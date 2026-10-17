@@ -231,11 +231,13 @@ Moonlight V+ / Enhanced 客户端。要吸收的核心特性：
 实现里，而不是照搬它们的补丁。注意许可证：这些项目多为 GPL-3.0，我们只借鉴思路/协议，
 不复制代码（保持 MIT OR Apache-2.0）。
 
-## 10. 硬件编解码（已落地第一个后端）
+## 10. 解码后端（进程内优先）
 
-- `UU_VIDEO_DECODER=ffmpeg`（或 `hw`）走**外部 ffmpeg 子进程**解码，硬件参数由
-  `UU_FFMPEG_HWACCEL` 指定：`none` / `auto` / `d3d11va` / `vaapi` / `cuda` / `qsv`。
-- `UU_VIDEO_DECODER=auto`：有 ffmpeg 就用 ffmpeg，否则回退 OpenH264。
-- 默认仍是进程内 **OpenH264 软件解码**（稳定、无外部依赖）。
-- 硬件设备不可用时**自动回退软件**（下一个 IDR 重开）。
-- 验证：`cargo run -p uu-media --example dec_ffmpeg -- <file.h264> [hwaccel]`。
+- **默认：进程内 OpenH264 软件解码**。实测 1080p **~2.9 ms/帧（约 340fps 余量）**，
+  60fps 毫无压力。
+- **外部 ffmpeg 子进程方案已废弃**（见 `archive/ffmpeg-subprocess/`）：进程间管道
+  缓冲带来高延迟，实测只有 5~10fps、操作不跟手，不适合实时串流。**不要**用它。
+- **硬件解码**要做成**进程内**后端：
+  - Windows：Media Foundation（MFT/DXVA，可 D3D11 纹理直供渲染）。
+  - Linux：VA-API（libva / ffmpeg 库，非子进程）。
+  - 仅 4K/HEVC/低端 CPU 才需要；1080p H.264 软件已足够。

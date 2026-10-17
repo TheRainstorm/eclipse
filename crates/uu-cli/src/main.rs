@@ -623,10 +623,6 @@ fn probe(config: &Config) -> Result<()> {
     println!("display           {display}");
 
     println!("video decoder     {}", uu_media::decoder_backend_name());
-    println!(
-        "ffmpeg            {}",
-        if uu_media::ffmpeg::ffmpeg_available() { "available" } else { "not found on PATH" }
-    );
 
     // Round out the report with the protocol revision so bug reports are
     // self-describing.

@@ -13,12 +13,10 @@
   - 远端画面已修复连续解码；键鼠走 CONTROL_DATA_CHANNEL 裸 JSON（已实测可用）
   - 垂直同步默认开启（无撕裂）；UU_VSYNC=0 可关
 
-帧率与硬件解码：
-  - 客户端软件解码（OpenH264）在本机 1080p 有约 200fps 余量，解码不是瓶颈；
-    实际帧率主要取决于被控端发送的帧率（静态桌面时官方被控端会跳帧，约 20fps，
-    画面有运动时才可能到 60fps）。
-  - 想用硬件解码：安装 ffmpeg 并把它放到 PATH，然后：
-        set UU_VIDEO_DECODER=ffmpeg
-        set UU_FFMPEG_HWACCEL=d3d11va
-        uu-gui.exe
-    （UU_FFMPEG_HWACCEL 也可用 auto / qsv / cuda；硬件不可用会自动回退软件）
+帧率说明：
+  - 客户端用进程内 OpenH264 软件解码，1080p 约 2.9ms/帧（几百 fps 余量），
+    解码不是瓶颈；实际帧率主要取决于被控端发送的帧率（静态桌面时官方被控端
+    会跳帧到 ~20fps，画面有运动时才拉高）。
+  - 已移除外部 ffmpeg 子进程解码（延迟太高、不跟手）。
+  - 硬件解码（Windows Media Foundation）规划为进程内后端，后续加入。
+  - 按 F1 或顶栏 HUD 按钮可显示串流统计（源/解码/渲染 fps、码率、解码耗时、丢包）。
