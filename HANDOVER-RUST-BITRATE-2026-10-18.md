@@ -8,8 +8,9 @@
 
 原生 Rust 主控端（Linux ares → 官方 Windows 被控端 KVM-WIN11）可稳定看
 **1080p@30fps** 画面、键鼠可用、UI 已改成**串流模式**（无设备列表、顶部一行控制条、
-全屏只剩画面）。**唯一未解卡点：码率**——实测约 4.5 Mbps 封顶，已排除中继因素，
-正用 Frida 抓官方主控端报文定位控制字段。
+全屏只剩画面）。**唯一未解卡点：码率**——实测约 4.5 Mbps 封顶，已排除中继因素
+（局域网直连），需用 Frida 抓官方主控端报文定位控制字段；抓包方法已固化到
+`docs/official-client-capture.md`。
 
 ## 1. 本轮完成（已提交、已部署）
 
@@ -79,37 +80,36 @@ protobuf 里**（我们只发了最小版 device_id+version，缺这些字段）
 （本轮 PID 49608）。Frida 17.24 可用，Python：
 `C:\Users\yfy\AppData\Local\Programs\Python\Python311\python.exe`。
 
-### 已部署脚本（按**导出名**挂钩，不依赖 RVA，避免版本差异）
+### 抓包方法（已定型，详见 `docs/official-client-capture.md`）
 
-- `C:\Users\yfy\sslcap2.js`：钩 `SSL_write` / `SSL_read`（经 `Module.findGlobalExportByName`
-  或遍历模块 `getExportByName` 定位），把每次明文按 hex 前 400 字节 `send()` 出来。
-- `C:\Users\yfy\sslcap2.py`：`frida.attach('GameViewer.exe')`，加载上面脚本，把消息写入
-  `C:\Users\yfy\sslcap2.log`，运行 N 秒（`python sslcap2.py <秒数>`）。
+**唯一正确的钩子点**：`streamer.dll` 内联 OpenSSL 的写/读函数，硬编码 RVA
+`0xdd7f30`（写）/ `0xdd7690`（读）。脚本 `C:\Users\yfy\wire2.js` + `wire2.py`
+（等价于当年的 `wirecap.js`），输出 `wire2.jsonl`。
 
-### 当前状态
+- ❌ 钩 `libssl-3-x64.dll` 导出的 `SSL_write`（`sslcap2.js`）**抓不到**——官方数据走
+  streamer.dll **静态链接**的 OpenSSL，不经过 libssl 导出。这一轮白折腾了一回。
+- ❌ `plaincap.js` 拿到的是 **TLS 密文**（socket 层，能看到 `17 03 03 00 41` 记录头）。
+- ✅ 明文是 **PCK 帧**：`b[:3]=="PCK"`、`b[8]==0x51`、`seq=b[9:13]BE`、
+  `channel=b[17:19]LE`、`kind=b[20:24]LE`、`payload=b[28:]`（JSON 或 protobuf）。
 
-6 秒探针已跑通：
+**脱离 SSH 会话启动**（否则子进程随 SSH 断开被杀，之前几次"空跑"就是这个原因）：
+用 `Invoke-CimMethod -ClassName Win32_Process -MethodName Create` 跑
+`cmd /c C:\Users\yfy\run_wire2b.bat`（`wire2.py <pid> 300 <out>`）。
+不要用 `/RU SYSTEM` 计划任务（Frida 附加会话进程失败）。
 
-```
-{'ev': 'found', 'w': True, 'r': True}
-loaded
-```
+### 当前状态 / 结论
 
-即 **`SSL_write`/`SSL_read` 已成功挂上**，但探针窗口内官方客户端没有新 TLS 收发
-（会话已建立后空闲），所以只看到 2 行。
+- 抓包链路已**验证可用**（`wire2` 挂钩成功，`writeRva=0xdd7f30`/`readRva=0xdd7690`）。
+- **码率报文至今没抓到**：4 份历史抓包（`/tmp/wirecap*.jsonl` 等）8683 个 PCK 帧
+  **全是输入 JSON**；本轮几次抓包窗口内官方客户端**没在推流**（只有保活帧
+  `81 01 32` / `81 81 99 00 f4 0b aa`），所以没触发码率报文。
 
 ### 待你配合的一步
 
-1. 官方客户端**连上 KVM-WIN11**。
-2. 我（或你）运行一段较长的抓包：
-   `& $py C:\Users\yfy\sslcap2.py 60`
-3. 抓包窗口内，在官方客户端里**把码率切到 30M / 多切几档**。
-4. 我读 `C:\Users\yfy\sslcap2.log`，在明文里找 `control`/`CaptureSettingRequest`
-   （Message 21）或 `app_data` protobuf，定位真正的码率/画质字段。
-
-> 注意：若官方把 CaptureSettingRequest 走的是 **WebRTC 数据通道（DTLS）**，则 OpenSSL
-> 钩子抓不到；那种情况需改钩 streamer.dll 里序列化 protobuf 的函数（更难）。抓包先做，
-> 看结果再决定。
+1. 官方客户端**连上 KVM-WIN11** 并看到画面；
+2. 在远端**动一下鼠标**（确认 PCK 在流）；
+3. **抓包窗口内切码率几档**（尤其 30M）。
+4. 我读 `wire2.jsonl`，解析非输入类 PCK 帧（protobuf），定位码率/画质字段。
 
 ## 4. 构建 / 运行 / 测试
 
@@ -157,11 +157,12 @@ GUI（x358h）：`C:\Users\yfy\uu-gui-demo\uu-gui.exe`。本轮用 `/tmp/uu_demo
 
 - **绝不连接 `FYYUAN-5NET3-53`。**
 - 官方被控端对桌面封顶 **30fps**；静态内容默认 ~21fps、~5Mbps 上限。
-- `target/`、`artifacts/` 已 gitignore。当前 HEAD：`597d97d`。
+- `target/`、`artifacts/` 已 gitignore。当前 HEAD：`05f2e0d`。
 
 ## 6. 已知问题 / 下一步
 
-1. **码率（主卡点）**：抓官方主控端报文（见 §3），定位真正字段 → 打通 30Mbps 局域网。
+1. **码率（主卡点）**：按 `docs/official-client-capture.md` 抓官方主控端报文（见 §3），
+   定位真正字段 → 打通 30Mbps 局域网。
 2. **独立串流窗口**：若要真正的第二 OS 窗口（egui `show_viewport_immediate`），需处理
    多 viewport 的输入/全屏事件路由；当前「同窗串流模式」已满足视觉诉求。
 3. **窗口/DPI**：x358h 125% 缩放下已用 1120x680 规避出屏；如需更稳可做「按显示器尺寸
@@ -179,7 +180,9 @@ GUI（x358h）：`C:\Users\yfy\uu-gui-demo\uu-gui.exe`。本轮用 `/tmp/uu_demo
 - 相关文件：`crates/uu-gui/src/main.rs`（串流模式/全屏/尺寸）、
   `crates/uu-core/src/media.rs`（REMB）、`crates/uu-core/src/controller.rs`（`UU_*`）、
   `crates/uu-core/src/control_wire.rs`（`capture_setting_request` 字段 1/2/8/18）。
-- x358h 抓包产物：`C:\Users\yfy\sslcap2.js` / `sslcap2.py` / `sslcap2.log`。
+- 新增文档：**`docs/official-client-capture.md`**（官方客户端明文抓包方法，必读）。
+- x358h 抓包产物：`C:\Users\yfy\wire2.js` / `wire2.py` / `run_wire2b.bat`
+  （当前推荐）；旧件 `wirecap.*`、`plaincap.*`、`sslcapture*.*`、`sslcap2.*`。
 - 参考协议（本机 `/tmp`）：`/tmp/uul_capture_setting.rs`、`/tmp/uuv_wire.rs`、
   `/tmp/uul_control_protocol.rs`、`/tmp/uuv_rtc.rs`、`/tmp/r_capture_setting.rs`、
   `/tmp/r_desktop.rs`。
