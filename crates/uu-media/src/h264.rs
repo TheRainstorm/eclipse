@@ -316,6 +316,108 @@ fn sps_gaps_bit_offset(rbsp: &[u8]) -> Option<usize> {
     Some(r.pos)
 }
 
+/// Dimensions of the first SPS found in an Annex-B access unit, honouring
+/// cropping. Used by the out-of-process decoder, which needs to know the raw
+/// frame size before reading frames from ffmpeg's stdout.
+pub fn h264_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let mut i = 0usize;
+    while i < data.len() {
+        let (sc, body) = if data[i..].starts_with(&[0, 0, 0, 1]) {
+            (4, i + 4)
+        } else if data[i..].starts_with(&[0, 0, 1]) {
+            (3, i + 3)
+        } else {
+            i += 1;
+            continue;
+        };
+        let _ = sc;
+        if body >= data.len() {
+            return None;
+        }
+        if data[body] & 0x1f == 7 {
+            // NAL end = next start code (or end of buffer).
+            let mut j = body + 1;
+            while j < data.len() {
+                if data[j..].starts_with(&[0, 0, 0, 1]) || data[j..].starts_with(&[0, 0, 1]) {
+                    break;
+                }
+                j += 1;
+            }
+            let rbsp = unescape_nal(&data[body + 1..j]);
+            if let Some(dims) = sps_dimensions(&rbsp) {
+                return Some(dims);
+            }
+        }
+        i = body;
+    }
+    None
+}
+
+fn sps_dimensions(rbsp: &[u8]) -> Option<(u32, u32)> {
+    let mut r = BitReader { data: rbsp, pos: 0 };
+    let profile = r.u(8)?;
+    r.u(8)?;
+    r.u(8)?;
+    r.ue()?; // sps_id
+    let mut chroma_format_idc = 1u32;
+    if matches!(
+        profile,
+        100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
+    ) {
+        chroma_format_idc = r.ue()?;
+        if chroma_format_idc == 3 {
+            r.u(1)?;
+        }
+        r.ue()?; // bit_depth_luma_minus8
+        r.ue()?; // bit_depth_chroma_minus8
+        r.u(1)?; // qpprime
+        if r.u(1)? == 1 {
+            return None; // scaling matrices: unsupported here
+        }
+    }
+    r.ue()?; // log2_max_frame_num_minus4
+    match r.ue()? {
+        0 => {
+            r.ue()?;
+        }
+        1 => {
+            r.u(1)?;
+            r.se()?;
+            r.se()?;
+            let n = r.ue()?;
+            for _ in 0..n {
+                r.se()?;
+            }
+        }
+        _ => {}
+    }
+    r.ue()?; // max_num_ref_frames
+    r.u(1)?; // gaps_in_frame_num_value_allowed_flag
+    let width_mbs = r.ue()?.checked_add(1)?;
+    let height_map_units = r.ue()?.checked_add(1)?;
+    let frame_mbs_only = r.u(1)? == 1;
+    if !frame_mbs_only {
+        r.u(1)?; // mb_adaptive_frame_field_flag
+    }
+    r.u(1)?; // direct_8x8_inference_flag
+    let (mut crop_l, mut crop_r, mut crop_t, mut crop_b) = (0u32, 0u32, 0u32, 0u32);
+    if r.u(1)? == 1 {
+        crop_l = r.ue()?;
+        crop_r = r.ue()?;
+        crop_t = r.ue()?;
+        crop_b = r.ue()?;
+    }
+    let frame_height_mbs = if frame_mbs_only { height_map_units } else { height_map_units * 2 };
+    let (crop_unit_x, crop_unit_y) = if chroma_format_idc == 0 {
+        (1, if frame_mbs_only { 2 } else { 1 })
+    } else {
+        (2, if frame_mbs_only { 2 } else { 1 })
+    };
+    let width = width_mbs * 16 - (crop_l + crop_r) * crop_unit_x;
+    let height = frame_height_mbs * 16 - (crop_t + crop_b) * crop_unit_y;
+    Some((width, height))
+}
+
 /// Set `gaps_in_frame_num_value_allowed_flag` in one SPS NAL (header + EBSP).
 fn patch_sps_nal(nal: &[u8]) -> Option<Vec<u8>> {
     if nal.is_empty() {
@@ -443,5 +545,18 @@ mod tests {
         // AUD + non-IDR slice: no SPS, nothing to change.
         let au = [0u8, 0, 0, 1, 0x09, 0x30, 0, 0, 0, 1, 0x41, 0x9a, 0x11];
         assert!(patch_sps_allow_gaps(&au).is_none());
+    }
+
+    #[test]
+    fn dimensions_are_parsed_from_sps_with_cropping() {
+        let mut au = vec![0u8, 0, 0, 1];
+        au.extend_from_slice(UU_SPS);
+        assert_eq!(h264_dimensions(&au), Some((1920, 1080)));
+    }
+
+    #[test]
+    fn dimensions_are_none_without_sps() {
+        let au = [0u8, 0, 0, 1, 0x09, 0x30, 0, 0, 0, 1, 0x41, 0x9a];
+        assert_eq!(h264_dimensions(&au), None);
     }
 }

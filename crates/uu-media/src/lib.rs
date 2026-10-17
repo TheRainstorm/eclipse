@@ -10,11 +10,13 @@
 
 pub mod codec;
 pub mod convert;
+pub mod ffmpeg;
 pub mod frame;
 #[cfg(feature = "h264")]
 pub mod h264;
 
 pub use codec::{CodecError, NullEncoder, VideoDecoder, VideoEncoder};
+pub use ffmpeg::FfmpegDecoder;
 pub use frame::{EncodedFrame, PixelFormat, RawFrame};
 
 #[cfg(feature = "h264")]
@@ -32,8 +34,21 @@ pub fn default_encoder(bitrate_kbps: u32) -> Result<Box<dyn VideoEncoder>, Codec
     Ok(encoder)
 }
 
-/// Build the default software decoder for this build.
+/// Build the default decoder for this build.
+///
+/// `UU_VIDEO_DECODER` selects the backend:
+/// * unset / `openh264` / `software` — in-process OpenH264 (default, stable);
+/// * `ffmpeg` / `hw` — out-of-process ffmpeg, honouring `UU_FFMPEG_HWACCEL`
+///   (`none` / `auto` / `d3d11va` / `vaapi` / `cuda` / `qsv` / ...);
+/// * `auto` — ffmpeg if present on `PATH`, else OpenH264.
 pub fn default_decoder() -> Result<Box<dyn VideoDecoder>, CodecError> {
+    let choice = std::env::var("UU_VIDEO_DECODER").unwrap_or_default();
+    let hwaccel = || std::env::var("UU_FFMPEG_HWACCEL").unwrap_or_else(|_| "auto".to_string());
+    match choice.as_str() {
+        "ffmpeg" | "hw" => return Ok(Box::new(FfmpegDecoder::new(hwaccel()))),
+        "auto" if ffmpeg::ffmpeg_available() => return Ok(Box::new(FfmpegDecoder::new(hwaccel()))),
+        _ => {}
+    }
     #[cfg(feature = "h264")]
     let decoder: Box<dyn VideoDecoder> = Box::new(H264Decoder::new()?);
     #[cfg(not(feature = "h264"))]
@@ -41,6 +56,21 @@ pub fn default_decoder() -> Result<Box<dyn VideoDecoder>, CodecError> {
         return Err(CodecError::Unsupported(uu_proto::media::VideoCodec::H264));
     };
     Ok(decoder)
+}
+
+/// Human-readable name of the decoder the environment selects (for `uu probe`).
+pub fn decoder_backend_name() -> String {
+    match std::env::var("UU_VIDEO_DECODER").unwrap_or_default().as_str() {
+        "ffmpeg" | "hw" => format!(
+            "ffmpeg (hwaccel={})",
+            std::env::var("UU_FFMPEG_HWACCEL").unwrap_or_else(|_| "auto".into())
+        ),
+        "auto" if ffmpeg::ffmpeg_available() => format!(
+            "ffmpeg (hwaccel={})",
+            std::env::var("UU_FFMPEG_HWACCEL").unwrap_or_else(|_| "auto".into())
+        ),
+        _ => "openh264 (software)".to_string(),
+    }
 }
 
 /// Monotonic microsecond timestamp used across capture/encode/decode.

@@ -23,6 +23,13 @@
   不自己造 NAT 穿透。
 - **多控一输入**：默认**多人同时可操作**（可再切「一控多观」/只看）。
 
+### 当前版本（V1）范围
+
+- **主控端跑在 Linux，连接官方 Windows UU 被控端**（即 interop 模式）。这是本阶段
+  要打磨好的交付物：稳定画面、键鼠可用、硬件解码、无撕裂、简洁 UI。
+- native 自有协议（own host + own client）作为**后续主线**（路线图 M1+）。
+- 形态上对标 **Sunshine（被控端）+ Moonlight（主控端）** 的组合，拿来主义、少走弯路。
+
 ## 2. 三大支柱（北极星）
 
 ### P1 · 多设备连接同一设备（多控一）
@@ -128,6 +135,7 @@ interop 里的鉴权、CONTROL 输入协议、视频解码等成果**全部保�
 | 里程碑 | 目标 | 验收 |
 |---|---|---|
 | **M0 收尾与基线** | 清理死代码、提交历史、统一构建脚本、单测 | `cargo test` 全绿、仓库分阶段提交 |
+| **V1 当前版本** | **Linux 主控端连接官方 Windows UU**：稳定画面、键鼠、硬件解码、无撕裂、简洁 UI | Linux 上长时间连接官方被控端无卡顿、无撕裂 |
 | **M1 native 最小闭环** | **局域网直连**、单控、手动输入 `IP:端口`；host 采集→编码→UDP，controller 解码→渲染→输入 | 两台机器（Win/Linux）不依赖任何服务器互控 |
 | **M2 硬件编解码 + 无撕裂** | ffmpeg 硬件后端；渲染垂直同步、帧节流 | 1080p60 硬件解码、无可感知撕裂 |
 | **M3 P2P 与自建服务** | rendezvous 信令 + STUN +（回退）TURN；ID+口令配对；NAT 打洞 | 跨公网打洞成功并自动回退中继 |
@@ -156,3 +164,28 @@ interop 里的鉴权、CONTROL 输入协议、视频解码等成果**全部保�
 - **跨平台采集/注入**（Win WGC/DXGI、Linux PipeWire/portal）工作量不小。
 - **无撕裂渲染**在不同平台/合成器行为不一，需要实机验证。
 - **合规**：interop 只用于互操作；native 模式不依赖任何网易资产。
+
+## 9. 借鉴 Sunshine / Moonlight
+
+形态对标：**Sunshine = 被控端**，**Moonlight = 主控端**。可吸收的方向（实现时逐项核对）：
+
+- **Sunshine（被控端）**
+  - 编码后端抽象：NVENC / QSV / VAAPI / AMF / 软件，H.264 / HEVC / AV1，HDR。
+  - 采集后端：Windows DXGI Desktop Duplication；Linux KMS/DRM 或 PipeWire。
+  - 输入注入：Windows `SendInput` + **ViGEmBus 虚拟手柄**；Linux `uinput`。
+  - Web 配置界面、多会话管理、低延迟选项与自适应码率。
+- **Moonlight（主控端）**
+  - **解码 → GPU 纹理 → vsync 呈现**的低延迟渲染管线（我们的 P3 无撕裂）。
+  - 手柄/键鼠映射；多主机管理；**控制流与音视频流分离**的协议设计。
+- 拟吸收进 native 协议：独立**控制通道** + 独立**媒体流**；**手柄**与**多控一**
+  从设计之初就作为一等公民，而不是事后补。
+- 注：以上为可借鉴的工程方向，具体能力以各自项目最新文档/源码为准，落地前再核实。
+
+## 10. 硬件编解码（已落地第一个后端）
+
+- `UU_VIDEO_DECODER=ffmpeg`（或 `hw`）走**外部 ffmpeg 子进程**解码，硬件参数由
+  `UU_FFMPEG_HWACCEL` 指定：`none` / `auto` / `d3d11va` / `vaapi` / `cuda` / `qsv`。
+- `UU_VIDEO_DECODER=auto`：有 ffmpeg 就用 ffmpeg，否则回退 OpenH264。
+- 默认仍是进程内 **OpenH264 软件解码**（稳定、无外部依赖）。
+- 硬件设备不可用时**自动回退软件**（下一个 IDR 重开）。
+- 验证：`cargo run -p uu-media --example dec_ffmpeg -- <file.h264> [hwaccel]`。

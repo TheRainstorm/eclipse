@@ -20,7 +20,6 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
-use uu_media::VideoDecoder;
 use webrtc::media::io::sample_builder::SampleBuilder;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtcp::payload_feedbacks::full_intra_request::{FirEntry, FullIntraRequest};
@@ -89,7 +88,7 @@ impl ControllerMedia {
                     .and_then(|p| std::fs::File::create(p).ok());
                 let mut builder = SampleBuilder::new(512, H264Packet::default(), 90000)
                     .with_max_time_delay(std::time::Duration::from_millis(500));
-                let mut decoder = uu_media::H264Decoder::new().ok();
+                let mut decoder = uu_media::default_decoder().ok();
                 let mut packets = 0u64;
                 let mut frames = 0u64;
                 let mut samples = 0u64;
