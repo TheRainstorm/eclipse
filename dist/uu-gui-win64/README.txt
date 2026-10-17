@@ -10,6 +10,15 @@
 注意：
   - libstdc++-6.dll 和 libgcc_s_seh-1.dll 必须与 uu-gui.exe 放在同一目录
   - 登录态保存在 %USERPROFILE%\.local\share\uu-remote\state.json
-  - 远端画面已修复连续解码（此前只出首帧、约 6 FPS 冻结）
-  - 键鼠已接通：输入走 CONTROL_DATA_CHANNEL 数据通道的裸 JSON
-    （先做 SimpleAction echo 握手）
+  - 远端画面已修复连续解码；键鼠走 CONTROL_DATA_CHANNEL 裸 JSON（已实测可用）
+  - 垂直同步默认开启（无撕裂）；UU_VSYNC=0 可关
+
+帧率与硬件解码：
+  - 客户端软件解码（OpenH264）在本机 1080p 有约 200fps 余量，解码不是瓶颈；
+    实际帧率主要取决于被控端发送的帧率（静态桌面时官方被控端会跳帧，约 20fps，
+    画面有运动时才可能到 60fps）。
+  - 想用硬件解码：安装 ffmpeg 并把它放到 PATH，然后：
+        set UU_VIDEO_DECODER=ffmpeg
+        set UU_FFMPEG_HWACCEL=d3d11va
+        uu-gui.exe
+    （UU_FFMPEG_HWACCEL 也可用 auto / qsv / cuda；硬件不可用会自动回退软件）
