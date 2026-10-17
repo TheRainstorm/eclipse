@@ -22,6 +22,7 @@ struct Device {
     #[serde(default)]
     wallpaper_url: String,
     #[serde(default)]
+    #[allow(dead_code)]
     platform: i64,
     #[serde(skip)]
     wallpaper_rgba: Option<(u32, u32, Vec<u8>)>,
@@ -112,7 +113,24 @@ fn vk_for(key: egui::Key) -> Option<u32> {
     })
 }
 
-fn setup_fonts(ctx: &egui::Context) {
+/// A coloured dot + label for the status bar.
+fn status_marker(status: &str) -> (&'static str, egui::Color32) {
+    if status.contains("已连接") {
+        ("●", egui::Color32::from_rgb(52, 199, 110))
+    } else if status.contains("错误") || status.contains("失败") || status.contains("断开") {
+        ("●", egui::Color32::from_rgb(230, 90, 90))
+    } else if status.contains("连接")
+        || status.contains("等待")
+        || status.contains("加载")
+        || status.contains("中")
+    {
+        ("●", egui::Color32::from_rgb(230, 180, 70))
+    } else {
+        ("●", egui::Color32::from_rgb(120, 126, 138))
+    }
+}
+
+fn setup_style(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let candidates: Vec<&str> = if cfg!(target_os = "windows") {
         vec![
@@ -144,12 +162,44 @@ fn setup_fonts(ctx: &egui::Context) {
         }
     }
     ctx.set_fonts(fonts);
+
+    let accent = egui::Color32::from_rgb(70, 122, 220);
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = egui::Color32::from_rgb(18, 20, 26);
+    visuals.window_fill = egui::Color32::from_rgb(24, 27, 34);
+    visuals.extreme_bg_color = egui::Color32::from_rgb(12, 14, 18);
+    visuals.faint_bg_color = egui::Color32::from_rgb(30, 34, 42);
+    visuals.hyperlink_color = egui::Color32::from_rgb(120, 170, 255);
+    visuals.selection.bg_fill = accent;
+    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(24, 27, 34);
+    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(34, 38, 48);
+    visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(34, 38, 48);
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(46, 52, 66);
+    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(46, 52, 66);
+    visuals.widgets.active.bg_fill = accent;
+    visuals.widgets.active.weak_bg_fill = accent;
+    for w in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        w.rounding = egui::Rounding::same(8.0);
+    }
+    ctx.set_visuals(visuals);
+
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 6.0);
+    style.spacing.interact_size.y = 28.0;
+    ctx.set_style(style);
     ctx.set_theme(egui::ThemePreference::Dark);
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        setup_fonts(&cc.egui_ctx);
+        setup_style(&cc.egui_ctx);
         // eframe 0.29 + glow does not always schedule repaints when only a
         // background thread has new data, so drive the UI at ~60 Hz.
         let repaint_ctx = cc.egui_ctx.clone();
@@ -430,22 +480,29 @@ impl eframe::App for App {
         if !self.logged_in {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.add_space(60.0);
-                    ui.heading("网易UU远程");
-                    ui.label("Rust 原生客户端 · 扫码登录");
-                    ui.add_space(20.0);
-                    if let Some(tex) = &self.login_texture {
-                        let s = tex.size_vec2();
-                        ui.image((tex.id(), s));
-                    } else {
-                        ui.add_space(220.0);
-                    }
-                    ui.add_space(12.0);
-                    ui.label(&self.login_status);
-                    ui.add_space(12.0);
-                    if ui.button("刷新二维码").clicked() {
-                        self.start_login();
-                    }
+                    ui.add_space(56.0);
+                    ui.label(egui::RichText::new("网易 UU 远程").size(30.0).strong());
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Rust 原生客户端 · 跨平台").weak());
+                    ui.add_space(24.0);
+                    egui::Frame::none()
+                        .fill(egui::Color32::from_rgb(24, 27, 34))
+                        .rounding(egui::Rounding::same(14.0))
+                        .inner_margin(egui::Margin::same(22.0))
+                        .show(ui, |ui| {
+                            if let Some(tex) = &self.login_texture {
+                                let s = tex.size_vec2();
+                                ui.image((tex.id(), s));
+                            } else {
+                                ui.add_space(240.0);
+                            }
+                            ui.add_space(14.0);
+                            ui.label(egui::RichText::new(&self.login_status).size(15.0));
+                            ui.add_space(10.0);
+                            if ui.button(egui::RichText::new("刷新二维码").size(15.0)).clicked() {
+                                self.start_login();
+                            }
+                        });
                 });
             });
             return;
@@ -453,15 +510,18 @@ impl eframe::App for App {
         ctx.request_repaint();
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.heading(egui::RichText::new("网易UU远程").strong());
-                ui.label(egui::RichText::new("Rust 原生客户端").weak());
+                ui.label(egui::RichText::new("网易 UU 远程").size(19.0).strong());
+                ui.add_space(8.0);
+                let (dot, col) = status_marker(&self.status);
+                ui.label(egui::RichText::new(dot).color(col).size(12.0));
+                ui.label(egui::RichText::new(&self.status).size(13.0).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some((w, hgt, _)) = self.latest.get(&self.selected_track) {
-                        let f = self.fps.get(&self.selected_track).copied().unwrap_or(0.0);
-                        ui.label(format!("{w}x{hgt} · {f:.0}fps"));
+                    if ui.button("全屏").clicked() {
+                        let full = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
                     }
-                    ui.label(&self.status);
                     if !self.textures.is_empty() {
                         let mut keys: Vec<u32> = self.textures.keys().copied().collect();
                         keys.sort();
@@ -475,12 +535,18 @@ impl eframe::App for App {
                                 }
                             });
                     }
-                    if ui.button("全屏").clicked() {
-                        let full = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+                    if let Some((w, hgt, _)) = self.latest.get(&self.selected_track) {
+                        let f = self.fps.get(&self.selected_track).copied().unwrap_or(0.0);
+                        ui.label(
+                            egui::RichText::new(format!("{w}×{hgt} · {f:.0} fps"))
+                                .monospace()
+                                .size(13.0)
+                                .weak(),
+                        );
                     }
                 });
             });
+            ui.add_space(4.0);
         });
 
         egui::SidePanel::left("devices")
@@ -516,27 +582,70 @@ impl eframe::App for App {
                     let d = &self.devices[i];
                     let online = d.status == "CONNECTED" || d.status == "ready";
                     let selected = self.selected == Some(i);
-                    let text = format!("{}  {}", if online { "●" } else { "○" }, d.alias);
-                    let color = if online {
-                        egui::Color32::from_rgb(34, 197, 94)
+                    let fill = if selected {
+                        egui::Color32::from_rgb(38, 58, 102)
+                    } else if online {
+                        egui::Color32::from_rgb(26, 30, 38)
                     } else {
-                        egui::Color32::from_rgb(120, 120, 120)
+                        egui::Color32::from_rgb(22, 24, 30)
                     };
-                    ui.horizontal(|ui| {
-                        if let Some(tex) = self.wallpapers.get(&i) {
-                            ui.image((tex.id(), egui::vec2(36.0, 36.0)));
-                        }
-                        let resp = ui.add_sized(
-                            [ui.available_width(), 36.0],
-                            egui::Button::new(egui::RichText::new(text).color(color))
-                                .selected(selected),
-                        );
-                        if resp.clicked() {
-                            clicked = Some(i);
-                        }
-                    });
-                    ui.label(egui::RichText::new(&d.device_id).small().weak());
-                    ui.add_space(2.0);
+                    let frame = egui::Frame::none()
+                        .fill(fill)
+                        .rounding(egui::Rounding::same(10.0))
+                        .inner_margin(egui::Margin::same(8.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let rect = ui.allocate_exact_size(
+                                    egui::vec2(42.0, 42.0),
+                                    egui::Sense::hover(),
+                                );
+                                match self.wallpapers.get(&i) {
+                                    Some(tex) => {
+                                        ui.painter().image(
+                                            tex.id(),
+                                            rect.0,
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(0.0, 0.0),
+                                                egui::pos2(1.0, 1.0),
+                                            ),
+                                            egui::Color32::WHITE,
+                                        );
+                                    }
+                                    None => {
+                                        ui.painter().rect_filled(
+                                            rect.0,
+                                            8.0,
+                                            egui::Color32::from_rgb(34, 38, 48),
+                                        );
+                                    }
+                                }
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(if online { "●" } else { "○" })
+                                                .color(if online {
+                                                    egui::Color32::from_rgb(52, 199, 110)
+                                                } else {
+                                                    egui::Color32::from_rgb(120, 126, 138)
+                                                })
+                                                .size(11.0),
+                                        );
+                                        ui.label(egui::RichText::new(&d.alias).strong().size(15.0));
+                                    });
+                                    ui.label(
+                                        egui::RichText::new(&d.device_id).small().weak().size(11.0),
+                                    );
+                                });
+                            });
+                        });
+                    let resp = frame.response.interact(egui::Sense::click());
+                    if resp.clicked() {
+                        clicked = Some(i);
+                    }
+                    if resp.hovered() && !selected {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    ui.add_space(4.0);
                 }
                 if let Some(i) = clicked {
                     self.selected = Some(i);
@@ -544,23 +653,38 @@ impl eframe::App for App {
             });
 
         egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if let Some(i) = self.selected {
-                    let d = &self.devices[i];
-                    ui.label(format!("{}  ({})", d.alias, d.device_id));
-                    if self.controller.is_some() {
-                        if ui.button("断开").clicked() {
-                            self.disconnect();
+                    let (alias, device_id, controllable) = {
+                        let d = &self.devices[i];
+                        (d.alias.clone(), d.device_id.clone(), d.controllable)
+                    };
+                    ui.label(egui::RichText::new(alias).strong());
+                    ui.label(egui::RichText::new(device_id).weak().size(12.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.controller.is_some() {
+                            if ui
+                                .button(egui::RichText::new("断开").size(15.0))
+                                .clicked()
+                            {
+                                self.disconnect();
+                            }
+                        } else if ui
+                            .button(egui::RichText::new("连接").size(15.0).strong())
+                            .clicked()
+                        {
+                            self.connect();
                         }
-                    } else if ui.button("连接").clicked() {
-                        let idx = i;
-                        self.selected = Some(idx);
-                        self.connect();
-                    }
+                        if self.controller.is_none() && !controllable {
+                            ui.label(egui::RichText::new("该设备不可被控").weak().size(12.0));
+                        }
+                    });
                 } else {
-                    ui.label("选择一台设备开始远控");
+                    ui.label(egui::RichText::new("选择一台设备开始远控").weak());
                 }
             });
+            ui.add_space(4.0);
         });
 
         let mut pending: Vec<(serde_json::Value, u32)> = Vec::new();
@@ -675,11 +799,15 @@ impl eframe::App for App {
 
 fn main() -> eframe::Result {
     uu_core::install_crypto_provider();
+    // Vertical sync is on by default (tear-free). `UU_VSYNC=0` disables it
+    // (e.g. for very low latency on a tearing-tolerant setup).
+    let vsync = std::env::var("UU_VSYNC").map(|v| v != "0").unwrap_or(true);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([900.0, 600.0])
-            .with_title("网易UU远程"),
+            .with_title("网易UU远程 · Rust"),
+        vsync,
         ..Default::default()
     };
     eframe::run_native(
