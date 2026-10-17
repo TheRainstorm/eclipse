@@ -157,7 +157,7 @@ GUI（x358h）：`C:\Users\yfy\uu-gui-demo\uu-gui.exe`。本轮用 `/tmp/uu_demo
 
 - **绝不连接 `FYYUAN-5NET3-53`。**
 - 官方被控端对桌面封顶 **30fps**；静态内容默认 ~21fps、~5Mbps 上限。
-- `target/`、`artifacts/` 已 gitignore。当前 HEAD：`05f2e0d`。
+- `target/`、`artifacts/` 已 gitignore。当前 HEAD：见 `git log -1 --oneline`。
 
 ## 6. 已知问题 / 下一步
 
