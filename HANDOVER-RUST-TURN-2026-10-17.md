@@ -1,0 +1,185 @@
+# 本轮交接：Rust TURN/PCK 与 Windows GUI 构建
+
+更新时间：2026-10-17
+
+这份文档记录本轮在原有 `HANDOVER.md` 之后完成的工作。原有交接文档保留，协议背景和历史逆向证据仍以它为准。
+
+## 已完成
+
+### TURN/PCK 中继
+
+- 新增 `crates/uu-core/src/turn.rs`。
+- 支持 `turns:` URL 解析，以及从 `iceServers` 提取 TURN-over-TLS 服务。
+- 建立 TLS 1.2/1.3 兼容连接，使用 IP 作为 SNI，服务端证书采用现有 PCK 诊断相同的宽松验证方式。
+- 实现 TURN long-term credential：
+  - 未认证 Allocate 获取 `REALM/NONCE`。
+  - `MD5(username:realm:credential)` 生成认证密钥。
+  - HMAC-SHA1 `MESSAGE-INTEGRITY` 和 `FINGERPRINT`。
+- 实现 `Allocate`、`CreatePermission`、`Send Indication`、`Data Indication`。
+- 支持 `438 Stale Nonce` 时更新 nonce 并重试。
+- 一个 allocation 可以向多个受控端候选地址建立 permission，并向这些地址广播 PCK 数据。
+
+### SDP 和控制器
+
+- `crates/uu-core/src/sdp.rs` 新增 srflx/relay UDP candidate 解析。
+- 控制器收集 SDP answer 和 trickle `soac candidate`，等待候选稳定后再建立 TURN allocation。
+- TURN 路径发送：
+  - PCK 传输 heartbeat（ptype `0x57`）。
+  - capability protobuf（kind `2`）。
+  - `kbd_heartbeat` 和键盘 JSON PCK 帧（kind `8`, channel `0`）。
+- 保留旧的 ICE-TCP/raw/TLS 探针模式：
+
+  ```text
+  UU_PCK_MODE=off|raw|probe|tls|turn|turntls
+  ```
+
+- `turntls` 是实验模式：在 TURN allocation 存活期间另开一条原始 TLS/PCK 连接，用来对照官方客户端的双 TLS 行为。
+
+### UI 和文档
+
+- `uu-gui` 现有 UI 已包含设备列表、搜索、壁纸缩略图、二维码登录、远程画面、多显示器选择、全屏、鼠标和键盘事件路由。
+- 同步更新了 `README.md`、`HANDOVER.md` 和 `docs/protocol-notes.md` 的 TURN 状态。
+
+## 验证结果
+
+已通过：
+
+```bash
+cargo test -p uu-core
+```
+
+结果为 13 个单元测试、2 个 self-loop 集成测试全部通过。
+
+真实 room/join 会话验证过：
+
+- Rust 获取 TURN `Allocate Success (0x0103)`。
+- 返回 relayed address 和 lifetime=600。
+- 批量 `CreatePermission` 成功。
+- `uu kbd-test aeawvmepembcpca5 --text Z` 能进入 `键盘通道已就绪 (TURN/PCK)`。
+
+## 尚未完成
+
+KVM 的 `kbdhook.exe` 在上述测试中仍只看到连接建立/断开时的合成 `VK_F24`，没有看到测试键 `Z`。因此 TURN 控制面已经接通，但远端低层键盘注入还没有完成端到端验收。
+
+下一步应优先对照官方抓包中的两条 TLS：官方同时存在 TURN 控制 TLS 和 PCK 承载 TLS。重点检查原始 PCK TLS 的建立时机、首个 heartbeat、候选/permission 的对应关系，以及官方是否将 PCK 发送到单独的 relay 服务地址。
+
+## Windows 构建
+
+已存在旧的发布目录：
+
+```text
+dist/uu-gui-win64/
+  uu-gui.exe
+  libstdc++-6.dll
+  libgcc_s_seh-1.dll
+```
+
+本轮重新构建命令：
+
+```bash
+cargo build --release -p uu-gui --target x86_64-pc-windows-gnu
+```
+
+构建已完成，新的 `uu-gui.exe` 和两个 MinGW DLL 已复制到
+`dist/uu-gui-win64/`。三个文件均已用 `file` 检查为 x86-64 Windows PE 文件。
+当前发布包校验值：
+
+```text
+uu-gui.exe         f10f24cae5ed510f00e90b73bf35db64171ba04caa145bcc79387da2db1afbe2
+libstdc++-6.dll    716df4898fdbfb0c58c6e83918f803dd9d2bf6b2e26734f73d4c96f5423f435b
+libgcc_s_seh-1.dll db6299e6e110540fc4622b6a1cbe6b83078d6ce6e05a140fa0cddbeb7afa1f04
+```
+
+`target/` 暂时保留，供后续增量构建复用。
+
+## 空间注意
+
+之前已删除约 19 GB 的 `target/`。Windows release 构建会重新产生大型 `target/`，构建完成并复制发布包后，如需保持空间，可以再次删除 `target/`；不会影响源码和 `dist/` 发布文件。
+
+## 最新暂停点：Windows 实测反馈与视频冻结
+
+用户在 x358h 上确认可以连接官方被控端，但反馈鼠标没有作用，画面只显示首帧，界面显示约 6 FPS。
+
+本轮 CLI 复现确认：
+
+- RTP 包持续到达，SSRC/序列号在增长。
+- 当前 `uu-media` 使用 Cisco OpenH264，属于 CPU 软解；没有接入 VA-API、DXVA/D3D11VA 或其他硬件 H264 解码器。
+- 失败样本的 H264 access unit 经常从 `AUD + P slice` 开始，OpenH264 报 `Native:16 (dsNoParamSets)` 或 `Native:2/18`，说明参数集/参考帧恢复失败。
+- 成功样本可包含 `AUD + SPS + PPS + IDR`，并能解出第一帧；随后参考帧丢失时又停止输出。
+- 已把 SampleBuilder 的重排窗口从 64 提高到 512、最大时间延迟提高到 500ms，并增加 PLI/FIR 请求；暂停前还未证明远端能响应这些 RTCP 请求。
+- 控制器默认使用 `force=true` 重新加入房间，避免复用已有官方会话从 GOP 中间开始。
+
+鼠标代码目前仍通过 WebRTC data channel 发送 kind=15/16 PCK；GUI 已有 click/drag/scroll 事件，但用户实测没有生效。下一轮应先给 `send_control` 增加可见错误/通道状态，再对照官方 data-channel 鼠标帧的 channel 值和事件序列。
+
+当前明确结论：Windows 包可以连接官方客户端，但视频连续解码、硬件解码和鼠标控制仍未完成验收，因此项目不能标记完成。
+
+## 后续修复：视频连续解码已解决（同日深夜）
+
+**根因**：NetEase 被控端的 H.264 编码器为了码率控制会主动跳帧（把
+`frame_num` 递增但实际不发该帧），而 SPS 里
+`gaps_in_frame_num_value_allowed_flag = 0`。OpenH264 严格遵守该标志，遇到
+frame gap 立刻报 `dsRefLost`/`dsNoParamSets`，于是首帧之后级联失败、画面
+冻结；ffmpeg 容忍这种跳帧，所以同一码流 ffmpeg 能全解、OpenH264 不能。
+
+**修复**（`crates/uu-media/src/h264.rs`）：
+
+1. 解码前把每个 SPS 的 `gaps_in_frame_num_value_allowed_flag` 改写为 1
+   （`patch_sps_allow_gaps`，含 RBSP 位级解析 + emulation-prevention 还原/重建）。
+2. 构造解码器时通过 `raw_api().set_option(DECODER_OPTION_ERROR_CON_IDC, 1)`
+   打开 error concealment，并保持 `Flush::NoFlush`（原默认每次解码后 flush
+   会破坏参考帧列表）。
+
+**验证**（ares → KVM-WIN11，release）：
+
+- 修复前：30s 内约 800+ 次 `Native:16/18`，只解出 30 帧后冻结。
+- 修复后：30s 解出 600+ 帧，`decode error = 0`，画面持续更新。
+- `cargo test -p uu-media`（含新增 SPS 修补测试）与 `-p uu-core` 全绿。
+
+**输入仍未打通**：data channel 上 `mouse_move_absolute`（kind 7/15）、
+`mouse_press/release`（kind 15）与 PCK/TURN 上的 kind 7 都在 KVM 上验证为
+无注入（低层键盘钩子只看到连接/断开的合成 `VK_F24`，远端光标不动、点
+开始菜单无反应）。官方 offer 的 application 段带
+`a=x-uuremote-mix-kcp:2` / `a=x-uuremote-quic`，而我们的 offer 没有；输入
+很可能走 data channel 内层的 KCP 隧道，需要在 SDP 里声明并实现 KCP 才能
+被被控端接受。这是下一步的关键。
+
+**Windows 包**：已用上述修复重建
+`dist/uu-gui-win64/uu-gui.exe`（sha256
+`74a780f6265c749253f171be1f0e6d7a5ca0a435552888cbf9baf7a224ab45db`），并部署到
+x358h 的 `C:\Users\yfy\uu-gui-demo\`。
+
+## 后续修复：键盘/鼠标输入已打通（同日更晚）
+
+**根因**：输入不是 WebRTC data channel 上带 PCK 帧头的二进制，也不是 TURN/PCK。
+官方控制协议（用 `uu-remote-linux` 的 viewer 侧 wire 定义交叉验证）是：
+
+1. 主控端创建 5 个数据通道，名字必须是
+   `CONTROL_DATA_CHANNEL` / `TEXT_DATA_CHANNEL` / `STREAMER_DATA_CHANNEL` /
+   `FILE_DATA_CHANNEL` / `BINARY_DATA_CHANNEL`。之前用的
+   `webrtc-datachannel` 让被控端完全不处理输入。
+2. 打开后在 CONTROL 上做 **SimpleAction echo 握手**：主控端发
+   `Message{1:seq,3:{1:0,4:features}}`；被控端会持续重发自己的 echo_request
+   （36 字节，action 缺省=0），主控端必须回
+   `Message{3:{1:1,2:{"seq":请求 seq},4:features}}`，握手完成后才接受输入。
+3. 输入是 CONTROL 通道上的**裸 JSON**（无 28 字节 PCK 头）：
+   - `{"action":"mouse_move_absolute","abs_x":0..1,"abs_y":0..1}`
+   - `{"action":"mouse_move_relative","delta_x":..,"delta_y":..}`
+   - `{"action":"mouse_press"/"mouse_release","button":1..}`
+   - `{"action":"mouse_scroll","delta_x":..,"delta_y":..}`
+   - `{"action":"kbd_press"/"kbd_release","key":<Windows VK>}`
+
+**实现**：新增 `crates/uu-core/src/control_wire.rs`（protobuf varint/解码 +
+echo 请求/响应 + 检测）；`media.rs` 创建 5 个通道、在 CONTROL 上收发 echo；
+`controller.rs` 把 GUI/CLI 产生的 PCK 帧剥掉头尾，作为裸 JSON 发到 CONTROL。
+
+**验证**（ares → KVM-WIN11）：
+
+- 被控端 KVM 的低层键盘钩子 `kbdhook.exe` 在 `kbd-test ... --text Z` 时
+  记录到 `vk=90` 按下/抬起（此前只有连接/断开的合成 `VK_F24`）。
+- `mouse-move --x 0.003 --y 0.998 --click` 让被控端 Win11 开始菜单弹出。
+
+**Windows 包**：重建并部署，`dist/uu-gui-win64/uu-gui.exe`
+sha256 `774fc1295c7a9d71e32f503608af287b92f8c577594a2611e7deb63aea3c38a4`，
+已复制到 x358h 的 `C:\Users\yfy\uu-gui-demo\`。
+
+

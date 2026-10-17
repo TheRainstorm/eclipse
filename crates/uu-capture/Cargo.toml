@@ -1,0 +1,16 @@
+[package]
+name = "uu-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Screen capture backends (Windows: WGC/DXGI, Linux: PipeWire/X11)"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uu-media = { path = "../uu-media" }
+
+[target.'cfg(windows)'.dependencies]
+
+[target.'cfg(unix)'.dependencies]

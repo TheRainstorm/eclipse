@@ -1,0 +1,21 @@
+[package]
+name = "uu-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Video/audio pipeline abstractions (encode, decode, frame transport)"
+
+[dependencies]
+anyhow.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uu-proto = { path = "../uu-proto" }
+
+[features]
+default = ["h264"]
+h264 = ["dep:openh264"]
+
+[dependencies.openh264]
+version = "0.9"
+optional = true

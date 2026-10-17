@@ -1,0 +1,12 @@
+# 采样样本与提取物：含网易专有二进制，绝不入库
+artifacts/
+
+# Rust
+/target/
+**/*.rs.bk
+
+# 编辑器/系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
