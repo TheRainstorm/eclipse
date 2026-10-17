@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use uu_core::signal::SignedRequest;
 use uu_core::UuApi;
-use uu_core::{ClientIdentity, Config, Role, Session, SessionState, SignalClient};
+use uu_core::{Config, Role, Session, SessionState, SignalClient};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -73,7 +73,7 @@ enum Command {
     KbdProbe {
         device: String,
     },
-    /// Connect and type text through the recovered PCK keyboard channel.
+    /// Connect and type text through the CONTROL input channel.
     KbdTest {
         device: String,
         #[arg(long, default_value = "hello")]
@@ -86,41 +86,15 @@ enum Command {
         x: f64,
         #[arg(long)]
         y: f64,
-        /// PCK kind; official mouse_move_absolute is 7, data-channel path 15.
+        /// Ignored: retained for CLI compatibility.
         #[arg(long, default_value_t = 7)]
         kind: u32,
-        /// PCK channel; 0 for absolute, screen index for relative.
+        /// Ignored: retained for CLI compatibility.
         #[arg(long, default_value_t = 0)]
         channel: u16,
         /// Also send a left-button press/release after the move.
         #[arg(long, default_value_t = false)]
         click: bool,
-    },
-    /// Dial the peer's passive TCP candidate with ICE-TCP + TLS (PCK channel).
-    PckDial {
-        host: String,
-        port: u16,
-        #[arg(long)]
-        remote_ufrag: String,
-        #[arg(long)]
-        remote_pwd: String,
-        #[arg(long)]
-        local_ufrag: String,
-        #[arg(long)]
-        local_pwd: String,
-        #[arg(long, default_value = "")]
-        sni: String,
-        #[arg(long)]
-        alpn: Option<String>,
-    },
-    /// Probe the PCK TLS control channel (used for keyboard input).
-    PckProbe {
-        host: String,
-        port: u16,
-        #[arg(long, default_value = "")]
-        sni: String,
-        #[arg(long)]
-        alpn: Option<String>,
     },
     /// End-to-end pipeline check: capture -> H.264 -> UDP -> decode -> PSNR.
     ///
@@ -262,7 +236,6 @@ async fn main() -> Result<()> {
             .await?;
             println!("offer sent ({} bytes sdp)", sdp.len());
 
-            let mut pck_addr: Option<(String, u16)> = None;
             let mut answered = false;
             let mut answer_at: Option<tokio::time::Instant> = None;
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
@@ -312,12 +285,6 @@ async fn main() -> Result<()> {
                             let idx = c["sdpMLineIndex"].as_u64().unwrap_or(0) as u16;
                             if !cand.is_empty() {
                                 println!("candidate {}", cand);
-                                let parts: Vec<&str> = cand.split_whitespace().collect();
-                                if parts.len() >= 7 && parts[2] == "tcp" && parts[6] == "host" {
-                                    if let Ok(p) = parts[5].parse::<u16>() {
-                                        pck_addr = Some((parts[4].to_string(), p));
-                                    }
-                                }
                                 media.add_candidate(cand, mid, idx).await?;
                             }
                         }
@@ -335,87 +302,6 @@ async fn main() -> Result<()> {
                 )
                 .await?;
                 println!("ice_finished_log sent; receiving media for 30s...");
-                if let Some((ip, port)) = pck_addr.clone() {
-                    println!("PCK candidate {ip}:{port}; probing TLS...");
-                    'probe: for sni in [target.clone(), ip.clone(), "uu-remote".to_string()] {
-                        for alpn in [None, Some("h2"), Some("http/1.1")] {
-                            let res = tokio::time::timeout(
-                                std::time::Duration::from_secs(4),
-                                uu_core::pck::PckTls::connect_with_alpn(&ip, port, &sni, alpn),
-                            ).await;
-                            match res {
-                                Ok(Ok(mut tls)) => {
-                                    println!("PCK TLS OK sni={sni} alpn={alpn:?}");
-                                    let hb = serde_json::json!({"heartbeat":"kbd_heartbeat"}).to_string();
-                                    let f = uu_proto::pck::encode_control_full(
-                                        hb.as_bytes(), 8, 1, 0x11223344, 0, 0x51);
-                                    let _ = tls.send(&f).await;
-                                    println!("PCK heartbeat sent");
-                                    break 'probe;
-                                }
-                                Ok(Err(e)) => println!("PCK TLS sni={sni} alpn={alpn:?} err: {e}"),
-                                Err(_) => println!("PCK TLS sni={sni} alpn={alpn:?} timeout"),
-                            }
-                        }
-                    }
-                }
-                // Official client sends an input-channel capability handshake
-                // (kind 0/1 protobuf) before it starts sending keyboard events.
-                let setup0 = hex::decode(
-                    "1a18221608061003180320022801300238024003480150015801").unwrap();
-                let setup1 = hex::decode(
-                    "08ac01109ce7b5c894341a2b0801120f7b202273657122203a20313732207d221608061003180320022801300238024003480150015801").unwrap();
-                let _ = media.send_control(uu_proto::pck::encode_control(
-                    &setup0, 0, 1, 0x55667788)).await;
-                let _ = media.send_control(uu_proto::pck::encode_control(
-                    &setup1, 1, 2, 0x55667788)).await;
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                let mv = serde_json::json!({
-                    "abs_x": 0.078, "abs_y": 0.278,
-                    "action": "mouse_move_absolute", "screen_id": 1
-                })
-                .to_string();
-                let frame = uu_proto::pck::encode_control(mv.as_bytes(), 15, 1, 0x11223344);
-                match media.send_control(frame).await {
-                    Ok(()) => println!("sent PCK mouse_move over data channel"),
-                    Err(e) => println!("data channel send failed: {e}"),
-                }
-                let mut seq = 2u32;
-                for payload in [
-                    serde_json::json!({"action":"mouse_press","button":1,"screen_id":1}),
-                    serde_json::json!({"action":"mouse_release","button":1,"screen_id":1}),
-                ] {
-                    let f = uu_proto::pck::encode_control(
-                        payload.to_string().as_bytes(), 15, seq, 0x11223344 + seq);
-                    seq += 1;
-                    let _ = media.send_control(f).await;
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                // Official keyboard sequence uses contiguous kseq values and
-                // kind 7 for the first events, kind 8 afterwards.
-                let hb = serde_json::json!({"heartbeat":"kbd_heartbeat"}).to_string();
-                let key = |action: &str, vk: u32, kseq: u32| {
-                    serde_json::json!({
-                        "action": action, "interrept": "i", "key": vk, "kseq": kseq
-                    }).to_string()
-                };
-                let send = |payload: String, kind: u32, kseq: u32| {
-                    uu_proto::pck::encode_control_full(
-                        payload.as_bytes(), kind, kseq, 0x11223344 + kseq, 0, 0x51)
-                };
-                for (payload, kind, kseq) in [
-                    (hb.clone(), 7u32, 1u32),
-                    (key("kbd_press", 88, 2), 7, 2),
-                    (key("kbd_release", 88, 3), 7, 3),
-                    (key("kbd_press", 88, 4), 8, 4),
-                    (key("kbd_release", 88, 5), 8, 5),
-                    (hb, 8, 6),
-                ] {
-                    let _ = media.send_control(send(payload, kind, kseq)).await;
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                }
-                println!("sent keyboard test (contiguous kseq)");
                 let end = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
                 while tokio::time::Instant::now() < end {
                     if let Ok(Ok((ev, data, _))) = tokio::time::timeout(
@@ -532,7 +418,6 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            Ok(())
         }
         Command::Api { method, path, body, token, device_id, user_id, language } => {
             let client = SignalClient::new(&config)?;
@@ -566,30 +451,27 @@ async fn main() -> Result<()> {
             let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
             let uu_core::controller::ControllerHandle { events, frames, input, close } =
                 uu_core::controller::spawn(config, device, geo)?;
-            let mut events = events;
-            let mut frames = frames;
-            std::thread::spawn(move || { while frames.blocking_recv().is_some() {} });
+            std::thread::spawn(move || {
+                let mut frames = frames;
+                while frames.blocking_recv().is_some() {}
+            });
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
             while std::time::Instant::now() < deadline {
                 match events.recv_timeout(std::time::Duration::from_millis(500)) {
                     Ok(uu_core::controller::ControllerEvent::Status(s)) => {
                         println!("status: {s}");
-                        if s.contains("键盘通道已就绪") { break; }
+                        if s.contains("已连接") { break; }
                     }
                     Ok(uu_core::controller::ControllerEvent::Error(e)) => anyhow::bail!("{e}"),
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(_) => break,
                 }
             }
-            let mut seq = 1u32;
-            let mut send = |label: &str, vk: u32, kind: u32, ptype: u8, payload: serde_json::Value| {
-                println!("variant {label}: vk={vk} kind={kind} ptype=0x{ptype:02x}");
-                let f = uu_proto::pck::encode_control_full(
-                    payload.to_string().as_bytes(), kind, seq, 0x11223344 + seq, 0, ptype);
-                seq += 1;
-                let _ = input.send(f);
+            let send = |label: &str, payload: serde_json::Value| {
+                println!("variant {label}");
+                let _ = input.send(payload.to_string().into_bytes());
             };
-            for (label, vk, kind, ptype, payload) in [
+            for (label, _vk, _kind, _ptype, payload) in [
                 ("k8-key", 65u32, 8u32, 0x51u8, serde_json::json!({"action":"kbd_press","interrept":"i","key":65,"kseq":1})),
                 ("k8-i-p", 66, 8, 0x51, serde_json::json!({"action":"kbd_press","interrept":"p","key":66,"kseq":2})),
                 ("k15-key", 67, 15, 0x51, serde_json::json!({"action":"kbd_press","interrept":"i","key":67,"kseq":3})),
@@ -599,7 +481,7 @@ async fn main() -> Result<()> {
                 ("k8-code", 71, 8, 0x51, serde_json::json!({"action":"kbd_press","interrept":"i","code":71,"kseq":7})),
                 ("k8-keypress", 72, 8, 0x51, serde_json::json!({"action":"key_press","interrept":"i","key":72,"kseq":8})),
             ] {
-                send(label, vk, kind, ptype, payload);
+                send(label, payload);
                 std::thread::sleep(std::time::Duration::from_millis(700));
             }
             std::thread::sleep(std::time::Duration::from_secs(5));
@@ -608,7 +490,7 @@ async fn main() -> Result<()> {
         }
         Command::KbdTest { device, text } => {
             let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
-            let mut h = uu_core::controller::spawn(config, device, geo)?;
+            let h = uu_core::controller::spawn(config, device, geo)?;
             {
                 let mut frames = h.frames;
                 std::thread::spawn(move || { while frames.blocking_recv().is_some() {} });
@@ -619,7 +501,7 @@ async fn main() -> Result<()> {
                 match h.events.recv_timeout(std::time::Duration::from_millis(500)) {
                     Ok(uu_core::controller::ControllerEvent::Status(s)) => {
                         println!("status: {s}");
-                        if s.contains("键盘通道已就绪") { ready = true; break; }
+                        if s.contains("已连接") { ready = true; break; }
                     }
                     Ok(uu_core::controller::ControllerEvent::Error(e)) => {
                         anyhow::bail!("controller error: {e}");
@@ -629,7 +511,7 @@ async fn main() -> Result<()> {
                 }
             }
             if !ready {
-                anyhow::bail!("PCK keyboard channel did not become ready");
+                anyhow::bail!("controller did not connect");
             }
             let keys: Vec<(u32, bool)> = text
                 .chars()
@@ -645,25 +527,21 @@ async fn main() -> Result<()> {
                     vk.into_iter().flat_map(|v| [(v, true), (v, false)])
                 })
                 .collect();
-            let mut seq = 1u32;
-            for (vk, down) in keys {
+            for (i, (vk, down)) in keys.into_iter().enumerate() {
                 let payload = serde_json::json!({
                     "action": if down { "kbd_press" } else { "kbd_release" },
-                    "interrept": "i", "key": vk, "kseq": seq
+                    "interrept": "i", "key": vk, "kseq": i + 1
                 });
-                seq += 1;
-                let f = uu_proto::pck::encode_control_full(
-                    payload.to_string().as_bytes(), 8, seq, 0x11223344 + seq, 0, 0x51);
-                h.input.send(f).ok();
+                h.input.send(payload.to_string().into_bytes()).ok();
                 std::thread::sleep(std::time::Duration::from_millis(80));
             }
-            println!("typed {} chars via PCK", text.chars().count());
+            println!("typed {} chars via CONTROL", text.chars().count());
             let hold = std::env::var("UU_HOLD_SECS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(8);
             std::thread::sleep(std::time::Duration::from_secs(hold));
             let _ = h.close.send(());
             Ok(())
         }
-        Command::MouseMove { device, x, y, kind, channel, click } => {
+        Command::MouseMove { device, x, y, kind: _kind, channel: _channel, click } => {
             let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
             let h = uu_core::controller::spawn(config, device, geo)?;
             {
@@ -676,9 +554,7 @@ async fn main() -> Result<()> {
                 match h.events.recv_timeout(std::time::Duration::from_millis(500)) {
                     Ok(uu_core::controller::ControllerEvent::Status(s)) => {
                         println!("status: {s}");
-                        if s.contains("键盘通道已就绪") || s.contains("键盘通道未建立") {
-                            ready = true;
-                        }
+                        if s.contains("已连接") { ready = true; }
                     }
                     Ok(uu_core::controller::ControllerEvent::Error(e)) => anyhow::bail!("{e}"),
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -691,17 +567,13 @@ async fn main() -> Result<()> {
                 "abs_x": x, "abs_y": y,
                 "action": "mouse_move_absolute", "screen_id": 1
             });
-            let f = uu_proto::pck::encode_control_ch(
-                payload.to_string().as_bytes(), kind, 1, 0x11223344, channel);
-            h.input.send(f).ok();
-            println!("sent mouse_move kind={kind} channel={channel} x={x} y={y}");
+            h.input.send(payload.to_string().into_bytes()).ok();
+            println!("sent mouse_move x={x} y={y}");
             if click {
                 std::thread::sleep(std::time::Duration::from_millis(400));
-                for (i, action) in ["mouse_press", "mouse_release"].iter().enumerate() {
+                for action in ["mouse_press", "mouse_release"] {
                     let p = serde_json::json!({"action": action, "button": 1, "screen_id": 1});
-                    let cf = uu_proto::pck::encode_control_ch(
-                        p.to_string().as_bytes(), 15, 10 + i as u32, 0x11223344, channel);
-                    h.input.send(cf).ok();
+                    h.input.send(p.to_string().into_bytes()).ok();
                     std::thread::sleep(std::time::Duration::from_millis(150));
                 }
                 println!("sent click");
@@ -709,44 +581,6 @@ async fn main() -> Result<()> {
             let hold = std::env::var("UU_HOLD_SECS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(6);
             std::thread::sleep(std::time::Duration::from_secs(hold));
             let _ = h.close.send(());
-            Ok(())
-        }
-        Command::PckDial { host, port, remote_ufrag, remote_pwd, local_ufrag, local_pwd, sni, alpn } => {
-            let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
-            let creds = uu_core::stun::IceCredentials { remote_ufrag, remote_pwd, local_ufrag, local_pwd };
-            let tls = uu_core::pck::PckTls::dial_ice_tcp(addr, &creds, &sni).await?;
-            println!("ICE-TCP + TLS OK to {addr}");
-            let _ = alpn; // ALPN is not used by the official PCK channel.
-            let mut tls = tls;
-            let hb = serde_json::json!({"heartbeat":"kbd_heartbeat"}).to_string();
-            let f = uu_proto::pck::encode_control_full(hb.as_bytes(), 8, 1, 0x11223344, 0, 0x51);
-            tls.send(&f).await?;
-            println!("PCK heartbeat sent");
-            for _ in 0..10 {
-                match tokio::time::timeout(std::time::Duration::from_secs(2), tls.recv()).await {
-                    Ok(Ok(fr)) => println!("PCK recv kind={} ch={} len={}", fr.kind, fr.channel, fr.payload.len()),
-                    Ok(Err(e)) => { println!("PCK recv error: {e}"); break; }
-                    Err(_) => {}
-                }
-            }
-            Ok(())
-        }
-        Command::PckProbe { host, port, sni, alpn } => {
-            let name = if sni.is_empty() { host.clone() } else { sni };
-            let mut tls = uu_core::pck::PckTls::connect_with_alpn(
-                &host, port, &name, alpn.as_deref()).await?;
-            println!("TLS OK to {host}:{port} sni={name}");
-            let hb = serde_json::json!({"heartbeat":"kbd_heartbeat"}).to_string();
-            let frame = uu_proto::pck::encode_control_full(
-                hb.as_bytes(), 8, 1, 0x11223344, 0, 0x51);
-            tls.send(&frame).await?;
-            println!("sent kbd_heartbeat, waiting for reply...");
-            match tokio::time::timeout(std::time::Duration::from_secs(5), tls.recv()).await {
-                Ok(Ok(f)) => println!("recv type={:#x} chan={} kind={} payload={:?}",
-                    f.ptype, f.channel, f.kind, String::from_utf8_lossy(&f.payload)),
-                Ok(Err(e)) => println!("recv error: {e}"),
-                Err(_) => println!("recv timeout"),
-            }
             Ok(())
         }
         Command::SelfLoop { frames, width, height, fps, bitrate_kbps, mtu, min_psnr } => {

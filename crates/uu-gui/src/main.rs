@@ -309,18 +309,13 @@ impl App {
         self.send_input_ch(payload, kind, 35);
     }
 
-    fn send_input_ch(&mut self, payload: serde_json::Value, kind: u32, channel: u16) {
+    /// The controlled end expects raw JSON on `CONTROL_DATA_CHANNEL`; the
+    /// `kind`/`channel` arguments are kept only to avoid touching every call
+    /// site and are ignored.
+    fn send_input_ch(&mut self, payload: serde_json::Value, _kind: u32, _channel: u16) {
         let Some(h) = &self.controller else { return };
-        let ts = 0x1122_0000u32.wrapping_add(self.seq);
-        let frame = uu_proto::pck::encode_control_ch(
-            payload.to_string().as_bytes(),
-            kind,
-            self.seq,
-            ts,
-            channel,
-        );
         self.seq = self.seq.wrapping_add(1);
-        let _ = h.input.send(frame);
+        let _ = h.input.send(payload.to_string().into_bytes());
     }
 
     fn send_key(&mut self, vk: u32, pressed: bool) {

@@ -97,7 +97,6 @@ impl ControllerMedia {
                 let mut pli_started = false;
                 let mut last_seq: std::collections::HashMap<u32, u16> = std::collections::HashMap::new();
                 let mut lost = 0u64;
-                let mut expected = 0u64;
                 while let Ok((pkt, _)) = track.read_rtp().await {
                     packets += 1;
                     let ssrc = pkt.header.ssrc;
@@ -106,7 +105,6 @@ impl ControllerMedia {
                         let gap = seq.wrapping_sub(prev).wrapping_sub(1);
                         if gap > 0 && gap < 3000 {
                             lost += gap as u64;
-                            expected += gap as u64;
                             if lost <= 40 || packets % 500 == 0 {
                                 println!(
                                     "RTP gap ssrc={ssrc} seq {prev}->{seq} missing={gap} total_lost={lost}"

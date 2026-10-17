@@ -1,5 +1,9 @@
 # 路线图 —— 原生 Rust 重写（Windows + Linux）
 
+> ⚠️ **本文已被 [`docs/vision.md`](vision.md) 取代**。项目方向升级为「超越 UU 的
+> 自有跨平台远控」（多控一 / 自主网络 / 无撕裂体验）。下面这份是旧的「复刻并与
+> 官方互通」路线，仅作历史存档。
+
 ## 策略
 
 1. **媒体面不自研**：官方用 libwebrtc（见 `protocol-notes.md`），我们用 Rust 的
