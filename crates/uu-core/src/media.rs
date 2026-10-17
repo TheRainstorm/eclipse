@@ -30,6 +30,64 @@ use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 
 pub type FrameSender = tokio::sync::mpsc::UnboundedSender<(u32, u32, u32, Vec<u8>)>;
 
+/// Live media statistics shared between the decode task and the UI (HUD).
+/// Fixed-point where noted so the hot path stays lock-free.
+#[derive(Default)]
+pub struct MediaStats {
+    pub width: AtomicU32,
+    pub height: AtomicU32,
+    /// Source (network) frame rate x100.
+    pub src_fps_x100: AtomicU32,
+    /// Decoded frame rate x100.
+    pub dec_fps_x100: AtomicU32,
+    /// Average decode time in microseconds.
+    pub decode_us: AtomicU32,
+    /// Received video bitrate in kbit/s.
+    pub bitrate_kbps: AtomicU32,
+    /// RTP packets received.
+    pub packets: AtomicU64,
+    /// RTP packets estimated lost (sequence gaps).
+    pub lost: AtomicU64,
+    /// Total frames decoded.
+    pub decoded_total: AtomicU64,
+    /// Decode errors.
+    pub errors: AtomicU64,
+    /// RTCP round-trip time estimate (ms), when available.
+    pub rtt_ms: AtomicU32,
+    pub backend: std::sync::Mutex<String>,
+}
+
+impl MediaStats {
+    pub fn set_backend(&self, backend: impl Into<String>) {
+        if let Ok(mut b) = self.backend.lock() {
+            *b = backend.into();
+        }
+    }
+
+    pub fn backend(&self) -> String {
+        self.backend
+            .lock()
+            .map(|b| b.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn src_fps(&self) -> f32 {
+        self.src_fps_x100.load(Ordering::Relaxed) as f32 / 100.0
+    }
+    pub fn dec_fps(&self) -> f32 {
+        self.dec_fps_x100.load(Ordering::Relaxed) as f32 / 100.0
+    }
+    pub fn decode_ms(&self) -> f32 {
+        self.decode_us.load(Ordering::Relaxed) as f32 / 1000.0
+    }
+    pub fn res(&self) -> (u32, u32) {
+        (
+            self.width.load(Ordering::Relaxed),
+            self.height.load(Ordering::Relaxed),
+        )
+    }
+}
+
 pub struct ControllerMedia {
     pub pc: Arc<RTCPeerConnection>,
     pub data_channel: Arc<webrtc::data_channel::RTCDataChannel>,
@@ -38,12 +96,13 @@ pub struct ControllerMedia {
 impl ControllerMedia {
     /// Build the PeerConnection with the ICE servers returned by `success`.
     pub async fn new(ice: Vec<RTCIceServer>) -> Result<Self> {
-        Self::new_with_frames(ice, None).await
+        Self::new_with_frames(ice, None, None).await
     }
 
     pub async fn new_with_frames(
         ice: Vec<RTCIceServer>,
         frames: Option<FrameSender>,
+        stats: Option<Arc<MediaStats>>,
     ) -> Result<Self> {
         let mut media = MediaEngine::default();
         media.register_default_codecs()?;
@@ -72,10 +131,12 @@ impl ControllerMedia {
 
         let pc_track = pc.clone();
         let frames_tx = frames.clone();
+        let stats_track = stats.clone();
         let track_counter = Arc::new(AtomicU32::new(0));
         pc.on_track(Box::new(move |track, _receiver, _transceiver| {
             let pc = pc_track.clone();
             let frame_tx = frames_tx.clone();
+            let stats = stats_track.clone();
             let track_idx = track_counter.fetch_add(1, Ordering::Relaxed);
             Box::pin(async move {
                 println!("track: {:?}", track.kind());
@@ -96,8 +157,23 @@ impl ControllerMedia {
                 let mut pli_started = false;
                 let mut last_seq: std::collections::HashMap<u32, u16> = std::collections::HashMap::new();
                 let mut lost = 0u64;
+                let mut last_ts: Option<u32> = None;
+                let mut src_frames = 0u64;
+                let mut win_start = std::time::Instant::now();
+                let mut win_decoded = 0u64;
+                let mut win_bytes = 0u64;
+                let mut decode_us_sum = 0u64;
+                let mut decode_n = 0u64;
+                if let Some(s) = &stats {
+                    s.set_backend(uu_media::decoder_backend_name());
+                }
                 while let Ok((pkt, _)) = track.read_rtp().await {
                     packets += 1;
+                    win_bytes += pkt.payload.len() as u64;
+                    if last_ts != Some(pkt.header.timestamp) {
+                        last_ts = Some(pkt.header.timestamp);
+                        src_frames += 1;
+                    }
                     let ssrc = pkt.header.ssrc;
                     let seq = pkt.header.sequence_number;
                     if let Some(prev) = last_seq.insert(ssrc, seq) {
@@ -110,6 +186,36 @@ impl ControllerMedia {
                                 );
                             }
                         }
+                    }
+                    if win_start.elapsed() >= std::time::Duration::from_secs(2) {
+                        let secs = win_start.elapsed().as_secs_f64();
+                        let src_fps = src_frames as f64 / secs;
+                        let dec_fps = win_decoded as f64 / secs;
+                        let kbps = (win_bytes as f64 * 8.0 / secs / 1000.0) as u32;
+                        let dec_us = if decode_n > 0 {
+                            (decode_us_sum / decode_n) as u32
+                        } else {
+                            0
+                        };
+                        println!(
+                            "stats src_fps={src_fps:.1} dec_fps={dec_fps:.1} kbps={kbps} decode_ms={:.2} lost={lost}",
+                            dec_us as f32 / 1000.0,
+                        );
+                        if let Some(s) = &stats {
+                            s.src_fps_x100.store((src_fps * 100.0) as u32, Ordering::Relaxed);
+                            s.dec_fps_x100.store((dec_fps * 100.0) as u32, Ordering::Relaxed);
+                            s.bitrate_kbps.store(kbps, Ordering::Relaxed);
+                            s.decode_us.store(dec_us, Ordering::Relaxed);
+                            s.packets.store(packets, Ordering::Relaxed);
+                            s.lost.store(lost, Ordering::Relaxed);
+                            s.decoded_total.store(frames, Ordering::Relaxed);
+                        }
+                        src_frames = 0;
+                        win_decoded = 0;
+                        win_bytes = 0;
+                        decode_us_sum = 0;
+                        decode_n = 0;
+                        win_start = std::time::Instant::now();
                     }
                     if packets == 1 || packets % 300 == 0 {
                         println!(
@@ -190,9 +296,17 @@ impl ControllerMedia {
                             data: sample.data.clone(),
                             pts: uu_media::Timestamp(0),
                         };
+                        let t_dec = std::time::Instant::now();
                         match dec.decode(&ef) {
                             Ok(Some(frame)) => {
                                 frames += 1;
+                                win_decoded += 1;
+                                decode_us_sum += t_dec.elapsed().as_micros() as u64;
+                                decode_n += 1;
+                                if let Some(s) = &stats {
+                                    s.width.store(frame.width, Ordering::Relaxed);
+                                    s.height.store(frame.height, Ordering::Relaxed);
+                                }
                                 if dbg && frames <= 60 {
                                     println!("  D#{} ok {}x{}", frames, frame.width, frame.height);
                                 }
@@ -216,6 +330,9 @@ impl ControllerMedia {
                             }
                             Err(e) => {
                                 decode_errors = decode_errors.saturating_add(1);
+                                if let Some(s) = &stats {
+                                    s.errors.fetch_add(1, Ordering::Relaxed);
+                                }
                                 if dbg && decode_errors <= 40 {
                                     println!("  D#ERR {e}");
                                 } else if decode_errors == 1 || decode_errors % 30 == 0 {

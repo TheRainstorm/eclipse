@@ -3,6 +3,7 @@
 //! Layout mirrors the official client: a device sidebar on the left, a large
 //! remote-screen area on the right, and a status/footer bar.
 
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{channel, Receiver};
 
 use eframe::egui;
@@ -94,6 +95,7 @@ struct App {
     login_rx: Option<Receiver<LoginEvent>>,
     login_texture: Option<egui::TextureHandle>,
     login_status: String,
+    hud: bool,
 }
 
 fn vk_for(key: egui::Key) -> Option<u32> {
@@ -240,6 +242,7 @@ impl App {
             login_rx: None,
             login_texture: None,
             login_status: String::new(),
+            hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(false),
         };
         if logged_in {
             app.start_load();
@@ -433,9 +436,13 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut keys = Vec::new();
         let mut mods = Vec::new();
+        let mut toggle_hud = false;
         let focused = ctx.input(|i| {
             for ev in &i.events {
                 if let egui::Event::Key { key, pressed, .. } = ev {
+                    if matches!(key, egui::Key::F1) && *pressed {
+                        toggle_hud = true;
+                    }
                     if let Some(vk) = vk_for(*key) {
                         keys.push((vk, *pressed));
                     }
@@ -454,6 +461,9 @@ impl eframe::App for App {
             }
             i.focused
         });
+        if toggle_hud {
+            self.hud = !self.hud;
+        }
         if self.focused && !focused {
             self.release_all_keys();
         }
@@ -521,6 +531,9 @@ impl eframe::App for App {
                     if ui.button("全屏").clicked() {
                         let full = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+                    }
+                    if ui.button(if self.hud { "HUD ✓" } else { "HUD" }).clicked() {
+                        self.hud = !self.hud;
                     }
                     if !self.textures.is_empty() {
                         let mut keys: Vec<u32> = self.textures.keys().copied().collect();
@@ -789,6 +802,54 @@ impl eframe::App for App {
                     egui::FontId::proportional(22.0),
                     egui::Color32::from_rgb(90, 96, 110),
                 );
+            }
+            if self.hud {
+                if let Some(h) = &self.controller {
+                    let s = &h.stats;
+                    let (w, hgt) = s.res();
+                    let rfps = self.fps.get(&self.selected_track).copied().unwrap_or(0.0);
+                    let lines = [
+                        "UU Remote · HUD   (F1 切换)".to_string(),
+                        format!("{w}×{hgt}   {}", s.backend()),
+                        format!(
+                            "src {:.1} fps   dec {:.1} fps   render {:.0} fps",
+                            s.src_fps(),
+                            s.dec_fps(),
+                            rfps
+                        ),
+                        format!(
+                            "bitrate {:.2} Mbps   decode {:.2} ms",
+                            s.bitrate_kbps.load(Ordering::Relaxed) as f32 / 1000.0,
+                            s.decode_ms()
+                        ),
+                        format!(
+                            "packets {}   lost {}   errors {}",
+                            s.packets.load(Ordering::Relaxed),
+                            s.lost.load(Ordering::Relaxed),
+                            s.errors.load(Ordering::Relaxed)
+                        ),
+                    ];
+                    let font = egui::FontId::monospace(13.0);
+                    let line_h = 17.0;
+                    let pad = 10.0;
+                    let x = rect.left() + 14.0;
+                    let y = rect.top() + 14.0;
+                    let bg = egui::Rect::from_min_size(
+                        egui::pos2(x - pad, y - pad),
+                        egui::vec2(420.0, line_h * lines.len() as f32 + pad * 2.0),
+                    );
+                    ui.painter()
+                        .rect_filled(bg, 6.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180));
+                    for (i, line) in lines.iter().enumerate() {
+                        ui.painter().text(
+                            egui::pos2(x, y + i as f32 * line_h),
+                            egui::Align2::LEFT_TOP,
+                            line,
+                            font.clone(),
+                            egui::Color32::from_rgb(215, 225, 240),
+                        );
+                    }
+                }
             }
         });
         for (payload, kind) in pending {

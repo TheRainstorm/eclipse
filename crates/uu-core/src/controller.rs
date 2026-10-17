@@ -28,6 +28,8 @@ pub struct ControllerHandle {
     /// Raw JSON input frames for `CONTROL_DATA_CHANNEL`.
     pub input: UnboundedSender<Vec<u8>>,
     pub close: UnboundedSender<()>,
+    /// Live media statistics for the HUD.
+    pub stats: std::sync::Arc<crate::media::MediaStats>,
 }
 
 pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<ControllerHandle> {
@@ -36,6 +38,8 @@ pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<Controlle
     let (frame_tx, frame_rx) = unbounded_channel();
     let (input_tx, input_rx) = unbounded_channel();
     let (close_tx, close_rx) = unbounded_channel();
+    let stats = std::sync::Arc::new(crate::media::MediaStats::default());
+    let stats_run = stats.clone();
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -52,6 +56,7 @@ pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<Controlle
             frame_tx,
             input_rx,
             close_rx,
+            stats_run,
         )) {
             let _ = ev_tx.send(ControllerEvent::Error(e.to_string()));
         }
@@ -61,6 +66,7 @@ pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<Controlle
         frames: frame_rx,
         input: input_tx,
         close: close_tx,
+        stats,
     })
 }
 
@@ -97,6 +103,7 @@ async fn run(
     frame_tx: crate::media::FrameSender,
     mut input_rx: UnboundedReceiver<Vec<u8>>,
     mut close_rx: UnboundedReceiver<()>,
+    stats: std::sync::Arc<crate::media::MediaStats>,
 ) -> Result<()> {
     let status = |s: &str| {
         let _ = ev.send(ControllerEvent::Status(s.to_string()));
@@ -172,7 +179,7 @@ async fn run(
     eprintln!("iceServers={}", success["iceServers"]);
     let ice = ice_servers_from_json(&success["iceServers"]);
     status("建立 WebRTC…");
-    let media = ControllerMedia::new_with_frames(ice, Some(frame_tx)).await?;
+    let media = ControllerMedia::new_with_frames(ice, Some(frame_tx), Some(stats.clone())).await?;
     let offer_sdp = media.offer().await?;
     let _ = std::fs::write("/tmp/offer_rust.sdp", &offer_sdp);
     let gz = gzip_sdp04(&offer_sdp)?;
