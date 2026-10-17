@@ -20,7 +20,7 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::media::io::sample_builder::SampleBuilder;
+use webrtc::rtp::packetizer::Depacketizer;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtcp::payload_feedbacks::full_intra_request::{FirEntry, FullIntraRequest};
 use webrtc::rtp::codecs::h264::H264Packet;
@@ -144,26 +144,116 @@ impl ControllerMedia {
                 // wider reorder window than the low bitrate default so a few
                 // late packets do not permanently lose the reference frame.
                 let dbg = std::env::var("UU_MEDIA_DEBUG").map(|v| v != "0").unwrap_or(false);
-                let mut dump_file = std::env::var("UU_DUMP_H264")
-                    .ok()
-                    .and_then(|p| std::fs::File::create(p).ok());
-                let mut builder = SampleBuilder::new(512, H264Packet::default(), 90000)
-                    .with_max_time_delay(std::time::Duration::from_millis(500));
-                let mut decoder = uu_media::default_decoder().ok();
+                // Decode runs on its own task so reading RTP never stalls behind
+                // decode + colour conversion. Samples are dropped (not queued
+                // unboundedly) when the decoder falls behind, bounding latency.
+                let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(8);
+                let worker_stats = stats.clone();
+                let worker_frames = frame_tx.clone();
+                let worker = tokio::spawn(async move {
+                    let mut dump_file = std::env::var("UU_DUMP_H264")
+                        .ok()
+                        .and_then(|p| std::fs::File::create(p).ok());
+                    let mut decoder = uu_media::default_decoder().ok();
+                    let mut samples = 0u64;
+                    let mut frames = 0u64;
+                    let mut decode_errors = 0u32;
+                    let mut win_decoded = 0u64;
+                    let mut decode_us_sum = 0u64;
+                    let mut decode_n = 0u64;
+                    let mut win_start = std::time::Instant::now();
+                    while let Some(data) = sample_rx.recv().await {
+                        samples += 1;
+                        if let Some(f) = dump_file.as_mut() {
+                            use std::io::Write;
+                            let _ = f.write_all(&data);
+                            let _ = f.flush();
+                        }
+                        let nal = uu_media::EncodedFrame::detect_h264_keyframe(&data);
+                        if dbg && samples <= 60 {
+                            println!("  S#{} len={} key={}", samples, data.len(), nal);
+                        }
+                        let Some(dec) = decoder.as_mut() else { continue };
+                        let ef = uu_media::EncodedFrame {
+                            is_keyframe: nal,
+                            data,
+                            pts: uu_media::Timestamp(0),
+                        };
+                        let t_dec = std::time::Instant::now();
+                        match dec.decode(&ef) {
+                            Ok(Some(frame)) => {
+                                frames += 1;
+                                win_decoded += 1;
+                                decode_us_sum += t_dec.elapsed().as_micros() as u64;
+                                decode_n += 1;
+                                if let Some(s) = &worker_stats {
+                                    s.width.store(frame.width, Ordering::Relaxed);
+                                    s.height.store(frame.height, Ordering::Relaxed);
+                                }
+                                if let Some(tx) = &worker_frames {
+                                    let rgba = uu_media::convert::i420_to_rgba(
+                                        &frame.data, frame.width, frame.height);
+                                    let _ = tx.send((track_idx, frame.width, frame.height, rgba));
+                                }
+                                if dbg && frames % 60 == 0 {
+                                    save_ppm(&frame, "/tmp/uu_rust_latest.ppm");
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                decode_errors = decode_errors.saturating_add(1);
+                                if let Some(s) = &worker_stats {
+                                    s.errors.fetch_add(1, Ordering::Relaxed);
+                                }
+                                if dbg && decode_errors <= 40 {
+                                    println!("  D#ERR {e}");
+                                }
+                            }
+                        }
+                        if win_start.elapsed() >= std::time::Duration::from_secs(2) {
+                            let secs = win_start.elapsed().as_secs_f64();
+                            let dec_us = if decode_n > 0 {
+                                (decode_us_sum / decode_n) as u32
+                            } else {
+                                0
+                            };
+                            if let Some(s) = &worker_stats {
+                                s.dec_fps_x100.store(
+                                    ((win_decoded as f64 / secs) * 100.0) as u32,
+                                    Ordering::Relaxed,
+                                );
+                                s.decode_us.store(dec_us, Ordering::Relaxed);
+                                s.decoded_total.store(frames, Ordering::Relaxed);
+                            }
+                            println!(
+                                "dec fps={:.1} decode_ms={:.2} errors={decode_errors} samples={samples}",
+                                win_decoded as f64 / secs,
+                                dec_us as f32 / 1000.0
+                            );
+                            win_decoded = 0;
+                            decode_us_sum = 0;
+                            decode_n = 0;
+                            win_start = std::time::Instant::now();
+                        }
+                    }
+                    println!("decode task done: samples={samples} frames={frames} errors={decode_errors}");
+                });
                 let mut packets = 0u64;
-                let mut frames = 0u64;
-                let mut samples = 0u64;
-                let mut decode_errors = 0u32;
                 let mut pli_started = false;
                 let mut last_seq: std::collections::HashMap<u32, u16> = std::collections::HashMap::new();
                 let mut lost = 0u64;
                 let mut last_ts: Option<u32> = None;
                 let mut src_frames = 0u64;
                 let mut win_start = std::time::Instant::now();
-                let mut win_decoded = 0u64;
                 let mut win_bytes = 0u64;
-                let mut decode_us_sum = 0u64;
-                let mut decode_n = 0u64;
+                let mut drops = 0u64;
+                // Assemble access units ourselves from RTP timestamps. This is
+                // deterministic (one frame per timestamp) and emits as soon as
+                // the marker bit arrives, unlike webrtc-rs' SampleBuilder which
+                // reorders/drops aggressively at 30-60 fps.
+                let mut depack = H264Packet::default();
+                let mut cur_ts: Option<u32> = None;
+                let mut cur_buf: Vec<u8> = Vec::new();
                 if let Some(s) = &stats {
                     s.set_backend(uu_media::decoder_backend_name());
                 }
@@ -190,31 +280,17 @@ impl ControllerMedia {
                     if win_start.elapsed() >= std::time::Duration::from_secs(2) {
                         let secs = win_start.elapsed().as_secs_f64();
                         let src_fps = src_frames as f64 / secs;
-                        let dec_fps = win_decoded as f64 / secs;
                         let kbps = (win_bytes as f64 * 8.0 / secs / 1000.0) as u32;
-                        let dec_us = if decode_n > 0 {
-                            (decode_us_sum / decode_n) as u32
-                        } else {
-                            0
-                        };
-                        println!(
-                            "stats src_fps={src_fps:.1} dec_fps={dec_fps:.1} kbps={kbps} decode_ms={:.2} lost={lost}",
-                            dec_us as f32 / 1000.0,
-                        );
+                        println!("net src_fps={src_fps:.1} kbps={kbps} lost={lost} drops={drops}");
                         if let Some(s) = &stats {
                             s.src_fps_x100.store((src_fps * 100.0) as u32, Ordering::Relaxed);
-                            s.dec_fps_x100.store((dec_fps * 100.0) as u32, Ordering::Relaxed);
                             s.bitrate_kbps.store(kbps, Ordering::Relaxed);
-                            s.decode_us.store(dec_us, Ordering::Relaxed);
                             s.packets.store(packets, Ordering::Relaxed);
                             s.lost.store(lost, Ordering::Relaxed);
-                            s.decoded_total.store(frames, Ordering::Relaxed);
                         }
                         src_frames = 0;
-                        win_decoded = 0;
                         win_bytes = 0;
-                        decode_us_sum = 0;
-                        decode_n = 0;
+                        drops = 0;
                         win_start = std::time::Instant::now();
                     }
                     if packets == 1 || packets % 300 == 0 {
@@ -267,84 +343,35 @@ impl ControllerMedia {
                             }
                         });
                     }
-                    builder.push(pkt);
-                    while let Some(sample) = builder.pop() {
-                        samples += 1;
-                        if let Some(f) = dump_file.as_mut() {
-                            use std::io::Write;
-                            let _ = f.write_all(&sample.data);
-                            let _ = f.flush();
-                        }
-                        if samples <= 3 {
-                            let head: Vec<String> = sample.data.iter().take(12).map(|b| format!("{b:02x}")).collect();
-                            println!("sample {samples} len={} head={}", sample.data.len(), head.join(" "));
-                        }
-                        let nal = uu_media::EncodedFrame::detect_h264_keyframe(&sample.data);
-                        if dbg && samples <= 60 {
-                            println!(
-                                "  S#{} ts={:?} len={} key={} nals={:?}",
-                                samples,
-                                sample.timestamp,
-                                sample.data.len(),
-                                nal,
-                                h264_nal_types(&sample.data)
-                            );
-                        }
-                        let Some(dec) = decoder.as_mut() else { continue };
-                        let ef = uu_media::EncodedFrame {
-                            is_keyframe: nal,
-                            data: sample.data.clone(),
-                            pts: uu_media::Timestamp(0),
-                        };
-                        let t_dec = std::time::Instant::now();
-                        match dec.decode(&ef) {
-                            Ok(Some(frame)) => {
-                                frames += 1;
-                                win_decoded += 1;
-                                decode_us_sum += t_dec.elapsed().as_micros() as u64;
-                                decode_n += 1;
-                                if let Some(s) = &stats {
-                                    s.width.store(frame.width, Ordering::Relaxed);
-                                    s.height.store(frame.height, Ordering::Relaxed);
-                                }
-                                if dbg && frames <= 60 {
-                                    println!("  D#{} ok {}x{}", frames, frame.width, frame.height);
-                                }
-                                if let Some(tx) = &frame_tx {
-                                    let rgba = uu_media::convert::i420_to_rgba(
-                                        &frame.data, frame.width, frame.height);
-                                    let _ = tx.send((track_idx, frame.width, frame.height, rgba));
-                                }
-                                if frames == 1 {
-                                    println!("decoded first frame {}x{}", frame.width, frame.height);
-                                    save_ppm(&frame, "/tmp/uu_rust_frame.ppm");
-                                } else if frames % 30 == 0 {
-                                    println!("decoded {frames} frames");
-                                    save_ppm(&frame, "/tmp/uu_rust_latest.ppm");
-                                }
-                            }
-                            Ok(None) => {
-                                if dbg && samples <= 60 {
-                                    println!("  D none");
-                                }
-                            }
-                            Err(e) => {
-                                decode_errors = decode_errors.saturating_add(1);
-                                if let Some(s) = &stats {
-                                    s.errors.fetch_add(1, Ordering::Relaxed);
-                                }
-                                if dbg && decode_errors <= 40 {
-                                    println!("  D#ERR {e}");
-                                } else if decode_errors == 1 || decode_errors % 30 == 0 {
-                                    println!("decode error ({decode_errors}): {e}");
-                                }
-                            }
+                    let ts = pkt.header.timestamp;
+                    if cur_ts.is_some() && cur_ts != Some(ts) && !cur_buf.is_empty() {
+                        if sample_tx
+                            .try_send(bytes::Bytes::from(std::mem::take(&mut cur_buf)))
+                            .is_err()
+                        {
+                            drops += 1;
                         }
                     }
+                    cur_ts = Some(ts);
+                    if let Ok(p) = depack.depacketize(&pkt.payload) {
+                        cur_buf.extend_from_slice(&p);
+                    }
+                    if pkt.header.marker && !cur_buf.is_empty() {
+                        if sample_tx
+                            .try_send(bytes::Bytes::from(std::mem::take(&mut cur_buf)))
+                            .is_err()
+                        {
+                            drops += 1;
+                        }
+                        cur_ts = None;
+                    }
                 }
-                println!(
-                    "track done: packets={packets} samples={samples} frames={frames} decode_errors={decode_errors} rtp_lost={lost}"
-                );
+                if !cur_buf.is_empty() {
+                    let _ = sample_tx.try_send(bytes::Bytes::from(std::mem::take(&mut cur_buf)));
+                }
+                drop(sample_tx);
+                let _ = worker.await;
+                println!("track done: packets={packets} rtp_lost={lost} drops={drops}");
             })
         }));
 
@@ -487,28 +514,6 @@ pub fn ice_servers_from_json(v: &serde_json::Value) -> Vec<RTCIceServer> {
         .unwrap_or_default()
 }
 
-
-/// Enumerate the H.264 NAL unit types in an Annex-B access unit (debug aid).
-fn h264_nal_types(data: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut i = 0usize;
-    while i + 3 < data.len() {
-        let sc = if data[i..].starts_with(&[0, 0, 0, 1]) {
-            4
-        } else if data[i..].starts_with(&[0, 0, 1]) {
-            3
-        } else {
-            i += 1;
-            continue;
-        };
-        let h = i + sc;
-        if h < data.len() {
-            out.push(data[h] & 0x1f);
-        }
-        i = h + 1;
-    }
-    out
-}
 
 /// Write an I420 frame as a binary PPM (P6) so it can be inspected without a
 /// UI dependency. Convert with `ffmpeg -i /tmp/uu_rust_frame.ppm out.png`.

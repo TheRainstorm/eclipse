@@ -238,6 +238,24 @@ async fn run(
     )
     .await?;
 
+    // Ask the controlled end for the target frame rate. Without this the host
+    // streams at its idle default (~21 fps); the official client sends the same
+    // CaptureSettingRequest. Retry a few times while CONTROL settles.
+    let fps_option: u64 = std::env::var("UU_FPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2); // 1=30, 2=60, 3=90, 4=144
+    for i in 0..3u64 {
+        let _ = media
+            .send_control(crate::control_wire::capture_setting_request(
+                1000 + i,
+                fps_option,
+            ))
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    }
+    status("已请求目标帧率");
+
     loop {
         tokio::select! {
             _ = close_rx.recv() => {
@@ -245,10 +263,10 @@ async fn run(
                 break;
             }
             Some(frame) = input_rx.recv() => {
-                // `frame` is the JSON payload for CONTROL_DATA_CHANNEL.
-                if let Err(e) = media.send_control(frame).await {
-                    status(&format!("输入发送失败: {e}"));
-                }
+                // `frame` is the JSON payload for CONTROL_DATA_CHANNEL. Early
+                // input can arrive before the channel opens; ignore failures so
+                // the status bar is not spammed.
+                let _ = media.send_control(frame).await;
             }
             recv = sio.recv_event() => {
                 let (event, data, _) = recv?;

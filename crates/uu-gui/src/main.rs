@@ -96,6 +96,7 @@ struct App {
     login_texture: Option<egui::TextureHandle>,
     login_status: String,
     hud: bool,
+    autoconnect_done: bool,
 }
 
 fn vk_for(key: egui::Key) -> Option<u32> {
@@ -243,6 +244,7 @@ impl App {
             login_texture: None,
             login_status: String::new(),
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(false),
+            autoconnect_done: false,
         };
         if logged_in {
             app.start_load();
@@ -320,6 +322,24 @@ impl App {
                             }
                         }
                         self.devices = devices;
+                        // Optional headless auto-connect for testing:
+                        //   UU_AUTOCONNECT=<explicit device_id|alias>
+                        if !self.autoconnect_done {
+                            self.autoconnect_done = true;
+                            // Only an explicit device id or alias is accepted —
+                            // never "first online" (that once picked the wrong
+                            // machine). Testing uses KVM-WIN11 explicitly.
+                            if let Ok(want) = std::env::var("UU_AUTOCONNECT") {
+                                if let Some(i) = self
+                                    .devices
+                                    .iter()
+                                    .position(|d| d.device_id == want || d.alias == want)
+                                {
+                                    self.selected = Some(i);
+                                    self.connect();
+                                }
+                            }
+                        }
                     }
                     Err(e) => self.status = format!("加载失败: {e}"),
                 }

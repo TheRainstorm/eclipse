@@ -183,24 +183,36 @@ mod tests {
 }
 
 /// Convert tightly packed I420 to RGBA (for the GUI texture upload path).
+///
+/// BT.601 with 16.16 fixed point (integer, no float): this runs per frame on
+/// the decode path, so it must stay cheap.
 pub fn i420_to_rgba(src: &[u8], width: u32, height: u32) -> Vec<u8> {
     let (w, h) = (width as usize, height as usize);
     let cw = w / 2;
     let ch = h / 2;
     let mut out = vec![0u8; w * h * 4];
-    let cl = |v: i32| v.clamp(0, 255) as u8;
+    if src.len() < w * h + cw * ch * 2 {
+        return out;
+    }
+    let yp = &src[..w * h];
+    let up = &src[w * h..w * h + cw * ch];
+    let vp = &src[w * h + cw * ch..w * h + cw * ch * 2];
     for j in 0..h {
+        let yrow = j * w;
+        let crow = (j >> 1) * cw;
+        let orow = j * w * 4;
         for i in 0..w {
-            let yy = src[j * w + i] as i32;
-            let uu = src[w * h + (j / 2) * cw + i / 2] as i32 - 128;
-            let vv = src[w * h + cw * ch + (j / 2) * cw + i / 2] as i32 - 128;
-            let r = yy + (1.402 * vv as f32) as i32;
-            let g = yy - (0.344136 * uu as f32) as i32 - (0.714136 * vv as f32) as i32;
-            let b = yy + (1.772 * uu as f32) as i32;
-            let o = (j * w + i) * 4;
-            out[o] = cl(r);
-            out[o + 1] = cl(g);
-            out[o + 2] = cl(b);
+            let y = yp[yrow + i] as i32;
+            let ci = crow + (i >> 1);
+            let u = up[ci] as i32 - 128;
+            let v = vp[ci] as i32 - 128;
+            let r = y + ((91881 * v) >> 16);
+            let g = y - ((22554 * u + 46802 * v) >> 16);
+            let b = y + ((116130 * u) >> 16);
+            let o = orow + i * 4;
+            out[o] = r.clamp(0, 255) as u8;
+            out[o + 1] = g.clamp(0, 255) as u8;
+            out[o + 2] = b.clamp(0, 255) as u8;
             out[o + 3] = 255;
         }
     }
