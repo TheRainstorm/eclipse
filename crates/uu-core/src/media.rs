@@ -23,6 +23,7 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp::packetizer::Depacketizer;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtcp::payload_feedbacks::full_intra_request::{FirEntry, FullIntraRequest};
+use webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
 use webrtc::rtp::codecs::h264::H264Packet;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
@@ -309,6 +310,13 @@ impl ControllerMedia {
                         let sender_ssrc = u32::from_be_bytes(
                             uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap(),
                         );
+                        // Advertise available bandwidth so the encoder is not
+                        // stuck at a conservative default. UU_BITRATE is Mbit/s.
+                        let remb_bps = std::env::var("UU_BITRATE")
+                            .ok()
+                            .and_then(|v| v.parse::<f32>().ok())
+                            .unwrap_or(30.0)
+                            * 1_000_000.0;
                         tokio::spawn(async move {
                             let mut fir_seq = 1u8;
                             // The first RTP packet is often a delta frame
@@ -334,6 +342,11 @@ impl ControllerMedia {
                                         sender_ssrc,
                                         media_ssrc: ssrc,
                                         fir: vec![FirEntry { ssrc, sequence_number: fir_seq, ..Default::default() }],
+                                    }),
+                                    Box::new(ReceiverEstimatedMaximumBitrate {
+                                        sender_ssrc,
+                                        bitrate: remb_bps,
+                                        ssrcs: vec![ssrc],
                                     }),
                                 ];
                                 fir_seq = fir_seq.wrapping_add(1);

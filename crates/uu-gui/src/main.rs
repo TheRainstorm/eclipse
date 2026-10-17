@@ -597,10 +597,16 @@ impl eframe::App for App {
         }
         ctx.request_repaint();
 
+        let streaming = self.controller.is_some();
+        if !self.fullscreen {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("网易 UU 远程").size(19.0).strong());
+                if streaming {
+                    ui.label(egui::RichText::new("串流").size(13.0).weak());
+                } else {
+                    ui.label(egui::RichText::new("网易 UU 远程").size(19.0).strong());
+                }
                 ui.add_space(8.0);
                 let (dot, col) = status_marker(&self.status);
                 ui.label(egui::RichText::new(dot).color(col).size(12.0));
@@ -634,6 +640,9 @@ impl eframe::App for App {
                     if ui.button(if self.hud { "HUD ✓" } else { "HUD" }).clicked() {
                         self.hud = !self.hud;
                     }
+                    if streaming && ui.button("断开").clicked() {
+                        self.disconnect();
+                    }
                     if !self.textures.is_empty() {
                         let mut keys: Vec<u32> = self.textures.keys().copied().collect();
                         keys.sort();
@@ -661,6 +670,7 @@ impl eframe::App for App {
             ui.add_space(4.0);
         });
 
+        if !streaming {
         egui::SidePanel::left("devices")
             .resizable(true)
             .default_width(280.0)
@@ -798,6 +808,8 @@ impl eframe::App for App {
             });
             ui.add_space(4.0);
         });
+        }
+        }
 
         let mut pending: Vec<(serde_json::Value, u32)> = Vec::new();
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -964,8 +976,8 @@ fn main() -> eframe::Result {
     let vsync = std::env::var("UU_VSYNC").map(|v| v != "0").unwrap_or(true);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([900.0, 600.0])
+            .with_inner_size([1120.0, 680.0])
+            .with_min_inner_size([720.0, 480.0])
             .with_title("网易UU远程 · Rust"),
         vsync,
         ..Default::default()
