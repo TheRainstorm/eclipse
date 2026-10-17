@@ -97,7 +97,23 @@ struct App {
     login_status: String,
     hud: bool,
     autoconnect_done: bool,
+    fullscreen: bool,
+    bitrate_idx: usize,
+    custom_mbps: u32,
+    settings_seq: u64,
 }
+
+/// Bitrate/quality presets sent as a CaptureSettingRequest. Values are the
+/// official GvPb_VideoQuality enum: 1 fast, 2 general, 3 hd, 4 bluray, 5 auto,
+/// 6 custom (uses the custom Mbit/s field).
+const BITRATE_PRESETS: &[(&str, u64)] = &[
+    ("自动", 5),
+    ("快速 1M", 1),
+    ("一般 2M", 2),
+    ("高清 8M", 3),
+    ("超清 20M", 4),
+    ("自定义", 6),
+];
 
 fn vk_for(key: egui::Key) -> Option<u32> {
     use egui::Key::*;
@@ -245,6 +261,10 @@ impl App {
             login_status: String::new(),
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(false),
             autoconnect_done: false,
+            fullscreen: false,
+            bitrate_idx: 4,
+            custom_mbps: 30,
+            settings_seq: 0,
         };
         if logged_in {
             app.start_load();
@@ -382,6 +402,30 @@ impl App {
         self.send_input_ch(payload, kind, 35);
     }
 
+    /// Send the currently selected bitrate/quality preset to the controlled end.
+    fn send_bitrate(&mut self) {
+        let Some(h) = &self.controller else { return };
+        let (_, quality) = BITRATE_PRESETS[self.bitrate_idx];
+        let bitrate = if quality == 6 {
+            Some(self.custom_mbps as u64)
+        } else {
+            None
+        };
+        self.settings_seq = self.settings_seq.wrapping_add(1);
+        let msg = uu_core::control_wire::capture_setting_request(
+            2000 + self.settings_seq,
+            2,
+            Some(quality),
+            bitrate,
+        );
+        let _ = h.settings.send(msg);
+    }
+
+    fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
+        self.fullscreen = !self.fullscreen;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+    }
+
     /// The controlled end expects raw JSON on `CONTROL_DATA_CHANNEL`; the
     /// `kind`/`channel` arguments are kept only to avoid touching every call
     /// site and are ignored.
@@ -446,6 +490,7 @@ impl App {
                 for vk in [0x11u32, 0x10, 0x12, 0xA2, 0xA0, 0xA4, 0x5B] {
                     self.send_key(vk, false);
                 }
+                self.send_bitrate();
             }
             Err(e) => self.status = format!("连接失败: {e}"),
         }
@@ -457,11 +502,21 @@ impl eframe::App for App {
         let mut keys = Vec::new();
         let mut mods = Vec::new();
         let mut toggle_hud = false;
+        let mut toggle_fs = false;
         let focused = ctx.input(|i| {
             for ev in &i.events {
                 if let egui::Event::Key { key, pressed, .. } = ev {
                     if matches!(key, egui::Key::F1) && *pressed {
                         toggle_hud = true;
+                    }
+                    // Ctrl+Alt+F toggles fullscreen; do not forward the F.
+                    if matches!(key, egui::Key::F)
+                        && *pressed
+                        && i.modifiers.ctrl
+                        && i.modifiers.alt
+                    {
+                        toggle_fs = true;
+                        continue;
                     }
                     if let Some(vk) = vk_for(*key) {
                         keys.push((vk, *pressed));
@@ -483,6 +538,9 @@ impl eframe::App for App {
         });
         if toggle_hud {
             self.hud = !self.hud;
+        }
+        if toggle_fs {
+            self.toggle_fullscreen(ctx);
         }
         if self.focused && !focused {
             self.release_all_keys();
@@ -548,9 +606,30 @@ impl eframe::App for App {
                 ui.label(egui::RichText::new(dot).color(col).size(12.0));
                 ui.label(egui::RichText::new(&self.status).size(13.0).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("全屏").clicked() {
-                        let full = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+                    if ui.button("全屏 (Ctrl+Alt+F)").clicked() {
+                        self.toggle_fullscreen(ui.ctx());
+                    }
+                    let mut idx = self.bitrate_idx;
+                    egui::ComboBox::from_id_salt("bitrate")
+                        .selected_text(BITRATE_PRESETS[idx].0)
+                        .show_ui(ui, |ui| {
+                            for (i, (label, _)) in BITRATE_PRESETS.iter().enumerate() {
+                                ui.selectable_value(&mut idx, i, *label);
+                            }
+                        });
+                    if idx != self.bitrate_idx {
+                        self.bitrate_idx = idx;
+                        self.send_bitrate();
+                    }
+                    if BITRATE_PRESETS[self.bitrate_idx].1 == 6 {
+                        let r = ui.add(
+                            egui::DragValue::new(&mut self.custom_mbps)
+                                .range(1..=1000)
+                                .suffix(" Mbps"),
+                        );
+                        if r.changed() {
+                            self.send_bitrate();
+                        }
                     }
                     if ui.button(if self.hud { "HUD ✓" } else { "HUD" }).clicked() {
                         self.hud = !self.hud;

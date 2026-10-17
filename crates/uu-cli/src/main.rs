@@ -449,7 +449,7 @@ async fn main() -> Result<()> {
         }
         Command::KbdProbe { device } => {
             let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
-            let uu_core::controller::ControllerHandle { events, frames, input, close, stats: _ } =
+            let uu_core::controller::ControllerHandle { events, frames, input, close, settings: _, stats: _ } =
                 uu_core::controller::spawn(config, device, geo)?;
             std::thread::spawn(move || {
                 let mut frames = frames;

@@ -62,6 +62,13 @@ impl SocketIo {
         Ok(())
     }
 
+    /// Leave the Socket.IO room and close the socket (so the server clears the
+    /// session and the controlled end stops showing "connected").
+    pub async fn close(&mut self) {
+        let _ = self.ws.send(Message::Text("41".into())).await;
+        let _ = self.ws.close(None).await;
+    }
+
     /// Receive the next Socket.IO event, skipping pings/open packets.
     pub async fn recv_event(&mut self) -> Result<(String, Value, Vec<Vec<u8>>)> {
         loop {

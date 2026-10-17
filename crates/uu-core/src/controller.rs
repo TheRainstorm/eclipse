@@ -27,6 +27,8 @@ pub struct ControllerHandle {
     pub frames: UnboundedReceiver<(u32, u32, u32, Vec<u8>)>,
     /// Raw JSON input frames for `CONTROL_DATA_CHANNEL`.
     pub input: UnboundedSender<Vec<u8>>,
+    /// Raw CONTROL messages (e.g. CaptureSettingRequest protobufs) to send.
+    pub settings: UnboundedSender<Vec<u8>>,
     pub close: UnboundedSender<()>,
     /// Live media statistics for the HUD.
     pub stats: std::sync::Arc<crate::media::MediaStats>,
@@ -37,6 +39,7 @@ pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<Controlle
     let (ev_tx, ev_rx) = std::sync::mpsc::channel();
     let (frame_tx, frame_rx) = unbounded_channel();
     let (input_tx, input_rx) = unbounded_channel();
+    let (settings_tx, settings_rx) = unbounded_channel();
     let (close_tx, close_rx) = unbounded_channel();
     let stats = std::sync::Arc::new(crate::media::MediaStats::default());
     let stats_run = stats.clone();
@@ -55,6 +58,7 @@ pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<Controlle
             ev_tx.clone(),
             frame_tx,
             input_rx,
+            settings_rx,
             close_rx,
             stats_run,
         )) {
@@ -65,6 +69,7 @@ pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<Controlle
         events: ev_rx,
         frames: frame_rx,
         input: input_tx,
+        settings: settings_tx,
         close: close_tx,
         stats,
     })
@@ -102,6 +107,7 @@ async fn run(
     ev: std::sync::mpsc::Sender<ControllerEvent>,
     frame_tx: crate::media::FrameSender,
     mut input_rx: UnboundedReceiver<Vec<u8>>,
+    mut settings_rx: UnboundedReceiver<Vec<u8>>,
     mut close_rx: UnboundedReceiver<()>,
     stats: std::sync::Arc<crate::media::MediaStats>,
 ) -> Result<()> {
@@ -245,11 +251,19 @@ async fn run(
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2); // 1=30, 2=60, 3=90, 4=144
+    let quality: Option<u64> = std::env::var("UU_QUALITY")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let bitrate: Option<u64> = std::env::var("UU_BITRATE")
+        .ok()
+        .and_then(|v| v.parse().ok());
     for i in 0..3u64 {
         let _ = media
             .send_control(crate::control_wire::capture_setting_request(
                 1000 + i,
                 fps_option,
+                quality,
+                bitrate,
             ))
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(700)).await;
@@ -259,7 +273,6 @@ async fn run(
     loop {
         tokio::select! {
             _ = close_rx.recv() => {
-                status("已断开");
                 break;
             }
             Some(frame) = input_rx.recv() => {
@@ -267,6 +280,10 @@ async fn run(
                 // input can arrive before the channel opens; ignore failures so
                 // the status bar is not spammed.
                 let _ = media.send_control(frame).await;
+            }
+            Some(msg) = settings_rx.recv() => {
+                // Runtime CaptureSettingRequest (frame rate / quality / bitrate).
+                let _ = media.send_control(msg).await;
             }
             recv = sio.recv_event() => {
                 let (event, data, _) = recv?;
@@ -276,6 +293,17 @@ async fn run(
             }
         }
     }
+    // Release the session so the server and the controlled end clear the
+    // "connected" state instead of waiting for a timeout.
+    let _ = sio
+        .emit(
+            "release",
+            json!({"app_control_id": ctrl, "control_id": ctrl}),
+            &[],
+        )
+        .await;
     let _ = media.pc.close().await;
+    sio.close().await;
+    status("已断开");
     Ok(())
 }

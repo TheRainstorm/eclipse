@@ -65,11 +65,15 @@ fn session_features(clipboard: bool) -> Vec<u8> {
 
 /// CaptureSettingRequest (CONTROL Message 21): ask the controlled end to switch
 /// frame rate / quality / bitrate. `setting` fields: 1 = fps option
-/// (1=30, 2=60, 3=90, 4=144), 2 = quality preset, 8 = custom bitrate (Mbit/s),
-/// 18 = explicit frame rate. Recovered from the interoperable Linux viewer.
-pub fn capture_setting_request(seq: u64, fps_option: u64) -> Vec<u8> {
-    // Option index (field 1) plus the explicit frame rate (field 18); the host
-    // prefers the explicit count when present.
+/// (1=30, 2=60, 3=90, 4=144), 2 = quality preset (1 fast .. 4 bluray, 5 auto,
+/// 6 custom), 8 = custom bitrate (Mbit/s), 18 = explicit frame rate.
+/// Recovered from the interoperable Linux viewer.
+pub fn capture_setting_request(
+    seq: u64,
+    fps_option: u64,
+    quality: Option<u64>,
+    bitrate_mbps: Option<u64>,
+) -> Vec<u8> {
     let fps = match fps_option {
         1 => 30,
         2 => 60,
@@ -80,6 +84,12 @@ pub fn capture_setting_request(seq: u64, fps_option: u64) -> Vec<u8> {
     let mut setting = Vec::new();
     int(1, fps_option, &mut setting);
     int(18, fps, &mut setting);
+    if let Some(q) = quality {
+        int(2, q, &mut setting);
+    }
+    if let Some(b) = bitrate_mbps {
+        int(8, b, &mut setting);
+    }
     let mut header = Vec::new();
     int(1, seq, &mut header);
     let mut rpc = Vec::new();
