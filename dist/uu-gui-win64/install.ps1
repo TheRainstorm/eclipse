@@ -1,7 +1,7 @@
 # One Windows installation directory; legacy copies are archived outside it.
 param(
     [string]$SourceDir = $PSScriptRoot,
-    [string]$InstallDir = (Join-Path $env:USERPROFILE 'uu-gui-demo'),
+    [string]$InstallDir = 'D:\SMB\uu-gui-demo',
     [string]$ArchiveRoot = (Join-Path $env:USERPROFILE 'uu-gui-archive'),
     [switch]$NoShortcut
 )
@@ -58,8 +58,10 @@ if (!$NoShortcut) {
     foreach ($root in $roots) {
         Get-ChildItem $root -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
             $link = $shell.CreateShortcut($_.FullName)
-            if ($link.TargetPath.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase) -and
-                [IO.Path]::GetFileName($link.TargetPath) -eq 'uu-gui.exe') {
+            $previousExe = Join-Path (Join-Path $env:USERPROFILE 'uu-gui-demo') 'uu-gui.exe'
+            if (($link.TargetPath.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase) -and
+                [IO.Path]::GetFileName($link.TargetPath) -eq 'uu-gui.exe') -or
+                $link.TargetPath.Equals($previousExe, [StringComparison]::OrdinalIgnoreCase)) {
                 $link.TargetPath = Join-Path $InstallDir 'uu-gui.exe'
                 $link.WorkingDirectory = $InstallDir
                 $link.Save()

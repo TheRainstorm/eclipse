@@ -26,4 +26,10 @@ x358h已有answer SDP只读核对了五个video m-line与 `video_0..4` 名称；
 
 整仓131项通过（core45、GUI26、media36及其它24）；最后补充绑定失败/超时隐藏旧源的状态测试后GUI26项再次通过。原有迟到ICE的真实WebRTC回环新增激活请求、Message19响应及CONTROL接收分发断言；仍包含轨道切换、屏幕清单、键鼠、心跳、设置与双向文本剪贴板。
 
-这些是本地合成对端测试和官方静态字段/分支核对，不是KVM-WIN11真实切屏验收。Windows构建和安装核对结果在交付后追加。用户重开后请直接尝试顶部两个屏幕互切，确认画面、键鼠边界与加号位置；默认保持布局策略不变。
+这些是本地合成对端测试和官方静态字段/分支核对，不是KVM-WIN11真实切屏验收。用户重开后请直接尝试顶部两个屏幕互切，确认画面、键鼠边界与加号位置；默认保持布局策略不变。
+
+## 本轮交付
+
+Windows release构建成功，已安装实际构建源 `072e36480df086e120530b518e8e8f8653d0ac1f`，GUI SHA256 `6f88d1aff81f87a613cf5d0e516313902c45a878676f9d59c20106e859ffc535`。六项文件哈希及源提交全部一致，桌面UU Remote Rust目标为 `D:\SMB\uu-gui-demo\uu-gui.exe`，工作目录为 `D:\SMB\uu-gui-demo`。旧窗口保留，重开后主页版本应为 `072e364`；发布记录提交不代表另一版二进制。
+
+私有证据位于 `artifacts/ui-dpi-validation/display-binding-{workspace-test.log,gui-final-test.log,package.log,install.json,installed-verified.json}`，安装器在Windows PowerShell解析器检查通过。临时部署脚本 `/tmp/uu_deploy_demo_D.py` 已改为验证D盘；后续仍以仓库安装器和清单为准，不依赖临时脚本存在。
