@@ -45,6 +45,9 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    fn capture_values(&self)->(u32,usize,u32,usize,bool) {
+        (self.fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.remote_cursor)
+    }
     pub fn path() -> Option<PathBuf> {
         uu_core::Config::from_env()
             .ok()
@@ -182,10 +185,12 @@ impl super::App {
                 });
                 ui.separator();
                 ui.horizontal(|ui| {if ui.button("保存并应用").clicked(){apply=true;}if ui.button("恢复默认").clicked(){self.settings_draft=Settings::default();}});
-                if !self.settings_notice.is_empty(){ui.label(&self.settings_notice);}
+                if self.settings_draft!=self.preferences {ui.label("有尚未应用的更改");}
+                else if !self.settings_notice.is_empty(){ui.label(&self.settings_notice);}
             });
         self.settings_open = open;
         if apply {
+            let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
             self.preferences=self.settings_draft.clone();
             self.release_pointer_capture(ctx);
             self.target_fps = self.preferences.fps;
@@ -201,7 +206,7 @@ impl super::App {
                 h.stats.audio.muted.store(self.preferences.muted, Relaxed);
             }
             self.persist_preferences();
-            self.send_capture_settings();
+            if capture_changed {self.send_capture_settings();}
         }
     }
 }

@@ -119,6 +119,7 @@ struct App {
     settings_open: bool,
     settings_draft: settings::Settings,
     settings_notice: String,
+    audio_save_after: Option<std::time::Instant>,
     shortcuts: shortcuts::Shortcuts,
     native_keyboard_capture: bool,
     native_window_keyboard: bool,
@@ -330,6 +331,7 @@ impl App {
             settings_open: false,
             settings_draft: preferences.clone(),
             settings_notice,
+            audio_save_after: None,
             shortcuts: shortcuts::Shortcuts::default(),
             native_keyboard_capture: false,
             native_window_keyboard: false,
@@ -825,6 +827,7 @@ impl App {
 impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Also cover backend shutdown paths that do not deliver CloseRequested.
+        if self.audio_save_after.take().is_some(){self.persist_preferences();}
         self.disconnect();
         if let Some(h) = &self.controller {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
@@ -948,6 +951,9 @@ impl eframe::App for App {
             self.home_ui(ctx);
         }
         self.settings_ui(ctx);
+        if self.audio_save_after.is_some_and(|at|std::time::Instant::now()>=at) {
+            self.audio_save_after=None;self.persist_preferences();
+        }
         self.update_keyboard_capture(ctx);
         self.update_pointer_capture(ctx);
         self.update_clipboard(ctx);

@@ -631,7 +631,7 @@ impl super::App {
                                             ui.small(format!("设备回调块 {:.1} ms · 欠载 {} 次",audio.output_block_us.load(Relaxed) as f32/1000.0,audio.underruns.load(Relaxed)));
                                             ui.small("这些是客户端阶段数据，不是端到端声音延迟。");
                                         }
-                                        if changed{self.persist_preferences();}
+                                        if changed{self.audio_save_after=Some(std::time::Instant::now()+std::time::Duration::from_millis(250));}
                                     });
                                     side_submenu(ui, &mut blocked, Icon::Desktop, "鼠标", |ui| {
                                         let old=(self.preferences.relative_mouse,self.preferences.remote_cursor);
@@ -643,7 +643,7 @@ impl super::App {
                                         ui.small("Ctrl+Alt+Z 释放／捕获键鼠");
                                         if old!=(self.preferences.relative_mouse,self.preferences.remote_cursor) {
                                             self.release_pointer_capture(ctx);self.remote_focus=false;self.persist_preferences();
-                                            self.send_capture_settings();ctx.memory_mut(|m|m.close_popup());
+                                            if old.1!=self.preferences.remote_cursor {self.send_capture_settings();}ctx.memory_mut(|m|m.close_popup());
                                         }
                                     });
                                     side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
