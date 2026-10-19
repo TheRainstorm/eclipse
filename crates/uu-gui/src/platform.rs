@@ -64,6 +64,7 @@ impl Platform {
                     windows::place_startup(window, origin);
                 }
             }
+            let _=windows::CAPTURE_CONTEXT.set(_cc.egui_ctx.clone());
             let hook = unsafe { windows::install_monitor_keys(window) };
             Self {
                 window,
@@ -111,6 +112,25 @@ impl Platform {
         {
             false
         }
+    }
+    pub fn capture_keyboard(&self, active: bool) -> bool {
+        #[cfg(windows)] {
+            let active=active && !self.hook.is_null();
+            windows::CAPTURE.store(active,std::sync::atomic::Ordering::Release);
+            active
+        }
+        #[cfg(not(windows))] {let _=active;false}
+    }
+    pub fn captured_keys(&self) -> Vec<crate::keyboard_capture::Decision> {
+        #[cfg(windows)] {
+            let mut queue=windows::CAPTURE_QUEUE.lock().unwrap();
+            queue.drain(..).collect()
+        }
+        #[cfg(not(windows))] {Vec::new()}
+    }
+    pub fn capture_overflowed(&self)->bool {
+        #[cfg(windows)] {windows::CAPTURE_OVERFLOW.swap(false,std::sync::atomic::Ordering::AcqRel)}
+        #[cfg(not(windows))] {false}
     }
     pub fn show(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.show_pending) {
@@ -272,6 +292,11 @@ mod windows {
     use windows_sys::Win32::{
         System::LibraryLoader::GetModuleHandleW, UI::Input::KeyboardAndMouse::*,
     };
+    pub(super) static CAPTURE_CONTEXT: std::sync::OnceLock<eframe::egui::Context>=std::sync::OnceLock::new();
+    pub(super) static CAPTURE: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+    pub(super) static CAPTURE_OVERFLOW: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+    static CAPTURE_KEYS: std::sync::Mutex<crate::keyboard_capture::Keys>=std::sync::Mutex::new(crate::keyboard_capture::Keys::new());
+    pub(super) static CAPTURE_QUEUE: std::sync::Mutex<std::collections::VecDeque<crate::keyboard_capture::Decision>>=std::sync::Mutex::new(std::collections::VecDeque::new());
     static OWNER: AtomicIsize = AtomicIsize::new(0);
     static KEYS: super::MonitorKeys = super::MonitorKeys {
         held: std::sync::atomic::AtomicU8::new(0),
@@ -295,6 +320,7 @@ mod windows {
         hook
     }
     pub unsafe fn remove_monitor_keys(hook: HHOOK) {
+        CAPTURE.store(false,Relaxed);
         OWNER.store(0, Relaxed);
         if !hook.is_null() {
             UnhookWindowsHookEx(hook);
@@ -323,12 +349,16 @@ mod windows {
             let key = &*(data as *const KBDLLHOOKSTRUCT);
             let down = message == WM_KEYDOWN as usize || message == WM_SYSKEYDOWN as usize;
             let up = message == WM_KEYUP as usize || message == WM_SYSKEYUP as usize;
+            let foreground=OWNER.load(Relaxed) as HWND;
+            let win_down=GetAsyncKeyState(0x5B)<0 || GetAsyncKeyState(0x5C)<0
+                || CAPTURE_KEYS.try_lock().is_ok_and(|keys|keys.down(0x5b)||keys.down(0x5c));
+            let shift_down=GetAsyncKeyState(0x10)<0
+                || CAPTURE_KEYS.try_lock().is_ok_and(|keys|keys.down(0xa0)||keys.down(0xa1));
             if (0x25..=0x28).contains(&key.vkCode) && (down || up) {
                 let owner = OWNER.load(Relaxed) as HWND;
                 let chord = !owner.is_null()
                     && GetForegroundWindow() == owner
-                    && (GetAsyncKeyState(0x5B) < 0 || GetAsyncKeyState(0x5C) < 0)
-                    && GetAsyncKeyState(0x10) < 0;
+                    && win_down && shift_down;
                 match KEYS.event(
                     key.vkCode,
                     down,
@@ -348,6 +378,27 @@ mod windows {
                         return 1;
                     }
                     super::ArrowEvent::Forward => {}
+                }
+            }
+            if (down || up) && key.flags & LLKHF_INJECTED == 0 {
+                if let Ok(mut keys)=CAPTURE_KEYS.try_lock() {
+                    let ctrl=GetAsyncKeyState(0x11)<0 || keys.down(0xa2)||keys.down(0xa3);
+                    let alt=GetAsyncKeyState(0x12)<0 || keys.down(0xa4)||keys.down(0xa5);
+                    let active=CAPTURE.load(std::sync::atomic::Ordering::Acquire)
+                        && !foreground.is_null() && GetForegroundWindow()==foreground;
+                    let decision=keys.event(key.vkCode,down,active,ctrl&&alt,GetAsyncKeyState(key.vkCode as i32)<0);
+                    match decision {
+                        crate::keyboard_capture::Decision::Forward=>{},
+                        crate::keyboard_capture::Decision::Consume=>return 1,
+                        event=>{
+                            if let Ok(mut queue)=CAPTURE_QUEUE.try_lock() {
+                                if queue.len()<512 {queue.push_back(event);}else{CAPTURE_OVERFLOW.store(true,Relaxed);}
+                            } else {CAPTURE_OVERFLOW.store(true,Relaxed);}
+                            if let Some(context)=CAPTURE_CONTEXT.get(){context.request_repaint();}
+                            PostMessageW(foreground,WM_NULL,0,0);
+                            return 1;
+                        }
+                    }
                 }
             }
         }

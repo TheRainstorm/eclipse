@@ -12,6 +12,7 @@ use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
+mod keyboard_capture;
 mod settings;
 mod sessions;
 mod platform;
@@ -116,6 +117,7 @@ struct App {
     settings_open: bool,
     settings_notice: String,
     shortcuts: shortcuts::Shortcuts,
+    native_keyboard_capture: bool,
     autoconnect_done: bool,
     fullscreen: bool,
     restore_maximized: bool,
@@ -314,6 +316,7 @@ impl App {
             settings_open: false,
             settings_notice,
             shortcuts: shortcuts::Shortcuts::default(),
+            native_keyboard_capture: false,
             autoconnect_done: false,
             fullscreen: false,
             restore_maximized: false,
@@ -562,7 +565,26 @@ impl App {
         };
     }
 
+    fn local_shortcut(&mut self, action: shortcuts::Action, ctx: &egui::Context) {
+        self.release_all_keys();
+        match action {
+            shortcuts::Action::Stats=>{self.hud=!self.hud;self.persist_preferences();},
+            shortcuts::Action::Menu=>{self.stream_menu.visible=!self.stream_menu.visible;self.stream_menu.open=false;ctx.memory_mut(|m|m.close_popup());self.persist_preferences();},
+            shortcuts::Action::Fullscreen=>self.toggle_fullscreen(ctx),
+            shortcuts::Action::Exit=>self.disconnect(),
+        }
+    }
+    fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
+        let desired=self.fullscreen && self.preferences.capture_keyboard && self.input_ready()
+            && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open && ctx.input(|i|i.focused);
+        let active=self.platform.capture_keyboard(desired);
+        if self.native_keyboard_capture!=active {
+            self.release_all_keys();self.native_keyboard_capture=active;
+        }
+    }
+
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
+        self.release_all_keys();
         self.fullscreen = !self.fullscreen;
         self.stream_menu.open = false;
         ctx.memory_mut(|m| m.close_popup());
@@ -795,6 +817,17 @@ impl eframe::App for App {
             self.remote_focus = false;
         }
         self.focused = focused;
+        self.update_keyboard_capture(ctx);
+        if self.platform.capture_overflowed() {self.release_all_keys();self.remote_focus=false;self.update_keyboard_capture(ctx);}
+        for event in self.platform.captured_keys() {
+            match event {
+                keyboard_capture::Decision::Remote{vk,pressed}=> {
+                    if !pressed || (self.native_keyboard_capture && self.input_ready()) {self.send_key(vk,pressed);}
+                },
+                keyboard_capture::Decision::Shortcut(action)=>self.local_shortcut(action,ctx),
+                _=>{},
+            }
+        }
         for event in &events {
             if let egui::Event::Key {
                 key,
@@ -811,24 +844,12 @@ impl eframe::App for App {
                 match self.shortcuts.key(*key, *pressed, *repeat, *modifiers, self.controller.is_some()) {
                     shortcuts::KeyAction::Consumed => continue,
                     shortcuts::KeyAction::Trigger(action) => {
-                        match action {
-                            shortcuts::Action::Stats => {
-                                self.hud = !self.hud;
-                                if std::env::var_os("UU_UI_DEBUG").is_some() { eprintln!("ui HUD visible={}", self.hud); }
-                            },
-                            shortcuts::Action::Menu => {
-                                self.stream_menu.visible = !self.stream_menu.visible;
-                                self.stream_menu.open = false;
-                                ctx.memory_mut(|m| m.close_popup());
-                            }
-                            shortcuts::Action::Fullscreen => self.toggle_fullscreen(ctx),
-                            shortcuts::Action::Exit => self.disconnect(),
-                        }
+                        self.local_shortcut(action,ctx);
                         continue;
                     }
                     shortcuts::KeyAction::Forward => {}
                 }
-                if self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
+                if !self.native_keyboard_capture && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
                     self.sync_modifiers(*modifiers);
                     if let Some(vk) = vk_for(*key) {
                         self.send_key(vk, *pressed);
@@ -836,7 +857,7 @@ impl eframe::App for App {
                 }
             }
         }
-        if self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
+        if !self.native_keyboard_capture && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
             self.sync_modifiers(ctx.input(|i| i.modifiers));
         }
         let elapsed = self.last_fps.elapsed().as_secs_f32();
@@ -853,6 +874,7 @@ impl eframe::App for App {
             self.home_ui(ctx);
         }
         self.settings_ui(ctx);
+        self.update_keyboard_capture(ctx);
         self.platform.show(ctx);
         ctx.request_repaint_after(std::time::Duration::from_millis(
             if self.controller.is_some() { 100 } else { 150 },
