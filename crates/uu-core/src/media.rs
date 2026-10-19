@@ -53,6 +53,12 @@ pub struct MediaStats {
     pub errors: AtomicU64,
     /// RTCP round-trip time estimate (ms), when available.
     pub rtt_ms: AtomicU32,
+    pub rtt_us: AtomicU32,
+    pub rtt_deviation_us: AtomicU32,
+    pub rtt_updated_ms: AtomicU64,
+    /// Unrecovered RTP packet loss in the current receive window, parts/million.
+    pub loss_ppm: AtomicU32,
+    pub codec: std::sync::Mutex<String>,
     pub nack_requests: AtomicU64,
     pub rtx_packets: AtomicU64,
     pub rtx_drops: AtomicU64,
@@ -97,6 +103,8 @@ pub struct ControllerMedia {
     pub pc: Arc<RTCPeerConnection>,
     repairs: Arc<crate::rtx::RepairBus>,
     pub data_channel: Arc<webrtc::data_channel::RTCDataChannel>,
+    seq: Arc<AtomicU64>,
+    network_probe: Arc<std::sync::Mutex<crate::network_probe::NetworkProbe>>,
 }
 
 impl ControllerMedia {
@@ -137,6 +145,7 @@ impl ControllerMedia {
             Box::pin(async {})
         }));
 
+        let network_probe = Arc::new(std::sync::Mutex::new(crate::network_probe::NetworkProbe::default()));
         let pc_track = Arc::downgrade(&pc);
         let repair_track = repairs.clone();
         let frames_tx = frames.clone();
@@ -216,13 +225,25 @@ impl ControllerMedia {
             }));
             let msg_ch = Arc::downgrade(&ch);
             let msg_seq = seq.clone();
+            let msg_probe = network_probe.clone();
+            let msg_stats = stats.clone();
             ch.on_message(Box::new(
                 move |msg: webrtc::data_channel::data_channel_message::DataChannelMessage| {
                     let ch = msg_ch.clone();
                     let seq = msg_seq.clone();
+                    let probe = msg_probe.clone();
+                    let stats = msg_stats.clone();
                     Box::pin(async move {
                         let Some(ch) = ch.upgrade() else { return };
                         if !msg.is_string {
+                            if let Some((mean, deviation)) = probe.lock().unwrap().reply(&msg.data) {
+                                if let Some(s) = &stats {
+                                    s.rtt_ms.store(mean / 1000, Ordering::Relaxed);
+                                    s.rtt_us.store(mean, Ordering::Relaxed);
+                                    s.rtt_deviation_us.store(deviation, Ordering::Relaxed);
+                                    s.rtt_updated_ms.store(crate::control_wire::now_ms(), Ordering::Release);
+                                }
+                            }
                             let head: Vec<String> = msg
                                 .data
                                 .iter()
@@ -253,6 +274,8 @@ impl ControllerMedia {
             pc,
             repairs,
             data_channel: dc,
+            seq,
+            network_probe,
         })
     }
 
@@ -326,6 +349,13 @@ fn save_ppm(frame: &uu_media::RawFrame, path: &str) {
 }
 
 impl ControllerMedia {
+    /// The ICE stats in webrtc-rs 0.11 leave RTT at zero. Use the host's
+    /// existing SimpleAction echo protocol and match exactly one pending seq.
+    pub async fn probe_network(&self) {
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        self.network_probe.lock().unwrap().begin(seq);
+        let _ = self.send_control(crate::control_wire::echo_request(seq)).await;
+    }
     /// Send a raw PCK frame over the WebRTC data channel (control hypothesis).
     pub async fn send_control(&self, data: Vec<u8>) -> Result<()> {
         self.data_channel.send(&bytes::Bytes::from(data)).await?;
@@ -354,6 +384,9 @@ async fn receive_video(
         return; // Audio and unsupported repair codecs are not H.264 data.
     }
     let debug = std::env::var("UU_MEDIA_DEBUG").is_ok_and(|v| v != "0");
+    if let Some(s) = &stats {
+        *s.codec.lock().unwrap() = track.codec().capability.mime_type.clone();
+    }
     let generation = Arc::new(AtomicU64::new(0));
     let waiting = Arc::new(AtomicBool::new(true));
     let request_generation = Arc::new(AtomicU64::new(0));
@@ -603,6 +636,8 @@ async fn receive_video(
     };
     let mut receiver_epoch = 0;
     let mut bytes = 0u64;
+    let mut window_packets = 0u64;
+    let mut previous_lost = 0u64;
     let mut src = 0u64;
     let mut last_ts = None;
     let mut window = Instant::now();
@@ -617,6 +652,7 @@ async fn receive_video(
         };
         let now = Instant::now();
         let units = if let Some(packet) = packet {
+            window_packets += 1;
             if let Some(s) = &stats {
                 s.packets.fetch_add(1, Ordering::Relaxed);
             }
@@ -691,6 +727,8 @@ async fn receive_video(
         if window.elapsed() >= Duration::from_secs(2) {
             if let Some(s) = &stats {
                 let seconds = window.elapsed().as_secs_f64();
+                let lost = receiver.stats.lost.saturating_sub(previous_lost);
+                s.loss_ppm.store((lost.saturating_mul(1_000_000) / (window_packets + lost).max(1)) as u32, Ordering::Relaxed);
                 s.src_fps_x100
                     .store((src as f64 / seconds * 100.0) as u32, Ordering::Relaxed);
                 s.bitrate_kbps.store(
@@ -712,6 +750,8 @@ async fn receive_video(
             }
             src = 0;
             bytes = 0;
+            window_packets = 0;
+            previous_lost = receiver.stats.lost;
             window = Instant::now();
         }
     }

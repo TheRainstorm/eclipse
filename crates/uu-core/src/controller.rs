@@ -297,9 +297,10 @@ async fn run(
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     }
     status("已请求目标画质/码率");
-
+    let mut probe_timer = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         tokio::select! {
+            _ = probe_timer.tick() => media.probe_network().await,
             Some(frame) = input_rx.recv() => {
                 // `frame` is the JSON payload for CONTROL_DATA_CHANNEL. Early
                 // input can arrive before the channel opens; ignore failures so

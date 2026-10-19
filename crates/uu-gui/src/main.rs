@@ -12,6 +12,7 @@ use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
+mod hud;
 mod window;
 mod stream_menu;
 mod login;
@@ -89,6 +90,8 @@ struct App {
     frame_count: std::collections::HashMap<u32, u32>,
     fps: std::collections::HashMap<u32, f32>,
     last_fps: std::time::Instant,
+    unpresented: std::collections::HashSet<u32>,
+    render_ms: f32,
     selected_track: u32,
     seq: u32,
     kseq: u32,
@@ -270,6 +273,8 @@ impl App {
             frame_count: std::collections::HashMap::new(),
             fps: std::collections::HashMap::new(),
             last_fps: std::time::Instant::now(),
+            unpresented: Default::default(),
+            render_ms: 0.0,
             selected_track: 0,
             seq: 1,
             kseq: 1,
@@ -447,7 +452,7 @@ impl App {
                 }
             }
             self.latest.insert(idx, (w, hgt, rgba));
-            *self.frame_count.entry(idx).or_insert(0) += 1;
+            self.unpresented.insert(idx);
         }
         if apply_settings {
             self.send_bitrate();
@@ -615,7 +620,10 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(seconds) = frame.info().cpu_usage {
+            self.render_ms = self.render_ms * 0.9 + seconds * 1000.0 * 0.1;
+        }
         self.window_edge_active = window::resize_border(ctx, self.fullscreen);
         if self.resize_pending {
             if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
@@ -690,6 +698,7 @@ impl eframe::App for App {
         }
         let elapsed = self.last_fps.elapsed().as_secs_f32();
         if elapsed >= 1.0 {
+            for fps in self.fps.values_mut() { *fps = 0.0; }
             for (track, count) in self.frame_count.drain() {
                 self.fps.insert(track, count as f32 / elapsed);
             }
@@ -728,24 +737,3 @@ fn main() -> eframe::Result {
     )
 }
 
-/// Condense a decoder backend name into a tag that fits the HUD's info line.
-///
-/// The full name can be a driver description plus a demotion reason, which is
-/// far too long for the line that also carries the resolution.
-fn short_backend(name: &str) -> String {
-    let mut tag = if name.starts_with("d3d11va") {
-        "HW d3d11va (MF)".to_string()
-    } else if name.starts_with("vaapi") {
-        "HW vaapi".to_string()
-    } else if name.starts_with("openh264") {
-        "SW openh264".to_string()
-    } else {
-        name.to_string()
-    };
-    if name.contains("abandoned") {
-        tag.push_str(" · hw 已回退");
-    } else if name.contains("hardware unavailable") {
-        tag.push_str(" · hw 不可用");
-    }
-    tag
-}

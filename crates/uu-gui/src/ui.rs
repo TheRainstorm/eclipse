@@ -2,7 +2,6 @@
 //! uncluttered stream view. All artwork here is egui vector drawing.
 use super::App;
 use eframe::egui::{self, Color32 as C, Pos2, Rect, Response, RichText, Sense, Stroke, Vec2};
-use std::sync::atomic::Ordering;
 const BLUE: C = C::from_rgb(53, 131, 255);
 const INK: C = C::from_rgb(24, 29, 35);
 const MUTED: C = C::from_rgb(115, 124, 135);
@@ -744,6 +743,7 @@ impl App {
                 let texture=&self.textures[&track];let size=texture.size_vec2();let scale=(rect.width()/size.x).min(rect.height()/size.y);
                 let draw=Rect::from_center_size(rect.center(),size*scale);
                 ui.painter().image(texture.id(),draw,Rect::from_min_max(Pos2::ZERO,egui::pos2(1.0,1.0)),C::WHITE);
+                if self.unpresented.remove(&track) { *self.frame_count.entry(track).or_insert(0) += 1; }
                 let pointer=ctx.input(|i|i.pointer.hover_pos());
                 if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) {self.remote_focus=true;}
                 if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if !rect.contains(*pos))) {
@@ -754,25 +754,8 @@ impl App {
             }else{
                 ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,&self.status,egui::FontId::proportional(18.0),C::from_rgb(160,170,185));
             }
-            if self.hud {
-                if let Some(controller)=&self.controller {
-                    let stats=&controller.stats;let (width,height)=stats.res();let backend=stats.backend();
-                    let waiting=stats.waiting_for_keyframe.load(Ordering::Relaxed)!=0;
-                    let lines=vec![
-                        format!("{width} × {height}  ·  {}",super::short_backend(&backend)),
-                        format!("接收 {:.0}  /  解码 {:.0}  /  显示 {:.0} fps",stats.src_fps(),stats.dec_fps(),self.fps.get(&self.selected_track).copied().unwrap_or(0.0)),
-                        format!("{:.1} Mbps   ·   解码 {:.2} ms",stats.bitrate_kbps.load(Ordering::Relaxed) as f32/1000.0,stats.decode_ms()),
-                        format!("缺包 {}  ·  坏帧 {}  ·  解码错误 {}",stats.lost.load(Ordering::Relaxed),stats.damaged_frames.load(Ordering::Relaxed),stats.errors.load(Ordering::Relaxed)),
-                        format!("重排 {}  ·  超时/重复 {}  ·  队列丢帧 {}",stats.reordered.load(Ordering::Relaxed),stats.late_packets.load(Ordering::Relaxed),stats.queue_drops.load(Ordering::Relaxed)),
-                        format!("恢复请求 {}{}",stats.keyframe_requests.load(Ordering::Relaxed),if waiting {"  ·  等待关键帧"}else{""}),
-                    ];
-                    let padding=12.0;let line_height=19.0;
-                    let hud=Rect::from_min_size(rect.left_top()+egui::vec2(14.0,14.0),egui::vec2(365.0_f32.min(rect.width()-28.0),padding*2.0+line_height*lines.len() as f32));
-                    ui.painter().rect_filled(hud,9.0,C::from_rgba_unmultiplied(15,20,29,210));
-                    let painter=ui.painter().with_clip_rect(hud.shrink(4.0));
-                    for (index,line) in lines.iter().enumerate(){text_at(&painter,hud.left_top()+egui::vec2(padding,padding+9.0+index as f32*line_height),line,12.0,if waiting&&index==5{C::from_rgb(255,197,104)}else{C::from_rgb(218,228,240)});}
-                }
-            }
+            if self.hud { self.paint_hud(ui, rect); }
+
         });
         for message in messages {
             self.send_input(message, 15);
