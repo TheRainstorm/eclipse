@@ -206,12 +206,12 @@ mod frame_rate_tests {
         let app = encode_app_data_at_fps("test-device", CaptureFrameRate::new(120).unwrap());
         assert_eq!(app[0], 4);
         let fields = decode_wire(&app[1..]).unwrap();
-        for (number, payload) in fields {
-            if let WireValue::Bytes(payload) = payload {
-                let nested = if [3,4].contains(&number) {decode_wire(payload).unwrap()} else {continue};
-                if number==3 { assert!(nested.contains(&(11,WireValue::Varint(120)))); assert!(nested.contains(&(1,WireValue::Varint(0)))); }
-                if number==4 { assert!(nested.contains(&(1,WireValue::Varint(144)))); }
-            }
-        }
+        let nested = |field| decode_wire(fields.iter().find_map(|(n, v)| match v {
+            WireValue::Bytes(payload) if *n == field => Some(*payload), _ => None,
+        }).expect("initial capture parameters and decoder capability must be present")).unwrap();
+        let params = nested(3);
+        assert!(params.contains(&(11, WireValue::Varint(120))));
+        assert!(params.contains(&(1, WireValue::Varint(0))));
+        assert!(nested(4).contains(&(1, WireValue::Varint(144))));
     }
 }

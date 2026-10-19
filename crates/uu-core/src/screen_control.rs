@@ -16,6 +16,10 @@ fn message<'a>(fields: &[(u32, WireValue<'a>)], field: u32) -> Option<&'a [u8]> 
         _ => None,
     })
 }
+fn dimension(fields: &[(u32, WireValue<'_>)], physical: u32, logical: u32) -> u32 {
+    [number(fields, physical), number(fields, logical)].into_iter()
+        .find(|v| *v > 0 && *v <= i32::MAX as u64).unwrap_or(0) as u32
+}
 #[derive(Clone, Debug, Default)]
 pub struct RemoteScreens {
     pub screens: Vec<RemoteScreen>,
@@ -65,8 +69,8 @@ pub fn screen_sources(data: &[u8]) -> Option<RemoteScreens> {
             id: number(&fields, 1) as i32,
             refresh_hz: number(&fields, 2) as u32,
             kind: number(&fields, 5) as u32,
-            width: number(&rect, 5).max(number(&rect, 3)) as u32,
-            height: number(&rect, 6).max(number(&rect, 4)) as u32,
+            width: dimension(&rect, 5, 3),
+            height: dimension(&rect, 6, 4),
             dpi_scale,
         });
     }
@@ -141,6 +145,10 @@ mod tests {
             int(1, id, &mut screen);
             int(2, rate, &mut screen);
             int(5, kind, &mut screen);
+            let mut rect = Vec::new();
+            int(3, 3000, &mut rect); // Logical dimensions are not physical dimensions.
+            int(5, 1920, &mut rect);
+            bytes(4, &rect, &mut screen);
             bytes(1, &screen, &mut payload);
         }
         int(2, 2, &mut payload);
@@ -148,6 +156,7 @@ mod tests {
         let selected = parsed.selected().unwrap();
         assert_eq!(selected.kind_label(), "超级屏");
         assert_eq!(selected.refresh_hz, 120);
+        assert_eq!(selected.width, 1920);
         assert!(screen_sources(&crate::control_wire::echo_request(1)).is_none());
     }
     #[test]

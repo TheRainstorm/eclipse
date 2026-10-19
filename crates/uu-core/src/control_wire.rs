@@ -114,7 +114,7 @@ impl CaptureFrameRate {
 /// 6  height          -1 unchanged, or explicit output height
 /// 7  constant        1
 /// 8  custom bitrate  bits/second (only for quality 6)
-/// 10 constant        1
+/// 10 resolution type 1=unchanged, 3=follow remote, 4=explicit
 /// 12 constant        4
 /// 13 constant        2
 /// 14 max width       3840
