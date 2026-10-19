@@ -54,7 +54,7 @@ jobs:
       - name: Install Linux development libraries
         if: matrix.platform == 'linux-x86_64'
         run: |
-          sudo apt-get install --no-install-recommends -y libasound2-dev libva-dev libgbm-dev libdrm-dev libclang-dev libxkbcommon-dev sway grim xvfb libegl1 libgl1-mesa-dri
+          sudo apt-get install --no-install-recommends -y libasound2-dev libpulse-dev pulseaudio pulseaudio-utils libva-dev libgbm-dev libdrm-dev libclang-dev libxkbcommon-dev sway grim xvfb libegl1 libgl1-mesa-dri
       - name: Install Windows cross toolchain
         if: matrix.platform == 'windows-x64'
         run: |
@@ -95,6 +95,11 @@ jobs:
           cargo build --release -p uu-core --example native_control_probe --features vaapi --locked
           python3 tools/native/input_smoke.py --probe target/release/examples/native_control_probe --output artifacts/native-input-authorized
           python3 tools/native/input_smoke.py --probe target/release/examples/native_control_probe --probe-arg=--read-only --output artifacts/native-input-readonly
+      - name: Test system-output audio against an owned null sink
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          cargo build --release -p uu-media --example audio_capture_probe --locked
+          python3 tools/native/audio_smoke.py --probe target/release/examples/audio_capture_probe --output artifacts/native-audio
       - name: Test isolated Wayland viewer and mixed DPI
         if: matrix.platform == 'linux-x86_64'
         run: |

@@ -6,7 +6,7 @@ Linux VA-API 支持完整访问单元提交，并依据 H.264 色彩标记选择
 
 ## 构建和统一安装
 
-开发机需要 Rust、C/C++、Clang、nasm、pkg-config，以及 libva/libgbm/libdrm/ALSA 的开发包。Ubuntu 可安装 `libva-dev libgbm-dev libdrm-dev libasound2-dev`，Arch 使用对应 `libva mesa libdrm alsa-lib` 软件包。运行桌面推荐安装 PipeWire ALSA 插件和中文字体。
+开发机需要 Rust、C/C++、Clang、nasm、pkg-config，以及 libva/libgbm/libdrm/ALSA/PulseAudio 的开发包。Ubuntu 可安装 `libva-dev libgbm-dev libdrm-dev libasound2-dev libpulse-dev`，Arch 使用对应 `libva mesa libdrm alsa-lib libpulse` 软件包。运行桌面推荐安装 PipeWire ALSA 插件和中文字体。
 
 ```sh
 cargo run -p uu-gui --features vaapi

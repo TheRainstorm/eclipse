@@ -1,5 +1,4 @@
 //! In-process Opus receive/playback. Never block RTP or retain unbounded sound.
-#[cfg(any(windows, target_os = "linux", test))]
 use std::collections::VecDeque;
 use std::{
     sync::{
@@ -225,18 +224,19 @@ fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> an
     Ok(())
 }
 
-#[cfg(any(windows, target_os = "linux", test))]
 #[derive(Default)]
-struct PcmQueue {
+pub(crate) struct PcmQueue {
     samples: VecDeque<f32>,
     last: Vec<f32>,
     channel: usize,
     gain: f32,
     buffering: bool,
 }
-#[cfg(any(windows, target_os = "linux", test))]
 impl PcmQueue {
-    fn submit(&mut self, samples: &[f32], rate: u32, channels: usize) {
+    pub(crate) fn buffered_frames(&self) -> usize {
+        self.samples.len() / self.last.len().max(1)
+    }
+    pub(crate) fn submit(&mut self, samples: &[f32], rate: u32, channels: usize) {
         if self.last.len() != channels {
             self.last = vec![0.0; channels];
             self.channel = 0;
@@ -260,7 +260,7 @@ impl PcmQueue {
             }
         }
     }
-    fn sample(&mut self, rate: u32, channels: usize) -> f32 {
+    pub(crate) fn sample(&mut self, rate: u32, channels: usize) -> f32 {
         if self.last.len() != channels {
             return 0.0;
         }

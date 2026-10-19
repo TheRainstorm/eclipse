@@ -1552,6 +1552,20 @@ Upstream: https://github.com/nagisa/rust_libloading/
 Authors: Simonas Kazlauskas <libloading@kazlauskas.me>
 License file: LICENSE -> text bbf1ea3140c4d068c74adfcd77c4a8538d51b5027b5cd246896511d2314c12a6
 
+## libpulse-binding 2.30.1
+SPDX: MIT OR Apache-2.0
+Upstream: https://github.com/jnqnfe/pulse-binding-rust
+Authors: Lyndon Brown <jnqnfe@gmail.com>
+License file: LICENSE-APACHE -> text 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76
+License file: LICENSE-MIT -> text b2dbc9dd617f04cdfbdc34387f0832bdf563bc84dcc63897366ea0ff36bdc012
+
+## libpulse-sys 1.23.0
+SPDX: MIT OR Apache-2.0
+Upstream: https://github.com/jnqnfe/pulse-binding-rust
+Authors: Lyndon Brown <jnqnfe@gmail.com>
+License file: LICENSE-APACHE -> text 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76
+License file: LICENSE-MIT -> text b2dbc9dd617f04cdfbdc34387f0832bdf563bc84dcc63897366ea0ff36bdc012
+
 ## libredox 0.1.25
 SPDX: MIT
 Upstream: https://gitlab.redox-os.org/redox-os/libredox.git
@@ -2459,6 +2473,12 @@ Upstream: https://github.com/webrtc-rs/rtp
 Authors: Rain Liu <yliu@webrtc.rs>; Michael Uti <utimichael9@gmail.com>
 License file: LICENSE-APACHE -> text 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76
 License file: LICENSE-MIT -> text 6c20917694e80c18e344457d73162f5484985e05f443e0db92d960d6e83630c5
+
+## rubato 0.16.2
+SPDX: MIT
+Upstream: https://github.com/HEnquist/rubato
+Authors: HEnquist <henrik.enquist@gmail.com>
+License file: LICENSE.txt -> text 36dbd32f27adb0d2477b3d3f6ecbde9ca9ad8d72e24766bebe3ea631d235a7ef
 
 ## rustc-hash 1.1.0
 SPDX: Apache-2.0/MIT
@@ -7458,6 +7478,27 @@ Except as contained in this notice, the name of a copyright holder shall
 not be used in advertising or otherwise to promote the sale, use or other
 dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
+
+## License text 36dbd32f27adb0d2477b3d3f6ecbde9ca9ad8d72e24766bebe3ea631d235a7ef
+Copyright (c) 2020 Henrik Enquist
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ## License text 37ecdbc1c72e7651b5d06b51be11a3873ed7aed6d0a050dfd3c34fa99c56e3ef
 Graphosaurus (c) by the petgraph project.
@@ -17019,6 +17060,27 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+## License text b2dbc9dd617f04cdfbdc34387f0832bdf563bc84dcc63897366ea0ff36bdc012
+Copyright (c) 2019 Lyndon Brown
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ## License text b38f573d5bc805e32f92fa8772ad44f1330a7de85022d133b2cd3d17424f8c22
 Copyright (c) 2019 The RustCrypto Project Developers

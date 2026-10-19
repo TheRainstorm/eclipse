@@ -9,6 +9,7 @@
 //! deliberately codec-agnostic and pluggable.
 
 pub mod audio;
+pub mod audio_capture;
 pub mod bitstream;
 pub mod codec;
 pub mod color;

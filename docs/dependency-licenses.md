@@ -235,6 +235,8 @@
 | [lazy_static](https://github.com/rust-lang-nursery/lazy-static.rs) | 1.5.1 | `MIT OR Apache-2.0` |
 | [libc](https://github.com/rust-lang/libc) | 0.2.190 | `MIT OR Apache-2.0` |
 | [libloading](https://github.com/nagisa/rust_libloading/) | 0.8.9 | `ISC` |
+| [libpulse-binding](https://github.com/jnqnfe/pulse-binding-rust) | 2.30.1 | `MIT OR Apache-2.0` |
+| [libpulse-sys](https://github.com/jnqnfe/pulse-binding-rust) | 1.23.0 | `MIT OR Apache-2.0` |
 | [libredox](https://gitlab.redox-os.org/redox-os/libredox.git) | 0.1.25 | `MIT` |
 | [linux-raw-sys](https://github.com/sunfishcode/linux-raw-sys) | 0.12.1 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` |
 | [linux-raw-sys](https://github.com/sunfishcode/linux-raw-sys) | 0.4.15 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` |
@@ -369,6 +371,7 @@
 | [ring](https://github.com/briansmith/ring) | 0.17.14 | `Apache-2.0 AND ISC` |
 | [rtcp](https://github.com/webrtc-rs/rtcp) | 0.11.0 | `MIT OR Apache-2.0` |
 | [rtp](https://github.com/webrtc-rs/rtp) | 0.11.0 | `MIT OR Apache-2.0` |
+| [rubato](https://github.com/HEnquist/rubato) | 0.16.2 | `MIT` |
 | [rustc-hash](https://github.com/rust-lang-nursery/rustc-hash) | 1.1.0 | `Apache-2.0/MIT` |
 | [rustc-hash](https://github.com/rust-lang/rustc-hash) | 2.1.3 | `Apache-2.0 OR MIT` |
 | [rustc_version](https://github.com/djc/rustc-version-rs) | 0.4.1 | `MIT OR Apache-2.0` |
