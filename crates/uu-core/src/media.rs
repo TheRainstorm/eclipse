@@ -284,43 +284,45 @@ impl ControllerMedia {
         });
         for ch in channels {
             let label=ch.label();
-            if label=="TEXT_DATA_CHANNEL" {
-                let sender=clipboard_tx.clone();let stats=stats.clone();
-                ch.on_message(Box::new(move |message| {
-                    queue_clipboard(&message.data,&stats,&sender);
+            if label == "TEXT_DATA_CHANNEL" {
+                text_channel = Some(ch.clone());
+            }
+            if label != "CONTROL_DATA_CHANNEL" && label != "TEXT_DATA_CHANNEL" { continue; }
+            // Official hosts send CaptureChange on TEXT and may send screen
+            // inventories / RPC replies there too. Both channels carry the same
+            // Message protobuf; TEXT is also used for clipboard traffic.
+            if label == "CONTROL_DATA_CHANNEL" {
+                let open_ch = Arc::downgrade(&ch);
+                let open_seq = seq.clone();
+                let open_stats = stats.clone();
+                ch.on_open(Box::new(move || {
+                    let ch = open_ch.clone();
+                    let seq = open_seq.clone();
+                    let stats = open_stats.clone();
+                    Box::pin(async move {
+                        let Some(ch) = ch.upgrade() else { return };
+                        println!("CONTROL_DATA_CHANNEL open");
+                        if let Some(s) = &stats { s.control_open.store(1, Ordering::Release); }
+                        let s = seq.fetch_add(1, Ordering::Relaxed);
+                        let _ = ch
+                            .send(&bytes::Bytes::from(crate::control_wire::echo_request_with_clipboard(s,stats.as_ref().is_some_and(|s|s.clipboard.enabled.load(Ordering::Acquire)))))
+                            .await;
+                    })
+                }));
+                let close_stats = stats.clone();
+                ch.on_close(Box::new(move || {
+                    if let Some(s) = &close_stats { s.control_open.store(0, Ordering::Release); }
+                    println!("CONTROL_DATA_CHANNEL closed");
                     Box::pin(async {})
                 }));
-                text_channel=Some(ch);continue;
+                control_dc = Some(ch.clone());
             }
-            if label != "CONTROL_DATA_CHANNEL" {continue;}
-            let open_ch = Arc::downgrade(&ch);
-            let open_seq = seq.clone();
-            let open_stats = stats.clone();
-            ch.on_open(Box::new(move || {
-                let ch = open_ch.clone();
-                let seq = open_seq.clone();
-                let stats = open_stats.clone();
-                Box::pin(async move {
-                    let Some(ch) = ch.upgrade() else { return };
-                    println!("CONTROL_DATA_CHANNEL open");
-                    if let Some(s) = &stats { s.control_open.store(1, Ordering::Release); }
-                    let s = seq.fetch_add(1, Ordering::Relaxed);
-                    let _ = ch
-                        .send(&bytes::Bytes::from(crate::control_wire::echo_request_with_clipboard(s,stats.as_ref().is_some_and(|s|s.clipboard.enabled.load(Ordering::Acquire)))))
-                        .await;
-                })
-            }));
-            let close_stats = stats.clone();
-            ch.on_close(Box::new(move || {
-                if let Some(s) = &close_stats { s.control_open.store(0, Ordering::Release); }
-                println!("CONTROL_DATA_CHANNEL closed");
-                Box::pin(async {})
-            }));
             let msg_clipboard=clipboard_tx.clone();
             let msg_ch = Arc::downgrade(&ch);
             let msg_seq = seq.clone();
             let msg_probe = network_probe.clone();
             let msg_stats = stats.clone();
+            let msg_channel = label.to_string();
             ch.on_message(Box::new(
                 move |msg: webrtc::data_channel::data_channel_message::DataChannelMessage| {
                     let clipboard=msg_clipboard.clone();
@@ -328,9 +330,10 @@ impl ControllerMedia {
                     let seq = msg_seq.clone();
                     let probe = msg_probe.clone();
                     let stats = msg_stats.clone();
+                    let channel = msg_channel.clone();
                     Box::pin(async move {
                         let Some(ch) = ch.upgrade() else { return };
-                        if !msg.is_string {
+                        {
                             queue_clipboard(&msg.data,&stats,&clipboard);
                             if let Some(s) = &stats {
                                 if crate::control_wire::echo_clipboard_supported(&msg.data){s.clipboard.supported.store(true,Ordering::Release);}
@@ -340,7 +343,7 @@ impl ControllerMedia {
                                     *cursor=Some((revision,shape));
                                 }
                                 if let Some((id,case,code))=crate::screen_control::response(&msg.data) {
-                                    s.diagnostics.record(serde_json::json!({"event":"display_reply","request":id,"case":case,"code":code}));
+                                    s.diagnostics.record(serde_json::json!({"event":"display_reply","channel":channel,"request":id,"case":case,"code":code}));
                                     if id==900 && case==22 {
                                         s.exclusive_result.store(if code==0{1}else{2},Ordering::Release);
                                         if code==0{s.exclusive_owned.store(true,Ordering::Release);}
@@ -350,18 +353,18 @@ impl ControllerMedia {
                                     replies.push_back((id,case,code));
                                 }
                                 if let Some(screens) = crate::screen_control::screen_sources(&msg.data) {
-                                    s.diagnostics.record(serde_json::json!({"event":"screens","current":screens.current_id,"sources":screens.screens.iter().map(|v|serde_json::json!({"id":v.id,"track":v.video_track_index,"name":v.display_name,"kind":v.kind,"primary":v.primary,"width":v.width,"height":v.height})).collect::<Vec<_>>()}));
+                                    s.diagnostics.record(serde_json::json!({"event":"screens","channel":channel,"current":screens.current_id,"sources":screens.screens.iter().map(|v|serde_json::json!({"id":v.id,"track":v.video_track_index,"name":v.display_name,"kind":v.kind,"primary":v.primary,"width":v.width,"height":v.height})).collect::<Vec<_>>()}));
                                     *s.remote_screens.lock().unwrap() = screens;
                                     s.remote_screens_revision.fetch_add(1,Ordering::Release);
                                 }
                                 if let Some(id) = crate::screen_control::desktop_capture_change(&msg.data) {
-                                    s.diagnostics.record(serde_json::json!({"event":"capture_change","source":id}));
+                                    s.diagnostics.record(serde_json::json!({"event":"capture_change","channel":channel,"source":id}));
                                     *s.desktop_capture_source.lock().unwrap() = Some(id);
                                 }
                             }
                             if let Some((id, accepted)) = crate::control_wire::capture_setting_response(&msg.data) {
                                 if let Some(s) = &stats {
-                                    s.diagnostics.record(serde_json::json!({"event":"settings_reply","request":id,"accepted":accepted}));
+                                    s.diagnostics.record(serde_json::json!({"event":"settings_reply","channel":channel,"request":id,"accepted":accepted}));
                                     s.settings_response.fetch_max((id << 1) | accepted as u64, Ordering::Release);
                                 }
                             }
@@ -384,7 +387,6 @@ impl ControllerMedia {
                     })
                 },
             ));
-            control_dc = Some(ch);
         }
         let dc = control_dc.expect("CONTROL_DATA_CHANNEL must be created");
 
@@ -1037,3 +1039,7 @@ fn register_receive_codecs(media: &mut MediaEngine) -> Result<()> {
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "media_channel_tests.rs"]
+mod channel_tests;
