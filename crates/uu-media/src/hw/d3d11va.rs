@@ -30,10 +30,10 @@ use windows::Win32::Graphics::Direct3D::{
 };
 use windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_DECODER, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device,
-    ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BIND_DECODER,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
@@ -211,9 +211,7 @@ impl super::Backend for Decoder {
         }
 
         let Decoder {
-            active,
-            pending,
-            ..
+            active, pending, ..
         } = self;
         let Some(transform) = active.as_mut() else {
             // No SPS yet: we joined mid-GOP. The controller's PLI/FIR loop
@@ -224,7 +222,7 @@ impl super::Backend for Decoder {
 
         let patched = patch_sps_allow_gaps(&frame.data);
         let data = patched.as_deref().unwrap_or(&frame.data);
-        transform.submit(data, frame.is_keyframe, pending)?;
+        transform.submit(data, frame.is_keyframe, frame.pts, pending)?;
         Ok(pending.pop_front())
     }
 }
@@ -248,7 +246,6 @@ struct Transform {
     provides_samples: bool,
     output_size: u32,
     staging: Option<Staging>,
-    time_100ns: i64,
     /// Surfaces decoded so far, and whether any of them was a D3D11 texture.
     /// A decoder that accepted the device manager but keeps handing back
     /// system memory is decoding in software, which the software decoder does
@@ -303,8 +300,7 @@ impl Transform {
                     return Err("MFT is not D3D11 aware".into());
                 }
                 let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
-                let _ =
-                    attributes.SetUINT32(&MF_SA_D3D11_BINDFLAGS, D3D11_BIND_DECODER.0 as u32);
+                let _ = attributes.SetUINT32(&MF_SA_D3D11_BINDFLAGS, D3D11_BIND_DECODER.0 as u32);
             }
             // Whether or not the decoder advertises awareness, handing it a
             // device manager is the switch that turns on GPU decode; a decoder
@@ -339,7 +335,6 @@ impl Transform {
                 provides_samples: info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0,
                 output_size: info.cbSize,
                 staging: None,
-                time_100ns: 0,
                 frames_read: 0,
                 saw_d3d11_surface: false,
             })
@@ -351,10 +346,14 @@ impl Transform {
         &mut self,
         data: &[u8],
         keyframe: bool,
+        pts: Timestamp,
         out: &mut VecDeque<RawFrame>,
     ) -> Result<(), String> {
-        let sample = input_sample(data, self.time_100ns, keyframe)?;
-        self.time_100ns += SAMPLE_DURATION_100NS;
+        // Preserve the transport clock, including skipped frames and decoder
+        // restarts. A synthetic 60 Hz counter drifts on 30 Hz input and resets
+        // to zero after loss, making a new IDR look older than its generation.
+        let time_100ns = pts.as_micros().saturating_mul(10).min(i64::MAX as u64) as i64;
+        let sample = input_sample(data, time_100ns, keyframe)?;
         unsafe {
             match self.transform.ProcessInput(self.input_id, &sample, 0) {
                 Err(e) if e.code() == MF_E_NOTACCEPTING => {
@@ -435,8 +434,8 @@ impl Transform {
     /// stalled session.
     fn read_surface(&mut self, sample: &IMFSample) -> Result<RawFrame, String> {
         let pts = unsafe { sample.GetSampleTime() }.unwrap_or(0).max(0) as u64 / 10;
-        let buffer = unsafe { sample.GetBufferByIndex(0) }
-            .map_err(|e| format!("GetBufferByIndex: {e}"))?;
+        let buffer =
+            unsafe { sample.GetBufferByIndex(0) }.map_err(|e| format!("GetBufferByIndex: {e}"))?;
         self.frames_read += 1;
 
         if let Ok(dxgi) = buffer.cast::<IMFDXGIBuffer>() {
@@ -465,15 +464,19 @@ impl Transform {
                     .CopySubresourceRegion(&staging, 0, 0, 0, 0, &texture, index, None);
             }
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            unsafe { self.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) }
-                .map_err(|e| format!("staging Map: {e}"))?;
+            unsafe {
+                self.context
+                    .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+            }
+            .map_err(|e| format!("staging Map: {e}"))?;
             // The texture includes decoder alignment (1080p commonly uses
             // 1088 luma rows). UV starts at the allocated, not visible, height.
             let stride = mapped.RowPitch;
             let len = stride as usize * height as usize * 3 / 2;
             let pixels = unsafe {
                 let source = std::slice::from_raw_parts(mapped.pData as *const u8, len);
-                let result = super::surface::crop_nv12(source, stride, height, self.width, self.height);
+                let result =
+                    super::surface::crop_nv12(source, stride, height, self.width, self.height);
                 self.context.Unmap(&staging, 0);
                 result?
             };
@@ -525,7 +528,9 @@ impl Transform {
         let mut pixels = vec![0u8; len];
         unsafe {
             ptr::copy_nonoverlapping(rows, pixels.as_mut_ptr(), len);
-            buffer.Unlock().map_err(|e| format!("IMFMediaBuffer::Unlock: {e}"))?;
+            buffer
+                .Unlock()
+                .map_err(|e| format!("IMFMediaBuffer::Unlock: {e}"))?;
         }
         Ok(RawFrame {
             width: self.width,
@@ -579,8 +584,11 @@ impl Transform {
                 MiscFlags: 0,
             };
             let mut texture: Option<ID3D11Texture2D> = None;
-            unsafe { self.device.CreateTexture2D(&description, None, Some(&mut texture)) }
-                .map_err(|e| format!("staging CreateTexture2D: {e}"))?;
+            unsafe {
+                self.device
+                    .CreateTexture2D(&description, None, Some(&mut texture))
+            }
+            .map_err(|e| format!("staging CreateTexture2D: {e}"))?;
             self.staging = Some(Staging {
                 texture: texture.ok_or("staging texture was not created")?,
                 width,
@@ -669,7 +677,13 @@ fn adapter_name(device: &ID3D11Device) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-fn texture_description(texture: &ID3D11Texture2D) -> (u32, u32, windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT) {
+fn texture_description(
+    texture: &ID3D11Texture2D,
+) -> (
+    u32,
+    u32,
+    windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+) {
     let mut description = D3D11_TEXTURE2D_DESC::default();
     unsafe { texture.GetDesc(&mut description) };
     (description.Width, description.Height, description.Format)
@@ -681,7 +695,9 @@ fn stream_ids(transform: &IMFTransform) -> Result<(u32, u32), String> {
     unsafe { transform.GetStreamCount(&mut inputs, &mut outputs) }
         .map_err(|e| format!("GetStreamCount: {e}"))?;
     if inputs != 1 || outputs != 1 {
-        return Err(format!("MFT exposes {inputs} input / {outputs} output streams"));
+        return Err(format!(
+            "MFT exposes {inputs} input / {outputs} output streams"
+        ));
     }
     let mut input_ids = [0u32];
     let mut output_ids = [0u32];
@@ -783,13 +799,17 @@ fn input_sample(data: &[u8], time_100ns: i64, keyframe: bool) -> Result<IMFSampl
         let sample = MFCreateSample().map_err(describe)?;
         let buffer = MFCreateMemoryBuffer(len).map_err(describe)?;
         let mut destination: *mut u8 = ptr::null_mut();
-        buffer.Lock(&mut destination, None, None).map_err(describe)?;
+        buffer
+            .Lock(&mut destination, None, None)
+            .map_err(describe)?;
         ptr::copy_nonoverlapping(data.as_ptr(), destination, data.len());
         buffer.Unlock().map_err(describe)?;
         buffer.SetCurrentLength(len).map_err(describe)?;
         sample.AddBuffer(&buffer).map_err(describe)?;
         sample.SetSampleTime(time_100ns).map_err(describe)?;
-        sample.SetSampleDuration(SAMPLE_DURATION_100NS).map_err(describe)?;
+        sample
+            .SetSampleDuration(SAMPLE_DURATION_100NS)
+            .map_err(describe)?;
         if keyframe {
             // Tells the decoder (and the D3D11 decoder's DPB management) that
             // this access unit starts a new sequence.
@@ -859,7 +879,10 @@ impl Drop for Activations {
             return;
         }
         unsafe {
-            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(self.pointer, self.count as usize));
+            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
+                self.pointer,
+                self.count as usize,
+            ));
             CoTaskMemFree(Some(self.pointer.cast()));
         }
     }

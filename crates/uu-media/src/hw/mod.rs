@@ -66,3 +66,41 @@ pub fn create_hardware_decoder() -> Result<Box<dyn VideoDecoder>, CodecError> {
         )))
     }
 }
+
+#[cfg(all(test, target_os = "windows", feature = "h264"))]
+mod windows_timing_tests {
+    use crate::{H264Encoder, RawFrame, Timestamp, VideoEncoder};
+    #[test]
+    #[ignore = "requires a Windows D3D11 hardware decoder; run explicitly on test GPUs"]
+    fn hardware_output_keeps_transport_pts_across_decoder_recreation() {
+        // A nonzero origin and a 30 Hz source expose the old synthetic 60 Hz
+        // counter. A second decoder exposes resetting that clock after loss.
+        for origin in [10_000_000, 20_000_000] {
+            let mut encoder = H264Encoder::new(1_000).unwrap();
+            let mut decoder = super::create_hardware_decoder().expect("hardware decoder required");
+            let mut produced = 0;
+            let mut expected = std::collections::HashSet::new();
+            for i in 0..20 {
+                let pts = Timestamp(origin + i * 33_333);
+                expected.insert(pts);
+                let mut data = vec![90; 64 * 64];
+                data.extend(vec![128; 64 * 64 / 2]);
+                let raw = RawFrame::new_i420(64, 64, data, pts);
+                for encoded in encoder.encode(&raw).unwrap() {
+                    if let Some(frame) = decoder.decode(&encoded).unwrap() {
+                        assert!(
+                            expected.contains(&frame.pts),
+                            "output {:?} is not a submitted transport PTS",
+                            frame.pts
+                        );
+                        produced += 1;
+                    }
+                }
+            }
+            assert!(
+                produced >= 10,
+                "hardware decoder must produce actual frames"
+            );
+        }
+    }
+}
