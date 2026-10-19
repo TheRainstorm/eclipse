@@ -571,9 +571,10 @@ impl App {
             1=>uu_core::control_wire::CaptureResolution::Exact(1920,1080),
             2=>uu_core::control_wire::CaptureResolution::Exact(2560,1440),
             3=>uu_core::control_wire::CaptureResolution::Exact(3840,2160),
-            _=>uu_core::control_wire::CaptureResolution::Native,
+            _=>uu_core::control_wire::CaptureResolution::Unchanged,
         };
-        let msg = uu_core::control_wire::capture_setting_request_with_cursor(
+        let source=h.stats.remote_screens.lock().unwrap().for_track(self.selected_track).map_or(-1,|s|s.id);
+        let msg = uu_core::control_wire::capture_setting_for_screen(
             2000 + self.settings_seq,
             uu_core::control_wire::now_ms(),
             uu_core::control_wire::CaptureFrameRate::new(self.target_fps).unwrap_or_default(),
@@ -581,6 +582,7 @@ impl App {
             custom_bps,
             resolution,
             self.preferences.remote_cursor,
+            source,
         );
         self.settings_feedback = if h.settings.send(msg).is_ok() {
             format!("已发送：{} FPS · {} · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0,
@@ -795,6 +797,7 @@ impl App {
         let device = self.devices[i].device_id.clone();
         let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
         let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
+        stats.display_mode.store((self.preferences.display_mode==uu_core::screen_control::DisplayMode::ExclusiveVirtual) as u32,std::sync::atomic::Ordering::Release);
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
         stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
         stats.clipboard.available.store(cfg!(windows),std::sync::atomic::Ordering::Release);

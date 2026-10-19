@@ -10,6 +10,7 @@ use std::{
 #[serde(default)]
 pub struct Settings {
     pub fps: u32,
+    pub display_mode: uu_core::screen_control::DisplayMode,
     pub bitrate: usize,
     pub custom_mbps: u32,
     pub resolution: usize,
@@ -28,6 +29,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             fps: 60,
+            display_mode: uu_core::screen_control::DisplayMode::Preserve,
             bitrate: 0,
             custom_mbps: 55,
             resolution: 0,
@@ -160,6 +162,12 @@ impl super::App {
             .min_width(260.0).default_width(440.0_f32.min((ctx.screen_rect().width()-40.0).max(260.0))).max_width((ctx.screen_rect().width()-32.0).max(260.0)).anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).show(ctx,|ui| {
                 let s=&mut self.settings_draft;
                 egui::ScrollArea::vertical().max_height((ctx.screen_rect().height()-140.0).max(180.0)).show(ui,|ui| {
+                    ui.strong("远端显示器");
+                    for mode in [uu_core::screen_control::DisplayMode::Preserve,uu_core::screen_control::DisplayMode::ExclusiveVirtual] {
+                        ui.radio_value(&mut s.display_mode,mode,mode.label());
+                    }
+                    ui.small("下次连接生效。保持现状不启用/关闭显示器，也不切换主屏。独占模式请求UU超级屏（例如S2719），会关闭其它显示器；退出时请求恢复。已有独占布局不会因保持现状而自动恢复。");
+                    ui.separator();
                     ui.strong("画面");
                     ui.horizontal(|ui|{ui.label("目标帧率");ui.add(egui::DragValue::new(&mut s.fps).range(5..=144).suffix(" FPS"));});
                     egui::ComboBox::from_label("画质").selected_text(super::BITRATE_PRESETS[s.bitrate].0).show_ui(ui,|ui|{
@@ -224,6 +232,7 @@ mod tests {
         assert_eq!(s.fps, 120);
         assert_eq!(s.volume, 100);
         assert!(s.capture_keyboard);
+        assert_eq!(s.display_mode,uu_core::screen_control::DisplayMode::Preserve);
         assert_eq!(s.bitrate, 4);
         s.save(&p).unwrap();
         s.fps = 90;

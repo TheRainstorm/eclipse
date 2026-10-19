@@ -272,9 +272,14 @@ async fn run(
     } else {
         None
     };
-    let initial_settings = crate::control_wire::capture_setting_request_at_fps(
+    let resolution=if std::env::var_os("UU_RESOLUTION").is_some() {
+        crate::control_wire::CaptureResolution::from_env()
+    } else {crate::control_wire::CaptureResolution::Unchanged};
+    // Do not derive a display-layout operation from an automatic source or a
+    // FOLLOW_REMOTE resolution request. Preserve the host's current capture.
+    let initial_settings = crate::control_wire::capture_setting_for_screen(
         1000, crate::control_wire::now_ms(), frame_rate, quality, custom_bps,
-        crate::control_wire::CaptureResolution::from_env(),
+        resolution,false,-1,
     );
     drive_session(sio, media, &ctrl, &ice_id, &ev, &mut input_rx, &mut settings_rx, initial_settings).await?;
     Ok::<_, anyhow::Error>(())
@@ -296,6 +301,11 @@ async fn run(
                 let _ = media.send_input(frame).await;
             }
         }).await;
+    }
+    if stats.exclusive_owned.load(std::sync::atomic::Ordering::Acquire) {
+        if let Some(media)=&peer {
+            let _=tokio::time::timeout(std::time::Duration::from_millis(500),media.send_control(crate::screen_control::quit_exclusive(901))).await;
+        }
     }
     close_session(socket.as_mut(), peer.as_ref(), &ctrl).await;
     status("已断开");
@@ -322,6 +332,9 @@ async fn drive_session(
     let started = tokio::time::Instant::now();
     let mut opened_at = None;
     let mut pending_initial = true;
+    let exclusive=media.wants_exclusive_display();
+    let mut policy_done=!exclusive;
+    let mut policy_sent=None;
     let mut pending_setting: Option<Vec<u8>> = None;
     let mut last_attempt = None;
     let mut setup_timer = tokio::time::interval(Duration::from_millis(250));
@@ -352,7 +365,24 @@ async fn drive_session(
                         && last_attempt.map_or(true, |at| now.duration_since(at) >= Duration::from_millis(500))
                     {
                         last_attempt = Some(now);
-                        if pending_initial && media.send_control(initial_settings.clone()).await.is_ok() {
+                        if !policy_done {
+                            if policy_sent.is_none() {
+                                if media.has_super_screen() {policy_done=true;}
+                                else if media.send_control(crate::screen_control::enter_exclusive(900)).await.is_ok() {
+                                    policy_sent=Some(now);status("正在请求UU虚拟屏独占…");
+                                }
+                            }
+                            if let Some(sent)=policy_sent {
+                                match media.exclusive_result() {
+                                    1=>{policy_done=true;status("远端已确认UU虚拟屏独占");},
+                                    2=>{policy_done=true;status("远端拒绝显示器独占，保留当前布局");},
+                                    _ if now.duration_since(sent)>=Duration::from_secs(8)=>{policy_done=true;status("显示器独占请求未确认，保留当前采集");},
+                                    _=>{}
+                                }
+                            }
+                            if !policy_done {continue;}
+                        }
+                        if pending_initial && media.send_control(media.bind_initial_capture(&initial_settings)).await.is_ok() {
                             pending_initial = false;
                             status("已请求目标画质/码率");
                         }

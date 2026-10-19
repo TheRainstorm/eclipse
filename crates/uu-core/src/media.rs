@@ -34,6 +34,11 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 #[derive(Default)]
 pub struct MediaStats {
     pub control_open: AtomicU32,
+    /// Snapshot of the user's connection policy: 0 preserve, 1 exclusive UU.
+    pub display_mode: AtomicU32,
+    pub display_responses: std::sync::Mutex<std::collections::VecDeque<(u64,u32,i32)>>,
+    pub exclusive_owned: std::sync::atomic::AtomicBool,
+    pub exclusive_result: AtomicU64,
     pub audio: Arc<uu_media::audio::AudioControl>,
     pub clipboard: Arc<crate::clipboard::Clipboard>,
     pub cursor: std::sync::Mutex<Option<(u64,crate::cursor::Shape)>>,
@@ -120,6 +125,23 @@ pub struct ControllerMedia {
 }
 
 impl ControllerMedia {
+    pub(crate) fn bind_initial_capture(&self,data:&[u8])->Vec<u8> {
+        self.stats.as_ref().and_then(|s| {
+            let screens=s.remote_screens.lock().unwrap();
+            let source=screens.selected().or_else(||screens.screens.iter().find(|s|s.primary)).or_else(||screens.screens.first())?;
+            crate::control_wire::bind_current_capture(data,source.id)
+        }).unwrap_or_else(||data.to_vec())
+    }
+    pub(crate) fn wants_exclusive_display(&self)->bool {
+        self.stats.as_ref().is_some_and(|s|s.display_mode.load(Ordering::Acquire)==1)
+    }
+    pub(crate) fn has_super_screen(&self)->bool {
+        self.stats.as_ref().is_some_and(|s|{let screens=s.remote_screens.lock().unwrap();screens.screens.len()==1 && screens.selected().is_some_and(|v|v.kind==2)})
+    }
+    pub(crate) fn exclusive_result(&self)->u64 {
+        self.stats.as_ref().map_or(0,|s|s.exclusive_result.load(Ordering::Acquire))
+    }
+
     /// Build the PeerConnection with the ICE servers returned by `success`.
     pub async fn new(ice: Vec<RTCIceServer>) -> Result<Self> {
         Self::new_with_frames(ice, None, None).await
@@ -293,6 +315,15 @@ impl ControllerMedia {
                                     let mut cursor=s.cursor.lock().unwrap();
                                     let revision=cursor.as_ref().map_or(1,|(revision,_)|revision+1);
                                     *cursor=Some((revision,shape));
+                                }
+                                if let Some((id,case,code))=crate::screen_control::response(&msg.data) {
+                                    if id==900 && case==22 {
+                                        s.exclusive_result.store(if code==0{1}else{2},Ordering::Release);
+                                        if code==0{s.exclusive_owned.store(true,Ordering::Release);}
+                                    }
+                                    let mut replies=s.display_responses.lock().unwrap();
+                                    if replies.len()==16{replies.pop_front();}
+                                    replies.push_back((id,case,code));
                                 }
                                 if let Some(screens) = crate::screen_control::screen_sources(&msg.data) {
                                     *s.remote_screens.lock().unwrap() = screens;

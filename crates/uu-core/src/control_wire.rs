@@ -109,7 +109,7 @@ impl CaptureFrameRate {
 /// ```text
 /// 1  fps option      1=30, 2=60, 3=90, 4=144
 /// 2  quality preset  1 fast, 2 general, 3 hd, 4 bluray, 5 auto, 6 custom
-/// 4  screen id       -2 keeps the current source (not a width/mode flag)
+/// 4  screen id       -2 broadcasts to existing tracks; nonnegative selects one source
 /// 5  width           -1 unchanged, or explicit output width
 /// 6  height          -1 unchanged, or explicit output height
 /// 7  constant        1
@@ -189,11 +189,21 @@ pub fn capture_setting_request_with_cursor(
     seq:u64,timestamp_ms:u64,frame_rate:CaptureFrameRate,quality:u64,
     custom_bitrate_bps:Option<u64>,resolution:CaptureResolution,cursor_capture:bool,
 )->Vec<u8> {
+    capture_setting_for_screen(seq,timestamp_ms,frame_rate,quality,custom_bitrate_bps,resolution,cursor_capture,-2)
+}
+
+/// A nonnegative id selects an advertised source. -1 addresses the existing
+/// capture in a single-track session; -2 broadcasts to existing tracks and is
+/// retained only by the legacy wire-compatible wrapper above.
+pub fn capture_setting_for_screen(
+    seq:u64,timestamp_ms:u64,frame_rate:CaptureFrameRate,quality:u64,
+    custom_bitrate_bps:Option<u64>,resolution:CaptureResolution,cursor_capture:bool,screen_id:i32,
+)->Vec<u8> {
     let mut setting = Vec::new();
     if cursor_capture {int(3,1,&mut setting);}
     int(1, frame_rate.option(), &mut setting);
     int(2, quality, &mut setting);
-    int(4, u64::MAX - 1, &mut setting); // Keep the currently selected screen, including super-screen.
+    int(4, screen_id as i64 as u64, &mut setting);
     // Runtime switch sentinels observed from the official client.  protobuf
     // int64 negatives use the full 10-byte two's-complement varint.
     match resolution {
@@ -350,6 +360,32 @@ pub fn capture_setting_response(data: &[u8]) -> Option<(u64, bool)> {
         _ => true,
     });
     Some((id, !rejected))
+}
+
+/// Bind the initial current-source sentinel to the host's measured screen ID.
+/// Leave legacy broadcasts and explicitly selected sources byte-for-byte intact.
+pub fn bind_current_capture(data:&[u8],screen_id:i32)->Option<Vec<u8>> {
+    fn replace(data:&[u8],field:u32,new:WireValue<'_>)->Option<Vec<u8>> {
+        let mut out=Vec::new();let mut found=false;
+        for (n,value) in decode_wire(data).ok()? {
+            let value=if n==field {found=true;&new}else{&value};
+            match value {
+                WireValue::Varint(v)=>int(n,*v,&mut out),
+                WireValue::Bytes(v)=>bytes(n,v,&mut out),
+                WireValue::Fixed64(v)=>{varint((n as u64)<<3|1,&mut out);out.extend(v);},
+                WireValue::Fixed32(v)=>{varint((n as u64)<<3|5,&mut out);out.extend(v);},
+            }
+        }
+        found.then_some(out)
+    }
+    let outer=decode_wire(data).ok()?;
+    let payload=|fields:&[(u32,WireValue<'_>)],field|fields.iter().find_map(|(n,v)|match v {WireValue::Bytes(b) if *n==field=>Some(b.to_vec()),_=>None});
+    let rpc=payload(&outer,21)?;
+    let setting=payload(&decode_wire(&rpc).ok()?,2)?;
+    if !decode_wire(&setting).ok()?.contains(&(4,WireValue::Varint(u64::MAX))){return None;}
+    let setting=replace(&setting,4,WireValue::Varint(screen_id as i64 as u64))?;
+    let rpc=replace(&rpc,2,WireValue::Bytes(&setting))?;
+    replace(data,21,WireValue::Bytes(&rpc))
 }
 
 /// Decode a protobuf message into `(field number, value)` pairs. Nested byte

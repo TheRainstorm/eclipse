@@ -1,4 +1,4 @@
-//! Read-only native screen metadata from the official Windows descriptors.
+//! Remote screen inventory and explicit display RPCs from Windows descriptors.
 use crate::control_wire::{decode_wire, WireValue};
 
 fn number(fields: &[(u32, WireValue<'_>)], field: u32) -> u64 {
@@ -46,6 +46,8 @@ pub struct RemoteScreen {
     pub height: u32,
     pub dpi_scale: Option<u32>,
     pub video_track_index: u32,
+    pub display_name: String,
+    pub primary: bool,
 }
 impl RemoteScreen {
     pub fn kind_label(&self) -> &'static str {
@@ -75,6 +77,8 @@ pub fn screen_sources(data: &[u8]) -> Option<RemoteScreens> {
             .filter(|v| *v > 0);
         screens.push(RemoteScreen {
             id: number(&fields, 1) as i32,
+            display_name: message(&fields,10).and_then(|v|std::str::from_utf8(v).ok()).unwrap_or("").chars().filter(|c|!c.is_control()).take(96).collect(),
+            primary: number(&fields,7)!=0,
             refresh_hz: number(&fields, 2) as u32,
             kind: number(&fields, 5) as u32,
             width: dimension(&rect, 5, 3),
@@ -86,6 +90,47 @@ pub fn screen_sources(data: &[u8]) -> Option<RemoteScreens> {
     Some(RemoteScreens {
         screens,
         current_id: number(&fields, 2) as i32,
+    })
+}
+
+/// Preserve is deliberately the default, including for existing settings files.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,serde::Serialize,serde::Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum DisplayMode {
+    #[default]
+    Preserve,
+    ExclusiveVirtual,
+}
+impl DisplayMode {
+    pub fn label(self)->&'static str {
+        match self {Self::Preserve=>"保持远端显示器现状",Self::ExclusiveVirtual=>"UU虚拟屏独占（关闭其它显示器）"}
+    }
+}
+
+fn request(seq:u64,case:u32,payload:&[u8])->Vec<u8> {
+    use crate::control_wire::{bytes,int};
+    let mut header=Vec::new();int(1,seq,&mut header);
+    let mut rpc=Vec::new();bytes(1,&header,&mut rpc);bytes(case,payload,&mut rpc);
+    let mut out=Vec::new();int(1,seq,&mut out);int(2,crate::control_wire::now_ms(),&mut out);bytes(21,&rpc,&mut out);out
+}
+/// Ask the host to send an existing track; does not create/disable monitors.
+pub fn send_video_track(seq:u64,index:u32)->Vec<u8> {
+    let mut body=Vec::new();crate::control_wire::int(1,index.into(),&mut body);request(seq,15,&body)
+}
+pub fn enter_exclusive(seq:u64)->Vec<u8> {
+    let mut body=Vec::new();crate::control_wire::int(1,1,&mut body); // REASON_MANUAL
+    request(seq,26,&body)
+}
+pub fn quit_exclusive(seq:u64)->Vec<u8> {request(seq,14,&[])}
+/// Display RPC results are independent of capture-setting acknowledgement.
+pub fn response(data:&[u8])->Option<(u64,u32,i32)> {
+    let outer=decode_wire(data).ok()?;
+    let rpc=decode_wire(message(&outer,22)?).ok()?;
+    let header=decode_wire(message(&rpc,1)?).ok()?;
+    let id=number(&header,1);
+    [10,11,22].into_iter().find_map(|case| {
+        let result=decode_wire(message(&rpc,case)?).ok()?;
+        Some((id,case,number(&result,1) as i32))
     })
 }
 
@@ -132,4 +177,37 @@ mod tests {
         assert_eq!(parsed.for_track(0).unwrap().id, 2);
         assert!(screen_sources(&crate::control_wire::echo_request(1)).is_none());
     }
+    #[test]
+    fn display_metadata_keeps_names_primary_and_real_ids() {
+        let mut screen=Vec::new();int(1,42,&mut screen);int(7,1,&mut screen);
+        int(12,3,&mut screen);bytes(10,"Zako HDR".as_bytes(),&mut screen);
+        let mut inventory=Vec::new();bytes(1,&screen,&mut inventory);int(2,42,&mut inventory);
+        let parsed=screen_sources(&crate::control_wire::envelope(1,7,&inventory)).unwrap();
+        let screen=parsed.selected().unwrap();assert_eq!(screen.display_name,"Zako HDR");assert!(screen.primary);assert_eq!(screen.video_track_index,3);
+    }
+    #[test]
+    fn explicit_display_requests_and_responses_use_official_rpc_cases() {
+        for (request,case,body) in [(send_video_track(9001,3),15,vec![(1,WireValue::Varint(3))]),(enter_exclusive(9002),26,vec![(1,WireValue::Varint(1))]),(quit_exclusive(9003),14,vec![])] {
+            let fields=decode_wire(&request).unwrap();let rpc=decode_wire(message(&fields,21).unwrap()).unwrap();
+            assert_eq!(decode_wire(message(&rpc,case).unwrap()).unwrap(),body);
+        }
+        for (case,code) in [(10,0),(11,7),(22,0)] {
+            let mut header=Vec::new();int(1,9001,&mut header);
+            let mut body=Vec::new();int(1,code,&mut body);
+            let mut rpc=Vec::new();bytes(1,&header,&mut rpc);bytes(case,&body,&mut rpc);
+            assert_eq!(response(&crate::control_wire::envelope(4,22,&rpc)),Some((9001,case,code as i32)));
+        }
+        assert!(response(&send_video_track(1,0)).is_none());
+    }
+    #[test]
+    fn current_capture_is_bound_without_broadcast_or_resolution_changes() {
+        use crate::control_wire::*;
+        let request=capture_setting_for_screen(1000,3,CaptureFrameRate::new(120).unwrap(),6,Some(18000000),CaptureResolution::Unchanged,false,-1);
+        let resolved=bind_current_capture(&request,42).unwrap();
+        let outer=decode_wire(&resolved).unwrap();let rpc=decode_wire(message(&outer,21).unwrap()).unwrap();let settings=decode_wire(message(&rpc,2).unwrap()).unwrap();
+        assert_eq!(number(&settings,4),42);assert_eq!(number(&settings,10),1);assert_eq!(number(&settings,18),120);assert_eq!(number(&settings,8),18000000);
+        assert!(bind_current_capture(&resolved,7).is_none());
+        assert_eq!(DisplayMode::default(),DisplayMode::Preserve);
+    }
+
 }
