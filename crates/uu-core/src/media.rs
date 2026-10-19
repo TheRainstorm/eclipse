@@ -673,6 +673,11 @@ async fn receive_video(
             receiver.poll(now)
         };
         if last_nack.elapsed() >= Duration::from_millis(20) {
+            if let Some(s) = &stats {
+                let measured_ms = (s.rtt_us.load(Ordering::Relaxed) as u64
+                    + 4 * s.rtt_deviation_us.load(Ordering::Relaxed) as u64) / 1000 + 20;
+                receiver.set_repair_wait(Duration::from_millis(wait_ms.max(measured_ms).min(200)));
+            }
             let missing = receiver.missing(now);
             if !missing.is_empty() {
                 use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{

@@ -103,6 +103,7 @@ pub struct VideoReceiver {
     completed_ts: Option<u32>,
     wait: Duration,
     last_packet: Option<Instant>,
+    gap_since: Option<Instant>,
     pub stats: ReceiverStats,
     refresh: bool,
     pub epoch: u64,
@@ -116,6 +117,7 @@ impl VideoReceiver {
             completed_ts: None,
             wait,
             last_packet: None,
+            gap_since: None,
             stats: ReceiverStats::default(),
             refresh: false,
             epoch: 0,
@@ -125,7 +127,6 @@ impl VideoReceiver {
         std::mem::take(&mut self.refresh)
     }
     pub fn push(&mut self, packet: Packet, now: Instant) -> Vec<AccessUnit> {
-        self.last_packet = Some(now);
         let seq = packet.header.sequence_number;
         let next = *self.next.get_or_insert(seq);
         let distance = seq.wrapping_sub(next) as i16;
@@ -136,6 +137,9 @@ impl VideoReceiver {
         if distance > 0 {
             self.stats.reordered += 1;
         }
+        if !packet.payload.is_empty() {
+            self.last_packet = Some(now);
+        }
         self.packets.insert(seq, (packet, now));
         self.poll(now)
     }
@@ -145,7 +149,7 @@ impl VideoReceiver {
         let Some(next) = self.next else {
             return Vec::new();
         };
-        let Some(oldest) = self.packets.values().map(|(_, at)| *at).min() else {
+        let Some(oldest) = self.gap_since else {
             return Vec::new();
         };
         let age = now.duration_since(oldest);
@@ -169,21 +173,22 @@ impl VideoReceiver {
         let mut ready = Vec::new();
         while let Some(next) = self.next {
             if let Some((packet, _)) = self.packets.remove(&next) {
+                self.gap_since = None;
                 self.next = Some(next.wrapping_add(1));
                 self.assemble(packet, &mut ready);
                 continue;
             }
-            let nearest = self
-                .packets
-                .iter()
-                .min_by_key(|(seq, _)| seq.wrapping_sub(next));
-            let Some((&seq, (packet, _))) = nearest else {
+            if self.packets.is_empty() {
+                self.gap_since = None;
                 break;
-            };
-            let oldest = self.packets.values().map(|(_, at)| *at).min().unwrap();
+            }
+            // Cache the hole's deadline. Scanning a growing HashMap twice on
+            // every subsequent packet made a loss burst quadratic in packets.
+            let oldest = *self.gap_since.get_or_insert_with(|| self.packets.values().map(|(_, at)| *at).min().unwrap());
             if self.packets.len() < MAX_PACKETS && now.duration_since(oldest) < self.wait {
                 break;
             }
+            let (&seq, (packet, _)) = self.packets.iter().min_by_key(|(seq, _)| seq.wrapping_sub(next)).unwrap();
             let timestamp = packet.header.timestamp;
             self.stats.lost += seq.wrapping_sub(next) as u64;
             self.epoch += 1;
@@ -207,6 +212,8 @@ impl VideoReceiver {
         }
         ready
     }
+    /// Only holes wait; complete in-order frames still pass immediately.
+    pub fn set_repair_wait(&mut self, wait: Duration) { self.wait = wait; }
     fn discard_picture(&mut self) {
         if let Some(picture) = self.picture.take() {
             if picture.vcl
