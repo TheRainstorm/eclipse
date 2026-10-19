@@ -16,6 +16,9 @@ impl Shortcuts {
             return if self.held.remove(&key) { KeyAction::Consumed } else { KeyAction::Forward };
         }
         if self.held.contains(&key) { return KeyAction::Consumed; }
+        // If this key was already sent remotely before the chord formed,
+        // preserve its repeat/release rather than claiming half a transition.
+        if repeat { return KeyAction::Forward; }
         let action = if modifiers.ctrl && modifiers.alt {
             match key {
                 Key::S if streaming => Some(Action::Stats),
@@ -26,7 +29,7 @@ impl Shortcuts {
         } else { None };
         if let Some(action) = action {
             self.held.insert(key);
-            if repeat { KeyAction::Consumed } else { KeyAction::Trigger(action) }
+            KeyAction::Trigger(action)
         } else { KeyAction::Forward }
     }
 }
@@ -41,6 +44,13 @@ mod tests {
         assert_eq!(keys.key(Key::S, true, true, CHORD, true), KeyAction::Consumed);
         assert_eq!(keys.key(Key::S, false, false, Modifiers::NONE, true), KeyAction::Consumed);
         assert_eq!(keys.key(Key::S, true, false, CHORD, true), KeyAction::Trigger(Action::Stats));
+    }
+    #[test]
+    fn remote_key_held_before_chord_keeps_its_release() {
+        let mut keys = Shortcuts::default();
+        assert_eq!(keys.key(Key::S, true, false, Modifiers::NONE, true), KeyAction::Forward);
+        assert_eq!(keys.key(Key::S, true, true, CHORD, true), KeyAction::Forward);
+        assert_eq!(keys.key(Key::S, false, false, CHORD, true), KeyAction::Forward);
     }
     #[test]
     fn ordinary_remote_keys_and_f1_are_preserved() {
