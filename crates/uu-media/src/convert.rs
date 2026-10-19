@@ -7,6 +7,9 @@
 use crate::codec::CodecError;
 use crate::frame::{PixelFormat, RawFrame};
 
+#[cfg(target_arch = "x86_64")]
+mod x86;
+
 /// Convert any supported frame to tightly packed I420.
 pub fn to_i420(frame: &RawFrame) -> Result<Vec<u8>, CodecError> {
     match frame.format {
@@ -207,7 +210,8 @@ pub fn frame_to_rgba(frame: &RawFrame) -> Vec<u8> {
     }
 }
 
-/// I420 to RGBA8, honouring a row stride for the luma and chroma planes.
+/// I420 to RGBA8 with pitched luma and packed U/V planes, as emitted by
+/// our decoder adapters. 4:2:0 visible dimensions must both be even.
 pub fn i420_to_rgba_strided(src: &[u8], width: u32, height: u32, stride: u32) -> Vec<u8> {
     let (w, h) = (width as usize, height as usize);
     let s = stride.max(width) as usize;
@@ -218,7 +222,14 @@ pub fn i420_to_rgba_strided(src: &[u8], width: u32, height: u32, stride: u32) ->
     // V at s*h + cw*ch. A tightly packed frame has s == w.
     let u_base = s * h;
     let v_base = u_base + cw * ch;
-    if src.len() < u_base + cw * ch * 2 {
+    if w % 2 != 0 || h % 2 != 0 || src.len() < u_base + cw * ch * 2 {
+        return out;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("sse4.1") {
+        // Complete even-sized planes and output are validated above. The
+        // kernel loads only complete 8-pixel groups; tails stay scalar.
+        unsafe { x86::convert::<false>(src, w, h, s, &mut out); }
         return out;
     }
     for j in 0..h {
@@ -249,7 +260,14 @@ pub fn nv12_to_rgba(src: &[u8], width: u32, height: u32, stride: u32) -> Vec<u8>
     let ch = h / 2;
     let mut out = vec![0u8; w * h * 4];
     let uv_base = s * h;
-    if src.len() < uv_base + s * ch {
+    if w % 2 != 0 || h % 2 != 0 || src.len() < uv_base + s * ch {
+        return out;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("sse4.1") {
+        // Pitched UV starts after every allocated luma row, as in the scalar
+        // path; no SIMD load may cross the last visible chroma pair.
+        unsafe { x86::convert::<true>(src, w, h, s, &mut out); }
         return out;
     }
     for j in 0..h {
@@ -377,5 +395,60 @@ mod rgba_tests {
         let i420 = frame(PixelFormat::I420, 2, 2, 2, vec![10, 10, 10, 10, 128, 128]);
         let nv12 = frame(PixelFormat::Nv12, 2, 2, 2, vec![10, 10, 10, 10, 128, 128]);
         assert_eq!(frame_to_rgba(&i420), frame_to_rgba(&nv12));
+    }
+}
+
+#[cfg(test)]
+mod conversion_equivalence_tests {
+    use super::*;
+
+    fn reference(src: &[u8], w: usize, h: usize, stride: usize, nv12: bool) -> Vec<u8> {
+        let mut out = Vec::with_capacity(w*h*4);
+        for row in 0..h { for col in 0..w {
+            let chroma = stride*h + row/2 * if nv12 {stride} else {w/2};
+            let u = src[chroma + col/2 * if nv12 {2} else {1}];
+            let v = if nv12 {src[chroma + col/2*2+1]} else {src[chroma + w*h/4 + col/2]};
+            let (r,g,b) = yuv_to_rgb(src[row*stride+col] as i32,u as i32-128,v as i32-128);
+            out.extend_from_slice(&[r.clamp(0,255) as u8,g.clamp(0,255) as u8,b.clamp(0,255) as u8,255]);
+        }}
+        out
+    }
+    #[test]
+    fn pitched_yuv_with_vector_tails_matches_scalar_reference_byte_for_byte() {
+        let mut seed = 12345u32;
+        for w in [2usize,4,6,8,10,14,16,18,30,32,66] {
+            for h in [2usize,4,6,10] { for padding in [0,1,8] { for nv12 in [false,true] {
+                let stride=w+padding;
+                let len=if nv12 {stride*h*3/2} else {stride*h+w*h/2};
+                let src:Vec<u8>=(0..len).map(|_|{seed=seed.wrapping_mul(1664525).wrapping_add(1013904223);(seed>>24) as u8}).collect();
+                let actual=if nv12 {nv12_to_rgba(&src,w as u32,h as u32,stride as u32)}
+                    else {i420_to_rgba_strided(&src,w as u32,h as u32,stride as u32)};
+                assert_eq!(actual,reference(&src,w,h,stride,nv12),"{w}x{h} stride={stride} NV12={nv12}");
+            }}}
+        }
+    }
+    #[test]
+    fn every_chroma_pair_preserves_scalar_rounding_and_clipping() {
+        let y=[0,1,15,16,64,128,235,255,255,235,128,64,16,15,1,0];
+        for u in 0..=255u8 { for v in 0..=255u8 {
+            let mut nv12=y.to_vec();nv12.extend([u,v,u,v,u,v,u,v]);
+            let mut i420=y.to_vec();i420.extend([u;4]);i420.extend([v;4]);
+            let expected=reference(&nv12,8,2,8,true);
+            assert_eq!(nv12_to_rgba(&nv12,8,2,8),expected,"NV12 U={u} V={v}");
+            assert_eq!(i420_to_rgba(&i420,8,2),expected,"I420 U={u} V={v}");
+        }}
+    }
+    #[test]
+    fn invalid_420_planes_do_not_read_past_visible_data() {
+        for (w,h) in [(3,2),(2,3),(1,1)] {
+            let src=vec![128;w*h*2+16];
+            assert_eq!(nv12_to_rgba(&src,w as u32,h as u32,w as u32),vec![0;w*h*4]);
+            assert_eq!(i420_to_rgba(&src,w as u32,h as u32),vec![0;w*h*4]);
+        }
+        for (w,h) in [(3,2),(2,3),(1,1),(4,4)] {
+            let src=vec![128;w*h*3/2-1];
+            assert_eq!(nv12_to_rgba(&src,w as u32,h as u32,w as u32),vec![0;w*h*4]);
+            assert_eq!(i420_to_rgba(&src,w as u32,h as u32),vec![0;w*h*4]);
+        }
     }
 }
