@@ -40,9 +40,11 @@
 
 | 23 | `23-2026-10-19-linux-client-and-live-validation.md` | 显示布局wire根因与TEXT回包实机闭环、Socket.IO取消安全、Linux音频/硬解/键鼠剪贴板/Wayland自动测试与正式安装 |
 
+| 24 | `24-2026-10-19-linux-latency-color-recovery.md` | Linux硬解AU提交消除两帧等待、BT709/范围颜色修正、周期丢包恢复与新版217e540 |
+
 约定：
 
-- 最新状态优先读[交接23](23-2026-10-19-linux-client-and-live-validation.md)：用户已明确授权自主测试并将任务延长到22:30。Linux正式安装及KVM实测已落地；x358h保持睡眠，用户工作电脑到x358h路径仍待后续复验。交接22保留故障历史，不能据旧文档重新要求用户配合本轮实验。
+- 最新Linux版本与延迟/颜色/故障测试优先读[交接24](24-2026-10-19-linux-latency-color-recovery.md)。机器及基础功能继续读[交接23](23-2026-10-19-linux-client-and-live-validation.md)：用户已明确授权自主测试并将任务延长到22:30。Linux正式安装及KVM实测已落地；x358h保持睡眠，用户工作电脑到x358h路径仍待后续复验。交接22保留故障历史，不能据旧文档重新要求用户配合本轮实验。
 
 - 最新SCTP卡住的接收竞态与验证证据见 [交接17](17-2026-10-19-dtls-reader-sctp.md)；用户已确认`f74fc9d`恢复键鼠。交接16的初始化回退未解决用户实机超时，不再当作最终修复。
 

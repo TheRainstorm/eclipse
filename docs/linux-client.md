@@ -1,5 +1,7 @@
 # Linux 客户端与自动验收
 
+最新正式版 `217e5400e177` 的低延迟、BT709与丢包恢复结果见 [交接24](../handoff/24-2026-10-19-linux-latency-color-recovery.md)。
+
 2026-10-19 在 laptop-arch（Intel Tiger Lake、Arch、KDE Wayland）连接 KVM-WIN11 实测。当前目标是控制端；`uu probe` 中 Linux **被控端** uinput 检测失败不影响控制 Windows 主机。
 
 ## 构建和统一安装
@@ -56,6 +58,6 @@ UU_DECODER=hw target/release/uu probe --h264 TEST.h264
 
 音频测试需要 PipeWire/Pulse 兼容服务、`pactl`、ffmpeg Pulse 输入和 ALSA PipeWire 插件。只创建自己的空声卡，使用进程专用 ALSA 配置，不修改默认播放设备；录制其 monitor 并检查 440Hz、RMS 和播放状态，最后卸载自己的模块。用的是实际 Opus 解码、PCM 队列和 CPAL 输出路径。
 
-硬解必须检查最终仍为 `vaapi`、无错误和无线程崩溃；“初始化成功”不足以证明硬解可用。当前采用驱动分配的 DMA surfaces 和 VAImage 映射，避开桌面 Mesa 不支持的 ChromeOS GBM 标志与上游 DMA 去平铺越界。120 AU 的离线样本输出118帧，当前 stateless 后端存在内部尾帧/提交等待；不能把这个尾差当网络丢包，也不能据离线吞吐声称实机持续60/120FPS。
+硬解必须检查最终仍为 `vaapi`、无错误和无线程崩溃；“初始化成功”不足以证明硬解可用。当前采用驱动分配的 DMA surfaces 和 VAImage 映射，避开桌面 Mesa 不支持的 ChromeOS GBM 标志与上游 DMA 去平铺越界。新版完整AU提交后，无重排120 AU样本输出120帧、首帧由AU2提前到AU0；含B帧样本仍有尾帧需要flush。不能把尾差当网络丢包，也不能据离线吞吐声称实机持续60/120FPS。
 
 实测多轮完整 Wayland 套件及正式安装包相对模式60秒持续运行均退出码0，四次切屏均完成、无切屏超时，元数据保持 AMD vDisplay 和 Zako HDR 两个物理源；键盘固定文本逐字匹配、C/V/X 均确认。Opus 空声卡录到440Hz测试音。正式包60秒运动画面测试末帧HUD约57 Rx / 56.7 De / 59.2 Rd FPS，解码4.60ms、解码错误0、坏帧0；只作为该次短测快照。仍需日常长稳、相对鼠标游戏手感、真实多屏跨DPI和其它GPU回归。
