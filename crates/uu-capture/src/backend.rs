@@ -42,7 +42,7 @@ pub fn available_backends() -> Vec<&'static str> {
     }
     #[cfg(target_os = "windows")]
     {
-        // Native Windows desktop capture is not implemented yet.
+        v.push("dxgi-duplication");
     }
     // Always available, on every platform: used by tests and by the
     // self-loop harness when there is no display to capture.

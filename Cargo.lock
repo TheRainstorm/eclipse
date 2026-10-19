@@ -4830,6 +4830,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "uu-media",
+ "windows 0.62.2",
  "x11rb",
 ]
 
