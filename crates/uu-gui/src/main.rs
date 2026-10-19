@@ -117,7 +117,6 @@ struct App {
     pointer: input::RemotePointer,
     remote_focus: bool,
     view_only: bool,
-    show_settings: bool,
     stream_menu: stream_menu::StreamMenu,
     resize_pending: bool,
     close_at: Option<std::time::Instant>,
@@ -303,7 +302,6 @@ impl App {
             pointer: input::RemotePointer::default(),
             remote_focus: false,
             view_only: false,
-            show_settings: false,
             stream_menu: stream_menu::StreamMenu::default(),
             resize_pending: true,
             close_at: None,
@@ -718,7 +716,7 @@ impl eframe::App for App {
                     }
                     shortcuts::KeyAction::Forward => {}
                 }
-                if self.remote_focus && !self.view_only && !self.show_settings && !self.stream_menu.open {
+                if self.remote_focus && !self.view_only && !self.stream_menu.open {
                     self.sync_modifiers(*modifiers);
                     if let Some(vk) = vk_for(*key) {
                         self.send_key(vk, *pressed);
@@ -726,7 +724,7 @@ impl eframe::App for App {
                 }
             }
         }
-        if self.remote_focus && !self.view_only && !self.show_settings && !self.stream_menu.open {
+        if self.remote_focus && !self.view_only && !self.stream_menu.open {
             self.sync_modifiers(ctx.input(|i| i.modifiers));
         }
         let elapsed = self.last_fps.elapsed().as_secs_f32();
@@ -742,7 +740,6 @@ impl eframe::App for App {
         } else {
             self.home_ui(ctx);
         }
-        self.settings_ui(ctx);
         ctx.request_repaint_after(std::time::Duration::from_millis(
             if self.controller.is_some() { 100 } else { 150 },
         ));

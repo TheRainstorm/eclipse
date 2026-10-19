@@ -355,12 +355,7 @@ impl super::App {
                                     ui.close_menu();
                 ui.memory_mut(|m| m.close_popup());
                                 }
-                                if ui.button("连接设置").clicked() {
-                                    self.show_settings = true;
-                                    self.stream_menu.open = false;
-                                    ui.close_menu();
-                ui.memory_mut(|m| m.close_popup());
-                                }
+
                             });
                             ui.separator();
                             if ui

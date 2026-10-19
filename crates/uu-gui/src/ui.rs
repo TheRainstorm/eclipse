@@ -215,10 +215,6 @@ impl App {
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        ui.separator();
-                        if icon_button(ui, Icon::Settings, "设置").clicked() {
-                            self.show_settings = !self.show_settings;
-                        }
                         icon_button(
                             ui,
                             Icon::Person,
@@ -436,19 +432,7 @@ impl App {
                         response.on_hover_text("暂未开放");
                     }
                 }
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.separator();
-                    if ui
-                        .add(
-                            egui::Button::new("⚙  设置")
-                                .frame(false)
-                                .min_size(egui::vec2(120.0, 36.0)),
-                        )
-                        .clicked()
-                    {
-                        self.show_settings = true;
-                    }
-                });
+
             });
         egui::CentralPanel::default()
             .frame(
@@ -691,45 +675,6 @@ impl App {
             });
     }
 
-    pub(super) fn settings_ui(&mut self, ctx: &egui::Context) {
-        if !self.show_settings {
-            return;
-        }
-        let mut open = true;
-        egui::Window::new("连接设置")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(320.0)
-            .show(ctx, |ui| {
-                ui.label("画质与带宽");
-                let previous = (self.bitrate_idx, self.custom_mbps);
-                egui::ComboBox::from_id_salt("settings-quality")
-                    .selected_text(super::BITRATE_PRESETS[self.bitrate_idx].0)
-                    .show_ui(ui, |ui| {
-                        for (index, (label, _)) in super::BITRATE_PRESETS.iter().enumerate() {
-                            ui.selectable_value(&mut self.bitrate_idx, index, *label);
-                        }
-                    });
-                if self.bitrate_idx == 5 {
-                    ui.add(egui::Slider::new(&mut self.custom_mbps, 1..=100).suffix(" Mbps"));
-                }
-                let resolution_before=self.resolution_idx;
-                egui::ComboBox::from_id_salt("resolution-quality").selected_text(["跟随远端分辨率","1920 × 1080","2560 × 1440","3840 × 2160"][self.resolution_idx]).show_ui(ui,|ui|{
-                    for (index,label) in ["跟随远端分辨率","1920 × 1080","2560 × 1440","3840 × 2160"].iter().enumerate(){ui.selectable_value(&mut self.resolution_idx,index,*label);}
-                });
-                if resolution_before!=self.resolution_idx{self.send_bitrate();}
-                if previous != (self.bitrate_idx, self.custom_mbps) {
-                    self.send_bitrate();
-                }
-                ui.add_space(10.0);
-                ui.label(
-                    RichText::new("Ctrl + Alt + F　切换全屏\nCtrl + Alt + S　显示 / 隐藏串流统计").color(MUTED),
-                );
-            });
-        self.show_settings = open;
-    }
-
     pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
         if !self.fullscreen { self.connection_bar(ctx); }
         let was_open = self.stream_menu.open;
@@ -751,8 +696,8 @@ impl App {
                 if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if !rect.contains(*pos))) {
                     self.remote_focus=false;self.release_all_keys();messages.extend(self.pointer.release_all(track+1));
                 }
-                if self.show_settings || controls_active {if self.remote_focus || !self.pressed_vks.is_empty(){self.remote_focus=false;self.release_all_keys();}messages.extend(self.pointer.release_all(track+1));}
-                if !self.view_only && !self.show_settings && !controls_active {messages.extend(self.pointer.events(events,draw,pointer,track+1));}
+                if controls_active {if self.remote_focus || !self.pressed_vks.is_empty(){self.remote_focus=false;self.release_all_keys();}messages.extend(self.pointer.release_all(track+1));}
+                if !self.view_only && !controls_active {messages.extend(self.pointer.events(events,draw,pointer,track+1));}
             }else{
                 ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,&self.status,egui::FontId::proportional(18.0),C::from_rgb(160,170,185));
             }
