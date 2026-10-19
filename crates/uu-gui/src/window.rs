@@ -202,10 +202,15 @@ pub struct Geometry {
 impl Geometry {
     fn from_context(ctx: &egui::Context) -> Option<Self> {
         let ppp = ctx.pixels_per_point();
+        // Wayland deliberately does not expose global window positions.
+        // Its local viewport still has a valid size; sizing must not depend
+        // on an outer/inner position query succeeding.
+        let local = ctx.screen_rect();
         ctx.input(|i| {
+            let inner = i.viewport().inner_rect.unwrap_or(local);
             Some(Self {
-                inner: i.viewport().inner_rect?,
-                outer: i.viewport().outer_rect.or(i.viewport().inner_rect)?,
+                inner,
+                outer: i.viewport().outer_rect.unwrap_or(inner),
                 work: egui::Rect::from_min_size(egui::Pos2::ZERO, i.viewport().monitor_size?),
                 ppp,
             })
@@ -300,6 +305,21 @@ pub fn native_geometry(_frame: &eframe::Frame, _ctx: &egui::Context) -> Option<G
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wayland_sizing_does_not_require_global_window_position() {
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 760.0)));
+        raw.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().monitor_size = Some(egui::vec2(1600.0, 1000.0));
+        let mut sizing = WindowSizing::default();
+        sizing.begin_stream();
+        let output = ctx.run(raw, |ctx| {
+            sizing.update(ctx, true, Some(egui::vec2(1920.0, 1080.0)), false, None);
+        });
+        let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::InnerSize(size) if size.x > 1200.0 && size.x < 1280.0 && size.y < 800.0)));
+    }
+
     #[test]
     fn stream_fills_eighty_percent_with_aspect_ratio_at_every_dpi() {
         for ppp in [1.0, 1.25, 1.5, 2.0, 2.5] {
