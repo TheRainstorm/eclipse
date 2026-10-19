@@ -7,11 +7,14 @@ use eframe::egui;
 use std::{path::PathBuf, sync::Arc};
 use uu_core::capabilities::Capability;
 
-#[derive(Default)]
 pub(super) struct NativeUi {
     pub open: bool,
     path: String,
     notice: String,
+    request_control:bool,
+}
+impl Default for NativeUi {
+    fn default()->Self{Self{open:false,path:String::new(),notice:String::new(),request_control:true}}
 }
 impl App {
     pub(super) fn is_native(&self) -> bool {
@@ -24,6 +27,20 @@ impl App {
             .as_ref()
             .map(|h| h.stats.capabilities.allows(capability))
             .unwrap_or(!self.is_native())
+    }
+    pub(super) fn native_input_available(&self)->bool {
+        self.is_native()&&self.controller.as_ref().is_some_and(|h|h.stats.native_input_available.load(std::sync::atomic::Ordering::Acquire))
+    }
+    pub(super) fn send_native(&mut self,command:uu_core::native_input::InputCommand) {
+        use uu_core::native_input::InputCommand as I;
+        let release=matches!(command,I::Key{pressed:false,..}|I::Button{pressed:false,..}|I::ReleaseAll{});
+        if (!self.input_ready()||self.view_only)&&!release{return;}
+        let failed=self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|sender|sender.send(command).is_err());
+        if failed {
+            if let Some(h)=&self.controller{h.stats.input_send_errors.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
+            self.remote_focus=false;self.pressed_vks.clear();self.mod_state=[false;4];
+            let screen=self.input_screen(self.selected_track);let _=self.pointer.release_all(screen);
+        }
     }
     pub(super) fn open_native(&mut self) {
         self.login_rx = None;
@@ -75,7 +92,8 @@ impl App {
                     self.native_ui.notice.clear();
                 }
                 ui.add_space(8.0);
-                ui.weak("当前原生模式仅观看画面；画质由被控端设置。");
+                ui.checkbox(&mut self.native_ui.request_control,"请求键鼠控制（需主机允许）");
+                ui.weak("未获主机许可时仅观看；画质由主机设置。");
                 if !self.native_ui.notice.is_empty() {
                     ui.colored_label(egui::Color32::from_rgb(180, 75, 65), &self.native_ui.notice);
                 }
@@ -103,7 +121,7 @@ impl App {
             let target = StreamTarget {
                 connection: ConnectionTarget::NativeInvitation(path.canonicalize()?),
                 alias: "原生直连".into(),
-                view_only: true,
+                view_only: !self.native_ui.request_control,
             };
             Ok(self
                 .sessions
@@ -140,8 +158,7 @@ impl App {
             .store(false, std::sync::atomic::Ordering::Release);
         self.displays = super::displays::Displays::default();
         self.selected_track = 0;
-        self.view_only = true;
-        match uu_core::native_controller::spawn(path, stats) {
+        match uu_core::native_controller::spawn_with_input(path, stats, !self.view_only) {
             Ok(handle) => {
                 let context = self.context.clone();
                 handle.frames.set_waker(move || context.request_repaint());

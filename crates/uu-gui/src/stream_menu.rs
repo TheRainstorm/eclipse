@@ -208,10 +208,10 @@ impl super::App {
                     if ui.available_width()>520.0 {ui.add_sized([76.0,24.0],egui::Label::new(RichText::new(title).size(12.0)).truncate());}
                     ui.separator();
                     if self.supports_remote(uu_core::capabilities::Capability::Displays){self.display_tabs(ui);}
-                    if self.view_only && (roomy || self.is_native()) {
+                    if (self.view_only || (self.is_native()&&!self.supports_remote(uu_core::capabilities::Capability::Input))) && (roomy || self.is_native()) {
                         ui.label(RichText::new("仅观看").color(Color32::from_rgb(98, 125, 160)));
                     }
-                    if wide && !self.view_only && self.controller.is_some() && !self.input_ready() {
+                    if wide && !self.view_only && self.controller.is_some() && !self.input_ready() && (!self.is_native()||self.native_input_available()) {
                         ui.label(
                             RichText::new(if self.displays.switching(){"正在切换显示器…"}else{"输入连接中…"})
                                 .size(12.0)
@@ -658,9 +658,11 @@ impl super::App {
                                         let old=(self.preferences.relative_mouse,self.preferences.remote_cursor);
                                         ui.selectable_value(&mut self.preferences.relative_mouse,false,"桌面模式 · 绝对定位");
                                         ui.selectable_value(&mut self.preferences.relative_mouse,true,"游戏模式 · 相对移动");
+                                        if !self.is_native() {
                                         separator(ui);
                                         ui.selectable_value(&mut self.preferences.remote_cursor,false,"本地光标");
                                         ui.selectable_value(&mut self.preferences.remote_cursor,true,"远端光标");
+                                        }
                                         ui.small("Ctrl+Alt+Z 释放／捕获键鼠");
                                         if old!=(self.preferences.relative_mouse,self.preferences.remote_cursor) {
                                             self.release_pointer_capture(ctx);self.remote_focus=false;self.persist_preferences();
@@ -668,8 +670,14 @@ impl super::App {
                                         }
                                     });
                                     }
-                                    if self.supports_remote(uu_core::capabilities::Capability::Input) {
+                                    if self.supports_remote(uu_core::capabilities::Capability::Input) || self.native_input_available() {
                                     side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
+                                        if self.native_input_available()&&!self.supports_remote(uu_core::capabilities::Capability::Input)
+                                            &&ui.button("请求键鼠控制").clicked() {
+                                            self.view_only=false;
+                                            if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()){sender.set_enabled(true);}
+                                            ui.close_menu();
+                                        }
                                         if ui
                                             .checkbox(&mut self.view_only, "仅观看，禁止远程输入")
                                             .changed()
@@ -682,6 +690,7 @@ impl super::App {
                                                 self.send_input(message, 15);
                                             }
                                             self.remote_focus = false;
+                                            if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()){sender.set_enabled(!self.view_only);}
                                         }
                                     });
                                     }

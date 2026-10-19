@@ -503,7 +503,7 @@ async fn main() -> Result<()> {
         }
         Command::KbdProbe { device } => {
             let geo = uu_core::config::geo_exit_ip();
-            let uu_core::controller::ControllerHandle { events, frames, input, close, settings: _, stats: _, stopped: _ } =
+            let uu_core::controller::ControllerHandle { events, frames, input, close, settings: _, stats: _, stopped: _, native_input:_ } =
                 uu_core::controller::spawn(config, device, geo)?;
             std::thread::spawn(move || {
                 let mut frames = frames;

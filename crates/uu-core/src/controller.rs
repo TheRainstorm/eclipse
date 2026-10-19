@@ -29,6 +29,8 @@ pub struct ControllerHandle {
     pub frames: crate::media::FrameReceiver,
     /// Non-coalesced CONTROL bytes: JSON input or protobuf RPC commands.
     pub input: UnboundedSender<Vec<u8>>,
+    /// Explicit native commands; interoperability sessions never expose it.
+    pub native_input: Option<crate::native_input::NativeInputSender>,
     /// Raw CONTROL messages (e.g. CaptureSettingRequest protobufs) to send.
     pub settings: UnboundedSender<Vec<u8>>,
     pub close: UnboundedSender<()>,
@@ -82,6 +84,7 @@ pub fn spawn_with_stats(config:Config,device:String,geo_ip:String,stats:std::syn
         events: ev_rx,
         frames: frame_rx,
         input: input_tx,
+        native_input:None,
         settings: settings_tx,
         close: close_tx,
         stats,

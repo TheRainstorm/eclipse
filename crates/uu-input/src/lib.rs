@@ -58,6 +58,13 @@ impl KeyCode {
         let keyboard = usage.mapping().ok()?;
         (keyboard.win == scan).then_some(usage)
     }
+
+    pub fn from_w3c_code(code: &str) -> Option<Self> {
+        let code: keycode::KeyMappingCode = code.parse().ok()?;
+        let key = keycode::KeyMap::from(code);
+        let usage = Self(key.usb);
+        (usage.mapping().ok()?.code == key.code).then_some(usage)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

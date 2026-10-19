@@ -51,7 +51,6 @@ impl StreamTarget {
                     ConnectionTarget::UuDevice(id) => id.clone(),
                     ConnectionTarget::NativeInvitation(_) => "原生直连".into(),
                 };
-                view_only |= matches!(connection, ConnectionTarget::NativeInvitation(_));
                 Ok(Some(Self {
                     connection,
                     alias: alias.unwrap_or(default),
@@ -186,7 +185,7 @@ mod tests {
         assert!(StreamTarget::parse(["--stream-device".into()]).is_err());
     }
     #[test]
-    fn native_invitation_is_an_explicit_read_only_target_and_roundtrips_without_an_account_device()
+    fn native_invitation_is_an_explicit_target_and_roundtrips_without_an_account_device()
     {
         let target = StreamTarget::parse([
             "--native-invitation".into(),
@@ -194,7 +193,7 @@ mod tests {
         ])
         .unwrap()
         .unwrap();
-        assert!(target.is_native() && target.view_only);
+        assert!(target.is_native() && !target.view_only);
         let command = target.command(Path::new("uu-gui"), None);
         let args: Vec<_> = command
             .get_args()

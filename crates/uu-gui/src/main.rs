@@ -30,6 +30,7 @@ mod brand;
 mod account;
 mod audio_controls;
 mod native_ui;
+mod native_keys;
 use login::LoginEvent;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -655,7 +656,7 @@ impl App {
         match action {
             shortcuts::Action::Stats=>{self.hud=!self.hud;self.persist_preferences();},
             shortcuts::Action::Menu=>{self.remote_focus=false;self.release_pointer_capture(ctx);self.stream_menu.visible=!self.stream_menu.visible;self.stream_menu.open=false;ctx.memory_mut(|m|m.close_popup());self.persist_preferences();},
-            shortcuts::Action::Mute=>self.toggle_audio_mute(),
+            shortcuts::Action::Mute=>{if self.supports_remote(uu_core::capabilities::Capability::Audio){self.toggle_audio_mute();}},
             shortcuts::Action::Fullscreen=>self.toggle_fullscreen(ctx),
             shortcuts::Action::Exit=>self.disconnect(),
             shortcuts::Action::Capture=>{
@@ -749,14 +750,17 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
     }
 
-    /// The controlled end expects raw JSON on `CONTROL_DATA_CHANNEL`; the
-    /// `kind`/`channel` arguments are kept only to avoid touching every call
-    /// site and are ignored.
+    /// Encode UI semantics for the selected transport. Native sessions use
+    /// typed HID commands; the compatibility path retains its CONTROL JSON.
     fn send_input_ch(&mut self, payload: serde_json::Value, _kind: u32, _channel: u16) {
         if self.view_only && !matches!(payload["action"].as_str(), Some("kbd_release" | "mouse_release")) {
             return;
         }
         if !self.input_ready() && !matches!(payload["action"].as_str(), Some("kbd_release" | "mouse_release")) {
+            return;
+        }
+        if self.is_native() {
+            if let Some(command)=native_keys::command(&payload){self.send_native(command);}
             return;
         }
         let Some(h) = &self.controller else { return };
@@ -804,6 +808,10 @@ impl App {
     }
 
     fn release_all_keys(&mut self) {
+        if self.is_native() {
+            if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()){sender.release_all();}
+            self.pressed_vks.clear();self.mod_state=[false;4];return;
+        }
         let keys: Vec<u32> = self.pressed_vks.drain().collect();
         for vk in keys {
             self.send_key(vk, false);
@@ -1017,7 +1025,11 @@ impl eframe::App for App {
                 // keys from another input source or a hook that timed out.
                 if !self.native_window_keyboard && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.local_dialog_open() {
                     self.sync_modifiers(*modifiers);
-                    if let Some(vk) = vk_for(physical_key.unwrap_or(*key)) {
+                    if self.is_native() {
+                        if let Some(usage)=native_keys::hid_for_egui(physical_key.unwrap_or(*key)){
+                            self.send_native(uu_core::native_input::InputCommand::Key{usage,pressed:*pressed});
+                        }
+                    } else if let Some(vk) = vk_for(physical_key.unwrap_or(*key)) {
                         self.send_key(vk, *pressed);
                     }
                 }

@@ -129,7 +129,7 @@ impl super::App {
         self.preferences.resolution = self.resolution_idx;
         self.preferences.hud = self.hud;
         self.preferences.floating_menu = self.stream_menu.visible;
-        if let Some(h) = &self.controller {
+        if let Some(h) = self.controller.as_ref().filter(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Audio)) {
             use std::sync::atomic::Ordering::Relaxed;
             self.preferences.volume = h.stats.audio.volume.load(Relaxed);
             self.preferences.muted = h.stats.audio.muted.load(Relaxed);

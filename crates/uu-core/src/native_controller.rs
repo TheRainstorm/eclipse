@@ -19,6 +19,9 @@ use tokio::sync::{
 };
 
 pub fn spawn(invitation_file: PathBuf, stats: Arc<MediaStats>) -> Result<ControllerHandle> {
+    spawn_with_input(invitation_file,stats,false)
+}
+pub fn spawn_with_input(invitation_file: PathBuf, stats: Arc<MediaStats>,requested:bool) -> Result<ControllerHandle> {
     stats.capabilities.set(0);
     stats.clipboard.enabled.store(false, Ordering::Release);
     stats.clipboard.available.store(false, Ordering::Release);
@@ -27,6 +30,7 @@ pub fn spawn(invitation_file: PathBuf, stats: Arc<MediaStats>) -> Result<Control
     let (input, input_rx) = unbounded_channel();
     let (settings, settings_rx) = unbounded_channel();
     let (close, close_rx) = unbounded_channel();
+    let (native_input,native_rx)=crate::native_input::channel(requested);
     let stopped = Arc::new(AtomicBool::new(false));
     let worker = Worker {
         invitation_file,
@@ -37,6 +41,7 @@ pub fn spawn(invitation_file: PathBuf, stats: Arc<MediaStats>) -> Result<Control
         close: close_rx,
         stats: stats.clone(),
         stopped: stopped.clone(),
+        native:Some(native_rx),
     };
     std::thread::Builder::new()
         .name("native-viewer".into())
@@ -47,6 +52,7 @@ pub fn spawn(invitation_file: PathBuf, stats: Arc<MediaStats>) -> Result<Control
         events: event_rx,
         frames: frame_rx,
         input,
+        native_input:Some(native_input),
         settings,
         close,
         stats,
@@ -62,6 +68,7 @@ struct Worker {
     close: UnboundedReceiver<()>,
     stats: Arc<MediaStats>,
     stopped: Arc<AtomicBool>,
+    native:Option<crate::native_input::NativeInputReceiver>,
 }
 impl Worker {
     fn run(mut self) {
@@ -101,11 +108,13 @@ impl Worker {
             .send(ControllerEvent::Status("正在验证原生邀请…".into()));
         let invitation = Invitation::load(&self.invitation_file)?;
         let (stop, stop_rx) = watch::channel(false);
-        let session = crate::native::view(
+        let native=self.native.take().context("native input interface was already consumed")?;
+        let session = crate::native::view_with_input(
             &invitation,
             self.frames.clone(),
             self.stats.clone(),
             stop_rx,
+            native,
         );
         tokio::pin!(session);
         loop {

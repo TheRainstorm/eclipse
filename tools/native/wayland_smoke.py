@@ -123,6 +123,8 @@ def main():
         wait(lambda: any(event.get('event') == 'first_frame' for event in events()))
         screenshot('window')
         keys('s'); keys('s')
+        if not json.loads((data / 'gui-settings.json').read_text()).get('muted'):
+            raise RuntimeError('A native viewing shortcut overwrote the saved audio preference')
         keys('x')
         wait(lambda: window().get('fullscreen_mode') == 1)
         screenshot('fullscreen')
