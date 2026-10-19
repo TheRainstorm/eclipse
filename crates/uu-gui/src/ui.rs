@@ -9,12 +9,11 @@ const MUTED: C = C::from_rgb(115, 124, 135);
 const SIDEBAR: C = C::from_rgb(240, 245, 248);
 
 #[derive(Clone, Copy)]
-enum Icon {
+pub(super) enum Icon {
     Desktop,
     Grid,
     Settings,
     Refresh,
-    Expand,
     Close,
     Min,
     Max,
@@ -24,10 +23,8 @@ enum Icon {
     Link,
     Person,
     Star,
-    Back,
-    Chart,
 }
-fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
+pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
     let r = Rect::from_center_size(rect.center(), Vec2::splat(18.0));
     let pt = |x: f32, y: f32| Pos2::new(r.left() + x, r.top() + y);
     let stroke = Stroke::new(1.5, color);
@@ -67,17 +64,6 @@ fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
             p.circle_stroke(r.center(), 6.0, stroke);
             line((15.0, 2.0), (15.0, 7.0));
             line((15.0, 7.0), (10.0, 7.0));
-        }
-        Icon::Expand => {
-            for (a, b, c) in [
-                ((1.0, 6.0), (1.0, 1.0), (6.0, 1.0)),
-                ((12.0, 1.0), (17.0, 1.0), (17.0, 6.0)),
-                ((17.0, 12.0), (17.0, 17.0), (12.0, 17.0)),
-                ((6.0, 17.0), (1.0, 17.0), (1.0, 12.0)),
-            ] {
-                line(a, b);
-                line(b, c);
-            }
         }
         Icon::Close => {
             line((3.0, 3.0), (15.0, 15.0));
@@ -141,23 +127,9 @@ fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
                 .collect();
             p.add(egui::Shape::closed_line(points, stroke));
         }
-        Icon::Back => {
-            line((16.0, 9.0), (2.0, 9.0));
-            line((7.0, 4.0), (2.0, 9.0));
-            line((2.0, 9.0), (7.0, 14.0));
-        }
-        Icon::Chart => {
-            for (x, h) in [(3.0, 5.0), (8.0, 10.0), (13.0, 15.0)] {
-                p.rect_filled(
-                    Rect::from_min_max(pt(x, 17.0 - h), pt(x + 3.0, 17.0)),
-                    1.0,
-                    color,
-                );
-            }
-        }
     }
 }
-fn icon_button(ui: &mut egui::Ui, kind: Icon, tip: &str) -> Response {
+pub(super) fn icon_button(ui: &mut egui::Ui, kind: Icon, tip: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
     if response.hovered() {
         ui.painter()
@@ -753,79 +725,11 @@ impl App {
     }
 
     pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
-        if !self.fullscreen {
-            egui::TopBottomPanel::top("stream-bar")
-                .exact_height(44.0)
-                .frame(
-                    egui::Frame::none()
-                        .fill(C::from_rgb(27, 30, 36))
-                        .inner_margin(egui::Margin::symmetric(12.0, 5.0)),
-                )
-                .show(ctx, |ui| {
-                    ui.visuals_mut().override_text_color = Some(C::from_rgb(220, 225, 233));
-                    ui.horizontal_centered(|ui| {
-                        if icon_button(ui, Icon::Back, "返回设备列表并断开").clicked() {
-                            self.disconnect();
-                        }
-                        let title = self
-                            .selected
-                            .and_then(|i| self.devices.get(i))
-                            .map(|d| d.alias.as_str())
-                            .unwrap_or("远程桌面");
-                        ui.label(RichText::new(title).size(14.0).color(C::WHITE));
-                        if self.view_only {
-                            ui.label(
-                                RichText::new("仅观看")
-                                    .size(11.0)
-                                    .color(C::from_rgb(135, 175, 235)),
-                            );
-                        }
-                        let (_, drag) = ui.allocate_exact_size(
-                            egui::vec2((ui.available_width() - 236.0).max(0.0), 30.0),
-                            Sense::drag(),
-                        );
-                        if drag.drag_started() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if icon_button(ui, Icon::Close, "断开连接").clicked() {
-                                self.disconnect();
-                            }
-                            if icon_button(ui, Icon::Expand, "全屏 · Ctrl+Alt+F").clicked() {
-                                self.toggle_fullscreen(ctx);
-                            }
-                            if icon_button(ui, Icon::Chart, "串流统计 · F1").clicked() {
-                                self.hud = !self.hud;
-                            }
-                            if icon_button(ui, Icon::Settings, "画质与码率").clicked() {
-                                self.show_settings = !self.show_settings;
-                            }
-                            if self.textures.len() > 1 {
-                                egui::ComboBox::from_id_salt("stream-display")
-                                    .width(70.0)
-                                    .selected_text(format!("屏幕 {}", self.selected_track + 1))
-                                    .show_ui(ui, |ui| {
-                                        for track in self.textures.keys() {
-                                            ui.selectable_value(
-                                                &mut self.selected_track,
-                                                *track,
-                                                format!("屏幕 {}", track + 1),
-                                            );
-                                        }
-                                    });
-                            } else if let Some((width, height, _)) =
-                                self.latest.get(&self.selected_track)
-                            {
-                                ui.label(
-                                    RichText::new(format!("{width}×{height}"))
-                                        .size(11.0)
-                                        .color(C::from_rgb(140, 150, 165)),
-                                );
-                            }
-                        });
-                    });
-                });
-        }
+        if !self.fullscreen { self.connection_bar(ctx); }
+        let was_open = self.stream_menu.open;
+        let controls = self.stream_controls(ctx);
+        let control_pointer = ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
+        let controls_active = was_open || self.stream_menu.open || control_pointer || ctx.memory(|m|m.any_popup_open());
         let mut messages = Vec::new();
         egui::CentralPanel::default().frame(egui::Frame::none().fill(C::BLACK)).show(ctx,|ui| {
             ui.set_clip_rect(ui.max_rect());
@@ -840,8 +744,8 @@ impl App {
                 if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if !rect.contains(*pos))) {
                     self.remote_focus=false;self.release_all_keys();messages.extend(self.pointer.release_all(track+1));
                 }
-                if self.show_settings {self.remote_focus=false;self.release_all_keys();messages.extend(self.pointer.release_all(track+1));}
-                if !self.view_only && !self.show_settings {messages.extend(self.pointer.events(events,draw,pointer,track+1));}
+                if self.show_settings || controls_active {if self.remote_focus || !self.pressed_vks.is_empty(){self.remote_focus=false;self.release_all_keys();}messages.extend(self.pointer.release_all(track+1));}
+                if !self.view_only && !self.show_settings && !controls_active {messages.extend(self.pointer.events(events,draw,pointer,track+1));}
             }else{
                 ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,&self.status,egui::FontId::proportional(18.0),C::from_rgb(160,170,185));
             }

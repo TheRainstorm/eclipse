@@ -12,6 +12,7 @@ use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
+mod stream_menu;
 mod login;
 mod ui;
 use login::LoginEvent;
@@ -107,6 +108,7 @@ struct App {
     remote_focus: bool,
     view_only: bool,
     show_settings: bool,
+    stream_menu: stream_menu::StreamMenu,
     resize_pending: bool,
     close_at: Option<std::time::Instant>,
 }
@@ -282,6 +284,7 @@ impl App {
             remote_focus: false,
             view_only: false,
             show_settings: false,
+            stream_menu: stream_menu::StreamMenu::default(),
             resize_pending: true,
             close_at: None,
         };
@@ -466,6 +469,7 @@ impl App {
 
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
         self.fullscreen = !self.fullscreen;
+        self.stream_menu.open = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
     }
 
@@ -534,6 +538,7 @@ impl App {
     }
 
     fn disconnect(&mut self) {
+        self.stream_menu.open = false;
         self.release_all_keys();
         for message in self.pointer.release_all(self.selected_track + 1) {
             self.send_input(message, 15);
@@ -615,13 +620,17 @@ impl eframe::App for App {
                     self.hud = !self.hud;
                     continue;
                 }
+                if *key == egui::Key::M && modifiers.ctrl && modifiers.alt && self.controller.is_some() {
+                    if *pressed { self.stream_menu.visible = !self.stream_menu.visible; self.stream_menu.open = false; }
+                    continue;
+                }
                 if *key == egui::Key::F && modifiers.ctrl && modifiers.alt {
                     if *pressed {
                         self.toggle_fullscreen(ctx);
                     }
                     continue;
                 }
-                if self.remote_focus && !self.view_only && !self.show_settings {
+                if self.remote_focus && !self.view_only && !self.show_settings && !self.stream_menu.open {
                     self.sync_modifiers(*modifiers);
                     if let Some(vk) = vk_for(*key) {
                         self.send_key(vk, *pressed);
@@ -629,7 +638,7 @@ impl eframe::App for App {
                 }
             }
         }
-        if self.remote_focus && !self.view_only && !self.show_settings {
+        if self.remote_focus && !self.view_only && !self.show_settings && !self.stream_menu.open {
             self.sync_modifiers(ctx.input(|i| i.modifiers));
         }
         let elapsed = self.last_fps.elapsed().as_secs_f32();
