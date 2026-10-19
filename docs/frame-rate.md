@@ -1,12 +1,12 @@
-# 帧率协商与超级屏
+# 帧率协商与原生屏幕
 
-更新：2026-10-19。已实现请求60/120/自定义帧率及显式超级屏切换；本轮没有自动连接、启动GUI或控制用户设备，实际高帧率由用户验收。
+更新：2026-10-19。交接16按用户要求移除全部超级屏操作、合并官方样式画质菜单，并恢复原有连接初始化方式。保留60/120/自定义帧率请求和只读屏幕信息，实际高帧率与输入问题由用户验收。
 
 ## 为什么此前只有30fps
 
 不能仅凭接收端代码认定唯一原因。用户已确认同一KVM-WIN11在官方客户端超级屏模式可到60，因此旧测试约30fps不代表官方host的统一上限。本轮确认旧客户端存在这些问题：
 
-- 初始ConnectOptions没有CaptureParams，只有后续设置；依赖host默认采集参数。
+- 交接15曾加入初始CaptureParams；用户随后报告视频正常但CONTROL 45秒未打开。因该初始化路径未经实机验证，交接16已回退，帧率继续由CONTROL就绪后的CaptureSettingRequest设置。不能把未传初始CaptureParams直接认定为30帧原因。
 - DecoderCap和streamer display_info固定60，无法完整表达120请求；GUI调整码率时又硬写60。
 - 帧率有旧枚举与实际整数两个字段，120没有对应的旧枚举；不能把120当枚举发送。
 - Exact分辨率把screen_id填为1，会选择物理屏1；应为-2保留当前采集源，包括超级屏。
@@ -20,14 +20,15 @@ WebRTC/H.264本身不要求超级屏。物理屏采集能否提供60/120由显�
 
 [网易官方App Store说明](https://apps.apple.com/cn/app/uu%E8%BF%9C%E7%A8%8B-%E8%BF%9C%E7%A8%8B%E5%8A%9E%E5%85%AC-%E6%B8%B8%E6%88%8F%E4%B8%B2%E6%B5%81/id1642306791?platform=ipad)将超级屏描述为突破物理屏分辨率与帧率限制的功能。安装/启用驱动不等于当前串流已使用该采集源；进入/退出是独立RPC，不是capture_type或帧率枚举。
 
-本客户端不会因选择高帧率而自动改变远端屏幕。用户可在帧率菜单明确请求进入/退出超级屏；成功响应只说明host接受请求，实际屏幕和帧率仍看后续元数据/视频。
+当前客户端只使用现有远端屏幕，不提供超级屏启用/退出功能；交接15的RPC代码和入口已删除。只读解析屏幕元数据，按video_track_index与真实screen_id匹配输入，不能按视频到达顺序推算屏幕ID。
 
 ## 当前用法
 
-1. 控制中心 → 帧率，选择30/60/90/120/144，或填写5–144整数并确认；菜单确认后返回主选项。
-2. 同一页显示当前远端屏幕类型/上报Hz。需要时点击请求切换超级屏，分辨率使用当前选择，跟随远端时优先当前屏幕物理尺寸；未知时等待视频尺寸，不虚构1080p。
+1. 控制中心 → 画质。上半部为自动原画、原画30M、超清14M、高清8M与自定义；明确码率通过quality=6及真实bps发送，标签不等于实测速率。
+2. 同一面板下半部直接选择144/120/90/60/30帧，自定义帧率支持5–144。分辨率和自定义参数侧开子面板，确认后返回主菜单；没有绿色常驻确认文字。
 3. Ctrl+Alt+S打开HUD，区分目标FPS、远端屏幕Hz、实际Rx接收/De解码/Rd新画面提交。请求确认不等于实际达标。
-4. 用持续动态内容分别验证60、120、自定义75。若Rx仍30且屏幕是物理屏，先看屏幕切换结果；若Rx60/120而De或Rd明显落后，则检查解码/呈现而非继续提高请求。
+4. 顶部出现“输入连接中”表示CONTROL尚未打开，即便视频已更新也不能操作。45秒超时会显示ICE/DTLS/SCTP/CONTROL状态。悬停HUD可查看本地输入发送/失败计数；这不代表远端已注入。
+5. 用持续动态内容分别验证60、120、自定义75。若Rx仍30，先看远端实际采集能力；若Rx60/120而De或Rd明显落后，则检查解码/呈现。
 
 CLI或进程环境可用UU_FPS=120指定初始值，默认60。旧UU_FPS=1/2/3/4仍映射30/60/90/144；新GUI/API使用实际整数。质量、分辨率、码率变更保留所选帧率。144只是当前请求范围上限，不表示所有机器或4K分辨率均能达到144。
 
@@ -38,12 +39,10 @@ CLI或进程环境可用UU_FPS=120指定初始值，默认60。旧UU_FPS=1/2/3/4
 | 项目 | 官方字段 | 本项目入口 |
 |---|---|---|
 | 旧帧率枚举 | 0 UNKNOWN、1=30、2=60、3=90、4=144；无120枚举 | `control_wire::CaptureFrameRate`，自定义/120枚举0并传实际count |
-| 初始采集请求 | ConnectOptions.3 CaptureParams：1枚举、11 fpsCount；DecoderCap.1上限 | `socketio::encode_app_data_at_fps` |
+| 连接能力 | ConnectOptions.4 DecoderCap：1上限；初始CaptureParams当前不发送 | `socketio::encode_app_data`，CONTROL建立后再请求实际fpsCount |
 | 运行时采集设置 | Message21/RpcRequest2，CaptureSettingRequest：1枚举、18 fpsCount、4 screen_id、10分辨率类型 | `control_wire::capture_setting_request_at_fps` |
 | 分辨率类型 | 1保持、2跟随本地、3跟随远端、4明确尺寸 | Exact保留screen_id=-2，发送类型4及物理宽高 |
 | 当前远端屏幕 | Message7 ScreenSources：screens1、current_screen_id2；Screen.id1、fps2、current_resolution4、screen_type5、dpi9 | `screen_control::screen_sources`，按当前ID找屏幕，不取第一块物理屏 |
-| 进入超级屏 | Message21/RpcRequest26：reason1=MANUAL、resolution2、dpi_scale3、fps消息4内fps_count1 | `screen_control::super_screen_request` |
-| 进入响应/退出 | Message22/RpcResponse22；退出Request14、Response10；错误码字段1，0成功 | `screen_control::super_screen_response`，请求ID与模式都匹配 |
 
 描述符起始偏移：main.proto 63307440、defines.proto 63309920、connect.proto 63319360、rpc_main.proto 63334800、general.proto 63342192、rpc_message.proto 63355904。私有解析结果保留在artifacts，后续官方更新要先比较新描述符，不能依赖这些固定偏移。
 
@@ -53,6 +52,6 @@ uu-remote-linux的`src/capture_setting.rs`也区分枚举与fpsCount，可参考
 
 ## 验证与边界
 
-协议10项检查覆盖旧60帧抓包字节兼容、120/自定义count、初始化能力、保留当前屏幕、元数据选择、超级屏RPC和响应。GUI14项已有输入/多窗口/显示器检查及Windows GUI/media测试代码交叉编译通过。
+协议针对性检查覆盖旧60帧抓包字节兼容、120/自定义count、初始化能力、保留当前屏幕、元数据选择和原生屏幕ID映射。本地迟到ICE回环验证设置、输入心跳、鼠标和键盘一起传送；GUI14项已有检查和Windows交叉编译通过。
 
-本轮未实测超级屏切换响应、切屏是否换视频轨、切换后是否需重新连接，以及真实60/120吞吐。没有实现未经验证的自动重连或伪造画面帧率。当前CPU RGBA转换/上传、VSync及丢包恢复仍会影响高帧率；GPU直接呈现与完整frame pacing依然未完成。
+本轮未验证用户CONTROL超时的最终根因与初始化回退效果，也未实测真实60/120吞吐。没有自动连接、操作用户GUI、自动重连或伪造画面帧率。当前CPU RGBA转换/上传、VSync及丢包恢复仍会影响高帧率；GPU直接呈现与完整frame pacing依然未完成。

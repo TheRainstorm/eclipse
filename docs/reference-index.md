@@ -1,6 +1,6 @@
 # 开源实现参考索引
 
-更新：2026-10-19。启动显示器与原生跨屏组合键修复见 [交接14](../handoff/14-2026-10-19-startup-monitor-native-shortcuts.md)。未串流主页跨 DPI 修复与多设备独立串流窗口见 [交接13](../handoff/13-2026-10-19-launcher-dpi-multiwindow.md)。统计快捷键、居中 HUD、原尺寸窗口与实机跨 DPI 往返、最大化 / 串流全屏分离见 [交接12](../handoff/12-2026-10-19-shortcuts-hud-dpi-window.md)。CONTROL 启动回归、延后 ICE 测试与统一安装入口见 [交接11](../handoff/11-2026-10-19-connection-startup-unified-install.md)。窗口缩放、紧凑 HUD、菜单确认、保留解码器的恢复、缺口扫描优化与退出清理已实现，最新证据和边界见 [交接10](../handoff/10-2026-10-19-resize-hud-recovery-exit.md)。
+更新：2026-10-19。官方样式画质菜单、FPS合并、删除超级屏控制及视频正常但CONTROL超时的处理见 [交接16](../handoff/16-2026-10-19-quality-menu-control-input.md)。启动显示器与原生跨屏组合键修复见 [交接14](../handoff/14-2026-10-19-startup-monitor-native-shortcuts.md)。未串流主页跨 DPI 修复与多设备独立串流窗口见 [交接13](../handoff/13-2026-10-19-launcher-dpi-multiwindow.md)。统计快捷键、居中 HUD、原尺寸窗口与实机跨 DPI 往返、最大化 / 串流全屏分离见 [交接12](../handoff/12-2026-10-19-shortcuts-hud-dpi-window.md)。CONTROL 启动回归、延后 ICE 测试与统一安装入口见 [交接11](../handoff/11-2026-10-19-connection-startup-unified-install.md)。窗口缩放、紧凑 HUD、菜单确认、保留解码器的恢复、缺口扫描优化与退出清理已实现，最新证据和边界见 [交接10](../handoff/10-2026-10-19-resize-hud-recovery-exit.md)。
 
 帧率/超级屏的新增官方描述符依据、已落地请求和用户验收边界见 [frame-rate.md](frame-rate.md) 与 [交接15](../handoff/15-2026-10-19-frame-rate-super-screen.md)。不要再沿用“Windows UU固定30fps”或“请求帧率等于实际帧率”的结论。
 

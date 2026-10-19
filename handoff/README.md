@@ -26,6 +26,8 @@
 
 约定：
 
+- 当前菜单与输入通道问题优先读 [交接16](16-2026-10-19-quality-menu-control-input.md)：FPS合并画质，移除超级屏操作；视频正常但CONTROL未打开的实机原因尚待新版复测。
+
 - 最新帧率协商、60/120/自定义与超级屏请求见 [交接15](15-2026-10-19-frame-rate-super-screen.md)。此前约30fps不代表官方host所有模式的统一上限；高帧率实机验收由用户完成。
 
 - Windows 唯一正式入口为 `C:\Users\yfy\uu-gui-demo\uu-gui.exe`，桌面 `UU Remote Rust`；旧目录已归档。当前启动屏幕与快捷键行为见交接14，多窗口行为见交接13，统一安装流程见交接11。
