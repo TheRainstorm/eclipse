@@ -168,9 +168,13 @@ impl DxgiCapture {
     fn acquire(&mut self) -> Result<Option<RawFrame>, CaptureError> {
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource = None;
+        // The producer already paces each frame. Once a cached desktop exists,
+        // poll for updates without adding another blocking wait to that interval.
+        // Initial acquisition keeps a short wait to avoid spinning on an idle desktop.
+        let wait_ms = if self.last.is_some() { 0 } else { 5 };
         match unsafe {
             self.duplication
-                .AcquireNextFrame(5, &mut info, &mut resource)
+                .AcquireNextFrame(wait_ms, &mut info, &mut resource)
         } {
             Ok(()) => {}
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),

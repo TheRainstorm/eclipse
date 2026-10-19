@@ -199,3 +199,9 @@ git -C moonlight/moonlight-qt submodule status
 | 标准音频冗余 | 独立实现 RFC 2198 一帧 RED，保留 Opus FEC/PLC 回退；与 Sunshine 的 GameStream 视频 FEC 不同，未复制 GPL 代码。 |
 
 相关模块为 `audio_capture`、`audio_red`、`native_audio` 与 `native_media`，能力与验证方法见[原生音频](native-audio.md)。
+
+### 自有主机采集与 CPU 编码开销
+
+Sunshine 的 `src/platform/windows/display_base.cpp` 在帧节奏等待后以零超时查询桌面更新；本项目据此检查重复等待，独立调整 `DxgiCapture`：只有首帧使用短等待，已有缓存时非阻塞查询并复用静态画面。生产线程仍按目标帧率等待，避免空转。没有导入其 GPL 源码。
+
+`uu-media::convert::bgra_to_i420` 使用独立定点 BT.601 全范围运算，2×2 色度先合并再舍入；与旧浮点公式的随机差分测试限制到每通道 1 个色值。`convert_bench` 提供不接触桌面的离线转换基准；主机 CLI 的阶段耗时用于区别采集与编码瓶颈。软件编码仍受画面内容与 CPU 性能限制。
