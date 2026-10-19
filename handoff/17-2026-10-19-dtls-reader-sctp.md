@@ -32,3 +32,11 @@ Windows打包完整性检查已包含vendor，避免未提交的依赖修改被�
 日志（私有，不入库）：`artifacts/ui-dpi-validation/dtls-race-before.log`、`dtls-race-after.log`、`dtls-application-after.log`、`dtls-control-startup.log`。
 
 用户负责实机测试，本轮不自动启动GUI、不自动连接设备、不注入输入、不终止用户进程。统一安装入口继续为x358h `192.168.34.3:2202`的`C:\Users\yfy\uu-gui-demo\uu-gui.exe`，桌面`UU Remote Rust`；源版本与SHA256以分发包version.json为准。安装后用户关闭旧主页和串流窗口，重新打开才能使用新DTLS代码。
+
+## 已交付版本
+
+Windows release构建通过，已安装源版本`f74fc9db5f1c0967dd5a04b8cb79e03f5de1471b`。六个manifest文件均与本地包一致，快捷方式目标/工作目录已核对；旧版归档、暂存安装文件清理完成，没有关闭用户窗口。
+
+GUI SHA256：`26e6aae7eb55a606402a95e18b6a25c7654d4d6f101a4c59f46e234d4e1913a3`。
+CLI SHA256：`c08b169d0b8c8771b04d04bcc241b63aad0ea6125beffb895c0dda086d13688d`。
+私有构建与安装证据：`artifacts/ui-dpi-validation/dtls-reader-package.log`、`dtls-reader-installed-verified.json`。已请用户复测，尚未收到该版本的实机恢复确认。
