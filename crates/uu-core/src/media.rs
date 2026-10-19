@@ -33,6 +33,7 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
 pub struct MediaStats {
+    pub diagnostics: crate::session_diagnostics::SessionDiagnostics,
     pub control_open: AtomicU32,
     /// Snapshot of the user's connection policy: 0 preserve, 1 exclusive UU.
     pub display_mode: AtomicU32,
@@ -223,6 +224,9 @@ impl ControllerMedia {
             } else {
                 u32::MAX
             };
+            if let Some(s) = &stats {
+                s.diagnostics.record(serde_json::json!({"event":"track", "kind":track.kind().to_string(), "index":index, "id":track.id(), "mid":transceiver.mid()}));
+            }
             Box::pin(async move {
                 if let Some(pc) = pc.upgrade() {
                     if track.kind() == RTPCodecType::Audio {
@@ -336,6 +340,7 @@ impl ControllerMedia {
                                     *cursor=Some((revision,shape));
                                 }
                                 if let Some((id,case,code))=crate::screen_control::response(&msg.data) {
+                                    s.diagnostics.record(serde_json::json!({"event":"display_reply","request":id,"case":case,"code":code}));
                                     if id==900 && case==22 {
                                         s.exclusive_result.store(if code==0{1}else{2},Ordering::Release);
                                         if code==0{s.exclusive_owned.store(true,Ordering::Release);}
@@ -345,15 +350,18 @@ impl ControllerMedia {
                                     replies.push_back((id,case,code));
                                 }
                                 if let Some(screens) = crate::screen_control::screen_sources(&msg.data) {
+                                    s.diagnostics.record(serde_json::json!({"event":"screens","current":screens.current_id,"sources":screens.screens.iter().map(|v|serde_json::json!({"id":v.id,"track":v.video_track_index,"name":v.display_name,"kind":v.kind,"primary":v.primary,"width":v.width,"height":v.height})).collect::<Vec<_>>()}));
                                     *s.remote_screens.lock().unwrap() = screens;
                                     s.remote_screens_revision.fetch_add(1,Ordering::Release);
                                 }
                                 if let Some(id) = crate::screen_control::desktop_capture_change(&msg.data) {
+                                    s.diagnostics.record(serde_json::json!({"event":"capture_change","source":id}));
                                     *s.desktop_capture_source.lock().unwrap() = Some(id);
                                 }
                             }
                             if let Some((id, accepted)) = crate::control_wire::capture_setting_response(&msg.data) {
                                 if let Some(s) = &stats {
+                                    s.diagnostics.record(serde_json::json!({"event":"settings_reply","request":id,"accepted":accepted}));
                                     s.settings_response.fetch_max((id << 1) | accepted as u64, Ordering::Release);
                                 }
                             }
@@ -461,6 +469,17 @@ fn save_ppm(frame: &uu_media::RawFrame, path: &str) {
 }
 
 impl ControllerMedia {
+    pub(crate) fn trace_transport(&self, previous: &mut String) {
+        let sctp = self.pc.sctp();
+        let state = serde_json::json!({"event":"transport", "peer":self.pc.connection_state().to_string(),
+            "ice":self.pc.ice_connection_state().to_string(),"dtls":sctp.transport().state().to_string(),
+            "sctp":sctp.state().to_string(),"control":self.data_channel.ready_state().to_string()});
+        let current = state.to_string();
+        if &current != previous {
+            *previous = current;
+            if let Some(stats) = &self.stats { stats.diagnostics.record(state); }
+        }
+    }
     /// The ICE stats in webrtc-rs 0.11 leave RTT at zero. Use the host's
     /// existing SimpleAction echo protocol and match exactly one pending seq.
     pub async fn probe_network(&self) {

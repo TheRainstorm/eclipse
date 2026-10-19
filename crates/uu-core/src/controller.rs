@@ -338,6 +338,7 @@ async fn drive_session(
     let mut policy_started=None;
     let mut pending_setting: Option<Vec<u8>> = None;
     let mut last_attempt = None;
+    let mut last_transport = String::new();
     let mut setup_timer = tokio::time::interval(Duration::from_millis(250));
     setup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut probe_timer = tokio::time::interval(Duration::from_secs(1));
@@ -348,6 +349,7 @@ async fn drive_session(
     loop {
         tokio::select! {
             _ = setup_timer.tick() => {
+                media.trace_transport(&mut last_transport);
                 let now = tokio::time::Instant::now();
                 match media.pc.connection_state() {
                     RTCPeerConnectionState::Failed => anyhow::bail!("WebRTC 连接失败（ICE/DTLS）"),

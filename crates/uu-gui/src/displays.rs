@@ -276,6 +276,9 @@ impl super::App {
         let command = target
             .map(|track| uu_core::screen_control::send_video_track(request, track))
             .unwrap_or_else(|| uu_core::screen_control::activate_screen(request, id));
+        if let Some(h) = &self.controller {
+            h.stats.diagnostics.record(serde_json::json!({"event":"select_display","source":id,"track":target,"request":request,"activation":target.is_none()}));
+        }
         if self
             .controller
             .as_ref()
@@ -339,10 +342,7 @@ impl super::App {
                 .selected
                 .and_then(|id| screens.screens.iter().find(|s| s.id == id));
             if selected.is_none() {
-                let next = screens
-                    .selected()
-                    .or_else(|| screens.screens.iter().find(|s| s.primary))
-                    .unwrap_or(&screens.screens[0]);
+                let next = screens.initial_screen().unwrap();
                 let previous = self.displays.selected;
                 if previous.is_some() {
                     self.release_all_keys();
@@ -351,7 +351,7 @@ impl super::App {
                 }
                 self.displays.selected = Some(next.id);
                 self.selected_track = next.assigned_track().unwrap_or(self.selected_track);
-                if previous.is_some() || self.displays.blocked || next.assigned_track().is_none() {
+                if previous.is_some() || self.displays.blocked {
                     // Invalidate cached frames when an existing source vanished.
                     self.displays.blocked = true;
                     self.select_remote_screen(next.id);
@@ -386,7 +386,13 @@ impl super::App {
             self.displays.last_frames.insert(*track, Instant::now());
             self.displays.frame(*track);
         }
+        let was_switching = self.displays.switching();
         self.displays.tick(Instant::now());
+        if was_switching && !self.displays.switching() && self.displays.blocked {
+            if let Some(h) = &self.controller {
+                h.stats.diagnostics.record(serde_json::json!({"event":"switch_timeout","source":self.displays.selected,"track":self.selected_track,"stage":self.displays.notice}));
+            }
+        }
     }
 }
 

@@ -28,6 +28,15 @@ pub struct RemoteScreens {
     pub current_id: i32,
 }
 impl RemoteScreens {
+    /// Observe the host's existing capture before considering any source switch.
+    pub fn initial_screen(&self) -> Option<&RemoteScreen> {
+        self.selected().filter(|s| s.assigned_track().is_some())
+            .or_else(|| self.for_track(0))
+            .or_else(|| self.screens.iter().find(|s| s.assigned_track().is_some()))
+            .or_else(|| self.selected())
+            .or_else(|| self.screens.iter().find(|s| s.primary))
+            .or_else(|| self.screens.first())
+    }
     pub fn selected(&self) -> Option<&RemoteScreen> {
         self.screens.iter().find(|s| s.id == self.current_id)
     }
@@ -192,6 +201,19 @@ mod tests {
         int(1,1,&mut body); // A captured window is not a desktop source.
         assert_eq!(desktop_capture_change(&crate::control_wire::envelope(2,8,&body)),None);
         assert_eq!(desktop_capture_change(&crate::control_wire::envelope(3,8,&[])),Some(0));
+    }
+    #[test]
+    fn startup_prefers_existing_stream_to_an_unbound_current_placeholder() {
+        let mut list=Vec::new();
+        for (id,track) in [(7,0),(42,u64::MAX)] {
+            let mut screen=Vec::new();int(1,id,&mut screen);int(12,track,&mut screen);bytes(1,&screen,&mut list);
+        }
+        int(2,42,&mut list);
+        let mut screens=screen_sources(&crate::control_wire::envelope(1,7,&list)).unwrap();
+        assert_eq!(screens.selected().unwrap().id,42);
+        assert_eq!(screens.initial_screen().unwrap().id,7);
+        screens.screens[0].video_track_index=-1;
+        assert_eq!(screens.initial_screen().unwrap().id,42);
     }
     #[test]
     fn native_screen_ids_follow_advertised_tracks_instead_of_arrival_order() {

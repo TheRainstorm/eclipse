@@ -13,6 +13,7 @@ mod decode_gate;
 mod test_loss;
 pub mod selfloop;
 pub mod session;
+pub mod session_diagnostics;
 pub mod sign;
 pub mod signal;
 pub mod socketio;

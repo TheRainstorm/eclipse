@@ -534,9 +534,6 @@ impl App {
         self.poll_displays(&arrived);
         if apply_settings {
             self.send_capture_settings();
-            if !self.textures.contains_key(&self.selected_track) {
-                if let Some(id)=self.displays.selected{self.select_remote_screen(id);}
-            }
         }
         if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
             if let Some(h)=&self.controller {h.stats.audio.stop();h.stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);}
@@ -831,6 +828,11 @@ impl App {
         }
         let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
         let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
+        let mut diagnostic_dirs = Vec::new();
+        if let Some(parent) = std::env::current_exe().ok().and_then(|p|p.parent().map(|p|p.to_path_buf())) { diagnostic_dirs.push(parent); }
+        diagnostic_dirs.push(config.at("diagnostics"));
+        stats.diagnostics.start(diagnostic_dirs);
+        stats.diagnostics.record(serde_json::json!({"event":"client","build":self.build_label,"display_mode":self.preferences.display_mode,"fps":self.target_fps}));
         stats.display_mode.store((self.preferences.display_mode==uu_core::screen_control::DisplayMode::ExclusiveVirtual) as u32,std::sync::atomic::Ordering::Release);
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
         stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
