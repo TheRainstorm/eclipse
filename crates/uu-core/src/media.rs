@@ -33,6 +33,9 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
 pub struct MediaStats {
+    pub control_open: AtomicU32,
+    pub input_messages_sent: AtomicU64,
+    pub input_send_errors: AtomicU64,
     pub width: AtomicU32,
     pub height: AtomicU32,
     /// Source (network) frame rate x100.
@@ -110,6 +113,7 @@ pub struct ControllerMedia {
     pub data_channel: Arc<webrtc::data_channel::RTCDataChannel>,
     seq: Arc<AtomicU64>,
     network_probe: Arc<std::sync::Mutex<crate::network_probe::NetworkProbe>>,
+    stats: Option<Arc<MediaStats>>,
 }
 
 impl ControllerMedia {
@@ -156,13 +160,22 @@ impl ControllerMedia {
         let frames_tx = frames.clone();
         let stats_track = stats.clone();
         let track_counter = Arc::new(AtomicU32::new(0));
-        pc.on_track(Box::new(move |track, _receiver, _transceiver| {
+        pc.on_track(Box::new(move |track, _receiver, transceiver| {
             let pc = pc_track.clone();
             let repairs = repair_track.clone();
             let frames = frames_tx.clone();
             let stats = stats_track.clone();
             let index = if track.kind() == RTPCodecType::Video {
-                track_counter.fetch_add(1, Ordering::Relaxed)
+                // Our offer has video m-lines 0..4. Packet arrival order is not
+                // a screen identity (a later display may start sending first).
+                let index = transceiver.mid().and_then(|mid| mid.parse::<u32>().ok())
+                    .filter(|index| *index < 5);
+                if let Some(index) = index {
+                    track_counter.fetch_max(index + 1, Ordering::Relaxed);
+                    index
+                } else {
+                    track_counter.fetch_add(1, Ordering::Relaxed)
+                }
             } else {
                 u32::MAX
             };
@@ -212,19 +225,24 @@ impl ControllerMedia {
             }
             let open_ch = Arc::downgrade(&ch);
             let open_seq = seq.clone();
+            let open_stats = stats.clone();
             ch.on_open(Box::new(move || {
                 let ch = open_ch.clone();
                 let seq = open_seq.clone();
+                let stats = open_stats.clone();
                 Box::pin(async move {
                     let Some(ch) = ch.upgrade() else { return };
                     println!("CONTROL_DATA_CHANNEL open");
+                    if let Some(s) = &stats { s.control_open.store(1, Ordering::Release); }
                     let s = seq.fetch_add(1, Ordering::Relaxed);
                     let _ = ch
                         .send(&bytes::Bytes::from(crate::control_wire::echo_request(s)))
                         .await;
                 })
             }));
-            ch.on_close(Box::new(|| {
+            let close_stats = stats.clone();
+            ch.on_close(Box::new(move || {
+                if let Some(s) = &close_stats { s.control_open.store(0, Ordering::Release); }
                 println!("CONTROL_DATA_CHANNEL closed");
                 Box::pin(async {})
             }));
@@ -294,6 +312,7 @@ impl ControllerMedia {
             data_channel: dc,
             seq,
             network_probe,
+            stats,
         })
     }
 
@@ -378,6 +397,14 @@ impl ControllerMedia {
     pub async fn send_control(&self, data: Vec<u8>) -> Result<()> {
         self.data_channel.send(&bytes::Bytes::from(data)).await?;
         Ok(())
+    }
+    pub async fn send_input(&self, data: Vec<u8>) -> Result<()> {
+        let result = self.send_control(data).await;
+        if let Some(s) = &self.stats {
+            if result.is_ok() { s.input_messages_sent.fetch_add(1, Ordering::Relaxed); }
+            else { s.input_send_errors.fetch_add(1, Ordering::Relaxed); }
+        }
+        result
     }
 }
 

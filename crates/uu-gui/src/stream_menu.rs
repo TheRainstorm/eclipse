@@ -118,6 +118,10 @@ impl super::App {
                     if self.view_only {
                         ui.label(RichText::new("仅观看").color(Color32::from_rgb(98, 125, 160)));
                     }
+                    if !self.view_only && self.controller.is_some() && !self.input_ready() {
+                        ui.label(RichText::new("输入连接中…").size(12.0).color(Color32::from_gray(110)))
+                            .on_hover_text("视频和输入分别建立连接，输入就绪后可操作");
+                    }
                     if let Some(controller) = &self.controller {
                         ui.label(
                             RichText::new(format!(
@@ -174,7 +178,7 @@ impl super::App {
                 .clicked()
             {
                 self.release_all_keys();
-                for message in self.pointer.release_all(self.selected_track + 1) {
+                for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
                     self.send_input(message, 15);
                 }
                 self.selected_track = track;
@@ -240,6 +244,8 @@ impl super::App {
             blocked.push(response.response.rect);
         }
         if !self.stream_menu.open {
+            // Custom child menus must never leave an invisible popup trapping input.
+            ctx.memory_mut(|m| m.close_popup());
             return blocked;
         }
         let screen = ctx.screen_rect();
@@ -383,7 +389,7 @@ impl super::App {
                                     .changed()
                                 {
                                     self.release_all_keys();
-                                    for message in self.pointer.release_all(self.selected_track + 1)
+                                    for message in self.pointer.release_all(self.input_screen(self.selected_track))
                                     {
                                         self.send_input(message, 15);
                                     }

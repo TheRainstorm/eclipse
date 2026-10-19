@@ -42,6 +42,7 @@ impl super::App {
         ui.painter().rect_filled(bounds, 6.0, Color32::from_black_alpha(180));
         ui.painter().galley(egui::pos2(rect.center().x, bounds.top() + 5.0), galley, Color32::WHITE);
         ui.interact(bounds, ui.id().with("hud-details"), egui::Sense::hover()).on_hover_text(format!(
-            "{}\nCtrl+Alt+S：显示 / 隐藏统计\nNetwork：CONTROL 往返耗时均值 ± 标准差（最近 32 次）\nLoss：最近 2 秒超时未修复的 RTP 包比例，重复 RTX 不计入分母\n其余包、帧、请求计数为本次会话累计值\nRd：每秒提交的新画面数，不是显示器扫描次数\nRender：UI 准备及渲染提交 CPU 时间，不含 VSync 等待\nDecode：解码调用耗时，不含颜色转换", s.backend()));
+            "{}\n输入通道：{} · 本地发送 {} 条 · 发送失败 {} 条\nCtrl+Alt+S：显示 / 隐藏统计\nNetwork：CONTROL 往返耗时均值 ± 标准差（最近 32 次）\nLoss：最近 2 秒超时未修复的 RTP 包比例，重复 RTX 不计入分母\n其余包、帧、请求计数为本次会话累计值\nRd：每秒提交的新画面数，不是显示器扫描次数\nRender：UI 准备及渲染提交 CPU 时间，不含 VSync 等待\nDecode：解码调用耗时，不含颜色转换", s.backend(), if self.input_ready() { "已打开" } else { "未打开" },
+            s.input_messages_sent.load(Relaxed), s.input_send_errors.load(Relaxed)));
     }
 }

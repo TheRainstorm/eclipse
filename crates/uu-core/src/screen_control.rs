@@ -29,6 +29,10 @@ impl RemoteScreens {
     pub fn selected(&self) -> Option<&RemoteScreen> {
         self.screens.iter().find(|s| s.id == self.current_id)
     }
+    pub fn for_track(&self, track: u32) -> Option<&RemoteScreen> {
+        self.selected().filter(|s| s.video_track_index == track)
+            .or_else(|| self.screens.iter().find(|s| s.video_track_index == track))
+    }
 }
 #[derive(Clone, Debug)]
 pub struct RemoteScreen {
@@ -38,6 +42,7 @@ pub struct RemoteScreen {
     pub width: u32,
     pub height: u32,
     pub dpi_scale: Option<u32>,
+    pub video_track_index: u32,
 }
 impl RemoteScreen {
     pub fn kind_label(&self) -> &'static str {
@@ -72,6 +77,7 @@ pub fn screen_sources(data: &[u8]) -> Option<RemoteScreens> {
             width: dimension(&rect, 5, 3),
             height: dimension(&rect, 6, 4),
             dpi_scale,
+            video_track_index: number(&fields, 12) as u32,
         });
     }
     Some(RemoteScreens {
@@ -138,6 +144,22 @@ pub fn super_screen_response(data: &[u8]) -> Option<ScreenModeResponse> {
 mod tests {
     use super::*;
     #[test]
+    fn native_screen_ids_follow_advertised_tracks_instead_of_arrival_order() {
+        let mut payload = Vec::new();
+        for (id, track) in [(42, 2), (7, 0), (11, 1)] {
+            let mut screen = Vec::new();
+            int(1, id, &mut screen);
+            int(12, track, &mut screen);
+            bytes(1, &screen, &mut payload);
+        }
+        int(2, 42, &mut payload);
+        let parsed = screen_sources(&crate::control_wire::envelope(1, 7, &payload)).unwrap();
+        assert_eq!(parsed.for_track(0).unwrap().id, 7);
+        assert_eq!(parsed.for_track(1).unwrap().id, 11);
+        assert_eq!(parsed.for_track(2).unwrap().id, 42);
+        assert!(parsed.for_track(3).is_none());
+    }
+    #[test]
     fn screen_metadata_uses_selected_id_not_first_physical_screen() {
         let mut payload = Vec::new();
         for (id, kind, rate) in [(1, 0, 30), (2, 2, 120)] {
@@ -157,6 +179,7 @@ mod tests {
         assert_eq!(selected.kind_label(), "超级屏");
         assert_eq!(selected.refresh_hz, 120);
         assert_eq!(selected.width, 1920);
+        assert_eq!(parsed.for_track(0).unwrap().id, 2);
         assert!(screen_sources(&crate::control_wire::echo_request(1)).is_none());
     }
     #[test]

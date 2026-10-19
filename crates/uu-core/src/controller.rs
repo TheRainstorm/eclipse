@@ -286,7 +286,7 @@ async fn run(
     if let Some(media) = &peer {
         let _ = tokio::time::timeout(std::time::Duration::from_millis(250), async {
             while let Ok(frame) = input_rx.try_recv() {
-                let _ = media.send_control(frame).await;
+                let _ = media.send_input(frame).await;
             }
         }).await;
     }
@@ -320,6 +320,9 @@ async fn drive_session(
     let mut setup_timer = tokio::time::interval(Duration::from_millis(250));
     setup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut probe_timer = tokio::time::interval(Duration::from_secs(1));
+    // Official CONTROL captures include this independent of SimpleAction RTT.
+    let mut input_heartbeat = tokio::time::interval(Duration::from_millis(200));
+    input_heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     probe_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
@@ -353,12 +356,19 @@ async fn drive_session(
                         }
                     }
                 } else if opened_at.is_none() && now.duration_since(started) >= Duration::from_secs(45) {
-                    anyhow::bail!("等待 WebRTC 控制通道超时（45秒），请检查网络或被控端");
+                    let sctp = media.pc.sctp();
+                    anyhow::bail!("输入控制通道未建立（45秒）：ICE={}，DTLS={}，SCTP={}，CONTROL={}。视频与输入分别建立，请重新连接。",
+                        media.pc.ice_connection_state(), sctp.transport().state(), sctp.state(), media.data_channel.ready_state());
                 }
             }
             _ = probe_timer.tick(), if opened_at.is_some() => media.probe_network().await,
+            _ = input_heartbeat.tick(), if opened_at.is_some() => {
+                let _ = media.send_control(br#"{"heartbeat":"kbd_heartbeat"}"#.to_vec()).await;
+            }
             Some(frame) = input_rx.recv(), if opened_at.is_some() => {
-                let _ = media.send_control(frame).await;
+                if media.send_input(frame).await.is_err() {
+                    status("输入通道发送失败，请重新连接");
+                }
             }
             Some(msg) = settings_rx.recv() => {
                 pending_setting = Some(msg); // Keep the newest selection until CONTROL is ready.

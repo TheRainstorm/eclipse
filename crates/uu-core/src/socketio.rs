@@ -136,10 +136,6 @@ async fn next_text(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> Resul
 /// fields are required for the server to route the session. The leading
 /// `0x04` is UU's binary-attachment prefix.
 pub fn encode_app_data(device_id: &str) -> Vec<u8> {
-    encode_app_data_at_fps(device_id, crate::control_wire::CaptureFrameRate::from_env())
-}
-
-pub fn encode_app_data_at_fps(device_id: &str, frame_rate: crate::control_wire::CaptureFrameRate) -> Vec<u8> {
     fn varint(out: &mut Vec<u8>, mut v: u64) {
         while v >= 0x80 {
             out.push((v as u8) | 0x80);
@@ -150,12 +146,9 @@ pub fn encode_app_data_at_fps(device_id: &str, frame_rate: crate::control_wire::
     let mut out = vec![0x04];
     out.extend_from_slice(&[0x08, 0x01]); // field 1 = 1
     out.extend_from_slice(&[0x10, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]);
-    // CaptureParams must carry the initial target too; no host-default 30 fps.
-    let mut params = Vec::new();
-    for (field, value) in [(1, frame_rate.option()), (2, 5), (4, 3), (7, 1), (11, frame_rate.fps() as u64)] {
-        crate::control_wire::int(field, value, &mut params);
-    }
-    crate::control_wire::bytes(3, &params, &mut out);
+    // Keep the proven desktop initialization: send CaptureSettingRequest only
+    // after CONTROL opens. An incomplete initial CaptureParams changes the
+    // host's setup path, before input/echo can be established.
     // ConnectOptions field 4 = DecoderCap {fps, codec, width, height, chroma}.
     // The old empty list plus 1080p streamer JSON restricted the initial stream.
     let mut cap=Vec::new();
@@ -200,18 +193,16 @@ pub fn gunzip_sdp04(data: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod frame_rate_tests {
     use super::*;
-    use crate::control_wire::{CaptureFrameRate, decode_wire, WireValue};
+    use crate::control_wire::{decode_wire, WireValue};
     #[test]
-    fn connect_advertises_144_and_initial_capture_uses_requested_120() {
-        let app = encode_app_data_at_fps("test-device", CaptureFrameRate::new(120).unwrap());
+    fn connect_keeps_legacy_initialization_and_advertises_144() {
+        let app = encode_app_data("test-device");
         assert_eq!(app[0], 4);
         let fields = decode_wire(&app[1..]).unwrap();
         let nested = |field| decode_wire(fields.iter().find_map(|(n, v)| match v {
             WireValue::Bytes(payload) if *n == field => Some(*payload), _ => None,
-        }).expect("initial capture parameters and decoder capability must be present")).unwrap();
-        let params = nested(3);
-        assert!(params.contains(&(11, WireValue::Varint(120))));
-        assert!(params.contains(&(1, WireValue::Varint(0))));
+        }).expect("decoder capability must be present")).unwrap();
+        assert!(!fields.iter().any(|(n, _)| *n == 3));
         assert!(nested(4).contains(&(1, WireValue::Varint(144))));
     }
 }

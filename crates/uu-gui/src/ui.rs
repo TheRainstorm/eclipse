@@ -678,13 +678,15 @@ impl App {
         let was_open = self.stream_menu.open;
         let controls = self.stream_controls(ctx);
         let control_pointer = ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
-        let controls_active = self.disconnecting || self.window_edge_active || was_open || self.stream_menu.open || control_pointer || ctx.memory(|m|m.any_popup_open());
+        let controls_active = !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.open || control_pointer;
         let mut messages = Vec::new();
         egui::CentralPanel::default().frame(egui::Frame::none().fill(C::BLACK)).show(ctx,|ui| {
             ui.set_clip_rect(ui.max_rect());
             let rect=ui.available_rect_before_wrap();ui.allocate_rect(rect,Sense::hover());
             let chosen=self.textures.contains_key(&self.selected_track).then_some(self.selected_track).or_else(||self.textures.keys().next().copied());
             if let Some(track)=chosen {
+                self.selected_track = track;
+                let input_screen = self.input_screen(track);
                 let texture=&self.textures[&track];let size=texture.size_vec2();let scale=(rect.width()/size.x).min(rect.height()/size.y);
                 let draw=Rect::from_center_size(rect.center(),size*scale);
                 ui.painter().image(texture.id(),draw,Rect::from_min_max(Pos2::ZERO,egui::pos2(1.0,1.0)),C::WHITE);
@@ -692,10 +694,10 @@ impl App {
                 let pointer=ctx.input(|i|i.pointer.hover_pos());
                 if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) {self.remote_focus=true;}
                 if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if !rect.contains(*pos))) {
-                    self.remote_focus=false;self.release_all_keys();messages.extend(self.pointer.release_all(track+1));
+                    self.remote_focus=false;self.release_all_keys();messages.extend(self.pointer.release_all(input_screen));
                 }
-                if controls_active {if self.remote_focus || !self.pressed_vks.is_empty(){self.remote_focus=false;self.release_all_keys();}messages.extend(self.pointer.release_all(track+1));}
-                if !self.view_only && !controls_active {messages.extend(self.pointer.events(events,draw,pointer,track+1));}
+                if controls_active {if self.remote_focus || !self.pressed_vks.is_empty(){self.remote_focus=false;self.release_all_keys();}messages.extend(self.pointer.release_all(input_screen));}
+                if !self.view_only && !controls_active {messages.extend(self.pointer.events(events,draw,pointer,input_screen));}
             }else{
                 ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,&self.status,egui::FontId::proportional(18.0),C::from_rgb(160,170,185));
             }

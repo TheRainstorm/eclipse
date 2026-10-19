@@ -534,6 +534,16 @@ impl App {
         self.send_input_ch(payload, kind, 35);
     }
 
+    fn input_screen(&self, track: u32) -> u32 {
+        self.controller.as_ref().and_then(|h|
+            h.stats.remote_screens.lock().unwrap().for_track(track).map(|s| s.id))
+            .filter(|id| *id >= 0).map(|id| id as u32).unwrap_or(track + 1)
+    }
+    fn input_ready(&self) -> bool {
+        !self.disconnecting && self.controller.as_ref().is_some_and(|h|
+            h.stats.control_open.load(std::sync::atomic::Ordering::Acquire) != 0)
+    }
+
     fn request_super_screen(&mut self, enter: bool) {
         if self.screen_request.is_some() { return; }
         let Some(h) = &self.controller else { return };
@@ -550,7 +560,7 @@ impl App {
             return;
         }
         self.release_all_keys();
-        for message in self.pointer.release_all(self.selected_track + 1) {
+        for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
             self.send_input(message, 15);
         }
         self.remote_focus = false;
@@ -643,6 +653,9 @@ impl App {
         if self.view_only && !matches!(payload["action"].as_str(), Some("kbd_release" | "mouse_release")) {
             return;
         }
+        if !self.input_ready() && !matches!(payload["action"].as_str(), Some("kbd_release" | "mouse_release")) {
+            return;
+        }
         let Some(h) = &self.controller else { return };
         self.seq = self.seq.wrapping_add(1);
         if std::env::var_os("UU_INPUT_AUDIT").is_some()
@@ -706,7 +719,7 @@ impl App {
         self.stream_menu.open = false;
         self.context.memory_mut(|m| m.close_popup());
         self.release_all_keys();
-        for message in self.pointer.release_all(self.selected_track + 1) {
+        for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
             self.send_input(message, 15);
         }
         self.remote_focus = false;
@@ -791,7 +804,7 @@ impl eframe::App for App {
         }
         if self.platform.move_monitors(self.fullscreen) {
             self.release_all_keys();
-            for message in self.pointer.release_all(self.selected_track + 1) {
+            for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
                 self.send_input(message, 15);
             }
             self.remote_focus = false;
@@ -826,7 +839,7 @@ impl eframe::App for App {
         if self.focused && !focused {
             self.shortcuts.clear();
             self.release_all_keys();
-            for message in self.pointer.release_all(self.selected_track + 1) {
+            for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
                 self.send_input(message, 15);
             }
             self.remote_focus = false;
