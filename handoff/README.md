@@ -16,9 +16,11 @@
 | 10 | `10-2026-10-19-resize-hud-recovery-exit.md` | 窗口缩放、Moonlight HUD、侧边菜单确认、恢复竞争/高吞吐优化、退出清理 |
 | 11 | `11-2026-10-19-connection-startup-unified-install.md` | CONTROL启动连接回归修复、迟到ICE回归测试、单一Windows安装入口与版本校验 |
 
+| 12 | `12-2026-10-19-shortcuts-hud-dpi-window.md` | Ctrl+Alt+S、居中 HUD、删除旧设置、1:1 初始窗口与真实跨 DPI 往返、窗口最大化和串流全屏分离 |
+
 约定：
 
-- Windows 唯一正式入口为 `C:\Users\yfy\uu-gui-demo\uu-gui.exe`，桌面 `UU Remote Rust`；旧目录已归档。当前安装说明以交接11为准。
+- Windows 唯一正式入口为 `C:\Users\yfy\uu-gui-demo\uu-gui.exe`，桌面 `UU Remote Rust`；旧目录已归档。当前版本与窗口行为见交接12，统一安装流程见交接11。
 
 - 当前 x358h SSH 地址是 `192.168.34.3:2202`（2026-10-19 用户更新）；历史文档中的 `192.168.35.200` 已失效。
 
