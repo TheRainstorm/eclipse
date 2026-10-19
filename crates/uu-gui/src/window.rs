@@ -113,6 +113,20 @@ impl WindowSizing {
         let chrome = (outer.size() - inner.size()).max(egui::Vec2::ZERO);
         let available = work.shrink(8.0);
         let capacity = available.size() - chrome;
+        // eframe initially stores the primary monitor's minimum as physical
+        // pixels. Refresh it after startup/DPI changes before requesting size.
+        if !self.initialized
+            || self.previous.is_some_and(|(old_ppp, _, old_work)| {
+                (old_ppp - ppp).abs() > 0.01 || old_work != work
+            })
+        {
+            let minimum = if streaming {
+                egui::vec2(320.0, 200.0)
+            } else {
+                egui::vec2(560.0, 360.0)
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(minimum.min(capacity)));
+        }
         if resize_started {
             self.resizing = true;
         }
@@ -425,6 +439,11 @@ mod tests {
             work: egui::Rect::from_min_size(egui::pos2(580.0, -1080.0), egui::vec2(1920.0, 1032.0)),
         });
         assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(1100.0, 760.0))));
+        assert!(
+            commands.contains(&egui::ViewportCommand::MinInnerSize(egui::vec2(
+                560.0, 360.0
+            )))
+        );
         assert!(
             commands.contains(&egui::ViewportCommand::OuterPosition(egui::pos2(
                 1392.0, -1060.0
