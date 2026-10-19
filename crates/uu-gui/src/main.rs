@@ -3,7 +3,8 @@
 //! Layout mirrors the official client: a device sidebar on the left, a large
 //! remote-screen area on the right, and a status/footer bar.
 
-use std::sync::atomic::Ordering;
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use std::sync::mpsc::{channel, Receiver};
 
 use eframe::egui;
@@ -12,6 +13,7 @@ use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
 mod login;
+mod ui;
 use login::LoginEvent;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -62,8 +64,7 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
                 if let Ok(bytes) = r.bytes().await {
                     if let Ok(img) = image::load_from_memory(&bytes) {
                         let rgba = img.to_rgba8();
-                        d.wallpaper_rgba =
-                            Some((rgba.width(), rgba.height(), rgba.into_raw()));
+                        d.wallpaper_rgba = Some((rgba.width(), rgba.height(), rgba.into_raw()));
                     }
                 }
             }
@@ -89,7 +90,6 @@ struct App {
     selected_track: u32,
     seq: u32,
     kseq: u32,
-    pointer: input::RemotePointer,
     pressed_vks: std::collections::HashSet<u32>,
     mod_state: [bool; 4],
     focused: bool,
@@ -103,6 +103,12 @@ struct App {
     bitrate_idx: usize,
     custom_mbps: u32,
     settings_seq: u64,
+    pointer: input::RemotePointer,
+    remote_focus: bool,
+    view_only: bool,
+    show_settings: bool,
+    resize_pending: bool,
+    close_at: Option<std::time::Instant>,
 }
 
 /// Bitrate/quality presets sent as a CaptureSettingRequest. Values are the
@@ -120,35 +126,53 @@ const BITRATE_PRESETS: &[(&str, u64)] = &[
 fn vk_for(key: egui::Key) -> Option<u32> {
     use egui::Key::*;
     Some(match key {
-        A => 0x41, B => 0x42, C => 0x43, D => 0x44, E => 0x45, F => 0x46,
-        G => 0x47, H => 0x48, I => 0x49, J => 0x4A, K => 0x4B, L => 0x4C,
-        M => 0x4D, N => 0x4E, O => 0x4F, P => 0x50, Q => 0x51, R => 0x52,
-        S => 0x53, T => 0x54, U => 0x55, V => 0x56, W => 0x57, X => 0x58,
-        Y => 0x59, Z => 0x5A,
-        Num0 => 0x30, Num1 => 0x31, Num2 => 0x32, Num3 => 0x33, Num4 => 0x34,
-        Num5 => 0x35, Num6 => 0x36, Num7 => 0x37, Num8 => 0x38, Num9 => 0x39,
-        Enter => 0x0D, Backspace => 0x08, Space => 0x20, Tab => 0x09,
-        Escape => 0x1B, ArrowUp => 0x26, ArrowDown => 0x28,
-        ArrowLeft => 0x25, ArrowRight => 0x27,
+        A => 0x41,
+        B => 0x42,
+        C => 0x43,
+        D => 0x44,
+        E => 0x45,
+        F => 0x46,
+        G => 0x47,
+        H => 0x48,
+        I => 0x49,
+        J => 0x4A,
+        K => 0x4B,
+        L => 0x4C,
+        M => 0x4D,
+        N => 0x4E,
+        O => 0x4F,
+        P => 0x50,
+        Q => 0x51,
+        R => 0x52,
+        S => 0x53,
+        T => 0x54,
+        U => 0x55,
+        V => 0x56,
+        W => 0x57,
+        X => 0x58,
+        Y => 0x59,
+        Z => 0x5A,
+        Num0 => 0x30,
+        Num1 => 0x31,
+        Num2 => 0x32,
+        Num3 => 0x33,
+        Num4 => 0x34,
+        Num5 => 0x35,
+        Num6 => 0x36,
+        Num7 => 0x37,
+        Num8 => 0x38,
+        Num9 => 0x39,
+        Enter => 0x0D,
+        Backspace => 0x08,
+        Space => 0x20,
+        Tab => 0x09,
+        Escape => 0x1B,
+        ArrowUp => 0x26,
+        ArrowDown => 0x28,
+        ArrowLeft => 0x25,
+        ArrowRight => 0x27,
         _ => return None,
     })
-}
-
-/// A coloured dot + label for the status bar.
-fn status_marker(status: &str) -> (&'static str, egui::Color32) {
-    if status.contains("已连接") {
-        ("●", egui::Color32::from_rgb(52, 199, 110))
-    } else if status.contains("错误") || status.contains("失败") || status.contains("断开") {
-        ("●", egui::Color32::from_rgb(230, 90, 90))
-    } else if status.contains("连接")
-        || status.contains("等待")
-        || status.contains("加载")
-        || status.contains("中")
-    {
-        ("●", egui::Color32::from_rgb(230, 180, 70))
-    } else {
-        ("●", egui::Color32::from_rgb(120, 126, 138))
-    }
 }
 
 fn setup_style(ctx: &egui::Context) {
@@ -168,7 +192,9 @@ fn setup_style(ctx: &egui::Context) {
     };
     for path in candidates {
         if let Ok(data) = std::fs::read(path) {
-            fonts.font_data.insert("cjk".into(), egui::FontData::from_owned(data));
+            fonts
+                .font_data
+                .insert("cjk".into(), egui::FontData::from_owned(data));
             fonts
                 .families
                 .get_mut(&egui::FontFamily::Proportional)
@@ -184,50 +210,35 @@ fn setup_style(ctx: &egui::Context) {
     }
     ctx.set_fonts(fonts);
 
-    let accent = egui::Color32::from_rgb(70, 122, 220);
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = egui::Color32::from_rgb(18, 20, 26);
-    visuals.window_fill = egui::Color32::from_rgb(24, 27, 34);
-    visuals.extreme_bg_color = egui::Color32::from_rgb(12, 14, 18);
-    visuals.faint_bg_color = egui::Color32::from_rgb(30, 34, 42);
-    visuals.hyperlink_color = egui::Color32::from_rgb(120, 170, 255);
-    visuals.selection.bg_fill = accent;
-    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(24, 27, 34);
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(34, 38, 48);
-    visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(34, 38, 48);
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(46, 52, 66);
-    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(46, 52, 66);
-    visuals.widgets.active.bg_fill = accent;
-    visuals.widgets.active.weak_bg_fill = accent;
-    for w in [
-        &mut visuals.widgets.noninteractive,
-        &mut visuals.widgets.inactive,
-        &mut visuals.widgets.hovered,
-        &mut visuals.widgets.active,
-        &mut visuals.widgets.open,
-    ] {
-        w.rounding = egui::Rounding::same(8.0);
-    }
+    let mut visuals = egui::Visuals::light();
+    visuals.panel_fill = egui::Color32::from_rgb(247, 250, 252);
+    visuals.window_fill = egui::Color32::WHITE;
+    visuals.extreme_bg_color = egui::Color32::WHITE;
+    visuals.faint_bg_color = egui::Color32::from_rgb(238, 243, 247);
+    visuals.selection.bg_fill = egui::Color32::from_rgb(53, 131, 255);
+    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(238, 243, 247);
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(225, 235, 247);
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(53, 131, 255);
+    visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(25, 31, 38);
+    visuals.window_rounding = egui::Rounding::same(12.0);
     ctx.set_visuals(visuals);
-
     let mut style = (*ctx.style()).clone();
+    style
+        .text_styles
+        .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-    style.spacing.button_padding = egui::vec2(12.0, 6.0);
-    style.spacing.interact_size.y = 28.0;
+    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.spacing.interact_size.y = 30.0;
     ctx.set_style(style);
-    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.set_theme(egui::ThemePreference::Light);
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_style(&cc.egui_ctx);
-        // eframe 0.29 + glow does not always schedule repaints when only a
-        // background thread has new data, so drive the UI at ~60 Hz.
-        let repaint_ctx = cc.egui_ctx.clone();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_millis(16));
-            repaint_ctx.request_repaint();
-        });
         let config = uu_core::Config::from_env().ok();
         let logged_in = config
             .as_ref()
@@ -254,7 +265,6 @@ impl App {
             selected_track: 0,
             seq: 1,
             kseq: 1,
-            pointer: input::RemotePointer::default(),
             pressed_vks: std::collections::HashSet::new(),
             mod_state: [false; 4],
             focused: true,
@@ -265,9 +275,15 @@ impl App {
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(false),
             autoconnect_done: false,
             fullscreen: false,
-            bitrate_idx: 4,
-            custom_mbps: 30,
+            bitrate_idx: 5,
+            custom_mbps: 55,
             settings_seq: 0,
+            pointer: input::RemotePointer::default(),
+            remote_focus: false,
+            view_only: false,
+            show_settings: false,
+            resize_pending: true,
+            close_at: None,
         };
         if logged_in {
             app.start_load();
@@ -287,7 +303,9 @@ impl App {
     }
 
     fn start_login(&mut self) {
-        let Some(config) = self.config.clone() else { return };
+        let Some(config) = self.config.clone() else {
+            return;
+        };
         self.login_status = "获取二维码…".into();
         self.login_rx = Some(login::spawn(config));
     }
@@ -338,13 +356,25 @@ impl App {
                         for (i, d) in devices.iter().enumerate() {
                             if let Some((w, h, rgba)) = &d.wallpaper_rgba {
                                 let img = egui::ColorImage::from_rgba_unmultiplied(
-                                    [*w as usize, *h as usize], rgba);
-                                self.wallpapers.insert(i, ctx.load_texture(
-                                    format!("wallpaper-{i}"), img,
-                                    egui::TextureOptions::LINEAR));
+                                    [*w as usize, *h as usize],
+                                    rgba,
+                                );
+                                self.wallpapers.insert(
+                                    i,
+                                    ctx.load_texture(
+                                        format!("wallpaper-{i}"),
+                                        img,
+                                        egui::TextureOptions::LINEAR,
+                                    ),
+                                );
                             }
                         }
                         self.devices = devices;
+                        self.selected = self
+                            .devices
+                            .iter()
+                            .position(|d| d.alias == "KVM-WIN11")
+                            .or_else(|| (!self.devices.is_empty()).then_some(0));
                         // Optional headless auto-connect for testing:
                         //   UU_AUTOCONNECT=<explicit device_id|alias>
                         if !self.autoconnect_done {
@@ -372,10 +402,16 @@ impl App {
     }
 
     fn poll_controller(&mut self, ctx: &egui::Context) {
-        let Some(h) = &mut self.controller else { return };
+        let Some(h) = &mut self.controller else {
+            return;
+        };
+        let mut apply_settings = false;
         while let Ok(ev) = h.events.try_recv() {
             match ev {
-                ControllerEvent::Status(s) => self.status = s,
+                ControllerEvent::Status(s) => {
+                    apply_settings |= s == "已请求目标画质/码率";
+                    self.status = s;
+                }
                 ControllerEvent::Error(e) => self.status = format!("错误: {e}"),
             }
         }
@@ -384,20 +420,23 @@ impl App {
             frames.push(f);
         }
         for (idx, w, hgt, rgba) in frames {
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [w as usize, hgt as usize],
-                &rgba,
-            );
+            let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, hgt as usize], &rgba);
             match self.textures.get_mut(&idx) {
                 Some(t) => t.set(image, egui::TextureOptions::LINEAR),
                 None => {
                     let t = ctx.load_texture(
-                        format!("remote-{idx}"), image, egui::TextureOptions::LINEAR);
+                        format!("remote-{idx}"),
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    );
                     self.textures.insert(idx, t);
                 }
             }
             self.latest.insert(idx, (w, hgt, rgba));
             *self.frame_count.entry(idx).or_insert(0) += 1;
+        }
+        if apply_settings {
+            self.send_bitrate();
         }
     }
 
@@ -409,7 +448,7 @@ impl App {
     fn send_bitrate(&mut self) {
         let Some(h) = &self.controller else { return };
         let (_, quality) = BITRATE_PRESETS[self.bitrate_idx];
-        let bitrate = if quality == 6 {
+        let custom_bps = if quality == 6 {
             Some(self.custom_mbps as u64 * 1_000_000)
         } else {
             None
@@ -420,7 +459,7 @@ impl App {
             uu_core::control_wire::now_ms(),
             2,
             quality,
-            bitrate,
+            custom_bps,
         );
         let _ = h.settings.send(msg);
     }
@@ -434,8 +473,22 @@ impl App {
     /// `kind`/`channel` arguments are kept only to avoid touching every call
     /// site and are ignored.
     fn send_input_ch(&mut self, payload: serde_json::Value, _kind: u32, _channel: u16) {
+        if self.view_only {
+            return;
+        }
         let Some(h) = &self.controller else { return };
         self.seq = self.seq.wrapping_add(1);
+        if std::env::var_os("UU_INPUT_AUDIT").is_some()
+            && matches!(
+                payload["action"].as_str(),
+                Some("mouse_press" | "mouse_release")
+            )
+        {
+            println!(
+                "pointer audit: {} button={}",
+                payload["action"], payload["button"]
+            );
+        }
         let _ = h.input.send(payload.to_string().into_bytes());
     }
 
@@ -453,8 +506,21 @@ impl App {
         self.send_input_ch(payload, 8, 0);
     }
 
+    fn sync_modifiers(&mut self, modifiers: egui::Modifiers) {
+        for (vk, down, index) in [
+            (0xA2, modifiers.ctrl, 0),
+            (0xA0, modifiers.shift, 1),
+            (0xA4, modifiers.alt, 2),
+            (0x5B, modifiers.mac_cmd, 3),
+        ] {
+            if self.mod_state[index] != down {
+                self.send_key(vk, down);
+                self.mod_state[index] = down;
+            }
+        }
+    }
+
     fn release_all_keys(&mut self) {
-        for payload in self.pointer.release_all(1) { self.send_input(payload, 15); }
         let keys: Vec<u32> = self.pressed_vks.drain().collect();
         for vk in keys {
             self.send_key(vk, false);
@@ -469,6 +535,10 @@ impl App {
 
     fn disconnect(&mut self) {
         self.release_all_keys();
+        for message in self.pointer.release_all(self.selected_track + 1) {
+            self.send_input(message, 15);
+        }
+        self.remote_focus = false;
         if let Some(h) = &self.controller {
             let _ = h.close.send(());
         }
@@ -491,6 +561,7 @@ impl App {
         match uu_core::controller::spawn(config, device, geo) {
             Ok(h) => {
                 self.controller = Some(h);
+                self.remote_focus = true;
                 self.status = "连接中…".into();
                 for vk in [0x11u32, 0x10, 0x12, 0xA2, 0xA0, 0xA4, 0x5B] {
                     self.send_key(vk, false);
@@ -504,405 +575,79 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut keys = Vec::new();
-        let mut mods = Vec::new();
-        let mut toggle_hud = false;
-        let mut toggle_fs = false;
-        let focused = ctx.input(|i| {
-            for ev in &i.events {
-                if let egui::Event::Key { key, pressed, .. } = ev {
-                    if matches!(key, egui::Key::F1) && *pressed {
-                        toggle_hud = true;
-                    }
-                    // Ctrl+Alt+F toggles fullscreen; do not forward the F.
-                    if matches!(key, egui::Key::F)
-                        && *pressed
-                        && i.modifiers.ctrl
-                        && i.modifiers.alt
-                    {
-                        toggle_fs = true;
-                        continue;
-                    }
-                    if let Some(vk) = vk_for(*key) {
-                        keys.push((vk, *pressed));
-                    }
-                }
+        if self.resize_pending {
+            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+                let size = egui::vec2(
+                    1100.0_f32.min(monitor.x * 0.92),
+                    760.0_f32.min(monitor.y * 0.88),
+                );
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                self.resize_pending = false;
             }
-            let want = [
-                (0xA2u32, i.modifiers.ctrl, 0usize),
-                (0xA0, i.modifiers.shift, 1),
-                (0xA4, i.modifiers.alt, 2),
-                (0x5B, i.modifiers.command, 3),
-            ];
-            for (vk, down, idx) in want {
-                if self.mod_state[idx] != down {
-                    mods.push((vk, down, idx));
-                }
-            }
-            i.focused
-        });
-        if toggle_hud {
-            self.hud = !self.hud;
         }
-        if toggle_fs {
-            self.toggle_fullscreen(ctx);
-        }
-        if self.focused && !focused {
-            self.release_all_keys();
-        }
-        self.focused = focused;
-        for (vk, pressed) in keys {
-            self.send_key(vk, pressed);
-        }
-        for (vk, down, idx) in mods {
-            self.send_key(vk, down);
-            self.mod_state[idx] = down;
-        }
-        let elapsed = self.last_fps.elapsed().as_secs_f32();
-        if elapsed >= 1.0 {
-            let counts: Vec<(u32, u32)> = self.frame_count.drain().collect();
-            for (k, c) in counts {
-                self.fps.insert(k, c as f32 / elapsed);
-            }
-            self.last_fps = std::time::Instant::now();
+        if self
+            .close_at
+            .is_some_and(|at| std::time::Instant::now() >= at)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.poll(ctx);
         self.poll_controller(ctx);
         self.poll_login(ctx);
-
-        if !self.logged_in {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(56.0);
-                    ui.label(egui::RichText::new("网易 UU 远程").size(30.0).strong());
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Rust 原生客户端 · 跨平台").weak());
-                    ui.add_space(24.0);
-                    egui::Frame::none()
-                        .fill(egui::Color32::from_rgb(24, 27, 34))
-                        .rounding(egui::Rounding::same(14.0))
-                        .inner_margin(egui::Margin::same(22.0))
-                        .show(ui, |ui| {
-                            if let Some(tex) = &self.login_texture {
-                                let s = tex.size_vec2();
-                                ui.image((tex.id(), s));
-                            } else {
-                                ui.add_space(240.0);
-                            }
-                            ui.add_space(14.0);
-                            ui.label(egui::RichText::new(&self.login_status).size(15.0));
-                            ui.add_space(10.0);
-                            if ui.button(egui::RichText::new("刷新二维码").size(15.0)).clicked() {
-                                self.start_login();
-                            }
-                        });
-                });
-            });
-            return;
-        }
-        ctx.request_repaint();
-
-        let streaming = self.controller.is_some();
-        if !self.fullscreen {
-        egui::TopBottomPanel::top("top").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if streaming {
-                    ui.label(egui::RichText::new("串流").size(13.0).weak());
-                } else {
-                    ui.label(egui::RichText::new("网易 UU 远程").size(19.0).strong());
-                }
-                ui.add_space(8.0);
-                let (dot, col) = status_marker(&self.status);
-                ui.label(egui::RichText::new(dot).color(col).size(12.0));
-                ui.label(egui::RichText::new(&self.status).size(13.0).weak());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("全屏 (Ctrl+Alt+F)").clicked() {
-                        self.toggle_fullscreen(ui.ctx());
-                    }
-                    let mut idx = self.bitrate_idx;
-                    egui::ComboBox::from_id_salt("bitrate")
-                        .selected_text(BITRATE_PRESETS[idx].0)
-                        .show_ui(ui, |ui| {
-                            for (i, (label, _)) in BITRATE_PRESETS.iter().enumerate() {
-                                ui.selectable_value(&mut idx, i, *label);
-                            }
-                        });
-                    if idx != self.bitrate_idx {
-                        self.bitrate_idx = idx;
-                        self.send_bitrate();
-                    }
-                    if BITRATE_PRESETS[self.bitrate_idx].1 == 6 {
-                        let r = ui.add(
-                            egui::DragValue::new(&mut self.custom_mbps)
-                                .range(1..=1000)
-                                .suffix(" Mbps"),
-                        );
-                        if r.changed() {
-                            self.send_bitrate();
-                        }
-                    }
-                    if ui.button(if self.hud { "HUD ✓" } else { "HUD" }).clicked() {
-                        self.hud = !self.hud;
-                    }
-                    if streaming && ui.button("断开").clicked() {
-                        self.disconnect();
-                    }
-                    if !self.textures.is_empty() {
-                        let mut keys: Vec<u32> = self.textures.keys().copied().collect();
-                        keys.sort();
-                        egui::ComboBox::from_id_salt("display")
-                            .selected_text(format!("显示屏 {}", self.selected_track + 1))
-                            .show_ui(ui, |ui| {
-                                for k in keys {
-                                    ui.selectable_value(
-                                        &mut self.selected_track, k,
-                                        format!("显示屏 {}", k + 1));
-                                }
-                            });
-                    }
-                    if let Some((w, hgt, _)) = self.latest.get(&self.selected_track) {
-                        let f = self.fps.get(&self.selected_track).copied().unwrap_or(0.0);
-                        ui.label(
-                            egui::RichText::new(format!("{w}×{hgt} · {f:.0} fps"))
-                                .monospace()
-                                .size(13.0)
-                                .weak(),
-                        );
-                    }
-                });
-            });
-            ui.add_space(4.0);
-        });
-
-        if !streaming {
-        egui::SidePanel::left("devices")
-            .resizable(true)
-            .default_width(280.0)
-            .show(ctx, |ui| {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("我的设备").strong().size(16.0));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("刷新").clicked() {
-                            self.start_load();
-                        }
-                    });
-                });
-                ui.add_space(4.0);
-                ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("搜索设备"));
-                ui.add_space(6.0);
-                let q = self.search.to_lowercase();
-                let items: Vec<usize> = self
-                    .devices
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, d)| {
-                        q.is_empty()
-                            || d.alias.to_lowercase().contains(&q)
-                            || d.device_id.contains(&q)
-                    })
-                    .map(|(i, _)| i)
-                    .collect();
-                let mut clicked = None;
-                for i in items {
-                    let d = &self.devices[i];
-                    let online = d.status == "CONNECTED" || d.status == "ready";
-                    let selected = self.selected == Some(i);
-                    let fill = if selected {
-                        egui::Color32::from_rgb(38, 58, 102)
-                    } else if online {
-                        egui::Color32::from_rgb(26, 30, 38)
-                    } else {
-                        egui::Color32::from_rgb(22, 24, 30)
-                    };
-                    let frame = egui::Frame::none()
-                        .fill(fill)
-                        .rounding(egui::Rounding::same(10.0))
-                        .inner_margin(egui::Margin::same(8.0))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                let rect = ui.allocate_exact_size(
-                                    egui::vec2(42.0, 42.0),
-                                    egui::Sense::hover(),
-                                );
-                                match self.wallpapers.get(&i) {
-                                    Some(tex) => {
-                                        ui.painter().image(
-                                            tex.id(),
-                                            rect.0,
-                                            egui::Rect::from_min_max(
-                                                egui::pos2(0.0, 0.0),
-                                                egui::pos2(1.0, 1.0),
-                                            ),
-                                            egui::Color32::WHITE,
-                                        );
-                                    }
-                                    None => {
-                                        ui.painter().rect_filled(
-                                            rect.0,
-                                            8.0,
-                                            egui::Color32::from_rgb(34, 38, 48),
-                                        );
-                                    }
-                                }
-                                ui.vertical(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(if online { "●" } else { "○" })
-                                                .color(if online {
-                                                    egui::Color32::from_rgb(52, 199, 110)
-                                                } else {
-                                                    egui::Color32::from_rgb(120, 126, 138)
-                                                })
-                                                .size(11.0),
-                                        );
-                                        ui.label(egui::RichText::new(&d.alias).strong().size(15.0));
-                                    });
-                                    ui.label(
-                                        egui::RichText::new(&d.device_id).small().weak().size(11.0),
-                                    );
-                                });
-                            });
-                        });
-                    let resp = frame.response.interact(egui::Sense::click());
-                    if resp.clicked() {
-                        clicked = Some(i);
-                    }
-                    if resp.hovered() && !selected {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    ui.add_space(4.0);
-                }
-                if let Some(i) = clicked {
-                    self.selected = Some(i);
-                }
-            });
-
-        egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if let Some(i) = self.selected {
-                    let (alias, device_id, controllable) = {
-                        let d = &self.devices[i];
-                        (d.alias.clone(), d.device_id.clone(), d.controllable)
-                    };
-                    ui.label(egui::RichText::new(alias).strong());
-                    ui.label(egui::RichText::new(device_id).weak().size(12.0));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if self.controller.is_some() {
-                            if ui
-                                .button(egui::RichText::new("断开").size(15.0))
-                                .clicked()
-                            {
-                                self.disconnect();
-                            }
-                        } else if ui
-                            .button(egui::RichText::new("连接").size(15.0).strong())
-                            .clicked()
-                        {
-                            self.connect();
-                        }
-                        if self.controller.is_none() && !controllable {
-                            ui.label(egui::RichText::new("该设备不可被控").weak().size(12.0));
-                        }
-                    });
-                } else {
-                    ui.label(egui::RichText::new("选择一台设备开始远控").weak());
-                }
-            });
-            ui.add_space(4.0);
-        });
-        }
-        }
-
-        let mut pending: Vec<(serde_json::Value, u32)> = Vec::new();
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let rect = ui.available_rect_before_wrap();
-            let _resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-            let chosen = if self.textures.contains_key(&self.selected_track) {
-                Some(self.selected_track)
-            } else {
-                self.textures.keys().next().copied()
-            };
-            if let Some(track) = chosen {
-                let tex = &self.textures[&track];
-                let size = tex.size_vec2();
-                let scale = (rect.width() / size.x).min(rect.height() / size.y);
-                let draw = egui::Rect::from_center_size(rect.center(), size * scale);
-                ui.painter().image(
-                    tex.id(),
-                    draw,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-                if self.focused {
-                    let (events, pointer) = ctx.input(|i| (i.events.clone(), i.pointer.hover_pos()));
-                    pending.extend(self.pointer.events(&events, draw, pointer, 1).into_iter().map(|p| (p, 15)));
-                }
-            } else {
-                ui.painter()
-                    .rect_filled(rect, 0.0, egui::Color32::from_rgb(12, 14, 18));
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "选择设备并连接",
-                    egui::FontId::proportional(22.0),
-                    egui::Color32::from_rgb(90, 96, 110),
-                );
+        let (events, focused) = ctx.input(|i| (i.events.clone(), i.focused));
+        if self.focused && !focused {
+            self.release_all_keys();
+            for message in self.pointer.release_all(self.selected_track + 1) {
+                self.send_input(message, 15);
             }
-            if self.hud {
-                if let Some(h) = &self.controller {
-                    let s = &h.stats;
-                    let (w, hgt) = s.res();
-                    let rfps = self.fps.get(&self.selected_track).copied().unwrap_or(0.0);
-                    let lines = [
-                        "UU Remote · HUD   (F1 切换)".to_string(),
-                        format!("{w}×{hgt}   {}", s.backend()),
-                        format!(
-                            "src {:.1} fps   dec {:.1} fps   render {:.0} fps",
-                            s.src_fps(),
-                            s.dec_fps(),
-                            rfps
-                        ),
-                        format!(
-                            "bitrate {:.2} Mbps   decode {:.2} ms",
-                            s.bitrate_kbps.load(Ordering::Relaxed) as f32 / 1000.0,
-                            s.decode_ms()
-                        ),
-                        format!(
-                            "packets {}   lost {}   errors {}",
-                            s.packets.load(Ordering::Relaxed),
-                            s.lost.load(Ordering::Relaxed),
-                            s.errors.load(Ordering::Relaxed)
-                        ),
-                    ];
-                    let font = egui::FontId::monospace(13.0);
-                    let line_h = 17.0;
-                    let pad = 10.0;
-                    let x = rect.left() + 14.0;
-                    let y = rect.top() + 14.0;
-                    let bg = egui::Rect::from_min_size(
-                        egui::pos2(x - pad, y - pad),
-                        egui::vec2(420.0, line_h * lines.len() as f32 + pad * 2.0),
-                    );
-                    ui.painter()
-                        .rect_filled(bg, 6.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180));
-                    for (i, line) in lines.iter().enumerate() {
-                        ui.painter().text(
-                            egui::pos2(x, y + i as f32 * line_h),
-                            egui::Align2::LEFT_TOP,
-                            line,
-                            font.clone(),
-                            egui::Color32::from_rgb(215, 225, 240),
-                        );
+            self.remote_focus = false;
+        }
+        self.focused = focused;
+        for event in &events {
+            if let egui::Event::Key {
+                key,
+                pressed,
+                modifiers,
+                ..
+            } = event
+            {
+                if *key == egui::Key::F1 && *pressed && self.controller.is_some() {
+                    self.hud = !self.hud;
+                    continue;
+                }
+                if *key == egui::Key::F && modifiers.ctrl && modifiers.alt {
+                    if *pressed {
+                        self.toggle_fullscreen(ctx);
+                    }
+                    continue;
+                }
+                if self.remote_focus && !self.view_only && !self.show_settings {
+                    self.sync_modifiers(*modifiers);
+                    if let Some(vk) = vk_for(*key) {
+                        self.send_key(vk, *pressed);
                     }
                 }
             }
-        });
-        for (payload, kind) in pending {
-            self.send_input(payload, kind);
         }
+        if self.remote_focus && !self.view_only && !self.show_settings {
+            self.sync_modifiers(ctx.input(|i| i.modifiers));
+        }
+        let elapsed = self.last_fps.elapsed().as_secs_f32();
+        if elapsed >= 1.0 {
+            for (track, count) in self.frame_count.drain() {
+                self.fps.insert(track, count as f32 / elapsed);
+            }
+            self.last_fps = std::time::Instant::now();
+        }
+        if self.controller.is_some() {
+            self.stream_ui(ctx, &events);
+        } else {
+            self.home_ui(ctx);
+        }
+        self.settings_ui(ctx);
+        ctx.request_repaint_after(std::time::Duration::from_millis(
+            if self.controller.is_some() { 16 } else { 150 },
+        ));
     }
 }
 
@@ -913,8 +658,9 @@ fn main() -> eframe::Result {
     let vsync = std::env::var("UU_VSYNC").map(|v| v != "0").unwrap_or(true);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1120.0, 680.0])
-            .with_min_inner_size([720.0, 480.0])
+            .with_inner_size([1100.0, 760.0])
+            .with_decorations(false)
+            .with_min_inner_size([560.0, 360.0])
             .with_title("网易UU远程 · Rust"),
         vsync,
         ..Default::default()
@@ -924,4 +670,26 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
+}
+
+/// Condense a decoder backend name into a tag that fits the HUD's info line.
+///
+/// The full name can be a driver description plus a demotion reason, which is
+/// far too long for the line that also carries the resolution.
+fn short_backend(name: &str) -> String {
+    let mut tag = if name.starts_with("d3d11va") {
+        "HW d3d11va (MF)".to_string()
+    } else if name.starts_with("vaapi") {
+        "HW vaapi".to_string()
+    } else if name.starts_with("openh264") {
+        "SW openh264".to_string()
+    } else {
+        name.to_string()
+    };
+    if name.contains("abandoned") {
+        tag.push_str(" · hw 已回退");
+    } else if name.contains("hardware unavailable") {
+        tag.push_str(" · hw 不可用");
+    }
+    tag
 }
