@@ -44,6 +44,7 @@ pub struct MediaStats {
     pub cursor: std::sync::Mutex<Option<(u64,crate::cursor::Shape)>>,
     pub input_messages_sent: AtomicU64,
     pub input_send_errors: AtomicU64,
+    pub selected_video_track:AtomicU32,
     pub width: AtomicU32,
     pub height: AtomicU32,
     /// Source (network) frame rate x100.
@@ -70,6 +71,7 @@ pub struct MediaStats {
     /// Capture-setting response: request_id << 1 | accepted.
     pub settings_response: AtomicU64,
     pub remote_screens: std::sync::Mutex<crate::screen_control::RemoteScreens>,
+    pub remote_screens_revision: AtomicU64,
     /// Unrecovered RTP packet loss in the current receive window, parts/million.
     pub loss_ppm: AtomicU32,
     pub codec: std::sync::Mutex<String>,
@@ -87,6 +89,12 @@ pub struct MediaStats {
 }
 
 impl MediaStats {
+    pub fn select_video_track(&self,track:u32) {
+        if self.selected_video_track.swap(track,Ordering::AcqRel)!=track {
+            for value in [&self.src_fps_x100,&self.dec_fps_x100,&self.decode_us,&self.bitrate_kbps,&self.width,&self.height,&self.loss_ppm] {value.store(0,Ordering::Relaxed);}
+            self.set_backend("");
+        }
+    }
     pub fn set_backend(&self, backend: impl Into<String>) {
         if let Ok(mut b) = self.backend.lock() {
             *b = backend.into();
@@ -137,6 +145,15 @@ impl ControllerMedia {
     }
     pub(crate) fn has_super_screen(&self)->bool {
         self.stats.as_ref().is_some_and(|s|{let screens=s.remote_screens.lock().unwrap();screens.screens.len()==1 && screens.selected().is_some_and(|v|v.kind==2)})
+    }
+    pub(crate) fn exclusive_request(&self,seq:u64)->Option<Vec<u8>> {
+        let stats=self.stats.as_ref()?;
+        let screens=stats.remote_screens.lock().unwrap();
+        let source=screens.screens.iter().find(|s|s.kind!=0)
+            .or_else(||screens.selected()).or_else(||screens.screens.iter().find(|s|s.primary)).or_else(||screens.screens.first());
+        let (w,h,dpi)=source.map(|s|(s.width,s.height,s.dpi_scale))
+            .filter(|(w,h,_)|*w>0&&*h>0).unwrap_or_else(||{let (w,h)=stats.res();(w,h,None)});
+        crate::screen_control::enter_exclusive(seq,w,h,dpi)
     }
     pub(crate) fn exclusive_result(&self)->u64 {
         self.stats.as_ref().map_or(0,|s|s.exclusive_result.load(Ordering::Acquire))
@@ -327,6 +344,7 @@ impl ControllerMedia {
                                 }
                                 if let Some(screens) = crate::screen_control::screen_sources(&msg.data) {
                                     *s.remote_screens.lock().unwrap() = screens;
+                                    s.remote_screens_revision.fetch_add(1,Ordering::Release);
                                 }
                             }
                             if let Some((id, accepted)) = crate::control_wire::capture_setting_response(&msg.data) {
@@ -536,7 +554,7 @@ async fn receive_video(
         return; // Audio and unsupported repair codecs are not H.264 data.
     }
     let debug = std::env::var("UU_MEDIA_DEBUG").is_ok_and(|v| v != "0");
-    if let Some(s) = &stats {
+    if let Some(s) = stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
         *s.codec.lock().unwrap() = track.codec().capability.mime_type.clone();
     }
     let generation = Arc::new(AtomicU64::new(0));
@@ -557,7 +575,7 @@ async fn receive_video(
                 return;
             }
         };
-        if let Some(s) = &worker_stats {
+        if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
             s.set_backend(decoder.backend_name());
         }
         let mut dump = std::env::var("UU_DUMP_H264")
@@ -576,7 +594,7 @@ async fn receive_video(
         while let Some((data, timestamp, sample_epoch, sample_request)) = sample_rx.blocking_recv()
         {
             if window.elapsed() >= Duration::from_secs(2) {
-                if let Some(s) = &worker_stats {
+                if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
                     s.set_backend(decoder.backend_name());
                     s.dec_fps_x100.store(
                         (window_frames as f64 / window.elapsed().as_secs_f64() * 100.0) as u32,
@@ -642,8 +660,10 @@ async fn receive_video(
                         window_frames += 1;
                         decode_us += started.elapsed().as_micros() as u64;
                         if let Some(s) = &worker_stats {
-                            s.width.store(frame.width, Ordering::Relaxed);
-                            s.height.store(frame.height, Ordering::Relaxed);
+                            if s.selected_video_track.load(Ordering::Acquire)==track_idx {
+                                s.width.store(frame.width, Ordering::Relaxed);
+                                s.height.store(frame.height, Ordering::Relaxed);
+                            }
                             s.decoded_total.fetch_add(1, Ordering::Relaxed);
                         }
                         if debug && decoded % 60 == 0 {
@@ -865,7 +885,7 @@ async fn receive_video(
             recover(strict);
         }
         let _ = receiver.take_refresh();
-        if let Some(s) = &stats {
+        if let Some(s) = stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
             s.lost.store(receiver.stats.lost, Ordering::Relaxed);
             s.reordered
                 .store(receiver.stats.reordered, Ordering::Relaxed);
@@ -874,7 +894,7 @@ async fn receive_video(
                 .store(receiver.stats.damaged, Ordering::Relaxed);
         }
         if window.elapsed() >= Duration::from_secs(2) {
-            if let Some(s) = &stats {
+            if let Some(s) = stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
                 let seconds = window.elapsed().as_secs_f64();
                 let lost = receiver.stats.lost.saturating_sub(previous_lost);
                 let window_packets = receiver.stats.received.saturating_sub(previous_received);

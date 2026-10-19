@@ -9,25 +9,6 @@ fn row_icon(ui: &egui::Ui, response: &egui::Response, kind: Icon, color: Color32
     );
     icon(ui.painter(), rect, kind, color);
 }
-fn submenu<R>(
-    ui: &mut egui::Ui,
-    kind: Icon,
-    label: impl Into<String>,
-    body: impl FnOnce(&mut egui::Ui) -> R,
-) -> egui::InnerResponse<Option<R>> {
-    let response = ui.menu_button(format!("      {}   ", label.into()), body);
-    row_icon(ui, &response.response, kind, Color32::from_rgb(42, 52, 66));
-    let right = response.response.rect.right_center() - egui::vec2(7.0, 0.0);
-    ui.painter().line_segment(
-        [right - egui::vec2(2.0, 3.0), right + egui::vec2(1.0, 0.0)],
-        Stroke::new(1.0, Color32::GRAY),
-    );
-    ui.painter().line_segment(
-        [right + egui::vec2(1.0, 0.0), right + egui::vec2(-2.0, 3.0)],
-        Stroke::new(1.0, Color32::GRAY),
-    );
-    response
-}
 const MENU_INK: Color32 = Color32::from_rgb(29, 32, 37);
 const MENU_WIDTH: f32 = 236.0;
 
@@ -215,42 +196,37 @@ impl super::App {
             .exact_height(super::window::CONNECTION_BAR_HEIGHT)
             .frame(
                 egui::Frame::none()
-                    .fill(Color32::from_rgb(244, 247, 251))
+                    .fill(Color32::from_rgb(218, 223, 229))
                     .inner_margin(egui::Margin::symmetric(10.0, 2.0)),
             )
             .show(ctx, |ui| {
                 if self.mouse_captured {ui.disable();}
                 ui.horizontal_centered(|ui| {
-                    ui.label(
-                        RichText::new("◆")
-                            .color(Color32::from_rgb(53, 131, 255))
-                            .size(20.0),
-                    );
+                    let (brand,drag)=ui.allocate_exact_size(egui::vec2(22.0,26.0),egui::Sense::drag());
+                    super::ui::logo(ui.painter(),brand);
+                    if drag.drag_started(){ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);}
                     let title = self
                         .selected
                         .and_then(|i| self.devices.get(i))
                         .map(|d| d.alias.as_str())
                         .unwrap_or("远程桌面");
-                    ui.label(RichText::new(title).size(12.0));
+                    let roomy=ui.available_width()>740.0;
+                    let wide=ui.available_width()>1100.0;
+                    if ui.available_width()>520.0 {ui.add_sized([76.0,24.0],egui::Label::new(RichText::new(title).size(12.0)).truncate());}
                     ui.separator();
-                    submenu(
-                        ui,
-                        Icon::Desktop,
-                        format!("显示屏 {}", self.selected_track + 1),
-                        |ui| self.display_menu(ui),
-                    );
-                    if self.view_only {
+                    self.display_tabs(ui);
+                    if roomy && self.view_only {
                         ui.label(RichText::new("仅观看").color(Color32::from_rgb(98, 125, 160)));
                     }
-                    if !self.view_only && self.controller.is_some() && !self.input_ready() {
+                    if wide && !self.view_only && self.controller.is_some() && !self.input_ready() {
                         ui.label(
-                            RichText::new("输入连接中…")
+                            RichText::new(if self.displays.switching(){"正在切换显示器…"}else{"输入连接中…"})
                                 .size(12.0)
                                 .color(Color32::from_gray(110)),
                         )
                         .on_hover_text("视频和输入分别建立连接，输入就绪后可操作");
                     }
-                    if let Some(controller) = &self.controller {
+                    if let Some(controller) = self.controller.as_ref().filter(|_|roomy) {
                         ui.label(
                             RichText::new(format!(
                                 "{:.1} Mbps",
@@ -285,6 +261,7 @@ impl super::App {
                         self.stream_menu.trigger_rect = Some(control.rect);
                         row_icon(ui, &control, Icon::Settings, Color32::from_rgb(42, 52, 66));
                         if control.clicked() {
+                            self.displays.menu_open=false;
                             self.stream_menu.open = !self.stream_menu.open;
                             if !self.stream_menu.open {
                                 ctx.memory_mut(|m| m.close_popup());
@@ -296,37 +273,66 @@ impl super::App {
             });
     }
 
+    fn display_tabs(&mut self, ui: &mut egui::Ui) {
+        let screens=self.remote_screens();
+        let reserve=if ui.available_width()>660.0{345.0}else{250.0};
+        let width=(ui.available_width()-reserve).clamp(75.0,540.0);
+        let mut chosen=None;
+        ui.allocate_ui_with_layout(egui::vec2(width,30.0),egui::Layout::left_to_right(egui::Align::Center),|ui| {
+            egui::ScrollArea::horizontal().id_salt("remote-display-tabs")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .max_width((width-30.0).max(60.0)).auto_shrink([false,true]).show(ui,|ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x=2.0;
+                        for screen in &screens.screens {
+                            let selected=self.displays.selected==Some(screen.id);
+                            let label=super::displays::label(&screens,screen);
+                            let (rect,response)=ui.allocate_exact_size(egui::vec2(140.0,30.0),egui::Sense::click());
+                            if selected || response.hovered() {ui.painter().rect_filled(rect,7.0,if selected{Color32::WHITE}else{Color32::from_rgb(232,235,239)});}
+                            icon(ui.painter(),Rect::from_center_size(rect.left_center()+egui::vec2(16.0,0.0),egui::vec2(15.0,15.0)),Icon::Desktop,MENU_INK);
+                            ui.painter().with_clip_rect(Rect::from_min_max(rect.min+egui::vec2(30.0,0.0),rect.max-egui::vec2(8.0,0.0))).text(rect.left_center()+egui::vec2(30.0,0.0),egui::Align2::LEFT_CENTER,&label,egui::FontId::proportional(12.0),MENU_INK);
+                            if response.on_hover_text(format!("{}{} · {} × {} · {} Hz",label,if screen.primary{" · 主屏"}else{""},screen.width,screen.height,screen.refresh_hz)).clicked(){chosen=Some(screen.id);}
+                        }
+                        if screens.screens.is_empty(){ui.label("等待显示器…");}
+                    });
+                });
+            let response=ui.add_sized([26.0,28.0],egui::Button::new(RichText::new("+").size(20.0)).frame(false)).on_hover_text("选择远端显示器");
+            if response.clicked(){self.displays.menu_open=!self.displays.menu_open;self.stream_menu.open=false;self.context.memory_mut(|m|m.close_popup());self.displays.anchor=response.rect.left_bottom();self.remote_focus=false;self.release_all_keys();}
+        });
+        if let Some(id)=chosen{self.select_remote_screen(id);}
+    }
+
+    fn display_picker(&mut self,ctx:&egui::Context,blocked:&mut Vec<Rect>) {
+        if !self.displays.menu_open || self.fullscreen{return;}
+        let screen=ctx.screen_rect().shrink(4.0);
+        let anchor=self.displays.anchor;
+        let menu=egui::Area::new("remote-display-picker".into()).order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(anchor.x.min(screen.right()-324.0).max(screen.left()),anchor.y))
+            .constrain_to(screen).show(ctx,|ui| {
+                popup_frame(ui).show(ui,|ui| {
+                    ui.set_width(310.0);ui.spacing_mut().item_spacing=egui::Vec2::ZERO;
+                    egui::ScrollArea::vertical().max_height((screen.height()-60.0).max(80.0)).show(ui,|ui|self.display_menu(ui));
+                });
+            });
+        blocked.push(menu.response.rect);
+        if ctx.input(|i|i.key_pressed(egui::Key::Escape) || (i.pointer.any_pressed() && i.pointer.hover_pos().is_some_and(|p| !menu.response.rect.contains(p) && p.y>super::window::CONNECTION_BAR_HEIGHT))) {
+            self.displays.menu_open=false;
+        }
+    }
+
     fn display_menu(&mut self, ui: &mut egui::Ui) {
-        let mut tracks: Vec<_> = self.textures.keys().copied().collect();
-        tracks.sort_unstable();
-        for track in tracks {
-            if menu_row(
-                ui,
-                &format!("显示屏 {}", track + 1),
-                None,
-                self.selected_track == track,
-                false,
-                "",
-                false,
-            )
-            .clicked()
-            {
-                self.release_all_keys();
-                for message in self
-                    .pointer
-                    .release_all(self.input_screen(self.selected_track))
-                {
-                    self.send_input(message, 15);
-                }
-                self.selected_track = track;
-                self.window_sizing.begin_stream();
-                ui.close_menu();
-                ui.memory_mut(|m| m.close_popup());
-            }
+        let screens=self.remote_screens();
+        ui.set_min_width(260.0);
+        for screen in &screens.screens {
+            let response=menu_row(ui,&super::displays::label(&screens,screen),None,
+                self.displays.selected==Some(screen.id),false,if screen.primary {"主屏"}else{""},false)
+                .on_hover_text(format!("{} · {} × {} · {} Hz · {}",screen.display_name,screen.width,screen.height,screen.refresh_hz,screen.kind_label()));
+            if response.clicked(){self.select_remote_screen(screen.id);ui.close_menu();}
         }
-        if self.textures.is_empty() {
-            ui.add_enabled(false, egui::Label::new("正在等待显示屏…"));
-        }
+        if screens.screens.is_empty(){ui.add_enabled(false,egui::Label::new("等待远端显示器列表…"));}
+        if !self.displays.notice.is_empty(){separator(ui);ui.label(&self.displays.notice);}
+        separator(ui);
+        if ui.button("显示器模式设置…").clicked(){self.displays.menu_open=false;self.open_settings();}
     }
 
     fn confirm_quality(&mut self, ui: &mut egui::Ui) {
@@ -453,7 +459,7 @@ impl super::App {
                             }
                             QualityDetail::Resolution => {
                                 for (index, label) in [
-                                    "跟随远端分辨率",
+                                    "保持远端分辨率",
                                     "1920 × 1080",
                                     "2560 × 1440",
                                     "3840 × 2160",
@@ -545,6 +551,7 @@ impl super::App {
             // Settings own their ComboBox popup while their window is open.
             // Otherwise clear old stream children so no invisible popup traps input.
             if !self.settings_open {ctx.memory_mut(|m| m.close_popup());}
+            self.display_picker(ctx,&mut blocked);
             return blocked;
         }
         let screen = ctx.screen_rect();
@@ -578,7 +585,7 @@ impl super::App {
                                         ui,
                                         &mut blocked,
                                         Icon::Desktop,
-                                        format!("显示屏 {}", self.selected_track + 1),
+                                        self.display_label(),
                                         |ui| self.display_menu(ui),
                                     );
                                     quality_open = side_submenu(

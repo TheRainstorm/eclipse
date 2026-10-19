@@ -12,6 +12,7 @@ use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
+mod displays;
 mod clipboard;
 mod cursor;
 mod keyboard_capture;
@@ -105,6 +106,7 @@ struct App {
     unpresented: std::collections::HashSet<u32>,
     render_ms: f32,
     selected_track: u32,
+    displays: displays::Displays,
     seq: u32,
     kseq: u32,
     pressed_vks: std::collections::HashSet<u32>,
@@ -317,6 +319,7 @@ impl App {
             unpresented: Default::default(),
             render_ms: 0.0,
             selected_track: 0,
+            displays: displays::Displays::default(),
             seq: 1,
             kseq: 1,
             pressed_vks: std::collections::HashSet::new(),
@@ -502,6 +505,7 @@ impl App {
         while let Ok(f) = h.frames.try_recv() {
             frames.push(f);
         }
+        let arrived:Vec<_>=frames.iter().map(|f|f.0).collect();
         for (idx, w, hgt, rgba) in frames {
             let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, hgt as usize], &rgba);
             match self.textures.get_mut(&idx) {
@@ -526,8 +530,12 @@ impl App {
                 } else { "远端拒绝了画质设置，请重新选择".into() };
             }
         }
+        self.poll_displays(&arrived);
         if apply_settings {
             self.send_capture_settings();
+            if !self.textures.contains_key(&self.selected_track) {
+                if let Some(id)=self.displays.selected{self.select_remote_screen(id);}
+            }
         }
         if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
             if let Some(h)=&self.controller {h.stats.audio.stop();h.stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);}
@@ -540,6 +548,7 @@ impl App {
             self.fps.clear();
             self.settings_feedback.clear();
             self.cursor=cursor::Cursor::default();self.remote_cursor_active=false;
+            self.displays=displays::Displays::default();
         }
     }
 
@@ -548,17 +557,24 @@ impl App {
     }
 
     fn input_screen(&self, track: u32) -> u32 {
-        self.controller.as_ref().and_then(|h|
-            h.stats.remote_screens.lock().unwrap().for_track(track).map(|s| s.id))
+        if track==self.selected_track {
+            if let Some(id)=self.displays.selected.filter(|id|*id>=0){return id as u32;}
+        }
+        self.controller.as_ref().and_then(|h| {
+            let screens=h.stats.remote_screens.lock().unwrap();
+            self.displays.selected.and_then(|id|screens.screens.iter().find(|s|s.id==id && s.video_track_index==track))
+                .or_else(||screens.for_track(track)).map(|s|s.id)
+        })
             .filter(|id| *id >= 0).map(|id| id as u32).unwrap_or(track + 1)
     }
     fn input_ready(&self) -> bool {
-        !self.disconnecting && self.controller.as_ref().is_some_and(|h|
+        !self.disconnecting && self.displays.ready() && self.controller.as_ref().is_some_and(|h|
             h.stats.control_open.load(std::sync::atomic::Ordering::Acquire) != 0)
     }
 
     /// Apply frame rate, quality and resolution together so another setting never resets FPS.
-    fn send_capture_settings(&mut self) {
+    fn send_capture_settings(&mut self) {self.send_capture_settings_through(false);}
+    fn send_capture_settings_through(&mut self,immediate:bool) {
         let Some(h) = &self.controller else { return };
         let (_, quality, preset_mbps) = BITRATE_PRESETS[self.bitrate_idx];
         let custom_bps = if quality == 6 {
@@ -573,7 +589,7 @@ impl App {
             3=>uu_core::control_wire::CaptureResolution::Exact(3840,2160),
             _=>uu_core::control_wire::CaptureResolution::Unchanged,
         };
-        let source=h.stats.remote_screens.lock().unwrap().for_track(self.selected_track).map_or(-1,|s|s.id);
+        let source=self.displays.selected.unwrap_or_else(||h.stats.remote_screens.lock().unwrap().for_track(self.selected_track).map_or(-1,|s|s.id));
         let msg = uu_core::control_wire::capture_setting_for_screen(
             2000 + self.settings_seq,
             uu_core::control_wire::now_ms(),
@@ -584,7 +600,10 @@ impl App {
             self.preferences.remote_cursor,
             source,
         );
-        self.settings_feedback = if h.settings.send(msg).is_ok() {
+        let request=2000+self.settings_seq;
+        self.displays.expect_settings(request);
+        let sent=if immediate {h.input.send(msg)}else{h.settings.send(msg)};
+        self.settings_feedback = if sent.is_ok() {
             format!("已发送：{} FPS · {} · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0,
                 if quality == 6 { format!("{} Mbps", preset_mbps.unwrap_or(self.custom_mbps)) }
                 else { "以实际接收码率为准".into() })
@@ -650,6 +669,7 @@ impl App {
     }
 
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
+        self.displays.menu_open=false;
         self.release_all_keys();
         self.fullscreen = !self.fullscreen;
         self.stream_menu.open = false;
@@ -754,6 +774,7 @@ impl App {
         if self.disconnecting { return; }
         self.release_pointer_capture(&self.context.clone());
         self.stream_menu.open = false;
+        self.displays.menu_open=false;
         self.context.memory_mut(|m| m.close_popup());
         self.release_all_keys();
         for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
@@ -789,6 +810,7 @@ impl App {
             return;
         }
         if self.controller.is_some() { return; }
+        self.displays=displays::Displays::default();self.selected_track=0;
         let Some(i) = self.selected else { return };
         let Some(config) = self.config.clone() else {
             self.status = "配置不可用".into();
@@ -876,7 +898,7 @@ impl eframe::App for App {
         self.sessions.reap();
         self.poll(ctx);
         self.poll_controller(ctx);
-        let video_px = self.textures.get(&self.selected_track).or_else(|| self.textures.values().next())
+        let video_px = self.textures.get(&self.selected_track)
             .map(|texture| texture.size_vec2());
         self.window_sizing.update(ctx, self.stream_target.is_some(), video_px,
             self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(frame, ctx));

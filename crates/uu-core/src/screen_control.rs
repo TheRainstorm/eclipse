@@ -75,8 +75,11 @@ pub fn screen_sources(data: &[u8]) -> Option<RemoteScreens> {
             .and_then(|v| decode_wire(v).ok())
             .map(|f| number(&f, 1) as u32)
             .filter(|v| *v > 0);
+        let id=number(&fields,1) as i32;
+        if id<0 {continue;}
+        if screens.iter().any(|s:&RemoteScreen|s.id==id){return None;}
         screens.push(RemoteScreen {
-            id: number(&fields, 1) as i32,
+            id,
             display_name: message(&fields,10).and_then(|v|std::str::from_utf8(v).ok()).unwrap_or("").chars().filter(|c|!c.is_control()).take(96).collect(),
             primary: number(&fields,7)!=0,
             refresh_hz: number(&fields, 2) as u32,
@@ -117,9 +120,13 @@ fn request(seq:u64,case:u32,payload:&[u8])->Vec<u8> {
 pub fn send_video_track(seq:u64,index:u32)->Vec<u8> {
     let mut body=Vec::new();crate::control_wire::int(1,index.into(),&mut body);request(seq,15,&body)
 }
-pub fn enter_exclusive(seq:u64)->Vec<u8> {
+pub fn enter_exclusive(seq:u64,width:u32,height:u32,dpi:Option<u32>)->Option<Vec<u8>> {
+    if width==0 || height==0 || width>16384 || height>16384 {return None;}
     let mut body=Vec::new();crate::control_wire::int(1,1,&mut body); // REASON_MANUAL
-    request(seq,26,&body)
+    let mut resolution=Vec::new();crate::control_wire::int(1,width.into(),&mut resolution);crate::control_wire::int(2,height.into(),&mut resolution);
+    crate::control_wire::bytes(2,&resolution,&mut body);
+    if let Some(dpi)=dpi.filter(|v|*v>0&&*v<=1000){crate::control_wire::int(3,dpi.into(),&mut body);}
+    Some(request(seq,26,&body))
 }
 pub fn quit_exclusive(seq:u64)->Vec<u8> {request(seq,14,&[])}
 /// Display RPC results are independent of capture-setting acknowledgement.
@@ -187,7 +194,7 @@ mod tests {
     }
     #[test]
     fn explicit_display_requests_and_responses_use_official_rpc_cases() {
-        for (request,case,body) in [(send_video_track(9001,3),15,vec![(1,WireValue::Varint(3))]),(enter_exclusive(9002),26,vec![(1,WireValue::Varint(1))]),(quit_exclusive(9003),14,vec![])] {
+        for (request,case,body) in [(send_video_track(9001,3),15,vec![(1,WireValue::Varint(3))]),(quit_exclusive(9003),14,vec![])] {
             let fields=decode_wire(&request).unwrap();let rpc=decode_wire(message(&fields,21).unwrap()).unwrap();
             assert_eq!(decode_wire(message(&rpc,case).unwrap()).unwrap(),body);
         }
@@ -208,6 +215,15 @@ mod tests {
         assert_eq!(number(&settings,4),42);assert_eq!(number(&settings,10),1);assert_eq!(number(&settings,18),120);assert_eq!(number(&settings,8),18000000);
         assert!(bind_current_capture(&resolved,7).is_none());
         assert_eq!(DisplayMode::default(),DisplayMode::Preserve);
+    }
+
+    #[test]
+    fn exclusive_request_requires_measured_dimensions_and_manual_reason() {
+        assert!(enter_exclusive(1,0,0,None).is_none());
+        let data=enter_exclusive(900,2560,1440,Some(125)).unwrap();
+        let outer=decode_wire(&data).unwrap();let rpc=decode_wire(message(&outer,21).unwrap()).unwrap();let body=decode_wire(message(&rpc,26).unwrap()).unwrap();
+        assert_eq!(number(&body,1),1);assert_eq!(number(&body,3),125);
+        let resolution=decode_wire(message(&body,2).unwrap()).unwrap();assert_eq!(number(&resolution,1),2560);assert_eq!(number(&resolution,2),1440);
     }
 
 }

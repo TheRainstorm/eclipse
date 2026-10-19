@@ -36,10 +36,21 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     let settings = crate::control_wire::capture_setting_request_with_resolution(
         1000, 1, 2, 5, None, crate::control_wire::CaptureResolution::Native);
     let expected = settings.clone();
+    let track_request=crate::screen_control::send_video_track(10001,2);
+    let expected_track=track_request.clone();
+    let mut sources=Vec::new();
+    for (id,track,name,primary) in [(7,0,"Zako HDR",true),(42,2,"S2719",false)] {
+        let mut screen=Vec::new();crate::control_wire::int(1,id,&mut screen);crate::control_wire::int(12,track,&mut screen);
+        crate::control_wire::int(7,primary as u64,&mut screen);crate::control_wire::bytes(10,name.as_bytes(),&mut screen);
+        crate::control_wire::bytes(1,&screen,&mut sources);
+    }
+    crate::control_wire::int(2,42,&mut sources);
+    let inventory=crate::control_wire::envelope(10002,7,&sources);
     let (delivered_tx, mut delivered_rx) = unbounded_channel();
     peer.on_data_channel(Box::new(move |channel| {
         let tx = delivered_tx.clone();
         let expected = expected.clone();
+        let expected_track=expected_track.clone();let inventory=inventory.clone();
         Box::pin(async move {
             if channel.label()=="TEXT_DATA_CHANNEL" {
                 let weak=Arc::downgrade(&channel);
@@ -61,9 +72,11 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
                 channel.on_open(Box::new(move ||{let channel=weak.clone();Box::pin(async move {
                     if let Some(channel)=channel.upgrade(){channel.send(&crate::control_wire::echo_response_with_clipboard(99,1,true).into()).await.unwrap();}
                 })}));
+                let track_channel=Arc::downgrade(&channel);
                 channel.on_message(Box::new(move |msg| {
-                    let tx = tx.clone();
-                    let kind = if !msg.is_string && msg.data.as_ref() == expected.as_slice() {
+                    let tx = tx.clone();let channel=track_channel.clone();let inventory=inventory.clone();
+                    let kind = if !msg.is_string && msg.data.as_ref()==expected_track.as_slice(){Some("display track")}
+                    else if !msg.is_string && msg.data.as_ref() == expected.as_slice() {
                         Some("settings")
                     } else {
                         serde_json::from_slice::<serde_json::Value>(&msg.data).ok().and_then(|v|
@@ -71,7 +84,17 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
                             else if v["action"] == "mouse_move_absolute" { Some("pointer") }
                             else if v["action"] == "kbd_press" { Some("key") } else { None })
                     };
-                    Box::pin(async move { if let Some(kind) = kind { let _ = tx.send(kind); } })
+                    Box::pin(async move {
+                        if kind==Some("display track") {
+                            if let Some(channel)=channel.upgrade() {
+                                let mut header=Vec::new();crate::control_wire::int(1,10001,&mut header);
+                                let mut rpc=Vec::new();crate::control_wire::bytes(1,&header,&mut rpc);crate::control_wire::bytes(11,&[],&mut rpc);
+                                channel.send(&crate::control_wire::envelope(10003,22,&rpc).into()).await.unwrap();
+                                channel.send(&inventory.into()).await.unwrap();
+                            }
+                        }
+                        if let Some(kind) = kind { let _ = tx.send(kind); }
+                    })
                 }));
             }
         })
@@ -106,8 +129,8 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
         }
         tokio::time::timeout(Duration::from_secs(10), async {
             let mut delivered = std::collections::HashSet::new();
-            while delivered.len() < 6 { delivered.insert(delivered_rx.recv().await.expect("CONTROL messages")); }
-            assert_eq!(delivered, ["settings", "heartbeat", "pointer", "key", "clipboard outbound", "clipboard ack"].into_iter().collect());
+            while delivered.len() < 7 { delivered.insert(delivered_rx.recv().await.expect("CONTROL messages")); }
+            assert_eq!(delivered, ["settings", "heartbeat", "pointer", "key", "clipboard outbound", "clipboard ack", "display track"].into_iter().collect());
         }).await.expect("settings, heartbeat and both kinds of input must reach the peer");
         ws.send(Message::Text("42[\"released\",{}]".into())).await.unwrap();
         // Keep the socket alive until the client consumes released.
@@ -120,14 +143,22 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     let (input, mut input_rx) = unbounded_channel();
     input.send(br#"{"action":"mouse_move_absolute","screen_id":42,"abs_x":0.5,"abs_y":0.5}"#.to_vec()).unwrap();
     input.send(br#"{"action":"kbd_press","key":65}"#.to_vec()).unwrap();
+    input.send(track_request).unwrap();
     let (_setting, mut settings_rx) = unbounded_channel();
     tokio::time::timeout(Duration::from_secs(25), drive_session(&mut sio, &media, "test", "ice", &ev,
         &mut input_rx, &mut settings_rx, settings)).await.unwrap().unwrap();
     assert!(events.try_iter().any(|event| matches!(event, ControllerEvent::Status(s) if s == "已请求目标画质/码率")));
     assert_eq!(stats.clipboard.remote.lock().unwrap().as_deref(),Some("host-to-local 🙂"));
+    assert!(stats.display_responses.lock().unwrap().contains(&(10001,11,0)));
+    let screens=stats.remote_screens.lock().unwrap().clone();
+    assert_eq!(screens.selected().unwrap().display_name,"S2719");assert_eq!(screens.for_track(0).unwrap().id,7);
+    assert_eq!(screens.for_track(2).unwrap().id,42);
     stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);
     media.pc.close().await.unwrap();
-    peer.close().await.unwrap();
+    // The first close can already reset the remote SCTP association. The
+    // library may report that reset while still completing peer shutdown.
+    let _=peer.close().await;
+    assert_eq!(peer.connection_state(),webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed);
     sio.close().await;
     server.await.unwrap();
 }

@@ -6,7 +6,7 @@ impl super::App {
     pub(super) fn paint_hud(&self, ui: &egui::Ui, rect: Rect) {
         let Some(controller) = &self.controller else { return };
         let s = &controller.stats;
-        let (w, h) = s.res();
+        let (w, h) = self.textures.get(&self.selected_track).map(|t|(t.size()[0] as u32,t.size()[1] as u32)).unwrap_or_else(||s.res());
         let rd = self.fps.get(&self.selected_track).copied().unwrap_or(0.0);
         let codec = s.codec.lock().unwrap().trim_start_matches("video/").to_uppercase();
         let codec = if codec.is_empty() { "—" } else { &codec };

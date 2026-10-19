@@ -167,7 +167,7 @@ fn text_at(p: &egui::Painter, pos: Pos2, text: impl Into<String>, size: f32, col
 fn online(status: &str) -> bool {
     matches!(status, "CONNECTED" | "ready" | "ONLINE")
 }
-fn logo(p: &egui::Painter, rect: Rect) {
+pub(super) fn logo(p: &egui::Painter, rect: Rect) {
     let c = rect.center();
     for (points, color) in [
         (
@@ -694,17 +694,16 @@ impl App {
 
     pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
         if !self.fullscreen { self.connection_bar(ctx); }
-        let was_open = self.stream_menu.open;
+        let was_open = self.stream_menu.open || self.displays.menu_open;
         let controls = self.stream_controls(ctx);
         let control_pointer = !self.mouse_captured && ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
-        let controls_active = self.settings_open || !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.open || control_pointer;
+        let controls_active = self.displays.menu_open || self.settings_open || !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.open || control_pointer;
         let mut messages = Vec::new();
         egui::CentralPanel::default().frame(egui::Frame::none().fill(C::BLACK)).show(ctx,|ui| {
             ui.set_clip_rect(ui.max_rect());
             let rect=ui.available_rect_before_wrap();ui.allocate_rect(rect,Sense::hover());
-            let chosen=self.textures.contains_key(&self.selected_track).then_some(self.selected_track).or_else(||self.textures.keys().next().copied());
+            let chosen=self.textures.contains_key(&self.selected_track).then_some(self.selected_track);
             if let Some(track)=chosen {
-                self.selected_track = track;
                 let input_screen = self.input_screen(track);
                 let texture=&self.textures[&track];let size=texture.size_vec2();let scale=(rect.width()/size.x).min(rect.height()/size.y);
                 let draw=Rect::from_center_size(rect.center(),size*scale);
@@ -730,14 +729,23 @@ impl App {
             }else{
                 let center=rect.center();
                 let message=Rect::from_center_size(center-egui::vec2(0.0,24.0),egui::vec2((rect.width()-48.0).clamp(1.0,640.0),80.0));
-                ui.put(message,egui::Label::new(RichText::new(&self.status).size(16.0).color(C::from_rgb(180,190,205))).wrap());
+                ui.put(message,egui::Label::new(RichText::new(if !self.displays.notice.is_empty(){&self.displays.notice}else{&self.status}).size(16.0).color(C::from_rgb(180,190,205))).wrap());
                 if self.controller.is_some() {
-                    ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(24.0,24.0)),egui::Spinner::new());
+                    if self.displays.ready() || self.displays.switching() {
+                        ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(24.0,24.0)),egui::Spinner::new());
+                    } else if let Some(id)=self.displays.selected {
+                        if ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(156.0,34.0)),egui::Button::new("重试当前显示器")).clicked(){self.select_remote_screen(id);}
+                    }
                     if !self.disconnecting && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),egui::Button::new("取消连接")).clicked(){self.disconnect();}
                 } else {
                     if ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),egui::Button::new(RichText::new("重新连接").color(C::WHITE)).fill(BLUE)).clicked(){self.connect();}
                     if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),egui::Button::new("关闭串流窗口")).clicked(){self.disconnect();}
                 }
+            }
+            if chosen.is_some() && !self.displays.notice.is_empty() {
+                let notice=Rect::from_center_size(rect.center_top()+egui::vec2(0.0,38.0),egui::vec2((rect.width()-40.0).clamp(1.0,480.0),44.0));
+                ui.painter().rect_filled(notice,6.0,C::from_black_alpha(160));
+                ui.put(notice,egui::Label::new(RichText::new(&self.displays.notice).color(C::WHITE)).wrap());
             }
             if self.hud { self.paint_hud(ui, rect); }
 

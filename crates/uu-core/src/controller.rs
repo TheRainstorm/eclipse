@@ -335,6 +335,7 @@ async fn drive_session(
     let exclusive=media.wants_exclusive_display();
     let mut policy_done=!exclusive;
     let mut policy_sent=None;
+    let mut policy_started=None;
     let mut pending_setting: Option<Vec<u8>> = None;
     let mut last_attempt = None;
     let mut setup_timer = tokio::time::interval(Duration::from_millis(250));
@@ -366,10 +367,14 @@ async fn drive_session(
                     {
                         last_attempt = Some(now);
                         if !policy_done {
+                            let waiting_since=*policy_started.get_or_insert(now);
                             if policy_sent.is_none() {
                                 if media.has_super_screen() {policy_done=true;}
-                                else if media.send_control(crate::screen_control::enter_exclusive(900)).await.is_ok() {
-                                    policy_sent=Some(now);status("正在请求UU虚拟屏独占…");
+                                else if let Some(request)=media.exclusive_request(900) {
+                                    if media.send_control(request).await.is_ok() {policy_sent=Some(now);status("正在请求UU虚拟屏独占…");}
+                                }
+                                if !policy_done && policy_sent.is_none() && now.duration_since(waiting_since)>=Duration::from_secs(8) {
+                                    policy_done=true;status("无法确认远端显示器参数，未申请独占");
                                 }
                             }
                             if let Some(sent)=policy_sent {
