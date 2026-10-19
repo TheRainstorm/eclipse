@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use bytes::Bytes;
 use cros_codecs::decoder::stateless::h264::H264;
 use cros_codecs::decoder::stateless::{
-    DecodeError, DynStatelessVideoDecoder, StatelessDecoder, StatelessVideoDecoder,
+    DecodeError, StatelessDecoder, StatelessVideoDecoder,
 };
 use cros_codecs::decoder::BlockingMode;
 use cros_codecs::decoder::{DecodedHandle, DecoderEvent, StreamInfo};
@@ -72,7 +72,7 @@ impl VideoDecoder for VaapiDecoder {
 }
 
 struct Decoder {
-    decoder: DynStatelessVideoDecoder<Surface>,
+    decoder: StatelessDecoder<H264, cros_codecs::backend::vaapi::decoder::VaapiBackend<Surface>>,
     display: std::rc::Rc<Display>,
     pool: Option<FramePool<GenericDmaVideoFrame>>,
     name: String,
@@ -86,8 +86,7 @@ impl Decoder {
         let (path, display) = open_display()?;
         let decoder =
             StatelessDecoder::<H264, _>::new_vaapi(display.clone(), BlockingMode::Blocking)
-                .map_err(|e| format!("VA-API H.264 decoder: {e}"))?
-                .into_trait_object();
+                .map_err(|e| format!("VA-API H.264 decoder: {e}"))?;
         Ok(Self {
             decoder,
             display,
@@ -147,6 +146,7 @@ impl super::Backend for Decoder {
             input = &input[consumed..];
             self.pump_events()?;
         }
+        self.decoder.finish_access_unit().map_err(|e| format!("VA access-unit submission: {e}"))?;
         self.pump_events()?;
         Ok(self.pending.pop_front())
     }
@@ -389,6 +389,43 @@ fn pack_nv12(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn immediate_output_keeps_h264_reference_surfaces_alive() {
+        use cros_codecs::codec::h264::{dpb::Dpb, picture::PictureData};
+        use std::sync::Arc;
+        let mut dpb = Dpb::default();
+        dpb.set_limits(2, 0);
+        let handle = Arc::new(42);
+        let mut picture = PictureData::new_non_existing(0, 0);
+        picture.nonexisting = false;
+        dpb.store_picture(picture.into_rc(), Some(handle.clone())).unwrap();
+        let shown = dpb.output_without_reordering();
+        assert_eq!(shown, vec![Some(handle.clone())]);
+        assert!(dpb.output_without_reordering().is_empty());
+        assert_eq!(dpb.entries().len(), 1);
+        assert!(dpb.entries()[0].reference.is_some());
+        assert!(dpb.entries()[0].decoded_frame.is_none());
+        drop(shown);
+        assert_eq!(Arc::strong_count(&handle), 2);
+    }
+
+    #[test]
+    fn reordered_or_interlaced_h264_never_uses_immediate_output() {
+        use cros_codecs::codec::h264::{dpb::Dpb, picture::PictureData};
+        for (reorder, interlaced) in [(2, false), (0, true)] {
+            let mut dpb = Dpb::default();
+            dpb.set_limits(2, reorder);
+            dpb.set_interlaced(interlaced);
+            // IDR/reset clears pictures, not the SPS reorder constraints.
+            dpb.clear();
+            let mut picture = PictureData::new_non_existing(0, 0);
+            picture.nonexisting = false;
+            dpb.store_picture(picture.into_rc(), Some(42)).unwrap();
+            assert!(dpb.output_without_reordering().is_empty());
+            assert_eq!(dpb.entries()[0].decoded_frame, Some(42));
+        }
+    }
 
     #[test]
     fn nv12_planes_are_repacked_row_by_row() {
