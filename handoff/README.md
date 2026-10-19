@@ -18,9 +18,11 @@
 
 | 12 | `12-2026-10-19-shortcuts-hud-dpi-window.md` | Ctrl+Alt+S、居中 HUD、删除旧设置、1:1 初始窗口与真实跨 DPI 往返、窗口最大化和串流全屏分离 |
 
+| 13 | `13-2026-10-19-launcher-dpi-multiwindow.md` | 未串流主页原生 DPI/坐标修复、保留主页、多设备独立串流进程与清理隔离；用户自行实机验收 |
+
 约定：
 
-- Windows 唯一正式入口为 `C:\Users\yfy\uu-gui-demo\uu-gui.exe`，桌面 `UU Remote Rust`；旧目录已归档。当前版本与窗口行为见交接12，统一安装流程见交接11。
+- Windows 唯一正式入口为 `C:\Users\yfy\uu-gui-demo\uu-gui.exe`，桌面 `UU Remote Rust`；旧目录已归档。当前版本与多窗口行为见交接13，统一安装流程见交接11。
 
 - 当前 x358h SSH 地址是 `192.168.34.3:2202`（2026-10-19 用户更新）；历史文档中的 `192.168.35.200` 已失效。
 
