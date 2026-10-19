@@ -38,13 +38,11 @@ pub fn available_backends() -> Vec<&'static str> {
     let mut v = Vec::new();
     #[cfg(target_os = "linux")]
     {
-        v.push("pipewire");
-        v.push("x11-shm");
+        v.push("x11-getimage");
     }
     #[cfg(target_os = "windows")]
     {
-        v.push("wgc");
-        v.push("dxgi-duplication");
+        // Native Windows desktop capture is not implemented yet.
     }
     // Always available, on every platform: used by tests and by the
     // self-loop harness when there is no display to capture.

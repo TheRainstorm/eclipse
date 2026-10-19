@@ -13,4 +13,5 @@ uu-media = { path = "../uu-media" }
 
 [target.'cfg(windows)'.dependencies]
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["randr"] }
