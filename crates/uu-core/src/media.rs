@@ -208,10 +208,11 @@ impl ControllerMedia {
             let frames = frames_tx.clone();
             let stats = stats_track.clone();
             let index = if track.kind() == RTPCodecType::Video {
-                // Our offer has video m-lines 0..4. Packet arrival order is not
-                // a screen identity (a later display may start sending first).
-                let index = transceiver.mid().and_then(|mid| mid.parse::<u32>().ok())
-                    .filter(|index| *index < 5);
+                // Track identity comes from the negotiated video_N label, with
+                // mid as a fallback, never from packet arrival order.
+                let id = track.id();
+                let mid = transceiver.mid();
+                let index = video_track_identity(&id, mid.as_deref());
                 if let Some(index) = index {
                     track_counter.fetch_max(index + 1, Ordering::Relaxed);
                     index
@@ -931,6 +932,23 @@ async fn receive_video(
     let _ = worker.await;
 }
 
+/// Official SDP names tracks video_N. N is an identity, not a slot count.
+fn video_track_identity(id: &str, mid: Option<&str>) -> Option<u32> {
+    id.strip_prefix("video_")
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v <= i32::MAX as u32)
+        .or_else(|| mid.and_then(|v| v.parse::<u32>().ok()))
+}
+#[cfg(test)]
+mod display_track_tests {
+    #[test]
+    fn negotiated_track_identity_does_not_assume_dense_or_five_bounded_ids() {
+        assert_eq!(super::video_track_identity("video_7",Some("0")),Some(7));
+        assert_eq!(super::video_track_identity("video_2",Some("2")),Some(2));
+        assert_eq!(super::video_track_identity("other",Some("3")),Some(3));
+        assert_eq!(super::video_track_identity("video_-1",None),None);
+    }
+}
 /// Advertise only codecs whose payloads we can actually consume. The default
 /// registry also advertises ULPFEC without a receive-side repair implementation.
 fn register_receive_codecs(media: &mut MediaEngine) -> Result<()> {

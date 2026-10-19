@@ -33,8 +33,8 @@ impl RemoteScreens {
     }
     pub fn for_track(&self, track: u32) -> Option<&RemoteScreen> {
         self.selected()
-            .filter(|s| s.video_track_index == track)
-            .or_else(|| self.screens.iter().find(|s| s.video_track_index == track))
+            .filter(|s| s.assigned_track() == Some(track))
+            .or_else(|| self.screens.iter().find(|s| s.assigned_track() == Some(track)))
     }
 }
 #[derive(Clone, Debug)]
@@ -45,11 +45,15 @@ pub struct RemoteScreen {
     pub width: u32,
     pub height: u32,
     pub dpi_scale: Option<u32>,
-    pub video_track_index: u32,
+    pub video_track_index: i32,
     pub display_name: String,
     pub primary: bool,
 }
 impl RemoteScreen {
+    /// -1 is an advertised source with no allocated video track yet.
+    pub fn assigned_track(&self) -> Option<u32> {
+        u32::try_from(self.video_track_index).ok()
+    }
     pub fn kind_label(&self) -> &'static str {
         match self.kind {
             0 => "物理屏",
@@ -87,7 +91,7 @@ pub fn screen_sources(data: &[u8]) -> Option<RemoteScreens> {
             width: dimension(&rect, 5, 3),
             height: dimension(&rect, 6, 4),
             dpi_scale,
-            video_track_index: number(&fields, 12) as u32,
+            video_track_index: number(&fields, 12) as i32,
         });
     }
     Some(RemoteScreens {
@@ -116,6 +120,14 @@ fn request(seq:u64,case:u32,payload:&[u8])->Vec<u8> {
     let mut rpc=Vec::new();bytes(1,&header,&mut rpc);bytes(case,payload,&mut rpc);
     let mut out=Vec::new();int(1,seq,&mut out);int(2,crate::control_wire::now_ms(),&mut out);bytes(21,&rpc,&mut out);out
 }
+/// Source-only CaptureConfig flag8 binds an existing monitor to capture.
+/// It does not set FPS/quality/resolution or change Windows display topology.
+pub fn activate_screen(seq:u64,screen_id:i32)->Vec<u8> {
+    let mut body=Vec::new();crate::control_wire::int(1,3,&mut body);
+    crate::control_wire::int(5,screen_id as i64 as u64,&mut body);
+    crate::control_wire::int(8,8,&mut body);
+    crate::control_wire::envelope(seq,9,&body)
+}
 /// Ask the host to send an existing track; does not create/disable monitors.
 pub fn send_video_track(seq:u64,index:u32)->Vec<u8> {
     let mut body=Vec::new();crate::control_wire::int(1,index.into(),&mut body);request(seq,15,&body)
@@ -132,6 +144,10 @@ pub fn quit_exclusive(seq:u64)->Vec<u8> {request(seq,14,&[])}
 /// Display RPC results are independent of capture-setting acknowledgement.
 pub fn response(data:&[u8])->Option<(u64,u32,i32)> {
     let outer=decode_wire(data).ok()?;
+    if let Some(body)=message(&outer,19) {
+        let fields=decode_wire(body).ok()?;
+        return (number(&fields,2)==8).then(||(number(&fields,1),19,number(&fields,3) as i32));
+    }
     let rpc=decode_wire(message(&outer,22)?).ok()?;
     let header=decode_wire(message(&rpc,1)?).ok()?;
     let id=number(&header,1);
@@ -224,6 +240,21 @@ mod tests {
         let outer=decode_wire(&data).unwrap();let rpc=decode_wire(message(&outer,21).unwrap()).unwrap();let body=decode_wire(message(&rpc,26).unwrap()).unwrap();
         assert_eq!(number(&body,1),1);assert_eq!(number(&body,3),125);
         let resolution=decode_wire(message(&body,2).unwrap()).unwrap();assert_eq!(number(&resolution,1),2560);assert_eq!(number(&resolution,2),1440);
+    }
+
+    #[test]
+    fn unallocated_sources_keep_negative_track_and_activate_without_layout_changes() {
+        let mut screen=Vec::new();int(1,42,&mut screen);int(12,u64::MAX,&mut screen);
+        let mut list=Vec::new();bytes(1,&screen,&mut list);int(2,42,&mut list);
+        let screens=screen_sources(&crate::control_wire::envelope(1,7,&list)).unwrap();
+        assert_eq!(screens.selected().unwrap().video_track_index,-1);
+        assert_eq!(screens.selected().unwrap().assigned_track(),None);
+        assert!(screens.for_track(u32::MAX).is_none());
+        let request=activate_screen(10001,42);let outer=decode_wire(&request).unwrap();
+        let body=decode_wire(message(&outer,9).unwrap()).unwrap();
+        assert_eq!(body,vec![(1,WireValue::Varint(3)),(5,WireValue::Varint(42)),(8,WireValue::Varint(8))]);
+        let mut result=Vec::new();int(1,10001,&mut result);int(2,8,&mut result);
+        assert_eq!(response(&crate::control_wire::envelope(2,19,&result)),Some((10001,19,0)));
     }
 
 }

@@ -38,6 +38,8 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     let expected = settings.clone();
     let track_request=crate::screen_control::send_video_track(10001,2);
     let expected_track=track_request.clone();
+    let activation=crate::screen_control::activate_screen(10004,42);
+    let expected_activation=activation.clone();
     let mut sources=Vec::new();
     for (id,track,name,primary) in [(7,0,"Zako HDR",true),(42,2,"S2719",false)] {
         let mut screen=Vec::new();crate::control_wire::int(1,id,&mut screen);crate::control_wire::int(12,track,&mut screen);
@@ -51,6 +53,7 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
         let tx = delivered_tx.clone();
         let expected = expected.clone();
         let expected_track=expected_track.clone();let inventory=inventory.clone();
+        let expected_activation=expected_activation.clone();
         Box::pin(async move {
             if channel.label()=="TEXT_DATA_CHANNEL" {
                 let weak=Arc::downgrade(&channel);
@@ -76,6 +79,7 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
                 channel.on_message(Box::new(move |msg| {
                     let tx = tx.clone();let channel=track_channel.clone();let inventory=inventory.clone();
                     let kind = if !msg.is_string && msg.data.as_ref()==expected_track.as_slice(){Some("display track")}
+                    else if !msg.is_string && msg.data.as_ref()==expected_activation.as_slice(){Some("display activation")}
                     else if !msg.is_string && msg.data.as_ref() == expected.as_slice() {
                         Some("settings")
                     } else {
@@ -91,6 +95,13 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
                                 let mut rpc=Vec::new();crate::control_wire::bytes(1,&header,&mut rpc);crate::control_wire::bytes(11,&[],&mut rpc);
                                 channel.send(&crate::control_wire::envelope(10003,22,&rpc).into()).await.unwrap();
                                 channel.send(&inventory.into()).await.unwrap();
+                            }
+                        }
+                        if kind==Some("display activation") {
+                            if let Some(channel)=channel.upgrade() {
+                                let mut result=Vec::new();crate::control_wire::int(1,10004,&mut result);
+                                crate::control_wire::int(2,8,&mut result);
+                                channel.send(&crate::control_wire::envelope(10005,19,&result).into()).await.unwrap();
                             }
                         }
                         if let Some(kind) = kind { let _ = tx.send(kind); }
@@ -129,8 +140,8 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
         }
         tokio::time::timeout(Duration::from_secs(10), async {
             let mut delivered = std::collections::HashSet::new();
-            while delivered.len() < 7 { delivered.insert(delivered_rx.recv().await.expect("CONTROL messages")); }
-            assert_eq!(delivered, ["settings", "heartbeat", "pointer", "key", "clipboard outbound", "clipboard ack", "display track"].into_iter().collect());
+            while delivered.len() < 8 { delivered.insert(delivered_rx.recv().await.expect("CONTROL messages")); }
+            assert_eq!(delivered, ["settings", "heartbeat", "pointer", "key", "clipboard outbound", "clipboard ack", "display track", "display activation"].into_iter().collect());
         }).await.expect("settings, heartbeat and both kinds of input must reach the peer");
         ws.send(Message::Text("42[\"released\",{}]".into())).await.unwrap();
         // Keep the socket alive until the client consumes released.
@@ -144,12 +155,14 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     input.send(br#"{"action":"mouse_move_absolute","screen_id":42,"abs_x":0.5,"abs_y":0.5}"#.to_vec()).unwrap();
     input.send(br#"{"action":"kbd_press","key":65}"#.to_vec()).unwrap();
     input.send(track_request).unwrap();
+    input.send(activation).unwrap();
     let (_setting, mut settings_rx) = unbounded_channel();
     tokio::time::timeout(Duration::from_secs(25), drive_session(&mut sio, &media, "test", "ice", &ev,
         &mut input_rx, &mut settings_rx, settings)).await.unwrap().unwrap();
     assert!(events.try_iter().any(|event| matches!(event, ControllerEvent::Status(s) if s == "已请求目标画质/码率")));
     assert_eq!(stats.clipboard.remote.lock().unwrap().as_deref(),Some("host-to-local 🙂"));
     assert!(stats.display_responses.lock().unwrap().contains(&(10001,11,0)));
+    assert!(stats.display_responses.lock().unwrap().contains(&(10004,19,0)));
     let screens=stats.remote_screens.lock().unwrap().clone();
     assert_eq!(screens.selected().unwrap().display_name,"S2719");assert_eq!(screens.for_track(0).unwrap().id,7);
     assert_eq!(screens.for_track(2).unwrap().id,42);

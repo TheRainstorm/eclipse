@@ -702,7 +702,7 @@ impl App {
         egui::CentralPanel::default().frame(egui::Frame::none().fill(C::BLACK)).show(ctx,|ui| {
             ui.set_clip_rect(ui.max_rect());
             let rect=ui.available_rect_before_wrap();ui.allocate_rect(rect,Sense::hover());
-            let chosen=self.textures.contains_key(&self.selected_track).then_some(self.selected_track);
+            let chosen=(!self.displays.waiting_binding()&&self.textures.contains_key(&self.selected_track)).then_some(self.selected_track);
             if let Some(track)=chosen {
                 let input_screen = self.input_screen(track);
                 let texture=&self.textures[&track];let size=texture.size_vec2();let scale=(rect.width()/size.x).min(rect.height()/size.y);

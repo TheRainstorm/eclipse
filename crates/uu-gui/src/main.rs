@@ -562,7 +562,7 @@ impl App {
         }
         self.controller.as_ref().and_then(|h| {
             let screens=h.stats.remote_screens.lock().unwrap();
-            self.displays.selected.and_then(|id|screens.screens.iter().find(|s|s.id==id && s.video_track_index==track))
+            self.displays.selected.and_then(|id|screens.screens.iter().find(|s|s.id==id && s.assigned_track()==Some(track)))
                 .or_else(||screens.for_track(track)).map(|s|s.id)
         })
             .filter(|id| *id >= 0).map(|id| id as u32).unwrap_or(track + 1)

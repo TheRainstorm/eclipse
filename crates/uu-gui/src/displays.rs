@@ -8,6 +8,7 @@ pub(super) struct Displays {
     pub selected: Option<i32>,
     pending: Option<Pending>,
     blocked: bool,
+    unbound: bool,
     pub notice: String,
     pub menu_open: bool,
     pub anchor: egui::Pos2,
@@ -15,7 +16,8 @@ pub(super) struct Displays {
 }
 struct Pending {
     request: u64,
-    track: u32,
+    track: Option<u32>,
+    activation: bool,
     sent: Instant,
     accepted: bool,
     frame: bool,
@@ -34,9 +36,11 @@ impl Displays {
         let request = 10_000 + self.next_request;
         self.selected = Some(id);
         self.blocked = true;
+        self.unbound = false;
         self.pending = Some(Pending {
             request,
-            track,
+            track: Some(track),
+            activation: false,
             sent: now,
             accepted: false,
             frame: false,
@@ -46,14 +50,41 @@ impl Displays {
         self.notice = "正在切换显示器…".into();
         request
     }
+    fn begin_activation(&mut self, id: i32, now: Instant) -> u64 {
+        let request = self.begin(id, 0, now);
+        let p = self.pending.as_mut().unwrap();
+        p.track = None;
+        p.activation = true;
+        self.unbound = true;
+        self.notice = "正在为显示器建立串流…".into();
+        request
+    }
+    pub fn waiting_binding(&self) -> bool {
+        self.unbound
+    }
+    fn bind_track(&mut self, track: u32) {
+        if let Some(p) = self
+            .pending
+            .as_mut()
+            .filter(|p| p.activation && p.track.is_none())
+        {
+            p.track = Some(track);
+            p.frame = false;
+            self.unbound = false;
+        }
+    }
     fn frame(&mut self, track: u32) {
-        if let Some(p) = self.pending.as_mut().filter(|p| p.track == track) {
+        if let Some(p) = self.pending.as_mut().filter(|p| p.track == Some(track)) {
             p.frame = true;
         }
         self.complete();
     }
     fn response(&mut self, id: u64, case: u32, code: i32) {
-        if case != 11 || !self.pending.as_ref().is_some_and(|p| p.request == id) {
+        if !self
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.request == id && case == if p.activation { 19 } else { 11 })
+        {
             return;
         }
         if code != 0 {
@@ -145,13 +176,10 @@ impl super::App {
         let Some(screen) = screens.screens.iter().find(|s| s.id == id).cloned() else {
             return;
         };
-        if screen.video_track_index >= 5 {
-            self.displays.notice = "此显示器超出当前支持的5路视频轨道范围".into();
-            return;
-        }
+        let target = screen.assigned_track();
         if self.displays.selected == Some(id)
             && self.displays.ready()
-            && self.textures.contains_key(&screen.video_track_index)
+            && target.is_some_and(|track| self.textures.contains_key(&track))
         {
             return;
         }
@@ -168,7 +196,7 @@ impl super::App {
         self.release_pointer_capture(&self.context.clone());
         self.remote_focus = false;
         self.cursor = super::cursor::Cursor::default();
-        self.selected_track = screen.video_track_index;
+        self.selected_track = target.unwrap_or(self.selected_track);
         if let Some(h) = &self.controller {
             h.stats.select_video_track(self.selected_track);
         }
@@ -176,19 +204,28 @@ impl super::App {
         self.unpresented.remove(&self.selected_track);
         self.frame_count.remove(&self.selected_track);
         self.fps.remove(&self.selected_track);
-        let request = self
-            .displays
-            .begin(id, screen.video_track_index, Instant::now());
-        let sent = self.controller.as_ref().unwrap().input.send(
-            uu_core::screen_control::send_video_track(request, screen.video_track_index),
-        );
-        if sent.is_err() {
+        let request = if let Some(track) = target {
+            self.displays.begin(id, track, Instant::now())
+        } else {
+            self.displays.begin_activation(id, Instant::now())
+        };
+        let command = target
+            .map(|track| uu_core::screen_control::send_video_track(request, track))
+            .unwrap_or_else(|| uu_core::screen_control::activate_screen(request, id));
+        if self
+            .controller
+            .as_ref()
+            .unwrap()
+            .input
+            .send(command)
+            .is_err()
+        {
             self.displays.pending = None;
             self.displays.notice = "切换失败：连接已关闭".into();
         }
-        // Apply the saved quality/FPS to this source only. Send alongside the
-        // track request instead of waiting in the coalesced settings timer.
-        self.send_capture_settings_through(true);
+        if target.is_some() {
+            self.send_capture_settings_through(true);
+        }
         self.displays.menu_open = false;
         self.stream_menu.open = false;
         self.context.memory_mut(|m| m.close_popup());
@@ -231,15 +268,23 @@ impl super::App {
                     self.remote_focus = false;
                 }
                 self.displays.selected = Some(next.id);
-                self.selected_track = next.video_track_index;
-                if previous.is_some() || self.displays.blocked {
+                self.selected_track = next.assigned_track().unwrap_or(self.selected_track);
+                if previous.is_some() || self.displays.blocked || next.assigned_track().is_none() {
                     // Invalidate cached frames when an existing source vanished.
                     self.displays.blocked = true;
                     self.select_remote_screen(next.id);
                 }
             } else if let Some(screen) = selected {
-                if self.selected_track != screen.video_track_index {
-                    self.select_remote_screen(screen.id);
+                if let Some(track) = screen.assigned_track() {
+                    if self.displays.waiting_binding() && self.displays.switching() {
+                        self.displays.bind_track(track);
+                        self.selected_track = track;
+                        self.textures.remove(&track);
+                        self.unpresented.remove(&track);
+                        self.send_capture_settings_through(true);
+                    } else if self.selected_track != track {
+                        self.select_remote_screen(screen.id);
+                    }
                 }
             }
         }
@@ -320,6 +365,32 @@ mod tests {
         d.response(request, 11, 0);
         d.frame(0);
         d.capture_response(2002, false);
+        assert!(!d.ready());
+    }
+    #[test]
+    fn unallocated_source_waits_for_activation_binding_settings_and_fresh_frame() {
+        let mut d = Displays::default();
+        let id = d.begin_activation(42, Instant::now());
+        assert!(d.waiting_binding());
+        d.frame(0);
+        d.response(id, 11, 0);
+        assert!(!d.ready());
+        d.response(id, 19, 0);
+        assert!(!d.ready());
+        d.bind_track(7);
+        d.expect_settings(2001);
+        d.frame(0);
+        d.capture_response(2001, true);
+        assert!(!d.ready());
+        d.frame(7);
+        assert!(d.ready());
+        let id = d.begin_activation(7, Instant::now());
+        d.response(id, 19, 3);
+        assert!(!d.ready());
+        assert!(d.waiting_binding());
+        d.begin_activation(42, Instant::now());
+        d.tick(Instant::now() + Duration::from_secs(9));
+        assert!(d.waiting_binding());
         assert!(!d.ready());
     }
 }
