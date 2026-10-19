@@ -10,13 +10,15 @@ impl super::App {
         let rd = self.fps.get(&self.selected_track).copied().unwrap_or(0.0);
         let codec = s.codec.lock().unwrap().trim_start_matches("video/").to_uppercase();
         let codec = if codec.is_empty() { "—" } else { &codec };
+        let source = s.remote_screens.lock().unwrap().selected()
+            .map(|s| format!(" · {} {}Hz", s.kind_label(), s.refresh_hz)).unwrap_or_default();
         let fresh = uu_core::control_wire::now_ms().saturating_sub(s.rtt_updated_ms.load(Relaxed)) < 5000;
         let network = if fresh {
             format!("{:.1}±{:.1}ms", s.rtt_us.load(Relaxed) as f32 / 1000.0, s.rtt_deviation_us.load(Relaxed) as f32 / 1000.0)
         } else { "—ms".into() };
         // Render is CPU preparation/submission time, excluding vsync wait.
         let text = format!(
-            "{w}×{h}@{rd:.0}   {codec}   目标 {} FPS   FPS {:.1} Rx · {:.1} De · {rd:.1} Rd\n\
+            "{w}×{h}@{rd:.0}   {codec}   目标 {} FPS{source}   FPS {:.1} Rx · {:.1} De · {rd:.1} Rd\n\
              Network {network}   Loss {:.2}%   Bandwidth {:.2} Mbps | Render {:.2}ms · Decode {:.2}ms\n\
              丢包 {} · NACK {} · RTX {} · 乱序 {} · 迟到 {} · 坏帧 {} · 解码错误 {} · 丢队列 {} · 恢复请求 {}",
             self.target_fps, s.src_fps(), s.dec_fps(), s.loss_ppm.load(Relaxed) as f32 / 10000.0,

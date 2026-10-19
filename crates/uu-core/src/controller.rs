@@ -27,7 +27,7 @@ pub struct ControllerHandle {
     pub stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub events: std::sync::mpsc::Receiver<ControllerEvent>,
     pub frames: crate::media::FrameReceiver,
-    /// Raw JSON input frames for `CONTROL_DATA_CHANNEL`.
+    /// Non-coalesced CONTROL bytes: JSON input or protobuf RPC commands.
     pub input: UnboundedSender<Vec<u8>>,
     /// Raw CONTROL messages (e.g. CaptureSettingRequest protobufs) to send.
     pub settings: UnboundedSender<Vec<u8>>,

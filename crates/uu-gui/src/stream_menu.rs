@@ -334,10 +334,29 @@ impl super::App {
                                 }
                                 ui.label(RichText::new("实际帧率以 HUD Rx / De / Rd 为准；
 静态画面、远端采集和本地刷新率均有影响。").small().weak());
+                                ui.separator();
+                                let current = self.controller.as_ref().and_then(|h|
+                                    h.stats.remote_screens.lock().unwrap().selected().cloned());
+                                if let Some(screen) = &current {
+                                    ui.label(format!("当前远端：{} · {}Hz", screen.kind_label(), screen.refresh_hz));
+                                } else {
+                                    ui.label("当前远端屏幕：等待信息");
+                                }
+                                let enter = !current.as_ref().is_some_and(|s| s.kind == 2);
+                                if ui.add_enabled(self.controller.is_some() && self.screen_request.is_none(),
+                                    egui::Button::new(if enter { "请求切换超级屏" } else { "退出超级屏" })).clicked() {
+                                    self.request_super_screen(enter);
+                                    ui.close_menu();
+                                    ui.memory_mut(|m| m.close_popup());
+                                }
+                                ui.label(RichText::new("物理屏采集受远端限制；超级屏可请求更高刷新率。").small().weak());
                             });
                             if !self.settings_feedback.is_empty() {
                                 ui.label(RichText::new(&self.settings_feedback).size(11.0)
                                     .color(Color32::from_rgb(51, 139, 111)));
+                            }
+                            if !self.screen_feedback.is_empty() {
+                                ui.label(RichText::new(&self.screen_feedback).size(11.0));
                             }
                             side_submenu(ui, &mut blocked, Icon::Max, "窗口", |ui| {
                                 if ui

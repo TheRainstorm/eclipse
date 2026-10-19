@@ -122,6 +122,9 @@ struct App {
     fps_draft: u32,
     settings_seq: u64,
     settings_feedback: String,
+    screen_rpc_seq: u64,
+    screen_request: Option<(u64, bool, std::time::Instant)>,
+    screen_feedback: String,
     pointer: input::RemotePointer,
     remote_focus: bool,
     view_only: bool,
@@ -316,6 +319,9 @@ impl App {
             fps_draft: uu_core::control_wire::CaptureFrameRate::from_env().fps(),
             settings_seq: 0,
             settings_feedback: String::new(),
+            screen_rpc_seq: 0,
+            screen_request: None,
+            screen_feedback: String::new(),
             pointer: input::RemotePointer::default(),
             remote_focus: false,
             view_only: false,
@@ -485,16 +491,31 @@ impl App {
             }
             self.unpresented.insert(idx);
         }
-        if apply_settings {
-            self.send_capture_settings();
-        }
         if let Some(h) = &self.controller {
+            if let Some((id, enter, sent)) = self.screen_request {
+                let response = *h.stats.screen_response.lock().unwrap();
+                if let Some(response) = response.filter(|r| r.id == id && r.enter == enter) {
+                    self.screen_request = None;
+                    self.screen_feedback = if response.error_code == 0 {
+                        apply_settings = true;
+                        "远端已接受屏幕切换，等待屏幕信息和画面同步".into()
+                    } else {
+                        format!("远端拒绝屏幕切换，错误码 {}", response.error_code)
+                    };
+                } else if sent.elapsed().as_secs() >= 10 {
+                    self.screen_request = None;
+                    self.screen_feedback = "屏幕切换尚未确认，请查看当前远端屏幕和实际 FPS".into();
+                }
+            }
             let response = h.stats.settings_response.load(std::sync::atomic::Ordering::Acquire);
             if response >> 1 == 2000 + self.settings_seq && self.settings_feedback.starts_with("已发送") {
                 self.settings_feedback = if response & 1 != 0 {
                     format!("远端已确认请求：{} FPS · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0)
                 } else { "远端拒绝了画质设置，请重新选择".into() };
             }
+        }
+        if apply_settings {
+            self.send_capture_settings();
         }
         if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
             self.controller = None;
@@ -504,11 +525,50 @@ impl App {
             self.frame_count.clear();
             self.fps.clear();
             self.settings_feedback.clear();
+            self.screen_request = None;
+            self.screen_feedback.clear();
         }
     }
 
     fn send_input(&mut self, payload: serde_json::Value, kind: u32) {
         self.send_input_ch(payload, kind, 35);
+    }
+
+    fn request_super_screen(&mut self, enter: bool) {
+        if self.screen_request.is_some() { return; }
+        let Some(h) = &self.controller else { return };
+        let screen = h.stats.remote_screens.lock().unwrap().selected().cloned();
+        let size = match self.resolution_idx {
+            1 => (1920, 1080),
+            2 => (2560, 1440),
+            3 => (3840, 2160),
+            _ => screen.as_ref().map(|s| (s.width, s.height))
+                .filter(|(w, h)| *w > 0 && *h > 0).unwrap_or_else(|| h.stats.res()),
+        };
+        if enter && (size.0 == 0 || size.1 == 0) {
+            self.screen_feedback = "请等待远端画面后再请求超级屏".into();
+            return;
+        }
+        self.release_all_keys();
+        for message in self.pointer.release_all(self.selected_track + 1) {
+            self.send_input(message, 15);
+        }
+        self.remote_focus = false;
+        self.screen_rpc_seq = self.screen_rpc_seq.wrapping_add(1);
+        let id = 100_000 + self.screen_rpc_seq;
+        let request = uu_core::screen_control::super_screen_request(
+            id, enter, size,
+            uu_core::control_wire::CaptureFrameRate::new(self.target_fps).unwrap_or_default(),
+            screen.and_then(|s| s.dpi_scale),
+        );
+        // RPC must use the ordered channel: capture-setting coalescing must not discard it.
+        if self.controller.as_ref().is_some_and(|h| h.input.send(request).is_ok()) {
+            self.screen_request = Some((id, enter, std::time::Instant::now()));
+            self.screen_feedback = if enter { "已请求切换超级屏，等待远端确认" }
+                else { "已请求退出超级屏，等待远端确认" }.into();
+        } else {
+            self.screen_feedback = "屏幕切换发送失败：连接已关闭".into();
+        }
     }
 
     /// Apply frame rate, quality and resolution together so another setting never resets FPS.
