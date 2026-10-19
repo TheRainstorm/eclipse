@@ -77,6 +77,8 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
 }
 
 struct App {
+    build_label: String,
+    executable_path: String,
     context: egui::Context,
     devices: Vec<Device>,
     selected: Option<usize>,
@@ -260,6 +262,8 @@ impl App {
             })
             .unwrap_or(false);
         let mut app = Self {
+            build_label: installed_revision(),
+            executable_path: std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
             context: cc.egui_ctx.clone(),
             devices: Vec::new(),
             selected: None,
@@ -748,7 +752,7 @@ fn main() -> eframe::Result {
             .with_inner_size([1100.0, 760.0])
             .with_decorations(false)
             .with_min_inner_size([560.0, 360.0])
-            .with_title("网易UU远程 · Rust"),
+            .with_title(format!("网易UU远程 · Rust · {}", installed_revision())),
         vsync,
         ..Default::default()
     };
@@ -757,5 +761,13 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
+}
+
+fn installed_revision() -> String {
+    std::env::current_exe().ok()
+        .and_then(|path| std::fs::read(path.parent()?.join("version.json")).ok())
+        .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
+        .and_then(|manifest| manifest["source_commit"].as_str().map(|s| s.chars().take(12).collect()))
+        .unwrap_or_else(|| "开发构建".into())
 }
 

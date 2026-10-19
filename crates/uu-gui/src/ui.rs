@@ -685,6 +685,8 @@ impl App {
                     }
                     ui.add_space(16.0);
                     ui.label(RichText::new(&self.status).size(12.0).color(MUTED));
+                    ui.label(RichText::new(format!("版本 {}", self.build_label)).size(11.0).color(MUTED))
+                        .on_hover_text(&self.executable_path);
                 });
             });
     }
