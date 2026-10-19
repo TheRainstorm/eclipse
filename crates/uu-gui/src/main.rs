@@ -12,6 +12,7 @@ use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
+mod sessions;
 mod shortcuts;
 mod hud;
 mod window;
@@ -78,6 +79,8 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
 }
 
 struct App {
+    stream_target: Option<sessions::StreamTarget>,
+    sessions: sessions::Sessions,
     build_label: String,
     executable_path: String,
     context: egui::Context,
@@ -254,7 +257,7 @@ fn setup_style(ctx: &egui::Context) {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>) -> Self {
         setup_style(&cc.egui_ctx);
         let config = uu_core::Config::from_env().ok();
         let logged_in = config
@@ -266,6 +269,8 @@ impl App {
             })
             .unwrap_or(false);
         let mut app = Self {
+            stream_target,
+            sessions: sessions::Sessions::default(),
             build_label: installed_revision(),
             executable_path: std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
             context: cc.egui_ctx.clone(),
@@ -313,7 +318,17 @@ impl App {
             exit_requested: false,
             window_edge_active: false,
         };
-        if logged_in {
+        if let Some(target) = app.stream_target.clone() {
+            app.devices.push(Device {
+                alias: target.alias, device_id: target.device_id,
+                status: "CONNECTED".into(), controllable: true,
+                wallpaper_url: String::new(), platform: 0, wallpaper_rgba: None,
+            });
+            app.selected = Some(0);
+            app.view_only = target.view_only;
+            app.autoconnect_done = true;
+            app.connect();
+        } else if logged_in {
             app.start_load();
         } else {
             app.status = "请扫码登录".into();
@@ -618,6 +633,7 @@ impl App {
     }
 
     fn disconnect(&mut self) {
+        if self.stream_target.is_some() { self.exit_requested = true; }
         if self.disconnecting { return; }
         self.stream_menu.open = false;
         self.context.memory_mut(|m| m.close_popup());
@@ -636,7 +652,24 @@ impl App {
         self.status = if self.disconnecting { "正在释放连接…" } else { "已断开" }.into();
     }
 
+    fn open_stream_window(&mut self) {
+        let Some(device) = self.selected.and_then(|i| self.devices.get(i)) else { return };
+        let target = sessions::StreamTarget {
+            device_id: device.device_id.clone(), alias: device.alias.clone(), view_only: self.view_only,
+        };
+        let result = std::env::current_exe().and_then(|exe| self.sessions.open(&exe, &target));
+        self.status = match result {
+            Ok(true) => format!("已打开 {} 的串流窗口，可继续选择其他设备", target.alias),
+            Ok(false) => format!("{} 的串流窗口已打开", target.alias),
+            Err(error) => format!("无法打开串流窗口：{error}"),
+        };
+    }
+
     fn connect(&mut self) {
+        if self.stream_target.is_none() {
+            self.open_stream_window();
+            return;
+        }
         if self.controller.is_some() { return; }
         let Some(i) = self.selected else { return };
         let Some(config) = self.config.clone() else {
@@ -702,11 +735,12 @@ impl eframe::App for App {
             self.disconnect();
             self.close_at = None;
         }
+        self.sessions.reap();
         self.poll(ctx);
         self.poll_controller(ctx);
         let video_px = self.textures.get(&self.selected_track).or_else(|| self.textures.values().next())
             .map(|texture| texture.size_vec2());
-        self.window_sizing.update(ctx, self.controller.is_some(), video_px,
+        self.window_sizing.update(ctx, self.stream_target.is_some(), video_px,
             self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(frame, ctx));
         if self.exit_requested && self.controller.is_none() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -734,6 +768,7 @@ impl eframe::App for App {
                 if std::env::var_os("UU_UI_DEBUG").is_some() && matches!(key, egui::Key::S | egui::Key::M | egui::Key::F) {
                     eprintln!("ui shortcut {key:?} pressed={pressed} repeat={repeat} ctrl={} alt={}", modifiers.ctrl, modifiers.alt);
                 }
+                if self.stream_target.is_none() { continue; }
                 match self.shortcuts.key(*key, *pressed, *repeat, *modifiers, self.controller.is_some()) {
                     shortcuts::KeyAction::Consumed => continue,
                     shortcuts::KeyAction::Trigger(action) => {
@@ -772,7 +807,7 @@ impl eframe::App for App {
             }
             self.last_fps = std::time::Instant::now();
         }
-        if self.controller.is_some() {
+        if self.stream_target.is_some() {
             self.stream_ui(ctx, &events);
         } else {
             self.home_ui(ctx);
@@ -785,6 +820,14 @@ impl eframe::App for App {
 
 fn main() -> eframe::Result {
     uu_core::install_crypto_provider();
+    let stream_target = match sessions::StreamTarget::parse(std::env::args().skip(1)) {
+        Ok(target) => target,
+        Err(error) => { eprintln!("{error}"); return Ok(()); }
+    };
+    let title = match &stream_target {
+        Some(target) => format!("{} · UU串流 · {}", target.alias, installed_revision()),
+        None => format!("网易UU远程 · Rust · {}", installed_revision()),
+    };
     // Vertical sync is on by default (tear-free). `UU_VSYNC=0` disables it
     // (e.g. for very low latency on a tearing-tolerant setup).
     let vsync = std::env::var("UU_VSYNC").map(|v| v != "0").unwrap_or(true);
@@ -793,7 +836,7 @@ fn main() -> eframe::Result {
             .with_inner_size([1100.0, 760.0])
             .with_decorations(false)
             .with_min_inner_size([560.0, 360.0])
-            .with_title(format!("网易UU远程 · Rust · {}", installed_revision())),
+            .with_title(title),
         vsync,
         centered: true,
         ..Default::default()
@@ -801,7 +844,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "网易UU远程",
         options,
-        Box::new(|cc| Ok(Box::new(App::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, stream_target)))),
     )
 }
 
