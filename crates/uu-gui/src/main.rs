@@ -621,7 +621,7 @@ impl App {
                 for vk in [0x11u32, 0x10, 0x12, 0xA2, 0xA0, 0xA4, 0x5B] {
                     self.send_key(vk, false);
                 }
-                self.send_bitrate();
+                // Apply UI settings once CONTROL is ready, in poll_controller.
             }
             Err(e) => self.status = format!("连接失败: {e}"),
         }

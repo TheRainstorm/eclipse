@@ -282,9 +282,10 @@ async fn run(
     // Give CONTROL_DATA_CHANNEL time to open and the SimpleAction echo
     // handshake to settle; the host ignores settings sent before that.
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let mut setting_sent = false;
     for i in 0..5u64 {
         let ts = crate::control_wire::now_ms();
-        let _ = media
+        if media
             .send_control(crate::control_wire::capture_setting_request_with_resolution(
                 1000 + i,
                 ts,
@@ -293,9 +294,13 @@ async fn run(
                 custom_bps,
                 crate::control_wire::CaptureResolution::from_env(),
             ))
-            .await;
+            .await.is_ok() {
+            setting_sent = true;
+            break; // Repeating accepted settings can restart the host encoder.
+        }
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     }
+    anyhow::ensure!(setting_sent, "CONTROL channel did not accept initial capture settings");
     status("已请求目标画质/码率");
     let mut probe_timer = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
