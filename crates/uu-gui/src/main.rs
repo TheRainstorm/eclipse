@@ -12,6 +12,7 @@ use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
+mod settings;
 mod sessions;
 mod platform;
 mod shortcuts;
@@ -111,6 +112,9 @@ struct App {
     login_texture: Option<egui::TextureHandle>,
     login_status: String,
     hud: bool,
+    preferences: settings::Settings,
+    settings_open: bool,
+    settings_notice: String,
     shortcuts: shortcuts::Shortcuts,
     autoconnect_done: bool,
     fullscreen: bool,
@@ -271,6 +275,9 @@ impl App {
                     .is_some()
             })
             .unwrap_or(false);
+        let (preferences, settings_notice) = match settings::Settings::path().map(|p|settings::Settings::load(&p)) {
+            Some(Ok(s))=>(s,String::new()),Some(Err(e))=>(settings::Settings::default(),format!("读取设置失败：{e}")),None=>(settings::Settings::default(),String::new()),
+        };
         let mut app = Self {
             stream_target,
             sessions: sessions::Sessions::default(),
@@ -302,22 +309,25 @@ impl App {
             login_rx: None,
             login_texture: None,
             login_status: String::new(),
-            hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(false),
+            hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(preferences.hud),
+            preferences: preferences.clone(),
+            settings_open: false,
+            settings_notice,
             shortcuts: shortcuts::Shortcuts::default(),
             autoconnect_done: false,
             fullscreen: false,
             restore_maximized: false,
-            bitrate_idx: 0,
-            resolution_idx: 0,
-            custom_mbps: 55,
-            target_fps: uu_core::control_wire::CaptureFrameRate::from_env().fps(),
-            fps_draft: uu_core::control_wire::CaptureFrameRate::from_env().fps(),
+            bitrate_idx: preferences.bitrate,
+            resolution_idx: preferences.resolution,
+            custom_mbps: preferences.custom_mbps,
+            target_fps: if std::env::var_os("UU_FPS").is_some(){uu_core::control_wire::CaptureFrameRate::from_env().fps()}else{preferences.fps},
+            fps_draft: preferences.fps,
             settings_seq: 0,
             settings_feedback: String::new(),
             pointer: input::RemotePointer::default(),
             remote_focus: false,
             view_only: false,
-            stream_menu: stream_menu::StreamMenu::default(),
+            stream_menu: stream_menu::StreamMenu {visible:preferences.floating_menu,..Default::default()},
             window_sizing: window::WindowSizing::default(),
             close_at: None,
             disconnecting: false,
@@ -701,6 +711,8 @@ impl App {
             Ok(h) => {
                 let context = self.context.clone();
                 h.frames.set_waker(move || context.request_repaint());
+                h.stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
+                h.stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
                 self.controller = Some(h);
                 self.window_sizing.begin_stream();
                 if !self.fullscreen {
@@ -816,7 +828,7 @@ impl eframe::App for App {
                     }
                     shortcuts::KeyAction::Forward => {}
                 }
-                if self.remote_focus && !self.view_only && !self.stream_menu.open {
+                if self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
                     self.sync_modifiers(*modifiers);
                     if let Some(vk) = vk_for(*key) {
                         self.send_key(vk, *pressed);
@@ -824,7 +836,7 @@ impl eframe::App for App {
                 }
             }
         }
-        if self.remote_focus && !self.view_only && !self.stream_menu.open {
+        if self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
             self.sync_modifiers(ctx.input(|i| i.modifiers));
         }
         let elapsed = self.last_fps.elapsed().as_secs_f32();
@@ -840,6 +852,7 @@ impl eframe::App for App {
         } else {
             self.home_ui(ctx);
         }
+        self.settings_ui(ctx);
         self.platform.show(ctx);
         ctx.request_repaint_after(std::time::Duration::from_millis(
             if self.controller.is_some() { 100 } else { 150 },
@@ -860,7 +873,9 @@ fn main() -> eframe::Result {
     };
     // Vertical sync is on by default (tear-free). `UU_VSYNC=0` disables it
     // (e.g. for very low latency on a tearing-tolerant setup).
-    let vsync = std::env::var("UU_VSYNC").map(|v| v != "0").unwrap_or(true);
+    let preferences=settings::Settings::path().and_then(|p|settings::Settings::load(&p).ok()).unwrap_or_default();
+    if std::env::var_os("UU_DECODER").is_none() && preferences.software_decoder {std::env::set_var("UU_DECODER","sw");}
+    let vsync = std::env::var("UU_VSYNC").map(|v| v != "0").unwrap_or(preferences.vsync);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 760.0])

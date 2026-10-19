@@ -182,7 +182,7 @@ fn unavailable(ui: &mut egui::Ui, kind: Icon, label: &str, hint: &str) {
     .on_disabled_hover_text(hint);
 }
 #[derive(Clone, Copy, PartialEq)]
-enum QualityDetail {
+pub(super) enum QualityDetail {
     Bitrate,
     Resolution,
     FrameRate,
@@ -192,9 +192,9 @@ pub(super) struct StreamMenu {
     pub visible: bool,
     pub open: bool,
     pub anchor: Pos2,
-    position: Option<Pos2>,
-    trigger_rect: Option<Rect>,
-    quality_detail: Option<(QualityDetail, Rect)>,
+    pub(super) position: Option<Pos2>,
+    pub(super) trigger_rect: Option<Rect>,
+    pub(super) quality_detail: Option<(QualityDetail, Rect)>,
 }
 impl Default for StreamMenu {
     fn default() -> Self {
@@ -329,6 +329,7 @@ impl super::App {
     }
 
     fn confirm_quality(&mut self, ui: &mut egui::Ui) {
+        self.persist_preferences();
         self.send_capture_settings();
         self.stream_menu.quality_detail = None;
         ui.memory_mut(|m| m.close_popup());
@@ -646,6 +647,7 @@ impl super::App {
                                         "工具",
                                         "文件、终端和端口映射尚未接入",
                                     );
+                                    if menu_row(ui,"软件设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_settings();}
                                     side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
                                         if menu_row(
                                             ui,

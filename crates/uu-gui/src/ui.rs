@@ -231,6 +231,7 @@ impl App {
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
+                        if icon_button(ui,Icon::Settings,"软件设置").clicked(){self.open_settings();}
                         icon_button(
                             ui,
                             Icon::Person,
@@ -696,7 +697,7 @@ impl App {
         let was_open = self.stream_menu.open;
         let controls = self.stream_controls(ctx);
         let control_pointer = ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
-        let controls_active = !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.open || control_pointer;
+        let controls_active = self.settings_open || !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.open || control_pointer;
         let mut messages = Vec::new();
         egui::CentralPanel::default().frame(egui::Frame::none().fill(C::BLACK)).show(ctx,|ui| {
             ui.set_clip_rect(ui.max_rect());
