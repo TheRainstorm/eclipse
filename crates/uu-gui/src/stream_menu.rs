@@ -143,8 +143,8 @@ impl super::App {
                         if icon_button(ui, Icon::Close, "退出远控").clicked() {
                             self.disconnect();
                         }
-                        if icon_button(ui, Icon::Max, "切换全屏 · Ctrl+Alt+F").clicked() {
-                            self.toggle_fullscreen(ctx);
+                        if icon_button(ui, Icon::Max, "最大化 / 还原窗口").clicked() {
+                            self.toggle_maximized(ctx);
                         }
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -316,18 +316,19 @@ impl super::App {
                             }
                             side_submenu(ui, &mut blocked, Icon::Max, "窗口", |ui| {
                                 if ui
-                                    .button(if self.fullscreen {
-                                        "退出全屏"
+                                    .button(if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+                                        "还原窗口"
                                     } else {
-                                        "进入全屏"
+                                        "最大化窗口"
                                     })
                                     .clicked()
                                 {
-                                    self.toggle_fullscreen(ctx);
+                                    self.toggle_maximized(ctx);
                                     self.stream_menu.open = false;
                                     ui.close_menu();
                 ui.memory_mut(|m| m.close_popup());
                                 }
+                                ui.label(RichText::new("Ctrl+Alt+F 切换全屏串流").small().weak());
                                 ui.checkbox(&mut self.stream_menu.visible, "全屏显示悬浮入口");
                                 ui.label(RichText::new("Ctrl+Alt+M 可随时恢复入口").small().weak());
                             });
@@ -359,14 +360,14 @@ impl super::App {
                             });
                             ui.separator();
                             if ui
-                                .button(if self.fullscreen {
-                                    "退出全屏                       Ctrl+Alt+F"
+                                .button(if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+                                    "还原窗口"
                                 } else {
-                                    "进入全屏                       Ctrl+Alt+F"
+                                    "最大化窗口"
                                 })
                                 .clicked()
                             {
-                                self.toggle_fullscreen(ctx);
+                                self.toggle_maximized(ctx);
                                 self.stream_menu.open = false;
                             }
                             if ui

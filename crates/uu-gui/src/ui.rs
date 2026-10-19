@@ -198,8 +198,7 @@ impl App {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
                     if drag.double_clicked() {
-                        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        self.toggle_maximized(ctx);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if icon_button(ui, Icon::Close, "关闭").clicked() {
@@ -209,8 +208,7 @@ impl App {
                             );
                         }
                         if icon_button(ui, Icon::Max, "最大化 / 还原").clicked() {
-                            let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                            self.toggle_maximized(ctx);
                         }
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));

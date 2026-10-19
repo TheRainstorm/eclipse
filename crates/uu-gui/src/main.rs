@@ -524,6 +524,17 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
     }
 
+    fn toggle_maximized(&mut self, ctx: &egui::Context) {
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        if self.fullscreen {
+            self.fullscreen = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
+        self.stream_menu.open = false;
+        ctx.memory_mut(|m| m.close_popup());
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+    }
+
     /// The controlled end expects raw JSON on `CONTROL_DATA_CHANNEL`; the
     /// `kind`/`channel` arguments are kept only to avoid touching every call
     /// site and are ignored.
@@ -650,6 +661,10 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if let Some(seconds) = frame.info().cpu_usage {
             self.render_ms = self.render_ms * 0.9 + seconds * 1000.0 * 0.1;
+        }
+        // Read back native state: maximized and fullscreen are distinct modes.
+        if let Some(fullscreen) = ctx.input(|i| i.viewport().fullscreen) {
+            self.fullscreen = fullscreen;
         }
         self.window_edge_active = window::resize_border(ctx, self.fullscreen);
         if self.resize_pending {
