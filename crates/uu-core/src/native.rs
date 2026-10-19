@@ -33,6 +33,7 @@ use webrtc::{
 
 const MAX_SIGNAL: usize = 256 * 1024;
 pub use uu_capture::CaptureSource;
+pub use uu_media::audio_capture::Source as AudioSource;
 
 #[derive(Clone, Debug)]
 pub struct CaptureMonitor {
@@ -64,7 +65,7 @@ pub enum HostStatus {
     Starting,
     Waiting { address: SocketAddr, expires_at: u64 },
     Preparing,
-    Streaming { width: u32, height: u32, fps: u32 },
+    Streaming { width: u32, height: u32, fps: u32, audio: String },
 }
 fn progress(status: &Option<watch::Sender<HostStatus>>, value: HostStatus) {
     if let Some(status) = status { status.send_replace(value); }
@@ -148,6 +149,7 @@ pub struct HostConfig {
     pub bitrate_kbps: u32,
     pub session_limit: Option<Duration>,
     pub allow_input: bool,
+    pub audio: Option<uu_media::audio_capture::Source>,
 }
 #[derive(Debug, Default)]
 pub struct HostReport {
@@ -156,6 +158,10 @@ pub struct HostReport {
     pub bytes: u64,
     pub input_events: u64,
     pub input_errors: u64,
+    pub audio_packets:u64,
+    pub audio_bytes:u64,
+    pub audio_errors:u64,
+    pub audio_queue_drops:u64,
 }
 
 async fn cancelled(stop: &mut watch::Receiver<bool>) {
@@ -185,6 +191,8 @@ pub async fn serve_with_status(config: HostConfig, mut stop: watch::Receiver<boo
     );
     ensure!(!config.allow_input || matches!(config.source,uu_capture::CaptureSource::Primary|uu_capture::CaptureSource::Monitor(_)),
         "desktop input can only be enabled for a real whole-monitor source");
+    ensure!(config.audio!=Some(uu_media::audio_capture::Source::System)||matches!(config.source,uu_capture::CaptureSource::Primary|uu_capture::CaptureSource::Monitor(_)),
+        "system audio requires an explicitly shared real monitor source");
     let listener = TcpListener::bind(config.bind)
         .await
         .context("cannot bind native signaling listener")?;
@@ -318,6 +326,8 @@ async fn send_video(
 ) -> Result<HostReport> {
     let refresh = Arc::new(AtomicBool::new(false));
     let track = peer.sender(refresh.clone()).await?;
+    let audio_mode=if config.audio.is_some(){crate::native_media::offered_audio(&offer.sdp)?}else{None};
+    let mut audio_sender=if let Some(red)=audio_mode {Some(peer.audio_sender(red).await?)}else{None};
     peer.remote(offer.sdp, stream.get_ref().0.peer_addr()?.ip())
         .await?;
     // Authentication and a valid media offer precede capture access.
@@ -348,8 +358,15 @@ async fn send_video(
         Some(Err(error))=>{controls.stop().await;return Err(error);},
         None=>{controls.stop().await;return Ok(HostReport::default());},
     }
-    progress(&status, HostStatus::Streaming { width, height, fps: config.fps });
     let mut producer = CaptureWorker::start(capture, config.fps, config.bitrate_kbps, refresh);
+    let mut audio_label=if config.audio.is_none(){String::new()}else if audio_sender.is_none(){"控制端未接收声音".into()}else{"声音准备中".into()};
+    let (mut audio_worker,mut audio_frames,mut audio_state)=if let Some(source)=config.audio.filter(|_|audio_sender.is_some()) {
+        match crate::native_audio::Worker::start(source) {
+            Ok((worker,frames,state))=>(Some(worker),Some(frames),Some(state)),
+            Err(error)=>{audio_label=format!("声音不可用：{error}");(None,None,None)},
+        }
+    }else{(None,None,None)};
+    progress(&status, HostStatus::Streaming { width, height, fps: config.fps, audio:audio_label });
     let mut report = HostReport::default();
     let mut previous = None;
     let deadline = async {
@@ -366,6 +383,25 @@ async fn send_video(
                 _ = cancelled(&mut stop) => break,
                 _ = &mut deadline => break,
                 _ = stream.read_u8() => break,
+                changed=async {match &mut audio_state {Some(state)=>state.changed().await,None=>std::future::pending().await}}=>{
+                    if changed.is_ok() {
+                        let state=audio_state.as_mut().unwrap().borrow_and_update().clone();
+                        progress(&status,HostStatus::Streaming {width,height,fps:config.fps,audio:state.label()});
+                    }else{audio_state=None;}
+                },
+                frame=async {match &mut audio_frames {Some(frames)=>frames.recv().await,None=>std::future::pending().await}}=>{
+                    if let Some(frame)=frame {
+                        if frame.created.elapsed()>Duration::from_millis(100){report.audio_queue_drops+=1;continue;}
+                        if let Some(sender)=&mut audio_sender {match sender.send(frame).await {
+                            Ok(bytes)=>{report.audio_packets+=1;report.audio_bytes+=bytes as u64;},
+                            Err(error)=>{
+                                report.audio_errors+=1;audio_frames=None;audio_state=None;
+                                if let Some(worker)=&audio_worker{worker.request_stop();}
+                                progress(&status,HostStatus::Streaming {width,height,fps:config.fps,audio:format!("声音传输停止：{error}")});
+                            },
+                        }}
+                    }else{audio_frames=None;}
+                },
                 state = peer.states.changed() => {
                     if state.is_err() || matches!(*peer.states.borrow(), RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed) {
                         bail!("native controller disconnected");
@@ -385,6 +421,9 @@ async fn send_video(
         Ok::<_, anyhow::Error>(())
     }.await;
     controls.stop().await;
+    if let Some(worker)=&mut audio_worker {
+        worker.stop().await;report.audio_errors+=worker.errors.load(Ordering::Relaxed);report.audio_queue_drops+=worker.dropped.load(Ordering::Relaxed);
+    }
     (report.input_events,report.input_errors)=controls.counters();
     peer.close().await;
     let stopped = producer.stop().await;
@@ -423,6 +462,8 @@ async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaS
     };
     peer.close().await;
     stats.control_open.store(0, Ordering::Release);
+    stats.audio.stop();
+    stats.capabilities.enable(crate::capabilities::Capability::Audio,false);
     let _ = stream.shutdown().await;
     result
 }
@@ -514,6 +555,7 @@ mod tests {
             bitrate_kbps: 2000,
             session_limit: Some(Duration::from_secs(10)),
             allow_input:false,
+            audio:None,
         };
         (config, file)
     }
@@ -530,6 +572,41 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn synthetic_source_cannot_authorize_system_audio() {
+        let (mut config,file)=config();config.audio=Some(AudioSource::System);
+        let (_stop,rx)=watch::channel(false);
+        assert!(serve(config,rx).await.is_err());assert!(!file.0.exists());
+    }
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn encrypted_audio_recovers_single_packet_losses_without_opening_an_output_device() {
+        let (mut config,file)=config();config.audio=Some(AudioSource::Synthetic);
+        let (host_stop,rx)=watch::channel(false);let (phase,host_phase)=watch::channel(HostStatus::Starting);let host=tokio::spawn(serve_with_status(config,rx,Some(phase)));
+        let invitation=invitation(&file).await;
+        let stats=Arc::new(MediaStats::default());stats.audio.output_enabled.store(false,Ordering::Release);
+        stats.audio.test_loss_every.store(5,Ordering::Release);
+        let (frames,mut receiver)=frame_channel();let (stop,rx)=watch::channel(false);
+        let client_stats=stats.clone();let viewer=tokio::spawn(async move{view(&invitation,frames,client_stats,rx).await});
+        let result=timeout(Duration::from_secs(10),async {
+            loop {
+                while receiver.try_recv().is_ok(){}
+                if stats.decoded_total.load(Ordering::Relaxed)>=45 && stats.audio.recovered.load(Ordering::Relaxed)>=5
+                    && stats.audio.decoded_samples.load(Ordering::Relaxed)>=24000 {break;}
+                assert!(!viewer.is_finished(),"audio/video viewer ended unexpectedly");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await;
+        let phase=host_phase.borrow().clone();
+        stop.send_replace(true);let viewer_result=timeout(Duration::from_secs(3),viewer).await;
+        host_stop.send_replace(true);let report=timeout(Duration::from_secs(3),host).await.unwrap().unwrap().unwrap();
+        assert!(result.is_ok(),"video={} audio_packets={} samples={} recovered={} dropped={} level={} phase={phase:?} report={report:?}",stats.decoded_total.load(Ordering::Relaxed),stats.audio.packets.load(Ordering::Relaxed),stats.audio.decoded_samples.load(Ordering::Relaxed),stats.audio.recovered.load(Ordering::Relaxed),stats.audio.dropped.load(Ordering::Relaxed),stats.audio.level_x10000.load(Ordering::Relaxed));
+        viewer_result.unwrap().unwrap().unwrap();
+        assert!(stats.audio.level_x10000.load(Ordering::Relaxed)>100);
+        assert!(stats.audio.injected_loss.load(Ordering::Relaxed)>=5);
+        assert_eq!(stats.errors.load(Ordering::Relaxed),0);
+        assert!(report.audio_packets>40);assert_eq!(report.audio_errors,0);
+        assert!(!file.0.exists());
+    }
     #[tokio::test]
     async fn stopped_waiting_host_removes_its_invitation_and_publishes_progress() {
         let (config, file) = config();

@@ -10,7 +10,7 @@ import tempfile
 import time
 
 
-def run(executable, frames, decoder):
+def run(executable, frames, decoder, audio=False):
     with tempfile.TemporaryDirectory(prefix='uu-native-smoke-') as temporary:
         temporary = Path(temporary)
         invitation = temporary / 'session.eclipse-invite.json'
@@ -24,7 +24,7 @@ def run(executable, frames, decoder):
         else:
             environment.pop('UU_DECODER', None)
         with (temporary / 'host.log').open('w+', encoding='utf-8') as log:
-            host = subprocess.Popen([str(executable), 'native-host', '--synthetic',
+            host = subprocess.Popen([str(executable), 'native-host', '--synthetic', *(['--synthetic-audio'] if audio else []),
                                      '--invitation-file', str(invitation), '--max-seconds', '30'],
                                     env=environment, stdout=log, stderr=subprocess.STDOUT)
             try:
@@ -37,7 +37,7 @@ def run(executable, frames, decoder):
                     time.sleep(.02)
                 probe = subprocess.run([str(executable), 'native-probe', '--invitation-file',
                                         str(invitation), '--frames', str(frames), '--timeout-seconds', '25',
-                                        '--report', str(temporary / 'probe.json')],
+                                        '--report', str(temporary / 'probe.json'), *(['--audio-loss-every', '5'] if audio else [])],
                                        env=environment, capture_output=True, text=True,
                                        encoding='utf-8', errors='replace', timeout=40)
                 if probe.returncode:
@@ -52,6 +52,8 @@ def run(executable, frames, decoder):
                         or report['final']['errors'] or not report['samples']
                         or report['first_frame_ms'] is None or report['observed'] <= 0):
                     raise RuntimeError('Native probe report did not match a completed, error-free video session')
+                if audio and (report['final']['audio_samples'] < frames * 300 or report['final']['audio_injected_loss'] < 2 or report['final']['audio_recovered'] < report['final']['audio_injected_loss'] - 2):
+                    raise RuntimeError('Native audio redundancy did not recover the injected packet loss')
                 if os.name == 'posix' and report_path.stat().st_mode & 0o077:
                     raise RuntimeError('Native probe report was not private')
                 metric = re.search(r'decoded=(\d+).*resolution=(\d+)x(\d+).*errors=(\d+)', lines[0])
@@ -63,7 +65,7 @@ def run(executable, frames, decoder):
                 if list((temporary / 'data').rglob('state.json')):
                     raise RuntimeError('Native smoke test unexpectedly created an interoperability account')
                 print(json.dumps(dict(native_video='passed', service_key='absent', account='absent',
-                                      clean_shutdown=True, metrics=lines[0])))
+                                      clean_shutdown=True, audio_redundancy=audio, metrics=lines[0])))
             finally:
                 if host.poll() is None:
                     host.terminate()
@@ -80,10 +82,11 @@ def main():
     parser.add_argument('--frames', type=int, default=120)
     parser.add_argument('--decoder', choices=('sw', 'auto'), default='sw',
                         help='Use deterministic software decoding in CI; auto exercises the actual machine decoder')
+    parser.add_argument('--audio', action='store_true', help='Check generated encrypted audio and receive-only packet loss; never plays sound')
     args = parser.parse_args()
     if not 1 <= args.frames <= 600:
         parser.error('--frames must be 1..=600')
-    run(args.exe.resolve(strict=True), args.frames, args.decoder)
+    run(args.exe.resolve(strict=True), args.frames, args.decoder, args.audio)
 
 
 if __name__ == '__main__':

@@ -20,8 +20,8 @@ pub async fn host(config: uu_core::native::HostConfig) -> Result<()> {
     drop(stop);
     let report = result?;
     println!(
-        "native host ended: captured={} sent={} bytes={} input={} input_errors={}",
-        report.captured, report.sent, report.bytes, report.input_events, report.input_errors
+        "native host ended: captured={} sent={} bytes={} input={} input_errors={} audio={} audio_errors={} audio_drops={}",
+        report.captured, report.sent, report.bytes, report.input_events, report.input_errors,report.audio_packets,report.audio_errors,report.audio_queue_drops
     );
     Ok(())
 }
@@ -31,6 +31,7 @@ pub async fn probe(
     frames: u64,
     seconds: u64,
     report: Option<PathBuf>,
+    audio_loss_every: u32,
 ) -> Result<()> {
     ensure!(
         (1..=100_000).contains(&frames) && (1..=3600).contains(&seconds),
@@ -52,6 +53,11 @@ pub async fn probe(
         })
         .transpose()?;
     let stats = Arc::new(uu_core::media::MediaStats::default());
+    stats.audio.output_enabled.store(false, Ordering::Release);
+    stats
+        .audio
+        .test_loss_every
+        .store(audio_loss_every, Ordering::Release);
     let worker_stats = stats.clone();
     let (images, mut receiver) = uu_core::media::frame_channel();
     let (stop, rx) = watch::channel(false);
@@ -85,7 +91,7 @@ pub async fn probe(
                 samples.push(snapshot(&stats, started.elapsed()));
                 next_sample = started.elapsed() + Duration::from_secs(1);
             }
-            if stats.decoded_total.load(Ordering::Relaxed) >= frames {
+            if stats.decoded_total.load(Ordering::Relaxed) >= frames && rendered > 0 {
                 break;
             }
             ensure!(
@@ -137,6 +143,9 @@ pub async fn probe(
 fn snapshot(stats: &MediaStats, elapsed: Duration) -> serde_json::Value {
     let (width, height) = stats.res();
     serde_json::json!({
+        "audio_packets":stats.audio.packets.load(Ordering::Relaxed),"audio_samples":stats.audio.decoded_samples.load(Ordering::Relaxed),
+        "audio_recovered":stats.audio.recovered.load(Ordering::Relaxed),"audio_concealed":stats.audio.concealed.load(Ordering::Relaxed),
+        "audio_injected_loss":stats.audio.injected_loss.load(Ordering::Relaxed),"audio_level":stats.audio.level_x10000.load(Ordering::Relaxed) as f64/10000.0,
         "at_ms":elapsed.as_millis() as u64,"width":width,"height":height,
         "backend":stats.backend(),"decoded":stats.decoded_total.load(Ordering::Relaxed),
         "rx_fps":stats.src_fps(),"decode_fps":stats.dec_fps(),"decode_ms":stats.decode_ms(),

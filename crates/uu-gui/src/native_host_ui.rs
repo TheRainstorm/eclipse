@@ -39,6 +39,7 @@ pub(super) struct NativeHostUi {
     fps: u32,
     bitrate_kbps: u32,
     allow_input: bool,
+    share_audio: bool,
     invitation: String,
     notice: String,
     sharing: Option<Sharing>,
@@ -53,6 +54,7 @@ impl Default for NativeHostUi {
             fps: 60,
             bitrate_kbps: 8000,
             allow_input: false,
+            share_audio: false,
             invitation: String::new(),
             notice: String::new(),
             sharing: None,
@@ -156,6 +158,9 @@ impl NativeHostUi {
             bitrate_kbps: self.bitrate_kbps,
             session_limit: None,
             allow_input: self.allow_input,
+            audio: self
+                .share_audio
+                .then_some(uu_core::native::AudioSource::System),
         };
         let (stop, rx) = watch::channel(false);
         let (status, states) = watch::channel(HostStatus::Starting);
@@ -221,7 +226,7 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.label("通过原生邀请共享当前桌面，无需账号。");
-                ui.weak("H.264 软件编码 · 当前共享不包含系统音频");
+                ui.weak("H.264 软件编码 · 系统声音由本次共享选择");
                 ui.add_space(10.0);
                 if let Some(sharing) = &mut host.sharing {
                     let status = sharing.status.borrow().clone();
@@ -244,8 +249,13 @@ impl App {
                                 )
                             }
                             HostStatus::Preparing => "正在建立加密串流…".into(),
-                            HostStatus::Streaming { width, height, fps } => {
-                                format!("正在共享 · {width}×{height} @ {fps} FPS")
+                            HostStatus::Streaming {
+                                width,
+                                height,
+                                fps,
+                                audio,
+                            } => {
+                                format!("正在共享 · {width}×{height} @ {fps} FPS  {audio}")
                             }
                         }
                     };
@@ -332,6 +342,7 @@ impl App {
                     });
                     ui.add_space(8.0);
                     ui.checkbox(&mut host.allow_input, "允许受邀端请求键盘和鼠标控制");
+                    ui.checkbox(&mut host.share_audio, "共享系统声音（输出设备）");
                     ui.add_space(8.0);
                     ui.label("新邀请文件（10 分钟内可连接）");
                     ui.add(egui::TextEdit::singleline(&mut host.invitation).desired_width(460.0));

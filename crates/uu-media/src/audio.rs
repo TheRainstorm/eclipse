@@ -9,6 +9,14 @@ use std::{
 };
 
 pub struct AudioControl {
+    /// Decode-only diagnostics leave the user's output device untouched.
+    pub output_enabled: AtomicBool,
+    pub decoded_samples: AtomicU64,
+    pub level_x10000: AtomicU32,
+    pub recovered: AtomicU64,
+    /// Per-session, receive-only diagnostic fault injection; zero disables it.
+    pub test_loss_every: AtomicU32,
+    pub injected_loss: AtomicU64,
     pub volume: AtomicU32,
     pub muted: AtomicBool,
     pub packets: AtomicU64,
@@ -25,6 +33,12 @@ pub struct AudioControl {
 impl Default for AudioControl {
     fn default() -> Self {
         Self {
+            output_enabled: AtomicBool::new(true),
+            decoded_samples: AtomicU64::new(0),
+            level_x10000: AtomicU32::new(0),
+            recovered: AtomicU64::new(0),
+            test_loss_every: AtomicU32::new(0),
+            injected_loss: AtomicU64::new(0),
             volume: AtomicU32::new(100),
             muted: AtomicBool::new(false),
             packets: AtomicU64::new(0),
@@ -53,6 +67,7 @@ impl AudioControl {
 }
 
 pub struct Packet {
+    pub repaired: bool,
     pub sequence: u16,
     pub timestamp: u32,
     pub payload: Vec<u8>,
@@ -178,7 +193,9 @@ fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> an
     let mut reorder = Reorder::default();
     while !control.stopped() {
         #[cfg(any(windows, target_os = "linux"))]
-        if output.is_none() && Instant::now() >= retry_at {
+        if output.is_some() && !control.output_enabled.load(Ordering::Acquire) { output=None; }
+        #[cfg(any(windows, target_os = "linux"))]
+        if control.output_enabled.load(Ordering::Acquire) && output.is_none() && Instant::now() >= retry_at {
             match device::Output::new(control.clone()) {
                 Ok(device) => output = Some(device),
                 Err(error) => {
@@ -203,6 +220,10 @@ fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> an
             );
             match decoder.decode(packet.timestamp, &packet.payload, control) {
                 Ok(pcm) => {
+                    control.decoded_samples.fetch_add((pcm.len()/2) as u64,Ordering::Relaxed);
+                    if packet.repaired {control.recovered.fetch_add(1,Ordering::Relaxed);}
+                    let power=pcm.iter().filter(|v|v.is_finite()).map(|v|v*v).sum::<f32>()/pcm.len().max(1) as f32;
+                    control.level_x10000.store((power.sqrt()*10000.0).clamp(0.0,u32::MAX as f32) as u32,Ordering::Relaxed);
                     #[cfg(any(windows, target_os = "linux"))]
                     if let Some(device) = output.as_mut() {
                         if let Err(error) = device.submit(&pcm, control) {
@@ -575,6 +596,7 @@ mod tests {
         let now = Instant::now();
         let mut q = Reorder::default();
         let packet = |n| Packet {
+            repaired:false,
             sequence: n,
             timestamp: 0,
             payload: vec![],

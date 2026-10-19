@@ -10,6 +10,7 @@
 
 pub mod audio;
 pub mod audio_capture;
+pub mod audio_red;
 pub mod bitstream;
 pub mod codec;
 pub mod color;

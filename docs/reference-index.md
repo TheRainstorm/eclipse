@@ -189,3 +189,13 @@ git -C moonlight/moonlight-qt submodule status
 `uu-input` 提供 Windows SendInput 与已授权 X11 XTest：明确转换扩展扫描码、侧键与横向滚轮，按物理虚拟桌面坐标处理负屏幕原点，并只释放本会话成功按下的键与按钮。Linux 不默认打开内核输入设备；Wayland 原生输入仍需后续 portal。
 
 后端验证使用有认证的独立 Xvfb，检查中键/侧键、滚轮、绝对/相对移动、Shift 标点与释放归属；Windows 单元测试只检查输入字段与生命周期，不向用户桌面注入测试按键。**这属于原生控制的底层准备，v0.2.0 原生观看仍然只读**，不能把后端组件视为已接入远控。
+
+### 自有音频通路补充
+
+| 可参考方向 | 当前实现与边界 |
+|---|---|
+| Sunshine 的系统输出采集分层 | 独立 Rust WASAPI loopback / PulseAudio monitor 后端，采集和编码留在自己的 OS 工作线程，默认不共享声音。 |
+| Moonlight 的实时音频与陈旧数据处理 | 有界队列、过期块丢弃、短渐变及解码与播放分离；设备错误保持视频，后台重新打开采集。 |
+| 标准音频冗余 | 独立实现 RFC 2198 一帧 RED，保留 Opus FEC/PLC 回退；与 Sunshine 的 GameStream 视频 FEC 不同，未复制 GPL 代码。 |
+
+相关模块为 `audio_capture`、`audio_red`、`native_audio` 与 `native_media`，能力与验证方法见[原生音频](native-audio.md)。

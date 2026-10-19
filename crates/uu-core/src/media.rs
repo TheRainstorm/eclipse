@@ -547,15 +547,30 @@ async fn receive_clipboard(data:&[u8],stats:&Option<Arc<MediaStats>>,seq:&Arc<At
     }
 }
 
-async fn receive_audio(track: Arc<webrtc::track::track_remote::TrackRemote>, stats: Option<Arc<MediaStats>>) {
-    if !track.codec().capability.mime_type.eq_ignore_ascii_case(MIME_TYPE_OPUS) { return; }
+pub(crate) async fn receive_audio(track: Arc<webrtc::track::track_remote::TrackRemote>, stats: Option<Arc<MediaStats>>) {
     let control = stats.as_ref().map(|s|s.audio.clone()).unwrap_or_default();
-    let tx = uu_media::audio::playback(control.clone());
+    let mut playback=None;
     while let Ok((packet,_)) = track.read_rtp().await {
+    let codec=track.codec().capability;
+    let red=codec.mime_type.eq_ignore_ascii_case("audio/red");
+    if !red && !codec.mime_type.eq_ignore_ascii_case(MIME_TYPE_OPUS) { return; }
+    let opus_payload=if red {match codec.sdp_fmtp_line.split('/').next().and_then(|v|v.parse::<u8>().ok()).filter(|pt|*pt<128){Some(pt)=>pt,None=>return}}else{111};
+        let tx=playback.get_or_insert_with(||uu_media::audio::playback(control.clone()));
         if control.stopped() { break; }
-        control.packets.fetch_add(1,Ordering::Relaxed);
-        let packet = uu_media::audio::Packet {sequence:packet.header.sequence_number,timestamp:packet.header.timestamp,
-            payload:packet.payload.to_vec(),received:std::time::Instant::now()};
+        let number=control.packets.fetch_add(1,Ordering::Relaxed)+1;
+        let period=control.test_loss_every.load(Ordering::Relaxed);
+        if period>=2 && number%u64::from(period)==0 {control.injected_loss.fetch_add(1,Ordering::Relaxed);continue;}
+        let received=std::time::Instant::now();
+        let (payload,backup)=if red {match uu_media::audio_red::unpack(opus_payload,&packet.payload) {
+            Ok(parts)=>(parts.primary,parts.previous),
+            Err(_)=>{control.dropped.fetch_add(1,Ordering::Relaxed);continue;},
+        }}else{(packet.payload.as_ref(),None)};
+        if let Some((offset,data))=backup {
+            let repair=uu_media::audio::Packet {repaired:true,sequence:packet.header.sequence_number.wrapping_sub(1),timestamp:packet.header.timestamp.wrapping_sub(u32::from(offset)),payload:data.to_vec(),received};
+            if let Err(std::sync::mpsc::TrySendError::Full(_))=tx.try_send(repair) {control.dropped.fetch_add(1,Ordering::Relaxed);}
+        }
+        let packet = uu_media::audio::Packet {repaired:false,sequence:packet.header.sequence_number,timestamp:packet.header.timestamp,
+            payload:payload.to_vec(),received};
         match tx.try_send(packet) {
             Ok(()) => {},
             Err(std::sync::mpsc::TrySendError::Full(_)) => { control.dropped.fetch_add(1,Ordering::Relaxed); },

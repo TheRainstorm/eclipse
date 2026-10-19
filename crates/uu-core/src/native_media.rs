@@ -34,9 +34,47 @@ use webrtc::{
         rtp_transceiver_direction::RTCRtpTransceiverDirection,
         RTCRtpTransceiverInit,
     },
-    track::track_local::{track_local_static_sample::TrackLocalStaticSample, TrackLocal},
+    track::track_local::{track_local_static_sample::TrackLocalStaticSample,track_local_static_rtp::TrackLocalStaticRTP,TrackLocalWriter, TrackLocal},
     util::vnet::net::Net,
 };
+
+fn opus_capability(red:bool)->RTCRtpCodecCapability {
+    RTCRtpCodecCapability {mime_type:if red{"audio/red"}else{"audio/opus"}.into(),clock_rate:48_000,channels:2,
+        sdp_fmtp_line:if red{"111/111"}else{"minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1"}.into(),..Default::default()}
+}
+/// Only an active receiving audio section can request system-output access.
+pub(crate) fn offered_audio(description:&RTCSessionDescription)->Result<Option<bool>> {
+    let sdp=description.unmarshal()?;
+    for media in &sdp.media_descriptions {
+        let direction=media.attributes.iter().chain(&sdp.attributes).find(|a|matches!(a.key.as_str(),"sendonly"|"recvonly"|"sendrecv"|"inactive"));
+        if media.media_name.media!="audio" || media.media_name.port.value==0
+            ||direction.is_some_and(|a|matches!(a.key.as_str(),"sendonly"|"inactive")){continue;}
+        let codec=|pt:&str,name:&str|media.media_name.formats.iter().any(|f|f==pt)
+            &&media.attributes.iter().any(|a|a.key=="rtpmap"&&a.value.as_ref().is_some_and(|v|v.eq_ignore_ascii_case(&format!("{pt} {name}/48000/2"))));
+        if codec("111","opus") {return Ok(Some(codec("112","red")));}
+    }
+    Ok(None)
+}
+pub(crate) struct AudioSender {
+    track:Arc<TrackLocalStaticRTP>,red:bool,sequence:u16,base:u32,previous:Option<(u32,bytes::Bytes)>,
+}
+impl AudioSender {
+    pub async fn send(&mut self,frame:uu_media::audio_capture::EncodedAudio)->Result<usize> {
+        let timestamp=self.base.wrapping_add(frame.sample_index as u32);
+        let payload=if self.red {
+            let previous=self.previous.as_ref().and_then(|(old,data)|{
+                let offset=timestamp.wrapping_sub(*old);(offset>0&&offset<16384).then_some((offset as u16,data.as_ref()))
+            });uu_media::audio_red::pack(111,&frame.data,previous)?
+        }else{frame.data.clone()};
+        ensure!(payload.len()<=uu_media::audio_red::MAX_PAYLOAD,"native audio exceeds datagram budget");
+        let size=payload.len();
+        let written=self.track.write_rtp(&webrtc::rtp::packet::Packet {header:webrtc::rtp::header::Header {
+            version:2,payload_type:if self.red{112}else{111},sequence_number:self.sequence,timestamp,marker:self.previous.as_ref().map_or(true,|(old,_)|timestamp.wrapping_sub(*old)>frame.samples),..Default::default()
+        },payload}).await?;
+        ensure!(written>0,"audio track has no negotiated active binding");
+        self.sequence=self.sequence.wrapping_add(1);self.previous=Some((timestamp,frame.data));Ok(size)
+    }
+}
 
 fn validate_candidates(sdp: &str, peer_ip: IpAddr) -> Result<()> {
     let mut candidates = 0usize;
@@ -150,6 +188,14 @@ impl NativePeer {
         )?;
         media.register_codec(
             webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
+                capability: opus_capability(false), payload_type: 111, ..Default::default()
+            }, RTPCodecType::Audio,
+        )?;
+        media.register_codec(webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
+            capability:opus_capability(true),payload_type:112,..Default::default()
+        },RTPCodecType::Audio)?;
+        media.register_codec(
+            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
                 capability: RTCRtpCodecCapability {
                     mime_type: "video/rtx".into(),
                     clock_rate: 90_000,
@@ -207,6 +253,7 @@ impl NativePeer {
         stats.set_backend(decoder.backend_name());
         *self.pending_decoder.lock().unwrap() = Some(decoder);
         let prepared = self.pending_decoder.clone();
+        let audio_claimed=Arc::new(AtomicBool::new(false));
         let weak = Arc::downgrade(&self.pc);
         let repairs = self.repairs.clone();
         self.pc.on_track(Box::new(move |track, _, _| {
@@ -215,6 +262,7 @@ impl NativePeer {
             let frames = frames.clone();
             let stats = stats.clone();
             let prepared = prepared.clone();
+            let audio_claimed=audio_claimed.clone();
             Box::pin(async move {
                 if track.kind() == RTPCodecType::Video {
                     if let Some(pc) = weak.upgrade() {
@@ -232,6 +280,9 @@ impl NativePeer {
                             Some(decoder),
                         ));
                     }
+                } else if track.kind()==RTPCodecType::Audio && !audio_claimed.swap(true,Ordering::AcqRel) {
+                    stats.capabilities.enable(crate::capabilities::Capability::Audio,true);
+                    tokio::spawn(crate::media::receive_audio(track,Some(stats)));
                 }
             })
         }));
@@ -244,6 +295,9 @@ impl NativePeer {
                 }),
             )
             .await?;
+        self.pc.add_transceiver_from_kind(RTPCodecType::Audio,Some(RTCRtpTransceiverInit {
+            direction:RTCRtpTransceiverDirection::Recvonly,send_encodings:vec![],
+        })).await?;
         Ok(())
     }
     pub async fn prepare_video(&self, width: u32, height: u32, stats: &MediaStats) -> Result<()> {
@@ -256,6 +310,12 @@ impl NativePeer {
         stats.set_backend(decoder.backend_name());
         *self.pending_decoder.lock().unwrap() = Some(decoder);
         Ok(())
+    }
+    pub async fn audio_sender(&self,red:bool)->Result<AudioSender> {
+        let track=Arc::new(TrackLocalStaticRTP::new(opus_capability(red),"audio_0".into(),"eclipse-native".into()));
+        let sender=self.pc.add_track(track.clone() as Arc<dyn TrackLocal+Send+Sync>).await?;
+        tokio::spawn(async move{while sender.read_rtcp().await.is_ok(){}});
+        Ok(AudioSender {track,red,sequence:rand::random(),base:rand::random(),previous:None})
     }
     pub async fn sender(&self, refresh: Arc<AtomicBool>) -> Result<Arc<TrackLocalStaticSample>> {
         let track = Arc::new(TrackLocalStaticSample::new(
@@ -390,7 +450,8 @@ mod tests {
                 .count(),
             1
         );
-        assert!(!offer.sdp.lines().any(|line| line.starts_with("m=audio ")));
+        assert_eq!(offer.sdp.lines().filter(|line|line.starts_with("m=audio ")).count(),1);
+        assert_eq!(offered_audio(&offer).unwrap(),Some(true));
         assert!(offer.sdp.contains("profile-level-id=420034"));
         let candidates: Vec<_> = offer
             .sdp

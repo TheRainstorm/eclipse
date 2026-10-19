@@ -69,6 +69,12 @@ enum Command {
         /// Allow an invited viewer to request keyboard and mouse control.
         #[arg(long, conflicts_with = "synthetic")]
         allow_input: bool,
+        /// Explicitly share system output audio for a real monitor source.
+        #[arg(long, conflicts_with="synthetic")]
+        audio:bool,
+        /// Add generated audio to a synthetic test host.
+        #[arg(long, requires="synthetic", conflicts_with="audio")]
+        synthetic_audio:bool,
         #[arg(long, default_value_t = 60)]
         fps: u32,
         #[arg(long, default_value_t = 8000)]
@@ -89,6 +95,9 @@ enum Command {
         /// New private JSON report containing metrics, never desktop images.
         #[arg(long)]
         report: Option<std::path::PathBuf>,
+        /// Receive-only diagnostic loss injection; the network is unchanged.
+        #[arg(long,value_parser=clap::value_parser!(u32).range(2..=10000))]
+        audio_loss_every:Option<u32>,
     },
     /// Register this machine (once) and log in by scanning a QR code.
     Login {
@@ -192,11 +201,11 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
         Command::NativeSources => native_cli::sources(),
-        Command::NativeHost { bind, invitation_file, monitor, synthetic, allow_input, fps, bitrate_kbps, pairing_seconds, max_seconds } => {
+        Command::NativeHost { bind, invitation_file, monitor, synthetic, allow_input, audio, synthetic_audio, fps, bitrate_kbps, pairing_seconds, max_seconds } => {
             let source=if synthetic {uu_capture::CaptureSource::Synthetic{width:1280,height:720,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
-            native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input}).await
+            native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
         },
-        Command::NativeProbe {invitation_file,frames,timeout_seconds,report} => native_cli::probe(invitation_file,frames,timeout_seconds,report).await,
+        Command::NativeProbe {invitation_file,frames,timeout_seconds,report,audio_loss_every} => native_cli::probe(invitation_file,frames,timeout_seconds,report,audio_loss_every.unwrap_or(0)).await,
         Command::ReleaseCheck => release_check(&config).await,
         Command::Devices => {
             let client = SignalClient::new(&config)?;

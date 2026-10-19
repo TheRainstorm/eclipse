@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
         let len = encoder.encode_float(&pcm, &mut encoded)?;
         encoded.truncate(len);
         control.packets.fetch_add(1, Relaxed);
-        tx.send(Packet { sequence: i, timestamp: u32::from(i) * 960, payload: encoded, received: Instant::now() })?;
+        tx.send(Packet { repaired:false, sequence: i, timestamp: u32::from(i) * 960, payload: encoded, received: Instant::now() })?;
         std::thread::sleep((start + Duration::from_millis(u64::from(i + 1) * 20)).saturating_duration_since(Instant::now()));
     }
     std::thread::sleep(Duration::from_millis(80));

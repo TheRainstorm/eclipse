@@ -149,6 +149,8 @@ impl App {
     }
     pub(super) fn connect_native(&mut self, path: PathBuf) {
         let stats = Arc::new(uu_core::media::MediaStats::default());
+        stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Release);
+        stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Release);
         if let Some(config) = &self.config {
             stats.diagnostics.start(vec![config.at("diagnostics")]);
         }
