@@ -59,11 +59,12 @@ dist/uu-gui-win64/
   version.json
 ```
 
-正式安装目录统一为 `%USERPROFILE%\uu-gui-demo`，桌面入口是 **UU Remote Rust**。
+正式安装目录统一为 `D:\SMB\uu-gui-demo`，桌面入口是 **UU Remote Rust**。
 在分发包目录运行 `powershell -ExecutionPolicy Bypass -File .\install.ps1` 安装/升级；
 旧 `rtx-auto`、`hud-recovery` 和 exe 备份会归档到 `%USERPROFILE%\uu-gui-archive`。
 主页底部显示源代码版本号，悬停显示实际 exe 路径；`version.json` 记录该包的提交号与文件哈希。
 开发端统一用 `python3 tools/windows/package.py` 构建并生成包，避免手动复制错版本。
+旧C盘目录不再同步；安装器会将指向旧入口的桌面/开始菜单快捷方式迁到D盘，不终止正在运行的旧窗口。
 
 首次启动会显示二维码，用手机扫码登录；左侧选择设备后点“连接”。
 
@@ -127,3 +128,4 @@ artifacts/         采样样本与校验和（不随仓库分发官方二进制�
 Windows已接入前台串流专属的双向文本剪贴板（30KiB），窗口／全屏普通输入统一使用原生VK；详见交接18。
 
 多显示器协议、两种布局模式和验收范围见[交接19](handoff/19-2026-10-19-multi-display.md)。
+未绑定屏幕激活、轨道负值修复与D盘安装迁移见[交接20](handoff/20-2026-10-19-display-binding-install.md)。

@@ -182,6 +182,8 @@ git -C /home/yfy/repo/moonlight/moonlight-qt submodule status
 
 ## 10. 远端多显示器
 
+后续修正见[交接20](../handoff/20-2026-10-19-display-binding-install.md)：`Screen.12`为int32，负数是未绑定轨道，不能转成u32后按五路数量限制拒绝。未绑定源先发 `Message.9 CaptureConfig(client=3,screen_id=真实源ID,config_flag=8)`，等待 `Message.19` 同序号的flag8成功回复和清单绑定，再发送目标采集设置并等待新画面。此路径只激活已有原生屏幕，不创建虚拟屏或修改显示布局。SDP的 `video_N` 决定轨道身份，m-line容量不代表显示器ID上限。
+
 交接19将显示器布局策略与串流源选择分开。`screen_control`解析官方名称/主屏/真实源ID/轨道；普通切屏使用 `RpcRequest.15 SendVideoTrackRequest` 加目标屏幕的采集设置，等待两种确认和新画面。顶部标签及+列表参考用户 `uu_menu_top.png`，全屏沿用同一清单。原来的纹理列表不能代表所有可用屏幕。
 
 本轮直接核对本地官方Windows描述符和被控端静态处理，确认 `screen_id=-2` 在多轨道时广播现有轨道，纠正此前“保持当前源”的注释。独占使用 `RpcRequest.26 EnterSuperScreenRequest`、reason=1、实测尺寸，退出使用case14；响应分别为22/10，切轨响应case11。这里只列自实现的字段对应关系，不导入官方二进制或GPL应用代码。普通模式不发送这些布局RPC，也不会自动修复既有的独占布局。

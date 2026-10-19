@@ -25,7 +25,7 @@ def main():
     files = {name: hashlib.sha256((DEST / name).read_bytes()).hexdigest()
              for name in ['uu-gui.exe', 'uu.exe', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'README.txt', 'install.ps1']}
     manifest = {'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
-                'install_directory': r'%USERPROFILE%\uu-gui-demo', 'sha256': files}
+                'install_directory': r'D:\SMB\uu-gui-demo', 'sha256': files}
     (DEST / 'version.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({'source_commit': revision, 'sha256': files}, indent=2))
 
