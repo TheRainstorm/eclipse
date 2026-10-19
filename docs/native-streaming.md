@@ -67,3 +67,14 @@ python3 tools/native/wayland_smoke.py \
 ```
 
 脚本启动自己的无头合成器、合成画面主机和观看窗口，检查全屏、只读模式下的本地快捷键、不同缩放比例输出间的往返尺寸及正常退出。输出目录必须不存在。默认使用 GLES；可用 `--renderer pixman`，验证 VA-API 时加 `--expect-hardware`。虚拟键盘只连接该脚本创建的 Wayland socket；不会向用户桌面发送按键。
+
+## 诊断报告（下个开发版本）
+
+源码构建的 `native-probe` 可生成新的私有 JSON 报告，适合较长串流或接收端丢包注入检查：
+
+```bash
+uu native-probe --invitation-file ./desktop.eclipse-invite.json \
+  --frames 3600 --timeout-seconds 90 --report ./native-probe.json
+```
+
+报告包含逐秒帧率、带宽、解码耗时、RTT、丢包、NACK/RTX、坏帧、队列丢帧与关键帧恢复计数，以及首次取帧耗时和接收队列最大取帧间隔。它反映接收端观测，不是玻璃到玻璃延迟。超时也保留已经获得的指标，`completed` 为 false。报告不包含邀请、账号或桌面图像；不覆盖已有文件，Unix 创建权限为600。

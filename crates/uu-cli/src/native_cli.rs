@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
+use uu_core::media::MediaStats;
 
 pub async fn host(config: uu_core::native::HostConfig) -> Result<()> {
     let (stop, rx) = watch::channel(false);
@@ -25,12 +26,31 @@ pub async fn host(config: uu_core::native::HostConfig) -> Result<()> {
     Ok(())
 }
 
-pub async fn probe(path: PathBuf, frames: u64, seconds: u64) -> Result<()> {
+pub async fn probe(
+    path: PathBuf,
+    frames: u64,
+    seconds: u64,
+    report: Option<PathBuf>,
+) -> Result<()> {
     ensure!(
         (1..=100_000).contains(&frames) && (1..=3600).contains(&seconds),
         "native probe requires 1..=100000 frames and 1..=3600 seconds"
     );
     let invitation = uu_core::native_pairing::Invitation::load(&path)?;
+    let mut report = report
+        .map(|path| {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            options
+                .open(path)
+                .context("probe report must be a new private file")
+        })
+        .transpose()?;
     let stats = Arc::new(uu_core::media::MediaStats::default());
     let worker_stats = stats.clone();
     let (images, mut receiver) = uu_core::media::frame_channel();
@@ -41,10 +61,29 @@ pub async fn probe(path: PathBuf, frames: u64, seconds: u64) -> Result<()> {
         );
     let started = Instant::now();
     let mut rendered = 0u64;
+    let mut first_frame_ms = None;
+    let mut last_frame = None;
+    let mut maximum_gap = Duration::ZERO;
+    let mut next_sample = Duration::ZERO;
+    let mut samples = Vec::new();
     let observation = tokio::time::timeout(Duration::from_secs(seconds), async {
         loop {
+            let mut observed = false;
             while receiver.try_recv().is_ok() {
                 rendered += 1;
+                observed = true;
+            }
+            let now = Instant::now();
+            if observed {
+                first_frame_ms.get_or_insert(started.elapsed().as_millis() as u64);
+                if let Some(previous) = last_frame {
+                    maximum_gap = maximum_gap.max(now.duration_since(previous));
+                }
+                last_frame = Some(now);
+            }
+            if report.is_some() && started.elapsed() >= next_sample && samples.len() < 3601 {
+                samples.push(snapshot(&stats, started.elapsed()));
+                next_sample = started.elapsed() + Duration::from_secs(1);
             }
             if stats.decoded_total.load(Ordering::Relaxed) >= frames {
                 break;
@@ -59,17 +98,57 @@ pub async fn probe(path: PathBuf, frames: u64, seconds: u64) -> Result<()> {
     })
     .await
     .context("native video probe timed out");
+    let elapsed = started.elapsed();
+    if let Some(previous) = last_frame {
+        maximum_gap = maximum_gap.max(previous.elapsed());
+    }
     let _ = stop.send(true);
-    let closed = worker.await.context("native viewing task failed")?;
+    let closed = worker
+        .await
+        .context("native viewing task failed")
+        .and_then(|result| result);
+    let completed = closed.is_ok()
+        && matches!(&observation, Ok(Ok(())))
+        && stats.errors.load(Ordering::Relaxed) == 0;
+    let (w, h) = stats.res();
+    if let Some(file) = &mut report {
+        samples.push(snapshot(&stats, elapsed));
+        serde_json::to_writer_pretty(
+            &mut *file,
+            &serde_json::json!({
+                "version":1,"completed":completed,"elapsed_ms":elapsed.as_millis() as u64,
+                "observed":rendered,"first_frame_ms":first_frame_ms,
+                "maximum_frame_gap_ms":maximum_gap.as_secs_f64()*1000.0,
+                "final":snapshot(&stats,elapsed),"samples":samples,
+            }),
+        )?;
+        file.sync_all()?;
+    }
+    println!("native probe: decoded={} observed={} resolution={}x{} elapsed_ms={:.0} errors={} backend={}",stats.decoded_total.load(Ordering::Relaxed),rendered,w,h,elapsed.as_secs_f64()*1000.0,stats.errors.load(Ordering::Relaxed),stats.backend());
     closed?;
     observation??;
-    let (w, h) = stats.res();
-    println!("native probe: decoded={} observed={} resolution={}x{} elapsed_ms={:.0} errors={} backend={}",stats.decoded_total.load(Ordering::Relaxed),rendered,w,h,started.elapsed().as_secs_f64()*1000.0,stats.errors.load(Ordering::Relaxed),stats.backend());
     ensure!(
         stats.errors.load(Ordering::Relaxed) == 0,
         "native decoder reported errors"
     );
     Ok(())
+}
+
+fn snapshot(stats: &MediaStats, elapsed: Duration) -> serde_json::Value {
+    let (width, height) = stats.res();
+    serde_json::json!({
+        "at_ms":elapsed.as_millis() as u64,"width":width,"height":height,
+        "backend":stats.backend(),"decoded":stats.decoded_total.load(Ordering::Relaxed),
+        "rx_fps":stats.src_fps(),"decode_fps":stats.dec_fps(),"decode_ms":stats.decode_ms(),
+        "bitrate_kbps":stats.bitrate_kbps.load(Ordering::Relaxed),
+        "rtt_us":stats.rtt_us.load(Ordering::Relaxed),"rtt_deviation_us":stats.rtt_deviation_us.load(Ordering::Relaxed),
+        "loss_ppm":stats.loss_ppm.load(Ordering::Relaxed),"errors":stats.errors.load(Ordering::Relaxed),
+        "packets":stats.packets.load(Ordering::Relaxed),"lost":stats.lost.load(Ordering::Relaxed),
+        "nack_requests":stats.nack_requests.load(Ordering::Relaxed),"rtx_packets":stats.rtx_packets.load(Ordering::Relaxed),
+        "damaged_frames":stats.damaged_frames.load(Ordering::Relaxed),"queue_drops":stats.queue_drops.load(Ordering::Relaxed),
+        "injected_loss":stats.injected_loss.load(Ordering::Relaxed),"keyframe_requests":stats.keyframe_requests.load(Ordering::Relaxed),
+        "waiting_for_keyframe":stats.waiting_for_keyframe.load(Ordering::Relaxed),
+    })
 }
 
 pub fn sources() -> Result<()> {

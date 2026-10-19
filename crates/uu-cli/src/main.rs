@@ -86,6 +86,9 @@ enum Command {
         frames: u64,
         #[arg(long, default_value_t = 15)]
         timeout_seconds: u64,
+        /// New private JSON report containing metrics, never desktop images.
+        #[arg(long)]
+        report: Option<std::path::PathBuf>,
     },
     /// Register this machine (once) and log in by scanning a QR code.
     Login {
@@ -193,7 +196,7 @@ async fn main() -> Result<()> {
             let source=if synthetic {uu_capture::CaptureSource::Synthetic{width:1280,height:720,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
             native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input}).await
         },
-        Command::NativeProbe {invitation_file,frames,timeout_seconds} => native_cli::probe(invitation_file,frames,timeout_seconds).await,
+        Command::NativeProbe {invitation_file,frames,timeout_seconds,report} => native_cli::probe(invitation_file,frames,timeout_seconds,report).await,
         Command::ReleaseCheck => release_check(&config).await,
         Command::Devices => {
             let client = SignalClient::new(&config)?;

@@ -36,7 +36,8 @@ def run(executable, frames, decoder):
                         raise TimeoutError('Native invitation was not ready')
                     time.sleep(.02)
                 probe = subprocess.run([str(executable), 'native-probe', '--invitation-file',
-                                        str(invitation), '--frames', str(frames), '--timeout-seconds', '25'],
+                                        str(invitation), '--frames', str(frames), '--timeout-seconds', '25',
+                                        '--report', str(temporary / 'probe.json')],
                                        env=environment, capture_output=True, text=True,
                                        encoding='utf-8', errors='replace', timeout=40)
                 if probe.returncode:
@@ -45,6 +46,14 @@ def run(executable, frames, decoder):
                 lines = [line for line in probe.stdout.splitlines() if line.startswith('native probe:')]
                 if len(lines) != 1:
                     raise RuntimeError('Native probe did not report one completed video session')
+                report_path = temporary / 'probe.json'
+                report = json.loads(report_path.read_text())
+                if (not report.get('completed') or report['final']['decoded'] < frames
+                        or report['final']['errors'] or not report['samples']
+                        or report['first_frame_ms'] is None or report['observed'] <= 0):
+                    raise RuntimeError('Native probe report did not match a completed, error-free video session')
+                if os.name == 'posix' and report_path.stat().st_mode & 0o077:
+                    raise RuntimeError('Native probe report was not private')
                 metric = re.search(r'decoded=(\d+).*resolution=(\d+)x(\d+).*errors=(\d+)', lines[0])
                 if not metric or int(metric[1]) < frames or (metric[2], metric[3], metric[4]) != ('1280', '720', '0'):
                     raise RuntimeError('Native video failed resolution, frame-count or decode-error checks')
