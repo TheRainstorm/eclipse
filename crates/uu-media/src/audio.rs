@@ -16,6 +16,10 @@ pub struct AudioControl {
     pub concealed: AtomicU64,
     pub dropped: AtomicU64,
     pub queue_ms: AtomicU32,
+    pub packet_ms: AtomicU32,
+    pub receive_decode_us: AtomicU32,
+    pub output_block_us: AtomicU32,
+    pub underruns: AtomicU64,
     pub status: Mutex<String>,
     stopped: AtomicBool,
 }
@@ -28,6 +32,10 @@ impl Default for AudioControl {
             concealed: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
             queue_ms: AtomicU32::new(0),
+            packet_ms: AtomicU32::new(0),
+            receive_decode_us: AtomicU32::new(0),
+            output_block_us: AtomicU32::new(0),
+            underruns: AtomicU64::new(0),
             status: Mutex::new("等待远端音频".into()),
             stopped: AtomicBool::new(false),
         }
@@ -113,6 +121,9 @@ impl OpusReceiver {
     ) -> anyhow::Result<Vec<f32>> {
         let mut output = Vec::new();
         let duration = self.decoder.get_nb_samples(payload)?;
+        control
+            .packet_ms
+            .store((duration * 1000 / 48_000) as u32, Ordering::Relaxed);
         if let Some(expected) = self.next_timestamp {
             let missing = timestamp.wrapping_sub(expected) as usize;
             if missing > 0 && missing <= 5760 && missing % 120 == 0 {
@@ -173,6 +184,10 @@ fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> an
                 control.dropped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
+            control.receive_decode_us.store(
+                packet.received.elapsed().as_micros().min(u32::MAX as u128) as u32,
+                Ordering::Relaxed,
+            );
             match decoder.decode(packet.timestamp, &packet.payload, control) {
                 Ok(pcm) => {
                     #[cfg(windows)]
@@ -198,7 +213,7 @@ struct PcmQueue {
 impl PcmQueue {
     fn submit(&mut self, samples: &[f32], rate: u32, channels: usize) {
         // Rejoin live sound after a device stall rather than playing the backlog.
-        let max = rate as usize * channels / 20; // 50ms
+        let max = rate as usize * channels * 30 / 1000; // 30ms; do not accumulate stale sound.
         if self.samples.len() + samples.len() > max {
             self.samples.clear();
         }
@@ -231,32 +246,48 @@ mod windows {
                 .ok_or_else(|| anyhow::anyhow!("没有默认播放设备"))?;
             let supported = device.default_output_config()?;
             let format = supported.sample_format();
-            let config: cpal::StreamConfig = supported.into();
+            let limits = *supported.buffer_size();
+            let mut config: cpal::StreamConfig = supported.into();
+            let requested = (config.sample_rate.0 / 100).max(1);
+            let requested = match limits {
+                cpal::SupportedBufferSize::Range { min, max } => {
+                    requested.clamp(min.max(1), max.max(1))
+                }
+                _ => requested,
+            };
+            config.buffer_size = cpal::BufferSize::Fixed(requested);
             let queue = Arc::new(Mutex::new(PcmQueue::default()));
             let failed = Arc::new(AtomicBool::new(false));
-            let stream = match format {
+            let create = |config: &cpal::StreamConfig| match format {
                 cpal::SampleFormat::F32 => build::<f32>(
                     &device,
-                    &config,
+                    config,
                     queue.clone(),
                     control.clone(),
                     failed.clone(),
-                )?,
+                ),
                 cpal::SampleFormat::I16 => build::<i16>(
                     &device,
-                    &config,
+                    config,
                     queue.clone(),
                     control.clone(),
                     failed.clone(),
-                )?,
+                ),
                 cpal::SampleFormat::U16 => build::<u16>(
                     &device,
-                    &config,
+                    config,
                     queue.clone(),
                     control.clone(),
                     failed.clone(),
-                )?,
-                _ => anyhow::bail!("不支持的播放设备采样格式 {format}"),
+                ),
+                _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
+            };
+            let stream = match create(&config) {
+                Ok(stream) => stream,
+                Err(_) => {
+                    config.buffer_size = cpal::BufferSize::Default;
+                    create(&config)?
+                }
             };
             stream.play()?;
             control.status("Opus · 48 kHz · 双声道");
@@ -312,10 +343,12 @@ mod windows {
                 self.phase += 48000.0 / self.rate as f64;
             }
             self.phase -= frames as f64;
-            self.queue
-                .lock()
-                .unwrap()
-                .submit(&samples, self.rate, self.channels);
+            let mut queue = self.queue.lock().unwrap();
+            queue.submit(&samples, self.rate, self.channels);
+            control.queue_ms.store(
+                (queue.samples.len() * 1000 / (self.rate as usize * self.channels)) as u32,
+                Ordering::Relaxed,
+            );
             Ok(())
         }
     }
@@ -331,6 +364,10 @@ mod windows {
         device.build_output_stream(
             config,
             move |data: &mut [T], _| {
+                control.output_block_us.store(
+                    (data.len() * 1_000_000 / (rate as usize * channels)) as u32,
+                    Ordering::Relaxed,
+                );
                 let gain = if control.muted.load(Ordering::Relaxed) {
                     0.0
                 } else {
@@ -338,6 +375,9 @@ mod windows {
                 };
                 // Never wait for decode on the realtime device callback.
                 if let Ok(mut q) = queue.try_lock() {
+                    if q.samples.len() < data.len() {
+                        control.underruns.fetch_add(1, Ordering::Relaxed);
+                    }
                     for sample in data {
                         *sample = T::from_sample(q.sample() * gain);
                     }
@@ -407,9 +447,9 @@ mod tests {
     #[test]
     fn stalled_playback_discards_old_sound_and_underrun_is_silent() {
         let mut q = PcmQueue::default();
-        q.submit(&vec![0.1; 3840], 48000, 2);
-        q.submit(&vec![0.2; 3840], 48000, 2);
-        assert_eq!(q.samples.len(), 3840);
+        q.submit(&vec![0.1; 1920], 48000, 2);
+        q.submit(&vec![0.2; 1920], 48000, 2);
+        assert_eq!(q.samples.len(), 1920);
         assert_eq!(q.sample(), 0.2);
         q.samples.clear();
         assert_eq!(q.sample(), 0.0);

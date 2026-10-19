@@ -626,7 +626,10 @@ impl super::App {
                                             let mut volume=audio.volume.load(Relaxed);
                                             if ui.add(egui::Slider::new(&mut volume,0..=100).text("音量")).changed() {audio.volume.store(volume,Relaxed);changed=true;}
                                             ui.label(audio.status.lock().unwrap().as_str());
-                                            ui.label(format!("缓冲 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
+                                            ui.label(format!("播放排队 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
+                                            ui.small(format!("音频包 {} ms · 接收→解码 {:.1} ms",audio.packet_ms.load(Relaxed),audio.receive_decode_us.load(Relaxed) as f32/1000.0));
+                                            ui.small(format!("设备回调块 {:.1} ms · 欠载 {} 次",audio.output_block_us.load(Relaxed) as f32/1000.0,audio.underruns.load(Relaxed)));
+                                            ui.small("这些是客户端阶段数据，不是端到端声音延迟。");
                                         }
                                         if changed{self.persist_preferences();}
                                     });
