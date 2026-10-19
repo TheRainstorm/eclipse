@@ -161,7 +161,8 @@ async fn run(
     socket = Some(SocketIo::connect(&url, &token).await?);
     let sio = socket.as_mut().unwrap();
     let dev_id = api.state.device_id.clone().unwrap_or_default();
-    let app = crate::socketio::encode_app_data_with_clipboard(&dev_id,stats.clipboard.enabled.load(std::sync::atomic::Ordering::Acquire));
+    let display_mode=if stats.display_mode.load(std::sync::atomic::Ordering::Acquire)==1 {crate::screen_control::DisplayMode::ExclusiveVirtual}else{crate::screen_control::DisplayMode::Preserve};
+    let app = crate::socketio::encode_app_data_with_display_mode(&dev_id,stats.clipboard.enabled.load(std::sync::atomic::Ordering::Acquire),display_mode);
     let streamer = json!({
         "control_id": ctrl,
         "device_capability": {

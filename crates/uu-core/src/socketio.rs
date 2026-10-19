@@ -137,6 +137,9 @@ async fn next_text(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> Resul
 /// `0x04` is UU's binary-attachment prefix.
 pub fn encode_app_data(device_id:&str)->Vec<u8>{encode_app_data_with_clipboard(device_id,false)}
 pub fn encode_app_data_with_clipboard(device_id:&str,clipboard:bool)->Vec<u8> {
+    encode_app_data_with_display_mode(device_id, clipboard, crate::screen_control::DisplayMode::Preserve)
+}
+pub fn encode_app_data_with_display_mode(device_id:&str,clipboard:bool,mode:crate::screen_control::DisplayMode)->Vec<u8> {
     fn varint(out: &mut Vec<u8>, mut v: u64) {
         while v >= 0x80 {
             out.push((v as u8) | 0x80);
@@ -161,7 +164,14 @@ pub fn encode_app_data_with_clipboard(device_id:&str,clipboard:bool)->Vec<u8> {
     out.push(0x4a); // field 9, string
     varint(&mut out, device_id.len() as u64);
     out.extend_from_slice(device_id.as_bytes());
-    out.extend_from_slice(&[0x50, 0x01]); // field 10 = 1
+    // Normal connections replay the host's saved per-controller display layout
+    // before CONTROL opens. Assistance policy skips that replay; authentication
+    // and the desktop capture type remain the same.
+    let connection_policy = match mode {
+        crate::screen_control::DisplayMode::Preserve => 2,
+        crate::screen_control::DisplayMode::ExclusiveVirtual => 1,
+    };
+    crate::control_wire::int(10, connection_policy, &mut out);
     if clipboard {crate::control_wire::bytes(11,&[64,3],&mut out);}
     let ver = b"4.40.1.2090";
     out.push(0x62); // field 12, string
@@ -196,6 +206,20 @@ pub fn gunzip_sdp04(data: &[u8]) -> Result<String> {
 mod frame_rate_tests {
     use super::*;
     use crate::control_wire::{decode_wire, WireValue};
+    #[test]
+    fn preserve_skips_saved_host_layout_and_exclusive_remains_explicit() {
+        use crate::screen_control::DisplayMode;
+        for (mode, policy) in [(DisplayMode::Preserve, 2), (DisplayMode::ExclusiveVirtual, 1)] {
+            let app = encode_app_data_with_display_mode("test-device", true, mode);
+            let fields = decode_wire(&app[1..]).unwrap();
+            assert!(fields.contains(&(10, WireValue::Varint(policy))));
+            assert!(fields.contains(&(1, WireValue::Varint(1)))); // CAPTURE_DESKTOP
+            assert!(fields.contains(&(2, WireValue::Varint(u64::MAX)))); // existing source
+            assert!(!fields.iter().any(|(n, _)| *n == 3)); // no layout-changing CaptureParams
+        }
+        assert_eq!(encode_app_data("test-device"),
+            encode_app_data_with_display_mode("test-device", false, DisplayMode::Preserve));
+    }
     #[test]
     fn clipboard_connect_flag_keeps_existing_capture_initialization() {
         for enabled in [false,true] {
