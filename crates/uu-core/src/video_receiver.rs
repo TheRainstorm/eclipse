@@ -16,6 +16,7 @@ pub struct AccessUnit {
 }
 #[derive(Default)]
 pub struct ReceiverStats {
+    pub received: u64,
     pub lost: u64,
     pub reordered: u64,
     pub late: u64,
@@ -173,6 +174,7 @@ impl VideoReceiver {
         let mut ready = Vec::new();
         while let Some(next) = self.next {
             if let Some((packet, _)) = self.packets.remove(&next) {
+                self.stats.received += 1;
                 self.gap_since = None;
                 self.next = Some(next.wrapping_add(1));
                 self.assemble(packet, &mut ready);

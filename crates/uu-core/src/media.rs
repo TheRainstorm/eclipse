@@ -632,7 +632,7 @@ async fn receive_video(
     let mut receiver_epoch = 0;
     let mut test_loss = crate::test_loss::TestLoss::from_env();
     let mut bytes = 0u64;
-    let mut window_packets = 0u64;
+    let mut previous_received = 0u64;
     let mut previous_lost = 0u64;
     let mut src = 0u64;
     let mut last_ts = None;
@@ -652,7 +652,6 @@ async fn receive_video(
             continue;
         }
         let units = if let Some(packet) = packet {
-            window_packets += 1;
             if let Some(s) = &stats {
                 s.packets.fetch_add(1, Ordering::Relaxed);
             }
@@ -733,6 +732,7 @@ async fn receive_video(
             if let Some(s) = &stats {
                 let seconds = window.elapsed().as_secs_f64();
                 let lost = receiver.stats.lost.saturating_sub(previous_lost);
+                let window_packets = receiver.stats.received.saturating_sub(previous_received);
                 s.loss_ppm.store((lost.saturating_mul(1_000_000) / (window_packets + lost).max(1)) as u32, Ordering::Relaxed);
                 s.src_fps_x100
                     .store((src as f64 / seconds * 100.0) as u32, Ordering::Relaxed);
@@ -755,7 +755,7 @@ async fn receive_video(
             }
             src = 0;
             bytes = 0;
-            window_packets = 0;
+            previous_received = receiver.stats.received;
             previous_lost = receiver.stats.lost;
             window = Instant::now();
         }

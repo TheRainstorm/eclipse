@@ -26,6 +26,9 @@ impl super::App {
         ui.painter().rect_filled(Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), size.y + 6.0)), 0.0,
             Color32::from_black_alpha(180));
         ui.painter().galley(pos, galley, Color32::WHITE);
+        ui.interact(Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), size.y + 6.0)),
+            ui.id().with("hud-details"), egui::Sense::hover()).on_hover_text(format!(
+                "{}\nNetwork：CONTROL 往返耗时均值 ± 标准差（最近 32 次）\nLoss：最近 2 秒超时未修复的 RTP 包比例，重复 RTX 不计入分母\nRender：UI 准备及渲染提交 CPU 时间，不含 VSync 等待\nDecode：解码调用耗时，不含颜色转换\nEncode：远端未提供可验证的计时，显示 N/A", s.backend()));
         if s.waiting_for_keyframe.load(Relaxed) != 0 {
             ui.painter().text(pos + egui::vec2(0.0, size.y + 5.0), egui::Align2::LEFT_TOP,
                 format!("正在恢复参考帧 · 请求 {} · 坏帧 {} · RTX {}", s.keyframe_requests.load(Relaxed), s.damaged_frames.load(Relaxed), s.rtx_packets.load(Relaxed)),
