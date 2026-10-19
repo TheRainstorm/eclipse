@@ -20,10 +20,12 @@
 
 ## 验证与边界
 
-核心46项、GUI29项通过。真实WebRTC回环使用7/42两屏、42初始轨道为-1，切屏只返回Message19成功与Message8 CaptureChange，刻意不重新发送ScreenSources，核对最终轨道0绑定42、旧7不再占用。GUI覆盖确认参数缓存、错误/过期回复、重绑定不复用确认、超时及新帧门控。新增排序测试覆盖编号/主屏不变、前后插入、热插拔、清单顺序变化、无效源及保存恢复。
+整仓135项通过，其中核心46项、GUI29项。真实WebRTC回环使用7/42两屏、42初始轨道为-1，切屏只返回Message19成功与Message8 CaptureChange，刻意不重新发送ScreenSources，核对最终轨道0绑定42、旧7不再占用。GUI覆盖确认参数缓存、错误/过期回复、重绑定不复用确认、超时及新帧门控。新增排序测试覆盖编号/主屏不变、前后插入、热插拔、清单顺序变化、无效源及保存恢复。
 
 所有回环是本地合成对端，真实KVM-WIN11切屏和Windows拖动交互仍需用户重开验收；不以这些结果声称官方对端已实测通过。私有证据在 `artifacts/ui-dpi-validation/display-change-test.log`、`display-tabs-test.log` 及 `display-legacy-notifications.txt`。
 
 ## 交付
 
-Windows发行构建及D盘安装核对结果在发布后追加；实际构建源仍以version.json.source_commit为准。
+Windows release构建成功，实际构建源 `93ea08426ac06fced1a01a3cb77b8ce3e9389b97` 已安装至x358h `D:\SMB\uu-gui-demo`。GUI SHA256 `96e066da5ea88ada8eb66acb4ee528c7594fa20bf199641f95d35f8ded1e34ad`，六项文件哈希、版本清单源提交、桌面UU Remote Rust目标与工作目录均核对通过。旧窗口保留，用户需关闭旧主页和串流后从桌面重开，主页应显示 `93ea084`。
+
+发布证据为 `artifacts/ui-dpi-validation/display-tabs-{workspace-test.log,package.log,install.json,installed-verified.json}`；发布记录提交不代表另一版二进制，构建源以version.json.source_commit为准。
