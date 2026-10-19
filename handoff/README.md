@@ -12,6 +12,7 @@
 | 06 | `06-2026-10-19-hardware-validation.md` | Intel/AMD 实机硬解验证、1088→1080 裁剪修复、Windows 分发包；x358h 新地址 |
 | 07 | `07-2026-10-19-experience.md` | Windows 中键实测值 16、浅色参考版 GUI、RTP/NACK 恢复与显示队列优化；FEC 边界 |
 | 08 | `08-2026-10-19-reference-index.md` | 功能拆分提交、三个本地项目源码参考索引、协议差异与后续实施顺序 |
+| 09 | `09-2026-10-19-controls-rtx-auto.md` | 可隐藏悬浮菜单、官方自动档达18Mbps、RTX接收与严格恢复、Windows真实PTS |
 
 约定：
 

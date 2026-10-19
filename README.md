@@ -22,6 +22,7 @@
 | M7 | Windows x64 交叉构建 | ✅ 已在 KVM-WIN11 启动验证 |
 | M8 | Windows D3D11VA 硬件解码 | ✅ Intel Arc B390 / AMD RX 7900 XTX 实测；Linux VA-API 待真机验证 |
 | M9 | 输入与串流体验 | ✅ Windows 中键按住/拖动、浅色设备主页、RTP 重排/坏帧丢弃/恢复、最新帧呈现 |
+| M10 | 自动档与重传恢复 | ✅ DecoderCap/自动画质、NACK/RTX、严格参考链恢复、可隐藏悬浮菜单；短测17–19Mbps |
 
 > 现在已经能做到：连接官方被控端、连续看画面、用鼠标和键盘操作。剩余的是
 > 音频/剪贴板/文件等外围功能，以及原生采集后端（目前是占位）。
@@ -65,7 +66,8 @@ HUD 显示实际解码后端。离线验证可运行
 
 设备主页按参考图改成浅色布局；连接后切换为紧凑串流界面。F1 切换统计，
 Ctrl+Alt+F 切换全屏。Windows 路径中键使用实测的 `MK_MBUTTON=16`，支持按住拖动。
-接收端支持短时 RTP 重排、NACK 和损坏帧恢复；FEC/完整 RTX 尚未接入。
+接收端支持短时 RTP 重排、NACK/RTX 和参考链恢复；FEC 尚未接入。
+默认使用官方自动画质，支持跟随远端分辨率；全屏悬浮菜单可用 Ctrl+Alt+M 隐藏/恢复。
 恢复机制、卡顿原因和 Sunshine/Moonlight 对比见 [`docs/streaming-quality.md`](docs/streaming-quality.md)。
 三个本地开源项目的功能、源码入口、接入边界与实施顺序见
 [`docs/reference-index.md`](docs/reference-index.md)；包含固定提交版本和快速迭代时的更新方法。
