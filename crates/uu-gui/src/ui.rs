@@ -72,16 +72,15 @@ pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
             }
         }
         Icon::Settings => {
-            p.circle_stroke(r.center(), 6.0, stroke);
-            p.circle_stroke(r.center(), 2.0, stroke);
-            for (a, b) in [
-                ((9.0, 0.0), (9.0, 3.0)),
-                ((9.0, 15.0), (9.0, 18.0)),
-                ((0.0, 9.0), (3.0, 9.0)),
-                ((15.0, 9.0), (18.0, 9.0)),
-            ] {
-                line(a, b);
+            let mut points = Vec::with_capacity(32);
+            for tooth in 0..8 {
+                for (offset, radius) in [(-0.35, 6.0), (-0.20, 8.0), (0.20, 8.0), (0.35, 6.0)] {
+                    let angle = (tooth as f32 + offset) * std::f32::consts::TAU / 8.0;
+                    points.push(r.center() + egui::vec2(angle.cos(), angle.sin()) * radius);
+                }
             }
+            p.add(egui::Shape::closed_line(points, stroke));
+            p.circle_stroke(r.center(), 2.6, stroke);
         }
         Icon::Refresh => {
             p.circle_stroke(r.center(), 6.0, stroke);
@@ -160,6 +159,17 @@ pub(super) fn icon_button(ui: &mut egui::Ui, kind: Icon, tip: &str) -> Response 
     }
     icon(ui.painter(), rect, kind, ui.visuals().text_color());
     response.on_hover_text(tip)
+}
+
+pub(super) fn icon_label_button(ui: &mut egui::Ui, kind: Icon, label: &str) -> Response {
+    let text = ui.painter().layout_no_wrap(label.into(), egui::FontId::proportional(14.0), ui.visuals().text_color());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(40.0 + text.size().x, 30.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 6.0, ui.visuals().widgets.hovered.bg_fill);
+    }
+    icon(ui.painter(), Rect::from_center_size(rect.left_center() + egui::vec2(14.0, 0.0), Vec2::splat(18.0)), kind, ui.visuals().text_color());
+    ui.painter().galley(egui::pos2(rect.left() + 30.0, rect.center().y - text.size().y / 2.0), text, ui.visuals().text_color());
+    response
 }
 fn text_at(p: &egui::Painter, pos: Pos2, text: impl Into<String>, size: f32, color: C) {
     p.text(

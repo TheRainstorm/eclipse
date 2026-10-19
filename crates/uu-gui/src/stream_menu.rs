@@ -1,14 +1,7 @@
 //! Connection chrome and the optional floating control menu.
-use super::ui::{icon, icon_button, Icon};
+use super::ui::{icon, icon_button, icon_label_button, Icon};
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke};
 
-fn row_icon(ui: &egui::Ui, response: &egui::Response, kind: Icon, color: Color32) {
-    let rect = Rect::from_center_size(
-        egui::pos2(response.rect.left() + 16.0, response.rect.center().y),
-        egui::vec2(16.0, 16.0),
-    );
-    icon(ui.painter(), rect, kind, color);
-}
 const MENU_INK: Color32 = Color32::from_rgb(29, 32, 37);
 const MENU_WIDTH: f32 = 236.0;
 
@@ -257,9 +250,8 @@ impl super::App {
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        let control = ui.add(egui::Button::new("      控制中心").frame(false));
+                        let control = icon_label_button(ui, Icon::Settings, "设置");
                         self.stream_menu.trigger_rect = Some(control.rect);
-                        row_icon(ui, &control, Icon::Settings, Color32::from_rgb(42, 52, 66));
                         if control.clicked() {
                             self.displays.menu_open=false;
                             self.stream_menu.open = !self.stream_menu.open;
@@ -549,7 +541,7 @@ impl super::App {
                                 }
                             }
                             button.on_hover_text(
-                                "控制中心 · 拖动可移动\nCtrl+Alt+M 隐藏 / 显示悬浮菜单",
+                                "设置 · 拖动可移动\nCtrl+Alt+M 隐藏 / 显示悬浮菜单",
                             );
                         });
                 });
