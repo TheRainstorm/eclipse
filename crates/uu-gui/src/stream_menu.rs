@@ -40,6 +40,7 @@ pub(super) struct StreamMenu {
     pub open: bool,
     pub anchor: Pos2,
     position: Option<Pos2>,
+    trigger_rect: Option<Rect>,
 }
 impl Default for StreamMenu {
     fn default() -> Self {
@@ -48,6 +49,7 @@ impl Default for StreamMenu {
             open: false,
             anchor: Pos2::ZERO,
             position: None,
+            trigger_rect: None,
         }
     }
 }
@@ -116,6 +118,7 @@ impl super::App {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                         let control = ui.add(egui::Button::new("      控制中心").frame(false));
+                        self.stream_menu.trigger_rect = Some(control.rect);
                         row_icon(ui, &control, Icon::Settings, Color32::from_rgb(42, 52, 66));
                         if control.clicked() {
                             self.stream_menu.open = !self.stream_menu.open;
@@ -153,6 +156,9 @@ impl super::App {
     /// Draw first so the stream can exclude every control rectangle from input.
     pub(super) fn stream_controls(&mut self, ctx: &egui::Context) -> Vec<Rect> {
         let mut blocked = Vec::new();
+        if !self.fullscreen {
+            if let Some(rect) = self.stream_menu.trigger_rect { blocked.push(rect); }
+        }
         if self.fullscreen && self.stream_menu.visible {
             let screen = ctx.screen_rect();
             let default = egui::pos2(screen.right() - 54.0, 8.0);
@@ -320,9 +326,9 @@ impl super::App {
                             ui.separator();
                             if ui
                                 .button(if self.fullscreen {
-                                    "⛶  退出全屏                       Ctrl+Alt+F"
+                                    "退出全屏                       Ctrl+Alt+F"
                                 } else {
-                                    "⛶  进入全屏                       Ctrl+Alt+F"
+                                    "进入全屏                       Ctrl+Alt+F"
                                 })
                                 .clicked()
                             {
@@ -331,7 +337,7 @@ impl super::App {
                             }
                             if ui
                                 .button(
-                                    RichText::new("↪  退出远控")
+                                    RichText::new("退出远控")
                                         .color(Color32::from_rgb(198, 65, 57)),
                                 )
                                 .clicked()
