@@ -92,7 +92,7 @@ def build_package(output):
             shutil.copy2(ROOT / 'tools/windows' / filename, staging / filename)
         verify_imports(staging)
         manifest = {'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
-                    'target': TARGET, 'install_directory': r'D:\SMB\uu-gui-demo',
+                    'target': TARGET,
                     'sha256': {filename: sha256(staging / filename) for filename in REQUIRED}}
         (staging / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         zip_path = Path(temp) / archive.name

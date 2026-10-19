@@ -10,3 +10,7 @@ artifacts/
 .idea/
 *.swp
 .DS_Store
+
+# 本地开发交接与机器调研记录，不作为公开文档发布
+/handoff/
+/notes/

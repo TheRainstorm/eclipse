@@ -1,8 +1,8 @@
 # Linux 客户端与自动验收
 
-最新正式版 `217e5400e177` 的低延迟、BT709与丢包恢复结果见 [交接24](../handoff/24-2026-10-19-linux-latency-color-recovery.md)。
+Linux VA-API 支持完整访问单元提交，并依据 H.264 色彩标记选择范围和 BT.601 / BT.709 转换。
 
-2026-10-19 在 laptop-arch（Intel Tiger Lake、Arch、KDE Wayland）连接 KVM-WIN11 实测。当前目标是控制端；`uu probe` 中 Linux **被控端** uinput 检测失败不影响控制 Windows 主机。
+2026-10-19 在 Linux 测试客户端（Intel Tiger Lake、Arch、KDE Wayland）连接 Windows 测试主机 实测。当前目标是控制端；`uu probe` 中 Linux **被控端** uinput 检测失败不影响控制 Windows 主机。
 
 ## 构建和统一安装
 

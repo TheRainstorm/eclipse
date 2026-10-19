@@ -7,7 +7,7 @@
 
 ## 1. 一句话
 
-给 x358h 上的 `GameViewer.exe` 挂 Frida，钩 **`streamer.dll` 内联 OpenSSL 的写/读函数**
+给 Windows 测试客户端 上的 `GameViewer.exe` 挂 Frida，钩 **`streamer.dll` 内联 OpenSSL 的写/读函数**
 （RVA `0xdd7f30` / `0xdd7690`），即可拿到**明文 PCK 帧**；脚本用 `Win32_Process.Create`
 脱离 SSH 会话启动，否则进程会被 SSH 断开杀掉。
 
@@ -24,10 +24,10 @@
 
 ## 3. 前置
 
-- 目标机 **x358h**（`ssh -p 2202 yfy@192.168.35.200`）。
+- 目标机 **Windows 测试客户端**（`ssh -p 22 USER@192.0.2.10`）。
 - 官方客户端进程名 `GameViewer.exe`，路径 `D:\Programs\GameViewer\bin\GameViewer.exe`。
-- Python：`C:\Users\yfy\AppData\Local\Programs\Python\Python311\python.exe`（已装 `frida` 17.24）。
-- 需要的文件（已在 x358h `C:\Users\yfy\`）：
+- Python：`C:\Users\USER\AppData\Local\Programs\Python\Python311\python.exe`（已装 `frida` 17.24）。
+- 需要的文件（已在 Windows 测试客户端 `C:\Users\USER\`）：
   - `wire2.js` / `wire2.py`（当前推荐；`wirecap.js/.py` 是旧版，`wirecap.js` 里 hex 有 `keep` 变量 bug）
   - `run_wire2b.bat`（把 python 包一层，便于脱离启动）
 
@@ -57,9 +57,9 @@ send({ev:'hooked',W:W.toString(),R:R.toString()});
 ```python
 import frida,sys,time,json
 pid=int(sys.argv[1]); secs=float(sys.argv[2]) if len(sys.argv)>2 else 20
-out=sys.argv[3] if len(sys.argv)>3 else r'C:\Users\yfy\wire2.jsonl'
+out=sys.argv[3] if len(sys.argv)>3 else r'C:\Users\USER\wire2.jsonl'
 s=frida.get_local_device().attach(pid)
-sc=s.create_script(open(r'C:\Users\yfy\wire2.js').read())
+sc=s.create_script(open(r'C:\Users\USER\wire2.js').read())
 f=open(out,'w',encoding='utf-8')
 def m(x,d):
     if x.get('type')=='error': print('ERR',x,flush=True); return
@@ -75,7 +75,7 @@ print('done',flush=True)
 
 ```bat
 @echo off
-"C:\Users\yfy\AppData\Local\Programs\Python\Python311\python.exe" C:\Users\yfy\wire2.py <PID> 300 > C:\Users\yfy\wire2b_out.txt 2>&1
+"C:\Users\USER\AppData\Local\Programs\Python\Python311\python.exe" C:\Users\USER\wire2.py <PID> 300 > C:\Users\USER\wire2b_out.txt 2>&1
 ```
 
 ## 5. 脱离 SSH 会话启动（关键）
@@ -87,7 +87,7 @@ $pid2 = (Get-Process GameViewer | Select-Object -First 1).Id
 
 # 2) 用 WMI 创建进程 —— 不随 SSH 会话结束而死
 Invoke-CimMethod -ClassName Win32_Process -MethodName Create `
-  -Arguments @{CommandLine='cmd.exe /c C:\Users\yfy\run_wire2b.bat'}
+  -Arguments @{CommandLine='cmd.exe /c C:\Users\USER\run_wire2b.bat'}
 ```
 
 > 备选：`New-ScheduledTaskPrincipal -LogonType Interactive` 注册计划任务再 `Start-ScheduledTask`。
@@ -117,7 +117,7 @@ b[28:]   = payload        JSON（输入）或 protobuf（控制类）
 ```python
 import json
 g={}
-for line in open(r'C:\Users\yfy\wire2.jsonl',errors='ignore'):
+for line in open(r'C:\Users\USER\wire2.jsonl',errors='ignore'):
     x=json.loads(line)
     if x.get('ev')!='io': continue
     b=bytes.fromhex(x.get('hex',''))
@@ -156,7 +156,7 @@ const readEx  = firstCall(rwrap, 0x10, 0x30);
 
 | 位置 | 文件 |
 |---|---|
-| x358h `C:\Users\yfy\` | `wire2.js` `wire2.py` `run_wire2b.bat`（当前推荐） |
-| x358h `C:\Users\yfy\` | `wirecap.js` `wirecap.py`（旧版，js 有 hex bug）、`plaincap.*`、`sslcapture*.*`、`startwire*.ps1` |
+| Windows 测试客户端 `C:\Users\USER\` | `wire2.js` `wire2.py` `run_wire2b.bat`（当前推荐） |
+| Windows 测试客户端 `C:\Users\USER\` | `wirecap.js` `wirecap.py`（旧版，js 有 hex bug）、`plaincap.*`、`sslcapture*.*`、`startwire*.ps1` |
 | ares `/tmp` | `wirecap.jsonl` `wirecap2.jsonl` `wirecap4.jsonl` `wirecap5.jsonl` `pcksniff.jsonl` `pcksniff2.jsonl` `pckcap.jsonl` `startwire*.ps1` |
 | 参考 | codex 会话 `~/.codex/sessions/2026/10/17/rollout-2026-10-17T20-54-18-*.jsonl`（含当年定位过程） |

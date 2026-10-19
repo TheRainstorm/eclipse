@@ -11,6 +11,6 @@ cargo run -p uu-core --example session_probe -- <设备ID> <屏幕源ID> <屏幕
 
 初连要求 CONTROL 打开、视频解码且初始画质请求成功。每次切屏要求相应的切屏回复成功、目标源有轨道绑定、定向画质请求成功，随后至少继续解码 5 帧。输出 `probe {...}` 汇总，不包含认证、输入、剪贴板和 SDP 正文。`artifacts/live-display-validation/uu-session-*.jsonl` 记录屏幕、回包通道和采集源通知；即使失败也先释放连接，报告 `cleanup stopped=true`。
 
-2026-10-19 实测开发机 → KVM-WIN11：原生 AMD vDisplay（ID 0）与 Zako HDR（ID 1），`0 1 0 1` 往返四次全部通过，解码错误 0、清理完成。实际回包中 `CaptureChange`、`CaptureConfigResponse` 和 `CaptureSettingResponse` 均来自 TEXT_DATA_CHANNEL；屏幕清单同时出现在 CONTROL 与 TEXT。
+2026-10-19 实测开发机 → Windows 测试主机：原生 AMD vDisplay（ID 0）与 Zako HDR（ID 1），`0 1 0 1` 往返四次全部通过，解码错误 0、清理完成。实际回包中 `CaptureChange`、`CaptureConfigResponse` 和 `CaptureSettingResponse` 均来自 TEXT_DATA_CHANNEL；屏幕清单同时出现在 CONTROL 与 TEXT。
 
 该程序验证实际连接/协议/解码，不代替 Windows GUI、键鼠、DPI、音频或帧间隔的人机验收。此前 `stream_check` 的强制复用会话（UU_FORCE_JOIN=0）与默认新会话行为不同；它的性能结果不能代替本探测的显示策略和切屏验收。

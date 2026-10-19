@@ -1,7 +1,7 @@
 # One Windows installation directory; legacy copies are archived outside it.
 param(
     [string]$SourceDir = $PSScriptRoot,
-    [string]$InstallDir = 'D:\SMB\uu-gui-demo',
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\UU Remote Rust'),
     [string]$ArchiveRoot = (Join-Path $env:USERPROFILE 'uu-gui-archive'),
     [switch]$NoShortcut
 )

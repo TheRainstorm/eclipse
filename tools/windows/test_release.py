@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -73,8 +74,8 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(sync.latest_package(), path)
 
     def run_sync(self, path, dry_run=True):
-        args = type('Args', (), dict(package=path, host='192.168.34.3', user='yfy', port=2202,
-                                    identity=None, install_dir="D:\\测试 目录\\yfy's demo",
+        args = type('Args', (), dict(package=path, host='192.0.2.10', user='tester', port=22,
+                                    identity=None, install_dir="D:\\测试 目录\\tester's demo",
                                     no_shortcut=True, dry_run=dry_run))()
         with contextlib.redirect_stdout(io.StringIO()):
             sync.sync_package(args)
@@ -83,6 +84,21 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(sync.subprocess, 'run') as run:
             self.run_sync(self.make_bundle())
             run.assert_not_called()
+
+    def test_cli_requires_user_and_install_directory(self):
+        result = subprocess.run([sys.executable, str(Path(sync.__file__)), '--host', '192.0.2.10',
+                                 '--dry-run'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--user', result.stderr)
+        self.assertIn('--install-dir', result.stderr)
+
+    def test_cli_defaults_to_standard_ssh_port(self):
+        result = subprocess.run([sys.executable, str(Path(sync.__file__)), '--host', '192.0.2.10',
+                                 '--user', 'tester', '--install-dir', r'C:\Apps\UU Remote Rust',
+                                 '--package', str(self.make_bundle()), '--dry-run'],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('tester@192.0.2.10:22', result.stdout)
 
     def test_corrupt_package_never_uploads(self):
         path = self.make_bundle(lambda files: files.update({'install.ps1': b'bad installer'}))
@@ -96,9 +112,9 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(sync.subprocess, 'run') as run:
             self.run_sync(self.make_bundle(), dry_run=False)
         upload, remote = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(upload[:4], ['scp', '-O', '-P', '2202'])
+        self.assertEqual(upload[:4], ['scp', '-O', '-P', '22'])
         script = base64.b64decode(remote[-1]).decode('utf-16-le')
-        self.assertIn("-InstallDir 'D:\\测试 目录\\yfy''s demo' -NoShortcut", script)
+        self.assertIn("-InstallDir 'D:\\测试 目录\\tester''s demo' -NoShortcut", script)
         self.assertIn('Get-FileHash -LiteralPath $uploaded', script)
         self.assertEqual(sync.ps_literal("x'; $(whoami)"), "'x''; $(whoami)'")
 

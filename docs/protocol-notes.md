@@ -232,7 +232,7 @@ uu api      带签名的手工探测（调试/发现新接口用）
       report_server_address, report_token, ws_connect_timeout_ms,
       streamer_retry_delta_ms, max_reconnect_delta, international_connect}
 3) 媒体/控制通道：主控端直接 TCP 连到被控端
-   实测：192.168.34.3:50986 → 192.168.35.6:63794  ESTABLISHED
+   实测：192.0.2.10:50986 → 192.0.2.20:63794  ESTABLISHED
    被控端 GameViewerServer 在该端口 LISTEN（另有 UDP socket）
 ```
 
@@ -243,7 +243,7 @@ uu api      带签名的手工探测（调试/发现新接口用）
   它不走系统 `libssl`/`Schannel` 导出函数 —— 所以常规挂钩抓不到明文。
 - 文件内还包含 libwebrtc 风格的 `OpenSSLAdapter`（`SSL_write couldn't write ...`）。
 
-### 已定位的函数（当前 19,108,856 字节构建，x358h 实测）
+### 已定位的函数（当前 19,108,856 字节构建，Windows 测试客户端 实测）
 
 真正的 TLS 读写入口（动态验证，不是猜测）：
 
@@ -372,9 +372,7 @@ kind=8, channel=0, ptype=0x51
 `kseq` 从 1 开始连续递增；`key` 是 Windows VK 码（72='H'，91=LWIN，
 160=LSHIFT，162=LCTRL，164=LALT）。
 
-WebRTC data channel 能送鼠标，但键盘帧会被被控端忽略；键盘必须走
-TURN/PCK 中继通道。最新细节和 TURN Allocate 验证结果见
-`handoff/01-base-handover.md` 的「键盘通道（最新结论）」。
+以上是早期 TURN/PCK 路径的观测。当前客户端的键盘输入使用 WebRTC CONTROL 通道的原生 VK 消息。
 
 ### 待解
 

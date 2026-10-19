@@ -1,12 +1,11 @@
 网易UU远程 — Rust 原生客户端（Windows x64）
 
-统一安装：
-  - 正式目录固定为 D:\SMB\uu-gui-demo，启动 uu-gui.exe。
-  - 在新包目录执行 powershell -ExecutionPolicy Bypass -File .\install.ps1。
-  - 安装器校验 version.json 的哈希，旧 rtx-auto / hud-recovery 与备份移到
-    %USERPROFILE%\uu-gui-archive，桌面统一使用 UU Remote Rust 快捷方式。
-  - 主页底部显示版本提交号，悬停可查看实际 exe 路径。
-  - 旧C盘目录不再同步；安装器迁移旧入口的快捷方式，不终止旧窗口，需关闭后从桌面入口重开。
+安装：
+  - 解压后执行 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1。
+  - 默认安装到 %LOCALAPPDATA%\Programs\UU Remote Rust；使用 -InstallDir 可指定目录。
+  - 安装器校验 version.json 的哈希，旧版归档到 %USERPROFILE%\uu-gui-archive。
+  - 桌面入口为 UU Remote Rust；主页底部显示版本提交号，悬停可查看实际 exe 路径。
+  - 安装前退出旧客户端，完成后重新打开；升级保留登录态和设置。
 
 运行：
   1. 双击 uu-gui.exe；首次运行如有防火墙提示，允许 UDP/TCP。
