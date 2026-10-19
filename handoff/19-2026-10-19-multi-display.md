@@ -36,3 +36,5 @@
 ## Windows交付
 
 唯一正式目录仍为x358h `192.168.34.3:2202` 的 `C:\Users\yfy\uu-gui-demo`，桌面 **UU Remote Rust**。实际构建源以 `dist/uu-gui-win64/version.json.source_commit` 为准。代理仅打包、安装和核对文件，不自动重启用户窗口。
+
+已安装实际构建源 `f8ccf8db4ebf97f7f57615d146b0cdd617d263ea`，GUI SHA256 `9ac87cc53fec6fc037ca9bce43f10fbfcf313f672eccef3543a89184f6cca078`。六项文件哈希、桌面快捷方式目标及工作目录均核对一致，Windows release成功。私有证据：`artifacts/ui-dpi-validation/displays-{final-workspace-test.log,windows-check.log,package.log,install.json,installed-verified.json}`；静态字段/分支核对也只保存在私有artifacts。用户旧进程保留运行，需自行关闭旧主页和串流后重开，主页版本应为 `f8ccf8d`。后续发布记录提交不代表另一版二进制。
