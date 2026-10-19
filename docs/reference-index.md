@@ -1,6 +1,8 @@
 # 开源实现参考索引
 
-更新：2026-10-19。**实现增量：NACK/RTX 接收、严格恢复、Windows 真实 PTS、自动档协商和可隐藏悬浮菜单已落地，见 [交接09](../handoff/09-2026-10-19-controls-rtx-auto.md)。下文参考版本和原分析保留作为快照。**
+更新：2026-10-19。窗口缩放、紧凑 HUD、菜单确认、保留解码器的恢复、缺口扫描优化与退出清理已实现，最新证据和边界见 [交接10](../handoff/10-2026-10-19-resize-hud-recovery-exit.md)。
+
+**此前实现增量：NACK/RTX 接收、严格恢复、Windows 真实 PTS、自动档协商和可隐藏悬浮菜单已落地，见 [交接09](../handoff/09-2026-10-19-controls-rtx-auto.md)。下文参考版本和原分析保留作为快照。**
 
 用途：后续实现功能时，先从本索引找到经过阅读的代码入口、协议边界和本项目接入点。串流现状见 [streaming-quality.md](streaming-quality.md)，本轮实机结果见 [交接 07](../handoff/07-2026-10-19-experience.md)。
 

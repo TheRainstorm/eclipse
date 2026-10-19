@@ -13,6 +13,7 @@
 | 07 | `07-2026-10-19-experience.md` | Windows 中键实测值 16、浅色参考版 GUI、RTP/NACK 恢复与显示队列优化；FEC 边界 |
 | 08 | `08-2026-10-19-reference-index.md` | 功能拆分提交、三个本地项目源码参考索引、协议差异与后续实施顺序 |
 | 09 | `09-2026-10-19-controls-rtx-auto.md` | 可隐藏悬浮菜单、官方自动档达18Mbps、RTX接收与严格恢复、Windows真实PTS |
+| 10 | `10-2026-10-19-resize-hud-recovery-exit.md` | 窗口缩放、Moonlight HUD、侧边菜单确认、恢复竞争/高吞吐优化、退出清理 |
 
 约定：
 
