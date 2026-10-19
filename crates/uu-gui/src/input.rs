@@ -7,6 +7,7 @@ pub struct RemotePointer {
     held: [bool; 3],
     scroll: egui::Vec2,
     last: Option<egui::Pos2>,
+    motion: egui::Vec2,
 }
 
 fn button(button: PointerButton) -> Option<(usize, u32)> {
@@ -22,6 +23,7 @@ impl RemotePointer {
     pub fn release_all(&mut self, screen: u32) -> Vec<Value> {
         self.last = None;
         self.scroll = egui::Vec2::ZERO;
+        self.motion = egui::Vec2::ZERO;
         self.held
             .iter_mut()
             .zip([1, 2, 16])
@@ -39,15 +41,29 @@ impl RemotePointer {
         pointer: Option<egui::Pos2>,
         screen: u32,
     ) -> Vec<Value> {
+        self.events_with_mode(events,draw,pointer,screen,false)
+    }
+    pub fn events_relative(&mut self,events:&[Event],screen:u32)->Vec<Value> {
+        self.events_with_mode(events,Rect::EVERYTHING,None,screen,true)
+    }
+    fn events_with_mode(&mut self,events:&[Event],draw:Rect,pointer:Option<egui::Pos2>,screen:u32,relative:bool)->Vec<Value> {
         let mut out = Vec::new();
         let move_to = |out: &mut Vec<Value>, pos: egui::Pos2| {
+            if relative {return;}
             out.push(json!({"action":"mouse_move_absolute", "screen_id":screen,
                 "abs_x":((pos.x-draw.left())/draw.width()).clamp(0.0,1.0),
                 "abs_y":((pos.y-draw.top())/draw.height()).clamp(0.0,1.0)}));
         };
         for event in events {
             match event {
-                Event::PointerMoved(pos) if draw.contains(*pos) || self.held.iter().any(|h| *h) => {
+                Event::MouseMoved(delta) if relative && delta.is_finite() => {
+                    self.motion+=*delta;
+                    let x=self.motion.x.trunc().clamp(-32767.0,32767.0) as i32;
+                    let y=self.motion.y.trunc().clamp(-32767.0,32767.0) as i32;
+                    self.motion-=egui::vec2(x as f32,y as f32);
+                    if x!=0 || y!=0 {out.push(json!({"action":"mouse_move_relative","delta_x":x,"delta_y":y,"mousetype":2,"screen_id":screen}));}
+                }
+                Event::PointerMoved(pos) if !relative && (draw.contains(*pos) || self.held.iter().any(|h| *h)) => {
                     if self.last != Some(*pos) {
                         move_to(&mut out, *pos);
                         self.last = Some(*pos);
@@ -60,7 +76,7 @@ impl RemotePointer {
                     ..
                 } => {
                     if let Some((index, mask)) = button(*raw) {
-                        if (*pressed && draw.contains(*pos) && !self.held[index])
+                        if (*pressed && (relative || draw.contains(*pos)) && !self.held[index])
                             || (!pressed && self.held[index])
                         {
                             move_to(&mut out, *pos);
@@ -71,7 +87,7 @@ impl RemotePointer {
                     }
                 }
                 Event::MouseWheel { unit, delta, .. }
-                    if pointer.is_some_and(|p| draw.contains(p)) =>
+                    if relative || pointer.is_some_and(|p| draw.contains(p)) =>
                 {
                     let factor = match unit {
                         egui::MouseWheelUnit::Line => 120.0,
@@ -102,6 +118,17 @@ mod tests {
             pressed,
             modifiers: egui::Modifiers::NONE,
         }
+    }
+    #[test]
+    fn relative_uses_raw_motion_once_keeps_fraction_and_never_repositions_on_button() {
+        let mut pointer=RemotePointer::default();
+        let events=[Event::PointerMoved(egui::pos2(500.0,200.0)),Event::MouseMoved(egui::vec2(1.25,-2.5)),transition(egui::pos2(1.0,2.0),true)];
+        let out=pointer.events_relative(&events,42);
+        assert_eq!(out.len(),2);assert_eq!(out[0],json!({"action":"mouse_move_relative","delta_x":1,"delta_y":-2,"mousetype":2,"screen_id":42}));
+        assert_eq!(out[1]["action"],"mouse_press");
+        let out=pointer.events_relative(&[Event::MouseMoved(egui::vec2(0.75,-0.5))],42);
+        assert_eq!(out[0]["delta_x"],1);assert_eq!(out[0]["delta_y"],-1);
+        assert_eq!(pointer.release_all(42)[0]["button"],16);
     }
     #[test]
     fn middle_hold_drag_and_release_outside_are_preserved() {

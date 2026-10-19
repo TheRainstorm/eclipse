@@ -35,6 +35,7 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 pub struct MediaStats {
     pub control_open: AtomicU32,
     pub audio: Arc<uu_media::audio::AudioControl>,
+    pub cursor: std::sync::Mutex<Option<(u64,crate::cursor::Shape)>>,
     pub input_messages_sent: AtomicU64,
     pub input_send_errors: AtomicU64,
     pub width: AtomicU32,
@@ -264,6 +265,11 @@ impl ControllerMedia {
                         let Some(ch) = ch.upgrade() else { return };
                         if !msg.is_string {
                             if let Some(s) = &stats {
+                                if let Some(shape)=crate::cursor::parse(&msg.data) {
+                                    let mut cursor=s.cursor.lock().unwrap();
+                                    let revision=cursor.as_ref().map_or(1,|(revision,_)|revision+1);
+                                    *cursor=Some((revision,shape));
+                                }
                                 if let Some(screens) = crate::screen_control::screen_sources(&msg.data) {
                                     *s.remote_screens.lock().unwrap() = screens;
                                 }

@@ -35,3 +35,5 @@ pub fn install_crypto_provider() {
 pub mod rtx;
 
 pub mod screen_control;
+
+pub mod cursor;

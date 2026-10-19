@@ -625,6 +625,19 @@ impl super::App {
                                             ui.label(format!("缓冲 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
                                         }
                                     });
+                                    side_submenu(ui, &mut blocked, Icon::Desktop, "鼠标", |ui| {
+                                        let old=(self.preferences.relative_mouse,self.preferences.remote_cursor);
+                                        ui.selectable_value(&mut self.preferences.relative_mouse,false,"桌面模式 · 绝对定位");
+                                        ui.selectable_value(&mut self.preferences.relative_mouse,true,"游戏模式 · 相对移动");
+                                        separator(ui);
+                                        ui.selectable_value(&mut self.preferences.remote_cursor,false,"本地光标");
+                                        ui.selectable_value(&mut self.preferences.remote_cursor,true,"远端光标");
+                                        ui.small("Ctrl+Alt+Z 释放／捕获键鼠");
+                                        if old!=(self.preferences.relative_mouse,self.preferences.remote_cursor) {
+                                            self.release_pointer_capture(ctx);self.remote_focus=false;self.persist_preferences();
+                                            self.send_capture_settings();ctx.memory_mut(|m|m.close_popup());
+                                        }
+                                    });
                                     side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
                                         if ui
                                             .checkbox(&mut self.view_only, "仅观看，禁止远程输入")

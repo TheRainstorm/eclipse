@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use eframe::egui::{Key, Modifiers};
 
 #[derive(Debug, PartialEq)]
-pub enum Action { Stats, Menu, Fullscreen, Exit }
+pub enum Action { Stats, Menu, Fullscreen, Exit, Capture }
 #[derive(Debug, PartialEq)]
 pub enum KeyAction { Forward, Consumed, Trigger(Action) }
 #[derive(Default)]
@@ -25,6 +25,7 @@ impl Shortcuts {
                 Key::M if streaming => Some(Action::Menu),
                 Key::F | Key::X => Some(Action::Fullscreen),
                 Key::Q if streaming => Some(Action::Exit),
+                Key::Z if streaming => Some(Action::Capture),
                 _ => None,
             }
         } else { None };
@@ -55,7 +56,7 @@ mod tests {
     }
     #[test]
     fn exit_and_fullscreen_alias_own_repeat_and_release() {
-        for (key, expected) in [(Key::Q, Action::Exit), (Key::X, Action::Fullscreen)] {
+        for (key, expected) in [(Key::Q, Action::Exit), (Key::X, Action::Fullscreen), (Key::Z, Action::Capture)] {
             let mut keys = Shortcuts::default();
             assert_eq!(keys.key(key, true, false, CHORD, true), KeyAction::Trigger(expected));
             assert_eq!(keys.key(key, true, true, CHORD, true), KeyAction::Consumed);

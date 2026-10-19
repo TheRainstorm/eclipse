@@ -182,7 +182,15 @@ pub fn capture_setting_request_at_fps(
     seq: u64, timestamp_ms: u64, frame_rate: CaptureFrameRate,
     quality: u64, custom_bitrate_bps: Option<u64>, resolution: CaptureResolution,
 ) -> Vec<u8> {
+    capture_setting_request_with_cursor(seq,timestamp_ms,frame_rate,quality,custom_bitrate_bps,resolution,false)
+}
+
+pub fn capture_setting_request_with_cursor(
+    seq:u64,timestamp_ms:u64,frame_rate:CaptureFrameRate,quality:u64,
+    custom_bitrate_bps:Option<u64>,resolution:CaptureResolution,cursor_capture:bool,
+)->Vec<u8> {
     let mut setting = Vec::new();
+    int(3,cursor_capture as u64,&mut setting);
     int(1, frame_rate.option(), &mut setting);
     int(2, quality, &mut setting);
     int(4, u64::MAX - 1, &mut setting); // Keep the currently selected screen, including super-screen.
@@ -434,6 +442,18 @@ mod tests {
         assert_eq!(CaptureFrameRate::parse("2"), CaptureFrameRate::new(60));
         assert_eq!(CaptureFrameRate::parse("120"), CaptureFrameRate::new(120));
         for invalid in ["0", "145", "-1", "no"] { assert_eq!(CaptureFrameRate::parse(invalid),None); }
+    }
+    #[test]
+    fn cursor_capture_switch_preserves_quality_rate_and_screen() {
+        for capture in [false,true] {
+            let msg=capture_setting_request_with_cursor(7,11,CaptureFrameRate::new(120).unwrap(),6,Some(30_000_000),CaptureResolution::Native,capture);
+            let outer=decode_wire(&msg).unwrap();
+            let rpc=outer.iter().find_map(|(n,v)|match (n,v){(21,WireValue::Bytes(b))=>Some(*b),_=>None}).unwrap();
+            let rpc=decode_wire(rpc).unwrap();
+            let setting=rpc.iter().find_map(|(n,v)|match (n,v){(2,WireValue::Bytes(b))=>Some(*b),_=>None}).unwrap();
+            let fields=decode_wire(setting).unwrap();
+            for (field,value) in [(3,capture as u64),(18,120),(8,30_000_000),(4,u64::MAX-1)] {assert!(fields.contains(&(field,WireValue::Varint(value))));}
+        }
     }
     #[test]
     fn echo_request_is_detected() {

@@ -20,6 +20,8 @@ pub struct Settings {
     pub capture_keyboard: bool,
     pub vsync: bool,
     pub software_decoder: bool,
+    pub relative_mouse: bool,
+    pub remote_cursor: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -35,6 +37,8 @@ impl Default for Settings {
             capture_keyboard: true,
             vsync: true,
             software_decoder: false,
+            relative_mouse: false,
+            remote_cursor: false,
         }
     }
 }
@@ -165,6 +169,9 @@ impl super::App {
                     ui.separator();ui.strong("输入");
                     ui.checkbox(&mut s.capture_keyboard,"全屏时将系统快捷键发送到远端");
                     ui.small("Ctrl+Alt+Q 退出串流；Ctrl+Alt+F / X 切换全屏。\nWin+Shift+方向键始终移动本地窗口。Ctrl+Alt+Del 由 Windows 保留。");
+                    ui.horizontal(|ui|{ui.label("鼠标模式");ui.selectable_value(&mut s.relative_mouse,false,"桌面 · 绝对定位");ui.selectable_value(&mut s.relative_mouse,true,"游戏 · 相对移动");});
+                    ui.horizontal(|ui|{ui.label("光标显示");ui.selectable_value(&mut s.remote_cursor,false,"本地光标");ui.selectable_value(&mut s.remote_cursor,true,"远端光标");});
+                    ui.small("游戏模式单击画面捕获鼠标，Ctrl+Alt+Z 释放／重新捕获；打开菜单或失焦时自动释放。");
                     ui.separator();ui.strong("启动选项");
                     ui.checkbox(&mut s.vsync,"垂直同步");ui.checkbox(&mut s.software_decoder,"使用软件解码（默认优先硬件解码）");
                     ui.small("启动选项在重新打开软件后生效，其他选项应用到当前串流并保存为默认值。");
@@ -175,6 +182,7 @@ impl super::App {
             });
         self.settings_open = open;
         if apply {
+            self.release_pointer_capture(ctx);
             self.target_fps = self.preferences.fps;
             self.fps_draft = self.target_fps;
             self.bitrate_idx = self.preferences.bitrate;

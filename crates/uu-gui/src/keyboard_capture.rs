@@ -58,6 +58,7 @@ impl Keys {
                 0x4d => Some(Action::Menu),
                 0x46 | 0x58 => Some(Action::Fullscreen),
                 0x51 => Some(Action::Exit),
+                0x5a => Some(Action::Capture),
                 _ => None,
             };
             if let Some(action) = action {

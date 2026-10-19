@@ -716,7 +716,17 @@ impl App {
                     self.remote_focus=false;self.release_all_keys();messages.extend(self.pointer.release_all(input_screen));
                 }
                 if controls_active {if self.remote_focus || !self.pressed_vks.is_empty(){self.remote_focus=false;self.release_all_keys();}messages.extend(self.pointer.release_all(input_screen));}
-                if !self.view_only && !controls_active {messages.extend(self.pointer.events(events,draw,pointer,input_screen));}
+                if !self.view_only && !controls_active && self.focused && self.remote_focus {
+                    if self.preferences.relative_mouse {
+                        if self.mouse_captured {messages.extend(self.pointer.events_relative(events,input_screen));}
+                    } else {messages.extend(self.pointer.events(events,draw,pointer,input_screen));}
+                }
+                if self.preferences.remote_cursor && !controls_active && pointer.is_some_and(|p|draw.contains(p)) {ctx.set_cursor_icon(egui::CursorIcon::None);}
+                if !self.preferences.remote_cursor && !self.preferences.relative_mouse && !controls_active {
+                    let revision=self.cursor.revision();
+                    let shape=self.controller.as_ref().and_then(|h|h.stats.cursor.lock().unwrap().as_ref().filter(|(r,_)|*r!=revision).cloned());
+                    self.cursor.paint(ctx,shape,pointer,draw,input_screen);
+                }
             }else{
                 ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,&self.status,egui::FontId::proportional(18.0),C::from_rgb(160,170,185));
             }

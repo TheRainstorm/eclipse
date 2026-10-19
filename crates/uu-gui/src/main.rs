@@ -12,6 +12,7 @@ use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
+mod cursor;
 mod keyboard_capture;
 mod settings;
 mod sessions;
@@ -129,6 +130,8 @@ struct App {
     settings_seq: u64,
     settings_feedback: String,
     pointer: input::RemotePointer,
+    mouse_captured: bool,
+    cursor: cursor::Cursor,
     remote_focus: bool,
     view_only: bool,
     stream_menu: stream_menu::StreamMenu,
@@ -328,6 +331,8 @@ impl App {
             settings_seq: 0,
             settings_feedback: String::new(),
             pointer: input::RemotePointer::default(),
+            mouse_captured: false,
+            cursor: cursor::Cursor::default(),
             remote_focus: false,
             view_only: false,
             stream_menu: stream_menu::StreamMenu {visible:preferences.floating_menu,..Default::default()},
@@ -548,13 +553,14 @@ impl App {
             3=>uu_core::control_wire::CaptureResolution::Exact(3840,2160),
             _=>uu_core::control_wire::CaptureResolution::Native,
         };
-        let msg = uu_core::control_wire::capture_setting_request_at_fps(
+        let msg = uu_core::control_wire::capture_setting_request_with_cursor(
             2000 + self.settings_seq,
             uu_core::control_wire::now_ms(),
             uu_core::control_wire::CaptureFrameRate::new(self.target_fps).unwrap_or_default(),
             quality,
             custom_bps,
             resolution,
+            self.preferences.remote_cursor,
         );
         self.settings_feedback = if h.settings.send(msg).is_ok() {
             format!("已发送：{} FPS · {} · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0,
@@ -572,6 +578,7 @@ impl App {
             shortcuts::Action::Menu=>{self.stream_menu.visible=!self.stream_menu.visible;self.stream_menu.open=false;ctx.memory_mut(|m|m.close_popup());self.persist_preferences();},
             shortcuts::Action::Fullscreen=>self.toggle_fullscreen(ctx),
             shortcuts::Action::Exit=>self.disconnect(),
+            shortcuts::Action::Capture=>{self.remote_focus=!self.remote_focus;},
         }
     }
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
@@ -581,6 +588,28 @@ impl App {
         if self.native_keyboard_capture!=active {
             self.release_all_keys();self.native_keyboard_capture=active;
         }
+    }
+
+    fn release_pointer_capture(&mut self,ctx:&egui::Context) {
+        for message in self.pointer.release_all(self.input_screen(self.selected_track)){self.send_input(message,15);}
+        if self.mouse_captured {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::None));
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));self.mouse_captured=false;
+        }
+    }
+    fn update_pointer_capture(&mut self,ctx:&egui::Context) {
+        let capture=self.preferences.relative_mouse && self.remote_focus && self.input_ready() && self.focused
+            && !self.view_only && !self.stream_menu.open && !self.settings_open && !self.textures.is_empty();
+        if capture!=self.mouse_captured {
+            self.release_pointer_capture(ctx);
+            if capture {
+                // Windows supports confinement; raw WM_INPUT deltas remain
+                // unbounded even when its invisible cursor reaches the edge.
+                ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::Confined));
+                ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));self.mouse_captured=true;
+            }
+        }
+        if self.mouse_captured {ctx.set_cursor_icon(egui::CursorIcon::None);}
     }
 
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
@@ -686,6 +715,7 @@ impl App {
     fn disconnect(&mut self) {
         if self.stream_target.is_some() { self.exit_requested = true; }
         if self.disconnecting { return; }
+        self.release_pointer_capture(&self.context.clone());
         self.stream_menu.open = false;
         self.context.memory_mut(|m| m.close_popup());
         self.release_all_keys();
@@ -875,6 +905,7 @@ impl eframe::App for App {
         }
         self.settings_ui(ctx);
         self.update_keyboard_capture(ctx);
+        self.update_pointer_capture(ctx);
         self.platform.show(ctx);
         ctx.request_repaint_after(std::time::Duration::from_millis(
             if self.controller.is_some() { 100 } else { 150 },
