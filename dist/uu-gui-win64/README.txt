@@ -42,6 +42,7 @@
   - 登录态保存在 %USERPROFILE%\.local\share\uu-remote\state.json。
   - 键鼠走 CONTROL_DATA_CHANNEL 裸 JSON；Windows 路径中键值 16，支持按住拖动。
   - 画面与输入分别建立，顶部“输入连接中”期间不可操作；45秒超时报出各传输层状态。
+  - 已修补DTLS握手结束后的接收竞态，避免接收任务等待过期确认、阻断SCTP握手而视频仍更新。
   - HUD 悬停可查看输入通道状态、本地发送数与失败数；发送成功不代表远端已执行。
   - 默认官方自动画质、跟随远端分辨率；也可选 1080p/1440p/4K 或手动码率。
   - 观看模式不转发键鼠输入，悬浮菜单和设置操作不会穿透到远端。
@@ -59,3 +60,26 @@
   - 网络丢失不重建健康解码器；重传窗口随 RTT 调整，完整帧不额外等待。
   - 压缩帧和显示队列有界，新帧到达立即唤醒显示。
   - 垂直同步默认开启；UU_VSYNC=0 可关。
+
+第三方组件许可（webrtc-dtls 0.10.0，采用其 MIT 许可）：
+MIT License
+
+Copyright (c) 2021 WebRTC.rs
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
