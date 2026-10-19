@@ -30,6 +30,14 @@ pub trait VideoDecoder: Send {
     /// Feed one access unit, producing a decoded frame when the decoder has
     /// enough data (B-frames and reordering mean this is not 1:1).
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError>;
+    /// Human-readable name of the backend actually in use.
+    ///
+    /// Surfaced in the HUD and in `uu probe` so a session always shows whether
+    /// it is on a hardware path, on the software fallback, or demoted from
+    /// hardware at runtime (see [`crate::decoder::FallbackDecoder`]).
+    fn backend_name(&self) -> &str {
+        "video decoder"
+    }
 }
 
 /// A software stand-in so the rest of the stack can be exercised before the

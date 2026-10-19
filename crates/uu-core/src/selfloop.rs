@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 
 use uu_capture::backend::Capture;
 use uu_capture::SyntheticCapture;
-use uu_media::{default_decoder, default_encoder, luma_mse, psnr_from_mse, RawFrame};
+use uu_media::{default_encoder, luma_mse, psnr_from_mse, software_decoder, RawFrame};
 use uu_proto::pkt::{packetize, Reassembler};
 
 /// Receive buffer for the controller socket. A 720p keyframe is ~100 KB and
@@ -298,7 +298,11 @@ async fn controller_loop(
 ) -> ControllerStats {
     use tokio::sync::mpsc::error::TryRecvError;
 
-    let mut decoder = match default_decoder() {
+    // Deliberately the software decoder: this loop is a quality gate on our
+    // own encode/decode, so it must not depend on a GPU being present (or on
+    // a driver behaving). Hardware paths are exercised by a real session,
+    // where `uu_media::FallbackDecoder` also bounds the damage.
+    let mut decoder = match software_decoder() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("decoder unavailable: {e}");

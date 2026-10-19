@@ -28,7 +28,16 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Report what this machine can do (backends, session type, paths).
-    Probe,
+    Probe {
+        /// Decode an Annex-B H.264 file with the decoder this machine selects
+        /// and report what came out. Checks the hardware path without
+        /// connecting to a device.
+        #[arg(long, value_name = "FILE")]
+        h264: Option<std::path::PathBuf>,
+        /// Save the first decoded frame as a PPM image for visual inspection.
+        #[arg(long, value_name = "FILE", requires = "h264")]
+        frame: Option<std::path::PathBuf>,
+    },
     /// Query NetEase's public release feed (platform ids 1..=5).
     ReleaseCheck,
     /// List devices on the signed-in account.
@@ -139,7 +148,7 @@ async fn main() -> Result<()> {
     config.ensure_dirs().await?;
 
     match cli.command {
-        Command::Probe => probe(&config),
+        Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
         Command::ReleaseCheck => release_check(&config).await,
         Command::Devices => {
             let client = SignalClient::new(&config)?;
@@ -598,7 +607,7 @@ async fn main() -> Result<()> {
     }
 }
 
-fn probe(config: &Config) -> Result<()> {
+fn probe(config: &Config, h264: Option<&std::path::Path>, frame: Option<&std::path::Path>) -> Result<()> {
     println!("uu {} — environment report\n", env!("CARGO_PKG_VERSION"));
     println!("platform          {} / {}", std::env::consts::OS, std::env::consts::ARCH);
     println!("data dir          {}", config.data_dir.display());
@@ -623,6 +632,10 @@ fn probe(config: &Config) -> Result<()> {
     println!("display           {display}");
 
     println!("video decoder     {}", uu_media::decoder_backend_name());
+    if let Some(path) = h264 {
+        println!();
+        decode_selftest(path, frame)?;
+    }
 
     // Round out the report with the protocol revision so bug reports are
     // self-describing.
@@ -652,4 +665,251 @@ fn render_qr(data: &str) -> Result<String> {
     use qrcode::render::unicode;
     let code = qrcode::QrCode::new(data.as_bytes()).context("encoding QR")?;
     Ok(code.render::<unicode::Dense1x2>().quiet_zone(true).build())
+}
+
+/// Decode an Annex-B H.264 file with the decoder this machine selects.
+///
+/// This exists because the hardware path is otherwise only reachable through a
+/// live session: it reports whether a machine really gets a hardware decoder,
+/// how many frames the file produced, and how fast — which is also how the
+/// software and hardware paths get compared on the same input.
+fn decode_selftest(path: &std::path::Path, output: Option<&std::path::Path>) -> Result<()> {
+    let data = std::fs::read(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let units = split_access_units(&data);
+    if units.is_empty() {
+        anyhow::bail!("{} holds no H.264 NAL units", path.display());
+    }
+
+    let mut decoder = uu_media::default_decoder()?;
+    println!("decoder           {}", decoder.backend_name());
+    println!(
+        "input             {} ({} bytes, {} access units)",
+        path.display(),
+        data.len(),
+        units.len()
+    );
+
+    let mut decoded = 0u64;
+    let mut errors = 0u64;
+    let mut shape = None;
+    let mut first_error = None;
+    let started = std::time::Instant::now();
+    for (index, unit) in units.iter().enumerate() {
+        let keyframe = uu_media::EncodedFrame::detect_h264_keyframe(unit);
+        let frame = uu_media::EncodedFrame {
+            is_keyframe: keyframe,
+            data: bytes::Bytes::from(unit.clone()),
+            pts: uu_media::Timestamp(index as u64 * 33_333),
+        };
+        match decoder.decode(&frame) {
+            Ok(Some(decoded_frame)) => {
+                anyhow::ensure!(decoded_frame.is_consistent(), "decoder returned a truncated frame");
+                decoded += 1;
+                shape = Some(decoded_frame.format);
+                if decoded <= 3 {
+                    println!(
+                        "  au {:>4}  {}-> {:?} {}x{} stride {}",
+                        index,
+                        if keyframe { "key  " } else { "delta" },
+                        decoded_frame.format,
+                        decoded_frame.width,
+                        decoded_frame.height,
+                        decoded_frame.stride,
+                    );
+                }
+                if decoded == 1 {
+                    if let Some(output) = output {
+                        write_probe_frame(output, &decoded_frame)?;
+                        println!("first frame       {}", output.display());
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                errors += 1;
+                first_error.get_or_insert_with(|| e.to_string());
+            }
+        }
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+    println!(
+        "decoded           {decoded} frames in {:.0} ms ({:.1} fps){}",
+        elapsed * 1000.0,
+        decoded as f64 / elapsed.max(1e-9),
+        shape.map(|f| format!(", {f:?}")).unwrap_or_default()
+    );
+    if errors > 0 {
+        println!(
+            "decode errors     {errors}{}",
+            first_error
+                .map(|e| format!(" (first: {e})"))
+                .unwrap_or_default()
+        );
+    }
+    // Report the backend again: a hardware decoder that failed mid-file
+    // demotes itself, and that shows up only in the name.
+    println!("decoder after     {}", decoder.backend_name());
+    anyhow::ensure!(decoded > 0, "decoder produced no frames");
+    anyhow::ensure!(errors == 0, "decoder reported {errors} errors");
+    Ok(())
+}
+
+fn write_probe_frame(path: &std::path::Path, frame: &uu_media::RawFrame) -> Result<()> {
+    use std::io::Write;
+    let rgba = uu_media::convert::frame_to_rgba(frame);
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path)
+        .with_context(|| format!("creating {}", path.display()))?);
+    write!(file, "P6\n{} {}\n255\n", frame.width, frame.height)?;
+    let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| p[..3].iter().copied()).collect();
+    file.write_all(&rgb)?;
+    file.flush()?;
+    Ok(())
+}
+
+/// Split an Annex-B H.264 byte stream into access units.
+///
+/// An access unit ends when the next picture's data starts. Both markers
+/// matter: a slice whose `first_mb_in_slice` is zero begins a picture, and the
+/// leading non-VCL NALs (AUD, SPS, PPS, SEI) that follow a picture belong to
+/// the *next* access unit, not to the one they came after.
+fn split_access_units(data: &[u8]) -> Vec<Vec<u8>> {
+    let mut units = Vec::new();
+    let mut current: Vec<u8> = Vec::new();
+    let mut has_slice = false;
+    for nal in annex_b_nals(data) {
+        let kind = nal.first().copied().unwrap_or(0) & 0x1f;
+        let is_slice = (1..=5).contains(&kind);
+        let starts_picture = is_slice && first_mb_in_slice(nal) == Some(0);
+        if has_slice && (starts_picture || !is_slice) {
+            units.push(std::mem::take(&mut current));
+            has_slice = false;
+        }
+        current.extend_from_slice(&[0, 0, 0, 1]);
+        current.extend_from_slice(nal);
+        has_slice |= is_slice;
+    }
+    if !current.is_empty() {
+        units.push(current);
+    }
+    units
+}
+
+/// NAL units of an Annex-B stream (start codes stripped).
+fn annex_b_nals(data: &[u8]) -> Vec<&[u8]> {
+    // (start of the start code, first byte after it)
+    let mut marks: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i + 3 <= data.len() {
+        let (length, body) = if data[i..].starts_with(&[0, 0, 0, 1]) {
+            (4usize, i + 4)
+        } else if data[i..].starts_with(&[0, 0, 1]) {
+            (3usize, i + 3)
+        } else {
+            i += 1;
+            continue;
+        };
+        let _ = length;
+        marks.push((i, body));
+        i = body;
+    }
+    marks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, body))| {
+            // A NAL ends where the *next* start code begins, whatever its
+            // length: guessing three bytes here silently appends padding.
+            let end = marks
+                .get(index + 1)
+                .map(|(start, _)| *start)
+                .unwrap_or(data.len());
+            data.get(*body..end).filter(|nal| !nal.is_empty())
+        })
+        .collect()
+}
+
+/// The first `ue(v)` of a slice header: `first_mb_in_slice`.
+fn first_mb_in_slice(nal: &[u8]) -> Option<u32> {
+    let mut bit = 0usize;
+    let mut zeros = 0u32;
+    loop {
+        let byte = *nal.get(1 + bit / 8)?;
+        let one = (byte >> (7 - (bit % 8))) & 1;
+        bit += 1;
+        if one == 1 {
+            break;
+        }
+        zeros += 1;
+        if zeros > 31 {
+            return None;
+        }
+    }
+    let mut value = 0u32;
+    for _ in 0..zeros {
+        let byte = *nal.get(1 + bit / 8)?;
+        value = (value << 1) | u32::from((byte >> (7 - (bit % 8))) & 1);
+        bit += 1;
+    }
+    Some(((1u32 << zeros) - 1) + value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build an Annex-B stream from NAL payloads.
+    fn stream_of(nals: &[&[u8]]) -> Vec<u8> {
+        let mut stream = Vec::new();
+        for nal in nals {
+            stream.extend_from_slice(&[0, 0, 0, 1]);
+            stream.extend_from_slice(nal);
+        }
+        stream
+    }
+
+    fn kinds(unit: &[u8]) -> Vec<u8> {
+        annex_b_nals(unit)
+            .iter()
+            .map(|nal| nal[0] & 0x1f)
+            .collect()
+    }
+
+    #[test]
+    fn parameter_sets_lead_the_picture_they_belong_to() {
+        // This is the layout UU sends: every access unit is AUD, SPS, PPS and
+        // one slice, so the trailing parameter sets of a keyframe must not be
+        // left behind with the previous picture.
+        let aud = [0x09u8, 0x10];
+        let sps = [0x67u8, 0x42, 0x00];
+        let pps = [0x68u8, 0xce, 0x38];
+        let idr = [0x65u8, 0x88, 0x84];
+        let p = [0x41u8, 0x9a, 0x11];
+        let stream = stream_of(&[&aud, &sps, &pps, &idr, &aud, &sps, &pps, &idr, &aud, &p]);
+        let units = split_access_units(&stream);
+        assert_eq!(units.len(), 3);
+        assert_eq!(kinds(&units[0]), vec![9, 7, 8, 5]);
+        assert_eq!(kinds(&units[1]), vec![9, 7, 8, 5]);
+        assert_eq!(kinds(&units[2]), vec![9, 1]);
+    }
+
+    #[test]
+    fn multi_slice_pictures_stay_in_one_unit() {
+        let aud = [0x09u8, 0x10];
+        let first = [0x65u8, 0x88, 0x84]; // first_mb_in_slice = 0
+        let second = [0x65u8, 0x41, 0x11]; // first_mb_in_slice = 1
+        let stream = stream_of(&[&aud, &first, &second, &aud, &first]);
+        let units = split_access_units(&stream);
+        assert_eq!(units.len(), 2);
+        assert_eq!(kinds(&units[0]), vec![9, 5, 5]);
+    }
+
+    #[test]
+    fn first_mb_in_slice_reads_the_leading_ue_v() {
+        // 0x88 = 1 0001000: ue(v) "1" then "0001000" -> 0.
+        assert_eq!(first_mb_in_slice(&[0x65, 0x88]), Some(0));
+        // 0x9a starts with a 1 bit, so it is the shortest ue(v) too.
+        assert_eq!(first_mb_in_slice(&[0x41, 0x9a]), Some(0));
+        // 0x41 = 0100 0001: ue(v) "01" + suffix "0" -> 1, i.e. a second slice.
+        assert_eq!(first_mb_in_slice(&[0x41, 0x41]), Some(1));
+    }
 }

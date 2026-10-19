@@ -181,6 +181,7 @@ impl ControllerMedia {
                             pts: uu_media::Timestamp(0),
                         };
                         let t_dec = std::time::Instant::now();
+                        if let Some(s) = &worker_stats { s.set_backend(dec.backend_name()); }
                         match dec.decode(&ef) {
                             Ok(Some(frame)) => {
                                 frames += 1;
@@ -192,8 +193,7 @@ impl ControllerMedia {
                                     s.height.store(frame.height, Ordering::Relaxed);
                                 }
                                 if let Some(tx) = &worker_frames {
-                                    let rgba = uu_media::convert::i420_to_rgba(
-                                        &frame.data, frame.width, frame.height);
+                                    let rgba = uu_media::convert::frame_to_rgba(&frame);
                                     let _ = tx.send((track_idx, frame.width, frame.height, rgba));
                                 }
                                 if dbg && frames % 60 == 0 {
@@ -528,29 +528,13 @@ pub fn ice_servers_from_json(v: &serde_json::Value) -> Vec<RTCIceServer> {
 }
 
 
-/// Write an I420 frame as a binary PPM (P6) so it can be inspected without a
+/// Write a decoded frame as a binary PPM (P6) so it can be inspected without a
 /// UI dependency. Convert with `ffmpeg -i /tmp/uu_rust_frame.ppm out.png`.
 fn save_ppm(frame: &uu_media::RawFrame, path: &str) {
-    let (w, h) = (frame.width as usize, frame.height as usize);
-    let y = &frame.data[..w * h];
-    let cw = w / 2;
-    let ch = h / 2;
-    let u = &frame.data[w * h..w * h + cw * ch];
-    let v = &frame.data[w * h + cw * ch..w * h + cw * ch * 2];
-    let mut out = Vec::with_capacity(w * h * 3 + 32);
-    out.extend_from_slice(format!("P6\n{w} {h}\n255\n").as_bytes());
-    let cl = |x: i32| x.clamp(0, 255) as u8;
-    for j in 0..h {
-        for i in 0..w {
-            let yy = y[j * w + i] as i32;
-            let uu = u[(j / 2) * cw + i / 2] as i32 - 128;
-            let vv = v[(j / 2) * cw + i / 2] as i32 - 128;
-            let r = yy + (1.402 * vv as f32) as i32;
-            let g = yy - (0.344136 * uu as f32) as i32 - (0.714136 * vv as f32) as i32;
-            let b = yy + (1.772 * uu as f32) as i32;
-            out.extend_from_slice(&[cl(r), cl(g), cl(b)]);
-        }
-    }
+    let (w, h) = (frame.width, frame.height);
+    let rgba = uu_media::convert::frame_to_rgba(frame);
+    let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
+    for pixel in rgba.chunks_exact(4) { out.extend_from_slice(&pixel[..3]); }
     let _ = std::fs::write(path, out);
 }
 

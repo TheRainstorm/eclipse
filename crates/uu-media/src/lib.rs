@@ -8,13 +8,17 @@
 //! Opus audio (see `docs/protocol-notes.md`), so the codec layer here is
 //! deliberately codec-agnostic and pluggable.
 
+pub mod bitstream;
 pub mod codec;
 pub mod convert;
+pub mod decoder;
 pub mod frame;
 #[cfg(feature = "h264")]
 pub mod h264;
+pub mod hw;
 
 pub use codec::{CodecError, NullEncoder, VideoDecoder, VideoEncoder};
+pub use decoder::{DecoderKind, FallbackDecoder, NamedDecoder};
 pub use frame::{EncodedFrame, PixelFormat, RawFrame};
 
 #[cfg(feature = "h264")]
@@ -32,13 +36,12 @@ pub fn default_encoder(bitrate_kbps: u32) -> Result<Box<dyn VideoEncoder>, Codec
     Ok(encoder)
 }
 
-/// Build the default decoder for this build.
+/// Build the in-process software (OpenH264) decoder.
 ///
-/// In-process OpenH264 software decode. Benchmarks: ~2.9 ms/frame for 1080p
-/// (~340 fps headroom), which is ample for 60 fps streaming and avoids the
-/// latency of any out-of-process decoder. Hardware decode (Windows Media
-/// Foundation / Linux VA-API) is a planned in-process backend.
-pub fn default_decoder() -> Result<Box<dyn VideoDecoder>, CodecError> {
+/// Benchmarks: ~2.9 ms/frame for 1080p at low bitrates, but ~20 ms/frame on
+/// the 55 Mbit/s preset the streamer actually runs, which is why hardware
+/// decode matters. Kept as the guaranteed fallback for every platform.
+pub fn software_decoder() -> Result<Box<dyn VideoDecoder>, CodecError> {
     #[cfg(feature = "h264")]
     let decoder: Box<dyn VideoDecoder> = Box::new(H264Decoder::new()?);
     #[cfg(not(feature = "h264"))]
@@ -48,10 +51,87 @@ pub fn default_decoder() -> Result<Box<dyn VideoDecoder>, CodecError> {
     Ok(decoder)
 }
 
-/// Human-readable name of the decoder backend (for `uu probe` and the HUD).
-pub fn decoder_backend_name() -> String {
-    "openh264 (software, in-process)".to_string()
+/// Build the decoder the session should use.
+///
+/// Hardware is preferred (`UU_DECODER=hw` asks for it explicitly, `sw` forces
+/// OpenH264) and is always paired with a software decoder it can demote to,
+/// so neither a missing driver nor a broken one can leave a session without a
+/// picture. See [`decoder`] for the selection rules.
+pub fn default_decoder() -> Result<Box<dyn VideoDecoder>, CodecError> {
+    let kind = DecoderKind::from_env();
+    let mut hardware = None;
+    let mut why = String::new();
+    if kind != DecoderKind::Software {
+        match hw::create_hardware_decoder() {
+            Ok(d) => hardware = Some(d),
+            Err(e) => why = e.to_string(),
+        }
+    }
+
+    match hardware {
+        // Hardware paths keep a software decoder in reserve: they fail in
+        // ways the transport cannot see (a driver that accepts every call and
+        // never emits a frame), so the wrapper demotes at runtime.
+        Some(primary) => match software_decoder() {
+            Ok(backup) => {
+                let decoder = FallbackDecoder::new(primary, backup);
+                let name = decoder.backend_name().to_string();
+                Ok(record_backend(&name, Box::new(decoder)))
+            }
+            Err(_) => {
+                let name = primary.backend_name().to_string();
+                Ok(record_backend(&name, primary))
+            }
+        },
+        None => {
+            let decoder = software_decoder()?;
+            let name = if kind == DecoderKind::Software || why.is_empty() {
+                decoder.backend_name().to_string()
+            } else {
+                // Keep the reason attached to the decoder itself: the HUD
+                // reads the name off the instance, not off the global.
+                format!("{} [hardware unavailable: {why}]", decoder.backend_name())
+            };
+            let decoder = name_decoder(decoder, name);
+            let name = decoder.backend_name().to_string();
+            Ok(record_backend(&name, decoder))
+        }
+    }
 }
+
+/// Backend chosen by the first [`default_decoder`] call in this process.
+///
+/// The HUD and `uu probe` print this before any session exists, so it also
+/// answers with the *intended* backend when nothing has been built yet.
+pub fn decoder_backend_name() -> String {
+    match BACKEND.get() {
+        Some(name) => name.clone(),
+        None => match DecoderKind::from_env() {
+            DecoderKind::Software => "openh264 (software, in-process)".to_string(),
+            _ => format!("{} (hardware, preferred)", hw::backend_label()),
+        },
+    }
+}
+
+/// Attach `name` to a decoder, but only when it says more than the decoder
+/// already does — the common case then keeps its own name and one less box.
+fn name_decoder(decoder: Box<dyn VideoDecoder>, name: String) -> Box<dyn VideoDecoder> {
+    if decoder.backend_name() == name {
+        decoder
+    } else {
+        Box::new(NamedDecoder::new(decoder, name))
+    }
+}
+
+/// Remember the chosen backend for [`decoder_backend_name`] and pass the
+/// decoder through.
+fn record_backend(name: &str, decoder: Box<dyn VideoDecoder>) -> Box<dyn VideoDecoder> {
+    let _ = BACKEND.set(name.to_string());
+    decoder
+}
+
+/// Backend selected by the first [`default_decoder`] call in this process.
+static BACKEND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Monotonic microsecond timestamp used across capture/encode/decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -94,4 +174,21 @@ pub fn psnr_from_mse(mse: f64) -> f64 {
         return f64::INFINITY;
     }
     10.0 * (255.0f64 * 255.0 / mse).log10()
+}
+
+#[cfg(test)]
+mod decoder_tests {
+    /// Whatever this machine offers, a session must always get a decoder: the
+    /// hardware path is allowed to fail, but it must fail into software rather
+    /// than into an error. Prints the selection so `--nocapture` shows which
+    /// backend a machine actually picked.
+    #[test]
+    fn a_decoder_is_always_available() {
+        // The environment override is process-wide, so keep this test to the
+        // default preference.
+        let decoder = crate::default_decoder().expect("a decoder must always be constructible");
+        let name = decoder.backend_name().to_string();
+        println!("selected decoder: {name}");
+        assert!(!name.is_empty());
+    }
 }

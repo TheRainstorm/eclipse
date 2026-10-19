@@ -13,9 +13,32 @@ tracing.workspace = true
 uu-proto = { path = "../uu-proto" }
 
 [features]
-default = ["h264"]
+default = ["h264", "d3d11va"]
 h264 = ["dep:openh264"]
+# Windows: Media Foundation H.264 decode on a D3D11 device manager (D3D11VA).
+# Only has an effect on Windows targets.
+d3d11va = ["dep:windows"]
+# Linux: VA-API stateless decode via cros-codecs. Needs libva and libgbm
+# development packages at build time, so it is opt-in.
+vaapi = ["dep:cros-codecs", "dep:cros-libva"]
 
 [dependencies.openh264]
 version = "0.9"
 optional = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D10",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cros-codecs = { version = "0.0.6", default-features = false, features = ["vaapi"], optional = true }
+cros-libva = { version = "0.0.12", optional = true }
