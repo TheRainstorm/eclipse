@@ -64,15 +64,34 @@ fn session_features(clipboard: bool) -> Vec<u8> {
 }
 
 /// CaptureSettingRequest (CONTROL Message 21): ask the controlled end to switch
-/// frame rate / quality / bitrate. `setting` fields: 1 = fps option
-/// (1=30, 2=60, 3=90, 4=144), 2 = quality preset (1 fast .. 4 bluray, 5 auto,
-/// 6 custom), 8 = custom bitrate (Mbit/s), 18 = explicit frame rate.
-/// Recovered from the interoperable Linux viewer.
+/// frame rate / quality / bitrate.
+///
+/// Recovered from an official Windows controller capture.  The inner setting
+/// is much wider than the Linux interoperable viewer's definition:
+///
+/// ```text
+/// 1  fps option      1=30, 2=60, 3=90, 4=144
+/// 2  quality preset  1 fast, 2 general, 3 hd, 4 bluray, 5 auto, 6 custom
+/// 4  width hint      -2 (runtime switch; 1 on first session setup)
+/// 5  width hint      -1 (runtime; 1920 on first setup)
+/// 6  height hint     -1 (runtime; 1080 on first setup)
+/// 7  constant        1
+/// 8  custom bitrate  bits/second (only for quality 6)
+/// 10 constant        1
+/// 12 constant        4
+/// 13 constant        2
+/// 14 max width       3840
+/// 15 max height      2160
+/// 18 explicit fps    30/60/90/144
+/// ```
+///
+/// The outer `Message` carries `1: seq, 2: unix_ms, 21: Rpc{1:{1:seq},2:setting}`.
 pub fn capture_setting_request(
     seq: u64,
+    timestamp_ms: u64,
     fps_option: u64,
-    quality: Option<u64>,
-    bitrate_mbps: Option<u64>,
+    quality: u64,
+    custom_bitrate_bps: Option<u64>,
 ) -> Vec<u8> {
     let fps = match fps_option {
         1 => 30,
@@ -83,19 +102,42 @@ pub fn capture_setting_request(
     };
     let mut setting = Vec::new();
     int(1, fps_option, &mut setting);
+    int(2, quality, &mut setting);
+    // Runtime switch sentinels observed from the official client.  protobuf
+    // int64 negatives use the full 10-byte two's-complement varint.
+    int(4, u64::MAX - 1, &mut setting); // -2
+    int(5, u64::MAX, &mut setting); // -1
+    int(6, u64::MAX, &mut setting); // -1
+    int(7, 1, &mut setting);
+    if let Some(bps) = custom_bitrate_bps {
+        int(8, bps, &mut setting);
+    }
+    int(10, 1, &mut setting);
+    int(12, 4, &mut setting);
+    int(13, 2, &mut setting);
+    int(14, 3840, &mut setting);
+    int(15, 2160, &mut setting);
     int(18, fps, &mut setting);
-    if let Some(q) = quality {
-        int(2, q, &mut setting);
-    }
-    if let Some(b) = bitrate_mbps {
-        int(8, b, &mut setting);
-    }
+
     let mut header = Vec::new();
     int(1, seq, &mut header);
     let mut rpc = Vec::new();
     bytes(1, &header, &mut rpc);
     bytes(2, &setting, &mut rpc);
-    envelope(seq, 21, &rpc)
+
+    let mut out = Vec::new();
+    int(1, seq, &mut out);
+    int(2, timestamp_ms, &mut out);
+    bytes(21, &rpc, &mut out);
+    out
+}
+
+/// Current UNIX time in milliseconds (the outer Message field 2).
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// `Message { 1: seq, 3: SimpleAction { 1: 0, 4: features } }`.
@@ -227,6 +269,33 @@ mod tests {
         assert!(echo_matches(&resp, 7));
         assert!(!echo_matches(&resp, 99));
         assert_eq!(echo_request_seq(&resp), None);
+    }
+
+    #[test]
+    fn capture_setting_matches_official_custom_bitrate() {
+        let msg = capture_setting_request(115, 1_792_263_156_376, 2, 6, Some(55_000_000));
+        let fields = decode_wire(&msg).unwrap();
+        assert!(fields.iter().any(|(n, v)| *n == 1 && *v == WireValue::Varint(115)));
+        assert!(fields.iter().any(|(n, v)| *n == 2 && *v == WireValue::Varint(1_792_263_156_376)));
+        let rpc = fields
+            .iter()
+            .find_map(|(n, v)| match (n, v) {
+                (21, WireValue::Bytes(b)) => Some(*b),
+                _ => None,
+            })
+            .expect("field 21");
+        let rf = decode_wire(rpc).unwrap();
+        let setting = rf
+            .iter()
+            .find_map(|(n, v)| match (n, v) {
+                (2, WireValue::Bytes(b)) => Some(*b),
+                _ => None,
+            })
+            .expect("rpc field 2");
+        assert_eq!(
+            hex::encode(setting),
+            "0802100620feffffffffffffffff0128ffffffffffffffffff0130ffffffffffffffffff01380140c0f79c1a50016004680270801e78f01090013c"
+        );
     }
 
     #[test]

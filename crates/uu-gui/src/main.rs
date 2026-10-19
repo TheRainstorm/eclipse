@@ -407,15 +407,16 @@ impl App {
         let Some(h) = &self.controller else { return };
         let (_, quality) = BITRATE_PRESETS[self.bitrate_idx];
         let bitrate = if quality == 6 {
-            Some(self.custom_mbps as u64)
+            Some(self.custom_mbps as u64 * 1_000_000)
         } else {
             None
         };
         self.settings_seq = self.settings_seq.wrapping_add(1);
         let msg = uu_core::control_wire::capture_setting_request(
             2000 + self.settings_seq,
+            uu_core::control_wire::now_ms(),
             2,
-            Some(quality),
+            quality,
             bitrate,
         );
         let _ = h.settings.send(msg);

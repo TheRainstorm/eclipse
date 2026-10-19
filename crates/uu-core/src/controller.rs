@@ -251,24 +251,37 @@ async fn run(
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2); // 1=30, 2=60, 3=90, 4=144
-    let quality: Option<u64> = std::env::var("UU_QUALITY")
+    let bitrate_mbps: Option<u64> = std::env::var("UU_BITRATE")
         .ok()
         .and_then(|v| v.parse().ok());
-    let bitrate: Option<u64> = std::env::var("UU_BITRATE")
+    // Quality 6 is the custom-bitrate preset; the official host only honours
+    // field 8 when it is paired with quality 6.
+    let quality: u64 = std::env::var("UU_QUALITY")
         .ok()
-        .and_then(|v| v.parse().ok());
-    for i in 0..3u64 {
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(if bitrate_mbps.is_some() { 6 } else { 5 });
+    let custom_bps = if quality == 6 {
+        Some(bitrate_mbps.unwrap_or(30).saturating_mul(1_000_000))
+    } else {
+        None
+    };
+    // Give CONTROL_DATA_CHANNEL time to open and the SimpleAction echo
+    // handshake to settle; the host ignores settings sent before that.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    for i in 0..5u64 {
+        let ts = crate::control_wire::now_ms();
         let _ = media
             .send_control(crate::control_wire::capture_setting_request(
                 1000 + i,
+                ts,
                 fps_option,
                 quality,
-                bitrate,
+                custom_bps,
             ))
             .await;
-        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     }
-    status("已请求目标帧率");
+    status("已请求目标画质/码率");
 
     loop {
         tokio::select! {
