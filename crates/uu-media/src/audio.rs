@@ -169,11 +169,23 @@ pub fn playback(control: Arc<AudioControl>) -> std::sync::mpsc::SyncSender<Packe
 fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> anyhow::Result<()> {
     let mut decoder = OpusReceiver::new()?;
     #[cfg(windows)]
-    let mut output = windows::Output::new(control.clone())?;
+    let mut output: Option<windows::Output> = None;
+    #[cfg(windows)]
+    let mut retry_at = Instant::now();
     #[cfg(not(windows))]
     control.status("当前构建未启用系统音频输出");
     let mut reorder = Reorder::default();
     while !control.stopped() {
+        #[cfg(windows)]
+        if output.is_none() && Instant::now() >= retry_at {
+            match windows::Output::new(control.clone()) {
+                Ok(device) => output = Some(device),
+                Err(error) => {
+                    control.status(format!("等待播放设备：{error}"));
+                    retry_at = Instant::now() + Duration::from_secs(1);
+                }
+            }
+        }
         match rx.recv_timeout(Duration::from_millis(5)) {
             Ok(packet) => reorder.push(packet),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -191,7 +203,14 @@ fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> an
             match decoder.decode(packet.timestamp, &packet.payload, control) {
                 Ok(pcm) => {
                     #[cfg(windows)]
-                    output.submit(&pcm, control)?;
+                    if let Some(device) = output.as_mut() {
+                        if let Err(error) = device.submit(&pcm, control) {
+                            output = None;
+                            retry_at = Instant::now() + Duration::from_secs(1);
+                            control.queue_ms.store(0, Ordering::Relaxed);
+                            control.status(format!("播放设备已变化，正在恢复：{error}"));
+                        }
+                    }
                     #[cfg(not(windows))]
                     let _ = pcm;
                 }
