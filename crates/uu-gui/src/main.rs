@@ -223,7 +223,7 @@ fn setup_style(ctx: &egui::Context) {
     // Remote Ctrl +/- belongs to the remote app, never to this client's UI zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let mut fonts = egui::FontDefinitions::default();
-    let candidates: Vec<&str> = if cfg!(target_os = "windows") {
+    let mut candidates: Vec<(String, u32)> = if cfg!(target_os = "windows") {
         vec![
             r"C:\Windows\Fonts\msyh.ttc",
             r"C:\Windows\Fonts\simhei.ttf",
@@ -232,15 +232,29 @@ fn setup_style(ctx: &egui::Context) {
     } else {
         vec![
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc",
             "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
             "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
         ]
-    };
-    for path in candidates {
+    }.into_iter().map(|path| (path.to_owned(), 0)).collect();
+    #[cfg(target_os = "linux")]
+    if let Ok(result) = std::process::Command::new("fc-match")
+        .args(["-f", "%{file}\n%{index}\n", "sans-serif:lang=zh-cn"]).output() {
+        if result.status.success() {
+            let matched = String::from_utf8_lossy(&result.stdout);
+            let mut lines = matched.lines();
+            if let Some(path) = lines.next().filter(|path| !path.is_empty()) {
+                let index = lines.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                candidates.insert(0, (path.to_owned(), index));
+            }
+        }
+    }
+    for (path, index) in candidates {
         if let Ok(data) = std::fs::read(path) {
-            fonts
-                .font_data
-                .insert("cjk".into(), egui::FontData::from_owned(data));
+            let mut font = egui::FontData::from_owned(data);
+            font.index = index;
+            fonts.font_data.insert("cjk".into(), font);
             fonts
                 .families
                 .get_mut(&egui::FontFamily::Proportional)
