@@ -137,7 +137,7 @@ impl ControllerMedia {
             Box::pin(async {})
         }));
 
-        let pc_track = pc.clone();
+        let pc_track = Arc::downgrade(&pc);
         let repair_track = repairs.clone();
         let frames_tx = frames.clone();
         let stats_track = stats.clone();
@@ -153,7 +153,9 @@ impl ControllerMedia {
                 u32::MAX
             };
             Box::pin(async move {
-                tokio::spawn(receive_video(pc, track, index, frames, stats, repairs));
+                if let Some(pc) = pc.upgrade() {
+                    tokio::spawn(receive_video(pc, track, index, frames, stats, repairs));
+                }
             })
         }));
 
@@ -194,12 +196,13 @@ impl ControllerMedia {
             if label != "CONTROL_DATA_CHANNEL" {
                 continue;
             }
-            let open_ch = ch.clone();
+            let open_ch = Arc::downgrade(&ch);
             let open_seq = seq.clone();
             ch.on_open(Box::new(move || {
                 let ch = open_ch.clone();
                 let seq = open_seq.clone();
                 Box::pin(async move {
+                    let Some(ch) = ch.upgrade() else { return };
                     println!("CONTROL_DATA_CHANNEL open");
                     let s = seq.fetch_add(1, Ordering::Relaxed);
                     let _ = ch
@@ -211,13 +214,14 @@ impl ControllerMedia {
                 println!("CONTROL_DATA_CHANNEL closed");
                 Box::pin(async {})
             }));
-            let msg_ch = ch.clone();
+            let msg_ch = Arc::downgrade(&ch);
             let msg_seq = seq.clone();
             ch.on_message(Box::new(
                 move |msg: webrtc::data_channel::data_channel_message::DataChannelMessage| {
                     let ch = msg_ch.clone();
                     let seq = msg_seq.clone();
                     Box::pin(async move {
+                        let Some(ch) = ch.upgrade() else { return };
                         if !msg.is_string {
                             let head: Vec<String> = msg
                                 .data

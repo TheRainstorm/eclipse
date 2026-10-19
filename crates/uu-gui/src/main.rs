@@ -114,6 +114,8 @@ struct App {
     stream_menu: stream_menu::StreamMenu,
     resize_pending: bool,
     close_at: Option<std::time::Instant>,
+    disconnecting: bool,
+    exit_requested: bool,
     window_edge_active: bool,
 }
 
@@ -293,6 +295,8 @@ impl App {
             stream_menu: stream_menu::StreamMenu::default(),
             resize_pending: true,
             close_at: None,
+            disconnecting: false,
+            exit_requested: false,
             window_edge_active: false,
         };
         if logged_in {
@@ -448,6 +452,16 @@ impl App {
         if apply_settings {
             self.send_bitrate();
         }
+        if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
+            self.controller = None;
+            self.disconnecting = false;
+            self.remote_focus = false;
+            self.textures.clear();
+            self.latest.clear();
+            self.frame_count.clear();
+            self.fps.clear();
+            self.settings_feedback.clear();
+        }
     }
 
     fn send_input(&mut self, payload: serde_json::Value, kind: u32) {
@@ -497,7 +511,7 @@ impl App {
     /// `kind`/`channel` arguments are kept only to avoid touching every call
     /// site and are ignored.
     fn send_input_ch(&mut self, payload: serde_json::Value, _kind: u32, _channel: u16) {
-        if self.view_only {
+        if self.view_only && !matches!(payload["action"].as_str(), Some("kbd_release" | "mouse_release")) {
             return;
         }
         let Some(h) = &self.controller else { return };
@@ -558,6 +572,7 @@ impl App {
     }
 
     fn disconnect(&mut self) {
+        if self.disconnecting { return; }
         self.stream_menu.open = false;
         self.release_all_keys();
         for message in self.pointer.release_all(self.selected_track + 1) {
@@ -566,16 +581,17 @@ impl App {
         self.remote_focus = false;
         if let Some(h) = &self.controller {
             let _ = h.close.send(());
+            self.disconnecting = true;
         }
-        self.controller = None;
         self.textures.clear();
         self.latest.clear();
         self.frame_count.clear();
         self.fps.clear();
-        self.status = "已断开".into();
+        self.status = if self.disconnecting { "正在释放连接…" } else { "已断开" }.into();
     }
 
     fn connect(&mut self) {
+        if self.controller.is_some() { return; }
         let Some(i) = self.selected else { return };
         let Some(config) = self.config.clone() else {
             self.status = "配置不可用".into();
@@ -611,14 +627,24 @@ impl eframe::App for App {
                 self.resize_pending = false;
             }
         }
+        if ctx.input(|i| i.viewport().close_requested()) && self.controller.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.exit_requested = true;
+            self.disconnect();
+        }
         if self
             .close_at
             .is_some_and(|at| std::time::Instant::now() >= at)
         {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.exit_requested = true;
+            self.disconnect();
+            self.close_at = None;
         }
         self.poll(ctx);
         self.poll_controller(ctx);
+        if self.exit_requested && self.controller.is_none() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         self.poll_login(ctx);
         let (events, focused) = ctx.input(|i| (i.events.clone(), i.focused));
         if self.focused && !focused {

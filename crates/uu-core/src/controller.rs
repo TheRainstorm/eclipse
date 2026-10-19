@@ -23,6 +23,8 @@ pub enum ControllerEvent {
 }
 
 pub struct ControllerHandle {
+    /// True only after release, transport close and runtime shutdown complete.
+    pub stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub events: std::sync::mpsc::Receiver<ControllerEvent>,
     pub frames: crate::media::FrameReceiver,
     /// Raw JSON input frames for `CONTROL_DATA_CHANNEL`.
@@ -43,11 +45,14 @@ pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<Controlle
     let (close_tx, close_rx) = unbounded_channel();
     let stats = std::sync::Arc::new(crate::media::MediaStats::default());
     let stats_run = stats.clone();
+    let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped_run = stopped.clone();
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
                 let _ = ev_tx.send(ControllerEvent::Error(e.to_string()));
+                stopped_run.store(true, std::sync::atomic::Ordering::Release);
                 return;
             }
         };
@@ -64,8 +69,11 @@ pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<Controlle
         )) {
             let _ = ev_tx.send(ControllerEvent::Error(e.to_string()));
         }
+        rt.shutdown_timeout(std::time::Duration::from_secs(1));
+        stopped_run.store(true, std::sync::atomic::Ordering::Release);
     });
     Ok(ControllerHandle {
+        stopped,
         events: ev_rx,
         frames: frame_rx,
         input: input_tx,
@@ -114,6 +122,12 @@ async fn run(
     let status = |s: &str| {
         let _ = ev.send(ControllerEvent::Status(s.to_string()));
     };
+    let ctrl = uuid::Uuid::new_v4().to_string();
+    // Keep ownership outside the cancellable attempt: every exit path runs the
+    // same cleanup, including failures and cancellation during negotiation.
+    let mut socket = None;
+    let mut peer = None;
+    let attempt = async {
     status("正在加入房间…");
     let client = SignalClient::new(&config)?;
     let api = UuApi::new(client, config.at("state.json"));
@@ -140,9 +154,8 @@ async fn run(
         server.trim_end_matches('/')
     );
     status("连接信令服务器…");
-    let mut sio = SocketIo::connect(&url, &token).await?;
-
-    let ctrl = uuid::Uuid::new_v4().to_string();
+    socket = Some(SocketIo::connect(&url, &token).await?);
+    let sio = socket.as_mut().unwrap();
     let dev_id = api.state.device_id.clone().unwrap_or_default();
     let app = encode_app_data(&dev_id);
     let streamer = json!({
@@ -185,7 +198,8 @@ async fn run(
     eprintln!("ICE server entries={}", success["iceServers"].as_array().map_or(0,Vec::len));
     let ice = ice_servers_from_json(&success["iceServers"]);
     status("建立 WebRTC…");
-    let media = ControllerMedia::new_with_frames(ice, Some(frame_tx), Some(stats.clone())).await?;
+    peer = Some(ControllerMedia::new_with_frames(ice, Some(frame_tx), Some(stats.clone())).await?);
+    let media = peer.as_ref().unwrap();
     let offer_sdp = media.offer().await?;
     let _ = std::fs::write("/tmp/offer_rust.sdp", &offer_sdp);
     let gz = gzip_sdp04(&offer_sdp)?;
@@ -286,9 +300,6 @@ async fn run(
 
     loop {
         tokio::select! {
-            _ = close_rx.recv() => {
-                break;
-            }
             Some(frame) = input_rx.recv() => {
                 // `frame` is the JSON payload for CONTROL_DATA_CHANNEL. Early
                 // input can arrive before the channel opens; ignore failures so
@@ -301,23 +312,75 @@ async fn run(
             }
             recv = sio.recv_event() => {
                 let (event, data, _) = recv?;
+                if event == "released" { break; }
                 if event == "soac" && data["data"]["type"] == "candidate" {
                     add_trickle(&media, &data["data"], &ev).await?;
                 }
             }
         }
     }
-    // Release the session so the server and the controlled end clear the
-    // "connected" state instead of waiting for a timeout.
-    let _ = sio
-        .emit(
-            "release",
-            json!({"app_control_id": ctrl, "control_id": ctrl}),
-            &[],
-        )
-        .await;
-    let _ = media.pc.close().await;
-    sio.close().await;
+    Ok::<_, anyhow::Error>(())
+    };
+    let result = tokio::select! {
+        biased;
+        _ = close_rx.recv() => Ok(()),
+        result = attempt => result,
+    };
+    status("正在释放连接…");
+    // Flush pending key/button releases before tearing down CONTROL. Bound
+    // every cleanup operation so a dead network cannot trap the UI on exit.
+    if let Some(media) = &peer {
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(250), async {
+            while let Ok(frame) = input_rx.try_recv() {
+                let _ = media.send_control(frame).await;
+            }
+        }).await;
+    }
+    close_session(socket.as_mut(), peer.as_ref(), &ctrl).await;
     status("已断开");
-    Ok(())
+    result
+}
+
+/// The same finalizer runs after cancellation, errors and a host release.
+async fn close_session(mut socket: Option<&mut SocketIo>, peer: Option<&ControllerMedia>, ctrl: &str) {
+    if let Some(sio) = socket.as_deref_mut() {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1),
+            sio.emit("release", json!({"app_control_id": ctrl, "control_id": ctrl}), &[])).await;
+    }
+    if let Some(media) = peer {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), media.pc.close()).await;
+    }
+    if let Some(sio) = socket {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), sio.close()).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    #[tokio::test]
+    async fn partial_session_cleanup_releases_the_correct_control_before_socket_disconnect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            ws.send(Message::Text("0{}".into())).await.unwrap();
+            assert_eq!(ws.next().await.unwrap().unwrap().into_text().unwrap(), "40");
+            ws.send(Message::Text("40{}".into())).await.unwrap();
+            let release = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let event: serde_json::Value = serde_json::from_str(&release[2..]).unwrap();
+            assert_eq!(event, json!(["release", {"app_control_id":"cancelled-attempt", "control_id":"cancelled-attempt"}]));
+            assert_eq!(ws.next().await.unwrap().unwrap().into_text().unwrap(), "41");
+            assert!(matches!(ws.next().await.unwrap().unwrap(), Message::Close(_)));
+        });
+        let mut sio = SocketIo::connect(&format!("ws://{addr}"), "test").await.unwrap();
+        // No peer yet: cancellation while waiting for the host must still release.
+        close_session(Some(&mut sio), None, "cancelled-attempt").await;
+        server.await.unwrap();
+        close_session(None, None, "never-connected").await;
+    }
 }
