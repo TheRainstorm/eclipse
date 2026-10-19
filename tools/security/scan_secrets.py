@@ -30,7 +30,7 @@ def variants(values):
 def inspect(name, data, forbidden=(), source=False):
     issues = []
     base = PurePosixPath(name).name
-    if base in ('signing-key', 'state.json', '.env') or base.startswith('signing-key.'):
+    if base in ('signing-key', 'state.json', '.env') or base.startswith('signing-key.') or base.endswith('.eclipse-invite.json'):
         issues.append('private credential/configuration file')
     if source and base.lower().endswith(('.exe', '.dll')):
         issues.append('compiled binary committed to source')

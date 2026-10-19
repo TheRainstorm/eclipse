@@ -8,6 +8,7 @@ mod display_frames;
 mod video_receiver;
 pub mod error;
 pub mod media;
+pub mod native_pairing;
 mod network_probe;
 mod decode_gate;
 mod test_loss;

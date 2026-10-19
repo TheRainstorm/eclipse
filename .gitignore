@@ -29,3 +29,6 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# 原生临时配对邀请包含访问凭据，不作为项目资源
+*.eclipse-invite.json

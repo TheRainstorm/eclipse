@@ -48,5 +48,11 @@ class CredentialGuardTests(unittest.TestCase):
             self.assertFalse(scan.artifact(path, scan.variants([self.SECRET])))
 
 
+class NativeInvitationGuard(unittest.TestCase):
+    def test_local_invitation_files_are_never_allowed_in_source_or_packages(self):
+        for name in ('pair.eclipse-invite.json', 'config/share.eclipse-invite.json'):
+            self.assertTrue(scan.inspect(name, b'{"version":1}'))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -23,6 +23,9 @@ crc32fast.workspace = true
 hex.workspace = true
 uuid.workspace = true
 zeroize = "1"
+rand = "0.8"
+rcgen = "0.13"
+subtle = "2.6"
 socket2 = "0.5"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
