@@ -4,6 +4,7 @@ use eframe::egui;
 use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
+    sync::{atomic::Ordering, Arc},
     thread::JoinHandle,
     time::Duration,
 };
@@ -15,10 +16,15 @@ struct Sharing {
     status: watch::Receiver<HostStatus>,
     worker: Option<JoinHandle<Result<HostReport, String>>>,
     stopping: bool,
+    clipboard: Option<Arc<uu_core::clipboard::Clipboard>>,
 }
 impl Sharing {
     fn stop(&mut self) {
         self.stopping = true;
+        if let Some(clipboard) = &self.clipboard {
+            clipboard.stopped.store(true, Ordering::Release);
+            clipboard.active.store(false, Ordering::Release);
+        }
         self.stop.send_replace(true);
     }
 }
@@ -40,6 +46,7 @@ pub(super) struct NativeHostUi {
     bitrate_kbps: u32,
     allow_input: bool,
     share_audio: bool,
+    share_clipboard: bool,
     invitation: String,
     notice: String,
     sharing: Option<Sharing>,
@@ -55,6 +62,7 @@ impl Default for NativeHostUi {
             bitrate_kbps: 8000,
             allow_input: false,
             share_audio: false,
+            share_clipboard: false,
             invitation: String::new(),
             notice: String::new(),
             sharing: None,
@@ -111,7 +119,7 @@ impl NativeHostUi {
             }
         }
     }
-    fn start(&mut self) -> anyhow::Result<()> {
+    fn start(&mut self, owner_window: isize) -> anyhow::Result<()> {
         anyhow::ensure!(!self.running(), "共享正在进行");
         anyhow::ensure!(!self.monitors.is_empty(), "请先获取可用显示器");
         let ip: IpAddr = self
@@ -145,7 +153,13 @@ impl NativeHostUi {
             }
             dirs.create(parent)?;
         }
+        let clipboard = self.share_clipboard.then(|| {
+            let state = Arc::new(uu_core::clipboard::Clipboard::default());
+            state.enabled.store(true, Ordering::Release);
+            state
+        });
         let config = HostConfig {
+            clipboard: clipboard.clone(),
             bind: SocketAddr::new(ip, 0),
             source: self
                 .monitor
@@ -181,7 +195,14 @@ impl NativeHostUi {
             status: states,
             worker: Some(worker),
             stopping: false,
+            clipboard: clipboard.clone(),
         });
+        if let Some(clipboard) = clipboard {
+            if let Err(error) = super::clipboard::start_host(clipboard, owner_window) {
+                self.stop();
+                return Err(error.into());
+            }
+        }
         self.notice.clear();
         Ok(())
     }
@@ -210,6 +231,7 @@ impl App {
             return;
         }
         let mut open = true;
+        let owner_window = self.platform.window_id();
         let host = &mut self.native_host;
         egui::Window::new("共享此设备")
             .id("native-host".into())
@@ -255,7 +277,7 @@ impl App {
                                 fps,
                                 audio,
                             } => {
-                                format!("正在共享 · {width}×{height} @ {fps} FPS  {audio}")
+                                format!("正在共享 · {width}×{height} · 目标 {fps} FPS  {audio}")
                             }
                         }
                     };
@@ -264,8 +286,15 @@ impl App {
                     ui.label(if host.allow_input {
                         "本次共享允许受邀端请求键鼠控制"
                     } else {
-                        "本次共享仅允许观看"
+                        "键鼠：仅观看"
                     });
+                    if let Some(clipboard) = &sharing.clipboard {
+                        ui.label(if clipboard.active.load(Ordering::Acquire) {
+                            "文本剪贴板：同步中"
+                        } else {
+                            "文本剪贴板：已允许，等待控制端开启"
+                        });
+                    }
                     ui.label("将邀请文件私下发给要连接的设备：");
                     ui.add(
                         egui::TextEdit::singleline(&mut host.invitation)
@@ -343,6 +372,10 @@ impl App {
                     ui.add_space(8.0);
                     ui.checkbox(&mut host.allow_input, "允许受邀端请求键盘和鼠标控制");
                     ui.checkbox(&mut host.share_audio, "共享系统声音（输出设备）");
+                    ui.checkbox(
+                        &mut host.share_clipboard,
+                        "允许文本剪贴板同步（控制端需主动开启）",
+                    );
                     ui.add_space(8.0);
                     ui.label("新邀请文件（10 分钟内可连接）");
                     ui.add(egui::TextEdit::singleline(&mut host.invitation).desired_width(460.0));
@@ -359,7 +392,7 @@ impl App {
                         )
                         .clicked()
                     {
-                        if let Err(error) = host.start() {
+                        if let Err(error) = host.start(owner_window) {
                             host.notice = format!("无法启动共享：{error}");
                         }
                     }

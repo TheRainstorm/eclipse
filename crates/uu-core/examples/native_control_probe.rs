@@ -98,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
         bitrate_kbps: 4000,
         session_limit: Some(Duration::from_secs(15)),
         allow_input: !readonly,
-        audio:None,
+        audio:None, clipboard:None,
     };
     let (host_stop, host_stop_rx) = watch::channel(false);
     let host = tokio::spawn(uu_core::native::serve(config, host_stop_rx));

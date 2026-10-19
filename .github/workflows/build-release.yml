@@ -95,6 +95,11 @@ jobs:
           cargo build --release -p uu-core --example native_control_probe --features vaapi --locked
           python3 tools/native/input_smoke.py --probe target/release/examples/native_control_probe --output artifacts/native-input-authorized
           python3 tools/native/input_smoke.py --probe target/release/examples/native_control_probe --probe-arg=--read-only --output artifacts/native-input-readonly
+      - name: Test native text clipboard on two owned desktops
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          cargo build --release -p uu-gui --example native_clipboard_probe --features vaapi --locked
+          python3 tools/native/clipboard_smoke.py --probe target/release/examples/native_clipboard_probe --output artifacts/native-clipboard
       - name: Test system-output audio against an owned null sink
         if: matrix.platform == 'linux-x86_64'
         run: |

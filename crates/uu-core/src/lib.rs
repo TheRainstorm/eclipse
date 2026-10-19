@@ -15,6 +15,7 @@ pub mod capabilities;
 pub mod native;
 pub mod native_input;
 mod native_control;
+mod native_clipboard;
 mod native_audio;
 mod native_media;
 mod network_probe;
@@ -49,3 +50,4 @@ pub mod screen_control;
 
 pub mod cursor;
 pub mod clipboard;
+

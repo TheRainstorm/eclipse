@@ -15,6 +15,8 @@ const MAX_BYTES: usize = MAX_TEXT * 2 + 2;
 pub struct Clipboard {
     pub available: AtomicBool,
     pub enabled: AtomicBool,
+    /// Frontend focus/consent generation, used to reject stale native messages.
+    pub generation: AtomicU64,
     pub active: AtomicBool,
     pub read_only: AtomicBool,
     pub stopped: AtomicBool,

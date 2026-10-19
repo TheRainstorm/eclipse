@@ -1,25 +1,38 @@
 //! System clipboard runs off the UI thread. Only the foreground stream may
-//! read/write text; no payload appears in logs, arguments or test fixtures.
+//! read/write text. A separately permitted host uses a peer-leased active state.
+//! Clipboard contents never appear in logs or command arguments.
 use std::sync::Arc;
 use uu_core::clipboard::Clipboard;
 
 pub fn start(control: Arc<Clipboard>, window: isize) -> std::io::Result<()> {
+    start_role(control, window, true)
+}
+
+/// Only an explicit native-host checkbox may call this; readiness is leased to its peer.
+pub fn start_host(control: Arc<Clipboard>, window: isize) -> std::io::Result<()> {
+    start_role(control, window, false)
+}
+fn start_role(
+    control: Arc<Clipboard>,
+    window: isize,
+    foreground_only: bool,
+) -> std::io::Result<()> {
     #[cfg(windows)]
     {
         std::thread::Builder::new()
             .name("uu-clipboard".into())
-            .spawn(move || run(control, window))?;
+            .spawn(move || run(control, window, foreground_only))?;
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = window;
+        let _ = (window, foreground_only);
         std::thread::Builder::new()
             .name("uu-clipboard".into())
-            .spawn(move || run_linux(control))?;
+            .spawn(move || run_linux(control, !foreground_only))?;
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
-        let _ = window;
+        let _ = (window, foreground_only);
         control.status("当前构建未启用系统剪贴板");
     }
     Ok(())
@@ -30,7 +43,7 @@ fn canonical(text: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux(control: Arc<Clipboard>) {
+fn run_linux(control: Arc<Clipboard>, suppress_initial: bool) {
     use std::sync::atomic::Ordering::{Acquire, Release};
     let mut clipboard = match arboard::Clipboard::new() {
         Ok(value) => value,
@@ -49,7 +62,7 @@ fn run_linux(control: Arc<Clipboard>) {
                 if value.len() <= uu_core::clipboard::MAX_TEXT && !value.contains('\0') {
                     let normalized = canonical(&value);
                     if last_text.as_ref() != Some(&normalized) {
-                        if !control.read_only.load(Acquire) {
+                        if !control.read_only.load(Acquire) && (!suppress_initial || last_text.is_some()) {
                             *control.local.lock().unwrap() = Some(value);
                             control.protocol.lock().unwrap().cancel_pending();
                             local_changed = true;
@@ -86,13 +99,13 @@ fn run_linux(control: Arc<Clipboard>) {
 }
 
 #[cfg(windows)]
-fn run(control: Arc<Clipboard>, window: isize) {
+fn run(control: Arc<Clipboard>, window: isize, foreground_only: bool) {
     use std::sync::atomic::Ordering::Acquire;
     let mut last_sequence = 0;
     let mut last_text = None;
     let mut was_active = false;
     while !control.stopped.load(Acquire) {
-        let active = control.ready() && native::foreground(window);
+        let active = control.ready() && (!foreground_only || native::foreground(window));
         if active {
             let sequence = native::sequence();
             let mut local_changed = false;
@@ -101,7 +114,7 @@ fn run(control: Arc<Clipboard>, window: isize) {
                     Ok(Some(value)) => {
                         let normalized = canonical(&value);
                         if last_text.as_ref() != Some(&normalized) {
-                            if !control.read_only.load(Acquire) {
+                            if !control.read_only.load(Acquire) && (foreground_only || was_active) {
                                 *control.local.lock().unwrap() = Some(value);
                                 local_changed = true;
                                 control.protocol.lock().unwrap().cancel_pending();
@@ -122,7 +135,7 @@ fn run(control: Arc<Clipboard>, window: isize) {
                     let normalized = canonical(&value);
                     if last_text.as_ref() != Some(&normalized)
                         && control.ready()
-                        && native::foreground(window)
+                        && (!foreground_only || native::foreground(window))
                     {
                         if native::write(window, &value).is_ok() {
                             last_text = Some(normalized);

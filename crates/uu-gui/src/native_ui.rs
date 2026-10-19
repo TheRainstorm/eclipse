@@ -148,6 +148,7 @@ impl App {
         }
     }
     pub(super) fn connect_native(&mut self, path: PathBuf) {
+        self.native_clipboard_enabled=false;
         let stats = Arc::new(uu_core::media::MediaStats::default());
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Release);
         stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Release);
@@ -164,13 +165,14 @@ impl App {
         stats
             .clipboard
             .available
-            .store(false, std::sync::atomic::Ordering::Release);
+            .store(cfg!(any(windows,target_os="linux")), std::sync::atomic::Ordering::Release);
         self.displays = super::displays::Displays::default();
         self.selected_track = 0;
         match uu_core::native_controller::spawn_with_input(path, stats, !self.view_only) {
             Ok(handle) => {
                 let context = self.context.clone();
                 handle.frames.set_waker(move || context.request_repaint());
+                if let Err(error)=super::clipboard::start(handle.stats.clipboard.clone(),self.platform.window_id()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(format!("剪贴板不可用：{error}"));}
                 self.controller = Some(handle);
                 self.window_sizing.begin_stream();
                 self.remote_focus = false;

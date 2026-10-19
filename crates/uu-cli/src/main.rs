@@ -203,7 +203,7 @@ async fn main() -> Result<()> {
         Command::NativeSources => native_cli::sources(),
         Command::NativeHost { bind, invitation_file, monitor, synthetic, allow_input, audio, synthetic_audio, fps, bitrate_kbps, pairing_seconds, max_seconds } => {
             let source=if synthetic {uu_capture::CaptureSource::Synthetic{width:1280,height:720,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
-            native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
+            native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
         },
         Command::NativeProbe {invitation_file,frames,timeout_seconds,report,audio_loss_every} => native_cli::probe(invitation_file,frames,timeout_seconds,report,audio_loss_every.unwrap_or(0)).await,
         Command::ReleaseCheck => release_check(&config).await,

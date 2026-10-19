@@ -150,6 +150,8 @@ pub struct HostConfig {
     pub session_limit: Option<Duration>,
     pub allow_input: bool,
     pub audio: Option<uu_media::audio_capture::Source>,
+    /// Caller-owned, opt-in OS backend; the core only transports bounded text.
+    pub clipboard: Option<Arc<crate::clipboard::Clipboard>>,
 }
 #[derive(Debug, Default)]
 pub struct HostReport {
@@ -369,7 +371,7 @@ async fn send_video(
     let (width, height) = capture.resolution();
     validate_video(width, height, config.fps)?;
     let controls=tokio::select! {
-        controls=crate::native_control::HostControl::new(config.allow_input,capture.desktop_rect())=>controls,
+        controls=crate::native_control::HostControl::new(config.allow_input,capture.desktop_rect(),config.clipboard.clone())=>controls,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
     };
     controls.attach(&peer.pc);
@@ -498,6 +500,7 @@ async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaS
     peer.close().await;
     stats.control_open.store(0, Ordering::Release);
     stats.audio.stop();
+    crate::native_clipboard::stop(&stats.clipboard);
     stats.capabilities.enable(crate::capabilities::Capability::Audio,false);
     let _ = stream.shutdown().await;
     result
@@ -515,6 +518,8 @@ async fn receive_session(
         .pc
         .create_data_channel("eclipse-control-v1", None)
         .await?;
+    let clipboard=peer.pc.create_data_channel(crate::native_clipboard::LABEL,None).await?;
+    crate::native_clipboard::viewer(clipboard,stats.clone());
     let mut controls=crate::native_control::ViewerControl::new(channel.clone(),stats.clone(),input);
     write_message(
         stream,
@@ -590,7 +595,7 @@ mod tests {
             bitrate_kbps: 2000,
             session_limit: Some(Duration::from_secs(10)),
             allow_input:false,
-            audio:None,
+            audio:None, clipboard:None,
         };
         (config, file)
     }
@@ -671,6 +676,89 @@ mod tests {
         assert!(validate_video(8192, 8192, 30).is_err());
         assert!(validate_video(1920, 1080, 120).is_err());
         assert!(validate_video(1919, 1080, 60).is_err());
+    }
+
+    async fn wait_clipboard(mut condition: impl FnMut() -> bool) -> Result<()> {
+        timeout(Duration::from_secs(3), async {
+            while !condition() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .context("clipboard state did not converge")?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_text_clipboard_requires_both_permissions_and_stops_without_stopping_video() {
+        use crate::capabilities::Capability;
+        let (mut config, file) = config();
+        let source = Arc::new(crate::clipboard::Clipboard::default());
+        source.available.store(true, Ordering::Release);
+        source.enabled.store(true, Ordering::Release);
+        config.clipboard = Some(source.clone());
+        let (host_stop, rx) = watch::channel(false);
+        let host = tokio::spawn(serve(config, rx));
+        let invite = invitation(&file).await;
+        let (frames, _images) = frame_channel();
+        let stats = Arc::new(MediaStats::default());
+        stats.clipboard.available.store(true, Ordering::Release);
+        let (view_stop, rx) = watch::channel(false);
+        let client_stats = stats.clone();
+        let client = tokio::spawn(async move { view(&invite, frames, client_stats, rx).await });
+        let validation = async {
+            wait_clipboard(|| {
+                stats.capabilities.allows(Capability::Clipboard)
+                    && stats.decoded_total.load(Ordering::Relaxed) > 10
+            })
+            .await?;
+            ensure!(
+                !source.active.load(Ordering::Acquire) && source.received.load(Ordering::Relaxed) == 0,
+                "clipboard activated without local consent"
+            );
+            stats.clipboard.enabled.store(true, Ordering::Release);
+            stats.clipboard.active.store(true, Ordering::Release);
+            wait_clipboard(|| source.active.load(Ordering::Acquire)).await?;
+            wait_clipboard(|| {
+                *stats.clipboard.local.lock().unwrap() = Some("generated local 中文🙂".into());
+                source.remote.lock().unwrap().as_deref() == Some("generated local 中文🙂")
+            })
+            .await?;
+            wait_clipboard(|| {
+                *source.local.lock().unwrap() = Some("generated remote text".into());
+                stats.clipboard.remote.lock().unwrap().as_deref() == Some("generated remote text")
+            })
+            .await?;
+            stats.clipboard.active.store(false, Ordering::Release);
+            wait_clipboard(|| !source.active.load(Ordering::Acquire)).await?;
+            let received = stats.clipboard.received.load(Ordering::Relaxed);
+            *source.local.lock().unwrap() = Some("inactive text must stay local".into());
+            let decoded = stats.decoded_total.load(Ordering::Relaxed);
+            wait_clipboard(|| stats.decoded_total.load(Ordering::Relaxed) > decoded + 15).await?;
+            ensure!(
+                stats.clipboard.received.load(Ordering::Relaxed) == received,
+                "inactive controller received clipboard text"
+            );
+            ensure!(
+                stats.errors.load(Ordering::Relaxed) == 0,
+                "clipboard transport disturbed video"
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        view_stop.send_replace(true);
+        let viewed = timeout(Duration::from_secs(5), client).await;
+        host_stop.send_replace(true);
+        let hosted = timeout(Duration::from_secs(5), host).await;
+        validation.unwrap();
+        viewed.unwrap().unwrap().unwrap();
+        hosted.unwrap().unwrap().unwrap();
+        assert!(
+            source.stopped.load(Ordering::Acquire) && stats.clipboard.stopped.load(Ordering::Acquire)
+        );
+        assert!(
+            source.remote.lock().unwrap().is_none() && stats.clipboard.remote.lock().unwrap().is_none()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

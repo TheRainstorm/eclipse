@@ -204,9 +204,15 @@ impl Drop for InputWorker {
 pub(crate) struct HostControl {
     worker: Option<Arc<InputWorker>>,
     registered: AtomicBool,
+    clipboard: Option<Arc<crate::clipboard::Clipboard>>,
+    clipboard_registered: AtomicBool,
 }
 impl HostControl {
-    pub async fn new(allow: bool, rect: Option<uu_capture::DesktopRect>) -> Arc<Self> {
+    pub async fn new(
+        allow: bool,
+        rect: Option<uu_capture::DesktopRect>,
+        clipboard: Option<Arc<crate::clipboard::Clipboard>>,
+    ) -> Arc<Self> {
         let worker = if let Some(rect) = rect.filter(|_| allow) {
             match DesktopRect::new(rect.x, rect.y, rect.width, rect.height) {
                 Ok(rect) => match InputWorker::start(rect).await {
@@ -223,6 +229,8 @@ impl HostControl {
         };
         Arc::new(Self {
             worker,
+            clipboard,
+            clipboard_registered: AtomicBool::new(false),
             registered: AtomicBool::new(false),
         })
     }
@@ -240,6 +248,15 @@ impl HostControl {
         pc.on_data_channel(Box::new(move |channel| {
             let host = host.clone();
             Box::pin(async move {
+                if channel.label() == crate::native_clipboard::LABEL
+                    && channel.ordered()
+                    && channel.max_retransmits() == 0
+                    && channel.max_packet_lifetime() == 0
+                    && !host.clipboard_registered.swap(true, Ordering::AcqRel)
+                {
+                    crate::native_clipboard::host(channel, host.clipboard.clone());
+                    return;
+                }
                 if channel.label() != "eclipse-control-v1"
                     || !channel.ordered()
                     || channel.max_retransmits() != 0
@@ -296,6 +313,9 @@ impl HostControl {
         }));
     }
     pub async fn stop(&self) {
+        if let Some(clipboard) = &self.clipboard {
+            crate::native_clipboard::stop(clipboard);
+        }
         if let Some(worker) = &self.worker {
             worker.stop().await;
         }
@@ -540,8 +560,11 @@ mod tests {
             width: 1280,
             height: 720,
         };
-        assert!(HostControl::new(false, Some(rect)).await.worker.is_none());
-        assert!(HostControl::new(true, None).await.worker.is_none());
+        assert!(HostControl::new(false, Some(rect), None)
+            .await
+            .worker
+            .is_none());
+        assert!(HostControl::new(true, None, None).await.worker.is_none());
     }
     #[test]
     fn control_messages_are_bounded_and_do_not_accept_interop_or_extra_commands() {

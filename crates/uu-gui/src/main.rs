@@ -101,6 +101,7 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
 struct App {
     stream_target: Option<sessions::StreamTarget>,
     native_ui: native_ui::NativeUi,
+    native_clipboard_enabled: bool,
     native_host: native_host_ui::NativeHostUi,
     sessions: sessions::Sessions,
     platform: platform::Platform,
@@ -329,6 +330,7 @@ impl App {
         let mut app = Self {
             stream_target,
             native_ui: native_ui::NativeUi::default(),
+            native_clipboard_enabled: false,
             native_host: native_host_ui::NativeHostUi::default(),
             sessions: sessions::Sessions::default(),
             platform,
@@ -703,18 +705,32 @@ impl App {
         if self.mouse_captured {ctx.set_cursor_icon(egui::CursorIcon::None);}
     }
 
-    fn update_clipboard(&mut self,ctx:&egui::Context) {
-        let ready=self.input_ready();
-        if let Some(h)=&self.controller {
-            use std::sync::atomic::Ordering::{Acquire,Release};
-            let clipboard=&h.stats.clipboard;
-            clipboard.enabled.store(self.preferences.clipboard&&clipboard.available.load(Acquire),Release);
-            clipboard.read_only.store(self.view_only,Release);
-            let active=ready&&ctx.input(|i|i.focused)&&!self.disconnecting;
-            let previous=clipboard.active.swap(active,Release);
-            if !active || !clipboard.enabled.load(Acquire) {
-                clipboard.local.lock().unwrap().take();clipboard.remote.lock().unwrap().take();
-                if previous {*clipboard.protocol.lock().unwrap()=Default::default();}
+    fn update_clipboard(&mut self, ctx: &egui::Context) {
+        use std::sync::atomic::Ordering::{Acquire, AcqRel, Release};
+        let native = self.is_native();
+        let ready = self.input_ready()
+            || (native && self.supports_remote(uu_core::capabilities::Capability::Clipboard)
+                && self.controller.as_ref().is_some_and(|h| h.stats.decoded_total.load(Acquire) > 0));
+        if let Some(h) = &self.controller {
+            let clipboard = &h.stats.clipboard;
+            let enabled = (if native { self.native_clipboard_enabled } else { self.preferences.clipboard })
+                && clipboard.available.load(Acquire);
+            let active = ready && ctx.input(|i| i.focused) && !self.disconnecting;
+            // Invalidate incoming data before reactivation, even if a complete
+            // focus round trip happened between the transport's polling ticks.
+            if native && (clipboard.enabled.load(Acquire) != enabled
+                || clipboard.active.load(Acquire) != active
+                || clipboard.read_only.load(Acquire) != self.view_only)
+            {
+                clipboard.generation.fetch_add(1, AcqRel);
+            }
+            clipboard.enabled.store(enabled, Release);
+            clipboard.read_only.store(self.view_only, Release);
+            let previous = clipboard.active.swap(active, Release);
+            if !active || !enabled {
+                clipboard.local.lock().unwrap().take();
+                clipboard.remote.lock().unwrap().take();
+                if previous { *clipboard.protocol.lock().unwrap() = Default::default(); }
             }
         }
     }
