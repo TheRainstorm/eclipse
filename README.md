@@ -25,6 +25,8 @@ uu-client 使用 Rust 构建，通过兼容协议连接 UU 远程被控端，提
 
 ## 已有功能
 
+下表描述 UU 兼容模式。原生模式目前提供独立主机与纯观看，具体范围见[原生串流说明](docs/native-streaming.md)。
+
 | 方面 | 当前支持 |
 |---|---|
 | 账号与设备 | 扫码登录、取消或刷新二维码、设备列表与搜索、退出账号；退出后断开本客户端串流，保留软件偏好。 |
@@ -42,6 +44,8 @@ uu-client 使用 Rust 构建，通过兼容协议连接 UU 远程被控端，提
 ## 开始使用
 
 安装包将随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
+
+原生观看可按[原生串流说明](docs/native-streaming.md)启动自有主机，再在主页选择“使用原生邀请”，全程无需 UU 账号或服务凭据。
 
 UU 兼容模式不内置或分发第三方服务的生产签名密钥。先按[连接凭据说明](docs/connection-credentials.md)配置你有权使用的本地凭据；没有凭据时无法登录或连接官方服务。
 
