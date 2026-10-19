@@ -30,15 +30,29 @@ def variants(values):
 def inspect(name, data, forbidden=(), source=False):
     issues = []
     base = PurePosixPath(name).name
-    if base in ('signing-key', 'state.json', '.env') or base.startswith('signing-key.') or base.endswith('.eclipse-invite.json'):
+    if (base in ('signing-key', 'state.json', '.env')
+            or base.startswith(('signing-key.', 'state.json.', '.uu-account-'))
+            or base.endswith('.eclipse-invite.json')):
         issues.append('private credential/configuration file')
-    if len(data) <= 16 * 1024 and data.lstrip().startswith(b'{') and all(field in data for field in (b'"certificate"', b'"token"', b'"expires_at"')):
+    json_data = data.removeprefix(b'\xef\xbb\xbf').lstrip()
+    if len(data) <= 16 * 1024 and json_data.startswith(b'{') and all(field in data for field in (b'"certificate"', b'"token"', b'"expires_at"')):
         try:
             document = json.loads(data)
             if (isinstance(document, dict) and isinstance(document.get('address'), str)
                     and isinstance(document.get('certificate'), list)
                     and isinstance(document.get('token'), list) and len(document['token']) == 32):
                 issues.append('private native invitation content')
+        except (ValueError, UnicodeDecodeError):
+            pass
+    if (len(data) <= 1024 * 1024 and json_data.startswith(b'{')
+            and all(field in data for field in (b'"identity"', b'"token"', b'"device_id"', b'"user_id"'))):
+        try:
+            document = json.loads(data)
+            if (isinstance(document, dict) and isinstance(document.get('identity'), dict)
+                    and isinstance(document['identity'].get('client_id'), str)
+                    and isinstance(document.get('token'), (str, type(None)))
+                    and {'device_id', 'user_id', 'token'} <= document.keys()):
+                issues.append('private account state content')
         except (ValueError, UnicodeDecodeError):
             pass
     if source and base.lower().endswith(('.exe', '.dll')):

@@ -1,6 +1,7 @@
 //! Orchestration: configuration, signaling, and the session state machine.
 
 pub mod api;
+mod private_file;
 pub mod config;
 pub mod control_wire;
 pub mod controller;

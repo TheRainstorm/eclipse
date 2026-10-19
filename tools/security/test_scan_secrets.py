@@ -59,5 +59,21 @@ class NativeInvitationGuard(unittest.TestCase):
             self.assertTrue(scan.inspect(name, b'{"version":1}'))
 
 
+class AccountStateGuard(unittest.TestCase):
+    def test_account_state_remains_private_after_rename_or_bom(self):
+        import json
+        data = json.dumps(dict(identity=dict(client_id='fixture-client'), token='fixture-auth',
+                               device_id='fixture-device', user_id='fixture-user')).encode()
+        for prefix in (b'', b'\xef\xbb\xbf'):
+            result = scan.inspect('renamed.json', prefix + data)
+            self.assertTrue(result)
+            self.assertNotIn('fixture-auth', str(result))
+
+    def test_account_backups_and_temporary_files_are_private_even_when_empty(self):
+        for name in ('config/state.json.backup', 'config/.uu-account-fixture.tmp'):
+            self.assertTrue(scan.inspect(name, b''))
+        self.assertFalse(scan.inspect('sample.json', b'{"token":"fixture"}'))
+
+
 if __name__ == '__main__':
     unittest.main()

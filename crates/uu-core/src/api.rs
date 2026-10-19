@@ -13,12 +13,21 @@ use crate::sign::ClientIdentity;
 use crate::signal::{SignalClient, SignedRequest};
 
 /// Persisted client state (identity + session token).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ClientState {
     pub identity: ClientIdentity,
     pub device_id: Option<String>,
     pub token: Option<String>,
     pub user_id: Option<String>,
+}
+
+impl std::fmt::Debug for ClientState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientState")
+            .field("registered", &self.device_id.is_some())
+            .field("authenticated", &self.token.as_ref().is_some_and(|token| !token.is_empty()))
+            .finish_non_exhaustive()
+    }
 }
 
 impl ClientState {
@@ -39,11 +48,8 @@ impl ClientState {
     }
 
     pub fn save(&self, path: &PathBuf) -> Result<(), CoreError> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
         let data = serde_json::to_vec_pretty(self).map_err(|e| CoreError::Config(e.to_string()))?;
-        std::fs::write(path, data)?;
+        crate::private_file::write_atomic(path, &data)?;
         Ok(())
     }
 }
@@ -54,11 +60,81 @@ impl Default for ClientState {
     }
 }
 
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+    use std::{fs, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread};
+
+    #[test]
+    fn private_atomic_account_updates_never_expose_partial_json_to_readers() {
+        let root = std::env::temp_dir().join(format!("uu-account-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("state.json");
+        let mut state = ClientState::new();
+        state.identity.client_id = "fixture-client".into();
+        state.device_id = Some("fixture-device".into());
+        state.user_id = Some("fixture-user".into());
+        state.token = Some("fixture-token".into());
+        fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        state.save(&path).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader_stop = stop.clone();
+        let reader_path = path.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut ready = Some(ready_tx);
+            loop {
+                let parsed: ClientState = serde_json::from_slice(&fs::read(&reader_path).unwrap()).unwrap();
+                assert_eq!(parsed.identity.client_id, "fixture-client");
+                assert!(parsed.token.unwrap().starts_with("fixture-"));
+                if let Some(ready) = ready.take() { let _ = ready.send(()); }
+                if reader_stop.load(Ordering::Acquire) { break; }
+                thread::yield_now();
+            }
+        });
+        ready_rx.recv().unwrap();
+        for n in 0..40 {
+            state.token = Some(format!("fixture-{n}-{}", "x".repeat(64 * 1024)));
+            state.save(&path).unwrap();
+        }
+        stop.store(true, Ordering::Release);
+        reader.join().unwrap();
+        assert_eq!(serde_json::to_value(ClientState::load(&path)).unwrap(), serde_json::to_value(&state).unwrap());
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn account_and_qr_debug_output_do_not_include_credentials_or_identity() {
+        let mut state = ClientState::new();
+        state.token = Some("fixture-private-token".into());
+        state.identity.client_id = "fixture-private-client".into();
+        let debug = format!("{state:?}");
+        assert!(!debug.contains("fixture-private"));
+        let qr = QrLogin { jump_url: "https://example.invalid/fixture-qr".into(), token: "fixture-qr-token".into() };
+        assert!(!format!("{qr:?}").contains("fixture-qr"));
+    }
+}
+
 /// The QR code handed to the user for scanning.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct QrLogin {
     pub jump_url: String,
     pub token: String,
+}
+
+impl std::fmt::Debug for QrLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QrLogin").finish_non_exhaustive()
+    }
 }
 
 /// Response of the device registration call.

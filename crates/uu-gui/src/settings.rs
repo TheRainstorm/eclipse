@@ -94,20 +94,8 @@ pub(super) fn save_json(value: &impl Serialize, path: &Path) -> anyhow::Result<(
         file.write_all(&serde_json::to_vec_pretty(value)?)?;
         file.sync_all()?;
         drop(file);
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStrExt;
-            #[link(name = "kernel32")]
-            extern "system" {
-                fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
-            }
-            let from: Vec<_> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
-            let to: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-            if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 1 | 8) } == 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-        }
-        #[cfg(not(windows))]
+        // std also supports Windows replacement while another window still
+        // has the old file open, via its POSIX-rename fallback.
         std::fs::rename(&temp, path)?;
         Ok(())
     })();

@@ -32,3 +32,8 @@ __pycache__/
 
 # 原生临时配对邀请包含访问凭据，不作为项目资源
 *.eclipse-invite.json
+
+# 本地账号状态及原子写入期间的私有临时文件
+**/state.json
+**/state.json.*
+.uu-account-*.tmp
