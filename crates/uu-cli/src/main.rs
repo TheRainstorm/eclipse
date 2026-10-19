@@ -54,7 +54,7 @@ enum Command {
     Host,
     /// List native capture monitors without reading desktop pixels.
     NativeSources,
-    /// Native view-only LAN host: private invitation + TLS + WebRTC; no UU account.
+    /// Native LAN host; desktop input requires an explicit --allow-input.
     NativeHost {
         #[arg(long, default_value = "127.0.0.1:0")]
         bind: std::net::SocketAddr,
@@ -66,6 +66,9 @@ enum Command {
         /// Use a moving 1280x720 test pattern instead of a desktop.
         #[arg(long)]
         synthetic: bool,
+        /// Allow an invited viewer to request keyboard and mouse control.
+        #[arg(long, conflicts_with = "synthetic")]
+        allow_input: bool,
         #[arg(long, default_value_t = 60)]
         fps: u32,
         #[arg(long, default_value_t = 8000)]
@@ -186,9 +189,9 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
         Command::NativeSources => native_cli::sources(),
-        Command::NativeHost { bind, invitation_file, monitor, synthetic, fps, bitrate_kbps, pairing_seconds, max_seconds } => {
+        Command::NativeHost { bind, invitation_file, monitor, synthetic, allow_input, fps, bitrate_kbps, pairing_seconds, max_seconds } => {
             let source=if synthetic {uu_capture::CaptureSource::Synthetic{width:1280,height:720,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
-            native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,session_limit:max_seconds.map(std::time::Duration::from_secs)}).await
+            native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input}).await
         },
         Command::NativeProbe {invitation_file,frames,timeout_seconds} => native_cli::probe(invitation_file,frames,timeout_seconds).await,
         Command::ReleaseCheck => release_check(&config).await,

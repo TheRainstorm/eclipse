@@ -19,8 +19,8 @@ pub async fn host(config: uu_core::native::HostConfig) -> Result<()> {
     drop(stop);
     let report = result?;
     println!(
-        "native host ended: captured={} sent={} bytes={}",
-        report.captured, report.sent, report.bytes
+        "native host ended: captured={} sent={} bytes={} input={} input_errors={}",
+        report.captured, report.sent, report.bytes, report.input_events, report.input_errors
     );
     Ok(())
 }

@@ -103,6 +103,7 @@ pub struct X11Capture {
     depth: u8,
     masks: [u32; 3],
     started: Instant,
+    desktop: bool,
 }
 
 impl X11Capture {
@@ -175,6 +176,7 @@ impl X11Capture {
             depth,
             masks,
             started: Instant::now(),
+            desktop: matches!(source, CaptureSource::Primary | CaptureSource::Monitor(_)),
         })
     }
 }
@@ -182,6 +184,9 @@ impl X11Capture {
 impl Capture for X11Capture {
     fn resolution(&self) -> (u32, u32) {
         (self.area.width, self.area.height)
+    }
+    fn desktop_rect(&self) -> Option<crate::DesktopRect> {
+        self.desktop.then_some(crate::DesktopRect {x:self.area.x,y:self.area.y,width:self.area.width,height:self.area.height})
     }
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
         let (width, height) = self.resolution();

@@ -34,6 +34,7 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 #[derive(Default)]
 pub struct MediaStats {
     pub capabilities:crate::capabilities::Capabilities,
+    pub native_input_available:std::sync::atomic::AtomicBool,
     /// Host-confirmed source target; zero when only the client's request is known.
     pub configured_fps:AtomicU32,
     pub diagnostics: crate::session_diagnostics::SessionDiagnostics,

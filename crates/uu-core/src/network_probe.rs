@@ -9,8 +9,13 @@ pub(crate) struct NetworkProbe {
 impl NetworkProbe {
     pub fn begin(&mut self, seq: u64) { self.pending = Some((seq, Instant::now())); }
     pub fn reply(&mut self, data: &[u8]) -> Option<(u32, u32)> {
-        let (seq, at) = self.pending?;
+        let (seq, _) = self.pending?;
         if !crate::control_wire::echo_matches(data, seq) { return None; }
+        self.reply_sequence(seq)
+    }
+    pub fn reply_sequence(&mut self, seq:u64) -> Option<(u32,u32)> {
+        let (expected,at)=self.pending?;
+        if seq!=expected {return None;}
         self.pending = None;
         self.sample(at.elapsed().as_secs_f64() * 1_000_000.0)
     }

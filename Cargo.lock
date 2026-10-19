@@ -4920,6 +4920,7 @@ dependencies = [
  "uu-proto",
  "uuid",
  "webrtc",
+ "x11rb",
  "zeroize",
 ]
 

@@ -19,4 +19,8 @@ impl Capabilities {
     pub fn set(&self, flags: u32) {
         self.0.store(flags & Self::ALL, Ordering::Release);
     }
+    pub fn enable(&self, capability: Capability, enabled: bool) {
+        if enabled {self.0.fetch_or(capability as u32,Ordering::AcqRel);}
+        else {self.0.fetch_and(!(capability as u32),Ordering::AcqRel);}
+    }
 }

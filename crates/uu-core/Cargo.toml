@@ -44,3 +44,6 @@ tokio = { workspace = true }
 
 [features]
 vaapi = ["uu-media/vaapi"]
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb = { version = "0.13", features = ["xtest"] }

@@ -92,6 +92,9 @@ jobs:
         run: |
           cargo build --release -p uu-input --example input_probe --locked
           python3 tools/native/input_smoke.py --probe target/release/examples/input_probe --output artifacts/input-x11
+          cargo build --release -p uu-core --example native_control_probe --features vaapi --locked
+          python3 tools/native/input_smoke.py --probe target/release/examples/native_control_probe --output artifacts/native-input-authorized
+          python3 tools/native/input_smoke.py --probe target/release/examples/native_control_probe --probe-arg=--read-only --output artifacts/native-input-readonly
       - name: Test isolated Wayland viewer and mixed DPI
         if: matrix.platform == 'linux-x86_64'
         run: |

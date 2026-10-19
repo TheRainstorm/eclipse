@@ -1,5 +1,8 @@
 //! Exercise XTest only inside the explicit display's own fixture window.
 #[cfg(target_os = "linux")]
+#[path = "../../../tools/native/owned_display.rs"]
+mod owned_display;
+#[cfg(target_os = "linux")]
 fn main() -> anyhow::Result<()> {
     use anyhow::{ensure, Context};
     use uu_input::{InputEvent as I, InputInjector, KeyCode, MouseButton};
@@ -19,6 +22,7 @@ fn main() -> anyhow::Result<()> {
         "explicit --x11-display is required"
     );
     let display = args.next().context("missing owned X11 display")?;
+    owned_display::check(&display)?;
     ensure!(args.next().is_none(), "unexpected argument");
     let (conn, index) = x11rb::connect(Some(&display))?;
     let screen = &conn.setup().roots[index];

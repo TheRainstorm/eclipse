@@ -1,5 +1,6 @@
 //! Native LAN viewing prototype: private TLS pairing, WebRTC DTLS-SRTP, one source.
-//! No vendor signaling, production credential, audio or input injection is used.
+//! No vendor signaling or production credential is used. Input needs an
+//! explicit host permission and a separate authenticated control request.
 use crate::{
     media::{FrameSender, MediaStats},
     native_media::NativePeer,
@@ -109,12 +110,15 @@ pub struct HostConfig {
     pub fps: u32,
     pub bitrate_kbps: u32,
     pub session_limit: Option<Duration>,
+    pub allow_input: bool,
 }
 #[derive(Debug, Default)]
 pub struct HostReport {
     pub captured: u64,
     pub sent: u64,
     pub bytes: u64,
+    pub input_events: u64,
+    pub input_errors: u64,
 }
 
 async fn cancelled(stop: &mut watch::Receiver<bool>) {
@@ -138,13 +142,15 @@ pub async fn serve(config: HostConfig, mut stop: watch::Receiver<bool>) -> Resul
         (1..=60).contains(&config.fps) && (64..=100_000).contains(&config.bitrate_kbps),
         "software native host needs 1..=60 fps and 64..=100000 kbps"
     );
+    ensure!(!config.allow_input || matches!(config.source,uu_capture::CaptureSource::Primary|uu_capture::CaptureSource::Monitor(_)),
+        "desktop input can only be enabled for a real whole-monitor source");
     let listener = TcpListener::bind(config.bind)
         .await
         .context("cannot bind native signaling listener")?;
     let address = listener.local_addr()?;
     let credentials = HostCredentials::new(address, config.invitation_lifetime)?;
     credentials.invitation().save_new(&config.invitation_file)?;
-    tracing::info!(%address,"native host waiting for an invited controller (view only)");
+    tracing::info!(%address,input_allowed=config.allow_input,"native host waiting for an invited controller");
     let socket = tokio::select! {
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
         result=timeout(config.invitation_lifetime,async{
@@ -246,9 +252,9 @@ fn encode_source(
 async fn host_session(
     mut stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     config: HostConfig,
-    stop: watch::Receiver<bool>,
+    mut stop: watch::Receiver<bool>,
 ) -> Result<HostReport> {
-    let offer: Offer = read_message(&mut stream).await?;
+    let offer: Offer = tokio::select! {result=read_message(&mut stream)=>result?,_=cancelled(&mut stop)=>return Ok(HostReport::default())};
     ensure!(offer.version == 1, "unsupported native protocol version");
     let local_ip = stream.get_ref().0.local_addr()?.ip();
     let mut peer = NativePeer::new(local_ip, None, true).await?;
@@ -267,19 +273,20 @@ async fn send_video(
 ) -> Result<HostReport> {
     let refresh = Arc::new(AtomicBool::new(false));
     let track = peer.sender(refresh.clone()).await?;
-    peer.pc.on_data_channel(Box::new(|channel| {
-        Box::pin(async move {
-            if channel.label() != "eclipse-control-v1" {
-                let _ = channel.close().await;
-            }
-        })
-    }));
     peer.remote(offer.sdp, stream.get_ref().0.peer_addr()?.ip())
         .await?;
     // Authentication and a valid media offer precede capture access.
-    let capture = tokio::task::spawn_blocking(move || uu_capture::open(&config.source)).await??;
+    let capture = tokio::select! {
+        result=tokio::task::spawn_blocking(move || uu_capture::open(&config.source))=>result??,
+        _=cancelled(&mut stop)=>return Ok(HostReport::default()),
+    };
     let (width, height) = capture.resolution();
     validate_video(width, height, config.fps)?;
+    let controls=tokio::select! {
+        controls=crate::native_control::HostControl::new(config.allow_input,capture.desktop_rect())=>controls,
+        _=cancelled(&mut stop)=>return Ok(HostReport::default()),
+    };
+    controls.attach(&peer.pc);
     let answer = Answer {
         version: 1,
         sdp: peer.description(false).await?,
@@ -290,7 +297,12 @@ async fn send_video(
         view_only: true,
     };
     write_message(stream, &answer).await?;
-    peer.connected().await?;
+    let connected=tokio::select! {result=peer.connected()=>Some(result),_=cancelled(&mut stop)=>None};
+    match connected {
+        Some(Ok(()))=>{},
+        Some(Err(error))=>{controls.stop().await;return Err(error);},
+        None=>{controls.stop().await;return Ok(HostReport::default());},
+    }
     let mut producer = CaptureWorker::start(capture, config.fps, config.bitrate_kbps, refresh);
     let mut report = HostReport::default();
     let mut previous = None;
@@ -326,6 +338,8 @@ async fn send_video(
         }
         Ok::<_, anyhow::Error>(())
     }.await;
+    controls.stop().await;
+    (report.input_events,report.input_errors)=controls.counters();
     peer.close().await;
     let stopped = producer.stop().await;
     report.captured = producer.captured.load(Ordering::Relaxed);
@@ -339,9 +353,18 @@ pub async fn view(
     invitation: &Invitation,
     frames: FrameSender,
     stats: Arc<MediaStats>,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
 ) -> Result<()> {
+    view_session(invitation,frames,stats,stop,None).await
+}
+
+pub async fn view_with_input(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaStats>,stop:watch::Receiver<bool>,input:crate::native_input::NativeInputReceiver)->Result<()> {
+    view_session(invitation,frames,stats,stop,Some(input)).await
+}
+
+async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaStats>,mut stop:watch::Receiver<bool>,input:Option<crate::native_input::NativeInputReceiver>)->Result<()> {
     stats.capabilities.set(0);
+    stats.native_input_available.store(false,Ordering::Release);
     let mut stream = tokio::select! {
         result=crate::native_pairing::connect(invitation)=>result?,
         _=cancelled(&mut stop)=>return Ok(()),
@@ -349,7 +372,7 @@ pub async fn view(
     let local_ip = stream.get_ref().0.local_addr()?.ip();
     let mut peer = NativePeer::new(local_ip, Some(stats.clone()), false).await?;
     let result = tokio::select! {
-        result=receive_session(&mut peer,&mut stream,frames,stats.clone())=>result,
+        result=receive_session(&mut peer,&mut stream,frames,stats.clone(),input)=>result,
         _=cancelled(&mut stop)=>Ok(()),
     };
     peer.close().await;
@@ -363,22 +386,14 @@ async fn receive_session(
     stream: &mut tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
     frames: FrameSender,
     stats: Arc<MediaStats>,
+    input:Option<crate::native_input::NativeInputReceiver>,
 ) -> Result<()> {
     peer.receiver(frames, stats.clone()).await?;
     let channel = peer
         .pc
         .create_data_channel("eclipse-control-v1", None)
         .await?;
-    let opened = stats.clone();
-    channel.on_open(Box::new(move || {
-        opened.control_open.store(1, Ordering::Release);
-        Box::pin(async {})
-    }));
-    let closed = stats.clone();
-    channel.on_close(Box::new(move || {
-        closed.control_open.store(0, Ordering::Release);
-        Box::pin(async {})
-    }));
+    let mut controls=crate::native_control::ViewerControl::new(channel.clone(),stats.clone(),input);
     write_message(
         stream,
         &Offer {
@@ -400,8 +415,17 @@ async fn receive_session(
     peer.remote(answer.sdp, stream.get_ref().0.peer_addr()?.ip())
         .await?;
     peer.connected().await?;
+    let mut control_active=true;
+    let control=controls.run();tokio::pin!(control);
     loop {
         tokio::select! {
+            result=&mut control,if control_active=>{
+                control_active=false;
+                if let Err(error)=result {tracing::warn!(%error,"native control unavailable; video continues");}
+                stats.capabilities.enable(crate::capabilities::Capability::Input,false);
+                stats.native_input_available.store(false,Ordering::Release);
+                let _=timeout(Duration::from_secs(1),channel.close()).await;
+            },
             _=stream.read_u8()=>{
                 ensure!(stats.decoded_total.load(Ordering::Relaxed)>0,"native host ended before delivering video");
                 break;
@@ -443,6 +467,7 @@ mod tests {
             fps: 60,
             bitrate_kbps: 2000,
             session_limit: Some(Duration::from_secs(10)),
+            allow_input:false,
         };
         (config, file)
     }
@@ -457,6 +482,14 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn synthetic_sources_cannot_grant_desktop_input_or_publish_an_invitation() {
+        let (mut config,file)=config();config.allow_input=true;
+        let (_keep_alive,stop)=watch::channel(false);
+        assert!(serve(config,stop).await.is_err());
+        assert!(!file.0.exists());
     }
     #[test]
     fn software_video_fits_its_advertised_h264_level() {

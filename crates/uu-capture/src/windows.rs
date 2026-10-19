@@ -272,6 +272,9 @@ impl Capture for DxgiCapture {
     fn resolution(&self) -> (u32, u32) {
         (self.source.width, self.source.height)
     }
+    fn desktop_rect(&self) -> Option<crate::DesktopRect> {
+        Some(crate::DesktopRect {x:self.source.x,y:self.source.y,width:self.source.width,height:self.source.height})
+    }
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {

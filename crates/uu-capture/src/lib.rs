@@ -15,7 +15,7 @@ pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod x11;
 
-pub use backend::{available_backends, Capture, CaptureError, CaptureTarget};
+pub use backend::{available_backends, Capture, CaptureError, CaptureTarget, DesktopRect};
 pub use synthetic::SyntheticCapture;
 
 /// Which source to capture.

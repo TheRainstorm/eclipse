@@ -29,8 +29,21 @@ pub enum CaptureError {
 /// handle that still needs a copy/download step.
 pub trait Capture: Send {
     fn resolution(&self) -> (u32, u32);
+    /// Global pixels represented by a whole-monitor capture. Synthetic and
+    /// window sources do not authorize desktop input through this interface.
+    fn desktop_rect(&self) -> Option<DesktopRect> {
+        None
+    }
     /// Block until the next frame is available.
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError>;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DesktopRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Describe the backends compiled into this binary.
