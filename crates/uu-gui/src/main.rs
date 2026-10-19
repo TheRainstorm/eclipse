@@ -628,6 +628,19 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Also cover backend shutdown paths that do not deliver CloseRequested.
+        self.disconnect();
+        if let Some(h) = &self.controller {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+            while !h.stopped.load(std::sync::atomic::Ordering::Acquire)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if let Some(seconds) = frame.info().cpu_usage {
             self.render_ms = self.render_ms * 0.9 + seconds * 1000.0 * 0.1;
