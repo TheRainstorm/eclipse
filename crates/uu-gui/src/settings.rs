@@ -157,7 +157,7 @@ impl super::App {
         let mut open = true;
         let mut apply = false;
         egui::Window::new("软件设置").open(&mut open).collapsible(false).resizable(false)
-            .default_width(440.0).anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).show(ctx,|ui| {
+            .min_width(260.0).default_width(440.0_f32.min((ctx.screen_rect().width()-40.0).max(260.0))).max_width((ctx.screen_rect().width()-32.0).max(260.0)).anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).show(ctx,|ui| {
                 let s=&mut self.settings_draft;
                 egui::ScrollArea::vertical().max_height((ctx.screen_rect().height()-140.0).max(180.0)).show(ui,|ui| {
                     ui.strong("画面");
@@ -176,8 +176,8 @@ impl super::App {
                     ui.checkbox(&mut s.clipboard,"同步文本剪贴板（仅当前前台串流）");
                     ui.checkbox(&mut s.capture_keyboard,"全屏时将系统快捷键发送到远端");
                     ui.small("Ctrl+Alt+Q 退出串流；Ctrl+Alt+F / X 切换全屏。\nWin+Shift+方向键始终移动本地窗口。Ctrl+Alt+Del 由 Windows 保留。");
-                    ui.horizontal(|ui|{ui.label("鼠标模式");ui.selectable_value(&mut s.relative_mouse,false,"桌面 · 绝对定位");ui.selectable_value(&mut s.relative_mouse,true,"游戏 · 相对移动");});
-                    ui.horizontal(|ui|{ui.label("光标显示");ui.selectable_value(&mut s.remote_cursor,false,"本地光标");ui.selectable_value(&mut s.remote_cursor,true,"远端光标");});
+                    ui.horizontal_wrapped(|ui|{ui.label("鼠标模式");ui.selectable_value(&mut s.relative_mouse,false,"桌面 · 绝对定位");ui.selectable_value(&mut s.relative_mouse,true,"游戏 · 相对移动");});
+                    ui.horizontal_wrapped(|ui|{ui.label("光标显示");ui.selectable_value(&mut s.remote_cursor,false,"本地光标");ui.selectable_value(&mut s.remote_cursor,true,"远端光标");});
                     ui.small("游戏模式单击画面捕获鼠标，Ctrl+Alt+Z 释放／重新捕获；打开菜单或失焦时自动释放。");
                     ui.separator();ui.strong("启动选项");
                     ui.checkbox(&mut s.vsync,"垂直同步");ui.checkbox(&mut s.software_decoder,"使用软件解码（默认优先硬件解码）");
