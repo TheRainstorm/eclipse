@@ -22,6 +22,7 @@ pub struct Settings {
     pub software_decoder: bool,
     pub relative_mouse: bool,
     pub remote_cursor: bool,
+    pub clipboard: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -39,6 +40,7 @@ impl Default for Settings {
             software_decoder: false,
             relative_mouse: false,
             remote_cursor: false,
+            clipboard: true,
         }
     }
 }
@@ -168,6 +170,7 @@ impl super::App {
                     ui.separator();ui.strong("声音");
                     ui.checkbox(&mut s.muted,"静音");ui.add(egui::Slider::new(&mut s.volume,0..=100).text("音量"));
                     ui.separator();ui.strong("输入");
+                    ui.checkbox(&mut s.clipboard,"同步文本剪贴板（仅当前前台串流）");
                     ui.checkbox(&mut s.capture_keyboard,"全屏时将系统快捷键发送到远端");
                     ui.small("Ctrl+Alt+Q 退出串流；Ctrl+Alt+F / X 切换全屏。\nWin+Shift+方向键始终移动本地窗口。Ctrl+Alt+Del 由 Windows 保留。");
                     ui.horizontal(|ui|{ui.label("鼠标模式");ui.selectable_value(&mut s.relative_mouse,false,"桌面 · 绝对定位");ui.selectable_value(&mut s.relative_mouse,true,"游戏 · 相对移动");});

@@ -12,6 +12,7 @@ use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
+mod clipboard;
 mod cursor;
 mod keyboard_capture;
 mod settings;
@@ -518,6 +519,7 @@ impl App {
             self.send_capture_settings();
         }
         if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
+            if let Some(h)=&self.controller {h.stats.audio.stop();h.stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);}
             self.controller = None;
             self.disconnecting = false;
             self.remote_focus = false;
@@ -616,6 +618,22 @@ impl App {
             }
         }
         if self.mouse_captured {ctx.set_cursor_icon(egui::CursorIcon::None);}
+    }
+
+    fn update_clipboard(&mut self,ctx:&egui::Context) {
+        let ready=self.input_ready();
+        if let Some(h)=&self.controller {
+            use std::sync::atomic::Ordering::{Acquire,Release};
+            let clipboard=&h.stats.clipboard;
+            clipboard.enabled.store(self.preferences.clipboard&&clipboard.available.load(Acquire),Release);
+            clipboard.read_only.store(self.view_only,Release);
+            let active=ready&&ctx.input(|i|i.focused)&&!self.disconnecting;
+            let previous=clipboard.active.swap(active,Release);
+            if !active || !clipboard.enabled.load(Acquire) {
+                clipboard.local.lock().unwrap().take();clipboard.remote.lock().unwrap().take();
+                if previous {*clipboard.protocol.lock().unwrap()=Default::default();}
+            }
+        }
     }
 
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
@@ -765,12 +783,20 @@ impl App {
         };
         let device = self.devices[i].device_id.clone();
         let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
-        match uu_core::controller::spawn(config, device, geo) {
+        let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
+        stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
+        stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
+        stats.clipboard.available.store(cfg!(windows),std::sync::atomic::Ordering::Release);
+        stats.clipboard.enabled.store(self.preferences.clipboard && cfg!(windows),std::sync::atomic::Ordering::Release);
+        match uu_core::controller::spawn_with_stats(config, device, geo,stats) {
             Ok(h) => {
                 let context = self.context.clone();
                 h.frames.set_waker(move || context.request_repaint());
                 h.stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
                 h.stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
+                if let Err(error)=clipboard::start(h.stats.clipboard.clone(),self.platform.window_id()) {
+                    h.stats.clipboard.status(format!("剪贴板线程启动失败：{error}"));h.stats.clipboard.enabled.store(false,std::sync::atomic::Ordering::Release);h.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);
+                }
                 self.controller = Some(h);
                 self.window_sizing.begin_stream();
                 if !self.fullscreen {
@@ -912,6 +938,7 @@ impl eframe::App for App {
         self.settings_ui(ctx);
         self.update_keyboard_capture(ctx);
         self.update_pointer_capture(ctx);
+        self.update_clipboard(ctx);
         self.platform.show(ctx);
         ctx.request_repaint_after(std::time::Duration::from_millis(
             if self.controller.is_some() { 100 } else { 150 },

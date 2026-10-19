@@ -80,6 +80,10 @@ impl Platform {
             }
         }
     }
+    pub fn window_id(&self)->isize {
+        #[cfg(windows)] {self.window as isize}
+        #[cfg(not(windows))] {0}
+    }
     pub fn origin(&self) -> Option<(i32, i32)> {
         #[cfg(windows)]
         {

@@ -37,3 +37,4 @@ pub mod rtx;
 pub mod screen_control;
 
 pub mod cursor;
+pub mod clipboard;

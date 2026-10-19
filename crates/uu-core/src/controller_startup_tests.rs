@@ -21,7 +21,11 @@ fn without_candidates(sdp: &str) -> (String, Vec<String>) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     crate::install_crypto_provider();
-    let media = ControllerMedia::new(vec![]).await.unwrap();
+    let stats=Arc::new(crate::media::MediaStats::default());
+    stats.clipboard.enabled.store(true,std::sync::atomic::Ordering::Release);
+    stats.clipboard.active.store(true,std::sync::atomic::Ordering::Release);
+    *stats.clipboard.local.lock().unwrap()=Some("local-to-host 中文".into());
+    let media = ControllerMedia::new_with_frames(vec![],None,Some(stats.clone())).await.unwrap();
     let offer = media.offer().await.unwrap();
     let (offer, client_candidates) = without_candidates(&offer);
     assert!(!client_candidates.is_empty());
@@ -37,7 +41,26 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
         let tx = delivered_tx.clone();
         let expected = expected.clone();
         Box::pin(async move {
-            if channel.label() == "CONTROL_DATA_CHANNEL" {
+            if channel.label()=="TEXT_DATA_CHANNEL" {
+                let weak=Arc::downgrade(&channel);
+                channel.on_message(Box::new(move |msg| {
+                    let tx=tx.clone();let channel=weak.clone();
+                    Box::pin(async move {
+                        let received=crate::clipboard::Protocol::default().receive(&msg.data,&std::sync::atomic::AtomicU64::new(1000)).unwrap();
+                        if let Some(text)=received.text {
+                            assert_eq!(text,"local-to-host 中文");let _=tx.send("clipboard outbound");
+                            if let Some(channel)=channel.upgrade() {
+                                for reply in received.replies {channel.send(&reply.into()).await.unwrap();}
+                                channel.send(&crate::clipboard::text_change(2000,"host-to-local 🙂").unwrap().into()).await.unwrap();
+                            }
+                        } else if received.acknowledged==Some(2000) {let _=tx.send("clipboard ack");}
+                    })
+                }));
+            } else if channel.label() == "CONTROL_DATA_CHANNEL" {
+                let weak=Arc::downgrade(&channel);
+                channel.on_open(Box::new(move ||{let channel=weak.clone();Box::pin(async move {
+                    if let Some(channel)=channel.upgrade(){channel.send(&crate::control_wire::echo_response_with_clipboard(99,1,true).into()).await.unwrap();}
+                })}));
                 channel.on_message(Box::new(move |msg| {
                     let tx = tx.clone();
                     let kind = if !msg.is_string && msg.data.as_ref() == expected.as_slice() {
@@ -83,8 +106,8 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
         }
         tokio::time::timeout(Duration::from_secs(10), async {
             let mut delivered = std::collections::HashSet::new();
-            while delivered.len() < 4 { delivered.insert(delivered_rx.recv().await.expect("CONTROL messages")); }
-            assert_eq!(delivered, ["settings", "heartbeat", "pointer", "key"].into_iter().collect());
+            while delivered.len() < 6 { delivered.insert(delivered_rx.recv().await.expect("CONTROL messages")); }
+            assert_eq!(delivered, ["settings", "heartbeat", "pointer", "key", "clipboard outbound", "clipboard ack"].into_iter().collect());
         }).await.expect("settings, heartbeat and both kinds of input must reach the peer");
         ws.send(Message::Text("42[\"released\",{}]".into())).await.unwrap();
         // Keep the socket alive until the client consumes released.
@@ -101,6 +124,8 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     tokio::time::timeout(Duration::from_secs(25), drive_session(&mut sio, &media, "test", "ice", &ev,
         &mut input_rx, &mut settings_rx, settings)).await.unwrap().unwrap();
     assert!(events.try_iter().any(|event| matches!(event, ControllerEvent::Status(s) if s == "已请求目标画质/码率")));
+    assert_eq!(stats.clipboard.remote.lock().unwrap().as_deref(),Some("host-to-local 🙂"));
+    stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);
     media.pc.close().await.unwrap();
     peer.close().await.unwrap();
     sio.close().await;

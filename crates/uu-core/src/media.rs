@@ -35,6 +35,7 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 pub struct MediaStats {
     pub control_open: AtomicU32,
     pub audio: Arc<uu_media::audio::AudioControl>,
+    pub clipboard: Arc<crate::clipboard::Clipboard>,
     pub cursor: std::sync::Mutex<Option<(u64,crate::cursor::Shape)>>,
     pub input_messages_sent: AtomicU64,
     pub input_send_errors: AtomicU64,
@@ -112,6 +113,7 @@ pub struct ControllerMedia {
     pub pc: Arc<RTCPeerConnection>,
     repairs: Arc<crate::rtx::RepairBus>,
     pub data_channel: Arc<webrtc::data_channel::RTCDataChannel>,
+    _text_channel: Option<Arc<webrtc::data_channel::RTCDataChannel>>,
     seq: Arc<AtomicU64>,
     network_probe: Arc<std::sync::Mutex<crate::network_probe::NetworkProbe>>,
     stats: Option<Arc<MediaStats>>,
@@ -217,17 +219,35 @@ impl ControllerMedia {
         // and answer theirs before input is accepted.
         let seq = Arc::new(AtomicU64::new(1));
         let mut control_dc = None;
-        for label in [
-            "CONTROL_DATA_CHANNEL",
-            "TEXT_DATA_CHANNEL",
-            "STREAMER_DATA_CHANNEL",
-            "FILE_DATA_CHANNEL",
-            "BINARY_DATA_CHANNEL",
-        ] {
-            let ch = pc.create_data_channel(label, None).await?;
-            if label != "CONTROL_DATA_CHANNEL" {
-                continue;
+        let mut text_channel=None;
+        let mut channels=Vec::new();
+        for label in ["CONTROL_DATA_CHANNEL","TEXT_DATA_CHANNEL","STREAMER_DATA_CHANNEL","FILE_DATA_CHANNEL","BINARY_DATA_CHANNEL"] {
+            channels.push(pc.create_data_channel(label,None).await?);
+        }
+        let text_for_control=Arc::downgrade(&channels[1]);
+        let (clipboard_tx,mut clipboard_rx)=tokio::sync::mpsc::channel::<Vec<u8>>(16);
+        let clipboard_stats=stats.clone();let clipboard_channel=text_for_control.clone();let clipboard_seq=seq.clone();
+        tokio::spawn(async move {
+            let mut tick=tokio::time::interval(Duration::from_millis(50));tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                if clipboard_stats.as_ref().is_some_and(|s|s.clipboard.stopped.load(Ordering::Acquire)){break;}
+                tokio::select! {
+                    message=clipboard_rx.recv()=>{let Some(data)=message else{break;};receive_clipboard(&data,&clipboard_stats,&clipboard_seq,&clipboard_channel).await;},
+                    _=tick.tick()=>flush_clipboard(&clipboard_stats,&clipboard_seq,&clipboard_channel).await,
+                }
             }
+        });
+        for ch in channels {
+            let label=ch.label();
+            if label=="TEXT_DATA_CHANNEL" {
+                let sender=clipboard_tx.clone();let stats=stats.clone();
+                ch.on_message(Box::new(move |message| {
+                    queue_clipboard(&message.data,&stats,&sender);
+                    Box::pin(async {})
+                }));
+                text_channel=Some(ch);continue;
+            }
+            if label != "CONTROL_DATA_CHANNEL" {continue;}
             let open_ch = Arc::downgrade(&ch);
             let open_seq = seq.clone();
             let open_stats = stats.clone();
@@ -241,7 +261,7 @@ impl ControllerMedia {
                     if let Some(s) = &stats { s.control_open.store(1, Ordering::Release); }
                     let s = seq.fetch_add(1, Ordering::Relaxed);
                     let _ = ch
-                        .send(&bytes::Bytes::from(crate::control_wire::echo_request(s)))
+                        .send(&bytes::Bytes::from(crate::control_wire::echo_request_with_clipboard(s,stats.as_ref().is_some_and(|s|s.clipboard.enabled.load(Ordering::Acquire)))))
                         .await;
                 })
             }));
@@ -251,12 +271,14 @@ impl ControllerMedia {
                 println!("CONTROL_DATA_CHANNEL closed");
                 Box::pin(async {})
             }));
+            let msg_clipboard=clipboard_tx.clone();
             let msg_ch = Arc::downgrade(&ch);
             let msg_seq = seq.clone();
             let msg_probe = network_probe.clone();
             let msg_stats = stats.clone();
             ch.on_message(Box::new(
                 move |msg: webrtc::data_channel::data_channel_message::DataChannelMessage| {
+                    let clipboard=msg_clipboard.clone();
                     let ch = msg_ch.clone();
                     let seq = msg_seq.clone();
                     let probe = msg_probe.clone();
@@ -264,7 +286,9 @@ impl ControllerMedia {
                     Box::pin(async move {
                         let Some(ch) = ch.upgrade() else { return };
                         if !msg.is_string {
+                            queue_clipboard(&msg.data,&stats,&clipboard);
                             if let Some(s) = &stats {
+                                if crate::control_wire::echo_clipboard_supported(&msg.data){s.clipboard.supported.store(true,Ordering::Release);}
                                 if let Some(shape)=crate::cursor::parse(&msg.data) {
                                     let mut cursor=s.cursor.lock().unwrap();
                                     let revision=cursor.as_ref().map_or(1,|(revision,_)|revision+1);
@@ -287,23 +311,12 @@ impl ControllerMedia {
                                     s.rtt_updated_ms.store(crate::control_wire::now_ms(), Ordering::Release);
                                 }
                             }
-                            let head: Vec<String> = msg
-                                .data
-                                .iter()
-                                .take(16)
-                                .map(|b| format!("{b:02x}"))
-                                .collect();
                             if let Some(req) = crate::control_wire::echo_request_seq(&msg.data) {
                                 let s = seq.fetch_add(1, Ordering::Relaxed);
-                                let resp = crate::control_wire::echo_response(s, req);
+                                let resp = crate::control_wire::echo_response_with_clipboard(s,req,stats.as_ref().is_some_and(|s|s.clipboard.enabled.load(Ordering::Acquire)));
                                 let _ = ch.send(&bytes::Bytes::from(resp)).await;
                                 println!("CONTROL echo request seq={req} answered (out seq={s})");
-                            } else {
-                                println!(
-                                    "CONTROL recv len={} head={}",
-                                    msg.data.len(),
-                                    head.join(" ")
-                                );
+
                             }
                         }
                     })
@@ -317,6 +330,7 @@ impl ControllerMedia {
             pc,
             repairs,
             data_channel: dc,
+            _text_channel:text_channel,
             seq,
             network_probe,
             stats,
@@ -398,7 +412,7 @@ impl ControllerMedia {
     pub async fn probe_network(&self) {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         self.network_probe.lock().unwrap().begin(seq);
-        let _ = self.send_control(crate::control_wire::echo_request(seq)).await;
+        let _ = self.send_control(crate::control_wire::echo_request_with_clipboard(seq,self.stats.as_ref().is_some_and(|s|s.clipboard.enabled.load(Ordering::Acquire)))).await;
     }
     /// Send a raw PCK frame over the WebRTC data channel (control hypothesis).
     pub async fn send_control(&self, data: Vec<u8>) -> Result<()> {
@@ -412,6 +426,45 @@ impl ControllerMedia {
             else { s.input_send_errors.fetch_add(1, Ordering::Relaxed); }
         }
         result
+    }
+}
+
+fn queue_clipboard(data:&[u8],stats:&Option<Arc<MediaStats>>,sender:&tokio::sync::mpsc::Sender<Vec<u8>>) {
+    if let Some(stats)=stats {
+        if stats.clipboard.ready() && crate::clipboard::is_clipboard(data) && sender.try_send(data.to_vec()).is_err() {
+            stats.clipboard.status("剪贴板队列繁忙，已跳过过期更新");
+        }
+    }
+}
+async fn flush_clipboard(stats:&Option<Arc<MediaStats>>,seq:&Arc<AtomicU64>,weak_channel:&std::sync::Weak<webrtc::data_channel::RTCDataChannel>) {
+        let Some(stats)=stats else{return;};let clipboard=&stats.clipboard;
+        if !clipboard.ready() || clipboard.read_only.load(Ordering::Acquire){return;}
+        if !clipboard.supported.load(Ordering::Acquire){clipboard.status("等待远端启用文本剪贴板");return;}
+        let Some(channel)=weak_channel.upgrade() else{return;};
+        if channel.ready_state()!=webrtc::data_channel::data_channel_state::RTCDataChannelState::Open{return;}
+        let value=clipboard.local.lock().unwrap().take();let Some(value)=value else{return;};
+        let seq=seq.fetch_add(1,Ordering::Relaxed);
+        let Ok(message)=crate::clipboard::text_change(seq,&value) else{clipboard.status("文本超过30 KiB或包含无效字符");return;};
+        match tokio::time::timeout(Duration::from_millis(200),channel.send(&bytes::Bytes::from(message))).await {
+            Ok(Ok(_))=>{clipboard.last_sent.store(seq,Ordering::Release);clipboard.sent.fetch_add(1,Ordering::Relaxed);clipboard.status("文本已发送，等待远端确认");},
+            _=>{let mut pending=clipboard.local.lock().unwrap();if pending.is_none(){*pending=Some(value);}clipboard.status("剪贴板发送失败，将重试");},
+        }
+    }
+
+async fn receive_clipboard(data:&[u8],stats:&Option<Arc<MediaStats>>,seq:&Arc<AtomicU64>,channel:&std::sync::Weak<webrtc::data_channel::RTCDataChannel>) {
+    let Some(stats)=stats else{return;};let clipboard=&stats.clipboard;
+    if !clipboard.ready() || !crate::clipboard::is_clipboard(data){return;}
+    clipboard.supported.store(true,Ordering::Release);
+    let received={clipboard.protocol.lock().unwrap().receive(data,seq)};
+    match received {
+        Ok(received)=>{
+            if let Some(text)=received.text {
+                if clipboard.ready(){*clipboard.remote.lock().unwrap()=Some(text);clipboard.received.fetch_add(1,Ordering::Relaxed);}
+            }
+            if received.acknowledged.is_some_and(|id|id==clipboard.last_sent.load(Ordering::Acquire)){clipboard.status("文本剪贴板已同步");}
+            if let Some(channel)=channel.upgrade(){for reply in received.replies{let _=tokio::time::timeout(Duration::from_millis(200),channel.send(&bytes::Bytes::from(reply))).await;}}
+        }
+        Err(_)=>clipboard.status("已忽略无效或超出范围的剪贴板数据"),
     }
 }
 

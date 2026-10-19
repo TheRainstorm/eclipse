@@ -245,15 +245,17 @@ pub fn now_ms() -> u64 {
 }
 
 /// `Message { 1: seq, 3: SimpleAction { 1: 0, 4: features } }`.
-pub fn echo_request(seq: u64) -> Vec<u8> {
+pub fn echo_request(seq: u64) -> Vec<u8> {echo_request_with_clipboard(seq,false)}
+pub fn echo_request_with_clipboard(seq:u64,clipboard:bool)->Vec<u8> {
     let mut action = Vec::new();
     int(1, 0, &mut action);
-    bytes(4, &session_features(false), &mut action);
+    bytes(4, &session_features(clipboard), &mut action);
     envelope(seq, 3, &action)
 }
 
 /// `Message { 1: seq, 3: SimpleAction { 1: 1, 2: {"seq": request_seq}, 4: features } }`.
-pub fn echo_response(seq: u64, request_seq: u64) -> Vec<u8> {
+pub fn echo_response(seq:u64,request_seq:u64)->Vec<u8>{echo_response_with_clipboard(seq,request_seq,false)}
+pub fn echo_response_with_clipboard(seq:u64,request_seq:u64,clipboard:bool)->Vec<u8> {
     let mut action = Vec::new();
     int(1, 1, &mut action);
     bytes(
@@ -261,8 +263,15 @@ pub fn echo_response(seq: u64, request_seq: u64) -> Vec<u8> {
         format!("{{\"seq\":{request_seq}}}").as_bytes(),
         &mut action,
     );
-    bytes(4, &session_features(false), &mut action);
+    bytes(4, &session_features(clipboard), &mut action);
     envelope(seq, 3, &action)
+}
+
+pub fn echo_clipboard_supported(data:&[u8])->bool {
+    let Ok(fields)=decode_wire(data) else{return false;};
+    fields.iter().any(|(n,v)|match (n,v){(3,WireValue::Bytes(action))=>decode_wire(action).is_ok_and(|fields|
+        fields.iter().any(|(n,v)|match (n,v){(4,WireValue::Bytes(flags))=>decode_wire(flags).is_ok_and(|fields|
+            fields.iter().any(|(n,v)|matches!((n,v),(8,WireValue::Varint(3..))))),_=>false})),_=>false})
 }
 
 /// Returns the request seq when `data` is a host echo request (SimpleAction
@@ -455,6 +464,14 @@ mod tests {
             assert_eq!(fields.contains(&(3,WireValue::Varint(1))),capture);
             for (field,value) in [(18,120),(8,30_000_000),(4,u64::MAX-1)] {assert!(fields.contains(&(field,WireValue::Varint(value))));}
         }
+    }
+    #[test]
+    fn clipboard_capability_is_only_advertised_when_enabled() {
+        assert!(!echo_clipboard_supported(&echo_request(1)));
+        assert!(!echo_clipboard_supported(&echo_response(2,1)));
+        assert!(echo_clipboard_supported(&echo_request_with_clipboard(1,true)));
+        assert!(echo_clipboard_supported(&echo_response_with_clipboard(2,1,true)));
+        assert!(!echo_clipboard_supported(&[0]));
     }
     #[test]
     fn echo_request_is_detected() {

@@ -135,7 +135,8 @@ async fn next_text(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> Resul
 /// The Windows client sends a 177-byte message; only the identity/version
 /// fields are required for the server to route the session. The leading
 /// `0x04` is UU's binary-attachment prefix.
-pub fn encode_app_data(device_id: &str) -> Vec<u8> {
+pub fn encode_app_data(device_id:&str)->Vec<u8>{encode_app_data_with_clipboard(device_id,false)}
+pub fn encode_app_data_with_clipboard(device_id:&str,clipboard:bool)->Vec<u8> {
     fn varint(out: &mut Vec<u8>, mut v: u64) {
         while v >= 0x80 {
             out.push((v as u8) | 0x80);
@@ -161,6 +162,7 @@ pub fn encode_app_data(device_id: &str) -> Vec<u8> {
     varint(&mut out, device_id.len() as u64);
     out.extend_from_slice(device_id.as_bytes());
     out.extend_from_slice(&[0x50, 0x01]); // field 10 = 1
+    if clipboard {crate::control_wire::bytes(11,&[64,3],&mut out);}
     let ver = b"4.40.1.2090";
     out.push(0x62); // field 12, string
     varint(&mut out, ver.len() as u64);
@@ -194,6 +196,17 @@ pub fn gunzip_sdp04(data: &[u8]) -> Result<String> {
 mod frame_rate_tests {
     use super::*;
     use crate::control_wire::{decode_wire, WireValue};
+    #[test]
+    fn clipboard_connect_flag_keeps_existing_capture_initialization() {
+        for enabled in [false,true] {
+            let app=encode_app_data_with_clipboard("test-device",enabled);
+            let fields=decode_wire(&app[1..]).unwrap();
+            assert!(!fields.iter().any(|(n,_)|*n==3));
+            let flags=fields.iter().find_map(|(n,v)|match (n,v){(11,WireValue::Bytes(b))=>Some(*b),_=>None});
+            assert_eq!(flags.is_some(),enabled);
+            if let Some(flags)=flags {assert_eq!(decode_wire(flags).unwrap(),vec![(8,WireValue::Varint(3))]);}
+        }
+    }
     #[test]
     fn connect_keeps_legacy_initialization_and_advertises_144() {
         let app = encode_app_data("test-device");

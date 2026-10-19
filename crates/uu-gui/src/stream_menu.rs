@@ -658,6 +658,11 @@ impl super::App {
                                             self.remote_focus = false;
                                         }
                                     });
+                                    side_submenu(ui,&mut blocked,Icon::Folder,"剪贴板",|ui| {
+                                        if ui.checkbox(&mut self.preferences.clipboard,"同步文本剪贴板").changed(){self.persist_preferences();}
+                                        ui.small("仅同步当前前台串流，支持最多30 KiB文本；图片和文件不传输。");
+                                        if let Some(h)=&self.controller {ui.label(h.stats.clipboard.status.lock().unwrap().as_str());}
+                                    });
                                     unavailable(ui, Icon::Link, "外设", "外设透传尚未接入");
                                     unavailable(
                                         ui,

@@ -15,7 +15,7 @@ use crate::api::UuApi;
 use crate::config::Config;
 use crate::media::{ice_servers_from_json, ControllerMedia};
 use crate::signal::SignalClient;
-use crate::socketio::{encode_app_data, gunzip_sdp04, gzip_sdp04, SocketIo};
+use crate::socketio::{gunzip_sdp04, gzip_sdp04, SocketIo};
 
 pub enum ControllerEvent {
     Status(String),
@@ -37,13 +37,16 @@ pub struct ControllerHandle {
 }
 
 pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<ControllerHandle> {
+    spawn_with_stats(config,device,geo_ip,std::sync::Arc::new(crate::media::MediaStats::default()))
+}
+
+pub fn spawn_with_stats(config:Config,device:String,geo_ip:String,stats:std::sync::Arc<crate::media::MediaStats>)->Result<ControllerHandle> {
     crate::install_crypto_provider();
     let (ev_tx, ev_rx) = std::sync::mpsc::channel();
     let (frame_tx, frame_rx) = crate::media::frame_channel();
     let (input_tx, input_rx) = unbounded_channel();
     let (settings_tx, settings_rx) = unbounded_channel();
     let (close_tx, close_rx) = unbounded_channel();
-    let stats = std::sync::Arc::new(crate::media::MediaStats::default());
     let stats_run = stats.clone();
     let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stopped_run = stopped.clone();
@@ -52,6 +55,7 @@ pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<Controlle
             Ok(rt) => rt,
             Err(e) => {
                 let _ = ev_tx.send(ControllerEvent::Error(e.to_string()));
+                stats_run.audio.stop();stats_run.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);
                 stopped_run.store(true, std::sync::atomic::Ordering::Release);
                 return;
             }
@@ -157,7 +161,7 @@ async fn run(
     socket = Some(SocketIo::connect(&url, &token).await?);
     let sio = socket.as_mut().unwrap();
     let dev_id = api.state.device_id.clone().unwrap_or_default();
-    let app = encode_app_data(&dev_id);
+    let app = crate::socketio::encode_app_data_with_clipboard(&dev_id,stats.clipboard.enabled.load(std::sync::atomic::Ordering::Acquire));
     let streamer = json!({
         "control_id": ctrl,
         "device_capability": {
@@ -281,6 +285,8 @@ async fn run(
         result = attempt => result,
     };
     stats.audio.stop();
+    stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);
+    stats.clipboard.active.store(false,std::sync::atomic::Ordering::Release);
     status("正在释放连接…");
     // Flush pending key/button releases before tearing down CONTROL. Bound
     // every cleanup operation so a dead network cannot trap the UI on exit.
