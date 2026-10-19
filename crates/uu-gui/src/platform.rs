@@ -1,5 +1,8 @@
 //! Windows startup placement and local monitor controls, in physical pixels.
 use eframe::egui;
+#[cfg(target_os = "linux")]
+#[path = "wayland_capture.rs"]
+mod wayland_capture;
 
 pub fn startup_origin(streaming: bool) -> Option<(i32, i32)> {
     #[cfg(windows)]
@@ -42,6 +45,8 @@ fn parse_origin(value: &str) -> Option<(i32, i32)> {
 }
 
 pub struct Platform {
+    #[cfg(target_os = "linux")]
+    wayland: std::cell::RefCell<Option<wayland_capture::Capture>>,
     #[cfg(windows)]
     window: windows_sys::Win32::Foundation::HWND,
     #[cfg(windows)]
@@ -80,6 +85,8 @@ impl Platform {
         #[cfg(not(windows))]
         {
             Self {
+                #[cfg(target_os = "linux")]
+                wayland: std::cell::RefCell::new(wayland_capture::Capture::new(_cc)),
                 show_pending: false,
             }
         }
@@ -139,6 +146,10 @@ impl Platform {
             windows::CAPTURE.store(active,std::sync::atomic::Ordering::Release);
             active
         }
+        #[cfg(target_os = "linux")]
+        if let Some(capture) = self.wayland.borrow_mut().as_mut() { capture.update(active); }
+        // Wayland still delivers ordinary egui events; the inhibitor only
+        // prevents the compositor from intercepting its system shortcuts.
         #[cfg(not(windows))] {let _=active;false}
     }
     pub fn captured_keys(&self) -> Vec<crate::keyboard_capture::Decision> {

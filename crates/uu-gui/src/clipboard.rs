@@ -10,16 +10,79 @@ pub fn start(control: Arc<Clipboard>, window: isize) -> std::io::Result<()> {
             .name("uu-clipboard".into())
             .spawn(move || run(control, window))?;
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = window;
+        std::thread::Builder::new()
+            .name("uu-clipboard".into())
+            .spawn(move || run_linux(control))?;
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = window;
         control.status("当前构建未启用系统剪贴板");
     }
     Ok(())
 }
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 fn canonical(text: &str) -> String {
     text.replace("\r\n", "\n")
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux(control: Arc<Clipboard>) {
+    use std::sync::atomic::Ordering::{Acquire, Release};
+    let mut clipboard = match arboard::Clipboard::new() {
+        Ok(value) => value,
+        Err(_) => {
+            control.available.store(false, Release);
+            control.status("无法打开系统剪贴板，请检查 Wayland / X11 会话");
+            return;
+        }
+    };
+    control.available.store(true, Release);
+    let mut last_text = None;
+    while !control.stopped.load(Acquire) {
+        if control.ready() {
+            let mut local_changed = false;
+            if let Ok(value) = clipboard.get_text() {
+                if value.len() <= uu_core::clipboard::MAX_TEXT && !value.contains('\0') {
+                    let normalized = canonical(&value);
+                    if last_text.as_ref() != Some(&normalized) {
+                        if !control.read_only.load(Acquire) {
+                            *control.local.lock().unwrap() = Some(value);
+                            control.protocol.lock().unwrap().cancel_pending();
+                            local_changed = true;
+                        }
+                        last_text = Some(normalized);
+                    }
+                }
+            }
+            // A newly copied local selection takes precedence over a response
+            // to an older remote clipboard request, matching the Windows path.
+            let remote = control.remote.lock().unwrap().take();
+            if let Some(value) = remote.filter(|_| !local_changed) {
+                let normalized = canonical(&value);
+                if last_text.as_ref() != Some(&normalized) && control.ready() {
+                    if clipboard.set_text(value.clone()).is_ok() {
+                        last_text = Some(normalized);
+                        control.status("文本剪贴板已同步");
+                    } else {
+                        let mut pending = control.remote.lock().unwrap();
+                        if pending.is_none() {
+                            *pending = Some(value);
+                        }
+                        control.status("本地剪贴板写入繁忙，正在重试");
+                    }
+                }
+            }
+        } else {
+            last_text = None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    control.available.store(false, Release);
+    control.status("剪贴板已停止");
 }
 
 #[cfg(windows)]
@@ -88,7 +151,7 @@ fn run(control: Arc<Clipboard>, window: isize) {
 #[cfg(windows)]
 mod native {
     use windows_sys::Win32::{
-        Foundation::{HWND,GlobalFree},
+        Foundation::{GlobalFree, HWND},
         System::{DataExchange::*, Memory::*},
         UI::WindowsAndMessaging::GetForegroundWindow,
     };

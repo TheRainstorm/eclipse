@@ -9,9 +9,10 @@ members = [
     "crates/uu-cli",
     "crates/uu-gui",
 ]
-exclude = ["vendor/webrtc-dtls"]
+exclude = ["vendor/webrtc-dtls", "vendor/egui-winit"]
 
 [patch.crates-io]
+egui-winit = { path = "vendor/egui-winit" }
 webrtc-dtls = { path = "vendor/webrtc-dtls" }
 
 [workspace.package]

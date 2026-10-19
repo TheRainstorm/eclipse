@@ -339,7 +339,7 @@ impl App {
             kseq: 1,
             pressed_vks: std::collections::HashSet::new(),
             mod_state: [false; 4],
-            focused: true,
+            focused: false,
             logged_in,
             login_rx: None,
             login_texture: None,
@@ -526,6 +526,7 @@ impl App {
             match self.textures.get_mut(&idx) {
                 Some(t) => t.set(image, egui::TextureOptions::LINEAR),
                 None => {
+                    h.stats.diagnostics.record(serde_json::json!({"event":"first_frame","track":idx,"width":w,"height":hgt,"backend":h.stats.backend()}));
                     let t = ctx.load_texture(
                         format!("remote-{idx}"),
                         image,
@@ -635,7 +636,10 @@ impl App {
             shortcuts::Action::Menu=>{self.remote_focus=false;self.release_pointer_capture(ctx);self.stream_menu.visible=!self.stream_menu.visible;self.stream_menu.open=false;ctx.memory_mut(|m|m.close_popup());self.persist_preferences();},
             shortcuts::Action::Fullscreen=>self.toggle_fullscreen(ctx),
             shortcuts::Action::Exit=>self.disconnect(),
-            shortcuts::Action::Capture=>{self.remote_focus=!self.remote_focus;},
+            shortcuts::Action::Capture=>{
+                self.remote_focus=!self.remote_focus;
+                if let Some(h)=&self.controller { h.stats.diagnostics.record(serde_json::json!({"event":"input_focus","active":self.remote_focus})); }
+            },
         }
     }
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
@@ -661,7 +665,12 @@ impl App {
             if capture {
                 // Windows supports confinement; raw WM_INPUT deltas remain
                 // unbounded even when its invisible cursor reaches the edge.
-                ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::Confined));
+                let mode = if cfg!(target_os = "linux") {
+                    egui::viewport::CursorGrab::Locked
+                } else {
+                    egui::viewport::CursorGrab::Confined
+                };
+                ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(mode));
                 ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));self.mouse_captured=true;
             }
         }
@@ -763,7 +772,7 @@ impl App {
             (0xA2, modifiers.ctrl, 0),
             (0xA0, modifiers.shift, 1),
             (0xA4, modifiers.alt, 2),
-            (0x5B, modifiers.mac_cmd, 3),
+            (0x5B, modifiers.mac_cmd && (!cfg!(target_os = "linux") || (self.fullscreen && self.preferences.capture_keyboard)), 3),
         ] {
             if self.mod_state[index] != down {
                 self.send_key(vk, down);
@@ -850,8 +859,8 @@ impl App {
         stats.display_mode.store((self.preferences.display_mode==uu_core::screen_control::DisplayMode::ExclusiveVirtual) as u32,std::sync::atomic::Ordering::Release);
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
         stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
-        stats.clipboard.available.store(cfg!(windows),std::sync::atomic::Ordering::Release);
-        stats.clipboard.enabled.store(self.preferences.clipboard && cfg!(windows),std::sync::atomic::Ordering::Release);
+        stats.clipboard.available.store(cfg!(any(windows, target_os = "linux")),std::sync::atomic::Ordering::Release);
+        stats.clipboard.enabled.store(self.preferences.clipboard && cfg!(any(windows, target_os = "linux")),std::sync::atomic::Ordering::Release);
         match uu_core::controller::spawn_with_stats(config, device, geo,stats) {
             Ok(h) => {
                 let context = self.context.clone();
