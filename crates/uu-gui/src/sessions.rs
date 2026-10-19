@@ -36,7 +36,7 @@ impl StreamTarget {
             None => Ok(None),
         }
     }
-    fn command(&self, exe: &Path) -> Command {
+    fn command(&self, exe: &Path, origin: Option<(i32, i32)>) -> Command {
         let mut command = Command::new(exe);
         command
             .arg("--stream-device")
@@ -45,6 +45,11 @@ impl StreamTarget {
             .arg(&self.alias)
             // A child connects directly to this target, never launches another child.
             .env_remove("UU_AUTOCONNECT");
+        if let Some((x, y)) = origin {
+            command.env("UU_WINDOW_ORIGIN", format!("{x},{y}"));
+        } else {
+            command.env_remove("UU_WINDOW_ORIGIN");
+        }
         if self.view_only {
             command.arg("--view-only");
         }
@@ -66,13 +71,18 @@ impl Sessions {
         self.children
             .retain(|_, child| !matches!(child.try_wait(), Ok(Some(_))));
     }
-    pub fn open(&mut self, exe: &Path, target: &StreamTarget) -> std::io::Result<bool> {
+    pub fn open(
+        &mut self,
+        exe: &Path,
+        target: &StreamTarget,
+        origin: Option<(i32, i32)>,
+    ) -> std::io::Result<bool> {
         self.reap();
         if let Some(child) = self.children.get(&target.device_id) {
             focus_process(child.id());
             return Ok(false);
         }
-        let child = target.command(exe).spawn()?;
+        let child = target.command(exe, origin).spawn()?;
         self.children.insert(target.device_id.clone(), child);
         Ok(true)
     }
@@ -123,7 +133,7 @@ mod tests {
             alias: "工作电脑 A 中文".into(),
             view_only: true,
         };
-        let command = target.command(Path::new("uu-gui.exe"));
+        let command = target.command(Path::new("uu-gui.exe"), Some((1540, -564)));
         let args: Vec<_> = command
             .get_args()
             .map(|s| s.to_str().unwrap().to_owned())
@@ -132,6 +142,9 @@ mod tests {
         assert!(command
             .get_envs()
             .any(|(k, v)| k == "UU_AUTOCONNECT" && v.is_none()));
+        assert!(command
+            .get_envs()
+            .any(|(k, v)| k == "UU_WINDOW_ORIGIN" && v == Some(std::ffi::OsStr::new("1540,-564"))));
         assert!(StreamTarget::parse(Vec::new()).unwrap().is_none());
         assert!(StreamTarget::parse(["--stream-device".into()]).is_err());
     }

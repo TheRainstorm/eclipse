@@ -13,6 +13,7 @@ use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
 mod sessions;
+mod platform;
 mod shortcuts;
 mod hud;
 mod window;
@@ -81,6 +82,7 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
 struct App {
     stream_target: Option<sessions::StreamTarget>,
     sessions: sessions::Sessions,
+    platform: platform::Platform,
     build_label: String,
     executable_path: String,
     context: egui::Context,
@@ -257,8 +259,9 @@ fn setup_style(ctx: &egui::Context) {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>) -> Self {
         setup_style(&cc.egui_ctx);
+        let platform = platform::Platform::new(cc, origin);
         let config = uu_core::Config::from_env().ok();
         let logged_in = config
             .as_ref()
@@ -271,6 +274,7 @@ impl App {
         let mut app = Self {
             stream_target,
             sessions: sessions::Sessions::default(),
+            platform,
             build_label: installed_revision(),
             executable_path: std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
             context: cc.egui_ctx.clone(),
@@ -657,7 +661,7 @@ impl App {
         let target = sessions::StreamTarget {
             device_id: device.device_id.clone(), alias: device.alias.clone(), view_only: self.view_only,
         };
-        let result = std::env::current_exe().and_then(|exe| self.sessions.open(&exe, &target));
+        let result = std::env::current_exe().and_then(|exe| self.sessions.open(&exe, &target, self.platform.origin()));
         self.status = match result {
             Ok(true) => format!("已打开 {} 的串流窗口，可继续选择其他设备", target.alias),
             Ok(false) => format!("{} 的串流窗口已打开", target.alias),
@@ -812,6 +816,7 @@ impl eframe::App for App {
         } else {
             self.home_ui(ctx);
         }
+        self.platform.show(ctx);
         ctx.request_repaint_after(std::time::Duration::from_millis(
             if self.controller.is_some() { 100 } else { 150 },
         ));
@@ -824,6 +829,7 @@ fn main() -> eframe::Result {
         Ok(target) => target,
         Err(error) => { eprintln!("{error}"); return Ok(()); }
     };
+    let origin = platform::startup_origin(stream_target.is_some());
     let title = match &stream_target {
         Some(target) => format!("{} · UU串流 · {}", target.alias, installed_revision()),
         None => format!("网易UU远程 · Rust · {}", installed_revision()),
@@ -836,15 +842,16 @@ fn main() -> eframe::Result {
             .with_inner_size([1100.0, 760.0])
             .with_decorations(false)
             .with_min_inner_size([560.0, 360.0])
-            .with_title(title),
+            .with_title(title)
+            .with_visible(!cfg!(windows)),
         vsync,
-        centered: true,
+        centered: !cfg!(windows),
         ..Default::default()
     };
     eframe::run_native(
         "网易UU远程",
         options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, stream_target)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, stream_target, origin)))),
     )
 }
 
