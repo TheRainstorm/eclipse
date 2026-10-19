@@ -4,7 +4,7 @@
 //! engine, while the *client* parses the bitstream and hands over parameter
 //! buffers plus the reference picture lists. `cros-codecs` is the stateless
 //! implementation ChromeOS ships, so this backend is mostly plumbing: a VA
-//! display on a render node, a GBM-backed surface pool, and the NAL-by-NAL
+//! display on a render node, a driver-allocated DMA surface pool, and the NAL-by-NAL
 //! feed loop its H.264 decoder expects.
 //!
 //! Two properties of that API shape this file. First, `decode` consumes *one*
@@ -22,28 +22,27 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use bytes::Bytes;
 use cros_codecs::decoder::stateless::h264::H264;
 use cros_codecs::decoder::stateless::{
     DecodeError, DynStatelessVideoDecoder, StatelessDecoder, StatelessVideoDecoder,
 };
-use cros_codecs::decoder::{DecodedHandle, DecoderEvent, StreamInfo};
 use cros_codecs::decoder::BlockingMode;
+use cros_codecs::decoder::{DecodedHandle, DecoderEvent, StreamInfo};
 use cros_codecs::video_frame::frame_pool::FramePool;
-use cros_codecs::video_frame::gbm_video_frame::{GbmDevice, GbmUsage, GbmVideoFrame};
+use cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame;
 use cros_codecs::video_frame::VideoFrame;
-use cros_codecs::{DecodedFormat, Fourcc};
-use cros_libva::{Display, VAEntrypoint, VAProfile};
+use cros_codecs::{DecodedFormat, Fourcc, FrameLayout, PlaneLayout};
+use cros_libva::{Display, UsageHint, VAEntrypoint, VAProfile};
 
 use crate::codec::{CodecError, VideoDecoder};
 use crate::frame::{EncodedFrame, PixelFormat, RawFrame};
 use crate::Timestamp;
 use uu_proto::media::VideoCodec;
 
-/// One GBM surface owned by the decoder's pool.
-type Surface = cros_codecs::video_frame::frame_pool::PooledVideoFrame<GbmVideoFrame>;
+/// One driver-allocated DMA surface owned by the decoder's pool.
+type Surface = cros_codecs::video_frame::frame_pool::PooledVideoFrame<GenericDmaVideoFrame>;
 
 /// Public handle: a `Worker` thread owning the VA display and its surfaces.
 pub struct VaapiDecoder {
@@ -74,8 +73,8 @@ impl VideoDecoder for VaapiDecoder {
 
 struct Decoder {
     decoder: DynStatelessVideoDecoder<Surface>,
-    device: Arc<GbmDevice>,
-    pool: Option<FramePool<GbmVideoFrame>>,
+    display: std::rc::Rc<Display>,
+    pool: Option<FramePool<GenericDmaVideoFrame>>,
     name: String,
     /// Frames decoded before the caller picks them up; one `decode` call can
     /// release several pictures (reordering).
@@ -85,13 +84,13 @@ struct Decoder {
 impl Decoder {
     fn open() -> Result<Self, String> {
         let (path, display) = open_display()?;
-        let device = GbmDevice::open(&path).map_err(|e| format!("GBM device: {e}"))?;
-        let decoder = StatelessDecoder::<H264, _>::new_vaapi(display, BlockingMode::Blocking)
-            .map_err(|e| format!("VA-API H.264 decoder: {e}"))?
-            .into_trait_object();
+        let decoder =
+            StatelessDecoder::<H264, _>::new_vaapi(display.clone(), BlockingMode::Blocking)
+                .map_err(|e| format!("VA-API H.264 decoder: {e}"))?
+                .into_trait_object();
         Ok(Self {
             decoder,
-            device,
+            display,
             pool: None,
             name: format!("vaapi (cros-codecs hw, {})", path.display()),
             pending: VecDeque::new(),
@@ -175,9 +174,31 @@ impl Decoder {
                     if frame.fourcc() != Fourcc::from(b"NV12") {
                         return Err("decode surface is not NV12".to_string());
                     }
-                    let pitches = frame.get_plane_pitch();
-                    let mapping = frame.map().map_err(|e| format!("surface map: {e}"))?;
-                    let planes = mapping.get();
+                    // Map through VA, which understands the driver's tiling.
+                    // The upstream generic DMA mapper assumes every padding
+                    // row is a complete Intel Y tile and panics on iHD exports.
+                    let surface = frame.to_native_handle(&self.display)?;
+                    let image = cros_libva::Image::derive_from(
+                        &surface,
+                        (resolution.width, resolution.height),
+                    )
+                    .map_err(|e| format!("VA image mapping: {e}"))?;
+                    let layout = image.image();
+                    if layout.format.fourcc != cros_libva::VA_FOURCC_NV12 || layout.num_planes != 2
+                    {
+                        return Err("mapped VA image is not two-plane NV12".into());
+                    }
+                    let planes = [
+                        image
+                            .as_ref()
+                            .get(layout.offsets[0] as usize..)
+                            .ok_or("VA luma offset outside mapping")?,
+                        image
+                            .as_ref()
+                            .get(layout.offsets[1] as usize..)
+                            .ok_or("VA chroma offset outside mapping")?,
+                    ];
+                    let pitches = [layout.pitches[0] as usize, layout.pitches[1] as usize];
                     let pixels = pack_nv12(&planes, &pitches, resolution.width, resolution.height)?;
                     self.pending.push_back(RawFrame {
                         width: resolution.width,
@@ -197,7 +218,10 @@ impl Decoder {
     /// (Re)build the surface pool with the size the decoder advertises.
     fn resize(&mut self, info: &StreamInfo) -> Result<(), String> {
         if info.format != DecodedFormat::NV12 {
-            return Err(format!("driver chose {:?}, only NV12 is supported", info.format));
+            return Err(format!(
+                "driver chose {:?}, only NV12 is supported",
+                info.format
+            ));
         }
         if !(1..=64).contains(&info.min_num_frames) {
             return Err(format!("driver wants {} surfaces", info.min_num_frames));
@@ -209,16 +233,55 @@ impl Decoder {
         // report failures, so every frame it hands out must already exist.
         let mut prepared = VecDeque::new();
         for _ in 0..info.min_num_frames {
-            let frame = self
-                .device
-                .clone()
-                .new_frame(
-                    Fourcc::from(b"NV12"),
-                    info.display_resolution,
-                    info.coded_resolution,
-                    GbmUsage::Decode,
+            // Let the VA driver choose its native allocation. ChromeOS GBM's
+            // HW_VIDEO_DECODER flag is not supported by desktop Mesa drivers.
+            let surface = self
+                .display
+                .create_surfaces(
+                    cros_libva::VA_RT_FORMAT_YUV420,
+                    Some(cros_libva::VA_FOURCC_NV12),
+                    info.coded_resolution.width,
+                    info.coded_resolution.height,
+                    Some(UsageHint::USAGE_HINT_DECODER | UsageHint::USAGE_HINT_EXPORT),
+                    vec![()],
                 )
-                .map_err(|e| format!("surface allocation: {e}"))?;
+                .map_err(|e| format!("VA surface allocation: {e}"))?
+                .pop()
+                .ok_or("VA driver allocated no surface")?;
+            let descriptor = surface
+                .export_prime()
+                .map_err(|e| format!("exporting VA surface: {e}"))?;
+            // GenericDmaVideoFrame currently supports one contiguous object.
+            // Reject unfamiliar layouts instead of interpreting tiled memory
+            // with the wrong pitch or silently producing damaged pictures.
+            if descriptor.objects.len() != 1
+                || descriptor.layers.len() != 1
+                || descriptor.layers[0].num_planes != 2
+                || descriptor.layers[0].object_index[..2] != [0, 0]
+            {
+                return Err("VA driver exported an unsupported NV12 layout".into());
+            }
+            let layer = &descriptor.layers[0];
+            let layout = FrameLayout {
+                format: (
+                    Fourcc::from(b"NV12"),
+                    descriptor.objects[0].drm_format_modifier,
+                ),
+                size: info.coded_resolution,
+                planes: (0..2)
+                    .map(|i| PlaneLayout {
+                        buffer_index: 0,
+                        offset: layer.offset[i] as usize,
+                        stride: layer.pitch[i] as usize,
+                    })
+                    .collect(),
+            };
+            let handles = descriptor
+                .objects
+                .into_iter()
+                .map(|o| std::fs::File::from(o.fd))
+                .collect();
+            let frame = GenericDmaVideoFrame::new(handles, layout)?;
             prepared.push_back(frame);
         }
         let mut pool = FramePool::new(move |_| {
@@ -292,30 +355,35 @@ fn pack_nv12(
     if planes.len() < 2 || pitches.len() < 2 {
         return Err(format!("NV12 surface has {} planes", planes.len()));
     }
-    let mut out = vec![0u8; w * h * 3 / 2];
+    if w == 0 || h == 0 || w % 2 != 0 || h % 2 != 0 {
+        return Err("NV12 dimensions must be positive and even".into());
+    }
+    for (i, rows) in [h, h / 2].into_iter().enumerate() {
+        let needed = pitches[i]
+            .checked_mul(rows - 1)
+            .and_then(|n| n.checked_add(w));
+        if pitches[i] < w || needed.map_or(true, |n| planes[i].len() < n) {
+            return Err(format!(
+                "NV12 plane {i} is truncated or has an invalid pitch"
+            ));
+        }
+    }
+    let length = w
+        .checked_mul(h)
+        .and_then(|n| n.checked_mul(3))
+        .map(|n| n / 2)
+        .ok_or("NV12 dimensions overflow")?;
+    let mut out = vec![0u8; length];
     for row in 0..h {
-        copy_row(&mut out[row * w..row * w + w], planes[0], row * pitches[0]);
+        out[row * w..(row + 1) * w]
+            .copy_from_slice(&planes[0][row * pitches[0]..row * pitches[0] + w]);
     }
     let chroma = w * h;
     for row in 0..h / 2 {
-        copy_row(
-            &mut out[chroma + row * w..chroma + row * w + w],
-            planes[1],
-            row * pitches[1],
-        );
+        out[chroma + row * w..chroma + (row + 1) * w]
+            .copy_from_slice(&planes[1][row * pitches[1]..row * pitches[1] + w]);
     }
     Ok(out)
-}
-
-/// Copy one row, tolerating a mapping that is shorter than the pitch implies:
-/// the frames are handed to a decoder that has already accepted the stream, so
-/// a partially mapped tail row costs a little noise instead of a hard failure.
-fn copy_row(destination: &mut [u8], plane: &[u8], offset: usize) {
-    let Some(tail) = plane.get(offset..) else {
-        return;
-    };
-    let available = tail.len().min(destination.len());
-    destination[..available].copy_from_slice(&tail[..available]);
 }
 
 #[cfg(test)]
@@ -332,10 +400,9 @@ mod tests {
     }
 
     #[test]
-    fn short_mappings_copy_what_exists_and_zero_the_rest() {
-        let packed = pack_nv12(&[&[7u8], &[]], &[8, 8], 2, 2).unwrap();
-        assert_eq!(packed.len(), 6);
-        assert_eq!(packed[0], 7);
-        assert_eq!(packed[1], 0);
+    fn truncated_planes_and_invalid_layouts_are_rejected() {
+        assert!(pack_nv12(&[&[7u8], &[]], &[8, 8], 2, 2).is_err());
+        assert!(pack_nv12(&[&[0; 8], &[0; 4]], &[1, 4], 2, 2).is_err());
+        assert!(pack_nv12(&[&[0; 8], &[0; 4]], &[4, 4], 3, 2).is_err());
     }
 }
