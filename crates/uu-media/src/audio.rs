@@ -167,6 +167,8 @@ pub fn playback(control: Arc<AudioControl>) -> std::sync::mpsc::SyncSender<Packe
 }
 
 fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    windows::prioritize_audio_thread();
     let mut decoder = OpusReceiver::new()?;
     #[cfg(windows)]
     let mut output: Option<windows::Output> = None;
@@ -248,6 +250,36 @@ impl PcmQueue {
 mod windows {
     use super::*;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    // CPAL 0.15.3's WASAPI helper passes a thread ID as a HANDLE to
+    // SetThreadPriority. Register our actual calling threads with MMCSS
+    // instead; failure leaves ordinary scheduling and never breaks audio.
+    #[link(name = "avrt")]
+    extern "system" {
+        fn AvSetMmThreadCharacteristicsW(task: *const u16, index: *mut u32) -> isize;
+        fn AvRevertMmThreadCharacteristics(handle: isize) -> i32;
+    }
+    struct AudioScheduling(isize);
+    impl AudioScheduling {
+        fn new() -> Self {
+            let mut index = 0;
+            Self(unsafe {
+                AvSetMmThreadCharacteristicsW([65, 117, 100, 105, 111, 0].as_ptr(), &mut index)
+            })
+        }
+    }
+    impl Drop for AudioScheduling {
+        fn drop(&mut self) {
+            if self.0 != 0 {
+                unsafe {
+                    AvRevertMmThreadCharacteristics(self.0);
+                }
+            }
+        }
+    }
+    thread_local! {static AUDIO_SCHEDULING:AudioScheduling=AudioScheduling::new();}
+    pub(super) fn prioritize_audio_thread() {
+        AUDIO_SCHEDULING.with(|_| {});
+    }
     pub(super) struct Output {
         _stream: cpal::Stream,
         queue: Arc<Mutex<PcmQueue>>,
@@ -383,6 +415,7 @@ mod windows {
         device.build_output_stream(
             config,
             move |data: &mut [T], _| {
+                prioritize_audio_thread();
                 control.output_block_us.store(
                     (data.len() * 1_000_000 / (rate as usize * channels)) as u32,
                     Ordering::Relaxed,
