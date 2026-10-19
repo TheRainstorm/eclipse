@@ -12,6 +12,7 @@ use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
+mod shortcuts;
 mod hud;
 mod window;
 mod stream_menu;
@@ -105,6 +106,7 @@ struct App {
     login_texture: Option<egui::TextureHandle>,
     login_status: String,
     hud: bool,
+    shortcuts: shortcuts::Shortcuts,
     autoconnect_done: bool,
     fullscreen: bool,
     bitrate_idx: usize,
@@ -290,6 +292,7 @@ impl App {
             login_texture: None,
             login_status: String::new(),
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(false),
+            shortcuts: shortcuts::Shortcuts::default(),
             autoconnect_done: false,
             fullscreen: false,
             bitrate_idx: 0,
@@ -682,6 +685,7 @@ impl eframe::App for App {
         self.poll_login(ctx);
         let (events, focused) = ctx.input(|i| (i.events.clone(), i.focused));
         if self.focused && !focused {
+            self.shortcuts.clear();
             self.release_all_keys();
             for message in self.pointer.release_all(self.selected_track + 1) {
                 self.send_input(message, 15);
@@ -694,22 +698,25 @@ impl eframe::App for App {
                 key,
                 pressed,
                 modifiers,
+                repeat,
                 ..
             } = event
             {
-                if *key == egui::Key::F1 && *pressed && self.controller.is_some() {
-                    self.hud = !self.hud;
-                    continue;
-                }
-                if *key == egui::Key::M && modifiers.ctrl && modifiers.alt && self.controller.is_some() {
-                    if *pressed { self.stream_menu.visible = !self.stream_menu.visible; self.stream_menu.open = false; ctx.memory_mut(|m| m.close_popup()); }
-                    continue;
-                }
-                if *key == egui::Key::F && modifiers.ctrl && modifiers.alt {
-                    if *pressed {
-                        self.toggle_fullscreen(ctx);
+                match self.shortcuts.key(*key, *pressed, *repeat, *modifiers, self.controller.is_some()) {
+                    shortcuts::KeyAction::Consumed => continue,
+                    shortcuts::KeyAction::Trigger(action) => {
+                        match action {
+                            shortcuts::Action::Stats => self.hud = !self.hud,
+                            shortcuts::Action::Menu => {
+                                self.stream_menu.visible = !self.stream_menu.visible;
+                                self.stream_menu.open = false;
+                                ctx.memory_mut(|m| m.close_popup());
+                            }
+                            shortcuts::Action::Fullscreen => self.toggle_fullscreen(ctx),
+                        }
+                        continue;
                     }
-                    continue;
+                    shortcuts::KeyAction::Forward => {}
                 }
                 if self.remote_focus && !self.view_only && !self.show_settings && !self.stream_menu.open {
                     self.sync_modifiers(*modifiers);

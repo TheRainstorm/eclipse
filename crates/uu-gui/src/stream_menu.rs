@@ -348,7 +348,7 @@ impl super::App {
                             unavailable(ui, Icon::Link, "外设", "外设透传尚未接入");
                             unavailable(ui, Icon::Folder, "工具", "文件、终端和端口映射尚未接入");
                             side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
-                                ui.checkbox(&mut self.hud, "串流统计 · F1");
+                                ui.checkbox(&mut self.hud, "串流统计 · Ctrl+Alt+S");
                                 if ui.button("隐藏悬浮入口 · Ctrl+Alt+M").clicked() {
                                     self.stream_menu.visible = false;
                                     self.stream_menu.open = false;

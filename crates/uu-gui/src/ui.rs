@@ -724,7 +724,7 @@ impl App {
                 }
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new("Ctrl + Alt + F　切换全屏\nF1　显示 / 隐藏串流统计").color(MUTED),
+                    RichText::new("Ctrl + Alt + F　切换全屏\nCtrl + Alt + S　显示 / 隐藏串流统计").color(MUTED),
                 );
             });
         self.show_settings = open;
