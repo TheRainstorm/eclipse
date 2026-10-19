@@ -229,15 +229,7 @@ impl App {
                         }
                         if icon_button(ui,Icon::Settings,"软件设置").clicked(){self.open_settings();}
                         if icon_button(ui,Icon::Info,"关于软件").clicked(){self.open_about();}
-                        icon_button(
-                            ui,
-                            Icon::Person,
-                            if self.logged_in {
-                                "已登录"
-                            } else {
-                                "未登录"
-                            },
-                        );
+                        self.account_button(ui);
                     });
                 });
             });
@@ -260,9 +252,15 @@ impl App {
                     }
                     ui.add_space(16.0);
                     ui.label(&self.login_status);
-                    if ui.button("刷新二维码").clicked() {
+                    if ui.button(if self.login_texture.is_none() && self.login_rx.is_none() {"扫码登录"} else {"刷新二维码"}).clicked() {
                         self.start_login();
                     }
+                    if self.login_rx.is_some() && ui.button("取消登录").clicked() {
+                        self.login_rx = None;
+                        self.login_texture = None;
+                        self.login_status = "已取消登录".into();
+                    }
+                    if !self.status.is_empty() {ui.label(RichText::new(&self.status).color(MUTED));}
                 });
             });
             return;

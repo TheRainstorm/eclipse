@@ -27,6 +27,7 @@ mod stream_menu;
 mod login;
 mod ui;
 mod brand;
+mod account;
 use login::LoginEvent;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -116,7 +117,9 @@ struct App {
     mod_state: [bool; 4],
     focused: bool,
     logged_in: bool,
-    login_rx: Option<Receiver<LoginEvent>>,
+    login_rx: Option<login::Worker>,
+    account_token: Option<String>,
+    account_poll_at: std::time::Instant,
     login_texture: Option<egui::TextureHandle>,
     login_status: String,
     hud: bool,
@@ -304,14 +307,8 @@ impl App {
         setup_style(&cc.egui_ctx);
         let platform = platform::Platform::new(cc, origin);
         let config = uu_core::Config::from_env().ok();
-        let logged_in = config
-            .as_ref()
-            .map(|c| {
-                uu_core::api::ClientState::load(&c.at("state.json"))
-                    .token
-                    .is_some()
-            })
-            .unwrap_or(false);
+        let account_token = config.as_ref().and_then(|c| account::read_token(&c.at("state.json")).ok().flatten());
+        let logged_in = account_token.is_some();
         let (preferences, settings_notice) = match settings::Settings::path().map(|p|settings::Settings::load(&p)) {
             Some(Ok(s))=>(s,String::new()),Some(Err(e))=>(settings::Settings::default(),format!("读取设置失败：{e}")),None=>(settings::Settings::default(),String::new()),
         };
@@ -346,6 +343,8 @@ impl App {
             focused: false,
             logged_in,
             login_rx: None,
+            account_token,
+            account_poll_at: std::time::Instant::now(),
             login_texture: None,
             login_status: String::new(),
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(preferences.hud),
@@ -413,6 +412,8 @@ impl App {
             return;
         };
         self.login_status = "获取二维码…".into();
+        self.login_rx = None;
+        self.login_texture = None;
         self.login_rx = Some(login::spawn(config));
     }
 
@@ -442,12 +443,16 @@ impl App {
                     Err(e) => self.login_status = format!("二维码生成失败: {e}"),
                 },
                 LoginEvent::Status(s) => self.login_status = s,
-                LoginEvent::Done => {
-                    self.logged_in = true;
+                LoginEvent::Done {token, user_id} => {
+                    let saved = self.config.as_ref().ok_or_else(||anyhow::anyhow!("无法确定登录目录"))
+                        .and_then(|config|account::store_login(&config.at("state.json"),token.clone(),user_id));
                     self.login_rx = None;
-                    self.start_load();
+                    match saved {
+                        Ok(()) => self.apply_account(Some(token)),
+                        Err(error) => self.login_status = format!("保存登录失败：{error}"),
+                    }
                 }
-                LoginEvent::Error(e) => self.login_status = format!("登录失败: {e}"),
+                LoginEvent::Error(e) => { self.login_rx = None; self.login_status = format!("登录失败: {e}"); },
             }
         }
     }
@@ -938,6 +943,7 @@ impl eframe::App for App {
             self.close_at = None;
         }
         self.sessions.reap();
+        self.poll_account();
         self.poll(ctx);
         self.poll_controller(ctx);
         let video_px = self.textures.get(&self.selected_track)

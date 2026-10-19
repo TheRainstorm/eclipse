@@ -1,6 +1,6 @@
 //! QR login flow for the GUI.
 
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 
 use anyhow::{Context, Result};
 use uu_core::{Config, SignalClient, UuApi};
@@ -8,13 +8,46 @@ use uu_core::{Config, SignalClient, UuApi};
 pub enum LoginEvent {
     Qr(String),
     Status(String),
-    Done,
+    Done {
+        token: String,
+        user_id: Option<String>,
+    },
     Error(String),
 }
 
-pub fn spawn(config: Config) -> Receiver<LoginEvent> {
+pub struct Worker {
+    events: Receiver<LoginEvent>,
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Worker {
+    pub fn try_recv(&self) -> std::result::Result<LoginEvent, TryRecvError> {
+        self.events.try_recv()
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+pub fn spawn(config: Config) -> Worker {
+    spawn_task(move |tx| async move { run(config, &tx).await })
+}
+
+fn spawn_task<F: std::future::Future<Output = Result<()>> + 'static>(
+    task: impl FnOnce(Sender<LoginEvent>) -> F + Send + 'static,
+) -> Worker {
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
+    let (cancel, cancelled) = tokio::sync::oneshot::channel();
+    let thread = std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
@@ -22,11 +55,23 @@ pub fn spawn(config: Config) -> Receiver<LoginEvent> {
                 return;
             }
         };
-        if let Err(e) = rt.block_on(run(config, &tx)) {
-            let _ = tx.send(LoginEvent::Error(e.to_string()));
-        }
+        rt.block_on(async {
+            tokio::select! {
+                biased;
+                _ = cancelled => {},
+                result = task(tx.clone()) => {
+                    if let Err(error) = result { let _ = tx.send(LoginEvent::Error(error.to_string())); }
+                }
+            }
+        });
+        // DNS/background tasks must not hold the UI's cancellation join open.
+        rt.shutdown_background();
     });
-    rx
+    Worker {
+        events: rx,
+        cancel: Some(cancel),
+        thread: Some(thread),
+    }
 }
 
 async fn run(config: Config, tx: &std::sync::mpsc::Sender<LoginEvent>) -> Result<()> {
@@ -40,6 +85,10 @@ async fn run(config: Config, tx: &std::sync::mpsc::Sender<LoginEvent>) -> Result
     loop {
         let _ = tx.send(LoginEvent::Status("获取二维码…".into()));
         let qr = api.gen_qr_login().await?;
+        anyhow::ensure!(
+            !qr.jump_url.is_empty() && !qr.token.is_empty(),
+            "服务未返回有效登录二维码"
+        );
         let _ = tx.send(LoginEvent::Qr(qr.jump_url.clone()));
         let mut status = 1i32;
         let mut last = None;
@@ -64,9 +113,17 @@ async fn run(config: Config, tx: &std::sync::mpsc::Sender<LoginEvent>) -> Result
                 match api.exchange_qr(&qr).await {
                     Ok(v) => {
                         if let Some(tok) = v["data"]["token"].as_str() {
-                            let uid = v["data"]["user_id"].as_str().map(str::to_string);
-                            api.store_token(tok, uid)?;
-                            let _ = tx.send(LoginEvent::Done);
+                            anyhow::ensure!(!tok.is_empty(), "登录响应缺少凭据");
+                            let uid = v["data"]["user_id"]
+                                .as_str()
+                                .map(str::to_string)
+                                .or_else(|| v["data"]["user_id"].as_u64().map(|id| id.to_string()));
+                            // Only the active UI receiver may persist credentials. A cancelled
+                            // or replaced QR flow can never sign the user back in later.
+                            let _ = tx.send(LoginEvent::Done {
+                                token: tok.into(),
+                                user_id: uid,
+                            });
                             return Ok(());
                         }
                     }
@@ -81,6 +138,44 @@ async fn run(config: Config, tx: &std::sync::mpsc::Sender<LoginEvent>) -> Result
             }
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    #[test]
+    fn cancelling_qr_worker_drops_inflight_poll_before_returning() {
+        struct Cancelled(Arc<AtomicBool>);
+        impl Drop for Cancelled {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let worker = spawn_task(move |tx| async move {
+            let _guard = Cancelled(flag);
+            tx.send(LoginEvent::Status("poll started".into())).unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            panic!("cancelled login must never finish");
+        });
+        assert!(matches!(
+            worker
+                .events
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap(),
+            LoginEvent::Status(_)
+        ));
+        let started = std::time::Instant::now();
+        drop(worker);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(cancelled.load(Ordering::SeqCst));
     }
 }
 
