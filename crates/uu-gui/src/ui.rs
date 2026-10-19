@@ -696,7 +696,7 @@ impl App {
         if !self.fullscreen { self.connection_bar(ctx); }
         let was_open = self.stream_menu.open;
         let controls = self.stream_controls(ctx);
-        let control_pointer = ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
+        let control_pointer = !self.mouse_captured && ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
         let controls_active = self.settings_open || !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.open || control_pointer;
         let mut messages = Vec::new();
         egui::CentralPanel::default().frame(egui::Frame::none().fill(C::BLACK)).show(ctx,|ui| {
@@ -712,7 +712,7 @@ impl App {
                 if self.unpresented.remove(&track) { *self.frame_count.entry(track).or_insert(0) += 1; }
                 let pointer=ctx.input(|i|i.pointer.hover_pos());
                 if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) {self.remote_focus=true;}
-                if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if !rect.contains(*pos))) {
+                if !self.mouse_captured && events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if !rect.contains(*pos))) {
                     self.remote_focus=false;self.release_all_keys();messages.extend(self.pointer.release_all(input_screen));
                 }
                 if controls_active {if self.remote_focus || !self.pressed_vks.is_empty(){self.remote_focus=false;self.release_all_keys();}messages.extend(self.pointer.release_all(input_screen));}
@@ -721,8 +721,8 @@ impl App {
                         if self.mouse_captured {messages.extend(self.pointer.events_relative(events,input_screen));}
                     } else {messages.extend(self.pointer.events(events,draw,pointer,input_screen));}
                 }
-                if self.preferences.remote_cursor && !controls_active && pointer.is_some_and(|p|draw.contains(p)) {ctx.set_cursor_icon(egui::CursorIcon::None);}
-                if !self.preferences.remote_cursor && !self.preferences.relative_mouse && !controls_active {
+                if self.remote_cursor_active && !controls_active && pointer.is_some_and(|p|draw.contains(p)) {ctx.set_cursor_icon(egui::CursorIcon::None);}
+                if !self.remote_cursor_active && !self.preferences.relative_mouse && !controls_active {
                     let revision=self.cursor.revision();
                     let shape=self.controller.as_ref().and_then(|h|h.stats.cursor.lock().unwrap().as_ref().filter(|(r,_)|*r!=revision).cloned());
                     self.cursor.paint(ctx,shape,pointer,draw,input_screen);

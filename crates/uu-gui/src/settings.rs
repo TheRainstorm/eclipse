@@ -109,6 +109,7 @@ impl Settings {
 impl super::App {
     pub(super) fn open_settings(&mut self) {
         self.snapshot_preferences();
+        self.settings_draft=self.preferences.clone();
         self.settings_open = true;
         self.stream_menu.open = false;
         self.context.memory_mut(|m| m.close_popup());
@@ -152,7 +153,7 @@ impl super::App {
         let mut apply = false;
         egui::Window::new("软件设置").open(&mut open).collapsible(false).resizable(false)
             .default_width(440.0).anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).show(ctx,|ui| {
-                let s=&mut self.preferences;
+                let s=&mut self.settings_draft;
                 egui::ScrollArea::vertical().max_height((ctx.screen_rect().height()-140.0).max(180.0)).show(ui,|ui| {
                     ui.strong("画面");
                     ui.horizontal(|ui|{ui.label("目标帧率");ui.add(egui::DragValue::new(&mut s.fps).range(5..=144).suffix(" FPS"));});
@@ -177,11 +178,12 @@ impl super::App {
                     ui.small("启动选项在重新打开软件后生效，其他选项应用到当前串流并保存为默认值。");
                 });
                 ui.separator();
-                ui.horizontal(|ui| {if ui.button("保存并应用").clicked(){apply=true;}if ui.button("恢复默认").clicked(){self.preferences=Settings::default();}});
+                ui.horizontal(|ui| {if ui.button("保存并应用").clicked(){apply=true;}if ui.button("恢复默认").clicked(){self.settings_draft=Settings::default();}});
                 if !self.settings_notice.is_empty(){ui.label(&self.settings_notice);}
             });
         self.settings_open = open;
         if apply {
+            self.preferences=self.settings_draft.clone();
             self.release_pointer_capture(ctx);
             self.target_fps = self.preferences.fps;
             self.fps_draft = self.target_fps;

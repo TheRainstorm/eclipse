@@ -219,6 +219,7 @@ impl super::App {
                     .inner_margin(egui::Margin::symmetric(10.0, 2.0)),
             )
             .show(ctx, |ui| {
+                if self.mouse_captured {ui.disable();}
                 ui.horizontal_centered(|ui| {
                     ui.label(
                         RichText::new("◆")
@@ -486,6 +487,7 @@ impl super::App {
     /// Draw first so the stream can exclude every control rectangle from input.
     pub(super) fn stream_controls(&mut self, ctx: &egui::Context) -> Vec<Rect> {
         let mut blocked = Vec::new();
+        if self.mouse_captured {return blocked;}
         if !self.fullscreen {
             if let Some(rect) = self.stream_menu.trigger_rect {
                 blocked.push(rect);
@@ -540,8 +542,9 @@ impl super::App {
         }
         if !self.stream_menu.open {
             self.stream_menu.quality_detail = None;
-            // Custom child menus must never leave an invisible popup trapping input.
-            ctx.memory_mut(|m| m.close_popup());
+            // Settings own their ComboBox popup while their window is open.
+            // Otherwise clear old stream children so no invisible popup traps input.
+            if !self.settings_open {ctx.memory_mut(|m| m.close_popup());}
             return blocked;
         }
         let screen = ctx.screen_rect();
@@ -614,16 +617,18 @@ impl super::App {
                                         );
                                     });
                                     side_submenu(ui, &mut blocked, Icon::Play, "声音", |ui| {
+                                        let mut changed=false;
                                         if let Some(h) = &self.controller {
                                             use std::sync::atomic::Ordering::Relaxed;
                                             let audio = &h.stats.audio;
                                             let mut muted = audio.muted.load(Relaxed);
-                                            if ui.checkbox(&mut muted, "静音").changed() { audio.muted.store(muted,Relaxed); }
+                                            if ui.checkbox(&mut muted, "静音").changed() { audio.muted.store(muted,Relaxed);changed=true; }
                                             let mut volume=audio.volume.load(Relaxed);
-                                            if ui.add(egui::Slider::new(&mut volume,0..=100).text("音量")).changed() {audio.volume.store(volume,Relaxed);}
+                                            if ui.add(egui::Slider::new(&mut volume,0..=100).text("音量")).changed() {audio.volume.store(volume,Relaxed);changed=true;}
                                             ui.label(audio.status.lock().unwrap().as_str());
                                             ui.label(format!("缓冲 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
                                         }
+                                        if changed{self.persist_preferences();}
                                     });
                                     side_submenu(ui, &mut blocked, Icon::Desktop, "鼠标", |ui| {
                                         let old=(self.preferences.relative_mouse,self.preferences.remote_cursor);
@@ -673,7 +678,7 @@ impl super::App {
                                         )
                                         .clicked()
                                         {
-                                            self.hud = !self.hud;
+                                            self.hud = !self.hud;self.persist_preferences();
                                         }
                                         if menu_row(
                                             ui,

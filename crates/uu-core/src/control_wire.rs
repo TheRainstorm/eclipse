@@ -190,7 +190,7 @@ pub fn capture_setting_request_with_cursor(
     custom_bitrate_bps:Option<u64>,resolution:CaptureResolution,cursor_capture:bool,
 )->Vec<u8> {
     let mut setting = Vec::new();
-    int(3,cursor_capture as u64,&mut setting);
+    if cursor_capture {int(3,1,&mut setting);}
     int(1, frame_rate.option(), &mut setting);
     int(2, quality, &mut setting);
     int(4, u64::MAX - 1, &mut setting); // Keep the currently selected screen, including super-screen.
@@ -452,7 +452,8 @@ mod tests {
             let rpc=decode_wire(rpc).unwrap();
             let setting=rpc.iter().find_map(|(n,v)|match (n,v){(2,WireValue::Bytes(b))=>Some(*b),_=>None}).unwrap();
             let fields=decode_wire(setting).unwrap();
-            for (field,value) in [(3,capture as u64),(18,120),(8,30_000_000),(4,u64::MAX-1)] {assert!(fields.contains(&(field,WireValue::Varint(value))));}
+            assert_eq!(fields.contains(&(3,WireValue::Varint(1))),capture);
+            for (field,value) in [(18,120),(8,30_000_000),(4,u64::MAX-1)] {assert!(fields.contains(&(field,WireValue::Varint(value))));}
         }
     }
     #[test]

@@ -116,6 +116,7 @@ struct App {
     hud: bool,
     preferences: settings::Settings,
     settings_open: bool,
+    settings_draft: settings::Settings,
     settings_notice: String,
     shortcuts: shortcuts::Shortcuts,
     native_keyboard_capture: bool,
@@ -131,6 +132,7 @@ struct App {
     settings_feedback: String,
     pointer: input::RemotePointer,
     mouse_captured: bool,
+    remote_cursor_active: bool,
     cursor: cursor::Cursor,
     remote_focus: bool,
     view_only: bool,
@@ -317,6 +319,7 @@ impl App {
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(preferences.hud),
             preferences: preferences.clone(),
             settings_open: false,
+            settings_draft: preferences.clone(),
             settings_notice,
             shortcuts: shortcuts::Shortcuts::default(),
             native_keyboard_capture: false,
@@ -332,6 +335,7 @@ impl App {
             settings_feedback: String::new(),
             pointer: input::RemotePointer::default(),
             mouse_captured: false,
+            remote_cursor_active: false,
             cursor: cursor::Cursor::default(),
             remote_focus: false,
             view_only: false,
@@ -504,6 +508,7 @@ impl App {
         if let Some(h) = &self.controller {
             let response = h.stats.settings_response.load(std::sync::atomic::Ordering::Acquire);
             if response >> 1 == 2000 + self.settings_seq && self.settings_feedback.starts_with("已发送") {
+                if response & 1 != 0 {self.remote_cursor_active=self.preferences.remote_cursor;}
                 self.settings_feedback = if response & 1 != 0 {
                     format!("远端已确认请求：{} FPS · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0)
                 } else { "远端拒绝了画质设置，请重新选择".into() };
@@ -520,6 +525,7 @@ impl App {
             self.frame_count.clear();
             self.fps.clear();
             self.settings_feedback.clear();
+            self.cursor=cursor::Cursor::default();self.remote_cursor_active=false;
         }
     }
 
@@ -575,7 +581,7 @@ impl App {
         self.release_all_keys();
         match action {
             shortcuts::Action::Stats=>{self.hud=!self.hud;self.persist_preferences();},
-            shortcuts::Action::Menu=>{self.stream_menu.visible=!self.stream_menu.visible;self.stream_menu.open=false;ctx.memory_mut(|m|m.close_popup());self.persist_preferences();},
+            shortcuts::Action::Menu=>{self.remote_focus=false;self.release_pointer_capture(ctx);self.stream_menu.visible=!self.stream_menu.visible;self.stream_menu.open=false;ctx.memory_mut(|m|m.close_popup());self.persist_preferences();},
             shortcuts::Action::Fullscreen=>self.toggle_fullscreen(ctx),
             shortcuts::Action::Exit=>self.disconnect(),
             shortcuts::Action::Capture=>{self.remote_focus=!self.remote_focus;},
@@ -812,7 +818,7 @@ impl eframe::App for App {
             self.remote_focus = false;
             self.shortcuts.clear();
         }
-        self.window_edge_active = window::resize_border(ctx, self.fullscreen);
+        self.window_edge_active = !self.mouse_captured && window::resize_border(ctx, self.fullscreen);
         if ctx.input(|i| i.viewport().close_requested()) && self.controller.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_requested = true;
@@ -871,7 +877,7 @@ impl eframe::App for App {
                     eprintln!("ui shortcut {key:?} pressed={pressed} repeat={repeat} ctrl={} alt={}", modifiers.ctrl, modifiers.alt);
                 }
                 if self.stream_target.is_none() { continue; }
-                match self.shortcuts.key(*key, *pressed, *repeat, *modifiers, self.controller.is_some()) {
+                match self.shortcuts.key(*key, *pressed, *repeat, *modifiers, true) {
                     shortcuts::KeyAction::Consumed => continue,
                     shortcuts::KeyAction::Trigger(action) => {
                         self.local_shortcut(action,ctx);

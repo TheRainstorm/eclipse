@@ -882,7 +882,7 @@ fn register_receive_codecs(media: &mut MediaEngine) -> Result<()> {
                 mime_type: MIME_TYPE_OPUS.into(),
                 clock_rate: 48_000,
                 channels: 2,
-                sdp_fmtp_line: "minptime=10;useinbandfec=1".into(),
+                sdp_fmtp_line: "minptime=10;useinbandfec=1;stereo=1".into(),
                 ..Default::default()
             },
             payload_type: 111,
