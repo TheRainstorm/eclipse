@@ -2,7 +2,7 @@
 
 更新：2026-10-19。交接16按用户要求移除全部超级屏操作、合并官方样式画质菜单，并恢复原有连接初始化方式。保留60/120/自定义帧率请求和只读屏幕信息，实际高帧率与输入问题由用户验收。
 
-后续用户证实ICE/DTLS connected而SCTP connecting，初始化回退未解决。交接17已在DTLS依赖中复现并修复握手结束后的接收死锁，见[交接17](../handoff/17-2026-10-19-dtls-reader-sctp.md)；它与FPS请求无关，仍待补丁版实机确认。
+后续用户证实ICE/DTLS connected而SCTP connecting，初始化回退未解决。交接17已在DTLS依赖中复现并修复握手结束后的接收死锁，用户确认补丁版`f74fc9d`恢复键鼠，见[交接17](../handoff/17-2026-10-19-dtls-reader-sctp.md)。本次输入恢复不等于实际60/120帧率已验收。
 
 ## 为什么此前只有30fps
 
@@ -48,7 +48,7 @@ CLI或进程环境可用UU_FPS=120指定初始值，默认60。旧UU_FPS=1/2/3/4
 
 描述符起始偏移：main.proto 63307440、defines.proto 63309920、connect.proto 63319360、rpc_main.proto 63334800、general.proto 63342192、rpc_message.proto 63355904。私有解析结果保留在artifacts，后续官方更新要先比较新描述符，不能依赖这些固定偏移。
 
-uu-remote-linux的`src/capture_setting.rs`也区分枚举与fpsCount，可参考其同协议host处理；但其旧字段和官方Windows当前描述符不完全一致，不整体搬用。Moonlight/Sunshine的FPS配置需要发送端采集/编码配合，同样不能把目标值当成实测；本项目的虚拟屏切换必须适配UU自己的RPC。
+uu-remote-linux的`src/capture_setting.rs`也区分枚举与fpsCount，可参考其同协议host处理；但其旧字段和官方Windows当前描述符不完全一致，不整体搬用。Moonlight/Sunshine的FPS配置需要发送端采集/编码配合，同样不能把目标值当成实测；本项目当前不提供虚拟屏切换。
 
 硬解改动依据：[微软H.264 Decoder](https://learn.microsoft.com/en-us/windows/win32/medfound/h-264-video-decoder)允许省略未知输入帧率并在获得码流后报告格式改变；[Chromium MF输入样本处理](https://chromium.googlesource.com/chromium/chromium/+/d3f4c0027364e81fad704fbca8cce4940140a9ac/media/mf/h264mft.cc)仅在时长已知时设置压缩样本时长。没有从这些项目导入实现代码。
 
@@ -56,4 +56,4 @@ uu-remote-linux的`src/capture_setting.rs`也区分枚举与fpsCount，可参考
 
 协议针对性检查覆盖旧60帧抓包字节兼容、120/自定义count、初始化能力、保留当前屏幕、元数据选择和原生屏幕ID映射。本地迟到ICE回环验证设置、输入心跳、鼠标和键盘一起传送；GUI14项已有检查和Windows交叉编译通过。
 
-本轮未验证用户CONTROL超时的最终根因与初始化回退效果，也未实测真实60/120吞吐。没有自动连接、操作用户GUI、自动重连或伪造画面帧率。当前CPU RGBA转换/上传、VSync及丢包恢复仍会影响高帧率；GPU直接呈现与完整frame pacing依然未完成。
+CONTROL超时已通过交接17的DTLS接收竞态补丁解决，用户确认键鼠恢复；初始化回退本身未解决问题。真实60/120吞吐尚未实测。没有自动连接、操作用户GUI、自动重连或伪造画面帧率。当前CPU RGBA转换/上传、VSync及丢包恢复仍会影响高帧率；GPU直接呈现与完整frame pacing依然未完成。

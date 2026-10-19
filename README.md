@@ -81,7 +81,7 @@ Ctrl+Alt+F 切换全屏串流，界面按钮只负责窗口最大化。连接后
 HUD 区分目标帧率、远端屏幕类型/刷新率和实际 Rx/De/Rd；视频更新不代表输入控制通道已就绪。
 协议依据、当前边界和测试方法见 [`docs/frame-rate.md`](docs/frame-rate.md)。
 恢复机制、卡顿原因和 Sunshine/Moonlight 对比见 [`docs/streaming-quality.md`](docs/streaming-quality.md)。
-视频正常而输入SCTP长期connecting的DTLS接收竞态已复现并修补，证据及待验边界见[交接17](handoff/17-2026-10-19-dtls-reader-sctp.md)。
+视频正常而输入SCTP长期connecting的DTLS接收竞态已复现并修补，用户已确认`f74fc9d`恢复键鼠，证据与验收范围见[交接17](handoff/17-2026-10-19-dtls-reader-sctp.md)。
 三个本地开源项目的功能、源码入口、接入边界与实施顺序见
 [`docs/reference-index.md`](docs/reference-index.md)；包含固定提交版本和快速迭代时的更新方法。
 

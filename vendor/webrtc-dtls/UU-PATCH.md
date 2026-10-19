@@ -28,6 +28,7 @@ SCTP没有收到握手包，状态就一直停在connecting。
 - 原版代码：300ms内无法投递，失败于`completed DTLS must continue reading SCTP`。
 - 修改后：同一测试立即通过，正常双端DTLS收发/关闭用例也通过。
 - 本项目迟到ICE回环继续验证CONTROL设置、输入心跳、鼠标与键盘共同送达。
+- 2026-10-19，交付Windows源版本`f74fc9d`后，用户明确回复“恢复了”，确认本次键鼠恢复，见交接17。
 
 vendored crate排除在workspace成员外，生产版本使用仓库根Cargo.lock；其单独Cargo.lock仅锁定上游测试依赖。
 

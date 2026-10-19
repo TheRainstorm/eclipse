@@ -11,7 +11,7 @@
 3. 原来的内部等待只监听通知确认和处理队列，**没有监听握手完成**。外层select即使监听完成，也无法打断已经进入的内部循环。
 4. 唯一DTLS接收任务由此永久等待，后续加密应用数据不再向SCTP投递；SRTP视频接收路径独立，仍可更新，状态也仍显示DTLS connected。
 
-这是代码与确定性测试证明的缺陷，与用户报告的分层状态吻合；实机是否仅由这一原因造成，需补丁版本再验证。没有通过延长超时或自动重连掩盖问题。
+这是代码与确定性测试证明的缺陷，与用户报告的分层状态吻合。用户在交付补丁版本后明确回复“恢复了”，本次键鼠失效的修复已获实机确认。没有通过延长超时或自动重连掩盖问题。
 
 ## 已提交的修复
 
@@ -39,4 +39,9 @@ Windows release构建通过，已安装源版本`f74fc9db5f1c0967dd5a04b8cb79e03
 
 GUI SHA256：`26e6aae7eb55a606402a95e18b6a25c7654d4d6f101a4c59f46e234d4e1913a3`。
 CLI SHA256：`c08b169d0b8c8771b04d04bcc241b63aad0ea6125beffb895c0dda086d13688d`。
-私有构建与安装证据：`artifacts/ui-dpi-validation/dtls-reader-package.log`、`dtls-reader-installed-verified.json`。已请用户复测，尚未收到该版本的实机恢复确认。
+私有构建与安装证据：`artifacts/ui-dpi-validation/dtls-reader-package.log`、`dtls-reader-installed-verified.json`。
+
+## 用户实机验收
+
+2026-10-19，交付`f74fc9d`后，用户回复“恢复了”，确认本次串流键鼠已恢复。此结果与修复前反例、补丁后DTLS/CONTROL回环共同构成闭环证据。
+本条验收覆盖本次输入恢复；60/120实际帧率、菜单外观与长时间稳定性结果另行记录。此次仅更新文档，不重建或替换已验收的Windows程序。
