@@ -41,6 +41,8 @@ uu-client 使用 Rust 构建，通过兼容协议连接 UU 远程被控端，提
 
 ## 开始使用
 
+安装包将随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
+
 本项目不内置或分发第三方服务的生产签名密钥。先按[连接凭据说明](docs/connection-credentials.md)配置你有权使用的本地凭据；没有凭据时无法登录或连接官方服务。
 
 在你有权控制的远端设备上安装并配置官方被控端。启动 uu-client，点击扫码登录，使用手机完成登录后，从设备列表选择设备连接。主页在串流期间保留，可继续连接其它设备。
