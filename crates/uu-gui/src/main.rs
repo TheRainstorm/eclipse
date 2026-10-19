@@ -104,6 +104,7 @@ struct App {
     frame_count: std::collections::HashMap<u32, u32>,
     fps: std::collections::HashMap<u32, f32>,
     last_fps: std::time::Instant,
+    last_diagnostic: std::time::Instant,
     unpresented: std::collections::HashSet<u32>,
     render_ms: f32,
     selected_track: u32,
@@ -331,6 +332,7 @@ impl App {
             frame_count: std::collections::HashMap::new(),
             fps: std::collections::HashMap::new(),
             last_fps: std::time::Instant::now(),
+            last_diagnostic: std::time::Instant::now(),
             unpresented: Default::default(),
             render_ms: 0.0,
             selected_track: 0,
@@ -1007,6 +1009,25 @@ impl eframe::App for App {
                 self.fps.insert(track, count as f32 / elapsed);
             }
             self.last_fps = std::time::Instant::now();
+        }
+        if self.last_diagnostic.elapsed() >= std::time::Duration::from_secs(5) {
+            self.last_diagnostic = std::time::Instant::now();
+            if let Some(h) = &self.controller {
+                use std::sync::atomic::Ordering::Relaxed;
+                let s = &h.stats;
+                s.diagnostics.record(serde_json::json!({"event":"video_stats",
+                    "backend":s.backend(),"decoded":s.decoded_total.load(Relaxed),
+                    "errors":s.errors.load(Relaxed),"damaged":s.damaged_frames.load(Relaxed),
+                    "rx_fps":s.src_fps(),"decode_fps":s.dec_fps(),
+                    "render_fps":self.fps.get(&self.selected_track).copied().unwrap_or(0.0),
+                    "decode_ms":s.decode_ms(),"render_ms":self.render_ms,
+                    "waiting_idr":s.waiting_for_keyframe.load(Relaxed),
+                    "keyframe_requests":s.keyframe_requests.load(Relaxed),
+                    "injected_loss":s.injected_loss.load(Relaxed),"loss_ppm":s.loss_ppm.load(Relaxed),
+                    "queue_drops":s.queue_drops.load(Relaxed),
+                    "input_sent":s.input_messages_sent.load(Relaxed),"input_errors":s.input_send_errors.load(Relaxed),
+                    "control_open":s.control_open.load(Relaxed)}));
+            }
         }
         if self.stream_target.is_some() {
             self.stream_ui(ctx, &events);

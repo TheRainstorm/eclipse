@@ -169,6 +169,16 @@ def main():
         if args.soak_seconds:
             screenshot('soak-final')
             result['phases'].append('soak-complete')
+        snapshots = [e for e in events() if e.get('event') == 'video_stats']
+        result['video_stats'] = snapshots[-2:]
+        if int(env.get('UU_TEST_VIDEO_LOSS_MS', '0')) > 0:
+            if len(snapshots) < 2 or snapshots[-1].get('injected_loss', 0) == 0:
+                raise RuntimeError('Configured packet loss did not execute')
+            if snapshots[-1]['decoded'] <= snapshots[-2]['decoded'] or snapshots[-1]['waiting_idr']:
+                raise RuntimeError('Video did not recover after injected loss')
+            if snapshots[-1]['errors'] or 'vaapi' not in snapshots[-1]['backend']:
+                raise RuntimeError('Recovery failed hardware decoder validation')
+            result['phases'].append('loss-recovery-verified')
         keys('q')
         # Exit ends the stream; its dedicated process then closes itself.
         gui.wait(timeout=12)
