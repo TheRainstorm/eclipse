@@ -27,6 +27,11 @@ pub trait VideoEncoder: Send {
 /// Controller-side decoder.
 pub trait VideoDecoder: Send {
     fn codec(&self) -> VideoCodec;
+    /// Prepare a host-confirmed geometry before video starts. Backends that
+    /// require the actual bitstream can defer setup until the first keyframe.
+    fn prepare(&mut self, _width: u32, _height: u32) -> Result<(), CodecError> {
+        Ok(())
+    }
     /// Feed one access unit, producing a decoded frame when the decoder has
     /// enough data (B-frames and reordering mean this is not 1:1).
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError>;

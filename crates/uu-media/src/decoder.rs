@@ -44,6 +44,10 @@ impl VideoDecoder for NamedDecoder {
         &self.name
     }
 
+    fn prepare(&mut self, width: u32, height: u32) -> Result<(), CodecError> {
+        self.inner.prepare(width, height)
+    }
+
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
         self.inner.decode(frame)
     }
@@ -149,6 +153,16 @@ impl VideoDecoder for FallbackDecoder {
         &self.current
     }
 
+    fn prepare(&mut self, width: u32, height: u32) -> Result<(), CodecError> {
+        self.backup.prepare(width, height)?;
+        if let Some(primary) = &mut self.primary {
+            if let Err(error) = primary.prepare(width, height) {
+                self.demote(&format!("preparation failed: {error}"));
+            }
+        }
+        Ok(())
+    }
+
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
         if self.primary.is_none() {
             return self.decode_software(frame);
@@ -240,6 +254,27 @@ mod tests {
 
     fn unit() -> EncodedFrame {
         EncodedFrame { data: Bytes::from_static(&[0, 0, 0, 1, 0x65]), pts: crate::Timestamp(0), is_keyframe: true }
+    }
+
+    #[test]
+    fn failed_preparation_falls_back_before_any_video_arrives() {
+        struct UnsupportedGeometry;
+        impl VideoDecoder for UnsupportedGeometry {
+            fn codec(&self) -> VideoCodec { VideoCodec::H264 }
+            fn prepare(&mut self, _: u32, _: u32) -> Result<(), CodecError> {
+                Err(CodecError::Backend("unsupported fixture geometry".into()))
+            }
+            fn decode(&mut self, _: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
+                panic!("failed hardware preparation must not receive video")
+            }
+        }
+        let mut primary = NamedDecoder::new(Box::new(UnsupportedGeometry), "fixture hw");
+        assert!(primary.prepare(1280, 720).is_err());
+        let mut decoder = FallbackDecoder::new(Box::new(primary), Box::new(Scripted::new("sw", 0, 10)));
+        decoder.prepare(1280, 720).unwrap();
+        assert!(!decoder.on_hardware());
+        assert!(decoder.backend_name().contains("preparation failed"));
+        assert!(decoder.decode(&unit()).unwrap().is_some());
     }
 
     #[test]

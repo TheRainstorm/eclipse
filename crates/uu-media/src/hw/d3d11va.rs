@@ -74,6 +74,10 @@ impl VideoDecoder for D3d11VaDecoder {
         self.worker.backend_name()
     }
 
+    fn prepare(&mut self, width: u32, height: u32) -> Result<(), CodecError> {
+        self.worker.prepare(width, height)
+    }
+
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
         self.worker.decode(frame)
     }
@@ -134,6 +138,17 @@ struct Decoder {
 }
 
 impl Decoder {
+    fn prepare_geometry(&mut self, width: u32, height: u32) -> Result<(), String> {
+        if width == 0 || height == 0 || width > 8192 || height > 8192 {
+            return Err("decoder geometry is outside the supported bounds".into());
+        }
+        if self.active.as_ref().map_or(true, |active| active.width != width || active.height != height) {
+            self.active = Some(self.open_transform(width, height)?);
+            self.pending.clear();
+        }
+        Ok(())
+    }
+
     fn open() -> Result<Self, String> {
         let runtime = Runtime::start()?;
         let (device, context) = create_device()?;
@@ -188,6 +203,10 @@ impl super::Backend for Decoder {
         &self.name
     }
 
+    fn prepare(&mut self, width: u32, height: u32) -> Result<(), String> {
+        self.prepare_geometry(width, height)
+    }
+
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, String> {
         // Always submit the new access unit, even if earlier output is queued:
         // returning a queued picture first would silently drop this input.
@@ -195,15 +214,7 @@ impl super::Backend for Decoder {
         // keyframe after joining tells us the geometry. A different geometry
         // means the host switched resolution and the transform must be rebuilt.
         if let Some((width, height)) = h264_dimensions(&frame.data) {
-            let stale = match self.active {
-                Some(ref active) => active.width != width || active.height != height,
-                None => true,
-            };
-            if stale {
-                let transform = self.open_transform(width, height)?;
-                self.active = Some(transform);
-                self.pending.clear();
-            }
+            self.prepare_geometry(width, height)?;
         }
 
         let Decoder {

@@ -235,7 +235,7 @@ impl ControllerMedia {
                     if track.kind() == RTPCodecType::Audio {
                         tokio::spawn(receive_audio(track, stats));
                     } else {
-                        tokio::spawn(receive_video(pc, track, index, frames, stats, repairs));
+                        tokio::spawn(receive_video(pc, track, index, frames, stats, repairs, None));
                     }
                 }
             })
@@ -570,6 +570,7 @@ pub(crate) async fn receive_video(
     frame_tx: Option<FrameSender>,
     stats: Option<Arc<MediaStats>>,
     repairs: Arc<crate::rtx::RepairBus>,
+    prepared_decoder: Option<Box<dyn uu_media::VideoDecoder>>,
 ) {
     use crate::video_receiver::VideoReceiver;
     use std::time::Instant;
@@ -597,7 +598,7 @@ pub(crate) async fn receive_video(
     // Decode, colour conversion and driver IPC are blocking CPU/OS work. Keep
     // them off tokio's RTP and RTCP executor threads.
     let worker = tokio::task::spawn_blocking(move || {
-        let mut decoder = match uu_media::default_decoder() {
+        let mut decoder = match prepared_decoder.map(Ok).unwrap_or_else(uu_media::default_decoder) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("video decoder unavailable: {e}");

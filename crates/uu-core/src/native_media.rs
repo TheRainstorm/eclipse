@@ -8,7 +8,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -97,6 +97,7 @@ pub(crate) struct NativePeer {
     pub repairs: Arc<RepairBus>,
     pub states: watch::Receiver<RTCPeerConnectionState>,
     closed: AtomicBool,
+    pending_decoder: Arc<Mutex<Option<Box<dyn uu_media::VideoDecoder>>>>,
 }
 impl NativePeer {
     pub async fn new(
@@ -192,9 +193,20 @@ impl NativePeer {
             repairs,
             states,
             closed: AtomicBool::new(false),
+            pending_decoder: Arc::new(Mutex::new(None)),
         })
     }
     pub async fn receiver(&self, frames: FrameSender, stats: Arc<MediaStats>) -> Result<()> {
+        // Driver startup must finish before the peer can send video, otherwise
+        // the bounded AU queue can overflow while the first decoder boots.
+        // Hardware handles keep their COM/VA-API state on their own OS worker;
+        // moving this Send handle does not move any driver objects.
+        let decoder = tokio::task::spawn_blocking(uu_media::default_decoder)
+            .await
+            .context("native decoder initialization task failed")??;
+        stats.set_backend(decoder.backend_name());
+        *self.pending_decoder.lock().unwrap() = Some(decoder);
+        let prepared = self.pending_decoder.clone();
         let weak = Arc::downgrade(&self.pc);
         let repairs = self.repairs.clone();
         self.pc.on_track(Box::new(move |track, _, _| {
@@ -202,9 +214,14 @@ impl NativePeer {
             let repairs = repairs.clone();
             let frames = frames.clone();
             let stats = stats.clone();
+            let prepared = prepared.clone();
             Box::pin(async move {
                 if track.kind() == RTPCodecType::Video {
                     if let Some(pc) = weak.upgrade() {
+                        // Exactly one native video track owns the prepared
+                        // decoder. Ignore duplicate/unexpected track callbacks.
+                        let decoder = prepared.lock().unwrap().take();
+                        let Some(decoder) = decoder else { return; };
                         tokio::spawn(crate::media::receive_video(
                             pc,
                             track,
@@ -212,6 +229,7 @@ impl NativePeer {
                             Some(frames),
                             Some(stats),
                             repairs,
+                            Some(decoder),
                         ));
                     }
                 }
@@ -226,6 +244,17 @@ impl NativePeer {
                 }),
             )
             .await?;
+        Ok(())
+    }
+    pub async fn prepare_video(&self, width: u32, height: u32, stats: &MediaStats) -> Result<()> {
+        let mut decoder = self.pending_decoder.lock().unwrap().take()
+            .context("native video decoder was already assigned")?;
+        let decoder = tokio::task::spawn_blocking(move || {
+            decoder.prepare(width, height)?;
+            Ok::<_, uu_media::CodecError>(decoder)
+        }).await.context("native decoder preparation task failed")??;
+        stats.set_backend(decoder.backend_name());
+        *self.pending_decoder.lock().unwrap() = Some(decoder);
         Ok(())
     }
     pub async fn sender(&self, refresh: Arc<AtomicBool>) -> Result<Arc<TrackLocalStaticSample>> {
@@ -296,6 +325,7 @@ impl NativePeer {
         .context("native WebRTC connection timed out")?
     }
     pub async fn close(&self) {
+        self.pending_decoder.lock().unwrap().take();
         if !self.closed.load(Ordering::Acquire) {
             let _ = self.pc.close().await;
             let _ = self.mux.close().await;
@@ -305,6 +335,7 @@ impl NativePeer {
 }
 impl Drop for NativePeer {
     fn drop(&mut self) {
+        self.pending_decoder.lock().unwrap().take();
         if !self.closed.swap(true, Ordering::AcqRel) {
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 let pc = self.pc.clone();
@@ -344,9 +375,12 @@ mod tests {
             .await
             .unwrap();
         let (frames, _) = crate::media::frame_channel();
-        peer.receiver(frames, Arc::new(MediaStats::default()))
+        let stats = Arc::new(MediaStats::default());
+        peer.receiver(frames, stats.clone())
             .await
             .unwrap();
+        assert!(!stats.backend.lock().unwrap().is_empty(),
+            "decoder must be ready before producing the SDP offer");
         let offer = peer.description(true).await.unwrap();
         assert_eq!(
             offer

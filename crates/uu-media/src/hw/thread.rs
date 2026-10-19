@@ -25,10 +25,14 @@ use crate::frame::{EncodedFrame, RawFrame};
 /// they are created, used and destroyed on one thread.
 pub trait Backend: 'static {
     fn backend_name(&self) -> &str;
+    fn prepare(&mut self, _width: u32, _height: u32) -> Result<(), String> {
+        Ok(())
+    }
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, String>;
 }
 
 enum Job {
+    Prepare(u32, u32, Sender<Result<(), String>>),
     Decode(EncodedFrame, Sender<Result<Option<RawFrame>, String>>),
     Stop,
 }
@@ -77,6 +81,15 @@ impl Worker {
         &self.name
     }
 
+    pub fn prepare(&mut self, width: u32, height: u32) -> Result<(), CodecError> {
+        let (reply_tx, reply_rx) = channel();
+        self.tx.send(Job::Prepare(width, height, reply_tx))
+            .map_err(|_| CodecError::Backend("hardware decoder thread is gone".into()))?;
+        reply_rx.recv()
+            .map_err(|_| CodecError::Backend("hardware decoder thread is gone".into()))?
+            .map_err(CodecError::Backend)
+    }
+
     /// Decode one access unit on the owning thread.
     pub fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
         let (reply_tx, reply_rx) = channel();
@@ -119,6 +132,11 @@ where
     }
     while let Ok(job) = rx.recv() {
         match job {
+            Job::Prepare(width, height, reply) => {
+                if reply.send(decoder.prepare(width, height)).is_err() {
+                    break;
+                }
+            }
             Job::Decode(frame, reply) => {
                 let result = decoder.decode(&frame).map_err(|e| e.to_string());
                 // A closed reply channel means the caller dropped us; stop.
@@ -130,4 +148,55 @@ where
         }
     }
     // `decoder` drops here: driver and COM teardown stay on this thread.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{rc::Rc, sync::{Arc, Mutex}, thread};
+
+    #[test]
+    fn preparation_decode_and_drop_keep_the_driver_thread_after_handle_moves() {
+        struct Driver {
+            owner: thread::ThreadId,
+            calls: Arc<Mutex<Vec<&'static str>>>,
+            _not_send: Rc<()>,
+        }
+        impl Backend for Driver {
+            fn backend_name(&self) -> &str { "thread fixture" }
+            fn prepare(&mut self, width: u32, height: u32) -> Result<(), String> {
+                assert_eq!(thread::current().id(), self.owner);
+                assert_eq!((width, height), (1280, 720));
+                self.calls.lock().unwrap().push("prepare");
+                Ok(())
+            }
+            fn decode(&mut self, _: &EncodedFrame) -> Result<Option<RawFrame>, String> {
+                assert_eq!(thread::current().id(), self.owner);
+                self.calls.lock().unwrap().push("decode");
+                Ok(None)
+            }
+        }
+        impl Drop for Driver {
+            fn drop(&mut self) {
+                assert_eq!(thread::current().id(), self.owner);
+                self.calls.lock().unwrap().push("drop");
+            }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let log = calls.clone();
+        let caller = thread::current().id();
+        let mut worker = Worker::spawn(move || {
+            assert_ne!(thread::current().id(), caller);
+            log.lock().unwrap().push("init");
+            Ok(Driver { owner: thread::current().id(), calls: log, _not_send: Rc::new(()) })
+        }).unwrap();
+        thread::spawn(move || {
+            worker.prepare(1280, 720).unwrap();
+            worker.decode(&EncodedFrame {
+                data: bytes::Bytes::new(), is_keyframe: true, pts: crate::Timestamp(0),
+            }).unwrap();
+            drop(worker);
+        }).join().unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["init", "prepare", "decode", "drop"]);
+    }
 }

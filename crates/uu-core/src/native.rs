@@ -393,6 +393,9 @@ async fn receive_session(
         "unsupported native session capabilities"
     );
     validate_video(answer.width, answer.height, answer.fps)?;
+    // Complete dimension-dependent driver work before setting remote SDP can
+    // start ICE/DTLS and release the first burst of video into the AU queue.
+    peer.prepare_video(answer.width, answer.height, &stats).await?;
     stats.configured_fps.store(answer.fps,Ordering::Release);
     peer.remote(answer.sdp, stream.get_ref().0.peer_addr()?.ip())
         .await?;
