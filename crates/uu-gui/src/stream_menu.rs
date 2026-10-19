@@ -154,6 +154,7 @@ impl super::App {
                         row_icon(ui, &control, Icon::Settings, Color32::from_rgb(42, 52, 66));
                         if control.clicked() {
                             self.stream_menu.open = !self.stream_menu.open;
+                            if !self.stream_menu.open { ctx.memory_mut(|m| m.close_popup()); }
                             self.stream_menu.anchor = control.rect.left_bottom();
                         }
                     });
@@ -227,6 +228,7 @@ impl super::App {
                             }
                             if button.clicked() {
                                 self.stream_menu.open = !self.stream_menu.open;
+                                if !self.stream_menu.open { ctx.memory_mut(|m| m.close_popup()); }
                             }
                             button.on_hover_text(
                                 "控制中心 · 拖动可移动\nCtrl+Alt+M 隐藏 / 显示悬浮菜单",

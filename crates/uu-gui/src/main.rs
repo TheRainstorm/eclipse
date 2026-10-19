@@ -698,7 +698,7 @@ impl eframe::App for App {
                     continue;
                 }
                 if *key == egui::Key::M && modifiers.ctrl && modifiers.alt && self.controller.is_some() {
-                    if *pressed { self.stream_menu.visible = !self.stream_menu.visible; self.stream_menu.open = false; }
+                    if *pressed { self.stream_menu.visible = !self.stream_menu.visible; self.stream_menu.open = false; ctx.memory_mut(|m| m.close_popup()); }
                     continue;
                 }
                 if *key == egui::Key::F && modifiers.ctrl && modifiers.alt {
