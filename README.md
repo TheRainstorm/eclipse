@@ -73,7 +73,7 @@ HUD 显示实际解码后端。离线验证可运行
 当前硬解仍需 CPU 回读，并不保证比软解更快。最新进度见 [`handoff/README.md`](handoff/README.md)。
 
 设备主页按参考图改成浅色布局；连接后切换为紧凑串流界面。Ctrl+Alt+S 切换统计，
-Ctrl+Alt+F 切换全屏。Windows 路径中键使用实测的 `MK_MBUTTON=16`，支持按住拖动。
+Ctrl+Alt+F 切换全屏串流，界面按钮只负责窗口最大化。连接后按视频物理像素 1:1 初始化并居中，超出屏幕时等比缩小。Windows 路径中键使用实测的 `MK_MBUTTON=16`，支持按住拖动。
 接收端支持短时 RTP 重排、NACK/RTX 和参考链恢复；FEC 尚未接入。
 默认使用官方自动画质，支持跟随远端分辨率；全屏悬浮菜单可用 Ctrl+Alt+M 隐藏/恢复。
 恢复机制、卡顿原因和 Sunshine/Moonlight 对比见 [`docs/streaming-quality.md`](docs/streaming-quality.md)。

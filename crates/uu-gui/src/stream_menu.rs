@@ -89,7 +89,7 @@ impl Default for StreamMenu {
 impl super::App {
     pub(super) fn connection_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("connection-top")
-            .exact_height(36.0)
+            .exact_height(super::window::CONNECTION_BAR_HEIGHT)
             .frame(
                 egui::Frame::none()
                     .fill(Color32::from_rgb(244, 247, 251))
@@ -178,6 +178,7 @@ impl super::App {
                     self.send_input(message, 15);
                 }
                 self.selected_track = track;
+                self.window_sizing.begin_stream();
                 ui.close_menu();
                 ui.memory_mut(|m| m.close_popup());
             }

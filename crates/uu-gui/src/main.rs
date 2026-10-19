@@ -118,7 +118,7 @@ struct App {
     remote_focus: bool,
     view_only: bool,
     stream_menu: stream_menu::StreamMenu,
-    resize_pending: bool,
+    window_sizing: window::WindowSizing,
     close_at: Option<std::time::Instant>,
     disconnecting: bool,
     exit_requested: bool,
@@ -190,6 +190,8 @@ fn vk_for(key: egui::Key) -> Option<u32> {
 }
 
 fn setup_style(ctx: &egui::Context) {
+    // Remote Ctrl +/- belongs to the remote app, never to this client's UI zoom.
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let mut fonts = egui::FontDefinitions::default();
     let candidates: Vec<&str> = if cfg!(target_os = "windows") {
         vec![
@@ -303,7 +305,7 @@ impl App {
             remote_focus: false,
             view_only: false,
             stream_menu: stream_menu::StreamMenu::default(),
-            resize_pending: true,
+            window_sizing: window::WindowSizing::default(),
             close_at: None,
             disconnecting: false,
             exit_requested: false,
@@ -632,6 +634,10 @@ impl App {
                 let context = self.context.clone();
                 h.frames.set_waker(move || context.request_repaint());
                 self.controller = Some(h);
+                self.window_sizing.begin_stream();
+                if !self.fullscreen {
+                    self.context.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                }
                 self.remote_focus = true;
                 self.status = "连接中…".into();
                 for vk in [0x11u32, 0x10, 0x12, 0xA2, 0xA0, 0xA4, 0x5B] {
@@ -667,16 +673,6 @@ impl eframe::App for App {
             self.fullscreen = fullscreen;
         }
         self.window_edge_active = window::resize_border(ctx, self.fullscreen);
-        if self.resize_pending {
-            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
-                let size = egui::vec2(
-                    1100.0_f32.min(monitor.x * 0.92),
-                    760.0_f32.min(monitor.y * 0.88),
-                );
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
-                self.resize_pending = false;
-            }
-        }
         if ctx.input(|i| i.viewport().close_requested()) && self.controller.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_requested = true;
@@ -692,6 +688,9 @@ impl eframe::App for App {
         }
         self.poll(ctx);
         self.poll_controller(ctx);
+        let video_px = self.textures.get(&self.selected_track).or_else(|| self.textures.values().next())
+            .map(|texture| texture.size_vec2());
+        self.window_sizing.update(ctx, self.controller.is_some(), video_px);
         if self.exit_requested && self.controller.is_none() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -773,6 +772,7 @@ fn main() -> eframe::Result {
             .with_min_inner_size([560.0, 360.0])
             .with_title(format!("网易UU远程 · Rust · {}", installed_revision())),
         vsync,
+        centered: true,
         ..Default::default()
     };
     eframe::run_native(
