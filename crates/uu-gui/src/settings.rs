@@ -163,6 +163,7 @@ impl super::App {
         }
         let mut open = true;
         let mut apply = false;
+        let mut about = false;
         egui::Window::new("软件设置").open(&mut open).collapsible(false).resizable(false)
             .min_width(260.0).default_width(440.0_f32.min((ctx.screen_rect().width()-40.0).max(260.0))).max_width((ctx.screen_rect().width()-32.0).max(260.0)).anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).show(ctx,|ui| {
                 let s=&mut self.settings_draft;
@@ -197,11 +198,12 @@ impl super::App {
                     ui.small("启动选项在重新打开软件后生效，其他选项应用到当前串流并保存为默认值。");
                 });
                 ui.separator();
-                ui.horizontal(|ui| {if ui.button("保存并应用").clicked(){apply=true;}if ui.button("恢复默认").clicked(){self.settings_draft=Settings::default();}});
+                ui.horizontal(|ui| {if ui.button("保存并应用").clicked(){apply=true;}if ui.button("恢复默认").clicked(){self.settings_draft=Settings::default();}if ui.button("关于软件").clicked(){about=true;}});
                 if self.settings_draft!=self.preferences {ui.label("有尚未应用的更改");}
                 else if !self.settings_notice.is_empty(){ui.label(&self.settings_notice);}
             });
         self.settings_open = open;
+        if about { self.open_about(); }
         if apply {
             let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
             self.preferences=self.settings_draft.clone();

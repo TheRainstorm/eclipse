@@ -24,6 +24,7 @@ pub(super) enum Icon {
     Link,
     Person,
     Star,
+    Info,
 }
 pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
     let r = Rect::from_center_size(rect.center(), Vec2::splat(18.0));
@@ -33,6 +34,11 @@ pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
         p.line_segment([pt(a.0, a.1), pt(b.0, b.1)], stroke);
     };
     match kind {
+        Icon::Info => {
+            p.circle_stroke(r.center(), 7.0, stroke);
+            p.circle_filled(pt(9.0, 5.0), 0.9, color);
+            line((9.0, 8.0), (9.0, 13.0));
+        }
         Icon::Exit => {
             line((8.0, 2.0), (2.0, 2.0));
             line((2.0, 2.0), (2.0, 16.0));
@@ -208,8 +214,8 @@ impl App {
                     if response.drag_started() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
-                    ui.label(RichText::new("网易UU远程").size(19.0).color(INK));
-                    let space = (ui.available_width() - 182.0).max(0.0);
+                    ui.label(RichText::new(super::brand::NAME).size(19.0).color(INK));
+                    let space = (ui.available_width() - 220.0).max(0.0);
                     let (_, drag) =
                         ui.allocate_exact_size(egui::vec2(space, 34.0), Sense::click_and_drag());
                     if drag.drag_started() {
@@ -232,6 +238,7 @@ impl App {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                         if icon_button(ui,Icon::Settings,"软件设置").clicked(){self.open_settings();}
+                        if icon_button(ui,Icon::Info,"关于软件").clicked(){self.open_about();}
                         icon_button(
                             ui,
                             Icon::Person,
@@ -287,26 +294,17 @@ impl App {
                 let (card, _) =
                     ui.allocate_exact_size(egui::vec2(ui.available_width(), 108.0), Sense::hover());
                 ui.painter().rect_filled(card, 5.0, BLUE);
-                icon(
-                    ui.painter(),
-                    Rect::from_min_size(
-                        card.right_top() + egui::vec2(-49.0, 16.0),
-                        Vec2::splat(30.0),
-                    ),
-                    Icon::Desktop,
-                    C::from_white_alpha(65),
-                );
                 text_at(
                     ui.painter(),
                     card.left_top() + egui::vec2(18.0, 38.0),
-                    "随时连接，自在掌控",
+                    super::brand::TAGLINE,
                     17.0,
                     C::WHITE,
                 );
                 text_at(
                     ui.painter(),
                     card.left_top() + egui::vec2(18.0, 72.0),
-                    "你的设备，触手可及",
+                    "开源连接，自由协作",
                     13.0,
                     C::from_white_alpha(220),
                 );
@@ -686,8 +684,6 @@ impl App {
                     }
                     ui.add_space(16.0);
                     ui.label(RichText::new(&self.status).size(12.0).color(MUTED));
-                    ui.label(RichText::new(format!("版本 {}", self.build_label)).size(11.0).color(MUTED))
-                        .on_hover_text(&self.executable_path);
                 });
             });
     }
@@ -697,7 +693,7 @@ impl App {
         let was_open = self.stream_menu.open || self.displays.menu_open;
         let controls = self.stream_controls(ctx);
         let control_pointer = !self.mouse_captured && ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
-        let controls_active = self.displays.menu_open || self.settings_open || !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.open || control_pointer;
+        let controls_active = self.displays.menu_open || self.local_dialog_open() || !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.open || control_pointer;
         let mut messages = Vec::new();
         egui::CentralPanel::default().frame(egui::Frame::none().fill(C::BLACK)).show(ctx,|ui| {
             ui.set_clip_rect(ui.max_rect());

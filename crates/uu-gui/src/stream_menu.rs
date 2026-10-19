@@ -560,7 +560,7 @@ impl super::App {
             self.stream_menu.quality_detail = None;
             // Settings own their ComboBox popup while their window is open.
             // Otherwise clear old stream children so no invisible popup traps input.
-            if !self.settings_open {ctx.memory_mut(|m| m.close_popup());}
+            if !self.local_dialog_open() {ctx.memory_mut(|m| m.close_popup());}
             self.display_picker(ctx,&mut blocked);
             return blocked;
         }
@@ -691,6 +691,7 @@ impl super::App {
                                         "文件、终端和端口映射尚未接入",
                                     );
                                     if menu_row(ui,"软件设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_settings();}
+                                    if menu_row(ui,"关于软件",Some(Icon::Info),false,false,"",false).clicked(){self.open_about();}
                                     side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
                                         if menu_row(
                                             ui,

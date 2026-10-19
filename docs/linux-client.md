@@ -11,11 +11,11 @@ Linux VA-API 支持完整访问单元提交，并依据 H.264 色彩标记选择
 ```sh
 cargo run -p uu-gui --features vaapi
 python3 tools/linux/package.py
-# 到生成的 artifacts/packages/uu-remote-linux-x86_64-<revision>/ 内：
+# 到生成的 artifacts/packages/uu-client-linux-x86_64-<revision>/ 内：
 python3 install.py
 ```
 
-正式入口：`~/.local/bin/uu-remote-rust`，或应用菜单 **UU Remote Rust**。实际文件在 `~/.local/opt/uu-remote-rust/releases/<revision>/`，`current` 为统一版本入口。CLI 是 `~/.local/bin/uu-rust`。安装器校验二进制 SHA256 和动态依赖，原子切换入口，旧版本保留。版本显示读取同目录 `version.json`；不要单独复制 exe/二进制而遗漏清单。
+正式入口：`~/.local/bin/uu-client`（保留旧 `uu-remote-rust` 启动别名），或应用菜单 **uu-client**。实际文件在 `~/.local/opt/uu-remote-rust/releases/<revision>/`，`current` 为统一版本入口。CLI 是 `~/.local/bin/uu-rust`。安装器校验二进制 SHA256 和动态依赖，原子切换入口，旧版本保留。版本显示读取同目录 `version.json`；不要单独复制 exe/二进制而遗漏清单。
 
 凭据和设置在 `$XDG_DATA_HOME/uu-remote`（默认 `~/.local/share/uu-remote`）。安装包不含凭据，首次运行可扫码登录。安装升级不覆盖设置或凭据。
 

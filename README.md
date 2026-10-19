@@ -1,4 +1,4 @@
-# uu_remote — UU 远程的原生 Rust 重写（Windows + Linux）
+# uu-client — 开源远程串流客户端（Windows + Linux）
 
 目标：不依赖 Wine，用 Rust 原生实现网易 UU 远程（`uuyc.163.com`）的**被控端**与
 **主控端**，同时支持 Windows 与 Linux 两个平台。
@@ -54,9 +54,9 @@ Windows 版（Linux 交叉编译与打包）：
 python3 tools/windows/package.py
 ```
 
-产物是 `artifacts/packages/uu-remote-windows-x64-<提交号>.zip`，包含 EXE、运行 DLL、安装器和 SHA256 清单。
+产物是 `artifacts/packages/uu-client-windows-x64-<提交号>.zip`，包含 EXE、运行 DLL、安装器和 SHA256 清单。
 环境准备和安装方法见 [Windows 编译与打包说明](docs/windows-build.md)。
-主页底部显示版本号，`version.json` 记录源提交号与文件哈希。旧 `dist/uu-gui-win64` 不再更新。
+在“关于软件”查看版本与项目信息，`version.json` 记录源提交号与文件哈希。旧 `dist/uu-gui-win64` 不再更新。
 
 首次启动会显示二维码，用手机扫码登录；左侧选择设备后点“连接”。
 

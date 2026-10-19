@@ -30,7 +30,7 @@ python3 tools/windows/package.py
 检查 EXE / DLL 的 MinGW 动态依赖，自动收集运行库，再生成：
 
 ```text
-artifacts/packages/uu-remote-windows-x64-<提交号前12位>.zip
+artifacts/packages/uu-client-windows-x64-<提交号前12位>.zip
 artifacts/packages/windows-latest.json
 ```
 
@@ -47,10 +47,10 @@ ZIP 解压后直接是 `uu-gui.exe`、`uu.exe`、两个运行 DLL、`README.txt`
 在解压后的目录打开 PowerShell：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir "$env:LOCALAPPDATA\Programs\UU Remote Rust"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir "$env:LOCALAPPDATA\Programs\uu-client"
 ```
 
-`-InstallDir` 指定安装位置。安装前退出旧客户端，完成后从桌面 **UU Remote Rust** 重新打开。
+`-InstallDir` 指定安装位置。安装前退出旧客户端，完成后从桌面 **uu-client** 重新打开。
 安装器校验文件、归档旧版和更新快捷方式；升级不覆盖登录态和设置。
 
 ## 脚本回归检查

@@ -52,12 +52,13 @@ def main():
             pending.replace(path)
         finally: pending.unlink(missing_ok=True)
     link(dest, base / 'current')
+    link(base / 'current' / 'uu-gui', prefix / 'bin' / 'uu-client')
     link(base / 'current' / 'uu-gui', prefix / 'bin' / 'uu-remote-rust')
     link(base / 'current' / 'uu', prefix / 'bin' / 'uu-rust')
     desktop = prefix / 'share' / 'applications' / 'uu-remote-rust.desktop'
     desktop.parent.mkdir(parents=True, exist_ok=True)
     executable = str(base / 'current' / 'uu-gui').replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$')
-    desktop.write_text('[Desktop Entry]\nType=Application\nName=UU Remote Rust\nName[zh_CN]=UU 远程 Rust\nComment=Windows / Linux remote streaming client\n' + f'Exec="{executable}"\nTryExec={base / "current" / "uu-gui"}\nIcon=network-workgroup\nTerminal=false\nCategories=Network;RemoteAccess;\nStartupNotify=true\n')
+    desktop.write_text('[Desktop Entry]\nType=Application\nName=uu-client\nName[zh_CN]=uu-client\nComment=Windows / Linux remote streaming client\n' + f'Exec="{executable}"\nTryExec={base / "current" / "uu-gui"}\nIcon=network-workgroup\nTerminal=false\nCategories=Network;RemoteAccess;\nStartupNotify=true\n')
     subprocess.run(['update-desktop-database', str(desktop.parent)], check=False) if shutil.which('update-desktop-database') else None
     print(json.dumps({'source_commit': revision, 'executable': str(base / 'current' / 'uu-gui'), 'desktop': str(desktop)}, ensure_ascii=False))
 

@@ -113,7 +113,7 @@ def sync_package(args):
             raise RuntimeError(f'缺少 {tool}，请安装 openssh-client')
     subprocess.run(scp, check=True)
     subprocess.run(ssh, check=True)
-    print('同步完成。请关闭旧版窗口，再从桌面 UU Remote Rust 重新打开。')
+    print('同步完成。请关闭旧版窗口，再从桌面 uu-client 重新打开。')
 
 
 def main():

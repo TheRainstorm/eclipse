@@ -1,10 +1,10 @@
-网易UU远程 — Rust 原生客户端（Windows x64）
+uu-client — 开源远程串流客户端（Windows x64）
 
 安装：
   - 解压后执行 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1。
-  - 默认安装到 %LOCALAPPDATA%\Programs\UU Remote Rust；使用 -InstallDir 可指定目录。
+  - 默认安装到 %LOCALAPPDATA%\Programs\uu-client；使用 -InstallDir 可指定目录。
   - 安装器校验 version.json 的哈希，旧版归档到 %USERPROFILE%\uu-gui-archive。
-  - 桌面入口为 UU Remote Rust；主页底部显示版本提交号，悬停可查看实际 exe 路径。
+  - 桌面入口为 uu-client；在“关于软件”查看版本、项目信息和程序路径。
   - 安装前退出旧客户端，完成后重新打开；升级保留登录态和设置。
 
 运行：

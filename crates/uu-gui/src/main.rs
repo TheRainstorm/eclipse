@@ -1,4 +1,4 @@
-//! UU Remote desktop client.
+//! uu-client remote desktop client.
 //!
 //! Layout mirrors the official client: a device sidebar on the left, a large
 //! remote-screen area on the right, and a status/footer bar.
@@ -26,6 +26,7 @@ mod window;
 mod stream_menu;
 mod login;
 mod ui;
+mod brand;
 use login::LoginEvent;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -121,6 +122,7 @@ struct App {
     hud: bool,
     preferences: settings::Settings,
     settings_open: bool,
+    about_open: bool,
     settings_draft: settings::Settings,
     settings_notice: String,
     audio_save_after: Option<std::time::Instant>,
@@ -349,6 +351,7 @@ impl App {
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(preferences.hud),
             preferences: preferences.clone(),
             settings_open: false,
+            about_open: false,
             settings_draft: preferences.clone(),
             settings_notice,
             audio_save_after: None,
@@ -645,7 +648,7 @@ impl App {
         }
     }
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
-        let remote=self.input_ready() && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open && ctx.input(|i|i.focused);
+        let remote=self.input_ready() && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.local_dialog_open() && ctx.input(|i|i.focused);
         let window=self.platform.window_keyboard(remote);
         let active=self.platform.capture_keyboard(remote&&self.fullscreen&&self.preferences.capture_keyboard);
         if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {self.release_all_keys();}
@@ -661,7 +664,7 @@ impl App {
     }
     fn update_pointer_capture(&mut self,ctx:&egui::Context) {
         let capture=self.preferences.relative_mouse && self.remote_focus && self.input_ready() && self.focused
-            && !self.view_only && !self.stream_menu.open && !self.settings_open && !self.textures.is_empty();
+            && !self.view_only && !self.stream_menu.open && !self.local_dialog_open() && !self.textures.is_empty();
         if capture!=self.mouse_captured {
             self.release_pointer_capture(ctx);
             if capture {
@@ -991,7 +994,7 @@ impl eframe::App for App {
                 // A swallowed native key never generates this window event.
                 // Any key that reaches egui still needs forwarding, including
                 // keys from another input source or a hook that timed out.
-                if !self.native_window_keyboard && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
+                if !self.native_window_keyboard && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.local_dialog_open() {
                     self.sync_modifiers(*modifiers);
                     if let Some(vk) = vk_for(physical_key.unwrap_or(*key)) {
                         self.send_key(vk, *pressed);
@@ -999,7 +1002,7 @@ impl eframe::App for App {
                 }
             }
         }
-        if !self.native_keyboard_capture && !self.native_window_keyboard && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
+        if !self.native_keyboard_capture && !self.native_window_keyboard && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.local_dialog_open() {
             self.sync_modifiers(ctx.input(|i| i.modifiers));
         }
         let elapsed = self.last_fps.elapsed().as_secs_f32();
@@ -1035,6 +1038,7 @@ impl eframe::App for App {
             self.home_ui(ctx);
         }
         self.settings_ui(ctx);
+        self.about_ui(ctx);
         if self.audio_save_after.is_some_and(|at|std::time::Instant::now()>=at) {
             self.audio_save_after=None;self.persist_preferences();
         }
@@ -1056,8 +1060,8 @@ fn main() -> eframe::Result {
     };
     let origin = platform::startup_origin(stream_target.is_some());
     let title = match &stream_target {
-        Some(target) => format!("{} · UU串流 · {}", target.alias, installed_revision()),
-        None => format!("网易UU远程 · Rust · {}", installed_revision()),
+        Some(target) => format!("{} · {}", target.alias, brand::NAME),
+        None => brand::NAME.into(),
     };
     // Vertical sync is on by default (tear-free). `UU_VSYNC=0` disables it
     // (e.g. for very low latency on a tearing-tolerant setup).
@@ -1076,7 +1080,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "网易UU远程",
+        brand::NAME,
         options,
         Box::new(move |cc| Ok(Box::new(App::new(cc, stream_target, origin)))),
     )

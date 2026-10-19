@@ -78,7 +78,7 @@ def build_package(output):
     if clean_revision() != revision:
         raise RuntimeError('构建期间提交号发生变化，请重新打包')
     output.mkdir(parents=True, exist_ok=True)
-    name = f'uu-remote-windows-x64-{revision[:12]}'
+    name = f'uu-client-windows-x64-{revision[:12]}'
     archive = output / (name + '.zip')
     with tempfile.TemporaryDirectory(prefix='.windows-package-', dir=output) as temp:
         staging = Path(temp) / name

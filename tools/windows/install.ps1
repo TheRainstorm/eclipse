@@ -1,7 +1,7 @@
 # One Windows installation directory; legacy copies are archived outside it.
 param(
     [string]$SourceDir = $PSScriptRoot,
-    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\UU Remote Rust'),
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\uu-client'),
     [string]$ArchiveRoot = (Join-Path $env:USERPROFILE 'uu-gui-archive'),
     [switch]$NoShortcut
 )
@@ -65,14 +65,17 @@ if (!$NoShortcut) {
                 $link.TargetPath = Join-Path $InstallDir 'uu-gui.exe'
                 $link.WorkingDirectory = $InstallDir
                 $link.Save()
+                if ($_.BaseName -eq 'UU Remote Rust') {
+                    Move-Item -LiteralPath $_.FullName -Destination (Join-Path $_.DirectoryName 'uu-client.lnk') -Force
+                }
             }
         }
     }
-    $shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'UU Remote Rust.lnk'
+    $shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'uu-client.lnk'
     $link = $shell.CreateShortcut($shortcut)
     $link.TargetPath = Join-Path $InstallDir 'uu-gui.exe'
     $link.WorkingDirectory = $InstallDir
-    $link.Description = 'UU Remote Rust - canonical installation'
+    $link.Description = 'uu-client - canonical installation'
     $link.Save()
 }
 foreach ($name in $required) {
