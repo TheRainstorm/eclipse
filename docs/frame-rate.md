@@ -11,7 +11,7 @@
 - 交接15曾加入初始CaptureParams；用户随后报告视频正常但CONTROL 45秒未打开。因该初始化路径未经实机验证，交接16已回退，帧率继续由CONTROL就绪后的CaptureSettingRequest设置。不能把未传初始CaptureParams直接认定为30帧原因。
 - DecoderCap和streamer display_info固定60，无法完整表达120请求；GUI调整码率时又硬写60。
 - 帧率有旧枚举与实际整数两个字段，120没有对应的旧枚举；不能把120当枚举发送。
-- Exact分辨率把screen_id填为1，会选择物理屏1；应为-2保留当前采集源，包括超级屏。
+- 早期Exact分辨率固定screen_id=1，后来改成-2。交接19核对官方被控端后更正：-2在多轨道路径是广播现有轨道，不是通用“保持当前屏幕”。现在采集设置绑定实际选中屏幕ID。
 - Windows硬解输出类型固定30fps，每帧写33.33ms时长。这是错误的格式/时长描述，不是已证实的网络收帧限速器；已取消，保留真实PTS和既有重协商。
 
 接收/解码/新帧唤醒没有30fps定时丢帧限制。静态桌面、远端采集、编码、网络恢复以及本地呈现仍可能使实际帧率低于目标。
@@ -22,7 +22,7 @@ WebRTC/H.264本身不要求超级屏。物理屏采集能否提供60/120由显�
 
 [网易官方App Store说明](https://apps.apple.com/cn/app/uu%E8%BF%9C%E7%A8%8B-%E8%BF%9C%E7%A8%8B%E5%8A%9E%E5%85%AC-%E6%B8%B8%E6%88%8F%E4%B8%B2%E6%B5%81/id1642306791?platform=ipad)将超级屏描述为突破物理屏分辨率与帧率限制的功能。安装/启用驱动不等于当前串流已使用该采集源；进入/退出是独立RPC，不是capture_type或帧率枚举。
 
-当前客户端只使用现有远端屏幕，不提供超级屏启用/退出功能；交接15的RPC代码和入口已删除。只读解析屏幕元数据，按video_track_index与真实screen_id匹配输入，不能按视频到达顺序推算屏幕ID。
+交接19按用户的新需求增加两种显示器模式：默认保持现有布局；用户选择UU虚拟屏独占后，在下次连接明确请求官方手动超级屏，退出时仅为本次成功申请的独占请求恢复。普通切屏只选择现有源与轨道，不进入独占模式。屏幕名称、主屏标记、video_track_index和真实screen_id来自远端清单。
 
 ## 当前用法
 
@@ -32,7 +32,7 @@ WebRTC/H.264本身不要求超级屏。物理屏采集能否提供60/120由显�
 4. 顶部出现“输入连接中”表示CONTROL尚未打开，即便视频已更新也不能操作。45秒超时会显示ICE/DTLS/SCTP/CONTROL状态。悬停HUD可查看本地输入发送/失败计数；这不代表远端已注入。
 5. 用持续动态内容分别验证60、120、自定义75。若Rx仍30，先看远端实际采集能力；若Rx60/120而De或Rd明显落后，则检查解码/呈现。
 
-CLI或进程环境可用UU_FPS=120指定初始值，默认60。旧UU_FPS=1/2/3/4仍映射30/60/90/144；新GUI/API使用实际整数。质量、分辨率、码率变更保留所选帧率。144只是当前请求范围上限，不表示所有机器或4K分辨率均能达到144。
+CLI或进程环境可用UU_FPS=120指定初始值，默认60；默认保留远端分辨率，不用分辨率请求隐式修改布局。旧UU_FPS=1/2/3/4仍映射30/60/90/144；新GUI/API使用实际整数。质量、分辨率、码率变更保留所选帧率。144只是当前请求范围上限，不表示所有机器或4K分辨率均能达到144。
 
 ## 官方字段依据与参考入口
 
@@ -43,12 +43,12 @@ CLI或进程环境可用UU_FPS=120指定初始值，默认60。旧UU_FPS=1/2/3/4
 | 旧帧率枚举 | 0 UNKNOWN、1=30、2=60、3=90、4=144；无120枚举 | `control_wire::CaptureFrameRate`，自定义/120枚举0并传实际count |
 | 连接能力 | ConnectOptions.4 DecoderCap：1上限；初始CaptureParams当前不发送 | `socketio::encode_app_data`，CONTROL建立后再请求实际fpsCount |
 | 运行时采集设置 | Message21/RpcRequest2，CaptureSettingRequest：1枚举、18 fpsCount、4 screen_id、10分辨率类型 | `control_wire::capture_setting_request_at_fps` |
-| 分辨率类型 | 1保持、2跟随本地、3跟随远端、4明确尺寸 | Exact保留screen_id=-2，发送类型4及物理宽高 |
+| 分辨率类型 | 1保持、2跟随本地、3跟随远端、4明确尺寸 | Exact绑定选中screen_id，发送类型4及物理宽高；默认类型1保持远端分辨率 |
 | 当前远端屏幕 | Message7 ScreenSources：screens1、current_screen_id2；Screen.id1、fps2、current_resolution4、screen_type5、dpi9 | `screen_control::screen_sources`，按当前ID找屏幕，不取第一块物理屏 |
 
 描述符起始偏移：main.proto 63307440、defines.proto 63309920、connect.proto 63319360、rpc_main.proto 63334800、general.proto 63342192、rpc_message.proto 63355904。私有解析结果保留在artifacts，后续官方更新要先比较新描述符，不能依赖这些固定偏移。
 
-uu-remote-linux的`src/capture_setting.rs`也区分枚举与fpsCount，可参考其同协议host处理；但其旧字段和官方Windows当前描述符不完全一致，不整体搬用。Moonlight/Sunshine的FPS配置需要发送端采集/编码配合，同样不能把目标值当成实测；本项目当前不提供虚拟屏切换。
+uu-remote-linux的`src/capture_setting.rs`也区分枚举与fpsCount，可参考其同协议host处理；但其旧字段和官方Windows当前描述符不完全一致，不整体搬用。Moonlight/Sunshine的FPS配置需要发送端采集/编码配合，同样不能把目标值当成实测；本项目的普通切屏和可选虚拟屏独占已分离，见交接19。
 
 硬解改动依据：[微软H.264 Decoder](https://learn.microsoft.com/en-us/windows/win32/medfound/h-264-video-decoder)允许省略未知输入帧率并在获得码流后报告格式改变；[Chromium MF输入样本处理](https://chromium.googlesource.com/chromium/chromium/+/d3f4c0027364e81fad704fbca8cce4940140a9ac/media/mf/h264mft.cc)仅在时长已知时设置压缩样本时长。没有从这些项目导入实现代码。
 

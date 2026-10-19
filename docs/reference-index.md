@@ -4,7 +4,7 @@
 
 用户实机验收：交付`f74fc9d`后用户明确回复“恢复了”，确认本次键鼠恢复；高帧率与长稳结果另记。
 
-更新：2026-10-19。官方样式画质菜单、FPS合并、删除超级屏控制及视频正常但CONTROL超时的处理见 [交接16](../handoff/16-2026-10-19-quality-menu-control-input.md)。启动显示器与原生跨屏组合键修复见 [交接14](../handoff/14-2026-10-19-startup-monitor-native-shortcuts.md)。未串流主页跨 DPI 修复与多设备独立串流窗口见 [交接13](../handoff/13-2026-10-19-launcher-dpi-multiwindow.md)。统计快捷键、居中 HUD、原尺寸窗口与实机跨 DPI 往返、最大化 / 串流全屏分离见 [交接12](../handoff/12-2026-10-19-shortcuts-hud-dpi-window.md)。CONTROL 启动回归、延后 ICE 测试与统一安装入口见 [交接11](../handoff/11-2026-10-19-connection-startup-unified-install.md)。窗口缩放、紧凑 HUD、菜单确认、保留解码器的恢复、缺口扫描优化与退出清理已实现，最新证据和边界见 [交接10](../handoff/10-2026-10-19-resize-hud-recovery-exit.md)。
+更新：2026-10-19。最新远端多显示器标签、真实源/轨道选择与默认保持布局见[交接19](../handoff/19-2026-10-19-multi-display.md)；按用户新需求提供可选UU虚拟屏独占。官方样式画质菜单、FPS合并、删除超级屏控制及视频正常但CONTROL超时的处理见 [交接16](../handoff/16-2026-10-19-quality-menu-control-input.md)。启动显示器与原生跨屏组合键修复见 [交接14](../handoff/14-2026-10-19-startup-monitor-native-shortcuts.md)。未串流主页跨 DPI 修复与多设备独立串流窗口见 [交接13](../handoff/13-2026-10-19-launcher-dpi-multiwindow.md)。统计快捷键、居中 HUD、原尺寸窗口与实机跨 DPI 往返、最大化 / 串流全屏分离见 [交接12](../handoff/12-2026-10-19-shortcuts-hud-dpi-window.md)。CONTROL 启动回归、延后 ICE 测试与统一安装入口见 [交接11](../handoff/11-2026-10-19-connection-startup-unified-install.md)。窗口缩放、紧凑 HUD、菜单确认、保留解码器的恢复、缺口扫描优化与退出清理已实现，最新证据和边界见 [交接10](../handoff/10-2026-10-19-resize-hud-recovery-exit.md)。
 
 帧率/超级屏的新增官方描述符依据、已落地请求和用户验收边界见 [frame-rate.md](frame-rate.md) 与 [交接15](../handoff/15-2026-10-19-frame-rate-super-screen.md)。不要再沿用“Windows UU固定30fps”或“请求帧率等于实际帧率”的结论。
 
@@ -179,3 +179,9 @@ git -C /home/yfy/repo/moonlight/moonlight-qt submodule status
 | M03 与软件交互 | Q/X/Z快捷键、80%跨屏窗口、独立主页、多设备、持久设置、取消/重连反馈 | 几何/状态测试和Windows编译；完整多设备与跨屏实机待验 |
 
 没有直接复制GPL应用实现；参考协议与机制后适配现有Rust架构。视频FEC、GPU直接呈现、完整音视频时钟同步仍属后续工作。
+
+## 10. 远端多显示器
+
+交接19将显示器布局策略与串流源选择分开。`screen_control`解析官方名称/主屏/真实源ID/轨道；普通切屏使用 `RpcRequest.15 SendVideoTrackRequest` 加目标屏幕的采集设置，等待两种确认和新画面。顶部标签及+列表参考用户 `uu_menu_top.png`，全屏沿用同一清单。原来的纹理列表不能代表所有可用屏幕。
+
+本轮直接核对本地官方Windows描述符和被控端静态处理，确认 `screen_id=-2` 在多轨道时广播现有轨道，纠正此前“保持当前源”的注释。独占使用 `RpcRequest.26 EnterSuperScreenRequest`、reason=1、实测尺寸，退出使用case14；响应分别为22/10，切轨响应case11。这里只列自实现的字段对应关系，不导入官方二进制或GPL应用代码。普通模式不发送这些布局RPC，也不会自动修复既有的独占布局。
