@@ -380,6 +380,7 @@ async fn receive_video(
         let mut recovery = None;
         let mut decoded = 0;
         let mut errors = 0;
+        let mut recovery_errors = 0u32;
         let mut window = Instant::now();
         let mut window_frames = 0u64;
         let mut decode_us = 0u64;
@@ -422,7 +423,7 @@ async fn receive_video(
                 continue;
             }
             if key && reset_decoder {
-                let next = if decoder.backend_name().starts_with("openh264") {
+                let next = if recovery_errors >= 3 || decoder.backend_name().starts_with("openh264") {
                     uu_media::software_decoder()
                 } else {
                     uu_media::default_decoder()
@@ -453,6 +454,7 @@ async fn receive_video(
                         need_idr = false;
                     }
                     if let Some(frame) = frame {
+                        recovery_errors = 0;
                         if recovery.is_some_and(|(generation, request, pts)| {
                             frame.pts >= pts
                                 && generation == worker_generation.load(Ordering::Acquire)
@@ -482,6 +484,9 @@ async fn receive_video(
                 }
                 Err(e) => {
                     errors += 1;
+                    // Preserve the fallback budget across decoder recreation;
+                    // repeatedly rebuilding a failing driver must not reset it.
+                    recovery_errors = recovery_errors.saturating_add(1);
                     need_idr = true;
                     reset_decoder = true;
                     recovery = None;
