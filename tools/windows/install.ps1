@@ -10,7 +10,8 @@ $ProgressPreference = 'SilentlyContinue'
 $SourceDir = [IO.Path]::GetFullPath($SourceDir).TrimEnd([IO.Path]::DirectorySeparatorChar)
 $InstallDir = [IO.Path]::GetFullPath($InstallDir).TrimEnd([IO.Path]::DirectorySeparatorChar)
 $manifest = Get-Content (Join-Path $SourceDir 'version.json') -Raw | ConvertFrom-Json
-$required = @('uu-gui.exe','uu.exe','libgcc_s_seh-1.dll','libstdc++-6.dll','README.txt','install.ps1')
+$required = @('uu-gui.exe','uu.exe','libgcc_s_seh-1.dll','libstdc++-6.dll','README.txt','install.ps1',
+              'LICENSE','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt')
 foreach ($name in $required) {
     $file = Join-Path $SourceDir $name
     if (!(Test-Path $file -PathType Leaf)) { throw "Package missing: $name" }

@@ -1,7 +1,7 @@
 # Windows 编译与打包
 
 在 Linux 仓库根目录执行。脚本使用 Python 3.11+ 标准库，无需安装 pip 依赖。
-Windows x64 包包括 GUI、CLI、MinGW 运行库、安装器、使用说明和版本校验清单。
+Windows x64 包包括 GUI、CLI、MinGW 运行库、安装器、使用说明、双许可与第三方通知、版本校验清单。
 
 ## 一次性准备 Linux 编译环境
 
@@ -34,7 +34,7 @@ artifacts/packages/uu-client-windows-x64-<提交号前12位>.zip
 artifacts/packages/windows-latest.json
 ```
 
-ZIP 解压后直接是 `uu-gui.exe`、`uu.exe`、两个运行 DLL、`README.txt`、`install.ps1`、`version.json`。
+ZIP 解压后直接是 `uu-gui.exe`、`uu.exe`、两个运行 DLL、`README.txt`、`install.ps1`、`LICENSE`、`LICENSE-MIT`、`LICENSE-APACHE`、`THIRD-PARTY-NOTICES.txt`、`version.json`。
 `version.json` 包含完整源提交号、UTC 打包时间和各文件 SHA256。
 `windows-latest.json` 指向最近一次成功完成的 Windows 包，并记录 ZIP 的 SHA256。
 源码或 `tools/windows` 有未提交改动时拒绝打包，避免版本号与实际源码不一致；提交后再运行即可。

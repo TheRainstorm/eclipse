@@ -15,10 +15,11 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / 'artifacts/packages'
 TARGET = 'x86_64-pc-windows-gnu'
+LICENSES = ('LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt')
 REQUIRED = ('uu-gui.exe', 'uu.exe', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll',
-            'README.txt', 'install.ps1')
+            'README.txt', 'install.ps1', *LICENSES)
 SOURCE_PATHS = ('crates', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
-                '.cargo', 'tools/windows')
+                '.cargo', 'tools/windows', 'tools/licenses', 'licenses', *LICENSES)
 
 
 def sha256(path):
@@ -90,6 +91,8 @@ def build_package(output):
             shutil.copy2(runtime_dll(compiler, filename), staging / filename)
         for filename in ('README.txt', 'install.ps1'):
             shutil.copy2(ROOT / 'tools/windows' / filename, staging / filename)
+        for filename in LICENSES:
+            shutil.copy2(ROOT / filename, staging / filename)
         verify_imports(staging)
         manifest = {'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
                     'target': TARGET,

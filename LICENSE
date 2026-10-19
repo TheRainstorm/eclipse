@@ -1,0 +1,14 @@
+uu-client
+Copyright (c) 2026 TheRainstorm
+
+Except for third-party components and files carrying their own notices, this
+project is dual-licensed under either of:
+
+  * MIT License (LICENSE-MIT)
+  * Apache License, Version 2.0 (LICENSE-APACHE)
+
+at your option. SPDX-License-Identifier: MIT OR Apache-2.0
+
+Third-party components retain their own licenses. See THIRD-PARTY-NOTICES.txt
+and docs/licensing-and-compatibility.md. This license does not grant permission
+to access third-party services or use third-party trademarks.

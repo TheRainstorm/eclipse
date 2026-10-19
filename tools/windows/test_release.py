@@ -43,6 +43,16 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'uu-gui.exe'):
             sync.verify_package(path)
 
+    def test_license_notices_are_required_and_verified(self):
+        for name in package.LICENSES:
+            with self.subTest(name=name):
+                path = self.make_bundle(lambda files: files.pop(name))
+                with self.assertRaises(ValueError):
+                    sync.verify_package(path)
+                path = self.make_bundle(lambda files: files.update({name: b'changed notice'}))
+                with self.assertRaisesRegex(ValueError, name):
+                    sync.verify_package(path)
+
     def test_missing_file_rejected(self):
         path = self.make_bundle(lambda files: files.pop('libstdc++-6.dll'))
         with self.assertRaises(ValueError):

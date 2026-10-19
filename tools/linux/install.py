@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import tempfile
 
+LICENSES = ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt']
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -20,7 +22,7 @@ def main():
     revision = manifest['source_commit']
     if len(revision) != 40 or any(c not in '0123456789abcdef' for c in revision):
         raise ValueError('Invalid source revision')
-    for name in ['uu-gui', 'uu', 'eclipse.png']:
+    for name in ['uu-gui', 'uu', 'eclipse.png', *LICENSES]:
         if hashlib.sha256((package / name).read_bytes()).hexdigest() != manifest['sha256'][name]:
             raise ValueError(f'Integrity check failed: {name}')
     for name in ['uu-gui', 'uu']:
@@ -35,14 +37,14 @@ def main():
     if not dest.exists():
         staging = Path(tempfile.mkdtemp(prefix='.install-', dir=releases))
         try:
-            for name in ['uu-gui', 'uu', 'version.json', 'README.txt', 'install.py', 'eclipse.png']:
+            for name in ['uu-gui', 'uu', 'version.json', 'README.txt', 'install.py', 'eclipse.png', *LICENSES]:
                 shutil.copy2(package / name, staging / name)
             for name in ['uu-gui', 'uu']: (staging / name).chmod(0o755)
             staging.rename(dest)
         finally:
             if staging.exists(): shutil.rmtree(staging)
     else:
-        for name in ['uu-gui', 'uu', 'eclipse.png']:
+        for name in ['uu-gui', 'uu', 'eclipse.png', *LICENSES]:
             if hashlib.sha256((dest / name).read_bytes()).hexdigest() != manifest['sha256'][name]:
                 raise ValueError('Existing release differs; refusing to overwrite a running installation')
     def link(target, path):
