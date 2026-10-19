@@ -17,6 +17,13 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 pub struct SocketIo {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    pending: Option<PendingEvent>,
+}
+struct PendingEvent {
+    event: String,
+    data: Value,
+    expected: usize,
+    attachments: Vec<Vec<u8>>,
 }
 
 impl SocketIo {
@@ -43,7 +50,7 @@ impl SocketIo {
         if !ack.starts_with("40") {
             bail!("socket.io connect rejected: {ack}");
         }
-        Ok(Self { ws })
+        Ok(Self { ws, pending: None })
     }
 
     /// Send a Socket.IO event, optionally with binary attachments.
@@ -70,6 +77,8 @@ impl SocketIo {
     }
 
     /// Receive the next Socket.IO event, skipping pings/open packets.
+    /// Assembly state belongs to the connection: drive_session cancels this
+    /// future on every timer/input tick, including between binary attachments.
     pub async fn recv_event(&mut self) -> Result<(String, Value, Vec<Vec<u8>>)> {
         loop {
             let msg = self.ws.next().await.ok_or_else(|| anyhow!("websocket closed"))??;
@@ -97,20 +106,24 @@ impl SocketIo {
                         continue;
                     };
                     let arr: Value = serde_json::from_str(body).context("bad socket.io json")?;
-                    let mut atts = Vec::new();
-                    if let Some(n) = prefix {
-                        for _ in 0..n {
-                            match self.ws.next().await {
-                                Some(Ok(Message::Binary(b))) => atts.push(b.to_vec()),
-                                other => bail!("expected binary attachment, got {other:?}"),
-                            }
-                        }
+                    if self.pending.is_some() {
+                        bail!("socket.io event interrupted binary attachments");
                     }
                     let event = arr.get(0).and_then(Value::as_str).unwrap_or_default().to_string();
                     let data = arr.get(1).cloned().unwrap_or(Value::Null);
-                    return Ok((event, data, atts));
+                    let expected = prefix.unwrap_or(0);
+                    if expected == 0 { return Ok((event, data, Vec::new())); }
+                    self.pending = Some(PendingEvent { event, data, expected, attachments: Vec::new() });
                 }
-                Message::Binary(_) => continue,
+                Message::Binary(data) => {
+                    if let Some(pending) = &mut self.pending {
+                        pending.attachments.push(data.to_vec());
+                        if pending.attachments.len() == pending.expected {
+                            let pending = self.pending.take().unwrap();
+                            return Ok((pending.event, pending.data, pending.attachments));
+                        }
+                    }
+                }
                 Message::Ping(p) => self.ws.send(Message::Pong(p)).await?,
                 Message::Close(_) => bail!("websocket closed by peer"),
                 _ => continue,
@@ -241,5 +254,67 @@ mod frame_rate_tests {
         }).expect("decoder capability must be present")).unwrap();
         assert!(!fields.iter().any(|(n, _)| *n == 3));
         assert!(nested(4).contains(&(1, WireValue::Varint(144))));
+    }
+}
+
+#[cfg(test)]
+mod receive_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn cancelled_receive_keeps_binary_event_and_partial_attachments() {
+        binary_event_roundtrip(true, false).await;
+    }
+    #[tokio::test]
+    async fn binary_event_services_engine_io_and_websocket_pings() {
+        binary_event_roundtrip(false, true).await;
+    }
+    async fn binary_event_roundtrip(cancel: bool, pings: bool) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (header_tx, header_rx) = tokio::sync::oneshot::channel();
+        let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            tcp.set_nodelay(true).unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            ws.send(Message::Text("0{}".into())).await.unwrap();
+            assert_eq!(ws.next().await.unwrap().unwrap().into_text().unwrap(), "40");
+            ws.send(Message::Text("40{}".into())).await.unwrap();
+            ws.send(Message::Text(r#"452-["soac",{"part":1}]"#.into())).await.unwrap();
+            ws.send(Message::Binary(vec![4, 11].into())).await.unwrap();
+            header_tx.send(()).unwrap();
+            continue_rx.await.unwrap();
+            if pings {
+                ws.send(Message::Ping(vec![7].into())).await.unwrap();
+                ws.send(Message::Text("2".into())).await.unwrap();
+            }
+            ws.send(Message::Binary(vec![4, 22].into())).await.unwrap();
+            ws.send(Message::Text(r#"42["released",{}]"#.into())).await.unwrap();
+            let mut engine_pong = false;
+            let mut websocket_pong = false;
+            while let Some(Ok(message)) = ws.next().await {
+                match message {
+                    Message::Text(t) if t == "3" => engine_pong = true,
+                    Message::Pong(p) if p.as_ref() == [7] => websocket_pong = true,
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+            if pings { assert!(engine_pong && websocket_pong); }
+        });
+        let mut sio = SocketIo::connect(&format!("ws://{address}"), "test").await.unwrap();
+        header_rx.await.unwrap();
+        // The first attachment has arrived but the second cannot arrive yet.
+        if cancel {
+            assert!(tokio::time::timeout(Duration::from_millis(50), sio.recv_event()).await.is_err());
+        }
+        continue_tx.send(()).unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(2), sio.recv_event()).await.unwrap().unwrap();
+        assert_eq!(event, ("soac".into(), serde_json::json!({"part":1}), vec![vec![4,11], vec![4,22]]));
+        assert_eq!(sio.recv_event().await.unwrap().0, "released");
+        sio.close().await;
+        tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
     }
 }
