@@ -118,6 +118,8 @@ struct App {
     bitrate_idx: usize,
     resolution_idx: usize,
     custom_mbps: u32,
+    target_fps: u32,
+    fps_draft: u32,
     settings_seq: u64,
     settings_feedback: String,
     pointer: input::RemotePointer,
@@ -310,6 +312,8 @@ impl App {
             bitrate_idx: 0,
             resolution_idx: 0,
             custom_mbps: 55,
+            target_fps: uu_core::control_wire::CaptureFrameRate::from_env().fps(),
+            fps_draft: uu_core::control_wire::CaptureFrameRate::from_env().fps(),
             settings_seq: 0,
             settings_feedback: String::new(),
             pointer: input::RemotePointer::default(),
@@ -482,13 +486,13 @@ impl App {
             self.unpresented.insert(idx);
         }
         if apply_settings {
-            self.send_bitrate();
+            self.send_capture_settings();
         }
         if let Some(h) = &self.controller {
             let response = h.stats.settings_response.load(std::sync::atomic::Ordering::Acquire);
             if response >> 1 == 2000 + self.settings_seq && self.settings_feedback.starts_with("已发送") {
                 self.settings_feedback = if response & 1 != 0 {
-                    format!("远端已确认：{}", BITRATE_PRESETS[self.bitrate_idx].0)
+                    format!("远端已确认请求：{} FPS · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0)
                 } else { "远端拒绝了画质设置，请重新选择".into() };
             }
         }
@@ -507,8 +511,8 @@ impl App {
         self.send_input_ch(payload, kind, 35);
     }
 
-    /// Send the currently selected bitrate/quality preset to the controlled end.
-    fn send_bitrate(&mut self) {
+    /// Apply frame rate, quality and resolution together so another setting never resets FPS.
+    fn send_capture_settings(&mut self) {
         let Some(h) = &self.controller else { return };
         let (_, quality) = BITRATE_PRESETS[self.bitrate_idx];
         let custom_bps = if quality == 6 {
@@ -523,16 +527,16 @@ impl App {
             3=>uu_core::control_wire::CaptureResolution::Exact(3840,2160),
             _=>uu_core::control_wire::CaptureResolution::Native,
         };
-        let msg = uu_core::control_wire::capture_setting_request_with_resolution(
+        let msg = uu_core::control_wire::capture_setting_request_at_fps(
             2000 + self.settings_seq,
             uu_core::control_wire::now_ms(),
-            2,
+            uu_core::control_wire::CaptureFrameRate::new(self.target_fps).unwrap_or_default(),
             quality,
             custom_bps,
             resolution,
         );
         self.settings_feedback = if h.settings.send(msg).is_ok() {
-            format!("已发送：{} · {}", BITRATE_PRESETS[self.bitrate_idx].0,
+            format!("已发送：{} FPS · {} · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0,
                 if quality == 6 { format!("{} Mbps", self.custom_mbps) }
                 else { "以实际接收码率为准".into() })
         } else {

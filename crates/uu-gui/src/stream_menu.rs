@@ -306,10 +306,34 @@ impl super::App {
                                     }
                                 }
                                 if confirm || previous_resolution != self.resolution_idx {
-                                    self.send_bitrate();
+                                    self.send_capture_settings();
                                     ui.close_menu();
                 ui.memory_mut(|m| m.close_popup());
                                 }
+                            });
+                            side_submenu(ui, &mut blocked, Icon::Play, format!("帧率 · {} FPS", self.target_fps), |ui| {
+                                for fps in [30, 60, 90, 120, 144] {
+                                    if ui.selectable_label(self.target_fps == fps, format!("{fps} FPS")).clicked() {
+                                        self.target_fps = fps;
+                                        self.fps_draft = fps;
+                                        self.send_capture_settings();
+                                        ui.close_menu();
+                                        ui.memory_mut(|m| m.close_popup());
+                                    }
+                                }
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    ui.label("自定义");
+                                    ui.add(egui::DragValue::new(&mut self.fps_draft).range(5..=144).suffix(" FPS"));
+                                });
+                                if ui.button("确认自定义帧率").clicked() {
+                                    self.target_fps = self.fps_draft.clamp(5, 144);
+                                    self.send_capture_settings();
+                                    ui.close_menu();
+                                    ui.memory_mut(|m| m.close_popup());
+                                }
+                                ui.label(RichText::new("实际帧率以 HUD Rx / De / Rd 为准；
+静态画面、远端采集和本地刷新率均有影响。").small().weak());
                             });
                             if !self.settings_feedback.is_empty() {
                                 ui.label(RichText::new(&self.settings_feedback).size(11.0)
