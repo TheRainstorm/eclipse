@@ -129,6 +129,7 @@ impl NativePeer {
         let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
         let mux = UDPMuxDefault::new(UDPMuxParams::new(socket));
         let mut settings = SettingEngine::default();
+        settings.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
         settings.set_network_types(vec![if local_ip.is_ipv4() {
             NetworkType::Udp4
         } else {

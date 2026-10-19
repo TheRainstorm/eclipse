@@ -42,6 +42,7 @@ pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<Controlle
 
 pub fn spawn_with_stats(config:Config,device:String,geo_ip:String,stats:std::sync::Arc<crate::media::MediaStats>)->Result<ControllerHandle> {
     crate::install_crypto_provider();
+    stats.capabilities.set(crate::capabilities::Capabilities::ALL);
     let (ev_tx, ev_rx) = std::sync::mpsc::channel();
     let (frame_tx, frame_rx) = crate::media::frame_channel();
     let (input_tx, input_rx) = unbounded_channel();

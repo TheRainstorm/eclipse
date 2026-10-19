@@ -247,6 +247,7 @@ impl App {
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
+                        if icon_label_button(ui,Icon::Link,"原生直连").clicked(){self.open_native();}
                         if icon_button(ui,Icon::Settings,"软件设置").clicked(){self.open_settings();}
                         if icon_button(ui,Icon::Info,"关于软件").clicked(){self.open_about();}
                         self.account_button(ui);
@@ -258,29 +259,27 @@ impl App {
     pub(super) fn home_ui(&mut self, ctx: &egui::Context) {
         self.title_bar(ctx);
         if !self.logged_in {
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ctx,|ui| {
                 ui.vertical_centered(|ui| {
-                    ui.add_space(45.0);
+                    ui.add_space(38.0);
                     ui.heading("连接你的每一台设备");
                     ui.add_space(12.0);
-                    ui.label(RichText::new("手机扫码登录，随时进入远程桌面").color(MUTED));
+                    ui.label(RichText::new("登录账号访问设备，或使用原生邀请查看共享画面").color(MUTED));
                     ui.add_space(24.0);
-                    if let Some(texture) = &self.login_texture {
-                        ui.image((texture.id(), egui::vec2(224.0, 224.0)));
-                    } else {
-                        ui.add_space(224.0);
+                    if let Some(texture)=&self.login_texture {
+                        ui.image((texture.id(),egui::vec2(224.0,224.0)));
+                        ui.add_space(14.0);
+                    }else if self.login_rx.is_some() {
+                        ui.add(egui::Spinner::new().size(28.0));ui.add_space(14.0);
                     }
-                    ui.add_space(16.0);
-                    ui.label(&self.login_status);
-                    if ui.button(if self.login_texture.is_none() && self.login_rx.is_none() {"扫码登录"} else {"刷新二维码"}).clicked() {
-                        self.start_login();
-                    }
-                    if self.login_rx.is_some() && ui.button("取消登录").clicked() {
-                        self.login_rx = None;
-                        self.login_texture = None;
-                        self.login_status = "已取消登录".into();
-                    }
-                    if !self.status.is_empty() {ui.label(RichText::new(&self.status).color(MUTED));}
+                    if !self.login_status.is_empty(){ui.label(&self.login_status);ui.add_space(10.0);}
+                    if ui.add_sized([180.0,36.0],egui::Button::new(RichText::new(if self.login_texture.is_some(){"刷新二维码"}else{"扫码登录"}).color(C::WHITE)).fill(BLUE)).clicked(){self.start_login();}
+                    if self.login_rx.is_some()&&ui.button("取消登录").clicked(){self.login_rx=None;self.login_texture=None;self.login_status="已取消登录".into();}
+                    ui.add_space(14.0);
+                    if ui.add_sized([180.0,36.0],egui::Button::new(RichText::new("使用原生邀请").color(BLUE)).fill(C::WHITE).stroke(egui::Stroke::new(1.0,BLUE))).clicked(){self.open_native();}
+                    ui.add_space(8.0);
+                    ui.small("无需账号 · 邀请文件也可直接拖入窗口");
+                    if !self.status.is_empty(){ui.add_space(16.0);ui.label(RichText::new(&self.status).color(MUTED));}
                 });
             });
             return;

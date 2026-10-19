@@ -16,12 +16,14 @@ impl super::App {
         let network = if fresh {
             format!("{:.1}±{:.1}ms", s.rtt_us.load(Relaxed) as f32 / 1000.0, s.rtt_deviation_us.load(Relaxed) as f32 / 1000.0)
         } else { "—ms".into() };
+        let configured=s.configured_fps.load(Relaxed);
+        let target_fps=if configured>0 {configured}else{self.target_fps};
         // Render is CPU preparation/submission time, excluding vsync wait.
         let text = format!(
             "{w}×{h}@{rd:.0}   {codec}   目标 {} FPS{source}   FPS {:.1} Rx · {:.1} De · {rd:.1} Rd\n\
              Network {network}   Loss {:.2}%   Bandwidth {:.2} Mbps | Render {:.2}ms · Decode {:.2}ms\n\
              丢包 {} · NACK {} · RTX {} · 乱序 {} · 迟到 {} · 坏帧 {} · 解码错误 {} · 丢队列 {} · 恢复请求 {}",
-            self.target_fps, s.src_fps(), s.dec_fps(), s.loss_ppm.load(Relaxed) as f32 / 10000.0,
+            target_fps, s.src_fps(), s.dec_fps(), s.loss_ppm.load(Relaxed) as f32 / 10000.0,
             s.bitrate_kbps.load(Relaxed) as f32 / 1000.0, self.render_ms, s.decode_ms(),
             s.lost.load(Relaxed), s.nack_requests.load(Relaxed), s.rtx_packets.load(Relaxed),
             s.reordered.load(Relaxed), s.late_packets.load(Relaxed), s.damaged_frames.load(Relaxed),

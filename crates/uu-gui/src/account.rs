@@ -108,6 +108,7 @@ impl super::App {
     }
 
     pub(super) fn poll_account(&mut self) {
+        if self.is_native(){return;}
         if self.account_poll_at.elapsed() < std::time::Duration::from_millis(500) {
             return;
         }

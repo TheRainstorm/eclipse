@@ -33,7 +33,7 @@ fn menu_row(
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
     let ink = if !ui.is_enabled() {
         Color32::from_gray(160)
-    } else if label == "退出远控" {
+    } else if label == "退出串流" {
         Color32::from_rgb(187, 65, 55)
     } else {
         MENU_INK
@@ -207,8 +207,8 @@ impl super::App {
                     let wide=ui.available_width()>1100.0;
                     if ui.available_width()>520.0 {ui.add_sized([76.0,24.0],egui::Label::new(RichText::new(title).size(12.0)).truncate());}
                     ui.separator();
-                    self.display_tabs(ui);
-                    if roomy && self.view_only {
+                    if self.supports_remote(uu_core::capabilities::Capability::Displays){self.display_tabs(ui);}
+                    if self.view_only && (roomy || self.is_native()) {
                         ui.label(RichText::new("仅观看").color(Color32::from_rgb(98, 125, 160)));
                     }
                     if wide && !self.view_only && self.controller.is_some() && !self.input_ready() {
@@ -219,7 +219,7 @@ impl super::App {
                         )
                         .on_hover_text("视频和输入分别建立连接，输入就绪后可操作");
                     }
-                    if let Some(controller) = self.controller.as_ref().filter(|_|roomy) {
+                    if let Some(controller) = self.controller.as_ref().filter(|_|roomy && !self.is_native()) {
                         ui.label(
                             RichText::new(format!(
                                 "{:.1} Mbps",
@@ -241,7 +241,7 @@ impl super::App {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icon_button(ui, Icon::Close, "退出远控").clicked() {
+                        if icon_button(ui, Icon::Close, "退出串流").clicked() {
                             self.disconnect();
                         }
                         if icon_button(ui, Icon::Max, "最大化 / 还原窗口").clicked() {
@@ -588,6 +588,7 @@ impl super::App {
                             ui.with_layout(
                                 egui::Layout::top_down_justified(egui::Align::Min),
                                 |ui| {
+                                    if self.supports_remote(uu_core::capabilities::Capability::Displays) {
                                     side_submenu(
                                         ui,
                                         &mut blocked,
@@ -595,6 +596,8 @@ impl super::App {
                                         self.display_label(),
                                         |ui| self.display_menu(ui),
                                     );
+                                    }
+                                    if self.supports_remote(uu_core::capabilities::Capability::Quality) {
                                     quality_open = side_submenu(
                                         ui,
                                         &mut blocked,
@@ -604,6 +607,7 @@ impl super::App {
                                     )
                                     .inner
                                     .is_some();
+                                    }
                                     side_submenu(ui, &mut blocked, Icon::Max, "窗口", |ui| {
                                         if menu_row(
                                             ui,
@@ -630,6 +634,7 @@ impl super::App {
                                             "全屏显示悬浮入口",
                                         );
                                     });
+                                    if self.supports_remote(uu_core::capabilities::Capability::Audio) {
                                     side_submenu(ui, &mut blocked, Icon::Play, "声音", |ui| {
                                         let mut changed=false;
                                         if let Some(h) = &self.controller {
@@ -647,6 +652,8 @@ impl super::App {
                                         }
                                         if changed{self.audio_save_after=Some(std::time::Instant::now()+std::time::Duration::from_millis(250));}
                                     });
+                                    }
+                                    if self.supports_remote(uu_core::capabilities::Capability::Input) {
                                     side_submenu(ui, &mut blocked, Icon::Desktop, "鼠标", |ui| {
                                         let old=(self.preferences.relative_mouse,self.preferences.remote_cursor);
                                         ui.selectable_value(&mut self.preferences.relative_mouse,false,"桌面模式 · 绝对定位");
@@ -660,6 +667,8 @@ impl super::App {
                                             if old.1!=self.preferences.remote_cursor {self.send_capture_settings();}ctx.memory_mut(|m|m.close_popup());
                                         }
                                     });
+                                    }
+                                    if self.supports_remote(uu_core::capabilities::Capability::Input) {
                                     side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
                                         if ui
                                             .checkbox(&mut self.view_only, "仅观看，禁止远程输入")
@@ -675,11 +684,15 @@ impl super::App {
                                             self.remote_focus = false;
                                         }
                                     });
+                                    }
+                                    if self.supports_remote(uu_core::capabilities::Capability::Clipboard) {
                                     side_submenu(ui,&mut blocked,Icon::Folder,"剪贴板",|ui| {
                                         if ui.checkbox(&mut self.preferences.clipboard,"同步文本剪贴板").changed(){self.persist_preferences();}
                                         ui.small("仅同步当前前台串流，支持最多30 KiB文本；图片和文件不传输。");
                                         if let Some(h)=&self.controller {ui.label(h.stats.clipboard.status.lock().unwrap().as_str());}
                                     });
+                                    }
+                                    if !self.is_native() {
                                     unavailable(ui, Icon::Link, "外设", "外设透传尚未接入");
                                     unavailable(
                                         ui,
@@ -687,6 +700,7 @@ impl super::App {
                                         "工具",
                                         "文件、终端和端口映射尚未接入",
                                     );
+                                    }
                                     if menu_row(ui,"软件设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_settings();}
                                     if menu_row(ui,"关于软件",Some(Icon::Info),false,false,"",false).clicked(){self.open_about();}
                                     side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
@@ -722,25 +736,13 @@ impl super::App {
                                     separator(ui);
                                     if menu_row(
                                         ui,
-                                        if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
-                                            "还原窗口"
-                                        } else {
-                                            "最大化窗口"
-                                        },
-                                        Some(Icon::Max),
-                                        false,
-                                        false,
-                                        "",
-                                        false,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.toggle_maximized(ctx);
-                                    }
+                                        if self.fullscreen {"退出全屏串流"}else{"全屏串流"},
+                                        Some(Icon::Max),false,false,"Ctrl+Alt+F",false,
+                                    ).clicked() {self.local_shortcut(super::shortcuts::Action::Fullscreen,ctx);}
                                     ui.scope(|ui| {
                                         if menu_row(
                                             ui,
-                                            "退出远控",
+                                            "退出串流",
                                             Some(Icon::Exit),
                                             false,
                                             false,

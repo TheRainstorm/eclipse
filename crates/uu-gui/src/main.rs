@@ -29,6 +29,7 @@ mod ui;
 mod brand;
 mod account;
 mod audio_controls;
+mod native_ui;
 use login::LoginEvent;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -97,6 +98,7 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
 
 struct App {
     stream_target: Option<sessions::StreamTarget>,
+    native_ui: native_ui::NativeUi,
     sessions: sessions::Sessions,
     platform: platform::Platform,
     build_label: String,
@@ -315,13 +317,15 @@ impl App {
         setup_style(&cc.egui_ctx);
         let platform = platform::Platform::new(cc, origin);
         let config = uu_core::Config::from_env().ok();
-        let account_token = config.as_ref().and_then(|c| account::read_token(&c.at("state.json")).ok().flatten());
+        let native=stream_target.as_ref().is_some_and(|target|target.is_native());
+        let account_token = if native {None}else{config.as_ref().and_then(|c| account::read_token(&c.at("state.json")).ok().flatten())};
         let logged_in = account_token.is_some();
         let (preferences, settings_notice) = match settings::Settings::path().map(|p|settings::Settings::load(&p)) {
             Some(Ok(s))=>(s,String::new()),Some(Err(e))=>(settings::Settings::default(),format!("读取设置失败：{e}")),None=>(settings::Settings::default(),String::new()),
         };
         let mut app = Self {
             stream_target,
+            native_ui: native_ui::NativeUi::default(),
             sessions: sessions::Sessions::default(),
             platform,
             build_label: installed_revision(),
@@ -390,7 +394,7 @@ impl App {
         };
         if let Some(target) = app.stream_target.clone() {
             app.devices.push(Device {
-                alias: target.alias, device_id: target.device_id,
+                alias: target.alias, device_id: match target.connection {sessions::ConnectionTarget::UuDevice(id)=>id,sessions::ConnectionTarget::NativeInvitation(_)=>String::new()},
                 status: "CONNECTED".into(), controllable: true,
                 wallpaper_url: String::new(), platform: 0, wallpaper_rgba: None,
             });
@@ -401,7 +405,7 @@ impl App {
         } else if logged_in {
             app.start_load();
         } else {
-            app.status = "请扫码登录".into();
+            app.status = "选择连接方式".into();
         }
         app
     }
@@ -517,6 +521,7 @@ impl App {
     }
 
     fn poll_controller(&mut self, ctx: &egui::Context) {
+        let native=self.is_native();
         let Some(h) = &mut self.controller else {
             return;
         };
@@ -540,6 +545,7 @@ impl App {
             match self.textures.get_mut(&idx) {
                 Some(t) => t.set(image, egui::TextureOptions::LINEAR),
                 None => {
+                    if native && self.status.starts_with("正在") {self.status="原生串流已连接 · 仅观看".into();}
                     h.stats.diagnostics.record(serde_json::json!({"event":"first_frame","track":idx,"width":w,"height":hgt,"backend":h.stats.backend()}));
                     let t = ctx.load_texture(
                         format!("remote-{idx}"),
@@ -560,7 +566,7 @@ impl App {
                 } else { "远端拒绝了画质设置，请重新选择".into() };
             }
         }
-        self.poll_displays(&arrived);
+        if self.supports_remote(uu_core::capabilities::Capability::Displays) {self.poll_displays(&arrived);}
         if apply_settings {
             self.send_capture_settings();
         }
@@ -595,7 +601,7 @@ impl App {
             .filter(|id| *id >= 0).map(|id| id as u32).unwrap_or(track + 1)
     }
     fn input_ready(&self) -> bool {
-        !self.disconnecting && self.displays.ready() && self.controller.as_ref().is_some_and(|h|
+        self.supports_remote(uu_core::capabilities::Capability::Input) && !self.disconnecting && self.displays.ready() && self.controller.as_ref().is_some_and(|h|
             h.stats.control_open.load(std::sync::atomic::Ordering::Acquire) != 0)
     }
 
@@ -605,6 +611,7 @@ impl App {
         (self.target_fps, self.bitrate_idx, if self.bitrate_idx == 4 {self.custom_mbps} else {0}, self.resolution_idx, self.preferences.remote_cursor)
     }
     fn send_capture_settings_through(&mut self,immediate:bool) {
+        if !self.supports_remote(uu_core::capabilities::Capability::Quality) {self.settings_feedback="当前画质由被控端设置".into();return;}
         let profile = self.capture_profile();
         let Some(h) = &self.controller else { return };
         let (_, quality, preset_mbps) = BITRATE_PRESETS[self.bitrate_idx];
@@ -834,7 +841,7 @@ impl App {
     fn open_stream_window(&mut self) {
         let Some(device) = self.selected.and_then(|i| self.devices.get(i)) else { return };
         let target = sessions::StreamTarget {
-            device_id: device.device_id.clone(), alias: device.alias.clone(), view_only: self.view_only,
+            connection: sessions::ConnectionTarget::UuDevice(device.device_id.clone()), alias: device.alias.clone(), view_only: self.view_only,
         };
         let result = std::env::current_exe().and_then(|exe| self.sessions.open(&exe, &target, self.platform.origin()));
         self.status = match result {
@@ -850,6 +857,9 @@ impl App {
             return;
         }
         if self.controller.is_some() { return; }
+        if let Some(sessions::ConnectionTarget::NativeInvitation(path))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
+            self.connect_native(path);return;
+        }
         self.displays=displays::Displays::default();self.selected_track=0;
         let Some(i) = self.selected else { return };
         let Some(config) = self.config.clone() else {
@@ -1048,6 +1058,7 @@ impl eframe::App for App {
         } else {
             self.home_ui(ctx);
         }
+        self.native_ui(ctx);
         self.settings_ui(ctx);
         self.about_ui(ctx);
         if self.audio_save_after.is_some_and(|at|std::time::Instant::now()>=at) {

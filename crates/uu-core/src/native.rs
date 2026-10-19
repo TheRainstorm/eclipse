@@ -326,6 +326,7 @@ async fn send_video(
         }
         Ok::<_, anyhow::Error>(())
     }.await;
+    peer.close().await;
     let stopped = producer.stop().await;
     report.captured = producer.captured.load(Ordering::Relaxed);
     active?;
@@ -340,31 +341,76 @@ pub async fn view(
     stats: Arc<MediaStats>,
     mut stop: watch::Receiver<bool>,
 ) -> Result<()> {
-    let mut stream = crate::native_pairing::connect(invitation).await?;
+    stats.capabilities.set(0);
+    let mut stream = tokio::select! {
+        result=crate::native_pairing::connect(invitation)=>result?,
+        _=cancelled(&mut stop)=>return Ok(()),
+    };
     let local_ip = stream.get_ref().0.local_addr()?.ip();
     let mut peer = NativePeer::new(local_ip, Some(stats.clone()), false).await?;
-    let result=async {
-        peer.receiver(frames,stats.clone()).await?;
-        let channel=peer.pc.create_data_channel("eclipse-control-v1",None).await?;
-        let opened=stats.clone();channel.on_open(Box::new(move||{opened.control_open.store(1,Ordering::Release);Box::pin(async{})}));
-        let closed=stats.clone();channel.on_close(Box::new(move||{closed.control_open.store(0,Ordering::Release);Box::pin(async{})}));
-        write_message(&mut stream,&Offer{version:1,sdp:peer.description(true).await?}).await?;
-        let answer:Answer=read_message(&mut stream).await?;
-        ensure!(answer.version==1&&answer.view_only,"unsupported native session capabilities");
-        validate_video(answer.width,answer.height,answer.fps)?;
-        peer.remote(answer.sdp,stream.get_ref().0.peer_addr()?.ip()).await?;peer.connected().await?;
-        loop {
-            tokio::select! {
-                _=cancelled(&mut stop)=>break,
-                _=stream.read_u8()=>{ensure!(stats.decoded_total.load(Ordering::Relaxed)>0,"native host ended before delivering video");break;},
-                state=peer.states.changed()=>{if state.is_err()||matches!(*peer.states.borrow(),RTCPeerConnectionState::Failed|RTCPeerConnectionState::Closed){bail!("native host disconnected");}},
-            }
-        }Ok::<_,anyhow::Error>(())
-    }.await;
+    let result = tokio::select! {
+        result=receive_session(&mut peer,&mut stream,frames,stats.clone())=>result,
+        _=cancelled(&mut stop)=>Ok(()),
+    };
     peer.close().await;
     stats.control_open.store(0, Ordering::Release);
     let _ = stream.shutdown().await;
     result
+}
+
+async fn receive_session(
+    peer: &mut NativePeer,
+    stream: &mut tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+    frames: FrameSender,
+    stats: Arc<MediaStats>,
+) -> Result<()> {
+    peer.receiver(frames, stats.clone()).await?;
+    let channel = peer
+        .pc
+        .create_data_channel("eclipse-control-v1", None)
+        .await?;
+    let opened = stats.clone();
+    channel.on_open(Box::new(move || {
+        opened.control_open.store(1, Ordering::Release);
+        Box::pin(async {})
+    }));
+    let closed = stats.clone();
+    channel.on_close(Box::new(move || {
+        closed.control_open.store(0, Ordering::Release);
+        Box::pin(async {})
+    }));
+    write_message(
+        stream,
+        &Offer {
+            version: 1,
+            sdp: peer.description(true).await?,
+        },
+    )
+    .await?;
+    let answer: Answer = read_message(stream).await?;
+    ensure!(
+        answer.version == 1 && answer.view_only,
+        "unsupported native session capabilities"
+    );
+    validate_video(answer.width, answer.height, answer.fps)?;
+    stats.configured_fps.store(answer.fps,Ordering::Release);
+    peer.remote(answer.sdp, stream.get_ref().0.peer_addr()?.ip())
+        .await?;
+    peer.connected().await?;
+    loop {
+        tokio::select! {
+            _=stream.read_u8()=>{
+                ensure!(stats.decoded_total.load(Ordering::Relaxed)>0,"native host ended before delivering video");
+                break;
+            },
+            state=peer.states.changed()=>{
+                if state.is_err()||matches!(*peer.states.borrow(),RTCPeerConnectionState::Failed|RTCPeerConnectionState::Closed){
+                    bail!("native host disconnected");
+                }
+            },
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

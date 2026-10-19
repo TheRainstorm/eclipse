@@ -33,6 +33,9 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
 pub struct MediaStats {
+    pub capabilities:crate::capabilities::Capabilities,
+    /// Host-confirmed source target; zero when only the client's request is known.
+    pub configured_fps:AtomicU32,
     pub diagnostics: crate::session_diagnostics::SessionDiagnostics,
     pub control_open: AtomicU32,
     /// Snapshot of the user's connection policy: 0 preserve, 1 exclusive UU.

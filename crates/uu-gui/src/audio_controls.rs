@@ -10,6 +10,7 @@ impl super::App {
     }
 
     pub(super) fn toggle_audio_mute(&mut self) {
+        if !self.supports_remote(uu_core::capabilities::Capability::Audio){return;}
         let muted = !self.audio_muted();
         self.preferences.muted = muted;
         self.settings_draft.muted = muted;
@@ -21,6 +22,7 @@ impl super::App {
     }
 
     pub(super) fn audio_button(&mut self, ui: &mut eframe::egui::Ui) {
+        if !self.supports_remote(uu_core::capabilities::Capability::Audio){return;}
         let muted = self.audio_muted();
         let icon = if muted {
             super::ui::Icon::Muted
