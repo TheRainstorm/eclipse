@@ -4885,6 +4885,7 @@ dependencies = [
  "uu-proto",
  "uuid",
  "webrtc",
+ "zeroize",
 ]
 
 [[package]]

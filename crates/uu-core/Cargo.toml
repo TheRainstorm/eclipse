@@ -22,6 +22,7 @@ md-5.workspace = true
 crc32fast.workspace = true
 hex.workspace = true
 uuid.workspace = true
+zeroize = "1"
 socket2 = "0.5"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"

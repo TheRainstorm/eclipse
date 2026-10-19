@@ -98,7 +98,7 @@ All candidates gathered for pooled session.
 * 相关签名算法与设备指纹**尚未还原** —— 这是能否与官方服务互通的**前置阻塞**。
 
 
-## 2.6 请求签名 —— 已破解并线上验证 ★★★
+## 2.6 请求签名格式与兼容性验证
 
 **结论：服务端接受我们独立构造的签名。**
 
@@ -120,14 +120,11 @@ message  = METHOD + pathWithQuery + headers + body
 signature= hex(HMAC-SHA256(key, message))
 ```
 
-### 两套密钥（不可混用）
+### 签名凭据由用户在本地提供
 
-| 用途 | 密钥 |
-|---|---|
-| **原生客户端（我们要用的）** | `REMOVED_SERVICE_KEY_0000` |
-| Web bundle（仅 web 页面） | `REMOVED_SERVICE_KEY_0000` |
-
-用 web 密钥签原生接口会被服务端以 `1003 无效签名` 拒绝。
+原生接口与 Web 接口的凭据不同，不能互换。本项目不分发第三方生产密钥，
+源码、测试、安装包都不包含有效密钥。客户端仅在运行时读取用户有权使用的本地配置；
+配置方式见 [连接凭据](connection-credentials.md)。缺少配置时明确报错，不尝试默认密钥或远端取密钥。
 
 ### 请求头真实取值（Windows 构建）
 
@@ -141,22 +138,17 @@ X-Param-TS: <unix 秒>                X-Param-client-id: <uuid>
 X-Param-device-id: <16 位>           X-Param-user-id: <登录后才有>
 ```
 
-### 证据与复现
+### 验证边界
 
-1. `uucap7.py` 挂钩 `BCrypt CreateHash/HashData/FinishHash`，抓到 53 个 HMAC 三元组
-   （key / message / digest）。
-2. 17/17 条 `HMAC-SHA256(key, message) == digest` 全部匹配。
-3. 规范串原文示例：
-```
-GET/api/v1/release/fetch/updatex-param-chn=gwqd&x-param-client-id=&x-param-cnt=zh-CN&x-param-device-id=aeawvih7lubbnfna&x-param-lang=zh-CN&x-param-opr=&x-param-pkgn=com.netease.uuremote&x-param-plat=1&x-param-rel=prod&x-param-system-id=&x-param-ts=1792218924&x-param-vc=2090&x-param-vn=4.40.1.2090
-```
-4. 实现：`crates/uu-core/src/sign.rs`，含这些真实向量作为单元测试。
+规范串和 HMAC 格式曾与实际交互进行本地对照；公开仓库不保留生产密钥及依赖它的测试向量。
+实现见 `crates/uu-core/src/sign.rs`，公开测试采用 RFC 4231 和虚构请求，验证排序、空值、签名头过滤与原始请求体。
+凭据读取、权限及缺失处理见 `crates/uu-core/src/signing_key.rs`。
 
 ### 实现状态
 
 | 项 | 状态 |
 |---|---|
-| 签名算法 | ✅ 已实现 + 真实向量测试 |
+| 签名算法 | ✅ 已实现；公开测试只用标准向量与虚构数据 |
 | 线上验证 | ✅ `uu api /api/v1/release/fetch/update` → 1151 |
 | 登录流程（QR） | 🚧 端点已知，**请求/响应 body 形状待抓** |
 | 设备列表 / 建会话 | 🚧 端点已知，需登录态 |
@@ -208,7 +200,7 @@ GET/api/v1/release/fetch/updatex-param-chn=gwqd&x-param-client-id=&x-param-cnt=z
 | `client_id` 必须是注册过的 UUID | 随机 UUID 调 `gen/login` 会 1001 |
 | `X-Param-device-id` 必须是注册返回的 device_id | 用 system_id 会 1001 |
 | `by_qrcode` 的调用时机 | 早于 `status=4` 会 1194 |
-| 两个密钥不可混用 | 原生用 `REMOVED_SERVICE_KEY_0000`，web 用 `REMOVED_SERVICE_KEY_0000` |
+| 凭据作用域不可混用 | 原生接口需要对应的用户本地凭据，不使用 Web 接口凭据 |
 | 终端二维码渲染 | 必须用半块字符（`▀▄█`）；一模块一字符会被拉成 2:1 无法扫描 |
 
 ### 当前实现

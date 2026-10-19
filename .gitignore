@@ -22,3 +22,10 @@ artifacts/
 /tools/linux_controller/
 __pycache__/
 *.pyc
+
+# 本地服务凭据；运行时读取，不编译进客户端
+**/signing-key
+**/signing-key.*
+.env
+.env.*
+!.env.example

@@ -14,9 +14,8 @@
 //! ```
 //!
 //! Two different keys exist in the product: the web bundle signs with its own
-//! key, while the native client (which this crate speaks to) uses the key
-//! below. They are NOT interchangeable — the server rejects the wrong one with
-//! `code 1003`.
+//! key, while the native client uses a different credential. The signing key
+//! used for a given API is runtime configuration, never bundled with the client.
 
 use std::collections::BTreeMap;
 
@@ -24,12 +23,6 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
 pub type HmacSha256 = Hmac<Sha256>;
-
-/// Native client signing key. Verified against captured traffic.
-pub const NATIVE_SIGN_KEY: &[u8; 24] = b"REMOVED_SERVICE_KEY_0000";
-
-/// Web bundle signing key (kept for reference; the native API rejects it).
-pub const WEB_SIGN_KEY: &[u8; 24] = b"REMOVED_SERVICE_KEY_0000";
 
 const HEADER_PREFIX: &str = "x-param-";
 const SIGN_HEADER: &str = "x-param-sign";
@@ -163,68 +156,33 @@ pub fn sign_request(
 mod tests {
     use super::*;
 
-    /// Real captures: (canonical message, expected signature). These came from
-    /// hooking BCrypt in the live client, so they are ground truth.
-    const VECTORS: &[(&str, &str)] = &[
-        (
-            "GET/api/v1/release/fetch/updatex-param-chn=gwqd&x-param-client-id=&x-param-cnt=zh-CN&x-param-device-id=aeawvih7lubbnfna&x-param-lang=zh-CN&x-param-opr=&x-param-pkgn=com.netease.uuremote&x-param-plat=1&x-param-rel=prod&x-param-system-id=&x-param-ts=1792218924&x-param-vc=2090&x-param-vn=4.40.1.2090",
-            "ea434c005c09f71486e30deaaa6b7bd7cba60c2a513ec4df2a7e4bfbbbca6371",
-        ),
-        (
-            "GET/api/v1/campaign/placements/market_tab/tagsx-param-chn=gwqd&x-param-client-id=570ec35c-1b66-4d97-b39b-daff4ee2c505&x-param-cnt=zh-CN&x-param-device-id=aeawvih7lubbnfna&x-param-lang=zh-CN&x-param-opr=&x-param-pkgn=com.netease.uuremote&x-param-plat=1&x-param-rel=prod&x-param-system-id=&x-param-ts=1792218925&x-param-user-id=aebgvih7zyakodn7&x-param-vc=2090&x-param-vn=4.40.1.2090",
-            "1f8dd02ed69181f21b26ba68107eaabf39f570793ed6e8a41d870e9618234a9f",
-        ),
-    ];
-
     #[test]
-    fn captured_vectors_verify() {
-        for (message, expected) in VECTORS {
-            assert_eq!(&sign_message(NATIVE_SIGN_KEY, message), expected, "message={message}");
-        }
+    fn rfc4231_hmac_sha256_vector() {
+        assert_eq!(sign_message(&[0x0b; 20], "Hi There"),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
     }
 
     #[test]
-    fn canonical_string_matches_capture_shape() {
-        let id = ClientIdentity {
-            client_id: String::new(),
-            device_id: "aeawvih7lubbnfna".into(),
-            ..ClientIdentity::default()
-        };
-        let headers = id.headers(1_792_218_924);
-        let msg = canonical_string("GET", "/api/v1/release/fetch/update", &headers, None);
-        assert_eq!(
-            msg,
-            "GET/api/v1/release/fetch/updatex-param-chn=gwqd&x-param-client-id=&x-param-cnt=zh-CN&x-param-device-id=aeawvih7lubbnfna&x-param-lang=zh-CN&x-param-opr=&x-param-pkgn=com.netease.uuremote&x-param-plat=1&x-param-rel=prod&x-param-system-id=&x-param-ts=1792218924&x-param-vc=2090&x-param-vn=4.40.1.2090"
-        );
-        assert_eq!(
-            sign_request(NATIVE_SIGN_KEY, "GET", "/api/v1/release/fetch/update", &headers, None),
-            "ea434c005c09f71486e30deaaa6b7bd7cba60c2a513ec4df2a7e4bfbbbca6371"
-        );
-    }
-
-    #[test]
-    fn body_is_appended_verbatim() {
+    fn canonical_string_filters_sorts_and_preserves_empty_values() {
         let mut h = BTreeMap::new();
-        h.insert("x-param-ts".to_string(), "5".to_string());
-        let msg = canonical_string("POST", "/p", &h, Some(r#"{"a":1}"#));
-        assert_eq!(msg, r#"POST/px-param-ts=5{"a":1}"#);
+        h.insert("X-Param-Z".into(), "".into());
+        h.insert("x-param-a".into(), "value".into());
+        h.insert("Authorization".into(), "Bearer test-token".into());
+        h.insert("x-param-sign".into(), "old-signature".into());
+        assert_eq!(canonical_string("GET", "/p?x=1", &h, None),
+            "GET/p?x=1x-param-a=value&x-param-z=");
     }
 
     #[test]
-    fn sign_header_is_excluded_from_canonical_string() {
+    fn body_is_signed_verbatim_with_explicit_test_key() {
         let mut h = BTreeMap::new();
-        h.insert("x-param-ts".to_string(), "5".to_string());
-        h.insert("x-param-sign".to_string(), "deadbeef".to_string());
-        assert_eq!(canonical_string("GET", "/p", &h, None), "GET/px-param-ts=5");
-    }
-
-    #[test]
-    fn web_and_native_keys_differ() {
-        assert_ne!(NATIVE_SIGN_KEY, WEB_SIGN_KEY);
-        let msg = "GET/x";
-        assert_ne!(
-            sign_message(NATIVE_SIGN_KEY, msg),
-            sign_message(WEB_SIGN_KEY, msg)
-        );
+        h.insert("x-param-ts".into(), "5".into());
+        let body = r#"{"a":1}"#;
+        let message = canonical_string("POST", "/p", &h, Some(body));
+        assert_eq!(message, r#"POST/px-param-ts=5{"a":1}"#);
+        assert_eq!(sign_request(b"unit-test-key", "POST", "/p", &h, Some(body)),
+            sign_message(b"unit-test-key", &message));
+        assert_ne!(sign_request(b"unit-test-key", "POST", "/p", &h, Some(body)),
+            sign_request(b"unit-test-key", "POST", "/p", &h, Some(r#"{ "a": 1 }"#)));
     }
 }

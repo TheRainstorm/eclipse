@@ -15,6 +15,7 @@ pub mod selfloop;
 pub mod session;
 pub mod session_diagnostics;
 pub mod sign;
+pub mod signing_key;
 pub mod signal;
 pub mod socketio;
 
@@ -23,7 +24,7 @@ pub use config::Config;
 pub use error::CoreError;
 pub use session::{Role, Session, SessionState};
 pub use signal::SignalClient;
-pub use sign::{ClientIdentity, NATIVE_SIGN_KEY};
+pub use sign::ClientIdentity;
 pub use selfloop::SelfLoopConfig;
 
 

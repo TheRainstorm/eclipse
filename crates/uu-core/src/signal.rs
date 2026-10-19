@@ -40,6 +40,7 @@ const RELEASE_CHANNEL: &str = "gwqd";
 pub struct SignalClient {
     http: reqwest::Client,
     host: String,
+    signing_key_path: std::path::PathBuf,
 }
 
 impl SignalClient {
@@ -47,7 +48,7 @@ impl SignalClient {
         let http = reqwest::Client::builder()
             .user_agent("uu-remote-rs/0.0.1")
             .build()?;
-        Ok(Self { http, host: config.signaling_host.clone() })
+        Ok(Self { http, host: config.signaling_host.clone(), signing_key_path: crate::signing_key::SigningKey::path(config) })
     }
 
     /// Ask the release feed where a platform's installer now lives.
@@ -90,6 +91,23 @@ impl SignalClient {
     }
 }
 
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn missing_credentials_fail_before_any_network_request() {
+        let client = SignalClient {
+            http: reqwest::Client::new(),
+            host: "127.0.0.1:9".into(),
+            signing_key_path: std::env::temp_dir().join(format!("uu-no-key-{}", uuid::Uuid::new_v4())),
+        };
+        let result = client.call(&ClientIdentity::default(), None,
+            SignedRequest { method: "GET", path_with_query: "/test", body: None }).await;
+        assert!(matches!(result, Err(CoreError::SigningKeyMissing)));
+    }
+}
+
 /// A response from the signed API.
 #[derive(Debug, Clone)]
 pub struct ApiResponse {
@@ -116,6 +134,7 @@ impl SignalClient {
         token: Option<&str>,
         req: SignedRequest<'_>,
     ) -> Result<ApiResponse, CoreError> {
+        let signing_key = crate::signing_key::SigningKey::load_file(&self.signing_key_path)?;
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| CoreError::Config(e.to_string()))?
@@ -127,7 +146,7 @@ impl SignalClient {
             .as_ref()
             .map(|b| serde_json::to_string(b).expect("serialising JSON value"));
         let signature = sign::sign_request(
-            sign::NATIVE_SIGN_KEY,
+            signing_key.as_bytes(),
             req.method,
             req.path_with_query,
             &headers,
