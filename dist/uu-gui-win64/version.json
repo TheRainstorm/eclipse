@@ -1,13 +1,13 @@
 {
-  "source_commit": "329afc4260e65c194df970e7635450ca53df4656",
-  "built_at_utc": "2026-10-19T10:10:30.912063+00:00",
+  "source_commit": "3df16e8aaf35e912887f2105229d32fddf8e642d",
+  "built_at_utc": "2026-10-19T10:31:27.685321+00:00",
   "install_directory": "%USERPROFILE%\\uu-gui-demo",
   "sha256": {
-    "uu-gui.exe": "b580d34e8ad77f3213ed752c29fe3cf79c13ca385c6e2c6694e6ecb3cc2a4d33",
-    "uu.exe": "645e56f27b4cf91e605da4fd639ee35786d4b76d8ab0a0e30ce1bc0936983c78",
+    "uu-gui.exe": "ee18b9e41abc9e6830d1809c49dfa77707cb3471bfb7b2e3855757c1e4c7248a",
+    "uu.exe": "fe1d6e143a712ab1757fa45cf4c71fb4aa544444f219f1188fa8e92d2db3fc02",
     "libgcc_s_seh-1.dll": "db6299e6e110540fc4622b6a1cbe6b83078d6ce6e05a140fa0cddbeb7afa1f04",
     "libstdc++-6.dll": "716df4898fdbfb0c58c6e83918f803dd9d2bf6b2e26734f73d4c96f5423f435b",
-    "README.txt": "39bd379b664e12552fa266ba011bd3d28c929cdc38111346050327dc2211cb6e",
+    "README.txt": "2e458eabf93949cf5dce5f0f3c6728590fe424bdb43826115a3e4ac4cbfe99c3",
     "install.ps1": "03784b40617fddda36c9216c69b05dbc0d8c139053b136c9a1c1da55634505ac"
   }
 }
