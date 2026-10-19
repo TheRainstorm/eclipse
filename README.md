@@ -67,6 +67,8 @@ HUD 显示实际解码后端。离线验证可运行
 Ctrl+Alt+F 切换全屏。Windows 路径中键使用实测的 `MK_MBUTTON=16`，支持按住拖动。
 接收端支持短时 RTP 重排、NACK 和损坏帧恢复；FEC/完整 RTX 尚未接入。
 恢复机制、卡顿原因和 Sunshine/Moonlight 对比见 [`docs/streaming-quality.md`](docs/streaming-quality.md)。
+三个本地开源项目的功能、源码入口、接入边界与实施顺序见
+[`docs/reference-index.md`](docs/reference-index.md)；包含固定提交版本和快速迭代时的更新方法。
 
 ## 仓库结构
 
