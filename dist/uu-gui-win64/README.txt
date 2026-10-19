@@ -1,22 +1,32 @@
 网易UU远程 — Rust 原生客户端（Windows x64）
 
 运行：
-  1. 双击 uu-gui.exe
-  2. 首次运行如弹出 Windows 防火墙提示，请点“允许”（需要 UDP/TCP）
-  3. 首次启动会显示二维码，用手机网易UU/微信扫码登录
-  4. 左侧选择设备，点击底部“连接”
-  5. 连接后可全屏、切换显示器；底部“断开”结束会话
+  1. 双击 uu-gui.exe；首次运行如有防火墙提示，允许 UDP/TCP。
+  2. 首次启动显示二维码，用手机扫码登录。
+  3. 左侧选择设备，点击“进入桌面”；连接后切到串流界面，设置图标可调码率。
+  4. Ctrl+Alt+F 切换全屏，F1 切换 HUD；顶栏返回或 × 图标断开会话。
+
+解码：
+  - 默认优先 D3D11VA（Media Foundation），失败自动回退 OpenH264。
+  - HUD 显示实际后端、GPU 和回退原因。
+  - Intel Arc B390 / AMD RX 7900 XTX 已实测；1080p 输出按可见尺寸裁剪。
+  - 硬解目前仍有 GPU→CPU 回读，实测速度不一定优于软解。
+  - 设置 UU_DECODER=sw 可强制软解；UU_DECODER=auto 恢复默认选择。
+  - 当前实际帧率也取决于被控端；官方静态桌面会主动降帧。
+
+离线自测（PowerShell，在本目录运行）：
+  .\uu.exe probe --h264 C:\path\sample.h264
+  .\uu.exe probe --h264 C:\path\sample.h264 --frame first-frame.ppm
+  $env:UU_DECODER='sw'; .\uu.exe probe --h264 C:\path\sample.h264
+  Remove-Item Env:UU_DECODER
+  --frame 将首帧写成 PPM；探测同时打印尺寸、行跨距、帧数和最终后端。
+  无输出帧或有解码错误时返回非零退出码。
 
 注意：
-  - libstdc++-6.dll 和 libgcc_s_seh-1.dll 必须与 uu-gui.exe 放在同一目录
-  - 登录态保存在 %USERPROFILE%\.local\share\uu-remote\state.json
-  - 远端画面已修复连续解码；键鼠走 CONTROL_DATA_CHANNEL 裸 JSON（已实测可用）
-  - 垂直同步默认开启（无撕裂）；UU_VSYNC=0 可关
-
-帧率说明：
-  - 客户端用进程内 OpenH264 软件解码，1080p 约 2.9ms/帧（几百 fps 余量），
-    解码不是瓶颈；实际帧率主要取决于被控端发送的帧率（静态桌面时官方被控端
-    会跳帧到 ~20fps，画面有运动时才拉高）。
-  - 已移除外部 ffmpeg 子进程解码（延迟太高、不跟手）。
-  - 硬件解码（Windows Media Foundation）规划为进程内后端，后续加入。
-  - 按 F1 或顶栏 HUD 按钮可显示串流统计（源/解码/渲染 fps、码率、解码耗时、丢包）。
+  - libstdc++-6.dll 和 libgcc_s_seh-1.dll 必须与两个 exe 放在同一目录。
+  - 登录态保存在 %USERPROFILE%\.local\share\uu-remote\state.json。
+  - 键鼠走 CONTROL_DATA_CHANNEL 裸 JSON；Windows 路径中键值 16，支持按住拖动。
+  - 默认自定义码率 55 Mbps；观看模式不转发键鼠输入。
+  - 接收端有短时重排/NACK、坏帧丢弃和按需关键帧恢复；FEC 尚未接入。
+  - 压缩帧和显示队列有界，积压时优先显示最新画面。
+  - 垂直同步默认开启；UU_VSYNC=0 可关。

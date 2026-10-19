@@ -1,6 +1,6 @@
 # 交接文档 —— uu_remote（UU 远程的原生 Rust 重写）
 
-最后更新：2026-10-17 23:05 ｜ 语言：中文 ｜ 状态：**鉴权/登录/媒体/GUI 已完成；远端视频连续解码、键盘与鼠标输入均已打通**
+最后更新：2026-10-18 03:10 ｜ 语言：中文 ｜ 状态：**鉴权/登录/媒体/GUI 已完成；视频连续解码、键盘/鼠标、码率控制均已打通**
 
 ---
 
@@ -12,10 +12,10 @@
 - ✅ **登录全链路跑通**：自注册设备 → 扫码登录 → 拿 JWT → 拉设备列表（`uu devices` 返回 `code:0`）
 - ✅ **会话/媒体面跑通**：Socket.IO 信令 + WebRTC，Rust 端收到并解码 1920×1080 H264
 - ✅ **Windows GUI 端到端可用**：设备列表、扫码登录、远程画面、鼠标、全屏/多显示器
-- ✅ **键盘通道定位完成**：官方键盘走 **TURN-over-TLS 到中继**，不是直连被控端 TLS
-- ✅ **Rust TURN/PCK 中继**：已实现 TLS、Allocate、CreatePermission、Send/Data
-  Indication，并在真实 room/join 会话中拿到 `0x0103` Allocate Success
-- 🚧 **最后一个缺口**：被控端仍未通过低层键盘钩子确认收到 Rust 发出的键盘帧
+- ✅ **输入**：5 个命名 data channel + CONTROL echo 握手 + 裸 JSON，键鼠实机验证通过
+- ✅ **码率控制**：官方 `CaptureSettingRequest` 完整字段 + field8(bps) 自定义档，
+  实测局域网 51.6 Mbps；旧 TURN/PCK 只保留为历史探针
+- 🚧 **主链路无阻塞缺口**：剩余为音频、剪贴板/文件、硬件解码、独立窗口等外围功能
 
 ---
 
@@ -435,7 +435,7 @@ uu pck-dial ...    ICE-TCP + TLS 的 PCK 拨号探针
 | 机器 | 地址 | 说明 |
 |---|---|---|
 | **ares**（开发机） | 192.168.35.10 | Ubuntu 24.04，12 核 / 15 GB，仓库所在 |
-| **x358h**（Windows 11，可随意折腾） | 192.168.35.200:2202，用户 yfy，管理员 | UU 装在 `D:\Programs\GameViewer`；被控/主控都测过 |
+| **x358h**（Windows 11，可随意折腾） | 192.168.34.3:2202，用户 yfy，管理员 | 2026-10-19 用户更新地址（旧 192.168.35.200）；Intel Arc B390，UU 装在 `D:\Programs\GameViewer`；被控/主控都测过 |
 | **KVM-WIN11**（被控测试机） | 192.168.35.6:2202 | UU 装在 `E:\Program\Netease\GameViewer`；device_id `aeawvmepembcpca5` |
 | laptop-arch | 192.168.35.100:22 | Arch x86_64，时有时无，仅作 Linux 端测试 |
 
@@ -516,6 +516,7 @@ C:\Users\yfy\kvmshot.ps1    截图到 C:\Users\yfy\kvm_shot.png
 | TURN-over-TLS Allocate（Python PoC） | `0x0103 Success`，relayed address + LIFETIME=600 |
 | data channel 键盘 8 组变体 | KVM 低层钩子只记录到一次 `VK_F24(135)`，没有任何测试 VK |
 | Windows GUI 视频/鼠标 | x358h → KVM-WIN11，1080p 画面、鼠标、全屏、多显示器均正常 |
+| 码率自定义档 | `UU_QUALITY=6 UU_BITRATE=55` → 实测 ~51.6 Mbps；`UU_BITRATE=20` → ~17 Mbps |
 
 当前没有保持中的测试会话；`force_join` 会踢掉官方会话，测试前再启动即可。
 

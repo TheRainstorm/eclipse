@@ -15,11 +15,13 @@
 | M2a | 自有环路（UDP）：采集→H.264→分片→UDP→解码→PSNR | ✅ |
 | M2b | 官方 WebRTC 媒体面（ICE/DTLS-SRTP、H264、多显示器） | ✅ 已收到 1080p 画面 |
 | M3 | 输入：鼠标/拖拽经 PCK over data channel | ✅ 实测生效 |
-| M3b | 键盘输入 | 🟡 Rust TURN/PCK 已接通；远端 VK 注入仍待验收 |
+| M3b | 键盘输入 | ✅ CONTROL 通道 VK 注入已实测 |
 | M4 | 官方 API：签名、扫码登录、设备列表、room/join | ✅ |
 | M5 | 官方信令：Socket.IO (`X-NRD-AUTH`) + SDP/ICE | ✅ |
 | M6 | GUI：设备列表、扫码登录、远程画面、全屏/断开 | ✅ |
 | M7 | Windows x64 交叉构建 | ✅ 已在 KVM-WIN11 启动验证 |
+| M8 | Windows D3D11VA 硬件解码 | ✅ Intel Arc B390 / AMD RX 7900 XTX 实测；Linux VA-API 待真机验证 |
+| M9 | 输入与串流体验 | ✅ Windows 中键按住/拖动、浅色设备主页、RTP 重排/坏帧丢弃/恢复、最新帧呈现 |
 
 > 现在已经能做到：连接官方被控端、连续看画面、用鼠标和键盘操作。剩余的是
 > 音频/剪贴板/文件等外围功能，以及原生采集后端（目前是占位）。
@@ -48,12 +50,23 @@ Windows 版（交叉编译产物）：
 ```
 dist/uu-gui-win64/
   uu-gui.exe
+  uu.exe
   libstdc++-6.dll
   libgcc_s_seh-1.dll
   README.txt
 ```
 
 首次启动会显示二维码，用手机扫码登录；左侧选择设备后点“连接”。
+
+Windows 默认优先使用 D3D11VA，失败时回退到 OpenH264；设置 `UU_DECODER=sw` 可强制软解。
+HUD 显示实际解码后端。离线验证可运行
+`uu.exe probe --h264 sample.h264 --frame first-frame.ppm`，同时检查解码数量、尺寸和首帧图像。
+当前硬解仍需 CPU 回读，并不保证比软解更快。最新进度见 [`handoff/README.md`](handoff/README.md)。
+
+设备主页按参考图改成浅色布局；连接后切换为紧凑串流界面。F1 切换统计，
+Ctrl+Alt+F 切换全屏。Windows 路径中键使用实测的 `MK_MBUTTON=16`，支持按住拖动。
+接收端支持短时 RTP 重排、NACK 和损坏帧恢复；FEC/完整 RTX 尚未接入。
+恢复机制、卡顿原因和 Sunshine/Moonlight 对比见 [`docs/streaming-quality.md`](docs/streaming-quality.md)。
 
 ## 仓库结构
 
@@ -83,8 +96,7 @@ artifacts/         采样样本与校验和（不随仓库分发官方二进制�
 - 音频（Opus）尚未接入。
 - 只实现了主控端（controller）；被控端（host）的桌面采集/编码还没接。
 - 视频只解 H264；H265 需要额外的解码器。
-- 鼠标目前走 WebRTC data channel；键盘硬走 TURN/PCK 中继通道，不能复用
-  data channel（已用被控端低层键盘钩子确认）。
+- 键盘和鼠标均走 `CONTROL_DATA_CHANNEL` 裸 JSON，不再使用独立 TURN/PCK 输入通道。
 
 ## 与前期调研的关系
 

@@ -374,7 +374,7 @@ kind=8, channel=0, ptype=0x51
 
 WebRTC data channel 能送鼠标，但键盘帧会被被控端忽略；键盘必须走
 TURN/PCK 中继通道。最新细节和 TURN Allocate 验证结果见
-`HANDOVER.md` 的「键盘通道（最新结论）」。
+`handoff/01-base-handover.md` 的「键盘通道（最新结论）」。
 
 ### 待解
 
