@@ -1074,6 +1074,8 @@ fn main() -> eframe::Result {
             .with_decorations(false)
             .with_min_inner_size([560.0, 360.0])
             .with_title(title)
+            .with_app_id(brand::NAME)
+            .with_icon(brand::window_icon())
             .with_visible(!cfg!(windows)),
         vsync,
         centered: !cfg!(windows),

@@ -17,7 +17,7 @@ OUTPUT = ROOT / 'artifacts/packages'
 TARGET = 'x86_64-pc-windows-gnu'
 REQUIRED = ('uu-gui.exe', 'uu.exe', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll',
             'README.txt', 'install.ps1')
-SOURCE_PATHS = ('crates', 'vendor', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
+SOURCE_PATHS = ('crates', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                 '.cargo', 'tools/windows')
 
 
@@ -37,7 +37,7 @@ def clean_revision():
 
 def check_tools():
     for name in ('cargo', 'rustup', 'git', 'nasm', 'x86_64-w64-mingw32-gcc',
-                 'x86_64-w64-mingw32-g++', 'x86_64-w64-mingw32-objdump'):
+                 'x86_64-w64-mingw32-g++', 'x86_64-w64-mingw32-objdump', 'x86_64-w64-mingw32-windres'):
         if not shutil.which(name):
             raise RuntimeError(f'缺少 {name}；依赖安装方法见 docs/windows-build.md')
     targets = subprocess.check_output(['rustup', 'target', 'list', '--installed'], text=True)

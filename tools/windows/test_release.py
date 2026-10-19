@@ -94,7 +94,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_cli_defaults_to_standard_ssh_port(self):
         result = subprocess.run([sys.executable, str(Path(sync.__file__)), '--host', '192.0.2.10',
-                                 '--user', 'tester', '--install-dir', r'C:\Apps\UU Remote Rust',
+                                 '--user', 'tester', '--install-dir', r'C:\Apps\uu-client',
                                  '--package', str(self.make_bundle()), '--dry-run'],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -133,6 +133,12 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'crates/new.rs'):
                 package.clean_revision()
             new_source.unlink()
+            (self.root / 'assets').mkdir()
+            icon = self.root / 'assets/icon.png'
+            icon.write_bytes(b'untracked icon')
+            with self.assertRaisesRegex(RuntimeError, 'assets/icon.png'):
+                package.clean_revision()
+            icon.unlink()
             (self.root / 'Cargo.toml').write_text('# changed\n')
             with self.assertRaisesRegex(RuntimeError, 'Cargo.toml'):
                 package.clean_revision()

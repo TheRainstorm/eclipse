@@ -64,6 +64,7 @@ if (!$NoShortcut) {
                 $link.TargetPath.Equals($previousExe, [StringComparison]::OrdinalIgnoreCase)) {
                 $link.TargetPath = Join-Path $InstallDir 'uu-gui.exe'
                 $link.WorkingDirectory = $InstallDir
+                $link.IconLocation = (Join-Path $InstallDir 'uu-gui.exe') + ',0'
                 $link.Save()
                 if ($_.BaseName -eq 'UU Remote Rust') {
                     Move-Item -LiteralPath $_.FullName -Destination (Join-Path $_.DirectoryName 'uu-client.lnk') -Force
@@ -75,6 +76,7 @@ if (!$NoShortcut) {
     $link = $shell.CreateShortcut($shortcut)
     $link.TargetPath = Join-Path $InstallDir 'uu-gui.exe'
     $link.WorkingDirectory = $InstallDir
+    $link.IconLocation = (Join-Path $InstallDir 'uu-gui.exe') + ',0'
     $link.Description = 'uu-client - canonical installation'
     $link.Save()
 }

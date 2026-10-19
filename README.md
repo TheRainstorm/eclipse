@@ -1,5 +1,7 @@
 # uu-client — 开源远程串流客户端（Windows + Linux）
 
+<img src="assets/branding/eclipse-256.png" width="80" height="80" alt="Eclipse 日蚀图标">
+
 目标：不依赖 Wine，用 Rust 原生实现网易 UU 远程（`uuyc.163.com`）的**被控端**与
 **主控端**，同时支持 Windows 与 Linux 两个平台。
 

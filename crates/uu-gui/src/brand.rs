@@ -4,6 +4,41 @@ use eframe::egui;
 pub const NAME: &str = "uu-client";
 pub const TAGLINE: &str = "远端，如在眼前";
 pub const REPOSITORY: &str = "https://github.com/TheRainstorm/uu-client";
+const ICON_PNG: &[u8] = include_bytes!("../../../assets/branding/eclipse-256.png");
+
+pub fn window_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(ICON_PNG).expect("embedded Eclipse icon must be a valid PNG")
+}
+
+pub fn paint_logo(painter: &egui::Painter, rect: egui::Rect) {
+    let id = egui::Id::new("eclipse-brand-texture");
+    let ctx = painter.ctx();
+    let texture = ctx
+        .data_mut(|data| data.get_temp::<egui::TextureHandle>(id))
+        .unwrap_or_else(|| {
+            let image = window_icon();
+            let texture = ctx.load_texture(
+                "eclipse-brand",
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [image.width as usize, image.height as usize],
+                    &image.rgba,
+                ),
+                egui::TextureOptions::LINEAR,
+            );
+            ctx.data_mut(|data| data.insert_temp(id, texture.clone()));
+            texture
+        });
+    let square = egui::Rect::from_center_size(
+        rect.center(),
+        egui::Vec2::splat(rect.width().min(rect.height())),
+    );
+    painter.image(
+        texture.id(),
+        square,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+}
 
 impl super::App {
     pub(super) fn local_dialog_open(&self) -> bool {
@@ -81,5 +116,28 @@ impl super::App {
                     });
             });
         self.about_open = open;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn embedded_icon_decodes_and_survives_repeated_context_frames() {
+        let icon = super::window_icon();
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+        let ctx = eframe::egui::Context::default();
+        for _ in 0..2 {
+            let output = ctx.run(Default::default(), |ctx| {
+                super::paint_logo(
+                    &ctx.debug_painter(),
+                    eframe::egui::Rect::from_min_size(
+                        eframe::egui::Pos2::ZERO,
+                        eframe::egui::Vec2::splat(32.0),
+                    ),
+                );
+            });
+            assert!(!output.shapes.is_empty());
+        }
     }
 }

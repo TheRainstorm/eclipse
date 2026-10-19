@@ -1,5 +1,5 @@
 //! Native layout based on the supplied UU desktop reference, with a separate
-//! uncluttered stream view. All artwork here is egui vector drawing.
+//! uncluttered stream view. Application branding uses the embedded Eclipse icon.
 use super::App;
 use eframe::egui::{self, Color32 as C, Pos2, Rect, Response, RichText, Sense, Stroke, Vec2};
 const BLUE: C = C::from_rgb(53, 131, 255);
@@ -174,27 +174,7 @@ fn online(status: &str) -> bool {
     matches!(status, "CONNECTED" | "ready" | "ONLINE")
 }
 pub(super) fn logo(p: &egui::Painter, rect: Rect) {
-    let c = rect.center();
-    for (points, color) in [
-        (
-            vec![c + egui::vec2(-1.0, -14.0), c + egui::vec2(11.0, -1.0), c],
-            C::from_rgb(0, 139, 255),
-        ),
-        (
-            vec![c + egui::vec2(11.0, -1.0), c + egui::vec2(0.0, 14.0), c],
-            C::from_rgb(20, 190, 242),
-        ),
-        (
-            vec![c + egui::vec2(0.0, 14.0), c + egui::vec2(-13.0, 2.0), c],
-            C::from_rgb(30, 114, 255),
-        ),
-        (
-            vec![c + egui::vec2(-13.0, 2.0), c + egui::vec2(-1.0, -14.0), c],
-            C::from_rgb(0, 211, 222),
-        ),
-    ] {
-        p.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
-    }
+    super::brand::paint_logo(p, rect);
 }
 
 impl App {
