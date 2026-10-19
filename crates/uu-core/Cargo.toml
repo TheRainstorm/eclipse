@@ -37,3 +37,6 @@ uu-input = { path = "../uu-input" }
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+[features]
+vaapi = ["uu-media/vaapi"]

@@ -25,3 +25,6 @@ uu-proto = { path = "../uu-proto" }
 uu-capture = { path = "../uu-capture" }
 uu-input = { path = "../uu-input" }
 uu-media = { path = "../uu-media" }
+
+[features]
+vaapi = ["uu-core/vaapi"]
