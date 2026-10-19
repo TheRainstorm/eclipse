@@ -28,3 +28,10 @@
 GUI14项已有检查、两项屏幕路由检查和Windows交叉编译通过。未自动启动GUI、连接设备、注入按键或终止用户进程。新版仍交由用户实机验证外观及CONTROL连接，失败时优先收集新增状态概要，避免继续猜测远端权限。
 
 Windows统一入口继续为x358h `192.168.34.3:2202` 的`C:\Users\yfy\uu-gui-demo\uu-gui.exe`，桌面`UU Remote Rust`；实际源版本和产物哈希由`dist/uu-gui-win64/version.json`记录。安装后需要用户关闭旧主页和旧串流窗口重新打开。
+
+## 安装记录与待验
+
+已发布并安装源版本`939adbe5319724f9cc08962947fbad4212c72df1`，全部六个manifest文件与本地包一致，桌面快捷方式目标和工作目录已核对。旧版由安装器归档，暂存exe、版本清单、安装脚本和说明已清理，未终止任何用户进程。
+
+GUI SHA256：`c7007eb0cfb67bfbf41ff2aeb637e4fc83f78415acad002edee721e85ef2968e`；CLI SHA256：`f86323f0acd014ae5294f8982542b3d836ecce57b302dffb2f51b1405d405f97`。
+私有交付记录：`artifacts/ui-dpi-validation/quality-menu-control-package.log`与`quality-menu-control-installed-verified.json`。已请用户从统一入口复测，当前尚不能宣称实际输入恢复。

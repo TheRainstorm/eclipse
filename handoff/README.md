@@ -24,6 +24,8 @@
 
 | 15 | `15-2026-10-19-frame-rate-super-screen.md` | 60/120/自定义fpsCount、初始化协商、屏幕类型与超级屏请求、移除硬解固定30帧元数据；用户实机验收 |
 
+| 16 | `16-2026-10-19-quality-menu-control-input.md` | 官方样式画质菜单与FPS合并、移除超级屏操作、CONTROL未打开的输入兼容处理和实机待验边界 |
+
 约定：
 
 - 当前菜单与输入通道问题优先读 [交接16](16-2026-10-19-quality-menu-control-input.md)：FPS合并画质，移除超级屏操作；视频正常但CONTROL未打开的实机原因尚待新版复测。
