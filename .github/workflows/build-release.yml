@@ -83,7 +83,7 @@ jobs:
         run: |
           cargo test --workspace --release --features vaapi --locked
           python3 tools/linux/package.py
-          python3 tools/native/smoke.py --exe target/release/uu
+          python3 tools/native/smoke.py --exe target/release/uu --decoder sw
           for archive in artifacts/packages/*.tar.gz; do
             python3 tools/security/scan_secrets.py --artifact "$archive"
           done
@@ -133,7 +133,7 @@ jobs:
           }
           & (Join-Path $unpack 'uu.exe') --version
           if ($LASTEXITCODE -ne 0) { throw 'Windows executable could not start' }
-          python tools/native/smoke.py --exe (Join-Path $unpack 'uu.exe')
+          python tools/native/smoke.py --exe (Join-Path $unpack 'uu.exe') --decoder sw
           if ($LASTEXITCODE -ne 0) { throw 'Windows native encrypted video smoke failed' }
 
   release:

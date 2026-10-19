@@ -10,7 +10,7 @@ import tempfile
 import time
 
 
-def run(executable, frames):
+def run(executable, frames, decoder):
     with tempfile.TemporaryDirectory(prefix='uu-native-smoke-') as temporary:
         temporary = Path(temporary)
         invitation = temporary / 'session.eclipse-invite.json'
@@ -19,6 +19,10 @@ def run(executable, frames):
                            XDG_STATE_HOME=str(temporary / 'state'),
                            UU_SIGNING_KEY_FILE=str(temporary / 'missing-signing-key'),
                            RUST_LOG='error')
+        if decoder == 'sw':
+            environment['UU_DECODER'] = 'sw'
+        else:
+            environment.pop('UU_DECODER', None)
         with (temporary / 'host.log').open('w+', encoding='utf-8') as log:
             host = subprocess.Popen([str(executable), 'native-host', '--synthetic',
                                      '--invitation-file', str(invitation), '--max-seconds', '30'],
@@ -36,7 +40,8 @@ def run(executable, frames):
                                        env=environment, capture_output=True, text=True,
                                        encoding='utf-8', errors='replace', timeout=40)
                 if probe.returncode:
-                    raise RuntimeError('Native viewing process failed: ' + probe.stderr[-4000:])
+                    metrics = '\n'.join(line for line in probe.stdout.splitlines() if line.startswith('native probe:'))
+                    raise RuntimeError('Native viewing process failed: ' + metrics + '\n' + probe.stderr[-4000:])
                 lines = [line for line in probe.stdout.splitlines() if line.startswith('native probe:')]
                 if len(lines) != 1:
                     raise RuntimeError('Native probe did not report one completed video session')
@@ -64,10 +69,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--exe', type=Path, required=True)
     parser.add_argument('--frames', type=int, default=120)
+    parser.add_argument('--decoder', choices=('sw', 'auto'), default='sw',
+                        help='Use deterministic software decoding in CI; auto exercises the actual machine decoder')
     args = parser.parse_args()
     if not 1 <= args.frames <= 600:
         parser.error('--frames must be 1..=600')
-    run(args.exe.resolve(strict=True), args.frames)
+    run(args.exe.resolve(strict=True), args.frames, args.decoder)
 
 
 if __name__ == '__main__':
