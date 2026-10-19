@@ -64,6 +64,8 @@ pub struct WindowSizing {
     initialized: bool,
     stream_pending: bool,
     was_streaming: bool,
+    canvas_px: Option<egui::Vec2>,
+    resizing: bool,
     previous: Option<(f32, egui::Vec2, egui::Rect)>,
 }
 
@@ -72,7 +74,13 @@ impl WindowSizing {
         self.stream_pending = true;
     }
 
-    pub fn update(&mut self, ctx: &egui::Context, streaming: bool, video_px: Option<egui::Vec2>) {
+    pub fn update(
+        &mut self,
+        ctx: &egui::Context,
+        streaming: bool,
+        video_px: Option<egui::Vec2>,
+        resize_started: bool,
+    ) {
         let viewport = ctx.input(|i| i.viewport().clone());
         if viewport.minimized == Some(true) {
             return;
@@ -97,31 +105,32 @@ impl WindowSizing {
         let Some(work) = work_area(ctx) else { return };
         let available = work.shrink(8.0);
         let ppp = ctx.pixels_per_point();
+        if streaming && resize_started {
+            self.resizing = true;
+        }
+        if self.resizing {
+            self.canvas_px = Some((inner.size() - egui::vec2(0.0, CONNECTION_BAR_HEIGHT)) * ppp);
+            if !ctx.input(|i| i.pointer.primary_down()) {
+                self.resizing = false;
+            }
+        }
         let initial_stream = self.stream_pending && video_px.is_some();
         let desired = if initial_stream {
             self.stream_pending = false;
+            self.canvas_px = video_px;
             Some(stream_size(video_px.unwrap(), ppp, available.size()))
         } else if !self.initialized {
             Some(egui::vec2(1100.0, 760.0).min(available.size()))
-        } else if let Some((old_ppp, old_size, old_work)) = self.previous {
-            if streaming && (old_ppp - ppp).abs() > 0.01 {
-                // winit preserves logical window size on DPI transitions. For a
-                // stream that would unexpectedly scale the image: keep the last
-                // video canvas's physical size and scale only the local toolbar.
-                let canvas_px = (old_size - egui::vec2(0.0, CONNECTION_BAR_HEIGHT)) * old_ppp;
-                Some(stream_size(canvas_px, ppp, available.size()))
+        } else if let Some((old_ppp, _, old_work)) = self.previous {
+            if streaming && ((old_ppp - ppp).abs() > 0.01 || old_work != work) {
+                // Keep the preferred physical canvas even when a smaller
+                // monitor temporarily forces it to fit; restore it on return.
+                self.canvas_px
+                    .map(|canvas| stream_size(canvas, ppp, available.size()))
             } else if old_work != work
                 && (inner.width() > available.width() || inner.height() > available.height())
             {
-                Some(if streaming {
-                    stream_size(
-                        (inner.size() - egui::vec2(0.0, CONNECTION_BAR_HEIGHT)) * ppp,
-                        ppp,
-                        available.size(),
-                    )
-                } else {
-                    inner.size().min(available.size())
-                })
+                Some(inner.size().min(available.size()))
             } else {
                 None
             }
@@ -235,7 +244,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut sizing = WindowSizing::default();
         sizing.begin_stream();
-        let mut run = |ppp: f32, size: egui::Vec2, monitor: egui::Vec2| {
+        let mut run = |ppp: f32, size: egui::Vec2, monitor: egui::Vec2, resize_started: bool| {
             let mut input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                 ..Default::default()
@@ -245,28 +254,74 @@ mod tests {
             viewport.monitor_size = Some(monitor);
             viewport.inner_rect = input.screen_rect;
             let output = ctx.run(input, |ctx| {
-                sizing.update(ctx, true, Some(egui::vec2(1920.0, 1080.0)))
+                sizing.update(ctx, true, Some(egui::vec2(1920.0, 1080.0)), resize_started)
             });
             output.viewport_output[&egui::ViewportId::ROOT]
                 .commands
                 .clone()
         };
-        let commands = run(2.0, egui::vec2(1100.0, 760.0), egui::vec2(1536.0, 936.0));
+        let commands = run(
+            2.0,
+            egui::vec2(1100.0, 760.0),
+            egui::vec2(1536.0, 936.0),
+            false,
+        );
         assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(960.0, 576.0))));
         assert!(
             commands.contains(&egui::ViewportCommand::OuterPosition(egui::pos2(
                 288.0, 180.0
             )))
         );
-        let commands = run(1.0, egui::vec2(960.0, 576.0), egui::vec2(3072.0, 1872.0));
+        let commands = run(
+            1.0,
+            egui::vec2(960.0, 576.0),
+            egui::vec2(3072.0, 1872.0),
+            false,
+        );
         assert!(
             commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(
                 1920.0, 1116.0
             )))
         );
-        let commands = run(1.0, egui::vec2(1500.0, 900.0), egui::vec2(3072.0, 1872.0));
+        let commands = run(
+            1.0,
+            egui::vec2(1500.0, 900.0),
+            egui::vec2(3072.0, 1872.0),
+            false,
+        );
         assert!(!commands
             .iter()
             .any(|cmd| matches!(cmd, egui::ViewportCommand::InnerSize(_))));
+        // A small destination fits the stream temporarily; returning restores
+        // the preferred physical canvas instead of accumulating shrinkage.
+        let commands = run(
+            1.0,
+            egui::vec2(1500.0, 900.0),
+            egui::vec2(1920.0, 1032.0),
+            false,
+        );
+        assert!(commands
+            .iter()
+            .any(|cmd| matches!(cmd, egui::ViewportCommand::InnerSize(size) if size.y <= 1016.0)));
+        let commands = run(
+            2.0,
+            egui::vec2(900.0, 520.0),
+            egui::vec2(1536.0, 936.0),
+            false,
+        );
+        assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(960.0, 576.0))));
+        run(
+            2.0,
+            egui::vec2(750.0, 450.0),
+            egui::vec2(1536.0, 936.0),
+            true,
+        );
+        let commands = run(
+            1.0,
+            egui::vec2(750.0, 450.0),
+            egui::vec2(3072.0, 1872.0),
+            false,
+        );
+        assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(1500.0, 864.0))));
     }
 }

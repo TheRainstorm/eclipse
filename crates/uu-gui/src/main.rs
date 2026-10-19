@@ -109,6 +109,7 @@ struct App {
     shortcuts: shortcuts::Shortcuts,
     autoconnect_done: bool,
     fullscreen: bool,
+    restore_maximized: bool,
     bitrate_idx: usize,
     resolution_idx: usize,
     custom_mbps: u32,
@@ -296,6 +297,7 @@ impl App {
             shortcuts: shortcuts::Shortcuts::default(),
             autoconnect_done: false,
             fullscreen: false,
+            restore_maximized: false,
             bitrate_idx: 0,
             resolution_idx: 0,
             custom_mbps: 55,
@@ -523,7 +525,21 @@ impl App {
         self.fullscreen = !self.fullscreen;
         self.stream_menu.open = false;
         ctx.memory_mut(|m| m.close_popup());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+        if self.fullscreen {
+            // Windows keeps WS_MAXIMIZE when entering borderless fullscreen.
+            // Restore first so its client area can cover the entire monitor.
+            self.restore_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+            if self.restore_maximized {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            if self.restore_maximized {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            }
+            self.restore_maximized = false;
+        }
     }
 
     fn toggle_maximized(&mut self, ctx: &egui::Context) {
@@ -690,7 +706,8 @@ impl eframe::App for App {
         self.poll_controller(ctx);
         let video_px = self.textures.get(&self.selected_track).or_else(|| self.textures.values().next())
             .map(|texture| texture.size_vec2());
-        self.window_sizing.update(ctx, self.controller.is_some(), video_px);
+        self.window_sizing.update(ctx, self.controller.is_some(), video_px,
+            self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()));
         if self.exit_requested && self.controller.is_none() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -714,11 +731,17 @@ impl eframe::App for App {
                 ..
             } = event
             {
+                if std::env::var_os("UU_UI_DEBUG").is_some() && matches!(key, egui::Key::S | egui::Key::M | egui::Key::F) {
+                    eprintln!("ui shortcut {key:?} pressed={pressed} repeat={repeat} ctrl={} alt={}", modifiers.ctrl, modifiers.alt);
+                }
                 match self.shortcuts.key(*key, *pressed, *repeat, *modifiers, self.controller.is_some()) {
                     shortcuts::KeyAction::Consumed => continue,
                     shortcuts::KeyAction::Trigger(action) => {
                         match action {
-                            shortcuts::Action::Stats => self.hud = !self.hud,
+                            shortcuts::Action::Stats => {
+                                self.hud = !self.hud;
+                                if std::env::var_os("UU_UI_DEBUG").is_some() { eprintln!("ui HUD visible={}", self.hud); }
+                            },
                             shortcuts::Action::Menu => {
                                 self.stream_menu.visible = !self.stream_menu.visible;
                                 self.stream_menu.open = false;
