@@ -50,9 +50,9 @@ impl VideoDecoder for NamedDecoder {
 }
 
 /// How many access units a hardware decoder may consume without producing a
-/// single frame before it is considered hung. At 30 fps this is ~4 s, which
-/// comfortably covers waiting for the first IDR the host sends after our PLI.
-const HARDWARE_GRACE_UNITS: u64 = 120;
+/// single frame before it is considered hung. Input is already IDR-gated.
+/// Bound both startup and a driver that stalls after previously working.
+const HARDWARE_GRACE_UNITS: u64 = 30;
 
 /// Consecutive errors tolerated before the hardware path is abandoned.
 const ERROR_BUDGET: u32 = 3;
@@ -94,8 +94,8 @@ pub struct FallbackDecoder {
     backup: Box<dyn VideoDecoder>,
     primary_name: String,
     current: String,
-    fed: u64,
-    produced: u64,
+    empty_units: u64,
+    empty_since: Option<std::time::Instant>,
     consecutive_errors: u32,
 }
 
@@ -107,8 +107,8 @@ impl FallbackDecoder {
             current: primary_name.clone(),
             backup,
             primary_name,
-            fed: 0,
-            produced: 0,
+            empty_units: 0,
+            empty_since: None,
             consecutive_errors: 0,
         }
     }
@@ -153,14 +153,14 @@ impl VideoDecoder for FallbackDecoder {
         if self.primary.is_none() {
             return self.decode_software(frame);
         }
-        self.fed += 1;
         let result = match self.primary.as_mut() {
             Some(primary) => primary.decode(frame),
             None => return self.decode_software(frame),
         };
         match result {
             Ok(Some(f)) => {
-                self.produced += 1;
+                self.empty_units = 0;
+                self.empty_since = None;
                 self.consecutive_errors = 0;
                 Ok(Some(f))
             }
@@ -169,7 +169,9 @@ impl VideoDecoder for FallbackDecoder {
                 // though every call returned success. Re-feed this access unit
                 // to the software decoder: it will hold it until the next IDR,
                 // which our PLI/FIR loop asks the host for.
-                if self.produced == 0 && self.fed > HARDWARE_GRACE_UNITS {
+                self.empty_units += 1;
+                let since = *self.empty_since.get_or_insert_with(std::time::Instant::now);
+                if self.empty_units > HARDWARE_GRACE_UNITS || since.elapsed() >= std::time::Duration::from_millis(750) {
                     self.demote("no output");
                     return self.decode_software(frame);
                 }
@@ -238,6 +240,19 @@ mod tests {
 
     fn unit() -> EncodedFrame {
         EncodedFrame { data: Bytes::from_static(&[0, 0, 0, 1, 0x65]), pts: crate::Timestamp(0), is_keyframe: true }
+    }
+
+    #[test]
+    fn hardware_that_stalls_after_a_good_frame_also_falls_back() {
+        let mut decoder = FallbackDecoder::new(
+            Box::new(Scripted::new("hw", 0, 1)),
+            Box::new(Scripted::new("sw", 0, 10)),
+        );
+        assert!(decoder.decode(&unit()).unwrap().is_some());
+        assert!(decoder.decode(&unit()).unwrap().is_none());
+        decoder.empty_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        assert!(decoder.decode(&unit()).unwrap().is_some());
+        assert!(!decoder.on_hardware());
     }
 
     #[test]
