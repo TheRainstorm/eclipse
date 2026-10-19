@@ -48,24 +48,22 @@ cargo run --bin uu -- control <device-id>     # 信令 + WebRTC + 视频（CLI �
 cargo run -p uu-gui                           # 图形客户端
 ```
 
-Windows 版（交叉编译产物）：
+Windows 版（Linux 交叉编译、打包并同步）：
 
+```bash
+python3 tools/windows/package.py
+python3 tools/windows/sync.py --host 192.168.34.3
 ```
-dist/uu-gui-win64/
-  uu-gui.exe
-  uu.exe
-  libstdc++-6.dll
-  libgcc_s_seh-1.dll
-  README.txt
-  install.ps1
-  version.json
-```
+
+产物是 `artifacts/packages/uu-remote-windows-x64-<提交号>.zip`，包含 EXE、运行 DLL、安装器和 SHA256 清单。
+同步默认使用 `yfy` / SSH `2202` 端口；`--dry-run` 可先校验本地包和查看操作。
+环境准备、自定义机器、历史版本和手动 SMB 复制方法见 [Windows 编译与同步说明](docs/windows-build.md)。
 
 正式安装目录统一为 `D:\SMB\uu-gui-demo`，桌面入口是 **UU Remote Rust**。
 在分发包目录运行 `powershell -ExecutionPolicy Bypass -File .\install.ps1` 安装/升级；
 旧 `rtx-auto`、`hud-recovery` 和 exe 备份会归档到 `%USERPROFILE%\uu-gui-archive`。
 主页底部显示源代码版本号，悬停显示实际 exe 路径；`version.json` 记录该包的提交号与文件哈希。
-开发端统一用 `python3 tools/windows/package.py` 构建并生成包，避免手动复制错版本。
+开发端统一用 `python3 tools/windows/package.py` 构建并生成包，旧 `dist/uu-gui-win64` 不再更新。
 旧C盘目录不再同步；安装器会将指向旧入口的桌面/开始菜单快捷方式迁到D盘，不终止正在运行的旧窗口。
 
 首次启动会显示二维码，用手机扫码登录；左侧选择设备后点“连接”。
