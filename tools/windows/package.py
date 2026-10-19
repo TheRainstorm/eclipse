@@ -17,7 +17,7 @@ def main():
                     '--target', 'x86_64-pc-windows-gnu', '--locked'], cwd=ROOT, check=True)
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     # Do not label a package as a commit when its source differs from that commit.
-    subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--', 'crates', 'Cargo.toml', 'Cargo.lock', 'tools/windows'],
+    subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--', 'crates', 'vendor', 'Cargo.toml', 'Cargo.lock', 'tools/windows'],
                    cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
     for name in ['uu-gui.exe', 'uu.exe']:
         shutil.copy2(BIN / name, DEST / name)
