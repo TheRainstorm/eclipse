@@ -32,6 +32,15 @@ def inspect(name, data, forbidden=(), source=False):
     base = PurePosixPath(name).name
     if base in ('signing-key', 'state.json', '.env') or base.startswith('signing-key.') or base.endswith('.eclipse-invite.json'):
         issues.append('private credential/configuration file')
+    if len(data) <= 16 * 1024 and data.lstrip().startswith(b'{') and all(field in data for field in (b'"certificate"', b'"token"', b'"expires_at"')):
+        try:
+            document = json.loads(data)
+            if (isinstance(document, dict) and isinstance(document.get('address'), str)
+                    and isinstance(document.get('certificate'), list)
+                    and isinstance(document.get('token'), list) and len(document['token']) == 32):
+                issues.append('private native invitation content')
+        except (ValueError, UnicodeDecodeError):
+            pass
     if source and base.lower().endswith(('.exe', '.dll')):
         issues.append('compiled binary committed to source')
     if any(value in data for value in forbidden):

@@ -49,6 +49,11 @@ class CredentialGuardTests(unittest.TestCase):
 
 
 class NativeInvitationGuard(unittest.TestCase):
+    def test_renamed_native_invitation_content_is_also_private(self):
+        import json
+        data=json.dumps(dict(address='127.0.0.1:12345',certificate=[1],token=[0]*32,expires_at=1)).encode()
+        self.assertTrue(scan.inspect('renamed.txt',data))
+
     def test_local_invitation_files_are_never_allowed_in_source_or_packages(self):
         for name in ('pair.eclipse-invite.json', 'config/share.eclipse-invite.json'):
             self.assertTrue(scan.inspect(name, b'{"version":1}'))

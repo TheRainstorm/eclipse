@@ -7,7 +7,10 @@
 //! The protocol work is in `uu-proto`/`uu-core`; the platform work is in
 //! `uu-capture`/`uu-input`.
 
+mod native_cli;
+
 use anyhow::{Context, Result};
+use std::io::IsTerminal;
 use clap::{Parser, Subcommand};
 use uu_core::signal::SignedRequest;
 use uu_core::UuApi;
@@ -49,6 +52,38 @@ enum Command {
     },
     /// Allow this machine to be controlled.
     Host,
+    /// List native capture monitors without reading desktop pixels.
+    NativeSources,
+    /// Native view-only LAN host: private invitation + TLS + WebRTC; no UU account.
+    NativeHost {
+        #[arg(long, default_value = "127.0.0.1:0")]
+        bind: std::net::SocketAddr,
+        /// NEW private .eclipse-invite.json file to share with the controller.
+        #[arg(long)]
+        invitation_file: std::path::PathBuf,
+        #[arg(long, conflicts_with = "synthetic")]
+        monitor: Option<String>,
+        /// Use a moving 1280x720 test pattern instead of a desktop.
+        #[arg(long)]
+        synthetic: bool,
+        #[arg(long, default_value_t = 60)]
+        fps: u32,
+        #[arg(long, default_value_t = 8000)]
+        bitrate_kbps: u32,
+        #[arg(long, default_value_t = 600)]
+        pairing_seconds: u64,
+        #[arg(long)]
+        max_seconds: Option<u64>,
+    },
+    /// Decode native video without saving pictures or opening a GUI.
+    NativeProbe {
+        #[arg(long)]
+        invitation_file: std::path::PathBuf,
+        #[arg(long, default_value_t = 120)]
+        frames: u64,
+        #[arg(long, default_value_t = 15)]
+        timeout_seconds: u64,
+    },
     /// Register this machine (once) and log in by scanning a QR code.
     Login {
         /// Device name shown on the account's device list.
@@ -140,6 +175,7 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| "info".into()),
         )
         .with_target(false)
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
 
     uu_core::install_crypto_provider();
@@ -149,6 +185,12 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
+        Command::NativeSources => native_cli::sources(),
+        Command::NativeHost { bind, invitation_file, monitor, synthetic, fps, bitrate_kbps, pairing_seconds, max_seconds } => {
+            let source=if synthetic {uu_capture::CaptureSource::Synthetic{width:1280,height:720,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
+            native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,session_limit:max_seconds.map(std::time::Duration::from_secs)}).await
+        },
+        Command::NativeProbe {invitation_file,frames,timeout_seconds} => native_cli::probe(invitation_file,frames,timeout_seconds).await,
         Command::ReleaseCheck => release_check(&config).await,
         Command::Devices => {
             let client = SignalClient::new(&config)?;

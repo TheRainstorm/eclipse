@@ -9,6 +9,8 @@ mod video_receiver;
 pub mod error;
 pub mod media;
 pub mod native_pairing;
+pub mod native;
+mod native_media;
 mod network_probe;
 mod decode_gate;
 mod test_loss;

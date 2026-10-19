@@ -560,7 +560,7 @@ async fn receive_audio(track: Arc<webrtc::track::track_remote::TrackRemote>, sta
     }
 }
 
-async fn receive_video(
+pub(crate) async fn receive_video(
     pc: Arc<RTCPeerConnection>,
     track: Arc<webrtc::track::track_remote::TrackRemote>,
     track_idx: u32,
