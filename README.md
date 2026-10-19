@@ -76,6 +76,10 @@ HUD 显示实际解码后端。离线验证可运行
 Ctrl+Alt+F 切换全屏串流，界面按钮只负责窗口最大化。连接后按视频物理像素 1:1 初始化并居中，超出屏幕时等比缩小。Windows 路径中键使用实测的 `MK_MBUTTON=16`，支持按住拖动。
 接收端支持短时 RTP 重排、NACK/RTX 和参考链恢复；FEC 尚未接入。
 默认使用官方自动画质，支持跟随远端分辨率；全屏悬浮菜单可用 Ctrl+Alt+M 隐藏/恢复。
+控制中心的“帧率”提供 30/60/90/120/144 FPS 和自定义 5–144 FPS；同页可请求切换超级屏。
+HUD 区分目标帧率、远端屏幕类型/刷新率和实际 Rx/De/Rd。超级屏不是视频传输协议的必需条件，
+但远端的物理屏采集策略可能限制帧率；安装超级屏不代表当前连接已选中它。
+协议依据、当前边界和测试方法见 [`docs/frame-rate.md`](docs/frame-rate.md)。
 恢复机制、卡顿原因和 Sunshine/Moonlight 对比见 [`docs/streaming-quality.md`](docs/streaming-quality.md)。
 三个本地开源项目的功能、源码入口、接入边界与实施顺序见
 [`docs/reference-index.md`](docs/reference-index.md)；包含固定提交版本和快速迭代时的更新方法。

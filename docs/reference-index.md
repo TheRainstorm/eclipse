@@ -2,6 +2,8 @@
 
 更新：2026-10-19。启动显示器与原生跨屏组合键修复见 [交接14](../handoff/14-2026-10-19-startup-monitor-native-shortcuts.md)。未串流主页跨 DPI 修复与多设备独立串流窗口见 [交接13](../handoff/13-2026-10-19-launcher-dpi-multiwindow.md)。统计快捷键、居中 HUD、原尺寸窗口与实机跨 DPI 往返、最大化 / 串流全屏分离见 [交接12](../handoff/12-2026-10-19-shortcuts-hud-dpi-window.md)。CONTROL 启动回归、延后 ICE 测试与统一安装入口见 [交接11](../handoff/11-2026-10-19-connection-startup-unified-install.md)。窗口缩放、紧凑 HUD、菜单确认、保留解码器的恢复、缺口扫描优化与退出清理已实现，最新证据和边界见 [交接10](../handoff/10-2026-10-19-resize-hud-recovery-exit.md)。
 
+帧率/超级屏的新增官方描述符依据、已落地请求和用户验收边界见 [frame-rate.md](frame-rate.md) 与 [交接15](../handoff/15-2026-10-19-frame-rate-super-screen.md)。不要再沿用“Windows UU固定30fps”或“请求帧率等于实际帧率”的结论。
+
 **此前实现增量：NACK/RTX 接收、严格恢复、Windows 真实 PTS、自动档协商和可隐藏悬浮菜单已落地，见 [交接09](../handoff/09-2026-10-19-controls-rtx-auto.md)。下文参考版本和原分析保留作为快照。**
 
 用途：后续实现功能时，先从本索引找到经过阅读的代码入口、协议边界和本项目接入点。串流现状见 [streaming-quality.md](streaming-quality.md)，本轮实机结果见 [交接 07](../handoff/07-2026-10-19-experience.md)。
