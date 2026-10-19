@@ -43,5 +43,6 @@ windows = { version = "0.62", optional = true, features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+cpal = "0.15.3"
 cros-codecs = { version = "0.0.6", default-features = false, features = ["vaapi"], optional = true }
 cros-libva = { version = "0.0.12", optional = true }

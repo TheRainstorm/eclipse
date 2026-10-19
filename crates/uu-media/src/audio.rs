@@ -1,5 +1,5 @@
 //! In-process Opus receive/playback. Never block RTP or retain unbounded sound.
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 use std::collections::VecDeque;
 use std::{
     sync::{
@@ -167,20 +167,20 @@ pub fn playback(control: Arc<AudioControl>) -> std::sync::mpsc::SyncSender<Packe
 }
 
 fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> anyhow::Result<()> {
-    #[cfg(windows)]
-    windows::prioritize_audio_thread();
+    #[cfg(any(windows, target_os = "linux"))]
+    device::prioritize_audio_thread();
     let mut decoder = OpusReceiver::new()?;
-    #[cfg(windows)]
-    let mut output: Option<windows::Output> = None;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
+    let mut output: Option<device::Output> = None;
+    #[cfg(any(windows, target_os = "linux"))]
     let mut retry_at = Instant::now();
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     control.status("当前构建未启用系统音频输出");
     let mut reorder = Reorder::default();
     while !control.stopped() {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if output.is_none() && Instant::now() >= retry_at {
-            match windows::Output::new(control.clone()) {
+            match device::Output::new(control.clone()) {
                 Ok(device) => output = Some(device),
                 Err(error) => {
                     control.status(format!("等待播放设备：{error}"));
@@ -204,7 +204,7 @@ fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> an
             );
             match decoder.decode(packet.timestamp, &packet.payload, control) {
                 Ok(pcm) => {
-                    #[cfg(windows)]
+                    #[cfg(any(windows, target_os = "linux"))]
                     if let Some(device) = output.as_mut() {
                         if let Err(error) = device.submit(&pcm, control) {
                             output = None;
@@ -213,7 +213,7 @@ fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> an
                             control.status(format!("播放设备已变化，正在恢复：{error}"));
                         }
                     }
-                    #[cfg(not(windows))]
+                    #[cfg(not(any(windows, target_os = "linux")))]
                     let _ = pcm;
                 }
                 Err(_) => {
@@ -225,7 +225,7 @@ fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> an
     Ok(())
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 #[derive(Default)]
 struct PcmQueue {
     samples: VecDeque<f32>,
@@ -234,7 +234,7 @@ struct PcmQueue {
     gain: f32,
     buffering: bool,
 }
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 impl PcmQueue {
     fn submit(&mut self, samples: &[f32], rate: u32, channels: usize) {
         if self.last.len() != channels {
@@ -300,14 +300,14 @@ impl PcmQueue {
 /// Keep the device waveform continuous when a producer briefly owns the
 /// queue lock. Starting a new transition always uses the last audible frame,
 /// even if a previous fade has not completed.
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 struct OutputTransition {
     last: Vec<f32>,
     base: Vec<f32>,
     stalled: bool,
     progress: f32,
 }
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 impl OutputTransition {
     fn new(channels: usize) -> Self {
         Self { last: vec![0.0; channels], base: vec![0.0; channels], stalled: false, progress: 1.0 }
@@ -330,39 +330,46 @@ impl OutputTransition {
     }
 }
 
-#[cfg(windows)]
-mod windows {
+#[cfg(any(windows, target_os = "linux"))]
+mod device {
     use super::*;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-    // CPAL 0.15.3's WASAPI helper passes a thread ID as a HANDLE to
-    // SetThreadPriority. Register our actual calling threads with MMCSS
-    // instead; failure leaves ordinary scheduling and never breaks audio.
-    #[link(name = "avrt")]
-    extern "system" {
-        fn AvSetMmThreadCharacteristicsW(task: *const u16, index: *mut u32) -> isize;
-        fn AvRevertMmThreadCharacteristics(handle: isize) -> i32;
-    }
-    struct AudioScheduling(isize);
-    impl AudioScheduling {
-        fn new() -> Self {
-            let mut index = 0;
-            Self(unsafe {
-                AvSetMmThreadCharacteristicsW([65, 117, 100, 105, 111, 0].as_ptr(), &mut index)
-            })
+    #[cfg(windows)]
+    mod scheduling {
+        // CPAL 0.15.3's WASAPI helper passes a thread ID as a HANDLE to
+        // SetThreadPriority. Register our actual calling threads with MMCSS
+        // instead; failure leaves ordinary scheduling and never breaks audio.
+        #[link(name = "avrt")]
+        extern "system" {
+            fn AvSetMmThreadCharacteristicsW(task: *const u16, index: *mut u32) -> isize;
+            fn AvRevertMmThreadCharacteristics(handle: isize) -> i32;
         }
-    }
-    impl Drop for AudioScheduling {
-        fn drop(&mut self) {
-            if self.0 != 0 {
-                unsafe {
-                    AvRevertMmThreadCharacteristics(self.0);
+        struct AudioScheduling(isize);
+        impl AudioScheduling {
+            fn new() -> Self {
+                let mut index = 0;
+                Self(unsafe {
+                    AvSetMmThreadCharacteristicsW([65, 117, 100, 105, 111, 0].as_ptr(), &mut index)
+                })
+            }
+        }
+        impl Drop for AudioScheduling {
+            fn drop(&mut self) {
+                if self.0 != 0 {
+                    unsafe {
+                        AvRevertMmThreadCharacteristics(self.0);
+                    }
                 }
             }
         }
+        thread_local! {static AUDIO_SCHEDULING:AudioScheduling=AudioScheduling::new();}
+        pub(super) fn prioritize() {
+            AUDIO_SCHEDULING.with(|_| {});
+        }
     }
-    thread_local! {static AUDIO_SCHEDULING:AudioScheduling=AudioScheduling::new();}
     pub(super) fn prioritize_audio_thread() {
-        AUDIO_SCHEDULING.with(|_| {});
+        #[cfg(windows)]
+        scheduling::prioritize();
     }
     pub(super) struct Output {
         _stream: cpal::Stream,
