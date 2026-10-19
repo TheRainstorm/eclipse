@@ -45,6 +45,12 @@ pub struct CaptureMonitor {
     pub primary: bool,
 }
 
+impl CaptureMonitor {
+    pub fn software_encodable(&self)->bool {
+        uu_media::H264Encoder::validate_dimensions(self.width,self.height).is_ok()
+    }
+}
+
 /// Enumerate the current authorized desktop without reading its pixels.
 pub fn monitors() -> Result<Vec<CaptureMonitor>> {
     #[cfg(windows)]
@@ -370,6 +376,8 @@ async fn send_video(
     };
     let (width, height) = capture.resolution();
     validate_video(width, height, config.fps)?;
+    uu_media::H264Encoder::validate_dimensions(width,height)
+        .context("当前显示器尺寸超出软件编码范围，请选择其它显示器；不会更改系统显示设置")?;
     let controls=tokio::select! {
         controls=crate::native_control::HostControl::new(config.allow_input,capture.desktop_rect(),config.clipboard.clone())=>controls,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),

@@ -119,9 +119,23 @@ impl NativeHostUi {
             }
         }
     }
+    fn source_size_supported(&self) -> bool {
+        self.monitors
+            .iter()
+            .find(|m| {
+                self.monitor
+                    .as_ref()
+                    .map_or(m.primary, |name| name == &m.name)
+            })
+            .map_or(true, CaptureMonitor::software_encodable)
+    }
     fn start(&mut self, owner_window: isize) -> anyhow::Result<()> {
         anyhow::ensure!(!self.running(), "共享正在进行");
         anyhow::ensure!(!self.monitors.is_empty(), "请先获取可用显示器");
+        anyhow::ensure!(
+            self.source_size_supported(),
+            "当前显示器超出软件编码范围，请选择其它显示器"
+        );
         let ip: IpAddr = self
             .bind
             .trim()
@@ -346,6 +360,12 @@ impl App {
                             host.refresh();
                         }
                     });
+                    if !host.source_size_supported() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(180, 75, 65),
+                            "软件编码支持最大3840×2160或2160×3840，请选择其它显示器。",
+                        );
+                    }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.label("本机网卡 IP");
@@ -383,7 +403,7 @@ impl App {
                     ui.add_space(12.0);
                     if ui
                         .add_enabled(
-                            !host.monitors.is_empty(),
+                            !host.monitors.is_empty() && host.source_size_supported(),
                             egui::Button::new(
                                 egui::RichText::new("开始共享").color(egui::Color32::WHITE),
                             )

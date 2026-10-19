@@ -46,6 +46,14 @@ impl H264Encoder {
         })
     }
 
+    /// OpenH264's encoder has a stricter size bound than the H.264 receive level.
+    pub fn validate_dimensions(width:u32,height:u32)->Result<(),CodecError> {
+        if width<2 || height<2 || width%2!=0 || height%2!=0 || width.max(height)>3840 || width.min(height)>2160 {
+            return Err(CodecError::Backend(format!("software H.264 needs even dimensions up to 3840x2160 or 2160x3840; requested {width}x{height}")));
+        }
+        Ok(())
+    }
+
     fn build(bitrate_kbps: u32, frame_rate: u32) -> Result<OhEncoder, CodecError> {
         if !(64..=100_000).contains(&bitrate_kbps) || !(1..=60).contains(&frame_rate) {
             return Err(CodecError::Backend(
@@ -76,6 +84,7 @@ impl VideoEncoder for H264Encoder {
     }
 
     fn encode(&mut self, frame: &RawFrame) -> Result<Vec<EncodedFrame>, CodecError> {
+        Self::validate_dimensions(frame.width,frame.height)?;
         let packed = to_i420(frame)?;
         if self.pending_keyframe {
             self.inner.force_intra_frame();
@@ -347,5 +356,22 @@ mod tests {
             crate::color::from_h264(&encoded[0].data),
             Some(crate::color::YuvColor::Full601)
         );
+    }
+}
+
+#[cfg(test)]
+mod encoder_bounds_tests {
+    use super::*;
+    #[test]
+    fn unsupported_desktop_size_is_rejected_before_pixel_conversion() {
+        for (w,h) in [(2,2),(1920,1080),(3840,2160),(2160,3840)] {
+            assert!(H264Encoder::validate_dimensions(w,h).is_ok());
+        }
+        let mut encoder=H264Encoder::with_frame_rate(8000,60).unwrap();
+        for (width,height) in [(4096,2160),(5120,1440),(3840,2400),(1921,1080),(0,0)] {
+            let frame=RawFrame{width,height,format:crate::frame::PixelFormat::Bgra8,stride:width.saturating_mul(4),data:Bytes::new(),pts:crate::Timestamp(0),gpu:false};
+            let error=encoder.encode(&frame).err().expect("unsupported software size");
+            assert!(error.to_string().contains("3840x2160"),"size must fail before accessing pixels: {error}");
+        }
     }
 }

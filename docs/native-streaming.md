@@ -44,7 +44,7 @@ uu-gui --native-invitation ./demo.eclipse-invite.json
 
 去掉 `--synthetic` 才会使用当前交互会话的主屏。`uu native-sources` 可枚举显示器，再用 `native-host --monitor` 选择枚举名称。Windows 使用 DXGI Desktop Duplication，Linux 使用已授权 X11；不会更改主屏、启用虚拟屏或关闭其它显示器。Wayland 当前需要后续 portal 采集支持，不能用 Xwayland 根窗口代替真实桌面。
 
-软件编码可用 `--fps`、`--bitrate-kbps` 设置，默认60fps、8000kbps；支持1–60fps及64–100000kbps。画面尺寸与帧率也必须符合协商的 H.264 level 5.2 上限。实际帧率取决于编码性能与网络，不承诺所有桌面尺寸均达到目标值。
+软件编码可用 `--fps`、`--bitrate-kbps` 设置，默认60fps、8000kbps；支持1–60fps及64–100000kbps。画面尺寸与帧率也必须符合协商的 H.264 level 5.2 上限。实际帧率取决于编码性能与网络，不承诺所有桌面尺寸均达到目标值。软件编码支持偶数尺寸，最大3840×2160或2160×3840；更大的源会提前提示，客户端不自动更改主机显示设置。
 
 ## 配对、范围与限制
 
