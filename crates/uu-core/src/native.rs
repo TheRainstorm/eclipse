@@ -156,6 +156,11 @@ pub struct HostReport {
     pub captured: u64,
     pub sent: u64,
     pub bytes: u64,
+    /// Local producer timings, independent of network/decoder latency.
+    pub producer_ms: u64,
+    pub capture_us: u64,
+    pub encode_us: u64,
+    pub backpressure_us: u64,
     pub input_events: u64,
     pub input_errors: u64,
     pub audio_packets:u64,
@@ -215,7 +220,20 @@ pub async fn serve_with_status(config: HostConfig, mut stop: watch::Receiver<boo
     host_session(socket, config, stop, status).await
 }
 
+#[derive(Default)]
+struct ProducerTimings {
+    capture_us: AtomicU64,
+    encode_us: AtomicU64,
+    backpressure_us: AtomicU64,
+}
+
+fn elapsed_us(started: Instant) -> u64 {
+    started.elapsed().as_micros().min(u64::MAX as u128) as u64
+}
+
 struct CaptureWorker {
+    started: Instant,
+    timings: Arc<ProducerTimings>,
     stopped: Arc<AtomicBool>,
     captured: Arc<AtomicU64>,
     frames: mpsc::Receiver<Result<uu_media::EncodedFrame>>,
@@ -233,13 +251,18 @@ impl CaptureWorker {
         let (tx, frames) = mpsc::channel(2);
         let worker_stop = stopped.clone();
         let counter = captured.clone();
+        let timings = Arc::new(ProducerTimings::default());
+        let worker_timings = timings.clone();
+        let started = Instant::now();
         let task = tokio::task::spawn_blocking(move || {
-            let result = encode_source(capture, fps, kbps, refresh, worker_stop, counter, &tx);
+            let result = encode_source(capture, fps, kbps, refresh, worker_stop, counter, worker_timings, &tx);
             if let Err(error) = result {
                 let _ = tx.blocking_send(Err(error));
             }
         });
         Self {
+            started,
+            timings,
             stopped,
             captured,
             frames,
@@ -268,6 +291,7 @@ fn encode_source(
     refresh: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
     captured: Arc<AtomicU64>,
+    timings: Arc<ProducerTimings>,
     output: &mpsc::Sender<Result<uu_media::EncodedFrame>>,
 ) -> Result<()> {
     use uu_media::VideoEncoder;
@@ -280,7 +304,9 @@ fn encode_source(
         if stopped.load(Ordering::Acquire) {
             break;
         }
+        let started = Instant::now();
         let frame = capture.next_frame()?;
+        timings.capture_us.fetch_add(elapsed_us(started), Ordering::Relaxed);
         captured.fetch_add(1, Ordering::Relaxed);
         let requested = refresh.load(Ordering::Acquire);
         if keyframe.elapsed() >= Duration::from_secs(2)
@@ -290,11 +316,16 @@ fn encode_source(
             encoder.request_keyframe();
             keyframe = Instant::now();
         }
-        for encoded in encoder.encode(&frame)? {
+        let started = Instant::now();
+        let encoded_frames = encoder.encode(&frame)?;
+        timings.encode_us.fetch_add(elapsed_us(started), Ordering::Relaxed);
+        let started = Instant::now();
+        for encoded in encoded_frames {
             if output.blocking_send(Ok(encoded)).is_err() {
                 return Ok(());
             }
         }
+        timings.backpressure_us.fetch_add(elapsed_us(started), Ordering::Relaxed);
         next = (next + interval).max(Instant::now());
     }
     Ok(())
@@ -428,6 +459,10 @@ async fn send_video(
     peer.close().await;
     let stopped = producer.stop().await;
     report.captured = producer.captured.load(Ordering::Relaxed);
+    report.producer_ms = producer.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    report.capture_us = producer.timings.capture_us.load(Ordering::Relaxed);
+    report.encode_us = producer.timings.encode_us.load(Ordering::Relaxed);
+    report.backpressure_us = producer.timings.backpressure_us.load(Ordering::Relaxed);
     active?;
     stopped?;
     Ok(report)
