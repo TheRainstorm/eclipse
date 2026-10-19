@@ -77,6 +77,7 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
 }
 
 struct App {
+    context: egui::Context,
     devices: Vec<Device>,
     selected: Option<usize>,
     search: String,
@@ -85,7 +86,6 @@ struct App {
     config: Option<uu_core::Config>,
     controller: Option<ControllerHandle>,
     textures: std::collections::HashMap<u32, egui::TextureHandle>,
-    latest: std::collections::HashMap<u32, (u32, u32, Vec<u8>)>,
     wallpapers: std::collections::HashMap<usize, egui::TextureHandle>,
     frame_count: std::collections::HashMap<u32, u32>,
     fps: std::collections::HashMap<u32, f32>,
@@ -260,6 +260,7 @@ impl App {
             })
             .unwrap_or(false);
         let mut app = Self {
+            context: cc.egui_ctx.clone(),
             devices: Vec::new(),
             selected: None,
             search: String::new(),
@@ -268,7 +269,6 @@ impl App {
             config,
             controller: None,
             textures: std::collections::HashMap::new(),
-            latest: std::collections::HashMap::new(),
             wallpapers: std::collections::HashMap::new(),
             frame_count: std::collections::HashMap::new(),
             fps: std::collections::HashMap::new(),
@@ -451,7 +451,6 @@ impl App {
                     self.textures.insert(idx, t);
                 }
             }
-            self.latest.insert(idx, (w, hgt, rgba));
             self.unpresented.insert(idx);
         }
         if apply_settings {
@@ -470,7 +469,6 @@ impl App {
             self.disconnecting = false;
             self.remote_focus = false;
             self.textures.clear();
-            self.latest.clear();
             self.frame_count.clear();
             self.fps.clear();
             self.settings_feedback.clear();
@@ -597,7 +595,6 @@ impl App {
             self.disconnecting = true;
         }
         self.textures.clear();
-        self.latest.clear();
         self.frame_count.clear();
         self.fps.clear();
         self.status = if self.disconnecting { "正在释放连接…" } else { "已断开" }.into();
@@ -614,6 +611,8 @@ impl App {
         let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
         match uu_core::controller::spawn(config, device, geo) {
             Ok(h) => {
+                let context = self.context.clone();
+                h.frames.set_waker(move || context.request_repaint());
                 self.controller = Some(h);
                 self.remote_focus = true;
                 self.status = "连接中…".into();
@@ -732,7 +731,7 @@ impl eframe::App for App {
         }
         self.settings_ui(ctx);
         ctx.request_repaint_after(std::time::Duration::from_millis(
-            if self.controller.is_some() { 16 } else { 150 },
+            if self.controller.is_some() { 100 } else { 150 },
         ));
     }
 }
