@@ -2,6 +2,39 @@
 use super::ui::{icon, icon_button, Icon};
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke};
 
+fn row_icon(ui: &egui::Ui, response: &egui::Response, kind: Icon, color: Color32) {
+    let rect = Rect::from_center_size(
+        egui::pos2(response.rect.left() + 16.0, response.rect.center().y),
+        egui::vec2(16.0, 16.0),
+    );
+    icon(ui.painter(), rect, kind, color);
+}
+fn submenu<R>(
+    ui: &mut egui::Ui,
+    kind: Icon,
+    label: impl Into<String>,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let response = ui.menu_button(format!("      {}   ", label.into()), body);
+    row_icon(ui, &response.response, kind, Color32::from_rgb(42, 52, 66));
+    let right = response.response.rect.right_center() - egui::vec2(7.0, 0.0);
+    ui.painter().line_segment(
+        [right - egui::vec2(2.0, 3.0), right + egui::vec2(1.0, 0.0)],
+        Stroke::new(1.0, Color32::GRAY),
+    );
+    ui.painter().line_segment(
+        [right + egui::vec2(1.0, 0.0), right + egui::vec2(-2.0, 3.0)],
+        Stroke::new(1.0, Color32::GRAY),
+    );
+    response
+}
+fn unavailable(ui: &mut egui::Ui, kind: Icon, label: &str, hint: &str) {
+    let response = ui
+        .add_enabled(false, egui::Button::new(format!("      {label}")))
+        .on_hover_text(hint);
+    row_icon(ui, &response, kind, Color32::from_gray(160));
+}
+
 pub(super) struct StreamMenu {
     pub visible: bool,
     pub open: bool,
@@ -42,16 +75,19 @@ impl super::App {
                         .unwrap_or("远程桌面");
                     ui.label(RichText::new(title).size(12.0));
                     ui.separator();
-                    ui.menu_button(format!("▣  显示屏 {}", self.selected_track + 1), |ui| {
-                        self.display_menu(ui)
-                    });
+                    submenu(
+                        ui,
+                        Icon::Desktop,
+                        format!("显示屏 {}", self.selected_track + 1),
+                        |ui| self.display_menu(ui),
+                    );
                     if self.view_only {
                         ui.label(RichText::new("仅观看").color(Color32::from_rgb(98, 125, 160)));
                     }
                     if let Some(controller) = &self.controller {
                         ui.label(
                             RichText::new(format!(
-                                "▥  {:.1} Mbps",
+                                "{:.1} Mbps",
                                 controller
                                     .stats
                                     .bitrate_kbps
@@ -79,7 +115,8 @@ impl super::App {
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        let control = ui.button("控制中心");
+                        let control = ui.add(egui::Button::new("      控制中心").frame(false));
+                        row_icon(ui, &control, Icon::Settings, Color32::from_rgb(42, 52, 66));
                         if control.clicked() {
                             self.stream_menu.open = !self.stream_menu.open;
                             self.stream_menu.anchor = control.rect.left_bottom();
@@ -190,11 +227,13 @@ impl super::App {
                         ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                             ui.spacing_mut().interact_size.y = 27.0;
-                            ui.menu_button(
-                                format!("▣  显示屏 {}", self.selected_track + 1),
+                            submenu(
+                                ui,
+                                Icon::Desktop,
+                                format!("显示屏 {}", self.selected_track + 1),
                                 |ui| self.display_menu(ui),
                             );
-                            ui.menu_button("▧  画质", |ui| {
+                            submenu(ui, Icon::Desktop, "画质", |ui| {
                                 let before = (self.bitrate_idx, self.custom_mbps);
                                 for (index, (label, _)) in super::BITRATE_PRESETS.iter().enumerate()
                                 {
@@ -226,7 +265,7 @@ impl super::App {
                                     self.send_bitrate();
                                 }
                             });
-                            ui.menu_button("□  窗口", |ui| {
+                            submenu(ui, Icon::Max, "窗口", |ui| {
                                 if ui
                                     .button(if self.fullscreen {
                                         "退出全屏"
@@ -242,9 +281,8 @@ impl super::App {
                                 ui.checkbox(&mut self.stream_menu.visible, "全屏显示悬浮入口");
                                 ui.label(RichText::new("Ctrl+Alt+M 可随时恢复入口").small().weak());
                             });
-                            ui.add_enabled(false, egui::Button::new("♬  声音"))
-                                .on_hover_text("音频尚未接入");
-                            ui.menu_button("♧  安全", |ui| {
+                            unavailable(ui, Icon::Play, "声音", "音频尚未接入");
+                            submenu(ui, Icon::Person, "安全", |ui| {
                                 if ui
                                     .checkbox(&mut self.view_only, "仅观看，禁止远程输入")
                                     .changed()
@@ -257,11 +295,9 @@ impl super::App {
                                     self.remote_focus = false;
                                 }
                             });
-                            ui.add_enabled(false, egui::Button::new("♧  外设"))
-                                .on_hover_text("外设透传尚未接入");
-                            ui.add_enabled(false, egui::Button::new("▣  工具"))
-                                .on_hover_text("文件、终端和端口映射尚未接入");
-                            ui.menu_button("▦  更多", |ui| {
+                            unavailable(ui, Icon::Link, "外设", "外设透传尚未接入");
+                            unavailable(ui, Icon::Folder, "工具", "文件、终端和端口映射尚未接入");
+                            submenu(ui, Icon::Grid, "更多", |ui| {
                                 ui.checkbox(&mut self.hud, "串流统计 · F1");
                                 if ui.button("隐藏悬浮入口 · Ctrl+Alt+M").clicked() {
                                     self.stream_menu.visible = false;
