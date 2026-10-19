@@ -20,6 +20,26 @@ use tokio::{
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use zeroize::{Zeroize, Zeroizing};
+use sha2::{Digest, Sha256};
+
+/// Remove this host's published capability when its listener/session ends.
+/// A replacement file belongs to its writer and must be left alone.
+pub(crate) struct PublishedInvitation {
+    path: std::path::PathBuf,
+    digest: [u8; 32],
+}
+impl Drop for PublishedInvitation {
+    fn drop(&mut self) {
+        let Ok(file) = fs::File::open(&self.path) else { return };
+        let mut bytes = Zeroizing::new(Vec::new());
+        if file.take(MAX_INVITE + 1).read_to_end(&mut bytes).is_ok()
+            && bytes.len() <= MAX_INVITE as usize
+            && <[u8; 32]>::from(Sha256::digest(&*bytes)) == self.digest
+        {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
 
 const PROTOCOL: u32 = 1;
 const TLS_NAME: &str = "eclipse.local";
@@ -124,6 +144,12 @@ impl Invitation {
         file.write_all(&data)?;
         file.sync_all()?;
         Ok(())
+    }
+    pub(crate) fn publish_new(&self, path: &Path) -> Result<PublishedInvitation> {
+        let bytes = Zeroizing::new(serde_json::to_vec_pretty(self)?);
+        let digest = Sha256::digest(&*bytes).into();
+        self.save_new(path)?;
+        Ok(PublishedInvitation { path: path.into(), digest })
     }
 }
 
@@ -231,6 +257,20 @@ pub async fn connect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn published_invitation_cleanup_preserves_a_replacement_file() {
+        let path = std::env::temp_dir().join(format!("eclipse-published-{}.json", uuid::Uuid::new_v4()));
+        let credentials = HostCredentials::new("127.0.0.1:32123".parse().unwrap(), Duration::from_secs(60)).unwrap();
+        let published = credentials.invitation().publish_new(&path).unwrap();
+        assert!(path.exists());
+        drop(published);
+        assert!(!path.exists());
+        let published = credentials.invitation().publish_new(&path).unwrap();
+        fs::write(&path, b"replacement owned by another writer").unwrap();
+        drop(published);
+        assert_eq!(fs::read(&path).unwrap(), b"replacement owned by another writer");
+        fs::remove_file(path).unwrap();
+    }
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,

@@ -31,6 +31,7 @@ mod account;
 mod audio_controls;
 mod native_ui;
 mod native_keys;
+mod native_host_ui;
 use login::LoginEvent;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -100,6 +101,7 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
 struct App {
     stream_target: Option<sessions::StreamTarget>,
     native_ui: native_ui::NativeUi,
+    native_host: native_host_ui::NativeHostUi,
     sessions: sessions::Sessions,
     platform: platform::Platform,
     build_label: String,
@@ -327,6 +329,7 @@ impl App {
         let mut app = Self {
             stream_target,
             native_ui: native_ui::NativeUi::default(),
+            native_host: native_host_ui::NativeHostUi::default(),
             sessions: sessions::Sessions::default(),
             platform,
             build_label: installed_revision(),
@@ -936,6 +939,7 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.native_host.poll(ctx);
         if let Some(seconds) = frame.info().cpu_usage {
             self.render_ms = self.render_ms * 0.9 + seconds * 1000.0 * 0.1;
         }
@@ -952,7 +956,7 @@ impl eframe::App for App {
             self.shortcuts.clear();
         }
         self.window_edge_active = !self.mouse_captured && window::resize_border(ctx, self.fullscreen);
-        if ctx.input(|i| i.viewport().close_requested()) && self.controller.is_some() {
+        if ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_requested = true;
             self.disconnect();
@@ -973,7 +977,8 @@ impl eframe::App for App {
             .map(|texture| texture.size_vec2());
         self.window_sizing.update(ctx, self.stream_target.is_some(), video_px,
             self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(frame, ctx));
-        if self.exit_requested && self.controller.is_none() {
+        if self.exit_requested { self.native_host.stop(); }
+        if self.exit_requested && self.controller.is_none() && !self.native_host.running() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.poll_login(ctx);
@@ -1071,6 +1076,7 @@ impl eframe::App for App {
             self.home_ui(ctx);
         }
         self.native_ui(ctx);
+        self.native_host_ui(ctx);
         self.settings_ui(ctx);
         self.about_ui(ctx);
         if self.audio_save_after.is_some_and(|at|std::time::Instant::now()>=at) {

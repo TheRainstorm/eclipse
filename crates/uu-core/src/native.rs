@@ -32,6 +32,43 @@ use webrtc::{
 };
 
 const MAX_SIGNAL: usize = 256 * 1024;
+pub use uu_capture::CaptureSource;
+
+#[derive(Clone, Debug)]
+pub struct CaptureMonitor {
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+}
+
+/// Enumerate the current authorized desktop without reading its pixels.
+pub fn monitors() -> Result<Vec<CaptureMonitor>> {
+    #[cfg(windows)]
+    let sources = uu_capture::windows::monitors()?;
+    #[cfg(target_os = "linux")]
+    let sources = uu_capture::x11::monitors(None)?;
+    #[cfg(any(windows, target_os = "linux"))]
+    return Ok(sources.into_iter().map(|m| CaptureMonitor {
+        name: m.name, x: m.x, y: m.y, width: m.width, height: m.height, primary: m.primary,
+    }).collect());
+    #[cfg(not(any(windows, target_os = "linux")))]
+    bail!("native desktop capture is unavailable on this platform")
+}
+
+/// Local host UI state. Capability contents never enter progress messages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostStatus {
+    Starting,
+    Waiting { address: SocketAddr, expires_at: u64 },
+    Preparing,
+    Streaming { width: u32, height: u32, fps: u32 },
+}
+fn progress(status: &Option<watch::Sender<HostStatus>>, value: HostStatus) {
+    if let Some(status) = status { status.send_replace(value); }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Offer {
@@ -133,7 +170,11 @@ async fn cancelled(stop: &mut watch::Receiver<bool>) {
 }
 
 /// Serve one invited controller, then close. A fresh invocation makes a fresh invitation.
-pub async fn serve(config: HostConfig, mut stop: watch::Receiver<bool>) -> Result<HostReport> {
+pub async fn serve(config: HostConfig, stop: watch::Receiver<bool>) -> Result<HostReport> {
+    serve_with_status(config, stop, None).await
+}
+
+pub async fn serve_with_status(config: HostConfig, mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>) -> Result<HostReport> {
     ensure!(
         !config.bind.ip().is_unspecified() && !config.bind.ip().is_multicast(),
         "choose a concrete native host interface"
@@ -149,7 +190,8 @@ pub async fn serve(config: HostConfig, mut stop: watch::Receiver<bool>) -> Resul
         .context("cannot bind native signaling listener")?;
     let address = listener.local_addr()?;
     let credentials = HostCredentials::new(address, config.invitation_lifetime)?;
-    credentials.invitation().save_new(&config.invitation_file)?;
+    let _published = credentials.invitation().publish_new(&config.invitation_file)?;
+    progress(&status, HostStatus::Waiting { address, expires_at: credentials.invitation().expires_at() });
     tracing::info!(%address,input_allowed=config.allow_input,"native host waiting for an invited controller");
     let socket = tokio::select! {
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
@@ -161,7 +203,8 @@ pub async fn serve(config: HostConfig, mut stop: watch::Receiver<bool>) -> Resul
         })=>result.context("native invitation expired before a controller paired")??,
     };
     drop(listener);
-    host_session(socket, config, stop).await
+    progress(&status, HostStatus::Preparing);
+    host_session(socket, config, stop, status).await
 }
 
 struct CaptureWorker {
@@ -253,12 +296,13 @@ async fn host_session(
     mut stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     config: HostConfig,
     mut stop: watch::Receiver<bool>,
+    status: Option<watch::Sender<HostStatus>>,
 ) -> Result<HostReport> {
     let offer: Offer = tokio::select! {result=read_message(&mut stream)=>result?,_=cancelled(&mut stop)=>return Ok(HostReport::default())};
     ensure!(offer.version == 1, "unsupported native protocol version");
     let local_ip = stream.get_ref().0.local_addr()?.ip();
     let mut peer = NativePeer::new(local_ip, None, true).await?;
-    let result = send_video(&mut peer, &mut stream, config, stop, offer).await;
+    let result = send_video(&mut peer, &mut stream, config, stop, offer, status).await;
     peer.close().await;
     let _ = stream.shutdown().await;
     result
@@ -270,6 +314,7 @@ async fn send_video(
     config: HostConfig,
     mut stop: watch::Receiver<bool>,
     offer: Offer,
+    status: Option<watch::Sender<HostStatus>>,
 ) -> Result<HostReport> {
     let refresh = Arc::new(AtomicBool::new(false));
     let track = peer.sender(refresh.clone()).await?;
@@ -303,6 +348,7 @@ async fn send_video(
         Some(Err(error))=>{controls.stop().await;return Err(error);},
         None=>{controls.stop().await;return Ok(HostReport::default());},
     }
+    progress(&status, HostStatus::Streaming { width, height, fps: config.fps });
     let mut producer = CaptureWorker::start(capture, config.fps, config.bitrate_kbps, refresh);
     let mut report = HostReport::default();
     let mut previous = None;
@@ -484,6 +530,20 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn stopped_waiting_host_removes_its_invitation_and_publishes_progress() {
+        let (config, file) = config();
+        let (stop, rx) = watch::channel(false);
+        let (status, mut state) = watch::channel(HostStatus::Starting);
+        let host = tokio::spawn(serve_with_status(config, rx, Some(status)));
+        timeout(Duration::from_secs(5), state.changed()).await.unwrap().unwrap();
+        assert!(matches!(*state.borrow_and_update(), HostStatus::Waiting { .. }));
+        assert!(file.0.exists());
+        stop.send_replace(true);
+        let report = timeout(Duration::from_secs(2), host).await.unwrap().unwrap().unwrap();
+        assert_eq!(report.captured, 0);
+        assert!(!file.0.exists());
+    }
     #[tokio::test]
     async fn synthetic_sources_cannot_grant_desktop_input_or_publish_an_invitation() {
         let (mut config,file)=config();config.allow_input=true;

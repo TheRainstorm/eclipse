@@ -73,18 +73,11 @@ pub async fn probe(path: PathBuf, frames: u64, seconds: u64) -> Result<()> {
 }
 
 pub fn sources() -> Result<()> {
-    #[cfg(windows)]
-    let monitors = uu_capture::windows::monitors()?;
-    #[cfg(target_os = "linux")]
-    let monitors = uu_capture::x11::monitors(None)?;
-    #[cfg(any(windows, target_os = "linux"))]
-    for source in monitors {
+    for source in uu_core::native::monitors()? {
         println!(
             "{} {}x{} origin=({},{}) primary={}",
             source.name, source.width, source.height, source.x, source.y, source.primary
         );
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    anyhow::bail!("native capture sources are unavailable on this platform");
     Ok(())
 }

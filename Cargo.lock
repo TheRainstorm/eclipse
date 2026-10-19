@@ -4942,6 +4942,7 @@ dependencies = [
  "tokio",
  "uu-core",
  "uu-proto",
+ "uuid",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-misc",

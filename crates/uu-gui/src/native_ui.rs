@@ -43,6 +43,7 @@ impl App {
         }
     }
     pub(super) fn open_native(&mut self) {
+        self.native_host.open = false;
         self.login_rx = None;
         self.login_texture = None;
         self.native_ui.open = true;
@@ -72,14 +73,18 @@ impl App {
         }
         let mut open = true;
         let mut connect = false;
+        let mut share = false;
         egui::Window::new("原生直连")
             .id("native-connect".into())
+            .frame(egui::Frame::window(&ctx.style()).fill(egui::Color32::WHITE).rounding(10.0).inner_margin(14.0))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .default_width(440.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
+                if ui.button("共享此设备 →").clicked(){ share = true; }
+                ui.add_space(8.0);
                 ui.label("使用主机生成的邀请，不需要登录账号。");
                 ui.add_space(10.0);
                 ui.label("将邀请文件拖入窗口，或填写文件路径：");
@@ -101,7 +106,8 @@ impl App {
                 if ui
                     .add_enabled(
                         !self.native_ui.path.trim().is_empty(),
-                        egui::Button::new("打开共享画面").min_size(egui::vec2(140.0, 32.0)),
+                        egui::Button::new(egui::RichText::new("打开共享画面").color(egui::Color32::WHITE))
+                            .fill(egui::Color32::from_rgb(53,131,255)).min_size(egui::vec2(140.0, 32.0)),
                     )
                     .clicked()
                 {
@@ -109,6 +115,7 @@ impl App {
                 }
             });
         self.native_ui.open = open;
+        if share { self.open_native_host(); return; }
         if connect {
             self.open_native_window();
         }

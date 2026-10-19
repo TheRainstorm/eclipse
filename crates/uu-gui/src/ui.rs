@@ -225,7 +225,7 @@ impl App {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
                     ui.label(RichText::new(super::brand::NAME).size(19.0).color(INK));
-                    let space = (ui.available_width() - 220.0).max(0.0);
+                    let space = (ui.available_width() - 290.0).max(0.0);
                     let (_, drag) =
                         ui.allocate_exact_size(egui::vec2(space, 34.0), Sense::click_and_drag());
                     if drag.drag_started() {
@@ -247,7 +247,9 @@ impl App {
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        if icon_label_button(ui,Icon::Link,"原生直连").clicked(){self.open_native();}
+                        if self.native_host.running() {
+                            if icon_label_button(ui,Icon::Desktop,"共享中").clicked(){self.open_native_host();}
+                        } else if icon_label_button(ui,Icon::Link,"原生直连").clicked(){self.open_native();}
                         if icon_button(ui,Icon::Settings,"软件设置").clicked(){self.open_settings();}
                         if icon_button(ui,Icon::Info,"关于软件").clicked(){self.open_about();}
                         self.account_button(ui);
@@ -277,6 +279,8 @@ impl App {
                     if self.login_rx.is_some()&&ui.button("取消登录").clicked(){self.login_rx=None;self.login_texture=None;self.login_status="已取消登录".into();}
                     ui.add_space(14.0);
                     if ui.add_sized([180.0,36.0],egui::Button::new(RichText::new("使用原生邀请").color(BLUE)).fill(C::WHITE).stroke(egui::Stroke::new(1.0,BLUE))).clicked(){self.open_native();}
+                    ui.add_space(8.0);
+                    if ui.add_sized([180.0,32.0],egui::Button::new(if self.native_host.running(){"管理当前共享"}else{"共享此设备"})).clicked(){self.open_native_host();}
                     ui.add_space(8.0);
                     ui.small("无需账号 · 邀请文件也可直接拖入窗口");
                     if !self.status.is_empty(){ui.add_space(16.0);ui.label(RichText::new(&self.status).color(MUTED));}
