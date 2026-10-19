@@ -75,6 +75,31 @@ fn session_features(clipboard: bool) -> Vec<u8> {
     feature_flag(&flags)
 }
 
+/// Requested rate, not a measured receive/decode/render rate. Official Windows
+/// descriptors define only FPS_UNKNOWN/30/60/90/144; arbitrary counts use fpsCount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureFrameRate(u32);
+impl Default for CaptureFrameRate { fn default() -> Self { Self(60) } }
+impl CaptureFrameRate {
+    pub const MIN: u32 = 5;
+    pub const MAX: u32 = 144;
+    pub fn new(fps: u32) -> Option<Self> {
+        (Self::MIN..=Self::MAX).contains(&fps).then_some(Self(fps))
+    }
+    pub fn fps(self) -> u32 { self.0 }
+    pub fn option(self) -> u64 {
+        match self.0 { 30 => 1, 60 => 2, 90 => 3, 144 => 4, _ => 0 }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        // Keep old UU_FPS=1/2/3/4 scripts compatible; >=5 is a literal rate.
+        let value = value.parse::<u32>().ok()?;
+        Self::new(match value { 1 => 30, 2 => 60, 3 => 90, 4 => 144, other => other })
+    }
+    pub fn from_env() -> Self {
+        std::env::var("UU_FPS").ok().as_deref().and_then(Self::parse).unwrap_or_default()
+    }
+}
+
 /// CaptureSettingRequest (CONTROL Message 21): ask the controlled end to switch
 /// frame rate / quality / bitrate.
 ///
@@ -84,9 +109,9 @@ fn session_features(clipboard: bool) -> Vec<u8> {
 /// ```text
 /// 1  fps option      1=30, 2=60, 3=90, 4=144
 /// 2  quality preset  1 fast, 2 general, 3 hd, 4 bluray, 5 auto, 6 custom
-/// 4  width hint      -2 (runtime switch; 1 on first session setup)
-/// 5  width hint      -1 (runtime; 1920 on first setup)
-/// 6  height hint     -1 (runtime; 1080 on first setup)
+/// 4  screen id       -2 keeps the current source (not a width/mode flag)
+/// 5  width           -1 unchanged, or explicit output width
+/// 6  height          -1 unchanged, or explicit output height
 /// 7  constant        1
 /// 8  custom bitrate  bits/second (only for quality 6)
 /// 10 constant        1
@@ -94,7 +119,7 @@ fn session_features(clipboard: bool) -> Vec<u8> {
 /// 13 constant        2
 /// 14 max width       3840
 /// 15 max height      2160
-/// 18 explicit fps    30/60/90/144
+/// 18 explicit fps    actual integer count, including 120/custom
 /// ```
 ///
 /// The outer `Message` carries `1: seq, 2: unix_ms, 21: Rpc{1:{1:seq},2:setting}`.
@@ -149,28 +174,28 @@ pub fn capture_setting_request_with_resolution(
     custom_bitrate_bps: Option<u64>,
     resolution: CaptureResolution,
 ) -> Vec<u8> {
-    let fps = match fps_option {
-        1 => 30,
-        2 => 60,
-        3 => 90,
-        4 => 144,
-        v => v,
-    };
+    let frame_rate = CaptureFrameRate::parse(&fps_option.to_string()).unwrap_or_default();
+    capture_setting_request_at_fps(seq, timestamp_ms, frame_rate, quality, custom_bitrate_bps, resolution)
+}
+
+pub fn capture_setting_request_at_fps(
+    seq: u64, timestamp_ms: u64, frame_rate: CaptureFrameRate,
+    quality: u64, custom_bitrate_bps: Option<u64>, resolution: CaptureResolution,
+) -> Vec<u8> {
     let mut setting = Vec::new();
-    int(1, fps_option, &mut setting);
+    int(1, frame_rate.option(), &mut setting);
     int(2, quality, &mut setting);
+    int(4, u64::MAX - 1, &mut setting); // Keep the currently selected screen, including super-screen.
     // Runtime switch sentinels observed from the official client.  protobuf
     // int64 negatives use the full 10-byte two's-complement varint.
     match resolution {
         CaptureResolution::Exact(width, height) => {
-            int(4, 1, &mut setting);
             int(5, width as u64, &mut setting);
             int(6, height as u64, &mut setting);
             int(16, width as u64, &mut setting);
             int(17, height as u64, &mut setting);
         }
         _ => {
-            int(4, u64::MAX - 1, &mut setting);
             int(5, u64::MAX, &mut setting);
             int(6, u64::MAX, &mut setting);
         }
@@ -181,18 +206,14 @@ pub fn capture_setting_request_with_resolution(
     }
     int(
         10,
-        if resolution == CaptureResolution::Native {
-            3
-        } else {
-            1
-        },
+        match resolution { CaptureResolution::Native => 3, CaptureResolution::Exact(_, _) => 4, _ => 1 },
         &mut setting,
     );
     int(12, 4, &mut setting);
     int(13, 2, &mut setting);
     int(14, 3840, &mut setting);
     int(15, 2160, &mut setting);
-    int(18, fps, &mut setting);
+    int(18, frame_rate.fps() as u64, &mut setting);
 
     let mut header = Vec::new();
     int(1, seq, &mut header);
@@ -392,9 +413,27 @@ mod tests {
         assert!(!fields.iter().any(|(n, _)| *n == 8));
         let full = setting(CaptureResolution::Exact(3840, 2160));
         let fields = decode_wire(&full).unwrap();
-        for (n, value) in [(4, 1), (5, 3840), (6, 2160), (16, 3840), (17, 2160)] {
+        for (n, value) in [(4, u64::MAX - 1), (5, 3840), (6, 2160), (16, 3840), (17, 2160)] {
             assert!(fields.contains(&(n, WireValue::Varint(value))));
         }
+    }
+    #[test]
+    fn literal_frame_rates_use_count_not_unknown_enum_numbers() {
+        for fps in [5, 30, 60, 75, 90, 120, 144] {
+            let rate = CaptureFrameRate::new(fps).unwrap();
+            let msg = capture_setting_request_at_fps(1, 2, rate, 5, None, CaptureResolution::Native);
+            let outer = decode_wire(&msg).unwrap();
+            let rpc = outer.iter().find_map(|(n,v)| match (n,v) { (21,WireValue::Bytes(b))=>Some(*b),_=>None }).unwrap();
+            let rpc = decode_wire(rpc).unwrap();
+            let setting = rpc.iter().find_map(|(n,v)| match (n,v) { (2,WireValue::Bytes(b))=>Some(*b),_=>None }).unwrap();
+            let setting = decode_wire(setting).unwrap();
+            assert!(setting.contains(&(18,WireValue::Varint(fps as u64))));
+            assert!(setting.contains(&(1,WireValue::Varint(rate.option()))));
+            if ![30,60,90,144].contains(&fps) { assert_eq!(rate.option(),0); }
+        }
+        assert_eq!(CaptureFrameRate::parse("2"), CaptureFrameRate::new(60));
+        assert_eq!(CaptureFrameRate::parse("120"), CaptureFrameRate::new(120));
+        for invalid in ["0", "145", "-1", "no"] { assert_eq!(CaptureFrameRate::parse(invalid),None); }
     }
     #[test]
     fn echo_request_is_detected() {

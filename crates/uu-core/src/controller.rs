@@ -161,7 +161,7 @@ async fn run(
     let streamer = json!({
         "control_id": ctrl,
         "device_capability": {
-            "display_info": [{"id":0,"fps":60,"type":0,"hdr":-2}],
+            "display_info": [{"id":0,"fps":crate::control_wire::CaptureFrameRate::MAX,"type":0,"hdr":-2}],
             "video_codec_capability": [{
                 "video_codec":1,"width":3840,"height":2160,
                 "chroma_sampling":1,"bit_depth":8,"codec_impl":32
@@ -253,10 +253,7 @@ async fn run(
     // Ask the controlled end for the target frame rate. Without this the host
     // streams at its idle default (~21 fps); the official client sends the same
     // CaptureSettingRequest. Retry a few times while CONTROL settles.
-    let fps_option: u64 = std::env::var("UU_FPS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2); // 1=30, 2=60, 3=90, 4=144
+    let frame_rate = crate::control_wire::CaptureFrameRate::from_env();
     let bitrate_mbps: Option<u64> = std::env::var("UU_BITRATE")
         .ok()
         .and_then(|v| v.parse().ok());
@@ -271,8 +268,8 @@ async fn run(
     } else {
         None
     };
-    let initial_settings = crate::control_wire::capture_setting_request_with_resolution(
-        1000, crate::control_wire::now_ms(), fps_option, quality, custom_bps,
+    let initial_settings = crate::control_wire::capture_setting_request_at_fps(
+        1000, crate::control_wire::now_ms(), frame_rate, quality, custom_bps,
         crate::control_wire::CaptureResolution::from_env(),
     );
     drive_session(sio, media, &ctrl, &ice_id, &ev, &mut input_rx, &mut settings_rx, initial_settings).await?;
