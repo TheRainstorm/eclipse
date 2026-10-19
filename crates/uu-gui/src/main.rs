@@ -12,6 +12,7 @@ use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
+mod window;
 mod stream_menu;
 mod login;
 mod ui;
@@ -112,6 +113,7 @@ struct App {
     stream_menu: stream_menu::StreamMenu,
     resize_pending: bool,
     close_at: Option<std::time::Instant>,
+    window_edge_active: bool,
 }
 
 /// Bitrate/quality presets sent as a CaptureSettingRequest. Values are the
@@ -289,6 +291,7 @@ impl App {
             stream_menu: stream_menu::StreamMenu::default(),
             resize_pending: true,
             close_at: None,
+            window_edge_active: false,
         };
         if logged_in {
             app.start_load();
@@ -589,6 +592,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.window_edge_active = window::resize_border(ctx, self.fullscreen);
         if self.resize_pending {
             if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
                 let size = egui::vec2(

@@ -734,7 +734,7 @@ impl App {
         let was_open = self.stream_menu.open;
         let controls = self.stream_controls(ctx);
         let control_pointer = ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
-        let controls_active = was_open || self.stream_menu.open || control_pointer || ctx.memory(|m|m.any_popup_open());
+        let controls_active = self.window_edge_active || was_open || self.stream_menu.open || control_pointer || ctx.memory(|m|m.any_popup_open());
         let mut messages = Vec::new();
         egui::CentralPanel::default().frame(egui::Frame::none().fill(C::BLACK)).show(ctx,|ui| {
             ui.set_clip_rect(ui.max_rect());
