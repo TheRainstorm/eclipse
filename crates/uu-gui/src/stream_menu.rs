@@ -234,16 +234,19 @@ impl super::App {
                                 |ui| self.display_menu(ui),
                             );
                             submenu(ui, Icon::Desktop, "画质", |ui| {
-                                let before = (self.bitrate_idx, self.custom_mbps);
+                                let mut confirm = false;
                                 for (index, (label, _)) in super::BITRATE_PRESETS.iter().enumerate()
                                 {
-                                    ui.selectable_value(&mut self.bitrate_idx, index, *label);
+                                    if ui.selectable_value(&mut self.bitrate_idx, index, *label).clicked() {
+                                        confirm = index != 5;
+                                    }
                                 }
                                 if self.bitrate_idx == 5 {
                                     ui.add(
                                         egui::Slider::new(&mut self.custom_mbps, 1..=100)
                                             .suffix(" Mbps"),
                                     );
+                                    confirm |= ui.button("确认自定义码率").clicked();
                                 }
                                 ui.separator();
                                 let previous_resolution = self.resolution_idx;
@@ -256,15 +259,19 @@ impl super::App {
                                 .iter()
                                 .enumerate()
                                 {
-                                    ui.selectable_value(&mut self.resolution_idx, index, *label);
+                                    if ui.selectable_value(&mut self.resolution_idx, index, *label).clicked() {
+                                        confirm = true;
+                                    }
                                 }
-                                if previous_resolution != self.resolution_idx {
+                                if confirm || previous_resolution != self.resolution_idx {
                                     self.send_bitrate();
-                                }
-                                if before != (self.bitrate_idx, self.custom_mbps) {
-                                    self.send_bitrate();
+                                    ui.close_menu();
                                 }
                             });
+                            if !self.settings_feedback.is_empty() {
+                                ui.label(RichText::new(&self.settings_feedback).size(11.0)
+                                    .color(Color32::from_rgb(51, 139, 111)));
+                            }
                             submenu(ui, Icon::Max, "窗口", |ui| {
                                 if ui
                                     .button(if self.fullscreen {

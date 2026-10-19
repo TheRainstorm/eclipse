@@ -106,6 +106,7 @@ struct App {
     resolution_idx: usize,
     custom_mbps: u32,
     settings_seq: u64,
+    settings_feedback: String,
     pointer: input::RemotePointer,
     remote_focus: bool,
     view_only: bool,
@@ -280,10 +281,11 @@ impl App {
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(false),
             autoconnect_done: false,
             fullscreen: false,
-            bitrate_idx: 4,
+            bitrate_idx: 0,
             resolution_idx: 0,
             custom_mbps: 55,
             settings_seq: 0,
+            settings_feedback: String::new(),
             pointer: input::RemotePointer::default(),
             remote_focus: false,
             view_only: false,
@@ -476,7 +478,13 @@ impl App {
             custom_bps,
             resolution,
         );
-        let _ = h.settings.send(msg);
+        self.settings_feedback = if h.settings.send(msg).is_ok() {
+            format!("已发送：{} · {}", BITRATE_PRESETS[self.bitrate_idx].0,
+                if quality == 6 { format!("{} Mbps", self.custom_mbps) }
+                else { "以实际接收码率为准".into() })
+        } else {
+            "设置发送失败：连接已关闭".into()
+        };
     }
 
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
