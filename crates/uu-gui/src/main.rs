@@ -10,6 +10,7 @@ use eframe::egui;
 use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
+mod input;
 mod login;
 use login::LoginEvent;
 
@@ -88,6 +89,7 @@ struct App {
     selected_track: u32,
     seq: u32,
     kseq: u32,
+    pointer: input::RemotePointer,
     pressed_vks: std::collections::HashSet<u32>,
     mod_state: [bool; 4],
     focused: bool,
@@ -252,6 +254,7 @@ impl App {
             selected_track: 0,
             seq: 1,
             kseq: 1,
+            pointer: input::RemotePointer::default(),
             pressed_vks: std::collections::HashSet::new(),
             mod_state: [false; 4],
             focused: true,
@@ -451,6 +454,7 @@ impl App {
     }
 
     fn release_all_keys(&mut self) {
+        for payload in self.pointer.release_all(1) { self.send_input(payload, 15); }
         let keys: Vec<u32> = self.pressed_vks.drain().collect();
         for vk in keys {
             self.send_key(vk, false);
@@ -815,7 +819,7 @@ impl eframe::App for App {
         let mut pending: Vec<(serde_json::Value, u32)> = Vec::new();
         egui::CentralPanel::default().show(ctx, |ui| {
             let rect = ui.available_rect_before_wrap();
-            let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+            let _resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
             let chosen = if self.textures.contains_key(&self.selected_track) {
                 Some(self.selected_track)
             } else {
@@ -832,77 +836,9 @@ impl eframe::App for App {
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
                 );
-                if let Some(p) = resp.hover_pos() {
-                    let x = ((p.x - draw.left()) / draw.width()).clamp(0.0, 1.0);
-                    let y = ((p.y - draw.top()) / draw.height()).clamp(0.0, 1.0);
-                    pending.push((
-                        serde_json::json!({
-                            "abs_x": x, "abs_y": y,
-                            "action": "mouse_move_absolute", "screen_id": 1
-                        }),
-                        15,
-                    ));
-                }
-                if resp.drag_started() {
-                    pending.push((
-                        serde_json::json!({"action":"mouse_press","button":1,"screen_id":1}),
-                        15,
-                    ));
-                }
-                if resp.dragged() {
-                    if let Some(p) = resp.interact_pointer_pos() {
-                        let x = ((p.x - draw.left()) / draw.width()).clamp(0.0, 1.0);
-                        let y = ((p.y - draw.top()) / draw.height()).clamp(0.0, 1.0);
-                        pending.push((
-                            serde_json::json!({
-                                "abs_x": x, "abs_y": y,
-                                "action": "mouse_move_absolute", "screen_id": 1
-                            }),
-                            15,
-                        ));
-                    }
-                }
-                if resp.drag_stopped() {
-                    pending.push((
-                        serde_json::json!({"action":"mouse_release","button":1,"screen_id":1}),
-                        15,
-                    ));
-                }
-                if resp.clicked() {
-                    for action in ["mouse_press", "mouse_release"] {
-                        pending.push((
-                            serde_json::json!({"action":action,"button":1,"screen_id":1}),
-                            15,
-                        ));
-                    }
-                }
-                if resp.secondary_clicked() {
-                    for action in ["mouse_press", "mouse_release"] {
-                        pending.push((
-                            serde_json::json!({"action":action,"button":2,"screen_id":1}),
-                            15,
-                        ));
-                    }
-                }
-                if resp.middle_clicked() {
-                    for action in ["mouse_press", "mouse_release"] {
-                        pending.push((
-                            serde_json::json!({"action":action,"button":3,"screen_id":1}),
-                            15,
-                        ));
-                    }
-                }
-                if resp.contains_pointer() {
-                    let scroll = ui.ctx().input(|i| i.raw_scroll_delta.y);
-                    if scroll.abs() > 0.1 {
-                        pending.push((
-                            serde_json::json!({
-                                "action": "mouse_scroll", "delta_x": 0,
-                                "delta_y": if scroll > 0.0 { 120 } else { -120 }
-                            }),
-                            16,
-                        ));
-                    }
+                if self.focused {
+                    let (events, pointer) = ctx.input(|i| (i.events.clone(), i.pointer.hover_pos()));
+                    pending.extend(self.pointer.events(&events, draw, pointer, 1).into_iter().map(|p| (p, 15)));
                 }
             } else {
                 ui.painter()
