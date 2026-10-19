@@ -28,6 +28,7 @@ mod login;
 mod ui;
 mod brand;
 mod account;
+mod audio_controls;
 use login::LoginEvent;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -644,6 +645,7 @@ impl App {
         match action {
             shortcuts::Action::Stats=>{self.hud=!self.hud;self.persist_preferences();},
             shortcuts::Action::Menu=>{self.remote_focus=false;self.release_pointer_capture(ctx);self.stream_menu.visible=!self.stream_menu.visible;self.stream_menu.open=false;ctx.memory_mut(|m|m.close_popup());self.persist_preferences();},
+            shortcuts::Action::Mute=>self.toggle_audio_mute(),
             shortcuts::Action::Fullscreen=>self.toggle_fullscreen(ctx),
             shortcuts::Action::Exit=>self.disconnect(),
             shortcuts::Action::Capture=>{

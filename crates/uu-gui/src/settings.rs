@@ -183,7 +183,7 @@ impl super::App {
                     let resolutions=["保持远端分辨率","1920 × 1080","2560 × 1440","3840 × 2160"];
                     egui::ComboBox::from_label("分辨率").selected_text(resolutions[s.resolution]).show_ui(ui,|ui|{for (i,label) in resolutions.iter().enumerate(){ui.selectable_value(&mut s.resolution,i,*label);}});
                     ui.checkbox(&mut s.hud,"显示串流统计 · Ctrl+Alt+S");
-                    ui.checkbox(&mut s.floating_menu,"全屏显示可隐藏的悬浮入口");
+                    ui.checkbox(&mut s.floating_menu,"全屏显示悬浮入口 · Ctrl+Alt+H");
                     ui.separator();ui.strong("声音");
                     ui.checkbox(&mut s.muted,"静音");ui.add(egui::Slider::new(&mut s.volume,0..=100).text("音量"));
                     ui.separator();ui.strong("输入");

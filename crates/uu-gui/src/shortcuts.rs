@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use eframe::egui::{Key, Modifiers};
 
 #[derive(Debug, PartialEq)]
-pub enum Action { Stats, Menu, Fullscreen, Exit, Capture }
+pub enum Action { Stats, Menu, Mute, Fullscreen, Exit, Capture }
 #[derive(Debug, PartialEq)]
 pub enum KeyAction { Forward, Consumed, Trigger(Action) }
 #[derive(Default)]
@@ -22,7 +22,8 @@ impl Shortcuts {
         let action = if modifiers.ctrl && modifiers.alt {
             match key {
                 Key::S if streaming => Some(Action::Stats),
-                Key::M if streaming => Some(Action::Menu),
+                Key::M if streaming => Some(Action::Mute),
+                Key::H if streaming => Some(Action::Menu),
                 Key::F | Key::X => Some(Action::Fullscreen),
                 Key::Q if streaming => Some(Action::Exit),
                 Key::Z if streaming => Some(Action::Capture),
@@ -71,5 +72,15 @@ mod tests {
         assert_eq!(keys.key(Key::F1, true, false, Modifiers::NONE, true), KeyAction::Forward);
         assert_eq!(keys.key(Key::S, true, false, CHORD, false), KeyAction::Forward);
         assert_eq!(keys.key(Key::F, true, false, CHORD, false), KeyAction::Trigger(Action::Fullscreen));
+    }
+    #[test]
+    fn mute_and_menu_are_distinct_and_toggle_only_on_first_press() {
+        for (key, action) in [(Key::M, Action::Mute), (Key::H, Action::Menu)] {
+            let mut keys = Shortcuts::default();
+            assert_eq!(keys.key(key, true, false, CHORD, true), KeyAction::Trigger(action));
+            assert_eq!(keys.key(key, true, true, Modifiers::NONE, true), KeyAction::Consumed);
+            assert_eq!(keys.key(key, false, false, Modifiers::NONE, false), KeyAction::Consumed);
+            assert_eq!(keys.key(key, true, false, CHORD, false), KeyAction::Forward);
+        }
     }
 }

@@ -55,7 +55,8 @@ impl Keys {
         if ctrl_alt {
             let action = match vk {
                 0x53 => Some(Action::Stats),
-                0x4d => Some(Action::Menu),
+                0x4d => Some(Action::Mute),
+                0x48 => Some(Action::Menu),
                 0x46 | 0x58 => Some(Action::Fullscreen),
                 0x51 => Some(Action::Exit),
                 0x5a => Some(Action::Capture),
@@ -85,6 +86,16 @@ pub fn sided_vk(vk:u32,lparam:usize)->u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn captured_mute_and_menu_chords_own_repeats_and_release_after_focus_loss() {
+        for (vk, action) in [(0x4d, Action::Mute), (0x48, Action::Menu)] {
+            let mut keys = Keys::new();
+            assert_eq!(keys.event(vk, true, true, true, false), Decision::Shortcut(action));
+            assert_eq!(keys.event(vk, true, true, false, false), Decision::Consume);
+            assert_eq!(keys.event(vk, false, false, false, false), Decision::Consume);
+            assert_eq!(keys.event(vk, true, true, false, false), Decision::Remote {vk, pressed:true});
+        }
+    }
     #[test]
     fn native_keys_preserve_oem_punctuation_numpad_functions_and_modifier_sides() {
         for vk in [0xba,0xbb,0xbc,0xbd,0xbe,0xbf,0xc0,0xdb,0xdc,0xdd,0xde,0xe2,0x60,0x6f,0x70,0x87] {

@@ -260,6 +260,7 @@ impl super::App {
                             }
                             self.stream_menu.anchor = control.rect.left_bottom();
                         }
+                        self.audio_button(ui);
                     });
                 });
             });
@@ -503,10 +504,10 @@ impl super::App {
         }
         if self.fullscreen && self.stream_menu.visible {
             let screen = ctx.screen_rect();
-            let default = egui::pos2(screen.right() - 54.0, 8.0);
+            let default = egui::pos2(screen.right() - 74.0, 8.0);
             let position = self.stream_menu.position.unwrap_or(default);
             let position = egui::pos2(
-                position.x.clamp(screen.left(), screen.right() - 40.0),
+                position.x.clamp(screen.left(), screen.right() - 66.0),
                 position.y.clamp(screen.top(), screen.bottom() - 40.0),
             );
             let response = egui::Area::new("floating-control-handle".into())
@@ -521,6 +522,8 @@ impl super::App {
                         .stroke(Stroke::new(1.0, Color32::from_rgb(217, 224, 234)))
                         .inner_margin(egui::Margin::same(3.0))
                         .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
                             let (rect, button) = ui.allocate_exact_size(
                                 egui::vec2(26.0, 26.0),
                                 egui::Sense::click_and_drag(),
@@ -541,8 +544,10 @@ impl super::App {
                                 }
                             }
                             button.on_hover_text(
-                                "设置 · 拖动可移动\nCtrl+Alt+M 隐藏 / 显示悬浮菜单",
+                                "设置 · 拖动可移动\nCtrl+Alt+H 隐藏 / 显示悬浮菜单",
                             );
+                            self.audio_button(ui);
+                            });
                         });
                 });
             self.stream_menu.anchor = response.response.rect.left_bottom();
@@ -704,7 +709,7 @@ impl super::App {
                                             None,
                                             false,
                                             false,
-                                            "Ctrl+Alt+M",
+                                            "Ctrl+Alt+H",
                                             false,
                                         )
                                         .clicked()

@@ -25,6 +25,8 @@ pub(super) enum Icon {
     Person,
     Star,
     Info,
+    Volume,
+    Muted,
 }
 pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
     let r = Rect::from_center_size(rect.center(), Vec2::splat(18.0));
@@ -34,6 +36,21 @@ pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
         p.line_segment([pt(a.0, a.1), pt(b.0, b.1)], stroke);
     };
     match kind {
+        Icon::Volume | Icon::Muted => {
+            p.add(egui::Shape::closed_line(vec![pt(2.0, 7.0), pt(5.0, 7.0), pt(9.0, 3.0), pt(9.0, 15.0), pt(5.0, 11.0), pt(2.0, 11.0)], stroke));
+            if matches!(kind, Icon::Muted) {
+                line((12.0, 6.0), (17.0, 12.0));
+                line((12.0, 12.0), (17.0, 6.0));
+            } else {
+                for radius in [4.0, 7.0] {
+                    let points = (0..=8).map(|step| {
+                        let angle = -0.8 + step as f32 * 0.2;
+                        pt(9.0, 9.0) + egui::vec2(angle.cos(), angle.sin()) * radius
+                    }).collect();
+                    p.add(egui::Shape::line(points, stroke));
+                }
+            }
+        }
         Icon::Info => {
             p.circle_stroke(r.center(), 7.0, stroke);
             p.circle_filled(pt(9.0, 5.0), 0.9, color);
@@ -152,12 +169,15 @@ pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
     }
 }
 pub(super) fn icon_button(ui: &mut egui::Ui, kind: Icon, tip: &str) -> Response {
+    icon_button_selected(ui, kind, tip, false)
+}
+pub(super) fn icon_button_selected(ui: &mut egui::Ui, kind: Icon, tip: &str, selected: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
-    if response.hovered() {
+    if response.hovered() || selected {
         ui.painter()
-            .rect_filled(rect, 6.0, ui.visuals().widgets.hovered.bg_fill);
+            .rect_filled(rect, 6.0, if selected {C::from_rgb(222, 235, 249)} else {ui.visuals().widgets.hovered.bg_fill});
     }
-    icon(ui.painter(), rect, kind, ui.visuals().text_color());
+    icon(ui.painter(), rect, kind, if selected {BLUE} else {ui.visuals().text_color()});
     response.on_hover_text(tip)
 }
 
