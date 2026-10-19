@@ -457,6 +457,14 @@ impl App {
         if apply_settings {
             self.send_bitrate();
         }
+        if let Some(h) = &self.controller {
+            let response = h.stats.settings_response.load(std::sync::atomic::Ordering::Acquire);
+            if response >> 1 == 2000 + self.settings_seq && self.settings_feedback.starts_with("已发送") {
+                self.settings_feedback = if response & 1 != 0 {
+                    format!("远端已确认：{}", BITRATE_PRESETS[self.bitrate_idx].0)
+                } else { "远端拒绝了画质设置，请重新选择".into() };
+            }
+        }
         if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
             self.controller = None;
             self.disconnecting = false;

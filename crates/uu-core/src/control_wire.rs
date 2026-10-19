@@ -288,6 +288,32 @@ pub fn echo_matches(data: &[u8], seq: u64) -> bool {
     })
 }
 
+/// Capture-setting RPC response (22), matched by RequestHeader.request_id.
+/// An empty CaptureSettingResponse means success; nonzero errors mean reject.
+pub fn capture_setting_response(data: &[u8]) -> Option<(u64, bool)> {
+    let outer = decode_wire(data).ok()?;
+    let rpc = outer.iter().find_map(|(n, v)| match (n, v) {
+        (22, WireValue::Bytes(b)) => Some(*b), _ => None,
+    })?;
+    let rpc = decode_wire(rpc).ok()?;
+    let header = rpc.iter().find_map(|(n, v)| match (n, v) {
+        (1, WireValue::Bytes(b)) => Some(*b), _ => None,
+    })?;
+    let id = decode_wire(header).ok()?.iter().find_map(|(n, v)| match (n, v) {
+        (1, WireValue::Varint(id)) => Some(*id), _ => None,
+    })?;
+    let response = rpc.iter().find_map(|(n, v)| match (n, v) {
+        (2, WireValue::Bytes(b)) => Some(*b), _ => None,
+    })?;
+    let errors = decode_wire(response).ok()?;
+    let rejected = errors.iter().any(|(n, v)| *n == 1 && match v {
+        WireValue::Varint(v) => *v != 0,
+        WireValue::Bytes(b) => b.iter().any(|v| *v != 0),
+        _ => true,
+    });
+    Some((id, !rejected))
+}
+
 /// Decode a protobuf message into `(field number, value)` pairs. Nested byte
 /// payloads are left opaque.
 pub fn decode_wire(input: &[u8]) -> Result<Vec<(u32, WireValue<'_>)>, ()> {
@@ -423,5 +449,22 @@ mod tests {
         bytes(4, &[8, 6, 16, 3], &mut action);
         let msg = envelope(893, 3, &action);
         assert_eq!(echo_request_seq(&msg), Some(893));
+    }
+}
+
+#[cfg(test)]
+mod settings_response_tests {
+    use super::*;
+    #[test]
+    fn settings_confirmation_matches_rpc_id_and_rejects_non_capture_responses() {
+        let mut header = vec![]; int(1, 2007, &mut header);
+        let mut rpc = vec![]; bytes(1, &header, &mut rpc); bytes(2, &[], &mut rpc);
+        assert_eq!(capture_setting_response(&envelope(42, 22, &rpc)), Some((2007, true)));
+        let mut failed = vec![]; int(1, 3, &mut failed);
+        let mut rpc = vec![]; bytes(1, &header, &mut rpc); bytes(2, &failed, &mut rpc);
+        assert_eq!(capture_setting_response(&envelope(43, 22, &rpc)), Some((2007, false)));
+        assert_eq!(capture_setting_response(&echo_response(44, 2007)), None);
+        let mut unrelated = vec![]; bytes(1, &header, &mut unrelated); bytes(3, &[], &mut unrelated);
+        assert_eq!(capture_setting_response(&envelope(45, 22, &unrelated)), None);
     }
 }

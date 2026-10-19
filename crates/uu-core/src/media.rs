@@ -56,6 +56,8 @@ pub struct MediaStats {
     pub rtt_us: AtomicU32,
     pub rtt_deviation_us: AtomicU32,
     pub rtt_updated_ms: AtomicU64,
+    /// Capture-setting response: request_id << 1 | accepted.
+    pub settings_response: AtomicU64,
     /// Unrecovered RTP packet loss in the current receive window, parts/million.
     pub loss_ppm: AtomicU32,
     pub codec: std::sync::Mutex<String>,
@@ -237,6 +239,11 @@ impl ControllerMedia {
                     Box::pin(async move {
                         let Some(ch) = ch.upgrade() else { return };
                         if !msg.is_string {
+                            if let Some((id, accepted)) = crate::control_wire::capture_setting_response(&msg.data) {
+                                if let Some(s) = &stats {
+                                    s.settings_response.fetch_max((id << 1) | accepted as u64, Ordering::Release);
+                                }
+                            }
                             if let Some((mean, deviation)) = probe.lock().unwrap().reply(&msg.data) {
                                 if let Some(s) = &stats {
                                     s.rtt_ms.store(mean / 1000, Ordering::Relaxed);
