@@ -70,9 +70,36 @@ impl Keys {
         Decision::Remote { vk, pressed: true }
     }
 }
+#[cfg_attr(not(any(windows,test)),allow(dead_code))]
+pub fn our_mask(vk:u32,extra_info:usize)->bool {vk==0xff && extra_info==0x5555574d}
+/// WM_KEY* uses generic modifiers; scan code and extended bit retain sides.
+#[cfg_attr(not(any(windows,test)),allow(dead_code))]
+pub fn sided_vk(vk:u32,lparam:usize)->u32 {
+    match vk {
+        0x10=>if (lparam>>16)&0xff==0x36 {0xa1}else{0xa0},
+        0x11=>if lparam&(1<<24)!=0 {0xa3}else{0xa2},
+        0x12=>if lparam&(1<<24)!=0 {0xa5}else{0xa4},
+        _=>vk,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_keys_preserve_oem_punctuation_numpad_functions_and_modifier_sides() {
+        for vk in [0xba,0xbb,0xbc,0xbd,0xbe,0xbf,0xc0,0xdb,0xdc,0xdd,0xde,0xe2,0x60,0x6f,0x70,0x87] {
+            assert_eq!(sided_vk(vk,0),vk);
+            let mut keys=Keys::new();assert_eq!(keys.event(vk,true,true,false,false),Decision::Remote{vk,pressed:true});
+            assert_eq!(keys.event(vk,false,true,false,false),Decision::Remote{vk,pressed:false});
+        }
+        assert_eq!(sided_vk(0x10,0x36<<16),0xa1);assert_eq!(sided_vk(0x10,0x2a<<16),0xa0);
+        assert_eq!(sided_vk(0x11,1<<24),0xa3);assert_eq!(sided_vk(0x12,1<<24),0xa5);
+    }
+    #[test]
+    fn remote_or_accessibility_input_is_not_filtered_with_our_own_mask() {
+        assert!(our_mask(0xff,0x5555574d));
+        assert!(!our_mask(0x41,0));assert!(!our_mask(0x41,0x5555574d));assert!(!our_mask(0xff,0));
+    }
     #[test]
     fn captured_system_key_owns_release_after_focus_loss_and_preserves_existing_keys() {
         let mut k = Keys::new();

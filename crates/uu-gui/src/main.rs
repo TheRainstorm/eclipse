@@ -121,6 +121,7 @@ struct App {
     settings_notice: String,
     shortcuts: shortcuts::Shortcuts,
     native_keyboard_capture: bool,
+    native_window_keyboard: bool,
     autoconnect_done: bool,
     fullscreen: bool,
     restore_maximized: bool,
@@ -203,6 +204,13 @@ fn vk_for(key: egui::Key) -> Option<u32> {
         ArrowDown => 0x28,
         ArrowLeft => 0x25,
         ArrowRight => 0x27,
+        Insert=>0x2d, Delete=>0x2e, Home=>0x24, End=>0x23, PageUp=>0x21, PageDown=>0x22,
+        Semicolon|Colon=>0xba, Equals|Plus=>0xbb, Comma=>0xbc, Minus=>0xbd, Period=>0xbe,
+        Slash|Questionmark=>0xbf, Backtick=>0xc0, OpenBracket=>0xdb, Backslash|Pipe=>0xdc,
+        CloseBracket=>0xdd, Quote=>0xde,
+        F1=>0x70,F2=>0x71,F3=>0x72,F4=>0x73,F5=>0x74,F6=>0x75,F7=>0x76,F8=>0x77,
+        F9=>0x78,F10=>0x79,F11=>0x7a,F12=>0x7b,F13=>0x7c,F14=>0x7d,F15=>0x7e,F16=>0x7f,
+        F17=>0x80,F18=>0x81,F19=>0x82,F20=>0x83,F21=>0x84,F22=>0x85,F23=>0x86,F24=>0x87,
         _ => return None,
     })
 }
@@ -324,6 +332,7 @@ impl App {
             settings_notice,
             shortcuts: shortcuts::Shortcuts::default(),
             native_keyboard_capture: false,
+            native_window_keyboard: false,
             autoconnect_done: false,
             fullscreen: false,
             restore_maximized: false,
@@ -590,12 +599,11 @@ impl App {
         }
     }
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
-        let desired=self.fullscreen && self.preferences.capture_keyboard && self.input_ready()
-            && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open && ctx.input(|i|i.focused);
-        let active=self.platform.capture_keyboard(desired);
-        if self.native_keyboard_capture!=active {
-            self.release_all_keys();self.native_keyboard_capture=active;
-        }
+        let remote=self.input_ready() && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open && ctx.input(|i|i.focused);
+        let window=self.platform.window_keyboard(remote);
+        let active=self.platform.capture_keyboard(remote&&self.fullscreen&&self.preferences.capture_keyboard);
+        if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {self.release_all_keys();}
+        self.native_keyboard_capture=active;self.native_window_keyboard=window;
     }
 
     fn release_pointer_capture(&mut self,ctx:&egui::Context) {
@@ -884,7 +892,7 @@ impl eframe::App for App {
         for event in self.platform.captured_keys() {
             match event {
                 keyboard_capture::Decision::Remote{vk,pressed}=> {
-                    if !pressed || (self.native_keyboard_capture && self.input_ready()) {self.send_key(vk,pressed);}
+                    if !pressed || ((self.native_keyboard_capture||self.native_window_keyboard) && self.input_ready()) {self.send_key(vk,pressed);}
                 },
                 keyboard_capture::Decision::Shortcut(action)=>self.local_shortcut(action,ctx),
                 _=>{},
@@ -896,6 +904,7 @@ impl eframe::App for App {
                 pressed,
                 modifiers,
                 repeat,
+                physical_key,
                 ..
             } = event
             {
@@ -911,15 +920,18 @@ impl eframe::App for App {
                     }
                     shortcuts::KeyAction::Forward => {}
                 }
-                if !self.native_keyboard_capture && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
+                // A swallowed native key never generates this window event.
+                // Any key that reaches egui still needs forwarding, including
+                // keys from another input source or a hook that timed out.
+                if !self.native_window_keyboard && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
                     self.sync_modifiers(*modifiers);
-                    if let Some(vk) = vk_for(*key) {
+                    if let Some(vk) = vk_for(physical_key.unwrap_or(*key)) {
                         self.send_key(vk, *pressed);
                     }
                 }
             }
         }
-        if !self.native_keyboard_capture && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
+        if !self.native_keyboard_capture && !self.native_window_keyboard && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.settings_open {
             self.sync_modifiers(ctx.input(|i| i.modifiers));
         }
         let elapsed = self.last_fps.elapsed().as_secs_f32();

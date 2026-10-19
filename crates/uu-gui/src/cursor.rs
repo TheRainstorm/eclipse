@@ -15,6 +15,7 @@ impl Cursor {
         position: Option<egui::Pos2>,
         draw: egui::Rect,
         screen: u32,
+        native_size: egui::Vec2,
     ) {
         if let Some((revision, shape)) = shape {
             if self.revision != revision {
@@ -58,14 +59,7 @@ impl Cursor {
         }
         if let Some(texture) = &self.texture {
             ctx.set_cursor_icon(egui::CursorIcon::None);
-            let size = egui::vec2(
-                shape.size[0] as f32 / shape.scale[0] as f32,
-                shape.size[1] as f32 / shape.scale[1] as f32,
-            );
-            let hotspot = egui::vec2(
-                shape.hotspot[0].clamp(0, shape.size[0] as i32) as f32 / shape.scale[0] as f32,
-                shape.hotspot[1].clamp(0, shape.size[1] as i32) as f32 / shape.scale[1] as f32,
-            );
+            let Some((size,hotspot))=geometry(shape.size,shape.hotspot,native_size) else {ctx.set_cursor_icon(egui::CursorIcon::Default);return;};
             ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
                 "remote-pointer".into(),
@@ -95,5 +89,25 @@ impl Cursor {
             };
             ctx.set_cursor_icon(icon);
         }
+    }
+}
+
+/// Remote coordinate scaling describes the remote desktop, not client cursor
+/// DPI. Normalize the bitmap and hotspot together to this monitor's OS size.
+fn geometry(size:[u32;2],hotspot:[i32;2],native:egui::Vec2)->Option<(egui::Vec2,egui::Vec2)> {
+    if size.contains(&0) || hotspot[0]<0 || hotspot[1]<0 || hotspot[0]>=size[0] as i32 || hotspot[1]>=size[1] as i32 {return None;}
+    let factor=(native.x/size[0] as f32).min(native.y/size[1] as f32);
+    if !factor.is_finite()||factor<=0.0{return None;}
+    Some((egui::vec2(size[0] as f32,size[1] as f32)*factor,egui::vec2(hotspot[0] as f32,hotspot[1] as f32)*factor))
+}
+#[cfg(test)] mod tests {
+    use super::*;
+    #[test] fn cursor_size_and_hotspot_follow_client_dpi_together() {
+        for pixels_per_point in [1.0,1.5,2.0] {
+            let native=egui::Vec2::splat(32.0*pixels_per_point)/pixels_per_point;
+            let (size,hotspot)=geometry([64,64],[8,4],native).unwrap();
+            assert_eq!(size,egui::vec2(32.0,32.0));assert_eq!(hotspot,egui::vec2(4.0,2.0));
+        }
+        assert!(geometry([32,32],[1000,500],egui::Vec2::splat(32.0)).is_none());
     }
 }

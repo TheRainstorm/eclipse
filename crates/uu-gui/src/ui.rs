@@ -725,7 +725,7 @@ impl App {
                 if !self.remote_cursor_active && !self.preferences.relative_mouse && !controls_active {
                     let revision=self.cursor.revision();
                     let shape=self.controller.as_ref().and_then(|h|h.stats.cursor.lock().unwrap().as_ref().filter(|(r,_)|*r!=revision).cloned());
-                    self.cursor.paint(ctx,shape,pointer,draw,input_screen);
+                    self.cursor.paint(ctx,shape,pointer,draw,input_screen,self.platform.cursor_size(ctx));
                 }
             }else{
                 ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,&self.status,egui::FontId::proportional(18.0),C::from_rgb(160,170,185));

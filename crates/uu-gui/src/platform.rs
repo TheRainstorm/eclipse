@@ -47,6 +47,8 @@ pub struct Platform {
     #[cfg(windows)]
     hook: windows_sys::Win32::UI::WindowsAndMessaging::HHOOK,
     #[cfg(windows)]
+    old_proc: isize,
+    #[cfg(windows)]
     restore_monitor: Option<(i32, i32)>,
     show_pending: bool,
 }
@@ -65,10 +67,12 @@ impl Platform {
                 }
             }
             let _=windows::CAPTURE_CONTEXT.set(_cc.egui_ctx.clone());
+            let old_proc=unsafe{windows::install_window_keyboard(window)};
             let hook = unsafe { windows::install_monitor_keys(window) };
             Self {
                 window,
                 hook,
+                old_proc,
                 restore_monitor: None,
                 show_pending: true,
             }
@@ -79,6 +83,14 @@ impl Platform {
                 show_pending: false,
             }
         }
+    }
+    pub fn cursor_size(&self,ctx:&egui::Context)->egui::Vec2 {
+        #[cfg(windows)] {
+            use windows_sys::Win32::UI::{HiDpi::{GetDpiForWindow,GetSystemMetricsForDpi},WindowsAndMessaging::{SM_CXCURSOR,SM_CYCURSOR}};
+            let dpi=unsafe{GetDpiForWindow(self.window)};
+            if dpi!=0 {return egui::vec2(unsafe{GetSystemMetricsForDpi(SM_CXCURSOR,dpi)} as f32,unsafe{GetSystemMetricsForDpi(SM_CYCURSOR,dpi)} as f32)/ctx.pixels_per_point();}
+        }
+        let _=ctx;egui::Vec2::splat(32.0)
     }
     pub fn window_id(&self)->isize {
         #[cfg(windows)] {self.window as isize}
@@ -117,6 +129,10 @@ impl Platform {
             false
         }
     }
+    pub fn window_keyboard(&self,active:bool)->bool {
+        #[cfg(windows)] {let active=active&&self.old_proc!=0;windows::WINDOW_INPUT.store(active,std::sync::atomic::Ordering::Release);active}
+        #[cfg(not(windows))] {let _=active;false}
+    }
     pub fn capture_keyboard(&self, active: bool) -> bool {
         #[cfg(windows)] {
             let active=active && !self.hook.is_null();
@@ -149,6 +165,7 @@ impl Drop for Platform {
     fn drop(&mut self) {
         unsafe {
             windows::remove_monitor_keys(self.hook);
+            windows::remove_window_keyboard(self.window,self.old_proc);
         }
     }
 }
@@ -296,6 +313,47 @@ mod windows {
     use windows_sys::Win32::{
         System::LibraryLoader::GetModuleHandleW, UI::Input::KeyboardAndMouse::*,
     };
+    pub(super) static WINDOW_INPUT: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+    static OLD_PROC: AtomicIsize=AtomicIsize::new(0);
+    static WINDOW_KEYS: std::sync::Mutex<crate::keyboard_capture::Keys>=std::sync::Mutex::new(crate::keyboard_capture::Keys::new());
+    pub unsafe fn install_window_keyboard(window:HWND)->isize {
+        if window.is_null(){return 0;}
+        let old=SetWindowLongPtrW(window,GWLP_WNDPROC,window_keyboard as *const () as isize);
+        OLD_PROC.store(old,Relaxed);old
+    }
+    pub unsafe fn remove_window_keyboard(window:HWND,old:isize) {
+        WINDOW_INPUT.store(false,Relaxed);
+        if old!=0 && IsWindow(window)!=0 && GetWindowLongPtrW(window,GWLP_WNDPROC)==window_keyboard as *const () as isize {
+            SetWindowLongPtrW(window,GWLP_WNDPROC,old);
+        }
+    }
+    fn enqueue(event:crate::keyboard_capture::Decision,window:HWND) {
+        if let Ok(mut queue)=CAPTURE_QUEUE.try_lock() {
+            if queue.len()<512 {queue.push_back(event);}else{CAPTURE_OVERFLOW.store(true,Relaxed);}
+        }else{CAPTURE_OVERFLOW.store(true,Relaxed);}
+        if let Some(context)=CAPTURE_CONTEXT.get(){context.request_repaint();}
+        unsafe{PostMessageW(window,WM_NULL,0,0);}
+    }
+    unsafe extern "system" fn window_keyboard(window:HWND,message:u32,wparam:usize,lparam:isize)->isize {
+        let down=message==WM_KEYDOWN||message==WM_SYSKEYDOWN;
+        let up=message==WM_KEYUP||message==WM_SYSKEYUP;
+        if down||up {
+            let vk=crate::keyboard_capture::sided_vk(wparam as u32,lparam as usize);
+            if let Ok(mut keys)=WINDOW_KEYS.try_lock() {
+                let ctrl=GetAsyncKeyState(0x11)<0||keys.down(0xa2)||keys.down(0xa3);
+                let alt=GetAsyncKeyState(0x12)<0||keys.down(0xa4)||keys.down(0xa5);
+                let active=WINDOW_INPUT.load(std::sync::atomic::Ordering::Acquire)&&GetForegroundWindow()==window;
+                match keys.event(vk,down,active,ctrl&&alt,lparam as usize&(1<<30)!=0) {
+                    crate::keyboard_capture::Decision::Forward=>{},
+                    crate::keyboard_capture::Decision::Consume=>return 0,
+                    event=>{enqueue(event,window);return 0;},
+                }
+            }
+        }
+        let old=OLD_PROC.load(Relaxed);
+        if old==0 {DefWindowProcW(window,message,wparam,lparam)}
+        else{CallWindowProcW(std::mem::transmute::<isize,WNDPROC>(old),window,message,wparam,lparam)}
+    }
     pub(super) static CAPTURE_CONTEXT: std::sync::OnceLock<eframe::egui::Context>=std::sync::OnceLock::new();
     pub(super) static CAPTURE: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
     pub(super) static CAPTURE_OVERFLOW: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
@@ -384,7 +442,9 @@ mod windows {
                     super::ArrowEvent::Forward => {}
                 }
             }
-            if (down || up) && key.flags & LLKHF_INJECTED == 0 {
+            // Injected input may come from remote desktops or accessibility
+            // tools. Only our own no-map Start-menu mask is excluded.
+            if (down || up) && !crate::keyboard_capture::our_mask(key.vkCode,key.dwExtraInfo) {
                 if let Ok(mut keys)=CAPTURE_KEYS.try_lock() {
                     let ctrl=GetAsyncKeyState(0x11)<0 || keys.down(0xa2)||keys.down(0xa3);
                     let alt=GetAsyncKeyState(0x12)<0 || keys.down(0xa4)||keys.down(0xa5);
@@ -395,11 +455,7 @@ mod windows {
                         crate::keyboard_capture::Decision::Forward=>{},
                         crate::keyboard_capture::Decision::Consume=>return 1,
                         event=>{
-                            if let Ok(mut queue)=CAPTURE_QUEUE.try_lock() {
-                                if queue.len()<512 {queue.push_back(event);}else{CAPTURE_OVERFLOW.store(true,Relaxed);}
-                            } else {CAPTURE_OVERFLOW.store(true,Relaxed);}
-                            if let Some(context)=CAPTURE_CONTEXT.get(){context.request_repaint();}
-                            PostMessageW(foreground,WM_NULL,0,0);
+                            enqueue(event,foreground);
                             return 1;
                         }
                     }
