@@ -49,13 +49,13 @@ pub fn resize_border(ctx: &egui::Context, fullscreen: bool) -> bool {
 
 pub const CONNECTION_BAR_HEIGHT: f32 = 36.0;
 
-/// Size the video in physical pixels; egui/native viewport commands use points.
-/// Preserve aspect ratio when the current work area cannot hold a 1:1 image.
+/// Fit the complete window inside 80% of the destination work area.
+/// Preserve video aspect ratio, including when enlarging a small source.
 fn stream_size(video_px: egui::Vec2, pixels_per_point: f32, available: egui::Vec2) -> egui::Vec2 {
+    let available = available * 0.8;
     let video = video_px / pixels_per_point;
     let scale = (available.x / video.x)
-        .min((available.y - CONNECTION_BAR_HEIGHT).max(1.0) / video.y)
-        .min(1.0);
+        .min((available.y - CONNECTION_BAR_HEIGHT).max(1.0) / video.y);
     video * scale + egui::vec2(0.0, CONNECTION_BAR_HEIGHT)
 }
 
@@ -154,7 +154,7 @@ impl WindowSizing {
                 // A monitor move must constrain position even if the size fits
                 // (Win+Shift+Arrow can place an otherwise small window outside).
                 Some(if streaming {
-                    stream_size(self.canvas_px.unwrap_or(inner.size() * ppp), ppp, capacity)
+                    stream_size(video_px.or(self.canvas_px).unwrap_or(inner.size() * ppp), ppp, capacity)
                 } else {
                     self.home_points.unwrap_or(inner.size()).min(capacity)
                 })
@@ -165,7 +165,7 @@ impl WindowSizing {
             None
         };
         if let Some(size) = desired {
-            let position = if initial_stream || !self.initialized {
+            let position = if initial_stream || !self.initialized || streaming {
                 available.center() - (size + chrome) / 2.0
             } else {
                 // Keep the user's placement while fitting the destination monitor.
@@ -301,113 +301,39 @@ pub fn native_geometry(_frame: &eframe::Frame, _ctx: &egui::Context) -> Option<G
 mod tests {
     use super::*;
     #[test]
-    fn initial_stream_is_one_physical_pixel_per_video_pixel_at_each_dpi() {
+    fn stream_fills_eighty_percent_with_aspect_ratio_at_every_dpi() {
         for ppp in [1.0, 1.25, 1.5, 2.0, 2.5] {
-            let size = stream_size(egui::vec2(1920.0, 1080.0), ppp, egui::vec2(3000.0, 2000.0));
-            assert_eq!(size.x * ppp, 1920.0);
-            assert_eq!((size.y - CONNECTION_BAR_HEIGHT) * ppp, 1080.0);
+            for video in [egui::vec2(640.0,480.0),egui::vec2(3840.0,2160.0)] {
+                let available = egui::vec2(1500.0,900.0);
+                let size = stream_size(video,ppp,available);
+                assert!(size.x <= 1200.01 && size.y <= 720.01);
+                assert!((size.x - 1200.0).abs() < 0.01 || (size.y - 720.0).abs() < 0.01);
+                assert!((size.x/(size.y-CONNECTION_BAR_HEIGHT)-video.x/video.y).abs() < 0.001);
+            }
         }
     }
     #[test]
-    fn oversized_stream_fits_monitor_without_aspect_distortion() {
-        let available = egui::vec2(1500.0, 900.0);
-        let size = stream_size(egui::vec2(3840.0, 2160.0), 2.0, available);
-        assert!(size.x <= available.x && size.y <= available.y);
-        assert!((size.x / (size.y - CONNECTION_BAR_HEIGHT) - 16.0 / 9.0).abs() < 0.001);
-        let low_res = stream_size(egui::vec2(640.0, 480.0), 2.0, available);
-        assert_eq!(low_res, egui::vec2(320.0, 276.0)); // Never enlarge small streams.
-    }
-
-    #[test]
-    fn viewport_commands_center_first_frame_preserve_pixels_across_dpi_and_allow_manual_resize() {
+    fn stream_recenters_on_new_monitor_but_preserves_manual_size_on_same_monitor() {
         let ctx = egui::Context::default();
         let mut sizing = WindowSizing::default();
         sizing.begin_stream();
-        let mut run = |ppp: f32, size: egui::Vec2, monitor: egui::Vec2, resize_started: bool| {
-            let mut input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                ..Default::default()
-            };
-            let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
-            viewport.native_pixels_per_point = Some(ppp);
-            viewport.monitor_size = Some(monitor);
-            viewport.inner_rect = input.screen_rect;
-            let output = ctx.run(input, |ctx| {
-                sizing.update(
-                    ctx,
-                    true,
-                    Some(egui::vec2(1920.0, 1080.0)),
-                    resize_started,
-                    None,
-                )
-            });
-            output.viewport_output[&egui::ViewportId::ROOT]
-                .commands
-                .clone()
+        let mut run = |work: egui::Rect, ppp: f32| {
+            let inner = egui::Rect::from_min_size(work.min,egui::vec2(750.0,450.0));
+            ctx.run(egui::RawInput::default(), |ctx| sizing.update(ctx,true,
+                Some(egui::vec2(1920.0,1080.0)),false,Some(Geometry {inner,outer:inner,work,ppp})))
+                .viewport_output[&egui::ViewportId::ROOT].commands.clone()
         };
-        let commands = run(
-            2.0,
-            egui::vec2(1100.0, 760.0),
-            egui::vec2(1536.0, 936.0),
-            false,
-        );
-        assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(960.0, 576.0))));
-        assert!(
-            commands.contains(&egui::ViewportCommand::OuterPosition(egui::pos2(
-                288.0, 180.0
-            )))
-        );
-        let commands = run(
-            1.0,
-            egui::vec2(960.0, 576.0),
-            egui::vec2(3072.0, 1872.0),
-            false,
-        );
-        assert!(
-            commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(
-                1920.0, 1116.0
-            )))
-        );
-        let commands = run(
-            1.0,
-            egui::vec2(1500.0, 900.0),
-            egui::vec2(3072.0, 1872.0),
-            false,
-        );
-        assert!(!commands
-            .iter()
-            .any(|cmd| matches!(cmd, egui::ViewportCommand::InnerSize(_))));
-        // A small destination fits the stream temporarily; returning restores
-        // the preferred physical canvas instead of accumulating shrinkage.
-        let commands = run(
-            1.0,
-            egui::vec2(1500.0, 900.0),
-            egui::vec2(1920.0, 1032.0),
-            false,
-        );
-        assert!(commands
-            .iter()
-            .any(|cmd| matches!(cmd, egui::ViewportCommand::InnerSize(size) if size.y <= 1016.0)));
-        let commands = run(
-            2.0,
-            egui::vec2(900.0, 520.0),
-            egui::vec2(1536.0, 936.0),
-            false,
-        );
-        assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(960.0, 576.0))));
-        run(
-            2.0,
-            egui::vec2(750.0, 450.0),
-            egui::vec2(1536.0, 936.0),
-            true,
-        );
-        let commands = run(
-            1.0,
-            egui::vec2(750.0, 450.0),
-            egui::vec2(3072.0, 1872.0),
-            false,
-        );
-        assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(1500.0, 864.0))));
+        let work = egui::Rect::from_min_size(egui::pos2(-1920.0,0.0),egui::vec2(1920.0,1040.0));
+        let commands = run(work,1.0);
+        let size = stream_size(egui::vec2(1920.0,1080.0),1.0,work.shrink(8.0).size());
+        assert!(commands.contains(&egui::ViewportCommand::InnerSize(size)));
+        assert!(commands.contains(&egui::ViewportCommand::OuterPosition(work.center()-size/2.0)));
+        assert!(!run(work,1.0).iter().any(|c|matches!(c,egui::ViewportCommand::InnerSize(_))));
+        let work = egui::Rect::from_min_size(egui::pos2(0.0,-1080.0),egui::vec2(1280.0,720.0));
+        let commands = run(work,1.5);
+        let size = stream_size(egui::vec2(1920.0,1080.0),1.5,work.shrink(8.0).size());
+        assert!(commands.contains(&egui::ViewportCommand::InnerSize(size)));
+        assert!(commands.contains(&egui::ViewportCommand::OuterPosition(work.center()-size/2.0)));
     }
     #[test]
     fn launcher_uses_native_dpi_and_fits_position_on_negative_origin_monitor() {

@@ -810,6 +810,7 @@ impl eframe::App for App {
                                 ctx.memory_mut(|m| m.close_popup());
                             }
                             shortcuts::Action::Fullscreen => self.toggle_fullscreen(ctx),
+                            shortcuts::Action::Exit => self.disconnect(),
                         }
                         continue;
                     }
