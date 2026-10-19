@@ -20,9 +20,11 @@
 
 | 13 | `13-2026-10-19-launcher-dpi-multiwindow.md` | 未串流主页原生 DPI/坐标修复、保留主页、多设备独立串流进程与清理隔离；用户自行实机验收 |
 
+| 14 | `14-2026-10-19-startup-monitor-native-shortcuts.md` | 启动屏幕跟随光标、串流继承父屏、Windows 原生 Win+Shift+方向键跨屏、目标 DPI 最小尺寸更新 |
+
 约定：
 
-- Windows 唯一正式入口为 `C:\Users\yfy\uu-gui-demo\uu-gui.exe`，桌面 `UU Remote Rust`；旧目录已归档。当前版本与多窗口行为见交接13，统一安装流程见交接11。
+- Windows 唯一正式入口为 `C:\Users\yfy\uu-gui-demo\uu-gui.exe`，桌面 `UU Remote Rust`；旧目录已归档。当前启动屏幕与快捷键行为见交接14，多窗口行为见交接13，统一安装流程见交接11。
 
 - 当前 x358h SSH 地址是 `192.168.34.3:2202`（2026-10-19 用户更新）；历史文档中的 `192.168.35.200` 已失效。
 
