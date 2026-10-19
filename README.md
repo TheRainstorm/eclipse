@@ -129,3 +129,4 @@ Windows已接入前台串流专属的双向文本剪贴板（30KiB），窗口�
 
 多显示器协议、两种布局模式和验收范围见[交接19](handoff/19-2026-10-19-multi-display.md)。
 未绑定屏幕激活、轨道负值修复与D盘安装迁移见[交接20](handoff/20-2026-10-19-display-binding-install.md)。
+切屏超时的CaptureChange兼容、缓存复用和可拖动且按设备保存的显示器标签见[交接21](handoff/21-2026-10-19-display-change-tabs.md)。

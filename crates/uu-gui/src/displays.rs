@@ -65,7 +65,7 @@ impl Displays {
         p.track = None;
         p.activation = true;
         self.unbound = true;
-        self.notice = "正在为显示器建立串流…".into();
+        self.notice = "正在切换采集源…".into();
         request
     }
     pub fn waiting_binding(&self) -> bool {
