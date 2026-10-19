@@ -9,9 +9,10 @@ fn main() -> anyhow::Result<()> {
         .next()
         .ok_or_else(|| anyhow::anyhow!("usage: stream_check DEVICE [SECONDS]"))?;
     anyhow::ensure!(
-        device == "aeawvmepembcpca5",
-        "diagnostic restricted to KVM-WIN11"
+        std::env::var("UU_TEST_DEVICE").as_deref() == Ok(device.as_str()),
+        "set UU_TEST_DEVICE to the explicit, authorized diagnostic target"
     );
+    std::env::set_var("UU_FORCE_JOIN", "0");
     let seconds = args
         .next()
         .map(|v| v.parse::<u64>())
@@ -22,7 +23,7 @@ fn main() -> anyhow::Result<()> {
     let handle = uu_core::controller::spawn(
         uu_core::Config::from_env()?,
         device,
-        "36.159.243.209".into(),
+        uu_core::config::geo_exit_ip(),
     )?;
     let max_gap = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let gap = max_gap.clone();

@@ -200,7 +200,7 @@ async fn main() -> Result<()> {
             let body = serde_json::json!({
                 "app_control_id": ctrl,
                 "app_data": {"_placeholder": true, "num": 0},
-                "geo_exit_ip": std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into()),
+                "geo_exit_ip": uu_core::config::geo_exit_ip(),
                 "streamer_data": streamer,
             });
             sio.emit("control", body, &[app]).await?;
@@ -457,7 +457,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::KbdProbe { device } => {
-            let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
+            let geo = uu_core::config::geo_exit_ip();
             let uu_core::controller::ControllerHandle { events, frames, input, close, settings: _, stats: _, stopped: _ } =
                 uu_core::controller::spawn(config, device, geo)?;
             std::thread::spawn(move || {
@@ -498,7 +498,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::KbdTest { device, text } => {
-            let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
+            let geo = uu_core::config::geo_exit_ip();
             let h = uu_core::controller::spawn(config, device, geo)?;
             {
                 let mut frames = h.frames;
@@ -551,7 +551,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::MouseMove { device, x, y, kind: _kind, channel: _channel, click } => {
-            let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
+            let geo = uu_core::config::geo_exit_ip();
             let h = uu_core::controller::spawn(config, device, geo)?;
             {
                 let mut frames = h.frames;

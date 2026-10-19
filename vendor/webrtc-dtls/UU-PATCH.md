@@ -15,7 +15,7 @@ SCTP没有收到握手包，状态就一直停在connecting。
 本补丁在内部等待中也观察握手结束，退出过期等待；外层在结束和通知同时就绪时优先处理结束。
 不改握手认证、证书指纹、加密、重放检查或SCTP协议，也不依赖延长超时与自动重连。
 
-线索来自只读参考项目`/home/yfy/repo/uu-remote-linux`的
+线索来自只读参考项目`uu-remote-linux`的
 `502635b156db334e412862668b7f9e79d604a9e6`版本DTLS补丁。这里以注册表0.10.0为基础适配，
 没有复制其整个GPL项目、旧rustls依赖或额外日志改动；本回归用例为本项目编写。
 
@@ -28,7 +28,7 @@ SCTP没有收到握手包，状态就一直停在connecting。
 - 原版代码：300ms内无法投递，失败于`completed DTLS must continue reading SCTP`。
 - 修改后：同一测试立即通过，正常双端DTLS收发/关闭用例也通过。
 - 本项目迟到ICE回环继续验证CONTROL设置、输入心跳、鼠标与键盘共同送达。
-- 2026-10-19，交付Windows源版本`f74fc9d`后，用户明确回复“恢复了”，确认本次键鼠恢复，见交接17。
+- 2026-10-19，交付Windows源版本`f74fc9d`后，用户明确回复“恢复了”，确认本次键鼠恢复。
 
 vendored crate排除在workspace成员外，生产版本使用仓库根Cargo.lock；其单独Cargo.lock仅锁定上游测试依赖。
 

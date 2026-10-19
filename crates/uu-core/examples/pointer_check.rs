@@ -5,10 +5,14 @@ use uu_core::controller::{spawn, ControllerEvent};
 fn main() -> anyhow::Result<()> {
     let mut args=std::env::args().skip(1);
     let device=args.next().ok_or_else(||anyhow::anyhow!("usage: pointer_check DEVICE BUTTON_MASK..."))?;
-    anyhow::ensure!(device=="aeawvmepembcpca5","this diagnostic is restricted to KVM-WIN11");
+    anyhow::ensure!(
+        std::env::var("UU_TEST_DEVICE").as_deref() == Ok(device.as_str()),
+        "set UU_TEST_DEVICE to the explicit, authorized diagnostic target"
+    );
+    std::env::set_var("UU_FORCE_JOIN", "0");
     let buttons:Vec<u32>=args.map(|a|a.parse()).collect::<Result<_,_>>()?;
     anyhow::ensure!(!buttons.is_empty(),"supply button masks explicitly");
-    let handle=spawn(uu_core::Config::from_env()?,device,"36.159.243.209".into())?;
+    let handle=spawn(uu_core::Config::from_env()?,device,uu_core::config::geo_exit_ip())?;
     let mut frames=handle.frames;
     std::thread::spawn(move||{while frames.blocking_recv().is_some(){}});
     let deadline=std::time::Instant::now()+Duration::from_secs(40);

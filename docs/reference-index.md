@@ -105,8 +105,8 @@ UU 当前没有可用的 RS/ULPFEC 接收实现，也没有确认官方主机在
 
 ### 已知差异：必须记住，避免再次照抄错误
 
-1. **中键**：本项目原代码把egui `middle_clicked()`结束后的点击合成为`button=3`的press/release。既不是真实按住状态，值也不被当前Windows UU路径接受。实测3/4无中键事件，16有完整`Middle down → drag → up`。修复点为[button / RemotePointer](/home/USER/Repo/uu_remote/crates/uu-gui/src/input.rs:12)；验证只覆盖当前Windows协商与目标，不推断所有UU平台都用16。
-2. **自定义码率**：该快照U的host仍把field8直接存入custom_mbps，旧交接也曾按Mbps填该字段；Windows抓包证明当前路径应为bits/s，且quality=6、外层timestamp和完整setting字段影响生效。本项目[CaptureSettingRequest](/home/USER/Repo/uu_remote/crates/uu-core/src/control_wire.rs:89)是已验实现；不能退回简化版字段。
+1. **中键**：本项目原代码把egui `middle_clicked()`结束后的点击合成为`button=3`的press/release。既不是真实按住状态，值也不被当前Windows UU路径接受。实测3/4无中键事件，16有完整`Middle down → drag → up`。修复点为[button / RemotePointer](../crates/uu-gui/src/input.rs)；验证只覆盖当前Windows协商与目标，不推断所有UU平台都用16。
+2. **自定义码率**：该快照U的host仍把field8直接存入custom_mbps，旧交接也曾按Mbps填该字段；Windows抓包证明当前路径应为bits/s，且quality=6、外层timestamp和完整setting字段影响生效。本项目[CaptureSettingRequest](../crates/uu-core/src/control_wire.rs)是已验实现；不能退回简化版字段。
 3. **重排容量**：U的32包与本项目2048包/60ms不是同一压力量级。1080p大IDR能拆成数百包，容量上限可能比40ms定时更早触发丢弃。参数必须按包率和突发测量，不能只比较毫秒值。
 4. **不要随意丢参考帧**：U的Latest用于AU和图像不同层时，语义并不相同。显示图可换成最新值；压缩P帧直接丢弃会损坏后续参考链。本项目8 AU队列过载进入IDR恢复，追赶时保留解码、跳旧RGBA转换。
 5. **延迟/吞吐指标的口径**：M的系统网络用量不一定等于本次串流带宽；协商FPS不等于decoded FPS；当前本项目decode_ms也不包含颜色转换/上传/显示。RTT字段尚未接入真实采样，不用0宣称零延迟。

@@ -4,6 +4,11 @@ use std::path::{Path, PathBuf};
 
 use crate::error::CoreError;
 
+/// Optional routing hint. Never ship a developer's public IP as a default.
+pub fn geo_exit_ip() -> String {
+    std::env::var("UU_GEO_IP").unwrap_or_else(|_| "0.0.0.0".into())
+}
+
 /// Where we keep installer caches, the Wine-less client state, and logs.
 #[derive(Debug, Clone)]
 pub struct Config {

@@ -71,6 +71,13 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
         let resp: DeviceListResp = serde_json::from_value(body)?;
         anyhow::ensure!(resp.code == 0, "device list code {}", resp.code);
         let mut devices = resp.data.map(|d| d.my_binded_devices).unwrap_or_default();
+        // Opt-in privacy for screen sharing/documentation; no account data is changed.
+        if std::env::var("UU_SCREENSHOT_PRIVACY").as_deref() == Ok("1") {
+            for (index, device) in devices.iter_mut().enumerate() {
+                device.alias = format!("远程设备 {:02}", index + 1);
+                device.wallpaper_url.clear();
+            }
+        }
         for d in &mut devices {
             if d.wallpaper_url.is_empty() {
                 continue;
@@ -482,18 +489,14 @@ impl App {
                             }
                         }
                         self.devices = devices;
-                        self.selected = self
-                            .devices
-                            .iter()
-                            .position(|d| d.alias == "KVM-WIN11")
-                            .or_else(|| (!self.devices.is_empty()).then_some(0));
+                        self.selected = (!self.devices.is_empty()).then_some(0);
                         // Optional headless auto-connect for testing:
                         //   UU_AUTOCONNECT=<explicit device_id|alias>
                         if !self.autoconnect_done {
                             self.autoconnect_done = true;
                             // Only an explicit device id or alias is accepted —
                             // never "first online" (that once picked the wrong
-                            // machine). Testing uses KVM-WIN11 explicitly.
+                            // machine).
                             if let Ok(want) = std::env::var("UU_AUTOCONNECT") {
                                 if let Some(i) = self
                                     .devices
@@ -861,7 +864,7 @@ impl App {
                 Err(error) => self.settings_notice = format!("显示器排序读取失败：{error}"),
             }
         }
-        let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
+        let geo = uu_core::config::geo_exit_ip();
         let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
         let mut diagnostic_dirs = Vec::new();
         if let Some(parent) = std::env::current_exe().ok().and_then(|p|p.parent().map(|p|p.to_path_buf())) { diagnostic_dirs.push(parent); }

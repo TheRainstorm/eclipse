@@ -91,7 +91,7 @@ fn main() -> Result<()> {
     stats.diagnostics.start([std::path::PathBuf::from(
         "artifacts/live-display-validation",
     )]);
-    let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
+    let geo = uu_core::config::geo_exit_ip();
     let mut session = Session(controller::spawn_with_stats(
         config,
         device,
