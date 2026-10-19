@@ -65,6 +65,7 @@ pub struct WindowSizing {
     stream_pending: bool,
     was_streaming: bool,
     canvas_px: Option<egui::Vec2>,
+    home_points: Option<egui::Vec2>,
     resizing: bool,
     previous: Option<(f32, egui::Vec2, egui::Rect)>,
 }
@@ -80,6 +81,7 @@ impl WindowSizing {
         streaming: bool,
         video_px: Option<egui::Vec2>,
         resize_started: bool,
+        native: Option<Geometry>,
     ) {
         let viewport = ctx.input(|i| i.viewport().clone());
         if viewport.minimized == Some(true) {
@@ -99,17 +101,28 @@ impl WindowSizing {
         if viewport.fullscreen == Some(true) || viewport.maximized == Some(true) {
             return;
         }
-        let Some(inner) = viewport.inner_rect else {
+        let Some(geometry) = native.or_else(|| Geometry::from_context(ctx)) else {
             return;
         };
-        let Some(work) = work_area(ctx) else { return };
+        let Geometry {
+            inner,
+            outer,
+            work,
+            ppp,
+        } = geometry;
+        let chrome = (outer.size() - inner.size()).max(egui::Vec2::ZERO);
         let available = work.shrink(8.0);
-        let ppp = ctx.pixels_per_point();
-        if streaming && resize_started {
+        let capacity = available.size() - chrome;
+        if resize_started {
             self.resizing = true;
         }
         if self.resizing {
-            self.canvas_px = Some((inner.size() - egui::vec2(0.0, CONNECTION_BAR_HEIGHT)) * ppp);
+            if streaming {
+                self.canvas_px =
+                    Some((inner.size() - egui::vec2(0.0, CONNECTION_BAR_HEIGHT)) * ppp);
+            } else {
+                self.home_points = Some(inner.size());
+            }
             if !ctx.input(|i| i.pointer.primary_down()) {
                 self.resizing = false;
             }
@@ -118,19 +131,19 @@ impl WindowSizing {
         let desired = if initial_stream {
             self.stream_pending = false;
             self.canvas_px = video_px;
-            Some(stream_size(video_px.unwrap(), ppp, available.size()))
+            Some(stream_size(video_px.unwrap(), ppp, capacity))
         } else if !self.initialized {
-            Some(egui::vec2(1100.0, 760.0).min(available.size()))
+            self.home_points = Some(egui::vec2(1100.0, 760.0));
+            Some(self.home_points.unwrap().min(capacity))
         } else if let Some((old_ppp, _, old_work)) = self.previous {
-            if streaming && ((old_ppp - ppp).abs() > 0.01 || old_work != work) {
-                // Keep the preferred physical canvas even when a smaller
-                // monitor temporarily forces it to fit; restore it on return.
-                self.canvas_px
-                    .map(|canvas| stream_size(canvas, ppp, available.size()))
-            } else if old_work != work
-                && (inner.width() > available.width() || inner.height() > available.height())
-            {
-                Some(inner.size().min(available.size()))
+            if (old_ppp - ppp).abs() > 0.01 || old_work != work {
+                // A monitor move must constrain position even if the size fits
+                // (Win+Shift+Arrow can place an otherwise small window outside).
+                Some(if streaming {
+                    stream_size(self.canvas_px.unwrap_or(inner.size() * ppp), ppp, capacity)
+                } else {
+                    self.home_points.unwrap_or(inner.size()).min(capacity)
+                })
             } else {
                 None
             }
@@ -139,17 +152,17 @@ impl WindowSizing {
         };
         if let Some(size) = desired {
             let position = if initial_stream || !self.initialized {
-                available.center() - size / 2.0
+                available.center() - (size + chrome) / 2.0
             } else {
                 // Keep the user's placement while fitting the destination monitor.
                 egui::pos2(
-                    inner.left().clamp(
+                    outer.left().clamp(
                         available.left(),
-                        (available.right() - size.x).max(available.left()),
+                        (available.right() - size.x - chrome.x).max(available.left()),
                     ),
-                    inner.top().clamp(
+                    outer.top().clamp(
                         available.top(),
-                        (available.bottom() - size.y).max(available.top()),
+                        (available.bottom() - size.y - chrome.y).max(available.top()),
                     ),
                 )
             };
@@ -163,10 +176,36 @@ impl WindowSizing {
     }
 }
 
-/// Actual work area, excluding the Windows taskbar, in viewport point units.
-fn work_area(ctx: &egui::Context) -> Option<egui::Rect> {
+/// Consistent geometry in current native DPI units. Never reconstruct physical
+/// coordinates by multiplying an egui rect from a previous DPI event/pass.
+#[derive(Clone, Copy)]
+pub struct Geometry {
+    pub inner: egui::Rect,
+    pub outer: egui::Rect,
+    pub work: egui::Rect,
+    pub ppp: f32,
+}
+impl Geometry {
+    fn from_context(ctx: &egui::Context) -> Option<Self> {
+        let ppp = ctx.pixels_per_point();
+        ctx.input(|i| {
+            Some(Self {
+                inner: i.viewport().inner_rect?,
+                outer: i.viewport().outer_rect.or(i.viewport().inner_rect)?,
+                work: egui::Rect::from_min_size(egui::Pos2::ZERO, i.viewport().monitor_size?),
+                ppp,
+            })
+        })
+    }
+}
+
+pub fn native_geometry(_frame: &eframe::Frame, _ctx: &egui::Context) -> Option<Geometry> {
     #[cfg(target_os = "windows")]
     {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let RawWindowHandle::Win32(handle) = _frame.window_handle().ok()?.as_raw() else {
+            return None;
+        };
         #[repr(C)]
         #[derive(Default)]
         struct NativeRect {
@@ -174,6 +213,12 @@ fn work_area(ctx: &egui::Context) -> Option<egui::Rect> {
             top: i32,
             right: i32,
             bottom: i32,
+        }
+        #[repr(C)]
+        #[derive(Default)]
+        struct Point {
+            x: i32,
+            y: i32,
         }
         #[repr(C)]
         struct MonitorInfo {
@@ -184,37 +229,58 @@ fn work_area(ctx: &egui::Context) -> Option<egui::Rect> {
         }
         #[link(name = "user32")]
         extern "system" {
-            fn MonitorFromRect(rect: *const NativeRect, flags: u32) -> isize;
+            fn MonitorFromWindow(window: isize, flags: u32) -> isize;
             fn GetMonitorInfoW(monitor: isize, info: *mut MonitorInfo) -> i32;
+            fn GetWindowRect(window: isize, rect: *mut NativeRect) -> i32;
+            fn GetClientRect(window: isize, rect: *mut NativeRect) -> i32;
+            fn ClientToScreen(window: isize, point: *mut Point) -> i32;
+            fn GetDpiForWindow(window: isize) -> u32;
         }
-        let outer = ctx.input(|i| i.viewport().outer_rect)? * ctx.pixels_per_point();
-        let rect = NativeRect {
-            left: outer.left() as i32,
-            top: outer.top() as i32,
-            right: outer.right() as i32,
-            bottom: outer.bottom() as i32,
-        };
+        let window = handle.hwnd.get();
+        let mut outer = NativeRect::default();
+        let mut client = NativeRect::default();
+        let mut origin = Point::default();
         let mut info = MonitorInfo {
             size: std::mem::size_of::<MonitorInfo>() as u32,
             monitor: NativeRect::default(),
             work: NativeRect::default(),
             flags: 0,
         };
-        // Only copies monitor metadata into a correctly sized C-layout structure.
-        if unsafe { GetMonitorInfoW(MonitorFromRect(&rect, 2), &mut info) } != 0 {
-            return Some(
-                egui::Rect::from_min_max(
-                    egui::pos2(info.work.left as f32, info.work.top as f32),
-                    egui::pos2(info.work.right as f32, info.work.bottom as f32),
-                ) / ctx.pixels_per_point(),
-            );
+        // All queries use this exact HWND and the same native DPI coordinate space.
+        let dpi = unsafe {
+            if GetWindowRect(window, &mut outer) == 0
+                || GetClientRect(window, &mut client) == 0
+                || ClientToScreen(window, &mut origin) == 0
+                || GetMonitorInfoW(MonitorFromWindow(window, 2), &mut info) == 0
+            {
+                return None;
+            }
+            GetDpiForWindow(window)
+        };
+        if dpi == 0 {
+            return None;
         }
+        let ppp = dpi as f32 / 96.0 * _ctx.zoom_factor();
+        let to_rect = |r: NativeRect| {
+            egui::Rect::from_min_max(
+                egui::pos2(r.left as f32, r.top as f32),
+                egui::pos2(r.right as f32, r.bottom as f32),
+            ) / ppp
+        };
+        Some(Geometry {
+            inner: egui::Rect::from_min_size(
+                egui::pos2(origin.x as f32, origin.y as f32) / ppp,
+                egui::vec2(client.right as f32, client.bottom as f32) / ppp,
+            ),
+            outer: to_rect(outer),
+            work: to_rect(info.work),
+            ppp,
+        })
     }
-    ctx.input(|i| {
-        i.viewport()
-            .monitor_size
-            .map(|size| egui::Rect::from_min_size(egui::Pos2::ZERO, size))
-    })
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -238,7 +304,6 @@ mod tests {
         assert_eq!(low_res, egui::vec2(320.0, 276.0)); // Never enlarge small streams.
     }
 
-    #[cfg(not(target_os = "windows"))]
     #[test]
     fn viewport_commands_center_first_frame_preserve_pixels_across_dpi_and_allow_manual_resize() {
         let ctx = egui::Context::default();
@@ -254,7 +319,13 @@ mod tests {
             viewport.monitor_size = Some(monitor);
             viewport.inner_rect = input.screen_rect;
             let output = ctx.run(input, |ctx| {
-                sizing.update(ctx, true, Some(egui::vec2(1920.0, 1080.0)), resize_started)
+                sizing.update(
+                    ctx,
+                    true,
+                    Some(egui::vec2(1920.0, 1080.0)),
+                    resize_started,
+                    None,
+                )
             });
             output.viewport_output[&egui::ViewportId::ROOT]
                 .commands
@@ -323,5 +394,50 @@ mod tests {
             false,
         );
         assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(1500.0, 864.0))));
+    }
+    #[test]
+    fn launcher_uses_native_dpi_and_fits_position_on_negative_origin_monitor() {
+        let ctx = egui::Context::default();
+        let mut sizing = WindowSizing::default();
+        let mut run = |geometry: Geometry| {
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                sizing.update(ctx, false, None, false, Some(geometry));
+            });
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .clone()
+        };
+        let first = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 760.0));
+        run(Geometry {
+            inner: first,
+            outer: first,
+            ppp: 2.0,
+            work: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1536.0, 912.0)),
+        });
+        // Native monitor/DPI have changed, while egui still has the old frame's
+        // coordinates. Window size and placement must use the native snapshot.
+        let displaced =
+            egui::Rect::from_min_size(egui::pos2(2000.0, -1060.0), egui::vec2(2200.0, 1520.0));
+        let commands = run(Geometry {
+            inner: displaced,
+            outer: displaced,
+            ppp: 1.0,
+            work: egui::Rect::from_min_size(egui::pos2(580.0, -1080.0), egui::vec2(1920.0, 1032.0)),
+        });
+        assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(1100.0, 760.0))));
+        assert!(
+            commands.contains(&egui::ViewportCommand::OuterPosition(egui::pos2(
+                1392.0, -1060.0
+            )))
+        );
+        let small =
+            egui::Rect::from_min_size(egui::pos2(-300.0, -200.0), egui::vec2(1100.0, 760.0));
+        let commands = run(Geometry {
+            inner: small,
+            outer: small,
+            ppp: 1.0,
+            work: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1032.0)),
+        });
+        assert!(commands.contains(&egui::ViewportCommand::OuterPosition(egui::pos2(8.0, 8.0))));
     }
 }

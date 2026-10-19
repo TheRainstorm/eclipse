@@ -707,7 +707,7 @@ impl eframe::App for App {
         let video_px = self.textures.get(&self.selected_track).or_else(|| self.textures.values().next())
             .map(|texture| texture.size_vec2());
         self.window_sizing.update(ctx, self.controller.is_some(), video_px,
-            self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()));
+            self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(frame, ctx));
         if self.exit_requested && self.controller.is_none() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }

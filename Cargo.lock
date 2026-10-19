@@ -4663,6 +4663,7 @@ dependencies = [
  "eframe",
  "image",
  "qrcode",
+ "raw-window-handle",
  "reqwest",
  "serde",
  "serde_json",
