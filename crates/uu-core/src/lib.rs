@@ -9,6 +9,8 @@ mod video_receiver;
 pub mod error;
 pub mod media;
 mod network_probe;
+mod decode_gate;
+mod test_loss;
 pub mod selfloop;
 pub mod session;
 pub mod sign;

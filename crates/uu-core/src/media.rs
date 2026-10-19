@@ -66,6 +66,7 @@ pub struct MediaStats {
     pub late_packets: AtomicU64,
     pub damaged_frames: AtomicU64,
     pub queue_drops: AtomicU64,
+    pub injected_loss: AtomicU64,
     pub keyframe_requests: AtomicU64,
     pub waiting_for_keyframe: AtomicU32,
     pub backend: std::sync::Mutex<String>,
@@ -390,11 +391,13 @@ async fn receive_video(
     let generation = Arc::new(AtomicU64::new(0));
     let waiting = Arc::new(AtomicBool::new(true));
     let request_generation = Arc::new(AtomicU64::new(0));
+    let refresh = Arc::new(tokio::sync::Notify::new());
     let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(bytes::Bytes, u32, u64, u64)>(8);
     let worker_stats = stats.clone();
     let worker_waiting = waiting.clone();
     let worker_generation = generation.clone();
     let worker_requests = request_generation.clone();
+    let worker_refresh = refresh.clone();
     // Decode, colour conversion and driver IPC are blocking CPU/OS work. Keep
     // them off tokio's RTP and RTCP executor threads.
     let worker = tokio::task::spawn_blocking(move || {
@@ -411,8 +414,7 @@ async fn receive_video(
         let mut dump = std::env::var("UU_DUMP_H264")
             .ok()
             .and_then(|p| std::fs::File::create(p).ok());
-        let mut epoch = 0;
-        let mut need_idr = true;
+        let mut gate = crate::decode_gate::DecodeGate::default();
         let mut reset_decoder = false;
         let mut recovery = None;
         let mut decoded = 0;
@@ -434,31 +436,20 @@ async fn receive_video(
                     s.decode_us
                         .store((decode_us / window_frames.max(1)) as u32, Ordering::Relaxed);
                     s.waiting_for_keyframe
-                        .store(need_idr as u32, Ordering::Relaxed);
+                        .store(worker_waiting.load(Ordering::Acquire) as u32, Ordering::Relaxed);
                 }
                 if debug {
-                    println!("dec frames={decoded} errors={errors} waiting_idr={need_idr}");
+                    println!("dec frames={decoded} errors={errors} waiting_idr={}", gate.waiting);
                 }
                 window = Instant::now();
                 window_frames = 0;
                 decode_us = 0;
             }
             let current_epoch = worker_generation.load(Ordering::Acquire);
-            if current_epoch != epoch {
-                epoch = current_epoch;
-                need_idr = true;
-                reset_decoder = true;
-                recovery = None;
-            }
-            // Once compressed input was dropped, old queued pictures cannot
-            // repair the current reference chain. Wait for a fresh IDR.
-            if sample_epoch != current_epoch {
-                continue;
-            }
             let key = uu_media::EncodedFrame::detect_h264_keyframe(&data);
-            if need_idr && !key {
-                continue;
-            }
+            if !gate.accepts(sample_epoch, current_epoch, key) { continue; }
+            // An IDR resets H.264 references itself. Recreate the decoder only
+            // after a decoder/driver error, never for ordinary network loss.
             if key && reset_decoder {
                 let next = if recovery_errors >= 3 || decoder.backend_name().starts_with("openh264") {
                     uu_media::software_decoder()
@@ -482,14 +473,12 @@ async fn receive_video(
                 pts: uu_media::Timestamp(timestamp.wrapping_sub(base) as u64 * 1_000_000 / 90_000),
             };
             if key {
-                recovery = Some((epoch, sample_request, encoded.pts));
+                recovery = Some((sample_epoch, sample_request, encoded.pts));
             }
             let started = Instant::now();
             match decoder.decode(&encoded) {
                 Ok(frame) => {
-                    if key {
-                        need_idr = false;
-                    }
+                    gate.decoded(sample_epoch, worker_generation.load(Ordering::Acquire), key);
                     if let Some(frame) = frame {
                         recovery_errors = 0;
                         if recovery.is_some_and(|(generation, request, pts)| {
@@ -513,7 +502,7 @@ async fn receive_video(
                         }
                         // Decode all reference pictures, but spend RGBA and
                         // upload work only on the newest one after a burst.
-                        if let Some(tx) = frame_tx.as_ref().filter(|_| sample_rx.is_empty()) {
+                        if let Some(tx) = frame_tx.as_ref().filter(|_| key || sample_rx.is_empty()) {
                             let rgba = uu_media::convert::frame_to_rgba(&frame);
                             let _ = tx.send((track_idx, frame.width, frame.height, rgba));
                         }
@@ -524,11 +513,12 @@ async fn receive_video(
                     // Preserve the fallback budget across decoder recreation;
                     // repeatedly rebuilding a failing driver must not reset it.
                     recovery_errors = recovery_errors.saturating_add(1);
-                    need_idr = true;
+                    gate.failed();
                     reset_decoder = true;
                     recovery = None;
                     worker_requests.fetch_add(1, Ordering::AcqRel);
                     worker_waiting.store(true, Ordering::Release);
+                    worker_refresh.notify_one();
                     if let Some(s) = &worker_stats {
                         s.errors.fetch_add(1, Ordering::Relaxed);
                     }
@@ -545,6 +535,7 @@ async fn receive_video(
     let feedback_pc = pc.clone();
     let feedback_waiting = waiting.clone();
     let feedback_stats = stats.clone();
+    let feedback_refresh = refresh.clone();
     let ssrc = track.ssrc();
     let feedback = tokio::spawn(async move {
         let sender_ssrc =
@@ -560,12 +551,13 @@ async fn receive_video(
         let mut fir_seq = 0u8;
         let mut retries = 0u32;
         loop {
-            ticker.tick().await;
+            tokio::select! { _ = ticker.tick() => {}, _ = feedback_refresh.notified() => {} }
             let now = Instant::now();
             let mut packets: Vec<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>> = Vec::new();
             let needs_refresh = feedback_waiting.load(Ordering::Acquire);
             if !needs_refresh {
                 retries = 0;
+                last_refresh = None;
             }
             if let Some(s) = &feedback_stats {
                 s.waiting_for_keyframe
@@ -573,7 +565,7 @@ async fn receive_video(
             }
             if needs_refresh
                 && last_refresh.map_or(true, |at: Instant| {
-                    now.duration_since(at) >= Duration::from_millis(500)
+                    now.duration_since(at) >= Duration::from_millis(if retries < 2 { 200 } else { 500 })
                 })
             {
                 packets.push(Box::new(PictureLossIndication {
@@ -633,8 +625,10 @@ async fn receive_video(
         }
         request_generation.fetch_add(1, Ordering::AcqRel);
         waiting.store(true, Ordering::Release);
+        refresh.notify_one();
     };
     let mut receiver_epoch = 0;
+    let mut test_loss = crate::test_loss::TestLoss::from_env();
     let mut bytes = 0u64;
     let mut window_packets = 0u64;
     let mut previous_lost = 0u64;
@@ -651,6 +645,10 @@ async fn receive_video(
             _=ticker.tick()=>None,
         };
         let now = Instant::now();
+        if packet.as_ref().is_some_and(|p| test_loss.drop_packet(p.header.sequence_number, now)) {
+            if let Some(s) = &stats { s.injected_loss.fetch_add(1, Ordering::Relaxed); }
+            continue;
+        }
         let units = if let Some(packet) = packet {
             window_packets += 1;
             if let Some(s) = &stats {
