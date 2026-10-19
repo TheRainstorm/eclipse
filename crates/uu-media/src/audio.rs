@@ -229,20 +229,68 @@ fn run(rx: std::sync::mpsc::Receiver<Packet>, control: &Arc<AudioControl>) -> an
 #[derive(Default)]
 struct PcmQueue {
     samples: VecDeque<f32>,
+    last: Vec<f32>,
+    channel: usize,
+    gain: f32,
+    buffering: bool,
 }
 #[cfg(any(windows, test))]
 impl PcmQueue {
     fn submit(&mut self, samples: &[f32], rate: u32, channels: usize) {
-        // Rejoin live sound after a device stall rather than playing the backlog.
-        let max = rate as usize * channels * 30 / 1000; // 30ms; do not accumulate stale sound.
-        if self.samples.len() + samples.len() > max {
-            self.samples.clear();
+        if self.last.len() != channels {
+            self.last = vec![0.0; channels];
+            self.channel = 0;
+            self.gain = 0.0;
+            self.buffering = true;
         }
+        // Allow ordinary network jitter without repeatedly discarding whole
+        // packets. Remain bounded after a genuine device/decoder stall.
+        let max = rate as usize * channels * 60 / 1000;
         let start = samples.len().saturating_sub(max) / channels * channels;
         self.samples.extend(&samples[start..]);
+        if self.samples.len() > max {
+            let excess = (self.samples.len() - max).div_ceil(channels) * channels;
+            self.samples.drain(..excess);
+            // Join the live waveform to the last audible frame over 5 ms,
+            // rather than introducing a full-amplitude discontinuity.
+            let fade = (rate as usize / 200).max(1);
+            for (i, sample) in self.samples.iter_mut().take(fade * channels).enumerate() {
+                let mix = ((i / channels + 1) as f32 / fade as f32).min(1.0);
+                *sample = self.last[i % channels] * (1.0 - mix) + *sample * mix;
+            }
+        }
     }
-    fn sample(&mut self) -> f32 {
-        self.samples.pop_front().unwrap_or(0.0)
+    fn sample(&mut self, rate: u32, channels: usize) -> f32 {
+        if self.last.len() != channels {
+            return 0.0;
+        }
+        if self.channel == 0 {
+            if self.samples.len() < channels {
+                self.buffering = true;
+            }
+            // Refill a short jitter cushion following an underrun. Silence is
+            // preferable to repeatedly starting/stopping every arriving packet.
+            if self.buffering && self.samples.len() >= rate as usize * channels * 20 / 1000 {
+                self.buffering = false;
+            }
+            let step = 1.0 / (rate as f32 * 0.005).max(1.0);
+            self.gain = (self.gain + if self.buffering { -step } else { step }).clamp(0.0, 1.0);
+        }
+        let sample = if self.buffering {
+            self.last[self.channel] * self.gain
+        } else {
+            let raw = self.samples.pop_front().unwrap_or(0.0);
+            let raw = if raw.is_finite() {
+                raw.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
+            // Keep the unscaled frame for a smooth fade-out on starvation.
+            self.last[self.channel] = raw;
+            raw * self.gain
+        };
+        self.channel = (self.channel + 1) % channels;
+        sample
     }
 }
 
@@ -412,6 +460,11 @@ mod windows {
     ) -> Result<cpal::Stream, cpal::BuildStreamError> {
         let rate = config.sample_rate.0;
         let channels = config.channels as usize;
+        let mut last_frame = vec![0.0f32; channels];
+        let mut fade_base = vec![0.0f32; channels];
+        let mut stalled = false;
+        let mut recovery = 1.0f32;
+        let step = 1.0 / (rate as f32 * 0.005).max(1.0);
         device.build_output_stream(
             config,
             move |data: &mut [T], _| {
@@ -427,19 +480,35 @@ mod windows {
                 };
                 // Never wait for decode on the realtime device callback.
                 if let Ok(mut q) = queue.try_lock() {
+                    stalled = false;
                     if q.samples.len() < data.len() {
                         control.underruns.fetch_add(1, Ordering::Relaxed);
                     }
-                    for sample in data {
-                        *sample = T::from_sample(q.sample() * gain);
+                    for (i, sample) in data.iter_mut().enumerate() {
+                        if i % channels == 0 {
+                            recovery = (recovery + step).min(1.0);
+                        }
+                        let next = q.sample(rate, channels) * gain;
+                        let smooth = last_frame[i % channels] * (1.0 - recovery) + next * recovery;
+                        last_frame[i % channels] = smooth;
+                        *sample = T::from_sample(smooth);
                     }
                     control.queue_ms.store(
                         (q.samples.len() * 1000 / (rate as usize * channels)) as u32,
                         Ordering::Relaxed,
                     );
                 } else {
-                    for sample in data {
-                        *sample = T::from_sample(0.0);
+                    if !stalled {
+                        fade_base.copy_from_slice(&last_frame);
+                        stalled = true;
+                    }
+                    control.underruns.fetch_add(1, Ordering::Relaxed);
+                    for (i, sample) in data.iter_mut().enumerate() {
+                        if i % channels == 0 {
+                            recovery = (recovery - step).max(0.0);
+                        }
+                        last_frame[i % channels] = fade_base[i % channels] * recovery;
+                        *sample = T::from_sample(last_frame[i % channels]);
                     }
                 }
             },
@@ -497,13 +566,38 @@ mod tests {
         assert!(q.pop(now).is_none());
     }
     #[test]
-    fn stalled_playback_discards_old_sound_and_underrun_is_silent() {
+    fn stalled_playback_is_bounded_and_transitions_are_smoothed() {
         let mut q = PcmQueue::default();
-        q.submit(&vec![0.1; 1920], 48000, 2);
-        q.submit(&vec![0.2; 1920], 48000, 2);
-        assert_eq!(q.samples.len(), 1920);
-        assert_eq!(q.sample(), 0.2);
-        q.samples.clear();
-        assert_eq!(q.sample(), 0.0);
+        q.submit(&vec![0.8; 1920], 48000, 2);
+        let mut previous = 0.0f32;
+        for _ in 0..(1920 + 960) {
+            let sample = q.sample(48000, 2);
+            assert!((sample - previous).abs() < 0.004);
+            previous = sample;
+        }
+        assert_eq!(previous, 0.0);
+        // A 10ms fragment waits for a second fragment, then fades in.
+        q.submit(&vec![-0.8; 960], 48000, 2);
+        assert_eq!(q.sample(48000, 2), 0.0);
+        assert_eq!(q.sample(48000, 2), 0.0);
+        q.submit(&vec![-0.8; 960], 48000, 2);
+        assert!(q.sample(48000, 2).abs() < 0.004);
+        for _ in 0..20 {
+            q.submit(&vec![0.8; 1920], 48000, 2);
+        }
+        assert!(q.samples.len() <= 5760 && q.samples.len() >= 5758);
+        assert!(q.samples.iter().all(|x| x.is_finite() && x.abs() <= 1.0));
+    }
+    #[test]
+    fn playback_keeps_stereo_channels_separate_and_bounds_samples() {
+        let mut q = PcmQueue::default();
+        let input: Vec<f32> = (0..960).flat_map(|_| [2.0, f32::NAN]).collect();
+        q.submit(&input, 48000, 2);
+        for _ in 0..960 {
+            let left = q.sample(48000, 2);
+            let right = q.sample(48000, 2);
+            assert!(left.is_finite() && (0.0..=1.0).contains(&left));
+            assert_eq!(right, 0.0);
+        }
     }
 }
