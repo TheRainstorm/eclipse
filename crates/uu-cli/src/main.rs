@@ -720,7 +720,7 @@ fn decode_selftest(path: &std::path::Path, output: Option<&std::path::Path>) -> 
                 }
                 if decoded == 1 {
                     if let Some(output) = output {
-                        write_probe_frame(output, &decoded_frame)?;
+                        write_probe_frame(output, &decoded_frame, uu_media::color::from_h264(&data).unwrap_or_default())?;
                         println!("first frame       {}", output.display());
                     }
                 }
@@ -755,9 +755,9 @@ fn decode_selftest(path: &std::path::Path, output: Option<&std::path::Path>) -> 
     Ok(())
 }
 
-fn write_probe_frame(path: &std::path::Path, frame: &uu_media::RawFrame) -> Result<()> {
+fn write_probe_frame(path: &std::path::Path, frame: &uu_media::RawFrame, color:uu_media::color::YuvColor) -> Result<()> {
     use std::io::Write;
-    let rgba = uu_media::convert::frame_to_rgba(frame);
+    let rgba = uu_media::convert::frame_to_rgba_with_color(frame,color);
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)
         .with_context(|| format!("creating {}", path.display()))?);
     write!(file, "P6\n{} {}\n255\n", frame.width, frame.height)?;

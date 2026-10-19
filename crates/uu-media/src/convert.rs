@@ -452,3 +452,23 @@ mod conversion_equivalence_tests {
         }
     }
 }
+
+/// Convert with the stream's range/matrix, preserving the vector upload path.
+pub fn frame_to_rgba_with_color(frame: &RawFrame, color: crate::color::YuvColor) -> Vec<u8> {
+    if color==crate::color::YuvColor::Full601 || frame.format==PixelFormat::Bgra8 {return frame_to_rgba(frame);}
+    let (w,h,s)=(frame.width as usize,frame.height as usize,frame.stride.max(frame.width) as usize);
+    let nv12=frame.format==PixelFormat::Nv12;
+    let mut out=vec![0;w*h*4];
+    let needed=if nv12{s*h+s*(h/2)}else{s*h+w*h/2};
+    if w%2!=0 || h%2!=0 || frame.data.len()<needed {return out;}
+    #[cfg(target_arch="x86_64")]
+    if std::is_x86_feature_detected!("sse4.1") {
+        unsafe {if nv12{x86::convert_color::<true>(&frame.data,w,h,s,&mut out,color)}else{x86::convert_color::<false>(&frame.data,w,h,s,&mut out,color)}}
+        return out;
+    }
+    for y in 0..h {for x in 0..w {
+        let (u,v)=if nv12 {let i=s*h+y/2*s+x/2*2;(frame.data[i],frame.data[i+1])}else{let i=y/2*(w/2)+x/2;(frame.data[s*h+i],frame.data[s*h+w*h/4+i])};
+        let (r,g,b)=color.rgb(frame.data[y*s+x] as i32,u as i32-128,v as i32-128);
+        out[(y*w+x)*4..(y*w+x+1)*4].copy_from_slice(&[r.clamp(0,255) as u8,g.clamp(0,255) as u8,b.clamp(0,255) as u8,255]);
+    }}out
+}

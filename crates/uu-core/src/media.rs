@@ -610,6 +610,7 @@ async fn receive_video(
         let mut gate = crate::decode_gate::DecodeGate::default();
         let mut reset_decoder = false;
         let mut recovery = None;
+        let mut color = uu_media::color::YuvColor::default();
         let mut decoded = 0;
         let mut errors = 0;
         let mut recovery_errors = 0u32;
@@ -660,6 +661,7 @@ async fn receive_video(
                 let _ = file.write_all(&data);
             }
             let base = *pts_base.get_or_insert(timestamp);
+            if key { if let Some(updated)=uu_media::color::from_h264(&data) {color=updated;} }
             let encoded = uu_media::EncodedFrame {
                 data,
                 is_keyframe: key,
@@ -698,7 +700,7 @@ async fn receive_video(
                         // Decode all reference pictures, but spend RGBA and
                         // upload work only on the newest one after a burst.
                         if let Some(tx) = frame_tx.as_ref().filter(|_| key || sample_rx.is_empty()) {
-                            let rgba = uu_media::convert::frame_to_rgba(&frame);
+                            let rgba = uu_media::convert::frame_to_rgba_with_color(&frame, color);
                             let _ = tx.send((track_idx, frame.width, frame.height, rgba));
                         }
                     }

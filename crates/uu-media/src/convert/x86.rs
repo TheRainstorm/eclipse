@@ -11,6 +11,11 @@ pub(super) unsafe fn convert<const NV12: bool>(
     stride: usize,
     out: &mut [u8],
 ) {
+    convert_color::<NV12>(src,w,h,stride,out,crate::color::YuvColor::Full601);
+}
+
+#[target_feature(enable = "sse4.1")]
+pub(super) unsafe fn convert_color<const NV12: bool>(src:&[u8],w:usize,h:usize,stride:usize,out:&mut[u8],color:crate::color::YuvColor) {
     let chroma = stride * h;
     let v_base = chroma + w * h / 4;
     for row in 0..h {
@@ -25,12 +30,12 @@ pub(super) unsafe fn convert<const NV12: bool>(
                 &src[v_base + start..v_base + start + w / 2],
             )
         };
-        row_rgba::<NV12>(y, u, v, &mut out[row * w * 4..(row + 1) * w * 4]);
+        row_rgba::<NV12>(y, u, v, &mut out[row * w * 4..(row + 1) * w * 4], color);
     }
 }
 
 #[target_feature(enable = "sse4.1")]
-unsafe fn row_rgba<const NV12: bool>(y: &[u8], u: &[u8], v: &[u8], out: &mut [u8]) {
+unsafe fn row_rgba<const NV12: bool>(y: &[u8], u: &[u8], v: &[u8], out: &mut [u8], color:crate::color::YuvColor) {
     let zero = _mm_setzero_si128();
     let center = _mm_set1_epi16(128);
     let mut x = 0;
@@ -52,12 +57,12 @@ unsafe fn row_rgba<const NV12: bool>(y: &[u8], u: &[u8], v: &[u8], out: &mut [u8
         let (r0, g0, b0) = rgb4(
             _mm_cvtepi16_epi32(yy),
             _mm_cvtepi16_epi32(uu),
-            _mm_cvtepi16_epi32(vv),
+            _mm_cvtepi16_epi32(vv), color,
         );
         let (r1, g1, b1) = rgb4(
             _mm_cvtepi16_epi32(_mm_srli_si128::<8>(yy)),
             _mm_cvtepi16_epi32(_mm_srli_si128::<8>(uu)),
-            _mm_cvtepi16_epi32(_mm_srli_si128::<8>(vv)),
+            _mm_cvtepi16_epi32(_mm_srli_si128::<8>(vv)), color,
         );
         let r = _mm_packus_epi16(_mm_packs_epi32(r0, r1), zero);
         let g = _mm_packus_epi16(_mm_packs_epi32(g0, g1), zero);
@@ -82,7 +87,7 @@ unsafe fn row_rgba<const NV12: bool>(y: &[u8], u: &[u8], v: &[u8], out: &mut [u8
         } else {
             (u[i / 2], v[i / 2])
         };
-        let (r, g, b) = super::yuv_to_rgb(y[i] as i32, uu as i32 - 128, vv as i32 - 128);
+        let (r, g, b) = color.rgb(y[i] as i32, uu as i32 - 128, vv as i32 - 128);
         out[i * 4..i * 4 + 4].copy_from_slice(&[
             r.clamp(0, 255) as u8,
             g.clamp(0, 255) as u8,
@@ -93,7 +98,16 @@ unsafe fn row_rgba<const NV12: bool>(y: &[u8], u: &[u8], v: &[u8], out: &mut [u8
 }
 
 #[target_feature(enable = "sse4.1")]
-unsafe fn rgb4(y: __m128i, u: __m128i, v: __m128i) -> (__m128i, __m128i, __m128i) {
+unsafe fn rgb4(y: __m128i, u: __m128i, v: __m128i, color:crate::color::YuvColor) -> (__m128i, __m128i, __m128i) {
+    if color!=crate::color::YuvColor::Full601 {
+        let [offset,m,r,gu,gv,b]=color.coefficients();
+        let y=_mm_mullo_epi32(_mm_sub_epi32(y,_mm_set1_epi32(offset)),_mm_set1_epi32(m));
+        return (
+            _mm_srai_epi32::<16>(_mm_add_epi32(y,_mm_mullo_epi32(v,_mm_set1_epi32(r)))),
+            _mm_srai_epi32::<16>(_mm_sub_epi32(_mm_sub_epi32(y,_mm_mullo_epi32(u,_mm_set1_epi32(gu))),_mm_mullo_epi32(v,_mm_set1_epi32(gv)))),
+            _mm_srai_epi32::<16>(_mm_add_epi32(y,_mm_mullo_epi32(u,_mm_set1_epi32(b)))),
+        );
+    }
     let r = _mm_add_epi32(
         y,
         _mm_srai_epi32::<16>(_mm_mullo_epi32(v, _mm_set1_epi32(91881))),

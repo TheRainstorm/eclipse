@@ -11,6 +11,7 @@
 pub mod audio;
 pub mod bitstream;
 pub mod codec;
+pub mod color;
 pub mod convert;
 pub mod decoder;
 pub mod frame;
