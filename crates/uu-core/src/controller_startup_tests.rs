@@ -41,7 +41,7 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     let activation=crate::screen_control::activate_screen(10004,42);
     let expected_activation=activation.clone();
     let mut sources=Vec::new();
-    for (id,track,name,primary) in [(7,0,"Zako HDR",true),(42,2,"S2719",false)] {
+    for (id,track,name,primary) in [(7,0,"Zako HDR",true),(42,u64::MAX,"S2719",false)] {
         let mut screen=Vec::new();crate::control_wire::int(1,id,&mut screen);crate::control_wire::int(12,track,&mut screen);
         crate::control_wire::int(7,primary as u64,&mut screen);crate::control_wire::bytes(10,name.as_bytes(),&mut screen);
         crate::control_wire::bytes(1,&screen,&mut sources);
@@ -102,6 +102,9 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
                                 let mut result=Vec::new();crate::control_wire::int(1,10004,&mut result);
                                 crate::control_wire::int(2,8,&mut result);
                                 channel.send(&crate::control_wire::envelope(10005,19,&result).into()).await.unwrap();
+                                // The legacy host changes capture without resending ScreenSources.
+                                let mut change=Vec::new();crate::control_wire::int(2,42,&mut change);
+                                channel.send(&crate::control_wire::envelope(10006,8,&change).into()).await.unwrap();
                             }
                         }
                         if let Some(kind) = kind { let _ = tx.send(kind); }
@@ -165,7 +168,11 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     assert!(stats.display_responses.lock().unwrap().contains(&(10004,19,0)));
     let screens=stats.remote_screens.lock().unwrap().clone();
     assert_eq!(screens.selected().unwrap().display_name,"S2719");assert_eq!(screens.for_track(0).unwrap().id,7);
-    assert_eq!(screens.for_track(2).unwrap().id,42);
+    assert_eq!(screens.screens.iter().find(|s|s.id==42).unwrap().assigned_track(),None);
+    assert_eq!(*stats.desktop_capture_source.lock().unwrap(),Some(42));
+    let effective=screens.with_desktop_capture(*stats.desktop_capture_source.lock().unwrap());
+    assert_eq!(effective.for_track(0).unwrap().id,42);
+    assert_eq!(effective.screens.iter().find(|s|s.id==7).unwrap().assigned_track(),None);
     stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);
     media.pc.close().await.unwrap();
     // The first close can already reset the remote SCTP association. The

@@ -100,6 +100,30 @@ pub fn screen_sources(data: &[u8]) -> Option<RemoteScreens> {
     })
 }
 
+/// Legacy desktop switches notify Message.8 CaptureChange, not ScreenSources.
+/// Desktop capture uses track 0; type_value is the actual source ID.
+pub fn desktop_capture_change(data: &[u8]) -> Option<i32> {
+    let outer = decode_wire(data).ok()?;
+    let change = decode_wire(message(&outer, 8)?).ok()?;
+    let id = number(&change, 2) as i32;
+    (number(&change, 1) == 0 && id >= 0).then_some(id)
+}
+
+impl RemoteScreens {
+    /// Apply the separately confirmed legacy capture source without assigning
+    /// the same track to two monitors from an older inventory.
+    pub fn with_desktop_capture(mut self, id: Option<i32>) -> Self {
+        if let Some(id) = id.filter(|id| self.screens.iter().any(|s| s.id == *id)) {
+            for screen in &mut self.screens {
+                if screen.id == id { screen.video_track_index = 0; }
+                else if screen.assigned_track() == Some(0) { screen.video_track_index = -1; }
+            }
+            self.current_id = id;
+        }
+        self
+    }
+}
+
 /// Preserve is deliberately the default, including for existing settings files.
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq,serde::Serialize,serde::Deserialize)]
 #[serde(rename_all="snake_case")]
@@ -161,6 +185,14 @@ pub fn response(data:&[u8])->Option<(u64,u32,i32)> {
 mod tests {
     use super::*;
     use crate::control_wire::{bytes, int};
+    #[test]
+    fn capture_change_confirms_single_track_source_without_new_inventory() {
+        let mut body=Vec::new();int(2,42,&mut body);
+        assert_eq!(desktop_capture_change(&crate::control_wire::envelope(1,8,&body)),Some(42));
+        int(1,1,&mut body); // A captured window is not a desktop source.
+        assert_eq!(desktop_capture_change(&crate::control_wire::envelope(2,8,&body)),None);
+        assert_eq!(desktop_capture_change(&crate::control_wire::envelope(3,8,&[])),Some(0));
+    }
     #[test]
     fn native_screen_ids_follow_advertised_tracks_instead_of_arrival_order() {
         let mut payload = Vec::new();

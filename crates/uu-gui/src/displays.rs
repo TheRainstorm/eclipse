@@ -1,7 +1,10 @@
 //! A display is identified by the remote source ID, never packet arrival order.
 use eframe::egui;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use uu_core::screen_control::{RemoteScreen, RemoteScreens};
+
+pub(super) type CaptureProfile = (u32, usize, u32, usize, bool);
 
 #[derive(Default)]
 pub(super) struct Displays {
@@ -13,6 +16,10 @@ pub(super) struct Displays {
     pub menu_open: bool,
     pub anchor: egui::Pos2,
     next_request: u64,
+    profiles: HashMap<i32, (u32, CaptureProfile)>,
+    settings_sent: Option<(u64, i32, u32, CaptureProfile)>,
+    bindings: HashMap<u32, i32>,
+    last_frames: HashMap<u32, Instant>,
 }
 struct Pending {
     request: u64,
@@ -102,7 +109,20 @@ impl Displays {
             p.settings_accepted = false;
         }
     }
+    pub fn settings_sent(&mut self, id: u64, screen: i32, track: u32, profile: CaptureProfile) {
+        self.expect_settings(id);
+        self.settings_sent = Some((id, screen, track, profile));
+    }
+    fn settings_match(&self, screen: i32, track: u32, profile: CaptureProfile) -> bool {
+        self.profiles.get(&screen) == Some(&(track, profile))
+    }
     fn capture_response(&mut self, id: u64, accepted: bool) {
+        if let Some((_, screen, track, profile)) = self.settings_sent.filter(|s| s.0 == id) {
+            self.settings_sent = None;
+            if accepted && self.bindings.get(&track) == Some(&screen) {
+                self.profiles.insert(screen, (track, profile));
+            }
+        }
         let Some(p) = self
             .pending
             .as_mut()
@@ -136,9 +156,24 @@ impl Displays {
             .as_ref()
             .is_some_and(|p| now.duration_since(p.sent) > Duration::from_secs(8))
         {
+            let stage = self
+                .pending
+                .as_ref()
+                .map(|p| {
+                    if !p.accepted {
+                        "等待远端切屏确认"
+                    } else if p.track.is_none() {
+                        "等待采集源通知"
+                    } else if !p.settings_accepted {
+                        "等待画质确认"
+                    } else {
+                        "等待目标画面"
+                    }
+                })
+                .unwrap_or("未完成");
             self.pending = None;
             self.blocked = true;
-            self.notice = "显示器切换未完成，可重新选择或切回其它显示器".into();
+            self.notice = format!("显示器切换超时（{stage}），可重试或切回其它显示器");
         }
     }
 }
@@ -160,7 +195,14 @@ impl super::App {
     pub(super) fn remote_screens(&self) -> RemoteScreens {
         self.controller
             .as_ref()
-            .map(|h| h.stats.remote_screens.lock().unwrap().clone())
+            .map(|h| {
+                h.stats
+                    .remote_screens
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .with_desktop_capture(*h.stats.desktop_capture_source.lock().unwrap())
+            })
             .unwrap_or_default()
     }
     pub(super) fn display_label(&self) -> String {
@@ -177,6 +219,10 @@ impl super::App {
             return;
         };
         let target = screen.assigned_track();
+        // Repeated clicks must not restart the same pending operation.
+        if self.displays.selected == Some(id) && self.displays.switching() {
+            return;
+        }
         if self.displays.selected == Some(id)
             && self.displays.ready()
             && target.is_some_and(|track| self.textures.contains_key(&track))
@@ -200,15 +246,30 @@ impl super::App {
         if let Some(h) = &self.controller {
             h.stats.select_video_track(self.selected_track);
         }
-        self.textures.remove(&self.selected_track);
-        self.unpresented.remove(&self.selected_track);
-        self.frame_count.remove(&self.selected_track);
-        self.fps.remove(&self.selected_track);
+        let reuse = target.is_some_and(|t| self.displays.bindings.get(&t) == Some(&id));
+        let warm = reuse
+            && self.textures.contains_key(&self.selected_track)
+            && self
+                .displays
+                .last_frames
+                .get(&self.selected_track)
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
+        if !reuse {
+            self.textures.remove(&self.selected_track);
+            self.unpresented.remove(&self.selected_track);
+        }
+        let settings_match = target.is_some_and(|track| {
+            self.displays
+                .settings_match(id, track, self.capture_profile())
+        });
         let request = if let Some(track) = target {
             self.displays.begin(id, track, Instant::now())
         } else {
             self.displays.begin_activation(id, Instant::now())
         };
+        if warm {
+            self.displays.pending.as_mut().unwrap().frame = true;
+        }
         let command = target
             .map(|track| uu_core::screen_control::send_video_track(request, track))
             .unwrap_or_else(|| uu_core::screen_control::activate_screen(request, id));
@@ -223,13 +284,12 @@ impl super::App {
             self.displays.pending = None;
             self.displays.notice = "切换失败：连接已关闭".into();
         }
-        if target.is_some() {
+        if target.is_some() && !settings_match {
             self.send_capture_settings_through(true);
         }
         self.displays.menu_open = false;
         self.stream_menu.open = false;
         self.context.memory_mut(|m| m.close_popup());
-        self.window_sizing.begin_stream();
     }
     pub(super) fn poll_displays(&mut self, tracks: &[u32]) {
         let received = self.controller.as_ref().is_some_and(|h| {
@@ -239,6 +299,22 @@ impl super::App {
                 != 0
         });
         let screens = self.remote_screens();
+        let bindings: HashMap<_, _> = screens
+            .screens
+            .iter()
+            .filter_map(|s| s.assigned_track().map(|t| (t, s.id)))
+            .collect();
+        for (track, source) in &self.displays.bindings {
+            if bindings.get(track) != Some(source) {
+                self.textures.remove(track);
+                self.unpresented.remove(track);
+                self.displays.last_frames.remove(track);
+            }
+        }
+        self.displays
+            .profiles
+            .retain(|id, (track, _)| bindings.get(track) == Some(id));
+        self.displays.bindings = bindings;
         if received && screens.screens.is_empty() {
             if self.displays.selected.is_some() {
                 self.release_all_keys();
@@ -301,6 +377,7 @@ impl super::App {
             }
         }
         for track in tracks {
+            self.displays.last_frames.insert(*track, Instant::now());
             self.displays.frame(*track);
         }
         self.displays.tick(Instant::now());
@@ -392,5 +469,27 @@ mod tests {
         d.tick(Instant::now() + Duration::from_secs(9));
         assert!(d.waiting_binding());
         assert!(!d.ready());
+    }
+    #[test]
+    fn cached_profile_requires_matching_ack_and_source_binding() {
+        let mut d = Displays::default();
+        let profile = (60, 0, 0, 0, false);
+        d.bindings.insert(2, 42);
+        d.settings_sent(2001, 42, 2, profile);
+        d.capture_response(2000, true);
+        assert!(!d.settings_match(42, 2, profile));
+        d.capture_response(2001, true);
+        assert!(d.settings_match(42, 2, profile));
+        assert!(!d.settings_match(42, 0, profile));
+        assert!(!d.settings_match(42, 2, (120, 0, 0, 0, false)));
+        let id = d.begin(42, 2, Instant::now());
+        d.frame(2);
+        d.response(id, 11, 0);
+        assert!(d.ready());
+        d.settings_sent(2002, 42, 2, profile);
+        d.bindings.insert(2, 7);
+        d.profiles.clear();
+        d.capture_response(2002, true);
+        assert!(!d.settings_match(42, 2, profile));
     }
 }

@@ -37,6 +37,7 @@ pub struct MediaStats {
     /// Snapshot of the user's connection policy: 0 preserve, 1 exclusive UU.
     pub display_mode: AtomicU32,
     pub display_responses: std::sync::Mutex<std::collections::VecDeque<(u64,u32,i32)>>,
+    pub desktop_capture_source: std::sync::Mutex<Option<i32>>,
     pub exclusive_owned: std::sync::atomic::AtomicBool,
     pub exclusive_result: AtomicU64,
     pub audio: Arc<uu_media::audio::AudioControl>,
@@ -346,6 +347,9 @@ impl ControllerMedia {
                                 if let Some(screens) = crate::screen_control::screen_sources(&msg.data) {
                                     *s.remote_screens.lock().unwrap() = screens;
                                     s.remote_screens_revision.fetch_add(1,Ordering::Release);
+                                }
+                                if let Some(id) = crate::screen_control::desktop_capture_change(&msg.data) {
+                                    *s.desktop_capture_source.lock().unwrap() = Some(id);
                                 }
                             }
                             if let Some((id, accepted)) = crate::control_wire::capture_setting_response(&msg.data) {

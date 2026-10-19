@@ -574,7 +574,11 @@ impl App {
 
     /// Apply frame rate, quality and resolution together so another setting never resets FPS.
     fn send_capture_settings(&mut self) {self.send_capture_settings_through(false);}
+    fn capture_profile(&self) -> displays::CaptureProfile {
+        (self.target_fps, self.bitrate_idx, if self.bitrate_idx == 4 {self.custom_mbps} else {0}, self.resolution_idx, self.preferences.remote_cursor)
+    }
     fn send_capture_settings_through(&mut self,immediate:bool) {
+        let profile = self.capture_profile();
         let Some(h) = &self.controller else { return };
         let (_, quality, preset_mbps) = BITRATE_PRESETS[self.bitrate_idx];
         let custom_bps = if quality == 6 {
@@ -601,7 +605,7 @@ impl App {
             source,
         );
         let request=2000+self.settings_seq;
-        self.displays.expect_settings(request);
+        self.displays.settings_sent(request, source, self.selected_track, profile);
         let sent=if immediate {h.input.send(msg)}else{h.settings.send(msg)};
         self.settings_feedback = if sent.is_ok() {
             format!("已发送：{} FPS · {} · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0,
