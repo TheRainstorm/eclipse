@@ -354,11 +354,20 @@ pub fn capture_setting_response(data: &[u8]) -> Option<(u64, bool)> {
         (2, WireValue::Bytes(b)) => Some(*b), _ => None,
     })?;
     let errors = decode_wire(response).ok()?;
-    let rejected = errors.iter().any(|(n, v)| *n == 1 && match v {
-        WireValue::Varint(v) => *v != 0,
-        WireValue::Bytes(b) => b.iter().any(|v| *v != 0),
-        _ => true,
-    });
+    // CaptureSettingResponse.errors is repeated Error, not a packed integer
+    // array. Success entries can carry descriptive text with error_code=0.
+    let mut rejected = false;
+    for (field, value) in errors {
+        if field != 1 { continue; }
+        let WireValue::Bytes(error) = value else { return None; };
+        let error = decode_wire(error).ok()?;
+        for (field, value) in error {
+            if field == 1 {
+                let WireValue::Varint(code) = value else { return None; };
+                rejected |= code != 0;
+            }
+        }
+    }
     Some((id, !rejected))
 }
 
@@ -569,11 +578,28 @@ mod tests {
 mod settings_response_tests {
     use super::*;
     #[test]
+    fn per_setting_errors_use_error_code_and_reject_malformed_entries() {
+        let mut header = Vec::new(); int(1, 2001, &mut header);
+        let reply = |errors: &[u8]| {
+            let mut rpc = Vec::new(); bytes(1, &header, &mut rpc); bytes(2, errors, &mut rpc);
+            capture_setting_response(&envelope(1, 22, &rpc))
+        };
+        let mut ok = Vec::new(); bytes(2, b"unchanged", &mut ok);
+        let mut errors = Vec::new(); bytes(1, &ok, &mut errors);
+        assert_eq!(reply(&errors), Some((2001, true)));
+        let mut failed = Vec::new(); int(1, u64::MAX, &mut failed);
+        bytes(1, &failed, &mut errors);
+        assert_eq!(reply(&errors), Some((2001, false)));
+        assert_eq!(reply(&[8, 3]), None); // errors must be a message
+        assert_eq!(reply(&[10, 1, 128]), None); // truncated nested Error
+    }
+    #[test]
     fn settings_confirmation_matches_rpc_id_and_rejects_non_capture_responses() {
         let mut header = vec![]; int(1, 2007, &mut header);
         let mut rpc = vec![]; bytes(1, &header, &mut rpc); bytes(2, &[], &mut rpc);
         assert_eq!(capture_setting_response(&envelope(42, 22, &rpc)), Some((2007, true)));
-        let mut failed = vec![]; int(1, 3, &mut failed);
+        let mut error = vec![]; int(1, 3, &mut error);
+        let mut failed = vec![]; bytes(1, &error, &mut failed);
         let mut rpc = vec![]; bytes(1, &header, &mut rpc); bytes(2, &failed, &mut rpc);
         assert_eq!(capture_setting_response(&envelope(43, 22, &rpc)), Some((2007, false)));
         assert_eq!(capture_setting_response(&echo_response(44, 2007)), None);
