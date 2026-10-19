@@ -15,6 +15,24 @@ fn main() {
                 (seed >> 24) as u8
             })
             .collect();
+        let bgra_stride = w * 4 + 64;
+        let bgra: Vec<u8> = (0..bgra_stride * h)
+            .map(|i| ((i * 13 + i / 97) % 256) as u8)
+            .collect();
+        black_box(uu_media::convert::bgra_to_i420(&bgra, w, h, bgra_stride));
+        let started = Instant::now();
+        for _ in 0..count {
+            black_box(uu_media::convert::bgra_to_i420(
+                black_box(&bgra),
+                w,
+                h,
+                bgra_stride,
+            ));
+        }
+        println!(
+            "BGRA {w}x{h} stride={bgra_stride} frames={count} ms_per_frame={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0 / count as f64
+        );
         for layout in ["NV12", "I420"] {
             let convert = || {
                 if layout == "NV12" {

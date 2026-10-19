@@ -118,39 +118,39 @@ pub fn nv12_to_i420(src: &[u8], width: u32, height: u32, stride: u32) -> Vec<u8>
 /// BGRA to I420 using the BT.601 full-range coefficients.
 pub fn bgra_to_i420(src: &[u8], width: u32, height: u32, stride: u32) -> Vec<u8> {
     let (w, h, s) = (width as usize, height as usize, stride as usize);
-    let (csw, csh) = (w / 2, h / 2);
-    let mut out = vec![0u8; w * h * 3 / 2];
-    let (u_off, v_off) = (w * h, w * h + csw * csh);
-
-    let luma = |out: &mut [u8], row: usize| {
-        for col in 0..w {
-            let p = row * s + col * 4;
-            let (b, g, r) = (src[p] as f32, src[p + 1] as f32, src[p + 2] as f32);
-            let y = 0.299 * r + 0.587 * g + 0.114 * b;
-            out[row * w + col] = y.round().clamp(0.0, 255.0) as u8;
+    let plane = w * h;
+    let mut out = vec![0u8; plane * 3 / 2];
+    let (luma, chroma) = out.split_at_mut(plane);
+    let (u, v) = chroma.split_at_mut(plane / 4);
+    // 16-bit fixed-point BT.601 full range. Coefficients sum exactly to
+    // 65536 for Y and zero for U/V, preserving neutral greys and endpoints.
+    for (row, y) in src.chunks_exact(s).take(h).zip(luma.chunks_exact_mut(w)) {
+        for (pixel, y) in row[..w * 4].chunks_exact(4).zip(y) {
+            *y = ((19595 * pixel[2] as u32
+                + 38470 * pixel[1] as u32
+                + 7471 * pixel[0] as u32
+                + 32768)
+                >> 16) as u8;
         }
-    };
-    for row in 0..h {
-        luma(&mut out, row);
     }
-
-    // Chroma is averaged over each 2x2 luma block, which is what the
-    // 4:2:0 subsampling actually means.
-    for cy in 0..csh {
-        for cx in 0..csw {
-            let (mut u_sum, mut v_sum) = (0.0f32, 0.0f32);
-            for dy in 0..2 {
-                for dx in 0..2 {
-                    let p = (cy * 2 + dy) * s + (cx * 2 + dx) * 4;
-                    let (b, g, r) = (src[p] as f32, src[p + 1] as f32, src[p + 2] as f32);
-                    // BT.601 full-range chroma.
-                    u_sum += -0.168_736 * r - 0.331_264 * g + 0.5 * b + 128.0;
-                    v_sum += 0.5 * r - 0.418_688 * g - 0.081_312 * b + 128.0;
-                }
-            }
-            let idx = cy * csw + cx;
-            out[u_off + idx] = (u_sum / 4.0).round().clamp(0.0, 255.0) as u8;
-            out[v_off + idx] = (v_sum / 4.0).round().clamp(0.0, 255.0) as u8;
+    for cy in 0..h / 2 {
+        let top = &src[cy * 2 * s..cy * 2 * s + w * 4];
+        let bottom = &src[(cy * 2 + 1) * s..(cy * 2 + 1) * s + w * 4];
+        let offset = cy * (w / 2);
+        for (cx, (a, b)) in top.chunks_exact(8).zip(bottom.chunks_exact(8)).enumerate() {
+            let sum = |channel: usize| {
+                a[channel] as i32
+                    + a[channel + 4] as i32
+                    + b[channel] as i32
+                    + b[channel + 4] as i32
+            };
+            let (blue, green, red) = (sum(0), sum(1), sum(2));
+            // Average the four unrounded chroma values, then round once.
+            let bias = (128 << 18) + (1 << 17);
+            u[offset + cx] =
+                ((-11059 * red - 21709 * green + 32768 * blue + bias) >> 18).clamp(0, 255) as u8;
+            v[offset + cx] =
+                ((32768 * red - 27439 * green - 5329 * blue + bias) >> 18).clamp(0, 255) as u8;
         }
     }
     out
@@ -170,6 +170,70 @@ mod tests {
             data: Bytes::from(data),
             pts: crate::Timestamp(0),
             gpu: false,
+        }
+    }
+
+    fn bgra_reference(src: &[u8], width: u32, height: u32, stride: u32) -> Vec<u8> {
+        let (w, h, s) = (width as usize, height as usize, stride as usize);
+        let (csw, csh) = (w / 2, h / 2);
+        let mut out = vec![0u8; w * h * 3 / 2];
+        let (u_off, v_off) = (w * h, w * h + csw * csh);
+
+        let luma = |out: &mut [u8], row: usize| {
+            for col in 0..w {
+                let p = row * s + col * 4;
+                let (b, g, r) = (src[p] as f32, src[p + 1] as f32, src[p + 2] as f32);
+                let y = 0.299 * r + 0.587 * g + 0.114 * b;
+                out[row * w + col] = y.round().clamp(0.0, 255.0) as u8;
+            }
+        };
+        for row in 0..h {
+            luma(&mut out, row);
+        }
+
+        // Chroma is averaged over each 2x2 luma block, which is what the
+        // 4:2:0 subsampling actually means.
+        for cy in 0..csh {
+            for cx in 0..csw {
+                let (mut u_sum, mut v_sum) = (0.0f32, 0.0f32);
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let p = (cy * 2 + dy) * s + (cx * 2 + dx) * 4;
+                        let (b, g, r) = (src[p] as f32, src[p + 1] as f32, src[p + 2] as f32);
+                        // BT.601 full-range chroma.
+                        u_sum += -0.168_736 * r - 0.331_264 * g + 0.5 * b + 128.0;
+                        v_sum += 0.5 * r - 0.418_688 * g - 0.081_312 * b + 128.0;
+                    }
+                }
+                let idx = cy * csw + cx;
+                out[u_off + idx] = (u_sum / 4.0).round().clamp(0.0, 255.0) as u8;
+                out[v_off + idx] = (v_sum / 4.0).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn fixed_point_bgra_matches_bt601_float_for_padded_random_frames() {
+        let mut seed = 17u32;
+        for (w, h, padding) in [(2, 2, 0), (6, 18, 13), (64, 32, 64), (1920, 8, 7)] {
+            let stride = w * 4 + padding;
+            let src: Vec<u8> = (0..stride * h)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (seed >> 24) as u8
+                })
+                .collect();
+            let expected = bgra_reference(&src, w, h, stride);
+            let actual = bgra_to_i420(&src, w, h, stride);
+            assert_eq!(actual.len(), expected.len());
+            assert!(
+                actual
+                    .iter()
+                    .zip(expected)
+                    .all(|(&a, b)| a.abs_diff(b) <= 1),
+                "BT.601 conversion differs by more than one level at {w}x{h}"
+            );
         }
     }
 
