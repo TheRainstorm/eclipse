@@ -515,6 +515,7 @@ impl App {
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
         self.fullscreen = !self.fullscreen;
         self.stream_menu.open = false;
+        ctx.memory_mut(|m| m.close_popup());
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
     }
 
@@ -585,6 +586,7 @@ impl App {
     fn disconnect(&mut self) {
         if self.disconnecting { return; }
         self.stream_menu.open = false;
+        self.context.memory_mut(|m| m.close_popup());
         self.release_all_keys();
         for message in self.pointer.release_all(self.selected_track + 1) {
             self.send_input(message, 15);

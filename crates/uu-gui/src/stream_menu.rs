@@ -28,6 +28,37 @@ fn submenu<R>(
     );
     response
 }
+/// Root controls stay visible while a child opens beside them, like UU.
+fn side_submenu<R>(ui: &mut egui::Ui, kind: Icon, label: impl Into<String>, body: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
+    let label = label.into();
+    let id = ui.make_persistent_id(("side-menu", &label));
+    let open = ui.memory(|m| m.is_popup_open(id));
+    let response = ui.add(egui::Button::new(format!("      {label}     >")).selected(open));
+    row_icon(ui, &response, kind, Color32::from_rgb(42, 52, 66));
+    if response.clicked() { ui.memory_mut(|m| m.toggle_popup(id)); }
+    else if response.hovered() && ui.memory(|m| m.any_popup_open()) { ui.memory_mut(|m| m.open_popup(id)); }
+    let mut inner = None;
+    if ui.memory(|m| m.is_popup_open(id)) {
+        let screen = ui.ctx().screen_rect().shrink(4.0);
+        let x = if response.rect.left() - screen.left() >= 218.0 {
+            response.rect.left() - 218.0
+        } else { response.rect.right() + 6.0 };
+        let area = egui::Area::new(id).order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(x, response.rect.top())).constrain_to(screen)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).fill(Color32::from_rgb(250, 251, 253))
+                    .rounding(8.0).show(ui, |ui| {
+                        ui.set_width(196.0);
+                        inner = Some(ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), body).inner);
+                    });
+            });
+        let parent = ui.memory(|m| m.area_rect(egui::Id::new("stream-control-menu"))).unwrap_or(response.rect);
+        let outside = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos()
+            .is_some_and(|p| !area.response.rect.contains(p) && !parent.contains(p)));
+        if outside { ui.memory_mut(|m| m.close_popup()); }
+    }
+    egui::InnerResponse::new(inner, response)
+}
 fn unavailable(ui: &mut egui::Ui, kind: Icon, label: &str, hint: &str) {
     let response = ui
         .add_enabled(false, egui::Button::new(format!("      {label}")))
@@ -146,6 +177,7 @@ impl super::App {
                 }
                 self.selected_track = track;
                 ui.close_menu();
+                ui.memory_mut(|m| m.close_popup());
             }
         }
         if self.textures.is_empty() {
@@ -233,13 +265,13 @@ impl super::App {
                         ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                             ui.spacing_mut().interact_size.y = 27.0;
-                            submenu(
+                            side_submenu(
                                 ui,
                                 Icon::Desktop,
                                 format!("显示屏 {}", self.selected_track + 1),
                                 |ui| self.display_menu(ui),
                             );
-                            submenu(ui, Icon::Desktop, "画质", |ui| {
+                            side_submenu(ui, Icon::Desktop, "画质", |ui| {
                                 let mut confirm = false;
                                 for (index, (label, _)) in super::BITRATE_PRESETS.iter().enumerate()
                                 {
@@ -272,13 +304,14 @@ impl super::App {
                                 if confirm || previous_resolution != self.resolution_idx {
                                     self.send_bitrate();
                                     ui.close_menu();
+                ui.memory_mut(|m| m.close_popup());
                                 }
                             });
                             if !self.settings_feedback.is_empty() {
                                 ui.label(RichText::new(&self.settings_feedback).size(11.0)
                                     .color(Color32::from_rgb(51, 139, 111)));
                             }
-                            submenu(ui, Icon::Max, "窗口", |ui| {
+                            side_submenu(ui, Icon::Max, "窗口", |ui| {
                                 if ui
                                     .button(if self.fullscreen {
                                         "退出全屏"
@@ -290,12 +323,13 @@ impl super::App {
                                     self.toggle_fullscreen(ctx);
                                     self.stream_menu.open = false;
                                     ui.close_menu();
+                ui.memory_mut(|m| m.close_popup());
                                 }
                                 ui.checkbox(&mut self.stream_menu.visible, "全屏显示悬浮入口");
                                 ui.label(RichText::new("Ctrl+Alt+M 可随时恢复入口").small().weak());
                             });
                             unavailable(ui, Icon::Play, "声音", "音频尚未接入");
-                            submenu(ui, Icon::Person, "安全", |ui| {
+                            side_submenu(ui, Icon::Person, "安全", |ui| {
                                 if ui
                                     .checkbox(&mut self.view_only, "仅观看，禁止远程输入")
                                     .changed()
@@ -310,17 +344,19 @@ impl super::App {
                             });
                             unavailable(ui, Icon::Link, "外设", "外设透传尚未接入");
                             unavailable(ui, Icon::Folder, "工具", "文件、终端和端口映射尚未接入");
-                            submenu(ui, Icon::Grid, "更多", |ui| {
+                            side_submenu(ui, Icon::Grid, "更多", |ui| {
                                 ui.checkbox(&mut self.hud, "串流统计 · F1");
                                 if ui.button("隐藏悬浮入口 · Ctrl+Alt+M").clicked() {
                                     self.stream_menu.visible = false;
                                     self.stream_menu.open = false;
                                     ui.close_menu();
+                ui.memory_mut(|m| m.close_popup());
                                 }
                                 if ui.button("连接设置").clicked() {
                                     self.show_settings = true;
                                     self.stream_menu.open = false;
                                     ui.close_menu();
+                ui.memory_mut(|m| m.close_popup());
                                 }
                             });
                             ui.separator();
@@ -359,7 +395,9 @@ impl super::App {
             || ctx.input(|i| i.key_pressed(egui::Key::Escape))
         {
             self.stream_menu.open = false;
+            ctx.memory_mut(|m| m.close_popup());
         }
+        if !self.stream_menu.open { ctx.memory_mut(|m| m.close_popup()); }
         blocked
     }
 }
