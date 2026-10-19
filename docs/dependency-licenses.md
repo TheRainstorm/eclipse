@@ -26,6 +26,7 @@
 | [anyhow](https://github.com/dtolnay/anyhow) | 1.0.104 | `MIT OR Apache-2.0` |
 | [arboard](https://github.com/1Password/arboard) | 3.7.0 | `MIT OR Apache-2.0` |
 | [arc-swap](https://github.com/vorner/arc-swap) | 1.9.2 | `MIT OR Apache-2.0` |
+| [arraydeque](https://github.com/andylokandy/arraydeque) | 0.5.1 | `MIT/Apache-2.0` |
 | [arrayvec](https://github.com/bluss/arrayvec) | 0.7.8 | `MIT OR Apache-2.0` |
 | [as-raw-xcb-connection](https://github.com/psychon/as-raw-xcb-connection) | 1.0.1 | `MIT OR Apache-2.0` |
 | [ash](https://github.com/ash-rs/ash) | 0.38.0+1.3.281 | `MIT OR Apache-2.0` |
@@ -227,6 +228,8 @@
 | [jni-sys-macros](https://github.com/jni-rs/jni-sys) | 0.4.1 | `MIT OR Apache-2.0` |
 | [jobserver](https://github.com/rust-lang/jobserver-rs) | 0.1.35 | `MIT OR Apache-2.0` |
 | [js-sys](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys) | 0.3.106 | `MIT OR Apache-2.0` |
+| [keycode](https://github.com/dfrankland/keycode) | 1.0.0 | `MIT` |
+| [keycode_macro](https://github.com/dfrankland/keycode) | 1.0.0 | `MIT` |
 | [khronos-egl](https://github.com/timothee-haudebourg/khronos-egl) | 6.0.0 | `MIT/Apache-2.0` |
 | [khronos_api](https://github.com/brendanzab/gl-rs/) | 3.1.0 | `Apache-2.0` |
 | [lazy_static](https://github.com/rust-lang-nursery/lazy-static.rs) | 1.5.1 | `MIT OR Apache-2.0` |

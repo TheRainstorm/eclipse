@@ -1,136 +1,204 @@
-//! `SendInput`-based injection.
-//!
-//! Note: this module is written against the Windows API but is not yet
-//! compile-verified from the Linux development host; enabling the Windows
-//! target is a build-matrix task tracked in `docs/roadmap.md`.
+//! Windows desktop input through the documented SendInput API.
+use crate::{
+    release_owned, DesktopRect, HeldInput, InputError, InputEvent, InputInjector, MouseButton,
+};
+use windows_sys::Win32::UI::HiDpi::{
+    SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
+use windows_sys::Win32::UI::{Input::KeyboardAndMouse as kbm, WindowsAndMessaging as wm};
 
-use crate::{InputError, InputEvent, InputInjector, KeyCode, MouseButton};
-
+#[derive(Default)]
 pub struct SendInputInjector {
-    screen: (u32, u32),
+    held: HeldInput,
 }
-
 impl SendInputInjector {
     pub fn new() -> Self {
-        Self { screen: (1920, 1080) }
-    }
-
-    fn normalize(&self, x: i32, y: i32) -> (i32, i32) {
-        // MOUSEEVENTF_ABSOLUTE maps onto a 0..65535 virtual desktop range.
-        let nx = ((x as i64 * 65535) / self.screen.0.max(1) as i64).clamp(0, 65535) as i32;
-        let ny = ((y as i64 * 65535) / self.screen.1.max(1) as i64).clamp(0, 65535) as i32;
-        (nx, ny)
+        Self::default()
     }
 }
 
-impl Default for SendInputInjector {
-    fn default() -> Self {
-        Self::new()
+fn virtual_screen() -> Result<DesktopRect, InputError> {
+    // DXGI capture and normalized pointer coordinates use physical pixels.
+    // A CLI host need not have a DPI-aware GUI, so query in a temporary
+    // per-monitor context on this input thread, then restore its old context.
+    let old = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    if old.is_null() {
+        return Err(InputError::Unavailable(
+            "physical desktop coordinates are unavailable".into(),
+        ));
     }
+    let (left, top, width, height) = unsafe {
+        (
+            wm::GetSystemMetrics(wm::SM_XVIRTUALSCREEN),
+            wm::GetSystemMetrics(wm::SM_YVIRTUALSCREEN),
+            wm::GetSystemMetrics(wm::SM_CXVIRTUALSCREEN),
+            wm::GetSystemMetrics(wm::SM_CYVIRTUALSCREEN),
+        )
+    };
+    unsafe {
+        SetThreadDpiAwarenessContext(old);
+    }
+    if width <= 0 || height <= 0 {
+        return Err(InputError::Unavailable("no active virtual desktop".into()));
+    }
+    DesktopRect::new(left, top, width as u32, height as u32)
 }
-
-impl InputInjector for SendInputInjector {
-    fn set_screen(&mut self, width: u32, height: u32) -> Result<(), InputError> {
-        self.screen = (width.max(1), height.max(1));
-        Ok(())
-    }
-
-    fn inject(&mut self, event: InputEvent) -> Result<(), InputError> {
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse as kbm;
-        // SAFETY: all structs below are plain-old-data with the layouts the
-        // Win32 API documents; the call only reads them during the call.
-        unsafe {
-            match event {
-                InputEvent::MouseMoveAbsolute { x, y } => {
-                    let (nx, ny) = self.normalize(x, y);
-                    let mut input: kbm::INPUT = std::mem::zeroed();
-                    input.r#type = kbm::INPUT_MOUSE;
-                    input.Anonymous.mi.dx = nx;
-                    input.Anonymous.mi.dy = ny;
-                    input.Anonymous.mi.dwFlags =
-                        kbm::MOUSEEVENTF_MOVE | kbm::MOUSEEVENTF_ABSOLUTE | kbm::MOUSEEVENTF_VIRTUALDESK;
-                    if kbm::SendInput(1, &mut input, std::mem::size_of::<kbm::INPUT>() as i32) == 0 {
-                        return Err(InputError::Backend("SendInput(move) failed".into()));
-                    }
-                }
-                InputEvent::MouseMoveRelative { dx, dy } => {
-                    let mut input: kbm::INPUT = std::mem::zeroed();
-                    input.r#type = kbm::INPUT_MOUSE;
-                    input.Anonymous.mi.dx = dx;
-                    input.Anonymous.mi.dy = dy;
-                    input.Anonymous.mi.dwFlags = kbm::MOUSEEVENTF_MOVE;
-                    if kbm::SendInput(1, &mut input, std::mem::size_of::<kbm::INPUT>() as i32) == 0 {
-                        return Err(InputError::Backend("SendInput(move) failed".into()));
-                    }
-                }
-                InputEvent::MouseButton { button, pressed } => {
-                    let flag = match (button, pressed) {
-                        (MouseButton::Left, true) => kbm::MOUSEEVENTF_LEFTDOWN,
-                        (MouseButton::Left, false) => kbm::MOUSEEVENTF_LEFTUP,
-                        (MouseButton::Right, true) => kbm::MOUSEEVENTF_RIGHTDOWN,
-                        (MouseButton::Right, false) => kbm::MOUSEEVENTF_RIGHTUP,
-                        (MouseButton::Middle, true) => kbm::MOUSEEVENTF_MIDDLEDOWN,
-                        (MouseButton::Middle, false) => kbm::MOUSEEVENTF_MIDDLEUP,
-                        (MouseButton::Back, true) => kbm::MOUSEEVENTF_XDOWN,
-                        (MouseButton::Back, false) => kbm::MOUSEEVENTF_XUP,
-                        (MouseButton::Forward, true) => kbm::MOUSEEVENTF_XDOWN,
-                        (MouseButton::Forward, false) => kbm::MOUSEEVENTF_XUP,
-                    };
-                    let mut input: kbm::INPUT = std::mem::zeroed();
-                    input.r#type = kbm::INPUT_MOUSE;
-                    input.Anonymous.mi.dwFlags = flag;
-                    if kbm::SendInput(1, &mut input, std::mem::size_of::<kbm::INPUT>() as i32) == 0 {
-                        return Err(InputError::Backend("SendInput(button) failed".into()));
-                    }
-                }
-                InputEvent::MouseScroll { dx: _, dy } => {
-                    let mut input: kbm::INPUT = std::mem::zeroed();
-                    input.r#type = kbm::INPUT_MOUSE;
-                    input.Anonymous.mi.mouseData = (dy * 120) as u32;
-                    input.Anonymous.mi.dwFlags = kbm::MOUSEEVENTF_WHEEL;
-                    if kbm::SendInput(1, &mut input, std::mem::size_of::<kbm::INPUT>() as i32) == 0 {
-                        return Err(InputError::Backend("SendInput(wheel) failed".into()));
-                    }
-                }
-                InputEvent::Key { key, pressed } => {
-                    let KeyCode(code) = key;
-                    let mut input: kbm::INPUT = std::mem::zeroed();
-                    input.r#type = kbm::INPUT_KEYBOARD;
-                    input.Anonymous.ki.wScan = code;
-                    input.Anonymous.ki.dwFlags = if pressed { 0 } else { kbm::KEYEVENTF_KEYUP }
-                        | kbm::KEYEVENTF_SCANCODE;
-                    if kbm::SendInput(1, &mut input, std::mem::size_of::<kbm::INPUT>() as i32) == 0 {
-                        return Err(InputError::Backend("SendInput(key) failed".into()));
-                    }
-                }
+fn mouse(flags: u32, data: u32, dx: i32, dy: i32) -> kbm::INPUT {
+    let mut input: kbm::INPUT = unsafe { std::mem::zeroed() };
+    input.r#type = kbm::INPUT_MOUSE;
+    input.Anonymous.mi = kbm::MOUSEINPUT {
+        dx,
+        dy,
+        mouseData: data,
+        dwFlags: flags,
+        time: 0,
+        dwExtraInfo: 0,
+    };
+    input
+}
+fn packets(event: InputEvent, screen: DesktopRect) -> Result<Vec<kbm::INPUT>, InputError> {
+    let mut out = Vec::with_capacity(2);
+    match event {
+        InputEvent::MouseMoveAbsolute { x, y } => {
+            let (x, y) = screen.windows_absolute(x, y);
+            out.push(mouse(
+                kbm::MOUSEEVENTF_MOVE | kbm::MOUSEEVENTF_ABSOLUTE | kbm::MOUSEEVENTF_VIRTUALDESK,
+                0,
+                x,
+                y,
+            ));
+        }
+        InputEvent::MouseMoveRelative { dx, dy } => {
+            out.push(mouse(kbm::MOUSEEVENTF_MOVE, 0, dx, dy))
+        }
+        InputEvent::MouseButton { button, pressed } => {
+            let (down, up, data) = match button {
+                MouseButton::Left => (kbm::MOUSEEVENTF_LEFTDOWN, kbm::MOUSEEVENTF_LEFTUP, 0),
+                MouseButton::Right => (kbm::MOUSEEVENTF_RIGHTDOWN, kbm::MOUSEEVENTF_RIGHTUP, 0),
+                MouseButton::Middle => (kbm::MOUSEEVENTF_MIDDLEDOWN, kbm::MOUSEEVENTF_MIDDLEUP, 0),
+                MouseButton::Back => (kbm::MOUSEEVENTF_XDOWN, kbm::MOUSEEVENTF_XUP, 1),
+                MouseButton::Forward => (kbm::MOUSEEVENTF_XDOWN, kbm::MOUSEEVENTF_XUP, 2),
+            };
+            out.push(mouse(if pressed { down } else { up }, data, 0, 0));
+        }
+        InputEvent::MouseScroll { dx, dy } => {
+            if dx != 0 {
+                out.push(mouse(kbm::MOUSEEVENTF_HWHEEL, dx as u32, 0, 0));
+            }
+            if dy != 0 {
+                out.push(mouse(kbm::MOUSEEVENTF_WHEEL, dy as u32, 0, 0));
             }
         }
-        Ok(())
-    }
-
-    fn release_all(&mut self) -> Result<(), InputError> {
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse as kbm;
-        let mut inputs: Vec<kbm::INPUT> = Vec::new();
-        // SAFETY: zeroed POD followed by explicit field initialisation.
-        unsafe {
-            for flag in [
-                kbm::MOUSEEVENTF_LEFTUP,
-                kbm::MOUSEEVENTF_RIGHTUP,
-                kbm::MOUSEEVENTF_MIDDLEUP,
-            ] {
-                let mut input: kbm::INPUT = std::mem::zeroed();
-                input.r#type = kbm::INPUT_MOUSE;
-                input.Anonymous.mi.dwFlags = flag;
-                inputs.push(input);
+        InputEvent::Key { key, pressed } => {
+            let scan = key.mapping()?.win;
+            if scan == 0 || scan == 0xffff {
+                return Err(InputError::UnsupportedKey(key.0));
             }
-            if !inputs.is_empty() {
+            let mut input: kbm::INPUT = unsafe { std::mem::zeroed() };
+            input.r#type = kbm::INPUT_KEYBOARD;
+            let mut flags = if pressed { 0 } else { kbm::KEYEVENTF_KEYUP };
+            if key.0 == 0x48 {
+                // Pause uses a multi-byte E1 hardware sequence; let Windows
+                // generate its virtual-key form instead of sending a partial scan.
+                input.Anonymous.ki.wVk = 0x13;
+            } else {
+                input.Anonymous.ki.wScan = scan & 0xff;
+                flags |= kbm::KEYEVENTF_SCANCODE;
+                if scan & 0xff00 == 0xe000 {
+                    flags |= kbm::KEYEVENTF_EXTENDEDKEY;
+                } else if scan > 0xff {
+                    return Err(InputError::UnsupportedKey(key.0));
+                }
+            }
+            input.Anonymous.ki.dwFlags = flags;
+            out.push(input);
+        }
+    }
+    Ok(out)
+}
+impl InputInjector for SendInputInjector {
+    fn inject(&mut self, event: InputEvent) -> Result<(), InputError> {
+        if !self.held.should_emit(event) {
+            return Ok(());
+        }
+        let mut inputs = packets(event, virtual_screen()?)?;
+        if !inputs.is_empty() {
+            let sent = unsafe {
                 kbm::SendInput(
                     inputs.len() as u32,
                     inputs.as_mut_ptr(),
                     std::mem::size_of::<kbm::INPUT>() as i32,
-                );
+                )
+            };
+            if sent != inputs.len() as u32 {
+                return Err(InputError::Backend(
+                    "SendInput did not accept the event; check target window permissions".into(),
+                ));
             }
         }
+        self.held.applied(event);
         Ok(())
+    }
+    fn release_all(&mut self) -> Result<(), InputError> {
+        let events = self.held.releases();
+        release_owned(self, events)
+    }
+}
+impl Drop for SendInputInjector {
+    fn drop(&mut self) {
+        let _ = self.release_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::KeyCode;
+    fn screen() -> DesktopRect {
+        DesktopRect::new(-1920, 0, 3840, 1080).unwrap()
+    }
+    #[test]
+    fn hid_keys_translate_to_scan_codes_and_extended_flags_without_injecting() {
+        for (usage, scan, extended) in [
+            (4, 0x1e, false),
+            (0x33, 0x27, false),
+            (0xe4, 0x1d, true),
+            (0x58, 0x1c, true),
+        ] {
+            let key = packets(
+                InputEvent::Key {
+                    key: KeyCode(usage),
+                    pressed: true,
+                },
+                screen(),
+            )
+            .unwrap();
+            let key = unsafe { key[0].Anonymous.ki };
+            assert_eq!(key.wScan, scan);
+            assert_eq!(key.dwFlags & kbm::KEYEVENTF_EXTENDEDKEY != 0, extended);
+            assert_ne!(key.dwFlags & kbm::KEYEVENTF_SCANCODE, 0);
+        }
+    }
+    #[test]
+    fn extra_buttons_and_both_wheel_axes_keep_their_platform_data() {
+        for (button, data) in [(MouseButton::Back, 1), (MouseButton::Forward, 2)] {
+            let packet = packets(
+                InputEvent::MouseButton {
+                    button,
+                    pressed: true,
+                },
+                screen(),
+            )
+            .unwrap();
+            let mouse = unsafe { packet[0].Anonymous.mi };
+            assert_eq!(mouse.mouseData, data);
+            assert_eq!(mouse.dwFlags, kbm::MOUSEEVENTF_XDOWN);
+        }
+        let packet = packets(InputEvent::MouseScroll { dx: 120, dy: -120 }, screen()).unwrap();
+        assert_eq!(
+            unsafe { packet[0].Anonymous.mi.dwFlags },
+            kbm::MOUSEEVENTF_HWHEEL
+        );
+        assert_eq!(unsafe { packet[1].Anonymous.mi.mouseData } as i32, -120);
     }
 }

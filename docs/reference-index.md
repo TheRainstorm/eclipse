@@ -181,3 +181,11 @@ git -C moonlight/moonlight-qt submodule status
 显示器布局策略与串流源选择分开。`screen_control`解析官方名称/主屏/真实源ID/轨道；普通切屏使用 `RpcRequest.15 SendVideoTrackRequest` 加目标屏幕的采集设置，等待两种确认和新画面。顶部标签及+列表参考用户 `uu_menu_top.png`，全屏沿用同一清单。原来的纹理列表不能代表所有可用屏幕。
 
 本轮直接核对本地官方Windows描述符和被控端静态处理，确认 `screen_id=-2` 在多轨道时广播现有轨道，纠正此前“保持当前源”的注释。独占使用 `RpcRequest.26 EnterSuperScreenRequest`、reason=1、实测尺寸，退出使用case14；响应分别为22/10，切轨响应case11。这里只列自实现的字段对应关系，不导入官方二进制或GPL应用代码。普通模式不发送这些布局RPC，也不会自动修复既有的独占布局。
+
+## 11. 原生输入后端与标准键码
+
+自有主机的输入后端使用 `keycode` / `keycode_macro` 1.0.0 的完整跨平台映射，避免把 USB HID usage 直接当成 Windows 扫描码或 Linux evdev 编号。来源为 [keycode](https://github.com/dfrankland/keycode) 与其固定的 [Chromium 键码数据](https://chromium.googlesource.com/chromium/src/+/2b6022954b9fb600f15e08002a148187f4f986da/ui/events/keycodes/dom/keycode_converter_data.inc)；Rust crate 的 MIT 许可和数据的 BSD 版权/许可均随第三方通知保留。
+
+`uu-input` 提供 Windows SendInput 与已授权 X11 XTest：明确转换扩展扫描码、侧键与横向滚轮，按物理虚拟桌面坐标处理负屏幕原点，并只释放本会话成功按下的键与按钮。Linux 不默认打开内核输入设备；Wayland 原生输入仍需后续 portal。
+
+后端验证使用有认证的独立 Xvfb，检查中键/侧键、滚轮、绝对/相对移动、Shift 标点与释放归属；Windows 单元测试只检查输入字段与生命周期，不向用户桌面注入测试按键。**这属于原生控制的底层准备，v0.2.0 原生观看仍然只读**，不能把后端组件视为已接入远控。

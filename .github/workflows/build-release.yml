@@ -54,7 +54,7 @@ jobs:
       - name: Install Linux development libraries
         if: matrix.platform == 'linux-x86_64'
         run: |
-          sudo apt-get install --no-install-recommends -y libasound2-dev libva-dev libgbm-dev libdrm-dev libclang-dev libxkbcommon-dev sway grim libegl1 libgl1-mesa-dri
+          sudo apt-get install --no-install-recommends -y libasound2-dev libva-dev libgbm-dev libdrm-dev libclang-dev libxkbcommon-dev sway grim xvfb libegl1 libgl1-mesa-dri
       - name: Install Windows cross toolchain
         if: matrix.platform == 'windows-x64'
         run: |
@@ -87,6 +87,11 @@ jobs:
           for archive in artifacts/packages/*.tar.gz; do
             python3 tools/security/scan_secrets.py --artifact "$archive"
           done
+      - name: Test authorized X11 input in its own server
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          cargo build --release -p uu-input --example input_probe --locked
+          python3 tools/native/input_smoke.py --probe target/release/examples/input_probe --output artifacts/input-x11
       - name: Test isolated Wayland viewer and mixed DPI
         if: matrix.platform == 'linux-x86_64'
         run: |
@@ -99,6 +104,29 @@ jobs:
           for archive in artifacts/packages/*.zip; do
             python3 tools/security/scan_secrets.py --artifact "$archive"
           done
+      - name: Build Windows input validation
+        if: matrix.platform == 'windows-x64'
+        run: |
+          cargo test -p uu-input --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/input-test-build.jsonl
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import shutil
+          messages = [json.loads(line) for line in Path('artifacts/input-test-build.jsonl').read_text().splitlines()]
+          executables = [m['executable'] for m in messages if m.get('reason') == 'compiler-artifact' and m.get('profile', {}).get('test') and m.get('executable')]
+          if len(executables) != 1:
+              raise RuntimeError('Expected exactly one freshly built input validation executable')
+          destination = Path('artifacts/validation/input-tests.exe')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copy2(executables[0], destination)
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.platform == 'windows-x64'
+        with:
+          name: validation-windows-input
+          path: artifacts/validation/input-tests.exe
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: uu-client-${{ matrix.platform }}
@@ -122,6 +150,10 @@ jobs:
         with:
           name: uu-client-windows-x64
           path: downloads
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: validation-windows-input
+          path: input-validation
       - name: Verify payload and load executable
         shell: pwsh
         run: |
@@ -140,6 +172,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows executable could not start' }
           python tools/native/smoke.py --exe (Join-Path $unpack 'uu.exe') --decoder sw
           if ($LASTEXITCODE -ne 0) { throw 'Windows native encrypted video smoke failed' }
+          $inputTests = Join-Path $unpack 'input-validation.exe'
+          Copy-Item -LiteralPath 'input-validation/input-tests.exe' -Destination $inputTests
+          & $inputTests --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Windows input mapping/lifecycle tests failed' }
+          Remove-Item -LiteralPath $inputTests
 
   release:
     name: Publish tagged release

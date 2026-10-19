@@ -55,6 +55,11 @@ def main():
         digest = hashlib.sha256(value.encode()).hexdigest()
         texts.setdefault(digest, value)
         output.append(f'Standard license text: {file.name} -> text {digest}')
+    for file in sorted((ROOT / 'licenses' / 'third-party').glob('*.txt')):
+        value = file.read_text().strip()
+        digest = hashlib.sha256(value.encode()).hexdigest()
+        texts.setdefault(digest, value)
+        output.append(f'Additional component notice: {file.name} -> text {digest}')
     output += ['', 'Crates without a separate license file in the published archive:', ', '.join(missing), '']
     for digest, value in sorted(texts.items()):
         output += [f'## License text {digest}', value, '']
