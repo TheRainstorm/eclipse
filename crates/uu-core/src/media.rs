@@ -380,7 +380,6 @@ async fn receive_video(
     repairs: Arc<crate::rtx::RepairBus>,
 ) {
     use crate::video_receiver::VideoReceiver;
-    use std::sync::atomic::AtomicBool;
     use std::time::Instant;
     if track.kind() != RTPCodecType::Video
         || !track
@@ -396,12 +395,10 @@ async fn receive_video(
         *s.codec.lock().unwrap() = track.codec().capability.mime_type.clone();
     }
     let generation = Arc::new(AtomicU64::new(0));
-    let waiting = Arc::new(AtomicBool::new(true));
-    let request_generation = Arc::new(AtomicU64::new(0));
+    let request_generation = Arc::new(crate::decode_gate::RecoverySignal::default());
     let refresh = Arc::new(tokio::sync::Notify::new());
     let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(bytes::Bytes, u32, u64, u64)>(8);
     let worker_stats = stats.clone();
-    let worker_waiting = waiting.clone();
     let worker_generation = generation.clone();
     let worker_requests = request_generation.clone();
     let worker_refresh = refresh.clone();
@@ -443,7 +440,7 @@ async fn receive_video(
                     s.decode_us
                         .store((decode_us / window_frames.max(1)) as u32, Ordering::Relaxed);
                     s.waiting_for_keyframe
-                        .store(worker_waiting.load(Ordering::Acquire) as u32, Ordering::Relaxed);
+                        .store(worker_requests.is_waiting() as u32, Ordering::Relaxed);
                 }
                 if debug {
                     println!("dec frames={decoded} errors={errors} waiting_idr={}", gate.waiting);
@@ -491,9 +488,9 @@ async fn receive_video(
                         if recovery.is_some_and(|(generation, request, pts)| {
                             frame.pts >= pts
                                 && generation == worker_generation.load(Ordering::Acquire)
-                                && request == worker_requests.load(Ordering::Acquire)
+                                && request == worker_requests.requested()
                         }) {
-                            worker_waiting.store(false, Ordering::Release);
+                            worker_requests.complete(recovery.unwrap().1);
                             recovery = None;
                         }
                         decoded += 1;
@@ -523,8 +520,7 @@ async fn receive_video(
                     gate.failed();
                     reset_decoder = true;
                     recovery = None;
-                    worker_requests.fetch_add(1, Ordering::AcqRel);
-                    worker_waiting.store(true, Ordering::Release);
+                    worker_requests.request();
                     worker_refresh.notify_one();
                     if let Some(s) = &worker_stats {
                         s.errors.fetch_add(1, Ordering::Relaxed);
@@ -540,7 +536,7 @@ async fn receive_video(
         }
     });
     let feedback_pc = pc.clone();
-    let feedback_waiting = waiting.clone();
+    let feedback_waiting = request_generation.clone();
     let feedback_stats = stats.clone();
     let feedback_refresh = refresh.clone();
     let ssrc = track.ssrc();
@@ -561,7 +557,7 @@ async fn receive_video(
             tokio::select! { _ = ticker.tick() => {}, _ = feedback_refresh.notified() => {} }
             let now = Instant::now();
             let mut packets: Vec<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>> = Vec::new();
-            let needs_refresh = feedback_waiting.load(Ordering::Acquire);
+            let needs_refresh = feedback_waiting.is_waiting();
             if !needs_refresh {
                 retries = 0;
                 last_refresh = None;
@@ -630,8 +626,7 @@ async fn receive_video(
         if hard {
             generation.fetch_add(1, Ordering::AcqRel);
         }
-        request_generation.fetch_add(1, Ordering::AcqRel);
-        waiting.store(true, Ordering::Release);
+        request_generation.request();
         refresh.notify_one();
     };
     let mut receiver_epoch = 0;
@@ -711,7 +706,7 @@ async fn receive_video(
                     unit.data,
                     unit.timestamp,
                     epoch,
-                    request_generation.load(Ordering::Acquire),
+                    request_generation.requested(),
                 ))
                 .is_err()
             {
@@ -754,7 +749,7 @@ async fn receive_video(
                         s.nack_requests.load(Ordering::Relaxed),
                         s.rtx_packets.load(Ordering::Relaxed),
                         s.rtx_drops.load(Ordering::Relaxed),
-                        waiting.load(Ordering::Acquire)
+                        request_generation.is_waiting()
                     );
                 }
             }

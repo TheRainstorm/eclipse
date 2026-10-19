@@ -41,3 +41,34 @@ mod tests {
         assert!(!gate.accepts(2, 2, false));
     }
 }
+
+use std::sync::atomic::{AtomicU64, Ordering};
+/// A late decode completion cannot clear a newer recovery request.
+pub(crate) struct RecoverySignal {
+    requested: AtomicU64,
+    completed: AtomicU64,
+}
+impl Default for RecoverySignal {
+    fn default() -> Self { Self { requested: AtomicU64::new(0), completed: AtomicU64::new(u64::MAX) } }
+}
+impl RecoverySignal {
+    pub fn requested(&self) -> u64 { self.requested.load(Ordering::Acquire) }
+    pub fn request(&self) { self.requested.fetch_add(1, Ordering::AcqRel); }
+    pub fn complete(&self, request: u64) { self.completed.store(request, Ordering::Release); }
+    pub fn is_waiting(&self) -> bool { self.requested() != self.completed.load(Ordering::Acquire) }
+}
+#[cfg(test)]
+mod signal_tests {
+    use super::*;
+    #[test]
+    fn a_loss_between_validation_and_decode_completion_stays_pending() {
+        let signal = RecoverySignal::default();
+        assert!(signal.is_waiting());
+        let idr_request = signal.requested();
+        signal.request(); // Loss arrives after the decoder checked its IDR.
+        signal.complete(idr_request);
+        assert!(signal.is_waiting());
+        signal.complete(signal.requested());
+        assert!(!signal.is_waiting());
+    }
+}
