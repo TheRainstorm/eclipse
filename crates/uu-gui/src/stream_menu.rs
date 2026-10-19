@@ -622,9 +622,9 @@ impl super::App {
                                             use std::sync::atomic::Ordering::Relaxed;
                                             let audio = &h.stats.audio;
                                             let mut muted = audio.muted.load(Relaxed);
-                                            if ui.checkbox(&mut muted, "静音").changed() { audio.muted.store(muted,Relaxed);changed=true; }
+                                            if ui.checkbox(&mut muted, "静音").changed() { audio.muted.store(muted,Relaxed);self.preferences.muted=muted;changed=true; }
                                             let mut volume=audio.volume.load(Relaxed);
-                                            if ui.add(egui::Slider::new(&mut volume,0..=100).text("音量")).changed() {audio.volume.store(volume,Relaxed);changed=true;}
+                                            if ui.add(egui::Slider::new(&mut volume,0..=100).text("音量")).changed() {audio.volume.store(volume,Relaxed);self.preferences.volume=volume;changed=true;}
                                             ui.label(audio.status.lock().unwrap().as_str());
                                             ui.label(format!("播放排队 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
                                             ui.small(format!("音频包 {} ms · 接收→解码 {:.1} ms",audio.packet_ms.load(Relaxed),audio.receive_decode_us.load(Relaxed) as f32/1000.0));

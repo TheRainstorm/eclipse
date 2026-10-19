@@ -531,6 +531,7 @@ impl App {
         }
         if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
             if let Some(h)=&self.controller {h.stats.audio.stop();h.stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);}
+            self.release_all_keys();self.release_pointer_capture(ctx);self.shortcuts.clear();
             self.controller = None;
             self.disconnecting = false;
             self.remote_focus = false;

@@ -728,7 +728,16 @@ impl App {
                     self.cursor.paint(ctx,shape,pointer,draw,input_screen,self.platform.cursor_size(ctx));
                 }
             }else{
-                ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,&self.status,egui::FontId::proportional(18.0),C::from_rgb(160,170,185));
+                let center=rect.center();
+                let message=Rect::from_center_size(center-egui::vec2(0.0,24.0),egui::vec2((rect.width()-48.0).clamp(1.0,640.0),80.0));
+                ui.put(message,egui::Label::new(RichText::new(&self.status).size(16.0).color(C::from_rgb(180,190,205))).wrap());
+                if self.controller.is_some() {
+                    ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(24.0,24.0)),egui::Spinner::new());
+                    if !self.disconnecting && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),egui::Button::new("取消连接")).clicked(){self.disconnect();}
+                } else {
+                    if ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),egui::Button::new(RichText::new("重新连接").color(C::WHITE)).fill(BLUE)).clicked(){self.connect();}
+                    if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),egui::Button::new("关闭串流窗口")).clicked(){self.disconnect();}
+                }
             }
             if self.hud { self.paint_hud(ui, rect); }
 
