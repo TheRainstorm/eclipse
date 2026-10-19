@@ -24,7 +24,7 @@ pub enum ControllerEvent {
 
 pub struct ControllerHandle {
     pub events: std::sync::mpsc::Receiver<ControllerEvent>,
-    pub frames: UnboundedReceiver<(u32, u32, u32, Vec<u8>)>,
+    pub frames: crate::media::FrameReceiver,
     /// Raw JSON input frames for `CONTROL_DATA_CHANNEL`.
     pub input: UnboundedSender<Vec<u8>>,
     /// Raw CONTROL messages (e.g. CaptureSettingRequest protobufs) to send.
@@ -37,7 +37,7 @@ pub struct ControllerHandle {
 pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<ControllerHandle> {
     crate::install_crypto_provider();
     let (ev_tx, ev_rx) = std::sync::mpsc::channel();
-    let (frame_tx, frame_rx) = unbounded_channel();
+    let (frame_tx, frame_rx) = crate::media::frame_channel();
     let (input_tx, input_rx) = unbounded_channel();
     let (settings_tx, settings_rx) = unbounded_channel();
     let (close_tx, close_rx) = unbounded_channel();

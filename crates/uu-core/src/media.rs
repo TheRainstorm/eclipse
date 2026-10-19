@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use webrtc::api::interceptor_registry::register_default_interceptors;
+use webrtc::api::interceptor_registry::{configure_rtcp_reports, configure_twcc_receiver_only};
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::APIBuilder;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
@@ -20,16 +20,14 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::rtp::packetizer::Depacketizer;
-use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtcp::payload_feedbacks::full_intra_request::{FirEntry, FullIntraRequest};
+use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
-use webrtc::rtp::codecs::h264::H264Packet;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 
-pub type FrameSender = tokio::sync::mpsc::UnboundedSender<(u32, u32, u32, Vec<u8>)>;
+pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSender};
 
 /// Live media statistics shared between the decode task and the UI (HUD).
 /// Fixed-point where noted so the hot path stays lock-free.
@@ -55,6 +53,12 @@ pub struct MediaStats {
     pub errors: AtomicU64,
     /// RTCP round-trip time estimate (ms), when available.
     pub rtt_ms: AtomicU32,
+    pub reordered: AtomicU64,
+    pub late_packets: AtomicU64,
+    pub damaged_frames: AtomicU64,
+    pub queue_drops: AtomicU64,
+    pub keyframe_requests: AtomicU64,
+    pub waiting_for_keyframe: AtomicU32,
     pub backend: std::sync::Mutex<String>,
 }
 
@@ -66,10 +70,7 @@ impl MediaStats {
     }
 
     pub fn backend(&self) -> String {
-        self.backend
-            .lock()
-            .map(|b| b.clone())
-            .unwrap_or_default()
+        self.backend.lock().map(|b| b.clone()).unwrap_or_default()
     }
 
     pub fn src_fps(&self) -> f32 {
@@ -106,12 +107,17 @@ impl ControllerMedia {
         stats: Option<Arc<MediaStats>>,
     ) -> Result<Self> {
         let mut media = MediaEngine::default();
-        media.register_default_codecs()?;
-        // Ensure H264/Opus are present even if the default set changes.
-        let _ = (MIME_TYPE_H264, MIME_TYPE_OPUS);
-
+        register_receive_codecs(&mut media)?;
         let mut registry = Registry::new();
-        registry = register_default_interceptors(registry, &mut media)?;
+        // The default NACK interval is 100 ms, longer than our entire loss
+        // recovery window. Ask for missing packets while they are still useful.
+        registry.add(Box::new(
+            webrtc::interceptor::nack::generator::Generator::builder()
+                .with_interval(Duration::from_millis(20))
+                .with_skip_last_n(2),
+        ));
+        registry = configure_rtcp_reports(registry);
+        registry = configure_twcc_receiver_only(registry, &mut media)?;
         let api = APIBuilder::new()
             .with_media_engine(media)
             .with_interceptor_registry(registry)
@@ -136,256 +142,14 @@ impl ControllerMedia {
         let track_counter = Arc::new(AtomicU32::new(0));
         pc.on_track(Box::new(move |track, _receiver, _transceiver| {
             let pc = pc_track.clone();
-            let frame_tx = frames_tx.clone();
+            let frames = frames_tx.clone();
             let stats = stats_track.clone();
-            let track_idx = track_counter.fetch_add(1, Ordering::Relaxed);
-            Box::pin(async move {
-                println!("track: {:?}", track.kind());
-                // A 1080p access unit is often dozens of RTP packets. Keep a
-                // wider reorder window than the low bitrate default so a few
-                // late packets do not permanently lose the reference frame.
-                let dbg = std::env::var("UU_MEDIA_DEBUG").map(|v| v != "0").unwrap_or(false);
-                // Decode runs on its own task so reading RTP never stalls behind
-                // decode + colour conversion. Samples are dropped (not queued
-                // unboundedly) when the decoder falls behind, bounding latency.
-                let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(8);
-                let worker_stats = stats.clone();
-                let worker_frames = frame_tx.clone();
-                let worker = tokio::spawn(async move {
-                    let mut dump_file = std::env::var("UU_DUMP_H264")
-                        .ok()
-                        .and_then(|p| std::fs::File::create(p).ok());
-                    let mut decoder = uu_media::default_decoder().ok();
-                    let mut samples = 0u64;
-                    let mut frames = 0u64;
-                    let mut decode_errors = 0u32;
-                    let mut win_decoded = 0u64;
-                    let mut decode_us_sum = 0u64;
-                    let mut decode_n = 0u64;
-                    let mut win_start = std::time::Instant::now();
-                    while let Some(data) = sample_rx.recv().await {
-                        samples += 1;
-                        if let Some(f) = dump_file.as_mut() {
-                            use std::io::Write;
-                            let _ = f.write_all(&data);
-                            let _ = f.flush();
-                        }
-                        let nal = uu_media::EncodedFrame::detect_h264_keyframe(&data);
-                        if dbg && samples <= 60 {
-                            println!("  S#{} len={} key={}", samples, data.len(), nal);
-                        }
-                        let Some(dec) = decoder.as_mut() else { continue };
-                        let ef = uu_media::EncodedFrame {
-                            is_keyframe: nal,
-                            data,
-                            pts: uu_media::Timestamp(0),
-                        };
-                        let t_dec = std::time::Instant::now();
-                        if let Some(s) = &worker_stats { s.set_backend(dec.backend_name()); }
-                        match dec.decode(&ef) {
-                            Ok(Some(frame)) => {
-                                frames += 1;
-                                win_decoded += 1;
-                                decode_us_sum += t_dec.elapsed().as_micros() as u64;
-                                decode_n += 1;
-                                if let Some(s) = &worker_stats {
-                                    s.width.store(frame.width, Ordering::Relaxed);
-                                    s.height.store(frame.height, Ordering::Relaxed);
-                                }
-                                if let Some(tx) = &worker_frames {
-                                    let rgba = uu_media::convert::frame_to_rgba(&frame);
-                                    let _ = tx.send((track_idx, frame.width, frame.height, rgba));
-                                }
-                                if dbg && frames % 60 == 0 {
-                                    save_ppm(&frame, "/tmp/uu_rust_latest.ppm");
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                decode_errors = decode_errors.saturating_add(1);
-                                if let Some(s) = &worker_stats {
-                                    s.errors.fetch_add(1, Ordering::Relaxed);
-                                }
-                                if dbg && decode_errors <= 40 {
-                                    println!("  D#ERR {e}");
-                                }
-                            }
-                        }
-                        if win_start.elapsed() >= std::time::Duration::from_secs(2) {
-                            let secs = win_start.elapsed().as_secs_f64();
-                            let dec_us = if decode_n > 0 {
-                                (decode_us_sum / decode_n) as u32
-                            } else {
-                                0
-                            };
-                            if let Some(s) = &worker_stats {
-                                s.dec_fps_x100.store(
-                                    ((win_decoded as f64 / secs) * 100.0) as u32,
-                                    Ordering::Relaxed,
-                                );
-                                s.decode_us.store(dec_us, Ordering::Relaxed);
-                                s.decoded_total.store(frames, Ordering::Relaxed);
-                            }
-                            println!(
-                                "dec fps={:.1} decode_ms={:.2} errors={decode_errors} samples={samples}",
-                                win_decoded as f64 / secs,
-                                dec_us as f32 / 1000.0
-                            );
-                            win_decoded = 0;
-                            decode_us_sum = 0;
-                            decode_n = 0;
-                            win_start = std::time::Instant::now();
-                        }
-                    }
-                    println!("decode task done: samples={samples} frames={frames} errors={decode_errors}");
-                });
-                let mut packets = 0u64;
-                let mut pli_started = false;
-                let mut last_seq: std::collections::HashMap<u32, u16> = std::collections::HashMap::new();
-                let mut lost = 0u64;
-                let mut last_ts: Option<u32> = None;
-                let mut src_frames = 0u64;
-                let mut win_start = std::time::Instant::now();
-                let mut win_bytes = 0u64;
-                let mut drops = 0u64;
-                // Assemble access units ourselves from RTP timestamps. This is
-                // deterministic (one frame per timestamp) and emits as soon as
-                // the marker bit arrives, unlike webrtc-rs' SampleBuilder which
-                // reorders/drops aggressively at 30-60 fps.
-                let mut depack = H264Packet::default();
-                let mut cur_ts: Option<u32> = None;
-                let mut cur_buf: Vec<u8> = Vec::new();
-                if let Some(s) = &stats {
-                    s.set_backend(uu_media::decoder_backend_name());
-                }
-                while let Ok((pkt, _)) = track.read_rtp().await {
-                    packets += 1;
-                    win_bytes += pkt.payload.len() as u64;
-                    if last_ts != Some(pkt.header.timestamp) {
-                        last_ts = Some(pkt.header.timestamp);
-                        src_frames += 1;
-                    }
-                    let ssrc = pkt.header.ssrc;
-                    let seq = pkt.header.sequence_number;
-                    if let Some(prev) = last_seq.insert(ssrc, seq) {
-                        let gap = seq.wrapping_sub(prev).wrapping_sub(1);
-                        if gap > 0 && gap < 3000 {
-                            lost += gap as u64;
-                            if lost <= 40 || packets % 500 == 0 {
-                                println!(
-                                    "RTP gap ssrc={ssrc} seq {prev}->{seq} missing={gap} total_lost={lost}"
-                                );
-                            }
-                        }
-                    }
-                    if win_start.elapsed() >= std::time::Duration::from_secs(2) {
-                        let secs = win_start.elapsed().as_secs_f64();
-                        let src_fps = src_frames as f64 / secs;
-                        let kbps = (win_bytes as f64 * 8.0 / secs / 1000.0) as u32;
-                        println!("net src_fps={src_fps:.1} kbps={kbps} lost={lost} drops={drops}");
-                        if let Some(s) = &stats {
-                            s.src_fps_x100.store((src_fps * 100.0) as u32, Ordering::Relaxed);
-                            s.bitrate_kbps.store(kbps, Ordering::Relaxed);
-                            s.packets.store(packets, Ordering::Relaxed);
-                            s.lost.store(lost, Ordering::Relaxed);
-                        }
-                        src_frames = 0;
-                        win_bytes = 0;
-                        drops = 0;
-                        win_start = std::time::Instant::now();
-                    }
-                    if packets == 1 || packets % 300 == 0 {
-                        println!(
-                            "rtp ssrc={} seq={} ts={} len={}",
-                            pkt.header.ssrc,
-                            pkt.header.sequence_number,
-                            pkt.header.timestamp,
-                            pkt.payload.len()
-                        );
-                    }
-                    if !pli_started {
-                        pli_started = true;
-                        let pc = pc.clone();
-                        let ssrc = pkt.header.ssrc;
-                        let sender_ssrc = u32::from_be_bytes(
-                            uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap(),
-                        );
-                        // Advertise available bandwidth so the encoder is not
-                        // stuck at a conservative default. UU_BITRATE is Mbit/s.
-                        let remb_bps = std::env::var("UU_BITRATE")
-                            .ok()
-                            .and_then(|v| v.parse::<f32>().ok())
-                            .unwrap_or(30.0)
-                            * 1_000_000.0;
-                        tokio::spawn(async move {
-                            let mut fir_seq = 1u8;
-                            // The first RTP packet is often a delta frame
-                            // because the controller joined mid-GOP. Ask for
-                            // an IDR immediately, then retry quickly while
-                            // the encoder switches to a fresh GOP.
-                            loop {
-                                let delay = if fir_seq <= 10 {
-                                    std::time::Duration::from_millis(300)
-                                } else {
-                                    std::time::Duration::from_secs(2)
-                                };
-                                tokio::time::sleep(delay).await;
-                                let pkts: Vec<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>> = vec![
-                                    Box::new(PictureLossIndication { sender_ssrc, media_ssrc: ssrc }),
-                                    // A few controlled implementations key
-                                    // feedback to the source SSRC even though
-                                    // RFC 4585 permits an independent sender
-                                    // SSRC. Send that interoperable variant as
-                                    // well.
-                                    Box::new(PictureLossIndication { sender_ssrc: ssrc, media_ssrc: ssrc }),
-                                    Box::new(FullIntraRequest {
-                                        sender_ssrc,
-                                        media_ssrc: ssrc,
-                                        fir: vec![FirEntry { ssrc, sequence_number: fir_seq, ..Default::default() }],
-                                    }),
-                                    Box::new(ReceiverEstimatedMaximumBitrate {
-                                        sender_ssrc,
-                                        bitrate: remb_bps,
-                                        ssrcs: vec![ssrc],
-                                    }),
-                                ];
-                                fir_seq = fir_seq.wrapping_add(1);
-                                if let Err(e) = pc.write_rtcp(&pkts).await {
-                                    eprintln!("RTCP PLI/FIR failed: {e}");
-                                }
-                            }
-                        });
-                    }
-                    let ts = pkt.header.timestamp;
-                    if cur_ts.is_some() && cur_ts != Some(ts) && !cur_buf.is_empty() {
-                        if sample_tx
-                            .try_send(bytes::Bytes::from(std::mem::take(&mut cur_buf)))
-                            .is_err()
-                        {
-                            drops += 1;
-                        }
-                    }
-                    cur_ts = Some(ts);
-                    if let Ok(p) = depack.depacketize(&pkt.payload) {
-                        cur_buf.extend_from_slice(&p);
-                    }
-                    if pkt.header.marker && !cur_buf.is_empty() {
-                        if sample_tx
-                            .try_send(bytes::Bytes::from(std::mem::take(&mut cur_buf)))
-                            .is_err()
-                        {
-                            drops += 1;
-                        }
-                        cur_ts = None;
-                    }
-                }
-                if !cur_buf.is_empty() {
-                    let _ = sample_tx.try_send(bytes::Bytes::from(std::mem::take(&mut cur_buf)));
-                }
-                drop(sample_tx);
-                let _ = worker.await;
-                println!("track done: packets={packets} rtp_lost={lost} drops={drops}");
-            })
+            let index = if track.kind() == RTPCodecType::Video {
+                track_counter.fetch_add(1, Ordering::Relaxed)
+            } else {
+                u32::MAX
+            };
+            Box::pin(receive_video(pc, track, index, frames, stats))
         }));
 
         // 5 displays (the controlled machine may only send on one).
@@ -433,7 +197,9 @@ impl ControllerMedia {
                 Box::pin(async move {
                     println!("CONTROL_DATA_CHANNEL open");
                     let s = seq.fetch_add(1, Ordering::Relaxed);
-                    let _ = ch.send(&bytes::Bytes::from(crate::control_wire::echo_request(s))).await;
+                    let _ = ch
+                        .send(&bytes::Bytes::from(crate::control_wire::echo_request(s)))
+                        .await;
                 })
             }));
             ch.on_close(Box::new(|| {
@@ -442,28 +208,42 @@ impl ControllerMedia {
             }));
             let msg_ch = ch.clone();
             let msg_seq = seq.clone();
-            ch.on_message(Box::new(move |msg: webrtc::data_channel::data_channel_message::DataChannelMessage| {
-                let ch = msg_ch.clone();
-                let seq = msg_seq.clone();
-                Box::pin(async move {
-                    if !msg.is_string {
-                        let head: Vec<String> = msg.data.iter().take(16).map(|b| format!("{b:02x}")).collect();
-                        if let Some(req) = crate::control_wire::echo_request_seq(&msg.data) {
-                            let s = seq.fetch_add(1, Ordering::Relaxed);
-                            let resp = crate::control_wire::echo_response(s, req);
-                            let _ = ch.send(&bytes::Bytes::from(resp)).await;
-                            println!("CONTROL echo request seq={req} answered (out seq={s})");
-                        } else {
-                            println!("CONTROL recv len={} head={}", msg.data.len(), head.join(" "));
+            ch.on_message(Box::new(
+                move |msg: webrtc::data_channel::data_channel_message::DataChannelMessage| {
+                    let ch = msg_ch.clone();
+                    let seq = msg_seq.clone();
+                    Box::pin(async move {
+                        if !msg.is_string {
+                            let head: Vec<String> = msg
+                                .data
+                                .iter()
+                                .take(16)
+                                .map(|b| format!("{b:02x}"))
+                                .collect();
+                            if let Some(req) = crate::control_wire::echo_request_seq(&msg.data) {
+                                let s = seq.fetch_add(1, Ordering::Relaxed);
+                                let resp = crate::control_wire::echo_response(s, req);
+                                let _ = ch.send(&bytes::Bytes::from(resp)).await;
+                                println!("CONTROL echo request seq={req} answered (out seq={s})");
+                            } else {
+                                println!(
+                                    "CONTROL recv len={} head={}",
+                                    msg.data.len(),
+                                    head.join(" ")
+                                );
+                            }
                         }
-                    }
-                })
-            }));
+                    })
+                },
+            ));
             control_dc = Some(ch);
         }
         let dc = control_dc.expect("CONTROL_DATA_CHANNEL must be created");
 
-        Ok(Self { pc, data_channel: dc })
+        Ok(Self {
+            pc,
+            data_channel: dc,
+        })
     }
 
     /// Create the local offer and wait until ICE gathering completes so the
@@ -502,7 +282,6 @@ impl ControllerMedia {
     }
 }
 
-
 /// Convert the `iceServers` array from the `success` event.
 pub fn ice_servers_from_json(v: &serde_json::Value) -> Vec<RTCIceServer> {
     v.as_array()
@@ -527,17 +306,13 @@ pub fn ice_servers_from_json(v: &serde_json::Value) -> Vec<RTCIceServer> {
         .unwrap_or_default()
 }
 
-
-/// Write a decoded frame as a binary PPM (P6) so it can be inspected without a
-/// UI dependency. Convert with `ffmpeg -i /tmp/uu_rust_frame.ppm out.png`.
+/// Write any decoded layout through the same converter used for presentation.
 fn save_ppm(frame: &uu_media::RawFrame, path: &str) {
-    let (w, h) = (frame.width, frame.height);
     let rgba = uu_media::convert::frame_to_rgba(frame);
-    let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
-    for pixel in rgba.chunks_exact(4) { out.extend_from_slice(&pixel[..3]); }
+    let mut out = format!("P6\n{} {}\n255\n", frame.width, frame.height).into_bytes();
+    out.extend(rgba.chunks_exact(4).flat_map(|p| p[..3].iter().copied()));
     let _ = std::fs::write(path, out);
 }
-
 
 impl ControllerMedia {
     /// Send a raw PCK frame over the WebRTC data channel (control hypothesis).
@@ -545,4 +320,362 @@ impl ControllerMedia {
         self.data_channel.send(&bytes::Bytes::from(data)).await?;
         Ok(())
     }
+}
+
+async fn receive_video(
+    pc: Arc<RTCPeerConnection>,
+    track: Arc<webrtc::track::track_remote::TrackRemote>,
+    track_idx: u32,
+    frame_tx: Option<FrameSender>,
+    stats: Option<Arc<MediaStats>>,
+) {
+    use crate::video_receiver::VideoReceiver;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Instant;
+    if track.kind() != RTPCodecType::Video
+        || !track
+            .codec()
+            .capability
+            .mime_type
+            .eq_ignore_ascii_case(MIME_TYPE_H264)
+    {
+        return; // Audio and unsupported repair codecs are not H.264 data.
+    }
+    let debug = std::env::var("UU_MEDIA_DEBUG").is_ok_and(|v| v != "0");
+    let generation = Arc::new(AtomicU64::new(0));
+    let waiting = Arc::new(AtomicBool::new(true));
+    let request_generation = Arc::new(AtomicU64::new(0));
+    let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(bytes::Bytes, u32, u64, u64)>(8);
+    let worker_stats = stats.clone();
+    let worker_waiting = waiting.clone();
+    let worker_generation = generation.clone();
+    let worker_requests = request_generation.clone();
+    // Decode, colour conversion and driver IPC are blocking CPU/OS work. Keep
+    // them off tokio's RTP and RTCP executor threads.
+    let worker = tokio::task::spawn_blocking(move || {
+        let mut decoder = match uu_media::default_decoder() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("video decoder unavailable: {e}");
+                return;
+            }
+        };
+        if let Some(s) = &worker_stats {
+            s.set_backend(decoder.backend_name());
+        }
+        let mut dump = std::env::var("UU_DUMP_H264")
+            .ok()
+            .and_then(|p| std::fs::File::create(p).ok());
+        let mut epoch = 0;
+        let mut need_idr = true;
+        let mut decoded = 0;
+        let mut errors = 0;
+        let mut window = Instant::now();
+        let mut window_frames = 0u64;
+        let mut decode_us = 0u64;
+        let mut pts_base = None;
+        while let Some((data, timestamp, sample_epoch, sample_request)) = sample_rx.blocking_recv()
+        {
+            if window.elapsed() >= Duration::from_secs(2) {
+                if let Some(s) = &worker_stats {
+                    s.set_backend(decoder.backend_name());
+                    s.dec_fps_x100.store(
+                        (window_frames as f64 / window.elapsed().as_secs_f64() * 100.0) as u32,
+                        Ordering::Relaxed,
+                    );
+                    s.decode_us
+                        .store((decode_us / window_frames.max(1)) as u32, Ordering::Relaxed);
+                    s.waiting_for_keyframe
+                        .store(need_idr as u32, Ordering::Relaxed);
+                }
+                if debug {
+                    println!("dec frames={decoded} errors={errors} waiting_idr={need_idr}");
+                }
+                window = Instant::now();
+                window_frames = 0;
+                decode_us = 0;
+            }
+            let current_epoch = worker_generation.load(Ordering::Acquire);
+            if current_epoch != epoch {
+                epoch = current_epoch;
+                need_idr = true;
+            }
+            // Once compressed input was dropped, old queued pictures cannot
+            // repair the current reference chain. Wait for a fresh IDR.
+            if sample_epoch != current_epoch {
+                continue;
+            }
+            let key = uu_media::EncodedFrame::detect_h264_keyframe(&data);
+            if need_idr && !key {
+                continue;
+            }
+            if let Some(file) = dump.as_mut() {
+                use std::io::Write;
+                let _ = file.write_all(&data);
+            }
+            let base = *pts_base.get_or_insert(timestamp);
+            let encoded = uu_media::EncodedFrame {
+                data,
+                is_keyframe: key,
+                pts: uu_media::Timestamp(timestamp.wrapping_sub(base) as u64 * 1_000_000 / 90_000),
+            };
+            let started = Instant::now();
+            match decoder.decode(&encoded) {
+                Ok(frame) => {
+                    if key {
+                        need_idr = false;
+                        if epoch == worker_generation.load(Ordering::Acquire)
+                            && sample_request == worker_requests.load(Ordering::Acquire)
+                        {
+                            worker_waiting.store(false, Ordering::Release);
+                        }
+                    }
+                    if let Some(frame) = frame {
+                        decoded += 1;
+                        window_frames += 1;
+                        decode_us += started.elapsed().as_micros() as u64;
+                        if let Some(s) = &worker_stats {
+                            s.width.store(frame.width, Ordering::Relaxed);
+                            s.height.store(frame.height, Ordering::Relaxed);
+                            s.decoded_total.fetch_add(1, Ordering::Relaxed);
+                        }
+                        if debug && decoded % 60 == 0 {
+                            save_ppm(&frame, "/tmp/uu_rust_latest.ppm");
+                        }
+                        // Decode all reference pictures, but spend RGBA and
+                        // upload work only on the newest one after a burst.
+                        if let Some(tx) = frame_tx.as_ref().filter(|_| sample_rx.is_empty()) {
+                            let rgba = uu_media::convert::frame_to_rgba(&frame);
+                            let _ = tx.send((track_idx, frame.width, frame.height, rgba));
+                        }
+                    }
+                }
+                Err(e) => {
+                    errors += 1;
+                    need_idr = true;
+                    worker_requests.fetch_add(1, Ordering::AcqRel);
+                    worker_waiting.store(true, Ordering::Release);
+                    if let Some(s) = &worker_stats {
+                        s.errors.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if debug {
+                        eprintln!("decode error, requesting IDR: {e}");
+                    }
+                }
+            }
+        }
+        if debug {
+            println!("decode done: frames={decoded} errors={errors}");
+        }
+    });
+    let feedback_pc = pc.clone();
+    let feedback_waiting = waiting.clone();
+    let feedback_stats = stats.clone();
+    let ssrc = track.ssrc();
+    let feedback = tokio::spawn(async move {
+        let sender_ssrc =
+            u32::from_be_bytes(uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap());
+        let remb_bps = std::env::var("UU_BITRATE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(55.0)
+            * 1_000_000.0;
+        let mut ticker = tokio::time::interval(Duration::from_millis(100));
+        let mut last_refresh = None;
+        let mut last_remb = None;
+        let mut fir_seq = 0u8;
+        loop {
+            ticker.tick().await;
+            let now = Instant::now();
+            let mut packets: Vec<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>> = Vec::new();
+            let needs_refresh = feedback_waiting.load(Ordering::Acquire);
+            if let Some(s) = &feedback_stats {
+                s.waiting_for_keyframe
+                    .store(needs_refresh as u32, Ordering::Relaxed);
+            }
+            if needs_refresh
+                && last_refresh.map_or(true, |at: Instant| {
+                    now.duration_since(at) >= Duration::from_millis(500)
+                })
+            {
+                fir_seq = fir_seq.wrapping_add(1);
+                packets.push(Box::new(PictureLossIndication {
+                    sender_ssrc,
+                    media_ssrc: ssrc,
+                }));
+                packets.push(Box::new(PictureLossIndication {
+                    sender_ssrc: ssrc,
+                    media_ssrc: ssrc,
+                }));
+                packets.push(Box::new(FullIntraRequest {
+                    sender_ssrc,
+                    media_ssrc: ssrc,
+                    fir: vec![FirEntry {
+                        ssrc,
+                        sequence_number: fir_seq,
+                        ..Default::default()
+                    }],
+                }));
+                last_refresh = Some(now);
+                if let Some(s) = &feedback_stats {
+                    s.keyframe_requests.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            // A healthy stream no longer gets forced into a large IDR every
+            // two seconds. Periodic REMB is independent of recovery requests.
+            if last_remb.map_or(true, |at: Instant| {
+                now.duration_since(at) >= Duration::from_secs(2)
+            }) {
+                packets.push(Box::new(ReceiverEstimatedMaximumBitrate {
+                    sender_ssrc,
+                    bitrate: remb_bps,
+                    ssrcs: vec![ssrc],
+                }));
+                last_remb = Some(now);
+            }
+            if !packets.is_empty() && feedback_pc.write_rtcp(&packets).await.is_err() {
+                break;
+            }
+        }
+    });
+    let wait_ms = std::env::var("UU_JITTER_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60)
+        .clamp(10, 200);
+    let mut receiver = VideoReceiver::new(Duration::from_millis(wait_ms));
+    let mut ticker = tokio::time::interval(Duration::from_millis(5));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let strict = std::env::var("UU_STRICT_RECOVERY").is_ok_and(|v| v == "1");
+    let recover = |hard: bool| {
+        if hard {
+            generation.fetch_add(1, Ordering::AcqRel);
+        }
+        request_generation.fetch_add(1, Ordering::AcqRel);
+        waiting.store(true, Ordering::Release);
+    };
+    let mut receiver_epoch = 0;
+    let mut bytes = 0u64;
+    let mut src = 0u64;
+    let mut last_ts = None;
+    let mut window = Instant::now();
+    loop {
+        let units = tokio::select! {
+            result=track.read_rtp()=>{
+                let Ok((packet,_))=result else {break};
+                if let Some(s)=&stats {s.packets.fetch_add(1,Ordering::Relaxed);}
+                bytes+=packet.payload.len() as u64;
+                if last_ts!=Some(packet.header.timestamp) {last_ts=Some(packet.header.timestamp);src+=1;}
+                receiver.push(packet,Instant::now())
+            }
+            _=ticker.tick()=>receiver.poll(Instant::now()),
+        };
+        for unit in units {
+            if unit.epoch != receiver_epoch {
+                receiver_epoch = unit.epoch;
+                // With balanced recovery keep decoding intact reference
+                // pictures while requesting refresh. Strict IDR-only recovery
+                // can freeze indefinitely when large keyframes also lose a packet.
+                recover(strict);
+            }
+            let epoch = generation.load(Ordering::Acquire);
+            if sample_tx
+                .try_send((
+                    unit.data,
+                    unit.timestamp,
+                    epoch,
+                    request_generation.load(Ordering::Acquire),
+                ))
+                .is_err()
+            {
+                recover(true);
+                if let Some(s) = &stats {
+                    s.queue_drops.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        if receiver.epoch != receiver_epoch {
+            receiver_epoch = receiver.epoch;
+            recover(strict);
+        }
+        let _ = receiver.take_refresh();
+        if let Some(s) = &stats {
+            s.lost.store(receiver.stats.lost, Ordering::Relaxed);
+            s.reordered
+                .store(receiver.stats.reordered, Ordering::Relaxed);
+            s.late_packets.store(receiver.stats.late, Ordering::Relaxed);
+            s.damaged_frames
+                .store(receiver.stats.damaged, Ordering::Relaxed);
+        }
+        if window.elapsed() >= Duration::from_secs(2) {
+            if let Some(s) = &stats {
+                let seconds = window.elapsed().as_secs_f64();
+                s.src_fps_x100
+                    .store((src as f64 / seconds * 100.0) as u32, Ordering::Relaxed);
+                s.bitrate_kbps.store(
+                    (bytes as f64 * 8.0 / seconds / 1000.0) as u32,
+                    Ordering::Relaxed,
+                );
+            }
+            src = 0;
+            bytes = 0;
+            window = Instant::now();
+        }
+    }
+    feedback.abort();
+    drop(sample_tx);
+    let _ = worker.await;
+}
+
+/// Advertise only codecs whose payloads we can actually consume. The default
+/// registry also advertises ULPFEC without a receive-side repair implementation.
+fn register_receive_codecs(media: &mut MediaEngine) -> Result<()> {
+    use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters};
+    use webrtc::rtp_transceiver::RTCPFeedback;
+    let feedback = vec![
+        RTCPFeedback {
+            typ: "nack".into(),
+            parameter: String::new(),
+        },
+        RTCPFeedback {
+            typ: "nack".into(),
+            parameter: "pli".into(),
+        },
+        RTCPFeedback {
+            typ: "ccm".into(),
+            parameter: "fir".into(),
+        },
+        RTCPFeedback {
+            typ: "goog-remb".into(),
+            parameter: String::new(),
+        },
+    ];
+    for (payload_type, profile, mode) in [
+        (102, "42001f", 1),
+        (127, "42001f", 0),
+        (125, "42e01f", 1),
+        (108, "42e01f", 0),
+        (123, "640032", 1),
+    ] {
+        media.register_codec(RTCRtpCodecParameters {
+            capability:RTCRtpCodecCapability {mime_type:MIME_TYPE_H264.into(),clock_rate:90_000,
+                sdp_fmtp_line:format!("level-asymmetry-allowed=1;packetization-mode={mode};profile-level-id={profile}"),
+                rtcp_feedback:feedback.clone(),..Default::default()},payload_type,..Default::default()
+        },RTPCodecType::Video)?;
+    }
+    media.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_OPUS.into(),
+                clock_rate: 48_000,
+                channels: 2,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1".into(),
+                ..Default::default()
+            },
+            payload_type: 111,
+            ..Default::default()
+        },
+        RTPCodecType::Audio,
+    )?;
+    Ok(())
 }

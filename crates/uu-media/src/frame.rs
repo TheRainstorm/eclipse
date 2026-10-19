@@ -89,9 +89,9 @@ impl EncodedFrame {
             let header_at = i + sc;
             if header_at < data.len() {
                 let nal_type = data[header_at] & 0x1f;
-                // 5 = IDR slice, 7 = SPS, 8 = PPS. A frame carrying parameter
-                // sets is also a valid join point.
-                if nal_type == 5 || nal_type == 7 || nal_type == 8 {
+                // SPS/PPS alone cannot repair a broken reference chain. Only
+                // an IDR is a safe join point after packet loss or queue drops.
+                if nal_type == 5 {
                     return true;
                 }
             }
@@ -136,7 +136,12 @@ mod tests {
 
     #[test]
     fn three_byte_start_code_is_honoured() {
-        let data = [0u8, 0, 1, 0x67, 0x42]; // type 7 = SPS
+        let data = [0u8, 0, 1, 0x65, 0x42]; // type 5 = IDR
         assert!(EncodedFrame::detect_h264_keyframe(&data));
+    }
+
+    #[test]
+    fn parameter_sets_are_not_reference_recovery_points() {
+        assert!(!EncodedFrame::detect_h264_keyframe(&[0,0,1,0x67,0x42,0,0,1,0x68,0xce]));
     }
 }

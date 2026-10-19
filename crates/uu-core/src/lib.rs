@@ -4,6 +4,8 @@ pub mod api;
 pub mod config;
 pub mod control_wire;
 pub mod controller;
+mod display_frames;
+mod video_receiver;
 pub mod error;
 pub mod media;
 pub mod selfloop;
