@@ -32,7 +32,7 @@ uu native-probe --invitation-file ./demo.eclipse-invite.json --frames 120
 uu-gui --native-invitation ./demo.eclipse-invite.json
 ```
 
-窗口沿用80%工作区初始大小、居中、HUD与全屏快捷键：Ctrl+Alt+S显示统计，Ctrl+Alt+F / X切换全屏，Ctrl+Alt+Q退出当前串流。该模式的菜单只显示已有能力；当前纯观看，不捕获远端键鼠，不启动剪贴板同步，也不因账号模式登录或退出而断开。
+窗口沿用80%工作区初始大小、居中、HUD与全屏快捷键：Ctrl+Alt+S显示统计，Ctrl+Alt+F / X切换全屏，Ctrl+Alt+Q退出当前串流。Wayland 的全局窗口位置由合成器安排，客户端会按所在输出调整尺寸；跨屏后的位置遵循桌面策略。该模式的菜单只显示已有能力；当前纯观看，不捕获远端键鼠，不启动剪贴板同步，也不因账号模式登录或退出而断开。
 
 ## 局域网与真实显示器
 
@@ -49,3 +49,16 @@ uu-gui --native-invitation ./demo.eclipse-invite.json
 - 不自动更改防火墙或开放公网入口；当前只接受与认证信令对端地址一致的 UDP 主机候选；没有 STUN/TURN、跨公网发现或持久配对管理。仅测试并使用自己授权的设备与网络。
 - 当前是单控制端、单显示源、纯观看模式。原生音频、输入注入、剪贴板和运行中画质调节尚未接入。现有兼容客户端的这些能力不等于原生主机已支持。
 - `--max-seconds` 可限制已连接会话时长，便于隔离验证。H.265、AV1、HDR、硬件编码和视频 FEC 尚未实现；当前恢复采用 NACK 重传、PLI / FIR 与参考链保护。
+
+## 隔离的 Wayland 窗口验证
+
+安装 Sway、grim，并构建 `cargo build --release -p uu-gui --example wayland_input`。使用开发构建运行：
+
+```bash
+python3 tools/native/wayland_smoke.py \
+  --gui ./target/release/uu-gui --cli ./target/release/uu \
+  --input-driver ./target/release/examples/wayland_input \
+  --output ./artifacts/native-wayland-test --multi-dpi
+```
+
+脚本启动自己的无头合成器、合成画面主机和观看窗口，检查全屏、只读模式下的本地快捷键、不同缩放比例输出间的往返尺寸及正常退出。输出目录必须不存在。默认使用 GLES；可用 `--renderer pixman`，验证 VA-API 时加 `--expect-hardware`。虚拟键盘只连接该脚本创建的 Wayland socket；不会向用户桌面发送按键。

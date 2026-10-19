@@ -9,12 +9,13 @@ members = [
     "crates/uu-cli",
     "crates/uu-gui",
 ]
-exclude = ["vendor/webrtc-dtls", "vendor/egui-winit", "vendor/cros-codecs"]
+exclude = ["vendor/webrtc-dtls", "vendor/egui-winit", "vendor/cros-codecs", "vendor/winit"]
 
 [patch.crates-io]
 cros-codecs = { path = "vendor/cros-codecs" }
 egui-winit = { path = "vendor/egui-winit" }
 webrtc-dtls = { path = "vendor/webrtc-dtls" }
+winit = { path = "vendor/winit" }
 
 [workspace.package]
 version = "0.1.0"

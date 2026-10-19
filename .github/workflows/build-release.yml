@@ -54,7 +54,7 @@ jobs:
       - name: Install Linux development libraries
         if: matrix.platform == 'linux-x86_64'
         run: |
-          sudo apt-get install --no-install-recommends -y libasound2-dev libva-dev libgbm-dev libdrm-dev libclang-dev libxkbcommon-dev
+          sudo apt-get install --no-install-recommends -y libasound2-dev libva-dev libgbm-dev libdrm-dev libclang-dev libxkbcommon-dev sway grim libegl1 libgl1-mesa-dri
       - name: Install Windows cross toolchain
         if: matrix.platform == 'windows-x64'
         run: |
@@ -87,6 +87,11 @@ jobs:
           for archive in artifacts/packages/*.tar.gz; do
             python3 tools/security/scan_secrets.py --artifact "$archive"
           done
+      - name: Test isolated Wayland viewer and mixed DPI
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          cargo build --release -p uu-gui --example wayland_input --features vaapi --locked
+          python3 tools/native/wayland_smoke.py --gui target/release/uu-gui --cli target/release/uu --input-driver target/release/examples/wayland_input --output artifacts/native-wayland --renderer pixman --decoder sw --multi-dpi
       - name: Package Windows
         if: matrix.platform == 'windows-x64'
         run: |
