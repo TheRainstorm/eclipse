@@ -7,6 +7,7 @@ from pathlib import Path
 import select
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -40,7 +41,7 @@ def main():
     (data / 'gui-settings.json').write_text(json.dumps(dict(hud=True, clipboard=False, muted=True)))
     marker = out / 'compositor-shortcut'
     config = out / 'sway.conf'
-    config.write_text(f'bindsym Mod4+F23 exec touch {marker}\n'
+    config.write_text(f'bindsym Mod4+c exec touch {marker}\n'
                       'output HEADLESS-1 mode 1600x1000@60Hz position 0 0 scale 1\n'
                       'output HEADLESS-2 mode 1280x800@60Hz position 1600 0 scale 1.5\n'
                       'xwayland disable\nseat seat0 fallback true\ndefault_border none\n'
@@ -125,7 +126,7 @@ def main():
         keys('x')
         wait(lambda: window().get('fullscreen_mode') == 1)
         screenshot('fullscreen')
-        keys('F23', ('logo',))
+        keys('c', ('logo',))
         wait(marker.exists)
         keys('x')
         wait(lambda: window().get('fullscreen_mode') == 0)
@@ -166,7 +167,7 @@ def main():
         sample = wait(lambda: next((event for event in reversed(events()) if event.get('event') == 'video_stats' and event.get('decoded', 0) >= 120), None))
         if sample['errors'] or sample['input_sent']:
             raise RuntimeError('Native readonly viewing had decode errors or forwarded input')
-        if args.expect_hardware and 'vaapi' not in sample['backend'].lower():
+        if args.expect_hardware and not sample['backend'].lower().startswith('vaapi ('):
             raise RuntimeError('Native viewer did not remain on VAAPI')
         result['stats'] = sample
         keys('q')
@@ -177,6 +178,14 @@ def main():
         result['clean_exit'] = True
         (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result))
+    except Exception:
+        # Retain the failing compositor's diagnostics in CI without emitting
+        # invitation contents, account state, or the host's authenticated data.
+        for name in ('sway.log', 'keyboard.log', 'gui.log'):
+            path = out / name
+            if path.exists():
+                print(f'Owned Wayland test {name}:\n{path.read_text(errors="replace")[-6000:]}', file=sys.stderr)
+        raise
     finally:
         for process in (gui, host, keyboard, sway):
             if process and process.poll() is None:
