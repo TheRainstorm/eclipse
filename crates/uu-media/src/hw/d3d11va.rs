@@ -52,10 +52,6 @@ fn describe<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
-/// Nominal sample duration in 100 ns units. UU streams at 30 or 60 fps and the
-/// decoder uses these timestamps for ordering feedback, not for presentation.
-const SAMPLE_DURATION_100NS: i64 = 333_333;
-
 /// Public handle: a `Worker` thread owning all Media Foundation state.
 pub struct D3d11VaDecoder {
     worker: super::Worker,
@@ -758,9 +754,9 @@ fn set_output_type(
         media_type
             .SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 1)
             .map_err(describe)?;
-        media_type
-            .SetUINT64(&MF_MT_FRAME_RATE, pack(30, 1))
-            .map_err(describe)?;
+        // Frame rate is not known from dimensions or the requested UI rate.
+        // Let the MFT derive it from the bitstream and renegotiate as needed;
+        // declaring 30 here contradicts 60/120/custom-rate input.
         media_type
             .SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack(1, 1))
             .map_err(describe)?;
@@ -807,9 +803,9 @@ fn input_sample(data: &[u8], time_100ns: i64, keyframe: bool) -> Result<IMFSampl
         buffer.SetCurrentLength(len).map_err(describe)?;
         sample.AddBuffer(&buffer).map_err(describe)?;
         sample.SetSampleTime(time_100ns).map_err(describe)?;
-        sample
-            .SetSampleDuration(SAMPLE_DURATION_100NS)
-            .map_err(describe)?;
+        // RTP gives a presentation timestamp, not this frame's duration.
+        // Duration may be omitted for compressed input; a fabricated 33 ms
+        // makes high-rate samples overlap. Keep the real PTS unchanged.
         if keyframe {
             // Tells the decoder (and the D3D11 decoder's DPB management) that
             // this access unit starts a new sequence.

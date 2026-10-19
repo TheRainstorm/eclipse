@@ -73,15 +73,16 @@ mod windows_timing_tests {
     #[test]
     #[ignore = "requires a Windows D3D11 hardware decoder; run explicitly on test GPUs"]
     fn hardware_output_keeps_transport_pts_across_decoder_recreation() {
-        // A nonzero origin and a 30 Hz source expose the old synthetic 60 Hz
-        // counter. A second decoder exposes resetting that clock after loss.
-        for origin in [10_000_000, 20_000_000] {
+        // Different source rates expose synthetic fixed-rate timestamps;
+        // a nonzero origin and a second decoder expose resets after loss.
+        for (origin, step) in [(10_000_000, 33_333), (20_000_000, 16_667),
+            (30_000_000, 8_333), (40_000_000, 13_333)] {
             let mut encoder = H264Encoder::new(1_000).unwrap();
             let mut decoder = super::create_hardware_decoder().expect("hardware decoder required");
             let mut produced = 0;
             let mut expected = std::collections::HashSet::new();
             for i in 0..20 {
-                let pts = Timestamp(origin + i * 33_333);
+                let pts = Timestamp(origin + i * step);
                 expected.insert(pts);
                 let mut data = vec![90; 64 * 64];
                 data.extend(vec![128; 64 * 64 / 2]);
