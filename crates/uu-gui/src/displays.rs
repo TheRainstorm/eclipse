@@ -313,6 +313,8 @@ impl super::App {
         self.context.memory_mut(|m| m.close_popup());
     }
     pub(super) fn poll_displays(&mut self, tracks: &[u32]) {
+        let pending_at_start = self.displays.pending.as_ref()
+            .map(|p| (p.request, p.sent, self.displays.selected));
         let received = self.controller.as_ref().is_some_and(|h| {
             h.stats
                 .remote_screens_revision
@@ -401,6 +403,13 @@ impl super::App {
         for track in tracks {
             self.displays.last_frames.insert(*track, Instant::now());
             self.displays.frame(*track);
+        }
+        if let Some((request, sent, source)) = pending_at_start
+            .filter(|(_, _, source)| self.displays.ready() && self.displays.selected == *source) {
+            if let Some(h) = &self.controller {
+                h.stats.diagnostics.record(serde_json::json!({"event":"display_ready","request":request,
+                    "source":source,"track":self.selected_track,"elapsed_ms":sent.elapsed().as_millis()}));
+            }
         }
         let was_switching = self.displays.switching();
         self.displays.tick(Instant::now());
