@@ -11,6 +11,8 @@ bytes.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 uu-proto = { path = "../uu-proto" }
+opus = "0.3.1"
+audiopus_sys = { version = "0.2.2", features = ["static"] }
 
 [features]
 default = ["h264", "d3d11va"]
@@ -27,6 +29,7 @@ version = "0.9"
 optional = true
 
 [target.'cfg(windows)'.dependencies]
+cpal = "0.15.3"
 windows = { version = "0.62", optional = true, features = [
     "Win32_Foundation",
     "Win32_Media_MediaFoundation",

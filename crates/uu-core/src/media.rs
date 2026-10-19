@@ -34,6 +34,7 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 #[derive(Default)]
 pub struct MediaStats {
     pub control_open: AtomicU32,
+    pub audio: Arc<uu_media::audio::AudioControl>,
     pub input_messages_sent: AtomicU64,
     pub input_send_errors: AtomicU64,
     pub width: AtomicU32,
@@ -180,7 +181,11 @@ impl ControllerMedia {
             };
             Box::pin(async move {
                 if let Some(pc) = pc.upgrade() {
-                    tokio::spawn(receive_video(pc, track, index, frames, stats, repairs));
+                    if track.kind() == RTPCodecType::Audio {
+                        tokio::spawn(receive_audio(track, stats));
+                    } else {
+                        tokio::spawn(receive_video(pc, track, index, frames, stats, repairs));
+                    }
                 }
             })
         }));
@@ -401,6 +406,23 @@ impl ControllerMedia {
             else { s.input_send_errors.fetch_add(1, Ordering::Relaxed); }
         }
         result
+    }
+}
+
+async fn receive_audio(track: Arc<webrtc::track::track_remote::TrackRemote>, stats: Option<Arc<MediaStats>>) {
+    if !track.codec().capability.mime_type.eq_ignore_ascii_case(MIME_TYPE_OPUS) { return; }
+    let control = stats.as_ref().map(|s|s.audio.clone()).unwrap_or_default();
+    let tx = uu_media::audio::playback(control.clone());
+    while let Ok((packet,_)) = track.read_rtp().await {
+        if control.stopped() { break; }
+        control.packets.fetch_add(1,Ordering::Relaxed);
+        let packet = uu_media::audio::Packet {sequence:packet.header.sequence_number,timestamp:packet.header.timestamp,
+            payload:packet.payload.to_vec(),received:std::time::Instant::now()};
+        match tx.try_send(packet) {
+            Ok(()) => {},
+            Err(std::sync::mpsc::TrySendError::Full(_)) => { control.dropped.fetch_add(1,Ordering::Relaxed); },
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => break,
+        }
     }
 }
 

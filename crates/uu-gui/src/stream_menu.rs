@@ -612,7 +612,18 @@ impl super::App {
                                             "全屏显示悬浮入口",
                                         );
                                     });
-                                    unavailable(ui, Icon::Play, "声音", "音频尚未接入");
+                                    side_submenu(ui, &mut blocked, Icon::Play, "声音", |ui| {
+                                        if let Some(h) = &self.controller {
+                                            use std::sync::atomic::Ordering::Relaxed;
+                                            let audio = &h.stats.audio;
+                                            let mut muted = audio.muted.load(Relaxed);
+                                            if ui.checkbox(&mut muted, "静音").changed() { audio.muted.store(muted,Relaxed); }
+                                            let mut volume=audio.volume.load(Relaxed);
+                                            if ui.add(egui::Slider::new(&mut volume,0..=100).text("音量")).changed() {audio.volume.store(volume,Relaxed);}
+                                            ui.label(audio.status.lock().unwrap().as_str());
+                                            ui.label(format!("缓冲 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
+                                        }
+                                    });
                                     side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
                                         if ui
                                             .checkbox(&mut self.view_only, "仅观看，禁止远程输入")

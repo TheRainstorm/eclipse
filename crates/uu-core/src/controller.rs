@@ -280,6 +280,7 @@ async fn run(
         _ = close_rx.recv() => Ok(()),
         result = attempt => result,
     };
+    stats.audio.stop();
     status("正在释放连接…");
     // Flush pending key/button releases before tearing down CONTROL. Bound
     // every cleanup operation so a dead network cannot trap the UI on exit.

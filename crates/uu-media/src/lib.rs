@@ -8,6 +8,7 @@
 //! Opus audio (see `docs/protocol-notes.md`), so the codec layer here is
 //! deliberately codec-agnostic and pluggable.
 
+pub mod audio;
 pub mod bitstream;
 pub mod codec;
 pub mod convert;
