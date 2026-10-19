@@ -102,6 +102,7 @@ pub struct VideoReceiver {
     picture: Option<Picture>,
     completed_ts: Option<u32>,
     wait: Duration,
+    last_packet: Option<Instant>,
     pub stats: ReceiverStats,
     refresh: bool,
     pub epoch: u64,
@@ -114,6 +115,7 @@ impl VideoReceiver {
             picture: None,
             completed_ts: None,
             wait,
+            last_packet: None,
             stats: ReceiverStats::default(),
             refresh: false,
             epoch: 0,
@@ -123,6 +125,7 @@ impl VideoReceiver {
         std::mem::take(&mut self.refresh)
     }
     pub fn push(&mut self, packet: Packet, now: Instant) -> Vec<AccessUnit> {
+        self.last_packet = Some(now);
         let seq = packet.header.sequence_number;
         let next = *self.next.get_or_insert(seq);
         let distance = seq.wrapping_sub(next) as i16;
@@ -135,6 +138,32 @@ impl VideoReceiver {
         }
         self.packets.insert(seq, (packet, now));
         self.poll(now)
+    }
+    /// Request only active holes, after a short reorder grace, and stop at
+    /// the same deadline as AU assembly. Bounded even on a sequence jump.
+    pub fn missing(&self, now: Instant) -> Vec<u16> {
+        let Some(next) = self.next else {
+            return Vec::new();
+        };
+        let Some(oldest) = self.packets.values().map(|(_, at)| *at).min() else {
+            return Vec::new();
+        };
+        let age = now.duration_since(oldest);
+        if age < Duration::from_millis(5) || age >= self.wait {
+            return Vec::new();
+        }
+        let end = self
+            .packets
+            .keys()
+            .map(|seq| seq.wrapping_sub(next) as usize)
+            .max()
+            .unwrap_or(0)
+            .min(MAX_PACKETS);
+        (0..end)
+            .map(|offset| next.wrapping_add(offset as u16))
+            .filter(|seq| !self.packets.contains_key(seq))
+            .take(512)
+            .collect()
     }
     pub fn poll(&mut self, now: Instant) -> Vec<AccessUnit> {
         let mut ready = Vec::new();
@@ -168,6 +197,13 @@ impl VideoReceiver {
                 ..Default::default()
             });
             self.next = Some(seq);
+        }
+        if self.packets.is_empty()
+            && self.last_packet.is_some_and(|at| {
+                now.duration_since(at) >= self.wait.max(Duration::from_millis(200))
+            })
+        {
+            self.discard_picture();
         }
         ready
     }
@@ -237,6 +273,34 @@ mod tests {
             },
             payload: Bytes::copy_from_slice(payload),
         }
+    }
+    #[test]
+    fn nack_holes_expire_and_stop_after_repair_and_missing_tail_times_out() {
+        let now = Instant::now();
+        let mut rx = VideoReceiver::new(Duration::from_millis(60));
+        rx.push(packet(1, 1, false, &[0x7c, 0x85, 1]), now);
+        rx.push(packet(3, 1, true, &[0x7c, 0x45, 3]), now);
+        assert!(rx.missing(now).is_empty());
+        assert_eq!(rx.missing(now + Duration::from_millis(10)), vec![2]);
+        assert_eq!(
+            rx.push(
+                packet(2, 1, false, &[0x7c, 0x05, 2]),
+                now + Duration::from_millis(12)
+            )
+            .len(),
+            1
+        );
+        assert!(rx.missing(now + Duration::from_millis(20)).is_empty());
+        rx.push(packet(4, 2, false, &[0x7c, 0x85, 4]), now);
+        rx.push(packet(6, 2, true, &[0x7c, 0x45, 6]), now);
+        assert!(rx.missing(now + Duration::from_millis(60)).is_empty());
+        rx.poll(now + Duration::from_millis(61));
+        assert!(rx.take_refresh());
+        let mut rx = VideoReceiver::new(Duration::from_millis(60));
+        rx.push(packet(1, 1, false, &[0x7c, 0x85, 1]), now);
+        rx.poll(now + Duration::from_millis(201));
+        assert!(rx.take_refresh());
+        assert_eq!(rx.stats.damaged, 1);
     }
     #[test]
     fn out_of_order_fu_a_is_repaired_before_deadline_including_sequence_wrap() {

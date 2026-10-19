@@ -182,7 +182,7 @@ async fn run(
         }
     }
     let success = success.context("missing success event")?;
-    eprintln!("iceServers={}", success["iceServers"]);
+    eprintln!("ICE server entries={}", success["iceServers"].as_array().map_or(0,Vec::len));
     let ice = ice_servers_from_json(&success["iceServers"]);
     status("建立 WebRTC…");
     let media = ControllerMedia::new_with_frames(ice, Some(frame_tx), Some(stats.clone())).await?;

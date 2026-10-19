@@ -53,6 +53,9 @@ pub struct MediaStats {
     pub errors: AtomicU64,
     /// RTCP round-trip time estimate (ms), when available.
     pub rtt_ms: AtomicU32,
+    pub nack_requests: AtomicU64,
+    pub rtx_packets: AtomicU64,
+    pub rtx_drops: AtomicU64,
     pub reordered: AtomicU64,
     pub late_packets: AtomicU64,
     pub damaged_frames: AtomicU64,
@@ -92,6 +95,7 @@ impl MediaStats {
 
 pub struct ControllerMedia {
     pub pc: Arc<RTCPeerConnection>,
+    repairs: Arc<crate::rtx::RepairBus>,
     pub data_channel: Arc<webrtc::data_channel::RTCDataChannel>,
 }
 
@@ -109,15 +113,12 @@ impl ControllerMedia {
         let mut media = MediaEngine::default();
         register_receive_codecs(&mut media)?;
         let mut registry = Registry::new();
-        // The default NACK interval is 100 ms, longer than our entire loss
-        // recovery window. Ask for missing packets while they are still useful.
-        registry.add(Box::new(
-            webrtc::interceptor::nack::generator::Generator::builder()
-                .with_interval(Duration::from_millis(20))
-                .with_skip_last_n(2),
-        ));
+        // NACK is generated from the application's bounded reorder window so
+        // successful RTX clears the hole and expired pictures stop requesting.
         registry = configure_rtcp_reports(registry);
         registry = configure_twcc_receiver_only(registry, &mut media)?;
+        let repairs = crate::rtx::RepairBus::new(stats.clone());
+        registry.add(Box::new(crate::rtx::RepairTap(repairs.clone())));
         let api = APIBuilder::new()
             .with_media_engine(media)
             .with_interceptor_registry(registry)
@@ -137,11 +138,13 @@ impl ControllerMedia {
         }));
 
         let pc_track = pc.clone();
+        let repair_track = repairs.clone();
         let frames_tx = frames.clone();
         let stats_track = stats.clone();
         let track_counter = Arc::new(AtomicU32::new(0));
         pc.on_track(Box::new(move |track, _receiver, _transceiver| {
             let pc = pc_track.clone();
+            let repairs = repair_track.clone();
             let frames = frames_tx.clone();
             let stats = stats_track.clone();
             let index = if track.kind() == RTPCodecType::Video {
@@ -149,7 +152,9 @@ impl ControllerMedia {
             } else {
                 u32::MAX
             };
-            Box::pin(receive_video(pc, track, index, frames, stats))
+            Box::pin(async move {
+                tokio::spawn(receive_video(pc, track, index, frames, stats, repairs));
+            })
         }));
 
         // 5 displays (the controlled machine may only send on one).
@@ -242,6 +247,7 @@ impl ControllerMedia {
 
         Ok(Self {
             pc,
+            repairs,
             data_channel: dc,
         })
     }
@@ -263,6 +269,7 @@ impl ControllerMedia {
     }
 
     pub async fn set_answer(&self, sdp: &str) -> Result<()> {
+        self.repairs.configure(sdp);
         self.pc
             .set_remote_description(RTCSessionDescription::answer(sdp.to_string())?)
             .await?;
@@ -328,6 +335,7 @@ async fn receive_video(
     track_idx: u32,
     frame_tx: Option<FrameSender>,
     stats: Option<Arc<MediaStats>>,
+    repairs: Arc<crate::rtx::RepairBus>,
 ) {
     use crate::video_receiver::VideoReceiver;
     use std::sync::atomic::AtomicBool;
@@ -368,6 +376,8 @@ async fn receive_video(
             .and_then(|p| std::fs::File::create(p).ok());
         let mut epoch = 0;
         let mut need_idr = true;
+        let mut reset_decoder = false;
+        let mut recovery = None;
         let mut decoded = 0;
         let mut errors = 0;
         let mut window = Instant::now();
@@ -399,6 +409,8 @@ async fn receive_video(
             if current_epoch != epoch {
                 epoch = current_epoch;
                 need_idr = true;
+                reset_decoder = true;
+                recovery = None;
             }
             // Once compressed input was dropped, old queued pictures cannot
             // repair the current reference chain. Wait for a fresh IDR.
@@ -408,6 +420,18 @@ async fn receive_video(
             let key = uu_media::EncodedFrame::detect_h264_keyframe(&data);
             if need_idr && !key {
                 continue;
+            }
+            if key && reset_decoder {
+                let next = if decoder.backend_name().starts_with("openh264") {
+                    uu_media::software_decoder()
+                } else {
+                    uu_media::default_decoder()
+                };
+                match next {
+                    Ok(fresh) => decoder = fresh,
+                    Err(_) => continue,
+                }
+                reset_decoder = false;
             }
             if let Some(file) = dump.as_mut() {
                 use std::io::Write;
@@ -419,18 +443,24 @@ async fn receive_video(
                 is_keyframe: key,
                 pts: uu_media::Timestamp(timestamp.wrapping_sub(base) as u64 * 1_000_000 / 90_000),
             };
+            if key {
+                recovery = Some((epoch, sample_request, encoded.pts));
+            }
             let started = Instant::now();
             match decoder.decode(&encoded) {
                 Ok(frame) => {
                     if key {
                         need_idr = false;
-                        if epoch == worker_generation.load(Ordering::Acquire)
-                            && sample_request == worker_requests.load(Ordering::Acquire)
-                        {
-                            worker_waiting.store(false, Ordering::Release);
-                        }
                     }
                     if let Some(frame) = frame {
+                        if recovery.is_some_and(|(generation, request, pts)| {
+                            frame.pts >= pts
+                                && generation == worker_generation.load(Ordering::Acquire)
+                                && request == worker_requests.load(Ordering::Acquire)
+                        }) {
+                            worker_waiting.store(false, Ordering::Release);
+                            recovery = None;
+                        }
                         decoded += 1;
                         window_frames += 1;
                         decode_us += started.elapsed().as_micros() as u64;
@@ -453,6 +483,8 @@ async fn receive_video(
                 Err(e) => {
                     errors += 1;
                     need_idr = true;
+                    reset_decoder = true;
+                    recovery = None;
                     worker_requests.fetch_add(1, Ordering::AcqRel);
                     worker_waiting.store(true, Ordering::Release);
                     if let Some(s) = &worker_stats {
@@ -484,11 +516,15 @@ async fn receive_video(
         let mut last_refresh = None;
         let mut last_remb = None;
         let mut fir_seq = 0u8;
+        let mut retries = 0u32;
         loop {
             ticker.tick().await;
             let now = Instant::now();
             let mut packets: Vec<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>> = Vec::new();
             let needs_refresh = feedback_waiting.load(Ordering::Acquire);
+            if !needs_refresh {
+                retries = 0;
+            }
             if let Some(s) = &feedback_stats {
                 s.waiting_for_keyframe
                     .store(needs_refresh as u32, Ordering::Relaxed);
@@ -498,24 +534,23 @@ async fn receive_video(
                     now.duration_since(at) >= Duration::from_millis(500)
                 })
             {
-                fir_seq = fir_seq.wrapping_add(1);
                 packets.push(Box::new(PictureLossIndication {
                     sender_ssrc,
                     media_ssrc: ssrc,
                 }));
-                packets.push(Box::new(PictureLossIndication {
-                    sender_ssrc: ssrc,
-                    media_ssrc: ssrc,
-                }));
-                packets.push(Box::new(FullIntraRequest {
-                    sender_ssrc,
-                    media_ssrc: ssrc,
-                    fir: vec![FirEntry {
-                        ssrc,
-                        sequence_number: fir_seq,
-                        ..Default::default()
-                    }],
-                }));
+                retries += 1;
+                if retries % 4 == 0 {
+                    fir_seq = fir_seq.wrapping_add(1);
+                    packets.push(Box::new(FullIntraRequest {
+                        sender_ssrc,
+                        media_ssrc: 0,
+                        fir: vec![FirEntry {
+                            ssrc,
+                            sequence_number: fir_seq,
+                            ..Default::default()
+                        }],
+                    }));
+                }
                 last_refresh = Some(now);
                 if let Some(s) = &feedback_stats {
                     s.keyframe_requests.fetch_add(1, Ordering::Relaxed);
@@ -543,10 +578,13 @@ async fn receive_video(
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(60)
         .clamp(10, 200);
+    let mut repair_rx = repairs.subscribe(track.ssrc());
+    let nack_sender = u32::from_be_bytes(uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap());
+    let mut last_nack = Instant::now();
     let mut receiver = VideoReceiver::new(Duration::from_millis(wait_ms));
     let mut ticker = tokio::time::interval(Duration::from_millis(5));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let strict = std::env::var("UU_STRICT_RECOVERY").is_ok_and(|v| v == "1");
+    let strict = !std::env::var("UU_STRICT_RECOVERY").is_ok_and(|v| v == "0");
     let recover = |hard: bool| {
         if hard {
             generation.fetch_add(1, Ordering::AcqRel);
@@ -560,16 +598,50 @@ async fn receive_video(
     let mut last_ts = None;
     let mut window = Instant::now();
     loop {
-        let units = tokio::select! {
+        let packet = tokio::select! {
             result=track.read_rtp()=>{
                 let Ok((packet,_))=result else {break};
-                if let Some(s)=&stats {s.packets.fetch_add(1,Ordering::Relaxed);}
-                bytes+=packet.payload.len() as u64;
-                if last_ts!=Some(packet.header.timestamp) {last_ts=Some(packet.header.timestamp);src+=1;}
-                receiver.push(packet,Instant::now())
+                Some(packet)
             }
-            _=ticker.tick()=>receiver.poll(Instant::now()),
+            Some(packet)=repair_rx.recv()=>Some(packet),
+            _=ticker.tick()=>None,
         };
+        let now = Instant::now();
+        let units = if let Some(packet) = packet {
+            if let Some(s) = &stats {
+                s.packets.fetch_add(1, Ordering::Relaxed);
+            }
+            bytes += packet.payload.len() as u64;
+            if last_ts.map_or(true, |last| {
+                packet.header.timestamp.wrapping_sub(last) as i32 > 0
+            }) {
+                last_ts = Some(packet.header.timestamp);
+                src += 1;
+            }
+            receiver.push(packet, now)
+        } else {
+            receiver.poll(now)
+        };
+        if last_nack.elapsed() >= Duration::from_millis(20) {
+            let missing = receiver.missing(now);
+            if !missing.is_empty() {
+                use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{
+                    nack_pairs_from_sequence_numbers, TransportLayerNack,
+                };
+                let nack = TransportLayerNack {
+                    sender_ssrc: nack_sender,
+                    media_ssrc: track.ssrc(),
+                    nacks: nack_pairs_from_sequence_numbers(&missing),
+                };
+                if pc.write_rtcp(&[Box::new(nack)]).await.is_ok() {
+                    if let Some(s) = &stats {
+                        s.nack_requests
+                            .fetch_add(missing.len() as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            last_nack = now;
+        }
         for unit in units {
             if unit.epoch != receiver_epoch {
                 receiver_epoch = unit.epoch;
@@ -616,12 +688,25 @@ async fn receive_video(
                     (bytes as f64 * 8.0 / seconds / 1000.0) as u32,
                     Ordering::Relaxed,
                 );
+                if debug {
+                    println!(
+                        "media: kbps={} lost={} bad={} nack={} rtx={} repair_drop={} waiting={}",
+                        s.bitrate_kbps.load(Ordering::Relaxed),
+                        receiver.stats.lost,
+                        receiver.stats.damaged,
+                        s.nack_requests.load(Ordering::Relaxed),
+                        s.rtx_packets.load(Ordering::Relaxed),
+                        s.rtx_drops.load(Ordering::Relaxed),
+                        waiting.load(Ordering::Acquire)
+                    );
+                }
             }
             src = 0;
             bytes = 0;
             window = Instant::now();
         }
     }
+    repairs.unsubscribe(track.ssrc());
     feedback.abort();
     drop(sample_tx);
     let _ = worker.await;
@@ -650,18 +735,31 @@ fn register_receive_codecs(media: &mut MediaEngine) -> Result<()> {
             parameter: String::new(),
         },
     ];
-    for (payload_type, profile, mode) in [
-        (102, "42001f", 1),
-        (127, "42001f", 0),
-        (125, "42e01f", 1),
-        (108, "42e01f", 0),
-        (123, "640032", 1),
+    for (payload_type, repair_type, profile, mode) in [
+        (102, 103, "42001f", 1),
+        (127, 126, "42001f", 0),
+        (125, 124, "42e01f", 1),
+        (108, 109, "42e01f", 0),
+        (123, 122, "640032", 1),
     ] {
         media.register_codec(RTCRtpCodecParameters {
             capability:RTCRtpCodecCapability {mime_type:MIME_TYPE_H264.into(),clock_rate:90_000,
                 sdp_fmtp_line:format!("level-asymmetry-allowed=1;packetization-mode={mode};profile-level-id={profile}"),
                 rtcp_feedback:feedback.clone(),..Default::default()},payload_type,..Default::default()
         },RTPCodecType::Video)?;
+        media.register_codec(
+            RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability {
+                    mime_type: "video/rtx".into(),
+                    clock_rate: 90_000,
+                    sdp_fmtp_line: format!("apt={payload_type}"),
+                    ..Default::default()
+                },
+                payload_type: repair_type,
+                ..Default::default()
+            },
+            RTPCodecType::Video,
+        )?;
     }
     media.register_codec(
         RTCRtpCodecParameters {
