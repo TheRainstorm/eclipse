@@ -281,7 +281,7 @@ impl super::App {
         ui.allocate_ui_with_layout(egui::vec2(width,30.0),egui::Layout::left_to_right(egui::Align::Center),|ui| {
             egui::ScrollArea::horizontal().id_salt("remote-display-tabs")
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .max_width((width-30.0).max(60.0)).auto_shrink([false,true]).show(ui,|ui| {
+                .max_width((width-30.0).max(60.0)).auto_shrink([true,true]).show(ui,|ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x=2.0;
                         for screen in &screens.screens {
