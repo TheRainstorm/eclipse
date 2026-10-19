@@ -29,7 +29,7 @@ fn submenu<R>(
     response
 }
 /// Root controls stay visible while a child opens beside them, like UU.
-fn side_submenu<R>(ui: &mut egui::Ui, kind: Icon, label: impl Into<String>, body: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
+fn side_submenu<R>(ui: &mut egui::Ui, blocked: &mut Vec<Rect>, kind: Icon, label: impl Into<String>, body: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
     let label = label.into();
     let id = ui.make_persistent_id(("side-menu", &label));
     let open = ui.memory(|m| m.is_popup_open(id));
@@ -52,6 +52,7 @@ fn side_submenu<R>(ui: &mut egui::Ui, kind: Icon, label: impl Into<String>, body
                         inner = Some(ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), body).inner);
                     });
             });
+        blocked.push(area.response.rect);
         let parent = ui.memory(|m| m.area_rect(egui::Id::new("stream-control-menu"))).unwrap_or(response.rect);
         let outside = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos()
             .is_some_and(|p| !area.response.rect.contains(p) && !parent.contains(p)));
@@ -266,12 +267,12 @@ impl super::App {
                             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                             ui.spacing_mut().interact_size.y = 27.0;
                             side_submenu(
-                                ui,
+                                ui, &mut blocked,
                                 Icon::Desktop,
                                 format!("显示屏 {}", self.selected_track + 1),
                                 |ui| self.display_menu(ui),
                             );
-                            side_submenu(ui, Icon::Desktop, "画质", |ui| {
+                            side_submenu(ui, &mut blocked, Icon::Desktop, "画质", |ui| {
                                 let mut confirm = false;
                                 for (index, (label, _)) in super::BITRATE_PRESETS.iter().enumerate()
                                 {
@@ -311,7 +312,7 @@ impl super::App {
                                 ui.label(RichText::new(&self.settings_feedback).size(11.0)
                                     .color(Color32::from_rgb(51, 139, 111)));
                             }
-                            side_submenu(ui, Icon::Max, "窗口", |ui| {
+                            side_submenu(ui, &mut blocked, Icon::Max, "窗口", |ui| {
                                 if ui
                                     .button(if self.fullscreen {
                                         "退出全屏"
@@ -329,7 +330,7 @@ impl super::App {
                                 ui.label(RichText::new("Ctrl+Alt+M 可随时恢复入口").small().weak());
                             });
                             unavailable(ui, Icon::Play, "声音", "音频尚未接入");
-                            side_submenu(ui, Icon::Person, "安全", |ui| {
+                            side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
                                 if ui
                                     .checkbox(&mut self.view_only, "仅观看，禁止远程输入")
                                     .changed()
@@ -344,7 +345,7 @@ impl super::App {
                             });
                             unavailable(ui, Icon::Link, "外设", "外设透传尚未接入");
                             unavailable(ui, Icon::Folder, "工具", "文件、终端和端口映射尚未接入");
-                            side_submenu(ui, Icon::Grid, "更多", |ui| {
+                            side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
                                 ui.checkbox(&mut self.hud, "串流统计 · F1");
                                 if ui.button("隐藏悬浮入口 · Ctrl+Alt+M").clicked() {
                                     self.stream_menu.visible = false;
