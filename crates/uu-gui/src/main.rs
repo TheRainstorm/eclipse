@@ -13,6 +13,7 @@ use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
 mod displays;
+mod display_layout;
 mod clipboard;
 mod cursor;
 mod keyboard_capture;
@@ -821,6 +822,13 @@ impl App {
             return;
         };
         let device = self.devices[i].device_id.clone();
+        self.displays.layout_path = display_layout::DisplayLayout::path(&config, &device);
+        if let Some(path) = &self.displays.layout_path {
+            match display_layout::DisplayLayout::load(path) {
+                Ok(layout) => self.displays.layout = layout,
+                Err(error) => self.settings_notice = format!("显示器排序读取失败：{error}"),
+            }
+        }
         let geo = std::env::var("UU_GEO_IP").unwrap_or_else(|_| "36.159.243.209".into());
         let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
         stats.display_mode.store((self.preferences.display_mode==uu_core::screen_control::DisplayMode::ExclusiveVirtual) as u32,std::sync::atomic::Ordering::Release);

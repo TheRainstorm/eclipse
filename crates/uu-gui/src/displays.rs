@@ -2,7 +2,7 @@
 use eframe::egui;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use uu_core::screen_control::{RemoteScreen, RemoteScreens};
+use uu_core::screen_control::RemoteScreens;
 
 pub(super) type CaptureProfile = (u32, usize, u32, usize, bool);
 
@@ -15,6 +15,8 @@ pub(super) struct Displays {
     pub notice: String,
     pub menu_open: bool,
     pub anchor: egui::Pos2,
+    pub layout: super::display_layout::DisplayLayout,
+    pub layout_path: Option<std::path::PathBuf>,
     next_request: u64,
     profiles: HashMap<i32, (u32, CaptureProfile)>,
     settings_sent: Option<(u64, i32, u32, CaptureProfile)>,
@@ -178,22 +180,10 @@ impl Displays {
     }
 }
 
-pub(super) fn label(screens: &RemoteScreens, screen: &RemoteScreen) -> String {
-    let number = screens
-        .screens
-        .iter()
-        .position(|s| s.id == screen.id)
-        .unwrap_or(0)
-        + 1;
-    if screen.display_name.is_empty() {
-        format!("显示屏 {number}")
-    } else {
-        format!("显示屏 {number}（{}）", screen.display_name)
-    }
-}
 impl super::App {
     pub(super) fn remote_screens(&self) -> RemoteScreens {
-        self.controller
+        let mut screens = self
+            .controller
             .as_ref()
             .map(|h| {
                 h.stats
@@ -203,14 +193,27 @@ impl super::App {
                     .clone()
                     .with_desktop_capture(*h.stats.desktop_capture_source.lock().unwrap())
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.displays.layout.sort(&mut screens.screens);
+        screens
+    }
+    fn save_display_layout(&mut self) {
+        if let Some(path) = &self.displays.layout_path {
+            if let Err(error) = self.displays.layout.save(path) {
+                self.settings_notice = format!("显示器排序保存失败：{error}");
+            }
+        }
+    }
+    pub(super) fn reorder_display_tab(&mut self, source: i32, target: i32, after: bool) {
+        if self.displays.layout.move_tab(source, target, after) {
+            self.save_display_layout();
+        }
     }
     pub(super) fn display_label(&self) -> String {
-        let screens = self.remote_screens();
         self.displays
             .selected
-            .and_then(|id| screens.screens.iter().position(|s| s.id == id))
-            .map(|i| format!("显示屏 {}", i + 1))
+            .and_then(|id| self.displays.layout.number(id))
+            .map(|number| format!("显示屏 {number}"))
             .unwrap_or_else(|| "显示器".into())
     }
     pub(super) fn select_remote_screen(&mut self, id: i32) {
@@ -299,6 +302,9 @@ impl super::App {
                 != 0
         });
         let screens = self.remote_screens();
+        if self.displays.layout.sync(&screens.screens) {
+            self.save_display_layout();
+        }
         let bindings: HashMap<_, _> = screens
             .screens
             .iter()

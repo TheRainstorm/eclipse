@@ -70,47 +70,51 @@ impl Settings {
         Ok(s)
     }
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        std::fs::create_dir_all(
-            path.parent()
-                .ok_or_else(|| anyhow::anyhow!("设置目录无效"))?,
-        )?;
-        let temp = path.with_extension(format!(
-            "{}.{}.tmp",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        let result = (|| -> anyhow::Result<()> {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
-            file.write_all(&serde_json::to_vec_pretty(self)?)?;
-            file.sync_all()?;
-            drop(file);
-            #[cfg(windows)]
-            {
-                use std::os::windows::ffi::OsStrExt;
-                #[link(name = "kernel32")]
-                extern "system" {
-                    fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
-                }
-                let from: Vec<_> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
-                let to: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-                if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 1 | 8) } == 0 {
-                    return Err(std::io::Error::last_os_error().into());
-                }
-            }
-            #[cfg(not(windows))]
-            std::fs::rename(&temp, path)?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(temp);
-        }
-        result
+        save_json(self, path)
     }
+}
+
+pub(super) fn save_json(value: &impl Serialize, path: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(
+        path.parent()
+            .ok_or_else(|| anyhow::anyhow!("设置目录无效"))?,
+    )?;
+    let temp = path.with_extension(format!(
+        "{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(&serde_json::to_vec_pretty(value)?)?;
+        file.sync_all()?;
+        drop(file);
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            #[link(name = "kernel32")]
+            extern "system" {
+                fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
+            }
+            let from: Vec<_> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
+            let to: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 1 | 8) } == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+        #[cfg(not(windows))]
+        std::fs::rename(&temp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp);
+    }
+    result
 }
 
 impl super::App {

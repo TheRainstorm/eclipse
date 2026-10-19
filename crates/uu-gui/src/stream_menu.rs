@@ -278,6 +278,7 @@ impl super::App {
         let reserve=if ui.available_width()>660.0{345.0}else{250.0};
         let width=(ui.available_width()-reserve).clamp(75.0,540.0);
         let mut chosen=None;
+        let mut reorder=None;
         ui.allocate_ui_with_layout(egui::vec2(width,30.0),egui::Layout::left_to_right(egui::Align::Center),|ui| {
             egui::ScrollArea::horizontal().id_salt("remote-display-tabs")
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -286,12 +287,20 @@ impl super::App {
                         ui.spacing_mut().item_spacing.x=2.0;
                         for screen in &screens.screens {
                             let selected=self.displays.selected==Some(screen.id);
-                            let label=super::displays::label(&screens,screen);
-                            let (rect,response)=ui.allocate_exact_size(egui::vec2(140.0,30.0),egui::Sense::click());
+                            let label=self.displays.layout.label(screen);
+                            let (rect,response)=ui.allocate_exact_size(egui::vec2(140.0,30.0),egui::Sense::click_and_drag());
                             if selected || response.hovered() {ui.painter().rect_filled(rect,7.0,if selected{Color32::WHITE}else{Color32::from_rgb(232,235,239)});}
+                            response.dnd_set_drag_payload(super::display_layout::DraggedDisplay(screen.id));
+                            if response.dragged(){ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);}
+                            let after=ui.input(|i|i.pointer.hover_pos().is_some_and(|p|p.x>rect.center().x));
+                            if response.dnd_hover_payload::<super::display_layout::DraggedDisplay>().is_some_and(|s|s.0!=screen.id) {
+                                let x=if after{rect.right()}else{rect.left()};
+                                ui.painter().line_segment([egui::pos2(x,rect.top()+3.0),egui::pos2(x,rect.bottom()-3.0)],egui::Stroke::new(2.0,MENU_INK));
+                                if let Some(dropped)=response.dnd_release_payload::<super::display_layout::DraggedDisplay>() {reorder=Some((dropped.0,screen.id,after));}
+                            }
                             icon(ui.painter(),Rect::from_center_size(rect.left_center()+egui::vec2(16.0,0.0),egui::vec2(15.0,15.0)),Icon::Desktop,MENU_INK);
                             ui.painter().with_clip_rect(Rect::from_min_max(rect.min+egui::vec2(30.0,0.0),rect.max-egui::vec2(8.0,0.0))).text(rect.left_center()+egui::vec2(30.0,0.0),egui::Align2::LEFT_CENTER,&label,egui::FontId::proportional(12.0),MENU_INK);
-                            if response.on_hover_text(format!("{}{} · {} × {} · {} Hz",label,if screen.primary{" · 主屏"}else{""},screen.width,screen.height,screen.refresh_hz)).clicked(){chosen=Some(screen.id);}
+                            if response.on_hover_text(format!("{}{} · {} × {} · {} Hz\n拖动调整标签顺序；编号为本地标记，重连后保留",label,if screen.primary{" · 主屏"}else{""},screen.width,screen.height,screen.refresh_hz)).clicked(){chosen=Some(screen.id);}
                         }
                         if screens.screens.is_empty(){ui.label("等待显示器…");}
                     });
@@ -299,6 +308,7 @@ impl super::App {
             let response=ui.add_sized([26.0,28.0],egui::Button::new(RichText::new("+").size(20.0)).frame(false)).on_hover_text("选择远端显示器");
             if response.clicked(){self.displays.menu_open=!self.displays.menu_open;self.stream_menu.open=false;self.context.memory_mut(|m|m.close_popup());self.displays.anchor=response.rect.left_bottom();self.remote_focus=false;self.release_all_keys();}
         });
+        if let Some((source,target,after))=reorder{self.reorder_display_tab(source,target,after);}
         if let Some(id)=chosen{self.select_remote_screen(id);}
     }
 
@@ -324,7 +334,7 @@ impl super::App {
         let screens=self.remote_screens();
         ui.set_min_width(260.0);
         for screen in &screens.screens {
-            let response=menu_row(ui,&super::displays::label(&screens,screen),None,
+            let response=menu_row(ui,&self.displays.layout.label(screen),None,
                 self.displays.selected==Some(screen.id),false,if screen.primary {"主屏"}else{""},false)
                 .on_hover_text(format!("{} · {} × {} · {} Hz · {}",screen.display_name,screen.width,screen.height,screen.refresh_hz,screen.kind_label()));
             if response.clicked(){self.select_remote_screen(screen.id);ui.close_menu();}
