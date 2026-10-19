@@ -230,7 +230,7 @@ async fn run(
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
     while tokio::time::Instant::now() < deadline && !answered {
         let (event, data, atts) =
-            tokio::time::timeout(std::time::Duration::from_secs(10), sio.recv_event())
+            tokio::time::timeout_at(deadline, sio.recv_event())
                 .await
                 .context("signalling timeout")??;
         if event != "soac" {
@@ -249,15 +249,7 @@ async fn run(
         }
     }
     anyhow::ensure!(answered, "no SDP answer");
-    status("已连接");
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    sio.emit(
-        "ice_finished_log",
-        json!({"app_control_id": ctrl, "ice_id": ice_id}),
-        &[],
-    )
-    .await?;
-
+    status("等待 WebRTC 控制通道…");
     // Ask the controlled end for the target frame rate. Without this the host
     // streams at its idle default (~21 fps); the official client sends the same
     // CaptureSettingRequest. Retry a few times while CONTROL settles.
@@ -279,52 +271,11 @@ async fn run(
     } else {
         None
     };
-    // Give CONTROL_DATA_CHANNEL time to open and the SimpleAction echo
-    // handshake to settle; the host ignores settings sent before that.
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-    let mut setting_sent = false;
-    for i in 0..5u64 {
-        let ts = crate::control_wire::now_ms();
-        if media
-            .send_control(crate::control_wire::capture_setting_request_with_resolution(
-                1000 + i,
-                ts,
-                fps_option,
-                quality,
-                custom_bps,
-                crate::control_wire::CaptureResolution::from_env(),
-            ))
-            .await.is_ok() {
-            setting_sent = true;
-            break; // Repeating accepted settings can restart the host encoder.
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-    }
-    anyhow::ensure!(setting_sent, "CONTROL channel did not accept initial capture settings");
-    status("已请求目标画质/码率");
-    let mut probe_timer = tokio::time::interval(std::time::Duration::from_secs(1));
-    loop {
-        tokio::select! {
-            _ = probe_timer.tick() => media.probe_network().await,
-            Some(frame) = input_rx.recv() => {
-                // `frame` is the JSON payload for CONTROL_DATA_CHANNEL. Early
-                // input can arrive before the channel opens; ignore failures so
-                // the status bar is not spammed.
-                let _ = media.send_control(frame).await;
-            }
-            Some(msg) = settings_rx.recv() => {
-                // Runtime CaptureSettingRequest (frame rate / quality / bitrate).
-                let _ = media.send_control(msg).await;
-            }
-            recv = sio.recv_event() => {
-                let (event, data, _) = recv?;
-                if event == "released" { break; }
-                if event == "soac" && data["data"]["type"] == "candidate" {
-                    add_trickle(&media, &data["data"], &ev).await?;
-                }
-            }
-        }
-    }
+    let initial_settings = crate::control_wire::capture_setting_request_with_resolution(
+        1000, crate::control_wire::now_ms(), fps_option, quality, custom_bps,
+        crate::control_wire::CaptureResolution::from_env(),
+    );
+    drive_session(sio, media, &ctrl, &ice_id, &ev, &mut input_rx, &mut settings_rx, initial_settings).await?;
     Ok::<_, anyhow::Error>(())
     };
     let result = tokio::select! {
@@ -345,6 +296,86 @@ async fn run(
     close_session(socket.as_mut(), peer.as_ref(), &ctrl).await;
     status("已断开");
     result
+}
+
+/// Keep consuming trickle candidates while ICE/DTLS/SCTP are connecting.
+/// Capture settings are a deferred operation, never a prerequisite for driving
+/// signalling: otherwise a slow connection deadlocks waiting for its own ICE.
+async fn drive_session(
+    sio: &mut SocketIo,
+    media: &ControllerMedia,
+    ctrl: &str,
+    ice_id: &str,
+    ev: &std::sync::mpsc::Sender<ControllerEvent>,
+    input_rx: &mut UnboundedReceiver<Vec<u8>>,
+    settings_rx: &mut UnboundedReceiver<Vec<u8>>,
+    initial_settings: Vec<u8>,
+) -> Result<()> {
+    use std::time::Duration;
+    use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+    use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+    let status = |message: &str| { let _ = ev.send(ControllerEvent::Status(message.into())); };
+    let started = tokio::time::Instant::now();
+    let mut opened_at = None;
+    let mut pending_initial = true;
+    let mut pending_setting: Option<Vec<u8>> = None;
+    let mut last_attempt = None;
+    let mut setup_timer = tokio::time::interval(Duration::from_millis(250));
+    setup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut probe_timer = tokio::time::interval(Duration::from_secs(1));
+    probe_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = setup_timer.tick() => {
+                let now = tokio::time::Instant::now();
+                match media.pc.connection_state() {
+                    RTCPeerConnectionState::Failed => anyhow::bail!("WebRTC 连接失败（ICE/DTLS）"),
+                    RTCPeerConnectionState::Closed => break,
+                    _ => {}
+                }
+                if media.data_channel.ready_state() == RTCDataChannelState::Open {
+                    if opened_at.is_none() {
+                        opened_at = Some(now);
+                        status("已连接");
+                        sio.emit("ice_finished_log", json!({"app_control_id":ctrl,"ice_id":ice_id}), &[]).await?;
+                    }
+                    // Allow the host's echo/initialization exchange to settle.
+                    // These timers never block receiving trickle candidates.
+                    if now.duration_since(opened_at.unwrap()) >= Duration::from_millis(1500)
+                        && last_attempt.map_or(true, |at| now.duration_since(at) >= Duration::from_millis(500))
+                    {
+                        last_attempt = Some(now);
+                        if pending_initial && media.send_control(initial_settings.clone()).await.is_ok() {
+                            pending_initial = false;
+                            status("已请求目标画质/码率");
+                        }
+                        if !pending_initial {
+                            if let Some(msg) = pending_setting.take() {
+                                if media.send_control(msg.clone()).await.is_err() { pending_setting = Some(msg); }
+                            }
+                        }
+                    }
+                } else if opened_at.is_none() && now.duration_since(started) >= Duration::from_secs(45) {
+                    anyhow::bail!("等待 WebRTC 控制通道超时（45秒），请检查网络或被控端");
+                }
+            }
+            _ = probe_timer.tick(), if opened_at.is_some() => media.probe_network().await,
+            Some(frame) = input_rx.recv(), if opened_at.is_some() => {
+                let _ = media.send_control(frame).await;
+            }
+            Some(msg) = settings_rx.recv() => {
+                pending_setting = Some(msg); // Keep the newest selection until CONTROL is ready.
+            }
+            recv = sio.recv_event() => {
+                let (event, data, _) = recv?;
+                if event == "released" { break; }
+                if event == "soac" && data["data"]["type"] == "candidate" {
+                    add_trickle(media, &data["data"], ev).await?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The same finalizer runs after cancellation, errors and a host release.
@@ -390,3 +421,7 @@ mod tests {
         close_session(None, None, "never-connected").await;
     }
 }
+
+#[cfg(test)]
+#[path = "controller_startup_tests.rs"]
+mod startup_tests;
