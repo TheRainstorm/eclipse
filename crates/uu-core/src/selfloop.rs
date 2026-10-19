@@ -20,7 +20,9 @@ use tokio::sync::mpsc;
 
 use uu_capture::backend::Capture;
 use uu_capture::SyntheticCapture;
-use uu_media::{default_encoder, luma_mse, psnr_from_mse, software_decoder, RawFrame};
+use uu_media::{
+    default_encoder_with_frame_rate, luma_mse, psnr_from_mse, software_decoder, RawFrame,
+};
 use uu_proto::pkt::{packetize, Reassembler};
 
 /// Receive buffer for the controller socket. A 720p keyframe is ~100 KB and
@@ -101,6 +103,12 @@ pub async fn run(cfg: SelfLoopConfig) -> Result<()> {
     if cfg.frames == 0 {
         bail!("--frames must be at least 1");
     }
+    if !(2..=8192).contains(&cfg.width) || !(2..=8192).contains(&cfg.height) {
+        bail!("software self-loop dimensions must be 2..=8192");
+    }
+    if !(1..=60).contains(&cfg.fps) || !(64..=100_000).contains(&cfg.bitrate_kbps) {
+        bail!("software self-loop requires 1..=60 fps and 64..=100000 kbps");
+    }
     println!("uu self-loop  (M2 pipeline check, no NetEase servers involved)");
     println!(
         "  source      synthetic {}x{} @{}fps (no display required)",
@@ -115,7 +123,11 @@ pub async fn run(cfg: SelfLoopConfig) -> Result<()> {
     let controller = bind_udp("127.0.0.1:0", RCVBUF_BYTES).context("binding controller socket")?;
     let controller_addr = controller.local_addr()?;
     let host = bind_udp("127.0.0.1:0", RCVBUF_BYTES).context("binding host socket")?;
-    println!("  transport   udp 127.0.0.1:{} -> {}", host.local_addr()?.port(), controller_addr.port());
+    println!(
+        "  transport   udp 127.0.0.1:{} -> {}",
+        host.local_addr()?.port(),
+        controller_addr.port()
+    );
 
     // Source frames are shared with the controller task so it can score the
     // decoded output. Test-harness only: the wire protocol has no such channel.
@@ -185,12 +197,18 @@ pub async fn run(cfg: SelfLoopConfig) -> Result<()> {
         decode_ratio * 100.0,
         ctrl_stats.pending_at_end
     );
-    println!("  quality     avg PSNR={:.2} dB  min={:.2} dB  (samples={})",
-             avg_psnr, ctrl_stats.psnr_min, ctrl_stats.psnr_samples);
+    println!(
+        "  quality     avg PSNR={:.2} dB  min={:.2} dB  (samples={})",
+        avg_psnr, ctrl_stats.psnr_min, ctrl_stats.psnr_samples
+    );
 
     // Hard gates: the point of the harness is to fail loudly on regressions.
     if (host_stats.captured as u64) != expected {
-        bail!("capture produced {} of {} frames", host_stats.captured, expected);
+        bail!(
+            "capture produced {} of {} frames",
+            host_stats.captured,
+            expected
+        );
     }
     if host_stats.encoded == 0 {
         bail!("encoder produced no bitstream at all");
@@ -214,7 +232,10 @@ pub async fn run(cfg: SelfLoopConfig) -> Result<()> {
         );
     }
     if ctrl_stats.pending_at_end != 0 {
-        bail!("{} frames were left with missing chunks", ctrl_stats.pending_at_end);
+        bail!(
+            "{} frames were left with missing chunks",
+            ctrl_stats.pending_at_end
+        );
     }
     if decode_ratio < 0.95 {
         bail!("decode ratio {:.1}% is below 95%", decode_ratio * 100.0);
@@ -225,7 +246,8 @@ pub async fn run(cfg: SelfLoopConfig) -> Result<()> {
     if avg_psnr < cfg.min_psnr_db {
         bail!(
             "decoded quality {:.2} dB is below the {:.1} dB gate",
-            avg_psnr, cfg.min_psnr_db
+            avg_psnr,
+            cfg.min_psnr_db
         );
     }
     println!();
@@ -249,7 +271,8 @@ async fn host_loop(
     cfg: &SelfLoopConfig,
     src_tx: mpsc::UnboundedSender<(u32, RawFrame)>,
 ) -> Result<HostStats> {
-    let mut encoder = default_encoder(cfg.bitrate_kbps).context("creating encoder")?;
+    let mut encoder =
+        default_encoder_with_frame_rate(cfg.bitrate_kbps, cfg.fps).context("creating encoder")?;
     let mut stats = HostStats::default();
     let frame_interval = Duration::from_micros(1_000_000 / cfg.fps.max(1) as u64);
     let start = Instant::now();
@@ -262,13 +285,21 @@ async fn host_loop(
             stats.encoded += 1;
         }
         for ef in &encoded {
-            let packets = packetize(frame_id, ef.pts.as_micros(), ef.is_keyframe, &ef.data, cfg.mtu)
-                .context("packetizing")?;
+            let packets = packetize(
+                frame_id,
+                ef.pts.as_micros(),
+                ef.is_keyframe,
+                &ef.data,
+                cfg.mtu,
+            )
+            .context("packetizing")?;
             if ef.is_keyframe {
                 stats.keyframes += 1;
             }
             for p in &packets {
-                host.send_to(p, controller_addr).await.context("sending datagram")?;
+                host.send_to(p, controller_addr)
+                    .await
+                    .context("sending datagram")?;
                 stats.packets += 1;
                 stats.payload_bytes += p.len() as u64;
             }
@@ -343,7 +374,13 @@ async fn controller_loop(
                 Ok((n, _)) => {
                     stats.packets += 1;
                     stats.delivered_bytes += n as u64;
-                    ingest(&mut reassembler, &mut decoder, &mut decoded_frames, &mut stats, &buf[..n]);
+                    ingest(
+                        &mut reassembler,
+                        &mut decoder,
+                        &mut decoded_frames,
+                        &mut stats,
+                        &buf[..n],
+                    );
                     quiet_ticks = 0;
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -360,7 +397,13 @@ async fn controller_loop(
             Ok(Ok((n, _))) => {
                 stats.packets += 1;
                 stats.delivered_bytes += n as u64;
-                ingest(&mut reassembler, &mut decoder, &mut decoded_frames, &mut stats, &buf[..n]);
+                ingest(
+                    &mut reassembler,
+                    &mut decoder,
+                    &mut decoded_frames,
+                    &mut stats,
+                    &buf[..n],
+                );
                 quiet_ticks = 0;
             }
             Ok(Err(_)) => break,

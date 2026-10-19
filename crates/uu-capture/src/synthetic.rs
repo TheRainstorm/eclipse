@@ -20,7 +20,7 @@ pub struct SyntheticCapture {
     height: u32,
     frame_index: u64,
     started: Instant,
-    interval: Duration,
+    fps: u32,
 }
 
 impl SyntheticCapture {
@@ -33,7 +33,7 @@ impl SyntheticCapture {
             height,
             frame_index: 0,
             started: Instant::now(),
-            interval: Duration::from_micros(1_000_000 / fps.max(1) as u64),
+            fps: fps.max(1),
         }
     }
 
@@ -46,12 +46,12 @@ impl SyntheticCapture {
 
         // Moving 32x32 white box: guarantees inter-frame difference.
         let box_size = 32usize.min(w).min(h);
-        let bx = (t * 3) % w.saturating_sub(box_size).max(1);
-        let by = (t * 2) % h.saturating_sub(box_size).max(1);
+        let bx = t.wrapping_mul(3) % w.saturating_sub(box_size).max(1);
+        let by = t.wrapping_mul(2) % h.saturating_sub(box_size).max(1);
 
         for y in 0..h {
             for x in 0..w {
-                let gradient = ((x + t * 2) % 256) as u8;
+                let gradient = ((x.wrapping_add(t.wrapping_mul(2))) % 256) as u8;
                 let in_box = x >= bx && x < bx + box_size && y >= by && y < by + box_size;
                 let stripes = if (y / 16) % 2 == 0 { 40 } else { 0 } as u8;
                 data[y * w + x] = if in_box {
@@ -74,7 +74,8 @@ impl SyntheticCapture {
             }
         }
 
-        let pts = Timestamp((n * 1_000_000) / 30);
+        let pts =
+            Timestamp(((n as u128 * 1_000_000) / self.fps as u128).min(u64::MAX as u128) as u64);
         RawFrame {
             width: self.width,
             height: self.height,
@@ -94,7 +95,9 @@ impl Capture for SyntheticCapture {
 
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
         // Pace to the requested rate, then advance the pattern.
-        let target = self.started + self.interval * (self.frame_index as u32 + 1);
+        let elapsed = ((self.frame_index as u128 + 1) * 1_000_000_000 / self.fps as u128)
+            .min(u64::MAX as u128) as u64;
+        let target = self.started + Duration::from_nanos(elapsed);
         let now = Instant::now();
         if target > now {
             std::thread::sleep(target - now);
@@ -122,7 +125,11 @@ mod tests {
         let b = c.pattern(7);
         assert!(a.is_consistent());
         assert_eq!(a.data.len(), (320 * 240 * 3 / 2) as usize);
-        assert_ne!(a.data[..320 * 240], b.data[..320 * 240], "pattern must move");
+        assert_ne!(
+            a.data[..320 * 240],
+            b.data[..320 * 240],
+            "pattern must move"
+        );
         assert_ne!(a.pts, b.pts);
     }
 
@@ -133,5 +140,14 @@ mod tests {
         let (w, h) = (64usize, 64usize);
         let u = &f.data[w * h..w * h + (w / 2) * (h / 2)];
         assert!(u.iter().max() != u.iter().min(), "U plane should vary");
+    }
+    #[test]
+    fn timestamps_match_requested_frame_rate_without_long_term_rounding_drift() {
+        for fps in [24, 30, 60, 120, 144] {
+            let capture = SyntheticCapture::new(8, 8, fps);
+            assert_eq!(capture.pattern(fps as u64).pts, Timestamp(1_000_000));
+            assert_eq!(capture.pattern(1).pts, Timestamp(1_000_000 / fps as u64));
+            assert!(capture.pattern(u64::MAX).pts.0 > 0);
+        }
     }
 }

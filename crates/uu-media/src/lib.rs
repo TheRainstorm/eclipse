@@ -28,11 +28,18 @@ pub use h264::{H264Decoder, H264Encoder};
 
 /// Build the default software encoder for this build.
 pub fn default_encoder(bitrate_kbps: u32) -> Result<Box<dyn VideoEncoder>, CodecError> {
+    default_encoder_with_frame_rate(bitrate_kbps, 30)
+}
+
+pub fn default_encoder_with_frame_rate(
+    bitrate_kbps: u32,
+    fps: u32,
+) -> Result<Box<dyn VideoEncoder>, CodecError> {
     #[cfg(feature = "h264")]
-    let encoder: Box<dyn VideoEncoder> = Box::new(H264Encoder::new(bitrate_kbps)?);
+    let encoder: Box<dyn VideoEncoder> = Box::new(H264Encoder::with_frame_rate(bitrate_kbps, fps)?);
     #[cfg(not(feature = "h264"))]
     let encoder: Box<dyn VideoEncoder> = {
-        let _ = bitrate_kbps;
+        let _ = (bitrate_kbps, fps);
         Box::new(NullEncoder::new(uu_proto::media::VideoCodec::H264))
     };
     Ok(encoder)
