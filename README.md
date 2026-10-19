@@ -55,7 +55,15 @@ dist/uu-gui-win64/
   libstdc++-6.dll
   libgcc_s_seh-1.dll
   README.txt
+  install.ps1
+  version.json
 ```
+
+正式安装目录统一为 `%USERPROFILE%\uu-gui-demo`，桌面入口是 **UU Remote Rust**。
+在分发包目录运行 `powershell -ExecutionPolicy Bypass -File .\install.ps1` 安装/升级；
+旧 `rtx-auto`、`hud-recovery` 和 exe 备份会归档到 `%USERPROFILE%\uu-gui-archive`。
+主页底部显示源代码版本号，悬停显示实际 exe 路径；`version.json` 记录该包的提交号与文件哈希。
+开发端统一用 `python3 tools/windows/package.py` 构建并生成包，避免手动复制错版本。
 
 首次启动会显示二维码，用手机扫码登录；左侧选择设备后点“连接”。
 

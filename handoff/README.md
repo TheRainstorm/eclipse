@@ -14,8 +14,11 @@
 | 08 | `08-2026-10-19-reference-index.md` | 功能拆分提交、三个本地项目源码参考索引、协议差异与后续实施顺序 |
 | 09 | `09-2026-10-19-controls-rtx-auto.md` | 可隐藏悬浮菜单、官方自动档达18Mbps、RTX接收与严格恢复、Windows真实PTS |
 | 10 | `10-2026-10-19-resize-hud-recovery-exit.md` | 窗口缩放、Moonlight HUD、侧边菜单确认、恢复竞争/高吞吐优化、退出清理 |
+| 11 | `11-2026-10-19-connection-startup-unified-install.md` | CONTROL启动连接回归修复、迟到ICE回归测试、单一Windows安装入口与版本校验 |
 
 约定：
+
+- Windows 唯一正式入口为 `C:\Users\yfy\uu-gui-demo\uu-gui.exe`，桌面 `UU Remote Rust`；旧目录已归档。当前安装说明以交接11为准。
 
 - 当前 x358h SSH 地址是 `192.168.34.3:2202`（2026-10-19 用户更新）；历史文档中的 `192.168.35.200` 已失效。
 
