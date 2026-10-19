@@ -36,3 +36,11 @@ python3 tools/native/input_smoke.py \
 ```
 
 脚本创建有随机 Xauthority 认证的独立 Xvfb，并核对服务器 PID；测试示例也要求该隔离证明，不接受工作桌面作为默认目标。它验证真实采集、TLS/SRTP 视频、控制授权、按住超过租期的心跳、只读切换与断线释放，同时确认本会话未按下的外部按键保持原状。加 `--probe-arg=--read-only` 检查主机拒绝控制时仍能观看且输入计数为零。
+
+Windows 交互桌面可额外检查 SendInput 的实际 OS 消息投递：
+
+```powershell
+cargo run --release -p uu-input --example windows_owned_probe -- --owned-window
+```
+
+该检查短暂打开自己的前台窗口，验证标点与扩展键扫描码、中键与侧键、双轴滚轮和按键释放。每次发送前检查前台归属，鼠标按键和滚轮还核对指针命中该窗口；焦点移走后停止检查。结束时恢复先前指针与前台窗口，焦点已被用户切换时保持用户的新选择。CI 编译该示例，实际交互检查需在可用的桌面会话显式运行。

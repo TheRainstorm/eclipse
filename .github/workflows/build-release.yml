@@ -110,6 +110,7 @@ jobs:
       - name: Build Windows input validation
         if: matrix.platform == 'windows-x64'
         run: |
+          cargo build -p uu-input --release --target x86_64-pc-windows-gnu --example windows_owned_probe --locked
           cargo test -p uu-input --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/input-test-build.jsonl
           python3 - <<'PY'
           import json
