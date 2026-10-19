@@ -102,6 +102,7 @@ struct App {
     autoconnect_done: bool,
     fullscreen: bool,
     bitrate_idx: usize,
+    resolution_idx: usize,
     custom_mbps: u32,
     settings_seq: u64,
     pointer: input::RemotePointer,
@@ -277,7 +278,8 @@ impl App {
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(false),
             autoconnect_done: false,
             fullscreen: false,
-            bitrate_idx: 5,
+            bitrate_idx: 4,
+            resolution_idx: 0,
             custom_mbps: 55,
             settings_seq: 0,
             pointer: input::RemotePointer::default(),
@@ -457,12 +459,19 @@ impl App {
             None
         };
         self.settings_seq = self.settings_seq.wrapping_add(1);
-        let msg = uu_core::control_wire::capture_setting_request(
+        let resolution = match self.resolution_idx {
+            1=>uu_core::control_wire::CaptureResolution::Exact(1920,1080),
+            2=>uu_core::control_wire::CaptureResolution::Exact(2560,1440),
+            3=>uu_core::control_wire::CaptureResolution::Exact(3840,2160),
+            _=>uu_core::control_wire::CaptureResolution::Native,
+        };
+        let msg = uu_core::control_wire::capture_setting_request_with_resolution(
             2000 + self.settings_seq,
             uu_core::control_wire::now_ms(),
             2,
             quality,
             custom_bps,
+            resolution,
         );
         let _ = h.settings.send(msg);
     }

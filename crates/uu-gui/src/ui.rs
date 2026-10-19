@@ -713,6 +713,11 @@ impl App {
                 if self.bitrate_idx == 5 {
                     ui.add(egui::Slider::new(&mut self.custom_mbps, 1..=100).suffix(" Mbps"));
                 }
+                let resolution_before=self.resolution_idx;
+                egui::ComboBox::from_id_salt("resolution-quality").selected_text(["跟随远端分辨率","1920 × 1080","2560 × 1440","3840 × 2160"][self.resolution_idx]).show_ui(ui,|ui|{
+                    for (index,label) in ["跟随远端分辨率","1920 × 1080","2560 × 1440","3840 × 2160"].iter().enumerate(){ui.selectable_value(&mut self.resolution_idx,index,*label);}
+                });
+                if resolution_before!=self.resolution_idx{self.send_bitrate();}
                 if previous != (self.bitrate_idx, self.custom_mbps) {
                     self.send_bitrate();
                 }

@@ -150,7 +150,7 @@ async fn run(
         "device_capability": {
             "display_info": [{"id":0,"fps":60,"type":0,"hdr":-2}],
             "video_codec_capability": [{
-                "video_codec":1,"width":1920,"height":1080,
+                "video_codec":1,"width":3840,"height":2160,
                 "chroma_sampling":1,"bit_depth":8,"codec_impl":32
             }],
             "ice_id": ""
@@ -271,12 +271,13 @@ async fn run(
     for i in 0..5u64 {
         let ts = crate::control_wire::now_ms();
         let _ = media
-            .send_control(crate::control_wire::capture_setting_request(
+            .send_control(crate::control_wire::capture_setting_request_with_resolution(
                 1000 + i,
                 ts,
                 fps_option,
                 quality,
                 custom_bps,
+                crate::control_wire::CaptureResolution::from_env(),
             ))
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;

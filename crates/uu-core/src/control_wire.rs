@@ -44,8 +44,16 @@ pub fn envelope(seq: u64, kind: u32, payload: &[u8]) -> Vec<u8> {
 }
 
 /// Viewer FeatureFlag pairs; clipboard (field 8) is advertised separately.
-pub const VIEWER_FEATURES: [[u32; 2]; 8] =
-    [[1, 6], [2, 2], [3, 1], [4, 2], [6, 2], [7, 2], [8, 3], [9, 1]];
+pub const VIEWER_FEATURES: [[u32; 2]; 8] = [
+    [1, 6],
+    [2, 2],
+    [3, 1],
+    [4, 2],
+    [6, 2],
+    [7, 2],
+    [8, 3],
+    [9, 1],
+];
 
 fn feature_flag(flags: &[[u32; 2]]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -56,7 +64,11 @@ fn feature_flag(flags: &[[u32; 2]]) -> Vec<u8> {
 }
 
 fn session_features(clipboard: bool) -> Vec<u8> {
-    let mut flags: Vec<[u32; 2]> = VIEWER_FEATURES.iter().copied().filter(|p| p[0] != 8).collect();
+    let mut flags: Vec<[u32; 2]> = VIEWER_FEATURES
+        .iter()
+        .copied()
+        .filter(|p| p[0] != 8)
+        .collect();
     if clipboard {
         flags.push([8, 3]);
     }
@@ -93,6 +105,50 @@ pub fn capture_setting_request(
     quality: u64,
     custom_bitrate_bps: Option<u64>,
 ) -> Vec<u8> {
+    capture_setting_request_with_resolution(
+        seq,
+        timestamp_ms,
+        fps_option,
+        quality,
+        custom_bitrate_bps,
+        CaptureResolution::Unchanged,
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureResolution {
+    Unchanged,
+    Native,
+    Exact(u32, u32),
+}
+impl CaptureResolution {
+    pub fn from_env() -> Self {
+        let value = std::env::var("UU_RESOLUTION").unwrap_or_default();
+        match value
+            .split_once('x')
+            .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+        {
+            Some((w, h))
+                if (320..=3840).contains(&w)
+                    && (240..=2160).contains(&h)
+                    && w % 2 == 0
+                    && h % 2 == 0 =>
+            {
+                Self::Exact(w, h)
+            }
+            _ => Self::Native,
+        }
+    }
+}
+
+pub fn capture_setting_request_with_resolution(
+    seq: u64,
+    timestamp_ms: u64,
+    fps_option: u64,
+    quality: u64,
+    custom_bitrate_bps: Option<u64>,
+    resolution: CaptureResolution,
+) -> Vec<u8> {
     let fps = match fps_option {
         1 => 30,
         2 => 60,
@@ -105,14 +161,33 @@ pub fn capture_setting_request(
     int(2, quality, &mut setting);
     // Runtime switch sentinels observed from the official client.  protobuf
     // int64 negatives use the full 10-byte two's-complement varint.
-    int(4, u64::MAX - 1, &mut setting); // -2
-    int(5, u64::MAX, &mut setting); // -1
-    int(6, u64::MAX, &mut setting); // -1
+    match resolution {
+        CaptureResolution::Exact(width, height) => {
+            int(4, 1, &mut setting);
+            int(5, width as u64, &mut setting);
+            int(6, height as u64, &mut setting);
+            int(16, width as u64, &mut setting);
+            int(17, height as u64, &mut setting);
+        }
+        _ => {
+            int(4, u64::MAX - 1, &mut setting);
+            int(5, u64::MAX, &mut setting);
+            int(6, u64::MAX, &mut setting);
+        }
+    }
     int(7, 1, &mut setting);
     if let Some(bps) = custom_bitrate_bps {
         int(8, bps, &mut setting);
     }
-    int(10, 1, &mut setting);
+    int(
+        10,
+        if resolution == CaptureResolution::Native {
+            3
+        } else {
+            1
+        },
+        &mut setting,
+    );
     int(12, 4, &mut setting);
     int(13, 2, &mut setting);
     int(14, 3840, &mut setting);
@@ -152,7 +227,11 @@ pub fn echo_request(seq: u64) -> Vec<u8> {
 pub fn echo_response(seq: u64, request_seq: u64) -> Vec<u8> {
     let mut action = Vec::new();
     int(1, 1, &mut action);
-    bytes(2, format!("{{\"seq\":{request_seq}}}").as_bytes(), &mut action);
+    bytes(
+        2,
+        format!("{{\"seq\":{request_seq}}}").as_bytes(),
+        &mut action,
+    );
     bytes(4, &session_features(false), &mut action);
     envelope(seq, 3, &action)
 }
@@ -191,13 +270,17 @@ pub fn echo_matches(data: &[u8], seq: u64) -> bool {
             let Ok(af) = decode_wire(action) else {
                 return false;
             };
-            let response = af.iter().any(|(n, v)| *n == 1 && *v == WireValue::Varint(1));
+            let response = af
+                .iter()
+                .any(|(n, v)| *n == 1 && *v == WireValue::Varint(1));
             response
                 && af.iter().any(|(n, v)| match (n, v) {
-                    (2, WireValue::Bytes(args)) => serde_json::from_slice::<serde_json::Value>(args)
-                        .ok()
-                        .and_then(|j| j.get("seq").and_then(|s| s.as_u64()))
-                        == Some(seq),
+                    (2, WireValue::Bytes(args)) => {
+                        serde_json::from_slice::<serde_json::Value>(args)
+                            .ok()
+                            .and_then(|j| j.get("seq").and_then(|s| s.as_u64()))
+                            == Some(seq)
+                    }
                     _ => false,
                 })
         }
@@ -257,6 +340,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_and_explicit_resolution_requests_do_not_impose_the_old_1080_cap() {
+        fn setting(resolution: CaptureResolution) -> Vec<u8> {
+            let msg = capture_setting_request_with_resolution(1, 1, 2, 5, None, resolution);
+            let rpc = decode_wire(&msg)
+                .unwrap()
+                .into_iter()
+                .find_map(|(n, v)| match (n, v) {
+                    (21, WireValue::Bytes(b)) => Some(b.to_vec()),
+                    _ => None,
+                })
+                .unwrap();
+            decode_wire(&rpc)
+                .unwrap()
+                .into_iter()
+                .find_map(|(n, v)| match (n, v) {
+                    (2, WireValue::Bytes(b)) => Some(b.to_vec()),
+                    _ => None,
+                })
+                .unwrap()
+        }
+        let native = setting(CaptureResolution::Native);
+        let fields = decode_wire(&native).unwrap();
+        assert!(fields.contains(&(10, WireValue::Varint(3))));
+        assert!(!fields.iter().any(|(n, _)| *n == 8));
+        let full = setting(CaptureResolution::Exact(3840, 2160));
+        let fields = decode_wire(&full).unwrap();
+        for (n, value) in [(4, 1), (5, 3840), (6, 2160), (16, 3840), (17, 2160)] {
+            assert!(fields.contains(&(n, WireValue::Varint(value))));
+        }
+    }
+    #[test]
     fn echo_request_is_detected() {
         let req = echo_request(7);
         assert_eq!(echo_request_seq(&req), Some(7));
@@ -275,8 +389,12 @@ mod tests {
     fn capture_setting_matches_official_custom_bitrate() {
         let msg = capture_setting_request(115, 1_792_263_156_376, 2, 6, Some(55_000_000));
         let fields = decode_wire(&msg).unwrap();
-        assert!(fields.iter().any(|(n, v)| *n == 1 && *v == WireValue::Varint(115)));
-        assert!(fields.iter().any(|(n, v)| *n == 2 && *v == WireValue::Varint(1_792_263_156_376)));
+        assert!(fields
+            .iter()
+            .any(|(n, v)| *n == 1 && *v == WireValue::Varint(115)));
+        assert!(fields
+            .iter()
+            .any(|(n, v)| *n == 2 && *v == WireValue::Varint(1_792_263_156_376)));
         let rpc = fields
             .iter()
             .find_map(|(n, v)| match (n, v) {

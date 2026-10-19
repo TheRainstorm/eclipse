@@ -206,6 +206,22 @@ impl super::App {
                                             .suffix(" Mbps"),
                                     );
                                 }
+                                ui.separator();
+                                let previous_resolution = self.resolution_idx;
+                                for (index, label) in [
+                                    "跟随远端分辨率",
+                                    "1920 × 1080",
+                                    "2560 × 1440",
+                                    "3840 × 2160",
+                                ]
+                                .iter()
+                                .enumerate()
+                                {
+                                    ui.selectable_value(&mut self.resolution_idx, index, *label);
+                                }
+                                if previous_resolution != self.resolution_idx {
+                                    self.send_bitrate();
+                                }
                                 if before != (self.bitrate_idx, self.custom_mbps) {
                                     self.send_bitrate();
                                 }

@@ -146,6 +146,13 @@ pub fn encode_app_data(device_id: &str) -> Vec<u8> {
     let mut out = vec![0x04];
     out.extend_from_slice(&[0x08, 0x01]); // field 1 = 1
     out.extend_from_slice(&[0x10, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]);
+    // ConnectOptions field 4 = DecoderCap {fps, codec, width, height, chroma}.
+    // The old empty list plus 1080p streamer JSON restricted the initial stream.
+    let mut cap=Vec::new();
+    for (field,value) in [(1,60),(2,1),(3,3840),(4,2160),(5,1)] {
+        crate::control_wire::int(field,value,&mut cap);
+    }
+    crate::control_wire::bytes(4,&cap,&mut out);
     out.extend_from_slice(&[0x40, 0x03]); // field 8 = 3
     out.push(0x4a); // field 9, string
     varint(&mut out, device_id.len() as u64);
