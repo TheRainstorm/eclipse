@@ -20,12 +20,14 @@
 | M5 | 官方信令：Socket.IO (`X-NRD-AUTH`) + SDP/ICE | ✅ |
 | M6 | GUI：设备列表、扫码登录、远程画面、全屏/断开 | ✅ |
 | M7 | Windows x64 交叉构建 | ✅ 已在 KVM-WIN11 启动验证 |
-| M8 | Windows D3D11VA 硬件解码 | ✅ Intel Arc B390 / AMD RX 7900 XTX 实测；Linux VA-API 待真机验证 |
+| M8 | Windows D3D11VA 硬件解码 | ✅ Intel Arc B390 / AMD RX 7900 XTX 实测；Linux VA-API 已在 laptop-arch Intel Tiger Lake 实测 |
 | M9 | 输入与串流体验 | ✅ Windows 中键按住/拖动、浅色设备主页、RTP 重排/坏帧丢弃/恢复、最新帧呈现 |
 | M10 | 自动档与重传恢复 | ✅ DecoderCap/自动画质、NACK/RTX、严格参考链恢复、可隐藏悬浮菜单；短测17–19Mbps |
 
 > 现在已经能做到：连接官方被控端、连续看画面、用鼠标和键盘操作。剩余的是
 > 文件等外围功能，以及原生采集后端（目前是占位）。
+
+Linux 原生客户端、统一安装入口和独立 Wayland/音频自动验收见 [Linux 客户端说明](docs/linux-client.md)。
 
 ## 最重要的逆向结论
 

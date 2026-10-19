@@ -1,5 +1,7 @@
 # 开源实现参考索引
 
+最新 Linux 落地：参考 Moonlight `input.cpp::updateKeyboardGrabState` 的“捕获状态 + 全屏策略”条件，在现有 egui/winit 上实现窗口/seat 级 Wayland shortcuts-inhibit；相对模式使用 Locked。补齐 Linux CPAL 播放、原生文本剪贴板，并在 laptop-arch 自动连接 KVM-WIN11 验证。具体边界、可重跑命令见 [Linux 客户端说明](linux-client.md)。Linux VAAPI 现已实测修复桌面缓冲区分配及 Intel DMA 映射崩溃；NV12/I420 SIMD 转换见 [性能记录](conversion-performance.md)。
+
 新增落地：参考U的DTLS握手结束处理，并核对本项目0.10.0源码，修复“握手已完成但接收任务还等待过期确认”的死锁。原版确定性回归失败，补丁后与正常DTLS/CONTROL回环通过；详见[交接17](../handoff/17-2026-10-19-dtls-reader-sctp.md)与[补丁来源和验证](../vendor/webrtc-dtls/UU-PATCH.md)。本地生产依赖采用MIT/Apache发布源码适配，没有整体替换为U的WebRTC副本。
 
 用户实机验收：交付`f74fc9d`后用户明确回复“恢复了”，确认本次键鼠恢复；高帧率与长稳结果另记。
