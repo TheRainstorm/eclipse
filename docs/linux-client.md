@@ -43,7 +43,7 @@ python3 tools/linux/wayland_smoke.py \
 
 `clipboard_probe` 在该独立剪贴板验证中英文标点、双向文本、回环抑制、只读和失焦停用。不读取用户 KDE 剪贴板。
 
-远端键盘验收可在专用测试主机的**交互桌面**运行 `tools/windows/keyboard-fixture.ps1`，然后向上述脚本增加 `--keyboard-fixture`。F22 只激活测试文本框；脚本输入固定文本 `aA;:,.?/[]{}+-_` 并发送 Ctrl+C/V/X。文本框禁用自己的 IME、拦截复制/粘贴/剪切，保留系统剪贴板；45 秒后关闭并恢复原前台。通过指定 `-Output` 读取 JSON，逐字检查结果，不能仅以“已发送”当作输入通过。不要在没有该专用文本框时启用此参数。
+远端键盘验收可在专用测试主机的**交互桌面**运行 `tools/windows/keyboard-fixture.ps1`，然后向上述脚本增加 `--keyboard-fixture`。增加 `--relative-mouse` 可验证Locked相对模式；`--soak-seconds 60` 延长运行。F22 只激活测试文本框；脚本输入固定文本 `aA;:,.?/[]{}+-_` 并发送 Ctrl+C/V/X。文本框禁用自己的 IME、拦截复制/粘贴/剪切，保留系统剪贴板；45 秒后关闭并恢复原前台。通过指定 `-Output` 读取 JSON，逐字检查结果，不能仅以“已发送”当作输入通过。不要在没有该专用文本框时启用此参数。
 
 ## 音频与硬解验收
 
@@ -58,4 +58,4 @@ UU_DECODER=hw target/release/uu probe --h264 TEST.h264
 
 硬解必须检查最终仍为 `vaapi`、无错误和无线程崩溃；“初始化成功”不足以证明硬解可用。当前采用驱动分配的 DMA surfaces 和 VAImage 映射，避开桌面 Mesa 不支持的 ChromeOS GBM 标志与上游 DMA 去平铺越界。120 AU 的离线样本输出118帧，当前 stateless 后端存在内部尾帧/提交等待；不能把这个尾差当网络丢包，也不能据离线吞吐声称实机持续60/120FPS。
 
-实测两次完整 Wayland 套件退出码0，四次切屏均完成、无切屏超时，元数据保持 AMD vDisplay 和 Zako HDR 两个物理源；键盘固定文本逐字匹配、C/V/X 均确认。Opus 空声卡录到440Hz测试音。仍需日常长稳、相对鼠标游戏手感、真实多屏跨DPI和其它GPU回归。
+实测多轮完整 Wayland 套件及正式安装包相对模式60秒持续运行均退出码0，四次切屏均完成、无切屏超时，元数据保持 AMD vDisplay 和 Zako HDR 两个物理源；键盘固定文本逐字匹配、C/V/X 均确认。Opus 空声卡录到440Hz测试音。正式包60秒运动画面测试末帧HUD约57 Rx / 56.7 De / 59.2 Rd FPS，解码4.60ms、解码错误0、坏帧0；只作为该次短测快照。仍需日常长稳、相对鼠标游戏手感、真实多屏跨DPI和其它GPU回归。

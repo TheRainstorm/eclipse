@@ -161,7 +161,10 @@ mod linux {
         for line in std::io::stdin().lock().lines() {
             let v: serde_json::Value = serde_json::from_str(&line?)?;
             let time = || start.elapsed().as_millis() as u32;
-            if let Some(x) = v.get("x").and_then(|x| x.as_u64()) {
+            if let Some(dx) = v.get("dx").and_then(|x| x.as_f64()) {
+                pointer.motion(time(), dx, v["dy"].as_f64().unwrap());
+                pointer.frame();
+            } else if let Some(x) = v.get("x").and_then(|x| x.as_u64()) {
                 pointer.motion_absolute(
                     time(),
                     x as u32,

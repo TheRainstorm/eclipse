@@ -17,6 +17,8 @@ def main():
     ap.add_argument('--state', type=Path, required=True, help='Existing private uu-remote/state.json; never printed')
     ap.add_argument('--device', required=True)
     ap.add_argument('--input-driver', type=Path, required=True)
+    ap.add_argument('--relative-mouse', action='store_true')
+    ap.add_argument('--soak-seconds', type=int, default=0)
     ap.add_argument('--renderer', choices=['gles2', 'pixman'], default='gles2')
     ap.add_argument('--clipboard-probe', type=Path)
     ap.add_argument('--keyboard-fixture', action='store_true', help='Type fixed text ONLY when a dedicated remote test text box is active')
@@ -27,11 +29,13 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
     binary = out / 'uu-gui'
     shutil.copy2(args.binary, binary)
+    manifest = args.binary.resolve().parent / 'version.json'
+    if manifest.exists(): shutil.copy2(manifest, out / 'version.json')
     runtime = Path(tempfile.mkdtemp(prefix='uu-wayland-', dir='/tmp'))
     data = out / 'data' / 'uu-remote'
     data.mkdir(parents=True)
     shutil.copyfile(args.state, data / 'state.json')
-    (data / 'gui-settings.json').write_text(json.dumps({'display_mode': 'preserve', 'fps': 60, 'muted': True, 'clipboard': False, 'hud': True}))
+    (data / 'gui-settings.json').write_text(json.dumps({'display_mode': 'preserve', 'fps': 60, 'muted': True, 'clipboard': False, 'hud': True, 'relative_mouse': args.relative_mouse}))
     config = out / 'sway.conf'
     marker = out / 'compositor-shortcut'
     config.write_text(f'bindsym Mod4+F23 exec touch {marker}\n' + 'output HEADLESS-1 mode 1600x1000@60Hz\nxwayland disable\nseat seat0 fallback true\ndefault_border none\nfocus_follows_mouse no\nfor_window [app_id=".*"] floating enable\n')
@@ -126,6 +130,10 @@ def main():
         if not capture_active(): keys('z')
         wait_for(capture_active)
         time.sleep(.3)
+        if args.relative_mouse:
+            driver({'dx': 60.0, 'dy': 30.0})
+            time.sleep(.3)
+            result['phases'].append('relative-motion-sent')
         if args.keyboard_fixture:
             driver({'key': 'F22'})
             time.sleep(.5)
@@ -141,6 +149,9 @@ def main():
         driver({'mods': ['logo'], 'key': 'F23'})
         wait_for(marker.exists)
         result['phases'].append('fullscreen-shortcuts-and-release')
+        if args.relative_mouse:
+            keys('z')
+            time.sleep(.3)
         node = window(); rect = node['rect']
         # Current stream title bar: first and second real display tabs.
         for x in [200, 340, 200, 340]:
@@ -151,6 +162,13 @@ def main():
         result['video'] = [e for e in events() if e.get('event') == 'first_frame'][-1:]
         result['timeouts'] = sum(e.get('event') == 'switch_timeout' for e in events())
         if len(result['display_ready']) < 4: raise RuntimeError('Display tabs did not complete four switches')
+        until = time.monotonic() + max(0, min(args.soak_seconds, 300))
+        while time.monotonic() < until:
+            if gui.poll() is not None: raise RuntimeError('GUI exited during soak')
+            time.sleep(.25)
+        if args.soak_seconds:
+            screenshot('soak-final')
+            result['phases'].append('soak-complete')
         keys('q')
         # Exit ends the stream; its dedicated process then closes itself.
         gui.wait(timeout=12)

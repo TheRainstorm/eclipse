@@ -16,7 +16,8 @@ public class UUInputForm : System.Windows.Forms.Form {
  }
  protected override void OnFormClosed(System.Windows.Forms.FormClosedEventArgs e) {UUFocus.UnregisterHotKey(Handle,10723);UUFocus.UnregisterHotKey(Handle,10724);base.OnFormClosed(e);}
 }
-public static class UUFocus { [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr window,int id,uint mods,uint key); [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr window,int id); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd); }
+[StructLayout(LayoutKind.Sequential)] public struct UUPoint { public int X; public int Y; }
+public static class UUFocus { [DllImport("user32.dll")] public static extern bool GetCursorPos(out UUPoint point); [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr window,int id,uint mods,uint key); [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr window,int id); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd); }
 '@
 $previous=[UUFocus]::GetForegroundWindow()
 $form=New-Object UUInputForm
@@ -35,12 +36,13 @@ $panel.add_Paint({param($sender,$event)
 })
 $animation=New-Object Windows.Forms.Timer; $animation.Interval=16
 $animation.add_Tick({$script:tick++;$panel.Invalidate()});$animation.Start()
-$proof=@{copy=$false;paste=$false;cut=$false;text='';done=$false}
+$initialMouse=New-Object UUPoint; [UUFocus]::GetCursorPos([ref]$initialMouse) | Out-Null
+$proof=@{copy=$false;paste=$false;cut=$false;text='';done=$false;mouse_before=@($initialMouse.X,$initialMouse.Y)}
 $path=$Output
-$save={ $proof.text=$text.Text; $proof | ConvertTo-Json | Set-Content -Encoding UTF8 $path }
+$save={ $point=New-Object UUPoint; [UUFocus]::GetCursorPos([ref]$point) | Out-Null; $proof.mouse_after=@($point.X,$point.Y); if (-not $text.IsDisposed) {$proof.text=$text.Text}; $proof | ConvertTo-Json | Set-Content -Encoding UTF8 $path }
 $text.add_KeyDown({param($sender,$event)
  if ($event.Control -and $event.KeyCode -in @('C','V','X')) {
-  if($event.KeyCode -eq 'C'){$proof.copy=$true};if($event.KeyCode -eq 'V'){$proof.paste=$true};if($event.KeyCode -eq 'X'){$proof.cut=$true}
+  if($event.KeyCode -eq 'C'){$proof.before_copy=$text.Text;$proof.copy=$true};if($event.KeyCode -eq 'V'){$proof.before_paste=$text.Text;$proof.paste=$true};if($event.KeyCode -eq 'X'){$proof.before_cut=$text.Text;$proof.cut=$true}
   $event.SuppressKeyPress=$true
  }
  & $save
