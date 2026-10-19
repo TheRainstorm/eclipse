@@ -28,43 +28,164 @@ fn submenu<R>(
     );
     response
 }
-/// Root controls stay visible while a child opens beside them, like UU.
-fn side_submenu<R>(ui: &mut egui::Ui, blocked: &mut Vec<Rect>, kind: Icon, label: impl Into<String>, body: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
+const MENU_INK: Color32 = Color32::from_rgb(29, 32, 37);
+const MENU_WIDTH: f32 = 236.0;
+
+fn popup_frame(ui: &egui::Ui) -> egui::Frame {
+    egui::Frame::popup(ui.style())
+        .fill(Color32::from_rgb(249, 249, 249))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(215, 215, 215)))
+        .rounding(7.0)
+        .inner_margin(egui::Margin::same(4.0))
+        .shadow(egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 3.0),
+            blur: 10.0,
+            spread: 0.0,
+            color: Color32::from_black_alpha(22),
+        })
+}
+
+/// Fixed gutters keep icons, selection dots, labels and arrows aligned.
+fn menu_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    kind: Option<Icon>,
+    selected: bool,
+    arrow: bool,
+    hint: &str,
+    active: bool,
+) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
+    let ink = if !ui.is_enabled() {
+        Color32::from_gray(160)
+    } else if label == "退出远控" {
+        Color32::from_rgb(187, 65, 55)
+    } else {
+        MENU_INK
+    };
+    if ui.is_enabled() && (response.hovered() || active) {
+        ui.painter()
+            .rect_filled(rect, 3.0, Color32::from_rgb(233, 233, 233));
+    }
+    if let Some(kind) = kind {
+        icon(
+            ui.painter(),
+            Rect::from_center_size(
+                egui::pos2(rect.left() + 16.0, rect.center().y),
+                egui::vec2(16.0, 16.0),
+            ),
+            kind,
+            ink,
+        );
+    } else if selected {
+        ui.painter()
+            .circle_filled(egui::pos2(rect.left() + 16.0, rect.center().y), 1.8, ink);
+    }
+    ui.painter().text(
+        egui::pos2(rect.left() + 36.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(14.0),
+        ink,
+    );
+    if arrow {
+        let center = egui::pos2(rect.right() - 13.0, rect.center().y);
+        ui.painter().line_segment(
+            [center - egui::vec2(2.0, 3.0), center + egui::vec2(1.0, 0.0)],
+            Stroke::new(1.0, Color32::from_gray(125)),
+        );
+        ui.painter().line_segment(
+            [
+                center + egui::vec2(1.0, 0.0),
+                center + egui::vec2(-2.0, 3.0),
+            ],
+            Stroke::new(1.0, Color32::from_gray(125)),
+        );
+    } else if !hint.is_empty() {
+        ui.painter().text(
+            egui::pos2(rect.right() - 12.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            hint,
+            egui::FontId::proportional(12.0),
+            Color32::from_gray(145),
+        );
+    }
+    response
+}
+fn separator(ui: &mut egui::Ui) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 9.0), egui::Sense::hover());
+    ui.painter().line_segment(
+        [rect.left_center(), rect.right_center()],
+        Stroke::new(1.0, Color32::from_gray(233)),
+    );
+}
+fn child_position(row: Rect, screen: Rect, width: f32) -> Pos2 {
+    let x = if row.right() + width + 9.0 <= screen.right() {
+        row.right() + 5.0
+    } else {
+        row.left() - width - 13.0
+    };
+    egui::pos2(x.max(screen.left()), row.top() - 4.0)
+}
+/// The root remains visible while the chosen panel opens beside it.
+fn side_submenu<R>(
+    ui: &mut egui::Ui,
+    blocked: &mut Vec<Rect>,
+    kind: Icon,
+    label: impl Into<String>,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
     let label = label.into();
     let id = ui.make_persistent_id(("side-menu", &label));
     let open = ui.memory(|m| m.is_popup_open(id));
-    let response = ui.add(egui::Button::new(format!("      {label}     >")).selected(open));
-    row_icon(ui, &response, kind, Color32::from_rgb(42, 52, 66));
-    if response.clicked() { ui.memory_mut(|m| m.toggle_popup(id)); }
-    else if response.hovered() && ui.memory(|m| m.any_popup_open()) { ui.memory_mut(|m| m.open_popup(id)); }
+    let response = menu_row(ui, &label, Some(kind), false, true, "", open);
+    if response.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(id));
+    } else if response.hovered() && ui.memory(|m| m.any_popup_open()) {
+        ui.memory_mut(|m| m.open_popup(id));
+    }
     let mut inner = None;
     if ui.memory(|m| m.is_popup_open(id)) {
         let screen = ui.ctx().screen_rect().shrink(4.0);
-        let x = if response.rect.left() - screen.left() >= 218.0 {
-            response.rect.left() - 218.0
-        } else { response.rect.right() + 6.0 };
-        let area = egui::Area::new(id).order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(x, response.rect.top())).constrain_to(screen)
+        let area = egui::Area::new(id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(child_position(response.rect, screen, MENU_WIDTH))
+            .constrain_to(screen)
             .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).fill(Color32::from_rgb(250, 251, 253))
-                    .rounding(8.0).show(ui, |ui| {
-                        ui.set_width(196.0);
-                        inner = Some(ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), body).inner);
-                    });
+                popup_frame(ui).show(ui, |ui| {
+                    ui.set_width(MENU_WIDTH);
+                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                    egui::ScrollArea::vertical()
+                        .max_height((screen.height() - 16.0).max(64.0))
+                        .show(ui, |ui| {
+                            inner = Some(
+                                ui.with_layout(
+                                    egui::Layout::top_down_justified(egui::Align::Min),
+                                    body,
+                                )
+                                .inner,
+                            );
+                        });
+                });
             });
         blocked.push(area.response.rect);
-        let parent = ui.memory(|m| m.area_rect(egui::Id::new("stream-control-menu"))).unwrap_or(response.rect);
-        let outside = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos()
-            .is_some_and(|p| !area.response.rect.contains(p) && !parent.contains(p)));
-        if outside { ui.memory_mut(|m| m.close_popup()); }
     }
     egui::InnerResponse::new(inner, response)
 }
 fn unavailable(ui: &mut egui::Ui, kind: Icon, label: &str, hint: &str) {
-    let response = ui
-        .add_enabled(false, egui::Button::new(format!("      {label}")))
-        .on_hover_text(hint);
-    row_icon(ui, &response, kind, Color32::from_gray(160));
+    ui.add_enabled_ui(false, |ui| {
+        menu_row(ui, label, Some(kind), false, true, "", false)
+    })
+    .inner
+    .on_disabled_hover_text(hint);
+}
+#[derive(Clone, Copy, PartialEq)]
+enum QualityDetail {
+    Bitrate,
+    Resolution,
+    FrameRate,
 }
 
 pub(super) struct StreamMenu {
@@ -73,6 +194,7 @@ pub(super) struct StreamMenu {
     pub anchor: Pos2,
     position: Option<Pos2>,
     trigger_rect: Option<Rect>,
+    quality_detail: Option<(QualityDetail, Rect)>,
 }
 impl Default for StreamMenu {
     fn default() -> Self {
@@ -82,6 +204,7 @@ impl Default for StreamMenu {
             anchor: Pos2::ZERO,
             position: None,
             trigger_rect: None,
+            quality_detail: None,
         }
     }
 }
@@ -119,8 +242,12 @@ impl super::App {
                         ui.label(RichText::new("仅观看").color(Color32::from_rgb(98, 125, 160)));
                     }
                     if !self.view_only && self.controller.is_some() && !self.input_ready() {
-                        ui.label(RichText::new("输入连接中…").size(12.0).color(Color32::from_gray(110)))
-                            .on_hover_text("视频和输入分别建立连接，输入就绪后可操作");
+                        ui.label(
+                            RichText::new("输入连接中…")
+                                .size(12.0)
+                                .color(Color32::from_gray(110)),
+                        )
+                        .on_hover_text("视频和输入分别建立连接，输入就绪后可操作");
                     }
                     if let Some(controller) = &self.controller {
                         ui.label(
@@ -158,7 +285,9 @@ impl super::App {
                         row_icon(ui, &control, Icon::Settings, Color32::from_rgb(42, 52, 66));
                         if control.clicked() {
                             self.stream_menu.open = !self.stream_menu.open;
-                            if !self.stream_menu.open { ctx.memory_mut(|m| m.close_popup()); }
+                            if !self.stream_menu.open {
+                                ctx.memory_mut(|m| m.close_popup());
+                            }
                             self.stream_menu.anchor = control.rect.left_bottom();
                         }
                     });
@@ -170,15 +299,22 @@ impl super::App {
         let mut tracks: Vec<_> = self.textures.keys().copied().collect();
         tracks.sort_unstable();
         for track in tracks {
-            if ui
-                .selectable_label(
-                    self.selected_track == track,
-                    format!("显示屏 {}", track + 1),
-                )
-                .clicked()
+            if menu_row(
+                ui,
+                &format!("显示屏 {}", track + 1),
+                None,
+                self.selected_track == track,
+                false,
+                "",
+                false,
+            )
+            .clicked()
             {
                 self.release_all_keys();
-                for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
+                for message in self
+                    .pointer
+                    .release_all(self.input_screen(self.selected_track))
+                {
                     self.send_input(message, 15);
                 }
                 self.selected_track = track;
@@ -192,11 +328,167 @@ impl super::App {
         }
     }
 
+    fn confirm_quality(&mut self, ui: &mut egui::Ui) {
+        self.send_capture_settings();
+        self.stream_menu.quality_detail = None;
+        ui.memory_mut(|m| m.close_popup());
+    }
+
+    fn quality_menu(&mut self, ui: &mut egui::Ui) {
+        for (index, (label, _, _)) in super::BITRATE_PRESETS.iter().enumerate() {
+            let custom = index == 4;
+            let response = menu_row(
+                ui,
+                label,
+                None,
+                self.bitrate_idx == index,
+                custom,
+                "",
+                false,
+            );
+            if custom && (response.hovered() || response.clicked()) {
+                self.stream_menu.quality_detail = Some((QualityDetail::Bitrate, response.rect));
+            } else if !custom && response.hovered() {
+                self.stream_menu.quality_detail = None;
+            }
+            if !custom && response.clicked() {
+                self.bitrate_idx = index;
+                self.confirm_quality(ui);
+            }
+        }
+        separator(ui);
+        for fps in [144, 120, 90, 60, 30] {
+            let response = menu_row(
+                ui,
+                &format!("{fps} 帧"),
+                None,
+                self.target_fps == fps,
+                false,
+                "",
+                false,
+            );
+            if response.hovered() {
+                self.stream_menu.quality_detail = None;
+            }
+            if response.clicked() {
+                self.target_fps = fps;
+                self.fps_draft = fps;
+                self.confirm_quality(ui);
+            }
+        }
+        let custom_fps = ![30, 60, 90, 120, 144].contains(&self.target_fps);
+        let label = if custom_fps {
+            format!("自定义 · {} 帧", self.target_fps)
+        } else {
+            "自定义帧率".into()
+        };
+        let response = menu_row(ui, &label, None, custom_fps, true, "", false);
+        if response.hovered() || response.clicked() {
+            self.stream_menu.quality_detail = Some((QualityDetail::FrameRate, response.rect));
+        }
+        separator(ui);
+        let response = menu_row(ui, "分辨率", None, false, true, "", false);
+        if response.hovered() || response.clicked() {
+            self.stream_menu.quality_detail = Some((QualityDetail::Resolution, response.rect));
+        }
+    }
+
+    fn quality_detail(&mut self, ctx: &egui::Context, blocked: &mut Vec<Rect>) {
+        let Some((kind, row)) = self.stream_menu.quality_detail else {
+            return;
+        };
+        let screen = ctx.screen_rect().shrink(4.0);
+        let mut position = child_position(row, screen, 204.0);
+        if ctx.memory(|m| m.area_rect(egui::Id::new("stream-control-menu")))
+            .is_some_and(|root| root.center().x > row.center().x)
+            && row.left() - screen.left() >= 217.0
+        {
+            position.x = row.left() - 217.0;
+        }
+        let response = egui::Area::new("quality-detail".into())
+            .order(egui::Order::Foreground)
+            .fixed_pos(position)
+            .constrain_to(screen)
+            .show(ctx, |ui| {
+                popup_frame(ui).show(ui, |ui| {
+                    ui.set_width(204.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                        match kind {
+                            QualityDetail::Bitrate => {
+                                ui.add_space(5.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("码率");
+                                    ui.add(
+                                        egui::DragValue::new(&mut self.custom_mbps)
+                                            .range(1..=100)
+                                            .suffix(" Mbps"),
+                                    );
+                                });
+                                ui.add_space(5.0);
+                                separator(ui);
+                                if menu_row(ui, "确认", None, false, false, "", false).clicked() {
+                                    self.bitrate_idx = 4;
+                                    self.confirm_quality(ui);
+                                }
+                            }
+                            QualityDetail::FrameRate => {
+                                ui.add_space(5.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("帧率");
+                                    ui.add(
+                                        egui::DragValue::new(&mut self.fps_draft)
+                                            .range(5..=144)
+                                            .suffix(" FPS"),
+                                    );
+                                });
+                                ui.add_space(5.0);
+                                separator(ui);
+                                if menu_row(ui, "确认", None, false, false, "", false).clicked() {
+                                    self.target_fps = self.fps_draft.clamp(5, 144);
+                                    self.confirm_quality(ui);
+                                }
+                            }
+                            QualityDetail::Resolution => {
+                                for (index, label) in [
+                                    "跟随远端分辨率",
+                                    "1920 × 1080",
+                                    "2560 × 1440",
+                                    "3840 × 2160",
+                                ]
+                                .iter()
+                                .enumerate()
+                                {
+                                    if menu_row(
+                                        ui,
+                                        label,
+                                        None,
+                                        self.resolution_idx == index,
+                                        false,
+                                        "",
+                                        false,
+                                    )
+                                    .clicked()
+                                    {
+                                        self.resolution_idx = index;
+                                        self.confirm_quality(ui);
+                                    }
+                                }
+                            }
+                        }
+                    });
+                });
+            });
+        blocked.push(response.response.rect);
+    }
+
     /// Draw first so the stream can exclude every control rectangle from input.
     pub(super) fn stream_controls(&mut self, ctx: &egui::Context) -> Vec<Rect> {
         let mut blocked = Vec::new();
         if !self.fullscreen {
-            if let Some(rect) = self.stream_menu.trigger_rect { blocked.push(rect); }
+            if let Some(rect) = self.stream_menu.trigger_rect {
+                blocked.push(rect);
+            }
         }
         if self.fullscreen && self.stream_menu.visible {
             let screen = ctx.screen_rect();
@@ -233,7 +525,9 @@ impl super::App {
                             }
                             if button.clicked() {
                                 self.stream_menu.open = !self.stream_menu.open;
-                                if !self.stream_menu.open { ctx.memory_mut(|m| m.close_popup()); }
+                                if !self.stream_menu.open {
+                                    ctx.memory_mut(|m| m.close_popup());
+                                }
                             }
                             button.on_hover_text(
                                 "控制中心 · 拖动可移动\nCtrl+Alt+M 隐藏 / 显示悬浮菜单",
@@ -244,6 +538,7 @@ impl super::App {
             blocked.push(response.response.rect);
         }
         if !self.stream_menu.open {
+            self.stream_menu.quality_detail = None;
             // Custom child menus must never leave an invisible popup trapping input.
             ctx.memory_mut(|m| m.close_popup());
             return blocked;
@@ -260,179 +555,160 @@ impl super::App {
                 .min(screen.bottom() - 386.0)
                 .max(screen.top() + 6.0),
         );
+        let mut quality_open = false;
         let menu = egui::Area::new("stream-control-menu".into())
             .order(egui::Order::Foreground)
             .fixed_pos(position)
+            .constrain_to(screen)
             .show(ctx, |ui| {
-                egui::Frame::popup(ui.style())
-                    .fill(Color32::from_rgb(250, 251, 253))
-                    .rounding(8.0)
-                    .inner_margin(egui::Margin::symmetric(9.0, 7.0))
-                    .show(ui, |ui| {
-                        ui.set_width(242.0);
-                        ui.visuals_mut().widgets.inactive.bg_fill = Color32::TRANSPARENT;
-                        ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-                        ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                            ui.spacing_mut().interact_size.y = 27.0;
-                            side_submenu(
-                                ui, &mut blocked,
-                                Icon::Desktop,
-                                format!("显示屏 {}", self.selected_track + 1),
-                                |ui| self.display_menu(ui),
-                            );
-                            side_submenu(ui, &mut blocked, Icon::Desktop, "画质", |ui| {
-                                let mut confirm = false;
-                                for (index, (label, _)) in super::BITRATE_PRESETS.iter().enumerate()
-                                {
-                                    if ui.selectable_value(&mut self.bitrate_idx, index, *label).clicked() {
-                                        confirm = index != 5;
-                                    }
-                                }
-                                if self.bitrate_idx == 5 {
-                                    ui.add(
-                                        egui::Slider::new(&mut self.custom_mbps, 1..=100)
-                                            .suffix(" Mbps"),
+                popup_frame(ui).show(ui, |ui| {
+                    ui.set_width(MENU_WIDTH);
+                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                    egui::ScrollArea::vertical()
+                        .max_height((screen.height() - 24.0).max(64.0))
+                        .show(ui, |ui| {
+                            ui.with_layout(
+                                egui::Layout::top_down_justified(egui::Align::Min),
+                                |ui| {
+                                    side_submenu(
+                                        ui,
+                                        &mut blocked,
+                                        Icon::Desktop,
+                                        format!("显示屏 {}", self.selected_track + 1),
+                                        |ui| self.display_menu(ui),
                                     );
-                                    confirm |= ui.button("确认自定义码率").clicked();
-                                }
-                                ui.separator();
-                                let previous_resolution = self.resolution_idx;
-                                for (index, label) in [
-                                    "跟随远端分辨率",
-                                    "1920 × 1080",
-                                    "2560 × 1440",
-                                    "3840 × 2160",
-                                ]
-                                .iter()
-                                .enumerate()
-                                {
-                                    if ui.selectable_value(&mut self.resolution_idx, index, *label).clicked() {
-                                        confirm = true;
-                                    }
-                                }
-                                if confirm || previous_resolution != self.resolution_idx {
-                                    self.send_capture_settings();
-                                    ui.close_menu();
-                ui.memory_mut(|m| m.close_popup());
-                                }
-                            });
-                            side_submenu(ui, &mut blocked, Icon::Play, format!("帧率 · {} FPS", self.target_fps), |ui| {
-                                for fps in [30, 60, 90, 120, 144] {
-                                    if ui.selectable_label(self.target_fps == fps, format!("{fps} FPS")).clicked() {
-                                        self.target_fps = fps;
-                                        self.fps_draft = fps;
-                                        self.send_capture_settings();
-                                        ui.close_menu();
-                                        ui.memory_mut(|m| m.close_popup());
-                                    }
-                                }
-                                ui.separator();
-                                ui.horizontal(|ui| {
-                                    ui.label("自定义");
-                                    ui.add(egui::DragValue::new(&mut self.fps_draft).range(5..=144).suffix(" FPS"));
-                                });
-                                if ui.button("确认自定义帧率").clicked() {
-                                    self.target_fps = self.fps_draft.clamp(5, 144);
-                                    self.send_capture_settings();
-                                    ui.close_menu();
-                                    ui.memory_mut(|m| m.close_popup());
-                                }
-                                ui.label(RichText::new("实际帧率以 HUD Rx / De / Rd 为准；
-静态画面、远端采集和本地刷新率均有影响。").small().weak());
-                                ui.separator();
-                                let current = self.controller.as_ref().and_then(|h|
-                                    h.stats.remote_screens.lock().unwrap().selected().cloned());
-                                if let Some(screen) = &current {
-                                    ui.label(format!("当前远端：{} · {}Hz", screen.kind_label(), screen.refresh_hz));
-                                } else {
-                                    ui.label("当前远端屏幕：等待信息");
-                                }
-                                let enter = !current.as_ref().is_some_and(|s| s.kind == 2);
-                                if ui.add_enabled(self.controller.is_some() && self.screen_request.is_none(),
-                                    egui::Button::new(if enter { "请求切换超级屏" } else { "退出超级屏" })).clicked() {
-                                    self.request_super_screen(enter);
-                                    ui.close_menu();
-                                    ui.memory_mut(|m| m.close_popup());
-                                }
-                                ui.label(RichText::new("物理屏采集受远端限制；超级屏可请求更高刷新率。").small().weak());
-                            });
-                            if !self.settings_feedback.is_empty() {
-                                ui.label(RichText::new(&self.settings_feedback).size(11.0)
-                                    .color(Color32::from_rgb(51, 139, 111)));
-                            }
-                            if !self.screen_feedback.is_empty() {
-                                ui.label(RichText::new(&self.screen_feedback).size(11.0));
-                            }
-                            side_submenu(ui, &mut blocked, Icon::Max, "窗口", |ui| {
-                                if ui
-                                    .button(if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
-                                        "还原窗口"
-                                    } else {
-                                        "最大化窗口"
-                                    })
+                                    quality_open = side_submenu(
+                                        ui,
+                                        &mut blocked,
+                                        Icon::Picture,
+                                        "画质",
+                                        |ui| self.quality_menu(ui),
+                                    )
+                                    .inner
+                                    .is_some();
+                                    side_submenu(ui, &mut blocked, Icon::Max, "窗口", |ui| {
+                                        if menu_row(
+                                            ui,
+                                            if ctx
+                                                .input(|i| i.viewport().maximized.unwrap_or(false))
+                                            {
+                                                "还原窗口"
+                                            } else {
+                                                "最大化窗口"
+                                            },
+                                            None,
+                                            false,
+                                            false,
+                                            "",
+                                            false,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.toggle_maximized(ctx);
+                                        }
+                                        separator(ui);
+                                        ui.checkbox(
+                                            &mut self.stream_menu.visible,
+                                            "全屏显示悬浮入口",
+                                        );
+                                    });
+                                    unavailable(ui, Icon::Play, "声音", "音频尚未接入");
+                                    side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
+                                        if ui
+                                            .checkbox(&mut self.view_only, "仅观看，禁止远程输入")
+                                            .changed()
+                                        {
+                                            self.release_all_keys();
+                                            for message in self
+                                                .pointer
+                                                .release_all(self.input_screen(self.selected_track))
+                                            {
+                                                self.send_input(message, 15);
+                                            }
+                                            self.remote_focus = false;
+                                        }
+                                    });
+                                    unavailable(ui, Icon::Link, "外设", "外设透传尚未接入");
+                                    unavailable(
+                                        ui,
+                                        Icon::Folder,
+                                        "工具",
+                                        "文件、终端和端口映射尚未接入",
+                                    );
+                                    side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
+                                        if menu_row(
+                                            ui,
+                                            "串流统计",
+                                            None,
+                                            self.hud,
+                                            false,
+                                            "Ctrl+Alt+S",
+                                            false,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.hud = !self.hud;
+                                        }
+                                        if menu_row(
+                                            ui,
+                                            "隐藏悬浮入口",
+                                            None,
+                                            false,
+                                            false,
+                                            "Ctrl+Alt+M",
+                                            false,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.stream_menu.visible = false;
+                                            self.stream_menu.open = false;
+                                            ctx.memory_mut(|m| m.close_popup());
+                                        }
+                                    });
+                                    separator(ui);
+                                    if menu_row(
+                                        ui,
+                                        if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+                                            "还原窗口"
+                                        } else {
+                                            "最大化窗口"
+                                        },
+                                        Some(Icon::Max),
+                                        false,
+                                        false,
+                                        "",
+                                        false,
+                                    )
                                     .clicked()
-                                {
-                                    self.toggle_maximized(ctx);
-                                    self.stream_menu.open = false;
-                                    ui.close_menu();
-                ui.memory_mut(|m| m.close_popup());
-                                }
-                                ui.label(RichText::new("Ctrl+Alt+F 切换全屏串流").small().weak());
-                                ui.checkbox(&mut self.stream_menu.visible, "全屏显示悬浮入口");
-                                ui.label(RichText::new("Ctrl+Alt+M 可随时恢复入口").small().weak());
-                            });
-                            unavailable(ui, Icon::Play, "声音", "音频尚未接入");
-                            side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
-                                if ui
-                                    .checkbox(&mut self.view_only, "仅观看，禁止远程输入")
-                                    .changed()
-                                {
-                                    self.release_all_keys();
-                                    for message in self.pointer.release_all(self.input_screen(self.selected_track))
                                     {
-                                        self.send_input(message, 15);
+                                        self.toggle_maximized(ctx);
                                     }
-                                    self.remote_focus = false;
-                                }
-                            });
-                            unavailable(ui, Icon::Link, "外设", "外设透传尚未接入");
-                            unavailable(ui, Icon::Folder, "工具", "文件、终端和端口映射尚未接入");
-                            side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
-                                ui.checkbox(&mut self.hud, "串流统计 · Ctrl+Alt+S");
-                                if ui.button("隐藏悬浮入口 · Ctrl+Alt+M").clicked() {
-                                    self.stream_menu.visible = false;
-                                    self.stream_menu.open = false;
-                                    ui.close_menu();
-                ui.memory_mut(|m| m.close_popup());
-                                }
-
-                            });
-                            ui.separator();
-                            if ui
-                                .button(if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
-                                    "还原窗口"
-                                } else {
-                                    "最大化窗口"
-                                })
-                                .clicked()
-                            {
-                                self.toggle_maximized(ctx);
-                                self.stream_menu.open = false;
-                            }
-                            if ui
-                                .button(
-                                    RichText::new("退出远控")
-                                        .color(Color32::from_rgb(198, 65, 57)),
-                                )
-                                .clicked()
-                            {
-                                self.stream_menu.open = false;
-                                self.disconnect();
-                            }
+                                    ui.scope(|ui| {
+                                        if menu_row(
+                                            ui,
+                                            "退出远控",
+                                            Some(Icon::Exit),
+                                            false,
+                                            false,
+                                            "",
+                                            false,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.stream_menu.open = false;
+                                            self.disconnect();
+                                        }
+                                    });
+                                },
+                            );
                         });
-                    });
+                });
             });
+        if quality_open {
+            self.quality_detail(ctx, &mut blocked);
+        } else {
+            self.stream_menu.quality_detail = None;
+        }
         blocked.push(menu.response.rect);
         let outside_click = ctx.input(|i| {
             i.pointer.any_pressed()
@@ -440,13 +716,13 @@ impl super::App {
                     .interact_pos()
                     .is_some_and(|p| !blocked.iter().any(|r| r.contains(p)))
         });
-        if (outside_click && !ctx.memory(|m| m.any_popup_open()))
-            || ctx.input(|i| i.key_pressed(egui::Key::Escape))
-        {
+        if outside_click || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.stream_menu.open = false;
             ctx.memory_mut(|m| m.close_popup());
         }
-        if !self.stream_menu.open { ctx.memory_mut(|m| m.close_popup()); }
+        if !self.stream_menu.open {
+            ctx.memory_mut(|m| m.close_popup());
+        }
         blocked
     }
 }

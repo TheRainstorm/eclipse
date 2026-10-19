@@ -10,7 +10,7 @@ impl super::App {
         let rd = self.fps.get(&self.selected_track).copied().unwrap_or(0.0);
         let codec = s.codec.lock().unwrap().trim_start_matches("video/").to_uppercase();
         let codec = if codec.is_empty() { "—" } else { &codec };
-        let source = s.remote_screens.lock().unwrap().selected()
+        let source = s.remote_screens.lock().unwrap().for_track(self.selected_track)
             .map(|s| format!(" · {} {}Hz", s.kind_label(), s.refresh_hz)).unwrap_or_default();
         let fresh = uu_core::control_wire::now_ms().saturating_sub(s.rtt_updated_ms.load(Relaxed)) < 5000;
         let network = if fresh {

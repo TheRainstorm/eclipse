@@ -10,6 +10,8 @@ const SIDEBAR: C = C::from_rgb(240, 245, 248);
 #[derive(Clone, Copy)]
 pub(super) enum Icon {
     Desktop,
+    Picture,
+    Exit,
     Grid,
     Settings,
     Refresh,
@@ -31,6 +33,22 @@ pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
         p.line_segment([pt(a.0, a.1), pt(b.0, b.1)], stroke);
     };
     match kind {
+        Icon::Exit => {
+            line((8.0, 2.0), (2.0, 2.0));
+            line((2.0, 2.0), (2.0, 16.0));
+            line((2.0, 16.0), (8.0, 16.0));
+            line((7.0, 9.0), (17.0, 9.0));
+            line((13.0, 5.0), (17.0, 9.0));
+            line((17.0, 9.0), (13.0, 13.0));
+        }
+        Icon::Picture => {
+            p.rect_stroke(Rect::from_min_max(pt(1.0, 2.0), pt(17.0, 16.0)), 2.0, stroke);
+            p.circle_stroke(pt(6.0, 6.0), 1.5, stroke);
+            line((2.0, 14.0), (8.0, 9.0));
+            line((8.0, 9.0), (11.0, 12.0));
+            line((11.0, 12.0), (14.0, 9.0));
+            line((14.0, 9.0), (17.0, 12.0));
+        }
         Icon::Desktop => {
             p.rect_stroke(
                 Rect::from_min_max(pt(1.0, 2.0), pt(17.0, 13.0)),

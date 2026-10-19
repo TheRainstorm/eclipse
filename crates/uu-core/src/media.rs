@@ -62,7 +62,6 @@ pub struct MediaStats {
     /// Capture-setting response: request_id << 1 | accepted.
     pub settings_response: AtomicU64,
     pub remote_screens: std::sync::Mutex<crate::screen_control::RemoteScreens>,
-    pub screen_response: std::sync::Mutex<Option<crate::screen_control::ScreenModeResponse>>,
     /// Unrecovered RTP packet loss in the current receive window, parts/million.
     pub loss_ppm: AtomicU32,
     pub codec: std::sync::Mutex<String>,
@@ -262,9 +261,6 @@ impl ControllerMedia {
                             if let Some(s) = &stats {
                                 if let Some(screens) = crate::screen_control::screen_sources(&msg.data) {
                                     *s.remote_screens.lock().unwrap() = screens;
-                                }
-                                if let Some(response) = crate::screen_control::super_screen_response(&msg.data) {
-                                    *s.screen_response.lock().unwrap() = Some(response);
                                 }
                             }
                             if let Some((id, accepted)) = crate::control_wire::capture_setting_response(&msg.data) {

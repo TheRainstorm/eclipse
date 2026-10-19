@@ -122,9 +122,6 @@ struct App {
     fps_draft: u32,
     settings_seq: u64,
     settings_feedback: String,
-    screen_rpc_seq: u64,
-    screen_request: Option<(u64, bool, std::time::Instant)>,
-    screen_feedback: String,
     pointer: input::RemotePointer,
     remote_focus: bool,
     view_only: bool,
@@ -136,16 +133,14 @@ struct App {
     window_edge_active: bool,
 }
 
-/// Bitrate/quality presets sent as a CaptureSettingRequest. Values are the
-/// official GvPb_VideoQuality enum: 1 fast, 2 general, 3 hd, 4 bluray, 5 auto,
-/// 6 custom (uses the custom Mbit/s field).
-const BITRATE_PRESETS: &[(&str, u64)] = &[
-    ("自动", 5),
-    ("快速 1M", 1),
-    ("一般 2M", 2),
-    ("高清 8M", 3),
-    ("超清 20M", 4),
-    ("自定义", 6),
+/// Match the supplied official menu. Explicit rates use quality 6 and are
+/// encoded as bits/second; automatic quality 5 remains controlled by the host.
+const BITRATE_PRESETS: &[(&str, u64, Option<u32>)] = &[
+    ("自动（原画）", 5, None),
+    ("原画 30M", 6, Some(30)),
+    ("超清 14M", 6, Some(14)),
+    ("高清 8M", 6, Some(8)),
+    ("自定义", 6, None),
 ];
 
 fn vk_for(key: egui::Key) -> Option<u32> {
@@ -319,9 +314,6 @@ impl App {
             fps_draft: uu_core::control_wire::CaptureFrameRate::from_env().fps(),
             settings_seq: 0,
             settings_feedback: String::new(),
-            screen_rpc_seq: 0,
-            screen_request: None,
-            screen_feedback: String::new(),
             pointer: input::RemotePointer::default(),
             remote_focus: false,
             view_only: false,
@@ -492,21 +484,6 @@ impl App {
             self.unpresented.insert(idx);
         }
         if let Some(h) = &self.controller {
-            if let Some((id, enter, sent)) = self.screen_request {
-                let response = *h.stats.screen_response.lock().unwrap();
-                if let Some(response) = response.filter(|r| r.id == id && r.enter == enter) {
-                    self.screen_request = None;
-                    self.screen_feedback = if response.error_code == 0 {
-                        apply_settings = true;
-                        "远端已接受屏幕切换，等待屏幕信息和画面同步".into()
-                    } else {
-                        format!("远端拒绝屏幕切换，错误码 {}", response.error_code)
-                    };
-                } else if sent.elapsed().as_secs() >= 10 {
-                    self.screen_request = None;
-                    self.screen_feedback = "屏幕切换尚未确认，请查看当前远端屏幕和实际 FPS".into();
-                }
-            }
             let response = h.stats.settings_response.load(std::sync::atomic::Ordering::Acquire);
             if response >> 1 == 2000 + self.settings_seq && self.settings_feedback.starts_with("已发送") {
                 self.settings_feedback = if response & 1 != 0 {
@@ -525,8 +502,6 @@ impl App {
             self.frame_count.clear();
             self.fps.clear();
             self.settings_feedback.clear();
-            self.screen_request = None;
-            self.screen_feedback.clear();
         }
     }
 
@@ -544,49 +519,12 @@ impl App {
             h.stats.control_open.load(std::sync::atomic::Ordering::Acquire) != 0)
     }
 
-    fn request_super_screen(&mut self, enter: bool) {
-        if self.screen_request.is_some() { return; }
-        let Some(h) = &self.controller else { return };
-        let screen = h.stats.remote_screens.lock().unwrap().selected().cloned();
-        let size = match self.resolution_idx {
-            1 => (1920, 1080),
-            2 => (2560, 1440),
-            3 => (3840, 2160),
-            _ => screen.as_ref().map(|s| (s.width, s.height))
-                .filter(|(w, h)| *w > 0 && *h > 0).unwrap_or_else(|| h.stats.res()),
-        };
-        if enter && (size.0 == 0 || size.1 == 0) {
-            self.screen_feedback = "请等待远端画面后再请求超级屏".into();
-            return;
-        }
-        self.release_all_keys();
-        for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
-            self.send_input(message, 15);
-        }
-        self.remote_focus = false;
-        self.screen_rpc_seq = self.screen_rpc_seq.wrapping_add(1);
-        let id = 100_000 + self.screen_rpc_seq;
-        let request = uu_core::screen_control::super_screen_request(
-            id, enter, size,
-            uu_core::control_wire::CaptureFrameRate::new(self.target_fps).unwrap_or_default(),
-            screen.and_then(|s| s.dpi_scale),
-        );
-        // RPC must use the ordered channel: capture-setting coalescing must not discard it.
-        if self.controller.as_ref().is_some_and(|h| h.input.send(request).is_ok()) {
-            self.screen_request = Some((id, enter, std::time::Instant::now()));
-            self.screen_feedback = if enter { "已请求切换超级屏，等待远端确认" }
-                else { "已请求退出超级屏，等待远端确认" }.into();
-        } else {
-            self.screen_feedback = "屏幕切换发送失败：连接已关闭".into();
-        }
-    }
-
     /// Apply frame rate, quality and resolution together so another setting never resets FPS.
     fn send_capture_settings(&mut self) {
         let Some(h) = &self.controller else { return };
-        let (_, quality) = BITRATE_PRESETS[self.bitrate_idx];
+        let (_, quality, preset_mbps) = BITRATE_PRESETS[self.bitrate_idx];
         let custom_bps = if quality == 6 {
-            Some(self.custom_mbps as u64 * 1_000_000)
+            Some(preset_mbps.unwrap_or(self.custom_mbps) as u64 * 1_000_000)
         } else {
             None
         };
@@ -607,7 +545,7 @@ impl App {
         );
         self.settings_feedback = if h.settings.send(msg).is_ok() {
             format!("已发送：{} FPS · {} · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0,
-                if quality == 6 { format!("{} Mbps", self.custom_mbps) }
+                if quality == 6 { format!("{} Mbps", preset_mbps.unwrap_or(self.custom_mbps)) }
                 else { "以实际接收码率为准".into() })
         } else {
             "设置发送失败：连接已关闭".into()
