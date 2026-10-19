@@ -10,6 +10,7 @@ pub(super) type CaptureProfile = (u32, usize, u32, usize, bool);
 pub(super) struct Displays {
     pub selected: Option<i32>,
     pending: Option<Pending>,
+    queued: Option<i32>,
     blocked: bool,
     unbound: bool,
     pub notice: String,
@@ -39,6 +40,16 @@ impl Displays {
     }
     pub fn switching(&self) -> bool {
         self.pending.is_some()
+    }
+    // A source change is not cancellable on the host. Keep only the newest
+    // selection until the in-flight source, settings and frame are confirmed.
+    fn defer_selection(&mut self, id: i32) -> bool {
+        if self.pending.is_none() { return false; }
+        self.queued = (self.selected != Some(id)).then_some(id);
+        true
+    }
+    fn queued_selection(&mut self) -> Option<i32> {
+        if self.pending.is_some() { None } else { self.queued.take() }
     }
     fn begin(&mut self, id: i32, track: u32, now: Instant) -> u64 {
         self.next_request = self.next_request.wrapping_add(1);
@@ -221,11 +232,15 @@ impl super::App {
         let Some(screen) = screens.screens.iter().find(|s| s.id == id).cloned() else {
             return;
         };
-        let target = screen.assigned_track();
-        // Repeated clicks must not restart the same pending operation.
-        if self.displays.selected == Some(id) && self.displays.switching() {
+        if self.displays.defer_selection(id) {
+            self.displays.menu_open = false;
+            self.stream_menu.open = false;
+            self.context.memory_mut(|m| m.close_popup());
             return;
         }
+        // An activation timeout/rejection leaves the old advertised track
+        // uncertain. Explicitly select the requested source before trusting it.
+        let target = screen.assigned_track().filter(|_| !self.displays.waiting_binding());
         if self.displays.selected == Some(id)
             && self.displays.ready()
             && target.is_some_and(|track| self.textures.contains_key(&track))
@@ -331,6 +346,7 @@ impl super::App {
             }
             self.displays.selected = None;
             self.displays.pending = None;
+            self.displays.queued = None;
             self.displays.blocked = true;
             self.displays.notice = "远端当前没有可用显示器，等待重新连接显示器…".into();
             self.remote_focus = false;
@@ -393,12 +409,48 @@ impl super::App {
                 h.stats.diagnostics.record(serde_json::json!({"event":"switch_timeout","source":self.displays.selected,"track":self.selected_track,"stage":self.displays.notice}));
             }
         }
+        if let Some(id) = self.displays.queued_selection() {
+            self.select_remote_screen(id);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rapid_selections_wait_for_current_confirmation_and_keep_only_latest() {
+        let mut d = Displays::default();
+        assert!(!d.defer_selection(7));
+        let request = d.begin_activation(42, Instant::now());
+        assert!(d.defer_selection(7));
+        assert!(d.defer_selection(9));
+        assert_eq!(d.selected, Some(42));
+        assert_eq!(d.queued_selection(), None);
+        d.response(request, 19, 0);
+        d.bind_track(0);
+        d.expect_settings(2001);
+        d.frame(0);
+        assert_eq!(d.queued_selection(), None);
+        d.capture_response(2001, true);
+        assert_eq!(d.queued_selection(), Some(9));
+        assert_eq!(d.queued_selection(), None);
+        d.begin_activation(7, Instant::now());
+        d.defer_selection(42);
+        d.defer_selection(7); // clicking the in-flight target cancels the queued choice
+        d.tick(Instant::now() + Duration::from_secs(9));
+        assert_eq!(d.queued_selection(), None);
+    }
+    #[test]
+    fn failed_activation_keeps_binding_uncertain_before_queued_retry() {
+        let mut d = Displays::default();
+        let request = d.begin_activation(42, Instant::now());
+        d.defer_selection(7);
+        d.response(request, 19, 3);
+        assert_eq!(d.queued_selection(), Some(7));
+        assert!(d.waiting_binding());
+        assert!(!d.ready());
+    }
     #[test]
     fn switching_needs_matching_reply_and_new_target_frame() {
         let mut d = Displays::default();
