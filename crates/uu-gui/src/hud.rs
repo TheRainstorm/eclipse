@@ -1,4 +1,4 @@
-//! Compact Moonlight-style performance strip. Unavailable host timings stay N/A.
+//! Centered, content-sized stream statistics. Only display measured timings.
 use eframe::egui::{self, Color32, FontId, Rect};
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -14,25 +14,32 @@ impl super::App {
         let network = if fresh {
             format!("{:.1}±{:.1}ms", s.rtt_us.load(Relaxed) as f32 / 1000.0, s.rtt_deviation_us.load(Relaxed) as f32 / 1000.0)
         } else { "—ms".into() };
-        // eframe measures UI preparation + rendering, excluding vsync wait.
-        // This is CPU submission time, not a GPU timestamp or display latency.
-        let text = format!("{w}×{h}@{rd:.0}   {codec}   FPS {:.1} Rx · {:.1} De · {rd:.1} Rd   Network {network}   Loss {:.2}%   Bandwidth {:.2} Mbps | Render {:.2}ms · Decode {:.2}ms · Encode N/A",
+        // Render is CPU preparation/submission time, excluding vsync wait.
+        let text = format!(
+            "{w}×{h}@{rd:.0}   {codec}   FPS {:.1} Rx · {:.1} De · {rd:.1} Rd\n\
+             Network {network}   Loss {:.2}%   Bandwidth {:.2} Mbps | Render {:.2}ms · Decode {:.2}ms\n\
+             丢包 {} · NACK {} · RTX {} · 乱序 {} · 迟到 {} · 坏帧 {} · 解码错误 {} · 丢队列 {} · 恢复请求 {}",
             s.src_fps(), s.dec_fps(), s.loss_ppm.load(Relaxed) as f32 / 10000.0,
-            s.bitrate_kbps.load(Relaxed) as f32 / 1000.0, self.render_ms, s.decode_ms());
-        let pos = rect.left_top() + egui::vec2(5.0, 3.0);
-        let galley = ui.painter().layout(text, FontId::proportional(12.0),
-            Color32::from_rgb(174, 238, 219), (rect.width() - 10.0).max(1.0));
-        let size = galley.size();
-        ui.painter().rect_filled(Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), size.y + 6.0)), 0.0,
-            Color32::from_black_alpha(180));
-        ui.painter().galley(pos, galley, Color32::WHITE);
-        ui.interact(Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), size.y + 6.0)),
-            ui.id().with("hud-details"), egui::Sense::hover()).on_hover_text(format!(
-                "{}\nNetwork：CONTROL 往返耗时均值 ± 标准差（最近 32 次）\nLoss：最近 2 秒超时未修复的 RTP 包比例，重复 RTX 不计入分母\nRender：UI 准备及渲染提交 CPU 时间，不含 VSync 等待\nDecode：解码调用耗时，不含颜色转换\nEncode：远端未提供可验证的计时，显示 N/A", s.backend()));
+            s.bitrate_kbps.load(Relaxed) as f32 / 1000.0, self.render_ms, s.decode_ms(),
+            s.lost.load(Relaxed), s.nack_requests.load(Relaxed), s.rtx_packets.load(Relaxed),
+            s.reordered.load(Relaxed), s.late_packets.load(Relaxed), s.damaged_frames.load(Relaxed),
+            s.errors.load(Relaxed), s.queue_drops.load(Relaxed), s.keyframe_requests.load(Relaxed));
+        let mut job = egui::text::LayoutJob::simple(text, FontId::proportional(12.0),
+            Color32::from_rgb(174, 238, 219), (rect.width() - 40.0).clamp(1.0, 920.0));
+        job.halign = egui::Align::Center;
         if s.waiting_for_keyframe.load(Relaxed) != 0 {
-            ui.painter().text(pos + egui::vec2(0.0, size.y + 5.0), egui::Align2::LEFT_TOP,
-                format!("正在恢复参考帧 · 请求 {} · 坏帧 {} · RTX {}", s.keyframe_requests.load(Relaxed), s.damaged_frames.load(Relaxed), s.rtx_packets.load(Relaxed)),
-                FontId::proportional(11.0), Color32::from_rgb(255, 197, 104));
+            job.append("\n正在恢复参考帧", 0.0, egui::TextFormat {
+                font_id: FontId::proportional(12.0),
+                color: Color32::from_rgb(255, 197, 104), ..Default::default()
+            });
         }
+        let galley = ui.fonts(|f| f.layout_job(job));
+        let bounds = Rect::from_min_size(
+            egui::pos2(rect.center().x - galley.size().x / 2.0 - 8.0, rect.top() + 8.0),
+            galley.size() + egui::vec2(16.0, 10.0));
+        ui.painter().rect_filled(bounds, 6.0, Color32::from_black_alpha(180));
+        ui.painter().galley(egui::pos2(rect.center().x, bounds.top() + 5.0), galley, Color32::WHITE);
+        ui.interact(bounds, ui.id().with("hud-details"), egui::Sense::hover()).on_hover_text(format!(
+            "{}\nCtrl+Alt+S：显示 / 隐藏统计\nNetwork：CONTROL 往返耗时均值 ± 标准差（最近 32 次）\nLoss：最近 2 秒超时未修复的 RTP 包比例，重复 RTX 不计入分母\n其余包、帧、请求计数为本次会话累计值\nRd：每秒提交的新画面数，不是显示器扫描次数\nRender：UI 准备及渲染提交 CPU 时间，不含 VSync 等待\nDecode：解码调用耗时，不含颜色转换", s.backend()));
     }
 }

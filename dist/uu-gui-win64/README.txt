@@ -17,7 +17,8 @@
 解码：
   - 默认优先 D3D11VA（Media Foundation），失败自动回退 OpenH264。
   - Ctrl+Alt+S 显示顶部紧凑 HUD；悬停查看实际后端、回退原因及统计定义。
-  - HUD 显示实际编码、Rx/De/Rd、RTT±波动、丢包、带宽、Render/Decode；Encode 未知时为 N/A。
+  - HUD 显示实际编码、Rx/De/Rd、RTT±波动、丢包、带宽、Render/Decode；保留丢包、重传、乱序、坏帧和恢复计数。
+  - HUD 顶部居中，背景跟随文字范围，不显示远端未提供的 Encode 延迟。
   - Intel Arc B390 / AMD RX 7900 XTX 已实测；1080p 输出按可见尺寸裁剪。
   - 硬解目前仍有 GPU→CPU 回读，实测速度不一定优于软解。
   - 设置 UU_DECODER=sw 可强制软解；UU_DECODER=auto 恢复默认选择。
