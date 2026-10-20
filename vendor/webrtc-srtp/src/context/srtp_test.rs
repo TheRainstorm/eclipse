@@ -170,3 +170,47 @@ fn test_rtp_lifecycle() -> Result<()> {
 //TODO: BenchmarkEncryptRTP
 //TODO: BenchmarkEncryptRTPInPlace
 //TODO: BenchmarkDecryptRTP
+
+#[test]
+fn first_late_previous_cycle_packet_is_authenticated_once_with_default_replay_window() {
+    for profile in [
+        ProtectionProfile::Aes128CmHmacSha1_80,
+        ProtectionProfile::AeadAes128Gcm,
+    ] {
+        let key = vec![0x17; profile.key_len()];
+        let salt = vec![0x2a; profile.salt_len()];
+        let mut sender = Context::new(&key, &salt, profile, None, None).unwrap();
+        let mut receiver =
+            Context::new(&key, &salt, profile, Some(srtp_replay_protection(64)), None).unwrap();
+        let mut withheld = None;
+        for sequence in (65500..=65535).chain(0..=20) {
+            let packet = rtp::packet::Packet {
+                header: rtp::header::Header {
+                    version: 2,
+                    ssrc: 42,
+                    sequence_number: sequence,
+                    ..Default::default()
+                },
+                payload: Bytes::from_static(b"generated late arrival"),
+                ..Default::default()
+            }
+            .marshal()
+            .unwrap();
+            let wire = sender.encrypt_rtp(&packet).unwrap();
+            if sequence == 65530 {
+                withheld = Some((packet, wire));
+            } else {
+                assert_eq!(receiver.decrypt_rtp(&wire).unwrap(), packet);
+            }
+        }
+        let (packet, wire) = withheld.unwrap();
+        let mut forged = wire.to_vec();
+        *forged.last_mut().unwrap() ^= 1;
+        assert!(receiver.decrypt_rtp(&forged).is_err());
+        assert_eq!(receiver.decrypt_rtp(&wire).unwrap(), packet);
+        assert!(
+            receiver.decrypt_rtp(&wire).is_err(),
+            "late packet must be recorded at its normalized age"
+        );
+    }
+}

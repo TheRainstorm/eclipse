@@ -7,6 +7,7 @@ pub mod context;
 mod error;
 mod key_derivation;
 pub mod option;
+mod replay_detector;
 pub mod protection_profile;
 pub mod session;
 pub mod stream;
