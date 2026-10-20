@@ -116,6 +116,9 @@ fn valid(frame: &RawFrame) -> bool {
 struct Planes {
     gl: Arc<glow::Context>,
     program: glow::Program,
+    layout_uniform: Option<glow::UniformLocation>,
+    coefficients_uniform: Option<glow::UniformLocation>,
+    levels_uniform: Option<glow::UniformLocation>,
     vao: glow::VertexArray,
     textures: [glow::Texture; 3],
     size: [u32; 2],
@@ -180,9 +183,21 @@ impl Planes {
                 }
             }
         }
+        let layout_uniform = gl.get_uniform_location(program, "pixel_layout");
+        let coefficients_uniform = gl.get_uniform_location(program, "coeff");
+        let levels_uniform = gl.get_uniform_location(program, "levels");
+        let previous_program = gl.get_parameter_program(glow::CURRENT_PROGRAM);
+        gl.use_program(Some(program));
+        for (unit, name) in ["plane0", "plane1", "plane2"].iter().enumerate() {
+            gl.uniform_1_i32(gl.get_uniform_location(program, name).as_ref(), unit as i32);
+        }
+        gl.use_program(previous_program);
         Ok(Self {
             gl,
             program,
+            layout_uniform,
+            coefficients_uniform,
+            levels_uniform,
             vao,
             textures: textures.try_into().unwrap(),
             size: [0, 0],
@@ -311,15 +326,9 @@ impl Planes {
         for (i, t) in self.textures.iter().enumerate() {
             gl.active_texture(glow::TEXTURE0 + i as u32);
             gl.bind_texture(glow::TEXTURE_2D, Some(*t));
-            gl.uniform_1_i32(
-                gl.get_uniform_location(self.program, &format!("plane{i}"))
-                    .as_ref(),
-                i as i32,
-            );
         }
         gl.uniform_1_i32(
-            gl.get_uniform_location(self.program, "pixel_layout")
-                .as_ref(),
+            self.layout_uniform.as_ref(),
             match self.layout {
                 Some(PixelFormat::Nv12) => 0,
                 Some(PixelFormat::I420) => 1,
@@ -346,18 +355,8 @@ impl Planes {
                 2.112402,
             ),
         };
-        gl.uniform_4_f32(
-            gl.get_uniform_location(self.program, "coeff").as_ref(),
-            r,
-            gu,
-            gv,
-            b,
-        );
-        gl.uniform_2_f32(
-            gl.get_uniform_location(self.program, "levels").as_ref(),
-            offset,
-            scale,
-        );
+        gl.uniform_4_f32(self.coefficients_uniform.as_ref(), r, gu, gv, b);
+        gl.uniform_2_f32(self.levels_uniform.as_ref(), offset, scale);
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
         // egui restores its program, VAO and blend state after the callback.
         // Restore texture unit and pixel unpack state explicitly.
