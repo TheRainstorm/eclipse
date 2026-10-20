@@ -458,7 +458,7 @@ impl App {
         };
         if let Some(target) = app.stream_target.clone() {
             app.devices.push(Device {
-                alias: target.alias, device_id: match target.connection {sessions::ConnectionTarget::UuDevice(id)=>id,sessions::ConnectionTarget::NativeInvitation(_)=>String::new()},
+                alias: target.alias, device_id: match target.connection {sessions::ConnectionTarget::UuDevice(id)=>id,sessions::ConnectionTarget::NativeInvitation(_) | sessions::ConnectionTarget::NativeDevice(_)=>String::new()},
                 status: "CONNECTED".into(), controllable: true,
                 wallpaper_url: String::new(), platform: 0,
             });
@@ -970,6 +970,9 @@ impl App {
         if self.controller.is_some() { return; }
         if let Some(sessions::ConnectionTarget::NativeInvitation(path))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
             self.connect_native(path);return;
+        }
+        if let Some(sessions::ConnectionTarget::NativeDevice(id))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
+            self.connect_native_device(id);return;
         }
         self.displays=displays::Displays::default();self.selected_track=0;
         let Some(i) = self.selected else { return };

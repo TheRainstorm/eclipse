@@ -148,6 +148,10 @@ impl App {
         }
     }
     pub(super) fn connect_native(&mut self, path: PathBuf) {
+        self.connect_native_source(Some(path),None);
+    }
+    pub(super) fn connect_native_device(&mut self,id:String){self.connect_native_source(None,Some(id));}
+    fn connect_native_source(&mut self,path:Option<PathBuf>,device:Option<String>){
         self.native_clipboard_enabled=false;
         let stats = Arc::new(uu_core::media::MediaStats::default());
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Release);
@@ -168,7 +172,10 @@ impl App {
             .store(cfg!(any(windows,target_os="linux")), std::sync::atomic::Ordering::Release);
         self.displays = super::displays::Displays::default();
         self.selected_track = 0;
-        match uu_core::native_controller::spawn_with_input(path, stats, !self.view_only) {
+        let result=if let Some(id)=device {
+            self.config.as_ref().ok_or_else(||anyhow::anyhow!("无法确定原生设备配置目录")).and_then(|config|uu_core::native_controller::spawn_device(config.at("native-lan/paired-devices.json"),id,stats,!self.view_only))
+        }else{uu_core::native_controller::spawn_with_input(path.unwrap(),stats,!self.view_only)};
+        match result {
             Ok(handle) => {
                 let context = self.context.clone();
                 handle.frames.enable_planar();
@@ -181,7 +188,7 @@ impl App {
                     self.context
                         .send_viewport_cmd(egui::ViewportCommand::Maximized(false));
                 }
-                self.status = "正在验证原生邀请…".into();
+                self.status = "正在建立原生串流…".into();
             }
             Err(error) => self.status = format!("原生连接失败：{error}"),
         }

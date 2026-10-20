@@ -22,6 +22,24 @@ pub fn spawn(invitation_file: PathBuf, stats: Arc<MediaStats>) -> Result<Control
     spawn_with_input(invitation_file,stats,false)
 }
 pub fn spawn_with_input(invitation_file: PathBuf, stats: Arc<MediaStats>,requested:bool) -> Result<ControllerHandle> {
+    spawn_source(Source::Invitation(invitation_file),stats,requested)
+}
+pub fn spawn_device(devices_file:PathBuf,id:String,stats:Arc<MediaStats>,requested:bool)->Result<ControllerHandle>{
+    anyhow::ensure!(uuid::Uuid::parse_str(&id).is_ok(),"无效的原生设备编号");
+    spawn_source(Source::Device{devices_file,id},stats,requested)
+}
+enum Source {Invitation(PathBuf),Device{devices_file:PathBuf,id:String}}
+impl Source {
+    async fn resolve(&self)->Result<Invitation>{match self{
+        Self::Invitation(path)=>Invitation::load(path),
+        Self::Device{devices_file,id}=>{
+            let book=crate::native_lan_store::Devices::open(devices_file)?;
+            let device=book.paired(id).context("该原生设备尚未配对，请返回设备页重新配对")?;
+            crate::native_lan::connect(device,&book.client_id).await
+        }
+    }}
+}
+fn spawn_source(source:Source,stats:Arc<MediaStats>,requested:bool)->Result<ControllerHandle>{
     stats.capabilities.set(0);
     stats.clipboard.enabled.store(false, Ordering::Release);
     stats.clipboard.available.store(false, Ordering::Release);
@@ -33,7 +51,7 @@ pub fn spawn_with_input(invitation_file: PathBuf, stats: Arc<MediaStats>,request
     let (native_input,native_rx)=crate::native_input::channel(requested);
     let stopped = Arc::new(AtomicBool::new(false));
     let worker = Worker {
-        invitation_file,
+        source,
         events,
         frames,
         input: input_rx,
@@ -60,7 +78,7 @@ pub fn spawn_with_input(invitation_file: PathBuf, stats: Arc<MediaStats>,request
 }
 
 struct Worker {
-    invitation_file: PathBuf,
+    source: Source,
     events: std::sync::mpsc::Sender<ControllerEvent>,
     frames: FrameSender,
     input: UnboundedReceiver<Vec<u8>>,
@@ -105,8 +123,12 @@ impl Worker {
     async fn network(&mut self) -> Result<()> {
         let _ = self
             .events
-            .send(ControllerEvent::Status("正在验证原生邀请…".into()));
-        let invitation = Invitation::load(&self.invitation_file)?;
+            .send(ControllerEvent::Status(match &self.source {Source::Invitation(_)=>"正在验证原生邀请…",Source::Device{..}=>"正在连接已配对的原生服务端…"}.into()));
+        let invitation=tokio::select!{
+            biased;
+            _=self.close.recv()=>return Ok(()),
+            result=self.source.resolve()=>result?,
+        };
         let (stop, stop_rx) = watch::channel(false);
         let native=self.native.take().context("native input interface was already consumed")?;
         let session = crate::native::view_with_input(
@@ -185,4 +207,16 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         outcome
     }
+}
+
+#[cfg(test)]mod lan_tests {
+ use super::*;
+ #[tokio::test]async fn closing_while_broker_metadata_is_pending_does_not_wait_for_network_timeout(){
+  use tokio::{net::TcpListener,io::AsyncReadExt,time::timeout};
+  let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();let root=std::env::temp_dir().join(format!("eclipse-lan-viewer-{}",uuid::Uuid::new_v4()));let path=root.join("paired-devices.json");
+  let mut book=crate::native_lan_store::Devices::open(&path).unwrap();let id=uuid::Uuid::new_v4().to_string();book.remember(&path,crate::native_lan_store::Device{id:id.clone(),name:"Generated server".into(),endpoint:listener.local_addr().unwrap().to_string(),certificate:vec![1],token:vec![42;32]}).unwrap();
+  let stats=Arc::new(MediaStats::default());let handle=spawn_device(path,id,stats.clone(),false).unwrap();let (mut socket,_)=timeout(Duration::from_secs(2),listener.accept()).await.unwrap().unwrap();
+  let mut header=[0;17];socket.read_exact(&mut header).await.unwrap();assert_eq!(&header,b"ECLIPSE-LAN-INFO\n");handle.close.send(()).unwrap();
+  timeout(Duration::from_secs(2),async{while !handle.stopped.load(Ordering::Acquire){tokio::time::sleep(Duration::from_millis(10)).await;}}).await.unwrap();assert_eq!(stats.input_messages_sent.load(Ordering::Acquire),0);std::fs::remove_dir_all(root).unwrap();
+ }
 }
