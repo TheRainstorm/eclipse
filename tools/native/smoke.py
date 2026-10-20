@@ -10,7 +10,7 @@ import tempfile
 import time
 
 
-def run(executable, frames, decoder, audio=False):
+def run(executable, frames, decoder, audio=False, encoder='software'):
     with tempfile.TemporaryDirectory(prefix='uu-native-smoke-') as temporary:
         temporary = Path(temporary)
         invitation = temporary / 'session.eclipse-invite.json'
@@ -25,6 +25,7 @@ def run(executable, frames, decoder, audio=False):
             environment.pop('UU_DECODER', None)
         with (temporary / 'host.log').open('w+', encoding='utf-8') as log:
             host = subprocess.Popen([str(executable), 'native-host', '--synthetic', *(['--synthetic-audio'] if audio else []),
+                                     *(['--encoder', encoder] if encoder != 'software' else []),
                                      '--invitation-file', str(invitation), '--max-seconds', '30'],
                                     env=environment, stdout=log, stderr=subprocess.STDOUT)
             try:
@@ -62,10 +63,16 @@ def run(executable, frames, decoder, audio=False):
                 host.wait(timeout=8)
                 if host.returncode:
                     raise RuntimeError('Native host failed to shut down after its viewer disconnected')
+                log.seek(0)
+                actual_encoder = re.search(r'encoder="([^"\r\n]+)"', log.read())
+                actual_encoder = actual_encoder[1] if actual_encoder else None
+                if encoder == 'vaapi' and (not actual_encoder or not actual_encoder.startswith('vaapi (')):
+                    raise RuntimeError('Explicit VA-API host did not report hardware encoding')
                 if list((temporary / 'data').rglob('state.json')):
                     raise RuntimeError('Native smoke test unexpectedly created an interoperability account')
-                print(json.dumps(dict(native_video='passed', service_key='absent', account='absent',
-                                      clean_shutdown=True, audio_redundancy=audio, metrics=lines[0])))
+                print(json.dumps(dict(native_video='passed', service_credentials_supplied=False, account='absent',
+                                      clean_shutdown=True, audio_redundancy=audio, encoder_backend=actual_encoder,
+                                      decoder_backend=report['final']['backend'], metrics=lines[0])))
             finally:
                 if host.poll() is None:
                     host.terminate()
@@ -83,10 +90,12 @@ def main():
     parser.add_argument('--decoder', choices=('sw', 'auto'), default='sw',
                         help='Use deterministic software decoding in CI; auto exercises the actual machine decoder')
     parser.add_argument('--audio', action='store_true', help='Check generated encrypted audio and receive-only packet loss; never plays sound')
+    parser.add_argument('--encoder', choices=('software', 'auto', 'vaapi'), default='software',
+                        help='Native host preference; explicit VA-API requires a reported hardware encoder')
     args = parser.parse_args()
     if not 1 <= args.frames <= 600:
         parser.error('--frames must be 1..=600')
-    run(args.exe.resolve(strict=True), args.frames, args.decoder, args.audio)
+    run(args.exe.resolve(strict=True), args.frames, args.decoder, args.audio, args.encoder)
 
 
 if __name__ == '__main__':
