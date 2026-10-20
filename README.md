@@ -47,7 +47,16 @@ uu-client 使用 Rust 构建，通过兼容协议连接 UU 远程被控端，提
 
 ## 开始使用
 
-安装包将随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
+安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
+
+已有源码目录且已安装并登录 GitHub CLI、Python 3.11+ 时，可直接下载已发布产物，无需本机编译：
+
+```sh
+python3 tools/release/download.py
+# 指定版本或平台：--tag v0.8.0 --platform windows
+```
+
+校验后的包统一位于 `artifacts/packages/`；工具核对发布标签对应提交、压缩包校验和及每个文件的哈希。下载不会安装或启动软件。
 
 原生模式中，主机在主页选择“共享此设备”，选择显示器和本机网卡地址后开始共享；控制端打开“使用原生邀请”，选择私下传递的邀请文件。默认只读，控制键鼠需要主机明确许可。具体范围及 CLI 用法见[原生串流说明](docs/native-streaming.md)，全程无需 UU 账号或服务凭据。
 
