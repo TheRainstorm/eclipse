@@ -12,6 +12,31 @@ import tempfile
 LICENSES = ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt']
 
 
+def desktop_value(value):
+    return str(value).replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+
+
+def desktop_entry(base, legacy=False):
+    executable = str(base / 'current' / 'uu-gui')
+    # Exec quoting is applied after the desktop string's own escape layer.
+    # Percent is a field code even inside quotes; a literal percent is %%.
+    def quoted_argument(value):
+        quoted = ''.join('\\' + c if c in '\\"`$' else c for c in str(value)).replace('%', '%%')
+        return '"' + quoted + '"'
+    # GLib validates argv[0] before expanding %%; keep the program with a
+    # possibly literal percent in argv[1]. env invokes it directly, no shell.
+    launcher = shutil.which('env')
+    if not launcher:
+        raise RuntimeError('The standard env utility is required for the desktop launcher')
+    command = desktop_value(quoted_argument(launcher) + ' ' + quoted_argument(executable))
+    return ('[Desktop Entry]\nType=Application\nName=uu-client\nName[zh_CN]=uu-client\n'
+            'Comment=Windows / Linux remote streaming client\n'
+            f'Exec={command}\n'
+            f'TryExec={desktop_value(executable)}\nIcon={desktop_value(base / "current" / "eclipse.png")}\n'
+            'Terminal=false\nCategories=Network;RemoteAccess;\nStartupNotify=true\nStartupWMClass=uu-client\n'
+            + ('NoDisplay=true\n' if legacy else ''))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prefix', type=Path, default=Path.home() / '.local')
@@ -30,7 +55,10 @@ def main():
         deps = subprocess.check_output(['ldd', str(package / name)], text=True)
         if 'not found' in deps: raise RuntimeError(f'Missing shared libraries for {name}: {deps}')
     prefix = args.prefix.expanduser().resolve()
+    if any(ord(c) < 32 for c in str(prefix)):
+        raise ValueError('Installation prefix must not contain control characters')
     base = prefix / 'opt' / 'uu-remote-rust'
+    desktop_contents = [(False, desktop_entry(base)), (True, desktop_entry(base, legacy=True))]
     releases = base / 'releases'
     releases.mkdir(parents=True, exist_ok=True)
     dest = releases / revision[:12]
@@ -58,10 +86,17 @@ def main():
     link(base / 'current' / 'uu-gui', prefix / 'bin' / 'uu-client')
     link(base / 'current' / 'uu-gui', prefix / 'bin' / 'uu-remote-rust')
     link(base / 'current' / 'uu', prefix / 'bin' / 'uu-rust')
-    desktop = prefix / 'share' / 'applications' / 'uu-remote-rust.desktop'
+    # The filename must match the window's Wayland app_id (uu-client).
+    desktop = prefix / 'share' / 'applications' / 'uu-client.desktop'
     desktop.parent.mkdir(parents=True, exist_ok=True)
-    executable = str(base / 'current' / 'uu-gui').replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$')
-    desktop.write_text('[Desktop Entry]\nType=Application\nName=uu-client\nName[zh_CN]=uu-client\nComment=Windows / Linux remote streaming client\n' + f'Exec="{executable}"\nTryExec={base / "current" / "uu-gui"}\nIcon={base / "current" / "eclipse.png"}\nTerminal=false\nCategories=Network;RemoteAccess;\nStartupNotify=true\nStartupWMClass=uu-client\n')
+    for legacy, contents in desktop_contents:
+        path = desktop.with_name('uu-remote-rust.desktop') if legacy else desktop
+        pending = path.with_name(path.name + f'.tmp-{os.getpid()}')
+        try:
+            pending.write_text(contents, encoding='utf-8')
+            pending.replace(path)
+        finally:
+            pending.unlink(missing_ok=True)
     subprocess.run(['update-desktop-database', str(desktop.parent)], check=False) if shutil.which('update-desktop-database') else None
     print(json.dumps({'source_commit': revision, 'executable': str(base / 'current' / 'uu-gui'), 'desktop': str(desktop)}, ensure_ascii=False))
 

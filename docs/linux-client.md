@@ -17,6 +17,8 @@ python3 install.py
 
 正式入口：`~/.local/bin/uu-client`（保留旧 `uu-remote-rust` 启动别名），或应用菜单 **uu-client**。实际文件在 `~/.local/opt/uu-remote-rust/releases/<revision>/`，`current` 为统一版本入口。CLI 是 `~/.local/bin/uu-rust`。安装器校验二进制 SHA256 和动态依赖，原子切换入口，旧版本保留。0.6起版本显示优先使用程序内嵌的源提交，并核对同目录 `version.json`；请使用完整包以保持程序、资源与清单一致。
 
+0.7起应用菜单使用与窗口标识一致的 `uu-client.desktop`，以便桌面识别图标和任务栏分组。旧启动项保留为隐藏兼容入口，避免已有固定图标失效；如固定项仍显示旧图标，可从应用菜单重新固定 uu-client。安装路径中的空格和特殊字符会按桌面启动项规则转义，启动不经过 shell。
+
 凭据和设置在 `$XDG_DATA_HOME/uu-remote`（默认 `~/.local/share/uu-remote`）。安装包不含凭据，首次运行可扫码登录。安装升级不覆盖设置或凭据。
 
 默认保持远端显示器布局；独占虚拟屏只在用户显式选择时启用。支持绝对桌面鼠标、Locked 相对游戏鼠标、本地/远端光标偏好。窗口按目标屏幕约 80% 容量计算大小；Wayland 的位置由合成器决定，应用不能强制全局居中坐标。
