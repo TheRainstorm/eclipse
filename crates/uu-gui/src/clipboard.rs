@@ -19,9 +19,42 @@ fn start_role(
 ) -> std::io::Result<()> {
     #[cfg(windows)]
     {
+        if window == 0
+            || unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(window as _) } == 0
+        {
+            control
+                .available
+                .store(false, std::sync::atomic::Ordering::Release);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "剪贴板所有者窗口尚未就绪",
+            ));
+        }
+        // Use the caller's authorized desktop explicitly. A worker must not
+        // inherit a stale startup desktop after an RDP/session transition.
+        let desktop = unsafe {
+            windows_sys::Win32::System::StationsAndDesktops::GetThreadDesktop(
+                windows_sys::Win32::System::Threading::GetCurrentThreadId(),
+            )
+        } as usize;
+        if desktop == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
         std::thread::Builder::new()
             .name("uu-clipboard".into())
-            .spawn(move || run(control, window, foreground_only))?;
+            .spawn(move || {
+                if unsafe {
+                    windows_sys::Win32::System::StationsAndDesktops::SetThreadDesktop(desktop as _)
+                } == 0
+                {
+                    control
+                        .available
+                        .store(false, std::sync::atomic::Ordering::Release);
+                    control.status("无法打开当前桌面的剪贴板");
+                    return;
+                }
+                run(control, window, foreground_only)
+            })?;
     }
     #[cfg(target_os = "linux")]
     {
@@ -62,7 +95,9 @@ fn run_linux(control: Arc<Clipboard>, suppress_initial: bool) {
                 if value.len() <= uu_core::clipboard::MAX_TEXT && !value.contains('\0') {
                     let normalized = canonical(&value);
                     if last_text.as_ref() != Some(&normalized) {
-                        if !control.read_only.load(Acquire) && (!suppress_initial || last_text.is_some()) {
+                        if !control.read_only.load(Acquire)
+                            && (!suppress_initial || last_text.is_some())
+                        {
                             *control.local.lock().unwrap() = Some(value);
                             control.protocol.lock().unwrap().cancel_pending();
                             local_changed = true;
@@ -82,7 +117,7 @@ fn run_linux(control: Arc<Clipboard>, suppress_initial: bool) {
                         control.status("文本剪贴板已同步");
                     } else {
                         let mut pending = control.remote.lock().unwrap();
-                        if pending.is_none() {
+                        if pending.is_none() && control.ready() {
                             *pending = Some(value);
                         }
                         control.status("本地剪贴板写入繁忙，正在重试");
@@ -100,7 +135,8 @@ fn run_linux(control: Arc<Clipboard>, suppress_initial: bool) {
 
 #[cfg(windows)]
 fn run(control: Arc<Clipboard>, window: isize, foreground_only: bool) {
-    use std::sync::atomic::Ordering::Acquire;
+    use std::sync::atomic::Ordering::{Acquire, Release};
+    control.available.store(true, Release);
     let mut last_sequence = 0;
     let mut last_text = None;
     let mut was_active = false;
@@ -110,7 +146,7 @@ fn run(control: Arc<Clipboard>, window: isize, foreground_only: bool) {
             let sequence = native::sequence();
             let mut local_changed = false;
             if !was_active || sequence != last_sequence {
-                match native::read(window) {
+                match native::read(window, foreground_only) {
                     Ok(Some(value)) => {
                         let normalized = canonical(&value);
                         if last_text.as_ref() != Some(&normalized) {
@@ -137,13 +173,13 @@ fn run(control: Arc<Clipboard>, window: isize, foreground_only: bool) {
                         && control.ready()
                         && (!foreground_only || native::foreground(window))
                     {
-                        if native::write(window, &value).is_ok() {
+                        if native::write(window, &value, foreground_only).is_ok() {
                             last_text = Some(normalized);
                             last_sequence = native::sequence();
                             control.status("文本剪贴板已同步");
                         } else {
                             let mut pending = control.remote.lock().unwrap();
-                            if pending.is_none() {
+                            if pending.is_none() && control.ready() {
                                 *pending = Some(value);
                             }
                             control.status("本地剪贴板写入繁忙，正在重试");
@@ -158,6 +194,7 @@ fn run(control: Arc<Clipboard>, window: isize, foreground_only: bool) {
         was_active = active;
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    control.available.store(false, Release);
     control.status("剪贴板已停止");
 }
 
@@ -166,7 +203,7 @@ mod native {
     use windows_sys::Win32::{
         Foundation::{GlobalFree, HWND},
         System::{DataExchange::*, Memory::*},
-        UI::WindowsAndMessaging::GetForegroundWindow,
+        UI::WindowsAndMessaging::{GetForegroundWindow, IsWindow},
     };
     const FORMAT: u32 = 13;
     struct Open;
@@ -183,8 +220,11 @@ mod native {
     pub fn sequence() -> u32 {
         unsafe { GetClipboardSequenceNumber() }
     }
-    fn open(window: isize) -> Result<Open, ()> {
-        if !foreground(window) {
+    fn open(window: isize, foreground_only: bool) -> Result<Open, ()> {
+        if window == 0
+            || unsafe { IsWindow(window as HWND) } == 0
+            || (foreground_only && !foreground(window))
+        {
             return Err(());
         }
         if unsafe { OpenClipboard(window as HWND) } == 0 {
@@ -192,8 +232,8 @@ mod native {
         }
         Ok(Open)
     }
-    pub fn read(window: isize) -> Result<Option<String>, ()> {
-        let _open = open(window)?;
+    pub fn read(window: isize, foreground_only: bool) -> Result<Option<String>, ()> {
+        let _open = open(window, foreground_only)?;
         unsafe {
             if IsClipboardFormatAvailable(FORMAT) == 0 {
                 return Ok(None);
@@ -221,7 +261,7 @@ mod native {
             Ok(Some(value))
         }
     }
-    pub fn write(window: isize, value: &str) -> Result<(), ()> {
+    pub fn write(window: isize, value: &str, foreground_only: bool) -> Result<(), ()> {
         if value.len() > uu_core::clipboard::MAX_TEXT || value.contains('\0') {
             return Err(());
         }
@@ -238,8 +278,8 @@ mod native {
             }
             std::ptr::copy_nonoverlapping(units.as_ptr(), pointer, units.len());
             GlobalUnlock(handle);
-            let opened = open(window);
-            if opened.is_err() || !foreground(window) {
+            let opened = open(window, foreground_only);
+            if opened.is_err() || (foreground_only && !foreground(window)) {
                 GlobalFree(handle);
                 return Err(());
             }

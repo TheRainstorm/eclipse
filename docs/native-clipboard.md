@@ -18,3 +18,5 @@ python3 tools/native/clipboard_smoke.py \
 ```
 
 脚本创建两个独立、有认证的 Xvfb。主机和控制端各自使用自己的系统剪贴板，只复制生成的测试文字，检查默认关闭、双向同步、后台暂停、重新激活时的收敛、视频继续与退出清理；不会使用工作桌面的剪贴板。核心测试另检查 UTF-8、代次、长度与无效包处理。
+
+Windows CI 另运行 `windows_clipboard_probe --isolated-window-station`，必须成功创建并核对全新的非交互窗口站后才执行剪贴板操作，检查中文/表情读写、主机初始基线、后台暂停、控制端前台限制和线程释放。各窗口站拥有自己的剪贴板，依据 [Microsoft 窗口站说明](https://learn.microsoft.com/en-us/windows/win32/winstation/window-stations)；测试不切换用户正在使用的桌面，创建失败即退出，不回退到交互窗口站。该测试程序只作为 CI 验证产物，不进入发布包。
