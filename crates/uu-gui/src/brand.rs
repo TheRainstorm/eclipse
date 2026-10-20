@@ -66,10 +66,12 @@ impl super::App {
             .collapsible(false)
             .resizable(false)
             .default_width(400.0_f32.min((ctx.screen_rect().width() - 48.0).max(260.0)))
+            .max_width((ctx.screen_rect().width() - 40.0).max(260.0))
+            .default_height((ctx.screen_rect().height() - 100.0).clamp(180.0, 600.0))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
-                    .max_height((ctx.screen_rect().height() - 140.0).max(180.0))
+                    .max_height((ctx.screen_rect().height() - 100.0).max(120.0))
                     .show(ui, |ui| {
                         ui.add_space(12.0);
                         ui.vertical_centered(|ui| {
@@ -82,12 +84,13 @@ impl super::App {
                         });
                         ui.add_space(12.0);
                         ui.separator();
-                        egui::Grid::new("about-details").spacing([24.0, 10.0]).show(ui, |ui| {
+                        egui::Grid::new("about-details").spacing([24.0, 10.0])
+                            .max_col_width((ui.available_width() - 100.0).max(140.0)).show(ui, |ui| {
                             ui.label("版本");
                             ui.label(env!("CARGO_PKG_VERSION"));
                             ui.end_row();
                             ui.label("构建");
-                            ui.label(&self.build_label);
+                            ui.add(egui::Label::new(&self.build_label).wrap());
                             ui.end_row();
                             ui.label("平台");
                             ui.label(format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH));
