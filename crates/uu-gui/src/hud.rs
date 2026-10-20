@@ -23,6 +23,10 @@ impl super::App {
         let rd = self.fps.get(&self.selected_track).copied().unwrap_or(0.0);
         let codec = s.codec.lock().unwrap().trim_start_matches("video/").to_uppercase();
         let codec = if codec.is_empty() { "—" } else { &codec };
+        // Report the active decoder, including a later software fallback,
+        // rather than the build features or the user's hardware preference.
+        let backend = s.backend();
+        let decoder = decoder_label(&backend);
         let source = s.remote_screens.lock().unwrap().for_track(self.selected_track)
             .map(|s| format!(" · {} {}Hz", s.kind_label(), s.refresh_hz)).unwrap_or_default();
         let fresh = uu_core::control_wire::now_ms().saturating_sub(s.rtt_updated_ms.load(Relaxed)) < 5000;
@@ -33,7 +37,7 @@ impl super::App {
         let target_fps=if configured>0 {configured}else{self.target_fps};
         // Render is CPU preparation/submission time, excluding vsync wait.
         let text = format!(
-            "{w}×{h}@{rd:.0}   {codec}   目标 {} FPS{source}   FPS {:.1} Rx · {:.1} De · {rd:.1} Rd\n\
+            "{w}×{h}@{rd:.0}   {codec} · {decoder}   目标 {} FPS{source}   FPS {:.1} Rx · {:.1} De · {rd:.1} Rd\n\
              Network {network}   Loss {:.2}%   Bandwidth {:.2} Mbps | Render {:.2}ms · Decode {:.2}ms\n\
              丢包 {} · NACK {} · RTX {} · 乱序 {} · 迟到 {} · 坏帧 {} · 解码错误 {} · 丢队列 {} · 恢复请求 {}",
             target_fps, s.src_fps(), s.dec_fps(), s.loss_ppm.load(Relaxed) as f32 / 10000.0,
@@ -62,5 +66,30 @@ impl super::App {
         ui.painter().rect_filled(bounds, 6.0, Color32::from_black_alpha(180));
         ui.painter().galley(egui::pos2(rect.center().x, bounds.top() + 5.0), galley, Color32::WHITE);
         ui.interact(bounds, ui.id().with("hud-details"), egui::Sense::hover()).on_hover_text(&self.hud_cache.detail);
+    }
+}
+
+fn decoder_label(backend: &str) -> &str {
+    if backend.starts_with("vaapi") {
+        "VAAPI 硬解"
+    } else if backend.starts_with("d3d11va") {
+        "D3D11 硬解"
+    } else if backend.starts_with("openh264") {
+        "OpenH264 软解"
+    } else if backend.is_empty() {
+        "解码初始化中"
+    } else {
+        backend
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn abandoned_hardware_in_a_fallback_note_is_not_reported_as_active() {
+        assert_eq!(super::decoder_label("vaapi (cros-codecs hw, /dev/dri/renderD128)"), "VAAPI 硬解");
+        assert_eq!(super::decoder_label("d3d11va (Media Foundation hw: GPU)"), "D3D11 硬解");
+        assert_eq!(super::decoder_label("openh264 [hardware vaapi abandoned: error]"), "OpenH264 软解");
+        assert_eq!(super::decoder_label(""), "解码初始化中");
     }
 }
