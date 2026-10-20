@@ -126,7 +126,7 @@ async fn encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets() 
                                 data == original.as_slice(),
                                 "late retransmission changed its encrypted packet index"
                             );
-                            let attempt = forwarded.fetch_add(1, Ordering::Relaxed);
+                            let attempt = forwarded.load(Ordering::Relaxed);
                             if attempt == 0 {
                                 // A forged repair must not consume the missing index.
                                 data[length - 1] ^= 1;
@@ -135,29 +135,54 @@ async fn encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets() 
                     }
                 }
                 relay.send_to(data, target).await?;
+                if source == host_address
+                    && length >= 12
+                    && data[0] >> 6 == 2
+                    && data[1] & 0x7f == 102
+                    && u16::from_be_bytes([data[2], data[3]]) == MISSING
+                {
+                    // Publish the barrier after the UDP send, so a negative
+                    // receive assertion cannot pass before forwarding occurs.
+                    forwarded.fetch_add(1, Ordering::Release);
+                }
             }
             #[allow(unreachable_code)]
             Ok::<_, anyhow::Error>(())
         }));
         viewer.remote(via_relay(answer, relay_port), ip).await?;
         tokio::try_join!(host.connected(), viewer.connected())?;
-        for seq in FIRST..=LAST {
-            track
-                .write_rtp(&Packet {
-                    header: Header {
-                        version: 2,
-                        payload_type: 102,
-                        sequence_number: seq,
-                        marker: true,
-                        ..Default::default()
-                    },
-                    payload: bytes::Bytes::from_static(b"\x65generated wire regression"),
-                    ..Default::default()
-                })
-                .await?;
+        let packet = |seq| Packet {
+            header: Header {
+                version: 2,
+                payload_type: 102,
+                sequence_number: seq,
+                marker: true,
+                ..Default::default()
+            },
+            payload: bytes::Bytes::from_static(b"\x65generated wire regression"),
+            ..Default::default()
+        };
+        // Connected can precede the receive task becoming ready. Bootstrap
+        // with identical copies, then pace the fixture so only our deliberate
+        // drop is lost, even while the workspace tests run in parallel.
+        timeout(Duration::from_secs(5), async {
+            loop {
+                track.write_rtp(&packet(FIRST)).await?;
+                if let Ok(received) = timeout(Duration::from_millis(10), received.recv()).await {
+                    let (seq, _) = received.context("bootstrap track closed")?;
+                    ensure!(seq == FIRST, "unexpected bootstrap sequence");
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+        })
+        .await
+        .context("initial encrypted track did not become ready")??;
+        for seq in FIRST + 1..=LAST {
+            track.write_rtp(&packet(seq)).await?;
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        let mut count = 0;
-        let media_ssrc = timeout(Duration::from_secs(3), async {
+        let mut count = 1;
+        let media_ssrc = timeout(Duration::from_secs(5), async {
             loop {
                 let (seq, ssrc) = received.recv().await.context("viewing track closed")?;
                 ensure!(seq != MISSING, "original lost packet reached SRTP");
@@ -185,8 +210,15 @@ async fn encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets() 
                     }],
                 })])
                 .await?;
+            timeout(Duration::from_secs(3), async {
+                while retransmitted.load(Ordering::Relaxed) <= attempt {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            })
+            .await
+            .context("requested NACK repair never crossed the owned relay")?;
             if attempt == 1 {
-                let (seq, _) = timeout(Duration::from_secs(1), received.recv())
+                let (seq, _) = timeout(Duration::from_secs(3), received.recv())
                     .await
                     .context("authenticated NACK repair was rejected after 300 newer packets")?
                     .context("repair track closed")?;
