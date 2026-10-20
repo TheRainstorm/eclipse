@@ -15,7 +15,7 @@ impl super::App {
         let Some(controller) = &self.controller else { return };
         let wrap=(rect.width()-40.0).clamp(1.0,920.0);
         let key=(self.selected_track,wrap.to_bits(),ui.ctx().pixels_per_point().to_bits());
-        let refresh=self.hud_cache.key!=Some(key) || self.hud_cache.updated.is_none_or(|at|at.elapsed()>=std::time::Duration::from_millis(500));
+        let refresh=self.hud_cache.key!=Some(key) || self.hud_cache.updated.map_or(true,|at|at.elapsed()>=std::time::Duration::from_millis(500));
         if refresh {
         let s = &controller.stats;
         let (w, h) = self.textures.get(&self.selected_track).map(|t|(t.size()[0] as u32,t.size()[1] as u32)).unwrap_or_else(||s.res());
