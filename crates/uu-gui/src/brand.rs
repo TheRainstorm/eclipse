@@ -108,10 +108,11 @@ impl super::App {
                             ui.add(egui::Label::new(&self.executable_path).wrap());
                             if ui.button("复制版本与诊断信息").clicked() {
                                 ui.output_mut(|output| output.copied_text = format!(
-                                    "{NAME} {}\n构建：{}\n平台：{} / {}\n程序：{}\n{REPOSITORY}",
+                                    "{NAME} {}\n构建：{}\n平台：{} / {}\n{REPOSITORY}",
                                     env!("CARGO_PKG_VERSION"), self.build_label,
-                                    std::env::consts::OS, std::env::consts::ARCH, self.executable_path));
+                                    std::env::consts::OS, std::env::consts::ARCH));
                             }
+                            ui.small("复制内容仅含版本、构建、平台与项目链接，不含程序路径或账号信息。");
                         });
                     });
             });

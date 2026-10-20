@@ -1,7 +1,74 @@
 //! Embed the application icon and product identity into Windows executables.
 use std::{env, fs, path::PathBuf, process::Command};
+mod build_support;
+
+fn embed_provenance() {
+    let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../..");
+    let raw_git = |args: &[&str]| -> Option<String> {
+        let output = Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8(output.stdout).ok())
+            .flatten()
+    };
+    // A source archive extracted inside an unrelated repository must not borrow
+    // that repository's revision or dirty state.
+    let own_repository = raw_git(&["rev-parse", "--show-toplevel"])
+        .and_then(|path| PathBuf::from(path.trim()).canonicalize().ok())
+        .zip(root.canonicalize().ok())
+        .is_some_and(|(repository, workspace)| repository == workspace);
+    let git = |args: &[&str]| own_repository.then(|| raw_git(args)).flatten();
+    let revision = git(&["rev-parse", "HEAD"]).unwrap_or_default();
+    let revision = revision.trim();
+    let revision = if build_support::valid_revision(revision) {
+        revision
+    } else {
+        ""
+    };
+    let inputs = [
+        "crates",
+        "vendor",
+        "assets",
+        "Cargo.toml",
+        "Cargo.lock",
+        ".cargo",
+    ];
+    for path in inputs {
+        if root.join(path).exists() {
+            println!("cargo:rerun-if-changed={}", root.join(path).display());
+        }
+    }
+    for name in ["HEAD".to_owned(), "index".to_owned()]
+        .into_iter()
+        .chain(git(&["symbolic-ref", "-q", "HEAD"]).map(|s| s.trim().to_owned()))
+    {
+        if let Some(path) = git(&["rev-parse", "--git-path", &name]) {
+            println!(
+                "cargo:rerun-if-changed={}",
+                root.join(path.trim()).display()
+            );
+        }
+    }
+    let mut args = vec!["status", "--porcelain", "--untracked-files=normal", "--"];
+    args.extend(inputs);
+    let dirty = match git(&args) {
+        Some(status) if status.trim().is_empty() => "false",
+        Some(_) => "true",
+        None => "unknown",
+    };
+    println!("cargo:rustc-env=UU_BUILD_COMMIT={revision}");
+    println!("cargo:rustc-env=UU_BUILD_DIRTY={dirty}");
+}
 
 fn main() {
+    embed_provenance();
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build_support.rs");
     println!("cargo:rerun-if-changed=../../assets/branding/eclipse.ico");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=RC");
@@ -19,11 +86,7 @@ fn main() {
         .replace('\\', "/")
         .replace('"', "\\\"");
     let version = env::var("CARGO_PKG_VERSION").unwrap();
-    let numbers: Vec<_> = version
-        .split('.')
-        .take(3)
-        .map(|v| v.parse::<u16>().unwrap())
-        .collect();
+    let numbers = build_support::windows_version(&version).expect("valid Windows resource version");
     let resource = output.join("uu-client.rc");
     fs::write(
         &resource,

@@ -27,6 +27,7 @@ mod stream_menu;
 mod login;
 mod ui;
 mod brand;
+mod build_info;
 mod account;
 mod audio_controls;
 mod native_ui;
@@ -361,7 +362,7 @@ impl App {
             native_host: native_host_ui::NativeHostUi::default(),
             sessions: sessions::Sessions::default(),
             platform,
-            build_label: installed_revision(),
+            build_label: build_info::label(),
             executable_path: std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
             context: cc.egui_ctx.clone(),
             devices: Vec::new(),
@@ -1191,13 +1192,5 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| Ok(Box::new(App::new(cc, stream_target, origin)))),
     )
-}
-
-fn installed_revision() -> String {
-    std::env::current_exe().ok()
-        .and_then(|path| std::fs::read(path.parent()?.join("version.json")).ok())
-        .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
-        .and_then(|manifest| manifest["source_commit"].as_str().map(|s| s.chars().take(12).collect()))
-        .unwrap_or_else(|| "开发构建".into())
 }
 
