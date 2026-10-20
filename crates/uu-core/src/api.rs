@@ -3,7 +3,7 @@
 //! Each step was verified against the live service before being encoded here
 //! (see `docs/protocol-notes.md` §2.6).
 
-use std::path::PathBuf;
+use std::{io::Read, path::{Path, PathBuf}};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -40,11 +40,30 @@ impl ClientState {
         }
     }
 
-    pub fn load(path: &PathBuf) -> Self {
-        std::fs::read(path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_else(Self::new)
+    pub fn read(path: &Path) -> Result<Option<Self>, CoreError> {
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(CoreError::AccountState("没有读取权限"));
+            },
+            Err(_) => return Err(CoreError::AccountState("无法读取文件")),
+        };
+        const LIMIT: usize = 1024 * 1024;
+        let mut bytes = Vec::new();
+        file.take(LIMIT as u64 + 1).read_to_end(&mut bytes)
+            .map_err(|_| CoreError::AccountState("无法读取文件"))?;
+        if bytes.len() > LIMIT {
+            return Err(CoreError::AccountState("文件超过 1 MiB 大小限制"));
+        }
+        // serde errors may quote the rejected value, including account tokens.
+        // Report the category without echoing any account contents or paths.
+        serde_json::from_slice(&bytes).map(Some)
+            .map_err(|_| CoreError::AccountState("文件格式无效"))
+    }
+
+    pub fn load(path: &Path) -> Result<Self, CoreError> {
+        Ok(Self::read(path)?.unwrap_or_default())
     }
 
     pub fn save(&self, path: &PathBuf) -> Result<(), CoreError> {
@@ -64,6 +83,44 @@ impl Default for ClientState {
 mod state_tests {
     use super::*;
     use std::{fs, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread};
+
+    #[test]
+    fn missing_account_is_new_but_unreadable_or_corrupt_account_is_preserved() {
+        let root = std::env::temp_dir().join(format!("uu-account-read-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("state.json");
+        assert!(ClientState::read(&path).unwrap().is_none());
+        assert!(ClientState::load(&path).unwrap().token.is_none());
+        assert!(!path.exists());
+        let mut wrong_type = serde_json::to_value(ClientState::new()).unwrap();
+        wrong_type["token"] = serde_json::json!({"private-fixture-marker": "not a string"});
+        for bytes in [b"partial account with private-fixture-marker".to_vec(),
+                      serde_json::to_vec(&wrong_type).unwrap(), vec![b'x'; 1024 * 1024 + 1]] {
+            fs::write(&path, &bytes).unwrap();
+            let error = ClientState::load(&path).unwrap_err().to_string();
+            assert!(error.contains("本地账号配置不可用"));
+            assert!(!error.contains("private-fixture-marker"));
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(ClientState::read(&path).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn api_construction_rejects_corrupt_state_before_registration_or_network() {
+        let root = std::env::temp_dir().join(format!("uu-api-state-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("state.json");
+        fs::write(&path, b"broken private-fixture-marker").unwrap();
+        let config = crate::Config { data_dir: root.clone(), state_dir: root.clone(),
+            signaling_host: "unreachable.example.invalid".into() };
+        let client = SignalClient::new(&config).unwrap();
+        assert!(matches!(UuApi::new(client, path.clone()), Err(CoreError::AccountState(_))));
+        assert_eq!(fs::read(&path).unwrap(), b"broken private-fixture-marker");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn private_atomic_account_updates_never_expose_partial_json_to_readers() {
@@ -103,7 +160,7 @@ mod state_tests {
         }
         stop.store(true, Ordering::Release);
         reader.join().unwrap();
-        assert_eq!(serde_json::to_value(ClientState::load(&path)).unwrap(), serde_json::to_value(&state).unwrap());
+        assert_eq!(serde_json::to_value(ClientState::load(&path).unwrap()).unwrap(), serde_json::to_value(&state).unwrap());
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
@@ -175,9 +232,9 @@ fn new_system_id() -> String {
 }
 
 impl UuApi {
-    pub fn new(client: SignalClient, state_path: PathBuf) -> Self {
-        let state = ClientState::load(&state_path);
-        Self { client, state, state_path }
+    pub fn new(client: SignalClient, state_path: PathBuf) -> Result<Self, CoreError> {
+        let state = ClientState::load(&state_path)?;
+        Ok(Self { client, state, state_path })
     }
 
     pub fn has_identity(&self) -> bool {

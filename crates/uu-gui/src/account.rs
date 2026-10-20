@@ -3,11 +3,7 @@ use std::path::Path;
 use uu_core::api::ClientState;
 
 fn read_state(path: &Path) -> anyhow::Result<Option<ClientState>> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
+    Ok(ClientState::read(path)?)
 }
 
 pub fn read_token(path: &Path) -> anyhow::Result<Option<String>> {
@@ -87,6 +83,7 @@ impl super::App {
 
     pub(super) fn apply_account(&mut self, token: Option<String>) {
         self.account_token = token;
+        self.account_error = None;
         self.logged_in = self.account_token.is_some();
         self.login_rx = None;
         self.login_texture = None;
@@ -119,11 +116,18 @@ impl super::App {
         self.account_poll_at = std::time::Instant::now();
         let Some(config) = &self.config else { return };
         // A partial write or transient read failure must not end a healthy session.
-        if let Ok(token) = read_token(&config.at("state.json")) {
-            if token != self.account_token {
-                self.apply_account(token);
-            }
+        match read_token(&config.at("state.json")) {
+            Ok(token) => {
+                self.account_error = None;
+                if token != self.account_token { self.apply_account(token); }
+            },
+            Err(error) => self.account_error = Some(error.to_string()),
         }
+    }
+
+    pub(super) fn retry_account_read(&mut self) {
+        self.account_poll_at = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        self.poll_account();
     }
 }
 

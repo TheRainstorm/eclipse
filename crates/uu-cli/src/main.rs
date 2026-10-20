@@ -209,7 +209,7 @@ async fn main() -> Result<()> {
         Command::ReleaseCheck => release_check(&config).await,
         Command::Devices => {
             let client = SignalClient::new(&config)?;
-            let api = UuApi::new(client, config.at("state.json"));
+            let api = UuApi::new(client, config.at("state.json"))?;
             let body = api
                 .device_list()
                 .await
@@ -219,7 +219,7 @@ async fn main() -> Result<()> {
         }
         Command::Control { device } => {
             let client = SignalClient::new(&config)?;
-            let api = UuApi::new(client, config.at("state.json"));
+            let api = UuApi::new(client, config.at("state.json"))?;
             let force = std::env::var("UU_FORCE_JOIN").map(|v| v == "1").unwrap_or(false);
             let room = api
                 .room_join(&device, force)
@@ -398,7 +398,7 @@ async fn main() -> Result<()> {
         }
         Command::Login { name } => {
             let client = SignalClient::new(&config)?;
-            let mut api = UuApi::new(client, config.at("state.json"));
+            let mut api = UuApi::new(client, config.at("state.json"))?;
             if !api.has_identity() {
                 let dev = api.register(&name).await?;
                 println!("registered device {} ({})", dev.alias, dev.device_id);
@@ -487,7 +487,7 @@ async fn main() -> Result<()> {
         }
         Command::Api { method, path, body, token, device_id, user_id, language } => {
             let client = SignalClient::new(&config)?;
-            let saved = uu_core::ClientState::load(&config.at("state.json"));
+            let saved = uu_core::ClientState::load(&config.at("state.json"))?;
             let mut identity = saved.identity.clone();
             identity.language = language.clone();
             identity.country = language;

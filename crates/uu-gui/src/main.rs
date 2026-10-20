@@ -102,7 +102,7 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
     let rt = tokio::runtime::Runtime::new()?;
     let result = rt.block_on(async {
         let client = uu_core::SignalClient::new(&config)?;
-        let api = uu_core::UuApi::new(client, config.at("state.json"));
+        let api = uu_core::UuApi::new(client, config.at("state.json"))?;
         let body = tokio::time::timeout(std::time::Duration::from_secs(15), api.device_list())
             .await.map_err(|_| anyhow::anyhow!("获取设备列表超时，请检查网络后重试"))??;
         let mut devices = parse_devices(body)?;
@@ -158,6 +158,7 @@ struct App {
     logged_in: bool,
     login_rx: Option<login::Worker>,
     account_token: Option<String>,
+    account_error: Option<String>,
     account_poll_at: std::time::Instant,
     login_texture: Option<egui::TextureHandle>,
     login_status: String,
@@ -347,9 +348,18 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>) -> Self {
         setup_style(&cc.egui_ctx);
         let platform = platform::Platform::new(cc, origin);
-        let config = uu_core::Config::from_env().ok();
+        let (config, config_error) = match uu_core::Config::from_env() {
+            Ok(config) => (Some(config), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
         let native=stream_target.as_ref().is_some_and(|target|target.is_native());
-        let account_token = if native {None}else{config.as_ref().and_then(|c| account::read_token(&c.at("state.json")).ok().flatten())};
+        let (account_token, account_error) = if native {(None, None)} else {
+            match config.as_ref().map(|config| account::read_token(&config.at("state.json"))) {
+                Some(Ok(token)) => (token, None),
+                Some(Err(error)) => (None, Some(error.to_string())),
+                None => (None, config_error),
+            }
+        };
         let logged_in = account_token.is_some();
         let device_library = if native { device_library::Library::default() } else { device_library::Library::for_account(config.as_ref(), account_token.as_deref()) };
         let (preferences, settings_notice) = match settings::Settings::path().map(|p|settings::Settings::load(&p)) {
@@ -394,6 +404,7 @@ impl App {
             logged_in,
             login_rx: None,
             account_token,
+            account_error,
             account_poll_at: std::time::Instant::now(),
             login_texture: None,
             login_status: String::new(),
@@ -468,7 +479,12 @@ impl App {
     }
 
     fn start_login(&mut self) {
+        if let Some(error) = &self.account_error {
+            self.login_status = error.clone();
+            return;
+        }
         let Some(config) = self.config.clone() else {
+            self.login_status = "无法确定登录目录，请检查本机用户目录配置".into();
             return;
         };
         self.login_status = "获取二维码…".into();

@@ -138,7 +138,7 @@ async fn run(
     let attempt = async {
     status("正在加入房间…");
     let client = SignalClient::new(&config)?;
-    let api = UuApi::new(client, config.at("state.json"));
+    let api = UuApi::new(client, config.at("state.json"))?;
     // A controller needs a fresh controlled-side media session. Reusing an
     // existing official session can start us halfway through an H264 GOP,
     // leaving the decoder without SPS/PPS and showing a frozen first frame.

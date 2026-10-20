@@ -266,6 +266,12 @@ impl App {
 
     pub(super) fn home_ui(&mut self, ctx: &egui::Context) {
         self.title_bar(ctx);
+        if let Some(error) = self.account_error.clone() {
+            egui::TopBottomPanel::top("local-account-error").show(ctx, |ui| {
+                ui.add(egui::Label::new(RichText::new(error).color(C::from_rgb(177, 48, 48))).wrap());
+                if ui.button("检查配置后重试").clicked() { self.retry_account_read(); }
+            });
+        }
         if !self.logged_in {
             egui::CentralPanel::default().show(ctx,|ui| {
                 ui.vertical_centered(|ui| {
@@ -281,7 +287,7 @@ impl App {
                         ui.add(egui::Spinner::new().size(28.0));ui.add_space(14.0);
                     }
                     if !self.login_status.is_empty(){ui.label(&self.login_status);ui.add_space(10.0);}
-                    if ui.add_sized([180.0,36.0],egui::Button::new(RichText::new(if self.login_texture.is_some(){"刷新二维码"}else{"扫码登录"}).color(C::WHITE)).fill(BLUE)).clicked(){self.start_login();}
+                    if ui.add_enabled_ui(self.account_error.is_none(), |ui| ui.add_sized([180.0,36.0],egui::Button::new(RichText::new(if self.login_texture.is_some(){"刷新二维码"}else{"扫码登录"}).color(C::WHITE)).fill(BLUE))).inner.clicked(){self.start_login();}
                     if self.login_rx.is_some()&&ui.button("取消登录").clicked(){self.login_rx=None;self.login_texture=None;self.login_status="已取消登录".into();}
                     ui.add_space(14.0);
                     if ui.add_sized([180.0,36.0],egui::Button::new(RichText::new("使用原生邀请").color(BLUE)).fill(C::WHITE).stroke(egui::Stroke::new(1.0,BLUE))).clicked(){self.open_native();}

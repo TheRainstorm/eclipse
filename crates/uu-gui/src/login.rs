@@ -76,7 +76,7 @@ fn spawn_task<F: std::future::Future<Output = Result<()>> + 'static>(
 
 async fn run(config: Config, tx: &std::sync::mpsc::Sender<LoginEvent>) -> Result<()> {
     let client = SignalClient::new(&config)?;
-    let mut api = UuApi::new(client, config.at("state.json"));
+    let mut api = UuApi::new(client, config.at("state.json"))?;
     if !api.has_identity() {
         let _ = tx.send(LoginEvent::Status("注册设备…".into()));
         let dev = api.register("uu-rs-gui").await?;
