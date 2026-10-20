@@ -246,9 +246,9 @@ impl Importer {
         }
         Ok(true)
     }
-    pub unsafe fn bind(&self) -> [f32; 2] {
+    pub unsafe fn bind(&self) -> [f32; 4] {
         let Some(frame) = &self.current else {
-            return [1., 1.];
+            return [1., 1., 1., 1.];
         };
         for (i, t) in frame.textures.iter().enumerate() {
             self.gl.active_texture(glow::TEXTURE0 + i as u32);
@@ -258,6 +258,8 @@ impl Importer {
         [
             frame._frame.width as f32 / dma.width as f32,
             frame._frame.height as f32 / dma.height as f32,
+            1.0 / dma.width as f32,
+            1.0 / dma.height as f32,
         ]
     }
     pub unsafe fn sampled(&mut self) {

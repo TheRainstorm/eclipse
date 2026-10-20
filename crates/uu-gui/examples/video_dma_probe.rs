@@ -25,6 +25,7 @@ mod linux {
         error: Option<String>,
     }
     struct Probe {
+        warmup_until: std::time::Instant,
         gl: Arc<glow::Context>,
         texture: Option<video_texture::VideoTexture>,
         state: Arc<Mutex<ResultState>>,
@@ -37,6 +38,10 @@ mod linux {
     }
     impl eframe::App for Probe {
         fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+            if std::time::Instant::now() < self.warmup_until {
+                ctx.request_repaint_after(std::time::Duration::from_millis(30));
+                return;
+            }
             if self.state.lock().unwrap().error.is_some() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
@@ -147,9 +152,12 @@ mod linux {
                                         .map(|(a, b)| a.abs_diff(*b))
                                         .max()
                                         .unwrap_or(255);
+                                    let sum:u64=pixels.iter().zip(&result.pixels).map(|(a,b)|a.abs_diff(*b) as u64).sum();
+                                    let mean=sum as f64/pixels.len().max(1) as f64;
+                                    let above2=pixels.iter().zip(&result.pixels).filter(|(a,b)|a.abs_diff(**b)>2).count();
                                     if pixels.len() != result.pixels.len() || max > 2 {
                                         result.error = Some(format!(
-                                            "GPU/CPU rendered pixels differ: max={max}"
+                                            "GPU/CPU rendered pixels differ: max={max}, mean={mean}, above2={above2}, actual_bytes={}, reference_bytes={}, frame={}",pixels.len(),result.pixels.len(),result.pairs
                                         ));
                                     }
                                     result.pairs += 1;
@@ -249,11 +257,18 @@ mod linux {
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("GL required"))?;
                 video_texture::enable_gpu_video(&gl);
-                if !dma_buf::rendering() {return Err("EGL import unavailable".into());}
+                if !dma_buf::rendering() {
+                    return Err("EGL import unavailable".into());
+                }
                 let cpu = uu_media::default_decoder()?;
                 let gpu = uu_media::default_decoder()?;
-                if !cpu.backend_name().starts_with("vaapi") || !gpu.backend_name().starts_with("vaapi") {return Err("Actual VAAPI decoders required".into());}
+                if !cpu.backend_name().starts_with("vaapi")
+                    || !gpu.backend_name().starts_with("vaapi")
+                {
+                    return Err("Actual VAAPI decoders required".into());
+                }
                 Ok(Box::new(Probe {
+                    warmup_until: std::time::Instant::now() + std::time::Duration::from_millis(500),
                     gl,
                     texture: None,
                     state,

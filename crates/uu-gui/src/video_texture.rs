@@ -226,7 +226,7 @@ impl Planes {
         gl.use_program(previous_program);
         #[cfg(target_os = "linux")]
         let importer = dma_buf_renderer::Importer::new(gl.clone());
-        let uv_scale_uniform = gl.get_uniform_location(program, "video_uv_scale");
+        let uv_scale_uniform = gl.get_uniform_location(program, "video_uv_layout");
         Ok(Self {
             gl,
             program,
@@ -398,12 +398,27 @@ impl Planes {
             gl.active_texture(glow::TEXTURE0 + i as u32);
             gl.bind_texture(glow::TEXTURE_2D, Some(*t));
         }
-        let uv_scale = [1.0, 1.0];
+        let uv_scale = [
+            1.0,
+            1.0,
+            1.0 / self.size[0].max(1) as f32,
+            1.0 / self.size[1].max(1) as f32,
+        ];
         #[cfg(target_os = "linux")]
         let uv_scale = if self.dma_active {
-            self.importer.as_ref().map_or(uv_scale, |importer| importer.bind())
-        } else {uv_scale};
-        gl.uniform_2_f32(self.uv_scale_uniform.as_ref(), uv_scale[0], uv_scale[1]);
+            self.importer
+                .as_ref()
+                .map_or(uv_scale, |importer| importer.bind())
+        } else {
+            uv_scale
+        };
+        gl.uniform_4_f32(
+            self.uv_scale_uniform.as_ref(),
+            uv_scale[0],
+            uv_scale[1],
+            uv_scale[2],
+            uv_scale[3],
+        );
         gl.uniform_1_i32(
             self.layout_uniform.as_ref(),
             match self.layout {
