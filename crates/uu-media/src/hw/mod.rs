@@ -19,7 +19,7 @@ pub mod vaapi;
 
 #[cfg(any(test, all(windows, feature = "d3d11va")))]
 mod surface;
-#[cfg(any(test, all(windows, feature = "d3d11va")))]
+#[cfg(any(test, all(windows, feature = "d3d11va"), all(target_os = "linux", feature = "vaapi")))]
 mod pixels;
 
 mod thread;

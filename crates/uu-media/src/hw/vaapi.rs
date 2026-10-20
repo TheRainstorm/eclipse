@@ -41,6 +41,9 @@ use crate::frame::{EncodedFrame, PixelFormat, RawFrame};
 use crate::Timestamp;
 use uu_proto::media::VideoCodec;
 
+#[path = "vaapi_download.rs"]
+mod download;
+
 /// One driver-allocated DMA surface owned by the decoder's pool.
 type Surface = cros_codecs::video_frame::frame_pool::PooledVideoFrame<GenericDmaVideoFrame>;
 
@@ -79,6 +82,19 @@ struct Decoder {
     /// Frames decoded before the caller picks them up; one `decode` call can
     /// release several pictures (reordering).
     pending: VecDeque<RawFrame>,
+    pixels: super::pixels::Pool,
+    dma_readback: bool,
+    profile: DecodeProfile,
+}
+
+#[derive(Default)]
+struct DecodeProfile {
+    enabled: bool,
+    calls: u64,
+    frames: u64,
+    total_us: u64,
+    sync_us: u64,
+    download_us: u64,
 }
 
 impl Decoder {
@@ -93,6 +109,9 @@ impl Decoder {
             pool: None,
             name: format!("vaapi (cros-codecs hw, {})", path.display()),
             pending: VecDeque::new(),
+            pixels: super::pixels::Pool::default(),
+            dma_readback: std::env::var("UU_VAAPI_READBACK").as_deref() != Ok("legacy"),
+            profile: DecodeProfile { enabled: std::env::var("UU_DECODE_PROFILE").is_ok_and(|v|v!="0"), ..Default::default() },
         })
     }
 }
@@ -103,6 +122,7 @@ impl super::Backend for Decoder {
     }
 
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, String> {
+        let started = self.profile.enabled.then(std::time::Instant::now);
         // Feed every new access unit before returning queued output, otherwise
         // a burst of reordered pictures makes us discard new compressed data.
         // The IDR access units carry SPS/PPS, and the decoder needs them
@@ -155,6 +175,17 @@ impl super::Backend for Decoder {
         }
         self.decoder.finish_access_unit().map_err(|e| format!("VA access-unit submission: {e}"))?;
         self.pump_events()?;
+        if let Some(started) = started {
+            self.profile.calls += 1;
+            self.profile.total_us += started.elapsed().as_micros() as u64;
+            if self.profile.calls >= 120 {
+                let p = &self.profile;
+                let n = p.calls.max(1) as f64 * 1000.0;
+                let frames = p.frames.max(1) as f64 * 1000.0;
+                eprintln!("vaapi decode profile calls={} frames={} readback={} total_ms={:.3} sync_ms={:.3} download_ms={:.3} parse_submit_other_ms={:.3}",p.calls,p.frames,if self.dma_readback {"dma-buf"} else {"vaimage"},p.total_us as f64/n,p.sync_us as f64/frames,p.download_us as f64/frames,p.total_us.saturating_sub(p.sync_us+p.download_us) as f64/n);
+                self.profile = DecodeProfile { enabled: true, ..Default::default() };
+            }
+        }
         Ok(self.pending.pop_front())
     }
 }
@@ -175,7 +206,10 @@ impl Decoder {
                     self.resize(&info)?;
                 }
                 DecoderEvent::FrameReady(handle) => {
+                    let sync_started = self.profile.enabled.then(std::time::Instant::now);
                     handle.sync().map_err(|e| format!("surface sync: {e}"))?;
+                    if let Some(started) = sync_started { self.profile.sync_us += started.elapsed().as_micros() as u64; }
+                    let download_started = self.profile.enabled.then(std::time::Instant::now);
                     let frame = handle.video_frame();
                     let resolution = handle.display_resolution();
                     if frame.fourcc() != Fourcc::from(b"NV12") {
@@ -185,6 +219,20 @@ impl Decoder {
                     // The upstream generic DMA mapper assumes every padding
                     // row is a complete Intel Y tile and panics on iHD exports.
                     let surface = frame.to_native_handle(&self.display)?;
+                    let direct = if self.dma_readback {
+                        match surface.export_prime().map_err(|e| e.to_string())
+                            .and_then(|descriptor| download::download(&descriptor,resolution.width,resolution.height,&self.pixels)) {
+                            Ok(pixels) => Some(pixels),
+                            Err(reason) => {
+                                // An unknown modifier or DMA mapping failure must
+                                // keep hardware decode, using the driver layout.
+                                tracing::debug!(%reason,"VAAPI DMA-BUF download unavailable; keeping driver mapping");
+                                self.dma_readback = false;
+                                None
+                            }
+                        }
+                    } else { None };
+                    let pixels = if let Some(pixels) = direct { pixels } else {
                     let image = cros_libva::Image::derive_from(
                         &surface,
                         (resolution.width, resolution.height),
@@ -207,12 +255,18 @@ impl Decoder {
                     ];
                     let pitches = [layout.pitches[0] as usize, layout.pitches[1] as usize];
                     let pixels = pack_nv12(&planes, &pitches, resolution.width, resolution.height)?;
+                    Bytes::from(pixels)
+                    };
+                    if let Some(started) = download_started {
+                        self.profile.download_us += started.elapsed().as_micros() as u64;
+                        self.profile.frames += 1;
+                    }
                     self.pending.push_back(RawFrame {
                         width: resolution.width,
                         height: resolution.height,
                         format: PixelFormat::Nv12,
                         stride: resolution.width,
-                        data: Bytes::from(pixels),
+                        data: pixels,
                         pts: Timestamp(handle.timestamp()),
                         gpu: false,
                     });

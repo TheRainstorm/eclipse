@@ -34,7 +34,7 @@ h264 = ["dep:openh264"]
 d3d11va = ["dep:windows"]
 # Linux: VA-API stateless decode via cros-codecs. Needs libva and libgbm
 # development packages at build time, so it is opt-in.
-vaapi = ["dep:cros-codecs", "dep:cros-libva"]
+vaapi = ["dep:cros-codecs", "dep:cros-libva", "dep:libc"]
 
 [dependencies.openh264]
 version = "0.9"
@@ -61,3 +61,4 @@ cpal = "0.15.3"
 libpulse-binding = "2.30.1"
 cros-codecs = { version = "0.0.6", default-features = false, features = ["vaapi"], optional = true }
 cros-libva = { version = "0.0.12", optional = true }
+libc = { version = "0.2", optional = true }
