@@ -850,10 +850,15 @@ pub(crate) async fn receive_video(
     let mut src = 0u64;
     let mut last_ts = None;
     let mut window = Instant::now();
+    // TrackRemote::read_rtp is not cancellation safe. Preserve the pending
+    // read across repair/timer events instead of dropping it every 5 ms.
+    let packet_read=track.read_rtp();
+    tokio::pin!(packet_read);
     loop {
         let packet = tokio::select! {
-            result=track.read_rtp()=>{
+            result=&mut packet_read=>{
                 let Ok((packet,_))=result else {break};
+                packet_read.set(track.read_rtp());
                 Some(packet)
             }
             Some(packet)=repair_rx.recv()=>Some(packet),
