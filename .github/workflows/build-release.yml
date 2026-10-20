@@ -98,6 +98,11 @@ jobs:
           python3 tools/native/input_smoke.py --probe target/release/examples/native_control_probe --probe-arg=--read-only --output artifacts/native-input-readonly
           cargo build --release -p uu-gui --example x11_destroyed_window_probe --features vaapi --locked
           python3 tools/native/input_smoke.py --probe target/release/examples/x11_destroyed_window_probe --report-field window --output artifacts/x11-destroyed-window
+      - name: Test planar video rendering on an owned GL framebuffer
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          cargo build --release -p uu-gui --example video_renderer_probe --features vaapi --locked
+          python3 tools/native/input_smoke.py --probe target/release/examples/video_renderer_probe --report-field video --output artifacts/video-renderer
       - name: Test native text clipboard on two owned desktops
         if: matrix.platform == 'linux-x86_64'
         run: |
@@ -126,6 +131,7 @@ jobs:
           cargo build -p uu-input --release --target x86_64-pc-windows-gnu --example windows_owned_probe --locked
           cargo build -p uu-gui --release --target x86_64-pc-windows-gnu --example windows_clipboard_probe --locked
           cargo build -p uu-media --release --target x86_64-pc-windows-gnu --example color_probe --locked
+          cargo build -p uu-gui --release --target x86_64-pc-windows-gnu --example video_renderer_probe --locked
           cargo test -p uu-input --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/input-test-build.jsonl
           cargo test -p uu-gui --release --target x86_64-pc-windows-gnu --bin uu-gui --no-run --locked --message-format=json-render-diagnostics > artifacts/gui-test-build.jsonl
           python3 - <<'PY'
@@ -141,6 +147,7 @@ jobs:
           shutil.copy2(executables[0], destination)
           shutil.copy2('target/x86_64-pc-windows-gnu/release/examples/windows_clipboard_probe.exe', destination.parent / 'clipboard-probe.exe')
           shutil.copy2('target/x86_64-pc-windows-gnu/release/examples/color_probe.exe', destination.parent / 'color-probe.exe')
+          shutil.copy2('target/x86_64-pc-windows-gnu/release/examples/video_renderer_probe.exe', destination.parent / 'video-renderer-probe.exe')
           gui_messages = [json.loads(line) for line in Path('artifacts/gui-test-build.jsonl').read_text().splitlines()]
           gui_tests = [m['executable'] for m in gui_messages if m.get('reason') == 'compiler-artifact' and m.get('profile', {}).get('test') and m.get('executable')]
           if len(gui_tests) != 1:

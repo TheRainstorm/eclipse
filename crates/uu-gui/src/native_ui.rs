@@ -171,6 +171,7 @@ impl App {
         match uu_core::native_controller::spawn_with_input(path, stats, !self.view_only) {
             Ok(handle) => {
                 let context = self.context.clone();
+                handle.frames.enable_planar();
                 handle.frames.set_waker(move || context.request_repaint());
                 if let Err(error)=super::clipboard::start(handle.stats.clipboard.clone(),self.platform.window_id()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(format!("剪贴板不可用：{error}"));}
                 self.controller = Some(handle);

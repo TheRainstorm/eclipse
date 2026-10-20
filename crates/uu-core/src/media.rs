@@ -711,8 +711,7 @@ pub(crate) async fn receive_video(
                         // Decode all reference pictures, but spend RGBA and
                         // upload work only on the newest one after a burst.
                         if let Some(tx) = frame_tx.as_ref().filter(|_| key || sample_rx.is_empty()) {
-                            let rgba = uu_media::convert::frame_to_rgba_with_color(&frame, color);
-                            let _ = tx.send((track_idx, frame.width, frame.height, rgba));
+                            let _ = tx.send_decoded(track_idx, frame, color);
                         }
                     }
                 }

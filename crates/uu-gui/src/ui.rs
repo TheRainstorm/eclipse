@@ -779,7 +779,7 @@ impl App {
                 let input_screen = self.input_screen(track);
                 let texture=&self.textures[&track];let size=texture.size_vec2();let scale=(rect.width()/size.x).min(rect.height()/size.y);
                 let draw=Rect::from_center_size(rect.center(),size*scale);
-                ui.painter().image(texture.id(),draw,Rect::from_min_max(Pos2::ZERO,egui::pos2(1.0,1.0)),C::WHITE);
+                texture.paint(ui,draw);
                 if self.unpresented.remove(&track) { *self.frame_count.entry(track).or_insert(0) += 1; }
                 let pointer=ctx.input(|i|i.pointer.hover_pos());
                 if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) {self.remote_focus=true;}

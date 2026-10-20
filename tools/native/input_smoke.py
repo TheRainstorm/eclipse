@@ -18,7 +18,7 @@ def main():
     parser.add_argument('--probe', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--probe-arg', action='append', default=[])
-    parser.add_argument('--report-field', choices=('input', 'window'), default='input')
+    parser.add_argument('--report-field', choices=('input', 'window', 'video'), default='input')
     args = parser.parse_args()
     os.umask(0o077)
     out = args.output.resolve()

@@ -22,6 +22,7 @@ mod sessions;
 mod platform;
 mod shortcuts;
 mod hud;
+mod video_texture;
 mod window;
 mod stream_menu;
 mod login;
@@ -140,7 +141,8 @@ struct App {
     rx: Option<Receiver<anyhow::Result<Vec<Device>>>>,
     config: Option<uu_core::Config>,
     controller: Option<ControllerHandle>,
-    textures: std::collections::HashMap<u32, egui::TextureHandle>,
+    textures: std::collections::HashMap<u32, video_texture::VideoTexture>,
+    video_gl: Option<std::sync::Arc<eframe::glow::Context>>,
     wallpapers: std::collections::HashMap<usize, egui::TextureHandle>,
     wallpaper_worker: Option<wallpapers::Worker>,
     frame_count: std::collections::HashMap<u32, u32>,
@@ -388,6 +390,7 @@ impl App {
             config,
             controller: None,
             textures: std::collections::HashMap::new(),
+            video_gl: cc.gl.clone(),
             wallpapers: std::collections::HashMap::new(),
             wallpaper_worker: None,
             frame_count: std::collections::HashMap::new(),
@@ -608,23 +611,19 @@ impl App {
             }
         }
         let mut frames = Vec::new();
-        while let Ok(f) = h.frames.try_recv() {
+        while let Ok(f) = h.frames.try_recv_image() {
             frames.push(f);
         }
-        let arrived:Vec<_>=frames.iter().map(|f|f.0).collect();
-        for (idx, w, hgt, rgba) in frames {
-            let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, hgt as usize], &rgba);
+        let mut arrived=Vec::new();
+        for image in frames {
+            let idx=match &image {uu_core::display_frames::DisplayImage::Rgba(f)=>f.0,uu_core::display_frames::DisplayImage::Decoded(track,..)=>*track};
+            arrived.push(idx);
             match self.textures.get_mut(&idx) {
-                Some(t) => t.set(image, egui::TextureOptions::LINEAR),
+                Some(t) => t.set(ctx, image),
                 None => {
                     if native && self.status.starts_with("正在") {self.status="原生串流已连接 · 仅观看".into();}
-                    h.stats.diagnostics.record(serde_json::json!({"event":"first_frame","track":idx,"width":w,"height":hgt,"backend":h.stats.backend()}));
-                    let t = ctx.load_texture(
-                        format!("remote-{idx}"),
-                        image,
-                        egui::TextureOptions::LINEAR,
-                    );
-                    self.textures.insert(idx, t);
+                    h.stats.diagnostics.record(serde_json::json!({"event":"first_frame","track":idx,"backend":h.stats.backend()}));
+                    self.textures.insert(idx, video_texture::VideoTexture::new(ctx, self.video_gl.as_ref(), image));
                 }
             }
             self.unpresented.insert(idx);
@@ -982,6 +981,7 @@ impl App {
         match uu_core::controller::spawn_with_stats(config, device, geo,stats) {
             Ok(h) => {
                 let context = self.context.clone();
+                h.frames.enable_planar();
                 h.frames.set_waker(move || context.request_repaint());
                 h.stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
                 h.stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
@@ -1007,6 +1007,8 @@ impl App {
 
 impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Delete custom GL textures while eframe still owns a current context.
+        self.textures.clear();
         // Also cover backend shutdown paths that do not deliver CloseRequested.
         if self.audio_save_after.take().is_some(){self.persist_preferences();}
         self.disconnect();
