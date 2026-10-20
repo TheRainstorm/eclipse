@@ -466,14 +466,6 @@ pub fn ice_servers_from_json(v: &serde_json::Value) -> Vec<RTCIceServer> {
         .unwrap_or_default()
 }
 
-/// Write any decoded layout through the same converter used for presentation.
-fn save_ppm(frame: &uu_media::RawFrame, path: &str) {
-    let rgba = uu_media::convert::frame_to_rgba(frame);
-    let mut out = format!("P6\n{} {}\n255\n", frame.width, frame.height).into_bytes();
-    out.extend(rgba.chunks_exact(4).flat_map(|p| p[..3].iter().copied()));
-    let _ = std::fs::write(path, out);
-}
-
 impl ControllerMedia {
     pub(crate) fn trace_transport(&self, previous: &mut String) {
         let sctp = self.pc.sctp();
@@ -712,9 +704,6 @@ pub(crate) async fn receive_video(
                                 s.height.store(frame.height, Ordering::Relaxed);
                             }
                             s.decoded_total.fetch_add(1, Ordering::Relaxed);
-                        }
-                        if debug && decoded % 60 == 0 {
-                            save_ppm(&frame, "/tmp/uu_rust_latest.ppm");
                         }
                         // Decode all reference pictures, but spend RGBA and
                         // upload work only on the newest one after a burst.
