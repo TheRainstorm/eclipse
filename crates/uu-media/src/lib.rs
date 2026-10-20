@@ -13,6 +13,8 @@ pub mod audio_capture;
 pub mod audio_red;
 pub mod bitstream;
 pub mod codec;
+#[cfg(feature = "h264")]
+pub mod encoder;
 pub mod color;
 pub mod convert;
 pub mod decoder;

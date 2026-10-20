@@ -15,6 +15,7 @@ pub enum CodecError {
 
 /// Host-side encoder.
 pub trait VideoEncoder: Send {
+    fn backend_name(&self) -> &str { "video encoder" }
     fn codec(&self) -> VideoCodec;
     /// Encode one frame. May return zero encoded frames while the encoder is
     /// still filling its GOP.

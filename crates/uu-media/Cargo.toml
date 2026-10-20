@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 description = "Video/audio pipeline abstractions (encode, decode, frame transport)"
 
+[[example]]
+name = "color_probe"
+required-features = ["h264"]
+
+[[example]]
+name = "encoder_probe"
+required-features = ["h264"]
+
 [dependencies]
 anyhow.workspace = true
 bytes.workspace = true

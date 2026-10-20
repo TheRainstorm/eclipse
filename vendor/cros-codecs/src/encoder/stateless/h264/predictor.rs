@@ -126,6 +126,7 @@ impl<Picture, Reference> LowDelayH264<Picture, Reference> {
     }
 }
 
+
 impl<Picture, Reference>
     LowDelayDelegate<Picture, DpbEntry<Reference>, BackendRequest<Picture, Reference>>
     for LowDelayH264<Picture, Reference>
@@ -136,8 +137,12 @@ impl<Picture, Reference>
         input_meta: FrameMetadata,
         idr: bool,
     ) -> EncodeResult<BackendRequest<Picture, Reference>> {
+        // A streaming recovery request needs a random-access point with fresh
+        // parameter sets, not an ordinary intra picture in the old sequence.
+        let idr = idr || input_meta.force_keyframe;
         if idr {
             // Begin new sequence and start with I frame and no references.
+            self.counter = 0;
             self.new_sequence();
         }
 

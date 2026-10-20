@@ -79,6 +79,7 @@ impl H264Encoder {
 }
 
 impl VideoEncoder for H264Encoder {
+    fn backend_name(&self) -> &str { "openh264 (software)" }
     fn codec(&self) -> VideoCodec {
         VideoCodec::H264
     }
