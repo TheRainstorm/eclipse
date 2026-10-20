@@ -10,6 +10,8 @@
 //! This module is deliberately not feature-gated: it needs no codec library,
 //! so a build with hardware decode but no OpenH264 can still repair streams.
 
+const MAX_SPS_BYTES: usize = 64 * 1024;
+
 /// Annex-B scan: if the access unit carries an SPS, return a copy with
 /// `gaps_in_frame_num_value_allowed_flag` set to 1. Returns `None` when there
 /// is nothing to change (no SPS, already allowed, or an SPS layout this simple
@@ -111,7 +113,11 @@ impl BitReader<'_> {
                 return None;
             }
         }
-        let suffix = if zeros > 0 { self.u(zeros as usize)? } else { 0 };
+        let suffix = if zeros > 0 {
+            self.u(zeros as usize)?
+        } else {
+            0
+        };
         Some(((1u32 << zeros) - 1).wrapping_add(suffix))
     }
 
@@ -122,27 +128,48 @@ impl BitReader<'_> {
     }
 }
 
-/// Bit offset (from the start of the RBSP) of the gaps flag, or `None` when
-/// the SPS uses a layout we do not parse.
-fn sps_gaps_bit_offset(rbsp: &[u8]) -> Option<usize> {
+/// Parse the shared prefix once for gap repair, dimensions and colour metadata.
+fn sps_prefix(rbsp: &[u8]) -> Option<(BitReader<'_>, u32)> {
     let mut r = BitReader { data: rbsp, pos: 0 };
     let profile = r.u(8)?;
     r.u(8)?;
     r.u(8)?;
     r.ue()?;
+    let mut chroma = 1;
     if matches!(
         profile,
         100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
     ) {
-        let chroma = r.ue()?;
-        if chroma == 3 {
-            r.u(1)?;
+        chroma = r.ue()?;
+        if chroma > 3 {
+            return None;
         }
+        let separate = chroma == 3 && r.u(1)? != 0;
         r.ue()?;
         r.ue()?;
         r.u(1)?;
-        if r.u(1)? == 1 {
-            return None; // scaling matrices: not worth parsing here
+        if r.u(1)? != 0 {
+            for index in 0..if chroma == 3 { 12 } else { 8 } {
+                if r.u(1)? != 0 {
+                    let mut last = 8i32;
+                    let mut next = 8i32;
+                    for _ in 0..if index < 6 { 16 } else { 64 } {
+                        if next != 0 {
+                            let delta = r.se()?;
+                            if !(-128..=127).contains(&delta) {
+                                return None;
+                            }
+                            next = (last + delta).rem_euclid(256);
+                        }
+                        if next != 0 {
+                            last = next;
+                        }
+                    }
+                }
+            }
+        }
+        if separate {
+            chroma = 0;
         }
     }
     r.ue()?;
@@ -154,15 +181,107 @@ fn sps_gaps_bit_offset(rbsp: &[u8]) -> Option<usize> {
             r.u(1)?;
             r.se()?;
             r.se()?;
-            let n = r.ue()?;
-            for _ in 0..n {
+            let count = r.ue()?;
+            if count > 255 {
+                return None;
+            }
+            for _ in 0..count {
                 r.se()?;
             }
         }
-        _ => {}
+        2 => {}
+        _ => return None,
     }
     r.ue()?;
-    Some(r.pos)
+    Some((r, chroma))
+}
+
+/// Bit offset of gaps_in_frame_num_value_allowed_flag in the SPS RBSP.
+fn sps_gaps_bit_offset(rbsp: &[u8]) -> Option<usize> {
+    Some(sps_prefix(rbsp)?.0.pos)
+}
+
+fn sps_geometry<'a>(mut r: BitReader<'a>, chroma: u32) -> Option<(BitReader<'a>, u32, u32)> {
+    r.u(1)?;
+    let width_mbs = r.ue()?.checked_add(1)?;
+    let height_units = r.ue()?.checked_add(1)?;
+    let frame_factor = if r.u(1)? == 1 {
+        1
+    } else {
+        r.u(1)?;
+        2
+    };
+    r.u(1)?;
+    let crop = if r.u(1)? == 1 {
+        [r.ue()?, r.ue()?, r.ue()?, r.ue()?]
+    } else {
+        [0; 4]
+    };
+    let (crop_x, crop_y) = match chroma {
+        0 | 3 => (1, frame_factor),
+        1 => (2, 2 * frame_factor),
+        2 => (2, frame_factor),
+        _ => return None,
+    };
+    let width = width_mbs
+        .checked_mul(16)?
+        .checked_sub(crop[0].checked_add(crop[1])?.checked_mul(crop_x)?)?;
+    let height = height_units
+        .checked_mul(16)?
+        .checked_mul(frame_factor)?
+        .checked_sub(crop[2].checked_add(crop[3])?.checked_mul(crop_y)?)?;
+    (width > 0 && height > 0).then_some((r, width, height))
+}
+
+/// Range and matrix from H.264 VUI, independent of hardware/OS features.
+/// An SPS without video_signal_type uses limited range, with BT.601 fallback.
+pub(crate) fn h264_video_signal(data: &[u8]) -> Option<(bool, u32)> {
+    let mut cursor = 0;
+    while cursor < data.len() {
+        let start = data[cursor..].windows(3).position(|v| v == [0, 0, 1])?;
+        let body = cursor + start + 3;
+        let header = *data.get(body)?;
+        let end = data[body..]
+            .windows(3)
+            .position(|v| v == [0, 0, 1])
+            .map(|next| body + next)
+            .unwrap_or(data.len());
+        if header & 0x1f == 7 {
+            if header & 0x80 != 0 || end - body > MAX_SPS_BYTES {
+                return None;
+            }
+            let rbsp = unescape_nal(&data[body + 1..end]);
+            let (r, chroma) = sps_prefix(&rbsp)?;
+            let (mut r, _, _) = sps_geometry(r, chroma)?;
+            if r.u(1)? == 0 {
+                return Some((false, 6));
+            }
+            if r.u(1)? != 0 {
+                if r.u(8)? == 255 {
+                    r.u(16)?;
+                    r.u(16)?;
+                }
+            }
+            if r.u(1)? != 0 {
+                r.u(1)?;
+            }
+            if r.u(1)? == 0 {
+                return Some((false, 6));
+            }
+            r.u(3)?;
+            let full = r.u(1)? != 0;
+            let matrix = if r.u(1)? != 0 {
+                r.u(8)?;
+                r.u(8)?;
+                r.u(8)?
+            } else {
+                6
+            };
+            return Some((full, matrix));
+        }
+        cursor = end;
+    }
+    None
 }
 
 /// Dimensions of the first SPS found in an Annex-B access unit, honouring
@@ -192,6 +311,9 @@ pub fn h264_dimensions(data: &[u8]) -> Option<(u32, u32)> {
                 }
                 j += 1;
             }
+            if j - body > MAX_SPS_BYTES {
+                return None;
+            }
             let rbsp = unescape_nal(&data[body + 1..j]);
             if let Some(dims) = sps_dimensions(&rbsp) {
                 return Some(dims);
@@ -203,73 +325,14 @@ pub fn h264_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 }
 
 fn sps_dimensions(rbsp: &[u8]) -> Option<(u32, u32)> {
-    let mut r = BitReader { data: rbsp, pos: 0 };
-    let profile = r.u(8)?;
-    r.u(8)?;
-    r.u(8)?;
-    r.ue()?; // sps_id
-    let mut chroma_format_idc = 1u32;
-    if matches!(
-        profile,
-        100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
-    ) {
-        chroma_format_idc = r.ue()?;
-        if chroma_format_idc == 3 {
-            r.u(1)?;
-        }
-        r.ue()?; // bit_depth_luma_minus8
-        r.ue()?; // bit_depth_chroma_minus8
-        r.u(1)?; // qpprime
-        if r.u(1)? == 1 {
-            return None; // scaling matrices: unsupported here
-        }
-    }
-    r.ue()?; // log2_max_frame_num_minus4
-    match r.ue()? {
-        0 => {
-            r.ue()?;
-        }
-        1 => {
-            r.u(1)?;
-            r.se()?;
-            r.se()?;
-            let n = r.ue()?;
-            for _ in 0..n {
-                r.se()?;
-            }
-        }
-        _ => {}
-    }
-    r.ue()?; // max_num_ref_frames
-    r.u(1)?; // gaps_in_frame_num_value_allowed_flag
-    let width_mbs = r.ue()?.checked_add(1)?;
-    let height_map_units = r.ue()?.checked_add(1)?;
-    let frame_mbs_only = r.u(1)? == 1;
-    if !frame_mbs_only {
-        r.u(1)?; // mb_adaptive_frame_field_flag
-    }
-    r.u(1)?; // direct_8x8_inference_flag
-    let (mut crop_l, mut crop_r, mut crop_t, mut crop_b) = (0u32, 0u32, 0u32, 0u32);
-    if r.u(1)? == 1 {
-        crop_l = r.ue()?;
-        crop_r = r.ue()?;
-        crop_t = r.ue()?;
-        crop_b = r.ue()?;
-    }
-    let frame_height_mbs = if frame_mbs_only { height_map_units } else { height_map_units * 2 };
-    let (crop_unit_x, crop_unit_y) = if chroma_format_idc == 0 {
-        (1, if frame_mbs_only { 2 } else { 1 })
-    } else {
-        (2, if frame_mbs_only { 2 } else { 1 })
-    };
-    let width = width_mbs * 16 - (crop_l + crop_r) * crop_unit_x;
-    let height = frame_height_mbs * 16 - (crop_t + crop_b) * crop_unit_y;
+    let (r, chroma) = sps_prefix(rbsp)?;
+    let (_, width, height) = sps_geometry(r, chroma)?;
     Some((width, height))
 }
 
 /// Set `gaps_in_frame_num_value_allowed_flag` in one SPS NAL (header + EBSP).
 fn patch_sps_nal(nal: &[u8]) -> Option<Vec<u8>> {
-    if nal.is_empty() {
+    if nal.is_empty() || nal.len() > MAX_SPS_BYTES {
         return None;
     }
     let rbsp = unescape_nal(&nal[1..]);
@@ -295,13 +358,170 @@ fn patch_sps_nal(nal: &[u8]) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct Writer(Vec<bool>);
+    impl Writer {
+        fn u(&mut self, value: u32, bits: u32) {
+            self.0
+                .extend((0..bits).rev().map(|shift| value & (1 << shift) != 0));
+        }
+        fn ue(&mut self, value: u32) {
+            let code = u64::from(value) + 1;
+            let bits = 64 - code.leading_zeros();
+            self.0
+                .extend(std::iter::repeat_n(false, (bits - 1) as usize));
+            self.0
+                .extend((0..bits).rev().map(|shift| code & (1 << shift) != 0));
+        }
+        fn finish(mut self) -> Vec<u8> {
+            self.0.push(true);
+            while self.0.len() % 8 != 0 {
+                self.0.push(false);
+            }
+            self.0
+                .chunks_exact(8)
+                .map(|bits| {
+                    bits.iter()
+                        .fold(0, |byte, bit| (byte << 1) | u8::from(*bit))
+                })
+                .collect()
+        }
+    }
+
+    fn synthetic_sps(
+        chroma: u32,
+        interlaced: bool,
+        crop: [u32; 4],
+        scaling: bool,
+        cycles: Option<u32>,
+        width: u32,
+    ) -> Vec<u8> {
+        let mut w = Writer::default();
+        w.u(100, 8);
+        w.u(0, 8);
+        w.u(31, 8);
+        w.ue(0);
+        w.ue(chroma);
+        if chroma == 3 {
+            w.u(0, 1);
+        }
+        w.ue(0);
+        w.ue(0);
+        w.u(0, 1);
+        w.u(u32::from(scaling), 1);
+        if scaling {
+            for index in 0..if chroma == 3 { 12 } else { 8 } {
+                w.u(u32::from(index == 0), 1);
+                if index == 0 {
+                    for _ in 0..16 {
+                        w.ue(0);
+                    }
+                }
+            }
+        }
+        w.ue(0);
+        if let Some(count) = cycles {
+            w.ue(1);
+            w.u(0, 1);
+            w.ue(0);
+            w.ue(0);
+            w.ue(count);
+            for _ in 0..count {
+                w.ue(0);
+            }
+        } else {
+            w.ue(0);
+            w.ue(0);
+        }
+        w.ue(1);
+        w.u(0, 1);
+        w.ue(width);
+        w.ue(3);
+        w.u(u32::from(!interlaced), 1);
+        if interlaced {
+            w.u(0, 1);
+        }
+        w.u(1, 1);
+        w.u(1, 1);
+        for value in crop {
+            w.ue(value);
+        }
+        w.u(1, 1);
+        w.u(0, 1);
+        w.u(0, 1);
+        w.u(1, 1);
+        w.u(5, 3);
+        w.u(1, 1);
+        w.u(1, 1);
+        w.u(1, 8);
+        w.u(1, 8);
+        w.u(1, 8);
+        for _ in 0..6 {
+            w.u(0, 1);
+        }
+        let mut data = vec![0, 0, 0, 1, 0x67];
+        data.extend(escape_nal(&w.finish()));
+        data
+    }
+
+    #[test]
+    fn scaling_lists_and_poc_cycles_keep_color_dimensions_and_gap_repair_consistent() {
+        let data = synthetic_sps(1, false, [0; 4], true, Some(1), 3);
+        assert_eq!(h264_dimensions(&data), Some((64, 64)));
+        assert_eq!(h264_video_signal(&data), Some((true, 1)));
+        let repaired = patch_sps_allow_gaps(&data).unwrap();
+        assert_eq!(h264_video_signal(&repaired), Some((true, 1)));
+        assert_eq!(h264_dimensions(&repaired), Some((64, 64)));
+        assert!(patch_sps_allow_gaps(&repaired).is_none());
+    }
+
+    #[test]
+    fn crop_units_follow_chroma_sampling_and_interlaced_frame_height() {
+        for (chroma, interlaced, expected) in [
+            (0, false, (63, 63)),
+            (1, false, (62, 62)),
+            (1, true, (62, 124)),
+            (2, false, (62, 63)),
+            (3, false, (63, 63)),
+        ] {
+            assert_eq!(
+                h264_dimensions(&synthetic_sps(
+                    chroma,
+                    interlaced,
+                    [0, 1, 0, 1],
+                    false,
+                    None,
+                    3
+                )),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_sps_dimensions_and_cycles_are_bounded() {
+        for data in [
+            synthetic_sps(1, false, [0; 4], false, None, u32::MAX - 1),
+            synthetic_sps(1, false, [0, u32::MAX - 1, 0, 0], false, None, 3),
+            synthetic_sps(1, false, [0; 4], false, Some(256), 3),
+        ] {
+            assert_eq!(h264_dimensions(&data), None);
+            assert_eq!(h264_video_signal(&data), None);
+        }
+        let mut data = synthetic_sps(1, false, [0; 4], false, None, 3);
+        data.resize(MAX_SPS_BYTES + 5, 0xff);
+        assert_eq!(h264_dimensions(&data), None);
+        assert_eq!(h264_video_signal(&data), None);
+        assert!(patch_sps_allow_gaps(&data).is_none());
+    }
+
     /// A real SPS captured from the UU controlled end (Main profile, 1080p),
     /// which has `gaps_in_frame_num_value_allowed_flag = 0` while the encoder
     /// actually drops frames.
     const UU_SPS: &[u8] = &[
-        0x67, 0x4d, 0x04, 0x2a, 0xe8, 0xa0, 0x3c, 0x01, 0x13, 0xf2, 0xff, 0xe0, 0x00, 0x20,
-        0x00, 0x28, 0x40, 0x40, 0x40, 0x50, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03,
-        0x03, 0xc8, 0xf0, 0x88, 0x46, 0x58,
+        0x67, 0x4d, 0x04, 0x2a, 0xe8, 0xa0, 0x3c, 0x01, 0x13, 0xf2, 0xff, 0xe0, 0x00, 0x20, 0x00,
+        0x28, 0x40, 0x40, 0x40, 0x50, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03, 0x03, 0xc8,
+        0xf0, 0x88, 0x46, 0x58,
     ];
 
     fn gaps_flag(rbsp: &[u8]) -> u8 {
@@ -374,7 +594,9 @@ mod tests {
             };
             let body = i + sc;
             let mut j = body;
-            while j < au.len() && !(au[j..].starts_with(&[0, 0, 0, 1]) || au[j..].starts_with(&[0, 0, 1])) {
+            while j < au.len()
+                && !(au[j..].starts_with(&[0, 0, 0, 1]) || au[j..].starts_with(&[0, 0, 1]))
+            {
                 j += 1;
             }
             total += j - body;

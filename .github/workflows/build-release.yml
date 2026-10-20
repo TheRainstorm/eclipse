@@ -124,6 +124,7 @@ jobs:
         run: |
           cargo build -p uu-input --release --target x86_64-pc-windows-gnu --example windows_owned_probe --locked
           cargo build -p uu-gui --release --target x86_64-pc-windows-gnu --example windows_clipboard_probe --locked
+          cargo build -p uu-media --release --target x86_64-pc-windows-gnu --example color_probe --locked
           cargo test -p uu-input --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/input-test-build.jsonl
           python3 - <<'PY'
           import json
@@ -137,6 +138,7 @@ jobs:
           destination.parent.mkdir(parents=True, exist_ok=True)
           shutil.copy2(executables[0], destination)
           shutil.copy2('target/x86_64-pc-windows-gnu/release/examples/windows_clipboard_probe.exe', destination.parent / 'clipboard-probe.exe')
+          shutil.copy2('target/x86_64-pc-windows-gnu/release/examples/color_probe.exe', destination.parent / 'color-probe.exe')
           PY
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.platform == 'windows-x64'
@@ -198,7 +200,11 @@ jobs:
           Copy-Item -LiteralPath 'platform-validation/clipboard-probe.exe' -Destination $clipboardProbe
           & $clipboardProbe --isolated-window-station
           if ($LASTEXITCODE -ne 0) { throw 'Windows isolated clipboard lifecycle failed' }
-          Remove-Item -LiteralPath $inputTests, $clipboardProbe
+          $colorProbe = Join-Path $unpack 'color-validation.exe'
+          Copy-Item -LiteralPath 'platform-validation/color-probe.exe' -Destination $colorProbe
+          & $colorProbe
+          if ($LASTEXITCODE -ne 0) { throw 'Windows H264 color metadata validation failed' }
+          Remove-Item -LiteralPath $inputTests, $clipboardProbe, $colorProbe
 
   release:
     name: Publish tagged release
