@@ -86,7 +86,8 @@ class AccountStateGuard(unittest.TestCase):
 
     def test_local_device_navigation_is_private_without_an_account_token(self):
         for name in ('config/device-list.fixture.json', 'config/device-list.fixture.123.tmp',
-                     'config/gui-settings.json', 'config/gui-settings.backup-fixture.json'):
+                     'config/gui-settings.json', 'config/gui-settings.backup-fixture.json',
+                     'diagnostics/uu-session-fixture.jsonl'):
             self.assertTrue(scan.inspect(name, b'{"favorites":["fixture-id"],"recent":[]}'))
 
 

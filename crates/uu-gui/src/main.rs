@@ -971,10 +971,7 @@ impl App {
         }
         let geo = uu_core::config::geo_exit_ip();
         let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
-        let mut diagnostic_dirs = Vec::new();
-        if let Some(parent) = std::env::current_exe().ok().and_then(|p|p.parent().map(|p|p.to_path_buf())) { diagnostic_dirs.push(parent); }
-        diagnostic_dirs.push(config.at("diagnostics"));
-        stats.diagnostics.start(diagnostic_dirs);
+        stats.diagnostics.start([config.state_dir.join("diagnostics")]);
         stats.diagnostics.record(serde_json::json!({"event":"client","build":self.build_label,"display_mode":self.preferences.display_mode,"fps":self.target_fps}));
         stats.display_mode.store((self.preferences.display_mode==uu_core::screen_control::DisplayMode::ExclusiveVirtual) as u32,std::sync::atomic::Ordering::Release);
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);

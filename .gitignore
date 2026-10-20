@@ -43,3 +43,4 @@ device-list.*.json
 device-list.*.tmp
 gui-settings*.json
 gui-settings*.tmp
+uu-session-*.jsonl

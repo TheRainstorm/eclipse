@@ -39,6 +39,7 @@ def inspect(name, data, forbidden=(), source=False):
     base = PurePosixPath(name).name
     if (base in ('signing-key', 'state.json', '.env')
             or base.startswith(('signing-key.', 'state.json.', '.uu-account-', 'device-list.', 'gui-settings'))
+            or (base.startswith('uu-session-') and base.endswith('.jsonl'))
             or base.endswith('.eclipse-invite.json')):
         issues.append('private credential/configuration file')
     json_data = data.removeprefix(b'\xef\xbb\xbf').lstrip()

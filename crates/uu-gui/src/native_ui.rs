@@ -153,7 +153,7 @@ impl App {
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Release);
         stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Release);
         if let Some(config) = &self.config {
-            stats.diagnostics.start(vec![config.at("diagnostics")]);
+            stats.diagnostics.start([config.state_dir.join("diagnostics")]);
         }
         stats.diagnostics.record(
             serde_json::json!({"event":"client","transport":"native","build":self.build_label}),
