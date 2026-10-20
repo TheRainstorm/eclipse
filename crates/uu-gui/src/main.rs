@@ -33,6 +33,7 @@ mod audio_controls;
 mod native_ui;
 mod native_keys;
 mod native_host_ui;
+mod native_interfaces;
 mod wallpapers;
 mod device_library;
 use login::LoginEvent;

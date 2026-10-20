@@ -212,6 +212,7 @@
 | [icu_provider](https://github.com/unicode-org/icu4x) | 2.3.1 | `Unicode-3.0` |
 | [idna](https://github.com/servo/rust-url/) | 1.1.0 | `MIT OR Apache-2.0` |
 | [idna_adapter](https://github.com/hsivonen/idna_adapter) | 1.2.2 | `Apache-2.0 OR MIT` |
+| [if-addrs](https://github.com/messense/if-addrs) | 0.15.0 | `MIT OR BSD-3-Clause` |
 | [image](https://github.com/image-rs/image) | 0.25.10 | `MIT OR Apache-2.0` |
 | [indexmap](https://github.com/indexmap-rs/indexmap) | 2.14.2 | `Apache-2.0 OR MIT` |
 | [inout](https://github.com/RustCrypto/utils) | 0.1.4 | `MIT OR Apache-2.0` |

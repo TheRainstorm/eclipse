@@ -30,12 +30,20 @@ mod tests {
     #[test]
     fn sharing_keeps_software_default_and_reports_actual_fallback() {
         let mut host=NativeHostUi::default();assert_eq!(host.encoder,EncoderPreference::Software);
+        assert_eq!(host.bind,"127.0.0.1");
         host.monitors.push(CaptureMonitor {name:"generated".into(),x:0,y:0,width:4096,height:2160,primary:true});
         assert!(!host.source_size_supported());host.encoder=EncoderPreference::Auto;
         assert!(host.source_size_supported());host.fps=61;assert!(!host.source_size_supported());
         assert_eq!(actual_encoder_label("vaapi (generated)"),"硬件编码 · VA-API");
         assert!(actual_encoder_label("openh264 (software) · fallback from VA-API").contains("已回退"));
         assert_eq!(actual_encoder_label("openh264 (software)"),"软件编码 · H.264");
+    }
+    #[test]
+    fn refreshing_interfaces_preserves_explicit_address_and_does_not_start_sharing() {
+        let mut host=NativeHostUi::default();host.bind="192.0.2.55".into();
+        host.refresh_addresses();
+        assert_eq!(host.bind,"192.0.2.55");
+        assert!(!host.running());
     }
 }
 
@@ -68,6 +76,8 @@ impl Drop for Sharing {
 pub(super) struct NativeHostUi {
     pub open: bool,
     bind: String,
+    addresses: Vec<super::native_interfaces::Address>,
+    address_error: Option<String>,
     monitors: Vec<CaptureMonitor>,
     monitor: Option<String>,
     fps: u32,
@@ -85,6 +95,8 @@ impl Default for NativeHostUi {
         Self {
             open: false,
             bind: "127.0.0.1".into(),
+            addresses: Vec::new(),
+            address_error: None,
             monitors: Vec::new(),
             monitor: None,
             fps: 60,
@@ -131,6 +143,7 @@ impl NativeHostUi {
         ctx.request_repaint();
     }
     fn refresh(&mut self) {
+        self.refresh_addresses();
         match uu_core::native::monitors() {
             Ok(monitors) => {
                 if self
@@ -148,6 +161,13 @@ impl NativeHostUi {
                 self.notice = format!("无法访问显示器：{error}");
             }
         }
+    }
+    fn refresh_addresses(&mut self) {
+        match super::native_interfaces::enumerate() {
+            Ok(addresses) => {self.addresses=addresses;self.address_error=None;},
+            Err(error) => {self.addresses.clear();self.address_error=Some(format!("无法读取本机地址：{error}；仍可手动填写。"));},
+        }
+        // Refresh never changes the selected bind address or starts a listener.
     }
     fn source_size_supported(&self) -> bool {
         self.monitors
@@ -174,6 +194,10 @@ impl NativeHostUi {
         anyhow::ensure!(
             !ip.is_unspecified() && !ip.is_multicast(),
             "请选择本机的具体网卡地址"
+        );
+        anyhow::ensure!(
+            !matches!(ip,IpAddr::V6(ip) if ip.is_unicast_link_local()),
+            "暂不支持需要接口作用域的 IPv6 链路本地地址，请选择本机 IPv4 或其它 IPv6 地址"
         );
         let invitation_file = PathBuf::from(self.invitation.trim().trim_matches('"'));
         anyhow::ensure!(
@@ -421,10 +445,25 @@ impl App {
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
+                        ui.label("连接地址");
+                        let selected=host.addresses.iter().find(|address|address.ip.to_string()==host.bind.trim())
+                            .map(|address|format!("{} · {}",address.name,address.ip))
+                            .unwrap_or_else(||if host.bind.trim()=="127.0.0.1" {"仅本机（默认）".into()}else{"手动地址".into()});
+                        egui::ComboBox::from_id_salt("native-host-address").selected_text(selected.as_str()).width(250.0).truncate()
+                            .show_ui(ui,|ui| {
+                                ui.selectable_value(&mut host.bind,"127.0.0.1".into(),"仅本机（默认）");
+                                for address in &host.addresses {
+                                    ui.selectable_value(&mut host.bind,address.ip.to_string(),format!("{} · {}",address.name,address.ip));
+                                }
+                            }).response.on_hover_text(selected);
+                        if ui.button("刷新地址").clicked() {host.refresh_addresses();}
+                    });
+                    ui.horizontal(|ui| {
                         ui.label("本机网卡 IP");
                         ui.add(egui::TextEdit::singleline(&mut host.bind).desired_width(250.0));
                     });
                     ui.weak("跨设备连接时填写本机局域网地址；127.0.0.1 仅限本机。");
+                    if let Some(error)=&host.address_error {ui.colored_label(egui::Color32::from_rgb(180,75,65),error);}
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.label("帧率");
