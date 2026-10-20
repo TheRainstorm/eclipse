@@ -19,6 +19,8 @@ pub mod vaapi;
 
 #[cfg(any(test, all(windows, feature = "d3d11va")))]
 mod surface;
+#[cfg(any(test, all(windows, feature = "d3d11va")))]
+mod pixels;
 
 mod thread;
 pub use thread::{Backend, Worker};

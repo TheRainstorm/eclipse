@@ -262,6 +262,7 @@ struct Transform {
     frames_read: u64,
     saw_d3d11_surface: bool,
     profile: DecodeProfile,
+    pixels: super::pixels::Pool,
 }
 
 #[derive(Default)]
@@ -369,6 +370,7 @@ impl Transform {
                 staging: None,
                 frames_read: 0,
                 saw_d3d11_surface: false,
+                pixels: super::pixels::Pool::default(),
                 profile: DecodeProfile {enabled: std::env::var("UU_DECODE_PROFILE").is_ok_and(|v|v!="0"), ..Default::default()},
             })
         }
@@ -520,12 +522,13 @@ impl Transform {
             // 1088 luma rows). UV starts at the allocated, not visible, height.
             let stride = mapped.RowPitch;
             let len = stride as usize * height as usize * 3 / 2;
-            let pixels = unsafe {
+            let mut pixels=self.pixels.take(self.width as usize*self.height as usize*3/2);
+            unsafe {
                 let source = std::slice::from_raw_parts(mapped.pData as *const u8, len);
                 let result =
-                    super::surface::crop_nv12(source, stride, height, self.width, self.height);
+                    super::surface::crop_nv12_into(source, stride, height, self.width, self.height, pixels.as_mut());
                 self.context.Unmap(&staging, 0);
-                result?
+                result?;
             };
             if let Some(started)=copy_started {self.profile.cpu_copy_us+=started.elapsed().as_micros() as u64;self.profile.surfaces+=1;}
             return Ok(RawFrame {
@@ -533,7 +536,7 @@ impl Transform {
                 height: self.height,
                 format: PixelFormat::Nv12,
                 stride: self.width,
-                data: Bytes::from(pixels),
+                data: Bytes::from_owner(pixels),
                 pts: Timestamp(pts),
                 gpu: false,
             });
