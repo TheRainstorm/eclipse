@@ -29,10 +29,14 @@ if-addrs = "0.15.0"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Security", "Win32_System_StationsAndDesktops", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8"
 wayland-client = { version = "0.31", features = ["system"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 egui-winit = { version = "0.29.1", default-features = false, features = ["preserve-key-events"] }
 arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
+
+[dev-dependencies]
+uu-media = { path = "../uu-media" }
 
 [features]
 vaapi = ["uu-core/vaapi"]

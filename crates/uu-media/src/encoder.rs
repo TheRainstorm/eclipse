@@ -180,6 +180,7 @@ mod tests {
             data: vec![128; 64 * 64 * 3 / 2].into(),
             pts: Timestamp(0),
             gpu: false,
+            dma_buf: None,
         }
     }
     struct Broken {

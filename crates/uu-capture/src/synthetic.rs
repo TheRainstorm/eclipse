@@ -84,6 +84,7 @@ impl SyntheticCapture {
             data: data.into(),
             pts,
             gpu: false,
+            dma_buf: None,
         }
     }
 }

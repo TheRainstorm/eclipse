@@ -176,6 +176,7 @@ mod tests {
             data: Bytes::from(data),
             pts: crate::Timestamp(0),
             gpu: false,
+            dma_buf: None,
         }
     }
 
@@ -452,6 +453,7 @@ mod rgba_tests {
             data: Bytes::from(data),
             pts: crate::Timestamp(0),
             gpu: false,
+            dma_buf: None,
         }
     }
 
@@ -694,6 +696,7 @@ mod encode_input_tests {
                 data: vec![0; len].into(),
                 pts: Timestamp(0),
                 gpu: false,
+                dma_buf: None,
             };
             assert!(to_i420(&frame).is_err());
         }
@@ -705,6 +708,7 @@ mod encode_input_tests {
             data: vec![128; 7].into(),
             pts: Timestamp(0),
             gpu: false,
+            dma_buf: None,
         };
         assert_eq!(to_i420(&frame).unwrap().len(), 6);
         let mut gpu = frame.clone();

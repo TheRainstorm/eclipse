@@ -584,6 +584,7 @@ mod tests {
             format: PixelFormat::Bgra8,
             pts: Timestamp(0),
             gpu: false,
+            dma_buf: None,
         }
     }
     #[test]

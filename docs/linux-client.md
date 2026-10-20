@@ -55,6 +55,10 @@ python3 tools/linux/wayland_smoke.py \
 
 Decode 包含解码调用、线程往返和硬件帧下载，并非只有视频芯片运行时间；De 是解码输出帧率，Rd 是提交的新画面帧率，两者可能不同。新版对线性与普通 Intel Y 平铺 NV12 表面使用只读 DMA-BUF 下载，避免 VAImage 映射时的双向平铺转换，并复用 CPU 输出缓冲。仍然存在 CPU 下载和纹理上传，不是 GPU 零拷贝；未知或压缩布局自动保留驱动下载路径。
 
+支持 EGL 导入的 Linux 图形客户端会优先把已同步的 VAAPI NV12 DMA-BUF 直接绑定为纹理，省去 CPU 下载与重新上传。当前支持线性和普通 Intel Y 布局；使用原有着色器处理色彩与可见区域裁剪。解码池的底层缓冲会保留到 GPU 采样完成，通过非阻塞 fence 检查回收；保留垂直同步，不新增待显示视频队列。能力不足、GLX 上下文、未知布局或导入失败时保留 CPU 下载/平面上传路径。可使用 `UU_GPU_VIDEO=0 uu-client` 禁用 GPU 导入进行同机对照；诊断中的 `video_render_path` 区分 `dma-buf-egl` 和 CPU 上传。硬解 CLI 默认仍返回 CPU 像素。
+
+EGL 导入依据 [Khronos DMA-BUF 扩展](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import.txt)和[格式修饰符扩展](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import_modifiers.txt)。CI 构建 `linux-gpu-validation` 探针，实机需在独立的测试合成器上运行；它只读取生成视频在自身 framebuffer 中的像素，逐帧对比 GPU 导入与 CPU 上传，不能把构建成功当作实机验收。
+
 开发者可用生成的 H.264 文件进行同机对照：
 
 ```sh

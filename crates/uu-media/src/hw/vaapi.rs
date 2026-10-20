@@ -92,6 +92,7 @@ struct DecodeProfile {
     enabled: bool,
     calls: u64,
     frames: u64,
+    gpu_frames: u64,
     total_us: u64,
     sync_us: u64,
     download_us: u64,
@@ -192,7 +193,7 @@ impl super::Backend for Decoder {
                 let p = &self.profile;
                 let n = p.calls.max(1) as f64 * 1000.0;
                 let frames = p.frames.max(1) as f64 * 1000.0;
-                eprintln!("vaapi decode profile calls={} frames={} readback={} total_ms={:.3} sync_ms={:.3} download_ms={:.3} parse_submit_other_ms={:.3}",p.calls,p.frames,if self.dma_readback {"dma-buf"} else {"vaimage"},p.total_us as f64/n,p.sync_us as f64/frames,p.download_us as f64/frames,p.total_us.saturating_sub(p.sync_us+p.download_us) as f64/n);
+                eprintln!("vaapi decode profile calls={} frames={} readback={} total_ms={:.3} sync_ms={:.3} download_ms={:.3} parse_submit_other_ms={:.3}",p.calls,p.frames,if p.gpu_frames>0 {"gpu-import"} else if self.dma_readback {"dma-buf"} else {"vaimage"},p.total_us as f64/n,p.sync_us as f64/frames,p.download_us as f64/frames,p.total_us.saturating_sub(p.sync_us+p.download_us) as f64/n);
                 self.profile = DecodeProfile { enabled: true, ..Default::default() };
             }
         }
@@ -224,6 +225,34 @@ impl Decoder {
                     let resolution = handle.display_resolution();
                     if frame.fourcc() != Fourcc::from(b"NV12") {
                         return Err("decode surface is not NV12".to_string());
+                    }
+                    if crate::dma_buf::rendering() {
+                        let exported = handle.borrow().surface().export_prime();
+                        if let Ok(mut descriptor) = exported {
+                            if descriptor.fourcc == cros_libva::VA_FOURCC_NV12
+                                && descriptor.objects.len()==1 && descriptor.layers.len()==1
+                                && descriptor.layers[0].num_planes==2
+                                && descriptor.layers[0].object_index[..2]==[0,0] {
+                                let layer=&descriptor.layers[0];
+                                let object=descriptor.objects.remove(0);
+                                let gpu=crate::dma_buf::Frame {
+                                    file:object.fd.into(),allocation_size:object.size,
+                                    width:descriptor.width,height:descriptor.height,
+                                    pitch:[layer.pitch[0],layer.pitch[1]],offset:[layer.offset[0],layer.offset[1]],
+                                    modifier:object.drm_format_modifier,keep_alive:frame.clone(),
+                                };
+                                if gpu.valid([resolution.width,resolution.height]) {
+                                    if self.profile.enabled {self.profile.frames+=1;self.profile.gpu_frames+=1;}
+                                    self.pending.push_back(RawFrame {width:resolution.width,height:resolution.height,
+                                        format:PixelFormat::Nv12,stride:resolution.width,data:Bytes::new(),
+                                        pts:Timestamp(handle.timestamp()),gpu:true,dma_buf:Some(std::sync::Arc::new(gpu))});
+                                    continue;
+                                }
+                            }
+                        }
+                        // One unsupported surface disables this process's import
+                        // path; the current frame still uses the established download.
+                        crate::dma_buf::set_rendering(false);
                     }
                     // Map through VA, which understands the driver's tiling.
                     // The upstream generic DMA mapper assumes every padding
@@ -280,6 +309,7 @@ impl Decoder {
                         data: pixels,
                         pts: Timestamp(handle.timestamp()),
                         gpu: false,
+                        dma_buf: None,
                     });
                 }
             }
@@ -303,8 +333,10 @@ impl Decoder {
         }
         // Allocate before entering the pool callback: that callback cannot
         // report failures, so every frame it hands out must already exist.
+        let mut pool_info=info.clone();
+        if crate::dma_buf::rendering() {pool_info.min_num_frames+=6;}
         let mut prepared = VecDeque::new();
-        for _ in 0..info.min_num_frames {
+        for _ in 0..pool_info.min_num_frames {
             // Let the VA driver choose its native allocation. ChromeOS GBM's
             // HW_VIDEO_DECODER flag is not supported by desktop Mesa drivers.
             let surface = self
@@ -361,7 +393,7 @@ impl Decoder {
                 .pop_front()
                 .expect("one prepared surface per advertised pool slot")
         });
-        pool.resize(info);
+        pool.resize(&pool_info);
         self.pool = Some(pool);
         Ok(())
     }

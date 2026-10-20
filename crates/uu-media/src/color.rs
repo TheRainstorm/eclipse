@@ -121,6 +121,7 @@ mod tests {
                     data: data.into(),
                     pts: Timestamp(0),
                     gpu: false,
+                    dma_buf: None,
                 };
                 let actual = crate::convert::frame_to_rgba_with_color(&f, color);
                 for y in 0..h {

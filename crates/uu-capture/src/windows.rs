@@ -269,6 +269,7 @@ impl DxgiCapture {
             data: data.into(),
             pts: self.timestamp(),
             gpu: false,
+            dma_buf: None,
         }))
     }
 }

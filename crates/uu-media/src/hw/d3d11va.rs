@@ -539,6 +539,7 @@ impl Transform {
                 data: Bytes::from_owner(pixels),
                 pts: Timestamp(pts),
                 gpu: false,
+                dma_buf: None,
             });
         }
 
@@ -564,6 +565,7 @@ impl Transform {
                 data: Bytes::from(pixels),
                 pts: Timestamp(pts),
                 gpu: false,
+                dma_buf: None,
             });
         }
 
@@ -591,6 +593,7 @@ impl Transform {
             data: Bytes::from(pixels),
             pts: Timestamp(pts),
             gpu: false,
+            dma_buf: None,
         })
     }
 

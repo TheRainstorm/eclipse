@@ -355,6 +355,7 @@ fn setup_style(ctx: &egui::Context) {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>) -> Self {
         setup_style(&cc.egui_ctx);
+        if let Some(gl)=&cc.gl {video_texture::enable_gpu_video(gl);}
         let platform = platform::Platform::new(cc, origin);
         let (config, config_error) = match uu_core::Config::from_env() {
             Ok(config) => (Some(config), None),
@@ -1169,6 +1170,7 @@ impl eframe::App for App {
                     "render_fps":self.fps.get(&self.selected_track).copied().unwrap_or(0.0),
                     "decode_ms":s.decode_ms(),"render_ms":self.render_ms,
                     "width":s.res().0,"height":s.res().1,
+                    "video_render_path":self.textures.get(&self.selected_track).map(|t|t.render_path()),
                     "remote_cursor_requested":self.preferences.remote_cursor,
                     "remote_cursor_active":self.remote_cursor_active,
                     "relative_mouse":self.preferences.relative_mouse,

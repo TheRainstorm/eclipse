@@ -18,6 +18,7 @@ pub mod encoder;
 pub mod color;
 pub mod convert;
 pub mod decoder;
+pub mod dma_buf;
 pub mod frame;
 #[cfg(feature = "h264")]
 pub mod h264;

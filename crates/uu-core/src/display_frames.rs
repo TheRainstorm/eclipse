@@ -6,6 +6,7 @@ use std::sync::{mpsc, Arc, Mutex};
 pub type DisplayFrame = (u32, u32, u32, Vec<u8>);
 pub use uu_media::{RawFrame, PixelFormat, Timestamp};
 pub use uu_media::color::YuvColor;
+pub use uu_media::dma_buf;
 
 pub enum DisplayImage {
     Rgba(DisplayFrame),
@@ -58,7 +59,8 @@ impl FrameSender {
     }
     pub fn send_decoded(&self, track: u32, frame: RawFrame, color: YuvColor) -> Result<(), mpsc::SendError<()>> {
         let image = DisplayImage::Decoded(track, frame, color);
-        if self.planar.load(std::sync::atomic::Ordering::Acquire) {
+        if matches!(&image,DisplayImage::Decoded(_,frame,_) if frame.gpu)
+            || self.planar.load(std::sync::atomic::Ordering::Acquire) {
             self.send_image(image)
         } else {
             self.send(image.into_rgba())

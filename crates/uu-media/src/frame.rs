@@ -29,6 +29,8 @@ pub struct RawFrame {
     /// True when `data` is an opaque GPU handle rather than CPU memory.
     /// Zero-copy paths set this and convert lazily.
     pub gpu: bool,
+    /// Typed, leased NV12 GPU storage; CPU frames leave this empty.
+    pub dma_buf: Option<std::sync::Arc<crate::dma_buf::Frame>>,
 }
 
 impl RawFrame {
@@ -42,6 +44,7 @@ impl RawFrame {
             data: Bytes::from(data),
             pts,
             gpu: false,
+            dma_buf: None,
         }
     }
 
@@ -58,7 +61,9 @@ impl RawFrame {
 
     /// Validate that the buffer can actually hold a full frame.
     pub fn is_consistent(&self) -> bool {
-        self.data.len() >= self.expected_len()
+        if self.gpu {
+            self.dma_buf.as_ref().is_some_and(|dma|dma.valid([self.width,self.height]))
+        } else {self.data.len() >= self.expected_len()}
     }
 }
 
@@ -115,6 +120,7 @@ mod tests {
             data: Bytes::from(vec![0u8; 4 * 4 * 3 / 2]),
             pts: Timestamp(0),
             gpu: false,
+            dma_buf: None,
         };
         assert_eq!(f.expected_len(), 24);
         assert!(f.is_consistent());

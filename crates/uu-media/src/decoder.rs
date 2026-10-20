@@ -246,6 +246,7 @@ mod tests {
                     data: Bytes::from(vec![0u8; 6]),
                     pts: crate::Timestamp(0),
                     gpu: false,
+                    dma_buf: None,
                 }));
             }
             Ok(None)

@@ -5,6 +5,7 @@ mod owned_display;
 #[cfg(windows)]
 #[path = "../../../tools/native/windows_owned_station.rs"]
 mod owned_station;
+#[allow(dead_code)]
 #[path = "../src/video_texture.rs"]
 mod video_texture;
 use eframe::{
@@ -186,6 +187,7 @@ fn cases() -> Vec<(RawFrame, YuvColor)> {
                     data: data.into(),
                     pts: Timestamp(0),
                     gpu: false,
+                    dma_buf: None,
                 };
                 cases.push((frame.clone(), color));
                 cases.push((frame, color));
@@ -235,6 +237,7 @@ fn main() -> anyhow::Result<()> {
             data: data.into(),
             pts: Timestamp(0),
             gpu: false,
+            dma_buf: None,
         };
         vec![(f, YuvColor::Limited709); 150]
     } else {

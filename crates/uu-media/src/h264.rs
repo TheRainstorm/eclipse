@@ -210,6 +210,7 @@ impl VideoDecoder for H264Decoder {
             data: Bytes::from(packed),
             pts: frame.pts,
             gpu: false,
+            dma_buf: None,
         }))
     }
 }
@@ -370,7 +371,7 @@ mod encoder_bounds_tests {
         }
         let mut encoder=H264Encoder::with_frame_rate(8000,60).unwrap();
         for (width,height) in [(4096,2160),(5120,1440),(3840,2400),(1921,1080),(0,0)] {
-            let frame=RawFrame{width,height,format:crate::frame::PixelFormat::Bgra8,stride:width.saturating_mul(4),data:Bytes::new(),pts:crate::Timestamp(0),gpu:false};
+            let frame=RawFrame{width,height,format:crate::frame::PixelFormat::Bgra8,stride:width.saturating_mul(4),data:Bytes::new(),pts:crate::Timestamp(0),gpu:false,dma_buf:None};
             let error=encoder.encode(&frame).err().expect("unsupported software size");
             assert!(error.to_string().contains("3840x2160"),"size must fail before accessing pixels: {error}");
         }

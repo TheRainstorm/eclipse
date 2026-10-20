@@ -133,6 +133,19 @@ jobs:
         run: |
           cargo test --workspace --release --features vaapi --locked
           cargo build --release -p uu-media --example vaapi_readback_probe --features vaapi --locked
+          cargo build --release -p uu-gui --example video_dma_probe --features vaapi --locked
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil
+          out = pathlib.Path('artifacts/gpu-validation')
+          out.mkdir(parents=True)
+          probe = out / 'video_dma_probe'
+          shutil.copy2('target/release/examples/video_dma_probe', probe)
+          (out / 'provenance.json').write_text(json.dumps({
+              'source_commit': os.environ['GITHUB_SHA'],
+              'sha256': {probe.name: hashlib.sha256(probe.read_bytes()).hexdigest()},
+              'scope': 'built in CI; actual DMA-BUF rendering requires a GPU validation host',
+          }, indent=2) + '\n')
+          PY
           cargo test --manifest-path vendor/webrtc-srtp/Cargo.toml --release --target-dir target
           python3 tools/linux/package.py
           python3 tools/native/smoke.py --exe target/release/uu --decoder sw --audio
@@ -144,6 +157,13 @@ jobs:
         with:
           name: linux-media-validation
           path: target/release/examples/vaapi_readback_probe
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.platform == 'linux-x86_64'
+        with:
+          name: linux-gpu-validation
+          path: artifacts/gpu-validation/*
           if-no-files-found: error
           retention-days: 14
       - name: Test authorized X11 input and owned window lifecycle

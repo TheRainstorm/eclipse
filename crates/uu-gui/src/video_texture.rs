@@ -1,5 +1,9 @@
-//! Upload decoded planes directly. No per-pixel ColorImage or CPU YUV conversion.
-//! D3D11/VAAPI readback remains in the decoder; this is not zero-copy decoding.
+#[cfg(target_os = "linux")]
+#[path = "video_dma_buf.rs"]
+mod dma_buf_renderer;
+
+// Upload decoded planes directly. No per-pixel ColorImage or CPU YUV conversion.
+// EGL-capable Linux clients may import leased DMA-BUF planes directly.
 use eframe::{
     egui,
     glow::{self, HasContext},
@@ -11,6 +15,12 @@ pub struct VideoTexture {
     size: [usize; 2],
     gpu: Option<Arc<Mutex<Planes>>>,
     fallback: Option<egui::TextureHandle>,
+}
+pub fn enable_gpu_video(gl: &glow::Context) {
+    #[cfg(target_os = "linux")]
+    dma_buf_renderer::enable(gl);
+    #[cfg(not(target_os = "linux"))]
+    let _ = gl;
 }
 impl VideoTexture {
     pub fn new(ctx: &egui::Context, gl: Option<&Arc<glow::Context>>, image: DisplayImage) -> Self {
@@ -32,11 +42,18 @@ impl VideoTexture {
     pub fn set(&mut self, ctx: &egui::Context, image: DisplayImage) {
         if let DisplayImage::Decoded(_, frame, color) = &image {
             if let Some(gpu) = &self.gpu {
-                if valid(frame) {
+                if valid(frame) || (frame.gpu && frame.dma_buf.is_some()) {
                     self.size = [frame.width as usize, frame.height as usize];
                     gpu.lock().unwrap().pending = Some((frame.clone(), *color));
                     return;
                 }
+            }
+        }
+        if let DisplayImage::Decoded(_, frame, _) = &image {
+            if frame.gpu {
+                uu_core::display_frames::dma_buf::set_rendering(false);
+                self.size = [frame.width as usize, frame.height as usize];
+                return; // The next decoded frame uses CPU storage; never read a GPU handle as pixels.
             }
         }
         // An early legacy frame must not permanently disable planar rendering.
@@ -57,9 +74,19 @@ impl VideoTexture {
             }
         }
     }
-    #[allow(dead_code, reason = "Used by the separately built video_renderer_probe example")]
+    #[allow(
+        dead_code,
+        reason = "Used by the separately built video_renderer_probe example"
+    )]
     pub fn uses_planar_renderer(&self) -> bool {
         self.gpu.is_some()
+    }
+    pub fn render_path(&self) -> &'static str {
+        match &self.gpu {
+            Some(gpu) if gpu.lock().unwrap().dma_active => "dma-buf-egl",
+            Some(_) => "cpu-planar-upload",
+            None => "cpu-rgba-upload",
+        }
     }
     pub fn size(&self) -> [usize; 2] {
         self.size
@@ -126,6 +153,10 @@ struct Planes {
     layout: Option<PixelFormat>,
     color: YuvColor,
     pending: Option<(RawFrame, YuvColor)>,
+    uv_scale_uniform: Option<glow::UniformLocation>,
+    dma_active: bool,
+    #[cfg(target_os = "linux")]
+    importer: Option<dma_buf_renderer::Importer>,
 }
 impl Planes {
     unsafe fn new(gl: Arc<glow::Context>) -> Result<Self, String> {
@@ -193,6 +224,9 @@ impl Planes {
             gl.uniform_1_i32(gl.get_uniform_location(program, name).as_ref(), unit as i32);
         }
         gl.use_program(previous_program);
+        #[cfg(target_os = "linux")]
+        let importer = dma_buf_renderer::Importer::new(gl.clone());
+        let uv_scale_uniform = gl.get_uniform_location(program, "video_uv_scale");
         Ok(Self {
             gl,
             program,
@@ -205,6 +239,10 @@ impl Planes {
             layout: None,
             color: YuvColor::default(),
             pending: None,
+            uv_scale_uniform,
+            dma_active: false,
+            #[cfg(target_os = "linux")]
+            importer,
         })
     }
     unsafe fn upload(
@@ -276,50 +314,82 @@ impl Planes {
     }
     unsafe fn paint(&mut self) {
         if let Some((f, color)) = self.pending.take() {
-            let changed = self.size != [f.width, f.height] || self.layout != Some(f.format);
-            let y = f.stride as usize * f.height as usize;
-            match f.format {
-                PixelFormat::Nv12 => {
-                    self.upload(0, f.width, f.height, 1, f.stride, &f.data[..y], changed);
-                    self.upload(
-                        1,
-                        f.width / 2,
-                        f.height / 2,
-                        2,
-                        f.stride,
-                        &f.data[y..],
-                        changed,
-                    );
+            if f.gpu {
+                #[cfg(target_os = "linux")]
+                if let Some(importer) = &mut self.importer {
+                    match importer.set(f.clone()) {
+                        Ok(true) => {
+                            self.size = [f.width, f.height];
+                            self.layout = Some(f.format);
+                            self.color = color;
+                            self.dma_active = true;
+                        }
+                        Ok(false) => {
+                            self.pending = Some((f, color));
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "DMA-BUF rendering unavailable, retaining CPU upload: {error}"
+                            );
+                            uu_core::display_frames::dma_buf::set_rendering(false);
+                        }
+                    }
+                } else {
+                    uu_core::display_frames::dma_buf::set_rendering(false);
                 }
-                PixelFormat::I420 => {
-                    let c = (f.width * f.height / 4) as usize;
-                    self.upload(0, f.width, f.height, 1, f.stride, &f.data[..y], changed);
-                    self.upload(
-                        1,
-                        f.width / 2,
-                        f.height / 2,
-                        1,
-                        f.width / 2,
-                        &f.data[y..y + c],
-                        changed,
-                    );
-                    self.upload(
-                        2,
-                        f.width / 2,
-                        f.height / 2,
-                        1,
-                        f.width / 2,
-                        &f.data[y + c..],
-                        changed,
-                    );
+            } else {
+                let changed = self.dma_active
+                    || self.size != [f.width, f.height]
+                    || self.layout != Some(f.format);
+                #[cfg(target_os = "linux")]
+                if let Some(importer) = &mut self.importer {
+                    importer.clear();
                 }
-                PixelFormat::Bgra8 => {
-                    self.upload(0, f.width, f.height, 4, f.stride, &f.data, changed)
+                self.dma_active = false;
+                let y = f.stride as usize * f.height as usize;
+                match f.format {
+                    PixelFormat::Nv12 => {
+                        self.upload(0, f.width, f.height, 1, f.stride, &f.data[..y], changed);
+                        self.upload(
+                            1,
+                            f.width / 2,
+                            f.height / 2,
+                            2,
+                            f.stride,
+                            &f.data[y..],
+                            changed,
+                        );
+                    }
+                    PixelFormat::I420 => {
+                        let c = (f.width * f.height / 4) as usize;
+                        self.upload(0, f.width, f.height, 1, f.stride, &f.data[..y], changed);
+                        self.upload(
+                            1,
+                            f.width / 2,
+                            f.height / 2,
+                            1,
+                            f.width / 2,
+                            &f.data[y..y + c],
+                            changed,
+                        );
+                        self.upload(
+                            2,
+                            f.width / 2,
+                            f.height / 2,
+                            1,
+                            f.width / 2,
+                            &f.data[y + c..],
+                            changed,
+                        );
+                    }
+                    PixelFormat::Bgra8 => {
+                        self.upload(0, f.width, f.height, 4, f.stride, &f.data, changed)
+                    }
                 }
+                self.size = [f.width, f.height];
+                self.layout = Some(f.format);
+                self.color = color;
             }
-            self.size = [f.width, f.height];
-            self.layout = Some(f.format);
-            self.color = color;
         }
         let gl = &self.gl;
         gl.use_program(Some(self.program));
@@ -328,6 +398,12 @@ impl Planes {
             gl.active_texture(glow::TEXTURE0 + i as u32);
             gl.bind_texture(glow::TEXTURE_2D, Some(*t));
         }
+        let uv_scale = [1.0, 1.0];
+        #[cfg(target_os = "linux")]
+        let uv_scale = if self.dma_active {
+            self.importer.as_ref().map_or(uv_scale, |importer| importer.bind())
+        } else {uv_scale};
+        gl.uniform_2_f32(self.uv_scale_uniform.as_ref(), uv_scale[0], uv_scale[1]);
         gl.uniform_1_i32(
             self.layout_uniform.as_ref(),
             match self.layout {
@@ -359,6 +435,12 @@ impl Planes {
         gl.uniform_4_f32(self.coefficients_uniform.as_ref(), r, gu, gv, b);
         gl.uniform_2_f32(self.levels_uniform.as_ref(), offset, scale);
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
+        #[cfg(target_os = "linux")]
+        if self.dma_active {
+            if let Some(importer) = &mut self.importer {
+                importer.sampled();
+            }
+        }
         // egui restores its program, VAO and blend state after the callback.
         // Restore texture unit and pixel unpack state explicitly.
         gl.active_texture(glow::TEXTURE0);
@@ -367,6 +449,8 @@ impl Planes {
 impl Drop for Planes {
     fn drop(&mut self) {
         unsafe {
+            #[cfg(target_os = "linux")]
+            drop(self.importer.take());
             for t in self.textures {
                 self.gl.delete_texture(t)
             }
