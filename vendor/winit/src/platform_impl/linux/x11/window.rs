@@ -1192,12 +1192,21 @@ impl UnownedWindow {
     }
 
     pub(crate) fn inner_position_physical(&self) -> (i32, i32) {
-        // This should be okay to unwrap since the only error XTranslateCoordinates can return
-        // is BadWindow, and if the window handle is bad we have bigger problems.
+        // Destruction is asynchronous: the server may have destroyed the window
+        // while its final input/redraw events are still queued locally. Keep a
+        // cached coordinate for teardown instead of panicking on BadWindow.
         self.xconn
             .translate_coords(self.xwindow, self.root)
             .map(|coords| (coords.dst_x.into(), coords.dst_y.into()))
-            .unwrap()
+            .unwrap_or_else(|_| {
+                // Some internal callers already hold shared_state. Do not
+                // deadlock during teardown just to obtain an optional cache.
+                self.shared_state
+                    .try_lock()
+                    .ok()
+                    .and_then(|state| state.inner_position)
+                    .unwrap_or((0, 0))
+            })
     }
 
     #[inline]

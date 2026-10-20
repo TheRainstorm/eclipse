@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check input against a fresh, authenticated Xvfb; never use the user's DISPLAY."""
+"""Run an X11 check on a fresh, authenticated Xvfb; never use the user's DISPLAY."""
 import argparse
 import json
 import os
@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--probe', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--probe-arg', action='append', default=[])
+    parser.add_argument('--report-field', choices=('input', 'window'), default='input')
     args = parser.parse_args()
     os.umask(0o077)
     out = args.output.resolve()
@@ -70,8 +71,8 @@ def main():
             if result.returncode:
                 raise RuntimeError('Owned input fixture failed: ' + result.stderr[-2000:])
             report = json.loads(result.stdout)
-            if report.get('input') != 'passed':
-                raise RuntimeError('Input fixture did not report success')
+            if report.get(args.report_field) != 'passed':
+                raise RuntimeError('Owned X11 fixture did not report success')
             (out / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
             print(json.dumps(report))
     finally:

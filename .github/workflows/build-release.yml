@@ -87,7 +87,7 @@ jobs:
           for archive in artifacts/packages/*.tar.gz; do
             python3 tools/security/scan_secrets.py --artifact "$archive"
           done
-      - name: Test authorized X11 input in its own server
+      - name: Test authorized X11 input and owned window lifecycle
         if: matrix.platform == 'linux-x86_64'
         run: |
           cargo build --release -p uu-input --example input_probe --locked
@@ -95,6 +95,8 @@ jobs:
           cargo build --release -p uu-core --example native_control_probe --features vaapi --locked
           python3 tools/native/input_smoke.py --probe target/release/examples/native_control_probe --output artifacts/native-input-authorized
           python3 tools/native/input_smoke.py --probe target/release/examples/native_control_probe --probe-arg=--read-only --output artifacts/native-input-readonly
+          cargo build --release -p uu-gui --example x11_destroyed_window_probe --features vaapi --locked
+          python3 tools/native/input_smoke.py --probe target/release/examples/x11_destroyed_window_probe --report-field window --output artifacts/x11-destroyed-window
       - name: Test native text clipboard on two owned desktops
         if: matrix.platform == 'linux-x86_64'
         run: |

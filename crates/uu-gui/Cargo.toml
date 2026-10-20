@@ -37,6 +37,7 @@ arboard = { version = "3.7", default-features = false, features = ["wayland-data
 vaapi = ["uu-core/vaapi"]
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb = "0.13"
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 xkbcommon-dl = "0.4"
