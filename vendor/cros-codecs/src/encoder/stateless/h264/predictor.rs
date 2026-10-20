@@ -84,6 +84,13 @@ impl<Picture, Reference> LowDelayH264<Picture, Reference> {
             _ => sps.chroma_format_idc(1),
         };
 
+        if matches!(config.profile, Profile::Baseline) {
+            // Progressive I/P, CAVLC, and one slice group: signal the same
+            // Constrained Baseline subset that the VA backend selects.
+            // RFC 6184 Table 5 identifies it by profile_idc=66 / set1=1.
+            sps = sps.constraint_set0_flag(true).constraint_set1_flag(true);
+        }
+
         let sps = sps
             .level_idc(config.level)
             .max_frame_num(self.limit as u32)
@@ -98,6 +105,7 @@ impl<Picture, Reference> LowDelayH264<Picture, Reference> {
             .bit_depth_chroma(8)
             .aspect_ratio(1, 1)
             .timing_info(1, self.tunings.framerate * 2, false)
+            .no_frame_reordering()
             .build();
 
         let min_qp = self.tunings.min_quality.max(MIN_QP as u32);

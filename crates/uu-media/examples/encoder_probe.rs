@@ -68,6 +68,7 @@ fn main() -> anyhow::Result<()> {
     };
     let mut frames = 180u32;
     let mut format = PixelFormat::I420;
+    let mut hardware_decoder = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let value = args.next().context("missing probe option value")?;
@@ -81,6 +82,13 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             "--frames" => frames = value.parse()?,
+            "--decoder" => {
+                hardware_decoder = match value.as_str() {
+                    "sw" => false,
+                    "hw" => true,
+                    _ => anyhow::bail!("decoder must be sw or hw"),
+                };
+            }
             "--width" => settings.width = value.parse()?,
             "--height" => settings.height = value.parse()?,
             "--input" => {
@@ -100,7 +108,13 @@ fn main() -> anyhow::Result<()> {
     );
     settings.validate()?;
     let mut encoder = encoder::create(settings)?;
-    let mut decoder = uu_media::H264Decoder::new()?;
+    // Explicit hardware validation must fail on unsupported hardware, rather
+    // than silently validating the software fallback after driver errors.
+    let mut decoder = if hardware_decoder {
+        uu_media::hw::create_hardware_decoder()?
+    } else {
+        uu_media::software_decoder()?
+    };
     let mut color = YuvColor::Full601;
     let mut times = Vec::new();
     let mut bytes = 0u64;
@@ -140,9 +154,20 @@ fn main() -> anyhow::Result<()> {
                     fresh.decode(&coded)?.is_some(),
                     "recovery IDR must decode with no old reference chain"
                 );
+                if hardware_decoder {
+                    let mut fresh = uu_media::hw::create_hardware_decoder()?;
+                    let mut padded = coded.clone();
+                    let mut data = coded.data.to_vec();
+                    data.extend_from_slice(&[0; 7]);
+                    padded.data = data.into();
+                    ensure!(
+                        fresh.decode(&padded).with_context(|| format!("fresh hardware decoder at frame {index}"))?.is_some(),
+                        "recovery IDR with Annex-B padding must initialize a fresh hardware decoder"
+                    );
+                }
             }
             let output = decoder
-                .decode(&coded)?
+                .decode(&coded).with_context(|| format!("continuous decoder at frame {index}"))?
                 .context("low-delay output must be immediately decodable")?;
             ensure!(
                 (output.width, output.height) == (settings.width, settings.height),
@@ -174,7 +199,7 @@ fn main() -> anyhow::Result<()> {
     let average = times.iter().sum::<f64>() / times.len() as f64;
     println!(
         "{}",
-        serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"frames":frames,"decoded":decoded,
+        serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.backend_name(),"frames":frames,"decoded":decoded,
         "keyframes":keys,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,
         "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],

@@ -117,6 +117,13 @@ impl super::Backend for Decoder {
         // very same bytes, which is why this loop retries instead of advancing.
         let mut stalls = 0u32;
         while !input.is_empty() {
+            // The upstream NAL reader excludes Annex-B trailing_zero_8bits
+            // from its consumed count. They may remain after the final NAL
+            // (including VA encoder alignment padding); there is no next NAL
+            // to parse. Only accept zero padding after actual NAL progress.
+            if input.len() < data.len() && input.iter().all(|byte| *byte == 0) {
+                break;
+            }
             let mut pool = self.pool.take();
             let result = self
                 .decoder

@@ -1015,6 +1015,16 @@ impl SpsBuilder {
         self
     }
 
+    pub fn constraint_set0_flag(mut self, value: bool) -> Self {
+        self.0.constraint_set0_flag = value;
+        self
+    }
+
+    pub fn constraint_set1_flag(mut self, value: bool) -> Self {
+        self.0.constraint_set1_flag = value;
+        self
+    }
+
     pub fn level_idc(mut self, value: Level) -> Self {
         self.0.level_idc = value;
         self
@@ -1162,6 +1172,23 @@ impl SpsBuilder {
         self.0.vui_parameters.num_units_in_tick = num_units_in_tick;
         self.0.vui_parameters.time_scale = time_scale;
         self.0.vui_parameters.fixed_frame_rate_flag = fixed_frame_rate_flag;
+        self
+    }
+
+    /// Signal the I/P-only encoder's ordering, without changing reference
+    /// retention. Conservative motion-vector and size limits avoid claiming
+    /// tighter restrictions than the VA driver actually guarantees.
+    pub fn no_frame_reordering(mut self) -> Self {
+        self = self.vui_parameters_present();
+        let vui = &mut self.0.vui_parameters;
+        vui.bitstream_restriction_flag = true;
+        vui.motion_vectors_over_pic_boundaries_flag = true;
+        vui.max_bytes_per_pic_denom = 0;
+        vui.max_bits_per_mb_denom = 0;
+        vui.log2_max_mv_length_horizontal = 16;
+        vui.log2_max_mv_length_vertical = 16;
+        vui.max_num_reorder_frames = 0;
+        vui.max_dec_frame_buffering = u32::from(self.0.max_num_ref_frames).max(1);
         self
     }
 
