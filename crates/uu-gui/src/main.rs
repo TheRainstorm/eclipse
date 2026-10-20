@@ -656,6 +656,7 @@ impl App {
             self.disconnecting = false;
             self.remote_focus = false;
             self.textures.clear();
+            self.hud_cache=Default::default();
             self.frame_count.clear();
             self.fps.clear();
             self.settings_feedback.clear();
@@ -933,6 +934,7 @@ impl App {
             self.disconnecting = true;
         }
         self.textures.clear();
+            self.hud_cache=Default::default();
         self.frame_count.clear();
         self.fps.clear();
         self.status = if self.disconnecting { "正在释放连接…" } else { "已断开" }.into();
@@ -1017,6 +1019,7 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Delete custom GL textures while eframe still owns a current context.
         self.textures.clear();
+            self.hud_cache=Default::default();
         // Also cover backend shutdown paths that do not deliver CloseRequested.
         if self.audio_save_after.take().is_some(){self.persist_preferences();}
         self.disconnect();
