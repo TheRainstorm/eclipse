@@ -611,6 +611,8 @@ pub(crate) async fn receive_video(
     let worker_generation = generation.clone();
     let worker_requests = request_generation.clone();
     let worker_refresh = refresh.clone();
+    let track_decoded = Arc::new(AtomicU64::new(0));
+    let worker_decoded = track_decoded.clone();
     // Decode, colour conversion and driver IPC are blocking CPU/OS work. Keep
     // them off tokio's RTP and RTCP executor threads.
     let worker = tokio::task::spawn_blocking(move || {
@@ -643,10 +645,6 @@ pub(crate) async fn receive_video(
             if window.elapsed() >= Duration::from_secs(2) {
                 if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
                     s.set_backend(decoder.backend_name());
-                    s.dec_fps_x100.store(
-                        (window_frames as f64 / window.elapsed().as_secs_f64() * 100.0) as u32,
-                        Ordering::Relaxed,
-                    );
                     s.decode_us
                         .store((decode_us / window_frames.max(1)) as u32, Ordering::Relaxed);
                     s.waiting_for_keyframe
@@ -705,6 +703,7 @@ pub(crate) async fn receive_video(
                             recovery = None;
                         }
                         decoded += 1;
+                        worker_decoded.fetch_add(1, Ordering::Relaxed);
                         window_frames += 1;
                         decode_us += started.elapsed().as_micros() as u64;
                         if let Some(s) = &worker_stats {
@@ -847,6 +846,7 @@ pub(crate) async fn receive_video(
     let mut bytes = 0u64;
     let mut previous_received = 0u64;
     let mut previous_lost = 0u64;
+    let mut previous_decoded = 0u64;
     let mut src = 0u64;
     let mut last_ts = None;
     let mut window = Instant::now();
@@ -947,8 +947,15 @@ pub(crate) async fn receive_video(
                 .store(receiver.stats.damaged, Ordering::Relaxed);
         }
         if window.elapsed() >= Duration::from_secs(2) {
+            let decoded = track_decoded.load(Ordering::Relaxed);
             if let Some(s) = stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
                 let seconds = window.elapsed().as_secs_f64();
+                // The receive timer keeps running when no sample reaches the
+                // decoder. An idle track must report zero, not its last rate.
+                s.dec_fps_x100.store(
+                    (decoded.saturating_sub(previous_decoded) as f64 / seconds * 100.0) as u32,
+                    Ordering::Relaxed,
+                );
                 let lost = receiver.stats.lost.saturating_sub(previous_lost);
                 let window_packets = receiver.stats.received.saturating_sub(previous_received);
                 s.loss_ppm.store((lost.saturating_mul(1_000_000) / (window_packets + lost).max(1)) as u32, Ordering::Relaxed);
@@ -975,6 +982,7 @@ pub(crate) async fn receive_video(
             bytes = 0;
             previous_received = receiver.stats.received;
             previous_lost = receiver.stats.lost;
+            previous_decoded = decoded;
             window = Instant::now();
         }
     }
