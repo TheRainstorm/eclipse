@@ -11,6 +11,7 @@ pub mod error;
 pub mod media;
 pub mod native_pairing;
 pub mod native_discovery;
+pub mod native_lan_store;
 pub mod native_controller;
 pub mod capabilities;
 pub mod native;
