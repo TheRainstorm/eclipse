@@ -47,6 +47,16 @@ class CredentialGuardTests(unittest.TestCase):
                 archive.writestr('LICENSE', b'license')
             self.assertFalse(scan.artifact(path, scan.variants([self.SECRET])))
 
+    def test_public_pc_constant_is_explicitly_scoped_and_never_overrides_forbidden_values(self):
+        source = Path(__file__).resolve().parents[2] / scan.PUBLIC_PC_SOURCE
+        data = source.read_bytes()
+        self.assertFalse(scan.inspect(scan.PUBLIC_PC_SOURCE, data))
+        self.assertTrue(scan.inspect('unapproved.rs', data))
+        constant = scan.RUST_KEY.search(data).group('value')
+        self.assertTrue(scan.inspect(scan.PUBLIC_PC_SOURCE, data, scan.variants([constant])))
+        changed = data.replace(constant, self.SECRET)
+        self.assertTrue(scan.inspect(scan.PUBLIC_PC_SOURCE, changed))
+
 
 class NativeInvitationGuard(unittest.TestCase):
     def test_renamed_native_invitation_content_is_also_private(self):

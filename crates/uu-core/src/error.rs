@@ -2,7 +2,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CoreError {
-    #[error("未配置连接签名密钥，请先提供本地凭据文件（UU_SIGNING_KEY_FILE）；项目不内置第三方服务密钥")]
+    #[error("指定的连接签名文件不存在，请检查 UU_SIGNING_KEY_FILE 的路径；未使用默认签名配置")]
     SigningKeyMissing,
     #[error("configuration is unusable: {0}")]
     Config(String),

@@ -27,11 +27,23 @@ pub struct ReleaseTarget {
 /// Platform ids observed on the live feed. Ids 0 and >5 return 422/404, so
 /// this list is exhaustive for the public feed.
 pub const RELEASE_TARGETS: &[ReleaseTarget] = &[
-    ReleaseTarget { id: 1, name: "windows-x64" },
-    ReleaseTarget { id: 2, name: "android" },
+    ReleaseTarget {
+        id: 1,
+        name: "windows-x64",
+    },
+    ReleaseTarget {
+        id: 2,
+        name: "android",
+    },
     ReleaseTarget { id: 3, name: "ios" },
-    ReleaseTarget { id: 4, name: "macos" },
-    ReleaseTarget { id: 5, name: "android-tv" },
+    ReleaseTarget {
+        id: 4,
+        name: "macos",
+    },
+    ReleaseTarget {
+        id: 5,
+        name: "android-tv",
+    },
 ];
 
 const RELEASE_CHANNEL: &str = "gwqd";
@@ -41,6 +53,7 @@ pub struct SignalClient {
     http: reqwest::Client,
     host: String,
     signing_key_path: std::path::PathBuf,
+    signing_key_builtin_fallback: bool,
 }
 
 impl SignalClient {
@@ -48,7 +61,12 @@ impl SignalClient {
         let http = reqwest::Client::builder()
             .user_agent("uu-remote-rs/0.0.1")
             .build()?;
-        Ok(Self { http, host: config.signaling_host.clone(), signing_key_path: crate::signing_key::SigningKey::path(config) })
+        Ok(Self {
+            http,
+            host: config.signaling_host.clone(),
+            signing_key_path: crate::signing_key::SigningKey::path(config),
+            signing_key_builtin_fallback: std::env::var_os("UU_SIGNING_KEY_FILE").is_none(),
+        })
     }
 
     /// Ask the release feed where a platform's installer now lives.
@@ -100,10 +118,21 @@ mod credential_tests {
         let client = SignalClient {
             http: reqwest::Client::new(),
             host: "127.0.0.1:9".into(),
-            signing_key_path: std::env::temp_dir().join(format!("uu-no-key-{}", uuid::Uuid::new_v4())),
+            signing_key_path: std::env::temp_dir()
+                .join(format!("uu-no-key-{}", uuid::Uuid::new_v4())),
+            signing_key_builtin_fallback: false,
         };
-        let result = client.call(&ClientIdentity::default(), None,
-            SignedRequest { method: "GET", path_with_query: "/test", body: None }).await;
+        let result = client
+            .call(
+                &ClientIdentity::default(),
+                None,
+                SignedRequest {
+                    method: "GET",
+                    path_with_query: "/test",
+                    body: None,
+                },
+            )
+            .await;
         assert!(matches!(result, Err(CoreError::SigningKeyMissing)));
     }
 }
@@ -134,7 +163,10 @@ impl SignalClient {
         token: Option<&str>,
         req: SignedRequest<'_>,
     ) -> Result<ApiResponse, CoreError> {
-        let signing_key = crate::signing_key::SigningKey::load_file(&self.signing_key_path)?;
+        let signing_key = crate::signing_key::SigningKey::load_for_pc(
+            &self.signing_key_path,
+            self.signing_key_builtin_fallback,
+        )?;
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| CoreError::Config(e.to_string()))?
@@ -166,7 +198,9 @@ impl SignalClient {
             builder = builder.header("Authorization", format!("Bearer {token}"));
         }
         if let Some(body) = &body_str {
-            builder = builder.header("Content-Type", "application/json").body(body.clone());
+            builder = builder
+                .header("Content-Type", "application/json")
+                .body(body.clone());
         }
 
         let resp = builder.send().await?;
@@ -178,8 +212,11 @@ impl SignalClient {
             }
         }
         let text = resp.text().await?;
-        let body = serde_json::from_str(&text)
-            .unwrap_or_else(|_| serde_json::Value::String(text));
-        Ok(ApiResponse { status, headers, body })
+        let body = serde_json::from_str(&text).unwrap_or_else(|_| serde_json::Value::String(text));
+        Ok(ApiResponse {
+            status,
+            headers,
+            body,
+        })
     }
 }

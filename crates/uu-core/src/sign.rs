@@ -15,7 +15,8 @@
 //!
 //! Two different keys exist in the product: the web bundle signs with its own
 //! key, while the native client uses a different credential. The signing key
-//! used for a given API is runtime configuration, never bundled with the client.
+//! for PC compatibility is distributed by default, with an optional local
+//! configuration override. It does not replace user or device authorization.
 
 use std::collections::BTreeMap;
 

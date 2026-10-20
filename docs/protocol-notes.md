@@ -120,11 +120,11 @@ message  = METHOD + pathWithQuery + headers + body
 signature= hex(HMAC-SHA256(key, message))
 ```
 
-### 签名凭据由用户在本地提供
+### PC 默认值与可选本地覆盖
 
-原生接口与 Web 接口的凭据不同，不能互换。本项目不分发第三方生产密钥，
-源码、测试、安装包都不包含有效密钥。客户端仅在运行时读取用户有权使用的本地配置；
-配置方式见 [连接凭据](connection-credentials.md)。缺少配置时明确报错，不尝试默认密钥或远端取密钥。
+PC 接口与 Web 接口的共享值不同，不能互换。开发版明确分发 PC 兼容请求签名值，
+保留运行时本地覆盖；它公开可提取，不替代账号与设备授权，不分发另一份 Web 值。
+配置优先级与旧版差异见 [连接签名配置](connection-credentials.md)。错误的显式覆盖会明确报错。
 
 ### 请求头真实取值（Windows 构建）
 
@@ -140,7 +140,7 @@ X-Param-device-id: <16 位>           X-Param-user-id: <登录后才有>
 
 ### 验证边界
 
-规范串和 HMAC 格式曾与实际交互进行本地对照；公开仓库不保留生产密钥及依赖它的测试向量。
+规范串和 HMAC 格式曾与实际交互进行本地对照；默认 PC 共享值按兼容数据明确分发，测试不保留真实账号请求或依赖它的线上抓包。
 实现见 `crates/uu-core/src/sign.rs`，公开测试采用 RFC 4231 和虚构请求，验证排序、空值、签名头过滤与原始请求体。
 凭据读取、权限及缺失处理见 `crates/uu-core/src/signing_key.rs`。
 

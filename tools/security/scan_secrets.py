@@ -2,6 +2,7 @@
 """Guard service signing credentials without printing matched values (Python 3.11+)."""
 import argparse
 import base64
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -10,7 +11,13 @@ import tarfile
 import zipfile
 
 # A targeted guard, not a replacement for a full secret scanner or provider rotation.
-RUST_KEY = re.compile(rb'(?m)^\s*(?:pub\s+)?const\s+(?:NATIVE_SIGN_KEY|WEB_SIGN_KEY|SERVICE_SIGN_KEY)\b[^\n]*?b?"([^"\r\n]+)"')
+RUST_KEY = re.compile(rb'(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?const\s+(?P<name>NATIVE_SIGN_KEY|WEB_SIGN_KEY|SERVICE_SIGN_KEY|PUBLIC_PC_SIGNING_KEY)\b[^\n]*?b?"(?P<value>[^"\r\n]+)"')
+# Explicit distribution policy: only this documented PC compatibility constant,
+# at this source path and with this exact fingerprint, is accepted. It is not
+# excluded from an explicit --forbid-file check, and all user credentials remain
+# private. This does not suppress GitHub's own scanning or push protection.
+PUBLIC_PC_SOURCE = 'crates/uu-core/src/compatibility_signing.rs'
+PUBLIC_PC_SHA256 = '40cb3a32f9f6f90d9962fb9736685bb881979e848b5956649b6dae3cc957528c'
 PLACEHOLDERS = (b'REMOVED_', b'test-', b'test_', b'fake-', b'example-', b'<')
 MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
 
@@ -59,7 +66,11 @@ def inspect(name, data, forbidden=(), source=False):
         issues.append('compiled binary committed to source')
     if any(value in data for value in forbidden):
         issues.append('forbidden credential value or encoding')
-    if any(not match.group(1).startswith(PLACEHOLDERS) for match in RUST_KEY.finditer(data)):
+    def approved_public_constant(match):
+        return (name == PUBLIC_PC_SOURCE and match.group('name') == b'PUBLIC_PC_SIGNING_KEY'
+                and hashlib.sha256(match.group('value')).hexdigest() == PUBLIC_PC_SHA256)
+    if any(not match.group('value').startswith(PLACEHOLDERS) and not approved_public_constant(match)
+           for match in RUST_KEY.finditer(data)):
         issues.append('embedded service signing constant')
     return [dict(path=name, reason=reason) for reason in issues]
 

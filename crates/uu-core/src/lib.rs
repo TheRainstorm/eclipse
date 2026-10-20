@@ -25,6 +25,7 @@ pub mod selfloop;
 pub mod session;
 pub mod session_diagnostics;
 pub mod sign;
+mod compatibility_signing;
 pub mod signing_key;
 pub mod signal;
 pub mod socketio;
