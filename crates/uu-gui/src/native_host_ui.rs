@@ -320,6 +320,10 @@ impl App {
                 egui::ScrollArea::vertical().max_height((ctx.screen_rect().height()-120.0).max(120.0)).show(ui,|ui| {
                 ui.label("通过原生邀请共享当前桌面，无需账号。");
                 ui.weak("H.264 视频 · 系统声音由本次共享选择");
+                #[cfg(target_os="linux")]
+                if std::env::var("XDG_SESSION_TYPE").is_ok_and(|session|session.eq_ignore_ascii_case("wayland")) {
+                    ui.weak("Wayland 完整桌面采集尚未接入；当前共享只能使用可访问的 X11 显示源。");
+                }
                 ui.add_space(10.0);
                 if let Some(sharing) = &mut host.sharing {
                     let status = sharing.status.borrow().clone();
