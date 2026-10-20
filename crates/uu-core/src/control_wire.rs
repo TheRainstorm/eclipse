@@ -200,7 +200,9 @@ pub fn capture_setting_for_screen(
     custom_bitrate_bps:Option<u64>,resolution:CaptureResolution,cursor_capture:bool,screen_id:i32,
 )->Vec<u8> {
     let mut setting = Vec::new();
-    if cursor_capture {int(3,1,&mut setting);}
+    // A capture-setting RPC changes an existing capture. Send false explicitly
+    // as well, so returning to a local cursor cannot leave host compositing on.
+    int(3, u64::from(cursor_capture), &mut setting);
     int(1, frame_rate.option(), &mut setting);
     int(2, quality, &mut setting);
     int(4, screen_id as i64 as u64, &mut setting);
@@ -506,7 +508,8 @@ mod tests {
             let rpc=decode_wire(rpc).unwrap();
             let setting=rpc.iter().find_map(|(n,v)|match (n,v){(2,WireValue::Bytes(b))=>Some(*b),_=>None}).unwrap();
             let fields=decode_wire(setting).unwrap();
-            assert_eq!(fields.contains(&(3,WireValue::Varint(1))),capture);
+            assert_eq!(fields.iter().filter(|(n,_)|*n==3).count(),1);
+            assert!(fields.contains(&(3,WireValue::Varint(u64::from(capture)))));
             for (field,value) in [(18,120),(8,30_000_000),(4,u64::MAX-1)] {assert!(fields.contains(&(field,WireValue::Varint(value))));}
         }
     }
@@ -558,9 +561,11 @@ mod tests {
                 _ => None,
             })
             .expect("rpc field 2");
+        // The captured request omitted the proto3 default for cursor_capture.
+        // Our runtime request now explicitly disables host compositing (18 00).
         assert_eq!(
             hex::encode(setting),
-            "0802100620feffffffffffffffff0128ffffffffffffffffff0130ffffffffffffffffff01380140c0f79c1a50016004680270801e78f01090013c"
+            "18000802100620feffffffffffffffff0128ffffffffffffffffff0130ffffffffffffffffff01380140c0f79c1a50016004680270801e78f01090013c"
         );
     }
 
