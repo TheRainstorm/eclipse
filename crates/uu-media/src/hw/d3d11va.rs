@@ -42,6 +42,8 @@ use windows::Win32::System::Com::{
     CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_MULTITHREADED,
 };
 
+use windows::Win32::System::Variant::VARIANT;
+
 use crate::bitstream::{h264_dimensions, patch_sps_allow_gaps};
 use crate::codec::{CodecError, VideoDecoder};
 use crate::frame::{EncodedFrame, PixelFormat, RawFrame};
@@ -259,6 +261,17 @@ struct Transform {
     /// better, so `read_surface` gives up on it.
     frames_read: u64,
     saw_d3d11_surface: bool,
+    profile: DecodeProfile,
+}
+
+#[derive(Default)]
+struct DecodeProfile {
+    enabled: bool,
+    calls: u64,
+    total_us: u64,
+    map_us: u64,
+    cpu_copy_us: u64,
+    surfaces: u64,
 }
 
 struct Staging {
@@ -309,6 +322,18 @@ impl Transform {
                 let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
                 let _ = attributes.SetUINT32(&MF_SA_D3D11_BINDFLAGS, D3D11_BIND_DECODER.0 as u32);
             }
+            // The in-box H.264 MFT may return E_NOTIMPL from GetAttributes.
+            // MF_LOW_LATENCY on an optional IMFAttributes cannot configure it.
+            // Microsoft's H.264 decoder specifically requires VT_UI4 here;
+            // other codecs may use VT_BOOL. This is a best-effort latency hint,
+            // never a reason to discard otherwise working hardware decode.
+            let codec_low_latency = transform.cast::<ICodecAPI>().ok().is_some_and(|codec| {
+                codec.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(1u32)).is_ok()
+                    || codec.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true)).is_ok()
+            });
+            if std::env::var_os("UU_DECODE_PROFILE").is_some() {
+                eprintln!("d3d11 low_latency_codec_api={codec_low_latency}");
+            }
             // Whether or not the decoder advertises awareness, handing it a
             // device manager is the switch that turns on GPU decode; a decoder
             // that cannot use it fails here and is skipped.
@@ -344,6 +369,7 @@ impl Transform {
                 staging: None,
                 frames_read: 0,
                 saw_d3d11_surface: false,
+                profile: DecodeProfile {enabled: std::env::var("UU_DECODE_PROFILE").is_ok_and(|v|v!="0"), ..Default::default()},
             })
         }
     }
@@ -359,6 +385,7 @@ impl Transform {
         // Preserve the transport clock, including skipped frames and decoder
         // restarts. A synthetic 60 Hz counter drifts on 30 Hz input and resets
         // to zero after loss, making a new IDR look older than its generation.
+        let profile_started = self.profile.enabled.then(std::time::Instant::now);
         let time_100ns = pts.as_micros().saturating_mul(10).min(i64::MAX as u64) as i64;
         let sample = input_sample(data, time_100ns, keyframe)?;
         unsafe {
@@ -374,7 +401,17 @@ impl Transform {
                 result => result.map_err(|e| format!("ProcessInput: {e}"))?,
             }
         }
-        self.drain(out)
+        let result = self.drain(out);
+        if let Some(started) = profile_started {
+            self.profile.calls += 1;
+            self.profile.total_us += started.elapsed().as_micros() as u64;
+            if self.profile.calls >= 120 {
+                let p=&self.profile;let n=p.calls.max(1);let frames=p.surfaces.max(1);
+                eprintln!("d3d11 decode profile calls={} surfaces={} total_ms={:.3} readback_ms={:.3} cpu_copy_ms={:.3} mft_other_ms={:.3}",p.calls,p.surfaces,p.total_us as f64/n as f64/1000.,p.map_us as f64/frames as f64/1000.,p.cpu_copy_us as f64/frames as f64/1000.,p.total_us.saturating_sub(p.map_us+p.cpu_copy_us) as f64/n as f64/1000.);
+                self.profile=DecodeProfile {enabled:true,..Default::default()};
+            }
+        }
+        result
     }
 
     /// Pull decoded frames until the MFT runs dry.
@@ -466,6 +503,7 @@ impl Transform {
             }
             // A handle so the mutable borrow of `self.staging` ends here.
             let staging = self.staging_texture(width, height)?.clone();
+            let map_started=self.profile.enabled.then(std::time::Instant::now);
             unsafe {
                 self.context
                     .CopySubresourceRegion(&staging, 0, 0, 0, 0, &texture, index, None);
@@ -476,6 +514,8 @@ impl Transform {
                     .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
             }
             .map_err(|e| format!("staging Map: {e}"))?;
+            if let Some(started)=map_started {self.profile.map_us+=started.elapsed().as_micros() as u64;}
+            let copy_started=self.profile.enabled.then(std::time::Instant::now);
             // The texture includes decoder alignment (1080p commonly uses
             // 1088 luma rows). UV starts at the allocated, not visible, height.
             let stride = mapped.RowPitch;
@@ -487,6 +527,7 @@ impl Transform {
                 self.context.Unmap(&staging, 0);
                 result?
             };
+            if let Some(started)=copy_started {self.profile.cpu_copy_us+=started.elapsed().as_micros() as u64;self.profile.surfaces+=1;}
             return Ok(RawFrame {
                 width: self.width,
                 height: self.height,
