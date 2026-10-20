@@ -10,8 +10,8 @@ use crate::frame::{PixelFormat, RawFrame};
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
-/// Convert any supported frame to tightly packed I420.
-pub fn to_i420(frame: &RawFrame) -> Result<Vec<u8>, CodecError> {
+/// Validate the complete CPU layout without converting or allocating pixels.
+pub(crate) fn validate_cpu_frame(frame: &RawFrame) -> Result<(usize, usize, usize), CodecError> {
     let invalid =
         || CodecError::Backend("invalid or incomplete CPU frame for I420 conversion".into());
     let (w, h, s) = (
@@ -40,6 +40,12 @@ pub fn to_i420(frame: &RawFrame) -> Result<Vec<u8>, CodecError> {
     if s < row || frame.data.len() < needed {
         return Err(invalid());
     }
+    Ok((w, h, s))
+}
+
+/// Convert any supported frame to tightly packed I420.
+pub fn to_i420(frame: &RawFrame) -> Result<Vec<u8>, CodecError> {
+    let (w, h, _) = validate_cpu_frame(frame)?;
     match frame.format {
         // Already packed I420 with stride == width is passed through; a
         // padded I420 would need re-packing, which no current backend emits.
