@@ -31,6 +31,33 @@ fn pattern(settings: Settings, index: u32) -> RawFrame {
         gpu: false,
     }
 }
+fn input_format(mut frame: RawFrame, format: PixelFormat) -> RawFrame {
+    let pixels = frame.width as usize * frame.height as usize;
+    match format {
+        PixelFormat::I420 => frame,
+        PixelFormat::Bgra8 => {
+            let mut rgba = uu_media::convert::frame_to_rgba(&frame);
+            for pixel in rgba.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+            frame.data = rgba.into();
+            frame.format = format;
+            frame.stride = frame.width * 4;
+            frame
+        }
+        PixelFormat::Nv12 => {
+            let mut nv12 = vec![0; pixels * 3 / 2];
+            nv12[..pixels].copy_from_slice(&frame.data[..pixels]);
+            for i in 0..pixels / 4 {
+                nv12[pixels + i * 2] = frame.data[pixels + i];
+                nv12[pixels + i * 2 + 1] = frame.data[pixels + pixels / 4 + i];
+            }
+            frame.data = nv12.into();
+            frame.format = format;
+            frame
+        }
+    }
+}
 fn main() -> anyhow::Result<()> {
     let mut settings = Settings {
         width: 1280,
@@ -40,6 +67,7 @@ fn main() -> anyhow::Result<()> {
         preference: Preference::Software,
     };
     let mut frames = 180u32;
+    let mut format = PixelFormat::I420;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let value = args.next().context("missing probe option value")?;
@@ -55,6 +83,14 @@ fn main() -> anyhow::Result<()> {
             "--frames" => frames = value.parse()?,
             "--width" => settings.width = value.parse()?,
             "--height" => settings.height = value.parse()?,
+            "--input" => {
+                format = match value.as_str() {
+                    "i420" => PixelFormat::I420,
+                    "bgra" => PixelFormat::Bgra8,
+                    "nv12" => PixelFormat::Nv12,
+                    _ => anyhow::bail!("input must be i420, bgra or nv12"),
+                }
+            }
             _ => anyhow::bail!("unknown probe argument"),
         }
     }
@@ -84,7 +120,7 @@ fn main() -> anyhow::Result<()> {
                 "invalid bitrate must be rejected without replacing encoder"
             );
         }
-        let input = pattern(settings, index);
+        let input = input_format(pattern(settings, index), format);
         let started = std::time::Instant::now();
         let output = encoder.encode(&input)?;
         times.push(started.elapsed().as_secs_f64() * 1000.0);
@@ -140,7 +176,7 @@ fn main() -> anyhow::Result<()> {
         "{}",
         serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"frames":frames,"decoded":decoded,
         "keyframes":keys,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,
-        "width":settings.width,"height":settings.height,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
+        "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
         "bytes":bytes,"screen_used":false,"input_used":false,"audio_used":false})
     );
