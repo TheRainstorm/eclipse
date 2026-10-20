@@ -42,7 +42,7 @@ def main():
     env = os.environ.copy()
     for key in ['DISPLAY', 'WAYLAND_DISPLAY', 'SWAYSOCK', 'UU_AUTOCONNECT', 'UU_FORCE_JOIN']:
         env.pop(key, None)
-    env.update(XDG_RUNTIME_DIR=str(runtime), WLR_BACKENDS='headless', WLR_HEADLESS_OUTPUTS='1', WLR_LIBINPUT_NO_DEVICES='1', WLR_RENDERER=args.renderer, WLR_RENDER_DRM_DEVICE='/dev/dri/renderD128', PIPEWIRE_RUNTIME_DIR=f'/run/user/{os.getuid()}', XDG_DATA_HOME=str(out / 'data'), UU_DECODER='hw', UU_UI_DEBUG='1')
+    env.update(XDG_RUNTIME_DIR=str(runtime), WLR_BACKENDS='headless', WLR_HEADLESS_OUTPUTS='1', WLR_LIBINPUT_NO_DEVICES='1', WLR_RENDERER=args.renderer, WLR_RENDER_DRM_DEVICE='/dev/dri/renderD128', PIPEWIRE_RUNTIME_DIR=f'/run/user/{os.getuid()}', XDG_DATA_HOME=str(out / 'data'), XDG_STATE_HOME=str(out / 'state'), UU_DECODER='hw', UU_UI_DEBUG='1')
     result = {'phases': []}
     sway = gui = keyboard = None
     files = []
@@ -103,7 +103,7 @@ def main():
         node = wait_for(window)
         ipc(f'[pid={gui.pid}] focus')
         def events():
-            paths = list(out.glob('uu-session-*.jsonl'))
+            paths = list((out / 'state' / 'uu-remote' / 'diagnostics').glob('uu-session-*.jsonl'))
             result = []
             for path in paths:
                 for line in path.read_text().splitlines():

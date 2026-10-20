@@ -88,7 +88,7 @@ def main():
 
     def events():
         result = []
-        for path in data.rglob('*.jsonl'):
+        for path in (out / 'state' / 'uu-remote' / 'diagnostics').glob('uu-session-*.jsonl'):
             for line in path.read_text().splitlines():
                 try:
                     result.append(json.loads(line))
