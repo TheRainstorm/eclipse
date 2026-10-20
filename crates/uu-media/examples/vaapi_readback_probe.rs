@@ -2,6 +2,7 @@
 //! H.264 files containing AUDs. Never capture a desktop or open audio/input.
 #[cfg(target_os = "linux")]
 fn main() -> anyhow::Result<()> {
+    use anyhow::Context;
     use std::time::Instant;
     use uu_media::{EncodedFrame, Timestamp, VideoDecoder};
     let path = std::env::args()
@@ -44,10 +45,14 @@ fn main() -> anyhow::Result<()> {
             pts: Timestamp(index as u64 * 16_667),
         };
         let at = Instant::now();
-        let expected = reference.decode(&encoded)?;
+        let expected = reference
+            .decode(&encoded)
+            .with_context(|| format!("driver reference at access unit {index}"))?;
         times[0] += at.elapsed().as_secs_f64();
         let at = Instant::now();
-        let actual = direct.decode(&encoded)?;
+        let actual = direct
+            .decode(&encoded)
+            .with_context(|| format!("DMA-BUF candidate at access unit {index}"))?;
         times[1] += at.elapsed().as_secs_f64();
         match (expected, actual) {
             (Some(a), Some(b)) => {

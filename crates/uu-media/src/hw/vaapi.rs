@@ -153,7 +153,16 @@ impl super::Backend for Decoder {
                 Ok(consumed) => consumed,
                 Err(DecodeError::CheckEvents) | Err(DecodeError::NotEnoughOutputBuffers(_)) => {
                     if self.pump_events()? == 0 {
-                        return Err("VA-API decoder is waiting for events but has none".to_string());
+                        // cros-codecs can enter FlushingForDRC with an empty
+                        // ready queue. There is no event to drain: the next
+                        // decode call advances reset_backend/renegotiation.
+                        // Retry the same NAL, but never spin on a stuck pool.
+                        stalls += 1;
+                        if stalls > 2 {
+                            return Err("VA-API decoder made no progress after event retries".into());
+                        }
+                    } else {
+                        stalls = 0;
                     }
                     continue;
                 }
@@ -170,6 +179,7 @@ impl super::Backend for Decoder {
                 }
                 continue;
             }
+            stalls = 0;
             input = &input[consumed..];
             self.pump_events()?;
         }
