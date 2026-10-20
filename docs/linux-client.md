@@ -49,6 +49,21 @@ python3 tools/linux/wayland_smoke.py \
 
 远端键盘验收可在专用测试主机的**交互桌面**运行 `tools/windows/keyboard-fixture.ps1`，然后向上述脚本增加 `--keyboard-fixture`。增加 `--relative-mouse` 可验证Locked相对模式；`--soak-seconds 60` 延长运行。F22 只激活测试文本框；脚本输入固定文本 `aA;:,.?/[]{}+-_` 并发送 Ctrl+C/V/X。文本框禁用自己的 IME、拦截复制/粘贴/剪切，保留系统剪贴板；45 秒后关闭并恢复原前台。通过指定 `-Output` 读取 JSON，逐字检查结果，不能仅以“已发送”当作输入通过。不要在没有该专用文本框时启用此参数。
 
+## 确认硬解与定位延迟
+
+串流时按 Ctrl+Alt+S，编码格式旁会显示实际使用的 `VAAPI 硬解` 或 `OpenH264 软解`；悬停 HUD 可查看完整后端和回退原因。编译时启用 `vaapi` 或 `vainfo` 显示支持 H.264，都不能单独证明当前会话正在硬解。
+
+Decode 包含解码调用、线程往返和硬件帧下载，并非只有视频芯片运行时间；De 是解码输出帧率，Rd 是提交的新画面帧率，两者可能不同。新版对线性与普通 Intel Y 平铺 NV12 表面使用只读 DMA-BUF 下载，避免 VAImage 映射时的双向平铺转换，并复用 CPU 输出缓冲。仍然存在 CPU 下载和纹理上传，不是 GPU 零拷贝；未知或压缩布局自动保留驱动下载路径。
+
+开发者可用生成的 H.264 文件进行同机对照：
+
+```sh
+UU_DECODE_PROFILE=1 uu-rust probe --h264 generated.h264
+UU_DECODE_PROFILE=1 UU_VAAPI_READBACK=legacy uu-rust probe --h264 generated.h264
+```
+
+每 120 次调用输出一组不含视频内容的分段均值。离线解码吞吐不能替代真实 GUI 的流畅度测量。会话诊断同时记录分辨率、音频队列、欠载和丢弃计数，用于区分画面提交不足与音频调度问题。
+
 ## 音频与硬解验收
 
 ```sh

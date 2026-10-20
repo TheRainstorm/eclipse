@@ -2,7 +2,7 @@
 
 大功能里程碑使用 `v主版本.次版本.修订号` 标签，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
-当前里程碑为 [v0.9.0](https://github.com/TheRainstorm/uu-client/releases/tag/v0.9.0)，包含[客户端延迟优化](releases/v0.9.0.md)。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+当前版本为 [v0.9.1](https://github.com/TheRainstorm/uu-client/releases/tag/v0.9.1)，补充 [Linux 硬解下载优化](releases/v0.9.1.md)；上一里程碑 v0.9.0 包含[客户端延迟优化](releases/v0.9.0.md)。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
 
 ```sh
 python3 tools/release/download.py
