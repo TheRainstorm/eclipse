@@ -22,6 +22,56 @@ env:
   UU_SIGNING_KEY_FILE: /nonexistent/uu-client-ci-signing-key
 
 jobs:
+  linux-media:
+    name: Linux media quick validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install media development libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential pkg-config cmake nasm libva-dev libgbm-dev libdrm-dev libclang-dev libasound2-dev libpulse-dev
+      - name: Select Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-linux-x86_64-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-linux-x86_64-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}-
+            cargo-linux-x86_64-${{ env.RUST_TOOLCHAIN }}-
+      - name: Validate and build only the media probe
+        run: |
+          python3 tools/security/scan_secrets.py
+          cargo test -p uu-media --lib --release --features vaapi --locked
+          cargo build -p uu-media --example vaapi_readback_probe --release --features vaapi --locked
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil
+          out = pathlib.Path('artifacts/media-fast')
+          out.mkdir(parents=True)
+          probe = out / 'vaapi_readback_probe'
+          shutil.copy2('target/release/examples/vaapi_readback_probe', probe)
+          (out / 'provenance.json').write_text(json.dumps({
+              'source_commit': os.environ['GITHUB_SHA'], 'features': ['vaapi'],
+              'sha256': {probe.name: hashlib.sha256(probe.read_bytes()).hexdigest()},
+              'scope': 'media-only; full platform validation is still required',
+          }, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-media-validation-fast
+          path: artifacts/media-fast/*
+          if-no-files-found: error
+          retention-days: 14
+
   build:
     name: Build ${{ matrix.platform }}
     runs-on: ubuntu-24.04
@@ -241,7 +291,7 @@ jobs:
   release:
     name: Publish tagged release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build, windows-smoke]
+    needs: [build, windows-smoke, linux-media]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
