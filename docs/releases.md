@@ -6,7 +6,7 @@
 
 `Build and release` 工作流在主分支提交、PR 和 `v*` 标签上运行，也可从 Actions 页面手动触发构建。当前固定 Rust 1.95.0；Actions 依赖固定完整提交号。
 
-- Linux x86_64：Ubuntu 24.04 构建，启用 VA-API，运行工作区、原生两进程视频与独立 Sway 混合 DPI 窗口检查，生成 tar.gz。
+- Linux x86_64：Ubuntu 24.04 构建，启用 VA-API，运行工作区、独立SRTP密码向量/重放回归、原生两进程视频与独立 Sway 混合 DPI 窗口检查，生成 tar.gz。
 - Windows x64：Linux 上使用 MinGW win32 线程模型交叉编译，生成 ZIP；随后在 Windows runner 校验所有文件哈希并运行 TLS/SRTP 原生两进程视频软件解码测试。
 - 两个平台都运行凭据分发边界检查；构建不读取本地私有配置或 CI 服务密钥，测试使用虚构数据。v0.5.0 起明确分发 PC 兼容共享签名值，其它凭据仍禁止进入安装包。发布包包含许可文件、第三方通知与源提交清单。
 - 分支和 PR 只生成保留 14 天的 Actions artifacts；只有标签构建全部成功后，才创建 GitHub Release、附上两端压缩包与 `SHA256SUMS`。

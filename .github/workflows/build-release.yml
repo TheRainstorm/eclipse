@@ -82,6 +82,7 @@ jobs:
         if: matrix.platform == 'linux-x86_64'
         run: |
           cargo test --workspace --release --features vaapi --locked
+          cargo test --manifest-path vendor/webrtc-srtp/Cargo.toml --release --target-dir target
           python3 tools/linux/package.py
           python3 tools/native/smoke.py --exe target/release/uu --decoder sw --audio
           for archive in artifacts/packages/*.tar.gz; do
