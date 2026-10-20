@@ -489,45 +489,102 @@ mod tests {
 
 #[cfg(test)]
 mod srtp_rollover_regression {
-    use webrtc::{rtp::{header::Header,packet::Packet},srtp::{context::Context,option::srtp_replay_protection,protection_profile::ProtectionProfile},util::marshal::Marshal};
-    fn pair(profile:ProtectionProfile)->(Context,Context) {
-        let key=[0x17;16];let salt=vec![0x2a;if matches!(profile,ProtectionProfile::Aes128CmHmacSha1_80) {14}else{12}];
-        (Context::new(&key,&salt,profile,None,None).unwrap(),Context::new(&key,&salt,profile,Some(srtp_replay_protection(64)),None).unwrap())
+    use webrtc::{
+        rtp::{header::Header, packet::Packet},
+        srtp::{
+            context::Context, option::srtp_replay_protection, protection_profile::ProtectionProfile,
+        },
+        util::marshal::Marshal,
+    };
+    fn pair(profile: ProtectionProfile) -> (Context, Context) {
+        let key = [0x17; 16];
+        let salt = vec![
+            0x2a;
+            if matches!(profile, ProtectionProfile::Aes128CmHmacSha1_80) {
+                14
+            } else {
+                12
+            }
+        ];
+        (
+            Context::new(&key, &salt, profile, None, None).unwrap(),
+            Context::new(&key, &salt, profile, Some(srtp_replay_protection(64)), None).unwrap(),
+        )
     }
-    fn packet(seq:u16)->bytes::Bytes {
-        Packet {header:Header {version:2,payload_type:102,ssrc:42,sequence_number:seq,..Default::default()},
-            payload:bytes::Bytes::from_static(b"generated SRTP regression"),..Default::default()}.marshal().unwrap()
+    fn packet(seq: u16) -> bytes::Bytes {
+        Packet {
+            header: Header {
+                version: 2,
+                payload_type: 102,
+                ssrc: 42,
+                sequence_number: seq,
+                ..Default::default()
+            },
+            payload: bytes::Bytes::from_static(b"generated SRTP regression"),
+            ..Default::default()
+        }
+        .marshal()
+        .unwrap()
     }
     #[test]
     fn late_retransmissions_keep_original_ciphertext_and_new_packets_decodable() {
-        for profile in [ProtectionProfile::Aes128CmHmacSha1_80,ProtectionProfile::AeadAes128Gcm] {
-            let (mut sender,mut receiver)=pair(profile);let mut cached=Vec::new();
+        for profile in [
+            ProtectionProfile::Aes128CmHmacSha1_80,
+            ProtectionProfile::AeadAes128Gcm,
+        ] {
+            let (mut sender, mut receiver) = pair(profile);
+            let mut cached = Vec::new();
             for seq in (65500..=65535).chain(0..=200) {
-                let plain=packet(seq);let wire=sender.encrypt_rtp(&plain).unwrap();
-                assert_eq!(receiver.decrypt_rtp(&wire).unwrap(),plain);
-                if seq==65530||seq==40 {cached.push((seq,wire));}
+                let plain = packet(seq);
+                let wire = sender.encrypt_rtp(&plain).unwrap();
+                assert_eq!(receiver.decrypt_rtp(&wire).unwrap(), plain);
+                if seq == 65530 || seq == 40 {
+                    cached.push((seq, wire));
+                }
             }
-            for (seq,original) in cached {
-                let wire=sender.encrypt_rtp(&packet(seq)).unwrap();assert_eq!(wire,original,"retransmission must retain its original packet index");
-                assert!(receiver.decrypt_rtp(&wire).is_err(),"replay protection must remain active");
+            for (seq, original) in cached {
+                let wire = sender.encrypt_rtp(&packet(seq)).unwrap();
+                assert_eq!(
+                    wire, original,
+                    "retransmission must retain its original packet index"
+                );
+                assert!(
+                    receiver.decrypt_rtp(&wire).is_err(),
+                    "replay protection must remain active"
+                );
             }
-            let plain=packet(201);let wire=sender.encrypt_rtp(&plain).unwrap();
-            assert_eq!(receiver.decrypt_rtp(&wire).unwrap(),plain);
+            let plain = packet(201);
+            let wire = sender.encrypt_rtp(&plain).unwrap();
+            assert_eq!(receiver.decrypt_rtp(&wire).unwrap(), plain);
         }
     }
     #[test]
     fn loss_of_more_than_one_hundred_packets_across_rollover_recovers_with_authentication() {
-        for profile in [ProtectionProfile::Aes128CmHmacSha1_80,ProtectionProfile::AeadAes128Gcm] {
-            let (mut sender,mut receiver)=pair(profile);
+        for profile in [
+            ProtectionProfile::Aes128CmHmacSha1_80,
+            ProtectionProfile::AeadAes128Gcm,
+        ] {
+            let (mut sender, mut receiver) = pair(profile);
             for seq in (65500..=65535).chain(0..=200) {
-                let plain=packet(seq);let wire=sender.encrypt_rtp(&plain).unwrap();
-                if seq>=65500 {assert_eq!(receiver.decrypt_rtp(&wire).unwrap(),plain);}
+                let plain = packet(seq);
+                let wire = sender.encrypt_rtp(&plain).unwrap();
+                if seq >= 65500 {
+                    assert_eq!(receiver.decrypt_rtp(&wire).unwrap(), plain);
+                }
             }
-            let plain=packet(201);let wire=sender.encrypt_rtp(&plain).unwrap();
-            let mut tampered=wire.to_vec();*tampered.last_mut().unwrap()^=1;
-            assert!(receiver.decrypt_rtp(&tampered).is_err(),"forged packets must not move receiver state");
-            assert_eq!(receiver.decrypt_rtp(&wire).unwrap(),plain);
-            assert!(receiver.decrypt_rtp(&wire).is_err(),"duplicate packets must still be rejected");
+            let plain = packet(201);
+            let wire = sender.encrypt_rtp(&plain).unwrap();
+            let mut tampered = wire.to_vec();
+            *tampered.last_mut().unwrap() ^= 1;
+            assert!(
+                receiver.decrypt_rtp(&tampered).is_err(),
+                "forged packets must not move receiver state"
+            );
+            assert_eq!(receiver.decrypt_rtp(&wire).unwrap(), plain);
+            assert!(
+                receiver.decrypt_rtp(&wire).is_err(),
+                "duplicate packets must still be rejected"
+            );
         }
     }
 }
