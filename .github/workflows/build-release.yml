@@ -103,6 +103,8 @@ jobs:
         run: |
           cargo build --release -p uu-gui --example video_renderer_probe --features vaapi --locked
           python3 tools/native/input_smoke.py --probe target/release/examples/video_renderer_probe --report-field video --output artifacts/video-renderer
+          python3 tools/native/input_smoke.py --probe target/release/examples/video_renderer_probe --report-field video --probe-arg=--benchmark --output artifacts/video-upload-planar
+          python3 tools/native/input_smoke.py --probe target/release/examples/video_renderer_probe --report-field video --probe-arg=--benchmark --probe-arg=--rgba-reference --output artifacts/video-upload-rgba
       - name: Test native text clipboard on two owned desktops
         if: matrix.platform == 'linux-x86_64'
         run: |

@@ -29,7 +29,8 @@ impl VideoTexture {
                 }
             }
         }
-        self.gpu = None;
+        // An early legacy frame must not permanently disable planar rendering.
+        if let Some(gpu)=&self.gpu {let mut gpu=gpu.lock().unwrap();gpu.size=[0,0];gpu.layout=None;gpu.pending=None;}
         let (_,w,h,rgba) = image.into_rgba();
         self.size = [w as usize,h as usize];
         let image = egui::ColorImage::from_rgba_unmultiplied(self.size, &rgba);

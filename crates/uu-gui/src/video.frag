@@ -7,7 +7,7 @@ uniform int pixel_layout;
 uniform vec4 coeff;
 uniform vec2 levels;
 void main() {
-    if(pixel_layout==2) {output_color=texture(plane0,uv).bgra;return;}
+    if(pixel_layout==2) {output_color=vec4(texture(plane0,uv).bgr,1.0);return;}
     float y=(texture(plane0,uv).r-levels.x)*levels.y;
     vec2 chroma=pixel_layout==0 ? texture(plane1,uv).rg : vec2(texture(plane1,uv).r,texture(plane2,uv).r);
     chroma-=vec2(128.0/255.0);
