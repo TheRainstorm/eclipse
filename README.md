@@ -122,7 +122,7 @@ crates/uu-proto    协议类型、控制消息与帧格式
 crates/uu-media    解码、音频播放与媒体抽象
 crates/uu-cli      调试与诊断命令 uu
 crates/uu-capture  DXGI / X11 实际采集与合成测试源
-crates/uu-input    注入抽象；被控端尚未完成
+crates/uu-input    按会话许可工作的 Windows / Linux 输入注入后端
 tools/            构建、打包及隔离验证工具
 vendor/           带有来源、许可与修改记录的局部依赖
 ```
@@ -137,7 +137,7 @@ cargo run -p uu-cli -- probe
 
 ## 方向与致谢
 
-当前名称 **uu-client** 说明其兼容客户端定位。下一阶段计划以 **Eclipse / 日蚀** 为名，探索采集端与客户端一体化、自主串流协议与更完整的跨平台体验；这是方向，并非当前已经实现的功能。
+当前名称 **uu-client** 说明其兼容客户端定位。下一阶段计划以 **Eclipse / 日蚀** 为名，探索采集端与客户端一体化、自主串流协议与更完整的跨平台体验；原生局域网基础已实现，后续范围与验收顺序见[产品远景](docs/vision.md)和[交付路线图](docs/roadmap.md)。
 
 感谢 [Moonlight](https://github.com/moonlight-stream/moonlight-qt)、[Sunshine](https://github.com/LizardByte/Sunshine)、[Foundation Sunshine](https://github.com/AlkaidLab/foundation-sunshine)、[uu-remote-linux](https://github.com/VallierDev/uu-remote-linux)，以及 Rust WebRTC、egui、OpenH264、Opus 等项目。参考机制与引用代码应分别遵守来源许可，具体参考版本和入口见源码参考索引。
 
