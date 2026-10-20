@@ -901,6 +901,11 @@ impl App {
     }
 
     fn release_all_keys(&mut self) {
+        // A view-only window that never forwarded a key must not send blanket
+        // modifier releases to the host when it gains/loses local focus.
+        if self.view_only && self.pressed_vks.is_empty() && self.mod_state.iter().all(|down| !down) {
+            return;
+        }
         if self.is_native() {
             if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()){sender.release_all();}
             self.pressed_vks.clear();self.mod_state=[false;4];return;
