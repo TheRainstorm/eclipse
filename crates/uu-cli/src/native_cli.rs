@@ -32,6 +32,8 @@ pub async fn probe(
     seconds: u64,
     report: Option<PathBuf>,
     audio_loss_every: u32,
+    progress_seconds: Option<u64>,
+    max_frame_gap_seconds: Option<u64>,
 ) -> Result<()> {
     ensure!(
         (1..=100_000).contains(&frames) && (1..=3600).contains(&seconds),
@@ -71,6 +73,7 @@ pub async fn probe(
     let mut last_frame = None;
     let mut maximum_gap = Duration::ZERO;
     let mut next_sample = Duration::ZERO;
+    let mut next_progress=Duration::ZERO;
     let mut samples = Vec::new();
     let observation = tokio::time::timeout(Duration::from_secs(seconds), async {
         loop {
@@ -90,6 +93,16 @@ pub async fn probe(
             if report.is_some() && started.elapsed() >= next_sample && samples.len() < 3601 {
                 samples.push(snapshot(&stats, started.elapsed()));
                 next_sample = started.elapsed() + Duration::from_secs(1);
+            }
+            if let Some(period)=progress_seconds {
+                if started.elapsed()>=next_progress {
+                    println!("native progress: {}",snapshot(&stats,started.elapsed()));
+                    next_progress=started.elapsed()+Duration::from_secs(period);
+                }
+            }
+            if let Some(limit)=max_frame_gap_seconds {
+                ensure!(!last_frame.is_some_and(|last|now.duration_since(last)>=Duration::from_secs(limit)),
+                    "native video stopped producing visible frames for {limit} seconds");
             }
             if stats.decoded_total.load(Ordering::Relaxed) >= frames && rendered > 0 {
                 break;

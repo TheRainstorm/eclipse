@@ -29,6 +29,16 @@ impl NativeEncoder {
 mod native_encoder_options {
     use super::*;
     #[test]
+    fn native_probe_progress_and_gap_limits_are_explicit_and_bounded() {
+        let base=["uu","native-probe","--invitation-file","generated.eclipse-invite.json"];
+        for option in ["--progress-seconds","--max-frame-gap-seconds"] {
+            let mut invalid=base.to_vec();invalid.extend([option,"0"]);
+            assert!(Cli::try_parse_from(invalid).is_err());
+        }
+        let mut args=base.to_vec();args.extend(["--progress-seconds","5","--max-frame-gap-seconds","10"]);
+        assert!(matches!(Cli::try_parse_from(args).unwrap().command,Command::NativeProbe {progress_seconds:Some(5),max_frame_gap_seconds:Some(10),..}));
+    }
+    #[test]
     fn native_sharing_defaults_to_software_and_accepts_explicit_choices() {
         let base=["uu","native-host","--synthetic","--invitation-file","generated.eclipse-invite.json"];
         let command=Cli::try_parse_from(base).unwrap().command;
@@ -128,6 +138,12 @@ enum Command {
         /// Receive-only diagnostic loss injection; the network is unchanged.
         #[arg(long,value_parser=clap::value_parser!(u32).range(2..=10000))]
         audio_loss_every:Option<u32>,
+        /// Print metadata-only progress periodically; disabled by default.
+        #[arg(long,value_parser=clap::value_parser!(u64).range(1..=60))]
+        progress_seconds:Option<u64>,
+        /// Fail with a report if no visible frame arrives for this long after the first frame.
+        #[arg(long,value_parser=clap::value_parser!(u64).range(1..=60))]
+        max_frame_gap_seconds:Option<u64>,
     },
     /// Register this machine (once) and log in by scanning a QR code.
     Login {
@@ -235,7 +251,7 @@ async fn main() -> Result<()> {
             let source=if synthetic {uu_capture::CaptureSource::Synthetic{width:1280,height:720,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
             native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,encoder:encoder.preference(),session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
         },
-        Command::NativeProbe {invitation_file,frames,timeout_seconds,report,audio_loss_every} => native_cli::probe(invitation_file,frames,timeout_seconds,report,audio_loss_every.unwrap_or(0)).await,
+        Command::NativeProbe {invitation_file,frames,timeout_seconds,report,audio_loss_every,progress_seconds,max_frame_gap_seconds} => native_cli::probe(invitation_file,frames,timeout_seconds,report,audio_loss_every.unwrap_or(0),progress_seconds,max_frame_gap_seconds).await,
         Command::ReleaseCheck => release_check(&config).await,
         Command::Devices => {
             let client = SignalClient::new(&config)?;
