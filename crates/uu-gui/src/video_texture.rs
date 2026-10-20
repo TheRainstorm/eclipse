@@ -57,6 +57,7 @@ impl VideoTexture {
             }
         }
     }
+    #[allow(dead_code, reason = "Used by the separately built video_renderer_probe example")]
     pub fn uses_planar_renderer(&self) -> bool {
         self.gpu.is_some()
     }
