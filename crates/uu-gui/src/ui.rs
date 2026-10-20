@@ -363,6 +363,7 @@ impl App {
                 let visible = self.device_library.visible_indices(&self.devices, self.device_filter, &self.search);
                 let footer_height = if compact_home { 0.0 } else { 170.0 } + if self.device_library.notice().is_some() { 42.0 } else { 0.0 };
                 egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
                     .max_height((ui.available_height() - footer_height).max(50.0))
                     .show(ui, |ui| {
                         for index in visible {
@@ -548,15 +549,15 @@ impl App {
                             C::WHITE,
                         );
                         ui.add_space(5.0);
-                        let title_width = (ui.available_width()-78.0).max(50.0);
-                        ui.add_sized([title_width, 40.0], egui::Label::new(RichText::new(&device.alias)
+                        let title_width = (ui.available_width()-96.0).max(24.0);
+                        ui.allocate_ui_with_layout(egui::vec2(title_width, 40.0), egui::Layout::left_to_right(egui::Align::Center), |ui| ui.add(egui::Label::new(RichText::new(&device.alias)
                                 .strong()
                                 .size(if ui.available_width() < 300.0 {
                                     22.0
                                 } else {
                                     29.0
                                 })
-                                .color(INK)).truncate()).on_hover_text(&device.alias);
+                                .color(INK)).truncate())).inner.on_hover_text(&device.alias);
                         let favorite = self.device_library.is_favorite(&device.device_id);
                         if icon_button_selected(ui, Icon::Star, if favorite { "取消收藏" } else { "收藏设备" }, favorite).clicked() {
                             self.device_library.toggle_favorite(&device.device_id);

@@ -70,12 +70,29 @@ fn parse_devices(body: serde_json::Value) -> anyhow::Result<Vec<Device>> {
 }
 
 #[cfg(test)]
-mod device_list_tests {
+mod launcher_tests {
     #[test]
     fn invalid_or_rejected_responses_are_not_treated_as_an_empty_account() {
         assert!(super::parse_devices(serde_json::json!({})).is_err());
         assert!(super::parse_devices(serde_json::json!({"code":1120,"data":{"my_binded_devices":[]}})).is_err());
         assert!(super::parse_devices(serde_json::json!({"code":0,"data":{"my_binded_devices":[]}})).unwrap().is_empty());
+    }
+
+    #[test]
+    fn light_theme_keeps_touch_targets_when_started_from_either_theme() {
+        for theme in [eframe::egui::Theme::Dark, eframe::egui::Theme::Light] {
+            let context = eframe::egui::Context::default();
+            context.set_theme(theme);
+            super::setup_style(&context);
+            let mut height = 0.0;
+            let _ = context.run(Default::default(), |context| {
+                eframe::egui::CentralPanel::default().show(context, |ui| {
+                    height = ui.button("Retry").rect.height();
+                });
+            });
+            assert_eq!(context.theme(), eframe::egui::Theme::Light);
+            assert!(height >= 30.0, "custom button target was lost after theme selection");
+        }
     }
 }
 
@@ -247,6 +264,9 @@ fn vk_for(key: egui::Key) -> Option<u32> {
 }
 
 fn setup_style(ctx: &egui::Context) {
+    // Styles are stored per theme. Select Light before updating its style;
+    // otherwise a dark-system startup customizes Dark and then discards it.
+    ctx.set_theme(egui::ThemePreference::Light);
     // Remote Ctrl +/- belongs to the remote app, never to this client's UI zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let mut fonts = egui::FontDefinitions::default();
@@ -320,7 +340,6 @@ fn setup_style(ctx: &egui::Context) {
     style.spacing.button_padding = egui::vec2(12.0, 7.0);
     style.spacing.interact_size.y = 30.0;
     ctx.set_style(style);
-    ctx.set_theme(egui::ThemePreference::Light);
 }
 
 impl App {
