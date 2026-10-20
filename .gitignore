@@ -41,3 +41,5 @@ __pycache__/
 # 按账号隔离的收藏与最近使用，含个人设备标识
 device-list.*.json
 device-list.*.tmp
+gui-settings*.json
+gui-settings*.tmp

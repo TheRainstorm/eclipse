@@ -168,6 +168,7 @@ struct App {
     about_open: bool,
     settings_draft: settings::Settings,
     settings_notice: String,
+    settings_storage_error: bool,
     audio_save_after: Option<std::time::Instant>,
     shortcuts: shortcuts::Shortcuts,
     native_keyboard_capture: bool,
@@ -362,8 +363,8 @@ impl App {
         };
         let logged_in = account_token.is_some();
         let device_library = if native { device_library::Library::default() } else { device_library::Library::for_account(config.as_ref(), account_token.as_deref()) };
-        let (preferences, settings_notice) = match settings::Settings::path().map(|p|settings::Settings::load(&p)) {
-            Some(Ok(s))=>(s,String::new()),Some(Err(e))=>(settings::Settings::default(),format!("读取设置失败：{e}")),None=>(settings::Settings::default(),String::new()),
+        let (preferences, settings_notice, settings_storage_error) = match settings::Settings::path().map(|p|settings::Settings::load(&p)) {
+            Some(Ok(s))=>(s,String::new(),false),Some(Err(e))=>(settings::Settings::default(),format!("读取设置失败：{e}"),true),None=>(settings::Settings::default(),"无法确定设置目录，当前使用默认设置".into(),true),
         };
         let mut app = Self {
             stream_target,
@@ -414,6 +415,7 @@ impl App {
             about_open: false,
             settings_draft: preferences.clone(),
             settings_notice,
+            settings_storage_error,
             audio_save_after: None,
             shortcuts: shortcuts::Shortcuts::default(),
             native_keyboard_capture: false,

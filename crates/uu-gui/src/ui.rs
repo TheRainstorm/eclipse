@@ -272,6 +272,12 @@ impl App {
                 if ui.button("检查配置后重试").clicked() { self.retry_account_read(); }
             });
         }
+        if self.settings_storage_error {
+            egui::TopBottomPanel::top("local-settings-error").show(ctx, |ui| {
+                ui.label("本地设置暂未读取或保存，原文件已保留；当前设置仅在本次运行中生效。");
+                if ui.button("检查软件设置").clicked() { self.open_settings(); }
+            });
+        }
         if !self.logged_in {
             egui::CentralPanel::default().show(ctx,|ui| {
                 ui.vertical_centered(|ui| {
