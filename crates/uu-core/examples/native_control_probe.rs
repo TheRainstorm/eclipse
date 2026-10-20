@@ -96,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
         invitation_lifetime: Duration::from_secs(30),
         fps: 30,
         bitrate_kbps: 4000,
+        encoder: uu_core::native::EncoderPreference::Software,
         session_limit: Some(Duration::from_secs(15)),
         allow_input: !readonly,
         audio:None, clipboard:None,

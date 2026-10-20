@@ -34,6 +34,11 @@ use webrtc::{
 const MAX_SIGNAL: usize = 256 * 1024;
 pub use uu_capture::CaptureSource;
 pub use uu_media::audio_capture::Source as AudioSource;
+pub use uu_media::encoder::Preference as EncoderPreference;
+
+pub fn hardware_encoding_compiled() -> bool {
+    cfg!(all(target_os="linux",feature="vaapi"))
+}
 
 #[derive(Clone, Debug)]
 pub struct CaptureMonitor {
@@ -48,6 +53,11 @@ pub struct CaptureMonitor {
 impl CaptureMonitor {
     pub fn software_encodable(&self)->bool {
         uu_media::H264Encoder::validate_dimensions(self.width,self.height).is_ok()
+    }
+    pub fn encodable(&self, preference:EncoderPreference, fps:u32)->bool {
+        let settings=uu_media::encoder::Settings {width:self.width,height:self.height,fps,
+            bitrate_kbps:64,preference};
+        settings.validate().is_ok() && (preference!=EncoderPreference::Software || self.software_encodable())
     }
 }
 
@@ -71,7 +81,7 @@ pub enum HostStatus {
     Starting,
     Waiting { address: SocketAddr, expires_at: u64 },
     Preparing,
-    Streaming { width: u32, height: u32, fps: u32, audio: String },
+    Streaming { width: u32, height: u32, fps: u32, audio: String, encoder: String },
 }
 fn progress(status: &Option<watch::Sender<HostStatus>>, value: HostStatus) {
     if let Some(status) = status { status.send_replace(value); }
@@ -153,6 +163,8 @@ pub struct HostConfig {
     pub invitation_lifetime: Duration,
     pub fps: u32,
     pub bitrate_kbps: u32,
+    /// Per-session choice; default callers should select Software.
+    pub encoder: EncoderPreference,
     pub session_limit: Option<Duration>,
     pub allow_input: bool,
     pub audio: Option<uu_media::audio_capture::Source>,
@@ -161,6 +173,7 @@ pub struct HostConfig {
 }
 #[derive(Debug, Default)]
 pub struct HostReport {
+    pub encoder: String,
     pub captured: u64,
     pub sent: u64,
     pub bytes: u64,
@@ -200,7 +213,7 @@ pub async fn serve_with_status(config: HostConfig, mut stop: watch::Receiver<boo
     );
     ensure!(
         (1..=60).contains(&config.fps) && (64..=100_000).contains(&config.bitrate_kbps),
-        "software native host needs 1..=60 fps and 64..=100000 kbps"
+        "native H.264 host needs 1..=60 fps and 64..=100000 kbps"
     );
     ensure!(!config.allow_input || matches!(config.source,uu_capture::CaptureSource::Primary|uu_capture::CaptureSource::Monitor(_)),
         "desktop input can only be enabled for a real whole-monitor source");
@@ -245,14 +258,15 @@ struct CaptureWorker {
     stopped: Arc<AtomicBool>,
     captured: Arc<AtomicU64>,
     frames: mpsc::Receiver<Result<uu_media::EncodedFrame>>,
+    encoder: watch::Receiver<String>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 impl CaptureWorker {
     fn start(
         capture: Box<dyn uu_capture::Capture>,
         fps: u32,
-        kbps: u32,
         refresh: Arc<AtomicBool>,
+        encoder: Box<dyn uu_media::VideoEncoder>,
     ) -> Self {
         let stopped = Arc::new(AtomicBool::new(false));
         let captured = Arc::new(AtomicU64::new(0));
@@ -262,8 +276,9 @@ impl CaptureWorker {
         let timings = Arc::new(ProducerTimings::default());
         let worker_timings = timings.clone();
         let started = Instant::now();
+        let (encoder_status,encoder_state)=watch::channel(encoder.backend_name().to_owned());
         let task = tokio::task::spawn_blocking(move || {
-            let result = encode_source(capture, fps, kbps, refresh, worker_stop, counter, worker_timings, &tx);
+            let result = encode_source(capture, fps, encoder, refresh, worker_stop, counter, worker_timings, encoder_status, &tx);
             if let Err(error) = result {
                 let _ = tx.blocking_send(Err(error));
             }
@@ -274,6 +289,7 @@ impl CaptureWorker {
             stopped,
             captured,
             frames,
+            encoder: encoder_state,
             task: Some(task),
         }
     }
@@ -295,15 +311,15 @@ impl Drop for CaptureWorker {
 fn encode_source(
     mut capture: Box<dyn uu_capture::Capture>,
     fps: u32,
-    kbps: u32,
+    mut encoder: Box<dyn uu_media::VideoEncoder>,
     refresh: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
     captured: Arc<AtomicU64>,
     timings: Arc<ProducerTimings>,
+    encoder_status: watch::Sender<String>,
     output: &mpsc::Sender<Result<uu_media::EncodedFrame>>,
 ) -> Result<()> {
-    use uu_media::VideoEncoder;
-    let mut encoder = uu_media::H264Encoder::with_frame_rate(kbps, fps)?;
+    let mut backend=encoder.backend_name().to_owned();
     let interval = Duration::from_secs_f64(1.0 / fps as f64);
     let mut next = Instant::now();
     let mut keyframe = Instant::now() - Duration::from_secs(3);
@@ -326,6 +342,9 @@ fn encode_source(
         }
         let started = Instant::now();
         let encoded_frames = encoder.encode(&frame)?;
+        if encoder.backend_name()!=backend {
+            backend=encoder.backend_name().to_owned();encoder_status.send_replace(backend.clone());
+        }
         timings.encode_us.fetch_add(elapsed_us(started), Ordering::Relaxed);
         let started = Instant::now();
         for encoded in encoded_frames {
@@ -370,14 +389,20 @@ async fn send_video(
     peer.remote(offer.sdp, stream.get_ref().0.peer_addr()?.ip())
         .await?;
     // Authentication and a valid media offer precede capture access.
-    let capture = tokio::select! {
-        result=tokio::task::spawn_blocking(move || uu_capture::open(&config.source))=>result??,
+    let (fps,kbps,preference)=(config.fps,config.bitrate_kbps,config.encoder);
+    let (capture,encoder) = tokio::select! {
+        result=tokio::task::spawn_blocking(move || -> Result<_> {
+            let capture=uu_capture::open(&config.source)?;
+            let (width,height)=capture.resolution();validate_video(width,height,fps)?;
+            let encoder=uu_media::encoder::create(uu_media::encoder::Settings {
+                width,height,fps,bitrate_kbps:kbps,preference,
+            }).context("无法为当前显示源初始化所选编码器；不会更改系统显示设置")?;
+            Ok((capture,encoder))
+        })=>result??,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
     };
     let (width, height) = capture.resolution();
     validate_video(width, height, config.fps)?;
-    uu_media::H264Encoder::validate_dimensions(width,height)
-        .context("当前显示器尺寸超出软件编码范围，请选择其它显示器；不会更改系统显示设置")?;
     let controls=tokio::select! {
         controls=crate::native_control::HostControl::new(config.allow_input,capture.desktop_rect(),config.clipboard.clone())=>controls,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
@@ -399,7 +424,9 @@ async fn send_video(
         Some(Err(error))=>{controls.stop().await;return Err(error);},
         None=>{controls.stop().await;return Ok(HostReport::default());},
     }
-    let mut producer = CaptureWorker::start(capture, config.fps, config.bitrate_kbps, refresh);
+    let mut producer = CaptureWorker::start(capture, config.fps, refresh, encoder);
+    let mut encoder_label=producer.encoder.borrow().clone();
+    let mut encoder_state=Some(producer.encoder.clone());
     let mut audio_label=if config.audio.is_none(){String::new()}else if audio_sender.is_none(){"控制端未接收声音".into()}else{"声音准备中".into()};
     let (mut audio_worker,mut audio_frames,mut audio_state)=if let Some(source)=config.audio.filter(|_|audio_sender.is_some()) {
         match crate::native_audio::Worker::start(source) {
@@ -407,7 +434,7 @@ async fn send_video(
             Err(error)=>{audio_label=format!("声音不可用：{error}");(None,None,None)},
         }
     }else{(None,None,None)};
-    progress(&status, HostStatus::Streaming { width, height, fps: config.fps, audio:audio_label });
+    progress(&status, HostStatus::Streaming { width, height, fps: config.fps, audio:audio_label.clone(),encoder:encoder_label.clone() });
     let mut report = HostReport::default();
     let mut previous = None;
     let deadline = async {
@@ -424,10 +451,17 @@ async fn send_video(
                 _ = cancelled(&mut stop) => break,
                 _ = &mut deadline => break,
                 _ = stream.read_u8() => break,
+                changed=async {match &mut encoder_state {Some(state)=>state.changed().await,None=>std::future::pending().await}}=>{
+                    if changed.is_ok() {
+                        encoder_label=encoder_state.as_mut().unwrap().borrow_and_update().clone();
+                        progress(&status,HostStatus::Streaming {width,height,fps:config.fps,audio:audio_label.clone(),encoder:encoder_label.clone()});
+                    }else{encoder_state=None;}
+                },
                 changed=async {match &mut audio_state {Some(state)=>state.changed().await,None=>std::future::pending().await}}=>{
                     if changed.is_ok() {
                         let state=audio_state.as_mut().unwrap().borrow_and_update().clone();
-                        progress(&status,HostStatus::Streaming {width,height,fps:config.fps,audio:state.label()});
+                        audio_label=state.label();
+                        progress(&status,HostStatus::Streaming {width,height,fps:config.fps,audio:audio_label.clone(),encoder:encoder_label.clone()});
                     }else{audio_state=None;}
                 },
                 frame=async {match &mut audio_frames {Some(frames)=>frames.recv().await,None=>std::future::pending().await}}=>{
@@ -438,7 +472,8 @@ async fn send_video(
                             Err(error)=>{
                                 report.audio_errors+=1;audio_frames=None;audio_state=None;
                                 if let Some(worker)=&audio_worker{worker.request_stop();}
-                                progress(&status,HostStatus::Streaming {width,height,fps:config.fps,audio:format!("声音传输停止：{error}")});
+                                audio_label=format!("声音传输停止：{error}");
+                                progress(&status,HostStatus::Streaming {width,height,fps:config.fps,audio:audio_label.clone(),encoder:encoder_label.clone()});
                             },
                         }}
                     }else{audio_frames=None;}
@@ -473,6 +508,7 @@ async fn send_video(
     report.capture_us = producer.timings.capture_us.load(Ordering::Relaxed);
     report.encode_us = producer.timings.encode_us.load(Ordering::Relaxed);
     report.backpressure_us = producer.timings.backpressure_us.load(Ordering::Relaxed);
+    report.encoder=producer.encoder.borrow().clone();
     active?;
     stopped?;
     Ok(report)
@@ -601,6 +637,7 @@ mod tests {
             invitation_lifetime: Duration::from_secs(60),
             fps: 60,
             bitrate_kbps: 2000,
+            encoder: EncoderPreference::Software,
             session_limit: Some(Duration::from_secs(10)),
             allow_input:false,
             audio:None, clipboard:None,

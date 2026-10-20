@@ -16,6 +16,33 @@ use uu_core::signal::SignedRequest;
 use uu_core::UuApi;
 use uu_core::{Config, Role, Session, SessionState, SignalClient};
 
+#[derive(clap::ValueEnum,Clone,Copy,Debug)]
+enum NativeEncoder { Software, Auto, Vaapi }
+impl NativeEncoder {
+    fn preference(self)->uu_core::native::EncoderPreference {
+        use uu_core::native::EncoderPreference as P;
+        match self {Self::Software=>P::Software,Self::Auto=>P::Auto,Self::Vaapi=>P::Vaapi}
+    }
+}
+
+#[cfg(test)]
+mod native_encoder_options {
+    use super::*;
+    #[test]
+    fn native_sharing_defaults_to_software_and_accepts_explicit_choices() {
+        let base=["uu","native-host","--synthetic","--invitation-file","generated.eclipse-invite.json"];
+        let command=Cli::try_parse_from(base).unwrap().command;
+        assert!(matches!(command,Command::NativeHost {encoder:NativeEncoder::Software,..}));
+        for (name,expected) in [("auto",uu_core::native::EncoderPreference::Auto),("vaapi",uu_core::native::EncoderPreference::Vaapi)] {
+            let mut args=base.to_vec();args.extend(["--encoder",name]);
+            let Command::NativeHost {encoder,..}=Cli::try_parse_from(args).unwrap().command else {panic!("native-host expected")};
+            assert_eq!(encoder.preference(),expected);
+        }
+        let mut invalid=base.to_vec();invalid.extend(["--encoder","unknown"]);
+        assert!(Cli::try_parse_from(invalid).is_err());
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "uu",
@@ -79,6 +106,9 @@ enum Command {
         fps: u32,
         #[arg(long, default_value_t = 8000)]
         bitrate_kbps: u32,
+        /// Native host encoder; VA-API is experimental and Linux-only.
+        #[arg(long,value_enum,default_value="software")]
+        encoder: NativeEncoder,
         #[arg(long, default_value_t = 600)]
         pairing_seconds: u64,
         #[arg(long)]
@@ -201,9 +231,9 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
         Command::NativeSources => native_cli::sources(),
-        Command::NativeHost { bind, invitation_file, monitor, synthetic, allow_input, audio, synthetic_audio, fps, bitrate_kbps, pairing_seconds, max_seconds } => {
+        Command::NativeHost { bind, invitation_file, monitor, synthetic, allow_input, audio, synthetic_audio, fps, bitrate_kbps, encoder, pairing_seconds, max_seconds } => {
             let source=if synthetic {uu_capture::CaptureSource::Synthetic{width:1280,height:720,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
-            native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
+            native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,encoder:encoder.preference(),session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
         },
         Command::NativeProbe {invitation_file,frames,timeout_seconds,report,audio_loss_every} => native_cli::probe(invitation_file,frames,timeout_seconds,report,audio_loss_every.unwrap_or(0)).await,
         Command::ReleaseCheck => release_check(&config).await,

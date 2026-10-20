@@ -9,7 +9,35 @@ use std::{
     time::Duration,
 };
 use tokio::sync::watch;
-use uu_core::native::{CaptureMonitor, CaptureSource, HostConfig, HostReport, HostStatus};
+use uu_core::native::{CaptureMonitor, CaptureSource, EncoderPreference, HostConfig, HostReport, HostStatus};
+
+fn preference_label(preference:EncoderPreference)->&'static str {
+    match preference {
+        EncoderPreference::Software=>"软件编码（兼容）",
+        EncoderPreference::Auto=>"自动（优先硬件）",
+        EncoderPreference::Vaapi=>"VA-API（实验）",
+    }
+}
+fn actual_encoder_label(backend:&str)->&'static str {
+    if backend.starts_with("vaapi ") {"硬件编码 · VA-API"}
+    else if backend.contains("fallback")||backend.contains("unavailable") {"软件编码 · 硬件不可用，已回退"}
+    else {"软件编码 · H.264"}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn sharing_keeps_software_default_and_reports_actual_fallback() {
+        let mut host=NativeHostUi::default();assert_eq!(host.encoder,EncoderPreference::Software);
+        host.monitors.push(CaptureMonitor {name:"generated".into(),x:0,y:0,width:4096,height:2160,primary:true});
+        assert!(!host.source_size_supported());host.encoder=EncoderPreference::Auto;
+        assert!(host.source_size_supported());host.fps=61;assert!(!host.source_size_supported());
+        assert_eq!(actual_encoder_label("vaapi (generated)"),"硬件编码 · VA-API");
+        assert!(actual_encoder_label("openh264 (software) · fallback from VA-API").contains("已回退"));
+        assert_eq!(actual_encoder_label("openh264 (software)"),"软件编码 · H.264");
+    }
+}
 
 struct Sharing {
     stop: watch::Sender<bool>,
@@ -44,6 +72,7 @@ pub(super) struct NativeHostUi {
     monitor: Option<String>,
     fps: u32,
     bitrate_kbps: u32,
+    encoder: EncoderPreference,
     allow_input: bool,
     share_audio: bool,
     share_clipboard: bool,
@@ -60,6 +89,7 @@ impl Default for NativeHostUi {
             monitor: None,
             fps: 60,
             bitrate_kbps: 8000,
+            encoder: EncoderPreference::Software,
             allow_input: false,
             share_audio: false,
             share_clipboard: false,
@@ -127,14 +157,14 @@ impl NativeHostUi {
                     .as_ref()
                     .map_or(m.primary, |name| name == &m.name)
             })
-            .map_or(true, CaptureMonitor::software_encodable)
+            .map_or(true, |monitor|monitor.encodable(self.encoder,self.fps))
     }
     fn start(&mut self, owner_window: isize) -> anyhow::Result<()> {
         anyhow::ensure!(!self.running(), "共享正在进行");
         anyhow::ensure!(!self.monitors.is_empty(), "请先获取可用显示器");
         anyhow::ensure!(
             self.source_size_supported(),
-            "当前显示器超出软件编码范围，请选择其它显示器"
+            "当前显示器超出所选编码器的尺寸范围，请调整编码方式或选择其它显示器"
         );
         let ip: IpAddr = self
             .bind
@@ -184,6 +214,7 @@ impl NativeHostUi {
             invitation_lifetime: Duration::from_secs(600),
             fps: self.fps,
             bitrate_kbps: self.bitrate_kbps,
+            encoder: self.encoder,
             session_limit: None,
             allow_input: self.allow_input,
             audio: self
@@ -259,13 +290,16 @@ impl App {
             )
             .resizable(false)
             .default_width(480.0)
+            .max_width((ctx.screen_rect().width()-48.0).max(260.0))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
+                egui::ScrollArea::vertical().max_height((ctx.screen_rect().height()-120.0).max(120.0)).show(ui,|ui| {
                 ui.label("通过原生邀请共享当前桌面，无需账号。");
-                ui.weak("H.264 软件编码 · 系统声音由本次共享选择");
+                ui.weak("H.264 视频 · 系统声音由本次共享选择");
                 ui.add_space(10.0);
                 if let Some(sharing) = &mut host.sharing {
                     let status = sharing.status.borrow().clone();
+                    let backend=match &status {HostStatus::Streaming {encoder,..}=>Some(encoder.clone()),_=>None};
                     let text = if sharing.stopping {
                         "正在停止共享并释放键鼠…".into()
                     } else {
@@ -290,12 +324,17 @@ impl App {
                                 height,
                                 fps,
                                 audio,
+                                encoder: _,
                             } => {
                                 format!("正在共享 · {width}×{height} · 目标 {fps} FPS  {audio}")
                             }
                         }
                     };
                     ui.label(egui::RichText::new(text).strong());
+                    if let Some(backend)=backend {
+                        ui.label(actual_encoder_label(&backend));
+                        ui.collapsing("编码详情",|ui|{ui.add(egui::Label::new(backend).wrap());});
+                    }
                     ui.add_space(8.0);
                     ui.label(if host.allow_input {
                         "本次共享允许受邀端请求键鼠控制"
@@ -336,6 +375,20 @@ impl App {
                     ctx.request_repaint_after(Duration::from_millis(100));
                 } else {
                     ui.horizontal(|ui| {
+                        ui.label("编码");
+                        egui::ComboBox::from_id_salt("native-host-encoder").selected_text(preference_label(host.encoder))
+                            .show_ui(ui,|ui| {
+                                ui.selectable_value(&mut host.encoder,EncoderPreference::Software,preference_label(EncoderPreference::Software));
+                                if uu_core::native::hardware_encoding_compiled() {
+                                    for preference in [EncoderPreference::Auto,EncoderPreference::Vaapi] {
+                                        ui.selectable_value(&mut host.encoder,preference,preference_label(preference));
+                                    }
+                                }
+                            });
+                    });
+                    if host.encoder==EncoderPreference::Auto {ui.weak("硬件不可用或运行失败时回退软件，开始后显示实际编码方式。");}
+                    else if host.encoder==EncoderPreference::Vaapi {ui.weak("实验性硬件编码；驱动不支持时停止并显示原因。仍有CPU转换和上传。");}
+                    ui.horizontal(|ui| {
                         ui.label("显示器");
                         egui::ComboBox::from_id_salt("native-host-monitor")
                             .selected_text(host.monitor.as_deref().unwrap_or("主显示器"))
@@ -363,7 +416,7 @@ impl App {
                     if !host.source_size_supported() {
                         ui.colored_label(
                             egui::Color32::from_rgb(180, 75, 65),
-                            "软件编码支持最大3840×2160或2160×3840，请选择其它显示器。",
+                            "当前源尺寸超出所选编码器支持范围，请调整编码方式或选择其它显示器。",
                         );
                     }
                     ui.add_space(8.0);
@@ -421,6 +474,7 @@ impl App {
                     ui.add_space(10.0);
                     ui.label(&host.notice);
                 }
+                });
             });
         host.open = open;
     }

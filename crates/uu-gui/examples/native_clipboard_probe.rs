@@ -81,6 +81,7 @@ fn main() -> anyhow::Result<()> {
             invitation_lifetime: Duration::from_secs(30),
             fps: 30,
             bitrate_kbps: 2000,
+            encoder: uu_core::native::EncoderPreference::Software,
             session_limit: Some(Duration::from_secs(25)),
             allow_input: false,
             audio: None,
