@@ -126,6 +126,7 @@ jobs:
           cargo build -p uu-gui --release --target x86_64-pc-windows-gnu --example windows_clipboard_probe --locked
           cargo build -p uu-media --release --target x86_64-pc-windows-gnu --example color_probe --locked
           cargo test -p uu-input --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/input-test-build.jsonl
+          cargo test -p uu-gui --release --target x86_64-pc-windows-gnu --bin uu-gui --no-run --locked --message-format=json-render-diagnostics > artifacts/gui-test-build.jsonl
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -139,6 +140,11 @@ jobs:
           shutil.copy2(executables[0], destination)
           shutil.copy2('target/x86_64-pc-windows-gnu/release/examples/windows_clipboard_probe.exe', destination.parent / 'clipboard-probe.exe')
           shutil.copy2('target/x86_64-pc-windows-gnu/release/examples/color_probe.exe', destination.parent / 'color-probe.exe')
+          gui_messages = [json.loads(line) for line in Path('artifacts/gui-test-build.jsonl').read_text().splitlines()]
+          gui_tests = [m['executable'] for m in gui_messages if m.get('reason') == 'compiler-artifact' and m.get('profile', {}).get('test') and m.get('executable')]
+          if len(gui_tests) != 1:
+              raise RuntimeError('Expected exactly one freshly built GUI keyboard validation executable')
+          shutil.copy2(gui_tests[0], destination.parent / 'keyboard-tests.exe')
           PY
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.platform == 'windows-x64'
@@ -196,6 +202,10 @@ jobs:
           Copy-Item -LiteralPath 'platform-validation/input-tests.exe' -Destination $inputTests
           & $inputTests --nocapture
           if ($LASTEXITCODE -ne 0) { throw 'Windows input mapping/lifecycle tests failed' }
+          $keyboardTests = Join-Path $unpack 'keyboard-validation.exe'
+          Copy-Item -LiteralPath 'platform-validation/keyboard-tests.exe' -Destination $keyboardTests
+          & $keyboardTests 'keyboard_capture::' --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Windows keyboard ownership/AltGr tests failed' }
           $clipboardProbe = Join-Path $unpack 'clipboard-validation.exe'
           Copy-Item -LiteralPath 'platform-validation/clipboard-probe.exe' -Destination $clipboardProbe
           & $clipboardProbe --isolated-window-station
@@ -204,7 +214,7 @@ jobs:
           Copy-Item -LiteralPath 'platform-validation/color-probe.exe' -Destination $colorProbe
           & $colorProbe
           if ($LASTEXITCODE -ne 0) { throw 'Windows H264 color metadata validation failed' }
-          Remove-Item -LiteralPath $inputTests, $clipboardProbe, $colorProbe
+          Remove-Item -LiteralPath $inputTests, $keyboardTests, $clipboardProbe, $colorProbe
 
   release:
     name: Publish tagged release

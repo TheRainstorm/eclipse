@@ -353,8 +353,9 @@ mod windows {
             if let Ok(mut keys)=WINDOW_KEYS.try_lock() {
                 let ctrl=GetAsyncKeyState(0x11)<0||keys.down(0xa2)||keys.down(0xa3);
                 let alt=GetAsyncKeyState(0x12)<0||keys.down(0xa4)||keys.down(0xa5);
+                let right_alt=GetAsyncKeyState(0xa5)<0||keys.down(0xa5);
                 let active=WINDOW_INPUT.load(std::sync::atomic::Ordering::Acquire)&&GetForegroundWindow()==window;
-                match keys.event(vk,down,active,ctrl&&alt,lparam as usize&(1<<30)!=0) {
+                match keys.event(vk,down,active,crate::keyboard_capture::shortcut_chord(ctrl,alt,right_alt),lparam as usize&(1<<30)!=0) {
                     crate::keyboard_capture::Decision::Forward=>{},
                     crate::keyboard_capture::Decision::Consume=>return 0,
                     event=>{enqueue(event,window);return 0;},
@@ -459,9 +460,10 @@ mod windows {
                 if let Ok(mut keys)=CAPTURE_KEYS.try_lock() {
                     let ctrl=GetAsyncKeyState(0x11)<0 || keys.down(0xa2)||keys.down(0xa3);
                     let alt=GetAsyncKeyState(0x12)<0 || keys.down(0xa4)||keys.down(0xa5);
+                    let right_alt=GetAsyncKeyState(0xa5)<0||keys.down(0xa5);
                     let active=CAPTURE.load(std::sync::atomic::Ordering::Acquire)
                         && !foreground.is_null() && GetForegroundWindow()==foreground;
-                    let decision=keys.event(key.vkCode,down,active,ctrl&&alt,GetAsyncKeyState(key.vkCode as i32)<0);
+                    let decision=keys.event(key.vkCode,down,active,crate::keyboard_capture::shortcut_chord(ctrl,alt,right_alt),GetAsyncKeyState(key.vkCode as i32)<0);
                     match decision {
                         crate::keyboard_capture::Decision::Forward=>{},
                         crate::keyboard_capture::Decision::Consume=>return 1,

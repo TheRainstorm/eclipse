@@ -8,6 +8,12 @@ pub enum Decision {
     Remote { vk: u32, pressed: bool },
     Shortcut(Action),
 }
+/// Right Alt can be AltGr: Windows then also reports a synthetic Ctrl.
+/// Reserve it for remote text input rather than local Ctrl+Alt actions.
+#[cfg_attr(not(any(windows,test)),allow(dead_code))]
+pub fn shortcut_chord(ctrl: bool, alt: bool, right_alt: bool) -> bool {
+    ctrl && alt && !right_alt
+}
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 pub struct Keys {
     held: [u8; 256],
@@ -28,6 +34,7 @@ impl Keys {
         ctrl_alt: bool,
         already_down: bool,
     ) -> Decision {
+        let altgr = self.down(0xa5);
         let Some(held) = self.held.get_mut(vk as usize) else {
             return Decision::Forward;
         };
@@ -52,7 +59,7 @@ impl Keys {
         if !active || already_down {
             return Decision::Forward;
         }
-        if ctrl_alt {
+        if ctrl_alt && !altgr {
             let action = match vk {
                 0x53 => Some(Action::Stats),
                 0x4d => Some(Action::Mute),
@@ -86,6 +93,23 @@ pub fn sided_vk(vk:u32,lparam:usize)->u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn altgr_text_never_exits_or_toggles_the_local_stream() {
+        for vk in [0x51,0x53,0x4d,0x48,0x46,0x58,0x5a] {
+            let mut keys=Keys::new();
+            assert_eq!(keys.event(0xa2,true,true,false,false),Decision::Remote {vk:0xa2,pressed:true});
+            assert_eq!(keys.event(0xa5,true,true,false,false),Decision::Remote {vk:0xa5,pressed:true});
+            assert_eq!(keys.event(vk,true,true,true,false),Decision::Remote {vk,pressed:true});
+            assert_eq!(keys.event(vk,false,true,true,false),Decision::Remote {vk,pressed:false});
+        }
+        // Also protect capture enabled while Right Alt was already held.
+        assert!(!shortcut_chord(true,true,true));
+        assert!(shortcut_chord(true,true,false));
+        let mut keys=Keys::new();
+        assert_eq!(keys.event(0x51,true,true,shortcut_chord(true,true,true),false),Decision::Remote {vk:0x51,pressed:true});
+        assert_eq!(keys.event(0x51,false,true,false,false),Decision::Remote {vk:0x51,pressed:false});
+        assert_eq!(keys.event(0x51,true,true,shortcut_chord(true,true,false),false),Decision::Shortcut(Action::Exit));
+    }
     #[test]
     fn captured_mute_and_menu_chords_own_repeats_and_release_after_focus_loss() {
         for (vk, action) in [(0x4d, Action::Mute), (0x48, Action::Menu)] {

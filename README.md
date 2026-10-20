@@ -110,6 +110,8 @@ python3 tools/linux/package.py
 
 Windows 的 Win+Shift+方向键始终用于移动本地窗口。全屏系统快捷键捕获受操作系统限制；Ctrl+Alt+Del 由 Windows 保留。Wayland 是否允许快捷键抑制取决于合成器支持。
 
+后续开发版在 Windows 原生捕获路径中保留右 Alt / AltGr 作为远端输入，避免输入 `@` 等字符时误触退出或其它本地操作；本地快捷键请使用 Ctrl+左 Alt。
+
 ## 当前边界
 
 - 原生被控端目前为实验性局域网共享通路，含 Windows DXGI / Linux X11 采集、默认软件 H.264 编码、Linux 实验性 VA-API 编码与可选系统声音；Wayland portal 与日常无人值守管理尚未接入该模式；键鼠控制需主机显式许可。不要把它当作完整的服务端。
