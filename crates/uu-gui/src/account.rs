@@ -94,6 +94,7 @@ impl super::App {
         // Discard device results started under the previous login.
         self.rx = None;
         self.devices.clear();
+        self.device_load_error = None;
         self.wallpapers.clear();
         self.selected = None;
         self.search.clear();

@@ -109,6 +109,7 @@ struct App {
     executable_path: String,
     context: egui::Context,
     devices: Vec<Device>,
+    device_load_error: Option<String>,
     selected: Option<usize>,
     search: String,
     status: String,
@@ -338,6 +339,7 @@ impl App {
             executable_path: std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
             context: cc.egui_ctx.clone(),
             devices: Vec::new(),
+            device_load_error: None,
             selected: None,
             search: String::new(),
             status: String::new(),
@@ -417,6 +419,7 @@ impl App {
     }
 
     fn start_load(&mut self) {
+        self.device_load_error = None;
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let _ = tx.send(load_devices());
@@ -480,6 +483,7 @@ impl App {
             if let Ok(result) = rx.try_recv() {
                 match result {
                     Ok(devices) => {
+                        self.device_load_error = None;
                         self.status = format!("已加载 {} 台设备", devices.len());
                         self.wallpapers.clear();
                         for (i, d) in devices.iter().enumerate() {
@@ -519,7 +523,11 @@ impl App {
                             }
                         }
                     }
-                    Err(e) => self.status = format!("加载失败: {e}"),
+                    Err(e) => {
+                        let error = e.to_string();
+                        self.status = format!("加载失败: {error}");
+                        self.device_load_error = Some(error);
+                    }
                 }
                 self.rx = None;
             }

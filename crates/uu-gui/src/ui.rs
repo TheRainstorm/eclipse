@@ -470,10 +470,27 @@ impl App {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let Some(index) = self.selected.filter(|i| *i < self.devices.len()) else {
                         ui.add_space(80.0);
-                        ui.heading("欢迎回来");
-                        ui.label("从左侧选择一台设备，开始远程连接。");
-                        if self.rx.is_some() {
+                        if let Some(error) = &self.device_load_error {
+                            ui.heading("设备加载失败");
+                            ui.add_space(12.0);
+                            ui.add(egui::Label::new(RichText::new(error).color(C::from_rgb(177, 48, 48))).wrap());
+                            ui.add_space(12.0);
+                            ui.label("设备列表暂时无法获取；本次加载失败不会清除本地登录状态。");
+                            ui.hyperlink_to("连接凭据配置说明", "https://github.com/TheRainstorm/uu-client/blob/master/docs/connection-credentials.md");
+                            if ui.button("重试加载设备").clicked() {
+                                self.start_load();
+                            }
+                        } else if self.rx.is_some() {
+                            ui.heading("正在加载设备…");
                             ui.spinner();
+                        } else if self.devices.is_empty() {
+                            ui.heading("此账号暂无设备");
+                            if ui.button("刷新设备").clicked() {
+                                self.start_load();
+                            }
+                        } else {
+                            ui.heading("欢迎回来");
+                            ui.label("从左侧选择一台设备，开始远程连接。");
                         }
                         return;
                     };
