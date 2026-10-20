@@ -180,7 +180,10 @@ impl<V: VideoFrame> VaapiDecodedHandle<V> {
         }
     }
 
-    pub(crate) fn surface(&self) -> &Surface<<V as VideoFrame>::MemDescriptor> {
+    /// Borrow the actual decoded surface for readback/export without importing
+    /// its DMA allocation into a second VA surface. The handle retains its
+    /// backing frame and decoder reference lifetime throughout this borrow.
+    pub fn surface(&self) -> &Surface<<V as VideoFrame>::MemDescriptor> {
         self.state.surface()
     }
 

@@ -218,7 +218,8 @@ impl Decoder {
                     // Map through VA, which understands the driver's tiling.
                     // The upstream generic DMA mapper assumes every padding
                     // row is a complete Intel Y tile and panics on iHD exports.
-                    let surface = frame.to_native_handle(&self.display)?;
+                    let picture = handle.borrow();
+                    let surface = picture.surface();
                     let direct = if self.dma_readback {
                         match surface.export_prime().map_err(|e| e.to_string())
                             .and_then(|descriptor| download::download(&descriptor,resolution.width,resolution.height,&self.pixels)) {
@@ -234,7 +235,7 @@ impl Decoder {
                     } else { None };
                     let pixels = if let Some(pixels) = direct { pixels } else {
                     let image = cros_libva::Image::derive_from(
-                        &surface,
+                        surface,
                         (resolution.width, resolution.height),
                     )
                     .map_err(|e| format!("VA image mapping: {e}"))?;
