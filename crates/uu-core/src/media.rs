@@ -637,7 +637,7 @@ pub(crate) async fn receive_video(
         let mut pts_base = None;
         while let Some((data, timestamp, sample_epoch, sample_request)) = sample_rx.blocking_recv()
         {
-            if window.elapsed() >= Duration::from_secs(2) {
+            if window.elapsed() >= Duration::from_millis(500) {
                 if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
                     s.set_backend(decoder.backend_name());
                     s.decode_us
@@ -937,7 +937,7 @@ pub(crate) async fn receive_video(
             s.damaged_frames
                 .store(receiver.stats.damaged, Ordering::Relaxed);
         }
-        if window.elapsed() >= Duration::from_secs(2) {
+        if window.elapsed() >= Duration::from_millis(500) {
             let decoded = track_decoded.load(Ordering::Relaxed);
             if let Some(s) = stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
                 let seconds = window.elapsed().as_secs_f64();

@@ -151,6 +151,10 @@ struct App {
     last_diagnostic: std::time::Instant,
     unpresented: std::collections::HashSet<u32>,
     render_ms: f32,
+    hud_cache: hud::Cache,
+    render_window: std::time::Instant,
+    render_total_seconds: f32,
+    render_samples: u32,
     selected_track: u32,
     displays: displays::Displays,
     seq: u32,
@@ -399,6 +403,10 @@ impl App {
             last_diagnostic: std::time::Instant::now(),
             unpresented: Default::default(),
             render_ms: 0.0,
+            hud_cache: Default::default(),
+            render_window: std::time::Instant::now(),
+            render_total_seconds: 0.0,
+            render_samples: 0,
             selected_track: 0,
             displays: displays::Displays::default(),
             seq: 1,
@@ -1025,7 +1033,13 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.native_host.poll(ctx);
         if let Some(seconds) = frame.info().cpu_usage {
-            self.render_ms = self.render_ms * 0.9 + seconds * 1000.0 * 0.1;
+            self.render_total_seconds += seconds;
+            self.render_samples += 1;
+        }
+        if self.render_window.elapsed() >= std::time::Duration::from_millis(500) {
+            if self.render_samples > 0 {self.render_ms=self.render_total_seconds*1000.0/self.render_samples as f32;}
+            self.render_total_seconds=0.0;self.render_samples=0;
+            self.render_window=std::time::Instant::now();
         }
         // Read back native state: maximized and fullscreen are distinct modes.
         if let Some(fullscreen) = ctx.input(|i| i.viewport().fullscreen) {
@@ -1128,7 +1142,7 @@ impl eframe::App for App {
             self.sync_modifiers(ctx.input(|i| i.modifiers));
         }
         let elapsed = self.last_fps.elapsed().as_secs_f32();
-        if elapsed >= 1.0 {
+        if elapsed >= 0.5 {
             for fps in self.fps.values_mut() { *fps = 0.0; }
             for (track, count) in self.frame_count.drain() {
                 self.fps.insert(track, count as f32 / elapsed);
