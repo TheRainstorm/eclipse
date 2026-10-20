@@ -64,6 +64,8 @@ UU_DECODE_PROFILE=1 UU_VAAPI_READBACK=legacy uu-rust probe --h264 generated.h264
 
 每 120 次调用输出一组不含视频内容的分段均值。离线解码吞吐不能替代真实 GUI 的流畅度测量。会话诊断同时记录分辨率、音频队列、欠载和丢弃计数，用于区分画面提交不足与音频调度问题。
 
+为避免用 720p 的结果推断 1080p 表现，原生生成源可显式设置 `native-host --synthetic --synthetic-width 1920 --synthetic-height 1080`，同时按原生直连文档指定私有邀请文件与监听地址。此选项只改变测试图案，不修改真实显示器。
+
 ## 音频与硬解验收
 
 ```sh

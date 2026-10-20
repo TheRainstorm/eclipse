@@ -25,9 +25,28 @@ impl NativeEncoder {
     }
 }
 
+fn synthetic_dimension(value: &str) -> std::result::Result<u32, String> {
+    let n: u32 = value.parse().map_err(|_| "test dimension must be an integer")?;
+    if (2..=8192).contains(&n) && n % 2 == 0 { Ok(n) }
+    else { Err("test dimension must be even and within 2..=8192".into()) }
+}
+
 #[cfg(test)]
 mod native_encoder_options {
     use super::*;
+    #[test]
+    fn synthetic_dimensions_are_explicit_bounded_and_do_not_affect_desktop_capture() {
+        let base=["uu","native-host","--invitation-file","generated.eclipse-invite.json"];
+        assert!(Cli::try_parse_from(base).is_ok());
+        let mut args=base.to_vec();args.extend(["--synthetic-width","1920"]);
+        assert!(Cli::try_parse_from(args).is_err());
+        let mut args=base.to_vec();args.extend(["--synthetic","--synthetic-width","1920","--synthetic-height","1080"]);
+        assert!(matches!(Cli::try_parse_from(args).unwrap().command,Command::NativeHost {synthetic_width:1920,synthetic_height:1080,..}));
+        for value in ["0","17","8194"] {
+            let mut args=base.to_vec();args.extend(["--synthetic","--synthetic-width",value]);
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
     #[test]
     fn native_probe_progress_and_gap_limits_are_explicit_and_bounded() {
         let base=["uu","native-probe","--invitation-file","generated.eclipse-invite.json"];
@@ -100,9 +119,15 @@ enum Command {
         invitation_file: std::path::PathBuf,
         #[arg(long, conflicts_with = "synthetic")]
         monitor: Option<String>,
-        /// Use a moving 1280x720 test pattern instead of a desktop.
+        /// Use a moving test pattern instead of a desktop (default 1280x720).
         #[arg(long)]
         synthetic: bool,
+        /// Generated test-source width; never changes a real monitor.
+        #[arg(long, requires="synthetic", default_value_t=1280, value_parser=synthetic_dimension)]
+        synthetic_width: u32,
+        /// Generated test-source height; never changes a real monitor.
+        #[arg(long, requires="synthetic", default_value_t=720, value_parser=synthetic_dimension)]
+        synthetic_height: u32,
         /// Allow an invited viewer to request keyboard and mouse control.
         #[arg(long, conflicts_with = "synthetic")]
         allow_input: bool,
@@ -247,8 +272,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
         Command::NativeSources => native_cli::sources(),
-        Command::NativeHost { bind, invitation_file, monitor, synthetic, allow_input, audio, synthetic_audio, fps, bitrate_kbps, encoder, pairing_seconds, max_seconds } => {
-            let source=if synthetic {uu_capture::CaptureSource::Synthetic{width:1280,height:720,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
+        Command::NativeHost { bind, invitation_file, monitor, synthetic, synthetic_width, synthetic_height, allow_input, audio, synthetic_audio, fps, bitrate_kbps, encoder, pairing_seconds, max_seconds } => {
+            let source=if synthetic {uu_capture::CaptureSource::Synthetic{width:synthetic_width,height:synthetic_height,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
             native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,encoder:encoder.preference(),session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
         },
         Command::NativeProbe {invitation_file,frames,timeout_seconds,report,audio_loss_every,progress_seconds,max_frame_gap_seconds} => native_cli::probe(invitation_file,frames,timeout_seconds,report,audio_loss_every.unwrap_or(0),progress_seconds,max_frame_gap_seconds).await,
