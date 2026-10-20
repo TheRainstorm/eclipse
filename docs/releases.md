@@ -2,6 +2,14 @@
 
 大功能里程碑使用 `v主版本.次版本.修订号` 标签，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
+当前里程碑为 [v0.9.0](https://github.com/TheRainstorm/uu-client/releases/tag/v0.9.0)，包含[客户端延迟优化](releases/v0.9.0.md)。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+
+```sh
+python3 tools/release/download.py
+```
+
+需要 Python 3.11+ 与已安装、登录的 GitHub CLI。工具核对标签提交、压缩包及逐文件校验和，再更新 `artifacts/packages/` 的平台最新包指针；不会安装或启动程序。
+
 ## 自动构建
 
 `Build and release` 工作流在主分支提交、PR 和 `v*` 标签上运行，也可从 Actions 页面手动触发构建。当前固定 Rust 1.95.0；Actions 依赖固定完整提交号。

@@ -11,7 +11,7 @@ H.264 → D3D11 硬解 → 同步读回 NV12 → CPU 转 RGBA
       → ColorImage → RGBA 纹理上传 → UI 与视频绘制 → VSync
 ```
 
-0.9 候选的图形观看路径：
+0.9的图形观看路径：
 
 ```text
 H.264 → D3D11 硬解 → 同步读回 NV12 → 最新帧邮箱
@@ -40,6 +40,34 @@ H.264 → D3D11 硬解 → 同步读回 NV12 → 最新帧邮箱
 默认测试颜色、方向、行填充、透明字节处理、格式/尺寸变化及复用；`--benchmark` 测试 1080p NV12 上传，`--rgba-reference` 使用原 RGBA 路径作为对照。结果中的 `pixel_pipeline_cpu_ms` 包括测试程序的像素准备和绘制提交；`ui_and_submit_ms` 扣除单独计时的 CPU 颜色转换。测试窗口缩放显示，因此这些数字不是全屏扫描或用户实际串流 HUD 的替代。
 
 `UU_DECODE_PROFILE=1` 启用 Windows 解码元数据计时，按 120 次调用输出整体、同步读回、CPU 拷贝和剩余 MFT 工作。它不会保存图像；默认关闭。首次初始化应与后续稳定窗口分开比较。
+
+## 候选的重复对照
+
+在 Intel Arc B390 上，使用完全相同的 600 帧 1080p60 H.264 合成文件，按“复用缓冲 → 未复用缓冲 → 复用缓冲”运行，每个阶段创建 3 个解码器，各解码 600 帧，均无错误。两者都设置相同的 ICodecAPI 提示。这是尽快处理文件的独立解码测试，并未播放到 GUI 或改变 VSync。
+
+对照源码为 `304a0ca58bf298e496282ad0284ddefca8044f63` 与 `2b1cc08d85336c839b4efb17a1e7af959b792e0b`。可在安装了 FFmpeg 的环境生成相同类型的输入；测试文件仅含生成的图案：
+
+```sh
+ffmpeg -f lavfi -i testsrc2=size=1920x1080:rate=60 -frames:v 600 -an -c:v libx264 -threads 2 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -profile:v high -b:v 18M -g 120 -f h264 synthetic-1080p60.h264
+```
+
+Windows 解码检查只读取这个文件，不连接设备或播放声音：
+
+```powershell
+$env:UU_DECODE_PROFILE = '1'
+.\uu.exe probe --h264 .\synthetic-1080p60.h264
+Remove-Item Env:UU_DECODE_PROFILE
+```
+
+| 测量 | 未复用缓冲 | 复用缓冲，两次阶段 |
+|---|---|---|
+| 整轮平均，包含首次延迟初始化 | 3.28ms | 2.19 / 2.17ms |
+| 排除每轮首个窗口后的 submit 均值 | 2.81ms | 1.86 / 1.85ms |
+| CPU 存储、裁剪拷贝与 Unmap | 1.10ms | 0.21 / 0.22ms |
+
+稳定窗口仍有约 1.35–1.42ms 的同步读回。MFT 其余 CPU 提交约 0.28–0.29ms，**它不等于完整 GPU 解码耗时**；部分 GPU 完成等待计入了读回阶段。首次冷启动结果不能直接当作稳定路径收益。
+
+独立 Linux GL 像素上传对照中，1080p 输入缩放到 192×192 测试窗口，RGBA 的 UI/提交约 7.1ms，平面约 0.49ms；这不是 Windows 全屏或实际串流 HUD 的验证。Windows 非交互窗口站未提供所需 GL 窗口配置，因此保留该渲染实测限制，不据此桥接交互桌面。
 
 ## 参考
 

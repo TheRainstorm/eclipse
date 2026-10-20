@@ -33,7 +33,7 @@ DTLS 接收竞态的修复依据见 [补丁说明](../vendor/webrtc-dtls/UU-PATC
 | 中键无效、按住拖动失效 | M03、U06；下文“已知差异” | `uu-gui/input.rs` | 原值 3 错；当前 Windows 路径实测中键 16，同时必须发真实 down/up |
 | 花屏、参考帧持续损坏 | S01–S03、N01–N02、U02 | `uu-core/video_receiver.rs`、`media.rs` | 分片完整性、重排、恢复状态机先于“提高码率” |
 | 周期停顿、丢包后卡死 | N02、M01、U02–U03 | 解码队列、IDR 请求、显示 mailbox | 解码参考帧与丢弃旧显示帧要分层处理 |
-| 硬解仍占 CPU、延迟高 | M02、S05 | `uu-media/hw/`、`uu-gui` 渲染后端 | 当前仍有 CPU NV12→RGBA 和纹理上传，硬解不等于全 GPU 呈现 |
+| 硬解仍占 CPU、延迟高 | M02、S05 | `uu-media/hw/`、`uu-gui` 渲染后端 | 0.9已用 GPU 颜色转换及平面上传；硬解表面仍同步读回 CPU，尚非全 GPU 呈现 |
 | 平均 FPS 足够却不顺滑 | M01、M07、S08 | UI 重绘、呈现调度、分阶段统计 | VSync 开关不能替代 frame pacing；要测帧间隔分位数 |
 | 想用 FEC | S01、N01、S09 | 先抓 SDP、NACK 与实际修复包 | RS、WebRTC ULPFEC、PyroWave XOR 是不同线上格式 |
 | 声音、剪贴板、文件、终端 | M05–M06、U07–U11 | 新媒体/工具模块与 capability handshake | U 更接近 UU；不能照搬 Foundation 私有控制包 |
@@ -80,7 +80,7 @@ UU 当前没有可用的 RS/ULPFEC 接收实现，也没有确认官方主机在
 | M09 其它硬件后端 | VAAPI（`moonlight/moonlight-qt/app/streaming/video/ffmpeg-renderers/vaapi.cpp:1`）；EGL呈现（`moonlight/moonlight-qt/app/streaming/video/ffmpeg-renderers/eglvid.cpp:1`）；VideoToolbox/Metal（`moonlight/moonlight-qt/app/streaming/video/ffmpeg-renderers/vt_metal.mm:1`） | Linux dma-buf/EGL与Mac Metal方向可作未来GPU接口设计参考；原生资源生命周期、色域与同步仍需分别实现。 |
 | D01 跨平台剪贴板/键鼠 | Client::enter / leave（`moonlight/deskflow/src/lib/client/Client.cpp:232`）；Portal clipboard（`moonlight/deskflow/src/lib/platform/PortalClipboard.h:19`）；Windows clipboard（`moonlight/deskflow/src/lib/platform/MSWindowsClipboard.cpp:1`） | 多种MIME、owner与变更状态、异步Portal读写超时；用于以后跨平台桌面协作。Deskflow没有视频链路，不作为FEC或解码参考。 |
 
-当前本项目 egui/glow 消费 CPU RGBA，不能直接接收 Moonlight 的 D3D11 AVFrame。实施 M02 前需要一个 GPU frame/surface 合同（资源所有权、设备/适配器、可见尺寸/stride、PTS、颜色空间、fence、回退路径），以及能消费它的 Windows renderer；只把NV12转换函数改成shader仍未解决硬解回读。
+0.9的 egui/glow 已能消费 CPU NV12/I420 平面并用着色器转换颜色，但仍不能直接接收 D3D11 解码表面。完整实施 M02 前需要一个 GPU frame/surface 合同（资源所有权、设备/适配器、可见尺寸/stride、PTS、颜色空间、fence、回退路径），以及能消费它的 Windows renderer；只把NV12转换函数改成shader仍未解决硬解回读。
 
 ## 5. uu-remote-linux（U）：同协议优先参考
 
@@ -109,7 +109,7 @@ UU 当前没有可用的 RS/ULPFEC 接收实现，也没有确认官方主机在
 2. **自定义码率**：该快照U的host仍把field8直接存入custom_mbps，旧交接也曾按Mbps填该字段；Windows抓包证明当前路径应为bits/s，且quality=6、外层timestamp和完整setting字段影响生效。本项目[CaptureSettingRequest](../crates/uu-core/src/control_wire.rs)是已验实现；不能退回简化版字段。
 3. **重排容量**：U的32包与本项目2048包/60ms不是同一压力量级。1080p大IDR能拆成数百包，容量上限可能比40ms定时更早触发丢弃。参数必须按包率和突发测量，不能只比较毫秒值。
 4. **不要随意丢参考帧**：U的Latest用于AU和图像不同层时，语义并不相同。显示图可换成最新值；压缩P帧直接丢弃会损坏后续参考链。本项目8 AU队列过载进入IDR恢复，追赶时保留解码、跳旧RGBA转换。
-5. **延迟/吞吐指标的口径**：M的系统网络用量不一定等于本次串流带宽；协商FPS不等于decoded FPS；当前本项目decode_ms也不包含颜色转换/上传/显示。RTT字段尚未接入真实采样，不用0宣称零延迟。
+5. **延迟/吞吐指标的口径**：M的系统网络用量不一定等于本次串流带宽；协商FPS不等于decoded FPS；当前本项目decode_ms也不包含颜色转换/上传/显示。当前 RTT 已使用 CONTROL 实测均值及偏差；未取得样本时显示缺失，不用 0 宣称零延迟。
 6. **能力广告必须真实**：U有HEVC/444和多工具，不表示本客户端已有相同解码/呈现/协议链路；S有PyroWave/HDR/USB，不表示UU官方host接受这些扩展。
 
 ## 6. 可实施顺序与验收标准
@@ -205,3 +205,16 @@ git -C moonlight/moonlight-qt submodule status
 Sunshine 的 `src/platform/windows/display_base.cpp` 在帧节奏等待后以零超时查询桌面更新；本项目据此检查重复等待，独立调整 `DxgiCapture`：只有首帧使用短等待，已有缓存时非阻塞查询并复用静态画面。生产线程仍按目标帧率等待，避免空转。没有导入其 GPL 源码。
 
 `uu-media::convert::bgra_to_i420` 使用独立定点 BT.601 全范围运算，2×2 色度先合并再舍入；与旧浮点公式的随机差分测试限制到每通道 1 个色值。`convert_bench` 提供不接触桌面的离线转换基准；主机 CLI 的阶段耗时用于区别采集与编码瓶颈。软件编码仍受画面内容与 CPU 性能限制。
+
+
+## 0.9 客户端呈现进展与剩余边界
+
+候选已实现原始 CPU 平面邮箱、GPU 颜色转换和纹理复用、Windows 有界读回存储复用、500ms HUD 快照，以及可用时的 ICodecAPI 低延迟提示。具体测量范围见[Windows 延迟说明](windows-latency.md)。这减少了 CPU 处理，但 M02 的 GPU 表面直达仍待实现。
+
+复核 M02 时应一起阅读 D3D11 renderer 的设备选择（约213–450行）、renderVideo（约1151行）和交换链说明（约660–710行）：
+
+- 解码与渲染设备可共享，也可使用同适配器的双向 fence；部分驱动直接绑定解码表面，其他路径使用显存内拷贝。避免 CPU 回读不等于所有 GPU 都完全不拷贝。
+- 保留图像与采样器表面的所有权，直到 GPU 使用完成，避免解码器提前复用参考表面。不能把裸句柄塞入 Bytes 来代替生命周期与同步合同。
+- 其翻转交换链、外部帧节奏与 SyncInterval 策略共同工作。源码特别说明盲设最大帧延迟为 1 可能使 DWM 阻塞；不能把常量搬到当前 OpenGL 后端，也不能通过关闭用户的 VSync 来冒充优化。
+
+下一阶段应先定义带类型的 GPU 表面、设备标识、可见裁剪、颜色、PTS 和完成信号，再选择能真正消费它的 Windows 呈现后端。首个原型可先在无窗口 D3D11 设备上验证生成的图像，随后在已授权的独立显示环境检验窗口呈现；非交互 GL 配置不可用时不桥接工作桌面。
