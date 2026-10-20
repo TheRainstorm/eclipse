@@ -84,6 +84,10 @@ class AccountStateGuard(unittest.TestCase):
             self.assertTrue(scan.inspect(name, b''))
         self.assertFalse(scan.inspect('sample.json', b'{"token":"fixture"}'))
 
+    def test_local_device_navigation_is_private_without_an_account_token(self):
+        for name in ('config/device-list.fixture.json', 'config/device-list.fixture.123.tmp'):
+            self.assertTrue(scan.inspect(name, b'{"favorites":["fixture-id"],"recent":[]}'))
+
 
 if __name__ == '__main__':
     unittest.main()

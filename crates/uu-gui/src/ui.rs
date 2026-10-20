@@ -24,6 +24,7 @@ pub(super) enum Icon {
     Link,
     Person,
     Star,
+    Clock,
     Info,
     Volume,
     Muted,
@@ -155,6 +156,11 @@ pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
                 3.0,
                 stroke,
             );
+        }
+        Icon::Clock => {
+            p.circle_stroke(r.center(), 7.0, stroke);
+            line((9.0, 4.0), (9.0, 9.0));
+            line((9.0, 9.0), (13.0, 11.0));
         }
         Icon::Star => {
             let points = (0..10)
@@ -288,6 +294,7 @@ impl App {
             });
             return;
         }
+        let compact_home = ctx.screen_rect().height() < 640.0;
         let sidebar_width = if ctx.screen_rect().width() < 800.0 {
             205.0
         } else {
@@ -302,6 +309,7 @@ impl App {
                     .inner_margin(egui::Margin::same(10.0)),
             )
             .show(ctx, |ui| {
+                if !compact_home {
                 let (card, _) =
                     ui.allocate_exact_size(egui::vec2(ui.available_width(), 108.0), Sense::hover());
                 ui.painter().rect_filled(card, 5.0, BLUE);
@@ -320,6 +328,7 @@ impl App {
                     C::from_white_alpha(220),
                 );
                 ui.add_space(15.0);
+                }
                 ui.horizontal(|ui| {
                     icon(
                         ui.painter(),
@@ -328,7 +337,13 @@ impl App {
                         INK,
                     );
                     ui.add_space(28.0);
-                    ui.label(RichText::new("我的设备").size(16.0));
+                    if compact_home {
+                        egui::ComboBox::from_id_salt("compact-device-filter").selected_text(self.device_filter.label()).show_ui(ui, |ui| {
+                            for filter in [super::device_library::Filter::All, super::device_library::Filter::Recent, super::device_library::Filter::Favorites] {
+                                ui.selectable_value(&mut self.device_filter, filter, filter.label());
+                            }
+                        });
+                    } else { ui.label(RichText::new("我的设备").size(16.0)); }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if icon_button(ui, Icon::Refresh, "刷新设备").clicked() {
                             self.start_load();
@@ -336,21 +351,22 @@ impl App {
                     });
                 });
                 ui.add_space(8.0);
-                ui.add(
+                if ui.add(
                     egui::TextEdit::singleline(&mut self.search)
                         .hint_text("搜索设备")
                         .desired_width(f32::INFINITY)
                         .margin(egui::vec2(10.0, 6.0)),
-                );
+                ).changed() { self.ensure_visible_device_selection(); }
+                self.ensure_visible_device_selection();
                 ui.add_space(8.0);
                 let mut selected = None;
+                let visible = self.device_library.visible_indices(&self.devices, self.device_filter, &self.search);
+                let footer_height = if compact_home { 0.0 } else { 170.0 } + if self.device_library.notice().is_some() { 42.0 } else { 0.0 };
                 egui::ScrollArea::vertical()
-                    .max_height((ui.available_height() - 175.0).max(90.0))
+                    .max_height((ui.available_height() - footer_height).max(50.0))
                     .show(ui, |ui| {
-                        for (index, device) in self.devices.iter().enumerate().filter(|(_, d)| {
-                            self.search.is_empty()
-                                || d.alias.to_lowercase().contains(&self.search.to_lowercase())
-                        }) {
+                        for index in visible {
+                            let device = &self.devices[index];
                             let (row, response) = ui.allocate_exact_size(
                                 egui::vec2(ui.available_width(), 45.0),
                                 Sense::click(),
@@ -400,36 +416,40 @@ impl App {
                                 },
                             );
                             icon(ui.painter(), tile.shrink(4.0), Icon::Grid, C::WHITE);
-                            let label = if device.alias.chars().count() > 17 {
-                                format!("{}…", device.alias.chars().take(15).collect::<String>())
-                            } else {
-                                device.alias.clone()
-                            };
-                            text_at(
-                                &ui.painter().with_clip_rect(row),
-                                row.left_center() + egui::vec2(66.0, 0.0),
-                                label,
-                                15.0,
-                                if online(&device.status) { INK } else { MUTED },
-                            );
+                            let color = if online(&device.status) { INK } else { MUTED };
+                            let mut job = egui::text::LayoutJob::simple(device.alias.clone(), egui::FontId::proportional(15.0), color, (row.width()-91.0).max(20.0));
+                            job.wrap.max_rows = 1; job.wrap.break_anywhere = true;
+                            let galley = ui.painter().layout_job(job);
+                            let origin = row.left_center() + egui::vec2(66.0, -galley.size().y/2.0);
+                            ui.painter().with_clip_rect(row).galley(origin, galley, color);
+                            if self.device_library.is_favorite(&device.device_id) {
+                                icon(ui.painter(), Rect::from_center_size(row.right_center()-egui::vec2(13.0,0.0), Vec2::splat(16.0)), Icon::Star, BLUE);
+                            }
                             if response.clicked() {
                                 selected = Some(index);
                             }
+                            response.on_hover_text(&device.alias);
                         }
                     });
                 if let Some(index) = selected {
                     self.selected = Some(index);
                 }
-                ui.add_space(13.0);
-                for (kind, label) in [
-                    (Icon::Grid, "全部设备"),
-                    (Icon::Link, "远程协助"),
-                    (Icon::Star, "收藏设备"),
+                if !compact_home {
+                ui.add_space(10.0);
+                ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                for (kind, label, filter) in [
+                    (Icon::Grid, "全部设备", Some(super::device_library::Filter::All)),
+                    (Icon::Clock, "最近使用", Some(super::device_library::Filter::Recent)),
+                    (Icon::Star, "收藏设备", Some(super::device_library::Filter::Favorites)),
+                    (Icon::Link, "远程协助", None),
                 ] {
+                    let active = filter == Some(self.device_filter);
                     let (row, response) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), 39.0),
-                        Sense::hover(),
+                        egui::vec2(ui.available_width(), 34.0),
+                        if filter.is_some() { Sense::click() } else { Sense::hover() },
                     );
+                    if active || (filter.is_some() && response.hovered()) { ui.painter().rect_filled(row, 5.0, C::from_rgb(225, 235, 247)); }
                     icon(
                         ui.painter(),
                         Rect::from_center_size(
@@ -437,7 +457,7 @@ impl App {
                             Vec2::splat(22.0),
                         ),
                         kind,
-                        if matches!(kind, Icon::Grid) {
+                        if active {
                             BLUE
                         } else {
                             MUTED
@@ -448,16 +468,21 @@ impl App {
                         row.left_center() + egui::vec2(55.0, 0.0),
                         label,
                         15.0,
-                        if matches!(kind, Icon::Grid) {
+                        if filter.is_some() {
                             INK
                         } else {
                             MUTED
                         },
                     );
-                    if !matches!(kind, Icon::Grid) {
+                    if let Some(filter) = filter {
+                        if response.clicked() { self.device_filter = filter; self.ensure_visible_device_selection(); }
+                    } else {
                         response.on_hover_text("暂未开放");
                     }
                 }
+                });
+                }
+                if let Some(notice) = self.device_library.notice() { ui.add_space(6.0); ui.label(RichText::new(notice).small().color(MUTED)); }
 
             });
         egui::CentralPanel::default()
@@ -489,8 +514,14 @@ impl App {
                                 self.start_load();
                             }
                         } else {
-                            ui.heading("欢迎回来");
-                            ui.label("从左侧选择一台设备，开始远程连接。");
+                            ui.heading(if self.search.trim().is_empty() { self.device_filter.empty_message() } else { "没有匹配的设备" });
+                            ui.label(match self.device_filter {
+                                super::device_library::Filter::Favorites => "点击设备标题旁的星标，即可加入收藏。",
+                                super::device_library::Filter::Recent => "打开过串流窗口的设备会显示在这里。",
+                                super::device_library::Filter::All => "调整搜索条件，或刷新设备列表。",
+                            });
+                            if !self.search.is_empty() && ui.button("清除搜索").clicked() { self.search.clear(); self.ensure_visible_device_selection(); }
+                            if self.device_filter != super::device_library::Filter::All && ui.button("查看全部设备").clicked() { self.device_filter = super::device_library::Filter::All; self.ensure_visible_device_selection(); }
                         }
                         return;
                     };
@@ -517,16 +548,20 @@ impl App {
                             C::WHITE,
                         );
                         ui.add_space(5.0);
-                        ui.label(
-                            RichText::new(&device.alias)
+                        let title_width = (ui.available_width()-78.0).max(50.0);
+                        ui.add_sized([title_width, 40.0], egui::Label::new(RichText::new(&device.alias)
                                 .strong()
                                 .size(if ui.available_width() < 300.0 {
                                     22.0
                                 } else {
                                     29.0
                                 })
-                                .color(INK),
-                        );
+                                .color(INK)).truncate()).on_hover_text(&device.alias);
+                        let favorite = self.device_library.is_favorite(&device.device_id);
+                        if icon_button_selected(ui, Icon::Star, if favorite { "取消收藏" } else { "收藏设备" }, favorite).clicked() {
+                            self.device_library.toggle_favorite(&device.device_id);
+                            self.ensure_visible_device_selection();
+                        }
                         ui.menu_button("···", |ui| {
                             ui.label(&device.device_id);
                             if ui.button("复制设备 ID").clicked() {

@@ -87,10 +87,13 @@ pub(super) fn save_json(value: &impl Serialize, path: &Path) -> anyhow::Result<(
             .as_nanos()
     ));
     let result = (|| -> anyhow::Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)] {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
         file.write_all(&serde_json::to_vec_pretty(value)?)?;
         file.sync_all()?;
         drop(file);

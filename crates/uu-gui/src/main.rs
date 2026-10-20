@@ -33,6 +33,7 @@ mod native_ui;
 mod native_keys;
 mod native_host_ui;
 mod wallpapers;
+mod device_library;
 use login::LoginEvent;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -112,6 +113,8 @@ struct App {
     context: egui::Context,
     devices: Vec<Device>,
     device_load_error: Option<String>,
+    device_library: device_library::Library,
+    device_filter: device_library::Filter,
     selected: Option<usize>,
     search: String,
     status: String,
@@ -328,6 +331,7 @@ impl App {
         let native=stream_target.as_ref().is_some_and(|target|target.is_native());
         let account_token = if native {None}else{config.as_ref().and_then(|c| account::read_token(&c.at("state.json")).ok().flatten())};
         let logged_in = account_token.is_some();
+        let device_library = if native { device_library::Library::default() } else { device_library::Library::for_account(config.as_ref(), account_token.as_deref()) };
         let (preferences, settings_notice) = match settings::Settings::path().map(|p|settings::Settings::load(&p)) {
             Some(Ok(s))=>(s,String::new()),Some(Err(e))=>(settings::Settings::default(),format!("读取设置失败：{e}")),None=>(settings::Settings::default(),String::new()),
         };
@@ -343,6 +347,8 @@ impl App {
             context: cc.egui_ctx.clone(),
             devices: Vec::new(),
             device_load_error: None,
+            device_library,
+            device_filter: device_library::Filter::All,
             selected: None,
             search: String::new(),
             status: String::new(),
@@ -436,6 +442,11 @@ impl App {
         self.status = "正在加载设备…".to_string();
     }
 
+    fn ensure_visible_device_selection(&mut self) {
+        let visible = self.device_library.visible_indices(&self.devices, self.device_filter, &self.search);
+        self.selected = device_library::Library::retain_selection(self.selected, &visible);
+    }
+
     fn start_login(&mut self) {
         let Some(config) = self.config.clone() else {
             return;
@@ -501,6 +512,7 @@ impl App {
                         self.devices = devices;
                         self.selected = selected_id.and_then(|id| self.devices.iter().position(|d|d.device_id == id))
                             .or_else(|| (!self.devices.is_empty()).then_some(0));
+                        self.ensure_visible_device_selection();
                         // Optional headless auto-connect for testing:
                         //   UU_AUTOCONNECT=<explicit device_id|alias>
                         if !self.autoconnect_done {
@@ -886,6 +898,9 @@ impl App {
             connection: sessions::ConnectionTarget::UuDevice(device.device_id.clone()), alias: device.alias.clone(), view_only: self.view_only,
         };
         let result = std::env::current_exe().and_then(|exe| self.sessions.open(&exe, &target, self.platform.origin()));
+        if result.is_ok() {
+            if let sessions::ConnectionTarget::UuDevice(id) = &target.connection { self.device_library.record_opened(id); }
+        }
         self.status = match result {
             Ok(true) => format!("已打开 {} 的串流窗口，可继续选择其他设备", target.alias),
             Ok(false) => format!("{} 的串流窗口已打开", target.alias),

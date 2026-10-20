@@ -95,6 +95,8 @@ impl super::App {
         self.rx = None;
         self.devices.clear();
         self.device_load_error = None;
+        self.device_library = super::device_library::Library::for_account(self.config.as_ref(), self.account_token.as_deref());
+        self.device_filter = super::device_library::Filter::All;
         self.wallpapers.clear();
         self.wallpaper_worker = None;
         self.selected = None;

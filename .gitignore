@@ -23,7 +23,7 @@ artifacts/
 __pycache__/
 *.pyc
 
-# 本地服务凭据；运行时读取，不编译进客户端
+# 本地连接覆盖文件；不分发用户私有配置
 **/signing-key
 **/signing-key.*
 .env
@@ -37,3 +37,7 @@ __pycache__/
 **/state.json
 **/state.json.*
 .uu-account-*.tmp
+
+# 按账号隔离的收藏与最近使用，含个人设备标识
+device-list.*.json
+device-list.*.tmp
