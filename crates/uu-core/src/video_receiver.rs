@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use webrtc::rtp::packet::Packet;
 
-const MAX_PACKETS: usize = 2048;
+pub(crate) const MAX_PACKETS: usize = 2048;
 const MAX_AU: usize = 16 * 1024 * 1024;
 
 pub struct AccessUnit {

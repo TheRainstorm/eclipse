@@ -21,6 +21,7 @@ mod native_media;
 mod network_probe;
 mod decode_gate;
 mod test_loss;
+mod srtp_policy;
 pub mod selfloop;
 pub mod session;
 pub mod session_diagnostics;

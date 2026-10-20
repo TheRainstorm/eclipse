@@ -184,8 +184,11 @@ impl ControllerMedia {
         registry = configure_twcc_receiver_only(registry, &mut media)?;
         let repairs = crate::rtx::RepairBus::new(stats.clone());
         registry.add(Box::new(crate::rtx::RepairTap(repairs.clone())));
+        let mut settings=webrtc::api::setting_engine::SettingEngine::default();
+        crate::srtp_policy::configure(&mut settings);
         let api = APIBuilder::new()
             .with_media_engine(media)
+            .with_setting_engine(settings)
             .with_interceptor_registry(registry)
             .build();
 
