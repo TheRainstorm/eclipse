@@ -32,6 +32,7 @@ mod audio_controls;
 mod native_ui;
 mod native_keys;
 mod native_host_ui;
+mod wallpapers;
 use login::LoginEvent;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -46,8 +47,6 @@ struct Device {
     #[serde(default)]
     #[allow(dead_code)]
     platform: i64,
-    #[serde(skip)]
-    wallpaper_rgba: Option<(u32, u32, Vec<u8>)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,22 +57,36 @@ struct DeviceListData {
 
 #[derive(Debug, Deserialize)]
 struct DeviceListResp {
-    #[serde(default)]
     code: i64,
     #[serde(default)]
     data: Option<DeviceListData>,
 }
 
+fn parse_devices(body: serde_json::Value) -> anyhow::Result<Vec<Device>> {
+    let resp: DeviceListResp = serde_json::from_value(body)?;
+    anyhow::ensure!(resp.code == 0, "获取设备列表失败，服务返回代码 {}", resp.code);
+    Ok(resp.data.map(|d| d.my_binded_devices).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod device_list_tests {
+    #[test]
+    fn invalid_or_rejected_responses_are_not_treated_as_an_empty_account() {
+        assert!(super::parse_devices(serde_json::json!({})).is_err());
+        assert!(super::parse_devices(serde_json::json!({"code":1120,"data":{"my_binded_devices":[]}})).is_err());
+        assert!(super::parse_devices(serde_json::json!({"code":0,"data":{"my_binded_devices":[]}})).unwrap().is_empty());
+    }
+}
+
 fn load_devices() -> anyhow::Result<Vec<Device>> {
     let config = uu_core::Config::from_env()?;
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
+    let result = rt.block_on(async {
         let client = uu_core::SignalClient::new(&config)?;
         let api = uu_core::UuApi::new(client, config.at("state.json"));
-        let body = api.device_list().await?;
-        let resp: DeviceListResp = serde_json::from_value(body)?;
-        anyhow::ensure!(resp.code == 0, "device list code {}", resp.code);
-        let mut devices = resp.data.map(|d| d.my_binded_devices).unwrap_or_default();
+        let body = tokio::time::timeout(std::time::Duration::from_secs(15), api.device_list())
+            .await.map_err(|_| anyhow::anyhow!("获取设备列表超时，请检查网络后重试"))??;
+        let mut devices = parse_devices(body)?;
         // Opt-in privacy for screen sharing/documentation; no account data is changed.
         if std::env::var("UU_SCREENSHOT_PRIVACY").as_deref() == Ok("1") {
             for (index, device) in devices.iter_mut().enumerate() {
@@ -81,21 +94,10 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
                 device.wallpaper_url.clear();
             }
         }
-        for d in &mut devices {
-            if d.wallpaper_url.is_empty() {
-                continue;
-            }
-            if let Ok(r) = reqwest::get(&d.wallpaper_url).await {
-                if let Ok(bytes) = r.bytes().await {
-                    if let Ok(img) = image::load_from_memory(&bytes) {
-                        let rgba = img.to_rgba8();
-                        d.wallpaper_rgba = Some((rgba.width(), rgba.height(), rgba.into_raw()));
-                    }
-                }
-            }
-        }
         Ok(devices)
-    })
+    });
+    rt.shutdown_background();
+    result
 }
 
 struct App {
@@ -118,6 +120,7 @@ struct App {
     controller: Option<ControllerHandle>,
     textures: std::collections::HashMap<u32, egui::TextureHandle>,
     wallpapers: std::collections::HashMap<usize, egui::TextureHandle>,
+    wallpaper_worker: Option<wallpapers::Worker>,
     frame_count: std::collections::HashMap<u32, u32>,
     fps: std::collections::HashMap<u32, f32>,
     last_fps: std::time::Instant,
@@ -348,6 +351,7 @@ impl App {
             controller: None,
             textures: std::collections::HashMap::new(),
             wallpapers: std::collections::HashMap::new(),
+            wallpaper_worker: None,
             frame_count: std::collections::HashMap::new(),
             fps: std::collections::HashMap::new(),
             last_fps: std::time::Instant::now(),
@@ -404,7 +408,7 @@ impl App {
             app.devices.push(Device {
                 alias: target.alias, device_id: match target.connection {sessions::ConnectionTarget::UuDevice(id)=>id,sessions::ConnectionTarget::NativeInvitation(_)=>String::new()},
                 status: "CONNECTED".into(), controllable: true,
-                wallpaper_url: String::new(), platform: 0, wallpaper_rgba: None,
+                wallpaper_url: String::new(), platform: 0,
             });
             app.selected = Some(0);
             app.view_only = target.view_only;
@@ -419,10 +423,14 @@ impl App {
     }
 
     fn start_load(&mut self) {
+        if self.rx.is_some() { return; }
+        self.wallpaper_worker = None;
         self.device_load_error = None;
         let (tx, rx) = channel();
+        let context = self.context.clone();
         std::thread::spawn(move || {
             let _ = tx.send(load_devices());
+            context.request_repaint();
         });
         self.rx = Some(rx);
         self.status = "正在加载设备…".to_string();
@@ -486,24 +494,13 @@ impl App {
                         self.device_load_error = None;
                         self.status = format!("已加载 {} 台设备", devices.len());
                         self.wallpapers.clear();
-                        for (i, d) in devices.iter().enumerate() {
-                            if let Some((w, h, rgba)) = &d.wallpaper_rgba {
-                                let img = egui::ColorImage::from_rgba_unmultiplied(
-                                    [*w as usize, *h as usize],
-                                    rgba,
-                                );
-                                self.wallpapers.insert(
-                                    i,
-                                    ctx.load_texture(
-                                        format!("wallpaper-{i}"),
-                                        img,
-                                        egui::TextureOptions::LINEAR,
-                                    ),
-                                );
-                            }
-                        }
+                        let requests = devices.iter().filter(|d| !d.wallpaper_url.is_empty())
+                            .map(|d| wallpapers::Request { device_id: d.device_id.clone(), url: d.wallpaper_url.clone() }).collect::<Vec<_>>();
+                        self.wallpaper_worker = if requests.is_empty() { None } else { wallpapers::Worker::start(requests, ctx.clone()).ok() };
+                        let selected_id = self.selected.and_then(|i| self.devices.get(i)).map(|d| d.device_id.clone());
                         self.devices = devices;
-                        self.selected = (!self.devices.is_empty()).then_some(0);
+                        self.selected = selected_id.and_then(|id| self.devices.iter().position(|d|d.device_id == id))
+                            .or_else(|| (!self.devices.is_empty()).then_some(0));
                         // Optional headless auto-connect for testing:
                         //   UU_AUTOCONNECT=<explicit device_id|alias>
                         if !self.autoconnect_done {
@@ -531,6 +528,16 @@ impl App {
                 }
                 self.rx = None;
             }
+        }
+        if let Some(worker) = &mut self.wallpaper_worker {
+            for _ in 0..2 {
+                let Some(preview) = worker.try_recv() else { break };
+                if let Some(index) = self.devices.iter().position(|d| d.device_id == preview.device_id && d.wallpaper_url == preview.url) {
+                    let image = egui::ColorImage::from_rgba_unmultiplied([preview.width as usize, preview.height as usize], &preview.rgba);
+                    self.wallpapers.insert(index, ctx.load_texture(format!("wallpaper-{index}"), image, egui::TextureOptions::LINEAR));
+                }
+            }
+            if worker.finished() { self.wallpaper_worker = None; }
         }
     }
 

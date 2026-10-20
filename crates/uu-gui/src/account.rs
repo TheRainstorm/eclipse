@@ -96,6 +96,7 @@ impl super::App {
         self.devices.clear();
         self.device_load_error = None;
         self.wallpapers.clear();
+        self.wallpaper_worker = None;
         self.selected = None;
         self.search.clear();
         self.autoconnect_done = true;
