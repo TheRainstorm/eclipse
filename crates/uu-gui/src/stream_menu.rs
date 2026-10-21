@@ -5,6 +5,44 @@ use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke};
 const MENU_INK: Color32 = Color32::from_rgb(29, 32, 37);
 const MENU_WIDTH: f32 = 236.0;
 
+/// The hit area stays entirely inside the viewport. Only the paint extends
+/// beyond its right edge, so egui cannot pull a hidden half back on screen.
+fn docked_handle(ctx: &egui::Context, open: &mut bool) -> Rect {
+    let screen = ctx.screen_rect();
+    let width: f32 = if *open { 48.0 } else { 24.0 };
+    let size = egui::vec2(width.min(screen.width()), 36.0_f32.min(screen.height()));
+    let inset: f32 = if *open { 8.0 } else { 0.0 };
+    let position = egui::pos2(
+        (screen.right() - size.x - inset).max(screen.left()),
+        (screen.top() + 8.0).min(screen.bottom() - size.y),
+    );
+    egui::Area::new("floating-control-handle".into())
+        .order(egui::Order::Foreground)
+        .constrain(false)
+        .movable(false)
+        .fixed_pos(position)
+        .show(ctx, |ui| {
+            let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+            let painter = ui.painter().with_clip_rect(rect.intersect(screen));
+            let full = Rect::from_min_size(rect.min, egui::vec2(48.0, size.y));
+            painter.rect(full, 8.0,
+                if response.hovered() { Color32::from_rgb(233,238,245) }
+                else { Color32::from_rgb(249,250,252) },
+                Stroke::new(1.0, Color32::from_rgb(217,224,234)));
+            if *open {
+                icon(&painter, Rect::from_center_size(rect.center(),egui::vec2(20.0,20.0)),
+                    Icon::Settings, MENU_INK);
+            } else {
+                let center = rect.center();
+                painter.line_segment([center+egui::vec2(2.0,-4.0),center-egui::vec2(2.0,0.0)],Stroke::new(1.5,MENU_INK));
+                painter.line_segment([center-egui::vec2(2.0,0.0),center+egui::vec2(2.0,4.0)],Stroke::new(1.5,MENU_INK));
+            }
+            if response.clicked() { *open = !*open; }
+            response.on_hover_text("点击展开 / 收起菜单 · Ctrl+Alt+H 隐藏 / 显示");
+            rect
+        }).inner
+}
+
 /// Every menu entry dispatches the same action as Ctrl+Alt+F/X.
 fn fullscreen_menu_action(ui:&mut egui::Ui,fullscreen:bool)->Option<super::shortcuts::Action> {
     menu_row(ui,if fullscreen {"退出全屏"} else {"进入全屏"},Some(Icon::Max),
@@ -172,7 +210,6 @@ pub(super) struct StreamMenu {
     pub visible: bool,
     pub open: bool,
     pub anchor: Pos2,
-    pub(super) position: Option<Pos2>,
     pub(super) trigger_rect: Option<Rect>,
     pub(super) quality_detail: Option<(QualityDetail, Rect)>,
 }
@@ -182,7 +219,6 @@ impl Default for StreamMenu {
             visible: true,
             open: false,
             anchor: Pos2::ZERO,
-            position: None,
             trigger_rect: None,
             quality_detail: None,
         }
@@ -511,55 +547,11 @@ impl super::App {
             }
         }
         if self.fullscreen && self.stream_menu.visible {
-            let screen = ctx.screen_rect();
-            let default = egui::pos2(screen.right() - 74.0, 8.0);
-            let position = self.stream_menu.position.unwrap_or(default);
-            let position = egui::pos2(
-                position.x.clamp(screen.left(), screen.right() - 66.0),
-                position.y.clamp(screen.top(), screen.bottom() - 40.0),
-            );
-            let response = egui::Area::new("floating-control-handle".into())
-                .order(egui::Order::Foreground)
-                .movable(false)
-                .fixed_pos(position)
-                .constrain_to(screen)
-                .show(ctx, |ui| {
-                    egui::Frame::none()
-                        .fill(Color32::from_rgb(249, 250, 252))
-                        .rounding(8.0)
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(217, 224, 234)))
-                        .inner_margin(egui::Margin::same(3.0))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            let (rect, button) = ui.allocate_exact_size(
-                                egui::vec2(26.0, 26.0),
-                                egui::Sense::click_and_drag(),
-                            );
-                            icon(
-                                ui.painter(),
-                                rect,
-                                Icon::Settings,
-                                Color32::from_rgb(53, 73, 96),
-                            );
-                            if button.dragged() {
-                                self.stream_menu.position = Some(position + button.drag_delta());
-                            }
-                            if button.clicked() {
-                                self.stream_menu.open = !self.stream_menu.open;
-                                if !self.stream_menu.open {
-                                    ctx.memory_mut(|m| m.close_popup());
-                                }
-                            }
-                            button.on_hover_text(
-                                "设置 · 拖动可移动\nCtrl+Alt+H 隐藏 / 显示悬浮菜单",
-                            );
-                            self.audio_button(ui);
-                            });
-                        });
-                });
-            self.stream_menu.anchor = response.response.rect.left_bottom();
-            blocked.push(response.response.rect);
+            let was_open = self.stream_menu.open;
+            let rect = docked_handle(ctx, &mut self.stream_menu.open);
+            if was_open && !self.stream_menu.open { ctx.memory_mut(|m| m.close_popup()); }
+            self.stream_menu.anchor = rect.left_bottom();
+            blocked.push(rect);
         }
         if !self.stream_menu.open {
             self.stream_menu.quality_detail = None;
@@ -572,10 +564,11 @@ impl super::App {
         let screen = ctx.screen_rect();
         let anchor = self.stream_menu.anchor;
         let position = egui::pos2(
-            anchor
-                .x
-                .min(screen.right() - 264.0)
-                .max(screen.left() + 6.0),
+            if self.fullscreen {
+                (screen.right() - MENU_WIDTH - 16.0).max(screen.left() + 6.0)
+            } else {
+                anchor.x.min(screen.right() - 264.0).max(screen.left() + 6.0)
+            },
             anchor
                 .y
                 .min(screen.bottom() - 386.0)
@@ -591,7 +584,7 @@ impl super::App {
                     ui.set_width(MENU_WIDTH);
                     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                     egui::ScrollArea::vertical()
-                        .max_height((screen.height() - 24.0).max(64.0))
+                        .max_height((screen.bottom() - position.y - 12.0).max(64.0))
                         .show(ui, |ui| {
                             ui.with_layout(
                                 egui::Layout::top_down_justified(egui::Align::Min),
@@ -789,6 +782,40 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn docked_handle_opens_only_on_click_and_stays_on_the_resized_right_edge() {
+        let context = egui::Context::default();
+        let mut open = false;
+        let mut frame = |size: egui::Vec2, events: Vec<egui::Event>| {
+            let mut rect = Rect::NOTHING;
+            let input = egui::RawInput { screen_rect:Some(Rect::from_min_size(Pos2::ZERO,size)),events,..Default::default() };
+            let _ = context.run(input, |ctx| rect = docked_handle(ctx,&mut open));
+            (rect,open)
+        };
+        let size = egui::vec2(1280.0,720.0);
+        frame(size,vec![]);
+        let (closed,_) = frame(size,vec![]);
+        assert_eq!(closed.right(),1280.0);
+        assert_eq!(closed.width(),24.0);
+        let point = closed.center();
+        for _ in 0..3 {
+            assert!(!frame(size,vec![egui::Event::PointerMoved(point)]).1);
+        }
+        let button = |pressed| egui::Event::PointerButton {pos:point,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+        frame(size,vec![button(true)]);
+        assert!(frame(size,vec![button(false)]).1);
+        let (expanded,active) = frame(size,vec![]);
+        assert!(active);
+        assert_eq!(expanded.width(),48.0);
+        assert_eq!(expanded.right(),1272.0);
+        let resized = egui::vec2(1920.0,1080.0);
+        let (moved,_) = frame(resized,vec![]);
+        assert_eq!(moved.right(),1912.0);
+        let point = moved.center();
+        frame(resized,vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}]);
+        assert!(!frame(resized,vec![egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}]).1);
+        assert_eq!(frame(resized,vec![]).0.right(),1920.0);
+    }
     #[test]
     fn fullscreen_menu_click_dispatches_stream_fullscreen_for_both_states() {
         for fullscreen in [false,true] {
