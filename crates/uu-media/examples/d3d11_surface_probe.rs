@@ -90,6 +90,15 @@ fn main() -> anyhow::Result<()> {
             frames += 1;
         }
         let expected = uu_media::convert::frame_to_rgba_with_color(&a, color);
+        if index < 2 && std::env::var("UU_SURFACE_PROBE_DUMP").as_deref() == Ok("1") {
+            std::fs::write(format!("surface-{index}-cpu.rgba"), &expected)?;
+            std::fs::write(format!("surface-{index}-gpu.bgra"), &rgb)?;
+            eprintln!(
+                "generated fixture frame={index} width={} height={} color={color:?}",
+                a.width, a.height
+            );
+        }
+
         for (actual, expected) in rgb.chunks_exact(4).zip(expected.chunks_exact(4)) {
             for (actual, expected) in [actual[2], actual[1], actual[0]]
                 .into_iter()

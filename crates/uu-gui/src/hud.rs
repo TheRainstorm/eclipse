@@ -57,7 +57,7 @@ impl super::App {
         self.hud_cache.galley=Some(ui.fonts(|f| f.layout_job(job)));
         self.hud_cache.key=Some(key);
         self.hud_cache.updated=Some(std::time::Instant::now());
-        self.hud_cache.detail=format!("{}\n输入通道：{} · 本地发送 {} 条 · 发送失败 {} 条\nCtrl+Alt+S：显示 / 隐藏统计\n统计每 500ms 更新；视频仍逐帧呈现\nNetwork：CONTROL 往返耗时均值 ± 标准差（最近 32 次）\nLoss：最近 500ms 超时未修复的 RTP 包比例，重复 RTX 不计入分母\n其余包、帧、请求计数为本次会话累计值\nRd：每秒提交的新画面数，不是显示器扫描次数\nRender：整轮 UI 准备及渲染提交 CPU 时间，不含交换缓冲的 VSync 等待，但驱动同步仍可能阻塞提交\nDecode：解码调用及硬件读回耗时，不含颜色转换",s.backend(),if self.input_ready(){"已打开"}else{"未打开"},s.input_messages_sent.load(Relaxed),s.input_send_errors.load(Relaxed));
+        self.hud_cache.detail=format!("{}\n输入通道：{} · 本地发送 {} 条 · 发送失败 {} 条\nCtrl+Alt+S：显示 / 隐藏统计\n统计每 500ms 更新；视频仍逐帧呈现\nNetwork：CONTROL 往返耗时均值 ± 标准差（最近 32 次）\nLoss：最近 500ms 超时未修复的 RTP 包比例，重复 RTX 不计入分母\n其余包、帧、请求计数为本次会话累计值\nRd：每秒提交的新画面数，不是显示器扫描次数\nRender：整轮 UI 准备及渲染提交 CPU 时间，不含交换缓冲的 VSync 等待，但驱动同步仍可能阻塞提交\nDecode：解码调用耗时；读回路径包含显存读回，GPU 共享路径的完成等待计入后续 Render，均不代表端到端延迟",s.backend(),if self.input_ready(){"已打开"}else{"未打开"},s.input_messages_sent.load(Relaxed),s.input_send_errors.load(Relaxed));
         }
         let Some(galley)=self.hud_cache.galley.clone() else {return};
         let bounds = Rect::from_min_size(
