@@ -653,7 +653,12 @@ mod windows {
             assert_ne!(read,u32::MAX);
             devices.truncate(read as usize);devices
         };
-        assert!(registrations().iter().any(|d|d.usUsagePage==1&&d.usUsage==6));
+        let before=registrations();
+        assert!(before.iter().any(|d|d.usUsagePage==1&&d.usUsage==6));
+        let mouse_before=before.iter().find(|d|d.usUsagePage==1&&d.usUsage==2).unwrap();
+        assert_eq!(mouse_before.hwndTarget,window.0);
+        // Compare OS readback before/after: Windows does not necessarily echo
+        // registration-only flags (DEVNOTIFY) in this query.
         HOOK_PUMP_ACK.store(0,Ordering::Release);
         // Drop/join the hook before the window and station.
         let hook=unsafe{install_keyboard_hook(window.0)}.expect("isolated hook installation");
@@ -664,7 +669,7 @@ mod windows {
                 "raw keyboard registration competes with low-level capture");
             let mouse=registered.iter().find(|d|d.usUsagePage==1&&d.usUsage==2).unwrap();
             assert_eq!(mouse.hwndTarget,window.0);
-            assert_eq!(mouse.dwFlags,RIDEV_DEVNOTIFY);
+            assert_eq!(mouse.dwFlags,mouse_before.dwFlags);
             // Reinitializing is idempotent and must keep the raw mouse target.
             unsafe{remove_raw_keyboard_registration().unwrap();}
         }
