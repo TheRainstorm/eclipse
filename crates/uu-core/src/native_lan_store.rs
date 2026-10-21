@@ -259,6 +259,8 @@ pub struct Devices {
     version: u8,
     pub client_id: String,
     pub devices: Vec<Device>,
+    #[serde(default)]
+    pub manual: Vec<String>,
 }
 impl Devices {
     pub fn open(path: &Path) -> Result<Self> {
@@ -267,6 +269,7 @@ impl Devices {
                 version: 1,
                 client_id: uuid::Uuid::new_v4().to_string(),
                 devices: Vec::new(),
+                manual: Vec::new(),
             });
         }
         let value: Self = read(path)?;
@@ -274,10 +277,37 @@ impl Devices {
             value.version == 1
                 && valid_id(&value.client_id)
                 && value.devices.len() <= 64
-                && value.devices.iter().all(Device::validate),
+                && value.devices.iter().all(Device::validate)
+                && value.manual.len() <= 64
+                && value
+                    .manual
+                    .iter()
+                    .all(|v| crate::native_discovery::endpoint(v).is_ok()),
             "invalid paired devices; original file was preserved"
         );
         Ok(value)
+    }
+    pub fn add_endpoint(&mut self, path: &Path, endpoint: &str) -> Result<()> {
+        let endpoint = crate::native_discovery::endpoint(endpoint)?;
+        if self.manual.contains(&endpoint) {
+            return Ok(());
+        }
+        ensure!(self.manual.len() < 64, "manual-device limit reached");
+        self.manual.push(endpoint);
+        if let Err(error) = save(path, self) {
+            self.manual.pop();
+            return Err(error);
+        }
+        Ok(())
+    }
+    pub fn remove_endpoint(&mut self, path: &Path, endpoint: &str) -> Result<()> {
+        let old = self.manual.clone();
+        self.manual.retain(|e| e != endpoint);
+        if let Err(error) = save(path, self) {
+            self.manual = old;
+            return Err(error);
+        }
+        Ok(())
     }
     pub fn save(&self, path: &Path) -> Result<()> {
         save(path, self)
@@ -333,6 +363,28 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+    #[test]
+    fn manual_addresses_survive_restart_and_failed_writes_do_not_change_memory() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("devices.json");
+        let mut book = Devices::open(&path).unwrap();
+        book.add_endpoint(&path, "127.0.0.1").unwrap();
+        book.add_endpoint(&path, "127.0.0.1:47998").unwrap();
+        assert_eq!(book.manual, ["127.0.0.1:47998"]);
+        assert_eq!(Devices::open(&path).unwrap().manual, book.manual);
+        let bad_path = path.join("parent-is-file.json");
+        assert!(book.add_endpoint(&bad_path, "example.invalid").is_err());
+        assert!(book.remove_endpoint(&bad_path, "127.0.0.1:47998").is_err());
+        assert_eq!(book.manual, ["127.0.0.1:47998"]);
+        assert!(book.add_endpoint(&path, "https://example.invalid").is_err());
+        book.remove_endpoint(&path, "127.0.0.1:47998").unwrap();
+        assert!(Devices::open(&path).unwrap().manual.is_empty());
+        // Old paired-device files predate manual addresses and remain readable.
+        let mut old = serde_json::to_value(&book).unwrap();
+        old.as_object_mut().unwrap().remove("manual");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(Devices::open(&path).unwrap().manual.is_empty());
     }
     #[test]
     fn identity_is_stable_and_corrupt_existing_files_are_never_replaced() {

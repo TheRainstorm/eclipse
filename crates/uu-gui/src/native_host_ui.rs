@@ -279,22 +279,13 @@ impl NativeHostUi {
 impl App {
     pub(super) fn open_native_host(&mut self) {
         self.native_ui.open = false;
-        self.native_host.open = true;
-        if !self.native_host.running() {
-            self.native_host.refresh();
-        }
-        if self.native_host.invitation.is_empty() {
-            let directory = self
-                .config
-                .as_ref()
-                .map(|c| c.at("native-invitations"))
-                .unwrap_or_else(|| std::env::temp_dir().join("uu-client-invitations"));
-            self.native_host.invitation = directory
-                .join(format!("{}.eclipse-invite.json", uuid::Uuid::new_v4()))
-                .display()
-                .to_string();
+        if self.native_host.running() {
+            self.native_host.open = true;
+        } else {
+            self.lan.host.show();
         }
     }
+
     pub(super) fn native_host_ui(&mut self, ctx: &egui::Context) {
         if !self.native_host.open {
             return;

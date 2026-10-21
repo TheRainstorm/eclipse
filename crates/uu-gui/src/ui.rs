@@ -253,7 +253,7 @@ impl App {
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        if self.native_host.running() {
+                        if self.native_host.running() || self.lan.host.running() {
                             if icon_label_button(ui,Icon::Desktop,"共享中").clicked(){self.open_native_host();}
                         } else if icon_label_button(ui,Icon::Link,"原生直连").clicked(){self.open_native();}
                         if icon_button(ui,Icon::Settings,"软件设置").clicked(){self.open_settings();}
@@ -266,6 +266,13 @@ impl App {
 
     pub(super) fn home_ui(&mut self, ctx: &egui::Context) {
         self.title_bar(ctx);
+        let mut switched=false;
+        egui::TopBottomPanel::top("connection-mode").frame(egui::Frame::none().fill(C::WHITE).inner_margin(egui::Margin::symmetric(20.,8.))).show(ctx,|ui|{ui.horizontal(|ui|{
+            if ui.selectable_label(!self.lan.compatibility,"Eclipse 局域网").clicked(){self.lan.compatibility=false;}
+            if ui.selectable_label(self.lan.compatibility,"兼容设备").clicked(){switched=!self.lan.compatibility;self.lan.compatibility=true;}
+        });});
+        if switched && self.logged_in && self.devices.is_empty(){self.start_load();}
+        if !self.lan.compatibility {self.lan_home(ctx);return;}
         if let Some(error) = self.account_error.clone() {
             egui::TopBottomPanel::top("local-account-error").show(ctx, |ui| {
                 ui.add(egui::Label::new(RichText::new(error).color(C::from_rgb(177, 48, 48))).wrap());
@@ -298,7 +305,7 @@ impl App {
                     ui.add_space(14.0);
                     if ui.add_sized([180.0,36.0],egui::Button::new(RichText::new("使用原生邀请").color(BLUE)).fill(C::WHITE).stroke(egui::Stroke::new(1.0,BLUE))).clicked(){self.open_native();}
                     ui.add_space(8.0);
-                    if ui.add_sized([180.0,32.0],egui::Button::new(if self.native_host.running(){"管理当前共享"}else{"共享此设备"})).clicked(){self.open_native_host();}
+                    if ui.add_sized([180.0,32.0],egui::Button::new(if self.lan.host.running(){"管理当前共享"}else{"共享此设备"})).clicked(){self.open_native_host();}
                     ui.add_space(8.0);
                     ui.small("无需账号 · 邀请文件也可直接拖入窗口");
                     if !self.status.is_empty(){ui.add_space(16.0);ui.label(RichText::new(&self.status).color(MUTED));}

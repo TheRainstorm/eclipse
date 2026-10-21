@@ -194,7 +194,7 @@ async fn saved_pairing_survives_server_restart_and_sessions_are_bounded() {
     let root = host.root.take().unwrap();
     host.finish().await;
     let host = Fixture::at(root).await;
-    device.endpoint = host.endpoint.clone();
+    device = verify_address(&device, &host.endpoint).await.unwrap();
     assert!(!inspect(&device.endpoint).await.unwrap().pairing_open);
     let invitation = connect(&device, &id).await.unwrap();
     assert!(
@@ -221,6 +221,22 @@ async fn saved_pairing_survives_server_restart_and_sessions_are_bounded() {
     .await
     .unwrap();
     assert!(crate::native_pairing::connect(&invitation).await.is_err());
+    host.finish().await;
+}
+
+#[tokio::test]
+async fn new_address_must_prove_the_saved_identity_without_starting_a_session() {
+    let mut host = Fixture::new().await;
+    let id = uuid::Uuid::new_v4().to_string();
+    let device = host.pair(&id).await;
+    let other = Fixture::new().await;
+    assert!(verify_address(&device, &other.endpoint).await.is_err());
+    let updated = verify_address(&device, &host.endpoint).await.unwrap();
+    assert_eq!(updated.certificate, device.certificate);
+    assert_eq!(updated.token, device.token);
+    assert!(host.handle.state.active.lock().unwrap().is_none());
+    assert!(other.handle.clients().is_empty());
+    other.finish().await;
     host.finish().await;
 }
 

@@ -101,7 +101,7 @@ impl super::App {
         self.autoconnect_done = true;
         if self.stream_target.is_some() {
             self.disconnect();
-        } else if self.logged_in {
+        } else if self.logged_in && self.lan.compatibility {
             self.start_load();
         } else {
             self.status = "已退出账号，请重新扫码登录".into();
@@ -109,7 +109,7 @@ impl super::App {
     }
 
     pub(super) fn poll_account(&mut self) {
-        if self.is_native(){return;}
+        if self.is_native()||(self.stream_target.is_none()&&!self.lan.compatibility){return;}
         if self.account_poll_at.elapsed() < std::time::Duration::from_millis(500) {
             return;
         }

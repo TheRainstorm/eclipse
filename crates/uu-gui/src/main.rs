@@ -32,6 +32,8 @@ mod build_info;
 mod account;
 mod audio_controls;
 mod native_ui;
+mod lan_ui;
+mod lan_host_ui;
 mod native_keys;
 mod native_host_ui;
 mod native_interfaces;
@@ -124,6 +126,7 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
 struct App {
     stream_target: Option<sessions::StreamTarget>,
     native_ui: native_ui::NativeUi,
+    lan: lan_ui::LanUi,
     native_clipboard_enabled: bool,
     native_host: native_host_ui::NativeHostUi,
     sessions: sessions::Sessions,
@@ -377,6 +380,7 @@ impl App {
         let mut app = Self {
             stream_target,
             native_ui: native_ui::NativeUi::default(),
+            lan:lan_ui::LanUi::new(config.as_ref().map(|c|c.at("native-lan"))),
             native_clipboard_enabled: false,
             native_host: native_host_ui::NativeHostUi::default(),
             sessions: sessions::Sessions::default(),
@@ -466,7 +470,7 @@ impl App {
             app.view_only = target.view_only;
             app.autoconnect_done = true;
             app.connect();
-        } else if logged_in {
+        } else if logged_in && app.lan.compatibility {
             app.start_load();
         } else {
             app.status = "选择连接方式".into();
@@ -630,7 +634,7 @@ impl App {
             match self.textures.get_mut(&idx) {
                 Some(t) => t.set(ctx, image),
                 None => {
-                    if native && self.status.starts_with("正在") {self.status="原生串流已连接 · 仅观看".into();}
+                    if native && self.status.starts_with("正在") {self.status="原生串流已连接".into();}
                     h.stats.diagnostics.record(serde_json::json!({"event":"first_frame","track":idx,"backend":h.stats.backend()}));
                     self.textures.insert(idx, video_texture::VideoTexture::new(ctx, self.video_gl.as_ref(), image));
                 }
@@ -1026,6 +1030,8 @@ impl App {
 
 impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.lan.host.stop();
+        self.native_host.stop();
         // Delete custom GL textures while eframe still owns a current context.
         self.textures.clear();
             self.hud_cache=Default::default();
@@ -1044,6 +1050,8 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.native_host.poll(ctx);
+        let lan_active=self.stream_target.is_none()&&!self.lan.compatibility;
+        self.lan.poll(ctx,lan_active);
         if let Some(seconds) = frame.info().cpu_usage {
             self.render_total_seconds += seconds;
             self.render_samples += 1;
@@ -1066,7 +1074,7 @@ impl eframe::App for App {
             self.shortcuts.clear();
         }
         self.window_edge_active = !self.mouse_captured && window::resize_border(ctx, self.fullscreen);
-        if ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running()) {
+        if ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running() || self.lan.host.running()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_requested = true;
             self.disconnect();
@@ -1087,8 +1095,8 @@ impl eframe::App for App {
             .map(|texture| texture.size_vec2());
         self.window_sizing.update(ctx, self.stream_target.is_some(), video_px,
             self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(frame, ctx));
-        if self.exit_requested { self.native_host.stop(); }
-        if self.exit_requested && self.controller.is_none() && !self.native_host.running() {
+        if self.exit_requested { self.native_host.stop(); self.lan.host.stop(); }
+        if self.exit_requested && self.controller.is_none() && !self.native_host.running() && !self.lan.host.running() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.poll_login(ctx);
@@ -1196,6 +1204,7 @@ impl eframe::App for App {
         }
         self.native_ui(ctx);
         self.native_host_ui(ctx);
+        if self.stream_target.is_none() {self.lan.dialogs(ctx);}
         self.settings_ui(ctx);
         self.about_ui(ctx);
         if self.audio_save_after.is_some_and(|at|std::time::Instant::now()>=at) {

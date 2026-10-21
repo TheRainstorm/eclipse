@@ -694,6 +694,19 @@ pub async fn pair(
         _ => Err(anyhow::anyhow!("配对响应无效")),
     }
 }
+/// Check a discovered new address against an already-paired certificate before
+/// updating the saved endpoint. No authorization token or media request is sent.
+pub async fn verify_address(device: &Device, endpoint: &str) -> Result<Device> {
+    let found = inspect(endpoint).await?;
+    ensure!(
+        found.info.id == device.id && found.certificate == device.certificate,
+        "服务端身份已变化，未发送连接凭据"
+    );
+    let _stream = tls_connect(found.address, &device.certificate).await?;
+    let mut updated = device.clone();
+    updated.endpoint = crate::native_discovery::endpoint(endpoint)?;
+    Ok(updated)
+}
 pub async fn connect(device: &Device, client_id: &str) -> Result<Invitation> {
     let found = inspect(&device.endpoint).await?;
     ensure!(
