@@ -68,6 +68,8 @@ pub struct Importer {
     current: Option<Arc<Frame>>,
     locked: bool,
     conversion_pending: bool,
+    timings: [f64; 3],
+    samples: [u64; 3],
 }
 // The eframe callback is Send+Sync but executes on its owning GL thread.
 // No WGL/D3D immediate context method is called from decoder threads here.
@@ -84,9 +86,18 @@ impl Importer {
             current: None,
             locked: false,
             conversion_pending: false,
+            timings: [0.; 3],
+            samples: [0; 3],
         })
     }
+    pub fn timings_ms(&self) -> [f64; 3] {
+        std::array::from_fn(|i| self.timings[i] * 1000. / self.samples[i].max(1) as f64)
+    }
     pub unsafe fn set(&mut self, frame: Arc<Frame>, color: YuvColor) -> Result<(), String> {
+        // Keep the output GL-owned through drawing/present and repeated UI
+        // repaints. Return it to D3D only before the next write: by then the
+        // previous draw can finish without stalling its submission thread.
+        self.sampled()?;
         if !self.converter.as_ref().is_some_and(|c| c.matches(&frame)) {
             self.clear();
             let converter = Converter::new(&frame)?;
@@ -113,17 +124,26 @@ impl Importer {
         self.current = Some(frame);
         // Mark pending before submission, including partial failure paths.
         self.conversion_pending = true;
-        self.converter
+        let started = std::time::Instant::now();
+        let result = self
+            .converter
             .as_ref()
             .unwrap()
-            .convert(self.current.as_ref().unwrap(), color)
+            .convert(self.current.as_ref().unwrap(), color);
+        self.timings[0] += started.elapsed().as_secs_f64();
+        self.samples[0] += 1;
+        result
     }
     pub unsafe fn bind(&mut self) -> Result<(), String> {
         if self.object.is_null() {
             return Err("WGL video object missing".into());
         }
         if !self.locked {
-            if (self.api.lock)(self.device, 1, &mut self.object) == 0 {
+            let started = std::time::Instant::now();
+            let locked = (self.api.lock)(self.device, 1, &mut self.object);
+            self.timings[1] += started.elapsed().as_secs_f64();
+            self.samples[1] += 1;
+            if locked == 0 {
                 return Err("WGL video synchronization failed".into());
             }
             self.locked = true;
@@ -155,7 +175,11 @@ impl Importer {
     }
     pub unsafe fn sampled(&mut self) -> Result<(), String> {
         if self.locked {
-            if (self.api.unlock)(self.device, 1, &mut self.object) == 0 {
+            let started = std::time::Instant::now();
+            let unlocked = (self.api.unlock)(self.device, 1, &mut self.object);
+            self.timings[2] += started.elapsed().as_secs_f64();
+            self.samples[2] += 1;
+            if unlocked == 0 {
                 return Err("WGL video release failed".into());
             }
             self.locked = false;

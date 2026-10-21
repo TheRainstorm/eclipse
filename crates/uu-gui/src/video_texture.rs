@@ -95,6 +95,17 @@ impl VideoTexture {
             None => "cpu-rgba-upload",
         }
     }
+    /// Session means: GPU conversion submission, WGL acquire, WGL release.
+    pub fn gpu_timings_ms(&self) -> Option<[f64; 3]> {
+        #[cfg(windows)]
+        if let Some(gpu) = &self.gpu {
+            let state = gpu.lock().unwrap();
+            if state.d3d_active {
+                return state.d3d_importer.as_ref().map(|i| i.timings_ms());
+            }
+        }
+        None
+    }
     pub fn size(&self) -> [usize; 2] {
         self.size
     }
@@ -511,18 +522,6 @@ impl Planes {
         gl.uniform_4_f32(self.coefficients_uniform.as_ref(), r, gu, gv, b);
         gl.uniform_2_f32(self.levels_uniform.as_ref(), offset, scale);
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
-        #[cfg(windows)]
-        if self.d3d_active {
-            if let Some(importer) = &mut self.d3d_importer {
-                if let Err(error) = importer.sampled() {
-                    eprintln!("D3D11 GPU video unlock failed, using readback: {error}");
-                    uu_core::display_frames::d3d11_frame::set_rendering(false);
-                    importer.clear();
-                    self.d3d_active = false;
-                    self.size = [0, 0];
-                }
-            }
-        }
         #[cfg(target_os = "linux")]
         if self.dma_active {
             if let Some(importer) = &mut self.importer {

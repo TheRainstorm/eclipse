@@ -31,7 +31,7 @@ H.264 → D3D11 硬解表面租约 → 最新帧邮箱
       → D3D11 视频处理器 NV12→RGB → WGL 共享纹理 → UI 绘制
 ```
 
-此路径省去 NV12 同步读回和 OpenGL 像素上传，但仍有 GPU 颜色转换及 D3D/GL 同步，不能称为没有拷贝或等待。保留原有 VSync 设置和最新帧邮箱，不增加显示队列。租约持有 MFT 输出 sample，防止只保留纹理 COM 引用时解码池提前覆盖表面；MF 生命周期随最后一个租约结束。D3D immediate context 启用多线程保护。共享对象在 GL 锁定期间只读，转换在解锁后提交，输入 sample 保留到同步完成。
+此路径省去 NV12 同步读回和 OpenGL 像素上传，但仍有 GPU 颜色转换及 D3D/GL 同步，不能称为没有拷贝或等待。保留原有 VSync 设置和最新帧邮箱，不增加显示队列。租约持有 MFT 输出 sample，防止只保留纹理 COM 引用时解码池提前覆盖表面；MF 生命周期随最后一个租约结束。D3D immediate context 启用多线程保护。共享对象在 GL 锁定期间只读，转换在解锁后提交，输入 sample 保留到同步完成。GL 读取所有权保持到下一帧需要 D3D 写入时才归还，避免每次画完视频都立即阻塞等待归还，也避免纯 UI 重绘重复切换所有权。
 
 驱动不提供扩展、设备不能共享或转换/同步失败时，后续帧回退 NV12 读回和平面上传。`UU_D3D11_READBACK=1` 可在启动时强制原路径用于同机对照；日志中的 `d3d11-wgl-gpu` 才表示实际使用了新渲染路径。不同显卡和跨适配器显示必须分别验证。
 
@@ -110,3 +110,5 @@ Windows 独立窗口站未提供所需 GL 配置，WGL 最终呈现实测仍需�
 - [Microsoft：视频处理颜色空间](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/ns-d3d11-d3d11_video_processor_color_space)
 - [Microsoft：VideoProcessorBlt 与 GPU 查询边界](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11videocontext-videoprocessorblt)
 - [Khronos：WGL D3D11 互操作与锁定同步](https://registry.khronos.org/OpenGL/extensions/NV/WGL_NV_DX_interop2.txt)
+
+首个部署版本的实际 4K 会话日志确认 `d3d11-wgl-gpu` 已启用，Decode 约 0.52ms、Render 约 3.65ms、解码错误为 0；旧会话分别为 7.6–8.0ms 和 0.60–0.69ms。后续延后归还 GL 所有权的优化另增 `video_gpu_submit_acquire_release_ms`，依次记录 GPU 转换提交、WGL 获取、WGL 归还的会话平均耗时，用于定位同步等待。实际画面与鼠标跟手程度仍须交互确认。
