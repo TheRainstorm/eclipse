@@ -922,9 +922,10 @@ impl App {
 
     #[track_caller]
     fn send_key(&mut self, vk: u32, pressed: bool) {
-        if !self.pressed_vks.event(vk,pressed){return;}
+        let change=self.pressed_vks.event(vk,pressed);
+        if change==input_capture::KeyChange::None{return;}
         let caller=std::panic::Location::caller();
-        if matches!(vk,0x10..=0x12|0x5b|0x5c|0xa0..=0xa5) {
+        if change!=input_capture::KeyChange::Repeat && matches!(vk,0x10..=0x12|0x5b|0x5c|0xa0..=0xa5) {
             if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
                 "event":"keyboard_transition","vk":vk,"pressed":pressed,"kseq":self.kseq,
                 "source":std::path::Path::new(caller.file()).file_name().and_then(|name|name.to_str()),
@@ -1234,7 +1235,7 @@ impl eframe::App for App {
                     "injected_loss":s.injected_loss.load(Relaxed),"loss_ppm":s.loss_ppm.load(Relaxed),
                     "queue_drops":s.queue_drops.load(Relaxed),
                     "input_sent":s.input_messages_sent.load(Relaxed),"input_errors":s.input_send_errors.load(Relaxed),
-                    "keyboard_repeats_suppressed":self.pressed_vks.suppressed_repeats(),
+                    "keyboard_repeats_forwarded":self.pressed_vks.forwarded_repeats(),
                     "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()}));
             }
         }

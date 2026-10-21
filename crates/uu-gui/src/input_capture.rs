@@ -46,27 +46,40 @@ impl Capture {
     }
 }
 /// Only this session's forwarded downs may produce remote releases.
-/// Transmit state transitions, not local typematic repeats. The host owns
-/// repeat timing while a key is held, as in the reference streaming clients.
+/// UU's host expires a held key unless it keeps receiving the local typematic
+/// downs, unlike hosts that own key-repeat timing themselves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyChange {
+    None,
+    Press,
+    Repeat,
+    Release,
+}
 pub struct RemoteKeys {
     down: [bool; 256],
-    suppressed_repeats: u64,
+    forwarded_repeats: u64,
 }
 impl Default for RemoteKeys {
     fn default() -> Self {
-        Self { down: [false; 256], suppressed_repeats: 0 }
+        Self { down: [false; 256], forwarded_repeats: 0 }
     }
 }
 impl RemoteKeys {
-    pub fn event(&mut self, vk: u32, pressed: bool) -> bool {
+    pub fn event(&mut self, vk: u32, pressed: bool) -> KeyChange {
         let Some(down) = self.down.get_mut(vk as usize) else {
-            return false;
+            return KeyChange::None;
         };
-        let held = std::mem::replace(down, pressed);
-        if held && pressed {self.suppressed_repeats=self.suppressed_repeats.saturating_add(1);}
-        held != pressed
+        match (*down, pressed) {
+            (false, true) => {*down=true;KeyChange::Press}
+            (true, true) => {
+                self.forwarded_repeats=self.forwarded_repeats.saturating_add(1);
+                KeyChange::Repeat
+            }
+            (true, false) => {*down=false;KeyChange::Release}
+            (false, false) => KeyChange::None,
+        }
     }
-    pub fn suppressed_repeats(&self) -> u64 {self.suppressed_repeats}
+    pub fn forwarded_repeats(&self) -> u64 {self.forwarded_repeats}
     pub fn held(&self) -> Vec<u32> {
         let mut keys: Vec<_> = self
             .down
@@ -214,23 +227,24 @@ mod tests {
     fn modifier_stays_down_across_repeated_chords_until_its_real_release() {
         for modifier in [0x5b, 0x5c, 0xa4, 0xa5] {
             let mut keys = RemoteKeys::default();
-            assert!(keys.event(modifier, true));
+            assert_eq!(keys.event(modifier, true), KeyChange::Press);
             for key in [0x25, 0x27, 9, 9, 0x25] {
-                assert!(keys.event(key, true));
-                assert!(keys.event(key, false));
-                assert!(!keys.event(key, false));
+                assert_eq!(keys.event(key, true), KeyChange::Press);
+                assert_eq!(keys.event(key, false), KeyChange::Release);
+                assert_eq!(keys.event(key, false), KeyChange::None);
                 assert_eq!(keys.held(), vec![modifier]);
             }
-            assert!(keys.event(modifier, false));
-            assert!(!keys.event(modifier, false));
+            assert_eq!(keys.event(modifier, false), KeyChange::Release);
+            assert_eq!(keys.event(modifier, false), KeyChange::None);
             assert!(keys.is_empty());
         }
     }
     #[test]
-    fn typematic_repeats_never_reach_the_host_or_end_a_held_chord() {
+    fn typematic_repeats_keep_uus_held_state_alive() {
         use crate::keyboard_capture::{Decision,Keys};
-        // The native hook must still consume every repeat from Windows, but
-        // only one down/up per key may cross the common sending boundary.
+        // The native hook consumes every repeat from Windows and the common
+        // sending boundary forwards them. UU's host uses these repeats to
+        // maintain a held key; suppressing them makes it expire as a tap.
         for modifier in [0x5b,0x5c,0xa4,0xa5] {
             let mut hook=Keys::new();
             let mut remote=RemoteKeys::default();
@@ -238,7 +252,7 @@ mod tests {
             let mut accept=|vk,down,previous| {
                 match hook.event(vk,down,true,false,previous) {
                     Decision::Remote{vk,pressed}=>{
-                        if remote.event(vk,pressed) {sent.push((vk,pressed));}
+                        if remote.event(vk,pressed)!=KeyChange::None {sent.push((vk,pressed));}
                     },
                     decision=>panic!("captured transition escaped hook: {decision:?}"),
                 }
@@ -251,12 +265,15 @@ mod tests {
                 accept(key,false,true);
             }
             accept(modifier,false,true);
-            assert_eq!(sent,vec![(modifier,true),(0x25,true),(0x25,false),
-                (0x27,true),(0x27,false),(9,true),(9,false),(modifier,false)]);
-            assert_eq!(remote.suppressed_repeats(),270);
+            assert_eq!(sent.len(),278);
+            assert_eq!(sent.first(),Some(&(modifier,true)));
+            assert_eq!(sent.last(),Some(&(modifier,false)));
+            assert_eq!(sent.iter().filter(|(_,pressed)|!pressed).count(),4);
+            assert_eq!(remote.forwarded_repeats(),270);
             assert!(remote.is_empty());
-            assert!(!remote.event(modifier,false));
-            assert!(remote.event(modifier,true));
+            assert_eq!(remote.event(modifier,false),KeyChange::None);
+            assert_eq!(remote.event(modifier,true),KeyChange::Press);
+            assert_eq!(remote.event(modifier,true),KeyChange::Repeat);
             assert_eq!(remote.held(),vec![modifier]);
         }
     }
@@ -264,19 +281,19 @@ mod tests {
     fn release_all_has_no_unowned_or_duplicate_modifier_ups() {
         let mut keys = RemoteKeys::default();
         assert!(keys.held().is_empty());
-        assert!(!keys.event(0x5b, false));
-        keys.event(0xa4, true);
-        keys.event(9, true);
-        keys.event(0x5b, true);
+        assert_eq!(keys.event(0x5b, false),KeyChange::None);
+        assert_eq!(keys.event(0xa4, true),KeyChange::Press);
+        assert_eq!(keys.event(9, true),KeyChange::Press);
+        assert_eq!(keys.event(0x5b, true),KeyChange::Press);
         let release = keys.held();
         assert_eq!(release.first(), Some(&9));
         for key in release {
-            assert!(keys.event(key, false));
-            assert!(!keys.event(key, false));
+            assert_eq!(keys.event(key, false),KeyChange::Release);
+            assert_eq!(keys.event(key, false),KeyChange::None);
         }
         assert!(keys.held().is_empty());
-        assert!(!keys.event(0x5b, false));
-        assert!(!keys.event(0xa4, false));
+        assert_eq!(keys.event(0x5b, false),KeyChange::None);
+        assert_eq!(keys.event(0xa4, false),KeyChange::None);
     }
     #[test]
     fn changing_system_capture_or_resuming_input_does_not_release_held_keys() {
