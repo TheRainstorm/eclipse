@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use webrtc::api::interceptor_registry::{configure_rtcp_reports, configure_twcc_receiver_only};
+use webrtc::api::interceptor_registry::configure_rtcp_reports;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::APIBuilder;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
@@ -71,7 +71,9 @@ pub struct MediaStats {
     pub decoded_total: AtomicU64,
     /// Decode errors.
     pub errors: AtomicU64,
-    /// RTCP round-trip time estimate (ms), when available.
+    /// Retired feedback metadata when the bounded TWCC collector overflows.
+    pub twcc_metadata_drops: Arc<AtomicU64>,
+    /// Application CONTROL round-trip estimate, not ICMP or pure wire time.
     pub rtt_ms: AtomicU32,
     pub rtt_us: AtomicU32,
     pub rtt_deviation_us: AtomicU32,
@@ -189,7 +191,7 @@ impl ControllerMedia {
         // NACK is generated from the application's bounded reorder window so
         // successful RTX clears the hole and expired pictures stop requesting.
         registry = configure_rtcp_reports(registry);
-        registry = configure_twcc_receiver_only(registry, &mut media)?;
+        registry = crate::congestion::configure(registry, &mut media, stats.as_ref().map(|s|s.twcc_metadata_drops.clone()).unwrap_or_default())?;
         let repairs = crate::rtx::RepairBus::new(stats.clone());
         registry.add(Box::new(crate::rtx::RepairTap(repairs.clone())));
         let mut settings=webrtc::api::setting_engine::SettingEngine::default();
