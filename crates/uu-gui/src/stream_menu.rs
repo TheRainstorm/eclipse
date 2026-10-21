@@ -634,29 +634,47 @@ impl super::App {
         }
         let screen = ctx.screen_rect();
         let anchor = self.stream_menu.anchor;
+        let menu_id=egui::Id::new("stream-control-menu");
+        let mut pivot=egui::Align2::LEFT_TOP;
+        let mut available_height=(screen.bottom()-anchor.y-8.0).max(64.0);
+        let mut y=anchor.y.min(screen.bottom()-386.0).max(screen.top()+6.0);
+        if self.fullscreen {
+            let below=(screen.bottom()-anchor.y-10.0).max(0.0);
+            let above=(anchor.y-HANDLE_SIZE-screen.top()-10.0).max(0.0);
+            let previous_height=ctx.memory(|memory|memory.area_rect(menu_id))
+                .map(|rect|rect.height()).unwrap_or(screen.height());
+            if below>=previous_height || below>=above {
+                y=anchor.y+4.0;
+                available_height=below;
+            } else {
+                // Anchor the menu's bottom to the button's top. Let egui
+                // measure its actual contents instead of assuming row count.
+                pivot=egui::Align2::LEFT_BOTTOM;
+                y=anchor.y-HANDLE_SIZE-4.0;
+                available_height=above;
+            }
+        }
         let position = egui::pos2(
             anchor.x.min(screen.right() - MENU_WIDTH - 16.0).max(screen.left() + 6.0),
-            if self.fullscreen && anchor.y+386.0>screen.bottom() {
-                (anchor.y-HANDLE_SIZE-392.0).max(screen.top()+6.0)
-            } else {
-                anchor.y.min(screen.bottom()-386.0).max(screen.top()+6.0)
-            },
+            y,
         );
         let mut quality_open = false;
-        let menu = egui::Area::new("stream-control-menu".into())
+        let menu = egui::Area::new(menu_id)
             .order(egui::Order::Foreground)
+            .pivot(pivot)
             .fixed_pos(position)
             .constrain_to(screen)
             .show(ctx, |ui| {
                 // Area remembers its previous content size. Give the scroll
                 // region the current viewport height, rather than retaining
                 // the initial 400-point default and hiding the final actions.
-                ui.set_max_height((screen.bottom() - position.y - 8.0).max(64.0));
+                ui.set_max_height(available_height.max(1.0));
                 popup_frame(ui).show(ui, |ui| {
                     ui.set_width(MENU_WIDTH);
                     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                     egui::ScrollArea::vertical()
-                        .max_height((screen.bottom() - position.y - 12.0).max(64.0))
+                        .max_height((available_height-8.0).max(1.0))
+                        .min_scrolled_height(0.0)
                         .show(ui, |ui| {
                             ui.with_layout(
                                 egui::Layout::top_down_justified(egui::Align::Min),
