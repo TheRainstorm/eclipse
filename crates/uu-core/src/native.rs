@@ -536,7 +536,8 @@ async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaS
         _=cancelled(&mut stop)=>return Ok(()),
     };
     let local_ip = stream.get_ref().0.local_addr()?.ip();
-    let mut peer = NativePeer::new(local_ip, Some(stats.clone()), false).await?;
+    let advertised_ip = invitation.observed_client_ip().unwrap_or(local_ip);
+    let mut peer = NativePeer::new_with_advertised(local_ip, advertised_ip, Some(stats.clone()), false).await?;
     let result = tokio::select! {
         result=receive_session(&mut peer,&mut stream,frames,stats.clone(),input)=>result,
         _=cancelled(&mut stop)=>Ok(()),

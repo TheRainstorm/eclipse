@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fmt, fs,
     io::{Read, Write},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::Path,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -66,6 +66,8 @@ pub struct Invitation {
     // local deadline. It cannot be supplied in an invitation file or on wire.
     #[serde(skip)]
     broker_deadline: Option<Instant>,
+    #[serde(skip)]
+    observed_client_ip: Option<IpAddr>,
 }
 impl Drop for Invitation {
     fn drop(&mut self) {
@@ -115,11 +117,27 @@ impl Invitation {
     /// Broker media capabilities are issued after the authenticated request.
     /// Start the client timer BEFORE sending that request, so transit time does
     /// not extend their lifetime. The host independently enforces its expiry.
-    pub(crate) fn from_authenticated_broker(mut self, requested_at: Instant) -> Result<Self> {
+    pub(crate) fn from_authenticated_broker(
+        mut self,
+        requested_at: Instant,
+        observed_client_ip: Option<IpAddr>,
+    ) -> Result<Self> {
         self.validate_format()?;
+        if let Some(ip) = observed_client_ip {
+            ensure!(
+                !ip.is_unspecified()
+                    && !ip.is_multicast()
+                    && ip.is_ipv4() == self.address.is_ipv4(),
+                "invalid observed client address"
+            );
+        }
         self.broker_deadline = Some(requested_at + BROKER_INVITATION_LIFETIME);
+        self.observed_client_ip = observed_client_ip;
         self.validate()?;
         Ok(self)
+    }
+    pub(crate) fn observed_client_ip(&self) -> Option<IpAddr> {
+        self.observed_client_ip
     }
     pub fn load(path: &Path) -> Result<Self> {
         let file = fs::File::open(path).context("cannot open native invitation file")?;
@@ -208,6 +226,7 @@ impl HostCredentials {
                 .checked_add(lifetime.as_secs())
                 .context("invitation lifetime overflow")?,
             broker_deadline: None,
+            observed_client_ip: None,
         };
         invitation.validate()?;
         Ok(Self {
@@ -365,7 +384,7 @@ mod tests {
         let invitation = credentials
             .invitation()
             .clone()
-            .from_authenticated_broker(Instant::now())
+            .from_authenticated_broker(Instant::now(), None)
             .unwrap();
         credentials.invitation.expires_at = now().unwrap() - 1;
         let task = tokio::spawn(async move {
@@ -387,9 +406,21 @@ mod tests {
         assert!(invitation.validate().is_err());
         let fresh = invitation
             .clone()
-            .from_authenticated_broker(Instant::now())
+            .from_authenticated_broker(Instant::now(), None)
             .unwrap();
         assert!(fresh.validate().is_ok());
+        let observed = invitation
+            .clone()
+            .from_authenticated_broker(Instant::now(), Some("127.0.0.2".parse().unwrap()))
+            .unwrap();
+        assert_eq!(
+            observed.observed_client_ip(),
+            Some("127.0.0.2".parse().unwrap())
+        );
+        let mut observed_wire = serde_json::to_value(&observed).unwrap();
+        assert!(observed_wire.get("observed_client_ip").is_none());
+        observed_wire["observed_client_ip"] = serde_json::json!("127.0.0.2");
+        assert!(serde_json::from_value::<Invitation>(observed_wire).is_err());
         let mut wire = serde_json::to_value(&fresh).unwrap();
         assert!(wire.get("broker_deadline").is_none());
         let loaded: Invitation = serde_json::from_value(wire.clone()).unwrap();
@@ -398,7 +429,7 @@ mod tests {
         wire["broker_deadline"] = serde_json::json!("2099-01-01");
         assert!(serde_json::from_value::<Invitation>(wire).is_err());
         assert!(invitation
-            .from_authenticated_broker(Instant::now() - Duration::from_secs(31))
+            .from_authenticated_broker(Instant::now() - Duration::from_secs(31), None)
             .is_err());
     }
     #[tokio::test]

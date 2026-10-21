@@ -143,11 +143,24 @@ impl NativePeer {
         stats: Option<Arc<MediaStats>>,
         sender: bool,
     ) -> Result<Self> {
+        Self::new_with_advertised(local_ip, local_ip, stats, sender).await
+    }
+    /// The optional address comes from the authenticated broker's observation
+    /// of this client's TCP connection. UDP stays bound to the local interface;
+    /// remote candidates still must match the authenticated signaling peer.
+    pub async fn new_with_advertised(
+        local_ip: IpAddr,
+        advertised_ip: IpAddr,
+        stats: Option<Arc<MediaStats>>,
+        sender: bool,
+    ) -> Result<Self> {
         crate::install_crypto_provider();
         ensure!(
             !local_ip.is_unspecified() && !local_ip.is_multicast(),
             "native media requires a concrete local address"
         );
+        ensure!(!advertised_ip.is_unspecified() && !advertised_ip.is_multicast()
+            && local_ip.is_ipv4() == advertised_ip.is_ipv4(), "invalid native advertised address");
         // One socket, explicitly bound to the authenticated signaling interface.
         // The older ICE library excludes loopback while enumerating interfaces;
         // its supported UDP mux + 1:1 mapping keeps localhost tests on loopback.
@@ -176,7 +189,7 @@ impl NativePeer {
             NetworkType::Udp6
         }]);
         settings.set_ip_filter(Box::new(move |ip| ip == gather_ip));
-        settings.set_nat_1to1_ips(vec![local_ip.to_string()], RTCIceCandidateType::Host);
+        settings.set_nat_1to1_ips(vec![advertised_ip.to_string()], RTCIceCandidateType::Host);
         settings.set_udp_network(UDPNetwork::Muxed(mux.clone()));
         let mut media = MediaEngine::default();
         media.register_codec(
@@ -413,6 +426,21 @@ impl Drop for NativePeer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn authenticated_observed_address_changes_advertisement_without_relaxing_peer_validation() {
+        let local = "127.0.0.1".parse().unwrap();
+        let observed = "127.0.0.2".parse().unwrap();
+        let peer = NativePeer::new_with_advertised(local, observed, None, false).await.unwrap();
+        let (frames, _receiver) = crate::media::frame_channel();
+        peer.receiver(frames, Arc::new(MediaStats::default())).await.unwrap();
+        let offer = peer.description(true).await.unwrap();
+        assert!(validate_candidates(&offer.sdp, observed).is_ok());
+        assert!(validate_candidates(&offer.sdp, local).is_err());
+        peer.close().await;
+        assert!(NativePeer::new_with_advertised(local, "0.0.0.0".parse().unwrap(), None, false).await.is_err());
+        assert!(NativePeer::new_with_advertised(local, "224.0.0.1".parse().unwrap(), None, false).await.is_err());
+        assert!(NativePeer::new_with_advertised(local, "::1".parse().unwrap(), None, false).await.is_err());
+    }
     #[test]
     fn media_candidates_cannot_redirect_a_paired_session_to_another_host() {
         let peer = "127.0.0.1".parse().unwrap();

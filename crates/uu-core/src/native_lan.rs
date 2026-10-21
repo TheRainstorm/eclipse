@@ -11,7 +11,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, Serve
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -66,10 +66,20 @@ enum Request {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 enum Reply {
-    Pending { server_id: String },
-    Paired { token: Secret },
-    Session { invitation: Invitation },
-    Error { message: String },
+    Pending {
+        server_id: String,
+    },
+    Paired {
+        token: Secret,
+    },
+    Session {
+        invitation: Invitation,
+        #[serde(default)]
+        observed_client_ip: Option<IpAddr>,
+    },
+    Error {
+        message: String,
+    },
 }
 async fn read<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin)) -> Result<T> {
     read_with_wait(stream, IO_WAIT).await
@@ -418,6 +428,7 @@ impl Drop for Server {
 async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
     socket.set_nodelay(true)?;
     let local = socket.local_addr()?;
+    let observed_client_ip = socket.peer_addr()?.ip();
     let mut header = [0; 17];
     timeout(IO_WAIT, socket.read_exact(&mut header))
         .await
@@ -521,7 +532,16 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
                 .await;
             }
             match start_session(state, client_id, local).await {
-                Ok(invitation) => write(&mut stream, &Reply::Session { invitation }).await?,
+                Ok(invitation) => {
+                    write(
+                        &mut stream,
+                        &Reply::Session {
+                            invitation,
+                            observed_client_ip: Some(observed_client_ip),
+                        },
+                    )
+                    .await?
+                }
                 Err(error) => {
                     write(
                         &mut stream,
@@ -772,7 +792,10 @@ pub async fn connect(device: &Device, client_id: &str) -> Result<Invitation> {
     )
     .await?;
     match read_with_wait::<Reply>(&mut stream, Duration::from_secs(10)).await? {
-        Reply::Session { invitation } => invitation.from_authenticated_broker(requested_at),
+        Reply::Session {
+            invitation,
+            observed_client_ip,
+        } => invitation.from_authenticated_broker(requested_at, observed_client_ip),
         Reply::Error { message } => Err(anyhow::anyhow!(message)),
         _ => Err(anyhow::anyhow!("连接响应无效")),
     }

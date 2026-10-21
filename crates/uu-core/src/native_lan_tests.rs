@@ -110,6 +110,10 @@ async fn matching_tls_comparison_pairs_then_saved_authorization_starts_generated
     assert_eq!(host.handle.clients().len(), 1);
     let invitation = connect(&device, &client_id).await.unwrap();
     assert!(invitation.address().ip().is_loopback());
+    assert_eq!(
+        invitation.observed_client_ip(),
+        Some("127.0.0.1".parse().unwrap())
+    );
     let (frames, _receiver) = crate::media::frame_channel();
     let stats = Arc::new(crate::media::MediaStats::default());
     let (stop, rx) = watch::channel(false);
