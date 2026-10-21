@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use webrtc::api::interceptor_registry::configure_rtcp_reports;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::APIBuilder;
@@ -61,6 +61,8 @@ pub struct MediaStats {
     pub dec_fps_x100: AtomicU32,
     /// Average decode time in microseconds.
     pub decode_us: AtomicU32,
+    pub frame_cadence: std::sync::Mutex<crate::frame_cadence::Snapshot>,
+    pub decoded_display_skips: AtomicU64,
     /// Received video bitrate in kbit/s.
     pub bitrate_kbps: AtomicU32,
     /// RTP packets received.
@@ -73,10 +75,13 @@ pub struct MediaStats {
     pub errors: AtomicU64,
     /// Retired feedback metadata when the bounded TWCC collector overflows.
     pub twcc_metadata_drops: Arc<AtomicU64>,
+    pub twcc_received_packets: Arc<AtomicU64>,
     /// Application CONTROL round-trip estimate, not ICMP or pure wire time.
     pub rtt_ms: AtomicU32,
     pub rtt_us: AtomicU32,
     pub rtt_deviation_us: AtomicU32,
+    pub rtt_distribution_us: std::sync::Mutex<Option<[u32; 5]>>,
+    pub control_probe_send_us: AtomicU32,
     pub rtt_updated_ms: AtomicU64,
     /// Capture-setting response: request_id << 1 | accepted.
     pub settings_response: AtomicU64,
@@ -102,6 +107,7 @@ impl MediaStats {
     pub fn select_video_track(&self,track:u32) {
         if self.selected_video_track.swap(track,Ordering::AcqRel)!=track {
             for value in [&self.src_fps_x100,&self.dec_fps_x100,&self.decode_us,&self.bitrate_kbps,&self.width,&self.height,&self.loss_ppm] {value.store(0,Ordering::Relaxed);}
+            *self.frame_cadence.lock().unwrap() = Default::default();
             self.set_backend("");
         }
     }
@@ -191,7 +197,7 @@ impl ControllerMedia {
         // NACK is generated from the application's bounded reorder window so
         // successful RTX clears the hole and expired pictures stop requesting.
         registry = configure_rtcp_reports(registry);
-        registry = crate::congestion::configure(registry, &mut media, stats.as_ref().map(|s|s.twcc_metadata_drops.clone()).unwrap_or_default())?;
+        registry = crate::congestion::configure(registry, &mut media, stats.as_ref().map(|s|s.twcc_metadata_drops.clone()).unwrap_or_default(), stats.as_ref().map(|s|s.twcc_received_packets.clone()).unwrap_or_default())?;
         let repairs = crate::rtx::RepairBus::new(stats.clone());
         registry.add(Box::new(crate::rtx::RepairTap(repairs.clone())));
         let mut settings=webrtc::api::setting_engine::SettingEngine::default();
@@ -349,6 +355,7 @@ impl ControllerMedia {
                     let stats = msg_stats.clone();
                     let channel = msg_channel.clone();
                     Box::pin(async move {
+                        let received_at = Instant::now();
                         let Some(ch) = ch.upgrade() else { return };
                         {
                             queue_clipboard(&msg.data,&stats,&clipboard);
@@ -385,8 +392,18 @@ impl ControllerMedia {
                                     s.settings_response.fetch_max((id << 1) | accepted as u64, Ordering::Release);
                                 }
                             }
-                            if let Some((mean, deviation)) = probe.lock().unwrap().reply(&msg.data) {
+                            let reading = {
+                                let mut probe = probe.lock().unwrap();
+                                probe.reply_at(&msg.data, received_at).map(|values| (values, probe.distribution_us()))
+                            };
+                            if let Some(((mean, deviation), distribution)) = reading {
                                 if let Some(s) = &stats {
+                                    *s.rtt_distribution_us.lock().unwrap() = distribution;
+                                    let send_us = s.control_probe_send_us.load(Ordering::Relaxed);
+                                    s.diagnostics.record(serde_json::json!({"event":"control_rtt",
+                                        "mean_us":mean,"stddev_us":deviation,
+                                        "last_min_p50_p95_max_us":distribution,
+                                        "send_call_us":(send_us>0).then_some(send_us)}));
                                     s.rtt_ms.store(mean / 1000, Ordering::Relaxed);
                                     s.rtt_us.store(mean, Ordering::Relaxed);
                                     s.rtt_deviation_us.store(deviation, Ordering::Relaxed);
@@ -545,8 +562,11 @@ impl ControllerMedia {
     /// existing SimpleAction echo protocol and match exactly one pending seq.
     pub async fn probe_network(&self) {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        if let Some(s) = &self.stats {s.control_probe_send_us.store(0,Ordering::Relaxed);}
+        let started = Instant::now();
         self.network_probe.lock().unwrap().begin(seq);
         let _ = self.send_control(crate::control_wire::echo_request_with_clipboard(seq,self.stats.as_ref().is_some_and(|s|s.clipboard.enabled.load(Ordering::Acquire)))).await;
+        if let Some(s) = &self.stats {s.control_probe_send_us.store(started.elapsed().as_micros().min(u32::MAX as u128) as u32,Ordering::Relaxed);}
     }
     /// Send a raw PCK frame over the WebRTC data channel (control hypothesis).
     pub async fn send_control(&self, data: Vec<u8>) -> Result<()> {
@@ -663,7 +683,7 @@ pub(crate) async fn receive_video(
     let generation = Arc::new(AtomicU64::new(0));
     let request_generation = Arc::new(crate::decode_gate::RecoverySignal::default());
     let refresh = Arc::new(tokio::sync::Notify::new());
-    let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(bytes::Bytes, u32, u64, u64)>(8);
+    let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(bytes::Bytes, u32, u64, u64, Instant)>(8);
     let worker_stats = stats.clone();
     let worker_generation = generation.clone();
     let worker_requests = request_generation.clone();
@@ -696,12 +716,15 @@ pub(crate) async fn receive_video(
         let mut window = Instant::now();
         let mut window_frames = 0u64;
         let mut decode_us = 0u64;
+        let mut queue_times = crate::frame_cadence::Samples::default();
         let mut pts_base = None;
-        while let Some((data, timestamp, sample_epoch, sample_request)) = sample_rx.blocking_recv()
+        while let Some((data, timestamp, sample_epoch, sample_request, enqueued)) = sample_rx.blocking_recv()
         {
             if window.elapsed() >= Duration::from_millis(500) {
+                let queue_summary = queue_times.take();
                 if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
                     s.set_backend(decoder.backend_name());
+                    s.frame_cadence.lock().unwrap().decode_queue_ms = queue_summary;
                     s.decode_us
                         .store((decode_us / window_frames.max(1)) as u32, Ordering::Relaxed);
                     s.waiting_for_keyframe
@@ -714,6 +737,7 @@ pub(crate) async fn receive_video(
                 window_frames = 0;
                 decode_us = 0;
             }
+            queue_times.push(Instant::now().duration_since(enqueued).as_secs_f64() * 1000.0);
             let current_epoch = worker_generation.load(Ordering::Acquire);
             let key = uu_media::EncodedFrame::detect_h264_keyframe(&data);
             if !gate.accepts(sample_epoch, current_epoch, key) { continue; }
@@ -774,6 +798,8 @@ pub(crate) async fn receive_video(
                         // upload work only on the newest one after a burst.
                         if let Some(tx) = frame_tx.as_ref().filter(|_| key || sample_rx.is_empty()) {
                             let _ = tx.send_decoded(track_idx, frame, color);
+                        } else if let Some(s) = worker_stats.as_ref().filter(|_|frame_tx.is_some()) {
+                            s.decoded_display_skips.fetch_add(1, Ordering::Relaxed);
                         }
                     }
                 }
@@ -902,6 +928,8 @@ pub(crate) async fn receive_video(
     let mut previous_decoded = 0u64;
     let mut src = 0u64;
     let mut last_ts = None;
+    let mut cadence = crate::frame_cadence::Cadence::default();
+    let mut tick_late = crate::frame_cadence::Samples::default();
     let mut window = Instant::now();
     // TrackRemote::read_rtp is not cancellation safe. Preserve the pending
     // read across repair/timer events instead of dropping it every 5 ms.
@@ -915,7 +943,7 @@ pub(crate) async fn receive_video(
                 Some(packet)
             }
             Some(packet)=repair_rx.recv()=>Some(packet),
-            _=ticker.tick()=>None,
+            due=ticker.tick()=>{tick_late.push(due.elapsed().as_secs_f64() * 1000.0);None},
         };
         let now = Instant::now();
         if packet.as_ref().is_some_and(|p| test_loss.drop_packet(p.header.sequence_number, now)) {
@@ -930,6 +958,7 @@ pub(crate) async fn receive_video(
             if last_ts.map_or(true, |last| {
                 packet.header.timestamp.wrapping_sub(last) as i32 > 0
             }) {
+                cadence.observe(packet.header.timestamp, now);
                 last_ts = Some(packet.header.timestamp);
                 src += 1;
             }
@@ -977,6 +1006,7 @@ pub(crate) async fn receive_video(
                     unit.timestamp,
                     epoch,
                     request_generation.requested(),
+                    Instant::now(),
                 ))
                 .is_err()
             {
@@ -1001,7 +1031,16 @@ pub(crate) async fn receive_video(
         }
         if window.elapsed() >= Duration::from_millis(500) {
             let decoded = track_decoded.load(Ordering::Relaxed);
+            let mut timing = crate::frame_cadence::Snapshot::default();
+            cadence.publish(&mut timing);
+            timing.receiver_tick_late_ms = tick_late.take();
             if let Some(s) = stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
+                {
+                    let mut snapshot = s.frame_cadence.lock().unwrap();
+                    snapshot.source_spacing_ms = timing.source_spacing_ms;
+                    snapshot.arrival_spacing_ms = timing.arrival_spacing_ms;
+                    snapshot.receiver_tick_late_ms = timing.receiver_tick_late_ms;
+                }
                 let seconds = window.elapsed().as_secs_f64();
                 // The receive timer keeps running when no sample reaches the
                 // decoder. An idle track must report zero, not its last rate.

@@ -31,12 +31,14 @@ struct Shared {
     start: tokio::time::Instant,
     closed: AtomicBool,
     dropped: Arc<AtomicU64>,
+    recorded: Arc<AtomicU64>,
 }
 impl Shared {
     fn record(&self, ssrc: u32, seq: u16) {
         if self.closed.load(Ordering::Relaxed) {
             return;
         }
+        self.recorded.fetch_add(1, Ordering::Relaxed);
         let at = self.start.elapsed().as_micros() as i64;
         let mut pending = self.pending.lock().unwrap();
         if pending.packets.len() == LIMIT {
@@ -48,7 +50,7 @@ impl Shared {
         pending.packets.push_back((ssrc, seq, at));
     }
 }
-pub(crate) struct Builder(pub Arc<AtomicU64>);
+pub(crate) struct Builder(pub Arc<AtomicU64>, pub Arc<AtomicU64>);
 impl InterceptorBuilder for Builder {
     fn build(&self, _: &str) -> Result<Arc<dyn Interceptor + Send + Sync>> {
         Ok(Arc::new(Receiver {
@@ -57,6 +59,7 @@ impl InterceptorBuilder for Builder {
                 start: tokio::time::Instant::now(),
                 closed: AtomicBool::new(false),
                 dropped: self.0.clone(),
+                recorded: self.1.clone(),
             }),
             task: Mutex::new(None),
         }))
@@ -176,6 +179,7 @@ pub(crate) fn configure(
     mut registry: interceptor::registry::Registry,
     media: &mut webrtc::api::media_engine::MediaEngine,
     dropped: Arc<AtomicU64>,
+    recorded: Arc<AtomicU64>,
 ) -> anyhow::Result<interceptor::registry::Registry> {
     use webrtc::rtp_transceiver::{
         rtp_codec::{RTCRtpHeaderExtensionCapability, RTPCodecType},
@@ -195,7 +199,7 @@ pub(crate) fn configure(
             None,
         )?;
     }
-    registry.add(Box::new(Builder(dropped)));
+    registry.add(Box::new(Builder(dropped, recorded)));
     Ok(registry)
 }
 
@@ -308,11 +312,16 @@ mod tests {
             !blocked_feedback_allows_video(upstream).await,
             "baseline must reproduce metadata backpressure"
         );
-        assert!(blocked_feedback_allows_video(Builder(Arc::default()).build("").unwrap()).await);
+        assert!(
+            blocked_feedback_allows_video(
+                Builder(Arc::default(), Arc::default()).build("").unwrap()
+            )
+            .await
+        );
     }
     #[tokio::test]
     async fn missing_extension_passthrough_and_metadata_memory_bound() {
-        let interceptor = Builder(Arc::default()).build("").unwrap();
+        let interceptor = Builder(Arc::default(), Arc::default()).build("").unwrap();
         let source: Arc<dyn RTPReader + Send + Sync> = Arc::new(Source(AtomicU64::new(0)));
         let reader = interceptor
             .bind_remote_stream(&StreamInfo::default(), source.clone())
@@ -324,6 +333,7 @@ mod tests {
             start: tokio::time::Instant::now(),
             closed: AtomicBool::new(false),
             dropped: Arc::default(),
+            recorded: Arc::default(),
         };
         for seq in 0..LIMIT + 7 {
             shared.record(42, seq as u16);

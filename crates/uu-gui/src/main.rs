@@ -1297,6 +1297,10 @@ impl eframe::App for App {
                     "injected_loss":s.injected_loss.load(Relaxed),"loss_ppm":s.loss_ppm.load(Relaxed),
                     "queue_drops":s.queue_drops.load(Relaxed),
                     "twcc_metadata_drops":s.twcc_metadata_drops.load(Relaxed),
+                    "twcc_received_packets":s.twcc_received_packets.load(Relaxed),
+                    "decoded_display_skips_all_tracks":s.decoded_display_skips.load(Relaxed),
+                    "frame_cadence":s.frame_cadence.lock().unwrap().clone(),
+                    "control_rtt_last_min_p50_p95_max_us":*s.rtt_distribution_us.lock().unwrap(),
                     "input_sent":s.input_messages_sent.load(Relaxed),"input_errors":s.input_send_errors.load(Relaxed),
                     "keyboard_repeats_forwarded":self.pressed_vks.forwarded_repeats(),
                     "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()}));

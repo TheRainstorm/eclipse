@@ -380,8 +380,12 @@ impl ViewerControl {
         channel.on_message(Box::new(move |message| {
             match parse(&message.data) {
                 Some(Packet::Pong { sequence }) => {
-                    if let Some((mean, deviation)) = probes.lock().unwrap().reply_sequence(sequence)
-                    {
+                    let reading = {
+                        let mut probe = probes.lock().unwrap();
+                        probe.reply_sequence(sequence).map(|values| (values, probe.distribution_us()))
+                    };
+                    if let Some(((mean, deviation), distribution)) = reading {
+                        *incoming.rtt_distribution_us.lock().unwrap() = distribution;
                         incoming.rtt_us.store(mean, Ordering::Relaxed);
                         incoming
                             .rtt_deviation_us
