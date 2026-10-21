@@ -497,103 +497,114 @@ impl LanUi {
                         }
                     });
                 }
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for row in &rows {
-                        egui::Frame::none()
-                            .fill(C::WHITE)
-                            .rounding(10.)
-                            .stroke(egui::Stroke::new(1., C::from_rgb(226, 232, 240)))
-                            .inner_margin(16.)
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    let width = (ui.available_width() - 125.).max(160.);
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(width, 72.),
-                                        egui::Layout::left_to_right(egui::Align::Center),
-                                        |ui| {
-                                            let (rect, _) = ui.allocate_exact_size(
-                                                egui::vec2(42., 42.),
-                                                egui::Sense::hover(),
-                                            );
-                                            ui.painter().rect_filled(
-                                                rect,
-                                                9.,
-                                                C::from_rgb(236, 244, 255),
-                                            );
-                                            ui::icon(
-                                                ui.painter(),
-                                                rect.shrink(10.),
-                                                Icon::Desktop,
-                                                BLUE,
-                                            );
-                                            ui.add_space(10.);
-                                            ui.vertical(|ui| {
-                                                ui.add(
-                                                    egui::Label::new(
-                                                        RichText::new(&row.name).size(17.).strong(),
-                                                    )
-                                                    .truncate(),
+                let row_width = ui.available_width();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for row in &rows {
+                            egui::Frame::none()
+                                .fill(C::WHITE)
+                                .rounding(10.)
+                                .stroke(egui::Stroke::new(1., C::from_rgb(226, 232, 240)))
+                                .inner_margin(16.)
+                                .show(ui, |ui| {
+                                    ui.set_min_width((row_width - 32.).max(0.));
+                                    ui.horizontal(|ui| {
+                                        let width =
+                                            (row_width - 32. - 125. - ui.spacing().item_spacing.x)
+                                                .max(160.);
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(width, 72.),
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.set_min_width(width);
+                                                let (rect, _) = ui.allocate_exact_size(
+                                                    egui::vec2(42., 42.),
+                                                    egui::Sense::hover(),
                                                 );
-                                                ui.label(
-                                                    RichText::new(&row.endpoint)
-                                                        .size(12.)
-                                                        .color(MUTED),
+                                                ui.painter().rect_filled(
+                                                    rect,
+                                                    9.,
+                                                    C::from_rgb(236, 244, 255),
                                                 );
-                                                ui.add(
-                                                    egui::Label::new(
-                                                        RichText::new(&row.detail).size(12.).color(
-                                                            if row.changed {
-                                                                C::from_rgb(170, 60, 50)
-                                                            } else {
-                                                                MUTED
-                                                            },
-                                                        ),
-                                                    )
-                                                    .truncate(),
+                                                ui::icon(
+                                                    ui.painter(),
+                                                    rect.shrink(10.),
+                                                    Icon::Desktop,
+                                                    BLUE,
                                                 );
-                                            });
-                                        },
-                                    );
-                                    ui.vertical(|ui| {
-                                        let label = if matches!(row.kind, RowKind::Paired(_)) {
-                                            "连接"
-                                        } else {
-                                            "配对"
-                                        };
-                                        if ui
-                                            .add_enabled(
-                                                self.client.is_none()
-                                                    && self.book.is_some()
-                                                    && !row.changed,
-                                                egui::Button::new(
-                                                    RichText::new(label).color(C::WHITE),
-                                                )
-                                                .fill(BLUE)
-                                                .min_size(egui::vec2(90., 32.)),
-                                            )
-                                            .clicked()
-                                        {
-                                            connect = Some(row.clone());
-                                        }
-                                        ui.menu_button("更多", |ui| {
+                                                ui.add_space(10.);
+                                                ui.vertical(|ui| {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(&row.name)
+                                                                .size(17.)
+                                                                .strong(),
+                                                        )
+                                                        .truncate(),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(&row.endpoint)
+                                                            .size(12.)
+                                                            .color(MUTED),
+                                                    );
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(&row.detail)
+                                                                .size(12.)
+                                                                .color(if row.changed {
+                                                                    C::from_rgb(170, 60, 50)
+                                                                } else {
+                                                                    MUTED
+                                                                }),
+                                                        )
+                                                        .truncate(),
+                                                    );
+                                                });
+                                            },
+                                        );
+                                        ui.vertical(|ui| {
+                                            let label = if matches!(row.kind, RowKind::Paired(_)) {
+                                                "连接"
+                                            } else {
+                                                "配对"
+                                            };
                                             if ui
-                                                .button(if matches!(row.kind, RowKind::Paired(_)) {
-                                                    "忘记配对"
-                                                } else {
-                                                    "移除设备"
-                                                })
+                                                .add_enabled(
+                                                    self.client.is_none()
+                                                        && self.book.is_some()
+                                                        && !row.changed,
+                                                    egui::Button::new(
+                                                        RichText::new(label).color(C::WHITE),
+                                                    )
+                                                    .fill(BLUE)
+                                                    .min_size(egui::vec2(90., 32.)),
+                                                )
                                                 .clicked()
                                             {
-                                                forget = Some(row.clone());
-                                                ui.close_menu();
+                                                connect = Some(row.clone());
                                             }
+                                            ui.menu_button("更多", |ui| {
+                                                if ui
+                                                    .button(
+                                                        if matches!(row.kind, RowKind::Paired(_)) {
+                                                            "忘记配对"
+                                                        } else {
+                                                            "移除设备"
+                                                        },
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    forget = Some(row.clone());
+                                                    ui.close_menu();
+                                                }
+                                            });
                                         });
                                     });
                                 });
-                            });
-                        ui.add_space(10.);
-                    }
-                });
+                            ui.add_space(10.);
+                        }
+                    });
             });
         if let Some(row) = connect {
             self.connect(row, ctx);
