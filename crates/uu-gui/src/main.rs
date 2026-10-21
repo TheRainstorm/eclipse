@@ -154,7 +154,6 @@ struct App {
     fps: std::collections::HashMap<u32, f32>,
     last_fps: std::time::Instant,
     last_diagnostic: std::time::Instant,
-    last_hook_refresh: std::time::Instant,
     unpresented: std::collections::HashSet<u32>,
     render_ms: f32,
     hud_cache: hud::Cache,
@@ -409,7 +408,6 @@ impl App {
             fps: std::collections::HashMap::new(),
             last_fps: std::time::Instant::now(),
             last_diagnostic: std::time::Instant::now(),
-            last_hook_refresh: std::time::Instant::now(),
             unpresented: Default::default(),
             render_ms: 0.0,
             hud_cache: Default::default(),
@@ -780,27 +778,6 @@ impl App {
     fn remote_input_active(&self,ctx:&egui::Context)->bool {
         self.input_capture.active(self.input_conditions(ctx))
     }
-    /// External keyboard-sharing tools may reinstall their low-level hook
-    /// after ours. When captured Win/Alt events are still being forwarded and
-    /// the local window sees them too, refresh our hook to move it to the
-    /// front of the chain without touching the other tool's configuration.
-    fn check_hook_conflict(&mut self) {
-        if !self.native_keyboard_capture {return;}
-        let Some(k)=self.platform.keyboard_diagnostics() else {return;};
-        let seen=k["win_seen"].as_u64().unwrap_or(0);
-        let captured=k["win_captured"].as_u64().unwrap_or(0);
-        let forwarded=k["win_forwarded_background"].as_u64().unwrap_or(0)
-            +k["alt_forwarded_background"].as_u64().unwrap_or(0);
-        let window=k["window_win_seen"].as_u64().unwrap_or(0)
-            +k["window_alt_seen"].as_u64().unwrap_or(0);
-        if seen>captured.saturating_add(1)
-            && (forwarded>0||window>0)
-            && self.last_hook_refresh.elapsed()>=std::time::Duration::from_secs(5)
-        {
-            self.platform.refresh_keyboard_hook();
-            self.last_hook_refresh=std::time::Instant::now();
-        }
-    }
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
         let conditions=self.input_conditions(ctx);
         let remote=self.input_capture.active(conditions);
@@ -810,7 +787,6 @@ impl App {
         let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused);
         let window=self.platform.window_keyboard(remote,shortcuts);
         let active=self.platform.capture_keyboard(self.input_capture.system(conditions,self.fullscreen,self.preferences.capture_keyboard));
-        if active && !self.native_keyboard_capture {self.platform.refresh_keyboard_hook();}
         if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {
             if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
                 "event":"input_capture", "requested":self.input_capture.requested(),
@@ -896,7 +872,6 @@ impl App {
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            self.platform.focus_window();
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             if self.restore_maximized {
@@ -1112,7 +1087,6 @@ impl App {
                 }
                 self.input_capture.request();
                 self.context.send_viewport_cmd(egui::ViewportCommand::Focus);
-                self.platform.focus_window();
                 self.status = "连接中…".into();
                 // Apply UI settings once CONTROL is ready, in poll_controller.
             }
@@ -1283,7 +1257,6 @@ impl eframe::App for App {
                     "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()}));
             }
         }
-        self.check_hook_conflict();
         if self.stream_target.is_some() {
             self.stream_ui(ctx, &events);
         } else {
@@ -1339,7 +1312,7 @@ fn main() -> eframe::Result {
             .with_title(title)
             .with_app_id(brand::NAME)
             .with_icon(brand::window_icon())
-            .with_visible(true),
+            .with_visible(!cfg!(windows)),
         vsync,
         centered: !cfg!(windows),
         ..Default::default()

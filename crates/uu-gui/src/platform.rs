@@ -122,17 +122,6 @@ impl Platform {
         }
         #[cfg(not(windows))] {let _=(active,shortcuts);false}
     }
-    pub fn refresh_keyboard_hook(&mut self) {
-        #[cfg(windows)]
-        if !self.window.is_null() {
-            // Another input tool may install its low-level hook after ours.
-            // Reinstall when system capture activates so this owner sees
-            // Alt/Win before that tool can consume or re-inject them.
-            self.hook.take();
-            self.hook=unsafe{windows::install_keyboard_hook(self.window)};
-            windows::HOOK_REFRESHES.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
-        }
-    }
     pub fn capture_keyboard(&self, active: bool) -> bool {
         #[cfg(windows)] {
             let active=active && self.hook.as_ref().is_some_and(|hook| hook.alive());
@@ -165,13 +154,6 @@ impl Platform {
         if std::mem::take(&mut self.show_pending) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            self.focus_window();
-        }
-    }
-    pub fn focus_window(&self) {
-        #[cfg(windows)]
-        if !self.window.is_null() {
-            unsafe {windows::show_and_focus(self.window);}
         }
     }
 }
@@ -201,12 +183,6 @@ mod windows {
     pub unsafe fn monitor_origin(window: HWND) -> Option<(i32, i32)> {
         let r = monitor_info(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST))?.rcWork;
         Some(((r.left + r.right) / 2, (r.top + r.bottom) / 2))
-    }
-    pub unsafe fn show_and_focus(window: HWND) {
-        if window.is_null() {return;}
-        ShowWindow(window,SW_SHOW);
-        SetForegroundWindow(window);
-        SetFocus(window);
     }
     pub unsafe fn place_startup(window: HWND, origin: (i32, i32)) {
         if window.is_null() {
@@ -269,7 +245,6 @@ mod windows {
     static HOOK_WIN_SEEN: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_CAPTURED: AtomicU64=AtomicU64::new(0);
     static WINDOW_WIN_SEEN: AtomicU64=AtomicU64::new(0);
-    static WINDOW_ALT_SEEN: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_UP: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_INJECTED_UP: AtomicU64=AtomicU64::new(0);
     static HOOK_ALT_UP: AtomicU64=AtomicU64::new(0);
@@ -282,14 +257,6 @@ mod windows {
     static HOOK_ALT_FORWARDED_INACTIVE: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_FORWARDED_BACKGROUND: AtomicU64=AtomicU64::new(0);
     static HOOK_ALT_FORWARDED_BACKGROUND: AtomicU64=AtomicU64::new(0);
-    static LAST_FORWARDED_MODIFIER_VK: AtomicU64=AtomicU64::new(0);
-    static LAST_FORWARDED_MODIFIER_FLAGS: AtomicU64=AtomicU64::new(0);
-    static LAST_FORWARDED_MODIFIER_CAPTURE: AtomicU64=AtomicU64::new(0);
-    static LAST_FORWARDED_MODIFIER_OWNED: AtomicU64=AtomicU64::new(0);
-    static LAST_FORWARDED_MODIFIER_ACTIVE: AtomicU64=AtomicU64::new(0);
-    static LAST_FORWARDED_MODIFIER_PREHELD: AtomicU64=AtomicU64::new(0);
-    static LAST_FORWARDED_MODIFIER_AT_MS: AtomicU64=AtomicU64::new(0);
-    pub(super) static HOOK_REFRESHES: AtomicU64=AtomicU64::new(0);
     pub unsafe fn install_window_keyboard(window:HWND)->isize {
         if window.is_null(){return 0;}
         let old=SetWindowLongPtrW(window,GWLP_WNDPROC,window_keyboard as *const () as isize);
@@ -318,20 +285,16 @@ mod windows {
         if down||up {
             let vk=crate::keyboard_capture::sided_vk(wparam as u32,lparam as usize);
             if matches!(vk,0x5b|0x5c){WINDOW_WIN_SEEN.fetch_add(1,Relaxed);}
-            if matches!(vk,0x12|0xa4|0xa5){WINDOW_ALT_SEEN.fetch_add(1,Relaxed);}
             // The hook thread can be ahead of this queued window message.
             // GetKeyState describes this message, not the latest physical input.
             let modifiers=crate::keyboard_capture::Modifiers::from_key_state(|vk|GetKeyState(vk as i32)<0);
             let ctrl_alt=modifiers.shortcut_chord();
             if let Ok(mut keys)=WINDOW_KEYS.try_lock() {
                 let foreground=GetForegroundWindow()==window;
-                // Window messages cannot suppress shell processing. When system
-                // capture is active they join the same remote ownership path;
-                // RemoteKeys deduplicates any event already seen by the hook.
+                // A window message cannot suppress Windows shell processing. If the
+                // hook didn't own a Win chord, keep the entire chord local.
                 let local_system=crate::keyboard_capture::local_system_key(vk,modifiers.win());
-                let system_capture=CAPTURE.load(std::sync::atomic::Ordering::Acquire);
-                let active=window_routes_remote(
-                    WINDOW_INPUT.load(std::sync::atomic::Ordering::Acquire),foreground,local_system,system_capture);
+                let active=WINDOW_INPUT.load(std::sync::atomic::Ordering::Acquire)&&foreground&&!local_system;
                 let shortcuts=LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire)&&foreground;
                 match keys.event_with_shortcuts(vk,down,active,shortcuts,ctrl_alt,lparam as usize&(1<<30)!=0) {
                     crate::keyboard_capture::Decision::Forward=>{},
@@ -345,12 +308,6 @@ mod windows {
         else{CallWindowProcW(std::mem::transmute::<isize,WNDPROC>(old),window,message,wparam,lparam)}
     }
     pub(super) static CAPTURE_CONTEXT: std::sync::OnceLock<eframe::egui::Context>=std::sync::OnceLock::new();
-    fn window_routes_remote(window_input:bool,foreground:bool,local_system:bool,system_capture:bool)->bool {
-        window_input && foreground && (!local_system || system_capture)
-    }
-    fn capture_owns(foreground_matches:bool,system_key:bool,injected:bool,capture:bool)->bool {
-        foreground_matches || (capture && (system_key || injected))
-    }
     fn preheld_for_capture(flags:u32,async_down:bool)->bool {
         // Injected input may already be reflected by GetAsyncKeyState before
         // the low-level callback runs. It is outer-client input, not a local
@@ -398,7 +355,6 @@ mod windows {
             "forwarded_inactive":HOOK_INACTIVE.load(Relaxed),"forwarded_preheld":HOOK_PREHELD.load(Relaxed),
             "win_seen":HOOK_WIN_SEEN.load(Relaxed),"win_captured":HOOK_WIN_CAPTURED.load(Relaxed),
             "window_win_seen":WINDOW_WIN_SEEN.load(Relaxed),
-            "window_alt_seen":WINDOW_ALT_SEEN.load(Relaxed),
             "win_up":HOOK_WIN_UP.load(Relaxed),"win_injected_up":HOOK_WIN_INJECTED_UP.load(Relaxed),
             "alt_up":HOOK_ALT_UP.load(Relaxed),"alt_injected_up":HOOK_ALT_INJECTED_UP.load(Relaxed),
             "win_down":HOOK_WIN_DOWN.load(Relaxed),"alt_down":HOOK_ALT_DOWN.load(Relaxed),
@@ -407,17 +363,7 @@ mod windows {
             "win_forwarded_inactive":HOOK_WIN_FORWARDED_INACTIVE.load(Relaxed),
             "alt_forwarded_inactive":HOOK_ALT_FORWARDED_INACTIVE.load(Relaxed),
             "win_forwarded_background":HOOK_WIN_FORWARDED_BACKGROUND.load(Relaxed),
-            "alt_forwarded_background":HOOK_ALT_FORWARDED_BACKGROUND.load(Relaxed),
-            "hook_refreshes":HOOK_REFRESHES.load(Relaxed),
-            "last_forwarded_modifier":{
-                "vk":LAST_FORWARDED_MODIFIER_VK.load(Relaxed),
-                "flags":LAST_FORWARDED_MODIFIER_FLAGS.load(Relaxed),
-                "capture":LAST_FORWARDED_MODIFIER_CAPTURE.load(Relaxed)!=0,
-                "owned":LAST_FORWARDED_MODIFIER_OWNED.load(Relaxed)!=0,
-                "active":LAST_FORWARDED_MODIFIER_ACTIVE.load(Relaxed)!=0,
-                "already_down":LAST_FORWARDED_MODIFIER_PREHELD.load(Relaxed)!=0,
-                "at_ms":LAST_FORWARDED_MODIFIER_AT_MS.load(Relaxed)
-            }
+            "alt_forwarded_background":HOOK_ALT_FORWARDED_BACKGROUND.load(Relaxed)
         })
     }
     impl Drop for KeyboardHook {
@@ -488,10 +434,8 @@ mod windows {
                     HOOK_ALT_UP.fetch_add(1,Relaxed);
                     if key.flags&LLKHF_INJECTED!=0 {HOOK_ALT_INJECTED_UP.fetch_add(1,Relaxed);}
                 }
-                let capture=CAPTURE.load(std::sync::atomic::Ordering::Acquire);
-                let injected=key.flags&(LLKHF_INJECTED|LLKHF_LOWER_IL_INJECTED)!=0;
-                let owned=!foreground.is_null()&&capture_owns(GetForegroundWindow()==foreground,win||alt,injected,capture);
-                let active=capture&&owned;
+                let owned=!foreground.is_null()&&GetForegroundWindow()==foreground;
+                let active=CAPTURE.load(std::sync::atomic::Ordering::Acquire)&&owned;
                 let shortcuts=LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire)&&owned;
                 let already_down=preheld_for_capture(key.flags,GetAsyncKeyState(key.vkCode as i32)<0);
                 let decision=HOOK_STATE.with(|state| {
@@ -500,15 +444,6 @@ mod windows {
                     modifiers.observe(vk,down);
                     keys.event_with_shortcuts(vk,down,active,shortcuts,modifiers.shortcut_chord(),already_down)
                 });
-                if (win||alt) && matches!(decision,crate::keyboard_capture::Decision::Forward) {
-                    LAST_FORWARDED_MODIFIER_VK.store(vk as u64,Relaxed);
-                    LAST_FORWARDED_MODIFIER_FLAGS.store(key.flags as u64,Relaxed);
-                    LAST_FORWARDED_MODIFIER_CAPTURE.store(capture as u64,Relaxed);
-                    LAST_FORWARDED_MODIFIER_OWNED.store(owned as u64,Relaxed);
-                    LAST_FORWARDED_MODIFIER_ACTIVE.store(active as u64,Relaxed);
-                    LAST_FORWARDED_MODIFIER_PREHELD.store(already_down as u64,Relaxed);
-                    LAST_FORWARDED_MODIFIER_AT_MS.store(uu_core::control_wire::now_ms(),Relaxed);
-                }
                 match decision {
                     crate::keyboard_capture::Decision::Forward=>{
                         if !owned{
@@ -544,25 +479,6 @@ mod windows {
         assert!(!preheld_for_capture(LLKHF_LOWER_IL_INJECTED,true));
         assert!(preheld_for_capture(0,true));
         assert!(!preheld_for_capture(0,false));
-    }
-
-    #[cfg(test)]
-    #[test]
-    fn window_layer_obeys_system_capture_for_local_system_keys() {
-        assert!(window_routes_remote(true,true,false,false));
-        assert!(!window_routes_remote(true,true,true,false));
-        assert!(window_routes_remote(true,true,true,true));
-        assert!(!window_routes_remote(false,true,true,true));
-    }
-
-    #[cfg(test)]
-    #[test]
-    fn active_capture_owns_system_and_injected_input_without_foreground_match() {
-        assert!(capture_owns(true,false,false,false));
-        assert!(capture_owns(false,true,false,true));
-        assert!(capture_owns(false,false,true,true));
-        assert!(!capture_owns(false,true,false,false));
-        assert!(!capture_owns(false,false,true,false));
     }
 
     #[cfg(test)]
