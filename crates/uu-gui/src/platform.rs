@@ -308,8 +308,8 @@ mod windows {
         else{CallWindowProcW(std::mem::transmute::<isize,WNDPROC>(old),window,message,wparam,lparam)}
     }
     pub(super) static CAPTURE_CONTEXT: std::sync::OnceLock<eframe::egui::Context>=std::sync::OnceLock::new();
-    fn capture_owns(foreground_matches:bool,injected:bool,capture:bool)->bool {
-        foreground_matches || (injected && capture)
+    fn capture_owns(foreground_matches:bool,system_key:bool,injected:bool,capture:bool)->bool {
+        foreground_matches || (capture && (system_key || injected))
     }
     fn preheld_for_capture(flags:u32,async_down:bool)->bool {
         // Injected input may already be reflected by GetAsyncKeyState before
@@ -439,7 +439,7 @@ mod windows {
                 }
                 let capture=CAPTURE.load(std::sync::atomic::Ordering::Acquire);
                 let injected=key.flags&(LLKHF_INJECTED|LLKHF_LOWER_IL_INJECTED)!=0;
-                let owned=!foreground.is_null()&&capture_owns(GetForegroundWindow()==foreground,injected,capture);
+                let owned=!foreground.is_null()&&capture_owns(GetForegroundWindow()==foreground,win||alt,injected,capture);
                 let active=capture&&owned;
                 let shortcuts=LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire)&&owned;
                 let already_down=preheld_for_capture(key.flags,GetAsyncKeyState(key.vkCode as i32)<0);
@@ -488,11 +488,12 @@ mod windows {
 
     #[cfg(test)]
     #[test]
-    fn active_capture_owns_injected_input_without_foreground_match() {
-        assert!(capture_owns(true,false,false));
-        assert!(capture_owns(false,true,true));
-        assert!(!capture_owns(false,true,false));
-        assert!(!capture_owns(false,false,true));
+    fn active_capture_owns_system_and_injected_input_without_foreground_match() {
+        assert!(capture_owns(true,false,false,false));
+        assert!(capture_owns(false,true,false,true));
+        assert!(capture_owns(false,false,true,true));
+        assert!(!capture_owns(false,true,false,false));
+        assert!(!capture_owns(false,false,true,false));
     }
 
     #[cfg(test)]
