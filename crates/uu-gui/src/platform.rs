@@ -154,6 +154,13 @@ impl Platform {
         if std::mem::take(&mut self.show_pending) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.focus_window();
+        }
+    }
+    pub fn focus_window(&self) {
+        #[cfg(windows)]
+        if !self.window.is_null() {
+            unsafe {windows::show_and_focus(self.window);}
         }
     }
 }
@@ -183,6 +190,12 @@ mod windows {
     pub unsafe fn monitor_origin(window: HWND) -> Option<(i32, i32)> {
         let r = monitor_info(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST))?.rcWork;
         Some(((r.left + r.right) / 2, (r.top + r.bottom) / 2))
+    }
+    pub unsafe fn show_and_focus(window: HWND) {
+        if window.is_null() {return;}
+        ShowWindow(window,SW_SHOW);
+        SetForegroundWindow(window);
+        SetFocus(window);
     }
     pub unsafe fn place_startup(window: HWND, origin: (i32, i32)) {
         if window.is_null() {

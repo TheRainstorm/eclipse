@@ -792,6 +792,7 @@ impl App {
                 if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) && !controls_active {
                     self.input_capture.request();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    self.platform.focus_window();
                 }
                 if controls_active {messages.extend(self.pointer.release_all(input_screen));}
                 if self.input_capture.pointer(self.input_conditions(ctx),controls_active) {
