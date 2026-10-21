@@ -4969,6 +4969,7 @@ dependencies = [
  "webrtc",
  "x11rb",
  "zeroize",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

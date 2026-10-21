@@ -38,6 +38,22 @@ use webrtc::{
     util::vnet::net::Net,
 };
 
+// ICMP port-unreachable replies during ICE probing are not a teardown of this
+// connectionless socket. Otherwise Windows reports 10054 to the mux, whose
+// reader exits before authenticated peer-reflexive checks can arrive.
+#[cfg(windows)]
+fn configure_udp_probing(socket: &UdpSocket) -> std::io::Result<()> {
+    use std::{os::windows::io::AsRawSocket, ptr::{null_mut}, mem::size_of};
+    use windows_sys::Win32::Networking::WinSock::{WSAIoctl, WSAGetLastError, SIO_UDP_CONNRESET, SOCKET_ERROR};
+    let report_reset: u32 = 0;
+    let mut returned = 0;
+    let result = unsafe { WSAIoctl(socket.as_raw_socket() as _, SIO_UDP_CONNRESET,
+        (&report_reset as *const u32).cast(), size_of::<u32>() as u32,
+        null_mut(), 0, &mut returned, null_mut(), None) };
+    if result == SOCKET_ERROR { return Err(std::io::Error::from_raw_os_error(unsafe { WSAGetLastError() })); }
+    Ok(())
+}
+
 fn opus_capability(red:bool)->RTCRtpCodecCapability {
     RTCRtpCodecCapability {mime_type:if red{"audio/red"}else{"audio/opus"}.into(),clock_rate:48_000,channels:2,
         sdp_fmtp_line:if red{"111/111"}else{"minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1"}.into(),..Default::default()}
@@ -179,6 +195,8 @@ impl NativePeer {
             local_ip
         };
         let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
+        #[cfg(windows)]
+        configure_udp_probing(&socket).context("cannot configure native UDP probing")?;
         let mux = UDPMuxDefault::new(UDPMuxParams::new(socket));
         let mut settings = SettingEngine::default();
         crate::srtp_policy::configure(&mut settings);

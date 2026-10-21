@@ -47,3 +47,6 @@ vaapi = ["uu-media/vaapi"]
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 x11rb = { version = "0.13", features = ["xtest"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Networking_WinSock", "Win32_System_IO"] }
