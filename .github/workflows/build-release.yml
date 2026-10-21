@@ -299,6 +299,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows keyboard ownership/AltGr tests failed' }
           & $keyboardTests 'input_capture::' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows input capture UI state tests failed' }
+          & $keyboardTests 'stream_menu::tests::' --nocapture | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Windows fullscreen menu action tests failed' }
           & $keyboardTests 'isolated_keyboard_hook_pumps_messages_while_ui_is_blocked' --ignored --test-threads=1 --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Isolated Windows keyboard hook lifecycle failed' }
           & $keyboardTests 'lan_host_ui::' --nocapture | Out-Host

@@ -5,6 +5,12 @@ use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke};
 const MENU_INK: Color32 = Color32::from_rgb(29, 32, 37);
 const MENU_WIDTH: f32 = 236.0;
 
+/// Every menu entry dispatches the same action as Ctrl+Alt+F/X.
+fn fullscreen_menu_action(ui:&mut egui::Ui,fullscreen:bool)->Option<super::shortcuts::Action> {
+    menu_row(ui,if fullscreen {"退出全屏"} else {"进入全屏"},Some(Icon::Max),
+        false,false,"Ctrl+Alt+F / X",false).clicked().then_some(super::shortcuts::Action::Fullscreen)
+}
+
 fn popup_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::popup(ui.style())
         .fill(Color32::from_rgb(249, 249, 249))
@@ -609,24 +615,8 @@ impl super::App {
                                     .is_some();
                                     }
                                     side_submenu(ui, &mut blocked, Icon::Max, "窗口", |ui| {
-                                        if menu_row(
-                                            ui,
-                                            if ctx
-                                                .input(|i| i.viewport().maximized.unwrap_or(false))
-                                            {
-                                                "还原窗口"
-                                            } else {
-                                                "最大化窗口"
-                                            },
-                                            None,
-                                            false,
-                                            false,
-                                            "",
-                                            false,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.toggle_maximized(ctx);
+                                        if let Some(action)=fullscreen_menu_action(ui,self.fullscreen) {
+                                            self.local_shortcut(action,ctx);
                                         }
                                         separator(ui);
                                         ui.checkbox(
@@ -743,11 +733,9 @@ impl super::App {
                                         }
                                     });
                                     separator(ui);
-                                    if menu_row(
-                                        ui,
-                                        if self.fullscreen {"退出全屏串流"}else{"全屏串流"},
-                                        Some(Icon::Max),false,false,"Ctrl+Alt+F",false,
-                                    ).clicked() {self.local_shortcut(super::shortcuts::Action::Fullscreen,ctx);}
+                                    if let Some(action)=fullscreen_menu_action(ui,self.fullscreen) {
+                                        self.local_shortcut(action,ctx);
+                                    }
                                     ui.scope(|ui| {
                                         if menu_row(
                                             ui,
@@ -789,5 +777,29 @@ impl super::App {
             ctx.memory_mut(|m| m.close_popup());
         }
         blocked
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn fullscreen_menu_click_dispatches_stream_fullscreen_for_both_states() {
+        for fullscreen in [false,true] {
+            let context=egui::Context::default();
+            let position=egui::pos2(64.0,24.0);
+            let mut actions=Vec::new();
+            for events in [vec![],vec![egui::Event::PointerMoved(position),
+                egui::Event::PointerButton{pos:position,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}],
+                vec![egui::Event::PointerButton{pos:position,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}]] {
+                let input=egui::RawInput {screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(236.0,80.0))),events,..Default::default()};
+                let _=context.run(input,|ctx| {
+                    egui::CentralPanel::default().show(ctx,|ui| {
+                        if let Some(action)=fullscreen_menu_action(ui,fullscreen){actions.push(action);}
+                    });
+                });
+            }
+            assert_eq!(actions,vec![super::super::shortcuts::Action::Fullscreen]);
+        }
     }
 }
