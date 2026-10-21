@@ -295,6 +295,8 @@ jobs:
           Copy-Item -LiteralPath 'platform-validation/keyboard-tests.exe' -Destination $keyboardTests
           & $keyboardTests 'keyboard_capture::' --nocapture
           if ($LASTEXITCODE -ne 0) { throw 'Windows keyboard ownership/AltGr tests failed' }
+          & $keyboardTests 'lan_host_ui::' --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Windows LAN sharing lifecycle tests failed' }
           & $keyboardTests 'native_interfaces::' --nocapture
           if ($LASTEXITCODE -ne 0) { throw 'Windows native address filtering failed' }
           & $keyboardTests 'refreshing_interfaces_preserves_explicit_address' --nocapture
@@ -339,4 +341,8 @@ jobs:
           fi
           cd release-assets
           sha256sum -- *.zip *.tar.gz > SHA256SUMS
-          gh release create "$RELEASE_TAG" --verify-tag --title "uu-client $RELEASE_TAG" --notes-file "$notes" -- ./*.zip ./*.tar.gz SHA256SUMS
+          release_flags=()
+          case "$RELEASE_TAG" in
+            *-*) release_flags+=(--prerelease --latest=false) ;;
+          esac
+          gh release create "$RELEASE_TAG" --verify-tag --title "uu-client $RELEASE_TAG" --notes-file "$notes" "${release_flags[@]}" -- ./*.zip ./*.tar.gz SHA256SUMS

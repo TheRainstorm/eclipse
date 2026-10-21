@@ -2,7 +2,7 @@
 
 大功能里程碑使用 `v主版本.次版本.修订号` 标签，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
-当前版本为 [v0.9.1](https://github.com/TheRainstorm/uu-client/releases/tag/v0.9.1)，补充 [Linux 硬解下载优化](releases/v0.9.1.md)；上一里程碑 v0.9.0 包含[客户端延迟优化](releases/v0.9.0.md)。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+当前正式版本为 [v0.9.0](https://github.com/TheRainstorm/uu-client/releases/tag/v0.9.0)，包含[客户端延迟优化](releases/v0.9.0.md)。开发分支正在准备 [v0.10.0-rc.1 候选版](releases/v0.10.0-rc.1.md)，接入 Eclipse 局域网设备发现、持久配对和一键串流，并合入此前未正式发布的 [Linux 硬解下载优化](releases/v0.9.1.md)。候选版不替换最新稳定版；以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
 
 ```sh
 python3 tools/release/download.py
@@ -17,7 +17,7 @@ python3 tools/release/download.py
 - Linux x86_64：Ubuntu 24.04 构建，启用 VA-API，运行工作区、独立SRTP密码向量/重放回归、原生两进程视频与独立 Sway 混合 DPI 窗口检查，生成 tar.gz。
 - Windows x64：Linux 上使用 MinGW win32 线程模型交叉编译，生成 ZIP；随后在 Windows runner 校验所有文件哈希并运行 TLS/SRTP 原生两进程视频软件解码测试。
 - 两个平台都运行凭据分发边界检查；构建不读取本地私有配置或 CI 服务密钥，测试使用虚构数据。v0.5.0 起明确分发 PC 兼容共享签名值，其它凭据仍禁止进入安装包。发布包包含许可文件、第三方通知与源提交清单。
-- 分支和 PR 只生成保留 14 天的 Actions artifacts；只有标签构建全部成功后，才创建 GitHub Release、附上两端压缩包与 `SHA256SUMS`。
+- 分支和 PR 只生成保留 14 天的 Actions artifacts；只有标签构建全部成功后，才创建 GitHub Release、附上两端压缩包与 `SHA256SUMS`。带预发布后缀的标签发布为 prerelease，不替换最新稳定版本。
 
 Linux 媒体还有独立的快速任务，只运行媒体库测试并生成带源提交、文件校验和的硬解对照探针，产物为 `linux-media-validation-fast`。它使显卡实机回归可以提前开始，正式发布仍等待完整两端检查；该任务只读恢复构建缓存，不与主任务争用缓存写入。
 
