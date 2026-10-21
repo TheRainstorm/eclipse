@@ -1314,7 +1314,7 @@ fn main() -> eframe::Result {
             .with_title(title)
             .with_app_id(brand::NAME)
             .with_icon(brand::window_icon())
-            .with_visible(!cfg!(windows)),
+            .with_visible(true),
         vsync,
         centered: !cfg!(windows),
         ..Default::default()
