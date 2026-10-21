@@ -871,6 +871,7 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             if self.restore_maximized {
@@ -1085,6 +1086,7 @@ impl App {
                     self.context.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
                 }
                 self.input_capture.request();
+                self.context.send_viewport_cmd(egui::ViewportCommand::Focus);
                 self.status = "连接中…".into();
                 // Apply UI settings once CONTROL is ready, in poll_controller.
             }
