@@ -16,7 +16,7 @@ pub fn shortcut_chord(ctrl: bool, alt: bool, right_alt: bool) -> bool {
 }
 /// Track physical modifier transitions even while capture is disabled. Windows
 /// does not update GetAsyncKeyState for a key swallowed by the low-level hook.
-/// Both native paths use this state across fullscreen/capture transitions.
+/// Window messages query their own queue-time state; the hook keeps its own state.
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 pub struct Modifiers { down: u8 }
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
@@ -32,8 +32,13 @@ impl Modifiers {
     pub fn win(&self) -> bool { self.down & 0xc0 != 0 }
     #[cfg(test)]
     pub fn shift(&self) -> bool { self.down & 0x03 != 0 }
-    pub fn bits(&self)->u8 {self.down}
-    pub fn from_bits(down:u8)->Self {Self{down}}
+    pub fn from_key_state(mut is_down:impl FnMut(u32)->bool)->Self {
+        let mut modifiers=Self::new();
+        for vk in [0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0x5b,0x5c] {
+            modifiers.observe(vk,is_down(vk));
+        }
+        modifiers
+    }
 }
 /// Win messages arriving at a window have already been offered to the shell.
 /// Only a low-level hook may forward these remotely without dual activation.
@@ -261,6 +266,15 @@ mod tests {
         }
     }
     #[test]
+    fn window_message_modifier_snapshot_does_not_follow_later_hook_events() {
+        let message=Modifiers::from_key_state(|_|false);
+        let later_hook=Modifiers::from_key_state(|vk|[0x5b,0xa2,0xa4].contains(&vk));
+        assert!(!message.win());assert!(!message.shortcut_chord());
+        assert!(later_hook.win());assert!(later_hook.shortcut_chord());
+        let message=Modifiers::from_key_state(|vk|vk==0x5c);
+        assert!(local_system_key(0x27,message.win()));
+    }
+    #[test]
     fn capture_changes_preserve_release_ownership_for_entire_system_chord() {
         let mut keys=Keys::new();
         for vk in [0x5b,0xa0,0x27] {
@@ -271,7 +285,7 @@ mod tests {
         }
         let mut modifiers=Modifiers::new();
         for vk in [0x5c,0xa2,0xa4] {modifiers.observe(vk,true);}
-        let snapshot=Modifiers::from_bits(modifiers.bits());
+        let snapshot=Modifiers::from_key_state(|vk|[0x5c,0xa2,0xa4].contains(&vk));
         assert!(snapshot.win());assert!(snapshot.shortcut_chord());
     }
     #[test]

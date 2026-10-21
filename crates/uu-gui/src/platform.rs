@@ -224,13 +224,12 @@ mod windows {
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
-    use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering::Relaxed};
+    use std::sync::atomic::{AtomicIsize, Ordering::Relaxed};
     use windows_sys::Win32::{
         System::LibraryLoader::GetModuleHandleW, UI::Input::KeyboardAndMouse::*,
     };
     pub(super) static WINDOW_INPUT: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
     pub(super) static LOCAL_SHORTCUTS: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
-    static MODIFIERS: AtomicU8 = AtomicU8::new(0);
     static OLD_PROC: AtomicIsize=AtomicIsize::new(0);
     static WINDOW_KEYS: std::sync::Mutex<crate::keyboard_capture::Keys>=std::sync::Mutex::new(crate::keyboard_capture::Keys::new());
     pub unsafe fn install_window_keyboard(window:HWND)->isize {
@@ -260,8 +259,9 @@ mod windows {
         let up=message==WM_KEYUP||message==WM_SYSKEYUP;
         if down||up {
             let vk=crate::keyboard_capture::sided_vk(wparam as u32,lparam as usize);
-            let mut modifiers=crate::keyboard_capture::Modifiers::from_bits(MODIFIERS.load(Relaxed));
-            modifiers.observe(vk,down);
+            // The hook thread can be ahead of this queued window message.
+            // GetKeyState describes this message, not the latest physical input.
+            let modifiers=crate::keyboard_capture::Modifiers::from_key_state(|vk|GetKeyState(vk as i32)<0);
             let ctrl_alt=modifiers.shortcut_chord();
             if let Ok(mut keys)=WINDOW_KEYS.try_lock() {
                 let foreground=GetForegroundWindow()==window;
@@ -318,10 +318,7 @@ mod windows {
             PeekMessageW(&mut message,std::ptr::null_mut(),0,0,PM_NOREMOVE);
             HOOK_STATE.with(|state| {
                 let mut state=state.borrow_mut();
-                for vk in [0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0x5b,0x5c] {
-                    state.0.observe(vk,GetAsyncKeyState(vk as i32)<0);
-                }
-                MODIFIERS.store(state.0.bits(),Relaxed);
+                state.0=crate::keyboard_capture::Modifiers::from_key_state(|vk|GetAsyncKeyState(vk as i32)<0);
             });
             let hook=SetWindowsHookExW(WH_KEYBOARD_LL,Some(monitor_key),GetModuleHandleW(std::ptr::null()),0);
             if hook.is_null(){
@@ -363,7 +360,6 @@ mod windows {
                     let mut state=state.borrow_mut();
                     let (modifiers,keys)=&mut *state;
                     modifiers.observe(vk,down);
-                    MODIFIERS.store(modifiers.bits(),Relaxed);
                     keys.event_with_shortcuts(vk,down,active,shortcuts,modifiers.shortcut_chord(),GetAsyncKeyState(key.vkCode as i32)<0)
                 });
                 match decision {
