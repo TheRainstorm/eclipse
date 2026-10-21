@@ -46,13 +46,15 @@ impl Capture {
     }
 }
 /// Only this session's forwarded downs may produce remote releases.
-/// Repeated downs are allowed; duplicate/unowned ups are discarded.
+/// Transmit state transitions, not local typematic repeats. The host owns
+/// repeat timing while a key is held, as in the reference streaming clients.
 pub struct RemoteKeys {
     down: [bool; 256],
+    suppressed_repeats: u64,
 }
 impl Default for RemoteKeys {
     fn default() -> Self {
-        Self { down: [false; 256] }
+        Self { down: [false; 256], suppressed_repeats: 0 }
     }
 }
 impl RemoteKeys {
@@ -61,8 +63,10 @@ impl RemoteKeys {
             return false;
         };
         let held = std::mem::replace(down, pressed);
-        pressed || held
+        if held && pressed {self.suppressed_repeats=self.suppressed_repeats.saturating_add(1);}
+        held != pressed
     }
+    pub fn suppressed_repeats(&self) -> u64 {self.suppressed_repeats}
     pub fn held(&self) -> Vec<u32> {
         let mut keys: Vec<_> = self
             .down
@@ -220,6 +224,40 @@ mod tests {
             assert!(keys.event(modifier, false));
             assert!(!keys.event(modifier, false));
             assert!(keys.is_empty());
+        }
+    }
+    #[test]
+    fn typematic_repeats_never_reach_the_host_or_end_a_held_chord() {
+        use crate::keyboard_capture::{Decision,Keys};
+        // The native hook must still consume every repeat from Windows, but
+        // only one down/up per key may cross the common sending boundary.
+        for modifier in [0x5b,0x5c,0xa4,0xa5] {
+            let mut hook=Keys::new();
+            let mut remote=RemoteKeys::default();
+            let mut sent=Vec::new();
+            let mut accept=|vk,down,previous| {
+                match hook.event(vk,down,true,false,previous) {
+                    Decision::Remote{vk,pressed}=>{
+                        if remote.event(vk,pressed) {sent.push((vk,pressed));}
+                    },
+                    decision=>panic!("captured transition escaped hook: {decision:?}"),
+                }
+            };
+            accept(modifier,true,false);
+            for key in [0x25,0x27,9] {
+                for _ in 0..60 {accept(modifier,true,true);}
+                accept(key,true,false);
+                for _ in 0..30 {accept(key,true,true);}
+                accept(key,false,true);
+            }
+            accept(modifier,false,true);
+            assert_eq!(sent,vec![(modifier,true),(0x25,true),(0x25,false),
+                (0x27,true),(0x27,false),(9,true),(9,false),(modifier,false)]);
+            assert_eq!(remote.suppressed_repeats(),270);
+            assert!(remote.is_empty());
+            assert!(!remote.event(modifier,false));
+            assert!(remote.event(modifier,true));
+            assert_eq!(remote.held(),vec![modifier]);
         }
     }
     #[test]

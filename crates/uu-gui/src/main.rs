@@ -1225,6 +1225,7 @@ impl eframe::App for App {
                     "injected_loss":s.injected_loss.load(Relaxed),"loss_ppm":s.loss_ppm.load(Relaxed),
                     "queue_drops":s.queue_drops.load(Relaxed),
                     "input_sent":s.input_messages_sent.load(Relaxed),"input_errors":s.input_send_errors.load(Relaxed),
+                    "keyboard_repeats_suppressed":self.pressed_vks.suppressed_repeats(),
                     "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()}));
             }
         }
