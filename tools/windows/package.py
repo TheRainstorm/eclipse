@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-build Windows x64 on Linux and publish a self-contained, verified ZIP."""
+"""Build Windows x64 with MinGW on Linux or Windows and create a verified ZIP."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -22,6 +22,10 @@ SOURCE_PATHS = ('crates', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-
                 '.cargo', 'tools/windows', 'tools/licenses', 'licenses', *LICENSES)
 
 
+def compiler_tool(name):
+    return name if sys.platform == 'win32' else 'x86_64-w64-mingw32-' + name
+
+
 def sha256(path):
     with Path(path).open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -37,8 +41,8 @@ def clean_revision():
 
 
 def check_tools():
-    for name in ('cargo', 'rustup', 'git', 'nasm', 'x86_64-w64-mingw32-gcc',
-                 'x86_64-w64-mingw32-g++', 'x86_64-w64-mingw32-objdump', 'x86_64-w64-mingw32-windres'):
+    for name in ('cargo', 'rustup', 'git', 'nasm', 'cmake', *(compiler_tool(tool)
+                 for tool in ('gcc', 'g++', 'objdump', 'windres'))):
         if not shutil.which(name):
             raise RuntimeError(f'缺少 {name}；依赖安装方法见 docs/windows-build.md')
     targets = subprocess.check_output(['rustup', 'target', 'list', '--installed'], text=True)
@@ -59,7 +63,7 @@ def verify_imports(directory):
     for path in directory.iterdir():
         if path.suffix.lower() not in ('.exe', '.dll'):
             continue
-        imports = subprocess.check_output(['x86_64-w64-mingw32-objdump', '-p', str(path)], text=True)
+        imports = subprocess.check_output([compiler_tool('objdump'), '-p', str(path)], text=True)
         for line in imports.splitlines():
             if 'DLL Name:' not in line:
                 continue
@@ -86,8 +90,8 @@ def build_package(output):
         staging.mkdir()
         for filename in ('uu-gui.exe', 'uu.exe'):
             shutil.copy2(binaries / filename, staging / filename)
-        for filename, compiler in [('libgcc_s_seh-1.dll', 'x86_64-w64-mingw32-gcc'),
-                                   ('libstdc++-6.dll', 'x86_64-w64-mingw32-g++')]:
+        for filename, compiler in [('libgcc_s_seh-1.dll', compiler_tool('gcc')),
+                                   ('libstdc++-6.dll', compiler_tool('g++'))]:
             shutil.copy2(runtime_dll(compiler, filename), staging / filename)
         for filename in ('README.txt', 'install.ps1'):
             shutil.copy2(ROOT / 'tools/windows' / filename, staging / filename)
@@ -111,7 +115,7 @@ def build_package(output):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='在 Linux 编译并打包 Windows x64 客户端（Python 3.11+）')
+    parser = argparse.ArgumentParser(description='在 Linux 或 Windows 使用 MinGW 编译打包 Windows x64 客户端（Python 3.11+）')
     parser.add_argument('--output-dir', type=Path, default=OUTPUT, help='产物目录（默认 artifacts/packages）')
     args = parser.parse_args()
     try:

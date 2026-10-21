@@ -1,6 +1,6 @@
 # Windows 编译与打包
 
-在 Linux 仓库根目录执行。脚本使用 Python 3.11+ 标准库，无需安装 pip 依赖。
+在仓库根目录执行，支持 Linux 交叉编译及 Windows 本机 GNU 编译。脚本使用 Python 3.11+ 标准库，无需安装 pip 依赖。
 Windows x64 包包括 GUI、CLI、MinGW 运行库、安装器、使用说明、双许可与第三方通知、版本校验清单。
 
 ## 一次性准备 Linux 编译环境
@@ -21,6 +21,8 @@ sudo update-alternatives --config x86_64-w64-mingw32-g++
 ```
 
 ## 编译与打包
+
+Windows 本机编译需准备 Rust 的 `x86_64-pc-windows-gnu` 工具链、64 位 MinGW（win32 线程模型）、CMake、NASM、Git 和 Python 3.11+，并在当前终端的 PATH 中提供这些工具。脚本会使用本机的 `gcc`、`g++`、`objdump` 和 `windres`；无需 Visual Studio。MSVC 工具链暂不适用于此打包脚本。
 
 ```bash
 python3 tools/windows/package.py
