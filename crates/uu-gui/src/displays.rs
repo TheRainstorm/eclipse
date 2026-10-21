@@ -359,21 +359,32 @@ impl super::App {
                 .selected
                 .and_then(|id| screens.screens.iter().find(|s| s.id == id));
             if selected.is_none() {
-                let next = self.displays.layout.last_selected()
-                    .and_then(|id| screens.screens.iter().find(|s| s.id == id))
-                    .or_else(|| screens.initial_screen())
-                    .unwrap();
-                let previous = self.displays.selected;
-                if previous.is_some() {
+                let initial = screens.initial_screen().unwrap();
+                let remembered = self.displays.layout.last_selected()
+                    .and_then(|id| screens.screens.iter().find(|s| s.id == id));
+                if let Some(remembered) = remembered.filter(|s| s.id != initial.id) {
+                    // Ask for the saved source before presenting the host's
+                    // default primary track; otherwise the first frame and
+                    // capture settings belong to the wrong monitor.
                     self.release_all_keys();
                     self.release_pointer_capture(&self.context.clone());
-                }
-                self.displays.selected = Some(next.id);
-                self.selected_track = next.assigned_track().unwrap_or(self.selected_track);
-                if previous.is_some() || self.displays.blocked {
-                    // Invalidate cached frames when an existing source vanished.
-                    self.displays.blocked = true;
-                    self.select_remote_screen(next.id);
+                    self.textures.clear();
+                    self.unpresented.clear();
+                    self.select_remote_screen(remembered.id);
+                } else {
+                    let next = remembered.unwrap_or(initial);
+                    let previous = self.displays.selected;
+                    if previous.is_some() {
+                        self.release_all_keys();
+                        self.release_pointer_capture(&self.context.clone());
+                    }
+                    self.displays.selected = Some(next.id);
+                    self.selected_track = next.assigned_track().unwrap_or(self.selected_track);
+                    if previous.is_some() || self.displays.blocked {
+                        // Invalidate cached frames when an existing source vanished.
+                        self.displays.blocked = true;
+                        self.select_remote_screen(next.id);
+                    }
                 }
             } else if let Some(screen) = selected {
                 if let Some(track) = screen.assigned_track() {
