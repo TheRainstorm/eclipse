@@ -37,12 +37,37 @@ def variants(values):
 def inspect(name, data, forbidden=(), source=False):
     issues = []
     base = PurePosixPath(name).name
-    if (base in ('signing-key', 'state.json', '.env')
+    if (base in ('signing-key', 'state.json', '.env', 'server-identity.json',
+                 'paired-devices.json', 'authorized-clients.json')
             or base.startswith(('signing-key.', 'state.json.', '.uu-account-', 'device-list.', 'gui-settings'))
             or (base.startswith('uu-session-') and base.endswith('.jsonl'))
             or base.endswith('.eclipse-invite.json')):
         issues.append('private credential/configuration file')
     json_data = data.removeprefix(b'\xef\xbb\xbf').lstrip()
+    if len(data) <= 1024 * 1024 and json_data.startswith(b'{'):
+        try:
+            document = json.loads(data)
+            if isinstance(document, dict):
+                identity = (isinstance(document.get('certificate'), list)
+                            and isinstance(document.get('key'), list)
+                            and bool(document['key']))
+                paired = (isinstance(document.get('client_id'), str)
+                          and isinstance(document.get('devices'), list)
+                          and any(isinstance(device, dict)
+                                  and isinstance(device.get('token'), list)
+                                  and len(device['token']) == 32
+                                  and isinstance(device.get('certificate'), list)
+                                  for device in document['devices']))
+                grants = (isinstance(document.get('server_id'), str)
+                          and isinstance(document.get('clients'), list)
+                          and any(isinstance(client, dict)
+                                  and isinstance(client.get('token_hash'), list)
+                                  and len(client['token_hash']) == 32
+                                  for client in document['clients']))
+                if identity or paired or grants:
+                    issues.append('private native LAN identity or pairing content')
+        except (ValueError, UnicodeDecodeError):
+            pass
     if len(data) <= 16 * 1024 and json_data.startswith(b'{') and all(field in data for field in (b'"certificate"', b'"token"', b'"expires_at"')):
         try:
             document = json.loads(data)

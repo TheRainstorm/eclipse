@@ -59,6 +59,21 @@ class CredentialGuardTests(unittest.TestCase):
 
 
 class NativeInvitationGuard(unittest.TestCase):
+    def test_native_lan_identity_and_saved_pairings_remain_private_after_rename(self):
+        import json
+        fixtures = [
+            dict(id='fixture', certificate=[1], key=[2]),
+            dict(client_id='fixture', devices=[dict(certificate=[1], token=[0]*32)]),
+            dict(server_id='fixture', clients=[dict(token_hash=[0]*32)]),
+        ]
+        for fixture in fixtures:
+            result = scan.inspect('renamed.json', json.dumps(fixture).encode())
+            self.assertTrue(result)
+            self.assertNotIn('fixture', str(result))
+        for name in ('server-identity.json', 'paired-devices.json', 'authorized-clients.json'):
+            self.assertTrue(scan.inspect(name, b'{}'))
+        self.assertFalse(scan.inspect('public-metadata.json', b'{"certificate":[1],"fingerprint":"fixture"}'))
+
     def test_renamed_native_invitation_content_is_also_private(self):
         import json
         data=json.dumps(dict(address='127.0.0.1:12345',certificate=[1],token=[0]*32,expires_at=1)).encode()

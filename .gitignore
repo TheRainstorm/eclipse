@@ -44,3 +44,8 @@ device-list.*.tmp
 gui-settings*.json
 gui-settings*.tmp
 uu-session-*.jsonl
+
+# 原生 LAN 持久身份、配对凭据与授权记录
+server-identity.json
+paired-devices.json
+authorized-clients.json
