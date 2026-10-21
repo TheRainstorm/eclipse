@@ -149,7 +149,6 @@ struct App {
     textures: std::collections::HashMap<u32, video_texture::VideoTexture>,
     video_gl: Option<std::sync::Arc<eframe::glow::Context>>,
     presentation_vsync: bool,
-    last_video_frame: Option<std::time::Instant>,
     wallpapers: std::collections::HashMap<usize, egui::TextureHandle>,
     wallpaper_worker: Option<wallpapers::Worker>,
     frame_count: std::collections::HashMap<u32, u32>,
@@ -406,7 +405,6 @@ impl App {
             textures: std::collections::HashMap::new(),
             video_gl: cc.gl.clone(),
             presentation_vsync,
-            last_video_frame: None,
             wallpapers: std::collections::HashMap::new(),
             wallpaper_worker: None,
             frame_count: std::collections::HashMap::new(),
@@ -639,7 +637,6 @@ impl App {
         for image in frames {
             let idx=match &image {uu_core::display_frames::DisplayImage::Rgba(f)=>f.0,uu_core::display_frames::DisplayImage::Decoded(track,..)=>*track};
             arrived.push(idx);
-            if idx == self.selected_track { self.last_video_frame = Some(std::time::Instant::now()); }
             match self.textures.get_mut(&idx) {
                 Some(t) => t.set(ctx, image),
                 None => {
@@ -1325,19 +1322,9 @@ impl eframe::App for App {
         let idle_poll_ms = if self.controller.is_some() || self.close_at.is_some() { 100 }
             else if self.rx.is_some() || self.login_rx.is_some() { 150 }
             else if self.lan.compatibility { 500 } else { 1000 };
-        // Keep a vblank-paced render loop while video is arriving. Frame/input
-        // wakeups alone can arrive during an in-flight paint and miss a refresh.
-        // No-vsync must stay event driven; otherwise request_repaint busy-spins.
-        // Existing unpresented accounting counts only new images, not redraws.
-        if self.presentation_vsync && self.controller.is_some()
-            && self.textures.contains_key(&self.selected_track)
-            && self.last_video_frame.is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(250))
-            && !ctx.input(|i| i.viewport().minimized.unwrap_or(false))
-        {
-            ctx.request_repaint();
-        } else {
-            ctx.request_repaint_after(std::time::Duration::from_millis(idle_poll_ms));
-        }
+        // Frame and input events wake the UI directly. Extra vblank-paced
+        // redraws regressed WGL ownership waits on the production client.
+        ctx.request_repaint_after(std::time::Duration::from_millis(idle_poll_ms));
     }
 }
 
