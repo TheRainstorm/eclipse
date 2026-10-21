@@ -35,7 +35,7 @@ fn main() -> anyhow::Result<()> {
     let mut converter: Option<Converter> = None;
     let mut held: Option<(Arc<d3d11_frame::Frame>, Vec<u8>, YuvColor)> = None;
     let mut color = YuvColor::default();
-    let mut timings = [0_f64; 3];
+    let mut timings = [0_f64; 4];
     let mut frames = 0;
     let mut checked = 0;
     let mut max_error = 0_u8;
@@ -79,14 +79,17 @@ fn main() -> anyhow::Result<()> {
         let c = converter.as_ref().unwrap();
         let at = Instant::now();
         c.convert(&surface, color).map_err(anyhow::Error::msg)?;
-        // Readback exists only to compare generated pixels and measure all GPU
-        // completion work. Do not present decode submit time as end-to-end time.
-        let rgb = c.readback().map_err(anyhow::Error::msg)?;
+        c.synchronize().map_err(anyhow::Error::msg)?;
         let conversion = at.elapsed().as_secs_f64();
+        // Readback exists only to compare generated pixels; report it separately.
+        let at = Instant::now();
+        let rgb = c.readback().map_err(anyhow::Error::msg)?;
+        let readback = at.elapsed().as_secs_f64();
         if index >= 10 {
             timings[0] += cpu_time;
             timings[1] += gpu_time;
             timings[2] += conversion;
+            timings[3] += readback;
             frames += 1;
         }
         let expected = uu_media::convert::frame_to_rgba_with_color(&a, color);
@@ -142,7 +145,8 @@ fn main() -> anyhow::Result<()> {
         "{}",
         serde_json::json!({"frames":frames,"retained_sample_checks":checked,
         "cpu_decode_readback_ms":timings[0]*1000./frames as f64,"gpu_decode_submit_ms":timings[1]*1000./frames as f64,
-        "gpu_convert_and_test_readback_ms":timings[2]*1000./frames as f64,
+        "gpu_convert_and_sync_ms":timings[2]*1000./frames as f64,
+            "test_rgb_readback_ms":timings[3]*1000./frames as f64,
         "rgb_max_error":max_error,"rgb_mean_error":sum_error as f64/pixels.max(1) as f64,
         "desktop_captured":false,"input_sent":false,"audio_opened":false})
     );

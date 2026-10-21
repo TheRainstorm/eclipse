@@ -172,7 +172,7 @@ impl Importer {
             // An import/lock error must not release an MFT sample while a
             // submitted conversion still reads it. Slow path only on failure.
             if let Some(c) = &self.converter {
-                let _ = c.readback();
+                let _ = c.synchronize();
             }
             self.conversion_pending = false;
         }

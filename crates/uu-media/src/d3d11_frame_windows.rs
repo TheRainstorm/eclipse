@@ -84,6 +84,7 @@ pub struct Converter {
     processor: ID3D11VideoProcessor,
     output: ID3D11Texture2D,
     output_view: ID3D11VideoProcessorOutputView,
+    completion: ID3D11Query,
     size: [u32; 2],
     allocation: [u32; 2],
 }
@@ -112,7 +113,7 @@ impl Converter {
                 },
                 OutputWidth: size[0],
                 OutputHeight: size[1],
-                Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+                Usage: D3D11_VIDEO_USAGE_OPTIMAL_SPEED,
             };
             let enumerator = video.CreateVideoProcessorEnumerator(&desc)?;
             let processor = video.CreateVideoProcessor(&enumerator, 0)?;
@@ -137,6 +138,14 @@ impl Converter {
                 Some(&mut output),
             )?;
             let output = output.unwrap();
+            let mut completion = None;
+            device.CreateQuery(
+                &D3D11_QUERY_DESC {
+                    Query: D3D11_QUERY_EVENT,
+                    MiscFlags: 0,
+                },
+                Some(&mut completion),
+            )?;
             let desc = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
                 ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
                 Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
@@ -179,6 +188,7 @@ impl Converter {
                 processor,
                 output,
                 output_view: output_view.unwrap(),
+                completion: completion.unwrap(),
                 size,
                 allocation: frame.allocation,
             })
@@ -223,17 +233,17 @@ impl Converter {
                 .map_err(|e| format!("video input view: {e}"))?;
             let matrix = matches!(color, YuvColor::Full709 | YuvColor::Limited709) as u32;
             let nominal = if matches!(color, YuvColor::Limited601 | YuvColor::Limited709) {
-                2
+                D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235
             } else {
-                1
+                D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255
             };
             // D3D11_VIDEO_PROCESSOR_COLOR_SPACE: YCbCr_Matrix bit2,
-            // Nominal_Range bits4..5 (1=0..255, 2=16..235).
+            // Nominal_Range bits4..5. Use SDK constants (1=limited, 2=full).
             self.video_context.VideoProcessorSetStreamColorSpace(
                 &self.processor,
                 0,
                 &D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
-                    _bitfield: (matrix << 2) | (nominal << 4),
+                    _bitfield: (matrix << 2) | ((nominal.0 as u32) << 4),
                 },
             );
             let mut stream = D3D11_VIDEO_PROCESSOR_STREAM {
@@ -250,6 +260,39 @@ impl Converter {
             ManuallyDrop::drop(&mut stream.pInputSurface);
             self.context.Flush();
             result.map_err(|e| format!("video GPU conversion: {e}"))
+        }
+    }
+    /// Wait without copying pixels, for offline timing and interop error cleanup.
+    /// Normal presentation uses WGL synchronization instead.
+    pub fn synchronize(&self) -> Result<(), String> {
+        unsafe {
+            // Older feature levels need a resource Map to include video work.
+            if self.device.GetFeatureLevel().0
+                < windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0.0
+            {
+                return self.readback().map(|_| ());
+            }
+            self.context.End(&self.completion);
+            self.context.Flush();
+            let started = std::time::Instant::now();
+            loop {
+                let mut complete = 0_i32;
+                self.context
+                    .GetData(
+                        &self.completion,
+                        Some((&mut complete as *mut i32).cast()),
+                        4,
+                        D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
+                    )
+                    .map_err(|e| e.to_string())?;
+                if complete != 0 {
+                    return Ok(());
+                }
+                if started.elapsed() > std::time::Duration::from_secs(5) {
+                    return Err("D3D11 GPU completion timed out".into());
+                }
+                std::thread::yield_now();
+            }
         }
     }
     /// CPU readback for offline correctness tests and synchronization on interop
