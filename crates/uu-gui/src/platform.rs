@@ -136,9 +136,13 @@ impl Platform {
             false
         }
     }
-    pub fn window_keyboard(&self,active:bool)->bool {
-        #[cfg(windows)] {let active=active&&self.old_proc!=0;windows::WINDOW_INPUT.store(active,std::sync::atomic::Ordering::Release);active}
-        #[cfg(not(windows))] {let _=active;false}
+    pub fn window_keyboard(&self,active:bool,shortcuts:bool)->bool {
+        #[cfg(windows)] {
+            windows::LOCAL_SHORTCUTS.store(shortcuts,std::sync::atomic::Ordering::Release);
+            let active=active&&self.old_proc!=0;
+            windows::WINDOW_INPUT.store(active,std::sync::atomic::Ordering::Release);active
+        }
+        #[cfg(not(windows))] {let _=(active,shortcuts);false}
     }
     pub fn capture_keyboard(&self, active: bool) -> bool {
         #[cfg(windows)] {
@@ -325,6 +329,8 @@ mod windows {
         System::LibraryLoader::GetModuleHandleW, UI::Input::KeyboardAndMouse::*,
     };
     pub(super) static WINDOW_INPUT: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+    pub(super) static LOCAL_SHORTCUTS: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+    static MODIFIERS: std::sync::Mutex<crate::keyboard_capture::Modifiers>=std::sync::Mutex::new(crate::keyboard_capture::Modifiers::new());
     static OLD_PROC: AtomicIsize=AtomicIsize::new(0);
     static WINDOW_KEYS: std::sync::Mutex<crate::keyboard_capture::Keys>=std::sync::Mutex::new(crate::keyboard_capture::Keys::new());
     pub unsafe fn install_window_keyboard(window:HWND)->isize {
@@ -334,6 +340,7 @@ mod windows {
     }
     pub unsafe fn remove_window_keyboard(window:HWND,old:isize) {
         WINDOW_INPUT.store(false,Relaxed);
+        LOCAL_SHORTCUTS.store(false,Relaxed);
         if old!=0 && IsWindow(window)!=0 && GetWindowLongPtrW(window,GWLP_WNDPROC)==window_keyboard as *const () as isize {
             SetWindowLongPtrW(window,GWLP_WNDPROC,old);
         }
@@ -350,12 +357,17 @@ mod windows {
         let up=message==WM_KEYUP||message==WM_SYSKEYUP;
         if down||up {
             let vk=crate::keyboard_capture::sided_vk(wparam as u32,lparam as usize);
+            let ctrl_alt=if let Ok(mut modifiers)=MODIFIERS.try_lock() {
+                // Also retain a window-message fallback if Windows removes a
+                // timed-out hook. Updating an observed transition is idempotent.
+                modifiers.observe(vk,down);
+                modifiers.shortcut_chord()
+            }else{false};
             if let Ok(mut keys)=WINDOW_KEYS.try_lock() {
-                let ctrl=GetAsyncKeyState(0x11)<0||keys.down(0xa2)||keys.down(0xa3);
-                let alt=GetAsyncKeyState(0x12)<0||keys.down(0xa4)||keys.down(0xa5);
-                let right_alt=GetAsyncKeyState(0xa5)<0||keys.down(0xa5);
-                let active=WINDOW_INPUT.load(std::sync::atomic::Ordering::Acquire)&&GetForegroundWindow()==window;
-                match keys.event(vk,down,active,crate::keyboard_capture::shortcut_chord(ctrl,alt,right_alt),lparam as usize&(1<<30)!=0) {
+                let foreground=GetForegroundWindow()==window;
+                let active=WINDOW_INPUT.load(std::sync::atomic::Ordering::Acquire)&&foreground;
+                let shortcuts=LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire)&&foreground;
+                match keys.event_with_shortcuts(vk,down,active,shortcuts,ctrl_alt,lparam as usize&(1<<30)!=0) {
                     crate::keyboard_capture::Decision::Forward=>{},
                     crate::keyboard_capture::Decision::Consume=>return 0,
                     event=>{enqueue(event,window);return 0;},
@@ -382,6 +394,11 @@ mod windows {
             return std::ptr::null_mut();
         }
         OWNER.store(window as isize, Relaxed);
+        if let Ok(mut modifiers)=MODIFIERS.lock() {
+            for vk in [0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0x5b,0x5c] {
+                modifiers.observe(vk,GetAsyncKeyState(vk as i32)<0);
+            }
+        }
         let hook = SetWindowsHookExW(
             WH_KEYBOARD_LL,
             Some(monitor_key),
@@ -424,10 +441,12 @@ mod windows {
             let down = message == WM_KEYDOWN as usize || message == WM_SYSKEYDOWN as usize;
             let up = message == WM_KEYUP as usize || message == WM_SYSKEYUP as usize;
             let foreground=OWNER.load(Relaxed) as HWND;
-            let win_down=GetAsyncKeyState(0x5B)<0 || GetAsyncKeyState(0x5C)<0
-                || CAPTURE_KEYS.try_lock().is_ok_and(|keys|keys.down(0x5b)||keys.down(0x5c));
-            let shift_down=GetAsyncKeyState(0x10)<0
-                || CAPTURE_KEYS.try_lock().is_ok_and(|keys|keys.down(0xa0)||keys.down(0xa1));
+            let vk=crate::keyboard_capture::sided_vk(key.vkCode,
+                ((key.scanCode as usize)<<16)|(((key.flags&LLKHF_EXTENDED) as usize)<<24));
+            let (ctrl_alt,win_down,shift_down)=if let Ok(mut modifiers)=MODIFIERS.try_lock() {
+                if down||up {modifiers.observe(vk,down);}
+                (modifiers.shortcut_chord(),modifiers.win(),modifiers.shift())
+            }else{(false,false,false)};
             if (0x25..=0x28).contains(&key.vkCode) && (down || up) {
                 let owner = OWNER.load(Relaxed) as HWND;
                 let chord = !owner.is_null()
@@ -458,12 +477,11 @@ mod windows {
             // tools. Only our own no-map Start-menu mask is excluded.
             if (down || up) && !crate::keyboard_capture::our_mask(key.vkCode,key.dwExtraInfo) {
                 if let Ok(mut keys)=CAPTURE_KEYS.try_lock() {
-                    let ctrl=GetAsyncKeyState(0x11)<0 || keys.down(0xa2)||keys.down(0xa3);
-                    let alt=GetAsyncKeyState(0x12)<0 || keys.down(0xa4)||keys.down(0xa5);
-                    let right_alt=GetAsyncKeyState(0xa5)<0||keys.down(0xa5);
+                    let owned=!foreground.is_null() && GetForegroundWindow()==foreground;
                     let active=CAPTURE.load(std::sync::atomic::Ordering::Acquire)
-                        && !foreground.is_null() && GetForegroundWindow()==foreground;
-                    let decision=keys.event(key.vkCode,down,active,crate::keyboard_capture::shortcut_chord(ctrl,alt,right_alt),GetAsyncKeyState(key.vkCode as i32)<0);
+                        && owned;
+                    let shortcuts=LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire)&&owned;
+                    let decision=keys.event_with_shortcuts(vk,down,active,shortcuts,ctrl_alt,GetAsyncKeyState(key.vkCode as i32)<0);
                     match decision {
                         crate::keyboard_capture::Decision::Forward=>{},
                         crate::keyboard_capture::Decision::Consume=>return 1,

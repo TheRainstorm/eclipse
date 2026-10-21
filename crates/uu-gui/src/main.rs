@@ -751,7 +751,10 @@ impl App {
     }
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
         let remote=self.input_ready() && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.local_dialog_open() && ctx.input(|i|i.focused);
-        let window=self.platform.window_keyboard(remote);
+        // Client commands remain local while viewing, in menus, or after
+        // releasing remote input. They do not depend on a host control grant.
+        let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused);
+        let window=self.platform.window_keyboard(remote,shortcuts);
         let active=self.platform.capture_keyboard(remote&&self.fullscreen&&self.preferences.capture_keyboard);
         if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {self.release_all_keys();}
         self.native_keyboard_capture=active;self.native_window_keyboard=window;

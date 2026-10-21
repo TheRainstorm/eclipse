@@ -230,7 +230,7 @@ impl super::App {
                     ui.separator();ui.strong("输入");
                     ui.checkbox(&mut s.clipboard,"同步文本剪贴板（仅当前前台串流）");
                     ui.checkbox(&mut s.capture_keyboard,"全屏时将系统快捷键发送到远端");
-                    ui.small("Ctrl+Alt+Q 退出串流；Ctrl+Alt+F / X 切换全屏。\nWin+Shift+方向键始终移动本地窗口。Ctrl+Alt+Del 由 Windows 保留。");
+                    ui.small("Ctrl+左 Alt+F / X 切换全屏；Q 退出串流；Z 释放／捕获输入。这些本地快捷键始终由客户端处理，不发送到远端。\n系统键只在全屏画面获得输入焦点时捕获，打开菜单、仅观看或失焦时释放。\nWin+Shift+方向键始终移动本地窗口。Ctrl+Alt+Del 由 Windows 保留。");
                     ui.horizontal_wrapped(|ui|{ui.label("鼠标模式");ui.selectable_value(&mut s.relative_mouse,false,"桌面 · 绝对定位");ui.selectable_value(&mut s.relative_mouse,true,"游戏 · 相对移动");});
                     ui.horizontal_wrapped(|ui|{ui.label("光标显示");ui.selectable_value(&mut s.remote_cursor,false,"本地光标");ui.selectable_value(&mut s.remote_cursor,true,"远端光标");});
                     ui.small("游戏模式单击画面捕获鼠标，Ctrl+Alt+Z 释放／重新捕获；打开菜单或失焦时自动释放。");

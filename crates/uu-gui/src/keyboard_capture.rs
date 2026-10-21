@@ -14,6 +14,24 @@ pub enum Decision {
 pub fn shortcut_chord(ctrl: bool, alt: bool, right_alt: bool) -> bool {
     ctrl && alt && !right_alt
 }
+/// Track physical modifier transitions even while capture is disabled. Windows
+/// does not update GetAsyncKeyState for a key swallowed by the low-level hook.
+/// Both native paths use this state across fullscreen/capture transitions.
+#[cfg_attr(not(any(windows,test)),allow(dead_code))]
+pub struct Modifiers { down: u8 }
+#[cfg_attr(not(any(windows,test)),allow(dead_code))]
+impl Modifiers {
+    pub const fn new() -> Self { Self { down: 0 } }
+    pub fn observe(&mut self, vk: u32, pressed: bool) {
+        let bit = match vk { 0xa0..=0xa5 => 1 << (vk-0xa0), 0x5b => 1 << 6, 0x5c => 1 << 7, _ => return };
+        if pressed { self.down |= bit; } else { self.down &= !bit; }
+    }
+    pub fn shortcut_chord(&self) -> bool {
+        shortcut_chord(self.down & 0x0c != 0, self.down & 0x30 != 0, self.down & 0x20 != 0)
+    }
+    pub fn win(&self) -> bool { self.down & 0xc0 != 0 }
+    pub fn shift(&self) -> bool { self.down & 0x03 != 0 }
+}
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 pub struct Keys {
     held: [u8; 256],
@@ -26,11 +44,23 @@ impl Keys {
     pub fn down(&self, vk: usize) -> bool {
         self.held.get(vk) == Some(&1)
     }
+    #[cfg(test)]
     pub fn event(
         &mut self,
         vk: u32,
         pressed: bool,
         active: bool,
+        ctrl_alt: bool,
+        already_down: bool,
+    ) -> Decision {
+        self.event_with_shortcuts(vk, pressed, active, active, ctrl_alt, already_down)
+    }
+    pub fn event_with_shortcuts(
+        &mut self,
+        vk: u32,
+        pressed: bool,
+        remote_active: bool,
+        shortcuts_active: bool,
         ctrl_alt: bool,
         already_down: bool,
     ) -> Decision {
@@ -49,17 +79,17 @@ impl Keys {
             return Decision::Consume;
         }
         if *held == 1 {
-            return if active {
+            return if remote_active {
                 Decision::Remote { vk, pressed: true }
             } else {
                 Decision::Consume
             };
         }
         // Do not steal the release of a key already pressed before capture.
-        if !active || already_down {
+        if already_down {
             return Decision::Forward;
         }
-        if ctrl_alt && !altgr {
+        if shortcuts_active && ctrl_alt && !altgr {
             let action = match vk {
                 0x53 => Some(Action::Stats),
                 0x4d => Some(Action::Mute),
@@ -74,6 +104,7 @@ impl Keys {
                 return Decision::Shortcut(action);
             }
         }
+        if !remote_active { return Decision::Forward; }
         *held = 1;
         Decision::Remote { vk, pressed: true }
     }
@@ -93,6 +124,67 @@ pub fn sided_vk(vk:u32,lparam:usize)->u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_fullscreen_chord_keeps_ownership_across_capture_changes() {
+        let mut modifiers=Modifiers::new();
+        let mut hook=Keys::new();
+        let mut window=Keys::new();
+        for vk in [0xa2,0xa4] {
+            modifiers.observe(vk,true);
+            assert_eq!(hook.event_with_shortcuts(vk,true,true,true,modifiers.shortcut_chord(),false),Decision::Remote{vk,pressed:true});
+        }
+        assert_eq!(hook.event_with_shortcuts(0x46,true,true,true,modifiers.shortcut_chord(),false),Decision::Shortcut(Action::Fullscreen));
+        // The hook swallowed Ctrl/Alt: Windows async state and the other
+        // route's ownership table both say "up" after leaving fullscreen.
+        assert!(!window.down(0xa2));assert!(!window.down(0xa4));
+        assert_eq!(hook.event_with_shortcuts(0x46,true,false,true,modifiers.shortcut_chord(),false),Decision::Consume);
+        assert_eq!(hook.event_with_shortcuts(0x46,false,false,true,modifiers.shortcut_chord(),false),Decision::Consume);
+        // A second tap while the same modifiers remain held is still local.
+        assert_eq!(hook.event_with_shortcuts(0x46,true,false,true,modifiers.shortcut_chord(),false),Decision::Shortcut(Action::Fullscreen));
+        assert_eq!(hook.event_with_shortcuts(0x46,false,true,true,modifiers.shortcut_chord(),false),Decision::Consume);
+        // An unreserved letter still traverses the ordinary window route.
+        assert_eq!(hook.event_with_shortcuts(0x41,true,false,true,modifiers.shortcut_chord(),false),Decision::Forward);
+        assert_eq!(window.event_with_shortcuts(0x41,true,true,true,modifiers.shortcut_chord(),false),Decision::Remote{vk:0x41,pressed:true});
+        for vk in [0xa4,0xa2] {
+            modifiers.observe(vk,false);
+            assert_eq!(hook.event_with_shortcuts(vk,false,false,true,modifiers.shortcut_chord(),false),Decision::Remote{vk,pressed:false});
+        }
+        assert!(!modifiers.shortcut_chord());
+    }
+    #[test]
+    fn client_commands_are_local_without_remote_control_or_system_capture() {
+        for (vk,action) in [(0x46,Action::Fullscreen),(0x58,Action::Fullscreen),(0x51,Action::Exit),
+            (0x53,Action::Stats),(0x4d,Action::Mute),(0x48,Action::Menu),(0x5a,Action::Capture)] {
+            let mut keys=Keys::new();
+            assert_eq!(keys.event_with_shortcuts(vk,true,false,true,true,false),Decision::Shortcut(action));
+            assert_eq!(keys.event_with_shortcuts(vk,true,false,false,false,false),Decision::Consume);
+            assert_eq!(keys.event_with_shortcuts(vk,false,false,false,false,false),Decision::Consume);
+            assert_eq!(keys.event_with_shortcuts(vk,true,false,false,true,false),Decision::Forward);
+        }
+        let mut keys=Keys::new();
+        assert_eq!(keys.event_with_shortcuts(0x46,true,false,true,true,true),Decision::Forward);
+        assert_eq!(keys.event_with_shortcuts(0x46,false,false,true,true,false),Decision::Forward);
+    }
+    #[test]
+    fn modifiers_observed_before_capture_preserve_altgr_and_release_order() {
+        let mut modifiers=Modifiers::new();
+        modifiers.observe(0xa2,true);modifiers.observe(0xa5,true);
+        assert!(!modifiers.shortcut_chord());
+        let mut keys=Keys::new();
+        assert_eq!(keys.event_with_shortcuts(0x46,true,true,true,modifiers.shortcut_chord(),false),Decision::Remote{vk:0x46,pressed:true});
+        modifiers.observe(0xa4,true); // Right Alt remains held: still AltGr.
+        assert!(!modifiers.shortcut_chord());
+        modifiers.observe(0xa5,false);
+        assert!(modifiers.shortcut_chord());
+        modifiers.observe(0xa3,true);modifiers.observe(0xa2,false);
+        assert!(modifiers.shortcut_chord());
+        modifiers.observe(0xa3,false);
+        assert!(!modifiers.shortcut_chord());
+        modifiers.observe(0xa0,true);modifiers.observe(0x5c,true);
+        assert!(modifiers.win()&&modifiers.shift());
+        modifiers.observe(0xa0,false);modifiers.observe(0x5c,false);
+        assert!(!modifiers.win()&&!modifiers.shift());
+    }
     #[test]
     fn altgr_text_never_exits_or_toggles_the_local_stream() {
         for vk in [0x51,0x53,0x4d,0x48,0x46,0x58,0x5a] {
