@@ -1204,7 +1204,7 @@ impl eframe::App for App {
         }
         self.native_ui(ctx);
         self.native_host_ui(ctx);
-        if self.stream_target.is_none() {self.lan.dialogs(ctx);}
+        if self.stream_target.is_none() {self.lan.dialogs(ctx,self.platform.window_id());}
         self.settings_ui(ctx);
         self.about_ui(ctx);
         if self.audio_save_after.is_some_and(|at|std::time::Instant::now()>=at) {

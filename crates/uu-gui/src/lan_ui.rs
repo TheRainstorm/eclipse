@@ -613,7 +613,7 @@ impl LanUi {
             self.forget(&row);
         }
     }
-    pub fn dialogs(&mut self, ctx: &egui::Context) {
+    pub fn dialogs(&mut self, ctx: &egui::Context, owner_window: isize) {
         if self.add_open {
             let mut open = true;
             let mut add = false;
@@ -678,7 +678,7 @@ impl LanUi {
                 self.pair_code = None;
             }
         }
-        self.host.ui(ctx, self.dir.as_deref());
+        self.host.ui(ctx, self.dir.as_deref(), owner_window);
     }
 }
 impl App {

@@ -1,6 +1,12 @@
 //! Explicit local sharing controls and first-pair confirmation.
 use eframe::egui;
-use std::{net::SocketAddr, path::Path, sync::mpsc, thread::JoinHandle, time::Duration};
+use std::{
+    net::SocketAddr,
+    path::Path,
+    sync::{atomic::Ordering, mpsc, Arc},
+    thread::JoinHandle,
+    time::Duration,
+};
 use tokio::sync::{mpsc as async_mpsc, watch};
 use uu_core::{native, native_lan as lan};
 struct Worker {
@@ -22,6 +28,10 @@ struct Pending {
 enum Ready {
     Listening(lan::Handle, SocketAddr),
     Ended(Result<(), String>),
+    Clipboard {
+        id: String,
+        state: Arc<uu_core::clipboard::Clipboard>,
+    },
 }
 pub(super) struct HostUi {
     pub open: bool,
@@ -33,6 +43,9 @@ pub(super) struct HostUi {
     mbps: u32,
     input: bool,
     audio: bool,
+    clipboard: bool,
+    clipboard_state: Option<(String, Arc<uu_core::clipboard::Clipboard>)>,
+    owner_window: isize,
     worker: Option<Worker>,
     ready: Option<mpsc::Receiver<Ready>>,
     events: Option<async_mpsc::UnboundedReceiver<lan::Event>>,
@@ -67,6 +80,9 @@ impl Default for HostUi {
             mbps: 18,
             input: true,
             audio: true,
+            clipboard: false,
+            clipboard_state: None,
+            owner_window: 0,
             worker: None,
             ready: None,
             events: None,
@@ -121,6 +137,18 @@ impl HostUi {
         if let Some(rx) = &self.ready {
             while let Ok(event) = rx.try_recv() {
                 match event {
+                    Ready::Clipboard { id, state } => {
+                        if !state.stopped.load(Ordering::Acquire) {
+                            if let Err(error) =
+                                super::clipboard::start_host(state.clone(), self.owner_window)
+                            {
+                                state.available.store(false, Ordering::Release);
+                                state.status("无法启动本机文本剪贴板");
+                                self.notice = format!("无法启用文本剪贴板：{error}");
+                            }
+                            self.clipboard_state = Some((id, state));
+                        }
+                    }
                     Ready::Listening(handle, address) => {
                         self.handle = Some(handle);
                         self.status = "共享已开启，等待连接".into();
@@ -185,6 +213,13 @@ impl HostUi {
                         }
                     }
                     lan::Event::SessionEnded(id) => {
+                        if self
+                            .clipboard_state
+                            .as_ref()
+                            .is_some_and(|(session, _)| session == &id)
+                        {
+                            self.clipboard_state = None;
+                        }
                         if self.active_session.as_deref() == Some(&id) {
                             self.active_session = None;
                             self.status = "共享已开启，等待连接".into();
@@ -204,6 +239,7 @@ impl HostUi {
             self.events = None;
             self.pending.clear();
             self.active_session = None;
+            self.clipboard_state = None;
             self.stopping = false;
         }
         if self.running() {
@@ -220,6 +256,23 @@ impl HostUi {
             monitor.encodable(native::EncoderPreference::Auto, self.fps),
             "此屏幕尺寸暂不支持，请选择其它屏幕"
         );
+        let (ready, ready_rx) = mpsc::channel();
+        let clipboard = self.clipboard.then(|| {
+            let requests = ready.clone();
+            let context = ctx.clone();
+            Arc::new(move |id: &str| {
+                let state = Arc::new(uu_core::clipboard::Clipboard::default());
+                state.enabled.store(true, Ordering::Release);
+                requests
+                    .send(Ready::Clipboard {
+                        id: id.to_owned(),
+                        state: state.clone(),
+                    })
+                    .map_err(|_| anyhow::anyhow!("共享窗口已关闭"))?;
+                context.request_repaint();
+                Ok(state)
+            }) as lan::ClipboardFactory
+        });
         let config = lan::Config {
             name: self.name.trim().into(),
             bind: SocketAddr::from(([0, 0, 0, 0], self.port)),
@@ -234,11 +287,10 @@ impl HostUi {
             encoder: native::EncoderPreference::Auto,
             allow_input: self.input,
             audio: self.audio.then_some(native::AudioSource::System),
-            clipboard: None,
+            clipboard,
         };
         let (stop, rx) = watch::channel(false);
         let (events, event_rx) = async_mpsc::unbounded_channel();
-        let (ready, ready_rx) = mpsc::channel();
         let context = ctx.clone();
         let task = std::thread::Builder::new()
             .name("eclipse-lan-server".into())
@@ -279,7 +331,8 @@ impl HostUi {
         self.stopping = false;
         Ok(())
     }
-    pub fn ui(&mut self, ctx: &egui::Context, data_dir: Option<&Path>) {
+    pub fn ui(&mut self, ctx: &egui::Context, data_dir: Option<&Path>, owner_window: isize) {
+        self.owner_window = owner_window;
         if self.open {
             let mut open = true;
             let mut start = false;
@@ -332,6 +385,18 @@ impl HostUi {
                                         }
                                     }
                                 });
+                            }
+                        }
+                        if let Some((_, state)) = &self.clipboard_state {
+                            let status = if state.ready() {
+                                "文本剪贴板已由双方启用".to_owned()
+                            } else if state.available.load(Ordering::Acquire) {
+                                "文本剪贴板等待控制端启用".to_owned()
+                            } else {
+                                state.status.lock().unwrap().clone()
+                            };
+                            if !status.is_empty() {
+                                ui.weak(status);
                             }
                         }
                         ui.add_space(10.);
@@ -389,6 +454,7 @@ impl HostUi {
                         ui.add_space(10.);
                         ui.checkbox(&mut self.input, "允许已配对设备控制键盘和鼠标");
                         ui.checkbox(&mut self.audio, "共享系统声音");
+                        ui.checkbox(&mut self.clipboard, "允许双方启用文本剪贴板");
                         ui.weak("只有在你确认配对后，设备才能访问本机。关闭软件会停止共享。");
                         ui.add_space(10.);
                         ui.horizontal(|ui| {
@@ -485,6 +551,24 @@ impl HostUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancelled_session_does_not_open_a_queued_clipboard_backend() {
+        let state = Arc::new(uu_core::clipboard::Clipboard::default());
+        state.stopped.store(true, Ordering::Release);
+        let (send, receiver) = mpsc::channel();
+        send.send(Ready::Clipboard {
+            id: "cancelled".into(),
+            state: state.clone(),
+        })
+        .ok()
+        .unwrap();
+        let mut host = HostUi::default();
+        host.ready = Some(receiver);
+        host.poll(&egui::Context::default());
+        assert!(host.clipboard_state.is_none());
+        assert!(!state.available.load(Ordering::Acquire));
+        assert!(state.status.lock().unwrap().is_empty());
+    }
     #[test]
     fn an_old_session_ending_cannot_clear_a_new_sessions_progress() {
         let (events, rx) = async_mpsc::unbounded_channel();

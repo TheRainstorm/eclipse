@@ -201,8 +201,12 @@ pub struct Config {
     pub encoder: native::EncoderPreference,
     pub allow_input: bool,
     pub audio: Option<native::AudioSource>,
-    pub clipboard: Option<Arc<crate::clipboard::Clipboard>>,
+    /// An explicitly permitted backend, created afresh for each session. The
+    /// GUI dispatches OS initialization back to its authorized main thread.
+    pub clipboard: Option<ClipboardFactory>,
 }
+pub type ClipboardFactory =
+    Arc<dyn Fn(&str) -> Result<Arc<crate::clipboard::Clipboard>> + Send + Sync>;
 struct Active {
     client: String,
     stop: watch::Sender<bool>,
@@ -536,9 +540,13 @@ struct SessionGuard {
     state: Arc<State>,
     id: String,
     finished: Arc<AtomicBool>,
+    clipboard: Option<Arc<crate::clipboard::Clipboard>>,
 }
 impl Drop for SessionGuard {
     fn drop(&mut self) {
+        if let Some(clipboard) = &self.clipboard {
+            crate::native_clipboard::stop(clipboard);
+        }
         self.finished.store(true, Ordering::Release);
         let _ = self.state.events.send(Event::SessionEnded(self.id.clone()));
     }
@@ -561,6 +569,19 @@ async fn start_session(state: Arc<State>, client: String, local: SocketAddr) -> 
             finished: finished.clone(),
         });
     }
+    let mut guard = SessionGuard {
+        state: state.clone(),
+        id: id.clone(),
+        finished,
+        clipboard: None,
+    };
+    let clipboard = state
+        .config
+        .clipboard
+        .as_ref()
+        .map(|factory| factory(&id))
+        .transpose()?;
+    guard.clipboard = clipboard.clone();
     let path = state
         .config
         .data_dir
@@ -577,17 +598,13 @@ async fn start_session(state: Arc<State>, client: String, local: SocketAddr) -> 
         session_limit: None,
         allow_input: state.config.allow_input,
         audio: state.config.audio,
-        clipboard: state.config.clipboard.clone(),
+        clipboard,
     };
     let task_state = state.clone();
     let task_id = id.clone();
     let (done, mut failure) = oneshot::channel();
     let task = tokio::spawn(async move {
-        let _guard = SessionGuard {
-            state: task_state.clone(),
-            id: task_id.clone(),
-            finished,
-        };
+        let _guard = guard;
         let _ = task_state.events.send(Event::SessionStarted {
             id: task_id.clone(),
             client,

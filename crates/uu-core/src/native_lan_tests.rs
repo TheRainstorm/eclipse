@@ -15,6 +15,9 @@ impl Fixture {
         Self::at(root).await
     }
     async fn at(root: PathBuf) -> Self {
+        Self::configured(root, None).await
+    }
+    async fn configured(root: PathBuf, clipboard: Option<ClipboardFactory>) -> Self {
         let (stop, rx) = watch::channel(false);
         let (events, event_rx) = mpsc::unbounded_channel();
         let config = Config {
@@ -32,7 +35,7 @@ impl Fixture {
             encoder: native::EncoderPreference::Software,
             allow_input: false,
             audio: None,
-            clipboard: None,
+            clipboard,
         };
         let (server, handle) = Server::bind(config, rx, events).await.unwrap();
         let endpoint = server.address().unwrap().to_string();
@@ -298,5 +301,124 @@ async fn human_confirmation_is_not_limited_by_the_short_rpc_read_timeout() {
     tokio::time::sleep(IO_WAIT + Duration::from_millis(200)).await;
     request.decision.send(true).unwrap();
     assert!(client.await.unwrap().is_ok());
+    host.finish().await;
+}
+
+#[tokio::test]
+async fn clipboard_is_opt_in_and_reconnect_creates_an_isolated_fresh_backend() {
+    use crate::{capabilities::Capability, clipboard::Clipboard};
+    let created = Arc::new(Mutex::new(Vec::<Arc<Clipboard>>::new()));
+    let instances = created.clone();
+    let factory: ClipboardFactory = Arc::new(move |_id| {
+        let state = Arc::new(Clipboard::default());
+        state.enabled.store(true, Ordering::Release);
+        state.available.store(true, Ordering::Release);
+        instances.lock().unwrap().push(state.clone());
+        Ok(state)
+    });
+    let root = std::env::temp_dir().join(format!("eclipse-lan-clipboard-{}", uuid::Uuid::new_v4()));
+    let mut host = Fixture::configured(root, Some(factory)).await;
+    let id = uuid::Uuid::new_v4().to_string();
+    let device = host.pair(&id).await;
+    for round in 0..2 {
+        let invite = connect(&device, &id).await.unwrap();
+        let source = created.lock().unwrap()[round].clone();
+        if round > 0 {
+            assert!(!Arc::ptr_eq(&source, &created.lock().unwrap()[round - 1]));
+        }
+        let stats = Arc::new(crate::media::MediaStats::default());
+        stats.clipboard.available.store(true, Ordering::Release);
+        let (frames, _receiver) = crate::media::frame_channel();
+        let (stop, rx) = watch::channel(false);
+        let measured = stats.clone();
+        let client = tokio::spawn(async move { native::view(&invite, frames, measured, rx).await });
+        timeout(Duration::from_secs(6), async {
+            while !stats.capabilities.allows(Capability::Clipboard)
+                || stats.decoded_total.load(Ordering::Acquire) < 8
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !source.ready(),
+            "host permission alone cannot activate clipboard"
+        );
+        stats.clipboard.enabled.store(true, Ordering::Release);
+        stats.clipboard.active.store(true, Ordering::Release);
+        timeout(Duration::from_secs(5), async {
+            while !source.ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            loop {
+                *stats.clipboard.local.lock().unwrap() = Some("generated viewer text 中文".into());
+                if source.remote.lock().unwrap().as_deref() == Some("generated viewer text 中文")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            loop {
+                *source.local.lock().unwrap() = Some("generated host text".into());
+                if stats.clipboard.remote.lock().unwrap().as_deref() == Some("generated host text")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(stats.errors.load(Ordering::Acquire), 0);
+        stop.send_replace(true);
+        timeout(Duration::from_secs(5), client)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(Event::SessionEnded(_)) = host.events.recv().await {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(source.stopped.load(Ordering::Acquire));
+        assert!(source.local.lock().unwrap().is_none() && source.remote.lock().unwrap().is_none());
+    }
+    assert_eq!(created.lock().unwrap().len(), 2);
+    host.finish().await;
+}
+
+#[tokio::test]
+async fn clipboard_backend_failure_releases_the_session_slot_without_creating_a_media_listener() {
+    let root = std::env::temp_dir().join(format!(
+        "eclipse-lan-clipboard-fail-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let factory: ClipboardFactory = Arc::new(|_| anyhow::bail!("generated backend error"));
+    let mut host = Fixture::configured(root, Some(factory)).await;
+    let id = uuid::Uuid::new_v4().to_string();
+    let device = host.pair(&id).await;
+    for _ in 0..2 {
+        assert!(connect(&device, &id)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("generated backend error"));
+        assert!(host
+            .handle
+            .state
+            .active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .finished
+            .load(Ordering::Acquire));
+    }
     host.finish().await;
 }
