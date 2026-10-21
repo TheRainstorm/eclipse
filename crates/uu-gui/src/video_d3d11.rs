@@ -70,6 +70,7 @@ pub struct Importer {
     conversion_pending: bool,
     timings: [f64; 3],
     samples: [u64; 3],
+    shared_export: Option<bool>,
 }
 // The eframe callback is Send+Sync but executes on its owning GL thread.
 // No WGL/D3D immediate context method is called from decoder threads here.
@@ -88,7 +89,11 @@ impl Importer {
             conversion_pending: false,
             timings: [0.; 3],
             samples: [0; 3],
+            shared_export: None,
         })
+    }
+    pub fn shared_export(&self) -> Option<bool> {
+        self.shared_export
     }
     pub fn timings_ms(&self) -> [f64; 3] {
         std::array::from_fn(|i| self.timings[i] * 1000. / self.samples[i].max(1) as f64)
@@ -100,24 +105,31 @@ impl Importer {
         self.sampled()?;
         if !self.converter.as_ref().is_some_and(|c| c.matches(&frame)) {
             self.clear();
-            let converter = Converter::new(&frame)?;
-            self.device = (self.api.open)(converter.device_ptr());
-            if self.device.is_null() {
-                return Err("WGL cannot share decoder adapter".into());
-            }
-            let texture = self.gl.create_texture()?;
-            self.texture = Some(texture);
-            // WGL_ACCESS_READ_ONLY_NV: GL samples; only D3D writes.
-            self.object = (self.api.register)(
-                self.device,
-                converter.texture_ptr(),
-                texture.0.get(),
-                glow::TEXTURE_2D,
-                0,
-            );
-            self.converter = Some(converter);
-            if self.object.is_null() {
+            for shared in [false, true] {
+                let converter = Converter::with_shared_export(&frame, shared)?;
+                self.device = (self.api.open)(converter.device_ptr());
+                if self.device.is_null() {
+                    return Err("WGL cannot share decoder adapter".into());
+                }
+                let texture = self.gl.create_texture()?;
+                self.texture = Some(texture);
+                // WGL_ACCESS_READ_ONLY_NV: GL samples; only D3D writes.
+                self.object = (self.api.register)(
+                    self.device,
+                    converter.texture_ptr(),
+                    texture.0.get(),
+                    glow::TEXTURE_2D,
+                    0,
+                );
+                self.converter = Some(converter);
+                if !self.object.is_null() {
+                    self.shared_export = Some(shared);
+                    eprintln!("WGL video texture registered: DXGI shared export={shared}");
+                    break;
+                }
                 self.clear();
+            }
+            if self.object.is_null() {
                 return Err("WGL D3D11 texture registration failed".into());
             }
         }
@@ -211,6 +223,7 @@ impl Importer {
             (self.api.close)(self.device);
             self.device = std::ptr::null_mut();
         }
+        self.shared_export = None;
         self.current = None;
         self.converter = None;
     }

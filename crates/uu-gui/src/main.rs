@@ -1278,6 +1278,7 @@ impl eframe::App for App {
                     "width":s.res().0,"height":s.res().1,
                     "video_render_path":self.textures.get(&self.selected_track).map(|t|t.render_path()),
                     "video_gpu_submit_acquire_release_ms":self.textures.get(&self.selected_track).and_then(|t|t.gpu_timings_ms()),
+                    "video_dxgi_shared_export":self.textures.get(&self.selected_track).and_then(|t|t.gpu_shared_export()),
                     "remote_cursor_requested":self.preferences.cursor_mode.remote(),
                     "remote_cursor_active":self.remote_cursor_active,
                     "relative_mouse":self.preferences.relative_mouse,

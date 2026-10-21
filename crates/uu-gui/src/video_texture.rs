@@ -95,6 +95,16 @@ impl VideoTexture {
             None => "cpu-rgba-upload",
         }
     }
+    pub fn gpu_shared_export(&self) -> Option<bool> {
+        #[cfg(windows)]
+        if let Some(gpu) = &self.gpu {
+            let state = gpu.lock().unwrap();
+            if state.d3d_active {
+                return state.d3d_importer.as_ref().and_then(|i| i.shared_export());
+            }
+        }
+        None
+    }
     /// Session means: GPU conversion submission, WGL acquire, WGL release.
     pub fn gpu_timings_ms(&self) -> Option<[f64; 3]> {
         #[cfg(windows)]

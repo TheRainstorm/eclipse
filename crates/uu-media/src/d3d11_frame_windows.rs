@@ -90,9 +90,14 @@ pub struct Converter {
 }
 impl Converter {
     pub fn new(frame: &Frame) -> Result<Self, String> {
-        Self::create(frame).map_err(|e| format!("D3D11 video processor: {e}"))
+        Self::with_shared_export(frame, false)
     }
-    fn create(frame: &Frame) -> windows::core::Result<Self> {
+    /// WGL interop2 needs DEFAULT usage, not a DXGI shared-handle allocation.
+    /// Some drivers may still require exportable storage when registering it.
+    pub fn with_shared_export(frame: &Frame, shared: bool) -> Result<Self, String> {
+        Self::create(frame, shared).map_err(|e| format!("D3D11 video processor: {e}"))
+    }
+    fn create(frame: &Frame, shared: bool) -> windows::core::Result<Self> {
         unsafe {
             let device = frame.device.clone();
             let context = device.GetImmediateContext()?;
@@ -131,7 +136,11 @@ impl Converter {
                     },
                     Usage: D3D11_USAGE_DEFAULT,
                     BindFlags: (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE).0 as u32,
-                    MiscFlags: D3D11_RESOURCE_MISC_SHARED.0 as u32,
+                    MiscFlags: if shared {
+                        D3D11_RESOURCE_MISC_SHARED.0 as u32
+                    } else {
+                        0
+                    },
                     ..Default::default()
                 },
                 None,
