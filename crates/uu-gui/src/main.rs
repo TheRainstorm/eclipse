@@ -1271,7 +1271,7 @@ impl eframe::App for App {
             if let Some(h) = &self.controller {
                 use std::sync::atomic::Ordering::Relaxed;
                 let s = &h.stats;
-                s.diagnostics.record(serde_json::json!({"event":"video_stats",
+                let mut report = serde_json::json!({"event":"video_stats",
                     "backend":s.backend(),"decoded":s.decoded_total.load(Relaxed),
                     "errors":s.errors.load(Relaxed),"damaged":s.damaged_frames.load(Relaxed),
                     "rx_fps":s.src_fps(),"decode_fps":s.dec_fps(),
@@ -1303,7 +1303,10 @@ impl eframe::App for App {
                     "control_rtt_last_min_p50_p95_max_us":*s.rtt_distribution_us.lock().unwrap(),
                     "input_sent":s.input_messages_sent.load(Relaxed),"input_errors":s.input_send_errors.load(Relaxed),
                     "keyboard_repeats_forwarded":self.pressed_vks.forwarded_repeats(),
-                    "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()}));
+                    "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()});
+                report["bitrate_kbps"] = s.bitrate_kbps.load(Relaxed).into();
+                report["codec"] = s.codec.lock().unwrap().clone().into();
+                s.diagnostics.record(report);
             }
         }
         if self.stream_target.is_some() {

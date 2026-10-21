@@ -22,6 +22,15 @@ use webrtc::{
 type Result<T> = std::result::Result<T, interceptor::Error>;
 const LIMIT: usize = 16_384;
 const URI: &str = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
+
+/// TWCC transmits receive deltas in 250 us units. The upstream Recorder keeps
+/// unquantized timestamps, but its wire encoder truncates *each* delta. At high
+/// packet rates that discards almost an entire report's elapsed time. Quantize
+/// the absolute timestamp once: subsequent deltas are exactly representable,
+/// so the reconstructed timeline stays within 125 us regardless of packet rate.
+fn twcc_timestamp(at_us: i64) -> i64 {
+    at_us.div_euclid(250) * 250 + if at_us.rem_euclid(250) >= 125 { 250 } else { 0 }
+}
 #[derive(Default)]
 struct Pending {
     packets: VecDeque<(u32, u16, i64)>,
@@ -133,7 +142,7 @@ impl Interceptor for Receiver {
                 tick.tick().await;
                 let packets = { std::mem::take(&mut shared.pending.lock().unwrap().packets) };
                 for (ssrc, seq, at) in packets {
-                    recorder.record(ssrc, seq, at);
+                    recorder.record(ssrc, seq, twcc_timestamp(at));
                 }
                 let feedback = recorder.build_feedback_packet();
                 // Neither metadata nor receive locks cross this await.
@@ -207,6 +216,75 @@ pub(crate) fn configure(
 mod tests {
     use super::*;
     use webrtc::{interceptor::stream_info::RTPHeaderExtension, util::Marshal};
+
+    fn wire_arrivals(recorder: &mut Recorder) -> Vec<(u16, Vec<i64>)> {
+        use webrtc::rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc;
+        recorder.build_feedback_packet().iter().map(|packet| {
+            // Verify actual RTCP bytes; inspecting the unencoded delta structs
+            // would hide the upstream truncation bug entirely.
+            let mut wire = packet.marshal().unwrap();
+            let feedback = TransportLayerCc::unmarshal(&mut wire).unwrap();
+            let mut at = feedback.reference_time as i64 * 64_000;
+            let times = feedback.recv_deltas.iter().map(|delta| {
+                at += delta.delta;
+                at
+            }).collect();
+            (feedback.base_sequence_number, times)
+        }).collect()
+    }
+
+    #[test]
+    fn twcc_wire_reproduces_high_packet_rate_drift_and_bounds_fixed_error() {
+        for spacing in [120, 240, 300, 1_200] {
+            let mut upstream = Recorder::new(1);
+            let mut fixed = Recorder::new(1);
+            let arrivals: Vec<i64> = (0..400).map(|i| 1_000_017 + i * spacing).collect();
+            for (seq, &at) in arrivals.iter().enumerate() {
+                upstream.record(42, seq as u16, at);
+                fixed.record(42, seq as u16, twcc_timestamp(at));
+            }
+            let raw = wire_arrivals(&mut upstream);
+            let repaired = wire_arrivals(&mut fixed);
+            assert_eq!(raw.len(), 1);
+            assert_eq!(repaired.len(), 1);
+            let drift = arrivals.last().unwrap() - raw[0].1.last().unwrap();
+            assert!(drift > 19_000, "baseline failed to reproduce: {spacing} us, {drift} us drift");
+            assert_eq!(repaired[0].1.len(), arrivals.len());
+            for (decoded, actual) in repaired[0].1.iter().zip(&arrivals) {
+                assert!((decoded - actual).abs() <= 125);
+            }
+            eprintln!("TWCC {spacing} us packet spacing: old tail error {drift} us, fixed <= 125 us");
+        }
+    }
+
+    #[test]
+    fn twcc_wire_preserves_timeline_across_reports_wrap_loss_and_reordering() {
+        let mut recorder = Recorder::new(1);
+        let mut seq = 65_500u16;
+        let mut origin = 7_000_019;
+        for _ in 0..40 {
+            let mut expected = Vec::new();
+            let base = seq;
+            for i in 0..400 {
+                if i % 37 != 17 { // Some packets remain lost; no synthetic arrivals.
+                    // Delayed packet followed by an earlier arrival in sequence
+                    // order exercises signed large deltas as well as small ones.
+                    let at = origin + i * 120 + if i % 13 == 4 { 971 } else { 0 };
+                    recorder.record(42, seq, twcc_timestamp(at));
+                    expected.push(at);
+                }
+                seq = seq.wrapping_add(1);
+            }
+            let reports = wire_arrivals(&mut recorder);
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].0, base);
+            assert_eq!(reports[0].1.len(), expected.len());
+            for (decoded, actual) in reports[0].1.iter().zip(&expected) {
+                assert!((decoded - actual).abs() <= 125, "{decoded} vs {actual}");
+            }
+            origin += 100_003;
+        }
+    }
     struct Source(AtomicU64);
     #[async_trait]
     impl RTPReader for Source {
