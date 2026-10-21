@@ -249,6 +249,14 @@ mod windows {
     static HOOK_WIN_INJECTED_UP: AtomicU64=AtomicU64::new(0);
     static HOOK_ALT_UP: AtomicU64=AtomicU64::new(0);
     static HOOK_ALT_INJECTED_UP: AtomicU64=AtomicU64::new(0);
+    static HOOK_WIN_DOWN: AtomicU64=AtomicU64::new(0);
+    static HOOK_ALT_DOWN: AtomicU64=AtomicU64::new(0);
+    static HOOK_WIN_FORWARDED_PREHELD: AtomicU64=AtomicU64::new(0);
+    static HOOK_ALT_FORWARDED_PREHELD: AtomicU64=AtomicU64::new(0);
+    static HOOK_WIN_FORWARDED_INACTIVE: AtomicU64=AtomicU64::new(0);
+    static HOOK_ALT_FORWARDED_INACTIVE: AtomicU64=AtomicU64::new(0);
+    static HOOK_WIN_FORWARDED_BACKGROUND: AtomicU64=AtomicU64::new(0);
+    static HOOK_ALT_FORWARDED_BACKGROUND: AtomicU64=AtomicU64::new(0);
     pub unsafe fn install_window_keyboard(window:HWND)->isize {
         if window.is_null(){return 0;}
         let old=SetWindowLongPtrW(window,GWLP_WNDPROC,window_keyboard as *const () as isize);
@@ -348,7 +356,14 @@ mod windows {
             "win_seen":HOOK_WIN_SEEN.load(Relaxed),"win_captured":HOOK_WIN_CAPTURED.load(Relaxed),
             "window_win_seen":WINDOW_WIN_SEEN.load(Relaxed),
             "win_up":HOOK_WIN_UP.load(Relaxed),"win_injected_up":HOOK_WIN_INJECTED_UP.load(Relaxed),
-            "alt_up":HOOK_ALT_UP.load(Relaxed),"alt_injected_up":HOOK_ALT_INJECTED_UP.load(Relaxed)
+            "alt_up":HOOK_ALT_UP.load(Relaxed),"alt_injected_up":HOOK_ALT_INJECTED_UP.load(Relaxed),
+            "win_down":HOOK_WIN_DOWN.load(Relaxed),"alt_down":HOOK_ALT_DOWN.load(Relaxed),
+            "win_forwarded_preheld":HOOK_WIN_FORWARDED_PREHELD.load(Relaxed),
+            "alt_forwarded_preheld":HOOK_ALT_FORWARDED_PREHELD.load(Relaxed),
+            "win_forwarded_inactive":HOOK_WIN_FORWARDED_INACTIVE.load(Relaxed),
+            "alt_forwarded_inactive":HOOK_ALT_FORWARDED_INACTIVE.load(Relaxed),
+            "win_forwarded_background":HOOK_WIN_FORWARDED_BACKGROUND.load(Relaxed),
+            "alt_forwarded_background":HOOK_ALT_FORWARDED_BACKGROUND.load(Relaxed)
         })
     }
     impl Drop for KeyboardHook {
@@ -407,7 +422,10 @@ mod windows {
             if down||up {
                 HOOK_CALLBACKS.fetch_add(1,Relaxed);
                 let win=matches!(vk,0x5b|0x5c);
+                let alt=matches!(vk,0x12|0xa4|0xa5);
                 if win{HOOK_WIN_SEEN.fetch_add(1,Relaxed);}
+                if down&&win{HOOK_WIN_DOWN.fetch_add(1,Relaxed);}
+                if down&&alt{HOOK_ALT_DOWN.fetch_add(1,Relaxed);}
                 if up&&win {
                     HOOK_WIN_UP.fetch_add(1,Relaxed);
                     if key.flags&LLKHF_INJECTED!=0 {HOOK_WIN_INJECTED_UP.fetch_add(1,Relaxed);}
@@ -428,9 +446,19 @@ mod windows {
                 });
                 match decision {
                     crate::keyboard_capture::Decision::Forward=>{
-                        if !owned{HOOK_BACKGROUND.fetch_add(1,Relaxed);}
-                        else if !active{HOOK_INACTIVE.fetch_add(1,Relaxed);}
-                        else if already_down{HOOK_PREHELD.fetch_add(1,Relaxed);}
+                        if !owned{
+                            HOOK_BACKGROUND.fetch_add(1,Relaxed);
+                            if win{HOOK_WIN_FORWARDED_BACKGROUND.fetch_add(1,Relaxed);}
+                            if alt{HOOK_ALT_FORWARDED_BACKGROUND.fetch_add(1,Relaxed);}
+                        }else if !active{
+                            HOOK_INACTIVE.fetch_add(1,Relaxed);
+                            if win{HOOK_WIN_FORWARDED_INACTIVE.fetch_add(1,Relaxed);}
+                            if alt{HOOK_ALT_FORWARDED_INACTIVE.fetch_add(1,Relaxed);}
+                        }else if already_down{
+                            HOOK_PREHELD.fetch_add(1,Relaxed);
+                            if win{HOOK_WIN_FORWARDED_PREHELD.fetch_add(1,Relaxed);}
+                            if alt{HOOK_ALT_FORWARDED_PREHELD.fetch_add(1,Relaxed);}
+                        }
                     },
                     crate::keyboard_capture::Decision::Consume=>return 1,
                     event=>{

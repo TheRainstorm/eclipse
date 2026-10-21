@@ -127,7 +127,12 @@ async fn run(
     mut close_rx: UnboundedReceiver<()>,
     stats: std::sync::Arc<crate::media::MediaStats>,
 ) -> Result<()> {
+    let phase_started=std::time::Instant::now();
     let status = |s: &str| {
+        stats.diagnostics.record(serde_json::json!({
+            "event":"connection_phase","phase":s,
+            "elapsed_ms":phase_started.elapsed().as_millis() as u64
+        }));
         let _ = ev.send(ControllerEvent::Status(s.to_string()));
     };
     let ctrl = uuid::Uuid::new_v4().to_string();
@@ -204,12 +209,14 @@ async fn run(
         }
     }
     let success = success.context("missing success event")?;
+    status("收到被控端参数");
     eprintln!("ICE server entries={}", success["iceServers"].as_array().map_or(0,Vec::len));
     let ice = ice_servers_from_json(&success["iceServers"]);
     status("建立 WebRTC…");
     peer = Some(ControllerMedia::new_with_frames(ice, Some(frame_tx), Some(stats.clone())).await?);
     let media = peer.as_ref().unwrap();
     let offer_sdp = media.offer().await?;
+    status("ICE收集完成");
     let _ = std::fs::write("/tmp/offer_rust.sdp", &offer_sdp);
     let gz = gzip_sdp04(&offer_sdp)?;
     let ice_id = success["ice_id"].as_str().unwrap_or_default().to_string();
@@ -251,6 +258,7 @@ async fn run(
                 let answer = gunzip_sdp04(&atts[0])?;
                 let _ = std::fs::write("/tmp/answer_live.sdp", &answer);
                 media.set_answer(&answer).await?;
+                status("收到SDP answer");
                 answered = true;
             }
             Some("candidate") => add_trickle(&media, d, &ev).await?,
