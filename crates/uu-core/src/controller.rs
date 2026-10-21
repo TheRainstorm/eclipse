@@ -212,6 +212,7 @@ async fn run(
     status("收到被控端参数");
     eprintln!("ICE server entries={}", success["iceServers"].as_array().map_or(0,Vec::len));
     let ice = ice_servers_from_json(&success["iceServers"]);
+    stats.diagnostics.record(serde_json::json!({"event":"ice_servers","count":ice.len()}));
     status("建立 WebRTC…");
     peer = Some(ControllerMedia::new_with_frames(ice, Some(frame_tx), Some(stats.clone())).await?);
     let media = peer.as_ref().unwrap();

@@ -136,6 +136,7 @@ pub struct ControllerMedia {
     seq: Arc<AtomicU64>,
     network_probe: Arc<std::sync::Mutex<crate::network_probe::NetworkProbe>>,
     stats: Option<Arc<MediaStats>>,
+    wait_for_ice_gather: bool,
 }
 
 impl ControllerMedia {
@@ -175,6 +176,11 @@ impl ControllerMedia {
         frames: Option<FrameSender>,
         stats: Option<Arc<MediaStats>>,
     ) -> Result<Self> {
+        // With no usable STUN/TURN servers, webrtc-ice still waits its fixed
+        // STUN gather timeout. Host candidates are available immediately, so
+        // avoid that pointless delay and only fall back to the full wait if no
+        // candidate appears in the local SDP.
+        let wait_for_ice_gather = !ice.is_empty();
         let mut media = MediaEngine::default();
         register_receive_codecs(&mut media)?;
         let mut registry = Registry::new();
@@ -405,6 +411,7 @@ impl ControllerMedia {
             seq,
             network_probe,
             stats,
+            wait_for_ice_gather,
         })
     }
 
@@ -414,6 +421,23 @@ impl ControllerMedia {
     pub async fn offer(&self) -> Result<String> {
         let offer = self.pc.create_offer(None).await?;
         self.pc.set_local_description(offer).await?;
+        if !self.wait_for_ice_gather {
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+            loop {
+                let local = self
+                    .pc
+                    .local_description()
+                    .await
+                    .context("no local description after gathering")?;
+                if local.sdp.contains("a=candidate") {
+                    return Ok(local.sdp);
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
         let mut gather = self.pc.gathering_complete_promise().await;
         let _ = tokio::time::timeout(Duration::from_secs(8), gather.recv()).await;
         let local = self
