@@ -179,7 +179,7 @@ async fn host(config: lan::Config) -> Result<()> {
     let (events, mut incoming) = mpsc::unbounded_channel();
     let (server, handle) = lan::Server::bind(config, rx, events).await?;
     println!("LAN server listening on {}", server.address()?);
-    println!("Commands: pair | code <8 digits from client> | deny | close-pairing | revoke <client-id> | stop");
+    println!("Commands: pair | code <8 digits from client> | deny | close-pairing | revoke <client-id> | disconnect | stop");
     let (lines, mut input) = mpsc::unbounded_channel();
     // A regular foreground stdin reader cannot keep the async runtime alive on
     // shutdown; it never reads anything outside this command's input stream.
@@ -207,7 +207,12 @@ async fn host(config: lan::Config) -> Result<()> {
                 }
                 Some(lan::Event::PairingEnded(id))=>{if pending.as_ref().is_some_and(|p|p.id==id){pending=None;println!("Pairing request ended");}}
                 Some(lan::Event::Warning(message))=>eprintln!("LAN warning: {message}"),
-                Some(lan::Event::SessionStarted(_))=>println!("Native session started"),
+                Some(lan::Event::SessionStarted { .. })=>println!("Native session started"),
+                Some(lan::Event::SessionProgress { status, .. })=>{
+                    if let native::HostStatus::Streaming { width,height,fps,audio,encoder }=status {
+                        println!("Native streaming: {width}x{height} @ {fps} FPS; encoder={encoder}; audio={audio}");
+                    }
+                },
                 Some(lan::Event::SessionEnded(_))=>println!("Native session ended"),
                 None=>break Ok(()),
             },
@@ -224,6 +229,7 @@ async fn host(config: lan::Config) -> Result<()> {
                         }else{eprintln!("Pairing code does not match; no authorization granted");}
                     }
                     "deny"=>{if let Some(request)=pending.take(){let _=request.decision.send(false);}}
+                    "disconnect"=>{handle.stop_session();println!("Disconnect requested; server remains available");}
                     "revoke"=>{match handle.revoke(value.trim()){Ok(())=>println!("Device authorization revoked"),Err(error)=>eprintln!("Cannot revoke device: {error}")}}
                     "stop"=>break Ok(()),
                     _=>eprintln!("Unknown command"),

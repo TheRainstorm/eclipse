@@ -39,6 +39,7 @@ pub(super) struct HostUi {
     handle: Option<lan::Handle>,
     notice: String,
     status: String,
+    active_session: Option<String>,
     pending: Vec<Pending>,
     addresses: Vec<String>,
     stopping: bool,
@@ -72,6 +73,7 @@ impl Default for HostUi {
             handle: None,
             notice: String::new(),
             status: "尚未启用共享".into(),
+            active_session: None,
             pending: Vec::new(),
             addresses: Vec::new(),
             stopping: false,
@@ -152,16 +154,42 @@ impl HostUi {
                     }
                     lan::Event::PairingEnded(id) => self.pending.retain(|p| p.request.id != id),
                     lan::Event::Warning(message) => self.notice = message,
-                    lan::Event::SessionStarted(id) => {
+                    lan::Event::SessionStarted { id, client } => {
                         let name = self
                             .handle
                             .as_ref()
-                            .and_then(|h| h.clients().into_iter().find(|p| p.id == id))
+                            .and_then(|h| h.clients().into_iter().find(|p| p.id == client))
                             .map(|p| p.name)
                             .unwrap_or_else(|| "已配对设备".into());
                         self.status = format!("正在为 {name} 建立串流");
+                        self.active_session = Some(id);
                     }
-                    lan::Event::SessionEnded(_) => self.status = "共享已开启，等待连接".into(),
+                    lan::Event::SessionProgress { id, status } => {
+                        if self.active_session.as_deref() == Some(&id) {
+                            self.status = match status {
+                                native::HostStatus::Starting => "正在准备串流…".into(),
+                                native::HostStatus::Waiting { .. } => {
+                                    "等待已授权设备建立媒体连接…".into()
+                                }
+                                native::HostStatus::Preparing => "正在准备屏幕采集与编码…".into(),
+                                native::HostStatus::Streaming {
+                                    width,
+                                    height,
+                                    fps,
+                                    audio,
+                                    encoder,
+                                } => {
+                                    format!("串流中 · {width}×{height} @ {fps} FPS · {encoder} · {audio}")
+                                }
+                            };
+                        }
+                    }
+                    lan::Event::SessionEnded(id) => {
+                        if self.active_session.as_deref() == Some(&id) {
+                            self.active_session = None;
+                            self.status = "共享已开启，等待连接".into();
+                        }
+                    }
                 }
             }
         }
@@ -175,6 +203,7 @@ impl HostUi {
             self.ready = None;
             self.events = None;
             self.pending.clear();
+            self.active_session = None;
             self.stopping = false;
         }
         if self.running() {
@@ -273,6 +302,11 @@ impl HostUi {
                             });
                         }
                         if let Some(handle) = &self.handle {
+                            if self.active_session.is_some() && ui.button("断开当前串流").clicked()
+                            {
+                                handle.stop_session();
+                                self.status = "正在断开串流…".into();
+                            }
                             ui.horizontal(|ui| {
                                 if ui.button("允许新设备配对（2 分钟）").clicked() {
                                     handle.allow_pairing();
@@ -445,5 +479,66 @@ impl HostUi {
                 self.notice = "配对请求已结束，请从客户端重试。".into();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn an_old_session_ending_cannot_clear_a_new_sessions_progress() {
+        let (events, rx) = async_mpsc::unbounded_channel();
+        let mut host = HostUi::default();
+        host.events = Some(rx);
+        let ctx = egui::Context::default();
+        events
+            .send(lan::Event::SessionStarted {
+                id: "old".into(),
+                client: "generated".into(),
+            })
+            .ok()
+            .unwrap();
+        events
+            .send(lan::Event::SessionStarted {
+                id: "new".into(),
+                client: "generated".into(),
+            })
+            .ok()
+            .unwrap();
+        events
+            .send(lan::Event::SessionProgress {
+                id: "new".into(),
+                status: native::HostStatus::Streaming {
+                    width: 1920,
+                    height: 1080,
+                    fps: 60,
+                    audio: "disabled".into(),
+                    encoder: "generated-backend".into(),
+                },
+            })
+            .ok()
+            .unwrap();
+        events
+            .send(lan::Event::SessionEnded("old".into()))
+            .ok()
+            .unwrap();
+        events
+            .send(lan::Event::SessionProgress {
+                id: "old".into(),
+                status: native::HostStatus::Preparing,
+            })
+            .ok()
+            .unwrap();
+        host.poll(&ctx);
+        assert_eq!(host.active_session.as_deref(), Some("new"));
+        assert!(host.status.contains("1920×1080 @ 60 FPS"));
+        assert!(host.status.contains("generated-backend"));
+        events
+            .send(lan::Event::SessionEnded("new".into()))
+            .ok()
+            .unwrap();
+        host.poll(&ctx);
+        assert!(host.active_session.is_none());
+        assert_eq!(host.status, "共享已开启，等待连接");
     }
 }

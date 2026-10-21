@@ -169,7 +169,14 @@ pub enum Event {
     Pairing(PairingRequest),
     PairingEnded(String),
     Warning(String),
-    SessionStarted(String),
+    SessionStarted {
+        id: String,
+        client: String,
+    },
+    SessionProgress {
+        id: String,
+        status: native::HostStatus,
+    },
     SessionEnded(String),
 }
 #[derive(Clone, Debug)]
@@ -581,8 +588,32 @@ async fn start_session(state: Arc<State>, client: String, local: SocketAddr) -> 
             id: task_id.clone(),
             finished,
         };
-        let _ = task_state.events.send(Event::SessionStarted(client));
-        let result = native::serve_with_status(config, rx, Some(phase)).await;
+        let _ = task_state.events.send(Event::SessionStarted {
+            id: task_id.clone(),
+            client,
+        });
+        let mut observed = phase.subscribe();
+        let serving = native::serve_with_status(config, rx, Some(phase));
+        tokio::pin!(serving);
+        let mut observing = true;
+        let result = loop {
+            tokio::select! {
+                result = &mut serving => break result,
+                changed = observed.changed(), if observing => {
+                    if changed.is_err() { observing = false; }
+                    else {
+                        let _ = task_state.events.send(Event::SessionProgress {
+                            id: task_id.clone(), status: observed.borrow_and_update().clone(),
+                        });
+                    }
+                }
+            }
+        };
+        if result.is_err() {
+            let _ = task_state.events.send(Event::Warning(
+                "原生串流未正常结束，请检查共享屏幕与采集、编码后端。".into(),
+            ));
+        }
         let _ = done.send(
             result
                 .map(|_| ())

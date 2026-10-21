@@ -121,6 +121,50 @@ async fn matching_tls_comparison_pairs_then_saved_authorization_starts_generated
     .await
     .unwrap();
     assert_eq!(stats.errors.load(Ordering::Acquire), 0);
+    let session_id = timeout(Duration::from_secs(3), async {
+        let mut session_id = None;
+        loop {
+            match host.events.recv().await.unwrap() {
+                Event::SessionStarted { id, client } => {
+                    assert_eq!(client, client_id);
+                    session_id = Some(id);
+                }
+                Event::SessionProgress {
+                    id,
+                    status:
+                        native::HostStatus::Streaming {
+                            width,
+                            height,
+                            fps,
+                            encoder,
+                            ..
+                        },
+                } => {
+                    assert_eq!(session_id.as_deref(), Some(id.as_str()));
+                    assert_eq!((width, height, fps), (64, 64, 30));
+                    assert!(encoder.starts_with("openh264"));
+                    break id;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    host.handle.stop_session();
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(Event::SessionEnded(id)) = host.events.recv().await {
+                assert_eq!(id, session_id);
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    // Stopping capture retains the persistent listener and pairing grant.
+    assert_eq!(host.handle.clients().len(), 1);
+    assert!(connect(&device, &client_id).await.is_ok());
     stop.send_replace(true);
     timeout(Duration::from_secs(5), viewing)
         .await
