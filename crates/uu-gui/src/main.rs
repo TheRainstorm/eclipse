@@ -1281,6 +1281,8 @@ impl eframe::App for App {
                     "video_render_path":self.textures.get(&self.selected_track).map(|t|t.render_path()),
                     "video_gpu_submit_acquire_release_ms":self.textures.get(&self.selected_track).and_then(|t|t.gpu_timings_ms()),
                     "presentation_vsync":self.presentation_vsync,
+                    "continuous_video_repaint":false,
+                    "video_mailbox_wait_ms":h.frames.delivery_wait_ms(self.selected_track),
                     "video_mailbox_published_replaced_delivered":h.frames.delivery_counts(self.selected_track),
                     "video_dxgi_shared_export":self.textures.get(&self.selected_track).and_then(|t|t.gpu_shared_export()),
                     "remote_cursor_requested":self.preferences.cursor_mode.remote(),

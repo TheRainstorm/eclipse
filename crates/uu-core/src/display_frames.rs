@@ -24,13 +24,18 @@ impl DisplayImage {
 }
 #[derive(Default)]
 struct Mailbox {
-    images: BTreeMap<u32, DisplayImage>,
+    images: BTreeMap<u32, (DisplayImage, std::time::Instant)>,
+    waits: BTreeMap<u32, std::collections::VecDeque<(std::time::Instant, f32)>>,
     // Per-track lifetime totals: published, replaced before delivery, delivered.
     counts: BTreeMap<u32, [u64; 3]>,
 }
 impl Mailbox {
     fn pop_first(&mut self) -> Option<DisplayImage> {
-        let (track, frame) = self.images.pop_first()?;
+        let (track, (frame, published)) = self.images.pop_first()?;
+        let now = std::time::Instant::now();
+        let waits = self.waits.entry(track).or_default();
+        waits.push_back((now, now.duration_since(published).as_secs_f32() * 1000.0));
+        while waits.len() > 120 { waits.pop_front(); }
         self.counts.entry(track).or_default()[2] += 1;
         Some(frame)
     }
@@ -84,7 +89,7 @@ impl FrameSender {
         {
             let mut mailbox = self.pending.lock().unwrap();
             let track = frame.track();
-            let replaced = mailbox.images.insert(track, frame).is_some();
+            let replaced = mailbox.images.insert(track, (frame, std::time::Instant::now())).is_some();
             let counts = mailbox.counts.entry(track).or_default();
             counts[0] += 1;
             counts[1] += u64::from(replaced);
@@ -103,6 +108,17 @@ impl FrameReceiver {
     /// Overwrites discard stale decoded images, never compressed reference frames.
     pub fn delivery_counts(&self, track: u32) -> [u64; 3] {
         self.pending.lock().unwrap().counts.get(&track).copied().unwrap_or_default()
+    }
+    /// Mean decoded-image mailbox residence of delivered images in the last 2s.
+    /// Replaced images are excluded; no recent image is unknown, not zero.
+    pub fn delivery_wait_ms(&self, track: u32) -> Option<f32> {
+        let mailbox = self.pending.lock().unwrap();
+        let samples = mailbox.waits.get(&track)?;
+        let now = std::time::Instant::now();
+        let (sum, count) = samples.iter()
+            .filter(|(at, _)| now.duration_since(*at) < std::time::Duration::from_secs(2))
+            .fold((0.0, 0usize), |(sum, n), (_, ms)| (sum + ms, n + 1));
+        (count > 0).then(|| sum / count as f32)
     }
     pub fn set_waker(&self, notify: impl Fn() + Send + Sync + 'static) {
         *self.notify.lock().unwrap() = Some(Arc::new(notify));
@@ -132,6 +148,25 @@ impl FrameReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delivery_wait_tracks_delivered_image_and_expires() {
+        let (tx, mut rx) = channel();
+        assert_eq!(rx.delivery_wait_ms(0), None);
+        tx.send((0, 1, 1, vec![])).unwrap();
+        tx.pending.lock().unwrap().images.get_mut(&0).unwrap().1 -= std::time::Duration::from_secs(1);
+        let replaced_at = std::time::Instant::now();
+        tx.send((0, 2, 1, vec![])).unwrap();
+        assert!(tx.pending.lock().unwrap().images.get(&0).unwrap().1 >= replaced_at);
+        // Replacement must reset the timestamp; old image was never delivered.
+        rx.try_recv().unwrap();
+        let mut pending = rx.pending.lock().unwrap();
+        let sample = pending.waits.get_mut(&0).unwrap().back_mut().unwrap();
+        sample.1 = 12.5;
+        drop(pending);
+        assert_eq!(rx.delivery_wait_ms(0), Some(12.5));
+        rx.pending.lock().unwrap().waits.get_mut(&0).unwrap().back_mut().unwrap().0 -= std::time::Duration::from_secs(3);
+        assert_eq!(rx.delivery_wait_ms(0), None);
+    }
     #[test]
     fn planar_mailbox_preserves_pixels_color_and_latest_only_without_rgba() {
         let (tx,mut rx)=channel();rx.enable_planar();

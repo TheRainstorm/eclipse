@@ -35,10 +35,18 @@ impl super::App {
         } else { "—ms".into() };
         let configured=s.configured_fps.load(Relaxed);
         let target_fps=if configured>0 {configured}else{self.target_fps};
+        let wait = controller.frames.delivery_wait_ms(self.selected_track);
+        let queue = wait.map(|v| format!("{v:.1}ms")).unwrap_or_else(|| "—".into());
+        let partial = if fresh {
+            wait.map(|q| format!("≈{:.1}ms", s.rtt_us.load(Relaxed) as f32 / 1000.0 + s.decode_ms() + q + self.render_ms))
+        } else { None }.unwrap_or_else(|| "—".into());
+        // This sum is an approximation across different sample populations,
+        // not an input-correlated end-to-end measurement or strict lower bound.
         // Render is CPU preparation/submission time, excluding vsync wait.
         let text = format!(
             "{w}×{h}@{rd:.0}   {codec} · {decoder}   目标 {} FPS{source}   FPS {:.1} Rx · {:.1} De · {rd:.1} Rd\n\
-             Network {network}   Loss {:.2}%   Bandwidth {:.2} Mbps | Render {:.2}ms · Decode {:.2}ms\n\
+             控制 RTT {network}   Loss {:.2}%   Bandwidth {:.2} Mbps | Render {:.2}ms · Decode {:.2}ms\n\
+             已知段合计 {partial} · 待绘制 {queue} · 总延迟待测（远端/呈现未计）\n\
              丢包 {} · NACK {} · RTX {} · 乱序 {} · 迟到 {} · 坏帧 {} · 解码错误 {} · 丢队列 {} · 恢复请求 {}",
             target_fps, s.src_fps(), s.dec_fps(), s.loss_ppm.load(Relaxed) as f32 / 10000.0,
             s.bitrate_kbps.load(Relaxed) as f32 / 1000.0, self.render_ms, s.decode_ms(),
@@ -57,7 +65,7 @@ impl super::App {
         self.hud_cache.galley=Some(ui.fonts(|f| f.layout_job(job)));
         self.hud_cache.key=Some(key);
         self.hud_cache.updated=Some(std::time::Instant::now());
-        self.hud_cache.detail=format!("{}\n输入通道：{} · 本地发送 {} 条 · 发送失败 {} 条\nCtrl+Alt+S：显示 / 隐藏统计\n统计每 500ms 更新；视频仍逐帧呈现\nNetwork：CONTROL 往返耗时均值 ± 标准差（最近 32 次）\nLoss：最近 500ms 超时未修复的 RTP 包比例，重复 RTX 不计入分母\n其余包、帧、请求计数为本次会话累计值\nRd：每秒提交的新画面数，不是显示器扫描次数\nRender：整轮 UI 准备及渲染提交 CPU 时间，不含交换缓冲的 VSync 等待，但驱动同步仍可能阻塞提交\nDecode：解码调用耗时；读回路径包含显存读回，GPU 共享路径的完成等待计入后续 Render，均不代表端到端延迟",s.backend(),if self.input_ready(){"已打开"}else{"未打开"},s.input_messages_sent.load(Relaxed),s.input_send_errors.load(Relaxed));
+        self.hud_cache.detail=format!("{}\n输入通道：{} · 本地发送 {} 条 · 发送失败 {} 条\nCtrl+Alt+S：显示 / 隐藏统计\n统计每 500ms 更新；视频仍逐帧呈现\n控制 RTT：CONTROL 应用消息往返均值 ± 标准差（最近 32 次），包含协议/排队/对端响应，不等于 ICMP ping；不能用 ping 替换实际应用等待\n已知段合计：控制 RTT + Decode + 待绘制 + Render，窗口均值近似相加，非同一输入/帧的全程测量，也非严格下界\n待绘制：解码图像发布到 UI 取走的等待，最近 2 秒最多 120 次交付；被覆盖图像不计，超过 2 秒无图像显示未知\n尚缺：输入事件等待、远端捕获/编码、视频组帧/解码前排队、VSync/桌面合成/扫描等；不能据此推算完整总延迟\nLoss：最近 500ms 超时未修复的 RTP 包比例，重复 RTX 不计入分母\n其余包、帧、请求计数为本次会话累计值\nRd：每秒提交的新画面数，不是显示器扫描次数\nRender：整轮 UI 准备及渲染提交 CPU 时间，不含交换缓冲的 VSync 等待，但驱动同步仍可能阻塞提交\nDecode：解码调用耗时；读回路径包含显存读回，GPU 共享路径的完成等待计入后续 Render，均不代表端到端延迟",s.backend(),if self.input_ready(){"已打开"}else{"未打开"},s.input_messages_sent.load(Relaxed),s.input_send_errors.load(Relaxed));
         }
         let Some(galley)=self.hud_cache.galley.clone() else {return};
         let bounds = Rect::from_min_size(
