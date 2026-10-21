@@ -299,7 +299,7 @@ impl super::App {
                     });
                 });
             let response=ui.add_sized([26.0,28.0],egui::Button::new(RichText::new("+").size(20.0)).frame(false)).on_hover_text("选择远端显示器");
-            if response.clicked(){self.displays.menu_open=!self.displays.menu_open;self.stream_menu.open=false;self.context.memory_mut(|m|m.close_popup());self.displays.anchor=response.rect.left_bottom();self.remote_focus=false;self.release_all_keys();}
+            if response.clicked(){self.displays.menu_open=!self.displays.menu_open;self.stream_menu.open=false;self.context.memory_mut(|m|m.close_popup());self.displays.anchor=response.rect.left_bottom();self.release_all_keys();}
         });
         if let Some((source,target,after))=reorder{self.reorder_display_tab(source,target,after);}
         if let Some(id)=chosen{self.select_remote_screen(id);}
@@ -665,7 +665,7 @@ impl super::App {
                                         }
                                         ui.small("Ctrl+Alt+Z 释放／捕获键鼠");
                                         if old!=(self.preferences.relative_mouse,self.preferences.remote_cursor) {
-                                            self.release_pointer_capture(ctx);self.remote_focus=false;self.persist_preferences();
+                                            self.release_pointer_capture(ctx);self.persist_preferences();
                                             if old.1!=self.preferences.remote_cursor {self.send_capture_settings();}ctx.memory_mut(|m|m.close_popup());
                                         }
                                     });
@@ -689,7 +689,6 @@ impl super::App {
                                             {
                                                 self.send_input(message, 15);
                                             }
-                                            self.remote_focus = false;
                                             if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()){sender.set_enabled(!self.view_only);}
                                         }
                                     });

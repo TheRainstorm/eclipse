@@ -789,12 +789,9 @@ impl App {
                 texture.paint(ui,draw);
                 if self.unpresented.remove(&track) { *self.frame_count.entry(track).or_insert(0) += 1; }
                 let pointer=ctx.input(|i|i.pointer.hover_pos());
-                if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) {self.remote_focus=true;}
-                if !self.mouse_captured && events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if !rect.contains(*pos))) {
-                    self.remote_focus=false;self.release_all_keys();messages.extend(self.pointer.release_all(input_screen));
-                }
-                if controls_active {if self.remote_focus || !self.pressed_vks.is_empty(){self.remote_focus=false;self.release_all_keys();}messages.extend(self.pointer.release_all(input_screen));}
-                if !self.view_only && !controls_active && self.focused && self.remote_focus {
+                if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) && !controls_active {self.input_capture.request();}
+                if controls_active {messages.extend(self.pointer.release_all(input_screen));}
+                if self.input_capture.pointer(self.input_conditions(ctx),controls_active) {
                     if self.preferences.relative_mouse {
                         if self.mouse_captured {messages.extend(self.pointer.events_relative(events,input_screen));}
                     } else {messages.extend(self.pointer.events(events,draw,pointer,input_screen));}

@@ -52,7 +52,6 @@ impl super::App {
         self.context.memory_mut(|memory| memory.close_popup());
         self.release_all_keys();
         self.release_pointer_capture(&self.context.clone());
-        self.remote_focus = false;
     }
 
     pub(super) fn about_ui(&mut self, ctx: &egui::Context) {

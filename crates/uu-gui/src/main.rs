@@ -17,6 +17,7 @@ mod display_layout;
 mod clipboard;
 mod cursor;
 mod keyboard_capture;
+mod input_capture;
 mod settings;
 mod sessions;
 mod platform;
@@ -197,7 +198,7 @@ struct App {
     mouse_captured: bool,
     remote_cursor_active: bool,
     cursor: cursor::Cursor,
-    remote_focus: bool,
+    input_capture: input_capture::Capture,
     view_only: bool,
     stream_menu: stream_menu::StreamMenu,
     window_sizing: window::WindowSizing,
@@ -451,7 +452,7 @@ impl App {
             mouse_captured: false,
             remote_cursor_active: false,
             cursor: cursor::Cursor::default(),
-            remote_focus: false,
+            input_capture: input_capture::Capture::default(),
             view_only: false,
             stream_menu: stream_menu::StreamMenu {visible:preferences.floating_menu,..Default::default()},
             window_sizing: window::WindowSizing::default(),
@@ -659,7 +660,7 @@ impl App {
             self.release_all_keys();self.release_pointer_capture(ctx);self.shortcuts.clear();
             self.controller = None;
             self.disconnecting = false;
-            self.remote_focus = false;
+            self.input_capture.release();
             self.textures.clear();
             self.hud_cache=Default::default();
             self.frame_count.clear();
@@ -739,24 +740,44 @@ impl App {
         self.release_all_keys();
         match action {
             shortcuts::Action::Stats=>{self.hud=!self.hud;self.persist_preferences();},
-            shortcuts::Action::Menu=>{self.remote_focus=false;self.release_pointer_capture(ctx);self.stream_menu.visible=!self.stream_menu.visible;self.stream_menu.open=false;ctx.memory_mut(|m|m.close_popup());self.persist_preferences();},
+            shortcuts::Action::Menu=>{self.release_pointer_capture(ctx);self.stream_menu.visible=!self.stream_menu.visible;self.stream_menu.open=false;ctx.memory_mut(|m|m.close_popup());self.persist_preferences();},
             shortcuts::Action::Mute=>{if self.supports_remote(uu_core::capabilities::Capability::Audio){self.toggle_audio_mute();}},
             shortcuts::Action::Fullscreen=>self.toggle_fullscreen(ctx),
             shortcuts::Action::Exit=>self.disconnect(),
             shortcuts::Action::Capture=>{
-                self.remote_focus=!self.remote_focus;
-                if let Some(h)=&self.controller { h.stats.diagnostics.record(serde_json::json!({"event":"input_focus","active":self.remote_focus})); }
+                self.input_capture.toggle();
+                if let Some(h)=&self.controller { h.stats.diagnostics.record(serde_json::json!({"event":"input_focus","active":self.input_capture.requested()})); }
             },
         }
+        self.update_keyboard_capture(ctx);
+    }
+    fn input_conditions(&self,ctx:&egui::Context)->input_capture::Conditions {
+        input_capture::Conditions {
+            ready:self.input_ready(), focused:ctx.input(|i|i.focused), view_only:self.view_only,
+            local_ui:self.stream_menu.open || self.displays.menu_open || self.local_dialog_open(),
+        }
+    }
+    fn remote_input_active(&self,ctx:&egui::Context)->bool {
+        self.input_capture.active(self.input_conditions(ctx))
     }
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
-        let remote=self.input_ready() && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.local_dialog_open() && ctx.input(|i|i.focused);
+        let conditions=self.input_conditions(ctx);
+        let remote=self.input_capture.active(conditions);
         // Client commands remain local while viewing, in menus, or after
         // releasing remote input. They do not depend on a host control grant.
         let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused);
         let window=self.platform.window_keyboard(remote,shortcuts);
-        let active=self.platform.capture_keyboard(remote&&self.fullscreen&&self.preferences.capture_keyboard);
-        if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {self.release_all_keys();}
+        let active=self.platform.capture_keyboard(self.input_capture.system(conditions,self.fullscreen,self.preferences.capture_keyboard));
+        if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {
+            self.release_all_keys();
+            if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
+                "event":"input_capture", "requested":self.input_capture.requested(),
+                "ready":conditions.ready, "focused":conditions.focused,
+                "view_only":conditions.view_only, "local_ui":conditions.local_ui,
+                "fullscreen":self.fullscreen, "system_keys_enabled":self.preferences.capture_keyboard,
+                "remote_input":remote, "native_window_input":window, "native_system_capture":active
+            }));}
+        }
         self.native_keyboard_capture=active;self.native_window_keyboard=window;
     }
 
@@ -768,8 +789,7 @@ impl App {
         }
     }
     fn update_pointer_capture(&mut self,ctx:&egui::Context) {
-        let capture=self.preferences.relative_mouse && self.remote_focus && self.input_ready() && self.focused
-            && !self.view_only && !self.stream_menu.open && !self.local_dialog_open() && !self.textures.is_empty();
+        let capture=self.preferences.relative_mouse && self.remote_input_active(ctx) && !self.textures.is_empty();
         if capture!=self.mouse_captured {
             self.release_pointer_capture(ctx);
             if capture {
@@ -824,6 +844,7 @@ impl App {
         self.stream_menu.open = false;
         ctx.memory_mut(|m| m.close_popup());
         if self.fullscreen {
+            self.input_capture.request();
             // Windows keeps WS_MAXIMIZE when entering borderless fullscreen.
             // Restore first so its client area can cover the entire monitor.
             self.restore_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
@@ -941,7 +962,7 @@ impl App {
         for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
             self.send_input(message, 15);
         }
-        self.remote_focus = false;
+        self.input_capture.release();
         if let Some(h) = &self.controller {
             let _ = h.close.send(());
             self.disconnecting = true;
@@ -1019,7 +1040,7 @@ impl App {
                 if !self.fullscreen {
                     self.context.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
                 }
-                self.remote_focus = true;
+                self.input_capture.request();
                 self.status = "连接中…".into();
                 for vk in [0x11u32, 0x10, 0x12, 0xA2, 0xA0, 0xA4, 0x5B] {
                     self.send_key(vk, false);
@@ -1102,11 +1123,10 @@ impl eframe::App for App {
             for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
                 self.send_input(message, 15);
             }
-            self.remote_focus = false;
         }
         self.focused = focused;
         self.update_keyboard_capture(ctx);
-        if self.platform.capture_overflowed() {self.release_all_keys();self.remote_focus=false;self.update_keyboard_capture(ctx);}
+        if self.platform.capture_overflowed() {self.release_all_keys();self.input_capture.release();self.update_keyboard_capture(ctx);}
         for event in self.platform.captured_keys() {
             match event {
                 keyboard_capture::Decision::Remote{vk,pressed}=> {
@@ -1141,7 +1161,7 @@ impl eframe::App for App {
                 // A swallowed native key never generates this window event.
                 // Any key that reaches egui still needs forwarding, including
                 // keys from another input source or a hook that timed out.
-                if !self.native_window_keyboard && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.local_dialog_open() {
+                if !self.native_window_keyboard && self.remote_input_active(ctx) {
                     self.sync_modifiers(*modifiers);
                     if self.is_native() {
                         if let Some(usage)=native_keys::hid_for_egui(physical_key.unwrap_or(*key)){
@@ -1153,7 +1173,7 @@ impl eframe::App for App {
                 }
             }
         }
-        if !self.native_keyboard_capture && !self.native_window_keyboard && self.remote_focus && !self.view_only && !self.stream_menu.open && !self.local_dialog_open() {
+        if !self.native_keyboard_capture && !self.native_window_keyboard && self.remote_input_active(ctx) {
             self.sync_modifiers(ctx.input(|i| i.modifiers));
         }
         let elapsed = self.last_fps.elapsed().as_secs_f32();

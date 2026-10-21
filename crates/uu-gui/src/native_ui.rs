@@ -38,7 +38,7 @@ impl App {
         let failed=self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|sender|sender.send(command).is_err());
         if failed {
             if let Some(h)=&self.controller{h.stats.input_send_errors.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
-            self.remote_focus=false;self.pressed_vks.clear();self.mod_state=[false;4];
+            self.input_capture.release();self.pressed_vks.clear();self.mod_state=[false;4];
             let screen=self.input_screen(self.selected_track);let _=self.pointer.release_all(screen);
         }
     }
@@ -183,7 +183,7 @@ impl App {
                 if let Err(error)=super::clipboard::start(handle.stats.clipboard.clone(),self.platform.window_id()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(format!("剪贴板不可用：{error}"));}
                 self.controller = Some(handle);
                 self.window_sizing.begin_stream();
-                self.remote_focus = false;
+                self.input_capture.request();
                 if !self.fullscreen {
                     self.context
                         .send_viewport_cmd(egui::ViewportCommand::Maximized(false));

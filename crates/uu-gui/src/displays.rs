@@ -258,7 +258,6 @@ impl super::App {
         // Release against the old source before changing its input binding.
         self.release_all_keys();
         self.release_pointer_capture(&self.context.clone());
-        self.remote_focus = false;
         self.cursor = super::cursor::Cursor::default();
         self.selected_track = target.unwrap_or(self.selected_track);
         if let Some(h) = &self.controller {
@@ -351,7 +350,6 @@ impl super::App {
             self.displays.queued = None;
             self.displays.blocked = true;
             self.displays.notice = "远端当前没有可用显示器，等待重新连接显示器…".into();
-            self.remote_focus = false;
             self.textures.clear();
         }
         if !screens.screens.is_empty() {
@@ -365,7 +363,6 @@ impl super::App {
                 if previous.is_some() {
                     self.release_all_keys();
                     self.release_pointer_capture(&self.context.clone());
-                    self.remote_focus = false;
                 }
                 self.displays.selected = Some(next.id);
                 self.selected_track = next.assigned_track().unwrap_or(self.selected_track);

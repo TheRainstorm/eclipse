@@ -165,7 +165,6 @@ impl super::App {
         {
             self.send_input(message, 15);
         }
-        self.remote_focus = false;
     }
     fn snapshot_preferences(&mut self) {
         self.preferences.fps = self.target_fps;
