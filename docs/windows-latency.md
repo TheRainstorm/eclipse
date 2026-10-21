@@ -176,3 +176,5 @@ RTP使用[RFC 7798](https://www.rfc-editor.org/rfc/rfc7798.html)的非交错单N
 目标GPU上的生成4K60 HEVC素材离线验证通过，GPU解码提交平均约0.50ms、转换及同步约1.02ms，旧纹理跨帧保留及解码器退出后的租约检查通过。这里的提交耗时不包含完整GPU完成时间，也不是端到端延迟；128×128启动探测不能证明所有高分辨率都达到目标帧率。官方远端是否实际选择HEVC，以HUD和`video_stats.codec`为准，真实流畅度仍需实流对照。
 
 离线GPU验证工具支持`cargo run -p uu-media --release --example d3d11_surface_probe -- GENERATED_AUD.hevc hevc`；素材必须是自主生成、带AUD的Main 8-bit视频。Windows隔离回归`windows_generated_srtp_switches_h264_hevc_h264_on_one_track`使用本机加密连接和生成视频检查完整接收/解码路径，不打开窗口、不采集桌面、不发送输入。
+
+该版本已通过Linux媒体72项、核心133项、GUI95项及Windows核心132项、媒体73项原生测试；Windows GUI默认回归与独立键盘消息泵测试进程均退出成功。在另一块GPU上的真实HEVC启动探测与加密同轨道切换也通过：H.264、HEVC、H.264三段各收到24个解码图像，累计72帧、解码错误0。以上验证覆盖客户端实现，仍不替代官方被控端4K60实际帧率与交互验收。
