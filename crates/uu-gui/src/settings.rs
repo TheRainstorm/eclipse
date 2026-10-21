@@ -6,6 +6,36 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorMode {
+    #[default]
+    Local,
+    Remote,
+    Both,
+}
+impl CursorMode {
+    pub const ALL: [Self; 3] = [Self::Local, Self::Remote, Self::Both];
+    pub fn label(self) -> &'static str {
+        match self { Self::Local => "仅本地光标", Self::Remote => "仅远端光标", Self::Both => "本地和远端光标" }
+    }
+    pub fn remote(self) -> bool { self != Self::Local }
+    pub fn local(self) -> bool { self != Self::Remote }
+    pub fn next(self) -> Self {
+        match self { Self::Local => Self::Remote, Self::Remote => Self::Both, Self::Both => Self::Local }
+    }
+}
+fn deserialize_cursor_mode<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CursorMode, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Value { Mode(CursorMode), Legacy(bool) }
+    Ok(match Value::deserialize(d)? {
+        Value::Mode(mode) => mode,
+        Value::Legacy(true) => CursorMode::Remote,
+        Value::Legacy(false) => CursorMode::Local,
+    })
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -22,7 +52,8 @@ pub struct Settings {
     pub vsync: bool,
     pub software_decoder: bool,
     pub relative_mouse: bool,
-    pub remote_cursor: bool,
+    #[serde(alias = "remote_cursor", deserialize_with = "deserialize_cursor_mode")]
+    pub cursor_mode: CursorMode,
     pub clipboard: bool,
 }
 impl Default for Settings {
@@ -41,14 +72,14 @@ impl Default for Settings {
             vsync: true,
             software_decoder: false,
             relative_mouse: false,
-            remote_cursor: false,
+            cursor_mode: CursorMode::Local,
             clipboard: true,
         }
     }
 }
 impl Settings {
     fn capture_values(&self)->(u32,usize,u32,usize,bool) {
-        (self.fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.remote_cursor)
+        (self.fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.cursor_mode.remote())
     }
     pub fn path() -> Option<PathBuf> {
         uu_core::Config::from_env()
@@ -231,7 +262,8 @@ impl super::App {
                     ui.checkbox(&mut s.capture_keyboard,"全屏时将系统快捷键发送到远端");
                     ui.small("Ctrl+左 Alt+F / X 切换全屏；Q 退出串流；Z 释放／捕获输入。这些本地快捷键始终由客户端处理，不发送到远端。\n系统键只在全屏画面获得输入焦点时捕获，打开菜单、仅观看或失焦时释放。\nWin+Shift+方向键与其它系统组合键遵循相同的捕获规则。Ctrl+Alt+Del 由 Windows 保留。");
                     ui.horizontal_wrapped(|ui|{ui.label("鼠标模式");ui.selectable_value(&mut s.relative_mouse,false,"桌面 · 绝对定位");ui.selectable_value(&mut s.relative_mouse,true,"游戏 · 相对移动");});
-                    ui.horizontal_wrapped(|ui|{ui.label("光标显示");ui.selectable_value(&mut s.remote_cursor,false,"本地光标");ui.selectable_value(&mut s.remote_cursor,true,"远端光标");});
+                    ui.horizontal_wrapped(|ui|{ui.label("光标显示");for mode in CursorMode::ALL {ui.selectable_value(&mut s.cursor_mode,mode,mode.label());}});
+                    ui.small("Ctrl+Alt+P 切换桌面／游戏模式；Ctrl+Alt+C 切换光标显示。仅本地光标会请求远端关闭视频内的光标合成；游戏捕获时隐藏本地光标。");
                     ui.small("游戏模式单击画面捕获鼠标，Ctrl+Alt+Z 释放／重新捕获；打开菜单或失焦时自动释放。");
                     ui.separator();ui.strong("启动选项");
                     ui.checkbox(&mut s.vsync,"垂直同步");ui.checkbox(&mut s.software_decoder,"使用软件解码（默认优先硬件解码）");
@@ -279,6 +311,28 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cursor_modes_migrate_legacy_settings_and_keep_display_ownership() {
+        for (json,expected) in [(r#"{}"#,CursorMode::Local),
+            (r#"{"remote_cursor":false}"#,CursorMode::Local),
+            (r#"{"remote_cursor":true}"#,CursorMode::Remote),
+            (r#"{"cursor_mode":"both"}"#,CursorMode::Both)] {
+            let settings:Settings=serde_json::from_str(json).unwrap();
+            assert_eq!(settings.cursor_mode,expected);
+            let saved=serde_json::to_value(&settings).unwrap();
+            assert!(saved.get("remote_cursor").is_none());
+            assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(),settings);
+        }
+        let mut mode=CursorMode::Local;
+        for expected in CursorMode::ALL {
+            assert_eq!(mode,expected);
+            assert_eq!(mode.local(),mode!=CursorMode::Remote);
+            assert_eq!(mode.remote(),mode!=CursorMode::Local);
+            mode=mode.next();
+        }
+        assert_eq!(mode,CursorMode::Local);
+        assert!(serde_json::from_str::<Settings>(r#"{"cursor_mode":"unknown"}"#).is_err());
+    }
 
     #[test]
     fn automatic_save_preserves_corrupt_settings_and_requires_explicit_backup() {

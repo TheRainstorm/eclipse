@@ -646,7 +646,7 @@ impl App {
         if let Some(h) = &self.controller {
             let response = h.stats.settings_response.load(std::sync::atomic::Ordering::Acquire);
             if response >> 1 == 2000 + self.settings_seq && self.settings_feedback.starts_with("已发送") {
-                if response & 1 != 0 {self.remote_cursor_active=self.preferences.remote_cursor;}
+                if response & 1 != 0 {self.remote_cursor_active=self.preferences.cursor_mode.remote();}
                 self.settings_feedback = if response & 1 != 0 {
                     format!("远端已确认请求：{} FPS · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0)
                 } else { "远端拒绝了画质设置，请重新选择".into() };
@@ -695,7 +695,7 @@ impl App {
     /// Apply frame rate, quality and resolution together so another setting never resets FPS.
     fn send_capture_settings(&mut self) {self.send_capture_settings_through(false);}
     fn capture_profile(&self) -> displays::CaptureProfile {
-        (self.target_fps, self.bitrate_idx, if self.bitrate_idx == 4 {self.custom_mbps} else {0}, self.resolution_idx, self.preferences.remote_cursor)
+        (self.target_fps, self.bitrate_idx, if self.bitrate_idx == 4 {self.custom_mbps} else {0}, self.resolution_idx, self.preferences.cursor_mode.remote())
     }
     fn send_capture_settings_through(&mut self,immediate:bool) {
         if !self.supports_remote(uu_core::capabilities::Capability::Quality) {self.settings_feedback="当前画质由被控端设置".into();return;}
@@ -722,7 +722,7 @@ impl App {
             quality,
             custom_bps,
             resolution,
-            self.preferences.remote_cursor,
+            self.preferences.cursor_mode.remote(),
             source,
         );
         let request=2000+self.settings_seq;
@@ -745,6 +745,23 @@ impl App {
             shortcuts::Action::Mute=>{if self.supports_remote(uu_core::capabilities::Capability::Audio){self.toggle_audio_mute();}},
             shortcuts::Action::Fullscreen=>self.toggle_fullscreen(ctx),
             shortcuts::Action::Exit=>self.disconnect(),
+            shortcuts::Action::MouseMode=>{
+                self.release_pointer_capture(ctx);
+                self.preferences.relative_mouse=!self.preferences.relative_mouse;
+                self.status=if self.preferences.relative_mouse {"鼠标：游戏模式 · 相对移动"} else {"鼠标：桌面模式 · 绝对定位"}.into();
+                self.persist_preferences();
+            },
+            shortcuts::Action::CursorMode=>{
+                if self.is_native() {
+                    self.status="当前原生主机尚不支持远端光标合成切换".into();
+                } else {
+                    let remote=self.preferences.cursor_mode.remote();
+                    self.preferences.cursor_mode=self.preferences.cursor_mode.next();
+                    self.status=format!("光标：{}",self.preferences.cursor_mode.label());
+                    self.persist_preferences();
+                    if remote!=self.preferences.cursor_mode.remote() {self.send_capture_settings();}
+                }
+            },
             shortcuts::Action::Capture=>{
                 self.input_capture.toggle();
                 if let Some(h)=&self.controller { h.stats.diagnostics.record(serde_json::json!({"event":"input_focus","active":self.input_capture.requested()})); }
@@ -1196,7 +1213,7 @@ impl eframe::App for App {
                     "decode_ms":s.decode_ms(),"render_ms":self.render_ms,
                     "width":s.res().0,"height":s.res().1,
                     "video_render_path":self.textures.get(&self.selected_track).map(|t|t.render_path()),
-                    "remote_cursor_requested":self.preferences.remote_cursor,
+                    "remote_cursor_requested":self.preferences.cursor_mode.remote(),
                     "remote_cursor_active":self.remote_cursor_active,
                     "relative_mouse":self.preferences.relative_mouse,
                     "audio_underruns":s.audio.underruns.load(Relaxed),

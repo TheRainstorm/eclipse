@@ -109,6 +109,8 @@ impl Keys {
                 0x46 | 0x58 => Some(Action::Fullscreen),
                 0x51 => Some(Action::Exit),
                 0x5a => Some(Action::Capture),
+                0x50 => Some(Action::MouseMode),
+                0x43 => Some(Action::CursorMode),
                 _ => None,
             };
             if let Some(action) = action {
@@ -164,7 +166,7 @@ mod tests {
     #[test]
     fn client_commands_are_local_without_remote_control_or_system_capture() {
         for (vk,action) in [(0x46,Action::Fullscreen),(0x58,Action::Fullscreen),(0x51,Action::Exit),
-            (0x53,Action::Stats),(0x4d,Action::Mute),(0x48,Action::Menu),(0x5a,Action::Capture)] {
+            (0x53,Action::Stats),(0x4d,Action::Mute),(0x48,Action::Menu),(0x5a,Action::Capture),(0x50,Action::MouseMode),(0x43,Action::CursorMode)] {
             let mut keys=Keys::new();
             assert_eq!(keys.event_with_shortcuts(vk,true,false,true,true,false),Decision::Shortcut(action));
             assert_eq!(keys.event_with_shortcuts(vk,true,false,false,false,false),Decision::Consume);
@@ -197,7 +199,7 @@ mod tests {
     }
     #[test]
     fn altgr_text_never_exits_or_toggles_the_local_stream() {
-        for vk in [0x51,0x53,0x4d,0x48,0x46,0x58,0x5a] {
+        for vk in [0x51,0x53,0x4d,0x48,0x46,0x58,0x5a,0x50,0x43] {
             let mut keys=Keys::new();
             assert_eq!(keys.event(0xa2,true,true,false,false),Decision::Remote {vk:0xa2,pressed:true});
             assert_eq!(keys.event(0xa5,true,true,false,false),Decision::Remote {vk:0xa5,pressed:true});

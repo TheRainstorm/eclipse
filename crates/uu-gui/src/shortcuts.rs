@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use eframe::egui::{Key, Modifiers};
 
 #[derive(Debug, PartialEq)]
-pub enum Action { Stats, Menu, Mute, Fullscreen, Exit, Capture }
+pub enum Action { Stats, Menu, Mute, Fullscreen, Exit, Capture, MouseMode, CursorMode }
 #[derive(Debug, PartialEq)]
 pub enum KeyAction { Forward, Consumed, Trigger(Action) }
 #[derive(Default)]
@@ -27,6 +27,8 @@ impl Shortcuts {
                 Key::F | Key::X => Some(Action::Fullscreen),
                 Key::Q if streaming => Some(Action::Exit),
                 Key::Z if streaming => Some(Action::Capture),
+                Key::P if streaming => Some(Action::MouseMode),
+                Key::C if streaming => Some(Action::CursorMode),
                 _ => None,
             }
         } else { None };
@@ -57,13 +59,18 @@ mod tests {
     }
     #[test]
     fn exit_and_fullscreen_alias_own_repeat_and_release() {
-        for (key, expected) in [(Key::Q, Action::Exit), (Key::X, Action::Fullscreen), (Key::Z, Action::Capture)] {
+        for (key, expected) in [(Key::Q, Action::Exit), (Key::X, Action::Fullscreen), (Key::Z, Action::Capture),
+            (Key::P, Action::MouseMode), (Key::C, Action::CursorMode)] {
             let mut keys = Shortcuts::default();
             assert_eq!(keys.key(key, true, false, CHORD, true), KeyAction::Trigger(expected));
             assert_eq!(keys.key(key, true, true, CHORD, true), KeyAction::Consumed);
             assert_eq!(keys.key(key, false, false, Modifiers::NONE, true), KeyAction::Consumed);
         }
         assert_eq!(Shortcuts::default().key(Key::Q, true, false, CHORD, false), KeyAction::Forward);
+        for key in [Key::P,Key::C] {
+            assert_eq!(Shortcuts::default().key(key,true,false,CHORD,false),KeyAction::Forward);
+            assert_eq!(Shortcuts::default().key(key,true,false,Modifiers::CTRL,true),KeyAction::Forward);
+        }
     }
     #[test]
     fn ordinary_remote_keys_and_f1_are_preserved() {

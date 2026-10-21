@@ -645,18 +645,22 @@ impl super::App {
                                     }
                                     if self.supports_remote(uu_core::capabilities::Capability::Input) {
                                     side_submenu(ui, &mut blocked, Icon::Desktop, "鼠标", |ui| {
-                                        let old=(self.preferences.relative_mouse,self.preferences.remote_cursor);
+                                        let old=(self.preferences.relative_mouse,self.preferences.cursor_mode);
                                         ui.selectable_value(&mut self.preferences.relative_mouse,false,"桌面模式 · 绝对定位");
                                         ui.selectable_value(&mut self.preferences.relative_mouse,true,"游戏模式 · 相对移动");
                                         if !self.is_native() {
                                         separator(ui);
-                                        ui.selectable_value(&mut self.preferences.remote_cursor,false,"本地光标");
-                                        ui.selectable_value(&mut self.preferences.remote_cursor,true,"远端光标");
+                                        for mode in super::settings::CursorMode::ALL {
+                                            ui.selectable_value(&mut self.preferences.cursor_mode,mode,mode.label());
                                         }
+                                        ui.small("Ctrl+Alt+C 切换光标显示");
+                                        ui.small(&self.settings_feedback);
+                                        }
+                                        ui.small("Ctrl+Alt+P 切换桌面／游戏模式");
                                         ui.small("Ctrl+Alt+Z 释放／捕获键鼠");
-                                        if old!=(self.preferences.relative_mouse,self.preferences.remote_cursor) {
+                                        if old!=(self.preferences.relative_mouse,self.preferences.cursor_mode) {
                                             self.release_pointer_capture(ctx);self.persist_preferences();
-                                            if old.1!=self.preferences.remote_cursor {self.send_capture_settings();}ctx.memory_mut(|m|m.close_popup());
+                                            if old.1.remote()!=self.preferences.cursor_mode.remote() {self.send_capture_settings();}ctx.memory_mut(|m|m.close_popup());
                                         }
                                     });
                                     }
