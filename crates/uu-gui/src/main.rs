@@ -787,6 +787,7 @@ impl App {
         let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused);
         let window=self.platform.window_keyboard(remote,shortcuts);
         let active=self.platform.capture_keyboard(self.input_capture.system(conditions,self.fullscreen,self.preferences.capture_keyboard));
+        if active && !self.native_keyboard_capture {self.platform.refresh_keyboard_hook();}
         if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {
             if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
                 "event":"input_capture", "requested":self.input_capture.requested(),

@@ -122,6 +122,17 @@ impl Platform {
         }
         #[cfg(not(windows))] {let _=(active,shortcuts);false}
     }
+    pub fn refresh_keyboard_hook(&mut self) {
+        #[cfg(windows)]
+        if !self.window.is_null() {
+            // Another input tool may install its low-level hook after ours.
+            // Reinstall when system capture activates so this owner sees
+            // Alt/Win before that tool can consume or re-inject them.
+            self.hook.take();
+            self.hook=unsafe{windows::install_keyboard_hook(self.window)};
+            windows::HOOK_REFRESHES.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+        }
+    }
     pub fn capture_keyboard(&self, active: bool) -> bool {
         #[cfg(windows)] {
             let active=active && self.hook.as_ref().is_some_and(|hook| hook.alive());
@@ -278,6 +289,7 @@ mod windows {
     static LAST_FORWARDED_MODIFIER_ACTIVE: AtomicU64=AtomicU64::new(0);
     static LAST_FORWARDED_MODIFIER_PREHELD: AtomicU64=AtomicU64::new(0);
     static LAST_FORWARDED_MODIFIER_AT_MS: AtomicU64=AtomicU64::new(0);
+    pub(super) static HOOK_REFRESHES: AtomicU64=AtomicU64::new(0);
     pub unsafe fn install_window_keyboard(window:HWND)->isize {
         if window.is_null(){return 0;}
         let old=SetWindowLongPtrW(window,GWLP_WNDPROC,window_keyboard as *const () as isize);
@@ -396,6 +408,7 @@ mod windows {
             "alt_forwarded_inactive":HOOK_ALT_FORWARDED_INACTIVE.load(Relaxed),
             "win_forwarded_background":HOOK_WIN_FORWARDED_BACKGROUND.load(Relaxed),
             "alt_forwarded_background":HOOK_ALT_FORWARDED_BACKGROUND.load(Relaxed),
+            "hook_refreshes":HOOK_REFRESHES.load(Relaxed),
             "last_forwarded_modifier":{
                 "vk":LAST_FORWARDED_MODIFIER_VK.load(Relaxed),
                 "flags":LAST_FORWARDED_MODIFIER_FLAGS.load(Relaxed),
