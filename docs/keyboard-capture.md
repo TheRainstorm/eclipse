@@ -34,3 +34,5 @@ UU 被控端不会自行维持长按：若按住期间只收到首次 `kbd_press
 这与 Moonlight/Sunshine 的分工不同。Moonlight 客户端忽略 `repeat` 事件，只发送状态变化；Sunshine 被控端的 `repeat_key()` 自己按约 500ms 首次延迟、约 40ms 周期生成重复。uu-remote-linux 的 viewer 同样只处理 `repeat:false` 且没有修饰键刷新计时器，因此它不能作为 UU 官方宿主会自行维持长按的依据。UU 官方客户端在本机输入流只有单次 Alt 按下时，仍会让官方宿主收到约 30ms 的 Alt 重复；兼容客户端必须按此行为发送修饰键刷新。
 
 诊断区分捕获请求与真实钩子活动，记录窗口有效性、前台/桌面匹配、回调与放行的汇总计数。发生应用级按键清理时记录代码调用位置、按住键数量及 Win/Alt 是否处于按住状态；不记录键入文字或普通按键序列。
+
+Windows 诊断还每 250ms 向独立钩子线程发送异步消息泵探针，记录发送、确认、延迟、回调起止时间及最长耗时（包括放行时的下游钩子）。线程存活和探针确认只证明消息泵能工作，不能证明 Windows 仍保留钩子或每次输入都经过它。窗口输入来源按硬件、注入、系统及未知汇总；Tab 只计数，不记录普通按键序列。来源取自 [GetCurrentInputMessageSource](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getcurrentinputmessagesource)，不可据此认定具体输入设备或软件。[LowLevelKeyboardProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc) 的调用线程及超时语义决定了这些指标需要分开观察。诊断不重装钩子、不注入按键，文件写入仍在钩子之外。

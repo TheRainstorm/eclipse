@@ -127,6 +127,7 @@ impl Platform {
     }
     pub fn capture_keyboard(&self, active: bool) -> bool {
         #[cfg(windows)] {
+            if let Some(hook)=&self.hook {hook.probe();}
             let active=active && self.hook.as_ref().is_some_and(|hook| hook.alive());
             windows::CAPTURE.store(active,std::sync::atomic::Ordering::Release);
             active
@@ -286,6 +287,35 @@ mod windows {
     static WINDOW_WIN_SEEN: AtomicU64=AtomicU64::new(0);
     static WINDOW_ALT_SEEN: AtomicU64=AtomicU64::new(0);
     static WINDOW_CAPTURED: AtomicU64=AtomicU64::new(0);
+    static WINDOW_TAB_SEEN: AtomicU64=AtomicU64::new(0);
+    static WINDOW_HARDWARE: AtomicU64=AtomicU64::new(0);
+    static WINDOW_INJECTED: AtomicU64=AtomicU64::new(0);
+    static WINDOW_SYSTEM: AtomicU64=AtomicU64::new(0);
+    static WINDOW_UNKNOWN: AtomicU64=AtomicU64::new(0);
+    static HOOK_TAB_SEEN: AtomicU64=AtomicU64::new(0);
+    static HOOK_TAB_CAPTURED: AtomicU64=AtomicU64::new(0);
+    static HOOK_INJECTED: AtomicU64=AtomicU64::new(0);
+    static HOOK_FIRST_CALLBACK: AtomicU64=AtomicU64::new(0);
+    static HOOK_LAST_CALLBACK: AtomicU64=AtomicU64::new(0);
+    static HOOK_LAST_COMPLETED: AtomicU64=AtomicU64::new(0);
+    static HOOK_MAX_CALLBACK_US: AtomicU64=AtomicU64::new(0);
+    static HOOK_PUMP_ACK: AtomicU64=AtomicU64::new(0);
+    static HOOK_PUMP_LATENCY: AtomicU64=AtomicU64::new(0);
+    const PUMP_PROBE:u32=WM_APP+0x71;
+    fn clock_ms()->u64 {
+        static START:std::sync::OnceLock<std::time::Instant>=std::sync::OnceLock::new();
+        START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64+1
+    }
+    fn age_ms(now:u64,then:u64)->Option<u64> {(then!=0).then(||now.saturating_sub(then))}
+    // Measure callback wall time, including downstream hooks when forwarding.
+    // Never write a log, allocate, or wait for the UI from this guard.
+    struct CallbackTimer(std::time::Instant);
+    impl Drop for CallbackTimer {
+        fn drop(&mut self) {
+            HOOK_MAX_CALLBACK_US.fetch_max(self.0.elapsed().as_micros() as u64,Relaxed);
+            HOOK_LAST_COMPLETED.store(clock_ms(),Relaxed);
+        }
+    }
     static HOOK_WIN_UP: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_INJECTED_UP: AtomicU64=AtomicU64::new(0);
     static HOOK_ALT_UP: AtomicU64=AtomicU64::new(0);
@@ -327,6 +357,15 @@ mod windows {
             let vk=crate::keyboard_capture::sided_vk(wparam as u32,lparam as usize);
             if matches!(vk,0x5b|0x5c){WINDOW_WIN_SEEN.fetch_add(1,Relaxed);}
             if matches!(vk,0x12|0xa4|0xa5){WINDOW_ALT_SEEN.fetch_add(1,Relaxed);}
+            if vk==0x09 {WINDOW_TAB_SEEN.fetch_add(1,Relaxed);}
+            // Source metadata applies to every key; never retain typed keys.
+            use windows_sys::Win32::UI::Input::{GetCurrentInputMessageSource,INPUT_MESSAGE_SOURCE,IMO_HARDWARE,IMO_INJECTED,IMO_SYSTEM};
+            let mut source:INPUT_MESSAGE_SOURCE=std::mem::zeroed();
+            let origin=if GetCurrentInputMessageSource(&mut source)!=0 {source.originId}else{0};
+            match origin {
+                IMO_HARDWARE=>&WINDOW_HARDWARE, IMO_INJECTED=>&WINDOW_INJECTED,
+                IMO_SYSTEM=>&WINDOW_SYSTEM, _=>&WINDOW_UNKNOWN,
+            }.fetch_add(1,Relaxed);
             // The hook thread can be ahead of this queued window message.
             // GetKeyState describes this message, not the latest physical input.
             let modifiers=crate::keyboard_capture::Modifiers::from_key_state(|vk|GetKeyState(vk as i32)<0);
@@ -363,14 +402,22 @@ mod windows {
     }
     pub(super) static CAPTURE_QUEUE: std::sync::Mutex<std::collections::VecDeque<crate::keyboard_capture::Decision>>=std::sync::Mutex::new(std::collections::VecDeque::new());
     static OWNER: AtomicIsize = AtomicIsize::new(0);
-    #[cfg(test)]
-    static HOOK_HEARTBEAT: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
     pub struct KeyboardHook {
         thread: Option<std::thread::JoinHandle<()>>,
         id: u32,
+        installed_ms:u64,
+        probe_sent:std::cell::Cell<u64>,
+        probe_error:std::cell::Cell<Option<i32>>,
     }
     impl KeyboardHook {
         pub fn alive(&self)->bool {self.thread.as_ref().is_some_and(|thread| !thread.is_finished())}
+        pub fn probe(&self) {
+            let now=clock_ms();
+            if self.probe_sent.get()!=0 && now.saturating_sub(self.probe_sent.get())<250 {return;}
+            self.probe_sent.set(now);
+            let ok=unsafe{PostThreadMessageW(self.id,PUMP_PROBE,now as usize,0)};
+            self.probe_error.set(if ok==0 {std::io::Error::last_os_error().raw_os_error()}else{None});
+        }
     }
     unsafe fn desktop_name(thread:u32)->Option<Vec<u16>> {
         use windows_sys::Win32::System::StationsAndDesktops::*;
@@ -381,15 +428,34 @@ mod windows {
         Some(name[..name.iter().position(|&v|v==0)?].to_vec())
     }
     pub unsafe fn keyboard_diagnostics(window:HWND,hook:Option<&KeyboardHook>)->serde_json::Value {
+        let now=clock_ms();
         let window_thread=GetWindowThreadProcessId(window,std::ptr::null_mut());
         let same_desktop=hook.and_then(|hook| {
             Some(desktop_name(window_thread)?==desktop_name(hook.id)?)
+        });
+        let health=serde_json::json!({
+            "hook_age_ms":hook.map(|hook|now.saturating_sub(hook.installed_ms)),
+            "pump_probe_sent_ms":hook.map(|hook|hook.probe_sent.get()),
+            "pump_probe_ack_ms":HOOK_PUMP_ACK.load(Relaxed),
+            "pump_ack_age_ms":age_ms(now,HOOK_PUMP_ACK.load(Relaxed)),
+            "pump_latency_ms":HOOK_PUMP_LATENCY.load(Relaxed),
+            "pump_post_error":hook.and_then(|hook|hook.probe_error.get()),
+            "first_callback_ms":HOOK_FIRST_CALLBACK.load(Relaxed),
+            "last_callback_age_ms":age_ms(now,HOOK_LAST_CALLBACK.load(Relaxed)),
+            "last_completed_age_ms":age_ms(now,HOOK_LAST_COMPLETED.load(Relaxed)),
+            "max_callback_us":HOOK_MAX_CALLBACK_US.load(Relaxed),
+            "hook_injected":HOOK_INJECTED.load(Relaxed),
+            "tab_seen":HOOK_TAB_SEEN.load(Relaxed),"tab_captured":HOOK_TAB_CAPTURED.load(Relaxed),
+            "window_tab_seen":WINDOW_TAB_SEEN.load(Relaxed),
+            "window_origins":{"hardware":WINDOW_HARDWARE.load(Relaxed),"injected":WINDOW_INJECTED.load(Relaxed),
+                "system":WINDOW_SYSTEM.load(Relaxed),"unknown":WINDOW_UNKNOWN.load(Relaxed)}
         });
         serde_json::json!({
             "window_valid":IsWindow(window)!=0,
             "foreground_matches":!window.is_null()&&GetForegroundWindow()==window,
             "foreground":foreground_snapshot(),
             "hook_thread_alive":hook.is_some_and(KeyboardHook::alive),
+            "hook_health":health,
             "same_desktop":same_desktop,
             "capture_requested":CAPTURE.load(Relaxed),
             "callbacks":HOOK_CALLBACKS.load(Relaxed),"captured":HOOK_CAPTURED.load(Relaxed),
@@ -435,11 +501,12 @@ mod windows {
                 eprintln!("keyboard capture hook: {}",std::io::Error::last_os_error());
                 let _=ready_tx.send(None);return;
             }
-            if ready_tx.send(Some(windows_sys::Win32::System::Threading::GetCurrentThreadId())).is_ok(){
+            let installed_ms=clock_ms();
+            if ready_tx.send(Some((windows_sys::Win32::System::Threading::GetCurrentThreadId(),installed_ms))).is_ok(){
                 while GetMessageW(&mut message,std::ptr::null_mut(),0,0)>0 {
-                    #[cfg(test)]
-                    if message.message==WM_APP {
-                        HOOK_HEARTBEAT.store(true,std::sync::atomic::Ordering::Release);
+                    if message.message==PUMP_PROBE {
+                        HOOK_PUMP_LATENCY.store(clock_ms().saturating_sub(message.wParam as u64),Relaxed);
+                        HOOK_PUMP_ACK.store(message.wParam as u64,std::sync::atomic::Ordering::Release);
                         continue;
                     }
                     TranslateMessage(&message);DispatchMessageW(&message);
@@ -448,11 +515,13 @@ mod windows {
             UnhookWindowsHookEx(hook);
         }).ok()?;
         match ready_rx.recv().ok().flatten() {
-            Some(id)=>Some(KeyboardHook{thread:Some(thread),id}),
+            Some((id,installed_ms))=>Some(KeyboardHook{thread:Some(thread),id,installed_ms,
+                probe_sent:std::cell::Cell::new(0),probe_error:std::cell::Cell::new(None)}),
             None=>{let _=thread.join();None}
         }
     }
     unsafe extern "system" fn monitor_key(code: i32, message: usize, data: isize) -> isize {
+        let _timer=(code>=0).then(||CallbackTimer(std::time::Instant::now()));
         if code >= 0 {
             let key = &*(data as *const KBDLLHOOKSTRUCT);
             let down = message == WM_KEYDOWN as usize || message == WM_SYSKEYDOWN as usize;
@@ -463,7 +532,12 @@ mod windows {
             // Accept injected input from outer remote desktop clients as well.
             // Ownership applies uniformly to every key; no Win-chord exceptions.
             if down||up {
+                let now=clock_ms();
+                let _=HOOK_FIRST_CALLBACK.compare_exchange(0,now,Relaxed,Relaxed);
+                HOOK_LAST_CALLBACK.store(now,Relaxed);
                 HOOK_CALLBACKS.fetch_add(1,Relaxed);
+                if key.flags&LLKHF_INJECTED!=0 {HOOK_INJECTED.fetch_add(1,Relaxed);}
+                if vk==0x09 {HOOK_TAB_SEEN.fetch_add(1,Relaxed);}
                 let win=matches!(vk,0x5b|0x5c);
                 let alt=matches!(vk,0x12|0xa4|0xa5);
                 if win{HOOK_WIN_SEEN.fetch_add(1,Relaxed);}
@@ -507,6 +581,7 @@ mod windows {
                     event=>{
                         HOOK_CAPTURED.fetch_add(1,Relaxed);
                         if win{HOOK_WIN_CAPTURED.fetch_add(1,Relaxed);}
+                        if vk==0x09 {HOOK_TAB_CAPTURED.fetch_add(1,Relaxed);}
                         enqueue(event,foreground);return 1;
                     }
                 }
@@ -537,7 +612,7 @@ mod windows {
         let window=Window(unsafe{CreateWindowExW(0,class.as_ptr(),std::ptr::null(),0,0,0,0,0,
             HWND_MESSAGE,std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null())});
         assert!(!window.0.is_null());
-        HOOK_HEARTBEAT.store(false,Ordering::Release);
+        HOOK_PUMP_ACK.store(0,Ordering::Release);
         // Drop/join the hook before the window and station.
         let hook=unsafe{install_keyboard_hook(window.0)}.expect("isolated hook installation");
         assert!(hook.alive());
@@ -545,9 +620,12 @@ mod windows {
         assert_eq!(snapshot["window_valid"],true);
         assert_eq!(snapshot["hook_thread_alive"],true);
         assert_eq!(snapshot["same_desktop"],true);
-        assert_ne!(unsafe{PostThreadMessageW(hook.id,WM_APP,0,0)},0);
+        hook.probe();
         std::thread::sleep(Duration::from_millis(150));
-        assert!(HOOK_HEARTBEAT.load(Ordering::Acquire),"hook depended on UI message pumping");
+        assert_eq!(HOOK_PUMP_ACK.load(Ordering::Acquire),hook.probe_sent.get(),"hook depended on UI message pumping");
+        let snapshot=unsafe{keyboard_diagnostics(window.0,Some(&hook))};
+        assert!(snapshot["hook_health"]["pump_ack_age_ms"].as_u64().is_some());
+        assert_eq!(snapshot["hook_health"]["pump_post_error"],serde_json::Value::Null);
         drop(hook);
         assert_eq!(OWNER.load(Relaxed),0);
         assert!(!CAPTURE.load(Relaxed));
