@@ -1162,6 +1162,14 @@ impl eframe::App for App {
         }
         self.poll_login(ctx);
         let (events, focused) = ctx.input(|i| (i.events.clone(), i.focused));
+        if self.focused != focused {
+            if let Some(h) = &self.controller {
+                h.stats.diagnostics.record(serde_json::json!({
+                    "event":"window_focus", "focused":focused, "fullscreen":self.fullscreen,
+                    "keyboard":self.platform.keyboard_diagnostics()
+                }));
+            }
+        }
         if self.focused && !focused {
             self.shortcuts.clear();
             self.release_all_keys();
@@ -1276,6 +1284,9 @@ impl eframe::App for App {
         self.update_pointer_capture(ctx);
         self.update_clipboard(ctx);
         self.platform.show(ctx);
+        for event in self.platform.focus_events() {
+            if let Some(h) = &self.controller { h.stats.diagnostics.record(event); }
+        }
         let idle_poll_ms = if self.controller.is_some() || self.close_at.is_some() { 100 }
             else if self.rx.is_some() || self.login_rx.is_some() { 150 }
             else if self.lan.compatibility { 500 } else { 1000 };

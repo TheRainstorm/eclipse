@@ -57,6 +57,8 @@ pub struct Platform {
     hook: Option<windows::KeyboardHook>,
     #[cfg(windows)]
     old_proc: isize,
+    #[cfg(windows)]
+    focus_events: std::cell::RefCell<std::collections::VecDeque<serde_json::Value>>,
     show_pending: bool,
 }
 impl Platform {
@@ -80,6 +82,7 @@ impl Platform {
                 window,
                 hook,
                 old_proc,
+                focus_events: Default::default(),
                 show_pending: true,
             }
         }
@@ -157,10 +160,17 @@ impl Platform {
             self.focus_window();
         }
     }
+    pub fn focus_events(&self) -> Vec<serde_json::Value> {
+        #[cfg(windows)] { self.focus_events.borrow_mut().drain(..).collect() }
+        #[cfg(not(windows))] { Vec::new() }
+    }
     pub fn focus_window(&self) {
         #[cfg(windows)]
         if !self.window.is_null() {
-            unsafe {windows::show_and_focus(self.window);}
+            let event = unsafe {windows::show_and_focus(self.window)};
+            let mut events = self.focus_events.borrow_mut();
+            if events.len() == 8 { events.pop_front(); }
+            events.push_back(event);
         }
     }
 }
@@ -191,11 +201,27 @@ mod windows {
         let r = monitor_info(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST))?.rcWork;
         Some(((r.left + r.right) / 2, (r.top + r.bottom) / 2))
     }
-    pub unsafe fn show_and_focus(window: HWND) {
-        if window.is_null() {return;}
+    unsafe fn foreground_snapshot() -> serde_json::Value {
+        let window = GetForegroundWindow();
+        let mut process = 0;
+        let thread = GetWindowThreadProcessId(window, &mut process);
+        serde_json::json!({"window":window as usize,"process":process,"thread":thread})
+    }
+    pub unsafe fn show_and_focus(window: HWND) -> serde_json::Value {
+        let started = std::time::Instant::now();
+        let before = foreground_snapshot();
         ShowWindow(window,SW_SHOW);
-        SetForegroundWindow(window);
+        let accepted = SetForegroundWindow(window) != 0;
+        // SetFocus alone can activate a background window's queue without
+        // making it foreground. Keep both results visible in diagnostics.
         SetFocus(window);
+        serde_json::json!({
+            "event":"window_activation", "target":window as usize,
+            "requested_at_ms":uu_core::control_wire::now_ms(),
+            "elapsed_us":started.elapsed().as_micros() as u64,
+            "accepted":accepted, "before":before, "after":foreground_snapshot(),
+            "keyboard_focus_matches":windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus()==window
+        })
     }
     pub unsafe fn place_startup(window: HWND, origin: (i32, i32)) {
         if window.is_null() {
@@ -360,6 +386,7 @@ mod windows {
         serde_json::json!({
             "window_valid":IsWindow(window)!=0,
             "foreground_matches":!window.is_null()&&GetForegroundWindow()==window,
+            "foreground":foreground_snapshot(),
             "hook_thread_alive":hook.is_some_and(KeyboardHook::alive),
             "same_desktop":same_desktop,
             "capture_requested":CAPTURE.load(Relaxed),

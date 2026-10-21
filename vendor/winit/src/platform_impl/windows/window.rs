@@ -25,9 +25,8 @@ use windows_sys::Win32::System::Com::{
 };
 use windows_sys::Win32::System::Ole::{OleInitialize, RegisterDragDrop};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, GetActiveWindow, MapVirtualKeyW, ReleaseCapture, SendInput, ToUnicode, INPUT,
-    INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC,
-    VIRTUAL_KEY, VK_LMENU, VK_MENU, VK_SPACE,
+    EnableWindow, GetActiveWindow, MapVirtualKeyW, ReleaseCapture, ToUnicode, MAPVK_VK_TO_VSC,
+    VIRTUAL_KEY, VK_SPACE,
 };
 use windows_sys::Win32::UI::Input::Touch::{RegisterTouchWindow, TWF_WANTPALM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1535,41 +1534,8 @@ pub(crate) unsafe fn set_skip_taskbar(hwnd: HWND, skip: bool) {
 }
 
 unsafe fn force_window_active(handle: HWND) {
-    // In some situation, calling SetForegroundWindow could not bring up the window,
-    // This is a little hack which can "steal" the foreground window permission
-    // We only call this function in the window creation, so it should be fine.
-    // See : https://stackoverflow.com/questions/10740346/setforegroundwindow-only-working-while-visual-studio-is-open
-    let alt_sc = unsafe { MapVirtualKeyW(VK_MENU as u32, MAPVK_VK_TO_VSC) };
-
-    let inputs = [
-        INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: VK_LMENU,
-                    wScan: alt_sc as u16,
-                    dwFlags: KEYEVENTF_EXTENDEDKEY,
-                    dwExtraInfo: 0,
-                    time: 0,
-                },
-            },
-        },
-        INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: VK_LMENU,
-                    wScan: alt_sc as u16,
-                    dwFlags: KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP,
-                    dwExtraInfo: 0,
-                    time: 0,
-                },
-            },
-        },
-    ];
-
-    // Simulate a key press and release
-    unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), mem::size_of::<INPUT>() as i32) };
-
+    // Respect Windows foreground activation rules. Synthesizing Alt here
+    // mutates the user's key state and also reaches remote-input hooks.
+    // The launcher can delegate foreground permission to its child process.
     unsafe { SetForegroundWindow(handle) };
 }

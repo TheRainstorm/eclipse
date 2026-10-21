@@ -124,6 +124,14 @@ impl Sessions {
             return Ok(false);
         }
         let child = target.command(exe, origin).spawn()?;
+        #[cfg(windows)]
+        unsafe {
+            // Called as part of the user's launch action while the launcher
+            // owns foreground permission. The child may show its window later.
+            if windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(child.id()) == 0 {
+                eprintln!("stream window activation permission: {}", std::io::Error::last_os_error());
+            }
+        }
         self.children.insert(key, child);
         Ok(true)
     }
