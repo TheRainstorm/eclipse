@@ -293,13 +293,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows input mapping/lifecycle tests failed' }
           $keyboardTests = Join-Path $unpack 'keyboard-validation.exe'
           Copy-Item -LiteralPath 'platform-validation/keyboard-tests.exe' -Destination $keyboardTests
-          & $keyboardTests 'keyboard_capture::' --nocapture
+          # This binary uses the Windows GUI subsystem. Piping forces
+          # PowerShell to wait and set LASTEXITCODE for this invocation.
+          & $keyboardTests 'keyboard_capture::' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows keyboard ownership/AltGr tests failed' }
-          & $keyboardTests 'lan_host_ui::' --nocapture
+          & $keyboardTests 'lan_host_ui::' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows LAN sharing lifecycle tests failed' }
-          & $keyboardTests 'native_interfaces::' --nocapture
+          & $keyboardTests 'native_interfaces::' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows native address filtering failed' }
-          & $keyboardTests 'refreshing_interfaces_preserves_explicit_address' --nocapture
+          & $keyboardTests 'refreshing_interfaces_preserves_explicit_address' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows native interface discovery changed sharing state' }
           $clipboardProbe = Join-Path $unpack 'clipboard-validation.exe'
           Copy-Item -LiteralPath 'platform-validation/clipboard-probe.exe' -Destination $clipboardProbe
