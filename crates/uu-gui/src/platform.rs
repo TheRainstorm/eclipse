@@ -270,6 +270,13 @@ mod windows {
     static HOOK_ALT_FORWARDED_INACTIVE: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_FORWARDED_BACKGROUND: AtomicU64=AtomicU64::new(0);
     static HOOK_ALT_FORWARDED_BACKGROUND: AtomicU64=AtomicU64::new(0);
+    static LAST_FORWARDED_MODIFIER_VK: AtomicU64=AtomicU64::new(0);
+    static LAST_FORWARDED_MODIFIER_FLAGS: AtomicU64=AtomicU64::new(0);
+    static LAST_FORWARDED_MODIFIER_CAPTURE: AtomicU64=AtomicU64::new(0);
+    static LAST_FORWARDED_MODIFIER_OWNED: AtomicU64=AtomicU64::new(0);
+    static LAST_FORWARDED_MODIFIER_ACTIVE: AtomicU64=AtomicU64::new(0);
+    static LAST_FORWARDED_MODIFIER_PREHELD: AtomicU64=AtomicU64::new(0);
+    static LAST_FORWARDED_MODIFIER_AT_MS: AtomicU64=AtomicU64::new(0);
     pub unsafe fn install_window_keyboard(window:HWND)->isize {
         if window.is_null(){return 0;}
         let old=SetWindowLongPtrW(window,GWLP_WNDPROC,window_keyboard as *const () as isize);
@@ -379,7 +386,16 @@ mod windows {
             "win_forwarded_inactive":HOOK_WIN_FORWARDED_INACTIVE.load(Relaxed),
             "alt_forwarded_inactive":HOOK_ALT_FORWARDED_INACTIVE.load(Relaxed),
             "win_forwarded_background":HOOK_WIN_FORWARDED_BACKGROUND.load(Relaxed),
-            "alt_forwarded_background":HOOK_ALT_FORWARDED_BACKGROUND.load(Relaxed)
+            "alt_forwarded_background":HOOK_ALT_FORWARDED_BACKGROUND.load(Relaxed),
+            "last_forwarded_modifier":{
+                "vk":LAST_FORWARDED_MODIFIER_VK.load(Relaxed),
+                "flags":LAST_FORWARDED_MODIFIER_FLAGS.load(Relaxed),
+                "capture":LAST_FORWARDED_MODIFIER_CAPTURE.load(Relaxed)!=0,
+                "owned":LAST_FORWARDED_MODIFIER_OWNED.load(Relaxed)!=0,
+                "active":LAST_FORWARDED_MODIFIER_ACTIVE.load(Relaxed)!=0,
+                "already_down":LAST_FORWARDED_MODIFIER_PREHELD.load(Relaxed)!=0,
+                "at_ms":LAST_FORWARDED_MODIFIER_AT_MS.load(Relaxed)
+            }
         })
     }
     impl Drop for KeyboardHook {
@@ -462,6 +478,15 @@ mod windows {
                     modifiers.observe(vk,down);
                     keys.event_with_shortcuts(vk,down,active,shortcuts,modifiers.shortcut_chord(),already_down)
                 });
+                if (win||alt) && matches!(decision,crate::keyboard_capture::Decision::Forward) {
+                    LAST_FORWARDED_MODIFIER_VK.store(vk as u64,Relaxed);
+                    LAST_FORWARDED_MODIFIER_FLAGS.store(key.flags as u64,Relaxed);
+                    LAST_FORWARDED_MODIFIER_CAPTURE.store(capture as u64,Relaxed);
+                    LAST_FORWARDED_MODIFIER_OWNED.store(owned as u64,Relaxed);
+                    LAST_FORWARDED_MODIFIER_ACTIVE.store(active as u64,Relaxed);
+                    LAST_FORWARDED_MODIFIER_PREHELD.store(already_down as u64,Relaxed);
+                    LAST_FORWARDED_MODIFIER_AT_MS.store(uu_core::control_wire::now_ms(),Relaxed);
+                }
                 match decision {
                     crate::keyboard_capture::Decision::Forward=>{
                         if !owned{
