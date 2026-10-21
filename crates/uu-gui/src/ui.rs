@@ -789,7 +789,10 @@ impl App {
                 texture.paint(ui,draw);
                 if self.unpresented.remove(&track) { *self.frame_count.entry(track).or_insert(0) += 1; }
                 let pointer=ctx.input(|i|i.pointer.hover_pos());
-                if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) && !controls_active {self.input_capture.request();}
+                if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) && !controls_active {
+                    self.input_capture.request();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
                 if controls_active {messages.extend(self.pointer.release_all(input_screen));}
                 if self.input_capture.pointer(self.input_conditions(ctx),controls_active) {
                     if self.preferences.relative_mouse {
@@ -823,6 +826,11 @@ impl App {
                 let notice=Rect::from_center_size(rect.center_top()+egui::vec2(0.0,38.0),egui::vec2((rect.width()-40.0).clamp(1.0,480.0),44.0));
                 ui.painter().rect_filled(notice,6.0,C::from_black_alpha(160));
                 ui.put(notice,egui::Label::new(RichText::new(&self.displays.notice).color(C::WHITE)).wrap());
+            }
+            if chosen.is_some() && self.fullscreen && !ctx.input(|i|i.focused) {
+                let hint=Rect::from_center_size(rect.center_bottom()-egui::vec2(0.0,54.0),egui::vec2((rect.width()-40.0).clamp(1.0,360.0),40.0));
+                ui.painter().rect_filled(hint,6.0,C::from_black_alpha(170));
+                ui.put(hint,egui::Label::new(RichText::new("点击画面以获取键盘控制").color(C::WHITE)).wrap());
             }
             if self.hud { self.paint_hud(ui, rect); }
 
