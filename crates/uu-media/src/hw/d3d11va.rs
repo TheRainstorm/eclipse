@@ -3,14 +3,9 @@
 //! This is the "D3D11VA" path of the system video stack: a D3D11 device is
 //! handed to the H.264 decoder MFT through `IMFDXGIDeviceManager`, so entropy
 //! decoding, motion compensation and in-loop filtering run on the GPU and the
-//! decoded NV12 surfaces never leave video memory.
-//!
-//! The controller still needs pixels in system memory (the GUI uploads an
-//! RGBA texture through glow), so every frame is copied into a staging texture
-//! and mapped. That readback costs a fraction of what a software decode spends
-//! at the 55 Mbit/s preset the streamer runs, and it keeps the media plane
-//! unchanged: hardware frames arrive as [`PixelFormat::Nv12`] with a row
-//! pitch, exactly like VA-API frames on Linux.
+//! decoded NV12 surfaces can be leased directly to the GUI. A capable renderer
+//! performs color conversion and synchronization on the GPU. CPU consumers and
+//! unsupported drivers retain the synchronous NV12 staging readback path.
 //!
 //! Everything runs on the decoder's own thread (see `hw::Worker`) because
 //! Media Foundation wants a COM apartment and D3D11 wants a single driver
@@ -89,6 +84,7 @@ impl VideoDecoder for D3d11VaDecoder {
 /// must go down in the opposite order, so this is the last field of [`Decoder`].
 struct Runtime {
     owns_apartment: bool,
+    foundation: Option<std::sync::Arc<crate::d3d11_frame::Foundation>>,
 }
 
 impl Runtime {
@@ -98,7 +94,8 @@ impl Runtime {
             if hr.is_err() && hr != RPC_E_CHANGED_MODE {
                 return Err(format!("CoInitializeEx: {hr:?}"));
             }
-            if let Err(e) = MFStartup(MF_VERSION, MFSTARTUP_FULL) {
+            let foundation = crate::d3d11_frame::Foundation::start();
+            if let Err(e) = &foundation {
                 // Only undo an apartment this call actually took.
                 if hr.is_ok() {
                     CoUninitialize();
@@ -107,6 +104,7 @@ impl Runtime {
             }
             Ok(Self {
                 owns_apartment: hr.is_ok(),
+                foundation: Some(foundation.unwrap()),
             })
         }
     }
@@ -115,7 +113,7 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         unsafe {
-            let _ = MFShutdown();
+            drop(self.foundation.take());
             if self.owns_apartment {
                 CoUninitialize();
             }
@@ -144,7 +142,9 @@ impl Decoder {
         if width == 0 || height == 0 || width > 8192 || height > 8192 {
             return Err("decoder geometry is outside the supported bounds".into());
         }
-        if self.active.as_ref().map_or(true, |active| active.width != width || active.height != height) {
+        if self.active.as_ref().map_or(true, |active| {
+            active.width != width || active.height != height
+        }) {
             self.active = Some(self.open_transform(width, height)?);
             self.pending.clear();
         }
@@ -189,6 +189,7 @@ impl Decoder {
                     &self.context,
                     width,
                     height,
+                    self.runtime.foundation.as_ref().unwrap().clone(),
                 );
                 match attempt {
                     Ok(transform) => return Ok(transform),
@@ -239,6 +240,7 @@ impl super::Backend for Decoder {
 /// One negotiated H.264 decoder MFT plus the staging texture it reads back to.
 struct Transform {
     transform: IMFTransform,
+    foundation: std::sync::Arc<crate::d3d11_frame::Foundation>,
     /// Keeps the activation alive so the MFT is shut down the way it was
     /// created (Media Foundation expects `ShutdownObject` for pool cleanup).
     activation: IMFActivate,
@@ -289,6 +291,7 @@ impl Transform {
         context: &ID3D11DeviceContext,
         width: u32,
         height: u32,
+        foundation: std::sync::Arc<crate::d3d11_frame::Foundation>,
     ) -> Result<Self, String> {
         unsafe {
             let transform: IMFTransform = activation
@@ -329,8 +332,12 @@ impl Transform {
             // other codecs may use VT_BOOL. This is a best-effort latency hint,
             // never a reason to discard otherwise working hardware decode.
             let codec_low_latency = transform.cast::<ICodecAPI>().ok().is_some_and(|codec| {
-                codec.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(1u32)).is_ok()
-                    || codec.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true)).is_ok()
+                codec
+                    .SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(1u32))
+                    .is_ok()
+                    || codec
+                        .SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true))
+                        .is_ok()
             });
             if std::env::var_os("UU_DECODE_PROFILE").is_some() {
                 eprintln!("d3d11 low_latency_codec_api={codec_low_latency}");
@@ -358,6 +365,7 @@ impl Transform {
                 .map_err(|e| format!("GetOutputStreamInfo: {e}"))?;
             Ok(Self {
                 transform,
+                foundation,
                 activation: activation.clone(),
                 device: device.clone(),
                 context: context.clone(),
@@ -371,7 +379,10 @@ impl Transform {
                 frames_read: 0,
                 saw_d3d11_surface: false,
                 pixels: super::pixels::Pool::default(),
-                profile: DecodeProfile {enabled: std::env::var("UU_DECODE_PROFILE").is_ok_and(|v|v!="0"), ..Default::default()},
+                profile: DecodeProfile {
+                    enabled: std::env::var("UU_DECODE_PROFILE").is_ok_and(|v| v != "0"),
+                    ..Default::default()
+                },
             })
         }
     }
@@ -408,9 +419,14 @@ impl Transform {
             self.profile.calls += 1;
             self.profile.total_us += started.elapsed().as_micros() as u64;
             if self.profile.calls >= 120 {
-                let p=&self.profile;let n=p.calls.max(1);let frames=p.surfaces.max(1);
+                let p = &self.profile;
+                let n = p.calls.max(1);
+                let frames = p.surfaces.max(1);
                 eprintln!("d3d11 decode profile calls={} surfaces={} total_ms={:.3} readback_ms={:.3} cpu_copy_ms={:.3} mft_other_ms={:.3}",p.calls,p.surfaces,p.total_us as f64/n as f64/1000.,p.map_us as f64/frames as f64/1000.,p.cpu_copy_us as f64/frames as f64/1000.,p.total_us.saturating_sub(p.map_us+p.cpu_copy_us) as f64/n as f64/1000.);
-                self.profile=DecodeProfile {enabled:true,..Default::default()};
+                self.profile = DecodeProfile {
+                    enabled: true,
+                    ..Default::default()
+                };
             }
         }
         result
@@ -503,9 +519,30 @@ impl Transform {
                     format.0
                 ));
             }
+            if crate::d3d11_frame::rendering() {
+                return Ok(RawFrame {
+                    width: self.width,
+                    height: self.height,
+                    format: PixelFormat::Nv12,
+                    stride: width,
+                    data: Bytes::new(),
+                    pts: Timestamp(pts),
+                    gpu: true,
+                    dma_buf: None,
+                    d3d11: Some(std::sync::Arc::new(crate::d3d11_frame::Frame::new(
+                        sample.clone(),
+                        texture,
+                        index,
+                        self.device.clone(),
+                        [self.width, self.height],
+                        [width, height],
+                        self.foundation.clone(),
+                    )?)),
+                });
+            }
             // A handle so the mutable borrow of `self.staging` ends here.
             let staging = self.staging_texture(width, height)?.clone();
-            let map_started=self.profile.enabled.then(std::time::Instant::now);
+            let map_started = self.profile.enabled.then(std::time::Instant::now);
             unsafe {
                 self.context
                     .CopySubresourceRegion(&staging, 0, 0, 0, 0, &texture, index, None);
@@ -516,21 +553,34 @@ impl Transform {
                     .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
             }
             .map_err(|e| format!("staging Map: {e}"))?;
-            if let Some(started)=map_started {self.profile.map_us+=started.elapsed().as_micros() as u64;}
-            let copy_started=self.profile.enabled.then(std::time::Instant::now);
+            if let Some(started) = map_started {
+                self.profile.map_us += started.elapsed().as_micros() as u64;
+            }
+            let copy_started = self.profile.enabled.then(std::time::Instant::now);
             // The texture includes decoder alignment (1080p commonly uses
             // 1088 luma rows). UV starts at the allocated, not visible, height.
             let stride = mapped.RowPitch;
             let len = stride as usize * height as usize * 3 / 2;
-            let mut pixels=self.pixels.take(self.width as usize*self.height as usize*3/2);
+            let mut pixels = self
+                .pixels
+                .take(self.width as usize * self.height as usize * 3 / 2);
             unsafe {
                 let source = std::slice::from_raw_parts(mapped.pData as *const u8, len);
-                let result =
-                    super::surface::crop_nv12_into(source, stride, height, self.width, self.height, pixels.as_mut());
+                let result = super::surface::crop_nv12_into(
+                    source,
+                    stride,
+                    height,
+                    self.width,
+                    self.height,
+                    pixels.as_mut(),
+                );
                 self.context.Unmap(&staging, 0);
                 result?;
             };
-            if let Some(started)=copy_started {self.profile.cpu_copy_us+=started.elapsed().as_micros() as u64;self.profile.surfaces+=1;}
+            if let Some(started) = copy_started {
+                self.profile.cpu_copy_us += started.elapsed().as_micros() as u64;
+                self.profile.surfaces += 1;
+            }
             return Ok(RawFrame {
                 width: self.width,
                 height: self.height,
@@ -540,6 +590,7 @@ impl Transform {
                 pts: Timestamp(pts),
                 gpu: false,
                 dma_buf: None,
+                d3d11: None,
             });
         }
 
@@ -566,6 +617,7 @@ impl Transform {
                 pts: Timestamp(pts),
                 gpu: false,
                 dma_buf: None,
+                d3d11: None,
             });
         }
 
@@ -594,6 +646,7 @@ impl Transform {
             pts: Timestamp(pts),
             gpu: false,
             dma_buf: None,
+            d3d11: None,
         })
     }
 
@@ -695,9 +748,10 @@ fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext), String> {
     let context = context.ok_or("D3D11CreateDevice returned no immediate context")?;
     // The decoder MFT decodes on its own threads, so the immediate context has
     // to be safe to touch from more than one of them.
-    if let Ok(multithread) = device.cast::<ID3D10Multithread>() {
-        let _ = unsafe { multithread.SetMultithreadProtected(true) };
-    }
+    let multithread = context
+        .cast::<ID3D10Multithread>()
+        .map_err(|e| format!("D3D11 immediate-context thread protection: {e}"))?;
+    let _ = unsafe { multithread.SetMultithreadProtected(true) };
     Ok((device, context))
 }
 

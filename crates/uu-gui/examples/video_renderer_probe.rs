@@ -188,6 +188,7 @@ fn cases() -> Vec<(RawFrame, YuvColor)> {
                     pts: Timestamp(0),
                     gpu: false,
                     dma_buf: None,
+                    d3d11: None,
                 };
                 cases.push((frame.clone(), color));
                 cases.push((frame, color));
@@ -238,6 +239,7 @@ fn main() -> anyhow::Result<()> {
             pts: Timestamp(0),
             gpu: false,
             dma_buf: None,
+            d3d11: None,
         };
         vec![(f, YuvColor::Limited709); 150]
     } else {

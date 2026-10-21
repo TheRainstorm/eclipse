@@ -7,6 +7,7 @@ pub type DisplayFrame = (u32, u32, u32, Vec<u8>);
 pub use uu_media::{RawFrame, PixelFormat, Timestamp};
 pub use uu_media::color::YuvColor;
 pub use uu_media::dma_buf;
+pub use uu_media::d3d11_frame;
 
 pub enum DisplayImage {
     Rgba(DisplayFrame),

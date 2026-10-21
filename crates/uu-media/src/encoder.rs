@@ -181,6 +181,7 @@ mod tests {
             pts: Timestamp(0),
             gpu: false,
             dma_buf: None,
+            d3d11: None,
         }
     }
     struct Broken {

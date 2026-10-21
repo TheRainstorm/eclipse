@@ -85,6 +85,7 @@ impl SyntheticCapture {
             pts,
             gpu: false,
             dma_buf: None,
+            d3d11: None,
         }
     }
 }

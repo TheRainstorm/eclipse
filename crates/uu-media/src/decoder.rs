@@ -247,6 +247,7 @@ mod tests {
                     pts: crate::Timestamp(0),
                     gpu: false,
                     dma_buf: None,
+                    d3d11: None,
                 }));
             }
             Ok(None)

@@ -1,11 +1,14 @@
-//! Compare actual DMA-BUF rendering with CPU plane upload in an owned Sway.
-//! Reads only generated test-video pixels from this fixture's own framebuffer.
-#[cfg(target_os = "linux")]
+#[cfg(windows)]
+#[path = "../../../tools/native/windows_owned_station.rs"]
+mod owned_station;
+// Compare GPU surface rendering with CPU plane upload on an owned display.
+// Reads only generated test-video pixels from this fixture's own framebuffer.
+#[cfg(any(target_os = "linux", windows))]
 #[allow(dead_code)]
 #[path = "../src/video_texture.rs"]
 mod video_texture;
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(any(target_os = "linux", windows))]
+mod platform {
     use super::video_texture;
     use eframe::{
         egui,
@@ -15,7 +18,17 @@ mod linux {
         path::PathBuf,
         sync::{Arc, Mutex},
     };
-    use uu_core::display_frames::{dma_buf, DisplayImage, YuvColor};
+    #[cfg(windows)]
+    use uu_core::display_frames::d3d11_frame as dma_buf;
+    #[cfg(target_os = "linux")]
+    use uu_core::display_frames::dma_buf;
+    use uu_core::display_frames::{DisplayImage, YuvColor};
+    const GPU_PATH: &str = if cfg!(windows) {
+        "d3d11-wgl-gpu"
+    } else {
+        "dma-buf-egl"
+    };
+    const BACKEND: &str = if cfg!(windows) { "d3d11va" } else { "vaapi" };
     use uu_media::{EncodedFrame, RawFrame, Timestamp, VideoDecoder};
     #[derive(Default)]
     struct ResultState {
@@ -49,7 +62,7 @@ mod linux {
             if self.state.lock().unwrap().checked {
                 self.state.lock().unwrap().checked = false;
                 if self.phase == 1 {
-                    if self.texture.as_ref().unwrap().render_path() != "dma-buf-egl" {
+                    if self.texture.as_ref().unwrap().render_path() != GPU_PATH {
                         self.state.lock().unwrap().error =
                             Some("GPU import silently fell back".into());
                         return;
@@ -174,37 +187,48 @@ mod linux {
         }
     }
     pub fn main() -> anyhow::Result<()> {
+        #[cfg(target_os = "linux")]
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let mut args = std::env::args().skip(1);
         anyhow::ensure!(
-            args.next().as_deref() == Some("--owned-wayland"),
-            "owned Wayland required"
+            args.next().as_deref()
+                == Some(if cfg!(windows) {
+                    "--isolated-window-station"
+                } else {
+                    "--owned-wayland"
+                }),
+            "explicit isolated display required"
         );
         let path = PathBuf::from(
             args.next()
                 .ok_or_else(|| anyhow::anyhow!("generated AUD file required"))?,
         );
         anyhow::ensure!(args.next().is_none(), "unexpected argument");
-        let runtime = PathBuf::from(
-            std::env::var_os("XDG_RUNTIME_DIR")
-                .ok_or_else(|| anyhow::anyhow!("owned runtime required"))?,
-        );
-        let meta = std::fs::metadata(&runtime)?;
-        anyhow::ensure!(
-            runtime
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("uu-owned-gpu-")
-                && meta.permissions().mode() & 0o077 == 0
-                && meta.uid() == unsafe { libc::geteuid() },
-            "private fixture runtime required"
-        );
-        let pid: u32 = std::env::var("UU_GPU_TEST_SWAY_PID")?.parse()?;
-        anyhow::ensure!(
-            std::fs::read_to_string(format!("/proc/{pid}/comm"))?.trim() == "sway",
-            "owned compositor required"
-        );
+        #[cfg(windows)]
+        let _station = super::owned_station::Station::create()?;
+        #[cfg(target_os = "linux")]
+        {
+            let runtime = PathBuf::from(
+                std::env::var_os("XDG_RUNTIME_DIR")
+                    .ok_or_else(|| anyhow::anyhow!("owned runtime required"))?,
+            );
+            let meta = std::fs::metadata(&runtime)?;
+            anyhow::ensure!(
+                runtime
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("uu-owned-gpu-")
+                    && meta.permissions().mode() & 0o077 == 0
+                    && meta.uid() == unsafe { libc::geteuid() },
+                "private fixture runtime required"
+            );
+            let pid: u32 = std::env::var("UU_GPU_TEST_SWAY_PID")?.parse()?;
+            anyhow::ensure!(
+                std::fs::read_to_string(format!("/proc/{pid}/comm"))?.trim() == "sway",
+                "owned compositor required"
+            );
+        }
         let data = std::fs::read(path)?;
         anyhow::ensure!(
             data.len() <= 64 * 1024 * 1024,
@@ -245,7 +269,7 @@ mod linux {
         let state = Arc::new(Mutex::new(ResultState::default()));
         let report = state.clone();
         eframe::run_native(
-            "Owned DMA-BUF fixture",
+            "Owned GPU surface fixture",
             eframe::NativeOptions {
                 viewport: egui::ViewportBuilder::default().with_inner_size([512., 256.]),
                 vsync: true,
@@ -258,14 +282,14 @@ mod linux {
                     .ok_or_else(|| anyhow::anyhow!("GL required"))?;
                 video_texture::enable_gpu_video(&gl);
                 if !dma_buf::rendering() {
-                    return Err("EGL import unavailable".into());
+                    return Err("GPU import unavailable".into());
                 }
                 let cpu = uu_media::default_decoder()?;
                 let gpu = uu_media::default_decoder()?;
-                if !cpu.backend_name().starts_with("vaapi")
-                    || !gpu.backend_name().starts_with("vaapi")
+                if !cpu.backend_name().starts_with(BACKEND)
+                    || !gpu.backend_name().starts_with(BACKEND)
                 {
-                    return Err("Actual VAAPI decoders required".into());
+                    return Err("Actual platform hardware decoders required".into());
                 }
                 Ok(Box::new(Probe {
                     warmup_until: std::time::Instant::now() + std::time::Duration::from_millis(500),
@@ -296,9 +320,9 @@ mod linux {
         Ok(())
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn main() -> anyhow::Result<()> {
-    linux::main()
+    platform::main()
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn main() {}

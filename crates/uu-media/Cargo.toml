@@ -6,6 +6,10 @@ license.workspace = true
 description = "Video/audio pipeline abstractions (encode, decode, frame transport)"
 
 [[example]]
+name = "d3d11_surface_probe"
+required-features = ["h264", "d3d11va"]
+
+[[example]]
 name = "color_probe"
 required-features = ["h264"]
 

@@ -177,6 +177,7 @@ mod tests {
             pts: crate::Timestamp(0),
             gpu: false,
             dma_buf: None,
+            d3d11: None,
         }
     }
 
@@ -454,6 +455,7 @@ mod rgba_tests {
             pts: crate::Timestamp(0),
             gpu: false,
             dma_buf: None,
+            d3d11: None,
         }
     }
 
@@ -697,6 +699,7 @@ mod encode_input_tests {
                 pts: Timestamp(0),
                 gpu: false,
                 dma_buf: None,
+                d3d11: None,
             };
             assert!(to_i420(&frame).is_err());
         }
@@ -709,6 +712,7 @@ mod encode_input_tests {
             pts: Timestamp(0),
             gpu: false,
             dma_buf: None,
+            d3d11: None,
         };
         assert_eq!(to_i420(&frame).unwrap().len(), 6);
         let mut gpu = frame.clone();

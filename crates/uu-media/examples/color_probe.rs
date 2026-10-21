@@ -19,6 +19,7 @@ fn main() -> anyhow::Result<()> {
         pts: Timestamp(0),
         gpu: false,
         dma_buf: None,
+        d3d11: None,
     };
     let encoded = H264Encoder::new(1000)?.encode(&frame)?;
     anyhow::ensure!(

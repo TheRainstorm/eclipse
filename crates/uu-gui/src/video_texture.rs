@@ -1,3 +1,6 @@
+#[cfg(windows)]
+#[path = "video_d3d11.rs"]
+mod d3d11_renderer;
 #[cfg(target_os = "linux")]
 #[path = "video_dma_buf.rs"]
 mod dma_buf_renderer;
@@ -19,7 +22,9 @@ pub struct VideoTexture {
 pub fn enable_gpu_video(gl: &glow::Context) {
     #[cfg(target_os = "linux")]
     dma_buf_renderer::enable(gl);
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    d3d11_renderer::enable(gl);
+    #[cfg(not(any(windows, target_os = "linux")))]
     let _ = gl;
 }
 impl VideoTexture {
@@ -42,7 +47,7 @@ impl VideoTexture {
     pub fn set(&mut self, ctx: &egui::Context, image: DisplayImage) {
         if let DisplayImage::Decoded(_, frame, color) = &image {
             if let Some(gpu) = &self.gpu {
-                if valid(frame) || (frame.gpu && frame.dma_buf.is_some()) {
+                if valid(frame) || (frame.gpu && frame.is_consistent()) {
                     self.size = [frame.width as usize, frame.height as usize];
                     gpu.lock().unwrap().pending = Some((frame.clone(), *color));
                     return;
@@ -52,6 +57,7 @@ impl VideoTexture {
         if let DisplayImage::Decoded(_, frame, _) = &image {
             if frame.gpu {
                 uu_core::display_frames::dma_buf::set_rendering(false);
+                uu_core::display_frames::d3d11_frame::set_rendering(false);
                 self.size = [frame.width as usize, frame.height as usize];
                 return; // The next decoded frame uses CPU storage; never read a GPU handle as pixels.
             }
@@ -83,6 +89,7 @@ impl VideoTexture {
     }
     pub fn render_path(&self) -> &'static str {
         match &self.gpu {
+            Some(gpu) if gpu.lock().unwrap().d3d_active => "d3d11-wgl-gpu",
             Some(gpu) if gpu.lock().unwrap().dma_active => "dma-buf-egl",
             Some(_) => "cpu-planar-upload",
             None => "cpu-rgba-upload",
@@ -155,6 +162,9 @@ struct Planes {
     pending: Option<(RawFrame, YuvColor)>,
     uv_scale_uniform: Option<glow::UniformLocation>,
     dma_active: bool,
+    d3d_active: bool,
+    #[cfg(windows)]
+    d3d_importer: Option<d3d11_renderer::Importer>,
     #[cfg(target_os = "linux")]
     importer: Option<dma_buf_renderer::Importer>,
 }
@@ -226,6 +236,8 @@ impl Planes {
         gl.use_program(previous_program);
         #[cfg(target_os = "linux")]
         let importer = dma_buf_renderer::Importer::new(gl.clone());
+        #[cfg(windows)]
+        let d3d_importer = d3d11_renderer::Importer::new(gl.clone());
         let uv_scale_uniform = gl.get_uniform_location(program, "video_uv_layout");
         Ok(Self {
             gl,
@@ -241,6 +253,9 @@ impl Planes {
             pending: None,
             uv_scale_uniform,
             dma_active: false,
+            d3d_active: false,
+            #[cfg(windows)]
+            d3d_importer,
             #[cfg(target_os = "linux")]
             importer,
         })
@@ -315,6 +330,26 @@ impl Planes {
     unsafe fn paint(&mut self) {
         if let Some((f, color)) = self.pending.take() {
             if f.gpu {
+                #[cfg(windows)]
+                if let (Some(importer), Some(surface)) = (&mut self.d3d_importer, &f.d3d11) {
+                    match importer.set(surface.clone(), color) {
+                        Ok(()) => {
+                            self.size = [f.width, f.height];
+                            self.layout = Some(f.format);
+                            self.color = color;
+                            self.d3d_active = true;
+                        }
+                        Err(error) => {
+                            eprintln!("D3D11 GPU video unavailable, using readback: {error}");
+                            uu_core::display_frames::d3d11_frame::set_rendering(false);
+                            importer.clear();
+                            self.d3d_active = false;
+                            self.size = [0, 0];
+                        }
+                    }
+                } else {
+                    uu_core::display_frames::d3d11_frame::set_rendering(false);
+                }
                 #[cfg(target_os = "linux")]
                 if let Some(importer) = &mut self.importer {
                     match importer.set(f.clone()) {
@@ -339,6 +374,7 @@ impl Planes {
                 }
             } else {
                 let changed = self.dma_active
+                    || self.d3d_active
                     || self.size != [f.width, f.height]
                     || self.layout != Some(f.format);
                 #[cfg(target_os = "linux")]
@@ -346,6 +382,11 @@ impl Planes {
                     importer.clear();
                 }
                 self.dma_active = false;
+                #[cfg(windows)]
+                if let Some(importer) = &mut self.d3d_importer {
+                    importer.clear();
+                }
+                self.d3d_active = false;
                 let y = f.stride as usize * f.height as usize;
                 match f.format {
                     PixelFormat::Nv12 => {
@@ -398,6 +439,22 @@ impl Planes {
             gl.active_texture(glow::TEXTURE0 + i as u32);
             gl.bind_texture(glow::TEXTURE_2D, Some(*t));
         }
+        #[cfg(windows)]
+        if self.d3d_active {
+            if let Some(importer) = &mut self.d3d_importer {
+                if let Err(error) = importer.bind() {
+                    eprintln!("D3D11 GPU video lock failed, using readback: {error}");
+                    uu_core::display_frames::d3d11_frame::set_rendering(false);
+                    importer.clear();
+                    self.d3d_active = false;
+                    self.size = [0, 0];
+                    return;
+                }
+            }
+        }
+        if self.size == [0, 0] {
+            return;
+        }
         let uv_scale = [
             1.0,
             1.0,
@@ -421,10 +478,14 @@ impl Planes {
         );
         gl.uniform_1_i32(
             self.layout_uniform.as_ref(),
-            match self.layout {
-                Some(PixelFormat::Nv12) => 0,
-                Some(PixelFormat::I420) => 1,
-                _ => 2,
+            if self.d3d_active {
+                3
+            } else {
+                match self.layout {
+                    Some(PixelFormat::Nv12) => 0,
+                    Some(PixelFormat::I420) => 1,
+                    _ => 2,
+                }
             },
         );
         let (offset, scale, r, gu, gv, b) = match self.color {
@@ -450,6 +511,18 @@ impl Planes {
         gl.uniform_4_f32(self.coefficients_uniform.as_ref(), r, gu, gv, b);
         gl.uniform_2_f32(self.levels_uniform.as_ref(), offset, scale);
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
+        #[cfg(windows)]
+        if self.d3d_active {
+            if let Some(importer) = &mut self.d3d_importer {
+                if let Err(error) = importer.sampled() {
+                    eprintln!("D3D11 GPU video unlock failed, using readback: {error}");
+                    uu_core::display_frames::d3d11_frame::set_rendering(false);
+                    importer.clear();
+                    self.d3d_active = false;
+                    self.size = [0, 0];
+                }
+            }
+        }
         #[cfg(target_os = "linux")]
         if self.dma_active {
             if let Some(importer) = &mut self.importer {
@@ -464,6 +537,8 @@ impl Planes {
 impl Drop for Planes {
     fn drop(&mut self) {
         unsafe {
+            #[cfg(windows)]
+            drop(self.d3d_importer.take());
             #[cfg(target_os = "linux")]
             drop(self.importer.take());
             for t in self.textures {

@@ -245,7 +245,7 @@ impl Decoder {
                                     if self.profile.enabled {self.profile.frames+=1;self.profile.gpu_frames+=1;}
                                     self.pending.push_back(RawFrame {width:resolution.width,height:resolution.height,
                                         format:PixelFormat::Nv12,stride:resolution.width,data:Bytes::new(),
-                                        pts:Timestamp(handle.timestamp()),gpu:true,dma_buf:Some(std::sync::Arc::new(gpu))});
+                                        pts:Timestamp(handle.timestamp()),gpu:true,dma_buf:Some(std::sync::Arc::new(gpu)),d3d11:None});
                                     continue;
                                 }
                             }
@@ -310,6 +310,7 @@ impl Decoder {
                         pts: Timestamp(handle.timestamp()),
                         gpu: false,
                         dma_buf: None,
+                        d3d11: None,
                     });
                 }
             }

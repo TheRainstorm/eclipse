@@ -22,11 +22,26 @@ H.264 → D3D11 硬解 → 同步读回 NV12 → 最新帧邮箱
 
 着色器支持 NV12、I420、BGRA，以及 BT.601/709 的完整和有限范围。初始化失败使用原 RGBA 回退。CLI 的 RGBA 消费接口保持兼容。
 
-**这里仍存在 D3D11 同步读回，尚不是零拷贝。** 真正去除该步骤需要让解码表面直接进入兼容的 GPU 渲染路径，并处理设备共享、同步、显示器切换和资源生命周期。不能通过关闭防重放、丢弃 H.264 参考帧或关闭 VSync 来代替。
+### Windows GPU 表面路径
+
+支持 `WGL_NV_DX_interop2` 的驱动自动使用下列路径：
+
+```text
+H.264 → D3D11 硬解表面租约 → 最新帧邮箱
+      → D3D11 视频处理器 NV12→RGB → WGL 共享纹理 → UI 绘制
+```
+
+此路径省去 NV12 同步读回和 OpenGL 像素上传，但仍有 GPU 颜色转换及 D3D/GL 同步，不能称为没有拷贝或等待。保留原有 VSync 设置和最新帧邮箱，不增加显示队列。租约持有 MFT 输出 sample，防止只保留纹理 COM 引用时解码池提前覆盖表面；MF 生命周期随最后一个租约结束。D3D immediate context 启用多线程保护。共享对象在 GL 锁定期间只读，转换在解锁后提交，输入 sample 保留到同步完成。
+
+驱动不提供扩展、设备不能共享或转换/同步失败时，后续帧回退 NV12 读回和平面上传。`UU_D3D11_READBACK=1` 可在启动时强制原路径用于同机对照；日志中的 `d3d11-wgl-gpu` 才表示实际使用了新渲染路径。不同显卡和跨适配器显示必须分别验证。
+
+`d3d11_surface_probe` 读取带 AUD 的合成 H.264 文件，对比 CPU/GPU 输出，检查跨帧及解码器销毁后的 sample 租约。其 RGB 读回仅用于测试，计时明确区分 CPU 解码加读回、GPU 解码提交和 GPU 转换加测试读回。`video_dma_probe --isolated-window-station GENERATED_AUD.h264` 在 Windows 独立窗口站比较 GPU 共享与 CPU 上传的最终 GL 像素；不支持 GL 的非交互环境不能据此声称已通过桌面呈现验收。
+
+不能通过关闭防重放、丢弃 H.264 参考帧或关闭 VSync 来代替管线优化。
 
 ## HUD
 
-- Decode 是解码调用耗时，Windows 当前包括 MFT 处理、GPU 完成等待及读回，不包括之后的 CPU 颜色转换。
+- Decode 是解码调用耗时。Windows 读回路径包括 MFT 处理、GPU 完成等待及读回；GPU 表面路径只计输出 sample 前的调用耗时，后续 GPU 完成与共享等待发生在渲染阶段。两条路径的 Decode 数值不能直接当作完整客户端延迟。
 - Render 是 eframe 一轮 UI 准备和绘制提交的 CPU 墙钟时间，包括可能阻塞的驱动调用；交换缓冲区的显式 VSync 等待已排除。它不是 GPU 时间戳测量，也不是端到端显示延迟。
 - FPS、带宽、解码均值及 Render 使用约 500ms 的采样窗口；HUD 以 500ms 快照显示并缓存排版。视频和输入继续按原有节奏处理，统计采样不延迟帧。
 - 显示器、分辨率、DPI 或布局宽度改变时，HUD 立即重新排版。
@@ -73,3 +88,9 @@ Remove-Item Env:UU_DECODE_PROFILE
 
 - [Microsoft：H.264 解码器低延迟接口](https://learn.microsoft.com/en-us/windows/win32/medfound/codecapi-avlowlatencymode)：内置 H.264 实现要求 `VT_UI4`。属性接口不可用时通过 `ICodecAPI` 设置；不支持该提示仍保留可用硬解。
 - [Moonlight Qt](https://github.com/moonlight-stream/moonlight-qt)：参考其硬件表面直接渲染、解码计时、显示排队分离的架构思路。本项目的平面着色器与邮箱实现独立编写，未引入其 GPL 渲染源文件。
+
+## 与 Moonlight 及编码格式比较
+
+Moonlight 的 Decode 和 Render 也有各自的计时边界；其 HUD 的 Encode 来自服务端处理延迟统计，不能仅凭标签判定是纯硬件编码耗时。对照应固定主机、内容、分辨率、帧率、码率、位深、HDR 和显示设置，并观察输入到画面的响应，不能将 H.264 SDR 与 AV1 HDR 的两张截图当作编码器独立对照。
+
+UU 协议及已有兼容实现包含 H.265/HEVC，UU 并非只能使用 H.264。本项目当前实际接收、RTP 组帧和解码链路仍为 H.264；协议枚举中的 HEVC/AV1 不代表已实现完整支持。尚未验证 UU 官方链路可协商 AV1，Moonlight 能使用 AV1 不代表 UU 协议也能。

@@ -11,6 +11,7 @@ void main() {
     vec2 video_uv=uv*video_uv_layout.xy;
     vec2 luma_uv=clamp(video_uv,video_uv_layout.zw*0.5,video_uv_layout.xy-video_uv_layout.zw*0.5);
     vec2 chroma_uv=clamp(video_uv,video_uv_layout.zw,video_uv_layout.xy-video_uv_layout.zw);
+    if(pixel_layout==3) {output_color=vec4(texture(plane0,luma_uv).rgb,1.0);return;}
     if(pixel_layout==2) {output_color=vec4(texture(plane0,luma_uv).bgr,1.0);return;}
     float y=(texture(plane0,luma_uv).r-levels.x)*levels.y;
     vec2 chroma=pixel_layout==0 ? texture(plane1,chroma_uv).rg : vec2(texture(plane1,chroma_uv).r,texture(plane2,chroma_uv).r);

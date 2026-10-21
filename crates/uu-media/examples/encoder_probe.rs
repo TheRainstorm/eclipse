@@ -30,6 +30,7 @@ fn pattern(settings: Settings, index: u32) -> RawFrame {
         pts: Timestamp(u64::from(index) * 1_000_000 / u64::from(settings.fps)),
         gpu: false,
         dma_buf: None,
+        d3d11: None,
     }
 }
 fn input_format(mut frame: RawFrame, format: PixelFormat) -> RawFrame {

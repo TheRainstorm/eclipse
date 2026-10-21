@@ -234,6 +234,7 @@ impl Capture for X11Capture {
             pts: Timestamp(self.started.elapsed().as_micros().min(u64::MAX as u128) as u64),
             gpu: false,
             dma_buf: None,
+            d3d11: None,
         })
     }
 }
