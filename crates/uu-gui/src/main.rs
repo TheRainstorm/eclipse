@@ -920,8 +920,17 @@ impl App {
         let _ = h.input.send(payload.to_string().into_bytes());
     }
 
+    #[track_caller]
     fn send_key(&mut self, vk: u32, pressed: bool) {
         if !self.pressed_vks.event(vk,pressed){return;}
+        let caller=std::panic::Location::caller();
+        if matches!(vk,0x10..=0x12|0x5b|0x5c|0xa0..=0xa5) {
+            if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
+                "event":"keyboard_transition","vk":vk,"pressed":pressed,"kseq":self.kseq,
+                "source":std::path::Path::new(caller.file()).file_name().and_then(|name|name.to_str()),
+                "line":caller.line(),"fullscreen":self.fullscreen,"focused":self.focused
+            }));}
+        }
         let payload = serde_json::json!({
             "action": if pressed { "kbd_press" } else { "kbd_release" },
             "interrept": "i", "key": vk, "kseq": self.kseq
