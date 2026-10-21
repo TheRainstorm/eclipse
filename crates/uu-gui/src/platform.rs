@@ -145,6 +145,11 @@ impl Platform {
         #[cfg(windows)] {windows::CAPTURE_OVERFLOW.swap(false,std::sync::atomic::Ordering::AcqRel)}
         #[cfg(not(windows))] {false}
     }
+    /// Aggregate routing metadata only: never record typed keys or window titles.
+    pub fn keyboard_diagnostics(&self)->Option<serde_json::Value> {
+        #[cfg(windows)] {Some(unsafe{windows::keyboard_diagnostics(self.window,self.hook.as_ref())})}
+        #[cfg(not(windows))] {None}
+    }
     pub fn show(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.show_pending) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -224,7 +229,7 @@ mod windows {
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
-    use std::sync::atomic::{AtomicIsize, Ordering::Relaxed};
+    use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering::Relaxed};
     use windows_sys::Win32::{
         System::LibraryLoader::GetModuleHandleW, UI::Input::KeyboardAndMouse::*,
     };
@@ -232,6 +237,14 @@ mod windows {
     pub(super) static LOCAL_SHORTCUTS: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
     static OLD_PROC: AtomicIsize=AtomicIsize::new(0);
     static WINDOW_KEYS: std::sync::Mutex<crate::keyboard_capture::Keys>=std::sync::Mutex::new(crate::keyboard_capture::Keys::new());
+    static HOOK_CALLBACKS: AtomicU64=AtomicU64::new(0);
+    static HOOK_CAPTURED: AtomicU64=AtomicU64::new(0);
+    static HOOK_BACKGROUND: AtomicU64=AtomicU64::new(0);
+    static HOOK_INACTIVE: AtomicU64=AtomicU64::new(0);
+    static HOOK_PREHELD: AtomicU64=AtomicU64::new(0);
+    static HOOK_WIN_SEEN: AtomicU64=AtomicU64::new(0);
+    static HOOK_WIN_CAPTURED: AtomicU64=AtomicU64::new(0);
+    static WINDOW_WIN_SEEN: AtomicU64=AtomicU64::new(0);
     pub unsafe fn install_window_keyboard(window:HWND)->isize {
         if window.is_null(){return 0;}
         let old=SetWindowLongPtrW(window,GWLP_WNDPROC,window_keyboard as *const () as isize);
@@ -259,6 +272,7 @@ mod windows {
         let up=message==WM_KEYUP||message==WM_SYSKEYUP;
         if down||up {
             let vk=crate::keyboard_capture::sided_vk(wparam as u32,lparam as usize);
+            if matches!(vk,0x5b|0x5c){WINDOW_WIN_SEEN.fetch_add(1,Relaxed);}
             // The hook thread can be ahead of this queued window message.
             // GetKeyState describes this message, not the latest physical input.
             let modifiers=crate::keyboard_capture::Modifiers::from_key_state(|vk|GetKeyState(vk as i32)<0);
@@ -298,6 +312,32 @@ mod windows {
     }
     impl KeyboardHook {
         pub fn alive(&self)->bool {self.thread.as_ref().is_some_and(|thread| !thread.is_finished())}
+    }
+    unsafe fn desktop_name(thread:u32)->Option<Vec<u16>> {
+        use windows_sys::Win32::System::StationsAndDesktops::*;
+        let desktop=GetThreadDesktop(thread);
+        if desktop.is_null(){return None;}
+        let mut name=[0u16;512];let mut needed=0;
+        if GetUserObjectInformationW(desktop,UOI_NAME,name.as_mut_ptr().cast(),std::mem::size_of_val(&name) as u32,&mut needed)==0 {return None;}
+        Some(name[..name.iter().position(|&v|v==0)?].to_vec())
+    }
+    pub unsafe fn keyboard_diagnostics(window:HWND,hook:Option<&KeyboardHook>)->serde_json::Value {
+        let window_thread=GetWindowThreadProcessId(window,std::ptr::null_mut());
+        let same_desktop=hook.and_then(|hook| {
+            Some(desktop_name(window_thread)?==desktop_name(hook.id)?)
+        });
+        serde_json::json!({
+            "window_valid":IsWindow(window)!=0,
+            "foreground_matches":!window.is_null()&&GetForegroundWindow()==window,
+            "hook_thread_alive":hook.is_some_and(KeyboardHook::alive),
+            "same_desktop":same_desktop,
+            "capture_requested":CAPTURE.load(Relaxed),
+            "callbacks":HOOK_CALLBACKS.load(Relaxed),"captured":HOOK_CAPTURED.load(Relaxed),
+            "forwarded_background":HOOK_BACKGROUND.load(Relaxed),
+            "forwarded_inactive":HOOK_INACTIVE.load(Relaxed),"forwarded_preheld":HOOK_PREHELD.load(Relaxed),
+            "win_seen":HOOK_WIN_SEEN.load(Relaxed),"win_captured":HOOK_WIN_CAPTURED.load(Relaxed),
+            "window_win_seen":WINDOW_WIN_SEEN.load(Relaxed)
+        })
     }
     impl Drop for KeyboardHook {
         fn drop(&mut self) {
@@ -353,19 +393,31 @@ mod windows {
             // Accept injected input from outer remote desktop clients as well.
             // Ownership applies uniformly to every key; no Win-chord exceptions.
             if down||up {
+                HOOK_CALLBACKS.fetch_add(1,Relaxed);
+                let win=matches!(vk,0x5b|0x5c);
+                if win{HOOK_WIN_SEEN.fetch_add(1,Relaxed);}
                 let owned=!foreground.is_null()&&GetForegroundWindow()==foreground;
                 let active=CAPTURE.load(std::sync::atomic::Ordering::Acquire)&&owned;
                 let shortcuts=LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire)&&owned;
+                let already_down=GetAsyncKeyState(key.vkCode as i32)<0;
                 let decision=HOOK_STATE.with(|state| {
                     let mut state=state.borrow_mut();
                     let (modifiers,keys)=&mut *state;
                     modifiers.observe(vk,down);
-                    keys.event_with_shortcuts(vk,down,active,shortcuts,modifiers.shortcut_chord(),GetAsyncKeyState(key.vkCode as i32)<0)
+                    keys.event_with_shortcuts(vk,down,active,shortcuts,modifiers.shortcut_chord(),already_down)
                 });
                 match decision {
-                    crate::keyboard_capture::Decision::Forward=>{},
+                    crate::keyboard_capture::Decision::Forward=>{
+                        if !owned{HOOK_BACKGROUND.fetch_add(1,Relaxed);}
+                        else if !active{HOOK_INACTIVE.fetch_add(1,Relaxed);}
+                        else if already_down{HOOK_PREHELD.fetch_add(1,Relaxed);}
+                    },
                     crate::keyboard_capture::Decision::Consume=>return 1,
-                    event=>{enqueue(event,foreground);return 1;}
+                    event=>{
+                        HOOK_CAPTURED.fetch_add(1,Relaxed);
+                        if win{HOOK_WIN_CAPTURED.fetch_add(1,Relaxed);}
+                        enqueue(event,foreground);return 1;
+                    }
                 }
             }
         }
@@ -389,6 +441,10 @@ mod windows {
         // Drop/join the hook before the window and station.
         let hook=unsafe{install_keyboard_hook(window.0)}.expect("isolated hook installation");
         assert!(hook.alive());
+        let snapshot=unsafe{keyboard_diagnostics(window.0,Some(&hook))};
+        assert_eq!(snapshot["window_valid"],true);
+        assert_eq!(snapshot["hook_thread_alive"],true);
+        assert_eq!(snapshot["same_desktop"],true);
         assert_ne!(unsafe{PostThreadMessageW(hook.id,WM_APP,0,0)},0);
         std::thread::sleep(Duration::from_millis(150));
         assert!(HOOK_HEARTBEAT.load(Ordering::Acquire),"hook depended on UI message pumping");

@@ -775,7 +775,8 @@ impl App {
                 "ready":conditions.ready, "focused":conditions.focused,
                 "view_only":conditions.view_only, "local_ui":conditions.local_ui,
                 "fullscreen":self.fullscreen, "system_keys_enabled":self.preferences.capture_keyboard,
-                "remote_input":remote, "native_window_input":window, "native_system_capture":active
+                "remote_input":remote, "native_window_input":window, "native_system_capture":active,
+                "keyboard":self.platform.keyboard_diagnostics()
             }));}
         }
         self.native_keyboard_capture=active;self.native_window_keyboard=window;
@@ -1209,7 +1210,7 @@ impl eframe::App for App {
                     "injected_loss":s.injected_loss.load(Relaxed),"loss_ppm":s.loss_ppm.load(Relaxed),
                     "queue_drops":s.queue_drops.load(Relaxed),
                     "input_sent":s.input_messages_sent.load(Relaxed),"input_errors":s.input_send_errors.load(Relaxed),
-                    "control_open":s.control_open.load(Relaxed)}));
+                    "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()}));
             }
         }
         if self.stream_target.is_some() {
