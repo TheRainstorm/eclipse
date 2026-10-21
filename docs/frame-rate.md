@@ -43,7 +43,7 @@ CLI或进程环境可用UU_FPS=120指定初始值，默认60；GUI 的分辨率�
 | 旧帧率枚举 | 0 UNKNOWN、1=30、2=60、3=90、4=144；无120枚举 | `control_wire::CaptureFrameRate`，自定义/120枚举0并传实际count |
 | 连接能力 | ConnectOptions.4 DecoderCap：1上限；初始CaptureParams当前不发送 | `socketio::encode_app_data`，CONTROL建立后再请求实际fpsCount |
 | 运行时采集设置 | Message21/RpcRequest2，CaptureSettingRequest：1枚举、18 fpsCount、4 screen_id、10分辨率类型 | `control_wire::capture_setting_request_at_fps` |
-| 分辨率类型 | 1保持、2跟随本地、3跟随远端、4明确尺寸 | GUI 的 Exact 绑定选中 screen_id，只通过 field 16/17 请求编码输出尺寸；field 5/6 保持远端桌面分辨率不变。`UU_RESOLUTION` 仍是显式高级入口。 |
+| 分辨率类型 | 1默认、2跟随本地、3跟随远端、4明确桌面尺寸 | GUI 的输出档位绑定选中 screen_id，通过 field 14/15（max_scale_width/height）限制编码尺寸；field 5/6 保持 -1，省略 field 16/17，field 10 使用 3（跟随远端桌面）。输出尺寸是保持宽高比的上限。Windows 被控端会按建连时的 DecoderCap 重算该上限，因此连接能力也携带所选尺寸；切换输出上限会先释放输入和旧连接再重新协商。实际尺寸不超过源画面，不放大桌面。`UU_RESOLUTION` 仍是显式高级入口。 |
 | 当前远端屏幕 | Message7 ScreenSources：screens1、current_screen_id2；Screen.id1、fps2、current_resolution4、screen_type5、dpi9 | `screen_control::screen_sources`，按当前ID找屏幕，不取第一块物理屏 |
 
 描述符起始偏移：main.proto 63307440、defines.proto 63309920、connect.proto 63319360、rpc_main.proto 63334800、general.proto 63342192、rpc_message.proto 63355904。私有解析结果保留在artifacts，后续官方更新要先比较新描述符，不能依赖这些固定偏移。

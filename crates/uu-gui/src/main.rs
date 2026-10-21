@@ -205,6 +205,7 @@ struct App {
     window_sizing: window::WindowSizing,
     close_at: Option<std::time::Instant>,
     disconnecting: bool,
+    output_reconnect_pending: bool,
     exit_requested: bool,
     window_edge_active: bool,
 }
@@ -459,6 +460,7 @@ impl App {
             window_sizing: window::WindowSizing::default(),
             close_at: None,
             disconnecting: false,
+            output_reconnect_pending: false,
             exit_requested: false,
             window_edge_active: false,
         };
@@ -637,7 +639,7 @@ impl App {
                 Some(t) => t.set(ctx, image),
                 None => {
                     if native && self.status.starts_with("正在") {self.status="原生串流已连接".into();}
-                    h.stats.diagnostics.record(serde_json::json!({"event":"first_frame","track":idx,"backend":h.stats.backend()}));
+                    h.stats.diagnostics.record(serde_json::json!({"event":"first_frame","track":idx,"backend":h.stats.backend(),"video_size":h.stats.res()}));
                     self.textures.insert(idx, video_texture::VideoTexture::new(ctx, self.video_gl.as_ref(), image));
                 }
             }
@@ -669,6 +671,9 @@ impl App {
             self.settings_feedback.clear();
             self.cursor=cursor::Cursor::default();self.remote_cursor_active=false;
             self.displays=displays::Displays::default();
+            if std::mem::take(&mut self.output_reconnect_pending) && !self.exit_requested {
+                self.connect();
+            }
         }
     }
 
@@ -697,8 +702,28 @@ impl App {
     fn capture_profile(&self) -> displays::CaptureProfile {
         (self.target_fps, self.bitrate_idx, if self.bitrate_idx == 4 {self.custom_mbps} else {0}, self.resolution_idx, self.preferences.cursor_mode.remote())
     }
+    fn capture_resolution(&self) -> uu_core::control_wire::CaptureResolution {
+        match self.resolution_idx {
+            1=>uu_core::control_wire::CaptureResolution::Exact(1920,1080),
+            2=>uu_core::control_wire::CaptureResolution::Exact(2560,1440),
+            3=>uu_core::control_wire::CaptureResolution::Exact(3840,2160),
+            _=>uu_core::control_wire::CaptureResolution::Unchanged,
+        }
+    }
     fn send_capture_settings_through(&mut self,immediate:bool) {
         if !self.supports_remote(uu_core::capabilities::Capability::Quality) {self.settings_feedback="当前画质由被控端设置".into();return;}
+        if self.disconnecting { return; }
+        let resolution = self.capture_resolution();
+        if self.controller.as_ref().is_some_and(|h| h.stats.output_resolution.get()
+            .is_some_and(|previous| previous.output_bounds() != resolution.output_bounds()))
+        {
+            // The host replaces runtime scale limits with negotiated decoder
+            // bounds. Release the old session before negotiating a new bound.
+            self.output_reconnect_pending = true;
+            self.stop_connection();
+            self.status = "正在切换输出分辨率…".into();
+            return;
+        }
         let profile = self.capture_profile();
         let Some(h) = &self.controller else { return };
         let (_, quality, preset_mbps) = BITRATE_PRESETS[self.bitrate_idx];
@@ -708,12 +733,6 @@ impl App {
             None
         };
         self.settings_seq = self.settings_seq.wrapping_add(1);
-        let resolution = match self.resolution_idx {
-            1=>uu_core::control_wire::CaptureResolution::Exact(1920,1080),
-            2=>uu_core::control_wire::CaptureResolution::Exact(2560,1440),
-            3=>uu_core::control_wire::CaptureResolution::Exact(3840,2160),
-            _=>uu_core::control_wire::CaptureResolution::Unchanged,
-        };
         let source=self.displays.selected.unwrap_or_else(||h.stats.remote_screens.lock().unwrap().for_track(self.selected_track).map_or(-1,|s|s.id));
         let msg = uu_core::control_wire::capture_setting_for_screen(
             2000 + self.settings_seq,
@@ -998,7 +1017,12 @@ impl App {
     }
 
     fn disconnect(&mut self) {
+        self.output_reconnect_pending = false;
         if self.stream_target.is_some() { self.exit_requested = true; }
+        self.stop_connection();
+    }
+
+    fn stop_connection(&mut self) {
         if self.disconnecting { return; }
         self.release_pointer_capture(&self.context.clone());
         self.stream_menu.open = false;
@@ -1065,6 +1089,7 @@ impl App {
         let geo = uu_core::config::geo_exit_ip();
         let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
         stats.diagnostics.start([config.state_dir.join("diagnostics")]);
+        let _ = stats.output_resolution.set(self.capture_resolution());
         stats.diagnostics.record(serde_json::json!({"event":"client","build":self.build_label,"display_mode":self.preferences.display_mode,"fps":self.target_fps}));
         stats.display_mode.store((self.preferences.display_mode==uu_core::screen_control::DisplayMode::ExclusiveVirtual) as u32,std::sync::atomic::Ordering::Release);
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);

@@ -37,6 +37,8 @@ pub struct MediaStats {
     pub native_input_available:std::sync::atomic::AtomicBool,
     /// Host-confirmed source target; zero when only the client's request is known.
     pub configured_fps:AtomicU32,
+    /// Immutable per-session output policy, supplied before signalling starts.
+    pub output_resolution: std::sync::OnceLock<crate::control_wire::CaptureResolution>,
     pub diagnostics: crate::session_diagnostics::SessionDiagnostics,
     pub control_open: AtomicU32,
     /// Snapshot of the user's connection policy: 0 preserve, 1 exclusive UU.
@@ -546,7 +548,9 @@ impl ControllerMedia {
     }
     /// Send a raw PCK frame over the WebRTC data channel (control hypothesis).
     pub async fn send_control(&self, data: Vec<u8>) -> Result<()> {
+        let metadata = self.stats.as_ref().and_then(|_| crate::control_wire::capture_setting_metadata(&data));
         self.data_channel.send(&bytes::Bytes::from(data)).await?;
+        if let (Some(stats), Some(metadata)) = (&self.stats, metadata) { stats.diagnostics.record(metadata); }
         Ok(())
     }
     pub async fn send_input(&self, data: Vec<u8>) -> Result<()> {

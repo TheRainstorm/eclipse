@@ -171,13 +171,19 @@ async fn run(
     let sio = socket.as_mut().unwrap();
     let dev_id = api.state.device_id.clone().unwrap_or_default();
     let display_mode=if stats.display_mode.load(std::sync::atomic::Ordering::Acquire)==1 {crate::screen_control::DisplayMode::ExclusiveVirtual}else{crate::screen_control::DisplayMode::Preserve};
-    let app = crate::socketio::encode_app_data_with_display_mode(&dev_id,stats.clipboard.enabled.load(std::sync::atomic::Ordering::Acquire),display_mode);
+    let resolution = *stats.output_resolution.get_or_init(|| {
+        if std::env::var_os("UU_RESOLUTION").is_some() { crate::control_wire::CaptureResolution::from_env() }
+        else { crate::control_wire::CaptureResolution::Unchanged }
+    });
+    let output = resolution.output_bounds();
+    let app = crate::socketio::encode_app_data_with_output(&dev_id,stats.clipboard.enabled.load(std::sync::atomic::Ordering::Acquire),display_mode,output);
+    stats.diagnostics.record(json!({"event":"output_negotiation","width":output.0,"height":output.1}));
     let streamer = json!({
         "control_id": ctrl,
         "device_capability": {
             "display_info": [{"id":0,"fps":crate::control_wire::CaptureFrameRate::MAX,"type":0,"hdr":-2}],
             "video_codec_capability": [{
-                "video_codec":1,"width":3840,"height":2160,
+                "video_codec":1,"width":output.0,"height":output.1,
                 "chroma_sampling":1,"bit_depth":8,"codec_impl":32
             }],
             "ice_id": ""
@@ -238,9 +244,6 @@ async fn run(
     } else {
         None
     };
-    let resolution=if std::env::var_os("UU_RESOLUTION").is_some() {
-        crate::control_wire::CaptureResolution::from_env()
-    } else {crate::control_wire::CaptureResolution::Unchanged};
     // Do not derive a display-layout operation from an automatic source or a
     // FOLLOW_REMOTE resolution request. Preserve the host's current capture.
     let initial_settings = crate::control_wire::capture_setting_for_screen(

@@ -153,6 +153,11 @@ pub fn encode_app_data_with_clipboard(device_id:&str,clipboard:bool)->Vec<u8> {
     encode_app_data_with_display_mode(device_id, clipboard, crate::screen_control::DisplayMode::Preserve)
 }
 pub fn encode_app_data_with_display_mode(device_id:&str,clipboard:bool,mode:crate::screen_control::DisplayMode)->Vec<u8> {
+    encode_app_data_with_output(device_id, clipboard, mode, (3840,2160))
+}
+/// Windows hosts renegotiate max_scale from this capability on every settings
+/// request. The advertised bound must match the selected output for the session.
+pub fn encode_app_data_with_output(device_id:&str,clipboard:bool,mode:crate::screen_control::DisplayMode,output:(u32,u32))->Vec<u8> {
     fn varint(out: &mut Vec<u8>, mut v: u64) {
         while v >= 0x80 {
             out.push((v as u8) | 0x80);
@@ -169,7 +174,7 @@ pub fn encode_app_data_with_display_mode(device_id:&str,clipboard:bool,mode:crat
     // ConnectOptions field 4 = DecoderCap {fps, codec, width, height, chroma}.
     // The old empty list plus 1080p streamer JSON restricted the initial stream.
     let mut cap=Vec::new();
-    for (field,value) in [(1,crate::control_wire::CaptureFrameRate::MAX as u64),(2,1),(3,3840),(4,2160),(5,1)] {
+    for (field,value) in [(1,crate::control_wire::CaptureFrameRate::MAX as u64),(2,1),(3,u64::from(output.0)),(4,u64::from(output.1)),(5,1)] {
         crate::control_wire::int(field,value,&mut cap);
     }
     crate::control_wire::bytes(4,&cap,&mut out);
@@ -242,6 +247,22 @@ mod frame_rate_tests {
             let flags=fields.iter().find_map(|(n,v)|match (n,v){(11,WireValue::Bytes(b))=>Some(*b),_=>None});
             assert_eq!(flags.is_some(),enabled);
             if let Some(flags)=flags {assert_eq!(decode_wire(flags).unwrap(),vec![(8,WireValue::Varint(3))]);}
+        }
+    }
+    #[test]
+    fn output_bound_is_negotiated_without_initial_desktop_size_or_layout_request() {
+        for output in [(1280,720),(1920,1080),(2560,1440),(3840,2160)] {
+            let app = encode_app_data_with_output("test-device", false,
+                crate::screen_control::DisplayMode::Preserve, output);
+            let fields = decode_wire(&app[1..]).unwrap();
+            assert!(!fields.iter().any(|(n,_)| matches!(n,3|5|6|7)));
+            let cap = fields.iter().find_map(|(n,v)| match (n,v) {
+                (4,WireValue::Bytes(cap)) => Some(*cap), _ => None,
+            }).unwrap();
+            let cap = decode_wire(cap).unwrap();
+            assert!(cap.contains(&(3,WireValue::Varint(u64::from(output.0)))));
+            assert!(cap.contains(&(4,WireValue::Varint(u64::from(output.1)))));
+            assert!(fields.contains(&(10,WireValue::Varint(2))));
         }
     }
     #[test]

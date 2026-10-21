@@ -65,6 +65,7 @@ fn report(stats: &MediaStats, phase: &str) {
         "probe {}",
         serde_json::json!({"phase":phase,
         "control":stats.control_open.load(Ordering::Acquire),
+        "video_size":stats.res(),
         "decoded":stats.decoded_total.load(Ordering::Acquire),"errors":stats.errors.load(Ordering::Acquire),
         "settings":stats.settings_response.load(Ordering::Acquire),"current":screens.current_id,
         "replies":*stats.display_responses.lock().unwrap(),
@@ -111,6 +112,16 @@ fn main() -> Result<()> {
                     && s.settings_response.load(Ordering::Acquire) == 2001
             },
         )?;
+        if std::env::var_os("UU_RESOLUTION").is_some() {
+            if let uu_core::control_wire::CaptureResolution::Exact(width, height) =
+                uu_core::control_wire::CaptureResolution::from_env()
+            {
+                wait(&mut session, Duration::from_secs(10), "encoded output bounds", |s| {
+                    let (actual_width, actual_height) = s.res();
+                    actual_width > 0 && actual_height > 0 && actual_width <= width && actual_height <= height
+                })?;
+            }
+        }
         report(&stats, "initial");
         for (index, id) in screens.into_iter().enumerate() {
             let inventory = stats

@@ -282,7 +282,7 @@ mod tests {
         let request=capture_setting_for_screen(1000,3,CaptureFrameRate::new(120).unwrap(),6,Some(18000000),CaptureResolution::Unchanged,false,-1);
         let resolved=bind_current_capture(&request,42).unwrap();
         let outer=decode_wire(&resolved).unwrap();let rpc=decode_wire(message(&outer,21).unwrap()).unwrap();let settings=decode_wire(message(&rpc,2).unwrap()).unwrap();
-        assert_eq!(number(&settings,4),42);assert_eq!(number(&settings,10),1);assert_eq!(number(&settings,18),120);assert_eq!(number(&settings,8),18000000);
+        assert_eq!(number(&settings,4),42);assert_eq!(number(&settings,10),3);assert_eq!(number(&settings,18),120);assert_eq!(number(&settings,8),18000000);
         assert!(bind_current_capture(&resolved,7).is_none());
         assert_eq!(DisplayMode::default(),DisplayMode::Preserve);
     }

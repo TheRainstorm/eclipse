@@ -110,15 +110,15 @@ impl CaptureFrameRate {
 /// 1  fps option      1=30, 2=60, 3=90, 4=144
 /// 2  quality preset  1 fast, 2 general, 3 hd, 4 bluray, 5 auto, 6 custom
 /// 4  screen id       -2 broadcasts to existing tracks; nonnegative selects one source
-/// 5  width           -1 unchanged, or explicit output width
-/// 6  height          -1 unchanged, or explicit output height
+/// 5  desktop width   -1 leaves the desktop size unchanged
+/// 6  desktop height  -1 leaves the desktop size unchanged
 /// 7  constant        1
 /// 8  custom bitrate  bits/second (only for quality 6)
-/// 10 resolution type 1=unchanged, 3=follow remote, 4=explicit
+/// 10 resolution type 1=default, 3=follow remote, 4=explicit desktop
 /// 12 constant        4
 /// 13 constant        2
-/// 14 max width       3840
-/// 15 max height      2160
+/// 14 max scale width encoded output bound (default 3840)
+/// 15 max scale height encoded output bound (default 2160)
 /// 18 explicit fps    actual integer count, including 120/custom
 /// ```
 ///
@@ -144,9 +144,13 @@ pub fn capture_setting_request(
 pub enum CaptureResolution {
     Unchanged,
     Native,
+    /// Encoded output bounds; preserves the desktop and its aspect ratio.
     Exact(u32, u32),
 }
 impl CaptureResolution {
+    pub fn output_bounds(self) -> (u32, u32) {
+        match self { Self::Exact(width, height) => (width, height), _ => (3840, 2160) }
+    }
     pub fn from_env() -> Self {
         let value = std::env::var("UU_RESOLUTION").unwrap_or_default();
         match value
@@ -206,35 +210,24 @@ pub fn capture_setting_for_screen(
     int(1, frame_rate.option(), &mut setting);
     int(2, quality, &mut setting);
     int(4, screen_id as i64 as u64, &mut setting);
-    // Runtime switch sentinels observed from the official client.  protobuf
-    // int64 negatives use the full 10-byte two's-complement varint.
-    match resolution {
-        CaptureResolution::Exact(width, height) => {
-            // 5/6 are the display-size path. Keep the host desktop unchanged;
-            // 16/17 request the encoded stream output size instead.
-            int(5, u64::MAX, &mut setting);
-            int(6, u64::MAX, &mut setting);
-            int(16, width as u64, &mut setting);
-            int(17, height as u64, &mut setting);
-        }
-        _ => {
-            int(5, u64::MAX, &mut setting);
-            int(6, u64::MAX, &mut setting);
-        }
-    }
+    // Desktop size and encoder output are independent. Never populate either
+    // desktop size pair (5/6 or 16/17) with an output preset.
+    int(5, u64::MAX, &mut setting);
+    int(6, u64::MAX, &mut setting);
     int(7, 1, &mut setting);
     if let Some(bps) = custom_bitrate_bps {
         int(8, bps, &mut setting);
     }
-    int(
-        10,
-        match resolution { CaptureResolution::Native => 3, CaptureResolution::Exact(_, _) => 1, _ => 1 },
-        &mut setting,
-    );
+    // DEFAULT can restore host-saved desktop settings. FOLLOW_REMOTE is the
+    // explicit display policy for every output preset, including auto/native.
+    int(10, 3, &mut setting);
     int(12, 4, &mut setting);
     int(13, 2, &mut setting);
-    int(14, 3840, &mut setting);
-    int(15, 2160, &mut setting);
+    let (width, height) = resolution.output_bounds();
+    // Official Windows CaptureSettingRequest.max_scale_width/height feed the
+    // video capture/encoder settings, independently of desktop resolution.
+    int(14, u64::from(width), &mut setting);
+    int(15, u64::from(height), &mut setting);
     int(18, frame_rate.fps() as u64, &mut setting);
 
     let mut header = Vec::new();
@@ -248,6 +241,29 @@ pub fn capture_setting_for_screen(
     int(2, timestamp_ms, &mut out);
     bytes(21, &rpc, &mut out);
     out
+}
+
+/// Numeric capture-setting metadata only; never logs generic CONTROL payloads.
+pub(crate) fn capture_setting_metadata(data: &[u8]) -> Option<serde_json::Value> {
+    fn number(fields: &[(u32, WireValue<'_>)], field: u32) -> Option<u64> {
+        fields.iter().find_map(|(n, value)| match value {
+            WireValue::Varint(value) if *n == field => Some(*value), _ => None,
+        })
+    }
+    fn nested<'a>(fields: &[(u32, WireValue<'a>)], field: u32) -> Option<&'a [u8]> {
+        fields.iter().find_map(|(n, value)| match value {
+            WireValue::Bytes(value) if *n == field => Some(*value), _ => None,
+        })
+    }
+    let envelope = decode_wire(data).ok()?;
+    let rpc = decode_wire(nested(&envelope, 21)?).ok()?;
+    let setting = decode_wire(nested(&rpc, 2)?).ok()?;
+    let header = decode_wire(nested(&rpc, 1)?).ok()?;
+    let fields: std::collections::BTreeMap<_, _> = setting.into_iter().filter_map(|(n, value)| match value {
+        WireValue::Varint(value) if (1..=18).contains(&n) => Some((n.to_string(), value)), _ => None,
+    }).collect();
+    Some(serde_json::json!({"event":"capture_setting_send", "seq":number(&envelope,1),
+        "timestamp":number(&envelope,2), "request":number(&header,1), "fields":fields}))
 }
 
 /// Current UNIX time in milliseconds (the outer Message field 2).
@@ -453,7 +469,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_and_explicit_resolution_requests_do_not_impose_the_old_1080_cap() {
+    fn output_presets_change_encoder_bounds_while_every_request_preserves_the_desktop() {
         fn setting(resolution: CaptureResolution) -> Vec<u8> {
             let msg = capture_setting_request_with_resolution(1, 1, 2, 5, None, resolution);
             let rpc = decode_wire(&msg)
@@ -473,17 +489,20 @@ mod tests {
                 })
                 .unwrap()
         }
-        let native = setting(CaptureResolution::Native);
-        let fields = decode_wire(&native).unwrap();
-        assert!(fields.contains(&(10, WireValue::Varint(3))));
-        assert!(!fields.iter().any(|(n, _)| *n == 8));
-        let full = setting(CaptureResolution::Exact(3840, 2160));
-        let fields = decode_wire(&full).unwrap();
-        for (n, value) in [(4, u64::MAX - 1), (5, u64::MAX), (6, u64::MAX), (16, 3840), (17, 2160)] {
-            assert!(fields.contains(&(n, WireValue::Varint(value))));
+        for (resolution, width, height) in [
+            (CaptureResolution::Unchanged, 3840, 2160),
+            (CaptureResolution::Native, 3840, 2160),
+            (CaptureResolution::Exact(1920, 1080), 1920, 1080),
+            (CaptureResolution::Exact(2560, 1440), 2560, 1440),
+            (CaptureResolution::Exact(3840, 2160), 3840, 2160),
+        ] {
+            let data = setting(resolution);
+            let fields = decode_wire(&data).unwrap();
+            for (n, value) in [(4, u64::MAX - 1), (5, u64::MAX), (6, u64::MAX), (10, 3), (14, width), (15, height)] {
+                assert!(fields.contains(&(n, WireValue::Varint(value))), "{resolution:?}: field {n}");
+            }
+            assert!(!fields.iter().any(|(n, _)| matches!(n, 8 | 16 | 17)));
         }
-        assert!(!fields.contains(&(5, WireValue::Varint(3840))));
-        assert!(!fields.contains(&(6, WireValue::Varint(2160))));
     }
     #[test]
     fn literal_frame_rates_use_count_not_unknown_enum_numbers() {
@@ -566,10 +585,11 @@ mod tests {
             })
             .expect("rpc field 2");
         // The captured request omitted the proto3 default for cursor_capture.
-        // Our runtime request now explicitly disables host compositing (18 00).
+        // Our runtime request explicitly disables host compositing (18 00)
+        // and follows the remote desktop (50 03 instead of captured DEFAULT).
         assert_eq!(
             hex::encode(setting),
-            "18000802100620feffffffffffffffff0128ffffffffffffffffff0130ffffffffffffffffff01380140c0f79c1a50016004680270801e78f01090013c"
+            "18000802100620feffffffffffffffff0128ffffffffffffffffff0130ffffffffffffffffff01380140c0f79c1a50036004680270801e78f01090013c"
         );
     }
 
@@ -614,5 +634,27 @@ mod settings_response_tests {
         assert_eq!(capture_setting_response(&echo_response(44, 2007)), None);
         let mut unrelated = vec![]; bytes(1, &header, &mut unrelated); bytes(3, &[], &mut unrelated);
         assert_eq!(capture_setting_response(&envelope(45, 22, &unrelated)), None);
+    }
+}
+
+#[cfg(test)]
+mod capture_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn capture_metadata_retains_wire_identifiers_and_numbers_but_excludes_other_control_data() {
+        let msg = capture_setting_for_screen(2001, 123456, CaptureFrameRate::default(),
+            6, Some(20_000_000), CaptureResolution::Exact(1920,1080), false, 42);
+        let metadata = capture_setting_metadata(&msg).unwrap();
+        assert_eq!(metadata["seq"], 2001);
+        assert_eq!(metadata["timestamp"], 123456);
+        assert_eq!(metadata["request"], 2001);
+        assert_eq!(metadata["fields"]["4"], 42);
+        assert_eq!(metadata["fields"]["10"], 3);
+        assert_eq!(metadata["fields"]["14"], 1920);
+        assert_eq!(metadata["fields"]["15"], 1080);
+        assert!(metadata["fields"].get("16").is_none());
+        assert!(capture_setting_metadata(br#"{"action":"kbd_press","key":65}"#).is_none());
+        assert!(capture_setting_metadata(&crate::clipboard::text_change(1,"private fixture").unwrap()).is_none());
+        assert!(capture_setting_metadata(&echo_request(1)).is_none());
     }
 }
