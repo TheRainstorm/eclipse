@@ -105,7 +105,11 @@ impl Importer {
         self.sampled()?;
         if !self.converter.as_ref().is_some_and(|c| c.matches(&frame)) {
             self.clear();
-            for shared in [false, true] {
+            // DEFAULT without SHARED is legal, but the production Arc WGL
+            // driver took ~5ms to acquire it versus <1ms for explicit sharing.
+            // Prefer the measured interop allocation, ordinary DEFAULT only
+            // as a registration fallback. Do not change presentation pacing.
+            for shared in [true, false] {
                 let converter = Converter::with_shared_export(&frame, shared)?;
                 self.device = (self.api.open)(converter.device_ptr());
                 if self.device.is_null() {
