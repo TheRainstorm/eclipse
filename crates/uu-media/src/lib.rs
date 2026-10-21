@@ -23,6 +23,7 @@ pub mod d3d11_frame;
 pub mod frame;
 #[cfg(feature = "h264")]
 pub mod h264;
+pub mod hevc;
 pub mod hw;
 
 pub use codec::{CodecError, NullEncoder, VideoDecoder, VideoEncoder};
@@ -112,6 +113,18 @@ pub fn default_decoder() -> Result<Box<dyn VideoDecoder>, CodecError> {
             Ok(record_backend(&name, decoder))
         }
     }
+}
+
+/// Select a decoder for the negotiated codec. OpenH264 cannot decode HEVC;
+/// never silently pass HEVC access units to the H.264 software fallback.
+pub fn decoder_for_codec(codec: uu_proto::media::VideoCodec) -> Result<Box<dyn VideoDecoder>, CodecError> {
+    use uu_proto::media::VideoCodec;
+    if codec == VideoCodec::H264 { return default_decoder(); }
+    #[cfg(all(windows, feature = "d3d11va"))]
+    if codec == VideoCodec::Hevc && DecoderKind::from_env() != DecoderKind::Software {
+        return Ok(Box::new(hw::d3d11va::D3d11VaDecoder::with_codec(codec)?));
+    }
+    Err(CodecError::Unsupported(codec))
 }
 
 /// Backend chosen by the first [`default_decoder`] call in this process.

@@ -108,6 +108,7 @@
 | [crc](https://github.com/mrhooray/crc-rs.git) | 3.4.0 | `MIT OR Apache-2.0` |
 | [crc-catalog](https://github.com/akhilles/crc-catalog.git) | 2.5.0 | `MIT OR Apache-2.0` |
 | [crc32fast](https://github.com/srijs/rust-crc32fast) | 1.5.2 | `MIT OR Apache-2.0` |
+| [cros-codecs](https://github.com/chromeos/cros-codecs) | 0.0.6 | `BSD-3-Clause` |
 | [crossbeam-utils](https://github.com/crossbeam-rs/crossbeam) | 0.8.23 | `MIT OR Apache-2.0` |
 | [crypto-bigint](https://github.com/RustCrypto/crypto-bigint) | 0.5.5 | `Apache-2.0 OR MIT` |
 | [crypto-common](https://github.com/RustCrypto/traits) | 0.1.7 | `MIT OR Apache-2.0` |

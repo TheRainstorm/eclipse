@@ -1,4 +1,4 @@
-//! Windows Media Foundation H.264 decoding on a D3D11 device manager.
+//! Windows Media Foundation H.264/HEVC decoding on a D3D11 device manager.
 //!
 //! This is the "D3D11VA" path of the system video stack: a D3D11 device is
 //! handed to the H.264 decoder MFT through `IMFDXGIDeviceManager`, so entropy
@@ -49,22 +49,38 @@ fn describe<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+fn subtype(codec: VideoCodec) -> windows::core::GUID {
+    match codec {
+        VideoCodec::Hevc => MFVideoFormat_HEVC,
+        _ => MFVideoFormat_H264,
+    }
+}
+
 /// Public handle: a `Worker` thread owning all Media Foundation state.
 pub struct D3d11VaDecoder {
     worker: super::Worker,
+    codec: VideoCodec,
 }
 
 impl D3d11VaDecoder {
     pub fn new() -> Result<Self, CodecError> {
+        Self::with_codec(VideoCodec::H264)
+    }
+
+    pub fn with_codec(codec: VideoCodec) -> Result<Self, CodecError> {
+        if !matches!(codec, VideoCodec::H264 | VideoCodec::Hevc) {
+            return Err(CodecError::Unsupported(codec));
+        }
         Ok(Self {
-            worker: super::Worker::spawn(Decoder::open)?,
+            worker: super::Worker::spawn(move || Decoder::open(codec))?,
+            codec,
         })
     }
 }
 
 impl VideoDecoder for D3d11VaDecoder {
     fn codec(&self) -> VideoCodec {
-        VideoCodec::H264
+        self.codec
     }
 
     fn backend_name(&self) -> &str {
@@ -127,6 +143,7 @@ impl Drop for Runtime {
 struct Decoder {
     pending: VecDeque<RawFrame>,
     active: Option<Transform>,
+    codec: VideoCodec,
     name: String,
     context: ID3D11DeviceContext,
     device: ID3D11Device,
@@ -151,7 +168,7 @@ impl Decoder {
         Ok(())
     }
 
-    fn open() -> Result<Self, String> {
+    fn open(codec: VideoCodec) -> Result<Self, String> {
         let runtime = Runtime::start()?;
         let (device, context) = create_device()?;
         let manager = device_manager(&device)?;
@@ -162,6 +179,7 @@ impl Decoder {
         Ok(Self {
             pending: VecDeque::new(),
             active: None,
+            codec,
             name,
             context,
             device,
@@ -172,7 +190,7 @@ impl Decoder {
 
     /// Negotiate a transform for `width` x `height`.
     fn open_transform(&self, width: u32, height: u32) -> Result<Transform, String> {
-        let mut last = "no H.264 decoder MFT available".to_string();
+        let mut last = format!("no {:?} decoder MFT available", self.codec);
         // Vendor decoders first (those are what the HARDWARE flag selects),
         // then the in-box Microsoft decoder MFT, which is D3D11-aware and is
         // what most machines actually use for DXVA decode.
@@ -180,7 +198,7 @@ impl Decoder {
             MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
             MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER,
         ] {
-            let candidates = Activations::enumerate(flags)?;
+            let candidates = Activations::enumerate(flags, self.codec)?;
             for activation in candidates.entries().iter().flatten() {
                 let attempt = Transform::create(
                     activation,
@@ -190,6 +208,7 @@ impl Decoder {
                     width,
                     height,
                     self.runtime.foundation.as_ref().unwrap().clone(),
+                    self.codec,
                 );
                 match attempt {
                     Ok(transform) => return Ok(transform),
@@ -216,7 +235,10 @@ impl super::Backend for Decoder {
         // Parameter sets travel inside the IDR access units, so the first
         // keyframe after joining tells us the geometry. A different geometry
         // means the host switched resolution and the transform must be rebuilt.
-        if let Some((width, height)) = h264_dimensions(&frame.data) {
+        let geometry = if self.codec == VideoCodec::Hevc {
+            crate::hevc::sequence(&frame.data).map(|s| (s.width, s.height))
+        } else { h264_dimensions(&frame.data) };
+        if let Some((width, height)) = geometry {
             self.prepare_geometry(width, height)?;
         }
 
@@ -230,16 +252,17 @@ impl super::Backend for Decoder {
             return Ok(None);
         };
 
-        let patched = patch_sps_allow_gaps(&frame.data);
+        let patched = if self.codec == VideoCodec::H264 { patch_sps_allow_gaps(&frame.data) } else { None };
         let data = patched.as_deref().unwrap_or(&frame.data);
         transform.submit(data, frame.is_keyframe, frame.pts, pending)?;
         Ok(pending.pop_front())
     }
 }
 
-/// One negotiated H.264 decoder MFT plus the staging texture it reads back to.
+/// One negotiated video decoder MFT plus its optional staging texture.
 struct Transform {
     transform: IMFTransform,
+    require_gpu: bool,
     foundation: std::sync::Arc<crate::d3d11_frame::Foundation>,
     /// Keeps the activation alive so the MFT is shut down the way it was
     /// created (Media Foundation expects `ShutdownObject` for pool cleanup).
@@ -292,6 +315,7 @@ impl Transform {
         width: u32,
         height: u32,
         foundation: std::sync::Arc<crate::d3d11_frame::Foundation>,
+        codec: VideoCodec,
     ) -> Result<Self, String> {
         unsafe {
             let transform: IMFTransform = activation
@@ -350,7 +374,7 @@ impl Transform {
                 .map_err(|e| format!("MFT_MESSAGE_SET_D3D_MANAGER: {e}"))?;
 
             let (input_id, output_id) = stream_ids(&transform)?;
-            set_input_type(&transform, input_id, width, height)?;
+            set_input_type(&transform, input_id, width, height, codec)?;
             if set_output_type(&transform, output_id, width, height).is_err() {
                 select_nv12_output(&transform, output_id)?;
             }
@@ -365,6 +389,7 @@ impl Transform {
                 .map_err(|e| format!("GetOutputStreamInfo: {e}"))?;
             Ok(Self {
                 transform,
+                require_gpu: codec == VideoCodec::Hevc,
                 foundation,
                 activation: activation.clone(),
                 device: device.clone(),
@@ -657,7 +682,7 @@ impl Transform {
         if self.saw_d3d11_surface {
             return Ok(());
         }
-        if self.frames_read > 30 {
+        if self.require_gpu || self.frames_read > 30 {
             return Err(format!(
                 "decoder returned {} system-memory frames and no D3D11 surface: hardware decode is not active",
                 self.frames_read
@@ -822,6 +847,7 @@ fn set_input_type(
     id: u32,
     width: u32,
     height: u32,
+    codec: VideoCodec,
 ) -> Result<(), String> {
     unsafe {
         let media_type = MFCreateMediaType().map_err(describe)?;
@@ -829,7 +855,7 @@ fn set_input_type(
             .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
             .map_err(describe)?;
         media_type
-            .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
+            .SetGUID(&MF_MT_SUBTYPE, &subtype(codec))
             .map_err(describe)?;
         media_type
             .SetUINT64(&MF_MT_FRAME_SIZE, pack(width, height))
@@ -950,10 +976,10 @@ struct Activations {
 }
 
 impl Activations {
-    fn enumerate(flags: MFT_ENUM_FLAG) -> Result<Self, String> {
+    fn enumerate(flags: MFT_ENUM_FLAG, codec: VideoCodec) -> Result<Self, String> {
         let input = MFT_REGISTER_TYPE_INFO {
             guidMajorType: MFMediaType_Video,
-            guidSubtype: MFVideoFormat_H264,
+            guidSubtype: subtype(codec),
         };
         let mut pointer: *mut Option<IMFActivate> = ptr::null_mut();
         let mut count = 0u32;

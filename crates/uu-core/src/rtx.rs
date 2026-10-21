@@ -106,7 +106,7 @@ fn routes(sdp: &str) -> HashMap<u32, Route> {
             .skip(3)
             .filter_map(|w| w.parse().ok())
             .collect();
-        let mut h264 = Vec::new();
+        let mut video = Vec::new();
         let mut rtx = Vec::new();
         let mut apt = HashMap::new();
         let mut fid = Vec::new();
@@ -114,8 +114,8 @@ fn routes(sdp: &str) -> HashMap<u32, Route> {
             if let Some(value) = line.strip_prefix("a=rtpmap:") {
                 if let Some((pt, codec)) = value.split_once(' ') {
                     if let Ok(pt) = pt.parse::<u8>() {
-                        if codec.eq_ignore_ascii_case("H264/90000") {
-                            h264.push(pt);
+                        if codec.eq_ignore_ascii_case("H264/90000") || codec.eq_ignore_ascii_case("H265/90000") {
+                            video.push(pt);
                         }
                         if codec.eq_ignore_ascii_case("rtx/90000") {
                             rtx.push(pt);
@@ -148,7 +148,7 @@ fn routes(sdp: &str) -> HashMap<u32, Route> {
         }
         apt.retain(|pt, original| {
             rtx.contains(pt)
-                && h264.contains(original)
+                && video.contains(original)
                 && offered.contains(pt)
                 && offered.contains(original)
         });
@@ -264,6 +264,16 @@ mod tests {
         assert!(restore(&p, &map[&99]).is_none());
         assert!(routes(&SDP.replace("apt=102", "apt=104")).is_empty());
         assert!(routes(&SDP.replace("m=video 9", "m=video 0")).is_empty());
+    }
+    #[test]
+    fn hevc_repairs_use_negotiated_apt_and_preserve_the_hevc_payload() {
+        let map=routes(&SDP.replace("H264/90000","H265/90000"));
+        let mut packet=repair();
+        packet.payload=bytes::Bytes::from_static(&[255,255,98,1,0x53,9]);
+        let repaired=restore(&packet,&map[&99]).unwrap();
+        assert_eq!(repaired.header.payload_type,102);
+        assert_eq!(repaired.header.sequence_number,65_535);
+        assert_eq!(repaired.payload.as_ref(),&[98,1,0x53,9]);
     }
     #[test]
     fn repairs_reach_reorder_queue_and_duplicate_is_not_decoded_again() {

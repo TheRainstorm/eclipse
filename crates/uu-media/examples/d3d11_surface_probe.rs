@@ -11,6 +11,8 @@ fn main() -> anyhow::Result<()> {
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("usage: d3d11_surface_probe GENERATED_AUD.h264"))?;
     let data = std::fs::read(path)?;
+    let hevc = std::env::args().nth(2).as_deref() == Some("hevc");
+    let codec = if hevc { uu_proto::media::VideoCodec::Hevc } else { uu_proto::media::VideoCodec::H264 };
     let mut starts = Vec::new();
     let mut i = 0;
     while i + 3 < data.len() {
@@ -22,7 +24,7 @@ fn main() -> anyhow::Result<()> {
             i += 1;
             continue;
         };
-        if data.get(i + n).is_some_and(|h| h & 31 == 9) {
+        if data.get(i + n).is_some_and(|h| if hevc { (h >> 1) & 63 == 35 } else { h & 31 == 9 }) {
             starts.push(i);
         }
         i += n;
@@ -30,8 +32,9 @@ fn main() -> anyhow::Result<()> {
     anyhow::ensure!(!starts.is_empty(), "generated fixture must contain AUDs");
     starts[0] = 0;
     starts.push(data.len());
-    let mut cpu = uu_media::hw::create_hardware_decoder()?;
-    let mut gpu = uu_media::hw::create_hardware_decoder()?;
+    let mut cpu = uu_media::hw::d3d11va::D3d11VaDecoder::with_codec(codec)?;
+    let mut gpu = uu_media::hw::d3d11va::D3d11VaDecoder::with_codec(codec)?;
+    use uu_media::VideoDecoder;
     let mut converter: Option<Converter> = None;
     let mut held: Option<(Arc<d3d11_frame::Frame>, Vec<u8>, YuvColor)> = None;
     let mut color = YuvColor::default();
@@ -43,11 +46,11 @@ fn main() -> anyhow::Result<()> {
     let mut pixels = 0_u64;
     for (index, span) in starts.windows(2).enumerate() {
         let bytes = bytes::Bytes::copy_from_slice(&data[span[0]..span[1]]);
-        if let Some(c) = uu_media::color::from_h264(&bytes) {
+        if let Some(c) = if hevc { uu_media::hevc::sequence(&bytes).map(|s|s.color) } else { uu_media::color::from_h264(&bytes) } {
             color = c;
         }
         let encoded = EncodedFrame {
-            is_keyframe: EncodedFrame::detect_h264_keyframe(&bytes),
+            is_keyframe: if hevc { uu_media::hevc::is_keyframe(&bytes) } else { EncodedFrame::detect_h264_keyframe(&bytes) },
             data: bytes,
             pts: Timestamp(index as u64 * 16667 + 10_000_000),
         };
@@ -143,7 +146,7 @@ fn main() -> anyhow::Result<()> {
     );
     println!(
         "{}",
-        serde_json::json!({"frames":frames,"retained_sample_checks":checked,
+        serde_json::json!({"codec":format!("{codec:?}"),"frames":frames,"retained_sample_checks":checked,
         "cpu_decode_readback_ms":timings[0]*1000./frames as f64,"gpu_decode_submit_ms":timings[1]*1000./frames as f64,
         "gpu_convert_and_sync_ms":timings[2]*1000./frames as f64,
             "test_rgb_readback_ms":timings[3]*1000./frames as f64,

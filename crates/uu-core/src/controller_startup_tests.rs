@@ -35,7 +35,9 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
         .new_peer_connection(RTCConfiguration::default()).await.unwrap());
     let settings = crate::control_wire::capture_setting_request_with_resolution(
         1000, 1, 2, 5, None, crate::control_wire::CaptureResolution::Native);
-    let expected = settings.clone();
+    // This peer negotiates H.264 only; the common CONTROL boundary must send
+    // that codec preference even when the legacy builder defaults to HEVC.
+    let expected = crate::control_wire::capture_codec(&settings, false).unwrap();
     let track_request=crate::screen_control::send_video_track(10001,2);
     let expected_track=track_request.clone();
     let activation=crate::screen_control::activate_screen(10004,42);

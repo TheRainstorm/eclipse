@@ -141,6 +141,15 @@ async fn run(
     let mut socket = None;
     let mut peer = None;
     let attempt = async {
+    let hevc = if stats.prefer_hevc.load(std::sync::atomic::Ordering::Acquire) {
+        status("正在检查 H.265 硬件解码…");
+        let probe = tokio::task::spawn_blocking(uu_media::hevc::probe_decoder).await;
+        let result = match probe { Ok(result) => result.map_err(|e|e.to_string()), Err(e) => Err(e.to_string()) };
+        stats.diagnostics.record(json!({"event":"hevc_decoder_probe","available":result.is_ok(),"reason":result.as_ref().err()}));
+        if result.is_err() { status("H.265 硬件解码不可用，使用 H.264"); }
+        result.is_ok()
+    } else { false };
+    let _ = stats.hevc_enabled.set(hevc);
     status("正在加入房间…");
     let client = SignalClient::new(&config)?;
     let api = UuApi::new(client, config.at("state.json"))?;
@@ -176,16 +185,17 @@ async fn run(
         else { crate::control_wire::CaptureResolution::Unchanged }
     });
     let output = resolution.output_bounds();
-    let app = crate::socketio::encode_app_data_with_output(&dev_id,stats.clipboard.enabled.load(std::sync::atomic::Ordering::Acquire),display_mode,output);
-    stats.diagnostics.record(json!({"event":"output_negotiation","width":output.0,"height":output.1}));
+    let app = crate::socketio::encode_app_data_with_codecs(&dev_id,stats.clipboard.enabled.load(std::sync::atomic::Ordering::Acquire),display_mode,output,hevc);
+    stats.diagnostics.record(json!({"event":"output_negotiation","width":output.0,"height":output.1,"hevc":hevc}));
+    let codecs: Vec<_> = crate::socketio::decoder_caps(output, hevc).into_iter().map(|(codec,width,height)|json!({
+        "video_codec":codec,"width":width,"height":height,
+        "chroma_sampling":1,"bit_depth":8,"codec_impl":32
+    })).collect();
     let streamer = json!({
         "control_id": ctrl,
         "device_capability": {
             "display_info": [{"id":0,"fps":crate::control_wire::CaptureFrameRate::MAX,"type":0,"hdr":-2}],
-            "video_codec_capability": [{
-                "video_codec":1,"width":output.0,"height":output.1,
-                "chroma_sampling":1,"bit_depth":8,"codec_impl":32
-            }],
+            "video_codec_capability": codecs,
             "ice_id": ""
         }
     })

@@ -51,6 +51,7 @@ pub struct Settings {
     pub capture_keyboard: bool,
     pub vsync: bool,
     pub software_decoder: bool,
+    pub prefer_hevc: bool,
     pub relative_mouse: bool,
     #[serde(alias = "remote_cursor", deserialize_with = "deserialize_cursor_mode")]
     pub cursor_mode: CursorMode,
@@ -71,6 +72,7 @@ impl Default for Settings {
             capture_keyboard: true,
             vsync: true,
             software_decoder: false,
+            prefer_hevc: false,
             relative_mouse: false,
             cursor_mode: CursorMode::Local,
             clipboard: true,
@@ -78,8 +80,8 @@ impl Default for Settings {
     }
 }
 impl Settings {
-    fn capture_values(&self)->(u32,usize,u32,usize,bool) {
-        (self.fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.cursor_mode.remote())
+    fn capture_values(&self)->(u32,usize,u32,usize,bool,bool) {
+        (self.fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.cursor_mode.remote(),self.prefer_hevc)
     }
     pub fn path() -> Option<PathBuf> {
         uu_core::Config::from_env()
@@ -254,6 +256,15 @@ impl super::App {
                     let resolutions=["保持远端桌面分辨率","输出 1920 × 1080","输出 2560 × 1440","输出 3840 × 2160"];
                     egui::ComboBox::from_label("输出分辨率").selected_text(resolutions[s.resolution]).show_ui(ui,|ui|{for (i,label) in resolutions.iter().enumerate(){ui.selectable_value(&mut s.resolution,i,*label);}});
                     ui.small("输出分辨率只改变串流编码尺寸，不修改被控端桌面分辨率。");
+                    #[cfg(windows)]
+                    {
+                        egui::ComboBox::from_label("视频编码").selected_text(if s.prefer_hevc {"H.265 / HEVC（优先）"} else {"H.264"})
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut s.prefer_hevc, false, "H.264");
+                                ui.selectable_value(&mut s.prefer_hevc, true, "H.265 / HEVC（优先）");
+                            });
+                        ui.small("UU 串流切换编码时自动重连。H.265 需要硬件解码支持；不可用时使用 H.264。实际编码见串流统计。");
+                    }
                     ui.checkbox(&mut s.hud,"显示串流统计 · Ctrl+Alt+S");
                     ui.checkbox(&mut s.floating_menu,"全屏显示悬浮入口 · Ctrl+Alt+H");
                     ui.separator();ui.strong("声音");

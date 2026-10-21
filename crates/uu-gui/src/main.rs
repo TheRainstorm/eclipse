@@ -717,13 +717,14 @@ impl App {
         if self.disconnecting { return; }
         let resolution = self.capture_resolution();
         if self.controller.as_ref().is_some_and(|h| h.stats.output_resolution.get()
-            .is_some_and(|previous| previous.output_bounds() != resolution.output_bounds()))
+            .is_some_and(|previous| previous.output_bounds() != resolution.output_bounds())
+            || h.stats.prefer_hevc.load(std::sync::atomic::Ordering::Acquire) != self.preferences.prefer_hevc)
         {
             // The host replaces runtime scale limits with negotiated decoder
             // bounds. Release the old session before negotiating a new bound.
             self.output_reconnect_pending = true;
             self.stop_connection();
-            self.status = "正在切换输出分辨率…".into();
+            self.status = "正在切换视频设置…".into();
             return;
         }
         let profile = self.capture_profile();
@@ -1093,6 +1094,7 @@ impl App {
         let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
         stats.diagnostics.start([config.state_dir.join("diagnostics")]);
         let _ = stats.output_resolution.set(self.capture_resolution());
+        stats.prefer_hevc.store(self.preferences.prefer_hevc, std::sync::atomic::Ordering::Release);
         stats.diagnostics.record(serde_json::json!({"event":"client","build":self.build_label,"display_mode":self.preferences.display_mode,"fps":self.target_fps}));
         stats.display_mode.store((self.preferences.display_mode==uu_core::screen_control::DisplayMode::ExclusiveVirtual) as u32,std::sync::atomic::Ordering::Release);
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);

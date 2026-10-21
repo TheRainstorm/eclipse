@@ -391,10 +391,7 @@ pub fn capture_setting_response(data: &[u8]) -> Option<(u64, bool)> {
     Some((id, !rejected))
 }
 
-/// Bind the initial current-source sentinel to the host's measured screen ID.
-/// Leave legacy broadcasts and explicitly selected sources byte-for-byte intact.
-pub fn bind_current_capture(data:&[u8],screen_id:i32)->Option<Vec<u8>> {
-    fn replace(data:&[u8],field:u32,new:WireValue<'_>)->Option<Vec<u8>> {
+fn replace_wire_field(data:&[u8],field:u32,new:WireValue<'_>)->Option<Vec<u8>> {
         let mut out=Vec::new();let mut found=false;
         for (n,value) in decode_wire(data).ok()? {
             let value=if n==field {found=true;&new}else{&value};
@@ -407,14 +404,33 @@ pub fn bind_current_capture(data:&[u8],screen_id:i32)->Option<Vec<u8>> {
         }
         found.then_some(out)
     }
+
+/// Bind the initial current-source sentinel to the host's measured screen ID.
+/// Leave legacy broadcasts and explicitly selected sources byte-for-byte intact.
+pub fn bind_current_capture(data:&[u8],screen_id:i32)->Option<Vec<u8>> {
     let outer=decode_wire(data).ok()?;
     let payload=|fields:&[(u32,WireValue<'_>)],field|fields.iter().find_map(|(n,v)|match v {WireValue::Bytes(b) if *n==field=>Some(b.to_vec()),_=>None});
     let rpc=payload(&outer,21)?;
     let setting=payload(&decode_wire(&rpc).ok()?,2)?;
     if !decode_wire(&setting).ok()?.contains(&(4,WireValue::Varint(u64::MAX))){return None;}
-    let setting=replace(&setting,4,WireValue::Varint(screen_id as i64 as u64))?;
-    let rpc=replace(&rpc,2,WireValue::Bytes(&setting))?;
-    replace(data,21,WireValue::Bytes(&rpc))
+    let setting=replace_wire_field(&setting,4,WireValue::Varint(screen_id as i64 as u64))?;
+    let rpc=replace_wire_field(&rpc,2,WireValue::Bytes(&setting))?;
+    replace_wire_field(data,21,WireValue::Bytes(&rpc))
+}
+
+/// Apply the session's verified codec at the common CONTROL boundary. Legacy
+/// request builders use the official HEVC preference, even on H.264-only peers.
+pub(crate) fn capture_codec(data: &[u8], hevc: bool) -> Option<Vec<u8>> {
+    fn child(data: &[u8], field: u32) -> Option<&[u8]> {
+        decode_wire(data).ok()?.into_iter().find_map(|(n,v)| match v {
+            WireValue::Bytes(b) if n == field => Some(b), _ => None,
+        })
+    }
+    let rpc = child(data, 21)?;
+    let setting = child(rpc, 2)?;
+    let setting = replace_wire_field(setting, 13, WireValue::Varint(if hevc { 2 } else { 1 }))?;
+    let rpc = replace_wire_field(rpc, 2, WireValue::Bytes(&setting))?;
+    replace_wire_field(data, 21, WireValue::Bytes(&rpc))
 }
 
 /// Decode a protobuf message into `(field number, value)` pairs. Nested byte
@@ -467,6 +483,20 @@ pub fn decode_wire(input: &[u8]) -> Result<Vec<(u32, WireValue<'_>)>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn codec_boundary_changes_only_codec_and_passes_other_control_messages() {
+        let request=capture_setting_for_screen(7,123,CaptureFrameRate::new(120).unwrap(),6,Some(30_000_000),
+            CaptureResolution::Exact(3840,2160),true,5);
+        let before=capture_setting_metadata(&request).unwrap();
+        for hevc in [false,true] {
+            let changed=capture_codec(&request,hevc).unwrap();
+            let mut expected=before.clone();
+            expected["fields"]["13"]=serde_json::json!(if hevc {2}else{1});
+            assert_eq!(capture_setting_metadata(&changed).unwrap(),expected);
+        }
+        assert!(capture_codec(&echo_request(3),true).is_none());
+        assert!(capture_codec(br#"{"type":1}"#,true).is_none());
+    }
 
     #[test]
     fn output_presets_change_encoder_bounds_while_every_request_preserves_the_desktop() {

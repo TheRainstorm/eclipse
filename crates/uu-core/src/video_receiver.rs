@@ -1,10 +1,11 @@
-//! Bounded RTP reordering followed by strict H.264 access-unit assembly.
+//! Bounded RTP reordering followed by strict H.264/HEVC access-unit assembly.
 //! Healthy frames have no added delay. Only gaps wait for NACK/retransmission;
 //! an expired gap invalidates the AU instead of feeding corrupt FU-A data.
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use webrtc::rtp::packet::Packet;
+use uu_proto::media::VideoCodec;
 
 pub(crate) const MAX_PACKETS: usize = 2048;
 const MAX_AU: usize = 16 * 1024 * 1024;
@@ -26,7 +27,7 @@ pub struct ReceiverStats {
 struct Picture {
     timestamp: u32,
     data: Vec<u8>,
-    fragment: Option<(u8, Vec<u8>)>,
+    fragment: Option<(u16, Vec<u8>)>,
     damaged: bool,
     vcl: bool,
 }
@@ -79,10 +80,10 @@ impl Picture {
                     if end || self.fragment.is_some() {
                         return Err(());
                     }
-                    self.fragment = Some((header, vec![header]));
+                    self.fragment = Some((u16::from(header), vec![header]));
                 }
                 let (expected, data) = self.fragment.as_mut().ok_or(())?;
-                if *expected != header || data.len() + payload.len() - 2 > MAX_AU {
+                if *expected != u16::from(header) || data.len() + payload.len() - 2 > MAX_AU {
                     return Err(());
                 }
                 data.extend_from_slice(&payload[2..]);
@@ -95,9 +96,71 @@ impl Picture {
             _ => Err(()),
         }
     }
+
+    fn hevc_nal(&mut self, nal: &[u8]) -> Result<(), ()> {
+        if nal.len() < 2 || nal[0] & 0x80 != 0 || nal[1] & 7 == 0
+            || (nal[0] >> 1) & 63 >= 48 || self.data.len() + nal.len() + 4 > MAX_AU {
+            return Err(());
+        }
+        self.vcl |= (nal[0] >> 1) & 63 <= 31;
+        self.data.extend_from_slice(&[0, 0, 0, 1]);
+        self.data.extend_from_slice(nal);
+        Ok(())
+    }
+
+    /// RFC 7798 single-layer, non-interleaved RTP (sprop-max-don-diff=0).
+    /// The common reorder/loss/size limits apply before either codec parser.
+    fn hevc_payload(&mut self, payload: &[u8]) -> Result<(), ()> {
+        if payload.is_empty() { return Ok(()); }
+        if payload.len() < 2 || payload[0] & 0x80 != 0 || payload[1] & 7 == 0 {
+            return Err(());
+        }
+        match (payload[0] >> 1) & 63 {
+            0..=47 => {
+                if self.fragment.is_some() { return Err(()); }
+                self.hevc_nal(payload)
+            }
+            48 => {
+                if self.fragment.is_some() { return Err(()); }
+                let mut offset = 2;
+                let mut count = 0;
+                while offset < payload.len() {
+                    let size = payload.get(offset..offset + 2).ok_or(())?;
+                    let size = u16::from_be_bytes([size[0], size[1]]) as usize;
+                    offset += 2;
+                    self.hevc_nal(payload.get(offset..offset + size).ok_or(())?)?;
+                    offset += size;
+                    count += 1;
+                }
+                if count < 2 { return Err(()); }
+                Ok(())
+            }
+            49 => {
+                if payload.len() < 4 || payload[2] & 63 >= 48 { return Err(()); }
+                let start = payload[2] & 0x80 != 0;
+                let end = payload[2] & 0x40 != 0;
+                let header = [(payload[0] & 0x81) | ((payload[2] & 63) << 1), payload[1]];
+                let id = u16::from_be_bytes(header);
+                if start {
+                    if end || self.fragment.is_some() { return Err(()); }
+                    self.fragment = Some((id, header.to_vec()));
+                }
+                let (expected, data) = self.fragment.as_mut().ok_or(())?;
+                if *expected != id || data.len() + payload.len() - 3 > MAX_AU { return Err(()); }
+                data.extend_from_slice(&payload[3..]);
+                if end {
+                    let (_, nal) = self.fragment.take().ok_or(())?;
+                    self.hevc_nal(&nal)?;
+                }
+                Ok(())
+            }
+            _ => Err(()), // PACI and DON-interleaved streams are not negotiated.
+        }
+    }
 }
 
 pub struct VideoReceiver {
+    codec: VideoCodec,
     packets: HashMap<u16, (Packet, Instant)>,
     next: Option<u16>,
     picture: Option<Picture>,
@@ -110,8 +173,13 @@ pub struct VideoReceiver {
     pub epoch: u64,
 }
 impl VideoReceiver {
+    #[cfg(test)]
     pub fn new(wait: Duration) -> Self {
+        Self::with_codec(wait, VideoCodec::H264)
+    }
+    pub fn with_codec(wait: Duration, codec: VideoCodec) -> Self {
         Self {
+            codec,
             packets: HashMap::new(),
             next: None,
             picture: None,
@@ -126,6 +194,20 @@ impl VideoReceiver {
     }
     pub fn take_refresh(&mut self) -> bool {
         std::mem::take(&mut self.refresh)
+    }
+    /// A negotiated payload format change starts a new reference generation.
+    /// Never concatenate fragments across codecs; keep cumulative transport
+    /// counters and the repair deadline while retiring the old reorder state.
+    pub fn change_codec(&mut self, codec: VideoCodec, first_sequence: u16) {
+        self.codec = codec;
+        self.packets.clear();
+        self.picture = None;
+        self.completed_ts = None;
+        self.next = Some(first_sequence);
+        self.gap_since = None;
+        self.last_packet = None;
+        self.epoch += 1;
+        self.refresh = true;
     }
     pub fn push(&mut self, packet: Packet, now: Instant) -> Vec<AccessUnit> {
         let seq = packet.header.sequence_number;
@@ -248,8 +330,13 @@ impl VideoReceiver {
             timestamp: ts,
             ..Default::default()
         });
-        if !picture.damaged && picture.payload(&packet.payload).is_err() {
-            picture.damaged = true;
+        if !picture.damaged {
+            let result = match self.codec {
+                VideoCodec::H264 => picture.payload(&packet.payload),
+                VideoCodec::Hevc => picture.hevc_payload(&packet.payload),
+                _ => Err(()),
+            };
+            picture.damaged = result.is_err();
         }
         if packet.header.marker {
             let picture = self.picture.take().unwrap();
@@ -282,6 +369,56 @@ mod tests {
             },
             payload: Bytes::copy_from_slice(payload),
         }
+    }
+    #[test]
+    fn hevc_aggregation_fragment_repair_wrap_and_format_change_are_isolated() {
+        let now = Instant::now();
+        let mut rx = VideoReceiver::with_codec(Duration::from_millis(60), VideoCodec::Hevc);
+        // VPS + IDR in one AP, no DON fields in the negotiated format.
+        let au = rx.push(packet(65_533, 100, true, &[96,1,0,3,64,1,0x80,0,3,38,1,0x80]), now);
+        assert_eq!(au[0].data.as_ref(), &[0,0,0,1,64,1,0x80,0,0,0,1,38,1,0x80]);
+        assert!(rx.push(packet(65_534, 200, false, &[98,1,0x93,1]), now).is_empty());
+        assert!(rx.push(packet(0, 200, true, &[98,1,0x53,3]), now).is_empty());
+        let au = rx.push(packet(65_535, 200, false, &[98,1,0x13,2]), now);
+        assert_eq!(au[0].data.as_ref(), &[0,0,0,1,38,1,1,2,3]);
+        rx.push(packet(1,300,false,&[98,1,0x93,4]),now);
+        rx.change_codec(VideoCodec::H264,2);
+        assert!(rx.push(packet(1,300,true,&[98,1,0x53,9]),now).is_empty());
+        let au = rx.push(packet(2,400,true,&[0x65,0x80]),now);
+        assert_eq!(au[0].data.as_ref(),&[0,0,0,1,0x65,0x80]);
+        assert_eq!(au[0].epoch,1);
+        rx.change_codec(VideoCodec::Hevc,3);
+        let au=rx.push(packet(3,500,true,&[38,1,0x80]),now);
+        assert_eq!(au[0].data.as_ref(),&[0,0,0,1,38,1,0x80]);
+        assert_eq!(au[0].epoch,2);
+    }
+    #[test]
+    fn hevc_incomplete_malformed_and_mixed_fragments_never_reach_decoder() {
+        let now = Instant::now();
+        for payloads in [
+            vec![vec![98,1,0x93,1],vec![98,1,0x54,2]], // changed NAL type
+            vec![vec![98,1,0xd3,1]], // start + end forbidden
+            vec![vec![98,1,0x93,1]], // unfinished FU at marker
+            vec![vec![96,1,0,8,38,1,0x80]], // AP length exceeds payload
+            vec![vec![96,1,0,3,38,1,0x80]], // AP needs at least two NALs
+            vec![vec![38,0,0x80]], // invalid temporal id
+            vec![vec![0xa6,1,0x80]], // forbidden bit
+            vec![vec![98,1,0x93,1],vec![98,2,0x53,2]], // changed temporal id
+        ] {
+            let mut rx=VideoReceiver::with_codec(Duration::from_millis(60),VideoCodec::Hevc);
+            for (i,payload) in payloads.iter().enumerate() {
+                assert!(rx.push(packet(i as u16,100,i+1==payloads.len(),payload),now).is_empty());
+            }
+            assert!(rx.take_refresh());
+            let next=rx.push(packet(payloads.len() as u16,200,true,&[38,1,0x80]),now);
+            assert_eq!(next.len(),1);
+            assert_eq!(next[0].epoch,1);
+        }
+        let mut rx=VideoReceiver::with_codec(Duration::from_millis(60),VideoCodec::Hevc);
+        rx.push(packet(10,300,false,&[98,1,0x93,1]),now);
+        rx.push(packet(12,300,true,&[98,1,0x53,3]),now);
+        assert!(rx.poll(now+Duration::from_millis(70)).is_empty());
+        assert!(rx.take_refresh());
     }
     #[test]
     fn nack_holes_expire_and_stop_after_repair_and_missing_tail_times_out() {

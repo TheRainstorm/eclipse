@@ -158,6 +158,22 @@ pub fn encode_app_data_with_display_mode(device_id:&str,clipboard:bool,mode:crat
 /// Windows hosts renegotiate max_scale from this capability on every settings
 /// request. The advertised bound must match the selected output for the session.
 pub fn encode_app_data_with_output(device_id:&str,clipboard:bool,mode:crate::screen_control::DisplayMode,output:(u32,u32))->Vec<u8> {
+    encode_app_data_with_codecs(device_id, clipboard, mode, output, false)
+}
+
+pub(crate) fn decoder_caps(output: (u32,u32), hevc: bool) -> Vec<(u64,u32,u32)> {
+    let mut caps = Vec::new();
+    if hevc {
+        // Main 8-bit NV12 through the Windows MFT. Do not advertise native
+        // dimensions beyond that path's documented maximum (4096 x 2304).
+        caps.push((2, if output.0 == 0 { 4096 } else { output.0.min(4096) },
+            if output.1 == 0 { 2304 } else { output.1.min(2304) }));
+    }
+    caps.push((1, output.0, output.1));
+    caps
+}
+
+pub(crate) fn encode_app_data_with_codecs(device_id:&str,clipboard:bool,mode:crate::screen_control::DisplayMode,output:(u32,u32),hevc:bool)->Vec<u8> {
     fn varint(out: &mut Vec<u8>, mut v: u64) {
         while v >= 0x80 {
             out.push((v as u8) | 0x80);
@@ -173,11 +189,13 @@ pub fn encode_app_data_with_output(device_id:&str,clipboard:bool,mode:crate::scr
     // host's setup path, before input/echo can be established.
     // ConnectOptions field 4 = DecoderCap {fps, codec, width, height, chroma}.
     // The old empty list plus 1080p streamer JSON restricted the initial stream.
-    let mut cap=Vec::new();
-    for (field,value) in [(1,crate::control_wire::CaptureFrameRate::MAX as u64),(2,1),(3,u64::from(output.0)),(4,u64::from(output.1)),(5,1)] {
-        crate::control_wire::int(field,value,&mut cap);
+    for (codec,width,height) in decoder_caps(output, hevc) {
+        let mut cap=Vec::new();
+        for (field,value) in [(1,crate::control_wire::CaptureFrameRate::MAX as u64),(2,codec),(3,u64::from(width)),(4,u64::from(height)),(5,1)] {
+            crate::control_wire::int(field,value,&mut cap);
+        }
+        crate::control_wire::bytes(4,&cap,&mut out);
     }
-    crate::control_wire::bytes(4,&cap,&mut out);
     out.extend_from_slice(&[0x40, 0x03]); // field 8 = 3
     out.push(0x4a); // field 9, string
     varint(&mut out, device_id.len() as u64);
@@ -224,6 +242,22 @@ pub fn gunzip_sdp04(data: &[u8]) -> Result<String> {
 mod frame_rate_tests {
     use super::*;
     use crate::control_wire::{decode_wire, WireValue};
+    #[test]
+    fn hevc_capabilities_are_bounded_and_leave_h264_fallback_in_both_wire_forms() {
+        for hevc in [false,true] {
+            let app=encode_app_data_with_codecs("test-device",false,crate::screen_control::DisplayMode::Preserve,(0,0),hevc);
+            let wire:Vec<_>=decode_wire(&app[1..]).unwrap().into_iter().filter_map(|(n,v)| match (n,v) {
+                (4,WireValue::Bytes(b))=>Some(decode_wire(b).unwrap()),_=>None,
+            }).collect();
+            let expected=decoder_caps((0,0),hevc);
+            assert_eq!(wire.len(),expected.len());
+            for (fields,(codec,w,h)) in wire.iter().zip(expected) {
+                for (n,v) in [(2,codec),(3,u64::from(w)),(4,u64::from(h)),(5,1)] {assert!(fields.contains(&(n,WireValue::Varint(v))));}
+            }
+            assert_eq!(wire.last().unwrap().iter().find(|(n,_)|*n==2).unwrap().1,WireValue::Varint(1));
+        }
+        assert_eq!(decoder_caps((7680,4320),true)[0],(2,4096,2304));
+    }
     #[test]
     fn preserve_skips_saved_host_layout_and_exclusive_remains_explicit() {
         use crate::screen_control::DisplayMode;

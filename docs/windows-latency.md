@@ -93,7 +93,7 @@ Remove-Item Env:UU_DECODE_PROFILE
 
 Moonlight 的 Decode 和 Render 也有各自的计时边界；其 HUD 的 Encode 来自服务端处理延迟统计，不能仅凭标签判定是纯硬件编码耗时。对照应固定主机、内容、分辨率、帧率、码率、位深、HDR 和显示设置，并观察输入到画面的响应，不能将 H.264 SDR 与 AV1 HDR 的两张截图当作编码器独立对照。
 
-UU 协议及已有兼容实现包含 H.265/HEVC，UU 并非只能使用 H.264。本项目当前实际接收、RTP 组帧和解码链路仍为 H.264；协议枚举中的 HEVC/AV1 不代表已实现完整支持。尚未验证 UU 官方链路可协商 AV1，Moonlight 能使用 AV1 不代表 UU 协议也能。
+UU 协议及已有兼容实现包含 H.265/HEVC，UU 并非只能使用 H.264。本项目 Windows UU 串流现可在“设置 → 视频编码”选择优先 H.265 / HEVC，切换时自动重连；默认仍为 H.264。尚未验证 UU 官方链路可协商 AV1，Moonlight 能使用 AV1 不代表 UU 协议也能。
 
 ## 4K GPU 路径原生对照
 
@@ -164,3 +164,15 @@ Windows 独立窗口站未提供所需 GL 配置，WGL 最终呈现实测仍需�
 确认另一处独立错误：所用TWCC记录器保留未量化的到达时间，RTCP编码却将每个差值截断为250微秒单位，导致每个包都丢失余量。400包间隔120或240微秒时，序列化后重建的末包时间分别落后约47.9或95.8毫秒；反馈中会凭空出现压缩的到达节奏和跨报告的跳跃，包速率越高越明显。这类反馈失真可能干扰发送端带宽适配，但尚不能据此宣称真实4K帧率已修复。
 
 现在在进入记录器前将绝对到达时间量化到最近的250微秒，确保差值可被精确编码，时间误差始终不超过125微秒且不随包数累积。这遵循TWCC的线格式；[Pion记录器](https://github.com/pion/interceptor/blob/master/pkg/twcc/twcc.go)采用保留量化余量的方式达到同样目的。本实现继续使用现有编码器，避免修改第三方依赖。回归检查实际序列化/反序列化后的时间线，覆盖不同包速率、连续报告、序号回绕、丢包和负时间差，并保留反馈写入阻塞时视频仍能继续接收的测试。
+
+用户随后反馈该修复仍未稳定60帧，偶尔降至约35帧。新日志确认运行修复版、实际4K H.264且无坏帧/解码错误/队列溢出；实际35–43Mbps片段仍约48–58接收FPS，源时间戳P95约33–36ms。低帧率也出现在低码率片段，不能仅凭相关性认定带宽是唯一原因；局部反馈缺陷已修复，端到端卡顿尚未解决。
+
+### Windows HEVC 可选路径
+
+切换编码需要同时实现能力声明、SDP、RTP组帧和解码。选择HEVC后先用内置生成的128×128灰色视频检查实际硬解输出；成功才在UU DecoderCap、streamer JSON及SDP中加入优先HEVC和H.264后备。HEVC能力限制为Main 8-bit 4:2:0，尺寸上限4096×2304；没有扩展、硬件不兼容或强制软件解码时不声明HEVC。CONTROL中的编码请求以双方实际协商结果为准，H.264-only远端继续收到H.264请求。
+
+RTP使用[RFC 7798](https://www.rfc-editor.org/rfc/rfc7798.html)的非交错单NAL、AP、FU组帧，与H.264共用有界乱序、NACK/RTX、丢包恢复和显示路径。同一SSRC切换编码时清空旧分片并开启新的参考帧代际，AU携带编码类型；迟到的旧格式包不能切回旧解码器。HEVC损坏数据不会交给OpenH264。SPS尺寸/色彩读取复用已有BSD许可的ChromiumOS解析器；[Windows HEVC MFT](https://learn.microsoft.com/en-us/windows/win32/medfound/h-265---hevc-video-decoder)输出继续使用现有NV12 GPU纹理租约、颜色转换和WGL呈现，未调整渲染调度。
+
+目标GPU上的生成4K60 HEVC素材离线验证通过，GPU解码提交平均约0.50ms、转换及同步约1.02ms，旧纹理跨帧保留及解码器退出后的租约检查通过。这里的提交耗时不包含完整GPU完成时间，也不是端到端延迟；128×128启动探测不能证明所有高分辨率都达到目标帧率。官方远端是否实际选择HEVC，以HUD和`video_stats.codec`为准，真实流畅度仍需实流对照。
+
+离线GPU验证工具支持`cargo run -p uu-media --release --example d3d11_surface_probe -- GENERATED_AUD.hevc hevc`；素材必须是自主生成、带AUD的Main 8-bit视频。Windows隔离回归`windows_generated_srtp_switches_h264_hevc_h264_on_one_track`使用本机加密连接和生成视频检查完整接收/解码路径，不打开窗口、不采集桌面、不发送输入。

@@ -39,6 +39,10 @@ pub struct MediaStats {
     pub configured_fps:AtomicU32,
     /// Immutable per-session output policy, supplied before signalling starts.
     pub output_resolution: std::sync::OnceLock<crate::control_wire::CaptureResolution>,
+    /// Requested preference is immutable after spawn; enabled only after the
+    /// local HEVC decoder actually produces a valid D3D11 image.
+    pub prefer_hevc: std::sync::atomic::AtomicBool,
+    pub hevc_enabled: std::sync::OnceLock<bool>,
     pub diagnostics: crate::session_diagnostics::SessionDiagnostics,
     pub control_open: AtomicU32,
     /// Snapshot of the user's connection policy: 0 preserve, 1 exclusive UU.
@@ -147,6 +151,7 @@ pub struct ControllerMedia {
     network_probe: Arc<std::sync::Mutex<crate::network_probe::NetworkProbe>>,
     stats: Option<Arc<MediaStats>>,
     wait_for_ice_gather: bool,
+    hevc_negotiated: std::sync::atomic::AtomicBool,
 }
 
 impl ControllerMedia {
@@ -192,7 +197,7 @@ impl ControllerMedia {
         // candidate appears in the local SDP.
         let wait_for_ice_gather = !ice.is_empty();
         let mut media = MediaEngine::default();
-        register_receive_codecs(&mut media)?;
+        register_receive_codecs(&mut media, stats.as_ref().is_some_and(|s| s.hevc_enabled.get() == Some(&true)))?;
         let mut registry = Registry::new();
         // NACK is generated from the application's bounded reorder window so
         // successful RTX clears the hole and expired pictures stop requesting.
@@ -433,6 +438,7 @@ impl ControllerMedia {
             network_probe,
             stats,
             wait_for_ice_gather,
+            hevc_negotiated: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -506,6 +512,15 @@ impl ControllerMedia {
         self.pc
             .set_remote_description(RTCSessionDescription::answer(sdp.to_string())?)
             .await?;
+        self.hevc_negotiated.store(sdp.split("m=").skip(1).any(|section| {
+            let mut lines = section.lines();
+            let Some(header) = lines.next() else { return false; };
+            let fields: Vec<_> = header.split_whitespace().collect();
+            fields.first() == Some(&"video") && fields.get(1) != Some(&"0") && lines.any(|l| {
+                l.trim().strip_prefix("a=rtpmap:").and_then(|l|l.split_once(' '))
+                    .is_some_and(|(pt,codec)| fields.get(3..).unwrap_or(&[]).contains(&pt) && codec.eq_ignore_ascii_case("H265/90000"))
+            })
+        }), Ordering::Release);
         Ok(())
     }
 
@@ -570,6 +585,8 @@ impl ControllerMedia {
     }
     /// Send a raw PCK frame over the WebRTC data channel (control hypothesis).
     pub async fn send_control(&self, data: Vec<u8>) -> Result<()> {
+        let hevc = self.hevc_negotiated.load(Ordering::Acquire);
+        let data = crate::control_wire::capture_codec(&data, hevc).unwrap_or(data);
         let metadata = self.stats.as_ref().and_then(|_| crate::control_wire::capture_setting_metadata(&data));
         self.data_channel.send(&bytes::Bytes::from(data)).await?;
         if let (Some(stats), Some(metadata)) = (&self.stats, metadata) { stats.diagnostics.record(metadata); }
@@ -656,6 +673,16 @@ pub(crate) async fn receive_audio(track: Arc<webrtc::track::track_remote::TrackR
     }
 }
 
+fn video_codec(capability: &webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability) -> Option<uu_proto::media::VideoCodec> {
+    use uu_proto::media::VideoCodec;
+    if capability.mime_type.eq_ignore_ascii_case(MIME_TYPE_H264) { return Some(VideoCodec::H264); }
+    if !capability.mime_type.eq_ignore_ascii_case("video/H265") { return None; }
+    // This receiver negotiates the non-interleaved, single-layer format.
+    if capability.sdp_fmtp_line.split(';').any(|p| p.trim().split_once('=')
+        .is_some_and(|(k,v)| k.trim().eq_ignore_ascii_case("sprop-max-don-diff") && v.trim() != "0")) { return None; }
+    Some(VideoCodec::Hevc)
+}
+
 pub(crate) async fn receive_video(
     pc: Arc<RTCPeerConnection>,
     track: Arc<webrtc::track::track_remote::TrackRemote>,
@@ -667,15 +694,10 @@ pub(crate) async fn receive_video(
 ) {
     use crate::video_receiver::VideoReceiver;
     use std::time::Instant;
-    if track.kind() != RTPCodecType::Video
-        || !track
-            .codec()
-            .capability
-            .mime_type
-            .eq_ignore_ascii_case(MIME_TYPE_H264)
-    {
-        return; // Audio and unsupported repair codecs are not H.264 data.
-    }
+    use uu_proto::media::VideoCodec;
+    if track.kind() != RTPCodecType::Video { return; }
+    let capability = track.codec().capability;
+    let Some(mut codec) = video_codec(&capability) else { return; };
     #[cfg(windows)]
     let _timer_resolution = {
         let timer = crate::video_timing::VideoTimerResolution::request();
@@ -692,7 +714,7 @@ pub(crate) async fn receive_video(
     let generation = Arc::new(AtomicU64::new(0));
     let request_generation = Arc::new(crate::decode_gate::RecoverySignal::default());
     let refresh = Arc::new(tokio::sync::Notify::new());
-    let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(bytes::Bytes, u32, u64, u64, Instant)>(8);
+    let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(bytes::Bytes, u32, u64, u64, Instant, VideoCodec)>(8);
     let worker_stats = stats.clone();
     let worker_generation = generation.clone();
     let worker_requests = request_generation.clone();
@@ -702,7 +724,9 @@ pub(crate) async fn receive_video(
     // Decode, colour conversion and driver IPC are blocking CPU/OS work. Keep
     // them off tokio's RTP and RTCP executor threads.
     let worker = tokio::task::spawn_blocking(move || {
-        let mut decoder = match prepared_decoder.map(Ok).unwrap_or_else(uu_media::default_decoder) {
+        let mut codec = codec;
+        let mut decoder = match prepared_decoder.filter(|d|d.codec()==codec).map(Ok)
+            .unwrap_or_else(|| uu_media::decoder_for_codec(codec)) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("video decoder unavailable: {e}");
@@ -712,7 +736,7 @@ pub(crate) async fn receive_video(
         if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
             s.set_backend(decoder.backend_name());
         }
-        let mut dump = std::env::var("UU_DUMP_H264")
+        let mut dump = std::env::var(if codec == VideoCodec::Hevc { "UU_DUMP_HEVC" } else { "UU_DUMP_H264" })
             .ok()
             .and_then(|p| std::fs::File::create(p).ok());
         let mut gate = crate::decode_gate::DecodeGate::default();
@@ -727,12 +751,13 @@ pub(crate) async fn receive_video(
         let mut decode_us = 0u64;
         let mut queue_times = crate::frame_cadence::Samples::default();
         let mut pts_base = None;
-        while let Some((data, timestamp, sample_epoch, sample_request, enqueued)) = sample_rx.blocking_recv()
+        while let Some((data, timestamp, sample_epoch, sample_request, enqueued, sample_codec)) = sample_rx.blocking_recv()
         {
             if window.elapsed() >= Duration::from_millis(500) {
                 let queue_summary = queue_times.take();
                 if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
                     s.set_backend(decoder.backend_name());
+                    *s.codec.lock().unwrap() = match codec { VideoCodec::Hevc => "video/H265", _ => "video/H264" }.into();
                     s.frame_cadence.lock().unwrap().decode_queue_ms = queue_summary;
                     s.decode_us
                         .store((decode_us / window_frames.max(1)) as u32, Ordering::Relaxed);
@@ -748,15 +773,35 @@ pub(crate) async fn receive_video(
             }
             queue_times.push(Instant::now().duration_since(enqueued).as_secs_f64() * 1000.0);
             let current_epoch = worker_generation.load(Ordering::Acquire);
-            let key = uu_media::EncodedFrame::detect_h264_keyframe(&data);
+            let key = if sample_codec == VideoCodec::Hevc { uu_media::hevc::is_keyframe(&data) }
+                else { uu_media::EncodedFrame::detect_h264_keyframe(&data) };
             if !gate.accepts(sample_epoch, current_epoch, key) { continue; }
+            if sample_codec != codec {
+                // Codec ownership travels with each AU, not a racy track
+                // snapshot. A format change cannot feed the previous decoder.
+                if !key { continue; }
+                match uu_media::decoder_for_codec(sample_codec) {
+                    Ok(next) => decoder = next,
+                    Err(_) => { gate.failed(); worker_requests.request(); worker_refresh.notify_one(); continue; }
+                }
+                codec = sample_codec;
+                if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
+                    *s.codec.lock().unwrap() = match codec { VideoCodec::Hevc => "video/H265", _ => "video/H264" }.into();
+                }
+                gate.failed();
+                reset_decoder = false;
+                recovery_errors = 0;
+                recovery = None;
+                color = uu_media::color::YuvColor::default();
+                dump = None;
+            }
             // An IDR resets H.264 references itself. Recreate the decoder only
             // after a decoder/driver error, never for ordinary network loss.
             if key && reset_decoder {
-                let next = if recovery_errors >= 3 || decoder.backend_name().starts_with("openh264") {
+                let next = if codec == VideoCodec::H264 && (recovery_errors >= 3 || decoder.backend_name().starts_with("openh264")) {
                     uu_media::software_decoder()
                 } else {
-                    uu_media::default_decoder()
+                    uu_media::decoder_for_codec(codec)
                 };
                 match next {
                     Ok(fresh) => decoder = fresh,
@@ -769,7 +814,11 @@ pub(crate) async fn receive_video(
                 let _ = file.write_all(&data);
             }
             let base = *pts_base.get_or_insert(timestamp);
-            if key { if let Some(updated)=uu_media::color::from_h264(&data) {color=updated;} }
+            if key {
+                let updated = if codec == VideoCodec::Hevc { uu_media::hevc::sequence(&data).map(|s|s.color) }
+                    else { uu_media::color::from_h264(&data) };
+                if let Some(updated) = updated { color = updated; }
+            }
             let encoded = uu_media::EncodedFrame {
                 data,
                 is_keyframe: key,
@@ -918,7 +967,7 @@ pub(crate) async fn receive_video(
     let mut repair_rx = repairs.subscribe(track.ssrc());
     let nack_sender = u32::from_be_bytes(uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap());
     let mut last_nack = Instant::now();
-    let mut receiver = VideoReceiver::new(Duration::from_millis(wait_ms));
+    let mut receiver = VideoReceiver::with_codec(Duration::from_millis(wait_ms), codec);
     let mut ticker = tokio::time::interval(Duration::from_millis(5));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let strict = !std::env::var("UU_STRICT_RECOVERY").is_ok_and(|v| v == "0");
@@ -944,22 +993,40 @@ pub(crate) async fn receive_video(
     // read across repair/timer events instead of dropping it every 5 ms.
     let packet_read=track.read_rtp();
     tokio::pin!(packet_read);
+    let mut active_payload_type = track.payload_type();
+    let mut latest_primary: Option<u16> = None;
     loop {
         let packet = tokio::select! {
             result=&mut packet_read=>{
                 let Ok((packet,_))=result else {break};
                 packet_read.set(track.read_rtp());
-                Some(packet)
+                Some((packet, true))
             }
-            Some(packet)=repair_rx.recv()=>Some(packet),
+            Some(packet)=repair_rx.recv()=>Some((packet, false)),
             due=ticker.tick()=>{tick_late.push(due.elapsed().as_secs_f64() * 1000.0);None},
         };
         let now = Instant::now();
-        if packet.as_ref().is_some_and(|p| test_loss.drop_packet(p.header.sequence_number, now)) {
+        if packet.as_ref().is_some_and(|(p,_)| test_loss.drop_packet(p.header.sequence_number, now)) {
             if let Some(s) = &stats { s.injected_loss.fetch_add(1, Ordering::Relaxed); }
             continue;
         }
-        let units = if let Some(packet) = packet {
+        let units = if let Some((packet, primary)) = packet {
+            if packet.header.payload_type != active_payload_type {
+                // Old RTX/late primary packets cannot switch the format back.
+                if !primary || latest_primary.is_some_and(|last| (packet.header.sequence_number.wrapping_sub(last) as i16) < 0) { continue; }
+                let Some(next_codec) = video_codec(&track.codec().capability) else { continue; };
+                active_payload_type = packet.header.payload_type;
+                if codec != next_codec {
+                    codec = next_codec;
+                    receiver.change_codec(codec, packet.header.sequence_number);
+                    receiver_epoch = receiver.epoch;
+                    recover(true);
+                    if let Some(s) = &stats { s.diagnostics.record(serde_json::json!({"event":"video_codec_change","track":track_idx,"codec":format!("{codec:?}")})); }
+                }
+            }
+            if primary && latest_primary.map_or(true, |last| (packet.header.sequence_number.wrapping_sub(last) as i16) > 0) {
+                latest_primary = Some(packet.header.sequence_number);
+            }
             if let Some(s) = &stats {
                 s.packets.fetch_add(1, Ordering::Relaxed);
             }
@@ -1016,6 +1083,7 @@ pub(crate) async fn receive_video(
                     epoch,
                     request_generation.requested(),
                     Instant::now(),
+                    codec,
                 ))
                 .is_err()
             {
@@ -1112,7 +1180,7 @@ mod display_track_tests {
 }
 /// Advertise only codecs whose payloads we can actually consume. The default
 /// registry also advertises ULPFEC without a receive-side repair implementation.
-fn register_receive_codecs(media: &mut MediaEngine) -> Result<()> {
+fn register_receive_codecs(media: &mut MediaEngine, hevc: bool) -> Result<()> {
     use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters};
     use webrtc::rtp_transceiver::RTCPFeedback;
     let feedback = vec![
@@ -1133,6 +1201,15 @@ fn register_receive_codecs(media: &mut MediaEngine) -> Result<()> {
             parameter: String::new(),
         },
     ];
+    if hevc {
+        for (payload_type, mime, fmtp) in [(104, "video/H265", ""), (105, "video/rtx", "apt=104")] {
+            media.register_codec(RTCRtpCodecParameters {
+                capability: RTCRtpCodecCapability { mime_type: mime.into(), clock_rate: 90_000,
+                    sdp_fmtp_line: fmtp.into(), rtcp_feedback: if payload_type == 104 { feedback.clone() } else { vec![] },
+                    ..Default::default() }, payload_type, ..Default::default()
+            }, RTPCodecType::Video)?;
+        }
+    }
     for (payload_type, repair_type, profile, mode) in [
         (102, 103, "42001f", 1),
         (127, 126, "42001f", 0),
@@ -1179,3 +1256,7 @@ fn register_receive_codecs(media: &mut MediaEngine) -> Result<()> {
 #[cfg(test)]
 #[path = "media_channel_tests.rs"]
 mod channel_tests;
+
+#[cfg(test)]
+#[path = "media_hevc_tests.rs"]
+mod hevc_tests;
