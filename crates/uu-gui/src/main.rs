@@ -20,6 +20,7 @@ mod keyboard_capture;
 mod input_capture;
 mod settings;
 mod sessions;
+mod single_instance;
 mod platform;
 mod shortcuts;
 mod hud;
@@ -1240,6 +1241,13 @@ fn main() -> eframe::Result {
         Ok(target) => target,
         Err(error) => { eprintln!("{error}"); return Ok(()); }
     };
+    let _launcher=if stream_target.is_none() {
+        match single_instance::launcher() {
+            Ok(Some(guard))=>Some(guard),
+            Ok(None)=>return Ok(()),
+            Err(error)=>return Err(eframe::Error::AppCreation(Box::new(error))),
+        }
+    }else{None};
     let origin = platform::startup_origin(stream_target.is_some());
     let title = match &stream_target {
         Some(target) => format!("{} · {}", target.alias, brand::NAME),
