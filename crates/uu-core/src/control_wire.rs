@@ -210,8 +210,10 @@ pub fn capture_setting_for_screen(
     // int64 negatives use the full 10-byte two's-complement varint.
     match resolution {
         CaptureResolution::Exact(width, height) => {
-            int(5, width as u64, &mut setting);
-            int(6, height as u64, &mut setting);
+            // 5/6 are the display-size path. Keep the host desktop unchanged;
+            // 16/17 request the encoded stream output size instead.
+            int(5, u64::MAX, &mut setting);
+            int(6, u64::MAX, &mut setting);
             int(16, width as u64, &mut setting);
             int(17, height as u64, &mut setting);
         }
@@ -226,7 +228,7 @@ pub fn capture_setting_for_screen(
     }
     int(
         10,
-        match resolution { CaptureResolution::Native => 3, CaptureResolution::Exact(_, _) => 4, _ => 1 },
+        match resolution { CaptureResolution::Native => 3, CaptureResolution::Exact(_, _) => 1, _ => 1 },
         &mut setting,
     );
     int(12, 4, &mut setting);
@@ -477,9 +479,11 @@ mod tests {
         assert!(!fields.iter().any(|(n, _)| *n == 8));
         let full = setting(CaptureResolution::Exact(3840, 2160));
         let fields = decode_wire(&full).unwrap();
-        for (n, value) in [(4, u64::MAX - 1), (5, 3840), (6, 2160), (16, 3840), (17, 2160)] {
+        for (n, value) in [(4, u64::MAX - 1), (5, u64::MAX), (6, u64::MAX), (16, 3840), (17, 2160)] {
             assert!(fields.contains(&(n, WireValue::Varint(value))));
         }
+        assert!(!fields.contains(&(5, WireValue::Varint(3840))));
+        assert!(!fields.contains(&(6, WireValue::Varint(2160))));
     }
     #[test]
     fn literal_frame_rates_use_count_not_unknown_enum_numbers() {

@@ -32,7 +32,7 @@ WebRTC/H.264本身不要求超级屏。物理屏采集能否提供60/120由显�
 4. 顶部出现“输入连接中”表示CONTROL尚未打开，即便视频已更新也不能操作。45秒超时会显示ICE/DTLS/SCTP/CONTROL状态。悬停HUD可查看本地输入发送/失败计数；这不代表远端已注入。
 5. 用持续动态内容分别验证60、120、自定义75。若Rx仍30，先看远端实际采集能力；若Rx60/120而De或Rd明显落后，则检查解码/呈现。
 
-CLI或进程环境可用UU_FPS=120指定初始值，默认60；默认保留远端分辨率，不用分辨率请求隐式修改布局。旧UU_FPS=1/2/3/4仍映射30/60/90/144；新GUI/API使用实际整数。质量、分辨率、码率变更保留所选帧率。144只是当前请求范围上限，不表示所有机器或4K分辨率均能达到144。
+CLI或进程环境可用UU_FPS=120指定初始值，默认60；GUI 的分辨率档位只改变串流编码输出尺寸，不修改被控端桌面分辨率。旧UU_FPS=1/2/3/4仍映射30/60/90/144；新GUI/API使用实际整数。质量、分辨率、码率变更保留所选帧率。144只是当前请求范围上限，不表示所有机器或4K分辨率均能达到144。
 
 ## 官方字段依据与参考入口
 
@@ -43,7 +43,7 @@ CLI或进程环境可用UU_FPS=120指定初始值，默认60；默认保留远�
 | 旧帧率枚举 | 0 UNKNOWN、1=30、2=60、3=90、4=144；无120枚举 | `control_wire::CaptureFrameRate`，自定义/120枚举0并传实际count |
 | 连接能力 | ConnectOptions.4 DecoderCap：1上限；初始CaptureParams当前不发送 | `socketio::encode_app_data`，CONTROL建立后再请求实际fpsCount |
 | 运行时采集设置 | Message21/RpcRequest2，CaptureSettingRequest：1枚举、18 fpsCount、4 screen_id、10分辨率类型 | `control_wire::capture_setting_request_at_fps` |
-| 分辨率类型 | 1保持、2跟随本地、3跟随远端、4明确尺寸 | Exact绑定选中screen_id，发送类型4及物理宽高；默认类型1保持远端分辨率 |
+| 分辨率类型 | 1保持、2跟随本地、3跟随远端、4明确尺寸 | GUI 的 Exact 绑定选中 screen_id，只通过 field 16/17 请求编码输出尺寸；field 5/6 保持远端桌面分辨率不变。`UU_RESOLUTION` 仍是显式高级入口。 |
 | 当前远端屏幕 | Message7 ScreenSources：screens1、current_screen_id2；Screen.id1、fps2、current_resolution4、screen_type5、dpi9 | `screen_control::screen_sources`，按当前ID找屏幕，不取第一块物理屏 |
 
 描述符起始偏移：main.proto 63307440、defines.proto 63309920、connect.proto 63319360、rpc_main.proto 63334800、general.proto 63342192、rpc_message.proto 63355904。私有解析结果保留在artifacts，后续官方更新要先比较新描述符，不能依赖这些固定偏移。

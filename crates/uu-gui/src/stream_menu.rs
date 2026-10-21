@@ -468,10 +468,10 @@ impl super::App {
                             }
                             QualityDetail::Resolution => {
                                 for (index, label) in [
-                                    "保持远端分辨率",
-                                    "1920 × 1080",
-                                    "2560 × 1440",
-                                    "3840 × 2160",
+                                    "保持远端桌面分辨率",
+                                    "输出 1920 × 1080",
+                                    "输出 2560 × 1440",
+                                    "输出 3840 × 2160",
                                 ]
                                 .iter()
                                 .enumerate()
@@ -491,6 +491,8 @@ impl super::App {
                                         self.confirm_quality(ui);
                                     }
                                 }
+                                separator(ui);
+                                ui.small("输出分辨率只改变串流编码尺寸，不修改被控端桌面分辨率。");
                             }
                         }
                     });

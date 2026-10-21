@@ -251,8 +251,9 @@ impl super::App {
                         for (i,(label,_,_)) in super::BITRATE_PRESETS.iter().enumerate(){ui.selectable_value(&mut s.bitrate,i,*label);}
                     });
                     if s.bitrate==4 {ui.add(egui::Slider::new(&mut s.custom_mbps,1..=100).text("Mbps"));}
-                    let resolutions=["保持远端分辨率","1920 × 1080","2560 × 1440","3840 × 2160"];
-                    egui::ComboBox::from_label("分辨率").selected_text(resolutions[s.resolution]).show_ui(ui,|ui|{for (i,label) in resolutions.iter().enumerate(){ui.selectable_value(&mut s.resolution,i,*label);}});
+                    let resolutions=["保持远端桌面分辨率","输出 1920 × 1080","输出 2560 × 1440","输出 3840 × 2160"];
+                    egui::ComboBox::from_label("输出分辨率").selected_text(resolutions[s.resolution]).show_ui(ui,|ui|{for (i,label) in resolutions.iter().enumerate(){ui.selectable_value(&mut s.resolution,i,*label);}});
+                    ui.small("输出分辨率只改变串流编码尺寸，不修改被控端桌面分辨率。");
                     ui.checkbox(&mut s.hud,"显示串流统计 · Ctrl+Alt+S");
                     ui.checkbox(&mut s.floating_menu,"全屏显示悬浮入口 · Ctrl+Alt+H");
                     ui.separator();ui.strong("声音");
