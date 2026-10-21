@@ -35,11 +35,19 @@ pub async fn probe(
     progress_seconds: Option<u64>,
     max_frame_gap_seconds: Option<u64>,
 ) -> Result<()> {
+    let invitation = uu_core::native_pairing::Invitation::load(&path)?;
+    probe_invitation(invitation, frames, seconds, report, audio_loss_every, progress_seconds, max_frame_gap_seconds).await
+}
+
+pub async fn probe_invitation(
+    invitation: uu_core::native_pairing::Invitation,
+    frames:u64, seconds:u64, report:Option<PathBuf>, audio_loss_every:u32,
+    progress_seconds:Option<u64>, max_frame_gap_seconds:Option<u64>,
+)->Result<()> {
     ensure!(
         (1..=100_000).contains(&frames) && (1..=3600).contains(&seconds),
         "native probe requires 1..=100000 frames and 1..=3600 seconds"
     );
-    let invitation = uu_core::native_pairing::Invitation::load(&path)?;
     let mut report = report
         .map(|path| {
             let mut options = std::fs::OpenOptions::new();

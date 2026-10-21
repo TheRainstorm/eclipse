@@ -149,6 +149,7 @@ jobs:
           cargo test --manifest-path vendor/webrtc-srtp/Cargo.toml --release --target-dir target
           python3 tools/linux/package.py
           python3 tools/native/smoke.py --exe target/release/uu --decoder sw --audio
+          python3 tools/native/lan_smoke.py --exe target/release/uu --output artifacts/native-lan-cli
           for archive in artifacts/packages/*.tar.gz; do
             python3 tools/security/scan_secrets.py --artifact "$archive"
           done

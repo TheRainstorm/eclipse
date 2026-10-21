@@ -8,6 +8,7 @@
 //! `uu-capture`/`uu-input`.
 
 mod native_cli;
+mod lan_cli;
 
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
@@ -86,6 +87,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Eclipse LAN discovery, persistent pairing and foreground sharing.
+    Lan {
+        #[command(subcommand)]
+        command:lan_cli::Command,
+    },
     /// Report what this machine can do (backends, session type, paths).
     Probe {
         /// Decode an Annex-B H.264 file with the decoder this machine selects
@@ -270,6 +276,7 @@ async fn main() -> Result<()> {
     config.ensure_dirs().await?;
 
     match cli.command {
+        Command::Lan {command} => lan_cli::run(command,config.at("native-lan")).await,
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
         Command::NativeSources => native_cli::sources(),
         Command::NativeHost { bind, invitation_file, monitor, synthetic, synthetic_width, synthetic_height, allow_input, audio, synthetic_audio, fps, bitrate_kbps, encoder, pairing_seconds, max_seconds } => {

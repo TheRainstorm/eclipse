@@ -37,3 +37,30 @@ cargo test -p uu-core -p uu-gui --features vaapi --locked native_lan
 ```
 
 这些检查不等同于跨平台实机性能验收。硬件解码、声音、输入与网络体验仍须按实际平台验证。
+
+## 前台服务与命令行诊断（开发分支）
+
+`uu lan` 提供与图形端共用的设备存储和协议。`discover` 查询广播，`inspect 主机[:端口]` 仅检查公开信息，`devices` 列出本机保存的配对，`pair 主机[:端口]` 显示待主机核对的配对码。`probe 设备ID --frames 120` 使用已保存授权请求一次串流并解码，不播放声音、不发送键鼠，也不保存画面。
+
+可以在两个终端验证生成画面，不读取桌面：
+
+```sh
+# 主机终端：默认仅监听回环地址，按输出提示输入 pair 开放配对
+uu lan host --synthetic --bind 127.0.0.1:47998
+# 控制端终端：显示八位码后，在主机输入 code 后跟这个号码
+uu lan pair 127.0.0.1
+uu lan devices
+uu lan probe <设备ID> --frames 120
+```
+
+主机终端输入 `stop`、关闭 stdin 或按 Ctrl+C 都会结束前台共享。`close-pairing` 关闭新配对窗口，`deny` 拒绝当前请求，`revoke 客户端ID` 撤销授权。没有自动批准参数，不需要在启动参数中传递令牌。
+
+跨电脑需要通过 `--bind` 明确选择主机监听地址；只有显式设置 `--discovery-bind 本机地址:47999` 才开启 CLI 广播应答。去掉 `--synthetic` 才会采集当前会话的真实屏幕，`--monitor` 选择显示源，`--allow-input` 和 `--audio` 分别允许键鼠与系统声音。生成画面与桌面输入参数不能同时启用。CLI 主机默认软件编码，可显式指定 `--encoder auto`。
+
+独立进程回归使用临时私有配置和自建回环服务，覆盖错误配对码、保存授权、解码、重启后复连、撤销和关闭：
+
+```sh
+python3 tools/native/lan_smoke.py --exe target/release/uu --output artifacts/lan-smoke
+```
+
+输出目录必须是新目录。结果只保存生成视频的接收统计，不保存私钥、令牌或配对码。
