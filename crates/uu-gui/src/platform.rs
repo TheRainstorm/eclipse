@@ -300,6 +300,12 @@ mod windows {
         else{CallWindowProcW(std::mem::transmute::<isize,WNDPROC>(old),window,message,wparam,lparam)}
     }
     pub(super) static CAPTURE_CONTEXT: std::sync::OnceLock<eframe::egui::Context>=std::sync::OnceLock::new();
+    fn preheld_for_capture(flags:u32,async_down:bool)->bool {
+        // Injected input may already be reflected by GetAsyncKeyState before
+        // the low-level callback runs. It is outer-client input, not a local
+        // physical key that belonged to the desktop before capture.
+        flags&(LLKHF_INJECTED|LLKHF_LOWER_IL_INJECTED)==0 && async_down
+    }
     pub(super) static CAPTURE: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
     pub(super) static CAPTURE_OVERFLOW: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
     std::thread_local! {
@@ -413,7 +419,7 @@ mod windows {
                 let owned=!foreground.is_null()&&GetForegroundWindow()==foreground;
                 let active=CAPTURE.load(std::sync::atomic::Ordering::Acquire)&&owned;
                 let shortcuts=LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire)&&owned;
-                let already_down=GetAsyncKeyState(key.vkCode as i32)<0;
+                let already_down=preheld_for_capture(key.flags,GetAsyncKeyState(key.vkCode as i32)<0);
                 let decision=HOOK_STATE.with(|state| {
                     let mut state=state.borrow_mut();
                     let (modifiers,keys)=&mut *state;
@@ -436,6 +442,15 @@ mod windows {
             }
         }
         CallNextHookEx(std::ptr::null_mut(), code, message, data)
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn injected_input_is_not_treated_as_preheld() {
+        assert!(!preheld_for_capture(LLKHF_INJECTED,true));
+        assert!(!preheld_for_capture(LLKHF_LOWER_IL_INJECTED,true));
+        assert!(preheld_for_capture(0,true));
+        assert!(!preheld_for_capture(0,false));
     }
 
     #[cfg(test)]
