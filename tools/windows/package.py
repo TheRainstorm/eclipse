@@ -76,7 +76,8 @@ def build_package(output):
     check_tools()
     revision = clean_revision()
     metadata = json.loads(subprocess.check_output(
-        ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], cwd=ROOT, text=True))
+        ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'],
+        cwd=ROOT, text=True, encoding='utf-8'))
     binaries = Path(metadata['target_directory']) / TARGET / 'release'
     subprocess.run(['cargo', 'build', '--release', '-p', 'uu-gui', '-p', 'uu-cli',
                     '--target', TARGET, '--locked'], cwd=ROOT, check=True)
