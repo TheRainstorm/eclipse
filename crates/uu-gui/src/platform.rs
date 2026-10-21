@@ -258,6 +258,7 @@ mod windows {
     static HOOK_WIN_SEEN: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_CAPTURED: AtomicU64=AtomicU64::new(0);
     static WINDOW_WIN_SEEN: AtomicU64=AtomicU64::new(0);
+    static WINDOW_ALT_SEEN: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_UP: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_INJECTED_UP: AtomicU64=AtomicU64::new(0);
     static HOOK_ALT_UP: AtomicU64=AtomicU64::new(0);
@@ -305,16 +306,20 @@ mod windows {
         if down||up {
             let vk=crate::keyboard_capture::sided_vk(wparam as u32,lparam as usize);
             if matches!(vk,0x5b|0x5c){WINDOW_WIN_SEEN.fetch_add(1,Relaxed);}
+            if matches!(vk,0x12|0xa4|0xa5){WINDOW_ALT_SEEN.fetch_add(1,Relaxed);}
             // The hook thread can be ahead of this queued window message.
             // GetKeyState describes this message, not the latest physical input.
             let modifiers=crate::keyboard_capture::Modifiers::from_key_state(|vk|GetKeyState(vk as i32)<0);
             let ctrl_alt=modifiers.shortcut_chord();
             if let Ok(mut keys)=WINDOW_KEYS.try_lock() {
                 let foreground=GetForegroundWindow()==window;
-                // A window message cannot suppress Windows shell processing. If the
-                // hook didn't own a Win chord, keep the entire chord local.
+                // Window messages cannot suppress shell processing. When system
+                // capture is active they join the same remote ownership path;
+                // RemoteKeys deduplicates any event already seen by the hook.
                 let local_system=crate::keyboard_capture::local_system_key(vk,modifiers.win());
-                let active=WINDOW_INPUT.load(std::sync::atomic::Ordering::Acquire)&&foreground&&!local_system;
+                let system_capture=CAPTURE.load(std::sync::atomic::Ordering::Acquire);
+                let active=window_routes_remote(
+                    WINDOW_INPUT.load(std::sync::atomic::Ordering::Acquire),foreground,local_system,system_capture);
                 let shortcuts=LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire)&&foreground;
                 match keys.event_with_shortcuts(vk,down,active,shortcuts,ctrl_alt,lparam as usize&(1<<30)!=0) {
                     crate::keyboard_capture::Decision::Forward=>{},
@@ -328,6 +333,9 @@ mod windows {
         else{CallWindowProcW(std::mem::transmute::<isize,WNDPROC>(old),window,message,wparam,lparam)}
     }
     pub(super) static CAPTURE_CONTEXT: std::sync::OnceLock<eframe::egui::Context>=std::sync::OnceLock::new();
+    fn window_routes_remote(window_input:bool,foreground:bool,local_system:bool,system_capture:bool)->bool {
+        window_input && foreground && (!local_system || system_capture)
+    }
     fn capture_owns(foreground_matches:bool,system_key:bool,injected:bool,capture:bool)->bool {
         foreground_matches || (capture && (system_key || injected))
     }
@@ -378,6 +386,7 @@ mod windows {
             "forwarded_inactive":HOOK_INACTIVE.load(Relaxed),"forwarded_preheld":HOOK_PREHELD.load(Relaxed),
             "win_seen":HOOK_WIN_SEEN.load(Relaxed),"win_captured":HOOK_WIN_CAPTURED.load(Relaxed),
             "window_win_seen":WINDOW_WIN_SEEN.load(Relaxed),
+            "window_alt_seen":WINDOW_ALT_SEEN.load(Relaxed),
             "win_up":HOOK_WIN_UP.load(Relaxed),"win_injected_up":HOOK_WIN_INJECTED_UP.load(Relaxed),
             "alt_up":HOOK_ALT_UP.load(Relaxed),"alt_injected_up":HOOK_ALT_INJECTED_UP.load(Relaxed),
             "win_down":HOOK_WIN_DOWN.load(Relaxed),"alt_down":HOOK_ALT_DOWN.load(Relaxed),
@@ -522,6 +531,15 @@ mod windows {
         assert!(!preheld_for_capture(LLKHF_LOWER_IL_INJECTED,true));
         assert!(preheld_for_capture(0,true));
         assert!(!preheld_for_capture(0,false));
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn window_layer_obeys_system_capture_for_local_system_keys() {
+        assert!(window_routes_remote(true,true,false,false));
+        assert!(!window_routes_remote(true,true,true,false));
+        assert!(window_routes_remote(true,true,true,true));
+        assert!(!window_routes_remote(false,true,true,true));
     }
 
     #[cfg(test)]
