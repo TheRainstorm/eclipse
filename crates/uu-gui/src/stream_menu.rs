@@ -5,9 +5,9 @@ use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke};
 const MENU_INK: Color32 = Color32::from_rgb(29, 32, 37);
 const MENU_WIDTH: f32 = 236.0;
 
-const HANDLE_SIZE: f32 = 54.0;
+const HANDLE_SIZE: f32 = 36.0;
 const DOCK_DISTANCE: f32 = 24.0;
-const DOCK_DELAY: f64 = 3.0;
+const DOCK_DELAY: f64 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Edge { Right, Left, Top, Bottom }
@@ -79,17 +79,18 @@ impl FloatingHandle {
                 // actual hit rectangle, with the hidden portion still clipped.
                 let full=full.translate(rect.min-hit.min);
                 let painter=ui.painter().with_clip_rect(screen);
-                painter.rect(full.shrink(1.0),17.0,Color32::from_rgb(235,237,240),Stroke::new(2.0,Color32::from_rgb(170,176,184)));
-                painter.rect(full.shrink(4.0),14.0,Color32::WHITE,Stroke::new(1.5,
+                let scale=HANDLE_SIZE/54.0;
+                painter.rect(full.shrink(scale),17.0*scale,Color32::from_rgb(235,237,240),Stroke::new(2.0*scale,Color32::from_rgb(170,176,184)));
+                painter.rect(full.shrink(4.0*scale),14.0*scale,Color32::WHITE,Stroke::new(1.5*scale,
                     if response.hovered() || *open {Color32::from_rgb(162,191,230)} else {Color32::from_rgb(205,212,222)}));
                 if self.docked.is_none() {
                     for y in [-5.0,5.0] {
-                        let pill=Rect::from_center_size(full.center()+egui::vec2(0.0,y),egui::vec2(17.0,6.0));
-                        painter.rect_stroke(pill,3.0,Stroke::new(1.4,MENU_INK));
-                        painter.circle_filled(pill.center()+egui::vec2(if y<0.0 {-4.5}else{4.5},0.0),1.4,MENU_INK);
+                        let pill=Rect::from_center_size(full.center()+egui::vec2(0.0,y)*scale,egui::vec2(17.0,6.0)*scale);
+                        painter.rect_stroke(pill,3.0*scale,Stroke::new(1.4*scale,MENU_INK));
+                        painter.circle_filled(pill.center()+egui::vec2(if y<0.0 {-4.5}else{4.5},0.0)*scale,1.4*scale,MENU_INK);
                     }
                 }
-                response.on_hover_text("拖动调整位置 · 靠边停留 3 秒自动收起 · 点击恢复按钮 / 展开菜单")
+                response.on_hover_text("拖动调整位置 · 靠边停留 2 秒自动收起 · 点击恢复按钮 / 展开菜单")
             }).inner;
         if response.dragged() {
             let folded=self.docked.take().is_some();
@@ -899,8 +900,8 @@ mod tests {
     fn floating_handle_waits_then_folds_and_requires_two_clicks_to_open_menu() {
         let mut ui=HandleUi::new();
         ui.frame(0.0,vec![]);
-        assert_eq!(ui.frame(2.9,vec![]).0.width(),HANDLE_SIZE);
-        let folded=ui.frame(3.1,vec![]).0;
+        assert_eq!(ui.frame(1.9,vec![]).0.width(),HANDLE_SIZE);
+        let folded=ui.frame(2.1,vec![]).0;
         assert_eq!(folded.right(),1280.0);
         assert_eq!(folded.width(),HANDLE_SIZE/3.0);
         ui.frame(4.0,vec![egui::Event::PointerMoved(folded.center())]);
@@ -937,7 +938,9 @@ mod tests {
             assert!(!ui.open,"dragging must not count as a click");
             ui.frame(0.5,vec![egui::Event::PointerMoved(egui::pos2(800.0,500.0))]);
             assert!(ui.handle.docked.is_none());
-            let folded=ui.frame(3.6,vec![]).0;
+            ui.frame(2.3,vec![]);
+            assert!(ui.handle.docked.is_none(),"wait for two seconds after interaction");
+            let folded=ui.frame(2.6,vec![]).0;
             assert_eq!(ui.handle.docked,Some(edge));
             assert!((folded.area()-HANDLE_SIZE*HANDLE_SIZE/3.0).abs()<1.0);
             ui.screen=Rect::from_min_size(Pos2::ZERO,egui::vec2(800.0,500.0));
