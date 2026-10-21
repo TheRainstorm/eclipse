@@ -1,0 +1,20 @@
+# 键盘捕获与所有权
+
+系统键捕获是整个输入路径的状态，不逐一注册 Windows 快捷键。串流全屏、画面获得输入焦点、允许控制、关闭菜单且设置启用时，Windows 低级键盘钩子将所有按键交给远端，并阻止本机继续处理。同一规则覆盖 Win 单键、Win+Shift+方向键、Alt+Tab 等组合；客户端 Ctrl+左 Alt 控制命令独立保留。退出捕获不转移已经按下的键的所有权，其抬起仍由原路径处理。
+
+未捕获时，Windows 负责本机系统快捷键。普通窗口消息继续传输文字与常规按键，但不把已经交给 Windows 的 Win 键及其组合再次发送到远端。客户端不模拟本机跨屏快捷键、不注入掩盖开始菜单的假按键。Ctrl+Alt+Del 属于 Windows 安全注意序列，不由普通客户端钩子捕获。
+
+低级钩子在独立线程安装并运行消息循环，保存物理修饰键及按键所有权。它只做有限队列写入和异步窗口通知；不执行渲染、网络发送或等待 GUI 锁。渲染线程收到通知后请求重绘、排出输入队列。来自外层远程桌面或辅助工具的 injected 按键也按同样规则处理，不整体过滤。
+
+## 参考实现
+
+- [Moonlight 输入管理](https://github.com/moonlight-stream/moonlight-qt/blob/master/app/streaming/input/input.cpp)：`updateKeyboardGrabState()` 根据捕获模式、输入捕获与全屏状态调用 SDL 键盘 grab；`isSystemKeyCaptureActive()` 还要求输入焦点。本项目参考状态管理方式，未复制其 GPL 实现。
+- [SDL 键盘 grab API](https://wiki.libsdl.org/SDL2/SDL_SetWindowKeyboardGrab)：由平台捕获层处理系统组合键。
+- [微软 LowLevelKeyboardProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc)：回调在安装线程执行，超时可能静默移除，建议使用独立线程；回调时异步按键状态尚未更新。
+- [uu-remote-linux](https://github.com/VallierDev/uu-remote-linux)：当前检查的 Rust 主体以被控端采集、注入和协议为主，不包含可直接移植的 Windows 客户端系统键捕获实现。
+
+## 验证边界
+
+状态回归覆盖全部 255 个虚拟键、左右 Win 及多键组合、释放顺序、模式切换、AltGr 和本地控制命令。Windows 独立测试在新建的非交互窗口站安装真实钩子，验证 GUI 线程不泵消息时钩子线程仍能处理消息，以及正常卸载。它不向工作桌面注入输入，不能替代真实桌面上开始菜单与远端窗口的交互验收。
+
+嵌套客户端的快捷键透传是另一个独立功能；当前没有 F12 切换快捷键表。外层客户端若先截获组合键，内层无法补收它，需要在外层释放捕获或使用其透传功能。

@@ -30,8 +30,15 @@ impl Modifiers {
         shortcut_chord(self.down & 0x0c != 0, self.down & 0x30 != 0, self.down & 0x20 != 0)
     }
     pub fn win(&self) -> bool { self.down & 0xc0 != 0 }
+    #[cfg(test)]
     pub fn shift(&self) -> bool { self.down & 0x03 != 0 }
+    pub fn bits(&self)->u8 {self.down}
+    pub fn from_bits(down:u8)->Self {Self{down}}
 }
+/// Win messages arriving at a window have already been offered to the shell.
+/// Only a low-level hook may forward these remotely without dual activation.
+#[cfg_attr(not(any(windows,test)),allow(dead_code))]
+pub fn local_system_key(vk:u32,win_down:bool)->bool {win_down||matches!(vk,0x5b|0x5c)}
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 pub struct Keys {
     held: [u8; 256],
@@ -109,8 +116,6 @@ impl Keys {
         Decision::Remote { vk, pressed: true }
     }
 }
-#[cfg_attr(not(any(windows,test)),allow(dead_code))]
-pub fn our_mask(vk:u32,extra_info:usize)->bool {vk==0xff && extra_info==0x5555574d}
 /// WM_KEY* uses generic modifiers; scan code and extended bit retain sides.
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 pub fn sided_vk(vk:u32,lparam:usize)->u32 {
@@ -223,9 +228,51 @@ mod tests {
         assert_eq!(sided_vk(0x11,1<<24),0xa3);assert_eq!(sided_vk(0x12,1<<24),0xa5);
     }
     #[test]
-    fn remote_or_accessibility_input_is_not_filtered_with_our_own_mask() {
-        assert!(our_mask(0xff,0x5555574d));
-        assert!(!our_mask(0x41,0));assert!(!our_mask(0x41,0x5555574d));assert!(!our_mask(0xff,0));
+    fn capture_owns_every_virtual_key_without_system_chord_exceptions() {
+        // The hook must swallow each down/repeat/up, including injected input.
+        // Win+Shift+arrows, Win alone and Alt+Tab all use the same path.
+        for vk in 1..=255 {
+            let mut keys=Keys::new();
+            assert_eq!(keys.event(vk,true,true,false,false),Decision::Remote{vk,pressed:true});
+            assert_eq!(keys.event(vk,true,true,false,true),Decision::Remote{vk,pressed:true});
+            assert_eq!(keys.event(vk,false,true,false,true),Decision::Remote{vk,pressed:false});
+        }
+    }
+    #[test]
+    fn win_chords_are_exclusively_hook_owned_or_entirely_local() {
+        for win in [0x5b,0x5c] {
+            for chord in [vec![win],vec![win,0xa0,0x25],vec![win,0xa1,0x27],vec![win,0x44],vec![win,0xa2,0x25]] {
+                for capture in [false,true] {
+                    let mut modifiers=Modifiers::new();
+                    let mut hook=Keys::new();let mut window=Keys::new();
+                    for (vk,pressed) in chord.iter().copied().map(|vk|(vk,true))
+                        .chain(chord.iter().rev().copied().map(|vk|(vk,false))) {
+                        modifiers.observe(vk,pressed);
+                        let event=hook.event(vk,pressed,capture,false,false);
+                        if capture {assert_eq!(event,Decision::Remote{vk,pressed});}
+                        else {
+                            assert_eq!(event,Decision::Forward);
+                            let remote=!local_system_key(vk,modifiers.win());
+                            assert_eq!(window.event_with_shortcuts(vk,pressed,remote,false,false,false),Decision::Forward);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn capture_changes_preserve_release_ownership_for_entire_system_chord() {
+        let mut keys=Keys::new();
+        for vk in [0x5b,0xa0,0x27] {
+            assert_eq!(keys.event(vk,true,true,false,false),Decision::Remote{vk,pressed:true});
+        }
+        for vk in [0x27,0xa0,0x5b] {
+            assert_eq!(keys.event(vk,false,false,false,true),Decision::Remote{vk,pressed:false});
+        }
+        let mut modifiers=Modifiers::new();
+        for vk in [0x5c,0xa2,0xa4] {modifiers.observe(vk,true);}
+        let snapshot=Modifiers::from_bits(modifiers.bits());
+        assert!(snapshot.win());assert!(snapshot.shortcut_chord());
     }
     #[test]
     fn captured_system_key_owns_release_after_focus_loss_and_preserves_existing_keys() {

@@ -1068,14 +1068,6 @@ impl eframe::App for App {
         if let Some(fullscreen) = ctx.input(|i| i.viewport().fullscreen) {
             self.fullscreen = fullscreen;
         }
-        if self.platform.move_monitors(self.fullscreen) {
-            self.release_all_keys();
-            for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
-                self.send_input(message, 15);
-            }
-            self.remote_focus = false;
-            self.shortcuts.clear();
-        }
         self.window_edge_active = !self.mouse_captured && window::resize_border(ctx, self.fullscreen);
         if ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running() || self.lan.host.running()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);

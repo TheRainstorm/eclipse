@@ -20,6 +20,14 @@ pub struct Station {
 }
 impl Station {
     pub fn create() -> Result<Self> {
+        Self::create_inner(0)
+    }
+    /// Hook tests stay within this newly created, noninteractive desktop.
+    #[cfg(test)]
+    pub fn create_with_keyboard_hook() -> Result<Self> {
+        Self::create_inner(DESKTOP_HOOKCONTROL)
+    }
+    fn create_inner(additional_access: u32) -> Result<Self> {
         unsafe {
             let original = GetProcessWindowStation();
             let original_desktop = GetThreadDesktop(GetCurrentThreadId());
@@ -56,7 +64,8 @@ impl Station {
                 DESKTOP_CREATEWINDOW
                     | DESKTOP_CREATEMENU
                     | DESKTOP_READOBJECTS
-                    | DESKTOP_WRITEOBJECTS,
+                    | DESKTOP_WRITEOBJECTS
+                    | additional_access,
                 null(),
             );
             check(!guard.desktop.is_null(), "cannot create isolated desktop")?;
