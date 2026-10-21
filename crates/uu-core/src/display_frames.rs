@@ -22,7 +22,20 @@ impl DisplayImage {
         }
     }
 }
-type Pending = Arc<Mutex<BTreeMap<u32, DisplayImage>>>;
+#[derive(Default)]
+struct Mailbox {
+    images: BTreeMap<u32, DisplayImage>,
+    // Per-track lifetime totals: published, replaced before delivery, delivered.
+    counts: BTreeMap<u32, [u64; 3]>,
+}
+impl Mailbox {
+    fn pop_first(&mut self) -> Option<DisplayImage> {
+        let (track, frame) = self.images.pop_first()?;
+        self.counts.entry(track).or_default()[2] += 1;
+        Some(frame)
+    }
+}
+type Pending = Arc<Mutex<Mailbox>>;
 type Waker = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 
 #[derive(Clone)]
@@ -68,7 +81,14 @@ impl FrameSender {
         }
     }
     fn send_image(&self, frame: DisplayImage) -> Result<(), mpsc::SendError<()>> {
-        self.pending.lock().unwrap().insert(frame.track(), frame);
+        {
+            let mut mailbox = self.pending.lock().unwrap();
+            let track = frame.track();
+            let replaced = mailbox.images.insert(track, frame).is_some();
+            let counts = mailbox.counts.entry(track).or_default();
+            counts[0] += 1;
+            counts[1] += u64::from(replaced);
+        }
         // Invoke outside the lock: a UI integration may immediately drain.
         let notify = self.notify.lock().unwrap().clone();
         if let Some(notify) = notify { notify(); }
@@ -79,6 +99,11 @@ impl FrameSender {
     }
 }
 impl FrameReceiver {
+    /// Published, overwritten before delivery, and delivered images for a track.
+    /// Overwrites discard stale decoded images, never compressed reference frames.
+    pub fn delivery_counts(&self, track: u32) -> [u64; 3] {
+        self.pending.lock().unwrap().counts.get(&track).copied().unwrap_or_default()
+    }
     pub fn set_waker(&self, notify: impl Fn() + Send + Sync + 'static) {
         *self.notify.lock().unwrap() = Some(Arc::new(notify));
     }
@@ -89,7 +114,7 @@ impl FrameReceiver {
     }
     pub fn try_recv_image(&mut self) -> Result<DisplayImage, mpsc::TryRecvError> {
         loop {
-            if let Some((_, frame)) = self.pending.lock().unwrap().pop_first() {
+            if let Some(frame) = self.pending.lock().unwrap().pop_first() {
                 return Ok(frame);
             }
             self.wake.try_recv()?;
@@ -97,7 +122,7 @@ impl FrameReceiver {
     }
     pub fn blocking_recv(&mut self) -> Option<DisplayFrame> {
         loop {
-            if let Some((_, frame)) = self.pending.lock().unwrap().pop_first() {
+            if let Some(frame) = self.pending.lock().unwrap().pop_first() {
                 return Some(frame.into_rgba());
             }
             self.wake.recv().ok()?;
@@ -140,6 +165,9 @@ mod tests {
         assert_eq!(rx.blocking_recv().unwrap().1, 99);
         assert_eq!(rx.blocking_recv().unwrap().0, 1);
         assert!(rx.blocking_recv().is_none());
+        assert_eq!(rx.delivery_counts(0), [100, 99, 1]);
+        assert_eq!(rx.delivery_counts(1), [1, 0, 1]);
+        assert_eq!(rx.delivery_counts(2), [0, 0, 0]);
     }
     #[test]
     fn new_images_wake_the_ui_even_when_the_mailbox_is_already_full() {

@@ -148,6 +148,8 @@ struct App {
     controller: Option<ControllerHandle>,
     textures: std::collections::HashMap<u32, video_texture::VideoTexture>,
     video_gl: Option<std::sync::Arc<eframe::glow::Context>>,
+    presentation_vsync: bool,
+    last_video_frame: Option<std::time::Instant>,
     wallpapers: std::collections::HashMap<usize, egui::TextureHandle>,
     wallpaper_worker: Option<wallpapers::Worker>,
     frame_count: std::collections::HashMap<u32, u32>,
@@ -359,7 +361,7 @@ fn setup_style(ctx: &egui::Context) {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>, presentation_vsync: bool) -> Self {
         setup_style(&cc.egui_ctx);
         if let Some(gl)=&cc.gl {video_texture::enable_gpu_video(gl);}
         let platform = platform::Platform::new(cc, origin);
@@ -403,6 +405,8 @@ impl App {
             controller: None,
             textures: std::collections::HashMap::new(),
             video_gl: cc.gl.clone(),
+            presentation_vsync,
+            last_video_frame: None,
             wallpapers: std::collections::HashMap::new(),
             wallpaper_worker: None,
             frame_count: std::collections::HashMap::new(),
@@ -635,6 +639,7 @@ impl App {
         for image in frames {
             let idx=match &image {uu_core::display_frames::DisplayImage::Rgba(f)=>f.0,uu_core::display_frames::DisplayImage::Decoded(track,..)=>*track};
             arrived.push(idx);
+            if idx == self.selected_track { self.last_video_frame = Some(std::time::Instant::now()); }
             match self.textures.get_mut(&idx) {
                 Some(t) => t.set(ctx, image),
                 None => {
@@ -1278,6 +1283,8 @@ impl eframe::App for App {
                     "width":s.res().0,"height":s.res().1,
                     "video_render_path":self.textures.get(&self.selected_track).map(|t|t.render_path()),
                     "video_gpu_submit_acquire_release_ms":self.textures.get(&self.selected_track).and_then(|t|t.gpu_timings_ms()),
+                    "presentation_vsync":self.presentation_vsync,
+                    "video_mailbox_published_replaced_delivered":h.frames.delivery_counts(self.selected_track),
                     "video_dxgi_shared_export":self.textures.get(&self.selected_track).and_then(|t|t.gpu_shared_export()),
                     "remote_cursor_requested":self.preferences.cursor_mode.remote(),
                     "remote_cursor_active":self.remote_cursor_active,
@@ -1318,7 +1325,19 @@ impl eframe::App for App {
         let idle_poll_ms = if self.controller.is_some() || self.close_at.is_some() { 100 }
             else if self.rx.is_some() || self.login_rx.is_some() { 150 }
             else if self.lan.compatibility { 500 } else { 1000 };
-        ctx.request_repaint_after(std::time::Duration::from_millis(idle_poll_ms));
+        // Keep a vblank-paced render loop while video is arriving. Frame/input
+        // wakeups alone can arrive during an in-flight paint and miss a refresh.
+        // No-vsync must stay event driven; otherwise request_repaint busy-spins.
+        // Existing unpresented accounting counts only new images, not redraws.
+        if self.presentation_vsync && self.controller.is_some()
+            && self.textures.contains_key(&self.selected_track)
+            && self.last_video_frame.is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(250))
+            && !ctx.input(|i| i.viewport().minimized.unwrap_or(false))
+        {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(idle_poll_ms));
+        }
     }
 }
 
@@ -1361,7 +1380,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         brand::NAME,
         options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, stream_target, origin)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, stream_target, origin, vsync)))),
     )
 }
 

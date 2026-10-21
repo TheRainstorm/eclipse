@@ -112,3 +112,9 @@ Windows 独立窗口站未提供所需 GL 配置，WGL 最终呈现实测仍需�
 - [Khronos：WGL D3D11 互操作与锁定同步](https://registry.khronos.org/OpenGL/extensions/NV/WGL_NV_DX_interop2.txt)
 
 首个部署版本的实际 4K 会话日志确认 `d3d11-wgl-gpu` 已启用，Decode 约 0.52ms、Render 约 3.65ms、解码错误为 0；旧会话分别为 7.6–8.0ms 和 0.60–0.69ms。后续延后归还 GL 所有权的优化另增 `video_gpu_submit_acquire_release_ms`，依次记录 GPU 转换提交、WGL 获取、WGL 归还的会话平均耗时，用于定位同步等待。实际画面与鼠标跟手程度仍须交互确认。
+
+第二轮延后归还纹理后，实际 4K 会话 Decode 约 0.46–0.59ms、Render 约 1.26–1.92ms，用户确认拖动体验再次改善。新截图仍存在接收/解码 60 FPS、呈现约 53 FPS，不能把解码提速等同于端到端优化完成。官方对照截图未显示编码格式，不能据此把帧率差异归因于 H.264 或 HEVC。
+
+后续呈现优化优先使用普通 D3D11 DEFAULT 纹理注册 WGL；驱动拒绝时回退显式 DXGI 共享纹理。`video_dxgi_shared_export` 记录最终选择。该选择符合 WGL 互操作的资源要求，性能收益仍需实际窗口验证。
+
+启用 VSync 且最近 250ms 内选中视频流有新图像时，UI 连续请求重绘，让交换缓冲区控制刷新节奏，减少到帧唤醒与正在进行的绘制错相。停止收帧、最小化或关闭 VSync 后恢复事件驱动。重复重绘不增加 Render FPS；统计仍只计算消费了新图像的绘制提交，不表示屏幕扫描完成。`presentation_vsync` 记录启动时真正使用的设置；`video_mailbox_published_replaced_delivered` 为选中轨道累计发布、被更新图像覆盖、交付 UI 的数量，用差分判断 UI 未及时消费的丢帧。这与压缩帧队列溢出的 `queue_drops` 不同，替换过时图像不破坏解码参考帧，也不引入显示排队。
