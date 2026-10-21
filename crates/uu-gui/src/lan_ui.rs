@@ -497,6 +497,12 @@ impl LanUi {
                         ui.label(
                             RichText::new("在目标电脑启用共享，或输入 IP 添加设备。").color(MUTED),
                         );
+                        ui.add_space(8.);
+                        ui.label(
+                            RichText::new("原账号设备请切换顶部“兼容设备”，登录状态与设置仍保留。")
+                                .size(12.)
+                                .color(MUTED),
+                        );
                         ui.add_space(16.);
                         if ui.button("添加设备").clicked() {
                             self.add_open = true;
