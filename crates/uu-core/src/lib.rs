@@ -59,3 +59,6 @@ pub mod clipboard;
 mod congestion;
 
 pub mod frame_cadence;
+
+#[cfg(windows)]
+mod video_timing;

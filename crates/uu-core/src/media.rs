@@ -676,6 +676,15 @@ pub(crate) async fn receive_video(
     {
         return; // Audio and unsupported repair codecs are not H.264 data.
     }
+    #[cfg(windows)]
+    let _timer_resolution = {
+        let timer = crate::video_timing::VideoTimerResolution::request();
+        if let Some(s) = &stats {
+            s.diagnostics.record(serde_json::json!({"event":"video_timer_resolution",
+                "track":track_idx, "requested_ms":1, "result":timer.result()}));
+        }
+        timer
+    };
     let debug = std::env::var("UU_MEDIA_DEBUG").is_ok_and(|v| v != "0");
     if let Some(s) = stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
         *s.codec.lock().unwrap() = track.codec().capability.mime_type.clone();
