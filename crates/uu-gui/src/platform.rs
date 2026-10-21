@@ -483,8 +483,31 @@ mod windows {
             if let Some(thread)=self.thread.take(){let _=thread.join();}
         }
     }
+    // winit registers both mouse and keyboard Raw Input when creating its event
+    // loop. We consume only raw mouse motion; keyboard ownership belongs to the
+    // window-message/low-level-hook paths. Keeping a foreground raw keyboard
+    // registration can bypass low-level hooks for physical input on Windows.
+    // Remove only the keyboard usage, before installing the hook and showing
+    // the window. This is process-wide, not a fullscreen/focus toggle.
+    unsafe fn remove_raw_keyboard_registration() -> std::io::Result<()> {
+        use windows_sys::Win32::UI::Input::{RegisterRawInputDevices, RAWINPUTDEVICE, RIDEV_REMOVE};
+        let device=RAWINPUTDEVICE {
+            usUsagePage:0x01, // Generic Desktop Controls
+            usUsage:0x06, // Keyboard
+            dwFlags:RIDEV_REMOVE,
+            hwndTarget:std::ptr::null_mut(),
+        };
+        if RegisterRawInputDevices(&device,1,std::mem::size_of::<RAWINPUTDEVICE>() as u32)==0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
     pub unsafe fn install_keyboard_hook(window: HWND) -> Option<KeyboardHook> {
         if window.is_null(){return None;}
+        if let Err(error)=remove_raw_keyboard_registration() {
+            eprintln!("keyboard capture Raw Input configuration: {error}");
+            return None;
+        }
         OWNER.store(window as isize,Relaxed);
         let (ready_tx,ready_rx)=std::sync::mpsc::sync_channel(1);
         // Low-level hooks run on their installing thread. A renderer stall on
@@ -612,10 +635,39 @@ mod windows {
         let window=Window(unsafe{CreateWindowExW(0,class.as_ptr(),std::ptr::null(),0,0,0,0,0,
             HWND_MESSAGE,std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null())});
         assert!(!window.0.is_null());
+        // Reproduce winit's process-wide registration, including raw mouse
+        // input needed by relative mode. Exercise the production setup below.
+        use windows_sys::Win32::UI::Input::{RegisterRawInputDevices,GetRegisteredRawInputDevices,
+            RAWINPUTDEVICE,RIDEV_DEVNOTIFY,RIDEV_REMOVE};
+        let devices=[
+            RAWINPUTDEVICE{usUsagePage:1,usUsage:2,dwFlags:RIDEV_DEVNOTIFY,hwndTarget:window.0},
+            RAWINPUTDEVICE{usUsagePage:1,usUsage:6,dwFlags:RIDEV_DEVNOTIFY,hwndTarget:window.0},
+        ];
+        let size=std::mem::size_of::<RAWINPUTDEVICE>() as u32;
+        assert_ne!(unsafe{RegisterRawInputDevices(devices.as_ptr(),2,size)},0);
+        let registrations=||unsafe {
+            let mut count=0;
+            assert_eq!(GetRegisteredRawInputDevices(std::ptr::null_mut(),&mut count,size),0);
+            let mut devices:Vec<RAWINPUTDEVICE>=vec![std::mem::zeroed();count as usize];
+            let read=GetRegisteredRawInputDevices(devices.as_mut_ptr(),&mut count,size);
+            assert_ne!(read,u32::MAX);
+            devices.truncate(read as usize);devices
+        };
+        assert!(registrations().iter().any(|d|d.usUsagePage==1&&d.usUsage==6));
         HOOK_PUMP_ACK.store(0,Ordering::Release);
         // Drop/join the hook before the window and station.
         let hook=unsafe{install_keyboard_hook(window.0)}.expect("isolated hook installation");
         assert!(hook.alive());
+        for _ in 0..2 {
+            let registered=registrations();
+            assert!(!registered.iter().any(|d|d.usUsagePage==1&&d.usUsage==6),
+                "raw keyboard registration competes with low-level capture");
+            let mouse=registered.iter().find(|d|d.usUsagePage==1&&d.usUsage==2).unwrap();
+            assert_eq!(mouse.hwndTarget,window.0);
+            assert_eq!(mouse.dwFlags,RIDEV_DEVNOTIFY);
+            // Reinitializing is idempotent and must keep the raw mouse target.
+            unsafe{remove_raw_keyboard_registration().unwrap();}
+        }
         let snapshot=unsafe{keyboard_diagnostics(window.0,Some(&hook))};
         assert_eq!(snapshot["window_valid"],true);
         assert_eq!(snapshot["hook_thread_alive"],true);
@@ -629,6 +681,8 @@ mod windows {
         drop(hook);
         assert_eq!(OWNER.load(Relaxed),0);
         assert!(!CAPTURE.load(Relaxed));
+        let mouse=RAWINPUTDEVICE{usUsagePage:1,usUsage:2,dwFlags:RIDEV_REMOVE,hwndTarget:std::ptr::null_mut()};
+        assert_ne!(unsafe{RegisterRawInputDevices(&mouse,1,size)},0);
     }
 }
 
