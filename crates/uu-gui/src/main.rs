@@ -163,7 +163,7 @@ struct App {
     displays: displays::Displays,
     seq: u32,
     kseq: u32,
-    pressed_vks: std::collections::HashSet<u32>,
+    pressed_vks: input_capture::RemoteKeys,
     mod_state: [bool; 4],
     focused: bool,
     logged_in: bool,
@@ -417,7 +417,7 @@ impl App {
             displays: displays::Displays::default(),
             seq: 1,
             kseq: 1,
-            pressed_vks: std::collections::HashSet::new(),
+            pressed_vks: input_capture::RemoteKeys::default(),
             mod_state: [false; 4],
             focused: false,
             logged_in,
@@ -763,13 +763,13 @@ impl App {
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
         let conditions=self.input_conditions(ctx);
         let remote=self.input_capture.active(conditions);
+        if self.input_capture.stopped(conditions){self.release_all_keys();}
         // Client commands remain local while viewing, in menus, or after
         // releasing remote input. They do not depend on a host control grant.
         let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused);
         let window=self.platform.window_keyboard(remote,shortcuts);
         let active=self.platform.capture_keyboard(self.input_capture.system(conditions,self.fullscreen,self.preferences.capture_keyboard));
         if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {
-            self.release_all_keys();
             if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
                 "event":"input_capture", "requested":self.input_capture.requested(),
                 "ready":conditions.ready, "focused":conditions.focused,
@@ -903,11 +903,7 @@ impl App {
     }
 
     fn send_key(&mut self, vk: u32, pressed: bool) {
-        if pressed {
-            self.pressed_vks.insert(vk);
-        } else {
-            self.pressed_vks.remove(&vk);
-        }
+        if !self.pressed_vks.event(vk,pressed){return;}
         let payload = serde_json::json!({
             "action": if pressed { "kbd_press" } else { "kbd_release" },
             "interrept": "i", "key": vk, "kseq": self.kseq
@@ -930,6 +926,7 @@ impl App {
         }
     }
 
+    #[track_caller]
     fn release_all_keys(&mut self) {
         // A view-only window that never forwarded a key must not send blanket
         // modifier releases to the host when it gains/loses local focus.
@@ -940,15 +937,18 @@ impl App {
             if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()){sender.release_all();}
             self.pressed_vks.clear();self.mod_state=[false;4];return;
         }
-        let keys: Vec<u32> = self.pressed_vks.drain().collect();
-        for vk in keys {
-            self.send_key(vk, false);
+        let keys=self.pressed_vks.held();
+        if !keys.is_empty() {
+            let caller=std::panic::Location::caller();
+            if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
+                "event":"input_release_all", "held_count":keys.len(),
+                "win_held":keys.iter().any(|vk|matches!(*vk,0x5b|0x5c)),
+                "alt_held":keys.iter().any(|vk|matches!(*vk,0x12|0xa4|0xa5)),
+                "source":std::path::Path::new(caller.file()).file_name().and_then(|name|name.to_str()),
+                "line":caller.line(),"fullscreen":self.fullscreen,"focused":self.focused
+            }));}
         }
-        // Clear modifier state on the remote side as well; a lost release
-        // leaves the controlled desktop thinking Alt/Ctrl is held down.
-        for vk in [0x11u32, 0x10, 0x12, 0xA2, 0xA0, 0xA4, 0x5B] {
-            self.send_key(vk, false);
-        }
+        for vk in keys {self.send_key(vk,false);}
         self.mod_state = [false; 4];
     }
 
@@ -1043,9 +1043,6 @@ impl App {
                 }
                 self.input_capture.request();
                 self.status = "连接中…".into();
-                for vk in [0x11u32, 0x10, 0x12, 0xA2, 0xA0, 0xA4, 0x5B] {
-                    self.send_key(vk, false);
-                }
                 // Apply UI settings once CONTROL is ready, in poll_controller.
             }
             Err(e) => self.status = format!("连接失败: {e}"),

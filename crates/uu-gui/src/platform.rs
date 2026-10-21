@@ -245,6 +245,10 @@ mod windows {
     static HOOK_WIN_SEEN: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_CAPTURED: AtomicU64=AtomicU64::new(0);
     static WINDOW_WIN_SEEN: AtomicU64=AtomicU64::new(0);
+    static HOOK_WIN_UP: AtomicU64=AtomicU64::new(0);
+    static HOOK_WIN_INJECTED_UP: AtomicU64=AtomicU64::new(0);
+    static HOOK_ALT_UP: AtomicU64=AtomicU64::new(0);
+    static HOOK_ALT_INJECTED_UP: AtomicU64=AtomicU64::new(0);
     pub unsafe fn install_window_keyboard(window:HWND)->isize {
         if window.is_null(){return 0;}
         let old=SetWindowLongPtrW(window,GWLP_WNDPROC,window_keyboard as *const () as isize);
@@ -336,7 +340,9 @@ mod windows {
             "forwarded_background":HOOK_BACKGROUND.load(Relaxed),
             "forwarded_inactive":HOOK_INACTIVE.load(Relaxed),"forwarded_preheld":HOOK_PREHELD.load(Relaxed),
             "win_seen":HOOK_WIN_SEEN.load(Relaxed),"win_captured":HOOK_WIN_CAPTURED.load(Relaxed),
-            "window_win_seen":WINDOW_WIN_SEEN.load(Relaxed)
+            "window_win_seen":WINDOW_WIN_SEEN.load(Relaxed),
+            "win_up":HOOK_WIN_UP.load(Relaxed),"win_injected_up":HOOK_WIN_INJECTED_UP.load(Relaxed),
+            "alt_up":HOOK_ALT_UP.load(Relaxed),"alt_injected_up":HOOK_ALT_INJECTED_UP.load(Relaxed)
         })
     }
     impl Drop for KeyboardHook {
@@ -396,6 +402,14 @@ mod windows {
                 HOOK_CALLBACKS.fetch_add(1,Relaxed);
                 let win=matches!(vk,0x5b|0x5c);
                 if win{HOOK_WIN_SEEN.fetch_add(1,Relaxed);}
+                if up&&win {
+                    HOOK_WIN_UP.fetch_add(1,Relaxed);
+                    if key.flags&LLKHF_INJECTED!=0 {HOOK_WIN_INJECTED_UP.fetch_add(1,Relaxed);}
+                }
+                if up&&matches!(vk,0x12|0xa4|0xa5) {
+                    HOOK_ALT_UP.fetch_add(1,Relaxed);
+                    if key.flags&LLKHF_INJECTED!=0 {HOOK_ALT_INJECTED_UP.fetch_add(1,Relaxed);}
+                }
                 let owned=!foreground.is_null()&&GetForegroundWindow()==foreground;
                 let active=CAPTURE.load(std::sync::atomic::Ordering::Acquire)&&owned;
                 let shortcuts=LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire)&&owned;
