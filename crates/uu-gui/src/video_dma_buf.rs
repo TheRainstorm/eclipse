@@ -69,8 +69,10 @@ impl Api {
 }
 /// Call while the GUI's GL context is current, before any decoder is started.
 pub fn enable(gl: &glow::Context) {
+    // Keep the verified CPU-planar path as the default until hardware import
+    // validation covers all supported resolutions, layouts and resizing.
     let enabled =
-        std::env::var("UU_GPU_VIDEO").as_deref() != Ok("0") && unsafe { Api::load(gl) }.is_ok();
+        std::env::var("UU_GPU_VIDEO").as_deref() == Ok("1") && unsafe { Api::load(gl) }.is_ok();
     dma_buf::set_rendering(enabled);
 }
 struct Imported {
