@@ -275,8 +275,14 @@ impl LanUi {
         {
             self.scan(ctx);
         }
-        if active || self.client.is_some() || self.scan.is_some() {
+        if self.client.is_some() || self.scan.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
+        } else if active {
+            let next = self
+                .last_scan
+                .map(|at| Duration::from_secs(8).saturating_sub(at.elapsed()))
+                .unwrap_or(Duration::ZERO);
+            ctx.request_repaint_after(next);
         }
     }
     fn rows(&self) -> Vec<Row> {

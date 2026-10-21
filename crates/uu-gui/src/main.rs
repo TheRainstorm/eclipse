@@ -1214,9 +1214,10 @@ impl eframe::App for App {
         self.update_pointer_capture(ctx);
         self.update_clipboard(ctx);
         self.platform.show(ctx);
-        ctx.request_repaint_after(std::time::Duration::from_millis(
-            if self.controller.is_some() { 100 } else { 150 },
-        ));
+        let idle_poll_ms = if self.controller.is_some() || self.close_at.is_some() { 100 }
+            else if self.rx.is_some() || self.login_rx.is_some() { 150 }
+            else if self.lan.compatibility { 500 } else { 1000 };
+        ctx.request_repaint_after(std::time::Duration::from_millis(idle_poll_ms));
     }
 }
 
