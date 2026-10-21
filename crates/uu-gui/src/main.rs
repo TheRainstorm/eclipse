@@ -921,6 +921,21 @@ impl App {
     }
 
     #[track_caller]
+    fn send_key_repeat(&mut self, vk: u32) {
+        let payload = serde_json::json!({
+            "action": "kbd_press", "interrept": "i", "key": vk, "kseq": self.kseq
+        });
+        self.kseq = self.kseq.wrapping_add(1);
+        self.send_input_ch(payload, 8, 0);
+    }
+
+    fn send_modifier_repeats(&mut self) {
+        for vk in self.pressed_vks.modifier_repeats(std::time::Instant::now()) {
+            self.send_key_repeat(vk);
+        }
+    }
+
+    #[track_caller]
     fn send_key(&mut self, vk: u32, pressed: bool) {
         let change=self.pressed_vks.event(vk,pressed);
         if change==input_capture::KeyChange::None{return;}
@@ -1162,6 +1177,7 @@ impl eframe::App for App {
                 _=>{},
             }
         }
+        self.send_modifier_repeats();
         for event in &events {
             if let egui::Event::Key {
                 key,

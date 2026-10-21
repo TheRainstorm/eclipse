@@ -55,13 +55,16 @@ pub enum KeyChange {
     Repeat,
     Release,
 }
+const MODIFIER_REPEAT_INTERVAL: std::time::Duration=std::time::Duration::from_millis(30);
+fn is_modifier(vk:u32)->bool {matches!(vk,0x10..=0x12|0x5b|0x5c|0xa0..=0xa5)}
 pub struct RemoteKeys {
     down: [bool; 256],
+    last_modifier_repeat: Option<std::time::Instant>,
     forwarded_repeats: u64,
 }
 impl Default for RemoteKeys {
     fn default() -> Self {
-        Self { down: [false; 256], forwarded_repeats: 0 }
+        Self { down: [false; 256], last_modifier_repeat: None, forwarded_repeats: 0 }
     }
 }
 impl RemoteKeys {
@@ -70,14 +73,38 @@ impl RemoteKeys {
             return KeyChange::None;
         };
         match (*down, pressed) {
-            (false, true) => {*down=true;KeyChange::Press}
+            (false, true) => {
+                *down=true;
+                if is_modifier(vk) {self.last_modifier_repeat=Some(std::time::Instant::now());}
+                KeyChange::Press
+            }
+            (true, true) if is_modifier(vk) => KeyChange::None,
             (true, true) => {
                 self.forwarded_repeats=self.forwarded_repeats.saturating_add(1);
                 KeyChange::Repeat
             }
-            (true, false) => {*down=false;KeyChange::Release}
+            (true, false) => {
+                *down=false;
+                if !self.down.iter().enumerate().any(|(vk,down)|*down&&is_modifier(vk as u32)) {
+                    self.last_modifier_repeat=None;
+                }
+                KeyChange::Release
+            }
             (false, false) => KeyChange::None,
         }
+    }
+    /// One refresh timer for all held modifiers. Windows may stop their
+    /// typematic events after a chord key, while UU's host needs regular
+    /// presses to keep the modifier down.
+    pub fn modifier_repeats(&mut self, now: std::time::Instant) -> Vec<u32> {
+        let held: Vec<u32>=self.down.iter().enumerate()
+            .filter_map(|(vk,down)|(*down&&is_modifier(vk as u32)).then_some(vk as u32)).collect();
+        if held.is_empty() {self.last_modifier_repeat=None;return held;}
+        let Some(last)=self.last_modifier_repeat else {self.last_modifier_repeat=Some(now);return Vec::new();};
+        if now.duration_since(last)<MODIFIER_REPEAT_INTERVAL {return Vec::new();}
+        self.last_modifier_repeat=Some(now);
+        self.forwarded_repeats=self.forwarded_repeats.saturating_add(held.len() as u64);
+        held
     }
     pub fn forwarded_repeats(&self) -> u64 {self.forwarded_repeats}
     pub fn held(&self) -> Vec<u32> {
@@ -96,6 +123,7 @@ impl RemoteKeys {
     }
     pub fn clear(&mut self) {
         self.down.fill(false);
+        self.last_modifier_repeat=None;
     }
 }
 #[cfg(test)]
@@ -242,9 +270,8 @@ mod tests {
     #[test]
     fn typematic_repeats_keep_uus_held_state_alive() {
         use crate::keyboard_capture::{Decision,Keys};
-        // The native hook consumes every repeat from Windows and the common
-        // sending boundary forwards them. UU's host uses these repeats to
-        // maintain a held key; suppressing them makes it expire as a tap.
+        // Ordinary keys forward Windows repeats; held modifiers use one
+        // client-side refresh timer because Windows may stop repeating them.
         for modifier in [0x5b,0x5c,0xa4,0xa5] {
             let mut hook=Keys::new();
             let mut remote=RemoteKeys::default();
@@ -259,24 +286,27 @@ mod tests {
             };
             accept(modifier,true,false);
             for key in [0x25,0x27,9] {
-                for _ in 0..60 {accept(modifier,true,true);}
                 accept(key,true,false);
                 for _ in 0..30 {accept(key,true,true);}
                 accept(key,false,true);
             }
             accept(modifier,false,true);
-            assert_eq!(sent.len(),278);
-            assert_eq!(sent.first(),Some(&(modifier,true)));
-            assert_eq!(sent.last(),Some(&(modifier,false)));
-            assert_eq!(sent.iter().filter(|(_,pressed)|!pressed).count(),4);
-            assert_eq!(remote.forwarded_repeats(),270);
+            assert_eq!(sent.iter().filter(|(vk,_)|*vk==modifier).count(),2);
+            assert_eq!(sent.iter().filter(|(vk,pressed)|*vk!=modifier&&!pressed).count(),3);
+            assert_eq!(remote.forwarded_repeats(),90);
             assert!(remote.is_empty());
-            assert_eq!(remote.event(modifier,false),KeyChange::None);
-            assert_eq!(remote.event(modifier,true),KeyChange::Press);
-            assert_eq!(remote.event(modifier,true),KeyChange::Repeat);
-            assert_eq!(remote.held(),vec![modifier]);
         }
+        let mut remote=RemoteKeys::default();
+        assert_eq!(remote.event(0xa4,true),KeyChange::Press);
+        let due=std::time::Instant::now()+MODIFIER_REPEAT_INTERVAL;
+        assert_eq!(remote.modifier_repeats(due),vec![0xa4]);
+        assert_eq!(remote.modifier_repeats(due),Vec::<u32>::new());
+        assert_eq!(remote.modifier_repeats(due+MODIFIER_REPEAT_INTERVAL),vec![0xa4]);
+        assert_eq!(remote.event(0xa4,true),KeyChange::None);
+        assert_eq!(remote.event(0xa4,false),KeyChange::Release);
+        assert!(remote.modifier_repeats(due+MODIFIER_REPEAT_INTERVAL*2).is_empty());
     }
+
     #[test]
     fn release_all_has_no_unowned_or_duplicate_modifier_ups() {
         let mut keys = RemoteKeys::default();
