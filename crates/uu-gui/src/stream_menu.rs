@@ -580,6 +580,10 @@ impl super::App {
             .fixed_pos(position)
             .constrain_to(screen)
             .show(ctx, |ui| {
+                // Area remembers its previous content size. Give the scroll
+                // region the current viewport height, rather than retaining
+                // the initial 400-point default and hiding the final actions.
+                ui.set_max_height((screen.bottom() - position.y - 8.0).max(64.0));
                 popup_frame(ui).show(ui, |ui| {
                     ui.set_width(MENU_WIDTH);
                     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
