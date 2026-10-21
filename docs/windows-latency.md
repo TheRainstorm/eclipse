@@ -35,7 +35,7 @@ H.264 → D3D11 硬解表面租约 → 最新帧邮箱
 
 驱动不提供扩展、设备不能共享或转换/同步失败时，后续帧回退 NV12 读回和平面上传。`UU_D3D11_READBACK=1` 可在启动时强制原路径用于同机对照；日志中的 `d3d11-wgl-gpu` 才表示实际使用了新渲染路径。不同显卡和跨适配器显示必须分别验证。
 
-`d3d11_surface_probe` 读取带 AUD 的合成 H.264 文件，对比 CPU/GPU 输出，检查跨帧及解码器销毁后的 sample 租约。其 RGB 读回仅用于测试，计时明确区分 CPU 解码加读回、GPU 解码提交和 GPU 转换加测试读回。`video_dma_probe --isolated-window-station GENERATED_AUD.h264` 在 Windows 独立窗口站比较 GPU 共享与 CPU 上传的最终 GL 像素；不支持 GL 的非交互环境不能据此声称已通过桌面呈现验收。
+`d3d11_surface_probe` 读取带 AUD 的合成 H.264 文件，对比 CPU/GPU 输出，检查跨帧及解码器销毁后的 sample 租约。其 RGB 读回仅用于测试，计时明确区分 CPU 解码加读回、GPU 解码提交和 GPU 转换并等待完成、额外的测试读回。`video_dma_probe --isolated-window-station GENERATED_AUD.h264` 在 Windows 独立窗口站比较 GPU 共享与 CPU 上传的最终 GL 像素；不支持 GL 的非交互环境不能据此声称已通过桌面呈现验收。
 
 不能通过关闭防重放、丢弃 H.264 参考帧或关闭 VSync 来代替管线优化。
 
@@ -94,3 +94,19 @@ Remove-Item Env:UU_DECODE_PROFILE
 Moonlight 的 Decode 和 Render 也有各自的计时边界；其 HUD 的 Encode 来自服务端处理延迟统计，不能仅凭标签判定是纯硬件编码耗时。对照应固定主机、内容、分辨率、帧率、码率、位深、HDR 和显示设置，并观察输入到画面的响应，不能将 H.264 SDR 与 AV1 HDR 的两张截图当作编码器独立对照。
 
 UU 协议及已有兼容实现包含 H.265/HEVC，UU 并非只能使用 H.264。本项目当前实际接收、RTP 组帧和解码链路仍为 H.264；协议枚举中的 HEVC/AV1 不代表已实现完整支持。尚未验证 UU 官方链路可协商 AV1，Moonlight 能使用 AV1 不代表 UU 协议也能。
+
+## 4K GPU 路径原生对照
+
+Intel Arc B390，3840×2160、60 FPS、120 帧合成 H.264，两个独立硬解器交替处理同一输入，排除前 10 帧。CPU 路径与 GPU 路径使用同一提交的解码器；测试未连接远端、采集桌面或发送输入。
+
+首轮通过颜色校验后的结果：CPU 解码加 NV12 读回 **7.17ms**；GPU 解码提交 **0.50ms**，NV12→RGB 转换并等待 GPU 完成 **1.18ms**，后两者合计 **1.67ms**。测试额外读取 RGB 用于逐像素对照的 17.40ms 单列，实际共享渲染不执行这一步。这里没有测 WGL 互操作、窗口合成或屏幕扫描，不能宣称端到端延迟为 1.67ms。
+
+随后两次同条件重复对照：CPU 路径 7.14 / 7.34ms；GPU 提交加转换完成 1.67 / 1.66ms，颜色误差相同，三轮均通过。
+
+120 帧的 119 次跨帧租约检查及解码器销毁后表面读取通过；另一组 96 帧覆盖完整/有限范围、BT.601/709、960×540↔1920×1080 及编码高度裁剪，92 次同尺寸租约检查通过。RGB 平均绝对误差分别为 1.05、1.25（8 位通道单位）；硬件色度滤波与 CPU 参考在饱和边缘不逐像素相同。Windows GL 对照相应检查均差及大差异像素比例，Linux 同着色器路径仍执行原有最大误差门禁。
+
+Windows 独立窗口站未提供所需 GL 配置，WGL 最终呈现实测仍需交互环境确认；不能把离线 D3D 校验当作实际串流验收。初始候选曾因颜色范围枚举写反而失败，修正为 SDK 命名常量后才通过；失败候选未安装到正式客户端。
+
+- [Microsoft：视频处理颜色空间](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/ns-d3d11-d3d11_video_processor_color_space)
+- [Microsoft：VideoProcessorBlt 与 GPU 查询边界](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11videocontext-videoprocessorblt)
+- [Khronos：WGL D3D11 互操作与锁定同步](https://registry.khronos.org/OpenGL/extensions/NV/WGL_NV_DX_interop2.txt)
