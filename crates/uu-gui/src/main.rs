@@ -154,6 +154,7 @@ struct App {
     fps: std::collections::HashMap<u32, f32>,
     last_fps: std::time::Instant,
     last_diagnostic: std::time::Instant,
+    last_hook_refresh: std::time::Instant,
     unpresented: std::collections::HashSet<u32>,
     render_ms: f32,
     hud_cache: hud::Cache,
@@ -408,6 +409,7 @@ impl App {
             fps: std::collections::HashMap::new(),
             last_fps: std::time::Instant::now(),
             last_diagnostic: std::time::Instant::now(),
+            last_hook_refresh: std::time::Instant::now(),
             unpresented: Default::default(),
             render_ms: 0.0,
             hud_cache: Default::default(),
@@ -777,6 +779,27 @@ impl App {
     }
     fn remote_input_active(&self,ctx:&egui::Context)->bool {
         self.input_capture.active(self.input_conditions(ctx))
+    }
+    /// External keyboard-sharing tools may reinstall their low-level hook
+    /// after ours. When captured Win/Alt events are still being forwarded and
+    /// the local window sees them too, refresh our hook to move it to the
+    /// front of the chain without touching the other tool's configuration.
+    fn check_hook_conflict(&mut self) {
+        if !self.native_keyboard_capture {return;}
+        let Some(k)=self.platform.keyboard_diagnostics() else {return;};
+        let seen=k["win_seen"].as_u64().unwrap_or(0);
+        let captured=k["win_captured"].as_u64().unwrap_or(0);
+        let forwarded=k["win_forwarded_background"].as_u64().unwrap_or(0)
+            +k["alt_forwarded_background"].as_u64().unwrap_or(0);
+        let window=k["window_win_seen"].as_u64().unwrap_or(0)
+            +k["window_alt_seen"].as_u64().unwrap_or(0);
+        if seen>captured.saturating_add(1)
+            && (forwarded>0||window>0)
+            && self.last_hook_refresh.elapsed()>=std::time::Duration::from_secs(5)
+        {
+            self.platform.refresh_keyboard_hook();
+            self.last_hook_refresh=std::time::Instant::now();
+        }
     }
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
         let conditions=self.input_conditions(ctx);
@@ -1260,6 +1283,7 @@ impl eframe::App for App {
                     "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()}));
             }
         }
+        self.check_hook_conflict();
         if self.stream_target.is_some() {
             self.stream_ui(ctx, &events);
         } else {
