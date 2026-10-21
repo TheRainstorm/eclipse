@@ -570,7 +570,7 @@ async fn start_session(state: Arc<State>, client: String, local: SocketAddr) -> 
         bind: SocketAddr::new(local.ip(), 0),
         source: state.config.source.clone(),
         invitation_file: path.clone(),
-        invitation_lifetime: Duration::from_secs(30),
+        invitation_lifetime: crate::native_pairing::BROKER_INVITATION_LIFETIME,
         fps: state.config.fps,
         bitrate_kbps: state.config.bitrate_kbps,
         encoder: state.config.encoder,
@@ -745,6 +745,7 @@ pub async fn connect(device: &Device, client_id: &str) -> Result<Invitation> {
         "服务端身份已变化；请核实设备后重新配对，未发送连接凭据"
     );
     let mut stream = tls_connect(found.address, &device.certificate).await?;
+    let requested_at = Instant::now();
     write(
         &mut stream,
         &Request::Connect {
@@ -754,7 +755,7 @@ pub async fn connect(device: &Device, client_id: &str) -> Result<Invitation> {
     )
     .await?;
     match read_with_wait::<Reply>(&mut stream, Duration::from_secs(10)).await? {
-        Reply::Session { invitation } => Ok(invitation),
+        Reply::Session { invitation } => invitation.from_authenticated_broker(requested_at),
         Reply::Error { message } => Err(anyhow::anyhow!(message)),
         _ => Err(anyhow::anyhow!("连接响应无效")),
     }
