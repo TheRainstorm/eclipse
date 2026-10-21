@@ -40,10 +40,19 @@ impl Modifiers {
         modifiers
     }
 }
-/// Win messages arriving at a window have already been offered to the shell.
-/// Only a low-level hook may forward these remotely without dual activation.
+/// In released mode, keep Win messages and their entire chord local. The
+/// low-level hook owns shell suppression; captured window messages share its
+/// remote ownership instead of being excluded solely because they are Win.
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 pub fn local_system_key(vk:u32,win_down:bool)->bool {win_down||matches!(vk,0x5b|0x5c)}
+#[cfg_attr(not(any(windows,test)),allow(dead_code))]
+#[derive(Clone, Copy)]
+pub struct WindowRoute {
+    pub input: bool,
+    pub foreground: bool,
+    pub system_capture: bool,
+    pub shortcuts: bool,
+}
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 pub struct Keys {
     held: [u8; 256],
@@ -55,6 +64,17 @@ impl Keys {
     }
     pub fn down(&self, vk: usize) -> bool {
         self.held.get(vk) == Some(&1)
+    }
+    /// Some input sources deliver window messages without a low-level hook
+    /// callback. Active system capture owns the whole window stream too.
+    #[cfg_attr(not(any(windows,test)),allow(dead_code))]
+    pub fn window_event(&mut self, vk:u32, pressed:bool, route:WindowRoute,
+        modifiers:&Modifiers, already_down:bool) -> Decision
+    {
+        let remote = route.input && route.foreground
+            && (route.system_capture || !local_system_key(vk,modifiers.win()));
+        self.event_with_shortcuts(vk,pressed,remote,route.shortcuts && route.foreground,
+            modifiers.shortcut_chord(),already_down)
     }
     #[cfg(test)]
     pub fn event(
@@ -265,6 +285,68 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+    #[test]
+    fn window_input_is_immediate_with_capture_even_before_any_hook_callback() {
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true};
+        for chord in [vec![0x5b],vec![0x5c,0xa0,0x27],vec![0xa4,0x09],vec![0x41]] {
+            let mut modifiers=Modifiers::new();
+            let mut window=Keys::new();
+            let mut remote=crate::input_capture::RemoteKeys::default();
+            for (vk,pressed) in chord.iter().copied().map(|vk|(vk,true))
+                .chain(chord.iter().rev().copied().map(|vk|(vk,false))) {
+                modifiers.observe(vk,pressed);
+                let event=window.window_event(vk,pressed,route,&modifiers,false);
+                assert_eq!(event,Decision::Remote{vk,pressed});
+                assert_eq!(remote.event(vk,pressed),if pressed {crate::input_capture::KeyChange::Press}else{crate::input_capture::KeyChange::Release});
+            }
+        }
+    }
+    #[test]
+    fn window_releases_keep_ownership_after_capture_focus_or_input_changes() {
+        let active=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true};
+        for route in [WindowRoute{system_capture:false,..active},WindowRoute{foreground:false,..active},WindowRoute{input:false,..active}] {
+            let mut modifiers=Modifiers::new();let mut keys=Keys::new();
+            for vk in [0x5b,0xa0,0x25] {
+                modifiers.observe(vk,true);
+                assert_eq!(keys.window_event(vk,true,active,&modifiers,false),Decision::Remote{vk,pressed:true});
+            }
+            for vk in [0x25,0xa0,0x5b] {
+                modifiers.observe(vk,false);
+                assert_eq!(keys.window_event(vk,false,route,&modifiers,true),Decision::Remote{vk,pressed:false});
+                assert_eq!(keys.window_event(vk,false,route,&modifiers,true),Decision::Forward);
+            }
+        }
+        let released=WindowRoute{system_capture:false,..active};
+        let mut modifiers=Modifiers::new();let mut keys=Keys::new();
+        for (vk,pressed) in [(0x5b,true),(0x41,true),(0x41,false),(0x5b,false)] {
+            modifiers.observe(vk,pressed);
+            assert_eq!(keys.window_event(vk,pressed,released,&modifiers,false),Decision::Forward);
+        }
+    }
+    #[test]
+    fn window_client_commands_work_before_control_is_ready_and_keep_their_release() {
+        let pending=WindowRoute{input:false,foreground:true,system_capture:false,shortcuts:true};
+        let mut modifiers=Modifiers::new();modifiers.observe(0xa2,true);modifiers.observe(0xa4,true);
+        let mut window=Keys::new();
+        assert_eq!(window.window_event(0x46,true,pending,&modifiers,false),Decision::Shortcut(Action::Fullscreen));
+        let unfocused=WindowRoute{foreground:false,..pending};
+        assert_eq!(window.window_event(0x46,true,unfocused,&modifiers,true),Decision::Consume);
+        assert_eq!(window.window_event(0x46,false,unfocused,&modifiers,true),Decision::Consume);
+    }
+    #[test]
+    fn duplicate_window_and_hook_modifier_events_do_not_send_extra_transitions() {
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true};
+        let mut window=Keys::new();let mut hook=Keys::new();let mut modifiers=Modifiers::new();
+        let mut remote=crate::input_capture::RemoteKeys::default();
+        for (vk,pressed) in [(0x5b,true),(0xa4,true),(0xa4,false),(0x5b,false)] {
+            modifiers.observe(vk,pressed);
+            let mut changes=Vec::new();
+            for event in [hook.event(vk,pressed,true,false,false),window.window_event(vk,pressed,route,&modifiers,false)] {
+                if let Decision::Remote{vk,pressed}=event {changes.push(remote.event(vk,pressed));}
+            }
+            assert_eq!(changes,vec![if pressed {crate::input_capture::KeyChange::Press}else{crate::input_capture::KeyChange::Release},crate::input_capture::KeyChange::None]);
         }
     }
     #[test]

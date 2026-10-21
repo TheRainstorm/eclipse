@@ -964,6 +964,7 @@ impl App {
         if change!=input_capture::KeyChange::Repeat && matches!(vk,0x10..=0x12|0x5b|0x5c|0xa0..=0xa5) {
             if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
                 "event":"keyboard_transition","vk":vk,"pressed":pressed,"kseq":self.kseq,
+                "keyboard":self.platform.keyboard_diagnostics(),
                 "source":std::path::Path::new(caller.file()).file_name().and_then(|name|name.to_str()),
                 "line":caller.line(),"fullscreen":self.fullscreen,"focused":self.focused
             }));}
