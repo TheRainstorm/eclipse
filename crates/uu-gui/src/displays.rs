@@ -255,6 +255,7 @@ impl super::App {
         }) {
             return;
         }
+        if self.displays.layout.remember_selected(id) {self.save_display_layout();}
         // Release against the old source before changing its input binding.
         self.release_all_keys();
         self.release_pointer_capture(&self.context.clone());
@@ -358,7 +359,10 @@ impl super::App {
                 .selected
                 .and_then(|id| screens.screens.iter().find(|s| s.id == id));
             if selected.is_none() {
-                let next = screens.initial_screen().unwrap();
+                let next = self.displays.layout.last_selected()
+                    .and_then(|id| screens.screens.iter().find(|s| s.id == id))
+                    .or_else(|| screens.initial_screen())
+                    .unwrap();
                 let previous = self.displays.selected;
                 if previous.is_some() {
                     self.release_all_keys();

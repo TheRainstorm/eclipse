@@ -8,6 +8,7 @@ use uu_core::screen_control::RemoteScreen;
 pub(super) struct DisplayLayout {
     numbers: Vec<i32>,
     order: Vec<i32>,
+    last_selected: Option<i32>,
 }
 
 pub(super) struct DraggedDisplay(pub i32);
@@ -32,6 +33,7 @@ impl DisplayLayout {
             let mut seen = std::collections::HashSet::new();
             ids.retain(|id| *id >= 0 && seen.len() < 256 && seen.insert(*id));
         }
+        if layout.last_selected.is_some_and(|id| id < 0) {layout.last_selected=None;}
         Ok(layout)
     }
     pub fn sync(&mut self, screens: &[RemoteScreen]) -> bool {
@@ -47,6 +49,12 @@ impl DisplayLayout {
             }
         }
         changed
+    }
+    pub fn last_selected(&self) -> Option<i32> {self.last_selected}
+    pub fn remember_selected(&mut self, id: i32) -> bool {
+        if id < 0 || self.last_selected == Some(id) {return false;}
+        self.last_selected = Some(id);
+        true
     }
     pub fn number(&self, id: i32) -> Option<usize> {
         self.numbers.iter().position(|v| *v == id).map(|i| i + 1)
@@ -130,10 +138,13 @@ mod tests {
         let mut layout = DisplayLayout::default();
         layout.sync(&[screen(7), screen(42)]);
         layout.move_tab(42, 7, false);
+        assert!(layout.remember_selected(42));
+        assert!(!layout.remember_selected(42));
         layout.save(&path).unwrap();
         let restored = DisplayLayout::load(&path).unwrap();
         assert_eq!(restored.order, [42, 7]);
         assert_eq!(restored.number(42), Some(2));
+        assert_eq!(restored.last_selected(), Some(42));
         std::fs::remove_file(path).unwrap();
     }
 }
