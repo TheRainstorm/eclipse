@@ -216,57 +216,9 @@ async fn run(
     status("建立 WebRTC…");
     peer = Some(ControllerMedia::new_with_frames(ice, Some(frame_tx), Some(stats.clone())).await?);
     let media = peer.as_ref().unwrap();
-    let offer_sdp = media.offer().await?;
-    status("ICE收集完成");
-    let _ = std::fs::write("/tmp/offer_rust.sdp", &offer_sdp);
-    let gz = gzip_sdp04(&offer_sdp)?;
     let ice_id = success["ice_id"].as_str().unwrap_or_default().to_string();
-    let target = success["client_id"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    sio.emit(
-        "soac",
-        json!({
-            "client_id": target,
-            "data": {
-                "app_control_id": ctrl,
-                "gzip_sdp": {"_placeholder": true, "num": 0},
-                "ice_id": ice_id,
-                "ice_network_type": 0,
-                "sdp": "",
-                "type": "offer"
-            }
-        }),
-        &[gz],
-    )
-    .await?;
-
-    status("等待 SDP answer…");
-    let mut answered = false;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
-    while tokio::time::Instant::now() < deadline && !answered {
-        let (event, data, atts) =
-            tokio::time::timeout_at(deadline, sio.recv_event())
-                .await
-                .context("signalling timeout")??;
-        if event != "soac" {
-            continue;
-        }
-        let d = &data["data"];
-        match d["type"].as_str() {
-            Some("answer") if !atts.is_empty() => {
-                let answer = gunzip_sdp04(&atts[0])?;
-                let _ = std::fs::write("/tmp/answer_live.sdp", &answer);
-                media.set_answer(&answer).await?;
-                status("收到SDP answer");
-                answered = true;
-            }
-            Some("candidate") => add_trickle(&media, d, &ev).await?,
-            _ => {}
-        }
-    }
-    anyhow::ensure!(answered, "no SDP answer");
+    let target = success["client_id"].as_str().unwrap_or_default().to_string();
+    let mut local_ice = offer_and_answer(sio, media, &ctrl, &target, &ice_id, &ev, &status).await?;
     status("等待 WebRTC 控制通道…");
     // Ask the controlled end for the target frame rate. Without this the host
     // streams at its idle default (~21 fps); the official client sends the same
@@ -295,7 +247,7 @@ async fn run(
         1000, crate::control_wire::now_ms(), frame_rate, quality, custom_bps,
         resolution,false,-1,
     );
-    drive_session(sio, media, &ctrl, &ice_id, &ev, &mut input_rx, &mut settings_rx, initial_settings).await?;
+    drive_session(sio, media, &ctrl, &ice_id, &ev, &mut input_rx, &mut settings_rx, initial_settings, &target, &mut local_ice).await?;
     Ok::<_, anyhow::Error>(())
     };
     let result = tokio::select! {
@@ -326,6 +278,69 @@ async fn run(
     result
 }
 
+type LocalIceCandidates = UnboundedReceiver<Option<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit>>;
+
+/// Offer first; candidate callbacks are queued until Socket.IO has sent it.
+/// Keep receiving remote candidates while waiting for the answer. The ICE API
+/// requires a remote description, so hold early candidates until it is set.
+async fn offer_and_answer(
+    sio: &mut SocketIo, media: &ControllerMedia, ctrl: &str, target: &str,
+    ice_id: &str, ev: &std::sync::mpsc::Sender<ControllerEvent>, status: &impl Fn(&str),
+) -> Result<LocalIceCandidates> {
+    let (offer, mut local_ice) = media.trickle_offer().await?;
+    sio.emit("soac", json!({"client_id": target, "data": {
+        "app_control_id": ctrl, "gzip_sdp": {"_placeholder": true, "num": 0},
+        "ice_id": ice_id, "ice_network_type": 0, "sdp": "", "type": "offer"
+    }}), &[gzip_sdp04(&offer)?]).await?;
+    status("已发送SDP offer");
+    status("等待 SDP answer…");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
+    let mut early_candidates = Vec::new();
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => anyhow::bail!("signalling timeout: no SDP answer"),
+            Some(candidate) = local_ice.recv() => {
+                send_local_candidate(sio, candidate, ctrl, target, ice_id, status).await?;
+            }
+            received = sio.recv_event() => {
+                let (event, data, attachments) = received?;
+                if event == "released" || event == "fail" { anyhow::bail!("被控端结束连接"); }
+                if event != "soac" { continue; }
+                let body = &data["data"];
+                match body["type"].as_str() {
+                    Some("answer") if !attachments.is_empty() => {
+                        media.set_answer(&gunzip_sdp04(&attachments[0])?).await?;
+                        for candidate in early_candidates { add_trickle(media, &candidate, ev).await?; }
+                        status("收到SDP answer");
+                        return Ok(local_ice);
+                    }
+                    Some("candidate") => {
+                        anyhow::ensure!(early_candidates.len() < 256, "too many ICE candidates before answer");
+                        early_candidates.push(body.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+async fn send_local_candidate(
+    sio: &mut SocketIo, candidate: Option<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit>,
+    ctrl: &str, target: &str, ice_id: &str, status: &impl Fn(&str),
+) -> Result<()> {
+    if let Some(candidate) = candidate {
+        sio.emit("soac", json!({"client_id": target, "data": {
+            "app_control_id": ctrl, "ice_id": ice_id, "type": "candidate", "candidate": candidate
+        }}), &[]).await?;
+    } else {
+        // UU's candidate event has no negotiated end-of-candidates extension.
+        // Completion is local progress only; do not invent a wire message.
+        status("ICE收集完成");
+    }
+    Ok(())
+}
+
 /// Keep consuming trickle candidates while ICE/DTLS/SCTP are connecting.
 /// Capture settings are a deferred operation, never a prerequisite for driving
 /// signalling: otherwise a slow connection deadlocks waiting for its own ICE.
@@ -338,6 +353,8 @@ async fn drive_session(
     input_rx: &mut UnboundedReceiver<Vec<u8>>,
     settings_rx: &mut UnboundedReceiver<Vec<u8>>,
     initial_settings: Vec<u8>,
+    target: &str,
+    local_ice: &mut LocalIceCandidates,
 ) -> Result<()> {
     use std::time::Duration;
     use webrtc::data_channel::data_channel_state::RTCDataChannelState;
@@ -362,6 +379,9 @@ async fn drive_session(
     probe_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            Some(candidate) = local_ice.recv() => {
+                send_local_candidate(sio, candidate, ctrl, target, ice_id, &status).await?;
+            }
             _ = setup_timer.tick() => {
                 media.trace_transport(&mut last_transport);
                 let now = tokio::time::Instant::now();

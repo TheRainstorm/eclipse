@@ -125,6 +125,7 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let remote = peer.clone();
+    let (local_tx, mut local_ice) = unbounded_channel();
     let server = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
         let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
@@ -133,8 +134,23 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
         ws.send(Message::Text("40{}".into())).await.unwrap();
         // Longer than the regressed setup's 3.5s + five 600ms retries.
         tokio::time::sleep(Duration::from_secs(8)).await;
+        // Local candidates can arrive after the SDP answer and must still be
+        // forwarded by drive_session, with the correct routing identifiers.
+        let count = client_candidates.len();
         for candidate in client_candidates {
-            remote.add_ice_candidate(RTCIceCandidateInit { candidate, sdp_mid:Some("0".into()), sdp_mline_index:Some(0), ..Default::default() }).await.unwrap();
+            local_tx.send(Some(RTCIceCandidateInit { candidate, sdp_mid:Some("0".into()), sdp_mline_index:Some(0), ..Default::default() })).unwrap();
+        }
+        local_tx.send(None).unwrap();
+        drop(local_tx);
+        for _ in 0..count {
+            let text = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let event: serde_json::Value = serde_json::from_str(&text[2..]).unwrap();
+            assert_eq!(event[0], "soac");
+            assert_eq!(event[1]["client_id"], "host");
+            assert_eq!(event[1]["data"]["app_control_id"], "test");
+            assert_eq!(event[1]["data"]["ice_id"], "ice");
+            assert_eq!(event[1]["data"]["type"], "candidate");
+            remote.add_ice_candidate(serde_json::from_value(event[1]["data"]["candidate"].clone()).unwrap()).await.unwrap();
         }
         for candidate in candidates {
             let event = json!(["soac", {"data":{"type":"candidate", "candidate":{
@@ -161,7 +177,7 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     input.send(activation).unwrap();
     let (_setting, mut settings_rx) = unbounded_channel();
     tokio::time::timeout(Duration::from_secs(25), drive_session(&mut sio, &media, "test", "ice", &ev,
-        &mut input_rx, &mut settings_rx, settings)).await.unwrap().unwrap();
+        &mut input_rx, &mut settings_rx, settings, "host", &mut local_ice)).await.unwrap().unwrap();
     assert!(events.try_iter().any(|event| matches!(event, ControllerEvent::Status(s) if s == "已请求目标画质/码率")));
     assert_eq!(stats.clipboard.remote.lock().unwrap().as_deref(),Some("host-to-local 🙂"));
     assert!(stats.display_responses.lock().unwrap().contains(&(10001,11,0)));
@@ -180,5 +196,93 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     let _=peer.close().await;
     assert_eq!(peer.connection_state(),webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed);
     sio.close().await;
+    server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trickle_offer_precedes_slow_stun_and_buffers_candidates_before_answer() {
+    crate::install_crypto_provider();
+    // Keep a real local STUN endpoint silent. Its timeout must not hold up SDP.
+    let silent_stun = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let media = ControllerMedia::new(vec![webrtc::ice_transport::ice_server::RTCIceServer {
+        urls: vec![format!("stun:{}", silent_stun.local_addr().unwrap())],
+        ..Default::default()
+    }]).await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut engine = MediaEngine::default();
+    engine.register_default_codecs().unwrap();
+    let peer = Arc::new(APIBuilder::new().with_media_engine(engine).build()
+        .new_peer_connection(RTCConfiguration::default()).await.unwrap());
+    let (host_tx, mut host_rx) = unbounded_channel();
+    peer.on_ice_candidate(Box::new(move |candidate| {
+        let tx = host_tx.clone();
+        Box::pin(async move {
+            if let Some(candidate) = candidate {
+                let mut value = candidate.to_json().unwrap();
+                value.sdp_mid = Some("0".into());
+                tx.send(value).unwrap();
+            }
+        })
+    }));
+    let remote = peer.clone();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        ws.send(Message::Text("0{}".into())).await.unwrap();
+        assert_eq!(ws.next().await.unwrap().unwrap().into_text().unwrap(), "40");
+        ws.send(Message::Text("40{}".into())).await.unwrap();
+        // The very first packet is the binary offer event, never a candidate.
+        let header = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        assert!(header.starts_with("451-"));
+        let event: serde_json::Value = serde_json::from_str(&header[4..]).unwrap();
+        assert_eq!(event[1]["client_id"], "host");
+        assert_eq!(event[1]["data"]["type"], "offer");
+        let attachment = ws.next().await.unwrap().unwrap().into_data();
+        let offer = gunzip_sdp04(&attachment).unwrap();
+        assert!(!offer.contains("a=candidate:"));
+        remote.set_remote_description(RTCSessionDescription::offer(offer).unwrap()).await.unwrap();
+        let answer = remote.create_answer(None).await.unwrap();
+        let answer_sdp = answer.sdp.clone();
+        remote.set_local_description(answer).await.unwrap();
+        // Exercise the order the old path rejected with ErrNoRemoteDescription.
+        let early = host_rx.recv().await.unwrap();
+        let event = json!(["soac", {"data":{"type":"candidate", "candidate":early}}]);
+        ws.send(Message::Text(format!("42{event}").into())).await.unwrap();
+        // Wait for a client candidate, proving local trickle runs before answer.
+        let text = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        let event: serde_json::Value = serde_json::from_str(&text[2..]).unwrap();
+        assert_eq!(event[1]["data"]["type"], "candidate");
+        assert_eq!(event[1]["data"]["candidate"]["sdpMid"], "0");
+        assert_eq!(event[1]["data"]["candidate"]["sdpMLineIndex"], 0);
+        remote.add_ice_candidate(serde_json::from_value(event[1]["data"]["candidate"].clone()).unwrap()).await.unwrap();
+        let event = json!(["soac", {"data":{"type":"answer", "gzip_sdp":{"_placeholder":true,"num":0}}}]);
+        ws.send(Message::Text(format!("451-{event}").into())).await.unwrap();
+        ws.send(Message::Binary(gzip_sdp04(&answer_sdp).unwrap().into())).await.unwrap();
+        while let Some(Ok(message)) = ws.next().await {
+            if matches!(message, Message::Close(_)) { break; }
+        }
+    });
+    let mut sio = SocketIo::connect(&format!("ws://{addr}"), "test").await.unwrap();
+    let (ev, _) = std::sync::mpsc::channel();
+    let phases = std::sync::Mutex::new(Vec::new());
+    let status = |phase: &str| phases.lock().unwrap().push(phase.to_owned());
+    let started = std::time::Instant::now();
+    let _local = tokio::time::timeout(Duration::from_secs(3),
+        offer_and_answer(&mut sio, &media, "test", "host", "ice", &ev, &status))
+        .await.expect("SDP must not wait for the five-second STUN gather timeout").unwrap();
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(phases.lock().unwrap().iter().any(|p| p == "收到SDP answer"));
+    assert!(!phases.lock().unwrap().iter().any(|p| p == "ICE收集完成"));
+    assert!(media.pc.remote_description().await.is_some());
+    // Candidates on both sides must really connect, not just pass JSON checks.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while media.data_channel.ready_state() != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("early host candidate and trickled client candidate must establish CONTROL");
+    sio.close().await;
+    let _ = media.pc.close().await;
+    let _ = peer.close().await;
     server.await.unwrap();
 }

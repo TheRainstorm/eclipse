@@ -415,9 +415,41 @@ impl ControllerMedia {
         })
     }
 
-    /// Create the local offer and wait until ICE gathering completes so the
-    /// SDP carries candidates (the UU peer accepts trickle, but a complete
-    /// offer keeps the first exchange simple).
+    /// Register before set_local_description so even the first host candidate
+    /// is queued. Signalling must send the offer before draining this receiver,
+    /// and keep draining it after the answer (STUN/TURN may finish later).
+    pub async fn trickle_offer(&self) -> Result<(String, tokio::sync::mpsc::UnboundedReceiver<Option<RTCIceCandidateInit>>)> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.pc.on_ice_candidate(Box::new(move |candidate| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                let value = match candidate {
+                    Some(candidate) => match candidate.to_json() {
+                        Ok(mut value) => {
+                            // All transceivers use the first BUNDLE transport.
+                            // webrtc-rs 0.11 returns an empty MID from to_json.
+                            value.sdp_mid = Some("0".into());
+                            value.sdp_mline_index = Some(0);
+                            Some(value)
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "cannot serialize local ICE candidate");
+                            return;
+                        }
+                    },
+                    None => None,
+                };
+                let _ = tx.send(value);
+            })
+        }));
+        let offer = self.pc.create_offer(None).await?;
+        let sdp = offer.sdp.clone();
+        self.pc.set_local_description(offer).await?;
+        Ok((sdp, rx))
+    }
+
+    /// Gather a self-contained offer for offline probes and direct peer tests.
+    /// Interactive Socket.IO sessions use trickle_offer to avoid this wait.
     pub async fn offer(&self) -> Result<String> {
         let offer = self.pc.create_offer(None).await?;
         self.pc.set_local_description(offer).await?;
