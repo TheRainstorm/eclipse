@@ -2,23 +2,27 @@
 use super::ui::{icon, icon_button, icon_label_button, Icon};
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke};
 
-const MENU_INK: Color32 = Color32::from_rgb(29, 32, 37);
-const MENU_WIDTH: f32 = 236.0;
+const MENU_INK: Color32 = Color32::from_rgb(23,37,61);
+const MENU_WIDTH: f32 = 220.0;
 
-const HANDLE_SIZE: f32 = 36.0;
+// A 30-point face has 30.6% less area than the previous 36-point button.
+const HANDLE_SIZE: f32 = 30.0;
 const DOCK_DISTANCE: f32 = 24.0;
 const DOCK_DELAY: f64 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Edge { Right, Left, Top, Bottom }
 
-/// Position always describes the complete button inside the viewport. Folding
-/// changes only its painted/interactive rectangle, so restoring never loses it.
+/// One owner for hover, click, drag and focus transitions. Position describes
+/// the complete button; folding only clips its visible/interactive rectangle.
 #[derive(Default)]
 pub(super) struct FloatingHandle {
     position: Option<Pos2>,
     docked: Option<Edge>,
     idle_since: f64,
+    pinned: bool,
+    blur_since: Option<f64>,
+    suppressed: bool,
 }
 impl FloatingHandle {
     fn size(screen: Rect) -> egui::Vec2 {
@@ -26,7 +30,8 @@ impl FloatingHandle {
     }
     fn place(&mut self, screen: Rect) {
         let size = Self::size(screen);
-        let position = self.position.get_or_insert(egui::pos2(screen.right()-size.x-8.0, screen.top()+8.0));
+        let position = self.position.get_or_insert(egui::pos2(
+            screen.right()-size.x, screen.top()+screen.height()*0.15));
         position.x = position.x.clamp(screen.left(), screen.right()-size.x);
         position.y = position.y.clamp(screen.top(), screen.bottom()-size.y);
         match self.docked {
@@ -57,17 +62,32 @@ impl FloatingHandle {
         let full=Rect::from_min_size(position,size);
         (full,full.intersect(screen))
     }
+    fn dismiss(&mut self, screen: Rect, open: &mut bool) {
+        *open=false;
+        self.pinned=false;
+        self.blur_since=None;
+        self.suppressed=true;
+        self.docked=self.nearest_edge(screen);
+    }
     fn show(&mut self, ctx: &egui::Context, open: &mut bool) -> (Rect,bool) {
         let screen=ctx.screen_rect();
         let now=ctx.input(|i|i.time);
         if self.position.is_none() {self.idle_since=now;}
         self.place(screen);
         let (_,hit)=self.rectangles(screen);
-        let busy=*open || ctx.input(|i|i.pointer.any_down() || i.pointer.hover_pos().is_some_and(|p|hit.contains(p)));
+        let (hovered, down, focused)=ctx.input(|i|(
+            i.pointer.hover_pos().is_some_and(|p|hit.contains(p)),i.pointer.any_down(),i.focused));
+        if !hovered && !down { self.suppressed=false; }
+        if !*open { self.pinned=false; self.blur_since=None; }
+        if hovered && focused && !down && !self.suppressed {
+            self.docked=None;
+            *open=true;
+        }
+        let busy=*open || hovered || down;
         if busy || self.nearest_edge(screen).is_none() {self.idle_since=now;}
         if self.docked.is_none() && !busy && self.nearest_edge(screen).is_some() {
             let remaining=DOCK_DELAY-(now-self.idle_since);
-            if remaining<=0.0 {self.docked=self.nearest_edge(screen); self.place(screen);}
+            if remaining<=0.0 {self.docked=self.nearest_edge(screen);self.place(screen);}
             else {ctx.request_repaint_after(std::time::Duration::from_secs_f64(remaining));}
         }
         let (full,hit)=self.rectangles(screen);
@@ -75,22 +95,19 @@ impl FloatingHandle {
             .order(egui::Order::Foreground).constrain(false).movable(false).fixed_pos(hit.min)
             .show(ctx, |ui| {
                 let (rect,response)=ui.allocate_exact_size(hit.size(),egui::Sense::click_and_drag());
-                // Area can round its origin at fractional DPI. Paint at the
-                // actual hit rectangle, with the hidden portion still clipped.
                 let full=full.translate(rect.min-hit.min);
                 let painter=ui.painter().with_clip_rect(screen);
-                let scale=HANDLE_SIZE/54.0;
-                painter.rect(full.shrink(scale),17.0*scale,Color32::from_rgb(235,237,240),Stroke::new(2.0*scale,Color32::from_rgb(170,176,184)));
-                painter.rect(full.shrink(4.0*scale),14.0*scale,Color32::WHITE,Stroke::new(1.5*scale,
-                    if response.hovered() || *open {Color32::from_rgb(162,191,230)} else {Color32::from_rgb(205,212,222)}));
+                let accent=Color32::from_rgb(37,99,235);
+                painter.rect(full.shrink(0.75),9.0,Color32::WHITE,
+                    Stroke::new(1.2,if response.hovered() || *open {accent}else{Color32::from_rgb(177,195,218)}));
                 if self.docked.is_none() {
-                    for y in [-5.0,5.0] {
-                        let pill=Rect::from_center_size(full.center()+egui::vec2(0.0,y)*scale,egui::vec2(17.0,6.0)*scale);
-                        painter.rect_stroke(pill,3.0*scale,Stroke::new(1.4*scale,MENU_INK));
-                        painter.circle_filled(pill.center()+egui::vec2(if y<0.0 {-4.5}else{4.5},0.0)*scale,1.4*scale,MENU_INK);
+                    for y in [-4.0,4.0] {
+                        let pill=Rect::from_center_size(full.center()+egui::vec2(0.0,y),egui::vec2(14.0,4.0));
+                        painter.rect_stroke(pill,2.0,Stroke::new(1.2,accent));
+                        painter.circle_filled(pill.center()+egui::vec2(if y<0.0 {-3.0}else{3.0},0.0),1.1,accent);
                     }
                 }
-                response.on_hover_text("拖动调整位置 · 靠边停留 2 秒自动收起 · 点击恢复按钮 / 展开菜单")
+                response.on_hover_text("悬停展开 · 点击保持交互 · 拖动调整位置")
             }).inner;
         if response.dragged() {
             let folded=self.docked.take().is_some();
@@ -98,16 +115,58 @@ impl FloatingHandle {
                 if let Some(pointer)=response.interact_pointer_pos() {self.position=Some(pointer-Self::size(screen)/2.0);}
             } else {self.position=Some(self.position.unwrap()+response.drag_delta());}
             self.place(screen);
-            self.idle_since=now;
             *open=false;
+            self.pinned=false;
+            self.blur_since=None;
+            self.suppressed=true;
+            self.idle_since=now;
             ctx.request_repaint();
         } else if response.clicked() {
-            if self.docked.take().is_none() {*open=!*open;}
-            self.idle_since=now;
+            self.docked=None;
+            *open=true;
+            self.pinned=true;
+            self.blur_since=None;
+            self.suppressed=false;
             ctx.request_repaint();
         }
         if response.drag_stopped() {self.idle_since=now;}
         (response.rect,response.dragged() || response.drag_stopped())
+    }
+    fn finish_frame(&mut self, ctx: &egui::Context, open: &mut bool, regions: &[Rect]) {
+        if !*open {return;}
+        let (now,focused,inside,pressed,escape)=ctx.input(|i|(
+            i.time,i.focused,i.pointer.hover_pos().is_some_and(|p|regions.iter().any(|r|r.contains(p))),
+            i.pointer.any_pressed(),i.key_pressed(egui::Key::Escape)));
+        if escape {self.dismiss(ctx.screen_rect(),open);return;}
+        if focused && inside && pressed {self.pinned=true;}
+        // Text editing owns keyboard focus even when the pointer leaves. A
+        // previously clicked button alone must not keep the menu open forever.
+        let editing=ctx.memory(|m|m.focused()).is_some_and(|id|
+            egui::text_edit::TextEditState::load(ctx,id).is_some());
+        if focused && (inside || editing) {self.blur_since=None;return;}
+        if !self.pinned {
+            self.dismiss(ctx.screen_rect(),open);
+        } else {
+            let since=*self.blur_since.get_or_insert(now);
+            let remaining=DOCK_DELAY-(now-since);
+            if remaining<=0.0 {self.dismiss(ctx.screen_rect(),open);}
+            else {ctx.request_repaint_after(std::time::Duration::from_secs_f64(remaining));}
+        }
+        if !*open {ctx.request_repaint();}
+    }
+}
+
+/// Only the narrow gap between adjacent controls belongs to the menu. This
+/// keeps hover navigation continuous without swallowing a large video region.
+fn hover_bridge(a: Rect, b: Rect) -> Option<Rect> {
+    if a.right()<=b.left() || b.right()<=a.left() {
+        let (left,right)=if a.right()<=b.left(){(a.right(),b.left())}else{(b.right(),a.left())};
+        let (top,bottom)=(a.top().max(b.top()),a.bottom().min(b.bottom()));
+        (bottom>top).then(||Rect::from_min_max(egui::pos2(left,top),egui::pos2(right,bottom)))
+    } else {
+        let (top,bottom)=if a.bottom()<=b.top(){(a.bottom(),b.top())}else if b.bottom()<=a.top(){(b.bottom(),a.top())}else{return None;};
+        let (left,right)=(a.left().max(b.left()),a.right().min(b.right()));
+        (right>left).then(||Rect::from_min_max(egui::pos2(left,top),egui::pos2(right,bottom)))
     }
 }
 
@@ -119,10 +178,10 @@ fn fullscreen_menu_action(ui:&mut egui::Ui,fullscreen:bool)->Option<super::short
 
 fn popup_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::popup(ui.style())
-        .fill(Color32::from_rgb(249, 249, 249))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(215, 215, 215)))
+        .fill(Color32::WHITE)
+        .stroke(Stroke::new(1.0, Color32::from_rgb(221,230,242)))
         .rounding(7.0)
-        .inner_margin(egui::Margin::same(4.0))
+        .inner_margin(egui::Margin::same(3.0))
         .shadow(egui::epaint::Shadow {
             offset: egui::vec2(0.0, 3.0),
             blur: 10.0,
@@ -142,7 +201,7 @@ fn menu_row(
     active: bool,
 ) -> egui::Response {
     let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
     let ink = if !ui.is_enabled() {
         Color32::from_gray(160)
     } else if label == "退出串流" {
@@ -152,7 +211,7 @@ fn menu_row(
     };
     if ui.is_enabled() && (response.hovered() || active) {
         ui.painter()
-            .rect_filled(rect, 3.0, Color32::from_rgb(233, 233, 233));
+            .rect_filled(rect, 3.0, Color32::from_rgb(234,242,255));
     }
     if let Some(kind) = kind {
         icon(
@@ -229,7 +288,7 @@ fn side_submenu<R>(
     let response = menu_row(ui, &label, Some(kind), false, true, "", open);
     if response.clicked() {
         ui.memory_mut(|m| m.toggle_popup(id));
-    } else if response.hovered() && ui.memory(|m| m.any_popup_open()) {
+    } else if response.hovered() {
         ui.memory_mut(|m| m.open_popup(id));
     }
     let mut inner = None;
@@ -256,6 +315,7 @@ fn side_submenu<R>(
                         });
                 });
             });
+        if let Some(bridge)=hover_bridge(response.rect,area.response.rect) {blocked.push(bridge);}
         blocked.push(area.response.rect);
     }
     egui::InnerResponse::new(inner, response)
@@ -301,7 +361,7 @@ impl super::App {
             .exact_height(super::window::CONNECTION_BAR_HEIGHT)
             .frame(
                 egui::Frame::none()
-                    .fill(Color32::from_rgb(218, 223, 229))
+                    .fill(Color32::from_rgb(239,245,253))
                     .inner_margin(egui::Margin::symmetric(10.0, 2.0)),
             )
             .show(ctx, |ui| {
@@ -604,13 +664,14 @@ impl super::App {
                     });
                 });
             });
+        if let Some(bridge)=hover_bridge(row,response.response.rect) {blocked.push(bridge);}
         blocked.push(response.response.rect);
     }
 
     /// Draw first so the stream can exclude every control rectangle from input.
     pub(super) fn stream_controls(&mut self, ctx: &egui::Context) -> Vec<Rect> {
         let mut blocked = Vec::new();
-        if self.mouse_captured {return blocked;}
+        if self.mouse_captured || self.local_dialog_open() {return blocked;}
         if !self.fullscreen {
             if let Some(rect) = self.stream_menu.trigger_rect {
                 blocked.push(rect);
@@ -852,6 +913,11 @@ impl super::App {
         } else {
             self.stream_menu.quality_detail = None;
         }
+        if self.fullscreen {
+            if let Some(handle)=blocked.first().copied() {
+                if let Some(bridge)=hover_bridge(handle,menu.response.rect) {blocked.push(bridge);}
+            }
+        }
         blocked.push(menu.response.rect);
         let outside_click = ctx.input(|i| {
             i.pointer.any_pressed()
@@ -859,9 +925,10 @@ impl super::App {
                     .interact_pos()
                     .is_some_and(|p| !blocked.iter().any(|r| r.contains(p)))
         });
-        if outside_click || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if self.fullscreen {
+            self.stream_menu.floating.finish_frame(ctx,&mut self.stream_menu.open,&blocked);
+        } else if outside_click || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.stream_menu.open = false;
-            ctx.memory_mut(|m| m.close_popup());
         }
         if !self.stream_menu.open {
             ctx.memory_mut(|m| m.close_popup());
@@ -878,14 +945,25 @@ mod tests {
         handle: FloatingHandle,
         open: bool,
         screen: Rect,
+        focused: bool,
     }
     impl HandleUi {
-        fn new() -> Self {Self {context:Default::default(),handle:Default::default(),open:false,
-            screen:Rect::from_min_size(Pos2::ZERO,egui::vec2(1280.0,720.0))}}
+        fn new() -> Self {
+            let mut ui=Self {context:Default::default(),handle:Default::default(),open:false,
+                screen:Rect::from_min_size(Pos2::ZERO,egui::vec2(1280.0,720.0)),focused:true};
+            ui.frame(0.0,vec![]); // Complete egui Area's first sizing pass before input.
+            ui
+        }
         fn frame(&mut self,time:f64,events:Vec<egui::Event>)->(Rect,bool) {
             let mut output=(Rect::NOTHING,false);
-            let input=egui::RawInput{time:Some(time),screen_rect:Some(self.screen),events,..Default::default()};
-            let _=self.context.run(input,|ctx|output=self.handle.show(ctx,&mut self.open));
+            let input=egui::RawInput{time:Some(time),screen_rect:Some(self.screen),events,focused:self.focused,..Default::default()};
+            let _=self.context.run(input,|ctx|{
+                output=self.handle.show(ctx,&mut self.open);
+                let menu=Rect::from_min_max(egui::pos2(1030.0,142.0),egui::pos2(1272.0,500.0));
+                let mut regions=vec![output.0,menu];
+                if let Some(bridge)=hover_bridge(output.0,menu) {regions.push(bridge);}
+                self.handle.finish_frame(ctx,&mut self.open,&regions);
+            });
             output
         }
         fn click(&mut self,time:f64,point:Pos2) {
@@ -897,91 +975,90 @@ mod tests {
         egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}
     }
     #[test]
-    fn floating_handle_waits_then_folds_and_requires_two_clicks_to_open_menu() {
+    fn floating_handle_starts_right_at_fifteen_percent_and_hover_opens_without_click() {
         let mut ui=HandleUi::new();
-        ui.frame(0.0,vec![]);
+        let initial=ui.frame(0.0,vec![]).0;
+        assert_eq!(initial.right(),1280.0);
+        assert_eq!(initial.top(),108.0);
+        assert!(initial.area()<=36.0*36.0*0.70);
         assert_eq!(ui.frame(1.9,vec![]).0.width(),HANDLE_SIZE);
         let folded=ui.frame(2.1,vec![]).0;
-        assert_eq!(folded.right(),1280.0);
         assert_eq!(folded.width(),HANDLE_SIZE/3.0);
-        ui.frame(4.0,vec![egui::Event::PointerMoved(folded.center())]);
-        assert!(ui.handle.docked.is_some());
-        assert!(!ui.open);
-        ui.click(4.1,folded.center());
-        assert!(ui.handle.docked.is_none());
-        assert!(!ui.open,"first click only restores the complete button");
-        let full=ui.frame(4.2,vec![]).0;
-        assert_eq!(full.width(),HANDLE_SIZE);
-        ui.click(4.3,full.center());
+        ui.frame(2.2,vec![egui::Event::PointerMoved(folded.center())]);
         assert!(ui.open);
-        ui.frame(10.0,vec![egui::Event::PointerMoved(egui::pos2(400.0,400.0))]);
-        assert!(ui.handle.docked.is_none(),"an open menu must not fold");
-        ui.click(10.1,full.center());
-        assert!(!ui.open);
-        ui.frame(10.2,vec![egui::Event::PointerMoved(egui::pos2(400.0,400.0))]);
         assert!(ui.handle.docked.is_none());
-        ui.frame(13.3,vec![]);
-        assert!(ui.handle.docked.is_some(),"restored button can fold again");
+        ui.frame(2.3,vec![egui::Event::PointerMoved(egui::pos2(1260.0,140.0))]);
+        assert!(ui.open,"moving across the handle/menu gap must retain ownership");
+        ui.frame(2.4,vec![egui::Event::PointerMoved(egui::pos2(1100.0,250.0))]);
+        assert!(ui.open);
+        ui.frame(2.5,vec![egui::Event::PointerMoved(egui::pos2(500.0,500.0))]);
+        assert!(!ui.open,"hover-only menus close on the first frame outside");
+        assert_eq!(ui.handle.docked,Some(Edge::Right));
     }
     #[test]
-    fn dragging_handle_moves_it_without_opening_menu_and_can_redock_on_every_edge() {
-        for (edge,position) in [(Edge::Left,egui::pos2(4.0,300.0)),
-            (Edge::Right,egui::pos2(1222.0,300.0)),(Edge::Top,egui::pos2(500.0,4.0)),
-            (Edge::Bottom,egui::pos2(500.0,662.0))] {
+    fn clicking_keeps_menu_until_two_seconds_after_leaving_or_losing_focus() {
+        for window_blur in [false,true] {
             let mut ui=HandleUi::new();
-            ui.frame(0.0,vec![]);
-            let initial=ui.frame(0.1,vec![]).0.center();
+            let handle=ui.frame(0.0,vec![]).0;
+            ui.click(0.1,handle.center());
+            assert!(ui.open && ui.handle.pinned);
+            if window_blur {ui.focused=false;}
+            let events=if window_blur {vec![]}else{vec![egui::Event::PointerMoved(egui::pos2(500.0,500.0))]};
+            ui.frame(1.0,events);
+            ui.frame(2.99,vec![]);
+            assert!(ui.open);
+            ui.frame(3.01,vec![]);
+            assert!(!ui.open);
+            assert_eq!(ui.handle.docked,Some(Edge::Right));
+        }
+    }
+    #[test]
+    fn dragging_handle_does_not_activate_menu_and_redocks_on_every_edge() {
+        for (edge,position) in [(Edge::Left,egui::pos2(4.0,300.0)),
+            (Edge::Right,egui::pos2(1246.0,300.0)),(Edge::Top,egui::pos2(500.0,4.0)),
+            (Edge::Bottom,egui::pos2(500.0,686.0))] {
+            let mut ui=HandleUi::new();
+            let initial=ui.frame(0.0,vec![]).0.center();
             ui.frame(0.2,vec![egui::Event::PointerMoved(initial),button(initial,true)]);
             let center=position+egui::Vec2::splat(HANDLE_SIZE/2.0);
             assert!(ui.frame(0.3,vec![egui::Event::PointerMoved(center)]).1);
-            assert!(ui.frame(0.4,vec![button(center,false)]).1);
-            assert!(!ui.open,"dragging must not count as a click");
+            ui.frame(0.4,vec![button(center,false)]);
+            assert!(!ui.open);
             ui.frame(0.5,vec![egui::Event::PointerMoved(egui::pos2(800.0,500.0))]);
-            assert!(ui.handle.docked.is_none());
             ui.frame(2.3,vec![]);
-            assert!(ui.handle.docked.is_none(),"wait for two seconds after interaction");
+            assert!(ui.handle.docked.is_none());
             let folded=ui.frame(2.6,vec![]).0;
             assert_eq!(ui.handle.docked,Some(edge));
             assert!((folded.area()-HANDLE_SIZE*HANDLE_SIZE/3.0).abs()<1.0);
             ui.screen=Rect::from_min_size(Pos2::ZERO,egui::vec2(800.0,500.0));
             let resized=ui.frame(3.7,vec![]).0;
             assert!(ui.screen.contains_rect(resized));
-            ui.click(3.8,resized.center());
-            let restored=ui.frame(3.9,vec![]).0;
-            assert!(ui.screen.contains_rect(restored));
         }
     }
     #[test]
-    fn floating_handle_stays_expanded_in_center_and_while_hovered_near_edge() {
+    fn reentering_menu_resets_click_timeout_and_escape_does_not_immediately_reopen() {
         let mut ui=HandleUi::new();
-        ui.handle.position=Some(egui::pos2(500.0,300.0));
-        ui.frame(0.0,vec![]);
-        ui.frame(30.0,vec![]);
-        assert!(ui.handle.docked.is_none());
-        ui.handle.position=Some(egui::pos2(500.0,4.0));
-        ui.frame(31.0,vec![egui::Event::PointerMoved(egui::pos2(525.0,25.0))]);
-        ui.frame(60.0,vec![]);
-        assert!(ui.handle.docked.is_none());
-        ui.frame(60.1,vec![egui::Event::PointerMoved(egui::pos2(400.0,400.0))]);
-        ui.frame(63.2,vec![]);
-        assert_eq!(ui.handle.docked,Some(Edge::Top));
+        let handle=ui.frame(0.0,vec![]).0;
+        ui.click(0.1,handle.right_center()-egui::vec2(2.0,0.0));
+        ui.frame(1.0,vec![egui::Event::PointerMoved(egui::pos2(500.0,500.0))]);
+        ui.frame(2.8,vec![egui::Event::PointerMoved(handle.right_center()-egui::vec2(2.0,0.0))]);
+        ui.frame(4.0,vec![]);
+        assert!(ui.open);
+        ui.frame(4.1,vec![egui::Event::Key{key:egui::Key::Escape,physical_key:None,pressed:true,repeat:false,modifiers:Default::default()}]);
+        assert!(!ui.open);
+        ui.frame(4.2,vec![]);
+        assert!(!ui.open,"Escape must suppress hover until the pointer leaves");
+        ui.frame(4.3,vec![egui::Event::PointerMoved(egui::pos2(500.0,500.0))]);
+        ui.frame(4.4,vec![egui::Event::PointerMoved(handle.right_center()-egui::vec2(2.0,0.0))]);
+        assert!(ui.open);
     }
     #[test]
-    fn folded_handle_can_be_dragged_directly_and_initial_delay_starts_when_shown() {
-        let mut ui=HandleUi::new();
-        ui.frame(30.0,vec![]);
-        assert!(ui.handle.docked.is_none());
-        let folded=ui.frame(33.1,vec![]).0;
-        assert!(ui.handle.docked.is_some());
-        ui.frame(33.2,vec![egui::Event::PointerMoved(folded.center()),button(folded.center(),true)]);
-        let destination=egui::pos2(600.0,300.0);
-        assert!(ui.frame(33.3,vec![egui::Event::PointerMoved(destination)]).1);
-        ui.frame(33.4,vec![button(destination,false)]);
-        assert!(ui.handle.docked.is_none());
-        assert!(!ui.open);
-        assert_eq!(ui.frame(33.5,vec![]).0.center(),destination);
-        ui.frame(40.0,vec![egui::Event::PointerMoved(egui::pos2(400.0,400.0))]);
-        assert!(ui.handle.docked.is_none());
+    fn submenu_bridge_covers_only_the_connecting_gap() {
+        let row=Rect::from_min_max(egui::pos2(700.0,100.0),egui::pos2(920.0,128.0));
+        let child=Rect::from_min_max(egui::pos2(450.0,96.0),egui::pos2(690.0,400.0));
+        let gap=hover_bridge(row,child).unwrap();
+        assert!(gap.contains(egui::pos2(695.0,115.0)));
+        assert!(!gap.contains(egui::pos2(695.0,200.0)));
     }
     #[test]
     fn fullscreen_menu_click_dispatches_stream_fullscreen_for_both_states() {
