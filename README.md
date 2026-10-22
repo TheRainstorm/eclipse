@@ -165,6 +165,8 @@ cargo run -p uu-cli -- probe
 
 详细文档：[协议兼容与 Moonlight 技术对比](docs/protocol-compatibility-and-transport.md) · [串流质量与恢复](docs/streaming-quality.md) · [帧率协商](docs/frame-rate.md) · [功能与源码参考索引](docs/reference-index.md) · [协议笔记](docs/protocol-notes.md)。诊断输出可能包含设备标识或网络信息，提交 issue 前请自行清理。
 
+自有主机与控制端利用 UU 会话信令及中继进行公网连接的设计，见 [UU 云端连接与中继接入方案](docs/uu-cloud-native-connection.md)；当前原生公网入口尚未实现。
+
 ## 方向与致谢
 
 当前名称 **uu-client** 说明其兼容客户端定位。下一阶段计划以 **Eclipse / 日蚀** 为名，探索采集端与客户端一体化、自主串流协议与更完整的跨平台体验；原生局域网基础已实现，后续范围与验收顺序见[产品远景](docs/vision.md)和[交付路线图](docs/roadmap.md)。
