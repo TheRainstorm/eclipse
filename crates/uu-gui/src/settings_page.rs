@@ -130,7 +130,6 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
                     }
                 });
                 ui.end_row();
-                #[cfg(windows)]
                 {
                     ui.label("视频编码");
                     combo(
@@ -154,7 +153,6 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
             ui,
             "输出分辨率只调整串流编码尺寸，不修改远端桌面。实际帧率取决于被控端、屏幕和网络。",
         );
-        #[cfg(windows)]
         note(
             ui,
             "切换编码会重新连接。HEVC 不可用时使用 H.264；实际编码可在串流统计中查看。",

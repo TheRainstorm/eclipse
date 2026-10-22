@@ -458,6 +458,15 @@ where
     B: StatelessH265DecoderBackend,
     B::Handle: Clone,
 {
+    /// Submit a complete access unit without flushing references. Output still
+    /// follows the SPS reorder constraints through `finish_picture`.
+    pub fn finish_access_unit(&mut self) -> Result<(), DecodeError> {
+        if let Some(picture) = self.codec.current_pic.take() {
+            self.finish_picture(picture)?;
+        }
+        Ok(())
+    }
+
     /// Whether the stream parameters have changed, indicating that a negotiation window has opened.
     fn negotiation_possible(
         sps: &Sps,

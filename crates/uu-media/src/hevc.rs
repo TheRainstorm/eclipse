@@ -89,9 +89,9 @@ pub fn is_keyframe(data: &[u8]) -> bool {
 pub const PROBE: &[u8] = include_bytes!("hevc_probe.h265");
 
 /// Validate actual decode output before advertising HEVC. `prepare` alone can
-/// succeed even when the installed MFT cannot decode on this device. The HEVC
-/// backend rejects system-memory MFT output, including while CPU rendering is
-/// selected, so this probe also verifies D3D11 surfaces without global changes.
+/// succeed even when a driver cannot decode on this device. Windows requires
+/// D3D11-backed MFT output; Linux uses the VA-API Main decoder and shared surface
+/// pool. No software H.264 decoder is used to claim HEVC support.
 pub fn probe_decoder() -> Result<(), crate::CodecError> {
     let mut decoder = crate::decoder_for_codec(uu_proto::media::VideoCodec::Hevc)?;
     let mut starts = Vec::new();

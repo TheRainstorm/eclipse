@@ -124,6 +124,10 @@ pub fn decoder_for_codec(codec: uu_proto::media::VideoCodec) -> Result<Box<dyn V
     if codec == VideoCodec::Hevc && DecoderKind::from_env() != DecoderKind::Software {
         return Ok(Box::new(hw::d3d11va::D3d11VaDecoder::with_codec(codec)?));
     }
+    #[cfg(all(target_os="linux",feature="vaapi"))]
+    if codec == VideoCodec::Hevc && DecoderKind::from_env() != DecoderKind::Software {
+        return Ok(Box::new(hw::vaapi::VaapiDecoder::with_codec(codec)?));
+    }
     Err(CodecError::Unsupported(codec))
 }
 

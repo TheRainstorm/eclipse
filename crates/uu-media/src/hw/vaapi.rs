@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
 use cros_codecs::decoder::stateless::h264::H264;
+use cros_codecs::decoder::stateless::h265::H265;
 use cros_codecs::decoder::stateless::{
     DecodeError, StatelessDecoder, StatelessVideoDecoder,
 };
@@ -50,19 +51,25 @@ type Surface = cros_codecs::video_frame::frame_pool::PooledVideoFrame<GenericDma
 /// Public handle: a `Worker` thread owning the VA display and its surfaces.
 pub struct VaapiDecoder {
     worker: super::Worker,
+    codec: VideoCodec,
 }
 
 impl VaapiDecoder {
     pub fn new() -> Result<Self, CodecError> {
+        Self::with_codec(VideoCodec::H264)
+    }
+    pub fn with_codec(codec:VideoCodec) -> Result<Self, CodecError> {
+        if !matches!(codec,VideoCodec::H264|VideoCodec::Hevc) {return Err(CodecError::Unsupported(codec));}
         Ok(Self {
-            worker: super::Worker::spawn(Decoder::open)?,
+            worker: super::Worker::spawn(move || Decoder::open(codec))?,
+            codec,
         })
     }
 }
 
 impl VideoDecoder for VaapiDecoder {
     fn codec(&self) -> VideoCodec {
-        VideoCodec::H264
+        self.codec
     }
 
     fn backend_name(&self) -> &str {
@@ -74,8 +81,26 @@ impl VideoDecoder for VaapiDecoder {
     }
 }
 
+type VaBackend=cros_codecs::backend::vaapi::decoder::VaapiBackend<Surface>;
+type Handle=std::rc::Rc<std::cell::RefCell<cros_codecs::backend::vaapi::decoder::VaapiDecodedHandle<Surface>>>;
+enum BitstreamDecoder { H264(StatelessDecoder<H264,VaBackend>), Hevc(StatelessDecoder<H265,VaBackend>) }
+impl BitstreamDecoder {
+    fn decode(&mut self,timestamp:u64,input:&[u8],alloc:&mut dyn FnMut()->Option<Surface>)->Result<usize,DecodeError> {
+        match self {Self::H264(d)=>d.decode(timestamp,input,alloc),Self::Hevc(d)=>d.decode(timestamp,input,alloc)}
+    }
+    fn next_event(&mut self)->Option<DecoderEvent<Handle>> {
+        match self {Self::H264(d)=>d.next_event(),Self::Hevc(d)=>d.next_event()}
+    }
+    fn stream_info(&self)->Option<&StreamInfo> {
+        match self {Self::H264(d)=>d.stream_info(),Self::Hevc(d)=>d.stream_info()}
+    }
+    fn finish_access_unit(&mut self)->Result<(),DecodeError> {
+        match self {Self::H264(d)=>d.finish_access_unit(),Self::Hevc(d)=>d.finish_access_unit()}
+    }
+}
 struct Decoder {
-    decoder: StatelessDecoder<H264, cros_codecs::backend::vaapi::decoder::VaapiBackend<Surface>>,
+    decoder: BitstreamDecoder,
+    codec: VideoCodec,
     display: std::rc::Rc<Display>,
     pool: Option<FramePool<GenericDmaVideoFrame>>,
     name: String,
@@ -99,16 +124,19 @@ struct DecodeProfile {
 }
 
 impl Decoder {
-    fn open() -> Result<Self, String> {
-        let (path, display) = open_display()?;
-        let decoder =
-            StatelessDecoder::<H264, _>::new_vaapi(display.clone(), BlockingMode::Blocking)
-                .map_err(|e| format!("VA-API H.264 decoder: {e}"))?;
+    fn open(codec:VideoCodec) -> Result<Self, String> {
+        let (path, display) = open_display(codec)?;
+        let decoder=match codec {
+            VideoCodec::H264=>BitstreamDecoder::H264(StatelessDecoder::<H264,_>::new_vaapi(display.clone(),BlockingMode::Blocking).map_err(|e|format!("VA-API H.264 decoder: {e}"))?),
+            VideoCodec::Hevc=>BitstreamDecoder::Hevc(StatelessDecoder::<H265,_>::new_vaapi(display.clone(),BlockingMode::Blocking).map_err(|e|format!("VA-API HEVC decoder: {e}"))?),
+            _=>return Err("Unsupported VAAPI codec".into()),
+        };
         Ok(Self {
             decoder,
+            codec,
             display,
             pool: None,
-            name: format!("vaapi (cros-codecs hw, {})", path.display()),
+            name: format!("vaapi (cros-codecs hw, {}{})", if codec==VideoCodec::Hevc {"HEVC, "}else{""}, path.display()),
             pending: VecDeque::new(),
             pixels: super::pixels::Pool::default(),
             dma_readback: std::env::var("UU_VAAPI_READBACK").as_deref() != Ok("legacy"),
@@ -129,7 +157,7 @@ impl super::Backend for Decoder {
         // The IDR access units carry SPS/PPS, and the decoder needs them
         // before any slice: feeding mid-GOP data first is harmless (it is
         // skipped) but produces nothing until a keyframe arrives.
-        let patched = crate::bitstream::patch_sps_allow_gaps(&frame.data);
+        let patched = if self.codec==VideoCodec::H264 {crate::bitstream::patch_sps_allow_gaps(&frame.data)}else{None};
         let data = patched.as_deref().unwrap_or(&frame.data);
         let mut input = data;
         let timestamp = frame.pts.as_micros();
@@ -401,7 +429,7 @@ impl Decoder {
 }
 
 /// Open the first DRM render node whose driver can decode H.264.
-fn open_display() -> Result<(PathBuf, std::rc::Rc<Display>), String> {
+fn open_display(codec:VideoCodec) -> Result<(PathBuf, std::rc::Rc<Display>), String> {
     let mut nodes: Vec<PathBuf> = std::fs::read_dir("/dev/dri")
         .map_err(|e| format!("reading /dev/dri: {e}"))?
         .filter_map(|entry| entry.ok())
@@ -418,23 +446,28 @@ fn open_display() -> Result<(PathBuf, std::rc::Rc<Display>), String> {
     }
     let mut failures = Vec::new();
     for path in nodes {
-        match open_node(&path) {
+        match open_node(&path,codec) {
             Ok(display) => return Ok((path, display)),
             Err(e) => failures.push(format!("{}: {e}", path.display())),
         }
     }
     Err(format!(
-        "no render node decodes H.264 with VA-API: {}",
+        "no render node decodes {codec:?} with VA-API: {}",
         failures.join("; ")
     ))
 }
 
-fn open_node(path: &Path) -> Result<std::rc::Rc<Display>, String> {
+fn open_node(path: &Path,codec:VideoCodec) -> Result<std::rc::Rc<Display>, String> {
     let display = Display::open_drm_display(path).map_err(|e| format!("VA display: {e}"))?;
     let profiles = display
         .query_config_profiles()
         .map_err(|e| format!("querying VA profiles: {e}"))?;
-    for profile in [VAProfile::VAProfileH264High, VAProfile::VAProfileH264Main] {
+    let requested:&[VAProfile::Type]=match codec {
+        VideoCodec::H264=>&[VAProfile::VAProfileH264High,VAProfile::VAProfileH264Main],
+        VideoCodec::Hevc=>&[VAProfile::VAProfileHEVCMain],
+        _=>return Err("Unsupported VAAPI codec".into()),
+    };
+    for &profile in requested {
         if !profiles.contains(&profile) {
             continue;
         }
@@ -445,7 +478,7 @@ fn open_node(path: &Path) -> Result<std::rc::Rc<Display>, String> {
             return Ok(display);
         }
     }
-    Err("driver offers no H.264 VLD entry point".to_string())
+    Err(format!("driver offers no {codec:?} VLD entry point"))
 }
 
 /// Repack the driver's (possibly padded) NV12 planes into a tightly packed

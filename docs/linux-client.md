@@ -2,6 +2,10 @@
 
 Linux VA-API 支持完整访问单元提交，并依据 H.264 色彩标记选择范围和 BT.601 / BT.709 转换。
 
+开发分支的“应用设置 → 串流 → 视频编码”可选择优先 H.265 / HEVC。Linux 通过 VA-API 解码 HEVC Main 8 位视频；连接前先用生成流验证实际解码输出，成功后才向 UU 被控端声明支持，失败时使用 H.264。需要启用 `vaapi` 构建和支持 HEVC Main 的显卡驱动；强制软件解码时不会声明 HEVC，不能把 OpenH264 当作 HEVC 回退。
+
+硬件环境可显式运行 `cargo run --release -p uu-media --example hevc_decode_probe --features vaapi --locked` 验证生成流，增加 `-- --leases` 检查 GPU 表面租约。探针不读取桌面，不保存画面。编译成功不代表显卡驱动验收成功。
+
 2026-10-19 在 Linux 测试客户端（Intel Tiger Lake、Arch、KDE Wayland）连接 Windows 测试主机 实测。当前目标是控制端；`uu probe` 中 Linux **被控端** uinput 检测失败不影响控制 Windows 主机。
 
 ## 构建和统一安装

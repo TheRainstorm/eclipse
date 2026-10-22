@@ -42,7 +42,7 @@ pub struct MediaStats {
     /// Immutable per-session output policy, supplied before signalling starts.
     pub output_resolution: std::sync::OnceLock<crate::control_wire::CaptureResolution>,
     /// Requested preference is immutable after spawn; enabled only after the
-    /// local HEVC decoder actually produces a valid D3D11 image.
+    /// local HEVC decoder actually produces a valid hardware image.
     pub prefer_hevc: std::sync::atomic::AtomicBool,
     pub hevc_enabled: std::sync::OnceLock<bool>,
     pub diagnostics: crate::session_diagnostics::SessionDiagnostics,
