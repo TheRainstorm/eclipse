@@ -33,7 +33,7 @@ jobs:
       - name: Install media development libraries
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y build-essential pkg-config cmake nasm libva-dev libgbm-dev libdrm-dev libclang-dev libasound2-dev libpulse-dev libpipewire-0.3-dev
+          sudo apt-get install --no-install-recommends -y build-essential pkg-config cmake nasm libva-dev libgbm-dev libdrm-dev libclang-dev libasound2-dev libpulse-dev
       - name: Select Rust toolchain
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
@@ -54,8 +54,8 @@ jobs:
           cargo test -p uu-input --lib --release --locked
           cc -Wall -Wextra -Werror crates/uu-input/src/gamepad/uhid.c tools/native/uhid_contract_smoke.c -o target/uhid-contract-smoke
           target/uhid-contract-smoke
-          # Check the standalone/default feature set before Cargo unifies VA-API.
-          cargo check -p uu-cli --bin uu-signal --locked
+          # Check VPL without VA-API, then the software-only feature set.
+          cargo check -p uu-media --locked
           cargo check -p uu-media --no-default-features --features h264 --locked
           cargo test -p uu-media --lib --release --features vaapi --locked
           cargo build -p uu-media --example vaapi_readback_probe --release --features vaapi --locked
