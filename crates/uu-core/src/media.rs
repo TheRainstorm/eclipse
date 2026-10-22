@@ -33,6 +33,8 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
 pub struct MediaStats {
+    pub native_media_epoch:AtomicU64,
+    pub native_displays:crate::native_displays::Client,
     pub native_timing:crate::native_timing::ClientTiming,
     pub pairing:crate::device_auth::PairingDisplay,
     pub connection:crate::connection_info::Details,

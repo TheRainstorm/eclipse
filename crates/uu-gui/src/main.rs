@@ -622,6 +622,11 @@ impl App {
                 ControllerEvent::Error(e) => self.status = format!("错误: {e}"),
             }
         }
+        if native && self.displays.native_frame_epoch!=h.frames.generation(){
+            self.displays.native_frame_epoch=h.frames.generation();
+            self.textures.clear();self.unpresented.clear();self.frame_count.clear();self.fps.clear();
+            self.hud_cache=Default::default();
+        }
         let mut frames = Vec::new();
         while let Ok(f) = h.frames.try_recv_image() {
             frames.push(f);

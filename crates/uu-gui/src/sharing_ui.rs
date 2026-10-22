@@ -13,7 +13,7 @@ use uu_core::{
     device_internet::EndpointStatus,
     device_trust::{Permissions, TrustStore},
     internet::{Provider, Settings},
-    native::{CaptureSource, HostStatus},
+    native::HostStatus,
     native_lan as lan,
     shared_host::{Access, SessionGate},
 };
@@ -319,7 +319,7 @@ impl HostUi {
                     let mut tasks=tokio::task::JoinSet::new();
                     let lan_config=lan::Config{name:sharing.name.clone(),bind:([0,0,0,0],sharing.service_port).into(),
                         discovery_bind:Some(([0,0,0,0],sharing.discovery_port).into()),data_dir:config.at("native-lan"),
-                        source:if sharing.monitor.is_empty(){CaptureSource::Primary}else{CaptureSource::Monitor(sharing.monitor.clone())},
+                        source:sharing.native().source,
                         fps:sharing.fps,bitrate_kbps:sharing.bitrate_mbps*1000,encoder:sharing.encoding.native(),
                         allow_input:sharing.control,audio:sharing.audio.then_some(uu_core::native::AudioSource::System),clipboard:factory.clone()};
                     match lan::Server::bind_with_access(lan_config,receiver.clone(),lan_events,server_access.clone()).await {

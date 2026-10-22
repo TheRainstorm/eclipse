@@ -886,7 +886,7 @@ impl Workspace {
         if uu_core::native::uses_desktop_portal() {
             self.monitors.clear();
             self.monitor_error.clear();
-            self.draft.monitor.clear();
+            if self.draft.monitor != uu_core::native_displays::ALL_MONITORS {self.draft.monitor.clear();}
             return;
         }
         match uu_core::native::monitors() {
@@ -999,32 +999,21 @@ impl Workspace {
             ui.add_enabled_ui(!locked, |ui| {
                 field(ui, "本机名称", &mut self.draft.name, "设备名称");
                 ui.label("共享屏幕");
-                if uu_core::native::uses_desktop_portal() {
-                    ui.label("连接时由系统选择共享屏幕");
-                    ui.weak("Wayland 会请求屏幕共享授权；允许控制时一并请求键鼠权限。");
-                } else { egui::ComboBox::from_id_salt("shared-monitor")
-                    .selected_text(if self.draft.monitor.is_empty() {
-                        "主显示器"
-                    } else {
-                        &self.draft.monitor
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.draft.monitor, String::new(), "主显示器");
-                        for monitor in &self.monitors {
-                            ui.selectable_value(
-                                &mut self.draft.monitor,
-                                monitor.name.clone(),
-                                format!("{} · {}×{}", monitor.name, monitor.width, monitor.height),
-                            );
-                        }
+                let portal=uu_core::native::uses_desktop_portal();
+                egui::ComboBox::from_id_salt("shared-monitor")
+                    .selected_text(if self.draft.monitor==uu_core::native_displays::ALL_MONITORS {
+                        if portal {"系统选择（允许远程请求重选）"}else{"所有显示器（允许远程切换）"}
+                    }else if self.draft.monitor.is_empty(){if portal{"系统选择一个屏幕"}else{"主显示器"}}else{&self.draft.monitor})
+                    .show_ui(ui,|ui|{
+                        ui.selectable_value(&mut self.draft.monitor,String::new(),if portal{"系统选择一个屏幕"}else{"主显示器"});
+                        ui.selectable_value(&mut self.draft.monitor,uu_core::native_displays::ALL_MONITORS.into(),if portal{"系统选择（允许远程请求重选）"}else{"所有显示器（允许远程切换）"});
+                        if !portal {for monitor in &self.monitors {
+                            ui.selectable_value(&mut self.draft.monitor,monitor.name.clone(),format!("{} · {}×{}",monitor.name,monitor.width,monitor.height));
+                        }}
                     });
-                if !self.monitor_error.is_empty() {
-                    ui.colored_label(theme::DANGER, &self.monitor_error);
-                }
-                if ui.small_button("刷新屏幕").clicked() {
-                    self.refresh_monitors();
-                }
-                }
+                if portal {ui.weak("Wayland 由系统授权屏幕；远程重选仍需本机确认，控制权限与屏幕使用同一会话。");}
+                if !self.monitor_error.is_empty(){ui.colored_label(theme::DANGER,&self.monitor_error);}
+                if !portal && ui.small_button("刷新屏幕").clicked(){self.refresh_monitors();}
                 ui.horizontal(|ui| {
                     ui.label("帧率");
                     ui.add(

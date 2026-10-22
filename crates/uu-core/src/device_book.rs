@@ -61,7 +61,9 @@ impl Default for Sharing {
 impl Sharing {
     pub fn native(&self) -> SharingConfig {
         SharingConfig {
-            source: if self.monitor.is_empty() {
+            source: if self.monitor == crate::native_displays::ALL_MONITORS {
+                native::CaptureSource::Desktop
+            } else if self.monitor.is_empty() {
                 native::CaptureSource::Primary
             } else {
                 native::CaptureSource::Monitor(self.monitor.clone())

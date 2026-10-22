@@ -207,6 +207,8 @@ jobs:
             python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe --case "$scenario"
           done
           python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe --cli target/release/uu --case stream-native
+          cargo build --release -p uu-core --example native_display_probe --locked
+          python3 tools/native/portal_smoke.py --probe target/release/examples/native_display_probe --case stream-displays
       - name: Package Windows
         if: matrix.platform == 'windows-x64'
         run: |

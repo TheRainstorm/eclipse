@@ -50,6 +50,8 @@ pub enum CaptureSource {
     Window(u64),
     /// Let the backend pick the primary output.
     Primary,
+    /// Explicit permission to select among desktop monitors during a session.
+    Desktop,
     /// Deterministic test pattern (no display required).
     Synthetic { width: u32, height: u32, fps: u32 },
 }

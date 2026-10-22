@@ -137,7 +137,7 @@ impl X11Capture {
                     attributes.visual,
                 )
             }
-            CaptureSource::Primary | CaptureSource::Monitor(_) => {
+            CaptureSource::Primary | CaptureSource::Desktop | CaptureSource::Monitor(_) => {
                 let list = monitors_on(&conn, screen_index)?;
                 let selected = match source {
                     CaptureSource::Monitor(name) => {
@@ -176,7 +176,7 @@ impl X11Capture {
             depth,
             masks,
             started: Instant::now(),
-            desktop: matches!(source, CaptureSource::Primary | CaptureSource::Monitor(_)),
+            desktop: matches!(source, CaptureSource::Primary | CaptureSource::Desktop | CaptureSource::Monitor(_)),
         })
     }
 }

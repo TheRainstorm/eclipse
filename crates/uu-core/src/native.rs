@@ -203,7 +203,7 @@ impl SharingConfig {
     pub fn validate(&self) -> Result<()> {
         ensure!((1..=60).contains(&self.fps) && (64..=100_000).contains(&self.bitrate_kbps),
             "native H.264 host needs 1..=60 fps and 64..=100000 kbps");
-        let monitor = matches!(self.source,CaptureSource::Primary|CaptureSource::Monitor(_));
+        let monitor = matches!(self.source,CaptureSource::Primary|CaptureSource::Desktop|CaptureSource::Monitor(_));
         ensure!(!self.allow_input || monitor, "desktop input requires an explicitly shared monitor");
         ensure!(self.audio != Some(AudioSource::System) || monitor, "system audio requires an explicitly shared monitor");
         Ok(())
@@ -214,28 +214,39 @@ impl SharingConfig {
 /// opened until the authenticated offer and direct-only candidates are checked.
 pub async fn serve_direct(signaling: &mut dyn SessionSignaling, ice: &crate::direct_ice::InternetIce,
     config: SharingConfig, stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>) -> Result<HostReport> {
+    let _clipboard=ClipboardLifetime(config.clipboard.clone());
     config.validate()?;
-    let mut peer = NativePeer::new_direct(ice, None, true).await?;
-    let result = serve_peer(&mut peer, signaling, config, stop, status).await;
-    peer.close().await;
-    result
+    let displays=matches!(config.source,CaptureSource::Desktop).then(||Arc::new(crate::native_displays::Host::default()));
+    let mut report=HostReport::default();
+    let started=Instant::now();
+    loop {
+        let mut current=config.clone();
+        if let Some(limit)=config.session_limit {if started.elapsed()>=limit{return Ok(report);}current.session_limit=Some(limit.saturating_sub(started.elapsed()));}
+        let mut peer=NativePeer::new_direct(ice,None,true).await?;
+        let result=serve_peer(&mut peer,signaling,current,stop.clone(),status.clone(),displays.clone()).await;
+        peer.close().await;
+        report.merge(result?);
+        if *stop.borrow() || !displays.as_ref().is_some_and(|d|d.switching()){return Ok(report);}
+    }
 }
 
 pub async fn view_direct(signaling: &mut dyn SessionSignaling, ice: &crate::direct_ice::InternetIce,
     frames: FrameSender, stats: Arc<MediaStats>, mut stop: watch::Receiver<bool>,
-    input: Option<crate::native_input::NativeInputReceiver>) -> Result<()> {
+    mut input: Option<crate::native_input::NativeInputReceiver>) -> Result<()> {
+    let _lifetime=ViewerLifetime(stats.clone());
     stats.capabilities.set(0);
     stats.native_input_available.store(false, Ordering::Release);
-    let mut peer = NativePeer::new_direct(ice, Some(stats.clone()), false).await?;
-    let result = tokio::select! {
-        result=receive_session(&mut peer,signaling,frames,stats.clone(),input)=>result,
-        _=cancelled(&mut stop)=>Ok(()),
+    let result=loop {
+        let frames=frames.renew();
+        stats.native_media_epoch.store(frames.generation(),Ordering::Release);
+        let mut peer = NativePeer::new_direct(ice, Some(stats.clone()), false).await?;
+        let result = tokio::select! {
+            result=receive_session(&mut peer,signaling,frames,stats.clone(),input)=>result,
+            _=cancelled(&mut stop)=>Ok(ViewOutcome::Ended),
+        };
+        peer.close().await;
+        match result {Ok(ViewOutcome::Switch(receiver))=>input=receiver,other=>break other.map(|_|())}
     };
-    peer.close().await;
-    stats.control_open.store(0, Ordering::Release);
-    stats.audio.stop();
-    crate::native_clipboard::stop(&stats.clipboard);
-    stats.capabilities.enable(crate::capabilities::Capability::Audio,false);
     result
 }
 #[derive(Debug, Default)]
@@ -257,6 +268,30 @@ pub struct HostReport {
     pub audio_queue_drops:u64,
 }
 
+impl HostReport {
+    fn merge(&mut self,other:Self){
+        self.encoder=other.encoder;
+        self.captured+=other.captured;self.sent+=other.sent;self.bytes+=other.bytes;
+        self.producer_ms+=other.producer_ms;self.capture_us+=other.capture_us;self.encode_us+=other.encode_us;self.backpressure_us+=other.backpressure_us;
+        self.input_events+=other.input_events;self.input_errors+=other.input_errors;
+        self.audio_packets+=other.audio_packets;self.audio_bytes+=other.audio_bytes;self.audio_errors+=other.audio_errors;self.audio_queue_drops+=other.audio_queue_drops;
+    }
+}
+
+struct ViewerLifetime(Arc<MediaStats>);
+impl Drop for ViewerLifetime {
+    fn drop(&mut self){
+        self.0.control_open.store(0,Ordering::Release);
+        self.0.capabilities.enable(crate::capabilities::Capability::Input,false);
+        self.0.native_input_available.store(false,Ordering::Release);
+        self.0.audio.stop();crate::native_clipboard::stop(&self.0.clipboard);
+        self.0.capabilities.enable(crate::capabilities::Capability::Audio,false);
+    }
+}
+
+struct ClipboardLifetime(Option<Arc<crate::clipboard::Clipboard>>);
+impl Drop for ClipboardLifetime {fn drop(&mut self){if let Some(c)=&self.0{crate::native_clipboard::stop(c);}}}
+
 async fn cancelled(stop: &mut watch::Receiver<bool>) {
     loop {
         if *stop.borrow_and_update() {
@@ -274,6 +309,7 @@ pub async fn serve(config: HostConfig, stop: watch::Receiver<bool>) -> Result<Ho
 }
 
 pub async fn serve_with_status(config: HostConfig, mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>) -> Result<HostReport> {
+    let _clipboard=ClipboardLifetime(config.clipboard.clone());
     ensure!(
         !config.bind.ip().is_unspecified() && !config.bind.ip().is_multicast(),
         "choose a concrete native host interface"
@@ -282,9 +318,9 @@ pub async fn serve_with_status(config: HostConfig, mut stop: watch::Receiver<boo
         (1..=60).contains(&config.fps) && (64..=100_000).contains(&config.bitrate_kbps),
         "native H.264 host needs 1..=60 fps and 64..=100000 kbps"
     );
-    ensure!(!config.allow_input || matches!(config.source,uu_capture::CaptureSource::Primary|uu_capture::CaptureSource::Monitor(_)),
+    ensure!(!config.allow_input || matches!(config.source,uu_capture::CaptureSource::Primary|uu_capture::CaptureSource::Desktop|uu_capture::CaptureSource::Monitor(_)),
         "desktop input can only be enabled for a real whole-monitor source");
-    ensure!(config.audio!=Some(uu_media::audio_capture::Source::System)||matches!(config.source,uu_capture::CaptureSource::Primary|uu_capture::CaptureSource::Monitor(_)),
+    ensure!(config.audio!=Some(uu_media::audio_capture::Source::System)||matches!(config.source,uu_capture::CaptureSource::Primary|uu_capture::CaptureSource::Desktop|uu_capture::CaptureSource::Monitor(_)),
         "system audio requires an explicitly shared real monitor source");
     let listener = TcpListener::bind(config.bind)
         .await
@@ -439,20 +475,35 @@ async fn host_session(
 ) -> Result<HostReport> {
     let local_ip = stream.get_ref().0.local_addr()?.ip();
     let peer_ip = stream.get_ref().0.peer_addr()?.ip();
-    let mut peer = NativePeer::new(local_ip, None, true).await?;
+    let displays=matches!(config.source,CaptureSource::Desktop).then(||Arc::new(crate::native_displays::Host::default()));
+    let config:SharingConfig=config.into();
     let mut signaling = TlsSignaling { stream, peer: peer_ip };
-    let result = serve_peer(&mut peer, &mut signaling, config.into(), stop, status).await;
-    peer.close().await;
+    let mut report=HostReport::default();
+    let started=Instant::now();
+    let result=loop {
+        let mut current=config.clone();
+        if let Some(limit)=config.session_limit {if started.elapsed()>=limit{break Ok(report);}current.session_limit=Some(limit.saturating_sub(started.elapsed()));}
+        let mut peer=NativePeer::new(local_ip,None,true).await?;
+        let result=serve_peer(&mut peer,&mut signaling,current,stop.clone(),status.clone(),displays.clone()).await;
+        peer.close().await;
+        match result {Ok(current)=>report.merge(current),Err(error)=>break Err(error)}
+        if *stop.borrow() || !displays.as_ref().is_some_and(|d|d.switching()){break Ok(report);}
+    };
     let _ = signaling.stream.shutdown().await;
     result
 }
 
-async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling, config: SharingConfig,
-    mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>) -> Result<HostReport> {
+async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling, mut config: SharingConfig,
+    mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>,displays:Option<Arc<crate::native_displays::Host>>) -> Result<HostReport> {
     let message = tokio::select! {result=signaling.receive()=>result?,_=cancelled(&mut stop)=>return Ok(HostReport::default())};
     let offer: Offer = serde_json::from_value(message).map_err(|_| anyhow::anyhow!("invalid native offer"))?;
     ensure!(offer.version == 1, "unsupported native protocol version");
-    send_video(peer, signaling, config, stop, offer, status).await
+    if let Some(displays)=&displays {
+        let displays=displays.clone();
+        config.source=tokio::task::spawn_blocking(move||displays.prepare()).await??;
+    }
+    progress(&status,HostStatus::Preparing);
+    send_video(peer, signaling, config, stop, offer, status,displays).await
 }
 
 async fn send_video(
@@ -462,6 +513,7 @@ async fn send_video(
     mut stop: watch::Receiver<bool>,
     offer: Offer,
     status: Option<watch::Sender<HostStatus>>,
+    displays:Option<Arc<crate::native_displays::Host>>,
 ) -> Result<HostReport> {
     let refresh = Arc::new(AtomicBool::new(false));
     let track = peer.sender(refresh.clone()).await?;
@@ -495,6 +547,8 @@ async fn send_video(
         controls=crate::native_control::HostControl::with_injector(config.allow_input,capture.desktop_rect(),config.clipboard.clone(),capture.input_injector())=>controls,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
     };
+    if let Some(displays)=&displays {displays.dimensions(width,height);}
+    controls.set_displays(displays.clone());
     controls.attach(&peer.pc);
     let answer = Answer {
         version: 1,
@@ -541,7 +595,11 @@ async fn send_video(
             tokio::select! {
                 _ = cancelled(&mut stop) => break,
                 _ = &mut deadline => break,
-                _ = stream.disconnected() => break,
+                // A source renewal sends its next Offer on this same signaling
+                // stream. Never race a disconnect read against that Offer.
+                _ = stream.disconnected(), if displays.is_none() => break,
+                _ = controls.closed.notified(), if displays.is_some() => break,
+                _ = async {match &displays {Some(d)=>d.changed.notified().await,None=>std::future::pending().await}} => break,
                 changed=async {match &mut encoder_state {Some(state)=>state.changed().await,None=>std::future::pending().await}}=>{
                     if changed.is_ok() {
                         encoder_label=encoder_state.as_mut().unwrap().borrow_and_update().clone();
@@ -619,7 +677,8 @@ pub async fn view_with_input(invitation:&Invitation,frames:FrameSender,stats:Arc
     view_session(invitation,frames,stats,stop,Some(input)).await
 }
 
-async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaStats>,mut stop:watch::Receiver<bool>,input:Option<crate::native_input::NativeInputReceiver>)->Result<()> {
+async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaStats>,mut stop:watch::Receiver<bool>,mut input:Option<crate::native_input::NativeInputReceiver>)->Result<()> {
+    let _lifetime=ViewerLifetime(stats.clone());
     stats.connection.set_service("IP 直连");
     stats.capabilities.set(0);
     stats.native_input_available.store(false,Ordering::Release);
@@ -629,21 +688,24 @@ async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaS
     };
     let local_ip = stream.get_ref().0.local_addr()?.ip();
     let advertised_ip = invitation.observed_client_ip().unwrap_or(local_ip);
-    let mut peer = NativePeer::new_with_advertised(local_ip, advertised_ip, Some(stats.clone()), false).await?;
     let peer_ip = stream.get_ref().0.peer_addr()?.ip();
     let mut signaling = TlsSignaling { stream, peer: peer_ip };
-    let result = tokio::select! {
-        result=receive_session(&mut peer,&mut signaling,frames,stats.clone(),input)=>result,
-        _=cancelled(&mut stop)=>Ok(()),
+    let result=loop {
+        let frames=frames.renew();
+        stats.native_media_epoch.store(frames.generation(),Ordering::Release);
+        let mut peer=NativePeer::new_with_advertised(local_ip,advertised_ip,Some(stats.clone()),false).await?;
+        let result=tokio::select! {
+            result=receive_session(&mut peer,&mut signaling,frames,stats.clone(),input)=>result,
+            _=cancelled(&mut stop)=>Ok(ViewOutcome::Ended),
+        };
+        peer.close().await;
+        match result {Ok(ViewOutcome::Switch(receiver))=>input=receiver,other=>break other.map(|_|())}
     };
-    peer.close().await;
-    stats.control_open.store(0, Ordering::Release);
-    stats.audio.stop();
-    crate::native_clipboard::stop(&stats.clipboard);
-    stats.capabilities.enable(crate::capabilities::Capability::Audio,false);
     let _ = signaling.stream.shutdown().await;
     result
 }
+
+enum ViewOutcome {Ended,Switch(Option<crate::native_input::NativeInputReceiver>)}
 
 async fn receive_session(
     peer: &mut NativePeer,
@@ -651,7 +713,7 @@ async fn receive_session(
     frames: FrameSender,
     stats: Arc<MediaStats>,
     input:Option<crate::native_input::NativeInputReceiver>,
-) -> Result<()> {
+) -> Result<ViewOutcome> {
     peer.receiver(frames, stats.clone()).await?;
     let channel = peer
         .pc
@@ -682,10 +744,12 @@ async fn receive_session(
     }
     peer.connected().await?;
     if stream.lan_peer().is_none() {stats.diagnostics.record(peer.direct_path().await?);}
+    let switching={
     let mut control_active=true;
     let control=controls.run();tokio::pin!(control);
     loop {
         tokio::select! {
+            _=stats.native_displays.changed.notified()=>{if let Some(request)=stats.native_displays.take_switch(){break Some(request);}},
             result=&mut control,if control_active=>{
                 control_active=false;
                 if let Err(error)=result {tracing::warn!(%error,"native control unavailable; video continues");}
@@ -695,7 +759,7 @@ async fn receive_session(
             },
             _=stream.disconnected()=>{
                 ensure!(stats.decoded_total.load(Ordering::Relaxed)>0,"native host ended before delivering video");
-                break;
+                break None;
             },
             state=peer.states.changed()=>{
                 if state.is_err()||matches!(*peer.states.borrow(),RTCPeerConnectionState::Failed|RTCPeerConnectionState::Closed){
@@ -704,7 +768,8 @@ async fn receive_session(
             },
         }
     }
-    Ok(())
+    };
+    if let Some(request)=switching {controls.apply_display(request).await?;Ok(ViewOutcome::Switch(controls.take_input()))}else{Ok(ViewOutcome::Ended)}
 }
 
 #[cfg(test)]

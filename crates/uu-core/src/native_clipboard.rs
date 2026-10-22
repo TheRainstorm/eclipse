@@ -102,6 +102,11 @@ fn clear_pending(control: &Clipboard) {
     control.local.lock().unwrap().take();
     control.remote.lock().unwrap().take();
 }
+pub(crate) fn suspend(control:&Clipboard){
+    control.active.store(false,Ordering::Release);
+    control.supported.store(false,Ordering::Release);
+    clear_pending(control);
+}
 pub(crate) fn stop(control: &Clipboard) {
     control.stopped.store(true, Ordering::Release);
     control.active.store(false, Ordering::Release);
@@ -129,13 +134,14 @@ impl Shared {
 
 /// The GUI supplies an explicitly permitted backend. None never opens a device.
 pub(crate) fn host(channel: Arc<RTCDataChannel>, control: Option<Arc<Clipboard>>) {
+    let transport=control.as_ref().map_or(0,|c|c.transport_epoch.fetch_add(1,Ordering::AcqRel).wrapping_add(1));
     let shared = Shared::new();
     let closed = shared.clone();
     let state = control.clone();
     channel.on_close(Box::new(move || {
         closed.closed.store(true, Ordering::Release);
-        if let Some(state) = &state {
-            stop(state);
+        if let Some(state) = state.as_ref().filter(|s|s.transport_epoch.load(Ordering::Acquire)==transport) {
+            suspend(state);
         }
         Box::pin(async {})
     }));
@@ -147,6 +153,7 @@ pub(crate) fn host(channel: Arc<RTCDataChannel>, control: Option<Arc<Clipboard>>
         let state = state.clone();
         let weak = weak.clone();
         Box::pin(async move {
+            if state.as_ref().is_some_and(|s|s.transport_epoch.load(Ordering::Acquire)!=transport){return;}
             let Some(channel) = weak.upgrade() else {
                 return;
             };
@@ -217,7 +224,8 @@ pub(crate) fn host(channel: Arc<RTCDataChannel>, control: Option<Arc<Clipboard>>
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            if shared.closed.load(Ordering::Acquire)
+            if control.as_ref().is_some_and(|s|s.transport_epoch.load(Ordering::Acquire)!=transport)
+                || shared.closed.load(Ordering::Acquire)
                 || channel.ready_state() == RTCDataChannelState::Closed
             {
                 break;
@@ -249,21 +257,24 @@ pub(crate) fn host(channel: Arc<RTCDataChannel>, control: Option<Arc<Clipboard>>
                 }
             }
         }
-        if let Some(state) = &control {
-            stop(state);
+        if let Some(state) = control.as_ref().filter(|s|s.transport_epoch.load(Ordering::Acquire)==transport) {
+            suspend(state);
         }
         let _ = channel.close().await;
     });
 }
 
 pub(crate) fn viewer(channel: Arc<RTCDataChannel>, stats: Arc<MediaStats>) {
+    let transport=stats.clipboard.transport_epoch.fetch_add(1,Ordering::AcqRel).wrapping_add(1);
     let shared = Shared::new();
     let closed = shared.clone();
     let state = stats.clone();
     channel.on_close(Box::new(move || {
         closed.closed.store(true, Ordering::Release);
-        state.capabilities.enable(Capability::Clipboard, false);
-        stop(&state.clipboard);
+        if state.clipboard.transport_epoch.load(Ordering::Acquire)==transport {
+            state.capabilities.enable(Capability::Clipboard, false);
+            suspend(&state.clipboard);
+        }
         Box::pin(async {})
     }));
     let incoming = shared.clone();
@@ -274,6 +285,7 @@ pub(crate) fn viewer(channel: Arc<RTCDataChannel>, stats: Arc<MediaStats>) {
         let state = state.clone();
         let weak = weak.clone();
         Box::pin(async move {
+            if state.clipboard.transport_epoch.load(Ordering::Acquire)!=transport{return;}
             match parse(&message.data) {
                 Some(Packet::Status {
                     epoch,
@@ -334,7 +346,8 @@ pub(crate) fn viewer(channel: Arc<RTCDataChannel>, stats: Arc<MediaStats>) {
         let mut previous = None;
         loop {
             interval.tick().await;
-            if shared.closed.load(Ordering::Acquire)
+            if stats.clipboard.transport_epoch.load(Ordering::Acquire)!=transport
+                || shared.closed.load(Ordering::Acquire)
                 || stats.clipboard.stopped.load(Ordering::Acquire)
                 || channel.ready_state() == RTCDataChannelState::Closed
             {
@@ -395,8 +408,10 @@ pub(crate) fn viewer(channel: Arc<RTCDataChannel>, stats: Arc<MediaStats>) {
                 }
             }
         }
-        stats.capabilities.enable(Capability::Clipboard, false);
-        stop(&stats.clipboard);
+        if stats.clipboard.transport_epoch.load(Ordering::Acquire)==transport {
+            stats.capabilities.enable(Capability::Clipboard, false);
+            suspend(&stats.clipboard);
+        }
         let _ = channel.close().await;
     });
 }

@@ -115,7 +115,7 @@ pub struct DxgiCapture {
 impl DxgiCapture {
     pub fn open(source: &CaptureSource) -> Result<Self, CaptureError> {
         let selected = match source {
-            CaptureSource::Primary => outputs()?
+            CaptureSource::Primary | CaptureSource::Desktop => outputs()?
                 .into_iter()
                 .find(|o| o.monitor.primary)
                 .ok_or(CaptureError::NoBackend)?,

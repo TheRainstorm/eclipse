@@ -137,8 +137,8 @@ def fixture(args):
 
     bus.add_message_filter(method)
     command = [str(args.probe)]
-    if args.case != 'stream-view': command += ['--allow-input']
-    if args.case.startswith('stream'): command += ['--frames', '60', '--sessions', '2']
+    if args.case not in ('stream-view', 'stream-displays'): command += ['--allow-input']
+    if args.case.startswith('stream') and args.case != 'stream-displays': command += ['--frames', '60', '--sessions', '2']
     if args.case == 'stream-input': command += ['--exercise-fixture-input']
     if args.case == 'cancel': command += ['--cancel-after-ms', '400']
     if args.case == 'stream-native':
@@ -157,7 +157,7 @@ def fixture(args):
                    '--frames', '60', '--timeout-seconds', '8', '--report', str(runtime / 'native-report.json')]
     probe = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              env=pw_env if video_node is not None else None)
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + (30 if args.case == 'stream-displays' else 10)
 
     def poll():
         if probe.poll() is not None or time.monotonic() > deadline:
@@ -192,6 +192,18 @@ def fixture(args):
             print(json.dumps(dict(case=args.case, generated_video=True, encrypted_native_media=True,
                                   decoded=native['final']['decoded'], errors=native['final']['errors'],
                                   no_user_desktop=True, session_closed=True)))
+            return
+        if args.case == 'stream-displays':
+            if probe.returncode: raise RuntimeError('Media renewal failed: ' + stderr[-3000:] + ' / ' + stdout[-2000:])
+            reports = [json.loads(line) for line in stdout.splitlines() if line.startswith('{')]
+            assert reports[-1]['ok'] and reports[-1]['generations'] == 3, reports
+            assert len([e for e in events if e['method'] == 'Start']) == 3, events
+            assert len([e for e in events if e['method'] == 'Close' and e.get('session')]) == 3, events
+            keys = [(e['keycode'], e['state']) for e in events if e['method'] == 'NotifyKeyboardKeycode']
+            assert keys == [(30,1),(30,0)] * 3, keys
+            print(json.dumps(dict(case=args.case, encrypted_native_media=True, generations=3,
+                                  same_size=True, held_keys_released=True, clipboard_resumed=True,
+                                  no_user_desktop=True)))
             return
         reports = [json.loads(line) for line in stdout.splitlines() if line.strip()]
         report = reports[-1]
@@ -237,7 +249,7 @@ def fixture(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--probe', type=Path, required=True)
-    parser.add_argument('--case', choices=('deny', 'cancel', 'stream-view', 'stream-input', 'stream-native'), required=True)
+    parser.add_argument('--case', choices=('deny', 'cancel', 'stream-view', 'stream-input', 'stream-native', 'stream-displays'), required=True)
     parser.add_argument('--cli', type=Path, help='Native CLI used for the encrypted-media scenario')
     parser.add_argument('--pipewire-prefix', type=Path, help='Optional private installation prefix for PipeWire fixture tools')
     parser.add_argument('--inside-owned-bus', action='store_true', help=argparse.SUPPRESS)
@@ -260,7 +272,7 @@ def main():
                    '--inside-owned-bus', '--probe', str(args.probe), '--case', args.case]
         if args.pipewire_prefix: command += ['--pipewire-prefix', str(args.pipewire_prefix)]
         if args.cli: command += ['--cli', str(args.cli)]
-        subprocess.run(command, env=env, check=True, timeout=15)
+        subprocess.run(command, env=env, check=True, timeout=40 if args.case == 'stream-displays' else 15)
 
 
 if __name__ == '__main__':

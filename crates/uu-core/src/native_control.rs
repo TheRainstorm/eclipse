@@ -25,11 +25,15 @@ use webrtc::{
     peer_connection::RTCPeerConnection,
 };
 
-const MAX_CONTROL: usize = 1024;
+const MAX_CONTROL: usize = 16 * 1024;
 const LEASE: Duration = Duration::from_secs(5);
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Packet {
+    Displays { catalog:crate::screen_control::RemoteScreens },
+    SelectDisplay { request:u64, id:i32 },
+    ApplyDisplay { request:u64 },
+    DisplaySelected { request:u64, accepted:bool, restart:bool },
     Ping { sequence: u64 },
     Pong { sequence: u64 },
     RequestInput { enabled: bool },
@@ -222,6 +226,10 @@ impl Drop for InputWorker {
 }
 
 pub(crate) struct HostControl {
+    displays:Mutex<Option<Arc<crate::native_displays::Host>>>,
+    pending_display:Mutex<Option<u64>>,
+    stopped:AtomicBool,
+    pub closed:Notify,
     timing:Arc<crate::native_timing::HostTiming>,
     worker: Option<Arc<InputWorker>>,
     registered: AtomicBool,
@@ -262,6 +270,10 @@ impl HostControl {
             None
         };
         Arc::new(Self {
+            displays:Mutex::new(None),
+            pending_display:Mutex::new(None),
+            stopped:AtomicBool::new(false),
+            closed:Notify::new(),
             timing,
             worker,
             clipboard,
@@ -269,6 +281,7 @@ impl HostControl {
             registered: AtomicBool::new(false),
         })
     }
+    pub fn set_displays(&self,displays:Option<Arc<crate::native_displays::Host>>){*self.displays.lock().unwrap()=displays;}
     pub fn timing(&self)->Arc<crate::native_timing::HostTiming>{self.timing.clone()}
     fn status(&self) -> Packet {
         Packet::InputStatus {
@@ -304,6 +317,7 @@ impl HostControl {
                 }
                 let closed = host.clone();
                 channel.on_close(Box::new(move || {
+                    closed.closed.notify_one();
                     if let Some(worker) = &closed.worker {
                         worker.state.stop.store(true, Ordering::Release);
                     }
@@ -318,6 +332,7 @@ impl HostControl {
                         let Some(channel) = weak.upgrade() else {
                             return;
                         };
+                        if host.stopped.load(Ordering::Acquire){return;}
                         match parse(&message.data) {
                             Some(Packet::Ping { sequence }) => {
                                 if let Some(worker) = &host.worker {
@@ -326,7 +341,21 @@ impl HostControl {
                                 let _ = send(&channel, Packet::Pong { sequence }).await;
                                 let _ = send(&channel, host.status()).await;
                                 let _ = send(&channel,Packet::Telemetry{version:1,stages:host.timing.snapshot()}).await;
+                                let displays=host.displays.lock().unwrap().clone();
+                                if let Some(displays)=displays {let _=send(&channel,Packet::Displays{catalog:displays.catalog()}).await;}
+
                             }
+                            Some(Packet::SelectDisplay{request,id})=>{
+                                let displays=host.displays.lock().unwrap().clone();
+                                let decision=if host.pending_display.lock().unwrap().is_some(){None}else{displays.as_ref().and_then(|d|d.select(id))};
+                                let restart=decision==Some(true);
+                                if restart {*host.pending_display.lock().unwrap()=Some(request);}
+                                let _=send(&channel,Packet::DisplaySelected{request,accepted:decision.is_some(),restart}).await;
+                            },
+                            Some(Packet::ApplyDisplay{request})=>{
+                                let matched={let mut pending=host.pending_display.lock().unwrap();if *pending==Some(request){pending.take();true}else{false}};
+                                if matched {let displays=host.displays.lock().unwrap().clone();if let Some(displays)=displays{displays.commit();}}
+                            },
                             Some(Packet::RequestInput { enabled }) => {
                                 if let Some(worker) = &host.worker {
                                     worker.request(enabled);
@@ -361,8 +390,9 @@ impl HostControl {
         }));
     }
     pub async fn stop(&self) {
+        self.stopped.store(true,Ordering::Release);
         if let Some(clipboard) = &self.clipboard {
-            crate::native_clipboard::stop(clipboard);
+            if self.displays.lock().unwrap().is_none(){crate::native_clipboard::stop(clipboard);}else{crate::native_clipboard::suspend(clipboard);}
         }
         if let Some(worker) = &self.worker {
             worker.stop().await;
@@ -379,6 +409,7 @@ impl HostControl {
 }
 
 pub(crate) struct ViewerControl {
+    media_epoch:u64,
     channel: Arc<RTCDataChannel>,
     stats: Arc<MediaStats>,
     input: Option<NativeInputReceiver>,
@@ -393,6 +424,10 @@ impl ViewerControl {
         stats: Arc<MediaStats>,
         input: Option<NativeInputReceiver>,
     ) -> Self {
+        let media_epoch=stats.native_media_epoch.load(Ordering::Acquire);
+        stats.control_open.store(0,Ordering::Release);
+        stats.capabilities.enable(Capability::Input,false);
+        stats.native_input_available.store(false,Ordering::Release);
         stats.native_timing.reset();
         stats.rtt_updated_ms.store(0,Ordering::Relaxed);
         let requested = input
@@ -408,6 +443,7 @@ impl ViewerControl {
         let opened = stats.clone();
         let notify = ready.clone();
         channel.on_open(Box::new(move || {
+            if opened.native_media_epoch.load(Ordering::Acquire)!=media_epoch{return Box::pin(async {});}
             opened.control_open.store(1, Ordering::Release);
             notify.notify_one();
             Box::pin(async {})
@@ -415,6 +451,7 @@ impl ViewerControl {
         let closed = stats.clone();
         let notify = ready.clone();
         channel.on_close(Box::new(move || {
+            if closed.native_media_epoch.load(Ordering::Acquire)!=media_epoch{return Box::pin(async {});}
             closed.control_open.store(0, Ordering::Release);
             closed.capabilities.enable(Capability::Input, false);
             closed
@@ -428,7 +465,15 @@ impl ViewerControl {
         let generation = epoch.clone();
         let probes = probe.clone();
         channel.on_message(Box::new(move |message| {
+            if incoming.native_media_epoch.load(Ordering::Acquire)!=media_epoch{return Box::pin(async {});}
             match parse(&message.data) {
+                Some(Packet::Displays{catalog}) if crate::native_displays::valid(&catalog)=>{
+                    *incoming.remote_screens.lock().unwrap()=catalog;
+                    incoming.native_displays.catalog(media_epoch);
+                    incoming.remote_screens_revision.fetch_add(1,Ordering::Release);
+                    incoming.capabilities.enable(Capability::Displays,true);
+                },
+                Some(Packet::DisplaySelected{request,accepted,restart})=>incoming.native_displays.response(crate::native_displays::Response{request,accepted,restart}),
                 Some(Packet::Pong { sequence }) => {
                     let reading = {
                         let mut probe = probes.lock().unwrap();
@@ -461,6 +506,7 @@ impl ViewerControl {
             Box::pin(async {})
         }));
         Self {
+            media_epoch,
             channel,
             stats,
             input,
@@ -480,6 +526,20 @@ impl ViewerControl {
             .fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
+    pub async fn apply_display(&self,request:u64)->Result<()> {
+        // The host keeps the old peer alive until this confirmation proves its
+        // acceptance reached us. Closing immediately after send could discard
+        // the buffered SCTP acceptance before the client received it.
+        send(&self.channel,Packet::ApplyDisplay{request}).await?;
+        timeout(Duration::from_secs(15),async{
+            loop {
+                if matches!(self.channel.ready_state(),RTCDataChannelState::Closing|RTCDataChannelState::Closed){break;}
+                self.ready.notified().await;
+            }
+        }).await.context("被控端未完成显示器切换")?;
+        Ok(())
+    }
+    pub fn take_input(&mut self)->Option<NativeInputReceiver>{self.input.take()}
     pub async fn run(&mut self) -> Result<()> {
         timeout(Duration::from_secs(15), async {
             loop {
@@ -512,6 +572,11 @@ impl ViewerControl {
             tokio::select! {biased;
                 action=async{match self.input.as_mut(){Some(input)=>input.next().await,None=>std::future::pending().await}}=>{
                     match action {
+                        NextInput::Display(request,id)=>{
+                            if self.stats.capabilities.allows(Capability::Displays) && self.stats.native_displays.request(request){
+                                send(&self.channel,Packet::SelectDisplay{request,id}).await?;
+                            }
+                        },
                         NextInput::Mode(enabled)=>{
                             if !enabled{self.stats.capabilities.enable(Capability::Input,false);}
                             send(&self.channel,Packet::RequestInput{enabled}).await?;
@@ -536,6 +601,7 @@ impl ViewerControl {
 }
 impl Drop for ViewerControl {
     fn drop(&mut self) {
+        if self.stats.native_media_epoch.load(Ordering::Acquire)!=self.media_epoch{return;}
         self.stats.capabilities.enable(Capability::Input, false);
         self.stats
             .native_input_available

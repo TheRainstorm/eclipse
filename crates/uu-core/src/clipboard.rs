@@ -13,6 +13,8 @@ pub const MAX_TEXT: usize = 30 * 1024;
 const MAX_BYTES: usize = MAX_TEXT * 2 + 2;
 #[derive(Default)]
 pub struct Clipboard {
+    /// Transport lease, independent of focus and permission changes.
+    pub(crate) transport_epoch:AtomicU64,
     pub available: AtomicBool,
     pub enabled: AtomicBool,
     /// Frontend focus/consent generation, used to reject stale native messages.

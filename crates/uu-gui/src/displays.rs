@@ -8,6 +8,8 @@ pub(super) type CaptureProfile = (u32, usize, u32, usize, bool);
 
 #[derive(Default)]
 pub(super) struct Displays {
+    pub native_frame_epoch:u64,
+    native_request_epoch:u64,
     pub selected: Option<i32>,
     pending: Option<Pending>,
     queued: Option<i32>,
@@ -163,6 +165,11 @@ impl Displays {
             self.notice.clear();
         }
     }
+    fn native_frame(&mut self,catalog_epoch:u64,has_frame:bool)->bool{
+        let fresh=self.native_frame_epoch!=self.native_request_epoch && catalog_epoch==self.native_frame_epoch;
+        if fresh && has_frame {if let Some(p)=self.pending.as_mut(){p.frame=true;}self.complete();}
+        self.ready()
+    }
     fn tick(&mut self, now: Instant) {
         if self
             .pending
@@ -228,6 +235,7 @@ impl super::App {
             .unwrap_or_else(|| "显示器".into())
     }
     pub(super) fn select_remote_screen(&mut self, id: i32) {
+        if self.is_native(){self.select_native_display(id);return;}
         let screens = self.remote_screens();
         let Some(screen) = screens.screens.iter().find(|s| s.id == id).cloned() else {
             return;
@@ -312,7 +320,59 @@ impl super::App {
         self.stream_menu.open = false;
         self.context.memory_mut(|m| m.close_popup());
     }
+    fn select_native_display(&mut self,id:i32){
+        let screens=self.remote_screens();
+        if !screens.screens.iter().any(|s|s.id==id){return;}
+        if self.displays.defer_selection(id){return;}
+        if self.displays.selected==Some(id) && self.displays.ready(){return;}
+        if !self.controller.as_ref().is_some_and(|h|h.stats.control_open.load(std::sync::atomic::Ordering::Acquire)!=0){return;}
+        self.release_all_keys();self.release_pointer_capture(&self.context.clone());
+        self.cursor=super::cursor::Cursor::default();
+        let request=self.displays.begin(id,0,Instant::now());
+        self.displays.native_request_epoch=self.displays.native_frame_epoch;
+        let sent=self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|input|input.select_display(request,id).is_ok());
+        if !sent {
+            self.displays.pending=None;self.displays.blocked=false;
+            self.displays.selected=Some(screens.current_id);
+            self.displays.notice="切换失败：控制连接不可用".into();
+        }
+        self.displays.menu_open=false;self.stream_menu.open=false;
+        self.context.memory_mut(|m|m.close_popup());
+    }
+    fn poll_native_displays(&mut self,tracks:&[u32]){
+        let screens=self.remote_screens();
+        if self.displays.layout.sync(&screens.screens){self.save_display_layout();}
+        let Some(h)=self.controller.as_ref()else{return;};
+        let catalog_epoch=h.stats.native_displays.catalog_epoch();
+        for response in h.stats.native_displays.responses(){
+            if !self.displays.pending.as_ref().is_some_and(|p|p.request==response.request){continue;}
+            if response.accepted && response.restart {self.displays.pending.as_mut().unwrap().accepted=true;}
+            else {
+                self.displays.pending=None;self.displays.blocked=false;
+                self.displays.selected=Some(screens.current_id);
+                self.displays.notice=if response.accepted{String::new()}else{"被控端未允许切换到该显示器".into()};
+            }
+        }
+        if self.displays.pending.is_some(){
+            // Acknowledgment alone is insufficient: require the catalog and an
+            // actual frame from the new media generation, even at identical size.
+            if self.displays.native_frame(catalog_epoch,tracks.contains(&0)||self.textures.contains_key(&0)){
+                self.displays.selected=Some(screens.current_id);
+            }
+        }else if catalog_epoch==self.displays.native_frame_epoch && !screens.screens.is_empty(){
+            self.displays.selected=Some(screens.current_id);
+        }
+        // The compositor may need local permission; use the same preparation
+        // bound as native SDP rather than the interoperability RPC's 8 seconds.
+        if self.displays.pending.as_ref().is_some_and(|p|p.sent.elapsed()>Duration::from_secs(125)){
+            self.displays.pending=None;self.displays.blocked=true;
+            self.displays.notice="等待新屏幕超时，请检查被控端授权或重新连接".into();
+        }
+        self.selected_track=0;
+        if let Some(id)=self.displays.queued_selection(){self.select_native_display(id);}
+    }
     pub(super) fn poll_displays(&mut self, tracks: &[u32]) {
+        if self.is_native(){self.poll_native_displays(tracks);return;}
         let pending_at_start = self.displays.pending.as_ref()
             .map(|p| (p.request, p.sent, self.displays.selected));
         let received = self.controller.as_ref().is_some_and(|h| {
@@ -439,6 +499,17 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_switch_requires_acceptance_inventory_and_image_of_the_new_generation(){
+        let mut d=Displays::default();d.native_frame_epoch=4;d.native_request_epoch=4;
+        d.begin(7,0,Instant::now());
+        d.pending.as_mut().unwrap().accepted=true;
+        assert!(!d.native_frame(4,true)); // old source, same size and track
+        d.native_frame_epoch=5;
+        assert!(!d.native_frame(4,true)); // late old inventory
+        assert!(!d.native_frame(5,false)); // negotiated but no image
+        assert!(d.native_frame(5,true));
+    }
     #[test]
     fn rapid_selections_wait_for_current_confirmation_and_keep_only_latest() {
         let mut d = Displays::default();

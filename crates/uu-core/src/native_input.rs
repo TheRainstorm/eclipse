@@ -56,6 +56,7 @@ pub struct InputQueueError;
 #[derive(Clone)]
 pub struct NativeInputSender {
     tx: mpsc::Sender<Envelope>,
+    displays:mpsc::Sender<(u64,i32)>,
     reset: watch::Sender<u64>,
     mode: watch::Sender<bool>,
     pub(crate) requested: Arc<AtomicBool>,
@@ -63,6 +64,7 @@ pub struct NativeInputSender {
 }
 pub struct NativeInputReceiver {
     pub(crate) rx: mpsc::Receiver<Envelope>,
+    displays:mpsc::Receiver<(u64,i32)>,
     pub(crate) reset: watch::Receiver<u64>,
     pub(crate) mode: watch::Receiver<bool>,
     pub(crate) requested: Arc<AtomicBool>,
@@ -74,6 +76,7 @@ pub(crate) struct Envelope {
     pub created:std::time::Instant,
 }
 pub(crate) enum NextInput {
+    Display(u64,i32),
     Mode(bool),
     Reset,
     Command(Envelope),
@@ -84,12 +87,14 @@ impl NativeInputReceiver {
         tokio::select! { biased;
             mode=self.mode.changed()=>if mode.is_ok(){NextInput::Mode(*self.mode.borrow_and_update())}else{NextInput::Closed},
             reset=self.reset.changed()=>if reset.is_ok(){self.reset.borrow_and_update();NextInput::Reset}else{NextInput::Closed},
+            display=self.displays.recv()=>display.map_or(NextInput::Closed,|(request,id)|NextInput::Display(request,id)),
             item=self.rx.recv()=>item.map_or(NextInput::Closed,NextInput::Command),
         }
     }
 }
 pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
     let (tx, rx) = mpsc::channel(256);
+    let (displays,displays_rx)=mpsc::channel(8);
     let (reset, reset_rx) = watch::channel(0);
     let (mode, mode_rx) = watch::channel(requested);
     let requested = Arc::new(AtomicBool::new(requested));
@@ -97,6 +102,7 @@ pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
     (
         NativeInputSender {
             tx,
+            displays,
             reset,
             mode,
             requested: requested.clone(),
@@ -104,6 +110,7 @@ pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
         },
         NativeInputReceiver {
             rx,
+            displays:displays_rx,
             reset: reset_rx,
             mode: mode_rx,
             requested,
@@ -112,6 +119,10 @@ pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
     )
 }
 impl NativeInputSender {
+    pub fn select_display(&self,request:u64,id:i32)->Result<(),InputQueueError>{
+        self.release_all();
+        self.displays.try_send((request,id)).map_err(|_|InputQueueError)
+    }
     pub fn send(&self, command: InputCommand) -> Result<(), InputQueueError> {
         let envelope = Envelope {
             epoch: self.epoch.load(Ordering::Acquire),

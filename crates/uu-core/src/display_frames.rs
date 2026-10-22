@@ -24,6 +24,7 @@ impl DisplayImage {
 }
 #[derive(Default)]
 struct Mailbox {
+    generation: u64,
     images: BTreeMap<u32, (DisplayImage, std::time::Instant)>,
     waits: BTreeMap<u32, std::collections::VecDeque<(std::time::Instant, f32)>>,
     // Per-track lifetime totals: published, replaced before delivery, delivered.
@@ -45,6 +46,7 @@ type Waker = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 
 #[derive(Clone)]
 pub struct FrameSender {
+    generation: u64,
     pending: Pending,
     wake: mpsc::SyncSender<()>,
     notify: Waker,
@@ -64,6 +66,7 @@ pub fn channel() -> (FrameSender, FrameReceiver) {
     let planar = Arc::new(std::sync::atomic::AtomicBool::new(false));
     (
         FrameSender {
+            generation: 0,
             pending: pending.clone(),
             wake: tx,
             notify: notify.clone(),
@@ -73,6 +76,20 @@ pub fn channel() -> (FrameSender, FrameReceiver) {
     )
 }
 impl FrameSender {
+    /// Start a new media source. Retired decoder tasks cannot publish into it,
+    /// including a late image with exactly the same size and video track.
+    pub fn renew(&self) -> Self {
+        let mut mailbox = self.pending.lock().unwrap();
+        mailbox.generation = mailbox.generation.wrapping_add(1);
+        for track in mailbox.images.keys().copied().collect::<Vec<_>>() {
+            mailbox.counts.entry(track).or_default()[1] += 1;
+        }
+        mailbox.images.clear();
+        mailbox.waits.clear();
+        Self { generation: mailbox.generation, ..self.clone() }
+    }
+    pub fn generation(&self) -> u64 { self.generation }
+
     pub fn send(&self, frame: DisplayFrame) -> Result<(), mpsc::SendError<()>> {
         self.send_image(DisplayImage::Rgba(frame))
     }
@@ -88,6 +105,7 @@ impl FrameSender {
     fn send_image(&self, frame: DisplayImage) -> Result<(), mpsc::SendError<()>> {
         {
             let mut mailbox = self.pending.lock().unwrap();
+            if mailbox.generation != self.generation { return Ok(()); }
             let track = frame.track();
             let replaced = mailbox.images.insert(track, (frame, std::time::Instant::now())).is_some();
             let counts = mailbox.counts.entry(track).or_default();
@@ -104,6 +122,7 @@ impl FrameSender {
     }
 }
 impl FrameReceiver {
+    pub fn generation(&self) -> u64 { self.pending.lock().unwrap().generation }
     /// Published, overwritten before delivery, and delivered images for a track.
     /// Overwrites discard stale decoded images, never compressed reference frames.
     pub fn delivery_counts(&self, track: u32) -> [u64; 3] {
@@ -148,6 +167,18 @@ impl FrameReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn renewed_source_drops_pending_and_late_old_images_even_at_the_same_size() {
+        let (old, mut rx) = channel();
+        old.send((0,2,2,vec![1])).unwrap();
+        let fresh = old.renew();
+        assert_eq!(rx.generation(), fresh.generation());
+        old.send((0,2,2,vec![2])).unwrap();
+        assert!(rx.try_recv().is_err());
+        fresh.send((0,2,2,vec![3])).unwrap();
+        assert_eq!(rx.try_recv().unwrap().3, vec![3]);
+        assert_eq!(rx.delivery_counts(0), [2,1,1]);
+    }
     #[test]
     fn delivery_wait_tracks_delivered_image_and_expires() {
         let (tx, mut rx) = channel();

@@ -22,7 +22,8 @@ fn dimension(fields: &[(u32, WireValue<'_>)], physical: u32, logical: u32) -> u3
         .find(|v| *v > 0 && *v <= i32::MAX as u64)
         .unwrap_or(0) as u32
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteScreens {
     pub screens: Vec<RemoteScreen>,
     pub current_id: i32,
@@ -46,7 +47,8 @@ impl RemoteScreens {
             .or_else(|| self.screens.iter().find(|s| s.assigned_track() == Some(track)))
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteScreen {
     pub id: i32,
     pub refresh_hz: u32,
