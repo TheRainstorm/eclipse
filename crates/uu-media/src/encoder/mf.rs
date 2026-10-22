@@ -126,7 +126,7 @@ pub(super) struct Driver {
     activation: IMFActivate,
     input_id: u32,
     output_id: u32,
-    input_credit: bool,
+    input_credit: u32,
     settings: Settings,
     bgra: Option<YUVBuffer>,
     nv12: Vec<u8>,
@@ -150,7 +150,7 @@ impl Driver {
                         activation: activation.clone(),
                         input_id,
                         output_id,
-                        input_credit: false,
+                        input_credit: 0,
                         settings,
                         bgra: None,
                         nv12: Vec::new(),
@@ -292,10 +292,10 @@ impl Driver {
                     .SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &VARIANT::from(1u32))
                     .map_err(|e| format!("hardware IDR request: {e}"))?;
             }
-            while !self.input_credit {
+            while self.input_credit == 0 {
                 let event = self.next_event()?;
                 if event == METransformNeedInput.0 as u32 {
-                    self.input_credit = true;
+                    self.input_credit += 1;
                 } else if event == METransformHaveOutput.0 as u32 {
                     return Err("MFT retained unexpected old output".into());
                 }
@@ -304,13 +304,13 @@ impl Driver {
             self.transform
                 .ProcessInput(self.input_id, &sample, 0)
                 .map_err(|e| format!("hardware ProcessInput: {e}"))?;
-            self.input_credit = false;
+            self.input_credit -= 1;
             loop {
                 let event = self.next_event()?;
                 if event == METransformNeedInput.0 as u32 {
-                    self.input_credit = true;
+                    self.input_credit += 1;
                 } else if event == METransformHaveOutput.0 as u32 {
-                    if let Some(coded) = self.output(frame, keyframe, 0)? {
+                    if let Some(coded) = self.output(frame, keyframe)? {
                         return Ok(vec![coded]);
                     }
                 }
@@ -321,7 +321,6 @@ impl Driver {
         &mut self,
         frame: &RawFrame,
         keyframe: bool,
-        changes: u8,
     ) -> Result<Option<EncodedFrame>, String> {
         unsafe {
             let info = self
@@ -355,11 +354,7 @@ impl Driver {
             drop(ManuallyDrop::take(&mut requests[0].pEvents));
             match result {
                 Err(e) if e.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
-                    // Retain the requested format when the driver publishes its
-                    // sequence header, before retrying this same output event.
-                    if changes >= 2 {
-                        return Err("hardware MFT repeated its output type change".into());
-                    }
+                    // Negotiate the type containing the driver's new sequence header.
                     let ty = self
                         .transform
                         .GetOutputAvailableType(self.output_id, 0)
@@ -367,10 +362,17 @@ impl Driver {
                     self.transform
                         .SetOutputType(self.output_id, &ty, 0)
                         .map_err(reason)?;
-                    return self.output(frame, keyframe, changes + 1);
+                    // One output call consumes one HaveOutput event, including
+                    // a type change. Wait for the next event before calling again.
+                    return Ok(None);
                 }
                 Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(None),
-                Err(e) => return Err(format!("hardware ProcessOutput: {e}")),
+                Err(e) => {
+                    return Err(format!(
+                        "hardware ProcessOutput (flags={}, size={}, alignment={}): {e}",
+                        info.dwFlags, info.cbSize, info.cbAlignment
+                    ))
+                }
                 Ok(()) => {}
             }
             let sample = sample.ok_or("hardware MFT returned no encoded sample")?;
@@ -414,6 +416,7 @@ impl Driver {
                     complete.extend_from_slice(&data);
                     data = complete;
                 }
+                data = super::low_delay::declare_no_reordering(&data)?;
                 if crate::bitstream::h264_dimensions(&data) != Some((frame.width, frame.height)) {
                     return Err("hardware recovery IDR has no matching SPS/PPS geometry".into());
                 }

@@ -3,6 +3,8 @@ use crate::{codec::CodecError, EncodedFrame, H264Encoder, RawFrame, VideoEncoder
 
 #[cfg(all(windows, feature = "mf-encode"))]
 mod mf;
+#[cfg(any(test,all(windows,feature="mf-encode")))]
+mod low_delay;
 mod upload;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 mod vaapi;
