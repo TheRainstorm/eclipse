@@ -122,8 +122,7 @@ fn hardware(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
     })?));
     #[cfg(not(any(
         all(target_os = "linux", feature = "vaapi"),
-        all(windows, feature = "mf-encode"),
-        all(feature="intel-vpl",any(windows,target_os="linux"))
+        all(windows, feature = "mf-encode")
     )))]
     {
         let _ = settings;
