@@ -1,4 +1,29 @@
 //! Explicit local sharing controls and first-pair confirmation.
+
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+    #[test]
+    fn completed_start_failure_is_shown_after_worker_cleanup() {
+        let (send, receive)=mpsc::channel();
+        let (stop, _)=watch::channel(false);
+        let task=std::thread::spawn(move || {send.send(Ready::Ended(Err("TCP fixture-port 已被占用".into()))).unwrap();});
+        while !task.is_finished() {std::thread::yield_now();}
+        let mut host=HostUi::default();
+        host.status="正在开启共享…".into();
+        host.ready=Some(receive);
+        host.worker=Some(Worker{stop,task:Some(task)});
+        host.poll(&egui::Context::default());
+        assert!(!host.running());
+        assert!(host.open);
+        assert!(host.notice.contains("已被占用"));
+        host.configure_ports(51000,51001);
+        assert_eq!(host.ports(),(51000,51001));
+        host.poll(&egui::Context::default());
+        assert!(host.notice.contains("已被占用"),"failure must remain visible on later frames");
+    }
+}
+
 use eframe::egui;
 use std::{
     net::SocketAddr,
@@ -37,6 +62,7 @@ pub(super) struct HostUi {
     pub open: bool,
     name: String,
     port: u16,
+    discovery_port: u16,
     monitors: Vec<native::CaptureMonitor>,
     monitor: usize,
     fps: u32,
@@ -74,6 +100,7 @@ impl Default for HostUi {
                 .filter(|s: &String| !s.is_empty())
                 .unwrap_or_else(|| "Eclipse server".into()),
             port: uu_core::native_discovery::SERVICE_PORT,
+            discovery_port: uu_core::native_discovery::DISCOVERY_PORT,
             monitors: Vec::new(),
             monitor: 0,
             fps: 60,
@@ -97,6 +124,10 @@ impl Default for HostUi {
     }
 }
 impl HostUi {
+    pub fn ports(&self) -> (u16, u16) { (self.port, self.discovery_port) }
+    pub fn configure_ports(&mut self, service: u16, discovery: u16) {
+        if !self.running() { self.port=service; self.discovery_port=discovery; }
+    }
     pub fn running(&self) -> bool {
         self.worker.is_some()
     }
@@ -133,7 +164,7 @@ impl HostUi {
             }
         }
     }
-    pub fn poll(&mut self, ctx: &egui::Context) {
+    fn poll_ready(&mut self) {
         if let Some(rx) = &self.ready {
             while let Ok(event) = rx.try_recv() {
                 match event {
@@ -159,14 +190,19 @@ impl HostUi {
                             .collect();
                     }
                     Ready::Ended(result) => {
+                        self.addresses.clear();
                         if let Err(error) = result {
-                            self.notice = format!("共享已停止：{error}");
+                            self.notice = format!("无法保持共享：{error}");
+                            self.open = true;
                         }
                         self.status = "共享已停止".into();
                     }
                 }
             }
         }
+    }
+    pub fn poll(&mut self, ctx: &egui::Context) {
+        self.poll_ready();
         if let Some(rx) = &mut self.events {
             while let Ok(event) = rx.try_recv() {
                 match event {
@@ -233,6 +269,14 @@ impl HostUi {
             .as_ref()
             .is_some_and(|worker| worker.task.as_ref().is_some_and(|task| task.is_finished()))
         {
+            // The worker can finish between the first drain and this check.
+            // Consume its final notification before dropping the receiver.
+            self.poll_ready();
+            if self.status == "正在开启共享…" {
+                self.status = "共享启动失败".into();
+                self.notice = "共享线程意外退出，请检查端口设置后重试".into();
+                self.open = true;
+            }
             self.worker = None;
             self.handle = None;
             self.ready = None;
@@ -278,7 +322,7 @@ impl HostUi {
             bind: SocketAddr::from(([0, 0, 0, 0], self.port)),
             discovery_bind: Some(SocketAddr::from((
                 [0, 0, 0, 0],
-                uu_core::native_discovery::DISCOVERY_PORT,
+                self.discovery_port,
             ))),
             data_dir: data_dir.into(),
             source: native::CaptureSource::Monitor(monitor.name.clone()),
@@ -317,7 +361,7 @@ impl HostUi {
                     server.run().await
                 });
                 runtime.shutdown_timeout(Duration::from_secs(2));
-                let _ = ready.send(Ready::Ended(result.map_err(|e| e.to_string())));
+                let _ = ready.send(Ready::Ended(result.map_err(|e| format!("{e:#}"))));
                 context.request_repaint();
             })?;
         self.worker = Some(Worker {
@@ -448,10 +492,14 @@ impl HostUi {
                                 );
                                 ui.end_row();
                                 ui.label("服务端口");
-                                ui.add(egui::DragValue::new(&mut self.port).range(1024..=65535));
+                                ui.add(egui::DragValue::new(&mut self.port).range(1..=65535));
+                                ui.end_row();
+                                ui.label("发现端口");
+                                ui.add(egui::DragValue::new(&mut self.discovery_port).range(1..=65535));
                                 ui.end_row();
                             });
                         ui.add_space(10.);
+                        ui.weak("服务端口使用 TCP，发现端口使用 UDP；端口自动保存。更改发现端口时，请将控制端设为相同端口，也可用 IP:服务端口 手动连接。");
                         ui.checkbox(&mut self.input, "允许已配对设备控制键盘和鼠标");
                         ui.checkbox(&mut self.audio, "共享系统声音");
                         ui.checkbox(&mut self.clipboard, "允许双方启用文本剪贴板");

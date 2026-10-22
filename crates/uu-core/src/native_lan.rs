@@ -307,9 +307,9 @@ impl Server {
         );
         let identity = Identity::open(&config.data_dir.join("server-identity.json"))?;
         let acceptor = tls_acceptor(&identity)?;
-        let listener = TcpListener::bind(config.bind)
-            .await
-            .context("cannot start LAN server; address may already be in use")?;
+        let listener = TcpListener::bind(config.bind).await.with_context(|| {
+            format!("无法监听共享端口 TCP {}；端口可能已被占用或没有监听权限，请更换服务端口后重试", config.bind.port())
+        })?;
         let info = ServerInfo {
             id: identity.id.clone(),
             name: config.name.clone(),
@@ -324,9 +324,9 @@ impl Server {
         let discovery = if let Some(address) = config.discovery_bind {
             match UdpSocket::bind(address).await {
                 Ok(socket) => Some(socket),
-                Err(_) => {
+                Err(error) => {
                     let _ = events.send(Event::Warning(
-                        "局域网发现端口不可用，仍可通过 IP 连接".into(),
+                        format!("局域网发现端口 UDP {} 不可用：{error}。自动发现已停用，仍可通过 IP:{} 连接；停止共享后可修改发现端口", address.port(), info.port),
                     ));
                     None
                 }

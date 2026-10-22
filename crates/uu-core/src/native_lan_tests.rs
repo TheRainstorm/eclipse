@@ -1,5 +1,50 @@
 //! Only owned loopback listeners and generated video. No desktop/audio/input.
 use super::*;
+
+#[tokio::test]
+async fn native_lan_port_conflicts_are_actionable_and_custom_discovery_advertises_service_port() {
+    let root = std::env::temp_dir().join(format!("eclipse-port-test-{}", uuid::Uuid::new_v4()));
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let (stop, rx) = watch::channel(false);
+    let (events, mut incoming) = mpsc::unbounded_channel();
+    let mut config = Config {
+        name: "Port fixture".into(), bind: address,
+        discovery_bind: Some(udp.local_addr().unwrap()), data_dir: root.clone(),
+        source: native::CaptureSource::Synthetic { width:64, height:64, fps:30 },
+        fps:30, bitrate_kbps:300, encoder:native::EncoderPreference::Software,
+        allow_input:false, audio:None, clipboard:None,
+    };
+    let error = Server::bind(config.clone(), rx.clone(), events.clone()).await.err().unwrap();
+    let message = format!("{error:#}");
+    assert!(message.contains(&format!("TCP {}", address.port())));
+    assert!(message.contains("更换服务端口"));
+    drop(tcp);
+    let (server, handle) = Server::bind(config.clone(), rx.clone(), events.clone()).await.unwrap();
+    assert_eq!(server.address().unwrap(), address);
+    assert!(server.discovery.is_none(), "UDP conflict must keep manual TCP connection available");
+    match incoming.recv().await.unwrap() {
+        Event::Warning(message) => {
+            assert!(message.contains(&format!("UDP {}", udp.local_addr().unwrap().port())));
+            assert!(message.contains(&format!("IP:{}", address.port())));
+        }
+        _ => panic!("discovery failure must be visible"),
+    }
+    drop(server); drop(handle); drop(udp);
+    config.discovery_bind = Some("127.0.0.1:0".parse().unwrap());
+    let (server, handle) = Server::bind(config, rx, events).await.unwrap();
+    let discovery = server.discovery.as_ref().unwrap().local_addr().unwrap();
+    let task = tokio::spawn(server.run());
+    let found = crate::native_discovery::discover(&[discovery], Duration::from_millis(150)).await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].address.port(), address.port());
+    stop.send_replace(true);
+    timeout(Duration::from_secs(3), task).await.unwrap().unwrap().unwrap();
+    drop(handle);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 struct Fixture {
     root: Option<PathBuf>,
     handle: Handle,

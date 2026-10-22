@@ -99,7 +99,7 @@ fn spawn(ctx: &egui::Context, events: mpsc::Sender<Event>, work: Work) -> Result
         task: Some(task),
     })
 }
-fn targets() -> Result<Vec<SocketAddr>, String> {
+fn targets(port: u16) -> Result<Vec<SocketAddr>, String> {
     if let Ok(value) = std::env::var("ECLIPSE_DISCOVERY_TARGETS") {
         let addresses: Result<Vec<_>, _> = value.split(',').map(str::parse::<SocketAddr>).collect();
         let addresses = addresses.map_err(|_| "局域网发现地址配置无效".to_owned())?;
@@ -111,7 +111,7 @@ fn targets() -> Result<Vec<SocketAddr>, String> {
     let mut values = HashSet::new();
     values.insert(SocketAddr::from((
         [255, 255, 255, 255],
-        discovery::DISCOVERY_PORT,
+        port,
     )));
     if let Ok(interfaces) = if_addrs::get_if_addrs() {
         for interface in interfaces {
@@ -120,7 +120,7 @@ fn targets() -> Result<Vec<SocketAddr>, String> {
             }
             if let if_addrs::IfAddr::V4(ip) = interface.addr {
                 if let Some(ip) = ip.broadcast {
-                    values.insert(SocketAddr::new(ip.into(), discovery::DISCOVERY_PORT));
+                    values.insert(SocketAddr::new(ip.into(), port));
                 }
             }
         }
@@ -157,6 +157,7 @@ pub(super) struct LanUi {
     scan: Option<Job>,
     client: Option<Job>,
     last_scan: Option<Instant>,
+    discovery_port: u16,
     notice: String,
     add_open: bool,
     address: String,
@@ -165,6 +166,15 @@ pub(super) struct LanUi {
     open_device: Option<Device>,
 }
 impl LanUi {
+    pub fn configure_ports(&mut self, service: u16, discovery: u16) {
+        self.host.configure_ports(service, discovery);
+        if self.discovery_port != discovery {
+            self.discovery_port = discovery;
+            self.scan = None;
+            self.last_scan = None;
+            self.found.clear();
+        }
+    }
     pub fn new(dir: Option<PathBuf>) -> Self {
         let (send, events) = mpsc::channel();
         let (book, notice) = if let Some(dir) = &dir {
@@ -186,6 +196,7 @@ impl LanUi {
             scan: None,
             client: None,
             last_scan: None,
+            discovery_port: discovery::DISCOVERY_PORT,
             notice,
             add_open: false,
             address: String::new(),
@@ -202,7 +213,7 @@ impl LanUi {
             return;
         }
         self.last_scan = Some(Instant::now());
-        self.scan = match targets()
+        self.scan = match targets(self.discovery_port)
             .and_then(|targets| spawn(ctx, self.send.clone(), Work::Scan(targets)))
         {
             Ok(job) => Some(job),

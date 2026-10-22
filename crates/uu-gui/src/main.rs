@@ -1149,6 +1149,7 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.native_host.poll(ctx);
+        self.lan.configure_ports(self.preferences.lan_service_port, self.preferences.lan_discovery_port);
         let lan_active=self.stream_target.is_none()&&!self.lan.compatibility;
         self.lan.poll(ctx,lan_active);
         if let Some(seconds) = frame.info().cpu_usage {
@@ -1318,7 +1319,15 @@ impl eframe::App for App {
         }
         self.native_ui(ctx);
         self.native_host_ui(ctx);
-        if self.stream_target.is_none() {self.lan.dialogs(ctx,self.platform.window_id());}
+        if self.stream_target.is_none() {
+            self.lan.dialogs(ctx,self.platform.window_id());
+            let (service, discovery)=self.lan.host.ports();
+            if (service, discovery)!=(self.preferences.lan_service_port,self.preferences.lan_discovery_port) {
+                self.preferences.lan_service_port=service;
+                self.preferences.lan_discovery_port=discovery;
+                self.persist_preferences();
+            }
+        }
         self.settings_ui(ctx);
         self.about_ui(ctx);
         if self.audio_save_after.is_some_and(|at|std::time::Instant::now()>=at) {

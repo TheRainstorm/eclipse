@@ -56,6 +56,8 @@ pub struct Settings {
     #[serde(alias = "remote_cursor", deserialize_with = "deserialize_cursor_mode")]
     pub cursor_mode: CursorMode,
     pub clipboard: bool,
+    pub lan_service_port: u16,
+    pub lan_discovery_port: u16,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -76,6 +78,8 @@ impl Default for Settings {
             relative_mouse: false,
             cursor_mode: CursorMode::Both,
             clipboard: true,
+            lan_service_port: uu_core::native_discovery::SERVICE_PORT,
+            lan_discovery_port: uu_core::native_discovery::DISCOVERY_PORT,
         }
     }
 }
@@ -101,6 +105,8 @@ impl Settings {
         s.custom_mbps = s.custom_mbps.clamp(1, 100);
         s.resolution = s.resolution.min(3);
         s.volume = s.volume.min(100);
+        anyhow::ensure!(s.lan_service_port != 0 && s.lan_discovery_port != 0,
+            "局域网端口必须在 1–65535 之间；原文件已保留");
         Ok(s)
     }
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
@@ -323,6 +329,23 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lan_ports_persist_and_invalid_ports_preserve_the_original_file() {
+        let root=std::env::temp_dir().join(format!("eclipse-port-settings-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path=root.join("gui-settings.json");
+        let mut settings=Settings::default();
+        settings.lan_service_port=51000;
+        settings.lan_discovery_port=51001;
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).unwrap(),settings);
+        let invalid=br#"{"lan_service_port":0}"#;
+        std::fs::write(&path,invalid).unwrap();
+        assert!(Settings::load(&path).is_err());
+        assert!(settings.save(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(),invalid);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn cursor_modes_migrate_legacy_settings_and_keep_display_ownership() {
         for (json,expected) in [(r#"{}"#,CursorMode::Both),
