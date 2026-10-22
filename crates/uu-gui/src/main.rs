@@ -1167,6 +1167,7 @@ impl eframe::App for App {
         self.poll_controller(ctx);
         let video_px = self.textures.get(&self.selected_track)
             .map(|texture| texture.size_vec2());
+        self.window_sizing.set_settings_page(self.settings_open);
         self.window_sizing.update(ctx, self.stream_target.is_some(), video_px,
             self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(frame, ctx));
         if self.exit_requested { self.native_host.stop(); self.lan.host.stop(); }

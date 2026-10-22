@@ -64,6 +64,7 @@ pub struct WindowSizing {
     initialized: bool,
     stream_pending: bool,
     was_streaming: bool,
+    settings_page: bool,
     canvas_px: Option<egui::Vec2>,
     home_points: Option<egui::Vec2>,
     resizing: bool,
@@ -71,6 +72,9 @@ pub struct WindowSizing {
 }
 
 impl WindowSizing {
+    pub fn set_settings_page(&mut self, open: bool) {
+        self.settings_page = open;
+    }
     pub fn begin_stream(&mut self) {
         self.stream_pending = true;
     }
@@ -87,13 +91,14 @@ impl WindowSizing {
         if viewport.minimized == Some(true) {
             return;
         }
-        if streaming != self.was_streaming {
-            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(if streaming {
+        let video_layout = streaming && !self.settings_page;
+        if video_layout != self.was_streaming {
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(if video_layout {
                 egui::vec2(320.0, 200.0)
             } else {
                 egui::vec2(560.0, 360.0)
             }));
-            self.was_streaming = streaming;
+            self.was_streaming = video_layout;
         }
         if !streaming {
             self.stream_pending = false;
@@ -120,12 +125,27 @@ impl WindowSizing {
                 (old_ppp - ppp).abs() > 0.01 || old_work != work
             })
         {
-            let minimum = if streaming {
+            let minimum = if video_layout {
                 egui::vec2(320.0, 200.0)
             } else {
                 egui::vec2(560.0, 360.0)
             };
             ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(minimum.min(capacity)));
+        }
+        if self.settings_page {
+            // A settings page uses the application minimum, even in a live
+            // stream process. Keep pending video sizing until the user returns.
+            let size=inner.size().max(egui::vec2(560.0,360.0).min(capacity)).min(capacity);
+            if size!=inner.size() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                let position=egui::pos2(
+                    outer.left().clamp(available.left(),(available.right()-size.x-chrome.x).max(available.left())),
+                    outer.top().clamp(available.top(),(available.bottom()-size.y-chrome.y).max(available.top())));
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(position));
+            }
+            self.previous=Some((ppp,size,work));
+            self.initialized=true;
+            return;
         }
         if resize_started {
             self.resizing = true;
@@ -305,6 +325,29 @@ pub fn native_geometry(_frame: &eframe::Frame, _ctx: &egui::Context) -> Option<G
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_use_application_minimum_and_preserve_pending_stream_fit() {
+        let ctx=egui::Context::default();
+        let mut sizing=WindowSizing::default();
+        sizing.begin_stream();
+        sizing.set_settings_page(true);
+        let run=|sizing:&mut WindowSizing,size,video|{
+            let inner=egui::Rect::from_min_size(egui::pos2(40.0,40.0),size);
+            let geometry=Geometry {inner,outer:inner,ppp:1.0,
+                work:egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1920.0,1080.0))};
+            ctx.run(Default::default(),|ctx|sizing.update(ctx,true,video,false,Some(geometry)))
+                .viewport_output[&egui::ViewportId::ROOT].commands.clone()
+        };
+        let commands=run(&mut sizing,egui::vec2(320.0,200.0),None);
+        assert!(commands.contains(&egui::ViewportCommand::MinInnerSize(egui::vec2(560.0,360.0))));
+        assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(560.0,360.0))));
+        assert!(sizing.stream_pending);
+        sizing.set_settings_page(false);
+        let commands=run(&mut sizing,egui::vec2(560.0,360.0),Some(egui::vec2(1280.0,720.0)));
+        assert!(commands.contains(&egui::ViewportCommand::MinInnerSize(egui::vec2(320.0,200.0))));
+        assert!(commands.iter().any(|command|matches!(command,egui::ViewportCommand::InnerSize(size) if size.x>1200.0)));
+        assert!(!sizing.stream_pending);
+    }
     #[test]
     fn wayland_sizing_does_not_require_global_window_position() {
         let ctx = egui::Context::default();

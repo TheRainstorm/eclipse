@@ -317,6 +317,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows preferences migration/persistence failed' }
           & $keyboardTests 'theme::tests::' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows UI contrast checks failed' }
+          & $keyboardTests 'window::tests::settings_use_application_minimum' --nocapture | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Windows settings/stream window sizing transition failed' }
           $coreTests = Join-Path $unpack 'core-validation.exe'
           Copy-Item -LiteralPath 'platform-validation/core-tests.exe' -Destination $coreTests
           & $coreTests 'native_lan::tests::native_lan_port_conflicts' --nocapture | Out-Host
