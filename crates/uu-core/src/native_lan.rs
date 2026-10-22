@@ -257,6 +257,7 @@ pub struct Handle {
     state: Arc<State>,
 }
 impl Handle {
+    pub fn server_id(&self)->&str {&self.state.info.id}
     pub fn allow_pairing(&self) {
         *self.state.pairing_until.lock().unwrap() = Some(Instant::now() + Duration::from_secs(120));
     }
@@ -489,7 +490,9 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
                 "控制端未确认串流请求");
             let peer_id=authorized.device.id();
             let invitation=if media {
-                let lease=access.claim(&peer_id)?;
+                let lease=match access.claim(&peer_id) {Ok(lease)=>lease,Err(error)=>{
+                    write(&mut stream,&Reply::Error {message:"主机正在串流或设备授权已变更，请在被控端检查后重试".into()}).await?;return Err(error);
+                }};
                 Some(start_authorized_session(state.clone(),peer_id.clone(),local,authorized.permissions,Some(lease)).await?)
             }else{None};
             write(&mut stream,&Reply::Device {invitation,peer_id:access.store.card(&access.name).id(),observed_client_ip:Some(observed_client_ip)}).await?;
@@ -794,8 +797,11 @@ pub async fn connect_device(endpoint:&str,store:&crate::device_trust::TrustStore
         crate::device_auth::client(&mut wire,store,name,&binding,expected,legacy.is_some(),display).await?};
     let requested_at=Instant::now();
     write(&mut stream,&serde_json::json!({"begin_media":media})).await?;
-    let Reply::Device{invitation,peer_id,observed_client_ip}=read::<Reply>(&mut stream).await?
-        else {anyhow::bail!("被控端未确认设备连接");};
+    let (invitation,peer_id,observed_client_ip)=match read::<Reply>(&mut stream).await? {
+        Reply::Device{invitation,peer_id,observed_client_ip}=>(invitation,peer_id,observed_client_ip),
+        Reply::Error{message}=>anyhow::bail!(message),
+        _=>anyhow::bail!("被控端未确认设备连接"),
+    };
     ensure!(peer_id==remote.device.id() && invitation.is_some()==media,"设备串流授权响应不匹配");
     let invitation=invitation.map(|v|v.from_authenticated_broker(requested_at,observed_client_ip)).transpose()?;
     Ok(DeviceConnection {invitation,peer:Some(remote.device)})

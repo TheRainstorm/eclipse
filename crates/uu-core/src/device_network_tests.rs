@@ -51,6 +51,162 @@ fn access(
         receive,
     )
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unified_device_wss_listener_republishes_and_reconnects_with_the_same_grant_after_stream_close(
+) {
+    use crate::{
+        device_internet::EndpointStatus,
+        internet::{self, Provider, Settings},
+    };
+    let root = std::env::temp_dir().join(format!("eclipse-device-wss-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert = root.join("certificate.pem");
+    let key = root.join("private.pem");
+    let token = root.join("token");
+    std::fs::write(&cert, certificate.cert.pem()).unwrap();
+    std::fs::write(&key, certificate.key_pair.serialize_pem()).unwrap();
+    internet::AccessKey::create(&token).unwrap();
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = reserved.local_addr().unwrap();
+    drop(reserved);
+    let (service_stop, service_rx) = watch::channel(false);
+    let service = tokio::spawn(internet::server::serve(
+        internet::server::Config {
+            bind: address,
+            certificate: cert.clone(),
+            private_key: key,
+            token_file: token.clone(),
+            stun: vec![],
+        },
+        service_rx,
+    ));
+    let settings = Settings {
+        provider: Provider::SelfHosted,
+        device_auth: true,
+        server: format!("localhost:{}", address.port()),
+        server_ca: Some(cert),
+        server_token: token,
+        device: "generated-host".into(),
+        ..Default::default()
+    };
+    let cfg = |part: &str| crate::Config {
+        data_dir: root.join(part),
+        state_dir: root.join(format!("{part}-state")),
+        signaling_host: "unused.invalid".into(),
+    };
+    let (access, mut requests) = access(&root);
+    access.pairing.open();
+    let (host_stop, host_rx) = watch::channel(false);
+    let (status, mut endpoint) = watch::channel(EndpointStatus::Starting);
+    let (progress, _) = watch::channel(native::HostStatus::Starting);
+    let sharing = native::SharingConfig {
+        source: native::CaptureSource::Synthetic {
+            width: 320,
+            height: 180,
+            fps: 30,
+        },
+        fps: 30,
+        bitrate_kbps: 500,
+        encoder: native::EncoderPreference::Software,
+        session_limit: Some(Duration::from_secs(15)),
+        allow_input: false,
+        audio: Some(native::AudioSource::Synthetic),
+        clipboard: None,
+    };
+    let hosting = tokio::spawn(crate::device_internet::listen(
+        settings.clone(),
+        cfg("host"),
+        sharing,
+        access.clone(),
+        host_rx,
+        status,
+        progress,
+        None,
+    ));
+    for attempt in 0..2 {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if matches!(*endpoint.borrow_and_update(), EndpointStatus::Ready) {
+                    break;
+                }
+                endpoint.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        let stats = Arc::new(crate::media::MediaStats::default());
+        stats.audio.output_enabled.store(false, Ordering::Release);
+        let (frames, mut received) = crate::media::frame_channel();
+        let (viewer_stop, viewer_rx) = watch::channel(false);
+        let observed = stats.clone();
+        let settings = settings.clone();
+        let config = cfg("viewer");
+        let viewing = tokio::spawn(async move {
+            internet::view(settings, config, frames, observed, viewer_rx, None).await
+        });
+        if attempt == 0 {
+            let request = tokio::time::timeout(Duration::from_secs(8), requests.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            request
+                .respond
+                .send(Some(
+                    PairApproval::new(&stats.pairing.code().unwrap(), Permissions::VIEW).unwrap(),
+                ))
+                .ok();
+        }
+        tokio::time::timeout(Duration::from_secs(12), async {
+            while stats.decoded_total.load(Ordering::Relaxed) < 12
+                || stats.audio.packets.load(Ordering::Relaxed) == 0
+            {
+                while received.try_recv().is_ok() {}
+                assert!(
+                    !viewing.is_finished(),
+                    "viewer ended before generated media"
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(stats.errors.load(Ordering::Relaxed), 0);
+        assert!(stats.pairing.code().is_none());
+        viewer_stop.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(5), viewing)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(7), async {
+            while access.sessions.active_peer().is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        access.pairing.close();
+        assert_eq!(access.store.peers().unwrap().len(), 1);
+    }
+    assert!(
+        requests.try_recv().is_err(),
+        "trusted reconnect must not ask for another code"
+    );
+    host_stop.send_replace(true);
+    tokio::time::timeout(Duration::from_secs(5), hosting)
+        .await
+        .unwrap()
+        .unwrap();
+    service_stop.send_replace(true);
+    tokio::time::timeout(Duration::from_secs(5), service)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unified_device_tls_pairing_saves_multiple_clients_and_revoke_stops_only_the_active_peer() {
     let root = std::env::temp_dir().join(format!("eclipse-network-{}", uuid::Uuid::new_v4()));

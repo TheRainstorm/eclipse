@@ -137,10 +137,7 @@ pub async fn view(
     };
     let connection = tokio::select! {result=joining=>result?,_=cancelled(&mut stop)=>return Ok(())};
     if settings.device_auth {
-        return tokio::select! {
-            result=crate::device_internet::view(connection,&settings,&config,frames,stats,stop.clone(),input)=>result,
-            _=cancelled(&mut stop)=>Ok(()),
-        };
+        return crate::device_internet::view(connection,&settings,&config,frames,stats,stop,input).await;
     }
     let (mut signal, ice) = Authenticated::new(connection, key.unwrap(), Role::Viewer);
     stats.connection.set_service(match settings.provider {Provider::Uu=>"UU 连接服务",Provider::SelfHosted=>"自建连接服务"});

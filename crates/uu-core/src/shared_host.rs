@@ -7,6 +7,31 @@ use anyhow::{ensure, Context, Result};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
+/// One running host per private configuration, including separate launcher
+/// processes. This lock is independent of the short-lived store update lock.
+pub struct HostOwner(std::fs::File);
+impl HostOwner {
+    pub fn claim(directory: &std::path::Path) -> Result<Self> {
+        std::fs::create_dir_all(directory)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(directory.join("host.lock"))?;
+        fs2::FileExt::try_lock_exclusive(&file)
+            .context("另一个窗口已开启本机共享，请在原窗口管理共享")?;
+        Ok(Self(file))
+    }
+}
+impl Drop for HostOwner {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
 struct Active {
     session: String,
     peer: String,
@@ -131,6 +156,17 @@ impl Drop for Cancellation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_one_host_owns_a_configuration_until_shutdown_finishes() {
+        let root =
+            std::env::temp_dir().join(format!("eclipse-host-owner-{}", uuid::Uuid::new_v4()));
+        let owner = HostOwner::claim(&root).unwrap();
+        assert!(HostOwner::claim(&root).is_err());
+        drop(owner);
+        let next = HostOwner::claim(&root).unwrap();
+        drop(next);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn all_listeners_share_single_media_ownership_and_revocation_is_per_peer() {
         let gate = Arc::new(SessionGate::default());

@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use zeroize::Zeroizing;
 
 pub const MAX_AUTH_MESSAGE: usize = 8 * 1024;
@@ -51,7 +51,29 @@ enum Message {
         permissions: Permissions,
     },
     Finished,
+    Rejected {
+        reason: Rejection,
+    },
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Rejection {
+    PairingClosed,
+    Busy,
+    Declined,
+    AuthenticationFailed,
+}
+impl std::fmt::Display for Rejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::PairingClosed => "请先在被控端允许新设备配对；配对许可已关闭、过期或达到尝试上限",
+            Self::Busy => "被控端正在确认另一台设备，请稍后重试",
+            Self::Declined => "被控端拒绝或取消了配对，请重新发起",
+            Self::AuthenticationFailed => "设备身份认证失败，请核对短码和被控端授权后重新连接",
+        })
+    }
+}
+impl std::error::Error for Rejection {}
 async fn send(io: &mut dyn AuthIo, message: Message) -> Result<()> {
     let value = serde_json::to_value(message)?;
     ensure!(
@@ -70,7 +92,11 @@ async fn receive(io: &mut dyn AuthIo) -> Result<Message> {
         serde_json::to_vec(&value)?.len() <= MAX_AUTH_MESSAGE,
         "配对消息过大"
     );
-    serde_json::from_value(value).map_err(|_| anyhow::anyhow!("设备认证协议无效"))
+    let message = serde_json::from_value(value).map_err(|_| anyhow::anyhow!("设备认证协议无效"))?;
+    if let Message::Rejected { reason } = message {
+        anyhow::bail!(reason);
+    }
+    Ok(message)
 }
 fn nonce() -> String {
     let mut b = [0; 32];
@@ -185,6 +211,35 @@ pub struct PairRequest {
     pub id: String,
     pub device: PublicDevice,
     pub respond: oneshot::Sender<Option<PairApproval>>,
+    pub status: watch::Receiver<PairStatus>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PairStatus {
+    Waiting,
+    Verifying,
+    Paired,
+    Failed,
+}
+struct Completion {
+    status: watch::Sender<PairStatus>,
+    done: bool,
+}
+impl Completion {
+    fn complete(&mut self) {
+        self.done = true;
+        self.status.send_replace(PairStatus::Paired);
+    }
+}
+impl Drop for Completion {
+    fn drop(&mut self) {
+        if !self.done {
+            self.status.send_replace(PairStatus::Failed);
+        }
+    }
+}
+struct Approved {
+    approval: PairApproval,
+    completion: Completion,
 }
 #[derive(Default)]
 struct Window {
@@ -225,22 +280,27 @@ impl PairingControl {
             .slot
             .clone()
             .try_acquire_owned()
-            .context("正在确认另一台设备，请稍后重试")?;
+            .map_err(|_| Rejection::Busy)?;
         let mut w = self.window.lock().unwrap();
-        ensure!(
-            w.until.is_some_and(|t| Instant::now() < t) && w.attempts < 5,
-            "请先在被控端允许新设备配对；配对许可已关闭、过期或达到尝试上限"
-        );
+        if !(w.until.is_some_and(|t| Instant::now() < t) && w.attempts < 5) {
+            anyhow::bail!(Rejection::PairingClosed);
+        }
         w.attempts += 1;
         Ok(slot)
     }
-    async fn approve(&self, device: PublicDevice) -> Result<PairApproval> {
+    async fn approve(&self, device: PublicDevice) -> Result<Approved> {
         let (respond, receive) = oneshot::channel();
+        let (status, updates) = watch::channel(PairStatus::Waiting);
+        let completion = Completion {
+            status,
+            done: false,
+        };
         self.requests
             .send(PairRequest {
                 id: uuid::Uuid::new_v4().to_string(),
                 device,
                 respond,
+                status: updates,
             })
             .map_err(|_| anyhow::anyhow!("被控端配对确认页面不可用"))?;
         tokio::pin!(receive);
@@ -248,13 +308,17 @@ impl PairingControl {
             let mut timer=tokio::time::interval(Duration::from_millis(100));
             loop {
                 tokio::select! {
-                    result=&mut receive=>return result.context("被控端已关闭配对请求")?.context("被控端拒绝配对"),
-                    _=timer.tick()=>ensure!(self.is_open(),"被控端已停止接收配对"),
+                    result=&mut receive=>return result.map_err(|_|Rejection::Declined)?.ok_or_else(||Rejection::Declined.into()),
+                    _=timer.tick()=>if !self.is_open(){anyhow::bail!(Rejection::PairingClosed);},
                 }
             }
         }).await.context("等待被控端批准超时")??;
         ensure!(self.is_open(), "被控端已停止接收配对");
-        Ok(approval)
+        completion.status.send_replace(PairStatus::Verifying);
+        Ok(Approved {
+            approval,
+            completion,
+        })
     }
 }
 
@@ -376,6 +440,26 @@ pub async fn host(
     pairing: &PairingControl,
     legacy: Option<&str>,
 ) -> Result<AuthenticatedPeer> {
+    let result = host_inner(io, store, name, binding, pairing, legacy).await;
+    if let Err(error) = &result {
+        // Only protocol-defined reasons cross the provisional transport;
+        // local filesystem paths and secret material never enter rejection.
+        let reason = error
+            .downcast_ref::<Rejection>()
+            .cloned()
+            .unwrap_or(Rejection::AuthenticationFailed);
+        let _ = send(io, Message::Rejected { reason }).await;
+    }
+    result
+}
+async fn host_inner(
+    io: &mut dyn AuthIo,
+    store: &TrustStore,
+    name: &str,
+    binding: &[u8],
+    pairing: &PairingControl,
+    legacy: Option<&str>,
+) -> Result<AuthenticatedPeer> {
     let (remote, a, _) = hello(receive(io).await?, false)?;
     let local = store.card(name);
     local.validate()?;
@@ -417,12 +501,15 @@ pub async fn host(
         None
     };
     send(io, Message::Ready { pair }).await?;
+    let mut completion = None;
     let permission = if pair {
         let a_share = share(receive(io).await?)?;
-        let approval = tokio::select! {
+        let approved = tokio::select! {
             result=pairing.approve(remote.clone())=>result?,
             _=io.receive()=>anyhow::bail!("控制端已取消配对或发送了无效消息"),
         };
+        let approval = approved.approval;
+        completion = Some(approved.completion);
         let (pake, b_share) = Spake2::<Ed25519Group>::start_b(
             &Password::new(approval.code.as_bytes()),
             &Identity::new(remote.id().as_bytes()),
@@ -481,6 +568,9 @@ pub async fn host(
         matches!(receive(io).await?, Message::Finished),
         "控制端未完成设备配对保存"
     );
+    if let Some(completion) = &mut completion {
+        completion.complete();
+    }
     Ok(AuthenticatedPeer {
         device: remote,
         permissions: permission,
@@ -507,6 +597,77 @@ mod tests {
         let (a, b) = mpsc::channel(8);
         let (c, d) = mpsc::channel(8);
         (Memory { tx: a, rx: d }, Memory { tx: c, rx: b })
+    }
+    #[tokio::test]
+    async fn a_closed_pairing_window_returns_an_actionable_reason_to_the_client() {
+        let root =
+            std::env::temp_dir().join(format!("eclipse-pair-closed-{}", uuid::Uuid::new_v4()));
+        let a = TrustStore::open(root.join("a")).unwrap();
+        let b = TrustStore::open(root.join("b")).unwrap();
+        let (events, _) = mpsc::unbounded_channel();
+        let pairing = PairingControl::new(events);
+        let (mut x, mut y) = wires();
+        let display = PairingDisplay::default();
+        let (left, right) = tokio::join!(
+            client(&mut x, &a, "A", &[3; 32], None, false, &display),
+            host(&mut y, &b, "B", &[3; 32], &pairing, None)
+        );
+        assert!(left
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("请先在被控端允许新设备配对"));
+        assert!(right.is_err());
+        assert!(display.code().is_none());
+        assert!(b.peers().unwrap().is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn cancelling_either_side_finishes_the_prompt_and_releases_the_pairing_slot() {
+        for client_cancel in [true, false] {
+            let root =
+                std::env::temp_dir().join(format!("eclipse-cancel-pair-{}", uuid::Uuid::new_v4()));
+            let a = TrustStore::open(root.join("a")).unwrap();
+            let b = TrustStore::open(root.join("b")).unwrap();
+            let (events, mut requests) = mpsc::unbounded_channel();
+            let pairing = std::sync::Arc::new(PairingControl::new(events));
+            pairing.open();
+            let display = std::sync::Arc::new(PairingDisplay::default());
+            let (mut x, mut y) = wires();
+            let shown = display.clone();
+            let control = pairing.clone();
+            let left = tokio::spawn(async move {
+                client(&mut x, &a, "A", &[3; 32], None, false, &shown).await
+            });
+            let right =
+                tokio::spawn(async move { host(&mut y, &b, "B", &[3; 32], &control, None).await });
+            let mut request = tokio::time::timeout(Duration::from_secs(2), requests.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(*request.status.borrow(), PairStatus::Waiting);
+            if client_cancel {
+                left.abort();
+            } else {
+                pairing.close();
+            }
+            assert!(tokio::time::timeout(Duration::from_secs(2), right)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err());
+            let _ = left.await;
+            request
+                .status
+                .wait_for(|s| *s == PairStatus::Failed)
+                .await
+                .unwrap();
+            assert!(display.code().is_none());
+            assert!(request.respond.send(None).is_err());
+            pairing.open();
+            drop(pairing.reserve().unwrap());
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
     #[tokio::test]
     async fn short_code_pairing_binds_identity_and_permissions_then_resumes_without_code() {

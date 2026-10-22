@@ -286,6 +286,7 @@ impl Bootstrap {
                 tokio::time::timeout(Duration::from_secs(15), AuthIo::receive(&mut self.io))
                     .await
                     .context("等待设备授权完成超时")??;
+            ensure!(ready["stage"]!="media-rejected","主机正在串流或设备授权已变更，请在被控端检查后重试");
             ensure!(
                 ready == json!({"stage":"media-ready"}),
                 "主机未完成设备授权"
@@ -293,6 +294,9 @@ impl Bootstrap {
             self.io.authenticated.store(true, Ordering::Release);
         }
         Ok(())
+    }
+    pub async fn reject_media(&mut self) {
+        let _=AuthIo::send(&mut self.io,json!({"stage":"media-rejected"})).await;
     }
     pub async fn close(&mut self) {
         let _ = self.io.dc.close().await;

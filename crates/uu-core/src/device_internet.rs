@@ -51,7 +51,7 @@ pub(crate) async fn view(
     config: &Config,
     frames: FrameSender,
     stats: Arc<MediaStats>,
-    stop: watch::Receiver<bool>,
+    mut stop: watch::Receiver<bool>,
     input: Option<crate::native_input::NativeInputReceiver>,
 ) -> Result<()> {
     let store = crate::device_trust::TrustStore::open(config.at("device-trust"))?;
@@ -62,9 +62,12 @@ pub(crate) async fn view(
         Provider::Uu => "UU 连接服务",
         Provider::SelfHosted => "自建连接服务",
     });
-    let mut bootstrap = Bootstrap::viewer(connection).await?;
+    let mut bootstrap = tokio::select! {
+        result=Bootstrap::viewer(connection)=>result?,
+        _=cancelled(&mut stop)=>return Ok(()),
+    };
     let result = async {
-        let remote = device_auth::client(
+        let authentication = device_auth::client(
             &mut bootstrap.io,
             &store,
             &name,
@@ -72,12 +75,12 @@ pub(crate) async fn view(
             settings.expected_peer.as_deref(),
             false,
             &stats.pairing,
-        )
-        .await?;
+        );
+        let remote=tokio::select! {result=authentication=>result?,_=cancelled(&mut stop)=>return Ok(())};
         if let Some(profile) = &settings.profile {
             book.bind(profile, &remote.device.id())?;
         }
-        bootstrap.ready(false).await?;
+        tokio::select! {result=bootstrap.ready(false)=>result?,_=cancelled(&mut stop)=>return Ok(())};
         native::view_direct(&mut bootstrap, &ice, frames, stats.clone(), stop, input).await
     }
     .await;
@@ -121,29 +124,35 @@ pub async fn serve_connection(
     mut connection: Connection,
     mut sharing: SharingConfig,
     access: &Access,
-    stop: watch::Receiver<bool>,
+    mut stop: watch::Receiver<bool>,
     status: Option<watch::Sender<HostStatus>>,
     clipboard: Option<crate::native_lan::ClipboardFactory>,
 ) -> Result<native::HostReport> {
-    let first = connection.transport.receive().await?;
+    let first = tokio::select! {
+        result=connection.transport.receive()=>result?,
+        _=cancelled(&mut stop)=>{connection.transport.close().await;return Ok(native::HostReport::default());},
+    };
     ensure!(
         crate::device_channel::is_bootstrap(&first),
         "控制端仍使用旧配对文件协议，请升级并通过短码完成设备配对"
     );
     let ice = connection.ice.clone();
-    let mut bootstrap = Bootstrap::host(connection, first).await?;
+    let mut bootstrap = tokio::select! {
+        result=Bootstrap::host(connection,first)=>result?,
+        _=cancelled(&mut stop)=>return Ok(native::HostReport::default()),
+    };
     let result = async {
-        let authorized = device_auth::host(
+        let authentication = device_auth::host(
             &mut bootstrap.io,
             &access.store,
             &access.name,
             &bootstrap.binding,
             &access.pairing,
             None,
-        )
-        .await?;
+        );
+        let authorized=tokio::select! {result=authentication=>result?,_=cancelled(&mut stop)=>return Ok(native::HostReport::default())};
         let peer = authorized.device.id();
-        let lease = access.claim(&peer)?;
+        let lease=match access.claim(&peer) {Ok(lease)=>lease,Err(error)=>{bootstrap.reject_media().await;return Err(error);}};
         let cancellation = access.cancellation(&lease, &peer, Some(authorized.permissions), stop);
         sharing.allow_input &= authorized.permissions.control;
         if let Some(factory) = clipboard {
@@ -202,7 +211,9 @@ pub async fn listen(
                 let result = loop {
                     tokio::select! {
                         result=&mut serving=>break result,
-                        _=cancelled(&mut stop)=>break Ok(native::HostReport::default()),
+                        _=cancelled(&mut stop)=>break match tokio::time::timeout(Duration::from_secs(5),&mut serving).await {
+                            Ok(result)=>result,Err(_)=>Err(anyhow::anyhow!("共享退出超时")),
+                        },
                         changed=observe.changed(),if observing=>{
                             if changed.is_err(){observing=false;}else{
                                 let phase=observe.borrow_and_update().clone();
