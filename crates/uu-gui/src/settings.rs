@@ -10,19 +10,19 @@ use std::{
 #[serde(rename_all = "snake_case")]
 pub enum CursorMode {
     #[default]
-    Local,
-    Remote,
+    #[serde(alias = "local")]
     Both,
+    Remote,
 }
 impl CursorMode {
-    pub const ALL: [Self; 3] = [Self::Local, Self::Remote, Self::Both];
+    pub const ALL: [Self; 2] = [Self::Both, Self::Remote];
     pub fn label(self) -> &'static str {
-        match self { Self::Local => "仅本地光标", Self::Remote => "仅远端光标", Self::Both => "本地和远端光标" }
+        match self { Self::Remote => "仅远端光标", Self::Both => "本地和远端光标" }
     }
-    pub fn remote(self) -> bool { self != Self::Local }
+    pub fn remote(self) -> bool { true }
     pub fn local(self) -> bool { self != Self::Remote }
     pub fn next(self) -> Self {
-        match self { Self::Local => Self::Remote, Self::Remote => Self::Both, Self::Both => Self::Local }
+        match self { Self::Both => Self::Remote, Self::Remote => Self::Both }
     }
 }
 fn deserialize_cursor_mode<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CursorMode, D::Error> {
@@ -32,7 +32,7 @@ fn deserialize_cursor_mode<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Cur
     Ok(match Value::deserialize(d)? {
         Value::Mode(mode) => mode,
         Value::Legacy(true) => CursorMode::Remote,
-        Value::Legacy(false) => CursorMode::Local,
+        Value::Legacy(false) => CursorMode::Both,
     })
 }
 
@@ -74,7 +74,7 @@ impl Default for Settings {
             software_decoder: false,
             prefer_hevc: false,
             relative_mouse: false,
-            cursor_mode: CursorMode::Local,
+            cursor_mode: CursorMode::Both,
             clipboard: true,
         }
     }
@@ -275,7 +275,7 @@ impl super::App {
                     ui.small("Ctrl+左 Alt+F / X 切换全屏；Q 退出串流；Z 释放／捕获输入。这些本地快捷键始终由客户端处理，不发送到远端。\n系统键只在全屏画面获得输入焦点时捕获，打开菜单、仅观看或失焦时释放。\nWin+Shift+方向键与其它系统组合键遵循相同的捕获规则。Ctrl+Alt+Del 由 Windows 保留。");
                     ui.horizontal_wrapped(|ui|{ui.label("鼠标模式");ui.selectable_value(&mut s.relative_mouse,false,"桌面 · 绝对定位");ui.selectable_value(&mut s.relative_mouse,true,"游戏 · 相对移动");});
                     ui.horizontal_wrapped(|ui|{ui.label("光标显示");for mode in CursorMode::ALL {ui.selectable_value(&mut s.cursor_mode,mode,mode.label());}});
-                    ui.small("Ctrl+Alt+P 切换桌面／游戏模式；Ctrl+Alt+C 切换光标显示。仅本地光标会请求远端关闭视频内的光标合成；游戏捕获时隐藏本地光标。");
+                    ui.small("Ctrl+Alt+P 切换桌面／游戏模式；Ctrl+Alt+C 在两种光标显示间切换。两种模式都显示远端光标；游戏捕获时隐藏本地光标。");
                     ui.small("游戏模式单击画面捕获鼠标，Ctrl+Alt+Z 释放／重新捕获；打开菜单或失焦时自动释放。");
                     ui.separator();ui.strong("启动选项");
                     ui.checkbox(&mut s.vsync,"垂直同步");ui.checkbox(&mut s.software_decoder,"使用软件解码（默认优先硬件解码）");
@@ -325,9 +325,11 @@ mod tests {
     use super::*;
     #[test]
     fn cursor_modes_migrate_legacy_settings_and_keep_display_ownership() {
-        for (json,expected) in [(r#"{}"#,CursorMode::Local),
-            (r#"{"remote_cursor":false}"#,CursorMode::Local),
+        for (json,expected) in [(r#"{}"#,CursorMode::Both),
+            (r#"{"remote_cursor":false}"#,CursorMode::Both),
             (r#"{"remote_cursor":true}"#,CursorMode::Remote),
+            (r#"{"cursor_mode":"local"}"#,CursorMode::Both),
+            (r#"{"cursor_mode":"remote"}"#,CursorMode::Remote),
             (r#"{"cursor_mode":"both"}"#,CursorMode::Both)] {
             let settings:Settings=serde_json::from_str(json).unwrap();
             assert_eq!(settings.cursor_mode,expected);
@@ -335,14 +337,14 @@ mod tests {
             assert!(saved.get("remote_cursor").is_none());
             assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(),settings);
         }
-        let mut mode=CursorMode::Local;
+        let mut mode=CursorMode::Both;
         for expected in CursorMode::ALL {
             assert_eq!(mode,expected);
             assert_eq!(mode.local(),mode!=CursorMode::Remote);
-            assert_eq!(mode.remote(),mode!=CursorMode::Local);
+            assert!(mode.remote());
             mode=mode.next();
         }
-        assert_eq!(mode,CursorMode::Local);
+        assert_eq!(mode,CursorMode::Both);
         assert!(serde_json::from_str::<Settings>(r#"{"cursor_mode":"unknown"}"#).is_err());
     }
 
