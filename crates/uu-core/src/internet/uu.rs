@@ -18,7 +18,7 @@ enum RoomRequest { Create, Join }
 fn room_data(response: Value, request: RoomRequest) -> Result<Value> {
     let code=response["code"].as_i64().unwrap_or(-1);
     if code==2001 && matches!(request,RoomRequest::Join) {
-        bail!("目标设备未上线，无法发起远控（UU 2001）。请先在目标设备的“连接服务 → UU 账号”页面点击“开始共享”，保持共享运行后再连接。更换账号或配对文件不能解决设备离线。");
+        bail!("目标设备未上线，无法发起远控（UU 2001）。请先在目标设备的“共享本机”中勾选 UU 连接服务并点击“开始共享”，保持共享运行后再连接。更换账号或配对文件不能解决设备离线。");
     }
     ensure!(
         code == 0,

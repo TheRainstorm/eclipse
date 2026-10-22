@@ -253,9 +253,9 @@ impl App {
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        if self.native_host.running() || self.lan.host.running() {
+                        if self.workspace.host.running() || self.native_host.running() || self.lan.host.running() {
                             if icon_label_button(ui,Icon::Desktop,"共享中").clicked(){self.open_native_host();}
-                        } else if icon_label_button(ui,Icon::Link,"原生直连").clicked(){self.open_native();}
+                        } else if icon_label_button(ui,Icon::Desktop,"共享本机").clicked(){self.open_native_host();}
                         if icon_button(ui,Icon::Settings,"软件设置").clicked(){self.open_settings();}
                         if icon_button(ui,Icon::Info,"关于软件").clicked(){self.open_about();}
                         self.account_button(ui);
@@ -266,14 +266,8 @@ impl App {
 
     pub(super) fn home_ui(&mut self, ctx: &egui::Context) {
         self.title_bar(ctx);
-        let mut switched=false;
-        egui::TopBottomPanel::top("connection-mode").frame(egui::Frame::none().fill(C::WHITE).inner_margin(egui::Margin::symmetric(20.,8.))).show(ctx,|ui|{ui.horizontal(|ui|{
-            if ui.selectable_label(!self.lan.compatibility&&!self.internet_ui.selected,"IP 直连").clicked(){self.lan.compatibility=false;self.internet_ui.selected=false;}
-            if ui.selectable_label(!self.lan.compatibility&&self.internet_ui.selected,"连接服务").clicked(){self.lan.compatibility=false;self.internet_ui.selected=true;}
-            if ui.selectable_label(self.lan.compatibility,"兼容设备").clicked(){switched=!self.lan.compatibility;self.lan.compatibility=true;}
-        });});
-        if switched && self.logged_in && self.devices.is_empty(){self.start_load();}
-        if !self.lan.compatibility {if self.internet_ui.selected {self.internet_home(ctx);} else {self.lan_home(ctx);}return;}
+        self.workspace_navigation(ctx);
+        if !self.lan.compatibility {self.workspace_home(ctx);return;}
         if let Some(error) = self.account_error.clone() {
             egui::TopBottomPanel::top("local-account-error").show(ctx, |ui| {
                 ui.add(egui::Label::new(RichText::new(error).color(C::from_rgb(177, 48, 48))).wrap());
@@ -292,7 +286,7 @@ impl App {
                     ui.add_space(38.0);
                     ui.heading("连接你的每一台设备");
                     ui.add_space(12.0);
-                    ui.label(RichText::new("登录账号访问设备，或使用原生邀请查看共享画面").color(MUTED));
+                    ui.label(RichText::new("登录 UU 账号访问官方设备；原生设备可从左侧设备页连接").color(MUTED));
                     ui.add_space(24.0);
                     if let Some(texture)=&self.login_texture {
                         ui.image((texture.id(),egui::vec2(224.0,224.0)));
@@ -304,11 +298,11 @@ impl App {
                     if ui.add_enabled_ui(self.account_error.is_none(), |ui| ui.add_sized([180.0,36.0],egui::Button::new(RichText::new(if self.login_texture.is_some(){"刷新二维码"}else{"扫码登录"}).color(C::WHITE)).fill(BLUE))).inner.clicked(){self.start_login();}
                     if self.login_rx.is_some()&&ui.button("取消登录").clicked(){self.login_rx=None;self.login_texture=None;self.login_status="已取消登录".into();}
                     ui.add_space(14.0);
-                    if ui.add_sized([180.0,36.0],egui::Button::new(RichText::new("使用原生邀请").color(BLUE)).fill(C::WHITE).stroke(egui::Stroke::new(1.0,BLUE))).clicked(){self.open_native();}
+                    if ui.add_sized([180.0,36.0],egui::Button::new(RichText::new("返回原生设备").color(BLUE)).fill(C::WHITE).stroke(egui::Stroke::new(1.0,BLUE))).clicked(){self.lan.compatibility=false;self.workspace.page=super::workspace_ui::Page::Devices;}
                     ui.add_space(8.0);
-                    if ui.add_sized([180.0,32.0],egui::Button::new(if self.lan.host.running(){"管理当前共享"}else{"共享此设备"})).clicked(){self.open_native_host();}
+                    if ui.add_sized([180.0,32.0],egui::Button::new(if self.workspace.host.running(){"管理当前共享"}else{"共享此设备"})).clicked(){self.open_native_host();}
                     ui.add_space(8.0);
-                    ui.small("无需账号 · 邀请文件也可直接拖入窗口");
+                    ui.small("原生 IP 直连无需账号；旧邀请文件仍可拖入窗口");
                     if !self.status.is_empty(){ui.add_space(16.0);ui.label(RichText::new(&self.status).color(MUTED));}
                 });
             });

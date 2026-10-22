@@ -31,7 +31,15 @@ pub async fn view(
 ) -> Result<()> {
     let store = TrustStore::open(config.at("device-trust"))?;
     let profiles = Store::open(config.at("device-trust"))?;
-    let name = profiles.read()?.sharing.name;
+    let book = profiles.read()?;
+    let name = book.sharing.name.clone();
+    // The first connection may have pinned an identity after this window's
+    // snapshot was created. Remember that pin for its subsequent reconnects.
+    let expected = launch.expected_peer.clone().or_else(|| {
+        book.device(&launch.profile)
+            .ok()
+            .and_then(|p| p.peer.clone())
+    });
     let settings = match &launch.route.destination {
         Destination::Ip {
             address,
@@ -39,6 +47,7 @@ pub async fn view(
         } => {
             let legacy = legacy_device
                 .as_ref()
+                .filter(|_| expected.is_none())
                 .map(|id| {
                     let book = crate::native_lan_store::Devices::open(
                         &config.at("native-lan/paired-devices.json"),
@@ -51,7 +60,7 @@ pub async fn view(
                 })
                 .transpose()?;
             let connection = tokio::select! {
-                result=crate::native_lan::connect_device(address,&store,&name,launch.expected_peer.as_deref(),
+                result=crate::native_lan::connect_device(address,&store,&name,expected.as_deref(),
                     legacy.as_ref().map(|(d,id)|(d,id.as_str())),true,&stats.pairing)=>result?,
                 _=cancelled(&mut stop)=>return Ok(()),
             };
@@ -69,7 +78,7 @@ pub async fn view(
             provider: Provider::Uu,
             device: device.clone(),
             device_auth: true,
-            expected_peer: launch.expected_peer.clone(),
+            expected_peer: expected.clone(),
             profile: Some(launch.profile.clone()),
             ..Default::default()
         },
@@ -86,14 +95,14 @@ pub async fn view(
                 server_token: server.token_file.clone(),
                 server_ca: server.certificate.clone(),
                 device_auth: true,
-                expected_peer: launch.expected_peer.clone(),
+                expected_peer: expected.clone(),
                 profile: Some(launch.profile.clone()),
                 ..Default::default()
             }
         }
         Destination::LegacyInternet { settings } => {
             ensure!(
-                launch.expected_peer.is_none(),
+                expected.is_none(),
                 "已升级公钥配对的设备不能降级使用旧共享密钥"
             );
             ensure!(

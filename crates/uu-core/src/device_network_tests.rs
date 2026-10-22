@@ -298,7 +298,7 @@ async fn unified_device_tls_pairing_saves_multiple_clients_and_revoke_stops_only
 async fn unified_device_legacy_pinned_pairing_migrates_without_another_code_and_cannot_restore_revoked_access(
 ) {
     let root = std::env::temp_dir().join(format!("eclipse-migration-{}", uuid::Uuid::new_v4()));
-    let (access, _requests) = access(&root);
+    let (access, mut requests) = access(&root);
     let (stop, rx) = watch::channel(false);
     let (events, mut incoming) = mpsc::unbounded_channel();
     let (server, handle) = lan::Server::bind_with_access(config(&root), rx, events, access.clone())
@@ -354,6 +354,37 @@ async fn unified_device_legacy_pinned_pairing_migrates_without_another_code_and_
     )
     .await
     .is_err());
+    access.pairing.open();
+    let expected = access.store.card("Generated host").id();
+    let approval = async {
+        let request = requests.recv().await.unwrap();
+        request
+            .respond
+            .send(Some(
+                PairApproval::new(&display.code().unwrap(), Permissions::VIEW).unwrap(),
+            ))
+            .ok();
+    };
+    let (connected, _) = tokio::join!(
+        lan::connect_device(
+            &endpoint,
+            &client,
+            "Upgraded client",
+            Some(&expected),
+            None,
+            false,
+            &display
+        ),
+        approval
+    );
+    assert!(
+        connected.unwrap().peer.is_some(),
+        "a revoked migrated client can be explicitly paired again without replaying its old token"
+    );
+    assert_eq!(
+        access.store.peer(&peer).unwrap().unwrap().inbound,
+        Some(Permissions::VIEW)
+    );
     stop.send_replace(true);
     serving.await.unwrap().unwrap();
     std::fs::remove_dir_all(root).unwrap();

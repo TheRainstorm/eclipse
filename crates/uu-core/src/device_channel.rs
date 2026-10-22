@@ -349,7 +349,14 @@ mod tests {
     #[async_trait::async_trait]
     impl Transport for Memory {
         async fn send(&mut self, v: Value) -> Result<()> {
-            self.tx.send(v).await.map_err(Into::into)
+            // Exercise the actual UU SDP extension and gzip wire roundtrip,
+            // including a data-only m=application offer and answer.
+            let encoded=crate::internet::pack_sdp(v.clone())?;
+            let compressed=crate::socketio::gzip_sdp04(&encoded)?;
+            let decoded=crate::socketio::gunzip_sdp04(&compressed)?;
+            let restored=crate::internet::unpack_sdp(&decoded)?;
+            ensure!(restored==v,"UU SDP encoding changed the bootstrap binding");
+            self.tx.send(restored).await.map_err(Into::into)
         }
         async fn receive(&mut self) -> Result<Value> {
             self.rx.recv().await.context("closed")

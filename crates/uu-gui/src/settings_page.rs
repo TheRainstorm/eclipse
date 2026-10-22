@@ -225,26 +225,9 @@ fn input(ui: &mut egui::Ui, s: &mut Settings) {
         );
     });
 }
-fn network(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>, actions: &mut Actions) {
-    group(ui, "Eclipse 局域网端口", |ui| {
-        if state.sharing {
-            note(ui, "本机共享运行中。请先停止共享，再修改端口。");
-            ui.add_space(8.0);
-        }
-        ui.add_enabled_ui(!state.sharing, |ui| {
-            egui::Grid::new("settings-network-grid")
-                .spacing([24.0, 14.0])
-                .show(ui, |ui| {
-                    ui.label("服务端口 · TCP");
-                    ui.add(egui::DragValue::new(&mut s.lan_service_port).range(1..=65535));
-                    ui.end_row();
-                    ui.label("发现端口 · UDP");
-                    ui.add(egui::DragValue::new(&mut s.lan_discovery_port).range(1..=65535));
-                    ui.end_row();
-                });
-        });
-        ui.add_space(8.0);
-        note(ui,"发现端口需与另一台设备一致。主机自动公告实际服务端口；手动添加非默认端口时输入“主机:端口”。端口冲突会显示原因，不会自动修改防火墙。");
+fn network(ui: &mut egui::Ui, _s: &mut Settings, state: &State<'_>, actions: &mut Actions) {
+    group(ui, "共享网络设置", |ui| {
+        note(ui, "IP 服务端口、发现端口与 UU/VPS 接入统一在“共享本机”和“连接服务”页面管理。");
     });
     group(ui, "本机共享与配对", |ui| {
         ui.label("共享屏幕、声音及设备访问许可，由本机明确开启和管理。");

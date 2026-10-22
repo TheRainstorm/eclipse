@@ -242,7 +242,7 @@ impl super::App {
         let dirty=self.settings_draft!=self.preferences;
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
             super::settings_page::State {
-                streaming:self.stream_target.is_some(),sharing:self.lan.host.running(),
+                streaming:self.stream_target.is_some(),sharing:self.workspace.host.running(),
                 dirty,
                 storage_error:self.settings_storage_error,notice:&self.settings_notice,
                 presentation_vsync:self.presentation_vsync,
@@ -251,7 +251,7 @@ impl super::App {
         if actions.maximize {self.toggle_maximized(ctx);}
         if actions.reset {
             self.settings_draft=Settings::default();
-            if self.lan.host.running() {
+            if self.workspace.host.running() {
                 self.settings_draft.lan_service_port=self.preferences.lan_service_port;
                 self.settings_draft.lan_discovery_port=self.preferences.lan_discovery_port;
             }
@@ -263,7 +263,6 @@ impl super::App {
         if apply {
             let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
             self.preferences=self.settings_draft.clone();
-            self.lan.configure_ports(self.preferences.lan_service_port,self.preferences.lan_discovery_port);
             self.release_pointer_capture(ctx);
             self.target_fps = self.preferences.fps;
             self.fps_draft = self.target_fps;

@@ -37,6 +37,8 @@ mod account;
 mod audio_controls;
 mod native_ui;
 mod internet_ui;
+mod workspace_ui;
+mod sharing_ui;
 mod connection_details;
 mod lan_ui;
 mod lan_host_ui;
@@ -131,8 +133,9 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
 
 struct App {
     stream_target: Option<sessions::StreamTarget>,
+    assistance:Option<uu_core::assistance::Request>,
     native_ui: native_ui::NativeUi,
-    internet_ui: internet_ui::InternetUi,
+    workspace:workspace_ui::Workspace,
     connection_details_open:bool,
     lan: lan_ui::LanUi,
     native_clipboard_enabled: bool,
@@ -345,7 +348,7 @@ fn setup_style(ctx: &egui::Context) {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>, presentation_vsync: bool) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>, presentation_vsync: bool, assistance:Option<uu_core::assistance::Request>) -> Self {
         setup_style(&cc.egui_ctx);
         if let Some(gl)=&cc.gl {video_texture::enable_gpu_video(gl);}
         let platform = platform::Platform::new(cc, origin);
@@ -368,8 +371,9 @@ impl App {
         };
         let mut app = Self {
             stream_target,
+            assistance,
             native_ui: native_ui::NativeUi::default(),
-            internet_ui: internet_ui::InternetUi::load(config.as_ref()),
+            workspace:workspace_ui::Workspace::load(config.as_ref(),(preferences.lan_service_port,preferences.lan_discovery_port)),
             connection_details_open:false,
             lan:lan_ui::LanUi::new(config.as_ref().map(|c|c.at("native-lan"))),
             native_clipboard_enabled: false,
@@ -456,7 +460,7 @@ impl App {
         };
         if let Some(target) = app.stream_target.clone() {
             app.devices.push(Device {
-                alias: target.alias, device_id: match target.connection {sessions::ConnectionTarget::UuDevice(id)=>id,sessions::ConnectionTarget::NativeInvitation(_) | sessions::ConnectionTarget::NativeDevice(_) | sessions::ConnectionTarget::NativeInternet(_)=>String::new()},
+                alias: target.alias, device_id: match target.connection {sessions::ConnectionTarget::UuDevice(id) | sessions::ConnectionTarget::UuAssistance(id)=>id,sessions::ConnectionTarget::NativeInvitation(_) | sessions::ConnectionTarget::NativeDevice(_) | sessions::ConnectionTarget::NativeInternet(_) | sessions::ConnectionTarget::NativeProfile{..}=>String::new()},
                 status: "CONNECTED".into(), controllable: true,
                 wallpaper_url: String::new(), platform: 0,
             });
@@ -492,6 +496,7 @@ impl App {
     }
 
     fn start_login(&mut self) {
+        if self.stream_target.is_none() && !self.lan.compatibility {self.workspace.page=workspace_ui::Page::Services;}
         if let Some(error) = &self.account_error {
             self.login_status = error.clone();
             return;
@@ -1058,6 +1063,9 @@ impl App {
             return;
         }
         if self.controller.is_some() { return; }
+        if let Some(sessions::ConnectionTarget::NativeProfile{snapshot,..})=self.stream_target.as_ref().map(|target|target.connection.clone()) {
+            self.connect_native_profile(snapshot);return;
+        }
         if let Some(sessions::ConnectionTarget::NativeInvitation(path))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
             self.connect_native(path);return;
         }
@@ -1092,7 +1100,14 @@ impl App {
         stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
         stats.clipboard.available.store(cfg!(any(windows, target_os = "linux")),std::sync::atomic::Ordering::Release);
         stats.clipboard.enabled.store(self.preferences.clipboard && cfg!(any(windows, target_os = "linux")),std::sync::atomic::Ordering::Release);
-        match uu_core::controller::spawn_with_stats(config, device, geo,stats) {
+        let target=match &self.stream_target {
+            Some(target) if matches!(target.connection,sessions::ConnectionTarget::UuAssistance(_))=>{
+                let Some(request)=self.assistance.clone() else {self.status="远程协助验证码不可用，请从主页重新发起".into();return;};
+                uu_core::controller::Target::Assistance(request)
+            },
+            _=>uu_core::controller::Target::Device(device),
+        };
+        match uu_core::controller::spawn_target(config, target, geo,stats) {
             Ok(h) => {
                 let context = self.context.clone();
                 h.frames.enable_planar();
@@ -1120,9 +1135,9 @@ impl App {
 
 impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.workspace.host.stop();
         self.lan.host.stop();
         self.native_host.stop();
-        self.internet_ui.stop();
         // Delete custom GL textures while eframe still owns a current context.
         self.textures.clear();
             self.hud_cache=Default::default();
@@ -1140,9 +1155,9 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.workspace_poll(ctx);
         self.native_host.poll(ctx);
-        self.internet_ui.poll(ctx);
-        self.lan.configure_ports(self.preferences.lan_service_port, self.preferences.lan_discovery_port);
+        self.lan.configure_ports(self.workspace.book.sharing.service_port, self.workspace.book.sharing.discovery_port);
         let lan_active=self.stream_target.is_none()&&!self.lan.compatibility;
         self.lan.poll(ctx,lan_active);
         if let Some(seconds) = frame.info().cpu_usage {
@@ -1159,7 +1174,7 @@ impl eframe::App for App {
             self.fullscreen = fullscreen;
         }
         self.window_edge_active = !self.mouse_captured && window::resize_border(ctx, self.fullscreen);
-        if ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running() || self.lan.host.running() || self.internet_ui.running()) {
+        if ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running() || self.lan.host.running() || self.workspace.host.running()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_requested = true;
             self.disconnect();
@@ -1181,8 +1196,8 @@ impl eframe::App for App {
         self.window_sizing.set_settings_page(self.settings_open);
         self.window_sizing.update(ctx, self.stream_target.is_some(), video_px,
             self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(frame, ctx));
-        if self.exit_requested { self.native_host.stop(); self.lan.host.stop(); self.internet_ui.stop(); }
-        if self.exit_requested && self.controller.is_none() && !self.native_host.running() && !self.lan.host.running() && !self.internet_ui.running() {
+        if self.exit_requested { self.native_host.stop(); self.lan.host.stop(); self.workspace.host.stop();}
+        if self.exit_requested && self.controller.is_none() && !self.native_host.running() && !self.lan.host.running() && !self.workspace.host.running() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.poll_login(ctx);
@@ -1326,6 +1341,8 @@ impl eframe::App for App {
         }
         self.about_ui(ctx);
         self.connection_details_ui(ctx);
+        if self.stream_target.is_none(){self.workspace_dialogs(ctx);}
+        self.device_pairing_ui(ctx);
         if self.audio_save_after.is_some_and(|at|std::time::Instant::now()>=at) {
             self.audio_save_after=None;self.persist_preferences();
         }
@@ -1351,6 +1368,10 @@ fn main() -> eframe::Result {
         Ok(target) => target,
         Err(error) => { eprintln!("{error}"); return Ok(()); }
     };
+    let assistance=if let Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::UuAssistance(id),..})=&stream_target {
+        let request=uu_core::assistance::Request::read(id,std::io::stdin().lock());
+        match request {Ok(request)=>Some(request),Err(error)=>{eprintln!("{error}");return Ok(());}}
+    }else{None};
     let _launcher=if stream_target.is_none() {
         match single_instance::launcher() {
             Ok(Some(guard))=>Some(guard),
@@ -1384,7 +1405,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         brand::NAME,
         options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, stream_target, origin, vsync)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, stream_target, origin, vsync, assistance)))),
     )
 }
 

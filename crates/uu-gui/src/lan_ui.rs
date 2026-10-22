@@ -175,6 +175,11 @@ pub(super) struct LanUi {
     open_device: Option<Device>,
 }
 impl LanUi {
+    pub fn nearby(&self,local:Option<&str>)->Vec<(String,String)> {
+        let mut devices:Vec<_>=self.found.values().filter(|s|s.at.elapsed()<Duration::from_secs(20) && local!=Some(s.device.info.id.as_str()))
+            .map(|s|(s.device.info.name.clone(),s.device.address.to_string())).collect();
+        devices.sort();devices.dedup();devices
+    }
     pub fn configure_ports(&mut self, service: u16, discovery: u16) {
         self.host.configure_ports(service, discovery);
         if self.discovery_port != discovery {

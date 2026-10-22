@@ -3,15 +3,17 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::{Child, Command, Stdio},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ConnectionTarget {
     UuDevice(String),
+    UuAssistance(String),
     NativeInvitation(PathBuf),
     NativeDevice(String),
     NativeInternet(PathBuf),
+    NativeProfile {id:String,snapshot:PathBuf},
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct StreamTarget {
@@ -21,14 +23,14 @@ pub struct StreamTarget {
 }
 impl StreamTarget {
     pub fn is_native(&self) -> bool {
-        matches!(self.connection, ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_))
+        matches!(self.connection, ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..})
     }
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Self>, String> {
         let mut args = args.into_iter();
         let (mut connection, mut alias, mut view_only) = (None, None, false);
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--stream-device" | "--native-invitation" | "--native-device" | "--native-internet" => {
+                "--stream-device" | "--assist-device" | "--native-invitation" | "--native-device" | "--native-internet" | "--device-profile" => {
                     if connection.is_some() {
                         return Err("一次只能选择一种连接方式".into());
                     }
@@ -38,6 +40,13 @@ impl StreamTarget {
                         .ok_or("缺少连接目标")?;
                     connection = Some(if arg == "--stream-device" {
                         ConnectionTarget::UuDevice(value)
+                    } else if arg=="--assist-device" {
+                        if value.len()>64 || !value.bytes().all(|b|b.is_ascii_digit()) {return Err("远程协助设备 ID 无效".into());}
+                        ConnectionTarget::UuAssistance(value)
+                    } else if arg=="--device-profile" {
+                        let path=PathBuf::from(value);
+                        let launch=uu_core::device_book::Launch::read(&path).map_err(|e|format!("无法读取设备配置：{e}"))?;
+                        ConnectionTarget::NativeProfile{id:launch.profile,snapshot:path}
                     } else if arg=="--native-internet" {
                         ConnectionTarget::NativeInternet(value.into())
                     } else if arg=="--native-device" {
@@ -56,7 +65,8 @@ impl StreamTarget {
             Some(connection) => {
                 let default = match &connection {
                     ConnectionTarget::UuDevice(id) => id.clone(),
-                    ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) => "原生直连".into(),
+                    ConnectionTarget::UuAssistance(id) => format!("远程协助 {id}"),
+                    ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..} => "原生设备".into(),
                 };
                 Ok(Some(Self {
                     connection,
@@ -74,11 +84,13 @@ impl StreamTarget {
             ConnectionTarget::UuDevice(id) => {
                 command.arg("--stream-device").arg(id);
             }
+            ConnectionTarget::UuAssistance(id)=>{command.arg("--assist-device").arg(id).stdin(Stdio::piped());}
             ConnectionTarget::NativeInvitation(path) => {
                 command.arg("--native-invitation").arg(path);
             }
             ConnectionTarget::NativeDevice(id) => {command.arg("--native-device").arg(id);}
             ConnectionTarget::NativeInternet(path) => {command.arg("--native-internet").arg(path);}
+            ConnectionTarget::NativeProfile{snapshot,..}=>{command.arg("--device-profile").arg(snapshot);}
         }
         command
             .arg("--stream-alias")
@@ -116,8 +128,26 @@ impl Sessions {
         target: &StreamTarget,
         origin: Option<(i32, i32)>,
     ) -> std::io::Result<bool> {
+        self.open_inner(exe,target,origin,None)
+    }
+    pub fn open_assistance(&mut self,exe:&Path,request:&uu_core::assistance::Request,origin:Option<(i32,i32)>)->std::io::Result<bool> {
+        let target=StreamTarget {connection:ConnectionTarget::UuAssistance(request.id.clone()),alias:format!("远程协助 {}",request.id),view_only:false};
+        self.open_inner(exe,&target,origin,Some(request.code()))
+    }
+    pub fn focus_profiles(&mut self,ids:&[String])->bool {
         self.reap();
+        for (key,child) in &self.children {
+            if matches!(key,ConnectionTarget::NativeProfile{id,..} if ids.contains(id)) {focus_process(child.id());return true;}
+        }
+        false
+    }
+    fn open_inner(&mut self,exe:&Path,target:&StreamTarget,origin:Option<(i32,i32)>,code:Option<&str>)->std::io::Result<bool> {
+        self.reap();
+        if matches!(target.connection,ConnectionTarget::UuAssistance(_)) && code.is_none() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"远程协助需要验证码"));
+        }
         let key = match &target.connection {
+            ConnectionTarget::NativeProfile{id,..}=>ConnectionTarget::NativeProfile{id:id.clone(),snapshot:PathBuf::new()},
             ConnectionTarget::NativeInvitation(path) => ConnectionTarget::NativeInvitation(
                 path.canonicalize().unwrap_or_else(|_| path.clone()),
             ),
@@ -127,7 +157,13 @@ impl Sessions {
             focus_process(child.id());
             return Ok(false);
         }
-        let child = target.command(exe, origin).spawn()?;
+        let mut child = target.command(exe, origin).spawn()?;
+        if let Some(code)=code {
+            use std::io::Write;
+            let result=child.stdin.take().ok_or_else(||std::io::Error::new(std::io::ErrorKind::BrokenPipe,"无法传递协助验证码"))
+                .and_then(|mut pipe|{pipe.write_all(code.as_bytes())?;pipe.write_all(b"\n")});
+            if let Err(error)=result {let _=child.kill();let _=child.wait();return Err(error);}
+        }
         #[cfg(windows)]
         unsafe {
             // Called as part of the user's launch action while the launcher
@@ -179,6 +215,15 @@ fn focus_process(_pid: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn assistance_arguments_contain_only_the_target_and_receive_a_bounded_stdin_code() {
+        let target=StreamTarget {connection:ConnectionTarget::UuAssistance("123456789".into()),alias:"Generated assistance".into(),view_only:false};
+        let command=target.command(Path::new("generated-gui"),None);
+        let args:Vec<String>=command.get_args().map(|s|s.to_string_lossy().into_owned()).collect();
+        assert_eq!(StreamTarget::parse(args).unwrap(),Some(target));
+        assert!(uu_core::assistance::Request::read("123456789",std::io::Cursor::new(b"TEST79\n")).is_ok());
+        assert!(uu_core::assistance::Request::read("123456789",std::io::Cursor::new(vec![b'A';128])).is_err());
+    }
     #[test]
     fn child_arguments_preserve_device_alias_and_mode_without_recursive_autoconnect() {
         let target = StreamTarget {

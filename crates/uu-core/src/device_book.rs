@@ -126,6 +126,30 @@ pub enum Destination {
     },
 }
 impl Destination {
+    pub fn same_target(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Ip { address: a, .. }, Self::Ip { address: b, .. }) => match (
+                crate::native_discovery::endpoint(a),
+                crate::native_discovery::endpoint(b),
+            ) {
+                (Ok(a), Ok(b)) => a.eq_ignore_ascii_case(&b),
+                _ => false,
+            },
+            (Self::Uu { device: a }, Self::Uu { device: b }) => a == b,
+            (
+                Self::Vps {
+                    service: a,
+                    device: x,
+                },
+                Self::Vps {
+                    service: b,
+                    device: y,
+                },
+            ) => a == b && x == y,
+            (Self::LegacyInternet { settings: a }, Self::LegacyInternet { settings: b }) => a == b,
+            _ => false,
+        }
+    }
     pub fn label(&self) -> &'static str {
         match self {
             Self::Ip { .. } => "IP 直连",
@@ -220,6 +244,17 @@ fn valid_name(name: &str) -> Result<()> {
     );
     Ok(())
 }
+fn service_device(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty()
+            && name.len() <= 80
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)),
+        "服务器中的设备名称只能使用字母、数字、短横线或下划线（最多80字节）"
+    );
+    Ok(())
+}
 impl Book {
     pub fn device(&self, id: &str) -> Result<&Profile> {
         let mut current = id;
@@ -258,7 +293,11 @@ impl Book {
                     && !service.address.trim().is_empty(),
                 "服务器地址或标识无效"
             );
-            valid_name(&service.published_name)?;
+            service_device(&service.published_name)?;
+            ensure!(
+                !service.token_file.as_os_str().is_empty(),
+                "请选择服务器访问凭据文件"
+            );
         }
         let mut ids = std::collections::HashSet::new();
         for profile in &self.devices {
@@ -298,12 +337,14 @@ impl Book {
                     Destination::Uu { device } => ensure!(
                         !device.trim().is_empty()
                             && device.len() <= 128
-                            && !device.chars().any(char::is_control),
+                            && device
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)),
                         "UU 设备编号无效"
                     ),
                     Destination::Vps { service, device } => {
                         self.service(service)?;
-                        valid_name(device)?;
+                        service_device(device)?;
                     }
                     Destination::LegacyInternet { settings } => {
                         ensure!(!settings.as_os_str().is_empty(), "旧配置路径无效")
@@ -358,6 +399,21 @@ pub struct Store {
     directory: PathBuf,
 }
 impl Store {
+    pub fn store_service_credential(&self, id: &str, text: &str) -> Result<PathBuf> {
+        valid_id(id)?;
+        let text = text.trim();
+        ensure!(
+            text.len() == 64 && hex::decode(text).is_ok(),
+            "服务器访问令牌应为64位十六进制字符"
+        );
+        // Existing stream snapshots retain their own credential version.
+        let path = self.directory.join(format!(
+            "service-access-{id}-{}.token",
+            uuid::Uuid::new_v4()
+        ));
+        crate::private_file::write_atomic(&path, text.as_bytes())?;
+        Ok(path)
+    }
     pub fn launch(&self, id: &str) -> Result<Launch> {
         let book = self.read()?;
         let profile = book.device(id)?;
@@ -429,6 +485,19 @@ impl Store {
             Ok(())
         })
     }
+    pub fn remove_service(&self, id: &str) -> Result<()> {
+        self.edit(|book| {
+            ensure!(
+                !book.devices.iter().any(|p| p.redirect.is_none()
+                    && p.routes.iter().any(
+                        |r| matches!(&r.destination,Destination::Vps{service,..} if service==id)
+                    )),
+                "该服务器仍用于设备连接，请先移除对应的连接地址"
+            );
+            book.services.retain(|s| s.id != id);
+            Ok(())
+        })
+    }
     pub fn save_device(&self, profile: Profile) -> Result<()> {
         self.edit(|b| {
             if let Some(v) = b.devices.iter_mut().find(|v| v.id == profile.id) {
@@ -456,7 +525,11 @@ impl Store {
             }) {
                 let routes = std::mem::take(&mut b.devices[current].routes);
                 for route in routes {
-                    if !b.devices[other].routes.iter().any(|r| r.id == route.id) {
+                    if !b.devices[other]
+                        .routes
+                        .iter()
+                        .any(|r| r.id == route.id || r.destination.same_target(&route.destination))
+                    {
                         b.devices[other].routes.push(route);
                     }
                 }
@@ -495,6 +568,26 @@ mod tests {
             published_name: "desktop".into(),
         };
         store.save_service(service.clone()).unwrap();
+        let first = store
+            .store_service_credential(&service.id, &"ab".repeat(32))
+            .unwrap();
+        let next = store
+            .store_service_credential(&service.id, &"cd".repeat(32))
+            .unwrap();
+        assert_ne!(first, next);
+        assert_eq!(
+            std::fs::read_to_string(first).unwrap(),
+            "ab".repeat(32),
+            "editing a service cannot replace an existing launch credential"
+        );
+        assert!(Destination::Ip {
+            address: "192.0.2.1".into(),
+            legacy_device: None
+        }
+        .same_target(&Destination::Ip {
+            address: "192.0.2.1:47998".into(),
+            legacy_device: Some(uuid::Uuid::new_v4().to_string())
+        }));
         let a = Profile::new(
             "A",
             Destination::Uu {
@@ -510,13 +603,20 @@ mod tests {
         );
         store.save_device(a.clone()).unwrap();
         store.save_device(b.clone()).unwrap();
-        let snapshot=store.publish_launch(&a.id).unwrap();
-        store.edit(|book| {
-            let profile=book.devices.iter_mut().find(|p|p.id==a.id).unwrap();
-            profile.routes[0].destination=Destination::Uu{device:"new-destination".into()};Ok(())
-        }).unwrap();
-        let frozen=Launch::read(&snapshot).unwrap();
-        assert!(matches!(frozen.route.destination,Destination::Uu{device} if device=="generated-a"));
+        let snapshot = store.publish_launch(&a.id).unwrap();
+        store
+            .edit(|book| {
+                let profile = book.devices.iter_mut().find(|p| p.id == a.id).unwrap();
+                profile.routes[0].destination = Destination::Uu {
+                    device: "new-destination".into(),
+                };
+                Ok(())
+            })
+            .unwrap();
+        let frozen = Launch::read(&snapshot).unwrap();
+        assert!(
+            matches!(frozen.route.destination,Destination::Uu{device} if device=="generated-a")
+        );
         let id = "a".repeat(64);
         store.bind(&a.id, &id).unwrap();
         assert!(store.bind(&a.id, &"b".repeat(64)).is_err());
@@ -525,6 +625,10 @@ mod tests {
         assert_eq!(book.device(&b.id).unwrap().id, a.id);
         assert_eq!(book.device(&a.id).unwrap().routes.len(), 2);
         assert_eq!(book.services[0].token_file, service.token_file);
+        assert!(
+            store.remove_service(&service.id).is_err(),
+            "a service referenced by a saved route cannot be removed"
+        );
         assert!(
             store.save_device(a).is_err(),
             "stale UI must not erase a freshly verified peer identity"

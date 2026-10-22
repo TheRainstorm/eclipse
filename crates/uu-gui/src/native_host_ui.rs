@@ -282,10 +282,13 @@ impl NativeHostUi {
 impl App {
     pub(super) fn open_native_host(&mut self) {
         self.native_ui.open = false;
-        if self.native_host.running() {
-            self.native_host.open = true;
-        } else {
-            self.lan.host.show();
+        self.settings_open=false;
+        if self.stream_target.is_none() {
+            self.lan.compatibility=false;
+            self.workspace.page=super::workspace_ui::Page::Sharing;
+        }else {
+            let result=std::env::current_exe().and_then(|exe|std::process::Command::new(exe).env_remove("UU_AUTOCONNECT").env("ECLIPSE_SHOW_SHARING","1").spawn());
+            self.status=match result {Ok(_)=>"已打开主页，可在“共享本机”中管理共享".into(),Err(e)=>format!("无法打开主页：{e}")};
         }
     }
 

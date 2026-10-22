@@ -82,6 +82,9 @@ impl super::App {
     }
 
     pub(super) fn apply_account(&mut self, token: Option<String>) {
+        if self.account_token.is_some() && self.account_token!=token && self.workspace.book.sharing.uu_enabled && self.workspace.host.running() {
+            self.workspace.host.stop();self.workspace.notice="UU 账号已变化，已停止本机共享；确认账号后可重新开启。".into();
+        }
         self.account_token = token;
         self.account_error = None;
         self.logged_in = self.account_token.is_some();
@@ -109,7 +112,7 @@ impl super::App {
     }
 
     pub(super) fn poll_account(&mut self) {
-        if self.is_native()||(self.stream_target.is_none()&&!self.lan.compatibility){return;}
+        if self.is_native(){return;}
         if self.account_poll_at.elapsed() < std::time::Duration::from_millis(500) {
             return;
         }

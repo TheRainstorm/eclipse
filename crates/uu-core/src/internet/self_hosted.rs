@@ -25,6 +25,20 @@ pub struct Config {
     /// certificates use the normal system/webpki trust path when omitted.
     pub ca_file: Option<PathBuf>,
 }
+impl Config {
+    /// Check local inputs before saving a service. This makes no connection.
+    pub fn validate_local(&self)->Result<()> {
+        let url=reqwest::Url::parse(&self.url).context("服务器地址格式无效")?;
+        ensure!(url.scheme()=="wss" && url.host_str().is_some() && url.username().is_empty() && url.password().is_none(),"服务器需要有效的 WSS 地址，访问凭据请单独填写");
+        let _=read_token(&self.token_file).context("无法读取服务器访问凭据文件")?;
+        if let Some(path)=&self.ca_file {
+            let mut roots=rustls::RootCertStore::empty();
+            for cert in CertificateDer::pem_file_iter(path).context("无法读取服务器证书")? {roots.add(cert?)?;}
+            ensure!(!roots.is_empty(),"证书文件中没有有效的 PEM 证书");
+        }
+        Ok(())
+    }
+}
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 async fn open(config: &Config, request: Request) -> Result<Socket> {
     crate::install_crypto_provider();

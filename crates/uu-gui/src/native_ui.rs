@@ -148,11 +148,12 @@ impl App {
         }
     }
     pub(super) fn connect_native(&mut self, path: PathBuf) {
-        self.connect_native_source(Some(path),None,None);
+        self.connect_native_source(Some(path),None,None,None);
     }
-    pub(super) fn connect_native_device(&mut self,id:String){self.connect_native_source(None,Some(id),None);}
-    pub(super) fn connect_native_internet(&mut self,path:PathBuf){self.connect_native_source(None,None,Some(path));}
-    fn connect_native_source(&mut self,path:Option<PathBuf>,device:Option<String>,internet:Option<PathBuf>){
+    pub(super) fn connect_native_device(&mut self,id:String){self.connect_native_source(None,Some(id),None,None);}
+    pub(super) fn connect_native_internet(&mut self,path:PathBuf){self.connect_native_source(None,None,Some(path),None);}
+    pub(super) fn connect_native_profile(&mut self,path:PathBuf){self.connect_native_source(None,None,None,Some(path));}
+    fn connect_native_source(&mut self,path:Option<PathBuf>,device:Option<String>,internet:Option<PathBuf>,profile:Option<PathBuf>){
         self.native_clipboard_enabled=false;
         let stats = Arc::new(uu_core::media::MediaStats::default());
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Release);
@@ -173,7 +174,13 @@ impl App {
             .store(cfg!(any(windows,target_os="linux")), std::sync::atomic::Ordering::Release);
         self.displays = super::displays::Displays::default();
         self.selected_track = 0;
-        let result=if let Some(profile)=internet {
+        let result=if let Some(path)=profile {
+            (||->anyhow::Result<_>{
+                let config=self.config.clone().ok_or_else(||anyhow::anyhow!("无法读取设备配置目录"))?;
+                let launch=uu_core::device_book::Launch::read(&path)?;
+                uu_core::native_controller::spawn_profile(launch,config,stats,!self.view_only)
+            })()
+        }else if let Some(profile)=internet {
             (|| -> anyhow::Result<_> {
                 let config=self.config.clone().ok_or_else(||anyhow::anyhow!("无法读取连接配置目录"))?;
                 let settings=super::internet_ui::read_profile(&profile)?;
