@@ -11,6 +11,23 @@ import tempfile
 
 LICENSES = ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt']
 
+PAYLOAD = ['uu-gui', 'uu', 'README.txt', 'install.py', 'eclipse.png', *LICENSES]
+
+
+def verify_package(package):
+    manifest = json.loads((package / 'version.json').read_text())
+    revision = manifest.get('source_commit')
+    if not isinstance(revision, str) or len(revision) != 40 or any(c not in '0123456789abcdef' for c in revision):
+        raise ValueError('Invalid source revision')
+    hashes = manifest.get('sha256')
+    if not isinstance(hashes, dict) or set(hashes) != set(PAYLOAD):
+        raise ValueError('Invalid package hash manifest')
+    for name in PAYLOAD:
+        path = package / name
+        if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != hashes[name]:
+            raise ValueError(f'Integrity check failed: {name}')
+    return manifest
+
 
 def desktop_value(value):
     return str(value).replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
@@ -43,15 +60,9 @@ def main():
     parser.add_argument('--package', type=Path, default=Path(__file__).resolve().parent)
     args = parser.parse_args()
     package = args.package.resolve()
-    manifest = json.loads((package / 'version.json').read_text())
+    manifest = verify_package(package)
     revision = manifest['source_commit']
-    if len(revision) != 40 or any(c not in '0123456789abcdef' for c in revision):
-        raise ValueError('Invalid source revision')
-    for name in ['uu-gui', 'uu', 'eclipse.png', *LICENSES]:
-        if hashlib.sha256((package / name).read_bytes()).hexdigest() != manifest['sha256'][name]:
-            raise ValueError(f'Integrity check failed: {name}')
     for name in ['uu-gui', 'uu']:
-        subprocess.run(['ldd', str(package / name)], check=True, capture_output=True)
         deps = subprocess.check_output(['ldd', str(package / name)], text=True)
         if 'not found' in deps: raise RuntimeError(f'Missing shared libraries for {name}: {deps}')
     prefix = args.prefix.expanduser().resolve()
@@ -65,14 +76,14 @@ def main():
     if not dest.exists():
         staging = Path(tempfile.mkdtemp(prefix='.install-', dir=releases))
         try:
-            for name in ['uu-gui', 'uu', 'version.json', 'README.txt', 'install.py', 'eclipse.png', *LICENSES]:
+            for name in [*PAYLOAD, 'version.json']:
                 shutil.copy2(package / name, staging / name)
             for name in ['uu-gui', 'uu']: (staging / name).chmod(0o755)
             staging.rename(dest)
         finally:
             if staging.exists(): shutil.rmtree(staging)
     else:
-        for name in ['uu-gui', 'uu', 'eclipse.png', *LICENSES]:
+        for name in PAYLOAD:
             if hashlib.sha256((dest / name).read_bytes()).hexdigest() != manifest['sha256'][name]:
                 raise ValueError('Existing release differs; refusing to overwrite a running installation')
     def link(target, path):

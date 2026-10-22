@@ -28,15 +28,16 @@ class DownloadTests(unittest.TestCase):
         self.make_linux()
         self.hashes()
 
-    def manifest(self, files):
-        return json.dumps({'source_commit': self.revision,
-                           'sha256': {n: hashlib.sha256(v).hexdigest() for n, v in files.items()}}).encode()
+    def manifest(self, files, format_version=None):
+        record = {'source_commit': self.revision, 'sha256': {n: hashlib.sha256(v).hexdigest() for n, v in files.items()}}
+        if format_version is not None: record['format_version'] = format_version
+        return json.dumps(record).encode()
 
     def make_windows(self):
         # Inventory is imported by the same strict Windows installer verifier.
         from package import REQUIRED
         files = {name: ('fixture ' + name).encode() for name in REQUIRED}
-        files['version.json'] = self.manifest(files)
+        files['version.json'] = self.manifest(files, format_version=2)
         with zipfile.ZipFile(self.assets / self.windows, 'w') as archive:
             for name, data in files.items():
                 archive.writestr(name, data)

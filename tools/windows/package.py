@@ -119,6 +119,8 @@ def build_package(output, vpl_archive=None):
         with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as bundle:
             for path in sorted(staging.iterdir()):
                 bundle.write(path, path.name)
+        if clean_revision() != revision:
+            raise RuntimeError('打包期间源码或提交发生变化，未发布产物')
         os.replace(zip_path, archive)
         result = {'source_commit': revision, 'archive': archive.name, 'sha256': sha256(archive)}
         pointer = Path(temp) / 'windows-latest.json'

@@ -143,8 +143,8 @@ Windows 上再次打开程序会唤起已有主页，避免并行运行多个主
 
 ## 当前边界
 
-- 原生被控端目前为实验性局域网共享通路，含 Windows DXGI / Linux X11 采集、软件及双平台 H.264 硬件编码与可选系统声音；图形局域网共享默认自动选择硬编。Wayland portal 与日常无人值守管理尚未接入该模式；键鼠控制需主机显式许可。不要把它当作完整的服务端。
-- Windows UU 串流支持 H.264 和可选 H.265 Main 8-bit 硬解；HEVC 需要系统解码扩展与兼容 GPU，连接前检查失败时使用 H.264。原生串流和 Linux 接收仍使用 H.264；AV1、HDR 与视频 FEC 未实现。高帧率选项不保证所有远端都能达到对应实际帧率。
+- 原生被控端目前为实验性局域网共享通路，含 Windows DXGI、Linux X11 / Wayland 门户采集、可选系统声音和输入控制。H.264 默认自动选择硬编；HEVC / AV1 / VBR 需要相应 Intel 硬件运行时。Wayland 需系统授权，日常无人值守管理尚未完整实现。
+- Windows UU 串流支持 H.264 和可选 H.265 Main 8-bit 硬解；HEVC 需要系统解码扩展与兼容 GPU，连接前检查失败时使用 H.264。Linux UU 接收可选 HEVC 硬解；原生支持 H.264 / HEVC / AV1，当前上限 4K60。HDR 与视频 FEC 未实现。高帧率选项不保证所有远端都能达到对应实际帧率。
 - 文件传输、终端和端口映射尚未实现。新版“远程协助”可按官方设备 ID 与验证码发起兼容连接；原生主机发布官方协助码尚未实现。
 - 硬解仍存在 CPU 回读，尚未做到完整零拷贝；网络波动、恢复与音频长稳体验仍需持续打磨。
 - 服务兼容性依赖官方接口与被控端版本，可能随更新失效；未获官方认可或授权，账号与服务使用存在协议风险。
@@ -159,7 +159,7 @@ crates/uu-core     账号 API、信令、WebRTC、显示源与恢复策略
 crates/uu-proto    协议类型、控制消息与帧格式
 crates/uu-media    解码、音频播放与媒体抽象
 crates/uu-cli      调试与诊断命令 uu
-crates/uu-capture  DXGI / X11 实际采集与合成测试源
+crates/uu-capture  DXGI / X11 / Wayland 门户采集与合成测试源
 crates/uu-input    按会话许可工作的 Windows / Linux 输入注入后端
 tools/            构建、打包及隔离验证工具
 vendor/           带有来源、许可与修改记录的局部依赖
