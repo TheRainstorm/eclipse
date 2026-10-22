@@ -10,7 +10,8 @@ pub mod linux;
 #[cfg(windows)]
 pub mod windows;
 pub use geometry::DesktopRect;
-use held::{release_owned, HeldInput};
+use held::release_owned;
+pub use held::HeldInput;
 
 #[derive(Debug, Error)]
 pub enum InputError {

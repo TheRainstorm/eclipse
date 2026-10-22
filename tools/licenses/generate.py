@@ -9,6 +9,10 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def license_text(value):
+    return '\n'.join(line.rstrip() for line in value.strip().splitlines())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--metadata', type=Path, help='Existing cargo metadata JSON; otherwise run cargo metadata --locked')
@@ -42,7 +46,7 @@ def main():
             f.name.lower().startswith(('license', 'licence', 'copying', 'notice', 'copyright'))
             or f.name in ('UFL.txt', 'OFL.txt', 'Hack-Regular.txt')) and f.stat().st_size < 2_000_000)
         for file in files:
-            value = file.read_text(encoding='utf-8', errors='replace').strip()
+            value = license_text(file.read_text(encoding='utf-8', errors='replace'))
             digest = hashlib.sha256(value.encode()).hexdigest()
             texts.setdefault(digest, value)
             output.append(f'License file: {file.relative_to(root).as_posix()} -> text {digest}')
@@ -51,19 +55,19 @@ def main():
             output.append('No separate license file in the crate archive; see the SPDX standard texts and upstream notices.')
         output.append('')
     for file in sorted((ROOT / 'licenses' / 'standard').glob('*.txt')):
-        value = file.read_text().strip()
+        value = license_text(file.read_text())
         digest = hashlib.sha256(value.encode()).hexdigest()
         texts.setdefault(digest, value)
         output.append(f'Standard license text: {file.name} -> text {digest}')
     for file in sorted((ROOT / 'licenses' / 'third-party').glob('*.txt')):
-        value = file.read_text().strip()
+        value = license_text(file.read_text())
         digest = hashlib.sha256(value.encode()).hexdigest()
         texts.setdefault(digest, value)
         output.append(f'Additional component notice: {file.name} -> text {digest}')
     output += ['', 'Crates without a separate license file in the published archive:', ', '.join(missing), '']
     for digest, value in sorted(texts.items()):
         output += [f'## License text {digest}', value, '']
-    (ROOT / 'THIRD-PARTY-NOTICES.txt').write_text('\n'.join(output), encoding='utf-8')
+    (ROOT / 'THIRD-PARTY-NOTICES.txt').write_text('\n'.join(line.rstrip() for line in output), encoding='utf-8')
     (ROOT / 'docs' / 'dependency-licenses.md').write_text('\n'.join(inventory) + '\n', encoding='utf-8')
     print(json.dumps({'packages': len(packages), 'distinct_license_texts': len(texts),
                       'crates_without_separate_license_file': len(missing)}))

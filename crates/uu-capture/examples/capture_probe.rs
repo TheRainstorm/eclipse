@@ -20,6 +20,11 @@ fn main() -> Result<()> {
     }
     if list {
         #[cfg(target_os = "linux")]
+        if display.is_none() && uu_capture::uses_desktop_portal() {
+            println!("Wayland: select an authorized monitor in the system screen-sharing dialog when capture starts");
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
         for monitor in uu_capture::x11::monitors(display.as_deref())? {
             println!("{monitor:?}");
         }
@@ -37,10 +42,9 @@ fn main() -> Result<()> {
     let mut capture: Box<dyn Capture> = {
         #[cfg(target_os = "linux")]
         {
-            Box::new(uu_capture::x11::X11Capture::open(
-                display.as_deref(),
-                &source,
-            )?)
+            if display.is_some() {
+                Box::new(uu_capture::x11::X11Capture::open(display.as_deref(),&source)?)
+            } else { uu_capture::open(&source)? }
         }
         #[cfg(not(target_os = "linux"))]
         {

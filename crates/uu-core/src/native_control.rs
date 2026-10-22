@@ -208,14 +208,26 @@ pub(crate) struct HostControl {
     clipboard_registered: AtomicBool,
 }
 impl HostControl {
+    #[cfg(test)]
     pub async fn new(
         allow: bool,
         rect: Option<uu_capture::DesktopRect>,
         clipboard: Option<Arc<crate::clipboard::Clipboard>>,
     ) -> Arc<Self> {
+        Self::with_injector(allow,rect,clipboard,None).await
+    }
+    pub async fn with_injector(
+        allow: bool,
+        rect: Option<uu_capture::DesktopRect>,
+        clipboard: Option<Arc<crate::clipboard::Clipboard>>,
+        injector: Option<Box<dyn InputInjector>>,
+    ) -> Arc<Self> {
         let worker = if let Some(rect) = rect.filter(|_| allow) {
             match DesktopRect::new(rect.x, rect.y, rect.width, rect.height) {
-                Ok(rect) => match InputWorker::start(rect).await {
+                Ok(rect) => match match injector {
+                    Some(injector)=>InputWorker::with_factory(rect,move || Ok(injector)).await,
+                    None=>InputWorker::start(rect).await,
+                } {
                     Ok(worker) => Some(worker),
                     Err(error) => {
                         tracing::warn!(%error,"native input unavailable; continuing view only");

@@ -883,6 +883,12 @@ impl Workspace {
         ui.weak("移除本地记录不会撤销被控端已授予的权限。授权在被控端的“共享本机”中管理。");
     }
     fn refresh_monitors(&mut self) {
+        if uu_core::native::uses_desktop_portal() {
+            self.monitors.clear();
+            self.monitor_error.clear();
+            self.draft.monitor.clear();
+            return;
+        }
         match uu_core::native::monitors() {
             Ok(monitors) => {
                 self.monitors = monitors;
@@ -927,7 +933,7 @@ impl Workspace {
                         }
                     } else if ui
                         .add_enabled(
-                            self.store.is_some() && !self.monitors.is_empty(),
+                            self.store.is_some() && (!self.monitors.is_empty() || uu_core::native::uses_desktop_portal()),
                             egui::Button::new(
                                 RichText::new("开始共享").color(egui::Color32::WHITE),
                             )
@@ -993,7 +999,10 @@ impl Workspace {
             ui.add_enabled_ui(!locked, |ui| {
                 field(ui, "本机名称", &mut self.draft.name, "设备名称");
                 ui.label("共享屏幕");
-                egui::ComboBox::from_id_salt("shared-monitor")
+                if uu_core::native::uses_desktop_portal() {
+                    ui.label("连接时由系统选择共享屏幕");
+                    ui.weak("Wayland 会请求屏幕共享授权；允许控制时一并请求键鼠权限。");
+                } else { egui::ComboBox::from_id_salt("shared-monitor")
                     .selected_text(if self.draft.monitor.is_empty() {
                         "主显示器"
                     } else {
@@ -1014,6 +1023,7 @@ impl Workspace {
                 }
                 if ui.small_button("刷新屏幕").clicked() {
                     self.refresh_monitors();
+                }
                 }
                 ui.horizontal(|ui| {
                     ui.label("帧率");

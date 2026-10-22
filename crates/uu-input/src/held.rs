@@ -1,7 +1,8 @@
 use crate::{InputError, InputEvent, InputInjector, KeyCode, MouseButton};
 
 #[derive(Default)]
-pub(crate) struct HeldInput {
+/// Tracks successful transitions so teardown releases only this session's input.
+pub struct HeldInput {
     keys: Vec<KeyCode>,
     buttons: Vec<MouseButton>,
 }

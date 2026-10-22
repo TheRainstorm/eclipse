@@ -6,7 +6,7 @@ Linux VA-API 支持完整访问单元提交，并依据 H.264 色彩标记选择
 
 ## 构建和统一安装
 
-开发机需要 Rust、C/C++、Clang、nasm、pkg-config，以及 libva/libgbm/libdrm/ALSA/PulseAudio 和 XKB 的开发包。Ubuntu 可安装 `libva-dev libgbm-dev libdrm-dev libasound2-dev libpulse-dev`，Arch 使用对应 `libva mesa libdrm alsa-lib libpulse libxkbcommon libxkbcommon-x11` 软件包。Ubuntu 的 X11 支持还需 `libxkbcommon-x11-dev`（运行时为 `libxkbcommon-x11-0`）；该库在启动 X11 后端时动态加载，单独运行 `ldd` 无法检查它是否存在。运行桌面推荐安装 PipeWire ALSA 插件和中文字体。
+开发机需要 Rust、C/C++、Clang、nasm、pkg-config，以及 libva/libgbm/libdrm/ALSA/PulseAudio、PipeWire 和 XKB 的开发包。Ubuntu 可安装 `libva-dev libgbm-dev libdrm-dev libasound2-dev libpulse-dev libpipewire-0.3-dev`，Arch 使用对应 `libva mesa libdrm alsa-lib libpulse pipewire libxkbcommon libxkbcommon-x11` 软件包。Ubuntu 的 X11 支持还需 `libxkbcommon-x11-dev`（运行时为 `libxkbcommon-x11-0`）；该库在启动 X11 后端时动态加载，单独运行 `ldd` 无法检查它是否存在。运行桌面推荐安装 PipeWire ALSA 插件和中文字体。
 
 ```sh
 cargo run -p uu-gui --features vaapi
@@ -24,6 +24,27 @@ python3 install.py
 默认保持远端显示器布局；独占虚拟屏只在用户显式选择时启用。支持绝对桌面鼠标、Locked 相对游戏鼠标、本地/远端光标偏好。窗口按目标屏幕约 80% 容量计算大小；Wayland 的位置由合成器决定，应用不能强制全局居中坐标。
 
 快捷键：Ctrl+Alt+S 信息，F/X 串流全屏，Q 退出串流，M 静音；H 悬浮入口，Z 释放/捕获。Wayland 全屏系统快捷键使用 `keyboard-shortcuts-inhibit`，是否允许由合成器决定。退出全屏/失焦时释放。窗口模式将 Super 留给本地桌面。X11 普通键盘、鼠标、文本剪贴板可用；X11 的全屏系统键抓取尚未实机闭环。
+
+## Wayland 本机共享
+
+在“共享本机”开启服务后，远端通过设备认证并请求画面时，由系统弹窗选择共享屏幕。Wayland 不预先读取屏幕内容或用 Xwayland 根窗口替代桌面；屏幕尺寸以系统授权后的实际画面为准，现阶段不保存门户的长期恢复令牌。
+
+允许控制时，画面和键鼠通过同一个 RemoteDesktop 门户会话获得授权。键鼠权限未获授权或桌面只支持 ScreenCast 时继续提供只读画面。鼠标绝对位置按屏幕像素与门户逻辑尺寸换算，适配缩放；停止控制仅释放当前会话按下的键和按钮。取消系统弹窗、断线及停止共享会关闭相应会话。Wayland 文本剪贴板仍取决于独立后端是否可用。
+
+需要运行 PipeWire、`xdg-desktop-portal` 和与桌面匹配的后端，例如 KDE 的 `xdg-desktop-portal-kde` 或 GNOME 的 `xdg-desktop-portal-gnome`。门户 API 定义见 [ScreenCast](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html) 和 [RemoteDesktop](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.RemoteDesktop.html)。系统拒绝授权时显示失败原因，不能通过应用绕过授权。
+
+开发验证可使用独立 D-Bus 与生成视频，不接触真实桌面和系统输入。需要 `python3-dbus python3-gi`，生成视频还需 PipeWire 工具及 SPA 视频测试源：
+
+```sh
+cargo build --release -p uu-capture --example portal_probe --locked
+for scenario in deny cancel stream-view stream-input; do
+  python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe --case "$scenario"
+done
+python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe \
+  --cli target/release/uu --case stream-native
+```
+
+这覆盖真实门户调用、拒绝/取消后关闭、PipeWire 帧传输、同进程重连、缩放坐标、按键释放及生成画面的原生加密串流；不代表各桌面的授权弹窗交互均已实机验收。
 
 ## 独立 Wayland 测试桌面
 

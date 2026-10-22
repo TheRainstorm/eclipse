@@ -18,7 +18,7 @@ pub enum CaptureError {
     TargetNotFound(CaptureTarget),
     #[error("backend error: {0}")]
     Backend(String),
-    #[error("capture was denied by the compositor")]
+    #[error("系统未授权屏幕共享，连接已取消")]
     Denied,
 }
 
@@ -32,6 +32,11 @@ pub trait Capture: Send {
     /// Global pixels represented by a whole-monitor capture. Synthetic and
     /// window sources do not authorize desktop input through this interface.
     fn desktop_rect(&self) -> Option<DesktopRect> {
+        None
+    }
+    /// A compositor-authorized injector belonging to this capture session.
+    /// Platforms with independent injection leave this empty.
+    fn input_injector(&self) -> Option<Box<dyn uu_input::InputInjector>> {
         None
     }
     /// Block until the next frame is available.
@@ -51,6 +56,7 @@ pub fn available_backends() -> Vec<&'static str> {
     let mut v = Vec::new();
     #[cfg(target_os = "linux")]
     {
+        v.push("portal-pipewire");
         v.push("x11-getimage");
     }
     #[cfg(target_os = "windows")]

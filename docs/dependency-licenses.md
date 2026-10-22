@@ -18,6 +18,7 @@
 | [android-activity](https://github.com/rust-mobile/android-activity) | 0.6.1 | `MIT OR Apache-2.0` |
 | [android-properties](https://github.com/miklelappo/android-properties) | 0.2.2 | `MIT` |
 | [android_system_properties](https://github.com/nical/android_system_properties) | 0.1.6 | `MIT OR Apache-2.0` |
+| [annotate-snippets](https://github.com/rust-lang/annotate-snippets-rs) | 0.11.5 | `MIT OR Apache-2.0` |
 | [anstream](https://github.com/rust-cli/anstyle.git) | 1.0.0 | `MIT OR Apache-2.0` |
 | [anstyle](https://github.com/rust-cli/anstyle.git) | 1.0.14 | `MIT OR Apache-2.0` |
 | [anstyle-parse](https://github.com/rust-cli/anstyle.git) | 1.0.0 | `MIT OR Apache-2.0` |
@@ -30,13 +31,16 @@
 | [arrayvec](https://github.com/bluss/arrayvec) | 0.7.8 | `MIT OR Apache-2.0` |
 | [as-raw-xcb-connection](https://github.com/psychon/as-raw-xcb-connection) | 1.0.1 | `MIT OR Apache-2.0` |
 | [ash](https://github.com/ash-rs/ash) | 0.38.0+1.3.281 | `MIT OR Apache-2.0` |
+| [ashpd](https://github.com/bilelmoussaoui/ashpd) | 0.11.1 | `MIT` |
 | [asn1-rs](https://github.com/rusticata/asn1-rs.git) | 0.5.2 | `MIT/Apache-2.0` |
 | [asn1-rs](https://github.com/rusticata/asn1-rs.git) | 0.6.2 | `MIT OR Apache-2.0` |
 | [asn1-rs-derive](https://github.com/rusticata/asn1-rs.git) | 0.4.0 | `MIT/Apache-2.0` |
 | [asn1-rs-derive](https://github.com/rusticata/asn1-rs.git) | 0.5.1 | `MIT OR Apache-2.0` |
 | [asn1-rs-impl](https://github.com/rusticata/asn1-rs.git) | 0.1.0 | `MIT/Apache-2.0` |
 | [asn1-rs-impl](https://github.com/rusticata/asn1-rs.git) | 0.2.0 | `MIT/Apache-2.0` |
+| [async-broadcast](https://github.com/smol-rs/async-broadcast) | 0.7.2 | `MIT OR Apache-2.0` |
 | [async-compression](https://github.com/Nullus157/async-compression) | 0.4.50 | `MIT OR Apache-2.0` |
+| [async-recursion](https://github.com/dcchut/async-recursion) | 1.2.0 | `MIT OR Apache-2.0` |
 | [async-trait](https://github.com/dtolnay/async-trait) | 0.1.92 | `MIT OR Apache-2.0` |
 | [atomic-waker](https://github.com/smol-rs/atomic-waker) | 1.1.2 | `Apache-2.0 OR MIT` |
 | [audiopus_sys](https://github.com/lakelezz/audiopus_sys.git) | 0.2.2 | `ISC` |
@@ -73,6 +77,7 @@
 | [ccm](https://github.com/RustCrypto/AEADs/tree/master/ccm) | 0.5.0 | `Apache-2.0 OR MIT` |
 | [cesu8](https://github.com/emk/cesu8-rs) | 1.1.0 | `Apache-2.0/MIT` |
 | [cexpr](https://github.com/jethrogb/rust-cexpr) | 0.6.0 | `Apache-2.0/MIT` |
+| [cfg-expr](https://github.com/EmbarkStudios/cfg-expr) | 0.20.10 | `MIT OR Apache-2.0` |
 | [cfg-if](https://github.com/rust-lang/cfg-if) | 1.0.5 | `MIT OR Apache-2.0` |
 | [cfg_aliases](https://github.com/katharostech/cfg_aliases) | 0.1.1 | `MIT` |
 | [cfg_aliases](https://github.com/katharostech/cfg_aliases) | 0.2.2 | `MIT` |
@@ -96,6 +101,8 @@
 | [compression-core](https://github.com/Nullus157/async-compression) | 0.4.33 | `MIT OR Apache-2.0` |
 | [concurrent-queue](https://github.com/smol-rs/concurrent-queue) | 2.5.0 | `Apache-2.0 OR MIT` |
 | [const-oid](https://github.com/RustCrypto/formats/tree/master/const-oid) | 0.9.6 | `Apache-2.0 OR MIT` |
+| [convert_case](https://github.com/rutrum/convert-case) | 0.8.0 | `MIT` |
+| [cookie-factory](https://github.com/rust-bakery/cookie-factory) | 0.3.3 | `MIT` |
 | [core-foundation](https://github.com/servo/core-foundation-rs) | 0.9.4 | `MIT OR Apache-2.0` |
 | [core-foundation-sys](https://github.com/servo/core-foundation-rs) | 0.8.7 | `MIT OR Apache-2.0` |
 | [core-graphics](https://github.com/servo/core-foundation-rs) | 0.23.2 | `MIT OR Apache-2.0` |
@@ -141,11 +148,17 @@
 | [either](https://github.com/rayon-rs/either) | 1.19.0 | `MIT OR Apache-2.0` |
 | [elliptic-curve](https://github.com/RustCrypto/traits/tree/master/elliptic-curve) | 0.13.8 | `Apache-2.0 OR MIT` |
 | [emath](https://github.com/emilk/egui/tree/master/crates/emath) | 0.29.1 | `MIT OR Apache-2.0` |
+| [endi](https://github.com/zeenix/endi) | 1.1.1 | `MIT` |
+| [enumflags2](https://github.com/meithecatte/enumflags2) | 0.7.12 | `MIT OR Apache-2.0` |
+| [enumflags2_derive](https://github.com/meithecatte/enumflags2) | 0.7.12 | `MIT OR Apache-2.0` |
 | [epaint](https://github.com/emilk/egui/tree/master/crates/epaint) | 0.29.1 | `MIT OR Apache-2.0` |
 | [epaint_default_fonts](https://github.com/emilk/egui/tree/master/crates/epaint_default_fonts) | 0.29.1 | `(MIT OR Apache-2.0) AND OFL-1.1 AND LicenseRef-UFL-1.0` |
 | [equivalent](https://github.com/indexmap-rs/equivalent) | 1.0.3 | `Apache-2.0 OR MIT` |
 | [errno](https://github.com/lambda-fairy/rust-errno) | 0.3.14 | `MIT OR Apache-2.0` |
 | [error-code](https://github.com/DoumanAsh/error-code) | 3.4.0 | `BSL-1.0` |
+| [event-listener](https://github.com/smol-rs/event-listener) | 5.4.2 | `Apache-2.0 OR MIT` |
+| [event-listener-strategy](https://github.com/smol-rs/event-listener-strategy) | 0.5.4 | `Apache-2.0 OR MIT` |
+| [fastrand](https://github.com/smol-rs/fastrand) | 2.5.0 | `Apache-2.0 OR MIT` |
 | [fdeflate](https://github.com/image-rs/fdeflate) | 0.3.7 | `MIT OR Apache-2.0` |
 | [ff](https://github.com/zkcrypto/ff) | 0.13.1 | `MIT/Apache-2.0` |
 | [fiat-crypto](https://github.com/mit-plv/fiat-crypto) | 0.2.9 | `MIT OR Apache-2.0 OR BSD-1-Clause` |
@@ -164,6 +177,7 @@
 | [futures-core](https://github.com/rust-lang/futures-rs) | 0.3.34 | `MIT OR Apache-2.0` |
 | [futures-executor](https://github.com/rust-lang/futures-rs) | 0.3.34 | `MIT OR Apache-2.0` |
 | [futures-io](https://github.com/rust-lang/futures-rs) | 0.3.34 | `MIT OR Apache-2.0` |
+| [futures-lite](https://github.com/smol-rs/futures-lite) | 2.6.1 | `Apache-2.0 OR MIT` |
 | [futures-macro](https://github.com/rust-lang/futures-rs) | 0.3.34 | `MIT OR Apache-2.0` |
 | [futures-sink](https://github.com/rust-lang/futures-rs) | 0.3.34 | `MIT OR Apache-2.0` |
 | [futures-task](https://github.com/rust-lang/futures-rs) | 0.3.34 | `MIT OR Apache-2.0` |
@@ -241,6 +255,8 @@
 | [libpulse-binding](https://github.com/jnqnfe/pulse-binding-rust) | 2.30.1 | `MIT OR Apache-2.0` |
 | [libpulse-sys](https://github.com/jnqnfe/pulse-binding-rust) | 1.23.0 | `MIT OR Apache-2.0` |
 | [libredox](https://gitlab.redox-os.org/redox-os/libredox.git) | 0.1.25 | `MIT` |
+| [libspa](https://gitlab.freedesktop.org/pipewire/pipewire-rs) | 0.9.2 | `MIT` |
+| [libspa-sys](https://gitlab.freedesktop.org/pipewire/pipewire-rs) | 0.9.2 | `MIT` |
 | [linux-raw-sys](https://github.com/sunfishcode/linux-raw-sys) | 0.12.1 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` |
 | [linux-raw-sys](https://github.com/sunfishcode/linux-raw-sys) | 0.4.15 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` |
 | [litemap](https://github.com/unicode-org/icu4x) | 0.8.3 | `Unicode-3.0` |
@@ -270,6 +286,7 @@
 | [ndk-sys](https://github.com/rust-mobile/ndk) | 0.5.0+25.2.9519653 | `MIT OR Apache-2.0` |
 | [ndk-sys](https://github.com/rust-mobile/ndk) | 0.6.0+11769913 | `MIT OR Apache-2.0` |
 | [nix](https://github.com/nix-rust/nix) | 0.26.4 | `MIT` |
+| [nix](https://github.com/nix-rust/nix) | 0.30.1 | `MIT` |
 | [nohash-hasher](https://github.com/paritytech/nohash-hasher) | 0.2.0 | `Apache-2.0 OR MIT` |
 | [nom](https://github.com/Geal/nom) | 7.1.3 | `MIT` |
 | [nom](https://github.com/rust-bakery/nom) | 8.0.0 | `MIT` |
@@ -315,10 +332,12 @@
 | [openh264-sys2](https://github.com/ralfbiedert/openh264-rs) | 0.9.9 | `BSD-2-Clause` |
 | [opus](https://github.com/SpaceManiac/opus-rs) | 0.3.1 | `MIT/Apache-2.0` |
 | [orbclient](https://gitlab.redox-os.org/redox-os/orbclient) | 0.3.55 | `MIT` |
+| [ordered-stream](https://github.com/danieldg/ordered-stream) | 0.2.0 | `MIT OR Apache-2.0` |
 | [os_pipe](https://github.com/oconnor663/os_pipe.rs) | 1.2.3 | `MIT` |
 | [owned_ttf_parser](https://github.com/alexheretic/owned-ttf-parser) | 0.25.1 | `Apache-2.0` |
 | [p256](https://github.com/RustCrypto/elliptic-curves/tree/master/p256) | 0.13.2 | `Apache-2.0 OR MIT` |
 | [p384](https://github.com/RustCrypto/elliptic-curves/tree/master/p384) | 0.13.1 | `Apache-2.0 OR MIT` |
+| [parking](https://github.com/smol-rs/parking) | 2.2.1 | `Apache-2.0 OR MIT` |
 | [parking_lot](https://github.com/Amanieu/parking_lot) | 0.12.5 | `MIT OR Apache-2.0` |
 | [parking_lot_core](https://github.com/Amanieu/parking_lot) | 0.9.12 | `MIT OR Apache-2.0` |
 | [paste](https://github.com/dtolnay/paste) | 1.0.15 | `MIT OR Apache-2.0` |
@@ -330,6 +349,8 @@
 | [pin-project-internal](https://github.com/taiki-e/pin-project) | 1.1.13 | `Apache-2.0 OR MIT` |
 | [pin-project-lite](https://github.com/taiki-e/pin-project-lite) | 0.2.17 | `Apache-2.0 OR MIT` |
 | [pin-utils](https://github.com/rust-lang/pin-utils) | 0.1.1 | `MIT OR Apache-2.0` |
+| [pipewire](https://gitlab.freedesktop.org/pipewire/pipewire-rs) | 0.9.2 | `MIT` |
+| [pipewire-sys](https://gitlab.freedesktop.org/pipewire/pipewire-rs) | 0.9.2 | `MIT` |
 | [pkcs8](https://github.com/RustCrypto/formats/tree/master/pkcs8) | 0.10.2 | `Apache-2.0 OR MIT` |
 | [pkg-config](https://github.com/rust-lang/pkg-config-rs) | 0.3.33 | `MIT OR Apache-2.0` |
 | [plain](https://github.com/randomites/plain) | 0.2.3 | `MIT/Apache-2.0` |
@@ -356,9 +377,12 @@
 | [r-efi](https://github.com/r-efi/r-efi) | 6.0.0 | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` |
 | [rand](https://github.com/rust-random/rand) | 0.10.3 | `MIT OR Apache-2.0` |
 | [rand](https://github.com/rust-random/rand) | 0.8.8 | `MIT OR Apache-2.0` |
+| [rand](https://github.com/rust-random/rand) | 0.9.5 | `MIT OR Apache-2.0` |
 | [rand_chacha](https://github.com/rust-random/rand) | 0.3.1 | `MIT OR Apache-2.0` |
+| [rand_chacha](https://github.com/rust-random/rand) | 0.9.0 | `MIT OR Apache-2.0` |
 | [rand_core](https://github.com/rust-random/rand_core) | 0.10.1 | `MIT OR Apache-2.0` |
 | [rand_core](https://github.com/rust-random/rand) | 0.6.4 | `MIT OR Apache-2.0` |
+| [rand_core](https://github.com/rust-random/rand) | 0.9.5 | `MIT OR Apache-2.0` |
 | [rand_pcg](https://github.com/rust-random/rngs) | 0.10.2 | `MIT OR Apache-2.0` |
 | [raw-window-handle](https://github.com/rust-windowing/raw-window-handle) | 0.6.2 | `MIT OR Apache-2.0 OR Zlib` |
 | [rcgen](https://github.com/rustls/rcgen) | 0.13.2 | `MIT OR Apache-2.0` |
@@ -397,6 +421,8 @@
 | [serde_core](https://github.com/serde-rs/serde) | 1.0.229 | `MIT OR Apache-2.0` |
 | [serde_derive](https://github.com/serde-rs/serde) | 1.0.229 | `MIT OR Apache-2.0` |
 | [serde_json](https://github.com/serde-rs/json) | 1.0.154 | `MIT OR Apache-2.0` |
+| [serde_repr](https://github.com/dtolnay/serde-repr) | 0.1.21 | `MIT OR Apache-2.0` |
+| [serde_spanned](https://github.com/toml-rs/toml) | 1.1.2 | `MIT OR Apache-2.0` |
 | [serde_urlencoded](https://github.com/nox/serde_urlencoded) | 0.7.1 | `MIT/Apache-2.0` |
 | [sha1](https://github.com/RustCrypto/hashes) | 0.10.7 | `MIT OR Apache-2.0` |
 | [sha2](https://github.com/RustCrypto/hashes) | 0.10.9 | `MIT OR Apache-2.0` |
@@ -433,6 +459,9 @@
 | [synstructure](https://github.com/mystor/synstructure) | 0.12.6 | `MIT` |
 | [synstructure](https://github.com/mystor/synstructure) | 0.13.2 | `MIT` |
 | [synstructure](https://github.com/mystor/synstructure) | 0.14.0 | `MIT` |
+| [system-deps](https://github.com/gdesmott/system-deps) | 7.0.8 | `MIT OR Apache-2.0` |
+| [target-lexicon](https://github.com/bytecodealliance/target-lexicon) | 0.13.5 | `Apache-2.0 WITH LLVM-exception` |
+| [tempfile](https://github.com/Stebalien/tempfile) | 3.27.0 | `MIT OR Apache-2.0` |
 | [termcolor](https://github.com/BurntSushi/termcolor) | 1.4.1 | `Unlicense OR MIT` |
 | [thiserror](https://github.com/dtolnay/thiserror) | 1.0.69 | `MIT OR Apache-2.0` |
 | [thiserror](https://github.com/dtolnay/thiserror) | 2.0.21 | `MIT OR Apache-2.0` |
@@ -449,9 +478,11 @@
 | [tokio-rustls](https://github.com/rustls/tokio-rustls) | 0.26.6 | `MIT OR Apache-2.0` |
 | [tokio-tungstenite](https://github.com/snapview/tokio-tungstenite) | 0.24.0 | `MIT` |
 | [tokio-util](https://github.com/tokio-rs/tokio) | 0.7.20 | `MIT` |
+| [toml](https://github.com/toml-rs/toml) | 1.1.8+spec-1.1.0 | `MIT OR Apache-2.0` |
 | [toml_datetime](https://github.com/toml-rs/toml) | 1.1.2+spec-1.1.0 | `MIT OR Apache-2.0` |
 | [toml_edit](https://github.com/toml-rs/toml) | 0.25.17+spec-1.1.0 | `MIT OR Apache-2.0` |
 | [toml_parser](https://github.com/toml-rs/toml) | 1.1.5+spec-1.1.0 | `MIT OR Apache-2.0` |
+| [toml_writer](https://github.com/toml-rs/toml) | 1.1.3+spec-1.1.0 | `MIT OR Apache-2.0` |
 | [tower](https://github.com/tower-rs/tower) | 0.5.3 | `MIT` |
 | [tower-http](https://github.com/tower-rs/tower-http) | 0.6.11 | `MIT` |
 | [tower-layer](https://github.com/tower-rs/tower) | 0.3.3 | `MIT` |
@@ -468,9 +499,11 @@
 | [turn](https://github.com/webrtc-rs/turn) | 0.8.0 | `MIT OR Apache-2.0` |
 | [type-map](https://github.com/kardeiz/type-map) | 0.5.1 | `MIT/Apache-2.0` |
 | [typenum](https://github.com/paholg/typenum) | 1.20.1 | `MIT OR Apache-2.0` |
+| [uds_windows](https://github.com/haraldh/rust_uds_windows) | 1.2.1 | `MIT` |
 | [unicode-ident](https://github.com/dtolnay/unicode-ident) | 1.0.27 | `(MIT OR Apache-2.0) AND Unicode-3.0` |
 | [unicode-segmentation](https://github.com/unicode-rs/unicode-segmentation) | 1.13.3 | `MIT OR Apache-2.0` |
 | [unicode-width](https://github.com/unicode-rs/unicode-width) | 0.1.14 | `MIT OR Apache-2.0` |
+| [unicode-width](https://github.com/unicode-rs/unicode-width) | 0.2.2 | `MIT OR Apache-2.0` |
 | [unicode-xid](https://github.com/unicode-rs/unicode-xid) | 0.2.6 | `MIT OR Apache-2.0` |
 | [universal-hash](https://github.com/RustCrypto/traits) | 0.5.1 | `MIT OR Apache-2.0` |
 | [untrusted](https://github.com/briansmith/untrusted) | 0.9.0 | `ISC` |
@@ -480,6 +513,7 @@
 | [utf8parse](https://github.com/alacritty/vte) | 0.2.2 | `Apache-2.0 OR MIT` |
 | [uuid](https://github.com/uuid-rs/uuid) | 1.28.0 | `Apache-2.0 OR MIT` |
 | [valuable](https://github.com/tokio-rs/valuable) | 0.1.1 | `MIT` |
+| [version-compare](https://gitlab.com/timvisee/version-compare) | 0.2.1 | `MIT` |
 | [version_check](https://github.com/SergioBenitez/version_check) | 0.9.5 | `MIT/Apache-2.0` |
 | [waitgroup](https://github.com/laizy/waitgroup-rs) | 0.1.2 | `Apache-2.0` |
 | [walkdir](https://github.com/BurntSushi/walkdir) | 2.5.0 | `Unlicense/MIT` |
@@ -581,6 +615,10 @@
 | [yasna](https://github.com/qnighy/yasna.rs) | 0.5.2 | `MIT OR Apache-2.0` |
 | [yoke](https://github.com/unicode-org/icu4x) | 0.8.3 | `Unicode-3.0` |
 | [yoke-derive](https://github.com/unicode-org/icu4x) | 0.8.4 | `Unicode-3.0` |
+| [zbus](https://github.com/z-galaxy/zbus/) | 5.19.0 | `MIT` |
+| [zbus_macros](https://github.com/z-galaxy/zbus/) | 5.19.0 | `MIT` |
+| [zbus_names](https://github.com/z-galaxy/zbus/) | 4.3.5 | `MIT` |
+| [zcheapstr](https://github.com/z-galaxy/zcheapstr/) | 1.1.0 | `MIT` |
 | [zerocopy](https://github.com/google/zerocopy) | 0.8.63 | `BSD-2-Clause OR Apache-2.0 OR MIT` |
 | [zerocopy-derive](https://github.com/google/zerocopy) | 0.8.63 | `BSD-2-Clause OR Apache-2.0 OR MIT` |
 | [zerofrom](https://github.com/unicode-org/icu4x) | 0.1.8 | `Unicode-3.0` |
@@ -594,3 +632,6 @@
 | [zmij](https://github.com/dtolnay/zmij) | 1.0.23 | `MIT` |
 | [zune-core](https://github.com/etemesi254/zune-image) | 0.5.3 | `MIT OR Apache-2.0 OR Zlib` |
 | [zune-jpeg](https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg) | 0.5.15 | `MIT OR Apache-2.0 OR Zlib` |
+| [zvariant](https://github.com/z-galaxy/zbus/) | 5.15.1 | `MIT` |
+| [zvariant_derive](https://github.com/z-galaxy/zbus/) | 5.15.1 | `MIT` |
+| [zvariant_utils](https://github.com/z-galaxy/zbus/) | 4.2.0 | `MIT` |

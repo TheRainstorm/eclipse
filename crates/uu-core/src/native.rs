@@ -41,6 +41,8 @@ pub fn hardware_encoding_compiled() -> bool {
     uu_media::encoder::hardware_compiled()
 }
 
+pub fn uses_desktop_portal() -> bool { uu_capture::uses_desktop_portal() }
+
 #[derive(Clone, Debug)]
 pub struct CaptureMonitor {
     pub name: String,
@@ -64,6 +66,9 @@ impl CaptureMonitor {
 
 /// Enumerate the current authorized desktop without reading its pixels.
 pub fn monitors() -> Result<Vec<CaptureMonitor>> {
+    // Wayland output selection and dimensions are only known after consent.
+    // Enumerating Xwayland would describe an unrelated desktop.
+    if uses_desktop_portal() { return Ok(Vec::new()); }
     #[cfg(windows)]
     let sources = uu_capture::windows::monitors()?;
     #[cfg(target_os = "linux")]
@@ -123,7 +128,10 @@ fn validate_video(width: u32, height: u32, fps: u32) -> Result<()> {
 }
 
 pub(crate) async fn read_message<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin)) -> Result<T> {
-    timeout(Duration::from_secs(15), async {
+    read_message_wait(stream,Duration::from_secs(15)).await
+}
+pub(crate) async fn read_message_wait<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin),wait:Duration) -> Result<T> {
+    timeout(wait, async {
         let len = stream.read_u32().await? as usize;
         ensure!(
             (1..=MAX_SIGNAL).contains(&len),
@@ -459,9 +467,13 @@ async fn send_video(
     }
     // Authentication and a valid media offer precede capture access.
     let (fps,kbps,preference)=(config.fps,config.bitrate_kbps,config.encoder);
+    struct CancelCaptureOpen(Arc<AtomicBool>);
+    impl Drop for CancelCaptureOpen { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
+    let capture_cancel = CancelCaptureOpen(Arc::new(AtomicBool::new(false)));
+    let capture_options = uu_capture::OpenOptions { allow_input: config.allow_input, fps, cancelled:capture_cancel.0.clone() };
     let (capture,encoder) = tokio::select! {
         result=tokio::task::spawn_blocking(move || -> Result<_> {
-            let capture=uu_capture::open(&config.source)?;
+            let capture=uu_capture::open_with_options(&config.source,capture_options)?;
             let (width,height)=capture.resolution();validate_video(width,height,fps)?;
             let encoder=uu_media::encoder::create(uu_media::encoder::Settings {
                 width,height,fps,bitrate_kbps:kbps,preference,
@@ -469,11 +481,12 @@ async fn send_video(
             Ok((capture,encoder))
         })=>result??,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
+        _=stream.disconnected()=>return Ok(HostReport::default()),
     };
     let (width, height) = capture.resolution();
     validate_video(width, height, config.fps)?;
     let controls=tokio::select! {
-        controls=crate::native_control::HostControl::new(config.allow_input,capture.desktop_rect(),config.clipboard.clone())=>controls,
+        controls=crate::native_control::HostControl::with_injector(config.allow_input,capture.desktop_rect(),config.clipboard.clone(),capture.input_injector())=>controls,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
     };
     controls.attach(&peer.pc);
@@ -645,7 +658,8 @@ async fn receive_session(
         version: 1,
         sdp: peer.description(true).await?,
     })?).await?;
-    let answer: Answer = serde_json::from_value(stream.receive().await?)
+    let answer: Answer = serde_json::from_value(timeout(crate::native_signaling::PREPARATION_WAIT,stream.receive_answer()).await
+        .context("等待被控端屏幕共享授权或编码器准备超时")??)
         .map_err(|_| anyhow::anyhow!("invalid native answer"))?;
     ensure!(
         answer.version == 1 && answer.view_only,

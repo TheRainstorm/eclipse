@@ -102,7 +102,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```bash
 # Ubuntu / Debian
 sudo apt install build-essential pkg-config cmake nasm libssl-dev \
-  libasound2-dev libpulse-dev libva-dev libgbm-dev libclang-dev libxkbcommon-dev libxkbcommon-x11-dev
+  libasound2-dev libpulse-dev libva-dev libgbm-dev libclang-dev libxkbcommon-dev libxkbcommon-x11-dev libpipewire-0.3-dev
 cargo run --release -p uu-gui --features vaapi --locked
 ```
 
