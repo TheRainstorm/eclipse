@@ -17,6 +17,52 @@ STUN 与信令是不同职责，可以放在同一台 VPS 上，也可以分别�
 
 因此，**换 STUN 服务不需要更改视频或输入协议**。设计上应允许配置一个或多个 STUN URL，将服务与设备身份、配对和媒体组件分开。若不希望使用 UU 服务，该原生公网路径可以完全不依赖 UU 账号、设备上线或房间 API。
 
+## 可替换连接组件应该分成两类
+
+用户可以将这一层理解为负责建连与可选转发的中间件，但实现时应分别配置：
+
+- **信令适配器**：处理设备寻址、身份认证、SDP/候选投递及会话取消。不同服务的消息和登录方式可能不同，需要匹配的协议适配器。
+- **ICE 服务列表**：配置标准 STUN/TURN URL 和需要的中继凭据，交给同一套 WebRTC 处理。它可以与信令使用完全不同的服务商。
+
+UU 等服务可能将两者打包下发，但不应因此把软件的通用网络接口绑定到某一家。建议界面分别提供“信令协议与服务器”“STUN 列表”“可选 TURN 及凭据”，支持只直连和允许自有中继的明确策略。这些配置入口目前尚未实现。
+
+### 哪些有标准协议
+
+| 部分 | 标准化范围 | 是否只改服务器地址就能替换 |
+|---|---|---|
+| STUN/TURN | 地址发现、中继分配及数据传输协议 | 通常可以，仍需匹配传输方式、认证与服务政策 |
+| SDP/ICE | 会话描述、候选和连通性选择机制 | 描述和检测可复用，但不包含设备账号及房间管理 |
+| WebSocket/WSS | 消息承载与连接传输 | 不能据此推断上面的业务消息相同 |
+| WebRTC 信令业务 | WebRTC 没有强制统一的房间、配对和消息 API | 不可以；PeerJS、UU 或自有服务各需适配 |
+
+WebRTC 明确将信令交给应用决定，因此不存在一个保证所有 WebRTC 应用“只填 URL 就互通”的通用信令服务器。[WebRTC 对信令的说明](https://webrtc.org/getting-started/peer-connections#signaling)
+
+### VPS 应部署什么软件
+
+| 软件组合 | 用途与适用边界 |
+|---|---|
+| 配套的轻量原生信令服务＋coturn | 推荐的产品方向：项目提供匹配原生设备身份和会话协议的信令程序及部署包，用户部署后填写地址；该配套信令服务尚未实现 |
+| PeerServer＋coturn | 已有开源选项：PeerServer 为 PeerJS 处理会话元数据和候选信令，媒体不由它代理；本项目仍需实现 PeerJS 信令适配及原生身份绑定 |
+| 只有 coturn | 提供标准 STUN/TURN，不提供本项目需要的设备配对、房间与 SDP 投递业务 |
+
+PeerServer 可以独立运行或使用 Docker 部署，但它不是现有原生客户端已经支持的入口。选现成软件仍有客户端适配工作，不能把“已经装好服务”当作两端已完成互通。[PeerServer](https://github.com/peers/peerjs-server)、[PeerJS 连接说明](https://peerjs.com/client/getting-started)
+
+## UU 作为可选适配的边界
+
+保留一个供应商适配器的位置在技术上可行，但 UU 信令需要账号、设备和房间流程，不是把官方 WSS 地址填入自建协议客户端。只研究其备用适配，不代表恢复已经取消的 UU 云接入实现；当前没有新增该入口。
+
+从现有兼容代码能够明确区分：
+
+| 服务 | 当前已知的寻址方式 | 端口含义 |
+|---|---|---|
+| UU 业务 API | 项目配置为 `https://api.nrd.nie.163.com` | 未显式指定时为 HTTPS/TCP 443；它不是实际 Socket.IO 节点地址的固定别名 |
+| UU 实际信令节点 | 加入房间响应的 `signaling_server`，随后访问其 `/socket.io/?EIO=4&transport=websocket` | 必须采用返回 URL 的端口；WSS 未显式指定端口时才使用 TCP 443 |
+| UU STUN/TURN | 具体会话事件下发的 `iceServers[].urls`，中继还可能附带凭据 | 以实际 URL 为准，不能从标准常用端口推断其部署端口 |
+
+源码入口：[业务 API 域名](../crates/uu-proto/src/lib.rs)、[加入房间与实际信令 URL](../crates/uu-core/src/controller.rs)、[ICE 配置来源](../crates/uu-core/src/media.rs)。地址样本不能证明服务对任意第三方公开，也不能当成长期固定配置；已有日志里的动态 IP 与会话资料不作为公开脚本默认值。
+
+uu-remote-linux 在没有云端 ICE 配置时列出的 Google、小米等 STUN 是它的备用服务，并不是 UU 的 STUN 域名。不要将参考项目的默认服务列表误认为官方下发列表。[上游会话 ICE 实现](https://github.com/VallierDev/uu-remote-linux/blob/50ed54d77a9084d18797061650bed9f85293c421/src/session_ice.rs)
+
 ## 公开服务与自己的 VPS
 
 Cloudflare 的官方文档明确介绍了其公开 STUN 地址，可作为可配置选项：
