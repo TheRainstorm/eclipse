@@ -39,6 +39,11 @@ pub struct Settings {
     pub server_token: std::path::PathBuf,
     pub server_ca: Option<std::path::PathBuf>,
     pub development_relay: bool,
+    /// Old snapshots keep their explicit PSK behavior. New device routes use
+    /// provider-independent public identity authentication instead.
+    pub device_auth: bool,
+    pub expected_peer: Option<String>,
+    pub profile: Option<String>,
 }
 impl Settings {
     pub fn self_hosted(&self) -> Result<self_hosted::Config> {
@@ -121,7 +126,7 @@ pub async fn view(
     mut stop: tokio::sync::watch::Receiver<bool>,
     input: Option<crate::native_input::NativeInputReceiver>,
 ) -> Result<()> {
-    let key = AccessKey::load(&settings.access_key)?;
+    let key = if settings.device_auth {None}else{Some(AccessKey::load(&settings.access_key)?)};
     let joining = async {
         match settings.provider {
             Provider::Uu => uu::join(&config, &settings.device, settings.development_relay).await,
@@ -131,7 +136,13 @@ pub async fn view(
         }
     };
     let connection = tokio::select! {result=joining=>result?,_=cancelled(&mut stop)=>return Ok(())};
-    let (mut signal, ice) = Authenticated::new(connection, key, Role::Viewer);
+    if settings.device_auth {
+        return tokio::select! {
+            result=crate::device_internet::view(connection,&settings,&config,frames,stats,stop.clone(),input)=>result,
+            _=cancelled(&mut stop)=>Ok(()),
+        };
+    }
+    let (mut signal, ice) = Authenticated::new(connection, key.unwrap(), Role::Viewer);
     stats.connection.set_service(match settings.provider {Provider::Uu=>"UU 连接服务",Provider::SelfHosted=>"自建连接服务"});
     stats.diagnostics.record(
         json!({"event":"native_provider","provider":settings.provider,

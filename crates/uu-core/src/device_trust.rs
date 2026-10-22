@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 
 const MAX_FILE: u64 = 1024 * 1024;
 
-fn read_private(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn read_private(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
     let meta = fs::symlink_metadata(path).context("无法读取设备私有配置")?;
     ensure!(
         meta.is_file() && !meta.file_type().is_symlink() && meta.len() <= MAX_FILE,
@@ -156,7 +156,7 @@ impl Book {
     }
 }
 
-struct FileLock(fs::File);
+pub(crate) struct FileLock(fs::File);
 impl Drop for FileLock {
     fn drop(&mut self) {
         let _ = FileExt::unlock(&self.0);
@@ -191,7 +191,7 @@ impl TrustStore {
         value.load()?.validate()?;
         Ok(value)
     }
-    fn lock_at(directory: &Path) -> Result<FileLock> {
+    pub(crate) fn lock_at(directory: &Path) -> Result<FileLock> {
         let mut options = fs::OpenOptions::new();
         options.read(true).write(true).create(true);
         #[cfg(unix)]

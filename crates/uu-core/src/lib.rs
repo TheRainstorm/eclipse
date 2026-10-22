@@ -28,6 +28,13 @@ mod network_probe;
 pub mod connection_info;
 pub mod device_trust;
 pub mod device_auth;
+pub mod device_channel;
+pub mod shared_host;
+pub mod device_book;
+pub mod device_internet;
+pub mod device_profile;
+#[cfg(test)]
+mod device_network_tests;
 mod decode_gate;
 mod test_loss;
 mod srtp_policy;

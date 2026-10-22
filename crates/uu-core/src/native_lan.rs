@@ -53,6 +53,11 @@ impl Drop for Secret {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
+    Device {
+        media: bool,
+        legacy_id: Option<String>,
+        legacy_token: Option<Secret>,
+    },
     Pair {
         client_id: String,
         name: String,
@@ -66,6 +71,11 @@ enum Request {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 enum Reply {
+    Device {
+        invitation: Option<Invitation>,
+        peer_id: String,
+        observed_client_ip: Option<IpAddr>,
+    },
     Pending {
         server_id: String,
     },
@@ -110,9 +120,9 @@ async fn write<T: Serialize>(stream: &mut (impl AsyncWrite + Unpin), value: &T) 
     .context("LAN write timed out")??;
     Ok(())
 }
-fn tls_acceptor(identity: &Identity) -> Result<TlsAcceptor> {
+fn tls_acceptor(identity: &Identity, device_auth: bool) -> Result<TlsAcceptor> {
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.key.clone()));
-    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+    let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_protocol_versions(&[&rustls::version::TLS13])?
@@ -121,12 +131,17 @@ fn tls_acceptor(identity: &Identity) -> Result<TlsAcceptor> {
         vec![CertificateDer::from(identity.certificate.clone())],
         key,
     )?;
+    if device_auth {config.alpn_protocols=vec![b"eclipse-device-v2".to_vec()];}
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 async fn tls_connect(
     address: SocketAddr,
     certificate: &[u8],
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    tls_connect_versioned(address,certificate,false).await
+}
+async fn tls_connect_versioned(address:SocketAddr,certificate:&[u8],device_auth:bool)
+    ->Result<tokio_rustls::client::TlsStream<TcpStream>> {
     ensure!(
         !certificate.is_empty() && certificate.len() <= 8192,
         "invalid server certificate"
@@ -135,12 +150,13 @@ async fn tls_connect(
     roots
         .add(CertificateDer::from(certificate.to_vec()))
         .context("invalid server certificate")?;
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_protocol_versions(&[&rustls::version::TLS13])?
     .with_root_certificates(roots)
     .with_no_client_auth();
+    if device_auth {config.alpn_protocols=vec![b"eclipse-device-v2".to_vec()];}
     timeout(IO_WAIT, async {
         let mut socket = TcpStream::connect(address).await?;
         socket.set_nodelay(true)?;
@@ -223,6 +239,7 @@ struct Active {
     finished: Arc<AtomicBool>,
 }
 struct State {
+    access:Option<Arc<crate::shared_host::Access>>,
     config: Config,
     info: ServerInfo,
     certificate: Vec<u8>,
@@ -250,6 +267,11 @@ impl Handle {
         self.state.grants.lock().unwrap().clients.clone()
     }
     pub fn revoke(&self, id: &str) -> Result<()> {
+        if let Some(access)=&self.state.access {
+            if let Some(peer)=access.store.peers()?.into_iter().find(|p|p.legacy_ids.iter().any(|old|old==id)) {
+                access.revoke(&peer.device.id())?;
+            }
+        }
         self.state.grants.lock().unwrap().revoke(
             &self.state.config.data_dir.join("authorized-clients.json"),
             id,
@@ -301,12 +323,20 @@ impl Server {
         stop: watch::Receiver<bool>,
         events: mpsc::UnboundedSender<Event>,
     ) -> Result<(Self, Handle)> {
+        Self::bind_inner(config,stop,events,None).await
+    }
+    pub async fn bind_with_access(config:Config,stop:watch::Receiver<bool>,events:mpsc::UnboundedSender<Event>,
+        access:Arc<crate::shared_host::Access>)->Result<(Self,Handle)> {
+        Self::bind_inner(config,stop,events,Some(access)).await
+    }
+    async fn bind_inner(config:Config,stop:watch::Receiver<bool>,events:mpsc::UnboundedSender<Event>,
+        access:Option<Arc<crate::shared_host::Access>>)->Result<(Self,Handle)> {
         ensure!(
             !config.bind.ip().is_multicast(),
             "invalid LAN listen address"
         );
         let identity = Identity::open(&config.data_dir.join("server-identity.json"))?;
-        let acceptor = tls_acceptor(&identity)?;
+        let acceptor = tls_acceptor(&identity,access.is_some())?;
         let listener = TcpListener::bind(config.bind).await.with_context(|| {
             format!("无法监听共享端口 TCP {}；端口可能已被占用或没有监听权限，请更换服务端口后重试", config.bind.port())
         })?;
@@ -335,6 +365,7 @@ impl Server {
             None
         };
         let state = Arc::new(State {
+            access,
             config,
             info,
             certificate: identity.certificate.clone(),
@@ -442,6 +473,27 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
         .context("LAN TLS handshake timed out")??;
     let request: Request = read(&mut stream).await?;
     match request {
+        Request::Device {media,legacy_id,legacy_token}=>{
+            let access=state.access.as_ref().context("主机尚未启用统一设备配对")?;
+            let legacy=match (&legacy_id,&legacy_token) {
+                (Some(id),Some(token))=>{
+                    ensure!(state.grants.lock().unwrap().accepts(id,&token.0),"旧配对已经失效，请重新配对");Some(id.as_str())
+                },
+                (None,None)=>None,
+                _=>anyhow::bail!("旧配对凭据不完整"),
+            };
+            let binding=stream.get_ref().1.export_keying_material([0;32],b"EXPORTER-Eclipse-Device-v2",Some(b"native"))?;
+            let authorized={let mut wire=DeviceWire(&mut stream);
+                crate::device_auth::host(&mut wire,&access.store,&access.name,&binding,&access.pairing,legacy).await?};
+            ensure!(read::<serde_json::Value>(&mut stream).await?==serde_json::json!({"begin_media":media}),
+                "控制端未确认串流请求");
+            let peer_id=authorized.device.id();
+            let invitation=if media {
+                let lease=access.claim(&peer_id)?;
+                Some(start_authorized_session(state.clone(),peer_id.clone(),local,authorized.permissions,Some(lease)).await?)
+            }else{None};
+            write(&mut stream,&Reply::Device {invitation,peer_id:access.store.card(&access.name).id(),observed_client_ip:Some(observed_client_ip)}).await?;
+        },
         Request::Pair {
             client_id,
             name,
@@ -557,6 +609,8 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
     Ok(())
 }
 struct SessionGuard {
+    _lease:Option<crate::shared_host::SessionLease>,
+    _cancellation:Option<crate::shared_host::Cancellation>,
     state: Arc<State>,
     id: String,
     finished: Arc<AtomicBool>,
@@ -572,6 +626,18 @@ impl Drop for SessionGuard {
     }
 }
 async fn start_session(state: Arc<State>, client: String, local: SocketAddr) -> Result<Invitation> {
+    let mut permission=crate::device_trust::Permissions::CONTROL;
+    let mut peer=client.clone();
+    let lease=if let Some(access)=&state.access {
+        if let Some(record)=access.store.peers()?.into_iter().find(|p|p.legacy_ids.iter().any(|id|id==&client)) {
+            permission=record.inbound.context("设备授权已经撤销")?;peer=record.device.id();
+        }
+        Some(access.sessions.claim(&peer)?)
+    }else{None};
+    start_authorized_session(state,peer,local,permission,lease).await
+}
+async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAddr,
+    permission:crate::device_trust::Permissions,lease:Option<crate::shared_host::SessionLease>)->Result<Invitation> {
     let (stop, rx) = watch::channel(false);
     let finished = Arc::new(AtomicBool::new(false));
     let id = uuid::Uuid::new_v4().to_string();
@@ -589,7 +655,13 @@ async fn start_session(state: Arc<State>, client: String, local: SocketAddr) -> 
             finished: finished.clone(),
         });
     }
+    let cancellation=if let (Some(access),Some(lease))=(&state.access,&lease) {
+        let record=access.store.peer(&client)?;
+        Some(access.cancellation(lease,&client,record.and_then(|p|p.inbound),rx.clone()))
+    }else{None};
+    let serving_stop=cancellation.as_ref().map(|c|c.receiver.clone()).unwrap_or(rx);
     let mut guard = SessionGuard {
+        _lease:lease,_cancellation:cancellation,
         state: state.clone(),
         id: id.clone(),
         finished,
@@ -616,7 +688,7 @@ async fn start_session(state: Arc<State>, client: String, local: SocketAddr) -> 
         bitrate_kbps: state.config.bitrate_kbps,
         encoder: state.config.encoder,
         session_limit: None,
-        allow_input: state.config.allow_input,
+        allow_input: state.config.allow_input && permission.control,
         audio: state.config.audio,
         clipboard,
     };
@@ -630,7 +702,7 @@ async fn start_session(state: Arc<State>, client: String, local: SocketAddr) -> 
             client,
         });
         let mut observed = phase.subscribe();
-        let serving = native::serve_with_status(config, rx, Some(phase));
+        let serving = native::serve_with_status(config, serving_stop, Some(phase));
         tokio::pin!(serving);
         let mut observing = true;
         let result = loop {
@@ -684,6 +756,51 @@ pub struct Found {
     pub certificate: Vec<u8>,
     pub pairing_open: bool,
 }
+
+struct DeviceWire<'a,S>(&'a mut S);
+#[async_trait::async_trait]
+impl<S:AsyncRead+AsyncWrite+Unpin+Send> crate::device_auth::AuthIo for DeviceWire<'_,S> {
+    async fn send(&mut self,value:serde_json::Value)->Result<()> {write(self.0,&value).await}
+    async fn receive(&mut self)->Result<serde_json::Value> {read_with_wait(self.0,Duration::from_secs(180)).await}
+}
+pub struct DeviceConnection {
+    pub invitation:Option<Invitation>,
+    pub peer:Option<crate::device_trust::PublicDevice>,
+}
+
+/// Known legacy credentials may migrate only over the exact already-pinned
+/// server certificate. An unknown or changed identity never silently downgrades.
+pub async fn connect_device(endpoint:&str,store:&crate::device_trust::TrustStore,name:&str,
+    expected:Option<&str>,legacy:Option<(&Device,&str)>,media:bool,
+    display:&crate::device_auth::PairingDisplay)->Result<DeviceConnection> {
+    let found=inspect(endpoint).await?;
+    if let Some((old,_))=legacy {
+        ensure!(old.id==found.info.id && old.certificate==found.certificate,
+            "旧设备证书已经变化，未发送任何配对凭据，请核实设备身份");
+    }
+    let mut stream=tls_connect_versioned(found.address,&found.certificate,true).await?;
+    if stream.get_ref().1.alpn_protocol()!=Some(b"eclipse-device-v2") {
+        ensure!(expected.is_none(),"已升级的设备不能降级到旧配对协议，请检查被控端版本");
+        let (old,id)=legacy.context("被控端版本尚不支持设备公钥配对，请先升级被控端")?;
+        drop(stream);
+        return Ok(DeviceConnection {invitation:if media {Some(connect(old,id).await?)}else{None},peer:None});
+    }
+    let binding=stream.get_ref().1.export_keying_material([0;32],b"EXPORTER-Eclipse-Device-v2",Some(b"native"))?;
+    write(&mut stream,&Request::Device {
+        media,legacy_id:legacy.map(|(_,id)|id.to_owned()),
+        legacy_token:legacy.map(|(device,_)|Secret(device.token.clone())),
+    }).await?;
+    let remote={let mut wire=DeviceWire(&mut stream);
+        crate::device_auth::client(&mut wire,store,name,&binding,expected,legacy.is_some(),display).await?};
+    let requested_at=Instant::now();
+    write(&mut stream,&serde_json::json!({"begin_media":media})).await?;
+    let Reply::Device{invitation,peer_id,observed_client_ip}=read::<Reply>(&mut stream).await?
+        else {anyhow::bail!("被控端未确认设备连接");};
+    ensure!(peer_id==remote.device.id() && invitation.is_some()==media,"设备串流授权响应不匹配");
+    let invitation=invitation.map(|v|v.from_authenticated_broker(requested_at,observed_client_ip)).transpose()?;
+    Ok(DeviceConnection {invitation,peer:Some(remote.device)})
+}
+
 pub async fn inspect(endpoint: &str) -> Result<Found> {
     let endpoint = crate::native_discovery::endpoint(endpoint)?;
     timeout(IO_WAIT, async {

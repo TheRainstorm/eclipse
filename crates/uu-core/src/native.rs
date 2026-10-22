@@ -174,6 +174,7 @@ pub struct HostConfig {
 }
 
 /// Capture and permissions shared by LAN and internet sessions.
+#[derive(Clone)]
 pub struct SharingConfig {
     pub source: CaptureSource,
     pub fps: u32,

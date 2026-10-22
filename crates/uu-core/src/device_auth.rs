@@ -243,11 +243,16 @@ impl PairingControl {
                 respond,
             })
             .map_err(|_| anyhow::anyhow!("被控端配对确认页面不可用"))?;
-        let approval = tokio::time::timeout(Duration::from_secs(120), receive)
-            .await
-            .context("等待被控端批准超时")?
-            .context("被控端已关闭配对请求")?
-            .context("被控端拒绝配对")?;
+        tokio::pin!(receive);
+        let approval = tokio::time::timeout(Duration::from_secs(120), async {
+            let mut timer=tokio::time::interval(Duration::from_millis(100));
+            loop {
+                tokio::select! {
+                    result=&mut receive=>return result.context("被控端已关闭配对请求")?.context("被控端拒绝配对"),
+                    _=timer.tick()=>ensure!(self.is_open(),"被控端已停止接收配对"),
+                }
+            }
+        }).await.context("等待被控端批准超时")??;
         ensure!(self.is_open(), "被控端已停止接收配对");
         Ok(approval)
     }
@@ -414,7 +419,10 @@ pub async fn host(
     send(io, Message::Ready { pair }).await?;
     let permission = if pair {
         let a_share = share(receive(io).await?)?;
-        let approval = pairing.approve(remote.clone()).await?;
+        let approval = tokio::select! {
+            result=pairing.approve(remote.clone())=>result?,
+            _=io.receive()=>anyhow::bail!("控制端已取消配对或发送了无效消息"),
+        };
         let (pake, b_share) = Spake2::<Ed25519Group>::start_b(
             &Password::new(approval.code.as_bytes()),
             &Identity::new(remote.id().as_bytes()),
