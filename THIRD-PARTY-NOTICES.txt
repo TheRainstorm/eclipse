@@ -1034,6 +1034,13 @@ Authors: The rust-url developers
 License file: LICENSE-APACHE -> text 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76
 License file: LICENSE-MIT -> text 33ed9a8ecf556f161ec5d7e8761712f404d082bf9eeb8f6085d43517b5938be4
 
+## fs2 0.4.3
+SPDX: MIT/Apache-2.0
+Upstream: https://github.com/danburkert/fs2-rs
+Authors: Dan Burkert <dan@danburkert.com>
+License file: LICENSE-APACHE -> text 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76
+License file: LICENSE-MIT -> text 033a9383ff21d1e4811d98dd2e0081b0ba0d9c9a31d6c7ba9e63e3488479bf29
+
 ## fs_extra 1.3.0
 SPDX: MIT
 Upstream: https://github.com/webdesus/fs_extra
@@ -2784,6 +2791,13 @@ Upstream: https://github.com/rust-lang/socket2
 Authors: Alex Crichton <alex@alexcrichton.com>; Thomas de Zeeuw <thomasdezeeuw@gmail.com>
 License file: LICENSE-APACHE -> text 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76
 License file: LICENSE-MIT -> text 84e1bbfebd74e4196cfa0ea5cf58e677aa24b47c6661adbb19fb07920d089d1d
+
+## spake2 0.4.0
+SPDX: MIT OR Apache-2.0
+Upstream: https://github.com/RustCrypto/PAKEs/tree/master/spake2
+Authors: Brian Warner <warner@lothar.com>
+License file: LICENSE-APACHE -> text e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4
+License file: LICENSE-MIT -> text 45d70a9a011478fc080bc41d636623af5ba6d2ecc2324babdc1d33643e4da252
 
 ## spirv 0.3.0+sdk-1.3.268.0
 SPDX: Apache-2.0
@@ -8064,6 +8078,29 @@ SOFTWARE.
 
 ## License text 4498464c2864825d7bb4c83e2ac4e9dbb533d49964fbf218c24f8d44ee4e87a9
 Copyright (c) Individual contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## License text 45d70a9a011478fc080bc41d636623af5ba6d2ecc2324babdc1d33643e4da252
+MIT License
+
+Copyright (c) 2017-2023 Brian Warner
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

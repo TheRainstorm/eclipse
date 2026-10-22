@@ -157,6 +157,7 @@
 | [foreign-types-macros](https://github.com/sfackler/foreign-types) | 0.2.4 | `MIT/Apache-2.0` |
 | [foreign-types-shared](https://github.com/sfackler/foreign-types) | 0.3.1 | `MIT/Apache-2.0` |
 | [form_urlencoded](https://github.com/servo/rust-url) | 1.2.2 | `MIT OR Apache-2.0` |
+| [fs2](https://github.com/danburkert/fs2-rs) | 0.4.3 | `MIT/Apache-2.0` |
 | [fs_extra](https://github.com/webdesus/fs_extra) | 1.3.0 | `MIT` |
 | [futures](https://github.com/rust-lang/futures-rs) | 0.3.34 | `MIT OR Apache-2.0` |
 | [futures-channel](https://github.com/rust-lang/futures-rs) | 0.3.34 | `MIT OR Apache-2.0` |
@@ -416,6 +417,7 @@
 | [smol_str](https://github.com/rust-analyzer/smol_str) | 0.2.2 | `MIT OR Apache-2.0` |
 | [socket2](https://github.com/rust-lang/socket2) | 0.5.10 | `MIT OR Apache-2.0` |
 | [socket2](https://github.com/rust-lang/socket2) | 0.6.5 | `MIT OR Apache-2.0` |
+| [spake2](https://github.com/RustCrypto/PAKEs/tree/master/spake2) | 0.4.0 | `MIT OR Apache-2.0` |
 | [spirv](https://github.com/gfx-rs/rspirv) | 0.3.0+sdk-1.3.268.0 | `Apache-2.0` |
 | [spki](https://github.com/RustCrypto/formats/tree/master/spki) | 0.7.3 | `Apache-2.0 OR MIT` |
 | [stable_deref_trait](https://github.com/storyyeller/stable_deref_trait) | 1.2.1 | `MIT OR Apache-2.0` |

@@ -26,6 +26,8 @@ mod native_audio;
 mod native_media;
 mod network_probe;
 pub mod connection_info;
+pub mod device_trust;
+pub mod device_auth;
 mod decode_gate;
 mod test_loss;
 mod srtp_policy;
