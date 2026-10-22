@@ -232,10 +232,20 @@ pub struct Listener {
 }
 impl Listener {
     pub async fn online(config: &Config, device: &str) -> Result<Self> {
-        let mut socket = open(config, Request::Host { version: 1, device: device.into() }).await?;
-        match receive(&mut socket).await? {
-            Event::Ready=>{},Event::Error{code}=>bail!("signaling registration rejected: {code}"),_=>bail!("unexpected signaling registration response"),
-        }
+        // Version 2 opts a host into multiplexing. A v1 host is kept at one
+        // viewer by new servers, and an old server can explicitly decline v2.
+        let mut socket = {
+            let mut version=2;
+            loop {
+                let mut candidate=open(config,Request::Host{version,device:device.into()}).await?;
+                match receive(&mut candidate).await? {
+                    Event::Ready=>{tracing::info!(version,multiplexed=version==2,"self-hosted signaling registered");break candidate;}
+                    Event::Error{code} if version==2&&code=="unsupported_version"=>{let _=candidate.close(None).await;version=1;},
+                    Event::Error{code}=>bail!("signaling registration rejected: {code}"),
+                    _=>bail!("unexpected signaling registration response"),
+                }
+            }
+        };
         let (outgoing, mut requests) = tokio::sync::mpsc::channel::<Request>(128);
         let (accepted, incoming) = tokio::sync::mpsc::channel(crate::shared_host::MAX_SESSIONS);
         let task = tokio::spawn(async move {

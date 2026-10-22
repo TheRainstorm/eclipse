@@ -60,6 +60,7 @@ struct Host {
     id: uuid::Uuid,
     tx: Sender,
     viewers: HashMap<String, Viewer>,
+    max_sessions: usize,
 }
 #[derive(Default)]
 struct Rooms {
@@ -86,7 +87,7 @@ impl State {
         let mut rooms = self.rooms.lock().unwrap();
         match request {
             Request::Host { version, device } => {
-                validate_identity(version, &device)?;
+                validate_identity(version, &device, 2)?;
                 ensure!(!rooms.hosts.contains_key(&device), "device_already_online");
                 ensure!(rooms.hosts.len() < 128, "server_full");
                 let id = uuid::Uuid::new_v4();
@@ -97,14 +98,15 @@ impl State {
                         id,
                         tx,
                         viewers: HashMap::new(),
+                        max_sessions: if version==2{crate::shared_host::MAX_SESSIONS}else{1},
                     },
                 );
                 Ok(Membership::Host { device, id })
             }
             Request::Join { version, device } => {
-                validate_identity(version, &device)?;
+                validate_identity(version, &device, 1)?;
                 let host = rooms.hosts.get_mut(&device).context("device_offline")?;
-                ensure!(host.viewers.len() < crate::shared_host::MAX_SESSIONS, "device_busy");
+                ensure!(host.viewers.len() < host.max_sessions, "device_busy");
                 let id = uuid::Uuid::new_v4();
                 let session = uuid::Uuid::new_v4().to_string();
                 host.tx.try_send(Event::Connected {
@@ -202,8 +204,8 @@ impl State {
         }
     }
 }
-fn validate_identity(version: u32, device: &str) -> Result<()> {
-    ensure!(version == 1, "unsupported_version");
+fn validate_identity(version: u32, device: &str, maximum: u32) -> Result<()> {
+    ensure!((1..=maximum).contains(&version), "unsupported_version");
     ensure!(
         !device.is_empty()
             && device.len() <= 80
@@ -357,11 +359,22 @@ async fn handle<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_hosts_keep_their_single_session_limit_and_version_two_explicitly_allows_multiple(){
+        for (version,limit) in [(1,1),(2,crate::shared_host::MAX_SESSIONS)] {
+            let state=State{rooms:Arc::default(),stun:vec![]};let (tx,_host_receive)=mpsc::channel(32);
+            state.register(Request::Host{version,device:"generated-compatibility-host".into()},tx).unwrap();
+            let mut receive=Vec::new();
+            for _ in 0..limit {let (tx,rx)=mpsc::channel(16);receive.push(rx);state.register(Request::Join{version:1,device:"generated-compatibility-host".into()},tx).unwrap();}
+            let (tx,_)=mpsc::channel(16);assert!(state.register(Request::Join{version:1,device:"generated-compatibility-host".into()},tx).is_err());
+            assert_eq!(state.rooms.lock().unwrap().hosts["generated-compatibility-host"].viewers.len(),limit);
+        }
+    }
     #[tokio::test]
     async fn concurrent_routes_are_private_bounded_and_host_leaves_only_one_session() {
         let state=State{rooms:Arc::default(),stun:vec![]};
         let (host_tx,mut host_rx)=mpsc::channel(32);
-        let host=state.register(Request::Host{version:1,device:"generated-host".into()},host_tx).unwrap();
+        let host=state.register(Request::Host{version:2,device:"generated-host".into()},host_tx).unwrap();
         host_rx.recv().await.unwrap();let mut viewers=Vec::new();let mut receive=Vec::new();
         for _ in 0..crate::shared_host::MAX_SESSIONS {
             let (tx,mut rx)=mpsc::channel(16);
