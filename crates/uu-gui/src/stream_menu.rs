@@ -18,6 +18,7 @@ enum Edge { Right, Left, Top, Bottom }
 #[derive(Default)]
 pub(super) struct FloatingHandle {
     position: Option<Pos2>,
+    user_positioned: bool,
     docked: Option<Edge>,
     idle_since: f64,
     pinned: bool,
@@ -31,6 +32,9 @@ impl FloatingHandle {
     }
     fn place(&mut self, screen: Rect) {
         let size = Self::size(screen);
+        if !self.user_positioned {
+            self.position=Some(egui::pos2(screen.right()-size.x,screen.top()+screen.height()*0.15));
+        }
         let position = self.position.get_or_insert(egui::pos2(
             screen.right()-size.x, screen.top()+screen.height()*0.15));
         position.x = position.x.clamp(screen.left(), screen.right()-size.x);
@@ -108,9 +112,10 @@ impl FloatingHandle {
                         painter.circle_filled(pill.center()+egui::vec2(if y<0.0 {-3.0}else{3.0},0.0),1.1,accent);
                     }
                 }
-                response.on_hover_text("悬停展开 · 点击保持交互 · 拖动调整位置")
+                response.on_hover_cursor(egui::CursorIcon::PointingHand)
             }).inner;
         if response.dragged() {
+            self.user_positioned=true;
             let folded=self.docked.take().is_some();
             if folded {
                 if let Some(pointer)=response.interact_pointer_pos() {self.position=Some(pointer-Self::size(screen)/2.0);}
@@ -162,11 +167,11 @@ impl FloatingHandle {
 fn hover_bridge(a: Rect, b: Rect) -> Option<Rect> {
     if a.right()<=b.left() || b.right()<=a.left() {
         let (left,right)=if a.right()<=b.left(){(a.right(),b.left())}else{(b.right(),a.left())};
-        let (top,bottom)=(a.top().max(b.top()),a.bottom().min(b.bottom()));
+        let (top,bottom)=(a.top().min(b.top()),a.bottom().max(b.bottom()));
         (bottom>top).then(||Rect::from_min_max(egui::pos2(left,top),egui::pos2(right,bottom)))
     } else {
         let (top,bottom)=if a.bottom()<=b.top(){(a.bottom(),b.top())}else if b.bottom()<=a.top(){(b.bottom(),a.top())}else{return None;};
-        let (left,right)=(a.left().max(b.left()),a.right().min(b.right()));
+        let (left,right)=(a.left().min(b.left()),a.right().max(b.right()));
         (right>left).then(||Rect::from_min_max(egui::pos2(left,top),egui::pos2(right,bottom)))
     }
 }
@@ -990,6 +995,12 @@ mod tests {
         assert_eq!(initial.right(),1280.0);
         assert_eq!(initial.top(),108.0);
         assert!(initial.area()<=36.0*36.0*0.70);
+        ui.screen=Rect::from_min_size(Pos2::ZERO,egui::vec2(1600.0,1000.0));
+        let resized=ui.frame(0.1,vec![]).0;
+        assert_eq!(resized.top(),150.0,"default anchor follows the final fullscreen viewport");
+        assert_eq!(resized.right(),1600.0);
+        ui.screen=Rect::from_min_size(Pos2::ZERO,egui::vec2(1280.0,720.0));
+        ui.frame(0.2,vec![]);
         assert_eq!(ui.frame(1.9,vec![]).0.width(),HANDLE_SIZE);
         let folded=ui.frame(2.1,vec![]).0;
         assert_eq!(folded.width(),HANDLE_SIZE/3.0);
@@ -1070,7 +1081,9 @@ mod tests {
         let child=Rect::from_min_max(egui::pos2(450.0,96.0),egui::pos2(690.0,400.0));
         let gap=hover_bridge(row,child).unwrap();
         assert!(gap.contains(egui::pos2(695.0,115.0)));
-        assert!(!gap.contains(egui::pos2(695.0,200.0)));
+        assert!(gap.contains(egui::pos2(695.0,200.0)),"diagonal movement into a child remains inside the narrow gap");
+        assert!(!gap.contains(egui::pos2(650.0,200.0)));
+        assert!(!gap.contains(egui::pos2(695.0,450.0)));
     }
     #[test]
     fn fullscreen_menu_click_dispatches_stream_fullscreen_for_both_states() {
