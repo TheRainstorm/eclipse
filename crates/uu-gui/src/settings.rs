@@ -56,6 +56,7 @@ pub struct Settings {
     #[serde(alias = "remote_cursor", deserialize_with = "deserialize_cursor_mode")]
     pub cursor_mode: CursorMode,
     pub clipboard: bool,
+    pub lan_discovery: bool,
     pub lan_service_port: u16,
     pub lan_discovery_port: u16,
 }
@@ -78,6 +79,7 @@ impl Default for Settings {
             relative_mouse: false,
             cursor_mode: CursorMode::Both,
             clipboard: true,
+            lan_discovery: true,
             lan_service_port: uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port: uu_core::native_discovery::DISCOVERY_PORT,
         }
@@ -301,6 +303,8 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let path=root.join("gui-settings.json");
         let mut settings=Settings::default();
+        assert!(serde_json::from_str::<Settings>("{}").unwrap().lan_discovery);
+        settings.lan_discovery=false;
         settings.lan_service_port=51000;
         settings.lan_discovery_port=51001;
         settings.save(&path).unwrap();

@@ -196,3 +196,39 @@ async fn native_lan_page_pairs_persists_and_decodes_generated_video_without_acco
         .unwrap();
     drop(page);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discovery_disable_cancels_owned_udp_and_discards_old_results_without_losing_devices() {
+    let fixture = Fixture::new();
+    let ctx = egui::Context::default();
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let mut page = LanUi::new(Some(fixture.0.clone()));
+    page.address = "127.0.0.1:51000".into();
+    page.add();
+    let previous = page.scan_epoch;
+    page.scan = Some(spawn(&ctx, page.send.clone(), Work::Scan(previous, vec![socket.local_addr().unwrap()])).unwrap());
+    let mut bytes = [0; 1500];
+    tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut bytes)).await.unwrap().unwrap();
+    let device = discovery::Device {
+        info: discovery::ServerInfo { id: uuid::Uuid::new_v4().to_string(), name: "Generated discovery fixture".into(), port: 51001, fingerprint: "a".repeat(64) },
+        address: "127.0.0.1:51001".parse().unwrap(),
+    };
+    page.found.insert((device.info.id.clone(), device.info.fingerprint.clone()), Seen { device: device.clone(), at: Instant::now() });
+    page.set_discovery(false);
+    assert!(page.scan.is_none() && page.found.is_empty());
+    page.send.send(Event::Scan(previous, Ok(vec![device.clone()]))).unwrap();
+    page.poll(&ctx, true);
+    assert!(page.nearby(None).is_empty());
+    assert_eq!(page.rows().len(), 1, "manual devices survive disabling discovery");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop { page.poll(&ctx, true); if page.retired_scans.is_empty() { break; } tokio::time::sleep(Duration::from_millis(10)).await; }
+    }).await.expect("cancellation must finish the worker");
+    assert!(tokio::time::timeout(Duration::from_millis(100), socket.recv_from(&mut bytes)).await.is_err(), "disabled polling must not send queries");
+    page.set_discovery(true);
+    page.send.send(Event::Scan(previous, Ok(vec![device.clone()]))).unwrap();
+    page.poll(&ctx, false);
+    assert!(page.found.is_empty(), "re-enabling cannot revive an old scan");
+    page.send.send(Event::Scan(page.scan_epoch, Ok(vec![device]))).unwrap();
+    page.poll(&ctx, false);
+    assert_eq!(page.nearby(None).len(), 1);
+}

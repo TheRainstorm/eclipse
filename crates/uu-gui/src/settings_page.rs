@@ -223,7 +223,11 @@ fn input(ui: &mut egui::Ui, s: &mut Settings) {
         );
     });
 }
-fn network(ui: &mut egui::Ui, _s: &mut Settings, state: &State<'_>, actions: &mut Actions) {
+fn network(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>, actions: &mut Actions) {
+    group(ui, "设备发现", |ui| {
+        ui.checkbox(&mut s.lan_discovery, "自动查找局域网设备");
+        note(ui, "关闭后停止扫描并隐藏附近设备；仍可连接已保存设备或手动输入 IP 地址。本机共享由共享页面独立管理。");
+    });
     group(ui, "共享网络设置", |ui| {
         note(ui, "IP 服务端口、发现端口与 UU/VPS 接入统一在“共享本机”和“连接服务”页面管理。");
     });

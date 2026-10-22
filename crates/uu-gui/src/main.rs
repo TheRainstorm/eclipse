@@ -1162,6 +1162,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.workspace_poll(ctx);
         self.native_host.poll(ctx);
+        self.lan.set_discovery(self.preferences.lan_discovery);
         self.lan.configure_ports(self.workspace.book.sharing.service_port, self.workspace.book.sharing.discovery_port);
         let lan_active=self.stream_target.is_none()&&!self.lan.compatibility;
         self.lan.poll(ctx,lan_active);

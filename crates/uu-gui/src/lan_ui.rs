@@ -21,13 +21,13 @@ use uu_core::{
 const BLUE: C = super::theme::ACCENT;
 const MUTED: C = super::theme::MUTED;
 enum Event {
-    Scan(Result<Vec<discovery::Device>, String>),
+    Scan(u64, Result<Vec<discovery::Device>, String>),
     Code(String),
     Paired(Result<Device, String>),
     Verified(Result<Device, String>),
 }
 enum Work {
-    Scan(Vec<SocketAddr>),
+    Scan(u64, Vec<SocketAddr>),
     Pair { endpoint: String, client_id: String },
     Verify { device: Device, endpoint: String },
 }
@@ -54,7 +54,7 @@ fn spawn(ctx: &egui::Context, events: mpsc::Sender<Event>, work: Work) -> Result
                 Err(error) => {
                     let error=format!("无法启动连接线程：{error}");
                     let event=match &work {
-                        Work::Scan(_)=>Event::Scan(Err(error)),
+                        Work::Scan(epoch,_)=>Event::Scan(*epoch,Err(error)),
                         Work::Pair {..}=>Event::Paired(Err(error)),
                         Work::Verify {..}=>Event::Verified(Err(error)),
                     };
@@ -65,12 +65,12 @@ fn spawn(ctx: &egui::Context, events: mpsc::Sender<Event>, work: Work) -> Result
             };
             runtime.block_on(async {
                 match work {
-                    Work::Scan(targets) => {
+                    Work::Scan(epoch, targets) => {
                         let result = tokio::select! {
                             _ = cancel.changed() => return,
                             result = discovery::discover(&targets, Duration::from_millis(1200)) => result,
                         };
-                        let _ = events.send(Event::Scan(result.map_err(|e| format!("{e:#}"))));
+                        let _ = events.send(Event::Scan(epoch, result.map_err(|e| format!("{e:#}"))));
                     }
                     Work::Pair { endpoint, client_id } => {
                         let (progress, mut codes) = async_mpsc::unbounded_channel();
@@ -161,6 +161,9 @@ pub(super) struct LanUi {
     send: mpsc::Sender<Event>,
     found: HashMap<(String, String), Seen>,
     scan: Option<Job>,
+    retired_scans: Vec<Job>,
+    scan_epoch: u64,
+    discovery_enabled: bool,
     client: Option<Job>,
     last_scan: Option<Instant>,
     discovery_port: u16,
@@ -184,10 +187,25 @@ impl LanUi {
         self.host.configure_ports(service, discovery);
         if self.discovery_port != discovery {
             self.discovery_port = discovery;
-            self.scan = None;
-            self.last_scan = None;
-            self.found.clear();
+            self.reset_scan();
         }
+    }
+    pub fn set_discovery(&mut self, enabled: bool) {
+        if self.discovery_enabled != enabled {
+            self.discovery_enabled = enabled;
+            self.reset_scan();
+        }
+    }
+    fn reset_scan(&mut self) {
+        self.scan_epoch = self.scan_epoch.wrapping_add(1);
+        if let Some(job) = self.scan.take() {
+            job.stop.send_replace(true);
+            // Cancellation closes the UDP socket on its worker. Join only after
+            // completion, so changing a preference never blocks the UI thread.
+            self.retired_scans.push(job);
+        }
+        self.last_scan = None;
+        self.found.clear();
     }
     pub fn new(dir: Option<PathBuf>) -> Self {
         let (send, events) = mpsc::channel();
@@ -208,6 +226,9 @@ impl LanUi {
             send,
             found: HashMap::new(),
             scan: None,
+            retired_scans: Vec::new(),
+            scan_epoch: 0,
+            discovery_enabled: true,
             client: None,
             last_scan: None,
             discovery_port: discovery::DISCOVERY_PORT,
@@ -226,12 +247,12 @@ impl LanUi {
         self.dir.as_ref().map(|d| d.join("paired-devices.json"))
     }
     fn scan(&mut self, ctx: &egui::Context) {
-        if self.scan.is_some() {
+        if !self.discovery_enabled || self.scan.is_some() {
             return;
         }
         self.last_scan = Some(Instant::now());
         self.scan = match targets(self.discovery_port)
-            .and_then(|targets| spawn(ctx, self.send.clone(), Work::Scan(targets)))
+            .and_then(|targets| spawn(ctx, self.send.clone(), Work::Scan(self.scan_epoch, targets)))
         {
             Ok(job) => Some(job),
             Err(error) => {
@@ -242,6 +263,7 @@ impl LanUi {
     }
     pub fn poll(&mut self, ctx: &egui::Context, active: bool) {
         self.host.poll(ctx);
+        self.retired_scans.retain(|job| !job.task.as_ref().is_none_or(|task| task.is_finished()));
         // Join a finished worker before draining: all final events are now
         // queued, even if it completed between repaint and this poll.
         if self
@@ -256,7 +278,8 @@ impl LanUi {
         if client_finished {self.client=None;}
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Scan(result) => match result {
+                Event::Scan(epoch, _) if !self.discovery_enabled || epoch != self.scan_epoch => continue,
+                Event::Scan(_, result) => match result {
                     Ok(devices) => {
                         for device in devices {
                             self.found.insert(
@@ -310,16 +333,16 @@ impl LanUi {
             self.client_error=Some(error);
             self.pair_code=None;
         }
-        if active
+        if active && self.discovery_enabled
             && self
                 .last_scan
                 .is_none_or(|at| at.elapsed() >= Duration::from_secs(8))
         {
             self.scan(ctx);
         }
-        if self.client.is_some() || self.scan.is_some() {
+        if self.client.is_some() || self.scan.is_some() || !self.retired_scans.is_empty() {
             ctx.request_repaint_after(Duration::from_millis(100));
-        } else if active {
+        } else if active && self.discovery_enabled {
             let next = self
                 .last_scan
                 .map(|at| Duration::from_secs(8).saturating_sub(at.elapsed()))
@@ -528,7 +551,7 @@ impl LanUi {
                         });
                     ui.add_space(12.);
                 }
-                if self.scan.is_some() {
+                if !self.discovery_enabled || self.scan.is_some() {
                     ui.horizontal(|ui| {
                         ui.add(egui::Spinner::new().size(14.));
                         ui.weak("正在查找局域网设备…");
