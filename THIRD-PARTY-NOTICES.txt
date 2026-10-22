@@ -3391,7 +3391,8 @@ License file: LICENSE -> text d30183ec6610abca89d6095d5f1dc56ea50248a1001cbb4549
 SPDX: MIT OR Apache-2.0
 Upstream: https://github.com/webrtc-rs/webrtc
 Authors: Rain Liu <yliu@webrtc.rs>
-No separate license file in the crate archive; see the SPDX standard texts and upstream notices.
+License file: LICENSE-APACHE -> text 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76
+License file: LICENSE-MIT -> text 6c20917694e80c18e344457d73162f5484985e05f443e0db92d960d6e83630c5
 
 ## webrtc-data 0.9.0
 SPDX: MIT OR Apache-2.0
@@ -3997,7 +3998,7 @@ Standard license text: Zlib.txt -> text 93bbf912f82f210f3f67f515f79f383103e90ffa
 Additional component notice: Chromium-keycode.txt -> text 5a3e11260ad4290fa783ec7e7afeb39bafd069fb1e97f680cdef29f952f85815
 
 Crates without a separate license file in the published archive:
-asn1-rs-derive 0.4.0, asn1-rs-impl 0.1.0, asn1-rs-impl 0.2.0, block 0.1.6, block2 0.5.1, clipboard-win 5.4.1, codespan-reporting 0.11.1, com_macros 0.6.0, com_macros_support 0.6.0, crc-catalog 2.5.0, dasp_sample 0.11.0, dispatch 0.2.0, dispatch2 0.3.1, ecolor 0.29.1, eframe 0.29.1, egui 0.29.1, egui-wgpu 0.29.1, egui_glow 0.29.1, emath 0.29.1, epaint 0.29.1, gl_generator 0.14.0, gpu-alloc 0.6.2, gpu-alloc-types 0.3.1, gpu-descriptor 0.3.2, gpu-descriptor-types 0.2.0, hexf-parse 0.2.1, jni 0.22.4, jni-macros 0.22.4, jni-sys-macros 0.4.1, khronos_api 3.1.0, malloc_buf 0.0.6, naga 22.1.0, ndk 0.8.0, ndk 0.9.0, ndk-context 0.1.1, ndk-sys 0.5.0+25.2.9519653, ndk-sys 0.6.0+11769913, objc-sys 0.3.5, objc2 0.5.3, objc2 0.6.5, objc2-app-kit 0.2.2, objc2-app-kit 0.3.2, objc2-cloud-kit 0.2.2, objc2-contacts 0.2.2, objc2-core-data 0.2.2, objc2-core-foundation 0.3.2, objc2-core-graphics 0.3.2, objc2-core-image 0.2.2, objc2-core-location 0.2.2, objc2-encode 4.1.0, objc2-io-surface 0.3.2, objc2-link-presentation 0.2.2, objc2-metal 0.2.2, objc2-quartz-core 0.2.2, objc2-symbols 0.2.2, objc2-ui-kit 0.2.2, objc2-uniform-type-identifiers 0.2.2, objc2-user-notifications 0.2.2, oboe 0.6.1, oboe-sys 0.6.1, openh264 0.9.9, profiling 1.0.18, r-efi 5.3.0, r-efi 6.0.0, spirv 0.3.0+sdk-1.3.268.0, valuable 0.1.1, webrtc 0.11.0, winapi-i686-pc-windows-gnu 0.4.0, winapi-x86_64-pc-windows-gnu 0.4.0, yasna 0.5.2
+asn1-rs-derive 0.4.0, asn1-rs-impl 0.1.0, asn1-rs-impl 0.2.0, block 0.1.6, block2 0.5.1, clipboard-win 5.4.1, codespan-reporting 0.11.1, com_macros 0.6.0, com_macros_support 0.6.0, crc-catalog 2.5.0, dasp_sample 0.11.0, dispatch 0.2.0, dispatch2 0.3.1, ecolor 0.29.1, eframe 0.29.1, egui 0.29.1, egui-wgpu 0.29.1, egui_glow 0.29.1, emath 0.29.1, epaint 0.29.1, gl_generator 0.14.0, gpu-alloc 0.6.2, gpu-alloc-types 0.3.1, gpu-descriptor 0.3.2, gpu-descriptor-types 0.2.0, hexf-parse 0.2.1, jni 0.22.4, jni-macros 0.22.4, jni-sys-macros 0.4.1, khronos_api 3.1.0, malloc_buf 0.0.6, naga 22.1.0, ndk 0.8.0, ndk 0.9.0, ndk-context 0.1.1, ndk-sys 0.5.0+25.2.9519653, ndk-sys 0.6.0+11769913, objc-sys 0.3.5, objc2 0.5.3, objc2 0.6.5, objc2-app-kit 0.2.2, objc2-app-kit 0.3.2, objc2-cloud-kit 0.2.2, objc2-contacts 0.2.2, objc2-core-data 0.2.2, objc2-core-foundation 0.3.2, objc2-core-graphics 0.3.2, objc2-core-image 0.2.2, objc2-core-location 0.2.2, objc2-encode 4.1.0, objc2-io-surface 0.3.2, objc2-link-presentation 0.2.2, objc2-metal 0.2.2, objc2-quartz-core 0.2.2, objc2-symbols 0.2.2, objc2-ui-kit 0.2.2, objc2-uniform-type-identifiers 0.2.2, objc2-user-notifications 0.2.2, oboe 0.6.1, oboe-sys 0.6.1, openh264 0.9.9, profiling 1.0.18, r-efi 5.3.0, r-efi 6.0.0, spirv 0.3.0+sdk-1.3.268.0, valuable 0.1.1, winapi-i686-pc-windows-gnu 0.4.0, winapi-x86_64-pc-windows-gnu 0.4.0, yasna 0.5.2
 
 ## License text 01316da6c16abba70ad6d2bf3e2c7259fff66eb777d953f36211c9f017c862d4
 Copyright (c) 2019 Ivan Molodetskikh

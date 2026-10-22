@@ -5379,8 +5379,6 @@ dependencies = [
 [[package]]
 name = "webrtc"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8b3a840e31c969844714f93b5a87e73ee49f3bc2a4094ab9132c69497eb31db"
 dependencies = [
  "arc-swap",
  "async-trait",
