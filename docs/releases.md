@@ -2,7 +2,7 @@
 
 大功能里程碑使用 `v主版本.次版本.修订号` 标签，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
-当前正式版本为 [v0.9.0](https://github.com/TheRainstorm/uu-client/releases/tag/v0.9.0)，包含[客户端延迟优化](releases/v0.9.0.md)。开发分支正在准备 [v0.10.0-rc.1 候选版](releases/v0.10.0-rc.1.md)，接入 Eclipse 局域网设备发现、持久配对和一键串流，并合入此前未正式发布的 [Linux 硬解下载优化](releases/v0.9.1.md)。候选版不替换最新稳定版；以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+当前正式版本为 [v0.10.0](https://github.com/TheRainstorm/uu-client/releases/tag/v0.10.0)，包含 Eclipse 局域网发现、持久配对与一键串流，以及 Windows GPU 共享呈现、可选 HEVC 和输入捕获修复，详见 [0.10 发布说明](releases/v0.10.0.md)。原生主机与 UU 兼容模式的能力范围分别列出，以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
 
 ```sh
 python3 tools/release/download.py
