@@ -1,14 +1,25 @@
-# One Windows installation directory; legacy copies are archived outside it.
+# Keep loaded images on their original volume when archiving an upgrade.
 param(
     [string]$SourceDir = $PSScriptRoot,
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\uu-client'),
-    [string]$ArchiveRoot = (Join-Path $env:USERPROFILE 'uu-gui-archive'),
+    [string]$ArchiveRoot = '',
     [switch]$NoShortcut
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$SourceDir = [IO.Path]::GetFullPath($SourceDir).TrimEnd([IO.Path]::DirectorySeparatorChar)
-$InstallDir = [IO.Path]::GetFullPath($InstallDir).TrimEnd([IO.Path]::DirectorySeparatorChar)
+function Resolve-PackagePath([string]$Value) {
+    $full = [IO.Path]::GetFullPath($Value)
+    if ($full.Length -gt [IO.Path]::GetPathRoot($full).Length) {
+        return $full.TrimEnd([IO.Path]::DirectorySeparatorChar)
+    }
+    return $full
+}
+$SourceDir = Resolve-PackagePath $SourceDir
+$InstallDir = Resolve-PackagePath $InstallDir
+if ($InstallDir -eq [IO.Path]::GetPathRoot($InstallDir)) { throw 'InstallDir must not be a drive root' }
+# A junction may point at another volume. Keeping the default archive below
+# InstallDir guarantees a rename rather than a cross-volume copy/delete.
+if ([string]::IsNullOrWhiteSpace($ArchiveRoot)) { $ArchiveRoot = Join-Path $InstallDir '.upgrade-archive' }
 $manifest = Get-Content -LiteralPath (Join-Path $SourceDir 'version.json') -Raw | ConvertFrom-Json
 $format = 1
 if ($null -ne $manifest.format_version) {
