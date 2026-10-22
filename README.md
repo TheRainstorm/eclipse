@@ -165,7 +165,7 @@ cargo run -p uu-cli -- probe
 
 详细文档：[协议兼容与 Moonlight 技术对比](docs/protocol-compatibility-and-transport.md) · [串流质量与恢复](docs/streaming-quality.md) · [帧率协商](docs/frame-rate.md) · [功能与源码参考索引](docs/reference-index.md) · [协议笔记](docs/protocol-notes.md)。诊断输出可能包含设备标识或网络信息，提交 issue 前请自行清理。
 
-自有主机与控制端利用 UU 会话信令及中继进行公网连接的设计，见 [UU 云端连接与中继接入方案](docs/uu-cloud-native-connection.md)；当前原生公网入口尚未实现。
+原生公网方向见[公网直连与可替换 STUN 服务](docs/native-public-connectivity.md)：自建信令，可配置公开或自建 STUN。当前原生公网入口尚未实现；此前新增 UU 云接入及中继复用的计划已经取消。
 
 ## 方向与致谢
 

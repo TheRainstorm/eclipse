@@ -55,7 +55,7 @@ flowchart TB
 
 原生主机可通过有路由的不同网段连接，但需要信令和媒体 UDP 均可达。自动广播发现通常不会跨路由，跨网段应手动添加地址。这里的跨网段不等于已经支持任意 NAT 或公网穿透。
 
-若希望自有两端通过 UU 云端信令和会话下发的 TURN 建立公网连接，可参考[UU 云端连接与中继接入方案](uu-cloud-native-connection.md)。该方案需要新增主机云端接入与原生 ICE/信令适配，不是当前 LAN 模式已有能力。
+公网方向见[原生公网直连与可替换 STUN 服务](native-public-connectivity.md)：使用自建信令和可配置的公开或自建 STUN，当前仍待实现。此前的 [UU 云端连接与中继研究](uu-cloud-native-connection.md)保留作为架构资料，该接入计划已经取消。
 
 ## TCP 和 UDP 分别承载什么
 
