@@ -9,7 +9,7 @@
 
 uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键鼠和多显示器操作。Linux 客户端原生运行，无需 Wine。当前开发分支默认进入 **Eclipse 局域网**：发现自有主机、手动添加 IP、首次确认配对并保存授权，后续一键串流，无需第三方账号；使用官方被控端时切换到“兼容设备”。详见[局域网连接与配对](docs/native-lan.md)。
 
-目前已达到日常远程桌面基本可用的 demo 阶段，仍在快速迭代。另有[实验性原生局域网串流通路](docs/native-streaming.md)，可使用自有主机、配对与加密视频传输；已提供图形端共享、显式授权的键鼠控制、[系统声音与音频恢复](docs/native-audio.md)，以及[双方许可文本剪贴板](docs/native-clipboard.md)，不需要 UU 账号或第三方服务密钥。0.7起增加[Linux 原生主机 VA-API 编码](docs/native-encoding.md)，默认仍用软件编码，实际后端与回退在共享窗口显示。**原生主机仍是早期局域网实现，不兼容 Sunshine / GameStream 协议。**
+目前已达到日常远程桌面基本可用的 demo 阶段，仍在快速迭代。另有[实验性原生局域网串流通路](docs/native-streaming.md)，可使用自有主机、配对与加密视频传输；已提供图形端共享、显式授权的键鼠控制、[系统声音与音频恢复](docs/native-audio.md)，以及[双方许可文本剪贴板](docs/native-clipboard.md)，不需要 UU 账号或第三方服务密钥。当前开发分支支持 [Linux VA-API 与 Windows MFT 原生 H.264 硬编](docs/native-encoding.md)，图形“共享本机”默认自动选择硬编，旧邀请入口与 CLI 保留软件默认值，实际后端与回退在共享窗口显示。**原生主机仍是早期局域网实现，不兼容 Sunshine / GameStream 协议。** 两种模式的互通边界、UDP/WebRTC 传输、Moonlight 对比与扩展方案见[协议与传输架构](docs/protocol-compatibility-and-transport.md)。
 
 ## 界面
 
@@ -135,7 +135,7 @@ Windows 上再次打开程序会唤起已有主页，避免并行运行多个主
 
 ## 当前边界
 
-- 原生被控端目前为实验性局域网共享通路，含 Windows DXGI / Linux X11 采集、默认软件 H.264 编码、Linux 实验性 VA-API 编码与可选系统声音；Wayland portal 与日常无人值守管理尚未接入该模式；键鼠控制需主机显式许可。不要把它当作完整的服务端。
+- 原生被控端目前为实验性局域网共享通路，含 Windows DXGI / Linux X11 采集、软件及双平台 H.264 硬件编码与可选系统声音；图形局域网共享默认自动选择硬编。Wayland portal 与日常无人值守管理尚未接入该模式；键鼠控制需主机显式许可。不要把它当作完整的服务端。
 - Windows UU 串流支持 H.264 和可选 H.265 Main 8-bit 硬解；HEVC 需要系统解码扩展与兼容 GPU，连接前检查失败时使用 H.264。原生串流和 Linux 接收仍使用 H.264；AV1、HDR 与视频 FEC 未实现。高帧率选项不保证所有远端都能达到对应实际帧率。
 - 文件传输、终端、端口映射和远程协助等入口尚未实现；界面中暂不可用的入口不代表现有能力。
 - 硬解仍存在 CPU 回读，尚未做到完整零拷贝；网络波动、恢复与音频长稳体验仍需持续打磨。
@@ -163,7 +163,7 @@ cargo run -p uu-cli -- devices
 cargo run -p uu-cli -- probe
 ```
 
-详细文档：[串流质量与恢复](docs/streaming-quality.md) · [帧率协商](docs/frame-rate.md) · [功能与源码参考索引](docs/reference-index.md) · [协议笔记](docs/protocol-notes.md)。诊断输出可能包含设备标识或网络信息，提交 issue 前请自行清理。
+详细文档：[协议兼容与 Moonlight 技术对比](docs/protocol-compatibility-and-transport.md) · [串流质量与恢复](docs/streaming-quality.md) · [帧率协商](docs/frame-rate.md) · [功能与源码参考索引](docs/reference-index.md) · [协议笔记](docs/protocol-notes.md)。诊断输出可能包含设备标识或网络信息，提交 issue 前请自行清理。
 
 ## 方向与致谢
 
