@@ -57,10 +57,14 @@ try {
         Assert-Test ((Get-FileHash -LiteralPath (Join-Path $target $file)).Hash -eq (Get-FileHash -LiteralPath (Join-Path $new $file)).Hash) "New payload mismatch: $file"
     }
     Assert-Test ([IO.File]::ReadAllText((Join-Path $target 'user-config.json')) -eq 'preserved user settings') 'User settings changed'
-    $defaultTarget = Join-Path $root 'default-archive-installed'
+    # Exercise a legal non-canonical input; the installer returns full paths.
+    $defaultTarget = Join-Path $root 'installed/../default-archive-installed'
     & $Installer -SourceDir $old -InstallDir $defaultTarget -NoShortcut | Out-Null
     $installed = (& $Installer -SourceDir $new -InstallDir $defaultTarget -NoShortcut) | ConvertFrom-Json
-    Assert-Test ($installed.Archive.StartsWith((Join-Path $defaultTarget '.upgrade-archive'))) 'Default archive must stay inside installation on its backing volume'
+    $expectedArchiveRoot = [IO.Path]::GetFullPath((Join-Path $defaultTarget '.upgrade-archive'))
+    $actualArchiveRoot = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($installed.Archive))
+    Assert-Test ([string]::Equals($actualArchiveRoot, $expectedArchiveRoot, [StringComparison]::OrdinalIgnoreCase)) `
+        "Default archive parent mismatch: expected '$expectedArchiveRoot', got '$actualArchiveRoot'"
     Assert-Test (Test-Path -LiteralPath (Join-Path $installed.Archive 'previous/uu-gui.exe')) 'Default archive did not preserve old executable'
     $failed = $false
     try { & $Installer -SourceDir $old -InstallDir ([IO.Path]::GetPathRoot($root)) -NoShortcut | Out-Null }
