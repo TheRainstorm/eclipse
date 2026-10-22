@@ -160,7 +160,7 @@ impl Worker {
                         }
                         actor.wake.notify_all();
                     }
-                    if let Some(pending) = pending.filter(|p| {
+                    if let Some(mut pending) = pending.filter(|p| {
                         !needs_reset
                             && p.epoch == epoch
                             && authorized
@@ -175,16 +175,34 @@ impl Worker {
                                 Err(e) => failure = Some(e.to_string()),
                             }
                         }
-                        if let Some(backend) = &mut backend {
-                            match backend.update(&pending.state) {
-                                Ok(()) => {
-                                    active = pending.state.iter().any(Option::is_some);
-                                    last = Some(pending.received);
-                                    let mut mail = actor.mail.lock().unwrap();
-                                    mail.status.connected = pending.state.iter().flatten().count();
-                                    mail.status.error = None;
+                        // Opening an OS device may block. Consume the newest full
+                        // state and recheck authority after that operation, before
+                        // submitting any buttons or motion to the driver.
+                        let ready = {
+                            let mut mail = actor.mail.lock().unwrap();
+                            if let Some(latest) = mail.latest.take() {
+                                pending = latest;
+                            }
+                            !mail.stop && mail.reset == reset
+                        };
+                        let (current_epoch, current_authorized) = authorization();
+                        if ready
+                            && current_authorized
+                            && current_epoch == pending.epoch
+                            && pending.received.elapsed() <= STALE
+                        {
+                            if let Some(backend) = &mut backend {
+                                match backend.update(&pending.state) {
+                                    Ok(()) => {
+                                        active = pending.state.iter().any(Option::is_some);
+                                        last = Some(pending.received);
+                                        let mut mail = actor.mail.lock().unwrap();
+                                        mail.status.connected =
+                                            pending.state.iter().flatten().count();
+                                        mail.status.error = None;
+                                    }
+                                    Err(e) => failure = Some(e.to_string()),
                                 }
-                                Err(e) => failure = Some(e.to_string()),
                             }
                         }
                     }
@@ -286,6 +304,24 @@ mod tests {
             Ok(())
         }
     }
+    struct OpeningRecorder {
+        events: Arc<Mutex<Vec<Snapshot>>>,
+        polled: Arc<AtomicBool>,
+    }
+    impl VirtualGamepads for OpeningRecorder {
+        fn update(&mut self, state: &Snapshot) -> Result<(), uu_input::InputError> {
+            self.events.lock().unwrap().push(*state);
+            Ok(())
+        }
+        fn reset(&mut self) -> Result<(), uu_input::InputError> {
+            self.events.lock().unwrap().push([None; 4]);
+            Ok(())
+        }
+        fn poll(&mut self) -> Result<(), uu_input::InputError> {
+            self.polled.store(true, Ordering::Release);
+            Ok(())
+        }
+    }
     async fn wait(check: impl Fn() -> bool) {
         tokio::time::timeout(Duration::from_secs(2), async {
             while !check() {
@@ -353,6 +389,106 @@ mod tests {
             worker.reset(),
             "a failed creation owns no virtual device and must not poison keyboard control"
         );
+        worker.stop();
+    }
+    #[tokio::test]
+    async fn device_open_rechecks_authority_and_uses_latest_state() {
+        use std::sync::atomic::AtomicU64;
+        for revoke in [false, true] {
+            let epoch = Arc::new(AtomicU64::new(1));
+            let enabled = Arc::new(AtomicBool::new(true));
+            let opened = Arc::new(AtomicBool::new(false));
+            let polled = Arc::new(AtomicBool::new(false));
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let (release, gate) = std::sync::mpsc::sync_channel(1);
+            let (e, active, started, record) = (
+                epoch.clone(),
+                enabled.clone(),
+                opened.clone(),
+                events.clone(),
+            );
+            let ready = polled.clone();
+            let worker = Worker::with_factory(
+                Arc::new(move || (e.load(Ordering::Acquire), active.load(Ordering::Acquire))),
+                Box::new(move || {
+                    started.store(true, Ordering::Release);
+                    gate.recv_timeout(Duration::from_secs(2)).unwrap();
+                    Ok(Box::new(OpeningRecorder {
+                        events: record.clone(),
+                        polled: ready.clone(),
+                    }))
+                }),
+            )
+            .unwrap();
+            let mut first = [None; 4];
+            first[0] = Some(uu_input::gamepad::State {
+                buttons: 1,
+                ..Default::default()
+            });
+            worker.submit(1, first);
+            wait(|| opened.load(Ordering::Acquire)).await;
+            let mut latest = first;
+            latest[0].as_mut().unwrap().buttons = 2;
+            if revoke {
+                enabled.store(false, Ordering::Release);
+                epoch.store(2, Ordering::Release);
+            } else {
+                worker.submit(1, latest);
+            }
+            release.send(()).unwrap();
+            wait(|| polled.load(Ordering::Acquire)).await;
+            if revoke {
+                assert!(events.lock().unwrap().iter().all(|state| state.iter().all(Option::is_none)),
+                        "a device opening after control revocation must never receive old pressed input");
+                assert!(worker.reset());
+            } else {
+                wait(|| worker.status().connected == 1).await;
+                assert_eq!(
+                    events.lock().unwrap().first(),
+                    Some(&latest),
+                    "new snapshots supersede input cached before driver creation"
+                );
+                assert!(worker.reset());
+            }
+            worker.stop();
+        }
+    }
+    #[tokio::test]
+    async fn slow_device_open_does_not_replay_expired_input() {
+        let opened = Arc::new(AtomicBool::new(false));
+        let polled = Arc::new(AtomicBool::new(false));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (release, gate) = std::sync::mpsc::sync_channel(1);
+        let (started, record) = (opened.clone(), events.clone());
+        let ready = polled.clone();
+        let worker = Worker::with_factory(
+            Arc::new(|| (1, true)),
+            Box::new(move || {
+                started.store(true, Ordering::Release);
+                gate.recv_timeout(Duration::from_secs(2)).unwrap();
+                Ok(Box::new(OpeningRecorder {
+                    events: record.clone(),
+                    polled: ready.clone(),
+                }))
+            }),
+        )
+        .unwrap();
+        let mut state = [None; 4];
+        state[0] = Some(Default::default());
+        worker.submit(1, state);
+        wait(|| opened.load(Ordering::Acquire)).await;
+        tokio::time::sleep(STALE + Duration::from_millis(20)).await;
+        release.send(()).unwrap();
+        wait(|| polled.load(Ordering::Acquire)).await;
+        assert!(events
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|state| state.iter().all(Option::is_none)));
+        assert!(worker.reset());
+        worker.submit(1, state);
+        wait(|| worker.status().connected == 1).await;
+        assert!(worker.reset());
         worker.stop();
     }
     #[test]
