@@ -515,6 +515,7 @@
 | [valuable](https://github.com/tokio-rs/valuable) | 0.1.1 | `MIT` |
 | [version-compare](https://gitlab.com/timvisee/version-compare) | 0.2.1 | `MIT` |
 | [version_check](https://github.com/SergioBenitez/version_check) | 0.9.5 | `MIT/Apache-2.0` |
+| [vigem-rust](https://github.com/arounre/vigem-rust) | 0.2.0 | `MIT OR Apache-2.0` |
 | [waitgroup](https://github.com/laizy/waitgroup-rs) | 0.1.2 | `Apache-2.0` |
 | [walkdir](https://github.com/BurntSushi/walkdir) | 2.5.0 | `Unlicense/MIT` |
 | [want](https://github.com/seanmonstar/want) | 0.3.2 | `MIT` |
