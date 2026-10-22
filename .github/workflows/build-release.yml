@@ -216,6 +216,7 @@ jobs:
           cargo test -p uu-input --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/input-test-build.jsonl
           cargo test -p uu-gui --release --target x86_64-pc-windows-gnu --bin uu-gui --no-run --locked --message-format=json-render-diagnostics > artifacts/gui-test-build.jsonl
           cargo test -p uu-core --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/core-test-build.jsonl
+          cargo test -p uu-media --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/media-test-build.jsonl
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -240,6 +241,11 @@ jobs:
           if len(core_tests) != 1:
               raise RuntimeError('Expected exactly one Windows core validation executable')
           shutil.copy2(core_tests[0], destination.parent / 'core-tests.exe')
+          media_messages = [json.loads(line) for line in Path('artifacts/media-test-build.jsonl').read_text().splitlines()]
+          media_tests = [m['executable'] for m in media_messages if m.get('reason') == 'compiler-artifact' and m.get('profile', {}).get('test') and m.get('executable')]
+          if len(media_tests) != 1:
+              raise RuntimeError('Expected exactly one Windows media validation executable')
+          shutil.copy2(media_tests[0], destination.parent / 'media-tests.exe')
           PY
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.platform == 'windows-x64'
@@ -327,6 +333,10 @@ jobs:
           Copy-Item -LiteralPath 'platform-validation/core-tests.exe' -Destination $coreTests
           & $coreTests 'native_lan::tests::native_lan_port_conflicts' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows TCP/UDP conflict and custom discovery tests failed' }
+          $mediaTests = Join-Path $unpack 'media-validation.exe'
+          Copy-Item -LiteralPath 'platform-validation/media-tests.exe' -Destination $mediaTests
+          & $mediaTests 'encoder::' --nocapture | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Windows encoder thread/fallback/colour/IDR validation failed' }
           & $keyboardTests 'native_interfaces::' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows native address filtering failed' }
           & $keyboardTests 'refreshing_interfaces_preserves_explicit_address' --nocapture | Out-Host

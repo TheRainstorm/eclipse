@@ -12,6 +12,8 @@ Windows 默认构建包含 `mf-encode`，仅枚举注册为硬件的 H.264 MFT�
 
 COM、Media Foundation、编码器和缓冲均在专用线程创建、使用和释放，与 Linux 共用有界请求队列和超时处理。关键帧必须为能独立恢复的 IDR，携带匹配尺寸和色彩的 SPS/PPS；输出为 H.264 Annex-B。支持显式请求关键帧与动态码率调整。当前输入仍由 CPU 转换为有限范围 BT.601 NV12 并上传，不宣称 GPU 零拷贝。
 
+驱动内部等待在 Windows 默认计时精度下可能多消耗一个刷新量级。编码器活动期间持有配对的 1 ms 计时请求，退出时释放；不会修改系统设置或目标帧率。对支持的驱动申请桌面远程场景和速度优先配置。开发诊断可显式设置 `UU_ENCODE_PROFILE=1`，退出时输出转换、输入提交、驱动完成的聚合耗时；默认关闭，不记录画面。
+
 实现依据微软的 [硬件 MFT](https://learn.microsoft.com/en-us/windows/win32/medfound/hardware-mfts)、[异步 MFT](https://learn.microsoft.com/en-us/windows/win32/medfound/asynchronous-mfts) 和 [H.264 编码器](https://learn.microsoft.com/en-us/windows/win32/medfound/h-264-video-encoder) API。Sunshine 与 uu-remote-linux 提供了硬件选择、低延迟参数和恢复行为的参考；本后端未复制其 GPL 代码。
 
 ## Linux VA-API
@@ -51,3 +53,9 @@ cargo run --release -p uu-media --example encoder_probe --features vaapi -- \
 编码探针增加 `--decoder hw`，直接打开硬件后端，失败即退出，不使用自动软件回退掩盖互通问题。它同时检查持续解码与带 Annex-B 零填充的恢复 IDR 能否交给全新硬件解码器，并保留全新软件解码器检查。
 
 实际双 VA-API 合成串流完成600帧、零解码错误。另一轮单次首帧观测由约350 ms降至55 ms；这是接收端测试统计，不是玻璃到玻璃延迟。720p、4K、1918×1078裁剪和竖屏均通过无软件回退的硬件探针。硬解还会忽略已完成NAL后的合法Annex-B零填充，保留其它解析错误。
+
+## Windows 验证范围
+
+Intel Arc 核显已通过720p/1080p/4K生成画面的实际硬编与硬解、冷IDR恢复、码率调整、尺寸和色彩检查，后端明确报告 Intel Quick Sync Video H.264 Encoder MFT。该接口当前仍有CPU转换、缓冲复制和驱动等待，不能把硬编可用等同于端到端最低延迟。一次4K BGRA生成测试的编码调用中位约25–35ms，尚不能据此承诺持续4K60。
+
+AMD的硬件MFT编码输出已通过软件解码检查，但当前额外的冷IDR硬件解码检查仍有不出首帧的情况；不将它描述为双硬件互通验收。不同驱动的首次恢复行为仍需按目标硬件验证。

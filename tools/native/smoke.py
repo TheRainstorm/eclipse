@@ -68,6 +68,8 @@ def run(executable, frames, decoder, audio=False, encoder='software'):
                 actual_encoder = actual_encoder[1] if actual_encoder else None
                 if encoder == 'vaapi' and (not actual_encoder or not actual_encoder.startswith('vaapi (')):
                     raise RuntimeError('Explicit VA-API host did not report hardware encoding')
+                if encoder == 'hardware' and (not actual_encoder or not actual_encoder.startswith(('vaapi (', 'mf (H.264 hardware,'))):
+                    raise RuntimeError('Explicit hardware host did not report a real platform hardware encoder')
                 if list((temporary / 'data').rglob('state.json')):
                     raise RuntimeError('Native smoke test unexpectedly created an interoperability account')
                 print(json.dumps(dict(native_video='passed', service_credentials_supplied=False, account='absent',
@@ -90,8 +92,8 @@ def main():
     parser.add_argument('--decoder', choices=('sw', 'auto'), default='sw',
                         help='Use deterministic software decoding in CI; auto exercises the actual machine decoder')
     parser.add_argument('--audio', action='store_true', help='Check generated encrypted audio and receive-only packet loss; never plays sound')
-    parser.add_argument('--encoder', choices=('software', 'auto', 'vaapi'), default='software',
-                        help='Native host preference; explicit VA-API requires a reported hardware encoder')
+    parser.add_argument('--encoder', choices=('software', 'auto', 'hardware', 'vaapi'), default='software',
+                        help='Native host preference; explicit hardware requires a reported hardware encoder')
     args = parser.parse_args()
     if not 1 <= args.frames <= 600:
         parser.error('--frames must be 1..=600')
