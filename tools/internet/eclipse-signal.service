@@ -1,0 +1,20 @@
+[Unit]
+Description=Eclipse native signaling and STUN
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=eclipse-signal
+Group=eclipse-signal
+EnvironmentFile=/etc/eclipse-signal/service.env
+ExecStart=/opt/eclipse-signal/uu-signal --bind ${SIGNAL_BIND} --certificate /etc/eclipse-signal/server.pem --private-key /etc/eclipse-signal/server.key --token-file /etc/eclipse-signal/server.token --stun ${STUN_URL} --stun-bind ${STUN_BIND}
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+WorkingDirectory=/var/lib/eclipse-signal
+
+[Install]
+WantedBy=multi-user.target
