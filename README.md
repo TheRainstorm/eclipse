@@ -11,7 +11,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 
 目前已达到日常远程桌面基本可用的 demo 阶段，仍在快速迭代。另有[实验性原生局域网串流通路](docs/native-streaming.md)，可使用自有主机、配对与加密视频传输；已提供图形端共享、显式授权的键鼠控制、[系统声音与音频恢复](docs/native-audio.md)，以及[双方许可文本剪贴板](docs/native-clipboard.md)，不需要 UU 账号或第三方服务密钥。当前开发分支支持 [Linux VA-API 与 Windows MFT 原生 H.264 硬编](docs/native-encoding.md)，图形“共享本机”默认自动选择硬编，旧邀请入口与 CLI 保留软件默认值，实际后端与回退在共享窗口显示。**原生主机仍是早期局域网实现，不兼容 Sunshine / GameStream 协议。** 两种模式的互通边界、UDP/WebRTC 传输、Moonlight 对比与扩展方案见[协议与传输架构](docs/protocol-compatibility-and-transport.md)。
 
-原生公网入口与自建连接服务见[使用说明](docs/native-internet.md)：IP 直连和连接服务共用原生串流；UU 跨设备实流仍待验收。
+原生公网入口与自建连接服务见[使用说明](docs/native-internet.md)：IP 直连和连接服务共用原生串流，用户已确认两台不同 UU 设备连接成功，跨 NAT 和中继仍待验收。共享设置拆分、多设备配置、公钥配对和远程协助的后续方案见[设备连接与配对统一设计](docs/device-connection-and-trust.md)。
 
 ## 界面
 
@@ -167,7 +167,7 @@ cargo run -p uu-cli -- probe
 
 详细文档：[协议兼容与 Moonlight 技术对比](docs/protocol-compatibility-and-transport.md) · [串流质量与恢复](docs/streaming-quality.md) · [帧率协商](docs/frame-rate.md) · [功能与源码参考索引](docs/reference-index.md) · [协议笔记](docs/protocol-notes.md)。诊断输出可能包含设备标识或网络信息，提交 issue 前请自行清理。
 
-原生公网方向见[公网直连与可替换 STUN 服务](docs/native-public-connectivity.md)：自建信令，可配置公开或自建 STUN。当前原生公网入口尚未实现；此前新增 UU 云接入及中继复用的计划已经取消。
+原生公网架构见[公网直连与可替换 STUN 服务](docs/native-public-connectivity.md)，当前使用方法和验证边界以[原生连接服务说明](docs/native-internet.md)为准。已接入 UU 和自建信令，正式默认仅直连，开发可显式测试中继；跨 NAT 与实际中继能力仍需验证。
 
 ## 方向与致谢
 

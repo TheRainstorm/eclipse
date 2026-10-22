@@ -4,6 +4,8 @@
 
 与 UU 兼容模式的互通范围、WebRTC/UDP 媒体路径及 Moonlight 的区别，见[协议兼容与传输架构](protocol-compatibility-and-transport.md)。
 
+IP 配对凭据与互联网配对文件的区别、后续统一设备身份及多连接地址的方案，见[设备连接与配对统一设计](device-connection-and-trust.md)。
+
 ## 连接两台电脑
 
 1. 在目标电脑启动图形客户端，选择“共享本机”。选择屏幕、帧率、码率及是否共享键鼠和系统声音，然后点击“启用共享”。共享期间需要保留软件运行。
