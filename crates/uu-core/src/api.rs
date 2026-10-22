@@ -418,6 +418,24 @@ impl UuApi {
         Ok(resp.body)
     }
 
+    /// Join an official assistance invitation without saving its code or
+    /// converting it into a permanent native device authorization.
+    pub async fn room_join_assistance(&self, request:&crate::assistance::Request) -> anyhow::Result<serde_json::Value> {
+        let token=self.state.token.as_deref().ok_or(CoreError::Unauthenticated)?;
+        let mut identity=self.state.identity.clone();
+        if let Some(id)=&self.state.device_id {identity.device_id=id.clone();}
+        for version in [2,1] {
+            let path=format!("/api/v{version}/room/join/share/by_code");
+            let response=self.client.call(&identity,Some(token),SignedRequest {
+                method:"POST",path_with_query:&path,
+                body:Some(serde_json::json!({"connect_id":request.id,"connect_code":request.code()})),
+            }).await?;
+            if crate::assistance::endpoint_fallback(version,response.status) {continue;}
+            return crate::assistance::room(response.status,response.body,request,token);
+        }
+        unreachable!()
+    }
+
     /// Create the controlled-side room using the current authenticated identity.
     pub async fn room_create(&self) -> Result<serde_json::Value, CoreError> {
         let token = self.state.token.as_deref().ok_or(CoreError::Unauthenticated)?;

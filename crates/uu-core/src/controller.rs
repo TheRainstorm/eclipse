@@ -22,6 +22,8 @@ pub enum ControllerEvent {
     Error(String),
 }
 
+pub enum Target { Device(String), Assistance(crate::assistance::Request) }
+
 pub struct ControllerHandle {
     /// True only after release, transport close and runtime shutdown complete.
     pub stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -43,6 +45,10 @@ pub fn spawn(config: Config, device: String, geo_ip: String) -> Result<Controlle
 }
 
 pub fn spawn_with_stats(config:Config,device:String,geo_ip:String,stats:std::sync::Arc<crate::media::MediaStats>)->Result<ControllerHandle> {
+    spawn_target(config,Target::Device(device),geo_ip,stats)
+}
+
+pub fn spawn_target(config:Config,target:Target,geo_ip:String,stats:std::sync::Arc<crate::media::MediaStats>)->Result<ControllerHandle> {
     crate::install_crypto_provider();
     stats.capabilities.set(crate::capabilities::Capabilities::ALL);
     let (ev_tx, ev_rx) = std::sync::mpsc::channel();
@@ -65,7 +71,7 @@ pub fn spawn_with_stats(config:Config,device:String,geo_ip:String,stats:std::syn
         };
         if let Err(e) = rt.block_on(run(
             config,
-            device,
+            target,
             geo_ip,
             ev_tx.clone(),
             frame_tx,
@@ -118,7 +124,7 @@ async fn add_trickle(
 
 async fn run(
     config: Config,
-    device: String,
+    target: Target,
     geo_ip: String,
     ev: std::sync::mpsc::Sender<ControllerEvent>,
     frame_tx: crate::media::FrameSender,
@@ -159,7 +165,10 @@ async fn run(
     let force = std::env::var("UU_FORCE_JOIN")
         .map(|v| v != "0")
         .unwrap_or(true);
-    let room = api.room_join(&device, force).await?;
+    let room = match &target {
+        Target::Device(device)=>api.room_join(device,force).await?,
+        Target::Assistance(request)=>api.room_join_assistance(request).await?,
+    };
     let data = room.get("data").cloned().unwrap_or_default();
     let token = data["token"]
         .as_str()
