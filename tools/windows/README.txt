@@ -1,3 +1,8 @@
+硬件编码运行库：
+  - 包内 libvpl.dll 为固定版本的 Intel VPL 标准 dispatcher（MIT 许可），不包含 GPU 驱动。
+  - HEVC / AV1 / VBR 仍需相应 Intel GPU 能力与系统运行时；不可用时显示准备失败原因。
+  - 安装器保留现有进程与用户配置；文件替换失败会回滚，重开程序后使用新版本。
+
 uu-client — 开源远程串流客户端（Windows x64）
 
 安装：

@@ -12,12 +12,21 @@ import sys
 import tempfile
 import zipfile
 
+import vpl_runtime
+
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / 'artifacts/packages'
 TARGET = 'x86_64-pc-windows-gnu'
 LICENSES = ('LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt')
-REQUIRED = ('uu-gui.exe', 'uu.exe', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll',
+LEGACY_REQUIRED = ('uu-gui.exe', 'uu.exe', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll',
             'README.txt', 'install.ps1', *LICENSES)
+REQUIRED = (*LEGACY_REQUIRED, 'libvpl.dll')
+
+def required_files(manifest):
+    version = manifest.get('format_version', 1)
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError('不支持的 Windows 包格式版本')
+    return REQUIRED if version == 2 else LEGACY_REQUIRED
 SOURCE_PATHS = ('crates', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                 '.cargo', 'tools/windows', 'tools/licenses', 'licenses', *LICENSES)
 
@@ -72,7 +81,7 @@ def verify_imports(directory):
                 raise RuntimeError(f'{path.name} 缺少 {name}；请使用 MinGW win32 线程模型工具链，见构建文档')
 
 
-def build_package(output):
+def build_package(output, vpl_archive=None):
     check_tools()
     revision = clean_revision()
     metadata = json.loads(subprocess.check_output(
@@ -81,6 +90,7 @@ def build_package(output):
     binaries = Path(metadata['target_directory']) / TARGET / 'release'
     subprocess.run(['cargo', 'build', '--release', '-p', 'uu-gui', '-p', 'uu-cli',
                     '--target', TARGET, '--locked'], cwd=ROOT, check=True)
+    dispatcher = vpl_runtime.build_dispatcher(Path(metadata['target_directory']) / 'vpl-runtime', vpl_archive)
     if clean_revision() != revision:
         raise RuntimeError('构建期间提交号发生变化，请重新打包')
     output.mkdir(parents=True, exist_ok=True)
@@ -94,13 +104,15 @@ def build_package(output):
         for filename, compiler in [('libgcc_s_seh-1.dll', compiler_tool('gcc')),
                                    ('libstdc++-6.dll', compiler_tool('g++'))]:
             shutil.copy2(runtime_dll(compiler, filename), staging / filename)
+        shutil.copy2(dispatcher, staging / 'libvpl.dll')
         for filename in ('README.txt', 'install.ps1'):
             shutil.copy2(ROOT / 'tools/windows' / filename, staging / filename)
         for filename in LICENSES:
             shutil.copy2(ROOT / filename, staging / filename)
         verify_imports(staging)
-        manifest = {'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
+        manifest = {'format_version': 2, 'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
                     'target': TARGET,
+                    'runtime_sources': {'intel_vpl': vpl_runtime.COMMIT},
                     'sha256': {filename: sha256(staging / filename) for filename in REQUIRED}}
         (staging / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         zip_path = Path(temp) / archive.name
@@ -118,9 +130,10 @@ def build_package(output):
 def main():
     parser = argparse.ArgumentParser(description='在 Linux 或 Windows 使用 MinGW 编译打包 Windows x64 客户端（Python 3.11+）')
     parser.add_argument('--output-dir', type=Path, default=OUTPUT, help='产物目录（默认 artifacts/packages）')
+    parser.add_argument('--vpl-archive', type=Path, help='离线 Intel VPL 固定版本源码归档；不提供时自动下载并验证')
     args = parser.parse_args()
     try:
-        build_package(args.output_dir.resolve())
+        build_package(args.output_dir.resolve(), args.vpl_archive)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f'打包失败：{error}', file=sys.stderr)
         return 1

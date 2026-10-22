@@ -1,4 +1,4 @@
-Intel VPL public API headers
+Intel VPL public API headers and Windows dispatcher
 Upstream: https://github.com/intel/libvpl
 Commit: 674d015bcb294bc39fa276e99a652ea045423e82
 SPDX: MIT

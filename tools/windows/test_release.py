@@ -24,7 +24,7 @@ class ReleaseTests(unittest.TestCase):
 
     def make_bundle(self, transform=None):
         files = {name: ('test ' + name).encode() for name in package.REQUIRED}
-        manifest = {'source_commit': 'a' * 40,
+        manifest = {'format_version': 2, 'source_commit': 'a' * 40,
                     'sha256': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
         files['version.json'] = json.dumps(manifest).encode()
         if transform:
@@ -52,6 +52,27 @@ class ReleaseTests(unittest.TestCase):
                 path = self.make_bundle(lambda files: files.update({name: b'changed notice'}))
                 with self.assertRaisesRegex(ValueError, name):
                     sync.verify_package(path)
+
+    def test_dispatcher_is_required_and_cannot_be_corrupted_in_new_bundles(self):
+        for corrupt in (False, True):
+            def transform(files):
+                if corrupt: files['libvpl.dll'] = b'changed dispatcher'
+                else: files.pop('libvpl.dll')
+            with self.assertRaises(ValueError):
+                sync.verify_package(self.make_bundle(transform))
+
+    def test_legacy_bundles_remain_installable_and_unknown_formats_are_rejected(self):
+        def legacy(files):
+            files.pop('libvpl.dll')
+            manifest = json.loads(files['version.json'])
+            manifest.pop('format_version')
+            manifest['sha256'].pop('libvpl.dll')
+            files['version.json'] = json.dumps(manifest).encode()
+        self.assertNotIn('format_version', sync.verify_package(self.make_bundle(legacy)))
+        def unknown(files):
+            manifest = json.loads(files['version.json']);manifest['format_version'] = 3
+            files['version.json'] = json.dumps(manifest).encode()
+        with self.assertRaises(ValueError): sync.verify_package(self.make_bundle(unknown))
 
     def test_missing_file_rejected(self):
         path = self.make_bundle(lambda files: files.pop('libstdc++-6.dll'))

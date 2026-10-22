@@ -9,34 +9,86 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $SourceDir = [IO.Path]::GetFullPath($SourceDir).TrimEnd([IO.Path]::DirectorySeparatorChar)
 $InstallDir = [IO.Path]::GetFullPath($InstallDir).TrimEnd([IO.Path]::DirectorySeparatorChar)
-$manifest = Get-Content (Join-Path $SourceDir 'version.json') -Raw | ConvertFrom-Json
+$manifest = Get-Content -LiteralPath (Join-Path $SourceDir 'version.json') -Raw | ConvertFrom-Json
+$format = 1
+if ($null -ne $manifest.format_version) {
+    if ($manifest.format_version -isnot [int] -and $manifest.format_version -isnot [long]) {
+        throw 'Invalid package format version'
+    }
+    $format = $manifest.format_version
+}
+if ($format -notin @(1, 2)) { throw 'Unsupported package format version' }
+if ($manifest.source_commit -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid source commit' }
 $required = @('uu-gui.exe','uu.exe','libgcc_s_seh-1.dll','libstdc++-6.dll','README.txt','install.ps1',
               'LICENSE','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt')
+if ($format -eq 2) { $required += 'libvpl.dll' }
+$hashNames = @($manifest.sha256.PSObject.Properties.Name)
+if ($hashNames.Count -ne $required.Count -or @($hashNames | Where-Object { $_ -cnotin $required }).Count) {
+    throw 'Invalid package hash manifest'
+}
 foreach ($name in $required) {
     $file = Join-Path $SourceDir $name
-    if (!(Test-Path $file -PathType Leaf)) { throw "Package missing: $name" }
+    if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Package missing: $name" }
     $expected = $manifest.sha256.$name
-    if (!$expected -or (Get-FileHash $file -Algorithm SHA256).Hash -ne $expected) {
+    if ($expected -cnotmatch '^[0-9a-f]{64}$' -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected) {
         throw "Package hash mismatch: $name"
     }
 }
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+$stamp = (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N').Substring(0,8)
 $archive = Join-Path $ArchiveRoot $stamp
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
-# Finish validation before moving any installed files. Never stop user processes.
-if ($SourceDir -ne $InstallDir) {
-    New-Item -ItemType Directory -Force (Join-Path $archive 'previous') | Out-Null
-    foreach ($name in $required + @('version.json')) {
+# Validate and back up all package files before mutation. User configuration is outside this allowlist.
+if (!$SourceDir.Equals($InstallDir, [StringComparison]::OrdinalIgnoreCase)) {
+    $previous = Join-Path $archive 'previous'
+    New-Item -ItemType Directory -Force $previous | Out-Null
+    $payload = @($required) + @('version.json')
+    $oldHashes = @{}
+    foreach ($name in $payload) {
         $target = Join-Path $InstallDir $name
-        if (Test-Path $target) { Copy-Item $target (Join-Path $archive "previous\$name") -Force }
-    }
-    foreach ($name in $required + @('version.json')) {
-        $target = Join-Path $InstallDir $name
-        if ((Test-Path $target) -and (Get-FileHash $target).Hash -eq (Get-FileHash (Join-Path $SourceDir $name)).Hash) { continue }
-        if ($name -in @('uu-gui.exe','uu.exe') -and (Test-Path $target)) {
-            Move-Item $target (Join-Path $archive "previous\running-$name") -Force
+        if (Test-Path -LiteralPath $target) {
+            if (!(Test-Path -LiteralPath $target -PathType Leaf)) { throw "Installed path is not a file: $name" }
+            Copy-Item -LiteralPath $target -Destination (Join-Path $previous $name) -Force
+            $oldHashes[$name] = (Get-FileHash -LiteralPath $target).Hash
         }
-        Copy-Item (Join-Path $SourceDir $name) $target -Force
+    }
+    $changed = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        foreach ($name in $payload) {
+            $target = Join-Path $InstallDir $name
+            $source = Join-Path $SourceDir $name
+            $digest = (Get-FileHash -LiteralPath $source).Hash
+            if ((Test-Path -LiteralPath $target) -and (Get-FileHash -LiteralPath $target).Hash -eq $digest) { continue }
+            if ([IO.Path]::GetExtension($name) -in @('.exe', '.dll') -and (Test-Path -LiteralPath $target)) {
+                # Loaded images can be renamed while their processes keep running. A sharing violation
+                # leaves this file untouched and rolls back the earlier payload changes.
+                Move-Item -LiteralPath $target -Destination (Join-Path $previous "running-$name") -Force
+            }
+            $changed.Add($name)
+            Copy-Item -LiteralPath $source -Destination $target -Force
+            if ((Get-FileHash -LiteralPath $target).Hash -ne $digest) { throw "Installed hash mismatch: $name" }
+        }
+    } catch {
+        $failure = $_.Exception.Message
+        $rollbackErrors = New-Object 'System.Collections.Generic.List[string]'
+        for ($index = $changed.Count - 1; $index -ge 0; $index--) {
+            $name = $changed[$index]
+            $target = Join-Path $InstallDir $name
+            try {
+                if ($oldHashes.ContainsKey($name) -and (Test-Path -LiteralPath $target) -and
+                    (Get-FileHash -LiteralPath $target).Hash -eq $oldHashes[$name]) { continue }
+                if (Test-Path -LiteralPath $target) {
+                    $failed = Join-Path $archive 'failed'
+                    New-Item -ItemType Directory -Force $failed | Out-Null
+                    Move-Item -LiteralPath $target -Destination (Join-Path $failed $name) -Force
+                }
+                if ($oldHashes.ContainsKey($name)) {
+                    Copy-Item -LiteralPath (Join-Path $previous $name) -Destination $target -Force
+                    if ((Get-FileHash -LiteralPath $target).Hash -ne $oldHashes[$name]) { throw 'Restored hash mismatch' }
+                }
+            } catch { $rollbackErrors.Add($name + ': ' + $_.Exception.Message) }
+        }
+        if ($rollbackErrors.Count) { throw "Installation failed: $failure; rollback incomplete: $($rollbackErrors -join '; '); backup: $previous" }
+        throw "Installation failed and package files were restored: $failure; backup: $previous"
     }
 }
 foreach ($name in @('rtx-auto','hud-recovery')) {
@@ -82,7 +134,7 @@ if (!$NoShortcut) {
     $link.Save()
 }
 foreach ($name in $required) {
-    if ((Get-FileHash (Join-Path $InstallDir $name)).Hash -ne $manifest.sha256.$name) {
+    if ((Get-FileHash -LiteralPath (Join-Path $InstallDir $name)).Hash -ne $manifest.sha256.$name) {
         throw "Installed hash mismatch: $name"
     }
 }

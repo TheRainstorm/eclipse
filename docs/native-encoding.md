@@ -32,7 +32,7 @@ VPL 使用单帧异步深度、无 B 帧、速度优先和有限 VBV；低延迟
 
 VBR 设置目标和峰值码率，峰值必须不小于目标。CBR 是编码器速率预算，不能保证每一帧、每一秒或加上网络协议后的线上字节数完全恒定。软件 OpenH264 路径保留平均码率控制，不提供这个 VBR 后端。
 
-构建只使用固定版本的 MIT Intel 公共头文件和 C 编译器。运行时需要 Intel GPU 对相应编码的硬件支持及驱动：Linux 安装 Intel VPL dispatcher（`libvpl.so.2`）和 GPU runtime；Windows 使用 `libvpl.dll`。硬件实现由标准 VPL dispatcher 查找，应用不自行扫描驱动目录或直接加载私有实现 DLL。不要求链接 FFmpeg 或启动编码子进程。CPU NV12 转换与上传仍存在，不宣称零拷贝。API 依据 [Intel VPL 低延迟说明](https://intel.github.io/libvpl/latest/appendix/VPL_apnds_c.html) 和 [编码过程](https://intel.github.io/libvpl/v2.10/programming_guide/VPL_prg_encoding.html)，公共头文件来源和固定提交见 `vendor/libvpl-api/UPSTREAM.md`。
+构建只使用固定版本的 MIT Intel 公共头文件和 C 编译器。运行时需要 Intel GPU 对相应编码的硬件支持及驱动：Linux 安装 Intel VPL dispatcher（`libvpl.so.2`）和 GPU runtime；Windows 正式包随带 MIT 许可的标准 `libvpl.dll` dispatcher，仍需系统 Intel GPU runtime；直接 Cargo 构建时需自行提供 dispatcher。硬件实现由标准 VPL dispatcher 查找，应用不自行扫描驱动目录或直接加载私有实现 DLL。不要求链接 FFmpeg 或启动编码子进程。CPU NV12 转换与上传仍存在，不宣称零拷贝。API 依据 [Intel VPL 低延迟说明](https://intel.github.io/libvpl/latest/appendix/VPL_apnds_c.html) 和 [编码过程](https://intel.github.io/libvpl/v2.10/programming_guide/VPL_prg_encoding.html)，公共头文件来源和固定提交见 `vendor/libvpl-api/UPSTREAM.md`。
 
 AV1 解码库在 Linux 复用 VA-API 表面池、DMA-BUF 租约与下载路径；Windows 可通过 Intel VPL 硬解为 CPU NV12 输出，之后仍有像素复制。H.264 / HEVC 的既有 D3D11 共享呈现路径保留。`av1_decode_probe` 使用生成的 I/P 时间单元，检查冷启动、连续解码、时间戳和可选 GPU 租约；仍需在目标驱动上实测。
 
