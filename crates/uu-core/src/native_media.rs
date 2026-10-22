@@ -146,6 +146,7 @@ fn h264_capability() -> RTCRtpCodecCapability {
 }
 
 pub(crate) struct NativePeer {
+    _connection_monitor:Option<crate::connection_info::Monitor>,
     pub pc: Arc<RTCPeerConnection>,
     mux: Option<Arc<UDPMuxDefault>>,
     pub repairs: Arc<RepairBus>,
@@ -258,7 +259,7 @@ impl NativePeer {
             },
             RTPCodecType::Video,
         )?;
-        let repairs = RepairBus::new(stats);
+        let repairs = RepairBus::new(stats.clone());
         let mut registry = if sender {
             register_default_interceptors(Registry::new(), &mut media)?
         } else {
@@ -285,6 +286,7 @@ impl NativePeer {
             Box::pin(async {})
         }));
         Ok(Self {
+            _connection_monitor:stats.as_ref().map(|stats|crate::connection_info::Monitor::start(&pc,stats)),
             pc,
             mux,
             repairs,
@@ -443,24 +445,13 @@ impl NativePeer {
         .context("native WebRTC connection timed out")?
     }
     pub async fn direct_path(&self) -> Result<serde_json::Value> {
-        use webrtc::stats::StatsReportType;
-        let reports=self.pc.get_stats().await;
-        for report in reports.reports.values() {
-            if let StatsReportType::CandidatePair(pair)=report {
-                if !pair.nominated {continue;}
-                let local=reports.reports.get(&pair.local_candidate_id);
-                let remote=reports.reports.get(&pair.remote_candidate_id);
-                if let (Some(StatsReportType::LocalCandidate(local)),Some(StatsReportType::RemoteCandidate(remote)))=(local,remote) {
-                    let local_type=local.candidate_type.to_string();
-                    let remote_type=remote.candidate_type.to_string();
-                    ensure!(self.development_relay || (local_type!="relay"&&remote_type!="relay"),"direct-only session selected a forbidden relay");
-                    let path=serde_json::json!({"event":"native_path","direct":local_type!="relay"&&remote_type!="relay","development_relay":self.development_relay,"local_type":local_type,"remote_type":remote_type,"transport":"udp"});
-                    tracing::info!(local_type,remote_type,"native UDP path selected");
-                    return Ok(path);
-                }
-            }
-        }
-        anyhow::bail!("cannot confirm selected native ICE path")
+        let pair=self.pc.sctp().transport().ice_transport().get_selected_candidate_pair().await
+            .context("cannot confirm selected native ICE path")?;
+        let local_type=pair.local().typ.to_string();let remote_type=pair.remote().typ.to_string();
+        ensure!(self.development_relay || (pair.local().typ!=RTCIceCandidateType::Relay && pair.remote().typ!=RTCIceCandidateType::Relay),"direct-only session selected a forbidden relay");
+        tracing::info!(local_type,remote_type,"native UDP path selected");
+        Ok(serde_json::json!({"event":"native_path","direct":pair.local().typ!=RTCIceCandidateType::Relay&&pair.remote().typ!=RTCIceCandidateType::Relay,
+            "development_relay":self.development_relay,"local_type":local_type,"remote_type":remote_type,"transport":"udp"}))
     }
     pub async fn close(&self) {
         self.pending_decoder.lock().unwrap().take();

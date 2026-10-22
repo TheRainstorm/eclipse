@@ -25,6 +25,7 @@ mod native_clipboard;
 mod native_audio;
 mod native_media;
 mod network_probe;
+pub mod connection_info;
 mod decode_gate;
 mod test_loss;
 mod srtp_policy;

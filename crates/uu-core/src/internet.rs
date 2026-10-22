@@ -132,6 +132,7 @@ pub async fn view(
     };
     let connection = tokio::select! {result=joining=>result?,_=cancelled(&mut stop)=>return Ok(())};
     let (mut signal, ice) = Authenticated::new(connection, key, Role::Viewer);
+    stats.connection.set_service(match settings.provider {Provider::Uu=>"UU 连接服务",Provider::SelfHosted=>"自建连接服务"});
     stats.diagnostics.record(
         json!({"event":"native_provider","provider":settings.provider,
         "stun_services":ice.urls().len(),"development_relay":settings.development_relay}),

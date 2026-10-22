@@ -600,6 +600,7 @@ pub async fn view_with_input(invitation:&Invitation,frames:FrameSender,stats:Arc
 }
 
 async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaStats>,mut stop:watch::Receiver<bool>,input:Option<crate::native_input::NativeInputReceiver>)->Result<()> {
+    stats.connection.set_service("IP 直连");
     stats.capabilities.set(0);
     stats.native_input_available.store(false,Ordering::Release);
     let stream = tokio::select! {

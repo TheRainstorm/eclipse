@@ -37,6 +37,7 @@ mod account;
 mod audio_controls;
 mod native_ui;
 mod internet_ui;
+mod connection_details;
 mod lan_ui;
 mod lan_host_ui;
 mod native_keys;
@@ -132,6 +133,7 @@ struct App {
     stream_target: Option<sessions::StreamTarget>,
     native_ui: native_ui::NativeUi,
     internet_ui: internet_ui::InternetUi,
+    connection_details_open:bool,
     lan: lan_ui::LanUi,
     native_clipboard_enabled: bool,
     native_host: native_host_ui::NativeHostUi,
@@ -368,6 +370,7 @@ impl App {
             stream_target,
             native_ui: native_ui::NativeUi::default(),
             internet_ui: internet_ui::InternetUi::load(config.as_ref()),
+            connection_details_open:false,
             lan:lan_ui::LanUi::new(config.as_ref().map(|c|c.at("native-lan"))),
             native_clipboard_enabled: false,
             native_host: native_host_ui::NativeHostUi::default(),
@@ -1322,6 +1325,7 @@ impl eframe::App for App {
             }
         }
         self.about_ui(ctx);
+        self.connection_details_ui(ctx);
         if self.audio_save_after.is_some_and(|at|std::time::Instant::now()>=at) {
             self.audio_save_after=None;self.persist_preferences();
         }

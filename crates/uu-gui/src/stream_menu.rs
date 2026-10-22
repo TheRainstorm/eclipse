@@ -892,6 +892,7 @@ impl super::App {
                                         "文件、终端和端口映射尚未接入",
                                     );
                                     }
+                                    if menu_row(ui,"连接详情",Some(Icon::Link),false,false,"",false).clicked(){self.open_connection_details();}
                                     if menu_row(ui,"软件设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_settings();}
                                     if menu_row(ui,"关于软件",Some(Icon::Info),false,false,"",false).clicked(){self.open_about();}
                                     side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {

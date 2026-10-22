@@ -33,6 +33,7 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
 pub struct MediaStats {
+    pub connection:crate::connection_info::Details,
     pub capabilities:crate::capabilities::Capabilities,
     pub native_input_available:std::sync::atomic::AtomicBool,
     /// Host-confirmed source target; zero when only the client's request is known.
@@ -143,6 +144,7 @@ impl MediaStats {
 }
 
 pub struct ControllerMedia {
+    _connection_monitor:Option<crate::connection_info::Monitor>,
     pub pc: Arc<RTCPeerConnection>,
     repairs: Arc<crate::rtx::RepairBus>,
     pub data_channel: Arc<webrtc::data_channel::RTCDataChannel>,
@@ -430,6 +432,7 @@ impl ControllerMedia {
         let dc = control_dc.expect("CONTROL_DATA_CHANNEL must be created");
 
         Ok(Self {
+            _connection_monitor:stats.as_ref().map(|stats|{stats.connection.set_service("UU 兼容连接");crate::connection_info::Monitor::start(&pc,stats)}),
             pc,
             repairs,
             data_channel: dc,
