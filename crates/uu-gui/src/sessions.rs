@@ -11,6 +11,7 @@ pub enum ConnectionTarget {
     UuDevice(String),
     NativeInvitation(PathBuf),
     NativeDevice(String),
+    NativeInternet(PathBuf),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct StreamTarget {
@@ -20,14 +21,14 @@ pub struct StreamTarget {
 }
 impl StreamTarget {
     pub fn is_native(&self) -> bool {
-        matches!(self.connection, ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_))
+        matches!(self.connection, ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_))
     }
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Self>, String> {
         let mut args = args.into_iter();
         let (mut connection, mut alias, mut view_only) = (None, None, false);
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--stream-device" | "--native-invitation" | "--native-device" => {
+                "--stream-device" | "--native-invitation" | "--native-device" | "--native-internet" => {
                     if connection.is_some() {
                         return Err("一次只能选择一种连接方式".into());
                     }
@@ -37,6 +38,8 @@ impl StreamTarget {
                         .ok_or("缺少连接目标")?;
                     connection = Some(if arg == "--stream-device" {
                         ConnectionTarget::UuDevice(value)
+                    } else if arg=="--native-internet" {
+                        ConnectionTarget::NativeInternet(value.into())
                     } else if arg=="--native-device" {
                         if uuid::Uuid::parse_str(&value).is_err(){return Err("无效的原生设备编号".into());}
                         ConnectionTarget::NativeDevice(value)
@@ -53,7 +56,7 @@ impl StreamTarget {
             Some(connection) => {
                 let default = match &connection {
                     ConnectionTarget::UuDevice(id) => id.clone(),
-                    ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) => "原生直连".into(),
+                    ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) => "原生直连".into(),
                 };
                 Ok(Some(Self {
                     connection,
@@ -75,6 +78,7 @@ impl StreamTarget {
                 command.arg("--native-invitation").arg(path);
             }
             ConnectionTarget::NativeDevice(id) => {command.arg("--native-device").arg(id);}
+            ConnectionTarget::NativeInternet(path) => {command.arg("--native-internet").arg(path);}
         }
         command
             .arg("--stream-alias")
@@ -256,5 +260,18 @@ mod tests {
   let target=StreamTarget::parse(["--native-device",id,"--stream-alias","Generated server"].into_iter().map(str::to_owned)).unwrap().unwrap();assert!(target.is_native());
   let command=target.command(Path::new("generated-gui"),None);let args:Vec<_>=command.get_args().map(|v|v.to_str().unwrap()).collect();assert_eq!(args,["--native-device",id,"--stream-alias","Generated server"]);
   assert!(StreamTarget::parse(["--native-device","invalid"].into_iter().map(str::to_owned)).is_err());assert!(StreamTarget::parse(["--native-device",id,"--native-invitation","generated.eclipse-invite.json"].into_iter().map(str::to_owned)).is_err());
+ }
+}
+
+#[cfg(test)]
+mod internet_target_tests {
+ use super::*;
+ #[test] fn internet_sessions_keep_native_input_and_pass_only_profile_location(){
+ let target=StreamTarget::parse(["--native-internet","generated-settings.json","--view-only"].into_iter().map(str::to_owned)).unwrap().unwrap();
+ assert!(target.is_native());assert!(target.view_only);
+ let command=target.command(Path::new("eclipse"),None);
+ let args:Vec<_>=command.get_args().map(|v|v.to_string_lossy().into_owned()).collect();
+ assert_eq!(&args[..2],["--native-internet","generated-settings.json"]);
+ assert!(StreamTarget::parse(["--native-internet","generated.json","--native-device","another"].into_iter().map(str::to_owned)).is_err());
  }
 }

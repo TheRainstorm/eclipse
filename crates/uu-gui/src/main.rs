@@ -36,6 +36,7 @@ mod build_info;
 mod account;
 mod audio_controls;
 mod native_ui;
+mod internet_ui;
 mod lan_ui;
 mod lan_host_ui;
 mod native_keys;
@@ -130,6 +131,7 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
 struct App {
     stream_target: Option<sessions::StreamTarget>,
     native_ui: native_ui::NativeUi,
+    internet_ui: internet_ui::InternetUi,
     lan: lan_ui::LanUi,
     native_clipboard_enabled: bool,
     native_host: native_host_ui::NativeHostUi,
@@ -365,6 +367,7 @@ impl App {
         let mut app = Self {
             stream_target,
             native_ui: native_ui::NativeUi::default(),
+            internet_ui: internet_ui::InternetUi::load(config.as_ref()),
             lan:lan_ui::LanUi::new(config.as_ref().map(|c|c.at("native-lan"))),
             native_clipboard_enabled: false,
             native_host: native_host_ui::NativeHostUi::default(),
@@ -450,7 +453,7 @@ impl App {
         };
         if let Some(target) = app.stream_target.clone() {
             app.devices.push(Device {
-                alias: target.alias, device_id: match target.connection {sessions::ConnectionTarget::UuDevice(id)=>id,sessions::ConnectionTarget::NativeInvitation(_) | sessions::ConnectionTarget::NativeDevice(_)=>String::new()},
+                alias: target.alias, device_id: match target.connection {sessions::ConnectionTarget::UuDevice(id)=>id,sessions::ConnectionTarget::NativeInvitation(_) | sessions::ConnectionTarget::NativeDevice(_) | sessions::ConnectionTarget::NativeInternet(_)=>String::new()},
                 status: "CONNECTED".into(), controllable: true,
                 wallpaper_url: String::new(), platform: 0,
             });
@@ -1055,6 +1058,9 @@ impl App {
         if let Some(sessions::ConnectionTarget::NativeInvitation(path))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
             self.connect_native(path);return;
         }
+        if let Some(sessions::ConnectionTarget::NativeInternet(path))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
+            self.connect_native_internet(path);return;
+        }
         if let Some(sessions::ConnectionTarget::NativeDevice(id))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
             self.connect_native_device(id);return;
         }
@@ -1113,6 +1119,7 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.lan.host.stop();
         self.native_host.stop();
+        self.internet_ui.stop();
         // Delete custom GL textures while eframe still owns a current context.
         self.textures.clear();
             self.hud_cache=Default::default();
@@ -1131,6 +1138,7 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.native_host.poll(ctx);
+        self.internet_ui.poll(ctx);
         self.lan.configure_ports(self.preferences.lan_service_port, self.preferences.lan_discovery_port);
         let lan_active=self.stream_target.is_none()&&!self.lan.compatibility;
         self.lan.poll(ctx,lan_active);
@@ -1148,7 +1156,7 @@ impl eframe::App for App {
             self.fullscreen = fullscreen;
         }
         self.window_edge_active = !self.mouse_captured && window::resize_border(ctx, self.fullscreen);
-        if ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running() || self.lan.host.running()) {
+        if ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running() || self.lan.host.running() || self.internet_ui.running()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_requested = true;
             self.disconnect();
@@ -1170,8 +1178,8 @@ impl eframe::App for App {
         self.window_sizing.set_settings_page(self.settings_open);
         self.window_sizing.update(ctx, self.stream_target.is_some(), video_px,
             self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(frame, ctx));
-        if self.exit_requested { self.native_host.stop(); self.lan.host.stop(); }
-        if self.exit_requested && self.controller.is_none() && !self.native_host.running() && !self.lan.host.running() {
+        if self.exit_requested { self.native_host.stop(); self.lan.host.stop(); self.internet_ui.stop(); }
+        if self.exit_requested && self.controller.is_none() && !self.native_host.running() && !self.lan.host.running() && !self.internet_ui.running() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.poll_login(ctx);

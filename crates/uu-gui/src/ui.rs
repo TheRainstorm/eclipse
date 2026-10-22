@@ -268,11 +268,12 @@ impl App {
         self.title_bar(ctx);
         let mut switched=false;
         egui::TopBottomPanel::top("connection-mode").frame(egui::Frame::none().fill(C::WHITE).inner_margin(egui::Margin::symmetric(20.,8.))).show(ctx,|ui|{ui.horizontal(|ui|{
-            if ui.selectable_label(!self.lan.compatibility,"Eclipse 局域网").clicked(){self.lan.compatibility=false;}
+            if ui.selectable_label(!self.lan.compatibility&&!self.internet_ui.selected,"IP 直连").clicked(){self.lan.compatibility=false;self.internet_ui.selected=false;}
+            if ui.selectable_label(!self.lan.compatibility&&self.internet_ui.selected,"连接服务").clicked(){self.lan.compatibility=false;self.internet_ui.selected=true;}
             if ui.selectable_label(self.lan.compatibility,"兼容设备").clicked(){switched=!self.lan.compatibility;self.lan.compatibility=true;}
         });});
         if switched && self.logged_in && self.devices.is_empty(){self.start_load();}
-        if !self.lan.compatibility {self.lan_home(ctx);return;}
+        if !self.lan.compatibility {if self.internet_ui.selected {self.internet_home(ctx);} else {self.lan_home(ctx);}return;}
         if let Some(error) = self.account_error.clone() {
             egui::TopBottomPanel::top("local-account-error").show(ctx, |ui| {
                 ui.add(egui::Label::new(RichText::new(error).color(C::from_rgb(177, 48, 48))).wrap());
