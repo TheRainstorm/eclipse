@@ -74,6 +74,7 @@ pub mod clipboard;
 mod congestion;
 
 pub mod frame_cadence;
+pub mod native_timing;
 
 #[cfg(windows)]
 mod video_timing;

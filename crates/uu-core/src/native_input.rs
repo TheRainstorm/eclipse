@@ -71,6 +71,7 @@ pub struct NativeInputReceiver {
 pub(crate) struct Envelope {
     pub epoch: u64,
     pub command: InputCommand,
+    pub created:std::time::Instant,
 }
 pub(crate) enum NextInput {
     Mode(bool),
@@ -115,6 +116,7 @@ impl NativeInputSender {
         let envelope = Envelope {
             epoch: self.epoch.load(Ordering::Acquire),
             command,
+            created:std::time::Instant::now(),
         };
         self.tx.try_send(envelope).map_err(|_| {
             self.release_all();

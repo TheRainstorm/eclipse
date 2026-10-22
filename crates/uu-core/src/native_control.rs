@@ -35,6 +35,9 @@ enum Packet {
     RequestInput { enabled: bool },
     InputStatus { available: bool, enabled: bool },
     Input { event: InputCommand },
+    Telemetry { version:u8, stages:crate::native_timing::HostSnapshot },
+    InputMeasured { sequence:u64, event:InputCommand },
+    InputApplied { sequence:u64, queue_us:u32, inject_us:u32 },
 }
 fn parse(data: &[u8]) -> Option<Packet> {
     if data.len() > MAX_CONTROL {
@@ -58,17 +61,25 @@ struct WorkerState {
     seen: Mutex<Instant>,
     applied: AtomicU64,
     errors: AtomicU64,
+    timing:Arc<crate::native_timing::HostTiming>,
 }
+struct InputApplied {queue_us:u32,inject_us:u32}
+struct InputJob {epoch:u64,command:InputCommand,queued:Instant,reply:Option<oneshot::Sender<InputApplied>>}
 struct InputWorker {
     state: Arc<WorkerState>,
-    tx: SyncSender<(u64, InputCommand)>,
+    tx: SyncSender<InputJob>,
     task: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 impl InputWorker {
-    async fn start(rect: DesktopRect) -> Result<Arc<Self>> {
-        Self::with_factory(rect, uu_input::default_injector).await
+    async fn start(rect: DesktopRect,timing:Arc<crate::native_timing::HostTiming>) -> Result<Arc<Self>> {
+        Self::with_timing_factory(rect, uu_input::default_injector,timing).await
     }
+    #[cfg(test)]
     async fn with_factory<F>(rect: DesktopRect, factory: F) -> Result<Arc<Self>>
+    where F:FnOnce()->std::result::Result<Box<dyn InputInjector>,uu_input::InputError>+Send+'static {
+        Self::with_timing_factory(rect,factory,Arc::default()).await
+    }
+    async fn with_timing_factory<F>(rect: DesktopRect, factory: F,timing:Arc<crate::native_timing::HostTiming>) -> Result<Arc<Self>>
     where
         F: FnOnce() -> std::result::Result<Box<dyn InputInjector>, uu_input::InputError>
             + Send
@@ -82,8 +93,9 @@ impl InputWorker {
             seen: Mutex::new(Instant::now()),
             applied: AtomicU64::new(0),
             errors: AtomicU64::new(0),
+            timing,
         });
-        let (tx, rx) = sync_channel::<(u64, InputCommand)>(128);
+        let (tx, rx) = sync_channel::<InputJob>(128);
         let (ready, boot) = oneshot::channel();
         let actor = state.clone();
         let task = std::thread::Builder::new()
@@ -121,10 +133,12 @@ impl InputWorker {
                         epoch = current;
                     }
                     match received {
-                        Ok((generation, command))
-                            if generation == epoch && actor.enabled.load(Ordering::Acquire) =>
+                        Ok(job)
+                            if job.epoch == epoch && actor.enabled.load(Ordering::Acquire) =>
                         {
-                            let result = match command.event(rect) {
+                            let queue_us=job.queued.elapsed().as_micros().min(u32::MAX as u128) as u32;
+                            let started=Instant::now();
+                            let result = match job.command.event(rect) {
                                 Some(event) => injector.inject(event),
                                 None => injector.release_all(),
                             };
@@ -132,6 +146,9 @@ impl InputWorker {
                                 actor.errors.fetch_add(1, Ordering::Relaxed);
                                 break;
                             }
+                            let inject_us=started.elapsed().as_micros().min(u32::MAX as u128) as u32;
+                            actor.timing.input(queue_us,inject_us);
+                            if let Some(reply)=job.reply {let _=reply.send(InputApplied{queue_us,inject_us});}
                             actor.applied.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -172,13 +189,16 @@ impl InputWorker {
             .store(enabled && self.available(), Ordering::Release);
     }
     fn push(&self, command: InputCommand) -> bool {
+        self.push_with_ack(command,None)
+    }
+    fn push_with_ack(&self,command:InputCommand,reply:Option<oneshot::Sender<InputApplied>>)->bool {
         if !self.available() || !self.state.enabled.load(Ordering::Acquire) || !command.validate() {
             return false;
         }
         self.touch();
         if self
             .tx
-            .try_send((self.state.epoch.load(Ordering::Acquire), command))
+            .try_send(InputJob {epoch:self.state.epoch.load(Ordering::Acquire),command,queued:Instant::now(),reply})
             .is_err()
         {
             self.state.stop.store(true, Ordering::Release);
@@ -202,6 +222,7 @@ impl Drop for InputWorker {
 }
 
 pub(crate) struct HostControl {
+    timing:Arc<crate::native_timing::HostTiming>,
     worker: Option<Arc<InputWorker>>,
     registered: AtomicBool,
     clipboard: Option<Arc<crate::clipboard::Clipboard>>,
@@ -222,11 +243,12 @@ impl HostControl {
         clipboard: Option<Arc<crate::clipboard::Clipboard>>,
         injector: Option<Box<dyn InputInjector>>,
     ) -> Arc<Self> {
+        let timing:Arc<crate::native_timing::HostTiming>=Arc::default();
         let worker = if let Some(rect) = rect.filter(|_| allow) {
             match DesktopRect::new(rect.x, rect.y, rect.width, rect.height) {
                 Ok(rect) => match match injector {
-                    Some(injector)=>InputWorker::with_factory(rect,move || Ok(injector)).await,
-                    None=>InputWorker::start(rect).await,
+                    Some(injector)=>InputWorker::with_timing_factory(rect,move || Ok(injector),timing.clone()).await,
+                    None=>InputWorker::start(rect,timing.clone()).await,
                 } {
                     Ok(worker) => Some(worker),
                     Err(error) => {
@@ -240,12 +262,14 @@ impl HostControl {
             None
         };
         Arc::new(Self {
+            timing,
             worker,
             clipboard,
             clipboard_registered: AtomicBool::new(false),
             registered: AtomicBool::new(false),
         })
     }
+    pub fn timing(&self)->Arc<crate::native_timing::HostTiming>{self.timing.clone()}
     fn status(&self) -> Packet {
         Packet::InputStatus {
             available: self.worker.as_ref().is_some_and(|w| w.available()),
@@ -301,6 +325,7 @@ impl HostControl {
                                 }
                                 let _ = send(&channel, Packet::Pong { sequence }).await;
                                 let _ = send(&channel, host.status()).await;
+                                let _ = send(&channel,Packet::Telemetry{version:1,stages:host.timing.snapshot()}).await;
                             }
                             Some(Packet::RequestInput { enabled }) => {
                                 if let Some(worker) = &host.worker {
@@ -317,6 +342,17 @@ impl HostControl {
                                     let _ = send(&channel, host.status()).await;
                                 }
                             }
+                            Some(Packet::InputMeasured{sequence,event})=>{
+                                let (reply,applied)=oneshot::channel();
+                                if host.worker.as_ref().is_some_and(|worker|worker.push_with_ack(event,Some(reply))) {
+                                    let weak=Arc::downgrade(&channel);
+                                    tokio::spawn(async move {
+                                        if let Ok(Ok(applied))=timeout(Duration::from_secs(1),applied).await {
+                                            if let Some(channel)=weak.upgrade() {let _=send(&channel,Packet::InputApplied{sequence,queue_us:applied.queue_us,inject_us:applied.inject_us}).await;}
+                                        }
+                                    });
+                                }else{let _=send(&channel,host.status()).await;}
+                            },
                             _ => {}
                         }
                     })
@@ -357,6 +393,8 @@ impl ViewerControl {
         stats: Arc<MediaStats>,
         input: Option<NativeInputReceiver>,
     ) -> Self {
+        stats.native_timing.reset();
+        stats.rtt_updated_ms.store(0,Ordering::Relaxed);
         let requested = input
             .as_ref()
             .map(|i| i.requested.clone())
@@ -399,6 +437,8 @@ impl ViewerControl {
                     if let Some(((mean, deviation), distribution)) = reading {
                         *incoming.rtt_distribution_us.lock().unwrap() = distribution;
                         incoming.rtt_us.store(mean, Ordering::Relaxed);
+                        incoming.rtt_ms.store(mean.div_ceil(1000),Ordering::Relaxed);
+                        incoming.rtt_updated_ms.store(crate::control_wire::now_ms(),Ordering::Relaxed);
                         incoming
                             .rtt_deviation_us
                             .store(deviation, Ordering::Relaxed);
@@ -414,6 +454,8 @@ impl ViewerControl {
                     }
                     incoming.capabilities.enable(Capability::Input, enabled);
                 }
+                Some(Packet::Telemetry{version:1,stages})=>incoming.native_timing.host(stages),
+                Some(Packet::InputApplied{sequence,queue_us,inject_us})=>incoming.native_timing.applied(sequence,queue_us,inject_us),
                 _ => {}
             }
             Box::pin(async {})
@@ -428,8 +470,11 @@ impl ViewerControl {
             epoch,
         }
     }
-    async fn input(&self, command: InputCommand) -> Result<()> {
-        send(&self.channel, Packet::Input { event: command }).await?;
+    async fn input(&self, command: InputCommand,created:Option<Instant>) -> Result<()> {
+        if let Some(created)=created {self.stats.native_timing.client_queue(created);}
+        let measured=if matches!(command,InputCommand::ReleaseAll{}) {None}else{self.stats.native_timing.begin_input()};
+        let packet=match measured {Some(sequence)=>Packet::InputMeasured{sequence,event:command},None=>Packet::Input{event:command}};
+        send(&self.channel,packet).await?;
         self.stats
             .input_messages_sent
             .fetch_add(1, Ordering::Relaxed);
@@ -471,9 +516,9 @@ impl ViewerControl {
                             if !enabled{self.stats.capabilities.enable(Capability::Input,false);}
                             send(&self.channel,Packet::RequestInput{enabled}).await?;
                         },
-                        NextInput::Reset=>{if self.stats.capabilities.allows(Capability::Input){self.input(InputCommand::ReleaseAll{}).await?;}},
+                        NextInput::Reset=>{if self.stats.capabilities.allows(Capability::Input){self.input(InputCommand::ReleaseAll{},None).await?;}},
                         NextInput::Command(envelope)=>{
-                            if envelope.epoch==self.epoch.load(Ordering::Acquire)&&self.requested.load(Ordering::Acquire)&&self.stats.capabilities.allows(Capability::Input){self.input(envelope.command).await?;}
+                            if envelope.epoch==self.epoch.load(Ordering::Acquire)&&self.requested.load(Ordering::Acquire)&&self.stats.capabilities.allows(Capability::Input){self.input(envelope.command,Some(envelope.created)).await?;}
                         },
                         NextInput::Closed=>{
                             self.requested.store(false,Ordering::Release);self.stats.capabilities.enable(Capability::Input,false);
@@ -526,6 +571,30 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+    #[tokio::test]
+    async fn input_ack_waits_for_the_injector_and_includes_its_processing_time() {
+        struct Delayed {started:Option<oneshot::Sender<()>>,gate:Arc<(Mutex<bool>,std::sync::Condvar)>}
+        impl InputInjector for Delayed {
+            fn inject(&mut self,_:uu_input::InputEvent)->std::result::Result<(),uu_input::InputError> {
+                if let Some(started)=self.started.take(){let _=started.send(());}
+                let (lock,signal)=&*self.gate;let mut ready=lock.lock().unwrap();
+                while !*ready {ready=signal.wait(ready).unwrap();}Ok(())
+            }
+            fn release_all(&mut self)->std::result::Result<(),uu_input::InputError>{Ok(())}
+        }
+        let gate=Arc::new((Mutex::new(false),std::sync::Condvar::new()));
+        let wait_gate=gate.clone();let (started,entered)=oneshot::channel();
+        let worker=InputWorker::with_factory(DesktopRect::new(0,0,640,480).unwrap(),move||Ok(Box::new(Delayed{started:Some(started),gate:wait_gate}))).await.unwrap();
+        worker.request(true);let (reply,mut applied)=oneshot::channel();
+        assert!(worker.push_with_ack(InputCommand::Key{usage:4,pressed:true},Some(reply)));
+        entered.await.unwrap();
+        let early=timeout(Duration::from_millis(20),&mut applied).await;
+        *gate.0.lock().unwrap()=true;gate.1.notify_all();
+        assert!(early.is_err(),"queuing is not an injection acknowledgement");
+        let result=applied.await.unwrap();assert!(result.inject_us>=15_000);
+        assert_eq!(worker.state.timing.snapshot().input.unwrap().samples,1);
+        worker.stop().await;
     }
     #[tokio::test]
     async fn input_requires_a_grant_and_is_released_on_lease_expiry_and_shutdown() {

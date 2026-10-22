@@ -334,6 +334,7 @@ impl CaptureWorker {
         fps: u32,
         refresh: Arc<AtomicBool>,
         encoder: Box<dyn uu_media::VideoEncoder>,
+        live_timing:Arc<crate::native_timing::HostTiming>,
     ) -> Self {
         let stopped = Arc::new(AtomicBool::new(false));
         let captured = Arc::new(AtomicU64::new(0));
@@ -345,7 +346,7 @@ impl CaptureWorker {
         let started = Instant::now();
         let (encoder_status,encoder_state)=watch::channel(encoder.backend_name().to_owned());
         let task = tokio::task::spawn_blocking(move || {
-            let result = encode_source(capture, fps, encoder, refresh, worker_stop, counter, worker_timings, encoder_status, &tx);
+            let result = encode_source(capture, fps, encoder, refresh, worker_stop, counter, worker_timings, live_timing,encoder_status, &tx);
             if let Err(error) = result {
                 let _ = tx.blocking_send(Err(error));
             }
@@ -383,6 +384,7 @@ fn encode_source(
     stopped: Arc<AtomicBool>,
     captured: Arc<AtomicU64>,
     timings: Arc<ProducerTimings>,
+    live_timing:Arc<crate::native_timing::HostTiming>,
     encoder_status: watch::Sender<String>,
     output: &mpsc::Sender<Result<uu_media::EncodedFrame>>,
 ) -> Result<()> {
@@ -397,7 +399,8 @@ fn encode_source(
         }
         let started = Instant::now();
         let frame = capture.next_frame()?;
-        timings.capture_us.fetch_add(elapsed_us(started), Ordering::Relaxed);
+        let capture_us=elapsed_us(started);
+        timings.capture_us.fetch_add(capture_us, Ordering::Relaxed);
         captured.fetch_add(1, Ordering::Relaxed);
         let requested = refresh.load(Ordering::Acquire);
         if keyframe.elapsed() >= Duration::from_secs(2)
@@ -412,14 +415,17 @@ fn encode_source(
         if encoder.backend_name()!=backend {
             backend=encoder.backend_name().to_owned();encoder_status.send_replace(backend.clone());
         }
-        timings.encode_us.fetch_add(elapsed_us(started), Ordering::Relaxed);
+        let encode_us=elapsed_us(started);
+        timings.encode_us.fetch_add(encode_us, Ordering::Relaxed);
         let started = Instant::now();
         for encoded in encoded_frames {
             if output.blocking_send(Ok(encoded)).is_err() {
                 return Ok(());
             }
         }
-        timings.backpressure_us.fetch_add(elapsed_us(started), Ordering::Relaxed);
+        let wait_us=elapsed_us(started);
+        timings.backpressure_us.fetch_add(wait_us, Ordering::Relaxed);
+        live_timing.video(capture_us,encode_us,wait_us);
         next = (next + interval).max(Instant::now());
     }
     Ok(())
@@ -509,7 +515,7 @@ async fn send_video(
     if stream.lan_peer().is_none() {
         if let Err(error)=peer.direct_path().await {controls.stop().await;return Err(error);}
     }
-    let mut producer = CaptureWorker::start(capture, config.fps, refresh, encoder);
+    let mut producer = CaptureWorker::start(capture, config.fps, refresh, encoder,controls.timing());
     let mut encoder_label=producer.encoder.borrow().clone();
     let mut encoder_state=Some(producer.encoder.clone());
     let mut audio_label=if config.audio.is_none(){String::new()}else if audio_sender.is_none(){"控制端未接收声音".into()}else{"声音准备中".into()};
@@ -920,6 +926,7 @@ mod tests {
                 }
                 if stats.decoded_total.load(Ordering::Relaxed) >= 30
                     && stats.control_open.load(Ordering::Acquire) == 1
+                    && stats.native_timing.snapshot().host.is_some_and(|host|host.video.is_some())
                 {
                     break;
                 }
@@ -934,6 +941,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
+        assert!(stats.rtt_updated_ms.load(Ordering::Relaxed)>0,"native RTT must stay visible in the HUD");
         assert_ne!(
             first.unwrap(),
             latest.unwrap(),

@@ -141,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
             if observed
                 && stats.rtt_us.load(Ordering::Acquire) > 0
                 && stats.decoded_total.load(Ordering::Acquire) >= 5
+                && stats.native_timing.snapshot().host.is_some_and(|host|host.video.is_some())
             {
                 break;
             }
@@ -159,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         conn.query_keymap()?.reply()?.keys[b / 8] & (1 << (b % 8)) == 0,
         "pre-permission key was replayed"
     );
+    let mut input_ack_us=None;
     if !readonly {
         input.send(I::Absolute {
             x: (70u32 * 65535 / 1279) as u16,
@@ -204,6 +206,12 @@ async fn main() -> anyhow::Result<()> {
             }
         })
         .await?;
+        tokio::time::timeout(Duration::from_secs(2),async {
+            loop {
+                if let Some(timing)=stats.native_timing.snapshot().input {input_ack_us=Some(timing.confirmation_rtt_us);break;}
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await?;
         // Hold beyond the control lease: heartbeats, rather than repeated
         // key packets, must keep a deliberate drag/hold alive.
         tokio::time::sleep(Duration::from_millis(5500)).await;
@@ -270,7 +278,9 @@ async fn main() -> anyhow::Result<()> {
     );
     conn.destroy_window(window)?.check()?;
     drop(invitation_file);
-    println!("{{\"input\":\"passed\",\"readonly\":{},\"decoded\":{},\"input_events\":{},\"rtt_us\":{},\"elapsed_ms\":{},\"clean_disconnect\":true}}",readonly,stats.decoded_total.load(Ordering::Relaxed),report.input_events,stats.rtt_us.load(Ordering::Relaxed),started.elapsed().as_millis());
+    println!("{}",serde_json::json!({"input":"passed","readonly":readonly,"decoded":stats.decoded_total.load(Ordering::Relaxed),
+        "input_events":report.input_events,"rtt_us":stats.rtt_us.load(Ordering::Relaxed),"input_ack_rtt_us":input_ack_us,
+        "elapsed_ms":started.elapsed().as_millis(),"clean_disconnect":true,"native_timing":stats.native_timing.snapshot()}));
     Ok(())
 }
 #[cfg(not(target_os = "linux"))]
