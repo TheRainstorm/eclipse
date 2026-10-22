@@ -19,6 +19,8 @@ mod cursor;
 mod keyboard_capture;
 mod input_capture;
 mod settings;
+mod settings_page;
+mod theme;
 mod sessions;
 mod single_instance;
 mod platform;
@@ -178,6 +180,7 @@ struct App {
     hud: bool,
     preferences: settings::Settings,
     settings_open: bool,
+    settings_section: settings_page::Section,
     about_open: bool,
     settings_draft: settings::Settings,
     settings_notice: String,
@@ -334,29 +337,7 @@ fn setup_style(ctx: &egui::Context) {
     }
     ctx.set_fonts(fonts);
 
-    let mut visuals = egui::Visuals::light();
-    visuals.panel_fill = egui::Color32::from_rgb(247, 250, 252);
-    visuals.window_fill = egui::Color32::WHITE;
-    visuals.extreme_bg_color = egui::Color32::WHITE;
-    visuals.faint_bg_color = egui::Color32::from_rgb(238, 243, 247);
-    visuals.selection.bg_fill = egui::Color32::from_rgb(53, 131, 255);
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(238, 243, 247);
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(225, 235, 247);
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(53, 131, 255);
-    visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(25, 31, 38);
-    visuals.window_rounding = egui::Rounding::same(12.0);
-    ctx.set_visuals(visuals);
-    let mut style = (*ctx.style()).clone();
-    style
-        .text_styles
-        .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
-    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-    style.spacing.button_padding = egui::vec2(12.0, 7.0);
-    style.spacing.interact_size.y = 30.0;
-    ctx.set_style(style);
+    theme::apply(ctx);
 }
 
 impl App {
@@ -434,6 +415,7 @@ impl App {
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(preferences.hud),
             preferences: preferences.clone(),
             settings_open: false,
+            settings_section: settings_page::Section::default(),
             about_open: false,
             settings_draft: preferences.clone(),
             settings_notice,
@@ -794,7 +776,7 @@ impl App {
     fn input_conditions(&self,ctx:&egui::Context)->input_capture::Conditions {
         input_capture::Conditions {
             ready:self.input_ready(), focused:ctx.input(|i|i.focused), view_only:self.view_only,
-            local_ui:self.stream_menu.open || self.displays.menu_open || self.local_dialog_open(),
+            local_ui:self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open || self.local_dialog_open(),
         }
     }
     fn remote_input_active(&self,ctx:&egui::Context)->bool {
@@ -1312,7 +1294,9 @@ impl eframe::App for App {
                 s.diagnostics.record(report);
             }
         }
-        if self.stream_target.is_some() {
+        if self.settings_open {
+            self.settings_ui(ctx);
+        } else if self.stream_target.is_some() {
             self.stream_ui(ctx, &events);
         } else {
             self.home_ui(ctx);
@@ -1328,7 +1312,6 @@ impl eframe::App for App {
                 self.persist_preferences();
             }
         }
-        self.settings_ui(ctx);
         self.about_ui(ctx);
         if self.audio_save_after.is_some_and(|at|std::time::Instant::now()>=at) {
             self.audio_save_after=None;self.persist_preferences();

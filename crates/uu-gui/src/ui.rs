@@ -2,10 +2,10 @@
 //! uncluttered stream view. Application branding uses the embedded Eclipse icon.
 use super::App;
 use eframe::egui::{self, Color32 as C, Pos2, Rect, Response, RichText, Sense, Stroke, Vec2};
-const BLUE: C = C::from_rgb(53, 131, 255);
-const INK: C = C::from_rgb(24, 29, 35);
-const MUTED: C = C::from_rgb(115, 124, 135);
-const SIDEBAR: C = C::from_rgb(240, 245, 248);
+const BLUE: C = super::theme::ACCENT;
+const INK: C = super::theme::INK;
+const MUTED: C = super::theme::MUTED;
+const SIDEBAR: C = super::theme::SIDEBAR;
 
 #[derive(Clone, Copy)]
 pub(super) enum Icon {
@@ -773,10 +773,10 @@ impl App {
 
     pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
         if !self.fullscreen { self.connection_bar(ctx); }
-        let was_open = self.stream_menu.open || self.displays.menu_open;
+        let was_open = self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open;
         let controls = self.stream_controls(ctx);
         let control_pointer = !self.mouse_captured && ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
-        let controls_active = self.displays.menu_open || self.local_dialog_open() || !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.open || control_pointer;
+        let controls_active = self.displays.menu_open || self.local_dialog_open() || !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.owns_input(self.fullscreen) || control_pointer;
         let mut messages = Vec::new();
         egui::CentralPanel::default().frame(egui::Frame::none().fill(C::BLACK)).show(ctx,|ui| {
             ui.set_clip_rect(ui.max_rect());

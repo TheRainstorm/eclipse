@@ -2,7 +2,7 @@
 use super::ui::{icon, icon_button, icon_label_button, Icon};
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke};
 
-const MENU_INK: Color32 = Color32::from_rgb(23,37,61);
+const MENU_INK: Color32 = super::theme::INK;
 const MENU_WIDTH: f32 = 220.0;
 
 // A 30-point face has 30.6% less area than the previous 36-point button.
@@ -25,6 +25,7 @@ pub(super) struct FloatingHandle {
     suppressed: bool,
 }
 impl FloatingHandle {
+    fn owns_input(&self, open: bool) -> bool { open && self.blur_since.is_none() }
     fn size(screen: Rect) -> egui::Vec2 {
         egui::vec2(HANDLE_SIZE.min(screen.width()), HANDLE_SIZE.min(screen.height()))
     }
@@ -97,7 +98,7 @@ impl FloatingHandle {
                 let (rect,response)=ui.allocate_exact_size(hit.size(),egui::Sense::click_and_drag());
                 let full=full.translate(rect.min-hit.min);
                 let painter=ui.painter().with_clip_rect(screen);
-                let accent=Color32::from_rgb(37,99,235);
+                let accent=super::theme::ACCENT;
                 painter.rect(full.shrink(0.75),9.0,Color32::WHITE,
                     Stroke::new(1.2,if response.hovered() || *open {accent}else{Color32::from_rgb(177,195,218)}));
                 if self.docked.is_none() {
@@ -179,7 +180,7 @@ fn fullscreen_menu_action(ui:&mut egui::Ui,fullscreen:bool)->Option<super::short
 fn popup_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::popup(ui.style())
         .fill(Color32::WHITE)
-        .stroke(Stroke::new(1.0, Color32::from_rgb(221,230,242)))
+        .stroke(Stroke::new(1.0, super::theme::BORDER))
         .rounding(7.0)
         .inner_margin(egui::Margin::same(3.0))
         .shadow(egui::epaint::Shadow {
@@ -211,7 +212,7 @@ fn menu_row(
     };
     if ui.is_enabled() && (response.hovered() || active) {
         ui.painter()
-            .rect_filled(rect, 3.0, Color32::from_rgb(234,242,255));
+            .rect_filled(rect, 3.0, super::theme::TINT);
     }
     if let Some(kind) = kind {
         icon(
@@ -355,13 +356,21 @@ impl Default for StreamMenu {
     }
 }
 
+impl StreamMenu {
+    /// A clicked menu may remain painted for its two-second dismissal timer.
+    /// Once focus leaves, that visual delay must not stall remote input.
+    pub(super) fn owns_input(&self, fullscreen: bool) -> bool {
+        if fullscreen {self.floating.owns_input(self.open)} else {self.open}
+    }
+}
+
 impl super::App {
     pub(super) fn connection_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("connection-top")
             .exact_height(super::window::CONNECTION_BAR_HEIGHT)
             .frame(
                 egui::Frame::none()
-                    .fill(Color32::from_rgb(239,245,253))
+                    .fill(super::theme::SIDEBAR)
                     .inner_margin(egui::Margin::symmetric(10.0, 2.0)),
             )
             .show(ctx, |ui| {
@@ -1002,9 +1011,12 @@ mod tests {
             let handle=ui.frame(0.0,vec![]).0;
             ui.click(0.1,handle.center());
             assert!(ui.open && ui.handle.pinned);
+            assert!(ui.handle.owns_input(ui.open));
             if window_blur {ui.focused=false;}
             let events=if window_blur {vec![]}else{vec![egui::Event::PointerMoved(egui::pos2(500.0,500.0))]};
             ui.frame(1.0,events);
+            assert!(ui.handle.blur_since.is_some(),"focus leaves before the visual dismissal timer");
+            assert!(!ui.handle.owns_input(ui.open),"visual dismissal delay must not hold remote input");
             ui.frame(2.99,vec![]);
             assert!(ui.open);
             ui.frame(3.01,vec![]);

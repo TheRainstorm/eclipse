@@ -387,6 +387,12 @@ impl HostUi {
                 .collapsible(false)
                 .default_width(480.)
                 .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().max_height((ctx.screen_rect().height()-120.0).max(160.0)).show(ui, |ui| {
+                    if !self.notice.is_empty() {
+                        ui.add(egui::Label::new(egui::RichText::new(&self.notice)
+                            .color(egui::Color32::from_rgb(160,75,35))).wrap());
+                        ui.add_space(10.0);
+                    }
                     ui.label(egui::RichText::new(&self.status).strong());
                     ui.add_space(10.);
                     if self.running() {
@@ -520,13 +526,7 @@ impl HostUi {
                             }
                         });
                     }
-                    if !self.notice.is_empty() {
-                        ui.add_space(10.);
-                        ui.label(
-                            egui::RichText::new(&self.notice)
-                                .color(egui::Color32::from_rgb(160, 75, 35)),
-                        );
-                    }
+                    });
                 });
             self.open = open;
             if stop {

@@ -1,0 +1,466 @@
+//! Full-page preferences. Rendering emits actions; App owns applying changes.
+use super::{
+    settings::{CursorMode, Settings},
+    theme,
+    ui::{self, Icon},
+};
+use eframe::egui::{self, RichText};
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum Section {
+    #[default]
+    Video,
+    Audio,
+    Input,
+    Network,
+    Application,
+}
+impl Section {
+    pub const ALL: [Self; 5] = [
+        Self::Video,
+        Self::Audio,
+        Self::Input,
+        Self::Network,
+        Self::Application,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Video => "画面与显示",
+            Self::Audio => "声音",
+            Self::Input => "键盘与鼠标",
+            Self::Network => "网络与共享",
+            Self::Application => "应用与诊断",
+        }
+    }
+    fn description(self) -> &'static str {
+        match self {
+            Self::Video => "调整清晰度、帧率与呈现方式。",
+            Self::Audio => "设置默认音量与声音播放。",
+            Self::Input => "选择光标显示、指针移动与快捷键归属。",
+            Self::Network => "配置 Eclipse 局域网端口与本机共享。",
+            Self::Application => "管理串流界面、默认偏好与软件信息。",
+        }
+    }
+}
+pub struct State<'a> {
+    pub streaming: bool,
+    pub sharing: bool,
+    pub dirty: bool,
+    pub storage_error: bool,
+    pub notice: &'a str,
+    pub presentation_vsync: bool,
+}
+#[derive(Default)]
+pub struct Actions {
+    pub back: bool,
+    pub apply: bool,
+    pub recover: bool,
+    pub reset: bool,
+    pub about: bool,
+    pub host: bool,
+    pub maximize: bool,
+}
+
+fn note(ui: &mut egui::Ui, text: &str) {
+    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(theme::MUTED)).wrap());
+}
+fn group(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none()
+        .fill(theme::SURFACE)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .rounding(12.0)
+        .inner_margin(if ui.ctx().screen_rect().height() < 520.0 {
+            12.0
+        } else {
+            18.0
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(title).size(16.0).strong().color(theme::INK));
+            ui.add_space(8.0);
+            body(ui);
+        });
+    ui.add_space(12.0);
+}
+fn combo(ui: &mut egui::Ui, id: &str, selected: &str, body: impl FnOnce(&mut egui::Ui)) {
+    egui::ComboBox::from_id_salt(id)
+        .width(210.0)
+        .selected_text(selected)
+        .show_ui(ui, body);
+}
+fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
+    group(ui, "串流画质", |ui| {
+        egui::Grid::new("settings-video-grid")
+            .spacing([24.0, 14.0])
+            .show(ui, |ui| {
+                ui.label("目标帧率");
+                ui.add(
+                    egui::DragValue::new(&mut s.fps)
+                        .range(5..=144)
+                        .suffix(" FPS"),
+                );
+                ui.end_row();
+                ui.label("画质");
+                combo(
+                    ui,
+                    "settings-bitrate",
+                    super::BITRATE_PRESETS[s.bitrate].0,
+                    |ui| {
+                        for (i, (label, _, _)) in super::BITRATE_PRESETS.iter().enumerate() {
+                            ui.selectable_value(&mut s.bitrate, i, *label);
+                        }
+                    },
+                );
+                ui.end_row();
+                if s.bitrate == 4 {
+                    ui.label("自定义码率");
+                    ui.add(egui::Slider::new(&mut s.custom_mbps, 1..=100).suffix(" Mbps"));
+                    ui.end_row();
+                }
+                ui.label("输出分辨率");
+                let labels = [
+                    "保持远端分辨率",
+                    "1920 × 1080",
+                    "2560 × 1440",
+                    "3840 × 2160",
+                ];
+                combo(ui, "settings-resolution", labels[s.resolution], |ui| {
+                    for (i, label) in labels.iter().enumerate() {
+                        ui.selectable_value(&mut s.resolution, i, *label);
+                    }
+                });
+                ui.end_row();
+                #[cfg(windows)]
+                {
+                    ui.label("视频编码");
+                    combo(
+                        ui,
+                        "settings-codec",
+                        if s.prefer_hevc {
+                            "H.265 / HEVC（优先）"
+                        } else {
+                            "H.264"
+                        },
+                        |ui| {
+                            ui.selectable_value(&mut s.prefer_hevc, false, "H.264");
+                            ui.selectable_value(&mut s.prefer_hevc, true, "H.265 / HEVC（优先）");
+                        },
+                    );
+                    ui.end_row();
+                }
+            });
+        ui.add_space(8.0);
+        note(
+            ui,
+            "输出分辨率只调整串流编码尺寸，不修改远端桌面。实际帧率取决于被控端、屏幕和网络。",
+        );
+        #[cfg(windows)]
+        note(
+            ui,
+            "切换编码会重新连接。HEVC 不可用时使用 H.264；实际编码可在串流统计中查看。",
+        );
+    });
+    group(ui, "呈现与解码", |ui| {
+        ui.checkbox(&mut s.vsync, "垂直同步");
+        note(
+            ui,
+            "关闭可减少呈现等待，也可能出现撕裂；重新打开串流窗口后生效。",
+        );
+        if state.streaming && s.vsync != state.presentation_vsync {
+            ui.label(
+                RichText::new("当前窗口仍使用启动时的垂直同步设置")
+                    .color(theme::ACCENT)
+                    .size(12.0),
+            );
+        }
+        ui.add_space(8.0);
+        ui.checkbox(&mut s.software_decoder, "使用软件解码");
+        note(ui, "默认优先使用硬件解码。更改后重新打开软件生效。");
+    });
+    group(ui, "远端显示器布局", |ui| {
+        for mode in [
+            uu_core::screen_control::DisplayMode::Preserve,
+            uu_core::screen_control::DisplayMode::ExclusiveVirtual,
+        ] {
+            ui.radio_value(&mut s.display_mode, mode, mode.label());
+        }
+        note(ui,"下次连接生效。保持现状不切换主屏或关闭显示器；独占虚拟屏会请求关闭其它屏幕，退出时请求恢复。");
+    });
+}
+fn audio(ui: &mut egui::Ui, s: &mut Settings) {
+    group(ui, "声音播放", |ui| {
+        ui.checkbox(&mut s.muted, "静音");
+        ui.add_space(8.0);
+        ui.add(
+            egui::Slider::new(&mut s.volume, 0..=100)
+                .suffix("%")
+                .text("音量"),
+        );
+        note(ui, "保存后应用到当前串流，并作为新窗口的默认音量。");
+    });
+}
+fn input(ui: &mut egui::Ui, s: &mut Settings) {
+    group(ui, "光标显示", |ui| {
+        for mode in CursorMode::ALL {
+            ui.radio_value(&mut s.cursor_mode, mode, mode.label());
+        }
+        note(
+            ui,
+            "Ctrl+Alt+C 在两种光标显示间切换。原生共享目前由控制端绘制本地光标。",
+        );
+    });
+    group(ui, "指针移动", |ui| {
+        ui.radio_value(&mut s.relative_mouse, false, "桌面 · 绝对定位");
+        ui.radio_value(&mut s.relative_mouse, true, "游戏 · 相对移动");
+        note(ui,"Ctrl+Alt+P 切换移动方式。游戏模式单击画面捕获鼠标，Ctrl+Alt+Z 释放或重新捕获；菜单和失焦时自动释放。");
+    });
+    group(ui, "键盘与协作", |ui| {
+        ui.checkbox(&mut s.capture_keyboard, "全屏时将系统快捷键交给远端");
+        note(ui,"系统键跟随全屏画面的输入焦点。Ctrl+左 Alt+F / X 切换全屏，Q 退出串流，Z 释放或捕获输入；这些本地命令始终由客户端处理。Ctrl+Alt+Del 由 Windows 保留。");
+        ui.add_space(8.0);
+        ui.checkbox(&mut s.clipboard, "同步文本剪贴板");
+        note(
+            ui,
+            "仅在当前前台串流同步有界文本；原生共享还需主机许可。图片和文件不传输。",
+        );
+    });
+}
+fn network(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>, actions: &mut Actions) {
+    group(ui, "Eclipse 局域网端口", |ui| {
+        if state.sharing {
+            note(ui, "本机共享运行中。请先停止共享，再修改端口。");
+            ui.add_space(8.0);
+        }
+        ui.add_enabled_ui(!state.sharing, |ui| {
+            egui::Grid::new("settings-network-grid")
+                .spacing([24.0, 14.0])
+                .show(ui, |ui| {
+                    ui.label("服务端口 · TCP");
+                    ui.add(egui::DragValue::new(&mut s.lan_service_port).range(1..=65535));
+                    ui.end_row();
+                    ui.label("发现端口 · UDP");
+                    ui.add(egui::DragValue::new(&mut s.lan_discovery_port).range(1..=65535));
+                    ui.end_row();
+                });
+        });
+        ui.add_space(8.0);
+        note(ui,"发现端口需与另一台设备一致。主机自动公告实际服务端口；手动添加非默认端口时输入“主机:端口”。端口冲突会显示原因，不会自动修改防火墙。");
+    });
+    group(ui, "本机共享与配对", |ui| {
+        ui.label("共享屏幕、声音及设备访问许可，由本机明确开启和管理。");
+        if ui
+            .add_enabled(
+                !state.dirty,
+                egui::Button::new(if state.sharing {
+                    "管理当前共享"
+                } else {
+                    "打开共享本机"
+                }),
+            )
+            .on_disabled_hover_text("请先保存更改，再打开共享本机")
+            .clicked()
+        {
+            actions.host = true;
+        }
+        if state.dirty {
+            note(ui, "请先保存更改，再打开共享本机。");
+        }
+        note(
+            ui,
+            "启用共享不会自动允许新设备。首次配对仍需在主机核对配对码。",
+        );
+    });
+}
+fn application(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions) {
+    group(ui, "串流界面", |ui| {
+        ui.checkbox(&mut s.floating_menu, "全屏显示悬浮菜单");
+        note(
+            ui,
+            "默认位于右边缘、距顶部 15%。悬停展开、离开收起，Ctrl+Alt+H 隐藏或显示。",
+        );
+        ui.add_space(8.0);
+        ui.checkbox(&mut s.hud, "显示串流统计");
+        note(
+            ui,
+            "Ctrl+Alt+S 隐藏或显示。统计中的已知段合计不等于完整输入到屏幕延迟。",
+        );
+    });
+    group(ui, "软件信息", |ui| {
+        ui.label(format!("uu-client · {}", env!("CARGO_PKG_VERSION")));
+        note(ui, "软件信息、源提交与版本核验可在“关于软件”查看。");
+        if ui.button("关于软件").clicked() {
+            actions.about = true;
+        }
+    });
+}
+
+pub fn show(
+    ctx: &egui::Context,
+    s: &mut Settings,
+    section: &mut Section,
+    state: State<'_>,
+) -> Actions {
+    let mut actions = Actions::default();
+    let compact = ctx.screen_rect().height() < 520.0;
+    egui::TopBottomPanel::top("settings-title")
+        .exact_height(58.0)
+        .frame(
+            egui::Frame::none()
+                .fill(theme::SURFACE)
+                .inner_margin(egui::Margin::symmetric(16.0, 8.0)),
+        )
+        .show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                if ui
+                    .button(if state.streaming {
+                        "‹ 返回串流"
+                    } else {
+                        "‹ 返回设备"
+                    })
+                    .clicked()
+                {
+                    actions.back = true;
+                }
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new("应用设置")
+                        .size(18.0)
+                        .strong()
+                        .color(theme::INK),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui::icon_button(ui, Icon::Close, "关闭软件").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    if ui::icon_button(ui, Icon::Max, "最大化 / 还原").clicked() {
+                        actions.maximize = true;
+                    }
+                    if ui::icon_button(ui, Icon::Min, "最小化").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                    let response = ui.allocate_response(ui.available_size(), egui::Sense::drag());
+                    if response.drag_started() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
+                });
+            });
+        });
+    egui::TopBottomPanel::bottom("settings-actions")
+        .exact_height(if compact { 54.0 } else { 66.0 })
+        .frame(
+            egui::Frame::none()
+                .fill(theme::SURFACE)
+                .inner_margin(egui::Margin::symmetric(
+                    20.0,
+                    if compact { 8.0 } else { 14.0 },
+                )),
+        )
+        .show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                if ui.button("恢复默认").clicked() {
+                    actions.reset = true;
+                }
+                if state.dirty {
+                    ui.label(
+                        RichText::new("有未保存的更改")
+                            .color(theme::MUTED)
+                            .size(12.0),
+                    );
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("保存并应用").color(egui::Color32::WHITE),
+                            )
+                            .fill(theme::ACCENT),
+                        )
+                        .clicked()
+                    {
+                        actions.apply = true;
+                    }
+                    if ui.button("取消").clicked() {
+                        actions.back = true;
+                    }
+                });
+            });
+        });
+    if ctx.screen_rect().width() >= 760.0 {
+        egui::SidePanel::left("settings-navigation")
+            .exact_width(184.0)
+            .resizable(false)
+            .frame(egui::Frame::none().fill(theme::SIDEBAR).inner_margin(14.0))
+            .show(ctx, |ui| {
+                ui.add_space(12.0);
+                note(ui, "偏好设置");
+                ui.add_space(12.0);
+                for item in Section::ALL {
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 42.0],
+                            egui::SelectableLabel::new(*section == item, item.label()),
+                        )
+                        .clicked()
+                    {
+                        *section = item;
+                    }
+                    ui.add_space(3.0);
+                }
+            });
+    } else {
+        egui::TopBottomPanel::top("settings-compact-navigation")
+            .frame(egui::Frame::none().fill(theme::SIDEBAR).inner_margin(12.0))
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for item in Section::ALL {
+                        ui.selectable_value(section, item, item.label());
+                    }
+                });
+            });
+    }
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::none()
+                .fill(theme::CANVAS)
+                .inner_margin(if compact { 12.0 } else { 22.0 }),
+        )
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt(("settings-content", *section as u8))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_max_width(860.0);
+                    ui.label(
+                        RichText::new(section.label())
+                            .size(if compact { 20.0 } else { 24.0 })
+                            .strong()
+                            .color(theme::INK),
+                    );
+                    if !compact {
+                        note(ui, section.description());
+                    }
+                    ui.add_space(if compact { 10.0 } else { 18.0 });
+                    if state.storage_error {
+                        group(ui, "设置文件需要处理", |ui| {
+                            ui.colored_label(theme::DANGER, state.notice);
+                            note(ui, "异常原件会保留。可先备份，再保存当前设置。");
+                            if ui.button("备份异常文件并保存").clicked() {
+                                actions.apply = true;
+                                actions.recover = true;
+                            }
+                        });
+                    } else if !state.notice.is_empty() {
+                        ui.label(RichText::new(state.notice).color(theme::SUCCESS));
+                        ui.add_space(12.0);
+                    }
+                    match section {
+                        Section::Video => video(ui, s, &state),
+                        Section::Audio => audio(ui, s),
+                        Section::Input => input(ui, s),
+                        Section::Network => network(ui, s, &state, &mut actions),
+                        Section::Application => application(ui, s, &mut actions),
+                    }
+                });
+        });
+    actions
+}

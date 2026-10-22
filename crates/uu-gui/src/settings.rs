@@ -110,6 +110,8 @@ impl Settings {
         Ok(s)
     }
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        anyhow::ensure!(self.lan_service_port != 0 && self.lan_discovery_port != 0,
+            "局域网端口必须在 1–65535 之间");
         // Automatic HUD/audio changes must not overwrite a broken original.
         // Recheck on every write, including after a second window changes it.
         Self::load(path)?;
@@ -194,10 +196,16 @@ impl super::App {
         self.snapshot_preferences();
         self.settings_draft=self.preferences.clone();
         self.settings_open = true;
+        self.about_open=false;
+        self.native_ui.open=false;
+        self.native_host.open=false;
+        self.lan.host.open=false;
         self.displays.menu_open=false;
         self.stream_menu.open = false;
         self.context.memory_mut(|m| m.close_popup());
         self.release_all_keys();
+        self.release_pointer_capture(&self.context.clone());
+        self.context.request_repaint();
         for message in self
             .pointer
             .release_all(self.input_screen(self.selected_track))
@@ -230,73 +238,32 @@ impl super::App {
         };
     }
     pub(super) fn settings_ui(&mut self, ctx: &egui::Context) {
-        if !self.settings_open {
-            return;
-        }
-        let mut open = true;
-        let mut apply = false;
-        let mut recover = false;
-        let mut about = false;
-        egui::Window::new("软件设置").open(&mut open).collapsible(false).resizable(false)
-            .min_width(260.0).default_width(440.0_f32.min((ctx.screen_rect().width()-40.0).max(260.0))).max_width((ctx.screen_rect().width()-32.0).max(260.0)).anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO).show(ctx,|ui| {
-                egui::ScrollArea::vertical().max_height((ctx.screen_rect().height()-100.0).max(120.0)).show(ui,|ui| {
-                    if self.settings_storage_error {
-                        ui.add(egui::Label::new(&self.settings_notice).wrap());
-                        ui.small("当前改动可在内存中使用。异常原文件不会被自动覆盖；确认后可先备份，再保存当前设置。");
-                        if ui.button("备份异常文件并保存当前设置").clicked() { apply=true;recover=true; }
-                        ui.separator();
-                    }
-                    let s=&mut self.settings_draft;
-                    ui.strong("远端显示器");
-                    for mode in [uu_core::screen_control::DisplayMode::Preserve,uu_core::screen_control::DisplayMode::ExclusiveVirtual] {
-                        ui.radio_value(&mut s.display_mode,mode,mode.label());
-                    }
-                    ui.small("下次连接生效。保持现状不启用/关闭显示器，也不切换主屏。独占模式请求UU超级屏（例如S2719），会关闭其它显示器；退出时请求恢复。已有独占布局不会因保持现状而自动恢复。");
-                    ui.separator();
-                    ui.strong("画面");
-                    ui.horizontal(|ui|{ui.label("目标帧率");ui.add(egui::DragValue::new(&mut s.fps).range(5..=144).suffix(" FPS"));});
-                    egui::ComboBox::from_label("画质").selected_text(super::BITRATE_PRESETS[s.bitrate].0).show_ui(ui,|ui|{
-                        for (i,(label,_,_)) in super::BITRATE_PRESETS.iter().enumerate(){ui.selectable_value(&mut s.bitrate,i,*label);}
-                    });
-                    if s.bitrate==4 {ui.add(egui::Slider::new(&mut s.custom_mbps,1..=100).text("Mbps"));}
-                    let resolutions=["保持远端桌面分辨率","输出 1920 × 1080","输出 2560 × 1440","输出 3840 × 2160"];
-                    egui::ComboBox::from_label("输出分辨率").selected_text(resolutions[s.resolution]).show_ui(ui,|ui|{for (i,label) in resolutions.iter().enumerate(){ui.selectable_value(&mut s.resolution,i,*label);}});
-                    ui.small("输出分辨率只改变串流编码尺寸，不修改被控端桌面分辨率。");
-                    #[cfg(windows)]
-                    {
-                        egui::ComboBox::from_label("视频编码").selected_text(if s.prefer_hevc {"H.265 / HEVC（优先）"} else {"H.264"})
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut s.prefer_hevc, false, "H.264");
-                                ui.selectable_value(&mut s.prefer_hevc, true, "H.265 / HEVC（优先）");
-                            });
-                        ui.small("UU 串流切换编码时自动重连。H.265 需要硬件解码支持；不可用时使用 H.264。实际编码见串流统计。");
-                    }
-                    ui.checkbox(&mut s.hud,"显示串流统计 · Ctrl+Alt+S");
-                    ui.checkbox(&mut s.floating_menu,"全屏显示悬浮入口 · Ctrl+Alt+H");
-                    ui.separator();ui.strong("声音");
-                    ui.checkbox(&mut s.muted,"静音");ui.add(egui::Slider::new(&mut s.volume,0..=100).text("音量"));
-                    ui.separator();ui.strong("输入");
-                    ui.checkbox(&mut s.clipboard,"同步文本剪贴板（仅当前前台串流）");
-                    ui.checkbox(&mut s.capture_keyboard,"全屏时将系统快捷键发送到远端");
-                    ui.small("Ctrl+左 Alt+F / X 切换全屏；Q 退出串流；Z 释放／捕获输入。这些本地快捷键始终由客户端处理，不发送到远端。\n系统键只在全屏画面获得输入焦点时捕获，打开菜单、仅观看或失焦时释放。\nWin+Shift+方向键与其它系统组合键遵循相同的捕获规则。Ctrl+Alt+Del 由 Windows 保留。");
-                    ui.horizontal_wrapped(|ui|{ui.label("鼠标模式");ui.selectable_value(&mut s.relative_mouse,false,"桌面 · 绝对定位");ui.selectable_value(&mut s.relative_mouse,true,"游戏 · 相对移动");});
-                    ui.horizontal_wrapped(|ui|{ui.label("光标显示");for mode in CursorMode::ALL {ui.selectable_value(&mut s.cursor_mode,mode,mode.label());}});
-                    ui.small("Ctrl+Alt+P 切换桌面／游戏模式；Ctrl+Alt+C 在两种光标显示间切换。两种模式都显示远端光标；游戏捕获时隐藏本地光标。");
-                    ui.small("游戏模式单击画面捕获鼠标，Ctrl+Alt+Z 释放／重新捕获；打开菜单或失焦时自动释放。");
-                    ui.separator();ui.strong("启动选项");
-                    ui.checkbox(&mut s.vsync,"垂直同步");ui.checkbox(&mut s.software_decoder,"使用软件解码（默认优先硬件解码）");
-                    ui.small("启动选项在重新打开软件后生效，其他选项应用到当前串流并保存为默认值。");
-                ui.separator();
-                ui.horizontal_wrapped(|ui| {if ui.button("保存并应用").clicked(){apply=true;}if ui.button("恢复默认").clicked(){self.settings_draft=Settings::default();}if ui.button("关于软件").clicked(){about=true;}});
-                if self.settings_draft!=self.preferences {ui.label("有尚未应用的更改");}
-                if !self.settings_storage_error && !self.settings_notice.is_empty(){ui.add(egui::Label::new(&self.settings_notice).wrap());}
-                });
+        if !self.settings_open {return;}
+        let dirty=self.settings_draft!=self.preferences;
+        let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
+            super::settings_page::State {
+                streaming:self.stream_target.is_some(),sharing:self.lan.host.running(),
+                dirty,
+                storage_error:self.settings_storage_error,notice:&self.settings_notice,
+                presentation_vsync:self.presentation_vsync,
             });
-        self.settings_open = open;
-        if about { self.open_about(); }
+        if actions.back {self.settings_open=false;ctx.request_repaint();}
+        if actions.maximize {self.toggle_maximized(ctx);}
+        if actions.reset {
+            self.settings_draft=Settings::default();
+            if self.lan.host.running() {
+                self.settings_draft.lan_service_port=self.preferences.lan_service_port;
+                self.settings_draft.lan_discovery_port=self.preferences.lan_discovery_port;
+            }
+        }
+        if actions.about {self.open_about();}
+        if actions.host {self.settings_open=false;self.open_native_host();}
+        let apply=actions.apply;
+        let recover=actions.recover;
         if apply {
             let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
             self.preferences=self.settings_draft.clone();
+            self.lan.configure_ports(self.preferences.lan_service_port,self.preferences.lan_discovery_port);
             self.release_pointer_capture(ctx);
             self.target_fps = self.preferences.fps;
             self.fps_draft = self.target_fps;

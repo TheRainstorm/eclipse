@@ -18,8 +18,8 @@ use uu_core::{
     native_discovery as discovery, native_lan as lan,
     native_lan_store::{Device, Devices},
 };
-const BLUE: C = C::from_rgb(53, 131, 255);
-const MUTED: C = C::from_rgb(112, 124, 138);
+const BLUE: C = super::theme::ACCENT;
+const MUTED: C = super::theme::MUTED;
 enum Event {
     Scan(Result<Vec<discovery::Device>, String>),
     Code(String),
