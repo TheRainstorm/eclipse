@@ -243,7 +243,7 @@ impl App {
                     field(ui,"配对文件",&mut page.key,"access.key");
                     if ui.button("创建新的配对文件").clicked(){
                         page.sync();let result=(||->anyhow::Result<()>{
-                            if let Some(parent)=page.settings.access_key.parent(){std::fs::create_dir_all(parent)?;}
+                            if let Some(parent)=page.settings.access_key.parent().filter(|p|!p.as_os_str().is_empty()){std::fs::create_dir_all(parent)?;}
                             uu_core::internet::AccessKey::create(&page.settings.access_key)
                         })();page.notice=match result{Ok(())=>"配对文件已创建，请复制到另一台设备。".into(),Err(e)=>format!("创建失败：{e}")};
                     }
