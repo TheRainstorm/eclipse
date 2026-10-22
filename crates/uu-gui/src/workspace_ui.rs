@@ -963,34 +963,33 @@ impl Workspace {
                         .access
                         .as_ref()
                         .is_some_and(|a| a.sessions.active_peer().is_some())
-                        && ui.button("断开当前串流").clicked()
+                        && ui.button("断开全部串流").clicked()
                     {
                         self.host.disconnect();
                     }
                 });
-                if self
-                    .host
-                    .access
-                    .as_ref()
-                    .is_some_and(|a| a.sessions.active_peer().is_some())
-                {
-                    if let Some(HostStatus::Streaming {
-                        width,
-                        height,
-                        fps,
-                        encoder,
-                        audio,
-                    }) = self.host.stream_status()
-                    {
-                        ui.weak(format!(
-                            "{width}×{height} · {fps} FPS · {encoder} · {audio}"
-                        ));
-                    }
-                }
             }
         });
         if self.monitors.is_empty() && self.monitor_error.is_empty() {
             self.refresh_monitors();
+        }
+        let sessions=self.host.sessions();
+        if !sessions.is_empty() {
+            card(ui,|ui| {
+                ui.strong(format!("已连接 {} / {} 个会话",sessions.len(),uu_core::shared_host::MAX_SESSIONS));
+                ui.weak("多台设备可同时观看；键鼠由当前取得控制权的一台设备操作，释放或离线后交接。");
+                for (id,name,status) in sessions {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(name);
+                        if ui.small_button("断开此会话").clicked(){self.host.disconnect_session(&id);}
+                    });
+                    ui.weak(match status {
+                        HostStatus::Starting|HostStatus::Preparing=>"正在准备串流…".into(),
+                        HostStatus::Waiting{..}=>"等待控制端建立媒体连接…".into(),
+                        HostStatus::Streaming{width,height,fps,encoder,audio}=>format!("{width}×{height} · {fps} FPS · {encoder} · {audio}"),
+                    });
+                }
+            });
         }
         let locked = self.host.running();
         card(ui, |ui| {

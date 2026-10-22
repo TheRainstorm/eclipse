@@ -149,7 +149,6 @@ pub(super) struct HostUi {
     handle: Option<lan::Handle>,
     pub access: Option<Arc<Access>>,
     endpoints: Vec<Endpoint>,
-    streaming: Option<watch::Receiver<HostStatus>>,
     pending: Vec<Pending>,
     legacy_pending: Vec<LegacyPending>,
     pub notice: String,
@@ -169,8 +168,16 @@ impl HostUi {
             .map(|e| (e.name.clone(), e.state.borrow().clone()))
             .collect()
     }
-    pub fn stream_status(&self) -> Option<HostStatus> {
-        self.streaming.as_ref().map(|s| s.borrow().clone())
+    pub fn sessions(&self) -> Vec<(String, String, HostStatus)> {
+        let Some(access)=&self.access else{return Vec::new();};
+        let peers=access.store.peers().unwrap_or_default();
+        access.sessions.details().into_iter().map(|(id,peer,status)| {
+            let name=peers.iter().find(|p|p.device.id()==peer).map(|p|p.device.name.clone()).unwrap_or_else(|| "已授权设备".into());
+            (id,name,status)
+        }).collect()
+    }
+    pub fn disconnect_session(&self, id:&str) {
+        if let Some(access)=&self.access {access.sessions.disconnect_session(id);}
     }
     pub fn pairing_open(&self) -> bool {
         self.access.as_ref().is_some_and(|a| a.pairing.is_open())
@@ -250,7 +257,7 @@ impl HostUi {
             sessions: Arc::new(SessionGate::default()),
         });
         let (stop, receiver) = watch::channel(false);
-        let (stream, streaming) = watch::channel(HostStatus::Starting);
+        let (stream, _) = watch::channel(HostStatus::Starting);
         let (ip_status, ip_updates) = watch::channel(EndpointStatus::Starting);
         let mut endpoints = vec![Endpoint {
             name: "IP 直连".into(),
@@ -363,7 +370,6 @@ impl HostUi {
         self.requests = Some(pair_requests);
         self.access = Some(access);
         self.endpoints = endpoints;
-        self.streaming = Some(streaming);
         self.allow_control = book.sharing.control;
         self.stopping = false;
         self.notice.clear();

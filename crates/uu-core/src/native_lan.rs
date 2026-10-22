@@ -14,7 +14,6 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -238,7 +237,6 @@ pub type ClipboardFactory =
 struct Active {
     client: String,
     stop: watch::Sender<bool>,
-    finished: Arc<AtomicBool>,
 }
 struct State {
     access:Option<Arc<crate::shared_host::Access>>,
@@ -250,7 +248,8 @@ struct State {
     events: mpsc::UnboundedSender<Event>,
     pairing_until: Mutex<Option<Instant>>,
     pair_slot: Arc<Semaphore>,
-    active: Mutex<Option<Active>>,
+    active: Mutex<std::collections::HashMap<String, Active>>,
+    input: Arc<crate::input_ownership::Authority>,
     sessions: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     stop: watch::Receiver<bool>,
 }
@@ -283,7 +282,7 @@ impl Handle {
         Ok(())
     }
     pub fn stop_session(&self) {
-        if let Some(active) = &*self.state.active.lock().unwrap() {
+        for active in self.state.active.lock().unwrap().values() {
             active.stop.send_replace(true);
         }
     }
@@ -296,13 +295,7 @@ impl State {
             .is_some_and(|until| Instant::now() < until)
     }
     fn stop_client(&self, id: &str) {
-        if let Some(active) = self
-            .active
-            .lock()
-            .unwrap()
-            .as_ref()
-            .filter(|s| s.client == id)
-        {
+        for active in self.active.lock().unwrap().values().filter(|s| s.client == id) {
             active.stop.send_replace(true);
         }
     }
@@ -369,7 +362,7 @@ impl Server {
             None
         };
         let state = Arc::new(State {
-            access,
+            access: access.clone(),
             config,
             info,
             certificate: identity.certificate.clone(),
@@ -378,7 +371,8 @@ impl Server {
             events,
             pairing_until: Mutex::new(None),
             pair_slot: Arc::new(Semaphore::new(1)),
-            active: Mutex::new(None),
+            active: Mutex::new(std::collections::HashMap::new()),
+            input: access.as_ref().map(|a| a.sessions.input.clone()).unwrap_or_default(),
             sessions: Mutex::new(Vec::new()),
             stop,
         });
@@ -431,7 +425,7 @@ impl Server {
              _=clients.join_next(),if !clients.is_empty()=>{},
             }
         }
-        if let Some(active) = &*self.state.active.lock().unwrap() {
+        for active in self.state.active.lock().unwrap().values() {
             active.stop.send_replace(true);
         }
         clients.abort_all();
@@ -452,7 +446,7 @@ impl Server {
 }
 impl Drop for Server {
     fn drop(&mut self) {
-        if let Some(active) = &*self.state.active.lock().unwrap() {
+        for active in self.state.active.lock().unwrap().values() {
             active.stop.send_replace(true);
         }
         for task in self.state.sessions.lock().unwrap().iter() {
@@ -494,7 +488,7 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
             let peer_id=authorized.device.id();
             let invitation=if media {
                 let lease=match access.claim(&peer_id) {Ok(lease)=>lease,Err(error)=>{
-                    write(&mut stream,&Reply::Error {message:"主机正在串流或设备授权已变更，请在被控端检查后重试".into()}).await?;return Err(error);
+                    write(&mut stream,&Reply::Error {message:format!("无法开始串流：{error}").chars().take(256).collect()}).await?;return Err(error);
                 }};
                 Some(start_authorized_session(state.clone(),peer_id.clone(),local,authorized.permissions,Some(lease)).await?)
             }else{None};
@@ -619,7 +613,6 @@ struct SessionGuard {
     _cancellation:Option<crate::shared_host::Cancellation>,
     state: Arc<State>,
     id: String,
-    finished: Arc<AtomicBool>,
     clipboard: Option<Arc<crate::clipboard::Clipboard>>,
 }
 impl Drop for SessionGuard {
@@ -627,7 +620,7 @@ impl Drop for SessionGuard {
         if let Some(clipboard) = &self.clipboard {
             crate::native_clipboard::stop(clipboard);
         }
-        self.finished.store(true, Ordering::Release);
+        self.state.active.lock().unwrap().remove(&self.id);
         let _ = self.state.events.send(Event::SessionEnded(self.id.clone()));
     }
 }
@@ -645,34 +638,18 @@ async fn start_session(state: Arc<State>, client: String, local: SocketAddr) -> 
 async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAddr,
     permission:crate::device_trust::Permissions,lease:Option<crate::shared_host::SessionLease>)->Result<Invitation> {
     let (stop, rx) = watch::channel(false);
-    let finished = Arc::new(AtomicBool::new(false));
     let id = uuid::Uuid::new_v4().to_string();
     {
         let mut active = state.active.lock().unwrap();
-        ensure!(
-            active
-                .as_ref()
-                .is_none_or(|s| s.finished.load(Ordering::Acquire)),
-            "主机正在串流，请先结束已有会话"
-        );
-        *active = Some(Active {
-            client: client.clone(),
-            stop: stop.clone(),
-            finished: finished.clone(),
-        });
+        ensure!(active.len() < crate::shared_host::MAX_SESSIONS, "主机并发串流已达上限，请先断开一个设备");
+        active.insert(id.clone(), Active { client: client.clone(), stop: stop.clone() });
     }
-    let cancellation=if let (Some(access),Some(lease))=(&state.access,&lease) {
-        let record=access.store.peer(&client)?;
-        Some(access.cancellation(lease,&client,record.and_then(|p|p.inbound),rx.clone()))
-    }else{None};
-    let serving_stop=cancellation.as_ref().map(|c|c.receiver.clone()).unwrap_or(rx);
-    let mut guard = SessionGuard {
-        _lease:lease,_cancellation:cancellation,
-        state: state.clone(),
-        id: id.clone(),
-        finished,
-        clipboard: None,
-    };
+    let mut guard = SessionGuard { _lease: lease, _cancellation: None, state: state.clone(), id: id.clone(), clipboard: None };
+    if let (Some(access), Some(lease)) = (&state.access, &guard._lease) {
+        let record = access.store.peer(&client)?;
+        guard._cancellation = Some(access.cancellation(lease, &client, record.and_then(|p|p.inbound), rx.clone()));
+    }
+    let serving_stop = guard._cancellation.as_ref().map(|c|c.receiver.clone()).unwrap_or(rx);
     let clipboard = state
         .config
         .clipboard
@@ -708,7 +685,7 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
             client,
         });
         let mut observed = phase.subscribe();
-        let serving = native::serve_with_status(config, serving_stop, Some(phase));
+        let serving = native::serve_with_authority(config, serving_stop, Some(phase), task_state.input.clone());
         tokio::pin!(serving);
         let mut observing = true;
         let result = loop {
@@ -717,9 +694,9 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
                 changed = observed.changed(), if observing => {
                     if changed.is_err() { observing = false; }
                     else {
-                        let _ = task_state.events.send(Event::SessionProgress {
-                            id: task_id.clone(), status: observed.borrow_and_update().clone(),
-                        });
+                        let status=observed.borrow_and_update().clone();
+                        if let Some(lease)=&_guard._lease {lease.progress(status.clone());}
+                        let _ = task_state.events.send(Event::SessionProgress { id: task_id.clone(), status });
                     }
                 }
             }

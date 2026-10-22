@@ -224,6 +224,10 @@ impl SharingConfig {
 /// opened until the authenticated offer and direct-only candidates are checked.
 pub async fn serve_direct(signaling: &mut dyn SessionSignaling, ice: &crate::direct_ice::InternetIce,
     config: SharingConfig, stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>) -> Result<HostReport> {
+    serve_direct_with_authority(signaling, ice, config, stop, status, Arc::default()).await
+}
+pub(crate) async fn serve_direct_with_authority(signaling: &mut dyn SessionSignaling, ice: &crate::direct_ice::InternetIce,
+    config: SharingConfig, stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>, authority: Arc<crate::input_ownership::Authority>) -> Result<HostReport> {
     let _clipboard=ClipboardLifetime(config.clipboard.clone());
     config.validate()?;
     let displays=matches!(config.source,CaptureSource::Desktop).then(||Arc::new(crate::native_displays::Host::default()));
@@ -233,7 +237,7 @@ pub async fn serve_direct(signaling: &mut dyn SessionSignaling, ice: &crate::dir
         let mut current=config.clone();
         if let Some(limit)=config.session_limit {if started.elapsed()>=limit{return Ok(report);}current.session_limit=Some(limit.saturating_sub(started.elapsed()));}
         let mut peer=NativePeer::new_direct(ice,None,true).await?;
-        let result=serve_peer(&mut peer,signaling,current,stop.clone(),status.clone(),displays.clone()).await;
+        let result=serve_peer(&mut peer,signaling,current,stop.clone(),status.clone(),displays.clone(),authority.clone()).await;
         peer.close().await;
         report.merge(result?);
         if *stop.borrow() || !displays.as_ref().is_some_and(|d|d.switching()){return Ok(report);}
@@ -319,7 +323,10 @@ pub async fn serve(config: HostConfig, stop: watch::Receiver<bool>) -> Result<Ho
     serve_with_status(config, stop, None).await
 }
 
-pub async fn serve_with_status(config: HostConfig, mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>) -> Result<HostReport> {
+pub async fn serve_with_status(config: HostConfig, stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>) -> Result<HostReport> {
+    serve_with_authority(config, stop, status, Arc::default()).await
+}
+pub(crate) async fn serve_with_authority(config: HostConfig, mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>, authority: Arc<crate::input_ownership::Authority>) -> Result<HostReport> {
     let _clipboard=ClipboardLifetime(config.clipboard.clone());
     ensure!(
         !config.bind.ip().is_unspecified() && !config.bind.ip().is_multicast(),
@@ -345,7 +352,7 @@ pub async fn serve_with_status(config: HostConfig, mut stop: watch::Receiver<boo
     };
     drop(listener);
     progress(&status, HostStatus::Preparing);
-    host_session(socket, config, stop, status).await
+    host_session(socket, config, stop, status, authority).await
 }
 
 #[derive(Default)]
@@ -476,6 +483,7 @@ async fn host_session(
     config: HostConfig,
     stop: watch::Receiver<bool>,
     status: Option<watch::Sender<HostStatus>>,
+    authority: Arc<crate::input_ownership::Authority>,
 ) -> Result<HostReport> {
     let local_ip = stream.get_ref().0.local_addr()?.ip();
     let peer_ip = stream.get_ref().0.peer_addr()?.ip();
@@ -488,7 +496,7 @@ async fn host_session(
         let mut current=config.clone();
         if let Some(limit)=config.session_limit {if started.elapsed()>=limit{break Ok(report);}current.session_limit=Some(limit.saturating_sub(started.elapsed()));}
         let mut peer=NativePeer::new(local_ip,None,true).await?;
-        let result=serve_peer(&mut peer,&mut signaling,current,stop.clone(),status.clone(),displays.clone()).await;
+        let result=serve_peer(&mut peer,&mut signaling,current,stop.clone(),status.clone(),displays.clone(),authority.clone()).await;
         peer.close().await;
         match result {Ok(current)=>report.merge(current),Err(error)=>break Err(error)}
         if *stop.borrow() || !displays.as_ref().is_some_and(|d|d.switching()){break Ok(report);}
@@ -498,7 +506,7 @@ async fn host_session(
 }
 
 async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling, mut config: SharingConfig,
-    mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>,displays:Option<Arc<crate::native_displays::Host>>) -> Result<HostReport> {
+    mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>,displays:Option<Arc<crate::native_displays::Host>>,authority:Arc<crate::input_ownership::Authority>) -> Result<HostReport> {
     let message = tokio::select! {result=signaling.receive()=>result?,_=cancelled(&mut stop)=>return Ok(HostReport::default())};
     let offer: Offer = serde_json::from_value(message).map_err(|_| anyhow::anyhow!("invalid native offer"))?;
     ensure!(offer.version == 1, "unsupported native protocol version");
@@ -508,7 +516,7 @@ async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling,
     }
     progress(&status,HostStatus::Preparing);
     let mut answered=false;
-    let result=send_video(peer,signaling,config,stop,offer,status,displays,&mut answered).await;
+    let result=send_video(peer,signaling,config,stop,offer,status,displays,&mut answered,authority).await;
     if let Err(error)=&result {
         if !answered {
             let reason=format!("{error:#}").chars().map(|c|if c.is_control(){' '}else{c}).take(512).collect::<String>();
@@ -527,6 +535,7 @@ async fn send_video(
     status: Option<watch::Sender<HostStatus>>,
     displays:Option<Arc<crate::native_displays::Host>>,
     answered:&mut bool,
+    authority: Arc<crate::input_ownership::Authority>,
 ) -> Result<HostReport> {
     let refresh = Arc::new(AtomicBool::new(false));
     ensure!(crate::native_media::offers_codec(&offer.sdp,config.codec),"控制端未声明支持 {:?} 解码，请更新控制端或在主机选择 H.264",config.codec);
@@ -558,7 +567,7 @@ async fn send_video(
     let (width, height) = capture.resolution();
     validate_video(width, height, config.fps)?;
     let controls=tokio::select! {
-        controls=crate::native_control::HostControl::with_injector(config.allow_input,capture.desktop_rect(),config.clipboard.clone(),capture.input_injector())=>controls,
+        controls=crate::native_control::HostControl::with_injector(config.allow_input,capture.desktop_rect(),config.clipboard.clone(),capture.input_injector(),authority)=>controls,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
     };
     if let Some(displays)=&displays {displays.dimensions(width,height);}

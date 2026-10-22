@@ -59,7 +59,7 @@ struct Viewer {
 struct Host {
     id: uuid::Uuid,
     tx: Sender,
-    viewer: Option<Viewer>,
+    viewers: HashMap<String, Viewer>,
 }
 #[derive(Default)]
 struct Rooms {
@@ -96,7 +96,7 @@ impl State {
                     Host {
                         id,
                         tx,
-                        viewer: None,
+                        viewers: HashMap::new(),
                     },
                 );
                 Ok(Membership::Host { device, id })
@@ -104,7 +104,7 @@ impl State {
             Request::Join { version, device } => {
                 validate_identity(version, &device)?;
                 let host = rooms.hosts.get_mut(&device).context("device_offline")?;
-                ensure!(host.viewer.is_none(), "device_busy");
+                ensure!(host.viewers.len() < crate::shared_host::MAX_SESSIONS, "device_busy");
                 let id = uuid::Uuid::new_v4();
                 let session = uuid::Uuid::new_v4().to_string();
                 host.tx.try_send(Event::Connected {
@@ -115,7 +115,7 @@ impl State {
                     session: session.clone(),
                     stun: self.stun.clone(),
                 })?;
-                host.viewer = Some(Viewer {
+                host.viewers.insert(session.clone(), Viewer {
                     id,
                     session: session.clone(),
                     tx,
@@ -130,7 +130,7 @@ impl State {
         }
     }
     fn route(&self, member: &Membership, request: Request) -> Result<()> {
-        let rooms = self.rooms.lock().unwrap();
+        let mut rooms = self.rooms.lock().unwrap();
         let (session, body) = match request {
             Request::Signal { session, body } => (session, Some(body)),
             Request::Leave { session } => (session, None),
@@ -143,12 +143,10 @@ impl State {
                     .get(device)
                     .filter(|h| h.id == *id)
                     .context("stale_host")?;
-                &host
-                    .viewer
-                    .as_ref()
-                    .filter(|v| v.session == session)
-                    .context("stale_session")?
-                    .tx
+                // The viewer may disconnect while an answer/release is queued.
+                // Its retired route must not close the shared host socket.
+                let Some(viewer) = host.viewers.get(&session) else { return Ok(()); };
+                &viewer.tx
             }
             Membership::Viewer {
                 device,
@@ -158,18 +156,21 @@ impl State {
                 ensure!(*owned == session, "stale_session");
                 let host = rooms.hosts.get(device).context("device_offline")?;
                 ensure!(
-                    host.viewer
-                        .as_ref()
-                        .is_some_and(|v| v.id == *id && v.session == session),
+                    host.viewers.get(&session).is_some_and(|v| v.id == *id),
                     "stale_session"
                 );
                 &host.tx
             }
         };
+        let leaving = body.is_none();
         target.try_send(match body {
-            Some(body) => Event::Signal { session, body },
-            None => Event::Ended { session },
+            Some(body) => Event::Signal { session: session.clone(), body },
+            None => Event::Ended { session: session.clone() },
         })?;
+        if leaving {
+            let device = match member { Membership::Host{device,..}|Membership::Viewer{device,..}=>device };
+            if let Some(host)=rooms.hosts.get_mut(device) { host.viewers.remove(&session); }
+        }
         Ok(())
     }
     fn remove(&self, member: &Membership) {
@@ -177,10 +178,10 @@ impl State {
         match member {
             Membership::Host { device, id } => {
                 if rooms.hosts.get(device).is_some_and(|h| h.id == *id) {
-                    if let Some(viewer) = rooms.hosts.remove(device).and_then(|h| h.viewer) {
-                        let _ = viewer.tx.try_send(Event::Ended {
-                            session: viewer.session,
-                        });
+                    if let Some(host) = rooms.hosts.remove(device) {
+                        for viewer in host.viewers.into_values() {
+                            let _ = viewer.tx.try_send(Event::Ended { session: viewer.session });
+                        }
                     }
                 }
             }
@@ -190,11 +191,9 @@ impl State {
                 session,
             } => {
                 if let Some(host) = rooms.hosts.get_mut(device).filter(|h| {
-                    h.viewer
-                        .as_ref()
-                        .is_some_and(|v| v.id == *id && v.session == *session)
+                    h.viewers.get(session).is_some_and(|v| v.id == *id)
                 }) {
-                    host.viewer = None;
+                    host.viewers.remove(session);
                     let _ = host.tx.try_send(Event::Ended {
                         session: session.clone(),
                     });
@@ -325,6 +324,7 @@ async fn handle<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     let mut heartbeat = interval(Duration::from_secs(10));
     let mut seen = tokio::time::Instant::now();
     let mut signals = 0usize;
+    let mut signal_window = tokio::time::Instant::now();
     loop {
         tokio::select! {
             _=heartbeat.tick()=>{
@@ -336,11 +336,12 @@ async fn handle<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                 let message=message.context("signaling disconnected")??;seen=tokio::time::Instant::now();
                 match message {
                     Message::Text(text)=>{
-                        signals+=1;ensure!(signals<=8,"signaling negotiation limit exceeded");
+                        if signal_window.elapsed()>=Duration::from_secs(1){signals=0;signal_window=tokio::time::Instant::now();}
+                        signals+=1;ensure!(signals<=32,"signaling negotiation limit exceeded");
                         let request=serde_json::from_str::<Request>(&text).map_err(|_|anyhow::anyhow!("invalid signal"))?;
                         let leave=matches!(request,Request::Leave{..});
                         guard.state.route(&guard.member,request)?;
-                        if leave {break;}
+                        if leave && matches!(guard.member,Membership::Viewer{..}) {break;}
                     },
                     Message::Ping(payload)=>ws.send(Message::Pong(payload)).await?,
                     Message::Pong(_)=>{},Message::Close(_)=>break,
@@ -356,6 +357,32 @@ async fn handle<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn concurrent_routes_are_private_bounded_and_host_leaves_only_one_session() {
+        let state=State{rooms:Arc::default(),stun:vec![]};
+        let (host_tx,mut host_rx)=mpsc::channel(32);
+        let host=state.register(Request::Host{version:1,device:"generated-host".into()},host_tx).unwrap();
+        host_rx.recv().await.unwrap();let mut viewers=Vec::new();let mut receive=Vec::new();
+        for _ in 0..crate::shared_host::MAX_SESSIONS {
+            let (tx,mut rx)=mpsc::channel(16);
+            viewers.push(state.register(Request::Join{version:1,device:"generated-host".into()},tx).unwrap());
+            rx.recv().await.unwrap();host_rx.recv().await.unwrap();receive.push(rx);
+        }
+        let (tx,_)=mpsc::channel(1);assert!(state.register(Request::Join{version:1,device:"generated-host".into()},tx).is_err());
+        let session=|member:&Membership|match member{Membership::Viewer{session,..}=>session.clone(),_=>unreachable!()};
+        state.route(&host,Request::Signal{session:session(&viewers[1]),body:serde_json::json!({"fixture":2})}).unwrap();
+        assert!(matches!(receive[1].recv().await.unwrap(),Event::Signal{body,..} if body["fixture"]==2));
+        assert!(receive[0].try_recv().is_err());
+        assert!(state.route(&viewers[0],Request::Signal{session:session(&viewers[1]),body:serde_json::json!({})}).is_err());
+        state.route(&host,Request::Leave{session:session(&viewers[0])}).unwrap();
+        state.route(&host,Request::Leave{session:session(&viewers[0])}).unwrap();
+        state.remove(&viewers[0]);
+        state.route(&viewers[1],Request::Signal{session:session(&viewers[1]),body:serde_json::json!({"alive":true})}).unwrap();
+        assert!(matches!(host_rx.recv().await.unwrap(),Event::Signal{body,..} if body["alive"]==true));
+        assert_eq!(state.rooms.lock().unwrap().hosts["generated-host"].viewers.len(),3);
+        state.remove(&host);
+        assert!(matches!(receive[1].recv().await.unwrap(),Event::Ended{..}));
+    }
     #[tokio::test]
     async fn stale_viewer_release_cannot_close_the_next_session() {
         let state = State {
@@ -407,8 +434,8 @@ mod tests {
             )
             .is_err());
         assert!(state.rooms.lock().unwrap().hosts["fixture"]
-            .viewer
-            .is_some());
+            .viewers
+            .len() == 1);
         state.remove(&new);
         state.remove(&host);
         assert!(state.rooms.lock().unwrap().hosts.is_empty());

@@ -58,6 +58,8 @@ async fn send(channel: &RTCDataChannel, packet: Packet) -> Result<()> {
 }
 
 struct WorkerState {
+    authority: Arc<crate::input_ownership::Authority>,
+    ownership: Mutex<Option<crate::input_ownership::Lease>>,
     available: AtomicBool,
     enabled: AtomicBool,
     stop: AtomicBool,
@@ -67,6 +69,15 @@ struct WorkerState {
     errors: AtomicU64,
     timing:Arc<crate::native_timing::HostTiming>,
 }
+impl WorkerState {
+    fn release(&self, injector: &mut dyn InputInjector, final_release: bool) -> bool {
+        let mut ownership = self.ownership.lock().unwrap();
+        let result = injector.release_all().is_ok();
+        if !result { if let Some(lease) = ownership.as_ref() { lease.poison(); } }
+        if final_release || !self.enabled.load(Ordering::Acquire) { ownership.take(); }
+        result
+    }
+}
 struct InputApplied {queue_us:u32,inject_us:u32}
 struct InputJob {epoch:u64,command:InputCommand,queued:Instant,reply:Option<oneshot::Sender<InputApplied>>}
 struct InputWorker {
@@ -75,21 +86,22 @@ struct InputWorker {
     task: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 impl InputWorker {
-    async fn start(rect: DesktopRect,timing:Arc<crate::native_timing::HostTiming>) -> Result<Arc<Self>> {
-        Self::with_timing_factory(rect, uu_input::default_injector,timing).await
+    async fn start(rect: DesktopRect,timing:Arc<crate::native_timing::HostTiming>,authority:Arc<crate::input_ownership::Authority>) -> Result<Arc<Self>> {
+        Self::with_timing_factory(rect, uu_input::default_injector,timing,authority).await
     }
     #[cfg(test)]
     async fn with_factory<F>(rect: DesktopRect, factory: F) -> Result<Arc<Self>>
     where F:FnOnce()->std::result::Result<Box<dyn InputInjector>,uu_input::InputError>+Send+'static {
-        Self::with_timing_factory(rect,factory,Arc::default()).await
+        Self::with_timing_factory(rect,factory,Arc::default(),Arc::default()).await
     }
-    async fn with_timing_factory<F>(rect: DesktopRect, factory: F,timing:Arc<crate::native_timing::HostTiming>) -> Result<Arc<Self>>
+    async fn with_timing_factory<F>(rect: DesktopRect, factory: F,timing:Arc<crate::native_timing::HostTiming>,authority:Arc<crate::input_ownership::Authority>) -> Result<Arc<Self>>
     where
         F: FnOnce() -> std::result::Result<Box<dyn InputInjector>, uu_input::InputError>
             + Send
             + 'static,
     {
         let state = Arc::new(WorkerState {
+            authority, ownership: Mutex::new(None),
             available: AtomicBool::new(false),
             enabled: AtomicBool::new(false),
             stop: AtomicBool::new(false),
@@ -130,7 +142,7 @@ impl InputWorker {
                     }
                     let current = actor.epoch.load(Ordering::Acquire);
                     if current != epoch {
-                        if injector.release_all().is_err() {
+                        if !actor.release(&mut *injector, false) {
                             actor.errors.fetch_add(1, Ordering::Relaxed);
                             break;
                         }
@@ -161,7 +173,7 @@ impl InputWorker {
                 }
                 actor.enabled.store(false, Ordering::Release);
                 actor.available.store(false, Ordering::Release);
-                if injector.release_all().is_err() {
+                if !actor.release(&mut *injector, true) {
                     actor.errors.fetch_add(1, Ordering::Relaxed);
                 }
             })
@@ -187,11 +199,18 @@ impl InputWorker {
     }
     fn request(&self, enabled: bool) {
         self.touch();
+        if !enabled || !self.available() {
+            self.state.enabled.store(false, Ordering::Release);
+            self.state.epoch.fetch_add(1, Ordering::AcqRel);
+            return;
+        }
+        // An OS release can take time; the network task must never wait for it.
+        let Ok(mut ownership) = self.state.ownership.try_lock() else { return; };
+        if ownership.is_none() { *ownership = self.state.authority.claim(); }
         self.state.epoch.fetch_add(1, Ordering::AcqRel);
-        self.state
-            .enabled
-            .store(enabled && self.available(), Ordering::Release);
+        self.state.enabled.store(ownership.is_some(), Ordering::Release);
     }
+
     fn push(&self, command: InputCommand) -> bool {
         self.push_with_ack(command,None)
     }
@@ -243,20 +262,21 @@ impl HostControl {
         rect: Option<uu_capture::DesktopRect>,
         clipboard: Option<Arc<crate::clipboard::Clipboard>>,
     ) -> Arc<Self> {
-        Self::with_injector(allow,rect,clipboard,None).await
+        Self::with_injector(allow,rect,clipboard,None,Arc::default()).await
     }
     pub async fn with_injector(
         allow: bool,
         rect: Option<uu_capture::DesktopRect>,
         clipboard: Option<Arc<crate::clipboard::Clipboard>>,
         injector: Option<Box<dyn InputInjector>>,
+        authority: Arc<crate::input_ownership::Authority>,
     ) -> Arc<Self> {
         let timing:Arc<crate::native_timing::HostTiming>=Arc::default();
         let worker = if let Some(rect) = rect.filter(|_| allow) {
             match DesktopRect::new(rect.x, rect.y, rect.width, rect.height) {
                 Ok(rect) => match match injector {
-                    Some(injector)=>InputWorker::with_timing_factory(rect,move || Ok(injector),timing.clone()).await,
-                    None=>InputWorker::start(rect,timing.clone()).await,
+                    Some(injector)=>InputWorker::with_timing_factory(rect,move || Ok(injector),timing.clone(),authority.clone()).await,
+                    None=>InputWorker::start(rect,timing.clone(),authority.clone()).await,
                 } {
                     Ok(worker) => Some(worker),
                     Err(error) => {
@@ -594,6 +614,9 @@ impl ViewerControl {
                 _=ticker.tick()=>{
                     sequence=sequence.wrapping_add(1);self.probe.lock().unwrap().begin(sequence);
                     send(&self.channel,Packet::Ping{sequence}).await?;
+                    if self.requested.load(Ordering::Acquire) && self.stats.native_input_available.load(Ordering::Acquire) && !self.stats.capabilities.allows(Capability::Input) {
+                        send(&self.channel,Packet::RequestInput{enabled:true}).await?;
+                    }
                 },
             }
         }
@@ -702,6 +725,37 @@ mod tests {
         assert!(releases.load(Ordering::Acquire) > before);
         assert!(!worker.push(command));
         worker.stop().await;
+    }
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn another_viewer_cannot_inject_until_the_previous_owners_os_release_finishes() {
+        struct BlockingRelease { entered: Option<oneshot::Sender<()>>, gate: Arc<(Mutex<bool>,std::sync::Condvar)>, armed: Arc<AtomicBool> }
+        impl InputInjector for BlockingRelease {
+            fn inject(&mut self,_:uu_input::InputEvent)->std::result::Result<(),uu_input::InputError>{self.armed.store(true,Ordering::Release);Ok(())}
+            fn release_all(&mut self)->std::result::Result<(),uu_input::InputError>{
+                if self.armed.swap(false,Ordering::AcqRel) {
+                    if let Some(entered)=self.entered.take(){let _=entered.send(());}
+                    let mut ready=self.gate.0.lock().unwrap();while !*ready {ready=self.gate.1.wait(ready).unwrap();}
+                }Ok(())
+            }
+        }
+        let authority=Arc::new(crate::input_ownership::Authority::default());
+        let gate=Arc::new((Mutex::new(false),std::sync::Condvar::new()));
+        let armed=Arc::new(AtomicBool::new(false));let state=armed.clone();let block=gate.clone();let (entered,wait_release)=oneshot::channel();
+        let rect=DesktopRect::new(0,0,640,480).unwrap();
+        let a=InputWorker::with_timing_factory(rect,move||Ok(Box::new(BlockingRelease{entered:Some(entered),gate:block,armed})),Arc::default(),authority.clone()).await.unwrap();
+        let b=InputWorker::with_timing_factory(rect,||Ok(Box::new(Fixture{events:Arc::default(),releases:Arc::default()})),Arc::default(),authority).await.unwrap();
+        a.request(true);assert!(a.push(InputCommand::Key{usage:4,pressed:true}));wait(||state.load(Ordering::Acquire)).await;
+        b.request(true);assert!(!b.push(InputCommand::Relative{dx:1,dy:1}));
+        a.request(false);wait_release.await.unwrap();
+        b.request(true);let blocked=!b.push(InputCommand::Relative{dx:1,dy:1});
+        *gate.0.lock().unwrap()=true;gate.1.notify_all();
+        assert!(blocked,"ownership must outlive OS release");
+        wait(||a.state.ownership.lock().unwrap().is_none()).await;
+        b.request(true);assert!(b.push(InputCommand::Key{usage:4,pressed:true}));
+        wait(||b.state.applied.load(Ordering::Acquire)==1).await;
+        a.stop().await;
+        assert!(b.state.enabled.load(Ordering::Acquire),"old owner cleanup cannot disable the new owner");
+        b.stop().await;
     }
     #[tokio::test]
     async fn missing_host_permission_or_capture_geometry_never_opens_an_injector() {

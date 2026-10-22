@@ -277,3 +277,6 @@ mod room_error_tests {
         assert_eq!(room_data(json!({"code":0,"data":{"fixture":true}}),RoomRequest::Join).unwrap()["fixture"],true);
     }
 }
+
+mod listener;
+pub use listener::Listener;

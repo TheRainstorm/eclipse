@@ -1,10 +1,10 @@
-//! All listeners share one authorization context and one active media owner.
+//! All listeners share one authorization context and bounded concurrent media sessions.
 use crate::{
     device_auth::PairingControl,
     device_trust::{Permissions, TrustStore},
 };
 use anyhow::{ensure, Context, Result};
-use std::sync::{Arc, Mutex};
+use std::{collections::HashMap, sync::{Arc, Mutex}};
 use tokio::sync::watch;
 
 /// One running host per private configuration, including separate launcher
@@ -32,64 +32,49 @@ impl Drop for HostOwner {
     }
 }
 
-struct Active {
-    session: String,
-    peer: String,
-    stop: watch::Sender<bool>,
-}
+pub const MAX_SESSIONS: usize = 4;
+struct Active { peer: String, stop: watch::Sender<bool>, status: crate::native::HostStatus }
 #[derive(Default)]
-pub struct SessionGate(Mutex<Option<Active>>);
+pub struct SessionGate {
+    active: Mutex<HashMap<String, Active>>,
+    pub input: Arc<crate::input_ownership::Authority>,
+}
 impl SessionGate {
     pub fn claim(self: &Arc<Self>, peer: &str) -> Result<SessionLease> {
-        let mut active = self.0.lock().unwrap();
-        ensure!(active.is_none(), "主机正在串流，请先断开当前设备");
+        let mut active = self.active.lock().unwrap();
+        ensure!(active.len() < MAX_SESSIONS, "主机最多同时接受 {MAX_SESSIONS} 个串流，请先断开一个设备");
         let session = uuid::Uuid::new_v4().to_string();
         let (stop, receiver) = watch::channel(false);
-        *active = Some(Active {
-            session: session.clone(),
-            peer: peer.into(),
-            stop,
-        });
-        Ok(SessionLease {
-            gate: self.clone(),
-            session,
-            receiver,
-        })
+        active.insert(session.clone(), Active { peer: peer.into(), stop, status: crate::native::HostStatus::Starting });
+        Ok(SessionLease { gate: self.clone(), session, receiver })
     }
     pub fn disconnect(&self) {
-        if let Some(active) = &*self.0.lock().unwrap() {
-            active.stop.send_replace(true);
-        }
+        for active in self.active.lock().unwrap().values() { active.stop.send_replace(true); }
     }
     pub fn revoke(&self, peer: &str) {
-        if let Some(active) = &*self.0.lock().unwrap() {
-            if active.peer == peer {
-                active.stop.send_replace(true);
-            }
-        }
+        for active in self.active.lock().unwrap().values().filter(|s| s.peer == peer) { active.stop.send_replace(true); }
     }
-    pub fn active_peer(&self) -> Option<String> {
-        self.0.lock().unwrap().as_ref().map(|v| v.peer.clone())
+    pub fn active_peer(&self) -> Option<String> { self.active.lock().unwrap().values().next().map(|v| v.peer.clone()) }
+    pub fn sessions(&self) -> Vec<(String, String)> {
+        let mut sessions: Vec<_> = self.active.lock().unwrap().iter().map(|(id,s)| (id.clone(),s.peer.clone())).collect();
+        sessions.sort(); sessions
+    }
+    pub fn details(&self) -> Vec<(String, String, crate::native::HostStatus)> {
+        let mut sessions: Vec<_> = self.active.lock().unwrap().iter().map(|(id,s)| (id.clone(),s.peer.clone(),s.status.clone())).collect();
+        sessions.sort_by(|a,b|a.0.cmp(&b.0)); sessions
+    }
+    pub fn disconnect_session(&self, id: &str) {
+        if let Some(active) = self.active.lock().unwrap().get(id) { active.stop.send_replace(true); }
     }
 }
-pub struct SessionLease {
-    gate: Arc<SessionGate>,
-    session: String,
-    receiver: watch::Receiver<bool>,
-}
+pub struct SessionLease { gate: Arc<SessionGate>, session: String, receiver: watch::Receiver<bool> }
 impl SessionLease {
-    pub fn stopped(&self) -> watch::Receiver<bool> {
-        self.receiver.clone()
+    pub fn stopped(&self) -> watch::Receiver<bool> { self.receiver.clone() }
+    pub fn progress(&self, status: crate::native::HostStatus) {
+        if let Some(active)=self.gate.active.lock().unwrap().get_mut(&self.session) {active.status=status;}
     }
 }
-impl Drop for SessionLease {
-    fn drop(&mut self) {
-        let mut active = self.gate.0.lock().unwrap();
-        if active.as_ref().is_some_and(|v| v.session == self.session) {
-            *active = None;
-        }
-    }
-}
+impl Drop for SessionLease { fn drop(&mut self) { self.gate.active.lock().unwrap().remove(&self.session); } }
 #[derive(Clone)]
 pub struct Access {
     pub store: TrustStore,
@@ -168,24 +153,21 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn all_listeners_share_single_media_ownership_and_revocation_is_per_peer() {
+    fn concurrent_sessions_are_bounded_and_revocation_only_stops_the_selected_peer() {
         let gate = Arc::new(SessionGate::default());
         let a = gate.claim("a").unwrap();
-        assert!(gate.claim("b").is_err());
-        gate.revoke("b");
-        assert!(!*a.receiver.borrow());
-        gate.revoke("a");
-        assert!(*a.receiver.borrow());
-        assert!(
-            gate.claim("b").is_err(),
-            "stop request does not release ownership before cleanup"
-        );
-        drop(a);
         let b = gate.claim("b").unwrap();
-        assert_eq!(gate.active_peer().as_deref(), Some("b"));
+        let c = gate.claim("c").unwrap();
+        let d = gate.claim("d").unwrap();
+        assert!(gate.claim("e").is_err());
+        gate.revoke("a");
+        assert!(*a.receiver.borrow()); assert!(!*b.receiver.borrow());
+        assert!(gate.claim("e").is_err(), "cancellation retains the slot until cleanup");
+        drop(a); let e = gate.claim("e").unwrap();
+        gate.disconnect_session(&b.session);
+        assert!(*b.receiver.borrow()); assert!(!*e.receiver.borrow());
         gate.disconnect();
-        assert!(*b.receiver.borrow());
-        drop(b);
-        assert!(gate.active_peer().is_none());
+        for lease in [&b,&c,&d,&e] { assert!(*lease.receiver.borrow()); }
+        drop((b,c,d,e)); assert!(gate.sessions().is_empty());
     }
 }

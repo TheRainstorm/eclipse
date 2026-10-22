@@ -88,38 +88,6 @@ pub(crate) async fn view(
     result
 }
 
-async fn accept(
-    settings: &Settings,
-    config: &Config,
-    status: &watch::Sender<EndpointStatus>,
-) -> Result<Connection> {
-    match settings.provider {
-        Provider::Uu => {
-            let mut host = tokio::time::timeout(
-                Duration::from_secs(20),
-                internet::uu::Host::online(config, settings.development_relay),
-            )
-            .await
-            .context("UU 主机上线超时")??;
-            status.send_replace(EndpointStatus::Ready);
-            let result = host.accept().await;
-            host.close().await;
-            result
-        }
-        Provider::SelfHosted => {
-            let service = settings.self_hosted()?;
-            let mut host = tokio::time::timeout(
-                Duration::from_secs(20),
-                internet::self_hosted::Host::online(&service, &settings.device),
-            )
-            .await
-            .context("自建主机上线超时")??;
-            status.send_replace(EndpointStatus::Ready);
-            host.accept().await
-        }
-    }
-}
-
 pub async fn serve_connection(
     mut connection: Connection,
     mut sharing: SharingConfig,
@@ -159,14 +127,21 @@ pub async fn serve_connection(
             sharing.clipboard = Some(factory(&uuid::Uuid::new_v4().to_string())?);
         }
         bootstrap.ready(true).await?;
-        let result = native::serve_direct(
-            &mut bootstrap,
-            &ice,
-            sharing,
-            cancellation.receiver.clone(),
-            status,
-        )
-        .await;
+        let (progress,mut observe)=watch::channel(HostStatus::Starting);
+        let serving = native::serve_direct_with_authority(
+            &mut bootstrap, &ice, sharing, cancellation.receiver.clone(), Some(progress), access.sessions.input.clone(),
+        );
+        tokio::pin!(serving);
+        let mut observing=true;
+        let result=loop {tokio::select! {
+            result=&mut serving=>break result,
+            changed=observe.changed(),if observing=>{
+                if changed.is_err(){observing=false;}else{
+                    let phase=observe.borrow_and_update().clone();lease.progress(phase.clone());
+                    if let Some(status)=&status {status.send_replace(phase);}
+                }
+            }
+        }};
         drop(cancellation);
         drop(lease);
         result
@@ -183,56 +158,65 @@ pub async fn listen(
     config: Config,
     sharing: SharingConfig,
     access: Arc<Access>,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
     status: watch::Sender<EndpointStatus>,
     stream_status: watch::Sender<HostStatus>,
     clipboard: Option<crate::native_lan::ClipboardFactory>,
 ) {
+    listen_concurrent(settings, config, sharing, access, stop, status, stream_status, clipboard).await;
+}
+
+enum Listener { Uu(internet::uu::Listener), SelfHosted(internet::self_hosted::Listener) }
+impl Listener {
+    async fn online(settings:&Settings,config:&Config)->Result<Self> {
+        match settings.provider {
+            Provider::Uu=>Ok(Self::Uu(internet::uu::Listener::online(config,settings.development_relay).await?)),
+            Provider::SelfHosted=>Ok(Self::SelfHosted(internet::self_hosted::Listener::online(&settings.self_hosted()?,&settings.device).await?)),
+        }
+    }
+    async fn accept(&mut self)->Result<Connection>{match self{Self::Uu(listener)=>listener.accept().await,Self::SelfHosted(listener)=>listener.accept().await}}
+    async fn close(&mut self){match self{Self::Uu(listener)=>listener.close().await,Self::SelfHosted(listener)=>listener.close().await}}
+}
+
+async fn listen_concurrent(settings: Settings, config: Config, sharing: SharingConfig, access: Arc<Access>, mut stop: watch::Receiver<bool>,
+    status: watch::Sender<EndpointStatus>, stream_status: watch::Sender<HostStatus>, clipboard: Option<crate::native_lan::ClipboardFactory>) {
     while !*stop.borrow() {
         status.send_replace(EndpointStatus::Starting);
-        let connection = tokio::select! {
-            result=accept(&settings,&config,&status)=>result,
-            _=cancelled(&mut stop)=>break,
+        let opening=async { tokio::time::timeout(Duration::from_secs(20),Listener::online(&settings,&config)).await.context("连接服务上线超时")? };
+        let opened=tokio::select! { result=opening=>result, _=cancelled(&mut stop)=>break };
+        let mut listener=match opened {
+            Ok(listener)=>listener,
+            Err(error)=>{status.send_replace(EndpointStatus::Error(format!("{error:#}")));tokio::select!{_=cancelled(&mut stop)=>break,_=tokio::time::sleep(Duration::from_secs(3))=>{}}continue;}
         };
-        let outcome = match connection {
-            Ok(connection) => {
-                status.send_replace(EndpointStatus::Authenticating);
-                let (phase, mut observe) = watch::channel(HostStatus::Starting);
-                let serving = serve_connection(
-                    connection,
-                    sharing.clone(),
-                    &access,
-                    stop.clone(),
-                    Some(phase),
-                    clipboard.clone(),
-                );
-                tokio::pin!(serving);
-                let mut observing = true;
-                let result = loop {
-                    tokio::select! {
-                        result=&mut serving=>break result,
-                        _=cancelled(&mut stop)=>break match tokio::time::timeout(Duration::from_secs(5),&mut serving).await {
-                            Ok(result)=>result,Err(_)=>Err(anyhow::anyhow!("共享退出超时")),
-                        },
-                        changed=observe.changed(),if observing=>{
-                            if changed.is_err(){observing=false;}else{
-                                let phase=observe.borrow_and_update().clone();
-                                if matches!(phase,HostStatus::Streaming{..}){status.send_replace(EndpointStatus::Streaming);}
-                                stream_status.send_replace(phase);
-                            }
-                        }
-                    }
-                };
-                result.map(|_| ())
+        status.send_replace(EndpointStatus::Ready);
+        let mut sessions=tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                _=cancelled(&mut stop)=>break,
+                result=sessions.join_next(),if !sessions.is_empty()=>{
+                    if let Some(Ok(Err(error)))=result {tracing::warn!(%error,"native internet viewer ended");}
+                },
+                connection=listener.accept()=>{
+                    let connection=match connection {Ok(connection)=>connection,Err(error)=>{status.send_replace(EndpointStatus::Error(format!("{error:#}")));break;}};
+                    if sessions.len()>=crate::shared_host::MAX_SESSIONS {let mut connection=connection;connection.transport.close().await;continue;}
+                    let access=access.clone();let sharing=sharing.clone();let stop=stop.clone();let clipboard=clipboard.clone();let progress=stream_status.clone();
+                    sessions.spawn(async move {
+                        let (phase,mut updates)=watch::channel(HostStatus::Starting);
+                        let serving=serve_connection(connection,sharing,&access,stop,Some(phase),clipboard);
+                        tokio::pin!(serving);
+                        let mut observing=true;
+                        loop {tokio::select! {
+                            result=&mut serving=>return result,
+                            result=updates.changed(),if observing=>{if result.is_err(){observing=false;}else{progress.send_replace(updates.borrow_and_update().clone());}}
+                        }}
+                    });
+                },
             }
-            Err(error) => Err(error),
-        };
-        if let Err(error) = outcome {
-            status.send_replace(EndpointStatus::Error(format!("{error:#}")));
-            tokio::select! {_=cancelled(&mut stop)=>break,_=tokio::time::sleep(Duration::from_secs(3))=>{}}
-        } else {
-            tokio::select! {_=cancelled(&mut stop)=>break,_=tokio::time::sleep(Duration::from_millis(200))=>{}}
         }
+        listener.close().await;
+        let draining=async {while sessions.join_next().await.is_some(){}};
+        if tokio::time::timeout(Duration::from_secs(5),draining).await.is_err(){sessions.abort_all();while sessions.join_next().await.is_some(){}}
+        if !*stop.borrow(){tokio::time::sleep(Duration::from_millis(200)).await;}
     }
     status.send_replace(EndpointStatus::Stopped);
 }

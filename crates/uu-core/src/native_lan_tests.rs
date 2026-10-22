@@ -1,5 +1,6 @@
 //! Only owned loopback listeners and generated video. No desktop/audio/input.
 use super::*;
+use std::sync::atomic::Ordering;
 
 #[tokio::test]
 async fn native_lan_port_conflicts_are_actionable_and_custom_discovery_advertises_service_port() {
@@ -293,10 +294,8 @@ async fn saved_pairing_survives_server_restart_and_sessions_are_bounded() {
     device = verify_address(&device, &host.endpoint).await.unwrap();
     assert!(!inspect(&device.endpoint).await.unwrap().pairing_open);
     let invitation = connect(&device, &id).await.unwrap();
-    assert!(
-        connect(&device, &id).await.is_err(),
-        "one host cannot start conflicting capture sessions"
-    );
+    for _ in 1..crate::shared_host::MAX_SESSIONS { connect(&device, &id).await.unwrap(); }
+    assert!(connect(&device, &id).await.is_err(), "capture concurrency must be bounded");
     host.handle.revoke(&id).unwrap();
     timeout(Duration::from_secs(3), async {
         loop {
@@ -306,8 +305,7 @@ async fn saved_pairing_survives_server_restart_and_sessions_are_bounded() {
                 .active
                 .lock()
                 .unwrap()
-                .as_ref()
-                .is_none_or(|s| s.finished.load(Ordering::Acquire))
+                .is_empty()
             {
                 break;
             }
@@ -330,7 +328,7 @@ async fn new_address_must_prove_the_saved_identity_without_starting_a_session() 
     let updated = verify_address(&device, &host.endpoint).await.unwrap();
     assert_eq!(updated.certificate, device.certificate);
     assert_eq!(updated.token, device.token);
-    assert!(host.handle.state.active.lock().unwrap().is_none());
+    assert!(host.handle.state.active.lock().unwrap().is_empty());
     assert!(other.handle.clients().is_empty());
     other.finish().await;
     host.finish().await;
@@ -464,10 +462,7 @@ async fn clipboard_backend_failure_releases_the_session_slot_without_creating_a_
             .active
             .lock()
             .unwrap()
-            .as_ref()
-            .unwrap()
-            .finished
-            .load(Ordering::Acquire));
+            .is_empty());
     }
     host.finish().await;
 }

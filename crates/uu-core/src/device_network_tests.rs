@@ -141,10 +141,10 @@ async fn unified_device_wss_listener_republishes_and_reconnects_with_the_same_gr
         let (frames, mut received) = crate::media::frame_channel();
         let (viewer_stop, viewer_rx) = watch::channel(false);
         let observed = stats.clone();
-        let settings = settings.clone();
+        let viewer_settings = settings.clone();
         let config = cfg("viewer");
         let viewing = tokio::spawn(async move {
-            internet::view(settings, config, frames, observed, viewer_rx, None).await
+            internet::view(viewer_settings, config, frames, observed, viewer_rx, None).await
         });
         if attempt == 0 {
             let request = tokio::time::timeout(Duration::from_secs(8), requests.recv())
@@ -174,6 +174,29 @@ async fn unified_device_wss_listener_republishes_and_reconnects_with_the_same_gr
         .unwrap();
         assert_eq!(stats.errors.load(Ordering::Relaxed), 0);
         assert!(stats.pairing.code().is_none());
+        let second_stats=Arc::new(crate::media::MediaStats::default());second_stats.audio.output_enabled.store(false,Ordering::Release);
+        let (second_frames,mut second_received)=crate::media::frame_channel();
+        let (second_stop,second_rx)=watch::channel(false);
+        let second_settings=settings.clone();let second_cfg=cfg("viewer");let second_observed=second_stats.clone();
+        let second=tokio::spawn(async move{internet::view(second_settings,second_cfg,second_frames,second_observed,second_rx,None).await});
+        tokio::time::timeout(Duration::from_secs(12),async {
+            while second_stats.decoded_total.load(Ordering::Acquire)<12 {
+                while received.try_recv().is_ok(){}while second_received.try_recv().is_ok(){}
+                assert!(!viewing.is_finished() && !second.is_finished(),"second WSS viewer must not replace the first");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        assert_eq!(access.sessions.sessions().len(),2);
+        assert_eq!(second_stats.errors.load(Ordering::Acquire),0);
+        second_stop.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(5),second).await.unwrap().unwrap().unwrap();
+        let before=stats.decoded_total.load(Ordering::Acquire);
+        tokio::time::timeout(Duration::from_secs(6),async {
+            while stats.decoded_total.load(Ordering::Acquire)<before+12 {
+                while received.try_recv().is_ok(){}assert!(!viewing.is_finished(),"leaving one WSS session cannot disconnect another");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
         viewer_stop.send_replace(true);
         tokio::time::timeout(Duration::from_secs(5), viewing)
             .await
@@ -208,7 +231,7 @@ async fn unified_device_wss_listener_republishes_and_reconnects_with_the_same_gr
     std::fs::remove_dir_all(root).unwrap();
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn unified_device_tls_pairing_saves_multiple_clients_and_revoke_stops_only_the_active_peer() {
+async fn unified_device_tls_concurrent_streams_survive_revoking_another_viewer() {
     let root = std::env::temp_dir().join(format!("eclipse-network-{}", uuid::Uuid::new_v4()));
     let (access, mut requests) = access(&root);
     access.pairing.open();
@@ -272,6 +295,21 @@ async fn unified_device_tls_pairing_saves_multiple_clients_and_revoke_stops_only
     })
     .await
     .unwrap();
+    let c_connected=lan::connect_device(&endpoint,&c,"C",Some(&expected),None,true,&PairingDisplay::default()).await.unwrap();
+    let c_invite=c_connected.invitation.unwrap();
+    let c_stats=Arc::new(crate::media::MediaStats::default());
+    let (c_frames,mut c_received)=crate::media::frame_channel();
+    let (c_stop,c_rx)=watch::channel(false);let c_observed=c_stats.clone();
+    let c_viewing=tokio::spawn(async move{native::view(&c_invite,c_frames,c_observed,c_rx).await});
+    tokio::time::timeout(Duration::from_secs(12),async {
+        while c_stats.decoded_total.load(Ordering::Acquire)<12 {
+            while c_received.try_recv().is_ok(){}while receiver.try_recv().is_ok(){}
+            assert!(!viewing.is_finished() && !c_viewing.is_finished());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(access.sessions.sessions().len(),2);
+    let c_before=c_stats.decoded_total.load(Ordering::Acquire);
     access.revoke(&a.card("A").id()).unwrap();
     let ended = tokio::time::timeout(Duration::from_secs(5), viewing)
         .await
@@ -288,6 +326,16 @@ async fn unified_device_tls_pairing_saves_multiple_clients_and_revoke_stops_only
     let denied =
         lan::connect_device(&endpoint, &a, "A", Some(&expected), None, false, &display).await;
     assert!(denied.is_err());
+    tokio::time::timeout(Duration::from_secs(6),async {
+        while c_stats.decoded_total.load(Ordering::Acquire)<c_before+12 {
+            while c_received.try_recv().is_ok(){}
+            assert!(!c_viewing.is_finished(),"revoking A cannot stop C");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(c_stats.errors.load(Ordering::Acquire),0);
+    c_stop.send_replace(true);
+    tokio::time::timeout(Duration::from_secs(5),c_viewing).await.unwrap().unwrap().unwrap();
     viewer_stop.send_replace(true);
     stop.send_replace(true);
     serving.await.unwrap().unwrap();

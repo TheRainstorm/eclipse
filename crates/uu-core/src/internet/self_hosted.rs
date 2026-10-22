@@ -223,3 +223,93 @@ impl Transport for SelfTransport {
         .await;
     }
 }
+
+/// One published device, with independently routed signaling for each viewer.
+/// Only SDP/ICE and disconnect notifications traverse this socket.
+pub struct Listener {
+    incoming: tokio::sync::mpsc::Receiver<Connection>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Listener {
+    pub async fn online(config: &Config, device: &str) -> Result<Self> {
+        let mut socket = open(config, Request::Host { version: 1, device: device.into() }).await?;
+        match receive(&mut socket).await? {
+            Event::Ready=>{},Event::Error{code}=>bail!("signaling registration rejected: {code}"),_=>bail!("unexpected signaling registration response"),
+        }
+        let (outgoing, mut requests) = tokio::sync::mpsc::channel::<Request>(128);
+        let (accepted, incoming) = tokio::sync::mpsc::channel(crate::shared_host::MAX_SESSIONS);
+        let task = tokio::spawn(async move {
+            let mut sessions = std::collections::HashMap::<String, tokio::sync::mpsc::Sender<Value>>::new();
+            loop {
+                tokio::select! {
+                    request=requests.recv()=>{
+                        let Some(request)=request else{break;};
+                        if let Request::Leave{session}=&request {sessions.remove(session);}
+                        let Ok(text)=serde_json::to_string(&request) else{break;};
+                        if socket.send(Message::Text(text.into())).await.is_err(){break;}
+                    },
+                    event=receive(&mut socket)=>{
+                        match event {
+                            Ok(Event::Connected{session,stun})=>{
+                                let Ok(ice)=crate::direct_ice::InternetIce::new(stun) else{break;};
+                                if sessions.len()>=crate::shared_host::MAX_SESSIONS || sessions.contains_key(&session) {break;}
+                                let (send,receive)=tokio::sync::mpsc::channel(64);
+                                sessions.insert(session.clone(),send);
+                                let connection=Connection{transport:Box::new(RoutedTransport{outgoing:outgoing.clone(),incoming:receive,session:session.clone(),closed:false}),session,ice};
+                                if accepted.try_send(connection).is_err(){break;}
+                            },
+                            Ok(Event::Signal{session,body})=>{
+                                if let Some(target)=sessions.get(&session) {
+                                    if target.try_send(body).is_err() {
+                                        sessions.remove(&session);
+                                        let request=Request::Leave{session};
+                                        if socket.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.is_err(){break;}
+                                    }
+                                }
+                            },
+                            Ok(Event::Ended{session})=>{sessions.remove(&session);},
+                            _=>break,
+                        }
+                    },
+                }
+            }
+            let _ = timeout(Duration::from_secs(1), socket.close(None)).await;
+        });
+        Ok(Self { incoming, task })
+    }
+    pub async fn accept(&mut self) -> Result<Connection> {
+        self.incoming.recv().await.context("self-hosted signaling listener disconnected")
+    }
+    pub async fn close(&mut self) {
+        self.task.abort();
+        let _ = (&mut self.task).await;
+        self.incoming.close();
+    }
+}
+impl Drop for Listener { fn drop(&mut self) { self.task.abort(); } }
+struct RoutedTransport {
+    outgoing: tokio::sync::mpsc::Sender<Request>,
+    incoming: tokio::sync::mpsc::Receiver<Value>,
+    session: String,
+    closed: bool,
+}
+#[async_trait::async_trait]
+impl Transport for RoutedTransport {
+    async fn send(&mut self, body: Value) -> Result<()> {
+        ensure!(!self.closed, "signaling session closed");
+        timeout(Duration::from_secs(1), self.outgoing.send(Request::Signal{session:self.session.clone(),body})).await.context("signaling queue timed out")?.context("signaling listener closed")
+    }
+    async fn receive(&mut self) -> Result<Value> { self.incoming.recv().await.context("native peer disconnected") }
+    async fn close(&mut self) {
+        if !self.closed {
+            self.closed=true;
+            let _=timeout(Duration::from_secs(1),self.outgoing.send(Request::Leave{session:self.session.clone()})).await;
+            self.incoming.close();
+        }
+    }
+}
+impl Drop for RoutedTransport {
+    fn drop(&mut self) {
+        if !self.closed { let _=self.outgoing.try_send(Request::Leave{session:self.session.clone()}); }
+    }
+}
