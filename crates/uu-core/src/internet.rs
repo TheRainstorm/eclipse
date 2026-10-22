@@ -79,24 +79,35 @@ pub async fn host(
 ) -> Result<crate::native::HostReport> {
     sharing.validate()?;
     let key = AccessKey::load(&settings.access_key)?;
+    let mut startup_cancel=stop.clone();
     let accepting = async {
         match settings.provider {
             Provider::Uu => {
-                let mut host = uu::Host::online(&config, settings.development_relay).await?;
+                let mut host=tokio::select! {
+                    result=tokio::time::timeout(std::time::Duration::from_secs(20),uu::Host::online(&config,settings.development_relay))=>result.context("UU host startup timed out")??,
+                    _=cancelled(&mut startup_cancel)=>anyhow::bail!("sharing cancelled"),
+                };
                 let result = tokio::select! {result=host.accept()=>result,_=cancelled(&mut stop)=>Err(anyhow::anyhow!("sharing cancelled"))};
                 host.close().await;
                 result
             }
             Provider::SelfHosted => {
-                let mut host =
-                    self_hosted::Host::online(&settings.self_hosted()?, &settings.device).await?;
+                let endpoint=settings.self_hosted()?;
+                let mut host=tokio::select! {
+                    result=tokio::time::timeout(std::time::Duration::from_secs(20),self_hosted::Host::online(&endpoint,&settings.device))=>result.context("self-hosted startup timed out")??,
+                    _=cancelled(&mut startup_cancel)=>anyhow::bail!("sharing cancelled"),
+                };
                 let result = tokio::select! {result=host.accept()=>result,_=cancelled(&mut stop)=>Err(anyhow::anyhow!("sharing cancelled"))};
                 host.close().await;
                 result
             }
         }
     };
-    let connection = accepting.await?;
+    let connection = match accepting.await {
+        Ok(connection)=>connection,
+        Err(_) if *stop.borrow()=>return Ok(crate::native::HostReport::default()),
+        Err(error)=>return Err(error),
+    };
     let (mut signal, ice) = Authenticated::new(connection, key, Role::Host);
     let result = crate::native::serve_direct(&mut signal, &ice, sharing, stop, status).await;
     signal.close().await;
@@ -536,6 +547,19 @@ mod tests {
         generated_session(viewer, host, ice).await;
     }
 
+    #[tokio::test]
+    async fn stopping_during_provider_tls_startup_does_not_wait_for_network_timeout() {
+        let root=Fixture(std::env::temp_dir().join(format!("eclipse-cancel-{}",uuid::Uuid::new_v4())));
+        std::fs::create_dir(&root.0).unwrap();let key=root.0.join("key");AccessKey::create(&key).unwrap();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let settings=Settings{server:listener.local_addr().unwrap().to_string(),device:"generated".into(),access_key:key.clone(),server_token:key,..Default::default()};
+        let config=crate::Config{data_dir:root.0.clone(),state_dir:root.0.clone(),signaling_host:"unused.invalid".into()};
+        let sharing=crate::native::SharingConfig{source:crate::native::CaptureSource::Synthetic{width:320,height:180,fps:30},fps:30,bitrate_kbps:1200,encoder:crate::native::EncoderPreference::Software,session_limit:None,allow_input:false,audio:None,clipboard:None};
+        let (stop,rx)=watch::channel(false);let task=tokio::spawn(host(settings,config,sharing,rx,None));
+        let (_held,_)=tokio::time::timeout(Duration::from_secs(2),listener.accept()).await.unwrap().unwrap();
+        stop.send_replace(true);
+        assert_eq!(tokio::time::timeout(Duration::from_millis(500),task).await.unwrap().unwrap().unwrap().sent,0);
+    }
     struct Fixture(std::path::PathBuf);
     impl Drop for Fixture {
         fn drop(&mut self) {
