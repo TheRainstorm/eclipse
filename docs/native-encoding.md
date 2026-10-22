@@ -26,7 +26,7 @@ COM、Media Foundation、编码器和缓冲均在专用线程创建、使用和�
 
 ## Intel VPL：HEVC、AV1 和 VBR
 
-编码库还提供 Intel VPL 硬件后端，支持驱动实际具备的 H.264、HEVC Main 8-bit 和 AV1 Main 8-bit 编码，以及 CBR / VBR。H.264 CBR 默认继续使用上面的 VA-API / MFT；其它组合由 Intel VPL 执行。这里描述编码库能力，具体连接格式还需要原生协议两端共同协商；UU 兼容模式的主机编码选择由其服务端决定。
+编码库还提供 Intel VPL 硬件后端，支持驱动实际具备的 H.264、HEVC Main 8-bit 和 AV1 Main 8-bit 编码，以及 CBR / VBR。H.264 CBR 默认继续使用上面的 VA-API / MFT；其它组合由 Intel VPL 执行。在“共享本机”设置编码格式、码率模式和 VBR 峰值；IP、UU 连接服务、自建连接服务共用这些设置。控制端仅在生成测试流实际解码成功后通过 SDP 声明 HEVC / AV1 支持。所选格式不受控制端支持或驱动不满足请求时，连接显示准备失败原因；UU 兼容模式的主机编码选择仍由其服务端决定。
 
 VPL 使用单帧异步深度、无 B 帧、速度优先和有限 VBV；低延迟 BRC 等额外调优由驱动能力决定。初始化后再次读取实际配置，若驱动把帧率、尺寸、编码或码率模式改成不符合请求的值，直接拒绝。仅接受硬件实现，拒绝部分软件加速。恢复关键帧携带实际编码器的参数集，重新设码率后请求新的关键帧；不会伪造参数或把 HEVC / AV1 失败伪装成软件 H.264 成功。
 
@@ -81,3 +81,9 @@ cargo run --release -p uu-media --example encoder_probe --features vaapi -- \
 Intel Arc 核显已通过720p/1080p/4K生成画面的实际硬编与硬解、冷IDR恢复、码率调整、尺寸和色彩检查，后端明确报告 Intel Quick Sync Video H.264 Encoder MFT。该接口当前仍有CPU转换、缓冲复制和驱动等待，不能把硬编可用等同于端到端最低延迟。一次4K BGRA生成测试的编码调用中位约25–35ms，尚不能据此承诺持续4K60。
 
 AMD的硬件MFT编码输出已通过软件解码检查，但当前额外的冷IDR硬件解码检查仍有不出首帧的情况；不将它描述为双硬件互通验收。不同驱动的首次恢复行为仍需按目标硬件验证。
+
+## 原生协议与兼容
+
+默认仍为 H.264，Offer JSON 不增加旧主机无法识别的字段；格式能力放入标准 SDP。H.264 Answer 保持旧字段，非 H.264 连接才使用可选 codec 字段。HEVC 按 RFC 7798 单 NAL / FU 发送，AV1 按 AOMedia RTP 规范聚合和分片；三种格式共用完整访问单元、NACK / RTX、PLI、源时间戳和呈现管线。AV1 重组后恢复明确的 OBU 长度，不把 RTP 聚合头交给解码器。
+
+原生共享界面当前提供 1–60 FPS 和既有 4K60 尺寸范围。编码库更大的格式或帧率参数不代表这条连接已经协商或实际达到相同性能。CLI 三种主机入口均支持 `--codec h264|hevc|av1 --rate-control cbr|vbr --peak-kbps N`；非 H.264 或 VBR 需选择 `--encoder hardware` 或 `auto`。新格式和 VBR 的真实性能还取决于目标硬件与驱动，不以接口模拟测试代替实机验证。

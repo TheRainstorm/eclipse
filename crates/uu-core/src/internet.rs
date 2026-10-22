@@ -491,7 +491,7 @@ mod tests {
         let (host_stop, host_rx) = watch::channel(false);
         let (viewer_stop, viewer_rx) = watch::channel(false);
         let host_ice = ice.clone();
-        let sharing = crate::native::SharingConfig {
+        let sharing = crate::native::SharingConfig {codec:Default::default(),rate_control:Default::default(),
             source: crate::native::CaptureSource::Synthetic {
                 width: 320,
                 height: 180,
@@ -563,7 +563,7 @@ mod tests {
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let settings=Settings{server:listener.local_addr().unwrap().to_string(),device:"generated".into(),access_key:key.clone(),server_token:key,..Default::default()};
         let config=crate::Config{data_dir:root.0.clone(),state_dir:root.0.clone(),signaling_host:"unused.invalid".into()};
-        let sharing=crate::native::SharingConfig{source:crate::native::CaptureSource::Synthetic{width:320,height:180,fps:30},fps:30,bitrate_kbps:1200,encoder:crate::native::EncoderPreference::Software,session_limit:None,allow_input:false,audio:None,clipboard:None};
+        let sharing=crate::native::SharingConfig{codec:Default::default(),rate_control:Default::default(),source:crate::native::CaptureSource::Synthetic{width:320,height:180,fps:30},fps:30,bitrate_kbps:1200,encoder:crate::native::EncoderPreference::Software,session_limit:None,allow_input:false,audio:None,clipboard:None};
         let (stop,rx)=watch::channel(false);let task=tokio::spawn(host(settings,config,sharing,rx,None));
         let (_held,_)=tokio::time::timeout(Duration::from_secs(2),listener.accept()).await.unwrap().unwrap();
         stop.send_replace(true);

@@ -169,7 +169,7 @@ fn snapshot(stats: &MediaStats, elapsed: Duration) -> serde_json::Value {
         "audio_injected_loss":stats.audio.injected_loss.load(Ordering::Relaxed),"audio_level":stats.audio.level_x10000.load(Ordering::Relaxed) as f64/10000.0,
         "at_ms":elapsed.as_millis() as u64,"width":width,"height":height,
         "native_timing":stats.native_timing.snapshot(),
-        "backend":stats.backend(),"decoded":stats.decoded_total.load(Ordering::Relaxed),
+        "backend":stats.backend(),"codec":stats.codec.lock().unwrap().clone(),"decoded":stats.decoded_total.load(Ordering::Relaxed),
         "rx_fps":stats.src_fps(),"decode_fps":stats.dec_fps(),"decode_ms":stats.decode_ms(),
         "bitrate_kbps":stats.bitrate_kbps.load(Ordering::Relaxed),
         "rtt_us":stats.rtt_us.load(Ordering::Relaxed),"rtt_deviation_us":stats.rtt_deviation_us.load(Ordering::Relaxed),

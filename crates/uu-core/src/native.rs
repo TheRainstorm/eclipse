@@ -25,7 +25,6 @@ use tokio::{
     time::timeout,
 };
 use webrtc::{
-    media::Sample,
     peer_connection::{
         peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription,
@@ -36,6 +35,7 @@ const MAX_SIGNAL: usize = 256 * 1024;
 pub use uu_capture::CaptureSource;
 pub use uu_media::audio_capture::Source as AudioSource;
 pub use uu_media::encoder::Preference as EncoderPreference;
+pub use uu_proto::media::VideoCodec;
 
 pub fn hardware_encoding_compiled() -> bool {
     uu_media::encoder::hardware_compiled()
@@ -101,6 +101,8 @@ struct Offer {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Answer {
+    #[serde(default,skip_serializing_if="is_h264")]
+    codec:VideoCodec,
     version: u32,
     sdp: RTCSessionDescription,
     width: u32,
@@ -110,6 +112,8 @@ struct Answer {
     view_only: bool,
 }
 
+fn is_h264(codec:&VideoCodec)->bool{*codec==VideoCodec::H264}
+
 fn validate_video(width: u32, height: u32, fps: u32) -> Result<()> {
     ensure!(
         (2..=8192).contains(&width)
@@ -117,12 +121,12 @@ fn validate_video(width: u32, height: u32, fps: u32) -> Result<()> {
             && width % 2 == 0
             && height % 2 == 0
             && (1..=60).contains(&fps),
-        "invalid native software video dimensions or frame rate"
+        "invalid native video dimensions or frame rate"
     );
     let macroblocks = width.div_ceil(16) as u64 * height.div_ceil(16) as u64;
     ensure!(
         macroblocks <= 36_864 && macroblocks * fps as u64 <= 2_073_600,
-        "native source exceeds negotiated H264 level 5.2; choose a smaller source or frame rate"
+        "native source exceeds the supported 4K60 geometry; choose a smaller source or frame rate"
     );
     Ok(())
 }
@@ -165,6 +169,8 @@ pub(crate) async fn write_message<T: Serialize>(
 }
 
 pub struct HostConfig {
+    pub codec:VideoCodec,
+    pub rate_control:uu_media::encoder::RateControl,
     /// Concrete local interface, loopback by default. No firewall rules are changed.
     pub bind: SocketAddr,
     pub source: uu_capture::CaptureSource,
@@ -184,6 +190,8 @@ pub struct HostConfig {
 /// Capture and permissions shared by LAN and internet sessions.
 #[derive(Clone)]
 pub struct SharingConfig {
+    pub codec:VideoCodec,
+    pub rate_control:uu_media::encoder::RateControl,
     pub source: CaptureSource,
     pub fps: u32,
     pub bitrate_kbps: u32,
@@ -193,16 +201,18 @@ pub struct SharingConfig {
     pub audio: Option<AudioSource>,
     pub clipboard: Option<Arc<crate::clipboard::Clipboard>>,
 }
-impl From<HostConfig> for SharingConfig {
-    fn from(c: HostConfig) -> Self {
-        Self { source:c.source, fps:c.fps, bitrate_kbps:c.bitrate_kbps, encoder:c.encoder,
-            session_limit:c.session_limit, allow_input:c.allow_input, audio:c.audio, clipboard:c.clipboard }
-    }
+impl From<&HostConfig> for SharingConfig {
+    fn from(c:&HostConfig)->Self {Self{codec:c.codec,rate_control:c.rate_control,source:c.source.clone(),fps:c.fps,bitrate_kbps:c.bitrate_kbps,encoder:c.encoder,
+        session_limit:c.session_limit,allow_input:c.allow_input,audio:c.audio,clipboard:c.clipboard.clone()}}
 }
+impl From<HostConfig> for SharingConfig {fn from(c:HostConfig)->Self{Self::from(&c)}}
 impl SharingConfig {
     pub fn validate(&self) -> Result<()> {
         ensure!((1..=60).contains(&self.fps) && (64..=100_000).contains(&self.bitrate_kbps),
-            "native H.264 host needs 1..=60 fps and 64..=100000 kbps");
+            "native host needs 1..=60 fps and 64..=100000 kbps");
+        let peak=self.rate_control.peak(self.bitrate_kbps);
+        ensure!(peak>=self.bitrate_kbps && peak<=200_000,"VBR 峰值须不小于目标且不大于 200 Mbps");
+        ensure!(self.encoder!=EncoderPreference::Software || (self.codec==VideoCodec::H264 && self.rate_control==uu_media::encoder::RateControl::Cbr),"所选编码格式或 VBR 需要硬件编码");
         let monitor = matches!(self.source,CaptureSource::Primary|CaptureSource::Desktop|CaptureSource::Monitor(_));
         ensure!(!self.allow_input || monitor, "desktop input requires an explicitly shared monitor");
         ensure!(self.audio != Some(AudioSource::System) || monitor, "system audio requires an explicitly shared monitor");
@@ -236,6 +246,7 @@ pub async fn view_direct(signaling: &mut dyn SessionSignaling, ice: &crate::dire
     let _lifetime=ViewerLifetime(stats.clone());
     stats.capabilities.set(0);
     stats.native_input_available.store(false, Ordering::Release);
+    tokio::select! {_=crate::native_media::receive_codecs(&stats)=>{},_=cancelled(&mut stop)=>return Ok(())}
     let result=loop {
         let frames=frames.renew();
         stats.native_media_epoch.store(frames.generation(),Ordering::Release);
@@ -314,14 +325,7 @@ pub async fn serve_with_status(config: HostConfig, mut stop: watch::Receiver<boo
         !config.bind.ip().is_unspecified() && !config.bind.ip().is_multicast(),
         "choose a concrete native host interface"
     );
-    ensure!(
-        (1..=60).contains(&config.fps) && (64..=100_000).contains(&config.bitrate_kbps),
-        "native H.264 host needs 1..=60 fps and 64..=100000 kbps"
-    );
-    ensure!(!config.allow_input || matches!(config.source,uu_capture::CaptureSource::Primary|uu_capture::CaptureSource::Desktop|uu_capture::CaptureSource::Monitor(_)),
-        "desktop input can only be enabled for a real whole-monitor source");
-    ensure!(config.audio!=Some(uu_media::audio_capture::Source::System)||matches!(config.source,uu_capture::CaptureSource::Primary|uu_capture::CaptureSource::Desktop|uu_capture::CaptureSource::Monitor(_)),
-        "system audio requires an explicitly shared real monitor source");
+    SharingConfig::from(&config).validate()?;
     let listener = TcpListener::bind(config.bind)
         .await
         .context("cannot bind native signaling listener")?;
@@ -503,7 +507,15 @@ async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling,
         config.source=tokio::task::spawn_blocking(move||displays.prepare()).await??;
     }
     progress(&status,HostStatus::Preparing);
-    send_video(peer, signaling, config, stop, offer, status,displays).await
+    let mut answered=false;
+    let result=send_video(peer,signaling,config,stop,offer,status,displays,&mut answered).await;
+    if let Err(error)=&result {
+        if !answered {
+            let reason=format!("{error:#}").chars().map(|c|if c.is_control(){' '}else{c}).take(512).collect::<String>();
+            let _=timeout(Duration::from_secs(1),signaling.send(serde_json::json!({"version":1,"preparation_error":reason}))).await;
+        }
+    }
+    result
 }
 
 async fn send_video(
@@ -514,9 +526,11 @@ async fn send_video(
     offer: Offer,
     status: Option<watch::Sender<HostStatus>>,
     displays:Option<Arc<crate::native_displays::Host>>,
+    answered:&mut bool,
 ) -> Result<HostReport> {
     let refresh = Arc::new(AtomicBool::new(false));
-    let track = peer.sender(refresh.clone()).await?;
+    ensure!(crate::native_media::offers_codec(&offer.sdp,config.codec),"控制端未声明支持 {:?} 解码，请更新控制端或在主机选择 H.264",config.codec);
+    let mut track = peer.sender_for_codec(refresh.clone(),config.codec).await?;
     let audio_mode=if config.audio.is_some(){crate::native_media::offered_audio(&offer.sdp)?}else{None};
     let mut audio_sender=if let Some(red)=audio_mode {Some(peer.audio_sender(red).await?)}else{None};
     match stream.lan_peer() {
@@ -524,7 +538,7 @@ async fn send_video(
         None => peer.remote_direct(offer.sdp).await?,
     }
     // Authentication and a valid media offer precede capture access.
-    let (fps,kbps,preference)=(config.fps,config.bitrate_kbps,config.encoder);
+    let (fps,kbps,preference,codec,rate_control)=(config.fps,config.bitrate_kbps,config.encoder,config.codec,config.rate_control);
     struct CancelCaptureOpen(Arc<AtomicBool>);
     impl Drop for CancelCaptureOpen { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
     let capture_cancel = CancelCaptureOpen(Arc::new(AtomicBool::new(false)));
@@ -533,7 +547,7 @@ async fn send_video(
         result=tokio::task::spawn_blocking(move || -> Result<_> {
             let capture=uu_capture::open_with_options(&config.source,capture_options)?;
             let (width,height)=capture.resolution();validate_video(width,height,fps)?;
-            let encoder=uu_media::encoder::create(uu_media::encoder::Settings {codec:uu_proto::media::VideoCodec::H264,rate_control:uu_media::encoder::RateControl::Cbr,
+            let encoder=uu_media::encoder::create(uu_media::encoder::Settings {codec,rate_control,
                 width,height,fps,bitrate_kbps:kbps,preference,
             }).context("无法为当前显示源初始化所选编码器；不会更改系统显示设置")?;
             Ok((capture,encoder))
@@ -551,6 +565,7 @@ async fn send_video(
     controls.set_displays(displays.clone());
     controls.attach(&peer.pc);
     let answer = Answer {
+        codec:config.codec,
         version: 1,
         sdp: peer.description(false).await?,
         width,
@@ -560,6 +575,7 @@ async fn send_video(
         view_only: true,
     };
     stream.send(serde_json::to_value(&answer)?).await?;
+    *answered=true;
     let connected=tokio::select! {result=peer.connected()=>Some(result),_=cancelled(&mut stop)=>None};
     match connected {
         Some(Ok(()))=>{},
@@ -581,7 +597,6 @@ async fn send_video(
     }else{(None,None,None)};
     progress(&status, HostStatus::Streaming { width, height, fps: config.fps, audio:audio_label.clone(),encoder:encoder_label.clone() });
     let mut report = HostReport::default();
-    let mut previous = None;
     let deadline = async {
         if let Some(limit) = config.session_limit {
             tokio::time::sleep(limit).await;
@@ -634,11 +649,8 @@ async fn send_video(
                 },
                 encoded = producer.frames.recv() => {
                     let encoded = encoded.context("native capture stopped unexpectedly")??;
-                    let duration = previous.map(|pts:u64| Duration::from_micros(encoded.pts.0.saturating_sub(pts)))
-                        .unwrap_or_else(|| Duration::from_secs_f64(1.0 / config.fps as f64));
-                    previous = Some(encoded.pts.0);
                     let bytes = encoded.data.len() as u64;
-                    track.write_sample(&Sample { data: encoded.data, duration, ..Default::default() }).await?;
+                    track.frame(&encoded).await?;
                     report.sent += 1; report.bytes += bytes;
                 }
             }
@@ -679,6 +691,7 @@ pub async fn view_with_input(invitation:&Invitation,frames:FrameSender,stats:Arc
 
 async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaStats>,mut stop:watch::Receiver<bool>,mut input:Option<crate::native_input::NativeInputReceiver>)->Result<()> {
     let _lifetime=ViewerLifetime(stats.clone());
+    tokio::select! {_=crate::native_media::receive_codecs(&stats)=>{},_=cancelled(&mut stop)=>return Ok(())}
     stats.connection.set_service("IP 直连");
     stats.capabilities.set(0);
     stats.native_input_available.store(false,Ordering::Release);
@@ -726,9 +739,12 @@ async fn receive_session(
         version: 1,
         sdp: peer.description(true).await?,
     })?).await?;
-    let answer: Answer = serde_json::from_value(timeout(crate::native_signaling::PREPARATION_WAIT,stream.receive_answer()).await
-        .context("等待被控端屏幕共享授权或编码器准备超时")??)
-        .map_err(|_| anyhow::anyhow!("invalid native answer"))?;
+    let message=timeout(crate::native_signaling::PREPARATION_WAIT,stream.receive_answer()).await
+        .context("等待被控端屏幕共享授权或编码器准备超时")??;
+    if let Some(reason)=message.get("preparation_error").and_then(|v|v.as_str()) {
+        bail!("被控端准备失败：{}",reason.chars().take(512).collect::<String>());
+    }
+    let answer:Answer=serde_json::from_value(message).map_err(|_|anyhow::anyhow!("invalid native answer"))?;
     ensure!(
         answer.version == 1 && answer.view_only,
         "unsupported native session capabilities"
@@ -736,7 +752,7 @@ async fn receive_session(
     validate_video(answer.width, answer.height, answer.fps)?;
     // Complete dimension-dependent driver work before setting remote SDP can
     // start ICE/DTLS and release the first burst of video into the AU queue.
-    peer.prepare_video(answer.width, answer.height, &stats).await?;
+    peer.prepare_video(answer.width, answer.height, answer.codec,&stats).await?;
     stats.configured_fps.store(answer.fps,Ordering::Release);
     match stream.lan_peer() {
         Some(ip) => peer.remote(answer.sdp, ip).await?,
@@ -787,7 +803,7 @@ mod tests {
             "uu-video-{}.eclipse-invite.json",
             uuid::Uuid::new_v4()
         )));
-        let config = HostConfig {
+        let config = HostConfig {codec:Default::default(),rate_control:Default::default(),
             bind: "127.0.0.1:0".parse().unwrap(),
             source: uu_capture::CaptureSource::Synthetic {
                 width: 320,
@@ -818,6 +834,14 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn default_answer_preserves_the_legacy_strict_schema(){
+        let legacy=serde_json::json!({"version":1,"sdp":{"type":"answer","sdp":"v=0\r\n"},"width":128,"height":128,"fps":60,"bitrate_kbps":2000,"view_only":true});
+        let answer:Answer=serde_json::from_value(legacy.clone()).unwrap();assert_eq!(answer.codec,VideoCodec::H264);
+        assert_eq!(serde_json::to_value(&answer).unwrap(),legacy);
+        let mut extended=legacy;extended["codec"]=serde_json::json!("av1");let answer:Answer=serde_json::from_value(extended.clone()).unwrap();
+        assert_eq!(answer.codec,VideoCodec::Av1);assert_eq!(serde_json::to_value(answer).unwrap(),extended);
+    }
     #[tokio::test]
     async fn synthetic_source_cannot_authorize_system_audio() {
         let (mut config,file)=config();config.audio=Some(AudioSource::System);

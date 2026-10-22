@@ -26,9 +26,15 @@ impl Encoding {
     }
 }
 
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum RateMode {#[default] Cbr,Vbr}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Sharing {
+    pub codec:native::VideoCodec,
+    pub rate_control:RateMode,
+    pub peak_bitrate_mbps:u32,
     pub name: String,
     pub monitor: String,
     pub fps: u32,
@@ -44,6 +50,7 @@ pub struct Sharing {
 impl Default for Sharing {
     fn default() -> Self {
         Self {
+            codec:Default::default(),rate_control:Default::default(),peak_bitrate_mbps:36,
             name: "Eclipse".into(),
             monitor: String::new(),
             fps: 60,
@@ -60,7 +67,7 @@ impl Default for Sharing {
 }
 impl Sharing {
     pub fn native(&self) -> SharingConfig {
-        SharingConfig {
+        SharingConfig {codec:self.codec,rate_control:match self.rate_control {RateMode::Cbr=>uu_media::encoder::RateControl::Cbr,RateMode::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:self.peak_bitrate_mbps*1000}},
             source: if self.monitor == crate::native_displays::ALL_MONITORS {
                 native::CaptureSource::Desktop
             } else if self.monitor.is_empty() {
@@ -80,7 +87,7 @@ impl Sharing {
     pub fn validate(&self) -> Result<()> {
         valid_name(&self.name)?;
         ensure!(
-            self.monitor.len() <= 256 && !self.monitor.chars().any(char::is_control),
+            self.peak_bitrate_mbps<=200 && self.peak_bitrate_mbps>0 && self.monitor.len() <= 256 && !self.monitor.chars().any(char::is_control),
             "屏幕名称无效"
         );
         ensure!(
@@ -90,6 +97,7 @@ impl Sharing {
                 && self.discovery_port > 0,
             "共享帧率、码率或端口无效"
         );
+        self.native().validate()?;
         Ok(())
     }
 }
@@ -556,6 +564,17 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_codec_and_rate_policy_survives_storage_and_rejects_invalid_profiles(){
+        let legacy:Sharing=serde_json::from_value(serde_json::json!({"name":"generated"})).unwrap();
+        assert_eq!(legacy.codec,native::VideoCodec::H264);assert_eq!(legacy.rate_control,RateMode::Cbr);
+        let mut sharing=legacy;sharing.codec=native::VideoCodec::Av1;sharing.rate_control=RateMode::Vbr;sharing.bitrate_mbps=20;sharing.peak_bitrate_mbps=35;
+        let restored:Sharing=serde_json::from_value(serde_json::to_value(&sharing).unwrap()).unwrap();restored.validate().unwrap();
+        assert_eq!(restored.native().codec,native::VideoCodec::Av1);assert_eq!(restored.native().rate_control,uu_media::encoder::RateControl::Vbr{peak_kbps:35000});
+        sharing.peak_bitrate_mbps=19;assert!(sharing.validate().is_err());sharing.peak_bitrate_mbps=35;
+        sharing.encoding=Encoding::Software;assert!(sharing.validate().is_err());
+        sharing.bitrate_mbps=u32::MAX;assert!(sharing.validate().is_err());
+    }
     #[test]
     fn profiles_keep_distinct_routes_and_service_credentials_and_bind_only_verified_identity() {
         let root = std::env::temp_dir().join(format!("eclipse-book-{}", uuid::Uuid::new_v4()));

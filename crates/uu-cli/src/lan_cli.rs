@@ -34,6 +34,8 @@ pub enum Command {
     },
     /// Explicit foreground server; stdin commands confirm pairing and stop it.
     Host {
+        #[command(flatten)]
+        video:super::NativeVideoOptions,
         #[arg(long, default_value = "127.0.0.1:47998")]
         bind: SocketAddr,
         /// Enable UDP discovery on this explicit local address.
@@ -132,6 +134,7 @@ pub async fn run(command: Command, dir: PathBuf) -> Result<()> {
             .await?;
         }
         Command::Host {
+            video,
             bind,
             discovery_bind,
             name,
@@ -145,6 +148,7 @@ pub async fn run(command: Command, dir: PathBuf) -> Result<()> {
             bitrate_kbps,
             encoder,
         } => {
+            let (codec,rate_control)=video.policy(bitrate_kbps)?;
             let source = if synthetic {
                 native::CaptureSource::Synthetic {
                     width: synthetic_width,
@@ -156,7 +160,7 @@ pub async fn run(command: Command, dir: PathBuf) -> Result<()> {
             } else {
                 native::CaptureSource::Primary
             };
-            host(lan::Config {
+            host(lan::Config {codec,rate_control,
                 name,
                 bind,
                 discovery_bind,

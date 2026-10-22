@@ -74,7 +74,7 @@ fn main() -> anyhow::Result<()> {
         let state = Arc::new(Clipboard::default());
         state.enabled.store(true, Ordering::Release);
         clipboard::start_host(state.clone(), 0)?;
-        let config = HostConfig {
+        let config = HostConfig {codec:Default::default(),rate_control:Default::default(),
             bind: "127.0.0.1:0".parse()?,
             source: CaptureSource::Primary,
             invitation_file: invitation,

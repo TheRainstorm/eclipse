@@ -317,7 +317,7 @@ impl HostUi {
                         if forward.send(Event::Legacy(event)).is_err(){break;}
                     }});
                     let mut tasks=tokio::task::JoinSet::new();
-                    let lan_config=lan::Config{name:sharing.name.clone(),bind:([0,0,0,0],sharing.service_port).into(),
+                    let lan_config=lan::Config{codec:sharing.native().codec,rate_control:sharing.native().rate_control,name:sharing.name.clone(),bind:([0,0,0,0],sharing.service_port).into(),
                         discovery_bind:Some(([0,0,0,0],sharing.discovery_port).into()),data_dir:config.at("native-lan"),
                         source:sharing.native().source,
                         fps:sharing.fps,bitrate_kbps:sharing.bitrate_mbps*1000,encoder:sharing.encoding.native(),

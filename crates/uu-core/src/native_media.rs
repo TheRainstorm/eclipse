@@ -4,6 +4,7 @@ use crate::{
     rtx::RepairBus,
 };
 use anyhow::{ensure, Context, Result};
+use uu_proto::media::VideoCodec;
 use std::{
     net::{IpAddr, SocketAddr},
     sync::{
@@ -34,7 +35,7 @@ use webrtc::{
         rtp_transceiver_direction::RTCRtpTransceiverDirection,
         RTCRtpTransceiverInit,
     },
-    track::track_local::{track_local_static_sample::TrackLocalStaticSample,track_local_static_rtp::TrackLocalStaticRTP,TrackLocalWriter, TrackLocal},
+    track::track_local::{track_local_static_rtp::TrackLocalStaticRTP,TrackLocalWriter, TrackLocal},
     util::vnet::net::Net,
 };
 
@@ -145,6 +146,41 @@ fn h264_capability() -> RTCRtpCodecCapability {
     }
 }
 
+fn video_capability(codec:VideoCodec)->RTCRtpCodecCapability {
+    let mut capability=h264_capability();
+    match codec {
+        VideoCodec::H264=>{},
+        VideoCodec::Hevc=>{capability.mime_type="video/H265".into();capability.sdp_fmtp_line="profile-id=1;tier-flag=1;level-id=156;sprop-max-don-diff=0".into();},
+        VideoCodec::Av1=>{capability.mime_type="video/AV1".into();capability.sdp_fmtp_line="profile=0;level-idx=14;tier=1".into();},
+    }capability
+}
+pub(crate) fn offers_codec(description:&RTCSessionDescription,codec:VideoCodec)->bool{
+    let name=match codec {VideoCodec::H264=>"H264/90000",VideoCodec::Hevc=>"H265/90000",VideoCodec::Av1=>"AV1/90000"};
+    let mut video=false;let mut payloads=Vec::new();
+    for line in description.sdp.lines().map(str::trim){
+        if let Some(media)=line.strip_prefix("m="){
+            video=media.starts_with("video ");payloads.clear();
+            if video {payloads.extend(media.split_whitespace().skip(3).filter_map(|v|v.parse::<u8>().ok()));}
+        }
+        if video {if let Some(value)=line.strip_prefix("a=rtpmap:"){
+            if let Some((pt,format))=value.split_once(' ') {
+                if format.eq_ignore_ascii_case(name)&&pt.parse::<u8>().ok().is_some_and(|pt|payloads.contains(&pt)){return true;}
+            }
+        }}
+    }false
+}
+pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
+    if let Some(codecs)=stats.native_codec_capabilities.get(){return codecs.clone();}
+    let mut codecs=vec![VideoCodec::H264];
+    for codec in [VideoCodec::Hevc,VideoCodec::Av1] {
+        let result=timeout(Duration::from_secs(5),tokio::task::spawn_blocking(move||match codec {
+            VideoCodec::Hevc=>uu_media::hevc::probe_decoder(),VideoCodec::Av1=>uu_media::av1::probe_decoder(),VideoCodec::H264=>unreachable!()
+        })).await;
+        if matches!(result,Ok(Ok(Ok(())))){codecs.push(codec);}
+    }
+    let _=stats.native_codec_capabilities.set(codecs.clone());codecs
+}
+
 pub(crate) struct NativePeer {
     _connection_monitor:Option<crate::connection_info::Monitor>,
     pub pc: Arc<RTCPeerConnection>,
@@ -230,14 +266,16 @@ impl NativePeer {
     async fn build(settings: SettingEngine, mux: Option<Arc<UDPMuxDefault>>, configuration: RTCConfiguration,
         stats: Option<Arc<MediaStats>>, sender: bool) -> Result<Self> {
         let mut media = MediaEngine::default();
-        media.register_codec(
-            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
-                capability: h264_capability(),
-                payload_type: 102,
-                ..Default::default()
-            },
-            RTPCodecType::Video,
-        )?;
+        let codecs=match &stats {Some(stats) if !sender=>receive_codecs(stats).await,_=>vec![VideoCodec::H264,VideoCodec::Hevc,VideoCodec::Av1]};
+        for codec in codecs {
+            let pt=match codec {VideoCodec::H264=>102,VideoCodec::Hevc=>104,VideoCodec::Av1=>106};
+            media.register_codec(webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
+                capability:video_capability(codec),payload_type:pt,..Default::default()
+            },RTPCodecType::Video)?;
+            media.register_codec(webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
+                capability:RTCRtpCodecCapability {mime_type:"video/rtx".into(),clock_rate:90_000,sdp_fmtp_line:format!("apt={pt}"),..Default::default()},payload_type:pt+1,..Default::default()
+            },RTPCodecType::Video)?;
+        }
         media.register_codec(
             webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
                 capability: opus_capability(false), payload_type: 111, ..Default::default()
@@ -246,19 +284,6 @@ impl NativePeer {
         media.register_codec(webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
             capability:opus_capability(true),payload_type:112,..Default::default()
         },RTPCodecType::Audio)?;
-        media.register_codec(
-            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: "video/rtx".into(),
-                    clock_rate: 90_000,
-                    sdp_fmtp_line: "apt=102".into(),
-                    ..Default::default()
-                },
-                payload_type: 103,
-                ..Default::default()
-            },
-            RTPCodecType::Video,
-        )?;
         let repairs = RepairBus::new(stats.clone());
         let mut registry = if sender {
             register_default_interceptors(Registry::new(), &mut media)?
@@ -354,10 +379,11 @@ impl NativePeer {
         })).await?;
         Ok(())
     }
-    pub async fn prepare_video(&self, width: u32, height: u32, stats: &MediaStats) -> Result<()> {
+    pub async fn prepare_video(&self, width: u32, height: u32, codec:VideoCodec,stats: &MediaStats) -> Result<()> {
         let mut decoder = self.pending_decoder.lock().unwrap().take()
             .context("native video decoder was already assigned")?;
         let decoder = tokio::task::spawn_blocking(move || {
+            if decoder.codec()!=codec{decoder=uu_media::decoder_for_codec(codec)?;}
             decoder.prepare(width, height)?;
             Ok::<_, uu_media::CodecError>(decoder)
         }).await.context("native decoder preparation task failed")??;
@@ -371,12 +397,8 @@ impl NativePeer {
         tokio::spawn(async move{while sender.read_rtcp().await.is_ok(){}});
         Ok(AudioSender {track,red,sequence:rand::random(),base:rand::random(),previous:None})
     }
-    pub async fn sender(&self, refresh: Arc<AtomicBool>) -> Result<Arc<TrackLocalStaticSample>> {
-        let track = Arc::new(TrackLocalStaticSample::new(
-            h264_capability(),
-            "video_0".into(),
-            "eclipse-native".into(),
-        ));
+    pub async fn sender_for_codec(&self,refresh:Arc<AtomicBool>,codec:VideoCodec)->Result<crate::native_video::Sender>{
+        let track=Arc::new(TrackLocalStaticRTP::new(video_capability(codec),"video_0".into(),"eclipse-native".into()));
         let sender = self
             .pc
             .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
@@ -394,7 +416,7 @@ impl NativePeer {
                 }
             }
         });
-        Ok(track)
+        Ok(crate::native_video::Sender::new(track,codec))
     }
     pub async fn description(&self, offer: bool) -> Result<RTCSessionDescription> {
         let description = if offer {
@@ -481,6 +503,14 @@ impl Drop for NativePeer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn format_support_requires_a_video_payload_in_the_offer(){
+        let description=|sdp:&str|serde_json::from_value(serde_json::json!({"type":"offer","sdp":sdp})).unwrap();
+        let legacy=description("m=video 9 UDP/TLS/RTP/SAVPF 102\r\na=rtpmap:102 H264/90000\r\na=rtpmap:106 AV1/90000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 104\r\na=rtpmap:104 H265/90000\r\n");
+        assert!(offers_codec(&legacy,VideoCodec::H264));assert!(!offers_codec(&legacy,VideoCodec::Av1));assert!(!offers_codec(&legacy,VideoCodec::Hevc));
+        let extended=description("m=video 9 UDP/TLS/RTP/SAVPF 104 106\r\na=rtpmap:104 H265/90000\r\na=rtpmap:106 AV1/90000\r\n");
+        assert!(offers_codec(&extended,VideoCodec::Hevc));assert!(offers_codec(&extended,VideoCodec::Av1));
+    }
     #[tokio::test]
     async fn authenticated_observed_address_changes_advertisement_without_relaxing_peer_validation() {
         let local = "127.0.0.1".parse().unwrap();

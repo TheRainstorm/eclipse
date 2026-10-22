@@ -170,7 +170,7 @@ fn main() -> anyhow::Result<()> {
             if encode_only {keys+=u32::from(coded.is_keyframe);continue;}
             if coded.is_keyframe {
                 keys += 1;
-                color = match settings.codec {VideoCodec::H264=>uu_media::color::from_h264(&coded.data),VideoCodec::Hevc=>uu_media::hevc::sequence(&coded.data).map(|s|s.color),VideoCodec::Av1=>None}
+                color = match settings.codec {VideoCodec::H264=>uu_media::color::from_h264(&coded.data),VideoCodec::Hevc=>uu_media::hevc::sequence(&coded.data).map(|s|s.color),VideoCodec::Av1=>uu_media::av1::sequence(&coded.data).map(|s|s.color)}
                     .context("keyframe needs colour metadata")?;
                 let mut fresh=if settings.codec==VideoCodec::H264{uu_media::software_decoder()?}else{uu_media::decoder_for_codec(settings.codec)?};
                 ensure!(
@@ -181,7 +181,7 @@ fn main() -> anyhow::Result<()> {
                     let mut fresh=if settings.codec==VideoCodec::H264{uu_media::hw::create_hardware_decoder()?}else{uu_media::decoder_for_codec(settings.codec)?};
                     let mut padded = coded.clone();
                     let mut data = coded.data.to_vec();
-                    data.extend_from_slice(&[0; 7]);
+                    if settings.codec!=VideoCodec::Av1 {data.extend_from_slice(&[0; 7]);}
                     padded.data = data.into();
                     ensure!(
                         fresh.decode(&padded).with_context(|| format!("fresh hardware decoder at frame {index}"))?.is_some(),

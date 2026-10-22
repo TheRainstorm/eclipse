@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 use uu_core::{
-    device_book::{Book, Destination, Encoding, Profile, Route, Service, Sharing, Store},
+    device_book::{RateMode,Book, Destination, Encoding, Profile, Route, Service, Sharing, Store},
     device_internet::EndpointStatus,
     device_trust::TrustStore,
     native::{CaptureMonitor, HostStatus},
@@ -1029,6 +1029,23 @@ impl Workspace {
                             .suffix(" Mbps"),
                     );
                 });
+                ui.horizontal_wrapped(|ui|{
+                    ui.label("编码格式");
+                    egui::ComboBox::from_id_salt("shared-codec").selected_text(match self.draft.codec {uu_core::native::VideoCodec::H264=>"H.264",uu_core::native::VideoCodec::Hevc=>"H.265 / HEVC",uu_core::native::VideoCodec::Av1=>"AV1"}).show_ui(ui,|ui|{
+                        ui.selectable_value(&mut self.draft.codec,uu_core::native::VideoCodec::H264,"H.264");
+                        ui.selectable_value(&mut self.draft.codec,uu_core::native::VideoCodec::Hevc,"H.265 / HEVC");
+                        ui.selectable_value(&mut self.draft.codec,uu_core::native::VideoCodec::Av1,"AV1");
+                    });
+                    ui.label("码率模式");
+                    egui::ComboBox::from_id_salt("shared-rate-control").selected_text(match self.draft.rate_control {RateMode::Cbr=>"CBR",RateMode::Vbr=>"VBR"}).show_ui(ui,|ui|{
+                        ui.selectable_value(&mut self.draft.rate_control,RateMode::Cbr,"CBR · 稳定预算");
+                        ui.selectable_value(&mut self.draft.rate_control,RateMode::Vbr,"VBR · 允许峰值");
+                    });
+                });
+                self.draft.peak_bitrate_mbps=self.draft.peak_bitrate_mbps.max(self.draft.bitrate_mbps);
+                if self.draft.rate_control==RateMode::Vbr {ui.horizontal(|ui|{ui.label("峰值码率");ui.add(egui::DragValue::new(&mut self.draft.peak_bitrate_mbps).range(self.draft.bitrate_mbps..=200).suffix(" Mbps"));});}
+                let needs_hardware=self.draft.codec!=uu_core::native::VideoCodec::H264 || self.draft.rate_control==RateMode::Vbr;
+                if needs_hardware && self.draft.encoding==Encoding::Software {self.draft.encoding=Encoding::Auto;}
                 ui.horizontal(|ui| {
                     ui.label("编码加速");
                     egui::ComboBox::from_id_salt("shared-encoder")
@@ -1044,13 +1061,10 @@ impl Workspace {
                                 Encoding::Hardware,
                                 "硬件",
                             );
-                            ui.selectable_value(
-                                &mut self.draft.encoding,
-                                Encoding::Software,
-                                "软件",
-                            );
+                            ui.add_enabled_ui(!needs_hardware,|ui|{ui.selectable_value(&mut self.draft.encoding,Encoding::Software,"软件");});
                         });
                 });
+                if needs_hardware {ui.weak("此组合需要 Intel VPL 硬件编码；控制端需支持相同格式，连接时自动核验。");}
                 ui.checkbox(&mut self.draft.audio, "共享系统声音");
                 ui.checkbox(&mut self.draft.control, "允许已授权设备控制键盘和鼠标");
                 ui.checkbox(&mut self.draft.clipboard, "允许双方启用文本剪贴板");

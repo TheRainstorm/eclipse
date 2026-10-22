@@ -8,7 +8,7 @@ use webrtc::rtp::packet::Packet;
 use uu_proto::media::VideoCodec;
 
 pub(crate) const MAX_PACKETS: usize = 2048;
-const MAX_AU: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_AU: usize = 16 * 1024 * 1024;
 
 pub struct AccessUnit {
     pub data: Bytes,
@@ -26,6 +26,7 @@ pub struct ReceiverStats {
 #[derive(Default)]
 struct Picture {
     timestamp: u32,
+    av1:crate::av1_rtp::Assembler,
     data: Vec<u8>,
     fragment: Option<(u16, Vec<u8>)>,
     damaged: bool,
@@ -334,12 +335,15 @@ impl VideoReceiver {
             let result = match self.codec {
                 VideoCodec::H264 => picture.payload(&packet.payload),
                 VideoCodec::Hevc => picture.hevc_payload(&packet.payload),
-                _ => Err(()),
+                VideoCodec::Av1 => picture.av1.push(&packet.payload),
             };
             picture.damaged = result.is_err();
         }
         if packet.header.marker {
-            let picture = self.picture.take().unwrap();
+            let mut picture = self.picture.take().unwrap();
+            if self.codec==VideoCodec::Av1 {
+                match picture.av1.finish(){Ok((data,frame))=>{picture.data=data;picture.vcl=frame;},Err(())=>picture.damaged=true}
+            }
             self.completed_ts = Some(ts);
             if picture.damaged || picture.fragment.is_some() {
                 self.stats.damaged += 1;

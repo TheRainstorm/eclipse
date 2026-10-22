@@ -27,6 +27,27 @@ impl NativeEncoder {
     }
 }
 
+#[derive(clap::ValueEnum,Clone,Copy,Debug)]
+enum NativeCodec {H264,#[value(alias="h265")] Hevc,Av1}
+#[derive(clap::ValueEnum,Clone,Copy,Debug)]
+enum NativeRate {Cbr,Vbr}
+#[derive(clap::Args,Clone,Debug)]
+struct NativeVideoOptions {
+    #[arg(long,value_enum,default_value="h264")]
+    codec:NativeCodec,
+    #[arg(long,value_enum,default_value="cbr")]
+    rate_control:NativeRate,
+    #[arg(long)]
+    peak_kbps:Option<u32>,
+}
+impl NativeVideoOptions {
+    fn policy(&self,target:u32)->Result<(uu_core::native::VideoCodec,uu_media::encoder::RateControl)>{
+        let codec=match self.codec {NativeCodec::H264=>uu_core::native::VideoCodec::H264,NativeCodec::Hevc=>uu_core::native::VideoCodec::Hevc,NativeCodec::Av1=>uu_core::native::VideoCodec::Av1};
+        let rate=match self.rate_control {NativeRate::Cbr=>{anyhow::ensure!(self.peak_kbps.is_none(),"--peak-kbps requires --rate-control vbr");uu_media::encoder::RateControl::Cbr},NativeRate::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:self.peak_kbps.unwrap_or(target.saturating_mul(2))}};
+        Ok((codec,rate))
+    }
+}
+
 fn synthetic_dimension(value: &str) -> std::result::Result<u32, String> {
     let n: u32 = value.parse().map_err(|_| "test dimension must be an integer")?;
     if (2..=8192).contains(&n) && n % 2 == 0 { Ok(n) }
@@ -124,6 +145,8 @@ enum Command {
     NativeSources,
     /// Native LAN host; desktop input requires an explicit --allow-input.
     NativeHost {
+        #[command(flatten)]
+        video:NativeVideoOptions,
         #[arg(long, default_value = "127.0.0.1:0")]
         bind: std::net::SocketAddr,
         /// NEW private .eclipse-invite.json file to share with the controller.
@@ -289,9 +312,10 @@ async fn main() -> Result<()> {
         Command::Lan {command} => lan_cli::run(command,config.at("native-lan")).await,
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
         Command::NativeSources => native_cli::sources(),
-        Command::NativeHost { bind, invitation_file, monitor, all_monitors, synthetic, synthetic_width, synthetic_height, allow_input, audio, synthetic_audio, fps, bitrate_kbps, encoder, pairing_seconds, max_seconds } => {
+        Command::NativeHost { video,bind, invitation_file, monitor, all_monitors, synthetic, synthetic_width, synthetic_height, allow_input, audio, synthetic_audio, fps, bitrate_kbps, encoder, pairing_seconds, max_seconds } => {
             let source=if all_monitors {uu_capture::CaptureSource::Desktop}else if synthetic {uu_capture::CaptureSource::Synthetic{width:synthetic_width,height:synthetic_height,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
-            native_cli::host(uu_core::native::HostConfig{bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,encoder:encoder.preference(),session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
+            let (codec,rate_control)=video.policy(bitrate_kbps)?;
+            native_cli::host(uu_core::native::HostConfig{codec,rate_control,bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,encoder:encoder.preference(),session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
         },
         Command::NativeProbe {invitation_file,frames,timeout_seconds,report,audio_loss_every,progress_seconds,max_frame_gap_seconds} => native_cli::probe(invitation_file,frames,timeout_seconds,report,audio_loss_every.unwrap_or(0),progress_seconds,max_frame_gap_seconds).await,
         Command::ReleaseCheck => release_check(&config).await,

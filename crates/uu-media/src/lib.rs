@@ -127,7 +127,14 @@ pub fn decoder_for_codec(codec: uu_proto::media::VideoCodec) -> Result<Box<dyn V
     }
     #[cfg(all(target_os="linux",feature="vaapi"))]
     if matches!(codec,VideoCodec::Hevc|VideoCodec::Av1) && DecoderKind::from_env() != DecoderKind::Software {
-        return Ok(Box::new(hw::vaapi::VaapiDecoder::with_codec(codec)?));
+        match hw::vaapi::VaapiDecoder::with_codec(codec) {
+            Ok(decoder)=>return Ok(Box::new(decoder)),
+            Err(reason)=>{
+                #[cfg(feature="intel-vpl")]
+                if codec==VideoCodec::Av1{return Ok(Box::new(hw::vpl::VplAv1Decoder::new().map_err(|error|CodecError::Backend(format!("{reason}; Intel VPL: {error}")))?));}
+                return Err(reason);
+            }
+        }
     }
     #[cfg(all(feature="intel-vpl",any(windows,target_os="linux")))]
     if codec==VideoCodec::Av1 && DecoderKind::from_env()!=DecoderKind::Software {

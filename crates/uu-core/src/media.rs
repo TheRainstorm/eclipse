@@ -33,6 +33,7 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
 pub struct MediaStats {
+    pub native_codec_capabilities:std::sync::OnceLock<Vec<uu_proto::media::VideoCodec>>,
     pub native_media_epoch:AtomicU64,
     pub native_displays:crate::native_displays::Client,
     pub native_timing:crate::native_timing::ClientTiming,
@@ -683,6 +684,10 @@ pub(crate) async fn receive_audio(track: Arc<webrtc::track::track_remote::TrackR
 fn video_codec(capability: &webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability) -> Option<uu_proto::media::VideoCodec> {
     use uu_proto::media::VideoCodec;
     if capability.mime_type.eq_ignore_ascii_case(MIME_TYPE_H264) { return Some(VideoCodec::H264); }
+    if capability.mime_type.eq_ignore_ascii_case("video/AV1") {
+        if capability.sdp_fmtp_line.split(';').any(|p|p.trim().split_once('=').is_some_and(|(k,v)|k.trim().eq_ignore_ascii_case("profile")&&v.trim()!="0")){return None;}
+        return Some(VideoCodec::Av1);
+    }
     if !capability.mime_type.eq_ignore_ascii_case("video/H265") { return None; }
     // This receiver negotiates the non-interleaved, single-layer format.
     if capability.sdp_fmtp_line.split(';').any(|p| p.trim().split_once('=')
@@ -743,7 +748,7 @@ pub(crate) async fn receive_video(
         if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
             s.set_backend(decoder.backend_name());
         }
-        let mut dump = std::env::var(if codec == VideoCodec::Hevc { "UU_DUMP_HEVC" } else { "UU_DUMP_H264" })
+        let mut dump = std::env::var(match codec {VideoCodec::H264=>"UU_DUMP_H264",VideoCodec::Hevc=>"UU_DUMP_HEVC",VideoCodec::Av1=>"UU_DUMP_AV1"})
             .ok()
             .and_then(|p| std::fs::File::create(p).ok());
         let mut gate = crate::decode_gate::DecodeGate::default();
@@ -764,7 +769,7 @@ pub(crate) async fn receive_video(
                 let queue_summary = queue_times.take();
                 if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
                     s.set_backend(decoder.backend_name());
-                    *s.codec.lock().unwrap() = match codec { VideoCodec::Hevc => "video/H265", _ => "video/H264" }.into();
+                    *s.codec.lock().unwrap() = match codec { VideoCodec::Hevc => "video/H265", VideoCodec::Av1=>"video/AV1",VideoCodec::H264 => "video/H264" }.into();
                     s.frame_cadence.lock().unwrap().decode_queue_ms = queue_summary;
                     s.decode_us
                         .store((decode_us / window_frames.max(1)) as u32, Ordering::Relaxed);
@@ -780,8 +785,7 @@ pub(crate) async fn receive_video(
             }
             queue_times.push(Instant::now().duration_since(enqueued).as_secs_f64() * 1000.0);
             let current_epoch = worker_generation.load(Ordering::Acquire);
-            let key = if sample_codec == VideoCodec::Hevc { uu_media::hevc::is_keyframe(&data) }
-                else { uu_media::EncodedFrame::detect_h264_keyframe(&data) };
+            let key = match sample_codec {VideoCodec::Hevc=>uu_media::hevc::is_keyframe(&data),VideoCodec::Av1=>uu_media::av1::is_keyframe(&data),VideoCodec::H264=>uu_media::EncodedFrame::detect_h264_keyframe(&data)};
             if !gate.accepts(sample_epoch, current_epoch, key) { continue; }
             if sample_codec != codec {
                 // Codec ownership travels with each AU, not a racy track
@@ -793,7 +797,7 @@ pub(crate) async fn receive_video(
                 }
                 codec = sample_codec;
                 if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
-                    *s.codec.lock().unwrap() = match codec { VideoCodec::Hevc => "video/H265", _ => "video/H264" }.into();
+                    *s.codec.lock().unwrap() = match codec { VideoCodec::Hevc => "video/H265", VideoCodec::Av1=>"video/AV1",VideoCodec::H264 => "video/H264" }.into();
                 }
                 gate.failed();
                 reset_decoder = false;
@@ -822,8 +826,7 @@ pub(crate) async fn receive_video(
             }
             let base = *pts_base.get_or_insert(timestamp);
             if key {
-                let updated = if codec == VideoCodec::Hevc { uu_media::hevc::sequence(&data).map(|s|s.color) }
-                    else { uu_media::color::from_h264(&data) };
+                let updated = match codec {VideoCodec::Hevc=>uu_media::hevc::sequence(&data).map(|s|s.color),VideoCodec::Av1=>uu_media::av1::sequence(&data).map(|s|s.color),VideoCodec::H264=>uu_media::color::from_h264(&data)};
                 if let Some(updated) = updated { color = updated; }
             }
             let encoded = uu_media::EncodedFrame {

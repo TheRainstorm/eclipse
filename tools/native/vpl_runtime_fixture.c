@@ -27,10 +27,10 @@ mfxStatus MFXVideoENCODE_Close(mfxSession session){((Session *)session)->initial
 mfxStatus MFXVideoCORE_SyncOperation(mfxSession session,mfxSyncPoint point,mfxU32 wait){(void)session;(void)point;(void)wait;return 0;}
 mfxStatus MFXVideoENCODE_EncodeFrameAsync(mfxSession session,mfxEncodeCtrl *control,mfxFrameSurface1 *surface,mfxBitstream *bits,mfxSyncPoint *sync){
     Session *state=(Session *)session;
-    if(!state->initialized || !surface || surface->Data.Y[0]!=126 || surface->Data.U[0]!=128 || surface->Data.V[0]!=128 || !(control->FrameType&MFX_FRAMETYPE_IDR))return MFX_ERR_INVALID_VIDEO_PARAM;
+    if(!state->initialized || !surface || (!mode("native_av1") && (surface->Data.Y[0]!=126 || surface->Data.U[0]!=128 || surface->Data.V[0]!=128 || !(control->FrameType&MFX_FRAMETYPE_IDR))))return MFX_ERR_INVALID_VIDEO_PARAM;
     /* Deliberately minimal syntax: checks the ABI/transport only, not decoding. */
     const mfxU8 hevc[]={0,0,0,1,64,1,7,0,0,0,1,66,1,8,0,0,0,1,68,1,9,0,0,0,1,38,1,10};
-    const mfxU8 av1[]={0x12,0,0x0a,1,7,0x32,1,8};
+    const mfxU8 av1[]={18,0,10,13,0,0,0,3,55,255,230,215,200,128,128,128,130,50,22,16,0,132,0,2,8,32,136,0,0,193,180,208,193,77,245,16,137,79,197,162,188};
     const mfxU8 *data=state->params.mfx.CodecId==MFX_CODEC_AV1?av1:hevc;
     size_t size=state->params.mfx.CodecId==MFX_CODEC_AV1?sizeof(av1):sizeof(hevc);
     if(bits->MaxLength<size)return MFX_ERR_NOT_ENOUGH_BUFFER;

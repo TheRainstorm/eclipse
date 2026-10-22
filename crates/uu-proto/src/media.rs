@@ -8,9 +8,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Codec identifiers observed in client resources and logs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VideoCodec {
+    #[default]
     H264,
     Hevc,
     Av1,

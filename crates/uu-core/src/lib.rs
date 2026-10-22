@@ -76,6 +76,8 @@ mod congestion;
 pub mod frame_cadence;
 pub mod native_timing;
 pub mod native_displays;
+mod native_video;
+mod av1_rtp;
 
 #[cfg(windows)]
 mod video_timing;

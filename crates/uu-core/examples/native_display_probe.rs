@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
     let host_clipboard = Arc::new(uu_core::clipboard::Clipboard::default());
     host_clipboard.available.store(true, Ordering::Release);
     host_clipboard.enabled.store(true, Ordering::Release);
-    let config = uu_core::native::HostConfig {
+    let config = uu_core::native::HostConfig {codec:Default::default(),rate_control:Default::default(),
         bind: "127.0.0.1:0".parse()?,
         source: uu_core::native::CaptureSource::Desktop,
         invitation_file: invitation.clone(),

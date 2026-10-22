@@ -30,6 +30,8 @@ pub enum Command {
     },
     /// Share a native source using UU or a self-hosted connection service.
     Host {
+        #[command(flatten)]
+        video:super::NativeVideoOptions,
         #[arg(long)]
         settings: PathBuf,
         #[arg(long, conflicts_with = "synthetic")]
@@ -103,6 +105,7 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
             tokio::select! {result=&mut service=>result,_=tokio::signal::ctrl_c()=>{stop.send_replace(true);service.await}}
         }
         Command::Host {
+            video,
             settings: path,
             monitor,
             synthetic,
@@ -117,6 +120,7 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
             max_seconds,
         } => {
             let settings = settings(&path)?;
+            let (codec,rate_control)=video.policy(bitrate_kbps)?;
             let source = if synthetic {
                 uu_core::native::CaptureSource::Synthetic { width, height, fps }
             } else if let Some(name) = monitor {
@@ -124,7 +128,7 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
             } else {
                 uu_core::native::CaptureSource::Primary
             };
-            let sharing = uu_core::native::SharingConfig {
+            let sharing = uu_core::native::SharingConfig {codec,rate_control,
                 source,
                 fps,
                 bitrate_kbps,

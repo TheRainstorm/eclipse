@@ -203,7 +203,7 @@ jobs:
         if: matrix.platform == 'linux-x86_64'
         run: |
           cargo build --release -p uu-media --example vpl_contract_probe --features vaapi --locked
-          python3 tools/native/vpl_contract_smoke.py --probe target/release/examples/vpl_contract_probe
+          python3 tools/native/vpl_contract_smoke.py --probe target/release/examples/vpl_contract_probe --cli target/release/uu
       - name: Test portal capture, consent cancellation and owned input
         if: matrix.platform == 'linux-x86_64'
         run: |

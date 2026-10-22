@@ -105,13 +105,15 @@ async fn hevc_offer_requires_verified_local_support_and_h264_only_peer_falls_bac
 }
 
 #[test]
-fn hevc_rejects_don_interleaving_and_other_video_formats() {
+fn video_formats_reject_interleaving_and_unsupported_av1_profiles() {
     use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
     for (mime, fmtp, valid) in [
         ("video/H265", "", true),
         ("video/h265", "sprop-max-don-diff=0", true),
         ("video/H265", "sprop-max-don-diff=1", false),
-        ("video/AV1", "", false),
+        ("video/AV1", "", true),
+        ("video/AV1", "profile=0;level-idx=14;tier=1", true),
+        ("video/AV1", "profile=1", false),
         ("video/rtx", "", false),
     ] {
         assert_eq!(
