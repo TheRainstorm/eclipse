@@ -1,4 +1,4 @@
-# 原生 H.264 编码后端
+# 原生视频编码后端
 
 此接口用于 Eclipse 原生主机，不影响 UU 兼容模式远端选择的编码器。Linux 使用 VA-API，Windows 使用显卡驱动提供的 Media Foundation 硬件 H.264 编码器，包括支持此接口的 Intel 核显。
 
@@ -23,6 +23,26 @@ COM、Media Foundation、编码器和缓冲均在专用线程创建、使用和�
 采集帧仍经过CPU转换与上传。输入使用有限范围BT.601 NV12，编码SPS必须与它一致；支持映射NV12表面的驱动避免额外的图像读回/写回，不支持时使用复制上传。输出为CPU Annex-B码流。这还不是完整GPU管线或零拷贝。
 
 恢复请求需要IDR与SPS/PPS。局部H.264预测器补丁将显式关键帧请求作为新序列起点，避免仅发普通I帧后仍依赖旧参考链。强制恢复帧使用全新软件解码器验证，不能只看持续解码器是否有画面。
+
+## Intel VPL：HEVC、AV1 和 VBR
+
+编码库还提供 Intel VPL 硬件后端，支持驱动实际具备的 H.264、HEVC Main 8-bit 和 AV1 Main 8-bit 编码，以及 CBR / VBR。H.264 CBR 默认继续使用上面的 VA-API / MFT；其它组合由 Intel VPL 执行。这里描述编码库能力，具体连接格式还需要原生协议两端共同协商；UU 兼容模式的主机编码选择由其服务端决定。
+
+VPL 使用单帧异步深度、无 B 帧、速度优先和有限 VBV；低延迟 BRC 等额外调优由驱动能力决定。初始化后再次读取实际配置，若驱动把帧率、尺寸、编码或码率模式改成不符合请求的值，直接拒绝。仅接受硬件实现，拒绝部分软件加速。恢复关键帧携带实际编码器的参数集，重新设码率后请求新的关键帧；不会伪造参数或把 HEVC / AV1 失败伪装成软件 H.264 成功。
+
+VBR 设置目标和峰值码率，峰值必须不小于目标。CBR 是编码器速率预算，不能保证每一帧、每一秒或加上网络协议后的线上字节数完全恒定。软件 OpenH264 路径保留平均码率控制，不提供这个 VBR 后端。
+
+构建只使用固定版本的 MIT Intel 公共头文件和 C 编译器。运行时需要 Intel GPU 对相应编码的硬件支持及驱动：Linux 安装 Intel VPL dispatcher（`libvpl.so.2`）和 GPU runtime；Windows 使用 `libvpl.dll`。硬件实现由标准 VPL dispatcher 查找，应用不自行扫描驱动目录或直接加载私有实现 DLL。不要求链接 FFmpeg 或启动编码子进程。CPU NV12 转换与上传仍存在，不宣称零拷贝。API 依据 [Intel VPL 低延迟说明](https://intel.github.io/libvpl/latest/appendix/VPL_apnds_c.html) 和 [编码过程](https://intel.github.io/libvpl/v2.10/programming_guide/VPL_prg_encoding.html)，公共头文件来源和固定提交见 `vendor/libvpl-api/UPSTREAM.md`。
+
+开发时可用生成视频探针要求真实硬编，例如：
+
+```sh
+cargo run --release -p uu-media --example encoder_probe --features vaapi -- \
+  --encoder hardware --codec hevc --rate-control vbr --bitrate-kbps 8000 \
+  --peak-kbps 16000 --decoder hw --frames 60 --width 1280 --height 720
+```
+
+AV1 使用 `--codec av1`。`--decoder none --output generated.obu` 只验证编码并保存生成码流，报告 `decode_checked: false`，不能当作解码或交互验收。实际 GPU 编解码与性能需要在目标驱动上验证；隔离的 `tools/native/vpl_contract_smoke.py` 是 ABI/边界测试，报告明确标为模拟运行时，不使用 GPU。
 
 ## 验证
 

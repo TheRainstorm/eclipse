@@ -1,9 +1,11 @@
 //! Generated colour bars only: never opens a screen, input or audio device.
 use anyhow::{ensure, Context};
+use std::io::Write;
+use uu_proto::media::VideoCodec;
 use uu_media::{
     color::YuvColor,
     encoder::{self, Preference, Settings},
-    PixelFormat, RawFrame, Timestamp, VideoDecoder,
+    PixelFormat, RawFrame, Timestamp,
 };
 
 fn pattern(settings: Settings, index: u32) -> RawFrame {
@@ -62,6 +64,7 @@ fn input_format(mut frame: RawFrame, format: PixelFormat) -> RawFrame {
 }
 fn main() -> anyhow::Result<()> {
     let mut settings = Settings {
+        codec:uu_proto::media::VideoCodec::H264,rate_control:encoder::RateControl::Cbr,
         width: 1280,
         height: 720,
         fps: 60,
@@ -71,6 +74,7 @@ fn main() -> anyhow::Result<()> {
     let mut frames = 180u32;
     let mut format = PixelFormat::I420;
     let mut hardware_decoder = false;
+    let mut encode_only=false;let mut output_path=None;let mut vbr=false;let mut peak=None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let value = args.next().context("missing probe option value")?;
@@ -84,12 +88,20 @@ fn main() -> anyhow::Result<()> {
                     _ => anyhow::bail!("unknown encoder"),
                 }
             }
+            "--codec"=>settings.codec=match value.as_str(){"h264"=>VideoCodec::H264,"h265"|"hevc"=>VideoCodec::Hevc,"av1"=>VideoCodec::Av1,_=>anyhow::bail!("codec must be h264, hevc or av1")},
+            "--rate-control"=>vbr=match value.as_str(){"cbr"=>false,"vbr"=>true,_=>anyhow::bail!("rate-control must be cbr or vbr")},
+            "--bitrate-kbps"=>settings.bitrate_kbps=value.parse()?,
+            "--peak-kbps"=>peak=Some(value.parse::<u32>()?),
+            "--fps"=>settings.fps=value.parse()?,
+            "--output"=>output_path=Some(std::path::PathBuf::from(value)),
             "--frames" => frames = value.parse()?,
             "--decoder" => {
+                encode_only=value=="none";
                 hardware_decoder = match value.as_str() {
+                    "none"=>{encode_only=true;false},
                     "sw" => false,
                     "hw" => true,
-                    _ => anyhow::bail!("decoder must be sw or hw"),
+                    _ => anyhow::bail!("decoder must be sw, hw or none"),
                 };
             }
             "--width" => settings.width = value.parse()?,
@@ -109,15 +121,20 @@ fn main() -> anyhow::Result<()> {
         (30..=1200).contains(&frames),
         "probe needs 30..=1200 generated frames"
     );
+    ensure!(vbr || peak.is_none(),"--peak-kbps requires --rate-control vbr");
+    settings.rate_control=if vbr{encoder::RateControl::Vbr{peak_kbps:peak.unwrap_or(settings.bitrate_kbps.saturating_mul(2))}}else{encoder::RateControl::Cbr};
     settings.validate()?;
     let mut encoder = encoder::create(settings)?;
     // Explicit hardware validation must fail on unsupported hardware, rather
     // than silently validating the software fallback after driver errors.
-    let mut decoder = if hardware_decoder {
-        uu_media::hw::create_hardware_decoder()?
+    let mut decoder = if encode_only {None}else if hardware_decoder {
+        Some(if settings.codec==VideoCodec::H264 {uu_media::hw::create_hardware_decoder()?}else{uu_media::decoder_for_codec(settings.codec)?})
     } else {
-        uu_media::software_decoder()?
+        ensure!(settings.codec==VideoCodec::H264,"software decoder validation supports H264; use --decoder hw or none");
+        Some(uu_media::software_decoder()?)
     };
+    let mut output_file=output_path.map(|path|std::fs::OpenOptions::new().write(true).create_new(true).open(path)).transpose()?;
+    let mut emitted=0u32;
     let mut color = YuvColor::Full601;
     let mut times = Vec::new();
     let mut bytes = 0u64;
@@ -131,7 +148,7 @@ fn main() -> anyhow::Result<()> {
             requested_keys += 1;
         }
         if index == frames / 2 {
-            encoder.set_bitrate(4000)?;
+            encoder.set_bitrate((settings.bitrate_kbps/2).max(64))?;
             ensure!(
                 encoder.set_bitrate(0).is_err(),
                 "invalid bitrate must be rejected without replacing encoder"
@@ -148,17 +165,20 @@ fn main() -> anyhow::Result<()> {
         let expected = uu_media::convert::frame_to_rgba(&input);
         for coded in output {
             bytes += coded.data.len() as u64;
+            emitted+=1;
+            if let Some(file)=output_file.as_mut(){file.write_all(&coded.data)?;}
+            if encode_only {keys+=u32::from(coded.is_keyframe);continue;}
             if coded.is_keyframe {
                 keys += 1;
-                color = uu_media::color::from_h264(&coded.data)
+                color = match settings.codec {VideoCodec::H264=>uu_media::color::from_h264(&coded.data),VideoCodec::Hevc=>uu_media::hevc::sequence(&coded.data).map(|s|s.color),VideoCodec::Av1=>None}
                     .context("keyframe needs colour metadata")?;
-                let mut fresh = uu_media::H264Decoder::new()?;
+                let mut fresh=if settings.codec==VideoCodec::H264{uu_media::software_decoder()?}else{uu_media::decoder_for_codec(settings.codec)?};
                 ensure!(
                     fresh.decode(&coded)?.is_some(),
                     "recovery IDR must decode with no old reference chain"
                 );
                 if hardware_decoder {
-                    let mut fresh = uu_media::hw::create_hardware_decoder()?;
+                    let mut fresh=if settings.codec==VideoCodec::H264{uu_media::hw::create_hardware_decoder()?}else{uu_media::decoder_for_codec(settings.codec)?};
                     let mut padded = coded.clone();
                     let mut data = coded.data.to_vec();
                     data.extend_from_slice(&[0; 7]);
@@ -169,7 +189,7 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
             }
-            let output = decoder
+            let output = decoder.as_mut().unwrap()
                 .decode(&coded).with_context(|| format!("continuous decoder at frame {index}"))?
                 .context("low-delay output must be immediately decodable")?;
             ensure!(
@@ -195,14 +215,14 @@ fn main() -> anyhow::Result<()> {
         }
     }
     ensure!(
-        decoded == frames && keys >= requested_keys + 1,
+        emitted == frames && (encode_only || decoded == frames) && keys >= requested_keys + 1,
         "keyframe requests or frame completion failed"
     );
     times.sort_by(f64::total_cmp);
     let average = times.iter().sum::<f64>() / times.len() as f64;
     println!(
         "{}",
-        serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.backend_name(),"frames":frames,"decoded":decoded,
+        serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
         "keyframes":keys,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,
         "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],

@@ -58,7 +58,7 @@ impl CaptureMonitor {
         uu_media::H264Encoder::validate_dimensions(self.width,self.height).is_ok()
     }
     pub fn encodable(&self, preference:EncoderPreference, fps:u32)->bool {
-        let settings=uu_media::encoder::Settings {width:self.width,height:self.height,fps,
+        let settings=uu_media::encoder::Settings {codec:uu_proto::media::VideoCodec::H264,rate_control:uu_media::encoder::RateControl::Cbr,width:self.width,height:self.height,fps,
             bitrate_kbps:64,preference};
         settings.validate().is_ok() && (preference!=EncoderPreference::Software || self.software_encodable())
     }
@@ -533,7 +533,7 @@ async fn send_video(
         result=tokio::task::spawn_blocking(move || -> Result<_> {
             let capture=uu_capture::open_with_options(&config.source,capture_options)?;
             let (width,height)=capture.resolution();validate_video(width,height,fps)?;
-            let encoder=uu_media::encoder::create(uu_media::encoder::Settings {
+            let encoder=uu_media::encoder::create(uu_media::encoder::Settings {codec:uu_proto::media::VideoCodec::H264,rate_control:uu_media::encoder::RateControl::Cbr,
                 width,height,fps,bitrate_kbps:kbps,preference,
             }).context("无法为当前显示源初始化所选编码器；不会更改系统显示设置")?;
             Ok((capture,encoder))

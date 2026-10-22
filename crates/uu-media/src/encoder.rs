@@ -1,14 +1,19 @@
 //! Native-host encoding selection. Interoperability decoding is independent.
+use uu_proto::media::VideoCodec;
 use crate::{codec::CodecError, EncodedFrame, H264Encoder, RawFrame, VideoEncoder};
 
 #[cfg(all(windows, feature = "mf-encode"))]
 mod mf;
-#[cfg(any(test,all(windows,feature="mf-encode")))]
+#[cfg(any(test,feature="intel-vpl",all(windows,feature="mf-encode")))]
 mod low_delay;
 mod upload;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 mod vaapi;
 mod worker;
+#[cfg(any(test,feature="intel-vpl"))]
+mod headers;
+#[cfg(all(feature="intel-vpl",any(windows,target_os="linux")))]
+mod vpl;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Preference {
@@ -20,8 +25,19 @@ pub enum Preference {
     Vaapi,
 }
 
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub enum RateControl {
+    #[default]
+    Cbr,
+    Vbr { peak_kbps:u32 },
+}
+impl RateControl {
+    pub fn peak(self,target:u32)->u32 {match self {Self::Cbr=>target,Self::Vbr{peak_kbps}=>peak_kbps}}
+}
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
+    pub codec:VideoCodec,
+    pub rate_control:RateControl,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -34,15 +50,18 @@ impl Settings {
             || !(2..=8192).contains(&self.height)
             || self.width % 2 != 0
             || self.height % 2 != 0
-            || !(1..=60).contains(&self.fps)
+            || u64::from(self.width)*u64::from(self.height)*3/2>64*1024*1024
+            || !(1..=if self.codec==VideoCodec::H264{60}else{240}).contains(&self.fps)
             || !(64..=100_000).contains(&self.bitrate_kbps)
         {
             return Err(error(
-                "H.264 encoding needs even 2..=8192 dimensions, 1..=60 FPS and 64..=100000 kbps",
+                "encoding needs even 2..=8192 dimensions, valid FPS and 64..=100000 kbps",
             ));
         }
+        let peak=self.rate_control.peak(self.bitrate_kbps);
+        if peak<self.bitrate_kbps || peak>200_000{return Err(error("VBR peak must be at least target bitrate and at most 200000 kbps"));}
         let blocks = u64::from(self.width.div_ceil(16)) * u64::from(self.height.div_ceil(16));
-        if blocks > 36_864 || blocks * u64::from(self.fps) > 2_073_600 {
+        if self.codec==VideoCodec::H264 && (blocks > 36_864 || blocks * u64::from(self.fps) > 2_073_600) {
             return Err(error(
                 "H.264 encoding geometry exceeds the advertised level 5.2",
             ));
@@ -56,6 +75,9 @@ fn error(message: impl Into<String>) -> CodecError {
 }
 
 fn software(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
+    if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr {
+        return Err(error("所选编码格式或 VBR 模式需要硬件编码；软件模式支持 H.264 平均码率控制"));
+    }
     H264Encoder::validate_dimensions(settings.width, settings.height)?;
     Ok(Box::new(H264Encoder::with_frame_rate(
         settings.bitrate_kbps,
@@ -66,7 +88,8 @@ fn software(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
 pub fn hardware_compiled() -> bool {
     cfg!(any(
         all(target_os = "linux", feature = "vaapi"),
-        all(windows, feature = "mf-encode")
+        all(windows, feature = "mf-encode"),
+        all(feature="intel-vpl",any(windows,target_os="linux"))
     ))
 }
 
@@ -81,6 +104,14 @@ pub fn hardware_name() -> &'static str {
     }
 }
 fn hardware(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
+    #[cfg(all(feature="intel-vpl",any(windows,target_os="linux")))]
+    if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr
+        || !cfg!(any(all(target_os="linux",feature="vaapi"),all(windows,feature="mf-encode"))) {
+        return Ok(Box::new(worker::Worker::spawn(move||vpl::Driver::open(settings))?));
+    }
+    if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr {
+        return Err(error("HEVC/AV1 and VBR require the intel-vpl backend in this build"));
+    }
     #[cfg(all(target_os = "linux", feature = "vaapi"))]
     return Ok(Box::new(worker::Worker::spawn(move || {
         vaapi::Driver::open(settings)
@@ -91,7 +122,8 @@ fn hardware(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
     })?));
     #[cfg(not(any(
         all(target_os = "linux", feature = "vaapi"),
-        all(windows, feature = "mf-encode")
+        all(windows, feature = "mf-encode"),
+        all(feature="intel-vpl",any(windows,target_os="linux"))
     )))]
     {
         let _ = settings;
@@ -108,6 +140,9 @@ pub fn create(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
         Preference::Software => (software(settings)?, false, false),
         Preference::Hardware => (hardware(settings)?, false, false),
         Preference::Vaapi => {
+            if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr {
+                return Err(error("显式 VA-API 后端仅支持 H.264 CBR；其它模式请选择自动或硬件编码"));
+            }
             if !cfg!(all(target_os = "linux", feature = "vaapi")) {
                 return Err(error(
                     "VA-API requires a Linux build with the vaapi feature",
@@ -116,8 +151,9 @@ pub fn create(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
             (hardware(settings)?, false, false)
         }
         Preference::Auto => match hardware(settings) {
-            Ok(encoder) => (encoder, true, false),
+            Ok(encoder) => (encoder, settings.codec==VideoCodec::H264 && settings.rate_control==RateControl::Cbr, false),
             Err(reason) => {
+                if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr{return Err(reason);}
                 tracing::warn!(%reason,backend=hardware_name(),"native hardware encoder unavailable; using software");
                 (software(settings)?, false, true)
             }
@@ -186,6 +222,7 @@ impl VideoEncoder for Selected {
         self.active.request_keyframe();
     }
     fn set_bitrate(&mut self, kbps: u32) -> Result<(), CodecError> {
+        if kbps==self.settings.bitrate_kbps{return Ok(());}
         let settings = Settings {
             bitrate_kbps: kbps,
             ..self.settings
@@ -221,6 +258,7 @@ mod tests {
             fps: 30,
             bitrate_kbps: 1000,
             preference: Preference::Software,
+            codec:VideoCodec::H264,rate_control:RateControl::Cbr,
         }
     }
     fn frame() -> RawFrame {
@@ -273,6 +311,16 @@ mod tests {
             encodes,
             tunes,
         )
+    }
+    #[test]
+    fn codec_and_peak_policy_rejects_silent_software_substitution_and_invalid_budgets(){
+        let base=settings();
+        for codec in [VideoCodec::Hevc,VideoCodec::Av1]{
+            assert!(create(Settings{codec,..base}).is_err());
+            assert!(Settings{codec,fps:120,..base}.validate().is_ok());
+        }
+        for peak_kbps in [999,200001]{assert!(Settings{rate_control:RateControl::Vbr{peak_kbps},..base}.validate().is_err());}
+        assert!(create(Settings{rate_control:RateControl::Vbr{peak_kbps:2000},..base}).is_err());
     }
     #[test]
     fn runtime_failure_falls_back_once_with_an_independently_decodable_idr() {
@@ -335,7 +383,8 @@ mod tests {
     }
     #[cfg(not(any(
         all(target_os = "linux", feature = "vaapi"),
-        all(windows, feature = "mf-encode")
+        all(windows, feature = "mf-encode"),
+        all(feature="intel-vpl",any(windows,target_os="linux"))
     )))]
     #[test]
     fn builds_without_vaapi_report_unavailable_and_auto_uses_software() {

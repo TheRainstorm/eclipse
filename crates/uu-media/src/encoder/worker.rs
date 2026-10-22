@@ -9,6 +9,7 @@ use std::{
 
 pub(super) trait Driver {
     fn backend_name(&self) -> &str;
+    fn codec(&self)->uu_proto::media::VideoCodec{uu_proto::media::VideoCodec::H264}
     fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Vec<EncodedFrame>, String>;
     fn bitrate(&mut self, kbps: u32) -> Result<(), String>;
 }
@@ -25,6 +26,7 @@ pub(super) struct Worker {
     sender: Option<SyncSender<Job>>,
     thread: Option<JoinHandle<()>>,
     name: String,
+    codec:uu_proto::media::VideoCodec,
     keyframe: bool,
 }
 impl Worker {
@@ -43,7 +45,7 @@ impl Worker {
                         return;
                     }
                 };
-                if ready.send(Ok(driver.backend_name().to_owned())).is_err() {
+                if ready.send(Ok((driver.backend_name().to_owned(),driver.codec()))).is_err() {
                     return;
                 }
                 while let Ok(job) = receiver.recv() {
@@ -60,7 +62,7 @@ impl Worker {
                 // Driver resources and COM apartments stay on their creating thread.
             })
             .map_err(|e| error(format!("hardware encoder thread: {e}")))?;
-        let name = match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        let (name,codec) = match ready_rx.recv_timeout(Duration::from_secs(10)) {
             Ok(Ok(name)) => name,
             Ok(Err(reason)) => {
                 let _ = thread.join();
@@ -76,6 +78,7 @@ impl Worker {
             sender: Some(sender),
             thread: Some(thread),
             name,
+            codec,
             keyframe: true,
         })
     }
@@ -97,7 +100,7 @@ impl VideoEncoder for Worker {
         &self.name
     }
     fn codec(&self) -> uu_proto::media::VideoCodec {
-        uu_proto::media::VideoCodec::H264
+        self.codec
     }
     fn encode(&mut self, frame: &RawFrame) -> Result<Vec<EncodedFrame>, CodecError> {
         let (reply, receiver) = mpsc::channel();
@@ -122,7 +125,9 @@ impl VideoEncoder for Worker {
             .ok_or_else(|| error("hardware encoder is unavailable"))?
             .send(Job::Bitrate(kbps, reply))
             .map_err(|_| error("hardware encoder thread ended"))?;
-        self.reply(receiver)
+        self.reply(receiver)?;
+        self.keyframe=true;
+        Ok(())
     }
 }
 impl Drop for Worker {

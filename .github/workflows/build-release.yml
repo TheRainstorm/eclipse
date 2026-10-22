@@ -199,6 +199,11 @@ jobs:
         run: |
           cargo build --release -p uu-gui --example wayland_input --features vaapi --locked
           python3 tools/native/wayland_smoke.py --gui target/release/uu-gui --cli target/release/uu --input-driver target/release/examples/wayland_input --output artifacts/native-wayland --renderer pixman --decoder sw --multi-dpi
+      - name: Test isolated Intel VPL ABI contracts
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          cargo build --release -p uu-media --example vpl_contract_probe --features vaapi --locked
+          python3 tools/native/vpl_contract_smoke.py --probe target/release/examples/vpl_contract_probe
       - name: Test portal capture, consent cancellation and owned input
         if: matrix.platform == 'linux-x86_64'
         run: |

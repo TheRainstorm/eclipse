@@ -6,6 +6,10 @@ license.workspace = true
 description = "Video/audio pipeline abstractions (encode, decode, frame transport)"
 
 [[example]]
+name = "vpl_contract_probe"
+required-features = ["h264", "intel-vpl"]
+
+[[example]]
 name = "d3d11_surface_probe"
 required-features = ["h264", "d3d11va"]
 
@@ -32,11 +36,16 @@ audiopus_sys = { version = "0.2.2", features = ["static"] }
 rubato = { version = "0.16.2", default-features = false }
 cros-codecs = { version = "0.0.6", default-features = false }
 
+[build-dependencies]
+cc = "1.2"
+
 [dev-dependencies]
 serde_json.workspace = true
 
 [features]
-default = ["h264", "d3d11va", "mf-encode"]
+default = ["h264", "d3d11va", "mf-encode", "intel-vpl"]
+# Optional runtime-loaded Intel hardware API; no SDK import library is linked.
+intel-vpl = []
 h264 = ["dep:openh264"]
 # Windows: Media Foundation H.264 decode on a D3D11 device manager (D3D11VA).
 # Only has an effect on Windows targets.
