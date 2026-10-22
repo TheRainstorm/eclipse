@@ -215,6 +215,7 @@ jobs:
           cargo build -p uu-gui --release --target x86_64-pc-windows-gnu --example video_renderer_probe --locked
           cargo test -p uu-input --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/input-test-build.jsonl
           cargo test -p uu-gui --release --target x86_64-pc-windows-gnu --bin uu-gui --no-run --locked --message-format=json-render-diagnostics > artifacts/gui-test-build.jsonl
+          cargo test -p uu-core --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/core-test-build.jsonl
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -234,6 +235,11 @@ jobs:
           if len(gui_tests) != 1:
               raise RuntimeError('Expected exactly one freshly built GUI keyboard validation executable')
           shutil.copy2(gui_tests[0], destination.parent / 'keyboard-tests.exe')
+          core_messages = [json.loads(line) for line in Path('artifacts/core-test-build.jsonl').read_text().splitlines()]
+          core_tests = [m['executable'] for m in core_messages if m.get('reason') == 'compiler-artifact' and m.get('profile', {}).get('test') and m.get('executable')]
+          if len(core_tests) != 1:
+              raise RuntimeError('Expected exactly one Windows core validation executable')
+          shutil.copy2(core_tests[0], destination.parent / 'core-tests.exe')
           PY
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.platform == 'windows-x64'
@@ -307,6 +313,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Isolated Windows keyboard hook lifecycle failed' }
           & $keyboardTests 'lan_host_ui::' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows LAN sharing lifecycle tests failed' }
+          & $keyboardTests 'settings::tests::' --nocapture | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Windows preferences migration/persistence failed' }
+          & $keyboardTests 'theme::tests::' --nocapture | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Windows UI contrast checks failed' }
+          $coreTests = Join-Path $unpack 'core-validation.exe'
+          Copy-Item -LiteralPath 'platform-validation/core-tests.exe' -Destination $coreTests
+          & $coreTests 'native_lan::tests::native_lan_port_conflicts' --nocapture | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Windows TCP/UDP conflict and custom discovery tests failed' }
           & $keyboardTests 'native_interfaces::' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows native address filtering failed' }
           & $keyboardTests 'refreshing_interfaces_preserves_explicit_address' --nocapture | Out-Host
@@ -319,7 +333,7 @@ jobs:
           Copy-Item -LiteralPath 'platform-validation/color-probe.exe' -Destination $colorProbe
           & $colorProbe
           if ($LASTEXITCODE -ne 0) { throw 'Windows H264 color metadata validation failed' }
-          Remove-Item -LiteralPath $inputTests, $keyboardTests, $clipboardProbe, $colorProbe
+          Remove-Item -LiteralPath $inputTests, $keyboardTests, $coreTests, $clipboardProbe, $colorProbe
 
   release:
     name: Publish tagged release
