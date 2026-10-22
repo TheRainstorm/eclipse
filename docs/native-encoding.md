@@ -1,8 +1,18 @@
 # 原生 H.264 编码后端
 
-此接口用于Eclipse原生主机，不影响UU兼容模式的远端编码器。0.7起“共享此设备”提供编码选项，命令行使用`native-host --encoder software|auto|vaapi`；默认仍为软件编码。Linux启用VA-API构建后可选择硬件，主机显示实际后端与回退结果，0.6及更早版本的主机仍使用软件。
+此接口用于 Eclipse 原生主机，不影响 UU 兼容模式远端选择的编码器。Linux 使用 VA-API，Windows 使用显卡驱动提供的 Media Foundation 硬件 H.264 编码器，包括支持此接口的 Intel 核显。
 
-`uu-media::encoder`提供软件、自动选择和显式VA-API三种偏好。软件为默认；自动选择在硬件初始化失败或运行出错时回退OpenH264，从新的IDR参考链继续，并报告实际后端。显式VA-API失败会返回错误。非法码率在调用驱动前被拒绝，当前编码器保留。
+“共享本机”默认自动选择硬件，也可选择“硬件编码（必需）”或软件编码。旧邀请文件共享入口和 CLI 继续保留软件默认值；CLI 使用 `native-host --encoder software|auto|hardware|vaapi`，`uu lan host` 使用相同选项。`hardware` 要求当前平台硬编成功，`vaapi` 为 Linux 专用选项。
+
+自动模式在初始化失败或运行出错时回退 OpenH264，并从新的 IDR 参考链继续。界面报告实际后端；诊断日志保存具体硬件失败原因。必须硬件模式直接报错，不用软件成功掩盖硬件失败。非法码率在调用驱动前被拒绝，当前编码器保留。
+
+## Windows Media Foundation
+
+Windows 默认构建包含 `mf-encode`，仅枚举注册为硬件的 H.264 MFT，不把系统软件 MFT 当作显卡编码。使用驱动的异步输入/输出事件，设置低延迟、无 B 帧和实时编码参数；编码前后检查当前帧时间戳，避免积攒旧帧。驱动需随显卡正式驱动安装并启用。
+
+COM、Media Foundation、编码器和缓冲均在专用线程创建、使用和释放，与 Linux 共用有界请求队列和超时处理。关键帧必须为能独立恢复的 IDR，携带匹配尺寸和色彩的 SPS/PPS；输出为 H.264 Annex-B。支持显式请求关键帧与动态码率调整。当前输入仍由 CPU 转换为有限范围 BT.601 NV12 并上传，不宣称 GPU 零拷贝。
+
+实现依据微软的 [硬件 MFT](https://learn.microsoft.com/en-us/windows/win32/medfound/hardware-mfts)、[异步 MFT](https://learn.microsoft.com/en-us/windows/win32/medfound/asynchronous-mfts) 和 [H.264 编码器](https://learn.microsoft.com/en-us/windows/win32/medfound/h-264-video-encoder) API。Sunshine 与 uu-remote-linux 提供了硬件选择、低延迟参数和恢复行为的参考；本后端未复制其 GPL 代码。
 
 ## Linux VA-API
 
@@ -20,7 +30,7 @@ cargo run --release -p uu-media --example encoder_probe --features vaapi -- \
   --encoder vaapi --frames 180 --width 1920 --height 1080
 ```
 
-探针只生成色条，检查范围/矩阵、尺寸裁剪、恢复IDR、码率调整和逐帧解码，不打开屏幕、声音或输入设备。使用`--encoder software`或`auto`检查其它选择；无VA-API构建也保留软件路径。
+探针只生成色条，检查范围/矩阵、尺寸裁剪、恢复IDR、码率调整和逐帧解码，不打开屏幕、声音或输入设备。Windows 使用 `--encoder hardware` 要求真正硬编；Linux 可用 `--encoder vaapi`。`--decoder hw` 同时要求硬件解码，不以自动软件回退代替硬件互通验证。使用 `--encoder software` 或 `auto` 检查其它选择；缺少硬件后端的构建保留软件路径。
 
 单台支持VA-API的Linux设备上，720p、1080p、1080×1920竖屏与3840×2160均完成恢复和色彩检查。合成色条的720p调用均值约为软件11.2 ms、复制上传VA-API4.4 ms、映射上传VA-API3.4 ms；4K映射上传约23 ms。这些是编码调用时间，包括转换、上传与等待，不是端到端延迟，也不是帧率保证；4K的该测量尚不足以持续60 FPS。不同码率控制会产生不同的实际字节数，不能将目标码率相同当作输出完全等价。
 

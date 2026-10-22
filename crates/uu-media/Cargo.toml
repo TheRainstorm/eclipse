@@ -36,11 +36,13 @@ cros-codecs = { version = "0.0.6", default-features = false }
 serde_json.workspace = true
 
 [features]
-default = ["h264", "d3d11va"]
+default = ["h264", "d3d11va", "mf-encode"]
 h264 = ["dep:openh264"]
 # Windows: Media Foundation H.264 decode on a D3D11 device manager (D3D11VA).
 # Only has an effect on Windows targets.
 d3d11va = ["dep:windows"]
+# Windows hardware H.264 encoding through the installed GPU driver's MFT.
+mf-encode = ["dep:windows"]
 # Linux: VA-API stateless decode via cros-codecs. Needs libva and libgbm
 # development packages at build time, so it is opt-in.
 vaapi = ["cros-codecs/vaapi", "dep:cros-libva", "dep:libc"]

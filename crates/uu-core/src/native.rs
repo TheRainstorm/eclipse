@@ -37,7 +37,7 @@ pub use uu_media::audio_capture::Source as AudioSource;
 pub use uu_media::encoder::Preference as EncoderPreference;
 
 pub fn hardware_encoding_compiled() -> bool {
-    cfg!(all(target_os="linux",feature="vaapi"))
+    uu_media::encoder::hardware_compiled()
 }
 
 #[derive(Clone, Debug)]

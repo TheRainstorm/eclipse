@@ -18,11 +18,11 @@ use uu_core::UuApi;
 use uu_core::{Config, Role, Session, SessionState, SignalClient};
 
 #[derive(clap::ValueEnum,Clone,Copy,Debug)]
-enum NativeEncoder { Software, Auto, Vaapi }
+enum NativeEncoder { Software, Auto, Hardware, Vaapi }
 impl NativeEncoder {
     fn preference(self)->uu_core::native::EncoderPreference {
         use uu_core::native::EncoderPreference as P;
-        match self {Self::Software=>P::Software,Self::Auto=>P::Auto,Self::Vaapi=>P::Vaapi}
+        match self {Self::Software=>P::Software,Self::Auto=>P::Auto,Self::Hardware=>P::Hardware,Self::Vaapi=>P::Vaapi}
     }
 }
 
@@ -63,7 +63,7 @@ mod native_encoder_options {
         let base=["uu","native-host","--synthetic","--invitation-file","generated.eclipse-invite.json"];
         let command=Cli::try_parse_from(base).unwrap().command;
         assert!(matches!(command,Command::NativeHost {encoder:NativeEncoder::Software,..}));
-        for (name,expected) in [("auto",uu_core::native::EncoderPreference::Auto),("vaapi",uu_core::native::EncoderPreference::Vaapi)] {
+        for (name,expected) in [("auto",uu_core::native::EncoderPreference::Auto),("hardware",uu_core::native::EncoderPreference::Hardware),("vaapi",uu_core::native::EncoderPreference::Vaapi)] {
             let mut args=base.to_vec();args.extend(["--encoder",name]);
             let Command::NativeHost {encoder,..}=Cli::try_parse_from(args).unwrap().command else {panic!("native-host expected")};
             assert_eq!(encoder.preference(),expected);
@@ -147,7 +147,7 @@ enum Command {
         fps: u32,
         #[arg(long, default_value_t = 8000)]
         bitrate_kbps: u32,
-        /// Native host encoder; VA-API is experimental and Linux-only.
+        /// Native host encoder; hardware requires a supported platform GPU driver.
         #[arg(long,value_enum,default_value="software")]
         encoder: NativeEncoder,
         #[arg(long, default_value_t = 600)]

@@ -79,6 +79,7 @@ fn main() -> anyhow::Result<()> {
                 settings.preference = match value.as_str() {
                     "software" => Preference::Software,
                     "auto" => Preference::Auto,
+                    "hardware" => Preference::Hardware,
                     "vaapi" => Preference::Vaapi,
                     _ => anyhow::bail!("unknown encoder"),
                 }

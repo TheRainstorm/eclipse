@@ -67,6 +67,7 @@ pub(super) struct HostUi {
     monitor: usize,
     fps: u32,
     mbps: u32,
+    encoder: native::EncoderPreference,
     input: bool,
     audio: bool,
     clipboard: bool,
@@ -105,6 +106,7 @@ impl Default for HostUi {
             monitor: 0,
             fps: 60,
             mbps: 18,
+            encoder: native::EncoderPreference::Auto,
             input: true,
             audio: true,
             clipboard: false,
@@ -298,7 +300,7 @@ impl HostUi {
             .get(self.monitor)
             .ok_or_else(|| anyhow::anyhow!("请选择可用屏幕"))?;
         anyhow::ensure!(
-            monitor.encodable(native::EncoderPreference::Auto, self.fps),
+            monitor.encodable(self.encoder, self.fps),
             "此屏幕尺寸暂不支持，请选择其它屏幕"
         );
         let (ready, ready_rx) = mpsc::channel();
@@ -329,7 +331,7 @@ impl HostUi {
             source: native::CaptureSource::Monitor(monitor.name.clone()),
             fps: self.fps,
             bitrate_kbps: self.mbps * 1000,
-            encoder: native::EncoderPreference::Auto,
+            encoder: self.encoder,
             allow_input: self.input,
             audio: self.audio.then_some(native::AudioSource::System),
             clipboard,
@@ -484,6 +486,15 @@ impl HostUi {
                                                 i,
                                                 format!("{} · {}×{}", m.name, m.width, m.height),
                                             );
+                                        }
+                                    });
+                                ui.end_row();
+                                ui.label("编码加速");
+                                egui::ComboBox::from_id_salt("lan-host-encoder")
+                                    .selected_text(super::native_host_ui::preference_label(self.encoder))
+                                    .show_ui(ui,|ui| {
+                                        for preference in [native::EncoderPreference::Auto,native::EncoderPreference::Hardware,native::EncoderPreference::Software] {
+                                            ui.selectable_value(&mut self.encoder,preference,super::native_host_ui::preference_label(preference));
                                         }
                                     });
                                 ui.end_row();

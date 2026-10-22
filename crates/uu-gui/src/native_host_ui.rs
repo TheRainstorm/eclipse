@@ -11,15 +11,17 @@ use std::{
 use tokio::sync::watch;
 use uu_core::native::{CaptureMonitor, CaptureSource, EncoderPreference, HostConfig, HostReport, HostStatus};
 
-fn preference_label(preference:EncoderPreference)->&'static str {
+pub(super) fn preference_label(preference:EncoderPreference)->&'static str {
     match preference {
         EncoderPreference::Software=>"软件编码（兼容）",
         EncoderPreference::Auto=>"自动（优先硬件）",
-        EncoderPreference::Vaapi=>"VA-API（实验）",
+        EncoderPreference::Hardware=>"硬件编码（必需）",
+        EncoderPreference::Vaapi=>"VA-API（Linux）",
     }
 }
 fn actual_encoder_label(backend:&str)->&'static str {
     if backend.starts_with("vaapi ") {"硬件编码 · VA-API"}
+    else if backend.starts_with("mf ") {"硬件编码 · Media Foundation"}
     else if backend.contains("fallback")||backend.contains("unavailable") {"软件编码 · 硬件不可用，已回退"}
     else {"软件编码 · H.264"}
 }
@@ -35,6 +37,7 @@ mod tests {
         assert!(!host.source_size_supported());host.encoder=EncoderPreference::Auto;
         assert!(host.source_size_supported());host.fps=61;assert!(!host.source_size_supported());
         assert_eq!(actual_encoder_label("vaapi (generated)"),"硬件编码 · VA-API");
+        assert_eq!(actual_encoder_label("mf (H.264 hardware, generated Intel encoder)"),"硬件编码 · Media Foundation");
         assert!(actual_encoder_label("openh264 (software) · fallback from VA-API").contains("已回退"));
         assert_eq!(actual_encoder_label("openh264 (software)"),"软件编码 · H.264");
     }
@@ -399,14 +402,14 @@ impl App {
                             .show_ui(ui,|ui| {
                                 ui.selectable_value(&mut host.encoder,EncoderPreference::Software,preference_label(EncoderPreference::Software));
                                 if uu_core::native::hardware_encoding_compiled() {
-                                    for preference in [EncoderPreference::Auto,EncoderPreference::Vaapi] {
+                                    for preference in [EncoderPreference::Auto,EncoderPreference::Hardware] {
                                         ui.selectable_value(&mut host.encoder,preference,preference_label(preference));
                                     }
                                 }
                             });
                     });
                     if host.encoder==EncoderPreference::Auto {ui.weak("硬件不可用或运行失败时回退软件，开始后显示实际编码方式。");}
-                    else if host.encoder==EncoderPreference::Vaapi {ui.weak("实验性硬件编码；驱动不支持时停止并显示原因。仍有CPU转换和上传。");}
+                    else if matches!(host.encoder,EncoderPreference::Hardware|EncoderPreference::Vaapi) {ui.weak("驱动不支持时停止并显示原因。当前仍有CPU颜色转换和上传。");}
                     ui.horizontal(|ui| {
                         ui.label("显示器");
                         egui::ComboBox::from_id_salt("native-host-monitor")

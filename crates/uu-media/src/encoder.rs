@@ -1,14 +1,20 @@
 //! Native-host encoding selection. Interoperability decoding is independent.
 use crate::{codec::CodecError, EncodedFrame, H264Encoder, RawFrame, VideoEncoder};
 
+#[cfg(all(windows, feature = "mf-encode"))]
+mod mf;
+mod upload;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 mod vaapi;
+mod worker;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Preference {
     #[default]
     Software,
     Auto,
+    /// Require the current platform's hardware encoder, without software fallback.
+    Hardware,
     Vaapi,
 }
 
@@ -54,15 +60,43 @@ fn software(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
         settings.fps,
     )?))
 }
+/// Whether the binary includes its platform's hardware encoding API.
+pub fn hardware_compiled() -> bool {
+    cfg!(any(
+        all(target_os = "linux", feature = "vaapi"),
+        all(windows, feature = "mf-encode")
+    ))
+}
+
+/// Platform API name, including builds without that optional backend.
+pub fn hardware_name() -> &'static str {
+    if cfg!(windows) {
+        "Media Foundation"
+    } else if cfg!(target_os = "linux") {
+        "VA-API"
+    } else {
+        "hardware encoder"
+    }
+}
 fn hardware(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
     #[cfg(all(target_os = "linux", feature = "vaapi"))]
-    return Ok(Box::new(vaapi::VaapiEncoder::new(settings)?));
-    #[cfg(not(all(target_os = "linux", feature = "vaapi")))]
+    return Ok(Box::new(worker::Worker::spawn(move || {
+        vaapi::Driver::open(settings)
+    })?));
+    #[cfg(all(windows, feature = "mf-encode"))]
+    return Ok(Box::new(worker::Worker::spawn(move || {
+        mf::Driver::open(settings)
+    })?));
+    #[cfg(not(any(
+        all(target_os = "linux", feature = "vaapi"),
+        all(windows, feature = "mf-encode")
+    )))]
     {
         let _ = settings;
-        Err(error(
-            "VA-API encoding is unavailable on this platform/build",
-        ))
+        Err(error(format!(
+            "{} encoding is unavailable in this platform/build",
+            hardware_name()
+        )))
     }
 }
 
@@ -70,11 +104,19 @@ pub fn create(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
     settings.validate()?;
     let (active, can_fallback, note) = match settings.preference {
         Preference::Software => (software(settings)?, false, false),
-        Preference::Vaapi => (hardware(settings)?, false, false),
+        Preference::Hardware => (hardware(settings)?, false, false),
+        Preference::Vaapi => {
+            if !cfg!(all(target_os = "linux", feature = "vaapi")) {
+                return Err(error(
+                    "VA-API requires a Linux build with the vaapi feature",
+                ));
+            }
+            (hardware(settings)?, false, false)
+        }
         Preference::Auto => match hardware(settings) {
             Ok(encoder) => (encoder, true, false),
             Err(reason) => {
-                tracing::debug!(%reason,"native hardware encoder unavailable; using software");
+                tracing::warn!(%reason,backend=hardware_name(),"native hardware encoder unavailable; using software");
                 (software(settings)?, false, true)
             }
         },
@@ -82,7 +124,11 @@ pub fn create(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
     let name = format!(
         "{}{}",
         active.backend_name(),
-        if note { " · VA-API unavailable" } else { "" }
+        if note {
+            format!(" · {} unavailable", hardware_name())
+        } else {
+            String::new()
+        }
     );
     Ok(Box::new(Selected {
         active,
@@ -101,7 +147,11 @@ struct Selected {
 impl Selected {
     fn fallback(&mut self, settings: Settings) -> Result<(), CodecError> {
         let replacement = software(settings)?;
-        self.name = format!("{} · fallback from VA-API", replacement.backend_name());
+        self.name = format!(
+            "{} · fallback from {}",
+            replacement.backend_name(),
+            hardware_name()
+        );
         self.active = replacement;
         self.settings = settings;
         self.can_fallback = false;
@@ -233,7 +283,9 @@ mod tests {
             .decode(&output[0])
             .unwrap()
             .is_some());
-        assert!(encoder.backend_name().contains("fallback from VA-API"));
+        assert!(encoder
+            .backend_name()
+            .contains(&format!("fallback from {}", hardware_name())));
         let mut next = frame();
         next.pts = Timestamp(33_333);
         encoder.encode(&next).unwrap();
@@ -279,7 +331,10 @@ mod tests {
             assert!(bad.validate().is_err());
         }
     }
-    #[cfg(not(all(target_os = "linux", feature = "vaapi")))]
+    #[cfg(not(any(
+        all(target_os = "linux", feature = "vaapi"),
+        all(windows, feature = "mf-encode")
+    )))]
     #[test]
     fn builds_without_vaapi_report_unavailable_and_auto_uses_software() {
         assert!(create(Settings {
