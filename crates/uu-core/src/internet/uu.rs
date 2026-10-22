@@ -12,11 +12,18 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::time::timeout;
 
-fn room_data(response: Value) -> Result<Value> {
+#[derive(Clone, Copy)]
+enum RoomRequest { Create, Join }
+
+fn room_data(response: Value, request: RoomRequest) -> Result<Value> {
+    let code=response["code"].as_i64().unwrap_or(-1);
+    if code==2001 && matches!(request,RoomRequest::Join) {
+        bail!("目标设备未上线，无法发起远控（UU 2001）。请先在目标设备的“连接服务 → UU 账号”页面点击“开始共享”，保持共享运行后再连接。更换账号或配对文件不能解决设备离线。");
+    }
     ensure!(
-        response["code"].as_i64() == Some(0),
-        "UU room request rejected (code {})",
-        response["code"].as_i64().unwrap_or(-1)
+        code == 0,
+        "UU {}失败（错误码 {}）",
+        if matches!(request,RoomRequest::Create) {"创建主机房间"}else{"加入目标主机房间"}, code
     );
     Ok(response["data"].clone())
 }
@@ -44,7 +51,7 @@ pub struct Host {
 impl Host {
     pub async fn online(config: &Config, development_relay: bool) -> Result<Self> {
         let api = UuApi::new(SignalClient::new(config)?, config.at("state.json"))?;
-        let data = room_data(api.room_create().await?)?;
+        let data = room_data(api.room_create().await?,RoomRequest::Create)?;
         let mut socket = connect(&data).await?;
         socket.request_ack("room_info", 1).await?;
         tracing::info!("UU native host online; direct connections only");
@@ -124,7 +131,9 @@ pub async fn join(config: &Config, device: &str, development_relay: bool) -> Res
         "invalid UU target device"
     );
     let api = UuApi::new(SignalClient::new(config)?, config.at("state.json"))?;
-    let data = room_data(api.room_join(device, false).await?)?;
+    ensure!(api.state.device_id.as_deref()!=Some(device),
+        "目标编号与本机 UU 编号相同。控制端应填写另一台设备的编号；更换 UU 账号不会更改本机设备编号。");
+    let data = room_data(api.room_join(device, false).await?,RoomRequest::Join)?;
     let mut socket = connect(&data).await?;
     let ctrl = uuid::Uuid::new_v4().to_string();
     let app = crate::socketio::encode_app_data(api.state.device_id.as_deref().unwrap_or_default());
@@ -252,5 +261,19 @@ impl Transport for UuTransport {
         )
         .await;
         let _ = timeout(Duration::from_secs(1), self.socket.close()).await;
+    }
+}
+
+#[cfg(test)]
+mod room_error_tests {
+    use super::*;
+    #[test]
+    fn offline_join_explains_host_action_and_is_not_reported_as_identity_or_pairing_failure() {
+        let response=json!({"code":2001,"msg":"被控设备不在线，无法发起远控"});
+        let error=room_data(response.clone(),RoomRequest::Join).unwrap_err().to_string();
+        assert!(error.contains("目标设备未上线")&&error.contains("开始共享")&&error.contains("2001"));
+        let create=room_data(response,RoomRequest::Create).unwrap_err().to_string();
+        assert!(create.contains("创建主机房间"));assert!(!create.contains("目标设备未上线"));
+        assert_eq!(room_data(json!({"code":0,"data":{"fixture":true}}),RoomRequest::Join).unwrap()["fixture"],true);
     }
 }

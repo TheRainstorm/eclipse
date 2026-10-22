@@ -238,7 +238,7 @@ impl App {
                         ui.weak("连接双方均运行本项目原生模式；UU 仅负责设备寻址与建连。");ui.add_space(8.);
                         if let Some(id)=&local_uu {ui.horizontal(|ui|{ui.label(format!("本机 UU 编号：{id}"));if ui.small_button("复制").clicked(){ui.output_mut(|o|o.copied_text=id.clone());}});}
                     }
-                    field(ui,if page.settings.provider==Provider::Uu {"目标 UU 设备编号（观看时填写）"}else{"设备名称（两端填写相同名称）"},&mut page.settings.device,"my-desktop");
+                    field(ui,if page.settings.provider==Provider::Uu {"目标 UU 设备编号（控制另一台设备时填写，共享本机可留空）"}else{"设备名称（两端填写相同名称）"},&mut page.settings.device,if page.settings.provider==Provider::Uu {"粘贴目标设备显示的“本机 UU 编号”"}else{"my-desktop"});
                     ui.separator();ui.label(RichText::new("设备配对").strong());ui.weak("首次使用创建配对文件，通过可信方式复制到另一台设备，两端选择同一文件。");
                     field(ui,"配对文件",&mut page.key,"access.key");
                     if ui.button("创建新的配对文件").clicked(){
@@ -249,12 +249,13 @@ impl App {
                     }
                     ui.add_space(12.);ui.horizontal(|ui|{
                         ui.add_enabled_ui(!page.running(),|ui|{
-                            if ui.button(RichText::new("连接并打开画面").strong()).clicked(){connect=true;}
+                            if ui.button(RichText::new("连接目标设备并打开画面").strong()).clicked(){connect=true;}
                         });
                     });
                 });ui.add_space(14.);
                 egui::Frame::none().fill(egui::Color32::WHITE).rounding(12.).inner_margin(20.).show(ui,|ui|{
-                    ui.heading("共享本机");
+                    ui.heading("共享本机（在被控设备上操作）");
+                    ui.weak("先在这台设备点击“开始共享”，再从另一台设备填写本机编号并连接。仅登录账号不会开启共享。");
                     ui.add_enabled_ui(!page.running(),|ui|{
                         if ui.button("刷新显示器").clicked(){match uu_core::native::monitors(){Ok(monitors)=>{page.monitors=monitors;page.monitor=0;},Err(e)=>page.notice=e.to_string()}}
                         egui::ComboBox::from_id_salt("internet-monitor").selected_text(page.monitors.get(page.monitor).map(|m|format!("{} · {}×{}",m.name,m.width,m.height)).unwrap_or_else(||"主显示器".into())).show_ui(ui,|ui|{
