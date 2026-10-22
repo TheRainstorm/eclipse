@@ -2,6 +2,7 @@
 #include <vpl/mfxvideo.h>
 #include <vpl/mfxdispatcher.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 typedef struct {mfxVideoParam params;int initialized;} Session;
 static int sessions=0,bad_close=0,loaders=0;
@@ -9,9 +10,11 @@ __attribute__((destructor)) static void verify_cleanup(void){if(sessions || bad_
 static int mode(const char *value){const char *which=getenv("ECLIPSE_VPL_CONTRACT_CASE");return which && strcmp(which,value)==0;}
 mfxLoader MFXLoad(void){++loaders;return (mfxLoader)1;}
 void MFXUnload(mfxLoader loader){(void)loader;--loaders;}
+mfxConfig MFXCreateConfig(mfxLoader loader){(void)loader;return (mfxConfig)2;}
+mfxStatus MFXSetConfigFilterProperty(mfxConfig config,const mfxU8 *name,mfxVariant value){(void)config;(void)name;return value.Type==MFX_VARIANT_TYPE_U32 && value.Version.Version==MFX_VARIANT_VERSION?0:MFX_ERR_INVALID_VIDEO_PARAM;}
 mfxStatus MFXCreateSession(mfxLoader loader,mfxU32 index,mfxSession *out){(void)loader;if(index)return MFX_ERR_NOT_FOUND;*out=(mfxSession)calloc(1,sizeof(Session));if(*out)++sessions;return *out?0:MFX_ERR_MEMORY_ALLOC;}
 mfxStatus MFXClose(mfxSession session){if(((Session *)session)->initialized)++bad_close;free(session);--sessions;return 0;}
-mfxStatus MFXQueryIMPL(mfxSession session,mfxIMPL *implementation){(void)session;*implementation=mode("software")?MFX_IMPL_SOFTWARE:MFX_IMPL_HARDWARE;return 0;}
+mfxStatus MFXQueryIMPL(mfxSession session,mfxIMPL *implementation){(void)session;*implementation=(mode("software")||mode("decode_software"))?MFX_IMPL_SOFTWARE:MFX_IMPL_HARDWARE;return 0;}
 mfxStatus MFXVideoENCODE_Query(mfxSession session,mfxVideoParam *input,mfxVideoParam *output){
     (void)session;
     if(input->AsyncDepth!=1 || input->mfx.GopRefDist!=1 || input->IOPattern!=MFX_IOPATTERN_IN_SYSTEM_MEMORY || input->mfx.NumRefFrame!=1 || input->mfx.FrameInfo.FourCC!=MFX_FOURCC_NV12)return MFX_ERR_INVALID_VIDEO_PARAM;
@@ -33,4 +36,23 @@ mfxStatus MFXVideoENCODE_EncodeFrameAsync(mfxSession session,mfxEncodeCtrl *cont
     if(bits->MaxLength<size)return MFX_ERR_NOT_ENOUGH_BUFFER;
     memcpy(bits->Data,data,size);bits->DataOffset=mode("buffer")?bits->MaxLength+1:0;bits->DataLength=(mfxU32)size;
     bits->TimeStamp=mode("timestamp")?123456789:surface->Data.TimeStamp;bits->FrameType=MFX_FRAMETYPE_I|MFX_FRAMETYPE_IDR|MFX_FRAMETYPE_REF;*sync=(mfxSyncPoint)1;return 0;
+}
+
+mfxStatus MFXVideoDECODE_DecodeHeader(mfxSession session,mfxBitstream *bits,mfxVideoParam *params){
+    (void)session;(void)bits;params->mfx.CodecId=MFX_CODEC_AV1;params->mfx.CodecProfile=MFX_PROFILE_AV1_MAIN;
+    mfxFrameInfo *info=&params->mfx.FrameInfo;info->FourCC=MFX_FOURCC_NV12;info->Width=128;info->Height=128;
+    info->CropW=mode("decode_size")?127:128;info->CropH=128;info->BitDepthLuma=8;info->BitDepthChroma=8;
+    info->ChromaFormat=MFX_CHROMAFORMAT_YUV420;return 0;
+}
+mfxStatus MFXVideoDECODE_Query(mfxSession session,mfxVideoParam *input,mfxVideoParam *out){(void)session;*out=*input;return mode("decode_partial")?MFX_WRN_PARTIAL_ACCELERATION:0;}
+mfxStatus MFXVideoDECODE_QueryIOSurf(mfxSession session,mfxVideoParam *params,mfxFrameAllocRequest *request){(void)session;(void)params;request->NumFrameMin=2;request->NumFrameSuggested=mode("decode_pool")?33:2;return 0;}
+mfxStatus MFXVideoDECODE_Init(mfxSession session,mfxVideoParam *params){((Session *)session)->params=*params;((Session *)session)->initialized=1;return 0;}
+mfxStatus MFXVideoDECODE_GetVideoParam(mfxSession session,mfxVideoParam *params){return MFXVideoENCODE_GetVideoParam(session,params);}
+mfxStatus MFXVideoDECODE_Reset(mfxSession session,mfxVideoParam *params){return MFXVideoENCODE_Reset(session,params);}
+mfxStatus MFXVideoDECODE_Close(mfxSession session){return MFXVideoENCODE_Close(session);}
+mfxStatus MFXVideoDECODE_DecodeFrameAsync(mfxSession session,mfxBitstream *bits,mfxFrameSurface1 *work,mfxFrameSurface1 **out,mfxSyncPoint *sync){
+    (void)session;memset(work->Data.Y,126+(bits->TimeStamp%3),(size_t)work->Data.Pitch*work->Info.Height);memset(work->Data.U,128,(size_t)work->Data.Pitch*work->Info.Height/2);
+    work->Data.TimeStamp=mode("decode_timestamp")?123456789:bits->TimeStamp;
+    bits->DataOffset+=bits->DataLength;bits->DataLength=0;
+    *out=mode("decode_surface")?(mfxFrameSurface1 *)(uintptr_t)0x123450:work;*sync=(mfxSyncPoint)1;return 0;
 }

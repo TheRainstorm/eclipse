@@ -8,6 +8,7 @@
 //! Opus audio (see `docs/protocol-notes.md`), so the codec layer here is
 //! deliberately codec-agnostic and pluggable.
 
+pub mod av1;
 pub mod audio;
 pub mod audio_capture;
 pub mod audio_red;
@@ -125,8 +126,12 @@ pub fn decoder_for_codec(codec: uu_proto::media::VideoCodec) -> Result<Box<dyn V
         return Ok(Box::new(hw::d3d11va::D3d11VaDecoder::with_codec(codec)?));
     }
     #[cfg(all(target_os="linux",feature="vaapi"))]
-    if codec == VideoCodec::Hevc && DecoderKind::from_env() != DecoderKind::Software {
+    if matches!(codec,VideoCodec::Hevc|VideoCodec::Av1) && DecoderKind::from_env() != DecoderKind::Software {
         return Ok(Box::new(hw::vaapi::VaapiDecoder::with_codec(codec)?));
+    }
+    #[cfg(all(feature="intel-vpl",any(windows,target_os="linux")))]
+    if codec==VideoCodec::Av1 && DecoderKind::from_env()!=DecoderKind::Software {
+        return Ok(Box::new(hw::vpl::VplAv1Decoder::new()?));
     }
     Err(CodecError::Unsupported(codec))
 }

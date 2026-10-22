@@ -12,7 +12,7 @@ def main():
         subprocess.run(['cc','-shared','-fPIC','-DMFX_DEPRECATED_OFF','-I'+str(root/'vendor/libvpl-api/include'),
             str(root/'tools/native/vpl_runtime_fixture.c'),'-o',str(library)],check=True)
         env=os.environ.copy();env.update(LD_LIBRARY_PATH=directory,ECLIPSE_VPL_CONTRACT='1')
-        for case in ('valid','software','fps','init_fps','codec','mode','partial','timestamp','buffer'):
+        for case in ('valid','software','fps','init_fps','codec','mode','partial','timestamp','buffer','decode_software','decode_size','decode_pool','decode_partial','decode_timestamp','decode_surface'):
             env['ECLIPSE_VPL_CONTRACT_CASE']=case
             result=subprocess.run([str(probe)],env=env,capture_output=True,text=True,timeout=15)
             if result.returncode:raise RuntimeError(case+': '+result.stdout[-2000:]+' / '+result.stderr[-2000:])

@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use bytes::Bytes;
 use cros_codecs::decoder::stateless::h264::H264;
 use cros_codecs::decoder::stateless::h265::H265;
+use cros_codecs::decoder::stateless::av1::Av1;
 use cros_codecs::decoder::stateless::{
     DecodeError, StatelessDecoder, StatelessVideoDecoder,
 };
@@ -59,7 +60,6 @@ impl VaapiDecoder {
         Self::with_codec(VideoCodec::H264)
     }
     pub fn with_codec(codec:VideoCodec) -> Result<Self, CodecError> {
-        if !matches!(codec,VideoCodec::H264|VideoCodec::Hevc) {return Err(CodecError::Unsupported(codec));}
         Ok(Self {
             worker: super::Worker::spawn(move || Decoder::open(codec))?,
             codec,
@@ -83,19 +83,19 @@ impl VideoDecoder for VaapiDecoder {
 
 type VaBackend=cros_codecs::backend::vaapi::decoder::VaapiBackend<Surface>;
 type Handle=std::rc::Rc<std::cell::RefCell<cros_codecs::backend::vaapi::decoder::VaapiDecodedHandle<Surface>>>;
-enum BitstreamDecoder { H264(StatelessDecoder<H264,VaBackend>), Hevc(StatelessDecoder<H265,VaBackend>) }
+enum BitstreamDecoder { H264(StatelessDecoder<H264,VaBackend>), Hevc(StatelessDecoder<H265,VaBackend>), Av1(StatelessDecoder<Av1,VaBackend>) }
 impl BitstreamDecoder {
     fn decode(&mut self,timestamp:u64,input:&[u8],alloc:&mut dyn FnMut()->Option<Surface>)->Result<usize,DecodeError> {
-        match self {Self::H264(d)=>d.decode(timestamp,input,alloc),Self::Hevc(d)=>d.decode(timestamp,input,alloc)}
+        match self {Self::H264(d)=>d.decode(timestamp,input,alloc),Self::Hevc(d)=>d.decode(timestamp,input,alloc),Self::Av1(d)=>d.decode(timestamp,input,alloc)}
     }
     fn next_event(&mut self)->Option<DecoderEvent<Handle>> {
-        match self {Self::H264(d)=>d.next_event(),Self::Hevc(d)=>d.next_event()}
+        match self {Self::H264(d)=>d.next_event(),Self::Hevc(d)=>d.next_event(),Self::Av1(d)=>d.next_event()}
     }
     fn stream_info(&self)->Option<&StreamInfo> {
-        match self {Self::H264(d)=>d.stream_info(),Self::Hevc(d)=>d.stream_info()}
+        match self {Self::H264(d)=>d.stream_info(),Self::Hevc(d)=>d.stream_info(),Self::Av1(d)=>d.stream_info()}
     }
     fn finish_access_unit(&mut self)->Result<(),DecodeError> {
-        match self {Self::H264(d)=>d.finish_access_unit(),Self::Hevc(d)=>d.finish_access_unit()}
+        match self {Self::H264(d)=>d.finish_access_unit(),Self::Hevc(d)=>d.finish_access_unit(),Self::Av1(_)=>Ok(())}
     }
 }
 struct Decoder {
@@ -129,14 +129,14 @@ impl Decoder {
         let decoder=match codec {
             VideoCodec::H264=>BitstreamDecoder::H264(StatelessDecoder::<H264,_>::new_vaapi(display.clone(),BlockingMode::Blocking).map_err(|e|format!("VA-API H.264 decoder: {e}"))?),
             VideoCodec::Hevc=>BitstreamDecoder::Hevc(StatelessDecoder::<H265,_>::new_vaapi(display.clone(),BlockingMode::Blocking).map_err(|e|format!("VA-API HEVC decoder: {e}"))?),
-            _=>return Err("Unsupported VAAPI codec".into()),
+            VideoCodec::Av1=>BitstreamDecoder::Av1(StatelessDecoder::<Av1,_>::new_vaapi(display.clone(),BlockingMode::Blocking).map_err(|e|format!("VA-API AV1 decoder: {e}"))?),
         };
         Ok(Self {
             decoder,
             codec,
             display,
             pool: None,
-            name: format!("vaapi (cros-codecs hw, {}{})", if codec==VideoCodec::Hevc {"HEVC, "}else{""}, path.display()),
+            name: format!("vaapi (cros-codecs hw, {}{})", match codec {VideoCodec::H264=>"",VideoCodec::Hevc=>"HEVC, ",VideoCodec::Av1=>"AV1, "}, path.display()),
             pending: VecDeque::new(),
             pixels: super::pixels::Pool::default(),
             dma_readback: std::env::var("UU_VAAPI_READBACK").as_deref() != Ok("legacy"),
@@ -170,7 +170,7 @@ impl super::Backend for Decoder {
             // from its consumed count. They may remain after the final NAL
             // (including VA encoder alignment padding); there is no next NAL
             // to parse. Only accept zero padding after actual NAL progress.
-            if input.len() < data.len() && input.iter().all(|byte| *byte == 0) {
+            if self.codec!=VideoCodec::Av1 && input.len() < data.len() && input.iter().all(|byte| *byte == 0) {
                 break;
             }
             let mut pool = self.pool.take();
@@ -181,7 +181,7 @@ impl super::Backend for Decoder {
             let consumed = match result {
                 Ok(consumed) => consumed,
                 Err(DecodeError::CheckEvents) | Err(DecodeError::NotEnoughOutputBuffers(_)) => {
-                    if self.pump_events()? == 0 {
+                    if self.pump_events(timestamp)? == 0 {
                         // cros-codecs can enter FlushingForDRC with an empty
                         // ready queue. There is no event to drain: the next
                         // decode call advances reset_backend/renegotiation.
@@ -200,7 +200,7 @@ impl super::Backend for Decoder {
             if consumed == 0 || consumed > input.len() {
                 // No progress even though the decoder accepted the call: ask
                 // for events once, then stop instead of spinning.
-                if self.pump_events()? == 0 {
+                if self.pump_events(timestamp)? == 0 {
                     stalls += 1;
                     if stalls > 2 {
                         return Err("VA-API decoder stopped consuming input".to_string());
@@ -210,10 +210,10 @@ impl super::Backend for Decoder {
             }
             stalls = 0;
             input = &input[consumed..];
-            self.pump_events()?;
+            self.pump_events(timestamp)?;
         }
         self.decoder.finish_access_unit().map_err(|e| format!("VA access-unit submission: {e}"))?;
-        self.pump_events()?;
+        self.pump_events(timestamp)?;
         if let Some(started) = started {
             self.profile.calls += 1;
             self.profile.total_us += started.elapsed().as_micros() as u64;
@@ -231,7 +231,7 @@ impl super::Backend for Decoder {
 
 impl Decoder {
     /// Handle every pending decoder event, returning how many were processed.
-    fn pump_events(&mut self) -> Result<usize, String> {
+    fn pump_events(&mut self,display_timestamp:u64) -> Result<usize, String> {
         let mut handled = 0usize;
         while let Some(event) = self.decoder.next_event() {
             handled += 1;
@@ -245,6 +245,10 @@ impl Decoder {
                     self.resize(&info)?;
                 }
                 DecoderEvent::FrameReady(handle) => {
+                    // AV1 show_existing_frame displays a retained reference in
+                    // the current temporal unit. Its original pixel timestamp
+                    // is not the new presentation timestamp. H26x keeps DPB PTS.
+
                     let sync_started = self.profile.enabled.then(std::time::Instant::now);
                     handle.sync().map_err(|e| format!("surface sync: {e}"))?;
                     if let Some(started) = sync_started { self.profile.sync_us += started.elapsed().as_micros() as u64; }
@@ -273,7 +277,7 @@ impl Decoder {
                                     if self.profile.enabled {self.profile.frames+=1;self.profile.gpu_frames+=1;}
                                     self.pending.push_back(RawFrame {width:resolution.width,height:resolution.height,
                                         format:PixelFormat::Nv12,stride:resolution.width,data:Bytes::new(),
-                                        pts:Timestamp(handle.timestamp()),gpu:true,dma_buf:Some(std::sync::Arc::new(gpu)),d3d11:None});
+                                        pts:Timestamp(if self.codec==VideoCodec::Av1 {display_timestamp}else{handle.timestamp()}),gpu:true,dma_buf:Some(std::sync::Arc::new(gpu)),d3d11:None});
                                     continue;
                                 }
                             }
@@ -335,7 +339,7 @@ impl Decoder {
                         format: PixelFormat::Nv12,
                         stride: resolution.width,
                         data: pixels,
-                        pts: Timestamp(handle.timestamp()),
+                        pts: Timestamp(if self.codec==VideoCodec::Av1 {display_timestamp}else{handle.timestamp()}),
                         gpu: false,
                         dma_buf: None,
                         d3d11: None,
@@ -465,7 +469,7 @@ fn open_node(path: &Path,codec:VideoCodec) -> Result<std::rc::Rc<Display>, Strin
     let requested:&[VAProfile::Type]=match codec {
         VideoCodec::H264=>&[VAProfile::VAProfileH264High,VAProfile::VAProfileH264Main],
         VideoCodec::Hevc=>&[VAProfile::VAProfileHEVCMain],
-        _=>return Err("Unsupported VAAPI codec".into()),
+        VideoCodec::Av1=>&[VAProfile::VAProfileAV1Profile0],
     };
     for &profile in requested {
         if !profiles.contains(&profile) {

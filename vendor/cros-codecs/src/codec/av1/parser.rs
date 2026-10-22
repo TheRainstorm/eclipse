@@ -1822,8 +1822,8 @@ impl Parser {
         // Both "low-overhead" and Annex B are now at the same point, i.e.: a
         // open_bitstream_unit() follows.
         let header = Self::parse_obu_header(&mut reader)?;
-        if matches!(self.stream_format, StreamFormat::LowOverhead) {
-            assert!(header.has_size_field);
+        if matches!(self.stream_format, StreamFormat::LowOverhead) && !header.has_size_field {
+            return Err("low-overhead OBU requires an explicit size".into());
         }
 
         let obu_size: usize = if header.has_size_field {
@@ -1839,16 +1839,16 @@ impl Parser {
 
         let consumed = reader.consumed(start_pos);
 
+        if reader.0.position() % 8 != 0 { return Err("unaligned OBU header".into()); }
+        let start_offset: usize = (reader.0.position() / 8).try_into().map_err(|_| "OBU offset overflow")?;
+        let end_offset = start_offset.checked_add(obu_size)
+            .filter(|end| *end <= data.len()).ok_or("truncated OBU payload")?;
         if let StreamFormat::AnnexB(annexb_state) = &mut self.stream_format {
-            annexb_state.temporal_unit_consumed += consumed;
-            annexb_state.frame_unit_consumed += consumed;
-
-            annexb_state.temporal_unit_consumed += u32::try_from(obu_size).unwrap();
-            annexb_state.frame_unit_consumed += u32::try_from(obu_size).unwrap();
+            let total = consumed.checked_add(u32::try_from(obu_size).map_err(|_| "OBU size overflow")?)
+                .ok_or("OBU consumption overflow")?;
+            annexb_state.temporal_unit_consumed = annexb_state.temporal_unit_consumed.checked_add(total).ok_or("temporal unit overflow")?;
+            annexb_state.frame_unit_consumed = annexb_state.frame_unit_consumed.checked_add(total).ok_or("frame unit overflow")?;
         }
-
-        assert!(reader.0.position() % 8 == 0);
-        let start_offset: usize = (reader.0.position() / 8).try_into().unwrap();
 
         log::debug!(
             "Identified OBU type {:?}, data size: {}, obu_size: {}",
@@ -1866,14 +1866,14 @@ impl Parser {
             let in_spatial_layer = ((self.operating_point_idc >> (header.spatial_id + 8)) & 1) != 0;
             if !in_temporal_layer || !in_spatial_layer {
                 log::debug!("Dropping obu as per drop_obu() in the specification",);
-                return Ok(ObuAction::Drop(reader.consumed(0)));
+                return Ok(ObuAction::Drop(u32::try_from(end_offset).map_err(|_| "OBU drop size overflow")?));
             }
         }
 
         Ok(ObuAction::Process(Obu {
             header,
-            data: Cow::from(&data[start_offset..start_offset + obu_size]),
-            bytes_used: start_offset + obu_size,
+            data: Cow::from(&data[start_offset..end_offset]),
+            bytes_used: end_offset,
         }))
     }
 

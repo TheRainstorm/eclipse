@@ -4,76 +4,7 @@ use crate::EncodedFrame;
 use uu_proto::media::VideoCodec;
 const MAX_HEADER: usize = 64 * 1024;
 
-pub(crate) fn nal_units(data: &[u8]) -> Vec<&[u8]> {
-    let mut positions = Vec::new();
-    let mut offset = 0;
-    while offset + 3 <= data.len() {
-        let length = if data[offset..].starts_with(&[0, 0, 0, 1]) {
-            4
-        } else if data[offset..].starts_with(&[0, 0, 1]) {
-            3
-        } else {
-            offset += 1;
-            continue;
-        };
-        if positions.len()>=4096{return Vec::new();}
-        positions.push((offset, offset + length));
-        offset += length;
-    }
-    positions
-        .iter()
-        .enumerate()
-        .filter_map(|(i, (_, body))| {
-            let end = positions.get(i + 1).map_or(data.len(), |(start, _)| *start);
-            (*body < end).then(|| &data[*body..end])
-        })
-        .collect()
-}
-/// Low-overhead AV1 OBUs with explicit size fields, as produced by VPL.
-pub(crate) fn obus(data: &[u8]) -> Result<Vec<&[u8]>, String> {
-    let mut units = Vec::new();
-    let mut at = 0;
-    while at < data.len() {
-        let begin = at;
-        let header = data[at];
-        at += 1;
-        if header & 0x81 != 0 || header & 2 == 0 {
-            return Err("invalid AV1 OBU header/size field".into());
-        }
-        if header & 4 != 0 {
-            if at >= data.len() {
-                return Err("truncated AV1 extension".into());
-            }
-            at += 1;
-        }
-        let mut size = 0usize;
-        let mut done = false;
-        for index in 0..8 {
-            let byte = *data.get(at).ok_or("truncated AV1 OBU length")?;
-            at += 1;
-            let part = usize::from(byte & 0x7f)
-                .checked_shl(index * 7)
-                .ok_or("AV1 length overflow")?;
-            size = size.checked_add(part).ok_or("AV1 length overflow")?;
-            if byte & 0x80 == 0 {
-                done = true;
-                break;
-            }
-        }
-        if !done {
-            return Err("oversized AV1 OBU length".into());
-        }
-        at = at
-            .checked_add(size)
-            .filter(|end| *end <= data.len())
-            .ok_or("truncated AV1 OBU")?;
-        units.push(&data[begin..at]);
-        if units.len() > 4096 {
-            return Err("too many AV1 OBUs".into());
-        }
-    }
-    Ok(units)
-}
+use crate::{bitstream::annexb_nals as nal_units,av1::obus};
 #[derive(Default)]
 pub(super) struct Headers {
     sets: [Option<Vec<u8>>; 3],

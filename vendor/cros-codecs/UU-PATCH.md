@@ -11,3 +11,5 @@ HEVC新增finish_access_unit：完整RTP访问单元结束时提交当前picture
 原生H.264编码补充：LowDelayH264把显式FrameMetadata.force_keyframe作为IDR请求，重置序列帧编号并重发SPS/PPS。上游默认只在计数器归零时标记IDR，强制请求产生的普通I帧不能满足丢包后从全新解码器恢复的要求。修改只影响H.264编码预测器，不改变其它编码格式或解码路径；由合成画面的VA-API编码/全新软件解码器探针验证。
 
 原生编码互通补充：Baseline 低延迟预测器写明 Constrained Baseline 的约束标志；其单参考 I/P 结构在 VUI 中声明 max_num_reorder_frames=0 与对应参考缓冲上限。SPS builder 增加所需字段，不修改解码器对不支持 profile 的拒绝规则。约束组合见 RFC 6184 表5；使用实际双硬件持续解码及冷启动 IDR 探针验证。
+
+AV1 OBU 读取补充：低开销格式缺少长度字段返回错误；在创建载荷切片前检查偏移和长度，避免截断的网络数据触发越界 panic。Annex-B 消耗计数使用 checked_add，过滤操作点时跳过完整 OBU。该边界校验同时适用于 VAAPI 解码与上层元数据读取，生成 AV1 灰帧的所有截断前缀作为应用回归。

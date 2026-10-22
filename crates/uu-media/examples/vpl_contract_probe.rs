@@ -20,7 +20,27 @@ fn main() -> anyhow::Result<()> {
         bitrate_kbps: 800,
         preference: Preference::Hardware,
     };
-    if matches!(case.as_str(), "software" | "fps" | "partial" | "init_fps" | "codec" | "mode") {
+    if case.starts_with("decode_") {
+        use uu_media::VideoDecoder;
+        let result = uu_media::hw::vpl::VplAv1Decoder::new().and_then(|mut decoder| {
+            decoder.prepare(128, 128)?;
+            decoder.decode(&uu_media::EncodedFrame {
+                data: bytes::Bytes::from_static(uu_media::av1::PROBE),
+                pts: Timestamp(0),
+                is_keyframe: true,
+            })
+        });
+        ensure!(result.is_err(), "invalid decoder driver output must fail");
+        println!(
+            "{}",
+            serde_json::json!({"case":case,"passed":true,"emulated_runtime":true,"hardware_used":false})
+        );
+        return Ok(());
+    }
+    if matches!(
+        case.as_str(),
+        "software" | "fps" | "partial" | "init_fps" | "codec" | "mode"
+    ) {
         ensure!(
             encoder::create(base).is_err(),
             "invalid/partially accelerated runtime must fail"
@@ -64,6 +84,29 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+    }
+    if case == "valid" {
+        use uu_media::VideoDecoder;
+        let mut decoder = uu_media::hw::vpl::VplAv1Decoder::new()?;
+        decoder.prepare(128, 128)?;
+        let mut coded = uu_media::EncodedFrame {
+            data: bytes::Bytes::from_static(uu_media::av1::PROBE),
+            pts: Timestamp(0),
+            is_keyframe: true,
+        };
+        let first = decoder
+            .decode(&coded)?
+            .ok_or_else(|| anyhow::anyhow!("no contract decode output"))?;
+        ensure!(
+            first.is_consistent() && !first.gpu && first.data[0] == 126 && first.pts == coded.pts,
+            "invalid copied frame"
+        );
+        coded.pts = Timestamp(16666);
+        let next = decoder.decode(&coded)?.unwrap();
+        ensure!(
+            next.data[0] == 128 && first.data[0] == 126 && next.pts == coded.pts,
+            "borrowed surface escaped its worker or timestamp changed"
+        );
     }
     println!(
         "{}",

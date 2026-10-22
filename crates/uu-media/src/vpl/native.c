@@ -30,8 +30,10 @@ static void pause_ms(void){struct timespec t={0,1000000};nanosleep(&t,NULL);}
 typedef mfxLoader (MFX_CDECL *LoadFn)(void);
 typedef void (MFX_CDECL *UnloadFn)(mfxLoader);
 typedef mfxStatus (MFX_CDECL *CreateFn)(mfxLoader,mfxU32,mfxSession *);
+typedef mfxConfig (MFX_CDECL *ConfigFn)(mfxLoader);
+typedef mfxStatus (MFX_CDECL *FilterFn)(mfxConfig,const mfxU8 *,mfxVariant);
 typedef struct {
-    Module module; mfxLoader loader; UnloadFn unload;
+    Module module; mfxLoader loader; UnloadFn unload; int decoder; int configured;
     mfxStatus (MFX_CDECL *close)(mfxSession);
     mfxStatus (MFX_CDECL *query_impl)(mfxSession,mfxIMPL *);
     mfxStatus (MFX_CDECL *query)(mfxSession,mfxVideoParam *,mfxVideoParam *);
@@ -40,6 +42,9 @@ typedef struct {
     mfxStatus (MFX_CDECL *get)(mfxSession,mfxVideoParam *);
     mfxStatus (MFX_CDECL *encode_close)(mfxSession);
     mfxStatus (MFX_CDECL *encode)(mfxSession,mfxEncodeCtrl *,mfxFrameSurface1 *,mfxBitstream *,mfxSyncPoint *);
+    mfxStatus (MFX_CDECL *header)(mfxSession,mfxBitstream *,mfxVideoParam *);
+    mfxStatus (MFX_CDECL *surfaces)(mfxSession,mfxVideoParam *,mfxFrameAllocRequest *);
+    mfxStatus (MFX_CDECL *decode)(mfxSession,mfxBitstream *,mfxFrameSurface1 *,mfxFrameSurface1 **,mfxSyncPoint *);
     mfxStatus (MFX_CDECL *sync)(mfxSession,mfxSyncPoint,mfxU32);
 } Runtime;
 typedef struct {
@@ -61,7 +66,8 @@ static void runtime_close(Runtime *rt){
     if(rt->module)module_close(rt->module);
     memset(rt,0,sizeof(*rt));
 }
-static int runtime_open(Runtime *rt,char *error,size_t capacity){
+static int runtime_open(Runtime *rt,int decoder,char *error,size_t capacity){
+    rt->decoder=decoder;
 #ifdef _WIN32
     const char *names[]={"libvpl.dll"};
 #else
@@ -71,12 +77,13 @@ static int runtime_open(Runtime *rt,char *error,size_t capacity){
         rt->module=module_open(names[i]);if(!rt->module)continue;
 #define RESOLVE(field,name) rt->field=(void *)module_symbol(rt->module,name)
         RESOLVE(close,"MFXClose");RESOLVE(query_impl,"MFXQueryIMPL");
-        RESOLVE(query,"MFXVideoENCODE_Query");RESOLVE(init,"MFXVideoENCODE_Init");
-        RESOLVE(reset,"MFXVideoENCODE_Reset");RESOLVE(get,"MFXVideoENCODE_GetVideoParam");
-        RESOLVE(encode_close,"MFXVideoENCODE_Close");RESOLVE(encode,"MFXVideoENCODE_EncodeFrameAsync");
+        RESOLVE(query,decoder?"MFXVideoDECODE_Query":"MFXVideoENCODE_Query");RESOLVE(init,decoder?"MFXVideoDECODE_Init":"MFXVideoENCODE_Init");
+        RESOLVE(reset,decoder?"MFXVideoDECODE_Reset":"MFXVideoENCODE_Reset");RESOLVE(get,decoder?"MFXVideoDECODE_GetVideoParam":"MFXVideoENCODE_GetVideoParam");
+        RESOLVE(encode_close,decoder?"MFXVideoDECODE_Close":"MFXVideoENCODE_Close");RESOLVE(encode,"MFXVideoENCODE_EncodeFrameAsync");
+        RESOLVE(header,"MFXVideoDECODE_DecodeHeader");RESOLVE(surfaces,"MFXVideoDECODE_QueryIOSurf");RESOLVE(decode,"MFXVideoDECODE_DecodeFrameAsync");
         RESOLVE(sync,"MFXVideoCORE_SyncOperation");
 #undef RESOLVE
-        if(rt->close&&rt->query_impl&&rt->query&&rt->init&&rt->reset&&rt->get&&rt->encode_close&&rt->encode&&rt->sync)return 0;
+        if(rt->close&&rt->query_impl&&rt->query&&rt->init&&rt->reset&&rt->get&&rt->encode_close&&rt->sync&&(!decoder?rt->encode!=NULL:(rt->header&&rt->surfaces&&rt->decode)))return 0;
         runtime_close(rt);
     }
     return failed(error,capacity,"runtime unavailable; install Intel VPL dispatcher and GPU runtime",MFX_ERR_NOT_FOUND);
@@ -90,17 +97,32 @@ void eclipse_vpl_encoder_close(Encoder *e){
 #endif
     free(e);
 }
-static int session_open(Encoder *e,unsigned index){
-    LoadFn load=(LoadFn)module_symbol(e->rt.module,"MFXLoad");
-    CreateFn create=(CreateFn)module_symbol(e->rt.module,"MFXCreateSession");
-    e->rt.unload=(UnloadFn)module_symbol(e->rt.module,"MFXUnload");
-    if(!load||!create||!e->rt.unload)return MFX_ERR_UNSUPPORTED;
-    if(!e->rt.loader)e->rt.loader=load();
-    if(!e->rt.loader)return MFX_ERR_NOT_INITIALIZED;
-    mfxStatus status=create(e->rt.loader,index,&e->session);
+static int session_open(Runtime *rt,mfxSession *session,unsigned index,mfxU32 codec){
+    LoadFn load=(LoadFn)module_symbol(rt->module,"MFXLoad");
+    CreateFn create=(CreateFn)module_symbol(rt->module,"MFXCreateSession");
+    ConfigFn config=(ConfigFn)module_symbol(rt->module,"MFXCreateConfig");
+    FilterFn filter=(FilterFn)module_symbol(rt->module,"MFXSetConfigFilterProperty");
+    rt->unload=(UnloadFn)module_symbol(rt->module,"MFXUnload");
+    if(!load||!create||!config||!filter||!rt->unload)return MFX_ERR_UNSUPPORTED;
+    if(!rt->loader)rt->loader=load();
+    if(!rt->loader)return MFX_ERR_NOT_INITIALIZED;
+    if(!rt->configured){
+        mfxVariant value;memset(&value,0,sizeof(value));value.Version.Version=MFX_VARIANT_VERSION;
+        value.Type=MFX_VARIANT_TYPE_U32;value.Data.U32=MFX_IMPL_TYPE_HARDWARE;
+        mfxConfig impl=config(rt->loader);mfxConfig format=config(rt->loader);
+        if(!impl||!format)return MFX_ERR_NOT_INITIALIZED;
+        mfxStatus status=filter(impl,(const mfxU8 *)"mfxImplDescription.Impl",value);if(status<0)return status;
+        value.Data.U32=codec;
+        status=filter(format,(const mfxU8 *)(rt->decoder?"mfxImplDescription.mfxDecoderDescription.decoder.CodecID":"mfxImplDescription.mfxEncoderDescription.encoder.CodecID"),value);
+        if(status<0)return status;
+        rt->configured=1;
+    }
+    mfxStatus status=create(rt->loader,index,session);
     if(status<0)return status;
-    mfxIMPL implementation=0;status=e->rt.query_impl(e->session,&implementation);
-    if(status<0 || !((implementation&0x0f)==MFX_IMPL_HARDWARE || (implementation&0x0f)==MFX_IMPL_HARDWARE2 || (implementation&0x0f)==MFX_IMPL_HARDWARE3 || (implementation&0x0f)==MFX_IMPL_HARDWARE4)){e->rt.close(e->session);e->session=NULL;return MFX_ERR_UNSUPPORTED;}
+    mfxIMPL implementation=0;status=rt->query_impl(*session,&implementation);
+    if(status<0 || !((implementation&0x0f)==MFX_IMPL_HARDWARE || (implementation&0x0f)==MFX_IMPL_HARDWARE2 || (implementation&0x0f)==MFX_IMPL_HARDWARE3 || (implementation&0x0f)==MFX_IMPL_HARDWARE4)){
+        rt->close(*session);*session=NULL;return MFX_ERR_UNSUPPORTED;
+    }
     return 0;
 }
 static void set_bitrate(Encoder *e,uint32_t target){
@@ -125,12 +147,12 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
     if(!out || width<2 || height<2 || width>8192 || height>8192 || (width|height)&1 || !fps || fps>240 || target<64 || target>100000 || peak<target || peak>200000)
         return failed(error,capacity,"invalid encoder settings",MFX_ERR_INVALID_VIDEO_PARAM);
     *out=NULL;Encoder *e=(Encoder *)calloc(1,sizeof(*e));if(!e)return failed(error,capacity,"allocation",MFX_ERR_MEMORY_ALLOC);
-    if(runtime_open(&e->rt,error,capacity)<0){eclipse_vpl_encoder_close(e);return -1;}
+    if(runtime_open(&e->rt,0,error,capacity)<0){eclipse_vpl_encoder_close(e);return -1;}
     mfxU32 id=codec==0?MFX_CODEC_AVC:codec==1?MFX_CODEC_HEVC:codec==2?MFX_CODEC_AV1:0;
     if(!id){eclipse_vpl_encoder_close(e);return failed(error,capacity,"unknown codec",MFX_ERR_UNSUPPORTED);}
     mfxStatus status=MFX_ERR_NOT_FOUND,last_error=MFX_ERR_NOT_FOUND;
     for(unsigned index=0;index<16;++index){
-        status=session_open(e,index);if(status<0){if(status==MFX_ERR_NOT_FOUND)break;last_error=status;continue;}
+        status=session_open(&e->rt,&e->session,index,id);if(status<0){if(status==MFX_ERR_NOT_FOUND)break;last_error=status;continue;}
         for(unsigned tuning=0;tuning<2;++tuning){
             memset(&e->params,0,sizeof(e->params));
             e->params.AsyncDepth=1;e->params.IOPattern=MFX_IOPATTERN_IN_SYSTEM_MEMORY;
@@ -229,4 +251,112 @@ int eclipse_vpl_encoder_bitrate(Encoder *e,uint32_t target,char *error,size_t ca
         e->initialized=-1;return failed(error,capacity,"changed configuration after bitrate reset",status<0?status:MFX_ERR_UNSUPPORTED);
     }
     return 0;
+}
+
+/* AV1 Main/8-bit decode with bounded external system-memory surfaces. The
+ * existing D3D11 H264/HEVC paths keep their shared GPU presentation pipeline. */
+typedef struct {
+    Runtime rt; mfxSession session; int initialized,failed,timer;
+    uint32_t expected_width,expected_height,count,pitch,rows,next_surface;
+    mfxVideoParam params; mfxFrameSurface1 *surfaces; uint8_t **pixels;
+    uint8_t *input; size_t input_length,input_capacity;
+} Decoder;
+void eclipse_vpl_decoder_close(Decoder *d){
+    if(!d)return;
+    if(d->session){if(d->initialized)d->rt.encode_close(d->session);d->rt.close(d->session);}
+    runtime_close(&d->rt);
+    if(d->pixels){for(uint32_t i=0;i<d->count;++i)free(d->pixels[i]);}
+    free(d->pixels);free(d->surfaces);free(d->input);
+#ifdef _WIN32
+    if(d->timer)timeEndPeriod(1);
+#endif
+    free(d);
+}
+int eclipse_vpl_decoder_open(Decoder **out,char *error,size_t capacity){
+    *out=NULL;Decoder *d=(Decoder *)calloc(1,sizeof(*d));if(!d)return failed(error,capacity,"decoder allocation",MFX_ERR_MEMORY_ALLOC);
+    if(runtime_open(&d->rt,1,error,capacity)<0){eclipse_vpl_decoder_close(d);return -1;}
+    mfxStatus status=MFX_ERR_NOT_FOUND;
+    for(unsigned i=0;i<16;++i){status=session_open(&d->rt,&d->session,i,MFX_CODEC_AV1);if(status>=0)break;if(status==MFX_ERR_NOT_FOUND)break;}
+    if(status<0 || !d->session){eclipse_vpl_decoder_close(d);return failed(error,capacity,"AV1 hardware decoder session",status);}
+#ifdef _WIN32
+    d->timer=timeBeginPeriod(1)==0;
+#endif
+    *out=d;return 0;
+}
+int eclipse_vpl_decoder_prepare(Decoder *d,uint32_t width,uint32_t height,char *error,size_t capacity){
+    if(!d || width<2 || height<2 || width>8192 || height>8192 || (width|height)&1)return failed(error,capacity,"invalid decoder size",MFX_ERR_INVALID_VIDEO_PARAM);
+    if(d->initialized && (d->params.mfx.FrameInfo.CropW!=width || d->params.mfx.FrameInfo.CropH!=height))return failed(error,capacity,"decoder size changed",MFX_ERR_INCOMPATIBLE_VIDEO_PARAM);
+    d->expected_width=width;d->expected_height=height;return 0;
+}
+static int decoder_init(Decoder *d,mfxBitstream *bits,char *error,size_t capacity){
+    memset(&d->params,0,sizeof(d->params));d->params.mfx.CodecId=MFX_CODEC_AV1;
+    mfxStatus status=d->rt.header(d->session,bits,&d->params);
+    if(status==MFX_ERR_MORE_DATA)return 0;
+    if(status<0)return failed(error,capacity,"AV1 header",status);
+    mfxFrameInfo *info=&d->params.mfx.FrameInfo;
+    if(d->params.mfx.CodecId!=MFX_CODEC_AV1 || (d->params.mfx.CodecProfile && d->params.mfx.CodecProfile!=MFX_PROFILE_AV1_MAIN)
+        || info->FourCC!=MFX_FOURCC_NV12 || info->BitDepthLuma>8 || info->BitDepthChroma>8 || info->CropX || info->CropY
+        || info->CropW<2 || info->CropH<2 || info->Width>8192 || info->Height>8192 || (info->CropW|info->CropH|info->Width|info->Height)&1
+        || info->CropW>info->Width || info->CropH>info->Height
+        || (d->expected_width && (info->CropW!=d->expected_width || info->CropH!=d->expected_height)))return failed(error,capacity,"unsupported AV1 geometry or bit depth",MFX_ERR_UNSUPPORTED);
+    d->params.AsyncDepth=1;d->params.IOPattern=MFX_IOPATTERN_OUT_SYSTEM_MEMORY;
+    mfxVideoParam checked=d->params;status=d->rt.query(d->session,&d->params,&checked);
+    if(status<0 || status==MFX_WRN_PARTIAL_ACCELERATION)return failed(error,capacity,"AV1 hardware decode query",status);
+    if(checked.mfx.CodecId!=MFX_CODEC_AV1 || checked.AsyncDepth!=1 || checked.IOPattern!=MFX_IOPATTERN_OUT_SYSTEM_MEMORY
+        || checked.mfx.FrameInfo.CropW!=info->CropW || checked.mfx.FrameInfo.CropH!=info->CropH || checked.mfx.FrameInfo.FourCC!=MFX_FOURCC_NV12
+        || checked.mfx.FrameInfo.Width!=info->Width || checked.mfx.FrameInfo.Height!=info->Height)return failed(error,capacity,"AV1 driver changed decoder format",MFX_ERR_UNSUPPORTED);
+    d->params=checked;
+    mfxFrameAllocRequest request;memset(&request,0,sizeof(request));status=d->rt.surfaces(d->session,&d->params,&request);
+    if(status<0 || status==MFX_WRN_PARTIAL_ACCELERATION)return failed(error,capacity,"AV1 surface query",status);
+    d->count=request.NumFrameSuggested>request.NumFrameMin?request.NumFrameSuggested:request.NumFrameMin;
+    d->pitch=info->Width;d->rows=info->Height;size_t size=(size_t)d->pitch*d->rows*3/2;
+    if(!d->count || d->count>32 || !size || size>64*1024*1024 || size*d->count>256*1024*1024)return failed(error,capacity,"AV1 surface budget exceeded",MFX_ERR_MEMORY_ALLOC);
+    d->surfaces=(mfxFrameSurface1 *)calloc(d->count,sizeof(*d->surfaces));d->pixels=(uint8_t **)calloc(d->count,sizeof(*d->pixels));
+    if(!d->surfaces||!d->pixels)return failed(error,capacity,"AV1 surface allocation",MFX_ERR_MEMORY_ALLOC);
+    for(uint32_t i=0;i<d->count;++i){
+        d->pixels[i]=(uint8_t *)malloc(size);if(!d->pixels[i])return failed(error,capacity,"AV1 pixels allocation",MFX_ERR_MEMORY_ALLOC);
+        mfxFrameSurface1 *surface=&d->surfaces[i];surface->Info=d->params.mfx.FrameInfo;surface->Data.Pitch=(mfxU16)d->pitch;
+        surface->Data.Y=d->pixels[i];surface->Data.U=d->pixels[i]+(size_t)d->pitch*d->rows;surface->Data.V=surface->Data.U+1;
+    }
+    status=d->rt.init(d->session,&d->params);
+    if(status<0)return failed(error,capacity,"AV1 decode initialization",status);
+    d->initialized=1;
+    if(status==MFX_WRN_PARTIAL_ACCELERATION)return failed(error,capacity,"AV1 partial hardware acceleration rejected",status);
+    status=d->rt.get(d->session,&d->params);
+    if(status<0 || d->params.mfx.CodecId!=MFX_CODEC_AV1 || d->params.AsyncDepth!=1 || d->params.IOPattern!=MFX_IOPATTERN_OUT_SYSTEM_MEMORY
+        || d->params.mfx.FrameInfo.CropW!=checked.mfx.FrameInfo.CropW || d->params.mfx.FrameInfo.CropH!=checked.mfx.FrameInfo.CropH
+        || d->params.mfx.FrameInfo.Width!=d->pitch || d->params.mfx.FrameInfo.Height!=d->rows || d->params.mfx.FrameInfo.FourCC!=MFX_FOURCC_NV12)return failed(error,capacity,"AV1 decoder readback changed format",status<0?status:MFX_ERR_UNSUPPORTED);
+    return 1;
+}
+int eclipse_vpl_decoder_decode(Decoder *d,const uint8_t *input,size_t length,uint64_t timestamp,
+    const uint8_t **y,const uint8_t **uv,uint32_t *pitch,uint32_t *width,uint32_t *height,uint64_t *pts,char *error,size_t capacity){
+    if(!d || d->failed || !input || !length || length>16*1024*1024 || d->input_length>16*1024*1024-length)return failed(error,capacity,"invalid AV1 decoder input",MFX_ERR_INVALID_VIDEO_PARAM);
+    size_t required=d->input_length+length;
+    if(required>d->input_capacity){uint8_t *next=(uint8_t *)realloc(d->input,required);if(!next){d->failed=1;return failed(error,capacity,"AV1 bitstream allocation",MFX_ERR_MEMORY_ALLOC);}d->input=next;d->input_capacity=required;}
+    memcpy(d->input+d->input_length,input,length);d->input_length=required;
+    mfxBitstream bits;memset(&bits,0,sizeof(bits));bits.Data=d->input;bits.DataLength=(mfxU32)d->input_length;bits.MaxLength=(mfxU32)d->input_capacity;
+    bits.TimeStamp=timestamp;bits.DataFlag=MFX_BITSTREAM_COMPLETE_FRAME;
+    if(!d->initialized){int result=decoder_init(d,&bits,error,capacity);if(result<0){d->failed=1;return -1;}if(!result)return 0;}
+    mfxStatus status=MFX_ERR_MORE_SURFACE;mfxSyncPoint sync=NULL;mfxFrameSurface1 *output=NULL;uint64_t deadline=now_ms()+1000;
+    for(unsigned attempt=0;attempt<64 && now_ms()<deadline;++attempt){
+        mfxFrameSurface1 *work=NULL;for(uint32_t step=0;step<d->count;++step){uint32_t i=(d->next_surface+step)%d->count;if(!d->surfaces[i].Data.Locked){work=&d->surfaces[i];d->next_surface=(i+1)%d->count;break;}}
+        if(!work){status=MFX_ERR_MORE_SURFACE;break;}
+        status=d->rt.decode(d->session,&bits,work,&output,&sync);
+        if(status==MFX_WRN_DEVICE_BUSY){pause_ms();continue;}
+        if(status==MFX_ERR_MORE_SURFACE)continue;
+        break;
+    }
+    if((size_t)bits.DataOffset+bits.DataLength>d->input_length){d->failed=1;return failed(error,capacity,"AV1 driver changed compressed buffer bounds",MFX_ERR_NOT_ENOUGH_BUFFER);}
+    if(bits.DataLength)memmove(d->input,d->input+bits.DataOffset,bits.DataLength);
+    d->input_length=bits.DataLength;
+    if(status==MFX_ERR_MORE_DATA)return 0;
+    if(status!=MFX_ERR_NONE || !sync || !output){d->failed=1;return failed(error,capacity,"AV1 DecodeFrameAsync",status);}
+    do{status=d->rt.sync(d->session,sync,100);}while(status==MFX_WRN_IN_EXECUTION && now_ms()<deadline);
+    if(status!=MFX_ERR_NONE){d->failed=1;return failed(error,capacity,"AV1 decode synchronization",status);}
+    uint32_t index=d->count;for(uint32_t i=0;i<d->count;++i){if(output==&d->surfaces[i]){index=i;break;}}
+    if(index==d->count){d->failed=1;return failed(error,capacity,"AV1 returned an unowned surface",MFX_ERR_UNDEFINED_BEHAVIOR);}
+    if(output->Data.Y!=d->pixels[index] || output->Data.U!=d->pixels[index]+(size_t)d->pitch*d->rows || output->Data.Pitch!=d->pitch
+        || output->Info.CropW!=d->params.mfx.FrameInfo.CropW || output->Info.CropH!=d->params.mfx.FrameInfo.CropH || output->Info.CropX || output->Info.CropY){d->failed=1;return failed(error,capacity,"AV1 output surface bounds changed",MFX_ERR_UNDEFINED_BEHAVIOR);}
+    *y=output->Data.Y;*uv=output->Data.U;*pitch=d->pitch;*width=output->Info.CropW;*height=output->Info.CropH;*pts=output->Data.TimeStamp;
+    return 1;
 }

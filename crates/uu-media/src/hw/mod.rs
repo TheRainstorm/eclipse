@@ -16,10 +16,12 @@
 pub mod d3d11va;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 pub mod vaapi;
+#[cfg(all(feature="intel-vpl",any(windows,target_os="linux")))]
+pub mod vpl;
 
 #[cfg(any(test, all(windows, feature = "d3d11va")))]
 mod surface;
-#[cfg(any(test, all(windows, feature = "d3d11va"), all(target_os = "linux", feature = "vaapi")))]
+#[cfg(any(test,feature="intel-vpl", all(windows, feature = "d3d11va"), all(target_os = "linux", feature = "vaapi")))]
 mod pixels;
 
 mod thread;

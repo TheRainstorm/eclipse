@@ -605,3 +605,30 @@ mod tests {
         total
     }
 }
+
+/// Bounded Annex-B NAL splitting shared by native senders and encoder recovery.
+pub fn annexb_nals(data: &[u8]) -> Vec<&[u8]> {
+    let mut positions = Vec::new();
+    let mut offset = 0;
+    while offset + 3 <= data.len() {
+        let length = if data[offset..].starts_with(&[0, 0, 0, 1]) {
+            4
+        } else if data[offset..].starts_with(&[0, 0, 1]) {
+            3
+        } else {
+            offset += 1;
+            continue;
+        };
+        if positions.len()>=4096{return Vec::new();}
+        positions.push((offset, offset + length));
+        offset += length;
+    }
+    positions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (_, body))| {
+            let end = positions.get(i + 1).map_or(data.len(), |(start, _)| *start);
+            (*body < end).then(|| &data[*body..end])
+        })
+        .collect()
+}
