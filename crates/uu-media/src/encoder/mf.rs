@@ -199,6 +199,13 @@ impl Driver {
             for (id, value) in [
                 (CODECAPI_AVLowLatencyMode, VARIANT::from(true)),
                 (CODECAPI_AVEncCommonRealTime, VARIANT::from(true)),
+                // Interactive desktop sharing prioritizes completion time over
+                // the driver's offline/high-quality encoding preset.
+                (CODECAPI_AVEncCommonQualityVsSpeed, VARIANT::from(0u32)),
+                (
+                    CODECAPI_AVScenarioInfo,
+                    VARIANT::from(eAVScenarioInfo_DisplayRemoting.0 as u32),
+                ),
                 (CODECAPI_AVEncMPVDefaultBPictureCount, VARIANT::from(0u32)),
                 (
                     CODECAPI_AVEncCommonRateControlMode,
