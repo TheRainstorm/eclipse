@@ -421,9 +421,14 @@ impl super::App {
                     ui.separator();
                     if self.supports_remote(uu_core::capabilities::Capability::Displays){self.display_tabs(ui);}
                     if (self.view_only || (self.is_native()&&!self.supports_remote(uu_core::capabilities::Capability::Input))) && (roomy || self.is_native()) {
-                        ui.label(RichText::new("仅观看").color(Color32::from_rgb(98, 125, 160)));
+                        let (text, help) = if self.is_native() && !self.view_only && self.native_input_available() {
+                            let requested = self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|s|s.requested());
+                            if requested {("等待控制权", "主机一次允许一个控制端操作；当前控制端释放后会自动重试。")}
+                            else {("控制已暂停", "返回串流画面后恢复控制；Ctrl+Alt+Z 可释放或重新请求控制。")}
+                        } else {("仅观看", "当前未启用远端输入；主机需允许控制并具有可用的输入后端。")};
+                        ui.label(RichText::new(text).color(Color32::from_rgb(98, 125, 160))).on_hover_text(help);
                     }
-                    if wide && !self.view_only && self.controller.is_some() && !self.input_ready() && (!self.is_native()||self.native_input_available()) {
+                    if wide && !self.view_only && self.controller.is_some() && !self.input_ready() && (!self.is_native()||self.displays.switching()) {
                         ui.label(
                             RichText::new(if self.displays.switching(){"正在切换显示器…"}else{"输入连接中…"})
                                 .size(12.0)
