@@ -141,6 +141,7 @@ pub(super) struct Driver {
     nv12: Vec<u8>,
     sequence: Vec<u8>,
     name: String,
+    profile: Option<[u128; 4]>,
     _runtime: Runtime,
 }
 impl Driver {
@@ -165,6 +166,7 @@ impl Driver {
                         nv12: Vec::new(),
                         sequence: Vec::new(),
                         name: format!("mf (H.264 hardware, {name})"),
+                        profile: std::env::var_os("UU_ENCODE_PROFILE").map(|_| [0; 4]),
                         _runtime: runtime,
                     });
                 }
@@ -270,6 +272,7 @@ impl Driver {
     }
     fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Vec<EncodedFrame>, String> {
         unsafe {
+            let started = std::time::Instant::now();
             if (frame.width, frame.height) != (self.settings.width, self.settings.height) {
                 return Err("MFT input dimensions changed".into());
             }
@@ -303,6 +306,7 @@ impl Driver {
                 [0, pixels as u32, 0],
                 &mut self.nv12,
             )?;
+            let converted = started.elapsed();
             if keyframe {
                 self.codec
                     .SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &VARIANT::from(1u32))
@@ -321,12 +325,19 @@ impl Driver {
                 .ProcessInput(self.input_id, &sample, 0)
                 .map_err(|e| format!("hardware ProcessInput: {e}"))?;
             self.input_credit -= 1;
+            let submitted = started.elapsed();
             loop {
                 let event = self.next_event()?;
                 if event == METransformNeedInput.0 as u32 {
                     self.input_credit += 1;
                 } else if event == METransformHaveOutput.0 as u32 {
                     if let Some(coded) = self.output(frame, keyframe)? {
+                        if let Some(profile) = &mut self.profile {
+                            profile[0] += 1;
+                            profile[1] += converted.as_nanos();
+                            profile[2] += (submitted - converted).as_nanos();
+                            profile[3] += (started.elapsed() - submitted).as_nanos();
+                        }
                         return Ok(vec![coded]);
                     }
                 }
@@ -375,6 +386,11 @@ impl Driver {
                         .transform
                         .GetOutputAvailableType(self.output_id, 0)
                         .map_err(reason)?;
+                    if self.profile.is_some() {
+                        eprintln!("uu-mf-type-change requested={}x{}@{} available_size={} available_rate={}",
+                            self.settings.width,self.settings.height,self.settings.fps,
+                            ty.GetUINT64(&MF_MT_FRAME_SIZE).unwrap_or(0),ty.GetUINT64(&MF_MT_FRAME_RATE).unwrap_or(0));
+                    }
                     self.transform
                         .SetOutputType(self.output_id, &ty, 0)
                         .map_err(reason)?;
@@ -473,6 +489,11 @@ impl super::worker::Driver for Driver {
 impl Drop for Driver {
     fn drop(&mut self) {
         unsafe {
+            if let Some(profile) = self.profile.filter(|p| p[0] > 0) {
+                let divisor = profile[0] as f64 * 1_000_000.0;
+                eprintln!("uu-mf-profile frames={} conversion_ms={:.3} submission_ms={:.3} completion_ms={:.3}",
+                    profile[0],profile[1] as f64/divisor,profile[2] as f64/divisor,profile[3] as f64/divisor);
+            }
             let _ = self
                 .transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
