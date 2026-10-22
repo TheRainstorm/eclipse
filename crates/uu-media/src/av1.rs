@@ -17,6 +17,9 @@ pub fn obus(data: &[u8]) -> Result<Vec<&[u8]>, String> {
             if at >= data.len() {
                 return Err("truncated AV1 extension".into());
             }
+            if data[at] & 7 != 0 {
+                return Err("invalid AV1 extension reserved bits".into());
+            }
             at += 1;
         }
         let mut size = 0usize;
@@ -193,6 +196,80 @@ pub fn probe_decoder() -> Result<(), crate::CodecError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn malformed_headers_orphan_tiles_and_missing_reference_geometry_do_not_panic() {
+        for data in [
+            &[0x13, 0][..],    // reserved header bit
+            &[0x92, 0][..],    // forbidden bit
+            &[0x16, 7, 0][..], // extension reserved bits
+            &[0x22, 0][..],    // tile group before a frame header
+            &[
+                18, 0, 10, 13, 0, 0, 0, 3, 55, 255, 230, 215, 200, 128, 128, 128, 130, 26, 40, 50,
+                238, 245, 74, 188, 129, 244, 23, 107, 75, 27, 5, 239, 246, 39, 21, 57, 135, 154,
+                191, 204, 17, 9, 67, 227, 204, 19, 21, 17, 187, 74, 22, 210, 69, 219, 226, 155,
+                234, 247, 186, 65,
+            ][..],
+        ] {
+            let _ = sequence(data);
+            assert!(!is_keyframe(data));
+        }
+        let mut parser = Parser::default();
+        let ObuAction::Process(obu) = parser.read_obu(&[0x22, 0]).unwrap() else {
+            panic!("expected OBU");
+        };
+        assert!(parser.parse_obu(obu).is_err());
+    }
+    #[test]
+    fn two_tile_columns_use_column_geometry_and_reject_oversized_tile() {
+        // Generated 256x128 gray, libaom realtime, 2 columns x 1 row, no lookahead.
+        const TWO_COLUMNS: &[u8] = &[
+            18, 0, 10, 10, 0, 0, 0, 3, 183, 255, 243, 107, 228, 1, 50, 37, 16, 0, 192, 106, 0, 65,
+            4, 16, 128, 65, 0, 0, 11, 193, 180, 187, 3, 85, 213, 216, 112, 141, 166, 64, 216, 193,
+            180, 187, 3, 85, 213, 216, 112, 141, 166, 64, 216,
+        ];
+        let mut parser = Parser::default();
+        let mut input = TWO_COLUMNS;
+        while !input.is_empty() {
+            let ObuAction::Process(obu) = parser.read_obu(input).unwrap() else {
+                panic!("unexpected dropped OBU");
+            };
+            let used = obu.bytes_used;
+            if let ParsedObu::Frame(frame) = parser.parse_obu(obu).unwrap() {
+                let tiles = &frame.tile_group.tiles;
+                assert_eq!(tiles.len(), 2);
+                assert_eq!((tiles[0].mi_col_start, tiles[0].mi_col_end), (0, 32));
+                assert_eq!((tiles[1].mi_col_start, tiles[1].mi_col_end), (32, 64));
+                assert!(tiles
+                    .iter()
+                    .all(|tile| (tile.mi_row_start, tile.mi_row_end) == (0, 32)));
+                assert!(is_keyframe(TWO_COLUMNS));
+                let group = frame.tile_group.obu.as_ref();
+                let size_bytes = frame.header.tile_info.tile_size_bytes as usize;
+                let size_at = TWO_COLUMNS.len() - input.len() + used - group.len()
+                    + tiles[0].tile_offset as usize - size_bytes;
+                let mut corrupt = TWO_COLUMNS.to_vec();
+                corrupt[size_at..size_at + size_bytes].fill(255);
+                assert!(!is_keyframe(&corrupt), "tile size must fit the remaining OBU");
+                return;
+            }
+            input = &input[used..];
+        }
+        panic!("generated tiled frame missing");
+    }
+    #[test]
+    fn generated_stream_byte_mutations_remain_bounded() {
+        for source in PROBE_UNITS {
+            for at in 0..source.len() {
+                for byte in 0..=255 {
+                    let mut data = source.to_vec();
+                    data[at] = byte;
+                    let _ = obus(&data);
+                    let _ = sequence(&data);
+                    let _ = is_keyframe(&data);
+                }
+            }
+        }
+    }
     #[test]
     fn generated_keyframe_metadata_and_truncation_are_bounded() {
         assert_eq!(

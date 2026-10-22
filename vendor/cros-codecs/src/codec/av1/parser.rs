@@ -1758,7 +1758,9 @@ impl Parser {
     }
 
     fn parse_obu_header(r: &mut Reader) -> Result<ObuHeader, String> {
-        let _obu_forbidden_bit = r.0.read_bit()?;
+        if r.0.read_bit()? {
+            return Err("OBU forbidden bit must be zero".into());
+        }
 
         let mut header = ObuHeader {
             obu_type: ObuType::try_from(r.0.read_bits::<u32>(4)?)?,
@@ -1769,12 +1771,16 @@ impl Parser {
         };
 
         let obu_reserved_1bit = r.0.read_bit()?;
-        assert!(!obu_reserved_1bit); // Must be set to zero as per spec.
+        if obu_reserved_1bit {
+            return Err("OBU reserved bit must be zero".into());
+        }
 
         if header.extension_flag {
             header.temporal_id = r.0.read_bits::<u32>(3)?;
             header.spatial_id = r.0.read_bits::<u32>(2)?;
-            let _ = r.0.read_bits::<u32>(3)?;
+            if r.0.read_bits::<u32>(3)? != 0 {
+                return Err("OBU extension reserved bits must be zero".into());
+            }
         }
 
         Ok(header)
@@ -2235,6 +2241,9 @@ impl Parser {
     }
 
     fn parse_tile_info(&mut self, r: &mut Reader, ti: &mut TileInfo) -> Result<(), String> {
+        if self.mi_cols == 0 || self.mi_rows == 0 {
+            return Err("Frame must have valid geometry before tile parsing".into());
+        }
         let seq = self.sequence()?;
 
         let sb_cols = if seq.use_128x128_superblock {
@@ -2287,6 +2296,9 @@ impl Parser {
             let mut start_sb = 0;
 
             while start_sb < sb_cols {
+                if i >= MAX_TILE_COLS {
+                    return Err("Too many tile columns".into());
+                }
                 self.mi_col_starts[i] = start_sb << sb_shift;
                 i += 1;
                 start_sb += tile_width_sb;
@@ -2328,6 +2340,9 @@ impl Parser {
             let mut start_sb = 0;
 
             while start_sb < sb_rows {
+                if i >= MAX_TILE_ROWS {
+                    return Err("Too many tile rows".into());
+                }
                 self.mi_row_starts[i] = start_sb << sb_shift;
                 i += 1;
                 start_sb += tile_height_sb;
@@ -2354,6 +2369,9 @@ impl Parser {
             let mut i = 0;
 
             while start_sb < sb_cols {
+                if i >= MAX_TILE_COLS {
+                    return Err("Too many tile columns".into());
+                }
                 self.mi_col_starts[i] = start_sb << sb_shift;
 
                 let max_width = std::cmp::min(sb_cols - start_sb, max_tile_width_sb);
@@ -2380,6 +2398,9 @@ impl Parser {
             let mut start_sb = 0;
             let mut i = 0;
             while start_sb < sb_rows {
+                if i >= MAX_TILE_ROWS {
+                    return Err("Too many tile rows".into());
+                }
                 self.mi_row_starts[i] = start_sb << sb_shift;
                 let max_height = std::cmp::min(sb_rows - start_sb, max_tile_height_sb);
                 ti.height_in_sbs_minus_1[i] = r.read_ns(max_height.try_into().unwrap())?;
@@ -3775,6 +3796,14 @@ impl Parser {
     }
 
     fn parse_tile_group_obu<'a>(&mut self, obu: Obu<'a>) -> Result<TileGroupObu<'a>, String> {
+        if !self.seen_frame_header
+            || self.tile_rows == 0
+            || self.tile_cols == 0
+            || self.tile_rows as usize >= self.mi_row_starts.len()
+            || self.tile_cols as usize >= self.mi_col_starts.len()
+        {
+            return Err("Tile group requires valid frame and tile geometry".into());
+        }
         let mut tg = TileGroupObu { obu, ..Default::default() };
 
         let mut r = Reader::new(tg.obu.as_ref());
@@ -3800,12 +3829,15 @@ impl Parser {
             tg.tg_start = r.0.read_bits::<u32>(tile_bits)?;
             tg.tg_end = r.0.read_bits::<u32>(tile_bits)?;
         }
+        if tg.tg_start > tg.tg_end || tg.tg_end >= num_tiles {
+            return Err("Tile group range exceeds frame geometry".into());
+        }
 
         r.byte_alignment()?;
 
         let end_bit_pos = r.0.position();
         let header_bytes = (end_bit_pos - start_bit_pos) / 8;
-        sz -= header_bytes;
+        sz = sz.checked_sub(header_bytes).ok_or("Tile group header exceeds payload")?;
 
         let mut tile_num = tg.tg_start;
         while tile_num <= tg.tg_end {
@@ -3815,10 +3847,15 @@ impl Parser {
             let tile_size;
 
             if last_tile {
-                tile_size = u32::try_from(sz).unwrap();
+                tile_size = u32::try_from(sz).map_err(|_| "Tile exceeds size limit")?;
             } else {
-                tile_size = r.0.read_le::<u32>(self.tile_size_bytes.try_into().unwrap())? + 1;
-                sz -= u64::from(tile_size + self.tile_size_bytes);
+                if !(1..=4).contains(&self.tile_size_bytes) {
+                    return Err("Invalid tile length field width".into());
+                }
+                tile_size = r.0.read_le::<u32>(self.tile_size_bytes as u8)?
+                    .checked_add(1).ok_or("Tile length overflow")?;
+                sz = sz.checked_sub(u64::from(tile_size) + u64::from(self.tile_size_bytes))
+                    .ok_or("Tile length exceeds remaining payload")?;
             }
 
             let tile = Tile {
@@ -3828,8 +3865,8 @@ impl Parser {
                 tile_col,
                 mi_row_start: self.mi_row_starts[tile_row as usize],
                 mi_row_end: self.mi_row_starts[tile_row as usize + 1],
-                mi_col_start: self.mi_row_starts[tile_col as usize],
-                mi_col_end: self.mi_row_starts[tile_col as usize + 1],
+                mi_col_start: self.mi_col_starts[tile_col as usize],
+                mi_col_end: self.mi_col_starts[tile_col as usize + 1],
             };
 
             tg.tiles.push(tile);
