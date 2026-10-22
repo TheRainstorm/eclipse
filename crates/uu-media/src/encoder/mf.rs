@@ -26,7 +26,9 @@ fn pack(a: u32, b: u32) -> u64 {
 }
 
 // Declared last in Driver: the transform is released before COM/MF shut down.
-struct Runtime;
+struct Runtime {
+    timer_requested: bool,
+}
 impl Runtime {
     fn start() -> Result<Self, String> {
         unsafe {
@@ -37,13 +39,20 @@ impl Runtime {
                 CoUninitialize();
                 return Err(reason(error));
             }
-            Ok(Self)
+            // Driver work queues can use Windows timed waits internally.
+            // Keep a balanced 1 ms request only while this encoder is active.
+            Ok(Self {
+                timer_requested: windows::Win32::Media::timeBeginPeriod(1) == 0,
+            })
         }
     }
 }
 impl Drop for Runtime {
     fn drop(&mut self) {
         unsafe {
+            if self.timer_requested {
+                windows::Win32::Media::timeEndPeriod(1);
+            }
             let _ = MFShutdown();
             CoUninitialize();
         }
