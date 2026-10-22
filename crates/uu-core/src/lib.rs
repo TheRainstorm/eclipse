@@ -3,6 +3,7 @@
 pub mod api;
 pub mod assistance;
 mod private_file;
+mod listen_socket;
 pub mod config;
 pub mod control_wire;
 pub mod controller;

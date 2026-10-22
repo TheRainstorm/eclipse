@@ -13,7 +13,6 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 use tokio::{
-    net::TcpListener,
     sync::{mpsc, watch, Semaphore},
     time::{interval, timeout},
 };
@@ -259,8 +258,7 @@ pub async fn serve(config: Config, mut stop: watch::Receiver<bool>) -> Result<()
         .with_no_client_auth()
         .with_single_cert(chain, key)?;
     let acceptor = TlsAcceptor::from(Arc::new(tls));
-    let listener = TcpListener::bind(config.bind)
-        .await
+    let listener = crate::listen_socket::tcp(config.bind)
         .context("cannot bind signaling service")?;
     tracing::info!(address=%listener.local_addr()?,"native signaling listening; media forwarding disabled");
     let state = State {

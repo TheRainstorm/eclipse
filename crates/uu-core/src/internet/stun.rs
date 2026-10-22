@@ -5,14 +5,16 @@ use std::{
     net::{IpAddr, SocketAddr},
     time::{Duration, Instant},
 };
-use tokio::{net::UdpSocket, sync::watch};
+use tokio::sync::watch;
+#[cfg(test)]
+use tokio::net::UdpSocket;
 use webrtc::stun::{
     message::{Message, BINDING_REQUEST, BINDING_SUCCESS},
     xoraddr::XorMappedAddress,
 };
 
 pub async fn serve(bind: SocketAddr, mut stop: watch::Receiver<bool>) -> Result<()> {
-    let socket = UdpSocket::bind(bind).await?;
+    let socket = crate::listen_socket::udp(bind)?;
     tracing::info!(address=%socket.local_addr()?,"STUN binding listening; TURN disabled");
     let mut packet = [0u8; 512];
     let mut rates: HashMap<IpAddr, (Instant, u32)> = HashMap::new();

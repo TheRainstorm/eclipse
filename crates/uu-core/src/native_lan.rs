@@ -338,7 +338,7 @@ impl Server {
         );
         let identity = Identity::open(&config.data_dir.join("server-identity.json"))?;
         let acceptor = tls_acceptor(&identity,access.is_some())?;
-        let listener = TcpListener::bind(config.bind).await.with_context(|| {
+        let listener = crate::listen_socket::tcp(config.bind).with_context(|| {
             format!("无法监听共享端口 TCP {}；端口可能已被占用或没有监听权限，请更换服务端口后重试", config.bind.port())
         })?;
         let info = ServerInfo {
@@ -353,7 +353,7 @@ impl Server {
             &identity.id,
         )?;
         let discovery = if let Some(address) = config.discovery_bind {
-            match UdpSocket::bind(address).await {
+            match crate::listen_socket::udp(address) {
                 Ok(socket) => Some(socket),
                 Err(error) => {
                     let _ = events.send(Event::Warning(

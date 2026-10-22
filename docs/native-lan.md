@@ -22,6 +22,8 @@
 
 TCP 服务端口绑定失败时，会显示端口号、系统原因和更换端口的提示，不会假装共享已开启。UDP 发现端口冲突会明确提示自动发现不可用，但保留 TCP 手动连接，不自动选用一个控制端无法获知的发现端口。
 
+Windows 固定服务监听在绑定前设置 `SO_EXCLUSIVEADDRUSE`，TCP、发现 UDP 和自建服务遵循相同的端口所有权规则，避免通配地址与具体网卡地址重叠时误报可用。该选项的绑定顺序与平台语义见 [Microsoft Winsock 文档](https://learn.microsoft.com/en-us/windows/win32/winsock/using-so-reuseaddr-and-so-exclusiveaddruse)。
+
 目前主机一次只接受一个串流会话，共享选定的一个显示源。运行中切屏、画质协商和无人值守系统服务尚未实现。Windows 使用当前交互会话的 DXGI 采集；Linux 主机使用 X11，Wayland 客户端可连接其它主机，但 Wayland 本机共享尚未接入 portal。共享不更改显示器布局。
 
 共享窗口会显示实际串流分辨率、目标帧率、正在使用的编码后端和音频状态。“断开当前串流”保留主机监听与已保存配对，方便稍后重连；“停止共享”则关闭服务。
