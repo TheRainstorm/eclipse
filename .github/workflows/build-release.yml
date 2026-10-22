@@ -313,6 +313,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Isolated Windows keyboard hook lifecycle failed' }
           & $keyboardTests 'lan_host_ui::' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows LAN sharing lifecycle tests failed' }
+          & $keyboardTests 'lan_ui::tests::native_lan_page_refused' --nocapture | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Windows manual LAN connection timeout/error reporting failed' }
+          & $keyboardTests 'lan_ui::tests::native_lan_page_worker_exit' --nocapture | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Windows LAN worker failure reporting failed' }
           & $keyboardTests 'settings::tests::' --nocapture | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Windows preferences migration/persistence failed' }
           & $keyboardTests 'theme::tests::' --nocapture | Out-Host

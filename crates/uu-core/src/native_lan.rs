@@ -689,10 +689,11 @@ pub async fn inspect(endpoint: &str) -> Result<Found> {
     timeout(IO_WAIT, async {
         let mut socket = TcpStream::connect(&endpoint)
             .await
-            .context("无法连接服务端，请检查地址及是否已启用共享")?;
+            .with_context(||format!("无法连接 {endpoint}；请确认目标已启用共享、服务端口正确，并允许防火墙 TCP 入站连接"))?;
         let address = socket.peer_addr()?;
         socket.write_all(INFO).await?;
-        let public: PublicInfo = read(&mut socket).await?;
+        let public: PublicInfo = read(&mut socket).await.with_context(||
+            format!("无法读取设备 {endpoint} 的 Eclipse 服务信息（5 秒超时）；请确认该 TCP 端口属于已开启的共享服务"))?;
         public.server.validate()?;
         ensure!(
             public.version == 1
@@ -709,7 +710,7 @@ pub async fn inspect(endpoint: &str) -> Result<Found> {
         })
     })
     .await
-    .context("检查服务端超时")?
+    .with_context(||format!("检查设备 {endpoint} 超时（5 秒）；请确认目标已启用共享、TCP 服务端口与路由及防火墙允许连接"))?
 }
 pub async fn pair(
     endpoint: &str,
@@ -718,8 +719,9 @@ pub async fn pair(
     progress: mpsc::UnboundedSender<String>,
 ) -> Result<Device> {
     let found = inspect(endpoint).await?;
-    ensure!(found.pairing_open, "请先在服务端允许新设备配对");
-    let mut stream = tls_connect(found.address, &found.certificate).await?;
+    ensure!(found.pairing_open, "已连接设备，但尚未开放配对；请先在目标电脑点击“允许新设备配对”");
+    let mut stream = tls_connect(found.address, &found.certificate).await
+        .with_context(||format!("无法与 {} 建立安全配对连接",found.address))?;
     let nonce = store::fresh_token();
     let context = context(&found.info.id, client_id, &nonce);
     let code = comparison(stream.get_ref().1.export_keying_material(

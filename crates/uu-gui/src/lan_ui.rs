@@ -52,7 +52,13 @@ fn spawn(ctx: &egui::Context, events: mpsc::Sender<Event>, work: Work) -> Result
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(runtime) => runtime,
                 Err(error) => {
-                    let _ = events.send(Event::Scan(Err(error.to_string())));
+                    let error=format!("无法启动连接线程：{error}");
+                    let event=match &work {
+                        Work::Scan(_)=>Event::Scan(Err(error)),
+                        Work::Pair {..}=>Event::Paired(Err(error)),
+                        Work::Verify {..}=>Event::Verified(Err(error)),
+                    };
+                    let _ = events.send(event);
                     ctx.request_repaint();
                     return;
                 }
@@ -64,7 +70,7 @@ fn spawn(ctx: &egui::Context, events: mpsc::Sender<Event>, work: Work) -> Result
                             _ = cancel.changed() => return,
                             result = discovery::discover(&targets, Duration::from_millis(1200)) => result,
                         };
-                        let _ = events.send(Event::Scan(result.map_err(|e| e.to_string())));
+                        let _ = events.send(Event::Scan(result.map_err(|e| format!("{e:#}"))));
                     }
                     Work::Pair { endpoint, client_id } => {
                         let (progress, mut codes) = async_mpsc::unbounded_channel();
@@ -80,14 +86,14 @@ fn spawn(ctx: &egui::Context, events: mpsc::Sender<Event>, work: Work) -> Result
                                 result = &mut pairing => break result,
                             }
                         };
-                        let _ = events.send(Event::Paired(result.map_err(|e| e.to_string())));
+                        let _ = events.send(Event::Paired(result.map_err(|e| format!("{e:#}"))));
                     }
                     Work::Verify { device, endpoint } => {
                         let result = tokio::select! {
                             _ = cancel.changed() => return,
                             result = lan::verify_address(&device, &endpoint) => result,
                         };
-                        let _ = events.send(Event::Verified(result.map_err(|e| e.to_string())));
+                        let _ = events.send(Event::Verified(result.map_err(|e| format!("{e:#}"))));
                     }
                 }
             });
@@ -163,6 +169,9 @@ pub(super) struct LanUi {
     address: String,
     pair_code: Option<String>,
     pair_target: String,
+    client_dialog: bool,
+    client_error: Option<String>,
+    client_started: Option<Instant>,
     open_device: Option<Device>,
 }
 impl LanUi {
@@ -202,6 +211,9 @@ impl LanUi {
             address: String::new(),
             pair_code: None,
             pair_target: String::new(),
+            client_dialog: false,
+            client_error: None,
+            client_started: None,
             open_device: None,
         }
     }
@@ -225,6 +237,18 @@ impl LanUi {
     }
     pub fn poll(&mut self, ctx: &egui::Context, active: bool) {
         self.host.poll(ctx);
+        // Join a finished worker before draining: all final events are now
+        // queued, even if it completed between repaint and this poll.
+        if self
+            .scan
+            .as_ref()
+            .is_some_and(|job| job.task.as_ref().is_some_and(|task| task.is_finished()))
+        {
+            self.scan = None;
+        }
+        let client_finished=self.client.as_ref()
+            .is_some_and(|job|job.task.as_ref().is_some_and(|task|task.is_finished()));
+        if client_finished {self.client=None;}
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::Scan(result) => match result {
@@ -243,11 +267,15 @@ impl LanUi {
                     }
                     Err(error) => self.notice = format!("局域网发现失败：{error}"),
                 },
-                Event::Code(code) => self.pair_code = Some(code),
+                Event::Code(code) => {
+                    if self.client_dialog {self.pair_code = Some(code);}
+                },
                 Event::Paired(result) | Event::Verified(result) => {
                     self.pair_code = None;
+                    if !self.client_dialog {continue;}
                     match result {
                         Ok(device) => {
+                            self.client_dialog=false;
                             if let (Some(path), Some(book)) = (self.path(), &mut self.book) {
                                 match book.remember(&path, device.clone()) {
                                     Ok(()) => {
@@ -255,29 +283,27 @@ impl LanUi {
                                         self.open_device = Some(device);
                                     }
                                     Err(error) => {
-                                        self.notice = format!("无法保存设备授权：{error}")
+                                        let message=format!("无法保存设备授权：{error}");
+                                        self.notice=message.clone();
+                                        self.client_error=Some(message);
+                                        self.client_dialog=true;
                                     }
                                 }
                             }
                         }
-                        Err(error) => self.notice = format!("连接未完成：{error}"),
+                        Err(error) => {
+                            self.notice = format!("连接 {} 未完成：{error}",self.pair_target);
+                            self.client_error=Some(error);
+                        },
                     }
                 }
             }
         }
-        if self
-            .scan
-            .as_ref()
-            .is_some_and(|job| job.task.as_ref().is_some_and(|task| task.is_finished()))
-        {
-            self.scan = None;
-        }
-        if self
-            .client
-            .as_ref()
-            .is_some_and(|job| job.task.as_ref().is_some_and(|task| task.is_finished()))
-        {
-            self.client = None;
+        if client_finished && self.client_dialog && self.client_error.is_none() {
+            let error="连接线程意外退出，请重试连接。".to_owned();
+            self.notice=error.clone();
+            self.client_error=Some(error);
+            self.pair_code=None;
         }
         if active
             && self
@@ -371,15 +397,22 @@ impl LanUi {
             return;
         }
         self.notice.clear();
+        self.client_error=None;
+        self.pair_code=None;
+        self.client_started=Some(Instant::now());
+        self.client_dialog=true;
+        ctx.request_repaint();
         self.pair_target = format!("{} · {}", row.name, row.endpoint);
         match row.kind {
             RowKind::Paired(device) => {
                 if row.changed {
+                    self.client_dialog=false;
                     self.notice =
                         "设备身份已变化，请先核实目标设备；确认后可忘记旧配对并重新连接。".into();
                     return;
                 }
                 if device.endpoint == row.endpoint {
+                    self.client_dialog=false;
                     self.open_device = Some(device);
                     return;
                 }
@@ -393,7 +426,8 @@ impl LanUi {
                 ) {
                     Ok(job) => Some(job),
                     Err(error) => {
-                        self.notice = error;
+                        self.notice = error.clone();
+                        self.client_error=Some(error);
                         None
                     }
                 };
@@ -402,7 +436,6 @@ impl LanUi {
                 let Some(book) = &self.book else {
                     return;
                 };
-                self.pair_target = row.name;
                 self.pair_code = None;
                 self.client = match spawn(
                     ctx,
@@ -414,7 +447,8 @@ impl LanUi {
                 ) {
                     Ok(job) => Some(job),
                     Err(error) => {
-                        self.notice = error;
+                        self.notice = error.clone();
+                        self.client_error=Some(error);
                         None
                     }
                 };
@@ -648,6 +682,9 @@ impl LanUi {
                 .default_width(380.)
                 .show(ctx, |ui| {
                     ui.label("输入目标电脑的 IP 地址或主机名");
+                    ui.weak("先在目标电脑启用共享并允许新设备配对。");
+                    ui.weak("未填写端口时使用 TCP 47998；其它端口请填写 IP:端口。");
+                    ui.weak("不同网段可手动连接，需路由及防火墙允许互通。");
                     let edit = ui.add(
                         egui::TextEdit::singleline(&mut self.address)
                             .hint_text("IP 或 主机名[:端口]")
@@ -669,7 +706,7 @@ impl LanUi {
                 self.add();
             }
         }
-        if self.client.is_some() {
+        if self.client_dialog && (self.client.is_some() || self.client_error.is_some()) {
             let mut cancel = false;
             egui::Window::new("连接设备")
                 .id("lan-client-progress".into())
@@ -678,19 +715,27 @@ impl LanUi {
                 .default_width(390.)
                 .show(ctx, |ui| {
                     ui.label(&self.pair_target);
-                    if let Some(code) = &self.pair_code {
+                    if let Some(error) = &self.client_error {
+                        ui.colored_label(C::from_rgb(170,60,50),"连接未完成");
+                        ui.add(egui::Label::new(error).wrap());
+                        ui.add_space(8.);
+                        ui.label("请确认目标已启用共享、服务端口正确，并允许防火墙中的 TCP 入站连接。");
+                        ui.weak("跨网段请使用手动地址，广播发现通常不跨路由器。");
+                    } else if let Some(code) = &self.pair_code {
                         ui.add_space(12.);
                         ui.label(RichText::new(code).size(34.).strong().color(BLUE));
                         ui.add_space(12.);
                         ui.label("请在目标电脑输入此配对码并允许连接。");
+                        ui.weak("等待主机确认，最长 90 秒；无需在本机再次输入。");
                     } else {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("正在连接设备…");
+                            let elapsed=self.client_started.map(|at|at.elapsed().as_secs()).unwrap_or(0);
+                            ui.label(format!("正在检查设备并建立安全连接… {elapsed} 秒"));
                         });
                     }
                     ui.add_space(12.);
-                    if ui.button("取消").clicked() {
+                    if ui.button(if self.client_error.is_some() {"关闭"} else {"取消"}).clicked() {
                         cancel = true;
                     }
                 });
@@ -699,6 +744,9 @@ impl LanUi {
                     job.stop.send_replace(true);
                 }
                 self.pair_code = None;
+                self.client_error=None;
+                self.client_dialog=false;
+                self.notice="已关闭连接窗口，可点击设备重试。".into();
             }
         }
         self.host.ui(ctx, self.dir.as_deref(), owner_window);

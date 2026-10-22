@@ -35,6 +35,64 @@ fn native_lan_page_preserves_manual_addresses_and_reports_invalid_configuration(
     assert!(page.book.is_none());
     assert!(page.notice.contains("原文件已保留"));
 }
+
+async fn wait_for_client_error(page: &mut LanUi, ctx: &egui::Context) {
+    tokio::time::timeout(Duration::from_secs(8),async {
+        loop {
+            page.poll(ctx,false);
+            if page.client.is_none() && page.client_error.is_some() {break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("client must report a bounded failure");
+    assert!(page.client_dialog,"failures must remain visible after the worker exits");
+}
+
+#[test]
+fn native_lan_page_worker_exit_cannot_silently_remove_progress() {
+    let fixture=Fixture::new();
+    let mut page=LanUi::new(Some(fixture.0.clone()));
+    let (stop,_)=watch::channel(false);
+    let task=std::thread::spawn(||{});
+    while !task.is_finished() {std::thread::yield_now();}
+    page.client=Some(Job {stop,task:Some(task)});
+    page.client_dialog=true;
+    page.poll(&egui::Context::default(),false);
+    assert!(page.client.is_none());
+    assert!(page.client_dialog);
+    assert!(page.client_error.as_ref().unwrap().contains("线程意外退出"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_lan_page_refused_and_unresponsive_endpoints_keep_actionable_error() {
+    for silent in [false,true] {
+        let fixture=Fixture::new();
+        let ctx=egui::Context::default();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint=listener.local_addr().unwrap().to_string();
+        let server=if silent {
+            Some(tokio::spawn(async move {
+                let (_socket,_)=listener.accept().await.unwrap();
+                std::future::pending::<()>().await;
+            }))
+        } else {drop(listener);None};
+        let mut page=LanUi::new(Some(fixture.0.clone()));
+        page.address=endpoint.clone();page.add();
+        page.connect(page.rows().remove(0),&ctx);
+        assert!(page.client_dialog && page.client.is_some());
+        assert!(page.pair_target.contains(&endpoint));
+        wait_for_client_error(&mut page,&ctx).await;
+        let error=page.client_error.as_ref().unwrap();
+        assert!(error.contains(&endpoint),"endpoint must survive error context: {error}");
+        if silent {assert!(error.contains("超时"));}
+        else {assert!(error.contains("无法连接"));assert!(error.contains("TCP"));}
+        assert!(page.open_device.is_none());
+        // Later discovery/page polls must not dismiss a connection failure.
+        page.poll(&ctx,false);
+        assert!(page.client_dialog && page.client_error.is_some());
+        if let Some(server)=server {server.abort();let _=server.await;}
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_lan_page_pairs_persists_and_decodes_generated_video_without_account() {
     let fixture = Fixture::new();
@@ -65,13 +123,17 @@ async fn native_lan_page_pairs_persists_and_decodes_generated_video_without_acco
     .unwrap();
     let endpoint = server.address().unwrap().to_string();
     let task = tokio::spawn(server.run());
-    host.allow_pairing();
     let ctx = egui::Context::default();
     let dir = fixture.0.join("viewer");
     let mut page = LanUi::new(Some(dir.clone()));
     page.address = endpoint;
     page.add();
     page.connect(page.rows().remove(0), &ctx);
+    wait_for_client_error(&mut page,&ctx).await;
+    assert!(page.client_error.as_ref().unwrap().contains("允许新设备配对"));
+    host.allow_pairing();
+    page.connect(page.rows().remove(0), &ctx);
+    assert!(page.client_error.is_none(),"retry clears the previous failure");
     let mut request = None;
     let deadline = Instant::now() + Duration::from_secs(8);
     while page.open_device.is_none() {
@@ -95,6 +157,7 @@ async fn native_lan_page_pairs_persists_and_decodes_generated_video_without_acco
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    assert!(!page.client_dialog,"successful pairing closes the progress dialog");
     let device = page.open_device.take().unwrap();
     let book = Devices::open(&dir.join("paired-devices.json")).unwrap();
     assert_eq!(book.devices.len(), 1);

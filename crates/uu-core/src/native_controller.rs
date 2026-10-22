@@ -105,7 +105,7 @@ impl Worker {
             Err(error) => {
                 let _ = self
                     .events
-                    .send(ControllerEvent::Error(format!("原生连接失败：{error}")));
+                    .send(ControllerEvent::Error(format!("原生连接失败：{error:#}")));
             }
             Ok(()) => {
                 let _ = self

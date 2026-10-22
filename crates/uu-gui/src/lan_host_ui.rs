@@ -186,6 +186,7 @@ impl HostUi {
                         self.addresses = super::native_interfaces::enumerate()
                             .unwrap_or_default()
                             .into_iter()
+                            .filter(|a|a.ip.is_ipv4()==address.is_ipv4())
                             .map(|a| SocketAddr::new(a.ip, address.port()).to_string())
                             .collect();
                     }
@@ -396,6 +397,8 @@ impl HostUi {
                     ui.label(egui::RichText::new(&self.status).strong());
                     ui.add_space(10.);
                     if self.running() {
+                        ui.weak(format!("监听所有 IPv4 网卡：0.0.0.0:{}（TCP）",self.port));
+                        ui.weak("控制端请填写下面的网卡地址；不同网段需路由与防火墙允许连接。");
                         for address in &self.addresses {
                             ui.horizontal(|ui| {
                                 ui.label(address);
