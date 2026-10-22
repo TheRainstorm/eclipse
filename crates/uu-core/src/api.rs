@@ -418,6 +418,17 @@ impl UuApi {
         Ok(resp.body)
     }
 
+    /// Create the controlled-side room using the current authenticated identity.
+    pub async fn room_create(&self) -> Result<serde_json::Value, CoreError> {
+        let token = self.state.token.as_deref().ok_or(CoreError::Unauthenticated)?;
+        let mut identity = self.state.identity.clone();
+        identity.device_id = self.state.device_id.clone().ok_or(CoreError::Unauthenticated)?;
+        Ok(self.client.call(&identity, Some(token), SignedRequest {
+            method: "POST", path_with_query: "/api/v1/room/create",
+            body: Some(serde_json::json!({})),
+        }).await?.body)
+    }
+
     pub async fn device_list(&self) -> Result<serde_json::Value, CoreError> {
         let token = self
             .state

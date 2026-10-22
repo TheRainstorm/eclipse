@@ -147,10 +147,11 @@ fn h264_capability() -> RTCRtpCodecCapability {
 
 pub(crate) struct NativePeer {
     pub pc: Arc<RTCPeerConnection>,
-    mux: Arc<UDPMuxDefault>,
+    mux: Option<Arc<UDPMuxDefault>>,
     pub repairs: Arc<RepairBus>,
     pub states: watch::Receiver<RTCPeerConnectionState>,
     closed: AtomicBool,
+    development_relay: bool,
     pending_decoder: Arc<Mutex<Option<Box<dyn uu_media::VideoDecoder>>>>,
 }
 impl NativePeer {
@@ -209,6 +210,24 @@ impl NativePeer {
         settings.set_ip_filter(Box::new(move |ip| ip == gather_ip));
         settings.set_nat_1to1_ips(vec![advertised_ip.to_string()], RTCIceCandidateType::Host);
         settings.set_udp_network(UDPNetwork::Muxed(mux.clone()));
+        Self::build(settings, Some(mux), RTCConfiguration::default(), stats, sender).await
+    }
+
+    /// Internet mode enumerates interfaces and obtains mapped addresses using
+    /// STUN. Unlike LAN mode it does not pin media to a signaling server's IP.
+    pub async fn new_direct(ice: &crate::direct_ice::InternetIce, stats: Option<Arc<MediaStats>>, sender: bool) -> Result<Self> {
+        crate::install_crypto_provider();
+        let mut settings = SettingEngine::default();
+        crate::srtp_policy::configure(&mut settings);
+        settings.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
+        settings.set_network_types(vec![NetworkType::Udp4, NetworkType::Udp6]);
+        let mut peer=Self::build(settings, None, ice.configuration(), stats, sender).await?;
+        peer.development_relay=ice.development_relay();
+        Ok(peer)
+    }
+
+    async fn build(settings: SettingEngine, mux: Option<Arc<UDPMuxDefault>>, configuration: RTCConfiguration,
+        stats: Option<Arc<MediaStats>>, sender: bool) -> Result<Self> {
         let mut media = MediaEngine::default();
         media.register_codec(
             webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
@@ -253,10 +272,10 @@ impl NativePeer {
             .with_setting_engine(settings)
             .with_interceptor_registry(registry)
             .build();
-        let pc = match api.new_peer_connection(RTCConfiguration::default()).await {
+        let pc = match api.new_peer_connection(configuration).await {
             Ok(pc) => Arc::new(pc),
             Err(e) => {
-                let _ = mux.close().await;
+                if let Some(mux) = &mux { let _ = mux.close().await; }
                 return Err(e.into());
             }
         };
@@ -271,6 +290,7 @@ impl NativePeer {
             repairs,
             states,
             closed: AtomicBool::new(false),
+            development_relay:false,
             pending_decoder: Arc::new(Mutex::new(None)),
         })
     }
@@ -396,6 +416,12 @@ impl NativePeer {
         self.pc.set_remote_description(description).await?;
         Ok(())
     }
+    pub async fn remote_direct(&self, description: RTCSessionDescription) -> Result<()> {
+        crate::direct_ice::validate_sdp(&description.sdp,self.development_relay)?;
+        self.repairs.configure(&description.sdp);
+        self.pc.set_remote_description(description).await?;
+        Ok(())
+    }
     pub async fn connected(&mut self) -> Result<()> {
         timeout(Duration::from_secs(15), async {
             loop {
@@ -416,11 +442,31 @@ impl NativePeer {
         .await
         .context("native WebRTC connection timed out")?
     }
+    pub async fn direct_path(&self) -> Result<serde_json::Value> {
+        use webrtc::stats::StatsReportType;
+        let reports=self.pc.get_stats().await;
+        for report in reports.reports.values() {
+            if let StatsReportType::CandidatePair(pair)=report {
+                if !pair.nominated {continue;}
+                let local=reports.reports.get(&pair.local_candidate_id);
+                let remote=reports.reports.get(&pair.remote_candidate_id);
+                if let (Some(StatsReportType::LocalCandidate(local)),Some(StatsReportType::RemoteCandidate(remote)))=(local,remote) {
+                    let local_type=local.candidate_type.to_string();
+                    let remote_type=remote.candidate_type.to_string();
+                    ensure!(self.development_relay || (local_type!="relay"&&remote_type!="relay"),"direct-only session selected a forbidden relay");
+                    let path=serde_json::json!({"event":"native_path","direct":local_type!="relay"&&remote_type!="relay","development_relay":self.development_relay,"local_type":local_type,"remote_type":remote_type,"transport":"udp"});
+                    tracing::info!(local_type,remote_type,"native UDP path selected");
+                    return Ok(path);
+                }
+            }
+        }
+        anyhow::bail!("cannot confirm selected native ICE path")
+    }
     pub async fn close(&self) {
         self.pending_decoder.lock().unwrap().take();
         if !self.closed.load(Ordering::Acquire) {
             let _ = self.pc.close().await;
-            let _ = self.mux.close().await;
+            if let Some(mux) = &self.mux { let _ = mux.close().await; }
             self.closed.store(true, Ordering::Release);
         }
     }
@@ -434,7 +480,7 @@ impl Drop for NativePeer {
                 let mux = self.mux.clone();
                 runtime.spawn(async move {
                     let _ = pc.close().await;
-                    let _ = mux.close().await;
+                    if let Some(mux) = mux { let _ = mux.close().await; }
                 });
             }
         }

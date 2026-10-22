@@ -9,6 +9,7 @@
 
 mod native_cli;
 mod lan_cli;
+mod internet_cli;
 
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
@@ -87,6 +88,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Native streaming through replaceable internet connection services.
+    Internet {
+        #[command(subcommand)]
+        command:internet_cli::Command,
+    },
     /// Eclipse LAN discovery, persistent pairing and foreground sharing.
     Lan {
         #[command(subcommand)]
@@ -276,6 +282,7 @@ async fn main() -> Result<()> {
     config.ensure_dirs().await?;
 
     match cli.command {
+        Command::Internet{command}=>internet_cli::run(command,config).await,
         Command::Lan {command} => lan_cli::run(command,config.at("native-lan")).await,
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
         Command::NativeSources => native_cli::sources(),

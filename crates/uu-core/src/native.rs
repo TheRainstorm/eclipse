@@ -5,6 +5,7 @@ use crate::{
     media::{FrameSender, MediaStats},
     native_media::NativePeer,
     native_pairing::{HostCredentials, Invitation},
+    native_signaling::{SessionSignaling, TlsSignaling},
 };
 use anyhow::{bail, ensure, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -121,7 +122,7 @@ fn validate_video(width: u32, height: u32, fps: u32) -> Result<()> {
     Ok(())
 }
 
-async fn read_message<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin)) -> Result<T> {
+pub(crate) async fn read_message<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin)) -> Result<T> {
     timeout(Duration::from_secs(15), async {
         let len = stream.read_u32().await? as usize;
         ensure!(
@@ -136,7 +137,7 @@ async fn read_message<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin)
     .await
     .context("native signaling timed out")?
 }
-async fn write_message<T: Serialize>(
+pub(crate) async fn write_message<T: Serialize>(
     stream: &mut (impl AsyncWrite + Unpin),
     message: &T,
 ) -> Result<()> {
@@ -170,6 +171,63 @@ pub struct HostConfig {
     pub audio: Option<uu_media::audio_capture::Source>,
     /// Caller-owned, opt-in OS backend; the core only transports bounded text.
     pub clipboard: Option<Arc<crate::clipboard::Clipboard>>,
+}
+
+/// Capture and permissions shared by LAN and internet sessions.
+pub struct SharingConfig {
+    pub source: CaptureSource,
+    pub fps: u32,
+    pub bitrate_kbps: u32,
+    pub encoder: EncoderPreference,
+    pub session_limit: Option<Duration>,
+    pub allow_input: bool,
+    pub audio: Option<AudioSource>,
+    pub clipboard: Option<Arc<crate::clipboard::Clipboard>>,
+}
+impl From<HostConfig> for SharingConfig {
+    fn from(c: HostConfig) -> Self {
+        Self { source:c.source, fps:c.fps, bitrate_kbps:c.bitrate_kbps, encoder:c.encoder,
+            session_limit:c.session_limit, allow_input:c.allow_input, audio:c.audio, clipboard:c.clipboard }
+    }
+}
+impl SharingConfig {
+    pub fn validate(&self) -> Result<()> {
+        ensure!((1..=60).contains(&self.fps) && (64..=100_000).contains(&self.bitrate_kbps),
+            "native H.264 host needs 1..=60 fps and 64..=100000 kbps");
+        let monitor = matches!(self.source,CaptureSource::Primary|CaptureSource::Monitor(_));
+        ensure!(!self.allow_input || monitor, "desktop input requires an explicitly shared monitor");
+        ensure!(self.audio != Some(AudioSource::System) || monitor, "system audio requires an explicitly shared monitor");
+        Ok(())
+    }
+}
+
+/// The provider must return authenticated, session-bound SDP. No capture is
+/// opened until the authenticated offer and direct-only candidates are checked.
+pub async fn serve_direct(signaling: &mut dyn SessionSignaling, ice: &crate::direct_ice::InternetIce,
+    config: SharingConfig, stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>) -> Result<HostReport> {
+    config.validate()?;
+    let mut peer = NativePeer::new_direct(ice, None, true).await?;
+    let result = serve_peer(&mut peer, signaling, config, stop, status).await;
+    peer.close().await;
+    result
+}
+
+pub async fn view_direct(signaling: &mut dyn SessionSignaling, ice: &crate::direct_ice::InternetIce,
+    frames: FrameSender, stats: Arc<MediaStats>, mut stop: watch::Receiver<bool>,
+    input: Option<crate::native_input::NativeInputReceiver>) -> Result<()> {
+    stats.capabilities.set(0);
+    stats.native_input_available.store(false, Ordering::Release);
+    let mut peer = NativePeer::new_direct(ice, Some(stats.clone()), false).await?;
+    let result = tokio::select! {
+        result=receive_session(&mut peer,signaling,frames,stats.clone(),input)=>result,
+        _=cancelled(&mut stop)=>Ok(()),
+    };
+    peer.close().await;
+    stats.control_open.store(0, Ordering::Release);
+    stats.audio.stop();
+    crate::native_clipboard::stop(&stats.clipboard);
+    stats.capabilities.enable(crate::capabilities::Capability::Audio,false);
+    result
 }
 #[derive(Debug, Default)]
 pub struct HostReport {
@@ -359,25 +417,33 @@ fn encode_source(
 }
 
 async fn host_session(
-    mut stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     config: HostConfig,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
     status: Option<watch::Sender<HostStatus>>,
 ) -> Result<HostReport> {
-    let offer: Offer = tokio::select! {result=read_message(&mut stream)=>result?,_=cancelled(&mut stop)=>return Ok(HostReport::default())};
-    ensure!(offer.version == 1, "unsupported native protocol version");
     let local_ip = stream.get_ref().0.local_addr()?.ip();
+    let peer_ip = stream.get_ref().0.peer_addr()?.ip();
     let mut peer = NativePeer::new(local_ip, None, true).await?;
-    let result = send_video(&mut peer, &mut stream, config, stop, offer, status).await;
+    let mut signaling = TlsSignaling { stream, peer: peer_ip };
+    let result = serve_peer(&mut peer, &mut signaling, config.into(), stop, status).await;
     peer.close().await;
-    let _ = stream.shutdown().await;
+    let _ = signaling.stream.shutdown().await;
     result
+}
+
+async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling, config: SharingConfig,
+    mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>) -> Result<HostReport> {
+    let message = tokio::select! {result=signaling.receive()=>result?,_=cancelled(&mut stop)=>return Ok(HostReport::default())};
+    let offer: Offer = serde_json::from_value(message).map_err(|_| anyhow::anyhow!("invalid native offer"))?;
+    ensure!(offer.version == 1, "unsupported native protocol version");
+    send_video(peer, signaling, config, stop, offer, status).await
 }
 
 async fn send_video(
     peer: &mut NativePeer,
-    stream: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
-    config: HostConfig,
+    stream: &mut dyn SessionSignaling,
+    config: SharingConfig,
     mut stop: watch::Receiver<bool>,
     offer: Offer,
     status: Option<watch::Sender<HostStatus>>,
@@ -386,8 +452,10 @@ async fn send_video(
     let track = peer.sender(refresh.clone()).await?;
     let audio_mode=if config.audio.is_some(){crate::native_media::offered_audio(&offer.sdp)?}else{None};
     let mut audio_sender=if let Some(red)=audio_mode {Some(peer.audio_sender(red).await?)}else{None};
-    peer.remote(offer.sdp, stream.get_ref().0.peer_addr()?.ip())
-        .await?;
+    match stream.lan_peer() {
+        Some(ip) => peer.remote(offer.sdp, ip).await?,
+        None => peer.remote_direct(offer.sdp).await?,
+    }
     // Authentication and a valid media offer precede capture access.
     let (fps,kbps,preference)=(config.fps,config.bitrate_kbps,config.encoder);
     let (capture,encoder) = tokio::select! {
@@ -417,12 +485,15 @@ async fn send_video(
         bitrate_kbps: config.bitrate_kbps,
         view_only: true,
     };
-    write_message(stream, &answer).await?;
+    stream.send(serde_json::to_value(&answer)?).await?;
     let connected=tokio::select! {result=peer.connected()=>Some(result),_=cancelled(&mut stop)=>None};
     match connected {
         Some(Ok(()))=>{},
         Some(Err(error))=>{controls.stop().await;return Err(error);},
         None=>{controls.stop().await;return Ok(HostReport::default());},
+    }
+    if stream.lan_peer().is_none() {
+        if let Err(error)=peer.direct_path().await {controls.stop().await;return Err(error);}
     }
     let mut producer = CaptureWorker::start(capture, config.fps, refresh, encoder);
     let mut encoder_label=producer.encoder.borrow().clone();
@@ -450,7 +521,7 @@ async fn send_video(
             tokio::select! {
                 _ = cancelled(&mut stop) => break,
                 _ = &mut deadline => break,
-                _ = stream.read_u8() => break,
+                _ = stream.disconnected() => break,
                 changed=async {match &mut encoder_state {Some(state)=>state.changed().await,None=>std::future::pending().await}}=>{
                     if changed.is_ok() {
                         encoder_label=encoder_state.as_mut().unwrap().borrow_and_update().clone();
@@ -531,15 +602,17 @@ pub async fn view_with_input(invitation:&Invitation,frames:FrameSender,stats:Arc
 async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaStats>,mut stop:watch::Receiver<bool>,input:Option<crate::native_input::NativeInputReceiver>)->Result<()> {
     stats.capabilities.set(0);
     stats.native_input_available.store(false,Ordering::Release);
-    let mut stream = tokio::select! {
+    let stream = tokio::select! {
         result=crate::native_pairing::connect(invitation)=>result?,
         _=cancelled(&mut stop)=>return Ok(()),
     };
     let local_ip = stream.get_ref().0.local_addr()?.ip();
     let advertised_ip = invitation.observed_client_ip().unwrap_or(local_ip);
     let mut peer = NativePeer::new_with_advertised(local_ip, advertised_ip, Some(stats.clone()), false).await?;
+    let peer_ip = stream.get_ref().0.peer_addr()?.ip();
+    let mut signaling = TlsSignaling { stream, peer: peer_ip };
     let result = tokio::select! {
-        result=receive_session(&mut peer,&mut stream,frames,stats.clone(),input)=>result,
+        result=receive_session(&mut peer,&mut signaling,frames,stats.clone(),input)=>result,
         _=cancelled(&mut stop)=>Ok(()),
     };
     peer.close().await;
@@ -547,13 +620,13 @@ async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaS
     stats.audio.stop();
     crate::native_clipboard::stop(&stats.clipboard);
     stats.capabilities.enable(crate::capabilities::Capability::Audio,false);
-    let _ = stream.shutdown().await;
+    let _ = signaling.stream.shutdown().await;
     result
 }
 
 async fn receive_session(
     peer: &mut NativePeer,
-    stream: &mut tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+    stream: &mut dyn SessionSignaling,
     frames: FrameSender,
     stats: Arc<MediaStats>,
     input:Option<crate::native_input::NativeInputReceiver>,
@@ -566,15 +639,12 @@ async fn receive_session(
     let clipboard=peer.pc.create_data_channel(crate::native_clipboard::LABEL,None).await?;
     crate::native_clipboard::viewer(clipboard,stats.clone());
     let mut controls=crate::native_control::ViewerControl::new(channel.clone(),stats.clone(),input);
-    write_message(
-        stream,
-        &Offer {
-            version: 1,
-            sdp: peer.description(true).await?,
-        },
-    )
-    .await?;
-    let answer: Answer = read_message(stream).await?;
+    stream.send(serde_json::to_value(Offer {
+        version: 1,
+        sdp: peer.description(true).await?,
+    })?).await?;
+    let answer: Answer = serde_json::from_value(stream.receive().await?)
+        .map_err(|_| anyhow::anyhow!("invalid native answer"))?;
     ensure!(
         answer.version == 1 && answer.view_only,
         "unsupported native session capabilities"
@@ -584,9 +654,12 @@ async fn receive_session(
     // start ICE/DTLS and release the first burst of video into the AU queue.
     peer.prepare_video(answer.width, answer.height, &stats).await?;
     stats.configured_fps.store(answer.fps,Ordering::Release);
-    peer.remote(answer.sdp, stream.get_ref().0.peer_addr()?.ip())
-        .await?;
+    match stream.lan_peer() {
+        Some(ip) => peer.remote(answer.sdp, ip).await?,
+        None => peer.remote_direct(answer.sdp).await?,
+    }
     peer.connected().await?;
+    if stream.lan_peer().is_none() {stats.diagnostics.record(peer.direct_path().await?);}
     let mut control_active=true;
     let control=controls.run();tokio::pin!(control);
     loop {
@@ -598,7 +671,7 @@ async fn receive_session(
                 stats.native_input_available.store(false,Ordering::Release);
                 let _=timeout(Duration::from_secs(1),channel.close()).await;
             },
-            _=stream.read_u8()=>{
+            _=stream.disconnected()=>{
                 ensure!(stats.decoded_total.load(Ordering::Relaxed)>0,"native host ended before delivering video");
                 break;
             },

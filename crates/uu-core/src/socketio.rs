@@ -69,6 +69,13 @@ impl SocketIo {
         Ok(())
     }
 
+    /// Request an acknowledgement without adding an invented data argument.
+    pub async fn request_ack(&mut self, event: &str, id: u64) -> Result<()> {
+        let payload = serde_json::to_string(&serde_json::json!([event]))?;
+        self.ws.send(Message::Text(format!("42{id}{payload}").into())).await?;
+        Ok(())
+    }
+
     /// Leave the Socket.IO room and close the socket (so the server clears the
     /// session and the controlled end stops showing "connected").
     pub async fn close(&mut self) {
@@ -98,7 +105,7 @@ impl SocketIo {
                         let json = &json[json.find('[').context("no json")?..];
                         (Some(n), json)
                     } else if let Some(rest) = t.strip_prefix("42") {
-                        (None, rest)
+                        (None, &rest[rest.find('[').context("no json")?..])
                     } else if let Some(rest) = t.strip_prefix("43") {
                         let rest = &rest[rest.find('[').context("no json")?..];
                         (None, rest)
@@ -234,7 +241,8 @@ pub fn gunzip_sdp04(data: &[u8]) -> Result<String> {
     use std::io::Read;
     let body = data.strip_prefix(&[0x04]).unwrap_or(data);
     let mut s = String::new();
-    GzDecoder::new(body).read_to_string(&mut s)?;
+    GzDecoder::new(body).take(256 * 1024 + 1).read_to_string(&mut s)?;
+    anyhow::ensure!(s.len() <= 256 * 1024, "SDP exceeds size limit");
     Ok(s)
 }
 

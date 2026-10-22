@@ -28,10 +28,14 @@ pub fn spawn_device(devices_file:PathBuf,id:String,stats:Arc<MediaStats>,request
     anyhow::ensure!(uuid::Uuid::parse_str(&id).is_ok(),"无效的原生设备编号");
     spawn_source(Source::Device{devices_file,id},stats,requested)
 }
-enum Source {Invitation(PathBuf),Device{devices_file:PathBuf,id:String}}
+pub fn spawn_internet(settings:crate::internet::Settings,config:crate::Config,stats:Arc<MediaStats>,requested:bool)->Result<ControllerHandle> {
+    spawn_source(Source::Internet{settings,config},stats,requested)
+}
+enum Source {Invitation(PathBuf),Device{devices_file:PathBuf,id:String},Internet{settings:crate::internet::Settings,config:crate::Config}}
 impl Source {
     async fn resolve(&self)->Result<Invitation>{match self{
         Self::Invitation(path)=>Invitation::load(path),
+        Self::Internet{..}=>anyhow::bail!("internet sessions do not use LAN invitations"),
         Self::Device{devices_file,id}=>{
             let book=crate::native_lan_store::Devices::open(devices_file)?;
             let device=book.paired(id).context("该原生设备尚未配对，请返回设备页重新配对")?;
@@ -123,21 +127,21 @@ impl Worker {
     async fn network(&mut self) -> Result<()> {
         let _ = self
             .events
-            .send(ControllerEvent::Status(match &self.source {Source::Invitation(_)=>"正在验证原生邀请…",Source::Device{..}=>"正在连接已配对的原生服务端…"}.into()));
-        let invitation=tokio::select!{
+            .send(ControllerEvent::Status(match &self.source {Source::Invitation(_)=>"正在验证原生邀请…",Source::Device{..}=>"正在连接已配对的原生服务端…",Source::Internet{..}=>"正在通过连接服务建立原生串流…"}.into()));
+        let invitation=if matches!(&self.source,Source::Internet{..}){None}else{Some(tokio::select!{
             biased;
             _=self.close.recv()=>return Ok(()),
             result=self.source.resolve()=>result?,
-        };
+        })};
         let (stop, stop_rx) = watch::channel(false);
         let native=self.native.take().context("native input interface was already consumed")?;
-        let session = crate::native::view_with_input(
-            &invitation,
-            self.frames.clone(),
-            self.stats.clone(),
-            stop_rx,
-            native,
-        );
+        let session = async {
+            if let Source::Internet{settings,config}=&self.source {
+                crate::internet::view(settings.clone(),config.clone(),self.frames.clone(),self.stats.clone(),stop_rx,Some(native)).await
+            } else {
+                crate::native::view_with_input(invitation.as_ref().unwrap(),self.frames.clone(),self.stats.clone(),stop_rx,native).await
+            }
+        };
         tokio::pin!(session);
         loop {
             tokio::select! {
