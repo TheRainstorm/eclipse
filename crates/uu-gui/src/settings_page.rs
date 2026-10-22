@@ -27,7 +27,7 @@ impl Section {
         match self {
             Self::Video => "画面与显示",
             Self::Audio => "声音",
-            Self::Input => "键盘与鼠标",
+            Self::Input => "输入与协作",
             Self::Network => "网络与共享",
             Self::Application => "应用与诊断",
         }
@@ -36,7 +36,7 @@ impl Section {
         match self {
             Self::Video => "调整清晰度、帧率与呈现方式。",
             Self::Audio => "设置默认音量与声音播放。",
-            Self::Input => "选择光标显示、指针移动与快捷键归属。",
+            Self::Input => "配置键鼠、手柄、运动传感器与输入归属。",
             Self::Network => "配置 Eclipse 局域网端口与本机共享。",
             Self::Application => "管理串流界面、默认偏好与软件信息。",
         }
@@ -49,6 +49,7 @@ pub struct State<'a> {
     pub storage_error: bool,
     pub notice: &'a str,
     pub presentation_vsync: bool,
+    pub gamepad_status: Option<&'a str>,
 }
 #[derive(Default)]
 pub struct Actions {
@@ -197,7 +198,7 @@ fn audio(ui: &mut egui::Ui, s: &mut Settings) {
         note(ui, "保存后应用到当前串流，并作为新窗口的默认音量。");
     });
 }
-fn input(ui: &mut egui::Ui, s: &mut Settings) {
+fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
     group(ui, "光标显示", |ui| {
         for mode in CursorMode::ALL {
             ui.radio_value(&mut s.cursor_mode, mode, mode.label());
@@ -211,6 +212,11 @@ fn input(ui: &mut egui::Ui, s: &mut Settings) {
         ui.radio_value(&mut s.relative_mouse, false, "桌面 · 绝对定位");
         ui.radio_value(&mut s.relative_mouse, true, "游戏 · 相对移动");
         note(ui,"Ctrl+Alt+P 切换移动方式。游戏模式单击画面捕获鼠标，Ctrl+Alt+Z 释放或重新捕获；菜单和失焦时自动释放。");
+    });
+    group(ui, "手柄与运动传感器", |ui| {
+        ui.checkbox(&mut s.gamepad, "转发本地手柄和陀螺仪");
+        if let Some(status)=state.gamepad_status{ui.label(status);}
+        note(ui, "原生串流支持最多 4 个手柄，仅在画面获得输入焦点和控制权时转发；失焦或断线后释放。运动传感器需要实体手柄支持，Windows 被控端需要 ViGEmBus，Linux 被控端需要 UHID 访问权限。");
     });
     group(ui, "键盘与协作", |ui| {
         ui.checkbox(&mut s.capture_keyboard, "全屏时将系统快捷键交给远端");
@@ -413,8 +419,8 @@ pub fn show(
             egui::ScrollArea::vertical()
                 .id_salt(("settings-content", *section as u8))
                 .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_max_width(860.0);
+                .show_viewport(ui, |ui, viewport| {
+                    ui.set_width(viewport.width().min(860.0));
                     ui.label(
                         RichText::new(section.label())
                             .size(if compact { 20.0 } else { 24.0 })
@@ -441,7 +447,7 @@ pub fn show(
                     match section {
                         Section::Video => video(ui, s, &state),
                         Section::Audio => audio(ui, s),
-                        Section::Input => input(ui, s),
+                        Section::Input => input(ui, s, &state),
                         Section::Network => network(ui, s, &state, &mut actions),
                         Section::Application => application(ui, s, &mut actions),
                     }

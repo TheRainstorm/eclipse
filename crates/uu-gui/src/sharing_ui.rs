@@ -477,7 +477,7 @@ impl HostUi {
                                 .char_limit(12),
                         );
                         ui.add_enabled_ui(self.allow_control, |ui| {
-                            ui.checkbox(&mut pending.control, "允许键盘和鼠标控制");
+                            ui.checkbox(&mut pending.control, "允许键盘、鼠标和手柄控制");
                         });
                         ui.weak("批准后记住这台设备，以后连接不再输入配对码。");
                         let permission = if pending.control {

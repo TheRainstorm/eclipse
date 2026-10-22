@@ -36,6 +36,7 @@ mod build_info;
 mod account;
 mod audio_controls;
 mod native_ui;
+mod gamepad;
 mod internet_ui;
 mod workspace_ui;
 mod sharing_ui;
@@ -135,6 +136,7 @@ struct App {
     stream_target: Option<sessions::StreamTarget>,
     assistance:Option<uu_core::assistance::Request>,
     native_ui: native_ui::NativeUi,
+    gamepad: gamepad::Reader,
     workspace:workspace_ui::Workspace,
     connection_details_open:bool,
     lan: lan_ui::LanUi,
@@ -373,6 +375,7 @@ impl App {
             stream_target,
             assistance,
             native_ui: native_ui::NativeUi::default(),
+            gamepad:gamepad::Reader::default(),
             workspace:workspace_ui::Workspace::load(config.as_ref(),(preferences.lan_service_port,preferences.lan_discovery_port)),
             connection_details_open:false,
             lan:lan_ui::LanUi::new(config.as_ref().map(|c|c.at("native-lan"))),
@@ -801,6 +804,12 @@ impl App {
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
         let conditions=self.input_conditions(ctx);
         let remote=self.input_capture.active(conditions);
+        if self.is_native() {
+            let requested=self.input_capture.wants_control(conditions)&&!self.disconnecting&&self.displays.ready();
+            if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()) {
+                if sender.requested()!=requested {sender.set_enabled(requested);}
+            }
+        }
         if self.input_capture.stopped(conditions){self.release_all_keys();}
         // Client commands remain local while viewing, in menus, or after
         // releasing remote input. They do not depend on a host control grant.
@@ -817,6 +826,10 @@ impl App {
                 "keyboard":self.platform.keyboard_diagnostics()
             }));}
         }
+        let gamepad=if self.preferences.gamepad && self.is_native() && remote {
+            self.controller.as_ref().and_then(|h|h.native_input.as_ref().map(|input|gamepad::Target{input:input.clone(),stats:h.stats.clone()}))
+        }else{None};
+        self.gamepad.configure(gamepad);
         self.native_keyboard_capture=active;self.native_window_keyboard=window;
     }
 

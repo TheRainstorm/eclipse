@@ -1065,7 +1065,7 @@ impl Workspace {
                 });
                 if needs_hardware {ui.weak("此组合需要 Intel VPL 硬件编码；控制端需支持相同格式，连接时自动核验。");}
                 ui.checkbox(&mut self.draft.audio, "共享系统声音");
-                ui.checkbox(&mut self.draft.control, "允许已授权设备控制键盘和鼠标");
+                ui.checkbox(&mut self.draft.control, "允许已授权设备控制键盘、鼠标和手柄");
                 ui.checkbox(&mut self.draft.clipboard, "允许双方启用文本剪贴板");
             });
             if locked {

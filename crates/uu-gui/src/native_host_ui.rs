@@ -362,7 +362,7 @@ impl App {
                     }
                     ui.add_space(8.0);
                     ui.label(if host.allow_input {
-                        "本次共享允许受邀端请求键鼠控制"
+                        "本次共享允许受邀端请求输入控制"
                     } else {
                         "键鼠：仅观看"
                     });
@@ -483,7 +483,7 @@ impl App {
                         );
                     });
                     ui.add_space(8.0);
-                    ui.checkbox(&mut host.allow_input, "允许受邀端请求键盘和鼠标控制");
+                    ui.checkbox(&mut host.allow_input, "允许受邀端请求键盘、鼠标和手柄控制");
                     ui.checkbox(&mut host.share_audio, "共享系统声音（输出设备）");
                     ui.checkbox(
                         &mut host.share_clipboard,

@@ -9,7 +9,9 @@
 
 uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键鼠和多显示器操作。Linux 客户端原生运行，无需 Wine。当前开发分支默认进入 **设备工作区**：保存多台原生设备及 IP、UU、VPS 地址，首次短码配对后跨入口复用公钥授权。“共享本机”统一管理画质、连接入口和控制端权限；使用官方被控端可选择“UU 兼容设备”或“远程协助”。详见[局域网连接与配对](docs/native-lan.md)。
 
-目前已达到日常远程桌面基本可用的 demo 阶段，仍在快速迭代。另有[实验性原生局域网串流通路](docs/native-streaming.md)，可使用自有主机、配对与加密视频传输；已提供图形端共享、显式授权的键鼠控制、[系统声音与音频恢复](docs/native-audio.md)，以及[双方许可文本剪贴板](docs/native-clipboard.md)，不需要 UU 账号或第三方服务密钥。当前开发分支支持 [Linux VA-API 与 Windows MFT 原生 H.264 硬编](docs/native-encoding.md)，图形“共享本机”默认自动选择硬编，旧邀请入口与 CLI 保留软件默认值，实际后端与回退在共享窗口显示。**原生主机仍是早期局域网实现，不兼容 Sunshine / GameStream 协议。** 两种模式的互通边界、UDP/WebRTC 传输、Moonlight 对比与扩展方案见[协议与传输架构](docs/protocol-compatibility-and-transport.md)。
+目前已达到日常远程桌面基本可用的 demo 阶段，仍在快速迭代。原生通路提供图形共享、公钥授权的输入控制、[系统声音与恢复](docs/native-audio.md)及[双方许可文本剪贴板](docs/native-clipboard.md)，IP 直连不需要第三方账号。Linux 共享支持 X11 和 [Wayland 门户 / PipeWire](docs/linux-client.md#wayland-本机共享)。
+
+开发分支增加[硬件 H.264 / HEVC / AV1 与 CBR / VBR](docs/native-encoding.md)、[原生分段延迟统计](docs/native-latency.md)、[运行中切换共享显示器](docs/native-lan.md#串流中切换显示器)和[手柄与陀螺仪](docs/native-gamepad.md)。共享最多接受 4 个会话，按设备授权和单独断开，输入控制权统一交接；硬件格式、帧率和实体外设仍需按目标驱动验证。“共享本机”默认自动选择硬编，旧邀请入口与 CLI 保留软件默认值。**原生协议仍在迭代，不兼容 Sunshine / GameStream。** 两种模式的互通边界、UDP/WebRTC 传输、Moonlight 对比见[协议与传输架构](docs/protocol-compatibility-and-transport.md)。
 
 原生公网入口与自建连接服务见[使用说明](docs/native-internet.md)：IP 直连和连接服务共用原生串流，用户已确认两台不同 UU 设备连接成功，跨 NAT 和中继仍待验收。新版共享设置、多设备配置、公钥配对和官方协助入口见[设备连接、共享与授权](docs/device-connection-and-trust.md)。
 
@@ -36,7 +38,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 | 方面 | 当前支持 |
 |---|---|
 | 账号与设备 | 扫码登录、取消或刷新二维码、设备列表与搜索、异步设备预览、本地收藏与最近使用、退出账号；退出后断开本客户端串流，保留软件偏好。 |
-| 视频 | H.264（Windows D3D11VA / Linux VA-API，失败回退 OpenH264）；Windows UU 串流可在设置中优先选择 H.265 / HEVC 硬解。 |
+| 视频 | H.264（Windows D3D11VA / Linux VA-API，失败回退 OpenH264）；Windows 与 Linux UU 串流可在设置中优先选择 H.265 / HEVC，硬解能力按实际探针确认。 |
 | 画质 | 自动 / 预设 / 自定义码率，保持远端或指定分辨率，预设与自定义 5–144 FPS。实际帧率受被控端、屏幕和网络限制。 |
 | 音频 | Opus 播放、音量、静音、限长缓冲与丢包平滑；顶部声音快捷按钮。 |
 | 键盘与鼠标 | 标点与组合键、鼠标中键与拖动；桌面绝对定位 / 游戏相对移动，本地 / 远端光标。 |
@@ -149,7 +151,7 @@ Windows 上再次打开程序会唤起已有主页，避免并行运行多个主
 
 ## 实现与开发
 
-GUI 使用 egui / eframe，媒体面采用 WebRTC、H.264 / HEVC 与 Opus。协议、输入和呈现分层，账号配置与软件偏好分开保存。
+GUI 使用 egui / eframe，媒体面采用 WebRTC/UDP 与 Opus；原生视频支持 H.264 / HEVC / AV1，UU 兼容模式协商 H.264 / HEVC。协议、输入和呈现分层，账号配置与软件偏好分开保存。
 
 ```text
 crates/uu-gui      设备主页、设置、串流窗口、输入捕获与呈现

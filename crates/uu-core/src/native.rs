@@ -743,7 +743,13 @@ async fn receive_session(
         .await?;
     let clipboard=peer.pc.create_data_channel(crate::native_clipboard::LABEL,None).await?;
     crate::native_clipboard::viewer(clipboard,stats.clone());
+    let gamepad=if let Some(input)=&input {
+        let options=webrtc::data_channel::data_channel_init::RTCDataChannelInit{ordered:Some(false),max_packet_life_time:Some(crate::native_gamepad::LIFETIME_MS),..Default::default()};
+        let channel=peer.pc.create_data_channel(crate::native_gamepad::LABEL,Some(options)).await?;
+        Some(crate::native_gamepad::Viewer::start(channel,stats.clone(),input.gamepads.clone(),input.requested.clone(),input.epoch.clone()))
+    }else{None};
     let mut controls=crate::native_control::ViewerControl::new(channel.clone(),stats.clone(),input);
+    controls.gamepads(gamepad);
     stream.send(serde_json::to_value(Offer {
         version: 1,
         sdp: peer.description(true).await?,

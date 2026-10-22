@@ -520,7 +520,7 @@ impl HostUi {
                             });
                         ui.add_space(10.);
                         ui.weak("服务端口使用 TCP，发现端口使用 UDP；端口自动保存。更改发现端口时，请将控制端设为相同端口，也可用 IP:服务端口 手动连接。");
-                        ui.checkbox(&mut self.input, "允许已配对设备控制键盘和鼠标");
+                        ui.checkbox(&mut self.input, "允许已配对设备控制键盘、鼠标和手柄");
                         ui.checkbox(&mut self.audio, "共享系统声音");
                         ui.checkbox(&mut self.clipboard, "允许双方启用文本剪贴板");
                         ui.weak("只有在你确认配对后，设备才能访问本机。关闭软件会停止共享。");

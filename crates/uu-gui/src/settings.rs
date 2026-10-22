@@ -56,6 +56,7 @@ pub struct Settings {
     #[serde(alias = "remote_cursor", deserialize_with = "deserialize_cursor_mode")]
     pub cursor_mode: CursorMode,
     pub clipboard: bool,
+    pub gamepad: bool,
     pub lan_discovery: bool,
     pub lan_service_port: u16,
     pub lan_discovery_port: u16,
@@ -79,6 +80,7 @@ impl Default for Settings {
             relative_mouse: false,
             cursor_mode: CursorMode::Both,
             clipboard: true,
+            gamepad: true,
             lan_discovery: true,
             lan_service_port: uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port: uu_core::native_discovery::DISCOVERY_PORT,
@@ -242,12 +244,14 @@ impl super::App {
     pub(super) fn settings_ui(&mut self, ctx: &egui::Context) {
         if !self.settings_open {return;}
         let dirty=self.settings_draft!=self.preferences;
+        let gamepad_status=self.gamepad_status();
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
             super::settings_page::State {
                 streaming:self.stream_target.is_some(),sharing:self.workspace.host.running(),
                 dirty,
                 storage_error:self.settings_storage_error,notice:&self.settings_notice,
                 presentation_vsync:self.presentation_vsync,
+                gamepad_status:gamepad_status.as_deref(),
             });
         if actions.back {self.settings_open=false;ctx.request_repaint();}
         if actions.maximize {self.toggle_maximized(ctx);}

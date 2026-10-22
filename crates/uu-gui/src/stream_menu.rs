@@ -845,7 +845,7 @@ impl super::App {
                                         ui.small(&self.settings_feedback);
                                         }
                                         ui.small("Ctrl+Alt+P 切换桌面／游戏模式");
-                                        ui.small("Ctrl+Alt+Z 释放／捕获键鼠");
+                                        ui.small("Ctrl+Alt+Z 释放／捕获输入");
                                         if old!=(self.preferences.relative_mouse,self.preferences.cursor_mode) {
                                             self.release_pointer_capture(ctx);self.persist_preferences();
                                             if old.1.remote()!=self.preferences.cursor_mode.remote() {self.send_capture_settings();}ctx.memory_mut(|m|m.close_popup());
@@ -855,9 +855,9 @@ impl super::App {
                                     if self.supports_remote(uu_core::capabilities::Capability::Input) || self.native_input_available() {
                                     side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
                                         if self.native_input_available()&&!self.supports_remote(uu_core::capabilities::Capability::Input)
-                                            &&ui.button("请求键鼠控制").clicked() {
+                                            &&ui.button("请求输入控制").clicked() {
                                             self.view_only=false;
-                                            if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()){sender.set_enabled(true);}
+                                            self.input_capture.request();
                                             ui.close_menu();
                                         }
                                         if ui
@@ -871,9 +871,16 @@ impl super::App {
                                             {
                                                 self.send_input(message, 15);
                                             }
-                                            if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()){sender.set_enabled(!self.view_only);}
+
                                         }
                                     });
+                                    }
+                                    if self.is_native() {
+                                        side_submenu(ui,&mut blocked,Icon::Person,"手柄",|ui|{
+                                            if ui.checkbox(&mut self.preferences.gamepad,"转发手柄和陀螺仪").changed(){self.persist_preferences();}
+                                            if let Some(status)=self.gamepad_status(){ui.label(egui::RichText::new(status).size(12.));}
+                                            ui.small("离开菜单并捕获输入后恢复转发；最多 4 个手柄。");
+                                        });
                                     }
                                     if self.supports_remote(uu_core::capabilities::Capability::Clipboard) {
                                     side_submenu(ui,&mut blocked,Icon::Folder,"剪贴板",|ui| {

@@ -59,6 +59,7 @@ pub struct NativeInputSender {
     displays:mpsc::Sender<(u64,i32)>,
     reset: watch::Sender<u64>,
     mode: watch::Sender<bool>,
+    gamepads: watch::Sender<uu_input::gamepad::Snapshot>,
     pub(crate) requested: Arc<AtomicBool>,
     pub(crate) epoch: Arc<AtomicU64>,
 }
@@ -67,6 +68,7 @@ pub struct NativeInputReceiver {
     displays:mpsc::Receiver<(u64,i32)>,
     pub(crate) reset: watch::Receiver<u64>,
     pub(crate) mode: watch::Receiver<bool>,
+    pub(crate) gamepads: watch::Receiver<uu_input::gamepad::Snapshot>,
     pub(crate) requested: Arc<AtomicBool>,
     pub(crate) epoch: Arc<AtomicU64>,
 }
@@ -97,6 +99,7 @@ pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
     let (displays,displays_rx)=mpsc::channel(8);
     let (reset, reset_rx) = watch::channel(0);
     let (mode, mode_rx) = watch::channel(requested);
+    let (gamepads,gamepads_rx)=watch::channel([None;uu_input::gamepad::SLOTS]);
     let requested = Arc::new(AtomicBool::new(requested));
     let epoch = Arc::new(AtomicU64::new(0));
     (
@@ -105,6 +108,7 @@ pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
             displays,
             reset,
             mode,
+            gamepads,
             requested: requested.clone(),
             epoch: epoch.clone(),
         },
@@ -113,12 +117,19 @@ pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
             displays:displays_rx,
             reset: reset_rx,
             mode: mode_rx,
+            gamepads: gamepads_rx,
             requested,
             epoch,
         },
     )
 }
 impl NativeInputSender {
+    pub fn requested(&self)->bool{self.requested.load(Ordering::Acquire)}
+    /// A latest-value mailbox; high-rate sensors never occupy the key queue.
+    pub fn gamepads(&self, state: uu_input::gamepad::Snapshot) {
+        if state.iter().flatten().all(|s|s.valid()) {self.gamepads.send_replace(state);}
+    }
+
     pub fn select_display(&self,request:u64,id:i32)->Result<(),InputQueueError>{
         self.release_all();
         self.displays.try_send((request,id)).map_err(|_|InputQueueError)
@@ -142,6 +153,7 @@ impl NativeInputSender {
     }
     pub fn set_enabled(&self, enabled: bool) {
         self.requested.store(enabled, Ordering::Release);
+        self.gamepads.send_replace([None;uu_input::gamepad::SLOTS]);
         self.release_all();
         self.mode.send_replace(enabled);
     }

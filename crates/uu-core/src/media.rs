@@ -59,6 +59,7 @@ pub struct MediaStats {
     pub exclusive_result: AtomicU64,
     pub audio: Arc<uu_media::audio::AudioControl>,
     pub clipboard: Arc<crate::clipboard::Clipboard>,
+    pub gamepad: Arc<crate::native_gamepad::Stats>,
     pub cursor: std::sync::Mutex<Option<(u64,crate::cursor::Shape)>>,
     pub input_messages_sent: AtomicU64,
     pub input_send_errors: AtomicU64,

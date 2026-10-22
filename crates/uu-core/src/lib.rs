@@ -83,3 +83,5 @@ mod av1_rtp;
 mod video_timing;
 
 pub mod input_ownership;
+
+pub mod native_gamepad;

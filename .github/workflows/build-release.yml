@@ -51,6 +51,9 @@ jobs:
       - name: Validate and build only the media probe
         run: |
           python3 tools/security/scan_secrets.py
+          cargo test -p uu-input --lib --release --locked
+          cc -Wall -Wextra -Werror crates/uu-input/src/gamepad/uhid.c tools/native/uhid_contract_smoke.c -o target/uhid-contract-smoke
+          target/uhid-contract-smoke
           cargo test -p uu-media --lib --release --features vaapi --locked
           cargo build -p uu-media --example vaapi_readback_probe --release --features vaapi --locked
           python3 - <<'PY'

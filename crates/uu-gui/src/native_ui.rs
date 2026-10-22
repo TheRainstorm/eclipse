@@ -97,7 +97,7 @@ impl App {
                     self.native_ui.notice.clear();
                 }
                 ui.add_space(8.0);
-                ui.checkbox(&mut self.native_ui.request_control,"请求键鼠控制（需主机允许）");
+                ui.checkbox(&mut self.native_ui.request_control,"请求输入控制（需主机允许）");
                 ui.weak("未获主机许可时仅观看；画质由主机设置。");
                 if !self.native_ui.notice.is_empty() {
                     ui.colored_label(egui::Color32::from_rgb(180, 75, 65), &self.native_ui.notice);

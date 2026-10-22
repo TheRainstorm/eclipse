@@ -24,12 +24,13 @@ impl Capture {
     pub fn requested(&self) -> bool {
         self.requested
     }
+    /// Intent is independent of the remote grant: a waiting viewer must keep
+    /// requesting control, while focus/UI changes immediately relinquish it.
+    pub fn wants_control(&self, conditions: Conditions) -> bool {
+        self.requested && conditions.focused && !conditions.view_only && !conditions.local_ui
+    }
     pub fn active(&self, conditions: Conditions) -> bool {
-        self.requested
-            && conditions.ready
-            && conditions.focused
-            && !conditions.view_only
-            && !conditions.local_ui
+        conditions.ready && self.wants_control(conditions)
     }
     /// Release on a real stop, never when only the OS capture method changes.
     pub fn stopped(&mut self, conditions: Conditions) -> bool {
@@ -129,6 +130,14 @@ impl RemoteKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn waiting_for_remote_grant_keeps_intent_but_focus_ui_and_view_only_release_ownership(){
+        let mut capture=Capture::default();capture.request();
+        let waiting=Conditions{ready:false,focused:true,view_only:false,local_ui:false};
+        assert!(capture.wants_control(waiting));assert!(!capture.active(waiting));
+        for paused in [Conditions{focused:false,..waiting},Conditions{local_ui:true,..waiting},Conditions{view_only:true,..waiting}] {assert!(!capture.wants_control(paused));}
+        capture.release();assert!(!capture.wants_control(waiting));
+    }
     const READY: Conditions = Conditions {
         ready: true,
         focused: true,

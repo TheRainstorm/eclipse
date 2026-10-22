@@ -414,6 +414,8 @@
 | [same-file](https://github.com/BurntSushi/same-file) | 1.0.6 | `Unlicense/MIT` |
 | [scoped-tls](https://github.com/alexcrichton/scoped-tls) | 1.0.1 | `MIT/Apache-2.0` |
 | [scopeguard](https://github.com/bluss/scopeguard) | 1.2.0 | `MIT OR Apache-2.0` |
+| [sdl2](https://github.com/Rust-SDL2/rust-sdl2) | 0.38.0 | `MIT` |
+| [sdl2-sys](https://github.com/rust-sdl2/rust-sdl2) | 0.38.0 | `MIT AND Zlib` |
 | [sdp](https://github.com/webrtc-rs/sdp) | 0.6.2 | `MIT OR Apache-2.0` |
 | [sec1](https://github.com/RustCrypto/formats/tree/master/sec1) | 0.7.3 | `Apache-2.0 OR MIT` |
 | [semver](https://github.com/dtolnay/semver) | 1.0.28 | `MIT OR Apache-2.0` |
@@ -513,6 +515,7 @@
 | [utf8parse](https://github.com/alacritty/vte) | 0.2.2 | `Apache-2.0 OR MIT` |
 | [uuid](https://github.com/uuid-rs/uuid) | 1.28.0 | `Apache-2.0 OR MIT` |
 | [valuable](https://github.com/tokio-rs/valuable) | 0.1.1 | `MIT` |
+| [version-compare](https://gitlab.com/timvisee/version-compare) | 0.1.1 | `MIT` |
 | [version-compare](https://gitlab.com/timvisee/version-compare) | 0.2.1 | `MIT` |
 | [version_check](https://github.com/SergioBenitez/version_check) | 0.9.5 | `MIT/Apache-2.0` |
 | [vigem-rust](https://github.com/arounre/vigem-rust) | 0.2.0 | `MIT OR Apache-2.0` |
