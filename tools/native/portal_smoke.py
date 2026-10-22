@@ -73,6 +73,7 @@ def fixture(args):
         video, video_node, pw_binary, pw_env = start_video(args.pipewire_prefix, os.environ['XDG_RUNTIME_DIR'])
     root = '/org/freedesktop/portal/desktop'
     portal = 'org.freedesktop.portal.'
+    sessions = {}
 
     def response(path, code, data):
         message = dbus.lowlevel.SignalMessage(path, portal + 'Request', 'Response')
@@ -91,7 +92,11 @@ def fixture(args):
         events.append(dict(method=name, interface=interface, timestamp=time.monotonic()))
         if interface == 'org.freedesktop.DBus.Properties':
             if name == 'Get':
-                answer.append(dbus.UInt32(5, variant_level=1), signature='v')
+                property_name = str(values[1])
+                value = 5
+                if property_name == 'AvailableDeviceTypes':
+                    value = 0 if args.case == 'stream-no-input' else (1 if args.case == 'stream-keyboard-only' else 3)
+                answer.append(dbus.UInt32(value, variant_level=1), signature='v')
             elif name == 'GetAll':
                 answer.append(dbus.Dictionary({'version': dbus.UInt32(5)}, signature='sv'), signature='a{sv}')
         elif name == 'Close':
@@ -104,11 +109,14 @@ def fixture(args):
             data, code = {}, 0
             if name == 'CreateSession':
                 data['session_handle'] = dbus.ObjectPath(root + '/session/' + sender + '/' + str(options['session_handle_token']))
+                sessions[str(data['session_handle'])] = interface
+            if name == 'SelectSources':
+                assert 'persist_mode' not in options and 'restore_token' not in options, 'Screen selection must omit persistence options'
             if name == 'Start':
                 if video_node is None:
                     code = 1
                 else:
-                    data['devices'] = dbus.UInt32(3)
+                    data['devices'] = dbus.UInt32(0 if args.case == 'stream-input-denied' else 3)
                     data['streams'] = dbus.Array([(dbus.UInt32(video_node), dbus.Dictionary({
                         'size': dbus.Struct((160, 120), signature='ii'),
                         'position': dbus.Struct((0, 0), signature='ii'),
@@ -220,6 +228,9 @@ def fixture(args):
                 assert any(e['method'] == 'NotifyPointerMotionAbsolute' and e['x'] == 80 and e['y'] == 60 for e in events), events
             else:
                 assert not any(e['method'].startswith('Notify') for e in events), events
+            if args.case in ('stream-no-input', 'stream-keyboard-only'):
+                assert not any(e['method'] == 'SelectDevices' for e in events), events
+                assert all(kind == portal + 'ScreenCast' for kind in sessions.values()), sessions
         else:
             assert probe.returncode != 0 and not report['ok'], (stdout, stderr)
         assert any(e['method'] == 'Start' for e in events), events
@@ -249,7 +260,7 @@ def fixture(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--probe', type=Path, required=True)
-    parser.add_argument('--case', choices=('deny', 'cancel', 'stream-view', 'stream-input', 'stream-native', 'stream-displays'), required=True)
+    parser.add_argument('--case', choices=('deny', 'cancel', 'stream-view', 'stream-input', 'stream-no-input', 'stream-keyboard-only', 'stream-input-denied', 'stream-native', 'stream-displays'), required=True)
     parser.add_argument('--cli', type=Path, help='Native CLI used for the encrypted-media scenario')
     parser.add_argument('--pipewire-prefix', type=Path, help='Optional private installation prefix for PipeWire fixture tools')
     parser.add_argument('--inside-owned-bus', action='store_true', help=argparse.SUPPRESS)

@@ -3,7 +3,7 @@
 use crate::{Capture, CaptureError, CaptureSource, DesktopRect, OpenOptions};
 use ashpd::desktop::{
     remote_desktop::{DeviceType, RemoteDesktop},
-    screencast::{CursorMode, Screencast, SourceType, Stream},
+    screencast::{Screencast, Stream},
     PersistMode, Session,
 };
 use futures_util::{stream::BoxStream, StreamExt};
@@ -18,6 +18,7 @@ use std::{
 use uu_media::frame::RawFrame;
 mod input;
 mod pipewire;
+mod request;
 
 fn error(value: impl std::fmt::Display) -> CaptureError {
     CaptureError::Backend(format!("Wayland 屏幕共享：{value}"))
@@ -152,7 +153,11 @@ async fn actor(
         let cast = Screencast::new().await.map_err(portal_error)?;
         let remote = if options.allow_input {
             match RemoteDesktop::new().await {
-                Ok(remote) => Some(remote),
+                Ok(remote) => {
+                    let devices = remote.available_device_types().await.map_err(portal_error)?;
+                    (devices.contains(DeviceType::Keyboard) && devices.contains(DeviceType::Pointer))
+                        .then_some(remote)
+                },
                 // A screencast-only compositor can still offer viewing.
                 Err(ashpd::Error::PortalNotFound(_)) => None,
                 Err(e) => return Err(portal_error(e)),
@@ -167,16 +172,14 @@ async fn actor(
                 (PortalSession::Remote(session), Some(remote)) => {
                     remote.select_devices(session, DeviceType::Keyboard | DeviceType::Pointer, None, PersistMode::DoNot)
                         .await.map_err(portal_error)?.response().map_err(portal_error)?;
-                    cast.select_sources(session, CursorMode::Embedded, SourceType::Monitor.into(), false, None, PersistMode::DoNot)
-                        .await.map_err(portal_error)?.response().map_err(portal_error)?;
+                    request::select_sources(&cast, session).await?;
                     let response = remote.start(session, None).await.map_err(portal_error)?.response().map_err(portal_error)?;
                     let streams = response.streams().ok_or_else(|| error("系统未授权共享屏幕"))?;
                     let control = response.devices().contains(DeviceType::Keyboard) && response.devices().contains(DeviceType::Pointer);
                     (streams.first().cloned(), control)
                 }
                 (PortalSession::Cast(session), _) => {
-                    cast.select_sources(session, CursorMode::Embedded, SourceType::Monitor.into(), false, None, PersistMode::DoNot)
-                        .await.map_err(portal_error)?.response().map_err(portal_error)?;
+                    request::select_sources(&cast, session).await?;
                     let response = cast.start(session, None).await.map_err(portal_error)?.response().map_err(portal_error)?;
                     (response.streams().first().cloned(), false)
                 }

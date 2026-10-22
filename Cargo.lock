@@ -5301,6 +5301,7 @@ dependencies = [
  "ashpd",
  "futures-util",
  "pipewire",
+ "serde",
  "thiserror 2.0.21",
  "tokio",
  "tracing",

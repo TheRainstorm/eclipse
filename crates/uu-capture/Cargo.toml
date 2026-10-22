@@ -22,3 +22,4 @@ ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 pipewire = "0.9"
 tokio.workspace = true
 futures-util = "0.3"
+serde.workspace = true

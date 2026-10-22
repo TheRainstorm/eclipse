@@ -214,7 +214,7 @@ jobs:
         if: matrix.platform == 'linux-x86_64'
         run: |
           cargo build --release -p uu-capture --example portal_probe --locked
-          for scenario in deny cancel stream-view stream-input; do
+          for scenario in deny cancel stream-view stream-input stream-no-input stream-keyboard-only stream-input-denied; do
             python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe --case "$scenario"
           done
           python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe --cli target/release/uu --case stream-native

@@ -33,7 +33,7 @@ python3 install.py
 
 在“共享本机”开启服务后，远端通过设备认证并请求画面时，由系统弹窗选择共享屏幕。Wayland 不预先读取屏幕内容或用 Xwayland 根窗口替代桌面；屏幕尺寸以系统授权后的实际画面为准，现阶段不保存门户的长期恢复令牌。
 
-允许控制时，画面和键鼠通过同一个 RemoteDesktop 门户会话获得授权。键鼠权限未获授权或桌面只支持 ScreenCast 时继续提供只读画面。鼠标绝对位置按屏幕像素与门户逻辑尺寸换算，适配缩放；停止控制仅释放当前会话按下的键和按钮。取消系统弹窗、断线及停止共享会关闭相应会话。Wayland 文本剪贴板仍取决于独立后端是否可用。
+允许控制时，画面和键鼠通过同一个 RemoteDesktop 门户会话获得授权。键鼠权限未获授权、桌面未声明完整键鼠能力或只支持 ScreenCast 时继续提供只读画面。屏幕选择不请求持久化权限；组合会话的持久化仅能由 RemoteDesktop 管理，本实现不保存恢复令牌。鼠标绝对位置按屏幕像素与门户逻辑尺寸换算，适配缩放；停止控制仅释放当前会话按下的键和按钮。取消系统弹窗、断线及停止共享会关闭相应会话。Wayland 文本剪贴板仍取决于独立后端是否可用。
 
 需要运行 PipeWire、`xdg-desktop-portal` 和与桌面匹配的后端，例如 KDE 的 `xdg-desktop-portal-kde` 或 GNOME 的 `xdg-desktop-portal-gnome`。门户 API 定义见 [ScreenCast](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html) 和 [RemoteDesktop](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.RemoteDesktop.html)。系统拒绝授权时显示失败原因，不能通过应用绕过授权。
 
@@ -41,7 +41,7 @@ python3 install.py
 
 ```sh
 cargo build --release -p uu-capture --example portal_probe --locked
-for scenario in deny cancel stream-view stream-input; do
+for scenario in deny cancel stream-view stream-input stream-no-input stream-keyboard-only stream-input-denied; do
   python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe --case "$scenario"
 done
 python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe \
