@@ -69,10 +69,16 @@ mod tests {
     fn actual_av1_packetizer_roundtrips_fragmented_generated_sequence(){
         for mtu in [5,9,16,1200]{
             let mut payloader=webrtc::rtp::codecs::av1::Av1Payloader::default();
-            let packets=payloader.payload(mtu,&Bytes::from_static(uu_media::av1::PROBE)).unwrap();
-            let mut assembly=Assembler::default();for packet in packets{assembly.push(&packet).unwrap();}
-            let (data,frame)=assembly.finish().unwrap();assert!(frame);
-            assert!(uu_media::av1::is_keyframe(&data));assert_eq!(uu_media::av1::sequence(&data),uu_media::av1::sequence(uu_media::av1::PROBE));
+            for source in uu_media::av1::PROBE_UNITS {
+                let packets=payloader.payload(mtu,&Bytes::from_static(source)).unwrap();
+                let mut assembly=Assembler::default();for packet in packets{assembly.push(&packet).unwrap();}
+                let (data,frame)=assembly.finish().unwrap();assert!(frame);
+                let expected:Vec<_>=uu_media::av1::obus(source).unwrap().into_iter()
+                    .filter(|obu| !matches!((obu[0]>>3)&15,2|15)).collect();
+                assert_eq!(uu_media::av1::obus(&data).unwrap(),expected,"I/P OBU payload changed at MTU {mtu}");
+                assert_eq!(uu_media::av1::is_keyframe(&data),uu_media::av1::is_keyframe(source));
+                assert_eq!(uu_media::av1::sequence(&data),uu_media::av1::sequence(source));
+            }
         }
     }
     #[test]
