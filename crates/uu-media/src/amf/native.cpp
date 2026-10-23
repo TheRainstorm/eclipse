@@ -130,12 +130,18 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
             s->set(AMF_VIDEO_ENCODER_PROFILE,amf_int64(AMF_VIDEO_ENCODER_PROFILE_BASELINE));
             s->set(AMF_VIDEO_ENCODER_PROFILE_LEVEL,amf_int64(52));
             s->set(AMF_VIDEO_ENCODER_B_PIC_PATTERN,amf_int64(0));
-            s->set(AMF_VIDEO_ENCODER_IDR_PERIOD,amf_int64(fps*2));
-        } else if(codec==1) s->set(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE,amf_int64(fps*2));
-        else s->set(AMF_VIDEO_ENCODER_AV1_GOP_SIZE,amf_int64(fps*2));
+        }
+        // Zero is the documented AMF infinite-GOP value for these formats.
+        // Recovery, source changes and rate changes still explicitly request
+        // independently decodable pictures through the shared encoder worker.
+        const auto gop_name=s->prop(AMF_VIDEO_ENCODER_IDR_PERIOD,AMF_VIDEO_ENCODER_HEVC_GOP_SIZE,AMF_VIDEO_ENCODER_AV1_GOP_SIZE);
+        s->set(gop_name,amf_int64(0));
         // A native timed output wait avoids a fixed application sleep per frame.
         s->encoder->SetProperty(s->prop(AMF_VIDEO_ENCODER_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_AV1_QUERY_TIMEOUT),amf_int64(1));
         checked(s->encoder->Init(amf::AMF_SURFACE_NV12,width,height),"initialize encoder");
+        amf_int64 actual_gop=-1;
+        checked(s->encoder->GetProperty(gop_name,&actual_gop),"read GOP policy");
+        if(actual_gop!=0)throw std::runtime_error("AMF changed the requested on-demand keyframe policy");
         amf_int64 actual_quality=-1;
         checked(s->encoder->GetProperty(quality_name,&actual_quality),"read quality preset");
         if(actual_quality!=presets[codec][quality])throw std::runtime_error("AMF changed the requested quality preset");
