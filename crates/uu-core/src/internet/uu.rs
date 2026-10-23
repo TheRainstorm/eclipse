@@ -54,6 +54,7 @@ impl Host {
         let data = room_data(api.room_create().await?,RoomRequest::Create)?;
         let mut socket = connect(&data).await?;
         socket.request_ack("room_info", 1).await?;
+        socket.keep_host_online();
         tracing::info!("UU native host online; direct connections only");
         Ok(Self {
             socket: Some(socket),

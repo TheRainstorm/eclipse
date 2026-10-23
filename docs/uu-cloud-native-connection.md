@@ -132,3 +132,9 @@ Relay 策略用于验证实际中继能力，不代表日常应始终中继。�
 先做“云端建连＋生成画面”的小闭环，确认会话内 ICE 下发、外网直连、强制中继各自实际成功；再接现有硬编、声音、键鼠与原生能力协商。最关键的投入是 UU 主机信令与原生公网连接抽象，不是重写现有视频编解码。
 
 uu-remote-linux 可以作为同协议的设计与行为参考，尤其是主机房间管理、连接标识隔离和会话 ICE 配置；它的 GPL 源码不能直接改标成本项目许可。当前 LAN 版本仍不具备本文描述的公网功能，后续实现与实网验收应独立记录。总体协议边界见[协议兼容与传输架构](protocol-compatibility-and-transport.md)。
+
+## 主机在线生命周期
+
+主机房间与单次原生串流分开维护。房间建立后 30 秒请求一次 `refresh_reconnect_key`，仅匹配请求编号、成功且带有效续约密钥的 ACK 才改为每 5 分钟续约；失败或丢失 ACK 每 30 秒重试，迟到的旧 ACK 不覆盖较新的续约状态。该请求不添加额外业务参数，密钥不写入日志或持久化；重新连接使用新建房间。此 UU 行为依据互通参考实现核对，仍需真实服务长时间互通验证。
+
+传输按 [Engine.IO v4 心跳](https://socket.io/docs/v4/engine-io-protocol/#heartbeat) 使用握手返回的 `pingInterval + pingTimeout` 检测半开连接；明确断开或心跳超时后走现有上线重试。计时器和二进制组装状态都属于 socket，GUI 更新或发送信令取消一次接收等待时不会丢失状态。续约采用 [Socket.IO ACK 编号](https://socket.io/docs/v4/socket-io-protocol/#acknowledgement)，不会定时重建仍有串流的房间。

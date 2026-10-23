@@ -14,10 +14,14 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+mod lifecycle;
+#[cfg(test)]
+mod lifetime_tests;
 
 pub struct SocketIo {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     pending: Option<PendingEvent>,
+    timers: lifecycle::Timers,
 }
 struct PendingEvent {
     event: String,
@@ -43,15 +47,25 @@ impl SocketIo {
         // Engine.IO open
         let first = next_text(&mut ws).await?;
         if !first.starts_with('0') {
-            bail!("expected engine.io open, got {first:?}");
+            bail!("expected Engine.IO open");
         }
+        let mut timers = lifecycle::Timers::open(&first[1..])?;
         ws.send(Message::Text("40".into())).await?;
-        let ack = next_text(&mut ws).await?;
+        let ack = loop {
+            let packet = tokio::time::timeout_at(timers.heartbeat_deadline, next_text(&mut ws))
+                .await.context("Engine.IO heartbeat timed out during handshake")??;
+            if packet == "2" {
+                timers.ping();
+                ws.send(Message::Text("3".into())).await?;
+            } else { break packet; }
+        };
         if !ack.starts_with("40") {
-            bail!("socket.io connect rejected: {ack}");
+            bail!("Socket.IO connect rejected");
         }
-        Ok(Self { ws, pending: None })
+        Ok(Self { ws, pending: None, timers })
     }
+
+    pub(crate) fn keep_host_online(&mut self) { self.timers.host(); }
 
     /// Send a Socket.IO event, optionally with binary attachments.
     pub async fn emit(&mut self, event: &str, data: Value, attachments: &[Vec<u8>]) -> Result<()> {
@@ -88,14 +102,25 @@ impl SocketIo {
     /// future on every timer/input tick, including between binary attachments.
     pub async fn recv_event(&mut self) -> Result<(String, Value, Vec<Vec<u8>>)> {
         loop {
-            let msg = self.ws.next().await.ok_or_else(|| anyhow!("websocket closed"))??;
+            let refresh = self.timers.refresh.as_ref().map(|r|r.next);
+            let msg = tokio::select! {
+                _ = tokio::time::sleep_until(self.timers.heartbeat_deadline) => bail!("Engine.IO heartbeat timed out"),
+                _ = async {match refresh {Some(at)=>tokio::time::sleep_until(at).await,None=>std::future::pending().await}} => {
+                    let id=self.timers.refresh.as_mut().unwrap().request(tokio::time::Instant::now());
+                    self.request_ack("refresh_reconnect_key",id).await?;
+                    continue;
+                },
+                msg = self.ws.next() => msg.ok_or_else(|| anyhow!("websocket closed"))??,
+            };
             match msg {
                 Message::Text(t) => {
                     let t = t.as_str();
                     if t == "2" {
+                        self.timers.ping();
                         self.ws.send(Message::Text("3".into())).await?;
                         continue;
                     }
+                    if t == "1" || t.starts_with("41") { bail!("Socket.IO room disconnected"); }
                     if t.starts_with('0') || t.starts_with("40") {
                         continue;
                     }
@@ -107,8 +132,12 @@ impl SocketIo {
                     } else if let Some(rest) = t.strip_prefix("42") {
                         (None, &rest[rest.find('[').context("no json")?..])
                     } else if let Some(rest) = t.strip_prefix("43") {
-                        let rest = &rest[rest.find('[').context("no json")?..];
-                        (None, rest)
+                        let start=rest.find('[').context("no ACK json")?;
+                        if let (Ok(id),Some(refresh))=(rest[..start].parse::<u64>(),self.timers.refresh.as_mut()) {
+                            let values:Value=serde_json::from_str(&rest[start..]).context("invalid Socket.IO ACK")?;
+                            if refresh.ack(id,&values,tokio::time::Instant::now()) {continue;}
+                        }
+                        (None, &rest[start..])
                     } else {
                         continue;
                     };
