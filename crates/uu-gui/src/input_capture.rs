@@ -97,7 +97,11 @@ impl RemoteKeys {
     /// One refresh timer for all held modifiers. Windows may stop their
     /// typematic events after a chord key, while UU's host needs regular
     /// presses to keep the modifier down.
-    pub fn modifier_repeats(&mut self, now: std::time::Instant) -> Vec<u32> {
+    pub fn modifier_repeats(&mut self, now: std::time::Instant, uu_compat: bool) -> Vec<u32> {
+        // Native hosts retain successful downs until release/reset. Reinjecting
+        // modifiers there starts a new shell chord after e.g. Win+V, so the
+        // eventual Win up can open Start and dismiss the clipboard flyout.
+        if !uu_compat { return Vec::new(); }
         let held: Vec<u32>=self.down.iter().enumerate()
             .filter_map(|(vk,down)|(*down&&is_modifier(vk as u32)).then_some(vk as u32)).collect();
         if held.is_empty() {self.last_modifier_repeat=None;return held;}
@@ -130,6 +134,29 @@ impl RemoteKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_chords_keep_one_modifier_down_until_release_without_keepalives() {
+        for modifier in [0x5b, 0x5c, 0xa0, 0xa2, 0xa4, 0xa5] {
+            let mut remote = RemoteKeys::default();
+            assert_eq!(remote.event(modifier,true),KeyChange::Press);
+            assert_eq!(remote.event(0x56,true),KeyChange::Press);
+            assert_eq!(remote.event(0x56,false),KeyChange::Release);
+            let now=std::time::Instant::now();
+            for tick in 1..=100 {
+                assert!(remote.modifier_repeats(now+MODIFIER_REPEAT_INTERVAL*tick,false).is_empty());
+                assert_eq!(remote.event(modifier,true),KeyChange::None);
+            }
+            assert_eq!(remote.held(),vec![modifier]);
+            assert_eq!(remote.forwarded_repeats(),0);
+            assert_eq!(remote.event(modifier,false),KeyChange::Release);
+            assert_eq!(remote.event(modifier,false),KeyChange::None);
+            assert_eq!(remote.event(0x41,true),KeyChange::Press);
+            assert_eq!(remote.event(0x41,true),KeyChange::Repeat);
+            remote.clear();
+            assert!(remote.modifier_repeats(now+MODIFIER_REPEAT_INTERVAL*101,false).is_empty());
+            assert_eq!(remote.event(0x41,false),KeyChange::None);
+        }
+    }
     #[test]
     fn waiting_for_remote_grant_keeps_intent_but_focus_ui_and_view_only_release_ownership(){
         let mut capture=Capture::default();capture.request();
@@ -308,12 +335,12 @@ mod tests {
         let mut remote=RemoteKeys::default();
         assert_eq!(remote.event(0xa4,true),KeyChange::Press);
         let due=std::time::Instant::now()+MODIFIER_REPEAT_INTERVAL;
-        assert_eq!(remote.modifier_repeats(due),vec![0xa4]);
-        assert_eq!(remote.modifier_repeats(due),Vec::<u32>::new());
-        assert_eq!(remote.modifier_repeats(due+MODIFIER_REPEAT_INTERVAL),vec![0xa4]);
+        assert_eq!(remote.modifier_repeats(due,true),vec![0xa4]);
+        assert_eq!(remote.modifier_repeats(due,true),Vec::<u32>::new());
+        assert_eq!(remote.modifier_repeats(due+MODIFIER_REPEAT_INTERVAL,true),vec![0xa4]);
         assert_eq!(remote.event(0xa4,true),KeyChange::None);
         assert_eq!(remote.event(0xa4,false),KeyChange::Release);
-        assert!(remote.modifier_repeats(due+MODIFIER_REPEAT_INTERVAL*2).is_empty());
+        assert!(remote.modifier_repeats(due+MODIFIER_REPEAT_INTERVAL*2,true).is_empty());
     }
 
     #[test]

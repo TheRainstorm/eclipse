@@ -1042,7 +1042,8 @@ impl App {
     }
 
     fn send_modifier_repeats(&mut self) {
-        for vk in self.pressed_vks.modifier_repeats(std::time::Instant::now()) {
+        let uu_compat = !self.is_native();
+        for vk in self.pressed_vks.modifier_repeats(std::time::Instant::now(), uu_compat) {
             self.send_key_repeat(vk);
         }
     }
