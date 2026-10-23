@@ -318,9 +318,30 @@ mod fixture {
             "controller foreground guard was bypassed"
         );
         drop(controller_backend);
+        let headless = Arc::new(Clipboard::default());
+        headless.enabled.store(true, Ordering::Release);
+        headless.supported.store(true, Ordering::Release);
+        headless.images_supported.store(true, Ordering::Release);
+        headless.active.store(true, Ordering::Release);
+        let headless_backend = Backend(headless.clone());
+        uu_clipboard::start_host_headless(headless.clone())?;
+        until("headless clipboard startup", || {
+            headless.available.load(Ordering::Acquire)
+        })?;
+        *headless.remote.lock().unwrap() = Some("Generated background service copy".into());
+        until("headless remote copy", || {
+            system.get_text().ok().as_deref() == Some("Generated background service copy")
+        })?;
+        let (pixels, _) = picture(81, 47, 63);
+        system.set_image(pixels.clone())?;
+        until("headless image copy", || {
+            let value = headless.local.lock().unwrap().take();
+            matches!(value,Some(uu_core::clipboard::Content::Image(image)) if image::load_from_memory(&image.png).is_ok_and(|image|image.to_rgba8().as_raw().as_slice()==pixels.bytes.as_ref()))
+        })?;
+        drop(headless_backend);
         println!(
             "{}",
-            serde_json::json!({"windows_clipboard":"passed","isolated_station":true,"interactive_clipboard":"untouched","controller_foreground_guard":true,"unicode_roundtrip":true,"png_and_dibv5":true,"text_image_switch":true,"image_echo_suppressed":true,"initial_baseline_stayed_local":true,"inactive_write_suppressed":true,"clean_stop":true})
+            serde_json::json!({"windows_clipboard":"passed","headless_owner":true,"isolated_station":true,"interactive_clipboard":"untouched","controller_foreground_guard":true,"unicode_roundtrip":true,"png_and_dibv5":true,"text_image_switch":true,"image_echo_suppressed":true,"initial_baseline_stayed_local":true,"inactive_write_suppressed":true,"clean_stop":true})
         );
         Ok(())
     }

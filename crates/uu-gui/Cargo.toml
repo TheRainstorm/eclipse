@@ -24,6 +24,7 @@ tokio.workspace = true
 uuid.workspace = true
 eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
 uu-core = { path = "../uu-core" }
+uu-clipboard = { path = "../uu-clipboard" }
 uu-proto = { path = "../uu-proto" }
 uu-input = { path = "../uu-input" }
 sdl2 = { version = "0.38", features = ["bundled", "static-link", "hidapi"] }

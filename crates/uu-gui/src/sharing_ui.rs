@@ -8,14 +8,13 @@ use std::{
 };
 use tokio::sync::{mpsc as async_mpsc, watch};
 use uu_core::{
-    device_auth::{PairApproval, PairRequest, PairStatus, PairingControl},
+    device_auth::{PairApproval, PairRequest, PairStatus},
     device_book::Book,
     device_internet::EndpointStatus,
     device_trust::{Permissions, TrustStore},
-    internet::{Provider, Settings},
     native::HostStatus,
     native_lan as lan,
-    shared_host::{Access, SessionGate},
+    shared_host::Access,
 };
 
 enum Event {
@@ -189,7 +188,6 @@ mod tests {
 struct Worker {
     stop: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
-    _owner: uu_core::shared_host::HostOwner,
 }
 impl Drop for Worker {
     fn drop(&mut self) {
@@ -368,72 +366,8 @@ impl HostUi {
         ctx: &egui::Context,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!self.running(), "共享已经开启");
-        book.sharing.validate()?;
-        anyhow::ensure!(book.sharing.ip_enabled || book.sharing.uu_enabled || book.services.iter().any(|s| s.host_enabled), "请先在连接服务中启用至少一个入口");
-        let owner = uu_core::shared_host::HostOwner::claim(&config.at("device-trust"))?;
         let (send, events) = mpsc::channel();
-        let (requests, pair_requests) = async_mpsc::unbounded_channel();
-        let access = Arc::new(Access {
-            store: trust,
-            name: book.sharing.name.clone(),
-            pairing: Arc::new(PairingControl::new(requests)),
-            sessions: Arc::new(SessionGate::default()),
-        });
-        let admin_store=uu_core::device_book::Store::open(config.at("device-trust"))?;
-        let admin_send=send.clone();let admin_context=ctx.clone();
-        *access.sessions.administration.lock().unwrap()=Some(Arc::new(uu_core::host_admin::Service::new(admin_store,book.sharing.clone(),move|| {
-            admin_send.send(Event::Restart).map_err(|_|anyhow::anyhow!("服务管理窗口已经关闭"))?;
-            admin_context.request_repaint();Ok(())
-        })));
-        self.restart_context=Some((config.clone(),access.store.clone()));
-        let (stop, receiver) = watch::channel(false);
-        let (stream, _) = watch::channel(HostStatus::Starting);
-        let (ip_status, ip_updates) = watch::channel(EndpointStatus::Starting);
-        let mut endpoints = Vec::new();
-        if book.sharing.ip_enabled {
-            endpoints.push(Endpoint { name: "IP 直连".into(), state: ip_updates });
-        }
-        let mut services = Vec::new();
-        if book.sharing.uu_enabled {
-            let (state, updates) = watch::channel(EndpointStatus::Starting);
-            endpoints.push(Endpoint {
-                name: "UU 账号".into(),
-                state: updates,
-            });
-            services.push((
-                Settings {
-                    provider: Provider::Uu,
-                    device_auth: true,
-                    ..Default::default()
-                },
-                state,
-            ));
-        }
-        for service in book.services.iter().filter(|s| s.host_enabled) {
-            let (state, updates) = watch::channel(EndpointStatus::Starting);
-            endpoints.push(Endpoint {
-                name: service.name.clone(),
-                state: updates,
-            });
-            services.push((
-                Settings {
-                    provider: Provider::SelfHosted,
-                    device_auth: true,
-                    server: service.address.clone(),
-                    device: service.published_name.clone(),
-                    server_token: service.token_file.clone(),
-                    server_ca: service.certificate.clone(),
-                    ..Default::default()
-                },
-                state,
-            ));
-        }
-        let sharing = book.sharing.clone();
-        let server_access = access.clone();
-        let context = ctx.clone();
-        // The actual UI wakes on a short timer while sharing; the factory only
-        // creates transport state here and initializes OS handles on the UI thread.
-        let factory = sharing.clipboard.then(|| {
+        let factory = book.sharing.clipboard.then(|| {
             let send = send.clone();
             Arc::new(move |_id: &str| {
                 let state = Arc::new(uu_core::clipboard::Clipboard::default());
@@ -443,60 +377,43 @@ impl HostUi {
                 Ok(state)
             }) as lan::ClipboardFactory
         });
-        let task=std::thread::Builder::new().name("eclipse-shared-host".into()).spawn(move || {
-            let result=(||->anyhow::Result<()> {
-                let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build()?;
-                let result=runtime.block_on(async {
-                    let (lan_events,mut receive)=async_mpsc::unbounded_channel();
-                    let forward=send.clone();let progress=stream.clone();
-                    let forwarding=tokio::spawn(async move {while let Some(event)=receive.recv().await {
-                        if let lan::Event::SessionProgress{status,..}=&event {progress.send_replace(status.clone());}
-                        if forward.send(Event::Legacy(event)).is_err(){break;}
-                    }});
-                    let mut tasks=tokio::task::JoinSet::new();
-                    if sharing.ip_enabled {
-                    let lan_config=lan::Config{encoder_tuning:sharing.encoder_tuning,video_policy:sharing.native().video_policy,codec:sharing.native().codec,rate_control:sharing.native().rate_control,name:sharing.name.clone(),bind:([0,0,0,0],sharing.service_port).into(),
-                        discovery_bind:Some(([0,0,0,0],sharing.discovery_port).into()),data_dir:config.at("native-lan"),
-                        source:sharing.native().source,
-                        fps:sharing.native().fps,bitrate_kbps:sharing.native().bitrate_kbps,encoder:sharing.encoding.native(),
-                        allow_input:sharing.control,audio:sharing.audio.then_some(uu_core::native::AudioSource::System),clipboard:factory.clone()};
-                    match lan::Server::bind_with_access(lan_config,receiver.clone(),lan_events,server_access.clone()).await {
-                        Ok((server,handle))=>{
-                            ip_status.send_replace(EndpointStatus::Ready);send.send(Event::Listening(handle)).ok();
-                            tasks.spawn(async move {let result=server.run().await;
-                                ip_status.send_replace(match &result {Ok(())=>EndpointStatus::Stopped,Err(e)=>EndpointStatus::Error(format!("IP 服务异常：{e:#}"))});result
-                            });
-                        },
-                        Err(error)=>{let text=format!("IP 共享不可用：{error:#}");ip_status.send_replace(EndpointStatus::Error(text.clone()));send.send(Event::Notice(text)).ok();},
-                    }
-                    }
-                    for (settings,status) in services {
-                        let config=config.clone();let defaults=sharing.native();let access=server_access.clone();
-                        let stop=receiver.clone();let phase=stream.clone();let factory=factory.clone();
-                        tasks.spawn(async move {uu_core::device_internet::listen(settings,config,defaults,access,stop,status,phase,factory).await;Ok(())});
-                    }
-                    let mut stop=receiver.clone();
-                    while !*stop.borrow() && !tasks.is_empty() {
-                        tokio::select! {
-                            _=stop.changed()=>break,
-                            result=tasks.join_next()=>{
-                                match result {Some(Err(error))=>{send.send(Event::Notice(format!("共享线程异常：{error}"))).ok();},Some(Ok(Err(error)))=>{send.send(Event::Notice(format!("共享服务异常：{error:#}"))).ok();},_=>{}}
-                            }
-                        }
-                    }
-                    let drain=async {while tasks.join_next().await.is_some(){}};
-                    if tokio::time::timeout(Duration::from_secs(5),drain).await.is_err(){tasks.abort_all();while tasks.join_next().await.is_some(){}}
-                    forwarding.abort();let _=forwarding.await;Ok::<_,anyhow::Error>(())
-                });
-                runtime.shutdown_timeout(Duration::from_secs(2));result
+        let restart_send = send.clone();
+        let restart_context = ctx.clone();
+        let forward = send.clone();
+        let prepared = uu_core::host_runtime::prepare(config.clone(), book.clone(), trust, factory,
+            move || {
+                restart_send.send(Event::Restart).map_err(|_|anyhow::anyhow!("服务管理窗口已经关闭"))?;
+                restart_context.request_repaint(); Ok(())
+            },
+            move |event| {
+                let event = match event {
+                    uu_core::host_runtime::Event::Listening(handle) => Event::Listening(handle),
+                    uu_core::host_runtime::Event::Legacy(event) => Event::Legacy(event),
+                    uu_core::host_runtime::Event::Notice(message) => Event::Notice(message),
+                };
+                let _ = forward.send(event);
+            },
+        )?;
+        let access = prepared.access;
+        let pair_requests = prepared.requests;
+        let endpoints = prepared.endpoints.into_iter().map(|entry| Endpoint {name:entry.name,state:entry.state}).collect();
+        self.restart_context = Some((config, access.store.clone()));
+        let (stop, receiver) = watch::channel(false);
+        let context = ctx.clone();
+        let task = std::thread::Builder::new().name("eclipse-shared-host".into()).spawn(move || {
+            let result = (|| -> anyhow::Result<()> {
+                let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build()?;
+                let result = runtime.block_on(prepared.runner.run(receiver));
+                runtime.shutdown_timeout(Duration::from_secs(2));
+                result
             })();
-            if let Err(error)=result {send.send(Event::Notice(format!("无法开启共享：{error:#}"))).ok();}
-            send.send(Event::Ended).ok();context.request_repaint();
+            if let Err(error) = result { let _ = send.send(Event::Notice(format!("无法开启共享：{error:#}"))); }
+            let _ = send.send(Event::Ended);
+            context.request_repaint();
         })?;
         self.worker = Some(Worker {
             stop,
             task: Some(task),
-            _owner: owner,
         });
         self.events = Some(events);
         self.requests = Some(pair_requests);

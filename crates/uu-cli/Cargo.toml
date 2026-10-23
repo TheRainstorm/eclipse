@@ -19,6 +19,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uu-core = { path = "../uu-core" }
+uu-clipboard = { path = "../uu-clipboard" }
 uuid.workspace = true
 hex.workspace = true
 uu-proto = { path = "../uu-proto" }

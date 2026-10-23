@@ -6,6 +6,7 @@ members = [
     "crates/uu-capture",
     "crates/uu-input",
     "crates/uu-core",
+    "crates/uu-clipboard",
     "crates/uu-cli",
     "crates/uu-gui",
 ]

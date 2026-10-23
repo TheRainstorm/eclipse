@@ -34,6 +34,7 @@ mod pairing_password;
 pub mod device_auth;
 pub mod device_channel;
 pub mod shared_host;
+pub mod host_runtime;
 pub mod host_admin;
 pub mod device_book;
 pub mod client_settings;

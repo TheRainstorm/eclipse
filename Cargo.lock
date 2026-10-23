@@ -5370,11 +5370,24 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uu-capture",
+ "uu-clipboard",
  "uu-core",
  "uu-input",
  "uu-media",
  "uu-proto",
  "uuid",
+]
+
+[[package]]
+name = "uu-clipboard"
+version = "0.17.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "image",
+ "sha2",
+ "uu-core",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5442,6 +5455,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "uu-clipboard",
  "uu-core",
  "uu-input",
  "uu-media",

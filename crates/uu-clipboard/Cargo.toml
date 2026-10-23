@@ -1,0 +1,18 @@
+[package]
+name = "uu-clipboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Permission-gated system text and image clipboard for native streams"
+
+[dependencies]
+anyhow.workspace = true
+uu-core = { path = "../uu-core" }
+sha2.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Security", "Win32_System_StationsAndDesktops", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3.7", default-features = false, features = ["wayland-data-control", "image-data"] }
