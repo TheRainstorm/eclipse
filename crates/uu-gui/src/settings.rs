@@ -92,6 +92,14 @@ impl Settings {
         save_json(self, path)
     }
 
+    /// A compatibility stream saves only client preferences. Software settings
+    /// may have changed in the launcher while this window was open.
+    fn save_client(&self, path: &Path) -> anyhow::Result<()> {
+        let mut latest = Self::load(path)?;
+        latest.client = self.client.clone();
+        latest.save(path)
+    }
+
     /// Only called by the user's explicit recovery action in Settings.
     pub fn backup_and_save(&self, path: &Path) -> anyhow::Result<Option<PathBuf>> {
         self.validate()?;
@@ -393,13 +401,17 @@ impl super::App {
     }
     pub(super) fn persist_preferences(&mut self) {
         self.snapshot_preferences();
-        if self.stream_target.is_some() {
+        if self.is_native() {
             self.set_settings_notice("已应用到当前串流");
             return;
         }
         let result = Settings::path()
             .ok_or_else(|| anyhow::anyhow!("无法确定设置目录"))
-            .and_then(|p| self.preferences.save(&p));
+            .and_then(|p| if self.stream_target.is_some() {
+                self.preferences.save_client(&p)
+            } else {
+                self.preferences.save(&p)
+            });
         self.settings_storage_error = result.is_err();
         let notice = match result {
             Ok(()) => "已保存应用设置".to_owned(),
@@ -528,6 +540,29 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compatibility_preferences_survive_reopen_without_reverting_launcher_settings() {
+        let root=std::env::temp_dir().join(format!("eclipse-client-settings-{}",uuid::Uuid::new_v4()));
+        let path=root.join("gui-settings.json");
+        let mut stream=Settings::default();
+        stream.save(&path).unwrap();
+        let mut launcher=Settings::load(&path).unwrap();
+        launcher.wallpaper_enabled=false;
+        launcher.lan_discovery=false;
+        launcher.save(&path).unwrap();
+        stream.codec=CodecPreference::Hevc;
+        stream.fps=120;
+        stream.vsync=false;
+        stream.save_client(&path).unwrap();
+        let reopened=Settings::load(&path).unwrap();
+        assert_eq!(reopened.client,stream.client);
+        assert!(!reopened.wallpaper_enabled);
+        assert!(!reopened.lan_discovery);
+        std::fs::write(&path,b"broken").unwrap();
+        assert!(stream.save_client(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(),b"broken");
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn lan_ports_persist_and_invalid_ports_preserve_the_original_file() {
         let root=std::env::temp_dir().join(format!("eclipse-port-settings-{}",uuid::Uuid::new_v4()));
