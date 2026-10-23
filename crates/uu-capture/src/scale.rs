@@ -54,6 +54,22 @@ fn plane(source:&[u8],stride:usize,sw:usize,sh:usize,target:&mut[u8],out_stride:
 mod tests {
     use super::*;
     #[test]
+    fn padded_pixels_and_physical_input_bounds_survive_scaling() {
+        struct Source(RawFrame);
+        impl Capture for Source {
+            fn resolution(&self)->(u32,u32){(16,8)}
+            fn desktop_rect(&self)->Option<DesktopRect>{Some(DesktopRect{x:-200,y:50,width:16,height:8})}
+            fn next_frame(&mut self)->Result<RawFrame,CaptureError>{Ok(self.0.clone())}
+        }
+        let stride=80usize;let mut data=vec![17;stride*8];
+        for y in 0..8 {for x in 0..16 {data[y*stride+x*4..y*stride+x*4+4].copy_from_slice(&[x as u8,y as u8,100,255]);}}
+        let frame=RawFrame{width:16,height:8,stride:80,format:PixelFormat::Bgra8,data:data.into(),pts:uu_media::Timestamp(12345),gpu:false,dma_buf:None,d3d11:None};
+        let mut scaled=bounded(Box::new(Source(frame)),Some([8,4]));let rect=scaled.desktop_rect().unwrap();
+        assert_eq!((rect.x,rect.y,rect.width,rect.height),(-200,50,16,8));
+        let image=scaled.next_frame().unwrap();assert_eq!(image.pts,uu_media::Timestamp(12345));assert_eq!(image.stride,32);
+        for y in 0..4 {for x in 0..8 {assert_eq!(&image.data[(y*8+x)*4..(y*8+x+1)*4],&[x as u8*2,y as u8*2,100,255]);}}
+    }
+    #[test]
     fn scaling_preserves_aspect_stride_and_timestamp_without_upscaling() {
         assert_eq!(dimensions((3840,2160),Some([1920,1080])),(1920,1080));
         assert_eq!(dimensions((2560,1600),Some([1920,1080])),(1728,1080));
