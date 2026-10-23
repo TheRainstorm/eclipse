@@ -159,6 +159,14 @@ struct LegacyPending {
     entered: String,
 }
 
+pub(super) struct SessionView {
+    pub id:String,
+    pub peer_id:String,
+    pub name:String,
+    pub status:HostStatus,
+    pub control:bool,
+}
+
 #[derive(Default)]
 pub(super) struct HostUi {
     worker: Option<Worker>,
@@ -196,13 +204,26 @@ impl HostUi {
             .map(|e| (e.name.clone(), e.state.borrow().clone()))
             .collect()
     }
-    pub fn sessions(&self) -> Vec<(String, String, HostStatus)> {
+    pub fn sessions(&self) -> Vec<SessionView> {
         let Some(access)=&self.access else{return Vec::new();};
         let peers=access.store.peers().unwrap_or_default();
         access.sessions.details().into_iter().map(|(id,peer,status)| {
-            let name=peers.iter().find(|p|p.device.id()==peer).map(|p|p.device.name.clone()).unwrap_or_else(|| "已授权设备".into());
-            (id,name,status)
+            let record=peers.iter().find(|p|p.device.id()==peer);
+            let name=record.map(|p|p.device.name.clone()).unwrap_or_else(|| "已授权设备".into());
+            let control=record.is_some_and(|p|p.inbound.is_some_and(|grant|grant.control));
+            SessionView {id,peer_id:peer,name,status,control}
         }).collect()
+    }
+    pub fn set_session_control(&self, peer_id:&str, control:bool) -> anyhow::Result<()> {
+        let access=self.access.as_ref().ok_or_else(||anyhow::anyhow!("本机共享未运行"))?;
+        let peer=access.store.peer(peer_id)?.ok_or_else(||anyhow::anyhow!("设备授权记录不存在"))?;
+        access.store.authorize(
+            peer.device,
+            if control {uu_core::device_trust::Permissions::CONTROL} else {uu_core::device_trust::Permissions::VIEW},
+            None,
+        )?;
+        access.sessions.revoke(peer_id);
+        Ok(())
     }
     pub fn disconnect_session(&self, id:&str) {
         if let Some(access)=&self.access {access.sessions.disconnect_session(id);}

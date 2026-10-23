@@ -1363,12 +1363,25 @@ impl Workspace {
             card(ui,|ui| {
                 ui.strong(format!("已连接 {} / {} 个会话",sessions.len(),uu_core::shared_host::MAX_SESSIONS));
                 muted(ui,"多台设备可同时观看；键鼠由当前取得控制权的一台设备操作，释放或离线后交接。");
-                for (id,name,status) in sessions {
+                for session in sessions {
                     ui.horizontal_wrapped(|ui| {
-                        ui.strong(name);
-                        if ui.small_button("断开此会话").clicked(){self.host.disconnect_session(&id);}
+                        ui.strong(&session.name);
+                        let mut control=session.control;
+                        if ui.checkbox(&mut control,"允许控制键鼠").changed() {
+                            match self.host.set_session_control(&session.peer_id,control) {
+                                Ok(())=>self.feedback.success(
+                                    super::ui_feedback::Scope::Services(0),
+                                    "已更新设备控制权限；该设备需要重新连接",
+                                ),
+                                Err(error)=>self.feedback.error(
+                                    super::ui_feedback::Scope::Services(0),
+                                    format!("无法更新设备控制权限：{error:#}"),
+                                ),
+                            }
+                        }
+                        if ui.small_button("断开此会话").clicked(){self.host.disconnect_session(&session.id);}
                     });
-                    muted(ui,match status {
+                    muted(ui,match session.status {
                         HostStatus::Starting|HostStatus::Preparing=>"正在准备串流…".into(),
                         HostStatus::Waiting{..}=>"等待控制端建立媒体连接…".into(),
                         HostStatus::Streaming{width,height,fps,encoder,audio}=>format!("{width}×{height} · {fps} FPS · {encoder} · {audio}"),
