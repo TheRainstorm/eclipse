@@ -163,7 +163,7 @@ pub async fn probe_invitation(
 
 fn snapshot(stats: &MediaStats, elapsed: Duration) -> serde_json::Value {
     let (width, height) = stats.res();
-    serde_json::json!({
+    let mut value=serde_json::json!({
         "audio_packets":stats.audio.packets.load(Ordering::Relaxed),"audio_samples":stats.audio.decoded_samples.load(Ordering::Relaxed),
         "audio_recovered":stats.audio.recovered.load(Ordering::Relaxed),"audio_concealed":stats.audio.concealed.load(Ordering::Relaxed),
         "audio_injected_loss":stats.audio.injected_loss.load(Ordering::Relaxed),"audio_level":stats.audio.level_x10000.load(Ordering::Relaxed) as f64/10000.0,
@@ -179,7 +179,10 @@ fn snapshot(stats: &MediaStats, elapsed: Duration) -> serde_json::Value {
         "damaged_frames":stats.damaged_frames.load(Ordering::Relaxed),"queue_drops":stats.queue_drops.load(Ordering::Relaxed),
         "injected_loss":stats.injected_loss.load(Ordering::Relaxed),"keyframe_requests":stats.keyframe_requests.load(Ordering::Relaxed),
         "waiting_for_keyframe":stats.waiting_for_keyframe.load(Ordering::Relaxed),
-    })
+    });
+    value["recovery_causes"]=serde_json::json!({"receive_damage":stats.recovery_receive_damage.load(Ordering::Relaxed),"decode_queue":stats.recovery_decode_queue.load(Ordering::Relaxed),"decoder_error":stats.recovery_decoder_error.load(Ordering::Relaxed),"format_change":stats.recovery_format_change.load(Ordering::Relaxed)});
+    value["frame_cadence"]=serde_json::to_value(stats.frame_cadence.lock().unwrap().clone()).unwrap_or_default();
+    value
 }
 
 pub fn sources() -> Result<()> {

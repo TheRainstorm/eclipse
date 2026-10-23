@@ -42,6 +42,7 @@ pub mod device_profile;
 #[cfg(test)]
 mod device_network_tests;
 mod decode_gate;
+mod decode_backlog;
 mod test_loss;
 mod srtp_policy;
 pub mod selfloop;

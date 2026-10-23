@@ -115,13 +115,28 @@ pub struct MediaStats {
     pub late_packets: AtomicU64,
     pub damaged_frames: AtomicU64,
     pub queue_drops: AtomicU64,
+    pub recovery_receive_damage:AtomicU64,
+    pub recovery_decode_queue:AtomicU64,
+    pub recovery_decoder_error:AtomicU64,
+    pub recovery_format_change:AtomicU64,
     pub injected_loss: AtomicU64,
     pub keyframe_requests: AtomicU64,
     pub waiting_for_keyframe: AtomicU32,
     pub backend: std::sync::Mutex<String>,
 }
 
+#[derive(Clone,Copy)]
+enum RecoveryCause {ReceiveDamage,DecodeQueue,DecoderError,FormatChange}
+
 impl MediaStats {
+    fn recovery(&self,cause:RecoveryCause) {
+        match cause {
+            RecoveryCause::ReceiveDamage=>&self.recovery_receive_damage,
+            RecoveryCause::DecodeQueue=>&self.recovery_decode_queue,
+            RecoveryCause::DecoderError=>&self.recovery_decoder_error,
+            RecoveryCause::FormatChange=>&self.recovery_format_change,
+        }.fetch_add(1,Ordering::Relaxed);
+    }
     pub fn decoder_kind(&self)->DecoderKind {self.decoder_preference.get().copied().unwrap_or_else(DecoderKind::from_env)}
     pub fn select_video_track(&self,track:u32) {
         if self.selected_video_track.swap(track,Ordering::AcqRel)!=track {
@@ -735,7 +750,9 @@ pub(crate) async fn receive_video(
     let generation = Arc::new(AtomicU64::new(0));
     let request_generation = Arc::new(crate::decode_gate::RecoverySignal::default());
     let refresh = Arc::new(tokio::sync::Notify::new());
-    let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(bytes::Bytes, u32, u64, u64, Instant, VideoCodec)>(8);
+    let backlog=Arc::new(crate::decode_backlog::Budget::default());
+    let worker_backlog=backlog.clone();
+    let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(bytes::Bytes, u32, u64, u64, Instant, VideoCodec,crate::decode_backlog::Permit)>(crate::decode_backlog::MAX_FRAMES);
     let worker_stats = stats.clone();
     let worker_generation = generation.clone();
     let worker_requests = request_generation.clone();
@@ -773,7 +790,7 @@ pub(crate) async fn receive_video(
         let mut decode_us = 0u64;
         let mut queue_times = crate::frame_cadence::Samples::default();
         let mut pts_base = None;
-        while let Some((data, timestamp, sample_epoch, sample_request, enqueued, sample_codec)) = sample_rx.blocking_recv()
+        while let Some((data, timestamp, sample_epoch, sample_request, enqueued, sample_codec,_permit)) = sample_rx.blocking_recv()
         {
             if window.elapsed() >= Duration::from_millis(500) {
                 let queue_summary = queue_times.take();
@@ -803,9 +820,10 @@ pub(crate) async fn receive_video(
                 if !key { continue; }
                 match uu_media::decoder_for_codec_with_kind(sample_codec,decoder_kind) {
                     Ok(next) => decoder = next,
-                    Err(_) => { gate.failed(); worker_requests.request(); worker_refresh.notify_one(); continue; }
+                    Err(_) => { gate.failed(); worker_requests.request(); worker_refresh.notify_one();if let Some(s)=&worker_stats{s.recovery(RecoveryCause::DecoderError);}continue; }
                 }
                 codec = sample_codec;
+                worker_backlog.reset_estimate();
                 if let Some(s) = worker_stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
                     *s.codec.lock().unwrap() = match codec { VideoCodec::Hevc => "video/H265", VideoCodec::Av1=>"video/AV1",VideoCodec::H264 => "video/H264" }.into();
                 }
@@ -829,6 +847,7 @@ pub(crate) async fn receive_video(
                     Err(_) => continue,
                 }
                 reset_decoder = false;
+                worker_backlog.reset_estimate();
             }
             if let Some(file) = dump.as_mut() {
                 use std::io::Write;
@@ -848,7 +867,9 @@ pub(crate) async fn receive_video(
                 recovery = Some((sample_epoch, sample_request, encoded.pts));
             }
             let started = Instant::now();
-            match decoder.decode(&encoded) {
+            let outcome=decoder.decode(&encoded);
+            worker_backlog.observe(started.elapsed());
+            match outcome {
                 Ok(frame) => {
                     gate.decoded(sample_epoch, worker_generation.load(Ordering::Acquire), key);
                     if let Some(frame) = frame {
@@ -892,6 +913,7 @@ pub(crate) async fn receive_video(
                     worker_requests.request();
                     worker_refresh.notify_one();
                     if let Some(s) = &worker_stats {
+                        s.recovery(RecoveryCause::DecoderError);
                         s.errors.fetch_add(1, Ordering::Relaxed);
                     }
                     if debug {
@@ -991,11 +1013,12 @@ pub(crate) async fn receive_video(
     let mut ticker = tokio::time::interval(Duration::from_millis(5));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let strict = !std::env::var("UU_STRICT_RECOVERY").is_ok_and(|v| v == "0");
-    let recover = |hard: bool| {
+    let recover = |hard: bool,cause:RecoveryCause| {
         if hard {
             generation.fetch_add(1, Ordering::AcqRel);
         }
         request_generation.request();
+        if let Some(s)=&stats{s.recovery(cause);}
         refresh.notify_one();
     };
     let mut receiver_epoch = 0;
@@ -1040,7 +1063,7 @@ pub(crate) async fn receive_video(
                     codec = next_codec;
                     receiver.change_codec(codec, packet.header.sequence_number);
                     receiver_epoch = receiver.epoch;
-                    recover(true);
+                    recover(true,RecoveryCause::FormatChange);
                     if let Some(s) = &stats { s.diagnostics.record(serde_json::json!({"event":"video_codec_change","track":track_idx,"codec":format!("{codec:?}")})); }
                 }
             }
@@ -1093,9 +1116,14 @@ pub(crate) async fn receive_video(
                 // With balanced recovery keep decoding intact reference
                 // pictures while requesting refresh. Strict IDR-only recovery
                 // can freeze indefinitely when large keyframes also lose a packet.
-                recover(strict);
+                recover(strict,RecoveryCause::ReceiveDamage);
             }
             let epoch = generation.load(Ordering::Acquire);
+            let Some(permit)=backlog.reserve(unit.data.len()) else {
+                recover(true,RecoveryCause::DecodeQueue);
+                if let Some(s)=&stats{s.queue_drops.fetch_add(1,Ordering::Relaxed);}
+                continue;
+            };
             if sample_tx
                 .try_send((
                     unit.data,
@@ -1104,10 +1132,11 @@ pub(crate) async fn receive_video(
                     request_generation.requested(),
                     Instant::now(),
                     codec,
+                    permit,
                 ))
                 .is_err()
             {
-                recover(true);
+                recover(true,RecoveryCause::DecodeQueue);
                 if let Some(s) = &stats {
                     s.queue_drops.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1115,7 +1144,7 @@ pub(crate) async fn receive_video(
         }
         if receiver.epoch != receiver_epoch {
             receiver_epoch = receiver.epoch;
-            recover(strict);
+            recover(strict,RecoveryCause::ReceiveDamage);
         }
         let _ = receiver.take_refresh();
         if let Some(s) = stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {

@@ -38,6 +38,94 @@ fn via_relay(mut description: RTCSessionDescription, port: u16) -> RTCSessionDes
     description
 }
 
+#[tokio::test(flavor="multi_thread",worker_threads=3)]
+async fn encrypted_twelve_frame_burst_preserves_references_while_a_fast_decoder_is_briefly_busy() {
+    use uu_media::{EncodedFrame,RawFrame,Timestamp,VideoDecoder,VideoEncoder};
+    struct Pause {
+        entered:AtomicBool,
+        released:std::sync::Mutex<bool>,
+        ready:std::sync::Condvar,
+    }
+    struct Release(Arc<Pause>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            *self.0.released.lock().unwrap()=true;self.0.ready.notify_all();
+        }
+    }
+    struct Decoder {inner:Box<dyn VideoDecoder>,count:u32,pause:Arc<Pause>}
+    impl VideoDecoder for Decoder {
+        fn codec(&self)->VideoCodec {self.inner.codec()}
+        fn prepare(&mut self,w:u32,h:u32)->std::result::Result<(),uu_media::CodecError> {self.inner.prepare(w,h)}
+        fn backend_name(&self)->&str {self.inner.backend_name()}
+        fn decode(&mut self,frame:&EncodedFrame)->std::result::Result<Option<RawFrame>,uu_media::CodecError> {
+            if self.count==32 {
+                self.pause.entered.store(true,Ordering::Release);
+                let released=self.pause.released.lock().unwrap();
+                let (released,_)=self.pause.ready.wait_timeout_while(released,Duration::from_secs(5),|ready|!*ready).unwrap();
+                if !*released {return Err(uu_media::CodecError::Backend("owned burst fixture was not released".into()));}
+            }
+            self.count+=1;self.inner.decode(frame)
+        }
+    }
+    let ip:IpAddr="127.0.0.1".parse().unwrap();
+    let stats=Arc::new(MediaStats::default());let _=stats.decoder_preference.set(uu_media::DecoderKind::Software);
+    let mut host=NativePeer::new(ip,None,true).await.unwrap();
+    let mut viewer=NativePeer::new(ip,Some(stats.clone()),false).await.unwrap();
+    let pause=Arc::new(Pause{entered:false.into(),released:std::sync::Mutex::new(false),ready:Default::default()});
+    let release=Release(pause.clone());
+    let (frames,mut images)=crate::media::frame_channel();
+    viewer.receiver(frames,stats.clone()).await.unwrap();
+    let decoder=viewer.pending_decoder.lock().unwrap().take().unwrap();
+    *viewer.pending_decoder.lock().unwrap()=Some(Box::new(Decoder{inner:decoder,count:0,pause:pause.clone()}));
+    let refresh=Arc::new(AtomicBool::new(false));
+    let mut sender=host.sender_for_codec(refresh,VideoCodec::H264).await.unwrap();
+    let result=async {
+        let offer=viewer.description(true).await?;host.remote(offer,ip).await?;
+        let answer=host.description(false).await?;viewer.remote(answer,ip).await?;
+        tokio::try_join!(host.connected(),viewer.connected())?;
+        let mut encoder=uu_media::H264Encoder::with_frame_rate(1000,60)?;
+        let mut encoded=Vec::new();
+        for index in 0..44u8 {
+            let mut pixels=vec![128;64*64*3/2];pixels[..64*64].fill(32+index*2);
+            encoded.extend(encoder.encode(&RawFrame::new_i420(64,64,pixels,Timestamp(u64::from(index)*16_666)))?);
+        }
+        ensure!(encoded.len()==44,"fixture needs one low-delay picture per input");
+        for frame in &encoded[..32] {
+            sender.frame(frame).await?;
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        timeout(Duration::from_secs(4),async {
+            while stats.decoded_total.load(Ordering::Acquire)<32 {
+                while images.try_recv_image().is_ok(){}
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        }).await.context("warm-up pictures were not decoded")?;
+        let packets=stats.packets.load(Ordering::Acquire);
+        for frame in &encoded[32..] {sender.frame(frame).await?;}
+        timeout(Duration::from_secs(3),async {
+            while !pause.entered.load(Ordering::Acquire)||stats.packets.load(Ordering::Acquire)<packets+12 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        }).await.context("encrypted burst did not reach the paused decoder")?;
+        // The last packet counter is published just before AU assembly.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        ensure!(stats.queue_drops.load(Ordering::Acquire)==0,"bounded fast-decode burst unnecessarily broke references");
+        drop(release);
+        timeout(Duration::from_secs(4),async {
+            while stats.decoded_total.load(Ordering::Acquire)<44 {
+                while images.try_recv_image().is_ok(){}
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        }).await.context("burst references did not recover without a new IDR")?;
+        ensure!(stats.errors.load(Ordering::Acquire)==0 && stats.recovery_decode_queue.load(Ordering::Acquire)==0,"burst caused decoder recovery");
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    // Also release on an assertion/error before closing the decoder's peer.
+    *pause.released.lock().unwrap()=true;pause.ready.notify_all();
+    host.close().await;viewer.close().await;
+    result.expect("encrypted reference-preserving burst regression");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets() {
     const FIRST: u16 = 7000;

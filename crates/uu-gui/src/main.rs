@@ -1543,6 +1543,7 @@ impl App {
                     "input_sent":s.input_messages_sent.load(Relaxed),"input_errors":s.input_send_errors.load(Relaxed),
                     "keyboard_repeats_forwarded":self.pressed_vks.forwarded_repeats(),
                     "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()});
+                report["recovery_causes"]=serde_json::json!({"receive_damage":s.recovery_receive_damage.load(Relaxed),"decode_queue":s.recovery_decode_queue.load(Relaxed),"decoder_error":s.recovery_decoder_error.load(Relaxed),"format_change":s.recovery_format_change.load(Relaxed)});
                 report["bitrate_kbps"] = s.bitrate_kbps.load(Relaxed).into();
                 report["codec"] = s.codec.lock().unwrap().clone().into();
                 s.diagnostics.record(report);

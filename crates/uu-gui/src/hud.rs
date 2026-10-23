@@ -175,12 +175,14 @@ impl super::App {
             "{w}×{h}@{rd:.0}   {codec} · {decoder}   目标 {} FPS{source}   FPS {:.1} Rx · {:.1} De · {rd:.1} Rd\n\
              控制 RTT {network}{rtt_tail}   Loss {:.2}%   Bandwidth {:.2} Mbps | Render {:.2}ms · Decode {:.2}ms\n\
              {pipeline_line}{native_line}\n\
-             丢包 {} · NACK {} · RTX {} · 乱序 {} · 迟到 {} · 坏帧 {} · 解码错误 {} · 丢队列 {} · 恢复请求 {}",
+             丢包 {} · NACK {} · RTX {} · 乱序 {} · 迟到 {} · 坏帧 {} · 解码错误 {} · 丢队列 {} · 恢复请求 {}\n\
+             恢复触发：接收损坏 {} · 解码积压 {} · 解码器错误 {} · 格式切换 {}",
             target_fps, s.src_fps(), s.dec_fps(), s.loss_ppm.load(Relaxed) as f32 / 10000.0,
             s.bitrate_kbps.load(Relaxed) as f32 / 1000.0, self.render_ms, s.decode_ms(),
             s.lost.load(Relaxed), s.nack_requests.load(Relaxed), s.rtx_packets.load(Relaxed),
             s.reordered.load(Relaxed), s.late_packets.load(Relaxed), s.damaged_frames.load(Relaxed),
-            s.errors.load(Relaxed), s.queue_drops.load(Relaxed), s.keyframe_requests.load(Relaxed));
+            s.errors.load(Relaxed), s.queue_drops.load(Relaxed), s.keyframe_requests.load(Relaxed),
+            s.recovery_receive_damage.load(Relaxed),s.recovery_decode_queue.load(Relaxed),s.recovery_decoder_error.load(Relaxed),s.recovery_format_change.load(Relaxed));
             let mut job = egui::text::LayoutJob::simple(
                 text,
                 FontId::proportional(12.0),
