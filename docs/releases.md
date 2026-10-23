@@ -2,7 +2,7 @@
 
 大功能里程碑使用 `v主版本.次版本.修订号` 标签，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
-当前正式版本为 [v0.11.0](https://github.com/TheRainstorm/uu-client/releases/tag/v0.11.0)，采用统一蓝白界面和独立分类设置页，精简悬浮菜单与光标模式，补齐局域网端口配置和冲突提示，详见 [0.11 发布说明](releases/v0.11.0.md)。此前现有功能已固化为 [v0.10.0](releases/v0.10.0.md)。以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+当前发布基线为 [v0.12.0](https://github.com/TheRainstorm/uu-client/releases/tag/v0.12.0)，包含统一设备授权、多入口共享与账号设备管理，详见 [0.12 发布说明](releases/v0.12.0.md)。此前版本见 [0.11](releases/v0.11.0.md) 与 [0.10](releases/v0.10.0.md)。正式产物以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
 
 ```sh
 python3 tools/release/download.py

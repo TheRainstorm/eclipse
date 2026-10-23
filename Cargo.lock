@@ -5295,7 +5295,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uu-capture"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -5313,7 +5313,7 @@ dependencies = [
 
 [[package]]
 name = "uu-cli"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5334,7 +5334,7 @@ dependencies = [
 
 [[package]]
 name = "uu-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5378,7 +5378,7 @@ dependencies = [
 
 [[package]]
 name = "uu-gui"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -5412,7 +5412,7 @@ dependencies = [
 
 [[package]]
 name = "uu-input"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "cc",
@@ -5429,7 +5429,7 @@ dependencies = [
 
 [[package]]
 name = "uu-media"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "audiopus_sys",
@@ -5452,7 +5452,7 @@ dependencies = [
 
 [[package]]
 name = "uu-proto"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
