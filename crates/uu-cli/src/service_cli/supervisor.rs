@@ -170,6 +170,10 @@ fn environment(paths: &Paths) -> Result<Vec<u16>> {
             paths.programs.parent().unwrap().to_path_buf(),
         ),
         ("PATH", windows.join("System32")),
+        (
+            "ECLIPSE_SERVICE_BOOTSTRAP_LOG",
+            paths.config().log_dir().join("bootstrap.log"),
+        ),
     ];
     pairs.sort_by_key(|(key, _)| key.to_ascii_lowercase());
     let mut result = Vec::new();

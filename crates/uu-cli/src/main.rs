@@ -307,7 +307,7 @@ async fn main() -> Result<()> {
     #[cfg(not(windows))]
     let background=false;
     #[cfg(windows)]
-    if background {service_cli::init_background_logging()?;}
+    if background {if let Err(error)=service_cli::init_background_logging(){service_cli::record_bootstrap_error(&error);return Err(error);}}
     if !background {
     tracing_subscriber::fmt()
         .with_env_filter(

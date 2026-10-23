@@ -12,6 +12,40 @@ use std::{
 use uu_core::{service_admin::windows::*, Config};
 use windows_sys::Win32::System::Services::*;
 
+/// The supervisor provisions this exact protected path. Use it when a shell or
+/// profile API fails before the regular logger exists; no cross-session handle
+/// inheritance or unprivileged caller can provide a privileged log destination.
+pub fn record_bootstrap_error(error: &anyhow::Error) {
+    use std::io::Write;
+    if process_user(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+        .ok()
+        .as_deref()
+        != Some("S-1-5-18")
+    {
+        return;
+    }
+    let Some(root) = std::env::var_os("ProgramData").map(PathBuf::from) else {
+        return;
+    };
+    let expected = root.join("EclipseRemoteHost/state/uu-remote/log/bootstrap.log");
+    let Some(path) = std::env::var_os("ECLIPSE_SERVICE_BOOTSTRAP_LOG").map(PathBuf::from) else {
+        return;
+    };
+    if !path.is_absolute() || path != expected {
+        return;
+    }
+    let truncate = std::fs::metadata(&path).is_ok_and(|m| m.len() > 1024 * 1024);
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(!truncate)
+        .truncate(truncate)
+        .open(path)
+    {
+        let _ = writeln!(file, "background startup failed: {error:#}");
+    }
+}
+
 pub fn init_background_logging() -> Result<()> {
     anyhow::ensure!(
         process_user(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })?
