@@ -68,6 +68,7 @@ pub(super) struct Info {
     pub login_status: String,
     pub login_busy: bool,
     pub nearby: Vec<(String, String)>,
+    pub uu_devices: Vec<(String, String)>,
 }
 #[derive(Clone)]
 struct DeviceEditor {
@@ -127,6 +128,7 @@ pub(super) struct Workspace {
     autostart_checked: bool,
     previews:std::collections::HashMap<String,PreviewSlot>,
     preview_jobs:Vec<PreviewJob>,
+    uu_choices: Vec<(String,String)>,
 }
 
 #[cfg(test)]
@@ -172,6 +174,7 @@ mod tests {
                 login_status: String::new(),
                 login_busy: false,
                 nearby: Vec::new(),
+                uu_devices: Vec::new(),
             };
             let output = self.ctx.run(
                 egui::RawInput {
@@ -655,7 +658,7 @@ impl Workspace {
             resume_connect: None,
             pairing_visible: false,
             autostart_checked: false,
-            previews:Default::default(),preview_jobs:Vec::new(),
+            previews:Default::default(),preview_jobs:Vec::new(),uu_choices:Vec::new(),
         }
     }
     pub fn poll(&mut self, ctx: &egui::Context, window: isize) {
@@ -896,6 +899,7 @@ impl Workspace {
         Ok(id)
     }
     pub fn show(&mut self, ui: &mut egui::Ui, info: &Info) -> Vec<Action> {
+        self.uu_choices = info.uu_devices.clone();
         let mut actions = Vec::new();
         match self.route.page {
             Page::Devices => self.devices(ui, info, &mut actions),
@@ -1908,12 +1912,44 @@ impl Workspace {
                 ui.add_space(12.);
                 match editor.kind {
                     0 => field(ui, "目标地址", &mut editor.address, "主机 IP:端口"),
-                    1 => field(
-                        ui,
-                        "目标 UU 设备编号",
-                        &mut editor.device,
-                        "被控端“连接服务”中的本机 UU 编号",
-                    ),
+                    1 => {
+                        if !self.uu_choices.is_empty() {
+                            ui.label("选择账号中的设备");
+                            let selected = self
+                                .uu_choices
+                                .iter()
+                                .find(|(id, _)| id == &editor.device)
+                                .map(|(_, name)| name.as_str())
+                                .unwrap_or("手动输入设备编号");
+                            egui::ComboBox::from_id_salt("route-uu-device")
+                                .selected_text(selected)
+                                .width(360.0)
+                                .show_ui(ui, |ui| {
+                                    for (id, name) in &self.uu_choices {
+                                        if ui
+                                            .selectable_label(editor.device == *id, format!("{name} · {id}"))
+                                            .clicked()
+                                        {
+                                            editor.device = id.clone();
+                                            if editor.name.trim().is_empty() {
+                                                editor.name = name.clone();
+                                            }
+                                        }
+                                    }
+                                });
+                            ui.collapsing("手动输入设备编号", |ui| {
+                                field(ui, "目标 UU 设备编号", &mut editor.device, "被控端“连接服务”中的本机 UU 编号");
+                            });
+                        } else {
+                            field(
+                                ui,
+                                "目标 UU 设备编号",
+                                &mut editor.device,
+                                "被控端“连接服务”中的本机 UU 编号",
+                            );
+                            muted(ui, "登录 UU 账号后可在这里选择设备列表。");
+                        }
+                    }
                     _ => {
                         ui.label("连接服务器");
                         egui::ComboBox::from_id_salt("route-service")
@@ -2141,6 +2177,7 @@ impl super::App {
             qr:self.login_texture.as_ref().map(|t|t.id()),
             login_status:self.account_error.clone().unwrap_or_else(||self.login_status.clone()),
             login_busy:self.login_rx.is_some(), nearby:self.lan.nearby(self.workspace.host.server_id()),
+            uu_devices:self.devices.iter().map(|device|(device.device_id.clone(),device.alias.clone())).collect(),
         }
     }
     pub(super) fn workspace_home(&mut self, ctx: &egui::Context) {
