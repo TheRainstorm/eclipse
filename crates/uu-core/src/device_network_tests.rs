@@ -101,7 +101,7 @@ async fn unified_device_wss_listener_republishes_and_reconnects_with_the_same_gr
     let (host_stop, host_rx) = watch::channel(false);
     let (status, mut endpoint) = watch::channel(EndpointStatus::Starting);
     let (progress, _) = watch::channel(native::HostStatus::Starting);
-    let sharing = native::SharingConfig {video_policy:None,codec:Default::default(),rate_control:Default::default(),
+    let sharing = native::SharingConfig {session:None,video_policy:None,codec:Default::default(),rate_control:Default::default(),
         source: native::CaptureSource::Synthetic {
             width: 320,
             height: 180,
@@ -497,7 +497,7 @@ async fn unified_device_internet_bootstrap_reuses_native_video_audio_after_short
         .await
     });
     let hosting = tokio::spawn(async move {
-        let sharing = native::SharingConfig {video_policy:None,codec:Default::default(),rate_control:Default::default(),
+        let sharing = native::SharingConfig {session:None,video_policy:None,codec:Default::default(),rate_control:Default::default(),
             source: native::CaptureSource::Synthetic {
                 width: 320,
                 height: 180,

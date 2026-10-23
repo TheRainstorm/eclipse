@@ -79,17 +79,46 @@ impl PublicDevice {
 pub struct Permissions {
     pub view: bool,
     pub control: bool,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub details: Option<PermissionDetails>,
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(default,deny_unknown_fields)]
+pub struct PermissionDetails {
+    pub keyboard:bool,
+    pub mouse:bool,
+    pub gamepad:bool,
+    pub clipboard:bool,
+    pub manage_server:bool,
 }
 impl Permissions {
     pub const VIEW: Self = Self {
         view: true,
         control: false,
+        details: None,
     };
     pub const CONTROL: Self = Self {
         view: true,
         control: true,
+        details: None,
     };
+    pub fn details(self)->PermissionDetails {
+        self.details.unwrap_or(PermissionDetails {keyboard:self.control,mouse:self.control,gamepad:self.control,clipboard:self.control,manage_server:false})
+    }
+    pub fn with_details(mut self,details:PermissionDetails)->Self {
+        self.control=details.keyboard||details.mouse||details.gamepad;
+        self.details=Some(details);
+        self
+    }
+    pub(crate) fn input_mask(self)->u8 {
+        let d=self.details();
+        if !self.view || !self.control {return 0;}
+        u8::from(d.keyboard)|(u8::from(d.mouse)<<1)|(u8::from(d.gamepad)<<2)
+    }
     pub fn validate(self) -> Result<()> {
+        if let Some(d)=self.details {
+            ensure!(self.control==(d.keyboard||d.mouse||d.gamepad),"输入权限与控制状态不一致");
+        }
         ensure!(
             self.view && (!self.control || self.view),
             "设备授权必须允许观看"
@@ -323,6 +352,20 @@ impl TrustStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_grants_preserve_signed_wire_format_and_do_not_grant_server_management() {
+        for permission in [Permissions::VIEW,Permissions::CONTROL] {
+            let wire=serde_json::to_string(&permission).unwrap();
+            assert!(!wire.contains("details"));
+            let restored:Permissions=serde_json::from_str(&wire).unwrap();
+            assert_eq!(permission,restored);
+            assert!(!restored.details().manage_server);
+        }
+        let permission=Permissions::VIEW.with_details(PermissionDetails{keyboard:true,gamepad:true,..Default::default()});
+        permission.validate().unwrap();
+        assert_eq!(permission.input_mask(),5);
+        assert_eq!(serde_json::from_slice::<Permissions>(&serde_json::to_vec(&permission).unwrap()).unwrap(),permission);
+    }
     #[test]
     fn persistent_identity_and_independent_grants_survive_concurrent_windows_and_revocation() {
         let root = std::env::temp_dir().join(format!("eclipse-trust-{}", uuid::Uuid::new_v4()));

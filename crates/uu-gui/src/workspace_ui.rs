@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 use uu_core::{
-    device_book::{RateMode,Book, Destination, Encoding, Profile, Route, Service, Sharing, Store},
+    device_book::{Book, Destination, Encoding, Profile, Route, Service, Sharing, Store},
     device_internet::EndpointStatus,
     device_trust::TrustStore,
     native::{CaptureMonitor, HostStatus},
@@ -1271,9 +1271,9 @@ impl Workspace {
                     }
                 });
                 muted(ui,match self.encoder_vendor_tab {
-                    1=>"NVIDIA：Windows 通过驱动提供的 Media Foundation 硬编使用 H.264。当前尚未接入 NVENC 专有参数。",
+                    1=>"NVIDIA：Windows 使用驱动提供的 Media Foundation 编码；各格式需实际初始化成功。NVENC 专有参数仍在实现中。",
                     2=>"Intel：H.264 使用系统硬件接口，HEVC / AV1 和 VBR 使用 Intel VPL；驱动需要支持所选组合。",
-                    3=>"AMD：Windows 通过驱动提供的 Media Foundation 硬编使用 H.264。当前尚未接入 AMF 专有参数。",
+                    3=>"AMD：Windows 使用原生 AMF 低延迟编码，支持驱动可用的 H.264 / HEVC / AV1。",
                     _=>"编码参数应用于当前主机。自动模式按已安装驱动选择可用后端；客户端仍需支持所选格式。",
                 });
                 let choice=match self.encoder_vendor_tab {1=>Some(Encoding::Nvidia),2=>Some(Encoding::Intel),3=>Some(Encoding::Amd),_=>None};
@@ -1366,9 +1366,9 @@ impl Workspace {
                 for session in sessions {
                     ui.horizontal_wrapped(|ui| {
                         ui.strong(&session.name);
-                        let mut control=session.control;
-                        if ui.checkbox(&mut control,"允许控制键鼠").changed() {
-                            match self.host.set_session_control(&session.peer_id,control) {
+                        let mut permissions=session.permissions;
+                        if super::sharing_ui::permissions(ui,&mut permissions) {
+                            match self.host.set_session_permissions(&session.peer_id,permissions) {
                                 Ok(())=>self.feedback.success(
                                     super::ui_feedback::Scope::Services(0),
                                     "已更新设备控制权限；该设备需要重新连接",
@@ -1396,112 +1396,11 @@ impl Workspace {
         }
         let running = self.host.running();
         card(ui, |ui| {
-            ui.strong(match self.host_section {0=>"采集与声音",1=>"编码与串流限制",_=>"访问权限"});
+            ui.strong(match self.host_section {0=>"采集与声音",1=>"编码",_=>"访问权限"});
             ui.add_space(10.);
-            ui.vertical(|ui| {
-                if self.host_section==0 {
-                ui.add_enabled_ui(!info.login_busy, |ui| field(ui, "本机名称", &mut self.draft.name, "设备名称"));
-                ui.label("共享屏幕");
-                let portal=uu_core::native::uses_desktop_portal();
-                egui::ComboBox::from_id_salt("shared-monitor")
-                    .selected_text(if self.draft.monitor==uu_core::native_displays::ALL_MONITORS {
-                        if portal {"系统选择（允许远程请求重选）"}else{"所有显示器（允许远程切换）"}
-                    }else if self.draft.monitor.is_empty(){if portal{"系统选择一个屏幕"}else{"主显示器"}}else{&self.draft.monitor})
-                    .show_ui(ui,|ui|{
-                        ui.selectable_value(&mut self.draft.monitor,String::new(),if portal{"系统选择一个屏幕"}else{"主显示器"});
-                        ui.selectable_value(&mut self.draft.monitor,uu_core::native_displays::ALL_MONITORS.into(),if portal{"系统选择（允许远程请求重选）"}else{"所有显示器（允许远程切换）"});
-                        if !portal {for monitor in &self.monitors {
-                            ui.selectable_value(&mut self.draft.monitor,monitor.name.clone(),format!("{} · {}×{}",monitor.name,monitor.width,monitor.height));
-                        }}
-                    });
-                if portal {muted(ui,"Wayland 由系统授权屏幕；远程重选仍需本机确认，控制权限与屏幕使用同一会话。");}
-                if !self.monitor_error.is_empty(){ui.colored_label(theme::DANGER,&self.monitor_error);}
-                if !portal && ui.small_button("刷新屏幕").clicked(){self.refresh_monitors();}
-                ui.checkbox(&mut self.draft.audio,"共享系统声音");
-                }
-                if self.host_section==1 {
-                ui.horizontal(|ui| {
-                    ui.label("最大帧率");
-                    ui.add(
-                        egui::DragValue::new(&mut self.draft.fps)
-                            .range(1..=60)
-                            .suffix(" FPS"),
-                    );
-                    ui.add_space(18.);
-                    ui.label("默认码率");
-                    ui.add(
-                        egui::DragValue::new(&mut self.draft.bitrate_mbps)
-                            .range(1..=100)
-                            .suffix(" Mbps"),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("最大码率");
-                    ui.add(egui::DragValue::new(&mut self.draft.max_bitrate_mbps).range(1..=100).suffix(" Mbps"));
-                });
-                muted(ui,"客户端可请求更低的帧率、码率和输出分辨率；当前原生链路最高 60 FPS。");
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("允许协商的编码");
-                    for (codec,label) in [(uu_core::native::VideoCodec::H264,"H.264"),(uu_core::native::VideoCodec::Hevc,"HEVC"),(uu_core::native::VideoCodec::Av1,"AV1")] {
-                        let mut enabled=self.draft.allowed_codecs.contains(&codec);
-                        if ui.checkbox(&mut enabled,label).changed(){if enabled{self.draft.allowed_codecs.push(codec);}else{self.draft.allowed_codecs.retain(|c|*c!=codec);}}
-                    }
-                });
-                muted(ui,"仅通报实际初始化成功的编码。HEVC / AV1 需要可用硬件编码，允许不代表驱动一定支持。");
-                ui.horizontal_wrapped(|ui|{
-                    ui.label("默认编码");
-                    egui::ComboBox::from_id_salt("shared-codec").selected_text(match self.draft.codec {None=>"自动协商",Some(uu_core::native::VideoCodec::H264)=>"H.264",Some(uu_core::native::VideoCodec::Hevc)=>"H.265 / HEVC",Some(uu_core::native::VideoCodec::Av1)=>"AV1"}).show_ui(ui,|ui|{
-                        ui.selectable_value(&mut self.draft.codec,None,"自动协商");
-                        ui.selectable_value(&mut self.draft.codec,Some(uu_core::native::VideoCodec::H264),"H.264");
-                        ui.selectable_value(&mut self.draft.codec,Some(uu_core::native::VideoCodec::Hevc),"H.265 / HEVC");
-                        ui.selectable_value(&mut self.draft.codec,Some(uu_core::native::VideoCodec::Av1),"AV1");
-                    });
-                    ui.label("码率模式");
-                    egui::ComboBox::from_id_salt("shared-rate-control").selected_text(match self.draft.rate_control {RateMode::Cbr=>"CBR",RateMode::Vbr=>"VBR"}).show_ui(ui,|ui|{
-                        ui.selectable_value(&mut self.draft.rate_control,RateMode::Cbr,"CBR · 稳定预算");
-                        ui.selectable_value(&mut self.draft.rate_control,RateMode::Vbr,"VBR · 允许峰值");
-                    });
-                });
-                muted(ui,"服务器明确选择时优先使用服务器格式；服务器自动时遵循客户端选择；双方自动按 AV1 → HEVC → H.264 尝试。明确请求不可用时提示原因。");
-                self.draft.peak_bitrate_mbps=self.draft.peak_bitrate_mbps.max(self.draft.bitrate_mbps);
-                if self.draft.rate_control==RateMode::Vbr {ui.horizontal(|ui|{ui.label("峰值码率");ui.add(egui::DragValue::new(&mut self.draft.peak_bitrate_mbps).range(self.draft.bitrate_mbps..=200).suffix(" Mbps"));});}
-                let needs_hardware=self.draft.codec.is_some_and(|c|c!=uu_core::native::VideoCodec::H264) || self.draft.rate_control==RateMode::Vbr;
-                if needs_hardware && self.draft.encoding==Encoding::Software {self.draft.encoding=Encoding::Auto;}
-                ui.horizontal(|ui| {
-                    ui.label("编码加速");
-                    egui::ComboBox::from_id_salt("shared-encoder")
-                        .selected_text(match self.draft.encoding {
-                            Encoding::Auto => "自动",
-                            Encoding::Hardware => "硬件",
-                            Encoding::Intel => "Intel QSV",
-                            Encoding::Nvidia => "NVIDIA 硬件",
-                            Encoding::Amd => "AMD 硬件",
-                            Encoding::Software => "软件",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.draft.encoding, Encoding::Auto, "自动");
-                            ui.selectable_value(
-                                &mut self.draft.encoding,
-                                Encoding::Hardware,
-                                "硬件",
-                            );
-                            for (vendor,label) in [(Encoding::Intel,"Intel QSV"),(Encoding::Nvidia,"NVIDIA 硬件"),(Encoding::Amd,"AMD 硬件")] {ui.selectable_value(&mut self.draft.encoding,vendor,label);}
-                            ui.add_enabled_ui(!needs_hardware,|ui|{ui.selectable_value(&mut self.draft.encoding,Encoding::Software,"软件");});
-                        });
-                });
-                if needs_hardware {
-                    muted(ui, if self.draft.codec==Some(uu_core::native::VideoCodec::H264) {
-                        "H.264 VBR 需要硬件编码；Windows 自动模式可使用 Media Foundation，显式 Intel 模式使用 VPL。控制端需支持相同格式。"
-                    } else {
-                        "Windows 按格式使用显卡驱动的硬件编码器；显式 Intel 使用 VPL。控制端需支持相同格式，连接时自动核验。"
-                    });
-                }
-                }
-                if self.host_section==2 {
-                ui.checkbox(&mut self.draft.control, "允许已授权设备控制键盘、鼠标和手柄");
-                ui.checkbox(&mut self.draft.clipboard, "允许双方启用文本剪贴板");
-                }
-            });
+            let monitors:Vec<_>=self.monitors.iter().map(|m|(m.name.clone(),format!("{} · {}×{}",m.name,m.width,m.height))).collect();
+            super::server_config_ui::edit(ui,&mut self.draft,self.host_section,&monitors,uu_core::native::uses_desktop_portal(),!info.login_busy);
+            if !self.monitor_error.is_empty(){ui.colored_label(theme::DANGER,&self.monitor_error);}
             if running {
                 muted(ui,"运行期间可编辑并保存；下次启动生效，或保存后重启服务。重启会断开当前串流。");
             }
@@ -1530,21 +1429,10 @@ impl Workspace {
             }
             for peer in active {
                 ui.push_id(peer.device.id(), |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(&peer.device.name);
-                        let mut control = peer.inbound.is_some_and(|p| p.control);
-                        if ui
-                            .checkbox(&mut control, "允许控制")
-                            .on_hover_text(
-                                "关闭后仅能观看。修改权限会断开这台设备的当前串流，重连后生效。",
-                            )
-                            .changed()
-                        {
-                            let permission = if control {
-                                uu_core::device_trust::Permissions::CONTROL
-                            } else {
-                                uu_core::device_trust::Permissions::VIEW
-                            };
+                        let mut permission=peer.inbound.unwrap_or(uu_core::device_trust::Permissions::VIEW);
+                        if super::sharing_ui::permissions(ui,&mut permission) {
                             let result = self.trust.as_ref().unwrap().authorize(
                                 peer.device.clone(),
                                 permission,

@@ -14,6 +14,8 @@ pub enum Section {
     Input,
     Stream,
     Application,
+    Connections,
+    Server,
 }
 impl Section {
     pub const ALL: [Self; 5] = [
@@ -30,6 +32,8 @@ impl Section {
             Self::Input => "键盘与鼠标",
             Self::Stream => "串流信息",
             Self::Application => "应用与诊断",
+            Self::Connections=>"连接信息",
+            Self::Server=>"服务端设置",
         }
     }
     fn description(self) -> &'static str {
@@ -39,10 +43,13 @@ impl Section {
             Self::Input => "配置键鼠、手柄、运动传感器与输入归属。",
             Self::Stream => "设置串流菜单与统计信息。",
             Self::Application => "管理串流界面、默认偏好与软件信息。",
+            Self::Connections=>"查看连接到主机的设备及其授权。",
+            Self::Server=>"修改远端服务下次启动使用的配置。",
         }
     }
 }
 pub struct State<'a> {
+    pub native:bool,
     pub streaming: bool,
     pub can_save_profile: bool,
     pub dirty: bool,
@@ -262,6 +269,7 @@ pub fn show(
     s: &mut Settings,
     section: &mut Section,
     state: State<'_>,
+    mut extra:impl FnMut(&mut egui::Ui,Section),
 ) -> Actions {
     let mut actions = Actions::default();
     if !state.streaming { *section=Section::Application; }
@@ -309,6 +317,7 @@ pub fn show(
                 });
             });
         });
+    if !matches!(*section,Section::Connections|Section::Server) {
     egui::TopBottomPanel::bottom("settings-actions")
         .exact_height(if compact { 54.0 } else { 66.0 })
         .frame(
@@ -358,6 +367,7 @@ pub fn show(
                 });
             });
         });
+    }
     if state.streaming && ctx.screen_rect().width() >= 760.0 {
         egui::SidePanel::left("settings-navigation")
             .exact_width(184.0)
@@ -380,6 +390,12 @@ pub fn show(
                     }
                     ui.add_space(18.0);
                 }
+                if state.native {
+                    ui.weak("主机");
+                    for item in [Section::Connections,Section::Server] {
+                        if ui.add_sized([ui.available_width(),38.],egui::SelectableLabel::new(*section==item,item.label())).clicked(){*section=item;}
+                    }
+                }
             });
     } else if state.streaming {
         egui::TopBottomPanel::top("settings-compact-navigation")
@@ -389,6 +405,7 @@ pub fn show(
                     for item in [Section::Video,Section::Audio,Section::Input,Section::Stream] {
                         ui.selectable_value(section, item, item.label());
                     }
+                    if state.native {for item in [Section::Connections,Section::Server] {ui.selectable_value(section,item,item.label());}}
                 });
             });
     }
@@ -411,12 +428,14 @@ pub fn show(
                             .color(theme::INK),
                     );
                     if !compact { note(ui, section.description()); }
-                    if *section!=Section::Application {
+                    if !matches!(*section,Section::Application|Section::Connections|Section::Server) {
                         note(ui,if state.streaming {
                             if state.can_save_profile {
                                 "保存并应用只影响当前串流；“保存到设备配置”会更新这台设备当前选择的命名配置。"
-                            } else {
+                            } else if state.native {
                                 "仅应用到当前串流；设备配置与全局默认不受影响。"
+                            } else {
+                                "UU 兼容串流设置会保存，下次连接继续使用。"
                             }
                         }else{"全局默认：未指定独立配置的设备使用这里的设置。"});
                     }
@@ -440,6 +459,7 @@ pub fn show(
                         Section::Input => input(ui, s, &state),
                         Section::Stream => stream(ui,s),
                         Section::Application => software(ui, s, &mut actions),
+                        Section::Connections|Section::Server=>extra(ui,*section),
                     }
                 });
         });
@@ -455,7 +475,7 @@ pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::Cli
     });
     ui.add_space(12.);
     let mut wrapper=Settings {client:settings.clone(),..Default::default()};
-    let state=State { streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None };
+    let state=State { native:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None };
     match section {Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
     *settings=wrapper.client;
 }

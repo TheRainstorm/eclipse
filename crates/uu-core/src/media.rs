@@ -33,6 +33,7 @@ pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSe
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
 pub struct MediaStats {
+    pub host_admin:crate::host_admin::Client,
     pub native_quality_request:std::sync::OnceLock<crate::native_quality::Request>,
     pub native_quality_response:std::sync::Mutex<Option<crate::native_quality::Response>>,
     pub native_codec_capabilities:std::sync::OnceLock<Vec<uu_proto::media::VideoCodec>>,

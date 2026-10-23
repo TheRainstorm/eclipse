@@ -329,7 +329,7 @@ impl Server {
             !config.bind.ip().is_multicast(),
             "invalid LAN listen address"
         );
-        native::SharingConfig {video_policy:config.video_policy.clone(),codec:config.codec,rate_control:config.rate_control,source:config.source.clone(),fps:config.fps,bitrate_kbps:config.bitrate_kbps,encoder:config.encoder,session_limit:None,allow_input:config.allow_input,audio:config.audio,clipboard:None}.validate()?;
+        native::SharingConfig {session:None,video_policy:config.video_policy.clone(),codec:config.codec,rate_control:config.rate_control,source:config.source.clone(),fps:config.fps,bitrate_kbps:config.bitrate_kbps,encoder:config.encoder,session_limit:None,allow_input:config.allow_input,audio:config.audio,clipboard:None}.validate()?;
         let identity = Identity::open(&config.data_dir.join("server-identity.json"))?;
         let acceptor = tls_acceptor(&identity,access.is_some())?;
         let listener = crate::listen_socket::tcp(config.bind).with_context(|| {
@@ -660,7 +660,7 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
         .data_dir
         .join(format!("session-{id}.eclipse-invite.json"));
     let (phase, mut status) = watch::channel(native::HostStatus::Starting);
-    let config = native::HostConfig {video_policy:state.config.video_policy.clone(),codec:state.config.codec,rate_control:state.config.rate_control,
+    let config = native::HostConfig {session:state.access.as_ref().map(|access|crate::shared_host::SessionContext{access:access.clone(),peer:client.clone(),permissions:permission}),video_policy:state.config.video_policy.clone(),codec:state.config.codec,rate_control:state.config.rate_control,
         bind: SocketAddr::new(local.ip(), 0),
         source: state.config.source.clone(),
         invitation_file: path.clone(),

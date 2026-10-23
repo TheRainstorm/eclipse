@@ -425,15 +425,19 @@ impl super::App {
         let dirty=self.settings_draft!=self.preferences;
         let gamepad_status=self.gamepad_status();
         let child=self.stream_target.is_some();
+        let native=self.is_native();
+        let stats=self.controller.as_ref().map(|h|h.stats.clone());
+        let remote=&mut self.remote_admin_ui;
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
             super::settings_page::State {
+                native,
                 streaming:self.stream_target.is_some(),
                 can_save_profile:self.stream_target.as_ref().is_some_and(|target| matches!(target.connection,super::sessions::ConnectionTarget::NativeProfile{..})),
                 dirty,
                 storage_error:self.settings_storage_error,notice:&self.settings_notice,
                 presentation_vsync:self.presentation_vsync,
                 gamepad_status:gamepad_status.as_deref(),
-            });
+            },|ui,section|remote.show(ui,section,stats.as_deref()));
         if actions.back {self.workspace.discard_server_draft();self.stream_settings_open=false;ctx.request_repaint();}
         if actions.maximize {self.toggle_maximized(ctx);}
         if actions.reset {

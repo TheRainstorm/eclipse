@@ -154,6 +154,7 @@ impl App {
     pub(super) fn connect_native_internet(&mut self,path:PathBuf){self.connect_native_source(None,None,Some(path),None);}
     pub(super) fn connect_native_profile(&mut self,path:PathBuf){self.connect_native_source(None,None,None,Some(path));}
     fn connect_native_source(&mut self,path:Option<PathBuf>,device:Option<String>,internet:Option<PathBuf>,profile:Option<PathBuf>){
+        self.remote_admin_ui=Default::default();
         self.native_clipboard_enabled=false;
         let stats = Arc::new(uu_core::media::MediaStats::default());
         let _=stats.native_quality_request.set(self.preferences.native_request());

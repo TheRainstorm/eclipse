@@ -107,7 +107,7 @@ impl Fixture {
         .unwrap()
     }
     async fn pair(&mut self, id: &str) -> Device {
-        self.handle.allow_pairing();
+        assert!(inspect(&self.endpoint).await.unwrap().pairing_open);
         let target = self.endpoint.clone();
         let id = id.to_owned();
         let (progress, mut codes) = mpsc::unbounded_channel();
@@ -229,6 +229,7 @@ async fn matching_tls_comparison_pairs_then_saved_authorization_starts_generated
 #[tokio::test]
 async fn pairing_requires_host_approval_and_rejection_does_not_create_authorization() {
     let mut host = Fixture::new().await;
+    host.handle.close_pairing();
     let id = uuid::Uuid::new_v4().to_string();
     let (progress, _codes) = mpsc::unbounded_channel();
     assert!(pair(&host.endpoint, &id, "Generated", progress)
@@ -292,7 +293,7 @@ async fn saved_pairing_survives_server_restart_and_sessions_are_bounded() {
     host.finish().await;
     let host = Fixture::at(root).await;
     device = verify_address(&device, &host.endpoint).await.unwrap();
-    assert!(!inspect(&device.endpoint).await.unwrap().pairing_open);
+    assert!(inspect(&device.endpoint).await.unwrap().pairing_open);
     let invitation = connect(&device, &id).await.unwrap();
     for _ in 1..crate::shared_host::MAX_SESSIONS { connect(&device, &id).await.unwrap(); }
     assert!(connect(&device, &id).await.is_err(), "capture concurrency must be bounded");

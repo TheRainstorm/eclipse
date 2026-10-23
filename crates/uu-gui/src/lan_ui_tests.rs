@@ -121,6 +121,7 @@ async fn native_lan_page_pairs_persists_and_decodes_generated_video_without_acco
     .await
     .unwrap();
     let endpoint = server.address().unwrap().to_string();
+    host.close_pairing();
     let task = tokio::spawn(server.run());
     let ctx = egui::Context::default();
     let dir = fixture.0.join("viewer");
@@ -129,7 +130,7 @@ async fn native_lan_page_pairs_persists_and_decodes_generated_video_without_acco
     page.add();
     page.connect(page.rows().remove(0), &ctx);
     wait_for_client_error(&mut page,&ctx).await;
-    assert!(page.client_error.as_ref().unwrap().contains("允许新设备配对"));
+    assert!(page.client_error.as_ref().unwrap().contains("停止接收配对"));
     host.allow_pairing();
     page.connect(page.rows().remove(0), &ctx);
     assert!(page.client_error.is_none(),"retry clears the previous failure");

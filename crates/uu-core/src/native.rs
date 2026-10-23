@@ -169,6 +169,7 @@ pub(crate) async fn write_message<T: Serialize>(
 }
 
 pub struct HostConfig {
+    pub session:Option<crate::shared_host::SessionContext>,
     pub video_policy:Option<crate::native_quality::Policy>,
     pub codec:VideoCodec,
     pub rate_control:uu_media::encoder::RateControl,
@@ -191,6 +192,7 @@ pub struct HostConfig {
 /// Capture and permissions shared by LAN and internet sessions.
 #[derive(Clone)]
 pub struct SharingConfig {
+    pub session:Option<crate::shared_host::SessionContext>,
     pub video_policy:Option<crate::native_quality::Policy>,
     pub codec:VideoCodec,
     pub rate_control:uu_media::encoder::RateControl,
@@ -204,7 +206,7 @@ pub struct SharingConfig {
     pub clipboard: Option<Arc<crate::clipboard::Clipboard>>,
 }
 impl From<&HostConfig> for SharingConfig {
-    fn from(c:&HostConfig)->Self {Self{video_policy:c.video_policy.clone(),codec:c.codec,rate_control:c.rate_control,source:c.source.clone(),fps:c.fps,bitrate_kbps:c.bitrate_kbps,encoder:c.encoder,
+    fn from(c:&HostConfig)->Self {Self{session:c.session.clone(),video_policy:c.video_policy.clone(),codec:c.codec,rate_control:c.rate_control,source:c.source.clone(),fps:c.fps,bitrate_kbps:c.bitrate_kbps,encoder:c.encoder,
         session_limit:c.session_limit,allow_input:c.allow_input,audio:c.audio,clipboard:c.clipboard.clone()}}
 }
 impl From<HostConfig> for SharingConfig {fn from(c:HostConfig)->Self{Self::from(&c)}}
@@ -300,6 +302,7 @@ struct ViewerLifetime(Arc<MediaStats>);
 impl Drop for ViewerLifetime {
     fn drop(&mut self){
         self.0.control_open.store(0,Ordering::Release);
+        self.0.host_admin.disconnect();
         self.0.capabilities.enable(crate::capabilities::Capability::Input,false);
         self.0.native_input_available.store(false,Ordering::Release);
         self.0.audio.stop();crate::native_clipboard::stop(&self.0.clipboard);
@@ -624,6 +627,8 @@ async fn send_video(
         _=stream.disconnected()=>return Ok(HostReport::default()),
     };
     config.codec=codec;
+    let permissions=config.session.as_ref().map_or(crate::device_trust::Permissions::CONTROL,|s|s.permissions);
+    if !permissions.details().clipboard {config.clipboard=None;}
     let mut track=peer.sender_for_codec(refresh.clone(),codec).await?;
     let mut audio_sender=if let Some(red)=audio_mode {Some(peer.audio_sender(red).await?)}else{None};
     let (width,height)=capture.resolution();
@@ -632,6 +637,8 @@ async fn send_video(
         controls=crate::native_control::HostControl::with_injector(config.allow_input,capture.desktop_rect(),config.clipboard.clone(),capture.input_injector(),authority)=>controls,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
     };
+    controls.set_permissions(permissions);
+    controls.set_session(config.session.clone());
     if let Some(displays)=&displays {displays.dimensions(width,height);}
     controls.set_displays(displays.clone());
     controls.attach(&peer.pc);
@@ -906,7 +913,7 @@ mod tests {
             "uu-video-{}.eclipse-invite.json",
             uuid::Uuid::new_v4()
         )));
-        let config = HostConfig {video_policy:None,codec:Default::default(),rate_control:Default::default(),
+        let config = HostConfig {session:None,video_policy:None,codec:Default::default(),rate_control:Default::default(),
             bind: "127.0.0.1:0".parse().unwrap(),
             source: uu_capture::CaptureSource::Synthetic {
                 width: 320,
@@ -1005,6 +1012,48 @@ mod tests {
         let viewed=viewer.await.unwrap();let hosted=host.await.unwrap();
         result.unwrap_or_else(|e|panic!("{e}; viewer={viewed:?}; host={hosted:?}; phase={:?}; packets={}; decoded={}; errors={}",*host_phase.borrow(),stats.packets.load(Ordering::Relaxed),stats.decoded_total.load(Ordering::Relaxed),stats.errors.load(Ordering::Relaxed))).unwrap_or_else(|e|panic!("{e}; viewer={viewed:?}; host={hosted:?}"));viewed.unwrap();let report=hosted.unwrap();assert!(report.sent>=12);
         assert!(!stats.capabilities.allows(crate::capabilities::Capability::Quality));
+    }
+    #[tokio::test]
+    async fn encrypted_control_reads_saves_and_acknowledges_host_restart() {
+        use crate::{device_auth::PairingControl,device_trust::{Permissions,TrustStore},host_admin::{Request,Response,Service},shared_host::{Access,SessionContext,SessionGate}};
+        let root=std::env::temp_dir().join(format!("eclipse-admin-stream-{}",uuid::Uuid::new_v4()));
+        let trust=TrustStore::open(root.join("host")).unwrap();
+        let client=TrustStore::open(root.join("client")).unwrap().card("Generated client");
+        let mut details=Permissions::CONTROL.details();details.manage_server=true;
+        let permissions=Permissions::CONTROL.with_details(details);
+        trust.authorize(client.clone(),permissions,None).unwrap();
+        let store=crate::device_book::Store::open(root.join("host")).unwrap();
+        let (sender,_)=mpsc::unbounded_channel();
+        let access=Arc::new(Access{store:trust,name:"Generated host".into(),pairing:Arc::new(PairingControl::new(sender)),sessions:Arc::new(SessionGate::default())});
+        let restarted=Arc::new(AtomicBool::new(false));let invoked=restarted.clone();
+        *access.sessions.administration.lock().unwrap()=Some(Arc::new(Service::new(store.clone(),Default::default(),move||{invoked.store(true,Ordering::Release);Ok(())})));
+        let _lease=access.claim(&client.id()).unwrap();
+        let (mut config,file)=config();
+        config.session=Some(SessionContext{access,peer:client.id(),permissions});
+        let (host_stop,rx)=watch::channel(false);let host=tokio::spawn(serve(config,rx));
+        let invite=invitation(&file).await;
+        let stats=Arc::new(MediaStats::default());let observed=stats.clone();
+        let (frames,_images)=frame_channel();let (stop,rx)=watch::channel(false);
+        let viewer=tokio::spawn(async move{view(&invite,frames,observed,rx).await});
+        let result=timeout(Duration::from_secs(12),async {
+            while !stats.host_admin.available.load(Ordering::Acquire)||stats.decoded_total.load(Ordering::Acquire)<3 {tokio::time::sleep(Duration::from_millis(10)).await;}
+            let id=stats.host_admin.request(Request::Inspect)?;
+            while stats.host_admin.response.lock().unwrap().as_ref().is_none_or(|(received,_)|*received!=id) {tokio::time::sleep(Duration::from_millis(10)).await;}
+            let snapshot=stats.host_admin.snapshot.lock().unwrap().clone().context("missing host snapshot")?;
+            ensure!(snapshot.connections.len()==1,"missing active connection");
+            let server=snapshot.server.context("missing manager settings")?;
+            let mut settings=server.saved;settings.audio=false;
+            let id=stats.host_admin.request(Request::Save{revision:server.revision,settings,restart:true})?;
+            while stats.host_admin.response.lock().unwrap().as_ref().is_none_or(|(received,_)|*received!=id) {tokio::time::sleep(Duration::from_millis(10)).await;}
+            ensure!(matches!(stats.host_admin.response.lock().unwrap().as_ref(),Some((_,Response::Saved{restart:true}))),"save failed");
+            while !restarted.load(Ordering::Acquire){tokio::time::sleep(Duration::from_millis(10)).await;}
+            ensure!(!store.read()?.sharing.audio,"settings were not saved");
+            Ok::<_,anyhow::Error>(())
+        }).await;
+        stop.send_replace(true);host_stop.send_replace(true);
+        let viewed=viewer.await.unwrap();let hosted=host.await.unwrap();
+        result.unwrap().unwrap();viewed.unwrap();hosted.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]
     async fn synthetic_source_cannot_authorize_system_audio() {

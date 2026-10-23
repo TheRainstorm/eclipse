@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let invitation_file = InvitationFile(invitation_path.clone());
-    let config = uu_core::native::HostConfig {video_policy:None,codec:Default::default(),rate_control:Default::default(),
+    let config = uu_core::native::HostConfig {session:None,video_policy:None,codec:Default::default(),rate_control:Default::default(),
         bind: "127.0.0.1:0".parse()?,
         source: uu_capture::CaptureSource::Primary,
         invitation_file: invitation_path.clone(),

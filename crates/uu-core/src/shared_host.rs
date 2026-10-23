@@ -33,11 +33,18 @@ impl Drop for HostOwner {
 }
 
 pub const MAX_SESSIONS: usize = 4;
+#[derive(Clone)]
+pub struct SessionContext {
+    pub access: Arc<Access>,
+    pub peer: String,
+    pub permissions: Permissions,
+}
 struct Active { peer: String, stop: watch::Sender<bool>, status: crate::native::HostStatus }
 #[derive(Default)]
 pub struct SessionGate {
     active: Mutex<HashMap<String, Active>>,
     pub input: Arc<crate::input_ownership::Authority>,
+    pub administration: Mutex<Option<Arc<crate::host_admin::Service>>>,
 }
 impl SessionGate {
     pub fn claim(self: &Arc<Self>, peer: &str) -> Result<SessionLease> {

@@ -24,6 +24,19 @@ enum Event {
     Clipboard(Arc<uu_core::clipboard::Clipboard>),
     Notice(String),
     Ended,
+    Restart,
+}
+
+pub(super) fn permissions(ui:&mut egui::Ui,value:&mut Permissions)->bool {
+    let mut details=value.details();
+    let mut changed=false;
+    changed|=ui.checkbox(&mut details.keyboard,"键盘").changed();
+    changed|=ui.checkbox(&mut details.mouse,"鼠标").changed();
+    changed|=ui.checkbox(&mut details.gamepad,"手柄").changed();
+    changed|=ui.checkbox(&mut details.clipboard,"剪贴板").changed();
+    changed|=ui.checkbox(&mut details.manage_server,"管理服务和连接权限").changed();
+    if changed {*value=value.with_details(details);}
+    changed
 }
 
 #[cfg(test)]
@@ -190,6 +203,7 @@ struct Pending {
     status: watch::Receiver<PairStatus>,
     code: String,
     control: bool,
+    manage:bool,
 }
 struct LegacyPending {
     request: lan::PairingRequest,
@@ -201,7 +215,7 @@ pub(super) struct SessionView {
     pub peer_id:String,
     pub name:String,
     pub status:HostStatus,
-    pub control:bool,
+    pub permissions:Permissions,
 }
 
 #[derive(Default)]
@@ -221,6 +235,7 @@ pub(super) struct HostUi {
     allow_control: bool,
     active_sharing: Option<uu_core::device_book::Sharing>,
     restart: Option<(uu_core::Config, Book, TrustStore)>,
+    restart_context:Option<(uu_core::Config,TrustStore)>,
 }
 impl HostUi {
     pub fn running(&self) -> bool {
@@ -262,16 +277,16 @@ impl HostUi {
         access.sessions.details().into_iter().map(|(id,peer,status)| {
             let record=peers.iter().find(|p|p.device.id()==peer);
             let name=record.map(|p|p.device.name.clone()).unwrap_or_else(|| "已授权设备".into());
-            let control=record.is_some_and(|p|p.inbound.is_some_and(|grant|grant.control));
-            SessionView {id,peer_id:peer,name,status,control}
+            let permissions=record.and_then(|p|p.inbound).unwrap_or(Permissions::VIEW);
+            SessionView {id,peer_id:peer,name,status,permissions}
         }).collect()
     }
-    pub fn set_session_control(&self, peer_id:&str, control:bool) -> anyhow::Result<()> {
+    pub fn set_session_permissions(&self, peer_id:&str, permissions:Permissions) -> anyhow::Result<()> {
         let access=self.access.as_ref().ok_or_else(||anyhow::anyhow!("本机共享未运行"))?;
         let peer=access.store.peer(peer_id)?.ok_or_else(||anyhow::anyhow!("设备授权记录不存在"))?;
         access.store.authorize(
             peer.device,
-            if control {uu_core::device_trust::Permissions::CONTROL} else {uu_core::device_trust::Permissions::VIEW},
+            permissions,
             None,
         )?;
         access.sessions.revoke(peer_id);
@@ -359,6 +374,13 @@ impl HostUi {
             pairing: Arc::new(PairingControl::new(requests)),
             sessions: Arc::new(SessionGate::default()),
         });
+        let admin_store=uu_core::device_book::Store::open(config.at("device-trust"))?;
+        let admin_send=send.clone();let admin_context=ctx.clone();
+        *access.sessions.administration.lock().unwrap()=Some(Arc::new(uu_core::host_admin::Service::new(admin_store,book.sharing.clone(),move|| {
+            admin_send.send(Event::Restart).map_err(|_|anyhow::anyhow!("服务管理窗口已经关闭"))?;
+            admin_context.request_repaint();Ok(())
+        })));
+        self.restart_context=Some((config.clone(),access.store.clone()));
         let (stop, receiver) = watch::channel(false);
         let (stream, _) = watch::channel(HostStatus::Starting);
         let (ip_status, ip_updates) = watch::channel(EndpointStatus::Starting);
@@ -482,6 +504,7 @@ impl HostUi {
         Ok(())
     }
     pub fn poll(&mut self, ctx: &egui::Context, window: isize) {
+        let mut restart_requested=false;
         if self.notice != self.last_notice {
             self.last_notice = self.notice.clone();
             self.notice_changed_at = (!self.notice.is_empty()).then(std::time::Instant::now);
@@ -532,6 +555,7 @@ impl HostUi {
                         _ => {}
                     },
                     Event::Ended => {}
+                    Event::Restart=>restart_requested=true,
                 }
             }
         }
@@ -544,6 +568,7 @@ impl HostUi {
                     status: request.status,
                     code: String::new(),
                     control: self.allow_control,
+                    manage:false,
                 });
                 ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
                     egui::UserAttentionType::Informational,
@@ -561,6 +586,14 @@ impl HostUi {
             }
             _ => true,
         });
+        if restart_requested&&!self.stopping {
+            let result=(||->anyhow::Result<()> {
+                let (config,trust)=self.restart_context.clone().ok_or_else(||anyhow::anyhow!("服务管理已关闭"))?;
+                let book=uu_core::device_book::Store::open(config.at("device-trust"))?.read()?;
+                self.restart(config,book,trust,ctx)
+            })();
+            if let Err(error)=result {self.notice=format!("远程重启服务失败：{error:#}");}
+        }
         if self
             .worker
             .as_ref()
@@ -614,6 +647,9 @@ impl HostUi {
                         } else {
                             Permissions::VIEW
                         };
+                        ui.checkbox(&mut pending.manage,"允许管理服务配置和连接权限");
+                        let mut details=permission.details();details.manage_server=pending.manage;
+                        let permission=if pending.manage {permission.with_details(details)}else{permission};
                         let approval = PairApproval::new(&pending.code, permission);
                         ui.horizontal(|ui| {
                             if ui

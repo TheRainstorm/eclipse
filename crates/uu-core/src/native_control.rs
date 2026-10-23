@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    sync::{oneshot, Notify},
+    sync::{mpsc,oneshot, Notify},
     time::timeout,
 };
 use uu_input::{DesktopRect, InputInjector};
@@ -30,6 +30,10 @@ const LEASE: Duration = Duration::from_secs(5);
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Packet {
+    AdminStatus {available:bool},
+    AdminRequest {request:u64,command:crate::host_admin::Request},
+    AdminResponse {request:u64,response:crate::host_admin::Response},
+    AdminApply {request:u64},
     Displays { catalog:crate::screen_control::RemoteScreens },
     SelectDisplay { request:u64, id:i32 },
     ApplyDisplay { request:u64 },
@@ -58,6 +62,7 @@ async fn send(channel: &RTCDataChannel, packet: Packet) -> Result<()> {
 }
 
 struct WorkerState {
+    allowed: std::sync::atomic::AtomicU8,
     gamepads: Mutex<Option<Arc<crate::native_gamepad::Worker>>>,
     gamepad_error: Mutex<Option<String>>,
     authority: Arc<crate::input_ownership::Authority>,
@@ -107,6 +112,7 @@ impl InputWorker {
             + 'static,
     {
         let state = Arc::new(WorkerState {
+            allowed:std::sync::atomic::AtomicU8::new(7),
             gamepads:Mutex::new(None),gamepad_error:Mutex::new(None),
             authority, ownership: Mutex::new(None),
             available: AtomicBool::new(false),
@@ -228,6 +234,7 @@ impl InputWorker {
     }
 
     fn gamepads(&self, state: uu_input::gamepad::Snapshot, generation:u64) {
+        if self.state.allowed.load(Ordering::Acquire)&4==0 {return;}
         if !self.available() || !self.state.enabled.load(Ordering::Acquire) || generation!=self.state.epoch.load(Ordering::Acquire){return;}
         let mut pads=self.state.gamepads.lock().unwrap();
         if pads.is_none() {
@@ -246,6 +253,8 @@ impl InputWorker {
         self.push_with_ack(command,None)
     }
     fn push_with_ack(&self,command:InputCommand,reply:Option<oneshot::Sender<InputApplied>>)->bool {
+        let required=match command {InputCommand::Key{..}=>1,InputCommand::ReleaseAll{}=>0,_=>2};
+        if required!=0 && self.state.allowed.load(Ordering::Acquire)&required==0 {return false;}
         if !self.available() || !self.state.enabled.load(Ordering::Acquire) || !command.validate() {
             return false;
         }
@@ -277,6 +286,9 @@ impl Drop for InputWorker {
 }
 
 pub(crate) struct HostControl {
+    session:Mutex<Option<crate::shared_host::SessionContext>>,
+    admin_busy:AtomicBool,
+    pending_restart:Mutex<Option<u64>>,
     displays:Mutex<Option<Arc<crate::native_displays::Host>>>,
     pending_display:Mutex<Option<u64>>,
     stopped:AtomicBool,
@@ -289,6 +301,33 @@ pub(crate) struct HostControl {
     gamepad_registered: AtomicBool,
 }
 impl HostControl {
+    pub fn set_session(&self,session:Option<crate::shared_host::SessionContext>) {*self.session.lock().unwrap()=session;}
+    fn admin_status(&self)->Packet {
+        Packet::AdminStatus{available:self.session.lock().unwrap().as_ref().is_some_and(|s|s.access.sessions.administration.lock().unwrap().is_some())}
+    }
+    async fn administer(self:Arc<Self>,channel:Arc<RTCDataChannel>,request:u64,command:crate::host_admin::Request) {
+        use crate::host_admin::Response;
+        if self.admin_busy.swap(true,Ordering::AcqRel) {
+            let _=send(&channel,Packet::AdminResponse{request,response:Response::Error{message:"另一项管理请求尚未完成".into()}}).await;
+            return;
+        }
+        struct Reset<'a>(&'a AtomicBool);
+        impl Drop for Reset<'_> {fn drop(&mut self){self.0.store(false,Ordering::Release);}}
+        let _reset=Reset(&self.admin_busy);
+        let context=self.session.lock().unwrap().clone();
+        let service=context.as_ref().and_then(|c|c.access.sessions.administration.lock().unwrap().clone());
+        let result=match (context,service) {
+            (Some(context),Some(service))=>tokio::task::spawn_blocking(move||service.execute(&context,command)).await.map_err(anyhow::Error::from).and_then(|r|r),
+            _=>Err(anyhow::anyhow!("主机未提供连接管理")),
+        };
+        if self.stopped.load(Ordering::Acquire){return;}
+        let response=result.unwrap_or_else(|error|Response::Error{message:error.to_string().chars().take(512).collect()});
+        if matches!(response,Response::Saved{restart:true}) {*self.pending_restart.lock().unwrap()=Some(request);}
+        let _=send(&channel,Packet::AdminResponse{request,response}).await;
+    }
+    pub fn set_permissions(&self,permissions:crate::device_trust::Permissions) {
+        if let Some(worker)=&self.worker {worker.state.allowed.store(permissions.input_mask(),Ordering::Release);}
+    }
     #[cfg(test)]
     pub async fn new(
         allow: bool,
@@ -323,6 +362,7 @@ impl HostControl {
             None
         };
         Arc::new(Self {
+            session:Mutex::new(None),admin_busy:AtomicBool::new(false),pending_restart:Mutex::new(None),
             displays:Mutex::new(None),
             pending_display:Mutex::new(None),
             stopped:AtomicBool::new(false),
@@ -391,12 +431,26 @@ impl HostControl {
                         };
                         if host.stopped.load(Ordering::Acquire){return;}
                         match parse(&message.data) {
+                            Some(Packet::AdminRequest{request,command})=>{
+                                tokio::spawn(host.clone().administer(channel.clone(),request,command));
+                            },
+                            Some(Packet::AdminApply{request})=>{
+                                let matched={let mut pending=host.pending_restart.lock().unwrap();if *pending==Some(request){pending.take();true}else{false}};
+                                if matched {
+                                    let context=host.session.lock().unwrap().clone();
+                                    if let Some(context)=context {
+                                        let service=context.access.sessions.administration.lock().unwrap().clone();
+                                        if let Some(service)=service {tokio::task::spawn_blocking(move||service.restart(&context));}
+                                    }
+                                }
+                            },
                             Some(Packet::Ping { sequence }) => {
                                 if let Some(worker) = &host.worker {
                                     worker.touch();
                                 }
                                 let _ = send(&channel, Packet::Pong { sequence }).await;
                                 let _ = send(&channel, host.status()).await;
+                                let _ = send(&channel, host.admin_status()).await;
                                 let _ = send(&channel,Packet::Telemetry{version:1,stages:host.timing.snapshot()}).await;
                                 let displays=host.displays.lock().unwrap().clone();
                                 if let Some(displays)=displays {let _=send(&channel,Packet::Displays{catalog:displays.catalog()}).await;}
@@ -418,6 +472,7 @@ impl HostControl {
                                     worker.request(enabled);
                                 }
                                 let _ = send(&channel, host.status()).await;
+                                let _ = send(&channel, host.admin_status()).await;
                             }
                             Some(Packet::Input { event }) => {
                                 if !host
@@ -486,6 +541,7 @@ impl HostControl {
 }
 
 pub(crate) struct ViewerControl {
+    admin:mpsc::Receiver<crate::host_admin::Command>,
     gamepads:Option<crate::native_gamepad::Viewer>,
     media_epoch:u64,
     channel: Arc<RTCDataChannel>,
@@ -503,6 +559,7 @@ impl ViewerControl {
         input: Option<NativeInputReceiver>,
     ) -> Self {
         let media_epoch=stats.native_media_epoch.load(Ordering::Acquire);
+        let admin=stats.host_admin.attach();
         stats.control_open.store(0,Ordering::Release);
         stats.capabilities.enable(Capability::Input,false);
         stats.native_input_available.store(false,Ordering::Release);
@@ -531,6 +588,7 @@ impl ViewerControl {
         channel.on_close(Box::new(move || {
             if closed.native_media_epoch.load(Ordering::Acquire)!=media_epoch{return Box::pin(async {});}
             closed.control_open.store(0, Ordering::Release);
+            closed.host_admin.disconnect();
             closed.capabilities.enable(Capability::Input, false);
             closed
                 .native_input_available
@@ -542,9 +600,19 @@ impl ViewerControl {
         let requested_copy = requested.clone();
         let generation = epoch.clone();
         let probes = probe.clone();
+        let admin_channel=Arc::downgrade(&channel);
         channel.on_message(Box::new(move |message| {
             if incoming.native_media_epoch.load(Ordering::Acquire)!=media_epoch{return Box::pin(async {});}
             match parse(&message.data) {
+                Some(Packet::AdminStatus{available})=>{incoming.host_admin.available.store(available,Ordering::Release);},
+                Some(Packet::AdminResponse{request,response})=>{
+                    let restart=matches!(response,crate::host_admin::Response::Saved{restart:true});
+                    incoming.host_admin.receive(request,response);
+                    if restart {
+                        let channel=admin_channel.clone();
+                        return Box::pin(async move{if let Some(channel)=channel.upgrade(){let _=send(&channel,Packet::AdminApply{request}).await;}});
+                    }
+                },
                 Some(Packet::Displays{catalog}) if crate::native_displays::valid(&catalog)=>{
                     *incoming.remote_screens.lock().unwrap()=catalog;
                     incoming.native_displays.catalog(media_epoch);
@@ -584,6 +652,7 @@ impl ViewerControl {
             Box::pin(async {})
         }));
         Self {
+            admin,
             gamepads:None,
             media_epoch,
             channel,
@@ -650,6 +719,9 @@ impl ViewerControl {
         let mut sequence = 0u64;
         loop {
             tokio::select! {biased;
+                Some(command)=self.admin.recv()=>{
+                    send(&self.channel,Packet::AdminRequest{request:command.id,command:command.request}).await?;
+                },
                 action=async{match self.input.as_mut(){Some(input)=>input.next().await,None=>std::future::pending().await}}=>{
                     match action {
                         NextInput::Display(request,id)=>{
@@ -785,6 +857,29 @@ mod tests {
         assert!(releases.load(Ordering::Acquire) > before);
         assert!(!worker.push(command));
         worker.stop().await;
+    }
+    #[tokio::test]
+    async fn keyboard_mouse_and_gamepad_grants_are_enforced_before_dispatch() {
+        let events=Arc::new(Mutex::new(Vec::new()));
+        let releases=Arc::new(AtomicU64::new(0));
+        let recorded=events.clone();let released=releases.clone();
+        let worker=InputWorker::with_factory(DesktopRect::new(0,0,640,480).unwrap(),move||Ok(Box::new(Fixture{events:recorded,releases:released}))).await.unwrap();
+        worker.state.allowed.store(1,Ordering::Release);
+        worker.request(true);
+        assert!(worker.push(InputCommand::Key{usage:4,pressed:true}));
+        assert!(!worker.push(InputCommand::Relative{dx:1,dy:1}));
+        let mut pads=[None;uu_input::gamepad::SLOTS];pads[0]=Some(Default::default());
+        worker.gamepads(pads,worker.state.epoch.load(Ordering::Acquire));
+        assert!(worker.state.gamepads.lock().unwrap().is_none());
+        wait(||worker.state.applied.load(Ordering::Acquire)==1).await;
+        assert_eq!(events.lock().unwrap().len(),1);
+        worker.state.allowed.store(2,Ordering::Release);
+        assert!(!worker.push(InputCommand::Key{usage:4,pressed:true}));
+        assert!(worker.push(InputCommand::Relative{dx:1,dy:1}));
+        assert!(worker.push(InputCommand::ReleaseAll{}));
+        wait(||worker.state.applied.load(Ordering::Acquire)==3).await;
+        worker.stop().await;
+        assert!(releases.load(Ordering::Acquire)>0);
     }
     #[tokio::test(flavor="multi_thread",worker_threads=2)]
     async fn another_viewer_cannot_inject_until_the_previous_owners_os_release_finishes() {
