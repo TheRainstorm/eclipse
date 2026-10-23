@@ -119,17 +119,19 @@ fn enable(name: &str) -> Result<()> {
     );
     Ok(())
 }
-fn owner_session(installed: &Installed) -> Option<u32> {
+fn owner_session(installed: &Installed) -> Result<u32> {
     let session = unsafe { WTSGetActiveConsoleSessionId() };
     if session == u32::MAX || session == 0 {
-        return None;
+        anyhow::bail!("等待活动控制台会话");
     }
     let mut token = ptr::null_mut();
-    if unsafe { WTSQueryUserToken(session, &mut token) } == 0 {
-        return None;
-    }
+    winok(unsafe { WTSQueryUserToken(session, &mut token) }).context("查询控制台用户身份失败")?;
     let token = Handle(token);
-    (token_user(token.0).ok().as_deref() == Some(installed.owner_sid.as_str())).then_some(session)
+    ensure!(
+        token_user(token.0)? == installed.owner_sid,
+        "等待服务所有者登录控制台"
+    );
+    Ok(session)
 }
 struct Child {
     session: u32,
@@ -292,12 +294,34 @@ fn run() -> Result<()> {
     report(SERVICE_RUNNING, 0);
     let mut child: Option<Child> = None;
     let mut retry_at = Instant::now();
+    let mut waiting = None;
     while !STOP.load(Ordering::Acquire) {
-        let session = owner_session(&installed);
+        let session = match owner_session(&installed) {
+            Ok(session) => {
+                waiting = None;
+                Some(session)
+            }
+            Err(error) => {
+                let reason = format!("{error:#}");
+                if waiting.as_ref() != Some(&reason) {
+                    tracing::info!(%reason,"background console host waiting");
+                    waiting = Some(reason);
+                }
+                None
+            }
+        };
         if child.as_ref().is_some_and(|child| {
             Some(child.session) != session
                 || unsafe { WaitForSingleObject(child.process.0, 0) } == WAIT_OBJECT_0
         }) {
+            if let Some(child) = &child {
+                let mut code = 0;
+                if unsafe { GetExitCodeProcess(child.process.0, &mut code) } != 0
+                    && code != STILL_ACTIVE as u32
+                {
+                    tracing::info!(code, "background media process exited");
+                }
+            }
             child.take();
             retry_at = Instant::now() + Duration::from_secs(2);
         }

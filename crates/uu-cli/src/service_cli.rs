@@ -39,9 +39,7 @@ pub fn init_background_logging() -> Result<()> {
         .append(true)
         .open(path)?;
     tracing_subscriber::fmt()
-        .with_env_filter(
-            "error,uu_core=info,uu_cli=info,uu_capture=warn,uu_input=warn,uu_media=warn",
-        )
+        .with_env_filter("error,uu_core=info,uu=info,uu_capture=warn,uu_input=warn,uu_media=warn")
         .with_target(false)
         .with_ansi(false)
         .with_writer(std::sync::Mutex::new(log))
@@ -126,7 +124,13 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
         Command::SessionHost {
             session,
             stop_event,
-        } => host::run(session, &stop_event).await,
+        } => {
+            let result = host::run(session, &stop_event).await;
+            if let Err(error) = &result {
+                tracing::error!(error=%error,"background media process stopped");
+            }
+            result
+        }
     }
 }
 pub fn start() -> Result<()> {

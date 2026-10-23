@@ -449,14 +449,15 @@ mod tests {
     async fn inspect() -> Response {
         let deadline = Instant::now() + Duration::from_secs(25);
         loop {
-            if let Ok(response @ Response::Status { .. }) =
-                service_admin::windows::request(Request::Status).await
-            {
-                return response;
-            }
+            let reason = match service_admin::windows::request(Request::Status).await {
+                Ok(response @ Response::Status { .. }) => return response,
+                Ok(Response::Error { message }) => message,
+                Ok(_) => "unexpected management response".into(),
+                Err(error) => format!("{error:#}"),
+            };
             assert!(
                 Instant::now() < deadline,
-                "owned background host did not become manageable"
+                "owned background host did not become manageable: {reason}"
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
