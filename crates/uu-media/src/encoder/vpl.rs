@@ -100,7 +100,11 @@ impl Driver {
             )
         };
         if status < 0 {
-            return Err(message(&error));
+            let low_power=match settings.tuning.intel_low_power {
+                super::LowPower::Auto=>"自动",super::LowPower::On=>"启用",super::LowPower::Off=>"停用",
+            };
+            return Err(format!("Intel QSV {:?}（Target Usage={}，低功耗={}）：{}",
+                settings.codec,settings.tuning.intel_target_usage,low_power,message(&error)));
         }
         let encoder = NonNull::new(encoder).ok_or("Intel runtime returned no encoder")?;
         let low_power = unsafe { eclipse_vpl_encoder_low_power(encoder.as_ptr()) } != 0;
