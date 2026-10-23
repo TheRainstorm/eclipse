@@ -259,6 +259,16 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
             "后台服务属于另一位 Windows 用户，请先移除原安装和配置"
         );
     }
+    let previous = if existing {
+        Some(paths.manifest()?)
+    } else {
+        None
+    };
+    let before = service_state()?;
+    ensure!(
+        before.is_none() || previous.is_some(),
+        "同名 Windows 服务缺少本产品的受保护安装记录，拒绝覆盖"
+    );
     let manifest: serde_json::Value =
         serde_json::from_slice(&regular(&package.join("version.json"), 64 * 1024)?)?;
     let revision = manifest["source_commit"]
@@ -292,9 +302,6 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
             "安装包文件校验失败：{name}"
         );
         files.push((name, bytes));
-    }
-    if status().is_ok() {
-        super::stop()?;
     }
     let versions = paths.programs.join("versions");
     directory(&versions)?;
@@ -385,16 +392,78 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
             Ok(())
         })?;
         protect_tree(&config.data_dir)?;
-        source_store.edit(|book| {
+    }
+    // Stage and verify the complete version before interrupting an old host.
+    // Keep both SCM registration and the manifest recoverable on normal errors.
+    if before.is_some() {
+        super::stop()?;
+    }
+    let mut created = false;
+    let mut switched = false;
+    let result = (|| -> Result<()> {
+        let (_service, new) = registration(&paths, &installed)?;
+        created = new;
+        switched = true;
+        paths.save_manifest(&installed)?;
+        protect(&paths.root.join("service.json"))?;
+        super::start()?;
+        uu_core::device_book::Store::open(source.join("device-trust"))?.edit(|book| {
             book.sharing.auto_start = false;
             Ok(())
         })?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let restored = (|| -> Result<()> {
+            if switched && service_state()?.is_some() {
+                super::stop()?;
+            }
+            if let Some(previous) = &previous {
+                if fs::read(paths.root.join("service.json")).ok()
+                    != Some(serde_json::to_vec(previous)?)
+                {
+                    paths.save_manifest(previous)?;
+                    protect(&paths.root.join("service.json"))?;
+                }
+                if before.is_some() {
+                    let _ = registration(&paths, previous)?;
+                }
+            } else if switched && paths.root.join("service.json").try_exists()? {
+                fs::remove_file(paths.root.join("service.json"))?;
+            }
+            if created && before.is_none() {
+                let service = open_service(DELETE)?;
+                winok(unsafe { DeleteService(service.0) })?;
+            }
+            if before == Some(SERVICE_RUNNING) {
+                super::start()?;
+            }
+            Ok(())
+        })();
+        return match restored {
+            Ok(()) => Err(error.context("后台安装更新失败，已恢复原服务状态")),
+            Err(restore) => Err(anyhow::anyhow!(
+                "后台安装更新失败：{error:#}；恢复原状态也失败：{restore:#}"
+            )),
+        };
     }
-    fs::write(
-        paths.root.join("service.json"),
-        serde_json::to_vec(&installed)?,
-    )?;
-    protect(&paths.root.join("service.json"))?;
+    Ok(())
+}
+fn service_state() -> Result<Option<u32>> {
+    match status() {
+        Ok(state) => Ok(Some(state)),
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .and_then(|e| e.raw_os_error())
+                == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+fn registration(paths: &Paths, installed: &Installed) -> Result<(ServiceHandle, bool)> {
     let manager = ServiceHandle(unsafe {
         OpenSCManagerW(
             ptr::null(),
@@ -403,7 +472,7 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
         )
     });
     ensure!(!manager.0.is_null(), "无法打开 Windows 服务管理器");
-    let executable = destination.join("uu.exe");
+    let executable = paths.binary_directory(installed).join("uu.exe");
     let command = wide(format!("\"{}\" service daemon", executable.display()));
     let name = wide(SERVICE_NAME);
     let service = unsafe {
@@ -414,6 +483,10 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
         )
     };
     if service.is_null() {
+        ensure!(
+            unsafe { GetLastError() } == ERROR_SERVICE_DOES_NOT_EXIST,
+            "无法读取现有后台服务配置"
+        );
         let service = ServiceHandle(unsafe {
             CreateServiceW(
                 manager.0,
@@ -436,6 +509,7 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
             "无法注册 Windows 后台服务：{}",
             std::io::Error::last_os_error()
         );
+        Ok((service, true))
     } else {
         let service = ServiceHandle(service);
         winok(unsafe {
@@ -453,8 +527,8 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
                 ptr::null(),
             )
         })?;
+        Ok((service, false))
     }
-    super::start()
 }
 
 pub fn import_account(source: PathBuf) -> Result<()> {
@@ -632,7 +706,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        install_from(source_data.clone(), package, false).unwrap();
+        install_from(source_data.clone(), package.clone(), false).unwrap();
         let Response::Status { snapshot, .. } = inspect().await else {
             unreachable!()
         };
@@ -649,6 +723,57 @@ mod tests {
             Some(Permissions::VIEW)
         );
         assert!(!store.read().unwrap().sharing.auto_start);
+        // Exercise a real OS activation failure after the protected manifest
+        // and SCM command have changed, rather than a validation-only failure.
+        let prior_manifest = fs::read(fixture.paths.root.join("service.json")).unwrap();
+        let invalid_package = fixture.source.join("invalid-executable-package");
+        fs::create_dir(&invalid_package).unwrap();
+        for name in [
+            "uu.exe",
+            "uu-gui.exe",
+            "libgcc_s_seh-1.dll",
+            "libstdc++-6.dll",
+            "libvpl.dll",
+        ] {
+            fs::copy(package.join(name), invalid_package.join(name)).unwrap();
+        }
+        let invalid_bytes = b"owned fixture: intentionally invalid Windows executable";
+        fs::write(invalid_package.join("uu.exe"), invalid_bytes).unwrap();
+        let mut invalid: serde_json::Value =
+            serde_json::from_slice(&fs::read(package.join("version.json")).unwrap()).unwrap();
+        invalid["source_commit"] = "1111111111111111111111111111111111111111".into();
+        invalid["sha256"]["uu.exe"] = hex::encode(Sha256::digest(invalid_bytes)).into();
+        fs::write(
+            invalid_package.join("version.json"),
+            serde_json::to_vec(&invalid).unwrap(),
+        )
+        .unwrap();
+        store
+            .edit(|book| {
+                book.sharing.auto_start = true;
+                Ok(())
+            })
+            .unwrap();
+        let error = install_from(source_data.clone(), invalid_package, false).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("已恢复原服务状态"),
+            "{error:#}"
+        );
+        assert_eq!(
+            fs::read(fixture.paths.root.join("service.json")).unwrap(),
+            prior_manifest
+        );
+        assert!(
+            store.read().unwrap().sharing.auto_start,
+            "failed activation changed the source profile"
+        );
+        let _ = inspect().await;
+        install_from(source_data.clone(), package, false).unwrap();
+        assert!(
+            !store.read().unwrap().sharing.auto_start,
+            "successful upgrades must disable frontend auto-start too"
+        );
+        let _ = inspect().await;
         for path in [
             protected.at("device-trust/identity.pk8"),
             protected.at("device-trust/peers.json"),
@@ -745,6 +870,6 @@ mod tests {
         assert!(!Paths::discover().unwrap().root.exists());
         assert!(!Paths::discover().unwrap().programs.exists());
         assert!(status().is_err());
-        println!("owned System console host, protected ACLs, identity and authorization migration, saved-only change, live restart, child stop and port release passed; desktop pixels were never captured");
+        println!("owned System console host, protected ACLs, identity and authorization migration, failed activation rollback, successful upgrade, saved-only change, live restart, child stop and port release passed; desktop pixels were never captured");
     }
 }

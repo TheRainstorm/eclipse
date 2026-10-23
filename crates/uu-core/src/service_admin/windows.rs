@@ -124,6 +124,14 @@ impl Paths {
         value.validate()?;
         Ok(value)
     }
+    pub fn save_manifest(&self, value: &Installed) -> Result<()> {
+        value.validate()?;
+        crate::private_file::write_atomic(
+            &self.root.join("service.json"),
+            &serde_json::to_vec(value)?,
+        )?;
+        Ok(())
+    }
     pub fn binary_directory(&self, installed: &Installed) -> PathBuf {
         self.programs
             .join("versions")
@@ -332,13 +340,15 @@ impl Drop for ServiceHandle {
 pub fn open_service(access: u32) -> Result<ServiceHandle> {
     let manager =
         ServiceHandle(unsafe { OpenSCManagerW(ptr::null(), ptr::null(), SC_MANAGER_CONNECT) });
-    ensure!(!manager.0.is_null(), "无法访问 Windows 服务管理器");
+    if manager.0.is_null() {
+        return Err(std::io::Error::last_os_error()).context("无法访问 Windows 服务管理器");
+    }
     let service =
         ServiceHandle(unsafe { OpenServiceW(manager.0, wide(SERVICE_NAME).as_ptr(), access) });
-    ensure!(
-        !service.0.is_null(),
-        "Windows 后台服务尚未安装或没有管理权限"
-    );
+    if service.0.is_null() {
+        return Err(std::io::Error::last_os_error())
+            .context("Windows 后台服务尚未安装或没有管理权限");
+    }
     Ok(service)
 }
 pub fn status() -> Result<u32> {
