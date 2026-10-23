@@ -14,6 +14,12 @@ fn swap_interval(enabled: bool) -> glutin::surface::SwapInterval {
     else { glutin::surface::SwapInterval::DontWait }
 }
 
+fn presentation_visible(current: Option<bool>, output: &egui::ViewportOutput) -> bool {
+    output.commands.iter().rev().find_map(|command| {
+        if let egui::ViewportCommand::Visible(visible) = command { Some(*visible) } else { None }
+    }).unwrap_or(output.builder.visible.or(current).unwrap_or(true))
+}
+
 use egui_winit::ActionRequested;
 use glutin::{
     config::GlConfig,
@@ -169,6 +175,10 @@ impl<'app> GlowWinitApp<'app> {
 
         // Creates the window - must come before we create our glow context
         glutin_window_context.initialize_window(ViewportId::ROOT, event_loop)?;
+        // Initial native hiding prevents a white flash. Retain the caller's
+        // visibility separately from that temporary construction detail.
+        glutin_window_context.viewports.get_mut(&ViewportId::ROOT).unwrap().builder.visible =
+            native_options.viewport.visible;
 
         {
             let viewport = &glutin_window_context.viewports[&ViewportId::ROOT];
@@ -699,7 +709,10 @@ impl<'app> GlowWinitRunning<'app> {
             integration.post_rendering(&window);
         }
 
-        {
+        // On Wayland set_visible(false) is unsupported: attaching a buffer
+        // maps the surface. Hidden viewports still run UI and upload shared
+        // textures, but must never present their coordinating surface.
+        if presentation_visible(viewport.builder.visible, &viewport_output[&viewport_id]) {
             // vsync - don't count as frame-time:
             frame_timer.pause();
             crate::profile_scope!("swap_buffers");
@@ -1307,6 +1320,11 @@ impl GlutinWindowContext {
                 let old_inner_size = window.inner_size();
 
                 viewport.deferred_commands.append(&mut commands);
+                for command in &viewport.deferred_commands {
+                    if let egui::ViewportCommand::Visible(visible) = command {
+                        viewport.builder.visible = Some(*visible);
+                    }
+                }
 
                 egui_winit::process_viewport_commands(
                     egui_ctx,
@@ -1526,7 +1544,7 @@ fn render_immediate_viewport(
         &textures_delta,
     );
 
-    {
+    if presentation_visible(viewport.builder.visible, &viewport_output[&viewport_id]) {
         crate::profile_scope!("swap_buffers");
         crate::vsync::apply(egui_ctx, viewport_id, false, |enabled| {
             gl_surface.set_swap_interval(current_gl_context, swap_interval(enabled)).map_err(|e| e.to_string())

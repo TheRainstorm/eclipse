@@ -38,7 +38,7 @@ def main():
                UU_DECODER='hw' if args.expect_hardware else args.decoder, RUST_LOG='error')
     data = out / 'data' / 'uu-remote'
     data.mkdir(parents=True)
-    (data / 'gui-settings.json').write_text(json.dumps(dict(hud=True, clipboard=False, muted=True)))
+    (data / 'gui-settings.json').write_text(json.dumps(dict(hud=True, clipboard=False, muted=True, lan_discovery=False)))
     marker = out / 'compositor-shortcut'
     config = out / 'sway.conf'
     config.write_text(f'bindsym Mod4+c exec touch {marker}\n'
@@ -81,11 +81,13 @@ def main():
     def window():
         nonlocal window_id
         owned = [node for node in nodes(ipc('', 'get_tree')) if node.get('pid') == gui.pid]
+        mapped = [node for node in owned if node.get('visible')]
+        if len(mapped) > 1:
+            raise RuntimeError('A hidden workspace coordinator became a visible extra window')
         if window_id is None:
             # A stream workspace also owns a hidden coordinating root. Pin the
             # mapped stream surface, then retain its compositor identity across
             # fullscreen and output changes, even while visibility transitions.
-            mapped = [node for node in owned if node.get('visible')]
             chosen = next((node for node in mapped if node.get('focused')), None)
             if chosen is None and len(mapped) == 1:
                 chosen = mapped[0]
@@ -194,6 +196,19 @@ def main():
         host.wait(timeout=6)
         if gui.returncode or host.returncode:
             raise RuntimeError('Native viewing did not close cleanly')
+        # Visibility is requested for the ordinary root window. Ensure that
+        # suppressing presentation of a hidden coordinator keeps the home UI.
+        window_id = None
+        gui = subprocess.Popen([str(args.gui.resolve())], env=env,
+                               stdout=log('home.log'), stderr=subprocess.STDOUT)
+        wait(window)
+        wait(lambda: window().get('focused'))
+        screenshot('home')
+        window_command('kill')
+        gui.wait(timeout=8)
+        if gui.returncode:
+            raise RuntimeError('Owned home window did not close cleanly')
+        result['home_root_visible'] = True
         result['clean_exit'] = True
         (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result))
@@ -208,7 +223,7 @@ def main():
                 (out / 'failed-windows.json').write_text(json.dumps(owned, indent=2))
             except (OSError, ValueError, subprocess.SubprocessError):
                 pass
-        for name in ('sway.log', 'keyboard.log', 'gui.log'):
+        for name in ('sway.log', 'keyboard.log', 'gui.log', 'home.log'):
             path = out / name
             if path.exists():
                 print(f'Owned Wayland test {name}:\n{path.read_text(errors="replace")[-6000:]}', file=sys.stderr)
