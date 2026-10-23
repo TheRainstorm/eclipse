@@ -22,6 +22,8 @@ COM、Media Foundation、编码器和缓冲均在专用线程创建、使用和�
 
 AMD 使用安装在系统目录的 AMF 驱动运行时，通过 `InitDX11` 和 `CreateSurfaceFromDX11Native` 接收纹理。采用超低延迟用途、速度预设、无 B 帧和有界输出等待；每个 sample 独立持有其纹理，直到编码器完成。H.264 / HEVC / AV1 共享生命周期、CBR / VBR、关键帧恢复与动态码率规则。显式 AMD 失败时返回具体原因，不偷偷选择其它厂商。API 头文件来源及固定版本见 [AMF API headers](../vendor/amf-api/README.md)，接口语义见 [AMD AMF SDK](https://github.com/GPUOpen-LibrariesAndSDKs/AMF)。实现参考 Sunshine 的 GPU 输入和输出生命周期，未复制其 GPL 实现。
 
+AMF 三种格式将 GOP 周期设为0，并在初始化后核对驱动实际值。公共编码线程仅在首帧、编码器重建和显式恢复请求时要求关键帧；AMF 在线码率调整保留参考链，不额外请求 IDR。需要重建参考链的其它后端仍可要求关键帧，不能把这条策略当成所有后端的无限 GOP 保证。
+
 在一台 AMD GPU 上，同为 3840×2160、60 FPS 设置、14 Mbps、60 帧生成色条的测试中，MFT CPU 输入均值约 43.4 ms，MFT GPU 输入约 45.6–45.8 ms；原生 AMF CPU 输入约 13.7 ms，AMF GPU 输入两次约 8.9 / 9.1 ms，中位约 8.0 ms。AMF HEVC GPU 输入约 9.0–9.2 ms。结果包含编码调用的转换、提交与驱动等待；生成纹理的初始 CPU 上传在计时外，真实桌面采集、传输和呈现也不在该计时内。测试核验颜色、冷关键帧、降码率及恢复，不能等同于真实桌面总延迟验收或所有显卡的性能保证。
 
 AV1 时序头包含标准的 32-bit 无符号字段。公共位读取器支持完整位宽，避免将带时序信息的有效序列头误判为不支持；保留有符号读取的边界检查。
