@@ -34,7 +34,7 @@ $definition.Settings.Enabled=$true;$definition.Settings.AllowDemandStart=$true;$
 $action=$definition.Actions.Create(0);$action.Path=Join-Path $PSHOME 'powershell.exe';$action.Arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+(Join-Path $PSScriptRoot 'action.ps1')+'"'
 $name='EclipseOwnedMedia-'+[guid]::NewGuid().ToString('N');$registered=$false;$task=$null
 try {
- $task=$folder.RegisterTaskDefinition($name,$definition,2,'SYSTEM',$null,5,$null);$registered=$true;$null=$task.Run($null)
+ $task=$folder.RegisterTaskDefinition($name,$definition,2,'SYSTEM',$null,5,'O:BAG:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)');$registered=$true;$null=$task.Run($null)
  $deadline=[DateTime]::UtcNow.AddSeconds(45)
  while(!(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'probe.result'))){if([DateTime]::UtcNow -gt $deadline){throw 'owned System task timed out'};Start-Sleep -Milliseconds 100}
  if([System.IO.File]::ReadAllText((Join-Path $PSScriptRoot 'probe.result')).Trim() -ne '0') {throw 'owned System media test failed'}
@@ -186,7 +186,10 @@ async fn owned_system_generated_media() {
     winok(unsafe { GetExitCodeProcess(child.process.0, &mut code) }).unwrap();
     assert_eq!(code, 0);
     drop(child);
-    fs::remove_file(invitation).unwrap();
+    assert!(
+        !invitation.exists(),
+        "native host left its owned invitation file"
+    );
     // Holding the exact protected service process handle prevents PID reuse.
     let service = open_service(SERVICE_QUERY_STATUS).unwrap();
     fn status(service: &ServiceHandle) -> SERVICE_STATUS_PROCESS {
