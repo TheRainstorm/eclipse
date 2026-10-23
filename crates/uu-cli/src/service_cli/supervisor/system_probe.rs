@@ -22,9 +22,10 @@ pub(crate) fn run(paths: &Paths) -> Result<()> {
 $p=$null
 try {
  $p=Start-Process -FilePath (Join-Path $PSScriptRoot 'probe.exe') -ArgumentList @('--ignored','--exact','service_cli::supervisor::system_probe::owned_system_generated_media','--test-threads=1','--nocapture') -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $PSScriptRoot 'probe.out') -RedirectStandardError (Join-Path $PSScriptRoot 'probe.err')
+ $null=$p.Handle
  [System.IO.File]::WriteAllText((Join-Path $PSScriptRoot 'probe.pid'),[string]$p.Id)
  if(!$p.WaitForExit(35000)){$p.Kill();$p.WaitForExit();throw 'owned System media probe timed out'}
- $p.WaitForExit();[System.IO.File]::WriteAllText((Join-Path $PSScriptRoot 'probe.result'),[string]$p.ExitCode)
+ $p.WaitForExit();if($null -eq $p.ExitCode){throw 'owned process exit status is unavailable'};[System.IO.File]::WriteAllText((Join-Path $PSScriptRoot 'probe.result'),[string]$p.ExitCode)
 } finally {if($null -ne $p -and !$p.HasExited){$p.Kill();$p.WaitForExit()}}
 "#;
     let scheduler = r#"$ErrorActionPreference='Stop'
