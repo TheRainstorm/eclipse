@@ -333,6 +333,19 @@ mod tests {
     }
 
     #[test]
+    fn pairing_tab_owns_identity_and_authorization_controls() {
+        let mut h=Harness::new();h.workspace.route.page=Page::Services;
+        h.click("配对设置");
+        assert!(h.texts.iter().any(|(s,_)|s=="设备名称"));
+        assert!(h.texts.iter().any(|(s,_)|s=="密码配对"));
+        assert!(h.texts.iter().any(|(s,_)|s=="复制本机公钥"));
+        h.click("输入");
+        assert!(!h.texts.iter().any(|(s,_)|s=="密码配对"));
+        h.click("音频 / 视频");
+        assert!(!h.texts.iter().any(|(s,_)|s=="设备名称"));
+    }
+
+    #[test]
     fn device_editor_retains_failed_input_and_saves_multiple_routes_without_duplicates_or_key_files(
     ) {
         let mut h = Harness::new();
@@ -1318,7 +1331,7 @@ impl Workspace {
     }
     fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>) {
         ui.horizontal_wrapped(|ui| {
-            for (tab,label) in [(0,"连接服务"),(1,"输入"),(2,"音频 / 视频"),(3,"编码器")] {
+            for (tab,label) in [(0,"连接服务"),(1,"输入"),(2,"音频 / 视频"),(3,"编码器"),(4,"配对设置")] {
                 ui.selectable_value(&mut self.service_tab,tab,label);
             }
         });
@@ -1467,6 +1480,19 @@ impl Workspace {
         }
     }
     pub(super) fn server_settings(&mut self, ui: &mut egui::Ui, info: &Info, _actions: &mut Vec<Action>) {
+        if self.service_tab==4 {
+            card(ui,|ui| {
+                ui.strong("设备身份");
+                super::server_config_ui::device_name(ui,&mut self.draft,true);
+                muted(ui,"名称用于原生设备配对和公钥备注，保存后使用新名称。");
+            });
+            if let Some(trust)=&self.trust {
+                card(ui,|ui|{self.pairing_settings.show(ui,trust,&self.book.sharing.name,self.host.access.as_ref());});
+            }
+            self.grants(ui);
+            return;
+        }
+
         if self.monitors.is_empty() && self.monitor_error.is_empty() {
             self.refresh_monitors();
         }
@@ -1475,20 +1501,16 @@ impl Workspace {
             ui.strong(match self.host_section {0=>"采集与声音",1=>"编码",_=>"访问权限"});
             ui.add_space(10.);
             let monitors:Vec<_>=self.monitors.iter().map(|m|(m.name.clone(),format!("{} · {}×{}",m.name,m.width,m.height))).collect();
-            super::server_config_ui::edit(ui,&mut self.draft,self.host_section,&monitors,uu_core::native::uses_desktop_portal(),!info.login_busy);
+            if self.host_section==0 {super::server_config_ui::capture(ui,&mut self.draft,&monitors,uu_core::native::uses_desktop_portal());}
+            else {super::server_config_ui::edit(ui,&mut self.draft,self.host_section,&monitors,uu_core::native::uses_desktop_portal(),!info.login_busy);}
             if !self.monitor_error.is_empty(){ui.colored_label(theme::DANGER,&self.monitor_error);}
             if running {
                 muted(ui,"运行期间可编辑并保存；下次启动生效，或保存后重启服务。重启会断开当前串流。");
             }
         });
         ui.add_space(14.);
-        if self.host_section==2 {
-            if let Some(trust)=&self.trust {
-                card(ui,|ui|{self.pairing_settings.show(ui,trust,&self.book.sharing.name,self.host.access.as_ref());});
-            }
-            self.grants(ui);
-        }
     }
+
     fn grants(&mut self, ui: &mut egui::Ui) {
         let peers = match &self.trust {
             Some(store) => match store.peers() {

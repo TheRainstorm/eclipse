@@ -70,7 +70,8 @@ impl PublicDevice {
             raw if raw.len()==64=>raw.to_owned(),
             _=>anyhow::bail!("请输入 Eclipse 或 SSH Ed25519 公钥"),
         };
-        let value=Self {name:name.trim().to_owned(),public_key:key.to_ascii_lowercase()};
+        let comment=parts.collect::<Vec<_>>().join(" ");
+        let value=Self {name:if name.trim().is_empty(){comment}else{name.trim().to_owned()},public_key:key.to_ascii_lowercase()};
         value.validate()?;
         Ok(value)
     }
@@ -388,9 +389,13 @@ mod tests {
         use base64::Engine;
         let key=[19;32];let native=PublicDevice{name:"Generated".into(),public_key:hex::encode(key)};
         assert_eq!(PublicDevice::from_public_key(&native.export_public_key(),"Imported").unwrap().public_key,native.public_key);
+        assert_eq!(PublicDevice::from_public_key(&native.export_public_key(),"").unwrap().name,native.name);
         let mut blob=Vec::new();blob.extend(11u32.to_be_bytes());blob.extend(b"ssh-ed25519");blob.extend(32u32.to_be_bytes());blob.extend(key);
         let ssh=format!("ssh-ed25519 {} generated fixture",base64::engine::general_purpose::STANDARD.encode(&blob));
         assert_eq!(PublicDevice::from_public_key(&ssh,"Imported").unwrap().public_key,native.public_key);
+        assert_eq!(PublicDevice::from_public_key(&ssh,"").unwrap().name,"generated fixture");
+        assert_eq!(PublicDevice::from_public_key(&ssh,"Custom name").unwrap().name,"Custom name");
+        assert!(PublicDevice::from_public_key(&native.public_key,"").is_err());
         blob.push(1);
         assert!(PublicDevice::from_public_key(&format!("ssh-ed25519 {}",base64::engine::general_purpose::STANDARD.encode(&blob)),"Imported").is_err());
         assert!(PublicDevice::from_public_key("-----BEGIN OPENSSH PRIVATE KEY-----","Imported").is_err());

@@ -46,7 +46,7 @@ impl ClientUi {
                         },
                         PairingMethod::PublicKey=>{ui.label("主机已预先授权本机公钥。核对上方指纹后信任并连接。");},
                     }
-                    if !prompt.preauthorized {ui.weak("公钥方式需先在主机“访问权限”中添加本机公钥。");}
+                    if !prompt.preauthorized {ui.weak("公钥方式需先在主机“配对设置”中添加本机公钥。");}
                     if !self.notice.is_empty(){ui.colored_label(super::theme::DANGER,&self.notice);}
                     let valid=self.method!=PairingMethod::Password || (8..=256).contains(&self.password.len());
                     if ui.add_enabled(valid,egui::Button::new(if self.method==PairingMethod::PublicKey{"信任并连接"}else{"开始配对"})).clicked() {
@@ -74,11 +74,19 @@ pub(super) struct HostUi {
     password_permissions:Permissions,
     public_key:String,
     name:String,
+    suggested_name:Option<String>,
     key_permissions:Permissions,
     notice:String,
     job:Option<std::sync::mpsc::Receiver<Result<Option<Permissions>,String>>>,
 }
 impl HostUi {
+    fn update_key_name(&mut self) {
+        if self.name.trim().is_empty() || self.suggested_name.as_ref()==Some(&self.name) {
+            if let Ok(device)=PublicDevice::from_public_key(&self.public_key,"") {
+                self.name=device.name.clone();self.suggested_name=Some(device.name);
+            }
+        }
+    }
     pub fn show(&mut self,ui:&mut egui::Ui,store:&TrustStore,name:&str,access:Option<&std::sync::Arc<uu_core::shared_host::Access>>) {
         if !self.loaded {
             self.password_permissions=Permissions::CONTROL;self.key_permissions=Permissions::CONTROL;
@@ -128,7 +136,7 @@ impl HostUi {
         ui.add_space(14.);
         ui.strong("预先授权控制端公钥");
         ui.add(egui::TextEdit::singleline(&mut self.name).char_limit(64).hint_text("控制端名称"));
-        ui.add(egui::TextEdit::multiline(&mut self.public_key).char_limit(8192).desired_rows(2).hint_text("粘贴 Eclipse 或 SSH Ed25519 公钥"));
+        if ui.add(egui::TextEdit::multiline(&mut self.public_key).char_limit(8192).desired_rows(2).hint_text("粘贴 Eclipse 或 SSH Ed25519 公钥")).changed(){self.update_key_name();}
         ui.horizontal_wrapped(|ui|{super::sharing_ui::permissions(ui,&mut self.key_permissions);});
         if ui.button("添加授权公钥").clicked() {
             let result=PublicDevice::from_public_key(&self.public_key,&self.name).and_then(|device| {
@@ -136,8 +144,25 @@ impl HostUi {
                 if let Some(access)=access{access.sessions.revoke(&device.id());}
                 Ok(())
             });
-            self.notice=match result {Ok(())=>{self.public_key.clear();self.name.clear();"公钥已授权，控制端首次连接时核对主机指纹并选择已授权公钥。".into()},Err(error)=>error.to_string()};
+            self.notice=match result {Ok(())=>{self.public_key.clear();self.name.clear();self.suggested_name=None;"公钥已授权，控制端首次连接时核对主机指纹并选择已授权公钥。".into()},Err(error)=>error.to_string()};
         }
         if !self.notice.is_empty(){ui.add_space(8.);ui.label(&self.notice);}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn pasted_key_suggests_its_comment_and_preserves_a_manual_name() {
+        let card=PublicDevice{name:"Generated client one".into(),public_key:"ab".repeat(32)};
+        let mut ui=HostUi{public_key:card.export_public_key(),..Default::default()};
+        ui.update_key_name();assert_eq!(ui.name,card.name);
+        let next=PublicDevice{name:"Generated client two".into(),..card};
+        ui.public_key=next.export_public_key();ui.update_key_name();assert_eq!(ui.name,next.name);
+        ui.name="My custom label".into();
+        ui.public_key=PublicDevice{name:"Generated client three".into(),..next}.export_public_key();
+        ui.update_key_name();assert_eq!(ui.name,"My custom label");
+        ui.name.clear();ui.public_key="invalid key with an arbitrary label".into();ui.update_key_name();assert!(ui.name.is_empty());
     }
 }

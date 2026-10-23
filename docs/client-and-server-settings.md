@@ -102,4 +102,4 @@ UU 登录成功或恢复已有登录后，会自动加载账号设备列表，�
 参数语义参考 [AMD AMF 头文件](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/tree/v1.4.36/amf/public/include/components)、[oneVPL 参数](https://github.com/intel/libvpl/blob/674d015bcb294bc39fa276e99a652ea045423e82/api/vpl/mfxstructures.h)及 [Windows QualityVsSpeed](https://learn.microsoft.com/en-us/windows/win32/codecapi/avenccommonqualityvsspeed-property)。设备配置从 v4 读入时使用默认参数，首次保存前保留原内容的私有备份；回退旧程序前按旧版备份恢复。
 
 
-访问权限页还提供配对密码、预授权公钥、本机公钥复制与已授权设备管理。密码保存在独立私有凭据文件中，点击“保存配对密码”后用于后续新配对；不会包含在普通服务配置快照中。密码验证后的权限由主机设置，临时码授权随串流结束失效。首次连接的选择和升级要求见[设备连接与信任](device-connection-and-trust.md)。
+服务管理新增“配对设置”页，集中管理设备名称、配对密码、预授权公钥、本机公钥复制与已授权设备。粘贴有效的 Eclipse / SSH Ed25519 公钥时，自动从末尾备注填入设备名称；手动修改的名称会保留。密码保存在独立私有凭据文件中，点击“保存配对密码”后用于后续新配对；不会包含在普通服务配置快照中。密码验证后的权限由主机设置，临时码授权随串流结束失效。首次连接的选择和升级要求见[设备连接与信任](device-connection-and-trust.md)。

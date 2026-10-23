@@ -5,16 +5,8 @@ use uu_core::native::VideoCodec;
 
 pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String)],portal:bool,naming:bool) {
     if section==0 {
-        ui.horizontal(|ui|{ui.label("本机名称");ui.add_enabled(naming,egui::TextEdit::singleline(&mut s.name).char_limit(64));});
-        ui.add_space(8.);
-        egui::ComboBox::from_id_salt("server-monitor").selected_text(if s.monitor.is_empty(){"主显示器 / 系统选择"}else if s.monitor==uu_core::native_displays::ALL_MONITORS{"允许远程切换显示器"}else{&s.monitor}).show_ui(ui,|ui| {
-            ui.selectable_value(&mut s.monitor,String::new(),"主显示器 / 系统选择");
-            ui.selectable_value(&mut s.monitor,uu_core::native_displays::ALL_MONITORS.into(),"允许远程切换显示器");
-            for (name,label) in monitors {ui.selectable_value(&mut s.monitor,name.clone(),label);}
-        });
-        if portal {ui.weak("屏幕选择由主机系统授权，远程重选仍需主机确认。");}
-        ui.add_space(10.);ui.checkbox(&mut s.audio,"传输系统声音");
-        ui.weak("帧率、输出尺寸和码率由各客户端调整。");
+        device_name(ui,s,naming);
+        capture(ui,s,monitors,portal);
     } else if section==1 {
         ui.horizontal_wrapped(|ui| {
             ui.label("允许的编码");
@@ -85,4 +77,20 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
         ui.checkbox(&mut s.clipboard,"允许文本剪贴板同步");
         ui.weak("每台设备还需获得对应授权；修改主机设置后下次启动生效。");
     }
+}
+
+pub fn device_name(ui:&mut egui::Ui,s:&mut Sharing,enabled:bool) {
+    ui.horizontal(|ui|{ui.label("设备名称");ui.add_enabled(enabled,egui::TextEdit::singleline(&mut s.name).char_limit(64));});
+}
+pub fn capture(ui:&mut egui::Ui,s:&mut Sharing,monitors:&[(String,String)],portal:bool) {
+        ui.add_space(8.);
+        egui::ComboBox::from_id_salt("server-monitor").selected_text(if s.monitor.is_empty(){"主显示器 / 系统选择"}else if s.monitor==uu_core::native_displays::ALL_MONITORS{"允许远程切换显示器"}else{&s.monitor}).show_ui(ui,|ui| {
+            ui.selectable_value(&mut s.monitor,String::new(),"主显示器 / 系统选择");
+            ui.selectable_value(&mut s.monitor,uu_core::native_displays::ALL_MONITORS.into(),"允许远程切换显示器");
+            for (name,label) in monitors {ui.selectable_value(&mut s.monitor,name.clone(),label);}
+        });
+        if portal {ui.weak("屏幕选择由主机系统授权，远程重选仍需主机确认。");}
+        ui.add_space(10.);ui.checkbox(&mut s.audio,"传输系统声音");
+        ui.weak("帧率、输出尺寸和码率由各客户端调整。");
+
 }
