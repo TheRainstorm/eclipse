@@ -77,9 +77,9 @@ try {
         Set-Location -LiteralPath $root
         [Environment]::CurrentDirectory = $otherWorkingDirectory
         $relative = (& $Installer -SourceDir 'old' -InstallDir 'relative-installed' -ArchiveRoot 'relative-archive' -NoShortcut) | ConvertFrom-Json
-        Assert-Test ([string]::Equals($relative.InstallDir, (Join-Path $root 'relative-installed'), [StringComparison]::OrdinalIgnoreCase)) 'Relative installation ignored the PowerShell location'
+        Assert-Test ([string]::Equals($relative.InstallDir, (Join-Path $root 'relative-installed'), [StringComparison]::OrdinalIgnoreCase)) "Relative installation mismatch: expected '$(Join-Path $root 'relative-installed')', got '$($relative.InstallDir)', shell '$((Get-Location).Path)', process '$([Environment]::CurrentDirectory)'"
         Assert-Test (Test-Path -LiteralPath (Join-Path $root 'relative-installed/uu-gui.exe')) 'Relative payload was not installed in the shell location'
-        Assert-Test ([string]::Equals([IO.Path]::GetDirectoryName($relative.Archive), (Join-Path $root 'relative-archive'), [StringComparison]::OrdinalIgnoreCase)) 'Relative archive ignored the PowerShell location'
+        Assert-Test ([string]::Equals([IO.Path]::GetDirectoryName($relative.Archive), (Join-Path $root 'relative-archive'), [StringComparison]::OrdinalIgnoreCase)) "Relative archive mismatch: expected '$(Join-Path $root 'relative-archive')', got '$([IO.Path]::GetDirectoryName($relative.Archive))'"
         Assert-Test (!(Test-Path -LiteralPath (Join-Path $otherWorkingDirectory 'relative-installed'))) 'Installation leaked into the process working directory'
     } finally {
         Set-Location -LiteralPath $savedLocation.Path
