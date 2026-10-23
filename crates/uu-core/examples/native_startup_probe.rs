@@ -107,9 +107,11 @@ async fn main() -> Result<()> {
         host_stop.send_replace(true);
         let viewed = tokio::time::timeout(Duration::from_secs(4), viewer).await??;
         let hosted = tokio::time::timeout(Duration::from_secs(4), host).await??;
+        // Preserve the underlying portal/negotiation error if the viewer ends
+        // before a frame. The frame-count guard alone hides the useful cause.
+        viewed.context("owned portal viewer failed")?;
+        hosted.context("owned portal host failed")?;
         let frames = received??;
-        viewed?;
-        hosted?;
         ensure!(stats.errors.load(Ordering::Relaxed) == 0, "decode errors");
         // The diagnostic writer is bounded and asynchronous. Wait for its final
         // negotiation metadata; only numeric phase events enter this report.
