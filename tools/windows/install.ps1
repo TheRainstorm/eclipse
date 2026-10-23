@@ -8,7 +8,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 function Resolve-PackagePath([string]$Value) {
-    $full = [IO.Path]::GetFullPath($Value)
+    # PowerShell locations and the process working directory can differ.
+    $provider = $null
+    $drive = $null
+    $path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Value, [ref]$provider, [ref]$drive)
+    if ($provider.Name -ne 'FileSystem') { throw 'Package paths must use the FileSystem provider' }
+    $full = [IO.Path]::GetFullPath($path)
     if ($full.Length -gt [IO.Path]::GetPathRoot($full).Length) {
         return $full.TrimEnd([IO.Path]::DirectorySeparatorChar)
     }
@@ -20,6 +25,7 @@ if ($InstallDir -eq [IO.Path]::GetPathRoot($InstallDir)) { throw 'InstallDir mus
 # A junction may point at another volume. Keeping the default archive below
 # InstallDir guarantees a rename rather than a cross-volume copy/delete.
 if ([string]::IsNullOrWhiteSpace($ArchiveRoot)) { $ArchiveRoot = Join-Path $InstallDir '.upgrade-archive' }
+$ArchiveRoot = Resolve-PackagePath $ArchiveRoot
 $manifest = Get-Content -LiteralPath (Join-Path $SourceDir 'version.json') -Raw | ConvertFrom-Json
 $format = 1
 if ($null -ne $manifest.format_version) {

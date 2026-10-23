@@ -1,6 +1,7 @@
 # Exercise only generated package files in a newly owned temporary directory.
 param([string]$Installer = (Join-Path $PSScriptRoot 'install.ps1'))
 $ErrorActionPreference = 'Stop'
+$Installer = (Get-Item -LiteralPath $Installer).FullName
 $root = Join-Path $env:TEMP ('uu-installer-test-' + [Guid]::NewGuid().ToString('N'))
 $baseFiles = @('uu-gui.exe','uu.exe','libgcc_s_seh-1.dll','libstdc++-6.dll','README.txt','install.ps1',
                'LICENSE','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt')
@@ -66,6 +67,24 @@ try {
     Assert-Test ([string]::Equals($actualArchiveRoot, $expectedArchiveRoot, [StringComparison]::OrdinalIgnoreCase)) `
         "Default archive parent mismatch: expected '$expectedArchiveRoot', got '$actualArchiveRoot'"
     Assert-Test (Test-Path -LiteralPath (Join-Path $installed.Archive 'previous/uu-gui.exe')) 'Default archive did not preserve old executable'
+    # Set-Location does not necessarily update Environment.CurrentDirectory.
+    # Source, destination and explicit archive paths must follow the shell.
+    $savedLocation = Get-Location
+    $savedProcessDirectory = [Environment]::CurrentDirectory
+    $otherWorkingDirectory = Join-Path $root 'process-working-directory'
+    New-Item -ItemType Directory -Path $otherWorkingDirectory | Out-Null
+    try {
+        Set-Location -LiteralPath $root
+        [Environment]::CurrentDirectory = $otherWorkingDirectory
+        $relative = (& $Installer -SourceDir 'old' -InstallDir 'relative-installed' -ArchiveRoot 'relative-archive' -NoShortcut) | ConvertFrom-Json
+        Assert-Test ([string]::Equals($relative.InstallDir, (Join-Path $root 'relative-installed'), [StringComparison]::OrdinalIgnoreCase)) 'Relative installation ignored the PowerShell location'
+        Assert-Test (Test-Path -LiteralPath (Join-Path $root 'relative-installed/uu-gui.exe')) 'Relative payload was not installed in the shell location'
+        Assert-Test ([string]::Equals([IO.Path]::GetDirectoryName($relative.Archive), (Join-Path $root 'relative-archive'), [StringComparison]::OrdinalIgnoreCase)) 'Relative archive ignored the PowerShell location'
+        Assert-Test (!(Test-Path -LiteralPath (Join-Path $otherWorkingDirectory 'relative-installed'))) 'Installation leaked into the process working directory'
+    } finally {
+        Set-Location -LiteralPath $savedLocation.Path
+        [Environment]::CurrentDirectory = $savedProcessDirectory
+    }
     $failed = $false
     try { & $Installer -SourceDir $old -InstallDir ([IO.Path]::GetPathRoot($root)) -NoShortcut | Out-Null }
     catch { $failed = $true; Assert-Test ($_.Exception.Message -like '*drive root*') 'Drive root rejection was not explicit' }

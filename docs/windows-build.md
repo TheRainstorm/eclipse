@@ -54,7 +54,7 @@ Intel VPL 源码固定为 `674d015bcb294bc39fa276e99a652ea045423e82`，下载归
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir "$env:LOCALAPPDATA\Programs\uu-client"
 ```
 
-`-InstallDir` 指定安装位置。安装前退出旧客户端，完成后从桌面 **uu-client** 重新打开。
+`-InstallDir` 指定安装位置；`-SourceDir`、`-InstallDir` 和 `-ArchiveRoot` 的相对路径按当前 PowerShell 目录解析。安装目录不能为盘根。安装后关闭旧主页和串流窗口，再从桌面 **uu-client** 打开新版。
 安装器先校验全部文件，再归档旧版和更新快捷方式；升级不覆盖登录态和设置，也不结束现有进程。已加载的 EXE / DLL 默认先移入安装目录内的 `.upgrade-archive`，确保安装路径经过目录联接或位于其它盘时仍在同一卷重命名，新进程使用新版。`-ArchiveRoot` 可自行指定归档位置；保留运行中程序时应选同一卷。发生共享冲突或复制失败时，自动恢复此前修改的包文件并报告错误；保留备份位置供检查。
 
 ## 脚本回归检查
