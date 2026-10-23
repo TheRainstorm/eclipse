@@ -472,7 +472,7 @@ fn encode_source(
                     // Driver contexts stay on their own threads. Build first,
                     // then start a fresh reference chain on the same transport.
                     let reopen=if encoder.is_hardware()&&updated.preference==EncoderPreference::Auto {uu_media::encoder::Settings{preference:EncoderPreference::Hardware,..updated}}else{updated};
-                    let replacement=uu_media::encoder::create(reopen)?;
+                    let replacement=uu_media::encoder::create_with_device(reopen,capture.encoder_input_device())?;
                     ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"画质请求已取消");
                     capture.set_frame_rate(updated.fps)?;
                     encoder=replacement;
@@ -665,7 +665,7 @@ async fn send_video(
             let mut selected=None;let mut last_error=None;let mut attempted=Vec::new();
             for codec in choices {
                 attempted.push(codec);
-                match uu_media::encoder::create(settings(codec)) {
+                match uu_media::encoder::create_with_device(settings(codec),capture.encoder_input_device()) {
                     Ok(encoder)=>{selected=Some((codec,encoder));break;},
                     Err(error)=>{tracing::warn!(?codec,?preference,%error,"native codec initialization failed");last_error=Some(anyhow::anyhow!("{codec:?}: {error}"));},
                 }
@@ -678,7 +678,7 @@ async fn send_video(
                 // this geometry. Retrying them delays the answer and can report
                 // a different capability for the same preparation attempt.
                 for candidate in advertised.into_iter().filter(|c|!attempted.contains(c)) {
-                    if uu_media::encoder::create(settings(candidate)).is_ok(){available.push(candidate);}
+                    if uu_media::encoder::create_with_device(settings(candidate),capture.encoder_input_device()).is_ok(){available.push(candidate);}
                 }
             }
             let startup=crate::native_quality::Startup{capture_us,encoder_us,other_encoders_us:elapsed_us(started),..Default::default()};

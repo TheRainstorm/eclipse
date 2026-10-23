@@ -4,6 +4,9 @@ use uu_media::{RawFrame,PixelFormat,d3d11_frame::Frame};
 use windows::{core::Interface,Win32::{Foundation::{HMODULE,RECT},Graphics::{Direct3D::*,Direct3D10::ID3D10Multithread,Direct3D11::*,Dxgi::{IDXGIAdapter,Common::*}}}};
 pub struct Upload {device:ID3D11Device}
 impl Upload {
+    pub fn input_device(&self)->Result<uu_media::encoder::InputDevice> {
+        Ok(uu_media::encoder::InputDevice::from_d3d11(self.device.clone())?)
+    }
     pub fn new()->Result<Self> {
         let (mut device,mut context)=(None,None);
         unsafe{D3D11CreateDevice(None::<&IDXGIAdapter>,D3D_DRIVER_TYPE_HARDWARE,HMODULE::default(),

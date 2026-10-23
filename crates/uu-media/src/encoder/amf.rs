@@ -35,9 +35,9 @@ pub(super) struct Driver {
     _runtime:super::mf::Runtime,
 }
 impl Driver {
-    pub fn open(settings:Settings)->Result<Self,String> {
+    pub fn open_with_device(settings:Settings,input:Option<super::InputDevice>)->Result<Self,String> {
         let runtime=super::mf::Runtime::start()?;
-        let native=Native::open(settings,ptr::null_mut())?;
+        let native=Native::open(settings,input.as_ref().map_or(ptr::null_mut(),|device|device.device.as_raw()))?;
         let codec=match settings.codec{VideoCodec::H264=>"H.264",VideoCodec::Hevc=>"HEVC",VideoCodec::Av1=>"AV1"};
         let mode=if matches!(settings.rate_control,super::RateControl::Vbr{..}){"VBR"}else{"CBR"};
         Ok(Self{native,gpu:None,upload:Vec::new(),settings,headers:Default::default(),name:format!("amf ({codec} {mode}, AMD D3D11, {:?})",settings.tuning.amd_quality),profile:super::profile::Profile::new("amf"),_runtime:runtime})

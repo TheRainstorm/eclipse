@@ -15,6 +15,7 @@ pub fn bounded(inner:Box<dyn Capture>,bounds:Option<[u32;2]>)->Box<dyn Capture> 
 }
 struct Scaled {inner:Box<dyn Capture>,output:(u32,u32)}
 impl Capture for Scaled {
+    fn encoder_input_device(&self)->Option<uu_media::encoder::InputDevice>{self.inner.encoder_input_device()}
     fn set_frame_rate(&mut self,fps:u32)->Result<(),CaptureError>{self.inner.set_frame_rate(fps)}
     fn prefer_gpu(&mut self,enabled:bool,vendor:Option<u16>){self.inner.prefer_gpu(enabled,vendor);}
     fn resolution(&self)->(u32,u32){self.output}

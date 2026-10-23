@@ -129,10 +129,18 @@ fn requires_vpl(settings: Settings, windows: bool) -> bool {
         || (!windows && (settings.codec != VideoCodec::H264 || settings.rate_control != RateControl::Cbr))
 }
 
-fn hardware(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
+mod input_device;
+pub use input_device::InputDevice;
+
+fn hardware(settings: Settings, input:Option<InputDevice>) -> Result<Box<dyn VideoEncoder>, CodecError> {
+    #[cfg(not(all(windows,feature="mf-encode")))]
+    let _=input;
     #[cfg(all(windows,feature="mf-encode"))]
     if matches!(settings.preference,Preference::Auto|Preference::Hardware|Preference::Amd) {
-        match worker::Worker::spawn(move||amf::Driver::open(settings)) {
+        // Cross-adapter encoding still uses the established CPU fallback.
+        // Only bind AMF to a capture device belonging to AMD itself.
+        let input=input.filter(|device|device.vendor==0x1002);
+        match worker::Worker::spawn(move||amf::Driver::open_with_device(settings,input)) {
             Ok(encoder)=>return Ok(Box::new(encoder)),
             Err(reason) if settings.preference==Preference::Amd=>return Err(reason),
             Err(reason)=>tracing::debug!(%reason,"native AMF unavailable; trying platform hardware API"),
@@ -197,10 +205,16 @@ fn hardware(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
 }
 
 pub fn create(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
+    create_with_device(settings,None)
+}
+
+/// Initialize against the capture device when the selected backend supports it.
+/// Other backends keep their existing initialization and fallback policy.
+pub fn create_with_device(settings: Settings,input:Option<InputDevice>) -> Result<Box<dyn VideoEncoder>, CodecError> {
     settings.validate()?;
     let (active, can_fallback, note) = match settings.preference {
         Preference::Software => (software(settings)?, false, false),
-        Preference::Hardware | Preference::Intel | Preference::Nvidia | Preference::Amd => (hardware(settings)?, false, false),
+        Preference::Hardware | Preference::Intel | Preference::Nvidia | Preference::Amd => (hardware(settings,input)?, false, false),
         Preference::Vaapi => {
             if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr {
                 return Err(error("显式 VA-API 后端仅支持 H.264 CBR；其它模式请选择自动或硬件编码"));
@@ -210,9 +224,9 @@ pub fn create(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
                     "VA-API requires a Linux build with the vaapi feature",
                 ));
             }
-            (hardware(settings)?, false, false)
+            (hardware(settings,input)?, false, false)
         }
-        Preference::Auto => match hardware(settings) {
+        Preference::Auto => match hardware(settings,input) {
             Ok(encoder) => (encoder, settings.codec==VideoCodec::H264 && settings.rate_control==RateControl::Cbr && settings.tuning==Tuning::default(), false),
             Err(reason) => {
                 if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr || settings.tuning!=Tuning::default(){return Err(reason);}

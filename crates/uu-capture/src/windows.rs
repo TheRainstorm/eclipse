@@ -403,6 +403,9 @@ impl DxgiCapture {
     }
 }
 impl Capture for DxgiCapture {
+    fn encoder_input_device(&self)->Option<uu_media::encoder::InputDevice> {
+        uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).ok()
+    }
     fn prefer_gpu(&mut self, enabled: bool, vendor: Option<u16>) {
         let enabled = enabled
             && self.rotation == Rotation::None

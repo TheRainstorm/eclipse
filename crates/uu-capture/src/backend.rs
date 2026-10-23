@@ -37,6 +37,8 @@ pub trait Capture: Send {
     fn set_frame_rate(&mut self,_fps:u32)->Result<(),CaptureError>{Ok(())}
     /// Opt in only when the selected encoder accepts native GPU surfaces.
     fn prefer_gpu(&mut self,_enabled:bool,_vendor:Option<u16>) {}
+    /// Optional immutable capture-device lease for encoder initialization.
+    fn encoder_input_device(&self)->Option<uu_media::encoder::InputDevice>{None}
     fn resolution(&self) -> (u32, u32);
     /// Global pixels represented by a whole-monitor capture. Synthetic and
     /// window sources do not authorize desktop input through this interface.

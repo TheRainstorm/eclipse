@@ -78,6 +78,7 @@ fn main() -> anyhow::Result<()> {
     let mut format = PixelFormat::I420;
     let mut gpu_input=false;
     let mut gpu_generated=false;
+    let mut capture_device=true;
     let mut source_scale=1u32;
     let mut hardware_decoder = false;
     let mut intel_decoder=false;
@@ -123,6 +124,7 @@ fn main() -> anyhow::Result<()> {
             }
             "--width" => settings.width = value.parse()?,
             "--source-scale" => source_scale=value.parse()?,
+            "--capture-device" => capture_device=match value.as_str(){"on"=>true,"off"=>false,_=>anyhow::bail!("capture-device must be on or off")},
             "--height" => settings.height = value.parse()?,
             "--input" => {
                 format = match value.as_str() {
@@ -147,14 +149,19 @@ fn main() -> anyhow::Result<()> {
     settings.validate()?;
     ensure!((1..=4).contains(&source_scale) && (gpu_input || source_scale==1)
         && settings.width*source_scale<=8192 && settings.height*source_scale<=8192,"source scale requires valid GPU capture geometry");
-    let mut encoder = encoder::create(settings)?;
     #[cfg(windows)]
-    let gpu=if gpu_input {
-        ensure!(encoder.gpu_input(),"selected encoder has no native D3D11 input support");
-        Some(gpu_encoder_input::Upload::new()?)
-    }else{None};
+    let gpu=if gpu_input {Some(gpu_encoder_input::Upload::new()?)}else{None};
+    let preparation_started=std::time::Instant::now();
+    #[cfg(windows)]
+    let input_device=if capture_device {gpu.as_ref().map(|gpu|gpu.input_device()).transpose()?}else{None};
     #[cfg(not(windows))]
     ensure!(!gpu_input,"D3D11 input requires Windows");
+    #[cfg(not(windows))]
+    let input_device={let _=capture_device;None};
+    let capture_device_supplied=input_device.is_some();
+    let mut encoder = encoder::create_with_device(settings,input_device)?;
+    let encoder_preparation_ms=preparation_started.elapsed().as_secs_f64()*1000.0;
+    ensure!(!gpu_input||encoder.gpu_input(),"selected encoder has no native D3D11 input support");
     // In sampled Windows hardware long tests retain the decoder's GPU lease;
     // conversion below maps only the selected verification frames. The normal
     // per-frame validation path keeps its historical CPU output behavior.
@@ -291,9 +298,10 @@ fn main() -> anyhow::Result<()> {
         "{}",
         serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
         "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,"pixel_verified_frames":verified,"pixel_verify_every":verify_every,"gpu_decoded_frames":gpu_decoded,
-        "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"gpu_generated":gpu_generated,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
+        "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"gpu_generated":gpu_generated,"capture_device_supplied":capture_device_supplied,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
         "encode_ms_first":first_encode,"encode_ms_p99":times[times.len()*99/100],"encode_ms_max":times[times.len()-1],
+        "encoder_preparation_ms":encoder_preparation_ms,"preparation_plus_first_encode_ms":encoder_preparation_ms+first_encode,
         "keyframe_encode_ms_mean":(!key_times.is_empty()).then(||key_times.iter().sum::<f64>()/key_times.len() as f64),
         "delta_encode_ms_mean":(!delta_times.is_empty()).then(||delta_times.iter().sum::<f64>()/delta_times.len() as f64),
         "bytes":bytes,"screen_used":false,"input_used":false,"audio_used":false})
