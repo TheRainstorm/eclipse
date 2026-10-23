@@ -529,6 +529,21 @@ async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling,
     result
 }
 
+fn codec_rank(codec: VideoCodec) -> u8 {
+    match codec {
+        VideoCodec::Av1 => 0,
+        VideoCodec::Hevc => 1,
+        VideoCodec::H264 => 2,
+    }
+}
+
+fn ordered_codecs(codecs: &[VideoCodec]) -> Vec<VideoCodec> {
+    let mut values = codecs.to_vec();
+    values.sort_by_key(|codec| codec_rank(*codec));
+    values.dedup();
+    values
+}
+
 async fn send_video(
     peer: &mut NativePeer,
     stream: &mut dyn SessionSignaling,
@@ -553,16 +568,23 @@ async fn send_video(
         }
     }
     let allowed=policy.as_ref().map(|p|p.codecs.clone()).unwrap_or_else(||vec![config.codec]);
-    let mut choices=if let Some(codec)=request.as_ref().and_then(|r|r.codec) {
-        ensure!(allowed.contains(&codec),"主机未允许 {:?} 编码，请选择允许的格式",codec);vec![codec]
+    let ordered=ordered_codecs(&allowed);
+    let mut choices=if let Some(client)=request.as_ref().and_then(|r|r.codec) {
+        ensure!(allowed.contains(&client),"主机未允许 {:?} 编码，请选择允许的格式",client);
+        // The server preference wins when it is usable; an explicit client
+        // choice remains the fallback instead of overriding the host.
+        let mut values=Vec::new();
+        if allowed.contains(&config.codec) {values.push(config.codec);}
+        values.push(client);
+        for codec in &ordered {if !values.contains(codec){values.push(*codec);}}
+        values
     }else{
-        let mut choices=allowed.clone();
-        if let Some(at)=choices.iter().position(|c|*c==config.codec){choices.swap(0,at);}
-        choices
+        // Both sides automatic: prefer AV1, then HEVC, then H.264.
+        ordered.clone()
     };
     choices.retain(|codec|crate::native_media::offers_codec(&offer.sdp,*codec));
     ensure!(!choices.is_empty(),"两端没有共同可用的视频编码，请检查主机编码设置和客户端解码支持");
-    let advertised:Vec<_>=allowed.into_iter().filter(|c|crate::native_media::offers_codec(&offer.sdp,*c)).collect();
+    let advertised:Vec<_>=ordered.into_iter().filter(|c|crate::native_media::offers_codec(&offer.sdp,*c)).collect();
     let audio_mode=if config.audio.is_some(){crate::native_media::offered_audio(&offer.sdp)?}else{None};
     match stream.lan_peer() {
         Some(ip) => peer.remote(offer.sdp, ip).await?,
@@ -920,6 +942,14 @@ mod tests {
         let pending=wait_first_frame(&stats,3,Duration::from_secs(20));
         tokio::select! { _=pending=>panic!("old frames cannot satisfy a new connection"), _=tokio::task::yield_now()=>{} }
     }
+    #[test]
+    fn automatic_codec_order_prefers_av1_then_hevc_then_h264() {
+        assert_eq!(
+            ordered_codecs(&[VideoCodec::H264, VideoCodec::Av1, VideoCodec::Hevc]),
+            vec![VideoCodec::Av1, VideoCodec::Hevc, VideoCodec::H264]
+        );
+    }
+
     #[test]
     fn default_answer_preserves_the_legacy_strict_schema(){
         let legacy=serde_json::json!({"version":1,"sdp":{"type":"answer","sdp":"v=0\r\n"},"width":128,"height":128,"fps":60,"bitrate_kbps":2000,"view_only":true});
