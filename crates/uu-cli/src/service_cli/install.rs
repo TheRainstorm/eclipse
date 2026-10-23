@@ -774,6 +774,7 @@ mod tests {
             "successful upgrades must disable frontend auto-start too"
         );
         let _ = inspect().await;
+        super::super::supervisor::system_probe::run(&fixture.paths).unwrap();
         for path in [
             protected.at("device-trust/identity.pk8"),
             protected.at("device-trust/peers.json"),

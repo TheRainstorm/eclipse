@@ -13,6 +13,8 @@ use windows_sys::Win32::{
 };
 static STOP: AtomicBool = AtomicBool::new(false);
 static STATUS: AtomicIsize = AtomicIsize::new(0);
+#[cfg(test)]
+pub(super) mod system_probe;
 
 fn report(state: u32, code: u32) {
     let status = SERVICE_STATUS {
@@ -223,6 +225,8 @@ fn environment(paths: &Paths, token: HANDLE) -> Result<Vec<u16>> {
         ("PATH", windows.join("System32")),
         ("TEMP", temp.clone()),
         ("TMP", temp),
+        ("XDG_DATA_HOME", paths.root.join("data")),
+        ("XDG_STATE_HOME", paths.root.join("state")),
         (
             "ECLIPSE_SERVICE_BOOTSTRAP_LOG",
             paths.config().log_dir().join("bootstrap.log"),
@@ -263,6 +267,14 @@ fn environment(paths: &Paths, token: HANDLE) -> Result<Vec<u16>> {
 }
 
 fn launch(paths: &Paths, installed: &Installed, session: u32) -> Result<Child> {
+    launch_entry(paths, installed, session, Entry::SessionHost)
+}
+enum Entry {
+    SessionHost,
+    #[cfg(test)]
+    Generated(std::path::PathBuf),
+}
+fn launch_entry(paths: &Paths, installed: &Installed, session: u32, entry: Entry) -> Result<Child> {
     let mut token = ptr::null_mut();
     winok(unsafe {
         OpenProcessToken(
@@ -307,10 +319,12 @@ fn launch(paths: &Paths, installed: &Installed, session: u32) -> Result<Child> {
     })?;
     let directory = paths.binary_directory(installed);
     let executable = directory.join("uu.exe");
-    let mut command = wide(format!(
-        "\"{}\" service session-host --session {session} --stop-event {event_name}",
-        executable.display()
-    ));
+    let arguments = match entry {
+        Entry::SessionHost => format!("service session-host --session {session} --stop-event {event_name}"),
+        #[cfg(test)]
+        Entry::Generated(invitation) => format!("native-host --synthetic --encoder hardware --fps 30 --max-seconds 15 --invitation-file \"{}\"",invitation.display()),
+    };
+    let mut command = wide(format!("\"{}\" {arguments}", executable.display()));
     let mut desktop = wide("winsta0\\default");
     let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
     startup.cb = std::mem::size_of_val(&startup) as u32;
