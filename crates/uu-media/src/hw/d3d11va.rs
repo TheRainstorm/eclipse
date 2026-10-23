@@ -92,6 +92,9 @@ impl VideoDecoder for D3d11VaDecoder {
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
         self.worker.decode(frame)
     }
+    fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+        self.worker.decode_frames(frame)
+    }
 }
 
 /// Media Foundation and COM are brought up together on the decoder thread and
@@ -256,6 +259,11 @@ impl super::Backend for Decoder {
         let data = patched.as_deref().unwrap_or(&frame.data);
         transform.submit(data, frame.is_keyframe, frame.pts, pending)?;
         Ok(pending.pop_front())
+    }
+    fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, String> {
+        let mut frames: Vec<_> = self.decode(frame)?.into_iter().collect();
+        frames.extend(self.pending.drain(..));
+        Ok(frames)
     }
 }
 

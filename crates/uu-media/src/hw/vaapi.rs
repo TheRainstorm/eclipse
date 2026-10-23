@@ -79,6 +79,9 @@ impl VideoDecoder for VaapiDecoder {
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
         self.worker.decode(frame)
     }
+    fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+        self.worker.decode_frames(frame)
+    }
 }
 
 type VaBackend=cros_codecs::backend::vaapi::decoder::VaapiBackend<Surface>;
@@ -226,6 +229,11 @@ impl super::Backend for Decoder {
             }
         }
         Ok(self.pending.pop_front())
+    }
+    fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, String> {
+        let mut frames: Vec<_> = self.decode(frame)?.into_iter().collect();
+        frames.extend(self.pending.drain(..));
+        Ok(frames)
     }
 }
 

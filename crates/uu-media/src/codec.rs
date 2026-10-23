@@ -40,6 +40,11 @@ pub trait VideoDecoder: Send {
     /// Feed one access unit, producing a decoded frame when the decoder has
     /// enough data (B-frames and reordering mean this is not 1:1).
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError>;
+    /// Submit the access unit once and collect every picture currently ready.
+    /// A driver may return no picture, then several pictures on a later input.
+    fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+        Ok(self.decode(frame)?.into_iter().collect())
+    }
     /// Human-readable name of the backend actually in use.
     ///
     /// Surfaced in the HUD and in `uu probe` so a session always shows whether

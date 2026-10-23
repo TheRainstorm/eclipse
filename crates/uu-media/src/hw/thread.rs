@@ -29,11 +29,15 @@ pub trait Backend: 'static {
         Ok(())
     }
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, String>;
+    fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, String> {
+        Ok(self.decode(frame)?.into_iter().collect())
+    }
 }
 
 enum Job {
     Prepare(u32, u32, Sender<Result<(), String>>),
     Decode(EncodedFrame, Sender<Result<Option<RawFrame>, String>>),
+    DecodeFrames(EncodedFrame, Sender<Result<Vec<RawFrame>, String>>),
     Stop,
 }
 
@@ -104,6 +108,15 @@ impl Worker {
             )),
         }
     }
+
+    pub fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+        let (reply_tx, reply_rx) = channel();
+        self.tx.send(Job::DecodeFrames(frame.clone(), reply_tx))
+            .map_err(|_| CodecError::Backend("hardware decoder thread is gone".into()))?;
+        reply_rx.recv()
+            .map_err(|_| CodecError::Backend("hardware decoder thread is gone".into()))?
+            .map_err(CodecError::Backend)
+    }
 }
 
 impl Drop for Worker {
@@ -144,6 +157,11 @@ where
                     break;
                 }
             }
+            Job::DecodeFrames(frame, reply) => {
+                if reply.send(decoder.decode_frames(&frame)).is_err() {
+                    break;
+                }
+            }
             Job::Stop => break,
         }
     }
@@ -154,6 +172,42 @@ where
 mod tests {
     use super::*;
     use std::{rc::Rc, sync::{Arc, Mutex}, thread};
+
+    #[test]
+    fn batch_output_crosses_the_thread_once_without_replaying_the_access_unit() {
+        struct Driver { owner:thread::ThreadId, calls:Arc<Mutex<Vec<&'static str>>> }
+        impl Backend for Driver {
+            fn backend_name(&self) -> &str { "batch fixture" }
+            fn decode(&mut self, _: &EncodedFrame) -> Result<Option<RawFrame>, String> {
+                panic!("batch request must reach the batch backend")
+            }
+            fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, String> {
+                assert_eq!(thread::current().id(), self.owner);
+                assert_eq!(frame.pts.0, 1);
+                self.calls.lock().unwrap().push("batch");
+                Ok([0,1].into_iter().map(|pts|RawFrame {
+                    width:2,height:2,stride:2,format:crate::PixelFormat::I420,
+                    data:bytes::Bytes::from(vec![0;6]),pts:crate::Timestamp(pts),
+                    gpu:false,dma_buf:None,d3d11:None,
+                }).collect())
+            }
+        }
+        impl Drop for Driver {
+            fn drop(&mut self) {
+                assert_eq!(thread::current().id(), self.owner);
+                self.calls.lock().unwrap().push("drop");
+            }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let log = calls.clone();
+        let mut worker = Worker::spawn(move || Ok(Driver { owner:thread::current().id(), calls:log })).unwrap();
+        let pictures = worker.decode_frames(&EncodedFrame {
+            data:bytes::Bytes::from_static(&[1]),is_keyframe:false,pts:crate::Timestamp(1),
+        }).unwrap();
+        assert_eq!(pictures.iter().map(|f|f.pts.0).collect::<Vec<_>>(), [0,1]);
+        drop(worker);
+        assert_eq!(*calls.lock().unwrap(), ["batch","drop"]);
+    }
 
     #[test]
     fn preparation_decode_and_drop_keep_the_driver_thread_after_handle_moves() {

@@ -874,12 +874,14 @@ pub(crate) async fn receive_video(
                 recovery = Some((sample_epoch, sample_request, encoded.pts));
             }
             let started = Instant::now();
-            let outcome=decoder.decode(&encoded);
+            let outcome=decoder.decode_frames(&encoded);
             worker_backlog.observe(started.elapsed());
             match outcome {
-                Ok(frame) => {
+                Ok(frames) => {
                     gate.decoded(sample_epoch, worker_generation.load(Ordering::Acquire), key);
-                    if let Some(frame) = frame {
+                    let last = frames.len().saturating_sub(1);
+                    if !frames.is_empty() { decode_us += started.elapsed().as_micros() as u64; }
+                    for (index, frame) in frames.into_iter().enumerate() {
                         recovery_errors = 0;
                         if recovery.is_some_and(|(generation, request, pts)| {
                             frame.pts >= pts
@@ -892,7 +894,6 @@ pub(crate) async fn receive_video(
                         decoded += 1;
                         worker_decoded.fetch_add(1, Ordering::Relaxed);
                         window_frames += 1;
-                        decode_us += started.elapsed().as_micros() as u64;
                         if let Some(s) = &worker_stats {
                             if s.selected_video_track.load(Ordering::Acquire)==track_idx {
                                 s.width.store(frame.width, Ordering::Relaxed);
@@ -902,7 +903,7 @@ pub(crate) async fn receive_video(
                         }
                         // Decode all reference pictures, but spend RGBA and
                         // upload work only on the newest one after a burst.
-                        if let Some(tx) = frame_tx.as_ref().filter(|_| key || sample_rx.is_empty()) {
+                        if let Some(tx) = frame_tx.as_ref().filter(|_| index == last && (key || sample_rx.is_empty())) {
                             let _ = tx.send_decoded(track_idx, frame, color);
                         } else if let Some(s) = worker_stats.as_ref().filter(|_|frame_tx.is_some()) {
                             s.decoded_display_skips.fetch_add(1, Ordering::Relaxed);

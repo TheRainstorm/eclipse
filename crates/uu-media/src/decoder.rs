@@ -51,6 +51,9 @@ impl VideoDecoder for NamedDecoder {
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
         self.inner.decode(frame)
     }
+    fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+        self.inner.decode_frames(frame)
+    }
 }
 
 /// How many access units a hardware decoder may consume without producing a
@@ -139,9 +142,39 @@ impl FallbackDecoder {
         );
     }
 
-    fn decode_software(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
-        self.backup.decode(frame)
+    fn decode_with<F>(&mut self, frame: &EncodedFrame, decode: F) -> Result<Vec<RawFrame>, CodecError>
+    where F: Fn(&mut dyn VideoDecoder, &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+        let result = match self.primary.as_mut() {
+            Some(primary) => decode(primary.as_mut(), frame),
+            None => return decode(self.backup.as_mut(), frame),
+        };
+        match result {
+            Ok(frames) if !frames.is_empty() => {
+                self.empty_units = 0;
+                self.empty_since = None;
+                self.consecutive_errors = 0;
+                Ok(frames)
+            }
+            Ok(frames) => {
+                self.empty_units += 1;
+                let since = *self.empty_since.get_or_insert_with(std::time::Instant::now);
+                if self.empty_units > HARDWARE_GRACE_UNITS || since.elapsed() >= std::time::Duration::from_millis(750) {
+                    self.demote("no output");
+                    return decode(self.backup.as_mut(), frame);
+                }
+                Ok(frames)
+            }
+            Err(e) => {
+                self.consecutive_errors += 1;
+                if self.consecutive_errors >= ERROR_BUDGET {
+                    self.demote(&e.to_string());
+                    return decode(self.backup.as_mut(), frame);
+                }
+                Err(e)
+            }
+        }
     }
+
 }
 
 impl VideoDecoder for FallbackDecoder {
@@ -164,43 +197,13 @@ impl VideoDecoder for FallbackDecoder {
     }
 
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
-        if self.primary.is_none() {
-            return self.decode_software(frame);
-        }
-        let result = match self.primary.as_mut() {
-            Some(primary) => primary.decode(frame),
-            None => return self.decode_software(frame),
-        };
-        match result {
-            Ok(Some(f)) => {
-                self.empty_units = 0;
-                self.empty_since = None;
-                self.consecutive_errors = 0;
-                Ok(Some(f))
-            }
-            Ok(None) => {
-                // A hardware decoder that never emits anything is broken even
-                // though every call returned success. Re-feed this access unit
-                // to the software decoder: it will hold it until the next IDR,
-                // which our PLI/FIR loop asks the host for.
-                self.empty_units += 1;
-                let since = *self.empty_since.get_or_insert_with(std::time::Instant::now);
-                if self.empty_units > HARDWARE_GRACE_UNITS || since.elapsed() >= std::time::Duration::from_millis(750) {
-                    self.demote("no output");
-                    return self.decode_software(frame);
-                }
-                Ok(None)
-            }
-            Err(e) => {
-                self.consecutive_errors += 1;
-                if self.consecutive_errors >= ERROR_BUDGET {
-                    self.demote(&e.to_string());
-                    return self.decode_software(frame);
-                }
-                Err(e)
-            }
-        }
+        self.decode_with(frame, |decoder, frame| Ok(decoder.decode(frame)?.into_iter().collect()))
+            .map(|mut frames| frames.pop())
     }
+    fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+        self.decode_with(frame, |decoder, frame| decoder.decode_frames(frame))
+    }
+
 }
 
 #[cfg(test)]
@@ -256,6 +259,38 @@ mod tests {
 
     fn unit() -> EncodedFrame {
         EncodedFrame { data: Bytes::from_static(&[0, 0, 0, 1, 0x65]), pts: crate::Timestamp(0), is_keyframe: true }
+    }
+
+    #[test]
+    fn named_and_fallback_keep_a_delayed_batch_without_replaying_input() {
+        use std::sync::{Arc, Mutex};
+        struct Burst(Arc<Mutex<Vec<u64>>>);
+        impl VideoDecoder for Burst {
+            fn codec(&self) -> VideoCodec { VideoCodec::H264 }
+            fn decode(&mut self, _: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
+                panic!("the batch route must remain intact through wrappers")
+            }
+            fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+                self.0.lock().unwrap().push(frame.pts.0);
+                let indexes: &[u64] = if frame.pts.0 == 0 { &[] } else if frame.pts.0 == 1 { &[0, 1] } else { &[2] };
+                Ok(indexes.iter().map(|pts| RawFrame {
+                    width:2,height:2,format:PixelFormat::I420,stride:2,
+                    data:Bytes::from(vec![0;6]),pts:crate::Timestamp(*pts),
+                    gpu:false,dma_buf:None,d3d11:None,
+                }).collect())
+            }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let named = NamedDecoder::new(Box::new(Burst(calls.clone())), "batch fixture");
+        let mut decoder = FallbackDecoder::new(Box::new(named), Box::new(Scripted::new("unused", 0, 0)));
+        let mut frame = unit();
+        assert!(decoder.decode_frames(&frame).unwrap().is_empty());
+        frame.pts = crate::Timestamp(1);
+        assert_eq!(decoder.decode_frames(&frame).unwrap().iter().map(|f|f.pts.0).collect::<Vec<_>>(), [0,1]);
+        frame.pts = crate::Timestamp(2);
+        assert_eq!(decoder.decode_frames(&frame).unwrap()[0].pts.0, 2);
+        assert!(decoder.on_hardware());
+        assert_eq!(*calls.lock().unwrap(), [0,1,2]);
     }
 
     #[test]

@@ -189,6 +189,8 @@ fn main() -> anyhow::Result<()> {
     let mut keyframe_indexes = Vec::new();
     let mut bytes = 0u64;
     let mut decoded = 0u32;
+    let mut zero_output_inputs = 0u32;
+    let mut max_decode_lag_frames = 0u32;
     let mut gpu_decoded = 0u32;
     let mut verified = 0u32;
     let mut keys = 0u32;
@@ -213,9 +215,7 @@ fn main() -> anyhow::Result<()> {
             // timestamp/reference ownership after a rate-control reset.
             encoder.set_bitrate(settings.bitrate_kbps)?;
         }
-        let verify = !encode_only && index%verify_every==0;
-        let input = if gpu_generated && !verify {None}else{Some(input_format(pattern(settings, index), format))};
-        let expected = if verify {uu_media::convert::frame_to_rgba(input.as_ref().unwrap())}else{Vec::new()};
+        let input = if gpu_generated {None}else{Some(input_format(pattern(settings, index), format))};
         #[cfg(windows)]
         let input=if let Some(gpu)=&gpu {
             let source=Settings{width:settings.width*source_scale,height:settings.height*source_scale,..settings};
@@ -261,44 +261,53 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
             }
-            let output = decoder.as_mut().unwrap()
-                .decode(&coded).with_context(|| format!("continuous decoder at frame {index}"))?
-                .context("low-delay output must be immediately decodable")?;
-            ensure!(
-                (output.width, output.height) == (settings.width, settings.height),
-                "encoder crop dimensions did not roundtrip"
-            );
-            decoded += 1;
-            gpu_decoded += u32::from(output.gpu);
-            if !verify {continue;}
-            #[cfg(windows)]
-            let actual=if let Some(surface)=&output.d3d11 {
-                if !gpu_verifier.as_ref().is_some_and(|converter|converter.matches(surface)) {
-                    gpu_verifier=Some(uu_media::d3d11_frame::Converter::new(surface).map_err(anyhow::Error::msg)?);
+            let pictures = decoder.as_mut().unwrap()
+                .decode_frames(&coded).with_context(|| format!("continuous decoder at frame {index}"))?;
+            zero_output_inputs += u32::from(pictures.is_empty());
+            for output in pictures {
+                let output_index = decoded;
+                let expected_pts = Timestamp(u64::from(output_index)*1_000_000/u64::from(settings.fps));
+                ensure!(output.pts == expected_pts, "decoded pictures were lost, duplicated or reordered: expected {}, got {}", expected_pts.0, output.pts.0);
+                ensure!(
+                    (output.width, output.height) == (settings.width, settings.height),
+                    "encoder crop dimensions did not roundtrip"
+                );
+                decoded += 1;
+                gpu_decoded += u32::from(output.gpu);
+                if output_index % verify_every != 0 {continue;}
+                let expected = uu_media::convert::frame_to_rgba(&input_format(pattern(settings, output_index), format));
+                #[cfg(windows)]
+                let actual=if let Some(surface)=&output.d3d11 {
+                    if !gpu_verifier.as_ref().is_some_and(|converter|converter.matches(surface)) {
+                        gpu_verifier=Some(uu_media::d3d11_frame::Converter::new(surface).map_err(anyhow::Error::msg)?);
+                    }
+                    let converter=gpu_verifier.as_ref().unwrap();
+                    converter.convert(surface,color).map_err(anyhow::Error::msg)?;
+                    let mut rgba=converter.readback().map_err(anyhow::Error::msg)?;
+                    for pixel in rgba.chunks_exact_mut(4) {pixel.swap(0,2);}
+                    rgba
+                }else{uu_media::convert::frame_to_rgba_with_color(&output,color)};
+                #[cfg(not(windows))]
+                let actual=uu_media::convert::frame_to_rgba_with_color(&output,color);
+                let mut squared = 0u64;
+                for (actual, expected) in actual.chunks_exact(4).zip(expected.chunks_exact(4)) {
+                    for channel in 0..3 {
+                        let diff = i64::from(actual[channel]) - i64::from(expected[channel]);
+                        squared += (diff * diff) as u64;
+                    }
                 }
-                let converter=gpu_verifier.as_ref().unwrap();
-                converter.convert(surface,color).map_err(anyhow::Error::msg)?;
-                let mut rgba=converter.readback().map_err(anyhow::Error::msg)?;
-                for pixel in rgba.chunks_exact_mut(4) {pixel.swap(0,2);}
-                rgba
-            }else{uu_media::convert::frame_to_rgba_with_color(&output,color)};
-            #[cfg(not(windows))]
-            let actual=uu_media::convert::frame_to_rgba_with_color(&output,color);
-            let mut squared = 0u64;
-            for (actual, expected) in actual.chunks_exact(4).zip(expected.chunks_exact(4)) {
-                for channel in 0..3 {
-                    let diff = i64::from(actual[channel]) - i64::from(expected[channel]);
-                    squared += (diff * diff) as u64;
-                }
+                let mse =
+                    squared as f64 / (f64::from(settings.width) * f64::from(settings.height) * 3.0);
+                maximum_mse = maximum_mse.max(mse);
+                ensure!(
+                    mse < 100.0,
+                    "encoded colour bars differ from expected range/matrix: MSE={mse}"
+                );
+                verified += 1;
             }
-            let mse =
-                squared as f64 / (f64::from(settings.width) * f64::from(settings.height) * 3.0);
-            maximum_mse = maximum_mse.max(mse);
-            ensure!(
-                mse < 100.0,
-                "encoded colour bars differ from expected range/matrix: MSE={mse}"
-            );
-            verified += 1;
+            let lag = emitted.saturating_sub(decoded);
+            max_decode_lag_frames = max_decode_lag_frames.max(lag);
+            ensure!(lag <= 4, "hardware decoder accumulated more than four pending pictures");
         }
     }
     ensure!(
@@ -311,7 +320,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
-        "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,"pixel_verified_frames":verified,"pixel_verify_every":verify_every,"gpu_decoded_frames":gpu_decoded,
+        "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,"pixel_verified_frames":verified,"pixel_verify_every":verify_every,"gpu_decoded_frames":gpu_decoded,"zero_output_inputs":zero_output_inputs,"max_decode_lag_frames":max_decode_lag_frames,
         "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"gpu_generated":gpu_generated,"capture_device_supplied":capture_device_supplied,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
         "encode_ms_first":first_encode,"encode_ms_p99":times[times.len()*99/100],"encode_ms_max":times[times.len()-1],

@@ -60,6 +60,9 @@ impl VideoDecoder for VplAv1Decoder {
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Option<RawFrame>, CodecError> {
         self.worker.decode(frame)
     }
+    fn decode_frames(&mut self, frame: &EncodedFrame) -> Result<Vec<RawFrame>, CodecError> {
+        self.worker.decode_frames(frame)
+    }
 }
 struct Driver {
     decoder: NonNull<c_void>,
