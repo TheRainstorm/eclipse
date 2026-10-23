@@ -15,7 +15,12 @@ PAYLOAD = ['uu-gui', 'uu', 'README.txt', 'install.py', 'eclipse.png', *LICENSES]
 
 
 def verify_package(package):
-    manifest = json.loads((package / 'version.json').read_text())
+    metadata = package / 'version.json'
+    if metadata.is_symlink() or not metadata.is_file():
+        raise ValueError('Package requires a regular version.json file')
+    manifest = json.loads(metadata.read_text())
+    if not isinstance(manifest, dict):
+        raise ValueError('Invalid package version manifest')
     revision = manifest.get('source_commit')
     if not isinstance(revision, str) or len(revision) != 40 or any(c not in '0123456789abcdef' for c in revision):
         raise ValueError('Invalid source revision')
@@ -83,9 +88,11 @@ def main():
         finally:
             if staging.exists(): shutil.rmtree(staging)
     else:
-        for name in PAYLOAD:
-            if hashlib.sha256((dest / name).read_bytes()).hexdigest() != manifest['sha256'][name]:
-                raise ValueError('Existing release differs; refusing to overwrite a running installation')
+        # Reusing a release must not promote a damaged or misidentified install.
+        # Build timestamps may differ for a legitimate rebuild of the same source.
+        existing = verify_package(dest)
+        if existing['source_commit'] != revision or existing['sha256'] != manifest['sha256']:
+            raise ValueError('Existing release differs; refusing to overwrite a running installation')
     def link(target, path):
         path.parent.mkdir(parents=True, exist_ok=True)
         pending = path.with_name(path.name + f'.tmp-{os.getpid()}')

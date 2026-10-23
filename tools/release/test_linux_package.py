@@ -65,6 +65,43 @@ class LinuxPackageTests(unittest.TestCase):
         with patch('sys.argv', ['install.py', '--package', str(second), '--prefix', str(prefix)]), self.assertRaises(ValueError): installer.main()
         self.assertEqual((base / 'current').resolve(), before)
 
+    def test_reusing_damaged_release_never_changes_current_or_launchers(self):
+        first = self.package(); second = self.package('b' * 40)
+        prefix = self.root / 'installed'
+        def install(package):
+            with patch('sys.argv', ['install.py', '--package', str(package), '--prefix', str(prefix)]), contextlib.redirect_stdout(io.StringIO()):
+                installer.main()
+        install(first); install(second)
+        base = prefix / 'opt/uu-remote-rust'
+        metadata = base / 'releases' / ('a' * 12) / 'version.json'
+        original = metadata.read_text()
+        desktop = prefix / 'share/applications/uu-client.desktop'
+        before = ((base / 'current').resolve(), desktop.read_bytes())
+        malformed = [None, 'not json', '[]', json.dumps(dict(json.loads(original), source_commit='c' * 40))]
+        for content in malformed:
+            with self.subTest(metadata=content):
+                if content is None: metadata.unlink()
+                else: metadata.write_text(content)
+                with self.assertRaises(ValueError): install(first)
+                self.assertEqual(((base / 'current').resolve(), desktop.read_bytes()), before)
+                metadata.write_text(original)
+        metadata.unlink(); metadata.symlink_to(first / 'version.json')
+        with self.assertRaises(ValueError): install(first)
+        self.assertEqual(((base / 'current').resolve(), desktop.read_bytes()), before)
+
+    def test_same_source_rebuild_metadata_can_reuse_verified_payload(self):
+        package = self.package(); prefix = self.root / 'installed'
+        def install():
+            with patch('sys.argv', ['install.py', '--package', str(package), '--prefix', str(prefix)]), contextlib.redirect_stdout(io.StringIO()):
+                installer.main()
+        install()
+        metadata = package / 'version.json'
+        value = json.loads(metadata.read_text()); value['built_at_utc'] = '2000-01-01T00:00:00Z'
+        metadata.write_text(json.dumps(value)); install()
+        current = prefix / 'opt/uu-remote-rust/current'
+        self.assertEqual(installer.verify_package(current)['source_commit'], 'a' * 40)
+        self.assertEqual(subprocess.run([str(prefix / 'bin/uu-client')]).returncode, 0)
+
     def test_source_guard_rejects_untracked_and_dirty_inputs(self):
         def git(*args):return subprocess.check_output(['git', *args], cwd=self.root, stderr=subprocess.DEVNULL)
         git('init', '-q');(self.root / 'Cargo.toml').write_text('# owned fixture')
