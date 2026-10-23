@@ -20,7 +20,7 @@ fn main() -> anyhow::Result<()> {
         bitrate_kbps: 800,
         preference: Preference::Hardware,
     };
-    if case.starts_with("decode_") {
+    if case.starts_with("decode_") && case != "decode_alignment" {
         use uu_media::VideoDecoder;
         let result = uu_media::hw::vpl::VplAv1Decoder::new().and_then(|mut decoder| {
             decoder.prepare(128, 128)?;
@@ -88,7 +88,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
-    if case == "valid" {
+    if matches!(case.as_str(), "valid" | "decode_alignment") {
         use uu_media::VideoDecoder;
         let mut decoder = uu_media::hw::vpl::VplAv1Decoder::new()?;
         decoder.prepare(128, 128)?;

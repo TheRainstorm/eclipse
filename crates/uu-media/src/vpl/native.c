@@ -321,13 +321,21 @@ static int decoder_init(Decoder *d,mfxBitstream *bits,char *error,size_t capacit
     mfxFrameAllocRequest request;memset(&request,0,sizeof(request));status=d->rt.surfaces(d->session,&d->params,&request);
     if(status<0 || status==MFX_WRN_PARTIAL_ACCELERATION)return failed(error,capacity,"AV1 surface query",status);
     d->count=request.NumFrameSuggested>request.NumFrameMin?request.NumFrameSuggested:request.NumFrameMin;
-    d->pitch=info->Width;d->rows=info->Height;size_t size=(size_t)d->pitch*d->rows*3/2;
+    /* QueryIOSurf describes allocation geometry; it may include padding that
+     * differs from DecodeHeader/GetVideoParam's coded dimensions. Keep the
+     * visible crop fixed while allocating the complete requested surface. */
+    const mfxFrameInfo *allocation=&request.Info;
+    if(allocation->FourCC!=MFX_FOURCC_NV12 || allocation->Width<info->Width || allocation->Height<info->Height
+        || allocation->Width>8192 || allocation->Height>8192 || (allocation->Width|allocation->Height)&1
+        || allocation->CropW!=info->CropW || allocation->CropH!=info->CropH || allocation->CropX || allocation->CropY)
+        return failed(error,capacity,"unsupported AV1 allocation geometry",MFX_ERR_UNSUPPORTED);
+    d->pitch=allocation->Width;d->rows=allocation->Height;size_t size=(size_t)d->pitch*d->rows*3/2;
     if(!d->count || d->count>32 || !size || size>64*1024*1024 || size*d->count>256*1024*1024)return failed(error,capacity,"AV1 surface budget exceeded",MFX_ERR_MEMORY_ALLOC);
     d->surfaces=(mfxFrameSurface1 *)calloc(d->count,sizeof(*d->surfaces));d->pixels=(uint8_t **)calloc(d->count,sizeof(*d->pixels));
     if(!d->surfaces||!d->pixels)return failed(error,capacity,"AV1 surface allocation",MFX_ERR_MEMORY_ALLOC);
     for(uint32_t i=0;i<d->count;++i){
         d->pixels[i]=(uint8_t *)malloc(size);if(!d->pixels[i])return failed(error,capacity,"AV1 pixels allocation",MFX_ERR_MEMORY_ALLOC);
-        mfxFrameSurface1 *surface=&d->surfaces[i];surface->Info=d->params.mfx.FrameInfo;surface->Data.Pitch=(mfxU16)d->pitch;
+        mfxFrameSurface1 *surface=&d->surfaces[i];surface->Info=request.Info;surface->Data.Pitch=(mfxU16)d->pitch;
         surface->Data.Y=d->pixels[i];surface->Data.U=d->pixels[i]+(size_t)d->pitch*d->rows;surface->Data.V=surface->Data.U+1;
     }
     status=d->rt.init(d->session,&d->params);
@@ -337,7 +345,9 @@ static int decoder_init(Decoder *d,mfxBitstream *bits,char *error,size_t capacit
     status=d->rt.get(d->session,&d->params);
     if(status<0 || d->params.mfx.CodecId!=MFX_CODEC_AV1 || d->params.AsyncDepth!=1 || d->params.IOPattern!=MFX_IOPATTERN_OUT_SYSTEM_MEMORY
         || d->params.mfx.FrameInfo.CropW!=checked.mfx.FrameInfo.CropW || d->params.mfx.FrameInfo.CropH!=checked.mfx.FrameInfo.CropH
-        || d->params.mfx.FrameInfo.Width!=d->pitch || d->params.mfx.FrameInfo.Height!=d->rows || d->params.mfx.FrameInfo.FourCC!=MFX_FOURCC_NV12)return failed(error,capacity,"AV1 decoder readback changed format",status<0?status:MFX_ERR_UNSUPPORTED);
+        || d->params.mfx.FrameInfo.Width>d->pitch || d->params.mfx.FrameInfo.Height>d->rows
+        || d->params.mfx.FrameInfo.Width<checked.mfx.FrameInfo.CropW || d->params.mfx.FrameInfo.Height<checked.mfx.FrameInfo.CropH
+        || d->params.mfx.FrameInfo.CropX || d->params.mfx.FrameInfo.CropY || d->params.mfx.FrameInfo.FourCC!=MFX_FOURCC_NV12)return failed(error,capacity,"AV1 decoder readback changed format",status<0?status:MFX_ERR_UNSUPPORTED);
     return 1;
 }
 int eclipse_vpl_decoder_decode(Decoder *d,const uint8_t *input,size_t length,uint64_t timestamp,
