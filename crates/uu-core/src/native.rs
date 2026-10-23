@@ -491,11 +491,12 @@ fn encode_source(
         let capture_us=elapsed_us(started);
         timings.capture_us.fetch_add(capture_us, Ordering::Relaxed);
         captured.fetch_add(1, Ordering::Relaxed);
-        let requested = refresh.load(Ordering::Acquire);
-        if keyframe.elapsed() >= Duration::from_secs(2)
-            || (requested && keyframe.elapsed() >= Duration::from_millis(250))
+        // RTCP already coalesces and limits recovery requests. Once requested,
+        // renew references on the next frame, even just after a previous IDR.
+        // Swap also preserves a request arriving while this frame is encoded.
+        let requested = refresh.swap(false, Ordering::AcqRel);
+        if keyframe.elapsed() >= Duration::from_secs(2) || requested
         {
-            refresh.store(false, Ordering::Release);
             encoder.request_keyframe();
             keyframe = Instant::now();
         }
@@ -951,6 +952,29 @@ async fn wait_first_frame(stats:&MediaStats,baseline:u64,limit:Duration)->Result
 mod tests {
     use super::*;
     use crate::media::frame_channel;
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn recovery_immediately_after_an_idr_is_encoded_in_the_next_capture_batch() {
+        let settings=uu_media::encoder::Settings{tuning:Default::default(),codec:VideoCodec::H264,
+            rate_control:Default::default(),width:64,height:64,fps:60,bitrate_kbps:1000,preference:EncoderPreference::Software};
+        let capture=uu_capture::open(&CaptureSource::Synthetic{width:64,height:64,fps:60}).unwrap();
+        let encoder=uu_media::encoder::create(settings).unwrap();
+        let refresh=Arc::new(AtomicBool::new(false));
+        let mut producer=CaptureWorker::start(capture,settings,refresh.clone(),encoder,Arc::default());
+        let first=timeout(Duration::from_secs(2),producer.frames.recv()).await.unwrap().unwrap().unwrap();
+        assert!(first.is_keyframe);
+        refresh.store(true,Ordering::Release);
+        // Allow the two already-buffered frames; a new request must reach the
+        // next captured frame rather than wait for a 250 ms debounce window.
+        let mut recovered=None;
+        for _ in 0..3 {
+            let frame=timeout(Duration::from_secs(2),producer.frames.recv()).await.unwrap().unwrap().unwrap();
+            if frame.is_keyframe {recovered=Some(frame);break;}
+        }
+        producer.stop().await.unwrap();
+        let recovered=recovered.expect("recovery feedback was delayed after a recent IDR");
+        let mut decoder=uu_media::software_decoder().unwrap();
+        assert!(decoder.decode(&recovered).unwrap().is_some(),"recovery is independently decodable");
+    }
     struct InvitationFile(PathBuf);
     impl Drop for InvitationFile {
         fn drop(&mut self) {
