@@ -23,3 +23,7 @@ convert eclipse-master.png -resize 256x256 eclipse-256.png
 convert eclipse-master.png -resize 512x512 eclipse-512.png
 convert eclipse-master.png -define icon:auto-resize=256,128,64,48,32,24,16 eclipse.ico
 ```
+
+## UU 兼容入口标志
+
+`uu-remote.ico` 为网易 UU 远程官网的原始 favicon，来源 https://uuyc.163.com/favicon.ico，仅用于识别可选的 UU 兼容入口。相关商标和图像权利归网易所有，不属于本项目的双许可，也不代表官方合作或背书。

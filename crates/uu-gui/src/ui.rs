@@ -10,6 +10,8 @@ const SIDEBAR: C = super::theme::SIDEBAR;
 #[derive(Clone, Copy)]
 pub(super) enum Icon {
     Desktop,
+    Globe,
+    Uu,
     Picture,
     Exit,
     Grid,
@@ -52,6 +54,19 @@ pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
                 }
             }
         }
+        Icon::Globe => {
+            p.circle_stroke(r.center(), 8.0, stroke);
+            line((1.0, 9.0), (17.0, 9.0));
+            for axis in [false, true] {
+                let points = (0..=32).map(|i| {
+                    let angle = i as f32 * std::f32::consts::TAU / 32.0;
+                    if axis { pt(9.0 + 7.5 * angle.cos(), 9.0 + 3.4 * angle.sin()) }
+                    else { pt(9.0 + 3.4 * angle.cos(), 9.0 + 7.5 * angle.sin()) }
+                }).collect();
+                p.add(egui::Shape::closed_line(points, stroke));
+            }
+        }
+        Icon::Uu => super::brand::paint_uu_logo(p, rect.shrink(5.0)),
         Icon::Info => {
             p.circle_stroke(r.center(), 7.0, stroke);
             p.circle_filled(pt(9.0, 5.0), 0.9, color);
@@ -225,13 +240,14 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(30.0, 34.0), Sense::drag());
+                        ui.allocate_exact_size(egui::vec2(30.0, 34.0), Sense::click_and_drag());
                     logo(ui.painter(), rect);
+                    if response.clicked() { self.select_workspace_page(super::workspace_ui::Page::Devices); }
                     if response.drag_started() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
                     if ctx.screen_rect().width()>=680. {ui.label(RichText::new(super::brand::NAME).size(19.0).color(INK));}
-                    let space = (ui.available_width() - 390.0).max(0.0);
+                    let space = (ui.available_width() - 255.0).max(0.0);
                     let (_, drag) =
                         ui.allocate_exact_size(egui::vec2(space, 34.0), Sense::click_and_drag());
                     if drag.drag_started() {
@@ -253,22 +269,27 @@ impl App {
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        let running=self.workspace.host.running();
-                        let color=if running {super::theme::SUCCESS}else{MUTED};
-                        let response=ui.add_sized([34.,34.],egui::Button::new("").frame(false));
-                        let rect=response.rect;
-                        if response.hovered()||response.has_focus(){ui.painter().rect_stroke(rect,6.,egui::Stroke::new(1.,BLUE));}
-                        response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),if running {"停止本机服务"}else{"启动本机服务"}));
-                        icon(ui.painter(),rect,Icon::Desktop,color);
-                        let response=response.on_hover_text(if running {"服务运行中 · 点击停止"}else{"服务已停止 · 点击启动"});
-                        if response.clicked(){self.toggle_shared_host(ctx);}
-                        ui.menu_button("UU 兼容",|ui| {
-                            if ui.button("远程协助").clicked(){self.select_uu_compatibility(true);ui.close_menu();}
-                            if ui.button("UU 兼容设备").clicked(){self.select_uu_compatibility(false);ui.close_menu();}
+                        if icon_button(ui, Icon::Info, "关于软件").clicked() { self.open_about(); }
+                        if icon_button_selected(ui, Icon::Settings, "应用设置", self.settings_open).clicked() { self.open_settings(); }
+                        let uu = icon_button_selected(ui, Icon::Uu, "UU 兼容", self.lan.compatibility || self.workspace.page == super::workspace_ui::Page::Assistance);
+                        let menu = ui.make_persistent_id("uu-compatibility-menu");
+                        if uu.clicked() { ui.memory_mut(|m| m.toggle_popup(menu)); }
+                        egui::popup_below_widget(ui, menu, &uu, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                            ui.set_min_width(150.0);
+                            if ui.button("远程协助").clicked() { self.select_uu_compatibility(true); ui.close_menu(); }
+                            if ui.button("UU 兼容设备").clicked() { self.select_uu_compatibility(false); ui.close_menu(); }
                         });
-                        if icon_button(ui,Icon::Settings,"软件设置").clicked(){self.open_settings();}
-                        if ctx.screen_rect().width()>=760. && icon_button(ui,Icon::Info,"关于软件").clicked(){self.open_about();}
-                        self.account_button(ui);
+                        let running = self.workspace.host.running();
+                        let failed = self.workspace.host.statuses().iter().any(|(_,s)| matches!(s, uu_core::device_internet::EndpointStatus::Error(_)));
+                        let color = if failed { super::theme::DANGER } else if running { super::theme::SUCCESS } else { MUTED };
+                        let selected = !self.lan.compatibility && self.workspace.page == super::workspace_ui::Page::Services;
+                        let response = ui.add_sized([30.,30.], egui::Button::new("").frame(false));
+                        if selected || response.hovered() { ui.painter().rect_filled(response.rect, 6., C::from_rgb(222,235,249)); }
+                        icon(ui.painter(), response.rect, Icon::Globe, color);
+                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "连接服务"));
+                        if response.on_hover_text(if failed { "连接服务 · 部分入口异常" } else if running { "连接服务 · 运行中" } else { "连接服务 · 已停止" }).clicked() {
+                            self.select_workspace_page(super::workspace_ui::Page::Services);
+                        }
                     });
                 });
             });
@@ -276,7 +297,6 @@ impl App {
 
     pub(super) fn home_ui(&mut self, ctx: &egui::Context) {
         self.title_bar(ctx);
-        self.workspace_navigation(ctx);
         if !self.lan.compatibility {self.workspace_home(ctx);return;}
         if let Some(error) = self.account_error.clone() {
             egui::TopBottomPanel::top("local-account-error").show(ctx, |ui| {
@@ -296,13 +316,11 @@ impl App {
                     ui.add_space(38.0);
                     ui.heading("连接你的每一台设备");
                     ui.add_space(12.0);
-                    ui.label(RichText::new("登录 UU 账号访问官方设备；原生设备可从左侧设备页连接").color(MUTED));
+                    ui.label(RichText::new("登录 UU 账号访问官方设备；点击左上角标志返回原生设备页").color(MUTED));
                     ui.add_space(24.0);
-                    ui.label("本机名称");
-                    let editable = self.login_rx.is_none() && !self.workspace.device_name_locked();
-                    ui.add_enabled(editable, egui::TextEdit::singleline(self.workspace.device_name_mut())
-                        .char_limit(64).desired_width(240.));
-                    ui.small("与“共享本机”共用名称，默认使用电脑名。");
+                    ui.label("UU 本机名称");
+                    ui.monospace(uu_core::config::uu_device_name());
+                    ui.small("自动使用电脑名加 -Eclipse，与官方客户端区分。");
                     ui.add_space(12.0);
                     if let Some(texture)=&self.login_texture {
                         ui.image((texture.id(),egui::vec2(224.0,224.0)));

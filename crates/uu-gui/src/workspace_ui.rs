@@ -207,26 +207,18 @@ mod tests {
         }
     }
     #[test]
-    fn uu_name_is_editable_before_login_and_can_be_saved_after_login() {
+    fn uu_name_is_automatic_and_does_not_change_native_host_preferences() {
         let mut h = Harness::new();
         h.workspace.page = Page::Services;
-        let initial = uu_core::config::local_device_name();
-        assert_eq!(h.workspace.draft.name, initial);
-        h.click(&initial);
-        h.frame(vec![egui::Event::Key {
-            key: egui::Key::A, physical_key: None, pressed: true, repeat: false,
-            modifiers: egui::Modifiers { ctrl: true, command: true, ..Default::default() },
-        }]);
-        h.frame(vec![egui::Event::Text("Studio PC".into())]);
-        assert_eq!(h.workspace.draft.name, "Studio PC");
+        h.workspace.draft.name = "My native host".into();
         let name = h.workspace.prepare_device_name().unwrap();
-        assert_eq!(name, "Studio PC");
-        assert_eq!(h.workspace.store.as_ref().unwrap().read().unwrap().sharing.name, name);
+        assert_eq!(name, uu_core::config::uu_device_name());
+        assert!(name.ends_with("-Eclipse"));
         assert!(matches!(&h.click("登录 UU 账号")[..], [Action::Login]));
         h.logged_in = true;
-        assert!(matches!(&h.click("保存名称")[..], [Action::RenameUu]));
+        assert!(matches!(&h.click("更新注册信息")[..], [Action::RenameUu]));
         assert!(matches!(&h.click("管理 UU 设备")[..], [Action::ManageUu]));
-        assert_eq!(h.workspace.draft.name, "Studio PC");
+        assert_eq!(h.workspace.draft.name, "My native host");
     }
 
     #[test]
@@ -618,19 +610,8 @@ impl Workspace {
             }
         }
     }
-    pub fn device_name_mut(&mut self) -> &mut String { &mut self.draft.name }
-    pub fn device_name_locked(&self) -> bool { self.host.running() }
-    pub fn prepare_device_name(&mut self) -> anyhow::Result<String> {
-        let name = uu_core::api::validate_device_name(&self.draft.name)?.to_string();
-        let store = self.store.as_ref().ok_or_else(|| anyhow::anyhow!("设备配置不可用"))?;
-        store.edit(|book| {
-            anyhow::ensure!(!self.host.running() || book.sharing.name == name, "请停止共享后修改本机名称");
-            book.sharing.name = name.clone();
-            Ok(())
-        })?;
-        self.draft.name = name.clone();
-        self.refresh();
-        Ok(name)
+    pub fn prepare_device_name(&self) -> anyhow::Result<String> {
+        Ok(uu_core::config::uu_device_name())
     }
     fn update_connections(&mut self, edit: impl FnOnce(&mut Sharing)) {
         let result = self.store.as_ref().ok_or_else(|| anyhow::anyhow!("设备配置不可用"))
@@ -1153,7 +1134,7 @@ impl Workspace {
             Err(e) => self.monitor_error = format!("无法读取屏幕：{e}"),
         }
     }
-    pub(super) fn server_settings(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>) {
+    pub(super) fn server_settings(&mut self, ui: &mut egui::Ui, info: &Info, _actions: &mut Vec<Action>) {
         if self.monitors.is_empty() && self.monitor_error.is_empty() {
             self.refresh_monitors();
         }
@@ -1174,30 +1155,6 @@ impl Workspace {
                     .size(18.)
                     .strong(),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.host.running() {
-                        if ui
-                            .add_enabled(!self.host.stopping(), egui::Button::new("停止服务"))
-                            .clicked()
-                        {
-                            self.host.stop();
-                        }
-                    } else if ui
-                        .add_enabled(
-                            self.store.is_some() && (!self.monitors.is_empty() || uu_core::native::uses_desktop_portal()),
-                            egui::Button::new(
-                                RichText::new("启动服务").color(egui::Color32::WHITE),
-                            )
-                            .fill(theme::ACCENT),
-                        )
-                        .clicked()
-                    {
-                        if self.save_sharing() {
-                            if info.logged_in { actions.push(Action::RenameUu); }
-                            actions.push(Action::StartSharing);
-                        }
-                    }
-                });
             });
             let mut auto = self.book.sharing.auto_start;
             if ui.checkbox(&mut auto, "打开软件时自动启动服务").changed() {
@@ -1437,8 +1394,27 @@ impl Workspace {
         });
     }
     fn services(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>) {
-        ui.heading("连接服务");
-        muted(ui,"服务配置保存一次，供多台设备复用。");
+        ui.horizontal(|ui| {
+            if ui.button("‹ 设备").clicked() { self.page = Page::Devices; }
+            ui.heading("连接服务");
+        });
+        muted(ui,"管理本机服务与连接入口，服务端画质和权限在应用设置中调整。");
+        ui.add_space(12.);
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(if self.host.running() { theme::SUCCESS } else { theme::MUTED },
+                    if self.host.stopping() { "正在停止服务…" } else if self.host.running() { "本机服务运行中" } else { "本机服务已停止" });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.host.running() {
+                        if ui.add_enabled(!self.host.stopping(), egui::Button::new("停止服务")).clicked() { self.host.stop(); }
+                    } else if ui.add_enabled(self.store.is_some(), egui::Button::new(RichText::new("启动服务").color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked() {
+                        actions.push(Action::StartSharing);
+                    }
+                });
+            });
+            muted(ui,"启动后同时运行下方已启用的连接入口。");
+            if !self.host.notice.is_empty() { ui.colored_label(theme::DANGER, &self.host.notice); }
+        });
         ui.add_space(16.);
         let locked = self.host.running();
         if locked { muted(ui,"服务正在运行；停止服务后可修改连接入口。"); }
@@ -1482,14 +1458,13 @@ impl Workspace {
             self.endpoint_state(ui,"UU 账号");
             ui.add_space(8.);
             ui.horizontal(|ui| {
-                ui.label("本机名称");
-                ui.add_enabled(!info.login_busy && !self.host.running(),
-                    egui::TextEdit::singleline(&mut self.draft.name).char_limit(64).desired_width(240.));
-                if info.logged_in && ui.add_enabled(!info.login_busy, egui::Button::new("保存名称")).clicked() {
+                ui.label("UU 本机名称");
+                ui.monospace(uu_core::config::uu_device_name());
+                if info.logged_in && ui.add_enabled(!info.login_busy, egui::Button::new("更新注册信息")).clicked() {
                     actions.push(Action::RenameUu);
                 }
             });
-            muted(ui,"与服务端设置共用名称，默认使用电脑名；修改名称不改变 UU 编号和设备授权。");
+            muted(ui,"自动使用电脑名加 -Eclipse，便于与官方客户端区分；原生共享名称独立设置。");
             if info.logged_in {
                 ui.label(RichText::new("已登录").color(theme::SUCCESS));
                 if ui.button("管理 UU 设备").clicked() { actions.push(Action::ManageUu); }
@@ -1909,21 +1884,11 @@ impl super::App {
             self.workspace_actions(vec![Action::StartSharing],ctx);
         }
     }
-    pub(super) fn workspace_navigation(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("workspace-navigation")
-            .exact_width(170.).resizable(false)
-            .frame(egui::Frame::none().fill(theme::SIDEBAR).inner_margin(16.))
-            .show(ctx,|ui| {
-                ui.add_space(12.);
-                for (page,label) in [(Page::Devices,"设备"),(Page::Services,"连接服务")] {
-                    if ui.add_sized([138.,40.],egui::SelectableLabel::new(!self.lan.compatibility && self.workspace.page==page,label)).clicked() {
-                        self.workspace.page=page; self.lan.compatibility=false;
-                        self.workspace.editor=None; self.workspace.service_editor=None;
-                    }
-                    ui.add_space(6.);
-                }
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT),|ui| {muted(ui,"Eclipse 设备工作区");});
-            });
+    pub(super) fn select_workspace_page(&mut self, page: Page) {
+        self.workspace.page = page;
+        self.lan.compatibility = false;
+        self.workspace.editor = None;
+        self.workspace.service_editor = None;
     }
     pub(super) fn select_uu_compatibility(&mut self, assistance:bool) {
         self.lan.compatibility=!assistance;

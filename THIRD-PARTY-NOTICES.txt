@@ -24569,3 +24569,8 @@ MIT License
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE
+
+UU Remote service mark
+----------------------
+assets/branding/uu-remote.ico: original favicon from https://uuyc.163.com/favicon.ico, retrieved 2026-10-23.
+UU Remote and its logo are trademarks/assets of NetEase. Used only to identify the optional compatibility service; excluded from this project's MIT/Apache-2.0 license. No affiliation or endorsement is implied.

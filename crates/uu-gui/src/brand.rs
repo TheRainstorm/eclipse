@@ -40,6 +40,21 @@ pub fn paint_logo(painter: &egui::Painter, rect: egui::Rect) {
     );
 }
 
+/// Official service mark identifies only the optional UU compatibility menu.
+pub fn paint_uu_logo(painter: &egui::Painter, rect: egui::Rect) {
+    let ctx = painter.ctx();
+    let id = egui::Id::new("uu-service-mark");
+    let texture = ctx.data_mut(|d| d.get_temp::<egui::TextureHandle>(id)).unwrap_or_else(|| {
+        let image = image::load_from_memory(include_bytes!("../../../assets/branding/uu-remote.ico"))
+            .expect("embedded service icon").into_rgba8();
+        let texture = ctx.load_texture("uu-service-mark", egui::ColorImage::from_rgba_unmultiplied(
+            [image.width() as usize, image.height() as usize], image.as_raw()), egui::TextureOptions::LINEAR);
+        ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
+        texture
+    });
+    painter.image(texture.id(), rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.,1.)), egui::Color32::WHITE);
+}
+
 impl super::App {
     pub(super) fn local_dialog_open(&self) -> bool {
         self.settings_open || self.about_open || self.native_ui.open || self.native_host.open || self.lan.host.open || self.connection_details_open || self.workspace.pairing_visible

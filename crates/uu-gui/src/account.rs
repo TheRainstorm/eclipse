@@ -49,40 +49,6 @@ pub fn sign_out_matching(path: &Path, expected: Option<&str>) -> anyhow::Result<
 }
 
 impl super::App {
-    pub(super) fn account_button(&mut self, ui: &mut eframe::egui::Ui) {
-        use eframe::egui::{self, RichText};
-        let response = super::ui::icon_button(ui, super::ui::Icon::Person, "账号");
-        let id = ui.make_persistent_id("account-menu");
-        if response.clicked() {
-            ui.memory_mut(|memory| memory.toggle_popup(id));
-        }
-        egui::popup_below_widget(
-            ui,
-            id,
-            &response,
-            egui::PopupCloseBehavior::CloseOnClickOutside,
-            |ui| {
-                ui.set_min_width(176.0);
-                ui.strong(if self.logged_in {
-                    "账号已登录"
-                } else {
-                    "尚未登录"
-                });
-                ui.separator();
-                if self.logged_in {
-                    ui.label(RichText::new("退出后将断开本客户端的串流").small());
-                    if ui.button("退出账号").clicked() {
-                        ui.close_menu();
-                        self.sign_out();
-                    }
-                } else if ui.button("扫码登录").clicked() {
-                    ui.close_menu();
-                    self.start_login();
-                }
-            },
-        );
-    }
-
     pub(super) fn sign_out(&mut self) {
         // Cancel and join a QR worker before changing its shared state file.
         self.login_rx = None;

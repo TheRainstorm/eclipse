@@ -27,10 +27,10 @@ impl Section {
     ];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Video => "客户端 · 画面与显示",
-            Self::Audio => "客户端 · 声音",
-            Self::Input => "客户端 · 键盘与鼠标",
-            Self::Stream => "客户端 · 串流信息",
+            Self::Video => "画面与显示",
+            Self::Audio => "声音",
+            Self::Input => "键盘与鼠标",
+            Self::Stream => "串流信息",
             Self::Server => "服务端设置",
             Self::Application => "应用与诊断",
         }
@@ -41,7 +41,7 @@ impl Section {
             Self::Audio => "设置默认音量与声音播放。",
             Self::Input => "配置键鼠、手柄、运动传感器与输入归属。",
             Self::Stream => "设置串流菜单与统计信息。",
-            Self::Server => "管理本机采集、编码、权限与服务运行状态。",
+            Self::Server => "管理本机采集、编码、权限与自动启动。",
             Self::Application => "管理串流界面、默认偏好与软件信息。",
         }
     }
@@ -362,19 +362,21 @@ pub fn show(
             .frame(egui::Frame::none().fill(theme::SIDEBAR).inner_margin(14.0))
             .show(ctx, |ui| {
                 ui.add_space(12.0);
-                note(ui, "偏好设置");
-                ui.add_space(12.0);
-                for item in Section::ALL {
-                    if ui
-                        .add_sized(
-                            [ui.available_width(), 42.0],
-                            egui::SelectableLabel::new(*section == item, item.label()),
-                        )
-                        .clicked()
-                    {
-                        *section = item;
+                for (title, items) in [
+                    ("客户端", &[Section::Video, Section::Audio, Section::Input, Section::Stream][..]),
+                    ("服务端", &[Section::Server][..]),
+                    ("应用", &[Section::Application][..]),
+                ] {
+                    ui.label(RichText::new(title).size(12.0).strong().color(theme::MUTED));
+                    ui.add_space(6.0);
+                    for &item in items {
+                        if ui.add_sized([ui.available_width(), 38.0],
+                            egui::SelectableLabel::new(*section == item, item.label())).clicked() {
+                            *section = item;
+                        }
+                        ui.add_space(3.0);
                     }
-                    ui.add_space(3.0);
+                    ui.add_space(18.0);
                 }
             });
     } else {
@@ -441,7 +443,7 @@ pub fn show(
 pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::ClientSettings, section:&mut Section) {
     ui.horizontal_wrapped(|ui| {
         for item in [Section::Video,Section::Audio,Section::Input,Section::Stream] {
-            ui.selectable_value(section,item,item.label().trim_start_matches("客户端 · "));
+            ui.selectable_value(section,item,item.label());
         }
     });
     ui.add_space(12.);
