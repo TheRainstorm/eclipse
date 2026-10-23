@@ -56,11 +56,19 @@ pub(super) enum Action {
     Login,
     RenameUu,
     ManageUu,
+    RefreshUuDevices,
     CancelLogin,
     StartSharing,
     RestartSharing,
     SaveClientDefaults(uu_core::client_settings::ClientSettings),
     Assist(uu_core::assistance::Request),
+}
+#[derive(Clone, Debug)]
+pub(super) enum UuDeviceList {
+    SignedOut,
+    Loading,
+    Loaded(Vec<(String, String)>),
+    Failed(String),
 }
 pub(super) struct Info {
     pub logged_in: bool,
@@ -69,7 +77,7 @@ pub(super) struct Info {
     pub login_status: String,
     pub login_busy: bool,
     pub nearby: Vec<(String, String)>,
-    pub uu_devices: Vec<(String, String)>,
+    pub uu_devices: UuDeviceList,
 }
 #[derive(Clone)]
 struct DeviceEditor {
@@ -130,7 +138,6 @@ pub(super) struct Workspace {
     autostart_checked: bool,
     previews:std::collections::HashMap<String,PreviewSlot>,
     preview_jobs:Vec<PreviewJob>,
-    uu_choices: Vec<(String,String)>,
 }
 
 #[cfg(test)]
@@ -143,6 +150,7 @@ mod tests {
         time: f64,
         texts: Vec<(String, egui::Pos2)>,
         logged_in: bool,
+        uu_devices: UuDeviceList,
     }
     impl Harness {
         fn new() -> Self {
@@ -164,6 +172,7 @@ mod tests {
                 time: 0.,
                 texts: Vec::new(),
                 logged_in: false,
+                uu_devices: UuDeviceList::Loaded(Vec::new()),
             }
         }
         fn frame(&mut self, events: Vec<egui::Event>) -> Vec<Action> {
@@ -176,7 +185,7 @@ mod tests {
                 login_status: String::new(),
                 login_busy: false,
                 nearby: Vec::new(),
-                uu_devices: Vec::new(),
+                uu_devices: if self.logged_in { self.uu_devices.clone() } else { UuDeviceList::SignedOut },
             };
             let output = self.ctx.run(
                 egui::RawInput {
@@ -193,7 +202,7 @@ mod tests {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         actions.extend(self.workspace.show(ui, &info));
                     });
-                    actions.extend(self.workspace.dialogs(ctx));
+                    actions.extend(self.workspace.dialogs(ctx, &info));
                 },
             );
             fn collect(shape: &egui::Shape, texts: &mut Vec<(String, egui::Pos2)>) {
@@ -255,6 +264,52 @@ mod tests {
         assert!(matches!(&h.click("更新注册信息")[..], [Action::RenameUu]));
         assert!(matches!(&h.click("管理 UU 设备")[..], [Action::ManageUu]));
         assert_eq!(h.workspace.draft.name, "My native host");
+    }
+
+    #[test]
+    fn uu_picker_on_device_home_tracks_loading_errors_empty_and_signed_out() {
+        let mut h = Harness::new();
+        h.logged_in = true;
+        h.uu_devices = UuDeviceList::Loading;
+        h.workspace.new_device(None, None);
+        h.click("UU 账号");
+        assert_eq!(h.workspace.route.page, Page::Devices);
+        assert!(h.texts.iter().any(|(s, _)| s == "正在加载 UU 设备列表…"));
+        assert!(!h.texts.iter().any(|(s, _)| s.contains("尚未登录")));
+
+        h.uu_devices = UuDeviceList::Failed("网络暂不可用".into());
+        assert!(matches!(&h.click("重试加载 UU 设备")[..], [Action::RefreshUuDevices]));
+        assert!(h.texts.iter().any(|(s, _)| s.contains("网络暂不可用")));
+        assert!(!h.texts.iter().any(|(s, _)| s.contains("尚未登录")));
+
+        h.uu_devices = UuDeviceList::Loaded(Vec::new());
+        assert!(matches!(&h.click("刷新 UU 设备")[..], [Action::RefreshUuDevices]));
+        assert!(h.texts.iter().any(|(s, _)| s == "此账号暂无可选 UU 设备。"));
+        assert!(!h.texts.iter().any(|(s, _)| s.contains("尚未登录")));
+
+        h.logged_in = false;
+        for _ in 0..3 { h.frame(Vec::new()); }
+        assert!(h.texts.iter().any(|(s, _)| s.contains("尚未登录")));
+        assert!(!h.texts.iter().any(|(s, _)| s == "刷新 UU 设备"));
+    }
+
+    #[test]
+    fn uu_picker_selects_account_device_without_visiting_compatibility_page() {
+        let mut h = Harness::new();
+        h.logged_in = true;
+        h.uu_devices = UuDeviceList::Loaded(vec![("generated-uu-device".into(), "Generated laptop".into())]);
+        h.workspace.new_device(None, None);
+        h.click("UU 账号");
+        h.click("请选择设备");
+        h.click("Generated laptop · generated-uu-device");
+        let editor = h.workspace.editor.as_ref().unwrap();
+        assert_eq!(editor.device, "generated-uu-device");
+        assert_eq!(editor.name, "Generated laptop");
+        h.click("仅保存");
+        let device = &h.workspace.book.devices[0];
+        assert_eq!(device.name, "Generated laptop");
+        assert!(matches!(&device.routes[0].destination, Destination::Uu { device } if device == "generated-uu-device"));
+        assert_eq!(h.workspace.route.page, Page::Devices);
     }
 
     #[test]
@@ -661,7 +716,7 @@ impl Workspace {
             pairing_visible: false,
             pairing_settings:Default::default(),
             autostart_checked: false,
-            previews:Default::default(),preview_jobs:Vec::new(),uu_choices:Vec::new(),
+            previews:Default::default(),preview_jobs:Vec::new(),
         }
     }
     pub fn poll(&mut self, ctx: &egui::Context, window: isize) {
@@ -902,7 +957,6 @@ impl Workspace {
         Ok(id)
     }
     pub fn show(&mut self, ui: &mut egui::Ui, info: &Info) -> Vec<Action> {
-        self.uu_choices = info.uu_devices.clone();
         let mut actions = Vec::new();
         match self.route.page {
             Page::Devices => self.devices(ui, info, &mut actions),
@@ -1743,7 +1797,7 @@ impl Workspace {
             if ui.button("让别人连接本机").clicked(){self.route.page=Page::Services;}
         });
     }
-    pub fn dialogs(&mut self, ctx: &egui::Context) -> Vec<Action> {
+    pub fn dialogs(&mut self, ctx: &egui::Context, info: &Info) -> Vec<Action> {
         let mut actions = Vec::new();
         self.host.dialogs(ctx);
         if let Some(mut editor)=self.client_editor.take() {
@@ -1823,19 +1877,38 @@ impl Workspace {
                 match editor.kind {
                     0 => field(ui, "目标地址", &mut editor.address, "主机 IP:端口"),
                     1 => {
-                        if !self.uu_choices.is_empty() {
+                        let choices = match &info.uu_devices {
+                            UuDeviceList::Loaded(devices) => devices.as_slice(),
+                            _ => &[],
+                        };
+                        match &info.uu_devices {
+                            UuDeviceList::SignedOut => {
+                                muted(ui, "尚未登录 UU 账号，可在连接服务或 UU 兼容页登录。");
+                            }
+                            UuDeviceList::Loading => {
+                                ui.horizontal(|ui| { ui.spinner(); ui.label("正在加载 UU 设备列表…"); });
+                            }
+                            UuDeviceList::Failed(error) => {
+                                ui.colored_label(theme::DANGER, format!("无法加载 UU 设备：{error}"));
+                                if ui.button("重试加载 UU 设备").clicked() { actions.push(Action::RefreshUuDevices); }
+                            }
+                            UuDeviceList::Loaded(devices) => {
+                                if devices.is_empty() { muted(ui, "此账号暂无可选 UU 设备。"); }
+                                if ui.button("刷新 UU 设备").clicked() { actions.push(Action::RefreshUuDevices); }
+                            }
+                        }
+                        if !choices.is_empty() {
                             ui.label("选择账号中的设备");
-                            let selected = self
-                                .uu_choices
+                            let selected = choices
                                 .iter()
                                 .find(|(id, _)| id == &editor.device)
                                 .map(|(_, name)| name.as_str())
-                                .unwrap_or("手动输入设备编号");
+                                .unwrap_or("请选择设备");
                             egui::ComboBox::from_id_salt("route-uu-device")
                                 .selected_text(selected)
                                 .width(360.0)
                                 .show_ui(ui, |ui| {
-                                    for (id, name) in &self.uu_choices {
+                                    for (id, name) in choices {
                                         if ui
                                             .selectable_label(editor.device == *id, format!("{name} · {id}"))
                                             .clicked()
@@ -1857,7 +1930,6 @@ impl Workspace {
                                 &mut editor.device,
                                 "被控端“连接服务”中的本机 UU 编号",
                             );
-                            muted(ui, "登录 UU 账号后可在这里选择设备列表。");
                         }
                     }
                     _ => {
@@ -2086,7 +2158,15 @@ impl super::App {
             qr:self.login_texture.as_ref().map(|t|t.id()),
             login_status:self.account_error.clone().unwrap_or_else(||self.login_status.clone()),
             login_busy:self.login_rx.is_some(), nearby:self.lan.nearby(self.workspace.host.server_id()),
-            uu_devices:self.devices.iter().map(|device|(device.device_id.clone(),device.alias.clone())).collect(),
+            uu_devices: if !self.logged_in {
+                UuDeviceList::SignedOut
+            } else if self.rx.is_some() {
+                UuDeviceList::Loading
+            } else if let Some(error) = &self.device_load_error {
+                UuDeviceList::Failed(error.clone())
+            } else {
+                UuDeviceList::Loaded(self.devices.iter().map(|device|(device.device_id.clone(),device.alias.clone())).collect())
+            },
         }
     }
     pub(super) fn workspace_home(&mut self, ctx: &egui::Context) {
@@ -2125,6 +2205,7 @@ impl super::App {
                     self.workspace.feedback.success(scope, "全局默认客户端配置已保存；下次连接生效");
                 }
                 Action::Login => self.start_login(),
+                Action::RefreshUuDevices => self.start_load(),
                 Action::RenameUu => self.rename_uu_device(),
                 Action::ManageUu => {
                     if let (Some(config), Some(token)) = (self.config.clone(), self.account_token.clone()) {
@@ -2243,7 +2324,8 @@ impl super::App {
         }
     }
     pub(super) fn workspace_dialogs(&mut self, ctx: &egui::Context) {
-        let actions = self.workspace.dialogs(ctx);
+        let info = self.workspace_info();
+        let actions = self.workspace.dialogs(ctx, &info);
         self.workspace_actions(actions, ctx);
     }
     pub(super) fn device_pairing_ui(&mut self,ctx:&egui::Context) {

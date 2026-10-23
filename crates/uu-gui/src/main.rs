@@ -96,6 +96,24 @@ fn parse_devices(body: serde_json::Value) -> anyhow::Result<Vec<Device>> {
 #[cfg(test)]
 mod launcher_tests {
     #[test]
+    fn device_fetch_rejects_a_changed_account_before_requesting_the_list() {
+        let root = std::env::temp_dir().join(format!("uu-list-account-{}", uuid::Uuid::new_v4()));
+        let config = uu_core::Config {
+            data_dir: root.join("data"),
+            state_dir: root.join("state"),
+            signaling_host: "unreachable.example.invalid".into(),
+        };
+        let mut state = uu_core::ClientState::new();
+        state.token = Some("new-account".into());
+        state.save(&config.at("state.json")).unwrap();
+        let before = std::fs::read(config.at("state.json")).unwrap();
+        let error = super::load_devices(config.clone(), "previous-account".into()).unwrap_err();
+        assert!(error.to_string().contains("账号已变化"), "{error:#}");
+        assert_eq!(std::fs::read(config.at("state.json")).unwrap(), before);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn invalid_or_rejected_responses_are_not_treated_as_an_empty_account() {
         assert!(super::parse_devices(serde_json::json!({})).is_err());
         assert!(super::parse_devices(serde_json::json!({"code":1120,"data":{"my_binded_devices":[]}})).is_err());
@@ -120,12 +138,12 @@ mod launcher_tests {
     }
 }
 
-fn load_devices() -> anyhow::Result<Vec<Device>> {
-    let config = uu_core::Config::from_env()?;
+fn load_devices(config: uu_core::Config, token: String) -> anyhow::Result<Vec<Device>> {
     let rt = tokio::runtime::Runtime::new()?;
     let result = rt.block_on(async {
         let client = uu_core::SignalClient::new(&config)?;
         let api = uu_core::UuApi::new(client, config.at("state.json"))?;
+        anyhow::ensure!(api.state.token.as_deref() == Some(token.as_str()), "账号已变化，请刷新设备列表");
         let body = tokio::time::timeout(std::time::Duration::from_secs(15), api.device_list())
             .await.map_err(|_| anyhow::anyhow!("获取设备列表超时，请检查网络后重试"))??;
         let mut devices = parse_devices(body)?;
@@ -515,7 +533,7 @@ impl App {
             app.view_only = target.view_only;
             app.autoconnect_done = true;
             app.connect();
-        } else if logged_in && app.workspace.route.page == workspace_ui::Page::Compatibility {
+        } else if logged_in {
             app.start_load();
         } else {
             app.status = "选择连接方式".into();
@@ -525,12 +543,13 @@ impl App {
 
     fn start_load(&mut self) {
         if self.rx.is_some() { return; }
+        let (Some(config), Some(token)) = (self.config.clone(), self.account_token.clone()) else { return; };
         self.wallpaper_worker = None;
         self.device_load_error = None;
         let (tx, rx) = channel();
         let context = self.context.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(load_devices());
+            let _ = tx.send(load_devices(config, token));
             context.request_repaint();
         });
         self.rx = Some(rx);
@@ -616,7 +635,7 @@ impl App {
                     self.login_status = match self.config.as_ref()
                         .ok_or_else(|| anyhow::anyhow!("无法确定登录目录"))
                         .and_then(|c| account::store_device_name(&c.at("state.json"), &token, name)) {
-                        Ok(()) => { self.rx = None; if self.compatibility_active() { self.start_load(); } "UU 设备名称已更新".into() },
+                        Ok(()) => { self.rx = None; self.start_load(); "UU 设备名称已更新".into() },
                         Err(error) => format!("云端名称已更新，保存本地记录失败：{error}"),
                     };
                 }
@@ -630,7 +649,12 @@ impl App {
 
     fn poll(&mut self, ctx: &egui::Context) {
         if let Some(rx) = &self.rx {
-            if let Ok(result) = rx.try_recv() {
+            let result = match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(anyhow::anyhow!("设备列表加载已中断，请重试"))),
+            };
+            if let Some(result) = result {
                 match result {
                     Ok(devices) => {
                         self.device_load_error = None;
@@ -1425,7 +1449,7 @@ impl App {
             else {
                 self.rx = None;
                 self.devices.clear();
-                if self.compatibility_active() { self.start_load(); }
+                self.start_load();
             }
         }
         let (events, focused) = ctx.input(|i| (i.events.clone(), i.focused));

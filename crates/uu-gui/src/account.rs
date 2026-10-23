@@ -87,7 +87,7 @@ impl super::App {
         self.autoconnect_done = true;
         if self.stream_target.is_some() {
             self.disconnect();
-        } else if self.logged_in && self.workspace.route.page == super::workspace_ui::Page::Compatibility {
+        } else if self.logged_in {
             self.start_load();
         } else {
             self.status = "已退出账号，请重新扫码登录".into();
