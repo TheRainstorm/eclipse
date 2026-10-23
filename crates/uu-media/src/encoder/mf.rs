@@ -536,7 +536,7 @@ impl super::worker::Driver for Driver {
     fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Vec<EncodedFrame>, String> {
         Driver::encode(self, frame, keyframe)
     }
-    fn bitrate(&mut self, kbps: u32) -> Result<(), String> {
+    fn bitrate(&mut self, kbps: u32) -> Result<super::worker::BitrateChange, String> {
         if let super::RateControl::Vbr { peak_kbps } = self.settings.rate_control {
             if kbps > peak_kbps {
                 return Err(format!(
@@ -552,7 +552,7 @@ impl super::worker::Driver for Driver {
                 )
                 .map_err(reason)?;
             self.settings.bitrate_kbps = kbps;
-            Ok(())
+            Ok(super::worker::BitrateChange::KeyframeRequired)
         }
     }
 }

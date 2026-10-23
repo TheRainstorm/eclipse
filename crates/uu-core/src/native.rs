@@ -454,7 +454,7 @@ fn encode_source(
     let mut backend=encoder.backend_name().to_owned();
     let mut interval = Duration::from_secs_f64(1.0 / settings.fps as f64);
     let mut next = Instant::now();
-    let mut keyframe = Instant::now() - Duration::from_secs(3);
+    encoder.request_keyframe();
     while !stopped.load(Ordering::Acquire) {
         std::thread::sleep(next.saturating_duration_since(Instant::now()));
         if stopped.load(Ordering::Acquire) {
@@ -476,10 +476,13 @@ fn encode_source(
                     ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"画质请求已取消");
                     capture.set_frame_rate(updated.fps)?;
                     encoder=replacement;
+                    encoder.request_keyframe();
                     interval=Duration::from_secs_f64(1.0/updated.fps as f64);
                     next=Instant::now();
                 }else{encoder.set_bitrate(bitrate_kbps)?;}
-                encoder.request_keyframe();settings=updated;
+                // The encoder owns whether a bitrate update invalidated its
+                // references; replacement encoders already start a new chain.
+                settings=updated;
                 quality_status.send_replace(settings);
                 Ok(bitrate_kbps)
             })().map_err(|error|error.to_string());
@@ -505,10 +508,8 @@ fn encode_source(
         // renew references on the next frame, even just after a previous IDR.
         // Swap also preserves a request arriving while this frame is encoded.
         let requested = refresh.swap(false, Ordering::AcqRel);
-        if keyframe.elapsed() >= Duration::from_secs(2) || requested
-        {
+        if requested {
             encoder.request_keyframe();
-            keyframe = Instant::now();
         }
         let started = Instant::now();
         let encoded_frames = encoder.encode(&frame)?;
@@ -992,6 +993,35 @@ async fn wait_first_frame(stats:&MediaStats,baseline:u64,limit:Duration)->Result
 mod tests {
     use super::*;
     use crate::media::frame_channel;
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn capture_requests_initial_idr_without_adding_a_periodic_refresh() {
+        struct Source {inner:Box<dyn uu_capture::Capture>,count:u32}
+        impl uu_capture::Capture for Source {
+            fn resolution(&self)->(u32,u32){self.inner.resolution()}
+            fn next_frame(&mut self)->std::result::Result<uu_media::RawFrame,uu_capture::CaptureError> {
+                if self.count==1 {std::thread::sleep(Duration::from_millis(2100));}
+                self.count+=1;self.inner.next_frame()
+            }
+        }
+        struct Encoder(bool);
+        impl uu_media::VideoEncoder for Encoder {
+            fn backend_name(&self)->&str{"owned reference fixture"}
+            fn codec(&self)->VideoCodec{VideoCodec::H264}
+            fn request_keyframe(&mut self){self.0=true;}
+            fn set_bitrate(&mut self,_:u32)->std::result::Result<(),uu_media::CodecError>{self.0=true;Ok(())}
+            fn encode(&mut self,frame:&uu_media::RawFrame)->std::result::Result<Vec<uu_media::EncodedFrame>,uu_media::CodecError> {
+                Ok(vec![uu_media::EncodedFrame{data:vec![0u8].into(),pts:frame.pts,is_keyframe:std::mem::take(&mut self.0)}])
+            }
+        }
+        let settings=uu_media::encoder::Settings{tuning:Default::default(),codec:VideoCodec::H264,
+            rate_control:Default::default(),width:64,height:64,fps:60,bitrate_kbps:1000,preference:EncoderPreference::Software};
+        let source=Box::new(Source{inner:uu_capture::open(&CaptureSource::Synthetic{width:64,height:64,fps:60}).unwrap(),count:0});
+        let mut producer=CaptureWorker::start(source,settings,Arc::default(),Box::new(Encoder(false)),Arc::default());
+        assert!(timeout(Duration::from_secs(2),producer.frames.recv()).await.unwrap().unwrap().unwrap().is_keyframe);
+        assert!(!timeout(Duration::from_secs(4),producer.frames.recv()).await.unwrap().unwrap().unwrap().is_keyframe,
+            "capture added a periodic refresh even though references were intact");
+        producer.stop().await.unwrap();
+    }
     #[tokio::test(flavor="multi_thread",worker_threads=2)]
     async fn suspended_capture_emits_no_old_pixels_resumes_with_idr_and_cancels() {
         struct Source {

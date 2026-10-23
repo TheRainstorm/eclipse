@@ -281,7 +281,7 @@ impl super::worker::Driver for Driver {
     fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Vec<EncodedFrame>, String> {
         Driver::encode(self, frame, keyframe)
     }
-    fn bitrate(&mut self, kbps: u32) -> Result<(), String> {
-        Driver::bitrate(self, kbps)
+    fn bitrate(&mut self, kbps: u32) -> Result<super::worker::BitrateChange, String> {
+        Driver::bitrate(self, kbps).map(|()|super::worker::BitrateChange::KeyframeRequired)
     }
 }

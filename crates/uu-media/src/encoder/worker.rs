@@ -7,13 +7,21 @@ use std::{
     time::Duration,
 };
 
+/// Whether the accepted update retained the encoded reference chain. Drivers
+/// must require a fresh picture unless their live-update API guarantees this.
+pub(super) enum BitrateChange {
+    // Some platform builds only include drivers requiring a new reference chain.
+    #[allow(dead_code)]
+    Preserved,
+    KeyframeRequired,
+}
 pub(super) trait Driver {
     fn backend_name(&self) -> &str;
     fn gpu_input(&self)->bool {false}
     fn gpu_vendor(&self)->Option<u16> {None}
     fn codec(&self)->uu_proto::media::VideoCodec{uu_proto::media::VideoCodec::H264}
     fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Vec<EncodedFrame>, String>;
-    fn bitrate(&mut self, kbps: u32) -> Result<(), String>;
+    fn bitrate(&mut self, kbps: u32) -> Result<BitrateChange, String>;
 }
 
 enum Job {
@@ -22,7 +30,7 @@ enum Job {
         bool,
         mpsc::Sender<Result<Vec<EncodedFrame>, String>>,
     ),
-    Bitrate(u32, mpsc::Sender<Result<(), String>>),
+    Bitrate(u32, mpsc::Sender<Result<BitrateChange, String>>),
 }
 pub(super) struct Worker {
     sender: Option<SyncSender<Job>>,
@@ -134,8 +142,8 @@ impl VideoEncoder for Worker {
             .ok_or_else(|| error("hardware encoder is unavailable"))?
             .send(Job::Bitrate(kbps, reply))
             .map_err(|_| error("hardware encoder thread ended"))?;
-        self.reply(receiver)?;
-        self.keyframe=true;
+        let change=self.reply(receiver)?;
+        self.keyframe |= matches!(change,BitrateChange::KeyframeRequired);
         Ok(())
     }
 }
@@ -162,6 +170,7 @@ mod tests {
         // A !Send driver is constructed and destroyed inside the worker.
         _owner: Rc<()>,
         trace: Arc<Mutex<Vec<ThreadId>>>,
+        preserve: bool,
     }
     impl Driver for Affine {
         fn backend_name(&self) -> &str {
@@ -179,9 +188,10 @@ mod tests {
                 is_keyframe: keyframe,
             }])
         }
-        fn bitrate(&mut self, _: u32) -> Result<(), String> {
+        fn bitrate(&mut self, kbps: u32) -> Result<BitrateChange, String> {
             self.trace.lock().unwrap().push(std::thread::current().id());
-            Ok(())
+            if kbps==0{return Err("invalid fixture bitrate".into());}
+            Ok(if self.preserve {BitrateChange::Preserved}else{BitrateChange::KeyframeRequired})
         }
     }
     impl Drop for Affine {
@@ -198,6 +208,7 @@ mod tests {
             Ok(Affine {
                 _owner: Rc::new(()),
                 trace: observed,
+                preserve: false,
             })
         })
         .unwrap();
@@ -225,5 +236,21 @@ mod tests {
         assert_eq!(trace.len(), 6);
         assert_ne!(trace[0], std::thread::current().id());
         assert!(trace.iter().all(|thread| *thread == trace[0]));
+    }
+    #[test]
+    fn bitrate_updates_follow_reference_requirements_without_losing_pending_recovery() {
+        for preserve in [false,true] {
+            let mut worker=Worker::spawn(move||Ok(Affine{_owner:Rc::new(()),trace:Arc::default(),preserve})).unwrap();
+            let frame=RawFrame {width:2,height:2,stride:2,format:crate::PixelFormat::I420,
+                data:vec![128;6].into(),pts:crate::Timestamp(0),gpu:false,dma_buf:None,d3d11:None};
+            assert!(worker.encode(&frame).unwrap()[0].is_keyframe);
+            worker.set_bitrate(1000).unwrap();
+            assert_eq!(worker.encode(&frame).unwrap()[0].is_keyframe,!preserve);
+            worker.request_keyframe();worker.set_bitrate(2000).unwrap();
+            assert!(worker.encode(&frame).unwrap()[0].is_keyframe,"rate update lost an explicit recovery request");
+            worker.request_keyframe();assert!(worker.set_bitrate(0).is_err());
+            assert!(worker.encode(&frame).unwrap()[0].is_keyframe,"failed rate update lost pending recovery");
+            assert!(!worker.encode(&frame).unwrap()[0].is_keyframe);
+        }
     }
 }

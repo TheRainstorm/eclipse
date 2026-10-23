@@ -213,7 +213,7 @@ impl super::worker::Driver for Driver {
         self.profile.record(started, uploaded);
         Ok(vec![frame])
     }
-    fn bitrate(&mut self, kbps: u32) -> Result<(), String> {
+    fn bitrate(&mut self, kbps: u32) -> Result<super::worker::BitrateChange, String> {
         let mut error = [0 as c_char; 512];
         if unsafe {
             eclipse_vpl_encoder_bitrate(
@@ -227,6 +227,6 @@ impl super::worker::Driver for Driver {
             return Err(message(&error));
         }
         self.settings.bitrate_kbps = kbps;
-        Ok(())
+        Ok(super::worker::BitrateChange::KeyframeRequired)
     }
 }

@@ -90,10 +90,10 @@ impl super::worker::Driver for Driver {
         self.profile.record(started,uploaded);
         Ok(vec![frame])
     }
-    fn bitrate(&mut self,kbps:u32)->Result<(),String> {
+    fn bitrate(&mut self,kbps:u32)->Result<super::worker::BitrateChange,String> {
         let mut error=[0;512];
         let result=unsafe{eclipse_amf_bitrate(self.native.0.as_ptr(),kbps,error.as_mut_ptr(),error.len())};
         if result!=0 {return Err(message(&error));}
-        self.settings.bitrate_kbps=kbps;Ok(())
+        self.settings.bitrate_kbps=kbps;Ok(super::worker::BitrateChange::Preserved)
     }
 }

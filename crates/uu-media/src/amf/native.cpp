@@ -132,7 +132,7 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
             s->set(AMF_VIDEO_ENCODER_B_PIC_PATTERN,amf_int64(0));
         }
         // Zero is the documented AMF infinite-GOP value for these formats.
-        // Recovery, source changes and rate changes still explicitly request
+        // Recovery and reference-invalidating reconfiguration still request
         // independently decodable pictures through the shared encoder worker.
         const auto gop_name=s->prop(AMF_VIDEO_ENCODER_IDR_PERIOD,AMF_VIDEO_ENCODER_HEVC_GOP_SIZE,AMF_VIDEO_ENCODER_AV1_GOP_SIZE);
         s->set(gop_name,amf_int64(0));
