@@ -173,7 +173,10 @@ pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
     if let Some(codecs)=stats.native_codec_capabilities.get(){return codecs.clone();}
     let mut codecs=vec![VideoCodec::H264];
     let kind=stats.decoder_kind();
-    for codec in [VideoCodec::Hevc,VideoCodec::Av1] {
+    // Each probe owns its decoder/device. Prepare the independent formats in
+    // parallel so unavailable drivers cannot add two five-second waits before
+    // the first offer. Only formats producing valid images are advertised.
+    let probe=|codec|async move {
         let started=std::time::Instant::now();
         let result=timeout(Duration::from_secs(5),tokio::task::spawn_blocking(move||match codec {
             VideoCodec::Hevc=>uu_media::hevc::probe_decoder_with_kind(kind),VideoCodec::Av1=>uu_media::av1::probe_decoder_with_kind(kind),VideoCodec::H264=>unreachable!()
@@ -185,8 +188,10 @@ pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
             Err(_)=>(false,"decoder probe exceeded 5 seconds".into()),
         };
         stats.diagnostics.record(serde_json::json!({"event":"native_decoder_probe","codec":codec,"available":available,"reason":reason,"elapsed_us":started.elapsed().as_micros().min(u64::MAX as u128) as u64}));
-        if available {codecs.push(codec);}
-    }
+        (codec,available)
+    };
+    let (hevc,av1)=tokio::join!(probe(VideoCodec::Hevc),probe(VideoCodec::Av1));
+    for (codec,available) in [hevc,av1] {if available {codecs.push(codec);}}
     let _=stats.native_codec_capabilities.set(codecs.clone());codecs
 }
 
