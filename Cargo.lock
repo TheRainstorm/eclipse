@@ -5424,8 +5424,13 @@ dependencies = [
  "tracing",
  "uuid",
  "vigem-rust",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
  "windows-sys 0.59.0",
  "x11rb",
+ "xkbcommon-dl",
 ]
 
 [[package]]

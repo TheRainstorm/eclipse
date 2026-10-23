@@ -16,11 +16,27 @@ def start_video(prefix, runtime):
     """Private daemon with a generated SPA video node and no device discovery."""
     binary = prefix / 'bin' if prefix else Path(shutil.which('pipewire') or '/missing').parent
     env = os.environ.copy()
+    for key in ('PIPEWIRE_REMOTE', 'PIPEWIRE_RUNTIME_DIR', 'PIPEWIRE_CORE', 'PIPEWIRE_CONFIG_NAME'):
+        env.pop(key, None)
     if prefix:
         env['PIPEWIRE_CONFIG_DIR'] = str(prefix / 'share/pipewire')
         modules = list((prefix / 'lib').glob('*/pipewire-0.3')) + list((prefix / 'lib').glob('pipewire-0.3'))
         if modules: env['PIPEWIRE_MODULE_DIR'] = str(modules[0])
     config = Path(runtime) / 'generated-video.conf'
+    # Newer PipeWire clients otherwise ask this fixture's portal for real-time
+    # scheduling before its D-Bus event loop starts. Keep fixture clients free
+    # of system policy/session-manager dependencies and on our own socket.
+    (Path(runtime) / 'client.conf').write_text('''
+context.spa-libs = { support.* = support/libspa-support }
+context.modules = [
+ { name = libpipewire-module-protocol-native }
+ { name = libpipewire-module-client-node }
+ { name = libpipewire-module-client-device }
+ { name = libpipewire-module-adapter }
+ { name = libpipewire-module-metadata }
+]
+''')
+    env['PIPEWIRE_CONFIG_DIR'] = str(runtime)
     config.write_text('''
 context.properties = { core.daemon = true core.name = pipewire-0 support.dbus = false }
 context.spa-libs = { support.* = support/libspa-support videotestsrc = videotestsrc/libspa-videotestsrc }
@@ -121,6 +137,7 @@ def fixture(args):
                         'size': dbus.Struct((160, 120), signature='ii'),
                         'position': dbus.Struct((0, 0), signature='ii'),
                         'source_type': dbus.UInt32(1),
+                        **({'mapping_id': args.owned_compositor_output} if args.owned_compositor_output else {}),
                     }, signature='sv'))], signature='(ua{sv})')
             if name != 'Start' or args.case != 'cancel':
                 GLib.timeout_add(10, response, request, code, data)
@@ -221,7 +238,8 @@ def fixture(args):
             assert all(r['distinct_frames'] >= 2 for r in reports), reports
             assert len([e for e in events if e['method'] == 'Close' and e.get('session')]) == 2, events
             assert (report['width'], report['height']) == (320, 240), report
-            assert report['input_available'] == (args.case == 'stream-input'), report
+            assert report['input_available'] == (args.case == 'stream-input' or
+                (args.owned_compositor_output is not None and args.case in ('stream-no-input', 'stream-keyboard-only'))), report
             if args.case == 'stream-input':
                 keys = [(e['keycode'], e['state']) for e in events if e['method'] == 'NotifyKeyboardKeycode']
                 assert keys == [(30, 1), (30, 0), (30, 1), (30, 0)], keys
@@ -263,11 +281,16 @@ def main():
     parser.add_argument('--case', choices=('deny', 'cancel', 'stream-view', 'stream-input', 'stream-no-input', 'stream-keyboard-only', 'stream-input-denied', 'stream-native', 'stream-displays'), required=True)
     parser.add_argument('--cli', type=Path, help='Native CLI used for the encrypted-media scenario')
     parser.add_argument('--pipewire-prefix', type=Path, help='Optional private installation prefix for PipeWire fixture tools')
+    parser.add_argument('--owned-compositor-output', help='Use a monitor in an explicitly isolated test compositor')
     parser.add_argument('--inside-owned-bus', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.probe = args.probe.resolve()
     if args.cli: args.cli = args.cli.resolve()
     if args.pipewire_prefix: args.pipewire_prefix = args.pipewire_prefix.resolve()
+    if args.owned_compositor_output:
+        if (os.environ.get('UU_OWNED_WAYLAND_TEST') != '1' or
+                not Path(os.environ.get('XDG_RUNTIME_DIR', '')).name.startswith('uu-wayland-input-')):
+            raise RuntimeError('Requires an owned compositor with its own runtime')
     if args.inside_owned_bus:
         if os.environ.get('ECLIPSE_PORTAL_FIXTURE') != '1':
             raise RuntimeError('The fixture must run on its own D-Bus bus')
@@ -275,14 +298,16 @@ def main():
         return
     with tempfile.TemporaryDirectory(prefix='eclipse-portal-fixture-') as temporary:
         env = os.environ.copy()
-        for name in ('DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'WAYLAND_DISPLAY'):
+        for name in ('DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', *(() if args.owned_compositor_output else ('WAYLAND_DISPLAY',))):
             env.pop(name, None)
-        env.update(ECLIPSE_PORTAL_FIXTURE='1', WAYLAND_DISPLAY='owned-fixture',
-                   XDG_RUNTIME_DIR=temporary, XDG_DATA_HOME=temporary + '/data', XDG_STATE_HOME=temporary + '/state')
+        env.update(ECLIPSE_PORTAL_FIXTURE='1', XDG_DATA_HOME=temporary + '/data', XDG_STATE_HOME=temporary + '/state')
+        if not args.owned_compositor_output:
+            env.update(WAYLAND_DISPLAY='owned-fixture', XDG_RUNTIME_DIR=temporary)
         command = ['dbus-run-session', '--', sys.executable, str(Path(__file__).resolve()),
                    '--inside-owned-bus', '--probe', str(args.probe), '--case', args.case]
         if args.pipewire_prefix: command += ['--pipewire-prefix', str(args.pipewire_prefix)]
         if args.cli: command += ['--cli', str(args.cli)]
+        if args.owned_compositor_output: command += ['--owned-compositor-output', args.owned_compositor_output]
         subprocess.run(command, env=env, check=True, timeout=40 if args.case == 'stream-displays' else 15)
 
 

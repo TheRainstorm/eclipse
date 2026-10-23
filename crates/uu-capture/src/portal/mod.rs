@@ -135,6 +135,7 @@ struct Opened {
     fd: std::os::fd::OwnedFd,
     stream: Stream,
     input: Option<tokio::sync::mpsc::Sender<input::Command>>,
+    wlroots_input: bool,
 }
 
 async fn actor(
@@ -202,7 +203,8 @@ async fn actor(
                 let (tx, mut rx) = tokio::sync::mpsc::channel::<input::Command>(16);
                 let mut closed = session.closed().await.map_err(portal_error)?;
                 let node = stream.pipe_wire_node_id();
-                if ready.send(Ok(Opened { fd, stream, input: control.then_some(tx) })).is_ok() {
+                let wlroots_input = matches!(&session, PortalSession::Cast(_));
+                if ready.send(Ok(Opened { fd, stream, input: control.then_some(tx), wlroots_input })).is_ok() {
                     loop {
                         tokio::select! {
                             _ = cancelled(&options.cancelled) => break,
@@ -239,6 +241,7 @@ pub struct PortalCapture {
     options: OpenOptions,
     worker: Option<JoinHandle<()>>,
     input: Option<tokio::sync::mpsc::Sender<input::Command>>,
+    input_target: Option<uu_input::wayland::OutputTarget>,
     logical_size: (u32, u32),
     pixels: (u32, u32),
     started: Instant,
@@ -257,6 +260,7 @@ impl PortalCapture {
             options,
             worker: None,
             input: None,
+            input_target: Default::default(),
             logical_size: (0, 0),
             pixels: (0, 0),
             started: Instant::now(),
@@ -297,6 +301,11 @@ impl PortalCapture {
             .map(|(w, h)| (w as u32, h as u32))
             .unwrap_or(capture.pixels);
         capture.input = opened.input;
+        capture.input_target = (opened.wlroots_input && capture.options.allow_input).then(|| uu_input::wayland::OutputTarget {
+            name: opened.stream.mapping_id().or_else(|| opened.stream.id()).map(str::to_owned),
+            position: opened.stream.position(),
+            logical_size: opened.stream.size(),
+        });
         Ok(capture)
     }
 }
@@ -317,10 +326,19 @@ impl Capture for PortalCapture {
         })
     }
     fn input_injector(&self) -> Option<Box<dyn uu_input::InputInjector>> {
-        self.input.clone().map(|tx| {
-            Box::new(input::Injector::new(tx, self.pixels, self.logical_size))
-                as Box<dyn uu_input::InputInjector>
-        })
+        if let Some(tx) = self.input.clone() {
+            return Some(Box::new(input::Injector::new(tx, self.pixels, self.logical_size)));
+        }
+        // ScreenCast-only wlroots portals do not provide RemoteDesktop. The
+        // same user's compositor may explicitly expose virtual input instead.
+        // Reach this path only after a permitted monitor stream produced a frame.
+        if let Some(target) = &self.input_target {
+            match uu_input::wayland::WlrootsInjector::connect(self.pixels, target.clone()) {
+                Ok(input) => return Some(Box::new(input)),
+                Err(error) => tracing::warn!(%error, "authorized Wayland capture has no input backend"),
+            }
+        }
+        None
     }
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
         let mut frame = self.frames.frame(&self.options.cancelled)?;

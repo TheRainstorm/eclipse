@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Authorized desktop input backends (Windows: SendInput, Linux: XTest)"
+description = "Authorized desktop input backends (Windows: SendInput, Linux: XTest/Wayland)"
 
 [dependencies]
 anyhow.workspace = true
@@ -17,6 +17,11 @@ uuid.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 x11rb = { version = "0.13", features = ["xtest"] }
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+xkbcommon-dl = "0.4"
 
 [build-dependencies]
 cc = "1"
