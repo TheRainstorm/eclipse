@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -18,13 +19,14 @@ def inside(args):
             os.environ.get('UU_OWNED_WAYLAND_TEST') != '1'):
         raise RuntimeError('Requires the owned compositor fixture')
     env = os.environ.copy()
-    processes, logs = [], []
+    processes, logs, process_names = [], [], []
 
     def start(name, command):
         log = (args.output / (name + '.log')).open('w')
         logs.append(log)
         process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
         processes.append(process)
+        process_names.append(name)
         return process
 
     def wait(check, seconds=8):
@@ -69,9 +71,15 @@ def inside(args):
         # rather than steady screen sharing.
         start('generated-surface', ['foot', '--app-id=uu-portal-generated', '--',
             sys.executable, '-u', '-c',
-            'import sys,time\nfor i in range(1000):\n'
+            'import sys,time,os,select,tty,json\nfrom pathlib import Path\n'
+            'tty.setraw(0);os.write(1,b"\\x1b[?1003h\\x1b[?1006h");i=0\nwhile True:\n'
             ' sys.stdout.write("\\x1b[48;5;"+str(24+i%2)+"m\\x1b[2J\\x1b[Hgenerated portal fixture")\n'
-            ' sys.stdout.flush();time.sleep(.1)'])
+            ' sys.stdout.flush();i+=1\n'
+            ' if select.select([0],[],[],.1)[0]:\n'
+            '  data=os.read(0,4096)\n'
+            '  with open(sys.argv[1],"ab") as output:output.write(data)\n'
+            '  size=os.get_terminal_size(0);Path(sys.argv[1]+".json").write_text(json.dumps(dict(columns=size.columns,lines=size.lines)))\n',
+            str(args.output/'generated-input.bin')])
         (runtime / 'client.conf').write_text('''
 context.spa-libs = { support.* = support/libspa-support }
 context.modules = [
@@ -109,20 +117,38 @@ context.objects = [
         (portal_config / 'portals.conf').write_text('[preferred]\ndefault=wlr\n'
             'org.freedesktop.impl.portal.ScreenCast=wlr\n'
             'org.freedesktop.impl.portal.Screenshot=wlr\n')
-        start('wlr', [str(args.backend), '--loglevel=TRACE'])
+        # This updates only our private D-Bus activation environment. Backends
+        # activated by the portal must see the same owned compositor/daemon.
+        subprocess.run(['dbus-update-activation-environment', 'WAYLAND_DISPLAY',
+            'XDG_CURRENT_DESKTOP', 'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME',
+            'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'PIPEWIRE_CONFIG_DIR'],
+            env=env, capture_output=True, check=True, timeout=3)
+        wlr = start('wlr', [str(args.backend), '--loglevel=DEBUG'])
         wait(lambda: owns('org.freedesktop.impl.portal.desktop.wlr'))
         start('portal', [str(args.portal)])
         wait(lambda: owns('org.freedesktop.portal.Desktop'))
-        env.update(ECLIPSE_PORTAL_FIXTURE='1', ECLIPSE_STARTUP_EXPECTED_SIZE='1280x800')
+        env.update(ECLIPSE_PORTAL_FIXTURE='1', ECLIPSE_STARTUP_EXPECTED_SIZE='1280x800',
+                   ECLIPSE_STARTUP_FRAMES=str(args.frames_per_session),
+                   ECLIPSE_STARTUP_ROUNDS=str(args.sessions),
+                   ECLIPSE_STARTUP_EXERCISE_QUALITY='1' if args.exercise_quality else '0',
+                   ECLIPSE_STARTUP_EXERCISE_INPUT='1' if args.exercise_input else '0')
         probe = subprocess.Popen([str(args.probe)], env=env, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True)
         processes.append(probe)
-        deadline = time.monotonic() + 85
+        process_names.append('probe')
+        deadline = time.monotonic() + args.frames_per_session*args.sessions/24 + 85
         links = 0
         graphs = set()
+        source_started = terminated_at = None
         while probe.poll() is None:
             if time.monotonic() > deadline:
                 raise TimeoutError('Real owned portal stream timed out')
+            if (args.terminate_backend_after and source_started and terminated_at is None
+                    and time.monotonic()>=source_started+args.terminate_backend_after):
+                wlr.terminate()
+                terminated_at=time.monotonic()
+            if terminated_at and time.monotonic()-terminated_at>8:
+                raise TimeoutError('Owned backend loss left the viewer running on cached frames')
             # This private PipeWire intentionally has no session manager or
             # hardware discovery. Link only its finite, owned video ports.
             outputs = subprocess.run(['pw-link', '-o'], env=env, capture_output=True,
@@ -141,6 +167,8 @@ context.objects = [
                 result = subprocess.run(['pw-link', outputs[-1], inputs[-1]], env=env,
                     capture_output=True, text=True, timeout=2)
                 links += result.returncode == 0
+                if result.returncode == 0 and source_started is None:
+                    source_started=time.monotonic()
                 if result.returncode:
                     (args.output / 'link-error.log').write_text(result.stderr)
                 elif links == 1:
@@ -150,19 +178,44 @@ context.objects = [
         stdout, stderr = probe.communicate(timeout=2)
         (args.output / 'probe.out').write_text(stdout)
         (args.output / 'probe.err').write_text(stderr)
+        if args.terminate_backend_after:
+            assert terminated_at is not None and probe.returncode!=0, 'Backend loss was not reported'
+            result=dict(ok=True,backend_loss_detected=True,
+                detection_ms=round((time.monotonic()-terminated_at)*1000),
+                user_desktop_accessed=False)
+            (args.output / 'result.json').write_text(json.dumps(result,indent=2)+'\n')
+            print(json.dumps(result),flush=True)
+            return
         if probe.returncode:
             raise RuntimeError('Real portal startup probe failed: ' + stderr[-3000:])
         reports = [json.loads(line) for line in stdout.splitlines() if line.startswith('{')]
-        assert len(reports) == 2 and all(r['ok'] and r['frames'] >= 60 for r in reports), reports
+        assert len(reports) == args.sessions and all(
+            r['ok'] and r['frames'] >= args.frames_per_session for r in reports), reports
         backend_log = (args.output / 'wlr.log').read_text()
-        assert backend_log.count('max_framerate: (30 / 1)') >= 2, \
-            'The real variable-rate source must honor the requested 30 FPS ceiling'
+        negotiated = [int(value) for value in re.findall(r'max_framerate: \((\d+) / 1\)', backend_log)]
+        assert len(negotiated)>=args.sessions and all(0<fps<=240 for fps in negotiated)
+        if args.exercise_quality:
+            assert all([value['settings']['fps'] for value in report['applied_quality']]==[60,24]
+                       for report in reports), 'Native output frame rates were not applied'
+        observed_input = None
+        if args.exercise_input:
+            data=(args.output/'generated-input.bin').read_bytes()
+            size=json.loads((args.output/'generated-input.bin.json').read_text())
+            clicks=[(int(x),int(y)) for x,y in re.findall(rb'\x1b\[<0;(\d+);(\d+)M',data)]
+            centered=[(x,y) for x,y in clicks if abs(x-(size['columns']+1)/2)<=3
+                       and abs(y-(size['lines']+1)/2)<=3]
+            assert b'a' in data and len(centered)>=args.sessions, \
+                'Native input did not reach the selected scaled terminal surface'
+            observed_input=dict(keyboard=True,centered_clicks=len(centered),sessions=args.sessions)
         result = dict(ok=True, real_wlr_portal=True, isolated_compositor=True,
                       user_desktop_accessed=False, explicit_owned_links=links,
-                      capture_max_fps=30, reports=reports)
+                      capture_max_fps=negotiated, observed_input=observed_input,reports=reports)
         (args.output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result), flush=True)
     finally:
+        (args.output / 'process-status.json').write_text(json.dumps([
+            dict(name=name,pid=process.pid,exit_code=process.poll())
+            for name,process in zip(process_names,processes)],indent=2))
         for process in reversed(processes):
             if process.poll() is None:
                 process.terminate()
@@ -181,13 +234,23 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--portal', type=Path, default=Path('/usr/lib/xdg-desktop-portal'))
     parser.add_argument('--backend', type=Path, default=Path('/usr/lib/xdg-desktop-portal-wlr'))
+    parser.add_argument('--frames-per-session', type=int, default=60)
+    parser.add_argument('--sessions', type=int, default=2)
+    parser.add_argument('--exercise-quality', action='store_true')
+    parser.add_argument('--exercise-input', action='store_true')
+    parser.add_argument('--terminate-backend-after',type=float,default=0)
     parser.add_argument('--inside-owned-bus', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if not (60<=args.frames_per_session<=18000 and 1<=args.sessions<=8
+            and args.frames_per_session*args.sessions<=108000
+            and 0<=args.terminate_backend_after<=60):
+        parser.error('Requires 60..18000 frames, 1..8 sessions, at most 108000 total frames')
     args.probe, args.output = args.probe.resolve(), args.output.resolve()
     if args.inside_owned_bus:
         inside(args)
         return
-    for name in ['sway', 'swaymsg', 'foot', 'pipewire', 'pw-link', 'pw-dump', 'gdbus', 'dbus-run-session']:
+    for name in ['sway', 'swaymsg', 'foot', 'pipewire', 'pw-link', 'pw-dump', 'gdbus',
+                 'dbus-run-session','dbus-update-activation-environment']:
         if shutil.which(name) is None:
             raise RuntimeError('Missing fixture dependency: ' + name)
     for path in [args.probe, args.portal, args.backend]:
@@ -206,10 +269,16 @@ def main():
             WLR_LIBINPUT_NO_DEVICES='1', UU_OWNED_WAYLAND_TEST='1')
         command = ['dbus-run-session', '--', sys.executable, str(Path(__file__).resolve()),
             '--inside-owned-bus', '--probe', str(args.probe), '--output', str(args.output),
-            '--portal', str(args.portal), '--backend', str(args.backend)]
+            '--portal', str(args.portal), '--backend', str(args.backend),
+            '--frames-per-session', str(args.frames_per_session), '--sessions', str(args.sessions),
+            '--terminate-backend-after',str(args.terminate_backend_after)]
+        if args.exercise_quality:
+            command.append('--exercise-quality')
+        if args.exercise_input:
+            command.append('--exercise-input')
         process = subprocess.Popen(command, env=env, start_new_session=True)
         try:
-            code = process.wait(timeout=115)
+            code = process.wait(timeout=args.frames_per_session*args.sessions/24+115)
             if code:
                 raise subprocess.CalledProcessError(code, command)
         finally:

@@ -52,6 +52,18 @@ python3 tools/native/portal_smoke.py --probe target/release/examples/portal_prob
 
 这覆盖真实门户调用、拒绝/取消后关闭、PipeWire 帧传输、同进程重连、缩放坐标、按键释放及生成画面的原生加密串流；不代表各桌面的授权弹窗交互均已实机验收。
 
+真实 wlr 后端可在独立 headless Sway、D-Bus 和 PipeWire 中验证。需要 Sway、foot、PipeWire 工具、GDBus 与 wlr 门户后端；不同发行版可用 `--portal` / `--backend` 指定系统二进制位置。下面只向该夹具的第二个缩放输出发送已知测试按键和点击，不连接用户桌面：
+
+```sh
+cargo build --release -p uu-core --example native_startup_probe --features vaapi --locked
+python3 tools/native/wayland_portal_startup.py \
+  --probe target/release/examples/native_startup_probe \
+  --output artifacts/real-portal-check --frames-per-session 180 \
+  --exercise-quality --exercise-input
+```
+
+夹具检查30→60→24输出帧率切换、持续解码、再次连接，以及私有终端收到键盘和中心点击。另用 `--sessions 1 --terminate-backend-after 1` 验证捕获源结束后及时报错，防止把缓存帧计数误判为仍在捕获。`--frames-per-session` 可增大为有界长测；所有统计仍不等同于用户桌面的端到端延迟。
+
 ## 独立 Wayland 测试桌面
 
 需要 `sway grim python3` 和 VAAPI 驱动；没有 GPU 时可用 `--renderer pixman` 测功能。测试依靠两个显示源的固定 KVM 测试机，输入/鼠标布局为 1600×1000 私有输出。不会向用户 KDE 会话注入输入。

@@ -24,7 +24,15 @@ async fn main() -> Result<()> {
     let (width,height)=expected.split_once('x').context("expected size must be WxH")?;
     let expected=(width.parse::<u32>()?,height.parse::<u32>()?);
     ensure!((2..=8192).contains(&expected.0)&&(2..=8192).contains(&expected.1),"invalid fixture size");
-    for round in 0..2 {
+    let target_frames=std::env::var("ECLIPSE_STARTUP_FRAMES").unwrap_or_else(|_|"60".into()).parse::<usize>()?;
+    let rounds=std::env::var("ECLIPSE_STARTUP_ROUNDS").unwrap_or_else(|_|"2".into()).parse::<usize>()?;
+    let exercise_quality=std::env::var("ECLIPSE_STARTUP_EXERCISE_QUALITY").as_deref()==Ok("1");
+    let exercise_input=std::env::var("ECLIPSE_STARTUP_EXERCISE_INPUT").as_deref()==Ok("1");
+    ensure!(!exercise_input||owned_compositor,"input requires the owned compositor");
+    ensure!((60..=18000).contains(&target_frames)&&(1..=8).contains(&rounds)
+        &&target_frames*rounds<=108000,"invalid owned portal test duration");
+    let session_duration=Duration::from_secs((target_frames as u64/24+20).max(40));
+    for round in 0..rounds {
         let started = Instant::now();
         let invitation_path = runtime.join(format!("startup-{round}.eclipse-invite.json"));
         let config = native::HostConfig {
@@ -35,7 +43,7 @@ async fn main() -> Result<()> {
             fps: 30,
             bitrate_kbps: 2000,
             encoder: native::EncoderPreference::Auto,
-            session_limit: Some(Duration::from_secs(40)),
+            session_limit: Some(session_duration),
             allow_input: true,
             audio: None,
             clipboard: None,
@@ -79,12 +87,16 @@ async fn main() -> Result<()> {
         let (frames, mut images) = frame_channel();
         let (viewer_stop, stop) = watch::channel(false);
         let view_stats = stats.clone();
+        let (quality, input)=uu_core::native_input::channel(exercise_input);
         let viewer =
-            tokio::spawn(async move { native::view(&invitation, frames, view_stats, stop).await });
+            tokio::spawn(async move { native::view_with_input(&invitation, frames, view_stats, stop,input).await });
         let mut first_frame_ms = None;
-        let received = tokio::time::timeout(Duration::from_secs(35), async {
+        let mut applied_quality=Vec::new();
+        let mut input_sent=false;
+        let received = tokio::time::timeout(session_duration+Duration::from_secs(5), async {
             let mut count = 0;
-            while count < 60 {
+            let mut requested=0;
+            while count < target_frames || (exercise_quality && applied_quality.len()<2) {
                 while let Ok((_, width, height, _)) = images.try_recv() {
                     ensure!(
                         (width, height) == expected,
@@ -92,6 +104,30 @@ async fn main() -> Result<()> {
                     );
                     first_frame_ms.get_or_insert_with(|| started.elapsed().as_millis());
                     count += 1;
+                }
+                if exercise_quality {
+                    if let Some(applied)=stats.native_quality_applied.lock().unwrap().clone() {
+                        if applied.request==requested && applied_quality.len()<requested as usize {
+                            ensure!(applied.error.is_none(),"runtime quality failed: {:?}",applied.error);
+                            ensure!(applied.settings.fps==if requested==1{60}else{24},"wrong applied frame rate");
+                            applied_quality.push(applied);
+                        }
+                    }
+                    if (count>=20&&requested==0)||(count>=40&&requested==1&&applied_quality.len()==1) {
+                        requested+=1;
+                        quality.set_quality(requested,native_quality::Update{fps:if requested==1{60}else{24},bitrate_kbps:Some(2000)})?;
+                    }
+                }
+                if exercise_input && !input_sent && count>=10
+                    &&stats.capabilities.allows(uu_core::capabilities::Capability::Input) {
+                    use uu_core::native_input::{InputCommand as I,MouseButton};
+                    for command in [I::Absolute{x:32768,y:32768},
+                        I::Button{button:MouseButton::Left,pressed:true},
+                        I::Button{button:MouseButton::Left,pressed:false},
+                        I::Key{usage:4,pressed:true},I::Key{usage:4,pressed:false}] {
+                        quality.send(command)?;
+                    }
+                    input_sent=true;
                 }
                 ensure!(
                     !viewer.is_finished(),
@@ -110,8 +146,9 @@ async fn main() -> Result<()> {
         // Preserve the underlying portal/negotiation error if the viewer ends
         // before a frame. The frame-count guard alone hides the useful cause.
         viewed.context("owned portal viewer failed")?;
-        hosted.context("owned portal host failed")?;
+        let hosted=hosted.context("owned portal host failed")?;
         let frames = received??;
+        ensure!(!exercise_input||(input_sent&&hosted.input_events>=5&&hosted.input_errors==0),"owned input was not delivered");
         ensure!(stats.errors.load(Ordering::Relaxed) == 0, "decode errors");
         // The diagnostic writer is bounded and asynchronous. Wait for its final
         // negotiation metadata; only numeric phase events enter this report.
@@ -149,7 +186,7 @@ async fn main() -> Result<()> {
         println!(
             "{}",
             serde_json::json!({"ok":true,"round":round,"frames":frames,"errors":0,
-            "first_frame_ms":first_frame_ms,"phases":phases,"generated_video":true,"no_user_desktop":true})
+            "first_frame_ms":first_frame_ms,"phases":phases,"applied_quality":applied_quality,"input_sent":input_sent,"generated_video":true,"no_user_desktop":true})
         );
     }
     Ok(())
