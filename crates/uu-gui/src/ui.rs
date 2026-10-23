@@ -288,10 +288,11 @@ impl App {
                     ui.add_space(12.0);
                     ui.label(RichText::new("登录 UU 账号访问官方设备；原生设备可从左侧设备页连接").color(MUTED));
                     ui.add_space(24.0);
-                    ui.label("UU 设备名称");
-                    ui.add_enabled(self.login_rx.is_none(), egui::TextEdit::singleline(&mut self.workspace.uu_name)
+                    ui.label("本机名称");
+                    let editable = self.login_rx.is_none() && !self.workspace.device_name_locked();
+                    ui.add_enabled(editable, egui::TextEdit::singleline(self.workspace.device_name_mut())
                         .char_limit(64).desired_width(240.));
-                    ui.small("默认使用电脑名称；登录后也可在“连接服务”修改。");
+                    ui.small("与“共享本机”共用名称，默认使用电脑名。");
                     ui.add_space(12.0);
                     if let Some(texture)=&self.login_texture {
                         ui.image((texture.id(),egui::vec2(224.0,224.0)));

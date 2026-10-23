@@ -64,7 +64,6 @@ pub(super) struct Workspace {
     pub store: Option<Store>,
     pub trust: Option<TrustStore>,
     pub notice: String,
-    pub uu_name: String,
     draft: Sharing,
     monitors: Vec<CaptureMonitor>,
     monitor_error: String,
@@ -194,18 +193,21 @@ mod tests {
         let mut h = Harness::new();
         h.workspace.page = Page::Services;
         let initial = uu_core::config::local_device_name();
-        assert_eq!(h.workspace.uu_name, initial);
+        assert_eq!(h.workspace.draft.name, initial);
         h.click(&initial);
         h.frame(vec![egui::Event::Key {
             key: egui::Key::A, physical_key: None, pressed: true, repeat: false,
             modifiers: egui::Modifiers { ctrl: true, command: true, ..Default::default() },
         }]);
         h.frame(vec![egui::Event::Text("Studio PC".into())]);
-        assert_eq!(h.workspace.uu_name, "Studio PC");
+        assert_eq!(h.workspace.draft.name, "Studio PC");
+        let name = h.workspace.prepare_device_name().unwrap();
+        assert_eq!(name, "Studio PC");
+        assert_eq!(h.workspace.store.as_ref().unwrap().read().unwrap().sharing.name, name);
         assert!(matches!(&h.click("登录 UU 账号")[..], [Action::Login]));
         h.logged_in = true;
         assert!(matches!(&h.click("保存名称")[..], [Action::RenameUu]));
-        assert_eq!(h.workspace.uu_name, "Studio PC");
+        assert_eq!(h.workspace.draft.name, "Studio PC");
     }
 
     #[test]
@@ -338,10 +340,6 @@ fn field(ui: &mut egui::Ui, label: &str, text: &mut String, hint: &str) {
 }
 impl Workspace {
     pub fn load(config: Option<&uu_core::Config>, ports: (u16, u16)) -> Self {
-        let uu_name = config.and_then(|c| uu_core::ClientState::read(&c.at("state.json")).ok().flatten())
-            .and_then(|state| state.device_name)
-            .filter(|name| uu_core::api::validate_device_name(name).is_ok())
-            .unwrap_or_else(uu_core::config::local_device_name);
         let loaded = (|| -> anyhow::Result<_> {
             let config = config.ok_or_else(|| anyhow::anyhow!("无法确定设备配置目录"))?;
             let store = Store::open(config.at("device-trust"))?;
@@ -366,18 +364,7 @@ impl Workspace {
                     }
                     book.sharing.service_port = ports.0;
                     book.sharing.discovery_port = ports.1;
-                    book.sharing.name = std::env::var("COMPUTERNAME")
-                        .ok()
-                        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
-                        .map(|s| {
-                            s.trim()
-                                .chars()
-                                .filter(|c| !c.is_control())
-                                .take(64)
-                                .collect::<String>()
-                        })
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| "Eclipse".into());
+                    book.sharing.name = uu_core::config::local_device_name();
                     if let Some(legacy) = &legacy {
                         for device in &legacy.devices {
                             book.devices.push(Profile::new(
@@ -469,7 +456,6 @@ impl Workspace {
             store,
             trust,
             notice,
-            uu_name,
             draft,
             monitors: Vec::new(),
             monitor_error: String::new(),
@@ -507,6 +493,20 @@ impl Workspace {
                 Err(e) => self.notice = format!("无法读取设备配置：{e:#}，原文件已保留"),
             }
         }
+    }
+    pub fn device_name_mut(&mut self) -> &mut String { &mut self.draft.name }
+    pub fn device_name_locked(&self) -> bool { self.host.running() }
+    pub fn prepare_device_name(&mut self) -> anyhow::Result<String> {
+        let name = uu_core::api::validate_device_name(&self.draft.name)?.to_string();
+        let store = self.store.as_ref().ok_or_else(|| anyhow::anyhow!("设备配置不可用"))?;
+        store.edit(|book| {
+            anyhow::ensure!(!self.host.running() || book.sharing.name == name, "请停止共享后修改本机名称");
+            book.sharing.name = name.clone();
+            Ok(())
+        })?;
+        self.draft.name = name.clone();
+        self.refresh();
+        Ok(name)
     }
     fn save_sharing(&mut self) -> bool {
         let result = self
@@ -651,7 +651,7 @@ impl Workspace {
         }
         match self.page {
             Page::Devices => self.devices(ui, info, &mut actions),
-            Page::Sharing => self.sharing(ui, &mut actions),
+            Page::Sharing => self.sharing(ui, info, &mut actions),
             Page::Services => self.services(ui, info, &mut actions),
             Page::Assistance => {
                 ui.heading("远程协助");
@@ -929,7 +929,7 @@ impl Workspace {
             Err(e) => self.monitor_error = format!("无法读取屏幕：{e}"),
         }
     }
-    fn sharing(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    fn sharing(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>) {
         if self.monitors.is_empty() && self.monitor_error.is_empty() {
             self.refresh_monitors();
         }
@@ -970,6 +970,7 @@ impl Workspace {
                         .clicked()
                     {
                         if self.save_sharing() {
+                            if info.logged_in { actions.push(Action::RenameUu); }
                             actions.push(Action::StartSharing);
                         }
                     }
@@ -1024,7 +1025,7 @@ impl Workspace {
             ui.strong("画面与声音");
             ui.add_space(10.);
             ui.add_enabled_ui(!locked, |ui| {
-                field(ui, "本机名称", &mut self.draft.name, "设备名称");
+                ui.add_enabled_ui(!info.login_busy, |ui| field(ui, "本机名称", &mut self.draft.name, "设备名称"));
                 ui.label("共享屏幕");
                 let portal=uu_core::native::uses_desktop_portal();
                 egui::ComboBox::from_id_salt("shared-monitor")
@@ -1161,7 +1162,7 @@ impl Workspace {
             });
         });
         if !locked && primary(ui, "保存共享设置").clicked() {
-            self.save_sharing();
+            if self.save_sharing() && info.logged_in { actions.push(Action::RenameUu); }
         }
         ui.add_space(14.);
         self.grants(ui);
@@ -1255,14 +1256,14 @@ impl Workspace {
             ui.strong("UU 账号");
             ui.add_space(8.);
             ui.horizontal(|ui| {
-                ui.label("UU 设备名称");
-                ui.add_enabled(!info.login_busy,
-                    egui::TextEdit::singleline(&mut self.uu_name).char_limit(64).desired_width(240.));
+                ui.label("本机名称");
+                ui.add_enabled(!info.login_busy && !self.host.running(),
+                    egui::TextEdit::singleline(&mut self.draft.name).char_limit(64).desired_width(240.));
                 if info.logged_in && ui.add_enabled(!info.login_busy, egui::Button::new("保存名称")).clicked() {
                     actions.push(Action::RenameUu);
                 }
             });
-            ui.weak("默认使用电脑名称，可自定义；修改名称不改变 UU 编号和设备授权。");
+            ui.weak("与“共享本机”共用名称，默认使用电脑名；修改名称不改变 UU 编号和设备授权。");
             if info.logged_in {
                 ui.label(RichText::new("已登录").color(theme::SUCCESS));
                 if let Some(id) = &info.uu_id {

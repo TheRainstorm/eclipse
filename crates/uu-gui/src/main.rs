@@ -508,8 +508,8 @@ impl App {
             self.login_status = "无法确定登录目录，请检查本机用户目录配置".into();
             return;
         };
-        let name = match uu_core::api::validate_device_name(&self.workspace.uu_name) {
-            Ok(name) => name.to_string(),
+        let name = match self.workspace.prepare_device_name() {
+            Ok(name) => name,
             Err(error) => { self.login_status = error.to_string(); return; }
         };
         self.login_status = "获取二维码…".into();
@@ -520,8 +520,8 @@ impl App {
 
     fn rename_uu_device(&mut self) {
         let Some(config) = self.config.clone() else { return; };
-        let name = match uu_core::api::validate_device_name(&self.workspace.uu_name) {
-            Ok(name) => name.to_string(),
+        let name = match self.workspace.prepare_device_name() {
+            Ok(name) => name,
             Err(error) => { self.login_status = error.to_string(); return; }
         };
         self.login_rx = None;

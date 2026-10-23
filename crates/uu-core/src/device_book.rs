@@ -51,7 +51,7 @@ impl Default for Sharing {
     fn default() -> Self {
         Self {
             codec:Default::default(),rate_control:Default::default(),peak_bitrate_mbps:36,
-            name: "Eclipse".into(),
+            name: crate::config::local_device_name(),
             monitor: String::new(),
             fps: 60,
             bitrate_mbps: 18,
