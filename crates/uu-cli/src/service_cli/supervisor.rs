@@ -147,7 +147,56 @@ impl Drop for Child {
         } /* job closes after graceful deadline */
     }
 }
-fn environment(paths: &Paths) -> Result<Vec<u16>> {
+fn system_environment(token: HANDLE) -> Result<Vec<(Vec<u16>, Vec<u16>)>> {
+    use windows_sys::Win32::System::Environment::{
+        CreateEnvironmentBlock, DestroyEnvironmentBlock,
+    };
+    let mut block = ptr::null_mut();
+    winok(unsafe { CreateEnvironmentBlock(&mut block, token, 0) })
+        .context("创建 System 用户的完整环境失败")?;
+    struct Block(*mut core::ffi::c_void);
+    impl Drop for Block {
+        fn drop(&mut self) {
+            unsafe {
+                DestroyEnvironmentBlock(self.0);
+            }
+        }
+    }
+    ensure!(!block.is_null(), "Windows 未返回环境块");
+    let block = Block(block);
+    // The API owns a double-NUL-terminated UTF-16 block. Preserve its variables
+    // and non-ASCII values; do not reconstruct required profile/drive aliases.
+    let mut entries: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
+    let mut offset = 0usize;
+    unsafe {
+        let data = block.0.cast::<u16>();
+        while *data.add(offset) != 0 {
+            let start = offset;
+            while *data.add(offset) != 0 {
+                offset += 1;
+                ensure!(offset < 1024 * 1024, "Windows 环境块过大");
+            }
+            let line = std::slice::from_raw_parts(data.add(start), offset - start);
+            offset += 1;
+            let separator = line
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find(|(_, value)| **value == b'=' as u16)
+                .map(|(at, _)| at)
+                .context("Windows 环境项无效")?;
+            let key = String::from_utf16_lossy(&line[..separator]).to_ascii_uppercase();
+            if !key.starts_with("UU_") && !key.starts_with("XDG_") {
+                entries.push((line[..separator].to_vec(), line[separator + 1..].to_vec()));
+            }
+        }
+    }
+    Ok(entries)
+}
+fn environment(paths: &Paths, token: HANDLE) -> Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Globalization::CompareStringOrdinal;
+    let mut entries = system_environment(token)?;
     let mut buffer = vec![0u16; 32768];
     let size = unsafe { GetSystemWindowsDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
     ensure!(
@@ -158,31 +207,49 @@ fn environment(paths: &Paths) -> Result<Vec<u16>> {
     let windows = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..size as usize]));
     let temp = paths.root.join("temp");
     super::install::directory(&temp)?;
-    let mut pairs = [
-        ("SystemRoot", windows.clone()),
-        ("windir", windows.clone()),
+    for (key, value) in [
+        ("PATH", windows.join("System32")),
         ("TEMP", temp.clone()),
         ("TMP", temp),
-        ("USERPROFILE", windows.join("System32/config/systemprofile")),
-        ("ProgramData", paths.root.parent().unwrap().to_path_buf()),
-        (
-            "ProgramFiles",
-            paths.programs.parent().unwrap().to_path_buf(),
-        ),
-        ("PATH", windows.join("System32")),
         (
             "ECLIPSE_SERVICE_BOOTSTRAP_LOG",
             paths.config().log_dir().join("bootstrap.log"),
         ),
-    ];
-    pairs.sort_by_key(|(key, _)| key.to_ascii_lowercase());
+    ] {
+        entries.retain(|(candidate, _)| {
+            !String::from_utf16_lossy(candidate).eq_ignore_ascii_case(key)
+        });
+        entries.push((
+            key.encode_utf16().collect(),
+            value.as_os_str().encode_wide().collect(),
+        ));
+    }
+    entries.sort_by(|(left, _), (right, _)| {
+        match unsafe {
+            CompareStringOrdinal(
+                left.as_ptr(),
+                left.len() as i32,
+                right.as_ptr(),
+                right.len() as i32,
+                1,
+            )
+        } {
+            1 => std::cmp::Ordering::Less,
+            3 => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        }
+    });
     let mut result = Vec::new();
-    for (key, value) in pairs {
-        result.extend(wide(format!("{key}={}", value.display())));
+    for (key, value) in entries {
+        result.extend(key);
+        result.push(b'=' as u16);
+        result.extend(value);
+        result.push(0);
     }
     result.push(0);
     Ok(result)
 }
+
 fn launch(paths: &Paths, installed: &Installed, session: u32) -> Result<Child> {
     let mut token = ptr::null_mut();
     winok(unsafe {
@@ -238,7 +305,7 @@ fn launch(paths: &Paths, installed: &Installed, session: u32) -> Result<Child> {
     let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
     startup.cb = std::mem::size_of_val(&startup) as u32;
     startup.lpDesktop = desktop.as_mut_ptr();
-    let environment = environment(paths)?;
+    let environment = environment(paths, token.0)?;
     let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     winok(unsafe {
         CreateProcessAsUserW(
@@ -347,4 +414,29 @@ fn run() -> Result<()> {
     }
     drop(child);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_environment_preserves_windows_directory_expansion_variables() {
+        let environment = system_environment(ptr::null_mut()).unwrap();
+        for key in [
+            "SystemDrive",
+            "SystemRoot",
+            "ProgramData",
+            "ALLUSERSPROFILE",
+        ] {
+            assert!(
+                environment
+                    .iter()
+                    .any(
+                        |(name, value)| String::from_utf16_lossy(name).eq_ignore_ascii_case(key)
+                            && !value.is_empty()
+                    ),
+                "missing required Windows directory expansion input: {key}"
+            );
+        }
+    }
 }

@@ -33,4 +33,4 @@ uu-media = { path = "../uu-media" }
 vaapi = ["uu-core/vaapi"]
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Services", "Win32_System_Threading", "Win32_System_RemoteDesktop", "Win32_System_JobObjects", "Win32_System_Environment", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Services", "Win32_System_Threading", "Win32_System_RemoteDesktop", "Win32_System_JobObjects", "Win32_System_Environment", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_UI_WindowsAndMessaging"] }
