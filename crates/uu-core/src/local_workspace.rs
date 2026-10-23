@@ -125,6 +125,9 @@ fn transcript(side: u8, client: &[u8; 32], server: &[u8; 32], bytes: &[u8]) -> Z
     value
 }
 fn socket(stream: &TcpStream) -> Result<()> {
+    // Winsock accept inherits the nonblocking listener's socket properties.
+    // Authentication uses bounded blocking reads, including fragmented writes.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_millis(750)))?;
     stream.set_write_timeout(Some(Duration::from_millis(750)))?;
     stream.set_nodelay(true)?;
@@ -316,6 +319,24 @@ fn private_directory(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn accepted_socket_reads_fragments_with_a_deadline_after_inheriting_nonblocking() {
+        let listener=TcpListener::bind((Ipv4Addr::LOCALHOST,0)).unwrap();
+        let address=listener.local_addr().unwrap();
+        let writer=std::thread::spawn(move || {
+            let mut client=TcpStream::connect(address).unwrap();
+            client.write_all(b"a").unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            client.write_all(b"b").unwrap();
+        });
+        let (mut stream,_)=listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        socket(&stream).unwrap();
+        let mut bytes=[0;2];
+        stream.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes,b"ab");
+        writer.join().unwrap();
+    }
     struct Directory(PathBuf);
     impl Directory {
         fn new() -> Self {
