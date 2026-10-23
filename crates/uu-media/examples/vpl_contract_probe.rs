@@ -61,6 +61,9 @@ fn main() -> anyhow::Result<()> {
                     rate_control,
                     ..base
                 })?;
+                if case.starts_with("low_power_") {
+                    ensure!(encoder.backend_name().contains("general engine"), "unsupported/changed low-power engine must fall back explicitly");
+                }
                 ensure!(encoder.codec() == codec, "worker lost codec identity");
                 for i in 0..2 {
                     let frame = RawFrame::new_i420(

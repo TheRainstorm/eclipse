@@ -26,6 +26,7 @@ extern "C" {
         capacity: usize,
     ) -> i32;
     fn eclipse_vpl_encoder_close(encoder: *mut c_void);
+    fn eclipse_vpl_encoder_low_power(encoder: *mut c_void) -> i32;
     fn eclipse_vpl_encoder_input(
         encoder: *mut c_void,
         data: *mut *mut u8,
@@ -99,13 +100,15 @@ impl Driver {
             return Err(message(&error));
         }
         let encoder = NonNull::new(encoder).ok_or("Intel runtime returned no encoder")?;
+        let low_power = unsafe { eclipse_vpl_encoder_low_power(encoder.as_ptr()) } != 0;
         Ok(Self {
             encoder,
             settings,
             name: format!(
-                "intel-vpl ({:?} hw, {})",
+                "intel-vpl ({:?} hw, {}, {} engine)",
                 settings.codec,
-                if vbr { "VBR" } else { "CBR" }
+                if vbr { "VBR" } else { "CBR" },
+                if low_power { "low power" } else { "general" }
             ),
             bgra: None,
             pending: VecDeque::new(),

@@ -17,10 +17,11 @@ mfxStatus MFXClose(mfxSession session){if(((Session *)session)->initialized)++ba
 mfxStatus MFXQueryIMPL(mfxSession session,mfxIMPL *implementation){(void)session;*implementation=(mode("software")||mode("decode_software"))?MFX_IMPL_SOFTWARE:MFX_IMPL_HARDWARE;return 0;}
 mfxStatus MFXVideoENCODE_Query(mfxSession session,mfxVideoParam *input,mfxVideoParam *output){
     (void)session;
+    if(mode("low_power_unavailable") && input->mfx.LowPower==MFX_CODINGOPTION_ON)return MFX_ERR_UNSUPPORTED;
     if(input->AsyncDepth!=1 || input->mfx.GopRefDist!=1 || input->IOPattern!=MFX_IOPATTERN_IN_SYSTEM_MEMORY || input->mfx.NumRefFrame!=1 || input->mfx.FrameInfo.FourCC!=MFX_FOURCC_NV12)return MFX_ERR_INVALID_VIDEO_PARAM;
     *output=*input;if(mode("fps"))output->mfx.FrameInfo.FrameRateExtN/=2;if(mode("mode"))output->mfx.RateControlMethod=MFX_RATECONTROL_CBR;return 0;
 }
-mfxStatus MFXVideoENCODE_Init(mfxSession session,mfxVideoParam *params){((Session *)session)->params=*params;((Session *)session)->initialized=1;if(mode("init_fps"))((Session *)session)->params.mfx.FrameInfo.FrameRateExtN/=2;if(mode("codec"))((Session *)session)->params.mfx.CodecId=MFX_CODEC_AVC;return mode("partial")?MFX_WRN_PARTIAL_ACCELERATION:0;}
+mfxStatus MFXVideoENCODE_Init(mfxSession session,mfxVideoParam *params){((Session *)session)->params=*params;((Session *)session)->initialized=1;if(mode("init_fps"))((Session *)session)->params.mfx.FrameInfo.FrameRateExtN/=2;if(mode("codec"))((Session *)session)->params.mfx.CodecId=MFX_CODEC_AVC;if(mode("low_power_changed"))((Session *)session)->params.mfx.LowPower=MFX_CODINGOPTION_OFF;return mode("partial")?MFX_WRN_PARTIAL_ACCELERATION:0;}
 mfxStatus MFXVideoENCODE_GetVideoParam(mfxSession session,mfxVideoParam *params){*params=((Session *)session)->params;return 0;}
 mfxStatus MFXVideoENCODE_Reset(mfxSession session,mfxVideoParam *params){
     Session *state=(Session *)session;
