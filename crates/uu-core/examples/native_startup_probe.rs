@@ -12,12 +12,18 @@ use uu_core::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let runtime = std::path::PathBuf::from(std::env::var("XDG_RUNTIME_DIR")?);
+    let owned_compositor=std::env::var("UU_OWNED_WAYLAND_TEST").as_deref()==Ok("1")
+        &&runtime.file_name().is_some_and(|name|name.to_string_lossy().starts_with("uu-wayland-input-"));
     ensure!(
         std::env::var("ECLIPSE_PORTAL_FIXTURE").as_deref() == Ok("1")
-            && std::env::var("WAYLAND_DISPLAY").as_deref() == Ok("owned-fixture"),
+            && (std::env::var("WAYLAND_DISPLAY").as_deref() == Ok("owned-fixture")||owned_compositor),
         "requires tools/native/portal_smoke.py --case stream-startup"
     );
-    let runtime = std::path::PathBuf::from(std::env::var("XDG_RUNTIME_DIR")?);
+    let expected=std::env::var("ECLIPSE_STARTUP_EXPECTED_SIZE").unwrap_or_else(|_|"320x240".into());
+    let (width,height)=expected.split_once('x').context("expected size must be WxH")?;
+    let expected=(width.parse::<u32>()?,height.parse::<u32>()?);
+    ensure!((2..=8192).contains(&expected.0)&&(2..=8192).contains(&expected.1),"invalid fixture size");
     for round in 0..2 {
         let started = Instant::now();
         let invitation_path = runtime.join(format!("startup-{round}.eclipse-invite.json"));
@@ -81,7 +87,7 @@ async fn main() -> Result<()> {
             while count < 60 {
                 while let Ok((_, width, height, _)) = images.try_recv() {
                     ensure!(
-                        (width, height) == (320, 240),
+                        (width, height) == expected,
                         "unexpected generated frame geometry"
                     );
                     first_frame_ms.get_or_insert_with(|| started.elapsed().as_millis());
