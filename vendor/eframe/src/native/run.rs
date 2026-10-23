@@ -77,6 +77,15 @@ impl<T: WinitApp> WinitAppWrapper<T> {
         event_loop: &ActiveEventLoop,
         event_result: Result<EventResult>,
     ) {
+        self.handle_event_result_without_redraw(event_loop,event_result);
+        self.check_redraw_requests(event_loop);
+    }
+
+    fn handle_event_result_without_redraw(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        event_result: Result<EventResult>,
+    ) {
         let mut exit = false;
 
         log::trace!("event_result: {event_result:?}");
@@ -143,11 +152,11 @@ impl<T: WinitApp> WinitAppWrapper<T> {
             }
         }
 
-        self.check_redraw_requests(event_loop);
     }
 
     fn check_redraw_requests(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
+        let mut hidden = Vec::new();
 
         self.windows_next_repaint_times
             .retain(|window_id, repaint_time| {
@@ -159,12 +168,32 @@ impl<T: WinitApp> WinitAppWrapper<T> {
 
                 if let Some(window) = self.winit_app.window(*window_id) {
                     log::trace!("request_redraw for {window_id:?}");
-                    window.request_redraw();
+                    // Hidden Win32 windows do not reliably receive WM_PAINT.
+                    // A coordinator can still request a pass to handle IPC and
+                    // deferred viewports. Drive only requested, due passes.
+                    if cfg!(target_os="windows") && window.is_visible()==Some(false) {
+                        hidden.push(*window_id);
+                    }else{window.request_redraw();}
                 } else {
                     log::trace!("No window found for {window_id:?}");
                 }
                 false
             });
+
+        if !hidden.is_empty() {
+            let already_in_context=event_loop_context::with_current_event_loop(|_|()).is_some();
+            let paint=|| {
+                for window_id in hidden {
+                    let result=self.winit_app.run_ui_and_paint(event_loop,window_id);
+                    // Schedule any subsequent pass for a later event-loop turn,
+                    // instead of recursively repainting an invisible window.
+                    self.handle_event_result_without_redraw(event_loop,result);
+                    if event_loop.exiting(){break;}
+                }
+            };
+            if already_in_context {paint();}
+            else {event_loop_context::with_event_loop_context(event_loop,paint);}
+        }
 
         let next_repaint_time = self.windows_next_repaint_times.values().min().copied();
         if let Some(next_repaint_time) = next_repaint_time {

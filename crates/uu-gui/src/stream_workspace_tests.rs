@@ -148,12 +148,24 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
     assert_eq!(*actions.borrow(), vec![Action::Detach(22)]);
 }
 
+std::thread_local! {
+    static SCREENSHOTS:std::cell::RefCell<Option<std::collections::HashMap<egui::ViewportId,Arc<egui::ColorImage>>>>=const {std::cell::RefCell::new(None)};
+}
+pub(super) fn observe_screenshot(ctx:&egui::Context) {
+    // Viewport input belongs to that viewport's pass. The root must not race
+    // its child by polling transient input events after a later child pass.
+    let image=ctx.input(|input|input.events.iter().find_map(|event|if let egui::Event::Screenshot{image,..}=event{Some(image.clone())}else{None}));
+    if let Some(image)=image {
+        SCREENSHOTS.with(|slot|if let Some(images)=&mut *slot.borrow_mut(){images.insert(ctx.viewport_id(),image);});
+    }
+}
 struct Probe {
     workspace: Workspace,
     directory: PathBuf,
     second: Option<Launch>,
     join: Option<std::thread::JoinHandle<anyhow::Result<uu_core::local_workspace::Join>>>,
     phase: u8,
+    reported_phase:Option<u8>,
     started: Instant,
     first: u64,
     second_id: u64,
@@ -164,6 +176,10 @@ struct Probe {
 }
 impl eframe::App for Probe {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.reported_phase!=Some(self.phase) {
+            eprintln!("generated workspace window probe phase={}",self.phase);
+            self.reported_phase=Some(self.phase);
+        }
         assert!(
             self.started.elapsed() < Duration::from_secs(40),
             "workspace probe timed out in phase {}",
@@ -264,8 +280,7 @@ impl eframe::App for Probe {
                     self.phase = 6;
                 }
                 6=>{
-                    let image=ctx.input_for(state.windows[0].viewport(),|input|input.events.iter().find_map(|event|
-                        if let egui::Event::Screenshot{image,..}=event{Some(image.clone())}else{None}));
+                    let image=SCREENSHOTS.with(|slot|slot.borrow_mut().as_mut().unwrap().remove(&state.windows[0].viewport()));
                     if let Some(image)=image {
                         assert!(image.size[0]>300&&image.size[1]>200);
                         if let Some(output)=std::env::var_os("ECLIPSE_WORKSPACE_PROBE_OUTPUT") {
@@ -335,6 +350,8 @@ impl eframe::App for Probe {
 #[test]
 #[ignore = "run alone: private XDG directories and an isolated Xvfb or newly owned Windows station"]
 fn native_windows_attach_reorder_and_detach_two_live_generated_sessions() {
+    eprintln!("generated workspace probe starting");
+    SCREENSHOTS.with(|slot|*slot.borrow_mut()=Some(Default::default()));
     uu_core::install_crypto_provider();
     let directory = Directory(std::env::temp_dir().join(format!(
         "eclipse-workspace-window-test-{}",
@@ -420,12 +437,16 @@ fn native_windows_attach_reorder_and_detach_two_live_generated_sessions() {
         "Generated workspace probe",
         options,
         Box::new(move |cc| {
+            eprintln!("generated workspace GL ready; creating coordinator");
+            let workspace=Workspace::new(cc,first,owner,false,None);
+            eprintln!("generated workspace coordinator ready");
             Ok(Box::new(Probe {
-                workspace: Workspace::new(cc, first, owner, false, None),
+                workspace,
                 directory: ipc,
                 second: Some(second),
                 join: None,
                 phase: 0,
+                reported_phase:None,
                 started: Instant::now(),
                 first: 0,
                 second_id: 0,

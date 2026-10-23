@@ -65,3 +65,5 @@ The _frame_ in `eframe` stands both for the frame in which your `egui` app resid
 ## Eclipse local changes
 
 The pinned 0.29.1 sources retain the upstream MIT/Apache-2.0 licenses. Local Glow changes provide per-viewport swap interval requests and weak native-window access for window-scoped input and geometry. Startup honors an explicitly hidden root viewport, allowing independent deferred stream windows without showing an empty coordinator window.
+
+On Windows, requested passes for hidden windows run through the normal UI path at their scheduled deadline, since Win32 paint delivery is visibility-dependent. This lets a hidden coordinator process IPC and deferred window changes without continuous repainting or recursively entering another pass.

@@ -329,6 +329,8 @@ impl Window {
         actions: Rc<RefCell<Vec<Action>>>,
         gamepad: &Rc<RefCell<crate::gamepad::Reader>>,
     ) {
+        #[cfg(test)]
+        tests::observe_screenshot(ctx);
         if self.platform.is_none() {
             let Some(native) = eframe::viewport_window(ctx) else {
                 ctx.request_repaint();
