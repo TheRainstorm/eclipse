@@ -52,18 +52,18 @@ pub fn init_background_logging() -> Result<()> {
             == "S-1-5-18",
         "后台进程必须由 LocalSystem 服务启动"
     );
-    let paths = Paths::discover()?;
-    let installed = paths.manifest()?;
+    let paths = Paths::discover().context("解析后台安装目录失败")?;
+    let installed = paths.manifest().context("读取后台安装记录失败")?;
     anyhow::ensure!(
-        std::env::current_exe()?.canonicalize()?
+        std::env::current_exe()?.canonicalize().context("解析后台可执行文件失败")?
             == paths
                 .binary_directory(&installed)
                 .join("uu.exe")
-                .canonicalize()?,
+                .canonicalize().context("解析受保护后台安装位置失败")?,
         "后台进程必须从安装位置启动"
     );
     let directory = paths.config().log_dir();
-    std::fs::create_dir_all(&directory)?;
+    std::fs::create_dir_all(&directory).context("创建后台日志目录失败")?;
     let path = directory.join("service.log");
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > 4 * 1024 * 1024) {
         let _ = std::fs::rename(&path, directory.join("service.previous.log"));
@@ -71,7 +71,7 @@ pub fn init_background_logging() -> Result<()> {
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)?;
+        .open(path).context("打开后台日志文件失败")?;
     tracing_subscriber::fmt()
         .with_env_filter("error,uu_core=info,uu=info,uu_capture=warn,uu_input=warn,uu_media=warn")
         .with_target(false)
