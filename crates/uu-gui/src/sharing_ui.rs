@@ -111,8 +111,7 @@ mod tests {
                 .is_none(),
             "starting listeners alone never acquires media"
         );
-        host.allow_pairing();
-        assert!(host.pairing_open());
+        assert!(host.pairing_open(),"starting the server accepts pairing without a second switch");
         host.stop();
         assert!(!host.pairing_open());
         poll_until(&mut host, &ctx, |host| !host.running());

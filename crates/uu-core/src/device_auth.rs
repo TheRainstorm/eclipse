@@ -66,7 +66,7 @@ enum Rejection {
 impl std::fmt::Display for Rejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::PairingClosed => "请先在被控端允许新设备配对；配对许可已关闭、过期或达到尝试上限",
+            Self::PairingClosed => "被控端已停止接收配对，或配对尝试过于频繁；请稍后重试",
             Self::Busy => "被控端正在确认另一台设备，请稍后重试",
             Self::Declined => "被控端拒绝或取消了配对，请重新发起",
             Self::AuthenticationFailed => "设备身份认证失败，请核对短码和被控端授权后重新连接",
@@ -241,10 +241,16 @@ struct Approved {
     approval: PairApproval,
     completion: Completion,
 }
-#[derive(Default)]
 struct Window {
     until: Option<Instant>,
+    continuous: bool,
     attempts: u8,
+    since: Instant,
+}
+impl Default for Window {
+    fn default()->Self {
+        Self {until:None,continuous:true,attempts:0,since:Instant::now()}
+    }
 }
 pub struct PairingControl {
     window: Mutex<Window>,
@@ -262,18 +268,19 @@ impl PairingControl {
     pub fn open(&self) {
         *self.window.lock().unwrap() = Window {
             until: Some(Instant::now() + Duration::from_secs(300)),
+            continuous:false,
             attempts: 0,
+            since:Instant::now(),
         };
     }
     pub fn close(&self) {
-        self.window.lock().unwrap().until = None;
+        let mut window=self.window.lock().unwrap();
+        window.until=None;
+        window.continuous=false;
     }
     pub fn is_open(&self) -> bool {
-        self.window
-            .lock()
-            .unwrap()
-            .until
-            .is_some_and(|t| Instant::now() < t)
+        let window=self.window.lock().unwrap();
+        window.continuous || window.until.is_some_and(|t|Instant::now()<t)
     }
     fn reserve(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
         let slot = self
@@ -282,7 +289,10 @@ impl PairingControl {
             .try_acquire_owned()
             .map_err(|_| Rejection::Busy)?;
         let mut w = self.window.lock().unwrap();
-        if !(w.until.is_some_and(|t| Instant::now() < t) && w.attempts < 5) {
+        if w.continuous && w.since.elapsed()>=Duration::from_secs(60) {
+            w.attempts=0;w.since=Instant::now();
+        }
+        if !((w.continuous || w.until.is_some_and(|t| Instant::now() < t)) && w.attempts < 5) {
             anyhow::bail!(Rejection::PairingClosed);
         }
         w.attempts += 1;
@@ -580,6 +590,19 @@ async fn host_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_accepts_pairing_and_rate_limit_recovers_without_manual_reopening() {
+        let (events,_)=mpsc::unbounded_channel();
+        let pairing=PairingControl::new(events);
+        assert!(pairing.is_open());
+        for _ in 0..5 {drop(pairing.reserve().unwrap());}
+        assert!(pairing.reserve().is_err());
+        pairing.window.lock().unwrap().since-=Duration::from_secs(61);
+        drop(pairing.reserve().unwrap());
+        pairing.close();
+        assert!(!pairing.is_open());
+        assert!(pairing.reserve().is_err());
+    }
     struct Memory {
         tx: mpsc::Sender<serde_json::Value>,
         rx: mpsc::Receiver<serde_json::Value>,
@@ -606,6 +629,7 @@ mod tests {
         let b = TrustStore::open(root.join("b")).unwrap();
         let (events, _) = mpsc::unbounded_channel();
         let pairing = PairingControl::new(events);
+        pairing.close();
         let (mut x, mut y) = wires();
         let display = PairingDisplay::default();
         let (left, right) = tokio::join!(
@@ -616,7 +640,7 @@ mod tests {
             .err()
             .unwrap()
             .to_string()
-            .contains("请先在被控端允许新设备配对"));
+            .contains("被控端已停止接收配对"));
         assert!(right.is_err());
         assert!(display.code().is_none());
         assert!(b.peers().unwrap().is_empty());

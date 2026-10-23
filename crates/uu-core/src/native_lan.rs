@@ -14,7 +14,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        atomic::Ordering, Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -247,7 +247,7 @@ struct State {
     acceptor: TlsAcceptor,
     grants: Mutex<Grants>,
     events: mpsc::UnboundedSender<Event>,
-    pairing_until: Mutex<Option<Instant>>,
+    pairing_enabled: std::sync::atomic::AtomicBool,
     pair_slot: Arc<Semaphore>,
     active: Mutex<std::collections::HashMap<String, Active>>,
     input: Arc<crate::input_ownership::Authority>,
@@ -261,10 +261,10 @@ pub struct Handle {
 impl Handle {
     pub fn server_id(&self)->&str {&self.state.info.id}
     pub fn allow_pairing(&self) {
-        *self.state.pairing_until.lock().unwrap() = Some(Instant::now() + Duration::from_secs(120));
+        self.state.pairing_enabled.store(true,Ordering::Release);
     }
     pub fn close_pairing(&self) {
-        *self.state.pairing_until.lock().unwrap() = None;
+        self.state.pairing_enabled.store(false,Ordering::Release);
     }
     pub fn clients(&self) -> Vec<store::AuthorizedClient> {
         self.state.grants.lock().unwrap().clients.clone()
@@ -290,10 +290,7 @@ impl Handle {
 }
 impl State {
     fn pairing_open(&self) -> bool {
-        self.pairing_until
-            .lock()
-            .unwrap()
-            .is_some_and(|until| Instant::now() < until)
+        self.access.as_ref().map_or_else(||self.pairing_enabled.load(Ordering::Acquire),|a|a.pairing.is_open())
     }
     fn stop_client(&self, id: &str) {
         for active in self.active.lock().unwrap().values().filter(|s| s.client == id) {
@@ -370,7 +367,7 @@ impl Server {
             acceptor,
             grants: Mutex::new(grants),
             events,
-            pairing_until: Mutex::new(None),
+            pairing_enabled: std::sync::atomic::AtomicBool::new(true),
             pair_slot: Arc::new(Semaphore::new(1)),
             active: Mutex::new(std::collections::HashMap::new()),
             input: access.as_ref().map(|a| a.sessions.input.clone()).unwrap_or_default(),
@@ -504,7 +501,7 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
                 return write(
                     &mut stream,
                     &Reply::Error {
-                        message: "请先在主机允许新设备配对".into(),
+                        message: "主机已停止接收配对".into(),
                     },
                 )
                 .await;
@@ -823,7 +820,7 @@ pub async fn pair(
     progress: mpsc::UnboundedSender<String>,
 ) -> Result<Device> {
     let found = inspect(endpoint).await?;
-    ensure!(found.pairing_open, "已连接设备，但尚未开放配对；请先在目标电脑点击“允许新设备配对”");
+    ensure!(found.pairing_open, "已连接设备，但主机已停止接收配对");
     let mut stream = tls_connect(found.address, &found.certificate).await
         .with_context(||format!("无法与 {} 建立安全配对连接",found.address))?;
     let nonce = store::fresh_token();

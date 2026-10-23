@@ -1335,14 +1335,7 @@ impl Workspace {
             if self.host.running() {
                 ui.add_space(12.);
                 ui.horizontal(|ui| {
-                    if self.host.pairing_open() {
-                        ui.label(RichText::new("正在允许新设备配对").color(theme::SUCCESS));
-                        if ui.button("停止接收配对").clicked() {
-                            self.host.close_pairing();
-                        }
-                    } else if primary(ui, "允许新设备配对").clicked() {
-                        self.host.allow_pairing();
-                    }
+                    ui.label(RichText::new("新设备可直接发起配对").color(theme::SUCCESS));
                     if self
                         .host
                         .access

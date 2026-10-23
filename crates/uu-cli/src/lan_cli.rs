@@ -224,7 +224,7 @@ async fn host(config: lan::Config) -> Result<()> {
                 let Some(line)=line else {break Ok(())};
                 let (command,value)=line.trim().split_once(' ').unwrap_or((line.trim(),""));
                 match command {
-                    "pair"=>{handle.allow_pairing();println!("New pairing allowed for two minutes");}
+                    "pair"=>{handle.allow_pairing();println!("New pairing requests enabled");}
                     "close-pairing"=>handle.close_pairing(),
                     "code"=>{
                         let code:String=value.chars().filter(|c|c.is_ascii_digit()).collect();
