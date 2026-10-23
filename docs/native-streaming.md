@@ -2,7 +2,7 @@
 
 v0.2.0 起的安装包包含此实验通路。当前开发分支新增默认的[局域网设备发现与持久配对](native-lan.md)，图形共享入口已切换为新通路。本文保留旧发布包及 CLI 邀请通路的使用方式。
 
-这条通路使用本项目的主机与控制端，不连接 UU 服务、不需要 UU 账号或生产签名凭据。目前提供图形观看与 CLI 诊断：旧邀请入口及 CLI 默认软件 H.264 编码，当前开发分支的局域网“共享本机”默认自动选择硬编，支持 [Linux VA-API、Windows MFT 及 Intel VPL](native-encoding.md)。HEVC / AV1 和 VBR 需要相应的硬件运行时及接收能力。控制端复用已有硬件解码、重排恢复与限长呈现队列。不是完整的日常远控服务端。与 UU 兼容模式的互通边界、UDP 传输及后续扩展见[协议与传输架构](protocol-compatibility-and-transport.md)。
+这条通路使用本项目的主机与控制端，不连接 UU 服务、不需要 UU 账号或生产签名凭据。目前提供图形观看与 CLI 诊断：旧邀请入口及 CLI 默认软件 H.264 编码，当前开发分支的局域网“共享本机”默认自动选择硬编，支持 [Linux VA-API、Windows MFT 及 Intel VPL](native-encoding.md)。HEVC / AV1 需要 Intel VPL 硬件运行时；Windows H.264 VBR 可使用驱动 MFT，Linux VBR 仍使用 VPL。接收端需支持相同格式。控制端复用已有硬件解码、重排恢复与限长呈现队列。不是完整的日常远控服务端。与 UU 兼容模式的互通边界、UDP 传输及后续扩展见[协议与传输架构](protocol-compatibility-and-transport.md)。
 
 0.7起在共享窗口提供本机网卡地址选择和刷新，也保留手动输入。默认仍为仅本机，刷新不会改变选择或启动监听；跨设备共享前需选择双方能互通的本机地址。暂不支持需要接口作用域的 IPv6 链路本地地址，地址列表也不会展示它们。
 
@@ -55,7 +55,7 @@ uu-gui --native-invitation ./demo.eclipse-invite.json
 - TLS1.3固定主机身份并认证邀请后，才开放采集；SDP通过已认证通道交换，媒体使用 WebRTC DTLS-SRTP。没有自造明文远程桌面协议。
 - 旧邀请通路不自动更改防火墙或开放公网入口，仅接受与认证信令对端地址一致的 UDP 主机候选。持久设备授权与多入口连接使用当前[设备工作区](device-connection-and-trust.md)；STUN 和公网寻址使用独立的[连接服务](native-internet.md)，不会由邀请文件隐式启用。
 - v0.2.0 发布包为单控制端、单显示源的纯观看模式。v0.3.0 加入图形端共享与[显式授权的键鼠控制](native-input.md)，默认仍只读。v0.4.0 加入[系统声音与音频冗余恢复](native-audio.md)，v0.5.0 加入[双方许可文本剪贴板](native-clipboard.md)。当前开发分支的原生串流菜单已支持在授权范围内切换显示源；切换先释放输入，再重建媒体代数，不改变远端显示布局。Wayland 重新选择需要系统再次授权；运行中画质重协商仍待完善。
-- `--max-seconds` 可限制已连接会话时长，便于隔离验证。当前开发分支 CLI 支持 `--encoder software|auto|hardware|vaapi`，默认 `software`；`hardware` 要求平台硬编成功，`vaapi` 仅适用于 Linux，Windows H.264 默认使用硬件 MFT。当前开发分支已接入 Intel VPL 的 H.264 / HEVC / AV1 和 CBR / VBR，详见[编码说明](native-encoding.md)；HDR 和视频 FEC 尚未实现，恢复采用 NACK 重传、PLI / FIR 与参考链保护。
+- `--max-seconds` 可限制已连接会话时长，便于隔离验证。当前开发分支 CLI 支持 `--encoder software|auto|hardware|vaapi`，默认 `software`；`hardware` 要求平台硬编成功，`vaapi` 仅适用于 Linux，Windows H.264 默认使用硬件 MFT。当前开发分支已接入 Windows MFT H.264 CBR / VBR 和 Intel VPL 的 H.264 / HEVC / AV1 与 CBR / VBR，详见[编码说明](native-encoding.md)；HDR 和视频 FEC 尚未实现，恢复采用 NACK 重传、PLI / FIR 与参考链保护。
 
 0.7起 `native-probe` 可加 `--progress-seconds 5` 输出周期统计，以及 `--max-frame-gap-seconds 5` 在首帧后长时间没有可见帧时主动结束。两者默认关闭；与 `--report 新文件.json` 一起使用时，失败也会保留已收集的统计，释放本次连接。进度不包含画面、键鼠内容或邀请凭据，探针始终不播放接收到的声音。
 

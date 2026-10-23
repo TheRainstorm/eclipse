@@ -167,7 +167,14 @@ impl Driver {
                         input_credit: 0,
                         settings,
                         sequence: Vec::new(),
-                        name: format!("mf (H.264 hardware, {name})"),
+                        name: format!(
+                            "mf (H.264 {}, {name})",
+                            if matches!(settings.rate_control, super::RateControl::Vbr { .. }) {
+                                "VBR"
+                            } else {
+                                "CBR"
+                            }
+                        ),
                         profile: std::env::var_os("UU_ENCODE_PROFILE").map(|_| [0; 4]),
                         _runtime: runtime,
                     });
@@ -211,19 +218,38 @@ impl Driver {
                     VARIANT::from(eAVScenarioInfo_DisplayRemoting.0 as u32),
                 ),
                 (CODECAPI_AVEncMPVDefaultBPictureCount, VARIANT::from(0u32)),
-                (
-                    CODECAPI_AVEncCommonRateControlMode,
-                    VARIANT::from(eAVEncCommonRateControlMode_CBR.0 as u32),
-                ),
                 (CODECAPI_AVEncMPVGOPSize, VARIANT::from(settings.fps * 2)),
-                (
-                    CODECAPI_AVEncCommonMeanBitRate,
-                    VARIANT::from(settings.bitrate_kbps * 1000),
-                ),
             ] {
                 if let Err(error) = codec.SetValue(&id, &value) {
                     tracing::debug!(?id,%error,"hardware MFT optional tuning unsupported");
                 }
+            }
+            let (rate_mode, peak_kbps) = match settings.rate_control {
+                super::RateControl::Cbr => (eAVEncCommonRateControlMode_CBR, None),
+                super::RateControl::Vbr { peak_kbps } => (
+                    eAVEncCommonRateControlMode_PeakConstrainedVBR,
+                    Some(peak_kbps),
+                ),
+            };
+            codec
+                .SetValue(
+                    &CODECAPI_AVEncCommonRateControlMode,
+                    &VARIANT::from(rate_mode.0 as u32),
+                )
+                .map_err(|error| format!("hardware rate-control mode: {error}"))?;
+            codec
+                .SetValue(
+                    &CODECAPI_AVEncCommonMeanBitRate,
+                    &VARIANT::from(settings.bitrate_kbps * 1000),
+                )
+                .map_err(|error| format!("hardware mean bitrate: {error}"))?;
+            if let Some(peak_kbps) = peak_kbps {
+                codec
+                    .SetValue(
+                        &CODECAPI_AVEncCommonMaxBitRate,
+                        &VARIANT::from(peak_kbps * 1000),
+                    )
+                    .map_err(|error| format!("hardware peak bitrate: {error}"))?;
             }
             let mut input = [0u32];
             let mut output = [0u32];
@@ -449,6 +475,13 @@ impl super::worker::Driver for Driver {
         Driver::encode(self, frame, keyframe)
     }
     fn bitrate(&mut self, kbps: u32) -> Result<(), String> {
+        if let super::RateControl::Vbr { peak_kbps } = self.settings.rate_control {
+            if kbps > peak_kbps {
+                return Err(format!(
+                    "requested bitrate {kbps} kbps exceeds configured VBR peak {peak_kbps} kbps"
+                ));
+            }
+        }
         unsafe {
             self.codec
                 .SetValue(
