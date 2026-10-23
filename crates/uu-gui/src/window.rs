@@ -238,11 +238,12 @@ impl Geometry {
     }
 }
 
-pub fn native_geometry(_frame: &eframe::Frame, _ctx: &egui::Context) -> Option<Geometry> {
+pub fn native_geometry(_ctx: &egui::Context) -> Option<Geometry> {
     #[cfg(target_os = "windows")]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let RawWindowHandle::Win32(handle) = _frame.window_handle().ok()?.as_raw() else {
+        let native=eframe::viewport_window(_ctx)?;
+        let RawWindowHandle::Win32(handle) = native.window_handle().ok()?.as_raw() else {
             return None;
         };
         #[repr(C)]

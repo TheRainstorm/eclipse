@@ -28,11 +28,13 @@ use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirecti
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 
 pub use crate::display_frames::{channel as frame_channel, FrameReceiver, FrameSender};
+pub use uu_media::DecoderKind;
 
 /// Live media statistics shared between the decode task and the UI (HUD).
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
 pub struct MediaStats {
+    pub decoder_preference:std::sync::OnceLock<DecoderKind>,
     pub host_admin:crate::host_admin::Client,
     pub native_quality_request:std::sync::OnceLock<crate::native_quality::Request>,
     pub native_quality_response:std::sync::Mutex<Option<crate::native_quality::Response>>,
@@ -120,6 +122,7 @@ pub struct MediaStats {
 }
 
 impl MediaStats {
+    pub fn decoder_kind(&self)->DecoderKind {self.decoder_preference.get().copied().unwrap_or_else(DecoderKind::from_env)}
     pub fn select_video_track(&self,track:u32) {
         if self.selected_video_track.swap(track,Ordering::AcqRel)!=track {
             for value in [&self.src_fps_x100,&self.dec_fps_x100,&self.decode_us,&self.bitrate_kbps,&self.width,&self.height,&self.loss_ppm] {value.store(0,Ordering::Relaxed);}
@@ -741,10 +744,11 @@ pub(crate) async fn receive_video(
     let worker_decoded = track_decoded.clone();
     // Decode, colour conversion and driver IPC are blocking CPU/OS work. Keep
     // them off tokio's RTP and RTCP executor threads.
+    let decoder_kind=worker_stats.as_ref().map_or_else(DecoderKind::from_env,|s|s.decoder_kind());
     let worker = tokio::task::spawn_blocking(move || {
         let mut codec = codec;
         let mut decoder = match prepared_decoder.filter(|d|d.codec()==codec).map(Ok)
-            .unwrap_or_else(|| uu_media::decoder_for_codec(codec)) {
+            .unwrap_or_else(|| uu_media::decoder_for_codec_with_kind(codec,decoder_kind)) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("video decoder unavailable: {e}");
@@ -797,7 +801,7 @@ pub(crate) async fn receive_video(
                 // Codec ownership travels with each AU, not a racy track
                 // snapshot. A format change cannot feed the previous decoder.
                 if !key { continue; }
-                match uu_media::decoder_for_codec(sample_codec) {
+                match uu_media::decoder_for_codec_with_kind(sample_codec,decoder_kind) {
                     Ok(next) => decoder = next,
                     Err(_) => { gate.failed(); worker_requests.request(); worker_refresh.notify_one(); continue; }
                 }
@@ -818,7 +822,7 @@ pub(crate) async fn receive_video(
                 let next = if codec == VideoCodec::H264 && (recovery_errors >= 3 || decoder.backend_name().starts_with("openh264")) {
                     uu_media::software_decoder()
                 } else {
-                    uu_media::decoder_for_codec(codec)
+                    uu_media::decoder_for_codec_with_kind(codec,decoder_kind)
                 };
                 match next {
                     Ok(fresh) => decoder = fresh,

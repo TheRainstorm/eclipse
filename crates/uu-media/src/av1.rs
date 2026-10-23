@@ -170,7 +170,10 @@ pub const PROBE_UNITS: [&[u8]; 4] = [
 ];
 pub const PROBE: &[u8] = PROBE_UNITS[0];
 pub fn probe_decoder() -> Result<(), crate::CodecError> {
-    let mut decoder = crate::decoder_for_codec(uu_proto::media::VideoCodec::Av1)?;
+    probe_decoder_with_kind(crate::DecoderKind::from_env())
+}
+pub fn probe_decoder_with_kind(kind:crate::DecoderKind)->Result<(),crate::CodecError> {
+    let mut decoder = crate::decoder_for_codec_with_kind(uu_proto::media::VideoCodec::Av1,kind)?;
     validate_decoder(decoder.as_mut())
 }
 

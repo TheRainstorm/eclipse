@@ -172,9 +172,10 @@ pub(crate) fn offers_codec(description:&RTCSessionDescription,codec:VideoCodec)-
 pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
     if let Some(codecs)=stats.native_codec_capabilities.get(){return codecs.clone();}
     let mut codecs=vec![VideoCodec::H264];
+    let kind=stats.decoder_kind();
     for codec in [VideoCodec::Hevc,VideoCodec::Av1] {
         let result=timeout(Duration::from_secs(5),tokio::task::spawn_blocking(move||match codec {
-            VideoCodec::Hevc=>uu_media::hevc::probe_decoder(),VideoCodec::Av1=>uu_media::av1::probe_decoder(),VideoCodec::H264=>unreachable!()
+            VideoCodec::Hevc=>uu_media::hevc::probe_decoder_with_kind(kind),VideoCodec::Av1=>uu_media::av1::probe_decoder_with_kind(kind),VideoCodec::H264=>unreachable!()
         })).await;
         let (available,reason)=match result {
             Ok(Ok(Ok(())))=>(true,String::new()),
@@ -333,7 +334,8 @@ impl NativePeer {
         // the bounded AU queue can overflow while the first decoder boots.
         // Hardware handles keep their COM/VA-API state on their own OS worker;
         // moving this Send handle does not move any driver objects.
-        let decoder = tokio::task::spawn_blocking(uu_media::default_decoder)
+        let kind=stats.decoder_kind();
+        let decoder = tokio::task::spawn_blocking(move ||uu_media::default_decoder_with_kind(kind))
             .await
             .context("native decoder initialization task failed")??;
         stats.set_backend(decoder.backend_name());

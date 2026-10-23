@@ -158,6 +158,7 @@ pub struct EpiIntegration {
     last_auto_save: Instant,
     pub beginning: Instant,
     is_first_frame: bool,
+    initially_visible: bool,
     pub egui_ctx: egui::Context,
     pending_full_output: egui::FullOutput,
 
@@ -224,6 +225,7 @@ impl EpiIntegration {
             app_icon_setter,
             beginning: Instant::now(),
             is_first_frame: true,
+            initially_visible: native_options.viewport.visible.unwrap_or(true),
         }
     }
 
@@ -307,7 +309,7 @@ impl EpiIntegration {
 
     pub fn post_rendering(&mut self, window: &winit::window::Window) {
         crate::profile_function!();
-        if std::mem::take(&mut self.is_first_frame) {
+        if std::mem::take(&mut self.is_first_frame) && self.initially_visible {
             // We keep hidden until we've painted something. See https://github.com/emilk/egui/pull/2279
             window.set_visible(true);
         }

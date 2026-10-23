@@ -93,7 +93,7 @@ fn group(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(12.0);
 }
 fn combo(ui: &mut egui::Ui, id: &str, selected: &str, body: impl FnOnce(&mut egui::Ui)) {
-    egui::ComboBox::from_id_salt(id)
+    egui::ComboBox::from_id_salt((ui.ctx().viewport_id(),id))
         .width(210.0)
         .selected_text(selected)
         .show_ui(ui, body);
@@ -173,7 +173,7 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
         }
         ui.add_space(8.0);
         ui.checkbox(&mut s.software_decoder, "使用软件解码");
-        note(ui, "默认优先使用硬件解码。更改后重新打开软件生效。");
+        note(ui, "默认优先使用硬件解码。更改后重新连接此设备生效。");
     });
     group(ui, "远端显示器布局", |ui| {
         for mode in [

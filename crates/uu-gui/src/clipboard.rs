@@ -5,20 +5,24 @@ use std::sync::Arc;
 use uu_core::clipboard::Clipboard;
 
 pub fn start(control: Arc<Clipboard>, window: isize) -> std::io::Result<()> {
-    start_role(control, window, true)
+    start_following(control,Arc::new(std::sync::atomic::AtomicIsize::new(window)))
+}
+pub fn start_following(control:Arc<Clipboard>,window:Arc<std::sync::atomic::AtomicIsize>)->std::io::Result<()> {
+    start_role(control,window,true)
 }
 
 /// Only an explicit native-host checkbox may call this; readiness is leased to its peer.
 pub fn start_host(control: Arc<Clipboard>, window: isize) -> std::io::Result<()> {
-    start_role(control, window, false)
+    start_role(control,Arc::new(std::sync::atomic::AtomicIsize::new(window)),false)
 }
 fn start_role(
     control: Arc<Clipboard>,
-    window: isize,
+    owner: Arc<std::sync::atomic::AtomicIsize>,
     foreground_only: bool,
 ) -> std::io::Result<()> {
     #[cfg(windows)]
     {
+        let window=owner.load(std::sync::atomic::Ordering::Acquire);
         if window == 0
             || unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(window as _) } == 0
         {
@@ -53,19 +57,19 @@ fn start_role(
                     control.status("无法打开当前桌面的剪贴板");
                     return;
                 }
-                run(control, window, foreground_only)
+                run(control, owner, foreground_only)
             })?;
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = (window, foreground_only);
+        let _ = (&owner, foreground_only);
         std::thread::Builder::new()
             .name("uu-clipboard".into())
             .spawn(move || run_linux(control, !foreground_only))?;
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
-        let _ = (window, foreground_only);
+        let _ = (&owner, foreground_only);
         control.status("当前构建未启用系统剪贴板");
     }
     Ok(())
@@ -134,13 +138,14 @@ fn run_linux(control: Arc<Clipboard>, suppress_initial: bool) {
 }
 
 #[cfg(windows)]
-fn run(control: Arc<Clipboard>, window: isize, foreground_only: bool) {
+fn run(control: Arc<Clipboard>, owner:Arc<std::sync::atomic::AtomicIsize>, foreground_only: bool) {
     use std::sync::atomic::Ordering::{Acquire, Release};
     control.available.store(true, Release);
     let mut last_sequence = 0;
     let mut last_text = None;
     let mut was_active = false;
     while !control.stopped.load(Acquire) {
+        let window=owner.load(Acquire);
         let active = control.ready() && (!foreground_only || native::foreground(window));
         if active {
             let sequence = native::sequence();
@@ -150,7 +155,7 @@ fn run(control: Arc<Clipboard>, window: isize, foreground_only: bool) {
                     Ok(Some(value)) => {
                         let normalized = canonical(&value);
                         if last_text.as_ref() != Some(&normalized) {
-                            if !control.read_only.load(Acquire) && (foreground_only || was_active) {
+                            if control.ready() && owner.load(Acquire)==window && !control.read_only.load(Acquire) && (foreground_only || was_active) {
                                 *control.local.lock().unwrap() = Some(value);
                                 local_changed = true;
                                 control.protocol.lock().unwrap().cancel_pending();
@@ -171,6 +176,7 @@ fn run(control: Arc<Clipboard>, window: isize, foreground_only: bool) {
                     let normalized = canonical(&value);
                     if last_text.as_ref() != Some(&normalized)
                         && control.ready()
+                        && owner.load(Acquire)==window
                         && (!foreground_only || native::foreground(window))
                     {
                         if native::write(window, &value, foreground_only).is_ok() {

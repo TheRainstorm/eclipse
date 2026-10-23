@@ -90,3 +90,4 @@ pub mod input_ownership;
 pub mod native_gamepad;
 
 pub mod native_quality;
+pub mod local_workspace;

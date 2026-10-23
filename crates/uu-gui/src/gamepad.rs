@@ -22,9 +22,14 @@ pub(super) struct Reader {
     shared: Arc<(Mutex<Desired>, Condvar)>,
     task: Option<std::thread::JoinHandle<()>>,
     key: Option<usize>,
+    owner:Option<u64>,
 }
 impl Reader {
-    pub fn configure(&mut self, target: Option<Target>) {
+    pub fn configure(&mut self,owner:u64,target: Option<Target>) {
+        // A background window may release only its own lease. There is one
+        // physical SDL reader for the entire streaming workspace.
+        if target.is_none() && self.owner!=Some(owner){return;}
+        self.owner=target.as_ref().map(|_|owner);
         let key = target.as_ref().map(|t| Arc::as_ptr(&t.stats) as usize);
         if key == self.key {
             return;
@@ -338,6 +343,15 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn background_session_cannot_release_the_current_gamepad_recipient() {
+        let mut reader=Reader::default();reader.owner=Some(11);reader.key=Some(42);
+        reader.configure(22,None);
+        assert_eq!(reader.owner,Some(11));assert_eq!(reader.key,Some(42));
+        reader.configure(11,None);
+        assert_eq!(reader.owner,None);assert_eq!(reader.key,None);
+        assert!(reader.task.is_none(),"releasing focus must not open physical devices");
+    }
     #[test]
     fn owned_sdl_virtual_gamepad_preserves_axes_buttons_slots_and_hot_unplug() {
         std::thread::spawn(|| {

@@ -1,12 +1,12 @@
-//! The launcher owns device browsing; each stream owns its own process, window,
-//! input state and controller. Closing one stream cannot stop another device.
+//! The launcher hands connections to the streaming workspace. Each session
+//! retains its own input state and controller inside that process.
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash,serde::Serialize,serde::Deserialize)]
 pub enum ConnectionTarget {
     UuDevice(String),
     UuAssistance(String),
@@ -15,13 +15,20 @@ pub enum ConnectionTarget {
     NativeInternet(PathBuf),
     NativeProfile {id:String,snapshot:PathBuf},
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq,serde::Serialize,serde::Deserialize)]
 pub struct StreamTarget {
     pub connection: ConnectionTarget,
     pub alias: String,
     pub view_only: bool,
 }
 impl StreamTarget {
+    pub fn key(&self)->ConnectionTarget {
+        match &self.connection {
+            ConnectionTarget::NativeProfile{id,..}=>ConnectionTarget::NativeProfile{id:id.clone(),snapshot:PathBuf::new()},
+            ConnectionTarget::NativeInvitation(path)=>ConnectionTarget::NativeInvitation(path.canonicalize().unwrap_or_else(|_|path.clone())),
+            other=>other.clone(),
+        }
+    }
     pub fn is_native(&self) -> bool {
         matches!(self.connection, ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..})
     }
@@ -134,13 +141,6 @@ impl Sessions {
         let target=StreamTarget {connection:ConnectionTarget::UuAssistance(request.id.clone()),alias:format!("远程协助 {}",request.id),view_only:false};
         self.open_inner(exe,&target,origin,Some(request.code()))
     }
-    pub fn focus_profiles(&mut self,ids:&[String])->bool {
-        self.reap();
-        for (key,child) in &self.children {
-            if matches!(key,ConnectionTarget::NativeProfile{id,..} if ids.contains(id)) {focus_process(child.id());return true;}
-        }
-        false
-    }
     fn open_inner(&mut self,exe:&Path,target:&StreamTarget,origin:Option<(i32,i32)>,code:Option<&str>)->std::io::Result<bool> {
         self.reap();
         if matches!(target.connection,ConnectionTarget::UuAssistance(_)) && code.is_none() {
@@ -153,10 +153,8 @@ impl Sessions {
             ),
             other => other.clone(),
         };
-        if let Some(child) = self.children.get(&key) {
-            focus_process(child.id());
-            return Ok(false);
-        }
+        // Even an existing target goes through IPC: only the workspace knows
+        // which tab and detached native window currently contain that session.
         let mut child = target.command(exe, origin).spawn()?;
         if let Some(code)=code {
             use std::io::Write;
@@ -177,39 +175,6 @@ impl Sessions {
     }
     // Child's Drop does not terminate the process. Streams may continue when
     // the user closes the launcher; every stream performs its own cleanup.
-}
-
-fn focus_process(_pid: u32) {
-    #[cfg(target_os = "windows")]
-    {
-        #[link(name = "user32")]
-        extern "system" {
-            fn EnumWindows(
-                callback: unsafe extern "system" fn(isize, isize) -> i32,
-                data: isize,
-            ) -> i32;
-            fn GetWindowThreadProcessId(window: isize, pid: *mut u32) -> u32;
-            fn IsWindowVisible(window: isize) -> i32;
-            fn IsIconic(window: isize) -> i32;
-            fn ShowWindow(window: isize, command: i32) -> i32;
-            fn SetForegroundWindow(window: isize) -> i32;
-        }
-        unsafe extern "system" fn focus(window: isize, pid: isize) -> i32 {
-            let mut actual = 0;
-            GetWindowThreadProcessId(window, &mut actual);
-            if actual == pid as u32 && IsWindowVisible(window) != 0 {
-                if IsIconic(window) != 0 {
-                    ShowWindow(window, 9);
-                }
-                SetForegroundWindow(window);
-                return 0;
-            }
-            1
-        }
-        unsafe {
-            EnumWindows(focus, _pid as isize);
-        }
-    }
 }
 
 #[cfg(test)]

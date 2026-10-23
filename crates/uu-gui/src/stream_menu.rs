@@ -314,7 +314,7 @@ fn side_submenu<R>(
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<Option<R>> {
     let label = label.into();
-    let id = ui.make_persistent_id(("side-menu", &label));
+    let id = ui.make_persistent_id((ui.ctx().viewport_id(),"side-menu", &label));
     let open = ui.memory(|m| m.is_popup_open(id));
     let response = menu_row(ui, &label, Some(kind), false, true, "", open);
     if response.clicked() {
@@ -418,9 +418,9 @@ impl super::App {
                         .unwrap_or("远程桌面");
                     let roomy=ui.available_width()>740.0;
                     let wide=ui.available_width()>1100.0;
-                    if ui.available_width()>520.0 {ui.add_sized([76.0,24.0],egui::Label::new(RichText::new(title).size(12.0)).truncate());}
+                    if self.workspace_tabs.is_none() && ui.available_width()>520.0 {ui.add_sized([76.0,24.0],egui::Label::new(RichText::new(title).size(12.0)).truncate());}
                     ui.separator();
-                    if self.supports_remote(uu_core::capabilities::Capability::Displays){self.display_tabs(ui);}
+                    if self.workspace_tabs.is_some() || self.supports_remote(uu_core::capabilities::Capability::Displays){self.display_tabs(ui);}
                     if (self.view_only || (self.is_native()&&!self.supports_remote(uu_core::capabilities::Capability::Input))) && (roomy || self.is_native()) {
                         let (text, help) = if self.is_native() && !self.view_only && self.native_input_available() {
                             let requested = self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|s|s.requested());
@@ -485,6 +485,7 @@ impl super::App {
     }
 
     fn display_tabs(&mut self, ui: &mut egui::Ui) {
+        if let Some(tabs)=&self.workspace_tabs {tabs.show(ui);return;}
         let screens=self.remote_screens();
         let reserve=if ui.available_width()>660.0{345.0}else{250.0};
         let width=(ui.available_width()-reserve).clamp(75.0,540.0);
@@ -794,7 +795,7 @@ impl super::App {
             self.stream_menu.quality_detail = None;
             // Settings own their ComboBox popup while their window is open.
             // Otherwise clear old stream children so no invisible popup traps input.
-            if !self.local_dialog_open() {ctx.memory_mut(|m| m.close_popup());}
+            if !self.local_dialog_open() && ctx.input(|i|i.focused) {ctx.memory_mut(|m| m.close_popup());}
             self.display_picker(ctx,&mut blocked);
             return blocked;
         }

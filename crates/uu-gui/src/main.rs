@@ -29,6 +29,8 @@ mod shortcuts;
 mod hud;
 mod video_texture;
 mod window;
+mod window_context;
+mod stream_workspace;
 mod stream_menu;
 mod login;
 mod ui;
@@ -140,21 +142,25 @@ fn load_devices() -> anyhow::Result<Vec<Device>> {
 }
 
 struct App {
+    instance_id:u64,
     stream_target: Option<sessions::StreamTarget>,
+    workspace_tabs:Option<stream_workspace::Tabs>,
+    active_session:bool,
     assistance:Option<uu_core::assistance::Request>,
     native_ui: native_ui::NativeUi,
-    gamepad: gamepad::Reader,
+    gamepad: std::rc::Rc<std::cell::RefCell<gamepad::Reader>>,
     workspace:workspace_ui::Workspace,
     connection_details_open:bool,
     remote_admin_ui:remote_admin_ui::RemoteAdminUi,
     lan: lan_ui::LanUi,
     native_clipboard_enabled: bool,
+    clipboard_window:std::sync::Arc<std::sync::atomic::AtomicIsize>,
     native_host: native_host_ui::NativeHostUi,
     sessions: sessions::Sessions,
-    platform: platform::Platform,
+    platform: std::rc::Rc<platform::Platform>,
     build_label: String,
     executable_path: String,
-    context: egui::Context,
+    context: window_context::Context,
     devices: Vec<Device>,
     device_load_error: Option<String>,
     device_library: device_library::Library,
@@ -214,7 +220,7 @@ struct App {
     nested_passthrough: bool,
     autoconnect_done: bool,
     fullscreen: bool,
-    restore_maximized: bool,
+    restore_maximized: std::rc::Rc<std::cell::Cell<bool>>,
     bitrate_idx: usize,
     resolution_idx: usize,
     custom_mbps: u32,
@@ -229,7 +235,7 @@ struct App {
     input_capture: input_capture::Capture,
     view_only: bool,
     stream_menu: stream_menu::StreamMenu,
-    window_sizing: window::WindowSizing,
+    window_sizing: std::rc::Rc<std::cell::RefCell<window::WindowSizing>>,
     close_at: Option<std::time::Instant>,
     disconnecting: bool,
     output_reconnect_pending: bool,
@@ -367,8 +373,10 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>, presentation_vsync: bool, assistance:Option<uu_core::assistance::Request>) -> Self {
         setup_style(&cc.egui_ctx);
         if let Some(gl)=&cc.gl {video_texture::enable_gpu_video(gl);}
-        let platform = platform::Platform::new(cc, origin);
-        platform.select_session(1);
+        Self::new_session(&cc.egui_ctx,cc.gl.clone(),std::rc::Rc::new(platform::Platform::new(cc,origin)),stream_target,presentation_vsync,assistance)
+    }
+    fn new_session(ctx:&egui::Context,gl:Option<std::sync::Arc<eframe::glow::Context>>,platform:std::rc::Rc<platform::Platform>,stream_target:Option<sessions::StreamTarget>,presentation_vsync:bool,assistance:Option<uu_core::assistance::Request>)->Self {
+        static NEXT_INSTANCE:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
         let (config, config_error) = match uu_core::Config::from_env() {
             Ok(config) => (Some(config), None),
             Err(error) => (None, Some(error.to_string())),
@@ -391,22 +399,29 @@ impl App {
                 if let Some(client) = launch.client { preferences.client = client; }
             }
         }
+        if stream_target.is_some() {
+            if let Ok(value)=std::env::var("UU_VSYNC"){preferences.vsync=value!="0";}
+        }
         let mut app = Self {
+            instance_id:NEXT_INSTANCE.fetch_add(1,std::sync::atomic::Ordering::Relaxed),
             stream_target,
+            workspace_tabs:None,
+            active_session:true,
             assistance,
             native_ui: native_ui::NativeUi::default(),
-            gamepad:gamepad::Reader::default(),
+            gamepad:Default::default(),
             workspace:workspace_ui::Workspace::load(config.as_ref(),(preferences.lan_service_port,preferences.lan_discovery_port)),
             connection_details_open:false,
             remote_admin_ui:Default::default(),
             lan:lan_ui::LanUi::new(config.as_ref().map(|c|c.at("native-lan"))),
             native_clipboard_enabled: false,
+            clipboard_window:std::sync::Arc::new(std::sync::atomic::AtomicIsize::new(platform.window_id())),
             native_host: native_host_ui::NativeHostUi::default(),
             sessions: sessions::Sessions::default(),
             platform,
             build_label: build_info::label(),
             executable_path: std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
-            context: cc.egui_ctx.clone(),
+            context: window_context::Context::new(ctx),
             devices: Vec::new(),
             device_load_error: None,
             device_library,
@@ -420,7 +435,7 @@ impl App {
             config,
             controller: None,
             textures: std::collections::HashMap::new(),
-            video_gl: cc.gl.clone(),
+            video_gl: gl,
             presentation_vsync,
             wallpapers: std::collections::HashMap::new(),
             wallpaper_worker: None,
@@ -465,7 +480,7 @@ impl App {
             nested_passthrough: preferences.nested_shortcuts,
             autoconnect_done: false,
             fullscreen: false,
-            restore_maximized: false,
+            restore_maximized: Default::default(),
             bitrate_idx: preferences.bitrate,
             resolution_idx: preferences.resolution,
             custom_mbps: preferences.custom_mbps,
@@ -480,7 +495,7 @@ impl App {
             input_capture: input_capture::Capture::default(),
             view_only: false,
             stream_menu: stream_menu::StreamMenu {visible:preferences.floating_menu,..Default::default()},
-            window_sizing: window::WindowSizing::default(),
+            window_sizing: Default::default(),
             close_at: None,
             disconnecting: false,
             output_reconnect_pending: false,
@@ -891,8 +906,9 @@ impl App {
     }
     fn input_conditions(&self,ctx:&egui::Context)->input_capture::Conditions {
         input_capture::Conditions {
-            ready:self.input_ready(), focused:ctx.input(|i|i.focused), view_only:self.view_only,
-            local_ui:self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open || self.local_dialog_open(),
+            ready:self.input_ready(), focused:self.active_session && ctx.input(|i|i.focused), view_only:self.view_only,
+            local_ui:self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open || self.local_dialog_open()
+                || self.workspace_tabs.as_ref().is_some_and(|tabs|tabs.owns_input(ctx)),
         }
     }
     fn remote_input_active(&self,ctx:&egui::Context)->bool {
@@ -926,15 +942,23 @@ impl App {
         let gamepad=if self.preferences.gamepad && self.is_native() && remote {
             self.controller.as_ref().and_then(|h|h.native_input.as_ref().map(|input|gamepad::Target{input:input.clone(),stats:h.stats.clone()}))
         }else{None};
-        self.gamepad.configure(gamepad);
+        self.gamepad.borrow_mut().configure(self.instance_id,gamepad);
         self.native_keyboard_capture=active;self.native_window_keyboard=window;
     }
 
     fn release_pointer_capture(&mut self,ctx:&egui::Context) {
         for message in self.pointer.release_all(self.input_screen(self.selected_track)){self.send_input(message,15);}
         if self.mouse_captured {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::None));
-            ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));self.mouse_captured=false;
+            // Release before another window acquires the process-wide native
+            // pointer grab, rather than enqueueing a later release behind it.
+            if let Some(window)=eframe::viewport_window_for(ctx,self.context.viewport()) {
+                let _=window.set_cursor_grab(winit::window::CursorGrabMode::None);
+                window.set_cursor_visible(true);
+            }else{
+                ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::None));
+                ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+            }
+            self.mouse_captured=false;
         }
     }
     fn update_pointer_capture(&mut self,ctx:&egui::Context) {
@@ -966,7 +990,7 @@ impl App {
             let clipboard = &h.stats.clipboard;
             let enabled = (if native { self.native_clipboard_enabled } else { self.preferences.clipboard })
                 && clipboard.available.load(Acquire);
-            let active = ready && ctx.input(|i| i.focused) && !self.disconnecting;
+            let active = self.active_session && ready && ctx.input(|i| i.focused) && !self.disconnecting;
             // Invalidate incoming data before reactivation, even if a complete
             // focus round trip happened between the transport's polling ticks.
             if native && (clipboard.enabled.load(Acquire) != enabled
@@ -996,19 +1020,19 @@ impl App {
             self.input_capture.request();
             // Windows keeps WS_MAXIMIZE when entering borderless fullscreen.
             // Restore first so its client area can cover the entire monitor.
-            self.restore_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-            if self.restore_maximized {
+            self.restore_maximized.set(ctx.input(|i| i.viewport().maximized.unwrap_or(false)));
+            if self.restore_maximized.get() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            self.platform.focus_window();
+            if self.active_session {self.platform.focus_window();}
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-            if self.restore_maximized {
+            if self.restore_maximized.get() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
             }
-            self.restore_maximized = false;
+            self.restore_maximized.set(false);
         }
     }
 
@@ -1129,6 +1153,32 @@ impl App {
         self.mod_state = [false; 4];
     }
 
+    fn deactivate_session(&mut self) {
+        self.active_session=false;
+        if let Some(handle)=&self.controller {handle.frames.set_waker(||{});}
+        self.release_session_input();
+    }
+    fn release_session_input(&mut self) {
+        self.release_all_keys();
+        for message in self.pointer.release_all(self.input_screen(self.selected_track)){self.send_input(message,15);}
+        self.release_pointer_capture(&self.context.clone());
+        self.gamepad.borrow_mut().configure(self.instance_id,None);
+        self.shortcuts.clear();self.focused=false;
+        self.platform.window_keyboard(false,false,false);self.platform.capture_keyboard(false);
+        if let Some(handle)=&self.controller {
+            if let Some(input)=&handle.native_input{input.set_enabled(false);}
+            use std::sync::atomic::Ordering::{AcqRel,Release};
+            let clipboard=&handle.stats.clipboard;
+            clipboard.active.store(false,Release);clipboard.generation.fetch_add(1,AcqRel);
+            clipboard.local.lock().unwrap().take();clipboard.remote.lock().unwrap().take();
+        }
+    }
+    fn decoder_kind(&self)->uu_core::media::DecoderKind {
+        use uu_core::media::DecoderKind;
+        if std::env::var_os("UU_DECODER").is_some(){DecoderKind::from_env()}
+        else if self.preferences.software_decoder{DecoderKind::Software}else{DecoderKind::Auto}
+    }
+
     fn save_last_remote_frame(&mut self) {
         if let (Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::NativeProfile{id,..},..}),Some(store))=(&self.stream_target,&self.workspace.store) {
             if let Some(texture)=self.textures.get(&self.selected_track).or_else(||self.textures.values().next()) {
@@ -1224,6 +1274,7 @@ impl App {
         }
         let geo = uu_core::config::geo_exit_ip();
         let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
+        let _=stats.decoder_preference.set(self.decoder_kind());
         stats.diagnostics.start([config.state_dir.join("diagnostics")]);
         let _ = stats.output_resolution.set(self.capture_resolution());
         stats.prefer_hevc.store(self.preferences.hevc_preferred(), std::sync::atomic::Ordering::Release);
@@ -1247,17 +1298,17 @@ impl App {
                 h.frames.set_waker(move || context.request_repaint());
                 h.stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
                 h.stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
-                if let Err(error)=clipboard::start(h.stats.clipboard.clone(),self.platform.window_id()) {
+                if let Err(error)=clipboard::start_following(h.stats.clipboard.clone(),self.clipboard_window.clone()) {
                     h.stats.clipboard.status(format!("剪贴板线程启动失败：{error}"));h.stats.clipboard.enabled.store(false,std::sync::atomic::Ordering::Release);h.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);
                 }
                 self.controller = Some(h);
-                self.window_sizing.begin_stream();
-                if !self.fullscreen {
+                self.window_sizing.borrow_mut().begin_stream();
+                if self.active_session && !self.fullscreen {
                     self.context.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
                 }
                 self.input_capture.request();
                 self.context.send_viewport_cmd(egui::ViewportCommand::Focus);
-                self.platform.focus_window();
+                if self.active_session {self.platform.focus_window();}
                 self.status = "连接中…".into();
                 // Apply UI settings once CONTROL is ready, in poll_controller.
             }
@@ -1288,6 +1339,11 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.update_frame(ctx,frame.info().cpu_usage);
+    }
+}
+impl App {
+    fn update_frame(&mut self,ctx:&egui::Context,cpu_usage:Option<f32>) {
         if let Some(result)=eframe::vsync_result(ctx) {
             match result {
                 Ok(enabled)=>self.presentation_vsync=enabled,
@@ -1310,7 +1366,7 @@ impl eframe::App for App {
         self.lan.configure_ports(self.workspace.book.sharing.service_port, self.workspace.book.sharing.discovery_port);
         let lan_active=self.stream_target.is_none()&&!self.compatibility_active();
         self.lan.poll(ctx,lan_active);
-        if let Some(seconds) = frame.info().cpu_usage {
+        if let Some(seconds) = cpu_usage {
             self.render_total_seconds += seconds;
             self.render_samples += 1;
         }
@@ -1324,7 +1380,7 @@ impl eframe::App for App {
             self.fullscreen = fullscreen;
         }
         self.window_edge_active = !self.mouse_captured && window::resize_border(ctx, self.fullscreen);
-        if ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running() || self.lan.host.running() || self.workspace.host.running()) {
+        if self.workspace_tabs.is_none() && ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running() || self.lan.host.running() || self.workspace.host.running()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_requested = true;
             self.disconnect();
@@ -1343,11 +1399,11 @@ impl eframe::App for App {
         self.poll_controller(ctx);
         let video_px = self.textures.get(&self.selected_track)
             .map(|texture| texture.size_vec2());
-        self.window_sizing.set_settings_page(self.stream_settings_open || self.workspace.route.page == workspace_ui::Page::Settings);
-        self.window_sizing.update(ctx, self.stream_target.is_some(), video_px,
-            self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(frame, ctx));
+        self.window_sizing.borrow_mut().set_settings_page(self.stream_settings_open || self.workspace.route.page == workspace_ui::Page::Settings);
+        self.window_sizing.borrow_mut().update(ctx, self.stream_target.is_some(), video_px,
+            self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(ctx));
         if self.exit_requested { self.native_host.stop(); self.lan.host.stop(); self.workspace.host.stop();}
-        if self.exit_requested && self.controller.is_none() && !self.native_host.running() && !self.lan.host.running() && !self.workspace.host.running() {
+        if self.workspace_tabs.is_none() && self.exit_requested && self.controller.is_none() && !self.native_host.running() && !self.lan.host.running() && !self.workspace.host.running() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.poll_login(ctx);
@@ -1540,6 +1596,19 @@ fn main() -> eframe::Result {
         let request=uu_core::assistance::Request::read(id,std::io::stdin().lock());
         match request {Ok(request)=>Some(request),Err(error)=>{eprintln!("{error}");return Ok(());}}
     }else{None};
+    let stream_workspace=if let Some(target)=stream_target.clone() {
+        let result=(||->anyhow::Result<_> {
+            let launch=stream_workspace::Launch::new(target,assistance.as_ref())?;
+            let config=uu_core::Config::from_env()?;
+            let bytes=zeroize::Zeroizing::new(serde_json::to_vec(&launch)?);
+            Ok((launch,uu_core::local_workspace::join(&config.at("stream-workspace-v1"),&bytes)?))
+        })();
+        match result {
+            Ok((_,uu_core::local_workspace::Join::Attached))=>return Ok(()),
+            Ok((launch,uu_core::local_workspace::Join::Owner(owner)))=>Some((launch,owner)),
+            Err(error)=>{eprintln!("无法打开串流窗口：{error:#}");return Ok(());}
+        }
+    }else{None};
     let _launcher=if stream_target.is_none() {
         match single_instance::launcher() {
             Ok(Some(guard))=>Some(guard),
@@ -1560,7 +1629,6 @@ fn main() -> eframe::Result {
             if let Some(client)=launch.client {preferences.client=client;}
         }
     }
-    if std::env::var_os("UU_DECODER").is_none() && preferences.software_decoder {std::env::set_var("UU_DECODER","sw");}
     let vsync = std::env::var("UU_VSYNC").map(|v| v != "0").unwrap_or(preferences.vsync);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -1570,15 +1638,18 @@ fn main() -> eframe::Result {
             .with_title(title)
             .with_app_id(brand::NAME)
             .with_icon(brand::window_icon())
-            .with_visible(true),
-        vsync,
+            .with_visible(stream_workspace.is_none()),
+        vsync:vsync && stream_workspace.is_none(),
         centered: !cfg!(windows),
         ..Default::default()
     };
     eframe::run_native(
         brand::NAME,
         options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, stream_target, origin, vsync, assistance)))),
+        Box::new(move |cc| {
+            if let Some((launch,owner))=stream_workspace {Ok(Box::new(stream_workspace::Workspace::new(cc,launch,owner,vsync,origin)))}
+            else {Ok(Box::new(App::new(cc,stream_target,origin,vsync,assistance)))}
+        }),
     )
 }
 

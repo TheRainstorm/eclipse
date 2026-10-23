@@ -61,3 +61,7 @@ Not all rust crates work when compiled to Wasm, but here are some useful crates 
 
 ## Name
 The _frame_ in `eframe` stands both for the frame in which your `egui` app resides and also for "framework" (`eframe` is a framework, `egui` is a library).
+
+## Eclipse local changes
+
+The pinned 0.29.1 sources retain the upstream MIT/Apache-2.0 licenses. Local Glow changes provide per-viewport swap interval requests and weak native-window access for window-scoped input and geometry. Startup honors an explicitly hidden root viewport, allowing independent deferred stream windows without showing an empty coordinator window.

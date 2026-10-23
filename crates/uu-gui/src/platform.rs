@@ -63,10 +63,13 @@ pub struct Platform {
 }
 impl Platform {
     pub fn new(_cc: &eframe::CreationContext<'_>, _origin: Option<(i32, i32)>) -> Self {
+        Self::for_window(_cc,&_cc.egui_ctx,_origin)
+    }
+    pub fn for_window(_handles:&(impl raw_window_handle::HasWindowHandle+raw_window_handle::HasDisplayHandle),_ctx:&egui::Context,_origin:Option<(i32,i32)>)->Self {
         #[cfg(windows)]
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            let window = match _cc.window_handle().ok().map(|h| h.as_raw()) {
+            let window = match _handles.window_handle().ok().map(|h| h.as_raw()) {
                 Some(RawWindowHandle::Win32(handle)) => handle.hwnd.get() as _,
                 _ => std::ptr::null_mut(),
             };
@@ -75,7 +78,7 @@ impl Platform {
                     windows::place_startup(window, origin);
                 }
             }
-            let route=unsafe{windows::install_window_keyboard(window, _cc.egui_ctx.clone())};
+            let route=unsafe{windows::install_window_keyboard(window,_ctx.clone())};
             let hook = unsafe { windows::shared_keyboard_hook(window) };
             Self {
                 window,
@@ -89,7 +92,7 @@ impl Platform {
         {
             Self {
                 #[cfg(target_os = "linux")]
-                wayland: std::cell::RefCell::new(wayland_capture::Capture::new(_cc)),
+                wayland: std::cell::RefCell::new(wayland_capture::Capture::new(_handles)),
                 show_pending: std::cell::Cell::new(false),
             }
         }

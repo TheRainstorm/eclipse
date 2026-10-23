@@ -727,6 +727,7 @@ impl<'app> GlowWinitRunning<'app> {
         glutin.handle_viewport_output(event_loop, &integration.egui_ctx, &viewport_output);
 
         integration.report_frame_time(frame_timer.total_time_sec()); // don't count auto-save time as part of regular frame time
+        crate::viewport_window::report_cpu_usage(&integration.egui_ctx,viewport_id,frame_timer.total_time_sec());
 
         integration.maybe_autosave(app.as_mut(), Some(&window));
 
@@ -1125,6 +1126,8 @@ impl GlutinWindowContext {
             egui_winit::update_viewport_info(&mut viewport.info, &self.egui_ctx, &window, true);
             viewport.window.insert(Arc::new(window))
         };
+
+        crate::viewport_window::register(&self.egui_ctx,viewport_id,window);
 
         viewport.egui_winit.get_or_insert_with(|| {
             log::debug!("Initializing egui_winit for viewport {viewport_id:?}");

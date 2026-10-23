@@ -157,8 +157,10 @@ impl App {
         self.remote_admin_ui=Default::default();
         self.native_clipboard_enabled=false;
         let stats = Arc::new(uu_core::media::MediaStats::default());
+        let kind=self.decoder_kind();
+        let _=stats.decoder_preference.set(kind);
         let _=stats.native_quality_request.set(self.preferences.native_request());
-        if self.preferences.software_decoder {let _=stats.native_codec_capabilities.set(vec![uu_core::native::VideoCodec::H264]);}
+        if kind==uu_core::media::DecoderKind::Software {let _=stats.native_codec_capabilities.set(vec![uu_core::native::VideoCodec::H264]);}
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Release);
         stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Release);
         if let Some(config) = &self.config {
@@ -197,11 +199,11 @@ impl App {
                 let context = self.context.clone();
                 handle.frames.enable_planar();
                 handle.frames.set_waker(move || context.request_repaint());
-                if let Err(error)=super::clipboard::start(handle.stats.clipboard.clone(),self.platform.window_id()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(format!("剪贴板不可用：{error}"));}
+                if let Err(error)=super::clipboard::start_following(handle.stats.clipboard.clone(),self.clipboard_window.clone()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(format!("剪贴板不可用：{error}"));}
                 self.controller = Some(handle);
-                self.window_sizing.begin_stream();
+                self.window_sizing.borrow_mut().begin_stream();
                 self.input_capture.request();
-                if !self.fullscreen {
+                if self.active_session && !self.fullscreen {
                     self.context
                         .send_viewport_cmd(egui::ViewportCommand::Maximized(false));
                 }

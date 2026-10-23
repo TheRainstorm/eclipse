@@ -974,10 +974,18 @@ impl App {
 
     pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
         if !self.fullscreen { self.connection_bar(ctx); }
+        let workspace_bar=if self.fullscreen {
+            self.workspace_tabs.as_ref().filter(|tabs|tabs.multiple()).map(|tabs|
+                egui::TopBottomPanel::top("fullscreen-device-groups").exact_height(34.)
+                    .frame(egui::Frame::none().fill(super::theme::SIDEBAR))
+                    .show(ctx,|ui|tabs.show(ui)).response.rect)
+        }else{None};
         let was_open = self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open;
-        let controls = self.stream_controls(ctx);
+        let mut controls = self.stream_controls(ctx);
+        controls.extend(workspace_bar);
         let control_pointer = !self.mouse_captured && ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
-        let controls_active = self.displays.menu_open || self.local_dialog_open() || !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.owns_input(self.fullscreen) || control_pointer;
+        let controls_active = self.displays.menu_open || self.local_dialog_open() || !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.owns_input(self.fullscreen) || control_pointer
+            || self.workspace_tabs.as_ref().is_some_and(|tabs|tabs.owns_input(ctx));
         let mut messages = Vec::new();
         egui::CentralPanel::default().frame(egui::Frame::none().fill(C::BLACK)).show(ctx,|ui| {
             ui.set_clip_rect(ui.max_rect());

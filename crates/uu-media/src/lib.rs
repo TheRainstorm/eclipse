@@ -75,7 +75,11 @@ pub fn software_decoder() -> Result<Box<dyn VideoDecoder>, CodecError> {
 /// so neither a missing driver nor a broken one can leave a session without a
 /// picture. See [`decoder`] for the selection rules.
 pub fn default_decoder() -> Result<Box<dyn VideoDecoder>, CodecError> {
-    let kind = DecoderKind::from_env();
+    default_decoder_with_kind(DecoderKind::from_env())
+}
+
+/// Per-session selection; does not mutate the process environment.
+pub fn default_decoder_with_kind(kind:DecoderKind) -> Result<Box<dyn VideoDecoder>, CodecError> {
     let mut hardware = None;
     let mut why = String::new();
     if kind != DecoderKind::Software {
@@ -119,14 +123,18 @@ pub fn default_decoder() -> Result<Box<dyn VideoDecoder>, CodecError> {
 /// Select a decoder for the negotiated codec. OpenH264 cannot decode HEVC;
 /// never silently pass HEVC access units to the H.264 software fallback.
 pub fn decoder_for_codec(codec: uu_proto::media::VideoCodec) -> Result<Box<dyn VideoDecoder>, CodecError> {
+    decoder_for_codec_with_kind(codec,DecoderKind::from_env())
+}
+
+pub fn decoder_for_codec_with_kind(codec:uu_proto::media::VideoCodec,kind:DecoderKind)->Result<Box<dyn VideoDecoder>,CodecError> {
     use uu_proto::media::VideoCodec;
-    if codec == VideoCodec::H264 { return default_decoder(); }
+    if codec == VideoCodec::H264 { return default_decoder_with_kind(kind); }
     #[cfg(all(windows, feature = "d3d11va"))]
-    if codec == VideoCodec::Hevc && DecoderKind::from_env() != DecoderKind::Software {
+    if codec == VideoCodec::Hevc && kind != DecoderKind::Software {
         return Ok(Box::new(hw::d3d11va::D3d11VaDecoder::with_codec(codec)?));
     }
     #[cfg(all(windows, feature = "d3d11va"))]
-    if codec == VideoCodec::Av1 && DecoderKind::from_env() != DecoderKind::Software {
+    if codec == VideoCodec::Av1 && kind != DecoderKind::Software {
         // A D3D11 device can open even when the AV1 MFT/runtime is absent.
         // Validate real output before committing to this backend, preserving
         // the existing Intel runtime as a same-codec fallback.
@@ -150,7 +158,7 @@ pub fn decoder_for_codec(codec: uu_proto::media::VideoCodec) -> Result<Box<dyn V
         }
     }
     #[cfg(all(target_os="linux",feature="vaapi"))]
-    if matches!(codec,VideoCodec::Hevc|VideoCodec::Av1) && DecoderKind::from_env() != DecoderKind::Software {
+    if matches!(codec,VideoCodec::Hevc|VideoCodec::Av1) && kind != DecoderKind::Software {
         match hw::vaapi::VaapiDecoder::with_codec(codec) {
             Ok(decoder)=>return Ok(Box::new(decoder)),
             Err(reason)=>{
@@ -161,7 +169,7 @@ pub fn decoder_for_codec(codec: uu_proto::media::VideoCodec) -> Result<Box<dyn V
         }
     }
     #[cfg(all(feature="intel-vpl",any(windows,target_os="linux")))]
-    if codec==VideoCodec::Av1 && DecoderKind::from_env()!=DecoderKind::Software {
+    if codec==VideoCodec::Av1 && kind!=DecoderKind::Software {
         return Ok(Box::new(hw::vpl::VplAv1Decoder::new()?));
     }
     Err(CodecError::Unsupported(codec))
@@ -246,6 +254,14 @@ pub fn psnr_from_mse(mse: f64) -> f64 {
 
 #[cfg(test)]
 mod decoder_tests {
+    #[test]
+    fn explicit_software_session_does_not_probe_other_codecs_or_change_process_defaults() {
+        let decoder=crate::decoder_for_codec_with_kind(uu_proto::media::VideoCodec::H264,crate::DecoderKind::Software).unwrap();
+        assert!(decoder.backend_name().starts_with("openh264"));
+        for codec in [uu_proto::media::VideoCodec::Hevc,uu_proto::media::VideoCodec::Av1] {
+            assert!(matches!(crate::decoder_for_codec_with_kind(codec,crate::DecoderKind::Software),Err(crate::CodecError::Unsupported(c)) if c==codec));
+        }
+    }
     /// Whatever this machine offers, a session must always get a decoder: the
     /// hardware path is allowed to fail, but it must fail into software rather
     /// than into an error. Prints the selection so `--nocapture` shows which

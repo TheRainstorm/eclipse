@@ -2198,16 +2198,6 @@ impl super::App {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("设备配置不可用"))?;
             let launch = store.launch(id)?;
-            let book = store.read()?;
-            let aliases: Vec<_> = book
-                .devices
-                .iter()
-                .filter(|p| book.device(&p.id).is_ok_and(|p| p.id == launch.profile))
-                .map(|p| p.id.clone())
-                .collect();
-            if self.sessions.focus_profiles(&aliases) {
-                return Ok(());
-            }
             if matches!(launch.route.destination, Destination::Uu { .. }) && !self.logged_in {
                 self.workspace.resume_connect = Some(id.into());
                 self.workspace.route.page = Page::Services;

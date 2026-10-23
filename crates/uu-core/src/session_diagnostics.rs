@@ -18,9 +18,10 @@ impl SessionDiagnostics {
             return;
         }
         let name = format!(
-            "uu-session-{}-{}.jsonl",
+            "uu-session-{}-{}-{}.jsonl",
             std::process::id(),
-            crate::control_wire::now_ms()
+            crate::control_wire::now_ms(),
+            uuid::Uuid::new_v4()
         );
         let file = directories.into_iter().find_map(|dir| {
             let mut directory = std::fs::DirBuilder::new();

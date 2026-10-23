@@ -63,7 +63,7 @@ pub struct Capture {
     inhibitors: Vec<Inhibitor>,
 }
 impl Capture {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Option<Self> {
+    pub fn new(cc: &(impl HasWindowHandle+HasDisplayHandle)) -> Option<Self> {
         let RawDisplayHandle::Wayland(display) = cc.display_handle().ok()?.as_raw() else {
             return None;
         };

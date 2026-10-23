@@ -93,7 +93,10 @@ pub const PROBE: &[u8] = include_bytes!("hevc_probe.h265");
 /// D3D11-backed MFT output; Linux uses the VA-API Main decoder and shared surface
 /// pool. No software H.264 decoder is used to claim HEVC support.
 pub fn probe_decoder() -> Result<(), crate::CodecError> {
-    let mut decoder = crate::decoder_for_codec(uu_proto::media::VideoCodec::Hevc)?;
+    probe_decoder_with_kind(crate::DecoderKind::from_env())
+}
+pub fn probe_decoder_with_kind(kind:crate::DecoderKind)->Result<(),crate::CodecError> {
+    let mut decoder = crate::decoder_for_codec_with_kind(uu_proto::media::VideoCodec::Hevc,kind)?;
     let mut starts = Vec::new();
     for i in 0..PROBE.len().saturating_sub(4) {
         if PROBE[i..].starts_with(&[0, 0, 0, 1, 70]) {

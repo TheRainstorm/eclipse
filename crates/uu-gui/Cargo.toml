@@ -13,9 +13,11 @@ path = "src/main.rs"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+zeroize = {version="1",features=["serde"]}
 sha2.workspace = true
 qrcode = "0.14"
 raw-window-handle = "0.6"
+winit = {version="0.30.13",default-features=false,features=["x11","wayland"]}
 reqwest.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "ico"] }
 tokio.workspace = true
