@@ -13,12 +13,14 @@ pub(super) struct Background {
     received:bool,
     cache:Option<PathBuf>,
     initialized:bool,
+    enabled:bool,
     retry_at:Option<Instant>,
 }
 impl Background {
     pub fn new(cache:Option<PathBuf>)->Self {Self{cache,..Default::default()}}
     pub fn sync(&mut self,s:&Settings,ctx:&egui::Context) {
-        if !s.wallpaper_enabled {self.worker=None;self.texture=None;self.initialized=false;return;}
+        self.enabled=s.wallpaper_enabled;
+        if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.initialized=false;return;}
         if !self.initialized || self.source!=s.wallpaper_api {
             self.initialized=true;self.source=s.wallpaper_api.clone();self.notice.clear();
             let mut fresh=false;
@@ -45,7 +47,7 @@ impl Background {
         while let Some(image)=self.worker.as_mut().and_then(|w|w.try_recv()) {self.received=true;self.set(image,ctx,true);}
         if self.worker.as_ref().is_some_and(|w|w.finished()) {
             self.worker=None;
-            if !self.received {self.notice=if self.texture.is_some(){"壁纸更新失败，继续使用已有图片"}else{"壁纸暂时无法获取，可稍后点击刷新"}.into();}
+            if !self.received {self.notice=if self.texture.is_some(){"壁纸更新失败，继续使用已有图片"}else{"图片暂时无法获取，正在使用内置背景；可在应用设置中刷新"}.into();}
         }
         if self.worker.is_some()||self.cache_rx.is_some(){ctx.request_repaint_after(Duration::from_millis(100));}
     }
@@ -75,12 +77,26 @@ impl Background {
         }
     }
     pub fn paint(&self,ui:&egui::Ui,rect:egui::Rect) {
-        let Some(texture)=&self.texture else{return;};
+        if !self.enabled { return; }
+        let Some(texture)=&self.texture else {
+            // Always provide a visible background while the optional image
+            // service is loading or unreachable, without blocking the page.
+            let mut mesh=egui::Mesh::default();
+            for (position,color) in [
+                (rect.left_top(),egui::Color32::from_rgb(215,234,255)),
+                (rect.right_top(),egui::Color32::from_rgb(237,245,255)),
+                (rect.right_bottom(),egui::Color32::from_rgb(194,220,250)),
+                (rect.left_bottom(),egui::Color32::from_rgb(235,242,255)),
+            ] { mesh.colored_vertex(position,color); }
+            mesh.add_triangle(0,1,2);mesh.add_triangle(0,2,3);
+            ui.painter().add(egui::Shape::mesh(mesh));
+            return;
+        };
         let source=texture.size_vec2();let ratio=(rect.width()/source.x).max(rect.height()/source.y);
         let fraction=rect.size()/(source*ratio);let uv=egui::Rect::from_center_size(egui::pos2(0.5,0.5),fraction);
         ui.painter().image(texture.id(),rect,uv,egui::Color32::WHITE);
         let canvas=super::theme::CANVAS;
-        ui.painter().rect_filled(rect,0.,egui::Color32::from_rgba_unmultiplied(canvas.r(),canvas.g(),canvas.b(),235));
+        ui.painter().rect_filled(rect,0.,egui::Color32::from_rgba_unmultiplied(canvas.r(),canvas.g(),canvas.b(),135));
     }
 }
 

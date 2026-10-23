@@ -38,7 +38,7 @@ impl Worker {
     pub fn start(requests: Vec<Request>, context: eframe::egui::Context) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(3))
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(12))
             .redirect(reqwest::redirect::Policy::limited(3))
             .build()?;
         Self::with_client(requests, context, client)
