@@ -44,6 +44,7 @@ impl Section {
 }
 pub struct State<'a> {
     pub streaming: bool,
+    pub can_save_profile: bool,
     pub dirty: bool,
     pub storage_error: bool,
     pub notice: &'a str,
@@ -54,6 +55,7 @@ pub struct State<'a> {
 pub struct Actions {
     pub back: bool,
     pub apply: bool,
+    pub save_profile: bool,
     pub recover: bool,
     pub reset: bool,
     pub about: bool,
@@ -210,6 +212,8 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
     });
     group(ui, "键盘与协作", |ui| {
         ui.checkbox(&mut s.capture_keyboard, "全屏时将系统快捷键交给远端");
+        ui.checkbox(&mut s.nested_shortcuts, "将 Ctrl+Alt 客户端快捷键交给远端（嵌套串流）");
+        note(ui,"Ctrl+Alt+F12 随时切换；开启后除 F12 外的客户端 Ctrl+Alt 命令会发送到远端，适合内外两层 Eclipse / 远程桌面。");
         note(ui,"系统键跟随全屏画面的输入焦点。Ctrl+左 Alt+F / X 切换全屏，Q 退出串流，Z 释放或捕获输入；这些本地命令始终由客户端处理。Ctrl+Alt+Del 由 Windows 保留。");
         ui.add_space(8.0);
         ui.checkbox(&mut s.clipboard, "同步文本剪贴板");
@@ -328,6 +332,15 @@ pub fn show(
                     );
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if state.can_save_profile
+                        && ui
+                            .button("保存到设备配置")
+                            .on_hover_text("将当前串流设置为该设备的命名配置，下次连接继续使用")
+                            .clicked()
+                    {
+                        actions.apply = true;
+                        actions.save_profile = true;
+                    }
                     if ui
                         .add(
                             egui::Button::new(
@@ -399,7 +412,13 @@ pub fn show(
                     );
                     if !compact { note(ui, section.description()); }
                     if *section!=Section::Application {
-                        note(ui,if state.streaming {"仅应用到当前串流；设备配置与全局默认不受影响。"}else{"全局默认：未指定独立配置的设备使用这里的设置。"});
+                        note(ui,if state.streaming {
+                            if state.can_save_profile {
+                                "保存并应用只影响当前串流；“保存到设备配置”会更新这台设备当前选择的命名配置。"
+                            } else {
+                                "仅应用到当前串流；设备配置与全局默认不受影响。"
+                            }
+                        }else{"全局默认：未指定独立配置的设备使用这里的设置。"});
                     }
                     ui.add_space(if compact { 10.0 } else { 18.0 });
                     if state.storage_error {
@@ -436,7 +455,7 @@ pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::Cli
     });
     ui.add_space(12.);
     let mut wrapper=Settings {client:settings.clone(),..Default::default()};
-    let state=State { streaming:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None };
+    let state=State { streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None };
     match section {Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
     *settings=wrapper.client;
 }

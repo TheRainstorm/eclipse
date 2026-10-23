@@ -52,6 +52,7 @@ pub struct WindowRoute {
     pub foreground: bool,
     pub system_capture: bool,
     pub shortcuts: bool,
+    pub nested_passthrough: bool,
 }
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 pub struct Keys {
@@ -74,7 +75,7 @@ impl Keys {
         let remote = route.input && route.foreground
             && (route.system_capture || !local_system_key(vk,modifiers.win()));
         self.event_with_shortcuts(vk,pressed,remote,route.shortcuts && route.foreground,
-            modifiers.shortcut_chord(),already_down)
+            route.nested_passthrough,modifiers.shortcut_chord(),already_down)
     }
     #[cfg(test)]
     pub fn event(
@@ -85,7 +86,7 @@ impl Keys {
         ctrl_alt: bool,
         already_down: bool,
     ) -> Decision {
-        self.event_with_shortcuts(vk, pressed, active, active, ctrl_alt, already_down)
+        self.event_with_shortcuts(vk, pressed, active, active, false, ctrl_alt, already_down)
     }
     pub fn event_with_shortcuts(
         &mut self,
@@ -93,6 +94,7 @@ impl Keys {
         pressed: bool,
         remote_active: bool,
         shortcuts_active: bool,
+        nested_passthrough: bool,
         ctrl_alt: bool,
         already_down: bool,
     ) -> Decision {
@@ -118,20 +120,30 @@ impl Keys {
             };
         }
         // Do not steal the release of a key already pressed before capture.
-        if already_down {
+        // Win is the system-shell chord owner: during active capture, a new
+        // physical Win down must not be reclassified as preheld just because
+        // GetAsyncKeyState has already updated. Otherwise Win+V becomes a
+        // mixed chord (remote V, local Start menu).
+        if already_down && !matches!(vk,0x5b|0x5c) {
             return Decision::Forward;
         }
         if shortcuts_active && ctrl_alt && !altgr {
-            let action = match vk {
-                0x53 => Some(Action::Stats),
-                0x4d => Some(Action::Mute),
-                0x48 => Some(Action::Menu),
-                0x46 | 0x58 => Some(Action::Fullscreen),
-                0x51 => Some(Action::Exit),
-                0x5a => Some(Action::Capture),
-                0x50 => Some(Action::MouseMode),
-                0x43 => Some(Action::CursorMode),
-                _ => None,
+            let action = if vk == 0x7b {
+                Some(Action::ToggleNested)
+            } else if nested_passthrough {
+                None
+            } else {
+                match vk {
+                    0x53 => Some(Action::Stats),
+                    0x4d => Some(Action::Mute),
+                    0x48 => Some(Action::Menu),
+                    0x46 | 0x58 => Some(Action::Fullscreen),
+                    0x51 => Some(Action::Exit),
+                    0x5a => Some(Action::Capture),
+                    0x50 => Some(Action::MouseMode),
+                    0x43 => Some(Action::CursorMode),
+                    _ => None,
+                }
             };
             if let Some(action) = action {
                 *held = 2;
@@ -163,23 +175,23 @@ mod tests {
         let mut window=Keys::new();
         for vk in [0xa2,0xa4] {
             modifiers.observe(vk,true);
-            assert_eq!(hook.event_with_shortcuts(vk,true,true,true,modifiers.shortcut_chord(),false),Decision::Remote{vk,pressed:true});
+            assert_eq!(hook.event_with_shortcuts(vk,true,true,true,false,modifiers.shortcut_chord(),false),Decision::Remote{vk,pressed:true});
         }
-        assert_eq!(hook.event_with_shortcuts(0x46,true,true,true,modifiers.shortcut_chord(),false),Decision::Shortcut(Action::Fullscreen));
+        assert_eq!(hook.event_with_shortcuts(0x46,true,true,true,false,modifiers.shortcut_chord(),false),Decision::Shortcut(Action::Fullscreen));
         // The hook swallowed Ctrl/Alt: Windows async state and the other
         // route's ownership table both say "up" after leaving fullscreen.
         assert!(!window.down(0xa2));assert!(!window.down(0xa4));
-        assert_eq!(hook.event_with_shortcuts(0x46,true,false,true,modifiers.shortcut_chord(),false),Decision::Consume);
-        assert_eq!(hook.event_with_shortcuts(0x46,false,false,true,modifiers.shortcut_chord(),false),Decision::Consume);
+        assert_eq!(hook.event_with_shortcuts(0x46,true,false,true,false,modifiers.shortcut_chord(),false),Decision::Consume);
+        assert_eq!(hook.event_with_shortcuts(0x46,false,false,true,false,modifiers.shortcut_chord(),false),Decision::Consume);
         // A second tap while the same modifiers remain held is still local.
-        assert_eq!(hook.event_with_shortcuts(0x46,true,false,true,modifiers.shortcut_chord(),false),Decision::Shortcut(Action::Fullscreen));
-        assert_eq!(hook.event_with_shortcuts(0x46,false,true,true,modifiers.shortcut_chord(),false),Decision::Consume);
+        assert_eq!(hook.event_with_shortcuts(0x46,true,false,true,false,modifiers.shortcut_chord(),false),Decision::Shortcut(Action::Fullscreen));
+        assert_eq!(hook.event_with_shortcuts(0x46,false,true,true,false,modifiers.shortcut_chord(),false),Decision::Consume);
         // An unreserved letter still traverses the ordinary window route.
-        assert_eq!(hook.event_with_shortcuts(0x41,true,false,true,modifiers.shortcut_chord(),false),Decision::Forward);
-        assert_eq!(window.event_with_shortcuts(0x41,true,true,true,modifiers.shortcut_chord(),false),Decision::Remote{vk:0x41,pressed:true});
+        assert_eq!(hook.event_with_shortcuts(0x41,true,false,true,false,modifiers.shortcut_chord(),false),Decision::Forward);
+        assert_eq!(window.event_with_shortcuts(0x41,true,true,true,false,modifiers.shortcut_chord(),false),Decision::Remote{vk:0x41,pressed:true});
         for vk in [0xa4,0xa2] {
             modifiers.observe(vk,false);
-            assert_eq!(hook.event_with_shortcuts(vk,false,false,true,modifiers.shortcut_chord(),false),Decision::Remote{vk,pressed:false});
+            assert_eq!(hook.event_with_shortcuts(vk,false,false,true,false,modifiers.shortcut_chord(),false),Decision::Remote{vk,pressed:false});
         }
         assert!(!modifiers.shortcut_chord());
     }
@@ -188,22 +200,60 @@ mod tests {
         for (vk,action) in [(0x46,Action::Fullscreen),(0x58,Action::Fullscreen),(0x51,Action::Exit),
             (0x53,Action::Stats),(0x4d,Action::Mute),(0x48,Action::Menu),(0x5a,Action::Capture),(0x50,Action::MouseMode),(0x43,Action::CursorMode)] {
             let mut keys=Keys::new();
-            assert_eq!(keys.event_with_shortcuts(vk,true,false,true,true,false),Decision::Shortcut(action));
-            assert_eq!(keys.event_with_shortcuts(vk,true,false,false,false,false),Decision::Consume);
-            assert_eq!(keys.event_with_shortcuts(vk,false,false,false,false,false),Decision::Consume);
-            assert_eq!(keys.event_with_shortcuts(vk,true,false,false,true,false),Decision::Forward);
+            assert_eq!(keys.event_with_shortcuts(vk,true,false,true,false,true,false),Decision::Shortcut(action));
+            assert_eq!(keys.event_with_shortcuts(vk,true,false,false,false,false,false),Decision::Consume);
+            assert_eq!(keys.event_with_shortcuts(vk,false,false,false,false,false,false),Decision::Consume);
+            assert_eq!(keys.event_with_shortcuts(vk,true,false,false,false,true,false),Decision::Forward);
         }
         let mut keys=Keys::new();
-        assert_eq!(keys.event_with_shortcuts(0x46,true,false,true,true,true),Decision::Forward);
-        assert_eq!(keys.event_with_shortcuts(0x46,false,false,true,true,false),Decision::Forward);
+        assert_eq!(keys.event_with_shortcuts(0x46,true,false,true,false,true,true),Decision::Forward);
+        assert_eq!(keys.event_with_shortcuts(0x46,false,false,true,false,true,false),Decision::Forward);
     }
+    #[test]
+    fn active_capture_owns_win_chord_even_when_async_state_reports_preheld() {
+        let mut keys = Keys::new();
+        assert_eq!(
+            keys.event_with_shortcuts(0x5b, true, true, false, false, false, true),
+            Decision::Remote { vk: 0x5b, pressed: true }
+        );
+        assert_eq!(
+            keys.event_with_shortcuts(0x56, true, true, false, false, false, false),
+            Decision::Remote { vk: 0x56, pressed: true }
+        );
+        assert_eq!(
+            keys.event_with_shortcuts(0x56, false, true, false, false, false, false),
+            Decision::Remote { vk: 0x56, pressed: false }
+        );
+        assert_eq!(
+            keys.event_with_shortcuts(0x5b, false, true, false, false, false, false),
+            Decision::Remote { vk: 0x5b, pressed: false }
+        );
+    }
+
+    #[test]
+    fn nested_passthrough_forwards_ctrl_alt_but_keeps_f12_local() {
+        let mut keys = Keys::new();
+        assert_eq!(
+            keys.event_with_shortcuts(0x53, true, true, true, true, true, false),
+            Decision::Remote { vk: 0x53, pressed: true }
+        );
+        assert_eq!(
+            keys.event_with_shortcuts(0x53, false, true, true, true, true, false),
+            Decision::Remote { vk: 0x53, pressed: false }
+        );
+        assert_eq!(
+            Keys::new().event_with_shortcuts(0x7b, true, true, true, true, true, false),
+            Decision::Shortcut(Action::ToggleNested)
+        );
+    }
+
     #[test]
     fn modifiers_observed_before_capture_preserve_altgr_and_release_order() {
         let mut modifiers=Modifiers::new();
         modifiers.observe(0xa2,true);modifiers.observe(0xa5,true);
         assert!(!modifiers.shortcut_chord());
         let mut keys=Keys::new();
-        assert_eq!(keys.event_with_shortcuts(0x46,true,true,true,modifiers.shortcut_chord(),false),Decision::Remote{vk:0x46,pressed:true});
+        assert_eq!(keys.event_with_shortcuts(0x46,true,true,true,false,modifiers.shortcut_chord(),false),Decision::Remote{vk:0x46,pressed:true});
         modifiers.observe(0xa4,true); // Right Alt remains held: still AltGr.
         assert!(!modifiers.shortcut_chord());
         modifiers.observe(0xa5,false);
@@ -280,7 +330,7 @@ mod tests {
                         else {
                             assert_eq!(event,Decision::Forward);
                             let remote=!local_system_key(vk,modifiers.win());
-                            assert_eq!(window.event_with_shortcuts(vk,pressed,remote,false,false,false),Decision::Forward);
+                            assert_eq!(window.event_with_shortcuts(vk,pressed,remote,false,false,false,false),Decision::Forward);
                         }
                     }
                 }
@@ -289,7 +339,7 @@ mod tests {
     }
     #[test]
     fn window_input_is_immediate_with_capture_even_before_any_hook_callback() {
-        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true};
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
         for chord in [vec![0x5b],vec![0x5c,0xa0,0x27],vec![0xa4,0x09],vec![0x41]] {
             let mut modifiers=Modifiers::new();
             let mut window=Keys::new();
@@ -305,7 +355,7 @@ mod tests {
     }
     #[test]
     fn window_releases_keep_ownership_after_capture_focus_or_input_changes() {
-        let active=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true};
+        let active=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
         for route in [WindowRoute{system_capture:false,..active},WindowRoute{foreground:false,..active},WindowRoute{input:false,..active}] {
             let mut modifiers=Modifiers::new();let mut keys=Keys::new();
             for vk in [0x5b,0xa0,0x25] {
@@ -327,7 +377,7 @@ mod tests {
     }
     #[test]
     fn window_client_commands_work_before_control_is_ready_and_keep_their_release() {
-        let pending=WindowRoute{input:false,foreground:true,system_capture:false,shortcuts:true};
+        let pending=WindowRoute{input:false,foreground:true,system_capture:false,shortcuts:true,nested_passthrough:false};
         let mut modifiers=Modifiers::new();modifiers.observe(0xa2,true);modifiers.observe(0xa4,true);
         let mut window=Keys::new();
         assert_eq!(window.window_event(0x46,true,pending,&modifiers,false),Decision::Shortcut(Action::Fullscreen));
@@ -337,7 +387,7 @@ mod tests {
     }
     #[test]
     fn duplicate_window_and_hook_modifier_events_do_not_send_extra_transitions() {
-        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true};
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
         let mut window=Keys::new();let mut hook=Keys::new();let mut modifiers=Modifiers::new();
         let mut remote=crate::input_capture::RemoteKeys::default();
         for (vk,pressed) in [(0x5b,true),(0xa4,true),(0xa4,false),(0x5b,false)] {

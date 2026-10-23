@@ -208,6 +208,7 @@ struct App {
     shortcuts: shortcuts::Shortcuts,
     native_keyboard_capture: bool,
     native_window_keyboard: bool,
+    nested_passthrough: bool,
     autoconnect_done: bool,
     fullscreen: bool,
     restore_maximized: bool,
@@ -456,6 +457,7 @@ impl App {
             shortcuts: shortcuts::Shortcuts::default(),
             native_keyboard_capture: false,
             native_window_keyboard: false,
+            nested_passthrough: preferences.nested_shortcuts,
             autoconnect_done: false,
             fullscreen: false,
             restore_maximized: false,
@@ -851,6 +853,15 @@ impl App {
                     if remote!=self.preferences.cursor_mode.remote() {self.send_capture_settings();}
                 }
             },
+            shortcuts::Action::ToggleNested=>{
+                self.nested_passthrough=!self.nested_passthrough;
+                self.status=if self.nested_passthrough {
+                    "嵌套快捷键：Ctrl+Alt 客户端命令发送到远端；F12 切回本机".into()
+                } else {
+                    "嵌套快捷键：Ctrl+Alt 客户端命令由本机处理".into()
+                };
+                self.persist_preferences();
+            },
             shortcuts::Action::Capture=>{
                 self.input_capture.toggle();
                 if let Some(h)=&self.controller { h.stats.diagnostics.record(serde_json::json!({"event":"input_focus","active":self.input_capture.requested()})); }
@@ -880,7 +891,7 @@ impl App {
         // Client commands remain local while viewing, in menus, or after
         // releasing remote input. They do not depend on a host control grant.
         let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused);
-        let window=self.platform.window_keyboard(remote,shortcuts);
+        let window=self.platform.window_keyboard(remote,shortcuts,self.nested_passthrough);
         let active=self.platform.capture_keyboard(self.input_capture.system(conditions,self.fullscreen,self.preferences.capture_keyboard));
         if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {
             if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
@@ -1367,7 +1378,7 @@ impl eframe::App for App {
                     eprintln!("ui shortcut {key:?} pressed={pressed} repeat={repeat} ctrl={} alt={}", modifiers.ctrl, modifiers.alt);
                 }
                 if self.stream_target.is_none() { continue; }
-                match self.shortcuts.key(*key, *pressed, *repeat, *modifiers, true) {
+                match self.shortcuts.key(*key, *pressed, *repeat, *modifiers, true, self.nested_passthrough) {
                     shortcuts::KeyAction::Consumed => continue,
                     shortcuts::KeyAction::Trigger(action) => {
                         self.local_shortcut(action,ctx);

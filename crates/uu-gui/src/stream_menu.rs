@@ -364,6 +364,7 @@ pub(super) enum QualityDetail {
     Bitrate,
     Resolution,
     FrameRate,
+    Codec,
 }
 
 pub(super) struct StreamMenu {
@@ -619,6 +620,20 @@ impl super::App {
         if response.hovered() || response.clicked() {
             self.stream_menu.quality_detail = Some((QualityDetail::Resolution, response.rect));
         }
+        separator(ui);
+        let codec = if self.preferences.codec == super::settings::CodecPreference::Auto {
+            if !self.is_native() && self.preferences.hevc_preferred() {
+                "H.265 / HEVC"
+            } else {
+                self.preferences.codec.label()
+            }
+        } else {
+            self.preferences.codec.label()
+        };
+        let response = menu_row(ui, &format!("编码 · {codec}"), None, false, true, "", false);
+        if response.hovered() || response.clicked() {
+            self.stream_menu.quality_detail = Some((QualityDetail::Codec, response.rect));
+        }
     }
 
     fn quality_detail(&mut self, ctx: &egui::Context, blocked: &mut Vec<Rect>) {
@@ -704,6 +719,34 @@ impl super::App {
                                 }
                                 separator(ui);
                                 ui.small("输出档位限制串流编码尺寸，保持宽高比；切换会短暂重连，被控端桌面分辨率不变。");
+                            }
+                            QualityDetail::Codec => {
+                                let options: &[(super::settings::CodecPreference, &str)] = if self.is_native() {
+                                    &[
+                                        (super::settings::CodecPreference::Auto, "自动协商"),
+                                        (super::settings::CodecPreference::H264, "H.264"),
+                                        (super::settings::CodecPreference::Hevc, "H.265 / HEVC"),
+                                        (super::settings::CodecPreference::Av1, "AV1"),
+                                    ]
+                                } else {
+                                    &[
+                                        (super::settings::CodecPreference::H264, "H.264"),
+                                        (super::settings::CodecPreference::Hevc, "H.265 / HEVC（优先）"),
+                                    ]
+                                };
+                                for (codec, label) in options {
+                                    let selected = self.preferences.codec == *codec
+                                        || (*codec == super::settings::CodecPreference::Hevc
+                                            && self.preferences.codec == super::settings::CodecPreference::Auto
+                                            && self.preferences.hevc_preferred());
+                                    if menu_row(ui, label, None, selected, false, "", false).clicked() {
+                                        self.preferences.codec = *codec;
+                                        self.preferences.prefer_hevc = *codec == super::settings::CodecPreference::Hevc;
+                                        self.confirm_quality(ui);
+                                    }
+                                }
+                                separator(ui);
+                                ui.small("原生会自动协商；UU 兼容目前支持 H.264 或优先 HEVC。切换编码会重连。");
                             }
                         }
                     });
@@ -905,9 +948,8 @@ impl super::App {
                                     );
                                     }
                                     if menu_row(ui,"连接详情",Some(Icon::Link),false,false,"",false).clicked(){self.open_connection_details();}
-                                    if menu_row(ui,"软件设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
-                                    if menu_row(ui,"关于软件",Some(Icon::Info),false,false,"",false).clicked(){self.open_about();}
-                                    side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
+                                    if menu_row(ui,"串流设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
+                                                                        side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
                                         if menu_row(
                                             ui,
                                             "串流统计",

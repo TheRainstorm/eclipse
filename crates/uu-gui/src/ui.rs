@@ -371,7 +371,9 @@ impl App {
                         let color = if failed {
                             super::theme::DANGER
                         } else if running {
-                            super::theme::SUCCESS
+                            C::from_rgb(34, 197, 94)
+                        } else if wallpaper_root {
+                            C::WHITE
                         } else {
                             MUTED
                         };

@@ -59,6 +59,8 @@ pub struct ClientSettings {
     pub cursor_mode: CursorMode,
     pub clipboard: bool,
     pub gamepad: bool,
+    /// Send Ctrl+Alt client command chords to the remote while excluding F12.
+    pub nested_shortcuts: bool,
 }
 impl Default for ClientSettings {
     fn default() -> Self {
@@ -66,7 +68,7 @@ impl Default for ClientSettings {
             bitrate:0,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,
             volume:100,muted:false,hud:false,floating_menu:true,capture_keyboard:true,
             vsync:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
-            cursor_mode:CursorMode::Both,clipboard:true,gamepad:true }
+            cursor_mode:CursorMode::Both,clipboard:true,gamepad:true,nested_shortcuts:false }
     }
 }
 impl ClientSettings {

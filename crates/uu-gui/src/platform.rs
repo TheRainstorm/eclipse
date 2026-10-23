@@ -117,13 +117,14 @@ impl Platform {
             None
         }
     }
-    pub fn window_keyboard(&self,active:bool,shortcuts:bool)->bool {
+    pub fn window_keyboard(&self,active:bool,shortcuts:bool,nested_passthrough:bool)->bool {
         #[cfg(windows)] {
             windows::LOCAL_SHORTCUTS.store(shortcuts,std::sync::atomic::Ordering::Release);
+            windows::NESTED_PASSTHROUGH.store(nested_passthrough,std::sync::atomic::Ordering::Release);
             let active=active&&self.old_proc!=0;
             windows::WINDOW_INPUT.store(active,std::sync::atomic::Ordering::Release);active
         }
-        #[cfg(not(windows))] {let _=(active,shortcuts);false}
+        #[cfg(not(windows))] {let _=(active,shortcuts,nested_passthrough);false}
     }
     pub fn capture_keyboard(&self, active: bool) -> bool {
         #[cfg(windows)] {
@@ -282,6 +283,7 @@ mod windows {
     static HOOK_BACKGROUND: AtomicU64=AtomicU64::new(0);
     static HOOK_INACTIVE: AtomicU64=AtomicU64::new(0);
     static HOOK_PREHELD: AtomicU64=AtomicU64::new(0);
+    pub(super) static NESTED_PASSTHROUGH: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
     static HOOK_WIN_SEEN: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_CAPTURED: AtomicU64=AtomicU64::new(0);
     static WINDOW_WIN_SEEN: AtomicU64=AtomicU64::new(0);
@@ -375,6 +377,7 @@ mod windows {
                     foreground:GetForegroundWindow()==window,
                     system_capture:CAPTURE.load(std::sync::atomic::Ordering::Acquire),
                     shortcuts:LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire),
+                    nested_passthrough:NESTED_PASSTHROUGH.load(std::sync::atomic::Ordering::Acquire),
                 };
                 match keys.window_event(vk,down,route,&modifiers,lparam as usize&(1<<30)!=0) {
                     crate::keyboard_capture::Decision::Forward=>{},
@@ -577,12 +580,13 @@ mod windows {
                 let owned=!foreground.is_null()&&GetForegroundWindow()==foreground;
                 let active=CAPTURE.load(std::sync::atomic::Ordering::Acquire)&&owned;
                 let shortcuts=LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire)&&owned;
+                let nested=NESTED_PASSTHROUGH.load(std::sync::atomic::Ordering::Acquire)&&owned;
                 let already_down=preheld_for_capture(key.flags,GetAsyncKeyState(key.vkCode as i32)<0);
                 let decision=HOOK_STATE.with(|state| {
                     let mut state=state.borrow_mut();
                     let (modifiers,keys)=&mut *state;
                     modifiers.observe(vk,down);
-                    keys.event_with_shortcuts(vk,down,active,shortcuts,modifiers.shortcut_chord(),already_down)
+                    keys.event_with_shortcuts(vk,down,active,shortcuts,nested,modifiers.shortcut_chord(),already_down)
                 });
                 match decision {
                     crate::keyboard_capture::Decision::Forward=>{

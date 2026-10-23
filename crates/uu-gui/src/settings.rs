@@ -384,6 +384,7 @@ impl super::App {
         self.preferences.resolution = self.resolution_idx;
         self.preferences.hud = self.hud;
         self.preferences.floating_menu = self.stream_menu.visible;
+        self.preferences.nested_shortcuts = self.nested_passthrough;
         if let Some(h) = self.controller.as_ref().filter(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Audio)) {
             use std::sync::atomic::Ordering::Relaxed;
             self.preferences.volume = h.stats.audio.volume.load(Relaxed);
@@ -415,6 +416,7 @@ impl super::App {
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
             super::settings_page::State {
                 streaming:self.stream_target.is_some(),
+                can_save_profile:self.stream_target.as_ref().is_some_and(|target| matches!(target.connection,super::sessions::ConnectionTarget::NativeProfile{..})),
                 dirty,
                 storage_error:self.settings_storage_error,notice:&self.settings_notice,
                 presentation_vsync:self.presentation_vsync,
@@ -440,6 +442,7 @@ impl super::App {
         if actions.refresh_wallpaper && self.settings_draft.wallpaper_enabled {self.background.sync(&self.settings_draft,ctx);self.background.refresh(ctx);}
         if actions.host {self.stream_settings_open=false;self.open_native_host();}
         let apply=actions.apply;
+        let save_profile=actions.save_profile;
         let recover=actions.recover;
         if apply {
             if let Err(error)=self.settings_draft.validate() {self.set_settings_notice(format!("无法应用：{error:#}"));return;}
@@ -456,6 +459,7 @@ impl super::App {
             self.resolution_idx = self.preferences.resolution;
             self.hud = self.preferences.hud;
             self.stream_menu.visible = self.preferences.floating_menu;
+            self.nested_passthrough = self.preferences.nested_shortcuts;
             if let Some(h) = &self.controller {
                 use std::sync::atomic::Ordering::Relaxed;
                 h.stats.audio.volume.store(self.preferences.volume, Relaxed);
@@ -474,7 +478,50 @@ impl super::App {
                 self.set_settings_notice(notice);
             } else { self.persist_preferences(); }
             if capture_changed {self.send_capture_settings();}
+            if save_profile {
+                if let Err(error) = self.save_stream_profile_settings() {
+                    self.settings_storage_error = true;
+                    self.set_settings_notice(format!("无法保存到设备配置：{error:#}"));
+                } else {
+                    self.set_settings_notice("已保存到设备配置；下次连接继续使用");
+                }
+            }
         }
+    }
+
+    fn save_stream_profile_settings(&mut self) -> anyhow::Result<()> {
+        let id = match &self.stream_target {
+            Some(super::sessions::StreamTarget {
+                connection: super::sessions::ConnectionTarget::NativeProfile { id, .. },
+                ..
+            }) => id.clone(),
+            _ => anyhow::bail!("当前串流没有可编辑的设备配置"),
+        };
+        let store = self
+            .workspace
+            .store
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("设备配置不可用"))?;
+        let mut profile = store.read()?.device(&id)?.clone();
+        let settings = self.preferences.client.clone();
+        if let Some(selected) = profile.selected_client.clone() {
+            if let Some(config) = profile
+                .client_configs
+                .iter_mut()
+                .find(|config| config.id == selected)
+            {
+                config.settings = settings;
+            } else {
+                let config = uu_core::client_settings::NamedClientSettings::new("串流设置", settings);
+                profile.selected_client = Some(config.id.clone());
+                profile.client_configs.push(config);
+            }
+        } else {
+            let config = uu_core::client_settings::NamedClientSettings::new("串流设置", settings);
+            profile.selected_client = Some(config.id.clone());
+            profile.client_configs.push(config);
+        }
+        store.save_device(profile)
     }
 }
 
