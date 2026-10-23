@@ -401,9 +401,10 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
     let mut created = false;
     let mut switched = false;
     let result = (|| -> Result<()> {
-        let (_service, new) = registration(&paths, &installed)?;
+        let (service, new) = registration(&paths, &installed)?;
         created = new;
         switched = true;
+        configure_recovery(&service)?;
         paths.save_manifest(&installed)?;
         protect(&paths.root.join("service.json"))?;
         super::start()?;
@@ -492,7 +493,7 @@ fn registration(paths: &Paths, installed: &Installed) -> Result<(ServiceHandle, 
                 manager.0,
                 name.as_ptr(),
                 wide("Eclipse Remote Host").as_ptr(),
-                SERVICE_START | SERVICE_QUERY_STATUS,
+                SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS,
                 SERVICE_WIN32_OWN_PROCESS,
                 SERVICE_AUTO_START,
                 SERVICE_ERROR_NORMAL,
@@ -529,6 +530,50 @@ fn registration(paths: &Paths, installed: &Installed) -> Result<(ServiceHandle, 
         })?;
         Ok((service, false))
     }
+}
+
+fn configure_recovery(service: &ServiceHandle) -> Result<()> {
+    let mut actions = [
+        SC_ACTION {
+            Type: SC_ACTION_RESTART,
+            Delay: 1000,
+        },
+        SC_ACTION {
+            Type: SC_ACTION_RESTART,
+            Delay: 5000,
+        },
+        SC_ACTION {
+            Type: SC_ACTION_RESTART,
+            Delay: 15000,
+        },
+    ];
+    let mut empty = wide("");
+    let recovery = SERVICE_FAILURE_ACTIONSW {
+        dwResetPeriod: 86400,
+        lpRebootMsg: empty.as_mut_ptr(),
+        lpCommand: empty.as_mut_ptr(),
+        cActions: actions.len() as u32,
+        lpsaActions: actions.as_mut_ptr(),
+    };
+    winok(unsafe {
+        ChangeServiceConfig2W(
+            service.0,
+            SERVICE_CONFIG_FAILURE_ACTIONS,
+            (&recovery as *const SERVICE_FAILURE_ACTIONSW).cast(),
+        )
+    })
+    .context("设置后台服务异常恢复失败")?;
+    let flag = SERVICE_FAILURE_ACTIONS_FLAG {
+        fFailureActionsOnNonCrashFailures: 1,
+    };
+    winok(unsafe {
+        ChangeServiceConfig2W(
+            service.0,
+            SERVICE_CONFIG_FAILURE_ACTIONS_FLAG,
+            (&flag as *const SERVICE_FAILURE_ACTIONS_FLAG).cast(),
+        )
+    })
+    .context("设置后台服务错误退出恢复失败")
 }
 
 pub fn import_account(source: PathBuf) -> Result<()> {
@@ -775,6 +820,7 @@ mod tests {
         );
         let _ = inspect().await;
         super::super::supervisor::system_probe::run(&fixture.paths).unwrap();
+        let _ = inspect().await;
         for path in [
             protected.at("device-trust/identity.pk8"),
             protected.at("device-trust/peers.json"),
@@ -853,6 +899,12 @@ mod tests {
             "configuration restart retains its supervised process"
         );
         super::super::stop().unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(
+            status().unwrap(),
+            SERVICE_STOPPED,
+            "an explicit stop must not trigger recovery"
+        );
         assert_eq!(
             unsafe { WaitForSingleObject(process.0, 2000) },
             WAIT_OBJECT_0

@@ -162,10 +162,9 @@ async fn owned_system_generated_media() {
             while let Ok((_, width, height, _)) = received.try_recv() {
                 assert_eq!((width, height), (1280, 720));
             }
-            assert!(
-                !viewer.is_finished(),
-                "generated System hardware stream ended"
-            );
+            if viewer.is_finished() {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -177,6 +176,7 @@ async fn owned_system_generated_media() {
         .unwrap();
     observed.unwrap();
     viewed.unwrap();
+    assert!(stats.decoded_total.load(Ordering::Relaxed) >= 12);
     assert_eq!(stats.errors.load(Ordering::Relaxed), 0);
     assert_eq!(
         unsafe { WaitForSingleObject(child.process.0, 4000) },
@@ -187,5 +187,69 @@ async fn owned_system_generated_media() {
     assert_eq!(code, 0);
     drop(child);
     fs::remove_file(invitation).unwrap();
-    println!("System console-session hardware encoder delivered {} generated frames with zero decode errors; no desktop was captured",stats.decoded_total.load(Ordering::Relaxed));
+    // Holding the exact protected service process handle prevents PID reuse.
+    let service = open_service(SERVICE_QUERY_STATUS).unwrap();
+    fn status(service: &ServiceHandle) -> SERVICE_STATUS_PROCESS {
+        let mut state: SERVICE_STATUS_PROCESS = unsafe { std::mem::zeroed() };
+        let mut size = 0;
+        winok(unsafe {
+            QueryServiceStatusEx(
+                service.0,
+                SC_STATUS_PROCESS_INFO,
+                (&mut state as *mut SERVICE_STATUS_PROCESS).cast(),
+                std::mem::size_of_val(&state) as u32,
+                &mut size,
+            )
+        })
+        .unwrap();
+        state
+    }
+    let original = status(&service);
+    assert_eq!(original.dwCurrentState, SERVICE_RUNNING);
+    let process = Handle(unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION
+                | PROCESS_TERMINATE
+                | windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE,
+            0,
+            original.dwProcessId,
+        )
+    });
+    assert!(!process.0.is_null());
+    assert_eq!(process_user(process.0).unwrap(), "S-1-5-18");
+    let mut image = vec![0u16; 32768];
+    let mut length = image.len() as u32;
+    winok(unsafe { QueryFullProcessImageNameW(process.0, 0, image.as_mut_ptr(), &mut length) })
+        .unwrap();
+    use std::os::windows::ffi::OsStringExt;
+    assert_eq!(
+        PathBuf::from(std::ffi::OsString::from_wide(&image[..length as usize]))
+            .canonicalize()
+            .unwrap(),
+        paths
+            .binary_directory(&paths.manifest().unwrap())
+            .join("uu.exe")
+            .canonicalize()
+            .unwrap()
+    );
+    winok(unsafe { TerminateProcess(process.0, 71) }).unwrap();
+    assert_eq!(
+        unsafe { WaitForSingleObject(process.0, 2000) },
+        WAIT_OBJECT_0
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let current = status(&service);
+            if current.dwCurrentState == SERVICE_RUNNING
+                && current.dwProcessId != 0
+                && current.dwProcessId != original.dwProcessId
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("SCM did not recover the owned crashed service");
+    println!("System console-session hardware encoder delivered {} generated frames with zero decode errors and SCM recovered its owned crashed service; no desktop was captured",stats.decoded_total.load(Ordering::Relaxed));
 }

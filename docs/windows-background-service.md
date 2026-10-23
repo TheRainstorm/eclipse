@@ -27,4 +27,6 @@
 
 安装器验证包内程序哈希，拒绝重解析点及普通用户可修改的服务目录。媒体进程由服务私有 Job 对象管理，停止时先请求正常退出，超过期限仅终止该服务拥有的进程。管理通道仅向本地管理员与 System 开放，拒绝远程命名管道连接；客户端还会核验服务器的 System 身份及受保护程序位置。新设备仍需完成配对，后台服务不自动批准请求。
 
+SCM 在服务异常退出后自动重启，连续失败时等待时间依次为 1、5、15 秒；正常停止服务不会触发这项恢复。媒体子进程由服务单独监督，退出后重新等待所属控制台会话并启动。
+
 实现参考了 Sunshine 的服务与桌面生命周期设计，代码独立实现。Windows 平台约束见 [DuplicateOutput](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutput1-duplicateoutput)、[OpenInputDesktop](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-openinputdesktop) 和 [SetThreadDesktop](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setthreaddesktop)。
