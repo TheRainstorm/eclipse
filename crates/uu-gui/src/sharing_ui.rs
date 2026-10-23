@@ -60,6 +60,44 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn saved_settings_wait_for_restart_and_restart_releases_the_old_listener_first() {
+        let root=std::env::temp_dir().join(format!("eclipse-host-restart-{}",uuid::Uuid::new_v4()));
+        let config=uu_core::Config{data_dir:root.join("data"),state_dir:root.join("state"),signaling_host:"unreachable.example.invalid".into()};
+        let trust=TrustStore::open(config.at("device-trust")).unwrap();
+        let store=uu_core::device_book::Store::open(config.at("workspace")).unwrap();
+        let ctx=egui::Context::default();
+        let tcp=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let udp=std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let mut book=Book::default();
+        book.sharing.service_port=tcp.local_addr().unwrap().port();
+        book.sharing.discovery_port=udp.local_addr().unwrap().port();
+        book.sharing.audio=false;book.sharing.control=false;
+        drop((tcp,udp));
+        store.sharing(book.sharing.clone()).unwrap();
+        let mut host=HostUi::default();
+        host.start(config.clone(),book.clone(),trust.clone(),&ctx).unwrap();
+        poll_until(&mut host,&ctx,|h|h.statuses().iter().any(|(_,s)|matches!(s,EndpointStatus::Ready)));
+        let old_port=book.sharing.service_port;
+        let next=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        book.sharing.service_port=next.local_addr().unwrap().port();
+        book.sharing.fps=30;
+        store.sharing(book.sharing.clone()).unwrap();
+        assert!(host.changes_pending(&store.read().unwrap().sharing));
+        assert_eq!(host.active_sharing.as_ref().unwrap().fps,60);
+        assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,old_port)).is_err());
+        let mut invalid=book.clone();invalid.sharing.fps=0;
+        assert!(host.restart(config.clone(),invalid,trust.clone(),&ctx).is_err());
+        assert!(!host.stopping());
+        drop(next);
+        host.restart(config,store.read().unwrap(),trust,&ctx).unwrap();
+        poll_until(&mut host,&ctx,|h|!h.stopping()&&h.active_sharing.as_ref().is_some_and(|s|s.fps==30)&&h.statuses().iter().any(|(_,s)|matches!(s,EndpointStatus::Ready)));
+        assert!(!host.changes_pending(&book.sharing));
+        let _old=std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,old_port)).unwrap();
+        assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,book.sharing.service_port)).is_err());
+        host.stop();poll_until(&mut host,&ctx,|h|!h.running());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn shared_host_reports_port_conflicts_and_releases_all_listeners_and_ownership_on_stop() {
         let root =
             std::env::temp_dir().join(format!("eclipse-sharing-ui-{}", uuid::Uuid::new_v4()));
@@ -181,6 +219,8 @@ pub(super) struct HostUi {
     last_notice: String,
     stopping: bool,
     allow_control: bool,
+    active_sharing: Option<uu_core::device_book::Sharing>,
+    restart: Option<(uu_core::Config, Book, TrustStore)>,
 }
 impl HostUi {
     pub fn running(&self) -> bool {
@@ -188,6 +228,19 @@ impl HostUi {
     }
     pub fn stopping(&self) -> bool {
         self.stopping
+    }
+    pub fn changes_pending(&self,saved:&uu_core::device_book::Sharing)->bool {
+        self.active_sharing.as_ref().is_some_and(|active|active!=saved)
+    }
+    pub fn restart(&mut self,config:uu_core::Config,book:Book,trust:TrustStore,ctx:&egui::Context)->anyhow::Result<()> {
+        book.sharing.validate()?;
+        anyhow::ensure!(book.sharing.ip_enabled || book.sharing.uu_enabled || book.services.iter().any(|s|s.host_enabled),"请先启用至少一个连接入口");
+        if !self.running() {return self.start(config,book,trust,ctx);}
+        anyhow::ensure!(!self.stopping,"服务正在停止，请稍后重试");
+        self.stop();
+        self.restart=Some((config,book,trust));
+        self.notice="正在停止旧服务，清理完成后应用已保存配置…".into();
+        Ok(())
     }
     pub fn notice_is_error(&self) -> bool {
         super::ui_feedback::looks_like_error(&self.notice)
@@ -249,6 +302,7 @@ impl HostUi {
         }
     }
     pub fn stop(&mut self) {
+        self.restart=None;
         self.close_pairing();
         if let Some(access) = &self.access {
             access.sessions.disconnect();
@@ -422,6 +476,7 @@ impl HostUi {
         self.access = Some(access);
         self.endpoints = endpoints;
         self.allow_control = book.sharing.control;
+        self.active_sharing=Some(book.sharing);
         self.stopping = false;
         self.notice.clear();
         Ok(())
@@ -519,6 +574,14 @@ impl HostUi {
             self.pending.clear();
             self.legacy_pending.clear();
             self.stopping = false;
+            self.active_sharing=None;
+        }
+        if !self.running() {
+            if let Some((config,book,trust))=self.restart.take() {
+                if let Err(error)=self.start(config,book,trust,ctx) {
+                    self.notice=format!("重新启动服务失败：{error:#}");
+                }
+            }
         }
     }
     pub fn dialogs(&mut self, ctx: &egui::Context) {

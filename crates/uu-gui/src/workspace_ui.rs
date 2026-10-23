@@ -58,6 +58,7 @@ pub(super) enum Action {
     ManageUu,
     CancelLogin,
     StartSharing,
+    RestartSharing,
     SaveClientDefaults(uu_core::client_settings::ClientSettings),
     Assist(uu_core::assistance::Request),
 }
@@ -772,7 +773,7 @@ impl Workspace {
         match result {
             Ok(()) => self.feedback.success(
                 super::ui_feedback::Scope::Services(self.service_tab),
-                "服务端设置已保存",
+                if self.host.running() {"服务端设置已保存，下次启动生效"}else{"服务端设置已保存"},
             ),
             Err(e) => self.feedback.error(
                 super::ui_feedback::Scope::Services(self.service_tab),
@@ -1253,10 +1254,13 @@ impl Workspace {
             self.services(ui,info,actions);
         } else {
             ui.horizontal(|ui| {
-                let locked=self.host.running();
-                if ui.add_enabled(!locked && self.server_dirty(),egui::Button::new(RichText::new("保存设置").color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked(){self.save_sharing();}
+                let running=self.host.running();
+                if ui.add_enabled(self.server_dirty(),egui::Button::new(RichText::new("保存设置").color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked(){self.save_sharing();}
+                if running && ui.add_enabled(!self.host.stopping(),egui::Button::new("保存并重启服务")).clicked() {
+                    if !self.server_dirty() || self.save_sharing() {actions.push(Action::RestartSharing);}
+                }
                 if ui.add_enabled(self.server_dirty(),egui::Button::new("还原修改")).clicked(){self.discard_server_draft();}
-                muted(ui,if locked {"停止服务后可修改"}else if self.server_dirty(){"有未保存的修改"}else{"已保存"});
+                muted(ui,if self.server_dirty(){"有未保存的修改"}else if self.host.changes_pending(&self.book.sharing){"已保存，下次启动生效"}else{"已保存"});
             });
             ui.add_space(12.);
             self.host_section=match self.service_tab {1=>2,2=>0,_=>1};
@@ -1275,7 +1279,7 @@ impl Workspace {
                 let choice=match self.encoder_vendor_tab {1=>Some(Encoding::Nvidia),2=>Some(Encoding::Intel),3=>Some(Encoding::Amd),_=>None};
                 if let Some(choice)=choice {
                     let mut selected=self.draft.encoding==choice;
-                    if ui.add_enabled(!self.host.running(),egui::Checkbox::new(&mut selected,"使用此厂商硬件编码")).changed() {
+                    if ui.checkbox(&mut selected,"使用此厂商硬件编码").changed() {
                         self.draft.encoding=if selected {choice}else{Encoding::Auto};
                     }
                 }
@@ -1303,6 +1307,9 @@ impl Workspace {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.host.running() {
                         if ui.add_enabled(!self.host.stopping(),egui::Button::new("停止服务")).clicked(){self.host.stop();}
+                        if ui.add_enabled(!self.host.stopping(),egui::Button::new("保存并重启服务")).clicked() {
+                            if !self.server_dirty() || self.save_sharing() {actions.push(Action::RestartSharing);}
+                        }
                     } else if ui.add_enabled(self.store.is_some(),egui::Button::new(RichText::new("启动服务").color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked() {
                         if !self.server_dirty() || self.save_sharing() { actions.push(Action::StartSharing); }
                     }
@@ -1387,11 +1394,11 @@ impl Workspace {
         if self.monitors.is_empty() && self.monitor_error.is_empty() {
             self.refresh_monitors();
         }
-        let locked = self.host.running();
+        let running = self.host.running();
         card(ui, |ui| {
             ui.strong(match self.host_section {0=>"采集与声音",1=>"编码与串流限制",_=>"访问权限"});
             ui.add_space(10.);
-            ui.add_enabled_ui(!locked, |ui| {
+            ui.vertical(|ui| {
                 if self.host_section==0 {
                 ui.add_enabled_ui(!info.login_busy, |ui| field(ui, "本机名称", &mut self.draft.name, "设备名称"));
                 ui.label("共享屏幕");
@@ -1495,8 +1502,8 @@ impl Workspace {
                 ui.checkbox(&mut self.draft.clipboard, "允许双方启用文本剪贴板");
                 }
             });
-            if locked {
-                muted(ui,"停止共享后可修改设置。");
+            if running {
+                muted(ui,"运行期间可编辑并保存；下次启动生效，或保存后重启服务。重启会断开当前串流。");
             }
         });
         ui.add_space(14.);
@@ -1596,8 +1603,8 @@ impl Workspace {
         });
     }
     fn services(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>) {
-        let locked = self.host.running();
-        if locked { muted(ui,"服务正在运行；停止服务后可修改连接入口。"); }
+        let locked = self.host.stopping();
+        if self.host.running() { muted(ui,"连接入口修改后保存，下次启动服务生效。可保存并重启服务立即应用。"); }
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("IP 直连");
@@ -1704,13 +1711,13 @@ impl Workspace {
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
-                                .add_enabled(!self.host.running(), egui::Button::new("编辑"))
+                                .add_enabled(!locked, egui::Button::new("编辑"))
                                 .clicked()
                             {
                                 self.edit_service(Some(service.clone()));
                             }
                             if ui
-                                .add_enabled(!self.host.running(), egui::Button::new("移除"))
+                                .add_enabled(!locked, egui::Button::new("移除"))
                                 .clicked()
                             {
                                 if let Some(store) = &self.store {
@@ -1755,7 +1762,7 @@ impl Workspace {
             });
         }
         if self.host.running() {
-            muted(ui,"停止共享后可修改服务器配置。");
+            muted(ui,"已运行的服务继续使用启动时配置；服务器配置更改在下次启动生效。");
         }
     }
     fn edit_service(&mut self, service: Option<Service>) {
@@ -2083,7 +2090,6 @@ impl Workspace {
                 editor.value.certificate = (!editor.certificate.trim().is_empty())
                     .then(|| editor.certificate.trim().trim_matches('"').into());
                 let result = (|| -> anyhow::Result<()> {
-                    anyhow::ensure!(!self.host.running(),"请先停止本机服务，再修改连接服务器");
                     let store = self
                         .store
                         .as_ref()
@@ -2238,7 +2244,8 @@ impl super::App {
                 }
                 // The start button is dispatched after rendering to keep one
                 // owner of the runtime and immutable sharing configuration.
-                Action::StartSharing => {
+                Action::StartSharing | Action::RestartSharing => {
+                    let restart=matches!(action,Action::RestartSharing);
                     let result = (|| -> anyhow::Result<()> {
                         let config = self
                             .config
@@ -2255,7 +2262,8 @@ impl super::App {
                             .trust
                             .clone()
                             .ok_or_else(|| anyhow::anyhow!("设备身份不可用"))?;
-                        self.workspace.host.start(config, book, trust, ctx)
+                        if restart {self.workspace.host.restart(config,book,trust,ctx)}
+                        else {self.workspace.host.start(config, book, trust, ctx)}
                     })();
                     if let Err(e) = result {
                         self.workspace.feedback.error(
