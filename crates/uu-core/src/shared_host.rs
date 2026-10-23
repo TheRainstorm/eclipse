@@ -76,6 +76,7 @@ impl SessionGate {
 }
 pub struct SessionLease { gate: Arc<SessionGate>, session: String, receiver: watch::Receiver<bool>,temporary:Option<crate::device_auth::TemporaryGrant> }
 impl SessionLease {
+    pub fn cancel(&self) { self.gate.disconnect_session(&self.session); }
     pub fn stopped(&self) -> watch::Receiver<bool> { self.receiver.clone() }
     pub fn progress(&self, status: crate::native::HostStatus) {
         if let Some(active)=self.gate.active.lock().unwrap().get_mut(&self.session) {active.status=status;}

@@ -66,7 +66,20 @@ impl Listener {
                             let connection=Connection{session:session.clone(),ice,transport:Box::new(Routed{session,outgoing:outgoing.clone(),incoming:receive,closed:false})};
                             if accepted.try_send(connection).is_err(){break;}
                         }else if matches!(event.as_str(),"released"|"left"|"leave"|"fail") {
-                            if let Some(session)=body["ice_id"].as_str(){sessions.remove(session);}else{break;}
+                            let field=|key|body.get(key).or_else(||header.get(key)).and_then(Value::as_str).filter(|s|!s.is_empty());
+                            let session=field("ice_id");
+                            let control=field("app_control_id").or_else(||field("control_id"));
+                            let client=field("client_id");
+                            // A viewer leaving is scoped to its route. A late or
+                            // unscoped release never tears down the host room.
+                            if session.is_some()||control.is_some()||client.is_some() {
+                                sessions.retain(|id,route| {
+                                    !(session.map_or(true,|v|v==id)
+                                        &&control.map_or(true,|v|v==route.ctrl)
+                                        &&client.map_or(true,|v|v==route.target))
+                                });
+                                if let Some(session)=session {pending.retain(|(id,_,_)|id.as_deref()!=Some(session));}
+                            }
                         }
                     },
                 }
@@ -122,7 +135,8 @@ mod tests {
         a.transport.close().await;
         let msg=timeout(Duration::from_secs(2),responses.recv()).await.unwrap().unwrap().into_text().unwrap();
         assert!(msg.contains("release") && msg.contains("session-1"));
-        commands.send(event("released",json!({"data":{"ice_id":"session-1"}}))).await.unwrap();
+        commands.send(event("released",json!({"data":{"control_id":"control-1"}}))).await.unwrap();
+        commands.send(event("released",json!({"data":{}}))).await.unwrap();
         b.transport.send(envelope(9)).await.unwrap();
         let text=timeout(Duration::from_secs(2),responses.recv()).await.unwrap().unwrap().into_text().unwrap();
         assert!(text.starts_with("451-") && text.contains("session-2") && text.contains("client-2"));

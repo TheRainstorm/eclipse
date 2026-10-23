@@ -167,7 +167,12 @@ impl Provider {
         let task = tokio::spawn(async move {
             // recv drives the provider's heartbeats even while a human is
             // entering the pairing code. Further SDP uses the authenticated DC.
-            tokio::select! {_=stopping.changed()=>{},_=transport.receive()=>{}}
+            loop {
+                tokio::select! {
+                    _=stopping.changed()=>break,
+                    result=transport.receive()=>if result.is_err(){break;},
+                }
+            }
             ended.send_replace(true);
             if let Some(pc) = peer.upgrade() {
                 let _ = pc.close().await;
@@ -303,6 +308,7 @@ impl Bootstrap {
         self.peer.close().await;
         self.provider.close().await;
     }
+    pub fn closed_signal(&self) -> watch::Receiver<bool> { self.io.state.clone() }
 }
 #[async_trait::async_trait]
 impl SessionSignaling for Bootstrap {
@@ -371,6 +377,7 @@ mod tests {
         let a = TrustStore::open(root.join("a")).unwrap();
         let b = TrustStore::open(root.join("b")).unwrap();
         let (tx, rx) = mpsc::channel(8);
+        let duplicate = tx.clone();
         let (tx2, rx2) = mpsc::channel(8);
         let viewer = Connection {
             transport: Box::new(Memory { tx, rx: rx2 }),
@@ -421,6 +428,10 @@ mod tests {
         let (a, b) = tokio::join!(viewer.ready(false), host.ready(true));
         a.unwrap();
         b.unwrap();
+        // Providers may repeat the original bootstrap after authentication.
+        // It is neither a new media negotiation nor a transport disconnect.
+        duplicate.send(envelope(host.peer.pc.local_description().await.unwrap())).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
         let payload = json!({"generated":true,"padding":"x".repeat(9000)});
         SessionSignaling::send(&mut viewer, payload.clone())
             .await

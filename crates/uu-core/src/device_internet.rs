@@ -129,13 +129,16 @@ pub async fn serve_connection(
         }
         bootstrap.ready(true).await?;
         let (progress,mut observe)=watch::channel(HostStatus::Starting);
+        let mut disconnected=bootstrap.closed_signal();
         let serving = native::serve_direct_with_authority(
             &mut bootstrap, &ice, sharing, cancellation.receiver.clone(), Some(progress), access.sessions.input.clone(),
         );
         tokio::pin!(serving);
         let mut observing=true;
+        let mut watching_connection=true;
         let result=loop {tokio::select! {
             result=&mut serving=>break result,
+            _=cancelled(&mut disconnected),if watching_connection=>{watching_connection=false;lease.cancel();},
             changed=observe.changed(),if observing=>{
                 if changed.is_err(){observing=false;}else{
                     let phase=observe.borrow_and_update().clone();lease.progress(phase.clone());
