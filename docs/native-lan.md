@@ -75,7 +75,7 @@ cargo test -p uu-core -p uu-gui --features vaapi --locked native_lan
 可以在两个终端验证生成画面，不读取桌面：
 
 ```sh
-# 主机终端：默认仅监听回环地址，按输出提示输入 pair 开放配对
+# 主机终端：默认仅监听回环地址，启动即接收配对申请，仍需核对批准
 uu lan host --synthetic --bind 127.0.0.1:48998
 # 控制端终端：显示八位码后，在主机输入 code 后跟这个号码
 uu lan pair 127.0.0.1

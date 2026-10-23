@@ -99,11 +99,20 @@ def main():
             return host, endpoint
         host, endpoint = start('127.0.0.1:0')
         metadata = json.loads(run('inspect', endpoint).stdout)
-        assert not metadata['pairing_open']
+        assert metadata['pairing_open']
         discovered = [json.loads(line) for line in run('discover', '--target', f'127.0.0.1:{discovery_port}').stdout.splitlines()]
         assert len(discovered) == 1 and discovered[0]['id'] == metadata['id']
+        # New hosts accept requests by default, but never auto-approve them.
+        # The diagnostic CLI can explicitly close admission independently of
+        # remembered authorizations; verify that transition too.
+        host.send('close-pairing')
+        deadline = time.monotonic() + 3
+        while json.loads(run('inspect', endpoint).stdout)['pairing_open']:
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Owned host did not close new pairing admission')
+            time.sleep(.02)
         run('pair', endpoint, success=False)
-        host.send('pair'); host.line('New pairing allowed')
+        host.send('pair'); host.line('New pairing requests enabled')
         client = Process([binary, 'lan', 'pair', endpoint], client_env); processes.append(client)
         # Both ends are controlled fixtures. A production host never auto-approves.
         code = client.line(r'Enter this code on the host to approve pairing: (\d{4} \d{4})').group(1)
@@ -123,7 +132,7 @@ def main():
         assert first['completed'] and first['final']['decoded'] >= 30
         host.send('stop'); host.finish()
         host, restarted = start(endpoint)
-        assert restarted == endpoint and not json.loads(run('inspect', endpoint).stdout)['pairing_open']
+        assert restarted == endpoint and json.loads(run('inspect', endpoint).stdout)['pairing_open']
         report = out/'resumed-probe.json'
         run('probe', paired_id, '--frames', '30', '--report', str(report))
         assert json.loads(report.read_text())['completed']
@@ -136,7 +145,8 @@ def main():
             sock.settimeout(.5)
             assert sock.connect_ex(('127.0.0.1', int(endpoint.rsplit(':', 1)[1]))) != 0
         report = {'lan': 'passed', 'discovery': True, 'host_confirmation': True,
-                  'wrong_code_rejected': True, 'generated_video': True,
+                  'wrong_code_rejected': True, 'default_pairing_admission': True,
+                  'explicit_pairing_close': True, 'generated_video': True,
                   'saved_pairing_after_restart': True, 'revocation': True, 'clean_shutdown': True}
         (out/'result.json').write_text(json.dumps(report, indent=2)+'\n')
         print(json.dumps(report))
