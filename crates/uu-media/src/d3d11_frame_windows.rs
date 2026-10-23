@@ -12,13 +12,14 @@ use windows::{
 #[derive(Debug)]
 pub struct Frame {
     // A COM reference to the texture alone does not prevent MFT sample reuse.
-    _sample: IMFSample,
-    _foundation: std::sync::Arc<Foundation>,
+    _sample: Option<IMFSample>,
+    _foundation: Option<std::sync::Arc<Foundation>>,
     texture: ID3D11Texture2D,
     device: ID3D11Device,
     index: u32,
     visible: [u32; 2],
     allocation: [u32; 2],
+    format: DXGI_FORMAT,
 }
 // Only immutable MFT output crosses threads. Media Foundation components are
 // thread-safe; no sample methods or buffer mutation occur after construction.
@@ -47,13 +48,14 @@ impl Frame {
             return Err("unsupported D3D11 decoder texture layout".into());
         }
         let frame = Self {
-            _sample: sample,
-            _foundation: foundation,
+            _sample: Some(sample),
+            _foundation: Some(foundation),
             texture,
             device,
             index,
             visible,
             allocation,
+            format:desc.Format,
         };
         if !frame.valid(visible) {
             return Err("invalid leased D3D11 surface".into());
@@ -61,7 +63,8 @@ impl Frame {
         Ok(frame)
     }
     pub fn valid(&self, visible: [u32; 2]) -> bool {
-        visible == self.visible
+        (visible == self.visible || (self.format==DXGI_FORMAT_B8G8R8A8_UNORM
+            && visible[0]<=self.visible[0] && visible[1]<=self.visible[1]))
             && visible.iter().all(|v| *v >= 2 && *v <= 8192 && *v % 2 == 0)
             && self.allocation.iter().all(|v| *v <= 8192)
             && self.allocation[0] >= visible[0]
@@ -69,6 +72,25 @@ impl Frame {
     }
     pub fn device_ptr(&self) -> *mut c_void {
         self.device.as_raw()
+    }
+    /// The caller transfers a dedicated, immutable texture. The duplication
+    /// surface itself must never escape ReleaseFrame. Contexts sharing this
+    /// device must have ID3D10Multithread protection enabled before publishing.
+    pub fn captured(texture:ID3D11Texture2D,device:ID3D11Device)->Result<Self,String> {
+        let mut desc=D3D11_TEXTURE2D_DESC::default();
+        unsafe{texture.GetDesc(&mut desc);}
+        if desc.Format!=DXGI_FORMAT_B8G8R8A8_UNORM || desc.ArraySize!=1
+            || desc.MipLevels!=1 || desc.SampleDesc.Count!=1 {
+            return Err("unsupported GPU capture surface".into());
+        }
+        let actual=unsafe{texture.GetDevice()}.map_err(|e|e.to_string())?;
+        if actual.as_raw()!=device.as_raw(){return Err("capture texture/device mismatch".into());}
+        Ok(Self{_sample:None,_foundation:None,texture,device,index:0,
+            visible:[desc.Width,desc.Height],allocation:[desc.Width,desc.Height],format:desc.Format})
+    }
+    pub(crate) fn capture_texture(&self)->Result<(&ID3D11Texture2D,&ID3D11Device),String> {
+        if self.format!=DXGI_FORMAT_B8G8R8A8_UNORM {return Err("encoder requires a BGRA capture surface".into());}
+        Ok((&self.texture,&self.device))
     }
 }
 

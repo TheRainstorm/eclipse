@@ -136,6 +136,9 @@ pub(super) struct Driver {
     sequence: Vec<u8>,
     name: String,
     profile: Option<[u128; 4]>,
+    gpu:Option<super::gpu::Input>,
+    gpu_capable:bool,
+    gpu_frames:u64,
     _runtime: Runtime,
 }
 impl Driver {
@@ -155,8 +158,9 @@ impl Driver {
                 };
                 if !matched { continue; }
             }
-            match unsafe { Self::activate(settings, activation) } {
+            match unsafe { Self::activate(settings, activation,None) } {
                 Ok((transform, events, codec, input_id, output_id)) => {
+                    let gpu_capable=unsafe{transform.GetAttributes().ok().and_then(|a|a.GetUINT32(&MF_SA_D3D11_AWARE).ok())==Some(1)};
                     return Ok(Self {
                         transform,
                         events,
@@ -176,6 +180,7 @@ impl Driver {
                             }
                         ),
                         profile: std::env::var_os("UU_ENCODE_PROFILE").map(|_| [0; 4]),
+                        gpu:None,gpu_capable,gpu_frames:0,
                         _runtime: runtime,
                     });
                 }
@@ -193,6 +198,7 @@ impl Driver {
     unsafe fn activate(
         settings: Settings,
         activation: &IMFActivate,
+        manager:Option<&IMFDXGIDeviceManager>,
     ) -> Result<(IMFTransform, IMFMediaEventGenerator, ICodecAPI, u32, u32), String> {
         unsafe {
             let transform: IMFTransform = activation.ActivateObject().map_err(reason)?;
@@ -204,6 +210,9 @@ impl Driver {
                 .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
                 .map_err(reason)?;
             let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
+            if let Some(manager)=manager {
+                transform.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER,manager.as_raw() as usize).map_err(reason)?;
+            }
             let codec: ICodecAPI = transform.cast().map_err(reason)?;
             // Drivers differ in optional tuning support. Actual one-frame completion
             // and IDR recovery are checked below, rather than trusting these flags.
@@ -307,7 +316,21 @@ impl Driver {
             // A fresh MF-owned sample keeps its storage alive for the
             // asynchronous transform. Never recycle a buffer on input credit:
             // the transform may still retain its sample reference.
-            let sample = input_sample(frame, self.settings.fps)?;
+            let sample = if frame.gpu {
+                if !self.gpu_capable {return Err("hardware MFT has no D3D11 input support".into());}
+                if self.gpu.is_none() {
+                    let gpu=super::gpu::Input::new(frame,self.settings)?;
+                    // Bind the capture device before negotiating input types.
+                    // No CPU samples have been submitted on this GPU session.
+                    self.activation.ShutdownObject().map_err(reason)?;
+                    let (transform,events,codec,input_id,output_id)=Self::activate(self.settings,&self.activation,Some(&gpu.manager))?;
+                    self.transform=transform;self.events=events;self.codec=codec;
+                    self.input_id=input_id;self.output_id=output_id;self.input_credit=0;
+                    self.gpu=Some(gpu);
+                }
+                self.gpu_frames+=1;
+                self.gpu.as_ref().unwrap().sample(frame)?
+            } else {input_sample(frame, self.settings.fps)?};
             let converted = started.elapsed();
             if keyframe {
                 self.codec
@@ -468,6 +491,7 @@ impl Driver {
     }
 }
 impl super::worker::Driver for Driver {
+    fn gpu_input(&self)->bool {self.gpu_capable}
     fn backend_name(&self) -> &str {
         &self.name
     }
@@ -501,6 +525,7 @@ impl Drop for Driver {
                 let divisor = profile[0] as f64 * 1_000_000.0;
                 eprintln!("uu-mf-profile frames={} conversion_ms={:.3} submission_ms={:.3} completion_ms={:.3}",
                     profile[0],profile[1] as f64/divisor,profile[2] as f64/divisor,profile[3] as f64/divisor);
+                eprintln!("uu-mf-input gpu_frames={} cpu_frames={}",self.gpu_frames,profile[0].saturating_sub(self.gpu_frames as u128));
             }
             let _ = self
                 .transform

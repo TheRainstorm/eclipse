@@ -449,6 +449,7 @@ fn encode_source(
             break;
         }
         let started = Instant::now();
+        capture.prefer_gpu(encoder.gpu_input());
         let frame = capture.next_frame()?;
         let capture_us=elapsed_us(started);
         timings.capture_us.fetch_add(capture_us, Ordering::Relaxed);

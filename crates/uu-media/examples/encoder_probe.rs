@@ -7,6 +7,9 @@ use uu_media::{
     encoder::{self, Preference, Settings},
     PixelFormat, RawFrame, Timestamp,
 };
+#[cfg(windows)]
+#[path="support/gpu_encoder_input.rs"]
+mod gpu_encoder_input;
 
 fn pattern(settings: Settings, index: u32) -> RawFrame {
     let (w, h) = (settings.width as usize, settings.height as usize);
@@ -73,6 +76,7 @@ fn main() -> anyhow::Result<()> {
     };
     let mut frames = 180u32;
     let mut format = PixelFormat::I420;
+    let mut gpu_input=false;
     let mut hardware_decoder = false;
     let mut intel_decoder=false;
     let mut encode_only=false;let mut output_path=None;let mut vbr=false;let mut peak=None;
@@ -115,6 +119,7 @@ fn main() -> anyhow::Result<()> {
                 format = match value.as_str() {
                     "i420" => PixelFormat::I420,
                     "bgra" => PixelFormat::Bgra8,
+                    "gpu" => {gpu_input=true;PixelFormat::Bgra8},
                     "nv12" => PixelFormat::Nv12,
                     _ => anyhow::bail!("input must be i420, bgra or nv12"),
                 }
@@ -130,6 +135,13 @@ fn main() -> anyhow::Result<()> {
     settings.rate_control=if vbr{encoder::RateControl::Vbr{peak_kbps:peak.unwrap_or(settings.bitrate_kbps.saturating_mul(2))}}else{encoder::RateControl::Cbr};
     settings.validate()?;
     let mut encoder = encoder::create(settings)?;
+    #[cfg(windows)]
+    let gpu=if gpu_input {
+        ensure!(encoder.gpu_input(),"selected encoder has no native D3D11 input support");
+        Some(gpu_encoder_input::Upload::new()?)
+    }else{None};
+    #[cfg(not(windows))]
+    ensure!(!gpu_input,"D3D11 input requires Windows");
     // Explicit hardware validation must fail on unsupported hardware, rather
     // than silently validating the software fallback after driver errors.
     let mut decoder = if encode_only {None}else if intel_decoder {
@@ -170,6 +182,9 @@ fn main() -> anyhow::Result<()> {
             encoder.set_bitrate(settings.bitrate_kbps)?;
         }
         let input = input_format(pattern(settings, index), format);
+        let expected = uu_media::convert::frame_to_rgba(&input);
+        #[cfg(windows)]
+        let input=if let Some(gpu)=&gpu {gpu.frame(&input)?}else{input};
         let started = std::time::Instant::now();
         let output = encoder.encode(&input)?;
         times.push(started.elapsed().as_secs_f64() * 1000.0);
@@ -177,7 +192,6 @@ fn main() -> anyhow::Result<()> {
             !output.is_empty(),
             "low-delay encoder emitted no current frame"
         );
-        let expected = uu_media::convert::frame_to_rgba(&input);
         for coded in output {
             bytes += coded.data.len() as u64;
             emitted+=1;
@@ -239,7 +253,7 @@ fn main() -> anyhow::Result<()> {
         "{}",
         serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
         "keyframes":keys,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,
-        "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"color":format!("{color:?}"),"maximum_mse":maximum_mse,
+        "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
         "bytes":bytes,"screen_used":false,"input_used":false,"audio_used":false})
     );

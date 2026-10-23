@@ -4,6 +4,8 @@ use crate::{codec::CodecError, EncodedFrame, H264Encoder, RawFrame, VideoEncoder
 
 #[cfg(all(windows, feature = "mf-encode"))]
 mod mf;
+#[cfg(all(windows, feature = "mf-encode"))]
+mod gpu;
 #[cfg(any(test,feature="intel-vpl",all(windows,feature="mf-encode")))]
 mod low_delay;
 mod upload;
@@ -229,6 +231,7 @@ impl Selected {
     }
 }
 impl VideoEncoder for Selected {
+    fn gpu_input(&self)->bool {self.active.gpu_input()}
     fn backend_name(&self) -> &str {
         &self.name
     }
@@ -241,7 +244,7 @@ impl VideoEncoder for Selected {
         }
         match self.active.encode(frame) {
             Ok(frames) => Ok(frames),
-            Err(reason) if self.can_fallback => {
+            Err(reason) if self.can_fallback && !frame.gpu => {
                 tracing::warn!(%reason,"native hardware encoding failed; restarting reference chain in software");
                 self.fallback(self.settings)?;
                 self.active.encode(frame)

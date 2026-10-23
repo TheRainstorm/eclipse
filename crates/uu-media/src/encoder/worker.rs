@@ -9,6 +9,7 @@ use std::{
 
 pub(super) trait Driver {
     fn backend_name(&self) -> &str;
+    fn gpu_input(&self)->bool {false}
     fn codec(&self)->uu_proto::media::VideoCodec{uu_proto::media::VideoCodec::H264}
     fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Vec<EncodedFrame>, String>;
     fn bitrate(&mut self, kbps: u32) -> Result<(), String>;
@@ -27,6 +28,7 @@ pub(super) struct Worker {
     thread: Option<JoinHandle<()>>,
     name: String,
     codec:uu_proto::media::VideoCodec,
+    gpu_input:bool,
     keyframe: bool,
 }
 impl Worker {
@@ -45,7 +47,7 @@ impl Worker {
                         return;
                     }
                 };
-                if ready.send(Ok((driver.backend_name().to_owned(),driver.codec()))).is_err() {
+                if ready.send(Ok((driver.backend_name().to_owned(),driver.codec(),driver.gpu_input()))).is_err() {
                     return;
                 }
                 while let Ok(job) = receiver.recv() {
@@ -62,7 +64,7 @@ impl Worker {
                 // Driver resources and COM apartments stay on their creating thread.
             })
             .map_err(|e| error(format!("hardware encoder thread: {e}")))?;
-        let (name,codec) = match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        let (name,codec,gpu_input) = match ready_rx.recv_timeout(Duration::from_secs(10)) {
             Ok(Ok(name)) => name,
             Ok(Err(reason)) => {
                 let _ = thread.join();
@@ -79,6 +81,7 @@ impl Worker {
             thread: Some(thread),
             name,
             codec,
+            gpu_input,
             keyframe: true,
         })
     }
@@ -96,6 +99,7 @@ impl Worker {
     }
 }
 impl VideoEncoder for Worker {
+    fn gpu_input(&self)->bool {self.gpu_input}
     fn backend_name(&self) -> &str {
         &self.name
     }

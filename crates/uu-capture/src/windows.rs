@@ -108,6 +108,7 @@ pub struct DxgiCapture {
     last: Option<RawFrame>,
     started: Instant,
     staging: Option<ID3D11Texture2D>,
+    gpu:bool,
     duplication: IDXGIOutputDuplication,
     context: ID3D11DeviceContext,
     device: ID3D11Device,
@@ -134,7 +135,7 @@ impl DxgiCapture {
                 &selected.adapter,
                 D3D_DRIVER_TYPE_UNKNOWN,
                 HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                 Some(&[
                     D3D_FEATURE_LEVEL_11_0,
                     D3D_FEATURE_LEVEL_10_1,
@@ -149,6 +150,8 @@ impl DxgiCapture {
         }
         let device = device.ok_or_else(|| backend("device unavailable"))?;
         let context = context.ok_or_else(|| backend("device context unavailable"))?;
+        let multithread:windows::Win32::Graphics::Direct3D10::ID3D10Multithread=context.cast().map_err(backend)?;
+        unsafe{let _=multithread.SetMultithreadProtected(true);}
         let output: IDXGIOutput1 = selected.output.cast().map_err(backend)?;
         let duplication = unsafe { output.DuplicateOutput(&device).map_err(backend)? };
         Ok(Self {
@@ -157,6 +160,7 @@ impl DxgiCapture {
             last: None,
             started: Instant::now(),
             staging: None,
+            gpu:false,
             duplication,
             context,
             device,
@@ -192,6 +196,22 @@ impl DxgiCapture {
         }
         if desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
             return Err(backend("unsupported desktop surface format"));
+        }
+        if self.gpu && self.rotation==Rotation::None {
+            if (desc.Width,desc.Height)!=(self.source.width,self.source.height) {
+                return Err(backend("desktop layout changed; reopen capture"));
+            }
+            let mut owned=None;
+            let owned_desc=D3D11_TEXTURE2D_DESC{Usage:D3D11_USAGE_DEFAULT,
+                BindFlags:(D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE).0 as u32,
+                CPUAccessFlags:0,MiscFlags:0,..desc};
+            unsafe{self.device.CreateTexture2D(&owned_desc,None,Some(&mut owned)).map_err(backend)?;}
+            let owned=owned.ok_or_else(||backend("GPU capture texture unavailable"))?;
+            unsafe{self.context.CopyResource(&owned,&texture);self.context.Flush();}
+            let surface=uu_media::d3d11_frame::Frame::captured(owned,self.device.clone()).map_err(backend)?;
+            return Ok(Some(RawFrame{width:desc.Width,height:desc.Height,format:PixelFormat::Bgra8,
+                stride:desc.Width*4,data:Default::default(),pts:self.timestamp(),gpu:true,
+                dma_buf:None,d3d11:Some(std::sync::Arc::new(surface))}));
         }
         let mut needs_staging = true;
         if let Some(staging) = &self.staging {
@@ -275,6 +295,10 @@ impl DxgiCapture {
     }
 }
 impl Capture for DxgiCapture {
+    fn prefer_gpu(&mut self,enabled:bool) {
+        let enabled=enabled && self.rotation==Rotation::None;
+        if self.gpu!=enabled {self.last=None;self.gpu=enabled;}
+    }
     fn resolution(&self) -> (u32, u32) {
         (self.source.width, self.source.height)
     }

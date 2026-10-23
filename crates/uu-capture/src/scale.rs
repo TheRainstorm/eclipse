@@ -15,11 +15,18 @@ pub fn bounded(inner:Box<dyn Capture>,bounds:Option<[u32;2]>)->Box<dyn Capture> 
 }
 struct Scaled {inner:Box<dyn Capture>,output:(u32,u32)}
 impl Capture for Scaled {
+    fn prefer_gpu(&mut self,enabled:bool){self.inner.prefer_gpu(enabled);}
     fn resolution(&self)->(u32,u32){self.output}
     fn desktop_rect(&self)->Option<DesktopRect>{self.inner.desktop_rect()}
     fn input_injector(&self)->Option<Box<dyn uu_input::InputInjector>>{self.inner.input_injector()}
     fn next_frame(&mut self)->Result<RawFrame,CaptureError> {
         let frame=self.inner.next_frame()?;
+        if frame.gpu && frame.d3d11.is_some() {
+            // BGRA capture surfaces retain their source geometry; the hardware
+            // encoder scales directly to these negotiated output dimensions.
+            let (width,height)=self.output;
+            return Ok(RawFrame{width,height,stride:width*4,..frame});
+        }
         if frame.gpu||!frame.is_consistent()||frame.width%2!=0||frame.height%2!=0 {
             return Err(CaptureError::Backend("采集画面缺少可缩放的 CPU 像素".into()));
         }
