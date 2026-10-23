@@ -415,6 +415,16 @@ jobs:
             echo 'Add curated release notes before publishing a milestone.' >&2
             exit 1
           fi
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > "$RUNNER_TEMP/existing-release-state" 2>/dev/null; then
+            if [ "$(cat "$RUNNER_TEMP/existing-release-state")" != false ]; then
+              echo 'An existing draft requires its own publication workflow.' >&2
+              exit 1
+            fi
+            python3 tools/release/download.py --repo "$GH_REPO" --tag "$RELEASE_TAG" \
+              --platform all --output-dir "$RUNNER_TEMP/verified-published-release"
+            echo 'Published packages match this tag and their checksums; retaining immutable release assets.'
+            exit 0
+          fi
           cd release-assets
           sha256sum -- *.zip *.tar.gz > SHA256SUMS
           release_flags=()
