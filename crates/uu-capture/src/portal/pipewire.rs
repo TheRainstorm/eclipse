@@ -11,7 +11,7 @@ use spa::{
 use std::{
     os::fd::OwnedFd,
     sync::{
-        atomic::{AtomicBool,AtomicU32, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
     time::Duration,
@@ -30,7 +30,7 @@ struct State {
 pub(super) fn run(
     fd: OwnedFd,
     node: u32,
-    fps: Arc<AtomicU32>,
+    fps: u32,
     stop: Arc<AtomicBool>,
     frames: Arc<FrameSlot>,
 ) -> Result<(), String> {
@@ -39,7 +39,7 @@ pub(super) fn run(
 fn run_inner(
     fd: OwnedFd,
     node: u32,
-    fps: Arc<AtomicU32>,
+    fps: u32,
     stop: Arc<AtomicBool>,
     frames: Arc<FrameSlot>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -47,6 +47,15 @@ fn run_inner(
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
     let core = context.connect_fd_rc(fd, None)?;
+    let failures=frames.clone();
+    let _core_listener=core.add_listener_local().error(move |id,_,_,message| {
+        if id==pw::sys::PW_ID_CORE {failures.fail(format!("共享连接已关闭：{message}"));}
+    }).register();
+    let registry=core.get_registry_rc()?;
+    let failures=frames.clone();
+    let _registry_listener=registry.add_listener_local().global_remove(move |id| {
+        if id==node {failures.fail("系统已移除共享画面源");}
+    }).register();
     let stream = pw::stream::StreamBox::new(
         &core,
         "Eclipse screen sharing",
@@ -126,6 +135,9 @@ fn run_inner(
             let Some(data) = buffer.datas_mut().first_mut() else {
                 return;
             };
+            if data.chunk().flags().contains(spa::buffer::ChunkFlags::CORRUPTED) {
+                return;
+            }
             if ![spa::buffer::DataType::MemFd, spa::buffer::DataType::MemPtr]
                 .contains(&data.type_())
             {
@@ -159,8 +171,7 @@ fn run_inner(
             }
         })
         .register()?;
-    let mut applied_fps=fps.load(Ordering::Acquire);
-    let serialized=format(applied_fps)?;
+    let serialized=format(fps)?;
     let mut params = [Pod::from_bytes(&serialized).ok_or("Invalid PipeWire format specification")?];
     stream.connect(
         spa::utils::Direction::Input,
@@ -169,13 +180,6 @@ fn run_inner(
         &mut params,
     )?;
     while !stop.load(Ordering::Acquire) {
-        let requested=fps.load(Ordering::Acquire);
-        if requested!=applied_fps {
-            let serialized=format(requested)?;
-            let mut params=[Pod::from_bytes(&serialized).ok_or("Invalid PipeWire format specification")?];
-            stream.update_params(&mut params)?;
-            applied_fps=requested;
-        }
         if mainloop.loop_().iterate(Duration::from_millis(30)) < 0 {
             return Err("共享连接已关闭".into());
         }
@@ -185,6 +189,8 @@ fn run_inner(
 }
 
 fn format(fps:u32)->Result<Vec<u8>,Box<dyn std::error::Error>> {
+    // Negotiate once for the authorized source. Its format and maxFramerate
+    // remain stable while the encoder controls runtime output cadence.
     let object = spa::pod::object!(
         spa::utils::SpaTypes::ObjectParamFormat,
         spa::param::ParamType::EnumFormat,
@@ -214,18 +220,6 @@ fn format(fps:u32)->Result<Vec<u8>,Box<dyn std::error::Error>> {
             Fraction,
             spa::utils::Fraction { num: fps, denom: 1 },
             spa::utils::Fraction { num: 0, denom: 1 },
-            spa::utils::Fraction { num: fps, denom: 1 }
-        ),
-        // Screen sharing is commonly variable-rate (framerate = 0). Its
-        // capture ceiling is maxFramerate, so constraining framerate alone
-        // leaves the compositor capturing at its own, potentially higher rate.
-        spa::pod::property!(
-            Prop::VideoMaxFramerate,
-            Choice,
-            Range,
-            Fraction,
-            spa::utils::Fraction { num: fps, denom: 1 },
-            spa::utils::Fraction { num: 1, denom: 1 },
             spa::utils::Fraction { num: fps, denom: 1 }
         )
     );

@@ -35,7 +35,7 @@ python3 install.py
 
 在“共享本机”开启服务后，远端通过设备认证并请求画面时，由系统弹窗选择共享屏幕。Wayland 不预先读取屏幕内容或用 Xwayland 根窗口替代桌面；屏幕尺寸以系统授权后的实际画面为准，现阶段不保存门户的长期恢复令牌。
 
-允许控制时，画面和键鼠通过同一个 RemoteDesktop 门户会话获得授权。如果桌面只提供 ScreenCast，Sway 等 wlroots 合成器可在屏幕授权后使用同一合成器的 virtual-keyboard / virtual-pointer，绑定获选输出并处理缩放；虚拟输入协议不可用时继续只观看。RemoteDesktop 明确拒绝输入授权时不改走虚拟输入。屏幕选择不请求持久化权限；组合会话的持久化仅能由 RemoteDesktop 管理，本实现不保存恢复令牌。鼠标绝对位置按屏幕像素与门户逻辑尺寸换算，适配缩放；停止控制仅释放当前会话按下的键和按钮。取消系统弹窗、断线及停止共享会关闭相应会话。Wayland 文本和图片剪贴板仍取决于独立后端是否可用。捕获同时协商可变帧率源的 maxFramerate，跟随客户端请求限制捕获工作。
+允许控制时，画面和键鼠通过同一个 RemoteDesktop 门户会话获得授权。如果桌面只提供 ScreenCast，Sway 等 wlroots 合成器可在屏幕授权后使用同一合成器的 virtual-keyboard / virtual-pointer，绑定获选输出并处理缩放；虚拟输入协议不可用时继续只观看。RemoteDesktop 明确拒绝输入授权时不改走虚拟输入。屏幕选择不请求持久化权限；组合会话的持久化仅能由 RemoteDesktop 管理，本实现不保存恢复令牌。鼠标绝对位置按屏幕像素与门户逻辑尺寸换算，适配缩放；停止控制仅释放当前会话按下的键和按钮。取消系统弹窗、断线及停止共享会关闭相应会话。Wayland 文本和图片剪贴板仍取决于独立后端是否可用。客户端输出帧率可动态调整；可变帧率源保留门户本身的捕获上限，不保证减少到同样的捕获工作量。部分 wlr 后端在活动中重协商源格式会破坏在途捕获对象，因此当前保持一次授权内的捕获格式稳定，由编码线程控制输出节奏。源被移除或连接失败时停止使用缓存画面并结束会话。
 
 需要运行 PipeWire、`xdg-desktop-portal` 和与桌面匹配的后端，例如 KDE 的 `xdg-desktop-portal-kde` 或 GNOME 的 `xdg-desktop-portal-gnome`。门户 API 定义见 [ScreenCast](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html) 和 [RemoteDesktop](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.RemoteDesktop.html)。系统拒绝授权时显示失败原因，不能通过应用绕过授权。
 
