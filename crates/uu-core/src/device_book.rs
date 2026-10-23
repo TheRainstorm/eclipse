@@ -560,6 +560,7 @@ impl Store {
     pub fn save_device(&self, profile: Profile) -> Result<()> {
         self.edit(|b| {
             if let Some(v) = b.devices.iter_mut().find(|v| v.id == profile.id) {
+                ensure!(v.redirect.is_none() && profile.redirect.is_none(),"设备已合并，请刷新设备列表后重试");
                 ensure!(
                     v.peer == profile.peer,
                     "设备身份刚刚更新，请重新打开设备详情后保存"
@@ -774,6 +775,10 @@ mod tests {
         assert_ne!(store.read().unwrap().device(&a.id).unwrap().id,store.read().unwrap().device(&b.id).unwrap().id);
         let peer="a".repeat(64);store.bind(&a.id,&peer).unwrap();store.bind(&b.id,&peer).unwrap();
         let book=store.read().unwrap();let merged=book.device(&b.id).unwrap();assert_eq!(merged.id,a.id);assert_eq!(merged.client_configs.len(),2);assert_eq!(merged.selected_client.as_deref(),Some(cb.id.as_str()));
+        let saved=std::fs::read(root.join("connections.json")).unwrap();
+        assert!(store.save_device(b.clone()).is_err(),"a stale route editor must not resurrect a merged device");
+        assert_eq!(std::fs::read(root.join("connections.json")).unwrap(),saved);
+        assert_eq!(store.read().unwrap().device(&b.id).unwrap().id,a.id);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
