@@ -634,6 +634,12 @@ impl super::App {
         if response.hovered() || response.clicked() {
             self.stream_menu.quality_detail = Some((QualityDetail::Codec, response.rect));
         }
+        if self.is_native() {
+            if let Some(controller)=&self.controller {
+                let actual=controller.stats.codec.lock().unwrap();
+                if !actual.is_empty() {ui.small(format!("实际编码：{}",actual.trim_start_matches("video/")));}
+            }
+        }
     }
 
     fn quality_detail(&mut self, ctx: &egui::Context, blocked: &mut Vec<Rect>) {
