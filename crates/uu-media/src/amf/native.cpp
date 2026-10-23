@@ -4,6 +4,7 @@
 #include <d3d10.h>
 #include <dxgi1_2.h>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -155,19 +156,32 @@ extern "C" int eclipse_amf_encode(void* session,void* native_texture,const unsig
     size_t cpu_length,long long pts,int keyframe,const unsigned char** bytes,size_t* length,long long* timestamp,char* error,size_t capacity) {
     try {
         auto s=(Session*)session;s->output=nullptr;
-        ID3D11Texture2D* texture=(ID3D11Texture2D*)native_texture;
-        if(!texture) {
-            if(!cpu_nv12||cpu_length!=size_t(s->width)*s->height*3/2)throw std::runtime_error("invalid CPU NV12 input");
-            D3D11_TEXTURE2D_DESC desc{};desc.Width=s->width;desc.Height=s->height;desc.MipLevels=1;desc.ArraySize=1;
-            desc.Format=DXGI_FORMAT_NV12;desc.SampleDesc.Count=1;desc.Usage=D3D11_USAGE_DEFAULT;
-            D3D11_SUBRESOURCE_DATA input{};input.pSysMem=cpu_nv12;input.SysMemPitch=s->width;
-            hr(s->device->CreateTexture2D(&desc,&input,&texture),"upload NV12 input");
-        } else texture->AddRef();
         amf::AMFSurfacePtr surface;
-        static const GUID array_index_id={0x28115527,0xe7c3,0x4b66,{0x99,0xd3,0x4f,0x2a,0xe6,0xb4,0xf,0xaf}};
-        unsigned array_index=0;
-        texture->SetPrivateData(array_index_id,sizeof(array_index),&array_index);
-        AMF_RESULT wrapped=s->context->CreateSurfaceFromDX11Native(texture,&surface,nullptr);texture->Release();checked(wrapped,"wrap DX11 surface");
+        if(!native_texture) {
+            if(!cpu_nv12||cpu_length!=size_t(s->width)*s->height*3/2)throw std::runtime_error("invalid CPU NV12 input");
+            // Let AMF own CPU allocation, plane alignment and the upload. A
+            // fresh external NV12 texture for every CPU picture crashes some
+            // drivers after sustained encoding; it is not a capture surface.
+            checked(s->context->AllocSurface(amf::AMF_MEMORY_HOST,amf::AMF_SURFACE_NV12,s->width,s->height,&surface),"allocate CPU NV12 surface");
+            if(surface->GetPlanesCount()!=2)throw std::runtime_error("invalid AMF NV12 plane count");
+            for(unsigned index=0;index<2;index++) {
+                auto plane=surface->GetPlaneAt(index);
+                const unsigned rows=index?s->height/2:s->height;
+                if(!plane||!plane->GetNative()||plane->GetHPitch()<(int)s->width||plane->GetHeight()<(int)rows)
+                    throw std::runtime_error("invalid AMF CPU NV12 plane layout");
+                auto dst=(unsigned char*)plane->GetNative();
+                const auto src=cpu_nv12+(index?size_t(s->width)*s->height:0);
+                for(unsigned row=0;row<rows;row++)std::memcpy(dst+size_t(row)*plane->GetHPitch(),src+size_t(row)*s->width,s->width);
+            }
+        } else {
+            // The Rust caller keeps its immutable, same-device GPU texture
+            // leased through this call. No CPU mapping or upload here.
+            auto texture=(ID3D11Texture2D*)native_texture;
+            static const GUID array_index_id={0x28115527,0xe7c3,0x4b66,{0x99,0xd3,0x4f,0x2a,0xe6,0xb4,0x7f,0xaf}};
+            unsigned array_index=0;
+            hr(texture->SetPrivateData(array_index_id,sizeof(array_index),&array_index),"set DX11 texture array index");
+            checked(s->context->CreateSurfaceFromDX11Native(texture,&surface,nullptr),"wrap DX11 surface");
+        }
         surface->SetCrop(0,0,s->width,s->height);
         surface->SetPts(pts);surface->SetDuration(10000000/s->fps);
         if(keyframe) {
