@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import sys
+import platform
 import unittest
 from unittest.mock import patch
 
@@ -26,6 +28,47 @@ class LinuxPackageTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+
+    def cached_bundle(self, changed=False, extra=None, revision='a'*40):
+        package=self.package()
+        manifest=json.loads((package/'version.json').read_text())
+        manifest.update(source_commit=revision,platform=f'linux-{platform.machine()}',features=packager.FEATURES,build_glibc=list(platform.libc_ver()))
+        (package/'version.json').write_text(json.dumps(manifest))
+        if changed:(package/'uu').write_text('corrupt')
+        destination=self.root/f'uu-client-linux-{platform.machine()}-aaaaaaaaaaaa'
+        package.rename(destination)
+        archive=Path(shutil.make_archive(str(self.root/'cache'),'gztar',root_dir=self.root,base_dir=destination.name))
+        if extra:
+            with tarfile.open(archive,'w:gz') as bundle:
+                bundle.add(destination,arcname=destination.name)
+                member=tarfile.TarInfo(extra);member.size=1;bundle.addfile(member,io.BytesIO(b'x'))
+        shutil.rmtree(destination)
+        return archive,destination
+
+    def test_verified_archive_restores_an_absent_directory_without_a_compiler(self):
+        archive,destination=self.cached_bundle()
+        with patch.object(packager,'source_revision',return_value='a'*40),patch.object(packager.subprocess,'run',side_effect=AssertionError('no compiler')):
+            result=packager.reuse_archive(archive,destination,'a'*40)
+        self.assertTrue(result['cached'])
+        self.assertEqual(installer.verify_package(destination)['source_commit'],'a'*40)
+        self.assertTrue((destination/'uu').stat().st_mode&0o111)
+
+    def test_corrupt_and_unsafe_caches_never_materialize_payload(self):
+        for changed,extra in [(True,None),(False,'../escape')]:
+            archive,destination=self.cached_bundle(changed,extra)
+            with patch.object(packager,'source_revision',return_value='a'*40),self.assertRaises(ValueError):
+                packager.reuse_archive(archive,destination,'a'*40)
+            self.assertFalse(destination.exists())
+        self.assertFalse((self.root.parent/'escape').exists())
+
+    def test_wrong_revision_cache_does_not_replace_the_requested_build(self):
+        archive,destination=self.cached_bundle(revision='b'*40)
+        self.assertIsNone(packager.reuse_archive(archive,destination,'a'*40))
+        self.assertFalse(destination.exists())
+
+    def test_help_never_starts_a_build(self):
+        result=subprocess.run([sys.executable,str(ROOT/'tools/linux/package.py'),'--help'],capture_output=True,text=True,check=True)
+        self.assertIn('--rebuild',result.stdout)
 
     def package(self, revision='a' * 40):
         package = self.root / revision[:12];package.mkdir()

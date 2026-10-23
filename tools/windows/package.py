@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
+import stat
 from pathlib import Path
 import shutil
 import subprocess
@@ -29,6 +31,37 @@ def required_files(manifest):
     return REQUIRED if version == 2 else LEGACY_REQUIRED
 SOURCE_PATHS = ('crates', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                 '.cargo', 'tools/windows', 'tools/licenses', 'licenses', *LICENSES)
+
+
+
+def verify_package(path):
+    with zipfile.ZipFile(path) as bundle:
+        names = bundle.namelist()
+        if names.count('version.json') != 1 or bundle.getinfo('version.json').file_size > 1024 * 1024:
+            raise ValueError('ZIP 缺少唯一、有界的 version.json')
+        manifest = json.loads(bundle.read('version.json'))
+        if not isinstance(manifest, dict):
+            raise ValueError('version.json 格式无效')
+        required = required_files(manifest)
+        # A legacy bundle remains installable, while new bundles must include
+        # the dispatcher. Neither format allows arbitrary extra executables.
+        if len(names) != len(required) + 1 or set(names) != set(required) | {'version.json'}:
+            raise ValueError('ZIP 文件清单不正确，请使用 tools/windows/package.py 生成的包')
+        revision = manifest.get('source_commit')
+        if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}', revision):
+            raise ValueError('version.json 缺少有效提交号')
+        hashes = manifest.get('sha256')
+        if not isinstance(hashes, dict) or set(hashes) != set(required):
+            raise ValueError('version.json 校验清单不完整')
+        for name in required:
+            info = bundle.getinfo(name)
+            if info.file_size > 512 * 1024 * 1024 or stat.S_IFMT(info.external_attr >> 16) == stat.S_IFLNK:
+                raise ValueError(f'ZIP 文件类型或大小无效：{name}')
+            with bundle.open(name) as stream:
+                actual = hashlib.file_digest(stream, 'sha256').hexdigest()
+            if actual != manifest['sha256'][name]:
+                raise ValueError(f'文件校验失败：{name}')
+    return manifest
 
 
 def compiler_tool(name):
@@ -81,9 +114,25 @@ def verify_imports(directory):
                 raise RuntimeError(f'{path.name} 缺少 {name}；请使用 MinGW win32 线程模型工具链，见构建文档')
 
 
-def build_package(output, vpl_archive=None):
-    check_tools()
+def build_package(output, vpl_archive=None, rebuild=False):
     revision = clean_revision()
+    archive = output / f'uu-client-windows-x64-{revision[:12]}.zip'
+    if not rebuild and vpl_archive is None and archive.is_file():
+        try:
+            manifest = verify_package(archive)
+            if manifest['source_commit'] == revision and manifest.get('target') == TARGET and manifest.get('format_version') == 2:
+                if clean_revision() != revision:
+                    raise RuntimeError('核验缓存期间源码版本发生变化')
+                result = {'source_commit': revision, 'archive': archive.name, 'sha256': sha256(archive)}
+                with tempfile.TemporaryDirectory(prefix='.cached-package-', dir=output) as temp:
+                    pointer = Path(temp) / 'windows-latest.json'
+                    pointer.write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
+                    os.replace(pointer, output / pointer.name)
+                print(json.dumps({**result, 'archive': str(archive), 'cached': True}, ensure_ascii=False, indent=2))
+                return result
+        except (ValueError, OSError, zipfile.BadZipFile) as error:
+            print(f'缓存包校验未通过，将执行构建：{error}', file=sys.stderr)
+    check_tools()
     metadata = json.loads(subprocess.check_output(
         ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'],
         cwd=ROOT, text=True, encoding='utf-8'))
@@ -132,10 +181,11 @@ def build_package(output, vpl_archive=None):
 def main():
     parser = argparse.ArgumentParser(description='在 Linux 或 Windows 使用 MinGW 编译打包 Windows x64 客户端（Python 3.11+）')
     parser.add_argument('--output-dir', type=Path, default=OUTPUT, help='产物目录（默认 artifacts/packages）')
+    parser.add_argument('--rebuild', action='store_true', help='执行构建流程而非复用已核验同提交的安装包；仍使用 Cargo 缓存')
     parser.add_argument('--vpl-archive', type=Path, help='离线 Intel VPL 固定版本源码归档；不提供时自动下载并验证')
     args = parser.parse_args()
     try:
-        build_package(args.output_dir.resolve(), args.vpl_archive)
+        build_package(args.output_dir.resolve(), args.vpl_archive, args.rebuild)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f'打包失败：{error}', file=sys.stderr)
         return 1

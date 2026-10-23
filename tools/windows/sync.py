@@ -13,34 +13,8 @@ import sys
 import uuid
 import zipfile
 
-from package import OUTPUT, required_files, sha256
+from package import OUTPUT, required_files, sha256, verify_package
 
-
-def verify_package(path):
-    with zipfile.ZipFile(path) as bundle:
-        names = bundle.namelist()
-        if names.count('version.json') != 1 or bundle.getinfo('version.json').file_size > 1024 * 1024:
-            raise ValueError('ZIP 缺少唯一、有界的 version.json')
-        manifest = json.loads(bundle.read('version.json'))
-        if not isinstance(manifest, dict):
-            raise ValueError('version.json 格式无效')
-        required = required_files(manifest)
-        # A legacy bundle remains installable, while new bundles must include
-        # the dispatcher. Neither format allows arbitrary extra executables.
-        if len(names) != len(required) + 1 or set(names) != set(required) | {'version.json'}:
-            raise ValueError('ZIP 文件清单不正确，请使用 tools/windows/package.py 生成的包')
-        revision = manifest.get('source_commit')
-        if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}', revision):
-            raise ValueError('version.json 缺少有效提交号')
-        hashes = manifest.get('sha256')
-        if not isinstance(hashes, dict) or set(hashes) != set(required):
-            raise ValueError('version.json 校验清单不完整')
-        for name in required:
-            with bundle.open(name) as stream:
-                actual = hashlib.file_digest(stream, 'sha256').hexdigest()
-            if actual != manifest['sha256'][name]:
-                raise ValueError(f'文件校验失败：{name}')
-    return manifest
 
 
 def latest_package():

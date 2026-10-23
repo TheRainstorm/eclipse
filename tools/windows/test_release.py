@@ -24,7 +24,7 @@ class ReleaseTests(unittest.TestCase):
 
     def make_bundle(self, transform=None):
         files = {name: ('test ' + name).encode() for name in package.REQUIRED}
-        manifest = {'format_version': 2, 'source_commit': 'a' * 40,
+        manifest = {'format_version': 2, 'target':package.TARGET, 'source_commit': 'a' * 40,
                     'sha256': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
         files['version.json'] = json.dumps(manifest).encode()
         if transform:
@@ -37,6 +37,25 @@ class ReleaseTests(unittest.TestCase):
 
     def test_valid_package(self):
         self.assertEqual(sync.verify_package(self.make_bundle())['source_commit'], 'a' * 40)
+
+    def test_same_revision_package_is_verified_and_reused_without_a_compiler(self):
+        archive=self.make_bundle().rename(self.root/('uu-client-windows-x64-'+'a'*12+'.zip'))
+        with patch.object(package,'clean_revision',return_value='a'*40), patch.object(package,'check_tools',side_effect=AssertionError('compiler must not run')), contextlib.redirect_stdout(io.StringIO()):
+            result=package.build_package(self.root)
+        self.assertEqual(result['sha256'],package.sha256(archive))
+        self.assertEqual(json.loads((self.root/'windows-latest.json').read_text())['source_commit'],'a'*40)
+
+    def test_corrupt_stale_and_wrong_target_caches_require_building(self):
+        for kind in ['corrupt','stale','target','force']:
+            def change(files):
+                if kind=='corrupt':files['uu.exe']=b'changed'
+                metadata=json.loads(files['version.json'])
+                if kind=='stale':metadata['source_commit']='b'*40
+                if kind=='target':metadata['target']='other-target'
+                files['version.json']=json.dumps(metadata).encode()
+            self.make_bundle(change).replace(self.root/('uu-client-windows-x64-'+'a'*12+'.zip'))
+            with self.subTest(kind=kind), patch.object(package,'clean_revision',return_value='a'*40), patch.object(package,'check_tools',side_effect=RuntimeError('build required')), contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(RuntimeError,'build required'):
+                package.build_package(self.root,rebuild=kind=='force')
 
     def test_corrupt_payload_rejected(self):
         path = self.make_bundle(lambda files: files.update({'uu-gui.exe': b'corrupt'}))

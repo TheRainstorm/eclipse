@@ -19,6 +19,8 @@ python3 tools/linux/package.py
 python3 install.py
 ```
 
+同一提交已有完整安装包时，打包脚本核验内容、目标平台、功能和 glibc 兼容性后直接复用，不调用 Cargo；解包目录缺失时从已核验归档恢复。`--rebuild` 可强制执行构建流程，仍使用 Cargo 缓存。检查与测试产物不等于 release 安装包，因此首次打包仍需要 release 构建。
+
 正式入口：`~/.local/bin/uu-client`（保留旧 `uu-remote-rust` 启动别名），或应用菜单 **uu-client**。实际文件在 `~/.local/opt/uu-remote-rust/releases/<revision>/`，`current` 为统一版本入口。CLI 是 `~/.local/bin/uu-rust`。安装器校验二进制 SHA256 和动态依赖，原子切换入口，旧版本保留。0.6起版本显示优先使用程序内嵌的源提交，并核对同目录 `version.json`；请使用完整包以保持程序、资源与清单一致。
 
 0.7起应用菜单使用与窗口标识一致的 `uu-client.desktop`，以便桌面识别图标和任务栏分组。旧启动项保留为隐藏兼容入口，避免已有固定图标失效；如固定项仍显示旧图标，可从应用菜单重新固定 uu-client。安装路径中的空格和特殊字符会按桌面启动项规则转义，启动不经过 shell。
