@@ -661,8 +661,9 @@ async fn send_video(
             let rate_control=match rate_control {uu_media::encoder::RateControl::Cbr=>rate_control,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:kbps.saturating_mul(2)}};
             let settings=|codec|uu_media::encoder::Settings {tuning:config.encoder_tuning,codec,rate_control,width,height,fps,bitrate_kbps:kbps,preference};
             let capture_us=elapsed_us(started);let started=Instant::now();
-            let mut selected=None;let mut last_error=None;
+            let mut selected=None;let mut last_error=None;let mut attempted=Vec::new();
             for codec in choices {
+                attempted.push(codec);
                 match uu_media::encoder::create(settings(codec)) {
                     Ok(encoder)=>{selected=Some((codec,encoder));break;},
                     Err(error)=>{tracing::warn!(?codec,?preference,%error,"native codec initialization failed");last_error=Some(anyhow::anyhow!("{codec:?}: {error}"));},
@@ -672,7 +673,10 @@ async fn send_video(
             let encoder_us=elapsed_us(started);let started=Instant::now();
             let mut available=vec![codec];
             if policy.is_some(){
-                for candidate in advertised.into_iter().filter(|c|*c!=codec) {
+                // Selection already tested the failed higher-ranked codecs at
+                // this geometry. Retrying them delays the answer and can report
+                // a different capability for the same preparation attempt.
+                for candidate in advertised.into_iter().filter(|c|!attempted.contains(c)) {
                     if uu_media::encoder::create(settings(candidate)).is_ok(){available.push(candidate);}
                 }
             }
