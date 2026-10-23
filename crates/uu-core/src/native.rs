@@ -777,6 +777,7 @@ async fn receive_session(
     stats: Arc<MediaStats>,
     input:Option<crate::native_input::NativeInputReceiver>,
 ) -> Result<ViewOutcome> {
+    let first_frame_baseline=stats.decoded_total.load(Ordering::Acquire);
     peer.receiver(frames, stats.clone()).await?;
     let channel = peer
         .pc
@@ -822,11 +823,15 @@ async fn receive_session(
     }
     peer.connected().await?;
     if stream.lan_peer().is_none() {stats.diagnostics.record(peer.direct_path().await?);}
+    let first_frame=wait_first_frame(&stats,first_frame_baseline,Duration::from_secs(20));
+    tokio::pin!(first_frame);
+    let mut awaiting_first_frame=true;
     let switching={
     let mut control_active=true;
     let control=controls.run();tokio::pin!(control);
     loop {
         tokio::select! {
+            result=&mut first_frame,if awaiting_first_frame=>{awaiting_first_frame=false;result?;},
             _=stats.native_displays.changed.notified()=>{if let Some(request)=stats.native_displays.take_switch(){break Some(request);}},
             result=&mut control,if control_active=>{
                 control_active=false;
@@ -848,6 +853,16 @@ async fn receive_session(
     }
     };
     if let Some(request)=switching {controls.apply_display(request).await?;Ok(ViewOutcome::Switch(controls.take_input()))}else{Ok(ViewOutcome::Ended)}
+}
+
+/// Once transport is established a decoder failure must not leave an endless
+/// connecting screen. A switch uses its own baseline, not earlier session frames.
+async fn wait_first_frame(stats:&MediaStats,baseline:u64,limit:Duration)->Result<()> {
+    timeout(limit,async {
+        while stats.decoded_total.load(Ordering::Acquire)<=baseline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }).await.context("连接已建立，但 20 秒内未解码出首帧；请检查两端编码支持或改用其它编码，诊断日志已记录协商编码和解码错误")
 }
 
 #[cfg(test)]
@@ -896,6 +911,15 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn first_frame_deadline_uses_new_frames_and_can_be_cancelled() {
+        let stats=MediaStats::default();
+        stats.decoded_total.store(3,Ordering::Release);
+        assert!(wait_first_frame(&stats,3,Duration::from_millis(5)).await.is_err());
+        assert!(wait_first_frame(&stats,2,Duration::from_secs(1)).await.is_ok());
+        let pending=wait_first_frame(&stats,3,Duration::from_secs(20));
+        tokio::select! { _=pending=>panic!("old frames cannot satisfy a new connection"), _=tokio::task::yield_now()=>{} }
+    }
     #[test]
     fn default_answer_preserves_the_legacy_strict_schema(){
         let legacy=serde_json::json!({"version":1,"sdp":{"type":"answer","sdp":"v=0\r\n"},"width":128,"height":128,"fps":60,"bitrate_kbps":2000,"view_only":true});

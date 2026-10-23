@@ -176,7 +176,14 @@ pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
         let result=timeout(Duration::from_secs(5),tokio::task::spawn_blocking(move||match codec {
             VideoCodec::Hevc=>uu_media::hevc::probe_decoder(),VideoCodec::Av1=>uu_media::av1::probe_decoder(),VideoCodec::H264=>unreachable!()
         })).await;
-        if matches!(result,Ok(Ok(Ok(())))){codecs.push(codec);}
+        let (available,reason)=match result {
+            Ok(Ok(Ok(())))=>(true,String::new()),
+            Ok(Ok(Err(error)))=>(false,error.to_string().chars().take(384).collect()),
+            Ok(Err(_))=>(false,"decoder probe worker failed".into()),
+            Err(_)=>(false,"decoder probe exceeded 5 seconds".into()),
+        };
+        stats.diagnostics.record(serde_json::json!({"event":"native_decoder_probe","codec":codec,"available":available,"reason":reason}));
+        if available {codecs.push(codec);}
     }
     let _=stats.native_codec_capabilities.set(codecs.clone());codecs
 }
