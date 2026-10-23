@@ -33,10 +33,7 @@ use windows_sys::Win32::{
     Foundation::*,
     Security::*,
     Storage::FileSystem::*,
-    System::{
-        RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId},
-        Threading::*,
-    },
+    System::{RemoteDesktop::*, Threading::*},
 };
 
 fn verify_acl(path: &Path) -> Result<()> {
@@ -159,6 +156,82 @@ pub fn install(source: PathBuf) -> Result<()> {
         .to_path_buf();
     install_from(source, package, true)
 }
+fn console_owner(session: u32) -> Result<String> {
+    fn field(session: u32, kind: WTS_INFO_CLASS) -> Result<Vec<u16>> {
+        let mut value = ptr::null_mut();
+        let mut bytes = 0;
+        winok(unsafe {
+            WTSQuerySessionInformationW(
+                WTS_CURRENT_SERVER_HANDLE,
+                session,
+                kind,
+                &mut value,
+                &mut bytes,
+            )
+        })
+        .context("读取控制台用户身份失败")?;
+        struct Buffer(*mut u16);
+        impl Drop for Buffer {
+            fn drop(&mut self) {
+                unsafe {
+                    WTSFreeMemory(self.0.cast());
+                }
+            }
+        }
+        let value = Buffer(value);
+        ensure!(
+            !value.0.is_null() && bytes >= 2 && bytes <= 65536 && bytes % 2 == 0,
+            "控制台用户身份无效"
+        );
+        let data = unsafe { std::slice::from_raw_parts(value.0, bytes as usize / 2) };
+        ensure!(data.last() == Some(&0), "控制台用户身份缺少结尾");
+        Ok(data[..data.len() - 1].to_vec())
+    }
+    let user = field(session, WTSUserName)?;
+    ensure!(!user.is_empty(), "请先登录需要共享的 Windows 控制台用户");
+    let mut name = field(session, WTSDomainName)?;
+    if !name.is_empty() {
+        name.push(b'\\' as u16);
+    }
+    name.extend(user);
+    name.push(0);
+    let (mut size, mut domain_length, mut kind) = (0, 0, 0);
+    unsafe {
+        LookupAccountNameW(
+            ptr::null(),
+            name.as_ptr(),
+            ptr::null_mut(),
+            &mut size,
+            ptr::null_mut(),
+            &mut domain_length,
+            &mut kind,
+        );
+    }
+    ensure!(
+        size > 0 && size < 65536 && domain_length < 32768,
+        "无法解析控制台用户 SID"
+    );
+    let mut sid = vec![
+        0usize;
+        (size as usize + std::mem::size_of::<usize>() - 1)
+            / std::mem::size_of::<usize>()
+    ];
+    let mut domain = vec![0u16; domain_length as usize];
+    winok(unsafe {
+        LookupAccountNameW(
+            ptr::null(),
+            name.as_ptr(),
+            sid.as_mut_ptr().cast(),
+            &mut size,
+            domain.as_mut_ptr(),
+            &mut domain_length,
+            &mut kind,
+        )
+    })
+    .context("解析控制台用户 SID 失败")?;
+    ensure!(kind == SidTypeUser, "控制台身份不是 Windows 用户");
+    sid_string(sid.as_mut_ptr().cast())
+}
 fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Result<()> {
     let _lock = installation_lock()?;
     let mut session = 0;
@@ -167,7 +240,13 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
         !enforce_console || session == unsafe { WTSGetActiveConsoleSessionId() },
         "请在需要共享的 Windows 控制台用户中安装后台服务"
     );
-    let owner = process_user(unsafe { GetCurrentProcess() })?;
+    // UAC may use a different administrator's credentials. The service belongs
+    // to the logged-in console user whose desktop was selected by the caller.
+    let owner = if enforce_console {
+        console_owner(session)?
+    } else {
+        process_user(unsafe { GetCurrentProcess() })?
+    };
     ensure!(owner != "S-1-5-18", "安装需要从当前控制台用户发起");
     let paths = Paths::discover()?;
     directory(&paths.programs)?;
@@ -383,9 +462,12 @@ pub fn import_account(source: PathBuf) -> Result<()> {
     let _lock = installation_lock()?;
     let paths = Paths::discover()?;
     let installed = paths.manifest()?;
+    let session = unsafe { WTSGetActiveConsoleSessionId() };
+    let mut caller_session = 0;
+    winok(unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut caller_session) })?;
     ensure!(
-        process_user(unsafe { GetCurrentProcess() })? == installed.owner_sid,
-        "只有安装服务的 Windows 用户可以同步账号"
+        caller_session == session && console_owner(session)? == installed.owner_sid,
+        "请在后台服务所属的 Windows 控制台用户中同步账号"
     );
     let state = uu_core::ClientState::load(&source.join("state.json"))?;
     let key = source.join("signing-key");
@@ -466,6 +548,11 @@ mod tests {
     #[ignore = "requires an elevated Windows console owner, a verified package, and completely absent service directories; never captures desktop pixels"]
     async fn protected_service_migrates_authorization_restarts_and_releases_owned_child() {
         administrator_file_owner().unwrap();
+        assert_eq!(
+            console_owner(unsafe { WTSGetActiveConsoleSessionId() }).unwrap(),
+            process_user(unsafe { GetCurrentProcess() }).unwrap(),
+            "fixture requires the logged-in console owner's identity"
+        );
         let _lock = installation_lock().unwrap();
         let paths = Paths::discover().unwrap();
         assert!(
