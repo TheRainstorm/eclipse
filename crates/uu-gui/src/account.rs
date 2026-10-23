@@ -12,12 +12,21 @@ pub fn read_token(path: &Path) -> anyhow::Result<Option<String>> {
         .filter(|token| !token.is_empty()))
 }
 
-pub fn store_login(path: &Path, token: String, user_id: Option<String>) -> anyhow::Result<()> {
+pub fn store_login(path: &Path, token: String, user_id: Option<String>, device_name: Option<String>) -> anyhow::Result<()> {
     anyhow::ensure!(!token.is_empty(), "登录响应缺少凭据");
     let mut state = read_state(path)?.unwrap_or_default();
     state.token = Some(token);
     state.user_id = user_id.clone();
     state.identity.user_id = user_id;
+    if let Some(name) = device_name { state.device_name = Some(name); }
+    state.save(&path.to_path_buf())?;
+    Ok(())
+}
+
+pub fn store_device_name(path: &Path, token: &str, name: String) -> anyhow::Result<()> {
+    let mut state = read_state(path)?.ok_or_else(|| anyhow::anyhow!("本地账号配置不存在"))?;
+    anyhow::ensure!(state.token.as_deref() == Some(token), "账号已变化，请重新保存设备名称");
+    state.device_name = Some(name);
     state.save(&path.to_path_buf())?;
     Ok(())
 }
@@ -139,6 +148,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn saved_device_name_preserves_identity_and_rejects_a_stale_account() {
+        let dir = std::env::temp_dir().join(format!("uu-name-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("state.json");
+        let mut state = ClientState::new();
+        state.device_id = Some("registered-device".into());
+        state.identity.client_id = "registered-client".into();
+        state.identity.device_id = "system-id".into();
+        state.token = Some("current-account-token".into());
+        state.save(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(store_device_name(&path, "previous-account-token", "New name".into()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        store_device_name(&path, "current-account-token", "Office PC".into()).unwrap();
+        let after = ClientState::load(&path).unwrap();
+        state.device_name = Some("Office PC".into());
+        assert_eq!(serde_json::to_value(after).unwrap(), serde_json::to_value(&state).unwrap());
+        sign_out(&path).unwrap();
+        assert_eq!(ClientState::load(&path).unwrap().device_name, state.device_name);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn sign_out_removes_credentials_but_preserves_registered_device_and_preferences() {
         let dir = std::env::temp_dir().join(format!("uu-account-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -150,7 +182,7 @@ mod tests {
         state.save(&path).unwrap();
         let preferences = dir.join("gui-settings.json");
         std::fs::write(&preferences, b"unchanged preferences").unwrap();
-        store_login(&path, "test-credential".into(), Some("test-account".into())).unwrap();
+        store_login(&path, "test-credential".into(), Some("test-account".into()), None).unwrap();
         assert_eq!(
             read_token(&path).unwrap().as_deref(),
             Some("test-credential")
@@ -168,7 +200,7 @@ mod tests {
             std::fs::read(&preferences).unwrap(),
             b"unchanged preferences"
         );
-        store_login(&path, "next-credential".into(), None).unwrap();
+        store_login(&path, "next-credential".into(), None, None).unwrap();
         assert_eq!(
             read_token(&path).unwrap().as_deref(),
             Some("next-credential")

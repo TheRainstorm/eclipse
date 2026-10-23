@@ -1,7 +1,8 @@
 //! High-level API flows: device registration, QR login, device list.
 //!
-//! Each step was verified against the live service before being encoded here
-//! (see `docs/protocol-notes.md` §2.6).
+//! Registration and QR flows were verified against the live service
+//! (see `docs/protocol-notes.md` §2.6). Device rename follows the PC client's
+//! PUT /device/{id} alias request; authenticated phone UI validation is separate.
 
 use std::{io::Read, path::{Path, PathBuf}};
 
@@ -17,6 +18,9 @@ use crate::signal::{SignalClient, SignedRequest};
 pub struct ClientState {
     pub identity: ClientIdentity,
     pub device_id: Option<String>,
+    /// Last name confirmed by UU; older state files need no migration/reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
     pub token: Option<String>,
     pub user_id: Option<String>,
 }
@@ -35,6 +39,7 @@ impl ClientState {
         Self {
             identity: ClientIdentity::default(),
             device_id: None,
+            device_name: None,
             token: None,
             user_id: None,
         }
@@ -83,6 +88,32 @@ impl Default for ClientState {
 mod state_tests {
     use super::*;
     use std::{fs, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread};
+
+    #[test]
+    fn old_account_keeps_identity_when_loading_without_a_device_name() {
+        let mut value = serde_json::to_value(ClientState::new()).unwrap();
+        value.as_object_mut().unwrap().remove("device_name");
+        value["device_id"] = serde_json::json!("registered-device");
+        value["identity"]["client_id"] = serde_json::json!("registered-client");
+        let state: ClientState = serde_json::from_value(value).unwrap();
+        assert!(state.device_name.is_none());
+        assert_eq!(state.device_id.as_deref(), Some("registered-device"));
+        assert_eq!(state.identity.client_id, "registered-client");
+    }
+
+    #[test]
+    fn rename_validates_a_display_name_and_cannot_target_another_api_path() {
+        for invalid in ["".into(), " \t ".into(), "PC\0name".into(), "PC\nname".into(), "名".repeat(65)] {
+            assert!(device_name_update("registered-device", &invalid).is_err());
+        }
+        for invalid in ["", "../other", "device?query=1", "device/other"] {
+            assert!(device_name_update(invalid, "Office PC").is_err());
+        }
+        let (path, body) = device_name_update("registered-device", "  工作站  ").unwrap();
+        assert_eq!(path, "/api/v1/device/registered-device");
+        assert_eq!(body, serde_json::json!({"alias":"工作站"}));
+        assert!(device_name_update("registered-device", &"名".repeat(64)).is_ok());
+    }
 
     #[test]
     fn missing_account_is_new_but_unreadable_or_corrupt_account_is_preserved() {
@@ -214,6 +245,24 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+pub fn validate_device_name(name: &str) -> Result<&str, CoreError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
+        return Err(CoreError::Config("请输入有效的设备名称（最多64字）".into()));
+    }
+    Ok(name)
+}
+
+fn device_name_update(device: &str, name: &str) -> Result<(String, serde_json::Value), CoreError> {
+    let name = validate_device_name(name)?;
+    if device.is_empty() || device.len() > 128
+        || !device.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
+        return Err(CoreError::Config("本机 UU 编号无效".into()));
+    }
+    // The PC client's rename operation uses alias, rather than init's name.
+    Ok((format!("/api/v1/device/{device}"), serde_json::json!({"alias": name})))
+}
+
 fn new_system_id() -> String {
     // Shape observed on the Windows client:
     // 20260415-8013-1656-2BF6-801316562BFA
@@ -243,6 +292,7 @@ impl UuApi {
 
     /// Register this machine and persist the assigned ids.
     pub async fn register(&mut self, name: &str) -> Result<RegisteredDevice, CoreError> {
+        let name = validate_device_name(name)?;
         if self.state.identity.client_id.is_empty() {
             self.state.identity.client_id = Uuid::new_v4().to_string();
         }
@@ -288,11 +338,35 @@ impl UuApi {
             })?
             .to_string();
         self.state.device_id = Some(device_id.clone());
+        let alias = data["alias"].as_str().unwrap_or(name).to_string();
+        self.state.device_name = Some(alias.clone());
         self.state.save(&self.state_path)?;
         Ok(RegisteredDevice {
             device_id,
-            alias: data["alias"].as_str().unwrap_or(name).to_string(),
+            alias,
         })
+    }
+
+    /// Rename only this registered device. The caller owns local state updates,
+    /// so a cancelled GUI worker cannot persist stale credentials or settings.
+    pub async fn rename_current_device(&self, name: &str) -> Result<(), CoreError> {
+        let token = self.state.token.as_deref().filter(|s| !s.is_empty())
+            .ok_or(CoreError::Unauthenticated)?;
+        let device = self.state.device_id.as_deref().ok_or(CoreError::Unauthenticated)?;
+        let (path, body) = device_name_update(device, name)?;
+        let mut identity = self.state.identity.clone();
+        identity.device_id = device.into();
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(15),
+            self.client.call(&identity, Some(token), SignedRequest {
+                method: "PUT", path_with_query: &path, body: Some(body),
+            })).await.map_err(|_| CoreError::Config("设备改名请求超时，请重试".into()))??;
+        if !(200..300).contains(&resp.status) || resp.body["code"].as_i64() != Some(0) {
+            return Err(CoreError::Service {
+                code: resp.body["code"].as_i64().unwrap_or(resp.status as i64) as i32,
+                message: resp.body["msg"].as_str().unwrap_or("设备改名失败").into(),
+            });
+        }
+        Ok(())
     }
 
     /// Ask the service for a login QR code.

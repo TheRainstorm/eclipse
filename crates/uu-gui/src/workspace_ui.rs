@@ -24,6 +24,7 @@ pub(super) enum Page {
 pub(super) enum Action {
     Open(String),
     Login,
+    RenameUu,
     CancelLogin,
     StartSharing,
     Assist(uu_core::assistance::Request),
@@ -63,6 +64,7 @@ pub(super) struct Workspace {
     pub store: Option<Store>,
     pub trust: Option<TrustStore>,
     pub notice: String,
+    pub uu_name: String,
     draft: Sharing,
     monitors: Vec<CaptureMonitor>,
     monitor_error: String,
@@ -88,6 +90,7 @@ mod tests {
         root: PathBuf,
         time: f64,
         texts: Vec<(String, egui::Pos2)>,
+        logged_in: bool,
     }
     impl Harness {
         fn new() -> Self {
@@ -108,13 +111,14 @@ mod tests {
                 root,
                 time: 0.,
                 texts: Vec::new(),
+                logged_in: false,
             }
         }
         fn frame(&mut self, events: Vec<egui::Event>) -> Vec<Action> {
             self.time += 0.02;
             let mut actions = Vec::new();
             let info = Info {
-                logged_in: false,
+                logged_in: self.logged_in,
                 uu_id: None,
                 qr: None,
                 login_status: String::new(),
@@ -185,6 +189,25 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.root);
         }
     }
+    #[test]
+    fn uu_name_is_editable_before_login_and_can_be_saved_after_login() {
+        let mut h = Harness::new();
+        h.workspace.page = Page::Services;
+        let initial = uu_core::config::local_device_name();
+        assert_eq!(h.workspace.uu_name, initial);
+        h.click(&initial);
+        h.frame(vec![egui::Event::Key {
+            key: egui::Key::A, physical_key: None, pressed: true, repeat: false,
+            modifiers: egui::Modifiers { ctrl: true, command: true, ..Default::default() },
+        }]);
+        h.frame(vec![egui::Event::Text("Studio PC".into())]);
+        assert_eq!(h.workspace.uu_name, "Studio PC");
+        assert!(matches!(&h.click("登录 UU 账号")[..], [Action::Login]));
+        h.logged_in = true;
+        assert!(matches!(&h.click("保存名称")[..], [Action::RenameUu]));
+        assert_eq!(h.workspace.uu_name, "Studio PC");
+    }
+
     #[test]
     fn device_editor_retains_failed_input_and_saves_multiple_routes_without_duplicates_or_key_files(
     ) {
@@ -315,6 +338,10 @@ fn field(ui: &mut egui::Ui, label: &str, text: &mut String, hint: &str) {
 }
 impl Workspace {
     pub fn load(config: Option<&uu_core::Config>, ports: (u16, u16)) -> Self {
+        let uu_name = config.and_then(|c| uu_core::ClientState::read(&c.at("state.json")).ok().flatten())
+            .and_then(|state| state.device_name)
+            .filter(|name| uu_core::api::validate_device_name(name).is_ok())
+            .unwrap_or_else(uu_core::config::local_device_name);
         let loaded = (|| -> anyhow::Result<_> {
             let config = config.ok_or_else(|| anyhow::anyhow!("无法确定设备配置目录"))?;
             let store = Store::open(config.at("device-trust"))?;
@@ -442,6 +469,7 @@ impl Workspace {
             store,
             trust,
             notice,
+            uu_name,
             draft,
             monitors: Vec::new(),
             monitor_error: String::new(),
@@ -1226,6 +1254,15 @@ impl Workspace {
         card(ui, |ui| {
             ui.strong("UU 账号");
             ui.add_space(8.);
+            ui.horizontal(|ui| {
+                ui.label("UU 设备名称");
+                ui.add_enabled(!info.login_busy,
+                    egui::TextEdit::singleline(&mut self.uu_name).char_limit(64).desired_width(240.));
+                if info.logged_in && ui.add_enabled(!info.login_busy, egui::Button::new("保存名称")).clicked() {
+                    actions.push(Action::RenameUu);
+                }
+            });
+            ui.weak("默认使用电脑名称，可自定义；修改名称不改变 UU 编号和设备授权。");
             if info.logged_in {
                 ui.label(RichText::new("已登录").color(theme::SUCCESS));
                 if let Some(id) = &info.uu_id {
@@ -1240,12 +1277,6 @@ impl Workspace {
                 ui.label("登录后可通过 UU 寻址原生设备。");
                 if let Some(qr) = info.qr {
                     ui.image((qr, egui::vec2(180., 180.)));
-                }
-                if info.login_busy {
-                    ui.spinner();
-                }
-                if !info.login_status.is_empty() {
-                    ui.label(&info.login_status);
                 }
                 if primary(
                     ui,
@@ -1263,6 +1294,8 @@ impl Workspace {
                     actions.push(Action::CancelLogin);
                 }
             }
+            if info.login_busy { ui.spinner(); }
+            if !info.login_status.is_empty() { ui.label(&info.login_status); }
             ui.add_space(8.);
             ui.weak("本机是否接受 UU 连接，在“共享本机”中启用。对方仍需经过设备配对授权。");
         });
@@ -1695,6 +1728,7 @@ impl super::App {
             match action {
                 Action::Open(id) => self.open_device_profile(&id),
                 Action::Login => self.start_login(),
+                Action::RenameUu => self.rename_uu_device(),
                 Action::CancelLogin => {
                     self.login_rx = None;
                     self.login_texture = None;

@@ -5343,6 +5343,7 @@ dependencies = [
  "flate2",
  "fs2",
  "futures-util",
+ "gethostname",
  "hex",
  "hmac",
  "md-5",

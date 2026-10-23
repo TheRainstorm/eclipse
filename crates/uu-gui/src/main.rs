@@ -508,10 +508,26 @@ impl App {
             self.login_status = "无法确定登录目录，请检查本机用户目录配置".into();
             return;
         };
+        let name = match uu_core::api::validate_device_name(&self.workspace.uu_name) {
+            Ok(name) => name.to_string(),
+            Err(error) => { self.login_status = error.to_string(); return; }
+        };
         self.login_status = "获取二维码…".into();
         self.login_rx = None;
         self.login_texture = None;
-        self.login_rx = Some(login::spawn(config));
+        self.login_rx = Some(login::spawn(config, name));
+    }
+
+    fn rename_uu_device(&mut self) {
+        let Some(config) = self.config.clone() else { return; };
+        let name = match uu_core::api::validate_device_name(&self.workspace.uu_name) {
+            Ok(name) => name.to_string(),
+            Err(error) => { self.login_status = error.to_string(); return; }
+        };
+        self.login_rx = None;
+        self.login_texture = None;
+        self.login_status = "正在保存 UU 设备名称…".into();
+        self.login_rx = Some(login::rename(config, name));
     }
 
     fn poll_login(&mut self, ctx: &egui::Context) {
@@ -540,16 +556,31 @@ impl App {
                     Err(e) => self.login_status = format!("二维码生成失败: {e}"),
                 },
                 LoginEvent::Status(s) => self.login_status = s,
-                LoginEvent::Done {token, user_id} => {
+                LoginEvent::Done {token, user_id, device_name, name_error} => {
                     let saved = self.config.as_ref().ok_or_else(||anyhow::anyhow!("无法确定登录目录"))
-                        .and_then(|config|account::store_login(&config.at("state.json"),token.clone(),user_id));
+                        .and_then(|config|account::store_login(&config.at("state.json"),token.clone(),user_id,device_name));
                     self.login_rx = None;
                     match saved {
-                        Ok(()) => self.apply_account(Some(token)),
+                        Ok(()) => {
+                            self.apply_account(Some(token));
+                            if let Some(error) = name_error { self.login_status = format!("账号已登录，设备改名失败：{error}；可点击“保存名称”重试。"); }
+                        },
                         Err(error) => self.login_status = format!("保存登录失败：{error}"),
                     }
                 }
-                LoginEvent::Error(e) => { self.login_rx = None; self.login_status = format!("登录失败: {e}"); },
+                LoginEvent::NameSaved { name, token } => {
+                    self.login_rx = None;
+                    self.login_status = match self.config.as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("无法确定登录目录"))
+                        .and_then(|c| account::store_device_name(&c.at("state.json"), &token, name)) {
+                        Ok(()) => { self.rx = None; if self.lan.compatibility { self.start_load(); } "UU 设备名称已更新".into() },
+                        Err(error) => format!("云端名称已更新，保存本地记录失败：{error}"),
+                    };
+                }
+                LoginEvent::Error(e) => {
+                    self.login_rx = None;
+                    self.login_status = if self.logged_in { format!("保存设备名称失败：{e}") } else { format!("登录失败：{e}") };
+                },
             }
         }
     }

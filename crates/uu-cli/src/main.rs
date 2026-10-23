@@ -210,8 +210,8 @@ enum Command {
     },
     /// Register this machine (once) and log in by scanning a QR code.
     Login {
-        /// Device name shown on the account's device list.
-        #[arg(long, default_value = "uu-rs-linux")]
+        /// Name for first registration; defaults to this computer's hostname.
+        #[arg(long, default_value_t = uu_core::config::local_device_name())]
         name: String,
     },
     /// Send one signed API request and print the JSON response.

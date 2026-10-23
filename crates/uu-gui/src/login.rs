@@ -11,7 +11,10 @@ pub enum LoginEvent {
     Done {
         token: String,
         user_id: Option<String>,
+        device_name: Option<String>,
+        name_error: Option<String>,
     },
+    NameSaved { name: String, token: String },
     Error(String),
 }
 
@@ -38,8 +41,19 @@ impl Drop for Worker {
     }
 }
 
-pub fn spawn(config: Config) -> Worker {
-    spawn_task(move |tx| async move { run(config, &tx).await })
+pub fn spawn(config: Config, name: String) -> Worker {
+    spawn_task(move |tx| async move { run(config, name, &tx).await })
+}
+
+pub fn rename(config: Config, name: String) -> Worker {
+    spawn_task(move |tx| async move {
+        let client = SignalClient::new(&config)?;
+        let api = UuApi::new(client, config.at("state.json"))?;
+        api.rename_current_device(&name).await?;
+        let token = api.state.token.context("账号未登录")?;
+        let _ = tx.send(LoginEvent::NameSaved { name, token });
+        Ok(())
+    })
 }
 
 fn spawn_task<F: std::future::Future<Output = Result<()>> + 'static>(
@@ -74,13 +88,13 @@ fn spawn_task<F: std::future::Future<Output = Result<()>> + 'static>(
     }
 }
 
-async fn run(config: Config, tx: &std::sync::mpsc::Sender<LoginEvent>) -> Result<()> {
+async fn run(config: Config, name: String, tx: &std::sync::mpsc::Sender<LoginEvent>) -> Result<()> {
+    let name = uu_core::api::validate_device_name(&name)?.to_string();
     let client = SignalClient::new(&config)?;
     let mut api = UuApi::new(client, config.at("state.json"))?;
     if !api.has_identity() {
         let _ = tx.send(LoginEvent::Status("注册设备…".into()));
-        let dev = api.register("uu-rs-gui").await?;
-        let _ = dev;
+        api.register(&name).await?;
     }
     loop {
         let _ = tx.send(LoginEvent::Status("获取二维码…".into()));
@@ -118,11 +132,25 @@ async fn run(config: Config, tx: &std::sync::mpsc::Sender<LoginEvent>) -> Result
                                 .as_str()
                                 .map(str::to_string)
                                 .or_else(|| v["data"]["user_id"].as_u64().map(|id| id.to_string()));
+                            api.state.token = Some(tok.into());
+                            api.state.user_id = uid.clone();
+                            api.state.identity.user_id = uid.clone();
+                            // Existing registrations keep init's original name.
+                            // Rename after authentication without replacing ids.
+                            let renamed = if api.state.device_name.as_deref() == Some(name.as_str()) {
+                                Ok(())
+                            } else {
+                                let _ = tx.send(LoginEvent::Status("登录成功，正在更新设备名称…".into()));
+                                api.rename_current_device(&name).await
+                            };
+                            let name_error = renamed.as_ref().err().map(ToString::to_string);
                             // Only the active UI receiver may persist credentials. A cancelled
                             // or replaced QR flow can never sign the user back in later.
                             let _ = tx.send(LoginEvent::Done {
                                 token: tok.into(),
                                 user_id: uid,
+                                device_name: renamed.is_ok().then_some(name.clone()),
+                                name_error,
                             });
                             return Ok(());
                         }

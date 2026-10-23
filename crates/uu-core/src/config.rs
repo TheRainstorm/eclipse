@@ -4,6 +4,14 @@ use std::path::{Path, PathBuf};
 
 use crate::error::CoreError;
 
+/// Human-readable default for a newly registered device, independent of its ids.
+pub fn local_device_name() -> String {
+    let hostname = gethostname::gethostname();
+    let name: String = hostname.to_string_lossy().trim().chars()
+        .filter(|c| !c.is_control()).take(64).collect();
+    if name.is_empty() { "Eclipse".into() } else { name }
+}
+
 /// Optional routing hint. Never ship a developer's public IP as a default.
 pub fn geo_exit_ip() -> String {
     std::env::var("UU_GEO_IP").unwrap_or_else(|_| "0.0.0.0".into())
