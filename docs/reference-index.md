@@ -186,7 +186,7 @@ git -C moonlight/moonlight-qt submodule status
 
 自有主机的输入后端使用 `keycode` / `keycode_macro` 1.0.0 的完整跨平台映射，避免把 USB HID usage 直接当成 Windows 扫描码或 Linux evdev 编号。来源为 [keycode](https://github.com/dfrankland/keycode) 与其固定的 [Chromium 键码数据](https://chromium.googlesource.com/chromium/src/+/2b6022954b9fb600f15e08002a148187f4f986da/ui/events/keycodes/dom/keycode_converter_data.inc)；Rust crate 的 MIT 许可和数据的 BSD 版权/许可均随第三方通知保留。
 
-`uu-input` 提供 Windows SendInput 与已授权 X11 XTest：明确转换扩展扫描码、侧键与横向滚轮，按物理虚拟桌面坐标处理负屏幕原点，并只释放本会话成功按下的键与按钮。Linux 不默认打开内核输入设备；Wayland 原生输入仍需后续 portal。
+`uu-input` 提供 Windows SendInput 与已授权 X11 XTest：明确转换扩展扫描码、侧键与横向滚轮，按物理虚拟桌面坐标处理负屏幕原点，并只释放本会话成功按下的键与按钮。Linux 普通键鼠不默认打开内核输入设备；Wayland 键鼠由同一采集门户会话授权和执行，详见[原生采集](native-capture.md)。可选虚拟手柄的 UHID / ViGEmBus 依赖另见[手柄说明](native-gamepad.md)。
 
 后端验证使用有认证的独立 Xvfb，检查中键/侧键、滚轮、绝对/相对移动、Shift 标点与释放归属；Windows 单元测试只检查输入字段与生命周期，不向用户桌面注入测试按键。**这属于原生控制的底层准备，v0.2.0 原生观看仍然只读**，不能把后端组件视为已接入远控。
 

@@ -10,7 +10,7 @@ v0.2.0 发布包仍为原生纯观看。v0.3.0 已接入主机后端与图形端
 uu native-host --invitation-file ./desktop.eclipse-invite.json --allow-input
 ```
 
-省略此开关时始终仅观看。合成画面、单窗口源不允许桌面输入；不要把邀请交给希望授权范围以外的人。Windows 使用当前交互桌面的 SendInput，Linux 使用同一授权 X11 会话的 XTest；不自动提权或修改输入设备权限，Wayland 输入仍需后续 portal。Windows 目标窗口的权限限制仍由操作系统执行。
+省略此开关时始终仅观看。合成画面、单窗口源不允许桌面输入；不要把邀请交给希望授权范围以外的人。Windows 使用当前交互桌面的 SendInput，Linux X11 使用同一授权会话的 XTest，Wayland 使用与屏幕采集相同且已获键鼠许可的 RemoteDesktop 门户会话。不自动提权或修改输入设备权限，未获得门户输入授权时继续仅观看。Windows 目标窗口的权限限制仍由操作系统执行。
 
 TLS 邀请与视频 Offer/Answer 保持 v0.2.0 格式。新控制端在已认证的 `eclipse-control-v1` SCTP 通道请求控制，主机确认后才启用输入；旧主机忽略该扩展时继续观看，旧控制端不请求控制时仍然只读。
 

@@ -40,16 +40,16 @@ flowchart TB
 |---|---|---|
 | 设备来源 | 官方账号设备列表与连接房间 | 局域网 UDP 发现、手动 IP 或主机名、已保存设备 |
 | 身份与授权 | 官方登录、设备身份、API 签名、房间凭据 | 本机持久证书、首次八位配对码、每设备独立授权与撤销；旧入口使用短期邀请 |
-| 连接信令 | HTTPS API、Socket.IO over WSS、官方事件和压缩 SDP、trickle ICE | 本项目 TLS 1.3 RPC 与长度前缀 JSON，交换原生 SDP offer/answer |
-| 网络范围 | 使用服务返回的 ICE/STUN/TURN 配置；本实现有自己的支持边界 | 当前只接受与认证信令对端地址一致的 UDP host candidate；没有原生公网 STUN/TURN 服务 |
-| 视频 | 接收官方协商的 H.264；Windows 可选 H.265 Main 8-bit | 当前主机发送 H.264；软件、Linux VA-API 或 Windows 硬件 MFT 编码 |
+| 连接信令 | HTTPS API、Socket.IO over WSS、官方事件和压缩 SDP、trickle ICE | IP 使用本项目 TLS 1.3 RPC；UU / 自建 WSS 转送原生认证与 SDP，不改变媒体协议 |
+| 网络范围 | 使用服务返回的 ICE/STUN/TURN 配置；本实现有自己的支持边界 | IP 邀请限制对端 UDP host candidate；连接服务可用 STUN / ICE 寻址，默认只直连，自建服务不提供 TURN |
+| 视频 | 接收官方协商的 H.264，可优先 H.265 Main 8-bit | H.264 默认；Intel VPL 可选 HEVC / AV1，按接收能力协商 |
 | 音频 | 接收官方协商的 Opus | Opus，可协商 RED 音频冗余 |
 | 视频恢复 | 共用接收侧 RTP 重排、NACK/RTX、PLI/FIR 和参考链保护 | 使用同类接收路径，原生发送端也处理恢复请求 |
 | 键鼠与会话控制 | `CONTROL_DATA_CHANNEL` 等官方通道，protobuf 控制消息与专用输入 JSON | `eclipse-control-v1`，本项目定义的请求输入许可、状态、心跳和输入 JSON |
 | 文本剪贴板 | 官方 TEXT/CONTROL 消息与功能声明 | 独立 `eclipse-clipboard-v1` 通道，双方许可的有界文本协议 |
-| 画质与显示源 | 已实现官方画质请求、帧率请求及多显示器操作 | 开始共享前选择一个显示源、帧率和码率；运行中切屏和完整画质重协商尚未接入 |
+| 画质与显示源 | 已实现官方画质请求、帧率请求及多显示器操作 | 共享前选择显示源和画质；运行中可在授权范围内切屏，完整画质重协商仍待完善 |
 
-表中的视频格式是**本项目当前可用的组合**，不是对官方 UU 所有版本编码能力的穷举。兼容客户端支持 HEVC，不等于本项目原生主机已经能编码 HEVC。当前原生 AV1、HDR 和视频 FEC 也未实现。
+表中的视频格式是**本项目当前可用的组合**，不是对官方 UU 所有版本编码能力的穷举。当前开发分支原生主机已接入 HEVC / AV1，要求相应 Intel 硬件运行时；实际 GPU 性能仍需验证。HDR 和视频 FEC 未实现，兼容 UU 设备也不会因为原生扩展而自动支持 AV1。
 
 新版局域网设备配对是原生会话外面的一层连接代理：持久配对成功后，为每次连接签发新的短期串流许可，再复用已有原生串流通路。旧邀请入口仍可直接使用该通路，二者不是两个不同的视频协议。详见[局域网配对](native-lan.md)和[邀请通路](native-streaming.md)。
 
@@ -63,7 +63,7 @@ flowchart TB
 
 ```text
 配对、授权、SDP：  原生 RPC / TLS 1.3 / TCP
-视频、音频：      H.264 或 Opus / RTP、RTCP / SRTP、SRTCP / UDP
+视频、音频：      H.264、HEVC、AV1 或 Opus / RTP、RTCP / SRTP、SRTCP / UDP
 键鼠、剪贴板：    原生应用消息 / SCTP DataChannel / DTLS / UDP
 ```
 
@@ -104,8 +104,8 @@ Moonlight 是控制端，Sunshine 是与其配套的被控主机。它们使用 
 | 音视频传输 | WebRTC RTP/RTCP，DTLS-SRTP，当前 UDP 网络 | UDP 音视频、GameStream RTP 封装及专用帧头和恢复信息，不是 WebRTC 媒体协商 |
 | 输入控制 | SCTP DataChannel，应用消息因模式而异 | 当前主要为 ENet over UDP 控制，具有可靠发送及不同通道；历史版本存在 TCP 路径 |
 | 视频丢包恢复 | NACK/RTX、PLI/FIR、参考链保护；没有视频 FEC | 实现了 Reed–Solomon 视频 FEC、帧组装与参考链恢复机制 |
-| 编解码能力 | 原生发送 H.264；Windows 兼容接收可选 HEVC | 支持 H.264、HEVC、AV1；具体依赖主机、GPU 和控制端能力，还支持 HDR 等组合 |
-| 主机 GPU 管线 | DXGI/X11 采集，当前有 CPU 转换和上传，再使用 VA-API 或 MFT 硬编 | 提供多种平台及硬件编码后端，例如 Windows QSV 使用 D3D11 硬件输入与低延迟配置；是否全程零拷贝仍取决于平台 |
+| 编解码能力 | 原生按能力发送 H.264 / HEVC / AV1；兼容接收可优先 HEVC | 支持 H.264、HEVC、AV1；具体依赖主机、GPU 和控制端能力，还支持 HDR 等组合 |
+| 主机 GPU 管线 | DXGI / X11 / Wayland 门户采集，当前有 CPU 转换和上传，再使用 VA-API、MFT 或 Intel VPL 硬编 | 提供多种平台及硬件编码后端，例如 Windows QSV 使用 D3D11 硬件输入与低延迟配置；是否全程零拷贝仍取决于平台 |
 | 浏览器方向 | 底层媒体标准可复用，但仍需浏览器能使用的认证与信令适配 | GameStream 也需要专用适配，不能直接由普通 WebRTC 页面连接 |
 
 Moonlight 的视频接收代码明确创建 UDP socket，控制代码同时保留 ENet 与旧 TCP 分支。不能把它描述为所有功能都发送裸 UDP，也不能把可靠输入当成 WebRTC 独有开销。[视频接收](https://github.com/moonlight-stream/moonlight-common-c/blob/04053843c90c4268583f2496b997d54d59f03957/src/VideoStream.c)、[控制流](https://github.com/moonlight-stream/moonlight-common-c/blob/04053843c90c4268583f2496b997d54d59f03957/src/ControlStream.c)、[HTTP 会话入口](https://github.com/moonlight-stream/moonlight-qt/blob/dc92b6d2f361064d3e9e53ce5de92f611db77220/app/backend/nvhttp.cpp)、[RTSP 实现](https://github.com/moonlight-stream/moonlight-common-c/blob/04053843c90c4268583f2496b997d54d59f03957/src/RtspConnection.c)
