@@ -53,6 +53,29 @@ fn main() -> anyhow::Result<()> {
         .context("owned clipboard state did not converge")?;
         Ok(())
     }
+    fn picture(width: usize, height: usize, mut seed: u32) -> arboard::ImageData<'static> {
+        let mut bytes = Vec::with_capacity(width * height * 4);
+        for index in 0..width * height {
+            for _ in 0..3 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                bytes.push((seed >> 24) as u8);
+            }
+            bytes.push(if index % 7 == 0 { 128 } else { 255 });
+        }
+        arboard::ImageData {
+            width,
+            height,
+            bytes: std::borrow::Cow::Owned(bytes),
+        }
+    }
+    fn is_picture(system: &mut arboard::Clipboard, width: usize, height: usize, seed: u32) -> bool {
+        let expected = picture(width, height, seed);
+        system.get_image().is_ok_and(|image| {
+            image.width == width
+                && image.height == height
+                && image.bytes.as_ref() == expected.bytes.as_ref()
+        })
+    }
     const LOCAL: &str = "Generated controller text 中文🙂";
     const REPLY: &str = "Generated host reply\r\nsecond line";
     const PAUSED_REPLY: &str = "Generated host copy while controller inactive";
@@ -75,7 +98,12 @@ fn main() -> anyhow::Result<()> {
         let state = Arc::new(Clipboard::default());
         state.enabled.store(true, Ordering::Release);
         clipboard::start_host(state.clone(), 0)?;
-        let config = HostConfig {encoder_tuning:Default::default(),session:None,video_policy:None,codec:Default::default(),rate_control:Default::default(),
+        let config = HostConfig {
+            encoder_tuning: Default::default(),
+            session: None,
+            video_policy: None,
+            codec: Default::default(),
+            rate_control: Default::default(),
             bind: "127.0.0.1:0".parse()?,
             source: CaptureSource::Primary,
             invitation_file: invitation,
@@ -99,6 +127,16 @@ fn main() -> anyhow::Result<()> {
                 std::fs::write(phases.join("inactive-host-copy"),b"ready")?;
                 until(||Path::new(&phases.join("resumed")).exists()&&system.get_text().is_ok_and(|s|s==PAUSED_REPLY)).await?;
                 std::fs::write(phases.join("host-converged"),b"ready")?;
+                until(||phases.join("images-start").exists()&&state.images_supported.load(Ordering::Acquire)).await?;
+                system.set_image(picture(192,128,10))?;
+                until(||is_picture(&mut system,128,192,20)).await?;
+                system.set_text("Generated text after images")?;
+                until(||phases.join("readonly-ready").exists()).await?;
+                system.set_image(picture(96,96,30))?;
+                until(||phases.join("readonly-local-copy").exists()).await?;
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                ensure!(is_picture(&mut system,96,96,30),"readonly image was forwarded to host");
+                std::fs::write(phases.join("readonly-verified"),b"ready")?;
                 until(||host.is_finished()).await?;
                 Ok::<_,anyhow::Error>(())
             }.await;
@@ -127,11 +165,23 @@ fn main() -> anyhow::Result<()> {
                 stats.clipboard.generation.fetch_add(1,Ordering::AcqRel);stats.clipboard.active.store(true,Ordering::Release);std::fs::write(phases.join("resumed"),b"ready")?;
                 until(||phases.join("host-converged").exists()).await?;
                 until(||system.get_text().is_ok_and(|s|s==PAUSED_REPLY)).await?;
+                ensure!(stats.clipboard.images_supported.load(Ordering::Acquire),"image protocol was not negotiated");
+                std::fs::write(phases.join("images-start"),b"ready")?;
+                until(||is_picture(&mut system,192,128,10)).await?;
+                system.set_image(picture(128,192,20))?;
+                until(||system.get_text().is_ok_and(|s|s=="Generated text after images")).await?;
+                stats.clipboard.read_only.store(true,Ordering::Release);
+                stats.clipboard.generation.fetch_add(1,Ordering::AcqRel);
+                std::fs::write(phases.join("readonly-ready"),b"ready")?;
+                until(||is_picture(&mut system,96,96,30)).await?;
+                system.set_image(picture(64,64,40))?;
+                std::fs::write(phases.join("readonly-local-copy"),b"ready")?;
+                until(||phases.join("readonly-verified").exists()).await?;
                 ensure!(stats.errors.load(Ordering::Relaxed)==0,"clipboard disturbed video");Ok::<_,anyhow::Error>(())
             }.await;
             stop.send_replace(true);let ended=tokio::time::timeout(Duration::from_secs(5),client).await;
             stats.clipboard.stopped.store(true,Ordering::Release);result?;ended???;
-            println!("{}",serde_json::json!({"role":"viewer","native_clipboard":true,"decoded":stats.decoded_total.load(Ordering::Relaxed),"default_off":true,"bidirectional_text":true,"inactive_suppressed":true,"resume_converged":true,"clean_stop":true}));Ok::<_,anyhow::Error>(())
+            println!("{}",serde_json::json!({"role":"viewer","native_clipboard":true,"decoded":stats.decoded_total.load(Ordering::Relaxed),"default_off":true,"bidirectional_text":true,"bidirectional_png":true,"text_image_switch":true,"readonly_image_suppressed":true,"inactive_suppressed":true,"resume_converged":true,"clean_stop":true}));Ok::<_,anyhow::Error>(())
         })?;
     } else {
         anyhow::bail!("role must be host or viewer");

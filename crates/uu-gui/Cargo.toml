@@ -19,7 +19,7 @@ qrcode = "0.14"
 raw-window-handle = "0.6"
 winit = {version="0.30.13",default-features=false,features=["x11","wayland"]}
 reqwest.workspace = true
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "ico"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "ico", "bmp"] }
 tokio.workspace = true
 uuid.workspace = true
 eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
@@ -37,7 +37,7 @@ libloading = "0.8"
 wayland-client = { version = "0.31", features = ["system"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 egui-winit = { version = "0.29.1", default-features = false, features = ["preserve-key-events"] }
-arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
+arboard = { version = "3.7", default-features = false, features = ["wayland-data-control", "image-data"] }
 
 [dev-dependencies]
 uu-media = { path = "../uu-media" }
@@ -53,4 +53,4 @@ xkbcommon-dl = "0.4"
 libc = "0.2"
 
 [target.'cfg(windows)'.dev-dependencies]
-arboard = { version = "3.7", default-features = false }
+arboard = { version = "3.7", default-features = false, features = ["image-data"] }

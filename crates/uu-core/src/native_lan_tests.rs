@@ -401,7 +401,7 @@ async fn clipboard_is_opt_in_and_reconnect_creates_an_isolated_fresh_backend() {
             }
             loop {
                 *stats.clipboard.local.lock().unwrap() = Some("generated viewer text 中文".into());
-                if source.remote.lock().unwrap().as_deref() == Some("generated viewer text 中文")
+                if source.remote.lock().unwrap().as_ref().and_then(crate::clipboard::Content::as_text) == Some("generated viewer text 中文")
                 {
                     break;
                 }
@@ -409,7 +409,7 @@ async fn clipboard_is_opt_in_and_reconnect_creates_an_isolated_fresh_backend() {
             }
             loop {
                 *source.local.lock().unwrap() = Some("generated host text".into());
-                if stats.clipboard.remote.lock().unwrap().as_deref() == Some("generated host text")
+                if stats.clipboard.remote.lock().unwrap().as_ref().and_then(crate::clipboard::Content::as_text) == Some("generated host text")
                 {
                     break;
                 }

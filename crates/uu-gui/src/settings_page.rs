@@ -236,14 +236,14 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
         note(ui,"系统键跟随全屏画面的输入焦点。Ctrl+左 Alt+F / X 切换全屏，Q 退出串流，Z 释放或捕获输入；这些本地命令始终由客户端处理。Ctrl+Alt+Del 由 Windows 保留。");
         ui.add_space(8.0);
         if state.native {
-            ui.checkbox(&mut s.native_clipboard, "同步文本剪贴板");
+            ui.checkbox(&mut s.native_clipboard, "同步剪贴板（文本和图片）");
         } else {
-            ui.checkbox(&mut s.native_clipboard, "原生连接：同步文本剪贴板");
+            ui.checkbox(&mut s.native_clipboard, "原生连接：同步文本和图片剪贴板");
             ui.checkbox(&mut s.clipboard, "兼容连接：同步文本剪贴板");
         }
         note(
             ui,
-            "仅在当前前台串流同步有界文本；原生共享还需主机许可。图片和文件不传输。",
+            "仅同步当前前台串流；原生共享需主机许可，支持最多30 KiB文本和8 MiB PNG图片，文件不传输。兼容连接只支持文本。",
         );
     });
 }

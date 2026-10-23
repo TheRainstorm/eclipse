@@ -626,6 +626,7 @@ async fn send_video(
     ensure!(!choices.is_empty(),"两端没有共同可用的视频编码，请检查主机编码设置和客户端解码支持");
     let advertised:Vec<_>=ordered.into_iter().filter(|c|crate::native_media::offers_codec(&offer.sdp,*c)).collect();
     let audio_mode=if config.audio.is_some(){crate::native_media::offered_audio(&offer.sdp)?}else{None};
+    let clipboard_images=crate::native_clipboard::images_offered(&offer.sdp);
     match stream.lan_peer() {
         Some(ip) => peer.remote(offer.sdp, ip).await?,
         None => peer.remote_direct(offer.sdp).await?,
@@ -679,11 +680,13 @@ async fn send_video(
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
     };
     controls.set_permissions(permissions);
+    controls.clipboard_images(clipboard_images);
     controls.set_session(config.session.clone());
     if let Some(displays)=&displays {displays.dimensions(width,height);}
     controls.set_displays(displays.clone());
     controls.attach(&peer.pc);
     let mut description=peer.description(false).await?;
+    if clipboard_images {crate::native_clipboard::advertise(&mut description);}
     if config.video_policy.is_some() {
         crate::native_quality::Response{dynamic,codecs:available,max_fps:if dynamic{crate::native_quality::MAX_FPS}else{60},max_bitrate_kbps:if dynamic{crate::native_quality::MAX_BITRATE_KBPS}else{100_000}}.add(&mut description)?;
     }
@@ -864,8 +867,6 @@ async fn receive_session(
         .pc
         .create_data_channel("eclipse-control-v1", None)
         .await?;
-    let clipboard=peer.pc.create_data_channel(crate::native_clipboard::LABEL,None).await?;
-    crate::native_clipboard::viewer(clipboard,stats.clone());
     let gamepad=if let Some(input)=&input {
         let options=webrtc::data_channel::data_channel_init::RTCDataChannelInit{ordered:Some(false),max_packet_life_time:Some(crate::native_gamepad::LIFETIME_MS),..Default::default()};
         let channel=peer.pc.create_data_channel(crate::native_gamepad::LABEL,Some(options)).await?;
@@ -874,6 +875,7 @@ async fn receive_session(
     let mut controls=crate::native_control::ViewerControl::new(channel.clone(),stats.clone(),input);
     controls.gamepads(gamepad);
     let mut description=peer.description(true).await?;
+    crate::native_clipboard::advertise(&mut description);
     if let Some(request)=stats.native_quality_request.get(){request.add(&mut description)?;}
     stream.send(serde_json::to_value(Offer {
         version: 1,
@@ -891,6 +893,7 @@ async fn receive_session(
     );
     validate_video(answer.width, answer.height, answer.fps)?;
     let quality=crate::native_quality::Response::read(&answer.sdp)?;
+    let clipboard_images=crate::native_clipboard::images_offered(&answer.sdp);
     if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"主机实际编码与能力回报不一致");}
     stats.capabilities.enable(crate::capabilities::Capability::Quality,quality.is_some());
     stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":stats.native_quality_request.get(),"host_capabilities":quality}));
@@ -904,6 +907,12 @@ async fn receive_session(
         Some(ip) => peer.remote(answer.sdp, ip).await?,
         None => peer.remote_direct(answer.sdp).await?,
     }
+    // CONTROL already negotiated the SCTP association. Select one clipboard
+    // version only after the authenticated answer, so old peers keep v1 and
+    // text/images share a single ordered content stream on new peers.
+    let label=if clipboard_images{crate::native_clipboard::LABEL_V2}else{crate::native_clipboard::LABEL};
+    let clipboard=peer.pc.create_data_channel(label,None).await?;
+    crate::native_clipboard::viewer(clipboard,stats.clone());
     peer.connected().await?;
     if stream.lan_peer().is_none() {stats.diagnostics.record(peer.direct_path().await?);}
     let first_frame=wait_first_frame(&stats,first_frame_baseline,Duration::from_secs(20));
@@ -1281,12 +1290,12 @@ mod tests {
             wait_clipboard(|| source.active.load(Ordering::Acquire)).await?;
             wait_clipboard(|| {
                 *stats.clipboard.local.lock().unwrap() = Some("generated local 中文🙂".into());
-                source.remote.lock().unwrap().as_deref() == Some("generated local 中文🙂")
+                source.remote.lock().unwrap().as_ref().and_then(crate::clipboard::Content::as_text) == Some("generated local 中文🙂")
             })
             .await?;
             wait_clipboard(|| {
                 *source.local.lock().unwrap() = Some("generated remote text".into());
-                stats.clipboard.remote.lock().unwrap().as_deref() == Some("generated remote text")
+                stats.clipboard.remote.lock().unwrap().as_ref().and_then(crate::clipboard::Content::as_text) == Some("generated remote text")
             })
             .await?;
             stats.clipboard.active.store(false, Ordering::Release);

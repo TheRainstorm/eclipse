@@ -876,9 +876,10 @@ impl super::App {
                                     }
                                     if self.is_native() || self.supports_remote(uu_core::capabilities::Capability::Clipboard) {
                                     side_submenu(ui,&mut blocked,Icon::Folder,"剪贴板",|ui| {
-                                        if self.is_native(){if ui.checkbox(&mut self.preferences.native_clipboard,"同步文本剪贴板").changed(){self.persist_preferences();}}
+                                        if self.is_native(){if ui.checkbox(&mut self.preferences.native_clipboard,"同步剪贴板（文本和图片）").changed(){self.persist_preferences();}}
                                         else if ui.checkbox(&mut self.preferences.clipboard,"同步文本剪贴板").changed(){self.persist_preferences();}
-                                        ui.small("仅同步当前前台串流，支持最多30 KiB文本；图片和文件不传输。");
+                                        if self.is_native(){ui.small("仅同步当前前台串流：文本最多30 KiB，图片最多8 MiB PNG；双方均需允许，文件不传输。");}
+                                        else{ui.small("兼容连接仅同步最多30 KiB文本。");}
                                         if let Some(h)=&self.controller {ui.label(h.stats.clipboard.status.lock().unwrap().as_str());}
                                     });
                                     }

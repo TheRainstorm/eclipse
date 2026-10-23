@@ -653,8 +653,9 @@ async fn flush_clipboard(stats:&Option<Arc<MediaStats>>,seq:&Arc<AtomicU64>,weak
         let Some(channel)=weak_channel.upgrade() else{return;};
         if channel.ready_state()!=webrtc::data_channel::data_channel_state::RTCDataChannelState::Open{return;}
         let value=clipboard.local.lock().unwrap().take();let Some(value)=value else{return;};
+        let Some(text)=value.as_text() else{clipboard.status("此兼容连接只支持文本剪贴板");return;};
         let seq=seq.fetch_add(1,Ordering::Relaxed);
-        let Ok(message)=crate::clipboard::text_change(seq,&value) else{clipboard.status("文本超过30 KiB或包含无效字符");return;};
+        let Ok(message)=crate::clipboard::text_change(seq,text) else{clipboard.status("文本超过30 KiB或包含无效字符");return;};
         match tokio::time::timeout(Duration::from_millis(200),channel.send(&bytes::Bytes::from(message))).await {
             Ok(Ok(_))=>{clipboard.last_sent.store(seq,Ordering::Release);clipboard.sent.fetch_add(1,Ordering::Relaxed);clipboard.status("文本已发送，等待远端确认");},
             _=>{let mut pending=clipboard.local.lock().unwrap();if pending.is_none(){*pending=Some(value);}clipboard.status("剪贴板发送失败，将重试");},
@@ -669,7 +670,7 @@ async fn receive_clipboard(data:&[u8],stats:&Option<Arc<MediaStats>>,seq:&Arc<At
     match received {
         Ok(received)=>{
             if let Some(text)=received.text {
-                if clipboard.ready(){*clipboard.remote.lock().unwrap()=Some(text);clipboard.received.fetch_add(1,Ordering::Relaxed);}
+                if clipboard.ready(){*clipboard.remote.lock().unwrap()=Some(text.into());clipboard.received.fetch_add(1,Ordering::Relaxed);}
             }
             if received.acknowledged.is_some_and(|id|id==clipboard.last_sent.load(Ordering::Acquire)){clipboard.status("文本剪贴板已同步");}
             if let Some(channel)=channel.upgrade(){for reply in received.replies{let _=tokio::time::timeout(Duration::from_millis(200),channel.send(&bytes::Bytes::from(reply))).await;}}

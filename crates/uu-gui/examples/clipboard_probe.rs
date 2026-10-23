@@ -14,6 +14,7 @@ fn main() -> anyhow::Result<()> {
     let mut local = arboard::Clipboard::new()?;
     local.set_text("uu-local-test-中文;!".to_owned())?;
     control.enabled.store(true, Release);
+    control.supported.store(true, Release);
     control.active.store(true, Release);
     clipboard::start(control.clone(), 0)?;
     let wait = |condition: &dyn Fn() -> bool| -> anyhow::Result<()> {
@@ -26,9 +27,17 @@ fn main() -> anyhow::Result<()> {
         }
         anyhow::bail!("clipboard condition timed out");
     };
-    wait(&|| control.local.lock().unwrap().as_deref() == Some("uu-local-test-中文;!"))?;
+    wait(&|| {
+        control
+            .local
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(uu_core::clipboard::Content::as_text)
+            == Some("uu-local-test-中文;!")
+    })?;
     control.local.lock().unwrap().take();
-    *control.remote.lock().unwrap() = Some("uu-remote-test-标点[]{}".to_owned());
+    *control.remote.lock().unwrap() = Some("uu-remote-test-标点[]{}".into());
     let end = Instant::now() + Duration::from_secs(4);
     loop {
         if local.get_text().ok().as_deref() == Some("uu-remote-test-标点[]{}") {
@@ -53,7 +62,7 @@ fn main() -> anyhow::Result<()> {
         "view-only clipboard sent local text"
     );
     control.active.store(false, Release);
-    *control.remote.lock().unwrap() = Some("uu-inactive-test".to_owned());
+    *control.remote.lock().unwrap() = Some("uu-inactive-test".into());
     std::thread::sleep(Duration::from_millis(250));
     anyhow::ensure!(
         local.get_text()? == "uu-read-only-test",

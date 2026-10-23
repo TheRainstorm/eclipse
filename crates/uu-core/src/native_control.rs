@@ -301,9 +301,11 @@ pub(crate) struct HostControl {
     registered: AtomicBool,
     clipboard: Option<Arc<crate::clipboard::Clipboard>>,
     clipboard_registered: AtomicBool,
+    clipboard_version: std::sync::atomic::AtomicU8,
     gamepad_registered: AtomicBool,
 }
 impl HostControl {
+    pub fn clipboard_images(&self,enabled:bool){self.clipboard_version.store(if enabled{2}else{1},Ordering::Release);}
     pub fn set_quality(&self,quality:crate::native_quality::Runtime){*self.quality.lock().unwrap()=Some(quality);}
     pub fn set_session(&self,session:Option<crate::shared_host::SessionContext>) {*self.session.lock().unwrap()=session;}
     fn admin_status(&self)->Packet {
@@ -376,6 +378,7 @@ impl HostControl {
             worker,
             clipboard,
             clipboard_registered: AtomicBool::new(false),
+            clipboard_version: std::sync::atomic::AtomicU8::new(1),
             gamepad_registered: AtomicBool::new(false),
             registered: AtomicBool::new(false),
         })
@@ -399,7 +402,8 @@ impl HostControl {
                 if channel.label()==crate::native_gamepad::LABEL && !channel.ordered() && channel.max_packet_lifetime()==crate::native_gamepad::LIFETIME_MS && channel.max_retransmits()==0 && !host.gamepad_registered.swap(true,Ordering::AcqRel) {
                     host.attach_gamepads(channel);return;
                 }
-                if channel.label() == crate::native_clipboard::LABEL
+                let clipboard_label=if host.clipboard_version.load(Ordering::Acquire)==2 {crate::native_clipboard::LABEL_V2}else{crate::native_clipboard::LABEL};
+                if channel.label() == clipboard_label
                     && channel.ordered()
                     && channel.max_retransmits() == 0
                     && channel.max_packet_lifetime() == 0

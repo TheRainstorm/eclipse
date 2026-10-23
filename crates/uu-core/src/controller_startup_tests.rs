@@ -181,7 +181,7 @@ async fn delayed_trickle_opens_control_and_delivers_initial_settings() {
     tokio::time::timeout(Duration::from_secs(25), drive_session(&mut sio, &media, "test", "ice", &ev,
         &mut input_rx, &mut settings_rx, settings, "host", &mut local_ice)).await.unwrap().unwrap();
     assert!(events.try_iter().any(|event| matches!(event, ControllerEvent::Status(s) if s == "已请求目标画质/码率")));
-    assert_eq!(stats.clipboard.remote.lock().unwrap().as_deref(),Some("host-to-local 🙂"));
+    assert_eq!(stats.clipboard.remote.lock().unwrap().as_ref().and_then(crate::clipboard::Content::as_text),Some("host-to-local 🙂"));
     assert!(stats.display_responses.lock().unwrap().contains(&(10001,11,0)));
     assert!(stats.display_responses.lock().unwrap().contains(&(10004,19,0)));
     let screens=stats.remote_screens.lock().unwrap().clone();

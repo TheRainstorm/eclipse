@@ -153,6 +153,34 @@ mod fixture {
         }
         Ok(())
     }
+    fn picture(
+        width: u32,
+        height: u32,
+        seed: u8,
+    ) -> (arboard::ImageData<'static>, uu_core::clipboard::Image) {
+        use image::ImageEncoder;
+        let mut pixels = Vec::new();
+        for index in 0..width * height {
+            pixels.extend([
+                seed.wrapping_add(index as u8),
+                index as u8,
+                255 - seed,
+                if index % 3 == 0 { 128 } else { 255 },
+            ]);
+        }
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&pixels, width, height, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        (
+            arboard::ImageData {
+                width: width as usize,
+                height: height as usize,
+                bytes: std::borrow::Cow::Owned(pixels),
+            },
+            uu_core::clipboard::Image::new(width, height, png).unwrap(),
+        )
+    }
     pub fn run() -> Result<()> {
         ensure!(
             std::env::args().skip(1).eq(["--isolated-window-station"]),
@@ -182,6 +210,7 @@ mod fixture {
         system.set_text("Generated private baseline")?;
         let state = Arc::new(Clipboard::default());
         state.enabled.store(true, Ordering::Release);
+        state.supported.store(true, Ordering::Release);
         let backend = Backend(state.clone());
         clipboard::start_host(state.clone(), owner.0 as isize)?;
         until("backend startup", || {
@@ -201,7 +230,13 @@ mod fixture {
         })?;
         system.set_text("Generated host reply 日本語🙂")?;
         until("local text capture", || {
-            state.local.lock().unwrap().as_deref() == Some("Generated host reply 日本語🙂")
+            state
+                .local
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(uu_core::clipboard::Content::as_text)
+                == Some("Generated host reply 日本語🙂")
         })?;
         state.local.lock().unwrap().take();
         state.active.store(false, Ordering::Release);
@@ -215,10 +250,50 @@ mod fixture {
         state.remote.lock().unwrap().take();
         system.set_text("Generated host copy while inactive")?;
         std::thread::sleep(Duration::from_millis(150));
-        ensure!(state.local.lock().unwrap().is_none(), "inactive host copy was captured");
+        ensure!(
+            state.local.lock().unwrap().is_none(),
+            "inactive host copy was captured"
+        );
         state.active.store(true, Ordering::Release);
         until("copy on host while viewer paused", || {
-            state.local.lock().unwrap().as_deref()==Some("Generated host copy while inactive")
+            state
+                .local
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(uu_core::clipboard::Content::as_text)
+                == Some("Generated host copy while inactive")
+        })?;
+        state.local.lock().unwrap().take();
+        state.images_supported.store(true, Ordering::Release);
+        let (pixels, image) = picture(64, 48, 17);
+        *state.remote.lock().unwrap() = Some(uu_core::clipboard::Content::Image(image));
+        until("remote PNG writes PNG and DIBV5", || {
+            system
+                .get_image()
+                .is_ok_and(|image| image.bytes.as_ref() == pixels.bytes.as_ref())
+        })?;
+        let (pixels, _) = picture(48, 64, 37);
+        system.set_image(pixels.clone())?;
+        until("local PNG capture", || {
+            let value = state.local.lock().unwrap().clone();
+            matches!(value,Some(uu_core::clipboard::Content::Image(image)) if image::load_from_memory(&image.png).is_ok_and(|image|image.to_rgba8().as_raw().as_slice()==pixels.bytes.as_ref()))
+        })?;
+        state.local.lock().unwrap().take();
+        std::thread::sleep(Duration::from_millis(250));
+        ensure!(
+            state.local.lock().unwrap().is_none(),
+            "unchanged image echoed"
+        );
+        system.set_text("Generated host copy while inactive")?;
+        until("text after images", || {
+            state
+                .local
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(uu_core::clipboard::Content::as_text)
+                == Some("Generated host copy while inactive")
         })?;
         drop(backend);
         ensure!(
@@ -227,6 +302,7 @@ mod fixture {
         );
         let controller = Arc::new(Clipboard::default());
         controller.enabled.store(true, Ordering::Release);
+        controller.supported.store(true, Ordering::Release);
         controller.active.store(true, Ordering::Release);
         let controller_backend = Backend(controller.clone());
         clipboard::start(controller.clone(), owner.0 as isize)?;
@@ -244,7 +320,7 @@ mod fixture {
         drop(controller_backend);
         println!(
             "{}",
-            serde_json::json!({"windows_clipboard":"passed","isolated_station":true,"interactive_clipboard":"untouched","controller_foreground_guard":true,"unicode_roundtrip":true,"initial_baseline_stayed_local":true,"inactive_write_suppressed":true,"clean_stop":true})
+            serde_json::json!({"windows_clipboard":"passed","isolated_station":true,"interactive_clipboard":"untouched","controller_foreground_guard":true,"unicode_roundtrip":true,"png_and_dibv5":true,"text_image_switch":true,"image_echo_suppressed":true,"initial_baseline_stayed_local":true,"inactive_write_suppressed":true,"clean_stop":true})
         );
         Ok(())
     }

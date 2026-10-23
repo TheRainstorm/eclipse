@@ -1,6 +1,8 @@
 //! Bounded text clipboard wire codec, independently implemented from the
 //! official Windows protobuf descriptors. TEXT is separate from input CONTROL.
 use crate::control_wire::{bytes, decode_wire, envelope, int, WireValue};
+mod content;
+pub use content::{Content,Image,MAX_IMAGE_BYTES,MAX_IMAGE_PIXELS,MAX_IMAGE_DIMENSION};
 use std::{
     collections::BTreeMap,
     sync::{
@@ -23,8 +25,9 @@ pub struct Clipboard {
     pub read_only: AtomicBool,
     pub stopped: AtomicBool,
     pub supported: AtomicBool,
-    pub local: Mutex<Option<String>>,
-    pub remote: Mutex<Option<String>>,
+    pub images_supported: AtomicBool,
+    pub local: Mutex<Option<Content>>,
+    pub remote: Mutex<Option<Content>>,
     pub last_sent: AtomicU64,
     pub sent: AtomicU64,
     pub received: AtomicU64,

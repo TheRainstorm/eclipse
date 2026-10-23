@@ -80,9 +80,9 @@ async fn main() -> anyhow::Result<()> {
                     tokio::time::sleep(Duration::from_millis(20)).await;}
             }).await.context("clipboard did not resume after source renewal")?;
             ensure!(!host_clipboard.stopped.load(Ordering::Acquire)&&!stats.clipboard.stopped.load(Ordering::Acquire),"media renewal stopped the connection clipboard");
-            *host_clipboard.local.lock().unwrap()=Some(format!("generated-screen-{round}"));
+            *host_clipboard.local.lock().unwrap()=Some(format!("generated-screen-{round}").into());
             tokio::time::timeout(Duration::from_secs(2),async{
-                loop{if stats.clipboard.remote.lock().unwrap().take().as_deref()==Some(&format!("generated-screen-{round}")){break;}
+                loop{if stats.clipboard.remote.lock().unwrap().take().as_ref().and_then(uu_core::clipboard::Content::as_text)==Some(&format!("generated-screen-{round}")){break;}
                     tokio::time::sleep(Duration::from_millis(10)).await;}
             }).await.context("clipboard text missing after source renewal")?;
             input.send(InputCommand::Key{usage:4,pressed:true})?;

@@ -74,7 +74,7 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
         }
     } else {
         ui.checkbox(&mut s.control,"允许已授权设备控制键盘、鼠标和手柄");
-        ui.checkbox(&mut s.clipboard,"允许文本剪贴板同步");
+        ui.checkbox(&mut s.clipboard,"允许文本和图片剪贴板同步");
         ui.weak("每台设备还需获得对应授权；修改主机设置后下次启动生效。");
     }
 }

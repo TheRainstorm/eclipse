@@ -491,7 +491,7 @@ impl App {
                     ui.checkbox(&mut host.share_audio, "共享系统声音（输出设备）");
                     ui.checkbox(
                         &mut host.share_clipboard,
-                        "允许文本剪贴板同步（控制端需主动开启）",
+                        "允许文本和图片剪贴板同步（控制端需主动开启）",
                     );
                     ui.add_space(8.0);
                     ui.label("新邀请文件（10 分钟内可连接）");
