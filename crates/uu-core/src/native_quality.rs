@@ -8,10 +8,32 @@ const LIMIT:usize=2048;
 const REQUEST:&str="x-eclipse-client-video";
 const RESPONSE:&str="x-eclipse-host-video";
 const RUNTIME:&str="x-eclipse-video-runtime";
+const STARTUP:&str="x-eclipse-startup-v1";
 fn is_false(value:&bool)->bool{!*value}
 pub fn runtime_requested(sdp:&RTCSessionDescription)->Result<bool>{Ok(get::<bool>(sdp,RUNTIME)?.unwrap_or(false))}
 pub const MAX_FPS:u32=240;
 pub const MAX_BITRATE_KBPS:u32=1_000_000;
+
+/// Relative preparation durations on the host's own monotonic clock. This is
+/// optional diagnostic metadata, independent of frame latency and wall clocks.
+#[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Startup {
+    pub capture_us:u64,
+    pub encoder_us:u64,
+    pub other_encoders_us:u64,
+    pub ice_us:u64,
+    pub total_us:u64,
+}
+impl Startup {
+    pub fn add(&self,sdp:&mut RTCSessionDescription)->Result<()> {self.validate()?;put(sdp,STARTUP,self)}
+    pub fn read(sdp:&RTCSessionDescription)->Result<Option<Self>> {
+        let value:Option<Self>=get(sdp,STARTUP)?;if let Some(value)=&value{value.validate()?;}Ok(value)
+    }
+    fn validate(&self)->Result<()> {
+        ensure!(self.total_us<=600_000_000&&[self.capture_us,self.encoder_us,self.other_encoders_us,self.ice_us].into_iter().all(|value|value<=self.total_us),"主机准备阶段计时无效");Ok(())
+    }
+}
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -114,7 +136,11 @@ mod tests {
         let mut sdp=RTCSessionDescription::offer("v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H264/90000\r\na=recvonly\r\n".into()).unwrap();
         let request=Request{fps:120,bounds:Some([1920,1080]),bitrate_kbps:Some(8000),codec:Some(VideoCodec::H264)};
         assert!(Request::read(&sdp).unwrap().is_none());
+        assert!(Startup::read(&sdp).unwrap().is_none());
         request.add(&mut sdp).unwrap();assert_eq!(Request::read(&sdp).unwrap(),Some(request.clone()));
+        let timing=Startup{capture_us:100,encoder_us:200,other_encoders_us:300,ice_us:400,total_us:2000};
+        timing.add(&mut sdp).unwrap();assert_eq!(Startup::read(&sdp).unwrap(),Some(timing));
+        assert!(Startup{encoder_us:3,total_us:2,..Default::default()}.add(&mut sdp).is_err());
         let reparsed=sdp.unmarshal().unwrap();assert!(reparsed.attributes.iter().any(|a|a.key==REQUEST));
         assert!(crate::native_media::offers_codec(&sdp,VideoCodec::H264));
         assert!(request.add(&mut sdp).is_err());

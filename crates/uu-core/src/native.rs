@@ -617,6 +617,7 @@ async fn send_video(
     authority: Arc<crate::input_ownership::Authority>,
 ) -> Result<HostReport> {
     let refresh = Arc::new(AtomicBool::new(false));
+    let preparation_started=Instant::now();
     let dynamic=crate::native_quality::runtime_requested(&offer.sdp)?;
     let request=crate::native_quality::Request::read(&offer.sdp)?;
     let policy=config.video_policy.clone();
@@ -649,8 +650,9 @@ async fn send_video(
     impl Drop for CancelCaptureOpen { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
     let capture_cancel = CancelCaptureOpen(Arc::new(AtomicBool::new(false)));
     let capture_options = uu_capture::OpenOptions { allow_input: config.allow_input, fps, cancelled:capture_cancel.0.clone() };
-    let (capture,encoder,codec,available,encoder_settings) = tokio::select! {
+    let (capture,encoder,codec,available,encoder_settings,mut startup) = tokio::select! {
         result=tokio::task::spawn_blocking(move || -> Result<_> {
+            let started=Instant::now();
             let mut capture=uu_capture::open_with_options(&config.source,capture_options)?;
             capture.set_frame_rate(fps)?;
             let capture=uu_capture::scale::bounded(capture,bounds);
@@ -658,6 +660,7 @@ async fn send_video(
             let kbps=if automatic {crate::native_quality::Update{fps,bitrate_kbps:None}.bitrate(width,height)}else{kbps};
             let rate_control=match rate_control {uu_media::encoder::RateControl::Cbr=>rate_control,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:kbps.saturating_mul(2)}};
             let settings=|codec|uu_media::encoder::Settings {tuning:config.encoder_tuning,codec,rate_control,width,height,fps,bitrate_kbps:kbps,preference};
+            let capture_us=elapsed_us(started);let started=Instant::now();
             let mut selected=None;let mut last_error=None;
             for codec in choices {
                 match uu_media::encoder::create(settings(codec)) {
@@ -666,13 +669,15 @@ async fn send_video(
                 }
             }
             let (codec,encoder)=selected.ok_or_else(||anyhow::anyhow!("主机无法初始化请求的编码器：{}",last_error.map(|e|e.to_string()).unwrap_or_default()))?;
+            let encoder_us=elapsed_us(started);let started=Instant::now();
             let mut available=vec![codec];
             if policy.is_some(){
                 for candidate in advertised.into_iter().filter(|c|*c!=codec) {
                     if uu_media::encoder::create(settings(candidate)).is_ok(){available.push(candidate);}
                 }
             }
-            Ok((capture,encoder,codec,available,settings(codec)))
+            let startup=crate::native_quality::Startup{capture_us,encoder_us,other_encoders_us:elapsed_us(started),..Default::default()};
+            Ok((capture,encoder,codec,available,settings(codec),startup))
         })=>result??,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
         _=stream.disconnected()=>return Ok(HostReport::default()),
@@ -695,7 +700,10 @@ async fn send_video(
     if let Some(displays)=&displays {displays.dimensions(width,height);}
     controls.set_displays(displays.clone());
     controls.attach(&peer.pc);
+    let ice_started=Instant::now();
     let mut description=peer.description(false).await?;
+    startup.ice_us=elapsed_us(ice_started);startup.total_us=elapsed_us(preparation_started);
+    startup.add(&mut description)?;
     if clipboard_images {crate::native_clipboard::advertise(&mut description);}
     if config.video_policy.is_some() {
         crate::native_quality::Response{dynamic,codecs:available,max_fps:if dynamic{crate::native_quality::MAX_FPS}else{60},max_bitrate_kbps:if dynamic{crate::native_quality::MAX_BITRATE_KBPS}else{100_000}}.add(&mut description)?;
@@ -884,15 +892,19 @@ async fn receive_session(
     }else{None};
     let mut controls=crate::native_control::ViewerControl::new(channel.clone(),stats.clone(),input);
     controls.gamepads(gamepad);
+    let ice_started=Instant::now();
     let mut description=peer.description(true).await?;
+    stats.diagnostics.record(serde_json::json!({"event":"native_local_ice_gather","elapsed_us":elapsed_us(ice_started)}));
     crate::native_clipboard::advertise(&mut description);
     if let Some(request)=stats.native_quality_request.get(){request.add(&mut description)?;}
     stream.send(serde_json::to_value(Offer {
         version: 1,
         sdp: description,
     })?).await?;
+    let answer_started=Instant::now();
     let message=timeout(crate::native_signaling::PREPARATION_WAIT,stream.receive_answer()).await
         .context("等待被控端屏幕共享授权或编码器准备超时")??;
+    stats.diagnostics.record(serde_json::json!({"event":"native_answer_wait","elapsed_us":elapsed_us(answer_started)}));
     if let Some(reason)=message.get("preparation_error").and_then(|v|v.as_str()) {
         bail!("被控端准备失败：{}",reason.chars().take(512).collect::<String>());
     }
@@ -902,6 +914,11 @@ async fn receive_session(
         "unsupported native session capabilities"
     );
     validate_video(answer.width, answer.height, answer.fps)?;
+    match crate::native_quality::Startup::read(&answer.sdp) {
+        Ok(Some(startup))=>stats.diagnostics.record(serde_json::json!({"event":"native_host_preparation","timing":startup})),
+        Err(_)=>stats.diagnostics.record(serde_json::json!({"event":"native_host_preparation_invalid"})),
+        Ok(None)=>{},
+    }
     let quality=crate::native_quality::Response::read(&answer.sdp)?;
     let clipboard_images=crate::native_clipboard::images_offered(&answer.sdp);
     if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"主机实际编码与能力回报不一致");}
