@@ -82,6 +82,7 @@ fn main() -> anyhow::Result<()> {
     let mut hardware_decoder = false;
     let mut intel_decoder=false;
     let mut encode_only=false;let mut output_path=None;let mut vbr=false;let mut peak=None;
+    let mut verify_every=1u32;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let value = args.next().context("missing probe option value")?;
@@ -109,6 +110,7 @@ fn main() -> anyhow::Result<()> {
             "--nvidia-quality-vs-speed"=>settings.tuning.nvidia_quality_vs_speed=Some(value.parse()?),
             "--output"=>output_path=Some(std::path::PathBuf::from(value)),
             "--frames" => frames = value.parse()?,
+            "--verify-every" => verify_every=value.parse()?,
             "--decoder" => {
                 encode_only=value=="none";
                 hardware_decoder = match value.as_str() {
@@ -139,6 +141,7 @@ fn main() -> anyhow::Result<()> {
         (30..=216000).contains(&frames),
         "probe needs 30..=216000 generated frames"
     );
+    ensure!((1..=216000).contains(&verify_every),"verify-every must be 1..=216000");
     ensure!(vbr || peak.is_none(),"--peak-kbps requires --rate-control vbr");
     settings.rate_control=if vbr{encoder::RateControl::Vbr{peak_kbps:peak.unwrap_or(settings.bitrate_kbps.saturating_mul(2))}}else{encoder::RateControl::Cbr};
     settings.validate()?;
@@ -174,6 +177,7 @@ fn main() -> anyhow::Result<()> {
     let mut keyframe_indexes = Vec::new();
     let mut bytes = 0u64;
     let mut decoded = 0u32;
+    let mut verified = 0u32;
     let mut keys = 0u32;
     let mut maximum_mse = 0.0f64;
     let mut requested_keys = 0u32;
@@ -194,8 +198,9 @@ fn main() -> anyhow::Result<()> {
             // timestamp/reference ownership after a rate-control reset.
             encoder.set_bitrate(settings.bitrate_kbps)?;
         }
-        let input = if gpu_generated && encode_only {None}else{Some(input_format(pattern(settings, index), format))};
-        let expected = if encode_only {Vec::new()}else{uu_media::convert::frame_to_rgba(input.as_ref().unwrap())};
+        let verify = !encode_only && index%verify_every==0;
+        let input = if gpu_generated && !verify {None}else{Some(input_format(pattern(settings, index), format))};
+        let expected = if verify {uu_media::convert::frame_to_rgba(input.as_ref().unwrap())}else{Vec::new()};
         #[cfg(windows)]
         let input=if let Some(gpu)=&gpu {
             let source=Settings{width:settings.width*source_scale,height:settings.height*source_scale,..settings};
@@ -248,6 +253,8 @@ fn main() -> anyhow::Result<()> {
                 (output.width, output.height) == (settings.width, settings.height),
                 "encoder crop dimensions did not roundtrip"
             );
+            decoded += 1;
+            if !verify {continue;}
             let actual = uu_media::convert::frame_to_rgba_with_color(&output, color);
             let mut squared = 0u64;
             for (actual, expected) in actual.chunks_exact(4).zip(expected.chunks_exact(4)) {
@@ -263,7 +270,7 @@ fn main() -> anyhow::Result<()> {
                 mse < 100.0,
                 "encoded colour bars differ from expected range/matrix: MSE={mse}"
             );
-            decoded += 1;
+            verified += 1;
         }
     }
     ensure!(
@@ -276,7 +283,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
-        "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,
+        "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,"pixel_verified_frames":verified,"pixel_verify_every":verify_every,
         "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"gpu_generated":gpu_generated,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
         "encode_ms_first":first_encode,"encode_ms_p99":times[times.len()*99/100],"encode_ms_max":times[times.len()-1],
