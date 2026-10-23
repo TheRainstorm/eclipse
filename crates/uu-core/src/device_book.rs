@@ -38,7 +38,7 @@ pub enum RateMode {#[default] Cbr,Vbr}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Sharing {
-    pub codec:native::VideoCodec,
+    pub codec:Option<native::VideoCodec>,
     pub allowed_codecs:Vec<native::VideoCodec>,
     pub max_bitrate_mbps:u32,
     pub rate_control:RateMode,
@@ -80,7 +80,7 @@ impl Default for Sharing {
 }
 impl Sharing {
     pub fn native(&self) -> SharingConfig {
-        SharingConfig {video_policy:Some(crate::native_quality::Policy{codecs:self.allowed_codecs.clone(),max_bitrate_kbps:self.max_bitrate_mbps*1000}),codec:self.codec,rate_control:match self.rate_control {RateMode::Cbr=>uu_media::encoder::RateControl::Cbr,RateMode::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:self.peak_bitrate_mbps*1000}},
+        SharingConfig {video_policy:Some(crate::native_quality::Policy{codecs:self.allowed_codecs.clone(),preferred_codec:self.codec,max_bitrate_kbps:self.max_bitrate_mbps*1000}),codec:self.codec.unwrap_or_default(),rate_control:match self.rate_control {RateMode::Cbr=>uu_media::encoder::RateControl::Cbr,RateMode::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:self.peak_bitrate_mbps*1000}},
             source: if self.monitor == crate::native_displays::ALL_MONITORS {
                 native::CaptureSource::Desktop
             } else if self.monitor.is_empty() {
@@ -99,7 +99,7 @@ impl Sharing {
     }
     pub fn validate(&self) -> Result<()> {
         ensure!((1..=100).contains(&self.max_bitrate_mbps)&&self.bitrate_mbps<=self.max_bitrate_mbps,"默认码率不能超过服务端最大码率（1–100 Mbps）");
-        ensure!(self.allowed_codecs.contains(&self.codec),"默认编码须包含在允许的编码中");
+        ensure!(self.codec.is_none_or(|c|self.allowed_codecs.contains(&c)),"默认编码须包含在允许的编码中");
         valid_name(&self.name)?;
         ensure!(
             self.peak_bitrate_mbps<=200 && self.peak_bitrate_mbps>0 && self.monitor.len() <= 256 && !self.monitor.chars().any(char::is_control),
@@ -816,8 +816,11 @@ mod tests {
     #[test]
     fn shared_codec_and_rate_policy_survives_storage_and_rejects_invalid_profiles(){
         let legacy:Sharing=serde_json::from_value(serde_json::json!({"name":"generated"})).unwrap();
-        assert_eq!(legacy.codec,native::VideoCodec::H264);assert_eq!(legacy.rate_control,RateMode::Cbr);
-        let mut sharing=legacy;sharing.codec=native::VideoCodec::Av1;sharing.rate_control=RateMode::Vbr;sharing.bitrate_mbps=20;sharing.peak_bitrate_mbps=35;
+        assert_eq!(legacy.codec,None);assert_eq!(legacy.rate_control,RateMode::Cbr);
+        assert_eq!(legacy.native().video_policy.unwrap().preferred_codec,None);
+        let explicit:Sharing=serde_json::from_value(serde_json::json!({"name":"generated","codec":"h264"})).unwrap();
+        assert_eq!(explicit.codec,Some(native::VideoCodec::H264));
+        let mut sharing=legacy;sharing.codec=Some(native::VideoCodec::Av1);sharing.rate_control=RateMode::Vbr;sharing.bitrate_mbps=20;sharing.peak_bitrate_mbps=35;
         let restored:Sharing=serde_json::from_value(serde_json::to_value(&sharing).unwrap()).unwrap();restored.validate().unwrap();
         assert_eq!(restored.native().codec,native::VideoCodec::Av1);assert_eq!(restored.native().rate_control,uu_media::encoder::RateControl::Vbr{peak_kbps:35000});
         sharing.peak_bitrate_mbps=19;assert!(sharing.validate().is_err());sharing.peak_bitrate_mbps=35;

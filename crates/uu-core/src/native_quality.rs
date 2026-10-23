@@ -42,9 +42,15 @@ impl Response {
     }
 }
 #[derive(Clone,Debug)]
-pub struct Policy {pub codecs:Vec<VideoCodec>,pub max_bitrate_kbps:u32}
+pub struct Policy {
+    pub codecs:Vec<VideoCodec>,
+    /// None lets an explicit client request choose; both automatic use AV1 > HEVC > H.264.
+    pub preferred_codec:Option<VideoCodec>,
+    pub max_bitrate_kbps:u32,
+}
 impl Policy {
     pub fn validate(&self)->Result<()> {
+        ensure!(self.preferred_codec.is_none_or(|c|self.codecs.contains(&c)),"默认编码须包含在允许的编码中");
         Response{codecs:self.codecs.clone(),max_fps:60,max_bitrate_kbps:self.max_bitrate_kbps}.validate()
     }
 }

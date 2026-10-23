@@ -1450,10 +1450,11 @@ impl Workspace {
                 muted(ui,"仅通报实际初始化成功的编码。HEVC / AV1 需要可用硬件编码，允许不代表驱动一定支持。");
                 ui.horizontal_wrapped(|ui|{
                     ui.label("默认编码");
-                    egui::ComboBox::from_id_salt("shared-codec").selected_text(match self.draft.codec {uu_core::native::VideoCodec::H264=>"H.264",uu_core::native::VideoCodec::Hevc=>"H.265 / HEVC",uu_core::native::VideoCodec::Av1=>"AV1"}).show_ui(ui,|ui|{
-                        ui.selectable_value(&mut self.draft.codec,uu_core::native::VideoCodec::H264,"H.264");
-                        ui.selectable_value(&mut self.draft.codec,uu_core::native::VideoCodec::Hevc,"H.265 / HEVC");
-                        ui.selectable_value(&mut self.draft.codec,uu_core::native::VideoCodec::Av1,"AV1");
+                    egui::ComboBox::from_id_salt("shared-codec").selected_text(match self.draft.codec {None=>"自动协商",Some(uu_core::native::VideoCodec::H264)=>"H.264",Some(uu_core::native::VideoCodec::Hevc)=>"H.265 / HEVC",Some(uu_core::native::VideoCodec::Av1)=>"AV1"}).show_ui(ui,|ui|{
+                        ui.selectable_value(&mut self.draft.codec,None,"自动协商");
+                        ui.selectable_value(&mut self.draft.codec,Some(uu_core::native::VideoCodec::H264),"H.264");
+                        ui.selectable_value(&mut self.draft.codec,Some(uu_core::native::VideoCodec::Hevc),"H.265 / HEVC");
+                        ui.selectable_value(&mut self.draft.codec,Some(uu_core::native::VideoCodec::Av1),"AV1");
                     });
                     ui.label("码率模式");
                     egui::ComboBox::from_id_salt("shared-rate-control").selected_text(match self.draft.rate_control {RateMode::Cbr=>"CBR",RateMode::Vbr=>"VBR"}).show_ui(ui,|ui|{
@@ -1461,9 +1462,10 @@ impl Workspace {
                         ui.selectable_value(&mut self.draft.rate_control,RateMode::Vbr,"VBR · 允许峰值");
                     });
                 });
+                muted(ui,"服务器明确选择时优先使用服务器格式；服务器自动时遵循客户端选择；双方自动按 AV1 → HEVC → H.264 尝试。明确请求不可用时提示原因。");
                 self.draft.peak_bitrate_mbps=self.draft.peak_bitrate_mbps.max(self.draft.bitrate_mbps);
                 if self.draft.rate_control==RateMode::Vbr {ui.horizontal(|ui|{ui.label("峰值码率");ui.add(egui::DragValue::new(&mut self.draft.peak_bitrate_mbps).range(self.draft.bitrate_mbps..=200).suffix(" Mbps"));});}
-                let needs_hardware=self.draft.codec!=uu_core::native::VideoCodec::H264 || self.draft.rate_control==RateMode::Vbr;
+                let needs_hardware=self.draft.codec.is_some_and(|c|c!=uu_core::native::VideoCodec::H264) || self.draft.rate_control==RateMode::Vbr;
                 if needs_hardware && self.draft.encoding==Encoding::Software {self.draft.encoding=Encoding::Auto;}
                 ui.horizontal(|ui| {
                     ui.label("编码加速");
@@ -1488,7 +1490,7 @@ impl Workspace {
                         });
                 });
                 if needs_hardware {
-                    muted(ui, if self.draft.codec==uu_core::native::VideoCodec::H264 {
+                    muted(ui, if self.draft.codec==Some(uu_core::native::VideoCodec::H264) {
                         "H.264 VBR 需要硬件编码；Windows 自动模式可使用 Media Foundation，显式 Intel 模式使用 VPL。控制端需支持相同格式。"
                     } else {
                         "HEVC / AV1 当前需要 Intel VPL 硬件编码；控制端需支持相同格式，连接时自动核验。"

@@ -545,6 +545,17 @@ fn ordered_codecs(codecs: &[VideoCodec]) -> Vec<VideoCodec> {
     values
 }
 
+fn codec_choices(allowed:&[VideoCodec],host:Option<VideoCodec>,client:Option<VideoCodec>)->Result<Vec<VideoCodec>> {
+    if let Some(codec)=host.or(client) {
+        ensure!(allowed.contains(&codec),"主机未允许 {:?} 编码，请选择允许的格式",codec);
+        // An explicit format is a requirement. Report backend failures instead
+        // of silently substituting H.264 while the UI still shows HEVC/AV1.
+        Ok(vec![codec])
+    } else {
+        Ok(ordered_codecs(allowed))
+    }
+}
+
 async fn send_video(
     peer: &mut NativePeer,
     stream: &mut dyn SessionSignaling,
@@ -570,19 +581,8 @@ async fn send_video(
     }
     let allowed=policy.as_ref().map(|p|p.codecs.clone()).unwrap_or_else(||vec![config.codec]);
     let ordered=ordered_codecs(&allowed);
-    let mut choices=if let Some(client)=request.as_ref().and_then(|r|r.codec) {
-        ensure!(allowed.contains(&client),"主机未允许 {:?} 编码，请选择允许的格式",client);
-        // The server preference wins when it is usable; an explicit client
-        // choice remains the fallback instead of overriding the host.
-        let mut values=Vec::new();
-        if allowed.contains(&config.codec) {values.push(config.codec);}
-        values.push(client);
-        for codec in &ordered {if !values.contains(codec){values.push(*codec);}}
-        values
-    }else{
-        // Both sides automatic: prefer AV1, then HEVC, then H.264.
-        ordered.clone()
-    };
+    let host_codec=policy.as_ref().map_or(Some(config.codec),|p|p.preferred_codec);
+    let mut choices=codec_choices(&allowed,host_codec,request.as_ref().and_then(|r|r.codec))?;
     choices.retain(|codec|crate::native_media::offers_codec(&offer.sdp,*codec));
     ensure!(!choices.is_empty(),"两端没有共同可用的视频编码，请检查主机编码设置和客户端解码支持");
     let advertised:Vec<_>=ordered.into_iter().filter(|c|crate::native_media::offers_codec(&offer.sdp,*c)).collect();
@@ -606,7 +606,8 @@ async fn send_video(
             let mut selected=None;let mut last_error=None;
             for codec in choices {
                 match uu_media::encoder::create(settings(codec)) {
-                    Ok(encoder)=>{selected=Some((codec,encoder));break;},Err(error)=>last_error=Some(error),
+                    Ok(encoder)=>{selected=Some((codec,encoder));break;},
+                    Err(error)=>{tracing::warn!(?codec,?preference,%error,"native codec initialization failed");last_error=Some(anyhow::anyhow!("{codec:?}: {error}"));},
                 }
             }
             let (codec,encoder)=selected.ok_or_else(||anyhow::anyhow!("主机无法初始化请求的编码器：{}",last_error.map(|e|e.to_string()).unwrap_or_default()))?;
@@ -951,6 +952,21 @@ mod tests {
             vec![VideoCodec::Av1, VideoCodec::Hevc, VideoCodec::H264]
         );
     }
+    #[test]
+    fn codec_policy_distinguishes_host_auto_client_choice_and_host_override() {
+        use VideoCodec::*;
+        let all=[H264,Hevc,Av1];
+        assert_eq!(codec_choices(&all,None,None).unwrap(),vec![Av1,Hevc,H264]);
+        for codec in all {
+            assert_eq!(codec_choices(&all,None,Some(codec)).unwrap(),vec![codec]);
+            assert_eq!(codec_choices(&all,Some(codec),None).unwrap(),vec![codec]);
+            for client in all {
+                assert_eq!(codec_choices(&all,Some(codec),Some(client)).unwrap(),vec![codec]);
+            }
+        }
+        assert!(codec_choices(&[H264],None,Some(Hevc)).is_err());
+        assert!(codec_choices(&[H264],Some(Av1),None).is_err());
+    }
 
     #[test]
     fn default_answer_preserves_the_legacy_strict_schema(){
@@ -963,7 +979,7 @@ mod tests {
     #[tokio::test(flavor="multi_thread",worker_threads=2)]
     async fn client_quality_request_scales_encrypted_video_and_reports_real_host_limits() {
         let (mut config,file)=config();
-        config.video_policy=Some(crate::native_quality::Policy{codecs:vec![VideoCodec::H264],max_bitrate_kbps:1000});
+        config.video_policy=Some(crate::native_quality::Policy{codecs:vec![VideoCodec::H264],preferred_codec:None,max_bitrate_kbps:1000});
         let (host_stop,rx)=watch::channel(false);let (phase,host_phase)=watch::channel(HostStatus::Starting);
         let host=tokio::spawn(serve_with_status(config,rx,Some(phase)));
         let invitation=invitation(&file).await;
