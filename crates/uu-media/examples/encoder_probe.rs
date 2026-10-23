@@ -74,6 +74,7 @@ fn main() -> anyhow::Result<()> {
     let mut frames = 180u32;
     let mut format = PixelFormat::I420;
     let mut hardware_decoder = false;
+    let mut intel_decoder=false;
     let mut encode_only=false;let mut output_path=None;let mut vbr=false;let mut peak=None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -84,6 +85,9 @@ fn main() -> anyhow::Result<()> {
                     "software" => Preference::Software,
                     "auto" => Preference::Auto,
                     "hardware" => Preference::Hardware,
+                    "intel" => Preference::Intel,
+                    "nvidia" => Preference::Nvidia,
+                    "amd" => Preference::Amd,
                     "vaapi" => Preference::Vaapi,
                     _ => anyhow::bail!("unknown encoder"),
                 }
@@ -101,7 +105,8 @@ fn main() -> anyhow::Result<()> {
                     "none"=>{encode_only=true;false},
                     "sw" => false,
                     "hw" => true,
-                    _ => anyhow::bail!("decoder must be sw, hw or none"),
+                    "vpl" => {intel_decoder=true;true},
+                    _ => anyhow::bail!("decoder must be sw, hw, vpl or none"),
                 };
             }
             "--width" => settings.width = value.parse()?,
@@ -127,7 +132,12 @@ fn main() -> anyhow::Result<()> {
     let mut encoder = encoder::create(settings)?;
     // Explicit hardware validation must fail on unsupported hardware, rather
     // than silently validating the software fallback after driver errors.
-    let mut decoder = if encode_only {None}else if hardware_decoder {
+    let mut decoder = if encode_only {None}else if intel_decoder {
+        #[cfg(feature="intel-vpl")]
+        {ensure!(settings.codec==VideoCodec::Av1,"direct VPL decode probe requires AV1");Some(Box::new(uu_media::hw::vpl::VplAv1Decoder::new()?) as Box<dyn uu_media::VideoDecoder>)}
+        #[cfg(not(feature="intel-vpl"))]
+        {anyhow::bail!("direct VPL decoder is unavailable in this build")}
+    }else if hardware_decoder {
         Some(if settings.codec==VideoCodec::H264 {uu_media::hw::create_hardware_decoder()?}else{uu_media::decoder_for_codec(settings.codec)?})
     } else {
         ensure!(settings.codec==VideoCodec::H264,"software decoder validation supports H264; use --decoder hw or none");

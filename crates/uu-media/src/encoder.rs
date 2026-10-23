@@ -23,7 +23,16 @@ pub enum Preference {
     Auto,
     /// Require the current platform's hardware encoder, without software fallback.
     Hardware,
+    Intel,
+    Nvidia,
+    Amd,
     Vaapi,
+}
+
+impl Preference {
+    pub fn vendor_id(self) -> Option<u16> {
+        match self { Self::Intel=>Some(0x8086),Self::Nvidia=>Some(0x10de),Self::Amd=>Some(0x1002),_=>None }
+    }
 }
 
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
@@ -105,8 +114,11 @@ pub fn hardware_name() -> &'static str {
     }
 }
 fn hardware(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
+    if matches!(settings.preference,Preference::Nvidia|Preference::Amd) && (settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr) {
+        return Err(error("当前 NVIDIA / AMD 后端支持 H.264 CBR；HEVC / AV1 厂商接口尚未接入"));
+    }
     #[cfg(all(feature="intel-vpl",any(windows,target_os="linux")))]
-    if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr
+    if (cfg!(windows) && settings.preference==Preference::Intel) || settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr
         || !cfg!(any(all(target_os="linux",feature="vaapi"),all(windows,feature="mf-encode"))) {
         return Ok(Box::new(worker::Worker::spawn(move||vpl::Driver::open(settings))?));
     }
@@ -138,7 +150,7 @@ pub fn create(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
     settings.validate()?;
     let (active, can_fallback, note) = match settings.preference {
         Preference::Software => (software(settings)?, false, false),
-        Preference::Hardware => (hardware(settings)?, false, false),
+        Preference::Hardware | Preference::Intel | Preference::Nvidia | Preference::Amd => (hardware(settings)?, false, false),
         Preference::Vaapi => {
             if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr {
                 return Err(error("显式 VA-API 后端仅支持 H.264 CBR；其它模式请选择自动或硬件编码"));
@@ -311,6 +323,16 @@ mod tests {
             encodes,
             tunes,
         )
+    }
+    #[test]
+    fn explicit_non_intel_backends_reject_unimplemented_codecs_without_falling_back() {
+        for preference in [Preference::Nvidia,Preference::Amd] {
+            for codec in [VideoCodec::Hevc,VideoCodec::Av1] {
+                let result=create(Settings {preference,codec,..settings()});
+                assert!(result.is_err());
+                assert!(result.err().unwrap().to_string().contains("NVIDIA / AMD"));
+            }
+        }
     }
     #[test]
     fn codec_and_peak_policy_rejects_silent_software_substitution_and_invalid_budgets(){

@@ -57,6 +57,11 @@ impl Driver {
         nodes.sort();
         let mut failures = Vec::new();
         for path in nodes {
+            if let Some(vendor)=settings.preference.vendor_id() {
+                let Some(name)=path.file_name() else {continue;};
+                let id=std::fs::read_to_string(std::path::Path::new("/sys/class/drm").join(name).join("device/vendor")).unwrap_or_default();
+                if u16::from_str_radix(id.trim().trim_start_matches("0x"),16).ok()!=Some(vendor) {continue;}
+            }
             for low_power in [true, false] {
                 match Self::open_node(settings, &path, low_power) {
                     Ok(driver) => return Ok(driver),

@@ -145,6 +145,16 @@ impl Driver {
         let mut failures = Vec::new();
         for activation in activations.entries().iter().flatten() {
             let name = friendly(activation);
+            if let Some(vendor)=settings.preference.vendor_id() {
+                let mut text=[0u16;128];
+                let id_available=unsafe { activation.GetString(&MFT_ENUM_HARDWARE_VENDOR_ID_Attribute,&mut text,None).is_ok() };
+                let id=String::from_utf16_lossy(&text).to_ascii_lowercase();
+                let label=name.to_ascii_lowercase();
+                let matched=if id_available {id.contains(&format!("{vendor:04x}"))}else {
+                    match vendor {0x8086=>label.contains("intel"),0x10de=>label.contains("nvidia"),0x1002=>label.contains("amd")||label.contains("advanced micro"),_=>false}
+                };
+                if !matched { continue; }
+            }
             match unsafe { Self::activate(settings, activation) } {
                 Ok((transform, events, codec, input_id, output_id)) => {
                     return Ok(Self {

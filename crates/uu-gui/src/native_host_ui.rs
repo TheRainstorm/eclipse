@@ -16,6 +16,9 @@ pub(super) fn preference_label(preference:EncoderPreference)->&'static str {
         EncoderPreference::Software=>"软件编码（兼容）",
         EncoderPreference::Auto=>"自动（优先硬件）",
         EncoderPreference::Hardware=>"硬件编码（必需）",
+        EncoderPreference::Intel=>"Intel QSV",
+        EncoderPreference::Nvidia=>"NVIDIA 硬件",
+        EncoderPreference::Amd=>"AMD 硬件",
         EncoderPreference::Vaapi=>"VA-API（Linux）",
     }
 }
