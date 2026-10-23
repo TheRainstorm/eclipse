@@ -1,7 +1,5 @@
 //! Windows desktop input through the documented SendInput API.
-use crate::{
-    release_owned, DesktopRect, HeldInput, InputError, InputEvent, InputInjector, MouseButton,
-};
+use crate::{DesktopRect, HeldInput, InputError, InputEvent, InputInjector, MouseButton};
 use windows_sys::Win32::UI::HiDpi::{
     SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -10,10 +8,32 @@ use windows_sys::Win32::UI::{Input::KeyboardAndMouse as kbm, WindowsAndMessaging
 #[derive(Default)]
 pub struct SendInputInjector {
     held: HeldInput,
+    desktop_reset: bool,
 }
 impl SendInputInjector {
     pub fn new() -> Self {
         Self::default()
+    }
+    fn prepare_desktop(&mut self) -> Result<(), InputError> {
+        let changed = crate::windows_desktop::sync_input_desktop()
+            .map_err(|e| InputError::Unavailable(crate::windows_desktop::access_error(&e)))?;
+        self.desktop_reset |= changed;
+        if self.desktop_reset {
+            // Only release this session's successful presses before admitting
+            // events on the new desktop. Failed releases remain owned for retry.
+            self.release_owned()?;
+            self.desktop_reset = false;
+        }
+        Ok(())
+    }
+    fn release_owned(&mut self) -> Result<(), InputError> {
+        let mut error = None;
+        for event in self.held.releases() {
+            if let Err(e) = self.send(event) {
+                error.get_or_insert(e);
+            }
+        }
+        error.map_or(Ok(()), Err)
     }
 }
 
@@ -116,8 +136,8 @@ fn packets(event: InputEvent, screen: DesktopRect) -> Result<Vec<kbm::INPUT>, In
     }
     Ok(out)
 }
-impl InputInjector for SendInputInjector {
-    fn inject(&mut self, event: InputEvent) -> Result<(), InputError> {
+impl SendInputInjector {
+    fn send(&mut self, event: InputEvent) -> Result<(), InputError> {
         if !self.held.should_emit(event) {
             return Ok(());
         }
@@ -139,9 +159,15 @@ impl InputInjector for SendInputInjector {
         self.held.applied(event);
         Ok(())
     }
+}
+impl InputInjector for SendInputInjector {
+    fn inject(&mut self, event: InputEvent) -> Result<(), InputError> {
+        self.prepare_desktop()?;
+        self.send(event)
+    }
     fn release_all(&mut self) -> Result<(), InputError> {
-        let events = self.held.releases();
-        release_owned(self, events)
+        self.prepare_desktop()?;
+        self.release_owned()
     }
 }
 impl Drop for SendInputInjector {

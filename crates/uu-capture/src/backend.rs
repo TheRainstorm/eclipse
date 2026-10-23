@@ -18,6 +18,10 @@ pub enum CaptureError {
     TargetNotFound(CaptureTarget),
     #[error("backend error: {0}")]
     Backend(String),
+    /// The current session/desktop is temporarily unavailable. No cached pixels
+    /// may be emitted until capture resumes; callers may retry with cancellation.
+    #[error("采集暂停：{0}")]
+    Suspended(String),
     #[error("系统未授权屏幕共享，连接已取消")]
     Denied,
 }

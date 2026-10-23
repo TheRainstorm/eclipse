@@ -11,7 +11,10 @@ pub mod linux;
 pub mod wayland;
 #[cfg(windows)]
 pub mod windows;
+#[cfg(windows)]
+pub mod windows_desktop;
 pub use geometry::DesktopRect;
+#[cfg(target_os = "linux")]
 use held::release_owned;
 pub use held::HeldInput;
 

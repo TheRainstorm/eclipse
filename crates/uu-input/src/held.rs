@@ -1,4 +1,6 @@
-use crate::{InputError, InputEvent, InputInjector, KeyCode, MouseButton};
+use crate::{InputEvent, KeyCode, MouseButton};
+#[cfg(target_os = "linux")]
+use crate::{InputError, InputInjector};
 
 #[derive(Default)]
 /// Tracks successful transitions so teardown releases only this session's input.
@@ -62,6 +64,7 @@ fn update<T: PartialEq>(held: &mut Vec<T>, value: T, pressed: bool) {
         held.retain(|old| *old != value);
     }
 }
+#[cfg(target_os = "linux")]
 pub(crate) fn release_owned(
     injector: &mut impl InputInjector,
     events: Vec<InputEvent>,

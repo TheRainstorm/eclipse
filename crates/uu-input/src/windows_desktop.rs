@@ -1,0 +1,163 @@
+//! Bind only windowless capture/input workers to the OS input desktop.
+//! This never changes the visible desktop or grants access to a secure desktop.
+use std::{cell::RefCell, io, ptr};
+use windows_sys::Win32::{
+    Foundation::HANDLE,
+    System::{StationsAndDesktops::*, Threading::GetCurrentThreadId},
+};
+
+struct Binding {
+    original: HDESK,
+    owned: HDESK,
+}
+impl Drop for Binding {
+    fn drop(&mut self) {
+        // SetThreadDesktop's handle must remain valid while it is assigned.
+        unsafe {
+            if !self.owned.is_null() && SetThreadDesktop(self.original) != 0 {
+                CloseDesktop(self.owned);
+            }
+        }
+    }
+}
+thread_local! {
+    static BINDING: RefCell<Binding> = RefCell::new(Binding {
+        original: unsafe { GetThreadDesktop(GetCurrentThreadId()) },
+        owned: ptr::null_mut(),
+    });
+}
+
+fn name(desktop: HDESK) -> io::Result<Vec<u16>> {
+    let mut length = 0;
+    unsafe {
+        GetUserObjectInformationW(desktop as HANDLE, UOI_NAME, ptr::null_mut(), 0, &mut length);
+    }
+    if length == 0 || length > 4096 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut value = vec![0u16; (length as usize + 1) / 2];
+    if unsafe {
+        GetUserObjectInformationW(
+            desktop as HANDLE,
+            UOI_NAME,
+            value.as_mut_ptr().cast(),
+            length,
+            &mut length,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(value)
+}
+
+/// Returns true after switching this worker. Call before querying coordinates,
+/// opening DXGI duplication, or injecting an event. GUI threads must not call it.
+pub fn sync_input_desktop() -> io::Result<bool> {
+    let input = unsafe {
+        OpenInputDesktop(
+            0,
+            0,
+            DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP,
+        )
+    };
+    if input.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let result = (|| {
+        let current = unsafe { GetThreadDesktop(GetCurrentThreadId()) };
+        if name(current)? == name(input)? {
+            return Ok(false);
+        }
+        BINDING.with(|binding| {
+            let mut binding = binding.borrow_mut();
+            if unsafe { SetThreadDesktop(input) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let old = std::mem::replace(&mut binding.owned, input);
+            if !old.is_null() {
+                unsafe {
+                    CloseDesktop(old);
+                }
+            }
+            Ok(true)
+        })
+    })();
+    if !matches!(result, Ok(true)) {
+        unsafe {
+            CloseDesktop(input);
+        }
+    }
+    result
+}
+
+pub fn access_error(error: &io::Error) -> String {
+    format!("无法访问当前输入桌面（{error}）；锁屏或 UAC 安全桌面需要安装并启动 Windows 后台服务；后台服务还需要已登录的控制台会话和有效显示输出")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an accessible interactive input desktop; never switches the visible desktop"]
+    fn windowless_worker_follows_input_and_restores_its_original_desktop() {
+        std::thread::spawn(|| unsafe {
+            let original = GetThreadDesktop(GetCurrentThreadId());
+            let input = OpenInputDesktop(
+                0,
+                0,
+                DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP,
+            );
+            assert!(
+                !input.is_null(),
+                "interactive desktop is required for this explicit fixture"
+            );
+            let input_name = name(input).unwrap();
+            CloseDesktop(input);
+            let fixture_name: Vec<u16> = format!("eclipse-owned-{}\0", uuid::Uuid::new_v4())
+                .encode_utf16()
+                .collect();
+            let fixture = CreateDesktopW(
+                fixture_name.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                0,
+                DESKTOP_READOBJECTS
+                    | DESKTOP_WRITEOBJECTS
+                    | DESKTOP_CREATEWINDOW
+                    | DESKTOP_SWITCHDESKTOP,
+                ptr::null(),
+            );
+            assert!(!fixture.is_null());
+            assert_ne!(SetThreadDesktop(fixture), 0);
+            assert!(sync_input_desktop().unwrap());
+            for _ in 0..128 {
+                assert!(!sync_input_desktop().unwrap());
+            }
+            assert_eq!(
+                name(GetThreadDesktop(GetCurrentThreadId())).unwrap(),
+                input_name
+            );
+            // Explicitly run the TLS guard while the private original is valid.
+            BINDING.with(|slot| {
+                let previous = std::mem::replace(
+                    &mut *slot.borrow_mut(),
+                    Binding {
+                        original,
+                        owned: ptr::null_mut(),
+                    },
+                );
+                drop(previous);
+            });
+            assert_eq!(
+                name(GetThreadDesktop(GetCurrentThreadId())).unwrap(),
+                name(fixture).unwrap()
+            );
+            assert_ne!(SetThreadDesktop(original), 0);
+            assert_ne!(CloseDesktop(fixture), 0);
+        })
+        .join()
+        .unwrap();
+    }
+}

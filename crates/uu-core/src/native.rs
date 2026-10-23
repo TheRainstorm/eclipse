@@ -487,7 +487,17 @@ fn encode_source(
         }
         let started = Instant::now();
         capture.prefer_gpu(encoder.gpu_input(),encoder.gpu_vendor());
-        let frame = capture.next_frame()?;
+        let frame = match capture.next_frame() {
+            Ok(frame) => frame,
+            Err(uu_capture::CaptureError::Suspended(_)) => {
+                // Desktop transitions must not terminate an authenticated
+                // transport or transmit a cached image of the old desktop.
+                refresh.store(true, Ordering::Release);
+                next = Instant::now() + Duration::from_millis(25);
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         let capture_us=elapsed_us(started);
         timings.capture_us.fetch_add(capture_us, Ordering::Relaxed);
         captured.fetch_add(1, Ordering::Relaxed);
@@ -961,6 +971,44 @@ async fn wait_first_frame(stats:&MediaStats,baseline:u64,limit:Duration)->Result
 mod tests {
     use super::*;
     use crate::media::frame_channel;
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn suspended_capture_emits_no_old_pixels_resumes_with_idr_and_cancels() {
+        struct Source {
+            inner: Box<dyn uu_capture::Capture>,
+            paused: Arc<AtomicBool>,
+            suspended: Arc<AtomicU64>,
+        }
+        impl uu_capture::Capture for Source {
+            fn resolution(&self)->(u32,u32){self.inner.resolution()}
+            fn next_frame(&mut self)->std::result::Result<uu_media::frame::RawFrame,uu_capture::CaptureError> {
+                if self.paused.load(Ordering::Acquire) {
+                    self.suspended.fetch_add(1,Ordering::Release);
+                    Err(uu_capture::CaptureError::Suspended("owned desktop transition".into()))
+                } else {self.inner.next_frame()}
+            }
+        }
+        let settings=uu_media::encoder::Settings{tuning:Default::default(),codec:VideoCodec::H264,
+            rate_control:Default::default(),width:64,height:64,fps:60,bitrate_kbps:1000,preference:EncoderPreference::Software};
+        let paused=Arc::new(AtomicBool::new(false));let suspended=Arc::new(AtomicU64::new(0));
+        let capture=Box::new(Source {inner:uu_capture::open(&CaptureSource::Synthetic{width:64,height:64,fps:60}).unwrap(),paused:paused.clone(),suspended:suspended.clone()});
+        let mut producer=CaptureWorker::start(capture,settings,Arc::default(),uu_media::encoder::create(settings).unwrap(),Arc::default());
+        let _=timeout(Duration::from_secs(2),producer.frames.recv()).await.unwrap().unwrap().unwrap();
+        paused.store(true,Ordering::Release);
+        timeout(Duration::from_secs(2),async {
+            while suspended.load(Ordering::Acquire)==0 {
+                while producer.frames.try_recv().is_ok() {}
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        while producer.frames.try_recv().is_ok() {}
+        assert!(timeout(Duration::from_millis(80),producer.frames.recv()).await.is_err(),"no old desktop frame is repeated");
+        paused.store(false,Ordering::Release);
+        let frame=timeout(Duration::from_secs(2),producer.frames.recv()).await.unwrap().unwrap().unwrap();
+        assert!(frame.is_keyframe);
+        assert!(uu_media::software_decoder().unwrap().decode(&frame).unwrap().is_some());
+        paused.store(true,Ordering::Release);
+        timeout(Duration::from_millis(500),producer.stop()).await.unwrap().unwrap();
+    }
     #[tokio::test(flavor="multi_thread",worker_threads=2)]
     async fn recovery_immediately_after_an_idr_is_encoded_in_the_next_capture_batch() {
         let settings=uu_media::encoder::Settings{tuning:Default::default(),codec:VideoCodec::H264,
