@@ -383,12 +383,12 @@ mod tests {
     #[test]
     fn media_draft_does_not_restore_old_connection_ports_or_enable_flags() {
         let mut h=Harness::new();
-        h.workspace.draft.bitrate_mbps=25;
+        h.workspace.draft.audio=false;
         h.workspace.update_connections(|s|{s.ip_enabled=false;s.uu_enabled=true;s.service_port=51001;s.discovery_port=51002;});
         assert!(h.workspace.save_sharing());
         assert!(!h.workspace.server_dirty());
         let book=h.workspace.store.as_ref().unwrap().read().unwrap();
-        assert_eq!(book.sharing.bitrate_mbps,25);
+        assert!(!book.sharing.audio);
         assert!(!book.sharing.ip_enabled && book.sharing.uu_enabled);
         assert_eq!((book.sharing.service_port,book.sharing.discovery_port),(51001,51002));
     }

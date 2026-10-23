@@ -30,6 +30,8 @@ const LEASE: Duration = Duration::from_secs(5);
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Packet {
+    Quality {request:u64,settings:crate::native_quality::Update},
+    QualityApplied {applied:crate::native_quality::Applied},
     AdminStatus {available:bool},
     AdminRequest {request:u64,command:crate::host_admin::Request},
     AdminResponse {request:u64,response:crate::host_admin::Response},
@@ -286,6 +288,7 @@ impl Drop for InputWorker {
 }
 
 pub(crate) struct HostControl {
+    quality:Mutex<Option<crate::native_quality::Runtime>>,
     session:Mutex<Option<crate::shared_host::SessionContext>>,
     admin_busy:AtomicBool,
     pending_restart:Mutex<Option<u64>>,
@@ -301,6 +304,7 @@ pub(crate) struct HostControl {
     gamepad_registered: AtomicBool,
 }
 impl HostControl {
+    pub fn set_quality(&self,quality:crate::native_quality::Runtime){*self.quality.lock().unwrap()=Some(quality);}
     pub fn set_session(&self,session:Option<crate::shared_host::SessionContext>) {*self.session.lock().unwrap()=session;}
     fn admin_status(&self)->Packet {
         Packet::AdminStatus{available:self.session.lock().unwrap().as_ref().is_some_and(|s|s.access.sessions.administration.lock().unwrap().is_some())}
@@ -362,6 +366,7 @@ impl HostControl {
             None
         };
         Arc::new(Self {
+            quality:Mutex::new(None),
             session:Mutex::new(None),admin_busy:AtomicBool::new(false),pending_restart:Mutex::new(None),
             displays:Mutex::new(None),
             pending_display:Mutex::new(None),
@@ -431,6 +436,17 @@ impl HostControl {
                         };
                         if host.stopped.load(Ordering::Acquire){return;}
                         match parse(&message.data) {
+                            Some(Packet::Quality{request,settings})=>{
+                                let quality=host.quality.lock().unwrap().clone();
+                                tokio::spawn(async move {
+                                    let result=async {
+                                        let receiver=quality.context("主机尚未准备好动态画质")?.request(settings)?;
+                                        timeout(Duration::from_secs(10),receiver).await.context("主机画质更新超时")?.context("画质更新已经取消")?.map_err(anyhow::Error::msg)
+                                    }.await;
+                                    let (bitrate_kbps,error)=match result {Ok(kbps)=>(kbps,None),Err(error)=>(0,Some(error.to_string()))};
+                                    let _=send(&channel,Packet::QualityApplied{applied:crate::native_quality::Applied{request,settings,bitrate_kbps,error}}).await;
+                                });
+                            },
                             Some(Packet::AdminRequest{request,command})=>{
                                 tokio::spawn(host.clone().administer(channel.clone(),request,command));
                             },
@@ -560,6 +576,7 @@ impl ViewerControl {
     ) -> Self {
         let media_epoch=stats.native_media_epoch.load(Ordering::Acquire);
         let admin=stats.host_admin.attach();
+        *stats.native_quality_applied.lock().unwrap()=None;
         stats.control_open.store(0,Ordering::Release);
         stats.capabilities.enable(Capability::Input,false);
         stats.native_input_available.store(false,Ordering::Release);
@@ -604,6 +621,16 @@ impl ViewerControl {
         channel.on_message(Box::new(move |message| {
             if incoming.native_media_epoch.load(Ordering::Acquire)!=media_epoch{return Box::pin(async {});}
             match parse(&message.data) {
+                Some(Packet::QualityApplied{applied})=>{
+                    let mut previous=incoming.native_quality_applied.lock().unwrap();
+                    if previous.as_ref().is_none_or(|old|applied.request>=old.request) {
+                        if applied.error.is_none()&&applied.settings.validate().is_ok() {
+                            *incoming.native_quality_current.lock().unwrap()=Some(applied.settings);
+                            incoming.configured_fps.store(applied.settings.fps,Ordering::Release);
+                        }
+                        *previous=Some(applied);
+                    }
+                },
                 Some(Packet::AdminStatus{available})=>{incoming.host_admin.available.store(available,Ordering::Release);},
                 Some(Packet::AdminResponse{request,response})=>{
                     let restart=matches!(response,crate::host_admin::Response::Saved{restart:true});
@@ -724,6 +751,7 @@ impl ViewerControl {
                 },
                 action=async{match self.input.as_mut(){Some(input)=>input.next().await,None=>std::future::pending().await}}=>{
                     match action {
+                        NextInput::Quality(request,settings)=>send(&self.channel,Packet::Quality{request,settings}).await?,
                         NextInput::Display(request,id)=>{
                             if self.stats.capabilities.allows(Capability::Displays) && self.stats.native_displays.request(request){
                                 send(&self.channel,Packet::SelectDisplay{request,id}).await?;

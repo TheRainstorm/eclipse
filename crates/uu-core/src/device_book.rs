@@ -40,12 +40,17 @@ pub enum RateMode {#[default] Cbr,Vbr}
 pub struct Sharing {
     pub codec:Option<native::VideoCodec>,
     pub allowed_codecs:Vec<native::VideoCodec>,
+    #[serde(skip_serializing)]
     pub max_bitrate_mbps:u32,
     pub rate_control:RateMode,
+    #[serde(skip_serializing)]
     pub peak_bitrate_mbps:u32,
     pub name: String,
     pub monitor: String,
+    // Accepted when reading old files; client requests own these values now.
+    #[serde(skip_serializing)]
     pub fps: u32,
+    #[serde(skip_serializing)]
     pub bitrate_mbps: u32,
     pub encoding: Encoding,
     pub control: bool,
@@ -80,7 +85,7 @@ impl Default for Sharing {
 }
 impl Sharing {
     pub fn native(&self) -> SharingConfig {
-        SharingConfig {session:None,video_policy:Some(crate::native_quality::Policy{codecs:self.allowed_codecs.clone(),preferred_codec:self.codec,max_bitrate_kbps:self.max_bitrate_mbps*1000}),codec:self.codec.unwrap_or_default(),rate_control:match self.rate_control {RateMode::Cbr=>uu_media::encoder::RateControl::Cbr,RateMode::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:self.peak_bitrate_mbps*1000}},
+        SharingConfig {session:None,video_policy:Some(crate::native_quality::Policy{codecs:self.allowed_codecs.clone(),preferred_codec:self.codec}),codec:self.codec.unwrap_or_default(),rate_control:match self.rate_control {RateMode::Cbr=>uu_media::encoder::RateControl::Cbr,RateMode::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:36_000}},
             source: if self.monitor == crate::native_displays::ALL_MONITORS {
                 native::CaptureSource::Desktop
             } else if self.monitor.is_empty() {
@@ -88,8 +93,8 @@ impl Sharing {
             } else {
                 native::CaptureSource::Monitor(self.monitor.clone())
             },
-            fps: self.fps,
-            bitrate_kbps: self.bitrate_mbps * 1000,
+            fps: 60,
+            bitrate_kbps: 18_000,
             encoder: self.encoding.native(),
             session_limit: None,
             allow_input: self.control,
@@ -98,19 +103,16 @@ impl Sharing {
         }
     }
     pub fn validate(&self) -> Result<()> {
-        ensure!((1..=100).contains(&self.max_bitrate_mbps)&&self.bitrate_mbps<=self.max_bitrate_mbps,"默认码率不能超过服务端最大码率（1–100 Mbps）");
         ensure!(self.codec.is_none_or(|c|self.allowed_codecs.contains(&c)),"默认编码须包含在允许的编码中");
         valid_name(&self.name)?;
         ensure!(
-            self.peak_bitrate_mbps<=200 && self.peak_bitrate_mbps>0 && self.monitor.len() <= 256 && !self.monitor.chars().any(char::is_control),
+            self.monitor.len() <= 256 && !self.monitor.chars().any(char::is_control),
             "屏幕名称无效"
         );
         ensure!(
-            (1..=60).contains(&self.fps)
-                && (1..=100).contains(&self.bitrate_mbps)
-                && self.service_port > 0
+            self.service_port > 0
                 && self.discovery_port > 0,
-            "共享帧率、码率或端口无效"
+            "共享端口无效"
         );
         self.native().validate()?;
         Ok(())
@@ -822,10 +824,13 @@ mod tests {
         assert_eq!(explicit.codec,Some(native::VideoCodec::H264));
         let mut sharing=legacy;sharing.codec=Some(native::VideoCodec::Av1);sharing.rate_control=RateMode::Vbr;sharing.bitrate_mbps=20;sharing.peak_bitrate_mbps=35;
         let restored:Sharing=serde_json::from_value(serde_json::to_value(&sharing).unwrap()).unwrap();restored.validate().unwrap();
-        assert_eq!(restored.native().codec,native::VideoCodec::Av1);assert_eq!(restored.native().rate_control,uu_media::encoder::RateControl::Vbr{peak_kbps:35000});
-        sharing.peak_bitrate_mbps=19;assert!(sharing.validate().is_err());sharing.peak_bitrate_mbps=35;
+        assert_eq!(restored.native().codec,native::VideoCodec::Av1);assert_eq!(restored.native().rate_control,uu_media::encoder::RateControl::Vbr{peak_kbps:36000});
+        sharing.peak_bitrate_mbps=19;sharing.bitrate_mbps=u32::MAX;sharing.fps=1;sharing.max_bitrate_mbps=1;
+        sharing.validate().unwrap();
+        let wire=serde_json::to_value(&sharing).unwrap();
+        for key in ["fps","bitrate_mbps","max_bitrate_mbps","peak_bitrate_mbps"] {assert!(wire.get(key).is_none());}
+        assert_eq!(sharing.native().fps,60,"legacy host rate must not cap client requests");
         sharing.encoding=Encoding::Software;assert!(sharing.validate().is_err());
-        sharing.bitrate_mbps=u32::MAX;assert!(sharing.validate().is_err());
     }
     #[test]
     fn profiles_keep_distinct_routes_and_service_credentials_and_bind_only_verified_identity() {

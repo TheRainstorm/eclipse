@@ -586,7 +586,8 @@ impl super::App {
             }
         }
         separator(ui);
-        for fps in [144, 120, 90, 60, 30] {
+        let presets: &[u32]=if self.is_native(){&[240,165,144,120,90,60,30]}else{&[144,120,90,60,30]};
+        for &fps in presets {
             let response = menu_row(
                 ui,
                 &format!("{fps} 帧"),
@@ -605,7 +606,7 @@ impl super::App {
                 self.confirm_quality(ui);
             }
         }
-        let custom_fps = ![30, 60, 90, 120, 144].contains(&self.target_fps);
+        let custom_fps = !presets.contains(&self.target_fps);
         let label = if custom_fps {
             format!("自定义 · {} 帧", self.target_fps)
         } else {
@@ -679,7 +680,7 @@ impl super::App {
                                     ui.label("码率");
                                     ui.add(
                                         egui::DragValue::new(&mut self.custom_mbps)
-                                            .range(1..=100)
+                                            .range(1..=1000)
                                             .suffix(" Mbps"),
                                     );
                                 });
@@ -696,14 +697,14 @@ impl super::App {
                                     ui.label("帧率");
                                     ui.add(
                                         egui::DragValue::new(&mut self.fps_draft)
-                                            .range(5..=144)
+                                            .range(5..=240)
                                             .suffix(" FPS"),
                                     );
                                 });
                                 ui.add_space(5.0);
                                 separator(ui);
                                 if menu_row(ui, "确认", None, false, false, "", false).clicked() {
-                                    self.target_fps = self.fps_draft.clamp(5, 144);
+                                    self.target_fps = self.fps_draft.clamp(5, 240);
                                     self.confirm_quality(ui);
                                 }
                             }

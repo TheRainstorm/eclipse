@@ -7,6 +7,38 @@ use uu_proto::media::VideoCodec;
 const LIMIT:usize=2048;
 const REQUEST:&str="x-eclipse-client-video";
 const RESPONSE:&str="x-eclipse-host-video";
+const RUNTIME:&str="x-eclipse-video-runtime";
+fn is_false(value:&bool)->bool{!*value}
+pub fn runtime_requested(sdp:&RTCSessionDescription)->Result<bool>{Ok(get::<bool>(sdp,RUNTIME)?.unwrap_or(false))}
+pub const MAX_FPS:u32=240;
+pub const MAX_BITRATE_KBPS:u32=1_000_000;
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Update {pub fps:u32,pub bitrate_kbps:Option<u32>}
+impl Update {
+    pub fn validate(self)->Result<()> {
+        ensure!((5..=MAX_FPS).contains(&self.fps),"帧率请求超出编码接口范围");
+        ensure!(self.bitrate_kbps.is_none_or(|kbps|(64..=MAX_BITRATE_KBPS).contains(&kbps)),"码率请求无效");Ok(())
+    }
+    pub fn bitrate(self,width:u32,height:u32)->u32 {
+        self.bitrate_kbps.unwrap_or_else(||(u64::from(width)*u64::from(height)*u64::from(self.fps)/12/1000).clamp(1000,u64::from(MAX_BITRATE_KBPS)) as u32)
+    }
+}
+#[derive(Clone,Debug,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Applied {pub request:u64,pub settings:Update,pub bitrate_kbps:u32,pub error:Option<String>}
+pub(crate) struct Change {pub settings:Update,pub reply:tokio::sync::oneshot::Sender<std::result::Result<u32,String>>}
+#[derive(Clone)]
+pub(crate) struct Runtime(std::sync::mpsc::SyncSender<Change>);
+impl Runtime {
+    pub fn channel()->(Self,std::sync::mpsc::Receiver<Change>){let(tx,rx)=std::sync::mpsc::sync_channel(1);(Self(tx),rx)}
+    pub fn request(&self,settings:Update)->Result<tokio::sync::oneshot::Receiver<std::result::Result<u32,String>>> {
+        settings.validate()?;
+        let(reply,rx)=tokio::sync::oneshot::channel();
+        self.0.try_send(Change{settings,reply}).map_err(|_|anyhow::anyhow!("画质更新尚未完成或会话已关闭"))?;Ok(rx)
+    }
+}
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -17,17 +49,19 @@ pub struct Request {
 }
 impl Request {
     pub fn validate(&self)->Result<()> {
-        ensure!((5..=144).contains(&self.fps),"客户端请求帧率无效");
+        ensure!((5..=MAX_FPS).contains(&self.fps),"客户端请求帧率无效");
         if let Some([w,h])=self.bounds {ensure!((2..=8192).contains(&w)&&(2..=8192).contains(&h)&&w%2==0&&h%2==0,"客户端请求分辨率无效");}
-        if let Some(kbps)=self.bitrate_kbps {ensure!((64..=100_000).contains(&kbps),"客户端请求码率无效");}
+        if let Some(kbps)=self.bitrate_kbps {ensure!((64..=MAX_BITRATE_KBPS).contains(&kbps),"客户端请求码率无效");}
         Ok(())
     }
-    pub fn add(&self,sdp:&mut RTCSessionDescription)->Result<()> {self.validate()?;put(sdp,REQUEST,self)}
+    pub fn add(&self,sdp:&mut RTCSessionDescription)->Result<()> {self.validate()?;put(sdp,REQUEST,self)?;put(sdp,RUNTIME,&true)}
     pub fn read(sdp:&RTCSessionDescription)->Result<Option<Self>> {let value:Option<Self>=get(sdp,REQUEST)?;if let Some(v)=&value{v.validate()?;}Ok(value)}
 }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Response {
+    #[serde(default,skip_serializing_if="is_false")]
+    pub dynamic:bool,
     /// Successfully initialized encoders at the negotiated geometry.
     pub codecs:Vec<VideoCodec>,
     pub max_fps:u32,
@@ -37,7 +71,7 @@ impl Response {
     pub fn add(&self,sdp:&mut RTCSessionDescription)->Result<()> {self.validate()?;put(sdp,RESPONSE,self)}
     pub fn read(sdp:&RTCSessionDescription)->Result<Option<Self>> {let value:Option<Self>=get(sdp,RESPONSE)?;if let Some(v)=&value{v.validate()?;}Ok(value)}
     fn validate(&self)->Result<()> {
-        ensure!(!self.codecs.is_empty()&&self.codecs.len()<=3&&(1..=60).contains(&self.max_fps)&&(64..=100_000).contains(&self.max_bitrate_kbps),"原生主机画质能力无效");
+        ensure!(!self.codecs.is_empty()&&self.codecs.len()<=3&&(1..=MAX_FPS).contains(&self.max_fps)&&(64..=MAX_BITRATE_KBPS).contains(&self.max_bitrate_kbps),"原生主机画质能力无效");
         for (i,codec) in self.codecs.iter().enumerate(){ensure!(!self.codecs[..i].contains(codec),"重复的主机编码能力");} Ok(())
     }
 }
@@ -46,12 +80,11 @@ pub struct Policy {
     pub codecs:Vec<VideoCodec>,
     /// None lets an explicit client request choose; both automatic use AV1 > HEVC > H.264.
     pub preferred_codec:Option<VideoCodec>,
-    pub max_bitrate_kbps:u32,
 }
 impl Policy {
     pub fn validate(&self)->Result<()> {
         ensure!(self.preferred_codec.is_none_or(|c|self.codecs.contains(&c)),"默认编码须包含在允许的编码中");
-        Response{codecs:self.codecs.clone(),max_fps:60,max_bitrate_kbps:self.max_bitrate_kbps}.validate()
+        Response{dynamic:true,codecs:self.codecs.clone(),max_fps:MAX_FPS,max_bitrate_kbps:MAX_BITRATE_KBPS}.validate()
     }
 }
 fn put(sdp:&mut RTCSessionDescription,key:&str,value:&impl Serialize)->Result<()> {

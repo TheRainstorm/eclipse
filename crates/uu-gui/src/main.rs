@@ -710,6 +710,9 @@ impl App {
             self.unpresented.insert(idx);
         }
         if let Some(h) = &self.controller {
+            if let Some(applied)=h.stats.native_quality_applied.lock().unwrap().as_ref().filter(|a|a.request==self.settings_seq) {
+                self.settings_feedback=match &applied.error {Some(error)=>format!("画质修改失败：{error}"),None=>format!("远端已应用：{} FPS · {:.1} Mbps",applied.settings.fps,applied.bitrate_kbps as f64/1000.)};
+            }
             let response = h.stats.settings_response.load(std::sync::atomic::Ordering::Acquire);
             if response >> 1 == 2000 + self.settings_seq && self.settings_feedback.starts_with("已发送") {
                 if response & 1 != 0 {self.remote_cursor_active=self.preferences.cursor_mode.remote();}
@@ -779,14 +782,26 @@ impl App {
         if self.stream_target.as_ref().is_some_and(|target|target.is_native()) {
             if self.disconnecting {return;}
             let request=self.preferences.native_request();
-            if self.controller.as_ref().is_some_and(|h|h.stats.native_quality_request.get().is_some_and(|old|old!=&request)) {
+            let dynamic=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_response.lock().unwrap().as_ref().is_some_and(|r|r.dynamic));
+            let reconnect=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_request.get().is_some_and(|old|if dynamic {old.bounds!=request.bounds||old.codec!=request.codec}else{old!=&request}));
+            if reconnect {
                 self.output_reconnect_pending=true;self.stop_connection();self.status="正在应用原生串流画质…".into();
+            }else if dynamic {
+                let settings=uu_core::native_quality::Update{fps:request.fps,bitrate_kbps:request.bitrate_kbps};
+                if let Some(h)=&self.controller {
+                    if h.stats.native_quality_current.lock().unwrap().as_ref()==Some(&settings){return;}
+                    self.settings_seq=self.settings_seq.wrapping_add(1);
+                    self.settings_feedback=match h.native_input.as_ref().ok_or("画质控制通路未连接").and_then(|input|input.set_quality(self.settings_seq,settings).map_err(|_|"画质请求队列已满或连接已关闭")) {
+                        Ok(())=>"已发送原生画质更新，等待主机实际应用…".into(),Err(error)=>error.into(),
+                    };
+                }
             }else{
                 self.settings_feedback=if self.controller.as_ref().is_some_and(|h|h.stats.native_quality_response.lock().unwrap().is_some()) {"画质已与主机协商，实际参数见串流信息"}else{"旧版主机使用其本机画质设置；升级主机后可协商"}.into();
             }
             return;
         }
         if !self.supports_remote(uu_core::capabilities::Capability::Quality) {self.settings_feedback="当前画质由被控端设置".into();return;}
+        let Some(frame_rate)=uu_core::control_wire::CaptureFrameRate::new(self.target_fps) else {self.settings_feedback="UU 兼容协议支持 5–144 FPS；请选择有效帧率".into();return;};
         if self.disconnecting { return; }
         let resolution = self.capture_resolution();
         if self.controller.as_ref().is_some_and(|h| h.stats.output_resolution.get()
@@ -813,7 +828,7 @@ impl App {
         let msg = uu_core::control_wire::capture_setting_for_screen(
             2000 + self.settings_seq,
             uu_core::control_wire::now_ms(),
-            uu_core::control_wire::CaptureFrameRate::new(self.target_fps).unwrap_or_default(),
+            frame_rate,
             quality,
             custom_bps,
             resolution,
@@ -1191,6 +1206,7 @@ impl App {
             self.status="UU 兼容连接暂不支持 AV1，请在串流设置中选择自动、H.264 或 HEVC".into();
             return;
         }
+        if uu_core::control_wire::CaptureFrameRate::new(self.target_fps).is_none() {self.status="UU 兼容协议支持 5–144 FPS，请调整客户端帧率".into();return;}
         self.displays=displays::Displays::default();self.selected_track=0;
         let Some(i) = self.selected else { return };
         let Some(config) = self.config.clone() else {

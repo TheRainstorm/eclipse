@@ -36,6 +36,8 @@ pub struct MediaStats {
     pub host_admin:crate::host_admin::Client,
     pub native_quality_request:std::sync::OnceLock<crate::native_quality::Request>,
     pub native_quality_response:std::sync::Mutex<Option<crate::native_quality::Response>>,
+    pub native_quality_current:std::sync::Mutex<Option<crate::native_quality::Update>>,
+    pub native_quality_applied:std::sync::Mutex<Option<crate::native_quality::Applied>>,
     pub native_codec_capabilities:std::sync::OnceLock<Vec<uu_proto::media::VideoCodec>>,
     pub native_media_epoch:AtomicU64,
     pub native_displays:crate::native_displays::Client,

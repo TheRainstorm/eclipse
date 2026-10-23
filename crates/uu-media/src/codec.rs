@@ -15,6 +15,7 @@ pub enum CodecError {
 
 /// Host-side encoder.
 pub trait VideoEncoder: Send {
+    fn is_hardware(&self)->bool {false}
     fn backend_name(&self) -> &str { "video encoder" }
     /// Accept immutable D3D11 BGRA surfaces, including GPU output scaling.
     fn gpu_input(&self)->bool {false}

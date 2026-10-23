@@ -55,9 +55,9 @@ impl H264Encoder {
     }
 
     fn build(bitrate_kbps: u32, frame_rate: u32) -> Result<OhEncoder, CodecError> {
-        if !(64..=100_000).contains(&bitrate_kbps) || !(1..=60).contains(&frame_rate) {
+        if !(64..=1_000_000).contains(&bitrate_kbps) || !(1..=240).contains(&frame_rate) {
             return Err(CodecError::Backend(
-                "software encoding requires 64..=100000 kbps and 1..=60 fps".into(),
+                "software encoding requires 64..=1000000 kbps and 1..=240 fps".into(),
             ));
         }
         let config = EncoderConfig::new()
@@ -86,6 +86,9 @@ impl VideoEncoder for H264Encoder {
 
     fn encode(&mut self, frame: &RawFrame) -> Result<Vec<EncodedFrame>, CodecError> {
         Self::validate_dimensions(frame.width,frame.height)?;
+        if u64::from(frame.width.div_ceil(16))*u64::from(frame.height.div_ceil(16))*u64::from(self.frame_rate)>2_073_600 {
+            return Err(CodecError::Backend("H.264 frame rate and dimensions exceed level 5.2".into()));
+        }
         let packed = to_i420(frame)?;
         if self.pending_keyframe {
             self.inner.force_intra_frame();
@@ -316,7 +319,8 @@ mod tests {
         assert!(changed[0].is_keyframe);
         assert_eq!(changed[0].pts, frame.pts);
         assert!(dec.decode(&changed[0]).unwrap().is_some());
-        assert!(H264Encoder::with_frame_rate(2000, 120).is_err());
+        assert!(H264Encoder::with_frame_rate(2000, 120).is_ok());
+        assert!(H264Encoder::with_frame_rate(2000, 241).is_err());
     }
 
     #[test]

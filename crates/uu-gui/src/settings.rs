@@ -72,9 +72,9 @@ impl Settings {
         // These two legacy fields only seed first migration into services.
         if s.lan_service_port==47998 { s.lan_service_port=uu_core::native_discovery::SERVICE_PORT; }
         if s.lan_discovery_port==47999 { s.lan_discovery_port=uu_core::native_discovery::DISCOVERY_PORT; }
-        s.fps = s.fps.clamp(5, 144);
+        s.fps = s.fps.clamp(5, 240);
         s.bitrate = s.bitrate.min(4);
-        s.custom_mbps = s.custom_mbps.clamp(1, 100);
+        s.custom_mbps = s.custom_mbps.clamp(1, 1000);
         s.resolution = s.resolution.min(3);
         s.volume = s.volume.min(100);
         anyhow::ensure!(s.lan_service_port != 0 && s.lan_discovery_port != 0,

@@ -65,15 +65,15 @@ impl Settings {
             || self.width % 2 != 0
             || self.height % 2 != 0
             || u64::from(self.width)*u64::from(self.height)*3/2>64*1024*1024
-            || !(1..=if self.codec==VideoCodec::H264{60}else{240}).contains(&self.fps)
-            || !(64..=100_000).contains(&self.bitrate_kbps)
+            || !(1..=240).contains(&self.fps)
+            || !(64..=1_000_000).contains(&self.bitrate_kbps)
         {
             return Err(error(
                 "encoding needs even 2..=8192 dimensions, valid FPS and 64..=100000 kbps",
             ));
         }
         let peak=self.rate_control.peak(self.bitrate_kbps);
-        if peak<self.bitrate_kbps || peak>200_000{return Err(error("VBR peak must be at least target bitrate and at most 200000 kbps"));}
+        if peak<self.bitrate_kbps || peak>2_000_000{return Err(error("VBR peak must be at least target bitrate and at most 2000000 kbps"));}
         let blocks = u64::from(self.width.div_ceil(16)) * u64::from(self.height.div_ceil(16));
         if self.codec==VideoCodec::H264 && (blocks > 36_864 || blocks * u64::from(self.fps) > 2_073_600) {
             return Err(error(
@@ -255,6 +255,7 @@ impl Selected {
     }
 }
 impl VideoEncoder for Selected {
+    fn is_hardware(&self)->bool {self.active.is_hardware()}
     fn gpu_input(&self)->bool {self.active.gpu_input()}
     fn gpu_vendor(&self)->Option<u16> {self.active.gpu_vendor()}
     fn backend_name(&self) -> &str {
@@ -291,10 +292,6 @@ impl VideoEncoder for Selected {
             Ok(()) => {
                 self.settings = settings;
                 Ok(())
-            }
-            Err(reason) if self.can_fallback => {
-                tracing::warn!(%reason,"native hardware tuning failed; using software");
-                self.fallback(settings)
             }
             Err(reason) => Err(reason),
         }
@@ -415,7 +412,7 @@ mod tests {
             assert!(create(Settings{codec,..base}).is_err());
             assert!(Settings{codec,fps:120,..base}.validate().is_ok());
         }
-        for peak_kbps in [999,200001]{assert!(Settings{rate_control:RateControl::Vbr{peak_kbps},..base}.validate().is_err());}
+        for peak_kbps in [999,2_000_001]{assert!(Settings{rate_control:RateControl::Vbr{peak_kbps},..base}.validate().is_err());}
         assert!(create(Settings{rate_control:RateControl::Vbr{peak_kbps:2000},..base}).is_err());
     }
     #[test]
@@ -443,10 +440,10 @@ mod tests {
         assert!(encoder.set_bitrate(0).is_err());
         assert_eq!(tunes.load(Ordering::Relaxed), 0);
         assert_eq!(encoder.backend_name(), "simulated hardware");
-        encoder.set_bitrate(2000).unwrap();
+        assert!(encoder.set_bitrate(2000).is_err());
         assert_eq!(tunes.load(Ordering::Relaxed), 1);
-        assert!(encoder.backend_name().contains("fallback"));
-        assert!(encoder.encode(&frame()).unwrap()[0].is_keyframe);
+        assert_eq!(encoder.backend_name(),"simulated hardware");
+        assert_eq!(encoder.settings.bitrate_kbps,1000);
     }
     #[test]
     fn size_changes_are_rejected_before_touching_the_driver() {
@@ -465,7 +462,7 @@ mod tests {
                 ..settings()
             },
             Settings {
-                fps: 61,
+                fps: 241,
                 ..settings()
             },
             Settings {

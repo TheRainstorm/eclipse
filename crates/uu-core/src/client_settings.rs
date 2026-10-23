@@ -73,8 +73,8 @@ impl Default for ClientSettings {
 }
 impl ClientSettings {
     pub fn validate(&self) -> Result<()> {
-        ensure!((5..=144).contains(&self.fps) && self.bitrate<=4
-            && (1..=100).contains(&self.custom_mbps) && self.resolution<=3 && self.volume<=100,
+        ensure!((5..=240).contains(&self.fps) && self.bitrate<=4
+            && (1..=1000).contains(&self.custom_mbps) && self.resolution<=3 && self.volume<=100,
             "客户端分辨率、帧率、码率或音量无效");
         ensure!(!self.software_decoder || !matches!(self.codec,CodecPreference::Hevc|CodecPreference::Av1),
             "HEVC / AV1 需要可用的硬件解码；请选择自动或 H.264");

@@ -28,6 +28,8 @@ pub enum CaptureError {
 /// into the encoder; `RawFrame::gpu` distinguishes a CPU buffer from a GPU
 /// handle that still needs a copy/download step.
 pub trait Capture: Send {
+    /// Update capture pacing without replacing the authorized desktop session.
+    fn set_frame_rate(&mut self,_fps:u32)->Result<(),CaptureError>{Ok(())}
     /// Opt in only when the selected encoder accepts native GPU surfaces.
     fn prefer_gpu(&mut self,_enabled:bool,_vendor:Option<u16>) {}
     fn resolution(&self) -> (u32, u32);

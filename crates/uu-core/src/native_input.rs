@@ -55,6 +55,7 @@ pub struct InputQueueError;
 
 #[derive(Clone)]
 pub struct NativeInputSender {
+    quality:mpsc::Sender<(u64,crate::native_quality::Update)>,
     tx: mpsc::Sender<Envelope>,
     displays:mpsc::Sender<(u64,i32)>,
     reset: watch::Sender<u64>,
@@ -64,6 +65,7 @@ pub struct NativeInputSender {
     pub(crate) epoch: Arc<AtomicU64>,
 }
 pub struct NativeInputReceiver {
+    quality:mpsc::Receiver<(u64,crate::native_quality::Update)>,
     pub(crate) rx: mpsc::Receiver<Envelope>,
     displays:mpsc::Receiver<(u64,i32)>,
     pub(crate) reset: watch::Receiver<u64>,
@@ -78,6 +80,7 @@ pub(crate) struct Envelope {
     pub created:std::time::Instant,
 }
 pub(crate) enum NextInput {
+    Quality(u64,crate::native_quality::Update),
     Display(u64,i32),
     Mode(bool),
     Reset,
@@ -90,11 +93,13 @@ impl NativeInputReceiver {
             mode=self.mode.changed()=>if mode.is_ok(){NextInput::Mode(*self.mode.borrow_and_update())}else{NextInput::Closed},
             reset=self.reset.changed()=>if reset.is_ok(){self.reset.borrow_and_update();NextInput::Reset}else{NextInput::Closed},
             display=self.displays.recv()=>display.map_or(NextInput::Closed,|(request,id)|NextInput::Display(request,id)),
+            update=self.quality.recv()=>update.map_or(NextInput::Closed,|(request,settings)|NextInput::Quality(request,settings)),
             item=self.rx.recv()=>item.map_or(NextInput::Closed,NextInput::Command),
         }
     }
 }
 pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
+    let (quality,quality_rx)=mpsc::channel(4);
     let (tx, rx) = mpsc::channel(256);
     let (displays,displays_rx)=mpsc::channel(8);
     let (reset, reset_rx) = watch::channel(0);
@@ -104,6 +109,7 @@ pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
     let epoch = Arc::new(AtomicU64::new(0));
     (
         NativeInputSender {
+            quality,
             tx,
             displays,
             reset,
@@ -113,6 +119,7 @@ pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
             epoch: epoch.clone(),
         },
         NativeInputReceiver {
+            quality:quality_rx,
             rx,
             displays:displays_rx,
             reset: reset_rx,
@@ -124,6 +131,10 @@ pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
     )
 }
 impl NativeInputSender {
+    pub fn set_quality(&self,request:u64,settings:crate::native_quality::Update)->Result<(),InputQueueError> {
+        settings.validate().map_err(|_|InputQueueError)?;
+        self.quality.try_send((request,settings)).map_err(|_|InputQueueError)
+    }
     pub fn requested(&self)->bool{self.requested.load(Ordering::Acquire)}
     /// A latest-value mailbox; high-rate sensors never occupy the key queue.
     pub fn gamepads(&self, state: uu_input::gamepad::Snapshot) {

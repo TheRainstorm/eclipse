@@ -20,6 +20,8 @@ pub struct SyntheticCapture {
     height: u32,
     frame_index: u64,
     started: Instant,
+    pace_started:Instant,
+    pace_index:u64,
     fps: u32,
 }
 
@@ -33,6 +35,7 @@ impl SyntheticCapture {
             height,
             frame_index: 0,
             started: Instant::now(),
+            pace_started:Instant::now(),pace_index:0,
             fps: fps.max(1),
         }
     }
@@ -91,21 +94,27 @@ impl SyntheticCapture {
 }
 
 impl Capture for SyntheticCapture {
+    fn set_frame_rate(&mut self,fps:u32)->Result<(),CaptureError> {
+        if !(1..=240).contains(&fps){return Err(CaptureError::Backend("invalid generated capture rate".into()));}
+        self.fps=fps;self.pace_started=Instant::now();self.pace_index=0;Ok(())
+    }
     fn resolution(&self) -> (u32, u32) {
         (self.width, self.height)
     }
 
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
         // Pace to the requested rate, then advance the pattern.
-        let elapsed = ((self.frame_index as u128 + 1) * 1_000_000_000 / self.fps as u128)
+        let elapsed = ((self.pace_index as u128 + 1) * 1_000_000_000 / self.fps as u128)
             .min(u64::MAX as u128) as u64;
-        let target = self.started + Duration::from_nanos(elapsed);
+        let target = self.pace_started + Duration::from_nanos(elapsed);
         let now = Instant::now();
         if target > now {
             std::thread::sleep(target - now);
         }
-        let frame = self.pattern(self.frame_index);
+        let mut frame = self.pattern(self.frame_index);
+        frame.pts=Timestamp(self.started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64);
         self.frame_index += 1;
+        self.pace_index+=1;
         Ok(frame)
     }
 }

@@ -144,7 +144,7 @@ static int bitrate_matches(const Encoder *e,uint32_t target){
 }
 int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint32_t fps,uint32_t target,uint32_t peak,int vbr,
     Encoder **out,char *error,size_t capacity){
-    if(!out || width<2 || height<2 || width>8192 || height>8192 || (width|height)&1 || !fps || fps>240 || target<64 || target>100000 || peak<target || peak>200000)
+    if(!out || width<2 || height<2 || width>8192 || height>8192 || (width|height)&1 || !fps || fps>240 || target<64 || target>1000000 || peak<target || peak>2000000)
         return failed(error,capacity,"invalid encoder settings",MFX_ERR_INVALID_VIDEO_PARAM);
     *out=NULL;Encoder *e=(Encoder *)calloc(1,sizeof(*e));if(!e)return failed(error,capacity,"allocation",MFX_ERR_MEMORY_ALLOC);
     if(runtime_open(&e->rt,0,error,capacity)<0){eclipse_vpl_encoder_close(e);return -1;}
@@ -244,7 +244,7 @@ int eclipse_vpl_encoder_encode(Encoder *e,uint64_t timestamp,int keyframe,const 
     *data=e->bits+bits.DataOffset;*length=bits.DataLength;*pts=bits.TimeStamp;*key=(bits.FrameType&(MFX_FRAMETYPE_I|MFX_FRAMETYPE_IDR))!=0;return 1;
 }
 int eclipse_vpl_encoder_bitrate(Encoder *e,uint32_t target,char *error,size_t capacity){
-    if(!e || target<64 || target>100000 || (e->vbr && target>e->peak_kbps))return failed(error,capacity,"invalid bitrate",MFX_ERR_INVALID_VIDEO_PARAM);
+    if(!e || target<64 || target>1000000 || (e->vbr && target>e->peak_kbps))return failed(error,capacity,"invalid bitrate",MFX_ERR_INVALID_VIDEO_PARAM);
     mfxVideoParam previous=e->params;set_bitrate(e,target);
     /* Reset permits bitrate changes, not reallocation of the encoder's VBV.
      * Preserve the initialized buffer and delay, expressed in the new BRC

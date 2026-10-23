@@ -11,7 +11,7 @@ use spa::{
 use std::{
     os::fd::OwnedFd,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool,AtomicU32, Ordering},
         Arc,
     },
     time::Duration,
@@ -30,7 +30,7 @@ struct State {
 pub(super) fn run(
     fd: OwnedFd,
     node: u32,
-    fps: u32,
+    fps: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
     frames: Arc<FrameSlot>,
 ) -> Result<(), String> {
@@ -39,7 +39,7 @@ pub(super) fn run(
 fn run_inner(
     fd: OwnedFd,
     node: u32,
-    fps: u32,
+    fps: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
     frames: Arc<FrameSlot>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -159,6 +159,32 @@ fn run_inner(
             }
         })
         .register()?;
+    let mut applied_fps=fps.load(Ordering::Acquire);
+    let serialized=format(applied_fps)?;
+    let mut params = [Pod::from_bytes(&serialized).ok_or("Invalid PipeWire format specification")?];
+    stream.connect(
+        spa::utils::Direction::Input,
+        Some(node),
+        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
+        &mut params,
+    )?;
+    while !stop.load(Ordering::Acquire) {
+        let requested=fps.load(Ordering::Acquire);
+        if requested!=applied_fps {
+            let serialized=format(requested)?;
+            let mut params=[Pod::from_bytes(&serialized).ok_or("Invalid PipeWire format specification")?];
+            stream.update_params(&mut params)?;
+            applied_fps=requested;
+        }
+        if mainloop.loop_().iterate(Duration::from_millis(30)) < 0 {
+            return Err("共享连接已关闭".into());
+        }
+    }
+    stream.disconnect()?;
+    Ok(())
+}
+
+fn format(fps:u32)->Result<Vec<u8>,Box<dyn std::error::Error>> {
     let object = spa::pod::object!(
         spa::utils::SpaTypes::ObjectParamFormat,
         spa::param::ParamType::EnumFormat,
@@ -197,20 +223,7 @@ fn run_inner(
     )?
     .0
     .into_inner();
-    let mut params = [Pod::from_bytes(&serialized).ok_or("Invalid PipeWire format specification")?];
-    stream.connect(
-        spa::utils::Direction::Input,
-        Some(node),
-        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
-        &mut params,
-    )?;
-    while !stop.load(Ordering::Acquire) {
-        if mainloop.loop_().iterate(Duration::from_millis(30)) < 0 {
-            return Err("共享连接已关闭".into());
-        }
-    }
-    stream.disconnect()?;
-    Ok(())
+    Ok(serialized)
 }
 
 fn copy_frame(

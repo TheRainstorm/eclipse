@@ -106,7 +106,7 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
                 ui.label("目标帧率");
                 ui.add(
                     egui::DragValue::new(&mut s.fps)
-                        .range(5..=144)
+                        .range(5..=240)
                         .suffix(" FPS"),
                 );
                 ui.end_row();
@@ -124,7 +124,7 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
                 ui.end_row();
                 if s.bitrate == 4 {
                     ui.label("自定义码率");
-                    ui.add(egui::Slider::new(&mut s.custom_mbps, 1..=100).suffix(" Mbps"));
+                    ui.add(egui::Slider::new(&mut s.custom_mbps, 1..=1000).suffix(" Mbps"));
                     ui.end_row();
                 }
                 ui.label("输出分辨率");

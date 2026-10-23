@@ -102,6 +102,7 @@ impl Worker {
     }
 }
 impl VideoEncoder for Worker {
+    fn is_hardware(&self)->bool {true}
     fn gpu_input(&self)->bool {self.gpu_input}
     fn gpu_vendor(&self)->Option<u16> {self.gpu_vendor}
     fn backend_name(&self) -> &str {

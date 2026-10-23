@@ -93,17 +93,17 @@ mod tests {
         let old_port=book.sharing.service_port;
         let next=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         book.sharing.service_port=next.local_addr().unwrap().port();
-        book.sharing.fps=30;
+        book.sharing.audio=true;
         store.sharing(book.sharing.clone()).unwrap();
         assert!(host.changes_pending(&store.read().unwrap().sharing));
-        assert_eq!(host.active_sharing.as_ref().unwrap().fps,60);
+        assert!(!host.active_sharing.as_ref().unwrap().audio);
         assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,old_port)).is_err());
-        let mut invalid=book.clone();invalid.sharing.fps=0;
+        let mut invalid=book.clone();invalid.sharing.name.clear();
         assert!(host.restart(config.clone(),invalid,trust.clone(),&ctx).is_err());
         assert!(!host.stopping());
         drop(next);
         host.restart(config,store.read().unwrap(),trust,&ctx).unwrap();
-        poll_until(&mut host,&ctx,|h|!h.stopping()&&h.active_sharing.as_ref().is_some_and(|s|s.fps==30)&&h.statuses().iter().any(|(_,s)|matches!(s,EndpointStatus::Ready)));
+        poll_until(&mut host,&ctx,|h|!h.stopping()&&h.active_sharing.as_ref().is_some_and(|s|s.audio)&&h.statuses().iter().any(|(_,s)|matches!(s,EndpointStatus::Ready)));
         assert!(!host.changes_pending(&book.sharing));
         let _old=std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,old_port)).unwrap();
         assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,book.sharing.service_port)).is_err());
@@ -453,7 +453,7 @@ impl HostUi {
                     let lan_config=lan::Config{video_policy:sharing.native().video_policy,codec:sharing.native().codec,rate_control:sharing.native().rate_control,name:sharing.name.clone(),bind:([0,0,0,0],sharing.service_port).into(),
                         discovery_bind:Some(([0,0,0,0],sharing.discovery_port).into()),data_dir:config.at("native-lan"),
                         source:sharing.native().source,
-                        fps:sharing.fps,bitrate_kbps:sharing.bitrate_mbps*1000,encoder:sharing.encoding.native(),
+                        fps:sharing.native().fps,bitrate_kbps:sharing.native().bitrate_kbps,encoder:sharing.encoding.native(),
                         allow_input:sharing.control,audio:sharing.audio.then_some(uu_core::native::AudioSource::System),clipboard:factory.clone()};
                     match lan::Server::bind_with_access(lan_config,receiver.clone(),lan_events,server_access.clone()).await {
                         Ok((server,handle))=>{

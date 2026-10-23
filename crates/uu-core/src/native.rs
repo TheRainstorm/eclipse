@@ -120,13 +120,12 @@ fn validate_video(width: u32, height: u32, fps: u32) -> Result<()> {
             && (2..=8192).contains(&height)
             && width % 2 == 0
             && height % 2 == 0
-            && (1..=60).contains(&fps),
+            && (1..=crate::native_quality::MAX_FPS).contains(&fps),
         "invalid native video dimensions or frame rate"
     );
-    let macroblocks = width.div_ceil(16) as u64 * height.div_ceil(16) as u64;
     ensure!(
-        macroblocks <= 36_864 && macroblocks * fps as u64 <= 2_073_600,
-        "native source exceeds the supported 4K60 geometry; choose a smaller source or frame rate"
+        u64::from(width)*u64::from(height)*3/2<=64*1024*1024,
+        "native frame exceeds the capture and decoder buffer budget"
     );
     Ok(())
 }
@@ -213,10 +212,10 @@ impl From<HostConfig> for SharingConfig {fn from(c:HostConfig)->Self{Self::from(
 impl SharingConfig {
     pub fn validate(&self) -> Result<()> {
         if let Some(policy)=&self.video_policy {policy.validate()?;}
-        ensure!((1..=60).contains(&self.fps) && (64..=100_000).contains(&self.bitrate_kbps),
-            "native host needs 1..=60 fps and 64..=100000 kbps");
+        ensure!((1..=crate::native_quality::MAX_FPS).contains(&self.fps) && (64..=crate::native_quality::MAX_BITRATE_KBPS).contains(&self.bitrate_kbps),
+            "native frame rate or bitrate exceeds the encoder interface range");
         let peak=self.rate_control.peak(self.bitrate_kbps);
-        ensure!(peak>=self.bitrate_kbps && peak<=200_000,"VBR 峰值须不小于目标且不大于 200 Mbps");
+        ensure!(peak>=self.bitrate_kbps && peak<=2_000_000,"VBR 峰值超出编码接口范围");
         ensure!(self.encoder!=EncoderPreference::Software || (self.codec==VideoCodec::H264 && self.rate_control==uu_media::encoder::RateControl::Cbr),"所选编码格式或 VBR 需要硬件编码");
         let monitor = matches!(self.source,CaptureSource::Primary|CaptureSource::Desktop|CaptureSource::Monitor(_));
         ensure!(!self.allow_input || monitor, "desktop input requires an explicitly shared monitor");
@@ -374,6 +373,8 @@ fn elapsed_us(started: Instant) -> u64 {
 }
 
 struct CaptureWorker {
+    quality:crate::native_quality::Runtime,
+    quality_state:watch::Receiver<uu_media::encoder::Settings>,
     started: Instant,
     timings: Arc<ProducerTimings>,
     stopped: Arc<AtomicBool>,
@@ -385,7 +386,7 @@ struct CaptureWorker {
 impl CaptureWorker {
     fn start(
         capture: Box<dyn uu_capture::Capture>,
-        fps: u32,
+        settings: uu_media::encoder::Settings,
         refresh: Arc<AtomicBool>,
         encoder: Box<dyn uu_media::VideoEncoder>,
         live_timing:Arc<crate::native_timing::HostTiming>,
@@ -399,13 +400,16 @@ impl CaptureWorker {
         let worker_timings = timings.clone();
         let started = Instant::now();
         let (encoder_status,encoder_state)=watch::channel(encoder.backend_name().to_owned());
+        let (quality,changes)=crate::native_quality::Runtime::channel();
+        let (quality_status,quality_state)=watch::channel(settings);
         let task = tokio::task::spawn_blocking(move || {
-            let result = encode_source(capture, fps, encoder, refresh, worker_stop, counter, worker_timings, live_timing,encoder_status, &tx);
+            let result = encode_source(capture, settings, encoder, refresh, worker_stop, counter, worker_timings, live_timing,encoder_status,changes,quality_status, &tx);
             if let Err(error) = result {
                 let _ = tx.blocking_send(Err(error));
             }
         });
         Self {
+            quality,quality_state,
             started,
             timings,
             stopped,
@@ -432,7 +436,7 @@ impl Drop for CaptureWorker {
 
 fn encode_source(
     mut capture: Box<dyn uu_capture::Capture>,
-    fps: u32,
+    mut settings: uu_media::encoder::Settings,
     mut encoder: Box<dyn uu_media::VideoEncoder>,
     refresh: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
@@ -440,16 +444,43 @@ fn encode_source(
     timings: Arc<ProducerTimings>,
     live_timing:Arc<crate::native_timing::HostTiming>,
     encoder_status: watch::Sender<String>,
+    changes:std::sync::mpsc::Receiver<crate::native_quality::Change>,
+    quality_status:watch::Sender<uu_media::encoder::Settings>,
     output: &mpsc::Sender<Result<uu_media::EncodedFrame>>,
 ) -> Result<()> {
     let mut backend=encoder.backend_name().to_owned();
-    let interval = Duration::from_secs_f64(1.0 / fps as f64);
+    let mut interval = Duration::from_secs_f64(1.0 / settings.fps as f64);
     let mut next = Instant::now();
     let mut keyframe = Instant::now() - Duration::from_secs(3);
     while !stopped.load(Ordering::Acquire) {
         std::thread::sleep(next.saturating_duration_since(Instant::now()));
         if stopped.load(Ordering::Acquire) {
             break;
+        }
+        if let Ok(change)=changes.try_recv() {
+            let result=(||->Result<u32> {
+                ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"画质请求已取消");
+                change.settings.validate()?;
+                let bitrate_kbps=change.settings.bitrate(settings.width,settings.height);
+                let rate_control=match settings.rate_control {uu_media::encoder::RateControl::Cbr=>uu_media::encoder::RateControl::Cbr,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:bitrate_kbps.saturating_mul(2)}};
+                let updated=uu_media::encoder::Settings{fps:change.settings.fps,bitrate_kbps,rate_control,..settings};
+                updated.validate()?;
+                if updated.fps!=settings.fps || updated.rate_control!=settings.rate_control {
+                    // Driver contexts stay on their own threads. Build first,
+                    // then start a fresh reference chain on the same transport.
+                    let reopen=if encoder.is_hardware()&&updated.preference==EncoderPreference::Auto {uu_media::encoder::Settings{preference:EncoderPreference::Hardware,..updated}}else{updated};
+                    let replacement=uu_media::encoder::create(reopen)?;
+                    ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"画质请求已取消");
+                    capture.set_frame_rate(updated.fps)?;
+                    encoder=replacement;
+                    interval=Duration::from_secs_f64(1.0/updated.fps as f64);
+                    next=Instant::now();
+                }else{encoder.set_bitrate(bitrate_kbps)?;}
+                encoder.request_keyframe();settings=updated;
+                quality_status.send_replace(settings);
+                Ok(bitrate_kbps)
+            })().map_err(|error|error.to_string());
+            let _=change.reply.send(result);
         }
         let started = Instant::now();
         capture.prefer_gpu(encoder.gpu_input(),encoder.gpu_vendor());
@@ -572,13 +603,13 @@ async fn send_video(
     authority: Arc<crate::input_ownership::Authority>,
 ) -> Result<HostReport> {
     let refresh = Arc::new(AtomicBool::new(false));
-    let host_max_fps=config.fps;
+    let dynamic=crate::native_quality::runtime_requested(&offer.sdp)?;
     let request=crate::native_quality::Request::read(&offer.sdp)?;
     let policy=config.video_policy.clone();
     let request=if policy.is_some(){request}else{None};
     if let Some(request)=&request {
-        config.fps=request.fps.min(config.fps);
-        config.bitrate_kbps=request.bitrate_kbps.unwrap_or(config.bitrate_kbps).min(policy.as_ref().unwrap().max_bitrate_kbps);
+        config.fps=if dynamic {request.fps}else{request.fps.min(60)};
+        config.bitrate_kbps=request.bitrate_kbps.unwrap_or(config.bitrate_kbps);
         if let uu_media::encoder::RateControl::Vbr{peak_kbps}=config.rate_control {
             config.rate_control=uu_media::encoder::RateControl::Vbr{peak_kbps:peak_kbps.max(config.bitrate_kbps)};
         }
@@ -598,14 +629,19 @@ async fn send_video(
     // Authentication and a valid media offer precede capture access.
     let (fps,kbps,preference,rate_control)=(config.fps,config.bitrate_kbps,config.encoder,config.rate_control);
     let bounds=request.as_ref().and_then(|r|r.bounds);
+    let automatic=request.as_ref().is_some_and(|r|r.bitrate_kbps.is_none());
     struct CancelCaptureOpen(Arc<AtomicBool>);
     impl Drop for CancelCaptureOpen { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
     let capture_cancel = CancelCaptureOpen(Arc::new(AtomicBool::new(false)));
     let capture_options = uu_capture::OpenOptions { allow_input: config.allow_input, fps, cancelled:capture_cancel.0.clone() };
-    let (capture,encoder,codec,available) = tokio::select! {
+    let (capture,encoder,codec,available,encoder_settings) = tokio::select! {
         result=tokio::task::spawn_blocking(move || -> Result<_> {
-            let capture=uu_capture::scale::bounded(uu_capture::open_with_options(&config.source,capture_options)?,bounds);
+            let mut capture=uu_capture::open_with_options(&config.source,capture_options)?;
+            capture.set_frame_rate(fps)?;
+            let capture=uu_capture::scale::bounded(capture,bounds);
             let (width,height)=capture.resolution();validate_video(width,height,fps)?;
+            let kbps=if automatic {crate::native_quality::Update{fps,bitrate_kbps:None}.bitrate(width,height)}else{kbps};
+            let rate_control=match rate_control {uu_media::encoder::RateControl::Cbr=>rate_control,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:kbps.saturating_mul(2)}};
             let settings=|codec|uu_media::encoder::Settings {codec,rate_control,width,height,fps,bitrate_kbps:kbps,preference};
             let mut selected=None;let mut last_error=None;
             for codec in choices {
@@ -621,12 +657,13 @@ async fn send_video(
                     if uu_media::encoder::create(settings(candidate)).is_ok(){available.push(candidate);}
                 }
             }
-            Ok((capture,encoder,codec,available))
+            Ok((capture,encoder,codec,available,settings(codec)))
         })=>result??,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
         _=stream.disconnected()=>return Ok(HostReport::default()),
     };
     config.codec=codec;
+    config.bitrate_kbps=encoder_settings.bitrate_kbps;
     let permissions=config.session.as_ref().map_or(crate::device_trust::Permissions::CONTROL,|s|s.permissions);
     if !permissions.details().clipboard {config.clipboard=None;}
     let mut track=peer.sender_for_codec(refresh.clone(),codec).await?;
@@ -643,8 +680,8 @@ async fn send_video(
     controls.set_displays(displays.clone());
     controls.attach(&peer.pc);
     let mut description=peer.description(false).await?;
-    if let Some(policy)=&config.video_policy {
-        crate::native_quality::Response{codecs:available,max_fps:host_max_fps,max_bitrate_kbps:policy.max_bitrate_kbps}.add(&mut description)?;
+    if config.video_policy.is_some() {
+        crate::native_quality::Response{dynamic,codecs:available,max_fps:if dynamic{crate::native_quality::MAX_FPS}else{60},max_bitrate_kbps:if dynamic{crate::native_quality::MAX_BITRATE_KBPS}else{100_000}}.add(&mut description)?;
     }
     let answer = Answer {
         codec:config.codec,
@@ -667,7 +704,8 @@ async fn send_video(
     if stream.lan_peer().is_none() {
         if let Err(error)=peer.direct_path().await {controls.stop().await;return Err(error);}
     }
-    let mut producer = CaptureWorker::start(capture, config.fps, refresh, encoder,controls.timing());
+    let mut producer = CaptureWorker::start(capture, encoder_settings, refresh, encoder,controls.timing());
+    if dynamic {controls.set_quality(producer.quality.clone());}
     let mut encoder_label=producer.encoder.borrow().clone();
     let mut encoder_state=Some(producer.encoder.clone());
     let mut audio_label=if config.audio.is_none(){String::new()}else if audio_sender.is_none(){"控制端未接收声音".into()}else{"声音准备中".into()};
@@ -690,6 +728,13 @@ async fn send_video(
     let active = async {
         loop {
             tokio::select! {
+                changed=producer.quality_state.changed()=>{
+                    if changed.is_ok() {
+                        let settings=*producer.quality_state.borrow_and_update();
+                        config.fps=settings.fps;config.bitrate_kbps=settings.bitrate_kbps;
+                        progress(&status,HostStatus::Streaming{width,height,fps:config.fps,audio:audio_label.clone(),encoder:encoder_label.clone()});
+                    }
+                },
                 _ = cancelled(&mut stop) => break,
                 _ = &mut deadline => break,
                 // A source renewal sends its next Offer on this same signaling
@@ -850,6 +895,7 @@ async fn receive_session(
     // start ICE/DTLS and release the first burst of video into the AU queue.
     peer.prepare_video(answer.width, answer.height, answer.codec,&stats).await?;
     stats.configured_fps.store(answer.fps,Ordering::Release);
+    *stats.native_quality_current.lock().unwrap()=stats.native_quality_request.get().map(|request|crate::native_quality::Update{fps:answer.fps,bitrate_kbps:request.bitrate_kbps});
     match stream.lan_peer() {
         Some(ip) => peer.remote(answer.sdp, ip).await?,
         None => peer.remote_direct(answer.sdp).await?,
@@ -987,7 +1033,7 @@ mod tests {
     #[tokio::test(flavor="multi_thread",worker_threads=2)]
     async fn client_quality_request_scales_encrypted_video_and_reports_real_host_limits() {
         let (mut config,file)=config();
-        config.video_policy=Some(crate::native_quality::Policy{codecs:vec![VideoCodec::H264],preferred_codec:None,max_bitrate_kbps:1000});
+        config.video_policy=Some(crate::native_quality::Policy{codecs:vec![VideoCodec::H264],preferred_codec:None});
         let (host_stop,rx)=watch::channel(false);let (phase,host_phase)=watch::channel(HostStatus::Starting);
         let host=tokio::spawn(serve_with_status(config,rx,Some(phase)));
         let invitation=invitation(&file).await;
@@ -1003,7 +1049,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             ensure!(stats.configured_fps.load(Ordering::Acquire)==30,"target FPS not negotiated");
-            ensure!(stats.native_quality_response.lock().unwrap().as_ref().is_some_and(|r|r.codecs==vec![VideoCodec::H264]&&r.max_bitrate_kbps==1000&&r.max_fps==60),"missing real host capability response");
+            ensure!(stats.native_quality_response.lock().unwrap().as_ref().is_some_and(|r|r.codecs==vec![VideoCodec::H264]&&r.dynamic&&r.max_bitrate_kbps==crate::native_quality::MAX_BITRATE_KBPS&&r.max_fps==crate::native_quality::MAX_FPS),"missing real host capability response");
             ensure!(stats.capabilities.allows(crate::capabilities::Capability::Quality),"negotiated quality controls remain hidden");
             ensure!(matches!(*host_phase.borrow(),HostStatus::Streaming{width:160,height:90,fps:30,..}),"capture was not scaled");
             Ok::<_,anyhow::Error>(())
@@ -1054,6 +1100,50 @@ mod tests {
         let viewed=viewer.await.unwrap();let hosted=host.await.unwrap();
         result.unwrap().unwrap();viewed.unwrap();hosted.unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn client_changes_frame_rate_and_bitrate_on_one_encrypted_media_session() {
+        let (mut config,file)=config();
+        config.fps=10;config.bitrate_kbps=64;config.session_limit=Some(Duration::from_secs(20));
+        config.video_policy=Some(crate::native_quality::Policy{codecs:vec![VideoCodec::H264],preferred_codec:None});
+        let (host_stop,rx)=watch::channel(false);let (phase,host_phase)=watch::channel(HostStatus::Starting);
+        let host=tokio::spawn(serve_with_status(config,rx,Some(phase)));
+        let invite=invitation(&file).await;
+        let stats=Arc::new(MediaStats::default());let observed=stats.clone();
+        stats.native_codec_capabilities.set(vec![VideoCodec::H264]).unwrap();
+        stats.native_quality_request.set(crate::native_quality::Request{fps:120,bounds:None,bitrate_kbps:Some(8000),codec:None}).unwrap();
+        let (frames,_images)=frame_channel();let (stop,rx)=watch::channel(false);
+        let (input,receive)=crate::native_input::channel(false);
+        let viewer=tokio::spawn(async move{view_with_input(&invite,frames,observed,rx,receive).await});
+        let result=timeout(Duration::from_secs(16),async {
+            while stats.decoded_total.load(Ordering::Acquire)<8 {tokio::time::sleep(Duration::from_millis(5)).await;}
+            ensure!(stats.configured_fps.load(Ordering::Acquire)==120,"old host FPS still caps the client");
+            let epoch=stats.native_media_epoch.load(Ordering::Acquire);
+            for (index,settings) in [crate::native_quality::Update{fps:24,bitrate_kbps:Some(500)},crate::native_quality::Update{fps:120,bitrate_kbps:Some(150_000)},crate::native_quality::Update{fps:240,bitrate_kbps:None}].into_iter().enumerate() {
+                let request=index as u64+1;
+                input.set_quality(request,settings)?;
+                loop {
+                    let reply=stats.native_quality_applied.lock().unwrap().clone();
+                    if let Some(applied)=reply.filter(|a|a.request==request) {
+                        ensure!(applied.error.is_none(),"runtime update failed: {:?}",applied.error);
+                        ensure!(applied.bitrate_kbps==settings.bitrate(320,180),"wrong applied bitrate");break;
+                    }
+                    ensure!(!viewer.is_finished(),"viewer stopped during update");
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                let baseline=stats.decoded_total.load(Ordering::Acquire);
+                while stats.decoded_total.load(Ordering::Acquire)<baseline+8 {tokio::time::sleep(Duration::from_millis(5)).await;}
+                ensure!(stats.native_media_epoch.load(Ordering::Acquire)==epoch,"quality change reconnected media");
+                ensure!(stats.configured_fps.load(Ordering::Acquire)==settings.fps,"target FPS not applied");
+                ensure!(matches!(*host_phase.borrow(),HostStatus::Streaming{fps,..} if fps==settings.fps),"host status retains old FPS");
+            }
+            ensure!(stats.errors.load(Ordering::Acquire)==0,"decoder errors after reconfiguration");
+            ensure!(input.set_quality(99,crate::native_quality::Update{fps:0,bitrate_kbps:None}).is_err(),"invalid update entered control queue");
+            Ok::<_,anyhow::Error>(())
+        }).await;
+        stop.send_replace(true);host_stop.send_replace(true);
+        let viewed=viewer.await.unwrap();let hosted=host.await.unwrap();
+        result.unwrap().unwrap();viewed.unwrap();let report=hosted.unwrap();assert!(report.sent>=32);
     }
     #[tokio::test]
     async fn synthetic_source_cannot_authorize_system_audio() {
@@ -1115,9 +1205,9 @@ mod tests {
     fn software_video_fits_its_advertised_h264_level() {
         assert!(validate_video(4096, 2160, 60).is_ok());
         assert!(validate_video(5120, 1440, 60).is_ok());
-        assert!(validate_video(8100, 1164, 60).is_err());
+        assert!(validate_video(8100, 1164, 60).is_ok());
         assert!(validate_video(8192, 8192, 30).is_err());
-        assert!(validate_video(1920, 1080, 120).is_err());
+        assert!(validate_video(1920, 1080, 120).is_ok());
         assert!(validate_video(1919, 1080, 60).is_err());
     }
 

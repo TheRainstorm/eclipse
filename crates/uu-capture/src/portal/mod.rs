@@ -9,7 +9,7 @@ use ashpd::desktop::{
 use futures_util::{stream::BoxStream, StreamExt};
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool,AtomicU32, Ordering},
         mpsc, Arc, Condvar, Mutex, OnceLock,
     },
     thread::JoinHandle,
@@ -234,6 +234,7 @@ async fn actor(
 }
 
 pub struct PortalCapture {
+    fps:Arc<AtomicU32>,
     frames: Arc<FrameSlot>,
     options: OpenOptions,
     worker: Option<JoinHandle<()>>,
@@ -251,6 +252,7 @@ impl PortalCapture {
         let (ready, rx) = mpsc::sync_channel(1);
         runtime()?.spawn(actor(options.clone(), ready, frames.clone()));
         let mut capture = Self {
+            fps:Arc::new(AtomicU32::new(options.fps.clamp(1,240))),
             frames,
             options,
             worker: None,
@@ -275,7 +277,7 @@ impl PortalCapture {
         };
         let (frames, stop) = (capture.frames.clone(), capture.options.cancelled.clone());
         let node = opened.stream.pipe_wire_node_id();
-        let fps = capture.options.fps.clamp(1, 240);
+        let fps = capture.fps.clone();
         capture.worker = Some(
             std::thread::Builder::new()
                 .name("portal-pipewire".into())
@@ -299,6 +301,10 @@ impl PortalCapture {
     }
 }
 impl Capture for PortalCapture {
+    fn set_frame_rate(&mut self,fps:u32)->Result<(),CaptureError> {
+        if !(1..=240).contains(&fps){return Err(error("帧率超出采集接口范围"));}
+        self.fps.store(fps,Ordering::Release);Ok(())
+    }
     fn resolution(&self) -> (u32, u32) {
         self.pixels
     }
