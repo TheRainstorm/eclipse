@@ -42,6 +42,16 @@ impl std::ops::DerefMut for Settings {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.client }
 }
 impl Settings {
+    fn validate(&self)->anyhow::Result<()> {
+        self.client.validate()?;
+        anyhow::ensure!(self.lan_service_port>0&&self.lan_discovery_port>0,"局域网端口必须在 1–65535 之间");
+        if self.wallpaper_enabled {
+            anyhow::ensure!(self.wallpaper_api.len()<=2048,"壁纸接口地址过长");
+            let url=reqwest::Url::parse(&self.wallpaper_api).map_err(|_|anyhow::anyhow!("请输入有效的壁纸图片 URL"))?;
+            anyhow::ensure!(matches!(url.scheme(),"http"|"https")&&url.host_str().is_some()&&url.username().is_empty()&&url.password().is_none(),"壁纸接口须为不含登录凭据的 HTTP / HTTPS 图片地址");
+        }
+        Ok(())
+    }
     fn capture_values(&self)->(u32,usize,u32,usize,bool,CodecPreference,bool) {
         (self.fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.cursor_mode.remote(),self.codec,self.hevc_preferred())
     }
@@ -65,11 +75,11 @@ impl Settings {
         s.volume = s.volume.min(100);
         anyhow::ensure!(s.lan_service_port != 0 && s.lan_discovery_port != 0,
             "局域网端口必须在 1–65535 之间；原文件已保留");
-        s.client.validate()?;
+        s.validate()?;
         Ok(s)
     }
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        self.client.validate()?;
+        self.validate()?;
         anyhow::ensure!(self.lan_service_port != 0 && self.lan_discovery_port != 0,
             "局域网端口必须在 1–65535 之间");
         // Automatic HUD/audio changes must not overwrite a broken original.
@@ -80,6 +90,7 @@ impl Settings {
 
     /// Only called by the user's explicit recovery action in Settings.
     pub fn backup_and_save(&self, path: &Path) -> anyhow::Result<Option<PathBuf>> {
+        self.validate()?;
         if Self::load(path).is_ok() {
             self.save(path)?;
             return Ok(None);
@@ -107,7 +118,7 @@ impl Settings {
     }
 }
 
-fn read_bounded(path: &Path, limit: usize) -> std::io::Result<Vec<u8>> {
+pub(super) fn read_bounded(path: &Path, limit: usize) -> std::io::Result<Vec<u8>> {
     let file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
@@ -118,6 +129,9 @@ fn read_bounded(path: &Path, limit: usize) -> std::io::Result<Vec<u8>> {
 }
 
 pub(super) fn save_json(value: &impl Serialize, path: &Path) -> anyhow::Result<()> {
+    save_bytes(path,&serde_json::to_vec_pretty(value)?)
+}
+pub(super) fn save_bytes(path:&Path,bytes:&[u8])->anyhow::Result<()> {
     std::fs::create_dir_all(
         path.parent()
             .ok_or_else(|| anyhow::anyhow!("设置目录无效"))?,
@@ -137,7 +151,7 @@ pub(super) fn save_json(value: &impl Serialize, path: &Path) -> anyhow::Result<(
             options.mode(0o600);
         }
         let mut file = options.open(&temp)?;
-        file.write_all(&serde_json::to_vec_pretty(value)?)?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
         // std also supports Windows replacement while another window still
@@ -207,6 +221,7 @@ impl super::App {
         let gamepad_status=self.gamepad_status();
         let mut host_actions=Vec::new();
         let host_info=self.workspace_info();
+        let child=self.stream_target.is_some();
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
             super::settings_page::State {
                 streaming:self.stream_target.is_some(),
@@ -214,9 +229,12 @@ impl super::App {
                 storage_error:self.settings_storage_error,notice:&self.settings_notice,
                 presentation_vsync:self.presentation_vsync,
                 gamepad_status:gamepad_status.as_deref(),
-            },|ui| { self.workspace.server_settings(ui,&host_info,&mut host_actions); });
+            },|ui| {
+                if child {ui.label("服务端设置由主页统一管理。");if ui.button("打开主页管理服务端").clicked(){host_actions.push(super::workspace_ui::Action::Settings);}}
+                else{self.workspace.server_settings(ui,&host_info,&mut host_actions);}
+            });
         self.workspace_actions(host_actions,ctx);
-        if actions.back {self.settings_open=false;ctx.request_repaint();}
+        if actions.back {self.workspace.discard_server_draft();self.settings_open=false;ctx.request_repaint();}
         if actions.maximize {self.toggle_maximized(ctx);}
         if actions.reset {
             self.settings_draft=Settings::default();
@@ -226,11 +244,12 @@ impl super::App {
             }
         }
         if actions.about {self.open_about();}
+        if actions.refresh_wallpaper && self.settings_draft.wallpaper_enabled {self.background.sync(&self.settings_draft,ctx);self.background.refresh(ctx);}
         if actions.host {self.settings_open=false;self.open_native_host();}
         let apply=actions.apply;
         let recover=actions.recover;
         if apply {
-            if let Err(error)=self.settings_draft.client.validate() {self.settings_notice=format!("无法应用：{error:#}");return;}
+            if let Err(error)=self.settings_draft.validate() {self.settings_notice=format!("无法应用：{error:#}");return;}
             let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
             self.preferences=self.settings_draft.clone();
             self.release_pointer_capture(ctx);

@@ -200,6 +200,9 @@ impl Route {
     }
 }
 
+#[derive(Clone,Debug,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Preview {pub id:String,pub at:u64}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
@@ -213,6 +216,10 @@ pub struct Profile {
     #[serde(default)]
     pub selected_client: Option<String>,
     #[serde(default)]
+    pub last_connected:Option<u64>,
+    #[serde(default)]
+    pub preview:Option<Preview>,
+    #[serde(default)]
     pub redirect: Option<String>,
 }
 impl Profile {
@@ -223,7 +230,7 @@ impl Profile {
             name: name.into(),
             peer: None,
             selected_route: route.id.clone(),
-            client_configs:Vec::new(),selected_client:None,
+            client_configs:Vec::new(),selected_client:None,last_connected:None,preview:None,
             routes: vec![route],
             redirect: None,
         }
@@ -327,7 +334,7 @@ impl Book {
         for profile in &self.devices {
             valid_id(&profile.id)?;
             valid_name(&profile.name)?;
-            ensure!(profile.client_configs.len()<=16,"每台设备最多保存16个客户端配置");
+            if let Some(preview)=&profile.preview {valid_id(&preview.id)?;}
             let mut config_ids=std::collections::HashSet::new();
             for config in &profile.client_configs {config.validate()?;ensure!(config_ids.insert(&config.id),"客户端配置标识重复");}
             ensure!(profile.selected_client.as_ref().is_none_or(|id|config_ids.contains(id)),"请选择有效的客户端配置");
@@ -407,7 +414,7 @@ impl Launch {
             peer: self.expected_peer.clone(),
             routes: vec![self.route.clone()],
             selected_route: self.route.id.clone(),
-            client_configs:Vec::new(),selected_client:None,
+            client_configs:Vec::new(),selected_client:None,last_connected:None,preview:None,
             redirect: None,
         };
         let book = Book {
@@ -560,6 +567,7 @@ impl Store {
                 let mut profile=profile;
                 profile.client_configs=v.client_configs.clone();
                 profile.selected_client=v.selected_client.clone();
+                profile.last_connected=v.last_connected;profile.preview=v.preview.clone();
                 *v = profile;
             } else {
                 b.devices.push(profile);
@@ -567,11 +575,48 @@ impl Store {
             Ok(())
         })
     }
-    pub fn save_client_config(&self, device:&str, config:crate::client_settings::NamedClientSettings) -> Result<()> {
+    /// Called only after the first decoded image, never when opening a window.
+    pub fn record_connected(&self,device:&str,at:u64)->Result<()> {
+        self.edit(|book| {
+            let id=book.device(device)?.id.clone();
+            let profile=book.devices.iter_mut().find(|p|p.id==id).unwrap();
+            profile.last_connected=Some(profile.last_connected.unwrap_or(0).max(at));Ok(())
+        })
+    }
+    pub fn record_preview(&self,device:&str,at:u64,jpeg:&[u8])->Result<()> {
+        ensure!(!jpeg.is_empty()&&jpeg.len()<=1024*1024,"设备预览大小无效");
+        let id=uuid::Uuid::new_v4().to_string();
+        let path=self.directory.join("previews").join(format!("{id}.jpg"));
+        crate::private_file::write_atomic(&path,jpeg)?;
+        let mut old=None;let mut retained=false;
+        let result=self.edit(|book| {
+            let target=book.device(device)?.id.clone();
+            let profile=book.devices.iter_mut().find(|p|p.id==target).unwrap();
+            if profile.preview.as_ref().is_none_or(|p|p.at<=at) {
+                old=profile.preview.replace(Preview{id:id.clone(),at});retained=true;
+            }
+            Ok(())
+        });
+        if result.is_err()||!retained {let _=std::fs::remove_file(path);}
+        if result.is_ok() {if let Some(old)=old{let _=std::fs::remove_file(self.directory.join("previews").join(format!("{}.jpg",old.id)));}}
+        result
+    }
+    pub fn preview_bytes(&self,preview:&Preview)->Result<Vec<u8>> {
+        valid_id(&preview.id)?;
+        Ok(read_private(&self.directory.join("previews").join(format!("{}.jpg",preview.id)))?.to_vec())
+    }
+    pub fn save_client_config(&self,device:&str,config:crate::client_settings::NamedClientSettings)->Result<()> {
+        self.save_config(device,config,false)
+    }
+    pub fn save_and_select_client_config(&self,device:&str,config:crate::client_settings::NamedClientSettings)->Result<()> {
+        self.save_config(device,config,true)
+    }
+    fn save_config(&self,device:&str,config:crate::client_settings::NamedClientSettings,select:bool)->Result<()> {
         config.validate()?;
         self.edit(|book| {
             let id=book.device(device)?.id.clone();
             let profile=book.devices.iter_mut().find(|p|p.id==id).unwrap();
+            if select {profile.selected_client=Some(config.id.clone());}
             if let Some(existing)=profile.client_configs.iter_mut().find(|c|c.id==config.id) {*existing=config;}
             else {profile.client_configs.push(config);}
             Ok(())
@@ -594,6 +639,7 @@ impl Store {
         })
     }
     pub fn bind(&self, profile: &str, peer: &str) -> Result<()> {
+        let mut unused=Vec::new();
         self.edit(|b| {
             let canonical = b.device(profile)?.id.clone();
             let current = b.devices.iter().position(|p| p.id == canonical).unwrap();
@@ -604,6 +650,11 @@ impl Store {
             if let Some(other) = b.devices.iter().position(|p| {
                 p.id != canonical && p.redirect.is_none() && p.peer.as_deref() == Some(peer)
             }) {
+                let at=b.devices[current].last_connected.take();
+                if let Some(at)=at {b.devices[other].last_connected=Some(b.devices[other].last_connected.unwrap_or(0).max(at));}
+                if let Some(preview)=b.devices[current].preview.take() {
+                    if b.devices[other].preview.as_ref().is_none_or(|p|p.at<preview.at){if let Some(old)=b.devices[other].preview.replace(preview){unused.push(old.id);}}else{unused.push(preview.id);}
+                }
                 let configs=std::mem::take(&mut b.devices[current].client_configs);
                 let selection=b.devices[current].selected_client.take();
                 for config in configs {if !b.devices[other].client_configs.iter().any(|c|c.id==config.id) {b.devices[other].client_configs.push(config);}}
@@ -624,15 +675,21 @@ impl Store {
                 b.devices[current].peer = Some(peer.into());
             }
             Ok(())
-        })
+        })?;
+        for id in unused{let _=std::fs::remove_file(self.directory.join("previews").join(format!("{id}.jpg")));}
+        Ok(())
     }
     pub fn forget(&self, id: &str) -> Result<()> {
+        let mut images=Vec::new();
         self.edit(|b| {
-            let canonical = b.device(id)?.id.clone();
-            b.devices
-                .retain(|p| p.id != canonical && p.redirect.as_deref() != Some(&canonical));
-            Ok(())
-        })
+            let canonical=b.device(id)?.id.clone();
+            for profile in b.devices.iter().filter(|p|p.id==canonical||p.redirect.as_deref()==Some(&canonical)) {
+                if let Some(preview)=&profile.preview {images.push(preview.id.clone());}
+            }
+            b.devices.retain(|p|p.id!=canonical&&p.redirect.as_deref()!=Some(&canonical));Ok(())
+        })?;
+        for id in images{let _=std::fs::remove_file(self.directory.join("previews").join(format!("{id}.jpg")));}
+        Ok(())
     }
 }
 
@@ -641,13 +698,36 @@ mod tests {
     use super::*;
     use crate::client_settings::{ClientSettings,NamedClientSettings};
     #[test]
+    fn successful_history_and_latest_private_preview_follow_verified_identity() {
+        let root=std::env::temp_dir().join(format!("eclipse-history-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        let a=Profile::new("First",Destination::Uu{device:"first".into()});
+        let b=Profile::new("Second",Destination::Uu{device:"second".into()});
+        store.save_device(a.clone()).unwrap();store.save_device(b.clone()).unwrap();
+        assert!(store.read().unwrap().device(&a.id).unwrap().last_connected.is_none());
+        store.record_connected(&a.id,100).unwrap();store.record_connected(&a.id,90).unwrap();
+        store.record_preview(&a.id,110,b"bounded generated preview A").unwrap();
+        store.record_preview(&a.id,109,b"older preview must not replace A").unwrap();
+        store.save_device(a.clone()).unwrap();
+        let book=store.read().unwrap();let record=book.device(&a.id).unwrap();assert_eq!(record.last_connected,Some(100));
+        assert_eq!(store.preview_bytes(record.preview.as_ref().unwrap()).unwrap(),b"bounded generated preview A");
+        store.record_connected(&b.id,200).unwrap();store.record_preview(&b.id,210,b"bounded generated preview B").unwrap();
+        let peer="12".repeat(32);store.bind(&a.id,&peer).unwrap();store.bind(&b.id,&peer).unwrap();
+        let book=store.read().unwrap();let record=book.device(&b.id).unwrap();assert_eq!(record.id,a.id);assert_eq!(record.last_connected,Some(200));
+        assert_eq!(store.preview_bytes(record.preview.as_ref().unwrap()).unwrap(),b"bounded generated preview B");
+        assert!(store.preview_bytes(&Preview{id:"../../credentials".into(),at:0}).is_err());
+        let preview=record.preview.clone().unwrap();store.forget(&a.id).unwrap();assert!(store.preview_bytes(&preview).is_err());
+        assert_eq!(std::fs::read_dir(root.join("previews")).unwrap().count(),0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn v2_migration_is_read_only_until_save_and_preserves_a_private_exact_backup() {
         let root=std::env::temp_dir().join(format!("eclipse-migrate-{}",uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let profile=Profile::new("Generated host",Destination::Uu{device:"generated-device".into()});
         let mut old=serde_json::to_value(Book{devices:vec![profile.clone()],..Default::default()}).unwrap();
         old["version"]=serde_json::json!(2);
-        let device=old["devices"][0].as_object_mut().unwrap();device.remove("client_configs");device.remove("selected_client");
+        let device=old["devices"][0].as_object_mut().unwrap();device.remove("client_configs");device.remove("selected_client");device.remove("last_connected");device.remove("preview");
         let original=serde_json::to_vec_pretty(&old).unwrap();
         let path=root.join("connections.json");crate::private_file::write_atomic(&path,&original).unwrap();
         let store=Store::open(&root).unwrap();

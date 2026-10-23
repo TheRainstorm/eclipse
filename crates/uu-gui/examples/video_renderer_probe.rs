@@ -93,6 +93,19 @@ impl eframe::App for Probe {
             })
             .collect()
         };
+        if !self.benchmark {
+            match self.texture.as_ref().unwrap().snapshot() {
+                Ok(preview)=>{
+                    for ((x,y),expected) in [(1,1),(3,1),(1,3),(3,3)].iter().zip(&expected) {
+                        let p=preview.pixels[(preview.size[1]*y/4)*preview.size[0]+preview.size[0]*x/4].to_array();
+                        if p.iter().zip(expected).any(|(a,b)|a.abs_diff(*b)>2) {
+                            *self.result.lock().unwrap()=Err(format!("preview color/orientation mismatch: {p:?} expected {expected:?}"));
+                        }
+                    }
+                },
+                Err(e)=>*self.result.lock().unwrap()=Err(format!("remote preview failed: {e}")),
+            }
+        }
         egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx,|ui|{
             let rect=ui.available_rect_before_wrap();self.texture.as_ref().unwrap().paint(ui,rect);
             let result=self.result.clone();let checked=self.checked.clone();

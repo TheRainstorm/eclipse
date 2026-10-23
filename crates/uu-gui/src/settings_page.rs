@@ -63,6 +63,7 @@ pub struct Actions {
     pub about: bool,
     pub host: bool,
     pub maximize: bool,
+    pub refresh_wallpaper:bool,
 }
 
 fn note(ui: &mut egui::Ui, text: &str) {
@@ -149,7 +150,7 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
         );
         note(
             ui,
-            "自动模式按两端能力协商；明确选择的编码不可用时会提示。切换编码需要重新连接。",
+            "原生连接按两端能力协商，明确选择不可用时会提示；UU 兼容模式支持 H.264 或优先 HEVC，暂不支持 AV1。切换编码需要重连。",
         );
     });
     group(ui, "呈现与解码", |ui| {
@@ -238,6 +239,13 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
     });
 }
 fn application(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions) {
+    group(ui,"设备页外观",|ui| {
+        ui.checkbox(&mut s.wallpaper_enabled,"显示背景壁纸");
+        ui.label("壁纸图片接口");
+        ui.add(egui::TextEdit::singleline(&mut s.wallpaper_api).desired_width(f32::INFINITY).hint_text("https://picsum.photos/1920/1080"));
+        note(ui,"兼容 Moonlight V+ 使用的图片接口，也可填返回 JPEG / PNG 的图片 URL。缓存每日更新，获取失败继续使用已有壁纸。");
+        if ui.button("刷新壁纸").clicked(){actions.refresh_wallpaper=true;}
+    });
     group(ui,"设备发现",|ui| {
         ui.checkbox(&mut s.lan_discovery,"自动查找局域网设备");
         note(ui,"关闭后仍可使用保存的地址或手动添加设备；本机服务入口在连接服务中管理。");
@@ -273,7 +281,7 @@ pub fn show(
                     .button(if state.streaming {
                         "‹ 返回串流"
                     } else {
-                        "‹ 返回设备"
+                        "‹ 返回主页"
                     })
                     .clicked()
                 {
@@ -399,7 +407,7 @@ pub fn show(
                         note(ui,if state.streaming {"仅应用到当前串流；设备配置与全局默认不受影响。"}else{"全局默认：未指定独立配置的设备使用这里的设置。"});
                     }
                     ui.add_space(if compact { 10.0 } else { 18.0 });
-                    if state.storage_error {
+                    if state.storage_error && *section!=Section::Server {
                         group(ui, "设置文件需要处理", |ui| {
                             ui.colored_label(theme::DANGER, state.notice);
                             note(ui, "异常原件会保留。可先备份，再保存当前设置。");
@@ -408,7 +416,7 @@ pub fn show(
                                 actions.recover = true;
                             }
                         });
-                    } else if !state.notice.is_empty() {
+                    } else if !state.notice.is_empty() && *section!=Section::Server {
                         ui.label(RichText::new(state.notice).color(theme::SUCCESS));
                         ui.add_space(12.0);
                     }

@@ -48,6 +48,8 @@ mod native_keys;
 mod native_host_ui;
 mod native_interfaces;
 mod wallpapers;
+mod background;
+mod device_preview;
 mod device_library;
 use login::LoginEvent;
 
@@ -163,6 +165,9 @@ struct App {
     presentation_vsync: bool,
     wallpapers: std::collections::HashMap<usize, egui::TextureHandle>,
     wallpaper_worker: Option<wallpapers::Worker>,
+    background:background::Background,
+    preview_writer:device_preview::Writer,
+    recorded_connection:bool,
     frame_count: std::collections::HashMap<u32, u32>,
     fps: std::collections::HashMap<u32, f32>,
     last_fps: std::time::Instant,
@@ -401,6 +406,8 @@ impl App {
             search: String::new(),
             status: String::new(),
             rx: None,
+            preview_writer:Default::default(),recorded_connection:false,
+            background:background::Background::new(config.as_ref().map(|c|c.at("appearance/wallpaper.jpg"))),
             config,
             controller: None,
             textures: std::collections::HashMap::new(),
@@ -676,6 +683,12 @@ impl App {
         let mut arrived=Vec::new();
         for image in frames {
             let idx=match &image {uu_core::display_frames::DisplayImage::Rgba(f)=>f.0,uu_core::display_frames::DisplayImage::Decoded(track,..)=>*track};
+            if !self.recorded_connection {
+                if let (Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::NativeProfile{id,..},..}),Some(store))=(&self.stream_target,&self.workspace.store) {
+                    self.preview_writer.submit(store.clone(),id.clone(),None);
+                }
+                self.recorded_connection=true;
+            }
             arrived.push(idx);
             match self.textures.get_mut(&idx) {
                 Some(t) => t.set(ctx, image),
@@ -703,6 +716,7 @@ impl App {
         if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
             if let Some(h)=&self.controller {h.stats.audio.stop();h.stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);}
             self.release_all_keys();self.release_pointer_capture(ctx);self.shortcuts.clear();
+            self.save_last_remote_frame();
             self.controller = None;
             self.disconnecting = false;
             self.input_capture.release();
@@ -1080,6 +1094,16 @@ impl App {
         self.mod_state = [false; 4];
     }
 
+    fn save_last_remote_frame(&mut self) {
+        if let (Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::NativeProfile{id,..},..}),Some(store))=(&self.stream_target,&self.workspace.store) {
+            if let Some(texture)=self.textures.get(&self.selected_track).or_else(||self.textures.values().next()) {
+                match texture.snapshot() {
+                    Ok(image)=>self.preview_writer.submit(store.clone(),id.clone(),Some(image)),
+                    Err(error)=>self.settings_notice=format!("本次预览未更新：{error}"),
+                }
+            }
+        }
+    }
     fn disconnect(&mut self) {
         self.output_reconnect_pending = false;
         if self.stream_target.is_some() { self.exit_requested = true; }
@@ -1088,6 +1112,7 @@ impl App {
 
     fn stop_connection(&mut self) {
         if self.disconnecting { return; }
+        self.save_last_remote_frame();
         self.release_pointer_capture(&self.context.clone());
         self.stream_menu.open = false;
         self.displays.menu_open=false;
@@ -1125,6 +1150,7 @@ impl App {
     }
 
     fn connect(&mut self) {
+        self.recorded_connection=false;
         if self.stream_target.is_none() {
             self.open_stream_window();
             return;
@@ -1141,6 +1167,10 @@ impl App {
         }
         if let Some(sessions::ConnectionTarget::NativeDevice(id))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
             self.connect_native_device(id);return;
+        }
+        if self.preferences.codec==settings::CodecPreference::Av1 {
+            self.status="UU 兼容连接暂不支持 AV1，请在串流设置中选择自动、H.264 或 HEVC".into();
+            return;
         }
         self.displays=displays::Displays::default();self.selected_track=0;
         let Some(i) = self.selected else { return };
@@ -1223,6 +1253,7 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.workspace_poll(ctx);
+        if let Some(error)=self.preview_writer.error.lock().unwrap().take(){self.settings_notice=error;}
         self.native_host.poll(ctx);
         self.lan.set_discovery(self.preferences.lan_discovery);
         self.lan.configure_ports(self.workspace.book.sharing.service_port, self.workspace.book.sharing.discovery_port);

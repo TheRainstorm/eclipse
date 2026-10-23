@@ -153,7 +153,7 @@ async fn download(client: reqwest::Client, request: Request) -> anyhow::Result<T
     tokio::task::spawn_blocking(move || decode(request, bytes)).await?
 }
 
-fn decode(request: Request, bytes: Vec<u8>) -> anyhow::Result<Thumbnail> {
+pub(super) fn decode(request: Request, bytes: Vec<u8>) -> anyhow::Result<Thumbnail> {
     anyhow::ensure!(bytes.len() <= MAX_DOWNLOAD, "preview too large");
     let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     let mut limits = image::Limits::default();

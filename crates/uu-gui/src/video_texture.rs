@@ -18,6 +18,7 @@ pub struct VideoTexture {
     size: [usize; 2],
     gpu: Option<Arc<Mutex<Planes>>>,
     fallback: Option<egui::TextureHandle>,
+    fallback_pixels:Option<Arc<egui::ColorImage>>,
 }
 pub fn enable_gpu_video(gl: &glow::Context) {
     #[cfg(target_os = "linux")]
@@ -40,6 +41,7 @@ impl VideoTexture {
             size: [0, 0],
             gpu,
             fallback: None,
+            fallback_pixels:None,
         };
         texture.set(ctx, image);
         texture
@@ -71,12 +73,13 @@ impl VideoTexture {
         }
         let (_, w, h, rgba) = image.into_rgba();
         self.size = [w as usize, h as usize];
-        let image = egui::ColorImage::from_rgba_unmultiplied(self.size, &rgba);
+        let image = Arc::new(egui::ColorImage::from_rgba_unmultiplied(self.size, &rgba));
+        self.fallback_pixels=Some(image.clone());
         match &mut self.fallback {
-            Some(t) => t.set(image, egui::TextureOptions::LINEAR),
+            Some(t) => t.set(egui::ImageData::Color(image), egui::TextureOptions::LINEAR),
             None => {
                 self.fallback =
-                    Some(ctx.load_texture("remote-fallback", image, egui::TextureOptions::LINEAR))
+                    Some(ctx.load_texture("remote-fallback", egui::ImageData::Color(image), egui::TextureOptions::LINEAR))
             }
         }
     }
@@ -121,6 +124,23 @@ impl VideoTexture {
     }
     pub fn size_vec2(&self) -> egui::Vec2 {
         egui::vec2(self.size[0] as f32, self.size[1] as f32)
+    }
+    /// Call on the UI thread with the window's current GL context, once at disconnect.
+    /// This draws only remote pixels, including imported hardware frames.
+    pub fn snapshot(&self)->Result<egui::ColorImage,String> {
+        if self.size.contains(&0){return Err("尚无串流画面".into());}
+        let ratio=(480.0/self.size[0] as f64).min(270.0/self.size[1] as f64).min(1.);
+        let size=[(self.size[0] as f64*ratio).max(1.) as usize,(self.size[1] as f64*ratio).max(1.) as usize];
+        if let Some(gpu)=&self.gpu {
+            let mut state=gpu.lock().unwrap();
+            if state.pending.is_some()||state.size!=[0,0] {return unsafe{state.snapshot(size)};}
+        }
+        let image=self.fallback_pixels.as_ref().ok_or("没有可保存的远端画面")?;
+        let mut output=egui::ColorImage::new(size,egui::Color32::BLACK);
+        for y in 0..size[1] {for x in 0..size[0] {
+            output.pixels[y*size[0]+x]=image.pixels[(y*image.size[1]/size[1])*image.size[0]+x*image.size[0]/size[0]];
+        }}
+        Ok(output)
     }
     pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect) {
         if let Some(gpu) = &self.gpu {
@@ -280,6 +300,60 @@ impl Planes {
             #[cfg(target_os = "linux")]
             importer,
         })
+    }
+    unsafe fn snapshot(&mut self,size:[usize;2])->Result<egui::ColorImage,String> {
+        let gl=self.gl.clone();
+        let draw=gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING);
+        let read=gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING);
+        let program=gl.get_parameter_program(glow::CURRENT_PROGRAM);
+        let vao=gl.get_parameter_vertex_array(glow::VERTEX_ARRAY_BINDING);
+        let active=gl.get_parameter_i32(glow::ACTIVE_TEXTURE) as u32;
+        let pack=gl.get_parameter_i32(glow::PACK_ALIGNMENT);
+        let pack_row=gl.get_parameter_i32(glow::PACK_ROW_LENGTH);
+        let pack_skip_x=gl.get_parameter_i32(glow::PACK_SKIP_PIXELS);
+        let pack_skip_y=gl.get_parameter_i32(glow::PACK_SKIP_ROWS);
+        let unpack_buffer=gl.get_parameter_buffer(glow::PIXEL_UNPACK_BUFFER_BINDING);
+        let unpack=gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
+        let row=gl.get_parameter_i32(glow::UNPACK_ROW_LENGTH);
+        let pack_buffer=gl.get_parameter_buffer(glow::PIXEL_PACK_BUFFER_BINDING);
+        let mut viewport=[0;4];gl.get_parameter_i32_slice(glow::VIEWPORT,&mut viewport);
+        let scissor=gl.is_enabled(glow::SCISSOR_TEST);let blend=gl.is_enabled(glow::BLEND);
+        let mut textures=Vec::new();let mut samplers=Vec::new();
+        for unit in 0..3 {gl.active_texture(glow::TEXTURE0+unit);textures.push(gl.get_parameter_texture(glow::TEXTURE_BINDING_2D));samplers.push(gl.get_parameter_sampler(glow::SAMPLER_BINDING));}
+        gl.active_texture(active);
+        let texture=gl.create_texture()?;
+        let framebuffer=match gl.create_framebuffer(){Ok(f)=>f,Err(e)=>{gl.delete_texture(texture);return Err(e);}};
+        let result=(|| {
+            gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER,None);
+            gl.active_texture(glow::TEXTURE0);gl.bind_texture(glow::TEXTURE_2D,Some(texture));
+            gl.tex_image_2d(glow::TEXTURE_2D,0,glow::RGBA8 as i32,size[0] as i32,size[1] as i32,0,glow::RGBA,glow::UNSIGNED_BYTE,None);
+            gl.bind_framebuffer(glow::FRAMEBUFFER,Some(framebuffer));
+            gl.framebuffer_texture_2d(glow::FRAMEBUFFER,glow::COLOR_ATTACHMENT0,glow::TEXTURE_2D,Some(texture),0);
+            if gl.check_framebuffer_status(glow::FRAMEBUFFER)!=glow::FRAMEBUFFER_COMPLETE {return Err("无法建立远端预览缓冲".into());}
+            gl.viewport(0,0,size[0] as i32,size[1] as i32);gl.disable(glow::SCISSOR_TEST);gl.disable(glow::BLEND);
+            for unit in 0..3 {gl.bind_sampler(unit,None);}
+            self.paint();
+            if self.size==[0,0]{return Err("远端 GPU 画面暂不可用".into());}
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER,None);gl.pixel_store_i32(glow::PACK_ALIGNMENT,1);
+            gl.pixel_store_i32(glow::PACK_ROW_LENGTH,0);gl.pixel_store_i32(glow::PACK_SKIP_PIXELS,0);gl.pixel_store_i32(glow::PACK_SKIP_ROWS,0);
+            let mut rgba=vec![0;size[0]*size[1]*4];
+            gl.read_pixels(0,0,size[0] as i32,size[1] as i32,glow::RGBA,glow::UNSIGNED_BYTE,glow::PixelPackData::Slice(&mut rgba));
+            if gl.get_error()!=glow::NO_ERROR{return Err("读取远端预览失败".into());}
+            let row=size[0]*4;
+            for y in 0..size[1]/2 {let (top,bottom)=rgba.split_at_mut((size[1]-1-y)*row);top[y*row..(y+1)*row].swap_with_slice(&mut bottom[..row]);}
+            Ok(egui::ColorImage::from_rgba_unmultiplied(size,&rgba))
+        })();
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER,draw);gl.bind_framebuffer(glow::READ_FRAMEBUFFER,read);
+        gl.viewport(viewport[0],viewport[1],viewport[2],viewport[3]);
+        if scissor{gl.enable(glow::SCISSOR_TEST);}else{gl.disable(glow::SCISSOR_TEST);}
+        if blend{gl.enable(glow::BLEND);}else{gl.disable(glow::BLEND);}
+        gl.use_program(program);gl.bind_vertex_array(vao);
+        gl.bind_buffer(glow::PIXEL_PACK_BUFFER,pack_buffer);gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER,unpack_buffer);
+        gl.pixel_store_i32(glow::PACK_ROW_LENGTH,pack_row);gl.pixel_store_i32(glow::PACK_SKIP_PIXELS,pack_skip_x);gl.pixel_store_i32(glow::PACK_SKIP_ROWS,pack_skip_y);
+        gl.pixel_store_i32(glow::PACK_ALIGNMENT,pack);gl.pixel_store_i32(glow::UNPACK_ALIGNMENT,unpack);gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH,row);
+        for (unit,texture) in textures.into_iter().enumerate(){gl.active_texture(glow::TEXTURE0+unit as u32);gl.bind_texture(glow::TEXTURE_2D,texture);gl.bind_sampler(unit as u32,samplers[unit]);}
+        gl.active_texture(active);gl.delete_framebuffer(framebuffer);gl.delete_texture(texture);
+        result
     }
     unsafe fn upload(
         &self,
