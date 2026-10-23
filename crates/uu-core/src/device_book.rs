@@ -7,6 +7,7 @@ use crate::{
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+pub use uu_media::encoder::{AmdQuality,LowPower,Tuning as EncoderTuning};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +54,7 @@ pub struct Sharing {
     #[serde(skip_serializing)]
     pub bitrate_mbps: u32,
     pub encoding: Encoding,
+    pub encoder_tuning:uu_media::encoder::Tuning,
     pub control: bool,
     pub audio: bool,
     pub clipboard: bool,
@@ -72,6 +74,7 @@ impl Default for Sharing {
             fps: 60,
             bitrate_mbps: 18,
             encoding: Encoding::Auto,
+            encoder_tuning:Default::default(),
             control: true,
             audio: true,
             clipboard: false,
@@ -85,7 +88,7 @@ impl Default for Sharing {
 }
 impl Sharing {
     pub fn native(&self) -> SharingConfig {
-        SharingConfig {session:None,video_policy:Some(crate::native_quality::Policy{codecs:self.allowed_codecs.clone(),preferred_codec:self.codec}),codec:self.codec.unwrap_or_default(),rate_control:match self.rate_control {RateMode::Cbr=>uu_media::encoder::RateControl::Cbr,RateMode::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:36_000}},
+        SharingConfig {encoder_tuning:self.encoder_tuning,session:None,video_policy:Some(crate::native_quality::Policy{codecs:self.allowed_codecs.clone(),preferred_codec:self.codec}),codec:self.codec.unwrap_or_default(),rate_control:match self.rate_control {RateMode::Cbr=>uu_media::encoder::RateControl::Cbr,RateMode::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:36_000}},
             source: if self.monitor == crate::native_displays::ALL_MONITORS {
                 native::CaptureSource::Desktop
             } else if self.monitor.is_empty() {
@@ -262,7 +265,7 @@ pub struct Book {
 impl Default for Book {
     fn default() -> Self {
         Self {
-            version: 4,
+            version: 5,
             sharing: Sharing::default(),
             services: Vec::new(),
             devices: Vec::new(),
@@ -318,7 +321,7 @@ impl Book {
     }
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 4 && self.devices.len() <= 256 && self.services.len() <= 32,
+            self.version == 5 && self.devices.len() <= 256 && self.services.len() <= 32,
             "设备配置版本或数量无效"
         );
         self.sharing.validate()?;
@@ -519,6 +522,7 @@ impl Store {
             if value.sharing.discovery_port == 47999 { value.sharing.discovery_port = crate::native_discovery::DISCOVERY_PORT; }
             value.version = 4;
         }
+        if value.version==4 {value.version=5;}
         value.validate()?;
         Ok(value)
     }
@@ -533,7 +537,7 @@ impl Store {
         if original.exists() {
             let bytes=read_private(&original)?;
             let version=serde_json::from_slice::<serde_json::Value>(&bytes)?["version"].as_u64().unwrap_or(0);
-            if matches!(version, 2 | 3) {
+            if matches!(version, 2 | 3 | 4) {
                 crate::private_file::write_atomic(&self.directory.join(format!("connections.v{version}-backup-{}.json",uuid::Uuid::new_v4())),&bytes)?;
             }
         }
@@ -714,6 +718,40 @@ mod tests {
     use super::*;
     use crate::client_settings::{ClientSettings,NamedClientSettings};
     #[test]
+    fn v4_encoder_defaults_migrate_without_rewriting_until_save_and_keep_exact_backup() {
+        use uu_media::encoder::{AmdQuality,LowPower};
+        let root=std::env::temp_dir().join(format!("eclipse-encoder-migration-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        let mut old=serde_json::to_value(Book::default()).unwrap();
+        old["version"]=4.into();
+        old["sharing"].as_object_mut().unwrap().remove("encoder_tuning");
+        old["sharing"]["service_port"]=50123.into();
+        let original=serde_json::to_vec(&old).unwrap();
+        crate::private_file::write_atomic(&root.join("connections.json"),&original).unwrap();
+        let migrated=store.read().unwrap();
+        assert_eq!(migrated.version,5);
+        assert_eq!(migrated.sharing.encoder_tuning,Default::default());
+        assert_eq!(std::fs::read(root.join("connections.json")).unwrap(),original);
+        store.edit(|book| {
+            book.sharing.encoder_tuning.amd_quality=AmdQuality::Balanced;
+            book.sharing.encoder_tuning.intel_target_usage=4;
+            book.sharing.encoder_tuning.intel_low_power=LowPower::Off;
+            book.sharing.encoder_tuning.nvidia_quality_vs_speed=Some(50);
+            Ok(())
+        }).unwrap();
+        let saved=store.read().unwrap();
+        assert_eq!(saved.sharing.service_port,50123);
+        assert_eq!(saved.sharing.encoder_tuning,saved.sharing.native().encoder_tuning);
+        assert_eq!(saved.sharing.encoder_tuning.amd_quality,AmdQuality::Balanced);
+        assert_eq!(saved.sharing.encoder_tuning.intel_target_usage,4);
+        assert_eq!(saved.sharing.encoder_tuning.intel_low_power,LowPower::Off);
+        assert_eq!(saved.sharing.encoder_tuning.nvidia_quality_vs_speed,Some(50));
+        let backups:Vec<_>=std::fs::read_dir(&root).unwrap().flatten().filter(|p|p.file_name().to_string_lossy().starts_with("connections.v4-backup-")).collect();
+        assert_eq!(backups.len(),1);
+        assert_eq!(std::fs::read(backups[0].path()).unwrap(),original);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn old_default_ports_migrate_once_while_custom_and_remote_addresses_survive() {
         let root = std::env::temp_dir().join(format!("eclipse-port-migration-{}", uuid::Uuid::new_v4()));
         let store = Store::open(&root).unwrap();
@@ -766,7 +804,7 @@ mod tests {
         let original=serde_json::to_vec_pretty(&old).unwrap();
         let path=root.join("connections.json");crate::private_file::write_atomic(&path,&original).unwrap();
         let store=Store::open(&root).unwrap();
-        assert_eq!(store.read().unwrap().version,4);
+        assert_eq!(store.read().unwrap().version,5);
         assert_eq!(std::fs::read(&path).unwrap(),original);
         let config=NamedClientSettings::new("Fast",ClientSettings::default());
         store.save_client_config(&profile.id,config.clone()).unwrap();

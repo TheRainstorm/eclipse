@@ -128,7 +128,7 @@ pub async fn run(command: Command, config: uu_core::Config) -> Result<()> {
             } else {
                 uu_core::native::CaptureSource::Primary
             };
-            let sharing = uu_core::native::SharingConfig {session:None,video_policy:None,codec,rate_control,
+            let sharing = uu_core::native::SharingConfig {encoder_tuning:Default::default(),session:None,video_policy:None,codec,rate_control,
                 source,
                 fps,
                 bitrate_kbps,

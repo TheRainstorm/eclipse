@@ -131,6 +131,17 @@ fn friendly(activation: &IMFActivate) -> String {
     }
 }
 
+fn vendor(activation:&IMFActivate) -> Option<u16> {
+    let mut text=[0u16;128];
+    if unsafe{activation.GetString(&MFT_ENUM_HARDWARE_VENDOR_ID_Attribute,&mut text,None).is_ok()} {
+        let id=String::from_utf16_lossy(&text).to_ascii_lowercase();
+        return [0x8086,0x10de,0x1002].into_iter().find(|id_value|id.contains(&format!("{id_value:04x}")));
+    }
+    let name=friendly(activation).to_ascii_lowercase();
+    if name.contains("intel"){Some(0x8086)}else if name.contains("nvidia"){Some(0x10de)}
+    else if name.contains("amd")||name.contains("advanced micro"){Some(0x1002)}else{None}
+}
+
 pub(super) struct Driver {
     transform: IMFTransform,
     events: IMFMediaEventGenerator,
@@ -156,15 +167,8 @@ impl Driver {
         let mut failures = Vec::new();
         for activation in activations.entries().iter().flatten() {
             let name = friendly(activation);
-            if let Some(vendor)=settings.preference.vendor_id() {
-                let mut text=[0u16;128];
-                let id_available=unsafe { activation.GetString(&MFT_ENUM_HARDWARE_VENDOR_ID_Attribute,&mut text,None).is_ok() };
-                let id=String::from_utf16_lossy(&text).to_ascii_lowercase();
-                let label=name.to_ascii_lowercase();
-                let matched=if id_available {id.contains(&format!("{vendor:04x}"))}else {
-                    match vendor {0x8086=>label.contains("intel"),0x10de=>label.contains("nvidia"),0x1002=>label.contains("amd")||label.contains("advanced micro"),_=>false}
-                };
-                if !matched { continue; }
+            if settings.preference.vendor_id().is_some_and(|id|vendor(activation)!=Some(id)) {
+                continue;
             }
             match unsafe { Self::activate(settings, activation,None) } {
                 Ok((transform, events, codec, input_id, output_id)) => {
@@ -181,12 +185,13 @@ impl Driver {
                         sequence: Vec::new(),
                         headers: Default::default(),
                         name: format!(
-                            "mf ({} {}, {name})",codec_label(settings.codec),
+                            "mf ({} {}, {name}{})",codec_label(settings.codec),
                             if matches!(settings.rate_control, super::RateControl::Vbr { .. }) {
                                 "VBR"
                             } else {
                                 "CBR"
-                            }
+                            },
+                            if vendor(activation)==Some(0x10de) {settings.tuning.nvidia_quality_vs_speed.map(|v|format!(", quality/speed={v}")).unwrap_or_default()}else{String::new()}
                         ),
                         profile: std::env::var_os("UU_ENCODE_PROFILE").map(|_| [0; 4]),
                         gpu:None,gpu_capable,gpu_frames:0,
@@ -223,14 +228,19 @@ impl Driver {
                 transform.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER,manager.as_raw() as usize).map_err(reason)?;
             }
             let codec: ICodecAPI = transform.cast().map_err(reason)?;
+            let vendor=vendor(activation);
+            if vendor==Some(0x1002) && settings.tuning.amd_quality!=super::AmdQuality::Speed {
+                return Err("自定义 AMD 画质预设需要原生 AMF，不能通过 MFT 忽略该设置".into());
+            }
+            if vendor==Some(0x8086) && settings.tuning.custom_intel() {
+                return Err("自定义 Intel 参数需要 oneVPL 后端".into());
+            }
+            let quality=(vendor==Some(0x10de)).then_some(settings.tuning.nvidia_quality_vs_speed).flatten();
             // Drivers differ in optional tuning support. Actual one-frame completion
             // and IDR recovery are checked below, rather than trusting these flags.
             for (id, value) in [
                 (CODECAPI_AVLowLatencyMode, VARIANT::from(true)),
                 (CODECAPI_AVEncCommonRealTime, VARIANT::from(true)),
-                // Interactive desktop sharing prioritizes completion time over
-                // the driver's offline/high-quality encoding preset.
-                (CODECAPI_AVEncCommonQualityVsSpeed, VARIANT::from(0u32)),
                 (
                     CODECAPI_AVScenarioInfo,
                     VARIANT::from(eAVScenarioInfo_DisplayRemoting.0 as u32),
@@ -241,6 +251,11 @@ impl Driver {
                 if let Err(error) = codec.SetValue(&id, &value) {
                     tracing::debug!(?id,%error,"hardware MFT optional tuning unsupported");
                 }
+            }
+            let quality_value=VARIANT::from(u32::from(quality.unwrap_or(0)));
+            let quality_result=codec.SetValue(&CODECAPI_AVEncCommonQualityVsSpeed,&quality_value);
+            if quality.is_some() {
+                quality_result.map_err(|error|format!("NVIDIA 驱动不支持自定义画质/速度：{error}"))?;
             }
             let (rate_mode, peak_kbps) = match settings.rate_control {
                 super::RateControl::Cbr => (eAVEncCommonRateControlMode_CBR, None),
@@ -299,6 +314,11 @@ impl Driver {
             transform
                 .SetInputType(input[0], &input_type, 0)
                 .map_err(|e| format!("NV12 input type: {e}"))?;
+            if let Some(requested)=quality {
+                let actual=codec.GetValue(&CODECAPI_AVEncCommonQualityVsSpeed).map_err(reason)?;
+                let actual=windows::Win32::System::Variant::VariantToUInt32(&actual).map_err(reason)?;
+                if actual!=u32::from(requested) {return Err(format!("NVIDIA 驱动将画质/速度 {requested} 改为 {actual}，请选择支持的值"));}
+            }
             let events = transform.cast().map_err(reason)?;
             transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)

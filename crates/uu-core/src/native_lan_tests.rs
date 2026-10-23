@@ -10,7 +10,7 @@ async fn native_lan_port_conflicts_are_actionable_and_custom_discovery_advertise
     let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let (stop, rx) = watch::channel(false);
     let (events, mut incoming) = mpsc::unbounded_channel();
-    let mut config = Config {video_policy:None,codec:Default::default(),rate_control:Default::default(),
+    let mut config = Config {encoder_tuning:Default::default(),video_policy:None,codec:Default::default(),rate_control:Default::default(),
         name: "Port fixture".into(), bind: address,
         discovery_bind: Some(udp.local_addr().unwrap()), data_dir: root.clone(),
         source: native::CaptureSource::Synthetic { width:64, height:64, fps:30 },
@@ -66,7 +66,7 @@ impl Fixture {
     async fn configured(root: PathBuf, clipboard: Option<ClipboardFactory>) -> Self {
         let (stop, rx) = watch::channel(false);
         let (events, event_rx) = mpsc::unbounded_channel();
-        let config = Config {video_policy:None,codec:Default::default(),rate_control:Default::default(),
+        let config = Config {encoder_tuning:Default::default(),video_policy:None,codec:Default::default(),rate_control:Default::default(),
             name: "Generated fixture".into(),
             bind: "127.0.0.1:0".parse().unwrap(),
             discovery_bind: None,

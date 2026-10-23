@@ -5,7 +5,7 @@ use std::{ffi::{c_char,c_void,CStr},ptr::{self,NonNull}};
 use uu_proto::media::VideoCodec;
 use windows::{core::Interface,Win32::{Graphics::Direct3D11::ID3D11Texture2D,Media::MediaFoundation::IMFDXGIBuffer}};
 unsafe extern "C" {
-    fn eclipse_amf_open(codec:i32,width:u32,height:u32,fps:u32,kbps:u32,peak:u32,vbr:i32,default_adapter:i32,device:*mut c_void,error:*mut c_char,capacity:usize)->*mut c_void;
+    fn eclipse_amf_open(codec:i32,width:u32,height:u32,fps:u32,kbps:u32,peak:u32,vbr:i32,quality:i32,default_adapter:i32,device:*mut c_void,error:*mut c_char,capacity:usize)->*mut c_void;
     fn eclipse_amf_close(session:*mut c_void);
     fn eclipse_amf_device(session:*mut c_void)->*mut c_void;
     fn eclipse_amf_bitrate(session:*mut c_void,kbps:u32,error:*mut c_char,capacity:usize)->i32;
@@ -19,7 +19,7 @@ impl Native {
         let mut error=[0;512];
         let codec=match settings.codec {VideoCodec::H264=>0,VideoCodec::Hevc=>1,VideoCodec::Av1=>2};
         let session=unsafe{eclipse_amf_open(codec,settings.width,settings.height,settings.fps,settings.bitrate_kbps,
-            settings.rate_control.peak(settings.bitrate_kbps),i32::from(matches!(settings.rate_control,super::RateControl::Vbr{..})),i32::from(settings.preference!=super::Preference::Amd),device,error.as_mut_ptr(),error.len())};
+            settings.rate_control.peak(settings.bitrate_kbps),i32::from(matches!(settings.rate_control,super::RateControl::Vbr{..})),match settings.tuning.amd_quality{super::AmdQuality::Speed=>0,super::AmdQuality::Balanced=>1,super::AmdQuality::Quality=>2},i32::from(settings.preference!=super::Preference::Amd),device,error.as_mut_ptr(),error.len())};
         NonNull::new(session).map(Self).ok_or_else(||message(&error))
     }
 }
@@ -40,7 +40,7 @@ impl Driver {
         let native=Native::open(settings,ptr::null_mut())?;
         let codec=match settings.codec{VideoCodec::H264=>"H.264",VideoCodec::Hevc=>"HEVC",VideoCodec::Av1=>"AV1"};
         let mode=if matches!(settings.rate_control,super::RateControl::Vbr{..}){"VBR"}else{"CBR"};
-        Ok(Self{native,gpu:None,upload:Vec::new(),settings,headers:Default::default(),name:format!("amf ({codec} {mode}, AMD D3D11)"),profile:super::profile::Profile::new("amf"),_runtime:runtime})
+        Ok(Self{native,gpu:None,upload:Vec::new(),settings,headers:Default::default(),name:format!("amf ({codec} {mode}, AMD D3D11, {:?})",settings.tuning.amd_quality),profile:super::profile::Profile::new("amf"),_runtime:runtime})
     }
 }
 impl super::worker::Driver for Driver {

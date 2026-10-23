@@ -67,7 +67,7 @@ fn input_format(mut frame: RawFrame, format: PixelFormat) -> RawFrame {
 }
 fn main() -> anyhow::Result<()> {
     let mut settings = Settings {
-        codec:uu_proto::media::VideoCodec::H264,rate_control:encoder::RateControl::Cbr,
+        tuning:Default::default(), codec:uu_proto::media::VideoCodec::H264,rate_control:encoder::RateControl::Cbr,
         width: 1280,
         height: 720,
         fps: 60,
@@ -102,6 +102,10 @@ fn main() -> anyhow::Result<()> {
             "--bitrate-kbps"=>settings.bitrate_kbps=value.parse()?,
             "--peak-kbps"=>peak=Some(value.parse::<u32>()?),
             "--fps"=>settings.fps=value.parse()?,
+            "--amd-quality"=>settings.tuning.amd_quality=match value.as_str(){"speed"=>encoder::AmdQuality::Speed,"balanced"=>encoder::AmdQuality::Balanced,"quality"=>encoder::AmdQuality::Quality,_=>anyhow::bail!("AMD quality must be speed, balanced or quality")},
+            "--intel-target-usage"=>settings.tuning.intel_target_usage=value.parse()?,
+            "--intel-low-power"=>settings.tuning.intel_low_power=match value.as_str(){"auto"=>encoder::LowPower::Auto,"on"=>encoder::LowPower::On,"off"=>encoder::LowPower::Off,_=>anyhow::bail!("Intel low power must be auto, on or off")},
+            "--nvidia-quality-vs-speed"=>settings.tuning.nvidia_quality_vs_speed=Some(value.parse()?),
             "--output"=>output_path=Some(std::path::PathBuf::from(value)),
             "--frames" => frames = value.parse()?,
             "--decoder" => {

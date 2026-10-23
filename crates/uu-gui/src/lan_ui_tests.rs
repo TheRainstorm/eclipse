@@ -98,7 +98,7 @@ async fn native_lan_page_pairs_persists_and_decodes_generated_video_without_acco
     let (stop, rx) = watch::channel(false);
     let (events, mut incoming) = async_mpsc::unbounded_channel();
     let (server, host) = lan::Server::bind(
-        lan::Config {video_policy:None,codec:Default::default(),rate_control:Default::default(),
+        lan::Config {encoder_tuning:Default::default(),video_policy:None,codec:Default::default(),rate_control:Default::default(),
             name: "Generated page fixture".into(),
             bind: "127.0.0.1:0".parse().unwrap(),
             discovery_bind: None,

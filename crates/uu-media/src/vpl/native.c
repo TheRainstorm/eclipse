@@ -142,9 +142,9 @@ static int bitrate_matches(const Encoder *e,uint32_t target){
     uint64_t maximum=(uint64_t)e->params.mfx.MaxKbps*multiplier;
     return actual+multiplier>=target && actual<=target+multiplier && (!e->vbr || (maximum>=actual && maximum<=e->peak_kbps+multiplier));
 }
-int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint32_t fps,uint32_t target,uint32_t peak,int vbr,
+int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint32_t fps,uint32_t target,uint32_t peak,int vbr,uint32_t target_usage,int low_power,
     Encoder **out,char *error,size_t capacity){
-    if(!out || width<2 || height<2 || width>8192 || height>8192 || (width|height)&1 || !fps || fps>240 || target<64 || target>1000000 || peak<target || peak>2000000)
+    if(!out || target_usage<1 || target_usage>7 || low_power<0 || low_power>2 || width<2 || height<2 || width>8192 || height>8192 || (width|height)&1 || !fps || fps>240 || target<64 || target>1000000 || peak<target || peak>2000000)
         return failed(error,capacity,"invalid encoder settings",MFX_ERR_INVALID_VIDEO_PARAM);
     *out=NULL;Encoder *e=(Encoder *)calloc(1,sizeof(*e));if(!e)return failed(error,capacity,"allocation",MFX_ERR_MEMORY_ALLOC);
     if(runtime_open(&e->rt,0,error,capacity)<0){eclipse_vpl_encoder_close(e);return -1;}
@@ -156,13 +156,13 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
         /* Prefer Intel's fixed-function low-power encoder (as used for
          * interactive streaming); retain the driver's general engine when
          * this codec/platform does not expose low-power encoding. */
-        for(unsigned tuning=0;tuning<4;++tuning){
+        for(unsigned tuning=low_power==2?2:0;tuning<(low_power==1?2:4);++tuning){
             memset(&e->params,0,sizeof(e->params));
             e->params.AsyncDepth=1;e->params.IOPattern=MFX_IOPATTERN_IN_SYSTEM_MEMORY;
             e->params.mfx.CodecId=id;e->params.mfx.CodecProfile=codec==0?MFX_PROFILE_AVC_BASELINE:codec==1?MFX_PROFILE_HEVC_MAIN:MFX_PROFILE_AV1_MAIN;
             if(codec==0)e->params.mfx.CodecLevel=MFX_LEVEL_AVC_52;
-            e->params.mfx.TargetUsage=MFX_TARGETUSAGE_BEST_SPEED;
-            e->params.mfx.LowPower=tuning<2?MFX_CODINGOPTION_ON:MFX_CODINGOPTION_UNKNOWN;
+            e->params.mfx.TargetUsage=(mfxU16)target_usage;
+            e->params.mfx.LowPower=tuning<2?MFX_CODINGOPTION_ON:low_power==2?MFX_CODINGOPTION_OFF:MFX_CODINGOPTION_UNKNOWN;
             e->params.mfx.GopPicSize=(mfxU16)(fps*2);e->params.mfx.GopRefDist=1;
             e->params.mfx.GopOptFlag=MFX_GOP_CLOSED;e->params.mfx.NumRefFrame=1;
             e->params.mfx.RateControlMethod=vbr?MFX_RATECONTROL_VBR:MFX_RATECONTROL_CBR;
@@ -190,13 +190,13 @@ int eclipse_vpl_encoder_open(uint32_t codec,uint32_t width,uint32_t height,uint3
             mfxVideoParam checked=e->params;
             status=e->rt.query(e->session,&e->params,&checked);
             if(status<0 || status==MFX_WRN_PARTIAL_ACCELERATION){last_error=status;continue;}
-            if((tuning<2 && checked.mfx.LowPower!=MFX_CODINGOPTION_ON) || checked.mfx.CodecId!=id || checked.mfx.CodecProfile!=e->params.mfx.CodecProfile || checked.mfx.FrameInfo.FrameRateExtN!=fps || checked.mfx.FrameInfo.FrameRateExtD!=1 || checked.mfx.FrameInfo.CropW!=width || checked.mfx.FrameInfo.CropH!=height
+            if(checked.mfx.TargetUsage!=target_usage || (low_power==2 && checked.mfx.LowPower!=MFX_CODINGOPTION_OFF) || (tuning<2 && checked.mfx.LowPower!=MFX_CODINGOPTION_ON) || checked.mfx.CodecId!=id || checked.mfx.CodecProfile!=e->params.mfx.CodecProfile || checked.mfx.FrameInfo.FrameRateExtN!=fps || checked.mfx.FrameInfo.FrameRateExtD!=1 || checked.mfx.FrameInfo.CropW!=width || checked.mfx.FrameInfo.CropH!=height
                 || checked.mfx.GopRefDist!=1 || checked.AsyncDepth!=1 || checked.mfx.RateControlMethod!=e->params.mfx.RateControlMethod){last_error=MFX_ERR_UNSUPPORTED;continue;}
             e->params=checked;status=e->rt.init(e->session,&e->params);
             if(status<0){last_error=status;continue;}
             if(status==MFX_WRN_PARTIAL_ACCELERATION){last_error=status;e->rt.encode_close(e->session);continue;}
             status=e->rt.get(e->session,&e->params);
-            if(status<0 || (tuning<2 && e->params.mfx.LowPower!=MFX_CODINGOPTION_ON) || e->params.mfx.CodecId!=id || e->params.mfx.FrameInfo.CropW!=width || e->params.mfx.FrameInfo.CropH!=height
+            if(status<0 || e->params.mfx.TargetUsage!=target_usage || (low_power==2 && e->params.mfx.LowPower!=MFX_CODINGOPTION_OFF) || (tuning<2 && e->params.mfx.LowPower!=MFX_CODINGOPTION_ON) || e->params.mfx.CodecId!=id || e->params.mfx.FrameInfo.CropW!=width || e->params.mfx.FrameInfo.CropH!=height
                 || e->params.mfx.FrameInfo.FrameRateExtN!=fps || e->params.mfx.FrameInfo.FrameRateExtD!=1
                 || e->params.mfx.FrameInfo.CropX!=0 || e->params.mfx.FrameInfo.CropY!=0 || e->params.mfx.CodecProfile!=checked.mfx.CodecProfile
                 || e->params.mfx.GopRefDist!=1 || e->params.AsyncDepth!=1 || e->params.mfx.FrameInfo.FourCC!=MFX_FOURCC_NV12
@@ -259,6 +259,7 @@ int eclipse_vpl_encoder_bitrate(Encoder *e,uint32_t target,char *error,size_t ca
     if(status<0 || !bitrate_matches(e,target) || e->params.AsyncDepth!=1 || e->params.mfx.GopRefDist!=1
         || e->params.mfx.FrameInfo.CropW!=previous.mfx.FrameInfo.CropW || e->params.mfx.FrameInfo.CropH!=previous.mfx.FrameInfo.CropH
         || e->params.mfx.FrameInfo.FrameRateExtN!=previous.mfx.FrameInfo.FrameRateExtN || e->params.mfx.FrameInfo.FrameRateExtD!=previous.mfx.FrameInfo.FrameRateExtD
+        || e->params.mfx.TargetUsage!=previous.mfx.TargetUsage || e->params.mfx.LowPower!=previous.mfx.LowPower
         || e->params.mfx.CodecId!=previous.mfx.CodecId || e->params.mfx.RateControlMethod!=previous.mfx.RateControlMethod){
         e->initialized=-1;return failed(error,capacity,"changed configuration after bitrate reset",status<0?status:MFX_ERR_UNSUPPORTED);
     }

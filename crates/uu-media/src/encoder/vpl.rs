@@ -20,6 +20,8 @@ extern "C" {
         target: u32,
         peak: u32,
         vbr: i32,
+        target_usage:u32,
+        low_power:i32,
         out: *mut *mut c_void,
         error: *mut c_char,
         capacity: usize,
@@ -90,6 +92,8 @@ impl Driver {
                 settings.bitrate_kbps,
                 settings.rate_control.peak(settings.bitrate_kbps),
                 i32::from(vbr),
+                u32::from(settings.tuning.intel_target_usage),
+                match settings.tuning.intel_low_power{super::LowPower::Auto=>0,super::LowPower::On=>1,super::LowPower::Off=>2},
                 &mut encoder,
                 error.as_mut_ptr(),
                 error.len(),
@@ -104,10 +108,10 @@ impl Driver {
             encoder,
             settings,
             name: format!(
-                "intel-vpl ({:?} hw, {}, {} engine)",
+                "intel-vpl ({:?} hw, {}, {} engine, TU{})",
                 settings.codec,
                 if vbr { "VBR" } else { "CBR" },
-                if low_power { "low power" } else { "general" }
+                if low_power { "low power" } else { "general" }, settings.tuning.intel_target_usage
             ),
             pending: VecDeque::new(),
             headers: Default::default(),

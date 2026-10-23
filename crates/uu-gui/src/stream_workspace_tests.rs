@@ -361,6 +361,7 @@ fn native_windows_attach_reorder_and_detach_two_live_generated_sessions() {
     for index in 0..2 {
         let invitation = directory.0.join(format!("generated-{index}.json"));
         let config = uu_core::native::HostConfig {
+            encoder_tuning:Default::default(),
             session: None,
             video_policy: Some(uu_core::native_quality::Policy {
                 codecs: vec![uu_core::native::VideoCodec::H264],

@@ -58,7 +58,7 @@ impl CaptureMonitor {
         uu_media::H264Encoder::validate_dimensions(self.width,self.height).is_ok()
     }
     pub fn encodable(&self, preference:EncoderPreference, fps:u32)->bool {
-        let settings=uu_media::encoder::Settings {codec:uu_proto::media::VideoCodec::H264,rate_control:uu_media::encoder::RateControl::Cbr,width:self.width,height:self.height,fps,
+        let settings=uu_media::encoder::Settings {tuning:Default::default(),codec:uu_proto::media::VideoCodec::H264,rate_control:uu_media::encoder::RateControl::Cbr,width:self.width,height:self.height,fps,
             bitrate_kbps:64,preference};
         settings.validate().is_ok() && (preference!=EncoderPreference::Software || self.software_encodable())
     }
@@ -168,6 +168,7 @@ pub(crate) async fn write_message<T: Serialize>(
 }
 
 pub struct HostConfig {
+    pub encoder_tuning:uu_media::encoder::Tuning,
     pub session:Option<crate::shared_host::SessionContext>,
     pub video_policy:Option<crate::native_quality::Policy>,
     pub codec:VideoCodec,
@@ -191,6 +192,7 @@ pub struct HostConfig {
 /// Capture and permissions shared by LAN and internet sessions.
 #[derive(Clone)]
 pub struct SharingConfig {
+    pub encoder_tuning:uu_media::encoder::Tuning,
     pub session:Option<crate::shared_host::SessionContext>,
     pub video_policy:Option<crate::native_quality::Policy>,
     pub codec:VideoCodec,
@@ -205,12 +207,13 @@ pub struct SharingConfig {
     pub clipboard: Option<Arc<crate::clipboard::Clipboard>>,
 }
 impl From<&HostConfig> for SharingConfig {
-    fn from(c:&HostConfig)->Self {Self{session:c.session.clone(),video_policy:c.video_policy.clone(),codec:c.codec,rate_control:c.rate_control,source:c.source.clone(),fps:c.fps,bitrate_kbps:c.bitrate_kbps,encoder:c.encoder,
+    fn from(c:&HostConfig)->Self {Self{encoder_tuning:c.encoder_tuning,session:c.session.clone(),video_policy:c.video_policy.clone(),codec:c.codec,rate_control:c.rate_control,source:c.source.clone(),fps:c.fps,bitrate_kbps:c.bitrate_kbps,encoder:c.encoder,
         session_limit:c.session_limit,allow_input:c.allow_input,audio:c.audio,clipboard:c.clipboard.clone()}}
 }
 impl From<HostConfig> for SharingConfig {fn from(c:HostConfig)->Self{Self::from(&c)}}
 impl SharingConfig {
     pub fn validate(&self) -> Result<()> {
+        self.encoder_tuning.validate()?;
         if let Some(policy)=&self.video_policy {policy.validate()?;}
         ensure!((1..=crate::native_quality::MAX_FPS).contains(&self.fps) && (64..=crate::native_quality::MAX_BITRATE_KBPS).contains(&self.bitrate_kbps),
             "native frame rate or bitrate exceeds the encoder interface range");
@@ -642,7 +645,7 @@ async fn send_video(
             let (width,height)=capture.resolution();validate_video(width,height,fps)?;
             let kbps=if automatic {crate::native_quality::Update{fps,bitrate_kbps:None}.bitrate(width,height)}else{kbps};
             let rate_control=match rate_control {uu_media::encoder::RateControl::Cbr=>rate_control,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:kbps.saturating_mul(2)}};
-            let settings=|codec|uu_media::encoder::Settings {codec,rate_control,width,height,fps,bitrate_kbps:kbps,preference};
+            let settings=|codec|uu_media::encoder::Settings {tuning:config.encoder_tuning,codec,rate_control,width,height,fps,bitrate_kbps:kbps,preference};
             let mut selected=None;let mut last_error=None;
             for codec in choices {
                 match uu_media::encoder::create(settings(codec)) {
@@ -959,7 +962,7 @@ mod tests {
             "uu-video-{}.eclipse-invite.json",
             uuid::Uuid::new_v4()
         )));
-        let config = HostConfig {session:None,video_policy:None,codec:Default::default(),rate_control:Default::default(),
+        let config = HostConfig {encoder_tuning:Default::default(),session:None,video_policy:None,codec:Default::default(),rate_control:Default::default(),
             bind: "127.0.0.1:0".parse().unwrap(),
             source: uu_capture::CaptureSource::Synthetic {
                 width: 320,

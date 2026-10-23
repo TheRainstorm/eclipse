@@ -320,7 +320,7 @@ impl HostUi {
                 Ok(state)
             }) as lan::ClipboardFactory
         });
-        let config = lan::Config {video_policy:None,codec:Default::default(),rate_control:Default::default(),
+        let config = lan::Config {encoder_tuning:Default::default(),video_policy:None,codec:Default::default(),rate_control:Default::default(),
             name: self.name.trim().into(),
             bind: SocketAddr::from(([0, 0, 0, 0], self.port)),
             discovery_bind: Some(SocketAddr::from((

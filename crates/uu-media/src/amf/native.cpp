@@ -88,9 +88,9 @@ static void check_amd(ID3D11Device* device) {
     multithread->SetMultithreadProtected(TRUE);multithread->Release();
 }
 extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsigned fps,unsigned kbps,
-    unsigned peak,int vbr,int default_adapter,void* native_device,char* error,size_t capacity) {
+    unsigned peak,int vbr,int quality,int default_adapter,void* native_device,char* error,size_t capacity) {
     try {
-        if(codec<0||codec>2||width<2||height<2||!fps||!kbps)throw std::runtime_error("invalid AMF settings");
+        if(codec<0||codec>2||quality<0||quality>2||width<2||height<2||!fps||!kbps)throw std::runtime_error("invalid AMF settings");
         auto s=std::make_unique<Session>();s->codec=codec;s->width=width;s->height=height;s->fps=fps;
         s->library=LoadLibraryExW(L"amfrt64.dll",nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);
         if(!s->library)throw std::runtime_error("AMD AMF runtime is not installed in the system directory");
@@ -106,8 +106,13 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
         checked(factory->CreateComponent(s->context,codec==0?AMFVideoEncoderVCE_AVC:codec==1?AMFVideoEncoder_HEVC:AMFVideoEncoder_AV1,&s->encoder),"create encoder component");
         s->set(s->prop(AMF_VIDEO_ENCODER_USAGE,AMF_VIDEO_ENCODER_HEVC_USAGE,AMF_VIDEO_ENCODER_AV1_USAGE),
             amf_int64(codec==0?AMF_VIDEO_ENCODER_USAGE_ULTRA_LOW_LATENCY:codec==1?AMF_VIDEO_ENCODER_HEVC_USAGE_ULTRA_LOW_LATENCY:AMF_VIDEO_ENCODER_AV1_USAGE_ULTRA_LOW_LATENCY));
+        const amf_int64 presets[3][3]={
+            {AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED,AMF_VIDEO_ENCODER_QUALITY_PRESET_BALANCED,AMF_VIDEO_ENCODER_QUALITY_PRESET_QUALITY},
+            {AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED,AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_BALANCED,AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_QUALITY},
+            {AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED,AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_BALANCED,AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_QUALITY}};
+        const auto quality_name=s->prop(AMF_VIDEO_ENCODER_QUALITY_PRESET,AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET,AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET);
         s->set(s->prop(AMF_VIDEO_ENCODER_QUALITY_PRESET,AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET,AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET),
-            amf_int64(codec==0?AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED:codec==1?AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED:AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED));
+            presets[codec][quality]);
         s->set(s->prop(AMF_VIDEO_ENCODER_FRAMESIZE,AMF_VIDEO_ENCODER_HEVC_FRAMESIZE,AMF_VIDEO_ENCODER_AV1_FRAMESIZE),AMFConstructSize(width,height));
         s->set(s->prop(AMF_VIDEO_ENCODER_FRAMERATE,AMF_VIDEO_ENCODER_HEVC_FRAMERATE,AMF_VIDEO_ENCODER_AV1_FRAMERATE),AMFConstructRate(fps,1));
         s->set(s->prop(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD,AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD,AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD),
@@ -130,6 +135,9 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
         // A native timed output wait avoids a fixed application sleep per frame.
         s->encoder->SetProperty(s->prop(AMF_VIDEO_ENCODER_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_AV1_QUERY_TIMEOUT),amf_int64(1));
         checked(s->encoder->Init(amf::AMF_SURFACE_NV12,width,height),"initialize encoder");
+        amf_int64 actual_quality=-1;
+        checked(s->encoder->GetProperty(quality_name,&actual_quality),"read quality preset");
+        if(actual_quality!=presets[codec][quality])throw std::runtime_error("AMF changed the requested quality preset");
         AMFSize actual_size{};AMFRate actual_rate{};
         checked(s->encoder->GetProperty(s->prop(AMF_VIDEO_ENCODER_FRAMESIZE,AMF_VIDEO_ENCODER_HEVC_FRAMESIZE,AMF_VIDEO_ENCODER_AV1_FRAMESIZE),&actual_size),"read frame size");
         checked(s->encoder->GetProperty(s->prop(AMF_VIDEO_ENCODER_FRAMERATE,AMF_VIDEO_ENCODER_HEVC_FRAMERATE,AMF_VIDEO_ENCODER_AV1_FRAMERATE),&actual_rate),"read frame rate");

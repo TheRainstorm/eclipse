@@ -29,6 +29,7 @@ required-features = ["h264", "vaapi"]
 anyhow.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
+serde.workspace = true
 tracing.workspace = true
 uu-proto = { path = "../uu-proto" }
 opus = "0.3.1"

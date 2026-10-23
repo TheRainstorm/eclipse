@@ -12,6 +12,8 @@ mod amf;
 mod low_delay;
 mod upload;
 mod profile;
+mod tuning;
+pub use tuning::{AmdQuality,LowPower,Tuning};
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 mod vaapi;
 mod worker;
@@ -50,6 +52,7 @@ impl RateControl {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
+    pub tuning: Tuning,
     pub codec:VideoCodec,
     pub rate_control:RateControl,
     pub width: u32,
@@ -60,6 +63,7 @@ pub struct Settings {
 }
 impl Settings {
     pub fn validate(self) -> Result<(), CodecError> {
+        self.tuning.validate()?;
         if !(2..=8192).contains(&self.width)
             || !(2..=8192).contains(&self.height)
             || self.width % 2 != 0
@@ -69,7 +73,7 @@ impl Settings {
             || !(64..=1_000_000).contains(&self.bitrate_kbps)
         {
             return Err(error(
-                "encoding needs even 2..=8192 dimensions, valid FPS and 64..=100000 kbps",
+                "encoding needs even 2..=8192 dimensions, valid FPS and 64..=1000000 kbps",
             ));
         }
         let peak=self.rate_control.peak(self.bitrate_kbps);
@@ -121,6 +125,7 @@ fn requires_vpl(settings: Settings, windows: bool) -> bool {
     // Windows Media Foundation supports H.264 CBR and peak-constrained VBR.
     // Linux VA-API remains CBR-only here, so other rate-control modes use VPL.
     settings.preference == Preference::Intel
+        || (settings.tuning.custom_intel() && matches!(settings.preference,Preference::Auto|Preference::Hardware))
         || (!windows && (settings.codec != VideoCodec::H264 || settings.rate_control != RateControl::Cbr))
 }
 
@@ -152,7 +157,7 @@ fn hardware(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
             Ok(encoder)=>return Ok(Box::new(encoder)),
             Err(mf_error)=>{
                 #[cfg(feature="intel-vpl")]
-                if matches!(settings.preference,Preference::Auto|Preference::Hardware) && settings.codec!=VideoCodec::H264 {
+                if matches!(settings.preference,Preference::Auto|Preference::Hardware) && (settings.codec!=VideoCodec::H264 || settings.tuning.custom_intel()) {
                     return worker::Worker::spawn(move||vpl::Driver::open(settings))
                         .map(|encoder|Box::new(encoder) as Box<dyn VideoEncoder>)
                         .map_err(|vpl_error|error(format!("Media Foundation: {mf_error}; Intel VPL: {vpl_error}")));
@@ -208,9 +213,9 @@ pub fn create(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
             (hardware(settings)?, false, false)
         }
         Preference::Auto => match hardware(settings) {
-            Ok(encoder) => (encoder, settings.codec==VideoCodec::H264 && settings.rate_control==RateControl::Cbr, false),
+            Ok(encoder) => (encoder, settings.codec==VideoCodec::H264 && settings.rate_control==RateControl::Cbr && settings.tuning==Tuning::default(), false),
             Err(reason) => {
-                if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr{return Err(reason);}
+                if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr || settings.tuning!=Tuning::default(){return Err(reason);}
                 tracing::warn!(%reason,backend=hardware_name(),"native hardware encoder unavailable; using software");
                 (software(settings)?, false, true)
             }
@@ -309,7 +314,7 @@ mod tests {
 
     fn settings() -> Settings {
         Settings {
-            width: 64,
+            tuning:Default::default(), width: 64,
             height: 64,
             fps: 30,
             bitrate_kbps: 1000,

@@ -1271,8 +1271,8 @@ impl Workspace {
                     }
                 });
                 muted(ui,match self.encoder_vendor_tab {
-                    1=>"NVIDIA：Windows 使用驱动提供的 Media Foundation 编码；各格式需实际初始化成功。NVENC 专有参数仍在实现中。",
-                    2=>"Intel：H.264 使用系统硬件接口，HEVC / AV1 和 VBR 使用 Intel VPL；驱动需要支持所选组合。",
+                    1=>"NVIDIA：Windows 使用驱动提供的 Media Foundation 编码，可调整画质与速度；驱动须支持所选参数。",
+                    2=>"Intel QSV 使用 oneVPL，可调整 Target Usage 与低功耗引擎；驱动需支持所选组合。",
                     3=>"AMD：Windows 使用原生 AMF 低延迟编码，支持驱动可用的 H.264 / HEVC / AV1。",
                     _=>"编码参数应用于当前主机。自动模式按已安装驱动选择可用后端；客户端仍需支持所选格式。",
                 });

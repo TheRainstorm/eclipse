@@ -40,6 +40,46 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
         egui::ComboBox::from_id_salt("server-encoding").selected_text(label).show_ui(ui,|ui| {
             for (value,label) in [(Encoding::Auto,"自动"),(Encoding::Hardware,"硬件"),(Encoding::Intel,"Intel QSV"),(Encoding::Nvidia,"NVIDIA 硬件"),(Encoding::Amd,"AMD AMF"),(Encoding::Software,"软件 H.264")] {ui.selectable_value(&mut s.encoding,value,label);}
         });
+        ui.add_space(10.);
+        ui.weak("编码参数在下次启动服务后生效；默认优先低延迟。提高画质可能增加编码耗时。仅应用实际使用的 GPU 参数。");
+        let tuning=&mut s.encoder_tuning;
+        if matches!(s.encoding,Encoding::Auto|Encoding::Hardware|Encoding::Amd) {
+            egui::CollapsingHeader::new("AMD AMF").id_salt("amd-tuning").show(ui,|ui| {
+                use uu_core::device_book::AmdQuality;
+                ui.horizontal(|ui| {
+                    ui.label("画质预设");
+                    for (value,label) in [(AmdQuality::Speed,"速度"),(AmdQuality::Balanced,"均衡"),(AmdQuality::Quality,"画质")] {
+                        ui.selectable_value(&mut tuning.amd_quality,value,label);
+                    }
+                });
+                ui.weak("Windows 原生 AMF，保持超低延迟用法与无 B 帧。");
+            });
+        }
+        if matches!(s.encoding,Encoding::Auto|Encoding::Hardware|Encoding::Intel) {
+            egui::CollapsingHeader::new("Intel QSV").id_salt("intel-tuning").show(ui,|ui| {
+                use uu_core::device_book::LowPower;
+                ui.add(egui::Slider::new(&mut tuning.intel_target_usage,1..=7).text("Target Usage · 1 画质 / 7 速度"));
+                ui.horizontal(|ui| {
+                    ui.label("低功耗引擎");
+                    for (value,label) in [(LowPower::Auto,"自动"),(LowPower::On,"启用"),(LowPower::Off,"停用")] {
+                        ui.selectable_value(&mut tuning.intel_low_power,value,label);
+                    }
+                });
+                ui.weak("自动优先固定功能引擎；驱动不支持明确选择的参数时连接会说明原因。");
+            });
+        }
+        if matches!(s.encoding,Encoding::Auto|Encoding::Hardware|Encoding::Nvidia) {
+            egui::CollapsingHeader::new("NVIDIA · Windows").id_salt("nvidia-tuning").show(ui,|ui| {
+                let mut custom=tuning.nvidia_quality_vs_speed.is_some();
+                if ui.checkbox(&mut custom,"自定义画质 / 速度").changed() {
+                    tuning.nvidia_quality_vs_speed=custom.then_some(0);
+                }
+                if let Some(value)=&mut tuning.nvidia_quality_vs_speed {
+                    ui.add(egui::Slider::new(value,0..=100).text("0 速度 / 100 画质"));
+                }
+                ui.weak("通过显卡驱动的 Media Foundation 接口设置；驱动须支持并回报该值。");
+            });
+        }
     } else {
         ui.checkbox(&mut s.control,"允许已授权设备控制键盘、鼠标和手柄");
         ui.checkbox(&mut s.clipboard,"允许文本剪贴板同步");

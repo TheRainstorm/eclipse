@@ -11,8 +11,8 @@ fn main() -> anyhow::Result<()> {
         "use tools/native/vpl_contract_smoke.py; this probe is not hardware validation"
     );
     let case = std::env::var("ECLIPSE_VPL_CONTRACT_CASE")?;
-    let base = Settings {
-        codec: VideoCodec::Hevc,
+    let mut base = Settings {
+        tuning:Default::default(), codec: VideoCodec::Hevc,
         rate_control: RateControl::Vbr { peak_kbps: 1600 },
         width: 64,
         height: 64,
@@ -20,6 +20,11 @@ fn main() -> anyhow::Result<()> {
         bitrate_kbps: 800,
         preference: Preference::Hardware,
     };
+    if case=="forced_low_power_unavailable" {base.tuning.intel_low_power=encoder::LowPower::On;}
+    if case=="custom_tuning" {
+        base.tuning.intel_target_usage=4;
+        base.tuning.intel_low_power=encoder::LowPower::Off;
+    }
     if case.starts_with("decode_") && case != "decode_alignment" {
         use uu_media::VideoDecoder;
         let result = uu_media::hw::vpl::VplAv1Decoder::new().and_then(|mut decoder| {
@@ -39,7 +44,7 @@ fn main() -> anyhow::Result<()> {
     }
     if matches!(
         case.as_str(),
-        "software" | "fps" | "partial" | "init_fps" | "codec" | "mode"
+        "software" | "fps" | "partial" | "init_fps" | "codec" | "mode" | "target_usage_changed" | "forced_low_power_unavailable"
     ) {
         ensure!(
             encoder::create(base).is_err(),
