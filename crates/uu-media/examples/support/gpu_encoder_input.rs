@@ -2,10 +2,10 @@
 use anyhow::{ensure,Context,Result};
 use uu_media::{RawFrame,PixelFormat,d3d11_frame::Frame};
 use windows::{core::Interface,Win32::{Foundation::{HMODULE,RECT},Graphics::{Direct3D::*,Direct3D10::ID3D10Multithread,Direct3D11::*,Dxgi::{IDXGIAdapter,Common::*}}}};
-pub struct Upload {device:ID3D11Device}
+pub struct Upload {device:ID3D11Device,input:uu_media::encoder::InputDevice,pool:std::cell::RefCell<Option<uu_media::encoder::CapturePool>>,last:std::cell::RefCell<Option<RawFrame>>}
 impl Upload {
     pub fn input_device(&self)->Result<uu_media::encoder::InputDevice> {
-        Ok(uu_media::encoder::InputDevice::from_d3d11(self.device.clone())?)
+        Ok(self.input.clone())
     }
     pub fn new()->Result<Self> {
         let (mut device,mut context)=(None,None);
@@ -15,7 +15,9 @@ impl Upload {
         let context=context.context("missing D3D11 context")?;
         let multithread:ID3D10Multithread=context.cast()?;
         unsafe{let _=multithread.SetMultithreadProtected(true);}
-        Ok(Self{device:device.context("missing D3D11 device")?})
+        let device=device.context("missing D3D11 device")?;
+        let input=uu_media::encoder::InputDevice::from_d3d11(device.clone())?;
+        Ok(Self{device,input,pool:Default::default(),last:Default::default()})
     }
     pub fn frame(&self,frame:&RawFrame)->Result<RawFrame> {
         ensure!(frame.format==PixelFormat::Bgra8 && !frame.gpu && frame.is_consistent(),"fixture needs CPU BGRA pixels");
@@ -33,6 +35,10 @@ impl Upload {
     /// Draw the same moving bars directly into a private GPU texture. This
     /// exercises encoder input without CPU rasterization or desktop access.
     pub fn generated(&self,width:u32,height:u32,index:u32,pts:uu_media::Timestamp)->Result<RawFrame> {
+        self.generated_with_copy(width,height,index,pts,None)
+    }
+    /// Optional DXGI-style snapshot copy; both modes use the same generated source.
+    pub fn generated_with_copy(&self,width:u32,height:u32,index:u32,pts:uu_media::Timestamp,pooled:Option<bool>)->Result<RawFrame> {
         ensure!((2..=8192).contains(&width)&&(2..=8192).contains(&height),"invalid generated GPU dimensions");
         let mut texture=None;
         unsafe {self.device.CreateTexture2D(&D3D11_TEXTURE2D_DESC {
@@ -60,6 +66,19 @@ impl Upload {
                 }
             }
             context.Flush();
+        }
+        if let Some(pooled)=pooled {
+            if pooled {
+                let mut pool=self.pool.borrow_mut();
+                if pool.is_none(){*pool=Some(uu_media::encoder::CapturePool::new(self.input_device()?,width,height)?);}
+                let frame=pool.as_mut().unwrap().capture(&texture,pts)?.context("all generated capture leases remain held")?;
+                *self.last.borrow_mut()=Some(frame.clone());
+                return Ok(frame);
+            }
+            let mut fresh=uu_media::encoder::CapturePool::new(self.input_device()?,width,height)?;
+            let frame=fresh.capture(&texture,pts)?.context("fresh generated snapshot unavailable")?;
+            *self.last.borrow_mut()=Some(frame.clone());
+            return Ok(frame);
         }
         let surface=Frame::captured(texture,self.device.clone()).map_err(anyhow::Error::msg)?;
         let frame=RawFrame{width,height,stride:width*4,format:PixelFormat::Bgra8,data:Default::default(),

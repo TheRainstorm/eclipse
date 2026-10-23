@@ -21,9 +21,10 @@ pub struct Frame {
     allocation: [u32; 2],
     format: DXGI_FORMAT,
 }
-// Only immutable MFT output crosses threads. Media Foundation components are
-// thread-safe; no sample methods or buffer mutation occur after construction.
-// The D3D device/context were created with multithread protection enabled.
+// Shared frame leases are immutable. MFT samples retain their decoder slots;
+// capture snapshots may be updated only after exclusive ownership is recovered.
+// Native source reads and copies use the same protected immediate context, so
+// queued GPU work remains ordered after its CPU lease is released.
 unsafe impl Send for Frame {}
 unsafe impl Sync for Frame {}
 impl Frame {
@@ -73,9 +74,10 @@ impl Frame {
     pub fn device_ptr(&self) -> *mut c_void {
         self.device.as_raw()
     }
-    /// The caller transfers a dedicated, immutable texture. The duplication
-    /// surface itself must never escape ReleaseFrame. Contexts sharing this
-    /// device must have ID3D10Multithread protection enabled before publishing.
+    /// The caller transfers an immutable snapshot for the duration of its frame
+    /// leases. A capture pool may refresh it only with exclusive ownership and
+    /// ordered GPU copies. The duplication surface must not escape ReleaseFrame.
+    /// Shared devices must have ID3D10Multithread protection enabled.
     pub fn captured(texture:ID3D11Texture2D,device:ID3D11Device)->Result<Self,String> {
         let mut desc=D3D11_TEXTURE2D_DESC::default();
         unsafe{texture.GetDesc(&mut desc);}

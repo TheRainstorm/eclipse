@@ -79,6 +79,7 @@ fn main() -> anyhow::Result<()> {
     let mut gpu_input=false;
     let mut gpu_generated=false;
     let mut capture_device=true;
+    let mut capture_copy=None;
     let mut source_scale=1u32;
     let mut hardware_decoder = false;
     let mut intel_decoder=false;
@@ -124,6 +125,7 @@ fn main() -> anyhow::Result<()> {
             }
             "--width" => settings.width = value.parse()?,
             "--source-scale" => source_scale=value.parse()?,
+            "--capture-copy" => capture_copy=match value.as_str(){"none"=>None,"fresh"=>Some(false),"pooled"=>Some(true),_=>anyhow::bail!("capture-copy must be none, fresh or pooled")},
             "--capture-device" => capture_device=match value.as_str(){"on"=>true,"off"=>false,_=>anyhow::bail!("capture-device must be on or off")},
             "--height" => settings.height = value.parse()?,
             "--input" => {
@@ -147,6 +149,7 @@ fn main() -> anyhow::Result<()> {
     ensure!(vbr || peak.is_none(),"--peak-kbps requires --rate-control vbr");
     settings.rate_control=if vbr{encoder::RateControl::Vbr{peak_kbps:peak.unwrap_or(settings.bitrate_kbps.saturating_mul(2))}}else{encoder::RateControl::Cbr};
     settings.validate()?;
+    ensure!(capture_copy.is_none() || gpu_generated,"capture-copy requires a generated GPU source");
     ensure!((1..=4).contains(&source_scale) && (gpu_input || source_scale==1)
         && settings.width*source_scale<=8192 && settings.height*source_scale<=8192,"source scale requires valid GPU capture geometry");
     #[cfg(windows)]
@@ -184,6 +187,8 @@ fn main() -> anyhow::Result<()> {
     let mut emitted=0u32;
     let mut color = YuvColor::Full601;
     let mut times = Vec::new();
+    let mut capture_times = Vec::new();
+    let mut capture_encode_times = Vec::new();
     let mut key_times = Vec::new();
     let mut delta_times = Vec::new();
     let mut keyframe_indexes = Vec::new();
@@ -215,21 +220,25 @@ fn main() -> anyhow::Result<()> {
             // timestamp/reference ownership after a rate-control reset.
             encoder.set_bitrate(settings.bitrate_kbps)?;
         }
+        let capture_started=std::time::Instant::now();
         let input = if gpu_generated {None}else{Some(input_format(pattern(settings, index), format))};
         #[cfg(windows)]
         let input=if let Some(gpu)=&gpu {
             let source=Settings{width:settings.width*source_scale,height:settings.height*source_scale,..settings};
             let pts=Timestamp(u64::from(index)*1_000_000/u64::from(settings.fps));
-            let frame=if gpu_generated {gpu.generated(source.width,source.height,index*source_scale,pts)?}
+            let frame=if gpu_generated {gpu.generated_with_copy(source.width,source.height,index*source_scale,pts,capture_copy)?}
                 else {let mut pixels=input_format(pattern(source,index*source_scale),PixelFormat::Bgra8);pixels.pts=pts;gpu.frame(&pixels)?};
             RawFrame{width:settings.width,height:settings.height,stride:settings.width*4,..frame}
         }else{input.unwrap()};
         #[cfg(not(windows))]
         let input=input.context("generated GPU input requires Windows")?;
+        let capture_ms=capture_started.elapsed().as_secs_f64()*1000.0;
+        capture_times.push(capture_ms);
         let started = std::time::Instant::now();
         let output = encoder.encode(&input)?;
         let elapsed=started.elapsed().as_secs_f64() * 1000.0;
         times.push(elapsed);
+        capture_encode_times.push(capture_ms+elapsed);
         ensure!(
             !output.is_empty(),
             "low-delay encoder emitted no current frame"
@@ -316,10 +325,9 @@ fn main() -> anyhow::Result<()> {
     );
     let first_encode=times[0];
     times.sort_by(f64::total_cmp);
+    capture_encode_times.sort_by(f64::total_cmp);
     let average = times.iter().sum::<f64>() / times.len() as f64;
-    println!(
-        "{}",
-        serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
+    let mut report=serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
         "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,"pixel_verified_frames":verified,"pixel_verify_every":verify_every,"gpu_decoded_frames":gpu_decoded,"zero_output_inputs":zero_output_inputs,"max_decode_lag_frames":max_decode_lag_frames,
         "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"gpu_generated":gpu_generated,"capture_device_supplied":capture_device_supplied,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
@@ -327,7 +335,13 @@ fn main() -> anyhow::Result<()> {
         "encoder_preparation_ms":encoder_preparation_ms,"preparation_plus_first_encode_ms":encoder_preparation_ms+first_encode,
         "keyframe_encode_ms_mean":(!key_times.is_empty()).then(||key_times.iter().sum::<f64>()/key_times.len() as f64),
         "delta_encode_ms_mean":(!delta_times.is_empty()).then(||delta_times.iter().sum::<f64>()/delta_times.len() as f64),
-        "bytes":bytes,"screen_used":false,"input_used":false,"audio_used":false})
-    );
+        "bytes":bytes,"screen_used":false,"input_used":false,"audio_used":false});
+    report["capture_fixture"]=serde_json::json!({
+        "copy":capture_copy.map(|pooled|if pooled{"pooled"}else{"fresh"}).unwrap_or("none"),
+        "cpu_ms_mean":capture_times.iter().sum::<f64>()/capture_times.len() as f64,
+        "plus_encode_ms_mean":capture_encode_times.iter().sum::<f64>()/capture_encode_times.len() as f64,
+        "plus_encode_ms_p50":capture_encode_times[capture_encode_times.len()/2],
+        "plus_encode_ms_p95":capture_encode_times[capture_encode_times.len()*95/100]});
+    println!("{report}");
     Ok(())
 }

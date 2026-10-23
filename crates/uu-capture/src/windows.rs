@@ -120,6 +120,7 @@ pub struct DxgiCapture {
     last: Option<RawFrame>,
     started: Instant,
     staging: Option<ID3D11Texture2D>,
+    capture_pool: Option<uu_media::encoder::CapturePool>,
     gpu: bool,
     adapter_vendor: u16,
     duplication: Option<IDXGIOutputDuplication>,
@@ -187,6 +188,7 @@ impl DxgiCapture {
             last: None,
             started: Instant::now(),
             staging: None,
+            capture_pool: None,
             gpu: false,
             adapter_vendor,
             duplication: Some(duplication),
@@ -201,6 +203,7 @@ impl DxgiCapture {
     fn invalidate(&mut self) {
         self.last = None;
         self.staging = None;
+        self.capture_pool = None;
         self.duplication = None;
     }
     fn resume(&mut self) -> Result<(), CaptureError> {
@@ -289,37 +292,12 @@ impl DxgiCapture {
             if (desc.Width, desc.Height) != (self.source.width, self.source.height) {
                 return Err(backend("desktop layout changed; reopen capture"));
             }
-            let mut owned = None;
-            let owned_desc = D3D11_TEXTURE2D_DESC {
-                Usage: D3D11_USAGE_DEFAULT,
-                BindFlags: (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE).0 as u32,
-                CPUAccessFlags: 0,
-                MiscFlags: 0,
-                ..desc
-            };
-            unsafe {
-                self.device
-                    .CreateTexture2D(&owned_desc, None, Some(&mut owned))
-                    .map_err(backend)?;
+            if self.capture_pool.is_none() {
+                let device = uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).map_err(backend)?;
+                self.capture_pool = Some(uu_media::encoder::CapturePool::new(device, desc.Width, desc.Height).map_err(backend)?);
             }
-            let owned = owned.ok_or_else(|| backend("GPU capture texture unavailable"))?;
-            unsafe {
-                self.context.CopyResource(&owned, &texture);
-                self.context.Flush();
-            }
-            let surface = uu_media::d3d11_frame::Frame::captured(owned, self.device.clone())
-                .map_err(backend)?;
-            return Ok(Some(RawFrame {
-                width: desc.Width,
-                height: desc.Height,
-                format: PixelFormat::Bgra8,
-                stride: desc.Width * 4,
-                data: Default::default(),
-                pts: self.timestamp(),
-                gpu: true,
-                dma_buf: None,
-                d3d11: Some(std::sync::Arc::new(surface)),
-            }));
+            let pts = self.timestamp();
+            return self.capture_pool.as_mut().unwrap().capture(&texture, pts).map_err(backend);
         }
         let mut needs_staging = true;
         if let Some(staging) = &self.staging {
@@ -412,6 +390,7 @@ impl Capture for DxgiCapture {
             && vendor.is_none_or(|v| v == self.adapter_vendor);
         if self.gpu != enabled {
             self.last = None;
+            self.capture_pool = None;
             self.gpu = enabled;
         }
     }
