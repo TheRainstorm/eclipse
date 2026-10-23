@@ -194,6 +194,8 @@ fn main() -> anyhow::Result<()> {
     let mut keys = 0u32;
     let mut maximum_mse = 0.0f64;
     let mut requested_keys = 0u32;
+    #[cfg(windows)]
+    let mut gpu_verifier:Option<uu_media::d3d11_frame::Converter>=None;
     for index in 0..frames {
         if index == frames / 3 || index == frames * 2 / 3 {
             encoder.request_keyframe();
@@ -269,7 +271,19 @@ fn main() -> anyhow::Result<()> {
             decoded += 1;
             gpu_decoded += u32::from(output.gpu);
             if !verify {continue;}
-            let actual = uu_media::convert::frame_to_rgba_with_color(&output, color);
+            #[cfg(windows)]
+            let actual=if let Some(surface)=&output.d3d11 {
+                if !gpu_verifier.as_ref().is_some_and(|converter|converter.matches(surface)) {
+                    gpu_verifier=Some(uu_media::d3d11_frame::Converter::new(surface).map_err(anyhow::Error::msg)?);
+                }
+                let converter=gpu_verifier.as_ref().unwrap();
+                converter.convert(surface,color).map_err(anyhow::Error::msg)?;
+                let mut rgba=converter.readback().map_err(anyhow::Error::msg)?;
+                for pixel in rgba.chunks_exact_mut(4) {pixel.swap(0,2);}
+                rgba
+            }else{uu_media::convert::frame_to_rgba_with_color(&output,color)};
+            #[cfg(not(windows))]
+            let actual=uu_media::convert::frame_to_rgba_with_color(&output,color);
             let mut squared = 0u64;
             for (actual, expected) in actual.chunks_exact(4).zip(expected.chunks_exact(4)) {
                 for channel in 0..3 {
