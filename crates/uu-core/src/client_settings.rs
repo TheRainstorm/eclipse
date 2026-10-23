@@ -57,6 +57,8 @@ pub struct ClientSettings {
     #[serde(alias = "remote_cursor", deserialize_with = "cursor")]
     pub cursor_mode: CursorMode,
     pub clipboard: bool,
+    /// Native consent is independent of the compatibility clipboard default.
+    pub native_clipboard: bool,
     pub gamepad: bool,
     /// Send Ctrl+Alt client command chords to the remote while excluding F12.
     pub nested_shortcuts: bool,
@@ -67,7 +69,7 @@ impl Default for ClientSettings {
             bitrate:0,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,
             volume:100,muted:false,hud:false,capture_keyboard:true,
             vsync:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
-            cursor_mode:CursorMode::Both,clipboard:true,gamepad:true,nested_shortcuts:false }
+            cursor_mode:CursorMode::Both,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
     }
 }
 impl ClientSettings {
@@ -106,5 +108,18 @@ impl NamedClientSettings {
         ensure!(uuid::Uuid::parse_str(&self.id).is_ok(),"客户端配置标识无效");
         ensure!(!self.name.trim().is_empty() && self.name.chars().count()<=64 && !self.name.chars().any(char::is_control),"请输入有效的配置名称（最多64字）");
         self.settings.validate()
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+    #[test]
+    fn native_clipboard_consent_is_independent_and_survives_client_profile_roundtrip() {
+        let mut settings:ClientSettings=serde_json::from_str(r#"{"clipboard":true}"#).unwrap();
+        assert!(settings.clipboard);assert!(!settings.native_clipboard);
+        settings.native_clipboard=true;
+        let restored:ClientSettings=serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert!(restored.native_clipboard);assert_eq!(restored,settings);
     }
 }

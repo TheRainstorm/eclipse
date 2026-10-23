@@ -79,6 +79,23 @@ fn canonical(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
 
+/// Observe only while permitted. Keeping a fingerprint through focus pauses
+/// lets a new host copy win over an unchanged controller value on return.
+#[cfg(any(windows, target_os = "linux", test))]
+#[derive(Default)]
+struct TextTracker { fingerprint: Option<[u8; 32]>, observed: bool }
+#[cfg(any(windows, target_os = "linux", test))]
+impl TextTracker {
+    fn fingerprint(text:&str)->[u8;32] {use sha2::Digest;sha2::Sha256::digest(canonical(text).as_bytes()).into()}
+    fn observe(&mut self,text:Option<&str>,publish_initial:bool)->bool {
+        let next=text.map(Self::fingerprint);
+        let publish=next!=self.fingerprint&&(publish_initial||self.observed);
+        self.fingerprint=next;self.observed=true;publish
+    }
+    fn matches(&self,text:&str)->bool{self.fingerprint==Some(Self::fingerprint(text))}
+    fn applied(&mut self,text:&str){self.observe(Some(text),false);}
+}
+
 #[cfg(target_os = "linux")]
 fn run_linux(control: Arc<Clipboard>, suppress_initial: bool) {
     use std::sync::atomic::Ordering::{Acquire, Release};
@@ -91,33 +108,37 @@ fn run_linux(control: Arc<Clipboard>, suppress_initial: bool) {
         }
     };
     control.available.store(true, Release);
-    let mut last_text = None;
+    let mut tracker = TextTracker::default();
     while !control.stopped.load(Acquire) {
         if control.ready() {
             let mut local_changed = false;
-            if let Ok(value) = clipboard.get_text() {
+            match clipboard.get_text() {
+              Ok(value) => {
                 if value.len() <= uu_core::clipboard::MAX_TEXT && !value.contains('\0') {
-                    let normalized = canonical(&value);
-                    if last_text.as_ref() != Some(&normalized) {
+                    if tracker.observe(Some(&value),!suppress_initial) {
                         if !control.read_only.load(Acquire)
-                            && (!suppress_initial || last_text.is_some())
                         {
                             *control.local.lock().unwrap() = Some(value);
                             control.protocol.lock().unwrap().cancel_pending();
                             local_changed = true;
                         }
-                        last_text = Some(normalized);
                     }
-                }
+                } else { tracker.observe(None,false); }
+              },
+              Err(arboard::Error::ContentNotAvailable) => {
+                // A non-text selection is also a valid initial baseline. The
+                // first subsequent text copy must not be suppressed forever.
+                tracker.observe(None,false);
+              },
+              Err(_) => control.status("剪贴板读取繁忙，正在重试"),
             }
             // A newly copied local selection takes precedence over a response
             // to an older remote clipboard request, matching the Windows path.
             let remote = control.remote.lock().unwrap().take();
             if let Some(value) = remote.filter(|_| !local_changed) {
-                let normalized = canonical(&value);
-                if last_text.as_ref() != Some(&normalized) && control.ready() {
+                if !tracker.matches(&value) && control.ready() {
                     if clipboard.set_text(value.clone()).is_ok() {
-                        last_text = Some(normalized);
+                        tracker.applied(&value);
                         control.status("文本剪贴板已同步");
                     } else {
                         let mut pending = control.remote.lock().unwrap();
@@ -128,8 +149,6 @@ fn run_linux(control: Arc<Clipboard>, suppress_initial: bool) {
                     }
                 }
             }
-        } else {
-            last_text = None;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
@@ -142,7 +161,7 @@ fn run(control: Arc<Clipboard>, owner:Arc<std::sync::atomic::AtomicIsize>, foreg
     use std::sync::atomic::Ordering::{Acquire, Release};
     control.available.store(true, Release);
     let mut last_sequence = 0;
-    let mut last_text = None;
+    let mut tracker = TextTracker::default();
     let mut was_active = false;
     while !control.stopped.load(Acquire) {
         let window=owner.load(Acquire);
@@ -153,18 +172,17 @@ fn run(control: Arc<Clipboard>, owner:Arc<std::sync::atomic::AtomicIsize>, foreg
             if !was_active || sequence != last_sequence {
                 match native::read(window, foreground_only) {
                     Ok(Some(value)) => {
-                        let normalized = canonical(&value);
-                        if last_text.as_ref() != Some(&normalized) {
-                            if control.ready() && owner.load(Acquire)==window && !control.read_only.load(Acquire) && (foreground_only || was_active) {
+                        if tracker.observe(Some(&value),foreground_only) {
+                            if control.ready() && owner.load(Acquire)==window && !control.read_only.load(Acquire) {
                                 *control.local.lock().unwrap() = Some(value);
                                 local_changed = true;
                                 control.protocol.lock().unwrap().cancel_pending();
                             }
-                            last_text = Some(normalized);
                         }
                         last_sequence = sequence;
                     }
                     Ok(None) => {
+                        tracker.observe(None,false);
                         last_sequence = sequence;
                     }
                     Err(()) => control.status("剪贴板被其他程序占用，正在重试"),
@@ -173,14 +191,13 @@ fn run(control: Arc<Clipboard>, owner:Arc<std::sync::atomic::AtomicIsize>, foreg
             let remote = control.remote.lock().unwrap().take();
             if !local_changed {
                 if let Some(value) = remote {
-                    let normalized = canonical(&value);
-                    if last_text.as_ref() != Some(&normalized)
+                    if !tracker.matches(&value)
                         && control.ready()
                         && owner.load(Acquire)==window
                         && (!foreground_only || native::foreground(window))
                     {
                         if native::write(window, &value, foreground_only).is_ok() {
-                            last_text = Some(normalized);
+                            tracker.applied(&value);
                             last_sequence = native::sequence();
                             control.status("文本剪贴板已同步");
                         } else {
@@ -194,7 +211,6 @@ fn run(control: Arc<Clipboard>, owner:Arc<std::sync::atomic::AtomicIsize>, foreg
                 }
             }
         } else {
-            last_text = None;
             last_sequence = 0;
         }
         was_active = active;
@@ -305,5 +321,21 @@ mod tests {
     fn newline_normalization_prevents_cross_platform_clipboard_echoes() {
         assert_eq!(canonical("中文\r\n🙂"), canonical("中文\n🙂"));
         assert_ne!(canonical("a\rb"), canonical("a\nb"));
+    }
+    #[test]
+    fn clipboard_baseline_handles_non_text_and_pauses_without_republishing_stale_values() {
+        let mut host=TextTracker::default();
+        assert!(!host.observe(None,false));
+        assert!(host.observe(Some("first copied text"),false));
+        assert!(!host.observe(Some("first copied text"),false));
+        host.applied("synced\r\nvalue");
+        assert!(!host.observe(Some("synced\nvalue"),false));
+        // A pause observes nothing and retains only the prior fingerprint.
+        assert!(host.observe(Some("new host copy while paused"),false));
+        let mut client=TextTracker::default();
+        assert!(client.observe(Some("initial consent"),true));
+        client.applied("synced value");
+        assert!(!client.observe(Some("synced value"),true));
+        assert!(client.observe(Some("new local copy"),true));
     }
 }

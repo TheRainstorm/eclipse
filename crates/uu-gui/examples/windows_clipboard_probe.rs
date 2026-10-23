@@ -213,6 +213,13 @@ mod fixture {
             "inactive clipboard write occurred"
         );
         state.remote.lock().unwrap().take();
+        system.set_text("Generated host copy while inactive")?;
+        std::thread::sleep(Duration::from_millis(150));
+        ensure!(state.local.lock().unwrap().is_none(), "inactive host copy was captured");
+        state.active.store(true, Ordering::Release);
+        until("copy on host while viewer paused", || {
+            state.local.lock().unwrap().as_deref()==Some("Generated host copy while inactive")
+        })?;
         drop(backend);
         ensure!(
             !state.available.load(Ordering::Acquire),
@@ -230,7 +237,7 @@ mod fixture {
             Some("Background controller text must not be written".into());
         std::thread::sleep(Duration::from_millis(250));
         ensure!(
-            system.get_text()? == "Generated host reply 日本語🙂"
+            system.get_text()? == "Generated host copy while inactive"
                 && controller.local.lock().unwrap().is_none(),
             "controller foreground guard was bypassed"
         );

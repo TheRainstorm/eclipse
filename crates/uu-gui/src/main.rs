@@ -173,7 +173,6 @@ struct App {
     remote_admin_ui:remote_admin_ui::RemoteAdminUi,
     pairing_ui:pairing_ui::ClientUi,
     lan: lan_ui::LanUi,
-    native_clipboard_enabled: bool,
     clipboard_window:std::sync::Arc<std::sync::atomic::AtomicIsize>,
     native_host: native_host_ui::NativeHostUi,
     sessions: sessions::Sessions,
@@ -435,7 +434,6 @@ impl App {
             remote_admin_ui:Default::default(),
             pairing_ui:Default::default(),
             lan:lan_ui::LanUi::new(config.as_ref().map(|c|c.at("native-lan"))),
-            native_clipboard_enabled: false,
             clipboard_window:std::sync::Arc::new(std::sync::atomic::AtomicIsize::new(platform.window_id())),
             native_host: native_host_ui::NativeHostUi::default(),
             sessions: sessions::Sessions::default(),
@@ -1015,7 +1013,7 @@ impl App {
                 && self.controller.as_ref().is_some_and(|h| h.stats.decoded_total.load(Acquire) > 0));
         if let Some(h) = &self.controller {
             let clipboard = &h.stats.clipboard;
-            let enabled = (if native { self.native_clipboard_enabled } else { self.preferences.clipboard })
+            let enabled = (if native { self.preferences.native_clipboard } else { self.preferences.clipboard })
                 && clipboard.available.load(Acquire);
             let active = self.active_session && ready && ctx.input(|i| i.focused) && !self.disconnecting;
             // Invalidate incoming data before reactivation, even if a complete

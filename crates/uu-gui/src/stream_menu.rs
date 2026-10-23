@@ -874,9 +874,9 @@ impl super::App {
                                             ui.small("离开菜单并捕获输入后恢复转发；最多 4 个手柄。");
                                         });
                                     }
-                                    if self.supports_remote(uu_core::capabilities::Capability::Clipboard) {
+                                    if self.is_native() || self.supports_remote(uu_core::capabilities::Capability::Clipboard) {
                                     side_submenu(ui,&mut blocked,Icon::Folder,"剪贴板",|ui| {
-                                        if self.is_native(){ui.checkbox(&mut self.native_clipboard_enabled,"本次同步文本剪贴板");}
+                                        if self.is_native(){if ui.checkbox(&mut self.preferences.native_clipboard,"同步文本剪贴板").changed(){self.persist_preferences();}}
                                         else if ui.checkbox(&mut self.preferences.clipboard,"同步文本剪贴板").changed(){self.persist_preferences();}
                                         ui.small("仅同步当前前台串流，支持最多30 KiB文本；图片和文件不传输。");
                                         if let Some(h)=&self.controller {ui.label(h.stats.clipboard.status.lock().unwrap().as_str());}

@@ -55,6 +55,7 @@ fn main() -> anyhow::Result<()> {
     }
     const LOCAL: &str = "Generated controller text 中文🙂";
     const REPLY: &str = "Generated host reply\r\nsecond line";
+    const PAUSED_REPLY: &str = "Generated host copy while controller inactive";
     let args: Vec<_> = std::env::args().collect();
     ensure!(
         args.len() == 4,
@@ -94,9 +95,9 @@ fn main() -> anyhow::Result<()> {
                 ensure!(state.sent.load(Ordering::Relaxed)==0,"host baseline was broadcast on activation");
                 system.set_text(REPLY)?;
                 until(||Path::new(&phases.join("inactive")).exists()&&!state.active.load(Ordering::Acquire)).await?;
-                system.set_text("Generated private text while controller inactive")?;
+                system.set_text(PAUSED_REPLY)?;
                 std::fs::write(phases.join("inactive-host-copy"),b"ready")?;
-                until(||Path::new(&phases.join("resumed")).exists()&&system.get_text().is_ok_and(|s|s==REPLY)).await?;
+                until(||Path::new(&phases.join("resumed")).exists()&&system.get_text().is_ok_and(|s|s==PAUSED_REPLY)).await?;
                 std::fs::write(phases.join("host-converged"),b"ready")?;
                 until(||host.is_finished()).await?;
                 Ok::<_,anyhow::Error>(())
@@ -125,6 +126,7 @@ fn main() -> anyhow::Result<()> {
                 ensure!(system.get_text()?==REPLY,"inactive host text reached the controller");
                 stats.clipboard.generation.fetch_add(1,Ordering::AcqRel);stats.clipboard.active.store(true,Ordering::Release);std::fs::write(phases.join("resumed"),b"ready")?;
                 until(||phases.join("host-converged").exists()).await?;
+                until(||system.get_text().is_ok_and(|s|s==PAUSED_REPLY)).await?;
                 ensure!(stats.errors.load(Ordering::Relaxed)==0,"clipboard disturbed video");Ok::<_,anyhow::Error>(())
             }.await;
             stop.send_replace(true);let ended=tokio::time::timeout(Duration::from_secs(5),client).await;

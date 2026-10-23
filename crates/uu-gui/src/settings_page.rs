@@ -235,7 +235,12 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
         note(ui,"Ctrl+Alt+F12 随时切换；开启后除 F12 外的客户端 Ctrl+Alt 命令会发送到远端，适合内外两层 Eclipse / 远程桌面。");
         note(ui,"系统键跟随全屏画面的输入焦点。Ctrl+左 Alt+F / X 切换全屏，Q 退出串流，Z 释放或捕获输入；这些本地命令始终由客户端处理。Ctrl+Alt+Del 由 Windows 保留。");
         ui.add_space(8.0);
-        ui.checkbox(&mut s.clipboard, "同步文本剪贴板");
+        if state.native {
+            ui.checkbox(&mut s.native_clipboard, "同步文本剪贴板");
+        } else {
+            ui.checkbox(&mut s.native_clipboard, "原生连接：同步文本剪贴板");
+            ui.checkbox(&mut s.clipboard, "兼容连接：同步文本剪贴板");
+        }
         note(
             ui,
             "仅在当前前台串流同步有界文本；原生共享还需主机许可。图片和文件不传输。",
