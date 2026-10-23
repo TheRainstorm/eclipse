@@ -1,412 +1,88 @@
-硬件编码运行库：
-  - 包内 libvpl.dll 为固定版本的 Intel VPL 标准 dispatcher（MIT 许可），不包含 GPU 驱动。
-  - HEVC / AV1 / VBR 仍需相应 Intel GPU 能力与系统运行时；不可用时显示准备失败原因。
-  - 安装器保留现有进程与用户配置；文件替换失败会回滚，重开程序后使用新版本。
-
-uu-client — 开源远程串流客户端（Windows x64）
-
-安装：
-  - 解压后执行 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1。
-  - 默认安装到 %LOCALAPPDATA%\Programs\uu-client；使用 -InstallDir 可指定目录。
-  - 安装器校验 version.json 的哈希，旧版归档到 %USERPROFILE%\uu-gui-archive。
-  - 桌面入口为 uu-client；在“关于软件”查看版本、项目信息和程序路径。
-  - 安装前退出旧客户端，完成后重新打开；升级保留登录态和设置。
-
-运行：
-  1. 双击 uu-gui.exe，默认进入 Eclipse 局域网，不需要第三方账号。
-  2. 在目标电脑的“共享本机”中选择屏幕及权限，启用共享，再允许新设备配对。
-  3. 控制端自动发现或手动添加 IP；将控制端显示的八位码输入主机确认，以后点击已配对设备即可串流。
-  4. 已有官方被控端请切换顶部“兼容设备”，再扫码登录；原账号和设置仍保留。两种模式的主机与权限相互独立。
-  5. 每个串流使用独立窗口，设备主窗口保留。右上角按钮只最大化窗口；Ctrl+Alt+F / X 切换串流全屏，S 切换HUD，M静音，Q退出当前串流。
-
-原生共享：
-  - 两台电脑需要局域网互通；软件不自动修改防火墙。
-  - 主机显示真实串流状态，可单独断开会话、撤销设备授权或停止共享；退出软件会停止服务。
-  - 文本剪贴板默认关闭，需要主机许可、控制端启用并保持前台；新会话不继承旧的待发送文本。
-  - 当前一次共享一个显示源、一个会话，H.264目标最高60FPS；Windows主机仍使用软件编码。
-  - 运行中切屏/画质、HDR/AV1/H.265、视频FEC和公网连接尚未实现。下方高帧率、多屏及显示布局选项说明的是兼容模式。
-
-解码：
-  - 默认优先 D3D11VA（Media Foundation），失败自动回退 OpenH264。
-  - Ctrl+Alt+S 显示顶部紧凑 HUD；悬停查看实际后端、回退原因及统计定义。
-  - HUD 显示实际编码、Rx/De/Rd、RTT±波动、丢包、带宽、Render/Decode；保留丢包、重传、乱序、坏帧和恢复计数。
-  - HUD 顶部居中，背景跟随文字范围，不显示远端未提供的 Encode 延迟。
-  - Intel Arc B390 / AMD RX 7900 XTX 已实测；1080p 输出按可见尺寸裁剪。
-  - 硬解目前仍有 GPU→CPU 回读，实测速度不一定优于软解。
-  - 设置 UU_DECODER=sw 可强制软解；UU_DECODER=auto 恢复默认选择。
-  - 当前实际帧率也取决于被控端；官方静态桌面会主动降帧。
-  - 画质菜单提供 30/60/90/120/144 和自定义 5–144 FPS，默认请求60；设置确认不等于实际达到该帧率。
-  - FPS 已合并到画质菜单；黑点标记当前选项，自定义码率/帧率/分辨率从侧面展开，确认后回主菜单。
-  - 默认保持远端显示器现状，不自动切换主屏、关闭屏幕或请求UU虚拟屏独占。
-  - 软件设置提供“保持远端显示器现状”和“UU虚拟屏独占（关闭其它显示器）”，下次连接生效。
-  - 独占模式向UU请求手动超级屏，使用测得的分辨率；只对本次成功申请的独占在退出时请求恢复。
-  - 保持现状不会自动恢复此前已存在的独占布局；被远端禁用的显示器须先在远端恢复才能出现在可串流列表。
-  - 顶部显示器标签按真实名称切换，紧随标签的+打开完整列表和模式设置；全屏设置菜单也能切屏。
-  - 顶部标签可拖动排序，顺序按远端设备单独保存；编号按首次识别顺序分配并随源ID保留，不等同Windows系统编号，拖动不改变编号或远端主屏。
-  - 切屏先释放旧屏键鼠；未分配轨道的屏幕先按真实源ID激活，再等待轨道绑定、设置确认和新画面；失败可重选或重试，不自动显示另一块屏幕。
-  - 兼容仅返回CaptureChange、不刷新屏幕清单的单轨道切屏；已收流轨道保留画面缓存，已确认的相同画质不重复发送。复用同一轨道仍需等待目标画面，不重建WebRTC连接。
-  - 当前为同一串流窗口的多显示器标签切换；普通切屏不创建/删除虚拟屏幕，不支持拼接显示全部屏幕。
-  - 高帧率仍取决于远端采集、编码、网络及本地呈现；帧率通过 CONTROL 就绪后的设置请求发送。
-  - UU_FPS=120 可指定连接初始目标；旧 UU_FPS=1/2/3/4 分别兼容30/60/90/144。
-
-离线自测（PowerShell，在本目录运行）：
-  .\uu.exe probe --h264 C:\path\sample.h264
-  .\uu.exe probe --h264 C:\path\sample.h264 --frame first-frame.ppm
-  $env:UU_DECODER='sw'; .\uu.exe probe --h264 C:\path\sample.h264
-  Remove-Item Env:UU_DECODER
-  --frame 将首帧写成 PPM；探测同时打印尺寸、行跨距、帧数和最终后端。
-  无输出帧或有解码错误时返回非零退出码。
-
-注意：
-  - libstdc++-6.dll 和 libgcc_s_seh-1.dll 必须与两个 exe 放在同一目录。
-  - 登录态保存在 %USERPROFILE%\.local\share\uu-remote\state.json。
-  - 键鼠走 CONTROL_DATA_CHANNEL 裸 JSON；Windows 原生 VK 支持标点、功能键、数字键盘及左右修饰键，中键值16，支持按住拖动。
-  - 画面与输入分别建立，顶部“输入连接中”期间不可操作；45秒超时报出各传输层状态。
-  - 已修补DTLS握手结束后的接收竞态，避免接收任务等待过期确认、阻断SCTP握手而视频仍更新。
-  - HUD 悬停可查看输入通道状态、本地发送数与失败数；发送成功不代表远端已执行。
-  - 默认官方自动画质、跟随远端分辨率；也可选 1080p/1440p/4K 或手动码率。
-  - 观看模式不转发键鼠输入，悬浮菜单和设置操作不会穿透到远端。
-  - 视频接收端有短时重排/NACK/RTX、坏帧丢弃和 IDR 参考链恢复；视频 FEC 尚未接入。
-  - Windows 硬解保留源 PTS，解码器重建不再把时间戳归零。
-  - 串流窗口默认在目标显示器可用区域的 80% 范围内等比适配、居中，可手动调整大小。
-  - 串流窗口跨屏或 DPI 变化后重新按目标工作区的 80% 适配、居中；同屏手动大小保留。
-  - 主页在启动光标所在显示器打开；串流窗口跟随设备主窗口所在显示器。
-  - Win+Shift+方向键在本地切换当前窗口所在显示器，支持窗口、最大化和全屏模式。
-  - 每台设备独立串流窗口；再次点击同一设备会激活已有窗口。关闭串流只释放该设备。
-  - 关闭设备主窗口时，已有串流窗口继续运行；每个串流独立退出清理。
-  - 主页跨 DPI 和跨屏快捷键移动时同时约束窗口大小、位置，避免超出屏幕工作区。
-  - 非全屏时支持拖动四边/四角缩放窗口；确认画质后回到主菜单。
-  - 退出会等待后台释放会话；取消连接和异常也执行清理。
-  - 网络丢失不重建健康解码器；重传窗口随 RTT 调整，完整帧不额外等待。
-  - 压缩帧和显示队列有界，新帧到达立即唤醒显示。
-  - 垂直同步默认开启；UU_VSYNC=0 可关。
-
-声音、输入和设置：
-  - 接收 Opus 双声道音频，声音菜单可调音量与静音；默认跟随 Windows 默认播放设备。
-  - 音频采用短时乱序等待、60ms播放积压上限、欠载后20ms重缓冲和5ms过渡和 Opus 内带恢复/丢包隐藏；优先请求10ms设备块，不支持时回退默认，不保证远端每包都有FEC。
-  - 卡顿、欠载和积压裁剪时平滑衔接波形；输出设备失效会等待恢复，声音菜单显示排队/设备块/欠载统计。
-  - 全屏且本串流窗口处于前台时，可捕获 Alt+Tab、Windows 键等系统快捷键发往远端。
-  - Ctrl+Alt+Del 由本地 Windows 安全桌面保留；本地退出、全屏、HUD、悬浮入口快捷键不转发。
-  - 鼠标菜单支持桌面绝对定位 / 游戏原始相对位移，以及本地光标 / 远端画面捕获光标。
-  - 游戏模式单击画面捕获鼠标；Ctrl+Alt+Z 释放或重新捕获，之后可操作本地菜单。
-  - 打开设置、菜单或窗口失焦、退出时释放远端键鼠。
-  - 本地光标支持远端 PNG 形状与热点，按当前屏幕系统光标尺寸同步缩放；未知格式或无效热点回退系统箭头。
-  - 主页右上角与串流设置菜单都可打开软件设置。
-  - 支持当前前台串流与Windows远端间双向同步最多30KiB的文本剪贴板；菜单和设置可关闭。
-  - 仅观看不写远端剪贴板，后台串流不覆盖本地，图片和文件不传输。
-  - 设置独立保存在 %USERPROFILE%\.local\share\uu-remote\gui-settings.json，不覆盖登录态。
-  - 保存并应用影响当前串流和以后新建窗口；垂直同步、解码方式下次启动生效。
-
-第三方组件许可（webrtc-dtls 0.10.0，采用其 MIT 许可）：
-MIT License
-
-Copyright (c) 2021 WebRTC.rs
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-
-第三方音频组件：libopus 1.3 / BSD-3-Clause
-Copyright 2001-2011 Xiph.Org, Skype Limited, Octasic,
-                    Jean-Marc Valin, Timothy B. Terriberry,
-                    CSIRO, Gregory Maxwell, Mark Borgerding,
-                    Erik de Castro Lopo
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions
-are met:
-
-- Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-
-- Redistributions in binary form must reproduce the above copyright
-notice, this list of conditions and the following disclaimer in the
-documentation and/or other materials provided with the distribution.
-
-- Neither the name of Internet Society, IETF or IETF Trust, nor the
-names of specific contributors, may be used to endorse or promote
-products derived from this software without specific prior written
-permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER
-OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-Opus is subject to the royalty-free patent licenses which are
-specified at:
-
-Xiph.Org Foundation:
-https://datatracker.ietf.org/ipr/1524/
-
-Microsoft Corporation:
-https://datatracker.ietf.org/ipr/1914/
-
-Broadcom Corporation:
-https://datatracker.ietf.org/ipr/1526/
-
-
-第三方音频组件：audiopus_sys 0.2.2 / ISC
-ISC License
-
-Copyright (c) 2019, Lakelezz
-
-Permission to use, copy, modify, and/or distribute this software for any
-purpose with or without fee is hereby granted, provided that the above
-copyright notice and this permission notice appear in all copies.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
-ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
-ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-
-
-第三方音频组件：opus-rs 0.3.1 / MIT
-Copyright (c) 2016 Tad Hardesty
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-
-第三方音频组件：cpal 0.15.3 / Apache-2.0
-                                 Apache License
-                           Version 2.0, January 2004
-                        http://www.apache.org/licenses/
-
-   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
-
-   1. Definitions.
-
-      "License" shall mean the terms and conditions for use, reproduction,
-      and distribution as defined by Sections 1 through 9 of this document.
-
-      "Licensor" shall mean the copyright owner or entity authorized by
-      the copyright owner that is granting the License.
-
-      "Legal Entity" shall mean the union of the acting entity and all
-      other entities that control, are controlled by, or are under common
-      control with that entity. For the purposes of this definition,
-      "control" means (i) the power, direct or indirect, to cause the
-      direction or management of such entity, whether by contract or
-      otherwise, or (ii) ownership of fifty percent (50%) or more of the
-      outstanding shares, or (iii) beneficial ownership of such entity.
-
-      "You" (or "Your") shall mean an individual or Legal Entity
-      exercising permissions granted by this License.
-
-      "Source" form shall mean the preferred form for making modifications,
-      including but not limited to software source code, documentation
-      source, and configuration files.
-
-      "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form, including but
-      not limited to compiled object code, generated documentation,
-      and conversions to other media types.
-
-      "Work" shall mean the work of authorship, whether in Source or
-      Object form, made available under the License, as indicated by a
-      copyright notice that is included in or attached to the work
-      (an example is provided in the Appendix below).
-
-      "Derivative Works" shall mean any work, whether in Source or Object
-      form, that is based on (or derived from) the Work and for which the
-      editorial revisions, annotations, elaborations, or other modifications
-      represent, as a whole, an original work of authorship. For the purposes
-      of this License, Derivative Works shall not include works that remain
-      separable from, or merely link (or bind by name) to the interfaces of,
-      the Work and Derivative Works thereof.
-
-      "Contribution" shall mean any work of authorship, including
-      the original version of the Work and any modifications or additions
-      to that Work or Derivative Works thereof, that is intentionally
-      submitted to Licensor for inclusion in the Work by the copyright owner
-      or by an individual or Legal Entity authorized to submit on behalf of
-      the copyright owner. For the purposes of this definition, "submitted"
-      means any form of electronic, verbal, or written communication sent
-      to the Licensor or its representatives, including but not limited to
-      communication on electronic mailing lists, source code control systems,
-      and issue tracking systems that are managed by, or on behalf of, the
-      Licensor for the purpose of discussing and improving the Work, but
-      excluding communication that is conspicuously marked or otherwise
-      designated in writing by the copyright owner as "Not a Contribution."
-
-      "Contributor" shall mean Licensor and any individual or Legal Entity
-      on behalf of whom a Contribution has been received by Licensor and
-      subsequently incorporated within the Work.
-
-   2. Grant of Copyright License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      copyright license to reproduce, prepare Derivative Works of,
-      publicly display, publicly perform, sublicense, and distribute the
-      Work and such Derivative Works in Source or Object form.
-
-   3. Grant of Patent License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      (except as stated in this section) patent license to make, have made,
-      use, offer to sell, sell, import, and otherwise transfer the Work,
-      where such license applies only to those patent claims licensable
-      by such Contributor that are necessarily infringed by their
-      Contribution(s) alone or by combination of their Contribution(s)
-      with the Work to which such Contribution(s) was submitted. If You
-      institute patent litigation against any entity (including a
-      cross-claim or counterclaim in a lawsuit) alleging that the Work
-      or a Contribution incorporated within the Work constitutes direct
-      or contributory patent infringement, then any patent licenses
-      granted to You under this License for that Work shall terminate
-      as of the date such litigation is filed.
-
-   4. Redistribution. You may reproduce and distribute copies of the
-      Work or Derivative Works thereof in any medium, with or without
-      modifications, and in Source or Object form, provided that You
-      meet the following conditions:
-
-      (a) You must give any other recipients of the Work or
-          Derivative Works a copy of this License; and
-
-      (b) You must cause any modified files to carry prominent notices
-          stating that You changed the files; and
-
-      (c) You must retain, in the Source form of any Derivative Works
-          that You distribute, all copyright, patent, trademark, and
-          attribution notices from the Source form of the Work,
-          excluding those notices that do not pertain to any part of
-          the Derivative Works; and
-
-      (d) If the Work includes a "NOTICE" text file as part of its
-          distribution, then any Derivative Works that You distribute must
-          include a readable copy of the attribution notices contained
-          within such NOTICE file, excluding those notices that do not
-          pertain to any part of the Derivative Works, in at least one
-          of the following places: within a NOTICE text file distributed
-          as part of the Derivative Works; within the Source form or
-          documentation, if provided along with the Derivative Works; or,
-          within a display generated by the Derivative Works, if and
-          wherever such third-party notices normally appear. The contents
-          of the NOTICE file are for informational purposes only and
-          do not modify the License. You may add Your own attribution
-          notices within Derivative Works that You distribute, alongside
-          or as an addendum to the NOTICE text from the Work, provided
-          that such additional attribution notices cannot be construed
-          as modifying the License.
-
-      You may add Your own copyright statement to Your modifications and
-      may provide additional or different license terms and conditions
-      for use, reproduction, or distribution of Your modifications, or
-      for any such Derivative Works as a whole, provided Your use,
-      reproduction, and distribution of the Work otherwise complies with
-      the conditions stated in this License.
-
-   5. Submission of Contributions. Unless You explicitly state otherwise,
-      any Contribution intentionally submitted for inclusion in the Work
-      by You to the Licensor shall be under the terms and conditions of
-      this License, without any additional terms or conditions.
-      Notwithstanding the above, nothing herein shall supersede or modify
-      the terms of any separate license agreement you may have executed
-      with Licensor regarding such Contributions.
-
-   6. Trademarks. This License does not grant permission to use the trade
-      names, trademarks, service marks, or product names of the Licensor,
-      except as required for reasonable and customary use in describing the
-      origin of the Work and reproducing the content of the NOTICE file.
-
-   7. Disclaimer of Warranty. Unless required by applicable law or
-      agreed to in writing, Licensor provides the Work (and each
-      Contributor provides its Contributions) on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-      implied, including, without limitation, any warranties or conditions
-      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-      PARTICULAR PURPOSE. You are solely responsible for determining the
-      appropriateness of using or redistributing the Work and assume any
-      risks associated with Your exercise of permissions under this License.
-
-   8. Limitation of Liability. In no event and under no legal theory,
-      whether in tort (including negligence), contract, or otherwise,
-      unless required by applicable law (such as deliberate and grossly
-      negligent acts) or agreed to in writing, shall any Contributor be
-      liable to You for damages, including any direct, indirect, special,
-      incidental, or consequential damages of any character arising as a
-      result of this License or out of the use or inability to use the
-      Work (including but not limited to damages for loss of goodwill,
-      work stoppage, computer failure or malfunction, or any and all
-      other commercial damages or losses), even if such Contributor
-      has been advised of the possibility of such damages.
-
-   9. Accepting Warranty or Additional Liability. While redistributing
-      the Work or Derivative Works thereof, You may choose to offer,
-      and charge a fee for, acceptance of support, warranty, indemnity,
-      or other liability obligations and/or rights consistent with this
-      License. However, in accepting such obligations, You may act only
-      on Your own behalf and on Your sole responsibility, not on behalf
-      of any other Contributor, and only if You agree to indemnify,
-      defend, and hold each Contributor harmless for any liability
-      incurred by, or claims asserted against, such Contributor by reason
-      of your accepting any such warranty or additional liability.
-
-   END OF TERMS AND CONDITIONS
-
-   APPENDIX: How to apply the Apache License to your work.
-
-      To apply the Apache License to your work, attach the following
-      boilerplate notice, with the fields enclosed by brackets "[]"
-      replaced with your own identifying information. (Don't include
-      the brackets!)  The text should be enclosed in the appropriate
-      comment syntax for the file format. We also recommend that a
-      file or class name and description of purpose be included on the
-      same "printed page" as the copyright notice for easier
-      identification within third-party archives.
-
-   Copyright [yyyy] [name of copyright owner]
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
+uu-client — Windows / Linux 远程串流客户端（Windows x64 包）
+
+安装与更新
+
+在解压目录打开 PowerShell，执行：
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+
+默认安装到 %LOCALAPPDATA%\Programs\uu-client。-InstallDir 可指定安装位置；
+-SourceDir、-InstallDir 和 -ArchiveRoot 的相对路径按当前 PowerShell 目录解析。
+安装目录不能为盘根。安装器校验 version.json 中的全部文件摘要，保留登录态、
+设置与现有进程。旧包默认移入安装目录内的 .upgrade-archive，文件替换失败会回滚。
+
+完成后关闭旧主页及串流窗口，再从桌面 uu-client 打开新版。在“关于软件”查看版本、
+构建提交和程序路径。保留包内运行 DLL；libvpl.dll 是 MIT 许可的标准 Intel VPL
+调度器，不含 GPU 驱动。实际硬件功能需要系统驱动及 GPU runtime。
+
+连接设备
+
+原生模式使用本项目主机和客户端。被控端在“共享本机”设置画面、声音和权限，
+点击“开始共享”，再“允许新设备配对”。控制端添加目标设备，将显示的八位配对码
+输入被控端确认；以后使用保存的设备公钥授权重连，不用复制同一个 key 文件。
+
+IP 直连填目标电脑的可达 IP 和服务端口，默认 TCP 47998；默认 UDP 47999 用于发现。
+端口可以修改，附近设备发现可以在设置中关闭；手动和已保存设备仍可使用。
+有路由的不同网段可手动连接，前提是网络策略允许互通；广播通常不会跨网段。
+
+也可在“连接服务”配置 UU 账号或自建 VPS，再给设备添加相应地址。
+UU 两端必须使用不同的 UU 设备身份，被控端需启用服务并开始共享，仅登录不能连接。
+连接服务负责寻址，原生公钥授权仍由主机管理。默认仅 UDP 直连，失败明确报错；
+STUN 无法保证所有网络都能打洞。应用不会自动修改防火墙。
+
+连接官方 UU 被控端时使用“UU 兼容设备”并正常扫码登录；这是另一套兼容协议。
+“远程协助”可按官方设备 ID 和验证码发起兼容连接，原生主机尚不能发布官方协助码。
+
+原生共享
+
+- Windows 使用当前交互会话的 DXGI 采集，不更改远端显示器布局。
+- H.264 / CBR 默认自动选择硬编；Windows H.264 使用硬件 MFT，失败可回退软件。
+- Intel VPL 提供 H.264 / HEVC / AV1 和 CBR / VBR。HEVC、AV1、VBR 需要对应的
+  Intel GPU 能力和系统运行时；控制端也需支持相同格式，否则明确报准备失败。
+  VBR 峰值不能小于目标；CBR 是编码预算，线上带宽不会每一秒严格恒定。
+- 当前原生目标范围最高 4K60，实际帧率取决于采集、编解码、驱动和网络；仍有 CPU
+  转换与上传。软件和旧 CLI 入口的默认值不同，可用 uu.exe --help 查看。
+- 主机选择允许切换所有显示器后，串流菜单可切换授权范围内的显示源；切换时释放
+  输入并重新准备音视频，不修改远端布局。Linux Wayland 主机使用系统门户授权，
+  重新选源仍需在本机确认；未获得键鼠授权时提供只读画面。
+- 最多四个独立会话，主机可单独断开、撤销某台设备或停止全部共享。多会话独立编码，
+  会增加资源消耗；同一时刻只有一个会话获得键鼠和手柄控制权，先释放再交接。
+  UU 云端并发还受服务侧策略限制。原生两端及自建服务需更新以使用多会话扩展。
+- 系统声音按主机设置共享。文本剪贴板需双方许可且串流窗口在前台，只传有界文本；
+  断线或撤销后停止，新会话不继承旧的待发文本。
+- “输入与协作”及串流菜单可启用最多四个手柄和陀螺仪，前台获得控制权时才转发。
+  Windows 被控端需要 ViGEmBus，Linux 被控端需要 UHID 访问权限；应用不安装驱动。
+  运动传感器需要实体手柄支持，尚不转发震动、触摸板坐标或自适应扳机。
+  原生手柄扩展尚未接入官方 UU 兼容设备。
+
+画面、输入与快捷键
+
+UU 兼容模式可在设置中优先 H.265 / HEVC Main 8-bit，不可用时协商 H.264。
+默认优先硬解，实际后端与回退原因可在统计中查看。UU_DECODER=sw 可强制软解。
+原生与兼容模式都保留有界队列、重排、NACK / RTX 和关键帧恢复；没有视频 FEC。
+
+串流窗口默认按工作区约 80% 居中，每台设备独立窗口。全屏悬浮入口默认在右边缘、
+距顶部 15%，可拖动；悬停展开、离开收起，点击后离开或失焦约两秒收起。
+应用设置使用独立蓝白页面，保存后应用；编码切换可能需要重新连接。
+
+以下命令均为 Ctrl+Alt+对应键，由客户端处理：
+  F / X  全屏或窗口       S 统计          Q 退出当前串流
+  M 静音                 H 悬浮入口      Z 释放或重新捕获输入
+  P 桌面绝对定位 / 游戏相对移动
+  C 本地和远端 / 仅远端光标（UU 兼容模式）
+
+系统快捷键捕获只在前台全屏画面获得输入焦点且允许控制时生效。捕获时整条系统
+键盘流归远端，包括 Win、Alt+Tab、Win+Shift+方向键；释放时交回本机。
+失焦、仅观看或本地菜单占用输入时暂停；Ctrl+Alt+Del 由 Windows 保留。
+普通远端键鼠仍受当前控制权限制，手柄遵循同一焦点和控制权规则。
+
+统计与边界
+
+HUD 显示实际编码、Rx/De/Rd、Decode、Render、丢包和控制 RTT；悬停查看定义。
+原生主机还可提供采集、编码、发送等待及键鼠排队、注入和确认 RTT。
+Decode + Render 不是总延迟；已知画面段估计也缺远程应用、采样、合成和显示扫描。
+控制 RTT 包含应用调度，不等同于 ping；输入确认仅证明操作系统接受了事件。
+地址、端口、候选和实际直连路径在悬浮菜单“连接详情”查看，不增加 HUD 行数。
+
+HDR、视频 FEC、文件传输、终端与端口映射尚未实现。原生功能与官方兼容模式的
+能力不同，不与 Moonlight / Sunshine 直接互通。项目及各功能说明：
+https://github.com/TheRainstorm/uu-client
