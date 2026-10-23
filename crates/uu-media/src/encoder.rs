@@ -7,6 +7,7 @@ mod mf;
 #[cfg(any(test,feature="intel-vpl",all(windows,feature="mf-encode")))]
 mod low_delay;
 mod upload;
+mod profile;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 mod vaapi;
 mod worker;

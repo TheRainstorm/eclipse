@@ -2,11 +2,163 @@
 #[cfg(test)]
 use crate::Timestamp;
 use crate::{PixelFormat, RawFrame};
+#[cfg(test)]
 use openh264::formats::{BGRA8Source, RGB8Source, RGBSource, YUVBuffer, YUVSource};
+
+#[cfg(target_arch = "x86_64")]
+#[path = "upload/x86.rs"]
+mod x86;
+
+/// Write directly into the driver's NV12 surface. BGRA uses limited BT.601;
+/// the existing raw YUV inputs use full BT.601 and are range-compressed here.
+/// No intermediate frame, allocation, or NV12 -> I420 -> NV12 round trip.
+pub(super) fn upload_frame(
+    frame: &RawFrame,
+    coded: (u32, u32),
+    pitches: [u32; 3],
+    offsets: [u32; 3],
+    out: &mut [u8],
+) -> Result<(), String> {
+    let (w, h, stride) = crate::convert::validate_cpu_frame(frame).map_err(|e| e.to_string())?;
+    let layout = validate_layout(w, h, coded, pitches, offsets, out.len())?;
+    let [_, _, yp, uvp, yo, uvo] = layout;
+    clear_padding(w, h, layout, out);
+    if frame.format == PixelFormat::Bgra8 {
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("avx2") {
+            unsafe { x86::bgra_nv12_avx2(&frame.data, w, h, stride, yp, uvp, yo, uvo, out) };
+            return Ok(());
+        }
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("sse4.1") {
+            // Complete source/destination geometry has been validated above.
+            unsafe { x86::bgra_nv12(&frame.data, w, h, stride, yp, uvp, yo, uvo, out) };
+            return Ok(());
+        }
+        for row in (0..h).step_by(2) {
+            bgra_row_pair(&frame.data, w, row, stride, yp, uvp, yo, uvo, out, 0);
+        }
+        return Ok(());
+    }
+    for row in 0..h {
+        let src = &frame.data[row * stride..row * stride + w];
+        let dst = &mut out[yo + row * yp..yo + row * yp + w];
+        range_row::<219>(src, dst);
+    }
+    let chroma = stride * h;
+    for row in 0..h / 2 {
+        let dst = &mut out[uvo + row * uvp..uvo + row * uvp + w];
+        if frame.format == PixelFormat::Nv12 {
+            let src = &frame.data[chroma + row * stride..chroma + row * stride + w];
+            range_row::<224>(src, dst);
+        } else {
+            let start = chroma + row * w / 2;
+            let (u, v) = (
+                &frame.data[start..start + w / 2],
+                &frame.data[start + w * h / 4..start + w * h / 4 + w / 2],
+            );
+            #[cfg(target_arch = "x86_64")]
+            if std::is_x86_feature_detected!("avx2") {
+                unsafe { x86::interleave_row(u, v, dst) };
+                continue;
+            }
+            for (dst, (&u, &v)) in dst.chunks_exact_mut(2).zip(u.iter().zip(v)) {
+                dst[0] = 16 + ((u32::from(u) * 224 + 127) / 255) as u8;
+                dst[1] = 16 + ((u32::from(v) * 224 + 127) / 255) as u8;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn range_row<const SCALE: i16>(src: &[u8], dst: &mut [u8]) {
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx2") {
+        unsafe { x86::range_row::<SCALE>(src, dst) };
+        return;
+    }
+    for (dst, src) in dst.iter_mut().zip(src) {
+        *dst = 16 + ((u32::from(*src) * SCALE as u32 + 127) / 255) as u8;
+    }
+}
+
+fn validate_layout(
+    w: usize,
+    h: usize,
+    coded: (u32, u32),
+    pitches: [u32; 3],
+    offsets: [u32; 3],
+    length: usize,
+) -> Result<[usize; 6], String> {
+    let (cw, ch) = (coded.0 as usize, coded.1 as usize);
+    if cw < w || ch < h || cw > 8192 || ch > 8192 || cw % 2 != 0 || ch % 2 != 0 {
+        return Err("invalid NV12 upload geometry".into());
+    }
+    let (yp, uvp) = (pitches[0] as usize, pitches[1] as usize);
+    let (yo, uvo) = (offsets[0] as usize, offsets[1] as usize);
+    let end = |offset: usize, pitch: usize, rows: usize| {
+        offset
+            .checked_add((rows - 1).checked_mul(pitch)?)
+            .and_then(|v| v.checked_add(cw))
+    };
+    let ye = end(yo, yp, ch).ok_or("NV12 luma offset overflow")?;
+    let uve = end(uvo, uvp, ch / 2).ok_or("NV12 chroma offset overflow")?;
+    if yp < cw || uvp < cw || ye > length || uve > length || (yo < uve && uvo < ye) {
+        return Err("invalid NV12 upload planes".into());
+    }
+    Ok([cw, ch, yp, uvp, yo, uvo])
+}
+
+fn clear_padding(w: usize, h: usize, [cw, ch, yp, uvp, yo, uvo]: [usize; 6], out: &mut [u8]) {
+    // Only coded padding needs clearing. Visible pixels are overwritten below;
+    // touching them twice is costly on mapped/write-combined GPU memory.
+    for row in 0..ch {
+        let start = yo + row * yp;
+        out[start + if row < h { w } else { 0 }..start + cw].fill(16);
+    }
+    for row in 0..ch / 2 {
+        let start = uvo + row * uvp;
+        out[start + if row < h / 2 { w } else { 0 }..start + cw].fill(128);
+    }
+}
+
+fn bgra_row_pair(
+    src: &[u8],
+    w: usize,
+    row: usize,
+    stride: usize,
+    yp: usize,
+    uvp: usize,
+    yo: usize,
+    uvo: usize,
+    out: &mut [u8],
+    start: usize,
+) {
+    for x in (start..w).step_by(2) {
+        let mut sum = [0i32; 3];
+        for dy in 0..2 {
+            for dx in 0..2 {
+                let i = (row + dy) * stride + (x + dx) * 4;
+                let (b, g, r) = (src[i] as i32, src[i + 1] as i32, src[i + 2] as i32);
+                out[yo + (row + dy) * yp + x + dx] =
+                    (16 + ((66 * r + 129 * g + 25 * b) >> 8)) as u8;
+                sum[0] += b;
+                sum[1] += g;
+                sum[2] += r;
+            }
+        }
+        let [b, g, r] = sum.map(|v| (v + 2) >> 2);
+        let i = uvo + row / 2 * uvp + x;
+        out[i] = (128 + ((-38 * r - 74 * g + 112 * b) >> 8)) as u8;
+        out[i + 1] = (128 + ((112 * r - 94 * g - 18 * b) >> 8)) as u8;
+    }
+}
 
 // The library's standard BGRA adapter supports padded rows in whole pixels.
 // Odd byte pitches continue through the existing conversion path.
+#[cfg(test)]
 struct BgraInput<'a>(&'a RawFrame);
+#[cfg(test)]
 impl RGBSource for BgraInput<'_> {
     fn dimensions(&self) -> (usize, usize) {
         (self.0.width as usize, self.0.height as usize)
@@ -20,6 +172,7 @@ impl RGBSource for BgraInput<'_> {
         )
     }
 }
+#[cfg(test)]
 impl RGB8Source for BgraInput<'_> {
     fn dimensions_padded(&self) -> (usize, usize) {
         (self.0.stride as usize / 4, self.0.height as usize)
@@ -34,12 +187,11 @@ impl RGB8Source for BgraInput<'_> {
         (2, 1, 0)
     }
 }
+#[cfg(test)]
 impl BGRA8Source for BgraInput<'_> {}
 
-pub(super) fn prepare_bgra(
-    buffer: &mut Option<YUVBuffer>,
-    frame: &RawFrame,
-) -> Result<bool, String> {
+#[cfg(test)]
+fn prepare_bgra(buffer: &mut Option<YUVBuffer>, frame: &RawFrame) -> Result<bool, String> {
     if frame.format != PixelFormat::Bgra8 || frame.stride % 4 != 0 {
         return Ok(false);
     }
@@ -88,7 +240,8 @@ fn upload_i420(
     )
 }
 
-pub(super) fn upload_planes(
+#[cfg(test)]
+fn upload_planes(
     planes: [&[u8]; 3],
     full_range: bool,
     width: usize,
@@ -172,6 +325,155 @@ pub(super) fn upload_planes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn accelerated_range_mapping_checks_every_byte_and_bgra_endpoints() {
+        let src: Vec<u8> = (0..=255).collect();
+        let mut actual = vec![0; 256];
+        range_row::<219>(&src, &mut actual);
+        for (&src, actual) in src.iter().zip(&actual) {
+            assert_eq!(*actual, 16 + ((u32::from(src) * 219 + 127) / 255) as u8);
+        }
+        range_row::<224>(&src, &mut actual);
+        for (&src, actual) in src.iter().zip(&actual) {
+            assert_eq!(*actual, 16 + ((u32::from(src) * 224 + 127) / 255) as u8);
+        }
+        for (input, expected) in [(0, 16), (255, 235)] {
+            let frame = bgra_frame(32, 2, 128, vec![input; 256]);
+            let mut actual = vec![0; 96];
+            upload_frame(&frame, (32, 2), [32, 32, 0], [0, 64, 0], &mut actual).unwrap();
+            assert_eq!(&actual[..64], &[expected; 64]);
+            assert_eq!(&actual[64..], &[128; 32]);
+        }
+    }
+    #[test]
+    fn fused_upload_matches_reference_for_all_formats_pitches_and_vector_tails() {
+        let mut seed = 0x816be2a1u32;
+        for (w, h) in [(2, 2), (6, 18), (14, 4), (64, 32), (1920, 8)] {
+            for format in [PixelFormat::Bgra8, PixelFormat::Nv12, PixelFormat::I420] {
+                for padding in [0, 1, 12] {
+                    let stride = w * if format == PixelFormat::Bgra8 { 4 } else { 1 } + padding;
+                    let length = match format {
+                        PixelFormat::Bgra8 => stride * h,
+                        PixelFormat::Nv12 => stride * h * 3 / 2,
+                        PixelFormat::I420 => stride * h + w * h / 2,
+                    };
+                    let data = (0..length)
+                        .map(|_| {
+                            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                            (seed >> 24) as u8
+                        })
+                        .collect();
+                    let mut frame = bgra_frame(w, h, stride, data);
+                    frame.format = format;
+                    let coded = (w + 2, h + 2);
+                    let pitch = w + 19;
+                    let offsets = [7, 7 + pitch * coded.1 + 5, 0];
+                    let length = (offsets[1] + pitch * coded.1 / 2 + 11) as usize;
+                    let mut actual = vec![0xa7; length];
+                    let mut expected = actual.clone();
+                    upload_frame(&frame, coded, [pitch, pitch, 0], offsets, &mut actual).unwrap();
+                    let mut bgra = None;
+                    // Odd byte BGRA pitch used to take a different full-range
+                    // conversion path. It now uses the same limited matrix;
+                    // compare directly to the independent scalar path below.
+                    if format != PixelFormat::Bgra8 || padding != 1 {
+                        let pixels = (w * h) as usize;
+                        if prepare_bgra(&mut bgra, &frame).unwrap() {
+                            let yuv = bgra.as_ref().unwrap();
+                            upload_planes(
+                                [yuv.y(), yuv.u(), yuv.v()],
+                                false,
+                                w as usize,
+                                h as usize,
+                                coded,
+                                [pitch, pitch, 0],
+                                offsets,
+                                &mut expected,
+                            )
+                            .unwrap();
+                        } else {
+                            let data = crate::convert::to_i420(&frame).unwrap();
+                            upload_planes(
+                                [
+                                    &data[..pixels],
+                                    &data[pixels..pixels + pixels / 4],
+                                    &data[pixels + pixels / 4..],
+                                ],
+                                true,
+                                w as usize,
+                                h as usize,
+                                coded,
+                                [pitch, pitch, 0],
+                                offsets,
+                                &mut expected,
+                            )
+                            .unwrap();
+                        }
+                        assert_eq!(actual, expected, "{format:?} {w}x{h} padding={padding}");
+                    }
+                    if format == PixelFormat::Bgra8 {
+                        expected.clone_from(&actual);
+                        for row in (0..h as usize).step_by(2) {
+                            bgra_row_pair(
+                                &frame.data,
+                                w as usize,
+                                row,
+                                stride as usize,
+                                pitch as usize,
+                                pitch as usize,
+                                offsets[0] as usize,
+                                offsets[1] as usize,
+                                &mut expected,
+                                0,
+                            );
+                        }
+                        assert_eq!(
+                            actual, expected,
+                            "SIMD/scalar mismatch {w}x{h} padding={padding}"
+                        );
+                        #[cfg(target_arch = "x86_64")]
+                        if std::is_x86_feature_detected!("sse4.1") {
+                            unsafe {
+                                x86::bgra_nv12(
+                                    &frame.data,
+                                    w as usize,
+                                    h as usize,
+                                    stride as usize,
+                                    pitch as usize,
+                                    pitch as usize,
+                                    offsets[0] as usize,
+                                    offsets[1] as usize,
+                                    &mut expected,
+                                )
+                            };
+                            assert_eq!(actual, expected, "AVX2/SSE4.1/scalar mismatch");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fused_upload_rejects_bad_source_and_overlapping_or_short_planes_before_writing() {
+        let frame = bgra_frame(2, 2, 8, vec![255; 16]);
+        for (coded, pitches, offsets) in [
+            ((2, 2), [2, 2, 0], [0, 2, 0]),
+            ((2, 2), [1, 2, 0], [0, 4, 0]),
+            ((2, 2), [2, 2, 0], [0, 100, 0]),
+            ((2, 2), [u32::MAX, 2, 0], [u32::MAX, 4, 0]),
+        ] {
+            let mut out = vec![0xa7; 12];
+            assert!(upload_frame(&frame, coded, pitches, offsets, &mut out).is_err());
+            assert_eq!(out, [0xa7; 12]);
+        }
+        let mut invalid = frame;
+        invalid.data = bytes::Bytes::from_static(&[0; 4]);
+        let mut out = vec![0xa7; 12];
+        assert!(upload_frame(&invalid, (2, 2), [2, 2, 0], [0, 4, 0], &mut out).is_err());
+        assert_eq!(out, [0xa7; 12]);
+    }
+
     fn bgra_frame(width: u32, height: u32, stride: u32, data: Vec<u8>) -> RawFrame {
         RawFrame {
             width,

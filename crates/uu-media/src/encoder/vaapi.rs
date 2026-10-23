@@ -1,6 +1,6 @@
 //! Thread-owned VA-API H.264 encoding through the existing BSD cros-codecs API.
 //! Input is uploaded as limited-range BT.601 NV12; output remains CPU Annex-B.
-use super::upload::{prepare_bgra, upload_planes};
+use super::upload::upload_frame;
 use super::Settings;
 use crate::{EncodedFrame, RawFrame, Timestamp};
 use cros_codecs::{
@@ -15,7 +15,6 @@ use cros_codecs::{
     BlockingMode, Fourcc, FrameLayout, PlaneLayout, Resolution,
 };
 use cros_libva::{Display, Surface, UsageHint, VAEntrypoint, VAProfile};
-use openh264::formats::{YUVBuffer, YUVSource};
 use std::{path::PathBuf, rc::Rc};
 
 type DriverEncoder = StatelessEncoder<
@@ -30,9 +29,9 @@ pub(super) struct Driver {
     layout: FrameLayout,
     image_format: cros_libva::VAImageFormat,
     direct_upload: bool,
-    bgra_buffer: Option<YUVBuffer>,
     settings: Settings,
     name: String,
+    profile: super::profile::Profile,
 }
 
 fn tunings(settings: Settings) -> Tunings {
@@ -173,8 +172,8 @@ impl Driver {
             layout,
             image_format,
             direct_upload,
-            bgra_buffer: None,
             settings,
+            profile: super::profile::Profile::new("vaapi"),
             name: format!(
                 "vaapi (H.264 hw, {}, {}, {} upload)",
                 path.display(),
@@ -184,31 +183,10 @@ impl Driver {
         })
     }
     fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Vec<EncodedFrame>, String> {
+        let started = self.profile.start();
         if (frame.width, frame.height) != (self.settings.width, self.settings.height) {
             return Err("VA input dimensions changed".into());
         }
-        let packed = if prepare_bgra(&mut self.bgra_buffer, frame)? {
-            None
-        } else {
-            Some(crate::convert::to_i420(frame).map_err(|e| e.to_string())?)
-        };
-        let pixels = frame.width as usize * frame.height as usize;
-        let (planes, full_range) = if let Some(packed) = packed.as_ref() {
-            (
-                [
-                    &packed[..pixels],
-                    &packed[pixels..pixels + pixels / 4],
-                    &packed[pixels + pixels / 4..],
-                ],
-                true,
-            )
-        } else {
-            let input = self
-                .bgra_buffer
-                .as_ref()
-                .ok_or("BGRA buffer was not prepared")?;
-            ([input.y(), input.u(), input.v()], false)
-        };
         {
             let size = (self.layout.size.width, self.layout.size.height);
             let mut image = if self.direct_upload {
@@ -221,11 +199,8 @@ impl Driver {
                 return Err("driver changed its NV12 upload format".into());
             }
             let info = *image.image();
-            upload_planes(
-                planes,
-                full_range,
-                self.settings.width as usize,
-                self.settings.height as usize,
+            upload_frame(
+                frame,
                 size,
                 info.pitches,
                 info.offsets,
@@ -233,6 +208,7 @@ impl Driver {
             )?;
         }
         self.input.sync().map_err(|e| e.to_string())?;
+        let uploaded = started.map(|start| start.elapsed());
         let handle = GenericDmaVideoFrame::new(
             vec![self.input_fd.try_clone().map_err(|e| e.to_string())?],
             self.layout.clone(),
@@ -269,6 +245,7 @@ impl Driver {
         if output.len() != 1 || output[0].pts != frame.pts {
             return Err("VA low-delay encoder did not complete exactly its current frame".into());
         }
+        self.profile.record(started, uploaded);
         Ok(output)
     }
     fn bitrate(&mut self, kbps: u32) -> Result<(), String> {

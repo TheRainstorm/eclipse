@@ -1,11 +1,10 @@
 //! Intel hardware encoding through a dynamically loaded VPL runtime. The C
 //! adapter uses unmodified official ABI declarations; all ownership stays here.
 use super::{
-    upload::{prepare_bgra, upload_planes},
+    upload::upload_frame,
     Settings,
 };
 use crate::{EncodedFrame, RawFrame, Timestamp};
-use openh264::formats::{YUVBuffer, YUVSource};
 use std::{
     collections::VecDeque,
     ffi::{c_char, c_void, CStr},
@@ -61,9 +60,9 @@ pub(super) struct Driver {
     encoder: NonNull<c_void>,
     settings: Settings,
     name: String,
-    bgra: Option<YUVBuffer>,
     pending: VecDeque<(u64, Timestamp)>,
     headers: super::headers::Headers,
+    profile: super::profile::Profile,
 }
 impl Drop for Driver {
     fn drop(&mut self) {
@@ -110,9 +109,9 @@ impl Driver {
                 if vbr { "VBR" } else { "CBR" },
                 if low_power { "low power" } else { "general" }
             ),
-            bgra: None,
             pending: VecDeque::new(),
             headers: Default::default(),
+            profile: super::profile::Profile::new("intel-vpl"),
         })
     }
 }
@@ -124,28 +123,10 @@ impl super::worker::Driver for Driver {
         self.settings.codec
     }
     fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Vec<EncodedFrame>, String> {
+        let started = self.profile.start();
         if (frame.width, frame.height) != (self.settings.width, self.settings.height) {
             return Err("capture size changed".into());
         }
-        let packed = if prepare_bgra(&mut self.bgra, frame)? {
-            None
-        } else {
-            Some(crate::convert::to_i420(frame).map_err(|e| e.to_string())?)
-        };
-        let pixels = frame.width as usize * frame.height as usize;
-        let (planes, full_range) = if let Some(bytes) = packed.as_ref() {
-            (
-                [
-                    &bytes[..pixels],
-                    &bytes[pixels..pixels + pixels / 4],
-                    &bytes[pixels + pixels / 4..],
-                ],
-                true,
-            )
-        } else {
-            let bgra = self.bgra.as_ref().ok_or("missing converted frame")?;
-            ([bgra.y(), bgra.u(), bgra.v()], false)
-        };
         let (mut pointer, mut size, mut pitch, mut rows) = (std::ptr::null_mut(), 0, 0, 0);
         if unsafe {
             eclipse_vpl_encoder_input(
@@ -168,16 +149,14 @@ impl super::worker::Driver for Driver {
             return Err("invalid Intel input surface".into());
         }
         let surface = unsafe { std::slice::from_raw_parts_mut(pointer, size) };
-        upload_planes(
-            planes,
-            full_range,
-            frame.width as usize,
-            frame.height as usize,
+        upload_frame(
+            frame,
             (pitch, rows),
             [pitch, pitch, 0],
             [0, pitch * rows, 0],
             surface,
         )?;
+        let uploaded = started.map(|start| start.elapsed());
         let tag = frame.pts.0.saturating_mul(90_000) / 1_000_000;
         if self.pending.len() >= 4 {
             return Err("Intel encoder buffered more than four input frames".into());
@@ -223,6 +202,7 @@ impl super::worker::Driver for Driver {
             is_keyframe: key != 0,
         };
         self.headers.prepare(self.settings.codec, &mut frame)?;
+        self.profile.record(started, uploaded);
         Ok(vec![frame])
     }
     fn bitrate(&mut self, kbps: u32) -> Result<(), String> {

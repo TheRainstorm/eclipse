@@ -2,11 +2,10 @@
 //! Only hardware-registered async transforms are enumerated. NV12 input is
 //! uploaded from CPU memory; this is hardware encoding, not GPU zero-copy.
 use super::{
-    upload::{prepare_bgra, upload_planes},
+    upload::upload_frame,
     Settings,
 };
 use crate::{EncodedFrame, RawFrame};
-use openh264::formats::{YUVBuffer, YUVSource};
 use std::{mem::ManuallyDrop, ptr};
 use windows::core::{Interface, GUID};
 use windows::Win32::{
@@ -137,7 +136,6 @@ pub(super) struct Driver {
     output_id: u32,
     input_credit: u32,
     settings: Settings,
-    bgra: Option<YUVBuffer>,
     nv12: Vec<u8>,
     sequence: Vec<u8>,
     name: String,
@@ -162,7 +160,6 @@ impl Driver {
                         output_id,
                         input_credit: 0,
                         settings,
-                        bgra: None,
                         nv12: Vec::new(),
                         sequence: Vec::new(),
                         name: format!("mf (H.264 hardware, {name})"),
@@ -277,30 +274,9 @@ impl Driver {
                 return Err("MFT input dimensions changed".into());
             }
             let pixels = frame.width as usize * frame.height as usize;
-            let packed = if prepare_bgra(&mut self.bgra, frame)? {
-                None
-            } else {
-                Some(crate::convert::to_i420(frame).map_err(reason)?)
-            };
-            let (planes, full) = if let Some(data) = packed.as_ref() {
-                (
-                    [
-                        &data[..pixels],
-                        &data[pixels..pixels + pixels / 4],
-                        &data[pixels + pixels / 4..],
-                    ],
-                    true,
-                )
-            } else {
-                let yuv = self.bgra.as_ref().ok_or("missing BGRA conversion")?;
-                ([yuv.y(), yuv.u(), yuv.v()], false)
-            };
             self.nv12.resize(pixels * 3 / 2, 0);
-            upload_planes(
-                planes,
-                full,
-                frame.width as usize,
-                frame.height as usize,
+            upload_frame(
+                frame,
                 (frame.width, frame.height),
                 [frame.width, frame.width, 0],
                 [0, pixels as u32, 0],
