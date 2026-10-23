@@ -111,6 +111,8 @@ struct ServiceEditor {
 struct PreviewSlot {revision:String,texture:Option<egui::TextureHandle>,loaded:bool}
 struct PreviewJob {device:String,revision:String,rx:std::sync::mpsc::Receiver<Result<super::wallpapers::Thumbnail,String>>}
 pub(super) struct Workspace {
+    #[cfg(windows)]
+    background_service:super::service_ui::Entry,
     pub route: HomeRoute,
     pub book: Book,
     pub host: super::sharing_ui::HostUi,
@@ -726,6 +728,8 @@ impl Workspace {
             },
             book,
             host: Default::default(),
+            #[cfg(windows)]
+            background_service:Default::default(),
             store,
             trust,
             feedback,
@@ -1378,6 +1382,11 @@ impl Workspace {
         }
     }
     fn service_control(&mut self, ui:&mut egui::Ui, actions:&mut Vec<Action>) {
+        #[cfg(windows)]
+        if self.background_service.show(ui,&mut self.host,self.store.is_some()) {
+            self.book.sharing.auto_start=false;
+            self.draft.auto_start=false;
+        }
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(

@@ -45,6 +45,8 @@ mod internet_ui;
 mod workspace_ui;
 mod ui_feedback;
 mod sharing_ui;
+#[cfg(windows)]
+mod service_ui;
 mod server_config_ui;
 mod remote_admin_ui;
 mod pairing_ui;
@@ -1614,6 +1616,10 @@ impl App {
 
 fn main() -> eframe::Result {
     uu_core::install_crypto_provider();
+    #[cfg(windows)]
+    if std::env::args().skip(1).eq(["--manage-background-service"]) {
+        return service_ui::run();
+    }
     let stream_target = match sessions::StreamTarget::parse(std::env::args().skip(1)) {
         Ok(target) => target,
         Err(error) => { eprintln!("{error}"); return Ok(()); }

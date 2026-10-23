@@ -10,6 +10,8 @@
 mod native_cli;
 mod lan_cli;
 mod internet_cli;
+#[cfg(windows)]
+mod service_cli;
 
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
@@ -109,6 +111,12 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Install or manage the Windows background host for lock-screen streaming.
+    #[cfg(windows)]
+    Service {
+        #[command(subcommand)]
+        command: service_cli::Command,
+    },
     /// Native streaming through replaceable internet connection services.
     Internet {
         #[command(subcommand)]
@@ -293,6 +301,14 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    #[cfg(windows)]
+    let background=matches!(&cli.command,Command::Service{command:service_cli::Command::Daemon|service_cli::Command::SessionHost{..}});
+    #[cfg(not(windows))]
+    let background=false;
+    #[cfg(windows)]
+    if background {service_cli::init_background_logging()?;}
+    if !background {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -301,13 +317,18 @@ async fn main() -> Result<()> {
         .with_target(false)
         .with_ansi(std::io::stdout().is_terminal())
         .init();
+    }
 
     uu_core::install_crypto_provider();
-    let cli = Cli::parse();
+    #[cfg(windows)]
+    let config = if background {uu_core::service_admin::windows::Paths::discover()?.config()}else{Config::from_env()?};
+    #[cfg(not(windows))]
     let config = Config::from_env()?;
     config.ensure_dirs().await?;
 
     match cli.command {
+        #[cfg(windows)]
+        Command::Service{command}=>service_cli::run(command,config).await,
         Command::Internet{command}=>internet_cli::run(command,config).await,
         Command::Lan {command} => lan_cli::run(command,config.at("native-lan")).await,
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),

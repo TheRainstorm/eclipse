@@ -22,6 +22,8 @@ uu-core = { path = "../uu-core" }
 uu-clipboard = { path = "../uu-clipboard" }
 uuid.workspace = true
 hex.workspace = true
+serde.workspace = true
+sha2.workspace = true
 uu-proto = { path = "../uu-proto" }
 uu-capture = { path = "../uu-capture" }
 uu-input = { path = "../uu-input" }
@@ -29,3 +31,6 @@ uu-media = { path = "../uu-media" }
 
 [features]
 vaapi = ["uu-core/vaapi"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Services", "Win32_System_Threading", "Win32_System_RemoteDesktop", "Win32_System_JobObjects", "Win32_System_Environment", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_UI_WindowsAndMessaging"] }

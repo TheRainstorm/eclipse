@@ -100,7 +100,18 @@ fn outputs() -> Result<Vec<Output>, CaptureError> {
     Ok(list)
 }
 pub fn monitors() -> Result<Vec<Monitor>, CaptureError> {
-    Ok(outputs()?.into_iter().map(|o| o.monitor).collect())
+    // Callers include GUI threads with windows/hooks; those threads cannot
+    // change desktops. Enumerate on a short-lived windowless worker instead.
+    std::thread::Builder::new()
+        .name("uu-display-inventory".into())
+        .spawn(|| {
+            uu_input::windows_desktop::sync_input_desktop()
+                .map_err(|e| backend(uu_input::windows_desktop::access_error(&e)))?;
+            Ok(outputs()?.into_iter().map(|o| o.monitor).collect())
+        })
+        .map_err(backend)?
+        .join()
+        .map_err(|_| backend("显示器枚举工作线程异常"))?
 }
 
 pub struct DxgiCapture {

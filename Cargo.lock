@@ -5365,7 +5365,9 @@ dependencies = [
  "clap",
  "hex",
  "qrcode",
+ "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -5376,6 +5378,7 @@ dependencies = [
  "uu-media",
  "uu-proto",
  "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

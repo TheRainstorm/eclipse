@@ -99,12 +99,22 @@ impl Service {
     }
     pub(crate) fn execute(&self,context:&SessionContext,request:Request)->Result<Response> {
         let grant=Self::grant(context)?;
+        self.execute_granted(&context.access, grant, request)
+    }
+    /// Only call after the local OS administrator boundary has been checked.
+    /// Network requests must use execute() and their current device grant.
+    pub fn execute_local_administrator(&self, access:&crate::shared_host::Access, request:Request)->Result<Response> {
+        let mut details=Permissions::CONTROL.details(); details.manage_server=true;
+        self.execute_granted(access,Permissions::CONTROL.with_details(details),request)
+    }
+    pub fn restart_local_administrator(&self)->Result<()> {(self.restart)()}
+    fn execute_granted(&self,access:&crate::shared_host::Access,grant:Permissions,request:Request)->Result<Response> {
         grant.validate()?;
         if !matches!(request,Request::Inspect) {ensure!(grant.details().manage_server,"本机未授予管理服务和连接权限");}
         match request {
             Request::Inspect=>{
-                let connections=context.access.sessions.details().into_iter().map(|(id,peer,status)| {
-                    let record=context.access.peer_permissions(&peer).ok().flatten();
+                let connections=access.sessions.details().into_iter().map(|(id,peer,status)| {
+                    let record=access.peer_permissions(&peer).ok().flatten();
                     let name=record.as_ref().map_or_else(||"已授权设备".into(),|(device,_)|device.name.clone());
                     let permissions=record.map(|(_,p)|p).unwrap_or(Permissions::VIEW);
                     let status=match status {
@@ -133,12 +143,12 @@ impl Service {
             },
             Request::Permissions{peer,permissions}=>{
                 permissions.validate()?;
-                context.access.set_permissions(&peer,permissions)?;
+                access.set_permissions(&peer,permissions)?;
                 Ok(Response::Applied)
             },
             Request::Disconnect{session}=>{
-                ensure!(context.access.sessions.sessions().iter().any(|(id,_)|id==&session),"会话已经结束");
-                context.access.sessions.disconnect_session(&session);
+                ensure!(access.sessions.sessions().iter().any(|(id,_)|id==&session),"会话已经结束");
+                access.sessions.disconnect_session(&session);
                 Ok(Response::Applied)
             },
         }
