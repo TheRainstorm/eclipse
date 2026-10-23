@@ -49,6 +49,7 @@ def inside(args):
         config = runtime / 'sway.conf'
         config.write_text('output HEADLESS-1 mode 320x240 position 0 0 scale 1\n'
                           'output HEADLESS-2 mode 1280x800 position 320 0 scale 2\n'
+                          'for_window [app_id="uu-portal-generated"] fullscreen enable\n'
                           'xwayland disable\nseat seat0 fallback true\n')
         start('sway', ['sway', '--unsupported-gpu', '-c', str(config)])
 
@@ -61,6 +62,16 @@ def inside(args):
         wait(compositor)
         (args.output / 'outputs.json').write_text(subprocess.check_output(
             ['swaymsg', '-r', '-t', 'get_outputs'], env=env, text=True))
+        subprocess.run(['swaymsg', 'focus output HEADLESS-2'], env=env,
+                       capture_output=True, check=True, timeout=2)
+        # Keep one owned surface alive. Replacing swaybg changes the pixman
+        # renderer's capture constraints and tests backend reconfiguration
+        # rather than steady screen sharing.
+        start('generated-surface', ['foot', '--app-id=uu-portal-generated', '--',
+            sys.executable, '-u', '-c',
+            'import sys,time\nfor i in range(1000):\n'
+            ' sys.stdout.write("\\x1b[48;5;"+str(24+i%2)+"m\\x1b[2J\\x1b[Hgenerated portal fixture")\n'
+            ' sys.stdout.flush();time.sleep(.1)'])
         (runtime / 'client.conf').write_text('''
 context.spa-libs = { support.* = support/libspa-support }
 context.modules = [
@@ -98,7 +109,7 @@ context.objects = [
         (portal_config / 'portals.conf').write_text('[preferred]\ndefault=wlr\n'
             'org.freedesktop.impl.portal.ScreenCast=wlr\n'
             'org.freedesktop.impl.portal.Screenshot=wlr\n')
-        start('wlr', [str(args.backend)])
+        start('wlr', [str(args.backend), '--loglevel=TRACE'])
         wait(lambda: owns('org.freedesktop.impl.portal.desktop.wlr'))
         start('portal', [str(args.portal)])
         wait(lambda: owns('org.freedesktop.portal.Desktop'))
@@ -108,6 +119,7 @@ context.objects = [
         processes.append(probe)
         deadline = time.monotonic() + 85
         links = 0
+        graphs = set()
         while probe.poll() is None:
             if time.monotonic() > deadline:
                 raise TimeoutError('Real owned portal stream timed out')
@@ -117,10 +129,23 @@ context.objects = [
                                      text=True, timeout=2).stdout.strip().splitlines()
             inputs = subprocess.run(['pw-link', '-i'], env=env, capture_output=True,
                                     text=True, timeout=2).stdout.strip().splitlines()
+            graph = (tuple(outputs), tuple(inputs))
+            if graph not in graphs:
+                graphs.add(graph)
+                (args.output / f'graph-{len(graphs)}.json').write_text(
+                    subprocess.run(['pw-dump'], env=env, capture_output=True,
+                                   text=True, timeout=3).stdout)
+                (args.output / f'ports-{len(graphs)}.json').write_text(
+                    json.dumps(dict(outputs=outputs, inputs=inputs), indent=2))
             if outputs and inputs:
                 result = subprocess.run(['pw-link', outputs[-1], inputs[-1]], env=env,
                     capture_output=True, text=True, timeout=2)
                 links += result.returncode == 0
+                if result.returncode:
+                    (args.output / 'link-error.log').write_text(result.stderr)
+                elif links == 1:
+                    (args.output / 'linked-graph.json').write_text(subprocess.run(
+                        ['pw-dump'], env=env, capture_output=True, text=True, timeout=3).stdout)
             time.sleep(.04)
         stdout, stderr = probe.communicate(timeout=2)
         (args.output / 'probe.out').write_text(stdout)
@@ -129,8 +154,12 @@ context.objects = [
             raise RuntimeError('Real portal startup probe failed: ' + stderr[-3000:])
         reports = [json.loads(line) for line in stdout.splitlines() if line.startswith('{')]
         assert len(reports) == 2 and all(r['ok'] and r['frames'] >= 60 for r in reports), reports
+        backend_log = (args.output / 'wlr.log').read_text()
+        assert backend_log.count('max_framerate: (30 / 1)') >= 2, \
+            'The real variable-rate source must honor the requested 30 FPS ceiling'
         result = dict(ok=True, real_wlr_portal=True, isolated_compositor=True,
-                      user_desktop_accessed=False, explicit_owned_links=links, reports=reports)
+                      user_desktop_accessed=False, explicit_owned_links=links,
+                      capture_max_fps=30, reports=reports)
         (args.output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result), flush=True)
     finally:
@@ -158,7 +187,7 @@ def main():
     if args.inside_owned_bus:
         inside(args)
         return
-    for name in ['sway', 'swaymsg', 'pipewire', 'pw-link', 'gdbus', 'dbus-run-session']:
+    for name in ['sway', 'swaymsg', 'foot', 'pipewire', 'pw-link', 'pw-dump', 'gdbus', 'dbus-run-session']:
         if shutil.which(name) is None:
             raise RuntimeError('Missing fixture dependency: ' + name)
     for path in [args.probe, args.portal, args.backend]:
