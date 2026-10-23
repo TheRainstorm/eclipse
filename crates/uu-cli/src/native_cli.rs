@@ -63,6 +63,7 @@ pub async fn probe_invitation(
         })
         .transpose()?;
     let stats = Arc::new(uu_core::media::MediaStats::default());
+    let diagnostics = report.as_ref().and_then(|_|stats.diagnostics.capture());
     stats.audio.output_enabled.store(false, Ordering::Release);
     stats
         .audio
@@ -147,6 +148,7 @@ pub async fn probe_invitation(
                 "observed":rendered,"first_frame_ms":first_frame_ms,
                 "maximum_frame_gap_ms":maximum_gap.as_secs_f64()*1000.0,
                 "final":snapshot(&stats,elapsed),"samples":samples,
+                "diagnostics":diagnostics.as_ref().map(|events|events.try_iter().collect::<Vec<_>>()),
             }),
         )?;
         file.sync_all()?;

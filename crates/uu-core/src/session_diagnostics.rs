@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::{
     path::PathBuf,
     sync::{
-        mpsc::{sync_channel, SyncSender},
+        mpsc::{sync_channel, Receiver, SyncSender},
         OnceLock,
     },
 };
@@ -12,6 +12,13 @@ use std::{
 #[derive(Default)]
 pub struct SessionDiagnostics(OnceLock<SyncSender<Value>>);
 impl SessionDiagnostics {
+    /// Attach a bounded metadata receiver instead of a file writer. A session
+    /// has one sink; slow diagnostic consumers never block media preparation.
+    pub fn capture(&self) -> Option<Receiver<Value>> {
+        let (tx, rx) = sync_channel(64);
+        self.0.set(tx).ok()?;
+        Some(rx)
+    }
     pub fn start(&self, directories: impl IntoIterator<Item = PathBuf>) {
         if self.0.get().is_some() {
             return;
@@ -40,10 +47,7 @@ impl SessionDiagnostics {
         let Some((file,path)) = file else {
             return;
         };
-        let (tx, rx) = sync_channel::<Value>(64);
-        if self.0.set(tx).is_err() {
-            return;
-        }
+        let Some(rx) = self.capture() else { return; };
         let _ = std::thread::Builder::new()
             .name("uu-diagnostics".into())
             .spawn(move || {
@@ -73,6 +77,18 @@ impl SessionDiagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn in_memory_reports_are_bounded_and_have_one_sink() {
+        let logger = SessionDiagnostics::default();
+        let events = logger.capture().unwrap();
+        assert!(logger.capture().is_none());
+        for number in 0..1000 {logger.record(serde_json::json!({"event":"generated","number":number}));}
+        let events:Vec<_> = events.try_iter().collect();
+        assert_eq!(events.len(),64);
+        assert_eq!(events[0]["number"],0);
+        assert_eq!(events[63]["number"],63);
+        assert!(events.iter().all(|event|event["at_ms"].is_number()));
+    }
     #[test]
     fn diagnostics_are_private_and_ignore_non_object_events_without_panicking() {
         let root =
