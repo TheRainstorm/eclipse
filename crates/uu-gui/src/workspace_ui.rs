@@ -79,13 +79,14 @@ pub(super) struct Workspace {
     monitors: Vec<CaptureMonitor>,
     monitor_error: String,
     host_section:u8,
+    service_tab:u8,
+    encoder_vendor_tab:u8,
     editor: Option<DeviceEditor>,
     service_editor: Option<ServiceEditor>,
     client_editor: Option<ClientEditor>,
     pub client_defaults: uu_core::client_settings::ClientSettings,
-    pub view: super::settings::DeviceView,
     details: Option<String>,
-    search: String,
+    dark_background:bool,
     assist_text: String,
     assist_id: String,
     assist_code: String,
@@ -225,7 +226,7 @@ mod tests {
     fn device_editor_retains_failed_input_and_saves_multiple_routes_without_duplicates_or_key_files(
     ) {
         let mut h = Harness::new();
-        h.click("添加第一台设备");
+        h.workspace.new_device(None,None);
         let editor = h.workspace.editor.as_mut().unwrap();
         editor.name = "Generated host".into();
         editor.address = "invalid:::".into();
@@ -328,7 +329,8 @@ mod tests {
         let id=profile.id.clone();
         h.workspace.store.as_ref().unwrap().save_device(profile).unwrap(); h.workspace.refresh();
         h.workspace.client_defaults.fps=120;
-        h.click("配置…");
+        let profile=h.workspace.book.device(&id).unwrap().clone();
+        h.workspace.edit_client_config(&profile,None,false);
         let editor=h.workspace.client_editor.as_mut().unwrap();
         editor.value.name="移动网络".into();editor.value.settings.fps=30;editor.value.settings.bitrate=3;
         h.click("保存配置");
@@ -536,13 +538,14 @@ impl Workspace {
             monitors: Vec::new(),
             monitor_error: String::new(),
             host_section:0,
+            service_tab:0,
+            encoder_vendor_tab:0,
             editor: None,
             service_editor: None,
             client_editor: None,
             client_defaults:Default::default(),
-            view:Default::default(),
             details: None,
-            search: String::new(),
+            dark_background:false,
             assist_text: String::new(),
             assist_id: String::new(),
             assist_code: String::new(),
@@ -780,7 +783,7 @@ impl Workspace {
         match self.page {
             Page::Devices => self.devices(ui, info, &mut actions),
             Page::Sharing => {actions.push(Action::Settings); self.page=Page::Devices;},
-            Page::Services => self.services(ui, info, &mut actions),
+            Page::Services => self.service_workspace(ui, info, &mut actions),
             Page::Assistance => {
                 ui.heading("远程协助");
                 muted(ui,"通过临时邀请帮助另一台设备");
@@ -795,162 +798,73 @@ impl Workspace {
             self.device_details(ui, &id, actions);
             return;
         }
-        ui.horizontal(|ui| {
-            ui.heading("设备");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if primary(ui, "添加设备").clicked() {
-                    self.new_device(None, None);
-                }
-            });
-        });
-        ui.horizontal(|ui| {
-            muted(ui,"配对一次，以后选择设备即可连接。");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                ui.selectable_value(&mut self.view,super::settings::DeviceView::List,"列表");
-                ui.selectable_value(&mut self.view,super::settings::DeviceView::Cards,"卡片");
-            });
-        });
-        ui.add_space(16.);
-        ui.add(
-            egui::TextEdit::singleline(&mut self.search)
-                .hint_text("搜索设备")
-                .desired_width(f32::INFINITY),
-        );
-        ui.add_space(12.);
-        let profiles: Vec<_> = self
-            .book
-            .devices
-            .iter()
-            .filter(|p| {
-                p.redirect.is_none() && p.name.to_lowercase().contains(&self.search.to_lowercase())
-            })
-            .cloned()
-            .collect();
-        if profiles.is_empty() {
-            card(ui, |ui| {
-                ui.heading("把你的设备放在一起");
-                ui.label("添加 IP、UU 或服务器中的设备，连接地址和配对会自动保存。");
-                ui.add_space(12.);
-                if primary(ui, "添加第一台设备").clicked() {
-                    self.new_device(None, None);
-                }
-                if ui.button("共享这台电脑").clicked() {
-                    self.page = Page::Sharing;
-                }
-            });
-        }
-        if self.view==super::settings::DeviceView::Cards {
-            let columns=((ui.available_width()+16.)/320.).floor().clamp(1.,4.) as usize;
-            for row in profiles.chunks(columns) {
-                ui.columns(columns,|cells| {for (index,profile) in row.iter().enumerate(){self.device_tile(&mut cells[index],profile,true,actions);}});
-            }
-        }else{
-            for profile in &profiles {self.device_tile(ui,profile,false,actions);}
-        }
-        let nearby: Vec<_> = info
-            .nearby
-            .iter()
-            .filter(|(_, address)| {
-                !self.book.devices.iter().any(|p| {
-                    p.routes.iter().any(
-                        |r| matches!(&r.destination,Destination::Ip{address:a,..} if a==address),
-                    )
-                })
-            })
-            .cloned()
-            .collect();
-        if !nearby.is_empty() {
-            ui.add_space(12.);
-            ui.label(RichText::new("附近的设备").strong());
-            muted(ui,"发现设备不代表已经授权，首次连接仍需被控端确认。");
-            ui.add_space(8.);
-            for (name, address) in nearby {
-                card(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.strong(&name);
-                            muted(ui,&address);
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("添加").clicked() {
-                                let profile = Profile::new(
-                                    &name,
-                                    Destination::Ip {
-                                        address,
-                                        legacy_device: None,
-                                    },
-                                );
-                                if let Some(store) = &self.store {
-                                    match store.save_device(profile) {
-                                        Ok(()) => self.refresh(),
-                                        Err(e) => self.notice = format!("无法添加：{e}"),
-                                    }
-                                }
+        let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
+        blank.context_menu(|ui| {
+            if ui.button("添加设备").clicked(){self.new_device(None,None);ui.close_menu();}
+            if !info.nearby.is_empty() {
+                ui.menu_button("添加附近设备",|ui| {
+                    for (name,address) in &info.nearby {
+                        if ui.button(name).on_hover_text(address).clicked() {
+                            if let Some(store)=&self.store {
+                                let result=store.save_device(Profile::new(name,Destination::Ip {address:address.clone(),legacy_device:None}));
+                                if let Err(error)=result {self.notice=format!("无法添加设备：{error:#}");}
+                                self.refresh();
                             }
-                        });
-                    });
+                            ui.close_menu();
+                        }
+                    }
                 });
             }
+        });
+        let profiles:Vec<_>=self.book.devices.iter().filter(|p|p.redirect.is_none()).cloned().collect();
+        let columns=((ui.available_width()+22.)/252.).floor().clamp(1.,8.) as usize;
+        for row in profiles.chunks(columns) {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x=22.;
+                for profile in row {self.device_tile(ui,profile,actions);}
+            });
+            ui.add_space(22.);
         }
     }
-    fn device_tile(&mut self,ui:&mut egui::Ui,profile:&Profile,cards:bool,actions:&mut Vec<Action>) {
-        if !cards {self.device_row(ui,profile,actions);return;}
+    fn device_tile(&mut self,ui:&mut egui::Ui,profile:&Profile,actions:&mut Vec<Action>) {
         ui.push_id(&profile.id,|ui| {
-            card(ui,|ui| {
-                if cards {self.device_picture(ui,profile,ui.available_width());ui.add_space(12.);}
-                ui.horizontal(|ui| {
-                    if !cards {self.device_picture(ui,profile,110.);ui.add_space(12.);}
-                    ui.vertical(|ui| {
-                        ui.add(egui::Label::new(RichText::new(&profile.name).size(18.).strong()).truncate()).on_hover_text(&profile.name);
-                        muted(ui,last_connection(profile.last_connected));
-                        if profile.peer.is_some(){ui.colored_label(theme::SUCCESS,"已配对");}else{muted(ui,"首次连接需确认");}
-                    });
+            let width=230_f32.min(ui.available_width());
+            let (rect,response)=ui.allocate_exact_size(egui::vec2(width,width*9./16.+42.),egui::Sense::click());
+            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),format!("连接 {}",profile.name)));
+            if response.hovered()||response.has_focus(){ui.painter().rect_filled(rect.expand(7.),10.,egui::Color32::from_rgba_unmultiplied(80,140,220,55));}
+            let picture=egui::Rect::from_min_size(rect.min,egui::vec2(width,width*9./16.));
+            self.paint_device_picture(ui.painter(),picture,profile);
+            let color=if self.dark_background {egui::Color32::WHITE}else{theme::INK};
+            let text=ui.painter().layout(profile.name.clone(),egui::FontId::proportional(17.),color,width);
+            let pos=egui::pos2(rect.center().x-text.size().x/2.,picture.bottom()+12.);
+            ui.painter().with_clip_rect(egui::Rect::from_min_max(egui::pos2(rect.left(),picture.bottom()+8.),rect.max)).galley(pos,text,color);
+            if response.clicked(){actions.push(Action::Open(profile.id.clone()));}
+            response.context_menu(|ui| {
+                ui.set_min_width(170.);
+                if ui.button("详情").clicked(){self.details=Some(profile.id.clone());ui.close_menu();}
+                ui.menu_button("连接方式",|ui| {
+                    for route in &profile.routes {
+                        if ui.selectable_label(profile.selected_route==route.id,format!("{} · {}",route.destination.label(),route.destination.target())).clicked() {
+                            let mut updated=profile.clone();updated.selected_route=route.id.clone();
+                            if let Some(store)=&self.store {if let Err(e)=store.save_device(updated){self.notice=format!("无法保存连接方式：{e:#}");}}
+                            self.refresh();ui.close_menu();
+                        }
+                    }
                 });
-                ui.add_space(10.);
-                self.route_picker(ui,profile);
-                self.client_config_picker(ui,profile);
-                ui.add_space(10.);
-                ui.horizontal(|ui| {
-                    if ui.button("详情").clicked(){self.details=Some(profile.id.clone());}
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                        if primary(ui,"连接").clicked(){actions.push(Action::Open(profile.id.clone()));}
-                    });
+                ui.menu_button("配置选择",|ui| {
+                    for (id,name) in std::iter::once((None,"默认配置")).chain(profile.client_configs.iter().map(|v|(Some(v.id.clone()),v.name.as_str()))) {
+                        if ui.selectable_label(profile.selected_client==id,name).clicked() {
+                            if let Some(store)=&self.store {if let Err(e)=store.select_client_config(&profile.id,id){self.notice=format!("无法选择配置：{e:#}");}}
+                            self.refresh();ui.close_menu();
+                        }
+                    }
                 });
+                if ui.button("配置编辑").clicked(){
+                    let selected=profile.client_configs.iter().find(|v|Some(&v.id)==profile.selected_client.as_ref()).cloned();
+                    self.edit_client_config(profile,selected,false);ui.close_menu();
+                }
             });
         });
-    }
-    fn device_row(&mut self,ui:&mut egui::Ui,profile:&Profile,actions:&mut Vec<Action>) {
-        if ui.available_width()<650. {
-            ui.push_id(&profile.id,|ui|card(ui,|ui| {
-                ui.horizontal_top(|ui| {self.device_picture(ui,profile,72.);ui.vertical(|ui| {
-                    ui.add(egui::Label::new(RichText::new(&profile.name).size(17.).strong()).truncate()).on_hover_text(&profile.name);
-                    muted(ui,last_connection(profile.last_connected));
-                });});
-                self.route_picker(ui,profile);self.client_config_picker(ui,profile);
-                ui.horizontal(|ui| {
-                    if ui.button("详情").clicked(){self.details=Some(profile.id.clone());}
-                    if primary(ui,"连接").clicked(){actions.push(Action::Open(profile.id.clone()));}
-                });
-            }));
-            return;
-        }
-        ui.push_id(&profile.id,|ui|card(ui,|ui| {
-            ui.horizontal_top(|ui| {
-                self.device_picture(ui,profile,112.);
-                ui.add_space(8.);
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Label::new(RichText::new(&profile.name).size(17.).strong()).truncate()).on_hover_text(&profile.name);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                            if primary(ui,"连接").clicked(){actions.push(Action::Open(profile.id.clone()));}
-                            if ui.button("详情").clicked(){self.details=Some(profile.id.clone());}
-                        });
-                    });
-                    ui.horizontal_wrapped(|ui| {muted(ui,last_connection(profile.last_connected));if profile.peer.is_some(){ui.colored_label(theme::SUCCESS,"已配对");}});
-                    ui.horizontal_wrapped(|ui| {self.route_picker(ui,profile);self.client_config_picker(ui,profile);});
-                });
-            });
-        }));
     }
     fn route_picker(&mut self,ui:&mut egui::Ui,profile:&Profile) {
                 let mut selected=profile.selected_route.clone();
@@ -968,12 +882,15 @@ impl Workspace {
     }
     fn device_picture(&mut self,ui:&mut egui::Ui,profile:&Profile,width:f32) {
         let (rect,_)=ui.allocate_exact_size(egui::vec2(width,width*9./16.),egui::Sense::hover());
-        ui.painter().rect_filled(rect,8.,theme::SIDEBAR);
+        self.paint_device_picture(ui.painter(),rect,profile);
+    }
+    fn paint_device_picture(&self,painter:&egui::Painter,rect:egui::Rect,profile:&Profile) {
+        painter.rect_filled(rect,8.,theme::SIDEBAR);
         if let Some(texture)=self.previews.get(&profile.id).and_then(|p|p.texture.as_ref()) {
             let size=texture.size_vec2();let scale=(rect.width()/size.x).min(rect.height()/size.y);
-            ui.painter().image(texture.id(),egui::Rect::from_center_size(rect.center(),size*scale),egui::Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.,1.)),egui::Color32::WHITE);
+            painter.image(texture.id(),egui::Rect::from_center_size(rect.center(),size*scale),egui::Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.,1.)),egui::Color32::WHITE);
         }else{
-            super::ui::icon(ui.painter(),egui::Rect::from_center_size(rect.center(),egui::vec2(36.,36.)),super::ui::Icon::Desktop,theme::MUTED);
+            super::ui::icon(painter,egui::Rect::from_center_size(rect.center(),egui::vec2(36.,36.)),super::ui::Icon::Desktop,theme::MUTED);
         }
     }
     fn edit_client_config(&mut self,profile:&Profile, value:Option<uu_core::client_settings::NamedClientSettings>, duplicate:bool) {
@@ -985,9 +902,9 @@ impl Workspace {
         ui.horizontal_wrapped(|ui| {
             ui.label("客户端配置");
             let mut selected=profile.selected_client.clone();
-            let title=profile.client_configs.iter().find(|v|Some(&v.id)==selected.as_ref()).map(|v|v.name.as_str()).unwrap_or("全局默认");
+            let title=profile.client_configs.iter().find(|v|Some(&v.id)==selected.as_ref()).map(|v|v.name.as_str()).unwrap_or("默认配置");
             egui::ComboBox::from_id_salt(("client-config",&profile.id)).selected_text(title).width(160.).show_ui(ui,|ui| {
-                ui.selectable_value(&mut selected,None,"全局默认");
+                ui.selectable_value(&mut selected,None,"默认配置");
                 for value in &profile.client_configs {ui.selectable_value(&mut selected,Some(value.id.clone()),&value.name);}
             });
             if selected!=profile.selected_client {
@@ -1134,12 +1051,56 @@ impl Workspace {
             Err(e) => self.monitor_error = format!("无法读取屏幕：{e}"),
         }
     }
-    pub(super) fn server_settings(&mut self, ui: &mut egui::Ui, info: &Info, _actions: &mut Vec<Action>) {
-        if self.monitors.is_empty() && self.monitor_error.is_empty() {
-            self.refresh_monitors();
-        }
+    fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>) {
+        ui.horizontal(|ui| {
+            if ui.button("‹ 设备").clicked(){self.page=Page::Devices;}
+            ui.heading("服务管理");
+        });
+        ui.add_space(12.);
+        ui.horizontal_wrapped(|ui| {
+            for (tab,label) in [(0,"连接服务"),(1,"输入"),(2,"音频 / 视频"),(3,"编码器")] {
+                ui.selectable_value(&mut self.service_tab,tab,label);
+            }
+        });
+        ui.add_space(14.);
         if !self.notice.is_empty(){ui.label(&self.notice);ui.add_space(8.);}
-        if !self.host.notice.is_empty(){ui.colored_label(theme::DANGER,&self.host.notice);ui.add_space(8.);}
+        if self.service_tab==0 {
+            self.service_control(ui,actions);
+            self.services(ui,info,actions);
+        } else {
+            ui.horizontal(|ui| {
+                let locked=self.host.running();
+                if ui.add_enabled(!locked && self.server_dirty(),egui::Button::new(RichText::new("保存设置").color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked(){self.save_sharing();}
+                if ui.add_enabled(self.server_dirty(),egui::Button::new("还原修改")).clicked(){self.discard_server_draft();}
+                muted(ui,if locked {"停止服务后可修改"}else if self.server_dirty(){"有未保存的修改"}else{"已保存"});
+            });
+            ui.add_space(12.);
+            self.host_section=match self.service_tab {1=>2,2=>0,_=>1};
+            if self.service_tab==3 {
+                ui.horizontal_wrapped(|ui| {
+                    for (vendor,label) in [(0,"自动"),(1,"NVIDIA"),(2,"Intel"),(3,"AMD")] {
+                        ui.selectable_value(&mut self.encoder_vendor_tab,vendor,label);
+                    }
+                });
+                muted(ui,match self.encoder_vendor_tab {
+                    1=>"NVIDIA：Windows 通过驱动提供的 Media Foundation 硬编使用 H.264。当前尚未接入 NVENC 专有参数。",
+                    2=>"Intel：H.264 使用系统硬件接口，HEVC / AV1 和 VBR 使用 Intel VPL；驱动需要支持所选组合。",
+                    3=>"AMD：Windows 通过驱动提供的 Media Foundation 硬编使用 H.264。当前尚未接入 AMF 专有参数。",
+                    _=>"编码参数应用于当前主机。自动模式按已安装驱动选择可用后端；客户端仍需支持所选格式。",
+                });
+                let choice=match self.encoder_vendor_tab {1=>Some(Encoding::Nvidia),2=>Some(Encoding::Intel),3=>Some(Encoding::Amd),_=>None};
+                if let Some(choice)=choice {
+                    let mut selected=self.draft.encoding==choice;
+                    if ui.add_enabled(!self.host.running(),egui::Checkbox::new(&mut selected,"使用此厂商硬件编码")).changed() {
+                        self.draft.encoding=if selected {choice}else{Encoding::Auto};
+                    }
+                }
+                ui.add_space(10.);
+            }
+            self.server_settings(ui,info,actions);
+        }
+    }
+    fn service_control(&mut self, ui:&mut egui::Ui, actions:&mut Vec<Action>) {
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -1155,6 +1116,13 @@ impl Workspace {
                     .size(18.)
                     .strong(),
                 );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.host.running() {
+                        if ui.add_enabled(!self.host.stopping(),egui::Button::new("停止服务")).clicked(){self.host.stop();}
+                    } else if ui.add_enabled(self.store.is_some(),egui::Button::new(RichText::new("启动服务").color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked() {
+                        if !self.server_dirty() || self.save_sharing() { actions.push(Action::StartSharing); }
+                    }
+                });
             });
             let mut auto = self.book.sharing.auto_start;
             if ui.checkbox(&mut auto, "打开软件时自动启动服务").changed() {
@@ -1205,10 +1173,13 @@ impl Workspace {
                 }
             });
         }
-        ui.horizontal_wrapped(|ui| {
-            for (index,label) in [(0,"采集与声音"),(1,"编码"),(2,"访问权限")] {ui.selectable_value(&mut self.host_section,index,label);}
-        });
-        ui.add_space(12.);
+    }
+    pub(super) fn server_settings(&mut self, ui: &mut egui::Ui, info: &Info, _actions: &mut Vec<Action>) {
+        if self.monitors.is_empty() && self.monitor_error.is_empty() {
+            self.refresh_monitors();
+        }
+        if !self.notice.is_empty(){ui.label(&self.notice);ui.add_space(8.);}
+        if !self.host.notice.is_empty(){ui.colored_label(theme::DANGER,&self.host.notice);ui.add_space(8.);}
         let locked = self.host.running();
         card(ui, |ui| {
             ui.strong(match self.host_section {0=>"采集与声音",1=>"编码与串流限制",_=>"访问权限"});
@@ -1286,6 +1257,9 @@ impl Workspace {
                         .selected_text(match self.draft.encoding {
                             Encoding::Auto => "自动",
                             Encoding::Hardware => "硬件",
+                            Encoding::Intel => "Intel QSV",
+                            Encoding::Nvidia => "NVIDIA 硬件",
+                            Encoding::Amd => "AMD 硬件",
                             Encoding::Software => "软件",
                         })
                         .show_ui(ui, |ui| {
@@ -1295,6 +1269,7 @@ impl Workspace {
                                 Encoding::Hardware,
                                 "硬件",
                             );
+                            for (vendor,label) in [(Encoding::Intel,"Intel QSV"),(Encoding::Nvidia,"NVIDIA 硬件"),(Encoding::Amd,"AMD 硬件")] {ui.selectable_value(&mut self.draft.encoding,vendor,label);}
                             ui.add_enabled_ui(!needs_hardware,|ui|{ui.selectable_value(&mut self.draft.encoding,Encoding::Software,"软件");});
                         });
                 });
@@ -1394,28 +1369,6 @@ impl Workspace {
         });
     }
     fn services(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>) {
-        ui.horizontal(|ui| {
-            if ui.button("‹ 设备").clicked() { self.page = Page::Devices; }
-            ui.heading("连接服务");
-        });
-        muted(ui,"管理本机服务与连接入口，服务端画质和权限在应用设置中调整。");
-        ui.add_space(12.);
-        card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.colored_label(if self.host.running() { theme::SUCCESS } else { theme::MUTED },
-                    if self.host.stopping() { "正在停止服务…" } else if self.host.running() { "本机服务运行中" } else { "本机服务已停止" });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.host.running() {
-                        if ui.add_enabled(!self.host.stopping(), egui::Button::new("停止服务")).clicked() { self.host.stop(); }
-                    } else if ui.add_enabled(self.store.is_some(), egui::Button::new(RichText::new("启动服务").color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked() {
-                        actions.push(Action::StartSharing);
-                    }
-                });
-            });
-            muted(ui,"启动后同时运行下方已启用的连接入口。");
-            if !self.host.notice.is_empty() { ui.colored_label(theme::DANGER, &self.host.notice); }
-        });
-        ui.add_space(16.);
         let locked = self.host.running();
         if locked { muted(ui,"服务正在运行；停止服务后可修改连接入口。"); }
         card(ui, |ui| {
@@ -1909,7 +1862,7 @@ impl super::App {
         let info = self.workspace_info();
         if self.workspace.page==Page::Devices {self.background.sync(&self.preferences,ctx);}
         self.workspace.client_defaults=self.preferences.client.clone();
-        self.workspace.view=self.preferences.device_view;
+        self.workspace.dark_background=self.background.texture.is_some() && self.preferences.wallpaper_enabled;
         let mut actions = Vec::new();
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(theme::CANVAS).inner_margin(24.))
@@ -1920,7 +1873,6 @@ impl super::App {
                     if self.workspace.page==Page::Devices && !self.background.notice.is_empty(){muted(ui,&self.background.notice);}
                 });
             });
-        if self.preferences.device_view!=self.workspace.view {self.preferences.device_view=self.workspace.view;self.persist_preferences();}
         self.workspace_actions(actions, ctx);
     }
     pub(super) fn workspace_actions(&mut self, actions: Vec<Action>, ctx: &egui::Context) {

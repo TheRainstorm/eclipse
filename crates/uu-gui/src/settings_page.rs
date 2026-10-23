@@ -13,16 +13,14 @@ pub enum Section {
     Audio,
     Input,
     Stream,
-    Server,
     Application,
 }
 impl Section {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Video,
         Self::Audio,
         Self::Input,
         Self::Stream,
-        Self::Server,
         Self::Application,
     ];
     pub fn label(self) -> &'static str {
@@ -31,7 +29,6 @@ impl Section {
             Self::Audio => "声音",
             Self::Input => "键盘与鼠标",
             Self::Stream => "串流信息",
-            Self::Server => "服务端设置",
             Self::Application => "应用与诊断",
         }
     }
@@ -41,7 +38,6 @@ impl Section {
             Self::Audio => "设置默认音量与声音播放。",
             Self::Input => "配置键鼠、手柄、运动传感器与输入归属。",
             Self::Stream => "设置串流菜单与统计信息。",
-            Self::Server => "管理本机采集、编码、权限与自动启动。",
             Self::Application => "管理串流界面、默认偏好与软件信息。",
         }
     }
@@ -49,8 +45,6 @@ impl Section {
 pub struct State<'a> {
     pub streaming: bool,
     pub dirty: bool,
-    pub server_dirty:bool,
-    pub server_locked:bool,
     pub storage_error: bool,
     pub notice: &'a str,
     pub presentation_vsync: bool,
@@ -60,7 +54,6 @@ pub struct State<'a> {
 pub struct Actions {
     pub back: bool,
     pub apply: bool,
-    pub save_server:bool,
     pub recover: bool,
     pub reset: bool,
     pub about: bool,
@@ -242,6 +235,11 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
     });
 }
 fn application(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions) {
+    group(ui,"常规",|ui| {
+        ui.horizontal(|ui| {ui.label("界面语言");ui.label("简体中文");});
+        ui.checkbox(&mut s.app_autostart,"登录系统时自动打开软件");
+        note(ui,"本机服务是否随软件启动，在服务管理的连接服务页设置。");
+    });
     group(ui,"设备页外观",|ui| {
         ui.checkbox(&mut s.wallpaper_enabled,"显示背景壁纸");
         ui.label("壁纸图片接口");
@@ -267,9 +265,9 @@ pub fn show(
     s: &mut Settings,
     section: &mut Section,
     state: State<'_>,
-    mut server: impl FnMut(&mut egui::Ui),
 ) -> Actions {
     let mut actions = Actions::default();
+    if !state.streaming { *section=Section::Application; }
     let compact = ctx.screen_rect().height() < 520.0;
     egui::TopBottomPanel::top("settings-title")
         .exact_height(58.0)
@@ -292,7 +290,7 @@ pub fn show(
                 }
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new("应用设置")
+                    RichText::new(if state.streaming {"串流设置"}else{"应用设置"})
                         .size(18.0)
                         .strong()
                         .color(theme::INK),
@@ -326,10 +324,10 @@ pub fn show(
         )
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                if *section != Section::Server && ui.button("恢复默认").clicked() {
+                if ui.button("恢复默认").clicked() {
                     actions.reset = true;
                 }
-                if if *section==Section::Server {state.server_dirty}else{state.dirty} {
+                if state.dirty {
                     ui.label(
                         RichText::new("有未保存的更改")
                             .color(theme::MUTED)
@@ -337,8 +335,7 @@ pub fn show(
                     );
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if *section==Section::Server && !state.streaming && ui.add_enabled(!state.server_locked,egui::Button::new(RichText::new("保存服务端设置").color(egui::Color32::WHITE)).fill(theme::ACCENT)).on_disabled_hover_text("停止服务后可保存设置").clicked(){actions.save_server=true;}
-                    if *section != Section::Server && ui
+                    if ui
                         .add(
                             egui::Button::new(
                                 RichText::new("保存并应用").color(egui::Color32::WHITE),
@@ -355,7 +352,7 @@ pub fn show(
                 });
             });
         });
-    if ctx.screen_rect().width() >= 760.0 {
+    if state.streaming && ctx.screen_rect().width() >= 760.0 {
         egui::SidePanel::left("settings-navigation")
             .exact_width(184.0)
             .resizable(false)
@@ -364,8 +361,7 @@ pub fn show(
                 ui.add_space(12.0);
                 for (title, items) in [
                     ("客户端", &[Section::Video, Section::Audio, Section::Input, Section::Stream][..]),
-                    ("服务端", &[Section::Server][..]),
-                    ("应用", &[Section::Application][..]),
+
                 ] {
                     ui.label(RichText::new(title).size(12.0).strong().color(theme::MUTED));
                     ui.add_space(6.0);
@@ -379,12 +375,12 @@ pub fn show(
                     ui.add_space(18.0);
                 }
             });
-    } else {
+    } else if state.streaming {
         egui::TopBottomPanel::top("settings-compact-navigation")
             .frame(egui::Frame::none().fill(theme::SIDEBAR).inner_margin(12.0))
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    for item in Section::ALL {
+                    for item in [Section::Video,Section::Audio,Section::Input,Section::Stream] {
                         ui.selectable_value(section, item, item.label());
                     }
                 });
@@ -409,11 +405,11 @@ pub fn show(
                             .color(theme::INK),
                     );
                     if !compact { note(ui, section.description()); }
-                    if !matches!(section,Section::Server|Section::Application) {
+                    if *section!=Section::Application {
                         note(ui,if state.streaming {"仅应用到当前串流；设备配置与全局默认不受影响。"}else{"全局默认：未指定独立配置的设备使用这里的设置。"});
                     }
                     ui.add_space(if compact { 10.0 } else { 18.0 });
-                    if state.storage_error && *section!=Section::Server {
+                    if state.storage_error {
                         group(ui, "设置文件需要处理", |ui| {
                             ui.colored_label(theme::DANGER, state.notice);
                             note(ui, "异常原件会保留。可先备份，再保存当前设置。");
@@ -422,7 +418,7 @@ pub fn show(
                                 actions.recover = true;
                             }
                         });
-                    } else if !state.notice.is_empty() && *section!=Section::Server {
+                    } else if !state.notice.is_empty() {
                         ui.label(RichText::new(state.notice).color(theme::SUCCESS));
                         ui.add_space(12.0);
                     }
@@ -431,7 +427,6 @@ pub fn show(
                         Section::Audio => audio(ui, s),
                         Section::Input => input(ui, s, &state),
                         Section::Stream => stream(ui,s),
-                        Section::Server => server(ui),
                         Section::Application => application(ui, s, &mut actions),
                     }
                 });
@@ -448,7 +443,7 @@ pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::Cli
     });
     ui.add_space(12.);
     let mut wrapper=Settings {client:settings.clone(),..Default::default()};
-    let state=State { streaming:false,dirty:false,server_dirty:false,server_locked:true,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None };
+    let state=State { streaming:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None };
     match section {Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
     *settings=wrapper.client;
 }

@@ -287,7 +287,7 @@ impl App {
                         if selected || response.hovered() { ui.painter().rect_filled(response.rect, 6., C::from_rgb(222,235,249)); }
                         icon(ui.painter(), response.rect, Icon::Globe, color);
                         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "连接服务"));
-                        if response.on_hover_text(if failed { "连接服务 · 部分入口异常" } else if running { "连接服务 · 运行中" } else { "连接服务 · 已停止" }).clicked() {
+                        if response.on_hover_text(if failed { "服务管理 · 部分入口异常" } else if running { "服务管理 · 运行中" } else { "服务管理 · 已停止" }).clicked() {
                             self.select_workspace_page(super::workspace_ui::Page::Services);
                         }
                     });

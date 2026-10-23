@@ -23,6 +23,7 @@ pub struct Settings {
     pub lan_discovery_port: u16,
     pub device_view: DeviceView,
     pub wallpaper_enabled: bool,
+    pub app_autostart:bool,
     pub wallpaper_api: String,
 }
 impl Default for Settings {
@@ -30,7 +31,7 @@ impl Default for Settings {
         Self { client: ClientSettings::default(), lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
-            device_view:DeviceView::Cards, wallpaper_enabled:true,
+            device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,
             wallpaper_api:"https://picsum.photos/1920/1080".into() }
     }
 }
@@ -214,7 +215,7 @@ impl super::App {
             .and_then(|p| self.preferences.save(&p));
         self.settings_storage_error = result.is_err();
         self.settings_notice = match result {
-            Ok(()) => "已保存；新串流窗口使用这些默认设置".into(),
+            Ok(()) => "已保存应用设置".into(),
             Err(error) => format!("设置保存失败：{error}"),
         };
     }
@@ -222,27 +223,26 @@ impl super::App {
         if !self.settings_open {return;}
         let dirty=self.settings_draft!=self.preferences;
         let gamepad_status=self.gamepad_status();
-        let mut host_actions=Vec::new();
-        let host_info=self.workspace_info();
         let child=self.stream_target.is_some();
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
             super::settings_page::State {
                 streaming:self.stream_target.is_some(),
                 dirty,
-                server_dirty:self.workspace.server_dirty(),server_locked:child||self.workspace.host.running()||self.workspace.store.is_none(),
                 storage_error:self.settings_storage_error,notice:&self.settings_notice,
                 presentation_vsync:self.presentation_vsync,
                 gamepad_status:gamepad_status.as_deref(),
-            },|ui| {
-                if child {ui.label("服务端设置由主页统一管理。");if ui.button("打开主页管理服务端").clicked(){host_actions.push(super::workspace_ui::Action::Settings);}}
-                else{self.workspace.server_settings(ui,&host_info,&mut host_actions);}
             });
-        self.workspace_actions(host_actions,ctx);
-        if actions.save_server && !child && self.workspace.save_sharing() && self.logged_in {self.rename_uu_device();}
         if actions.back {self.workspace.discard_server_draft();self.settings_open=false;ctx.request_repaint();}
         if actions.maximize {self.toggle_maximized(ctx);}
         if actions.reset {
-            self.settings_draft=Settings::default();
+            if child {self.settings_draft.client=ClientSettings::default();}
+            else {
+                let defaults=Settings::default();
+                self.settings_draft.wallpaper_enabled=defaults.wallpaper_enabled;
+                self.settings_draft.wallpaper_api=defaults.wallpaper_api;
+                self.settings_draft.lan_discovery=defaults.lan_discovery;
+                self.settings_draft.app_autostart=defaults.app_autostart;
+            }
             if self.workspace.host.running() {
                 self.settings_draft.lan_service_port=self.preferences.lan_service_port;
                 self.settings_draft.lan_discovery_port=self.preferences.lan_discovery_port;
@@ -255,6 +255,9 @@ impl super::App {
         let recover=actions.recover;
         if apply {
             if let Err(error)=self.settings_draft.validate() {self.settings_notice=format!("无法应用：{error:#}");return;}
+            if !child && self.preferences.app_autostart!=self.settings_draft.app_autostart {
+                if let Err(error)=super::app_startup::apply(self.settings_draft.app_autostart){self.settings_notice=format!("无法保存软件自启动：{error:#}");return;}
+            }
             let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
             self.preferences=self.settings_draft.clone();
             self.release_pointer_capture(ctx);

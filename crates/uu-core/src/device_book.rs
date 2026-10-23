@@ -14,6 +14,9 @@ pub enum Encoding {
     #[default]
     Auto,
     Hardware,
+    Intel,
+    Nvidia,
+    Amd,
     Software,
 }
 impl Encoding {
@@ -21,6 +24,9 @@ impl Encoding {
         match self {
             Self::Auto => native::EncoderPreference::Auto,
             Self::Hardware => native::EncoderPreference::Hardware,
+            Self::Intel => native::EncoderPreference::Intel,
+            Self::Nvidia => native::EncoderPreference::Nvidia,
+            Self::Amd => native::EncoderPreference::Amd,
             Self::Software => native::EncoderPreference::Software,
         }
     }

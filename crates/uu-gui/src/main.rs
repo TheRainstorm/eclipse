@@ -19,6 +19,7 @@ mod cursor;
 mod keyboard_capture;
 mod input_capture;
 mod settings;
+mod app_startup;
 mod settings_page;
 mod theme;
 mod sessions;

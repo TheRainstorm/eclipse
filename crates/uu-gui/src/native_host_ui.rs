@@ -287,12 +287,10 @@ impl App {
         self.native_ui.open = false;
         self.settings_open=false;
         if self.stream_target.is_none() {
-            self.lan.compatibility=false;
-            self.open_settings();
-            self.settings_section=super::settings_page::Section::Server;
+            self.select_workspace_page(super::workspace_ui::Page::Services);
         }else {
             let result=std::env::current_exe().and_then(|exe|std::process::Command::new(exe).env_remove("UU_AUTOCONNECT").env("ECLIPSE_SHOW_SHARING","1").spawn());
-            self.status=match result {Ok(_)=>"已打开主页，可在应用设置中管理服务端".into(),Err(e)=>format!("无法打开主页：{e}")};
+            self.status=match result {Ok(_)=>"已打开主页，可在服务管理中调整".into(),Err(e)=>format!("无法打开主页：{e}")};
         }
     }
 

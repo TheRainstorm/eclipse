@@ -95,8 +95,7 @@ impl Background {
         let source=texture.size_vec2();let ratio=(rect.width()/source.x).max(rect.height()/source.y);
         let fraction=rect.size()/(source*ratio);let uv=egui::Rect::from_center_size(egui::pos2(0.5,0.5),fraction);
         ui.painter().image(texture.id(),rect,uv,egui::Color32::WHITE);
-        let canvas=super::theme::CANVAS;
-        ui.painter().rect_filled(rect,0.,egui::Color32::from_rgba_unmultiplied(canvas.r(),canvas.g(),canvas.b(),135));
+        ui.painter().rect_filled(rect,0.,egui::Color32::from_black_alpha(70));
     }
 }
 
