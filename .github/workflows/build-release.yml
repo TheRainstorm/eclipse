@@ -78,6 +78,21 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  windows-installer:
+    name: Windows installer validation
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate installer with PowerShell 7
+        shell: pwsh
+        run: '& ./tools/windows/test_installer.ps1 | Out-Host'
+      - name: Validate installer with Windows PowerShell
+        shell: powershell
+        run: '& ./tools/windows/test_installer.ps1 | Out-Host'
+
   build:
     name: Build ${{ matrix.platform }}
     runs-on: ubuntu-24.04
@@ -287,7 +302,7 @@ jobs:
 
   windows-smoke:
     name: Windows executable smoke test
-    needs: build
+    needs: [build, windows-installer]
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -306,7 +321,6 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & ./tools/windows/test_installer.ps1 | Out-Host
           $zip = @(Get-ChildItem downloads -Filter '*.zip')
           if ($zip.Count -ne 1) { throw 'Expected exactly one Windows package' }
           $unpack = Join-Path $env:RUNNER_TEMP 'uu-client-smoke'
