@@ -9,6 +9,7 @@ description = "Session orchestration, signaling client and device model"
 async-trait = "0.1"
 anyhow.workspace = true
 bytes.workspace = true
+base64.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true

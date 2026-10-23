@@ -95,9 +95,7 @@ impl Service {
         Self {store,active,restart:Arc::new(restart)}
     }
     fn grant(context:&SessionContext)->Result<Permissions> {
-        let peer=context.access.store.peer(&context.peer)?.context("设备授权不存在")?;
-        ensure!(!peer.revoked,"设备授权已撤销");
-        peer.inbound.context("设备授权已撤销")
+        Ok(context.access.peer_permissions(&context.peer)?.context("设备授权已撤销")?.1)
     }
     pub(crate) fn execute(&self,context:&SessionContext,request:Request)->Result<Response> {
         let grant=Self::grant(context)?;
@@ -105,11 +103,10 @@ impl Service {
         if !matches!(request,Request::Inspect) {ensure!(grant.details().manage_server,"本机未授予管理服务和连接权限");}
         match request {
             Request::Inspect=>{
-                let peers=context.access.store.peers()?;
                 let connections=context.access.sessions.details().into_iter().map(|(id,peer,status)| {
-                    let record=peers.iter().find(|p|p.device.id()==peer);
-                    let name=record.map_or_else(||"已授权设备".into(),|p|p.device.name.clone());
-                    let permissions=record.and_then(|p|p.inbound).unwrap_or(Permissions::VIEW);
+                    let record=context.access.peer_permissions(&peer).ok().flatten();
+                    let name=record.as_ref().map_or_else(||"已授权设备".into(),|(device,_)|device.name.clone());
+                    let permissions=record.map(|(_,p)|p).unwrap_or(Permissions::VIEW);
                     let status=match status {
                         crate::native::HostStatus::Streaming{width,height,fps,..}=>format!("{width}×{height} · {fps} FPS"),
                         _=>"正在建立串流".into(),
@@ -136,10 +133,7 @@ impl Service {
             },
             Request::Permissions{peer,permissions}=>{
                 permissions.validate()?;
-                let record=context.access.store.peer(&peer)?.context("目标设备授权不存在")?;
-                ensure!(!record.revoked&&record.inbound.is_some(),"目标设备授权已撤销");
-                context.access.store.authorize(record.device,permissions,None)?;
-                context.access.sessions.revoke(&peer);
+                context.access.set_permissions(&peer,permissions)?;
                 Ok(Response::Applied)
             },
             Request::Disconnect{session}=>{

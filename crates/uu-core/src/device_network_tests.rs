@@ -15,6 +15,61 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
+#[tokio::test(flavor="multi_thread",worker_threads=4)]
+async fn password_public_key_and_temporary_code_authenticate_real_tls_and_generated_media() {
+    use crate::device_auth::{PairingChoice,PairingMethod};
+    let root=std::env::temp_dir().join(format!("eclipse-new-pairing-wire-{}",uuid::Uuid::new_v4()));
+    let (access,mut requests)=access(&root);
+    access.store.set_pairing_password("generated media fixture password",Permissions::VIEW).unwrap();
+    let (stop,rx)=watch::channel(false);let (events,_)=mpsc::unbounded_channel();
+    let (server,_)=lan::Server::bind_with_access(config(&root),rx,events,access.clone()).await.unwrap();
+    let endpoint=server.address().unwrap().to_string();let serving=tokio::spawn(server.run());
+    let expected=access.store.card("Generated host").id();
+    for (index,method) in [PairingMethod::PublicKey,PairingMethod::Password,PairingMethod::TemporaryCode].into_iter().enumerate() {
+        let client=TrustStore::open(root.join(format!("viewer-{index}"))).unwrap();
+        let card=client.card("Generated viewer");
+        if method==PairingMethod::PublicKey {access.store.authorize(card.clone(),Permissions::VIEW,None).unwrap();}
+        let display=PairingDisplay::default();display.enable_choices();
+        let choose=async {
+            tokio::time::timeout(Duration::from_secs(4),async {
+                while display.prompt().is_none(){tokio::time::sleep(Duration::from_millis(5)).await;}
+            }).await.unwrap();
+            display.choose(PairingChoice{method,password:zeroize::Zeroizing::new("generated media fixture password".into())}).unwrap();
+            if method==PairingMethod::TemporaryCode {
+                let request=requests.recv().await.unwrap();
+                assert_eq!(request.method,method);
+                request.respond.send(Some(PairApproval::new(&display.code().unwrap(),Permissions::VIEW).unwrap())).ok().unwrap();
+            }
+        };
+        let (connected,_)=tokio::join!(lan::connect_device(&endpoint,&client,"Generated viewer",Some(&expected),None,true,&display),choose);
+        let invitation=connected.unwrap().invitation.unwrap();
+        let stats=Arc::new(crate::media::MediaStats::default());
+        let _=stats.decoder_preference.set(crate::media::DecoderKind::Software);
+        let (frames,mut received)=crate::media::frame_channel();let (viewer_stop,viewer_rx)=watch::channel(false);
+        let observed=stats.clone();let viewing=tokio::spawn(async move{native::view(&invitation,frames,observed,viewer_rx).await});
+        tokio::time::timeout(Duration::from_secs(10),async {
+            while stats.decoded_total.load(Ordering::Acquire)<12 {
+                while received.try_recv().is_ok(){}
+                assert!(!viewing.is_finished());tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        assert_eq!(stats.errors.load(Ordering::Relaxed),0);
+        assert!(access.peer_permissions(&card.id()).unwrap().is_some());
+        viewer_stop.send_replace(true);tokio::time::timeout(Duration::from_secs(5),viewing).await.unwrap().unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(6),async {
+            while !access.sessions.sessions().is_empty(){tokio::time::sleep(Duration::from_millis(10)).await;}
+        }).await.unwrap();
+        access.pairing.close();
+        let next=lan::connect_device(&endpoint,&client,"Generated viewer",Some(&expected),None,false,&PairingDisplay::default()).await;
+        if method==PairingMethod::TemporaryCode {
+            assert!(next.is_err());assert!(access.store.peer(&card.id()).unwrap().is_none());
+            assert!(access.peer_permissions(&card.id()).unwrap().is_none());
+        }else{assert!(next.is_ok());access.pairing.open();}
+    }
+    stop.send_replace(true);tokio::time::timeout(Duration::from_secs(5),serving).await.unwrap().unwrap().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn config(root: &std::path::Path) -> Config {
     Config {encoder_tuning:Default::default(),video_policy:None,codec:Default::default(),rate_control:Default::default(),
         name: "Generated host".into(),

@@ -94,3 +94,6 @@ IP 直连默认启用，UU 和每台自建服务器独立启用。启动本机�
 这些设置只用于实际选中的 GPU。明确设置的参数必须通过驱动检查和读回，不能应用时说明失败原因；自定义参数不会通过软件回退伪装为已生效。提高画质可能增加编码时间，需按实际统计调整。NVIDIA 当前使用 Windows Media Foundation 驱动接口，其参数不是 NVENC P1–P7 预设。Linux VA-API 后端不接受 AMD/NVIDIA 自定义参数；Intel 自定义参数使用 QSV。
 
 参数语义参考 [AMD AMF 头文件](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/tree/v1.4.36/amf/public/include/components)、[oneVPL 参数](https://github.com/intel/libvpl/blob/674d015bcb294bc39fa276e99a652ea045423e82/api/vpl/mfxstructures.h)及 [Windows QualityVsSpeed](https://learn.microsoft.com/en-us/windows/win32/codecapi/avenccommonqualityvsspeed-property)。设备配置从 v4 读入时使用默认参数，首次保存前保留原内容的私有备份；回退旧程序前按旧版备份恢复。
+
+
+访问权限页还提供配对密码、预授权公钥、本机公钥复制与已授权设备管理。密码保存在独立私有凭据文件中，点击“保存配对密码”后用于后续新配对；不会包含在普通服务配置快照中。密码验证后的权限由主机设置，临时码授权随串流结束失效。首次连接的选择和升级要求见[设备连接与信任](device-connection-and-trust.md)。

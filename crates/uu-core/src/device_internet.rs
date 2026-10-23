@@ -118,9 +118,9 @@ pub async fn serve_connection(
             &access.pairing,
             None,
         );
-        let authorized=tokio::select! {result=authentication=>result?,_=cancelled(&mut stop)=>return Ok(native::HostReport::default())};
+        let mut authorized=tokio::select! {result=authentication=>result?,_=cancelled(&mut stop)=>return Ok(native::HostReport::default())};
         let peer = authorized.device.id();
-        let lease=match access.claim(&peer) {Ok(lease)=>lease,Err(error)=>{bootstrap.reject_media().await;return Err(error);}};
+        let lease=match access.claim_authenticated(&mut authorized) {Ok(lease)=>lease,Err(error)=>{bootstrap.reject_media().await;return Err(error);}};
         let cancellation = access.cancellation(&lease, &peer, Some(authorized.permissions), stop);
         sharing.allow_input &= authorized.permissions.control;
         sharing.session=Some(crate::shared_host::SessionContext{access:Arc::new(access.clone()),peer:peer.clone(),permissions:authorized.permissions});

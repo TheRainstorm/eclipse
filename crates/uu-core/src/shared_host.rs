@@ -53,7 +53,7 @@ impl SessionGate {
         let session = uuid::Uuid::new_v4().to_string();
         let (stop, receiver) = watch::channel(false);
         active.insert(session.clone(), Active { peer: peer.into(), stop, status: crate::native::HostStatus::Starting });
-        Ok(SessionLease { gate: self.clone(), session, receiver })
+        Ok(SessionLease { gate: self.clone(), session, receiver,temporary:None })
     }
     pub fn disconnect(&self) {
         for active in self.active.lock().unwrap().values() { active.stop.send_replace(true); }
@@ -74,7 +74,7 @@ impl SessionGate {
         if let Some(active) = self.active.lock().unwrap().get(id) { active.stop.send_replace(true); }
     }
 }
-pub struct SessionLease { gate: Arc<SessionGate>, session: String, receiver: watch::Receiver<bool> }
+pub struct SessionLease { gate: Arc<SessionGate>, session: String, receiver: watch::Receiver<bool>,temporary:Option<crate::device_auth::TemporaryGrant> }
 impl SessionLease {
     pub fn stopped(&self) -> watch::Receiver<bool> { self.receiver.clone() }
     pub fn progress(&self, status: crate::native::HostStatus) {
@@ -90,8 +90,26 @@ pub struct Access {
     pub sessions: Arc<SessionGate>,
 }
 impl Access {
+    pub fn peer_permissions(&self,peer:&str)->Result<Option<(crate::device_trust::PublicDevice,Permissions)>> {
+        if let Some(record)=self.pairing.temporary_peer(peer) {return Ok(Some(record));}
+        Ok(self.store.peer(peer)?.filter(|r|!r.revoked).and_then(|r|r.inbound.map(|p|(r.device,p))))
+    }
+    pub fn set_permissions(&self,peer:&str,permissions:Permissions)->Result<()> {
+        permissions.validate()?;
+        if self.pairing.revoke_temporary(peer) {
+            self.sessions.revoke(peer);
+            return Ok(());
+        }
+        let record=self.store.peer(peer)?.context("设备授权不存在")?;
+        ensure!(!record.revoked && record.inbound.is_some(),"设备授权已撤销");
+        self.store.authorize(record.device,permissions,None)?;
+        self.sessions.revoke(peer);
+        Ok(())
+    }
     pub fn revoke(&self, peer: &str) -> Result<()> {
-        self.store.revoke(peer)?;
+        let temporary=self.pairing.revoke_temporary(peer);
+        if self.store.peer(peer)?.is_some() {self.store.revoke(peer)?;}
+        else {ensure!(temporary,"设备授权不存在");}
         self.sessions.revoke(peer);
         Ok(())
     }
@@ -102,6 +120,14 @@ impl Access {
             "控制端授权已经撤销"
         );
         self.sessions.claim(peer)
+    }
+    pub(crate) fn claim_authenticated(&self,authorized:&mut crate::device_auth::AuthenticatedPeer)->Result<SessionLease> {
+        if let Some(temporary)=authorized.temporary.take() {
+            ensure!(self.pairing.valid_temporary(&temporary.probe()),"临时授权已结束");
+            let mut lease=self.sessions.claim(&authorized.device.id())?;
+            lease.temporary=Some(temporary);
+            Ok(lease)
+        }else{self.claim(&authorized.device.id())}
     }
     /// A separate process can revoke a grant. Poll only the small private
     /// authorization record, never run this work on the media packet path.
@@ -114,7 +140,8 @@ impl Access {
     ) -> Cancellation {
         let (stop, receiver) = watch::channel(false);
         let mut session = lease.stopped();
-        let store = self.store.clone();
+        let access = self.clone();
+        let temporary=lease.temporary.as_ref().map(|grant|grant.probe());
         let peer = peer.to_owned();
         let task = tokio::spawn(async move {
             let mut timer = tokio::time::interval(std::time::Duration::from_millis(250));
@@ -126,7 +153,10 @@ impl Access {
                     _=application.changed()=>break,
                     _=session.changed()=>break,
                     _=timer.tick()=>{
-                        if permission.is_some() && store.peer(&peer).ok().flatten().and_then(|p|p.inbound)!=permission {break;}
+                        if let Some(probe)=&temporary {
+                            if !access.pairing.valid_temporary(probe) {break;}
+                            if permission.is_some() && access.peer_permissions(&peer).ok().flatten().map(|(_,p)|p)!=permission {break;}
+                        }else if permission.is_some() && access.store.peer(&peer).ok().flatten().and_then(|p|p.inbound)!=permission {break;}
                     }
                 }
             }

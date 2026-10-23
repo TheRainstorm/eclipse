@@ -480,13 +480,13 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
                 _=>anyhow::bail!("旧配对凭据不完整"),
             };
             let binding=stream.get_ref().1.export_keying_material([0;32],b"EXPORTER-Eclipse-Device-v2",Some(b"native"))?;
-            let authorized={let mut wire=DeviceWire(&mut stream);
+            let mut authorized={let mut wire=DeviceWire(&mut stream);
                 crate::device_auth::host(&mut wire,&access.store,&access.name,&binding,&access.pairing,legacy).await?};
             ensure!(read::<serde_json::Value>(&mut stream).await?==serde_json::json!({"begin_media":media}),
                 "控制端未确认串流请求");
             let peer_id=authorized.device.id();
             let invitation=if media {
-                let lease=match access.claim(&peer_id) {Ok(lease)=>lease,Err(error)=>{
+                let lease=match access.claim_authenticated(&mut authorized) {Ok(lease)=>lease,Err(error)=>{
                     write(&mut stream,&Reply::Error {message:format!("无法开始串流：{error}").chars().take(256).collect()}).await?;return Err(error);
                 }};
                 Some(start_authorized_session(state.clone(),peer_id.clone(),local,authorized.permissions,Some(lease)).await?)
@@ -645,8 +645,8 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
     }
     let mut guard = SessionGuard { _lease: lease, _cancellation: None, state: state.clone(), id: id.clone(), clipboard: None };
     if let (Some(access), Some(lease)) = (&state.access, &guard._lease) {
-        let record = access.store.peer(&client)?;
-        guard._cancellation = Some(access.cancellation(lease, &client, record.and_then(|p|p.inbound), rx.clone()));
+        let record = access.peer_permissions(&client)?;
+        guard._cancellation = Some(access.cancellation(lease, &client, record.map(|(_,p)|p), rx.clone()));
     }
     let serving_stop = guard._cancellation.as_ref().map(|c|c.receiver.clone()).unwrap_or(rx);
     let clipboard = state

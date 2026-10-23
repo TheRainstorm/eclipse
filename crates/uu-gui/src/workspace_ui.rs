@@ -126,6 +126,7 @@ pub(super) struct Workspace {
     last_read: Instant,
     pub resume_connect: Option<String>,
     pub pairing_visible: bool,
+    pairing_settings:super::pairing_ui::HostUi,
     autostart_checked: bool,
     previews:std::collections::HashMap<String,PreviewSlot>,
     preview_jobs:Vec<PreviewJob>,
@@ -658,6 +659,7 @@ impl Workspace {
             last_read: Instant::now(),
             resume_connect: None,
             pairing_visible: false,
+            pairing_settings:Default::default(),
             autostart_checked: false,
             previews:Default::default(),preview_jobs:Vec::new(),uu_choices:Vec::new(),
         }
@@ -1406,7 +1408,12 @@ impl Workspace {
             }
         });
         ui.add_space(14.);
-        if self.host_section==2 {self.grants(ui);}
+        if self.host_section==2 {
+            if let Some(trust)=&self.trust {
+                card(ui,|ui|{self.pairing_settings.show(ui,trust,&self.book.sharing.name,self.host.access.as_ref());});
+            }
+            self.grants(ui);
+        }
     }
     fn grants(&mut self, ui: &mut egui::Ui) {
         let peers = match &self.trust {
@@ -1425,7 +1432,7 @@ impl Workspace {
             ui.add_space(10.);
             let active: Vec<_> = peers.iter().filter(|p| p.inbound.is_some()).collect();
             if active.is_empty() {
-                muted(ui,"还没有已授权的控制端。开启共享后，允许新设备配对即可添加。");
+                muted(ui,"还没有已授权的控制端。可预先添加公钥，或在启动服务后发起配对。");
             }
             for peer in active {
                 ui.push_id(peer.device.id(), |ui| {
@@ -1731,7 +1738,7 @@ impl Workspace {
             muted(ui,"需登录 UU 账号。验证码只用于本次连接，不保存为设备授权。");
         });
         ui.collapsing("连接原生设备", |ui| {
-            ui.label("被控端开启“允许新设备配对”，控制端添加 IP、UU 或 VPS 设备并连接，再把八位配对码交给被控端输入。");
+            ui.label("主机启动服务后即可配对。控制端添加 IP、UU 或 VPS 设备并连接，可选择配对码、密码、临时配对码，或使用主机预先授权的公钥。");
             if primary(ui, "添加设备").clicked() {self.route.page=Page::Devices;self.new_device(None,None);}
             if ui.button("让别人连接本机").clicked(){self.route.page=Page::Services;}
         });
@@ -2239,43 +2246,10 @@ impl super::App {
         let actions = self.workspace.dialogs(ctx);
         self.workspace_actions(actions, ctx);
     }
-    pub(super) fn device_pairing_ui(&mut self, ctx: &egui::Context) {
-        let code = self
-            .controller
-            .as_ref()
-            .and_then(|h| h.stats.pairing.code());
-        self.workspace.pairing_visible = code.is_some();
-        let Some(code) = code else {
-            return;
-        };
-        let mut open = true;
-        egui::Window::new("首次连接 · 设备配对")
-            .id("device-pair-code".into())
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .default_width(420.)
-            .show(ctx, |ui| {
-                ui.label("请在被控端输入下面的配对码，并批准本设备：");
-                ui.add_space(14.);
-                let formatted = format!("{} {}", &code[..4], &code[4..]);
-                ui.label(
-                    RichText::new(formatted)
-                        .size(34.)
-                        .monospace()
-                        .color(theme::ACCENT),
-                );
-                ui.add_space(10.);
-                if ui.button("复制配对码").clicked() {
-                    ctx.copy_text(code.clone());
-                }
-                muted(ui,"完整公钥会自动交换。配对完成后，以后连接无需重复输入。");
-                ui.spinner();
-                ui.label("等待被控端确认…");
-            });
-        if !open {
-            self.disconnect();
-        }
+    pub(super) fn device_pairing_ui(&mut self,ctx:&egui::Context) {
+        let Some(controller)=&self.controller else {self.workspace.pairing_visible=false;return;};
+        let display=&controller.stats.pairing;
+        self.workspace.pairing_visible=display.prompt().is_some()||display.code().is_some();
+        if self.pairing_ui.show(ctx,display){self.disconnect();}
     }
 }

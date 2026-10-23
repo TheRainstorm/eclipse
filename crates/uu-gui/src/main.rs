@@ -47,6 +47,7 @@ mod ui_feedback;
 mod sharing_ui;
 mod server_config_ui;
 mod remote_admin_ui;
+mod pairing_ui;
 mod connection_details;
 mod lan_ui;
 mod lan_host_ui;
@@ -152,6 +153,7 @@ struct App {
     workspace:workspace_ui::Workspace,
     connection_details_open:bool,
     remote_admin_ui:remote_admin_ui::RemoteAdminUi,
+    pairing_ui:pairing_ui::ClientUi,
     lan: lan_ui::LanUi,
     native_clipboard_enabled: bool,
     clipboard_window:std::sync::Arc<std::sync::atomic::AtomicIsize>,
@@ -413,6 +415,7 @@ impl App {
             workspace:workspace_ui::Workspace::load(config.as_ref(),(preferences.lan_service_port,preferences.lan_discovery_port)),
             connection_details_open:false,
             remote_admin_ui:Default::default(),
+            pairing_ui:Default::default(),
             lan:lan_ui::LanUi::new(config.as_ref().map(|c|c.at("native-lan"))),
             native_clipboard_enabled: false,
             clipboard_window:std::sync::Arc::new(std::sync::atomic::AtomicIsize::new(platform.window_id())),

@@ -44,6 +44,36 @@ pub struct PublicDevice {
     pub public_key: String,
 }
 impl PublicDevice {
+    pub fn export_public_key(&self)->String {format!("eclipse-ed25519 {} {}",self.public_key,self.name)}
+    pub fn from_public_key(text:&str,name:&str)->Result<Self> {
+        ensure!(text.len()<=8192,"公钥文本过长");
+        let mut parts=text.split_whitespace();
+        let first=parts.next().context("请输入控制端公钥")?;
+        let key=match first {
+            "eclipse-ed25519"=>parts.next().context("缺少公钥内容")?.to_owned(),
+            "ssh-ed25519"=>{
+                use base64::Engine;
+                let bytes=base64::engine::general_purpose::STANDARD.decode(parts.next().context("缺少 SSH 公钥内容")?)
+                    .context("SSH 公钥格式无效")?;
+                let mut remaining=bytes.as_slice();
+                fn field<'a>(input:&mut &'a [u8])->Result<&'a [u8]> {
+                    ensure!(input.len()>=4,"SSH 公钥字段无效");
+                    let length=u32::from_be_bytes(input[..4].try_into().unwrap()) as usize;
+                    *input=&input[4..];ensure!(length<=input.len(),"SSH 公钥字段超出长度");
+                    let (value,rest)=input.split_at(length);*input=rest;Ok(value)
+                }
+                ensure!(field(&mut remaining)?==b"ssh-ed25519","仅支持 Ed25519 公钥");
+                let key=field(&mut remaining)?;
+                ensure!(key.len()==32 && remaining.is_empty(),"SSH 公钥长度无效");
+                hex::encode(key)
+            },
+            raw if raw.len()==64=>raw.to_owned(),
+            _=>anyhow::bail!("请输入 Eclipse 或 SSH Ed25519 公钥"),
+        };
+        let value=Self {name:name.trim().to_owned(),public_key:key.to_ascii_lowercase()};
+        value.validate()?;
+        Ok(value)
+    }
     pub fn validate(&self) -> Result<()> {
         ensure!(
             !self.name.trim().is_empty()
@@ -200,6 +230,7 @@ pub struct TrustStore {
     identity: Arc<Ed25519KeyPair>,
 }
 impl TrustStore {
+    pub(crate) fn directory(&self)->&Path {&self.directory}
     pub fn open(directory: impl Into<PathBuf>) -> Result<Self> {
         let directory = directory.into();
         fs::create_dir_all(&directory)?;
@@ -352,6 +383,19 @@ impl TrustStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn public_key_import_checks_ssh_binary_fields_and_does_not_accept_private_keys() {
+        use base64::Engine;
+        let key=[19;32];let native=PublicDevice{name:"Generated".into(),public_key:hex::encode(key)};
+        assert_eq!(PublicDevice::from_public_key(&native.export_public_key(),"Imported").unwrap().public_key,native.public_key);
+        let mut blob=Vec::new();blob.extend(11u32.to_be_bytes());blob.extend(b"ssh-ed25519");blob.extend(32u32.to_be_bytes());blob.extend(key);
+        let ssh=format!("ssh-ed25519 {} generated fixture",base64::engine::general_purpose::STANDARD.encode(&blob));
+        assert_eq!(PublicDevice::from_public_key(&ssh,"Imported").unwrap().public_key,native.public_key);
+        blob.push(1);
+        assert!(PublicDevice::from_public_key(&format!("ssh-ed25519 {}",base64::engine::general_purpose::STANDARD.encode(&blob)),"Imported").is_err());
+        assert!(PublicDevice::from_public_key("-----BEGIN OPENSSH PRIVATE KEY-----","Imported").is_err());
+        assert!(PublicDevice::from_public_key("ssh-rsa fixture","Imported").is_err());
+    }
     #[test]
     fn legacy_grants_preserve_signed_wire_format_and_do_not_grant_server_management() {
         for permission in [Permissions::VIEW,Permissions::CONTROL] {

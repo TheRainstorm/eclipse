@@ -30,6 +30,7 @@ mod native_media;
 mod network_probe;
 pub mod connection_info;
 pub mod device_trust;
+mod pairing_password;
 pub mod device_auth;
 pub mod device_channel;
 pub mod shared_host;

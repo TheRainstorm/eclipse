@@ -157,6 +157,7 @@ impl App {
         self.remote_admin_ui=Default::default();
         self.native_clipboard_enabled=false;
         let stats = Arc::new(uu_core::media::MediaStats::default());
+        stats.pairing.enable_choices();
         let kind=self.decoder_kind();
         let _=stats.decoder_preference.set(kind);
         let _=stats.native_quality_request.set(self.preferences.native_request());

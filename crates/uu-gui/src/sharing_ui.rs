@@ -204,6 +204,7 @@ struct Pending {
     code: String,
     control: bool,
     manage:bool,
+    temporary:bool,
 }
 struct LegacyPending {
     request: lan::PairingRequest,
@@ -273,23 +274,16 @@ impl HostUi {
     }
     pub fn sessions(&self) -> Vec<SessionView> {
         let Some(access)=&self.access else{return Vec::new();};
-        let peers=access.store.peers().unwrap_or_default();
         access.sessions.details().into_iter().map(|(id,peer,status)| {
-            let record=peers.iter().find(|p|p.device.id()==peer);
-            let name=record.map(|p|p.device.name.clone()).unwrap_or_else(|| "已授权设备".into());
-            let permissions=record.and_then(|p|p.inbound).unwrap_or(Permissions::VIEW);
-            SessionView {id,peer_id:peer,name,status,permissions}
+            let record=access.peer_permissions(&peer).ok().flatten();
+            let name=record.as_ref().map(|(d,_)|d.name.clone()).unwrap_or_else(||"已授权设备".into());
+            let permissions=record.map(|(_,p)|p).unwrap_or(Permissions::VIEW);
+            SessionView{id,peer_id:peer,name,status,permissions}
         }).collect()
     }
     pub fn set_session_permissions(&self, peer_id:&str, permissions:Permissions) -> anyhow::Result<()> {
         let access=self.access.as_ref().ok_or_else(||anyhow::anyhow!("本机共享未运行"))?;
-        let peer=access.store.peer(peer_id)?.ok_or_else(||anyhow::anyhow!("设备授权记录不存在"))?;
-        access.store.authorize(
-            peer.device,
-            permissions,
-            None,
-        )?;
-        access.sessions.revoke(peer_id);
+        access.set_permissions(peer_id,permissions)?;
         Ok(())
     }
     pub fn disconnect_session(&self, id:&str) {
@@ -569,6 +563,7 @@ impl HostUi {
                     code: String::new(),
                     control: self.allow_control,
                     manage:false,
+                    temporary:request.method==uu_core::device_auth::PairingMethod::TemporaryCode,
                 });
                 ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
                     egui::UserAttentionType::Informational,
@@ -641,7 +636,7 @@ impl HostUi {
                         ui.add_enabled_ui(self.allow_control, |ui| {
                             ui.checkbox(&mut pending.control, "允许键盘、鼠标和手柄控制");
                         });
-                        ui.weak("批准后记住这台设备，以后连接不再输入配对码。");
+                        ui.weak(if pending.temporary{"本次为临时配对。批准后撤销此前长期授权，仅允许这次串流，断开后必须重新配对。"}else{"批准后记住这台设备，以后连接不再输入配对码。"});
                         let permission = if pending.control {
                             Permissions::CONTROL
                         } else {
@@ -656,7 +651,7 @@ impl HostUi {
                                 .add_enabled(
                                     approval.is_ok(),
                                     egui::Button::new(
-                                        egui::RichText::new("允许并保存设备")
+                                        egui::RichText::new(if pending.temporary{"允许本次串流"}else{"允许并保存设备"})
                                             .color(egui::Color32::WHITE),
                                     )
                                     .fill(super::theme::ACCENT),
