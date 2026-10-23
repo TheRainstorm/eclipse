@@ -1,20 +1,30 @@
 # 原生视频编码后端
 
-此接口用于 Eclipse 原生主机，不影响 UU 兼容模式远端选择的编码器。Linux 使用 VA-API，Windows 使用显卡驱动提供的 Media Foundation 硬件 H.264 编码器，支持 CBR 与峰值约束 VBR，包括支持此接口的 Intel、AMD 和 NVIDIA 驱动。
+此接口用于 Eclipse 原生主机，不影响 UU 兼容模式远端选择的编码器。Linux 使用 VA-API；Windows 自动模式在默认 AMD 适配器上优先使用原生 AMF，其它平台硬件使用显卡驱动注册的 Media Foundation 编码器；显式 Intel 使用 VPL。硬件格式支持 H.264、HEVC Main 8-bit 和 AV1 Main 8-bit，以实际驱动初始化结果为准。
 
 “应用设置 → 服务端设置 → 编码”默认自动选择硬件，也可选择“硬件编码（必需）”或软件编码。旧邀请文件共享入口和 CLI 继续保留软件默认值；CLI 使用 `native-host --encoder software|auto|hardware|vaapi`，`uu lan host` 使用相同选项。`hardware` 要求当前平台硬编成功，`vaapi` 为 Linux 专用选项。
 
-自动模式在初始化失败或运行出错时回退 OpenH264，并从新的 IDR 参考链继续。界面报告实际后端；诊断日志保存具体硬件失败原因。必须硬件模式直接报错，不用软件成功掩盖硬件失败。非法码率在调用驱动前被拒绝，当前编码器保留。
+H.264 CBR 自动模式在硬件初始化失败时可回退 OpenH264，CPU 输入运行失败时从新的 IDR 参考链继续；GPU 输入运行失败会明确报错，避免将缺少 CPU 像素的纹理交给软件编码器。界面报告实际后端；诊断日志保存具体硬件失败原因。必须硬件模式直接报错，不用软件成功掩盖硬件失败。非法码率在调用驱动前被拒绝，当前编码器保留。
 
 ## Windows Media Foundation
 
-Windows 默认构建包含 `mf-encode`，仅枚举注册为硬件的 H.264 MFT，不把系统软件 MFT 当作显卡编码。使用驱动的异步输入/输出事件，设置低延迟、无 B 帧、实时编码参数以及 CBR / 峰值约束 VBR；编码前后检查当前帧时间戳，避免积攒旧帧。驱动需随显卡正式驱动安装并启用。
+Windows 默认构建包含 `mf-encode`，按 H.264 / HEVC / AV1 子类型枚举注册为硬件的 MFT，不把系统软件 MFT 当作显卡编码。使用驱动的异步输入/输出事件，设置低延迟、无 B 帧、实时编码参数以及 CBR / 峰值约束 VBR；编码前后检查当前帧时间戳，避免积攒旧帧。驱动需随显卡正式驱动安装并启用。
 
-COM、Media Foundation、编码器和缓冲均在专用线程创建、使用和释放，与 Linux 共用有界请求队列和超时处理。NV12 直接写入每帧独立的 MF 输入缓冲，省去临时 NV12 向量到输入 sample 的整帧复制；异步编码器持有 sample 时，其缓冲保持独立，不根据输入额度提前复用。关键帧必须为能独立恢复的 IDR，携带匹配尺寸和色彩的 SPS/PPS；输出为 H.264 Annex-B。支持显式请求关键帧与动态码率调整。当前输入仍由 CPU 转换为有限范围 BT.601 NV12 并上传，不宣称 GPU 零拷贝。
+COM、Media Foundation、编码器和缓冲均在专用线程创建、使用和释放，与 Linux 共用有界请求队列和超时处理。NV12 直接写入每帧独立的 MF 输入缓冲，省去临时 NV12 向量到输入 sample 的整帧复制；异步编码器持有 sample 时，其缓冲保持独立，不根据输入额度提前复用。恢复关键帧携带实际编码器生成的参数集，核验尺寸、颜色和当前帧时间戳。支持显式请求关键帧与动态码率调整。支持 D3D11 输入的编码器直接接收 GPU NV12 sample，CPU 输入保留逐帧独立缓冲。
 
 驱动内部等待在 Windows 默认计时精度下可能多消耗一个刷新量级。编码器活动期间持有配对的 1 ms 计时请求，退出时释放；不会修改系统设置或目标帧率。对支持的驱动申请桌面远程场景和速度优先配置。开发诊断可显式设置 `UU_ENCODE_PROFILE=1`，退出时输出转换、输入提交、驱动完成的聚合耗时；默认关闭，不记录画面。
 
 实现依据微软的 [硬件 MFT](https://learn.microsoft.com/en-us/windows/win32/medfound/hardware-mfts)、[异步 MFT](https://learn.microsoft.com/en-us/windows/win32/medfound/asynchronous-mfts) 和 [H.264 编码器](https://learn.microsoft.com/en-us/windows/win32/medfound/h-264-video-encoder) API。Sunshine 与 uu-remote-linux 提供了硬件选择、低延迟参数和恢复行为的参考；本后端未复制其 GPL 代码。
+
+## Windows GPU 输入与 AMD AMF
+
+支持 GPU 输入且适配器匹配时，DXGI 采集只把桌面纹理复制到会话独立持有的 GPU 纹理；D3D11 视频处理器在 GPU 上完成输出缩放和 BGRA→有限范围 BT.601 NV12 转换，再交给编码器。不会把这些像素下载到 CPU 后重新上传。复制和转色仍会消耗 GPU 时间，不等于完全没有复制。旋转屏、编码器不支持 D3D11 输入或跨厂商设备保留既有 CPU 路径；物理输入坐标始终描述原始屏幕。
+
+AMD 使用安装在系统目录的 AMF 驱动运行时，通过 `InitDX11` 和 `CreateSurfaceFromDX11Native` 接收纹理。采用超低延迟用途、速度预设、无 B 帧和有界输出等待；每个 sample 独立持有其纹理，直到编码器完成。H.264 / HEVC / AV1 共享生命周期、CBR / VBR、关键帧恢复与动态码率规则。显式 AMD 失败时返回具体原因，不偷偷选择其它厂商。API 头文件来源及固定版本见 [AMF API headers](../vendor/amf-api/README.md)，接口语义见 [AMD AMF SDK](https://github.com/GPUOpen-LibrariesAndSDKs/AMF)。实现参考 Sunshine 的 GPU 输入和输出生命周期，未复制其 GPL 实现。
+
+在一台 AMD GPU 上，同为 3840×2160、60 FPS 设置、14 Mbps、60 帧生成色条的测试中，MFT CPU 输入均值约 43.4 ms，MFT GPU 输入约 45.6–45.8 ms；原生 AMF CPU 输入约 13.7 ms，AMF GPU 输入两次约 8.9 / 9.1 ms，中位约 8.0 ms。AMF HEVC GPU 输入约 9.0–9.2 ms。结果包含编码调用的转换、提交与驱动等待；生成纹理的初始 CPU 上传在计时外，真实桌面采集、传输和呈现也不在该计时内。测试核验颜色、冷关键帧、降码率及恢复，不能等同于真实桌面总延迟验收或所有显卡的性能保证。
+
+AV1 时序头包含标准的 32-bit 无符号字段。公共位读取器支持完整位宽，避免将带时序信息的有效序列头误判为不支持；保留有符号读取的边界检查。
 
 ## Linux VA-API
 
@@ -26,7 +36,7 @@ COM、Media Foundation、编码器和缓冲均在专用线程创建、使用和�
 
 ## Intel VPL：HEVC、AV1 与显式 Intel 编码
 
-编码库还提供 Intel VPL 硬件后端，支持驱动实际具备的 H.264、HEVC Main 8-bit 和 AV1 Main 8-bit 编码，以及 CBR / VBR。Windows H.264 CBR / VBR 自动模式优先使用上面的 MFT，Linux H.264 CBR 优先使用 VA-API；显式选择 Intel、HEVC / AV1，以及 Linux VBR 使用 Intel VPL。在服务端设置中配置默认编码、允许的格式、码率模式和 VBR 峰值；IP、UU 连接服务、自建连接服务共用这些设置。控制端仅在生成测试流实际解码成功后通过 SDP 声明 HEVC / AV1 支持。双方都自动时按 **AV1 > HEVC > H.264** 顺序尝试主机允许且两端共同支持的格式；服务器默认编码可以选择自动。服务器明确选择时优先使用服务器格式；服务器自动时遵循客户端的明确选择；只有双方自动才按格式优先级回退。显式格式初始化失败会报告原因，不静默换成 H.264。既有配置的明确格式保留，新配置默认为自动。明确请求的格式不受支持或驱动不满足请求时，连接显示准备失败原因；UU 兼容模式的主机编码选择仍由其服务端决定。
+编码库还提供 Intel VPL 硬件后端，支持驱动实际具备的 H.264、HEVC Main 8-bit 和 AV1 Main 8-bit 编码，以及 CBR / VBR。Windows 自动模式先按适配器与格式选择 AMF / MFT，缺少对应 MFT 时可尝试同格式 VPL；Linux H.264 CBR 优先使用 VA-API；显式 Intel 以及 Linux HEVC / AV1 / VBR 使用 VPL。在服务端设置中配置默认编码、允许的格式、码率模式和 VBR 峰值；IP、UU 连接服务、自建连接服务共用这些设置。控制端仅在生成测试流实际解码成功后通过 SDP 声明 HEVC / AV1 支持。双方都自动时按 **AV1 > HEVC > H.264** 顺序尝试主机允许且两端共同支持的格式；服务器默认编码可以选择自动。服务器明确选择时优先使用服务器格式；服务器自动时遵循客户端的明确选择；只有双方自动才按格式优先级回退。显式格式初始化失败会报告原因，不静默换成 H.264。既有配置的明确格式保留，新配置默认为自动。明确请求的格式不受支持或驱动不满足请求时，连接显示准备失败原因；UU 兼容模式的主机编码选择仍由其服务端决定。
 
 VPL 使用单帧异步深度、无 B 帧、速度优先和有限 VBV；低延迟 BRC 等额外调优由驱动能力决定。初始化后再次读取实际配置，若驱动把帧率、尺寸、编码或码率模式改成不符合请求的值，直接拒绝。仅接受硬件实现，拒绝部分软件加速。恢复关键帧携带实际编码器的参数集，重新设码率后请求新的关键帧；不会伪造参数或把 HEVC / AV1 失败伪装成软件 H.264 成功。
 
@@ -94,7 +104,7 @@ AMD的硬件MFT编码输出已通过软件解码检查，但当前额外的冷ID
 
 ## 原生协议与兼容
 
-默认仍为 H.264，Offer JSON 不增加旧主机无法识别的字段；格式能力放入标准 SDP。H.264 Answer 保持旧字段，非 H.264 连接才使用可选 codec 字段。HEVC 按 RFC 7798 单 NAL / FU 发送，AV1 按 AOMedia RTP 规范聚合和分片；三种格式共用完整访问单元、NACK / RTX、PLI、源时间戳和呈现管线。AV1 重组后恢复明确的 OBU 长度，不把 RTP 聚合头交给解码器。
+不带画质协商的旧入口保留 H.264 默认，Offer JSON 不增加旧主机无法识别的字段；格式能力放入标准 SDP。H.264 Answer 保持旧字段，非 H.264 连接才使用可选 codec 字段。HEVC 按 RFC 7798 单 NAL / FU 发送，AV1 按 AOMedia RTP 规范聚合和分片；三种格式共用完整访问单元、NACK / RTX、PLI、源时间戳和呈现管线。AV1 重组后恢复明确的 OBU 长度，不把 RTP 聚合头交给解码器。
 
 原生共享界面当前提供 1–60 FPS 和既有 4K60 尺寸范围。编码库更大的格式或帧率参数不代表这条连接已经协商或实际达到相同性能。CLI 三种主机入口均支持 `--codec h264|hevc|av1 --rate-control cbr|vbr --peak-kbps N`；非 H.264 或 Linux VBR 需选择 `--encoder hardware` 或 `auto`；Windows H.264 VBR 可由 MFT 硬件路径执行。新格式和 VBR 的真实性能还取决于目标硬件与驱动，不以接口模拟测试代替实机验证。
 

@@ -68,7 +68,7 @@ def run(executable, frames, decoder, audio=False, encoder='software'):
                 actual_encoder = actual_encoder[1] if actual_encoder else None
                 if encoder == 'vaapi' and (not actual_encoder or not actual_encoder.startswith('vaapi (')):
                     raise RuntimeError('Explicit VA-API host did not report hardware encoding')
-                if encoder == 'hardware' and (not actual_encoder or not actual_encoder.startswith(('vaapi (', 'mf (H.264 hardware,'))):
+                if encoder == 'hardware' and (not actual_encoder or not actual_encoder.startswith(('vaapi (', 'mf (', 'amf (', 'intel-vpl ('))):
                     raise RuntimeError('Explicit hardware host did not report a real platform hardware encoder')
                 if list((temporary / 'data').rglob('state.json')):
                     raise RuntimeError('Native smoke test unexpectedly created an interoperability account')

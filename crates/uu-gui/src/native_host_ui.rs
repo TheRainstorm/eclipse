@@ -25,6 +25,7 @@ pub(super) fn preference_label(preference:EncoderPreference)->&'static str {
 fn actual_encoder_label(backend:&str)->&'static str {
     if backend.starts_with("vaapi ") {"硬件编码 · VA-API"}
     else if backend.starts_with("mf ") {"硬件编码 · Media Foundation"}
+    else if backend.starts_with("amf ") {"硬件编码 · AMD AMF"}
     else if backend.contains("fallback")||backend.contains("unavailable") {"软件编码 · 硬件不可用，已回退"}
     else {"软件编码 · H.264"}
 }
@@ -41,6 +42,7 @@ mod tests {
         assert!(host.source_size_supported());host.fps=61;assert!(!host.source_size_supported());
         assert_eq!(actual_encoder_label("vaapi (generated)"),"硬件编码 · VA-API");
         assert_eq!(actual_encoder_label("mf (H.264 hardware, generated Intel encoder)"),"硬件编码 · Media Foundation");
+        assert_eq!(actual_encoder_label("amf (HEVC CBR, AMD D3D11)"),"硬件编码 · AMD AMF");
         assert!(actual_encoder_label("openh264 (software) · fallback from VA-API").contains("已回退"));
         assert_eq!(actual_encoder_label("openh264 (software)"),"软件编码 · H.264");
     }
