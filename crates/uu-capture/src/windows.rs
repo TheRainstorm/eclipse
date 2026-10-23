@@ -135,7 +135,7 @@ impl DxgiCapture {
             CaptureSource::Primary | CaptureSource::Desktop => outputs()?
                 .into_iter()
                 .find(|o| o.monitor.primary)
-                .ok_or(CaptureError::NoBackend)?,
+                .ok_or_else(|| backend("当前没有活动的桌面显示输出；请确认被控用户已登录，显示器或虚拟显示输出保持启用。锁屏共享需安装并启动 Windows 后台服务"))?,
             CaptureSource::Monitor(name) => outputs()?
                 .into_iter()
                 .find(|o| &o.monitor.name == name)
