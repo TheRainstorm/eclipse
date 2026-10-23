@@ -49,7 +49,6 @@ pub struct ClientSettings {
     pub volume: u32,
     pub muted: bool,
     pub hud: bool,
-    pub floating_menu: bool,
     pub capture_keyboard: bool,
     pub vsync: bool,
     pub software_decoder: bool,
@@ -66,7 +65,7 @@ impl Default for ClientSettings {
     fn default() -> Self {
         Self { fps:60, display_mode:crate::screen_control::DisplayMode::Preserve,
             bitrate:0,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,
-            volume:100,muted:false,hud:false,floating_menu:true,capture_keyboard:true,
+            volume:100,muted:false,hud:false,capture_keyboard:true,
             vsync:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
             cursor_mode:CursorMode::Both,clipboard:true,gamepad:true,nested_shortcuts:false }
     }

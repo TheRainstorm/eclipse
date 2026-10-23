@@ -201,12 +201,6 @@ fn hover_bridge(a: Rect, b: Rect) -> Option<Rect> {
     }
 }
 
-/// Every menu entry dispatches the same action as Ctrl+Alt+F/X.
-fn fullscreen_menu_action(ui:&mut egui::Ui,fullscreen:bool)->Option<super::shortcuts::Action> {
-    menu_row(ui,if fullscreen {"退出全屏"} else {"进入全屏"},Some(Icon::Max),
-        false,false,"Ctrl+Alt+F / X",false).clicked().then_some(super::shortcuts::Action::Fullscreen)
-}
-
 fn popup_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::popup(ui.style())
         .fill(Color32::WHITE)
@@ -364,7 +358,6 @@ pub(super) enum QualityDetail {
     Bitrate,
     Resolution,
     FrameRate,
-    Codec,
 }
 
 pub(super) struct StreamMenu {
@@ -564,92 +557,55 @@ impl super::App {
         ui.memory_mut(|m| m.close_popup());
     }
 
-    fn quality_menu(&mut self, ui: &mut egui::Ui) {
-        for (index, (label, _, _)) in super::BITRATE_PRESETS.iter().enumerate() {
-            let custom = index == 4;
-            let response = menu_row(
-                ui,
-                label,
-                None,
-                self.bitrate_idx == index,
-                custom,
-                "",
-                false,
-            );
-            if custom && (response.hovered() || response.clicked()) {
-                self.stream_menu.quality_detail = Some((QualityDetail::Bitrate, response.rect));
-            } else if !custom && response.hovered() {
-                self.stream_menu.quality_detail = None;
-            }
-            if !custom && response.clicked() {
-                self.bitrate_idx = index;
-                self.confirm_quality(ui);
-            }
-        }
+    fn picture_menu(&mut self, ui: &mut egui::Ui) {
+        if self.stream_menu.quality_detail.is_some_and(|(kind,_)|kind==QualityDetail::Bitrate) {self.stream_menu.quality_detail=None;}
+        let response=menu_row(ui,"分辨率",None,false,true,"",false);
+        if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::Resolution,response.rect));}
         separator(ui);
-        let presets: &[u32]=if self.is_native(){&[240,165,144,120,90,60,30]}else{&[144,120,90,60,30]};
-        for &fps in presets {
-            let response = menu_row(
-                ui,
-                &format!("{fps} 帧"),
-                None,
-                self.target_fps == fps,
-                false,
-                "",
-                false,
-            );
-            if response.hovered() {
-                self.stream_menu.quality_detail = None;
-            }
-            if response.clicked() {
-                self.target_fps = fps;
-                self.fps_draft = fps;
-                self.confirm_quality(ui);
-            }
+        for fps in [30,60,120,165] {
+            let response=menu_row(ui,&format!("{fps} 帧"),None,self.target_fps==fps,false,"",false);
+            if response.hovered(){self.stream_menu.quality_detail=None;}
+            if response.clicked(){self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);}
         }
-        let custom_fps = !presets.contains(&self.target_fps);
-        let label = if custom_fps {
-            format!("自定义 · {} 帧", self.target_fps)
-        } else {
-            "自定义帧率".into()
-        };
-        let response = menu_row(ui, &label, None, custom_fps, true, "", false);
-        if response.hovered() || response.clicked() {
-            self.stream_menu.quality_detail = Some((QualityDetail::FrameRate, response.rect));
-        }
-        separator(ui);
-        let response = menu_row(ui, "分辨率", None, false, true, "", false);
-        if response.hovered() || response.clicked() {
-            self.stream_menu.quality_detail = Some((QualityDetail::Resolution, response.rect));
-        }
-        separator(ui);
-        let codec = if self.preferences.codec == super::settings::CodecPreference::Auto {
-            if !self.is_native() && self.preferences.hevc_preferred() {
-                "H.265 / HEVC"
-            } else {
-                self.preferences.codec.label()
-            }
-        } else {
-            self.preferences.codec.label()
-        };
-        let response = menu_row(ui, &format!("编码 · {codec}"), None, false, true, "", false);
-        if response.hovered() || response.clicked() {
-            self.stream_menu.quality_detail = Some((QualityDetail::Codec, response.rect));
-        }
-        if self.is_native() {
-            if let Some(controller)=&self.controller {
-                let actual=controller.stats.codec.lock().unwrap();
-                if !actual.is_empty() {ui.small(format!("实际编码：{}",actual.trim_start_matches("video/")));}
-            }
-        }
+        let response=menu_row(ui,"其它帧数",None,![30,60,120,165].contains(&self.target_fps),true,"",false);
+        if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::FrameRate,response.rect));}
         separator(ui);
         let response=menu_row(ui,"垂直同步",None,self.preferences.vsync,false,"",false);
-        if response.hovered() {self.stream_menu.quality_detail=None;}
-        if response.clicked() {
+        if response.hovered(){self.stream_menu.quality_detail=None;}
+        if response.clicked(){
             self.preferences.vsync=!self.preferences.vsync;
             eframe::request_vsync(ui.ctx(),self.preferences.vsync);
-            self.persist_preferences();
-            ui.close_menu();
+            self.persist_preferences();ui.close_menu();
+        }
+    }
+
+    fn encoding_menu(&mut self, ui: &mut egui::Ui) {
+        if self.stream_menu.quality_detail.is_some_and(|(kind,_)|kind!=QualityDetail::Bitrate) {self.stream_menu.quality_detail=None;}
+        let options: &[(super::settings::CodecPreference,&str)]=if self.is_native() {
+            &[(super::settings::CodecPreference::Auto,"自动协商"),(super::settings::CodecPreference::H264,"H.264"),
+              (super::settings::CodecPreference::Hevc,"H.265 / HEVC"),(super::settings::CodecPreference::Av1,"AV1")]
+        }else{
+            &[(super::settings::CodecPreference::H264,"H.264"),(super::settings::CodecPreference::Hevc,"H.265 / HEVC（优先）")]
+        };
+        for (codec,label) in options {
+            let selected=self.preferences.codec==*codec || (!self.is_native()&&*codec==super::settings::CodecPreference::Hevc
+                &&self.preferences.codec==super::settings::CodecPreference::Auto&&self.preferences.hevc_preferred());
+            let response=menu_row(ui,label,None,selected,false,"",false);
+            if response.hovered(){self.stream_menu.quality_detail=None;}
+            if response.clicked(){self.preferences.codec=*codec;self.preferences.prefer_hevc=*codec==super::settings::CodecPreference::Hevc;self.confirm_quality(ui);}
+        }
+        if let Some(controller)=&self.controller {
+            let actual=controller.stats.codec.lock().unwrap();
+            if !actual.is_empty(){ui.small(format!("当前编码：{}",actual.trim_start_matches("video/")));}
+        }
+        separator(ui);
+        ui.small("码率");
+        for (index,(label,_,_)) in super::BITRATE_PRESETS.iter().enumerate() {
+            let custom=index==4;
+            let response=menu_row(ui,label,None,self.bitrate_idx==index,custom,"",false);
+            if custom&&(response.hovered()||response.clicked()) {self.stream_menu.quality_detail=Some((QualityDetail::Bitrate,response.rect));}
+            else if response.hovered(){self.stream_menu.quality_detail=None;}
+            if !custom&&response.clicked(){self.bitrate_idx=index;self.confirm_quality(ui);}
         }
     }
 
@@ -693,6 +649,13 @@ impl super::App {
                                 }
                             }
                             QualityDetail::FrameRate => {
+                                for fps in [24,90,120,144] {
+                                    if menu_row(ui,&format!("{fps} 帧"),None,self.target_fps==fps,false,"",false).clicked() {
+                                        self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);
+                                    }
+                                }
+                                separator(ui);
+                                ui.label("自定义帧数");
                                 ui.add_space(5.0);
                                 ui.horizontal(|ui| {
                                     ui.label("帧率");
@@ -737,34 +700,7 @@ impl super::App {
                                 separator(ui);
                                 ui.small("输出档位限制串流编码尺寸，保持宽高比；切换会短暂重连，被控端桌面分辨率不变。");
                             }
-                            QualityDetail::Codec => {
-                                let options: &[(super::settings::CodecPreference, &str)] = if self.is_native() {
-                                    &[
-                                        (super::settings::CodecPreference::Auto, "自动协商"),
-                                        (super::settings::CodecPreference::H264, "H.264"),
-                                        (super::settings::CodecPreference::Hevc, "H.265 / HEVC"),
-                                        (super::settings::CodecPreference::Av1, "AV1"),
-                                    ]
-                                } else {
-                                    &[
-                                        (super::settings::CodecPreference::H264, "H.264"),
-                                        (super::settings::CodecPreference::Hevc, "H.265 / HEVC（优先）"),
-                                    ]
-                                };
-                                for (codec, label) in options {
-                                    let selected = self.preferences.codec == *codec
-                                        || (*codec == super::settings::CodecPreference::Hevc
-                                            && self.preferences.codec == super::settings::CodecPreference::Auto
-                                            && self.preferences.hevc_preferred());
-                                    if menu_row(ui, label, None, selected, false, "", false).clicked() {
-                                        self.preferences.codec = *codec;
-                                        self.preferences.prefer_hevc = *codec == super::settings::CodecPreference::Hevc;
-                                        self.confirm_quality(ui);
-                                    }
-                                }
-                                separator(ui);
-                                ui.small("原生会自动协商；UU 兼容目前支持 H.264 或优先 HEVC。切换编码会重连。");
-                            }
+
                         }
                     });
                 });
@@ -861,22 +797,13 @@ impl super::App {
                                         ui,
                                         &mut blocked,
                                         Icon::Picture,
-                                        "画质",
-                                        |ui| self.quality_menu(ui),
+                                        "画面",
+                                        |ui| self.picture_menu(ui),
                                     )
                                     .inner
                                     .is_some();
+                                    quality_open |= side_submenu(ui,&mut blocked,Icon::Encoding,"编码",|ui|self.encoding_menu(ui)).inner.is_some();
                                     }
-                                    side_submenu(ui, &mut blocked, Icon::Max, "窗口", |ui| {
-                                        if let Some(action)=fullscreen_menu_action(ui,self.fullscreen) {
-                                            self.local_shortcut(action,ctx);
-                                        }
-                                        separator(ui);
-                                        ui.checkbox(
-                                            &mut self.stream_menu.visible,
-                                            "全屏显示悬浮入口",
-                                        );
-                                    });
                                     if self.supports_remote(uu_core::capabilities::Capability::Audio) {
                                     side_submenu(ui, &mut blocked, Icon::Play, "声音", |ui| {
                                         let mut changed=false;
@@ -886,7 +813,7 @@ impl super::App {
                                             let mut muted = audio.muted.load(Relaxed);
                                             if ui.checkbox(&mut muted, "静音").changed() { audio.muted.store(muted,Relaxed);self.preferences.muted=muted;changed=true; }
                                             let mut volume=audio.volume.load(Relaxed);
-                                            if ui.add(egui::Slider::new(&mut volume,0..=100).text("音量")).changed() {audio.volume.store(volume,Relaxed);self.preferences.volume=volume;changed=true;}
+                                            if super::audio_controls::volume_slider(ui,&mut volume) {audio.volume.store(volume,Relaxed);self.preferences.volume=volume;changed=true;}
                                             ui.label(audio.status.lock().unwrap().as_str());
                                             ui.label(format!("播放排队 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
                                             ui.small(format!("音频包 {} ms · 接收→解码 {:.1} ms",audio.packet_ms.load(Relaxed),audio.receive_decode_us.load(Relaxed) as f32/1000.0));
@@ -941,7 +868,7 @@ impl super::App {
                                     });
                                     }
                                     if self.is_native() {
-                                        side_submenu(ui,&mut blocked,Icon::Person,"手柄",|ui|{
+                                        side_submenu(ui,&mut blocked,Icon::Keyboard,"输入",|ui|{
                                             if ui.checkbox(&mut self.preferences.gamepad,"转发手柄和陀螺仪").changed(){self.persist_preferences();}
                                             if let Some(status)=self.gamepad_status(){ui.label(egui::RichText::new(status).size(12.));}
                                             ui.small("离开菜单并捕获输入后恢复转发；最多 4 个手柄。");
@@ -997,9 +924,6 @@ impl super::App {
                                         }
                                     });
                                     separator(ui);
-                                    if let Some(action)=fullscreen_menu_action(ui,self.fullscreen) {
-                                        self.local_shortcut(action,ctx);
-                                    }
                                     ui.scope(|ui| {
                                         if menu_row(
                                             ui,
@@ -1235,24 +1159,5 @@ mod tests {
         assert!(gap.contains(egui::pos2(695.0,200.0)),"diagonal movement into a child remains inside the narrow gap");
         assert!(!gap.contains(egui::pos2(650.0,200.0)));
         assert!(!gap.contains(egui::pos2(695.0,450.0)));
-    }
-    #[test]
-    fn fullscreen_menu_click_dispatches_stream_fullscreen_for_both_states() {
-        for fullscreen in [false,true] {
-            let context=egui::Context::default();
-            let position=egui::pos2(64.0,24.0);
-            let mut actions=Vec::new();
-            for events in [vec![],vec![egui::Event::PointerMoved(position),
-                egui::Event::PointerButton{pos:position,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}],
-                vec![egui::Event::PointerButton{pos:position,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}]] {
-                let input=egui::RawInput {screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(236.0,80.0))),events,..Default::default()};
-                let _=context.run(input,|ctx| {
-                    egui::CentralPanel::default().show(ctx,|ui| {
-                        if let Some(action)=fullscreen_menu_action(ui,fullscreen){actions.push(action);}
-                    });
-                });
-            }
-            assert_eq!(actions,vec![super::super::shortcuts::Action::Fullscreen]);
-        }
     }
 }

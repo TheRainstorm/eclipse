@@ -391,7 +391,6 @@ impl super::App {
         self.preferences.custom_mbps = self.custom_mbps;
         self.preferences.resolution = self.resolution_idx;
         self.preferences.hud = self.hud;
-        self.preferences.floating_menu = self.stream_menu.visible;
         self.preferences.nested_shortcuts = self.nested_passthrough;
         if let Some(h) = self.controller.as_ref().filter(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Audio)) {
             use std::sync::atomic::Ordering::Relaxed;
@@ -427,6 +426,7 @@ impl super::App {
         let child=self.stream_target.is_some();
         let native=self.is_native();
         let stats=self.controller.as_ref().map(|h|h.stats.clone());
+        let actual_codec=stats.as_ref().map(|s|s.codec.lock().unwrap().clone());
         let remote=&mut self.remote_admin_ui;
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
             super::settings_page::State {
@@ -437,6 +437,7 @@ impl super::App {
                 storage_error:self.settings_storage_error,notice:&self.settings_notice,
                 presentation_vsync:self.presentation_vsync,
                 gamepad_status:gamepad_status.as_deref(),
+                actual_codec:actual_codec.as_deref(),
             },|ui,section|remote.show(ui,section,stats.as_deref()));
         if actions.back {self.workspace.discard_server_draft();self.stream_settings_open=false;ctx.request_repaint();}
         if actions.maximize {self.toggle_maximized(ctx);}
@@ -477,7 +478,6 @@ impl super::App {
             self.custom_mbps = self.preferences.custom_mbps;
             self.resolution_idx = self.preferences.resolution;
             self.hud = self.preferences.hud;
-            self.stream_menu.visible = self.preferences.floating_menu;
             self.nested_passthrough = self.preferences.nested_shortcuts;
             if let Some(h) = &self.controller {
                 use std::sync::atomic::Ordering::Relaxed;

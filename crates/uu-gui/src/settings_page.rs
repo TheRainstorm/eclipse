@@ -10,6 +10,7 @@ use eframe::egui::{self, RichText};
 pub enum Section {
     #[default]
     Video,
+    Encoding,
     Audio,
     Input,
     Stream,
@@ -18,8 +19,9 @@ pub enum Section {
     Server,
 }
 impl Section {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Video,
+        Self::Encoding,
         Self::Audio,
         Self::Input,
         Self::Stream,
@@ -27,9 +29,10 @@ impl Section {
     ];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Video => "画面与显示",
+            Self::Video => "画面",
+            Self::Encoding => "编码",
             Self::Audio => "声音",
-            Self::Input => "键盘与鼠标",
+            Self::Input => "输入",
             Self::Stream => "串流信息",
             Self::Application => "应用与诊断",
             Self::Connections=>"连接信息",
@@ -38,7 +41,8 @@ impl Section {
     }
     fn description(self) -> &'static str {
         match self {
-            Self::Video => "调整清晰度、帧率与呈现方式。",
+            Self::Video => "调整分辨率、帧率与呈现方式。",
+            Self::Encoding => "选择编码格式、码率并查看当前编码。",
             Self::Audio => "设置默认音量与声音播放。",
             Self::Input => "配置键鼠、手柄、运动传感器与输入归属。",
             Self::Stream => "设置串流菜单与统计信息。",
@@ -57,6 +61,7 @@ pub struct State<'a> {
     pub notice: &'a str,
     pub presentation_vsync: bool,
     pub gamepad_status: Option<&'a str>,
+    pub actual_codec: Option<&'a str>,
 }
 #[derive(Default)]
 pub struct Actions {
@@ -99,34 +104,19 @@ fn combo(ui: &mut egui::Ui, id: &str, selected: &str, body: impl FnOnce(&mut egu
         .show_ui(ui, body);
 }
 fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
-    group(ui, "串流画质", |ui| {
+    group(ui, "画面", |ui| {
         egui::Grid::new("settings-video-grid")
             .spacing([24.0, 14.0])
             .show(ui, |ui| {
                 ui.label("目标帧率");
-                ui.add(
-                    egui::DragValue::new(&mut s.fps)
-                        .range(5..=240)
-                        .suffix(" FPS"),
-                );
+                egui::ComboBox::from_id_salt("settings-frame-rate").selected_text(format!("{} FPS",s.fps)).show_ui(ui,|ui| {
+                    for fps in [30,60,120,165] {ui.selectable_value(&mut s.fps,fps,format!("{fps} FPS"));}
+                    ui.menu_button("其它帧数",|ui| {
+                        for fps in [24,90,120,144] {ui.selectable_value(&mut s.fps,fps,format!("{fps} FPS"));}
+                        ui.separator();ui.label("自定义帧数");ui.add(egui::DragValue::new(&mut s.fps).range(5..=240).suffix(" FPS"));
+                    });
+                });
                 ui.end_row();
-                ui.label("画质");
-                combo(
-                    ui,
-                    "settings-bitrate",
-                    super::BITRATE_PRESETS[s.bitrate].0,
-                    |ui| {
-                        for (i, (label, _, _)) in super::BITRATE_PRESETS.iter().enumerate() {
-                            ui.selectable_value(&mut s.bitrate, i, *label);
-                        }
-                    },
-                );
-                ui.end_row();
-                if s.bitrate == 4 {
-                    ui.label("自定义码率");
-                    ui.add(egui::Slider::new(&mut s.custom_mbps, 1..=1000).suffix(" Mbps"));
-                    ui.end_row();
-                }
                 ui.label("输出分辨率");
                 let labels = [
                     "保持远端分辨率",
@@ -140,23 +130,14 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
                     }
                 });
                 ui.end_row();
-                ui.label("视频编码");
-                combo(ui,"settings-codec",s.codec.label(),|ui| {
-                    for codec in super::settings::CodecPreference::ALL {
-                        if ui.selectable_value(&mut s.codec,codec,codec.label()).changed(){s.prefer_hevc=false;}
-                    }
-                });
-                ui.end_row();
+
             });
         ui.add_space(8.0);
         note(
             ui,
             "输出分辨率只调整串流编码尺寸，不修改远端桌面。实际帧率取决于被控端、屏幕和网络。",
         );
-        note(
-            ui,
-            "原生连接按两端能力协商，明确选择不可用时会提示；UU 兼容模式支持 H.264 或优先 HEVC，暂不支持 AV1。切换编码需要重连。",
-        );
+
     });
     group(ui, "呈现与解码", |ui| {
         ui.checkbox(&mut s.vsync, "垂直同步");
@@ -185,15 +166,46 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
         note(ui,"下次连接生效。保持现状不切换主屏或关闭显示器；独占虚拟屏会请求关闭其它屏幕，退出时请求恢复。");
     });
 }
+fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
+    group(ui,"编码与码率",|ui| {
+        egui::Grid::new("settings-encoding-grid").spacing([24.0,14.0]).show(ui,|ui| {
+                ui.label("视频编码");
+                combo(ui,"settings-codec",s.codec.label(),|ui| {
+                    for codec in super::settings::CodecPreference::ALL {
+                        if ui.selectable_value(&mut s.codec,codec,codec.label()).changed(){s.prefer_hevc=false;}
+                    }
+                });
+                ui.end_row();
+                ui.label("码率");
+                combo(
+                    ui,
+                    "settings-bitrate",
+                    super::BITRATE_PRESETS[s.bitrate].0,
+                    |ui| {
+                        for (i, (label, _, _)) in super::BITRATE_PRESETS.iter().enumerate() {
+                            ui.selectable_value(&mut s.bitrate, i, *label);
+                        }
+                    },
+                );
+                ui.end_row();
+                if s.bitrate == 4 {
+                    ui.label("自定义码率");
+                    ui.add(egui::Slider::new(&mut s.custom_mbps, 1..=1000).suffix(" Mbps"));
+                    ui.end_row();
+                }
+        });
+        if let Some(codec)=state.actual_codec.filter(|c|!c.is_empty()){ui.label(format!("当前编码：{}",codec.trim_start_matches("video/")));}
+        note(
+            ui,
+            "原生连接按两端能力协商，明确选择不可用时会提示；UU 兼容模式支持 H.264 或优先 HEVC，暂不支持 AV1。切换编码需要重连。",
+        );
+    });
+}
 fn audio(ui: &mut egui::Ui, s: &mut Settings) {
     group(ui, "声音播放", |ui| {
         ui.checkbox(&mut s.muted, "静音");
         ui.add_space(8.0);
-        ui.add(
-            egui::Slider::new(&mut s.volume, 0..=100)
-                .suffix("%")
-                .text("音量"),
-        );
+        super::audio_controls::volume_slider(ui, &mut s.volume);
         note(ui, "当前串流和全局默认分别保存；设备配置可覆盖默认值。");
     });
 }
@@ -232,7 +244,7 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
 }
 fn stream(ui:&mut egui::Ui,s:&mut Settings) {
     group(ui, "串流界面", |ui| {
-        ui.checkbox(&mut s.floating_menu, "全屏显示悬浮菜单");
+        ui.label("全屏悬浮入口默认开启");
         note(
             ui,
             "默认位于右边缘、距顶部 15%。悬停展开、离开收起，Ctrl+Alt+H 隐藏或显示。",
@@ -376,7 +388,7 @@ pub fn show(
             .show(ctx, |ui| {
                 ui.add_space(12.0);
                 for (title, items) in [
-                    ("客户端", &[Section::Video, Section::Audio, Section::Input, Section::Stream][..]),
+                    ("客户端", &[Section::Video, Section::Encoding, Section::Audio, Section::Input, Section::Stream][..]),
 
                 ] {
                     ui.label(RichText::new(title).size(12.0).strong().color(theme::MUTED));
@@ -402,7 +414,7 @@ pub fn show(
             .frame(egui::Frame::none().fill(theme::SIDEBAR).inner_margin(12.0))
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    for item in [Section::Video,Section::Audio,Section::Input,Section::Stream] {
+                    for item in [Section::Video,Section::Encoding,Section::Audio,Section::Input,Section::Stream] {
                         ui.selectable_value(section, item, item.label());
                     }
                     if state.native {for item in [Section::Connections,Section::Server] {ui.selectable_value(section,item,item.label());}}
@@ -455,6 +467,7 @@ pub fn show(
                     }
                     match section {
                         Section::Video => video(ui, s, &state),
+                        Section::Encoding => encoding(ui,s,&state),
                         Section::Audio => audio(ui, s),
                         Section::Input => input(ui, s, &state),
                         Section::Stream => stream(ui,s),
@@ -469,13 +482,13 @@ pub fn show(
 /// The device editor uses exactly the same client fields as global/session settings.
 pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::ClientSettings, section:&mut Section) {
     ui.horizontal_wrapped(|ui| {
-        for item in [Section::Video,Section::Audio,Section::Input,Section::Stream] {
+        for item in [Section::Video,Section::Encoding,Section::Audio,Section::Input,Section::Stream] {
             ui.selectable_value(section,item,item.label());
         }
     });
     ui.add_space(12.);
     let mut wrapper=Settings {client:settings.clone(),..Default::default()};
-    let state=State { native:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None };
-    match section {Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
+    let state=State { native:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None,actual_codec:None };
+    match section {Section::Encoding=>encoding(ui,&mut wrapper,&state),Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
     *settings=wrapper.client;
 }

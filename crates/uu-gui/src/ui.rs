@@ -30,6 +30,8 @@ pub(super) enum Icon {
     Info,
     Volume,
     Muted,
+    Keyboard,
+    Encoding,
 }
 pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
     let r = Rect::from_center_size(rect.center(), Vec2::splat(18.0));
@@ -39,6 +41,15 @@ pub(super) fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
         p.line_segment([pt(a.0, a.1), pt(b.0, b.1)], stroke);
     };
     match kind {
+        Icon::Keyboard => {
+            p.rect_stroke(Rect::from_min_max(pt(1.0,4.0),pt(17.0,14.0)),2.0,stroke);
+            for y in [7.0,10.0] {for x in [4.0,7.0,10.0,13.0] {p.circle_filled(pt(x,y),0.7,color);}}
+            line((6.0,12.0),(12.0,12.0));
+        }
+        Icon::Encoding => {
+            p.rect_stroke(Rect::from_min_max(pt(4.0,4.0),pt(14.0,14.0)),2.0,stroke);
+            for v in [6.0,9.0,12.0] {line((v,1.0),(v,4.0));line((v,14.0),(v,17.0));line((1.0,v),(4.0,v));line((14.0,v),(17.0,v));}
+        }
         Icon::Volume | Icon::Muted => {
             p.add(egui::Shape::closed_line(vec![pt(2.0, 7.0), pt(5.0, 7.0), pt(9.0, 3.0), pt(9.0, 15.0), pt(5.0, 11.0), pt(2.0, 11.0)], stroke));
             if matches!(kind, Icon::Muted) {

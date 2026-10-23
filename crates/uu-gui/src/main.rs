@@ -515,7 +515,7 @@ impl App {
             cursor: cursor::Cursor::default(),
             input_capture: input_capture::Capture::default(),
             view_only: false,
-            stream_menu: stream_menu::StreamMenu {visible:preferences.floating_menu,..Default::default()},
+            stream_menu: stream_menu::StreamMenu::default(),
             window_sizing: Default::default(),
             close_at: None,
             disconnecting: false,
