@@ -640,6 +640,15 @@ impl super::App {
                 if !actual.is_empty() {ui.small(format!("实际编码：{}",actual.trim_start_matches("video/")));}
             }
         }
+        separator(ui);
+        let response=menu_row(ui,"垂直同步",None,self.preferences.vsync,false,"",false);
+        if response.hovered() {self.stream_menu.quality_detail=None;}
+        if response.clicked() {
+            self.preferences.vsync=!self.preferences.vsync;
+            eframe::request_vsync(ui.ctx(),self.preferences.vsync);
+            self.persist_preferences();
+            ui.close_menu();
+        }
     }
 
     fn quality_detail(&mut self, ctx: &egui::Context, blocked: &mut Vec<Rect>) {

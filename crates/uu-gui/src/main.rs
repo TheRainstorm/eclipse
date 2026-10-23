@@ -1267,6 +1267,18 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(result)=eframe::vsync_result(ctx) {
+            match result {
+                Ok(enabled)=>self.presentation_vsync=enabled,
+                Err(error) if self.preferences.vsync!=self.presentation_vsync=> {
+                    self.preferences.vsync=self.presentation_vsync;
+                    self.settings_draft.vsync=self.presentation_vsync;
+                    self.persist_preferences();
+                    self.set_settings_notice(format!("垂直同步修改失败：{error}"));
+                }
+                Err(_)=>{}
+            }
+        }
         self.workspace_poll(ctx);
         let preview_error = self.preview_writer.error.lock().unwrap().take();
         if let Some(error) = preview_error {

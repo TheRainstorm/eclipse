@@ -155,11 +155,11 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
         ui.checkbox(&mut s.vsync, "垂直同步");
         note(
             ui,
-            "关闭可减少呈现等待，也可能出现撕裂；重新打开串流窗口后生效。",
+            "保存后立即应用到当前窗口。关闭可减少呈现等待，也可能出现撕裂。",
         );
         if state.streaming && s.vsync != state.presentation_vsync {
             ui.label(
-                RichText::new("当前窗口仍使用启动时的垂直同步设置")
+                    RichText::new("保存后应用新的垂直同步设置")
                     .color(theme::ACCENT)
                     .size(12.0),
             );
