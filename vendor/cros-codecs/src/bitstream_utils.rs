@@ -57,7 +57,7 @@ impl fmt::Display for ReadBitsError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             ReadBitsError::TooManyBitsRequested(bits) => {
-                write!(f, "more than 31 ({}) bits were requested", bits)
+                write!(f, "more than 32 ({}) bits were requested", bits)
             }
             ReadBitsError::GetByte(_) => write!(f, "failed to advance the current byte"),
             ReadBitsError::ConversionFailed => {
@@ -96,13 +96,18 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    /// Read up to 31 bits from the stream. Note that we don't want to read 32
-    /// bits even though we're returning a u32 because that would break the
-    /// read_bits_signed() function. 31 bits should be overkill for compressed
-    /// header parsing anyway.
+    /// Read up to 32 unsigned bits, including AV1 timing/model fields.
     pub fn read_bits<U: TryFrom<u32>>(&mut self, num_bits: usize) -> Result<U, String> {
-        if num_bits > 31 {
+        if num_bits > 32 {
             return Err(ReadBitsError::TooManyBitsRequested(num_bits).to_string());
+        }
+        if num_bits == 32 {
+            // Keep shifts below the accumulator width; the signed helper
+            // separately retains its 31-bit bound for sign extension.
+            let high = self.read_bits::<u32>(16)?;
+            let low = self.read_bits::<u32>(16)?;
+            return U::try_from((high << 16) | low)
+                .map_err(|_| ReadBitsError::ConversionFailed.to_string());
         }
 
         let mut bits_left = num_bits;
@@ -124,12 +129,15 @@ impl<'a> BitReader<'a> {
 
     /// Reads a two's complement signed integer of length |num_bits|.
     pub fn read_bits_signed<U: TryFrom<i32>>(&mut self, num_bits: usize) -> Result<U, String> {
+        if !(1..=31).contains(&num_bits) {
+            return Err("signed read requires 1..=31 bits".into());
+        }
         let mut out: i32 = self
             .read_bits::<u32>(num_bits)?
             .try_into()
             .map_err(|_| ReadBitsError::ConversionFailed.to_string())?;
         if out >> (num_bits - 1) != 0 {
-            out |= -1i32 ^ ((1 << num_bits) - 1);
+            out |= -1i32 << num_bits;
         }
 
         U::try_from(out).map_err(|_| ReadBitsError::ConversionFailed.to_string())
@@ -546,6 +554,24 @@ impl<W: Write> Drop for BitWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn full_width_unsigned_fields_preserve_high_bits_and_signed_bounds() {
+        for value in [0u32,1,0x8000_0000,u32::MAX] {
+            let data=value.to_be_bytes();
+            let mut reader=BitReader::new(&data,false);
+            assert_eq!(reader.read_bits::<u32>(32).unwrap(),value);
+            assert_eq!(reader.position(),32);
+            assert!(reader.read_bits::<u8>(1).is_err());
+        }
+        let data=[0xff;5];
+        let mut reader=BitReader::new(&data,false);
+        assert!(reader.read_bits_signed::<i32>(0).is_err());
+        assert!(reader.read_bits_signed::<i32>(32).is_err());
+        assert_eq!(reader.position(),0);
+        assert!(reader.read_bits::<u64>(33).is_err());
+        assert_eq!(reader.read_bits_signed::<i32>(31).unwrap(),-1);
+        assert!(BitReader::new(&[0xff;3],false).read_bits::<u32>(32).is_err());
+    }
 
     #[test]
     fn test_ivf_file_header() {

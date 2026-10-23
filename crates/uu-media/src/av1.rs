@@ -295,4 +295,27 @@ mod tests {
         }
         assert!(obus(&[0x0a, 0xff]).is_err());
     }
+    #[test]
+    fn encoder_timing_info_with_full_width_unsigned_fields_is_valid() {
+        // Generated uniform grey NV12, 720p60, AV1 Main/8-bit, limited BT.601.
+        // Its timing_info_present_flag requires the standard 32-bit fields.
+        let frame=include_bytes!("amf_av1_probe.obu");
+        assert_eq!(sequence(frame),Some(Sequence{width:1280,height:720,color:YuvColor::Limited601}));
+        assert!(is_keyframe(frame));
+        let mut parser=Parser::default();
+        let mut input=frame.as_slice();
+        let mut found=false;
+        while !input.is_empty() {
+            let ObuAction::Process(obu)=parser.read_obu(input).unwrap() else {panic!("unexpected dropped OBU");};
+            let used=obu.bytes_used;
+            if let ParsedObu::SequenceHeader(s)=parser.parse_obu(obu).unwrap() {
+                assert!(s.timing_info_present_flag);
+                assert_eq!(s.timing_info.time_scale/s.timing_info.num_units_in_display_tick,60);
+                found=true;
+            }
+            input=&input[used..];
+        }
+        assert!(found);
+        for end in 0..frame.len() {let _=sequence(&frame[..end]);let _=is_keyframe(&frame[..end]);}
+    }
 }

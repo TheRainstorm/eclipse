@@ -15,3 +15,5 @@ HEVC新增finish_access_unit：完整RTP访问单元结束时提交当前picture
 AV1 OBU 读取补充：低开销格式缺少长度字段返回错误；在创建载荷切片前检查偏移和长度，避免截断的网络数据触发越界 panic。Annex-B 消耗计数使用 checked_add，过滤操作点时跳过完整 OBU。该边界校验同时适用于 VAAPI 解码与上层元数据读取，生成 AV1 灰帧的所有截断前缀作为应用回归。
 
 AV1 畸形流与 tile 补充：OBU forbidden/reserved/extension reserved 位不合法时返回错误，不触发断言；无 frame header、零尺寸或不合法 tile 范围/长度拒绝，读取 tile 布局前检查数组容量。tile 列边界使用 mi_col_starts，修正原来误用行边界导致非方形 tile 布局错误。由生成灰帧逐字节变异、固定损坏样本及 2 列 1 行 AV1 码流回归；不是 GPU 性能验收。
+
+AV1 timing_info 补充：公共 unsigned BitReader 支持规范中的完整 32-bit 时钟和 decoder-model 字段，通过两个 16-bit 读取拼接以避免整宽移位。signed 读取仍限制 1–31 bit，拒绝零宽。原先将 unsigned 也限制为 31 bit，使带 timing_info 的有效 AV1 序列头无法解析，进而把 AMD 编码器的真实关键帧误判为不可恢复。新增不含桌面内容的 720p60 灰帧回归，覆盖序列尺寸、颜色、时钟比例、关键帧及所有截断前缀。
