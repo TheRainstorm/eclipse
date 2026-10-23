@@ -107,6 +107,11 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
         checked(factory->CreateComponent(s->context,codec==0?AMFVideoEncoderVCE_AVC:codec==1?AMFVideoEncoder_HEVC:AMFVideoEncoder_AV1,&s->encoder),"create encoder component");
         s->set(s->prop(AMF_VIDEO_ENCODER_USAGE,AMF_VIDEO_ENCODER_HEVC_USAGE,AMF_VIDEO_ENCODER_AV1_USAGE),
             amf_int64(codec==0?AMF_VIDEO_ENCODER_USAGE_ULTRA_LOW_LATENCY:codec==1?AMF_VIDEO_ENCODER_HEVC_USAGE_ULTRA_LOW_LATENCY:AMF_VIDEO_ENCODER_AV1_USAGE_ULTRA_LOW_LATENCY));
+        // AMF's AV1 default accepts only 64x16-aligned dimensions. Let the
+        // SDK handle padding without changing the requested visible geometry.
+        if(codec==2 && (width%64!=0 || height%16!=0)) {
+            s->set(AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE,amf_int64(AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE_NO_RESTRICTIONS));
+        }
         const amf_int64 presets[3][3]={
             {AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED,AMF_VIDEO_ENCODER_QUALITY_PRESET_BALANCED,AMF_VIDEO_ENCODER_QUALITY_PRESET_QUALITY},
             {AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED,AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_BALANCED,AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_QUALITY},
