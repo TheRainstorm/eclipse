@@ -1,5 +1,5 @@
 //! SCM owns a System child in the configured user's console session. The
-//! launcher retains privileges; the media child starts with privileges disabled.
+//! launcher retains privileges; the media child keeps normal path traversal only.
 use super::*;
 use anyhow::{ensure, Context};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -101,6 +101,9 @@ fn enable(name: &str) -> Result<()> {
         )
     })?;
     let token = Handle(token);
+    enable_token(token.0, name)
+}
+fn enable_token(token: HANDLE, name: &str) -> Result<()> {
     let mut luid: LUID = unsafe { std::mem::zeroed() };
     winok(unsafe { LookupPrivilegeValueW(ptr::null(), wide(name).as_ptr(), &mut luid) })?;
     let privileges = TOKEN_PRIVILEGES {
@@ -111,13 +114,22 @@ fn enable(name: &str) -> Result<()> {
         }],
     };
     winok(unsafe {
-        AdjustTokenPrivileges(token.0, 0, &privileges, 0, ptr::null_mut(), ptr::null_mut())
+        AdjustTokenPrivileges(token, 0, &privileges, 0, ptr::null_mut(), ptr::null_mut())
     })?;
     ensure!(
         unsafe { GetLastError() } != ERROR_NOT_ALL_ASSIGNED,
         "后台服务缺少必要的会话启动权限"
     );
     Ok(())
+}
+fn media_privileges(token: HANDLE) -> Result<()> {
+    winok(unsafe {
+        AdjustTokenPrivileges(token, 1, ptr::null(), 0, ptr::null_mut(), ptr::null_mut())
+    })?;
+    // This is enabled for ordinary Windows users too. Disabling it breaks
+    // canonical path resolution on otherwise accessible installed executables.
+    // Process/session-launch privileges remain disabled in the media child.
+    enable_token(token, "SeChangeNotifyPrivilege")
 }
 fn owner_session(installed: &Installed) -> Result<u32> {
     let session = unsafe { WTSGetActiveConsoleSessionId() };
@@ -275,9 +287,7 @@ fn launch(paths: &Paths, installed: &Installed, session: u32) -> Result<Child> {
     winok(unsafe {
         SetTokenInformation(token.0, TokenSessionId, (&session as *const u32).cast(), 4)
     })?;
-    winok(unsafe {
-        AdjustTokenPrivileges(token.0, 1, ptr::null(), 0, ptr::null_mut(), ptr::null_mut())
-    })?;
+    media_privileges(token.0)?;
     let descriptor = Descriptor::administrators()?;
     let attributes = descriptor.attributes();
     let event_name = format!("Global\\EclipseRemoteHost.stop.{}", uuid::Uuid::new_v4());
@@ -419,6 +429,78 @@ fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn media_token_keeps_only_normal_windows_traversal_enabled() {
+        let mut original = ptr::null_mut();
+        winok(unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_DUPLICATE | TOKEN_QUERY,
+                &mut original,
+            )
+        })
+        .unwrap();
+        let original = Handle(original);
+        let mut token = ptr::null_mut();
+        winok(unsafe {
+            DuplicateTokenEx(
+                original.0,
+                TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
+                ptr::null(),
+                SecurityImpersonation,
+                TokenPrimary,
+                &mut token,
+            )
+        })
+        .unwrap();
+        let token = Handle(token);
+        media_privileges(token.0).unwrap();
+        let mut length = 0;
+        unsafe {
+            GetTokenInformation(token.0, TokenPrivileges, ptr::null_mut(), 0, &mut length);
+        }
+        assert!(length > 0 && length < 65536);
+        let mut storage = vec![
+            0usize;
+            (length as usize + std::mem::size_of::<usize>() - 1)
+                / std::mem::size_of::<usize>()
+        ];
+        winok(unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenPrivileges,
+                storage.as_mut_ptr().cast(),
+                length,
+                &mut length,
+            )
+        })
+        .unwrap();
+        let privileges = unsafe { &*storage.as_ptr().cast::<TOKEN_PRIVILEGES>() };
+        let values = unsafe {
+            std::slice::from_raw_parts(
+                privileges.Privileges.as_ptr(),
+                privileges.PrivilegeCount as usize,
+            )
+        };
+        let mut expected: LUID = unsafe { std::mem::zeroed() };
+        winok(unsafe {
+            LookupPrivilegeValueW(
+                ptr::null(),
+                wide("SeChangeNotifyPrivilege").as_ptr(),
+                &mut expected,
+            )
+        })
+        .unwrap();
+        let enabled: Vec<_> = values
+            .iter()
+            .filter(|v| v.Attributes & SE_PRIVILEGE_ENABLED != 0)
+            .collect();
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(
+            (enabled[0].Luid.LowPart, enabled[0].Luid.HighPart),
+            (expected.LowPart, expected.HighPart)
+        );
+    }
     #[test]
     fn native_environment_preserves_windows_directory_expansion_variables() {
         let environment = system_environment(ptr::null_mut()).unwrap();
