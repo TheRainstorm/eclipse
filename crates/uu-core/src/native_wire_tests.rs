@@ -346,3 +346,71 @@ async fn encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets() 
     }
     result.expect("encrypted localhost retransmission regression");
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=3)]
+async fn encrypted_fec_recovers_a_lost_keyframe_fragment_when_every_retransmission_is_dropped() {
+    use uu_media::{RawFrame,Timestamp,VideoEncoder};
+    let ip:IpAddr="127.0.0.1".parse().unwrap();
+    let stats=Arc::new(MediaStats::default());let _=stats.decoder_preference.set(uu_media::DecoderKind::Software);
+    let mut host=NativePeer::new(ip,None,true).await.unwrap();
+    let mut viewer=NativePeer::new(ip,Some(stats.clone()),false).await.unwrap();
+    let(frames,mut images)=crate::media::frame_channel();viewer.receiver(frames,stats.clone()).await.unwrap();
+    let mut sender=host.sender_for_codec(Arc::new(AtomicBool::new(false)),VideoCodec::H264).await.unwrap();
+    let relay=UdpSocket::bind((ip,0)).await.unwrap();let port=relay.local_addr().unwrap().port();
+    let dropped=Arc::new(AtomicUsize::new(0));let losses=dropped.clone();let mut relay_task=None;
+    let result=async {
+        let offer=viewer.description(true).await?;let viewer_address=SocketAddr::new(ip,media_port(&offer)?);
+        host.remote(via_relay(offer,port),ip).await?;
+        let answer=host.description(false).await?;let host_address=SocketAddr::new(ip,media_port(&answer)?);
+        relay_task=Some(tokio::spawn(async move {
+            let mut buffer=vec![0;65536];let mut missing=None;let mut originals=std::collections::HashSet::new();
+            loop {
+                let(length,source)=relay.recv_from(&mut buffer).await?;
+                let target=if source==host_address{viewer_address}else if source==viewer_address{host_address}else{continue;};
+                let data=&buffer[..length];
+                if source==host_address&&length>=12&&data[0]>>6==2 {
+                    let pt=data[1]&127;
+                    if pt==103 {losses.fetch_add(1,Ordering::Release);continue;}
+                    if pt==102 {
+                        let seq=u16::from_be_bytes([data[2],data[3]]);
+                        if originals.insert(seq)&&originals.len()==3{missing=Some(seq);}
+                        if missing==Some(seq){losses.fetch_add(1,Ordering::Release);continue;}
+                    }
+                }
+                relay.send_to(data,target).await?;
+            }
+            #[allow(unreachable_code)] Ok::<_,anyhow::Error>(())
+        }));
+        viewer.remote(via_relay(answer,port),ip).await?;
+        tokio::try_join!(host.connected(),viewer.connected())?;
+        timeout(Duration::from_secs(3),async {
+            loop {
+                let open=host.fec.ready();
+                if open{break;}
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        }).await.context("negotiated FEC channel did not open")?;
+        let mut encoder=uu_media::H264Encoder::with_frame_rate(3000,30)?;
+        for index in 0..12u32 {
+            let mut pixels=vec![128;320*180*3/2];let mut random=0x12345678u32;
+            for pixel in &mut pixels[..320*180]{random=random.wrapping_mul(1664525).wrapping_add(1013904223);*pixel=((random>>24) as u8).wrapping_add(index as u8);}
+            let encoded=encoder.encode(&RawFrame::new_i420(320,180,pixels,Timestamp(u64::from(index)*33_333)))?;
+            ensure!(encoded.len()==1,"fixture needs one coded frame per input");
+            sender.frame(&encoded[0]).await?;
+            timeout(Duration::from_secs(3),async {
+                while stats.decoded_total.load(Ordering::Acquire)<u64::from(index)+1 {
+                    while images.try_recv_image().is_ok(){}
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            }).await.context("keyframe/reference did not decode without retransmission")?;
+        }
+        ensure!(dropped.load(Ordering::Acquire)>0,"fixture did not drop encrypted RTP");
+        ensure!(stats.fec_enabled.load(Ordering::Acquire)&&stats.fec_packets.load(Ordering::Acquire)>0,"no negotiated protection arrived");
+        ensure!(stats.fec_recovered.load(Ordering::Acquire)>=1,"lost fragment was not reconstructed");
+        ensure!(stats.decoded_total.load(Ordering::Acquire)==12&&stats.errors.load(Ordering::Acquire)==0,"FEC damaged the video references");
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    host.close().await;viewer.close().await;
+    if let Some(task)=relay_task{task.abort();let _=task.await;}
+    result.expect("encrypted FEC regression");
+}

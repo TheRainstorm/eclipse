@@ -111,6 +111,11 @@ pub struct MediaStats {
     pub nack_requests: AtomicU64,
     pub rtx_packets: AtomicU64,
     pub rtx_drops: AtomicU64,
+    pub fec_enabled: std::sync::atomic::AtomicBool,
+    pub fec_packets: AtomicU64,
+    pub fec_bytes: AtomicU64,
+    pub fec_recovered: AtomicU64,
+    pub fec_drops: AtomicU64,
     pub reordered: AtomicU64,
     pub late_packets: AtomicU64,
     pub damaged_frames: AtomicU64,
@@ -291,7 +296,7 @@ impl ControllerMedia {
                     if track.kind() == RTPCodecType::Audio {
                         tokio::spawn(receive_audio(track, stats));
                     } else {
-                        tokio::spawn(receive_video(pc, track, index, frames, stats, repairs, None));
+                        tokio::spawn(receive_video(pc, track, index, frames, stats, repairs, None, None));
                     }
                 }
             })
@@ -727,6 +732,7 @@ pub(crate) async fn receive_video(
     stats: Option<Arc<MediaStats>>,
     repairs: Arc<crate::rtx::RepairBus>,
     prepared_decoder: Option<Box<dyn uu_media::VideoDecoder>>,
+    fec: Option<Arc<crate::native_fec::Receive>>,
 ) {
     use crate::video_receiver::VideoReceiver;
     use std::time::Instant;
@@ -1037,6 +1043,7 @@ pub(crate) async fn receive_video(
     let packet_read=track.read_rtp();
     tokio::pin!(packet_read);
     let mut active_payload_type = track.payload_type();
+    if let Some(fec) = &fec { fec.source(track.ssrc(), active_payload_type); }
     let mut latest_primary: Option<u16> = None;
     loop {
         let packet = tokio::select! {
@@ -1046,6 +1053,7 @@ pub(crate) async fn receive_video(
                 Some((packet, true))
             }
             Some(packet)=repair_rx.recv()=>Some((packet, false)),
+            packet=async {match &fec {Some(fec)=>fec.next().await,None=>std::future::pending().await}}=>Some((packet,false)),
             due=ticker.tick()=>{tick_late.push(due.elapsed().as_secs_f64() * 1000.0);None},
         };
         let now = Instant::now();
@@ -1059,6 +1067,7 @@ pub(crate) async fn receive_video(
                 if !primary || latest_primary.is_some_and(|last| (packet.header.sequence_number.wrapping_sub(last) as i16) < 0) { continue; }
                 let Some(next_codec) = video_codec(&track.codec().capability) else { continue; };
                 active_payload_type = packet.header.payload_type;
+                if let Some(fec) = &fec { fec.source(track.ssrc(), active_payload_type); }
                 if codec != next_codec {
                     codec = next_codec;
                     receiver.change_codec(codec, packet.header.sequence_number);
@@ -1070,6 +1079,7 @@ pub(crate) async fn receive_video(
             if primary && latest_primary.map_or(true, |last| (packet.header.sequence_number.wrapping_sub(last) as i16) > 0) {
                 latest_primary = Some(packet.header.sequence_number);
             }
+            if let Some(fec) = &fec { fec.observe(&packet); }
             if let Some(s) = &stats {
                 s.packets.fetch_add(1, Ordering::Relaxed);
             }

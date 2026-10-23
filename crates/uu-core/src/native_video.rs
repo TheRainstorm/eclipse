@@ -25,24 +25,30 @@ impl Payloader for HevcPayloader {
 pub(crate) struct Sender {
     track:Arc<TrackLocalStaticRTP>,payloader:Box<dyn Payloader+Send+Sync>,sequence:Box<dyn Sequencer+Send+Sync>,
     origin:Option<u64>,last_pts:Option<u64>,timestamp:u32,
+    fec:Option<crate::native_fec::Encoder>,
 
 }
 impl Sender {
     pub fn new(track:Arc<TrackLocalStaticRTP>,codec:VideoCodec)->Self{
         let payloader:Box<dyn Payloader+Send+Sync>=match codec{VideoCodec::H264=>Box::<webrtc::rtp::codecs::h264::H264Payloader>::default(),VideoCodec::Hevc=>Box::<HevcPayloader>::default(),VideoCodec::Av1=>Box::<webrtc::rtp::codecs::av1::Av1Payloader>::default()};
-        Self{track,payloader,sequence:Box::new(new_random_sequencer()),origin:None,last_pts:None,timestamp:rand::random()}
+        Self{track,payloader,sequence:Box::new(new_random_sequencer()),origin:None,last_pts:None,timestamp:rand::random(),fec:None}
+    }
+    pub fn with_fec(track:Arc<TrackLocalStaticRTP>,codec:VideoCodec,transport:Arc<crate::native_fec::Transport>)->Self {
+        let mut sender=Self::new(track,codec);sender.fec=Some(crate::native_fec::Encoder::new(transport));sender
     }
     pub async fn frame(&mut self,encoded:&uu_media::EncodedFrame)->Result<()>{
         ensure!(encoded.data.len()<=crate::video_receiver::MAX_AU,"native encoded frame exceeds access-unit budget");
         let origin=*self.origin.get_or_insert(encoded.pts.0);
         ensure!(encoded.pts.0>=origin && self.last_pts.map_or(true,|previous|encoded.pts.0>previous),"native encoder timestamp did not advance");
         let timestamp=self.timestamp.wrapping_add(((encoded.pts.0-origin) as u128*90_000/1_000_000) as u32);
-        let payloads=self.payloader.payload(1188,&encoded.data)?;
+        let mtu=if self.fec.as_ref().is_some_and(|fec|fec.enabled()){crate::native_fec::PAYLOAD}else{1188};
+        let payloads=self.payloader.payload(mtu,&encoded.data)?;
         ensure!(!payloads.is_empty(),"native encoder emitted no packetizable video");
         let count=payloads.len();
         for (index,payload) in payloads.into_iter().enumerate(){
             let packet=Packet{header:Header{version:2,sequence_number:self.sequence.next_sequence_number(),timestamp,marker:index+1==count,..Default::default()},payload};
             self.track.write_rtp(&packet).await?;
+            if let Some(fec)=&mut self.fec {fec.packet(&packet);}
         }self.last_pts=Some(encoded.pts.0);Ok(())
     }
 

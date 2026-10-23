@@ -171,12 +171,15 @@ impl super::App {
             // This sum is an approximation across different sample populations,
             // not an input-correlated end-to-end measurement or strict lower bound.
             // Render is CPU preparation/submission time, excluding vsync wait.
+            let fec_line = if s.fec_enabled.load(Relaxed) || s.fec_packets.load(Relaxed)>0 {
+                format!("\nFEC XOR · 校验 {} 包 · 恢复 {} 包 · 校验内容 {:.2} MiB · 无效/丢弃 {}",s.fec_packets.load(Relaxed),s.fec_recovered.load(Relaxed),s.fec_bytes.load(Relaxed) as f64/1048576.,s.fec_drops.load(Relaxed))
+            } else {String::new()};
             let text = format!(
             "{w}×{h}@{rd:.0}   {codec} · {decoder}   目标 {} FPS{source}   FPS {:.1} Rx · {:.1} De · {rd:.1} Rd\n\
              控制 RTT {network}{rtt_tail}   Loss {:.2}%   Bandwidth {:.2} Mbps | Render {:.2}ms · Decode {:.2}ms\n\
              {pipeline_line}{native_line}\n\
              丢包 {} · NACK {} · RTX {} · 乱序 {} · 迟到 {} · 坏帧 {} · 解码错误 {} · 丢队列 {} · 恢复请求 {}\n\
-             恢复触发：接收损坏 {} · 解码积压 {} · 解码器错误 {} · 格式切换 {}",
+             恢复触发：接收损坏 {} · 解码积压 {} · 解码器错误 {} · 格式切换 {}{fec_line}",
             target_fps, s.src_fps(), s.dec_fps(), s.loss_ppm.load(Relaxed) as f32 / 10000.0,
             s.bitrate_kbps.load(Relaxed) as f32 / 1000.0, self.render_ms, s.decode_ms(),
             s.lost.load(Relaxed), s.nack_requests.load(Relaxed), s.rtx_packets.load(Relaxed),

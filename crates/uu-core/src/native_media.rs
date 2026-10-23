@@ -194,6 +194,7 @@ pub(crate) struct NativePeer {
     pub pc: Arc<RTCPeerConnection>,
     mux: Option<Arc<UDPMuxDefault>>,
     pub repairs: Arc<RepairBus>,
+    fec: Arc<crate::native_fec::Transport>,
     pub states: watch::Receiver<RTCPeerConnectionState>,
     closed: AtomicBool,
     development_relay: bool,
@@ -323,6 +324,7 @@ impl NativePeer {
             pc,
             mux,
             repairs,
+            fec: crate::native_fec::Transport::new(sender, stats.clone()),
             states,
             closed: AtomicBool::new(false),
             development_relay:false,
@@ -330,6 +332,7 @@ impl NativePeer {
         })
     }
     pub async fn receiver(&self, frames: FrameSender, stats: Arc<MediaStats>) -> Result<()> {
+        self.fec.receiver(&self.pc).await?;
         // Driver startup must finish before the peer can send video, otherwise
         // the bounded AU queue can overflow while the first decoder boots.
         // Hardware handles keep their COM/VA-API state on their own OS worker;
@@ -344,9 +347,11 @@ impl NativePeer {
         let audio_claimed=Arc::new(AtomicBool::new(false));
         let weak = Arc::downgrade(&self.pc);
         let repairs = self.repairs.clone();
+        let fec = self.fec.receive.clone();
         self.pc.on_track(Box::new(move |track, _, _| {
             let weak = weak.clone();
             let repairs = repairs.clone();
+            let fec = fec.clone();
             let frames = frames.clone();
             let stats = stats.clone();
             let prepared = prepared.clone();
@@ -366,6 +371,7 @@ impl NativePeer {
                             Some(stats),
                             repairs,
                             Some(decoder),
+                            Some(fec),
                         ));
                     }
                 } else if track.kind()==RTPCodecType::Audio && !audio_claimed.swap(true,Ordering::AcqRel) {
@@ -441,7 +447,7 @@ impl NativePeer {
                 }
             }
         });
-        Ok(crate::native_video::Sender::new(track,codec))
+        Ok(crate::native_video::Sender::with_fec(track,codec,self.fec.clone()))
     }
     pub async fn description(&self, offer: bool) -> Result<RTCSessionDescription> {
         let description = if offer {
@@ -454,20 +460,24 @@ impl NativePeer {
         timeout(Duration::from_secs(10), gathered.recv())
             .await
             .context("native ICE gathering timed out")?;
-        self.pc
+        let mut description = self.pc
             .local_description()
             .await
-            .context("native local SDP unavailable")
+            .context("native local SDP unavailable")?;
+        self.fec.description(&mut description);
+        Ok(description)
     }
     pub async fn remote(&self, description: RTCSessionDescription, peer_ip: IpAddr) -> Result<()> {
         validate_candidates(&description.sdp, peer_ip)?;
         self.repairs.configure(&description.sdp);
+        self.fec.remote(&self.pc, &description).await?;
         self.pc.set_remote_description(description).await?;
         Ok(())
     }
     pub async fn remote_direct(&self, description: RTCSessionDescription) -> Result<()> {
         crate::direct_ice::validate_sdp(&description.sdp,self.development_relay)?;
         self.repairs.configure(&description.sdp);
+        self.fec.remote(&self.pc, &description).await?;
         self.pc.set_remote_description(description).await?;
         Ok(())
     }
@@ -501,6 +511,7 @@ impl NativePeer {
             "development_relay":self.development_relay,"local_type":local_type,"remote_type":remote_type,"transport":"udp"}))
     }
     pub async fn close(&self) {
+        self.fec.stop();
         self.pending_decoder.lock().unwrap().take();
         if !self.closed.load(Ordering::Acquire) {
             let _ = self.pc.close().await;
@@ -511,6 +522,7 @@ impl NativePeer {
 }
 impl Drop for NativePeer {
     fn drop(&mut self) {
+        self.fec.stop();
         self.pending_decoder.lock().unwrap().take();
         if !self.closed.swap(true, Ordering::AcqRel) {
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {

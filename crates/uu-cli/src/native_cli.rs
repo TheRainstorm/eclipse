@@ -176,6 +176,7 @@ fn snapshot(stats: &MediaStats, elapsed: Duration) -> serde_json::Value {
         "loss_ppm":stats.loss_ppm.load(Ordering::Relaxed),"errors":stats.errors.load(Ordering::Relaxed),
         "packets":stats.packets.load(Ordering::Relaxed),"lost":stats.lost.load(Ordering::Relaxed),
         "nack_requests":stats.nack_requests.load(Ordering::Relaxed),"rtx_packets":stats.rtx_packets.load(Ordering::Relaxed),
+        "fec":{"enabled":stats.fec_enabled.load(Ordering::Relaxed),"packets":stats.fec_packets.load(Ordering::Relaxed),"bytes":stats.fec_bytes.load(Ordering::Relaxed),"recovered":stats.fec_recovered.load(Ordering::Relaxed),"drops":stats.fec_drops.load(Ordering::Relaxed)},
         "damaged_frames":stats.damaged_frames.load(Ordering::Relaxed),"queue_drops":stats.queue_drops.load(Ordering::Relaxed),
         "injected_loss":stats.injected_loss.load(Ordering::Relaxed),"keyframe_requests":stats.keyframe_requests.load(Ordering::Relaxed),
         "waiting_for_keyframe":stats.waiting_for_keyframe.load(Ordering::Relaxed),
