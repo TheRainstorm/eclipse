@@ -1,10 +1,7 @@
 //! Windows GPU-driver H.264 MFT, written against the Media Foundation API.
 //! Only hardware-registered async transforms are enumerated. NV12 input is
 //! uploaded from CPU memory; this is hardware encoding, not GPU zero-copy.
-use super::{
-    upload::upload_frame,
-    Settings,
-};
+use super::{upload::upload_frame, Settings};
 use crate::{EncodedFrame, RawFrame};
 use std::{mem::ManuallyDrop, ptr};
 use windows::core::{Interface, GUID};
@@ -136,7 +133,6 @@ pub(super) struct Driver {
     output_id: u32,
     input_credit: u32,
     settings: Settings,
-    nv12: Vec<u8>,
     sequence: Vec<u8>,
     name: String,
     profile: Option<[u128; 4]>,
@@ -160,7 +156,6 @@ impl Driver {
                         output_id,
                         input_credit: 0,
                         settings,
-                        nv12: Vec::new(),
                         sequence: Vec::new(),
                         name: format!("mf (H.264 hardware, {name})"),
                         profile: std::env::var_os("UU_ENCODE_PROFILE").map(|_| [0; 4]),
@@ -273,15 +268,10 @@ impl Driver {
             if (frame.width, frame.height) != (self.settings.width, self.settings.height) {
                 return Err("MFT input dimensions changed".into());
             }
-            let pixels = frame.width as usize * frame.height as usize;
-            self.nv12.resize(pixels * 3 / 2, 0);
-            upload_frame(
-                frame,
-                (frame.width, frame.height),
-                [frame.width, frame.width, 0],
-                [0, pixels as u32, 0],
-                &mut self.nv12,
-            )?;
+            // A fresh MF-owned sample keeps its storage alive for the
+            // asynchronous transform. Never recycle a buffer on input credit:
+            // the transform may still retain its sample reference.
+            let sample = input_sample(frame, self.settings.fps)?;
             let converted = started.elapsed();
             if keyframe {
                 self.codec
@@ -296,7 +286,6 @@ impl Driver {
                     return Err("MFT retained unexpected old output".into());
                 }
             }
-            let sample = input_sample(&self.nv12, frame.pts.0, self.settings.fps)?;
             self.transform
                 .ProcessInput(self.input_id, &sample, 0)
                 .map_err(|e| format!("hardware ProcessInput: {e}"))?;
@@ -502,22 +491,140 @@ unsafe fn video_type(settings: Settings, subtype: GUID) -> Result<IMFMediaType, 
         Ok(ty)
     }
 }
-unsafe fn input_sample(data: &[u8], pts: u64, fps: u32) -> Result<IMFSample, String> {
+// Unlock on every conversion/validation error before releasing the buffer.
+struct LockedInput<'a>(Option<&'a IMFMediaBuffer>);
+impl LockedInput<'_> {
+    unsafe fn finish(mut self) -> Result<(), String> {
+        self.0
+            .take()
+            .ok_or("MFT input was already unlocked")?
+            .Unlock()
+            .map_err(reason)
+    }
+}
+impl Drop for LockedInput<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(buffer) = self.0.take() {
+                let _ = buffer.Unlock();
+            }
+        }
+    }
+}
+
+unsafe fn input_sample(frame: &RawFrame, fps: u32) -> Result<IMFSample, String> {
     unsafe {
+        let (w, h, _) = crate::convert::validate_cpu_frame(frame).map_err(reason)?;
+        let timestamp = frame
+            .pts
+            .0
+            .checked_mul(10)
+            .and_then(|v| i64::try_from(v).ok())
+            .ok_or("MFT timestamp overflow")?;
+        if fps == 0 {
+            return Err("MFT frame rate must be positive".into());
+        }
+        let length = w * h * 3 / 2;
         let sample = MFCreateSample().map_err(reason)?;
-        let buffer = MFCreateMemoryBuffer(data.len() as u32).map_err(reason)?;
+        let buffer = MFCreateMemoryBuffer(length as u32).map_err(reason)?;
         let mut pointer = ptr::null_mut();
-        buffer.Lock(&mut pointer, None, None).map_err(reason)?;
-        ptr::copy_nonoverlapping(data.as_ptr(), pointer, data.len());
-        buffer.Unlock().map_err(reason)?;
-        buffer.SetCurrentLength(data.len() as u32).map_err(reason)?;
-        sample.AddBuffer(&buffer).map_err(reason)?;
-        sample
-            .SetSampleTime(pts.checked_mul(10).ok_or("MFT timestamp overflow")? as i64)
+        let mut capacity = 0;
+        buffer
+            .Lock(&mut pointer, Some(&mut capacity), None)
             .map_err(reason)?;
+        {
+            let locked = LockedInput(Some(&buffer));
+            if pointer.is_null() || (capacity as usize) < length {
+                return Err("MFT input buffer is shorter than the NV12 frame".into());
+            }
+            let target = std::slice::from_raw_parts_mut(pointer, length);
+            upload_frame(
+                frame,
+                (frame.width, frame.height),
+                [frame.width, frame.width, 0],
+                [0, (w * h) as u32, 0],
+                target,
+            )?;
+            locked.finish()?;
+        }
+        buffer.SetCurrentLength(length as u32).map_err(reason)?;
+        sample.AddBuffer(&buffer).map_err(reason)?;
+        sample.SetSampleTime(timestamp).map_err(reason)?;
         sample
             .SetSampleDuration(10_000_000 / i64::from(fps))
             .map_err(reason)?;
         Ok(sample)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{PixelFormat, Timestamp};
+
+    unsafe fn sample_bytes(sample: &IMFSample) -> Vec<u8> {
+        let buffer = sample.GetBufferByIndex(0).unwrap();
+        let mut pointer = ptr::null_mut();
+        let mut length = 0;
+        buffer.Lock(&mut pointer, None, Some(&mut length)).unwrap();
+        let _locked = LockedInput(Some(&buffer));
+        std::slice::from_raw_parts(pointer, length as usize).to_vec()
+    }
+
+    #[test]
+    fn owned_mf_samples_convert_padded_inputs_and_keep_independent_storage() {
+        let _runtime = Runtime::start().unwrap();
+        for format in [PixelFormat::Bgra8, PixelFormat::Nv12, PixelFormat::I420] {
+            let (w, h) = (34u32, 4u32);
+            let stride = w * if format == PixelFormat::Bgra8 { 4 } else { 1 } + 7;
+            let mut data = vec![
+                255;
+                match format {
+                    PixelFormat::Bgra8 => (stride * h) as usize,
+                    PixelFormat::Nv12 => (stride * h * 3 / 2) as usize,
+                    PixelFormat::I420 => (stride * h + w * h / 2) as usize,
+                }
+            ];
+            if format != PixelFormat::Bgra8 {
+                data[(stride * h) as usize..].fill(128);
+            }
+            let mut frame = RawFrame {
+                width: w,
+                height: h,
+                stride,
+                format,
+                data: data.into(),
+                pts: Timestamp(123456),
+                gpu: false,
+                dma_buf: None,
+                d3d11: None,
+            };
+            unsafe {
+                let first = input_sample(&frame, 60).unwrap();
+                assert_eq!(first.GetSampleTime().unwrap(), 1_234_560);
+                assert_eq!(first.GetSampleDuration().unwrap(), 10_000_000 / 60);
+                let before = sample_bytes(&first);
+                assert_eq!(&before[..(w * h) as usize], &vec![235; (w * h) as usize]);
+                assert_eq!(
+                    &before[(w * h) as usize..],
+                    &vec![128; (w * h / 2) as usize]
+                );
+                let mut next = frame.data.to_vec();
+                next[..(stride * h) as usize].fill(0);
+                frame.data = next.into();
+                let second = input_sample(&frame, 60).unwrap();
+                assert_eq!(
+                    &sample_bytes(&second)[..(w * h) as usize],
+                    &vec![16; (w * h) as usize]
+                );
+                assert_eq!(sample_bytes(&first), before);
+                frame.pts = Timestamp(u64::MAX);
+                assert!(input_sample(&frame, 60).is_err());
+                frame.pts = Timestamp(0);
+                assert!(input_sample(&frame, 0).is_err());
+                frame.data = bytes::Bytes::from_static(&[0; 4]);
+                assert!(input_sample(&frame, 60).is_err());
+            }
+        }
     }
 }
