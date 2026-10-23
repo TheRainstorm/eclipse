@@ -1,8 +1,9 @@
-//! Windows GPU-driver H.264 MFT, written against the Media Foundation API.
+//! Windows GPU-driver H.264 / HEVC / AV1 MFTs through Media Foundation.
 //! Only hardware-registered async transforms are enumerated. NV12 input is
 //! uploaded from CPU memory; this is hardware encoding, not GPU zero-copy.
 use super::{upload::upload_frame, Settings};
 use crate::{EncodedFrame, RawFrame};
+use uu_proto::media::VideoCodec;
 use std::{mem::ManuallyDrop, ptr};
 use windows::core::{Interface, GUID};
 use windows::Win32::{
@@ -19,6 +20,12 @@ fn reason(e: impl std::fmt::Display) -> String {
 }
 fn pack(a: u32, b: u32) -> u64 {
     (u64::from(a) << 32) | u64::from(b)
+}
+fn subtype(codec:VideoCodec)->GUID {
+    match codec {VideoCodec::H264=>MFVideoFormat_H264,VideoCodec::Hevc=>MFVideoFormat_HEVC,VideoCodec::Av1=>MFVideoFormat_AV1}
+}
+fn codec_label(codec:VideoCodec)->&'static str {
+    match codec {VideoCodec::H264=>"H.264",VideoCodec::Hevc=>"HEVC",VideoCodec::Av1=>"AV1"}
 }
 
 // Declared last in Driver: the transform is released before COM/MF shut down.
@@ -60,7 +67,7 @@ struct Activations {
     count: u32,
 }
 impl Activations {
-    fn hardware() -> Result<Self, String> {
+    fn hardware(codec:VideoCodec) -> Result<Self, String> {
         unsafe {
             let mut value = Self {
                 entries: ptr::null_mut(),
@@ -72,7 +79,7 @@ impl Activations {
             };
             let output = MFT_REGISTER_TYPE_INFO {
                 guidMajorType: MFMediaType_Video,
-                guidSubtype: MFVideoFormat_H264,
+                guidSubtype: subtype(codec),
             };
             MFTEnumEx(
                 MFT_CATEGORY_VIDEO_ENCODER,
@@ -134,6 +141,7 @@ pub(super) struct Driver {
     input_credit: u32,
     settings: Settings,
     sequence: Vec<u8>,
+    headers: super::headers::Headers,
     name: String,
     profile: Option<[u128; 4]>,
     gpu:Option<super::gpu::Input>,
@@ -144,7 +152,7 @@ pub(super) struct Driver {
 impl Driver {
     pub(super) fn open(settings: Settings) -> Result<Self, String> {
         let runtime = Runtime::start()?;
-        let activations = Activations::hardware()?;
+        let activations = Activations::hardware(settings.codec)?;
         let mut failures = Vec::new();
         for activation in activations.entries().iter().flatten() {
             let name = friendly(activation);
@@ -171,8 +179,9 @@ impl Driver {
                         input_credit: 0,
                         settings,
                         sequence: Vec::new(),
+                        headers: Default::default(),
                         name: format!(
-                            "mf (H.264 {}, {name})",
+                            "mf ({} {}, {name})",codec_label(settings.codec),
                             if matches!(settings.rate_control, super::RateControl::Vbr { .. }) {
                                 "VBR"
                             } else {
@@ -192,7 +201,7 @@ impl Driver {
                 }
             }
         }
-        Err(format!("no usable Windows hardware H.264 MFT; install/enable the Intel/AMD/NVIDIA graphics driver: {}",
+        Err(format!("no usable Windows hardware {} MFT; install/enable the Intel/AMD/NVIDIA graphics driver: {}",codec_label(settings.codec),
             if failures.is_empty(){"no hardware encoder was registered".into()}else{failures.join("; ")}))
     }
     unsafe fn activate(
@@ -267,14 +276,19 @@ impl Driver {
                 Err(e) if e.code() == E_NOTIMPL => {}
                 Err(e) => return Err(reason(e)),
             }
-            let out = video_type(settings, MFVideoFormat_H264)?;
+            let out = video_type(settings, subtype(settings.codec))?;
             out.SetUINT32(&MF_MT_AVG_BITRATE, settings.bitrate_kbps * 1000)
                 .map_err(reason)?;
-            out.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base.0 as u32)
+            let profile=match settings.codec {
+                VideoCodec::H264=>eAVEncH264VProfile_Base.0,
+                VideoCodec::Hevc=>eAVEncH265VProfile_Main_420_8.0,
+                VideoCodec::Av1=>eAVEncAV1VProfile_Main_420_8.0,
+            };
+            out.SetUINT32(&MF_MT_MPEG2_PROFILE, profile as u32)
                 .map_err(reason)?;
             transform
                 .SetOutputType(output[0], &out, 0)
-                .map_err(|e| format!("H.264 output type: {e}"))?;
+                .map_err(|e| format!("{} output type: {e}",codec_label(settings.codec)))?;
             let input_type = video_type(settings, MFVideoFormat_NV12)?;
             input_type
                 .SetUINT32(&MF_MT_DEFAULT_STRIDE, settings.width)
@@ -451,46 +465,50 @@ impl Driver {
             if data.is_empty() {
                 return Err("hardware MFT returned an empty access unit".into());
             }
-            let idr = EncodedFrame::detect_h264_keyframe(&data);
-            if keyframe && !idr {
-                return Err("hardware MFT did not honour the requested recovery IDR".into());
-            }
-            if idr {
-                let ty = self
-                    .transform
-                    .GetOutputCurrentType(self.output_id)
-                    .map_err(reason)?;
-                if let Ok(size) = ty.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER) {
-                    if size > 0 && size <= 65536 {
-                        self.sequence.resize(size as usize, 0);
-                        ty.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut self.sequence, None)
-                            .map_err(reason)?;
+            let codec=self.settings.codec;
+            let has_sequence=|bytes:&[u8]|match codec {
+                VideoCodec::H264=>crate::bitstream::h264_dimensions(bytes).is_some(),
+                VideoCodec::Hevc=>crate::hevc::sequence(bytes).is_some(),
+                VideoCodec::Av1=>crate::av1::sequence(bytes).is_some(),
+            };
+            let clean=sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0)!=0;
+            if (keyframe || clean) && !has_sequence(&data) {
+                let ty=self.transform.GetOutputCurrentType(self.output_id).map_err(reason)?;
+                if let Ok(size)=ty.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER) {
+                    if size>0 && size<=65536 {
+                        self.sequence.resize(size as usize,0);
+                        ty.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER,&mut self.sequence,None).map_err(reason)?;
                     }
                 }
-                if crate::bitstream::h264_dimensions(&data).is_none() && !self.sequence.is_empty() {
-                    let mut complete = self.sequence.clone();
-                    complete.extend_from_slice(&data);
-                    data = complete;
-                }
-                data = super::low_delay::declare_no_reordering(&data)?;
-                if crate::bitstream::h264_dimensions(&data) != Some((frame.width, frame.height)) {
-                    return Err("hardware recovery IDR has no matching SPS/PPS geometry".into());
-                }
-                if crate::color::from_h264(&data) != Some(crate::color::YuvColor::Limited601) {
-                    return Err(
-                        "hardware SPS colour does not match the limited BT.601 NV12 input".into(),
-                    );
+                if !self.sequence.is_empty() {
+                    let mut complete=self.sequence.clone();complete.extend_from_slice(&data);data=complete;
                 }
             }
-            Ok(Some(EncodedFrame {
-                data: data.into(),
-                pts: frame.pts,
-                is_keyframe: idr,
-            }))
+            let idr=match codec {
+                VideoCodec::H264=>EncodedFrame::detect_h264_keyframe(&data),
+                VideoCodec::Hevc=>crate::hevc::is_keyframe(&data),
+                VideoCodec::Av1=>crate::av1::is_keyframe(&data),
+            };
+            if keyframe && !idr {return Err("hardware MFT did not honour the requested recovery keyframe".into());}
+            let mut encoded=EncodedFrame{data:data.into(),pts:frame.pts,is_keyframe:idr};
+            self.headers.prepare(codec,&mut encoded)?;
+            if idr {
+                if codec==VideoCodec::H264 {encoded.data=super::low_delay::declare_no_reordering(&encoded.data)?.into();}
+                let metadata=match codec {
+                    VideoCodec::H264=>crate::bitstream::h264_dimensions(&encoded.data).zip(crate::color::from_h264(&encoded.data)),
+                    VideoCodec::Hevc=>crate::hevc::sequence(&encoded.data).map(|s|((s.width,s.height),s.color)),
+                    VideoCodec::Av1=>crate::av1::sequence(&encoded.data).map(|s|((s.width,s.height),s.color)),
+                };
+                if metadata!=Some(((frame.width,frame.height),crate::color::YuvColor::Limited601)) {
+                    return Err(format!("hardware recovery frame has incompatible geometry/colour: {metadata:?}"));
+                }
+            }
+            Ok(Some(encoded))
         }
     }
 }
 impl super::worker::Driver for Driver {
+    fn codec(&self)->VideoCodec {self.settings.codec}
     fn gpu_input(&self)->bool {self.gpu_capable}
     fn backend_name(&self) -> &str {
         &self.name

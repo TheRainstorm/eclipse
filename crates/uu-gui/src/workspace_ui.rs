@@ -1493,7 +1493,7 @@ impl Workspace {
                     muted(ui, if self.draft.codec==Some(uu_core::native::VideoCodec::H264) {
                         "H.264 VBR 需要硬件编码；Windows 自动模式可使用 Media Foundation，显式 Intel 模式使用 VPL。控制端需支持相同格式。"
                     } else {
-                        "HEVC / AV1 当前需要 Intel VPL 硬件编码；控制端需支持相同格式，连接时自动核验。"
+                        "Windows 按格式使用显卡驱动的硬件编码器；显式 Intel 使用 VPL。控制端需支持相同格式，连接时自动核验。"
                     });
                 }
                 }

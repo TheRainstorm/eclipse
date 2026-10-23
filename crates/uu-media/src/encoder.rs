@@ -13,7 +13,7 @@ mod profile;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 mod vaapi;
 mod worker;
-#[cfg(any(test,feature="intel-vpl"))]
+#[cfg(any(test,feature="intel-vpl",all(windows,feature="mf-encode")))]
 mod headers;
 #[cfg(all(feature="intel-vpl",any(windows,target_os="linux")))]
 mod vpl;
@@ -119,15 +119,14 @@ fn requires_vpl(settings: Settings, windows: bool) -> bool {
     // Windows Media Foundation supports H.264 CBR and peak-constrained VBR.
     // Linux VA-API remains CBR-only here, so other rate-control modes use VPL.
     settings.preference == Preference::Intel
-        || settings.codec != VideoCodec::H264
-        || (!windows && settings.rate_control != RateControl::Cbr)
+        || (!windows && (settings.codec != VideoCodec::H264 || settings.rate_control != RateControl::Cbr))
 }
 
 fn hardware(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
     let windows = cfg!(windows);
     let platform_cbr_only = !windows;
     let vpl_required = requires_vpl(settings, windows);
-    if matches!(settings.preference,Preference::Nvidia|Preference::Amd)
+    if !windows && matches!(settings.preference,Preference::Nvidia|Preference::Amd)
         && (settings.codec!=VideoCodec::H264
             || (platform_cbr_only && settings.rate_control!=RateControl::Cbr))
     {
@@ -136,6 +135,21 @@ fn hardware(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
         } else {
             "当前 NVIDIA / AMD 后端支持 H.264 CBR；HEVC / AV1 和 VBR 厂商接口尚未接入"
         }));
+    }
+    #[cfg(all(windows,feature="mf-encode"))]
+    if settings.preference!=Preference::Intel {
+        match worker::Worker::spawn(move||mf::Driver::open(settings)) {
+            Ok(encoder)=>return Ok(Box::new(encoder)),
+            Err(mf_error)=>{
+                #[cfg(feature="intel-vpl")]
+                if matches!(settings.preference,Preference::Auto|Preference::Hardware) && settings.codec!=VideoCodec::H264 {
+                    return worker::Worker::spawn(move||vpl::Driver::open(settings))
+                        .map(|encoder|Box::new(encoder) as Box<dyn VideoEncoder>)
+                        .map_err(|vpl_error|error(format!("Media Foundation: {mf_error}; Intel VPL: {vpl_error}")));
+                }
+                return Err(mf_error);
+            }
+        }
     }
     #[cfg(all(feature="intel-vpl",any(windows,target_os="linux")))]
     if vpl_required
@@ -347,7 +361,7 @@ mod tests {
         )
     }
     #[test]
-    fn backend_policy_uses_mf_for_windows_h264_vbr_and_vpl_for_intel_or_hevc() {
+    fn backend_policy_uses_windows_mf_for_all_formats_and_vpl_for_explicit_intel() {
         let base = settings();
         let vbr = Settings {
             rate_control: RateControl::Vbr { peak_kbps: 2000 },
@@ -355,7 +369,7 @@ mod tests {
         };
         assert!(!requires_vpl(vbr, true));
         assert!(requires_vpl(vbr, false));
-        assert!(requires_vpl(
+        assert!(!requires_vpl(
             Settings {
                 codec: VideoCodec::Hevc,
                 ..base
@@ -373,6 +387,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(all(windows,feature="mf-encode")))]
     fn explicit_non_intel_backends_reject_unimplemented_codecs_without_falling_back() {
         for preference in [Preference::Nvidia,Preference::Amd] {
             for codec in [VideoCodec::Hevc,VideoCodec::Av1] {

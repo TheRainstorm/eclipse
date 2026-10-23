@@ -9,18 +9,18 @@ pub fn rendering() -> bool {
     RENDERING.load(Ordering::Acquire)
 }
 
-#[cfg(all(windows, feature = "d3d11va"))]
+#[cfg(all(windows, any(feature = "d3d11va", feature = "mf-encode")))]
 #[path = "d3d11_frame_windows.rs"]
 mod platform;
-#[cfg(all(windows, feature = "d3d11va"))]
+#[cfg(all(windows, any(feature = "d3d11va", feature = "mf-encode")))]
 pub use platform::*;
 
-#[cfg(not(all(windows, feature = "d3d11va")))]
+#[cfg(not(all(windows, any(feature = "d3d11va", feature = "mf-encode"))))]
 #[derive(Debug)]
 pub struct Frame {
     _private: (),
 }
-#[cfg(not(all(windows, feature = "d3d11va")))]
+#[cfg(not(all(windows, any(feature = "d3d11va", feature = "mf-encode"))))]
 impl Frame {
     pub fn valid(&self, _: [u32; 2]) -> bool {
         false
