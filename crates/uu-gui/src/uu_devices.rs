@@ -162,7 +162,7 @@ impl Manager {
                 if let Some(device) = self.confirmation.clone() {
                     ui.separator();
                     ui.label(format!("确认解绑“{}”（{}）？", device.alias, device.device_id));
-                    if device.current { ui.label("解绑本客户端会退出 UU 登录并停止本机共享。"); }
+                    if device.current { ui.label("解绑本客户端会退出 UU 登录；若当前共享启用了 UU 入口，也会停止该次共享。"); }
                     ui.horizontal(|ui| {
                         if ui.add_enabled(!busy, egui::Button::new("确认解绑")).clicked() {
                             operation = Some(Operation::Unbind(device.device_id));
