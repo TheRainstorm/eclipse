@@ -54,12 +54,12 @@ pub struct Platform {
     #[cfg(windows)]
     window: windows_sys::Win32::Foundation::HWND,
     #[cfg(windows)]
-    hook: Option<windows::KeyboardHook>,
+    hook: Option<std::rc::Rc<windows::KeyboardHook>>,
     #[cfg(windows)]
-    old_proc: isize,
+    route: std::sync::Arc<windows::Route>,
     #[cfg(windows)]
     focus_events: std::cell::RefCell<std::collections::VecDeque<serde_json::Value>>,
-    show_pending: bool,
+    show_pending: std::cell::Cell<bool>,
 }
 impl Platform {
     pub fn new(_cc: &eframe::CreationContext<'_>, _origin: Option<(i32, i32)>) -> Self {
@@ -75,15 +75,14 @@ impl Platform {
                     windows::place_startup(window, origin);
                 }
             }
-            let _=windows::CAPTURE_CONTEXT.set(_cc.egui_ctx.clone());
-            let old_proc=unsafe{windows::install_window_keyboard(window)};
-            let hook = unsafe { windows::install_keyboard_hook(window) };
+            let route=unsafe{windows::install_window_keyboard(window, _cc.egui_ctx.clone())};
+            let hook = unsafe { windows::shared_keyboard_hook(window) };
             Self {
                 window,
                 hook,
-                old_proc,
+                route,
                 focus_events: Default::default(),
-                show_pending: true,
+                show_pending: std::cell::Cell::new(true),
             }
         }
         #[cfg(not(windows))]
@@ -91,7 +90,7 @@ impl Platform {
             Self {
                 #[cfg(target_os = "linux")]
                 wayland: std::cell::RefCell::new(wayland_capture::Capture::new(_cc)),
-                show_pending: false,
+                show_pending: std::cell::Cell::new(false),
             }
         }
     }
@@ -117,12 +116,17 @@ impl Platform {
             None
         }
     }
+    /// Select the session that owns this window's input queue. The caller first
+    /// releases the previous session's remote keys, pointer and gamepads.
+    pub fn select_session(&self,session:u64) {
+        #[cfg(windows)] self.route.select(session);
+        #[cfg(not(windows))] let _=session;
+    }
     pub fn window_keyboard(&self,active:bool,shortcuts:bool,nested_passthrough:bool)->bool {
         #[cfg(windows)] {
-            windows::LOCAL_SHORTCUTS.store(shortcuts,std::sync::atomic::Ordering::Release);
-            windows::NESTED_PASSTHROUGH.store(nested_passthrough,std::sync::atomic::Ordering::Release);
-            let active=active&&self.old_proc!=0;
-            windows::WINDOW_INPUT.store(active,std::sync::atomic::Ordering::Release);active
+            let active=active&&self.route.old_proc!=0;
+            self.route.set_policy(active,shortcuts,nested_passthrough);
+            active
         }
         #[cfg(not(windows))] {let _=(active,shortcuts,nested_passthrough);false}
     }
@@ -130,7 +134,7 @@ impl Platform {
         #[cfg(windows)] {
             if let Some(hook)=&self.hook {hook.probe();}
             let active=active && self.hook.as_ref().is_some_and(|hook| hook.alive());
-            windows::CAPTURE.store(active,std::sync::atomic::Ordering::Release);
+            self.route.set_capture(active);
             active
         }
         #[cfg(target_os = "linux")]
@@ -141,22 +145,22 @@ impl Platform {
     }
     pub fn captured_keys(&self) -> Vec<crate::keyboard_capture::Decision> {
         #[cfg(windows)] {
-            let mut queue=windows::CAPTURE_QUEUE.lock().unwrap();
+            let mut queue=self.route.queue.lock().unwrap();
             queue.drain(..).collect()
         }
         #[cfg(not(windows))] {Vec::new()}
     }
     pub fn capture_overflowed(&self)->bool {
-        #[cfg(windows)] {windows::CAPTURE_OVERFLOW.swap(false,std::sync::atomic::Ordering::AcqRel)}
+        #[cfg(windows)] {self.route.overflow.swap(false,std::sync::atomic::Ordering::AcqRel)}
         #[cfg(not(windows))] {false}
     }
     /// Aggregate routing metadata only: never record typed keys or window titles.
     pub fn keyboard_diagnostics(&self)->Option<serde_json::Value> {
-        #[cfg(windows)] {Some(unsafe{windows::keyboard_diagnostics(self.window,self.hook.as_ref())})}
+        #[cfg(windows)] {Some(unsafe{windows::keyboard_diagnostics(self.window,self.hook.as_deref())})}
         #[cfg(not(windows))] {None}
     }
-    pub fn show(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.show_pending) {
+    pub fn show(&self, ctx: &egui::Context) {
+        if self.show_pending.replace(false) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             self.focus_window();
@@ -182,7 +186,7 @@ impl Drop for Platform {
     fn drop(&mut self) {
         unsafe {
             self.hook.take();
-            windows::remove_window_keyboard(self.window,self.old_proc);
+            windows::remove_window_keyboard(self.window,&self.route);
         }
     }
 }
@@ -270,20 +274,52 @@ mod windows {
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
-    use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering::Relaxed};
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
     use windows_sys::Win32::{
         System::LibraryLoader::GetModuleHandleW, UI::Input::KeyboardAndMouse::*,
     };
-    pub(super) static WINDOW_INPUT: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
-    pub(super) static LOCAL_SHORTCUTS: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
-    static OLD_PROC: AtomicIsize=AtomicIsize::new(0);
-    static WINDOW_KEYS: std::sync::Mutex<crate::keyboard_capture::Keys>=std::sync::Mutex::new(crate::keyboard_capture::Keys::new());
+    const INPUT:u8=1;
+    const SHORTCUTS:u8=2;
+    const NESTED:u8=4;
+    const CAPTURE:u8=8;
+    pub struct Route {
+        pub old_proc:isize,
+        context:eframe::egui::Context,
+        viewport:eframe::egui::ViewportId,
+        policy:std::sync::atomic::AtomicU8,
+        session:AtomicU64,
+        keys:std::sync::Mutex<crate::keyboard_capture::RecipientKeys>,
+        pub queue:std::sync::Mutex<std::collections::VecDeque<crate::keyboard_capture::Decision>>,
+        pub overflow:std::sync::atomic::AtomicBool,
+    }
+    impl Route {
+        pub fn set_policy(&self,input:bool,shortcuts:bool,nested:bool) {
+            self.policy.fetch_update(Relaxed,Relaxed,|old|Some((old&CAPTURE)
+                |if input{INPUT}else{0}|if shortcuts{SHORTCUTS}else{0}|if nested{NESTED}else{0})).ok();
+        }
+        pub fn set_capture(&self,enabled:bool) {
+            if enabled {self.policy.fetch_or(CAPTURE,Relaxed);}else{self.policy.fetch_and(!CAPTURE,Relaxed);}
+        }
+        pub fn select(&self,session:u64) {
+            if self.session.swap(session,std::sync::atomic::Ordering::AcqRel)==session {return;}
+            self.policy.store(0,Relaxed);
+            self.queue.lock().unwrap().clear();
+            let modifiers=crate::keyboard_capture::Modifiers::from_key_state(|vk|unsafe{GetAsyncKeyState(vk as i32)<0});
+            self.keys.lock().unwrap().select((self as *const Self as isize,session),&modifiers);
+        }
+    }
+    fn routes()->&'static std::sync::RwLock<std::collections::HashMap<isize,std::sync::Arc<Route>>> {
+        static ROUTES:std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<isize,std::sync::Arc<Route>>>>=std::sync::OnceLock::new();
+        ROUTES.get_or_init(Default::default)
+    }
+    fn route(window:HWND)->Option<std::sync::Arc<Route>> {
+        routes().read().ok()?.get(&(window as isize)).cloned()
+    }
     static HOOK_CALLBACKS: AtomicU64=AtomicU64::new(0);
     static HOOK_CAPTURED: AtomicU64=AtomicU64::new(0);
     static HOOK_BACKGROUND: AtomicU64=AtomicU64::new(0);
     static HOOK_INACTIVE: AtomicU64=AtomicU64::new(0);
     static HOOK_PREHELD: AtomicU64=AtomicU64::new(0);
-    pub(super) static NESTED_PASSTHROUGH: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
     static HOOK_WIN_SEEN: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_CAPTURED: AtomicU64=AtomicU64::new(0);
     static WINDOW_WIN_SEEN: AtomicU64=AtomicU64::new(0);
@@ -330,29 +366,31 @@ mod windows {
     static HOOK_ALT_FORWARDED_INACTIVE: AtomicU64=AtomicU64::new(0);
     static HOOK_WIN_FORWARDED_BACKGROUND: AtomicU64=AtomicU64::new(0);
     static HOOK_ALT_FORWARDED_BACKGROUND: AtomicU64=AtomicU64::new(0);
-    pub unsafe fn install_window_keyboard(window:HWND)->isize {
-        if window.is_null(){return 0;}
-        let old=SetWindowLongPtrW(window,GWLP_WNDPROC,window_keyboard as *const () as isize);
-        OLD_PROC.store(old,Relaxed);old
+    pub unsafe fn install_window_keyboard(window:HWND,context:eframe::egui::Context)->std::sync::Arc<Route> {
+        let old=if window.is_null(){0}else{SetWindowLongPtrW(window,GWLP_WNDPROC,window_keyboard as *const () as isize)};
+        let viewport=context.viewport_id();
+        let result=std::sync::Arc::new(Route {old_proc:old,context,viewport,policy:0.into(),session:0.into(),
+            keys:std::sync::Mutex::new(crate::keyboard_capture::RecipientKeys::new()),queue:Default::default(),overflow:false.into()});
+        routes().write().unwrap().insert(window as isize,result.clone());
+        result
     }
-    pub unsafe fn remove_window_keyboard(window:HWND,old:isize) {
-        WINDOW_INPUT.store(false,Relaxed);
-        LOCAL_SHORTCUTS.store(false,Relaxed);
-        if old!=0 && IsWindow(window)!=0 && GetWindowLongPtrW(window,GWLP_WNDPROC)==window_keyboard as *const () as isize {
-            SetWindowLongPtrW(window,GWLP_WNDPROC,old);
+    pub unsafe fn remove_window_keyboard(window:HWND,route:&Route) {
+        route.policy.store(0,Relaxed);
+        if route.old_proc!=0 && IsWindow(window)!=0 && GetWindowLongPtrW(window,GWLP_WNDPROC)==window_keyboard as *const () as isize {
+            SetWindowLongPtrW(window,GWLP_WNDPROC,route.old_proc);
         }
+        routes().write().unwrap().remove(&(window as isize));
     }
-    fn enqueue(event:crate::keyboard_capture::Decision,window:HWND) {
-        if let Ok(mut queue)=CAPTURE_QUEUE.try_lock() {
-            if queue.len()<512 {queue.push_back(event);}else{CAPTURE_OVERFLOW.store(true,Relaxed);}
-        }else{CAPTURE_OVERFLOW.store(true,Relaxed);}
+    fn enqueue(event:crate::keyboard_capture::Decision,window:HWND,route:&Route,session:u64) {
+        if let Ok(mut queue)=route.queue.try_lock() {
+            if route.session.load(std::sync::atomic::Ordering::Acquire)!=session {return;}
+            if queue.len()<512 {queue.push_back(event);}else{route.overflow.store(true,Relaxed);}
+        }else{route.overflow.store(true,Relaxed);}
         unsafe{PostMessageW(window,WM_NULL,0,0);}
     }
     unsafe extern "system" fn window_keyboard(window:HWND,message:u32,wparam:usize,lparam:isize)->isize {
-        if message==WM_NULL {
-            // Wake egui on the UI thread; the hook must never wait for its locks.
-            if let Some(context)=CAPTURE_CONTEXT.get(){context.request_repaint();}
-        }
+        let Some(state)=route(window) else{return DefWindowProcW(window,message,wparam,lparam)};
+        if message==WM_NULL { state.context.request_repaint_of(state.viewport); }
         let down=message==WM_KEYDOWN||message==WM_SYSKEYDOWN;
         let up=message==WM_KEYUP||message==WM_SYSKEYUP;
         if down||up {
@@ -371,40 +409,46 @@ mod windows {
             // The hook thread can be ahead of this queued window message.
             // GetKeyState describes this message, not the latest physical input.
             let modifiers=crate::keyboard_capture::Modifiers::from_key_state(|vk|GetKeyState(vk as i32)<0);
-            if let Ok(mut keys)=WINDOW_KEYS.try_lock() {
+            if let Ok(mut keys)=state.keys.try_lock() {
+                let policy=state.policy.load(std::sync::atomic::Ordering::Acquire);
                 let route=crate::keyboard_capture::WindowRoute {
-                    input:WINDOW_INPUT.load(std::sync::atomic::Ordering::Acquire),
+                    input:policy&INPUT!=0,
                     foreground:GetForegroundWindow()==window,
-                    system_capture:CAPTURE.load(std::sync::atomic::Ordering::Acquire),
-                    shortcuts:LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire),
-                    nested_passthrough:NESTED_PASSTHROUGH.load(std::sync::atomic::Ordering::Acquire),
+                    system_capture:policy&CAPTURE!=0,
+                    shortcuts:policy&SHORTCUTS!=0,
+                    nested_passthrough:policy&NESTED!=0,
                 };
-                match keys.window_event(vk,down,route,&modifiers,lparam as usize&(1<<30)!=0) {
+                let remote=route.input && route.foreground && (route.system_capture || !crate::keyboard_capture::local_system_key(vk,modifiers.win()));
+                match keys.event(vk,down,crate::keyboard_capture::WindowRoute{input:remote,..route},&modifiers,lparam as usize&(1<<30)!=0) {
                     crate::keyboard_capture::Decision::Forward=>{},
                     crate::keyboard_capture::Decision::Consume=>return 0,
-                    event=>{WINDOW_CAPTURED.fetch_add(1,Relaxed);enqueue(event,window);return 0;},
+                    event=>{WINDOW_CAPTURED.fetch_add(1,Relaxed);enqueue(event,window,&state,state.session.load(Relaxed));return 0;},
                 }
             }
         }
-        let old=OLD_PROC.load(Relaxed);
+        let old=state.old_proc;
         if old==0 {DefWindowProcW(window,message,wparam,lparam)}
         else{CallWindowProcW(std::mem::transmute::<isize,WNDPROC>(old),window,message,wparam,lparam)}
     }
-    pub(super) static CAPTURE_CONTEXT: std::sync::OnceLock<eframe::egui::Context>=std::sync::OnceLock::new();
     fn preheld_for_capture(flags:u32,async_down:bool)->bool {
         // Injected input may already be reflected by GetAsyncKeyState before
         // the low-level callback runs. It is outer-client input, not a local
         // physical key that belonged to the desktop before capture.
         flags&(LLKHF_INJECTED|LLKHF_LOWER_IL_INJECTED)==0 && async_down
     }
-    pub(super) static CAPTURE: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
-    pub(super) static CAPTURE_OVERFLOW: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
     std::thread_local! {
-        static HOOK_STATE: std::cell::RefCell<(crate::keyboard_capture::Modifiers,crate::keyboard_capture::Keys)> =
-            const { std::cell::RefCell::new((crate::keyboard_capture::Modifiers::new(),crate::keyboard_capture::Keys::new())) };
+        static HOOK_STATE: std::cell::RefCell<(crate::keyboard_capture::Modifiers,crate::keyboard_capture::RecipientKeys)> =
+            const { std::cell::RefCell::new((crate::keyboard_capture::Modifiers::new(),crate::keyboard_capture::RecipientKeys::new())) };
+        static SHARED_HOOK:std::cell::RefCell<std::rc::Weak<KeyboardHook>>=const {std::cell::RefCell::new(std::rc::Weak::new())};
     }
-    pub(super) static CAPTURE_QUEUE: std::sync::Mutex<std::collections::VecDeque<crate::keyboard_capture::Decision>>=std::sync::Mutex::new(std::collections::VecDeque::new());
-    static OWNER: AtomicIsize = AtomicIsize::new(0);
+    pub unsafe fn shared_keyboard_hook(window:HWND)->Option<std::rc::Rc<KeyboardHook>> {
+        SHARED_HOOK.with(|slot| {
+            if let Some(hook)=slot.borrow().upgrade() {if hook.alive(){return Some(hook);}}
+            let hook=std::rc::Rc::new(install_keyboard_hook(window)?);
+            *slot.borrow_mut()=std::rc::Rc::downgrade(&hook);
+            Some(hook)
+        })
+    }
     pub struct KeyboardHook {
         thread: Option<std::thread::JoinHandle<()>>,
         id: u32,
@@ -460,7 +504,7 @@ mod windows {
             "hook_thread_alive":hook.is_some_and(KeyboardHook::alive),
             "hook_health":health,
             "same_desktop":same_desktop,
-            "capture_requested":CAPTURE.load(Relaxed),
+            "capture_requested":route(window).is_some_and(|r|r.policy.load(Relaxed)&CAPTURE!=0),
             "callbacks":HOOK_CALLBACKS.load(Relaxed),"captured":HOOK_CAPTURED.load(Relaxed),
             "forwarded_background":HOOK_BACKGROUND.load(Relaxed),
             "forwarded_inactive":HOOK_INACTIVE.load(Relaxed),"forwarded_preheld":HOOK_PREHELD.load(Relaxed),
@@ -480,8 +524,6 @@ mod windows {
     }
     impl Drop for KeyboardHook {
         fn drop(&mut self) {
-            CAPTURE.store(false,Relaxed);
-            OWNER.store(0,Relaxed);
             unsafe { PostThreadMessageW(self.id,WM_QUIT,0,0); }
             if let Some(thread)=self.thread.take(){let _=thread.join();}
         }
@@ -511,7 +553,6 @@ mod windows {
             eprintln!("keyboard capture Raw Input configuration: {error}");
             return None;
         }
-        OWNER.store(window as isize,Relaxed);
         let (ready_tx,ready_rx)=std::sync::mpsc::sync_channel(1);
         // Low-level hooks run on their installing thread. A renderer stall on
         // that thread lets Windows silently remove the hook (LowLevelHooksTimeout).
@@ -552,7 +593,11 @@ mod windows {
             let key = &*(data as *const KBDLLHOOKSTRUCT);
             let down = message == WM_KEYDOWN as usize || message == WM_SYSKEYDOWN as usize;
             let up = message == WM_KEYUP as usize || message == WM_SYSKEYUP as usize;
-            let foreground=OWNER.load(Relaxed) as HWND;
+            let foreground=GetForegroundWindow();
+            // Never block a low-level hook on the UI thread's registry lock.
+            let selected=routes().try_read().ok().and_then(|routes|routes.get(&(foreground as isize)).cloned());
+            let policy=selected.as_ref().map_or(0,|r|r.policy.load(std::sync::atomic::Ordering::Acquire));
+            let session=selected.as_ref().map_or(0,|r|r.session.load(std::sync::atomic::Ordering::Acquire));
             let vk=crate::keyboard_capture::sided_vk(key.vkCode,
                 ((key.scanCode as usize)<<16)|(((key.flags&LLKHF_EXTENDED) as usize)<<24));
             // Accept injected input from outer remote desktop clients as well.
@@ -577,16 +622,19 @@ mod windows {
                     HOOK_ALT_UP.fetch_add(1,Relaxed);
                     if key.flags&LLKHF_INJECTED!=0 {HOOK_ALT_INJECTED_UP.fetch_add(1,Relaxed);}
                 }
-                let owned=!foreground.is_null()&&GetForegroundWindow()==foreground;
-                let active=CAPTURE.load(std::sync::atomic::Ordering::Acquire)&&owned;
-                let shortcuts=LOCAL_SHORTCUTS.load(std::sync::atomic::Ordering::Acquire)&&owned;
-                let nested=NESTED_PASSTHROUGH.load(std::sync::atomic::Ordering::Acquire)&&owned;
+                let owned=selected.is_some();
+                let active=policy&CAPTURE!=0;
+                let shortcuts=policy&SHORTCUTS!=0;
+                let nested=policy&NESTED!=0;
                 let already_down=preheld_for_capture(key.flags,GetAsyncKeyState(key.vkCode as i32)<0);
                 let decision=HOOK_STATE.with(|state| {
                     let mut state=state.borrow_mut();
                     let (modifiers,keys)=&mut *state;
+                    keys.select((if owned{foreground as isize}else{0},session),modifiers);
                     modifiers.observe(vk,down);
-                    keys.event_with_shortcuts(vk,down,active,shortcuts,nested,modifiers.shortcut_chord(),already_down)
+                    keys.event(vk,down,crate::keyboard_capture::WindowRoute {
+                        input:active,shortcuts,foreground:owned,system_capture:active,nested_passthrough:nested,
+                    },modifiers,already_down)
                 });
                 match decision {
                     crate::keyboard_capture::Decision::Forward=>{
@@ -609,7 +657,7 @@ mod windows {
                         HOOK_CAPTURED.fetch_add(1,Relaxed);
                         if win{HOOK_WIN_CAPTURED.fetch_add(1,Relaxed);}
                         if vk==0x09 {HOOK_TAB_CAPTURED.fetch_add(1,Relaxed);}
-                        enqueue(event,foreground);return 1;
+                        if let Some(route)=&selected {enqueue(event,foreground,route,session);}return 1;
                     }
                 }
             }
@@ -624,6 +672,55 @@ mod windows {
         assert!(!preheld_for_capture(LLKHF_LOWER_IL_INJECTED,true));
         assert!(preheld_for_capture(0,true));
         assert!(!preheld_for_capture(0,false));
+    }
+
+    #[cfg(test)]
+    #[test]
+    #[ignore = "run alone: owns a newly created noninteractive window station"]
+    fn isolated_windows_keep_their_procedures_policies_and_session_queues() {
+        let _station=super::owned_station::Station::create_with_keyboard_hook().unwrap();
+        struct Window(HWND,std::sync::Arc<Route>);
+        impl Drop for Window {fn drop(&mut self){unsafe{remove_window_keyboard(self.0,&self.1);DestroyWindow(self.0);}}}
+        let create=||unsafe {
+            let class:Vec<u16>="STATIC\0".encode_utf16().collect();
+            let window=CreateWindowExW(0,class.as_ptr(),std::ptr::null(),0,0,0,0,0,
+                HWND_MESSAGE,std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null());
+            assert!(!window.is_null());
+            Window(window,install_window_keyboard(window,Default::default()))
+        };
+        let a=create();let b=create();
+        a.1.select(11);b.1.select(22);
+        a.1.set_policy(true,true,false);a.1.set_capture(true);
+        b.1.set_policy(false,true,true);
+        assert_eq!(a.1.policy.load(Relaxed),INPUT|SHORTCUTS|CAPTURE);
+        assert_eq!(b.1.policy.load(Relaxed),SHORTCUTS|NESTED);
+        for window in [&a,&b] {
+            // Seed a forwarded down, then deliver its native release. Release
+            // ownership must survive loss of foreground and policy changes.
+            assert_eq!(window.1.keys.lock().unwrap().keys.event_with_shortcuts(0x41,true,true,false,false,false,false),
+                crate::keyboard_capture::Decision::Remote{vk:0x41,pressed:true});
+            unsafe{SendMessageW(window.0,WM_KEYUP,0x41,0);}
+            let mut queue=window.1.queue.lock().unwrap();
+            assert_eq!(queue.pop_front(),Some(crate::keyboard_capture::Decision::Remote{vk:0x41,pressed:false}));
+            assert!(queue.is_empty());
+        }
+        enqueue(crate::keyboard_capture::Decision::Shortcut(crate::shortcuts::Action::Stats),a.0,&a.1,11);
+        assert_eq!(a.1.queue.lock().unwrap().len(),1);
+        assert!(b.1.queue.lock().unwrap().is_empty());
+        a.1.select(12);
+        enqueue(crate::keyboard_capture::Decision::Shortcut(crate::shortcuts::Action::Exit),a.0,&a.1,11);
+        assert!(a.1.queue.lock().unwrap().is_empty());
+        let first=unsafe{shared_keyboard_hook(a.0)}.unwrap();
+        let second=unsafe{shared_keyboard_hook(b.0)}.unwrap();
+        assert!(std::rc::Rc::ptr_eq(&first,&second));
+        drop(first);drop(a);
+        assert!(second.alive());
+        assert_eq!(b.1.policy.load(Relaxed),SHORTCUTS|NESTED);
+        // Exercise the surviving native subclass and its own previous proc.
+        unsafe{SendMessageW(b.0,WM_SETTEXT,0,"generated\0".encode_utf16().collect::<Vec<_>>().as_ptr() as isize);}
+        assert_eq!(unsafe{GetWindowTextLengthW(b.0)},9);
+        drop(second);drop(b);
+        assert!(routes().read().unwrap().is_empty());
     }
 
     #[cfg(test)]
@@ -688,8 +785,6 @@ mod windows {
         assert!(snapshot["hook_health"]["pump_ack_age_ms"].as_u64().is_some());
         assert_eq!(snapshot["hook_health"]["pump_post_error"],serde_json::Value::Null);
         drop(hook);
-        assert_eq!(OWNER.load(Relaxed),0);
-        assert!(!CAPTURE.load(Relaxed));
         let mouse=RAWINPUTDEVICE{usUsagePage:1,usUsage:2,dwFlags:RIDEV_REMOVE,hwndTarget:std::ptr::null_mut()};
         assert_ne!(unsafe{RegisterRawInputDevices(&mouse,1,size)},0);
     }

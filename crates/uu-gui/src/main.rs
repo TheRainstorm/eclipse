@@ -368,6 +368,7 @@ impl App {
         setup_style(&cc.egui_ctx);
         if let Some(gl)=&cc.gl {video_texture::enable_gpu_video(gl);}
         let platform = platform::Platform::new(cc, origin);
+        platform.select_session(1);
         let (config, config_error) = match uu_core::Config::from_env() {
             Ok(config) => (Some(config), None),
             Err(error) => (None, Some(error.to_string())),
