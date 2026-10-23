@@ -79,7 +79,7 @@ impl ClientSettings {
         Ok(())
     }
     pub fn hevc_preferred(&self) -> bool {
-        self.codec == CodecPreference::Hevc || (self.codec == CodecPreference::Auto && self.prefer_hevc)
+        !self.software_decoder && (self.codec == CodecPreference::Hevc || (self.codec == CodecPreference::Auto && self.prefer_hevc))
     }
 }
 

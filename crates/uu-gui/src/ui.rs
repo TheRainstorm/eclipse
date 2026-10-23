@@ -231,7 +231,7 @@ impl App {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
                     ui.label(RichText::new(super::brand::NAME).size(19.0).color(INK));
-                    let space = (ui.available_width() - 290.0).max(0.0);
+                    let space = (ui.available_width() - 390.0).max(0.0);
                     let (_, drag) =
                         ui.allocate_exact_size(egui::vec2(space, 34.0), Sense::click_and_drag());
                     if drag.drag_started() {
@@ -253,9 +253,16 @@ impl App {
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        if self.workspace.host.running() || self.native_host.running() || self.lan.host.running() {
-                            if icon_label_button(ui,Icon::Desktop,"共享中").clicked(){self.open_native_host();}
-                        } else if icon_label_button(ui,Icon::Desktop,"共享本机").clicked(){self.open_native_host();}
+                        let running=self.workspace.host.running();
+                        let color=if running {super::theme::SUCCESS}else{MUTED};
+                        let (rect,response)=ui.allocate_exact_size(egui::vec2(34.,34.),Sense::click());
+                        icon(ui.painter(),rect,Icon::Desktop,color);
+                        let response=response.on_hover_text(if running {"服务运行中 · 点击停止"}else{"服务已停止 · 点击启动"});
+                        if response.clicked(){self.toggle_shared_host(ctx);}
+                        ui.menu_button("UU 兼容",|ui| {
+                            if ui.button("远程协助").clicked(){self.select_uu_compatibility(true);ui.close_menu();}
+                            if ui.button("UU 兼容设备").clicked(){self.select_uu_compatibility(false);ui.close_menu();}
+                        });
                         if icon_button(ui,Icon::Settings,"软件设置").clicked(){self.open_settings();}
                         if icon_button(ui,Icon::Info,"关于软件").clicked(){self.open_about();}
                         self.account_button(ui);

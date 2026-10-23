@@ -28,6 +28,7 @@ pub(super) enum Action {
     ManageUu,
     CancelLogin,
     StartSharing,
+    Settings,
     Assist(uu_core::assistance::Request),
 }
 pub(super) struct Info {
@@ -50,6 +51,13 @@ struct DeviceEditor {
     service: String,
 }
 #[derive(Clone)]
+struct ClientEditor {
+    device:String,
+    value:uu_core::client_settings::NamedClientSettings,
+    section:super::settings_page::Section,
+    error:String,
+}
+#[derive(Clone)]
 struct ServiceEditor {
     error: String,
     value: Service,
@@ -70,6 +78,9 @@ pub(super) struct Workspace {
     monitor_error: String,
     editor: Option<DeviceEditor>,
     service_editor: Option<ServiceEditor>,
+    client_editor: Option<ClientEditor>,
+    pub client_defaults: uu_core::client_settings::ClientSettings,
+    pub view: super::settings::DeviceView,
     details: Option<String>,
     search: String,
     assist_text: String,
@@ -79,6 +90,7 @@ pub(super) struct Workspace {
     last_read: Instant,
     pub resume_connect: Option<String>,
     pub pairing_visible: bool,
+    autostart_checked: bool,
 }
 
 #[cfg(test)]
@@ -274,7 +286,7 @@ mod tests {
     fn server_form_reports_missing_credentials_without_discarding_fields() {
         let mut h = Harness::new();
         h.workspace.page = Page::Services;
-        h.click("添加服务器");
+        h.click("＋ 添加服务器");
         let editor = h.workspace.service_editor.as_mut().unwrap();
         editor.value.name = "Home".into();
         editor.value.address = "signal.example.invalid:8443".into();
@@ -291,6 +303,40 @@ mod tests {
         assert_eq!(std::fs::read_to_string(path).unwrap(), "ab".repeat(32));
         h.frame(Vec::new());
         assert!(!h.texts.iter().any(|(s, _)| s.contains(&"ab".repeat(32))));
+    }
+    #[test]
+    fn device_preset_editor_saves_an_isolated_selected_config() {
+        let mut h=Harness::new();
+        let profile=Profile::new("Desk",Destination::Ip {address:"127.0.0.1:47998".into(),legacy_device:None});
+        let id=profile.id.clone();
+        h.workspace.store.as_ref().unwrap().save_device(profile).unwrap(); h.workspace.refresh();
+        h.workspace.client_defaults.fps=120;
+        h.click("新建");
+        let editor=h.workspace.client_editor.as_mut().unwrap();
+        editor.value.name="移动网络".into();editor.value.settings.fps=30;editor.value.settings.bitrate=3;
+        h.click("保存配置");
+        assert!(h.workspace.client_editor.is_none());
+        let book=h.workspace.store.as_ref().unwrap().read().unwrap();
+        let profile=book.device(&id).unwrap();
+        assert_eq!(profile.client_configs.len(),1);
+        assert_eq!(profile.selected_client.as_deref(),Some(profile.client_configs[0].id.as_str()));
+        assert_eq!(profile.client_configs[0].settings.fps,30);
+        assert_eq!(h.workspace.client_defaults.fps,120);
+        assert_eq!(book.sharing.fps,60);
+        h.workspace.details=Some(id);
+        h.click("复制");
+        assert!(h.workspace.client_editor.as_ref().unwrap().value.name.contains("副本"));
+    }
+    #[test]
+    fn media_draft_does_not_restore_old_connection_ports_or_enable_flags() {
+        let mut h=Harness::new();
+        h.workspace.draft.bitrate_mbps=25;
+        h.workspace.update_connections(|s|{s.ip_enabled=false;s.uu_enabled=true;s.service_port=51001;s.discovery_port=51002;});
+        assert!(h.workspace.save_sharing());
+        let book=h.workspace.store.as_ref().unwrap().read().unwrap();
+        assert_eq!(book.sharing.bitrate_mbps,25);
+        assert!(!book.sharing.ip_enabled && book.sharing.uu_enabled);
+        assert_eq!((book.sharing.service_port,book.sharing.discovery_port),(51001,51002));
     }
     #[test]
     fn assistance_import_uses_its_own_invitation_and_never_creates_a_device_grant() {
@@ -463,6 +509,9 @@ impl Workspace {
             monitor_error: String::new(),
             editor: None,
             service_editor: None,
+            client_editor: None,
+            client_defaults:Default::default(),
+            view:Default::default(),
             details: None,
             search: String::new(),
             assist_text: String::new(),
@@ -472,6 +521,7 @@ impl Workspace {
             last_read: Instant::now(),
             resume_connect: None,
             pairing_visible: false,
+            autostart_checked: false,
         }
     }
     pub fn poll(&mut self, ctx: &egui::Context, window: isize) {
@@ -510,12 +560,32 @@ impl Workspace {
         self.refresh();
         Ok(name)
     }
+    fn update_connections(&mut self, edit: impl FnOnce(&mut Sharing)) {
+        let result = self.store.as_ref().ok_or_else(|| anyhow::anyhow!("设备配置不可用"))
+            .and_then(|store| store.edit(|book| { edit(&mut book.sharing); Ok(()) }));
+        if let Err(error) = result { self.notice = format!("无法保存连接服务：{error:#}"); }
+        self.refresh();
+    }
+    fn endpoint_state(&self, ui: &mut egui::Ui, name: &str) {
+        for (endpoint, status) in self.host.statuses().into_iter().filter(|(n,_)| n==name) {
+            let color = match status { EndpointStatus::Ready|EndpointStatus::Streaming=>theme::SUCCESS,EndpointStatus::Error(_)=>theme::DANGER,_=>theme::MUTED };
+            ui.colored_label(color, format!("{endpoint} · {}",status.label()));
+        }
+    }
     fn save_sharing(&mut self) -> bool {
         let result = self
             .store
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("设备配置不可用"))
-            .and_then(|s| s.sharing(self.draft.clone()));
+            .and_then(|s| s.edit(|book| {
+                let mut media = self.draft.clone();
+                media.ip_enabled = book.sharing.ip_enabled;
+                media.uu_enabled = book.sharing.uu_enabled;
+                media.service_port = book.sharing.service_port;
+                media.discovery_port = book.sharing.discovery_port;
+                book.sharing = media;
+                Ok(())
+            }));
         let saved = result.is_ok();
         self.notice = match result {
             Ok(()) => "共享设置已保存".into(),
@@ -653,7 +723,7 @@ impl Workspace {
         }
         match self.page {
             Page::Devices => self.devices(ui, info, &mut actions),
-            Page::Sharing => self.sharing(ui, info, &mut actions),
+            Page::Sharing => {actions.push(Action::Settings); self.page=Page::Devices;},
             Page::Services => self.services(ui, info, &mut actions),
             Page::Assistance => {
                 ui.heading("远程协助");
@@ -763,6 +833,7 @@ impl Workspace {
                         ui.weak(route.destination.target());
                     }
                 });
+                self.client_config_picker(ui,&profile);
             });
             if changed {
                 if let Some(store) = &self.store {
@@ -818,6 +889,32 @@ impl Workspace {
                 });
             }
         }
+    }
+    fn edit_client_config(&mut self,profile:&Profile, value:Option<uu_core::client_settings::NamedClientSettings>, duplicate:bool) {
+        let mut value=value.unwrap_or_else(||uu_core::client_settings::NamedClientSettings::new("新配置",self.client_defaults.clone()));
+        if duplicate { value.id=uuid::Uuid::new_v4().to_string(); value.name=format!("{} 副本",value.name); }
+        self.client_editor=Some(ClientEditor {device:profile.id.clone(),value,section:super::settings_page::Section::Video,error:String::new()});
+    }
+    fn client_config_picker(&mut self,ui:&mut egui::Ui,profile:&Profile) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("客户端配置");
+            let mut selected=profile.selected_client.clone();
+            let title=profile.client_configs.iter().find(|v|Some(&v.id)==selected.as_ref()).map(|v|v.name.as_str()).unwrap_or("全局默认");
+            egui::ComboBox::from_id_salt(("client-config",&profile.id)).selected_text(title).width(160.).show_ui(ui,|ui| {
+                ui.selectable_value(&mut selected,None,"全局默认");
+                for value in &profile.client_configs {ui.selectable_value(&mut selected,Some(value.id.clone()),&value.name);}
+            });
+            if selected!=profile.selected_client {
+                if let Some(store)=&self.store {
+                    match store.select_client_config(&profile.id,selected){Ok(())=>self.refresh(),Err(e)=>self.notice=format!("无法选择配置：{e:#}")}
+                }
+            }
+            if ui.small_button("配置…").clicked() {
+                let value=profile.client_configs.iter().find(|v|Some(&v.id)==profile.selected_client.as_ref()).cloned();
+                self.edit_client_config(profile,value,false);
+            }
+            if ui.small_button("新建").clicked(){self.edit_client_config(profile,None,false);}
+        });
     }
     fn device_details(&mut self, ui: &mut egui::Ui, id: &str, actions: &mut Vec<Action>) {
         if ui.button("‹ 返回设备").clicked() {
@@ -898,6 +995,26 @@ impl Workspace {
                 }
             }
         });
+        card(ui,|ui| {
+            ui.strong("客户端配置");
+            ui.weak("每台设备可保存多个配置；选择全局默认会跟随应用设置。修改配置只影响下次连接。");
+            self.client_config_picker(ui,&profile);
+            for value in &profile.client_configs {
+                ui.push_id(&value.id,|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(&value.name);
+                        ui.weak(format!("{} FPS · {}",value.settings.fps,value.settings.codec.label()));
+                        if ui.small_button("编辑").clicked(){self.edit_client_config(&profile,Some(value.clone()),false);}
+                        if ui.small_button("复制").clicked(){self.edit_client_config(&profile,Some(value.clone()),true);}
+                        if ui.small_button("删除").clicked(){
+                            if let Some(store)=&self.store {
+                                match store.remove_client_config(&profile.id,&value.id){Ok(())=>self.refresh(),Err(e)=>self.notice=format!("无法删除配置：{e:#}")}
+                            }
+                        }
+                    });
+                });
+            }
+        });
         ui.add_space(12.);
         if ui.button("移除本地设备记录").clicked() {
             if let Some(store) = &self.store {
@@ -931,11 +1048,11 @@ impl Workspace {
             Err(e) => self.monitor_error = format!("无法读取屏幕：{e}"),
         }
     }
-    fn sharing(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>) {
+    pub(super) fn server_settings(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>) {
         if self.monitors.is_empty() && self.monitor_error.is_empty() {
             self.refresh_monitors();
         }
-        ui.heading("共享本机");
+        ui.heading("服务端设置");
         ui.weak("一套画面与权限设置，供所有连接入口使用。");
         ui.add_space(16.);
         card(ui, |ui| {
@@ -978,6 +1095,11 @@ impl Workspace {
                     }
                 });
             });
+            let mut auto = self.book.sharing.auto_start;
+            if ui.checkbox(&mut auto, "打开软件时自动启动服务").changed() {
+                self.update_connections(|s| s.auto_start = auto);
+                self.draft.auto_start = auto;
+            }
             if self.host.running() {
                 ui.add_space(12.);
                 ui.horizontal(|ui| {
@@ -1103,66 +1225,6 @@ impl Workspace {
                 ui.weak("停止共享后可修改设置。");
             }
         });
-        card(ui, |ui| {
-            ui.strong("连接入口");
-            ui.weak("IP 直连默认启用，其它入口按需开启。");
-            ui.add_space(10.);
-            if self.host.running() {
-                for (name, status) in self.host.statuses() {
-                    ui.horizontal(|ui| {
-                        ui.label(name);
-                        let color = match status {
-                            EndpointStatus::Ready | EndpointStatus::Streaming => theme::SUCCESS,
-                            EndpointStatus::Error(_) => theme::DANGER,
-                            _ => theme::MUTED,
-                        };
-                        ui.label(RichText::new(status.label()).color(color));
-                    });
-                }
-            }
-            ui.add_enabled_ui(!locked, |ui| {
-                ui.checkbox(&mut self.draft.uu_enabled, "使用 UU 账号连接服务");
-            });
-            for service in &self.book.services {
-                ui.horizontal(|ui| {
-                    ui.label(&service.name);
-                    ui.weak(if service.host_enabled {
-                        format!("已启用 · 本机名称 {}", service.published_name)
-                    } else {
-                        "未用于共享本机".into()
-                    });
-                });
-            }
-            if ui.button("管理连接服务").clicked() {
-                self.page = Page::Services;
-            }
-            ui.collapsing("IP 地址与高级网络", |ui| {
-                ui.add_enabled_ui(!locked, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("服务端口 TCP");
-                        ui.add(egui::DragValue::new(&mut self.draft.service_port).range(1..=65535));
-                        ui.label("发现端口 UDP");
-                        ui.add(
-                            egui::DragValue::new(&mut self.draft.discovery_port).range(1..=65535),
-                        );
-                    });
-                });
-                if let Ok(addresses) = super::native_interfaces::enumerate() {
-                    for address in addresses.into_iter().filter(|a| a.ip.is_ipv4()) {
-                        let endpoint = format!("{}:{}", address.ip, self.book.sharing.service_port);
-                        ui.horizontal(|ui| {
-                            ui.monospace(&endpoint);
-                            if ui.small_button("复制").clicked() {
-                                ui.ctx().copy_text(endpoint);
-                            }
-                        });
-                    }
-                }
-                ui.weak(
-                    "不同网段可手动填写可达地址；自动发现通常不跨路由。应用不会自动修改防火墙。",
-                );
-            });
-        });
         if !locked && primary(ui, "保存共享设置").clicked() {
             if self.save_sharing() && info.logged_in { actions.push(Action::RenameUu); }
         }
@@ -1254,8 +1316,46 @@ impl Workspace {
         ui.heading("连接服务");
         ui.weak("服务配置保存一次，供多台设备复用。");
         ui.add_space(16.);
+        let locked = self.host.running();
+        if locked { ui.weak("服务正在运行；停止服务后可修改连接入口。"); }
         card(ui, |ui| {
-            ui.strong("UU 账号");
+            ui.horizontal(|ui| {
+                ui.strong("IP 直连");
+                let mut enabled = self.book.sharing.ip_enabled;
+                if ui.add_enabled(!locked, egui::Checkbox::new(&mut enabled,"启用")).changed() {
+                    self.update_connections(|s| s.ip_enabled=enabled);
+                }
+            });
+            ui.weak("同一网络或已有路由时直接连接，默认开启。");
+            let mut tcp=self.book.sharing.service_port;
+            let mut udp=self.book.sharing.discovery_port;
+            ui.add_enabled_ui(!locked, |ui| {
+                egui::Grid::new("connection-ip-ports").spacing([20.,10.]).show(ui,|ui| {
+                    ui.label("服务端口 · TCP"); ui.add(egui::DragValue::new(&mut tcp).range(1..=65535)); ui.end_row();
+                    ui.label("发现端口 · UDP"); ui.add(egui::DragValue::new(&mut udp).range(1..=65535)); ui.end_row();
+                });
+            });
+            if tcp!=self.book.sharing.service_port || udp!=self.book.sharing.discovery_port {
+                self.update_connections(|s| {s.service_port=tcp; s.discovery_port=udp;});
+            }
+            self.endpoint_state(ui,"IP 直连");
+            ui.collapsing("本机地址",|ui| {
+                if let Ok(addresses)=super::native_interfaces::enumerate() {
+                    for address in addresses.into_iter().filter(|a| a.ip.is_ipv4()) {
+                        let endpoint=format!("{}:{}",address.ip,self.book.sharing.service_port);
+                        ui.horizontal(|ui| {ui.monospace(&endpoint); if ui.small_button("复制").clicked(){ui.ctx().copy_text(endpoint);}});
+                    }
+                }
+                ui.weak("手动输入可达地址支持跨网段；自动发现通常不跨路由。");
+            });
+        });
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("UU 账号连接服务");
+                let mut enabled=self.book.sharing.uu_enabled;
+                if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,"启用")).changed(){self.update_connections(|s|s.uu_enabled=enabled);}
+            });
+            self.endpoint_state(ui,"UU 账号");
             ui.add_space(8.);
             ui.horizontal(|ui| {
                 ui.label("本机名称");
@@ -1265,7 +1365,7 @@ impl Workspace {
                     actions.push(Action::RenameUu);
                 }
             });
-            ui.weak("与“共享本机”共用名称，默认使用电脑名；修改名称不改变 UU 编号和设备授权。");
+            ui.weak("与服务端设置共用名称，默认使用电脑名；修改名称不改变 UU 编号和设备授权。");
             if info.logged_in {
                 ui.label(RichText::new("已登录").color(theme::SUCCESS));
                 if ui.button("管理 UU 设备").clicked() { actions.push(Action::ManageUu); }
@@ -1301,16 +1401,13 @@ impl Workspace {
             if info.login_busy { ui.spinner(); }
             if !info.login_status.is_empty() { ui.label(&info.login_status); }
             ui.add_space(8.);
-            ui.weak("本机是否接受 UU 连接，在“共享本机”中启用。对方仍需经过设备配对授权。");
+            ui.weak("启动服务后，启用的入口会发布本机。连接仍需经过设备配对授权。");
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new("自建服务器").strong());
-            if ui
-                .add_enabled(!self.host.running(), egui::Button::new("添加服务器"))
-                .clicked()
-            {
-                self.edit_service(None);
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                if ui.add_enabled(!locked,egui::Button::new(RichText::new("＋ 添加服务器").color(theme::ACCENT))).clicked(){self.edit_service(None);}
+            });
         });
         ui.add_space(10.);
         if self.book.services.is_empty() {
@@ -1353,6 +1450,18 @@ impl Workspace {
                             ui.ctx().copy_text(service.published_name.clone());
                         }
                     });
+                    let mut enabled=service.host_enabled;
+                    if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,"启用此连接服务")).changed() {
+                        if let Some(store)=&self.store {
+                            let result=store.edit(|book| {
+                                let item=book.services.iter_mut().find(|s|s.id==service.id).ok_or_else(||anyhow::anyhow!("服务器已移除"))?;
+                                item.host_enabled=enabled; Ok(())
+                            });
+                            if let Err(e)=result {self.notice=format!("无法保存：{e:#}");}
+                        }
+                        self.refresh();
+                    }
+                    self.endpoint_state(ui,&service.name);
                     ui.weak(if service.host_enabled {
                         "共享开启时，会在此服务器发布本机"
                     } else {
@@ -1443,6 +1552,29 @@ impl Workspace {
     pub fn dialogs(&mut self, ctx: &egui::Context) -> Vec<Action> {
         let mut actions = Vec::new();
         self.host.dialogs(ctx);
+        if let Some(mut editor)=self.client_editor.take() {
+            let mut open=true; let mut save=false; let mut cancel=false;
+            egui::Window::new("设备客户端配置").id("device-client-editor".into()).open(&mut open)
+                .default_width(720.).default_height(600.).max_height((ctx.screen_rect().height()-70.).max(200.)).max_width((ctx.screen_rect().width()-40.).max(280.))
+                .collapsible(false).show(ctx,|ui| {
+                    if !editor.error.is_empty(){ui.colored_label(theme::DANGER,&editor.error);}
+                    field(ui,"配置名称",&mut editor.value.name,"例如：桌面 4K / 游戏 120 FPS");
+                    ui.weak("仅用于这台设备，不改变本机共享设置和其它设备。");
+                    ui.separator();
+                    egui::ScrollArea::vertical().id_salt("device-client-fields").max_height((ui.available_height()-70.).max(80.).min((ctx.screen_rect().height()-260.).max(80.))).show(ui,|ui| {
+                        super::settings_page::client_editor(ui,&mut editor.value.settings,&mut editor.section);
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {save=primary(ui,"保存配置").clicked();cancel=ui.button("取消").clicked();});
+                });
+            if save {
+                let result=self.store.as_ref().ok_or_else(||anyhow::anyhow!("设备配置不可用")).and_then(|store| {
+                    store.save_client_config(&editor.device,editor.value.clone())?;
+                    store.select_client_config(&editor.device,Some(editor.value.id.clone()))
+                });
+                match result {Ok(())=>{self.notice="设备配置已保存；下次连接生效".into();self.refresh();},Err(e)=>{editor.error=format!("无法保存：{e:#}");self.client_editor=Some(editor);}}
+            }else if open && !cancel {self.client_editor=Some(editor);}
+        }
         if let Some(mut editor) = self.editor.take() {
             let mut open = true;
             let mut save = false;
@@ -1642,75 +1774,52 @@ impl Workspace {
 }
 
 impl super::App {
+    pub(super) fn toggle_shared_host(&mut self, ctx:&egui::Context) {
+        if self.workspace.host.running() { self.workspace.host.stop(); }
+        else { self.workspace_actions(vec![Action::StartSharing],ctx); }
+    }
+    pub(super) fn autostart_shared_host(&mut self, ctx:&egui::Context) {
+        if self.workspace.autostart_checked {return;}
+        self.workspace.autostart_checked=true;
+        if self.stream_target.is_none() && self.workspace.book.sharing.auto_start && !self.exit_requested {
+            self.workspace_actions(vec![Action::StartSharing],ctx);
+        }
+    }
     pub(super) fn workspace_navigation(&mut self, ctx: &egui::Context) {
-        let mut compatibility = false;
         egui::SidePanel::left("workspace-navigation")
-            .exact_width(170.)
+            .exact_width(170.).resizable(false)
             .frame(egui::Frame::none().fill(theme::SIDEBAR).inner_margin(16.))
-            .show(ctx, |ui| {
+            .show(ctx,|ui| {
                 ui.add_space(12.);
-                for (page, label) in [
-                    (Page::Devices, "设备"),
-                    (Page::Sharing, "共享本机"),
-                    (Page::Services, "连接服务"),
-                    (Page::Assistance, "远程协助"),
-                ] {
-                    if ui
-                        .add_sized(
-                            [138., 38.],
-                            egui::SelectableLabel::new(
-                                !self.lan.compatibility && self.workspace.page == page,
-                                label,
-                            ),
-                        )
-                        .clicked()
-                    {
-                        self.workspace.page = page;
-                        self.lan.compatibility = false;
-                        self.workspace.editor = None;
-                        self.workspace.service_editor = None;
+                for (page,label) in [(Page::Devices,"设备"),(Page::Services,"连接服务")] {
+                    if ui.add_sized([138.,40.],egui::SelectableLabel::new(!self.lan.compatibility && self.workspace.page==page,label)).clicked() {
+                        self.workspace.page=page; self.lan.compatibility=false;
+                        self.workspace.editor=None; self.workspace.service_editor=None;
                     }
-                    ui.add_space(4.);
+                    ui.add_space(6.);
                 }
-                ui.add_space(22.);
-                ui.separator();
-                ui.add_space(10.);
-                if ui
-                    .selectable_label(self.lan.compatibility, "UU 兼容设备")
-                    .clicked()
-                {
-                    compatibility = true;
-                }
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT),|ui| {ui.weak("Eclipse 设备工作区");});
             });
-        if compatibility {
-            self.lan.compatibility = true;
-            self.workspace.editor = None;
-            self.workspace.service_editor = None;
-            if self.logged_in && self.devices.is_empty() {
-                self.start_load();
-            }
+    }
+    pub(super) fn select_uu_compatibility(&mut self, assistance:bool) {
+        self.lan.compatibility=!assistance;
+        if assistance {self.workspace.page=Page::Assistance;}
+        else if self.logged_in && self.devices.is_empty(){self.start_load();}
+        self.workspace.editor=None; self.workspace.service_editor=None;
+    }
+    pub(super) fn workspace_info(&self)->Info {
+        Info {
+            logged_in:self.logged_in,
+            uu_id:self.config.as_ref().and_then(|c|uu_core::ClientState::read(&c.at("state.json")).ok().flatten()).and_then(|s|s.device_id),
+            qr:self.login_texture.as_ref().map(|t|t.id()),
+            login_status:self.account_error.clone().unwrap_or_else(||self.login_status.clone()),
+            login_busy:self.login_rx.is_some(), nearby:self.lan.nearby(self.workspace.host.server_id()),
         }
     }
     pub(super) fn workspace_home(&mut self, ctx: &egui::Context) {
-        let info = Info {
-            logged_in: self.logged_in,
-            uu_id: self
-                .config
-                .as_ref()
-                .and_then(|c| {
-                    uu_core::ClientState::read(&c.at("state.json"))
-                        .ok()
-                        .flatten()
-                })
-                .and_then(|s| s.device_id),
-            qr: self.login_texture.as_ref().map(|t| t.id()),
-            login_status: self
-                .account_error
-                .clone()
-                .unwrap_or_else(|| self.login_status.clone()),
-            login_busy: self.login_rx.is_some(),
-            nearby: self.lan.nearby(self.workspace.host.server_id()),
-        };
+        let info = self.workspace_info();
+        self.workspace.client_defaults=self.preferences.client.clone();
+        self.workspace.view=self.preferences.device_view;
         let mut actions = Vec::new();
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(theme::CANVAS).inner_margin(24.))
@@ -1725,6 +1834,7 @@ impl super::App {
         for action in actions {
             match action {
                 Action::Open(id) => self.open_device_profile(&id),
+                Action::Settings => { self.open_settings(); self.settings_section=super::settings_page::Section::Server; },
                 Action::Login => self.start_login(),
                 Action::RenameUu => self.rename_uu_device(),
                 Action::ManageUu => {

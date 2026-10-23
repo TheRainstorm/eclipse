@@ -285,10 +285,11 @@ impl App {
         self.settings_open=false;
         if self.stream_target.is_none() {
             self.lan.compatibility=false;
-            self.workspace.page=super::workspace_ui::Page::Sharing;
+            self.open_settings();
+            self.settings_section=super::settings_page::Section::Server;
         }else {
             let result=std::env::current_exe().and_then(|exe|std::process::Command::new(exe).env_remove("UU_AUTOCONNECT").env("ECLIPSE_SHOW_SHARING","1").spawn());
-            self.status=match result {Ok(_)=>"已打开主页，可在“共享本机”中管理共享".into(),Err(e)=>format!("无法打开主页：{e}")};
+            self.status=match result {Ok(_)=>"已打开主页，可在应用设置中管理服务端".into(),Err(e)=>format!("无法打开主页：{e}")};
         }
     }
 

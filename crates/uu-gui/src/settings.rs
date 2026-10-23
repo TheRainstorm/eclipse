@@ -42,8 +42,8 @@ impl std::ops::DerefMut for Settings {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.client }
 }
 impl Settings {
-    fn capture_values(&self)->(u32,usize,u32,usize,bool,bool) {
-        (self.fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.cursor_mode.remote(),self.prefer_hevc)
+    fn capture_values(&self)->(u32,usize,u32,usize,bool,CodecPreference,bool) {
+        (self.fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.cursor_mode.remote(),self.codec,self.hevc_preferred())
     }
     pub fn path() -> Option<PathBuf> {
         uu_core::Config::from_env()
@@ -205,14 +205,17 @@ impl super::App {
         if !self.settings_open {return;}
         let dirty=self.settings_draft!=self.preferences;
         let gamepad_status=self.gamepad_status();
+        let mut host_actions=Vec::new();
+        let host_info=self.workspace_info();
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
             super::settings_page::State {
-                streaming:self.stream_target.is_some(),sharing:self.workspace.host.running(),
+                streaming:self.stream_target.is_some(),
                 dirty,
                 storage_error:self.settings_storage_error,notice:&self.settings_notice,
                 presentation_vsync:self.presentation_vsync,
                 gamepad_status:gamepad_status.as_deref(),
-            });
+            },|ui| { self.workspace.server_settings(ui,&host_info,&mut host_actions); });
+        self.workspace_actions(host_actions,ctx);
         if actions.back {self.settings_open=false;ctx.request_repaint();}
         if actions.maximize {self.toggle_maximized(ctx);}
         if actions.reset {
@@ -227,6 +230,7 @@ impl super::App {
         let apply=actions.apply;
         let recover=actions.recover;
         if apply {
+            if let Err(error)=self.settings_draft.client.validate() {self.settings_notice=format!("无法应用：{error:#}");return;}
             let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
             self.preferences=self.settings_draft.clone();
             self.release_pointer_capture(ctx);

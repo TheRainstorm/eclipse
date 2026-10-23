@@ -42,6 +42,24 @@ mod tests {
         }
     }
     #[test]
+    fn disabled_ip_never_binds_or_creates_legacy_listener_state() {
+        let root=std::env::temp_dir().join(format!("eclipse-host-no-ip-{}",uuid::Uuid::new_v4()));
+        let config=uu_core::Config{data_dir:root.join("data"),state_dir:root.join("state"),signaling_host:"unreachable.example.invalid".into()};
+        let trust=TrustStore::open(config.at("device-trust")).unwrap();
+        let ctx=egui::Context::default();
+        let mut host=HostUi::default();
+        let mut book=Book::default();book.sharing.ip_enabled=false;
+        assert!(host.start(config.clone(),book.clone(),trust.clone(),&ctx).unwrap_err().to_string().contains("至少一个"));
+        book.sharing.uu_enabled=true;
+        host.start(config.clone(),book,trust,&ctx).unwrap();
+        assert!(host.statuses().iter().all(|(n,_)|n!="IP 直连"));
+        poll_until(&mut host,&ctx,|h|h.statuses().iter().any(|(_,s)|matches!(s,EndpointStatus::Error(_))));
+        assert!(!config.at("native-lan").exists(),"disabled IP must never initialize legacy listener identity or keys");
+        host.stop();poll_until(&mut host,&ctx,|h|!h.running());
+        let owner=uu_core::shared_host::HostOwner::claim(&config.at("device-trust")).unwrap();drop(owner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn shared_host_reports_port_conflicts_and_releases_all_listeners_and_ownership_on_stop() {
         let root =
             std::env::temp_dir().join(format!("eclipse-sharing-ui-{}", uuid::Uuid::new_v4()));
@@ -247,6 +265,7 @@ impl HostUi {
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!self.running(), "共享已经开启");
         book.sharing.validate()?;
+        anyhow::ensure!(book.sharing.ip_enabled || book.sharing.uu_enabled || book.services.iter().any(|s| s.host_enabled), "请先在连接服务中启用至少一个入口");
         let owner = uu_core::shared_host::HostOwner::claim(&config.at("device-trust"))?;
         let (send, events) = mpsc::channel();
         let (requests, pair_requests) = async_mpsc::unbounded_channel();
@@ -259,10 +278,10 @@ impl HostUi {
         let (stop, receiver) = watch::channel(false);
         let (stream, _) = watch::channel(HostStatus::Starting);
         let (ip_status, ip_updates) = watch::channel(EndpointStatus::Starting);
-        let mut endpoints = vec![Endpoint {
-            name: "IP 直连".into(),
-            state: ip_updates,
-        }];
+        let mut endpoints = Vec::new();
+        if book.sharing.ip_enabled {
+            endpoints.push(Endpoint { name: "IP 直连".into(), state: ip_updates });
+        }
         let mut services = Vec::new();
         if book.sharing.uu_enabled {
             let (state, updates) = watch::channel(EndpointStatus::Starting);
@@ -324,6 +343,7 @@ impl HostUi {
                         if forward.send(Event::Legacy(event)).is_err(){break;}
                     }});
                     let mut tasks=tokio::task::JoinSet::new();
+                    if sharing.ip_enabled {
                     let lan_config=lan::Config{codec:sharing.native().codec,rate_control:sharing.native().rate_control,name:sharing.name.clone(),bind:([0,0,0,0],sharing.service_port).into(),
                         discovery_bind:Some(([0,0,0,0],sharing.discovery_port).into()),data_dir:config.at("native-lan"),
                         source:sharing.native().source,
@@ -337,6 +357,7 @@ impl HostUi {
                             });
                         },
                         Err(error)=>{let text=format!("IP 共享不可用：{error:#}");ip_status.send_replace(EndpointStatus::Error(text.clone()));send.send(Event::Notice(text)).ok();},
+                    }
                     }
                     for (settings,status) in services {
                         let config=config.clone();let defaults=sharing.native();let access=server_access.clone();

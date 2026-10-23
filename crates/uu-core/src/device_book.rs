@@ -46,6 +46,8 @@ pub struct Sharing {
     pub service_port: u16,
     pub discovery_port: u16,
     pub uu_enabled: bool,
+    pub ip_enabled: bool,
+    pub auto_start: bool,
 }
 impl Default for Sharing {
     fn default() -> Self {
@@ -62,6 +64,8 @@ impl Default for Sharing {
             service_port: crate::native_discovery::SERVICE_PORT,
             discovery_port: crate::native_discovery::DISCOVERY_PORT,
             uu_enabled: false,
+            ip_enabled: true,
+            auto_start: false,
         }
     }
 }

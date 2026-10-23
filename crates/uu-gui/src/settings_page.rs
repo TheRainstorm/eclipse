@@ -12,23 +12,26 @@ pub enum Section {
     Video,
     Audio,
     Input,
-    Network,
+    Stream,
+    Server,
     Application,
 }
 impl Section {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Video,
         Self::Audio,
         Self::Input,
-        Self::Network,
+        Self::Stream,
+        Self::Server,
         Self::Application,
     ];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Video => "画面与显示",
-            Self::Audio => "声音",
-            Self::Input => "输入与协作",
-            Self::Network => "网络与共享",
+            Self::Video => "客户端 · 画面与显示",
+            Self::Audio => "客户端 · 声音",
+            Self::Input => "客户端 · 键盘与鼠标",
+            Self::Stream => "客户端 · 串流信息",
+            Self::Server => "服务端设置",
             Self::Application => "应用与诊断",
         }
     }
@@ -37,14 +40,14 @@ impl Section {
             Self::Video => "调整清晰度、帧率与呈现方式。",
             Self::Audio => "设置默认音量与声音播放。",
             Self::Input => "配置键鼠、手柄、运动传感器与输入归属。",
-            Self::Network => "配置 Eclipse 局域网端口与本机共享。",
+            Self::Stream => "设置串流菜单与统计信息。",
+            Self::Server => "管理本机采集、编码、权限与服务运行状态。",
             Self::Application => "管理串流界面、默认偏好与软件信息。",
         }
     }
 }
 pub struct State<'a> {
     pub streaming: bool,
-    pub sharing: bool,
     pub dirty: bool,
     pub storage_error: bool,
     pub notice: &'a str,
@@ -131,23 +134,13 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
                     }
                 });
                 ui.end_row();
-                {
-                    ui.label("视频编码");
-                    combo(
-                        ui,
-                        "settings-codec",
-                        if s.prefer_hevc {
-                            "H.265 / HEVC（优先）"
-                        } else {
-                            "H.264"
-                        },
-                        |ui| {
-                            ui.selectable_value(&mut s.prefer_hevc, false, "H.264");
-                            ui.selectable_value(&mut s.prefer_hevc, true, "H.265 / HEVC（优先）");
-                        },
-                    );
-                    ui.end_row();
-                }
+                ui.label("视频编码");
+                combo(ui,"settings-codec",s.codec.label(),|ui| {
+                    for codec in super::settings::CodecPreference::ALL {
+                        if ui.selectable_value(&mut s.codec,codec,codec.label()).changed(){s.prefer_hevc=false;}
+                    }
+                });
+                ui.end_row();
             });
         ui.add_space(8.0);
         note(
@@ -156,7 +149,7 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
         );
         note(
             ui,
-            "切换编码会重新连接。HEVC 不可用时使用 H.264；实际编码可在串流统计中查看。",
+            "自动模式按两端能力协商；明确选择的编码不可用时会提示。切换编码需要重新连接。",
         );
     });
     group(ui, "呈现与解码", |ui| {
@@ -195,7 +188,7 @@ fn audio(ui: &mut egui::Ui, s: &mut Settings) {
                 .suffix("%")
                 .text("音量"),
         );
-        note(ui, "保存后应用到当前串流，并作为新窗口的默认音量。");
+        note(ui, "当前串流和全局默认分别保存；设备配置可覆盖默认值。");
     });
 }
 fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
@@ -229,40 +222,7 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
         );
     });
 }
-fn network(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>, actions: &mut Actions) {
-    group(ui, "设备发现", |ui| {
-        ui.checkbox(&mut s.lan_discovery, "自动查找局域网设备");
-        note(ui, "关闭后停止扫描并隐藏附近设备；仍可连接已保存设备或手动输入 IP 地址。本机共享由共享页面独立管理。");
-    });
-    group(ui, "共享网络设置", |ui| {
-        note(ui, "IP 服务端口、发现端口与 UU/VPS 接入统一在“共享本机”和“连接服务”页面管理。");
-    });
-    group(ui, "本机共享与配对", |ui| {
-        ui.label("共享屏幕、声音及设备访问许可，由本机明确开启和管理。");
-        if ui
-            .add_enabled(
-                !state.dirty,
-                egui::Button::new(if state.sharing {
-                    "管理当前共享"
-                } else {
-                    "打开共享本机"
-                }),
-            )
-            .on_disabled_hover_text("请先保存更改，再打开共享本机")
-            .clicked()
-        {
-            actions.host = true;
-        }
-        if state.dirty {
-            note(ui, "请先保存更改，再打开共享本机。");
-        }
-        note(
-            ui,
-            "启用共享不会自动允许新设备。首次配对仍需在主机核对配对码。",
-        );
-    });
-}
-fn application(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions) {
+fn stream(ui:&mut egui::Ui,s:&mut Settings) {
     group(ui, "串流界面", |ui| {
         ui.checkbox(&mut s.floating_menu, "全屏显示悬浮菜单");
         note(
@@ -275,6 +235,12 @@ fn application(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions) {
             ui,
             "Ctrl+Alt+S 隐藏或显示。统计中的已知段合计不等于完整输入到屏幕延迟。",
         );
+    });
+}
+fn application(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions) {
+    group(ui,"设备发现",|ui| {
+        ui.checkbox(&mut s.lan_discovery,"自动查找局域网设备");
+        note(ui,"关闭后仍可使用保存的地址或手动添加设备；本机服务入口在连接服务中管理。");
     });
     group(ui, "软件信息", |ui| {
         ui.label(format!("uu-client · {}", env!("CARGO_PKG_VERSION")));
@@ -290,6 +256,7 @@ pub fn show(
     s: &mut Settings,
     section: &mut Section,
     state: State<'_>,
+    mut server: impl FnMut(&mut egui::Ui),
 ) -> Actions {
     let mut actions = Actions::default();
     let compact = ctx.screen_rect().height() < 520.0;
@@ -348,10 +315,10 @@ pub fn show(
         )
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                if ui.button("恢复默认").clicked() {
+                if *section != Section::Server && ui.button("恢复默认").clicked() {
                     actions.reset = true;
                 }
-                if state.dirty {
+                if state.dirty && *section!=Section::Server {
                     ui.label(
                         RichText::new("有未保存的更改")
                             .color(theme::MUTED)
@@ -359,7 +326,7 @@ pub fn show(
                     );
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
+                    if *section != Section::Server && ui
                         .add(
                             egui::Button::new(
                                 RichText::new("保存并应用").color(egui::Color32::WHITE),
@@ -427,8 +394,9 @@ pub fn show(
                             .strong()
                             .color(theme::INK),
                     );
-                    if !compact {
-                        note(ui, section.description());
+                    if !compact { note(ui, section.description()); }
+                    if !matches!(section,Section::Server|Section::Application) {
+                        note(ui,if state.streaming {"仅应用到当前串流；设备配置与全局默认不受影响。"}else{"全局默认：未指定独立配置的设备使用这里的设置。"});
                     }
                     ui.add_space(if compact { 10.0 } else { 18.0 });
                     if state.storage_error {
@@ -448,10 +416,25 @@ pub fn show(
                         Section::Video => video(ui, s, &state),
                         Section::Audio => audio(ui, s),
                         Section::Input => input(ui, s, &state),
-                        Section::Network => network(ui, s, &state, &mut actions),
+                        Section::Stream => stream(ui,s),
+                        Section::Server => server(ui),
                         Section::Application => application(ui, s, &mut actions),
                     }
                 });
         });
     actions
+}
+
+/// The device editor uses exactly the same client fields as global/session settings.
+pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::ClientSettings, section:&mut Section) {
+    ui.horizontal_wrapped(|ui| {
+        for item in [Section::Video,Section::Audio,Section::Input,Section::Stream] {
+            ui.selectable_value(section,item,item.label().trim_start_matches("客户端 · "));
+        }
+    });
+    ui.add_space(12.);
+    let mut wrapper=Settings {client:settings.clone(),..Default::default()};
+    let state=State { streaming:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None };
+    match section {Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
+    *settings=wrapper.client;
 }

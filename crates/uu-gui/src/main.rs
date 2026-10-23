@@ -758,7 +758,7 @@ impl App {
         let resolution = self.capture_resolution();
         if self.controller.as_ref().is_some_and(|h| h.stats.output_resolution.get()
             .is_some_and(|previous| previous.output_bounds() != resolution.output_bounds())
-            || h.stats.prefer_hevc.load(std::sync::atomic::Ordering::Acquire) != self.preferences.prefer_hevc)
+            || h.stats.prefer_hevc.load(std::sync::atomic::Ordering::Acquire) != self.preferences.hevc_preferred())
         {
             // The host replaces runtime scale limits with negotiated decoder
             // bounds. Release the old session before negotiating a new bound.
@@ -1150,7 +1150,7 @@ impl App {
         let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
         stats.diagnostics.start([config.state_dir.join("diagnostics")]);
         let _ = stats.output_resolution.set(self.capture_resolution());
-        stats.prefer_hevc.store(self.preferences.prefer_hevc, std::sync::atomic::Ordering::Release);
+        stats.prefer_hevc.store(self.preferences.hevc_preferred(), std::sync::atomic::Ordering::Release);
         stats.diagnostics.record(serde_json::json!({"event":"client","build":self.build_label,"display_mode":self.preferences.display_mode,"fps":self.target_fps}));
         stats.display_mode.store((self.preferences.display_mode==uu_core::screen_control::DisplayMode::ExclusiveVirtual) as u32,std::sync::atomic::Ordering::Release);
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
@@ -1259,6 +1259,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.poll_login(ctx);
+        self.autostart_shared_host(ctx);
         if let Some(current) = self.uu_devices.show(ctx, self.config.as_ref(), self.account_token.as_deref()) {
             if current {
                 self.login_rx = None;
@@ -1461,7 +1462,12 @@ fn main() -> eframe::Result {
     };
     // Vertical sync is on by default (tear-free). `UU_VSYNC=0` disables it
     // (e.g. for very low latency on a tearing-tolerant setup).
-    let preferences=settings::Settings::path().and_then(|p|settings::Settings::load(&p).ok()).unwrap_or_default();
+    let mut preferences=settings::Settings::path().and_then(|p|settings::Settings::load(&p).ok()).unwrap_or_default();
+    if let Some(sessions::StreamTarget { connection:sessions::ConnectionTarget::NativeProfile{snapshot,..},..})=&stream_target {
+        if let Ok(launch)=uu_core::device_book::Launch::read(snapshot) {
+            if let Some(client)=launch.client {preferences.client=client;}
+        }
+    }
     if std::env::var_os("UU_DECODER").is_none() && preferences.software_decoder {std::env::set_var("UU_DECODER","sw");}
     let vsync = std::env::var("UU_VSYNC").map(|v| v != "0").unwrap_or(preferences.vsync);
     let options = eframe::NativeOptions {
