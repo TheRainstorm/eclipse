@@ -1255,7 +1255,16 @@ impl eframe::App for App {
         }
         self.poll_login(ctx);
         if let Some(current) = self.uu_devices.show(ctx, self.config.as_ref(), self.account_token.as_deref()) {
-            if current { self.sign_out(); }
+            if current {
+                self.login_rx = None;
+                let result = self.config.as_ref().ok_or_else(|| anyhow::anyhow!("无法确定登录目录"))
+                    .and_then(|config| account::sign_out_matching(&config.at("state.json"), self.account_token.as_deref()));
+                match result {
+                    Ok(true) => self.apply_account(None),
+                    Ok(false) => self.retry_account_read(),
+                    Err(error) => self.status = format!("设备已解绑，退出本地账号失败：{error}"),
+                }
+            }
             else {
                 self.rx = None;
                 self.devices.clear();

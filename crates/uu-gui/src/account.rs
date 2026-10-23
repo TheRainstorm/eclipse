@@ -32,13 +32,20 @@ pub fn store_device_name(path: &Path, token: &str, name: String) -> anyhow::Resu
 }
 
 pub fn sign_out(path: &Path) -> anyhow::Result<()> {
+    sign_out_matching(path, None).map(|_| ())
+}
+
+/// An asynchronous unbind may finish after another process has logged in.
+pub fn sign_out_matching(path: &Path, expected: Option<&str>) -> anyhow::Result<bool> {
     if let Some(mut state) = read_state(path)? {
+        if expected.is_some() && state.token.as_deref() != expected { return Ok(false); }
         state.token = None;
         state.user_id = None;
         state.identity.user_id = None;
         state.save(&path.to_path_buf())?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 impl super::App {
@@ -166,7 +173,10 @@ mod tests {
         let after = ClientState::load(&path).unwrap();
         state.device_name = Some("Office PC".into());
         assert_eq!(serde_json::to_value(after).unwrap(), serde_json::to_value(&state).unwrap());
-        sign_out(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!sign_out_matching(&path, Some("previous-account-token")).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(sign_out_matching(&path, Some("current-account-token")).unwrap());
         assert_eq!(ClientState::load(&path).unwrap().device_name, state.device_name);
         std::fs::remove_dir_all(dir).unwrap();
     }
