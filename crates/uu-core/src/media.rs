@@ -875,12 +875,13 @@ pub(crate) async fn receive_video(
             }
             let started = Instant::now();
             let outcome=decoder.decode_frames(&encoded);
-            worker_backlog.observe(started.elapsed());
+            let decode_elapsed = started.elapsed();
+            worker_backlog.observe(decode_elapsed);
+            decode_us += decode_elapsed.as_micros() as u64;
             match outcome {
                 Ok(frames) => {
                     gate.decoded(sample_epoch, worker_generation.load(Ordering::Acquire), key);
                     let last = frames.len().saturating_sub(1);
-                    if !frames.is_empty() { decode_us += started.elapsed().as_micros() as u64; }
                     for (index, frame) in frames.into_iter().enumerate() {
                         recovery_errors = 0;
                         if recovery.is_some_and(|(generation, request, pts)| {
