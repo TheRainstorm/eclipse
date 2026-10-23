@@ -370,15 +370,16 @@ mod tests {
         let path = fixture.0.join("devices.json");
         let mut book = Devices::open(&path).unwrap();
         book.add_endpoint(&path, "127.0.0.1").unwrap();
-        book.add_endpoint(&path, "127.0.0.1:47998").unwrap();
-        assert_eq!(book.manual, ["127.0.0.1:47998"]);
+        let endpoint = format!("127.0.0.1:{}", crate::native_discovery::SERVICE_PORT);
+        book.add_endpoint(&path, &endpoint).unwrap();
+        assert_eq!(book.manual, [endpoint.clone()]);
         assert_eq!(Devices::open(&path).unwrap().manual, book.manual);
         let bad_path = path.join("parent-is-file.json");
         assert!(book.add_endpoint(&bad_path, "example.invalid").is_err());
-        assert!(book.remove_endpoint(&bad_path, "127.0.0.1:47998").is_err());
-        assert_eq!(book.manual, ["127.0.0.1:47998"]);
+        assert!(book.remove_endpoint(&bad_path, &endpoint).is_err());
+        assert_eq!(book.manual, [endpoint.clone()]);
         assert!(book.add_endpoint(&path, "https://example.invalid").is_err());
-        book.remove_endpoint(&path, "127.0.0.1:47998").unwrap();
+        book.remove_endpoint(&path, &endpoint).unwrap();
         assert!(Devices::open(&path).unwrap().manual.is_empty());
         // Old paired-device files predate manual addresses and remain readable.
         let mut old = serde_json::to_value(&book).unwrap();
