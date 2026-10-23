@@ -109,6 +109,7 @@ pub struct DxgiCapture {
     started: Instant,
     staging: Option<ID3D11Texture2D>,
     gpu:bool,
+    adapter_vendor:u16,
     duplication: IDXGIOutputDuplication,
     context: ID3D11DeviceContext,
     device: ID3D11Device,
@@ -153,6 +154,7 @@ impl DxgiCapture {
         let multithread:windows::Win32::Graphics::Direct3D10::ID3D10Multithread=context.cast().map_err(backend)?;
         unsafe{let _=multithread.SetMultithreadProtected(true);}
         let output: IDXGIOutput1 = selected.output.cast().map_err(backend)?;
+        let adapter_vendor=unsafe{selected.adapter.GetDesc1().map_err(backend)?}.VendorId as u16;
         let duplication = unsafe { output.DuplicateOutput(&device).map_err(backend)? };
         Ok(Self {
             source: selected.monitor,
@@ -161,6 +163,7 @@ impl DxgiCapture {
             started: Instant::now(),
             staging: None,
             gpu:false,
+            adapter_vendor,
             duplication,
             context,
             device,
@@ -295,8 +298,8 @@ impl DxgiCapture {
     }
 }
 impl Capture for DxgiCapture {
-    fn prefer_gpu(&mut self,enabled:bool) {
-        let enabled=enabled && self.rotation==Rotation::None;
+    fn prefer_gpu(&mut self,enabled:bool,vendor:Option<u16>) {
+        let enabled=enabled && self.rotation==Rotation::None && vendor.is_none_or(|v|v==self.adapter_vendor);
         if self.gpu!=enabled {self.last=None;self.gpu=enabled;}
     }
     fn resolution(&self) -> (u32, u32) {

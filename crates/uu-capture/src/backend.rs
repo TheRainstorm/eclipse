@@ -29,7 +29,7 @@ pub enum CaptureError {
 /// handle that still needs a copy/download step.
 pub trait Capture: Send {
     /// Opt in only when the selected encoder accepts native GPU surfaces.
-    fn prefer_gpu(&mut self,_enabled:bool) {}
+    fn prefer_gpu(&mut self,_enabled:bool,_vendor:Option<u16>) {}
     fn resolution(&self) -> (u32, u32);
     /// Global pixels represented by a whole-monitor capture. Synthetic and
     /// window sources do not authorize desktop input through this interface.

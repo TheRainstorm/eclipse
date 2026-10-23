@@ -4318,6 +4318,7 @@ Standard license text: Unicode-3.0.txt -> text 361d7912957842f2ce61c774b14afba41
 Standard license text: Unlicense.txt -> text 5ad2a6a132966114d7777b3ad68fe00092976038d879d38c28d854851ac1ba5c
 Standard license text: Zlib.txt -> text 93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1
 Additional component notice: Chromium-keycode.txt -> text 5a3e11260ad4290fa783ec7e7afeb39bafd069fb1e97f680cdef29f952f85815
+Additional component notice: amd-amf.txt -> text c70d1ce659c7a6543974af75624d1fb289f50c03b43fee44a714269474929f22
 Additional component notice: ds4-data.txt -> text 177fb6b3dd2e6b77ed66e7647da4e8fc3798d1ad00b12a601962d07bdad170eb
 Additional component notice: intel-vpl-api.txt -> text 28b533c5651587e45c9006fba193276a8f94aba90bb63e0fadf981ecbd073e16
 
@@ -20838,6 +20839,43 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
+## License text c70d1ce659c7a6543974af75624d1fb289f50c03b43fee44a714269474929f22
+AMD AMF API headers v1.4.36
+https://github.com/GPUOpen-LibrariesAndSDKs/AMF
+Only API headers are included, without FFmpeg libraries or AMD driver binaries.
+
+Notice Regarding Standards.  AMD does not provide a license or sublicense to
+any Intellectual Property Rights relating to any standards, including but not
+limited to any audio and/or video codec technologies such as MPEG-2, MPEG-4;
+AVC/H.264; HEVC/H.265; AAC decode/FFMPEG; AAC encode/FFMPEG; VC-1; and MP3
+(collectively, the "Media Technologies"). For clarity, you will pay any
+royalties due for such third party technologies, which may include the Media
+Technologies that are owed as a result of AMD providing the Software to you.
+
+This software uses libraries from the FFmpeg project under the LGPLv2.1.
+
+MIT license
+
+Copyright (c) 2016 Advanced Micro Devices, Inc. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
 ## License text c804065b0956d00a65ce119456ec48ee456f5446b904b07ee85225ba5a88ce41
 Copyright (c) 2014 Carl Lerche and other MIO contributors
 
@@ -24569,8 +24607,3 @@ MIT License
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE
-
-UU Remote service mark
-----------------------
-assets/branding/uu-remote.ico: original favicon from https://uuyc.163.com/favicon.ico, retrieved 2026-10-23.
-UU Remote and its logo are trademarks/assets of NetEase. Used only to identify the optional compatibility service; excluded from this project's MIT/Apache-2.0 license. No affiliation or endorsement is implied.

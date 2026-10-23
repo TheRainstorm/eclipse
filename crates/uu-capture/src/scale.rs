@@ -15,7 +15,7 @@ pub fn bounded(inner:Box<dyn Capture>,bounds:Option<[u32;2]>)->Box<dyn Capture> 
 }
 struct Scaled {inner:Box<dyn Capture>,output:(u32,u32)}
 impl Capture for Scaled {
-    fn prefer_gpu(&mut self,enabled:bool){self.inner.prefer_gpu(enabled);}
+    fn prefer_gpu(&mut self,enabled:bool,vendor:Option<u16>){self.inner.prefer_gpu(enabled,vendor);}
     fn resolution(&self)->(u32,u32){self.output}
     fn desktop_rect(&self)->Option<DesktopRect>{self.inner.desktop_rect()}
     fn input_injector(&self)->Option<Box<dyn uu_input::InputInjector>>{self.inner.input_injector()}

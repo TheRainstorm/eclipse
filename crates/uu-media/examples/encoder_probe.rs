@@ -77,6 +77,7 @@ fn main() -> anyhow::Result<()> {
     let mut frames = 180u32;
     let mut format = PixelFormat::I420;
     let mut gpu_input=false;
+    let mut source_scale=1u32;
     let mut hardware_decoder = false;
     let mut intel_decoder=false;
     let mut encode_only=false;let mut output_path=None;let mut vbr=false;let mut peak=None;
@@ -114,6 +115,7 @@ fn main() -> anyhow::Result<()> {
                 };
             }
             "--width" => settings.width = value.parse()?,
+            "--source-scale" => source_scale=value.parse()?,
             "--height" => settings.height = value.parse()?,
             "--input" => {
                 format = match value.as_str() {
@@ -134,6 +136,8 @@ fn main() -> anyhow::Result<()> {
     ensure!(vbr || peak.is_none(),"--peak-kbps requires --rate-control vbr");
     settings.rate_control=if vbr{encoder::RateControl::Vbr{peak_kbps:peak.unwrap_or(settings.bitrate_kbps.saturating_mul(2))}}else{encoder::RateControl::Cbr};
     settings.validate()?;
+    ensure!((1..=4).contains(&source_scale) && (gpu_input || source_scale==1)
+        && settings.width*source_scale<=8192 && settings.height*source_scale<=8192,"source scale requires valid GPU capture geometry");
     let mut encoder = encoder::create(settings)?;
     #[cfg(windows)]
     let gpu=if gpu_input {
@@ -184,7 +188,13 @@ fn main() -> anyhow::Result<()> {
         let input = input_format(pattern(settings, index), format);
         let expected = uu_media::convert::frame_to_rgba(&input);
         #[cfg(windows)]
-        let input=if let Some(gpu)=&gpu {gpu.frame(&input)?}else{input};
+        let input=if let Some(gpu)=&gpu {
+            let source=Settings{width:settings.width*source_scale,height:settings.height*source_scale,..settings};
+            let mut pixels=input_format(pattern(source,index*source_scale),PixelFormat::Bgra8);
+            pixels.pts=input.pts;
+            let frame=gpu.frame(&pixels)?;
+            RawFrame{width:settings.width,height:settings.height,stride:settings.width*4,..frame}
+        }else{input};
         let started = std::time::Instant::now();
         let output = encoder.encode(&input)?;
         times.push(started.elapsed().as_secs_f64() * 1000.0);
@@ -253,7 +263,7 @@ fn main() -> anyhow::Result<()> {
         "{}",
         serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
         "keyframes":keys,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,
-        "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
+        "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
         "bytes":bytes,"screen_used":false,"input_used":false,"audio_used":false})
     );

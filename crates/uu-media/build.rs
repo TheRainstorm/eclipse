@@ -2,6 +2,15 @@ fn main() {
     println!("cargo:rerun-if-changed=src/vpl/native.c");
     println!("cargo:rerun-if-changed=../../vendor/libvpl-api/include");
     let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    println!("cargo:rerun-if-changed=src/amf/native.cpp");
+    println!("cargo:rerun-if-changed=../../vendor/amf-api/include");
+    if target=="windows" && std::env::var_os("CARGO_FEATURE_MF_ENCODE").is_some() {
+        cc::Build::new().cpp(true).file("src/amf/native.cpp")
+            .include("../../vendor/amf-api/include").flag_if_supported("-std=c++17")
+            .warnings(true).compile("eclipse_amf_adapter");
+        println!("cargo:rustc-link-lib=d3d11");
+        println!("cargo:rustc-link-lib=dxgi");
+    }
     if std::env::var_os("CARGO_FEATURE_INTEL_VPL").is_none()
         || !matches!(target.as_str(), "linux" | "windows")
     {

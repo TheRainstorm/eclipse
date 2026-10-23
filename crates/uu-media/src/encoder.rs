@@ -6,6 +6,8 @@ use crate::{codec::CodecError, EncodedFrame, H264Encoder, RawFrame, VideoEncoder
 mod mf;
 #[cfg(all(windows, feature = "mf-encode"))]
 mod gpu;
+#[cfg(all(windows, feature = "mf-encode"))]
+mod amf;
 #[cfg(any(test,feature="intel-vpl",all(windows,feature="mf-encode")))]
 mod low_delay;
 mod upload;
@@ -123,6 +125,14 @@ fn requires_vpl(settings: Settings, windows: bool) -> bool {
 }
 
 fn hardware(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
+    #[cfg(all(windows,feature="mf-encode"))]
+    if matches!(settings.preference,Preference::Auto|Preference::Hardware|Preference::Amd) {
+        match worker::Worker::spawn(move||amf::Driver::open(settings)) {
+            Ok(encoder)=>return Ok(Box::new(encoder)),
+            Err(reason) if settings.preference==Preference::Amd=>return Err(reason),
+            Err(reason)=>tracing::debug!(%reason,"native AMF unavailable; trying platform hardware API"),
+        }
+    }
     let windows = cfg!(windows);
     let platform_cbr_only = !windows;
     let vpl_required = requires_vpl(settings, windows);
@@ -246,6 +256,7 @@ impl Selected {
 }
 impl VideoEncoder for Selected {
     fn gpu_input(&self)->bool {self.active.gpu_input()}
+    fn gpu_vendor(&self)->Option<u16> {self.active.gpu_vendor()}
     fn backend_name(&self) -> &str {
         &self.name
     }

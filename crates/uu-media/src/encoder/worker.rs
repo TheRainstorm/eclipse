@@ -10,6 +10,7 @@ use std::{
 pub(super) trait Driver {
     fn backend_name(&self) -> &str;
     fn gpu_input(&self)->bool {false}
+    fn gpu_vendor(&self)->Option<u16> {None}
     fn codec(&self)->uu_proto::media::VideoCodec{uu_proto::media::VideoCodec::H264}
     fn encode(&mut self, frame: &RawFrame, keyframe: bool) -> Result<Vec<EncodedFrame>, String>;
     fn bitrate(&mut self, kbps: u32) -> Result<(), String>;
@@ -29,6 +30,7 @@ pub(super) struct Worker {
     name: String,
     codec:uu_proto::media::VideoCodec,
     gpu_input:bool,
+    gpu_vendor:Option<u16>,
     keyframe: bool,
 }
 impl Worker {
@@ -47,7 +49,7 @@ impl Worker {
                         return;
                     }
                 };
-                if ready.send(Ok((driver.backend_name().to_owned(),driver.codec(),driver.gpu_input()))).is_err() {
+                if ready.send(Ok((driver.backend_name().to_owned(),driver.codec(),driver.gpu_input(),driver.gpu_vendor()))).is_err() {
                     return;
                 }
                 while let Ok(job) = receiver.recv() {
@@ -64,7 +66,7 @@ impl Worker {
                 // Driver resources and COM apartments stay on their creating thread.
             })
             .map_err(|e| error(format!("hardware encoder thread: {e}")))?;
-        let (name,codec,gpu_input) = match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        let (name,codec,gpu_input,gpu_vendor) = match ready_rx.recv_timeout(Duration::from_secs(10)) {
             Ok(Ok(name)) => name,
             Ok(Err(reason)) => {
                 let _ = thread.join();
@@ -82,6 +84,7 @@ impl Worker {
             name,
             codec,
             gpu_input,
+            gpu_vendor,
             keyframe: true,
         })
     }
@@ -100,6 +103,7 @@ impl Worker {
 }
 impl VideoEncoder for Worker {
     fn gpu_input(&self)->bool {self.gpu_input}
+    fn gpu_vendor(&self)->Option<u16> {self.gpu_vendor}
     fn backend_name(&self) -> &str {
         &self.name
     }

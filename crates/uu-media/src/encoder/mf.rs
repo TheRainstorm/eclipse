@@ -29,11 +29,11 @@ fn codec_label(codec:VideoCodec)->&'static str {
 }
 
 // Declared last in Driver: the transform is released before COM/MF shut down.
-struct Runtime {
+pub(super) struct Runtime {
     timer_requested: bool,
 }
 impl Runtime {
-    fn start() -> Result<Self, String> {
+    pub(super) fn start() -> Result<Self, String> {
         unsafe {
             CoInitializeEx(None, COINIT_MULTITHREADED)
                 .ok()

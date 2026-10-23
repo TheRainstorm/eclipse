@@ -18,6 +18,7 @@ pub trait VideoEncoder: Send {
     fn backend_name(&self) -> &str { "video encoder" }
     /// Accept immutable D3D11 BGRA surfaces, including GPU output scaling.
     fn gpu_input(&self)->bool {false}
+    fn gpu_vendor(&self)->Option<u16> {None}
     fn codec(&self) -> VideoCodec;
     /// Encode one frame. May return zero encoded frames while the encoder is
     /// still filling its GOP.
