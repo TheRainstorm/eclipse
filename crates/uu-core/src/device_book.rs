@@ -254,7 +254,7 @@ pub struct Book {
 impl Default for Book {
     fn default() -> Self {
         Self {
-            version: 3,
+            version: 4,
             sharing: Sharing::default(),
             services: Vec::new(),
             devices: Vec::new(),
@@ -310,7 +310,7 @@ impl Book {
     }
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 3 && self.devices.len() <= 256 && self.services.len() <= 32,
+            self.version == 4 && self.devices.len() <= 256 && self.services.len() <= 32,
             "设备配置版本或数量无效"
         );
         self.sharing.validate()?;
@@ -504,7 +504,13 @@ impl Store {
         }
         let mut value: Book = serde_json::from_slice(&read_private(&path)?)
             .map_err(|_| anyhow::anyhow!("设备连接配置损坏，原文件已保留"))?;
-        if value.version==2 {value.version=3;}
+        if matches!(value.version, 2 | 3) {
+            // Move the old default listeners away from Sunshine once. Values
+            // saved by current versions, and all custom ports, remain explicit.
+            if value.sharing.service_port == 47998 { value.sharing.service_port = crate::native_discovery::SERVICE_PORT; }
+            if value.sharing.discovery_port == 47999 { value.sharing.discovery_port = crate::native_discovery::DISCOVERY_PORT; }
+            value.version = 4;
+        }
         value.validate()?;
         Ok(value)
     }
@@ -518,8 +524,9 @@ impl Store {
         let original=self.directory.join("connections.json");
         if original.exists() {
             let bytes=read_private(&original)?;
-            if serde_json::from_slice::<serde_json::Value>(&bytes)?["version"].as_u64()==Some(2) {
-                crate::private_file::write_atomic(&self.directory.join(format!("connections.v2-backup-{}.json",uuid::Uuid::new_v4())),&bytes)?;
+            let version=serde_json::from_slice::<serde_json::Value>(&bytes)?["version"].as_u64().unwrap_or(0);
+            if matches!(version, 2 | 3) {
+                crate::private_file::write_atomic(&self.directory.join(format!("connections.v{version}-backup-{}.json",uuid::Uuid::new_v4())),&bytes)?;
             }
         }
         crate::private_file::write_atomic(
@@ -699,6 +706,25 @@ mod tests {
     use super::*;
     use crate::client_settings::{ClientSettings,NamedClientSettings};
     #[test]
+    fn old_default_ports_migrate_once_while_custom_and_remote_addresses_survive() {
+        let root = std::env::temp_dir().join(format!("eclipse-port-migration-{}", uuid::Uuid::new_v4()));
+        let store = Store::open(&root).unwrap();
+        let mut old = Book::default();
+        old.version = 3;
+        old.sharing.service_port = 47998;
+        old.sharing.discovery_port = 47999;
+        old.devices.push(Profile::new("Older host", Destination::Ip { address: "192.0.2.10:47998".into(), legacy_device: None }));
+        crate::private_file::write_atomic(&root.join("connections.json"), &serde_json::to_vec(&old).unwrap()).unwrap();
+        let migrated=store.read().unwrap();
+        assert_eq!((migrated.sharing.service_port,migrated.sharing.discovery_port),(48998,48999));
+        assert!(matches!(&migrated.devices[0].routes[0].destination, Destination::Ip {address,..} if address.ends_with(":47998")));
+        store.edit(|book| {book.sharing.service_port=47998;book.sharing.discovery_port=50123;Ok(())}).unwrap();
+        let explicit=store.read().unwrap();
+        assert_eq!((explicit.sharing.service_port,explicit.sharing.discovery_port),(47998,50123));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn successful_history_and_latest_private_preview_follow_verified_identity() {
         let root=std::env::temp_dir().join(format!("eclipse-history-{}",uuid::Uuid::new_v4()));
         let store=Store::open(&root).unwrap();
@@ -732,7 +758,7 @@ mod tests {
         let original=serde_json::to_vec_pretty(&old).unwrap();
         let path=root.join("connections.json");crate::private_file::write_atomic(&path,&original).unwrap();
         let store=Store::open(&root).unwrap();
-        assert_eq!(store.read().unwrap().version,3);
+        assert_eq!(store.read().unwrap().version,4);
         assert_eq!(std::fs::read(&path).unwrap(),original);
         let config=NamedClientSettings::new("Fast",ClientSettings::default());
         store.save_client_config(&profile.id,config.clone()).unwrap();
@@ -823,7 +849,7 @@ mod tests {
             legacy_device: None
         }
         .same_target(&Destination::Ip {
-            address: "192.0.2.1:47998".into(),
+            address: "192.0.2.1:48998".into(),
             legacy_device: Some(uuid::Uuid::new_v4().to_string())
         }));
         let a = Profile::new(

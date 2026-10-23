@@ -711,7 +711,7 @@ impl LanUi {
                 .show(ctx, |ui| {
                     ui.label("输入目标电脑的 IP 地址或主机名");
                     ui.weak("先在目标电脑启用共享并允许新设备配对。");
-                    ui.weak("未填写端口时使用 TCP 47998；其它端口请填写 IP:端口。");
+                    ui.weak("未填写端口时使用 TCP 48998；其它端口请填写 IP:端口。");
                     ui.weak("不同网段可手动连接，需路由及防火墙允许互通。");
                     let edit = ui.add(
                         egui::TextEdit::singleline(&mut self.address)

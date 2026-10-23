@@ -11,7 +11,7 @@ use uu_core::{
 pub enum Command {
     /// Query public device metadata; does not pair or start capture.
     Discover {
-        #[arg(long, default_value = "255.255.255.255:47999")]
+        #[arg(long, default_value = "255.255.255.255:48999")]
         target: Vec<SocketAddr>,
     },
     /// Check one IP/hostname and print public metadata only.
@@ -36,7 +36,7 @@ pub enum Command {
     Host {
         #[command(flatten)]
         video:super::NativeVideoOptions,
-        #[arg(long, default_value = "127.0.0.1:47998")]
+        #[arg(long, default_value = "127.0.0.1:48998")]
         bind: SocketAddr,
         /// Enable UDP discovery on this explicit local address.
         #[arg(long)]

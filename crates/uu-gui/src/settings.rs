@@ -68,6 +68,9 @@ impl Settings {
         };
         let mut s: Self = serde_json::from_slice(&bytes)
             .map_err(|_| anyhow::anyhow!("设置文件格式无效；原文件已保留，未自动覆盖"))?;
+        // These two legacy fields only seed first migration into services.
+        if s.lan_service_port==47998 { s.lan_service_port=uu_core::native_discovery::SERVICE_PORT; }
+        if s.lan_discovery_port==47999 { s.lan_discovery_port=uu_core::native_discovery::DISCOVERY_PORT; }
         s.fps = s.fps.clamp(5, 144);
         s.bitrate = s.bitrate.min(4);
         s.custom_mbps = s.custom_mbps.clamp(1, 100);

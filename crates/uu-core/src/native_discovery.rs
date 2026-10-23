@@ -14,8 +14,8 @@ use tokio::{
     time::{timeout_at, Instant as Deadline},
 };
 
-pub const SERVICE_PORT: u16 = 47998;
-pub const DISCOVERY_PORT: u16 = 47999;
+pub const SERVICE_PORT: u16 = 48998;
+pub const DISCOVERY_PORT: u16 = 48999;
 const MAGIC: &str = "eclipse-lan";
 const MAX_PACKET: usize = 1200;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -264,7 +264,7 @@ mod tests {
             .unwrap();
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].info, expected);
-        assert_eq!(devices[0].address, "127.0.0.1:47998".parse().unwrap());
+        assert_eq!(devices[0].address, "127.0.0.1:48998".parse().unwrap());
         stop.send_replace(true);
         server.await.unwrap().unwrap();
     }
@@ -309,11 +309,11 @@ mod tests {
     #[test]
     fn manual_endpoints_handle_ipv4_ipv6_hostnames_and_reject_urls_or_empty_ports() {
         for (input, expected) in [
-            ("127.0.0.1", "127.0.0.1:47998"),
+            ("127.0.0.1", "127.0.0.1:48998"),
             ("127.0.0.1:43210", "127.0.0.1:43210"),
-            ("::1", "[::1]:47998"),
+            ("::1", "[::1]:48998"),
             ("[::1]:43210", "[::1]:43210"),
-            ("generated-host.local", "generated-host.local:47998"),
+            ("generated-host.local", "generated-host.local:48998"),
         ] {
             assert_eq!(endpoint(input).unwrap(), expected);
         }

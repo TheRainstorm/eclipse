@@ -25,7 +25,7 @@ fn native_lan_page_preserves_manual_addresses_and_reports_invalid_configuration(
     assert_eq!(page.rows().len(), 1);
     drop(page);
     let mut page = LanUi::new(Some(fixture.0.clone()));
-    assert_eq!(page.rows()[0].endpoint, "127.0.0.1:47998");
+    assert_eq!(page.rows()[0].endpoint, "127.0.0.1:48998");
     page.address = "https://example.invalid".into();
     page.add();
     assert!(page.notice.contains("无法添加设备"));
