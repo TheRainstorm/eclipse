@@ -48,6 +48,7 @@ def main():
                       'focus_follows_mouse no\nfor_window [app_id=".*"] floating enable\n')
     logs = []
     sway = host = gui = keyboard = None
+    window_id = None
 
     def log(name):
         file = (out / name).open('w')
@@ -78,7 +79,22 @@ def main():
             yield from nodes(child)
 
     def window():
-        return next((node for node in nodes(ipc('', 'get_tree')) if node.get('pid') == gui.pid), None)
+        nonlocal window_id
+        owned = [node for node in nodes(ipc('', 'get_tree')) if node.get('pid') == gui.pid]
+        if window_id is None:
+            # A stream workspace also owns a hidden coordinating root. Pin the
+            # mapped stream surface, then retain its compositor identity across
+            # fullscreen and output changes, even while visibility transitions.
+            mapped = [node for node in owned if node.get('visible')]
+            chosen = next((node for node in mapped if node.get('focused')), None)
+            if chosen is None and len(mapped) == 1:
+                chosen = mapped[0]
+            if chosen is not None:
+                window_id = chosen['id']
+        return next((node for node in owned if node['id'] == window_id), None)
+
+    def window_command(command):
+        ipc(f'[con_id="{window_id}"] {command}')
 
     def keys(key, mods=('ctrl', 'alt')):
         keyboard.stdin.write(json.dumps(dict(mods=list(mods), key=key)) + '\n')
@@ -121,6 +137,7 @@ def main():
         gui = subprocess.Popen([str(args.gui.resolve()), '--native-invitation', str(invitation)], env=env, stdout=log('gui.log'), stderr=subprocess.STDOUT)
         wait(window)
         wait(lambda: any(event.get('event') == 'first_frame' for event in events()))
+        wait(lambda: window().get('focused'))
         screenshot('window')
         keys('s'); keys('s')
         if not json.loads((data / 'gui-settings.json').read_text()).get('muted'):
@@ -134,7 +151,7 @@ def main():
         wait(lambda: window().get('fullscreen_mode') == 0)
         result = dict(native_viewer=True, fullscreen=True, local_system_shortcut_in_readonly=True)
         if args.multi_dpi:
-            ipc(f'[pid="{gui.pid}"] move container to output HEADLESS-2')
+            window_command('move container to output HEADLESS-2')
             outputs = ipc('', 'get_outputs')
             area = next(output['rect'] for output in outputs if output['name'] == 'HEADLESS-2')
             (out / 'dpi-output.json').write_text(json.dumps(outputs, indent=2))
@@ -148,23 +165,23 @@ def main():
             result['cross_dpi_before_compositor_center'] = window()['rect']
             # Wayland clients cannot set global positions. The owned compositor
             # chooses placement, independently of the application's size policy.
-            ipc(f'[pid="{gui.pid}"] move position center')
+            window_command('move position center')
             result['cross_dpi_rect'] = window()['rect']
             screenshot('cross-dpi', 'HEADLESS-2')
             # Moving a container to another output does not focus that output.
             # Keep the final shortcut inside this test's own focused window.
-            ipc(f'[pid="{gui.pid}"] focus')
+            window_command('focus')
             wait(lambda: window().get('focused'))
             keys('x')
             wait(lambda: window().get('fullscreen_mode') == 1)
             keys('x')
             wait(lambda: window().get('fullscreen_mode') == 0)
-            ipc(f'[pid="{gui.pid}"] move container to output HEADLESS-1')
+            window_command('move container to output HEADLESS-1')
             wait(lambda: window()['rect']['width'] > area['width'] * .9
                  and window()['rect']['width'] <= 1600 * .9
                  and window()['rect']['height'] <= 1000 * .9)
             result['cross_dpi_return_rect'] = window()['rect']
-            ipc(f'[pid="{gui.pid}"] move position center, focus')
+            window_command('move position center, focus')
             wait(lambda: window().get('focused'))
         sample = wait(lambda: next((event for event in reversed(events()) if event.get('event') == 'video_stats' and event.get('decoded', 0) >= 120), None))
         if sample['errors'] or sample['input_sent']:
@@ -183,6 +200,14 @@ def main():
     except Exception:
         # Retain the failing compositor's diagnostics in CI without emitting
         # invitation contents, account state, or the host's authenticated data.
+        if sway and sway.poll() is None and env.get('SWAYSOCK'):
+            try:
+                tree = ipc('', 'get_tree')
+                owned = [node for node in nodes(tree) if gui and node.get('pid') == gui.pid]
+                print('Owned Wayland windows: ' + json.dumps(owned), file=sys.stderr)
+                (out / 'failed-windows.json').write_text(json.dumps(owned, indent=2))
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass
         for name in ('sway.log', 'keyboard.log', 'gui.log'):
             path = out / name
             if path.exists():
