@@ -97,6 +97,15 @@ async fn run(config: Config, name: String, tx: &std::sync::mpsc::Sender<LoginEve
     // record using the existing ids before generating the QR, including upgrades.
     let _ = tx.send(LoginEvent::Status("更新本机注册信息…".into()));
     api.register(&name).await?;
+    if api.state.device_name.as_deref()!=Some(name.as_str()) {
+        if api.state.token.is_some() {
+            let _=tx.send(LoginEvent::Status("同步 UU 设备名称…".into()));
+            if api.rename_current_device(&name).await.is_ok() { api.state.device_name=Some(name.clone()); }
+        }
+        if api.state.device_name.as_deref()!=Some(name.as_str()) {
+            let _=tx.send(LoginEvent::Status("旧设备未认证时，手机可能仍显示原名；登录确认后会自动更新。".into()));
+        }
+    }
     loop {
         let _ = tx.send(LoginEvent::Status("获取二维码…".into()));
         let qr = api.gen_qr_login().await?;
