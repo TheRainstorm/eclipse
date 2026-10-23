@@ -541,7 +541,7 @@ impl App {
         };
         self.login_rx = None;
         self.login_texture = None;
-        self.login_status = "正在保存 UU 设备名称…".into();
+        self.login_status = "正在更新 UU 注册信息…".into();
         self.login_rx = Some(login::rename(config, name));
     }
 

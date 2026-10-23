@@ -128,6 +128,23 @@ mod state_tests {
     }
 
     #[test]
+    fn registration_refresh_preserves_sign_out_and_rejects_replaced_device_ids() {
+        let mut initial = ClientState::new();
+        initial.identity.client_id = "generated-installation".into();
+        initial.device_id = Some("generated-device".into());
+        initial.token = Some("old-login".into());
+        let mut latest = initial.clone();
+        latest.token = None;
+        latest.user_id = None;
+        let merged = merge_registration(&initial, latest.clone(), "generated-device", "Desktop-Eclipse").unwrap();
+        assert!(merged.token.is_none());
+        assert_eq!(merged.device_name.as_deref(), Some("Desktop-Eclipse"));
+        assert!(merge_registration(&initial, latest.clone(), "another-device", "Desktop-Eclipse").is_err());
+        latest.identity.client_id = "another-installation".into();
+        assert!(merge_registration(&initial, latest, "generated-device", "Desktop-Eclipse").is_err());
+    }
+
+    #[test]
     fn rename_validates_a_display_name_and_cannot_target_another_api_path() {
         for invalid in ["".into(), " \t ".into(), "PC\0name".into(), "PC\nname".into(), "名".repeat(65)] {
             assert!(device_name_update("registered-device", &invalid).is_err());
@@ -328,6 +345,22 @@ fn device_name_update(device: &str, name: &str) -> Result<(String, serde_json::V
     Ok((device_path(device)?, serde_json::json!({"alias": name})))
 }
 
+/// Merge only registration fields into the current on-disk account. Account
+/// changes in another window must survive a slow registration refresh.
+fn merge_registration(initial: &ClientState, mut latest: ClientState, device: &str, alias: &str) -> Result<ClientState, CoreError> {
+    if initial.device_id.as_deref().is_some_and(|expected| expected != device) {
+        return Err(CoreError::Config("UU 刷新注册返回了不同设备编号，已保留原身份，请勿重新注册".into()));
+    }
+    if latest.device_id != initial.device_id || (!latest.identity.client_id.is_empty()
+        && latest.identity.client_id != initial.identity.client_id) {
+        return Err(CoreError::Config("本机 UU 身份已变化，请重新打开登录页面".into()));
+    }
+    if latest.identity.client_id.is_empty() { latest.identity = initial.identity.clone(); }
+    latest.device_id = Some(device.into());
+    latest.device_name = Some(alias.into());
+    Ok(latest)
+}
+
 fn new_system_id() -> String {
     // Shape observed on the Windows client:
     // 20260415-8013-1656-2BF6-801316562BFA
@@ -367,25 +400,20 @@ impl UuApi {
             self.state.identity.device_id.clone()
         };
         self.state.identity.device_id = system_id.clone();
-        self.state.identity.user_id = None;
 
-        let body = serde_json::json!({
-            "name": name,
-            "client_id": self.state.identity.client_id,
-            "system_id": system_id,
-            "machine_guid": Uuid::new_v4().to_string(),
-            "os": std::env::consts::OS,
-            "base_board": "unknown",
-            "cpu": std::env::consts::ARCH,
-            "video": ["unknown"],
-            "mac": "02:00:00:00:00:01",
-            "memory": "unknown",
-            "screen": "1920x1080",
-        });
-        let resp = self
+        let inventory = tokio::task::spawn_blocking(crate::registration::ComputerInfo::collect)
+            .await.unwrap_or_default();
+        let mut body = serde_json::to_value(inventory).map_err(|e| CoreError::Config(e.to_string()))?;
+        body["name"] = name.into();
+        body["client_id"] = self.state.identity.client_id.clone().into();
+        body["system_id"] = system_id.into();
+        body["machine_guid"] = crate::registration::installation_guid(&self.state.identity.client_id).into();
+        let mut identity = self.state.identity.clone();
+        identity.user_id = None;
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(15), self
             .client
             .call(
-                &self.state.identity,
+                &identity,
                 None,
                 SignedRequest {
                     method: "POST",
@@ -393,7 +421,7 @@ impl UuApi {
                     body: Some(body),
                 },
             )
-            .await?;
+            ).await.map_err(|_| CoreError::Config("UU 注册信息更新超时，请重试".into()))??;
         let data = &resp.body["data"];
         let device_id = data["device_id"]
             .as_str()
@@ -402,10 +430,11 @@ impl UuApi {
                 message: resp.body["msg"].as_str().unwrap_or("registration failed").to_string(),
             })?
             .to_string();
-        self.state.device_id = Some(device_id.clone());
         let alias = data["alias"].as_str().unwrap_or(name).to_string();
-        self.state.device_name = Some(alias.clone());
-        self.state.save(&self.state_path)?;
+        let latest = ClientState::load(&self.state_path)?;
+        let latest = merge_registration(&self.state, latest, &device_id, &alias)?;
+        latest.save(&self.state_path)?;
+        self.state = latest;
         Ok(RegisteredDevice {
             device_id,
             alias,

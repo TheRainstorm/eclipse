@@ -48,7 +48,8 @@ pub fn spawn(config: Config, name: String) -> Worker {
 pub fn rename(config: Config, name: String) -> Worker {
     spawn_task(move |tx| async move {
         let client = SignalClient::new(&config)?;
-        let api = UuApi::new(client, config.at("state.json"))?;
+        let mut api = UuApi::new(client, config.at("state.json"))?;
+        api.register(&name).await?;
         api.rename_current_device(&name).await?;
         let token = api.state.token.context("账号未登录")?;
         let _ = tx.send(LoginEvent::NameSaved { name, token });
@@ -92,10 +93,10 @@ async fn run(config: Config, name: String, tx: &std::sync::mpsc::Sender<LoginEve
     let name = uu_core::api::validate_device_name(&name)?.to_string();
     let client = SignalClient::new(&config)?;
     let mut api = UuApi::new(client, config.at("state.json"))?;
-    if !api.has_identity() {
-        let _ = tx.send(LoginEvent::Status("注册设备…".into()));
-        api.register(&name).await?;
-    }
+    // The phone sees init's stored name before authentication. Refresh that
+    // record using the existing ids before generating the QR, including upgrades.
+    let _ = tx.send(LoginEvent::Status("更新本机注册信息…".into()));
+    api.register(&name).await?;
     loop {
         let _ = tx.send(LoginEvent::Status("获取二维码…".into()));
         let qr = api.gen_qr_login().await?;

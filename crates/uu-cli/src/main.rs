@@ -210,8 +210,8 @@ enum Command {
     },
     /// Register this machine (once) and log in by scanning a QR code.
     Login {
-        /// Name for first registration; defaults to this computer's hostname.
-        #[arg(long, default_value_t = uu_core::config::local_device_name())]
+        /// Registration name; defaults to the computer name with -Eclipse.
+        #[arg(long, default_value_t = uu_core::config::uu_device_name())]
         name: String,
     },
     /// Send one signed API request and print the JSON response.
@@ -511,12 +511,8 @@ async fn main() -> Result<()> {
         Command::Login { name } => {
             let client = SignalClient::new(&config)?;
             let mut api = UuApi::new(client, config.at("state.json"))?;
-            if !api.has_identity() {
-                let dev = api.register(&name).await?;
-                println!("registered device {} ({})", dev.alias, dev.device_id);
-            } else {
-                println!("using existing identity {}", api.state.identity.client_id);
-            }
+            let dev = api.register(&name).await?;
+            println!("registered device {} ({})", dev.alias, dev.device_id);
             // The QR is short-lived, so regenerate it on expiry. While the
             // QR is alive we keep polling the *same* code: status 2 means
             // "scanned, waiting for the phone to confirm", not "start over".
