@@ -182,7 +182,7 @@ def fixture(args):
                    '--frames', '60', '--timeout-seconds', '8', '--report', str(runtime / 'native-report.json')]
     probe = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              env=pw_env if video_node is not None else None)
-    deadline = time.monotonic() + (30 if args.case == 'stream-displays' else 10)
+    deadline = time.monotonic() + (85 if args.case == 'stream-startup' else 30 if args.case == 'stream-displays' else 10)
 
     def poll():
         if probe.poll() is not None or time.monotonic() > deadline:
@@ -217,6 +217,14 @@ def fixture(args):
             print(json.dumps(dict(case=args.case, generated_video=True, encrypted_native_media=True,
                                   decoded=native['final']['decoded'], errors=native['final']['errors'],
                                   no_user_desktop=True, session_closed=True)))
+            return
+        if args.case == 'stream-startup':
+            if probe.returncode: raise RuntimeError('Startup probe failed: ' + stderr[-4000:] + ' / ' + stdout[-2000:])
+            reports = [json.loads(line) for line in stdout.splitlines() if line.startswith('{')]
+            assert len(reports) == 2 and all(r['ok'] and r['frames'] >= 60 for r in reports), reports
+            assert len([e for e in events if e['method'] == 'Close' and e.get('session')]) == 2, events
+            assert not any(e['method'].startswith('Notify') for e in events), events
+            print(json.dumps(dict(case=args.case, reports=reports, no_user_desktop=True)))
             return
         if args.case == 'stream-displays':
             if probe.returncode: raise RuntimeError('Media renewal failed: ' + stderr[-3000:] + ' / ' + stdout[-2000:])
@@ -278,7 +286,7 @@ def fixture(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--probe', type=Path, required=True)
-    parser.add_argument('--case', choices=('deny', 'cancel', 'stream-view', 'stream-input', 'stream-no-input', 'stream-keyboard-only', 'stream-input-denied', 'stream-native', 'stream-displays'), required=True)
+    parser.add_argument('--case', choices=('deny', 'cancel', 'stream-view', 'stream-input', 'stream-no-input', 'stream-keyboard-only', 'stream-input-denied', 'stream-native', 'stream-displays', 'stream-startup'), required=True)
     parser.add_argument('--cli', type=Path, help='Native CLI used for the encrypted-media scenario')
     parser.add_argument('--pipewire-prefix', type=Path, help='Optional private installation prefix for PipeWire fixture tools')
     parser.add_argument('--owned-compositor-output', help='Use a monitor in an explicitly isolated test compositor')
@@ -308,7 +316,7 @@ def main():
         if args.pipewire_prefix: command += ['--pipewire-prefix', str(args.pipewire_prefix)]
         if args.cli: command += ['--cli', str(args.cli)]
         if args.owned_compositor_output: command += ['--owned-compositor-output', args.owned_compositor_output]
-        subprocess.run(command, env=env, check=True, timeout=40 if args.case == 'stream-displays' else 15)
+        subprocess.run(command, env=env, check=True, timeout=95 if args.case == 'stream-startup' else 40 if args.case == 'stream-displays' else 15)
 
 
 if __name__ == '__main__':
