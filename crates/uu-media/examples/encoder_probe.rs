@@ -77,6 +77,7 @@ fn main() -> anyhow::Result<()> {
     let mut frames = 180u32;
     let mut format = PixelFormat::I420;
     let mut gpu_input=false;
+    let mut gpu_generated=false;
     let mut source_scale=1u32;
     let mut hardware_decoder = false;
     let mut intel_decoder=false;
@@ -126,16 +127,17 @@ fn main() -> anyhow::Result<()> {
                     "i420" => PixelFormat::I420,
                     "bgra" => PixelFormat::Bgra8,
                     "gpu" => {gpu_input=true;PixelFormat::Bgra8},
+                    "gpu-generated" => {gpu_input=true;gpu_generated=true;PixelFormat::Bgra8},
                     "nv12" => PixelFormat::Nv12,
-                    _ => anyhow::bail!("input must be i420, bgra or nv12"),
+                    _ => anyhow::bail!("input must be i420, bgra, nv12, gpu or gpu-generated"),
                 }
             }
             _ => anyhow::bail!("unknown probe argument"),
         }
     }
     ensure!(
-        (30..=1200).contains(&frames),
-        "probe needs 30..=1200 generated frames"
+        (30..=216000).contains(&frames),
+        "probe needs 30..=216000 generated frames"
     );
     ensure!(vbr || peak.is_none(),"--peak-kbps requires --rate-control vbr");
     settings.rate_control=if vbr{encoder::RateControl::Vbr{peak_kbps:peak.unwrap_or(settings.bitrate_kbps.saturating_mul(2))}}else{encoder::RateControl::Cbr};
@@ -192,16 +194,18 @@ fn main() -> anyhow::Result<()> {
             // timestamp/reference ownership after a rate-control reset.
             encoder.set_bitrate(settings.bitrate_kbps)?;
         }
-        let input = input_format(pattern(settings, index), format);
-        let expected = uu_media::convert::frame_to_rgba(&input);
+        let input = if gpu_generated && encode_only {None}else{Some(input_format(pattern(settings, index), format))};
+        let expected = if encode_only {Vec::new()}else{uu_media::convert::frame_to_rgba(input.as_ref().unwrap())};
         #[cfg(windows)]
         let input=if let Some(gpu)=&gpu {
             let source=Settings{width:settings.width*source_scale,height:settings.height*source_scale,..settings};
-            let mut pixels=input_format(pattern(source,index*source_scale),PixelFormat::Bgra8);
-            pixels.pts=input.pts;
-            let frame=gpu.frame(&pixels)?;
+            let pts=Timestamp(u64::from(index)*1_000_000/u64::from(settings.fps));
+            let frame=if gpu_generated {gpu.generated(source.width,source.height,index*source_scale,pts)?}
+                else {let mut pixels=input_format(pattern(source,index*source_scale),PixelFormat::Bgra8);pixels.pts=pts;gpu.frame(&pixels)?};
             RawFrame{width:settings.width,height:settings.height,stride:settings.width*4,..frame}
-        }else{input};
+        }else{input.unwrap()};
+        #[cfg(not(windows))]
+        let input=input.context("generated GPU input requires Windows")?;
         let started = std::time::Instant::now();
         let output = encoder.encode(&input)?;
         let elapsed=started.elapsed().as_secs_f64() * 1000.0;
@@ -273,7 +277,7 @@ fn main() -> anyhow::Result<()> {
         "{}",
         serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
         "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,
-        "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
+        "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"gpu_generated":gpu_generated,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
         "encode_ms_first":first_encode,"encode_ms_p99":times[times.len()*99/100],"encode_ms_max":times[times.len()-1],
         "keyframe_encode_ms_mean":(!key_times.is_empty()).then(||key_times.iter().sum::<f64>()/key_times.len() as f64),

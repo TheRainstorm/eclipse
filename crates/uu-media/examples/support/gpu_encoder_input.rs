@@ -1,7 +1,7 @@
 //! Generates D3D11 input without reading a desktop. Upload is outside encode timing.
 use anyhow::{ensure,Context,Result};
 use uu_media::{RawFrame,PixelFormat,d3d11_frame::Frame};
-use windows::{core::Interface,Win32::{Foundation::HMODULE,Graphics::{Direct3D::*,Direct3D10::ID3D10Multithread,Direct3D11::*,Dxgi::{IDXGIAdapter,Common::*}}}};
+use windows::{core::Interface,Win32::{Foundation::{HMODULE,RECT},Graphics::{Direct3D::*,Direct3D10::ID3D10Multithread,Direct3D11::*,Dxgi::{IDXGIAdapter,Common::*}}}};
 pub struct Upload {device:ID3D11Device}
 impl Upload {
     pub fn new()->Result<Self> {
@@ -26,5 +26,41 @@ impl Upload {
         let output=RawFrame{data:Default::default(),gpu:true,d3d11:Some(std::sync::Arc::new(surface)),..frame.clone()};
         ensure!(output.is_consistent(),"invalid GPU fixture frame");
         Ok(output)
+    }
+    /// Draw the same moving bars directly into a private GPU texture. This
+    /// exercises encoder input without CPU rasterization or desktop access.
+    pub fn generated(&self,width:u32,height:u32,index:u32,pts:uu_media::Timestamp)->Result<RawFrame> {
+        ensure!((2..=8192).contains(&width)&&(2..=8192).contains(&height),"invalid generated GPU dimensions");
+        let mut texture=None;
+        unsafe {self.device.CreateTexture2D(&D3D11_TEXTURE2D_DESC {
+            Width:width,Height:height,MipLevels:1,ArraySize:1,Format:DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc:DXGI_SAMPLE_DESC{Count:1,Quality:0},Usage:D3D11_USAGE_DEFAULT,
+            BindFlags:(D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE).0 as u32,..Default::default()
+        },None,Some(&mut texture))?;}
+        let texture=texture.context("missing generated GPU texture")?;
+        unsafe {
+            let context=self.device.GetImmediateContext()?;
+            let clear:ID3D11DeviceContext1=context.cast()?;
+            let mut view=None;self.device.CreateRenderTargetView(&texture,None,Some(&mut view))?;
+            let view=view.context("missing generated render target")?;
+            context.ClearRenderTargetView(&view,&[0.0,0.0,0.0,1.0]);
+            let colors=[[0.0,0.0,0.0,1.0],[1.0,1.0,1.0,1.0],[254.0/255.0,0.0,0.0,1.0],[0.0,1.0,1.0/255.0,1.0]];
+            let offset=(u64::from(index)*2%u64::from(width)) as u32;
+            for bar in 1..4u32 {
+                let start=(bar*width+3)/4;let end=((bar+1)*width+3)/4;
+                if start==end {continue;}
+                let left=(start+width-offset)%width;let right=left+end-start;
+                let rect=RECT{left:left as i32,top:0,right:right.min(width) as i32,bottom:height as i32};
+                clear.ClearView(&view,&colors[bar as usize],Some(&[rect]));
+                if right>width {
+                    clear.ClearView(&view,&colors[bar as usize],Some(&[RECT{left:0,top:0,right:(right-width) as i32,bottom:height as i32}]));
+                }
+            }
+            context.Flush();
+        }
+        let surface=Frame::captured(texture,self.device.clone()).map_err(anyhow::Error::msg)?;
+        let frame=RawFrame{width,height,stride:width*4,format:PixelFormat::Bgra8,data:Default::default(),
+            pts,gpu:true,dma_buf:None,d3d11:Some(std::sync::Arc::new(surface))};
+        ensure!(frame.is_consistent(),"invalid generated GPU frame");Ok(frame)
     }
 }
