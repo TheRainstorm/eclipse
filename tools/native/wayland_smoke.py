@@ -22,7 +22,11 @@ def main():
     parser.add_argument('--decoder', choices=('sw', 'auto', 'hw'), default='auto')
     parser.add_argument('--multi-dpi', action='store_true')
     parser.add_argument('--expect-hardware', action='store_true')
+    parser.add_argument('--soak-seconds', type=int, default=0,
+                        help='Keep generated viewing active for 0..3600 seconds before closing')
     args = parser.parse_args()
+    if not 0 <= args.soak_seconds <= 3600:
+        parser.error('--soak-seconds must be 0..3600')
     os.umask(0o077)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -112,7 +116,7 @@ def main():
                     result.append(json.loads(line))
                 except ValueError:
                     pass
-        return result
+        return sorted(result, key=lambda event: event.get('at_ms', 0))
 
     def screenshot(name, output='HEADLESS-1'):
         subprocess.run(['grim', '-o', output, str(out / (name + '.png'))], env=env, check=True)
@@ -134,7 +138,7 @@ def main():
         if not select.select([keyboard.stdout], [], [], 10)[0] or json.loads(keyboard.stdout.readline()) != {'ready': True}:
             raise RuntimeError('Owned virtual input driver did not become ready')
         invitation = out / 'session.eclipse-invite.json'
-        host = subprocess.Popen([str(args.cli.resolve()), 'native-host', '--synthetic', '--invitation-file', str(invitation), '--max-seconds', '90'], env=env, stdout=log('host.log'), stderr=subprocess.STDOUT)
+        host = subprocess.Popen([str(args.cli.resolve()), 'native-host', '--synthetic', '--invitation-file', str(invitation), '--max-seconds', str(90 + args.soak_seconds)], env=env, stdout=log('host.log'), stderr=subprocess.STDOUT)
         wait(invitation.exists)
         gui = subprocess.Popen([str(args.gui.resolve()), '--native-invitation', str(invitation)], env=env, stdout=log('gui.log'), stderr=subprocess.STDOUT)
         wait(window)
@@ -190,6 +194,28 @@ def main():
             raise RuntimeError('Native readonly viewing had decode errors or forwarded input')
         if args.expect_hardware and not sample['backend'].lower().startswith('vaapi ('):
             raise RuntimeError('Native viewer did not remain on VAAPI')
+        deadline = time.monotonic() + args.soak_seconds
+        last_progress = time.monotonic()
+        initial_decoded = sample['decoded']
+        while time.monotonic() < deadline:
+            if gui.poll() is not None or host.poll() is not None:
+                raise RuntimeError('Owned generated viewing ended during its soak')
+            if window() is None:  # Also reject a coordinator mapped later.
+                raise RuntimeError('Owned stream surface disappeared during its soak')
+            latest = next((event for event in reversed(events())
+                           if event.get('event') == 'video_stats'), sample)
+            if latest.get('errors') or latest.get('input_sent'):
+                raise RuntimeError('Owned viewing failed or forwarded readonly input during its soak')
+            if args.expect_hardware and not latest['backend'].lower().startswith('vaapi ('):
+                raise RuntimeError('Owned viewing left VAAPI during its soak')
+            if latest['decoded'] > sample['decoded']:
+                sample = latest
+                last_progress = time.monotonic()
+            if time.monotonic() - last_progress > 12:
+                raise RuntimeError('Owned generated viewing stopped progressing during its soak')
+            time.sleep(.2)
+        result['soak_seconds'] = args.soak_seconds
+        result['soak_decoded'] = sample['decoded'] - initial_decoded
         result['stats'] = sample
         keys('q')
         gui.wait(timeout=6)
