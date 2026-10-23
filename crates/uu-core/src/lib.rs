@@ -43,6 +43,7 @@ pub mod device_profile;
 mod device_network_tests;
 mod decode_gate;
 mod decode_backlog;
+mod diagnostic_writer;
 mod test_loss;
 mod srtp_policy;
 pub mod selfloop;

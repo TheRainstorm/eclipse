@@ -2,7 +2,6 @@
 //! authentication, SDP or network candidate payloads.
 use serde_json::Value;
 use std::{
-    io::Write,
     path::PathBuf,
     sync::{
         mpsc::{sync_channel, SyncSender},
@@ -35,9 +34,10 @@ impl SessionDiagnostics {
                 options.mode(0o600);
             }
             directory.create(&dir).ok()?;
-            options.open(dir.join(&name)).ok()
+            let path=dir.join(&name);
+            options.open(&path).ok().map(|file|(file,path))
         });
-        let Some(mut file) = file else {
+        let Some((file,path)) = file else {
             return;
         };
         let (tx, rx) = sync_channel::<Value>(64);
@@ -47,14 +47,13 @@ impl SessionDiagnostics {
         let _ = std::thread::Builder::new()
             .name("uu-diagnostics".into())
             .spawn(move || {
-                let mut size = 0;
+                let mut writer=crate::diagnostic_writer::Writer::new(file,path);
                 for value in rx {
                     let Ok(mut line) = serde_json::to_vec(&value) else {
                         continue;
                     };
                     line.push(b'\n');
-                    size += line.len();
-                    if size > 256 * 1024 || file.write_all(&line).is_err() {
+                    if writer.write(&line).is_err() {
                         break;
                     }
                 }
