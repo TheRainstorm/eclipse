@@ -56,11 +56,12 @@ mfxStatus MFXVideoDECODE_DecodeHeader(mfxSession session,mfxBitstream *bits,mfxV
 mfxStatus MFXVideoDECODE_Query(mfxSession session,mfxVideoParam *input,mfxVideoParam *out){(void)session;*out=*input;return mode("decode_partial")?MFX_WRN_PARTIAL_ACCELERATION:0;}
 mfxStatus MFXVideoDECODE_QueryIOSurf(mfxSession session,mfxVideoParam *params,mfxFrameAllocRequest *request){(void)session;request->Info=params->mfx.FrameInfo;if(mode("decode_alignment"))request->Info.Height+=16;if(mode("decode_allocation"))request->Info.Height=64;request->NumFrameMin=2;request->NumFrameSuggested=mode("decode_pool")?33:2;return 0;}
 mfxStatus MFXVideoDECODE_Init(mfxSession session,mfxVideoParam *params){((Session *)session)->params=*params;((Session *)session)->initialized=1;return 0;}
-mfxStatus MFXVideoDECODE_GetVideoParam(mfxSession session,mfxVideoParam *params){mfxStatus status=MFXVideoENCODE_GetVideoParam(session,params);if(mode("decode_alignment"))params->mfx.FrameInfo.Height+=16;return status;}
+mfxStatus MFXVideoDECODE_GetVideoParam(mfxSession session,mfxVideoParam *params){mfxStatus status=MFXVideoENCODE_GetVideoParam(session,params);if(mode("decode_alignment")){params->mfx.FrameInfo.Height+=16;params->mfx.FrameInfo.CropH+=16;}return status;}
 mfxStatus MFXVideoDECODE_Reset(mfxSession session,mfxVideoParam *params){return MFXVideoENCODE_Reset(session,params);}
 mfxStatus MFXVideoDECODE_Close(mfxSession session){return MFXVideoENCODE_Close(session);}
 mfxStatus MFXVideoDECODE_DecodeFrameAsync(mfxSession session,mfxBitstream *bits,mfxFrameSurface1 *work,mfxFrameSurface1 **out,mfxSyncPoint *sync){
     (void)session;memset(work->Data.Y,126+(bits->TimeStamp%3),(size_t)work->Data.Pitch*work->Info.Height);memset(work->Data.U,128,(size_t)work->Data.Pitch*work->Info.Height/2);
+    if(mode("decode_output_crop"))work->Info.CropH+=16;
     work->Data.TimeStamp=mode("decode_timestamp")?123456789:bits->TimeStamp;
     bits->DataOffset+=bits->DataLength;bits->DataLength=0;
     *out=mode("decode_surface")?(mfxFrameSurface1 *)(uintptr_t)0x123450:work;*sync=(mfxSyncPoint)1;return 0;

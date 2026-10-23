@@ -269,7 +269,7 @@ int eclipse_vpl_encoder_bitrate(Encoder *e,uint32_t target,char *error,size_t ca
  * existing D3D11 H264/HEVC paths keep their shared GPU presentation pipeline. */
 typedef struct {
     Runtime rt; mfxSession session; int initialized,failed,timer;
-    uint32_t expected_width,expected_height,count,pitch,rows,next_surface;
+    uint32_t expected_width,expected_height,visible_width,visible_height,count,pitch,rows,next_surface;
     mfxVideoParam params; mfxFrameSurface1 *surfaces; uint8_t **pixels;
     uint8_t *input; size_t input_length,input_capacity;
 } Decoder;
@@ -297,7 +297,7 @@ int eclipse_vpl_decoder_open(Decoder **out,char *error,size_t capacity){
 }
 int eclipse_vpl_decoder_prepare(Decoder *d,uint32_t width,uint32_t height,char *error,size_t capacity){
     if(!d || width<2 || height<2 || width>8192 || height>8192 || (width|height)&1)return failed(error,capacity,"invalid decoder size",MFX_ERR_INVALID_VIDEO_PARAM);
-    if(d->initialized && (d->params.mfx.FrameInfo.CropW!=width || d->params.mfx.FrameInfo.CropH!=height))return failed(error,capacity,"decoder size changed",MFX_ERR_INCOMPATIBLE_VIDEO_PARAM);
+    if(d->initialized && (d->visible_width!=width || d->visible_height!=height))return failed(error,capacity,"decoder size changed",MFX_ERR_INCOMPATIBLE_VIDEO_PARAM);
     d->expected_width=width;d->expected_height=height;return 0;
 }
 static int decoder_init(Decoder *d,mfxBitstream *bits,char *error,size_t capacity){
@@ -318,6 +318,7 @@ static int decoder_init(Decoder *d,mfxBitstream *bits,char *error,size_t capacit
         || checked.mfx.FrameInfo.CropW!=info->CropW || checked.mfx.FrameInfo.CropH!=info->CropH || checked.mfx.FrameInfo.FourCC!=MFX_FOURCC_NV12
         || checked.mfx.FrameInfo.Width!=info->Width || checked.mfx.FrameInfo.Height!=info->Height)return failed(error,capacity,"AV1 driver changed decoder format",MFX_ERR_UNSUPPORTED);
     d->params=checked;
+    d->visible_width=checked.mfx.FrameInfo.CropW;d->visible_height=checked.mfx.FrameInfo.CropH;
     mfxFrameAllocRequest request;memset(&request,0,sizeof(request));status=d->rt.surfaces(d->session,&d->params,&request);
     if(status<0 || status==MFX_WRN_PARTIAL_ACCELERATION)return failed(error,capacity,"AV1 surface query",status);
     d->count=request.NumFrameSuggested>request.NumFrameMin?request.NumFrameSuggested:request.NumFrameMin;
@@ -344,7 +345,9 @@ static int decoder_init(Decoder *d,mfxBitstream *bits,char *error,size_t capacit
     if(status==MFX_WRN_PARTIAL_ACCELERATION)return failed(error,capacity,"AV1 partial hardware acceleration rejected",status);
     status=d->rt.get(d->session,&d->params);
     if(status<0 || d->params.mfx.CodecId!=MFX_CODEC_AV1 || d->params.AsyncDepth!=1 || d->params.IOPattern!=MFX_IOPATTERN_OUT_SYSTEM_MEMORY
-        || d->params.mfx.FrameInfo.CropW!=checked.mfx.FrameInfo.CropW || d->params.mfx.FrameInfo.CropH!=checked.mfx.FrameInfo.CropH
+        /* GetVideoParam may report a padded crop (1088 for visible 1080).
+         * DecodeHeader and each returned surface define the visible crop. */
+        || d->params.mfx.FrameInfo.CropW>d->pitch || d->params.mfx.FrameInfo.CropH>d->rows
         || d->params.mfx.FrameInfo.Width>d->pitch || d->params.mfx.FrameInfo.Height>d->rows
         || d->params.mfx.FrameInfo.Width<checked.mfx.FrameInfo.CropW || d->params.mfx.FrameInfo.Height<checked.mfx.FrameInfo.CropH
         || d->params.mfx.FrameInfo.CropX || d->params.mfx.FrameInfo.CropY || d->params.mfx.FrameInfo.FourCC!=MFX_FOURCC_NV12)return failed(error,capacity,"AV1 decoder readback changed format",status<0?status:MFX_ERR_UNSUPPORTED);
@@ -378,7 +381,7 @@ int eclipse_vpl_decoder_decode(Decoder *d,const uint8_t *input,size_t length,uin
     uint32_t index=d->count;for(uint32_t i=0;i<d->count;++i){if(output==&d->surfaces[i]){index=i;break;}}
     if(index==d->count){d->failed=1;return failed(error,capacity,"AV1 returned an unowned surface",MFX_ERR_UNDEFINED_BEHAVIOR);}
     if(output->Data.Y!=d->pixels[index] || output->Data.U!=d->pixels[index]+(size_t)d->pitch*d->rows || output->Data.Pitch!=d->pitch
-        || output->Info.CropW!=d->params.mfx.FrameInfo.CropW || output->Info.CropH!=d->params.mfx.FrameInfo.CropH || output->Info.CropX || output->Info.CropY){d->failed=1;return failed(error,capacity,"AV1 output surface bounds changed",MFX_ERR_UNDEFINED_BEHAVIOR);}
+        || output->Info.CropW!=d->visible_width || output->Info.CropH!=d->visible_height || output->Info.CropX || output->Info.CropY){d->failed=1;return failed(error,capacity,"AV1 output surface bounds changed",MFX_ERR_UNDEFINED_BEHAVIOR);}
     *y=output->Data.Y;*uv=output->Data.U;*pitch=d->pitch;*width=output->Info.CropW;*height=output->Info.CropH;*pts=output->Data.TimeStamp;
     return 1;
 }
