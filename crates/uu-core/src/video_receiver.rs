@@ -374,6 +374,86 @@ mod tests {
             payload: Bytes::copy_from_slice(payload),
         }
     }
+    fn generated_av1_packets(sequence: u16, timestamp: u32) -> Vec<Packet> {
+        use webrtc::rtp::packetizer::Payloader;
+        let mut payloader = webrtc::rtp::codecs::av1::Av1Payloader::default();
+        let payloads = payloader
+            .payload(5, &Bytes::from_static(uu_media::av1::PROBE_UNITS[0]))
+            .unwrap();
+        assert!(payloads.len() > 3);
+        let count = payloads.len();
+        payloads
+            .into_iter()
+            .enumerate()
+            .map(|(index, payload)| {
+                packet(
+                    sequence.wrapping_add(index as u16),
+                    timestamp,
+                    index + 1 == count,
+                    &payload,
+                )
+            })
+            .collect()
+    }
+    fn assert_generated_av1_unchanged(data: &[u8]) {
+        let expected: Vec<_> = uu_media::av1::obus(uu_media::av1::PROBE_UNITS[0])
+            .unwrap()
+            .into_iter()
+            .filter(|obu| !matches!((obu[0] >> 3) & 15, 2 | 15))
+            .collect();
+        assert_eq!(uu_media::av1::obus(data).unwrap(), expected);
+    }
+    #[test]
+    fn av1_wrapped_fragment_repair_preserves_the_complete_obus() {
+        let now = Instant::now();
+        let mut rx = VideoReceiver::with_codec(Duration::from_millis(60), VideoCodec::Av1);
+        let packets = generated_av1_packets(65_534, u32::MAX - 10);
+        for (index, packet) in packets.iter().enumerate() {
+            if index != 1 {
+                assert!(rx.push(packet.clone(), now).is_empty());
+            }
+        }
+        assert_eq!(rx.missing(now + Duration::from_millis(10)), vec![65_535]);
+        let repaired = rx.push(packets[1].clone(), now + Duration::from_millis(12));
+        assert_eq!(repaired.len(), 1);
+        assert_generated_av1_unchanged(&repaired[0].data);
+        assert_eq!(rx.stats.lost, 0);
+        assert!(rx.missing(now + Duration::from_millis(20)).is_empty());
+        assert!(rx
+            .push(packets[1].clone(), now + Duration::from_millis(21))
+            .is_empty());
+        assert!(!rx.take_refresh());
+        let mut next = Vec::new();
+        for packet in generated_av1_packets(65_534u16.wrapping_add(packets.len() as u16), 40) {
+            next.extend(rx.push(packet, now + Duration::from_millis(22)));
+        }
+        assert_eq!(next.len(), 1);
+        assert_generated_av1_unchanged(&next[0].data);
+    }
+    #[test]
+    fn av1_missing_fragment_requests_refresh_without_poisoning_next_picture() {
+        let now = Instant::now();
+        let mut rx = VideoReceiver::with_codec(Duration::from_millis(60), VideoCodec::Av1);
+        let packets = generated_av1_packets(10, 100);
+        for (index, packet) in packets.iter().enumerate() {
+            if index != 1 {
+                assert!(rx.push(packet.clone(), now).is_empty());
+            }
+        }
+        assert!(rx.poll(now + Duration::from_millis(61)).is_empty());
+        assert!(rx.take_refresh());
+        let mut next = Vec::new();
+        for packet in generated_av1_packets(10 + packets.len() as u16, 200) {
+            next.extend(rx.push(packet, now + Duration::from_millis(62)));
+        }
+        assert_eq!(next.len(), 1);
+        assert!(next[0].epoch > 0); // Both loss and the discarded partial picture invalidate references.
+        assert_generated_av1_unchanged(&next[0].data);
+        assert!(rx
+            .push(packets[1].clone(), now + Duration::from_millis(63))
+            .is_empty());
+        assert!(!rx.take_refresh());
+    }
     #[test]
     fn hevc_aggregation_fragment_repair_wrap_and_format_change_are_isolated() {
         let now = Instant::now();
