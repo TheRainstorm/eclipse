@@ -304,6 +304,7 @@ impl Drop for ViewerLifetime {
         self.0.native_input_available.store(false,Ordering::Release);
         self.0.audio.stop();crate::native_clipboard::stop(&self.0.clipboard);
         self.0.capabilities.enable(crate::capabilities::Capability::Audio,false);
+        self.0.capabilities.enable(crate::capabilities::Capability::Quality,false);
     }
 }
 
@@ -833,6 +834,7 @@ async fn receive_session(
     validate_video(answer.width, answer.height, answer.fps)?;
     let quality=crate::native_quality::Response::read(&answer.sdp)?;
     if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"主机实际编码与能力回报不一致");}
+    stats.capabilities.enable(crate::capabilities::Capability::Quality,quality.is_some());
     stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":stats.native_quality_request.get(),"host_capabilities":quality}));
     *stats.native_quality_response.lock().unwrap()=quality;
     // Complete dimension-dependent driver work before setting remote SDP can
@@ -978,12 +980,14 @@ mod tests {
             }
             ensure!(stats.configured_fps.load(Ordering::Acquire)==30,"target FPS not negotiated");
             ensure!(stats.native_quality_response.lock().unwrap().as_ref().is_some_and(|r|r.codecs==vec![VideoCodec::H264]&&r.max_bitrate_kbps==1000&&r.max_fps==60),"missing real host capability response");
+            ensure!(stats.capabilities.allows(crate::capabilities::Capability::Quality),"negotiated quality controls remain hidden");
             ensure!(matches!(*host_phase.borrow(),HostStatus::Streaming{width:160,height:90,fps:30,..}),"capture was not scaled");
             Ok::<_,anyhow::Error>(())
         }).await;
         stop.send_replace(true);host_stop.send_replace(true);
         let viewed=viewer.await.unwrap();let hosted=host.await.unwrap();
         result.unwrap_or_else(|e|panic!("{e}; viewer={viewed:?}; host={hosted:?}; phase={:?}; packets={}; decoded={}; errors={}",*host_phase.borrow(),stats.packets.load(Ordering::Relaxed),stats.decoded_total.load(Ordering::Relaxed),stats.errors.load(Ordering::Relaxed))).unwrap_or_else(|e|panic!("{e}; viewer={viewed:?}; host={hosted:?}"));viewed.unwrap();let report=hosted.unwrap();assert!(report.sent>=12);
+        assert!(!stats.capabilities.allows(crate::capabilities::Capability::Quality));
     }
     #[tokio::test]
     async fn synthetic_source_cannot_authorize_system_audio() {
