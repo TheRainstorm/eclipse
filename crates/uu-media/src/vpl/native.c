@@ -241,6 +241,13 @@ int eclipse_vpl_encoder_encode(Encoder *e,uint64_t timestamp,int keyframe,const 
 int eclipse_vpl_encoder_bitrate(Encoder *e,uint32_t target,char *error,size_t capacity){
     if(!e || target<64 || target>100000 || (e->vbr && target>e->peak_kbps))return failed(error,capacity,"invalid bitrate",MFX_ERR_INVALID_VIDEO_PARAM);
     mfxVideoParam previous=e->params;set_bitrate(e,target);
+    /* Reset permits bitrate changes, not reallocation of the encoder's VBV.
+     * Preserve the initialized buffer and delay, expressed in the new BRC
+     * multiplier units. In particular, lowering CBR must not shrink the VBV. */
+    uint32_t old_multiplier=previous.mfx.BRCParamMultiplier?previous.mfx.BRCParamMultiplier:1;
+    uint32_t multiplier=e->params.mfx.BRCParamMultiplier?e->params.mfx.BRCParamMultiplier:1;
+    e->params.mfx.BufferSizeInKB=(mfxU16)(((uint32_t)previous.mfx.BufferSizeInKB*old_multiplier+multiplier-1)/multiplier);
+    e->params.mfx.InitialDelayInKB=(mfxU16)(((uint32_t)previous.mfx.InitialDelayInKB*old_multiplier+multiplier-1)/multiplier);
     mfxStatus status=e->rt.reset(e->session,&e->params);
     if(status<0 || status==MFX_WRN_PARTIAL_ACCELERATION){e->params=previous;e->initialized=-1;return failed(error,capacity,"bitrate reset",status);}
     status=e->rt.get(e->session,&e->params);

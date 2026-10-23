@@ -22,7 +22,15 @@ mfxStatus MFXVideoENCODE_Query(mfxSession session,mfxVideoParam *input,mfxVideoP
 }
 mfxStatus MFXVideoENCODE_Init(mfxSession session,mfxVideoParam *params){((Session *)session)->params=*params;((Session *)session)->initialized=1;if(mode("init_fps"))((Session *)session)->params.mfx.FrameInfo.FrameRateExtN/=2;if(mode("codec"))((Session *)session)->params.mfx.CodecId=MFX_CODEC_AVC;return mode("partial")?MFX_WRN_PARTIAL_ACCELERATION:0;}
 mfxStatus MFXVideoENCODE_GetVideoParam(mfxSession session,mfxVideoParam *params){*params=((Session *)session)->params;return 0;}
-mfxStatus MFXVideoENCODE_Reset(mfxSession session,mfxVideoParam *params){((Session *)session)->params=*params;return 0;}
+mfxStatus MFXVideoENCODE_Reset(mfxSession session,mfxVideoParam *params){
+    Session *state=(Session *)session;
+    /* Rate changes cannot silently resize the VBV allocated by Init. */
+    mfxU32 before=state->params.mfx.BRCParamMultiplier?state->params.mfx.BRCParamMultiplier:1;
+    mfxU32 after=params->mfx.BRCParamMultiplier?params->mfx.BRCParamMultiplier:1;
+    if((mfxU32)params->mfx.BufferSizeInKB*after!=(mfxU32)state->params.mfx.BufferSizeInKB*before
+        || (mfxU32)params->mfx.InitialDelayInKB*after!=(mfxU32)state->params.mfx.InitialDelayInKB*before)return MFX_ERR_INCOMPATIBLE_VIDEO_PARAM;
+    state->params=*params;return 0;
+}
 mfxStatus MFXVideoENCODE_Close(mfxSession session){((Session *)session)->initialized=0;return 0;}
 mfxStatus MFXVideoCORE_SyncOperation(mfxSession session,mfxSyncPoint point,mfxU32 wait){(void)session;(void)point;(void)wait;return 0;}
 mfxStatus MFXVideoENCODE_EncodeFrameAsync(mfxSession session,mfxEncodeCtrl *control,mfxFrameSurface1 *surface,mfxBitstream *bits,mfxSyncPoint *sync){

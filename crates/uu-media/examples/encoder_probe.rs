@@ -154,6 +154,11 @@ fn main() -> anyhow::Result<()> {
                 "invalid bitrate must be rejected without replacing encoder"
             );
         }
+        if index == frames * 3 / 4 {
+            // Verify both directions without replacing the session or losing
+            // timestamp/reference ownership after a rate-control reset.
+            encoder.set_bitrate(settings.bitrate_kbps)?;
+        }
         let input = input_format(pattern(settings, index), format);
         let started = std::time::Instant::now();
         let output = encoder.encode(&input)?;
