@@ -222,3 +222,7 @@ Sunshine 的 `src/platform/windows/display_base.cpp` 在帧节奏等待后以零
 ### v0.18 原生视频保护更新
 
 本项目两端新增 [有界 XOR 视频 FEC](native-fec.md)，只在原生 SDP 双方确认后启用，真实发出校验并将重建 RTP 送回重排器。每组最多 8 数据包，恢复一个缺失；校验预算含固定封装估算最多为编码负载 20%。这是本项目私有扩展，未复制 Sunshine RS 代码，也不等同于 RS/ULPFEC 或官方 UU 手机协议；上文涉及“未实现视频 FEC”的记录保留其历史范围。
+
+### v0.18 AMF 设备绑定与按需关键帧
+
+继续参考固定快照 `0219abe22c4d9c937a6ca52ebb895f216da4b077` 的 Foundation Sunshine [采集设备与 AMF 初始化](https://github.com/AlkaidLab/foundation-sunshine/blob/0219abe22c4d9c937a6ca52ebb895f216da4b077/src/platform/windows/display_vram.cpp#L3368)及[原生 AMF 后端](https://github.com/AlkaidLab/foundation-sunshine/blob/0219abe22c4d9c937a6ca52ebb895f216da4b077/src/amf/amf_d3d11.cpp)。本项目独立实现类型化采集设备租约，使用实际 AMD 捕获设备初始化，消除首个 GPU 帧上的重复初始化；三格式 GOP=0，恢复与引用失效由公共编码线程明确请求。没有复制 GPL 源码，也没有强制打开其明确提示存在驱动冻结风险的额外 LOWLATENCY_MODE / INPUT_QUEUE_SIZE 开关。生成帧开关对照、GPU解码抽样校验与计时边界见[编码说明](native-encoding.md)。
