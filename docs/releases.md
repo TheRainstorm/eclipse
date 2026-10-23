@@ -2,7 +2,7 @@
 
 大功能里程碑使用 `v主版本.次版本.修订号` 标签，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
-当前发布基线为 [v0.15.0](https://github.com/TheRainstorm/uu-client/releases/tag/v0.15.0)，包含嵌套快捷键透传、流式设置与自动编码顺序，详见 [0.15 发布说明](releases/v0.15.0.md)。上一正式版本为 [0.14](releases/v0.14.0.md)，更早版本见 [0.12](releases/v0.12.0.md)。此前版本见 [0.11](releases/v0.11.0.md) 与 [0.10](releases/v0.10.0.md)。正式产物以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+本次发布 [v0.15.1](https://github.com/TheRainstorm/uu-client/releases/tag/v0.15.1)，修复原生输入、画质菜单、编码协商并接入 AMD AMF，详见 [0.15.1 发布说明](releases/v0.15.1.md)。已发布的 [v0.15.0](releases/v0.15.0.md) 保持不变。正式产物以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
 
 ```sh
 python3 tools/release/download.py
