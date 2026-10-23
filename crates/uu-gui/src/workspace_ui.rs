@@ -358,6 +358,7 @@ mod tests {
         h.workspace.draft.bitrate_mbps=25;
         h.workspace.update_connections(|s|{s.ip_enabled=false;s.uu_enabled=true;s.service_port=51001;s.discovery_port=51002;});
         assert!(h.workspace.save_sharing());
+        assert!(!h.workspace.server_dirty());
         let book=h.workspace.store.as_ref().unwrap().read().unwrap();
         assert_eq!(book.sharing.bitrate_mbps,25);
         assert!(!book.sharing.ip_enabled && book.sharing.uu_enabled);
@@ -644,7 +645,8 @@ impl Workspace {
         }
     }
     pub(super) fn discard_server_draft(&mut self){self.draft=self.book.sharing.clone();}
-    fn save_sharing(&mut self) -> bool {
+    pub(super) fn server_dirty(&self)->bool {self.draft!=self.book.sharing}
+    pub(super) fn save_sharing(&mut self) -> bool {
         let result = self
             .store
             .as_ref()
@@ -660,10 +662,11 @@ impl Workspace {
             }));
         let saved = result.is_ok();
         self.notice = match result {
-            Ok(()) => "共享设置已保存".into(),
+            Ok(()) => "服务端设置已保存".into(),
             Err(e) => format!("无法保存：{e:#}"),
         };
         self.refresh();
+        if saved {self.draft=self.book.sharing.clone();}
         saved
     }
     fn new_device(&mut self, profile: Option<String>, route: Option<String>) {
@@ -1349,9 +1352,6 @@ impl Workspace {
                 muted(ui,"停止共享后可修改设置。");
             }
         });
-        if !locked && primary(ui, "保存服务端设置").clicked() {
-            if self.save_sharing() && info.logged_in { actions.push(Action::RenameUu); }
-        }
         ui.add_space(14.);
         if self.host_section==2 {self.grants(ui);}
     }

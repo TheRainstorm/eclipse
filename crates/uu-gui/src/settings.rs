@@ -226,6 +226,7 @@ impl super::App {
             super::settings_page::State {
                 streaming:self.stream_target.is_some(),
                 dirty,
+                server_dirty:self.workspace.server_dirty(),server_locked:child||self.workspace.host.running()||self.workspace.store.is_none(),
                 storage_error:self.settings_storage_error,notice:&self.settings_notice,
                 presentation_vsync:self.presentation_vsync,
                 gamepad_status:gamepad_status.as_deref(),
@@ -234,6 +235,7 @@ impl super::App {
                 else{self.workspace.server_settings(ui,&host_info,&mut host_actions);}
             });
         self.workspace_actions(host_actions,ctx);
+        if actions.save_server && !child && self.workspace.save_sharing() && self.logged_in {self.rename_uu_device();}
         if actions.back {self.workspace.discard_server_draft();self.settings_open=false;ctx.request_repaint();}
         if actions.maximize {self.toggle_maximized(ctx);}
         if actions.reset {

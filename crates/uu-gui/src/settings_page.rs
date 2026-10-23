@@ -49,6 +49,8 @@ impl Section {
 pub struct State<'a> {
     pub streaming: bool,
     pub dirty: bool,
+    pub server_dirty:bool,
+    pub server_locked:bool,
     pub storage_error: bool,
     pub notice: &'a str,
     pub presentation_vsync: bool,
@@ -58,6 +60,7 @@ pub struct State<'a> {
 pub struct Actions {
     pub back: bool,
     pub apply: bool,
+    pub save_server:bool,
     pub recover: bool,
     pub reset: bool,
     pub about: bool,
@@ -326,7 +329,7 @@ pub fn show(
                 if *section != Section::Server && ui.button("恢复默认").clicked() {
                     actions.reset = true;
                 }
-                if state.dirty && *section!=Section::Server {
+                if if *section==Section::Server {state.server_dirty}else{state.dirty} {
                     ui.label(
                         RichText::new("有未保存的更改")
                             .color(theme::MUTED)
@@ -334,6 +337,7 @@ pub fn show(
                     );
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if *section==Section::Server && !state.streaming && ui.add_enabled(!state.server_locked,egui::Button::new(RichText::new("保存服务端设置").color(egui::Color32::WHITE)).fill(theme::ACCENT)).on_disabled_hover_text("停止服务后可保存设置").clicked(){actions.save_server=true;}
                     if *section != Section::Server && ui
                         .add(
                             egui::Button::new(
@@ -442,7 +446,7 @@ pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::Cli
     });
     ui.add_space(12.);
     let mut wrapper=Settings {client:settings.clone(),..Default::default()};
-    let state=State { streaming:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None };
+    let state=State { streaming:false,dirty:false,server_dirty:false,server_locked:true,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None };
     match section {Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
     *settings=wrapper.client;
 }
