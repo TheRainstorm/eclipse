@@ -11,6 +11,9 @@ use windows::{
 
 #[derive(Debug)]
 pub struct Frame {
+    // A cropped view retains the original lease, including capture-pool
+    // exclusivity and decoder sample ownership.
+    _parent: Option<std::sync::Arc<Frame>>,
     // A COM reference to the texture alone does not prevent MFT sample reuse.
     _sample: Option<IMFSample>,
     _foundation: Option<std::sync::Arc<Foundation>>,
@@ -49,6 +52,7 @@ impl Frame {
             return Err("unsupported D3D11 decoder texture layout".into());
         }
         let frame = Self {
+            _parent: None,
             _sample: Some(sample),
             _foundation: Some(foundation),
             texture,
@@ -87,8 +91,17 @@ impl Frame {
         }
         let actual=unsafe{texture.GetDevice()}.map_err(|e|e.to_string())?;
         if actual.as_raw()!=device.as_raw(){return Err("capture texture/device mismatch".into());}
-        Ok(Self{_sample:None,_foundation:None,texture,device,index:0,
+        Ok(Self{_parent:None,_sample:None,_foundation:None,texture,device,index:0,
             visible:[desc.Width,desc.Height],allocation:[desc.Width,desc.Height],format:desc.Format})
+    }
+    pub(crate) fn cropped_view(source:&std::sync::Arc<Self>,visible:[u32;2])->Result<Self,String> {
+        if !source.valid(source.visible) || visible.iter().any(|v|*v<2 || *v%2!=0)
+            || visible[0]>source.visible[0] || visible[1]>source.visible[1] {
+            return Err("invalid decoded GPU display geometry".into());
+        }
+        Ok(Self{_parent:Some(source.clone()),_sample:None,_foundation:None,
+            texture:source.texture.clone(),device:source.device.clone(),index:source.index,
+            visible,allocation:source.allocation,format:source.format})
     }
     pub(crate) fn capture_texture(&self)->Result<(&ID3D11Texture2D,&ID3D11Device),String> {
         if self.format!=DXGI_FORMAT_B8G8R8A8_UNORM {return Err("encoder requires a BGRA capture surface".into());}

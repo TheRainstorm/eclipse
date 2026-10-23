@@ -76,7 +76,8 @@ async fn encrypted_twelve_frame_burst_preserves_references_while_a_fast_decoder_
     let (frames,mut images)=crate::media::frame_channel();
     viewer.receiver(frames,stats.clone()).await.unwrap();
     let decoder=viewer.pending_decoder.lock().unwrap().take().unwrap();
-    *viewer.pending_decoder.lock().unwrap()=Some(Box::new(Decoder{inner:decoder,count:0,pause:pause.clone()}));
+    *viewer.pending_decoder.lock().unwrap()=Some(crate::media::PreparedVideoDecoder{
+        decoder:Box::new(Decoder{inner:decoder.decoder,count:0,pause:pause.clone()}),visible:decoder.visible});
     let refresh=Arc::new(AtomicBool::new(false));
     let mut sender=host.sender_for_codec(refresh,VideoCodec::H264).await.unwrap();
     let result=async {

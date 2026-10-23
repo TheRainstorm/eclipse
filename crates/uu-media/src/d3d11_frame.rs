@@ -25,4 +25,7 @@ impl Frame {
     pub fn valid(&self, _: [u32; 2]) -> bool {
         false
     }
+    pub(crate) fn cropped_view(_: &std::sync::Arc<Self>, _: [u32;2]) -> Result<Self,String> {
+        Err("D3D11 display views are unavailable".into())
+    }
 }

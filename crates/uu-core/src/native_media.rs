@@ -204,7 +204,7 @@ pub(crate) struct NativePeer {
     pub states: watch::Receiver<RTCPeerConnectionState>,
     closed: AtomicBool,
     development_relay: bool,
-    pending_decoder: Arc<Mutex<Option<Box<dyn uu_media::VideoDecoder>>>>,
+    pending_decoder: Arc<Mutex<Option<crate::media::PreparedVideoDecoder>>>,
 }
 impl NativePeer {
     pub async fn new(
@@ -348,7 +348,7 @@ impl NativePeer {
             .await
             .context("native decoder initialization task failed")??;
         stats.set_backend(decoder.backend_name());
-        *self.pending_decoder.lock().unwrap() = Some(decoder);
+        *self.pending_decoder.lock().unwrap() = Some(crate::media::PreparedVideoDecoder{decoder,visible:None});
         let prepared = self.pending_decoder.clone();
         let audio_claimed=Arc::new(AtomicBool::new(false));
         let weak = Arc::downgrade(&self.pc);
@@ -401,15 +401,16 @@ impl NativePeer {
         Ok(())
     }
     pub async fn prepare_video(&self, width: u32, height: u32, codec:VideoCodec,stats: &MediaStats) -> Result<()> {
-        let mut decoder = self.pending_decoder.lock().unwrap().take()
+        let prepared = self.pending_decoder.lock().unwrap().take()
             .context("native video decoder was already assigned")?;
+        let mut decoder=prepared.decoder;
         let decoder = tokio::task::spawn_blocking(move || {
             if decoder.codec()!=codec{decoder=uu_media::decoder_for_codec(codec)?;}
             decoder.prepare(width, height)?;
             Ok::<_, uu_media::CodecError>(decoder)
         }).await.context("native decoder preparation task failed")??;
         stats.set_backend(decoder.backend_name());
-        *self.pending_decoder.lock().unwrap() = Some(decoder);
+        *self.pending_decoder.lock().unwrap() = Some(crate::media::PreparedVideoDecoder{decoder,visible:Some([width,height])});
         Ok(())
     }
     /// Reuse the offered media section when encoder selection follows consent.

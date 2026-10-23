@@ -183,6 +183,7 @@ fn main() -> anyhow::Result<()> {
         ensure!(settings.codec==VideoCodec::H264,"software decoder validation supports H264; use --decoder hw or none");
         Some(uu_media::software_decoder()?)
     };
+    if let Some(decoder)=decoder.as_mut() {decoder.prepare(settings.width,settings.height)?;}
     let mut output_file=output_path.map(|path|std::fs::OpenOptions::new().write(true).create_new(true).open(path)).transpose()?;
     let mut emitted=0u32;
     let mut color = YuvColor::Full601;
@@ -254,18 +255,20 @@ fn main() -> anyhow::Result<()> {
                 color = match settings.codec {VideoCodec::H264=>uu_media::color::from_h264(&coded.data),VideoCodec::Hevc=>uu_media::hevc::sequence(&coded.data).map(|s|s.color),VideoCodec::Av1=>uu_media::av1::sequence(&coded.data).map(|s|s.color)}
                     .context("keyframe needs colour metadata")?;
                 let mut fresh=if settings.codec==VideoCodec::H264{uu_media::software_decoder()?}else{uu_media::decoder_for_codec(settings.codec)?};
+                fresh.prepare(settings.width,settings.height)?;
                 ensure!(
-                    fresh.decode(&coded)?.is_some(),
+                    fresh.decode(&coded)?.is_some_and(|f|f.width==settings.width && f.height==settings.height),
                     "recovery IDR must decode with no old reference chain"
                 );
                 if hardware_decoder {
                     let mut fresh=if settings.codec==VideoCodec::H264{uu_media::hw::create_hardware_decoder()?}else{uu_media::decoder_for_codec(settings.codec)?};
+                    fresh.prepare(settings.width,settings.height)?;
                     let mut padded = coded.clone();
                     let mut data = coded.data.to_vec();
                     if settings.codec!=VideoCodec::Av1 {data.extend_from_slice(&[0; 7]);}
                     padded.data = data.into();
                     ensure!(
-                        fresh.decode(&padded).with_context(|| format!("fresh hardware decoder at frame {index}"))?.is_some(),
+                        fresh.decode(&padded).with_context(|| format!("fresh hardware decoder at frame {index}"))?.is_some_and(|f|f.width==settings.width && f.height==settings.height),
                         "recovery IDR with Annex-B padding must initialize a fresh hardware decoder"
                     );
                 }

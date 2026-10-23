@@ -16,6 +16,36 @@ use crate::codec::{CodecError, VideoDecoder};
 use crate::frame::{EncodedFrame, RawFrame};
 use uu_proto::media::VideoCodec;
 
+/// AV1 hardware encoders may append black padding. The stream/container's
+/// confirmed display dimensions are independent from its coded sequence size.
+pub(crate) struct DisplaySizeDecoder {
+    inner: Box<dyn VideoDecoder>,
+    visible: Option<[u32;2]>,
+}
+impl DisplaySizeDecoder {
+    pub(crate) fn new(inner:Box<dyn VideoDecoder>)->Self { Self{inner,visible:None} }
+    fn crop(&self,frame:RawFrame)->Result<RawFrame,CodecError> {
+        match self.visible {Some(visible)=>frame.crop_decoded(visible),None=>Ok(frame)}
+    }
+}
+impl VideoDecoder for DisplaySizeDecoder {
+    fn codec(&self)->VideoCodec {self.inner.codec()}
+    fn backend_name(&self)->&str {self.inner.backend_name()}
+    fn prepare(&mut self,width:u32,height:u32)->Result<(),CodecError> {
+        if width<2 || height<2 || width%2!=0 || height%2!=0 || width>8192 || height>8192 {
+            return Err(CodecError::Backend("invalid negotiated display dimensions".into()));
+        }
+        self.inner.prepare(width,height)?;
+        self.visible=Some([width,height]);Ok(())
+    }
+    fn decode(&mut self,frame:&EncodedFrame)->Result<Option<RawFrame>,CodecError> {
+        self.inner.decode(frame)?.map(|picture|self.crop(picture)).transpose()
+    }
+    fn decode_frames(&mut self,frame:&EncodedFrame)->Result<Vec<RawFrame>,CodecError> {
+        self.inner.decode_frames(frame)?.into_iter().map(|picture|self.crop(picture)).collect()
+    }
+}
+
 /// A decoder that reports a more descriptive backend name than its inner one.
 ///
 /// Selection sometimes has something to say that the decoder itself does not
@@ -259,6 +289,36 @@ mod tests {
 
     fn unit() -> EncodedFrame {
         EncodedFrame { data: Bytes::from_static(&[0, 0, 0, 1, 0x65]), pts: crate::Timestamp(0), is_keyframe: true }
+    }
+
+    #[test]
+    fn display_size_preserves_delayed_batches_and_changes_only_after_valid_preparation() {
+        struct Padded;
+        impl VideoDecoder for Padded {
+            fn codec(&self)->VideoCodec {VideoCodec::Av1}
+            fn prepare(&mut self,w:u32,_:u32)->Result<(),CodecError> {
+                if w==8 {return Err(CodecError::Backend("fixture rejects geometry".into()));}Ok(())
+            }
+            fn decode(&mut self,_:&EncodedFrame)->Result<Option<RawFrame>,CodecError> {panic!("batch fixture")}
+            fn decode_frames(&mut self,f:&EncodedFrame)->Result<Vec<RawFrame>,CodecError> {
+                if f.pts.0==0 {return Ok(vec![]);}
+                Ok([f.pts.0-1,f.pts.0].into_iter().map(|pts|RawFrame::new_i420(6,6,vec![128;54],crate::Timestamp(pts))).collect())
+            }
+        }
+        let mut decoder=DisplaySizeDecoder::new(Box::new(Padded));
+        let mut frame=unit();
+        assert!(decoder.decode_frames(&frame).unwrap().is_empty());
+        frame.pts=crate::Timestamp(1);
+        assert_eq!(decoder.decode_frames(&frame).unwrap()[0].width,6);
+        decoder.prepare(4,4).unwrap();
+        assert!(decoder.prepare(8,4).is_err());
+        assert!(decoder.prepare(3,4).is_err());
+        let pictures=decoder.decode_frames(&frame).unwrap();
+        assert_eq!(pictures.iter().map(|f|(f.width,f.height,f.pts.0,f.data.len())).collect::<Vec<_>>(),[(4,4,0,24),(4,4,1,24)]);
+        decoder.prepare(6,4).unwrap();
+        assert_eq!(decoder.decode_frames(&frame).unwrap()[0].width,6);
+        decoder.prepare(6,8).unwrap();
+        assert!(decoder.decode_frames(&frame).is_err(),"never stretch an undersized decoded picture");
     }
 
     #[test]

@@ -725,6 +725,11 @@ fn video_codec(capability: &webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapab
     Some(VideoCodec::Hevc)
 }
 
+pub(crate) struct PreparedVideoDecoder {
+    pub decoder: Box<dyn uu_media::VideoDecoder>,
+    pub visible: Option<[u32;2]>,
+}
+
 pub(crate) async fn receive_video(
     pc: Arc<RTCPeerConnection>,
     track: Arc<webrtc::track::track_remote::TrackRemote>,
@@ -732,7 +737,7 @@ pub(crate) async fn receive_video(
     frame_tx: Option<FrameSender>,
     stats: Option<Arc<MediaStats>>,
     repairs: Arc<crate::rtx::RepairBus>,
-    prepared_decoder: Option<Box<dyn uu_media::VideoDecoder>>,
+    prepared_decoder: Option<PreparedVideoDecoder>,
     fec: Option<Arc<crate::native_fec::Receive>>,
 ) {
     use crate::video_receiver::VideoReceiver;
@@ -771,8 +776,16 @@ pub(crate) async fn receive_video(
     let decoder_kind=worker_stats.as_ref().map_or_else(DecoderKind::from_env,|s|s.decoder_kind());
     let worker = tokio::task::spawn_blocking(move || {
         let mut codec = codec;
-        let mut decoder = match prepared_decoder.filter(|d|d.codec()==codec).map(Ok)
-            .unwrap_or_else(|| uu_media::decoder_for_codec_with_kind(codec,decoder_kind)) {
+        // Negotiated display geometry belongs to the session, not one driver
+        // instance. Preserve it on both codec changes and decoder recovery.
+        let visible = prepared_decoder.as_ref().and_then(|d|d.visible);
+        let prepare = |mut decoder:Box<dyn uu_media::VideoDecoder>| {
+            if let Some([width,height])=visible {decoder.prepare(width,height)?;}
+            Ok::<_,uu_media::CodecError>(decoder)
+        };
+        let create = |codec| uu_media::decoder_for_codec_with_kind(codec,decoder_kind).and_then(&prepare);
+        let mut decoder = match prepared_decoder.filter(|d|d.decoder.codec()==codec).map(|d|Ok(d.decoder))
+            .unwrap_or_else(|| create(codec)) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("video decoder unavailable: {e}");
@@ -825,7 +838,7 @@ pub(crate) async fn receive_video(
                 // Codec ownership travels with each AU, not a racy track
                 // snapshot. A format change cannot feed the previous decoder.
                 if !key { continue; }
-                match uu_media::decoder_for_codec_with_kind(sample_codec,decoder_kind) {
+                match create(sample_codec) {
                     Ok(next) => decoder = next,
                     Err(_) => { gate.failed(); worker_requests.request(); worker_refresh.notify_one();if let Some(s)=&worker_stats{s.recovery(RecoveryCause::DecoderError);}continue; }
                 }
@@ -845,9 +858,9 @@ pub(crate) async fn receive_video(
             // after a decoder/driver error, never for ordinary network loss.
             if key && reset_decoder {
                 let next = if codec == VideoCodec::H264 && (recovery_errors >= 3 || decoder.backend_name().starts_with("openh264")) {
-                    uu_media::software_decoder()
+                    uu_media::software_decoder().and_then(&prepare)
                 } else {
-                    uu_media::decoder_for_codec_with_kind(codec,decoder_kind)
+                    create(codec)
                 };
                 match next {
                     Ok(fresh) => decoder = fresh,

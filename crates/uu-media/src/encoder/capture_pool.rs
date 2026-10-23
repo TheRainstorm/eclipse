@@ -126,8 +126,12 @@ mod tests {
         assert_eq!(pool.slots.len(), 2);
         assert_eq!(pixel(&device,&red), [0,0,255,255]);
         let first = red.d3d11.as_ref().unwrap().capture_texture().unwrap().0.as_raw();
+        let cropped = red.clone().crop_decoded([2,2]).unwrap();
         drop(red);
         unsafe { context.ClearRenderTargetView(&view, &[0.,1.,0.,1.]); }
+        assert!(pool.capture(&source, Timestamp(3)).unwrap().is_none(), "cropped views retain the original pool lease");
+        assert_eq!(pixel(&device,&cropped), [0,0,255,255]);
+        drop(cropped);
         let green = pool.capture(&source, Timestamp(3)).unwrap().unwrap();
         assert_eq!(green.d3d11.as_ref().unwrap().capture_texture().unwrap().0.as_raw(), first);
         assert_eq!(pixel(&device,&blue), [255,0,0,255]);

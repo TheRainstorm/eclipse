@@ -36,6 +36,48 @@ pub struct RawFrame {
 }
 
 impl RawFrame {
+    /// Remove codec padding at the right/bottom using authenticated display
+    /// geometry. GPU views retain their backing leases; CPU planes are repacked
+    /// independently so chroma still starts after the original luma plane.
+    pub(crate) fn crop_decoded(mut self, visible: [u32;2]) -> Result<Self,crate::CodecError> {
+        let fail = ||crate::CodecError::Backend("decoded picture does not contain the negotiated display area".into());
+        let [w,h]=visible;
+        if w<2 || h<2 || w%2!=0 || h%2!=0 || w>self.width || h>self.height
+            || self.width>8192 || self.height>8192 || !self.is_consistent() {return Err(fail());}
+        if (w,h)==(self.width,self.height) {return Ok(self);}
+        if self.gpu {
+            if let Some(frame)=&self.d3d11 {
+                self.d3d11=Some(std::sync::Arc::new(crate::d3d11_frame::Frame::cropped_view(frame,visible)
+                    .map_err(crate::CodecError::Backend)?));
+            } else if !self.dma_buf.as_ref().is_some_and(|frame|frame.valid(visible)) {return Err(fail());}
+        } else {
+            let bpp=if self.format==PixelFormat::Bgra8 {4}else{1};
+            if self.stride < self.width*bpp {return Err(fail());}
+            let (w,h,stride,old_h)=(w as usize,h as usize,self.stride as usize,self.height as usize);
+            let mut data=vec![0; if bpp==4 {w*h*4}else{w*h*3/2}];
+            let mut rows=|base:usize,pitch:usize,dst:usize,row_bytes:usize,count:usize|->Result<(),crate::CodecError> {
+                for row in 0..count {
+                    let start=base+row*pitch;
+                    let source=self.data.get(start..start+row_bytes).ok_or_else(fail)?;
+                    data[dst+row*row_bytes..dst+(row+1)*row_bytes].copy_from_slice(source);
+                }
+                Ok(())
+            };
+            rows(0,stride,0,w*bpp as usize,h)?;
+            match self.format {
+                PixelFormat::Bgra8=>{},
+                PixelFormat::Nv12=>rows(stride*old_h,stride,w*h,w,h/2)?,
+                PixelFormat::I420=>{
+                    let chroma=stride.div_ceil(2);
+                    rows(stride*old_h,chroma,w*h,w/2,h/2)?;
+                    rows(stride*old_h+chroma*old_h.div_ceil(2),chroma,w*h+w*h/4,w/2,h/2)?;
+                }
+            }
+            self.data=data.into();self.stride=w as u32*bpp;
+        }
+        self.width=w;self.height=h;
+        Ok(self)
+    }
     /// A CPU-side I420 frame, the common currency of the encoder path.
     pub fn new_i420(width: u32, height: u32, data: Vec<u8>, pts: Timestamp) -> Self {
         Self {
@@ -113,6 +155,34 @@ impl EncodedFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crop_keeps_chroma_at_original_plane_offsets_and_preserves_timestamp() {
+        for format in [PixelFormat::Bgra8,PixelFormat::Nv12,PixelFormat::I420] {
+            let stride=if format==PixelFormat::Bgra8 {32}else{8};
+            let len=if format==PixelFormat::Bgra8 {stride*6}else{stride*9};
+            let original=RawFrame {width:6,height:6,format,stride:stride as u32,
+                data:Bytes::from((0..len).map(|n|n as u8).collect::<Vec<_>>()),
+                pts:Timestamp(12345),gpu:false,dma_buf:None,d3d11:None};
+            let cropped=original.clone().crop_decoded([4,4]).unwrap();
+            assert_eq!((cropped.width,cropped.height,cropped.pts),(4,4,Timestamp(12345)));
+            let mut expected=Vec::new();
+            let row=if format==PixelFormat::Bgra8 {16}else{4};
+            for y in 0..4 {expected.extend_from_slice(&original.data[y*stride..y*stride+row]);}
+            match format {
+                PixelFormat::Bgra8=>{},
+                PixelFormat::Nv12=>expected.extend_from_slice(&[48,49,50,51,56,57,58,59]),
+                PixelFormat::I420=>expected.extend_from_slice(&[48,49,52,53,60,61,64,65]),
+            }
+            assert_eq!(cropped.data.as_ref(),expected);
+            assert_eq!(cropped.stride,row as u32);
+            assert_eq!(original.data.len(),len);
+            assert!(cropped.is_consistent());
+            for invalid in [[0,4],[3,4],[8,4],[4,8]] {assert!(original.clone().crop_decoded(invalid).is_err());}
+            let mut truncated=original;truncated.data=Bytes::from_static(&[0;8]);
+            assert!(truncated.crop_decoded([4,4]).is_err());
+        }
+    }
 
     #[test]
     fn nv12_size_is_one_and_a_half_planes() {

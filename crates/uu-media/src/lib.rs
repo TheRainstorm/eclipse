@@ -127,6 +127,11 @@ pub fn decoder_for_codec(codec: uu_proto::media::VideoCodec) -> Result<Box<dyn V
 }
 
 pub fn decoder_for_codec_with_kind(codec:uu_proto::media::VideoCodec,kind:DecoderKind)->Result<Box<dyn VideoDecoder>,CodecError> {
+    let decoder=decoder_for_codec_impl(codec,kind)?;
+    if codec==uu_proto::media::VideoCodec::Av1 {Ok(Box::new(decoder::DisplaySizeDecoder::new(decoder)))}else{Ok(decoder)}
+}
+
+fn decoder_for_codec_impl(codec:uu_proto::media::VideoCodec,kind:DecoderKind)->Result<Box<dyn VideoDecoder>,CodecError> {
     use uu_proto::media::VideoCodec;
     if codec == VideoCodec::H264 { return default_decoder_with_kind(kind); }
     #[cfg(all(windows, feature = "d3d11va"))]
