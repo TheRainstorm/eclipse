@@ -27,6 +27,8 @@ GitHub Actions 的 GUI/GPU 环境不能替代显卡、声音与桌面交互实�
 
 0.7起会话诊断统一写入用户状态目录的 `uu-remote/diagnostics`，不再优先写程序旁边；Linux遵循`XDG_STATE_HOME`。新建Unix目录/文件权限为0700/0600，Windows继承用户目录权限。诊断不包含键鼠内容、剪贴板、认证、SDP或网络候选原文；已有旧日志保留，不随升级自动删除。
 
+开发版对长会话保留起始段和七段近期轮转记录，每段最多256 KiB、单会话最多2 MiB；`.tail-N`为循环槽位，按事件`at_ms`还原时间顺序。视频恢复原因见[串流质量与恢复](streaming-quality.md#原生串流的突发与恢复)。
+
 ## 发布步骤
 
 1. 完成功能并单独提交，更新 README / 已知限制和 workspace 版本、Cargo.lock，并添加 `docs/releases/v版本号.md` 发布说明。
