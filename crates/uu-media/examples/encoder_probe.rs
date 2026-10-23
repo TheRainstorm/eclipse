@@ -155,6 +155,11 @@ fn main() -> anyhow::Result<()> {
     }else{None};
     #[cfg(not(windows))]
     ensure!(!gpu_input,"D3D11 input requires Windows");
+    // In sampled Windows hardware long tests retain the decoder's GPU lease;
+    // conversion below maps only the selected verification frames. The normal
+    // per-frame validation path keeps its historical CPU output behavior.
+    #[cfg(windows)]
+    uu_media::d3d11_frame::set_rendering(hardware_decoder && verify_every>1);
     // Explicit hardware validation must fail on unsupported hardware, rather
     // than silently validating the software fallback after driver errors.
     let mut decoder = if encode_only {None}else if intel_decoder {
@@ -177,6 +182,7 @@ fn main() -> anyhow::Result<()> {
     let mut keyframe_indexes = Vec::new();
     let mut bytes = 0u64;
     let mut decoded = 0u32;
+    let mut gpu_decoded = 0u32;
     let mut verified = 0u32;
     let mut keys = 0u32;
     let mut maximum_mse = 0.0f64;
@@ -254,6 +260,7 @@ fn main() -> anyhow::Result<()> {
                 "encoder crop dimensions did not roundtrip"
             );
             decoded += 1;
+            gpu_decoded += u32::from(output.gpu);
             if !verify {continue;}
             let actual = uu_media::convert::frame_to_rgba_with_color(&output, color);
             let mut squared = 0u64;
@@ -283,7 +290,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
-        "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,"pixel_verified_frames":verified,"pixel_verify_every":verify_every,
+        "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,"pixel_verified_frames":verified,"pixel_verify_every":verify_every,"gpu_decoded_frames":gpu_decoded,
         "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"gpu_generated":gpu_generated,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
         "encode_ms_first":first_encode,"encode_ms_p99":times[times.len()*99/100],"encode_ms_max":times[times.len()-1],
