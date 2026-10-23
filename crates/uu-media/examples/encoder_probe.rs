@@ -167,6 +167,9 @@ fn main() -> anyhow::Result<()> {
     let mut emitted=0u32;
     let mut color = YuvColor::Full601;
     let mut times = Vec::new();
+    let mut key_times = Vec::new();
+    let mut delta_times = Vec::new();
+    let mut keyframe_indexes = Vec::new();
     let mut bytes = 0u64;
     let mut decoded = 0u32;
     let mut keys = 0u32;
@@ -201,12 +204,14 @@ fn main() -> anyhow::Result<()> {
         }else{input};
         let started = std::time::Instant::now();
         let output = encoder.encode(&input)?;
-        times.push(started.elapsed().as_secs_f64() * 1000.0);
+        let elapsed=started.elapsed().as_secs_f64() * 1000.0;
+        times.push(elapsed);
         ensure!(
             !output.is_empty(),
             "low-delay encoder emitted no current frame"
         );
         for coded in output {
+            if coded.is_keyframe {key_times.push(elapsed);keyframe_indexes.push(index);}else{delta_times.push(elapsed);}
             bytes += coded.data.len() as u64;
             emitted+=1;
             if let Some(file)=output_file.as_mut(){file.write_all(&coded.data)?;}
@@ -261,14 +266,18 @@ fn main() -> anyhow::Result<()> {
         emitted == frames && (encode_only || decoded == frames) && keys >= requested_keys + 1,
         "keyframe requests or frame completion failed"
     );
+    let first_encode=times[0];
     times.sort_by(f64::total_cmp);
     let average = times.iter().sum::<f64>() / times.len() as f64;
     println!(
         "{}",
         serde_json::json!({"encoder":"passed","backend":encoder.backend_name(),"decoder_backend":decoder.as_ref().map(|d|d.backend_name()),"decode_checked":!encode_only,"codec":format!("{:?}",settings.codec),"rate_control":format!("{:?}",settings.rate_control),"frames":frames,"decoded":decoded,
-        "keyframes":keys,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,
+        "keyframes":keys,"keyframe_indexes":keyframe_indexes,"keyframe_requests":requested_keys,"invalid_bitrate_preserved":true,
         "width":settings.width,"height":settings.height,"input":format!("{format:?}"),"gpu_input":gpu_input,"source_scale":source_scale,"color":format!("{color:?}"),"maximum_mse":maximum_mse,
         "encode_ms_mean":average,"encode_ms_p50":times[times.len()/2],"encode_ms_p95":times[times.len()*95/100],
+        "encode_ms_first":first_encode,"encode_ms_p99":times[times.len()*99/100],"encode_ms_max":times[times.len()-1],
+        "keyframe_encode_ms_mean":(!key_times.is_empty()).then(||key_times.iter().sum::<f64>()/key_times.len() as f64),
+        "delta_encode_ms_mean":(!delta_times.is_empty()).then(||delta_times.iter().sum::<f64>()/delta_times.len() as f64),
         "bytes":bytes,"screen_used":false,"input_used":false,"audio_used":false})
     );
     Ok(())
