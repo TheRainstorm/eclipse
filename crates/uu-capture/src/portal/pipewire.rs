@@ -215,6 +215,18 @@ fn format(fps:u32)->Result<Vec<u8>,Box<dyn std::error::Error>> {
             spa::utils::Fraction { num: fps, denom: 1 },
             spa::utils::Fraction { num: 0, denom: 1 },
             spa::utils::Fraction { num: fps, denom: 1 }
+        ),
+        // Screen sharing is commonly variable-rate (framerate = 0). Its
+        // capture ceiling is maxFramerate, so constraining framerate alone
+        // leaves the compositor capturing at its own, potentially higher rate.
+        spa::pod::property!(
+            Prop::VideoMaxFramerate,
+            Choice,
+            Range,
+            Fraction,
+            spa::utils::Fraction { num: fps, denom: 1 },
+            spa::utils::Fraction { num: 1, denom: 1 },
+            spa::utils::Fraction { num: fps, denom: 1 }
         )
     );
     let serialized = spa::pod::serialize::PodSerializer::serialize(
