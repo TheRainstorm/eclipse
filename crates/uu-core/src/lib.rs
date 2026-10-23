@@ -33,6 +33,7 @@ pub mod device_auth;
 pub mod device_channel;
 pub mod shared_host;
 pub mod device_book;
+pub mod client_settings;
 pub mod device_internet;
 pub mod device_profile;
 #[cfg(test)]

@@ -1813,7 +1813,7 @@ impl super::App {
                 self.start_login();
                 return Ok(());
             }
-            let snapshot = store.publish_launch(id)?;
+            let snapshot = store.publish_launch_with_defaults(id,&self.preferences.client)?;
             let target = super::sessions::StreamTarget {
                 connection: super::sessions::ConnectionTarget::NativeProfile {
                     id: launch.profile,

@@ -200,6 +200,10 @@ pub struct Profile {
     pub routes: Vec<Route>,
     pub selected_route: String,
     #[serde(default)]
+    pub client_configs: Vec<crate::client_settings::NamedClientSettings>,
+    #[serde(default)]
+    pub selected_client: Option<String>,
+    #[serde(default)]
     pub redirect: Option<String>,
 }
 impl Profile {
@@ -210,6 +214,7 @@ impl Profile {
             name: name.into(),
             peer: None,
             selected_route: route.id.clone(),
+            client_configs:Vec::new(),selected_client:None,
             routes: vec![route],
             redirect: None,
         }
@@ -233,7 +238,7 @@ pub struct Book {
 impl Default for Book {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             sharing: Sharing::default(),
             services: Vec::new(),
             devices: Vec::new(),
@@ -289,7 +294,7 @@ impl Book {
     }
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 2 && self.devices.len() <= 256 && self.services.len() <= 32,
+            self.version == 3 && self.devices.len() <= 256 && self.services.len() <= 32,
             "设备配置版本或数量无效"
         );
         self.sharing.validate()?;
@@ -313,6 +318,10 @@ impl Book {
         for profile in &self.devices {
             valid_id(&profile.id)?;
             valid_name(&profile.name)?;
+            ensure!(profile.client_configs.len()<=16,"每台设备最多保存16个客户端配置");
+            let mut config_ids=std::collections::HashSet::new();
+            for config in &profile.client_configs {config.validate()?;ensure!(config_ids.insert(&config.id),"客户端配置标识重复");}
+            ensure!(profile.selected_client.as_ref().is_none_or(|id|config_ids.contains(id)),"请选择有效的客户端配置");
             ensure!(ids.insert(&profile.id), "设备配置标识重复");
             ensure!(
                 profile
@@ -377,6 +386,8 @@ pub struct Launch {
     pub expected_peer: Option<String>,
     pub route: Route,
     pub service: Option<Service>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub client: Option<crate::client_settings::ClientSettings>,
 }
 impl Launch {
     fn validate(&self) -> Result<()> {
@@ -387,6 +398,7 @@ impl Launch {
             peer: self.expected_peer.clone(),
             routes: vec![self.route.clone()],
             selected_route: self.route.id.clone(),
+            client_configs:Vec::new(),selected_client:None,
             redirect: None,
         };
         let book = Book {
@@ -394,6 +406,7 @@ impl Launch {
             services: self.service.clone().into_iter().collect(),
             ..Default::default()
         };
+        if let Some(client)=&self.client {client.validate()?;}
         book.validate()
     }
     pub fn read(path: &std::path::Path) -> Result<Self> {
@@ -439,10 +452,20 @@ impl Store {
             expected_peer: profile.peer.clone(),
             route,
             service,
+            client:profile.selected_client.as_ref().and_then(|id|profile.client_configs.iter().find(|c|&c.id==id)).map(|c|c.settings.clone()),
         })
     }
     pub fn publish_launch(&self, id: &str) -> Result<PathBuf> {
         let launch = self.launch(id)?;
+        self.publish_snapshot(launch)
+    }
+    pub fn publish_launch_with_defaults(&self,id:&str,defaults:&crate::client_settings::ClientSettings) -> Result<PathBuf> {
+        let mut launch=self.launch(id)?;
+        if launch.client.is_none() {launch.client=Some(defaults.clone());}
+        self.publish_snapshot(launch)
+    }
+    fn publish_snapshot(&self, launch:Launch) -> Result<PathBuf> {
+        launch.validate()?;
         let path = self.directory.join(format!(
             "launch-{}-{}.json",
             launch.profile,
@@ -463,8 +486,9 @@ impl Store {
         if !path.try_exists()? {
             return Ok(Book::default());
         }
-        let value: Book = serde_json::from_slice(&read_private(&path)?)
+        let mut value: Book = serde_json::from_slice(&read_private(&path)?)
             .map_err(|_| anyhow::anyhow!("设备连接配置损坏，原文件已保留"))?;
+        if value.version==2 {value.version=3;}
         value.validate()?;
         Ok(value)
     }
@@ -473,9 +497,18 @@ impl Store {
         let mut value = self.read()?;
         f(&mut value)?;
         value.validate()?;
+        let encoded=serde_json::to_vec_pretty(&value)?;
+        ensure!(encoded.len()<=1024*1024,"设备与配置记录总量超过1 MiB，请先移除不再使用的记录");
+        let original=self.directory.join("connections.json");
+        if original.exists() {
+            let bytes=read_private(&original)?;
+            if serde_json::from_slice::<serde_json::Value>(&bytes)?["version"].as_u64()==Some(2) {
+                crate::private_file::write_atomic(&self.directory.join(format!("connections.v2-backup-{}.json",uuid::Uuid::new_v4())),&bytes)?;
+            }
+        }
         crate::private_file::write_atomic(
             &self.directory.join("connections.json"),
-            &serde_json::to_vec_pretty(&value)?,
+            &encoded,
         )?;
         Ok(())
     }
@@ -515,10 +548,39 @@ impl Store {
                     v.peer == profile.peer,
                     "设备身份刚刚更新，请重新打开设备详情后保存"
                 );
+                let mut profile=profile;
+                profile.client_configs=v.client_configs.clone();
+                profile.selected_client=v.selected_client.clone();
                 *v = profile;
             } else {
                 b.devices.push(profile);
             }
+            Ok(())
+        })
+    }
+    pub fn save_client_config(&self, device:&str, config:crate::client_settings::NamedClientSettings) -> Result<()> {
+        config.validate()?;
+        self.edit(|book| {
+            let id=book.device(device)?.id.clone();
+            let profile=book.devices.iter_mut().find(|p|p.id==id).unwrap();
+            if let Some(existing)=profile.client_configs.iter_mut().find(|c|c.id==config.id) {*existing=config;}
+            else {profile.client_configs.push(config);}
+            Ok(())
+        })
+    }
+    pub fn select_client_config(&self, device:&str, selected:Option<String>) -> Result<()> {
+        self.edit(|book| {
+            let id=book.device(device)?.id.clone();
+            book.devices.iter_mut().find(|p|p.id==id).unwrap().selected_client=selected;
+            Ok(())
+        })
+    }
+    pub fn remove_client_config(&self, device:&str, id:&str) -> Result<()> {
+        self.edit(|book| {
+            let canonical=book.device(device)?.id.clone();
+            let profile=book.devices.iter_mut().find(|p|p.id==canonical).unwrap();
+            profile.client_configs.retain(|c|c.id!=id);
+            if profile.selected_client.as_deref()==Some(id) {profile.selected_client=None;}
             Ok(())
         })
     }
@@ -533,6 +595,10 @@ impl Store {
             if let Some(other) = b.devices.iter().position(|p| {
                 p.id != canonical && p.redirect.is_none() && p.peer.as_deref() == Some(peer)
             }) {
+                let configs=std::mem::take(&mut b.devices[current].client_configs);
+                let selection=b.devices[current].selected_client.take();
+                for config in configs {if !b.devices[other].client_configs.iter().any(|c|c.id==config.id) {b.devices[other].client_configs.push(config);}}
+                if b.devices[other].selected_client.is_none() {b.devices[other].selected_client=selection;}
                 let routes = std::mem::take(&mut b.devices[current].routes);
                 for route in routes {
                     if !b.devices[other]
@@ -564,6 +630,63 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client_settings::{ClientSettings,NamedClientSettings};
+    #[test]
+    fn v2_migration_is_read_only_until_save_and_preserves_a_private_exact_backup() {
+        let root=std::env::temp_dir().join(format!("eclipse-migrate-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let profile=Profile::new("Generated host",Destination::Uu{device:"generated-device".into()});
+        let mut old=serde_json::to_value(Book{devices:vec![profile.clone()],..Default::default()}).unwrap();
+        old["version"]=serde_json::json!(2);
+        let device=old["devices"][0].as_object_mut().unwrap();device.remove("client_configs");device.remove("selected_client");
+        let original=serde_json::to_vec_pretty(&old).unwrap();
+        let path=root.join("connections.json");crate::private_file::write_atomic(&path,&original).unwrap();
+        let store=Store::open(&root).unwrap();
+        assert_eq!(store.read().unwrap().version,3);
+        assert_eq!(std::fs::read(&path).unwrap(),original);
+        let config=NamedClientSettings::new("Fast",ClientSettings::default());
+        store.save_client_config(&profile.id,config.clone()).unwrap();
+        store.select_client_config(&profile.id,Some(config.id)).unwrap();
+        let backups:Vec<_>=std::fs::read_dir(&root).unwrap().flatten().filter(|p|p.file_name().to_string_lossy().starts_with("connections.v2-backup-")).collect();
+        assert_eq!(backups.len(),1);assert_eq!(std::fs::read(backups[0].path()).unwrap(),original);
+        #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;assert_eq!(std::fs::metadata(backups[0].path()).unwrap().permissions().mode()&0o777,0o600);}
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn named_and_inherited_settings_freeze_at_launch_and_stale_route_edits_keep_presets() {
+        let root=std::env::temp_dir().join(format!("eclipse-presets-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        let mut profile=Profile::new("Host",Destination::Uu{device:"generated-host".into()});
+        store.save_device(profile.clone()).unwrap();
+        let mut defaults=ClientSettings::default();
+        let inherited=store.publish_launch_with_defaults(&profile.id,&defaults).unwrap();defaults.fps=90;
+        assert_eq!(Launch::read(&inherited).unwrap().client.unwrap().fps,60);
+        let mut named=NamedClientSettings::new("Fast",ClientSettings{fps:120,..Default::default()});
+        store.save_client_config(&profile.id,named.clone()).unwrap();store.select_client_config(&profile.id,Some(named.id.clone())).unwrap();
+        let frozen=store.publish_launch_with_defaults(&profile.id,&defaults).unwrap();
+        named.settings.fps=30;store.save_client_config(&profile.id,named.clone()).unwrap();
+        profile.name="Updated host".into();store.save_device(profile.clone()).unwrap();
+        assert_eq!(store.read().unwrap().device(&profile.id).unwrap().client_configs[0].settings.fps,30);
+        assert_eq!(Launch::read(&frozen).unwrap().client.unwrap().fps,120);
+        store.remove_client_config(&profile.id,&named.id).unwrap();
+        assert!(store.read().unwrap().device(&profile.id).unwrap().selected_client.is_none());
+        assert_eq!(Launch::read(&store.publish_launch_with_defaults(&profile.id,&defaults).unwrap()).unwrap().client.unwrap().fps,90);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn verified_identity_merges_routes_and_presets_without_merging_similar_names() {
+        let root=std::env::temp_dir().join(format!("eclipse-preset-merge-{}",uuid::Uuid::new_v4()));let store=Store::open(&root).unwrap();
+        let a=Profile::new("Same name",Destination::Uu{device:"generated-a".into()});
+        let b=Profile::new("Same name",Destination::Uu{device:"generated-b".into()});
+        store.save_device(a.clone()).unwrap();store.save_device(b.clone()).unwrap();
+        let ca=NamedClientSettings::new("Office",ClientSettings::default());
+        let cb=NamedClientSettings::new("Gaming",ClientSettings{fps:120,..Default::default()});
+        store.save_client_config(&a.id,ca).unwrap();store.save_client_config(&b.id,cb.clone()).unwrap();store.select_client_config(&b.id,Some(cb.id.clone())).unwrap();
+        assert_ne!(store.read().unwrap().device(&a.id).unwrap().id,store.read().unwrap().device(&b.id).unwrap().id);
+        let peer="a".repeat(64);store.bind(&a.id,&peer).unwrap();store.bind(&b.id,&peer).unwrap();
+        let book=store.read().unwrap();let merged=book.device(&b.id).unwrap();assert_eq!(merged.id,a.id);assert_eq!(merged.client_configs.len(),2);assert_eq!(merged.selected_client.as_deref(),Some(cb.id.as_str()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn shared_codec_and_rate_policy_survives_storage_and_rejects_invalid_profiles(){
         let legacy:Sharing=serde_json::from_value(serde_json::json!({"name":"generated"})).unwrap();

@@ -6,86 +6,40 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub use uu_core::client_settings::{ClientSettings, CodecPreference, CursorMode};
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CursorMode {
-    #[default]
-    #[serde(alias = "local")]
-    Both,
-    Remote,
-}
-impl CursorMode {
-    pub const ALL: [Self; 2] = [Self::Both, Self::Remote];
-    pub fn label(self) -> &'static str {
-        match self { Self::Remote => "仅远端光标", Self::Both => "本地和远端光标" }
-    }
-    pub fn remote(self) -> bool { true }
-    pub fn local(self) -> bool { self != Self::Remote }
-    pub fn next(self) -> Self {
-        match self { Self::Both => Self::Remote, Self::Remote => Self::Both }
-    }
-}
-fn deserialize_cursor_mode<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CursorMode, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Value { Mode(CursorMode), Legacy(bool) }
-    Ok(match Value::deserialize(d)? {
-        Value::Mode(mode) => mode,
-        Value::Legacy(true) => CursorMode::Remote,
-        Value::Legacy(false) => CursorMode::Both,
-    })
-}
+pub enum DeviceView { #[default] Cards, List }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
-    pub fps: u32,
-    pub display_mode: uu_core::screen_control::DisplayMode,
-    pub bitrate: usize,
-    pub custom_mbps: u32,
-    pub resolution: usize,
-    pub volume: u32,
-    pub muted: bool,
-    pub hud: bool,
-    pub floating_menu: bool,
-    pub capture_keyboard: bool,
-    pub vsync: bool,
-    pub software_decoder: bool,
-    pub prefer_hevc: bool,
-    pub relative_mouse: bool,
-    #[serde(alias = "remote_cursor", deserialize_with = "deserialize_cursor_mode")]
-    pub cursor_mode: CursorMode,
-    pub clipboard: bool,
-    pub gamepad: bool,
+    #[serde(flatten)]
+    pub client: ClientSettings,
     pub lan_discovery: bool,
+    // Retained only to migrate older configurations into connection services.
     pub lan_service_port: u16,
     pub lan_discovery_port: u16,
+    pub device_view: DeviceView,
+    pub wallpaper_enabled: bool,
+    pub wallpaper_api: String,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self {
-            fps: 60,
-            display_mode: uu_core::screen_control::DisplayMode::Preserve,
-            bitrate: 0,
-            custom_mbps: 55,
-            resolution: 0,
-            volume: 100,
-            muted: false,
-            hud: false,
-            floating_menu: true,
-            capture_keyboard: true,
-            vsync: true,
-            software_decoder: false,
-            prefer_hevc: false,
-            relative_mouse: false,
-            cursor_mode: CursorMode::Both,
-            clipboard: true,
-            gamepad: true,
-            lan_discovery: true,
-            lan_service_port: uu_core::native_discovery::SERVICE_PORT,
-            lan_discovery_port: uu_core::native_discovery::DISCOVERY_PORT,
-        }
+        Self { client: ClientSettings::default(), lan_discovery:true,
+            lan_service_port:uu_core::native_discovery::SERVICE_PORT,
+            lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
+            device_view:DeviceView::Cards, wallpaper_enabled:true,
+            wallpaper_api:"https://picsum.photos/1920/1080".into() }
     }
+}
+impl std::ops::Deref for Settings {
+    type Target = ClientSettings;
+    fn deref(&self) -> &Self::Target { &self.client }
+}
+impl std::ops::DerefMut for Settings {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.client }
 }
 impl Settings {
     fn capture_values(&self)->(u32,usize,u32,usize,bool,bool) {
@@ -111,9 +65,11 @@ impl Settings {
         s.volume = s.volume.min(100);
         anyhow::ensure!(s.lan_service_port != 0 && s.lan_discovery_port != 0,
             "局域网端口必须在 1–65535 之间；原文件已保留");
+        s.client.validate()?;
         Ok(s)
     }
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        self.client.validate()?;
         anyhow::ensure!(self.lan_service_port != 0 && self.lan_discovery_port != 0,
             "局域网端口必须在 1–65535 之间");
         // Automatic HUD/audio changes must not overwrite a broken original.
@@ -232,6 +188,10 @@ impl super::App {
     }
     pub(super) fn persist_preferences(&mut self) {
         self.snapshot_preferences();
+        if self.stream_target.is_some() {
+            self.settings_notice = "已应用到当前串流".into();
+            return;
+        }
         let result = Settings::path()
             .ok_or_else(|| anyhow::anyhow!("无法确定设置目录"))
             .and_then(|p| self.preferences.save(&p));
@@ -282,7 +242,7 @@ impl super::App {
                 h.stats.audio.volume.store(self.preferences.volume, Relaxed);
                 h.stats.audio.muted.store(self.preferences.muted, Relaxed);
             }
-            if recover {
+            if recover && self.stream_target.is_none() {
                 self.snapshot_preferences();
                 let result = Settings::path().ok_or_else(|| anyhow::anyhow!("无法确定设置目录"))
                     .and_then(|path|self.preferences.backup_and_save(&path));
