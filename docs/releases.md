@@ -2,7 +2,7 @@
 
 大功能里程碑使用 `v主版本.次版本.修订号` 标签，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
-本次发布 [v0.17.0](https://github.com/TheRainstorm/uu-client/releases/tag/v0.17.0)，包含突发参考链恢复、恢复统计、长会话诊断及 AMF 稳定性修复，详见 [0.17 发布说明](releases/v0.17.0.md)。多设备工作区与服务管理见 [0.16](releases/v0.16.0.md)，输入 / 编码修复见 [0.15.1](releases/v0.15.1.md)。已发布的 [0.15.0](releases/v0.15.0.md) 保持不变。正式产物以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+本次发布 [v0.18.0](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.0)，包含连接恢复、图文剪贴板、Windows 后台服务、原生视频 XOR FEC 与 AMD 首帧初始化优化，详见 [0.18 发布说明](releases/v0.18.0.md)。之前的恢复改进见 [0.17](releases/v0.17.0.md)，多设备工作区与服务管理见 [0.16](releases/v0.16.0.md)，输入 / 编码修复见 [0.15.1](releases/v0.15.1.md)。已有发布保持不变，正式产物以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
 
 ```sh
 python3 tools/release/download.py
