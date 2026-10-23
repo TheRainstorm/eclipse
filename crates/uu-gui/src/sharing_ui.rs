@@ -65,10 +65,12 @@ mod tests {
         assert!(host.start(config.clone(),book.clone(),trust.clone(),&ctx).unwrap_err().to_string().contains("至少一个"));
         book.sharing.uu_enabled=true;
         host.start(config.clone(),book,trust,&ctx).unwrap();
+        assert!(host.uses_uu_account());
         assert!(host.statuses().iter().all(|(n,_)|n!="IP 直连"));
         poll_until(&mut host,&ctx,|h|h.statuses().iter().any(|(_,s)|matches!(s,EndpointStatus::Error(_))));
         assert!(!config.at("native-lan").exists(),"disabled IP must never initialize legacy listener identity or keys");
         host.stop();poll_until(&mut host,&ctx,|h|!h.running());
+        assert!(!host.uses_uu_account());
         let owner=uu_core::shared_host::HostOwner::claim(&config.at("device-trust")).unwrap();drop(owner);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -97,6 +99,11 @@ mod tests {
         store.sharing(book.sharing.clone()).unwrap();
         assert!(host.changes_pending(&store.read().unwrap().sharing));
         assert!(!host.active_sharing.as_ref().unwrap().audio);
+        let mut saved = store.read().unwrap().sharing;
+        saved.uu_enabled = true;
+        store.sharing(saved).unwrap();
+        assert!(!host.uses_uu_account(), "a saved UU entry is inactive until restart");
+        store.sharing(book.sharing.clone()).unwrap();
         assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,old_port)).is_err());
         let mut invalid=book.clone();invalid.sharing.name.clear();
         assert!(host.restart(config.clone(),invalid,trust.clone(),&ctx).is_err());
@@ -247,6 +254,10 @@ impl HostUi {
     }
     pub fn changes_pending(&self,saved:&uu_core::device_book::Sharing)->bool {
         self.active_sharing.as_ref().is_some_and(|active|active!=saved)
+    }
+    pub fn uses_uu_account(&self) -> bool {
+        self.active_sharing.as_ref().is_some_and(|active| active.uu_enabled)
+            || self.restart.as_ref().is_some_and(|(_, book, _)| book.sharing.uu_enabled)
     }
     pub fn restart(&mut self,config:uu_core::Config,book:Book,trust:TrustStore,ctx:&egui::Context)->anyhow::Result<()> {
         book.sharing.validate()?;

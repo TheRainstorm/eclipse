@@ -54,6 +54,7 @@ pub(super) struct HomeRoute {
 pub(super) enum Action {
     Open(String),
     Login,
+    Logout,
     RenameUu,
     ManageUu,
     RefreshUuDevices,
@@ -264,6 +265,25 @@ mod tests {
         assert!(matches!(&h.click("更新注册信息")[..], [Action::RenameUu]));
         assert!(matches!(&h.click("管理 UU 设备")[..], [Action::ManageUu]));
         assert_eq!(h.workspace.draft.name, "My native host");
+    }
+
+    #[test]
+    fn uu_service_shows_login_status_and_logout_even_when_the_entry_is_disabled() {
+        let mut h = Harness::new();
+        h.workspace.route.page = Page::Services;
+        assert!(!h.workspace.book.sharing.uu_enabled);
+        assert!(matches!(&h.click("登录 UU 账号")[..], [Action::Login]));
+        assert!(h.texts.iter().any(|(s, _)| s == "账号状态：未登录"));
+        assert!(!h.texts.iter().any(|(s, _)| s == "登出 UU 账号"));
+        let before = serde_json::to_value(&h.workspace.book).unwrap();
+        h.logged_in = true;
+        assert!(matches!(&h.click("登出 UU 账号")[..], [Action::Logout]));
+        assert!(h.texts.iter().any(|(s, _)| s == "账号状态：已登录"));
+        assert!(!h.texts.iter().any(|(s, _)| s == "登录 UU 账号"));
+        assert_eq!(serde_json::to_value(&h.workspace.book).unwrap(), before);
+        h.logged_in = false;
+        h.frame(Vec::new());
+        assert!(h.texts.iter().any(|(s, _)| s == "账号状态：未登录"));
     }
 
     #[test]
@@ -1602,8 +1622,14 @@ impl Workspace {
             });
             muted(ui,"自动使用电脑名加 -Eclipse，便于与官方客户端区分；原生共享名称独立设置。");
             if info.logged_in {
-                ui.label(RichText::new("已登录").color(theme::SUCCESS));
-                if ui.button("管理 UU 设备").clicked() { actions.push(Action::ManageUu); }
+                ui.label(RichText::new("账号状态：已登录").color(theme::SUCCESS));
+                ui.horizontal(|ui| {
+                    if ui.button("登出 UU 账号").clicked() { actions.push(Action::Logout); }
+                    if ui.button("管理 UU 设备").clicked() { actions.push(Action::ManageUu); }
+                });
+                if self.host.uses_uu_account() {
+                    muted(ui, "登出会停止当前使用 UU 入口的本机共享服务。");
+                }
                 if let Some(id) = &info.uu_id {
                     ui.horizontal(|ui| {
                         ui.label(format!("本机 UU 编号：{id}"));
@@ -1613,6 +1639,7 @@ impl Workspace {
                     });
                 }
             } else {
+                ui.label("账号状态：未登录");
                 ui.label("登录后可通过 UU 寻址原生设备。");
                 if let Some(qr) = info.qr {
                     ui.image((qr, egui::vec2(180., 180.)));
@@ -2205,6 +2232,7 @@ impl super::App {
                     self.workspace.feedback.success(scope, "全局默认客户端配置已保存；下次连接生效");
                 }
                 Action::Login => self.start_login(),
+                Action::Logout => self.sign_out(),
                 Action::RefreshUuDevices => self.start_load(),
                 Action::RenameUu => self.rename_uu_device(),
                 Action::ManageUu => {

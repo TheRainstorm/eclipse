@@ -50,22 +50,30 @@ pub fn sign_out_matching(path: &Path, expected: Option<&str>) -> anyhow::Result<
 
 impl super::App {
     pub(super) fn sign_out(&mut self) {
+        let Some(expected) = self.account_token.clone() else { return; };
         // Cancel and join a QR worker before changing its shared state file.
         self.login_rx = None;
         let result = self
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("无法确定登录目录"))
-            .and_then(|config| sign_out(&config.at("state.json")));
+            .and_then(|config| sign_out_matching(&config.at("state.json"), Some(&expected)));
         match result {
-            Ok(()) => self.apply_account(None),
-            Err(error) => self.status = format!("退出账号失败：{error}"),
+            Ok(true) => self.apply_account(None),
+            Ok(false) => {
+                self.retry_account_read();
+                self.workspace.feedback.error(super::ui_feedback::Scope::Services(0), "UU 账号已变化，请确认后重新登出。");
+            }
+            Err(error) => {
+                self.status = format!("登出账号失败：{error}");
+                self.workspace.feedback.error(super::ui_feedback::Scope::Services(0), self.status.clone());
+            }
         }
     }
 
     pub(super) fn apply_account(&mut self, token: Option<String>) {
         self.uu_devices = Default::default();
-        if self.account_token.is_some() && self.account_token!=token && self.workspace.book.sharing.uu_enabled && self.workspace.host.running() {
+        if self.account_token.is_some() && self.account_token!=token && self.workspace.host.uses_uu_account() {
             self.workspace.host.stop();self.workspace.feedback.error(super::ui_feedback::Scope::Services(0),"UU 账号已变化，已停止本机共享；确认账号后可重新开启。");
         }
         self.account_token = token;
@@ -164,7 +172,7 @@ mod tests {
             read_token(&path).unwrap().as_deref(),
             Some("test-credential")
         );
-        sign_out(&path).unwrap();
+        assert!(sign_out_matching(&path, Some("test-credential")).unwrap());
         sign_out(&path).unwrap();
         let after = read_state(&path).unwrap().unwrap();
         assert!(
