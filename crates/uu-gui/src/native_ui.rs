@@ -156,6 +156,8 @@ impl App {
     fn connect_native_source(&mut self,path:Option<PathBuf>,device:Option<String>,internet:Option<PathBuf>,profile:Option<PathBuf>){
         self.native_clipboard_enabled=false;
         let stats = Arc::new(uu_core::media::MediaStats::default());
+        let _=stats.native_quality_request.set(self.preferences.native_request());
+        if self.preferences.software_decoder {let _=stats.native_codec_capabilities.set(vec![uu_core::native::VideoCodec::H264]);}
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Release);
         stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Release);
         if let Some(config) = &self.config {

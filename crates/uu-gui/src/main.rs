@@ -753,6 +753,16 @@ impl App {
         }
     }
     fn send_capture_settings_through(&mut self,immediate:bool) {
+        if self.stream_target.as_ref().is_some_and(|target|target.is_native()) {
+            if self.disconnecting {return;}
+            let request=self.preferences.native_request();
+            if self.controller.as_ref().is_some_and(|h|h.stats.native_quality_request.get().is_some_and(|old|old!=&request)) {
+                self.output_reconnect_pending=true;self.stop_connection();self.status="正在应用原生串流画质…".into();
+            }else{
+                self.settings_feedback=if self.controller.as_ref().is_some_and(|h|h.stats.native_quality_response.lock().unwrap().is_some()) {"画质已与主机协商，实际参数见串流信息"}else{"旧版主机使用其本机画质设置；升级主机后可协商"}.into();
+            }
+            return;
+        }
         if !self.supports_remote(uu_core::capabilities::Capability::Quality) {self.settings_feedback="当前画质由被控端设置".into();return;}
         if self.disconnecting { return; }
         let resolution = self.capture_resolution();

@@ -169,6 +169,7 @@ pub(crate) async fn write_message<T: Serialize>(
 }
 
 pub struct HostConfig {
+    pub video_policy:Option<crate::native_quality::Policy>,
     pub codec:VideoCodec,
     pub rate_control:uu_media::encoder::RateControl,
     /// Concrete local interface, loopback by default. No firewall rules are changed.
@@ -190,6 +191,7 @@ pub struct HostConfig {
 /// Capture and permissions shared by LAN and internet sessions.
 #[derive(Clone)]
 pub struct SharingConfig {
+    pub video_policy:Option<crate::native_quality::Policy>,
     pub codec:VideoCodec,
     pub rate_control:uu_media::encoder::RateControl,
     pub source: CaptureSource,
@@ -202,12 +204,13 @@ pub struct SharingConfig {
     pub clipboard: Option<Arc<crate::clipboard::Clipboard>>,
 }
 impl From<&HostConfig> for SharingConfig {
-    fn from(c:&HostConfig)->Self {Self{codec:c.codec,rate_control:c.rate_control,source:c.source.clone(),fps:c.fps,bitrate_kbps:c.bitrate_kbps,encoder:c.encoder,
+    fn from(c:&HostConfig)->Self {Self{video_policy:c.video_policy.clone(),codec:c.codec,rate_control:c.rate_control,source:c.source.clone(),fps:c.fps,bitrate_kbps:c.bitrate_kbps,encoder:c.encoder,
         session_limit:c.session_limit,allow_input:c.allow_input,audio:c.audio,clipboard:c.clipboard.clone()}}
 }
 impl From<HostConfig> for SharingConfig {fn from(c:HostConfig)->Self{Self::from(&c)}}
 impl SharingConfig {
     pub fn validate(&self) -> Result<()> {
+        if let Some(policy)=&self.video_policy {policy.validate()?;}
         ensure!((1..=60).contains(&self.fps) && (64..=100_000).contains(&self.bitrate_kbps),
             "native host needs 1..=60 fps and 64..=100000 kbps");
         let peak=self.rate_control.peak(self.bitrate_kbps);
@@ -529,7 +532,7 @@ async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling,
 async fn send_video(
     peer: &mut NativePeer,
     stream: &mut dyn SessionSignaling,
-    config: SharingConfig,
+    mut config: SharingConfig,
     mut stop: watch::Receiver<bool>,
     offer: Offer,
     status: Option<watch::Sender<HostStatus>>,
@@ -538,34 +541,68 @@ async fn send_video(
     authority: Arc<crate::input_ownership::Authority>,
 ) -> Result<HostReport> {
     let refresh = Arc::new(AtomicBool::new(false));
-    ensure!(crate::native_media::offers_codec(&offer.sdp,config.codec),"控制端未声明支持 {:?} 解码，请更新控制端或在主机选择 H.264",config.codec);
-    let mut track = peer.sender_for_codec(refresh.clone(),config.codec).await?;
+    let host_max_fps=config.fps;
+    let request=crate::native_quality::Request::read(&offer.sdp)?;
+    let policy=config.video_policy.clone();
+    let request=if policy.is_some(){request}else{None};
+    if let Some(request)=&request {
+        config.fps=request.fps.min(config.fps);
+        config.bitrate_kbps=request.bitrate_kbps.unwrap_or(config.bitrate_kbps).min(policy.as_ref().unwrap().max_bitrate_kbps);
+        if let uu_media::encoder::RateControl::Vbr{peak_kbps}=config.rate_control {
+            config.rate_control=uu_media::encoder::RateControl::Vbr{peak_kbps:peak_kbps.max(config.bitrate_kbps)};
+        }
+    }
+    let allowed=policy.as_ref().map(|p|p.codecs.clone()).unwrap_or_else(||vec![config.codec]);
+    let mut choices=if let Some(codec)=request.as_ref().and_then(|r|r.codec) {
+        ensure!(allowed.contains(&codec),"主机未允许 {:?} 编码，请选择允许的格式",codec);vec![codec]
+    }else{
+        let mut choices=allowed.clone();
+        if let Some(at)=choices.iter().position(|c|*c==config.codec){choices.swap(0,at);}
+        choices
+    };
+    choices.retain(|codec|crate::native_media::offers_codec(&offer.sdp,*codec));
+    ensure!(!choices.is_empty(),"两端没有共同可用的视频编码，请检查主机编码设置和客户端解码支持");
+    let advertised:Vec<_>=allowed.into_iter().filter(|c|crate::native_media::offers_codec(&offer.sdp,*c)).collect();
     let audio_mode=if config.audio.is_some(){crate::native_media::offered_audio(&offer.sdp)?}else{None};
-    let mut audio_sender=if let Some(red)=audio_mode {Some(peer.audio_sender(red).await?)}else{None};
     match stream.lan_peer() {
         Some(ip) => peer.remote(offer.sdp, ip).await?,
         None => peer.remote_direct(offer.sdp).await?,
     }
     // Authentication and a valid media offer precede capture access.
-    let (fps,kbps,preference,codec,rate_control)=(config.fps,config.bitrate_kbps,config.encoder,config.codec,config.rate_control);
+    let (fps,kbps,preference,rate_control)=(config.fps,config.bitrate_kbps,config.encoder,config.rate_control);
+    let bounds=request.as_ref().and_then(|r|r.bounds);
     struct CancelCaptureOpen(Arc<AtomicBool>);
     impl Drop for CancelCaptureOpen { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
     let capture_cancel = CancelCaptureOpen(Arc::new(AtomicBool::new(false)));
     let capture_options = uu_capture::OpenOptions { allow_input: config.allow_input, fps, cancelled:capture_cancel.0.clone() };
-    let (capture,encoder) = tokio::select! {
+    let (capture,encoder,codec,available) = tokio::select! {
         result=tokio::task::spawn_blocking(move || -> Result<_> {
-            let capture=uu_capture::open_with_options(&config.source,capture_options)?;
+            let capture=uu_capture::scale::bounded(uu_capture::open_with_options(&config.source,capture_options)?,bounds);
             let (width,height)=capture.resolution();validate_video(width,height,fps)?;
-            let encoder=uu_media::encoder::create(uu_media::encoder::Settings {codec,rate_control,
-                width,height,fps,bitrate_kbps:kbps,preference,
-            }).context("无法为当前显示源初始化所选编码器；不会更改系统显示设置")?;
-            Ok((capture,encoder))
+            let settings=|codec|uu_media::encoder::Settings {codec,rate_control,width,height,fps,bitrate_kbps:kbps,preference};
+            let mut selected=None;let mut last_error=None;
+            for codec in choices {
+                match uu_media::encoder::create(settings(codec)) {
+                    Ok(encoder)=>{selected=Some((codec,encoder));break;},Err(error)=>last_error=Some(error),
+                }
+            }
+            let (codec,encoder)=selected.ok_or_else(||anyhow::anyhow!("主机无法初始化请求的编码器：{}",last_error.map(|e|e.to_string()).unwrap_or_default()))?;
+            let mut available=vec![codec];
+            if policy.is_some(){
+                for candidate in advertised.into_iter().filter(|c|*c!=codec) {
+                    if uu_media::encoder::create(settings(candidate)).is_ok(){available.push(candidate);}
+                }
+            }
+            Ok((capture,encoder,codec,available))
         })=>result??,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
         _=stream.disconnected()=>return Ok(HostReport::default()),
     };
-    let (width, height) = capture.resolution();
-    validate_video(width, height, config.fps)?;
+    config.codec=codec;
+    let mut track=peer.sender_for_codec(refresh.clone(),codec).await?;
+    let mut audio_sender=if let Some(red)=audio_mode {Some(peer.audio_sender(red).await?)}else{None};
+    let (width,height)=capture.resolution();
+    validate_video(width,height,config.fps)?;
     let controls=tokio::select! {
         controls=crate::native_control::HostControl::with_injector(config.allow_input,capture.desktop_rect(),config.clipboard.clone(),capture.input_injector(),authority)=>controls,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
@@ -573,10 +610,14 @@ async fn send_video(
     if let Some(displays)=&displays {displays.dimensions(width,height);}
     controls.set_displays(displays.clone());
     controls.attach(&peer.pc);
+    let mut description=peer.description(false).await?;
+    if let Some(policy)=&config.video_policy {
+        crate::native_quality::Response{codecs:available,max_fps:host_max_fps,max_bitrate_kbps:policy.max_bitrate_kbps}.add(&mut description)?;
+    }
     let answer = Answer {
         codec:config.codec,
         version: 1,
-        sdp: peer.description(false).await?,
+        sdp: description,
         width,
         height,
         fps: config.fps,
@@ -750,9 +791,11 @@ async fn receive_session(
     }else{None};
     let mut controls=crate::native_control::ViewerControl::new(channel.clone(),stats.clone(),input);
     controls.gamepads(gamepad);
+    let mut description=peer.description(true).await?;
+    if let Some(request)=stats.native_quality_request.get(){request.add(&mut description)?;}
     stream.send(serde_json::to_value(Offer {
         version: 1,
-        sdp: peer.description(true).await?,
+        sdp: description,
     })?).await?;
     let message=timeout(crate::native_signaling::PREPARATION_WAIT,stream.receive_answer()).await
         .context("等待被控端屏幕共享授权或编码器准备超时")??;
@@ -765,6 +808,10 @@ async fn receive_session(
         "unsupported native session capabilities"
     );
     validate_video(answer.width, answer.height, answer.fps)?;
+    let quality=crate::native_quality::Response::read(&answer.sdp)?;
+    if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"主机实际编码与能力回报不一致");}
+    stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":stats.native_quality_request.get(),"host_capabilities":quality}));
+    *stats.native_quality_response.lock().unwrap()=quality;
     // Complete dimension-dependent driver work before setting remote SDP can
     // start ICE/DTLS and release the first burst of video into the AU queue.
     peer.prepare_video(answer.width, answer.height, answer.codec,&stats).await?;
@@ -818,7 +865,7 @@ mod tests {
             "uu-video-{}.eclipse-invite.json",
             uuid::Uuid::new_v4()
         )));
-        let config = HostConfig {codec:Default::default(),rate_control:Default::default(),
+        let config = HostConfig {video_policy:None,codec:Default::default(),rate_control:Default::default(),
             bind: "127.0.0.1:0".parse().unwrap(),
             source: uu_capture::CaptureSource::Synthetic {
                 width: 320,
@@ -856,6 +903,33 @@ mod tests {
         assert_eq!(serde_json::to_value(&answer).unwrap(),legacy);
         let mut extended=legacy;extended["codec"]=serde_json::json!("av1");let answer:Answer=serde_json::from_value(extended.clone()).unwrap();
         assert_eq!(answer.codec,VideoCodec::Av1);assert_eq!(serde_json::to_value(answer).unwrap(),extended);
+    }
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn client_quality_request_scales_encrypted_video_and_reports_real_host_limits() {
+        let (mut config,file)=config();
+        config.video_policy=Some(crate::native_quality::Policy{codecs:vec![VideoCodec::H264],max_bitrate_kbps:1000});
+        let (host_stop,rx)=watch::channel(false);let (phase,host_phase)=watch::channel(HostStatus::Starting);
+        let host=tokio::spawn(serve_with_status(config,rx,Some(phase)));
+        let invitation=invitation(&file).await;
+        let stats=Arc::new(MediaStats::default());
+        stats.native_codec_capabilities.set(vec![VideoCodec::H264]).unwrap();
+        stats.native_quality_request.set(crate::native_quality::Request{fps:30,bounds:Some([160,90]),bitrate_kbps:Some(8000),codec:Some(VideoCodec::H264)}).unwrap();
+        let observed=stats.clone();let (frames,mut receiver)=frame_channel();let (stop,rx)=watch::channel(false);
+        let viewer=tokio::spawn(async move{view(&invitation,frames,observed,rx).await});
+        let result=timeout(Duration::from_secs(8),async {
+            while stats.decoded_total.load(Ordering::Acquire)<12 {
+                while receiver.try_recv().is_ok(){}
+                ensure!(!viewer.is_finished(),"negotiated viewer ended before frames");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            ensure!(stats.configured_fps.load(Ordering::Acquire)==30,"target FPS not negotiated");
+            ensure!(stats.native_quality_response.lock().unwrap().as_ref().is_some_and(|r|r.codecs==vec![VideoCodec::H264]&&r.max_bitrate_kbps==1000&&r.max_fps==60),"missing real host capability response");
+            ensure!(matches!(*host_phase.borrow(),HostStatus::Streaming{width:160,height:90,fps:30,..}),"capture was not scaled");
+            Ok::<_,anyhow::Error>(())
+        }).await;
+        stop.send_replace(true);host_stop.send_replace(true);
+        let viewed=viewer.await.unwrap();let hosted=host.await.unwrap();
+        result.unwrap_or_else(|e|panic!("{e}; viewer={viewed:?}; host={hosted:?}; phase={:?}; packets={}; decoded={}; errors={}",*host_phase.borrow(),stats.packets.load(Ordering::Relaxed),stats.decoded_total.load(Ordering::Relaxed),stats.errors.load(Ordering::Relaxed))).unwrap_or_else(|e|panic!("{e}; viewer={viewed:?}; host={hosted:?}"));viewed.unwrap();let report=hosted.unwrap();assert!(report.sent>=12);
     }
     #[tokio::test]
     async fn synthetic_source_cannot_authorize_system_audio() {

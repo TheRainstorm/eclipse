@@ -391,18 +391,34 @@ impl NativePeer {
         *self.pending_decoder.lock().unwrap() = Some(decoder);
         Ok(())
     }
+    /// Reuse the offered media section when encoder selection follows consent.
+    /// webrtc-rs 0.11 add_track only reuses a sender with an identical generated
+    /// track id; calling it here would append an unoffered m= section.
+    async fn attach_sender(&self,track:Arc<dyn TrackLocal+Send+Sync>)->Result<Arc<webrtc::rtp_transceiver::rtp_sender::RTCRtpSender>> {
+        if self.pc.remote_description().await.is_some() {
+            for transceiver in self.pc.get_transceivers().await {
+                if transceiver.kind()==track.kind() && transceiver.mid().is_some() {
+                    let sender=transceiver.sender().await;
+                    if sender.track().await.is_none() {
+                        sender.replace_track(Some(track)).await?;
+                        transceiver.set_direction(RTCRtpTransceiverDirection::Sendonly).await;
+                        return Ok(sender);
+                    }
+                }
+            }
+            anyhow::bail!("控制端没有可用的媒体接收通道");
+        }
+        Ok(self.pc.add_track(track).await?)
+    }
     pub async fn audio_sender(&self,red:bool)->Result<AudioSender> {
         let track=Arc::new(TrackLocalStaticRTP::new(opus_capability(red),"audio_0".into(),"eclipse-native".into()));
-        let sender=self.pc.add_track(track.clone() as Arc<dyn TrackLocal+Send+Sync>).await?;
+        let sender=self.attach_sender(track.clone() as Arc<dyn TrackLocal+Send+Sync>).await?;
         tokio::spawn(async move{while sender.read_rtcp().await.is_ok(){}});
         Ok(AudioSender {track,red,sequence:rand::random(),base:rand::random(),previous:None})
     }
     pub async fn sender_for_codec(&self,refresh:Arc<AtomicBool>,codec:VideoCodec)->Result<crate::native_video::Sender>{
         let track=Arc::new(TrackLocalStaticRTP::new(video_capability(codec),"video_0".into(),"eclipse-native".into()));
-        let sender = self
-            .pc
-            .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-            .await?;
+        let sender = self.attach_sender(track.clone() as Arc<dyn TrackLocal + Send + Sync>).await?;
         tokio::spawn(async move {
             use webrtc::rtcp::payload_feedbacks::{
                 full_intra_request::FullIntraRequest,

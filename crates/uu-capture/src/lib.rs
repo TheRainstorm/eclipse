@@ -9,6 +9,7 @@
 
 pub mod backend;
 mod pixels;
+pub mod scale;
 #[cfg(target_os = "linux")]
 pub mod portal;
 pub mod synthetic;

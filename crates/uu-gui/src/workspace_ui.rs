@@ -1167,22 +1167,35 @@ impl Workspace {
                 if !self.monitor_error.is_empty(){ui.colored_label(theme::DANGER,&self.monitor_error);}
                 if !portal && ui.small_button("刷新屏幕").clicked(){self.refresh_monitors();}
                 ui.horizontal(|ui| {
-                    ui.label("帧率");
+                    ui.label("最大帧率");
                     ui.add(
                         egui::DragValue::new(&mut self.draft.fps)
                             .range(1..=60)
                             .suffix(" FPS"),
                     );
                     ui.add_space(18.);
-                    ui.label("码率");
+                    ui.label("默认码率");
                     ui.add(
                         egui::DragValue::new(&mut self.draft.bitrate_mbps)
                             .range(1..=100)
                             .suffix(" Mbps"),
                     );
                 });
+                ui.horizontal(|ui| {
+                    ui.label("最大码率");
+                    ui.add(egui::DragValue::new(&mut self.draft.max_bitrate_mbps).range(1..=100).suffix(" Mbps"));
+                });
+                ui.weak("客户端可请求更低的帧率、码率和输出分辨率；当前原生链路最高 60 FPS。");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("允许协商的编码");
+                    for (codec,label) in [(uu_core::native::VideoCodec::H264,"H.264"),(uu_core::native::VideoCodec::Hevc,"HEVC"),(uu_core::native::VideoCodec::Av1,"AV1")] {
+                        let mut enabled=self.draft.allowed_codecs.contains(&codec);
+                        if ui.checkbox(&mut enabled,label).changed(){if enabled{self.draft.allowed_codecs.push(codec);}else{self.draft.allowed_codecs.retain(|c|*c!=codec);}}
+                    }
+                });
+                ui.weak("仅通报实际初始化成功的编码。HEVC / AV1 需要可用硬件编码，允许不代表驱动一定支持。");
                 ui.horizontal_wrapped(|ui|{
-                    ui.label("编码格式");
+                    ui.label("默认编码");
                     egui::ComboBox::from_id_salt("shared-codec").selected_text(match self.draft.codec {uu_core::native::VideoCodec::H264=>"H.264",uu_core::native::VideoCodec::Hevc=>"H.265 / HEVC",uu_core::native::VideoCodec::Av1=>"AV1"}).show_ui(ui,|ui|{
                         ui.selectable_value(&mut self.draft.codec,uu_core::native::VideoCodec::H264,"H.264");
                         ui.selectable_value(&mut self.draft.codec,uu_core::native::VideoCodec::Hevc,"H.265 / HEVC");

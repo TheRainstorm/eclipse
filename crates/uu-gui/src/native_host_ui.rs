@@ -229,7 +229,7 @@ impl NativeHostUi {
             state.enabled.store(true, Ordering::Release);
             state
         });
-        let config = HostConfig {codec:Default::default(),rate_control:Default::default(),
+        let config = HostConfig {video_policy:None,codec:Default::default(),rate_control:Default::default(),
             clipboard: clipboard.clone(),
             bind: SocketAddr::new(ip, 0),
             source: self

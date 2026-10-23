@@ -78,6 +78,13 @@ impl ClientSettings {
             "HEVC / AV1 需要可用的硬件解码；请选择自动或 H.264");
         Ok(())
     }
+    pub fn native_request(&self)->crate::native_quality::Request {
+        use uu_proto::media::VideoCodec;
+        crate::native_quality::Request { fps:self.fps,
+            bounds:match self.resolution {1=>Some([1920,1080]),2=>Some([2560,1440]),3=>Some([3840,2160]),_=>None},
+            bitrate_kbps:match self.bitrate {1=>Some(30_000),2=>Some(14_000),3=>Some(8_000),4=>Some(self.custom_mbps*1000),_=>None},
+            codec:match self.codec {CodecPreference::Auto=>None,CodecPreference::H264=>Some(VideoCodec::H264),CodecPreference::Hevc=>Some(VideoCodec::Hevc),CodecPreference::Av1=>Some(VideoCodec::Av1)} }
+    }
     pub fn hevc_preferred(&self) -> bool {
         !self.software_decoder && (self.codec == CodecPreference::Hevc || (self.codec == CodecPreference::Auto && self.prefer_hevc))
     }

@@ -344,7 +344,7 @@ impl HostUi {
                     }});
                     let mut tasks=tokio::task::JoinSet::new();
                     if sharing.ip_enabled {
-                    let lan_config=lan::Config{codec:sharing.native().codec,rate_control:sharing.native().rate_control,name:sharing.name.clone(),bind:([0,0,0,0],sharing.service_port).into(),
+                    let lan_config=lan::Config{video_policy:sharing.native().video_policy,codec:sharing.native().codec,rate_control:sharing.native().rate_control,name:sharing.name.clone(),bind:([0,0,0,0],sharing.service_port).into(),
                         discovery_bind:Some(([0,0,0,0],sharing.discovery_port).into()),data_dir:config.at("native-lan"),
                         source:sharing.native().source,
                         fps:sharing.fps,bitrate_kbps:sharing.bitrate_mbps*1000,encoder:sharing.encoding.native(),

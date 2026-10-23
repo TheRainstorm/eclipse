@@ -33,6 +33,8 @@ pub enum RateMode {#[default] Cbr,Vbr}
 #[serde(default, deny_unknown_fields)]
 pub struct Sharing {
     pub codec:native::VideoCodec,
+    pub allowed_codecs:Vec<native::VideoCodec>,
+    pub max_bitrate_mbps:u32,
     pub rate_control:RateMode,
     pub peak_bitrate_mbps:u32,
     pub name: String,
@@ -52,6 +54,7 @@ pub struct Sharing {
 impl Default for Sharing {
     fn default() -> Self {
         Self {
+            allowed_codecs:vec![native::VideoCodec::H264,native::VideoCodec::Hevc,native::VideoCodec::Av1],max_bitrate_mbps:100,
             codec:Default::default(),rate_control:Default::default(),peak_bitrate_mbps:36,
             name: crate::config::local_device_name(),
             monitor: String::new(),
@@ -71,7 +74,7 @@ impl Default for Sharing {
 }
 impl Sharing {
     pub fn native(&self) -> SharingConfig {
-        SharingConfig {codec:self.codec,rate_control:match self.rate_control {RateMode::Cbr=>uu_media::encoder::RateControl::Cbr,RateMode::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:self.peak_bitrate_mbps*1000}},
+        SharingConfig {video_policy:Some(crate::native_quality::Policy{codecs:self.allowed_codecs.clone(),max_bitrate_kbps:self.max_bitrate_mbps*1000}),codec:self.codec,rate_control:match self.rate_control {RateMode::Cbr=>uu_media::encoder::RateControl::Cbr,RateMode::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:self.peak_bitrate_mbps*1000}},
             source: if self.monitor == crate::native_displays::ALL_MONITORS {
                 native::CaptureSource::Desktop
             } else if self.monitor.is_empty() {
@@ -89,6 +92,8 @@ impl Sharing {
         }
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!((1..=100).contains(&self.max_bitrate_mbps)&&self.bitrate_mbps<=self.max_bitrate_mbps,"默认码率不能超过服务端最大码率（1–100 Mbps）");
+        ensure!(self.allowed_codecs.contains(&self.codec),"默认编码须包含在允许的编码中");
         valid_name(&self.name)?;
         ensure!(
             self.peak_bitrate_mbps<=200 && self.peak_bitrate_mbps>0 && self.monitor.len() <= 256 && !self.monitor.chars().any(char::is_control),
