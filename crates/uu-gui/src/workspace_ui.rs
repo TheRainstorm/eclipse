@@ -1677,12 +1677,6 @@ impl super::App {
                 {
                     compatibility = true;
                 }
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    if ui.button("应用设置").clicked() {
-                        self.open_settings();
-                    }
-                    ui.weak("Eclipse 设备工作区");
-                });
             });
         if compatibility {
             self.lan.compatibility = true;
