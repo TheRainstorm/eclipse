@@ -41,6 +41,7 @@ mod native_ui;
 mod gamepad;
 mod internet_ui;
 mod workspace_ui;
+mod ui_feedback;
 mod sharing_ui;
 mod connection_details;
 mod lan_ui;
@@ -196,11 +197,12 @@ struct App {
     uu_devices: uu_devices::Manager,
     hud: bool,
     preferences: settings::Settings,
-    settings_open: bool,
+    stream_settings_open: bool,
     settings_section: settings_page::Section,
     about_open: bool,
     settings_draft: settings::Settings,
     settings_notice: String,
+    settings_notice_at: Option<std::time::Instant>,
     settings_storage_error: bool,
     audio_save_after: Option<std::time::Instant>,
     shortcuts: shortcuts::Shortcuts,
@@ -443,11 +445,12 @@ impl App {
             uu_devices: Default::default(),
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(preferences.hud),
             preferences: preferences.clone(),
-            settings_open: false,
+            stream_settings_open: false,
             settings_section: settings_page::Section::default(),
             about_open: false,
             settings_draft: preferences.clone(),
             settings_notice,
+            settings_notice_at: None,
             settings_storage_error,
             audio_save_after: None,
             shortcuts: shortcuts::Shortcuts::default(),
@@ -487,7 +490,7 @@ impl App {
             app.view_only = target.view_only;
             app.autoconnect_done = true;
             app.connect();
-        } else if logged_in && app.lan.compatibility {
+        } else if logged_in && app.workspace.route.page == workspace_ui::Page::Compatibility {
             app.start_load();
         } else {
             app.status = "选择连接方式".into();
@@ -515,7 +518,6 @@ impl App {
     }
 
     fn start_login(&mut self) {
-        if self.stream_target.is_none() && !self.lan.compatibility {self.workspace.page=workspace_ui::Page::Services;}
         if let Some(error) = &self.account_error {
             self.login_status = error.clone();
             return;
@@ -589,7 +591,7 @@ impl App {
                     self.login_status = match self.config.as_ref()
                         .ok_or_else(|| anyhow::anyhow!("无法确定登录目录"))
                         .and_then(|c| account::store_device_name(&c.at("state.json"), &token, name)) {
-                        Ok(()) => { self.rx = None; if self.lan.compatibility { self.start_load(); } "UU 设备名称已更新".into() },
+                        Ok(()) => { self.rx = None; if self.compatibility_active() { self.start_load(); } "UU 设备名称已更新".into() },
                         Err(error) => format!("云端名称已更新，保存本地记录失败：{error}"),
                     };
                 }
@@ -1100,7 +1102,7 @@ impl App {
             if let Some(texture)=self.textures.get(&self.selected_track).or_else(||self.textures.values().next()) {
                 match texture.snapshot() {
                     Ok(image)=>self.preview_writer.submit(store.clone(),id.clone(),Some(image)),
-                    Err(error)=>self.settings_notice=format!("本次预览未更新：{error}"),
+                    Err(error)=>self.set_settings_notice(format!("本次预览未更新：{error}")),
                 }
             }
         }
@@ -1184,7 +1186,7 @@ impl App {
         if let Some(path) = &self.displays.layout_path {
             match display_layout::DisplayLayout::load(path) {
                 Ok(layout) => self.displays.layout = layout,
-                Err(error) => self.settings_notice = format!("显示器排序读取失败：{error}"),
+                Err(error) => self.set_settings_notice(format!("显示器排序读取失败：{error}")),
             }
         }
         let geo = uu_core::config::geo_exit_ip();
@@ -1254,11 +1256,14 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.workspace_poll(ctx);
-        if let Some(error)=self.preview_writer.error.lock().unwrap().take(){self.settings_notice=error;}
+        let preview_error = self.preview_writer.error.lock().unwrap().take();
+        if let Some(error) = preview_error {
+            self.set_settings_notice(error);
+        }
         self.native_host.poll(ctx);
         self.lan.set_discovery(self.preferences.lan_discovery);
         self.lan.configure_ports(self.workspace.book.sharing.service_port, self.workspace.book.sharing.discovery_port);
-        let lan_active=self.stream_target.is_none()&&!self.lan.compatibility;
+        let lan_active=self.stream_target.is_none()&&!self.compatibility_active();
         self.lan.poll(ctx,lan_active);
         if let Some(seconds) = frame.info().cpu_usage {
             self.render_total_seconds += seconds;
@@ -1293,7 +1298,7 @@ impl eframe::App for App {
         self.poll_controller(ctx);
         let video_px = self.textures.get(&self.selected_track)
             .map(|texture| texture.size_vec2());
-        self.window_sizing.set_settings_page(self.settings_open);
+        self.window_sizing.set_settings_page(self.stream_settings_open || self.workspace.route.page == workspace_ui::Page::Settings);
         self.window_sizing.update(ctx, self.stream_target.is_some(), video_px,
             self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(frame, ctx));
         if self.exit_requested { self.native_host.stop(); self.lan.host.stop(); self.workspace.host.stop();}
@@ -1316,7 +1321,7 @@ impl eframe::App for App {
             else {
                 self.rx = None;
                 self.devices.clear();
-                if self.lan.compatibility { self.start_load(); }
+                if self.compatibility_active() { self.start_load(); }
             }
         }
         let (events, focused) = ctx.input(|i| (i.events.clone(), i.focused));
@@ -1439,8 +1444,8 @@ impl eframe::App for App {
                 s.diagnostics.record(report);
             }
         }
-        if self.settings_open {
-            self.settings_ui(ctx);
+        if self.stream_settings_open {
+            self.stream_settings_ui(ctx);
         } else if self.stream_target.is_some() {
             self.stream_ui(ctx, &events);
         } else {
@@ -1473,7 +1478,7 @@ impl eframe::App for App {
         }
         let idle_poll_ms = if self.controller.is_some() || self.close_at.is_some() { 100 }
             else if self.rx.is_some() || self.login_rx.is_some() { 150 }
-            else if self.lan.compatibility { 500 } else { 1000 };
+            else if self.compatibility_active() { 500 } else { 1000 };
         // Frame and input events wake the UI directly. Extra vblank-paced
         // redraws regressed WGL ownership waits on the production client.
         ctx.request_repaint_after(std::time::Duration::from_millis(idle_poll_ms));

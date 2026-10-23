@@ -218,7 +218,7 @@ impl super::App {
     fn save_display_layout(&mut self) {
         if let Some(path) = &self.displays.layout_path {
             if let Err(error) = self.displays.layout.save(path) {
-                self.settings_notice = format!("显示器排序保存失败：{error}");
+                self.set_settings_notice(format!("显示器排序保存失败：{error}"));
             }
         }
     }

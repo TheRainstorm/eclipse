@@ -234,7 +234,7 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
         );
     });
 }
-fn application(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions) {
+pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions) {
     group(ui,"常规",|ui| {
         ui.horizontal(|ui| {ui.label("界面语言");ui.label("简体中文");});
         ui.checkbox(&mut s.app_autostart,"登录系统时自动打开软件");
@@ -250,13 +250,6 @@ fn application(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions) {
     group(ui,"设备发现",|ui| {
         ui.checkbox(&mut s.lan_discovery,"自动查找局域网设备");
         note(ui,"关闭后仍可使用保存的地址或手动添加设备；本机服务入口在连接服务中管理。");
-    });
-    group(ui, "软件信息", |ui| {
-        ui.label(format!("uu-client · {}", env!("CARGO_PKG_VERSION")));
-        note(ui, "软件信息、源提交与版本核验可在“关于软件”查看。");
-        if ui.button("关于软件").clicked() {
-            actions.about = true;
-        }
     });
 }
 
@@ -427,7 +420,7 @@ pub fn show(
                         Section::Audio => audio(ui, s),
                         Section::Input => input(ui, s, &state),
                         Section::Stream => stream(ui,s),
-                        Section::Application => application(ui, s, &mut actions),
+                        Section::Application => software(ui, s, &mut actions),
                     }
                 });
         });

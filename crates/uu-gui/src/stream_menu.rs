@@ -552,7 +552,7 @@ impl super::App {
         if screens.screens.is_empty(){ui.add_enabled(false,egui::Label::new("等待远端显示器列表…"));}
         if !self.displays.notice.is_empty(){separator(ui);ui.label(&self.displays.notice);}
         separator(ui);
-        if ui.button("显示器模式设置…").clicked(){self.displays.menu_open=false;self.open_settings();}
+        if ui.button("显示器模式设置…").clicked(){self.displays.menu_open=false;self.open_stream_settings();}
     }
 
     fn confirm_quality(&mut self, ui: &mut egui::Ui) {
@@ -905,7 +905,7 @@ impl super::App {
                                     );
                                     }
                                     if menu_row(ui,"连接详情",Some(Icon::Link),false,false,"",false).clicked(){self.open_connection_details();}
-                                    if menu_row(ui,"软件设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_settings();}
+                                    if menu_row(ui,"软件设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
                                     if menu_row(ui,"关于软件",Some(Icon::Info),false,false,"",false).clicked(){self.open_about();}
                                     side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
                                         if menu_row(

@@ -66,7 +66,7 @@ impl super::App {
     pub(super) fn apply_account(&mut self, token: Option<String>) {
         self.uu_devices = Default::default();
         if self.account_token.is_some() && self.account_token!=token && self.workspace.book.sharing.uu_enabled && self.workspace.host.running() {
-            self.workspace.host.stop();self.workspace.notice="UU 账号已变化，已停止本机共享；确认账号后可重新开启。".into();
+            self.workspace.host.stop();self.workspace.feedback.error(super::ui_feedback::Scope::Services(0),"UU 账号已变化，已停止本机共享；确认账号后可重新开启。");
         }
         self.account_token = token;
         self.account_error = None;
@@ -87,7 +87,7 @@ impl super::App {
         self.autoconnect_done = true;
         if self.stream_target.is_some() {
             self.disconnect();
-        } else if self.logged_in && self.lan.compatibility {
+        } else if self.logged_in && self.workspace.route.page == super::workspace_ui::Page::Compatibility {
             self.start_load();
         } else {
             self.status = "已退出账号，请重新扫码登录".into();

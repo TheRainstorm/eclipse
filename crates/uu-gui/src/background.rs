@@ -76,7 +76,14 @@ impl Background {
             Ok(worker)=>{self.worker=Some(worker);self.notice="正在更新壁纸…".into();},Err(e)=>self.notice=format!("壁纸加载失败：{e}")
         }
     }
-    pub fn paint(&self,ui:&egui::Ui,rect:egui::Rect) {
+    pub fn paint_background(&self, ctx: &egui::Context, rect: egui::Rect) {
+        self.paint_with(
+            &ctx.layer_painter(egui::LayerId::background()),
+            rect,
+        );
+    }
+
+    fn paint_with(&self, painter: &egui::Painter, rect: egui::Rect) {
         if !self.enabled { return; }
         let Some(texture)=&self.texture else {
             // Always provide a visible background while the optional image
@@ -89,13 +96,13 @@ impl Background {
                 (rect.left_bottom(),egui::Color32::from_rgb(235,242,255)),
             ] { mesh.colored_vertex(position,color); }
             mesh.add_triangle(0,1,2);mesh.add_triangle(0,2,3);
-            ui.painter().add(egui::Shape::mesh(mesh));
+            painter.add(egui::Shape::mesh(mesh));
             return;
         };
         let source=texture.size_vec2();let ratio=(rect.width()/source.x).max(rect.height()/source.y);
         let fraction=rect.size()/(source*ratio);let uv=egui::Rect::from_center_size(egui::pos2(0.5,0.5),fraction);
-        ui.painter().image(texture.id(),rect,uv,egui::Color32::WHITE);
-        ui.painter().rect_filled(rect,0.,egui::Color32::from_black_alpha(70));
+        painter.image(texture.id(),rect,uv,egui::Color32::WHITE);
+        painter.rect_filled(rect,0.,egui::Color32::from_black_alpha(70));
     }
 }
 

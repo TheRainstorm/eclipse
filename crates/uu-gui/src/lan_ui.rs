@@ -153,7 +153,6 @@ struct Row {
     changed: bool,
 }
 pub(super) struct LanUi {
-    pub compatibility: bool,
     pub host: super::lan_host_ui::HostUi,
     dir: Option<PathBuf>,
     book: Option<Devices>,
@@ -218,7 +217,6 @@ impl LanUi {
             (None, "无法确定设备配置目录，请检查本机用户目录。".into())
         };
         Self {
-            compatibility: false,
             host: super::lan_host_ui::HostUi::default(),
             dir,
             book,

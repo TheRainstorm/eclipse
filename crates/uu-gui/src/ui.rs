@@ -193,12 +193,29 @@ pub(super) fn icon_button(ui: &mut egui::Ui, kind: Icon, tip: &str) -> Response 
     icon_button_selected(ui, kind, tip, false)
 }
 pub(super) fn icon_button_selected(ui: &mut egui::Ui, kind: Icon, tip: &str, selected: bool) -> Response {
+    icon_button_tinted(ui, kind, tip, selected, ui.visuals().text_color())
+}
+
+pub(super) fn icon_button_tinted(
+    ui: &mut egui::Ui,
+    kind: Icon,
+    tip: &str,
+    selected: bool,
+    tint: C,
+) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
     if response.hovered() || selected {
-        ui.painter()
-            .rect_filled(rect, 6.0, if selected {C::from_rgb(222, 235, 249)} else {ui.visuals().widgets.hovered.bg_fill});
+        ui.painter().rect_filled(
+            rect,
+            6.0,
+            if selected {
+                C::from_rgb(222, 235, 249)
+            } else {
+                ui.visuals().widgets.hovered.bg_fill
+            },
+        );
     }
-    icon(ui.painter(), rect, kind, if selected {BLUE} else {ui.visuals().text_color()});
+    icon(ui.painter(), rect, kind, if selected { BLUE } else { tint });
     response.on_hover_text(tip)
 }
 
@@ -230,24 +247,75 @@ pub(super) fn logo(p: &egui::Painter, rect: Rect) {
 
 impl App {
     fn title_bar(&mut self, ctx: &egui::Context) {
+        let page = self.workspace.route.page;
+        let wallpaper_root = page == super::workspace_ui::Page::Devices
+            && matches!(self.workspace.route.device, super::workspace_ui::DeviceView::List)
+            && self.preferences.wallpaper_enabled;
+        let detail_name = match (&self.workspace.route.device, page) {
+            (super::workspace_ui::DeviceView::Details(id), super::workspace_ui::Page::Devices) => {
+                self.workspace.book.device(id).ok().map(|device| device.name.clone())
+            }
+            _ => None,
+        };
+        let current = match page {
+            super::workspace_ui::Page::Devices => "设备列表".to_owned(),
+            super::workspace_ui::Page::Services => "服务管理".into(),
+            super::workspace_ui::Page::Compatibility => "UU 兼容".into(),
+            super::workspace_ui::Page::Settings => "应用设置".into(),
+        };
+        let running = self.workspace.host.running();
+        let failed = self
+            .workspace
+            .host
+            .statuses()
+            .iter()
+            .any(|(_, status)| matches!(status, uu_core::device_internet::EndpointStatus::Error(_)));
         egui::TopBottomPanel::top("home-title")
             .exact_height(58.0)
             .frame(
                 egui::Frame::none()
-                    .fill(SIDEBAR)
-                    .inner_margin(egui::Margin::symmetric(18.0, 8.0)),
+                    .fill(if wallpaper_root {
+                        C::TRANSPARENT
+                    } else {
+                        super::theme::SURFACE
+                    })
+                    .inner_margin(egui::Margin::symmetric(16.0, 8.0)),
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     let (rect, response) =
                         ui.allocate_exact_size(egui::vec2(30.0, 34.0), Sense::click_and_drag());
                     logo(ui.painter(), rect);
-                    if response.clicked() { self.select_workspace_page(super::workspace_ui::Page::Devices); }
+                    if response.clicked() {
+                        self.select_workspace_page(super::workspace_ui::Page::Devices);
+                    }
                     if response.drag_started() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
-                    if ctx.screen_rect().width()>=680. {ui.label(RichText::new(super::brand::NAME).size(19.0).color(INK));}
-                    let space = (ui.available_width() - 255.0).max(0.0);
+                    let title_color = if wallpaper_root { C::WHITE } else { INK };
+                    let separator_color = if wallpaper_root {
+                        C::from_white_alpha(190)
+                    } else {
+                        MUTED
+                    };
+                    if ctx.screen_rect().width() >= 520.0 {
+                        ui.label(RichText::new(super::brand::NAME).size(18.0).strong().color(title_color));
+                        ui.label(RichText::new("/").size(17.0).color(separator_color));
+                    }
+                    if let Some(name) = detail_name {
+                        if ui.link(RichText::new("设备列表").size(17.0)).clicked() {
+                            self.workspace.route.device = super::workspace_ui::DeviceView::List;
+                        }
+                        ui.label(RichText::new("/").size(17.0).color(separator_color));
+                        ui.add(egui::Label::new(RichText::new(name).size(17.0).color(title_color)).truncate());
+                    } else {
+                        ui.add(
+                            egui::Label::new(RichText::new(current).size(17.0).color(title_color))
+                                .truncate(),
+                        );
+                    }
+                    let controls_width = 255.0;
+                    let space = (ui.available_width() - controls_width).max(0.0);
                     let (_, drag) =
                         ui.allocate_exact_size(egui::vec2(space, 34.0), Sense::click_and_drag());
                     if drag.drag_started() {
@@ -269,26 +337,74 @@ impl App {
                         if icon_button(ui, Icon::Min, "最小化").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        if icon_button(ui, Icon::Info, "关于软件").clicked() { self.open_about(); }
-                        if icon_button_selected(ui, Icon::Settings, "应用设置", self.settings_open).clicked() { self.open_settings(); }
-                        let uu = icon_button_selected(ui, Icon::Uu, "UU 兼容", self.lan.compatibility || self.workspace.page == super::workspace_ui::Page::Assistance);
-                        let menu = ui.make_persistent_id("uu-compatibility-menu");
-                        if uu.clicked() { ui.memory_mut(|m| m.toggle_popup(menu)); }
-                        egui::popup_below_widget(ui, menu, &uu, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-                            ui.set_min_width(150.0);
-                            if ui.button("远程协助").clicked() { self.select_uu_compatibility(true); ui.close_menu(); }
-                            if ui.button("UU 兼容设备").clicked() { self.select_uu_compatibility(false); ui.close_menu(); }
-                        });
-                        let running = self.workspace.host.running();
-                        let failed = self.workspace.host.statuses().iter().any(|(_,s)| matches!(s, uu_core::device_internet::EndpointStatus::Error(_)));
-                        let color = if failed { super::theme::DANGER } else if running { super::theme::SUCCESS } else { MUTED };
-                        let selected = !self.lan.compatibility && self.workspace.page == super::workspace_ui::Page::Services;
-                        let response = ui.add_sized([30.,30.], egui::Button::new("").frame(false));
-                        if selected || response.hovered() { ui.painter().rect_filled(response.rect, 6., C::from_rgb(222,235,249)); }
+                        ui.add_space(4.0);
+                        if icon_button_tinted(
+                            ui,
+                            Icon::Settings,
+                            "应用设置",
+                            page == super::workspace_ui::Page::Settings,
+                            if wallpaper_root { C::WHITE } else { INK },
+                        )
+                        .clicked()
+                        {
+                            self.select_workspace_page(super::workspace_ui::Page::Settings);
+                        }
+                        if icon_button_selected(
+                            ui,
+                            Icon::Uu,
+                            "UU 兼容",
+                            page == super::workspace_ui::Page::Compatibility,
+                        )
+                        .clicked()
+                        {
+                            self.select_uu_compatibility(false);
+                        }
+                        let response = ui.add_sized([30.0, 30.0], egui::Button::new("").frame(false));
+                        let selected = page == super::workspace_ui::Page::Services;
+                        if selected || response.hovered() {
+                            ui.painter().rect_filled(
+                                response.rect,
+                                6.0,
+                                C::from_rgb(222, 235, 249),
+                            );
+                        }
+                        let color = if failed {
+                            super::theme::DANGER
+                        } else if running {
+                            super::theme::SUCCESS
+                        } else {
+                            MUTED
+                        };
                         icon(ui.painter(), response.rect, Icon::Globe, color);
-                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "连接服务"));
-                        if response.on_hover_text(if failed { "服务管理 · 部分入口异常" } else if running { "服务管理 · 运行中" } else { "服务管理 · 已停止" }).clicked() {
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                ui.is_enabled(),
+                                "服务管理",
+                            )
+                        });
+                        if response
+                            .on_hover_text(if failed {
+                                "服务管理 · 部分入口异常"
+                            } else if running {
+                                "服务管理 · 运行中"
+                            } else {
+                                "服务管理 · 已停止"
+                            })
+                            .clicked()
+                        {
                             self.select_workspace_page(super::workspace_ui::Page::Services);
+                        }
+                        if icon_button_tinted(
+                            ui,
+                            Icon::Desktop,
+                            "设备列表",
+                            page == super::workspace_ui::Page::Devices,
+                            if wallpaper_root { C::WHITE } else { INK },
+                        )
+                        .clicked()
+                        {
+                            self.select_workspace_page(super::workspace_ui::Page::Devices);
                         }
                     });
                 });
@@ -296,18 +412,27 @@ impl App {
     }
 
     pub(super) fn home_ui(&mut self, ctx: &egui::Context) {
+        if self.workspace.route.page == super::workspace_ui::Page::Devices
+            && matches!(self.workspace.route.device, super::workspace_ui::DeviceView::List)
+        {
+            self.background.sync(&self.preferences, ctx);
+            self.background.paint_background(ctx, ctx.screen_rect());
+        }
         self.title_bar(ctx);
-        if !self.lan.compatibility {self.workspace_home(ctx);return;}
+        match self.workspace.route.page {
+            super::workspace_ui::Page::Devices | super::workspace_ui::Page::Services => {
+                self.workspace_home(ctx)
+            }
+            super::workspace_ui::Page::Compatibility => self.compatibility_ui(ctx),
+            super::workspace_ui::Page::Settings => self.settings_home(ctx),
+        }
+    }
+
+    fn compatibility_ui(&mut self, ctx: &egui::Context) {
         if let Some(error) = self.account_error.clone() {
             egui::TopBottomPanel::top("local-account-error").show(ctx, |ui| {
                 ui.add(egui::Label::new(RichText::new(error).color(C::from_rgb(177, 48, 48))).wrap());
                 if ui.button("检查配置后重试").clicked() { self.retry_account_read(); }
-            });
-        }
-        if self.settings_storage_error {
-            egui::TopBottomPanel::top("local-settings-error").show(ctx, |ui| {
-                ui.label("本地设置暂未读取或保存，原文件已保留；当前设置仅在本次运行中生效。");
-                if ui.button("检查软件设置").clicked() { self.open_settings(); }
             });
         }
         if !self.logged_in {
@@ -332,7 +457,6 @@ impl App {
                     if ui.add_enabled_ui(self.account_error.is_none(), |ui| ui.add_sized([180.0,36.0],egui::Button::new(RichText::new(if self.login_texture.is_some(){"刷新二维码"}else{"扫码登录"}).color(C::WHITE)).fill(BLUE))).inner.clicked(){self.start_login();}
                     if self.login_rx.is_some()&&ui.button("取消登录").clicked(){self.login_rx=None;self.login_texture=None;self.login_status="已取消登录".into();}
                     ui.add_space(14.0);
-                    if ui.add_sized([180.0,36.0],egui::Button::new(RichText::new("返回原生设备").color(BLUE)).fill(C::WHITE).stroke(egui::Stroke::new(1.0,BLUE))).clicked(){self.lan.compatibility=false;self.workspace.page=super::workspace_ui::Page::Devices;}
                     ui.add_space(8.0);
                     if ui.add_sized([180.0,32.0],egui::Button::new(if self.workspace.host.running(){"管理当前共享"}else{"共享此设备"})).clicked(){self.open_native_host();}
                     ui.add_space(8.0);
@@ -482,23 +606,26 @@ impl App {
                     });
                 if let Some(index) = selected {
                     self.selected = Some(index);
+                    self.workspace.route.compatibility =
+                        super::workspace_ui::CompatibilityView::Devices;
                 }
                 if !compact_home {
                 ui.add_space(10.0);
                 ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
+                let devices_view = self.workspace.route.compatibility
+                    == super::workspace_ui::CompatibilityView::Devices;
                 for (kind, label, filter) in [
-                    (Icon::Grid, "全部设备", Some(super::device_library::Filter::All)),
-                    (Icon::Clock, "最近使用", Some(super::device_library::Filter::Recent)),
-                    (Icon::Star, "收藏设备", Some(super::device_library::Filter::Favorites)),
-                    (Icon::Link, "远程协助", None),
+                    (Icon::Grid, "全部设备", super::device_library::Filter::All),
+                    (Icon::Clock, "最近使用", super::device_library::Filter::Recent),
+                    (Icon::Star, "收藏设备", super::device_library::Filter::Favorites),
                 ] {
-                    let active = filter == Some(self.device_filter);
+                    let active = devices_view && filter == self.device_filter;
                     let (row, response) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), 34.0),
-                        if filter.is_some() { Sense::click() } else { Sense::hover() },
+                        Sense::click(),
                     );
-                    if active || (filter.is_some() && response.hovered()) { ui.painter().rect_filled(row, 5.0, C::from_rgb(225, 235, 247)); }
+                    if active || response.hovered() { ui.painter().rect_filled(row, 5.0, C::from_rgb(225, 235, 247)); }
                     icon(
                         ui.painter(),
                         Rect::from_center_size(
@@ -506,34 +633,77 @@ impl App {
                             Vec2::splat(22.0),
                         ),
                         kind,
-                        if active {
-                            BLUE
-                        } else {
-                            MUTED
-                        },
+                        if active { BLUE } else { MUTED },
                     );
                     text_at(
                         ui.painter(),
                         row.left_center() + egui::vec2(55.0, 0.0),
                         label,
                         15.0,
-                        if filter.is_some() {
-                            INK
-                        } else {
-                            MUTED
-                        },
+                        INK,
                     );
-                    if let Some(filter) = filter {
-                        if response.clicked() { self.device_filter = filter; self.ensure_visible_device_selection(); }
-                    } else {
-                        response.on_hover_text("暂未开放");
+                    if response.clicked() {
+                        self.workspace.route.compatibility =
+                            super::workspace_ui::CompatibilityView::Devices;
+                        self.device_filter = filter;
+                        self.ensure_visible_device_selection();
                     }
+                }
+                let assistance_active = self.workspace.route.compatibility
+                    == super::workspace_ui::CompatibilityView::Assistance;
+                let (row, response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 34.0),
+                    Sense::click(),
+                );
+                if assistance_active || response.hovered() {
+                    ui.painter().rect_filled(row, 5.0, C::from_rgb(225, 235, 247));
+                }
+                icon(
+                    ui.painter(),
+                    Rect::from_center_size(
+                        row.left_center() + egui::vec2(28.0, 0.0),
+                        Vec2::splat(22.0),
+                    ),
+                    Icon::Link,
+                    if assistance_active { BLUE } else { MUTED },
+                );
+                text_at(
+                    ui.painter(),
+                    row.left_center() + egui::vec2(55.0, 0.0),
+                    "远程协助",
+                    15.0,
+                    INK,
+                );
+                if response.clicked() {
+                    self.workspace.route.compatibility =
+                        super::workspace_ui::CompatibilityView::Assistance;
                 }
                 });
                 }
                 if let Some(notice) = self.device_library.notice() { ui.add_space(6.0); ui.label(RichText::new(notice).small().color(MUTED)); }
 
             });
+        if self.workspace.route.compatibility
+            == super::workspace_ui::CompatibilityView::Assistance
+        {
+            let mut actions = Vec::new();
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::none()
+                        .fill(C::from_rgb(248, 251, 253))
+                        .inner_margin(egui::Margin::symmetric(36.0, 26.0)),
+                )
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.heading("远程协助");
+                        ui.label(RichText::new("通过临时邀请帮助另一台设备").color(MUTED));
+                        ui.add_space(18.0);
+                        actions = self.workspace.assistance_page(ui);
+                    });
+                });
+            self.workspace_actions(actions, ctx);
+            return;
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()

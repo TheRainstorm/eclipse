@@ -170,6 +170,8 @@ pub(super) struct HostUi {
     pending: Vec<Pending>,
     legacy_pending: Vec<LegacyPending>,
     pub notice: String,
+    notice_changed_at: Option<std::time::Instant>,
+    last_notice: String,
     stopping: bool,
     allow_control: bool,
 }
@@ -179,6 +181,14 @@ impl HostUi {
     }
     pub fn stopping(&self) -> bool {
         self.stopping
+    }
+    pub fn notice_is_error(&self) -> bool {
+        super::ui_feedback::looks_like_error(&self.notice)
+    }
+    pub fn clear_notice(&mut self) {
+        self.notice.clear();
+        self.last_notice.clear();
+        self.notice_changed_at = None;
     }
     pub fn statuses(&self) -> Vec<(String, EndpointStatus)> {
         self.endpoints
@@ -397,6 +407,21 @@ impl HostUi {
         Ok(())
     }
     pub fn poll(&mut self, ctx: &egui::Context, window: isize) {
+        if self.notice != self.last_notice {
+            self.last_notice = self.notice.clone();
+            self.notice_changed_at = (!self.notice.is_empty()).then(std::time::Instant::now);
+        }
+        if !self.notice.is_empty()
+            && !super::ui_feedback::looks_like_error(&self.notice)
+            && self.notice_changed_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(2))
+        {
+            self.notice.clear();
+            self.last_notice.clear();
+            self.notice_changed_at = None;
+        }
+        if self.notice_changed_at.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
         if self.running() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }

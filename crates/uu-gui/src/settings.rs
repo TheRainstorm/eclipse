@@ -170,10 +170,196 @@ pub(super) fn save_bytes(path:&Path,bytes:&[u8])->anyhow::Result<()> {
 }
 
 impl super::App {
-    pub(super) fn open_settings(&mut self) {
+    pub(super) fn set_settings_notice(&mut self, text: impl Into<String>) {
+        self.settings_notice = text.into();
+        self.settings_notice_at = Some(std::time::Instant::now());
+    }
+
+    fn expire_settings_notice(&mut self, ctx: &egui::Context) {
+        if !self.settings_notice.is_empty()
+            && !self.settings_storage_error
+            && !super::ui_feedback::looks_like_error(&self.settings_notice)
+            && self
+                .settings_notice_at
+                .is_some_and(|at| at.elapsed() >= std::time::Duration::from_secs(2))
+        {
+            self.settings_notice.clear();
+            self.settings_notice_at = None;
+        } else if self.settings_notice_at.is_some()
+            && !super::ui_feedback::looks_like_error(&self.settings_notice)
+        {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    pub(super) fn prepare_home_settings(&mut self) {
+        self.snapshot_preferences();
+        self.settings_draft = self.preferences.clone();
+        self.about_open = false;
+        self.native_ui.open = false;
+        self.native_host.open = false;
+        self.lan.host.open = false;
+        self.displays.menu_open = false;
+        self.stream_menu.open = false;
+        self.context.memory_mut(|memory| memory.close_popup());
+        self.context.request_repaint();
+    }
+
+    pub(super) fn discard_home_settings(&mut self) {
+        self.settings_draft = self.preferences.clone();
+        self.settings_notice.clear();
+        self.settings_notice_at = None;
+    }
+
+    pub(super) fn settings_home(&mut self, ctx: &egui::Context) {
+        self.expire_settings_notice(ctx);
+        let view = self.workspace.route.settings;
+        let dirty = self.settings_draft != self.preferences;
+        let mut actions = super::settings_page::Actions::default();
+        egui::SidePanel::left("home-settings-navigation")
+            .exact_width(if ctx.screen_rect().width() < 720.0 { 156.0 } else { 190.0 })
+            .resizable(false)
+            .frame(
+                egui::Frame::none()
+                    .fill(super::theme::SIDEBAR)
+                    .inner_margin(egui::Margin::symmetric(14.0, 18.0)),
+            )
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new("应用设置").size(13.0).strong().color(super::theme::MUTED));
+                ui.add_space(10.0);
+                for (tab, label) in [
+                    (super::workspace_ui::SettingsView::Software, "软件设置"),
+                    (super::workspace_ui::SettingsView::About, "关于"),
+                ] {
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 40.0],
+                            egui::SelectableLabel::new(view == tab, label),
+                        )
+                        .clicked()
+                    {
+                        self.workspace.route.settings = tab;
+                    }
+                    ui.add_space(4.0);
+                }
+            });
+        if view == super::workspace_ui::SettingsView::Software {
+            egui::TopBottomPanel::bottom("home-settings-actions")
+                .exact_height(if ctx.screen_rect().height() < 520.0 { 54.0 } else { 66.0 })
+                .frame(
+                    egui::Frame::none()
+                        .fill(super::theme::SURFACE)
+                        .inner_margin(egui::Margin::symmetric(20.0, 12.0)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        if ui.button("恢复默认").clicked() {
+                            actions.reset = true;
+                        }
+                        if dirty {
+                            ui.label(egui::RichText::new("有未保存的更改").size(12.0).color(super::theme::MUTED));
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("保存并应用").color(egui::Color32::WHITE),
+                                    )
+                                    .fill(super::theme::ACCENT),
+                                )
+                                .clicked()
+                            {
+                                actions.apply = true;
+                            }
+                            if ui.button("取消").clicked() {
+                                actions.back = true;
+                            }
+                        });
+                    });
+                });
+        }
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::none()
+                    .fill(super::theme::CANVAS)
+                    .inner_margin(if ctx.screen_rect().height() < 520.0 { 14.0 } else { 24.0 }),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt(("home-settings-content", view as u8))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width().min(860.0));
+                        ui.heading(match view {
+                            super::workspace_ui::SettingsView::Software => "软件设置",
+                            super::workspace_ui::SettingsView::About => "关于 Eclipse",
+                        });
+                        ui.add_space(12.0);
+                        if !self.settings_notice.is_empty() {
+                            let error = self.settings_storage_error
+                                || self.settings_notice.contains("失败")
+                                || self.settings_notice.contains("无法");
+                            ui.label(
+                                egui::RichText::new(&self.settings_notice)
+                                    .color(if error { super::theme::DANGER } else { super::theme::SUCCESS }),
+                            );
+                            ui.add_space(10.0);
+                        }
+                        match view {
+                            super::workspace_ui::SettingsView::Software => {
+                                super::settings_page::software(
+                                    ui,
+                                    &mut self.settings_draft,
+                                    &mut actions,
+                                );
+                            }
+                            super::workspace_ui::SettingsView::About => {
+                                self.about_content(ui);
+                            }
+                        }
+                    });
+            });
+        if actions.back {
+            self.leave_settings();
+        }
+        if actions.reset {
+            let defaults = Settings::default();
+            self.settings_draft.wallpaper_enabled = defaults.wallpaper_enabled;
+            self.settings_draft.wallpaper_api = defaults.wallpaper_api;
+            self.settings_draft.lan_discovery = defaults.lan_discovery;
+            self.settings_draft.app_autostart = defaults.app_autostart;
+        }
+        if actions.refresh_wallpaper && self.settings_draft.wallpaper_enabled {
+            self.background.sync(&self.settings_draft, ctx);
+            self.background.refresh(ctx);
+        }
+        if actions.apply {
+            if let Err(error) = self.settings_draft.validate() {
+                self.settings_storage_error = true;
+                self.set_settings_notice(format!("无法应用：{error:#}"));
+                return;
+            }
+            if self.preferences.app_autostart != self.settings_draft.app_autostart {
+                if let Err(error) = super::app_startup::apply(self.settings_draft.app_autostart) {
+                    self.settings_storage_error = true;
+                    self.set_settings_notice(format!("无法保存软件自启动：{error:#}"));
+                    return;
+                }
+            }
+            let wallpaper_changed = self.preferences.wallpaper_api != self.settings_draft.wallpaper_api
+                || self.preferences.wallpaper_enabled != self.settings_draft.wallpaper_enabled;
+            self.preferences = self.settings_draft.clone();
+            self.persist_preferences();
+            if wallpaper_changed {
+                self.background.sync(&self.preferences, ctx);
+            }
+        }
+    }
+
+    pub(super) fn open_stream_settings(&mut self) {
         self.snapshot_preferences();
         self.settings_draft=self.preferences.clone();
-        self.settings_open = true;
+        self.stream_settings_open = true;
         self.about_open=false;
         self.native_ui.open=false;
         self.native_host.open=false;
@@ -207,20 +393,22 @@ impl super::App {
     pub(super) fn persist_preferences(&mut self) {
         self.snapshot_preferences();
         if self.stream_target.is_some() {
-            self.settings_notice = "已应用到当前串流".into();
+            self.set_settings_notice("已应用到当前串流");
             return;
         }
         let result = Settings::path()
             .ok_or_else(|| anyhow::anyhow!("无法确定设置目录"))
             .and_then(|p| self.preferences.save(&p));
         self.settings_storage_error = result.is_err();
-        self.settings_notice = match result {
-            Ok(()) => "已保存应用设置".into(),
+        let notice = match result {
+            Ok(()) => "已保存应用设置".to_owned(),
             Err(error) => format!("设置保存失败：{error}"),
         };
+        self.set_settings_notice(notice);
     }
-    pub(super) fn settings_ui(&mut self, ctx: &egui::Context) {
-        if !self.settings_open {return;}
+    pub(super) fn stream_settings_ui(&mut self, ctx: &egui::Context) {
+        if !self.stream_settings_open {return;}
+        self.expire_settings_notice(ctx);
         let dirty=self.settings_draft!=self.preferences;
         let gamepad_status=self.gamepad_status();
         let child=self.stream_target.is_some();
@@ -232,7 +420,7 @@ impl super::App {
                 presentation_vsync:self.presentation_vsync,
                 gamepad_status:gamepad_status.as_deref(),
             });
-        if actions.back {self.workspace.discard_server_draft();self.settings_open=false;ctx.request_repaint();}
+        if actions.back {self.workspace.discard_server_draft();self.stream_settings_open=false;ctx.request_repaint();}
         if actions.maximize {self.toggle_maximized(ctx);}
         if actions.reset {
             if child {self.settings_draft.client=ClientSettings::default();}
@@ -250,13 +438,13 @@ impl super::App {
         }
         if actions.about {self.open_about();}
         if actions.refresh_wallpaper && self.settings_draft.wallpaper_enabled {self.background.sync(&self.settings_draft,ctx);self.background.refresh(ctx);}
-        if actions.host {self.settings_open=false;self.open_native_host();}
+        if actions.host {self.stream_settings_open=false;self.open_native_host();}
         let apply=actions.apply;
         let recover=actions.recover;
         if apply {
-            if let Err(error)=self.settings_draft.validate() {self.settings_notice=format!("无法应用：{error:#}");return;}
+            if let Err(error)=self.settings_draft.validate() {self.set_settings_notice(format!("无法应用：{error:#}"));return;}
             if !child && self.preferences.app_autostart!=self.settings_draft.app_autostart {
-                if let Err(error)=super::app_startup::apply(self.settings_draft.app_autostart){self.settings_notice=format!("无法保存软件自启动：{error:#}");return;}
+                if let Err(error)=super::app_startup::apply(self.settings_draft.app_autostart){self.set_settings_notice(format!("无法保存软件自启动：{error:#}"));return;}
             }
             let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
             self.preferences=self.settings_draft.clone();
@@ -278,11 +466,12 @@ impl super::App {
                 let result = Settings::path().ok_or_else(|| anyhow::anyhow!("无法确定设置目录"))
                     .and_then(|path|self.preferences.backup_and_save(&path));
                 self.settings_storage_error = result.is_err();
-                self.settings_notice = match result {
+                let notice = match result {
                     Ok(Some(path)) => format!("已保存。原设置已备份为 {}",path.file_name().unwrap_or_default().to_string_lossy()),
                     Ok(None) => "设置文件已恢复正常，当前设置已保存".into(),
                     Err(error) => format!("设置恢复失败：{error}"),
                 };
+                self.set_settings_notice(notice);
             } else { self.persist_preferences(); }
             if capture_changed {self.send_capture_settings();}
         }

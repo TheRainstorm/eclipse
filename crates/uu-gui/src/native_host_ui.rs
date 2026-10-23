@@ -285,7 +285,7 @@ impl NativeHostUi {
 impl App {
     pub(super) fn open_native_host(&mut self) {
         self.native_ui.open = false;
-        self.settings_open=false;
+        self.stream_settings_open=false;
         if self.stream_target.is_none() {
             self.select_workspace_page(super::workspace_ui::Page::Services);
         }else {
