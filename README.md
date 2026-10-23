@@ -9,7 +9,7 @@
 
 uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键鼠和多显示器操作。Linux 客户端原生运行，无需 Wine。当前开发分支默认进入 **设备工作区**：保存多台原生设备及 IP、UU、VPS 地址，首次短码配对后跨入口复用公钥授权。服务管理集中管理连接、采集、编码、权限与会话，应用设置保留软件通用选项。主页显示壁纸与最后画面卡片，右键管理连接方式和多个命名客户端配置；官方被控端入口集中在顶部“UU 兼容”。详见[新版配置与设备页](docs/client-and-server-settings.md)。详见[局域网连接与配对](docs/native-lan.md)。
 
-目前已达到日常远程桌面基本可用的 demo 阶段，仍在快速迭代。原生通路提供图形共享、公钥授权的输入控制、[系统声音与恢复](docs/native-audio.md)及[双方许可文本剪贴板](docs/native-clipboard.md)，IP 直连不需要第三方账号。Linux 共享支持 X11 和 [Wayland 门户 / PipeWire](docs/linux-client.md#wayland-本机共享)。
+目前已达到日常远程桌面基本可用的 demo 阶段，仍在快速迭代。原生通路提供图形共享、公钥授权的输入控制、[系统声音与恢复](docs/native-audio.md)及[双方许可的文本与图片剪贴板](docs/native-clipboard.md)，IP 直连不需要第三方账号。Linux 共享支持 X11 和 [Wayland 门户 / PipeWire](docs/linux-client.md#wayland-本机共享)；Windows 锁屏共享使用可选的[后台服务](docs/windows-background-service.md)。
 
 开发分支增加[硬件 H.264 / HEVC / AV1 与 CBR / VBR](docs/native-encoding.md)、[原生分段延迟统计](docs/native-latency.md)、[运行中切换共享显示器](docs/native-lan.md#串流中切换显示器)和[手柄与陀螺仪](docs/native-gamepad.md)。共享最多接受 4 个会话，按设备授权和单独断开，输入控制权统一交接；硬件格式、帧率和实体外设仍需按目标驱动验证。“共享本机”默认自动选择硬编，旧邀请入口与 CLI 保留软件默认值。**原生协议仍在迭代，不兼容 Sunshine / GameStream。** 两种模式的互通边界、UDP/WebRTC 传输、Moonlight 对比见[协议与传输架构](docs/protocol-compatibility-and-transport.md)。
 
@@ -149,9 +149,10 @@ Windows 上再次打开程序会唤起已有主页，避免并行运行多个主
 
 ## 当前边界
 
-- 原生被控端目前为实验性共享通路，默认 IP 连接，也可使用 [UU / 自建连接服务](docs/native-internet.md)寻址；含 Windows DXGI、Linux X11 / Wayland 门户采集、可选系统声音和输入控制。H.264 默认自动选择硬编，Windows Media Foundation 支持 H.264 CBR / VBR；Windows AMD 使用原生 AMF，Intel 可使用 VPL，NVIDIA 使用驱动 MFT；Linux 保留 VA-API，Intel 自定义参数使用 VPL。可用格式与码控受硬件和驱动限制。Wayland 需系统授权，日常无人值守管理尚未完整实现。
-- Windows UU 串流支持 H.264 和可选 H.265 Main 8-bit 硬解；HEVC 需要系统解码扩展与兼容 GPU，连接前检查失败时使用 H.264。Linux UU 接收可选 HEVC 硬解；原生支持 H.264 / HEVC / AV1，GUI 可请求 5–240 FPS，分辨率与实际吞吐受格式、硬件及驱动限制。HDR 与视频 FEC 未实现。高帧率选项不保证所有远端都能达到对应实际帧率。
+- 原生被控端目前为实验性共享通路，默认 IP 连接，也可使用 [UU / 自建连接服务](docs/native-internet.md)寻址；含 Windows DXGI、Linux X11 / Wayland 门户采集、可选系统声音和输入控制。H.264 默认自动选择硬编，Windows Media Foundation 支持 H.264 CBR / VBR；Windows AMD 使用原生 AMF，Intel 可使用 VPL，NVIDIA 使用驱动 MFT；Linux 保留 VA-API，Intel 自定义参数使用 VPL。可用格式与码控受硬件和驱动限制。Windows 锁屏共享需安装后台服务、保持该用户登录及有效显示输出；Wayland 仍需系统门户授权。
+- Windows UU 串流支持 H.264 和可选 H.265 Main 8-bit 硬解；HEVC 需要系统解码扩展与兼容 GPU，连接前检查失败时使用 H.264。Linux UU 接收可选 HEVC 硬解；原生支持 H.264 / HEVC / AV1，GUI 可请求 5–240 FPS，分辨率与实际吞吐受格式、硬件及驱动限制。HDR 未实现；新版原生两端支持有预算上限的 [XOR 视频 FEC](docs/native-fec.md)，每组可恢复一包，不兼容官方 UU 的 FEC。高帧率选项不保证所有远端都能达到对应实际帧率。
 - 文件传输、终端和端口映射尚未实现。新版“远程协助”可按官方设备 ID 与验证码发起兼容连接；原生主机发布官方协助码尚未实现。
+- 本项目原生主机暂不能供官方手机客户端连接；当前认证与协商需要独立兼容入口，详见[官方手机客户端兼容可行性分析](docs/official-mobile-client-feasibility.md)。
 - 硬解仍存在 CPU 回读，尚未做到完整零拷贝；网络波动、恢复与音频长稳体验仍需持续打磨。
 - 服务兼容性依赖官方接口与被控端版本，可能随更新失效；未获官方认可或授权，账号与服务使用存在协议风险。
 

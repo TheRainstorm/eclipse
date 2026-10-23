@@ -372,9 +372,9 @@ impl App {
                     });
                     if let Some(clipboard) = &sharing.clipboard {
                         ui.label(if clipboard.active.load(Ordering::Acquire) {
-                            "文本剪贴板：同步中"
+                            "剪贴板：同步中"
                         } else {
-                            "文本剪贴板：已允许，等待控制端开启"
+                            "剪贴板：已允许，等待控制端开启"
                         });
                     }
                     ui.label("将邀请文件私下发给要连接的设备：");

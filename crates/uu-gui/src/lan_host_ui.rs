@@ -176,8 +176,8 @@ impl HostUi {
                                 super::clipboard::start_host(state.clone(), self.owner_window)
                             {
                                 state.available.store(false, Ordering::Release);
-                                state.status("无法启动本机文本剪贴板");
-                                self.notice = format!("无法启用文本剪贴板：{error}");
+                                state.status("无法启动本机剪贴板");
+                                self.notice = format!("无法启用剪贴板：{error}");
                             }
                             self.clipboard_state = Some((id, state));
                         }
@@ -444,9 +444,9 @@ impl HostUi {
                         }
                         if let Some((_, state)) = &self.clipboard_state {
                             let status = if state.ready() {
-                                "文本剪贴板已由双方启用".to_owned()
+                                "剪贴板已由双方启用".to_owned()
                             } else if state.available.load(Ordering::Acquire) {
-                                "文本剪贴板等待控制端启用".to_owned()
+                                "剪贴板等待控制端启用".to_owned()
                             } else {
                                 state.status.lock().unwrap().clone()
                             };
@@ -522,7 +522,7 @@ impl HostUi {
                         ui.weak("服务端口使用 TCP，发现端口使用 UDP；端口自动保存。更改发现端口时，请将控制端设为相同端口，也可用 IP:服务端口 手动连接。");
                         ui.checkbox(&mut self.input, "允许已配对设备控制键盘、鼠标和手柄");
                         ui.checkbox(&mut self.audio, "共享系统声音");
-                        ui.checkbox(&mut self.clipboard, "允许双方启用文本剪贴板");
+                        ui.checkbox(&mut self.clipboard, "允许双方启用文本和图片剪贴板");
                         ui.weak("只有在你确认配对后，设备才能访问本机。关闭软件会停止共享。");
                         ui.add_space(10.);
                         ui.horizontal(|ui| {
