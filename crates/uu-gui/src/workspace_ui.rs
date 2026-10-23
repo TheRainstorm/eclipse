@@ -25,6 +25,7 @@ pub(super) enum Action {
     Open(String),
     Login,
     RenameUu,
+    ManageUu,
     CancelLogin,
     StartSharing,
     Assist(uu_core::assistance::Request),
@@ -207,6 +208,7 @@ mod tests {
         assert!(matches!(&h.click("登录 UU 账号")[..], [Action::Login]));
         h.logged_in = true;
         assert!(matches!(&h.click("保存名称")[..], [Action::RenameUu]));
+        assert!(matches!(&h.click("管理 UU 设备")[..], [Action::ManageUu]));
         assert_eq!(h.workspace.draft.name, "Studio PC");
     }
 
@@ -1266,6 +1268,7 @@ impl Workspace {
             ui.weak("与“共享本机”共用名称，默认使用电脑名；修改名称不改变 UU 编号和设备授权。");
             if info.logged_in {
                 ui.label(RichText::new("已登录").color(theme::SUCCESS));
+                if ui.button("管理 UU 设备").clicked() { actions.push(Action::ManageUu); }
                 if let Some(id) = &info.uu_id {
                     ui.horizontal(|ui| {
                         ui.label(format!("本机 UU 编号：{id}"));
@@ -1724,6 +1727,11 @@ impl super::App {
                 Action::Open(id) => self.open_device_profile(&id),
                 Action::Login => self.start_login(),
                 Action::RenameUu => self.rename_uu_device(),
+                Action::ManageUu => {
+                    if let (Some(config), Some(token)) = (self.config.clone(), self.account_token.clone()) {
+                        self.uu_devices.open(config, token);
+                    }
+                }
                 Action::CancelLogin => {
                     self.login_rx = None;
                     self.login_texture = None;

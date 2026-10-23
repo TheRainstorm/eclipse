@@ -90,6 +90,32 @@ mod state_tests {
     use std::{fs, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread};
 
     #[test]
+    fn account_management_lists_only_owned_devices_and_marks_current_identity() {
+        let body = serde_json::json!({"code":0,"data":{
+            "current_device":{"device_id":"current-device","alias":"Local PC"},
+            "my_binded_devices":[{"device_id":"current-device","alias":"Local PC"},
+                {"device_id":"official-device","alias":"Local PC"}],
+            "others_shared_devices":[{"device_id":"shared-device","alias":"Shared PC"}]
+        }});
+        let devices = parse_account_devices(body, "current-device").unwrap();
+        assert_eq!(devices.len(), 2);
+        assert!(devices[0].current);
+        assert!(!devices[1].current);
+        assert_eq!(devices[1].device_id, "official-device");
+    }
+
+    #[test]
+    fn account_management_rejects_errors_and_invalid_targets_instead_of_an_empty_list() {
+        for body in [serde_json::json!({"code":1120,"data":{"my_binded_devices":[]}}),
+            serde_json::json!({"code":0}),
+            serde_json::json!({"code":0,"data":{"my_binded_devices":"invalid"}}),
+            serde_json::json!({"code":0,"data":{"my_binded_devices":[{"device_id":"../other","alias":"Wrong"}]}})] {
+            assert!(parse_account_devices(body, "current-device").is_err());
+        }
+        assert!(parse_account_devices(serde_json::json!({"code":0,"data":{"my_binded_devices":[]}}), "current-device").unwrap().is_empty());
+    }
+
+    #[test]
     fn old_account_keeps_identity_when_loading_without_a_device_name() {
         let mut value = serde_json::to_value(ClientState::new()).unwrap();
         value.as_object_mut().unwrap().remove("device_name");
@@ -232,6 +258,41 @@ pub struct RegisteredDevice {
     pub alias: String,
 }
 
+/// A registration bound to the signed-in account, excluding shared-with-me rows.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AccountDevice {
+    pub device_id: String,
+    pub alias: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(skip)]
+    pub current: bool,
+}
+
+fn parse_account_devices(body: serde_json::Value, current: &str) -> Result<Vec<AccountDevice>, CoreError> {
+    if body["code"].as_i64() != Some(0) {
+        return Err(CoreError::Service {
+            code: body["code"].as_i64().unwrap_or(-1) as i32,
+            message: body["msg"].as_str().unwrap_or("获取账号设备失败").into(),
+        });
+    }
+    let data = body["data"].as_object().ok_or_else(|| CoreError::Config("账号设备列表格式无效".into()))?;
+    let mut values = data.get("my_binded_devices").and_then(serde_json::Value::as_array)
+        .ok_or_else(|| CoreError::Config("账号设备列表格式无效".into()))?.clone();
+    if let Some(device) = data.get("current_device").filter(|d| !d.is_null()) {
+        values.insert(0, device.clone());
+    }
+    let mut devices = Vec::<AccountDevice>::new();
+    for value in values {
+        let mut device: AccountDevice = serde_json::from_value(value)
+            .map_err(|_| CoreError::Config("账号设备记录格式无效".into()))?;
+        device_path(&device.device_id)?;
+        device.current = device.device_id == current;
+        if !devices.iter().any(|d| d.device_id == device.device_id) { devices.push(device); }
+    }
+    Ok(devices)
+}
+
 pub struct UuApi {
     client: SignalClient,
     pub state: ClientState,
@@ -253,14 +314,18 @@ pub fn validate_device_name(name: &str) -> Result<&str, CoreError> {
     Ok(name)
 }
 
-fn device_name_update(device: &str, name: &str) -> Result<(String, serde_json::Value), CoreError> {
-    let name = validate_device_name(name)?;
+fn device_path(device: &str) -> Result<String, CoreError> {
     if device.is_empty() || device.len() > 128
         || !device.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
-        return Err(CoreError::Config("本机 UU 编号无效".into()));
+        return Err(CoreError::Config("UU 设备编号无效".into()));
     }
+    Ok(format!("/api/v1/device/{device}"))
+}
+
+fn device_name_update(device: &str, name: &str) -> Result<(String, serde_json::Value), CoreError> {
+    let name = validate_device_name(name)?;
     // The PC client's rename operation uses alias, rather than init's name.
-    Ok((format!("/api/v1/device/{device}"), serde_json::json!({"alias": name})))
+    Ok((device_path(device)?, serde_json::json!({"alias": name})))
 }
 
 fn new_system_id() -> String {
@@ -365,6 +430,27 @@ impl UuApi {
                 code: resp.body["code"].as_i64().unwrap_or(resp.status as i64) as i32,
                 message: resp.body["msg"].as_str().unwrap_or("设备改名失败").into(),
             });
+        }
+        Ok(())
+    }
+
+    pub async fn account_devices(&self) -> Result<Vec<AccountDevice>, CoreError> {
+        parse_account_devices(self.device_list().await?, self.state.device_id.as_deref().unwrap_or_default())
+    }
+
+    /// Remove an account binding, retaining local registration and native trust.
+    /// This is the PC client's POST unbind operation, not a registration reset.
+    pub async fn unbind_account_device(&self, device: &str) -> Result<(), CoreError> {
+        let token = self.state.token.as_deref().filter(|s| !s.is_empty()).ok_or(CoreError::Unauthenticated)?;
+        let mut identity = self.state.identity.clone();
+        identity.device_id = self.state.device_id.clone().ok_or(CoreError::Unauthenticated)?;
+        let path = format!("{}/unbind", device_path(device)?);
+        let resp = self.client.call(&identity, Some(token), SignedRequest {
+            method: "POST", path_with_query: &path, body: None,
+        }).await?;
+        if !(200..300).contains(&resp.status) || resp.body["code"].as_i64() != Some(0) {
+            return Err(CoreError::Service {code:resp.body["code"].as_i64().unwrap_or(resp.status as i64) as i32,
+                message:resp.body["msg"].as_str().unwrap_or("设备解绑失败").into()});
         }
         Ok(())
     }

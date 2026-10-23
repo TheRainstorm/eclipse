@@ -76,7 +76,7 @@ impl super::App {
         );
     }
 
-    fn sign_out(&mut self) {
+    pub(super) fn sign_out(&mut self) {
         // Cancel and join a QR worker before changing its shared state file.
         self.login_rx = None;
         let result = self
@@ -91,6 +91,7 @@ impl super::App {
     }
 
     pub(super) fn apply_account(&mut self, token: Option<String>) {
+        self.uu_devices = Default::default();
         if self.account_token.is_some() && self.account_token!=token && self.workspace.book.sharing.uu_enabled && self.workspace.host.running() {
             self.workspace.host.stop();self.workspace.notice="UU 账号已变化，已停止本机共享；确认账号后可重新开启。".into();
         }

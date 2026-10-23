@@ -34,6 +34,7 @@ mod ui;
 mod brand;
 mod build_info;
 mod account;
+mod uu_devices;
 mod audio_controls;
 mod native_ui;
 mod gamepad;
@@ -186,6 +187,7 @@ struct App {
     account_poll_at: std::time::Instant,
     login_texture: Option<egui::TextureHandle>,
     login_status: String,
+    uu_devices: uu_devices::Manager,
     hud: bool,
     preferences: settings::Settings,
     settings_open: bool,
@@ -425,6 +427,7 @@ impl App {
             account_poll_at: std::time::Instant::now(),
             login_texture: None,
             login_status: String::new(),
+            uu_devices: Default::default(),
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(preferences.hud),
             preferences: preferences.clone(),
             settings_open: false,
@@ -1251,6 +1254,14 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.poll_login(ctx);
+        if let Some(current) = self.uu_devices.show(ctx, self.config.as_ref(), self.account_token.as_deref()) {
+            if current { self.sign_out(); }
+            else {
+                self.rx = None;
+                self.devices.clear();
+                if self.lan.compatibility { self.start_load(); }
+            }
+        }
         let (events, focused) = ctx.input(|i| (i.events.clone(), i.focused));
         if self.focused != focused {
             if let Some(h) = &self.controller {
