@@ -171,6 +171,13 @@ pub const PROBE_UNITS: [&[u8]; 4] = [
 pub const PROBE: &[u8] = PROBE_UNITS[0];
 pub fn probe_decoder() -> Result<(), crate::CodecError> {
     let mut decoder = crate::decoder_for_codec(uu_proto::media::VideoCodec::Av1)?;
+    validate_decoder(decoder.as_mut())
+}
+
+/// Check actual I/P output before selecting or advertising an AV1 backend.
+/// Accept an existing decoder so candidate selection never recurses through
+/// `decoder_for_codec` and never treats an open device as proven AV1 support.
+pub(crate) fn validate_decoder(decoder: &mut dyn crate::VideoDecoder) -> Result<(), crate::CodecError> {
     let mut produced = 0;
     for (i, data) in PROBE_UNITS.iter().cycle().take(8).enumerate() {
         if let Some(frame) = decoder.decode(&crate::EncodedFrame {

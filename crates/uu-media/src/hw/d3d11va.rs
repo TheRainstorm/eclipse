@@ -1,4 +1,4 @@
-//! Windows Media Foundation H.264/HEVC decoding on a D3D11 device manager.
+//! Windows Media Foundation H.264/HEVC/AV1 decoding on a D3D11 device manager.
 //!
 //! This is the "D3D11VA" path of the system video stack: a D3D11 device is
 //! handed to the H.264 decoder MFT through `IMFDXGIDeviceManager`, so entropy
@@ -52,7 +52,8 @@ fn describe<E: std::fmt::Display>(e: E) -> String {
 fn subtype(codec: VideoCodec) -> windows::core::GUID {
     match codec {
         VideoCodec::Hevc => MFVideoFormat_HEVC,
-        _ => MFVideoFormat_H264,
+        VideoCodec::Av1 => MFVideoFormat_AV1,
+        VideoCodec::H264 => MFVideoFormat_H264,
     }
 }
 
@@ -68,9 +69,6 @@ impl D3d11VaDecoder {
     }
 
     pub fn with_codec(codec: VideoCodec) -> Result<Self, CodecError> {
-        if !matches!(codec, VideoCodec::H264 | VideoCodec::Hevc) {
-            return Err(CodecError::Unsupported(codec));
-        }
         Ok(Self {
             worker: super::Worker::spawn(move || Decoder::open(codec))?,
             codec,
@@ -235,9 +233,11 @@ impl super::Backend for Decoder {
         // Parameter sets travel inside the IDR access units, so the first
         // keyframe after joining tells us the geometry. A different geometry
         // means the host switched resolution and the transform must be rebuilt.
-        let geometry = if self.codec == VideoCodec::Hevc {
-            crate::hevc::sequence(&frame.data).map(|s| (s.width, s.height))
-        } else { h264_dimensions(&frame.data) };
+        let geometry = match self.codec {
+            VideoCodec::Hevc => crate::hevc::sequence(&frame.data).map(|s| (s.width, s.height)),
+            VideoCodec::Av1 => crate::av1::sequence(&frame.data).map(|s| (s.width, s.height)),
+            VideoCodec::H264 => h264_dimensions(&frame.data),
+        };
         if let Some((width, height)) = geometry {
             self.prepare_geometry(width, height)?;
         }
@@ -389,7 +389,7 @@ impl Transform {
                 .map_err(|e| format!("GetOutputStreamInfo: {e}"))?;
             Ok(Self {
                 transform,
-                require_gpu: codec == VideoCodec::Hevc,
+                require_gpu: codec != VideoCodec::H264,
                 foundation,
                 activation: activation.clone(),
                 device: device.clone(),
@@ -1025,6 +1025,14 @@ impl Drop for Activations {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_codec_selects_its_own_media_foundation_subtype() {
+        assert_eq!(subtype(VideoCodec::H264), MFVideoFormat_H264);
+        assert_eq!(subtype(VideoCodec::Hevc), MFVideoFormat_HEVC);
+        assert_eq!(subtype(VideoCodec::Av1), MFVideoFormat_AV1);
+        assert_ne!(subtype(VideoCodec::Av1), subtype(VideoCodec::H264));
+    }
 
     #[test]
     fn frame_size_and_ratio_are_packed_high_then_low() {

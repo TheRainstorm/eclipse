@@ -125,6 +125,30 @@ pub fn decoder_for_codec(codec: uu_proto::media::VideoCodec) -> Result<Box<dyn V
     if codec == VideoCodec::Hevc && DecoderKind::from_env() != DecoderKind::Software {
         return Ok(Box::new(hw::d3d11va::D3d11VaDecoder::with_codec(codec)?));
     }
+    #[cfg(all(windows, feature = "d3d11va"))]
+    if codec == VideoCodec::Av1 && DecoderKind::from_env() != DecoderKind::Software {
+        // A D3D11 device can open even when the AV1 MFT/runtime is absent.
+        // Validate real output before committing to this backend, preserving
+        // the existing Intel runtime as a same-codec fallback.
+        let candidate = hw::d3d11va::D3d11VaDecoder::with_codec(codec)
+            .and_then(|mut decoder| {
+                av1::validate_decoder(&mut decoder)?;
+                // Probe references, timestamps and queued output belong only
+                // to the probe. Start the real session with a fresh decoder.
+                drop(decoder);
+                hw::d3d11va::D3d11VaDecoder::with_codec(codec)
+            });
+        match candidate {
+            Ok(decoder) => return Ok(Box::new(decoder)),
+            Err(reason) => {
+                #[cfg(feature = "intel-vpl")]
+                return Ok(Box::new(hw::vpl::VplAv1Decoder::new().map_err(|error|
+                    CodecError::Backend(format!("AV1 D3D11: {reason}; Intel VPL: {error}")))?));
+                #[cfg(not(feature = "intel-vpl"))]
+                return Err(reason);
+            }
+        }
+    }
     #[cfg(all(target_os="linux",feature="vaapi"))]
     if matches!(codec,VideoCodec::Hevc|VideoCodec::Av1) && DecoderKind::from_env() != DecoderKind::Software {
         match hw::vaapi::VaapiDecoder::with_codec(codec) {
