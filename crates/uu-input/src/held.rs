@@ -21,6 +21,10 @@ impl HeldInput {
                 button,
                 pressed: true,
             } => !self.buttons.contains(&button),
+            // HID modifiers represent held state, never text typematic. Older
+            // clients may send timeout refreshes; reinjecting these can start a
+            // fresh Windows shell chord after Win+V or Alt combinations.
+            InputEvent::Key {key,pressed:true} if (0xe0..=0xe7).contains(&key.0) => !self.keys.contains(&key),
             _ => true,
         }
     }
@@ -76,6 +80,20 @@ pub(crate) fn release_owned(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn held_modifiers_ignore_refreshes_and_keep_the_owned_release() {
+        let mut held=HeldInput::default();
+        for usage in 0xe0..=0xe7 {
+            let down=InputEvent::Key{key:KeyCode(usage),pressed:true};
+            let up=InputEvent::Key{key:KeyCode(usage),pressed:false};
+            assert!(held.should_emit(down));held.applied(down);
+            for _ in 0..100 {assert!(!held.should_emit(down));}
+            assert!(held.should_emit(up));held.applied(up);
+            assert!(!held.should_emit(up));assert!(held.should_emit(down));
+        }
+        let ordinary=InputEvent::Key{key:KeyCode(4),pressed:true};
+        held.applied(ordinary);assert!(held.should_emit(ordinary));
+    }
     #[test]
     fn session_release_does_not_release_other_keys_or_duplicate_repeat_ownership() {
         let mut held = HeldInput::default();
