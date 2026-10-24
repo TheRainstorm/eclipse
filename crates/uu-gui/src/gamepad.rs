@@ -362,6 +362,27 @@ impl super::App {
 mod tests {
     use super::*;
     #[test]
+    #[ignore="reads attached physical controllers for 25 seconds; run only with the device owner's authorization"]
+    fn authorized_physical_controller_sampling(){
+        std::thread::spawn(||{
+            use std::io::Write;
+            let mut sampler=Sampler::new().unwrap();let start=Instant::now();let mut last=None;let mut observed=false;let mut changes=0;
+            while start.elapsed()<Duration::from_secs(25){
+                let (mut state,notice)=sampler.sample();
+                for pad in state.iter_mut().flatten(){pad.timestamp_us=0;}
+                if Some(state)!=last {
+                    observed|=state.iter().any(Option::is_some);changes+=1;
+                    let names:Vec<_>=sampler.pads.iter().flatten().map(|pad|pad.name()).collect();
+                    println!("{}",serde_json::json!({"event":"physical_gamepad_sample","elapsed_ms":start.elapsed().as_millis(),"names":names,"notice":notice,"state":state}));
+                    std::io::stdout().flush().unwrap();last=Some(state);
+                }
+                std::thread::sleep(Duration::from_millis(8));
+            }
+            println!("{}",serde_json::json!({"event":"physical_gamepad_complete","observed":observed,"changes":changes}));
+            assert!(observed,"no physical controller was accessible in this session");
+        }).join().unwrap();
+    }
+    #[test]
     fn controller_identity_selects_xbox_or_motion_capable_playstation(){
         use sdl2::sys::SDL_GameControllerType::*;
         assert_eq!(output_kind(SDL_CONTROLLER_TYPE_XBOXONE,true),Kind::Xbox360);
