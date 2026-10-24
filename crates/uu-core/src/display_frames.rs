@@ -32,14 +32,14 @@ struct Mailbox {
     counts: BTreeMap<u32, [u64; 3]>,
 }
 impl Mailbox {
-    fn pop_first(&mut self) -> Option<DisplayImage> {
+    fn pop_first(&mut self) -> Option<(DisplayImage, std::time::Instant)> {
         let (track, (frame, published)) = self.images.pop_first()?;
         let now = std::time::Instant::now();
         let waits = self.waits.entry(track).or_default();
         waits.push_back((now, now.duration_since(published).as_secs_f32() * 1000.0));
         while waits.len() > 120 { waits.pop_front(); }
         self.counts.entry(track).or_default()[2] += 1;
-        Some(frame)
+        Some((frame, published))
     }
 }
 type Pending = Arc<Mutex<Mailbox>>;
@@ -149,6 +149,11 @@ impl FrameReceiver {
         self.try_recv_image().map(DisplayImage::into_rgba)
     }
     pub fn try_recv_image(&mut self) -> Result<DisplayImage, mpsc::TryRecvError> {
+        self.try_recv_timed_image().map(|(image, _)| image)
+    }
+    /// Publication time of this exact mailbox image, on the local monotonic
+    /// clock. It is neither the host capture time nor GPU/display completion.
+    pub fn try_recv_timed_image(&mut self) -> Result<(DisplayImage, std::time::Instant), mpsc::TryRecvError> {
         loop {
             if let Some(frame) = self.pending.lock().unwrap().pop_first() {
                 return Ok(frame);
@@ -158,7 +163,7 @@ impl FrameReceiver {
     }
     pub fn blocking_recv(&mut self) -> Option<DisplayFrame> {
         loop {
-            if let Some(frame) = self.pending.lock().unwrap().pop_first() {
+            if let Some((frame, _)) = self.pending.lock().unwrap().pop_first() {
                 return Some(frame.into_rgba());
             }
             self.wake.recv().ok()?;
@@ -189,8 +194,10 @@ mod tests {
         let replaced_at = std::time::Instant::now();
         tx.send((0, 2, 1, vec![])).unwrap();
         assert!(tx.pending.lock().unwrap().images.get(&0).unwrap().1 >= replaced_at);
-        // Replacement must reset the timestamp; old image was never delivered.
-        rx.try_recv().unwrap();
+        // Timing must accompany the delivered replacement, not an earlier wake.
+        let (image, published) = rx.try_recv_timed_image().unwrap();
+        assert!(published >= replaced_at);
+        assert!(matches!(image, DisplayImage::Rgba((0, 2, 1, _))));
         let mut pending = rx.pending.lock().unwrap();
         let sample = pending.waits.get_mut(&0).unwrap().back_mut().unwrap();
         sample.1 = 12.5;
