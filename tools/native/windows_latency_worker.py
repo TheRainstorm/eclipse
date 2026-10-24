@@ -76,7 +76,11 @@ def resources(process):
 
 
 def stimulus(config):
-    """Own nonactivating GDI window: DWM -> real desktop duplication, not synthetic capture."""
+    """One nonactivating GDI surface; count completed EndPaint calls, not ticks.
+
+    Waitable timer API: https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw
+    The legacy WM_TIMER mode is a bounded diagnostic control, never the default.
+    """
     user = C.WinDLL('user32', use_last_error=True); gdi = C.WinDLL('gdi32', use_last_error=True)
     kernel = C.WinDLL('kernel32', use_last_error=True)
     callback_type = C.WINFUNCTYPE(C.c_ssize_t, W.HWND, W.UINT, W.WPARAM, W.LPARAM)
@@ -96,54 +100,100 @@ def stimulus(config):
     user.FillRect.argtypes = [W.HDC, C.POINTER(W.RECT), W.HBRUSH]
     user.InvalidateRect.argtypes = [W.HWND, C.c_void_p, W.BOOL]
     user.SetTimer.argtypes = [W.HWND, C.c_size_t, W.UINT, C.c_void_p]; user.SetTimer.restype = C.c_size_t
-    user.DestroyWindow.argtypes = [W.HWND]
+    user.DestroyWindow.argtypes = [W.HWND]; user.UpdateWindow.argtypes = [W.HWND]
     user.ShowWindow.argtypes = [W.HWND, C.c_int]
     user.SetWindowPos.argtypes = [W.HWND, W.HWND, C.c_int, C.c_int, C.c_int, C.c_int, W.UINT]
     gdi.CreateSolidBrush.argtypes = [W.DWORD]; gdi.CreateSolidBrush.restype = W.HBRUSH
     gdi.DeleteObject.argtypes = [W.HANDLE]
     user.GetMessageW.argtypes = [C.POINTER(W.MSG), W.HWND, W.UINT, W.UINT]
+    user.PeekMessageW.argtypes = [C.POINTER(W.MSG), W.HWND, W.UINT, W.UINT, W.UINT]
     user.DispatchMessageW.argtypes = [C.POINTER(W.MSG)]; user.DispatchMessageW.restype = C.c_ssize_t
-    count = 0; started = time.monotonic(); last_write = started
+    user.MsgWaitForMultipleObjectsEx.argtypes = [W.DWORD, C.POINTER(W.HANDLE), W.DWORD, W.DWORD, W.DWORD]
+    user.MsgWaitForMultipleObjectsEx.restype = W.DWORD
+    kernel.CreateWaitableTimerExW.argtypes = [C.c_void_p, W.LPCWSTR, W.DWORD, W.DWORD]
+    kernel.CreateWaitableTimerExW.restype = W.HANDLE
+    kernel.SetWaitableTimer.argtypes = [W.HANDLE, C.POINTER(C.c_int64), W.LONG, C.c_void_p, C.c_void_p, W.BOOL]
+    kernel.CancelWaitableTimer.argtypes = [W.HANDLE]; kernel.CloseHandle.argtypes = [W.HANDLE]
+    clock = config.get('stimulus_clock', 'high_res_waitable')
+    if clock not in ('high_res_waitable', 'legacy_wm_timer'):
+        raise ValueError('unknown bounded stimulus clock')
+    count = 0; started = time.perf_counter(); last_write = started
+    completions = []; errors = []; hwnd = None
+    duration = config.get('stimulus_seconds', config['deadline_seconds'])
+    def report():
+        steady = [at for at in completions if at >= 1_000_000]
+        gaps = sorted((b-a)/1000 for a,b in zip(steady,steady[1:]))
+        def rank(p,d=100):return gaps[max(0,(len(gaps)*p+d-1)//d-1)] if gaps else None
+        return {'version':2,'pid':os.getpid(),'hwnd':int(hwnd or 0),'clock':clock,'updates':count,
+                'elapsed_seconds':time.perf_counter()-started,'completion_offsets_us':completions,
+                'steady_completed_hz':(len(steady)-1)*1e6/(steady[-1]-steady[0]) if len(steady)>1 else None,
+                'paint_completion_gap_ms':{'samples':len(gaps),'p50':rank(50),'p95':rank(95),'p99':rank(99),
+                                          'p999':rank(999,1000),'max':max(gaps) if gaps else None},
+                'scope':'GDI EndPaint API completion, not DWM composition or scanout','error':errors[0] if errors else None}
     def procedure(hwnd, message, wp, lp):
         nonlocal count, last_write
-        if message == 0x113:  # WM_TIMER, one long-lived surface, no topology changes
-            if time.monotonic() - started > config['deadline_seconds']:
-                user.DestroyWindow(hwnd)
-            else:
-                user.InvalidateRect(hwnd, None, False)
+        if message == 0x113:
+            if time.perf_counter()-started >= duration:user.DestroyWindow(hwnd)
+            else:user.InvalidateRect(hwnd,None,False)
             return 0
         if message == 0xF:
-            paint = Paint(); dc = user.BeginPaint(hwnd, C.byref(paint)); count += 1
+            paint=Paint();dc=user.BeginPaint(hwnd,C.byref(paint))
             for index in range(6):
-                color = ((count * 3 + index * 37) % 220 + 20) | (((index*41+count) % 220+20) << 8) | (((count*2+index*31) % 220+20) << 16)
-                brush = gdi.CreateSolidBrush(color)
-                rectangle = W.RECT(index * 160, 0, (index+1)*160, 540)
-                user.FillRect(dc, C.byref(rectangle), brush); gdi.DeleteObject(brush)
-            user.EndPaint(hwnd, C.byref(paint))
-            if time.monotonic() - last_write >= 1:
-                atomic(Path(config['stimulus_report']), {'updates': count, 'elapsed_seconds': time.monotonic()-started})
-                last_write = time.monotonic()
+                color=((count*3+index*37)%220+20)|(((index*41+count)%220+20)<<8)|(((count*2+index*31)%220+20)<<16)
+                brush=gdi.CreateSolidBrush(color);rectangle=W.RECT(index*160,0,(index+1)*160,540)
+                user.FillRect(dc,C.byref(rectangle),brush);gdi.DeleteObject(brush)
+            user.EndPaint(hwnd,C.byref(paint));count+=1
+            if len(completions)>=900_000:raise RuntimeError('stimulus samples overflow')
+            completions.append(round((time.perf_counter()-started)*1e6))
+            if time.perf_counter()-last_write>=1:
+                atomic(Path(config['stimulus_report']),report());last_write=time.perf_counter()
             return 0
         if message == 2:
-            atomic(Path(config['stimulus_report']), {'updates': count, 'elapsed_seconds': time.monotonic()-started})
-            user.PostQuitMessage(0); return 0
-        return user.DefWindowProcW(hwnd, message, wp, lp)
-    callback = callback_type(procedure)
-    instance = kernel.GetModuleHandleW(None); name = 'EclipseLatencyStimulus-' + str(os.getpid())
-    cls = Class(0, callback, 0, 0, instance, None, None, None, None, name)
-    if not user.RegisterClassW(C.byref(cls)):
-        raise C.WinError(C.get_last_error())
-    hwnd = user.CreateWindowExW(0x08000000 | 0x00000080, name, 'Eclipse owned desktop latency stimulus',
-                               0x80000000, 32, 32, 960, 540, None, None, instance, None)
-    if not hwnd:
-        raise C.WinError(C.get_last_error())
-    user.SetWindowPos(hwnd, W.HWND(-1), 32, 32, 960, 540, 0x10)  # TOPMOST, NOACTIVATE
-    user.ShowWindow(hwnd, 4)  # SHOWNOACTIVATE
-    user.SetTimer(hwnd, 1, max(1, round(1000 / config['fps'])), None)
-    atomic(Path(config['stimulus_report']), {'updates': 0, 'elapsed_seconds': 0})
-    message = W.MSG()
-    while user.GetMessageW(C.byref(message), None, 0, 0) > 0:
-        user.TranslateMessage(C.byref(message)); user.DispatchMessageW(C.byref(message))
+            atomic(Path(config['stimulus_report']),report());user.PostQuitMessage(0);return 0
+        return user.DefWindowProcW(hwnd,message,wp,lp)
+    def checked(hwnd,message,wp,lp):
+        try:return procedure(hwnd,message,wp,lp)
+        except BaseException as error:
+            errors.append(str(error));user.PostQuitMessage(1);return 0
+    callback=callback_type(checked);instance=kernel.GetModuleHandleW(None);name='EclipseLatencyStimulus-'+str(os.getpid())
+    cls=Class(0,callback,0,0,instance,None,None,None,None,name)
+    if not user.RegisterClassW(C.byref(cls)):raise C.WinError(C.get_last_error())
+    hwnd=user.CreateWindowExW(0x08000000|0x80,name,'Eclipse owned desktop latency stimulus',0x80000000,
+                              32,32,960,540,None,None,instance,None)
+    if not hwnd:raise C.WinError(C.get_last_error())
+    user.SetWindowPos(hwnd,W.HWND(-1),32,32,960,540,0x10);user.ShowWindow(hwnd,4)
+    atomic(Path(config['stimulus_report']),report())
+    timer=None
+    try:
+        if clock=='legacy_wm_timer':
+            if not user.SetTimer(hwnd,1,max(1,round(1000/config['fps'])),None):raise C.WinError(C.get_last_error())
+            message=W.MSG()
+            while user.GetMessageW(C.byref(message),None,0,0)>0:
+                user.TranslateMessage(C.byref(message));user.DispatchMessageW(C.byref(message))
+        else:
+            # Per-process high-resolution wait, no timeBeginPeriod/global state.
+            timer=kernel.CreateWaitableTimerExW(None,None,2,0x1F0003)
+            if not timer:raise C.WinError(C.get_last_error())
+            handles=(W.HANDLE*1)(timer);period=1/config['fps'];deadline=started+period;running=True
+            while running:
+                due=C.c_int64(-max(1,round((deadline-time.perf_counter())*10_000_000)))
+                if not kernel.SetWaitableTimer(timer,C.byref(due),0,None,None,False):raise C.WinError(C.get_last_error())
+                result=user.MsgWaitForMultipleObjectsEx(1,handles,1000,0x4FF,4)
+                if result==0:
+                    now=time.perf_counter()
+                    if now-started>=duration:user.DestroyWindow(hwnd)
+                    else:user.InvalidateRect(hwnd,None,False);user.UpdateWindow(hwnd)
+                    deadline+=period
+                    if deadline<=now:deadline=now+period  # Never burst stale catch-up frames.
+                elif result==0xFFFFFFFF:raise C.WinError(C.get_last_error())
+                message=W.MSG()
+                while user.PeekMessageW(C.byref(message),None,0,0,1):
+                    if message.message==0x12:running=False;break
+                    user.TranslateMessage(C.byref(message));user.DispatchMessageW(C.byref(message))
+        if errors:raise RuntimeError(errors[0])
+    finally:
+        if timer:kernel.CancelWaitableTimer(timer);kernel.CloseHandle(timer)
+        atomic(Path(config['stimulus_report']),report())
 
 
 def main():
@@ -184,6 +234,21 @@ def main():
         actual_environment[label] = name.value
     actual_environment['python_version'] = sys.version
     actual_environment['python_sha256'] = sha(sys.executable)
+    actual_environment['display'] = {'coordinate_units':'logical_pixels','outputs':actual_environment['display']}
+    if config['role'] != 'stimulus-clock':
+        inventory_command=[str(root/'bin/uu.exe'),'native-sources','--json']
+        raw=subprocess.run(inventory_command,capture_output=True,text=True,encoding='utf8',timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
+        if raw.returncode:raise RuntimeError('physical output inventory failed: '+raw.stderr[-1000:])
+        actual_environment['physical_capture_inventory']=json.loads(raw.stdout)
+        if config['role']=='host':
+            primary=[m for m in actual_environment['physical_capture_inventory']['monitors'] if m['primary']]
+            if len(primary)!=1:raise RuntimeError('no unique primary output for the owned fixture')
+            actual_environment['selected_capture_source']=primary[0]
+            # Pin the exact physical output examined above, not an implicit primary
+            # which could change between inventory and stream preparation.
+            config['command'] += ['--monitor',primary[0]['name']]
+            atomic(root/'selected-source.json',primary[0])
+            atomic(root/'actual-host-command.json',config['command'])
     atomic(root/'environment.json', actual_environment)
     for name, expected in config['sha256'].items():
         if sha(name) != expected:
@@ -194,14 +259,17 @@ def main():
             env.pop(name)
     env.update(APPDATA=str(root/'profile'), LOCALAPPDATA=str(root/'local'), XDG_DATA_HOME=str(root/'data'),
                XDG_STATE_HOME=str(root/'state'), UU_SIGNING_KEY_FILE=str(root/'absent-key'), RUST_LOG='error', ECLIPSE_FRAME_TRACE='1')
-    processes = []; logs = []; samples = []; completed = False; error = None
+    processes = []; logs = []; samples = []; completed = False; error = None; moving = None
     try:
         def launch(argv, logfile):
             log = (root / logfile).open('wb'); logs.append(log)
             process = subprocess.Popen(argv, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                        creationflags=subprocess.CREATE_NO_WINDOW)
             processes.append(process); return process
-        if config['role'] == 'host':
+        moving = None
+        if config['role'] == 'stimulus-clock':
+            process = launch([sys.executable,str(Path(__file__).resolve()),'--config',str(config_path),'--stimulus'],'stimulus.log')
+        elif config['role'] == 'host':
             moving = launch([sys.executable, str(Path(__file__).resolve()), '--config', str(config_path), '--stimulus'], 'stimulus.log')
             deadline = time.monotonic()+10
             while not Path(config['stimulus_report']).exists():
@@ -215,6 +283,8 @@ def main():
             raise ValueError('unknown worker role')
         started = time.monotonic()
         while process.poll() is None:
+            if moving is not None and moving.poll() is not None:
+                raise RuntimeError('owned desktop stimulus stopped before the host')
             sample = resources(process)
             if sample: samples.append(sample)
             if time.monotonic()-started > config['deadline_seconds']:
@@ -222,10 +292,24 @@ def main():
             time.sleep(.25)
         if process.returncode:
             raise RuntimeError('native process exit ' + str(process.returncode))
+        if config['role'] != 'stimulus-clock':
+            end=subprocess.run(inventory_command,capture_output=True,text=True,encoding='utf8',timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
+            if end.returncode or json.loads(end.stdout)!=actual_environment['physical_capture_inventory']:
+                raise RuntimeError('physical output/color inventory changed during trial')
+            actual_environment['end_inventory_matched']=True
+            atomic(root/'environment.json',actual_environment)
         completed = True
     except BaseException as failure:
         error = f'{type(failure).__name__}: {failure}'
     finally:
+        if moving is not None and moving.poll() is None:
+            try:
+                data=json.loads(Path(config['stimulus_report']).read_text())
+                user=C.WinDLL('user32');user.GetWindowThreadProcessId.argtypes=[W.HWND,C.POINTER(W.DWORD)]
+                user.PostMessageW.argtypes=[W.HWND,W.UINT,W.WPARAM,W.LPARAM]
+                pid=W.DWORD();user.GetWindowThreadProcessId(W.HWND(data['hwnd']),C.byref(pid))
+                if pid.value==moving.pid:user.PostMessageW(W.HWND(data['hwnd']),0x10,0,0);moving.wait(timeout=3)
+            except Exception:pass
         for process in reversed(processes):
             if process.poll() is None:
                 process.terminate()
