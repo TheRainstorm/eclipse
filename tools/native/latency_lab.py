@@ -30,12 +30,76 @@ def digest(path):
         return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
+def implementation_files(config, config_path):
+    files = config.get('implementation_files', [])
+    if not files or not {'runner', 'adapter'}.issubset({f.get('role') for f in files}):
+        raise ValueError('runner and private adapter must be frozen before execution')
+    for item in files:
+        item['path'] = str((config_path.parent / item['path']).resolve(strict=True))
+        if not item.get('source') or not re.fullmatch('[0-9a-f]{64}', item.get('sha256', '')) or digest(item['path']) != item['sha256']:
+            raise ValueError('implementation source/digest mismatch: ' + item.get('role', '?'))
+    runner = next(item for item in files if item['role']=='runner')
+    adapter = next(item for item in files if item['role']=='adapter')
+    if Path(runner['path']) != Path(__file__).resolve() or adapter['path'] not in config['adapter']:
+        raise ValueError('frozen runner/adapter do not match the executed entrypoints')
+    return files
+
+
+def steady_host_windows(viewer, final_context, final_epoch):
+    """Independent clocks: client time selects a fresh anchor, then only host
+    time + a duration define the conservative fence. Never subtract host/client
+    timestamps. Require the entire rolling window to cross that fence.
+    """
+    warmup_us = viewer['configuration']['warmup_seconds'] * 1_000_000
+    client_boundary_ms = (viewer.get('first_frame_ms') or 0) + warmup_us / 1000
+    seen = set(); reports = []; anchor = None; previous_end = None
+    for sample in viewer.get('samples', []):
+        trace = sample.get('host_frame_trace')
+        if not trace:
+            continue
+        if (trace.get('clock_domain') != 'host_monotonic' or trace.get('epoch') != final_epoch
+                or trace.get('context') != final_context):
+            raise ValueError('host trace clock/epoch/generation/configuration changed')
+        start, end = trace.get('window_start_us'), trace.get('window_end_us')
+        if not isinstance(start, int) or not isinstance(end, int) or start < 0 or start > end:
+            raise ValueError('invalid host clock window')
+        key = (trace['epoch'], end)
+        if key in seen:
+            continue
+        if previous_end is not None and end <= previous_end:
+            raise ValueError('host clock moved backwards')
+        seen.add(key); previous_end = end
+        reports.append(trace)
+        if anchor is None and sample.get('at_ms', 0) >= client_boundary_ms:
+            # Additional host-side warmup after this freshly observed anchor is
+            # deliberately conservative; receive-time alone cannot exclude the
+            # early frames still contained in a 512-frame rolling window.
+            anchor = end
+    fence = None if anchor is None else anchor + warmup_us
+    valid = [t for t in reports if fence is not None and t['window_start_us'] > fence]
+    intervals = sorted((t['window_start_us'], t['window_end_us']) for t in valid)
+    merged = []
+    for start, end in intervals:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    coverage = sum(end-start for start, end in merged)
+    return valid, {'clock_domain': 'host_monotonic', 'epoch': final_epoch,
+                   'generation': final_context.get('generation'), 'anchor_end_us': anchor,
+                   'fence_us': fence, 'extra_host_warmup_us': warmup_us,
+                   'observed_windows': len(reports), 'valid_windows': len(valid),
+                   'excluded_windows': len(reports)-len(valid), 'coverage_us': coverage,
+                   'coverage_intervals_us': merged}
+
+
 def load_config(path):
     config = json.loads(path.read_text())
     if config.get('version') != 1 or not isinstance(config.get('adapter'), list) or not config['adapter']:
         raise ValueError('version 1 and an adapter argv array are required')
     if not all(isinstance(arg, str) and arg for arg in config['adapter']):
         raise ValueError('adapter arguments must be nonempty strings')
+    implementation_files(config, path)
     variants = config['variants']
     if not 1 <= len(variants) <= 2 or 'baseline' not in variants or set(variants) - {'baseline', 'candidate'}:
         raise ValueError('specify baseline, and optionally candidate')
@@ -69,7 +133,7 @@ def load_config(path):
     criteria = config['criteria']
     for name in ('min_paint_fps_ratio', 'min_new_source_ratio', 'max_paint_gap_ms',
                  'max_mailbox_p99_ms', 'max_first_frame_ms', 'max_memory_growth_mb',
-                 'fps_max_relative_drop', 'tail_max_added_ms', 'improvement_min_ms'):
+                 'fps_max_relative_drop', 'tail_max_added_ms', 'improvement_min_ms', 'min_host_coverage_seconds'):
         if not isinstance(criteria.get(name), (int, float)) or not math.isfinite(criteria[name]) or criteria[name] < 0:
             raise ValueError('missing or invalid criterion: ' + name)
     if not 0 < criteria['min_paint_fps_ratio'] <= 1 or not 0 < criteria['min_new_source_ratio'] <= 1:
@@ -102,6 +166,11 @@ def summarize(output, request):
             ('host_gpu', 'client_gpu', 'host_display', 'client_display', 'network', 'stimulus')), 'incomplete environment fingerprint')
     require(worker.get('desktop_capture') is True, 'not real desktop capture')
     require(worker.get('stimulus_updates', 0) >= case['seconds'] * case['fps'] * .5, 'insufficient desktop stimulus updates')
+    require(isinstance(worker.get('stimulus_completed_hz'), (int,float)) and worker['stimulus_completed_hz'] >= case['fps']*.9,
+            'desktop stimulus did not complete drawings at target cadence')
+    source=environment.get('host_source', {}) if isinstance(environment,dict) else {}
+    require(isinstance(source,dict) and source.get('name') and source.get('physical_bounds') and
+            isinstance(source.get('hdr_enabled'),bool) and source.get('refresh_hz'), 'missing physical capture/color identity')
     require(viewer.get('errors') == 0, 'decoder errors')
     require(case['decoder_contains'].lower() in viewer.get('decoder_backend', '').lower(), 'wrong decoder / fallback')
     require(viewer.get('render_paths') == [case['render_path']], 'wrong renderer / fallback')
@@ -130,13 +199,20 @@ def summarize(output, request):
     require(counts.get('unknown_source', 1) == 0 and counts.get('captured', 0) > 0, 'missing real source identity')
     require(counts.get('unmatched_outputs', 1) == 0 and counts.get('pending_evictions', 1) == 0, 'lost host frame correlation')
     require(bool(final.get('frames')) and all(f.get('gpu_input') is True and f.get('source') for f in final.get('frames', [])), 'missing GPU/source proof')
-    traces = [s['host_frame_trace'] for s in viewer.get('samples', [])
-              if s.get('host_frame_trace') and s.get('at_ms', 0) >= (viewer.get('first_frame_ms') or 0) + case['warmup_seconds'] * 1000]
-    # Deduplicate unreliable snapshots. Windows overlap: do NOT pool their
-    # percentiles or label the median-of-window-p99 a session p99.
-    traces = list({(t['epoch'], t['window_end_us']): t for t in traces}.values())
-    require(len(traces) >= max(2, case['seconds'] // 3), 'insufficient host telemetry coverage')
-    require(all(t.get('context') == context for t in traces), 'host configuration changed during trial')
+    try:
+        traces, host_coverage = steady_host_windows(viewer, context, final.get('epoch'))
+    except ValueError as error:
+        traces, host_coverage = [], {'coverage_us': 0, 'valid_windows': 0, 'error': str(error)}
+        require(False, str(error))
+    # Overlapping windows retain their identity. Only fully steady windows enter
+    # the percentile summary, and union coverage is reported without double count.
+    require(len(traces) >= max(2, case['seconds'] // 3), 'insufficient steady host telemetry windows')
+    require(host_coverage['coverage_us'] >= request['criteria']['min_host_coverage_seconds'] * 1_000_000,
+            'insufficient steady host telemetry coverage')
+    decoded_samples = [sample for sample in viewer.get('samples', [])
+                       if sample.get('at_ms',0) >= (viewer.get('first_frame_ms') or 0)+case['warmup_seconds']*1000]
+    require(bool(decoded_samples) and all([sample.get('width'),sample.get('height')]==case['size'] for sample in decoded_samples),
+            'decoded dimensions do not match the negotiated stream')
     gaps, mailbox = viewer.get('paint_gap_ms') or {}, viewer.get('mailbox_to_draw_ms') or {}
     require(bool(gaps) and bool(mailbox) and not gaps.get('overflow', True) and not mailbox.get('overflow', True), 'missing/overflowed paint measurements')
     def stage(name):
@@ -144,7 +220,7 @@ def summarize(output, request):
         require(len(values) == len(traces) and bool(values), 'missing stage: ' + name)
         return statistics.median(values) if values else None
     metrics = {
-        'paint_fps': viewer.get('paint_fps'), 'paint_gap_p99_ms': gaps.get('p99'),
+        'stimulus_completed_hz': worker.get('stimulus_completed_hz'), 'paint_fps': viewer.get('paint_fps'), 'paint_gap_p99_ms': gaps.get('p99'),
         'paint_gap_max_ms': gaps.get('max'), 'paint_stalls_over_50ms': gaps.get('over_50ms'),
         'mailbox_to_draw_p99_ms': mailbox.get('p99'), 'first_frame_ms': viewer.get('first_frame_ms'),
         'new_source_ratio': counts.get('new_source', 0) / max(1, counts.get('captured', 0)),
@@ -155,7 +231,7 @@ def summarize(output, request):
     }
     require(all(isinstance(v, (int, float)) and math.isfinite(v) for v in metrics.values()), 'missing/nonfinite metrics')
     return {'failures': failures, 'metrics': metrics, 'environment': environment,
-            'host_context': context, 'host_counts': counts, 'host_windows': len(traces),
+            'host_context': context, 'host_counts': counts, 'host_windows': len(traces), 'host_coverage': host_coverage,
             'scanout_measured': False, 'input_tested': False, 'audio_playback_tested': False}
 
 
@@ -271,6 +347,9 @@ def main():
     write(output / 'experiment.json', {'config': config, 'cycles': args.cycles,
           'adapter_cwd': str(Path.cwd()), 'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
           'runner_sha256': digest(__file__)})
+    frozen = output / 'implementations'; frozen.mkdir()
+    for index, item in enumerate(config['implementation_files']):
+        (frozen / (str(index)+'-'+Path(item['path']).name)).write_bytes(Path(item['path']).read_bytes())
     paired = 'candidate' in config['variants']
     order = ['baseline', 'candidate', 'candidate', 'baseline'] if paired else ['baseline']
     rows = []; interrupted = False
@@ -283,7 +362,9 @@ def main():
                     index = len(rows); run = f'{index:03d}-{case["name"]}-{variant}'
                     trial = output / run; trial.mkdir()
                     request = {'version': 1, 'run_id': uuid.uuid4().hex, 'variant': config['variants'][variant], 'case': case,
-                               'adapter_options': config.get('adapter_options', {})}
+                               'adapter_options': config.get('adapter_options', {}), 'criteria': config['criteria'],
+                               'implementation_files': config['implementation_files']}
+                    implementation_files(config, config_path)
                     write(trial / 'request.json', request)
                     # Recheck immediately before staging; a build/install hook must
                     # never silently substitute the newest local executable.
@@ -294,6 +375,7 @@ def main():
                     try:
                         code = run_adapter(config['adapter'], trial / 'request.json', trial,
                                            case['seconds'] + case['warmup_seconds'] + config.get('adapter_overhead_seconds', 180))
+                        implementation_files(config, config_path)
                         row.update(summarize(trial, request))
                         row['measurement_valid'] = not row['failures']
                         row['failures'] = absolute_failures(row, case, config['criteria'])
