@@ -1067,7 +1067,7 @@ impl Workspace {
             let mut painter=ui.painter().clone();
             if offline{ui.painter().rect_filled(picture,8.,egui::Color32::from_gray(50));painter.multiply_opacity(0.35);}
             self.paint_device_picture(&painter,picture,profile);
-            let pos=egui::pos2(rect.center().x-text.size().x/2.,picture.bottom()+12.);
+            let pos=egui::pos2(rect.center().x,picture.bottom()+12.);
             if self.dark_background {
                 ui.painter().galley_with_override_text_color(pos+egui::vec2(0.,1.),text.clone(),egui::Color32::from_black_alpha(210));
             }
