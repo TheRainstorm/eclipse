@@ -1197,6 +1197,15 @@ impl Workspace {
                     ui.heading(&profile.name);
                     ui.add_space(4.0);
                     muted(ui, last_connection(profile.last_connected));
+                    let mut pinned=profile.preview.as_ref().is_some_and(|p|p.pinned);
+                    if ui.add_enabled(profile.preview.is_some(),egui::Checkbox::new(&mut pinned,"固定当前截图")).on_hover_text("固定后保留这张截图；取消固定后，下次串流结束时自动更新").changed() {
+                        if let (Some(store),Some(preview))=(&self.store,&profile.preview) {
+                            if let Err(error)=store.pin_preview(&profile.id,&preview.id,pinned) {
+                                self.feedback.error(super::ui_feedback::Scope::DeviceDetails(id.to_owned()),format!("无法保存截图设置：{error:#}"));
+                            }
+                            self.refresh();
+                        }
+                    }
                     let route = profile.route().map(|route| {
                         format!("{} · {}", route.destination.label(), route.destination.target())
                     }).unwrap_or_else(|_| "未选择连接方式".into());

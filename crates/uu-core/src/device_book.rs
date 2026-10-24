@@ -213,7 +213,12 @@ impl Route {
 
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Preview {pub id:String,pub at:u64}
+pub struct Preview {
+    pub id:String,
+    pub at:u64,
+    #[serde(default)]
+    pub pinned:bool,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
@@ -612,14 +617,26 @@ impl Store {
         let result=self.edit(|book| {
             let target=book.device(device)?.id.clone();
             let profile=book.devices.iter_mut().find(|p|p.id==target).unwrap();
-            if profile.preview.as_ref().is_none_or(|p|p.at<=at) {
-                old=profile.preview.replace(Preview{id:id.clone(),at});retained=true;
+            if profile.preview.as_ref().is_none_or(|p|!p.pinned && p.at<=at) {
+                old=profile.preview.replace(Preview{id:id.clone(),at,pinned:false});retained=true;
             }
             Ok(())
         });
         if result.is_err()||!retained {let _=std::fs::remove_file(path);}
         if result.is_ok() {if let Some(old)=old{let _=std::fs::remove_file(self.directory.join("previews").join(format!("{}.jpg",old.id)));}}
         result
+    }
+    /// Pin the image the user actually saw. A queued preview writer must not
+    /// replace it, and an outdated details window must not pin a different one.
+    pub fn pin_preview(&self,device:&str,expected:&str,pinned:bool)->Result<()> {
+        self.edit(|book| {
+            let target=book.device(device)?.id.clone();
+            let profile=book.devices.iter_mut().find(|p|p.id==target).unwrap();
+            let preview=profile.preview.as_mut().context("设备还没有截图，请先连接一次")?;
+            ensure!(preview.id==expected,"设备截图已更新，请重新查看后再固定");
+            preview.pinned=pinned;
+            Ok(())
+        })
     }
     pub fn preview_bytes(&self,preview:&Preview)->Result<Vec<u8>> {
         valid_id(&preview.id)?;
@@ -673,7 +690,7 @@ impl Store {
                 let at=b.devices[current].last_connected.take();
                 if let Some(at)=at {b.devices[other].last_connected=Some(b.devices[other].last_connected.unwrap_or(0).max(at));}
                 if let Some(preview)=b.devices[current].preview.take() {
-                    if b.devices[other].preview.as_ref().is_none_or(|p|p.at<preview.at){if let Some(old)=b.devices[other].preview.replace(preview){unused.push(old.id);}}else{unused.push(preview.id);}
+                    if b.devices[other].preview.as_ref().is_none_or(|p|(!p.pinned && preview.pinned) || (p.pinned==preview.pinned && !p.pinned && p.at<preview.at)){if let Some(old)=b.devices[other].preview.replace(preview){unused.push(old.id);}}else{unused.push(preview.id);}
                 }
                 let configs=std::mem::take(&mut b.devices[current].client_configs);
                 let selection=b.devices[current].selected_client.take();
@@ -771,6 +788,31 @@ mod tests {
     }
 
     #[test]
+    fn pinned_preview_survives_queued_writes_stale_editors_and_identity_merge() {
+        let root=std::env::temp_dir().join(format!("eclipse-pinned-preview-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        let a=Profile::new("First",Destination::Uu{device:"first".into()});
+        let b=Profile::new("Second",Destination::Uu{device:"second".into()});
+        store.save_device(a.clone()).unwrap();store.save_device(b.clone()).unwrap();
+        store.record_preview(&b.id,100,b"keep this screenshot").unwrap();
+        let image=store.read().unwrap().device(&b.id).unwrap().preview.clone().unwrap();
+        store.pin_preview(&b.id,&image.id,true).unwrap();
+        store.save_device(b.clone()).unwrap();
+        store.record_preview(&b.id,200,b"queued later screenshot").unwrap();
+        store.record_preview(&a.id,300,b"newer unpinned screenshot").unwrap();
+        let peer="34".repeat(32);store.bind(&a.id,&peer).unwrap();store.bind(&b.id,&peer).unwrap();
+        let pinned=store.read().unwrap().device(&b.id).unwrap().preview.clone().unwrap();
+        assert!(pinned.pinned);assert_eq!(pinned.id,image.id);
+        assert_eq!(store.preview_bytes(&pinned).unwrap(),b"keep this screenshot");
+        assert_eq!(std::fs::read_dir(root.join("previews")).unwrap().count(),1);
+        store.pin_preview(&b.id,&image.id,false).unwrap();
+        store.record_preview(&b.id,400,b"automatic updates resumed").unwrap();
+        assert!(store.pin_preview(&b.id,&image.id,true).is_err(),"stale details must not pin an unseen replacement");
+        let updated=store.read().unwrap().device(&a.id).unwrap().preview.clone().unwrap();
+        assert!(!updated.pinned);assert_eq!(store.preview_bytes(&updated).unwrap(),b"automatic updates resumed");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn successful_history_and_latest_private_preview_follow_verified_identity() {
         let root=std::env::temp_dir().join(format!("eclipse-history-{}",uuid::Uuid::new_v4()));
         let store=Store::open(&root).unwrap();
@@ -788,7 +830,7 @@ mod tests {
         let peer="12".repeat(32);store.bind(&a.id,&peer).unwrap();store.bind(&b.id,&peer).unwrap();
         let book=store.read().unwrap();let record=book.device(&b.id).unwrap();assert_eq!(record.id,a.id);assert_eq!(record.last_connected,Some(200));
         assert_eq!(store.preview_bytes(record.preview.as_ref().unwrap()).unwrap(),b"bounded generated preview B");
-        assert!(store.preview_bytes(&Preview{id:"../../credentials".into(),at:0}).is_err());
+        assert!(store.preview_bytes(&Preview{id:"../../credentials".into(),at:0,pinned:false}).is_err());
         let preview=record.preview.clone().unwrap();store.forget(&a.id).unwrap();assert!(store.preview_bytes(&preview).is_err());
         assert_eq!(std::fs::read_dir(root.join("previews")).unwrap().count(),0);
         std::fs::remove_dir_all(root).unwrap();
