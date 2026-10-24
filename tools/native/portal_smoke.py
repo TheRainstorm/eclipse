@@ -139,8 +139,13 @@ def fixture(args):
                         'source_type': dbus.UInt32(1),
                         **({'mapping_id': args.owned_compositor_output} if args.owned_compositor_output else {}),
                     }, signature='sv'))], signature='(ua{sv})')
-            if name != 'Start' or args.case != 'cancel':
+            blocked = ((name == 'Start' and args.case == 'cancel') or
+                       (name == 'SelectSources' and args.case in ('cancel-select', 'cancel-select-call')) or
+                       (name == 'CreateSession' and args.case == 'cancel-init'))
+            if not blocked:
                 GLib.timeout_add(10, response, request, code, data)
+            if name == 'SelectSources' and args.case == 'cancel-select-call':
+                return dbus.lowlevel.HANDLER_RESULT_HANDLED
         elif name == 'OpenPipeWireRemote' and video_node is not None:
             connection = socket.socket(socket.AF_UNIX)
             try:
@@ -165,7 +170,7 @@ def fixture(args):
     if args.case not in ('stream-view', 'stream-displays'): command += ['--allow-input']
     if args.case.startswith('stream') and args.case != 'stream-displays': command += ['--frames', '60', '--sessions', '2']
     if args.case == 'stream-input': command += ['--exercise-fixture-input']
-    if args.case == 'cancel': command += ['--cancel-after-ms', '400']
+    if args.case.startswith('cancel'): command += ['--cancel-after-ms', '400']
     if args.case == 'stream-native':
         if args.cli is None: raise ValueError('stream-native requires --cli')
         runtime = Path(os.environ['XDG_RUNTIME_DIR'])
@@ -259,12 +264,22 @@ def fixture(args):
                 assert all(kind == portal + 'ScreenCast' for kind in sessions.values()), sessions
         else:
             assert probe.returncode != 0 and not report['ok'], (stdout, stderr)
-        assert any(e['method'] == 'Start' for e in events), events
-        assert any(e['method'] == 'Close' and e.get('session') for e in events), events
+        if args.case.startswith('cancel-select'):
+            assert any(e['method'] == 'SelectSources' for e in events), events
+            assert any(e['method'] == 'Close' and not e.get('session') for e in events), events
+            assert not any(e['method'] == 'Start' for e in events), events
+        elif args.case == 'cancel-init':
+            assert any(e['method'] == 'CreateSession' for e in events), events
+            assert not any(e['method'] == 'SelectSources' for e in events), events
+        else:
+            assert any(e['method'] == 'Start' for e in events), events
+        if args.case != 'cancel-init':
+            assert any(e['method'] == 'Close' and e.get('session') for e in events), events
         assert report['elapsed_ms'] < 3000, report
         if video_node is None:
             assert not any(e['method'] == 'OpenPipeWireRemote' or e['method'].startswith('Notify') for e in events), events
-        result = dict(case=args.case, consent_started=True, session_closed=True,
+        result = dict(case=args.case, consent_started=args.case != 'cancel-init', session_closed=args.case != 'cancel-init',
+                      request_closed=args.case.startswith('cancel-select'),
                       generated_video=video_node is not None, no_user_desktop=True,
                       input_checked=args.case == 'stream-input', elapsed_ms=report['elapsed_ms'])
         print(json.dumps(result))
@@ -286,7 +301,7 @@ def fixture(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--probe', type=Path, required=True)
-    parser.add_argument('--case', choices=('deny', 'cancel', 'stream-view', 'stream-input', 'stream-no-input', 'stream-keyboard-only', 'stream-input-denied', 'stream-native', 'stream-displays', 'stream-startup'), required=True)
+    parser.add_argument('--case', choices=('deny', 'cancel', 'cancel-select', 'cancel-select-call', 'cancel-init', 'stream-view', 'stream-input', 'stream-no-input', 'stream-keyboard-only', 'stream-input-denied', 'stream-native', 'stream-displays', 'stream-startup'), required=True)
     parser.add_argument('--cli', type=Path, help='Native CLI used for the encrypted-media scenario')
     parser.add_argument('--pipewire-prefix', type=Path, help='Optional private installation prefix for PipeWire fixture tools')
     parser.add_argument('--owned-compositor-output', help='Use a monitor in an explicitly isolated test compositor')

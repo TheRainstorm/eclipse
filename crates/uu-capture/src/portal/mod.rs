@@ -151,23 +151,34 @@ async fn actor(
     }
     let _finished = Finished(frames.clone());
     let result = async {
-        let cast = Screencast::new().await.map_err(portal_error)?;
-        let remote = if options.allow_input {
-            match RemoteDesktop::new().await {
-                Ok(remote) => {
-                    let devices = remote.available_device_types().await.map_err(portal_error)?;
-                    (devices.contains(DeviceType::Keyboard) && devices.contains(DeviceType::Pointer))
-                        .then_some(remote)
-                },
-                // A screencast-only compositor can still offer viewing.
-                Err(ashpd::Error::PortalNotFound(_)) => None,
-                Err(e) => return Err(portal_error(e)),
-            }
-        } else { None };
-        let session = match &remote {
-            Some(remote) => PortalSession::Remote(remote.create_session().await.map_err(portal_error)?),
-            None => PortalSession::Cast(cast.create_session().await.map_err(portal_error)?),
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        let initialize = async {
+            let cast = Screencast::new().await.map_err(portal_error)?;
+            let remote = if options.allow_input {
+                match RemoteDesktop::new().await {
+                    Ok(remote) => {
+                        let devices = remote.available_device_types().await.map_err(portal_error)?;
+                        (devices.contains(DeviceType::Keyboard) && devices.contains(DeviceType::Pointer))
+                            .then_some(remote)
+                    },
+                    // A screencast-only compositor can still offer viewing.
+                    Err(ashpd::Error::PortalNotFound(_)) => None,
+                    Err(e) => return Err(portal_error(e)),
+                }
+            } else { None };
+            let session = match &remote {
+                Some(remote) => PortalSession::Remote(remote.create_session().await.map_err(portal_error)?),
+                None => PortalSession::Cast(cast.create_session().await.map_err(portal_error)?),
+            };
+            Ok::<_, CaptureError>((cast, remote, session))
         };
+        // D-Bus/backend initialization can stall too. Cancellation and the
+        // preparation deadline cover the entire open, not just the consent UI.
+        let (cast, remote, session) = tokio::select! {
+            value = initialize => value,
+            _ = cancelled(&options.cancelled) => Err(error("共享授权已取消")),
+            _ = tokio::time::sleep_until(deadline) => Err(error("等待系统屏幕共享服务超时")),
+        }?;
         let setup = async {
             let (selected, control) = match (&session, &remote) {
                 (PortalSession::Remote(session), Some(remote)) => {
@@ -196,7 +207,7 @@ async fn actor(
         let setup = tokio::select! {
             value = setup => value,
             _ = cancelled(&options.cancelled) => Err(error("共享授权已取消")),
-            _ = tokio::time::sleep(Duration::from_secs(120)) => Err(error("等待系统屏幕共享授权超时")),
+            _ = tokio::time::sleep_until(deadline) => Err(error("等待系统屏幕共享授权超时")),
         };
         let result = async { match setup {
             Ok((stream, fd, control)) => {

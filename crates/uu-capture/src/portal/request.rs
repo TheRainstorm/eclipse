@@ -12,7 +12,24 @@ use futures_util::StreamExt;
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
+
+// Dropping a response future does not cancel the portal's dialog. The request
+// owns that interaction until Response arrives or Request.Close is sent.
+struct PendingRequest(Option<(zbus::Connection, String)>);
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        let Some((connection, path)) = self.0.take() else { return; };
+        tokio::spawn(async move {
+            let close = connection.call_method(
+                Some("org.freedesktop.portal.Desktop"), path.as_str(),
+                Some("org.freedesktop.portal.Request"), "Close", &(),
+            );
+            let _ = tokio::time::timeout(Duration::from_secs(2), close).await;
+        });
+    }
+}
 
 pub(super) async fn select_sources<T: serde::Serialize + Type>(
     cast: &Screencast<'_>,
@@ -48,6 +65,9 @@ pub(super) async fn select_sources<T: serde::Serialize + Type>(
         ("multiple", Value::from(false)),
         ("cursor_mode", Value::from(CursorMode::Embedded as u32)),
     ]);
+    // Arm before sending: cancellation can occur while SelectSources itself is
+    // still waiting for its method reply, not only while waiting for Response.
+    let mut pending = PendingRequest(Some((connection.clone(), path.clone())));
     let returned: OwnedObjectPath = cast
         .call("SelectSources", &(session, options))
         .await
@@ -59,6 +79,7 @@ pub(super) async fn select_sources<T: serde::Serialize + Type>(
         .next()
         .await
         .ok_or_else(|| error("屏幕选择请求意外结束"))?;
+    pending.0 = None; // Response ends the request, including denial/error codes.
     let (code, _): (u32, HashMap<String, OwnedValue>) =
         response.body().deserialize().map_err(error)?;
     match code {
