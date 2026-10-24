@@ -74,6 +74,41 @@ class Gates(unittest.TestCase):
             if row['variant']=='candidate':row['metrics']['mailbox_to_draw_p99_ms']=10
         self.assertFalse(lab.compare(rows,[CASE],CRITERIA,True)['desktop']['passed'])
 
+    def test_opposing_tail_regressions_cannot_cancel_between_abba_blocks(self):
+        rows=self.rows()
+        for row in rows:
+            if row['variant']=='candidate':
+                row['metrics'][CRITERIA['objective']]=7
+                row['metrics']['paint_gap_p99_ms']=20 if row['cycle']==0 else 14
+        # Pooled medians look unchanged and both objective gains are positive;
+        # block zero still incurs a 3ms tail regression and must reject.
+        result=lab.compare(rows,[CASE],CRITERIA,True)['desktop']
+        self.assertEqual(result['medians']['candidate']['paint_gap_p99_ms'],17)
+        self.assertEqual(result['paired_block_improvements_ms'],[1,1])
+        self.assertFalse(result['passed'])
+        self.assertTrue(any('block 0: candidate tail regression' in f for f in result['failures']))
+
+    def test_opposing_throughput_changes_cannot_cancel_between_abba_blocks(self):
+        rows=self.rows()
+        for row in rows:
+            if row['variant']=='candidate':
+                row['metrics'][CRITERIA['objective']]=7
+                row['metrics']['paint_fps']=56 if row['cycle']==0 else 64
+        result=lab.compare(rows,[CASE],CRITERIA,True)['desktop']
+        self.assertEqual(result['medians']['candidate']['paint_fps'],60)
+        self.assertFalse(result['improved'])
+        self.assertIn('block 0: candidate throughput regression',result['failures'])
+
+    def test_incomplete_abba_and_missing_tail_fail_instead_of_crashing(self):
+        rows=self.rows();del rows[-1]
+        result=lab.compare(rows,[CASE],CRITERIA,True)['desktop']
+        self.assertFalse(result['passed'])
+        self.assertTrue(any('incomplete' in f for f in result['failures']))
+        criteria={**CRITERIA,'objective':'mailbox_to_draw_p99_ms'}
+        rows=self.rows()
+        for row in rows:del row['metrics']['host_ready_to_last_rtp_p99_window_median_ms']
+        self.assertFalse(lab.compare(rows,[CASE],criteria,True)['desktop']['passed'])
+
     def test_environment_change_and_failed_trials_cannot_be_accepted(self):
         rows=self.rows();rows[-1]['environment']={'fixed':2}
         self.assertFalse(lab.compare(rows,[CASE],CRITERIA,True)['desktop']['passed'])

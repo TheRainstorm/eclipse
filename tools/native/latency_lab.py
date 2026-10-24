@@ -192,27 +192,43 @@ def compare(rows, cases, criteria, paired):
             if trials:
                 medians[variant] = {name: statistics.median(r['metrics'][name] for r in trials)
                                     for name in trials[0]['metrics'] if all(isinstance(r['metrics'][name], (int, float)) for r in trials)}
-        improved = False; difference = None; block_gains = []
+        improved = False; difference = None; block_gains = []; blocks = []
+        tails = ('paint_gap_p99_ms', 'mailbox_to_draw_p99_ms', 'host_ready_to_last_rtp_p99_window_median_ms')
+        required = tuple(dict.fromkeys(('paint_fps', *tails, criteria['objective'])))
         if paired and set(medians) == {'baseline', 'candidate'} and all(
-                name in medians[v] for v in medians for name in ('paint_fps', 'paint_gap_p99_ms', 'mailbox_to_draw_p99_ms', criteria['objective'])):
+                name in medians[v] and math.isfinite(medians[v][name]) for v in medians for name in required):
             a, b = medians['baseline'], medians['candidate']
             if b['paint_fps'] < a['paint_fps'] * (1-criteria['fps_max_relative_drop']):
                 failures.append('candidate throughput regression')
-            for tail in ('paint_gap_p99_ms', 'mailbox_to_draw_p99_ms', 'host_ready_to_last_rtp_p99_window_median_ms'):
+            for tail in tails:
                 if b[tail] > a[tail] + criteria['tail_max_added_ms']:
                     failures.append('candidate tail regression: ' + tail)
             difference = a[criteria['objective']] - b[criteria['objective']]
             for block in sorted({r.get('cycle', 0) for r in group}):
                 block_rows = [r for r in group if r.get('cycle', 0) == block]
-                values = {v: [r['metrics'].get(criteria['objective']) for r in block_rows
-                              if r['variant'] == v and r.get('metrics')] for v in ('baseline', 'candidate')}
-                if all(len(values[v]) == 2 and all(isinstance(n, (int, float)) for n in values[v]) for v in values):
-                    block_gains.append(statistics.median(values['baseline']) - statistics.median(values['candidate']))
+                if ([r['variant'] for r in block_rows] != ['baseline', 'candidate', 'candidate', 'baseline']
+                        or any(not all(isinstance(r.get('metrics', {}).get(name), (int, float))
+                                       and math.isfinite(r['metrics'][name]) for name in required) for r in block_rows)):
+                    failures.append(f'block {block}: incomplete or invalid ABBA measurements')
+                    continue
+                values = {v: {name: statistics.median(r['metrics'][name] for r in block_rows if r['variant'] == v)
+                              for name in required} for v in ('baseline', 'candidate')}
+                gain = values['baseline'][criteria['objective']] - values['candidate'][criteria['objective']]
+                block_gains.append(gain)
+                block_failures = []
+                if values['candidate']['paint_fps'] < values['baseline']['paint_fps'] * (1-criteria['fps_max_relative_drop']):
+                    block_failures.append('candidate throughput regression')
+                for tail in tails:
+                    if values['candidate'][tail] > values['baseline'][tail] + criteria['tail_max_added_ms']:
+                        block_failures.append('candidate tail regression: ' + tail)
+                failures.extend(f'block {block}: {reason}' for reason in block_failures)
+                blocks.append({'cycle': block, 'medians': values, 'objective_improvement_ms': gain,
+                               'failures': block_failures})
             improved = len(block_gains) >= 2 and all(gain >= criteria['improvement_min_ms'] for gain in block_gains)
         elif paired:
             failures.append('missing comparable trials')
         results[case['name']] = {'passed': not failures, 'improved': improved and not failures,
-            'objective_improvement_ms': difference, 'paired_block_improvements_ms': block_gains,
+            'objective_improvement_ms': difference, 'paired_block_improvements_ms': block_gains, 'paired_blocks': blocks,
             'failures': failures, 'medians': medians}
     return results
 
