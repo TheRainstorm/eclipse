@@ -174,7 +174,7 @@ impl DxgiCapture {
                 None,
                 Some(&mut context),
             )
-            .map_err(backend)?;
+            .map_err(|error| backend(format!("D3D11CreateDevice for {}: {error}", selected.monitor.name)))?;
         }
         let device = device.ok_or_else(|| backend("device unavailable"))?;
         let context = context.ok_or_else(|| backend("device context unavailable"))?;
@@ -188,7 +188,7 @@ impl DxgiCapture {
         let hdr=if allow_hdr && selected.rotation==Rotation::None {output_hdr(&selected.output)}else{None};
         let duplication=duplicate(&selected.output,&device,hdr.is_some()).map_err(|e| {
             if e.code()==windows::Win32::Foundation::E_ACCESSDENIED {backend("当前桌面拒绝采集；锁屏和 UAC 安全桌面需要 Windows 后台服务以 LocalSystem 运行")}
-            else{backend(e)}
+            else{backend(format!("{} for {}: {e}", if hdr.is_some(){"DuplicateOutput1 HDR"}else{"DuplicateOutput SDR"}, selected.monitor.name))}
         })?;
         Ok(Self {
             source: selected.monitor,
