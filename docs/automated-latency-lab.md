@@ -74,3 +74,7 @@ Windows 编译增加 `--target x86_64-pc-windows-gnu`。探针旁放置经过完
 实验主机必须显式使用 `native-host --client-quality`，才接受受限于 `--codec` 的客户端尺寸/帧率/码率请求；普通 CLI 的默认静态合同不变。`native-sources --json` 在交互桌面导出物理像素清单、当前模式刷新率和 DXGI 色彩空间/HDR状态；WinForms 的逻辑尺寸另外标注单位。worker将选中输出显式传给主机，并检查试验前后物理清单一致。
 
 刺激默认使用独立的高精度 waitable timer 与消息联合等待，不调用全局 `timeBeginPeriod`；保留旧 WM_TIMER 模式仅用于有界时钟对照。计数和间隔来自 GDI EndPaint 完成，另由真实采集源身份比例验证 DWM 是否产生了新画面。绘制完成不代表扫描输出。[Microsoft 计时器接口说明](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw)。
+
+可用 `UU_GPU_ENCODE_PROFILE=1` 开启编码颜色转换的 GPU elapsed 诊断，默认关闭。每个转换器预分配 8 组 timestamp/disjoint query，在已有 immediate-context 互斥范围内，每帧仅尝试读取旧查询一次，使用 DONOTFLUSH；未完成便返回，无空槽便跳过，不额外 Flush、不等待 GPU、不读回像素。关闭时不分配或读取查询。退出只输出有界统计，并记录未收集、disjoint、不支持和错误数。分位数使用 25μs 直方图上界，102.4ms 桶包含溢出，最大值另记；无有效样本时均值、分位数和最大值为 -1。
+
+该时间只覆盖两次 timestamp 之间的转换命令区间，可能含 CPU 提交间隙，不是纯着色器执行时间，不覆盖此前排队、驱动内部复制或 AMF 视频引擎，也不归因某个 PTS 的完成时刻。CPU 转换时间包含原有 Flush。诊断开销须单独做开关对照，正式性能比较应关闭该诊断。语义依据 [D3D11 查询类型](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/ne-d3d11-d3d11_query)与 [GetData 非刷新标志](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/ne-d3d11-d3d11_async_getdata_flag)。

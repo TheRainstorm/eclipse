@@ -50,6 +50,13 @@ def av1_input_queue_size(config):
 
 
 
+def binary_switch(config, name):
+    value = config.get(name, 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1):
+        raise ValueError(name + ' must be integer 0 or 1')
+    return value
+
+
 class WlanObserver:
     """Read-only lab observer: never resolves/calls WlanSetInterface.
 
@@ -348,7 +355,9 @@ def main():
             env.pop(name)
     env.update(APPDATA=str(root/'profile'), LOCALAPPDATA=str(root/'local'), XDG_DATA_HOME=str(root/'data'),
                XDG_STATE_HOME=str(root/'state'), UU_SIGNING_KEY_FILE=str(root/'absent-key'), RUST_LOG='error', ECLIPSE_FRAME_TRACE='1')
-    env['UU_AMF_INPUT_POOL'] = '0'
+    env['UU_AMF_INPUT_POOL'] = str(binary_switch(config, 'amf_input_pool'))
+    if binary_switch(config, 'gpu_encode_profile'):
+        env['UU_GPU_ENCODE_PROFILE'] = '1'
     wlan_mode = config.get('wlan_streaming_mode', 0)
     if isinstance(wlan_mode, bool) or not isinstance(wlan_mode, int) or wlan_mode not in (0, 1):
         raise ValueError('wlan_streaming_mode must be 0 or 1')
@@ -364,7 +373,7 @@ def main():
         env['UU_ENCODE_PROFILE'] = '1'
     atomic(root/'diagnostic-switches.json',{'continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL'],
                                          'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config),'wlan_streaming_mode':wlan_mode,
-                                         'amf_av1_input_queue_size':av1_queue})
+                                         'amf_av1_input_queue_size':av1_queue,'gpu_encode_profile':env.get('UU_GPU_ENCODE_PROFILE')=='1'})
     processes = []; logs = []; samples = []; completed = False; error = None; moving = None
     observer = WlanObserver(); wlan_samples = [observer.snapshot()]; next_wlan = time.monotonic() + 1
     try:

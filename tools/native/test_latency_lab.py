@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import latency_lab as lab
-from windows_latency_worker import stimulus_fps, query_timeout_ms, av1_input_queue_size
+from windows_latency_worker import stimulus_fps, query_timeout_ms, av1_input_queue_size, binary_switch
 
 CRITERIA = dict(min_paint_fps_ratio=.9, min_new_source_ratio=.7, max_paint_gap_ms=100,
                 max_mailbox_p99_ms=30, max_first_frame_ms=3000, max_memory_growth_mb=128,
@@ -18,6 +18,14 @@ CASE = dict(name='desktop', seconds=10, warmup_seconds=1, source='desktop', hdr=
 
 
 class Gates(unittest.TestCase):
+    def test_pool_and_gpu_diagnostic_switches_are_explicit_and_unambiguous(self):
+        for name in ('amf_input_pool', 'gpu_encode_profile'):
+            self.assertEqual(binary_switch({}, name), 0)
+            for value in (0, 1):
+                self.assertEqual(binary_switch({name:value}, name), value)
+            for value in (True, False, 2, -1, 1.0, '1', None):
+                with self.assertRaises(ValueError):binary_switch({name:value}, name)
+
     def test_av1_queue_experiment_is_opt_in_and_rejects_ambiguous_values(self):
         self.assertIsNone(av1_input_queue_size({}))
         for value in (1, 16):

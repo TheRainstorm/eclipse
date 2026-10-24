@@ -12,6 +12,9 @@
 #include <string>
 #include <array>
 #include <cstdlib>
+#include <cmath>
+#include <chrono>
+#include <algorithm>
 using Microsoft::WRL::ComPtr;
 namespace {
 void check(HRESULT result,const char* operation) {
@@ -92,6 +95,65 @@ struct EncodeTarget {
     ComPtr<ID3D11Texture2D> output;
     std::array<ComPtr<ID3D11RenderTargetView>,2> planes;
 };
+// Optional bounded diagnostics: elapsed conversion commands, not AMF/video-engine
+// time or time queued before the first timestamp. No per-frame I/O or GPU wait.
+struct GpuProfile {
+    struct Slot {ComPtr<ID3D11Query> disjoint,start,end;bool pending=false,failed=false;};
+    std::array<Slot,8> slots;
+    std::array<unsigned long long,4097> histogram{}; // 25us bounds; last is overflow
+    unsigned long long samples=0,valid=0,not_ready=0,disjoint=0,skipped=0,errors=0,unsupported=0,cpu_count=0;
+    double total_ms=0,max_ms=0,cpu_total_ms=0,cpu_max_ms=0;
+    bool available=true;
+    explicit GpuProfile(ID3D11Device* device) {
+        for(auto& slot:slots) {
+            D3D11_QUERY_DESC d{D3D11_QUERY_TIMESTAMP_DISJOINT,0};
+            HRESULT result=device->CreateQuery(&d,&slot.disjoint);
+            d.Query=D3D11_QUERY_TIMESTAMP;
+            if(SUCCEEDED(result))result=device->CreateQuery(&d,&slot.start);
+            if(SUCCEEDED(result))result=device->CreateQuery(&d,&slot.end);
+            if(FAILED(result)) {available=false;if(result==DXGI_ERROR_UNSUPPORTED||result==E_NOTIMPL)++unsupported;else ++errors;break;}
+        }
+    }
+    void collect(ID3D11DeviceContext* context) {
+        if(!available)return;
+        for(auto& slot:slots) {
+            if(!slot.pending||slot.failed)continue;
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT data{};UINT64 start=0,end=0;
+            HRESULT result=context->GetData(slot.disjoint.Get(),&data,sizeof(data),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            if(result==S_OK)result=context->GetData(slot.start.Get(),&start,sizeof(start),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            if(result==S_OK)result=context->GetData(slot.end.Get(),&end,sizeof(end),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            if(result==S_FALSE){++not_ready;continue;} // one attempt/slot/frame, never poll
+            if(result!=S_OK){++errors;slot.failed=true;continue;} // do not reuse unknown query
+            slot.pending=false;
+            if(data.Disjoint){++disjoint;continue;}
+            if(!data.Frequency||end<start){++errors;continue;}
+            const double ms=double(end-start)*1000.0/double(data.Frequency);
+            ++valid;total_ms+=ms;max_ms=std::max(max_ms,ms);
+            const size_t bucket=ms>=102.4?4096:size_t(std::ceil(ms/0.025));++histogram[bucket];
+        }
+    }
+    Slot* begin(ID3D11DeviceContext* context) {
+        if(available)for(auto& slot:slots)if(!slot.pending&&!slot.failed) {
+            slot.pending=true;++samples;context->Begin(slot.disjoint.Get());context->End(slot.start.Get());return &slot;
+        }
+        ++skipped;return nullptr;
+    }
+    void end(ID3D11DeviceContext* context,Slot* slot) {
+        if(slot){context->End(slot->end.Get());context->End(slot->disjoint.Get());}
+    }
+    void cpu(double ms){++cpu_count;cpu_total_ms+=ms;cpu_max_ms=std::max(cpu_max_ms,ms);}
+    double percentile(unsigned p) const {
+        if(!valid)return -1;
+        const auto target=(valid*p+99)/100;unsigned long long count=0;
+        for(size_t i=0;i<histogram.size();++i){count+=histogram[i];if(count>=target)return double(i)*0.025;}
+        return -1;
+    }
+    ~GpuProfile() {
+        unsigned pending=0;for(const auto& slot:slots)if(slot.pending)++pending;
+        std::fprintf(stderr,"{\"event\":\"gpu_color_profile\",\"scope\":\"conversion command GPU elapsed only; 25us quantile upper bounds; last bucket overflow; CPU includes original Flush; no PTS readiness attribution\",\"ring_size\":8,\"samples\":%llu,\"valid\":%llu,\"not_ready_polls\":%llu,\"disjoint\":%llu,\"skipped\":%llu,\"errors\":%llu,\"unsupported\":%llu,\"uncollected\":%u,\"mean_ms\":%.6f,\"p50_ms\":%.6f,\"p95_ms\":%.6f,\"p99_ms\":%.6f,\"max_ms\":%.6f,\"cpu_calls\":%llu,\"cpu_mean_ms\":%.6f,\"cpu_max_ms\":%.6f}\n",
+            samples,valid,not_ready,disjoint,skipped,errors,unsupported,pending,valid?total_ms/valid:-1.,percentile(50),percentile(95),percentile(99),valid?max_ms:-1.,cpu_count,cpu_count?cpu_total_ms/cpu_count:-1.,cpu_count?cpu_max_ms:-1.);
+    }
+};
 struct Color {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
@@ -111,6 +173,7 @@ struct Color {
     struct SourceView {ComPtr<ID3D11Texture2D> texture;ComPtr<ID3D11ShaderResourceView> view;};
     std::array<SourceView,2> cached_sources;
     unsigned next_source=0;
+    std::unique_ptr<GpuProfile> profile;
     unsigned long long pooled_frames=0,fresh_frames=0,target_allocations=0,source_view_allocations=0;
     ~Color() {
         if(!decoder && std::getenv("UU_ENCODE_PROFILE"))std::fprintf(stderr,
@@ -137,6 +200,8 @@ struct Color {
         check(device->CreateRasterizerState(&rd,&rasterizer),"create HDR rasterizer");
         D3D11_DEPTH_STENCIL_DESC dd{};dd.DepthEnable=FALSE;dd.StencilEnable=FALSE;
         check(device->CreateDepthStencilState(&dd,&depth),"create HDR depth state");
+        const char* profiling=std::getenv("UU_GPU_ENCODE_PROFILE");
+        if(!decoder&&profiling&&std::strcmp(profiling,"1")==0)profile=std::make_unique<GpuProfile>(device.Get());
         if(decoder){output=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,w,h,shared);check(device->CreateRenderTargetView(output.Get(),nullptr,&target),"create HDR RGB output view");}
     }
     ComPtr<ID3D11Texture2D> texture(DXGI_FORMAT format,unsigned w,unsigned h,bool exportable) {
@@ -168,6 +233,8 @@ struct Color {
     }
     ComPtr<ID3D11Texture2D> convert(ID3D11Texture2D* input,unsigned index,bool full,EncodeTarget* destination=nullptr) {
         struct Lock {ID3D10Multithread* p;Lock(ID3D10Multithread* v):p(v){p->Enter();}~Lock(){p->Leave();}} lock(threading.Get());
+        const auto cpu_start=profile?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+        if(profile)profile->collect(context.Get());
         D3D11_TEXTURE2D_DESC td{};input->GetDesc(&td);
         ComPtr<ID3D11Device> owner;input->GetDevice(&owner);
         if(owner.Get()!=device.Get()||index>=td.ArraySize||td.MipLevels!=1||td.SampleDesc.Count!=1||td.Width<width||td.Height<height)throw std::runtime_error("HDR source device/layout mismatch");
@@ -203,6 +270,10 @@ struct Color {
                 source_view_allocations++;fresh_frames++;
                 output=texture(hdr?DXGI_FORMAT_P010:DXGI_FORMAT_NV12,width,height,false);
             }
+            struct EndTiming {
+                GpuProfile* profile;ID3D11DeviceContext* context;GpuProfile::Slot* slot;
+                ~EndTiming(){if(profile)profile->end(context,slot);}
+            } timing{profile.get(),context.Get(),profile?profile->begin(context.Get()):nullptr};
             ID3D11ShaderResourceView* view=input_view.Get();context->PSSetShaderResources(0,1,&view);
             for(unsigned plane=0;plane<2;plane++) {
                 D3D11_RENDER_TARGET_VIEW_DESC vd{};vd.ViewDimension=D3D11_RTV_DIMENSION_TEXTURE2D;
@@ -212,8 +283,12 @@ struct Color {
                 else check(device->CreateRenderTargetView(output.Get(),&vd,&out),"create encoder plane view");
                 values[4]=(float)plane;draw(out.Get(),plane?width/2:width,plane?height/2:height,values);
             }
+            if(profile)profile->end(context.Get(),timing.slot);
+            timing.profile=nullptr;
         }
-        ID3D11ShaderResourceView* none[2]={};context->PSSetShaderResources(0,2,none);context->Flush();return output;
+        ID3D11ShaderResourceView* none[2]={};context->PSSetShaderResources(0,2,none);context->Flush();
+        if(profile)profile->cpu(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-cpu_start).count());
+        return output;
     }
 };
 }
