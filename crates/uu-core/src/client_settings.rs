@@ -10,13 +10,14 @@ pub enum CursorMode {
     #[serde(alias = "local")]
     Both,
     Remote,
+    Hidden,
 }
 impl CursorMode {
-    pub const ALL: [Self; 2] = [Self::Both, Self::Remote];
-    pub fn label(self) -> &'static str { match self { Self::Both => "本地和远端光标", Self::Remote => "仅远端光标" } }
+    pub const ALL: [Self; 3] = [Self::Both, Self::Remote, Self::Hidden];
+    pub fn label(self) -> &'static str { match self { Self::Both => "本地和远端光标", Self::Remote => "仅远端光标", Self::Hidden => "隐藏光标" } }
     pub fn local(self) -> bool { self == Self::Both }
-    pub fn remote(self) -> bool { true }
-    pub fn next(self) -> Self { match self { Self::Both => Self::Remote, Self::Remote => Self::Both } }
+    pub fn remote(self) -> bool { self != Self::Hidden }
+    pub fn next(self) -> Self { match self { Self::Both => Self::Remote, Self::Remote => Self::Hidden, Self::Hidden => Self::Both } }
 }
 fn cursor<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CursorMode, D::Error> {
     #[derive(Deserialize)]

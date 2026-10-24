@@ -824,23 +824,36 @@ impl super::App {
                                     });
                                     }
                                     if self.supports_remote(uu_core::capabilities::Capability::Input) {
-                                    side_submenu(ui, &mut blocked, Icon::Desktop, "鼠标", |ui| {
+                                    side_submenu(ui, &mut blocked, Icon::Keyboard, "输入", |ui| {
                                         let old=(self.preferences.relative_mouse,self.preferences.cursor_mode);
+                                        ui.label("光标显示");
+                                        for mode in super::settings::CursorMode::ALL {
+                                            ui.add_enabled_ui(!self.is_native() || mode!=super::settings::CursorMode::Remote,|ui| {
+                                                ui.selectable_value(&mut self.preferences.cursor_mode,mode,mode.label());
+                                            });
+                                        }
+                                        if self.is_native() {
+                                            ui.small("原生串流目前由本机显示光标，尚不支持远端光标合成。");
+                                        } else {
+                                            ui.small("Ctrl+Alt+C 切换光标显示");
+                                            ui.small(&self.settings_feedback);
+                                        }
+                                        separator(ui);
+                                        ui.label("指针移动");
                                         ui.selectable_value(&mut self.preferences.relative_mouse,false,"桌面模式 · 绝对定位");
                                         ui.selectable_value(&mut self.preferences.relative_mouse,true,"游戏模式 · 相对移动");
-                                        if !self.is_native() {
-                                        separator(ui);
-                                        for mode in super::settings::CursorMode::ALL {
-                                            ui.selectable_value(&mut self.preferences.cursor_mode,mode,mode.label());
-                                        }
-                                        ui.small("Ctrl+Alt+C 切换光标显示");
-                                        ui.small(&self.settings_feedback);
-                                        }
                                         ui.small("Ctrl+Alt+P 切换桌面／游戏模式");
                                         ui.small("Ctrl+Alt+Z 释放／捕获输入");
                                         if old!=(self.preferences.relative_mouse,self.preferences.cursor_mode) {
                                             self.release_pointer_capture(ctx);self.persist_preferences();
-                                            if old.1.remote()!=self.preferences.cursor_mode.remote() {self.send_capture_settings();}ctx.memory_mut(|m|m.close_popup());
+                                            if old.1.remote()!=self.preferences.cursor_mode.remote() {self.send_capture_settings();}
+                                            ctx.memory_mut(|m|m.close_popup());
+                                        }
+                                        if self.is_native() {
+                                            separator(ui);
+                                            if ui.checkbox(&mut self.preferences.gamepad,"转发手柄和陀螺仪").changed(){self.persist_preferences();}
+                                            if let Some(status)=self.gamepad_status(){ui.label(egui::RichText::new(status).size(12.));}
+                                            ui.small("离开菜单并捕获输入后恢复转发；最多 4 个手柄。");
                                         }
                                     });
                                     }
@@ -866,13 +879,6 @@ impl super::App {
 
                                         }
                                     });
-                                    }
-                                    if self.is_native() {
-                                        side_submenu(ui,&mut blocked,Icon::Keyboard,"输入",|ui|{
-                                            if ui.checkbox(&mut self.preferences.gamepad,"转发手柄和陀螺仪").changed(){self.persist_preferences();}
-                                            if let Some(status)=self.gamepad_status(){ui.label(egui::RichText::new(status).size(12.));}
-                                            ui.small("离开菜单并捕获输入后恢复转发；最多 4 个手柄。");
-                                        });
                                     }
                                     if self.is_native() || self.supports_remote(uu_core::capabilities::Capability::Clipboard) {
                                     side_submenu(ui,&mut blocked,Icon::Folder,"剪贴板",|ui| {

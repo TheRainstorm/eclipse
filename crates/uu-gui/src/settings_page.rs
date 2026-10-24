@@ -212,11 +212,13 @@ fn audio(ui: &mut egui::Ui, s: &mut Settings) {
 fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
     group(ui, "光标显示", |ui| {
         for mode in CursorMode::ALL {
-            ui.radio_value(&mut s.cursor_mode, mode, mode.label());
+            ui.add_enabled_ui(!state.native || mode!=CursorMode::Remote,|ui| {
+                ui.radio_value(&mut s.cursor_mode, mode, mode.label());
+            });
         }
         note(
             ui,
-            "Ctrl+Alt+C 在两种光标显示间切换。原生共享目前由控制端绘制本地光标。",
+            "Ctrl+Alt+C 切换光标显示。原生串流支持显示或隐藏本机光标；仅远端光标需要被控端合成支持。",
         );
     });
     group(ui, "指针移动", |ui| {

@@ -906,15 +906,14 @@ impl App {
                 self.persist_preferences();
             },
             shortcuts::Action::CursorMode=>{
-                if self.is_native() {
-                    self.status="当前原生主机尚不支持远端光标合成切换".into();
-                } else {
-                    let remote=self.preferences.cursor_mode.remote();
-                    self.preferences.cursor_mode=self.preferences.cursor_mode.next();
-                    self.status=format!("光标：{}",self.preferences.cursor_mode.label());
-                    self.persist_preferences();
-                    if remote!=self.preferences.cursor_mode.remote() {self.send_capture_settings();}
-                }
+                let remote=self.preferences.cursor_mode.remote();
+                self.preferences.cursor_mode=if self.is_native() {
+                    if self.preferences.cursor_mode==settings::CursorMode::Hidden {settings::CursorMode::Both}
+                    else {settings::CursorMode::Hidden}
+                } else {self.preferences.cursor_mode.next()};
+                self.status=format!("光标：{}",self.preferences.cursor_mode.label());
+                self.persist_preferences();
+                if !self.is_native() && remote!=self.preferences.cursor_mode.remote() {self.send_capture_settings();}
             },
             shortcuts::Action::ToggleNested=>{
                 self.nested_passthrough=!self.nested_passthrough;

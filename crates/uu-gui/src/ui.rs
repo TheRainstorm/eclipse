@@ -1020,9 +1020,10 @@ impl App {
                         if self.mouse_captured {messages.extend(self.pointer.events_relative(events,input_screen));}
                     } else {messages.extend(self.pointer.events(events,draw,pointer,input_screen));}
                 }
-                let local_cursor=self.is_native() || self.preferences.cursor_mode.local();
-                if !local_cursor && self.remote_cursor_active && !controls_active && pointer.is_some_and(|p|draw.contains(p)) {ctx.set_cursor_icon(egui::CursorIcon::None);}
-                if (local_cursor || !self.remote_cursor_active) && !self.preferences.relative_mouse && !controls_active {
+                let hidden=self.preferences.cursor_mode==super::settings::CursorMode::Hidden;
+                let local_cursor=!hidden && (self.is_native() || self.preferences.cursor_mode.local());
+                if (hidden || (!local_cursor && self.remote_cursor_active)) && !controls_active && pointer.is_some_and(|p|draw.contains(p)) {ctx.set_cursor_icon(egui::CursorIcon::None);}
+                if !hidden && (local_cursor || !self.remote_cursor_active) && !self.preferences.relative_mouse && !controls_active {
                     let revision=self.cursor.revision();
                     let shape=self.controller.as_ref().and_then(|h|h.stats.cursor.lock().unwrap().as_ref().filter(|(r,_)|*r!=revision).cloned());
                     self.cursor.paint(ctx,shape,pointer,draw,input_screen,self.platform.cursor_size(ctx));
