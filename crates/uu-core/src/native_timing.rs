@@ -78,6 +78,7 @@ impl<const N: usize> Window<N> {
 }
 #[derive(Default)]
 pub(crate) struct HostTiming {
+    pub trace: std::sync::Arc<crate::frame_trace::HostTrace>,
     video: Mutex<Window<3>>,
     input: Mutex<Window<2>>,
 }

@@ -9,6 +9,7 @@ pub mod config;
 pub mod control_wire;
 pub mod controller;
 pub mod display_frames;
+pub mod frame_trace;
 mod video_receiver;
 pub mod error;
 pub mod media;

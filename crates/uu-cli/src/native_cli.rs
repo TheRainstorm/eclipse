@@ -23,6 +23,9 @@ pub async fn host(config: uu_core::native::HostConfig) -> Result<()> {
         "native host ended: captured={} sent={} bytes={} input={} input_errors={} audio={} audio_errors={} audio_drops={} producer_ms={} capture_us={} encode_us={} backpressure_us={} encoder={:?}",
         report.captured, report.sent, report.bytes, report.input_events, report.input_errors,report.audio_packets,report.audio_errors,report.audio_queue_drops,report.producer_ms,report.capture_us,report.encode_us,report.backpressure_us,report.encoder
     );
+    if let Some(report)=report.frame_trace {
+        println!("{}",serde_json::json!({"event":"host_frame_trace","report":report}));
+    }
     Ok(())
 }
 
@@ -171,6 +174,7 @@ fn snapshot(stats: &MediaStats, elapsed: Duration) -> serde_json::Value {
         "audio_injected_loss":stats.audio.injected_loss.load(Ordering::Relaxed),"audio_level":stats.audio.level_x10000.load(Ordering::Relaxed) as f64/10000.0,
         "at_ms":elapsed.as_millis() as u64,"width":width,"height":height,
         "native_timing":stats.native_timing.snapshot(),
+        "host_frame_trace":stats.native_frame_trace.lock().unwrap().clone(),
         "backend":stats.backend(),"codec":stats.codec.lock().unwrap().clone(),"decoded":stats.decoded_total.load(Ordering::Relaxed),
         "rx_fps":stats.src_fps(),"decode_fps":stats.dec_fps(),"decode_ms":stats.decode_ms(),
         "bitrate_kbps":stats.bitrate_kbps.load(Ordering::Relaxed),

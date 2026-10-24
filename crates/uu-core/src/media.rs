@@ -62,6 +62,8 @@ pub struct MediaStats {
     pub prefer_hevc: std::sync::atomic::AtomicBool,
     pub hevc_enabled: std::sync::OnceLock<bool>,
     pub diagnostics: crate::session_diagnostics::SessionDiagnostics,
+    pub native_frame_trace_supported: std::sync::atomic::AtomicBool,
+    pub native_frame_trace: std::sync::Mutex<Option<crate::frame_trace::Report>>,
     pub control_open: AtomicU32,
     /// Snapshot of the user's connection policy: 0 preserve, 1 exclusive UU.
     pub display_mode: AtomicU32,

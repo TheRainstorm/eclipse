@@ -57,7 +57,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 
 ## 开始使用
 
-当前为 **v0.18.7 测试版，尚未正式发布**，新增统一输入菜单和 Windows 原生 HDR 串流，见[测试说明](docs/releases/v0.18.7.md)。此前 0.18.6 的连接与采集修复也包含在内。最新正式版仍为 [v0.18.5](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.5)。
+当前开发分支为 **v0.18.8 媒体重构测试版，尚未正式发布**，首批加入[主机同帧测量](docs/frame-tracing.md)，见[测试说明](docs/releases/v0.18.8.md)。[v0.18.7 输入与 HDR 测试版](docs/releases/v0.18.7.md)独立保留，之前 0.18.6 的连接与采集修复也包含在新开发分支中。最新正式版仍为 [v0.18.5](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.5)。
 
 安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
 

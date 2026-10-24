@@ -28,6 +28,11 @@ pub(crate) struct Sender {
     fec:Option<crate::native_fec::Encoder>,
 
 }
+pub(crate) struct SendTiming {
+    pub timestamp: u32,
+    pub first: std::time::Instant,
+    pub last: std::time::Instant,
+}
 impl Sender {
     pub fn new(track:Arc<TrackLocalStaticRTP>,codec:VideoCodec)->Self{
         let payloader:Box<dyn Payloader+Send+Sync>=match codec{VideoCodec::H264=>Box::<webrtc::rtp::codecs::h264::H264Payloader>::default(),VideoCodec::Hevc=>Box::<HevcPayloader>::default(),VideoCodec::Av1=>Box::<webrtc::rtp::codecs::av1::Av1Payloader>::default()};
@@ -37,6 +42,12 @@ impl Sender {
         let mut sender=Self::new(track,codec);sender.fec=Some(crate::native_fec::Encoder::new(transport));sender
     }
     pub async fn frame(&mut self,encoded:&uu_media::EncodedFrame)->Result<()>{
+        self.transmit(encoded,false).await.map(|_|())
+    }
+    pub async fn frame_timed(&mut self,encoded:&uu_media::EncodedFrame)->Result<SendTiming>{
+        Ok(self.transmit(encoded,true).await?.expect("packetized video has first/last writes"))
+    }
+    async fn transmit(&mut self,encoded:&uu_media::EncodedFrame,timed:bool)->Result<Option<SendTiming>>{
         ensure!(encoded.data.len()<=crate::video_receiver::MAX_AU,"native encoded frame exceeds access-unit budget");
         let origin=*self.origin.get_or_insert(encoded.pts.0);
         ensure!(encoded.pts.0>=origin && self.last_pts.map_or(true,|previous|encoded.pts.0>previous),"native encoder timestamp did not advance");
@@ -45,11 +56,17 @@ impl Sender {
         let payloads=self.payloader.payload(mtu,&encoded.data)?;
         ensure!(!payloads.is_empty(),"native encoder emitted no packetizable video");
         let count=payloads.len();
+        let mut first=None;let mut last=None;
         for (index,payload) in payloads.into_iter().enumerate(){
             let packet=Packet{header:Header{version:2,sequence_number:self.sequence.next_sequence_number(),timestamp,marker:index+1==count,..Default::default()},payload};
             self.track.write_rtp(&packet).await?;
+            if timed && (index==0 || index+1==count) {
+                let now=std::time::Instant::now();
+                if index==0 {first=Some(now);}last=Some(now);
+            }
             if let Some(fec)=&mut self.fec {fec.packet(&packet);}
-        }self.last_pts=Some(encoded.pts.0);Ok(())
+        }self.last_pts=Some(encoded.pts.0);
+        Ok(first.zip(last).map(|(first,last)|SendTiming{timestamp,first,last}))
     }
 
 }
