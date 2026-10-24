@@ -79,7 +79,7 @@ async fn encrypted_twelve_frame_burst_preserves_references_while_a_fast_decoder_
     *viewer.pending_decoder.lock().unwrap()=Some(crate::media::PreparedVideoDecoder{
         decoder:Box::new(Decoder{inner:decoder.decoder,count:0,pause:pause.clone()}),visible:decoder.visible});
     let refresh=Arc::new(AtomicBool::new(false));
-    let mut sender=host.sender_for_codec(refresh,VideoCodec::H264).await.unwrap();
+    let mut sender=host.sender_for_color(refresh,VideoCodec::H264,false).await.unwrap();
     let result=async {
         let offer=viewer.description(true).await?;host.remote(offer,ip).await?;
         let answer=host.description(false).await?;viewer.remote(answer,ip).await?;
@@ -356,7 +356,7 @@ async fn encrypted_fec_recovers_a_lost_keyframe_fragment_when_every_retransmissi
     let mut host=NativePeer::new(ip,None,true).await.unwrap();
     let mut viewer=NativePeer::new(ip,Some(stats.clone()),false).await.unwrap();
     let(frames,mut images)=crate::media::frame_channel();viewer.receiver(frames,stats.clone()).await.unwrap();
-    let mut sender=host.sender_for_codec(Arc::new(AtomicBool::new(false)),VideoCodec::H264).await.unwrap();
+    let mut sender=host.sender_for_color(Arc::new(AtomicBool::new(false)),VideoCodec::H264,false).await.unwrap();
     let relay=UdpSocket::bind((ip,0)).await.unwrap();let port=relay.local_addr().unwrap().port();
     let dropped=Arc::new(AtomicUsize::new(0));let losses=dropped.clone();let mut relay_task=None;
     let result=async {

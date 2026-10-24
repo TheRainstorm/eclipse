@@ -296,7 +296,7 @@ mod wire_tests {
             .unwrap();
         let (frames, _rx) = crate::media::frame_channel();
         viewer.receiver(frames, stats.clone()).await.unwrap();
-        host.sender_for_codec(Arc::new(AtomicBool::new(false)),uu_proto::media::VideoCodec::H264).await.unwrap();
+        host.sender_for_color(Arc::new(AtomicBool::new(false)),uu_proto::media::VideoCodec::H264,false).await.unwrap();
         let offer = viewer.description(true).await.unwrap();
         let local = from_sdp(&offer.sdp)[0].address;
         host.remote(offer, ip).await.unwrap();

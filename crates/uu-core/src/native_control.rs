@@ -867,6 +867,15 @@ mod tests {
         .await
         .unwrap();
     }
+    async fn wait_for_grant(worker: &InputWorker) {
+        // Requests intentionally do not block while the input actor releases
+        // the previous generation. Model the control heartbeat's retry here.
+        wait(|| {
+            worker.request(true);
+            worker.state.enabled.load(Ordering::Acquire)
+        })
+        .await;
+    }
     #[tokio::test]
     async fn temporary_input_failure_releases_before_regrant_and_drops_old_events() {
         struct Interrupted {fail:Arc<AtomicBool>,cleanup:Arc<AtomicBool>,events:Arc<Mutex<Vec<uu_input::InputEvent>>>}
@@ -896,7 +905,7 @@ mod tests {
         wait(||a.state.applied.load(Ordering::Acquire)==2).await;
         assert_eq!(events.lock().unwrap().len(),2);
         a.request(false);wait(||a.state.ownership.lock().unwrap().is_none()).await;
-        b.request(true);assert!(b.push(InputCommand::Relative{dx:2,dy:2}));wait(||b.state.applied.load(Ordering::Acquire)==1).await;
+        wait_for_grant(&b).await;assert!(b.push(InputCommand::Relative{dx:2,dy:2}));wait(||b.state.applied.load(Ordering::Acquire)==1).await;
         a.stop().await;b.stop().await;
     }
     #[tokio::test]
@@ -1050,7 +1059,7 @@ mod tests {
         *gate.0.lock().unwrap()=true;gate.1.notify_all();
         assert!(blocked,"ownership must outlive OS release");
         wait(||a.state.ownership.lock().unwrap().is_none()).await;
-        b.request(true);assert!(b.push(InputCommand::Key{usage:4,pressed:true}));
+        wait_for_grant(&b).await;assert!(b.push(InputCommand::Key{usage:4,pressed:true}));
         wait(||b.state.applied.load(Ordering::Acquire)==1).await;
         a.stop().await;
         assert!(b.state.enabled.load(Ordering::Acquire),"old owner cleanup cannot disable the new owner");
