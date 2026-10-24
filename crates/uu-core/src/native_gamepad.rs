@@ -7,6 +7,16 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use uu_input::gamepad::{Snapshot, VirtualGamepads};
 pub(crate) const LABEL: &str = "eclipse-gamepad-v1";
+pub(crate) const LABEL_V2: &str = "eclipse-gamepad-v2";
+const ATTRIBUTE:&str="a=x-eclipse-gamepad:types1";
+pub(crate) fn typed_offered(sdp:&webrtc::peer_connection::sdp::session_description::RTCSessionDescription)->bool {
+    let mut attributes=sdp.sdp.lines().map(str::trim).filter(|line|line.starts_with("a=x-eclipse-gamepad:"));
+    attributes.next()==Some(ATTRIBUTE)&&attributes.next().is_none()
+}
+pub(crate) fn advertise(sdp:&mut webrtc::peer_connection::sdp::session_description::RTCSessionDescription) {
+    let at=sdp.sdp.find("m=").unwrap_or(sdp.sdp.len());sdp.sdp.insert_str(at,&format!("{ATTRIBUTE}\r\n"));
+}
+pub(crate) fn version(channel:&webrtc::data_channel::RTCDataChannel)->u8{if channel.label()==LABEL_V2{2}else{1}}
 pub(crate) const LIFETIME_MS: u16 = 50;
 const STALE: Duration = Duration::from_millis(250);
 #[derive(Default)]
@@ -41,13 +51,13 @@ pub(crate) fn parse(data: &[u8]) -> Option<Packet> {
     let packet: Packet = serde_json::from_slice(data).ok()?;
     let valid = match &packet {
         Packet::State {
-            version: 1,
+            version: version @ (1|2),
             sequence,
             state,
             ..
-        } => *sequence > 0 && state.iter().flatten().all(|s| s.valid()),
+        } => *sequence > 0 && state.iter().flatten().all(|s| s.valid() && (*version==2 || s.kind==uu_input::gamepad::Kind::DualShock4)),
         Packet::Status {
-            version: 1,
+            version: 1|2,
             connected,
             error,
             ..
@@ -492,6 +502,17 @@ mod tests {
         worker.stop();
     }
     #[test]
+    fn typed_controller_packets_require_v2_and_legacy_packets_omit_new_fields(){
+        let mut state=[None;4];state[0]=Some(Default::default());
+        let packet=|version,state|serde_json::to_vec(&Packet::State{version,sequence:1,generation:1,state}).unwrap();
+        let legacy=packet(1,state);assert!(!String::from_utf8_lossy(&legacy).contains("kind"));assert!(parse(&legacy).is_some());
+        state[0].as_mut().unwrap().kind=uu_input::gamepad::Kind::Xbox360;
+        assert!(parse(&packet(1,state)).is_none());assert!(parse(&packet(2,state)).is_some());
+        let mut sdp=webrtc::peer_connection::sdp::session_description::RTCSessionDescription::default();
+        sdp.sdp="v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n".into();
+        assert!(!typed_offered(&sdp));advertise(&mut sdp);assert!(typed_offered(&sdp));advertise(&mut sdp);assert!(!typed_offered(&sdp));
+    }
+    #[test]
     fn packet_parser_bounds_version_slots_and_nonfinite_sensor_values() {
         let mut state = [None; 4];
         state[0] = Some(Default::default());
@@ -506,7 +527,7 @@ mod tests {
         assert!(parse(br#"{"type":"state","version":1,"sequence":1,"state":[]}"#).is_none());
         assert!(parse(
             &serde_json::to_vec(&Packet::State {
-                version: 2,
+                version: 3,
                 sequence: 1,
                 generation: 1,
                 state
@@ -548,18 +569,21 @@ impl Viewer {
             opened.notify_one();
             Box::pin(async {})
         }));
+        let version=version(&channel);
         let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let current_generation = generation.clone();
         let incoming = stats.clone();
         channel.on_message(Box::new(move |message| {
             if incoming.native_media_epoch.load(Ordering::Acquire) == media_epoch {
                 if let Some(Packet::Status {
+                    version: packet_version,
                     connected,
                     generation,
                     error,
                     ..
                 }) = parse(&message.data)
                 {
+                    if packet_version!=version{return Box::pin(async{});}
                     let previous = current_generation.fetch_max(generation, Ordering::AcqRel);
                     if generation < previous {
                         return Box::pin(async {});
@@ -570,7 +594,7 @@ impl Viewer {
                         .store(connected, Ordering::Release);
                     *incoming.gamepad.status.lock().unwrap() = error.unwrap_or_else(|| {
                         if connected > 0 {
-                            format!("已转发 {connected} 个手柄")
+                            if version==1 {format!("已转发 {connected} 个手柄（旧版被控端统一模拟 DS4）")}else{format!("已转发 {connected} 个手柄")}
                         } else {
                             "等待本地手柄或控制权".into()
                         }
@@ -601,7 +625,7 @@ impl Viewer {
                 }
                 let sample_epoch = input_epoch.load(Ordering::Acquire);
                 let grant = generation.load(Ordering::Acquire);
-                let state = if requested.load(Ordering::Acquire)
+                let mut state = if requested.load(Ordering::Acquire)
                     && stats
                         .capabilities
                         .allows(crate::capabilities::Capability::Input)
@@ -611,6 +635,7 @@ impl Viewer {
                     samples.borrow_and_update();
                     [None; uu_input::gamepad::SLOTS]
                 };
+                if version==1 {for pad in state.iter_mut().flatten(){pad.kind=uu_input::gamepad::Kind::DualShock4;}}
                 if channel.ready_state()
                     != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
                 {
@@ -626,7 +651,7 @@ impl Viewer {
                 }
                 sequence = sequence.wrapping_add(1).max(1);
                 if let Ok(bytes) = serde_json::to_vec(&Packet::State {
-                    version: 1,
+                    version,
                     sequence,
                     generation: grant,
                     state,

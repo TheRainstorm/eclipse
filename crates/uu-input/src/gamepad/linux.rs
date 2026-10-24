@@ -1,4 +1,4 @@
-use super::{ds4, Snapshot, State, VirtualGamepads, SLOTS};
+use super::{ds4,xbox,Kind, Snapshot, State, VirtualGamepads, SLOTS};
 use crate::InputError;
 use std::{ffi::CString,fs::{File,OpenOptions},os::{fd::AsRawFd,unix::fs::OpenOptionsExt}};
 const DESCRIPTOR:&[u8]=include_bytes!("../../../../vendor/ds4-data/descriptor.bin");
@@ -11,8 +11,11 @@ extern "C" {
     fn eclipse_pad_poll(fd:i32,id:*mut u32,number:*mut u32)->i32;
     fn eclipse_pad_reply(fd:i32,id:u32,number:u32,bytes:*const u8,size:u32)->i32;
     fn eclipse_pad_set_reply(fd:i32,id:u32)->i32;
+    fn eclipse_xpad_create(fd:i32)->i32;
+    fn eclipse_xpad_input(fd:i32,buttons:u32,sticks:*const i16,triggers:*const u8)->i32;
+    fn eclipse_xpad_destroy(fd:i32)->i32;
 }
-fn result(code:i32)->Result<(),InputError>{if code<0 {Err(InputError::Backend(format!("virtual DS4: {}",std::io::Error::from_raw_os_error(-code))))}else{Ok(())}}
+fn result(code:i32)->Result<(),InputError>{if code<0 {Err(InputError::Backend(format!("virtual gamepad: {}",std::io::Error::from_raw_os_error(-code))))}else{Ok(())}}
 struct Device {file:File,mac:[u8;6]}
 impl Device {
     fn new()->Result<Self,InputError>{
@@ -46,13 +49,33 @@ impl Device {
     }
 }
 impl Drop for Device {fn drop(&mut self){let _=self.update(&State::default());unsafe{eclipse_pad_destroy(self.file.as_raw_fd());}}}
-#[derive(Default)] pub struct Backend {pads:[Option<Device>;SLOTS]}
+struct XboxDevice {file:File}
+impl XboxDevice {
+    fn new()->Result<Self,InputError>{
+        let file=OpenOptions::new().read(true).write(true).custom_flags(libc::O_NONBLOCK|libc::O_CLOEXEC).open("/dev/uinput")
+            .map_err(|e|InputError::Unavailable(format!("无法打开 /dev/uinput：{e}；Xbox虚拟手柄需要uinput访问权限")))?;
+        result(unsafe{eclipse_xpad_create(file.as_raw_fd())})?;Ok(Self{file})
+    }
+    fn update(&mut self,state:&State)->Result<(),InputError>{
+        let report=xbox::report(state);
+        result(unsafe{eclipse_xpad_input(self.file.as_raw_fd(),u32::from(report.buttons),state.sticks.as_ptr(),report.triggers.as_ptr())})
+    }
+}
+impl Drop for XboxDevice {fn drop(&mut self){let _=self.update(&State::default());unsafe{eclipse_xpad_destroy(self.file.as_raw_fd());}}}
+enum Pad {Ds4(Device),Xbox(XboxDevice)}
+impl Pad {
+    fn kind(&self)->Kind{match self{Self::Ds4(_)=>Kind::DualShock4,Self::Xbox(_)=>Kind::Xbox360}}
+    fn update(&mut self,state:&State)->Result<(),InputError>{match self{Self::Ds4(pad)=>pad.update(state),Self::Xbox(pad)=>pad.update(state)}}
+    fn poll(&mut self)->Result<(),InputError>{match self{Self::Ds4(pad)=>pad.poll(),Self::Xbox(_)=>Ok(())}}
+}
+#[derive(Default)] pub struct Backend {pads:[Option<Pad>;SLOTS]}
 impl VirtualGamepads for Backend {
     fn update(&mut self,state:&Snapshot)->Result<(),InputError>{
         for (slot,state) in state.iter().enumerate(){
             if let Some(state)=state {
                 if !state.valid(){return Err(InputError::Backend("invalid controller state".into()));}
-                if self.pads[slot].is_none(){self.pads[slot]=Some(Device::new()?);}
+                if self.pads[slot].as_ref().is_some_and(|pad|pad.kind()!=state.kind){self.pads[slot].take();}
+                if self.pads[slot].is_none(){self.pads[slot]=Some(match state.kind{Kind::DualShock4=>Pad::Ds4(Device::new()?),Kind::Xbox360=>Pad::Xbox(XboxDevice::new()?)});}
                 self.pads[slot].as_mut().unwrap().update(state)?;
             }else{self.pads[slot].take();}
         }self.poll()

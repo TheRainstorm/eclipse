@@ -5,7 +5,7 @@ use std::{
     sync::{atomic::Ordering, Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
-use uu_input::gamepad::{Snapshot, State, SLOTS};
+use uu_input::gamepad::{Kind,Snapshot, State, SLOTS};
 #[derive(Clone)]
 pub(super) struct Target {
     pub input: uu_core::native_input::NativeInputSender,
@@ -260,7 +260,9 @@ impl Sampler {
         } else if state.iter().all(Option::is_none) {
             "未检测到本地手柄".into()
         } else {
-            String::new()
+            let xbox=state.iter().flatten().filter(|pad|pad.kind==Kind::Xbox360).count();
+            let ds4=state.iter().flatten().count()-xbox;
+            format!("模拟类型：Xbox 360 × {xbox}，DS4 × {ds4}")
         };
         (state, notice)
     }
@@ -298,6 +300,12 @@ fn sample(pad: &sdl2::controller::GameController, timestamp_us: u64) -> State {
         .then_some(data)
     };
     State {
+        kind: {
+            // SDL owns this handle; borrow it only on the sampler's SDL thread.
+            let controller=unsafe{sdl2::sys::SDL_GameControllerFromInstanceID(pad.instance_id() as i32)};
+            let kind=if controller.is_null(){sdl2::sys::SDL_GameControllerType::SDL_CONTROLLER_TYPE_UNKNOWN}else{unsafe{sdl2::sys::SDL_GameControllerGetType(controller)}};
+            output_kind(kind,pad.has_sensor(sdl2::sensor::SensorType::Gyroscope))
+        },
         buttons,
         sticks: [Axis::LeftX, Axis::LeftY, Axis::RightX, Axis::RightY].map(|axis| pad.axis(axis)),
         triggers: [Axis::TriggerLeft, Axis::TriggerRight]
@@ -305,6 +313,16 @@ fn sample(pad: &sdl2::controller::GameController, timestamp_us: u64) -> State {
         timestamp_us,
         gyro: sensor(sdl2::sensor::SensorType::Gyroscope),
         acceleration: sensor(sdl2::sensor::SensorType::Accelerometer),
+    }
+}
+fn output_kind(kind:sdl2::sys::SDL_GameControllerType,motion:bool)->Kind {
+    use sdl2::sys::SDL_GameControllerType::*;
+    match kind {
+        SDL_CONTROLLER_TYPE_XBOX360|SDL_CONTROLLER_TYPE_XBOXONE=>Kind::Xbox360,
+        SDL_CONTROLLER_TYPE_PS3|SDL_CONTROLLER_TYPE_PS4|SDL_CONTROLLER_TYPE_PS5
+        |SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO|SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_LEFT
+        |SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT|SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR=>Kind::DualShock4,
+        _=>if motion{Kind::DualShock4}else{Kind::Xbox360},
     }
 }
 
@@ -343,6 +361,15 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn controller_identity_selects_xbox_or_motion_capable_playstation(){
+        use sdl2::sys::SDL_GameControllerType::*;
+        assert_eq!(output_kind(SDL_CONTROLLER_TYPE_XBOXONE,true),Kind::Xbox360);
+        assert_eq!(output_kind(SDL_CONTROLLER_TYPE_UNKNOWN,false),Kind::Xbox360);
+        assert_eq!(output_kind(SDL_CONTROLLER_TYPE_UNKNOWN,true),Kind::DualShock4);
+        assert_eq!(output_kind(SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO,false),Kind::DualShock4);
+        assert_eq!(output_kind(SDL_CONTROLLER_TYPE_PS5,true),Kind::DualShock4);
+    }
     #[test]
     fn background_session_cannot_release_the_current_gamepad_recipient() {
         let mut reader=Reader::default();reader.owner=Some(11);reader.key=Some(42);

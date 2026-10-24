@@ -1,8 +1,10 @@
 # 原生手柄与陀螺仪
 
-开发分支的原生 IP、UU 连接服务、自建连接服务共用手柄输入路径。控制端在“应用设置 → 输入与协作”启用“转发本地手柄和陀螺仪”，串流菜单也有手柄开关和状态。最多转发 4 个 SDL 能识别的本地手柄；主机将它们呈现为虚拟 USB DualShock 4。
+原生 IP、UU 连接服务、自建连接服务共用手柄输入路径。控制端在“应用设置 → 输入与协作”启用“转发本地手柄和陀螺仪”，串流菜单也有手柄开关和状态。最多转发 4 个 SDL 能识别的本地手柄。v0.18.2 起，Xbox 类型呈现为虚拟 Xbox 360/XInput 手柄；Nintendo Switch 和 PlayStation 类型呈现为 DS4，以传递运动传感器。未知型号有陀螺仪时选 DS4，否则选 Xbox。菜单显示最近检测到的模拟类型。
 
 此功能需要原生主机与原生控制端均更新到支持此扩展的版本，尚未接入官方 UU 兼容设备的外设协议。常规按钮、方向键、双摇杆和模拟扳机可用；陀螺仪、加速度需要实体手柄及其驱动支持。当前不转发震动、触摸板坐标和自适应扳机。触摸板点击作为普通按钮传输。
+
+模拟类型通过会话能力协商。连接旧版时保留旧 DS4 协议，并在控制端显示兼容状态；要让 Xbox 以 Xbox 类型出现，需要同时升级控制端和实际运行的后台程序，再重新连接。蓝牙实体连接不会把虚拟设备变成远端蓝牙设备。
 
 ## 焦点和控制权
 
@@ -14,12 +16,13 @@
 
 ## 平台依赖
 
-Windows 被控端需要已安装、正常工作的 [ViGEmBus](https://github.com/nefarius/ViGEmBus)。应用通过 [vigem-rust](https://github.com/arounre/vigem-rust) 创建虚拟 DS4，不自动安装驱动或修改系统设置。普通键鼠、视频不依赖此驱动；驱动缺失只使手柄不可用。
+Windows 被控端需要已安装、正常工作的 [ViGEmBus](https://github.com/nefarius/ViGEmBus)。应用通过 [vigem-rust](https://github.com/arounre/vigem-rust) 创建虚拟 Xbox 360 或 DS4，不自动安装驱动或修改系统设置。普通键鼠、视频不依赖此驱动；驱动缺失只使手柄不可用。
 
-Linux 被控端使用内核 UHID，需要加载 `uhid` 模块并允许运行共享的用户访问 `/dev/uhid`。可由管理员配置只针对 UHID 的 udev 规则，例如供本地活动桌面会话使用：
+Linux 被控端的 DS4 使用 `/dev/uhid`，Xbox 使用 `/dev/uinput`，需相应内核模块及运行共享用户的访问权限。可由管理员配置对应 udev 规则，例如供本地活动桌面会话使用：
 
 ```udev
 KERNEL=="uhid", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uhid"
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
 ```
 
 后台服务可使用独立用户组授予该节点权限。客户端的物理手柄及传感器读取遵循 SDL 与系统现有的 evdev / HID 权限；设备只提供普通按键而无传感器时仍能转发普通手柄。
@@ -35,8 +38,8 @@ flowchart LR
     Latest --> DC["独立、无序的数据通道\n50 ms 包寿命，DTLS 加密"]
     DC --> Gate["已认证会话与统一控制权"]
     Gate --> Worker["虚拟手柄线程"]
-    Worker --> Linux["Linux UHID：虚拟 DS4"]
-    Worker --> Windows["Windows ViGEmBus：扩展 DS4 报告"]
+    Worker --> Linux["Linux uinput Xbox / UHID DS4"]
+    Worker --> Windows["Windows ViGEmBus：Xbox / DS4"]
 ```
 
 高频传感器状态不进入可靠键盘队列。每次传输全部四个槽位的状态，后续快照可修复丢包造成的按键抬起遗漏；每个快照携带当前输入授权代数；失焦、重新捕获后，旧代数的快照即使带着更大的序号也不会执行。旧序号被拒绝，250 毫秒没有有效更新会释放虚拟手柄。发送队列有界，不重播积攒的旧传感器数据。该通道仍使用现有 WebRTC/UDP 连接，与视频共用网络带宽。

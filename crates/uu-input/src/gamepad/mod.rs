@@ -2,13 +2,21 @@
 use crate::InputError;
 use serde::{Deserialize, Serialize};
 mod ds4;
+mod xbox;
 #[cfg(target_os="linux")] mod linux;
 #[cfg(windows)] mod windows;
 pub const SLOTS: usize = 4;
 pub const BUTTON_MASK: u32 = 0x7fff | (1 << 20);
+/// The virtual device requested for this slot. Legacy peers only know DS4.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum Kind {Xbox360,#[default] DualShock4}
+impl Kind {fn legacy(&self)->bool{*self==Self::DualShock4}}
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct State {
+    #[serde(default,skip_serializing_if="Kind::legacy")]
+    pub kind:Kind,
     pub buttons: u32,
     pub sticks: [i16; 4],
     pub triggers: [u16; 2],
@@ -20,7 +28,7 @@ pub struct State {
     pub acceleration: Option<[f32; 3]>,
 }
 impl Default for State {
-    fn default()->Self{Self{buttons:0,sticks:[0;4],triggers:[0;2],timestamp_us:0,gyro:None,acceleration:None}}
+    fn default()->Self{Self{kind:Kind::default(),buttons:0,sticks:[0;4],triggers:[0;2],timestamp_us:0,gyro:None,acceleration:None}}
 }
 impl State {
     pub fn valid(&self)->bool {

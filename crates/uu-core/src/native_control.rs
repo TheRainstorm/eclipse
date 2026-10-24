@@ -337,9 +337,11 @@ pub(crate) struct HostControl {
     clipboard_registered: AtomicBool,
     clipboard_version: std::sync::atomic::AtomicU8,
     gamepad_registered: AtomicBool,
+    gamepad_typed: AtomicBool,
 }
 impl HostControl {
     pub fn clipboard_images(&self,enabled:bool){self.clipboard_version.store(if enabled{2}else{1},Ordering::Release);}
+    pub fn gamepad_types(&self,enabled:bool){self.gamepad_typed.store(enabled,Ordering::Release);}
     pub fn set_quality(&self,quality:crate::native_quality::Runtime){*self.quality.lock().unwrap()=Some(quality);}
     pub fn set_session(&self,session:Option<crate::shared_host::SessionContext>) {*self.session.lock().unwrap()=session;}
     fn admin_status(&self)->Packet {
@@ -414,6 +416,7 @@ impl HostControl {
             clipboard_registered: AtomicBool::new(false),
             clipboard_version: std::sync::atomic::AtomicU8::new(1),
             gamepad_registered: AtomicBool::new(false),
+            gamepad_typed: AtomicBool::new(false),
             registered: AtomicBool::new(false),
         })
     }
@@ -433,7 +436,8 @@ impl HostControl {
         pc.on_data_channel(Box::new(move |channel| {
             let host = host.clone();
             Box::pin(async move {
-                if channel.label()==crate::native_gamepad::LABEL && !channel.ordered() && channel.max_packet_lifetime()==crate::native_gamepad::LIFETIME_MS && channel.max_retransmits()==0 && !host.gamepad_registered.swap(true,Ordering::AcqRel) {
+                let gamepad_label=if host.gamepad_typed.load(Ordering::Acquire){crate::native_gamepad::LABEL_V2}else{crate::native_gamepad::LABEL};
+                if channel.label()==gamepad_label && !channel.ordered() && channel.max_packet_lifetime()==crate::native_gamepad::LIFETIME_MS && channel.max_retransmits()==0 && !host.gamepad_registered.swap(true,Ordering::AcqRel) {
                     host.attach_gamepads(channel);return;
                 }
                 let clipboard_label=if host.clipboard_version.load(Ordering::Acquire)==2 {crate::native_clipboard::LABEL_V2}else{crate::native_clipboard::LABEL};
@@ -556,19 +560,21 @@ impl HostControl {
         }));
     }
     fn attach_gamepads(self:&Arc<Self>,channel:Arc<RTCDataChannel>) {
+        let version=crate::native_gamepad::version(&channel);
         let worker=self.worker.clone();let closed=worker.clone();
         channel.on_close(Box::new(move||{if let Some(worker)=&closed{worker.gamepads([None;uu_input::gamepad::SLOTS],worker.state.epoch.load(Ordering::Acquire));}Box::pin(async{})}));
         let weak=Arc::downgrade(&channel);let last=Arc::new(AtomicU64::new(0));let reported=Arc::new(Mutex::new(Instant::now()-Duration::from_secs(1)));
         channel.on_message(Box::new(move|message|{
             let worker=worker.clone();let weak=weak.clone();let last=last.clone();let reported=reported.clone();
             Box::pin(async move {
-                if let Some(crate::native_gamepad::Packet::State{sequence,generation,state,..})=crate::native_gamepad::parse(&message.data) {
+                if let Some(crate::native_gamepad::Packet::State{version:packet_version,sequence,generation,state})=crate::native_gamepad::parse(&message.data) {
+                    if packet_version!=version{return;}
                     if last.fetch_update(Ordering::AcqRel,Ordering::Acquire,|old|(sequence>old).then_some(sequence)).is_err(){return;}
                     if let Some(worker)=&worker {worker.gamepads(state,generation);}
                     let reporting={let mut at=reported.lock().unwrap();if worker.as_ref().is_some_and(|w|w.state.epoch.load(Ordering::Acquire)!=generation)||at.elapsed()>=Duration::from_secs(1){*at=Instant::now();true}else{false}};
                     if reporting {if let Some(channel)=weak.upgrade(){
                         let status=worker.as_ref().map_or_else(||crate::native_gamepad::Status{connected:0,error:Some("被控端未允许控制或输入后端不可用".into())},|worker|worker.gamepad_status());
-                        let packet=crate::native_gamepad::Packet::Status{version:1,connected:status.connected,generation:worker.as_ref().map_or(0,|w|w.state.epoch.load(Ordering::Acquire)),error:status.error};
+                        let packet=crate::native_gamepad::Packet::Status{version,connected:status.connected,generation:worker.as_ref().map_or(0,|w|w.state.epoch.load(Ordering::Acquire)),error:status.error};
                         if let Ok(bytes)=serde_json::to_vec(&packet){let _=timeout(Duration::from_millis(20),channel.send(&bytes.into())).await;}
                     }}
                 }
@@ -1052,6 +1058,13 @@ mod tests {
     }
     #[tokio::test(flavor="multi_thread",worker_threads=4)]
     async fn encrypted_gamepad_snapshots_share_control_focus_but_not_the_reliable_key_queue(){
+        encrypted_gamepad_snapshots(false).await;
+    }
+    #[tokio::test(flavor="multi_thread",worker_threads=4)]
+    async fn typed_gamepad_snapshots_preserve_xbox_identity_and_control_generations(){
+        encrypted_gamepad_snapshots(true).await;
+    }
+    async fn encrypted_gamepad_snapshots(typed:bool){
         use crate::native_media::NativePeer;
         use uu_input::gamepad::{Snapshot,VirtualGamepads};
         struct Pads(Arc<Mutex<Vec<Snapshot>>>);
@@ -1061,12 +1074,15 @@ mod tests {
         }
         let host=HostControl::with_injector(true,Some(uu_capture::DesktopRect{x:0,y:0,width:640,height:480}),None,
             Some(Box::new(Fixture{events:Arc::default(),releases:Arc::default()})),Arc::default()).await;
+        host.gamepad_types(typed);
+        let label=if typed{crate::native_gamepad::LABEL_V2}else{crate::native_gamepad::LABEL};
+        let version=if typed{2}else{1};
         let input_worker=host.worker.as_ref().unwrap();let weak=Arc::downgrade(&input_worker.state);
         let events=Arc::new(Mutex::new(Vec::new()));let record=events.clone();
         *input_worker.state.gamepads.lock().unwrap()=Some(crate::native_gamepad::Worker::with_factory(Arc::new(move||weak.upgrade().map_or((0,false),|s|(s.epoch.load(Ordering::Acquire),s.enabled.load(Ordering::Acquire)&&!s.stop.load(Ordering::Acquire)&&s.applied_epoch.load(Ordering::Acquire)==s.epoch.load(Ordering::Acquire)))),Box::new(move||Ok(Box::new(Pads(record.clone()))))).unwrap());
         let ip="127.0.0.1".parse().unwrap();let mut server=NativePeer::new(ip,None,true).await.unwrap();let mut client=NativePeer::new(ip,None,false).await.unwrap();host.attach(&server.pc);
         let channel=client.pc.create_data_channel("eclipse-control-v1",None).await.unwrap();
-        let pad_channel=client.pc.create_data_channel(crate::native_gamepad::LABEL,Some(webrtc::data_channel::data_channel_init::RTCDataChannelInit{ordered:Some(false),max_packet_life_time:Some(crate::native_gamepad::LIFETIME_MS),..Default::default()})).await.unwrap();
+        let pad_channel=client.pc.create_data_channel(label,Some(webrtc::data_channel::data_channel_init::RTCDataChannelInit{ordered:Some(false),max_packet_life_time:Some(crate::native_gamepad::LIFETIME_MS),..Default::default()})).await.unwrap();
         let (input,receiver)=crate::native_input::channel(true);let stats=Arc::new(MediaStats::default());
         let pad_viewer=crate::native_gamepad::Viewer::start(pad_channel.clone(),stats.clone(),receiver.gamepads.clone(),receiver.requested.clone(),receiver.epoch.clone());
         let mut controls=ViewerControl::new(channel,stats.clone(),Some(receiver));
@@ -1074,7 +1090,7 @@ mod tests {
         let (a,b)=tokio::join!(client.connected(),server.connected());a.unwrap();b.unwrap();
         let controlling=tokio::spawn(async move{controls.run().await});
         wait(||stats.capabilities.allows(Capability::Input)).await;
-        let mut state=[None;4];state[0]=Some(uu_input::gamepad::State{buttons:1,timestamp_us:10000,gyro:Some([0.2,0.3,-0.4]),..Default::default()});
+        let mut state=[None;4];state[0]=Some(uu_input::gamepad::State{kind:if typed{uu_input::gamepad::Kind::Xbox360}else{Default::default()},buttons:1,timestamp_us:10000,gyro:Some([0.2,0.3,-0.4]),..Default::default()});
         input.send(InputCommand::Key{usage:4,pressed:true}).unwrap();wait(||host.counters().0>0).await;
         timeout(Duration::from_secs(3),async {loop{input.gamepads(state);if events.lock().unwrap().last()==Some(&state){break;}tokio::time::sleep(Duration::from_millis(8)).await;}}).await.expect("latest snapshots must arrive over the unreliable channel");
         let previous_generation=input_worker.state.epoch.load(Ordering::Acquire);
@@ -1088,7 +1104,7 @@ mod tests {
         state[0].as_mut().unwrap().buttons=2;
         timeout(Duration::from_secs(3),async{loop{input.gamepads(state);if events.lock().unwrap().last()==Some(&state){break;}tokio::time::sleep(Duration::from_millis(8)).await;}}).await.unwrap();
         drop(pad_viewer);
-        let packet=|sequence,generation,state|serde_json::to_vec(&crate::native_gamepad::Packet::State{version:1,sequence,generation,state}).unwrap().into();
+        let packet=|sequence,generation,state|serde_json::to_vec(&crate::native_gamepad::Packet::State{version,sequence,generation,state}).unwrap().into();
         let generation=input_worker.state.epoch.load(Ordering::Acquire);assert!(generation>previous_generation);
         state[0].as_mut().unwrap().buttons=4;
         timeout(Duration::from_secs(3),async{loop{pad_channel.send(&packet(100,generation,state)).await.unwrap();if events.lock().unwrap().last()==Some(&state){break;}tokio::time::sleep(Duration::from_millis(8)).await;}}).await.unwrap();

@@ -639,6 +639,7 @@ async fn send_video(
     let advertised:Vec<_>=ordered.into_iter().filter(|c|crate::native_media::offers_codec(&offer.sdp,*c)).collect();
     let audio_mode=if config.audio.is_some(){crate::native_media::offered_audio(&offer.sdp)?}else{None};
     let clipboard_images=crate::native_clipboard::images_offered(&offer.sdp);
+    let typed_gamepads=crate::native_gamepad::typed_offered(&offer.sdp);
     match stream.lan_peer() {
         Some(ip) => peer.remote(offer.sdp, ip).await?,
         None => peer.remote_direct(offer.sdp).await?,
@@ -701,6 +702,7 @@ async fn send_video(
     };
     controls.set_permissions(permissions);
     controls.clipboard_images(clipboard_images);
+    controls.gamepad_types(typed_gamepads);
     controls.set_session(config.session.clone());
     if let Some(displays)=&displays {displays.dimensions(width,height);}
     controls.set_displays(displays.clone());
@@ -710,6 +712,7 @@ async fn send_video(
     startup.ice_us=elapsed_us(ice_started);startup.total_us=elapsed_us(preparation_started);
     startup.add(&mut description)?;
     if clipboard_images {crate::native_clipboard::advertise(&mut description);}
+    if typed_gamepads {crate::native_gamepad::advertise(&mut description);}
     if config.video_policy.is_some() {
         crate::native_quality::Response{dynamic,codecs:available,max_fps:if dynamic{crate::native_quality::MAX_FPS}else{60},max_bitrate_kbps:if dynamic{crate::native_quality::MAX_BITRATE_KBPS}else{100_000}}.add(&mut description)?;
     }
@@ -890,17 +893,13 @@ async fn receive_session(
         .pc
         .create_data_channel("eclipse-control-v1", None)
         .await?;
-    let gamepad=if let Some(input)=&input {
-        let options=webrtc::data_channel::data_channel_init::RTCDataChannelInit{ordered:Some(false),max_packet_life_time:Some(crate::native_gamepad::LIFETIME_MS),..Default::default()};
-        let channel=peer.pc.create_data_channel(crate::native_gamepad::LABEL,Some(options)).await?;
-        Some(crate::native_gamepad::Viewer::start(channel,stats.clone(),input.gamepads.clone(),input.requested.clone(),input.epoch.clone()))
-    }else{None};
+    let gamepad=input.as_ref().map(|input|(input.gamepads.clone(),input.requested.clone(),input.epoch.clone()));
     let mut controls=crate::native_control::ViewerControl::new(channel.clone(),stats.clone(),input);
-    controls.gamepads(gamepad);
     let ice_started=Instant::now();
     let mut description=peer.description(true).await?;
     stats.diagnostics.record(serde_json::json!({"event":"native_local_ice_gather","elapsed_us":elapsed_us(ice_started)}));
     crate::native_clipboard::advertise(&mut description);
+    crate::native_gamepad::advertise(&mut description);
     if let Some(request)=stats.native_quality_request.get(){request.add(&mut description)?;}
     stream.send(serde_json::to_value(Offer {
         version: 1,
@@ -926,6 +925,7 @@ async fn receive_session(
     }
     let quality=crate::native_quality::Response::read(&answer.sdp)?;
     let clipboard_images=crate::native_clipboard::images_offered(&answer.sdp);
+    let typed_gamepads=crate::native_gamepad::typed_offered(&answer.sdp);
     if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"主机实际编码与能力回报不一致");}
     stats.capabilities.enable(crate::capabilities::Capability::Quality,quality.is_some());
     stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":stats.native_quality_request.get(),"host_capabilities":quality}));
@@ -938,6 +938,12 @@ async fn receive_session(
     match stream.lan_peer() {
         Some(ip) => peer.remote(answer.sdp, ip).await?,
         None => peer.remote_direct(answer.sdp).await?,
+    }
+    if let Some((samples,requested,epoch))=gamepad {
+        let label=if typed_gamepads{crate::native_gamepad::LABEL_V2}else{crate::native_gamepad::LABEL};
+        let options=webrtc::data_channel::data_channel_init::RTCDataChannelInit{ordered:Some(false),max_packet_life_time:Some(crate::native_gamepad::LIFETIME_MS),..Default::default()};
+        let channel=peer.pc.create_data_channel(label,Some(options)).await?;
+        controls.gamepads(Some(crate::native_gamepad::Viewer::start(channel,stats.clone(),samples,requested,epoch)));
     }
     // CONTROL already negotiated the SCTP association. Select one clipboard
     // version only after the authenticated answer, so old peers keep v1 and

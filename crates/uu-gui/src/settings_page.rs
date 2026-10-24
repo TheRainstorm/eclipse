@@ -227,7 +227,7 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
     group(ui, "手柄与运动传感器", |ui| {
         ui.checkbox(&mut s.gamepad, "转发本地手柄和陀螺仪");
         if let Some(status)=state.gamepad_status{ui.label(status);}
-        note(ui, "原生串流支持最多 4 个手柄，仅在画面获得输入焦点和控制权时转发；失焦或断线后释放。运动传感器需要实体手柄支持，Windows 被控端需要 ViGEmBus，Linux 被控端需要 UHID 访问权限。");
+        note(ui, "原生串流支持最多 4 个手柄，仅在画面获得输入焦点和控制权时转发；失焦或断线后释放。Xbox 模拟为 Xbox，NS/PS 模拟为 DS4 并保留实体支持的运动传感器。Windows 被控端需要 ViGEmBus；Linux 的 Xbox 需要 uinput、DS4 需要 UHID 访问权限。");
     });
     group(ui, "键盘与协作", |ui| {
         ui.checkbox(&mut s.capture_keyboard, "全屏时将系统快捷键交给远端");
