@@ -83,6 +83,13 @@ mod native_encoder_options {
         assert!(matches!(Cli::try_parse_from(args).unwrap().command,Command::NativeProbe {progress_seconds:Some(5),max_frame_gap_seconds:Some(10),..}));
     }
     #[test]
+    fn native_host_quality_negotiation_remains_explicit() {
+        let base=["uu","native-host","--invitation-file","test.eclipse-invite.json"];
+        assert!(matches!(Cli::try_parse_from(base).unwrap().command,Command::NativeHost{client_quality:false,..}));
+        let mut args=base.to_vec();args.push("--client-quality");
+        assert!(matches!(Cli::try_parse_from(args).unwrap().command,Command::NativeHost{client_quality:true,..}));
+    }
+    #[test]
     fn native_sharing_defaults_to_software_and_accepts_explicit_choices() {
         let base=["uu","native-host","--synthetic","--invitation-file","generated.eclipse-invite.json"];
         let command=Cli::try_parse_from(base).unwrap().command;
@@ -194,6 +201,9 @@ enum Command {
         pairing_seconds: u64,
         #[arg(long)]
         max_seconds: Option<u64>,
+        /// Explicitly accept client quality requests, restricted to --codec.
+        #[arg(long)]
+        client_quality: bool,
     },
     /// Decode native video without saving pictures or opening a GUI.
     NativeProbe {
@@ -333,10 +343,10 @@ async fn main() -> Result<()> {
         Command::Lan {command} => lan_cli::run(command,config.at("native-lan")).await,
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
         Command::NativeSources => native_cli::sources(),
-        Command::NativeHost { video,bind, invitation_file, monitor, all_monitors, synthetic, synthetic_width, synthetic_height, allow_input, audio, synthetic_audio, fps, bitrate_kbps, encoder, pairing_seconds, max_seconds } => {
+        Command::NativeHost { video,bind, invitation_file, monitor, all_monitors, synthetic, synthetic_width, synthetic_height, allow_input, audio, synthetic_audio, fps, bitrate_kbps, encoder, pairing_seconds, max_seconds, client_quality } => {
             let source=if all_monitors {uu_capture::CaptureSource::Desktop{initial_monitor:None}}else if synthetic {uu_capture::CaptureSource::Synthetic{width:synthetic_width,height:synthetic_height,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
             let (codec,rate_control)=video.policy(bitrate_kbps)?;
-            native_cli::host(uu_core::native::HostConfig{encoder_tuning:Default::default(),session:None,video_policy:None,codec,rate_control,bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,encoder:encoder.preference(),session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
+            native_cli::host(uu_core::native::HostConfig{encoder_tuning:Default::default(),session:None,video_policy:client_quality.then(||uu_core::native_quality::Policy{codecs:vec![codec],preferred_codec:Some(codec)}),codec,rate_control,bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,encoder:encoder.preference(),session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
         },
         Command::NativeProbe {invitation_file,frames,timeout_seconds,report,audio_loss_every,progress_seconds,max_frame_gap_seconds} => native_cli::probe(invitation_file,frames,timeout_seconds,report,audio_loss_every.unwrap_or(0),progress_seconds,max_frame_gap_seconds).await,
         Command::ReleaseCheck => release_check(&config).await,
