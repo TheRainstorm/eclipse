@@ -899,12 +899,16 @@ pub(crate) async fn receive_video(
             if let Some(s)=&worker_stats{s.pipeline_trace.frame(trace_epoch,track_idx,source_ssrc,timestamp,crate::pipeline_trace::Stage::DecodeStart,Some((encoded.pts.0,sample_epoch)));}
             let started = Instant::now();
             let outcome=decoder.decode_frames(&encoded);
+            let output_available=Instant::now();
             let decode_elapsed = started.elapsed();
             if let Some(s)=&worker_stats{s.pipeline_trace.frame(trace_epoch,track_idx,source_ssrc,timestamp,crate::pipeline_trace::Stage::DecodeReturn,None);}
             worker_backlog.observe(decode_elapsed);
             decode_us += decode_elapsed.as_micros() as u64;
             match outcome {
                 Ok(frames) => {
+                    // One call may yield prior inputs. Stamp all actual output
+                    // PTS at the API return, before publishing any of the batch.
+                    if let Some(s)=&worker_stats{for frame in &frames{s.pipeline_trace.image_at(trace_epoch,track_idx,frame.pts.0,crate::pipeline_trace::Stage::OutputAvailable,output_available);}}
                     gate.decoded(sample_epoch, worker_generation.load(Ordering::Acquire), key);
                     let last = frames.len().saturating_sub(1);
                     for (index, frame) in frames.into_iter().enumerate() {
@@ -1125,6 +1129,10 @@ pub(crate) async fn receive_video(
         } else {
             receiver.poll(now)
         };
+        // Capture assembly completion before any asynchronous feedback write.
+        for unit in &units {
+            if let Some(s)=&stats{s.pipeline_trace.frame(trace_epoch,track_idx,source_ssrc,unit.timestamp,crate::pipeline_trace::Stage::CompleteAu,None);}
+        }
         if last_nack.elapsed() >= Duration::from_millis(20) {
             if let Some(s) = &stats {
                 let measured_ms = (s.rtt_us.load(Ordering::Relaxed) as u64
@@ -1151,7 +1159,6 @@ pub(crate) async fn receive_video(
             last_nack = now;
         }
         for unit in units {
-            if let Some(s)=&stats{s.pipeline_trace.frame(trace_epoch,track_idx,source_ssrc,unit.timestamp,crate::pipeline_trace::Stage::CompleteAu,None);}
             if unit.epoch != receiver_epoch {
                 receiver_epoch = unit.epoch;
                 // With balanced recovery keep decoding intact reference

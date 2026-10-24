@@ -15,6 +15,7 @@ pub enum Stage {
     Publish = 5,
     MailboxTake = 6,
     Draw = 7,
+    OutputAvailable = 8,
 }
 type Key = (u64, u32, u32, u32); // media epoch, track, SSRC, RTP timestamp
 #[derive(Clone, Serialize)]
@@ -26,7 +27,7 @@ struct Row {
     rtp: u32,
     pts_us: Option<u64>,
     generation: Option<u64>,
-    at_us: [Option<u64>; 8],
+    at_us: [Option<u64>; 9],
     primary_packets: u32,
     repair_packets: u32,
 }
@@ -115,7 +116,7 @@ impl Trace {
                 rtp,
                 pts_us: None,
                 generation: None,
-                at_us: [Some(at), Some(at), None, None, None, None, None, None],
+                at_us: [Some(at), Some(at), None, None, None, None, None, None, None],
                 primary_packets: 0,
                 repair_packets: 0,
             });
@@ -160,10 +161,11 @@ impl Trace {
         }
     }
     pub fn image(&self, epoch: u64, track: u32, pts: u64, stage: Stage) {
-        if !self.enabled {
-            return;
-        }
-        let at = self.offset(Instant::now());
+        self.image_at(epoch,track,pts,stage,Instant::now());
+    }
+    pub fn image_at(&self, epoch:u64, track:u32, pts:u64, stage:Stage, observed:Instant) {
+        if !self.enabled {return;}
+        let at=self.offset(observed);
         let mut s = self.state.lock().unwrap();
         let Some(id) = s.pts.get(&(epoch, track, pts)).copied() else {
             s.missing += 1;
@@ -179,7 +181,7 @@ impl Trace {
         }
         let s = self.state.lock().unwrap();
         Some(
-            serde_json::json!({"clock":"client_monotonic","stages":["first_rtp_read","last_rtp_read","complete_au","decode_start","decode_return","publish_call","mailbox_take","draw_callback"],"limit":LIMIT,"total_frames":s.total,"evicted_frames":s.evicted,"unmatched_events":s.missing,"frames":s.rows}),
+            serde_json::json!({"clock":"client_monotonic","stages":["first_rtp_read","last_rtp_read","complete_au","decode_start","decode_return","publish_call","mailbox_take","draw_callback","output_available_by_pts"],"limit":LIMIT,"total_frames":s.total,"evicted_frames":s.evicted,"unmatched_events":s.missing,"frames":s.rows}),
         )
     }
 }
@@ -240,6 +242,20 @@ mod tests {
         assert_eq!(r["frames"][0]["ssrc"], 10);
         assert!(r["frames"][0]["at_us"][7].is_number());
         assert_eq!(r["unmatched_events"], 0);
+    }
+    #[test]
+    fn delayed_output_is_attached_to_output_pts_not_current_input() {
+        let t=Trace::new(true);
+        for (rtp,pts) in [(1,0),(2,16667)] {
+            t.packet(1,0,9,rtp,true,Instant::now());
+            t.frame(1,0,9,rtp,Stage::DecodeStart,Some((pts,1)));
+            t.frame(1,0,9,rtp,Stage::DecodeReturn,None);
+        }
+        let observed=Instant::now();
+        t.image_at(1,0,0,Stage::OutputAvailable,observed);
+        let r=t.report().unwrap();
+        assert!(r["frames"][0]["at_us"][8].is_number());
+        assert!(r["frames"][1]["at_us"][8].is_null());
     }
     #[test]
     fn disabled_has_no_observations() {
