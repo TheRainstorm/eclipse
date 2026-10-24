@@ -99,3 +99,5 @@ pub mod native_gamepad;
 pub mod native_quality;
 pub mod native_color;
 pub mod local_workspace;
+
+pub mod pipeline_trace;

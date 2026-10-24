@@ -259,6 +259,8 @@ def main():
             env.pop(name)
     env.update(APPDATA=str(root/'profile'), LOCALAPPDATA=str(root/'local'), XDG_DATA_HOME=str(root/'data'),
                XDG_STATE_HOME=str(root/'state'), UU_SIGNING_KEY_FILE=str(root/'absent-key'), RUST_LOG='error', ECLIPSE_FRAME_TRACE='1')
+    if config.get('continuous_trace') is True:
+        env['ECLIPSE_CONTINUOUS_TRACE'] = '1'
     if config.get('encode_profile') is True:
         env['UU_ENCODE_PROFILE'] = '1'
     processes = []; logs = []; samples = []; completed = False; error = None; moving = None

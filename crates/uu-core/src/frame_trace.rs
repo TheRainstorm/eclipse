@@ -315,6 +315,8 @@ struct State {
     pending: VecDeque<(u64, Token)>,
     counts: Counts,
     slow: Option<u64>,
+    continuous:Option<VecDeque<Frame>>,
+    continuous_evicted:u64,
 }
 pub(crate) struct HostTrace {
     enabled: bool,
@@ -339,6 +341,8 @@ impl HostTrace {
                 pending: VecDeque::with_capacity(if enabled { PENDING } else { 0 }),
                 counts: Counts::default(),
                 slow: None,
+                continuous:std::env::var("ECLIPSE_CONTINUOUS_TRACE").is_ok_and(|v|v=="1").then(VecDeque::new),
+                continuous_evicted:0,
             }),
         }
     }
@@ -486,10 +490,21 @@ impl HostTrace {
                     .zip(row.events_us[b])
                     .is_some_and(|(a, b)| b.saturating_sub(a) > threshold)
             });
+            let completed=*row;
             if slow {
                 state.slow = Some(token.id);
             }
+            if let Some(rows)=&mut state.continuous {
+                let full=rows.len()==8192;
+                if full{rows.pop_front();}
+                rows.push_back(completed);
+                if full{state.continuous_evicted+=1;}
+            }
         }
+    }
+    pub fn continuous_report(&self)->Option<serde_json::Value> {
+        let state=self.state.lock().unwrap();let rows=state.continuous.as_ref()?;
+        Some(serde_json::json!({"clock":"host_monotonic","epoch":self.epoch,"events":EVENTS,"limit":8192,"captured":state.counts.captured,"sent":state.counts.sent,"evicted":state.continuous_evicted,"frames":rows}))
     }
     /// Called off the media hot path. Clone under the lock; sort/serialize after releasing it.
     pub fn report(&self) -> Option<Report> {
@@ -657,6 +672,27 @@ mod tests {
             hdr: false,
             source_hdr: None,
         }
+    }
+    #[test]
+    fn continuous_sent_rows_are_bounded_and_keep_generation_identity() {
+        let trace=HostTrace::new(true);
+        trace.state.lock().unwrap().continuous=Some(VecDeque::new());
+        trace.configure(settings(),"fixture");
+        for pts in 0..8194 {
+            let at=Instant::now();
+            let token=trace.captured(pts,None,true,at,at,at);
+            trace.output(pts,false,at);
+            trace.sent(token,pts as u32,at,at);
+        }
+        trace.configure(settings(),"rebuilt");
+        let at=Instant::now();let token=trace.captured(9000,None,true,at,at,at);
+        trace.output(9000,false,at);trace.sent(token,9000,at,at);
+        let report=trace.continuous_report().unwrap();
+        let rows=report["frames"].as_array().unwrap();
+        assert_eq!(rows.len(),8192);assert_eq!(report["evicted"],3);
+        assert_eq!(rows.first().unwrap()["generation"],1);
+        assert_eq!(rows.last().unwrap()["generation"],2);
+        assert_eq!(report["captured"],8195);assert_eq!(report["sent"],8195);
     }
     #[test]
     fn delayed_outputs_match_pts_and_queue_delay_is_not_encode_time() {

@@ -877,6 +877,7 @@ async fn send_video(
     report.backpressure_us = producer.timings.backpressure_us.load(Ordering::Relaxed);
     report.encoder=producer.encoder.borrow().clone();
     report.frame_trace=producer.trace.report();
+    if let Some(continuous)=producer.trace.continuous_report(){println!("{}",serde_json::json!({"event":"host_continuous_trace","report":continuous}));}
     active?;
     stopped?;
     Ok(report)

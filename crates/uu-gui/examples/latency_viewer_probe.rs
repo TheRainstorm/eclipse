@@ -81,7 +81,7 @@ struct Probe {
     warmup: Duration,
     duration: Duration,
     texture: Option<video_texture::VideoTexture>,
-    pending: Option<(u64, Instant)>,
+    pending: Option<(u64, Instant, u32, u64)>,
     serial: u64,
     draws: Arc<Mutex<Draws>>,
     paths: Arc<Mutex<BTreeSet<String>>>,
@@ -109,7 +109,8 @@ impl eframe::App for Probe {
             return;
         }
         while let Ok((image, published)) = self.images.try_recv_timed_image() {
-            if let uu_core::display_frames::DisplayImage::Decoded(_,frame,color)=&image {
+            if let uu_core::display_frames::DisplayImage::Decoded(track,frame,color)=&image {
+                self.stats.pipeline_trace.image(self.stats.native_media_epoch.load(Ordering::Acquire),*track,frame.pts.0,uu_core::pipeline_trace::Stage::MailboxTake);
                 let signature=(frame.format,*color,frame.gpu,frame.width,frame.height);
                 if self.last_format!=Some(signature) {
                     self.formats.lock().unwrap().push(serde_json::json!({"at_ms":self.started.elapsed().as_millis(),
@@ -120,7 +121,8 @@ impl eframe::App for Probe {
             }
             self.first.lock().unwrap().get_or_insert(published);
             self.serial += 1;
-            self.pending = Some((self.serial, published));
+            let (track,pts)=match &image{uu_core::display_frames::DisplayImage::Decoded(track,frame,_)=>(*track,frame.pts.0),_=> (0,u64::MAX)};
+            self.pending = Some((self.serial, published,track,pts));
             match &mut self.texture {
                 Some(texture) => texture.set(ctx, image),
                 None => {
@@ -134,7 +136,8 @@ impl eframe::App for Probe {
                 .frame(egui::Frame::none())
                 .show(ctx, |ui| {
                     texture.paint(ui, ui.max_rect());
-                    if let Some((serial, published)) = self.pending {
+                    if let Some((serial, published, track, pts)) = self.pending {
+                        let stats=self.stats.clone();
                         let draws = self.draws.clone();
                         let measure_from = self.first.lock().unwrap().map(|t| t + self.warmup);
                         ui.painter().add(egui::PaintCallback {
@@ -146,6 +149,7 @@ impl eframe::App for Probe {
                                     return;
                                 }
                                 draws.last_serial = serial;
+                                stats.pipeline_trace.image(stats.native_media_epoch.load(Ordering::Acquire),track,pts,uu_core::pipeline_trace::Stage::Draw);
                                 if measure_from.is_some_and(|t| published >= t) {
                                     if let Some(last) = draws.last {
                                         draws
@@ -319,6 +323,8 @@ fn main() -> Result<()> {
         "decoded":stats.decoded_total.load(Ordering::Relaxed),"errors":stats.errors.load(Ordering::Relaxed),
         "decode_display_skips":stats.decoded_display_skips.load(Ordering::Relaxed),
         "mailbox_counts":*mailbox_counts.lock().unwrap(),"decoded_formats":*formats.lock().unwrap(),
+        "pipeline_trace":stats.pipeline_trace.report(),
+        "repair_counts":{"lost":stats.lost.load(Ordering::Relaxed),"reordered":stats.reordered.load(Ordering::Relaxed),"late":stats.late_packets.load(Ordering::Relaxed),"damaged":stats.damaged_frames.load(Ordering::Relaxed),"nack":stats.nack_requests.load(Ordering::Relaxed),"rtx":stats.rtx_packets.load(Ordering::Relaxed),"rtx_drops":stats.rtx_drops.load(Ordering::Relaxed),"fec_packets":stats.fec_packets.load(Ordering::Relaxed),"fec_recovered":stats.fec_recovered.load(Ordering::Relaxed),"fec_drops":stats.fec_drops.load(Ordering::Relaxed),"queue_drops":stats.queue_drops.load(Ordering::Relaxed)},
         "samples":*samples.lock().unwrap(),"host_frame_trace":stats.native_frame_trace.lock().unwrap().clone(),
         "close_error":close_error,"gui_error":gui.as_ref().err().map(ToString::to_string)});
     report.write_all(serde_json::to_string_pretty(&value)?.as_bytes())?;

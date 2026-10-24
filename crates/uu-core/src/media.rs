@@ -62,6 +62,7 @@ pub struct MediaStats {
     pub prefer_hevc: std::sync::atomic::AtomicBool,
     pub hevc_enabled: std::sync::OnceLock<bool>,
     pub diagnostics: crate::session_diagnostics::SessionDiagnostics,
+    pub pipeline_trace:crate::pipeline_trace::Trace,
     pub native_frame_trace_supported: std::sync::atomic::AtomicBool,
     pub native_frame_trace: std::sync::Mutex<Option<crate::frame_trace::Report>>,
     pub control_open: AtomicU32,
@@ -772,6 +773,8 @@ pub(crate) async fn receive_video(
     let backlog=Arc::new(crate::decode_backlog::Budget::default());
     let worker_backlog=backlog.clone();
     let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(bytes::Bytes, u32, u64, u64, Instant, VideoCodec,crate::decode_backlog::Permit)>(crate::decode_backlog::MAX_FRAMES);
+    let source_ssrc=track.ssrc();
+    let trace_epoch=stats.as_ref().map_or(0,|s|s.native_media_epoch.load(Ordering::Acquire));
     let worker_stats = stats.clone();
     let worker_generation = generation.clone();
     let worker_requests = request_generation.clone();
@@ -893,9 +896,11 @@ pub(crate) async fn receive_video(
             if key {
                 recovery = Some((sample_epoch, sample_request, encoded.pts));
             }
+            if let Some(s)=&worker_stats{s.pipeline_trace.frame(trace_epoch,track_idx,source_ssrc,timestamp,crate::pipeline_trace::Stage::DecodeStart,Some((encoded.pts.0,sample_epoch)));}
             let started = Instant::now();
             let outcome=decoder.decode_frames(&encoded);
             let decode_elapsed = started.elapsed();
+            if let Some(s)=&worker_stats{s.pipeline_trace.frame(trace_epoch,track_idx,source_ssrc,timestamp,crate::pipeline_trace::Stage::DecodeReturn,None);}
             worker_backlog.observe(decode_elapsed);
             decode_us += decode_elapsed.as_micros() as u64;
             match outcome {
@@ -925,6 +930,7 @@ pub(crate) async fn receive_video(
                         // Decode all reference pictures, but spend RGBA and
                         // upload work only on the newest one after a burst.
                         if let Some(tx) = frame_tx.as_ref().filter(|_| index == last && (key || sample_rx.is_empty())) {
+                            if let Some(s)=&worker_stats{s.pipeline_trace.image(trace_epoch,track_idx,frame.pts.0,crate::pipeline_trace::Stage::Publish);}
                             let _ = tx.send_decoded(track_idx, frame, color);
                         } else if let Some(s) = worker_stats.as_ref().filter(|_|frame_tx.is_some()) {
                             s.decoded_display_skips.fetch_add(1, Ordering::Relaxed);
@@ -1114,6 +1120,7 @@ pub(crate) async fn receive_video(
                 last_ts = Some(packet.header.timestamp);
                 src += 1;
             }
+            if let Some(s)=&stats{s.pipeline_trace.packet(trace_epoch,track_idx,source_ssrc,packet.header.timestamp,primary,now);}
             receiver.push(packet, now)
         } else {
             receiver.poll(now)
@@ -1144,6 +1151,7 @@ pub(crate) async fn receive_video(
             last_nack = now;
         }
         for unit in units {
+            if let Some(s)=&stats{s.pipeline_trace.frame(trace_epoch,track_idx,source_ssrc,unit.timestamp,crate::pipeline_trace::Stage::CompleteAu,None);}
             if unit.epoch != receiver_epoch {
                 receiver_epoch = unit.epoch;
                 // With balanced recovery keep decoding intact reference
