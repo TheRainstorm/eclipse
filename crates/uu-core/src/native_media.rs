@@ -212,6 +212,8 @@ pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
 }
 
 pub(crate) struct NativePeer {
+    socket_trace:Option<Arc<crate::socket_trace::Observation>>,
+    trace_receivers:Option<Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>>,
     _connection_monitor:Option<crate::connection_info::Monitor>,
     pub pc: Arc<RTCPeerConnection>,
     mux: Option<Arc<UDPMuxDefault>>,
@@ -267,7 +269,12 @@ impl NativePeer {
         let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
         #[cfg(windows)]
         configure_udp_probing(&socket).context("cannot configure native UDP probing")?;
-        let mux = UDPMuxDefault::new(UDPMuxParams::new(socket));
+        let observation=crate::socket_trace::Observation::configured()?;
+        let params=match &observation {
+            Some(trace)=>UDPMuxParams::new(crate::socket_trace::Observed{socket,trace:trace.clone()}),
+            None=>UDPMuxParams::new(socket),
+        };
+        let mux = UDPMuxDefault::new(params);
         let mut settings = SettingEngine::default();
         crate::srtp_policy::configure(&mut settings);
         settings.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
@@ -279,7 +286,10 @@ impl NativePeer {
         settings.set_ip_filter(Box::new(move |ip| ip == gather_ip));
         settings.set_nat_1to1_ips(vec![advertised_ip.to_string()], RTCIceCandidateType::Host);
         settings.set_udp_network(UDPNetwork::Muxed(mux.clone()));
-        Self::build(settings, Some(mux), RTCConfiguration::default(), stats, sender).await
+        let mut peer=Self::build(settings, Some(mux), RTCConfiguration::default(), stats, sender).await?;
+        peer.trace_receivers=observation.as_ref().map(|_|Arc::new(Mutex::new(Vec::new())));
+        peer.socket_trace=observation;
+        Ok(peer)
     }
 
     /// Internet mode enumerates interfaces and obtains mapped addresses using
@@ -368,6 +378,8 @@ impl NativePeer {
             Box::pin(async {})
         }));
         Ok(Self {
+            socket_trace:None,
+            trace_receivers:None,
             _connection_monitor:stats.as_ref().map(|stats|crate::connection_info::Monitor::start(&pc,stats)),
             pc,
             mux,
@@ -381,6 +393,7 @@ impl NativePeer {
         })
     }
     pub async fn receiver(&self, frames: FrameSender, stats: Arc<MediaStats>) -> Result<()> {
+        if let Some(trace)=&self.socket_trace{let _=stats.socket_trace.set(trace.clone());}
         self.fec.receiver(&self.pc).await?;
         // Driver startup must finish before the peer can send video, otherwise
         // the bounded AU queue can overflow while the first decoder boots.
@@ -397,10 +410,12 @@ impl NativePeer {
         let weak = Arc::downgrade(&self.pc);
         let repairs = self.repairs.clone();
         let fec = self.fec.receive.clone();
+        let trace_receivers=self.trace_receivers.clone();
         self.pc.on_track(Box::new(move |track, _, _| {
             let weak = weak.clone();
             let repairs = repairs.clone();
             let fec = fec.clone();
+            let trace_receivers=trace_receivers.clone();
             let frames = frames.clone();
             let stats = stats.clone();
             let prepared = prepared.clone();
@@ -412,7 +427,7 @@ impl NativePeer {
                         // decoder. Ignore duplicate/unexpected track callbacks.
                         let decoder = prepared.lock().unwrap().take();
                         let Some(decoder) = decoder else { return; };
-                        tokio::spawn(crate::media::receive_video(
+                        let task=tokio::spawn(crate::media::receive_video(
                             pc,
                             track,
                             0,
@@ -422,6 +437,7 @@ impl NativePeer {
                             Some(decoder),
                             Some(fec),
                         ));
+                        if let Some(tasks)=trace_receivers{tasks.lock().unwrap().push(task);}
                     }
                 } else if track.kind()==RTPCodecType::Audio && !audio_claimed.swap(true,Ordering::AcqRel) {
                     stats.capabilities.enable(crate::capabilities::Capability::Audio,true);
@@ -566,11 +582,27 @@ impl NativePeer {
         if !self.closed.load(Ordering::Acquire) {
             let _ = self.pc.close().await;
             if let Some(mux) = &self.mux { let _ = mux.close().await; }
+            finish_trace(self.trace_receivers.clone(),self.socket_trace.clone()).await;
             self.closed.store(true, Ordering::Release);
         }
         let wlan=self.wlan.lock().unwrap().take();
         if let Some(wlan)=wlan {let _=tokio::task::spawn_blocking(move||drop(wlan)).await;}
     }
+}
+async fn finish_trace(receivers:Option<Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>>,trace:Option<Arc<crate::socket_trace::Observation>>) {
+    let Some(trace)=trace else{return};
+    let tasks=receivers.map(|r|std::mem::take(&mut *r.lock().unwrap())).unwrap_or_default();
+    let deadline=tokio::time::Instant::now()+Duration::from_secs(2);
+    let (mut normal,mut aborted,mut failed)=(0,0,0);
+    for mut task in tasks {
+        match tokio::time::timeout_at(deadline,&mut task).await {
+            Ok(Ok(()))=>normal+=1,
+            Ok(Err(_))=>failed+=1,
+            Err(_)=>{aborted+=1;task.abort();let _=tokio::time::timeout(Duration::from_millis(100),task).await;},
+        }
+    }
+    println!("{}",serde_json::json!({"event":"native_socket_receiver_shutdown","normal":normal,"aborted":aborted,"failed":failed}));
+    trace.finish().await;
 }
 impl Drop for NativePeer {
     fn drop(&mut self) {
@@ -584,9 +616,12 @@ impl Drop for NativePeer {
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 let pc = self.pc.clone();
                 let mux = self.mux.clone();
+                let trace=self.socket_trace.clone();
+                let receivers=self.trace_receivers.clone();
                 runtime.spawn(async move {
                     let _ = pc.close().await;
                     if let Some(mux) = mux { let _ = mux.close().await; }
+                    finish_trace(receivers,trace).await;
                 });
             }
         }

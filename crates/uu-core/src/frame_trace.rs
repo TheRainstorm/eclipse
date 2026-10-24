@@ -320,6 +320,7 @@ struct State {
 }
 pub(crate) struct HostTrace {
     enabled: bool,
+    continuous_limit:usize,
     started: Instant,
     epoch: u64,
     state: Mutex<State>,
@@ -333,6 +334,7 @@ impl HostTrace {
     fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            continuous_limit:crate::pipeline_trace::diagnostic_limit(),
             started: Instant::now(),
             epoch: rand::random::<u64>().max(1),
             state: Mutex::new(State {
@@ -495,7 +497,7 @@ impl HostTrace {
                 state.slow = Some(token.id);
             }
             if let Some(rows)=&mut state.continuous {
-                let full=rows.len()==8192;
+                let full=rows.len()==self.continuous_limit;
                 if full{rows.pop_front();}
                 rows.push_back(completed);
                 if full{state.continuous_evicted+=1;}
@@ -503,8 +505,9 @@ impl HostTrace {
         }
     }
     pub fn continuous_report(&self)->Option<serde_json::Value> {
-        let state=self.state.lock().unwrap();let rows=state.continuous.as_ref()?;
-        Some(serde_json::json!({"clock":"host_monotonic","epoch":self.epoch,"events":EVENTS,"limit":8192,"captured":state.counts.captured,"sent":state.counts.sent,"evicted":state.continuous_evicted,"frames":rows}))
+        let state=self.state.lock().unwrap();let rows=state.continuous.as_ref()?.clone();
+        let (captured,sent,evicted)=(state.counts.captured,state.counts.sent,state.continuous_evicted);drop(state);
+        Some(serde_json::json!({"clock":"host_monotonic","epoch":self.epoch,"events":EVENTS,"limit":self.continuous_limit,"captured":captured,"sent":sent,"evicted":evicted,"frames":rows}))
     }
     /// Called off the media hot path. Clone under the lock; sort/serialize after releasing it.
     pub fn report(&self) -> Option<Report> {

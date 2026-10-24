@@ -6,6 +6,7 @@ use std::{
     time::Instant,
 };
 const LIMIT: usize = 8192;
+pub(crate) fn diagnostic_limit()->usize {if std::env::var("ECLIPSE_SOCKET_TRACE").as_deref()==Ok("1"){32768}else{LIMIT}}
 #[derive(Clone, Copy)]
 #[repr(usize)]
 pub enum Stage {
@@ -42,6 +43,7 @@ struct State {
 }
 pub struct Trace {
     enabled: bool,
+    limit: usize,
     started: Instant,
     state: Mutex<State>,
 }
@@ -54,6 +56,7 @@ impl Trace {
     fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            limit: diagnostic_limit(),
             started: Instant::now(),
             state: Mutex::new(State {
                 rows: VecDeque::new(),
@@ -66,6 +69,7 @@ impl Trace {
             }),
         }
     }
+    pub(crate) fn clock_offset(&self,at:Instant)->u64{self.offset(at)}
     fn offset(&self, at: Instant) -> u64 {
         at.saturating_duration_since(self.started)
             .as_micros()
@@ -95,7 +99,7 @@ impl Trace {
                 return;
             }
             s.newest.insert(stream, rtp);
-            if s.rows.len() == LIMIT {
+            if s.rows.len() == self.limit {
                 let old = s.rows.pop_front().unwrap();
                 s.keys.remove(&(old.epoch, old.track, old.ssrc, old.rtp));
                 if let Some(pts) = old.pts_us {
@@ -180,8 +184,10 @@ impl Trace {
             return None;
         }
         let s = self.state.lock().unwrap();
+        let (total,evicted,missing,rows)=(s.total,s.evicted,s.missing,s.rows.clone());
+        drop(s);
         Some(
-            serde_json::json!({"clock":"client_monotonic","stages":["first_rtp_read","last_rtp_read","complete_au","decode_start","decode_return","publish_call","mailbox_take","draw_callback","output_available_by_pts"],"limit":LIMIT,"total_frames":s.total,"evicted_frames":s.evicted,"unmatched_events":s.missing,"frames":s.rows}),
+            serde_json::json!({"clock":"client_monotonic","stages":["first_rtp_read","last_rtp_read","complete_au","decode_start","decode_return","publish_call","mailbox_take","draw_callback","output_available_by_pts"],"limit":self.limit,"total_frames":total,"evicted_frames":evicted,"unmatched_events":missing,"frames":rows}),
         )
     }
 }

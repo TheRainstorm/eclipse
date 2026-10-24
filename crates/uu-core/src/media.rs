@@ -62,6 +62,7 @@ pub struct MediaStats {
     pub prefer_hevc: std::sync::atomic::AtomicBool,
     pub hevc_enabled: std::sync::OnceLock<bool>,
     pub diagnostics: crate::session_diagnostics::SessionDiagnostics,
+    pub(crate) socket_trace:std::sync::OnceLock<Arc<crate::socket_trace::Observation>>,
     pub pipeline_trace:crate::pipeline_trace::Trace,
     pub native_frame_trace_supported: std::sync::atomic::AtomicBool,
     pub native_frame_trace: std::sync::Mutex<Option<crate::frame_trace::Report>>,
@@ -1082,6 +1083,7 @@ pub(crate) async fn receive_video(
         let packet = tokio::select! {
             result=&mut packet_read=>{
                 let Ok((packet,_))=result else {break};
+                if let Some(s)=&stats{if let Some(trace)=s.socket_trace.get(){let at=Instant::now();trace.primary(trace_epoch,track_idx,&packet.header,at,s.pipeline_trace.clock_offset(at));}}
                 packet_read.set(track.read_rtp());
                 Some((packet, true))
             }
