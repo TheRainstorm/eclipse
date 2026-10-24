@@ -53,6 +53,10 @@ impl RateControl {
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
     pub tuning: Tuning,
+    /// HDR10 PQ/BT.2020 output requires 10-bit HEVC or AV1 and GPU capture.
+    pub hdr: bool,
+    /// Actual source desktop metadata; needed when mapping HDR into SDR.
+    pub source_hdr: Option<crate::hdr::Metadata>,
     pub codec:VideoCodec,
     pub rate_control:RateControl,
     pub width: u32,
@@ -64,6 +68,8 @@ pub struct Settings {
 impl Settings {
     pub fn validate(self) -> Result<(), CodecError> {
         self.tuning.validate()?;
+        if self.source_hdr.is_some_and(|m|!m.valid()) {return Err(error("invalid source HDR metadata"));}
+        if self.hdr && self.codec==VideoCodec::H264 {return Err(error("HDR requires 10-bit HEVC or AV1"));}
         if !(2..=8192).contains(&self.width)
             || !(2..=8192).contains(&self.height)
             || self.width % 2 != 0
@@ -96,6 +102,7 @@ fn software(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
     if settings.codec!=VideoCodec::H264 || settings.rate_control!=RateControl::Cbr {
         return Err(error("所选编码格式或 VBR 模式需要硬件编码；软件模式支持 H.264 平均码率控制"));
     }
+    if settings.hdr {return Err(error("HDR requires a 10-bit hardware encoder"));}
     H264Encoder::validate_dimensions(settings.width, settings.height)?;
     Ok(Box::new(H264Encoder::with_frame_rate(
         settings.bitrate_kbps,
@@ -137,6 +144,7 @@ mod capture_pool;
 pub use capture_pool::CapturePool;
 
 fn hardware(settings: Settings, input:Option<InputDevice>) -> Result<Box<dyn VideoEncoder>, CodecError> {
+    if settings.hdr && !cfg!(windows) {return Err(error("HDR encoding is unavailable on this platform"));}
     #[cfg(not(all(windows,feature="mf-encode")))]
     let _=input;
     #[cfg(all(windows,feature="mf-encode"))]
@@ -164,12 +172,12 @@ fn hardware(settings: Settings, input:Option<InputDevice>) -> Result<Box<dyn Vid
         }));
     }
     #[cfg(all(windows,feature="mf-encode"))]
-    if settings.preference!=Preference::Intel {
+    if settings.preference!=Preference::Intel || settings.hdr || settings.source_hdr.is_some() {
         match worker::Worker::spawn(move||mf::Driver::open(settings)) {
             Ok(encoder)=>return Ok(Box::new(encoder)),
             Err(mf_error)=>{
                 #[cfg(feature="intel-vpl")]
-                if matches!(settings.preference,Preference::Auto|Preference::Hardware) && (settings.codec!=VideoCodec::H264 || settings.tuning.custom_intel()) {
+                if matches!(settings.preference,Preference::Auto|Preference::Hardware|Preference::Intel) && (settings.codec!=VideoCodec::H264 || settings.tuning.custom_intel() || settings.preference==Preference::Intel) {
                     return worker::Worker::spawn(move||vpl::Driver::open(settings))
                         .map(|encoder|Box::new(encoder) as Box<dyn VideoEncoder>)
                         .map_err(|vpl_error|error(format!("Media Foundation: {mf_error}; Intel VPL: {vpl_error}")));
@@ -332,7 +340,7 @@ mod tests {
 
     fn settings() -> Settings {
         Settings {
-            tuning:Default::default(), width: 64,
+            hdr:false,source_hdr:None,tuning:Default::default(), width: 64,
             height: 64,
             fps: 30,
             bitrate_kbps: 1000,
@@ -517,4 +525,16 @@ mod tests {
         assert!(encoder.backend_name().starts_with("openh264"));
         assert!(encoder.encode(&frame()).unwrap()[0].is_keyframe);
     }
+}
+
+#[cfg(all(windows,feature="mf-encode"))]
+fn validate_hdr_output(frame:&EncodedFrame,codec:VideoCodec,hdr:bool)->Result<(),String> {
+    if !hdr || !frame.is_keyframe {return Ok(());}
+    let actual=match codec {
+        VideoCodec::Hevc=>crate::hevc::sequence(&frame.data).map(|s|(s.bit_depth,s.color)),
+        VideoCodec::Av1=>crate::av1::sequence(&frame.data).map(|s|(s.bit_depth,s.color)),
+        VideoCodec::H264=>None,
+    };
+    if actual==Some((10,crate::color::YuvColor::Limited2020Pq)) {Ok(())}
+    else {Err("encoder did not produce the negotiated 10-bit PQ/BT.2020 signal".into())}
 }

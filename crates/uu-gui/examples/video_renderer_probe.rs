@@ -8,6 +8,9 @@ mod owned_station;
 #[allow(dead_code)]
 #[path = "../src/video_texture.rs"]
 mod video_texture;
+#[cfg(windows)]
+#[path = "../src/wgl_interop.rs"]
+mod wgl_interop;
 use eframe::{
     egui,
     glow::{self, HasContext},
@@ -208,6 +211,34 @@ fn cases() -> Vec<(RawFrame, YuvColor)> {
             }
         }
     }
+    // HDR fallback must retain 16-bit samples until GPU tone mapping.
+    for (w,h) in [(16u32,8u32),(8,16)] {
+        for color in [YuvColor::Limited2020Pq,YuvColor::Full2020Pq] {
+            let stride=w*2+8;let mut data=vec![37;(stride*h*3/2) as usize];
+            let full=color==YuvColor::Full2020Pq;
+            for y in 0..h {for x in 0..w {
+                let patch=(y>=h/2) as usize*2+(x>=w/2) as usize;
+                let pq=uu_media::hdr::nits_to_pq([0.,203.,1000.,4000.][patch]);
+                let code=if full{pq*1023.}else{64.+pq*876.};let word=((code.round() as u16)<<6).to_le_bytes();
+                let at=(y*stride+x*2) as usize;data[at..at+2].copy_from_slice(&word);
+            }}
+            for y in 0..h/2 {for x in 0..w/2 {
+                let at=(stride*h+y*stride+x*4) as usize;
+                let u=if x>=w/4 {560u16}else{512};let v=if y>=h/4 {480u16}else{512};
+                data[at..at+2].copy_from_slice(&(u<<6).to_le_bytes());data[at+2..at+4].copy_from_slice(&(v<<6).to_le_bytes());
+            }}
+            let frame=RawFrame{width:w,height:h,format:PixelFormat::P010,stride,data:data.into(),pts:Timestamp(0),gpu:false,dma_buf:None,d3d11:None};
+            cases.push((frame.clone(),color));cases.push((frame,color));
+        }
+        let stride=w*8+16;let mut data=vec![19;(stride*h) as usize];
+        let colors=[[0x4a40u16,0x3400,0x3400,0x3c00],[0x3400,0x4400,0x3400,0x3c00],[0x3400,0x3400,0x3c00,0x3c00],[0,0,0,0x3c00]];
+        for y in 0..h {for x in 0..w {let patch=(y>=h/2) as usize*2+(x>=w/2) as usize;
+            for c in 0..4 {let at=(y*stride+x*8+c*2) as usize;data[at..at+2].copy_from_slice(&colors[patch][c as usize].to_le_bytes());}
+        }}
+        let frame=RawFrame{width:w,height:h,format:PixelFormat::ScRgb16,stride,data:data.into(),pts:Timestamp(0),gpu:false,dma_buf:None,d3d11:None};
+        cases.push((frame.clone(),YuvColor::Limited2020Pq));cases.push((frame,YuvColor::Limited2020Pq));
+    }
+    cases.push(cases[0].clone()); // Returning to ordinary 8-bit textures resets storage and levels.
     cases
 }
 fn main() -> anyhow::Result<()> {

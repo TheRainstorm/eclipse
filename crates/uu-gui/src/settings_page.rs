@@ -140,6 +140,8 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
 
     });
     group(ui, "呈现与解码", |ui| {
+        ui.add_enabled_ui(cfg!(windows),|ui|{ui.checkbox(&mut s.hdr,"原生串流：优先 HDR");});
+        note(ui,"双方显示器均启用 HDR 且支持 10 位 HEVC / AV1 时自动协商。HDR 和编码切换需要重新连接；其它情况使用 SDR。当前 Linux 客户端以 SDR 呈现。");
         ui.checkbox(&mut s.vsync, "垂直同步");
         note(
             ui,

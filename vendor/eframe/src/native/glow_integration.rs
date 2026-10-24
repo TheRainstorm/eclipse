@@ -662,7 +662,8 @@ impl<'app> GlowWinitRunning<'app> {
 
         let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
 
-        if !clear_before_update {
+        let custom_surface=crate::glow_presentation::begin(&integration.egui_ctx,viewport_id,screen_size_in_pixels);
+        if custom_surface.is_some() || !clear_before_update {
             painter.clear(screen_size_in_pixels, clear_color);
         }
 
@@ -722,13 +723,19 @@ impl<'app> GlowWinitRunning<'app> {
                     "failed to get current context to swap buffers".to_owned(),
                 ))?;
 
-            crate::vsync::apply(&integration.egui_ctx, viewport_id, false, |enabled| {
-                gl_surface.set_swap_interval(context, swap_interval(enabled)).map_err(|e| e.to_string())
-            });
-            gl_surface.swap_buffers(context)?;
+            if let Some(surface)=&custom_surface {
+                crate::vsync::apply(&integration.egui_ctx,viewport_id,false,|enabled|{surface.set_vsync(enabled);Ok(())});
+                if let Err(error)=surface.present(){log::error!("custom Glow presentation failed: {error}");crate::glow_presentation::remove(&integration.egui_ctx,viewport_id);}
+            }else{
+                crate::vsync::apply(&integration.egui_ctx, viewport_id, false, |enabled| {
+                    gl_surface.set_swap_interval(context, swap_interval(enabled)).map_err(|e| e.to_string())
+                });
+                gl_surface.swap_buffers(context)?;
+            }
             frame_timer.resume();
         }
 
+        if let Some(surface)=&custom_surface {surface.finish();}
         // give it time to settle:
         #[cfg(feature = "__screenshot")]
         if integration.egui_ctx.cumulative_pass_nr() == 2 {
@@ -1277,6 +1284,9 @@ impl GlutinWindowContext {
         &mut self,
         viewport_output: &ViewportIdMap<ViewportOutput>,
     ) {
+        // Release custom GL/DXGI resources while the context and HWND live.
+        let retired=self.viewports.keys().filter(|id|!viewport_output.contains_key(id)).copied().collect::<Vec<_>>();
+        for id in retired {crate::glow_presentation::remove_closed(&self.egui_ctx,id);}
         // GC old viewports
         self.viewports
             .retain(|id, _| viewport_output.contains_key(id));
@@ -1531,6 +1541,7 @@ fn render_immediate_viewport(
         );
     }
 
+    let custom_surface=crate::glow_presentation::begin(egui_ctx,viewport_id,screen_size_in_pixels);
     egui_glow::painter::clear(
         painter.borrow().gl(),
         screen_size_in_pixels,
@@ -1546,14 +1557,20 @@ fn render_immediate_viewport(
 
     if presentation_visible(viewport.builder.visible, &viewport_output[&viewport_id]) {
         crate::profile_scope!("swap_buffers");
-        crate::vsync::apply(egui_ctx, viewport_id, false, |enabled| {
-            gl_surface.set_swap_interval(current_gl_context, swap_interval(enabled)).map_err(|e| e.to_string())
-        });
-        if let Err(err) = gl_surface.swap_buffers(current_gl_context) {
-            log::error!("swap_buffers failed: {err}");
+        if let Some(surface)=&custom_surface {
+            crate::vsync::apply(egui_ctx,viewport_id,false,|enabled|{surface.set_vsync(enabled);Ok(())});
+            if let Err(error)=surface.present(){log::error!("custom Glow presentation failed: {error}");crate::glow_presentation::remove(egui_ctx,viewport_id);}
+        }else {
+            crate::vsync::apply(egui_ctx, viewport_id, false, |enabled| {
+                gl_surface.set_swap_interval(current_gl_context, swap_interval(enabled)).map_err(|e| e.to_string())
+            });
+            if let Err(err) = gl_surface.swap_buffers(current_gl_context) {
+                log::error!("swap_buffers failed: {err}");
+            }
         }
     }
 
+    if let Some(surface)=&custom_surface {surface.finish();}
     egui_winit.handle_platform_output(window, platform_output);
 
     event_loop_context::with_current_event_loop(|event_loop| {

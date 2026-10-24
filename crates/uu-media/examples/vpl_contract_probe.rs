@@ -12,7 +12,7 @@ fn main() -> anyhow::Result<()> {
     );
     let case = std::env::var("ECLIPSE_VPL_CONTRACT_CASE")?;
     let mut base = Settings {
-        tuning:Default::default(), codec: VideoCodec::Hevc,
+        hdr:false,source_hdr:None,tuning:Default::default(), codec: VideoCodec::Hevc,
         rate_control: RateControl::Vbr { peak_kbps: 1600 },
         width: 64,
         height: 64,

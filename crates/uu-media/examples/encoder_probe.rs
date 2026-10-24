@@ -41,6 +41,7 @@ fn pattern(settings: Settings, index: u32) -> RawFrame {
 fn input_format(mut frame: RawFrame, format: PixelFormat) -> RawFrame {
     let pixels = frame.width as usize * frame.height as usize;
     match format {
+        PixelFormat::P010|PixelFormat::ScRgb16=>unreachable!("HDR input is covered by hdr_gpu_probe"),
         PixelFormat::I420 => frame,
         PixelFormat::Bgra8 => {
             let mut rgba = uu_media::convert::frame_to_rgba(&frame);
@@ -67,7 +68,7 @@ fn input_format(mut frame: RawFrame, format: PixelFormat) -> RawFrame {
 }
 fn main() -> anyhow::Result<()> {
     let mut settings = Settings {
-        tuning:Default::default(), codec:uu_proto::media::VideoCodec::H264,rate_control:encoder::RateControl::Cbr,
+        hdr:false,source_hdr:None,tuning:Default::default(), codec:uu_proto::media::VideoCodec::H264,rate_control:encoder::RateControl::Cbr,
         width: 1280,
         height: 720,
         fps: 60,

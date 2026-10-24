@@ -58,7 +58,7 @@ impl CaptureMonitor {
         uu_media::H264Encoder::validate_dimensions(self.width,self.height).is_ok()
     }
     pub fn encodable(&self, preference:EncoderPreference, fps:u32)->bool {
-        let settings=uu_media::encoder::Settings {tuning:Default::default(),codec:uu_proto::media::VideoCodec::H264,rate_control:uu_media::encoder::RateControl::Cbr,width:self.width,height:self.height,fps,
+        let settings=uu_media::encoder::Settings {hdr:false,source_hdr:None,tuning:Default::default(),codec:uu_proto::media::VideoCodec::H264,rate_control:uu_media::encoder::RateControl::Cbr,width:self.width,height:self.height,fps,
             bitrate_kbps:64,preference};
         settings.validate().is_ok() && (preference!=EncoderPreference::Software || self.software_encodable())
     }
@@ -623,6 +623,8 @@ async fn send_video(
     let preparation_started=Instant::now();
     let dynamic=crate::native_quality::runtime_requested(&offer.sdp)?;
     let request=crate::native_quality::Request::read(&offer.sdp)?;
+    let mut hdr_codecs=crate::native_color::Request::read(&offer.sdp)?.map(|r|r.codecs).unwrap_or_default();
+    hdr_codecs.retain(|codec|crate::native_media::offers_hdr_codec(&offer.sdp,*codec));
     let policy=config.video_policy.clone();
     let request=if policy.is_some(){request}else{None};
     if let Some(request)=&request {
@@ -653,7 +655,7 @@ async fn send_video(
     struct CancelCaptureOpen(Arc<AtomicBool>);
     impl Drop for CancelCaptureOpen { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
     let capture_cancel = CancelCaptureOpen(Arc::new(AtomicBool::new(false)));
-    let capture_options = uu_capture::OpenOptions { allow_input: config.allow_input, fps, cancelled:capture_cancel.0.clone() };
+    let capture_options = uu_capture::OpenOptions { hdr:true,allow_input: config.allow_input, fps, cancelled:capture_cancel.0.clone() };
     let (capture,encoder,codec,available,encoder_settings,mut startup) = tokio::select! {
         result=tokio::task::spawn_blocking(move || -> Result<_> {
             let started=Instant::now();
@@ -663,17 +665,22 @@ async fn send_video(
             let (width,height)=capture.resolution();validate_video(width,height,fps)?;
             let kbps=if automatic {crate::native_quality::Update{fps,bitrate_kbps:None}.bitrate(width,height)}else{kbps};
             let rate_control=match rate_control {uu_media::encoder::RateControl::Cbr=>rate_control,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:kbps.saturating_mul(2)}};
-            let settings=|codec|uu_media::encoder::Settings {tuning:config.encoder_tuning,codec,rate_control,width,height,fps,bitrate_kbps:kbps,preference};
+            let source_metadata=capture.hdr_metadata();
+            let settings=|codec,hdr|uu_media::encoder::Settings {hdr,source_hdr:source_metadata,tuning:config.encoder_tuning,codec,rate_control,width,height,fps,bitrate_kbps:kbps,preference};
             let capture_us=elapsed_us(started);let started=Instant::now();
             let mut selected=None;let mut last_error=None;let mut attempted=Vec::new();
-            for codec in choices {
-                attempted.push(codec);
-                match uu_media::encoder::create_with_device(settings(codec),capture.encoder_input_device()) {
-                    Ok(encoder)=>{selected=Some((codec,encoder));break;},
-                    Err(error)=>{tracing::warn!(?codec,?preference,%error,"native codec initialization failed");last_error=Some(anyhow::anyhow!("{codec:?}: {error}"));},
+            let source_hdr=capture.hdr_metadata().is_some();
+            let attempts=choices.iter().copied().filter(|c|source_hdr&&hdr_codecs.contains(c)).map(|c|(c,true))
+                .chain(choices.iter().copied().map(|c|(c,false))).collect::<Vec<_>>();
+            for (codec,hdr) in attempts {
+                if !attempted.contains(&codec){attempted.push(codec);}
+                match uu_media::encoder::create_with_device(settings(codec,hdr),capture.encoder_input_device()) {
+                    Ok(encoder) if !hdr || encoder.gpu_input()=>{selected=Some((codec,encoder,hdr));break;},
+                    Ok(_)=>last_error=Some(anyhow::anyhow!("{codec:?}: HDR source requires same-device GPU color conversion")),
+                    Err(error)=>{tracing::warn!(?codec,?preference,hdr,%error,"native codec initialization failed");last_error=Some(anyhow::anyhow!("{codec:?}: {error}"));},
                 }
             }
-            let (codec,encoder)=selected.ok_or_else(||anyhow::anyhow!("主机无法初始化请求的编码器：{}",last_error.map(|e|e.to_string()).unwrap_or_default()))?;
+            let (codec,encoder,hdr)=selected.ok_or_else(||anyhow::anyhow!("主机无法初始化请求的编码器：{}",last_error.map(|e|e.to_string()).unwrap_or_default()))?;
             let encoder_us=elapsed_us(started);let started=Instant::now();
             let mut available=vec![codec];
             if policy.is_some(){
@@ -681,11 +688,11 @@ async fn send_video(
                 // this geometry. Retrying them delays the answer and can report
                 // a different capability for the same preparation attempt.
                 for candidate in advertised.into_iter().filter(|c|!attempted.contains(c)) {
-                    if uu_media::encoder::create_with_device(settings(candidate),capture.encoder_input_device()).is_ok(){available.push(candidate);}
+                    if uu_media::encoder::create_with_device(settings(candidate,hdr&&hdr_codecs.contains(&candidate)),capture.encoder_input_device()).is_ok(){available.push(candidate);}
                 }
             }
             let startup=crate::native_quality::Startup{capture_us,encoder_us,other_encoders_us:elapsed_us(started),..Default::default()};
-            Ok((capture,encoder,codec,available,settings(codec),startup))
+            Ok((capture,encoder,codec,available,settings(codec,hdr),startup))
         })=>result??,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
         _=stream.disconnected()=>return Ok(HostReport::default()),
@@ -694,7 +701,7 @@ async fn send_video(
     config.bitrate_kbps=encoder_settings.bitrate_kbps;
     let permissions=config.session.as_ref().map_or(crate::device_trust::Permissions::CONTROL,|s|s.permissions);
     if !permissions.details().clipboard {config.clipboard=None;}
-    let mut track=peer.sender_for_codec(refresh.clone(),codec).await?;
+    let mut track=peer.sender_for_color(refresh.clone(),codec,encoder_settings.hdr).await?;
     let mut audio_sender=if let Some(red)=audio_mode {Some(peer.audio_sender(red).await?)}else{None};
     let (width,height)=capture.resolution();
     validate_video(width,height,config.fps)?;
@@ -713,6 +720,9 @@ async fn send_video(
     let mut description=peer.description(false).await?;
     startup.ice_us=elapsed_us(ice_started);startup.total_us=elapsed_us(preparation_started);
     startup.add(&mut description)?;
+    if encoder_settings.hdr {
+        crate::native_color::Response{codec,metadata:capture.hdr_metadata().context("HDR capture metadata disappeared")?}.add(&mut description)?;
+    }
     if clipboard_images {crate::native_clipboard::advertise(&mut description);}
     if typed_gamepads {crate::native_gamepad::advertise(&mut description);}
     if config.video_policy.is_some() {
@@ -912,6 +922,9 @@ async fn receive_session(
         request.fps=current.fps;request.bitrate_kbps=current.bitrate_kbps;
     }
     if let Some(request)=&quality_request {request.add(&mut description)?;}
+    if let Some(codecs)=stats.native_hdr_codecs.get().filter(|codecs|!codecs.is_empty()) {
+        crate::native_color::Request{codecs:codecs.clone()}.add(&mut description)?;
+    }
     stream.send(serde_json::to_value(Offer {
         version: 1,
         sdp: description,
@@ -936,6 +949,13 @@ async fn receive_session(
         Ok(None)=>{},
     }
     let quality=crate::native_quality::Response::read(&answer.sdp)?;
+    let hdr=crate::native_color::Response::read(&answer.sdp)?;
+    if let Some(response)=&hdr {
+        ensure!(response.codec==answer.codec && crate::native_media::offers_hdr_codec(&answer.sdp,answer.codec) && stats.native_hdr_capable.load(Ordering::Acquire)
+            && stats.native_hdr_codecs.get().is_some_and(|codecs|codecs.contains(&answer.codec)),"主机返回未协商的 HDR10 格式");
+    }
+    *stats.native_hdr_response.lock().unwrap()=hdr;
+    stats.diagnostics.record(serde_json::json!({"event":"native_color_negotiated","hdr":hdr}));
     let clipboard_images=crate::native_clipboard::images_offered(&answer.sdp);
     let typed_gamepads=crate::native_gamepad::typed_offered(&answer.sdp);
     if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"主机实际编码与能力回报不一致");}
@@ -1061,7 +1081,7 @@ mod tests {
                 Ok(vec![uu_media::EncodedFrame{data:vec![0u8].into(),pts:frame.pts,is_keyframe:std::mem::take(&mut self.0)}])
             }
         }
-        let settings=uu_media::encoder::Settings{tuning:Default::default(),codec:VideoCodec::H264,
+        let settings=uu_media::encoder::Settings{hdr:false,source_hdr:None,tuning:Default::default(),codec:VideoCodec::H264,
             rate_control:Default::default(),width:64,height:64,fps:60,bitrate_kbps:1000,preference:EncoderPreference::Software};
         let source=Box::new(Source{inner:uu_capture::open(&CaptureSource::Synthetic{width:64,height:64,fps:60}).unwrap(),count:0});
         let mut producer=CaptureWorker::start(source,settings,Arc::default(),Box::new(Encoder(false)),Arc::default());
@@ -1086,7 +1106,7 @@ mod tests {
                 } else {self.inner.next_frame()}
             }
         }
-        let settings=uu_media::encoder::Settings{tuning:Default::default(),codec:VideoCodec::H264,
+        let settings=uu_media::encoder::Settings{hdr:false,source_hdr:None,tuning:Default::default(),codec:VideoCodec::H264,
             rate_control:Default::default(),width:64,height:64,fps:60,bitrate_kbps:1000,preference:EncoderPreference::Software};
         let paused=Arc::new(AtomicBool::new(false));let suspended=Arc::new(AtomicU64::new(0));
         let capture=Box::new(Source {inner:uu_capture::open(&CaptureSource::Synthetic{width:64,height:64,fps:60}).unwrap(),paused:paused.clone(),suspended:suspended.clone()});
@@ -1110,7 +1130,7 @@ mod tests {
     }
     #[tokio::test(flavor="multi_thread",worker_threads=2)]
     async fn recovery_immediately_after_an_idr_is_encoded_in_the_next_capture_batch() {
-        let settings=uu_media::encoder::Settings{tuning:Default::default(),codec:VideoCodec::H264,
+        let settings=uu_media::encoder::Settings{hdr:false,source_hdr:None,tuning:Default::default(),codec:VideoCodec::H264,
             rate_control:Default::default(),width:64,height:64,fps:60,bitrate_kbps:1000,preference:EncoderPreference::Software};
         let capture=uu_capture::open(&CaptureSource::Synthetic{width:64,height:64,fps:60}).unwrap();
         let encoder=uu_media::encoder::create(settings).unwrap();

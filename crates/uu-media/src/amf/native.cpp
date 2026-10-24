@@ -89,9 +89,9 @@ static void check_amd(ID3D11Device* device) {
     multithread->SetMultithreadProtected(TRUE);multithread->Release();
 }
 extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsigned fps,unsigned kbps,
-    unsigned peak,int vbr,int quality,int default_adapter,void* native_device,char* error,size_t capacity) {
+    unsigned peak,int vbr,int quality,int hdr,int default_adapter,void* native_device,char* error,size_t capacity) {
     try {
-        if(codec<0||codec>2||quality<0||quality>2||width<2||height<2||!fps||!kbps)throw std::runtime_error("invalid AMF settings");
+        if((hdr&&codec==0)||codec<0||codec>2||quality<0||quality>2||width<2||height<2||!fps||!kbps)throw std::runtime_error("invalid AMF settings");
         auto s=std::make_unique<Session>();s->codec=codec;s->width=width;s->height=height;s->fps=fps;
         s->library=LoadLibraryExW(L"amfrt64.dll",nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);
         if(!s->library)throw std::runtime_error("AMD AMF runtime is not installed in the system directory");
@@ -127,10 +127,14 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
             (vbr?AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR:AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CBR)));
         s->bitrate(kbps);
         s->set(s->prop(AMF_VIDEO_ENCODER_PEAK_BITRATE,AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE,AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE),amf_int64(peak)*1000);
-        s->set(s->prop(AMF_VIDEO_ENCODER_INPUT_COLOR_PROFILE,AMF_VIDEO_ENCODER_HEVC_INPUT_COLOR_PROFILE,AMF_VIDEO_ENCODER_AV1_INPUT_COLOR_PROFILE),amf_int64(AMF_VIDEO_CONVERTER_COLOR_PROFILE_601));
-        s->set(s->prop(AMF_VIDEO_ENCODER_OUTPUT_COLOR_PROFILE,AMF_VIDEO_ENCODER_HEVC_OUTPUT_COLOR_PROFILE,AMF_VIDEO_ENCODER_AV1_OUTPUT_COLOR_PROFILE),amf_int64(AMF_VIDEO_CONVERTER_COLOR_PROFILE_601));
-        s->set(s->prop(AMF_VIDEO_ENCODER_OUTPUT_COLOR_PRIMARIES,AMF_VIDEO_ENCODER_HEVC_OUTPUT_COLOR_PRIMARIES,AMF_VIDEO_ENCODER_AV1_OUTPUT_COLOR_PRIMARIES),amf_int64(AMF_COLOR_PRIMARIES_SMPTE170M));
-        s->set(s->prop(AMF_VIDEO_ENCODER_OUTPUT_TRANSFER_CHARACTERISTIC,AMF_VIDEO_ENCODER_HEVC_OUTPUT_TRANSFER_CHARACTERISTIC,AMF_VIDEO_ENCODER_AV1_OUTPUT_TRANSFER_CHARACTERISTIC),amf_int64(AMF_COLOR_TRANSFER_CHARACTERISTIC_BT709));
+        s->set(s->prop(AMF_VIDEO_ENCODER_INPUT_COLOR_PROFILE,AMF_VIDEO_ENCODER_HEVC_INPUT_COLOR_PROFILE,AMF_VIDEO_ENCODER_AV1_INPUT_COLOR_PROFILE),amf_int64(hdr?AMF_VIDEO_CONVERTER_COLOR_PROFILE_2020:AMF_VIDEO_CONVERTER_COLOR_PROFILE_601));
+        s->set(s->prop(AMF_VIDEO_ENCODER_OUTPUT_COLOR_PROFILE,AMF_VIDEO_ENCODER_HEVC_OUTPUT_COLOR_PROFILE,AMF_VIDEO_ENCODER_AV1_OUTPUT_COLOR_PROFILE),amf_int64(hdr?AMF_VIDEO_CONVERTER_COLOR_PROFILE_2020:AMF_VIDEO_CONVERTER_COLOR_PROFILE_601));
+        s->set(s->prop(AMF_VIDEO_ENCODER_OUTPUT_COLOR_PRIMARIES,AMF_VIDEO_ENCODER_HEVC_OUTPUT_COLOR_PRIMARIES,AMF_VIDEO_ENCODER_AV1_OUTPUT_COLOR_PRIMARIES),amf_int64(hdr?AMF_COLOR_PRIMARIES_BT2020:AMF_COLOR_PRIMARIES_SMPTE170M));
+        s->set(s->prop(AMF_VIDEO_ENCODER_OUTPUT_TRANSFER_CHARACTERISTIC,AMF_VIDEO_ENCODER_HEVC_OUTPUT_TRANSFER_CHARACTERISTIC,AMF_VIDEO_ENCODER_AV1_OUTPUT_TRANSFER_CHARACTERISTIC),amf_int64(hdr?AMF_COLOR_TRANSFER_CHARACTERISTIC_SMPTE2084:AMF_COLOR_TRANSFER_CHARACTERISTIC_BT709));
+        if(hdr) {
+            s->set(codec==1?AMF_VIDEO_ENCODER_HEVC_COLOR_BIT_DEPTH:AMF_VIDEO_ENCODER_AV1_COLOR_BIT_DEPTH,amf_int64(AMF_COLOR_BIT_DEPTH_10));
+            if(codec==1)s->set(AMF_VIDEO_ENCODER_HEVC_PROFILE,amf_int64(AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN_10));
+        }
         if(codec==0) {
             // Windows' H.264 DXVA path requires Main-compatible Baseline.
             // Plain AMF Baseline omits constraint_set1_flag and the system MFT
@@ -146,7 +150,7 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
         s->set(gop_name,amf_int64(0));
         // A native timed output wait avoids a fixed application sleep per frame.
         s->encoder->SetProperty(s->prop(AMF_VIDEO_ENCODER_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_AV1_QUERY_TIMEOUT),amf_int64(1));
-        checked(s->encoder->Init(amf::AMF_SURFACE_NV12,width,height),"initialize encoder");
+        checked(s->encoder->Init(hdr?amf::AMF_SURFACE_P010:amf::AMF_SURFACE_NV12,width,height),"initialize encoder");
         amf_int64 actual_gop=-1;
         checked(s->encoder->GetProperty(gop_name,&actual_gop),"read GOP policy");
         if(actual_gop!=0)throw std::runtime_error("AMF changed the requested on-demand keyframe policy");

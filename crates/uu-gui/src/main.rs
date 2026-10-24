@@ -28,6 +28,10 @@ mod platform;
 mod shortcuts;
 mod hud;
 mod video_texture;
+#[cfg(windows)]
+mod wgl_interop;
+#[cfg(windows)]
+mod video_hdr;
 mod window;
 mod window_context;
 mod stream_workspace;
@@ -742,6 +746,7 @@ impl App {
                 }
                 self.recorded_connection=true;
             }
+            let source_white=h.stats.native_hdr_response.lock().unwrap().as_ref().map_or(203.,|r|r.metadata.sdr_white_nits);
             arrived.push(idx);
             match self.textures.get_mut(&idx) {
                 Some(t) => t.set(ctx, image),
@@ -751,6 +756,7 @@ impl App {
                     self.textures.insert(idx, video_texture::VideoTexture::new(ctx, self.video_gl.as_ref(), image));
                 }
             }
+            if let Some(texture)=self.textures.get_mut(&idx){texture.set_source_white(source_white);}
             self.unpresented.insert(idx);
         }
         if let Some(h) = &self.controller {
@@ -776,7 +782,9 @@ impl App {
             self.controller = None;
             self.disconnecting = false;
             self.input_capture.release();
-            self.textures.clear();
+            #[cfg(windows)]
+        eframe::glow_presentation::remove(&self.context,self.context.viewport());
+        self.textures.clear();
             self.hud_cache=Default::default();
             self.frame_count.clear();
             self.fps.clear();
@@ -828,6 +836,7 @@ impl App {
             let request=self.preferences.native_request();
             let dynamic=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_response.lock().unwrap().as_ref().is_some_and(|r|r.dynamic));
             let reconnect=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_request.get().is_some_and(|old|if dynamic {old.bounds!=request.bounds||old.codec!=request.codec}else{old!=&request}));
+            let reconnect=reconnect || self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_requested.get().is_some_and(|old|*old!=self.preferences.hdr));
             if reconnect {
                 self.output_reconnect_pending=true;self.stop_connection();self.status="正在应用原生串流画质…".into();
             }else if dynamic {
@@ -1424,6 +1433,14 @@ impl App {
         self.poll_account();
         self.poll(ctx);
         self.poll_controller(ctx);
+        #[cfg(windows)]
+        {
+            let hdr=self.is_native() && self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_response.lock().unwrap().is_some());
+            if hdr && eframe::glow_presentation::available_color_for(ctx,ctx.viewport_id()).is_none() {
+                if let Some(gl)=self.video_gl.clone(){let _=video_hdr::enable(ctx,gl,self.preferences.vsync);}
+            }
+            eframe::glow_presentation::set_active(ctx,ctx.viewport_id(),hdr,self.preferences.vsync);
+        }
         let video_px = self.textures.get(&self.selected_track)
             .map(|texture| texture.size_vec2());
         self.window_sizing.borrow_mut().set_settings_page(self.stream_settings_open || self.workspace.route.page == workspace_ui::Page::Settings);

@@ -1,4 +1,4 @@
-//! HEVC Main 8-bit metadata using the existing ChromiumOS parser (BSD-3-Clause).
+//! HEVC Main / Main10 metadata using the existing ChromiumOS parser (BSD-3-Clause).
 //! Parsing stays independent of the platform decoder and its GPU backend.
 use crate::color::YuvColor;
 use cros_codecs::codec::h265::parser::{Nalu, NaluType, Parser};
@@ -8,9 +8,10 @@ pub struct Sequence {
     pub width: u32,
     pub height: u32,
     pub color: YuvColor,
+    pub bit_depth: u8,
 }
 
-/// Return SPS geometry and VUI only for the negotiated 8-bit 4:2:0 format.
+/// Return SPS geometry, bit depth and VUI for 8/10-bit 4:2:0.
 pub fn sequence(data: &[u8]) -> Option<Sequence> {
     let mut cursor = std::io::Cursor::new(data);
     while let Ok(nal) = Nalu::next(&mut cursor) {
@@ -28,8 +29,8 @@ pub fn sequence(data: &[u8]) -> Option<Sequence> {
         let mut parser = Parser::default();
         let sps = parser.parse_sps(&nal).ok()?;
         if sps.chroma_format_idc != 1
-            || sps.bit_depth_luma_minus8 != 0
-            || sps.bit_depth_chroma_minus8 != 0
+            || !matches!(sps.bit_depth_luma_minus8,0|2)
+            || sps.bit_depth_chroma_minus8 != sps.bit_depth_luma_minus8
         {
             return None;
         }
@@ -50,16 +51,20 @@ pub fn sequence(data: &[u8]) -> Option<Sequence> {
         // Unspecified matrix follows the HD convention; explicit 601/709 and
         // full/limited range are retained for the shared CPU/GPU color path.
         let bt709 = !matches!(vui.matrix_coeffs, 5 | 6);
-        let color = match (vui.video_full_range_flag, bt709) {
+        let hdr=vui.colour_primaries==9 && vui.transfer_characteristics==16 && vui.matrix_coeffs==9;
+        let color = if hdr {
+            if vui.video_full_range_flag {YuvColor::Full2020Pq}else{YuvColor::Limited2020Pq}
+        }else {match (vui.video_full_range_flag, bt709) {
             (true, true) => YuvColor::Full709,
             (false, true) => YuvColor::Limited709,
             (true, false) => YuvColor::Full601,
             (false, false) => YuvColor::Limited601,
-        };
+        }};
         return Some(Sequence {
             width,
             height,
             color,
+            bit_depth:8+sps.bit_depth_luma_minus8 as u8,
         });
     }
     None
@@ -138,7 +143,7 @@ mod tests {
             Some(Sequence {
                 width: 128,
                 height: 128,
-                color: YuvColor::Limited709
+                color: YuvColor::Limited709, bit_depth:8
             })
         );
         assert!(is_keyframe(PROBE));
@@ -166,5 +171,15 @@ mod tests {
     #[ignore = "requires installed HEVC MFT and a compatible GPU"]
     fn windows_hevc_advertisement_requires_actual_gpu_decode() {
         probe_decoder().unwrap();
+    }
+}
+
+#[cfg(test)] mod hdr_tests {
+    #[test] fn reads_main10_pq_2020_and_rejects_truncation() {
+        let bytes=include_bytes!("hevc_hdr10_probe.h265");
+        let seq=super::sequence(bytes).unwrap();
+        assert_eq!((seq.width,seq.height,seq.bit_depth),(128,128,10));
+        assert_eq!(seq.color,crate::color::YuvColor::Limited2020Pq);
+        for end in 0..bytes.len(){let _=super::sequence(&bytes[..end]);}
     }
 }

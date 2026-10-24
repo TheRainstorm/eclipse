@@ -75,6 +75,7 @@ impl Drop for Driver {
 }
 impl Driver {
     pub fn open(settings: Settings) -> Result<Self, String> {
+        if settings.hdr {return Err("HDR requires the Windows P010 hardware encoder path".into());}
         let codec = match settings.codec {
             uu_proto::media::VideoCodec::H264 => 0,
             uu_proto::media::VideoCodec::Hevc => 1,

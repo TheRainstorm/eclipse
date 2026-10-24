@@ -558,6 +558,13 @@ impl super::App {
     }
 
     fn picture_menu(&mut self, ui: &mut egui::Ui) {
+        if self.is_native() {
+            ui.add_enabled_ui(cfg!(windows),|ui|{if ui.checkbox(&mut self.preferences.hdr,"优先 HDR").changed(){self.persist_preferences();self.send_capture_settings();}});
+            let hdr=self.controller.as_ref().and_then(|h|*h.stats.native_hdr_response.lock().unwrap()).is_some();
+            let displaying=eframe::glow_presentation::color_target_for(ui.ctx(),ui.ctx().viewport_id()).is_some_and(|c|c.hdr);
+            ui.small(if hdr&&displaying {"当前 HDR10 · 10 位 PQ / BT.2020"}else if hdr {"当前 HDR10 → SDR 映射"}else{"当前 SDR；HDR 需要两端显示输出和编解码支持"});
+            separator(ui);
+        }
         if self.stream_menu.quality_detail.is_some_and(|(kind,_)|kind==QualityDetail::Bitrate) {self.stream_menu.quality_detail=None;}
         let response=menu_row(ui,"分辨率",None,false,true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::Resolution,response.rect));}

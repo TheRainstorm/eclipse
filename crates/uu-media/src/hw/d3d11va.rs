@@ -30,7 +30,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_STAGING,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::{
@@ -145,6 +145,7 @@ struct Decoder {
     pending: VecDeque<RawFrame>,
     active: Option<Transform>,
     codec: VideoCodec,
+    bit_depth:u8,
     name: String,
     context: ID3D11DeviceContext,
     device: ID3D11Device,
@@ -161,7 +162,7 @@ impl Decoder {
             return Err("decoder geometry is outside the supported bounds".into());
         }
         if self.active.as_ref().map_or(true, |active| {
-            active.width != width || active.height != height
+            active.width != width || active.height != height || active.bit_depth!=self.bit_depth
         }) {
             self.active = Some(self.open_transform(width, height)?);
             self.pending.clear();
@@ -181,6 +182,7 @@ impl Decoder {
             pending: VecDeque::new(),
             active: None,
             codec,
+            bit_depth:8,
             name,
             context,
             device,
@@ -210,6 +212,7 @@ impl Decoder {
                     height,
                     self.runtime.foundation.as_ref().unwrap().clone(),
                     self.codec,
+                    self.bit_depth,
                 );
                 match attempt {
                     Ok(transform) => return Ok(transform),
@@ -237,11 +240,12 @@ impl super::Backend for Decoder {
         // keyframe after joining tells us the geometry. A different geometry
         // means the host switched resolution and the transform must be rebuilt.
         let geometry = match self.codec {
-            VideoCodec::Hevc => crate::hevc::sequence(&frame.data).map(|s| (s.width, s.height)),
-            VideoCodec::Av1 => crate::av1::sequence(&frame.data).map(|s| (s.width, s.height)),
-            VideoCodec::H264 => h264_dimensions(&frame.data),
+            VideoCodec::Hevc => crate::hevc::sequence(&frame.data).map(|s| (s.width, s.height,s.bit_depth)),
+            VideoCodec::Av1 => crate::av1::sequence(&frame.data).map(|s| (s.width, s.height,s.bit_depth)),
+            VideoCodec::H264 => h264_dimensions(&frame.data).map(|(w,h)|(w,h,8)),
         };
-        if let Some((width, height)) = geometry {
+        if let Some((width, height,bit_depth)) = geometry {
+            self.bit_depth=bit_depth;
             self.prepare_geometry(width, height)?;
         }
 
@@ -271,6 +275,7 @@ impl super::Backend for Decoder {
 struct Transform {
     transform: IMFTransform,
     require_gpu: bool,
+    bit_depth:u8,
     foundation: std::sync::Arc<crate::d3d11_frame::Foundation>,
     /// Keeps the activation alive so the MFT is shut down the way it was
     /// created (Media Foundation expects `ShutdownObject` for pool cleanup).
@@ -324,6 +329,7 @@ impl Transform {
         height: u32,
         foundation: std::sync::Arc<crate::d3d11_frame::Foundation>,
         codec: VideoCodec,
+        bit_depth:u8,
     ) -> Result<Self, String> {
         unsafe {
             let transform: IMFTransform = activation
@@ -383,8 +389,8 @@ impl Transform {
 
             let (input_id, output_id) = stream_ids(&transform)?;
             set_input_type(&transform, input_id, width, height, codec)?;
-            if set_output_type(&transform, output_id, width, height).is_err() {
-                select_nv12_output(&transform, output_id)?;
+            if set_output_type(&transform, output_id, width, height,bit_depth).is_err() {
+                select_planar_output(&transform, output_id,bit_depth)?;
             }
             transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
@@ -398,6 +404,7 @@ impl Transform {
             Ok(Self {
                 transform,
                 require_gpu: codec != VideoCodec::H264,
+                bit_depth,
                 foundation,
                 activation: activation.clone(),
                 device: device.clone(),
@@ -507,11 +514,11 @@ impl Transform {
     }
 
     /// The decoder re-announced its output type (resolution or format change):
-    /// re-negotiate NV12 and drop the now-wrong staging texture.
+    /// re-negotiate the required 8/10-bit planar format and drop the now-wrong staging texture.
     fn renegotiate(&mut self) -> Result<(), String> {
         let (width, height) = (self.width, self.height);
-        if set_output_type(&self.transform, self.output_id, width, height).is_err() {
-            select_nv12_output(&self.transform, self.output_id)?;
+        if set_output_type(&self.transform, self.output_id, width, height,self.bit_depth).is_err() {
+            select_planar_output(&self.transform, self.output_id,self.bit_depth)?;
         }
         let info = unsafe { self.transform.GetOutputStreamInfo(self.output_id) }
             .map_err(|e| format!("GetOutputStreamInfo: {e}"))?;
@@ -528,6 +535,8 @@ impl Transform {
     /// buffer. Both are handled, so a driver quirk costs a copy rather than a
     /// stalled session.
     fn read_surface(&mut self, sample: &IMFSample) -> Result<RawFrame, String> {
+        let bytes_per_sample=if self.bit_depth==10 {2}else{1};
+        let layout=if self.bit_depth==10 {PixelFormat::P010}else{PixelFormat::Nv12};
         let pts = unsafe { sample.GetSampleTime() }.unwrap_or(0).max(0) as u64 / 10;
         let buffer =
             unsafe { sample.GetBufferByIndex(0) }.map_err(|e| format!("GetBufferByIndex: {e}"))?;
@@ -546,9 +555,9 @@ impl Transform {
             let index = unsafe { dxgi.GetSubresourceIndex() }
                 .map_err(|e| format!("GetSubresourceIndex: {e}"))?;
             let (width, height, format) = texture_description(&texture);
-            if format != DXGI_FORMAT_NV12 {
+            if format != if self.bit_depth==10{DXGI_FORMAT_P010}else{DXGI_FORMAT_NV12} {
                 return Err(format!(
-                    "decoded surface is not NV12 (DXGI format {})",
+                    "decoded surface has the wrong 8/10-bit layout (DXGI format {})",
                     format.0
                 ));
             }
@@ -556,8 +565,8 @@ impl Transform {
                 return Ok(RawFrame {
                     width: self.width,
                     height: self.height,
-                    format: PixelFormat::Nv12,
-                    stride: width,
+                    format: layout,
+                    stride: width*bytes_per_sample,
                     data: Bytes::new(),
                     pts: Timestamp(pts),
                     gpu: true,
@@ -596,14 +605,14 @@ impl Transform {
             let len = stride as usize * height as usize * 3 / 2;
             let mut pixels = self
                 .pixels
-                .take(self.width as usize * self.height as usize * 3 / 2);
+                .take(self.width as usize * self.height as usize * bytes_per_sample as usize * 3 / 2);
             unsafe {
                 let source = std::slice::from_raw_parts(mapped.pData as *const u8, len);
                 let result = super::surface::crop_nv12_into(
                     source,
                     stride,
                     height,
-                    self.width,
+                    self.width*bytes_per_sample,
                     self.height,
                     pixels.as_mut(),
                 );
@@ -617,8 +626,8 @@ impl Transform {
             return Ok(RawFrame {
                 width: self.width,
                 height: self.height,
-                format: PixelFormat::Nv12,
-                stride: self.width,
+                format: layout,
+                stride: self.width*bytes_per_sample,
                 data: Bytes::from_owner(pixels),
                 pts: Timestamp(pts),
                 gpu: false,
@@ -644,7 +653,7 @@ impl Transform {
             return Ok(RawFrame {
                 width: self.width,
                 height: self.height,
-                format: PixelFormat::Nv12,
+                format: layout,
                 stride,
                 data: Bytes::from(pixels),
                 pts: Timestamp(pts),
@@ -673,7 +682,7 @@ impl Transform {
         Ok(RawFrame {
             width: self.width,
             height: self.height,
-            format: PixelFormat::Nv12,
+            format: layout,
             stride,
             data: Bytes::from(pixels),
             pts: Timestamp(pts),
@@ -711,7 +720,7 @@ impl Transform {
                 Height: height,
                 MipLevels: 1,
                 ArraySize: 1,
-                Format: DXGI_FORMAT_NV12,
+                Format: if self.bit_depth==10{DXGI_FORMAT_P010}else{DXGI_FORMAT_NV12},
                 SampleDesc: DXGI_SAMPLE_DESC {
                     Count: 1,
                     Quality: 0,
@@ -882,6 +891,7 @@ fn set_output_type(
     id: u32,
     width: u32,
     height: u32,
+    bit_depth:u8,
 ) -> Result<(), String> {
     unsafe {
         let media_type = MFCreateMediaType().map_err(describe)?;
@@ -889,7 +899,7 @@ fn set_output_type(
             .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
             .map_err(describe)?;
         media_type
-            .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)
+            .SetGUID(&MF_MT_SUBTYPE, &if bit_depth==10{MFVideoFormat_P010}else{MFVideoFormat_NV12})
             .map_err(describe)?;
         media_type
             .SetUINT64(&MF_MT_FRAME_SIZE, pack(width, height))
@@ -912,9 +922,9 @@ fn set_output_type(
     }
 }
 
-/// Fall back to whatever NV12 output type the MFT advertises.
-fn select_nv12_output(transform: &IMFTransform, id: u32) -> Result<(), String> {
-    let mut last = "no NV12 output type offered".to_string();
+/// Select an advertised output of the required bit depth.
+fn select_planar_output(transform: &IMFTransform, id: u32,bit_depth:u8) -> Result<(), String> {
+    let mut last = "no compatible planar output type offered".to_string();
     for index in 0..64u32 {
         let candidate = match unsafe { transform.GetOutputAvailableType(id, index) } {
             Ok(candidate) => candidate,
@@ -922,7 +932,7 @@ fn select_nv12_output(transform: &IMFTransform, id: u32) -> Result<(), String> {
             Err(e) => return Err(format!("GetOutputAvailableType: {e}")),
         };
         let is_nv12 = unsafe { candidate.GetGUID(&MF_MT_SUBTYPE) }
-            .map(|subtype| subtype == MFVideoFormat_NV12)
+            .map(|subtype| subtype == if bit_depth==10{MFVideoFormat_P010}else{MFVideoFormat_NV12})
             .unwrap_or(false);
         if !is_nv12 {
             continue;

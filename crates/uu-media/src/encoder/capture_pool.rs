@@ -30,9 +30,12 @@ impl CapturePool {
         unsafe { source.GetDesc(&mut desc); }
         let actual = unsafe { source.GetDevice() }.map_err(|e|super::error(e.to_string()))?;
         if actual.as_raw() != self.input.device.as_raw()
-            || [desc.Width, desc.Height] != self.size || desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM
+            || [desc.Width, desc.Height] != self.size || !matches!(desc.Format,DXGI_FORMAT_B8G8R8A8_UNORM|DXGI_FORMAT_R16G16B16A16_FLOAT)
             || desc.ArraySize != 1 || desc.MipLevels != 1 || desc.SampleDesc.Count != 1 {
             return Err(super::error("capture pool source/device layout changed"));
+        }
+        if self.slots.first().is_some_and(|slot|slot.capture_texture().ok().is_some_and(|(old,_)|{let mut before=D3D11_TEXTURE2D_DESC::default();unsafe{old.GetDesc(&mut before);}before.Format!=desc.Format})) {
+            self.slots.clear(); // Old frames retain their own immutable leases.
         }
         let free = self.slots.iter_mut().position(|slot| Arc::get_mut(slot).is_some());
         let index = match free {
@@ -60,8 +63,8 @@ impl CapturePool {
             self.context.Flush();
         }
         Ok(Some(RawFrame {
-            width: self.size[0], height: self.size[1], stride: self.size[0] * 4,
-            format: PixelFormat::Bgra8, data: Default::default(), pts, gpu: true,
+            width: self.size[0], height: self.size[1], stride: self.size[0] * if desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT{8}else{4},
+            format: if desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT{PixelFormat::ScRgb16}else{PixelFormat::Bgra8}, data: Default::default(), pts, gpu: true,
             dma_buf: None, d3d11: Some(self.slots[index].clone()),
         }))
     }

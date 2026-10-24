@@ -14,6 +14,7 @@ pub(super) struct Input {
     pub manager:IMFDXGIDeviceManager,
     source:[u32;2],
     settings:Settings,
+    hdr:Option<crate::d3d11_color::Converter>,
 }
 impl Input {
     pub fn new(frame:&RawFrame,settings:Settings)->Result<Self,String> {
@@ -29,6 +30,10 @@ impl Input {
             let video_context:ID3D11VideoContext=context.cast()?;
             let mut desc=D3D11_TEXTURE2D_DESC::default();texture.GetDesc(&mut desc);
             let source=[desc.Width,desc.Height];
+            let hdr=if settings.hdr || frame.format==crate::PixelFormat::ScRgb16 {
+                Some(crate::d3d11_color::Converter::new(&device,[settings.width,settings.height],false,settings.hdr,false,settings.source_hdr.map_or(203.,|m|m.sdr_white_nits))
+                    .map_err(|e|{tracing::warn!(%e,"HDR GPU conversion unavailable");windows::core::Error::empty()})?)
+            }else{None};
             let rate=DXGI_RATIONAL{Numerator:settings.fps,Denominator:1};
             let enumerator=video.CreateVideoProcessorEnumerator(&D3D11_VIDEO_PROCESSOR_CONTENT_DESC{
                 InputFrameFormat:D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,InputFrameRate:rate,
@@ -53,10 +58,17 @@ impl Input {
             MFCreateDXGIDeviceManager(&mut token,&mut manager)?;
             let manager=manager.ok_or_else(windows::core::Error::empty)?;
             manager.ResetDevice(&device,token)?;
-            Ok(Self{device,context,video,video_context,enumerator,processor,manager,source,settings})
+            Ok(Self{device,context,video,video_context,enumerator,processor,manager,source,settings,hdr})
         }
     }
     pub fn sample(&self,frame:&RawFrame)->Result<IMFSample,String> {
+        if let Some(converter)=&self.hdr {
+            if !frame.is_consistent() || (frame.width,frame.height)!=(self.settings.width,self.settings.height) {return Err("HDR source geometry changed".into());}
+            let surface=frame.d3d11.as_ref().ok_or("missing HDR source")?;
+            let (texture,_)=surface.capture_texture()?;
+            let output=converter.convert(texture,0,false)?;
+            return unsafe{make_sample(&output,frame,self.settings.fps)}.map_err(|e|e.to_string());
+        }
         self.convert(frame).map_err(|e|format!("D3D11 BGRA/NV12 conversion: {e}"))
     }
     fn convert(&self,frame:&RawFrame)->windows::core::Result<IMFSample> {
@@ -99,4 +111,14 @@ impl Input {
             Ok(sample)
         }
     }
+}
+
+unsafe fn make_sample(output:&ID3D11Texture2D,frame:&RawFrame,fps:u32)->windows::core::Result<IMFSample> {
+    let sample=unsafe{MFCreateSample()?};
+    unsafe {
+        sample.AddBuffer(&MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID,output,0,false)?)?;
+        let time=frame.pts.0.checked_mul(10).and_then(|t|i64::try_from(t).ok()).ok_or_else(windows::core::Error::empty)?;
+        sample.SetSampleTime(time)?;sample.SetSampleDuration(10_000_000/i64::from(fps))?;
+    }
+    Ok(sample)
 }

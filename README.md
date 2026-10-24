@@ -57,7 +57,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 
 ## 开始使用
 
-当前为 **v0.18.6 测试版，尚未正式发布**，包含 Windows 首帧后断开、Wayland 原生采集与默认远程切屏修复，见[测试说明](docs/releases/v0.18.6.md)。最新正式版仍为 [v0.18.5](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.5)。
+当前为 **v0.18.7 测试版，尚未正式发布**，新增统一输入菜单和 Windows 原生 HDR 串流，见[测试说明](docs/releases/v0.18.7.md)。此前 0.18.6 的连接与采集修复也包含在内。最新正式版仍为 [v0.18.5](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.5)。
 
 安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
 
@@ -150,7 +150,7 @@ Windows 上再次打开程序会唤起已有主页，避免并行运行多个主
 ## 当前边界
 
 - 原生被控端目前为实验性共享通路，默认 IP 连接，也可使用 [UU / 自建连接服务](docs/native-internet.md)寻址；含 Windows DXGI、Linux X11 / Wayland 门户采集、可选系统声音和输入控制。H.264 默认自动选择硬编，Windows Media Foundation 支持 H.264 CBR / VBR；Windows AMD 使用原生 AMF，Intel 可使用 VPL，NVIDIA 使用驱动 MFT；Linux 保留 VA-API，Intel 自定义参数使用 VPL。可用格式与码控受硬件和驱动限制。Windows 锁屏共享需安装后台服务、保持该用户登录及有效显示输出；Wayland 仍需系统门户授权。
-- Windows UU 串流支持 H.264 和可选 H.265 Main 8-bit 硬解；HEVC 需要系统解码扩展与兼容 GPU，连接前检查失败时使用 H.264。Linux UU 接收可选 HEVC 硬解；原生支持 H.264 / HEVC / AV1，GUI 可请求 5–240 FPS，分辨率与实际吞吐受格式、硬件及驱动限制。HDR 未实现；新版原生两端支持有预算上限的 [XOR 视频 FEC](docs/native-fec.md)，每组可恢复一包，不兼容官方 UU 的 FEC。高帧率选项不保证所有远端都能达到对应实际帧率。
+- Windows UU 串流支持 H.264 和可选 H.265 Main 8-bit 硬解；HEVC 需要系统解码扩展与兼容 GPU，连接前检查失败时使用 H.264。Linux UU 接收可选 HEVC 硬解；原生支持 H.264 / HEVC / AV1，GUI 可请求 5–240 FPS，分辨率与实际吞吐受格式、硬件及驱动限制。Windows 原生连接支持 [HDR10](docs/hdr.md)，需要两端系统显示输出及 10 位编解码支持，Linux 当前使用 SDR；新版原生两端支持有预算上限的 [XOR 视频 FEC](docs/native-fec.md)，每组可恢复一包，不兼容官方 UU 的 FEC。高帧率选项不保证所有远端都能达到对应实际帧率。
 - 文件传输、终端和端口映射尚未实现。新版“远程协助”可按官方设备 ID 与验证码发起兼容连接；原生主机发布官方协助码尚未实现。
 - 本项目原生主机暂不能供官方手机客户端连接；当前认证与协商需要独立兼容入口，详见[官方手机客户端兼容可行性分析](docs/official-mobile-client-feasibility.md)。
 - 硬解仍存在 CPU 回读，尚未做到完整零拷贝；网络波动、恢复与音频长稳体验仍需持续打磨。

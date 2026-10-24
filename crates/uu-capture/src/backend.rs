@@ -42,6 +42,8 @@ pub enum CaptureError {
 /// into the encoder; `RawFrame::gpu` distinguishes a CPU buffer from a GPU
 /// handle that still needs a copy/download step.
 pub trait Capture: Send {
+    /// Actual HDR source metadata, never inferred from bit depth alone.
+    fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{None}
     /// Hint capture pacing without replacing the authorized desktop session.
     /// Backends may retain the source cadence; the producer controls output FPS.
     fn set_frame_rate(&mut self,_fps:u32)->Result<(),CaptureError>{Ok(())}

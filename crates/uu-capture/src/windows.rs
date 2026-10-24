@@ -126,6 +126,8 @@ pub struct DxgiCapture {
     staging: Option<ID3D11Texture2D>,
     capture_pool: Option<uu_media::encoder::CapturePool>,
     gpu: bool,
+    hdr: Option<uu_media::hdr::Metadata>,
+    allow_hdr:bool,
     adapter_vendor: u16,
     duplication: Option<IDXGIOutputDuplication>,
     retry_at: Instant,
@@ -133,7 +135,8 @@ pub struct DxgiCapture {
     device: ID3D11Device,
 }
 impl DxgiCapture {
-    pub fn open(source: &CaptureSource) -> Result<Self, CaptureError> {
+    pub fn open(source: &CaptureSource) -> Result<Self, CaptureError> {Self::open_hdr(source,false)}
+    pub fn open_hdr(source: &CaptureSource,allow_hdr:bool) -> Result<Self,CaptureError> {
         uu_input::windows_desktop::sync_input_desktop()
             .map_err(|e| backend(uu_input::windows_desktop::access_error(&e)))?;
         let selected = match source {
@@ -176,16 +179,13 @@ impl DxgiCapture {
         unsafe {
             let _ = multithread.SetMultithreadProtected(true);
         }
-        let output: IDXGIOutput1 = selected.output.cast().map_err(backend)?;
         let adapter_vendor =
             unsafe { selected.adapter.GetDesc1().map_err(backend)? }.VendorId as u16;
-        let duplication = unsafe {
-            output.DuplicateOutput(&device).map_err(|e| {
-            if e.code() == windows::Win32::Foundation::E_ACCESSDENIED {
-                backend("当前桌面拒绝采集；锁屏和 UAC 安全桌面需要 Windows 后台服务以 LocalSystem 运行")
-            } else { backend(e) }
-        })?
-        };
+        let hdr=if allow_hdr && selected.rotation==Rotation::None {output_hdr(&selected.output)}else{None};
+        let duplication=duplicate(&selected.output,&device,hdr.is_some()).map_err(|e| {
+            if e.code()==windows::Win32::Foundation::E_ACCESSDENIED {backend("当前桌面拒绝采集；锁屏和 UAC 安全桌面需要 Windows 后台服务以 LocalSystem 运行")}
+            else{backend(e)}
+        })?;
         Ok(Self {
             source: selected.monitor,
             rotation: selected.rotation,
@@ -194,6 +194,8 @@ impl DxgiCapture {
             staging: None,
             capture_pool: None,
             gpu: false,
+            hdr,
+            allow_hdr:allow_hdr && selected.rotation==Rotation::None,
             adapter_vendor,
             duplication: Some(duplication),
             retry_at: Instant::now(),
@@ -225,9 +227,10 @@ impl DxgiCapture {
         if selected.monitor != self.source || selected.rotation != self.rotation {
             return Err(backend("显示布局已改变，请重新连接"));
         }
-        let output: IDXGIOutput1 = selected.output.cast().map_err(backend)?;
         self.duplication = Some(unsafe {
-            output.DuplicateOutput(&self.device).map_err(|e| {
+            let now_hdr=output_hdr(&selected.output);
+            if self.allow_hdr && self.hdr.is_some()!=now_hdr.is_some() {return Err(backend("显示器 HDR 状态已改变，请重新连接"));}
+            duplicate(&selected.output,&self.device,self.hdr.is_some()).map_err(|e| {
                 if e.code() == DXGI_ERROR_ACCESS_LOST
                     || e.code() == DXGI_ERROR_SESSION_DISCONNECTED
                     || e.code() == DXGI_ERROR_UNSUPPORTED
@@ -296,7 +299,7 @@ impl DxgiCapture {
         unsafe {
             texture.GetDesc(&mut desc);
         }
-        if desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
+        if !matches!(desc.Format,DXGI_FORMAT_B8G8R8A8_UNORM|DXGI_FORMAT_R16G16B16A16_FLOAT) {
             return Err(backend(format!("unsupported desktop surface format: format={}, size={}x{}, accumulated={}, present={}",desc.Format.0,desc.Width,desc.Height,info.AccumulatedFrames,info.LastPresentTime)));
         }
         if self.gpu && self.rotation == Rotation::None {
@@ -316,7 +319,7 @@ impl DxgiCapture {
             unsafe {
                 staging.GetDesc(&mut old);
             }
-            needs_staging = old.Width != desc.Width || old.Height != desc.Height;
+            needs_staging = old.Width != desc.Width || old.Height != desc.Height || old.Format!=desc.Format;
         }
         if needs_staging {
             let staging_desc = D3D11_TEXTURE2D_DESC {
@@ -368,6 +371,15 @@ impl DxgiCapture {
         }
         // D3D11 Map guarantees RowPitch bytes per row for the mapped texture.
         let data = unsafe { std::slice::from_raw_parts(mapped.pData.cast::<u8>(), len) };
+        if desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT {
+            if self.rotation!=Rotation::None || desc.Width!=self.source.width || desc.Height!=self.source.height || mapped.RowPitch<desc.Width*8 {return Err(backend("HDR desktop CPU layout changed"));}
+            let row=desc.Width as usize*8;let mut pixels=vec![0u8;row*desc.Height as usize];
+            for y in 0..desc.Height as usize {pixels[y*row..(y+1)*row].copy_from_slice(&data[y*mapped.RowPitch as usize..y*mapped.RowPitch as usize+row]);}
+            let frame=RawFrame{width:desc.Width,height:desc.Height,format:PixelFormat::ScRgb16,stride:desc.Width*8,data:pixels.into(),pts:self.timestamp(),gpu:false,dma_buf:None,d3d11:None};
+            let mut bgra=uu_media::convert::hdr_frame_to_rgba(&frame,uu_media::color::YuvColor::Limited2020Pq,self.hdr.map_or(203.,|m|m.sdr_white_nits));
+            for pixel in bgra.chunks_exact_mut(4){pixel.swap(0,2);}
+            return Ok(Some(RawFrame{format:PixelFormat::Bgra8,stride:desc.Width*4,data:bgra.into(),..frame}));
+        }
         let (width, height, data) = bgra_rows(
             data,
             desc.Width as usize,
@@ -392,6 +404,7 @@ impl DxgiCapture {
     }
 }
 impl Capture for DxgiCapture {
+    fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{self.hdr}
     fn encoder_input_device(&self)->Option<uu_media::encoder::InputDevice> {
         uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).ok()
     }
@@ -472,5 +485,23 @@ mod tests {
             println!("capture={}x{} duplication={}x{}",capture.source.width,capture.source.height,width,height);
             assert_eq!((capture.source.width,capture.source.height),(width,height));
         }).join().unwrap();
+    }
+}
+
+fn output_hdr(output:&IDXGIOutput)->Option<uu_media::hdr::Metadata> {
+    let desc=unsafe{output.cast::<IDXGIOutput6>().ok()?.GetDesc1().ok()?};
+    if desc.ColorSpace!=DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 {return None;}
+    let metadata=uu_media::hdr::Metadata {
+        primaries:[desc.RedPrimary,desc.GreenPrimary,desc.BluePrimary],white:desc.WhitePoint,
+        min_nits:desc.MinLuminance,max_nits:desc.MaxLuminance,max_full_frame_nits:desc.MaxFullFrameLuminance,
+        sdr_white_nits:uu_media::hdr::desktop_sdr_white(&desc.DeviceName),
+    };
+    let metadata=metadata.with_display_defaults();
+    metadata.valid().then_some(metadata)
+}
+fn duplicate(output:&IDXGIOutput,device:&ID3D11Device,hdr:bool)->windows::core::Result<IDXGIOutputDuplication> {
+    unsafe {
+        if hdr {output.cast::<IDXGIOutput5>()?.DuplicateOutput1(device,0,&[DXGI_FORMAT_R16G16B16A16_FLOAT,DXGI_FORMAT_B8G8R8A8_UNORM])}
+        else{output.cast::<IDXGIOutput1>()?.DuplicateOutput(device)}
     }
 }

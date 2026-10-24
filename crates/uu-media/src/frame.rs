@@ -4,15 +4,26 @@ use bytes::Bytes;
 
 use crate::Timestamp;
 
-/// Packed pixel formats we handle before handing frames to an encoder.
+/// Pixel layouts carried by capture and decoder frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
     /// 8-bit BGRA, the DXGI/GPU-native layout on Windows (and GDI capture).
     Bgra8,
+    /// Linear scRGB BT.709, IEEE half-float RGBA (1.0 = 80 cd/m²).
+    ScRgb16,
+    /// 10-bit 4:2:0, MSB aligned in 16-bit Y and interleaved UV samples.
+    P010,
     /// Semi-planar YUV 4:2:0 (NV12); what VA-API/QSV and DXGI video produce.
     Nv12,
     /// Planar YUV 4:2:0 (I420); the layout OpenH264 consumes.
     I420,
+}
+
+impl PixelFormat {
+    pub fn row_bytes(self,width:u32)->u32 {
+        width*match self {Self::Bgra8=>4,Self::ScRgb16=>8,Self::P010=>2,_=>1}
+    }
+    fn packed(self)->bool {matches!(self,Self::Bgra8|Self::ScRgb16)}
 }
 
 /// A captured but not-yet-encoded frame.
@@ -26,8 +37,8 @@ pub struct RawFrame {
     pub stride: u32,
     pub data: Bytes,
     pub pts: Timestamp,
-    /// True when `data` is an opaque GPU handle rather than CPU memory.
-    /// Zero-copy paths set this and convert lazily.
+    /// Pixels reside in a typed GPU lease below; `data` is empty.
+    /// Conversion and copies stay on the GPU until explicit readback.
     pub gpu: bool,
     /// Typed, leased NV12 GPU storage; CPU frames leave this empty.
     pub dma_buf: Option<std::sync::Arc<crate::dma_buf::Frame>>,
@@ -51,10 +62,10 @@ impl RawFrame {
                     .map_err(crate::CodecError::Backend)?));
             } else if !self.dma_buf.as_ref().is_some_and(|frame|frame.valid(visible)) {return Err(fail());}
         } else {
-            let bpp=if self.format==PixelFormat::Bgra8 {4}else{1};
+            let bpp=self.format.row_bytes(1);
             if self.stride < self.width*bpp {return Err(fail());}
             let (w,h,stride,old_h)=(w as usize,h as usize,self.stride as usize,self.height as usize);
-            let mut data=vec![0; if bpp==4 {w*h*4}else{w*h*3/2}];
+            let mut data=vec![0; if self.format.packed() {w*h*bpp as usize}else{w*h*bpp as usize*3/2}];
             let mut rows=|base:usize,pitch:usize,dst:usize,row_bytes:usize,count:usize|->Result<(),crate::CodecError> {
                 for row in 0..count {
                     let start=base+row*pitch;
@@ -65,8 +76,8 @@ impl RawFrame {
             };
             rows(0,stride,0,w*bpp as usize,h)?;
             match self.format {
-                PixelFormat::Bgra8=>{},
-                PixelFormat::Nv12=>rows(stride*old_h,stride,w*h,w,h/2)?,
+                PixelFormat::Bgra8|PixelFormat::ScRgb16=>{},
+                PixelFormat::Nv12|PixelFormat::P010=>rows(stride*old_h,stride,w*h*bpp as usize,w*bpp as usize,h/2)?,
                 PixelFormat::I420=>{
                     let chroma=stride.div_ceil(2);
                     rows(stride*old_h,chroma,w*h,w/2,h/2)?;
@@ -98,9 +109,9 @@ impl RawFrame {
         let stride = self.stride as usize;
         let height = self.height as usize;
         match self.format {
-            PixelFormat::Bgra8 => stride * height,
+            PixelFormat::Bgra8 | PixelFormat::ScRgb16 => stride * height,
             // Both 4:2:0 layouts are luma + two half-resolution chroma planes.
-            PixelFormat::Nv12 | PixelFormat::I420 => stride * height * 3 / 2,
+            PixelFormat::Nv12 | PixelFormat::I420 | PixelFormat::P010 => stride * height * 3 / 2,
         }
     }
 
@@ -173,6 +184,7 @@ mod tests {
                 PixelFormat::Bgra8=>{},
                 PixelFormat::Nv12=>expected.extend_from_slice(&[48,49,50,51,56,57,58,59]),
                 PixelFormat::I420=>expected.extend_from_slice(&[48,49,52,53,60,61,64,65]),
+                _=>unreachable!(),
             }
             assert_eq!(cropped.data.as_ref(),expected);
             assert_eq!(cropped.stride,row as u32);
@@ -224,5 +236,16 @@ mod tests {
     #[test]
     fn parameter_sets_are_not_reference_recovery_points() {
         assert!(!EncodedFrame::detect_h264_keyframe(&[0,0,1,0x67,0x42,0,0,1,0x68,0xce]));
+    }
+}
+
+#[cfg(test)] mod hdr_layout_tests {
+    use super::*;
+    #[test] fn p010_crop_preserves_word_alignment_and_original_chroma_offset() {
+        let original=RawFrame{width:6,height:6,format:PixelFormat::P010,stride:16,data:(0..144).map(|n|n as u8).collect::<Vec<_>>().into(),pts:Timestamp(123),gpu:false,dma_buf:None,d3d11:None};
+        let cropped=original.clone().crop_decoded([4,4]).unwrap();
+        let mut expected=Vec::new();for row in 0..4{expected.extend_from_slice(&original.data[row*16..row*16+8]);}
+        for row in 0..2{expected.extend_from_slice(&original.data[96+row*16..96+row*16+8]);}
+        assert_eq!(cropped.stride,8);assert_eq!(cropped.data.as_ref(),expected);assert_eq!(cropped.pts,Timestamp(123));assert!(cropped.is_consistent());
     }
 }

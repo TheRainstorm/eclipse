@@ -354,6 +354,7 @@ mod tests {
                     let stride = w * if format == PixelFormat::Bgra8 { 4 } else { 1 } + padding;
                     let length = match format {
                         PixelFormat::Bgra8 => stride * h,
+                        PixelFormat::P010|PixelFormat::ScRgb16=>unreachable!(),
                         PixelFormat::Nv12 => stride * h * 3 / 2,
                         PixelFormat::I420 => stride * h + w * h / 2,
                     };

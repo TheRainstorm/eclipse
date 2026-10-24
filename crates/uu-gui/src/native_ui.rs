@@ -160,6 +160,16 @@ impl App {
         let kind=self.decoder_kind();
         let _=stats.decoder_preference.set(kind);
         let _=stats.native_quality_request.set(self.preferences.native_request());
+        let _=stats.native_hdr_requested.set(self.preferences.hdr);
+        #[cfg(windows)]
+        if self.preferences.hdr && kind!=uu_core::media::DecoderKind::Software && self.preferences.codec!=super::settings::CodecPreference::H264 {
+            if let Some(gl)=self.video_gl.clone() {
+                match super::video_hdr::enable(&self.context,gl,self.preferences.vsync) {
+                    Ok(capable)=>stats.native_hdr_capable.store(capable,std::sync::atomic::Ordering::Release),
+                    Err(error)=>stats.diagnostics.record(serde_json::json!({"event":"hdr_presentation_unavailable","reason":error})),
+                }
+            }
+        }
         if kind==uu_core::media::DecoderKind::Software {let _=stats.native_codec_capabilities.set(vec![uu_core::native::VideoCodec::H264]);}
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Release);
         stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Release);

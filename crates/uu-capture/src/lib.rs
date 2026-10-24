@@ -25,6 +25,8 @@ pub use synthetic::SyntheticCapture;
 
 #[derive(Clone)]
 pub struct OpenOptions {
+    /// Permit a negotiated floating-point HDR capture path.
+    pub hdr: bool,
     pub allow_input: bool,
     pub fps: u32,
     /// Cancels a pending compositor permission request as well as capture.
@@ -33,6 +35,7 @@ pub struct OpenOptions {
 impl Default for OpenOptions {
     fn default() -> Self {
         Self {
+            hdr:false,
             allow_input: false,
             fps: 60,
             cancelled: Default::default(),
@@ -89,7 +92,7 @@ pub fn open_with_options(
         #[cfg(target_os = "linux")]
         other => Ok(Box::new(x11::X11Capture::open(None, other)?)),
         #[cfg(windows)]
-        other => Ok(Box::new(windows::DxgiCapture::open(other)?)),
+        other => Ok(Box::new(windows::DxgiCapture::open_hdr(other,options.hdr)?)),
         #[cfg(not(any(target_os = "linux", windows)))]
         other => Err(CaptureError::TargetNotFound(match other {
             CaptureSource::Monitor(name) => CaptureTarget::Output(name.clone()),

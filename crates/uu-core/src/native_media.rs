@@ -154,6 +154,11 @@ fn video_capability(codec:VideoCodec)->RTCRtpCodecCapability {
         VideoCodec::Av1=>{capability.mime_type="video/AV1".into();capability.sdp_fmtp_line="profile=0;level-idx=14;tier=1".into();},
     }capability
 }
+fn video_color_capability(codec:VideoCodec,hdr:bool)->RTCRtpCodecCapability {
+    let mut capability=video_capability(codec);
+    if hdr && codec==VideoCodec::Hevc {capability.sdp_fmtp_line=capability.sdp_fmtp_line.replace("profile-id=1;","profile-id=2;");}
+    capability
+}
 pub(crate) fn offers_codec(description:&RTCSessionDescription,codec:VideoCodec)->bool{
     let name=match codec {VideoCodec::H264=>"H264/90000",VideoCodec::Hevc=>"H265/90000",VideoCodec::Av1=>"AV1/90000"};
     let mut video=false;let mut payloads=Vec::new();
@@ -168,6 +173,17 @@ pub(crate) fn offers_codec(description:&RTCSessionDescription,codec:VideoCodec)-
             }
         }}
     }false
+}
+/// A 10-bit claim must also match the negotiated RTP profile.
+pub(crate) fn offers_hdr_codec(description:&RTCSessionDescription,codec:VideoCodec)->bool {
+    let (mime,name,profile)=match codec {VideoCodec::Hevc=>("H265/90000","profile-id","2"),VideoCodec::Av1=>("AV1/90000","profile","0"),VideoCodec::H264=>return false};
+    let Ok(sdp)=description.unmarshal() else{return false};
+    sdp.media_descriptions.iter().filter(|m|m.media_name.media=="video"&&m.media_name.port.value!=0).any(|media| {
+        media.media_name.formats.iter().any(|pt| {
+            let mapped=media.attributes.iter().any(|a|a.key=="rtpmap"&&a.value.as_ref().is_some_and(|v|v.split_once(' ').is_some_and(|(p,m)|p==pt&&m.eq_ignore_ascii_case(mime))));
+            mapped&&media.attributes.iter().any(|a|a.key=="fmtp"&&a.value.as_ref().is_some_and(|v|v.split_once(' ').is_some_and(|(p,params)|p==pt&&params.split(';').any(|v|v.trim().split_once('=').is_some_and(|(n,v)|n.eq_ignore_ascii_case(name)&&v.trim()==profile)))))
+        })
+    })
 }
 pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
     if let Some(codecs)=stats.native_codec_capabilities.get(){return codecs.clone();}
@@ -290,6 +306,26 @@ impl NativePeer {
             media.register_codec(webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
                 capability:RTCRtpCodecCapability {mime_type:"video/rtx".into(),clock_rate:90_000,sdp_fmtp_line:format!("apt={pt}"),..Default::default()},payload_type:pt+1,..Default::default()
             },RTPCodecType::Video)?;
+        }
+        let hdr_codecs=if sender {vec![VideoCodec::Hevc,VideoCodec::Av1]}else if let Some(stats)=&stats {
+            if stats.native_hdr_capable.load(Ordering::Acquire) {
+                if let Some(cached)=stats.native_hdr_codecs.get(){cached.clone()}else{
+                    let probe=|codec|async move {
+                        let kind=stats.decoder_kind();
+                        let result=timeout(Duration::from_secs(5),tokio::task::spawn_blocking(move||uu_media::hdr::probe_decoder(codec,kind))).await;
+                        let available=matches!(result,Ok(Ok(Ok(()))));
+                        stats.diagnostics.record(serde_json::json!({"event":"native_hdr_decoder_probe","codec":codec,"available":available}));
+                        (codec,available)
+                    };
+                    let (hevc,av1)=tokio::join!(probe(VideoCodec::Hevc),probe(VideoCodec::Av1));
+                    let codecs=vec![hevc,av1].into_iter().filter_map(|(c,ok)|ok.then_some(c)).collect::<Vec<_>>();
+                    let _=stats.native_hdr_codecs.set(codecs.clone());codecs
+                }
+            }else{Vec::new()}
+        }else{Vec::new()};
+        if hdr_codecs.contains(&VideoCodec::Hevc) {
+            media.register_codec(webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters{capability:video_color_capability(VideoCodec::Hevc,true),payload_type:108,..Default::default()},RTPCodecType::Video)?;
+            media.register_codec(webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters{capability:RTCRtpCodecCapability{mime_type:"video/rtx".into(),clock_rate:90_000,sdp_fmtp_line:"apt=108".into(),..Default::default()},payload_type:109,..Default::default()},RTPCodecType::Video)?;
         }
         media.register_codec(
             webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
@@ -438,8 +474,8 @@ impl NativePeer {
         tokio::spawn(async move{while sender.read_rtcp().await.is_ok(){}});
         Ok(AudioSender {track,red,sequence:rand::random(),base:rand::random(),previous:None})
     }
-    pub async fn sender_for_codec(&self,refresh:Arc<AtomicBool>,codec:VideoCodec)->Result<crate::native_video::Sender>{
-        let track=Arc::new(TrackLocalStaticRTP::new(video_capability(codec),"video_0".into(),"eclipse-native".into()));
+    pub async fn sender_for_color(&self,refresh:Arc<AtomicBool>,codec:VideoCodec,hdr:bool)->Result<crate::native_video::Sender>{
+        let track=Arc::new(TrackLocalStaticRTP::new(video_color_capability(codec,hdr),"video_0".into(),"eclipse-native".into()));
         let sender = self.attach_sender(track.clone() as Arc<dyn TrackLocal + Send + Sync>).await?;
         tokio::spawn(async move {
             use webrtc::rtcp::payload_feedbacks::{
@@ -554,6 +590,44 @@ mod tests {
         assert!(offers_codec(&legacy,VideoCodec::H264));assert!(!offers_codec(&legacy,VideoCodec::Av1));assert!(!offers_codec(&legacy,VideoCodec::Hevc));
         let extended=description("m=video 9 UDP/TLS/RTP/SAVPF 104 106\r\na=rtpmap:104 H265/90000\r\na=rtpmap:106 AV1/90000\r\n");
         assert!(offers_codec(&extended,VideoCodec::Hevc));assert!(offers_codec(&extended,VideoCodec::Av1));
+    }
+    #[test]
+    fn hdr_profile_must_belong_to_an_active_video_payload() {
+        let base="v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n";
+        for (media,expected) in [
+            ("m=video 9 UDP/TLS/RTP/SAVPF 108\r\na=rtpmap:108 H265/90000\r\na=fmtp:108 profile-id=2;tier-flag=1\r\n",true),
+            ("m=video 9 UDP/TLS/RTP/SAVPF 104\r\na=rtpmap:104 H265/90000\r\na=fmtp:104 profile-id=1\r\n",false),
+            ("m=video 0 UDP/TLS/RTP/SAVPF 108\r\na=rtpmap:108 H265/90000\r\na=fmtp:108 profile-id=2\r\n",false),
+            ("m=video 9 UDP/TLS/RTP/SAVPF 104\r\na=rtpmap:108 H265/90000\r\na=fmtp:108 profile-id=2\r\n",false),
+        ] {
+            let sdp=RTCSessionDescription::offer(format!("{base}{media}")).unwrap();
+            assert_eq!(offers_hdr_codec(&sdp,VideoCodec::Hevc),expected);
+        }
+    }
+    #[tokio::test]
+    async fn hdr_main10_profile_is_used_on_the_actual_encrypted_rtp_track() {
+        let local="127.0.0.1".parse().unwrap();let stats=Arc::new(MediaStats::default());
+        stats.native_codec_capabilities.set(vec![VideoCodec::Hevc]).unwrap();
+        stats.native_hdr_capable.store(true,Ordering::Release);
+        stats.native_hdr_codecs.set(vec![VideoCodec::Hevc]).unwrap();
+        let mut viewer=NativePeer::new(local,Some(stats),false).await.unwrap();
+        let mut host=NativePeer::new(local,None,true).await.unwrap();
+        let(tx,mut rx)=tokio::sync::mpsc::channel(1);
+        viewer.pc.on_track(Box::new(move|track,_,_|{let tx=tx.clone();Box::pin(async move{
+            let codec=track.codec();let packet=track.read_rtp().await.unwrap().0;let _=tx.send((codec,packet)).await;
+        })}));
+        viewer.pc.add_transceiver_from_kind(RTPCodecType::Video,Some(RTCRtpTransceiverInit{direction:RTCRtpTransceiverDirection::Recvonly,send_encodings:vec![]})).await.unwrap();
+        let offer=viewer.description(true).await.unwrap();assert!(offers_hdr_codec(&offer,VideoCodec::Hevc));
+        host.remote(offer,local).await.unwrap();
+        let mut sender=host.sender_for_color(Arc::new(AtomicBool::new(false)),VideoCodec::Hevc,true).await.unwrap();
+        let answer=host.description(false).await.unwrap();assert!(offers_hdr_codec(&answer,VideoCodec::Hevc));
+        viewer.remote(answer,local).await.unwrap();
+        let (a,b)=tokio::join!(host.connected(),viewer.connected());a.unwrap();b.unwrap();
+        let data=uu_media::hdr::HEVC_PROBE;let end=data.windows(5).enumerate().skip(1).find(|(_,v)|*v==[0,0,0,1,70]).map_or(data.len(),|(i,_)|i);
+        sender.frame(&uu_media::EncodedFrame{data:bytes::Bytes::copy_from_slice(&data[..end]),pts:uu_media::Timestamp(0),is_keyframe:true}).await.unwrap();
+        let (codec,packet)=timeout(Duration::from_secs(3),rx.recv()).await.unwrap().unwrap();
+        assert_eq!(codec.payload_type,108);assert_eq!(packet.header.payload_type,108);assert!(codec.capability.sdp_fmtp_line.contains("profile-id=2"));assert!(!packet.payload.is_empty());
+        host.close().await;viewer.close().await;
     }
     #[tokio::test]
     async fn authenticated_observed_address_changes_advertisement_without_relaxing_peer_validation() {

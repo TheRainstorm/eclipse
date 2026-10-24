@@ -109,7 +109,7 @@ impl Policy {
         Response{dynamic:true,codecs:self.codecs.clone(),max_fps:MAX_FPS,max_bitrate_kbps:MAX_BITRATE_KBPS}.validate()
     }
 }
-fn put(sdp:&mut RTCSessionDescription,key:&str,value:&impl Serialize)->Result<()> {
+pub(crate) fn put(sdp:&mut RTCSessionDescription,key:&str,value:&impl Serialize)->Result<()> {
     ensure!(get::<serde_json::Value>(sdp,key)?.is_none(),"重复的画质属性");
     let value=serde_json::to_vec(value)?;ensure!(value.len()<=LIMIT/2,"画质属性过长");
     let line=format!("a={key}:{}\r\n",hex::encode(value));
@@ -117,7 +117,7 @@ fn put(sdp:&mut RTCSessionDescription,key:&str,value:&impl Serialize)->Result<()
     let at=sdp.sdp.find("m=").unwrap_or(sdp.sdp.len());sdp.sdp.insert_str(at,&line);
     Ok(())
 }
-fn get<T:DeserializeOwned>(sdp:&RTCSessionDescription,key:&str)->Result<Option<T>> {
+pub(crate) fn get<T:DeserializeOwned>(sdp:&RTCSessionDescription,key:&str)->Result<Option<T>> {
     let prefix=format!("a={key}:");let mut found=None;
     for line in sdp.sdp.lines() {
         if let Some(value)=line.strip_prefix(&prefix) {

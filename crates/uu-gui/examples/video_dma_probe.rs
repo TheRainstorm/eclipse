@@ -7,6 +7,9 @@ mod owned_station;
 #[allow(dead_code)]
 #[path = "../src/video_texture.rs"]
 mod video_texture;
+#[cfg(windows)]
+#[path = "../src/wgl_interop.rs"]
+mod wgl_interop;
 #[cfg(any(target_os = "linux", windows))]
 mod platform {
     use super::video_texture;

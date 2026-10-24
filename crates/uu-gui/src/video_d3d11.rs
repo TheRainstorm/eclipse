@@ -2,56 +2,12 @@
 //! WGL lock/unlock provides GPU ordering between D3D11 and GL. All methods and
 //! destruction run with the owning GL context current on the renderer thread.
 use eframe::glow::{self, HasContext};
-use std::{
-    ffi::{c_char, c_void, CStr},
-    sync::Arc,
-};
+use std::sync::Arc;
 use uu_core::display_frames::{
     d3d11_frame::{self, Converter, Frame},
     YuvColor,
 };
-type Handle = *mut c_void;
-#[link(name = "opengl32")]
-extern "system" {
-    fn wglGetProcAddress(name: *const c_char) -> *const c_void;
-    fn wglGetCurrentDC() -> Handle;
-}
-#[derive(Clone, Copy)]
-struct Api {
-    open: unsafe extern "system" fn(Handle) -> Handle,
-    close: unsafe extern "system" fn(Handle) -> i32,
-    register: unsafe extern "system" fn(Handle, Handle, u32, u32, u32) -> Handle,
-    unregister: unsafe extern "system" fn(Handle, Handle) -> i32,
-    lock: unsafe extern "system" fn(Handle, i32, *mut Handle) -> i32,
-    unlock: unsafe extern "system" fn(Handle, i32, *mut Handle) -> i32,
-}
-impl Api {
-    unsafe fn load() -> Option<Self> {
-        unsafe fn proc(name: &[u8]) -> Option<*const c_void> {
-            let p = wglGetProcAddress(name.as_ptr().cast());
-            (!p.is_null() && p as usize > 3 && p as usize != usize::MAX).then_some(p)
-        }
-        let extensions: unsafe extern "system" fn(Handle) -> *const c_char =
-            std::mem::transmute(proc(b"wglGetExtensionsStringARB\0")?);
-        let list = extensions(wglGetCurrentDC());
-        if list.is_null()
-            || !CStr::from_ptr(list)
-                .to_bytes()
-                .split(|c| *c == b' ')
-                .any(|s| s == b"WGL_NV_DX_interop2")
-        {
-            return None;
-        }
-        Some(Self {
-            open: std::mem::transmute(proc(b"wglDXOpenDeviceNV\0")?),
-            close: std::mem::transmute(proc(b"wglDXCloseDeviceNV\0")?),
-            register: std::mem::transmute(proc(b"wglDXRegisterObjectNV\0")?),
-            unregister: std::mem::transmute(proc(b"wglDXUnregisterObjectNV\0")?),
-            lock: std::mem::transmute(proc(b"wglDXLockObjectsNV\0")?),
-            unlock: std::mem::transmute(proc(b"wglDXUnlockObjectsNV\0")?),
-        })
-    }
-}
+use crate::wgl_interop::{Api,Handle};
 pub fn enable(_gl: &glow::Context) {
     let enabled = std::env::var("UU_D3D11_READBACK").as_deref() != Ok("1")
         && unsafe { Api::load().is_some() };

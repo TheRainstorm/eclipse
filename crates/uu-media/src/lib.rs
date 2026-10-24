@@ -17,10 +17,13 @@ pub mod codec;
 #[cfg(feature = "h264")]
 pub mod encoder;
 pub mod color;
+pub mod hdr;
 pub mod convert;
 pub mod decoder;
 pub mod dma_buf;
 pub mod d3d11_frame;
+#[cfg(all(windows,any(feature="d3d11va",feature="mf-encode")))]
+mod d3d11_color;
 pub mod frame;
 #[cfg(feature = "h264")]
 pub mod h264;

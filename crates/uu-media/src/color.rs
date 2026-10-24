@@ -9,14 +9,37 @@ pub enum YuvColor {
     Limited601,
     Full709,
     Limited709,
+    /// BT.2020 nonconstant luminance with absolute ST 2084 transfer.
+    Limited2020Pq,
+    Full2020Pq,
 }
 impl YuvColor {
+    pub fn hdr(self)->bool { matches!(self,Self::Limited2020Pq|Self::Full2020Pq) }
+    /// Normalized texture levels and unscaled matrix coefficients for 8-bit
+    /// planes or MSB-aligned P010 after normalization to 10-bit code values.
+    pub fn shader_conversion(self,ten_bit:bool)->([f32;4],[f32;4]) {
+        let limited=matches!(self,Self::Limited601|Self::Limited709|Self::Limited2020Pq);
+        let levels=match (ten_bit,limited) {
+            (false,false)=>[0.,1.,128./255.,1.],
+            (false,true)=>[16./255.,255./219.,128./255.,255./224.],
+            (true,false)=>[0.,1.,512./1023.,1.],
+            (true,true)=>[64./1023.,1023./876.,512./1023.,1023./896.],
+        };
+        let matrix=match self {
+            Self::Full601|Self::Limited601=>[1.402,0.344136,0.714136,1.772],
+            Self::Full709|Self::Limited709=>[1.5748,0.187324,0.468124,1.8556],
+            Self::Full2020Pq|Self::Limited2020Pq=>[1.4746,0.164553,0.571353,1.8814],
+        };
+        (levels,matrix)
+    }
     pub(crate) fn coefficients(self) -> [i32; 6] {
         match self {
             Self::Full601 => [0, 65536, 91881, 22554, 46802, 116130],
             Self::Limited601 => [16, 76309, 104597, 25675, 53279, 132201],
             Self::Full709 => [0, 65536, 103206, 12276, 30679, 121609],
             Self::Limited709 => [16, 76309, 117489, 13975, 34925, 138438],
+            Self::Limited2020Pq => [16, 76309, 110014, 12277, 42626, 140363],
+            Self::Full2020Pq => [0,65536,96640,10784,37444,123299],
         }
     }
     pub(crate) fn rgb(self, y: i32, u: i32, v: i32) -> (i32, i32, i32) {

@@ -15,6 +15,7 @@ pub fn bounded(inner:Box<dyn Capture>,bounds:Option<[u32;2]>)->Box<dyn Capture> 
 }
 struct Scaled {inner:Box<dyn Capture>,output:(u32,u32)}
 impl Capture for Scaled {
+    fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{self.inner.hdr_metadata()}
     fn encoder_input_device(&self)->Option<uu_media::encoder::InputDevice>{self.inner.encoder_input_device()}
     fn set_frame_rate(&mut self,fps:u32)->Result<(),CaptureError>{self.inner.set_frame_rate(fps)}
     fn prefer_gpu(&mut self,enabled:bool,vendor:Option<u16>){self.inner.prefer_gpu(enabled,vendor);}
@@ -27,17 +28,19 @@ impl Capture for Scaled {
             // BGRA capture surfaces retain their source geometry; the hardware
             // encoder scales directly to these negotiated output dimensions.
             let (width,height)=self.output;
-            return Ok(RawFrame{width,height,stride:width*4,..frame});
+            return Ok(RawFrame{width,height,stride:frame.format.row_bytes(width),..frame});
         }
         if frame.gpu||!frame.is_consistent()||frame.width%2!=0||frame.height%2!=0 {
             return Err(CaptureError::Backend("采集画面缺少可缩放的 CPU 像素".into()));
         }
+        if matches!(frame.format,PixelFormat::P010|PixelFormat::ScRgb16) {return Err(CaptureError::Backend("HDR scaling requires GPU storage".into()));}
         let (w,h)=self.output;let (sw,sh,stride)=(frame.width as usize,frame.height as usize,frame.stride as usize);
         let (w,h)=(w as usize,h as usize);
         let row=if frame.format==PixelFormat::Bgra8 {sw*4}else{sw};
         if stride<row{return Err(CaptureError::Backend("采集画面步长无效".into()));}
         let mut output=vec![0u8;if frame.format==PixelFormat::Bgra8 {w*h*4}else{w*h*3/2}];
         match frame.format {
+            PixelFormat::P010|PixelFormat::ScRgb16=>unreachable!(),
             PixelFormat::Bgra8=>plane(&frame.data,stride,sw,sh,&mut output,w*4,w,h,4),
             PixelFormat::Nv12=>{
                 plane(&frame.data[..stride*sh],stride,sw,sh,&mut output[..w*h],w,w,h,1);

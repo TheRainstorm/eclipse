@@ -296,20 +296,20 @@ impl Driver {
                 .map_err(reason)?;
             let profile=match settings.codec {
                 VideoCodec::H264=>eAVEncH264VProfile_Base.0,
-                VideoCodec::Hevc=>eAVEncH265VProfile_Main_420_8.0,
-                VideoCodec::Av1=>eAVEncAV1VProfile_Main_420_8.0,
+                VideoCodec::Hevc=>if settings.hdr{eAVEncH265VProfile_Main_420_10.0}else{eAVEncH265VProfile_Main_420_8.0},
+                VideoCodec::Av1=>if settings.hdr{eAVEncAV1VProfile_Main_420_10.0}else{eAVEncAV1VProfile_Main_420_8.0},
             };
             out.SetUINT32(&MF_MT_MPEG2_PROFILE, profile as u32)
                 .map_err(reason)?;
             transform
                 .SetOutputType(output[0], &out, 0)
                 .map_err(|e| format!("{} output type: {e}",codec_label(settings.codec)))?;
-            let input_type = video_type(settings, MFVideoFormat_NV12)?;
+            let input_type = video_type(settings, if settings.hdr{MFVideoFormat_P010}else{MFVideoFormat_NV12})?;
             input_type
-                .SetUINT32(&MF_MT_DEFAULT_STRIDE, settings.width)
+                .SetUINT32(&MF_MT_DEFAULT_STRIDE, settings.width*if settings.hdr{2}else{1})
                 .map_err(reason)?;
             input_type
-                .SetUINT32(&MF_MT_SAMPLE_SIZE, settings.width * settings.height * 3 / 2)
+                .SetUINT32(&MF_MT_SAMPLE_SIZE, settings.width * settings.height * 3 / if settings.hdr{1}else{2})
                 .map_err(reason)?;
             transform
                 .SetInputType(input[0], &input_type, 0)
@@ -350,6 +350,7 @@ impl Driver {
             // A fresh MF-owned sample keeps its storage alive for the
             // asynchronous transform. Never recycle a buffer on input credit:
             // the transform may still retain its sample reference.
+            if self.settings.hdr && !frame.gpu {return Err("HDR encoding requires GPU capture".into());}
             let sample = if frame.gpu {
                 if !self.gpu_capable {return Err("hardware MFT has no D3D11 input support".into());}
                 if self.gpu.is_none() {
@@ -523,6 +524,7 @@ impl Driver {
                     return Err(format!("hardware recovery frame has incompatible geometry/colour: {metadata:?}"));
                 }
             }
+            super::validate_hdr_output(&encoded,self.settings.codec,self.settings.hdr)?;
             Ok(Some(encoded))
         }
     }
@@ -587,10 +589,10 @@ unsafe fn video_type(settings: Settings, subtype: GUID) -> Result<IMFMediaType, 
             .map_err(reason)?;
         for (id, value) in [
             (MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32),
-            (MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT601.0 as u32),
+            (MF_MT_YUV_MATRIX, if settings.hdr {MFVideoTransferMatrix_BT2020_10.0}else{MFVideoTransferMatrix_BT601.0} as u32),
             (MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32),
-            (MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_SMPTE170M.0 as u32),
-            (MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32),
+            (MF_MT_VIDEO_PRIMARIES, if settings.hdr {MFVideoPrimaries_BT2020.0}else{MFVideoPrimaries_SMPTE170M.0} as u32),
+            (MF_MT_TRANSFER_FUNCTION, if settings.hdr {MFVideoTransFunc_2084.0}else{MFVideoTransFunc_709.0} as u32),
         ] {
             ty.SetUINT32(&id, value).map_err(reason)?;
         }
@@ -686,6 +688,7 @@ mod tests {
             let mut data = vec![
                 255;
                 match format {
+                    PixelFormat::P010|PixelFormat::ScRgb16=>unreachable!("8-bit CPU upload fixture"),
                     PixelFormat::Bgra8 => (stride * h) as usize,
                     PixelFormat::Nv12 => (stride * h * 3 / 2) as usize,
                     PixelFormat::I420 => (stride * h + w * h / 2) as usize,

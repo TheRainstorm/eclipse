@@ -96,4 +96,5 @@ pub mod input_ownership;
 pub mod native_gamepad;
 
 pub mod native_quality;
+pub mod native_color;
 pub mod local_workspace;

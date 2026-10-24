@@ -19,6 +19,7 @@ pub struct VideoTexture {
     gpu: Option<Arc<Mutex<Planes>>>,
     fallback: Option<egui::TextureHandle>,
     fallback_pixels:Option<Arc<egui::ColorImage>>,
+    source_white_nits:f32,
 }
 pub fn enable_gpu_video(gl: &glow::Context) {
     #[cfg(target_os = "linux")]
@@ -42,17 +43,26 @@ impl VideoTexture {
             gpu,
             fallback: None,
             fallback_pixels:None,
+            source_white_nits:203.,
         };
         texture.set(ctx, image);
         texture
     }
+    pub fn set_source_white(&mut self,white:f32){if white.is_finite()&&(40.0..=1000.0).contains(&white){self.source_white_nits=white;}}
     pub fn set(&mut self, ctx: &egui::Context, image: DisplayImage) {
         if let DisplayImage::Decoded(_, frame, color) = &image {
             if let Some(gpu) = &self.gpu {
                 if valid(frame) || (frame.gpu && frame.is_consistent()) {
-                    self.size = [frame.width as usize, frame.height as usize];
-                    gpu.lock().unwrap().pending = Some((frame.clone(), *color));
-                    return;
+                    let mut state=gpu.lock().unwrap();
+                    // Normalized 16-bit planes require EXT_texture_norm16 on
+                    // GLES. Desktop GL supports them; other GLES clients use
+                    // explicit CPU tone mapping rather than an invalid upload.
+                    let supported=frame.gpu || frame.format!=PixelFormat::P010 || !state.gl.version().is_embedded || state.gl.supported_extensions().contains("GL_EXT_texture_norm16");
+                    if supported {
+                        self.size = [frame.width as usize, frame.height as usize];
+                        state.pending = Some((frame.clone(), *color));
+                        return;
+                    }
                 }
             }
         }
@@ -133,7 +143,7 @@ impl VideoTexture {
         let size=[(self.size[0] as f64*ratio).max(1.) as usize,(self.size[1] as f64*ratio).max(1.) as usize];
         if let Some(gpu)=&self.gpu {
             let mut state=gpu.lock().unwrap();
-            if state.pending.is_some()||state.size!=[0,0] {return unsafe{state.snapshot(size)};}
+            if state.pending.is_some()||state.size!=[0,0] {return unsafe{state.snapshot(size,self.source_white_nits)};}
         }
         let image=self.fallback_pixels.as_ref().ok_or("没有可保存的远端画面")?;
         let mut output=egui::ColorImage::new(size,egui::Color32::BLACK);
@@ -151,10 +161,12 @@ impl VideoTexture {
             };
             if ready {
                 let gpu = gpu.clone();
+                let ctx=ui.ctx().clone();let viewport=ctx.viewport_id();let source_white=self.source_white_nits;
                 ui.painter().add(egui::PaintCallback {
                     rect,
                     callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |_, _| unsafe {
-                        gpu.lock().unwrap().paint();
+                        let color=eframe::glow_presentation::color_target_for(&ctx,viewport);
+                        gpu.lock().unwrap().paint(color.is_some_and(|c|c.hdr),color.map_or(80.,|c|c.sdr_white_nits),source_white);
                     })),
                 });
                 return;
@@ -180,6 +192,8 @@ fn valid(frame: &RawFrame) -> bool {
         return false;
     }
     let (row, len) = match frame.format {
+        PixelFormat::P010=>(w*2,s*h*3/2),
+        PixelFormat::ScRgb16=>(w*8,s*h),
         PixelFormat::Nv12 => (w, s * h + s * (h / 2)),
         PixelFormat::I420 => (w, s * h + w * h / 2),
         PixelFormat::Bgra8 => (w * 4, s * h),
@@ -187,6 +201,8 @@ fn valid(frame: &RawFrame) -> bool {
     s >= row
         && (frame.format != PixelFormat::Bgra8 || s % 4 == 0)
         && (frame.format != PixelFormat::Nv12 || s % 2 == 0)
+        && (frame.format != PixelFormat::P010 || s % 4 == 0)
+        && (frame.format != PixelFormat::ScRgb16 || s % 8 == 0)
         && frame.data.len() >= len
 }
 struct Planes {
@@ -301,7 +317,7 @@ impl Planes {
             importer,
         })
     }
-    unsafe fn snapshot(&mut self,size:[usize;2])->Result<egui::ColorImage,String> {
+    unsafe fn snapshot(&mut self,size:[usize;2],source_white:f32)->Result<egui::ColorImage,String> {
         let gl=self.gl.clone();
         let draw=gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING);
         let read=gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING);
@@ -332,7 +348,7 @@ impl Planes {
             if gl.check_framebuffer_status(glow::FRAMEBUFFER)!=glow::FRAMEBUFFER_COMPLETE {return Err("无法建立远端预览缓冲".into());}
             gl.viewport(0,0,size[0] as i32,size[1] as i32);gl.disable(glow::SCISSOR_TEST);gl.disable(glow::BLEND);
             for unit in 0..3 {gl.bind_sampler(unit,None);}
-            self.paint();
+            self.paint(false,80.,source_white);
             if self.size==[0,0]{return Err("远端 GPU 画面暂不可用".into());}
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER,None);gl.pixel_store_i32(glow::PACK_ALIGNMENT,1);
             gl.pixel_store_i32(glow::PACK_ROW_LENGTH,0);gl.pixel_store_i32(glow::PACK_SKIP_PIXELS,0);gl.pixel_store_i32(glow::PACK_SKIP_ROWS,0);
@@ -365,16 +381,23 @@ impl Planes {
         data: &[u8],
         reallocate: bool,
     ) {
+        self.upload_pixels(unit,w,h,channels,1,false,row_bytes,data,reallocate);
+    }
+    unsafe fn upload_pixels(&self,unit:usize,w:u32,h:u32,channels:u32,sample_bytes:u32,floating:bool,row_bytes:u32,data:&[u8],reallocate:bool) {
         let gl = &self.gl;
         gl.active_texture(glow::TEXTURE0 + unit as u32);
         gl.bind_texture(glow::TEXTURE_2D, Some(self.textures[unit]));
         gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-        gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, (row_bytes / channels) as i32);
-        let (internal, format) = match channels {
-            1 => (glow::R8, glow::RED),
-            2 => (glow::RG8, glow::RG),
-            _ => (glow::RGBA8, glow::RGBA),
+        gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, (row_bytes / (channels*sample_bytes)) as i32);
+        let (internal,format)=match (channels,sample_bytes,floating) {
+            (1,2,_) =>(glow::R16,glow::RED),
+            (2,2,_) =>(glow::RG16,glow::RG),
+            (4,2,true)=>(glow::RGBA16F,glow::RGBA),
+            (1,_,_)=>(glow::R8,glow::RED),
+            (2,_,_)=>(glow::RG8,glow::RG),
+            _=>(glow::RGBA8,glow::RGBA),
         };
+        let scalar=if floating{glow::HALF_FLOAT}else if sample_bytes==2{glow::UNSIGNED_SHORT}else{glow::UNSIGNED_BYTE};
         if reallocate {
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
@@ -404,7 +427,7 @@ impl Planes {
                 h as i32,
                 0,
                 format,
-                glow::UNSIGNED_BYTE,
+                scalar,
                 Some(data),
             );
         } else {
@@ -416,13 +439,13 @@ impl Planes {
                 w as i32,
                 h as i32,
                 format,
-                glow::UNSIGNED_BYTE,
+                scalar,
                 glow::PixelUnpackData::Slice(data),
             );
         }
         gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
     }
-    unsafe fn paint(&mut self) {
+    unsafe fn paint(&mut self,hdr_output:bool,white_nits:f32,source_white:f32) {
         if let Some((f, color)) = self.pending.take() {
             if f.gpu {
                 #[cfg(windows)]
@@ -484,6 +507,11 @@ impl Planes {
                 self.d3d_active = false;
                 let y = f.stride as usize * f.height as usize;
                 match f.format {
+                    PixelFormat::P010=>{
+                        self.upload_pixels(0,f.width,f.height,1,2,false,f.stride,&f.data[..y],changed);
+                        self.upload_pixels(1,f.width/2,f.height/2,2,2,false,f.stride,&f.data[y..],changed);
+                    },
+                    PixelFormat::ScRgb16=>self.upload_pixels(0,f.width,f.height,4,2,true,f.stride,&f.data,changed),
                     PixelFormat::Nv12 => {
                         self.upload(0, f.width, f.height, 1, f.stride, &f.data[..y], changed);
                         self.upload(
@@ -577,34 +605,21 @@ impl Planes {
                 3
             } else {
                 match self.layout {
+                    Some(PixelFormat::P010)=>5,
+                    Some(PixelFormat::ScRgb16)=>4,
                     Some(PixelFormat::Nv12) => 0,
                     Some(PixelFormat::I420) => 1,
                     _ => 2,
                 }
             },
         );
-        let (offset, scale, r, gu, gv, b) = match self.color {
-            YuvColor::Full601 => (0., 1., 1.402, 0.344136, 0.714136, 1.772),
-            YuvColor::Full709 => (0., 1., 1.5748, 0.187324, 0.468124, 1.8556),
-            YuvColor::Limited601 => (
-                16. / 255.,
-                255. / 219.,
-                1.596027,
-                0.391762,
-                0.812968,
-                2.017232,
-            ),
-            YuvColor::Limited709 => (
-                16. / 255.,
-                255. / 219.,
-                1.792741,
-                0.213249,
-                0.532909,
-                2.112402,
-            ),
-        };
-        gl.uniform_4_f32(self.coefficients_uniform.as_ref(), r, gu, gv, b);
-        gl.uniform_2_f32(self.levels_uniform.as_ref(), offset, scale);
+        let (levels,matrix)=self.color.shader_conversion(self.layout==Some(PixelFormat::P010)&&!self.d3d_active);
+        gl.uniform_4_f32(self.coefficients_uniform.as_ref(),matrix[0],matrix[1],matrix[2],matrix[3]);
+        gl.uniform_4_f32(self.levels_uniform.as_ref(),levels[0],levels[1],levels[2],levels[3]);
+        gl.uniform_1_i32(gl.get_uniform_location(self.program,"hdr_input").as_ref(),i32::from(self.color.hdr() || self.layout==Some(PixelFormat::ScRgb16)));
+        gl.uniform_1_i32(gl.get_uniform_location(self.program,"hdr_output").as_ref(),i32::from(hdr_output));
+        gl.uniform_1_f32(gl.get_uniform_location(self.program,"sdr_white").as_ref(),white_nits/80.);
+        gl.uniform_1_f32(gl.get_uniform_location(self.program,"source_white").as_ref(),source_white);
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
         #[cfg(target_os = "linux")]
         if self.dma_active {

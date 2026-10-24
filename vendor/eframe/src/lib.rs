@@ -151,6 +151,8 @@ pub(crate) mod stopwatch;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "glow"))]
 mod vsync;
+#[cfg(all(not(target_arch="wasm32"),feature="glow"))]
+pub mod glow_presentation;
 #[cfg(all(not(target_arch = "wasm32"), feature = "glow"))]
 pub use vsync::{request_vsync, vsync_result};
 

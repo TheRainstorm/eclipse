@@ -52,6 +52,8 @@ pub struct ClientSettings {
     pub hud: bool,
     pub capture_keyboard: bool,
     pub vsync: bool,
+    /// Prefer negotiated HDR10 when the current display and decoder support it.
+    pub hdr: bool,
     pub software_decoder: bool,
     pub prefer_hevc: bool,
     pub relative_mouse: bool,
@@ -69,7 +71,7 @@ impl Default for ClientSettings {
         Self { fps:60, display_mode:crate::screen_control::DisplayMode::Preserve,
             bitrate:0,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,
             volume:100,muted:false,hud:false,capture_keyboard:true,
-            vsync:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
+            vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
             cursor_mode:CursorMode::Both,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
     }
 }

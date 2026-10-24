@@ -8,6 +8,7 @@ pub use uu_media::{RawFrame, PixelFormat, Timestamp};
 pub use uu_media::color::YuvColor;
 pub use uu_media::dma_buf;
 pub use uu_media::d3d11_frame;
+pub use uu_media::hdr;
 
 pub enum DisplayImage {
     Rgba(DisplayFrame),

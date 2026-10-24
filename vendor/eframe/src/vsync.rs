@@ -12,12 +12,13 @@ fn key(viewport: ViewportId) -> Id { Id::new(("eframe-swap-interval", viewport))
 
 /// Change vertical synchronization for the current native Glow viewport.
 /// Applied before its next buffer swap. Inspect [`vsync_result`] on a later frame.
-pub fn request_vsync(ctx: &Context, enabled: bool) {
-    let id=key(ctx.viewport_id());
+pub fn request_vsync(ctx: &Context, enabled: bool) {request_for(ctx,ctx.viewport_id(),enabled);}
+pub(crate) fn request_for(ctx:&Context,viewport:ViewportId,enabled:bool) {
+    let id=key(viewport);
     ctx.data_mut(|data| data.insert_temp(id, Request {
         desired: enabled, pending: true, result: None,
     }));
-    ctx.request_repaint();
+    ctx.request_repaint_of(viewport);
 }
 
 /// Result of the most recent request for this viewport, or `None` while pending.

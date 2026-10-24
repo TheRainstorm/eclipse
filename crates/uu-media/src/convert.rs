@@ -23,6 +23,9 @@ pub(crate) fn validate_cpu_frame(frame: &RawFrame) -> Result<(usize, usize, usiz
     {
         return Err(invalid());
     }
+    if matches!(frame.format,PixelFormat::P010|PixelFormat::ScRgb16) {
+        return Err(CodecError::Backend("10-bit/float frames require explicit HDR conversion".into()));
+    }
     let row = if frame.format == PixelFormat::Bgra8 {
         w.checked_mul(4)
     } else {
@@ -32,6 +35,7 @@ pub(crate) fn validate_cpu_frame(frame: &RawFrame) -> Result<(usize, usize, usiz
     let plane = s.checked_mul(h).ok_or_else(invalid)?;
     let needed = match frame.format {
         PixelFormat::Bgra8 => Some(plane),
+        PixelFormat::P010 | PixelFormat::ScRgb16=>return Err(invalid()),
         PixelFormat::Nv12 => plane.checked_add(s.checked_mul(h / 2).ok_or_else(invalid)?),
         PixelFormat::I420 => plane.checked_add(w * h / 2),
     }
@@ -47,6 +51,7 @@ pub(crate) fn validate_cpu_frame(frame: &RawFrame) -> Result<(usize, usize, usiz
 pub fn to_i420(frame: &RawFrame) -> Result<Vec<u8>, CodecError> {
     let (w, h, _) = validate_cpu_frame(frame)?;
     match frame.format {
+        PixelFormat::P010|PixelFormat::ScRgb16=>Err(CodecError::Backend("HDR frames require color conversion before 8-bit encoding".into())),
         // Already packed I420 with stride == width is passed through; a
         // padded I420 would need re-packing, which no current backend emits.
         PixelFormat::I420 => {
@@ -315,6 +320,7 @@ pub fn i420_to_rgba(src: &[u8], width: u32, height: u32) -> Vec<u8> {
 /// frame.
 pub fn frame_to_rgba(frame: &RawFrame) -> Vec<u8> {
     match frame.format {
+        PixelFormat::P010|PixelFormat::ScRgb16=>hdr_frame_to_rgba(frame,crate::color::YuvColor::Limited2020Pq,203.),
         PixelFormat::I420 => {
             i420_to_rgba_strided(&frame.data, frame.width, frame.height, frame.stride)
         }
@@ -627,6 +633,7 @@ mod conversion_equivalence_tests {
 
 /// Convert with the stream's range/matrix, preserving the vector upload path.
 pub fn frame_to_rgba_with_color(frame: &RawFrame, color: crate::color::YuvColor) -> Vec<u8> {
+    if matches!(frame.format,PixelFormat::P010|PixelFormat::ScRgb16) {return hdr_frame_to_rgba(frame,color,203.);}
     if color == crate::color::YuvColor::Full601 || frame.format == PixelFormat::Bgra8 {
         return frame_to_rgba(frame);
     }
@@ -718,5 +725,47 @@ mod encode_input_tests {
         let mut gpu = frame.clone();
         gpu.gpu = true;
         assert!(to_i420(&gpu).is_err());
+    }
+}
+
+/// SDR snapshots/readback fallback. Normal HDR presentation keeps GPU storage.
+pub fn hdr_frame_to_rgba(frame:&RawFrame,color:crate::color::YuvColor,white_nits:f32)->Vec<u8> {
+    let (w,h,s)=(frame.width as usize,frame.height as usize,frame.stride as usize);
+    if frame.gpu || w<2 || h<2 || w>8192 || h>8192 || w%2!=0 || h%2!=0
+        || s<frame.format.row_bytes(frame.width) as usize || !frame.is_consistent() {return Vec::new();}
+    let mut output=vec![0;w*h*4];
+    let word=|at:usize|u16::from_le_bytes([frame.data[at],frame.data[at+1]]);
+    for y in 0..h {for x in 0..w {
+        let rgb=if frame.format==PixelFormat::ScRgb16 {
+            let at=y*s+x*8;
+            crate::hdr::sc_rgb_to_sdr([half_to_float(word(at)),half_to_float(word(at+2)),half_to_float(word(at+4))],white_nits)
+        } else {
+            let uv=s*h+y/2*s+x/2*4;
+            if color.hdr() {crate::hdr::sc_rgb_to_sdr(crate::hdr::p010_to_sc_rgb(word(y*s+x*2),word(uv),word(uv+2),color==crate::color::YuvColor::Full2020Pq),white_nits)}
+            else {let (r,g,b)=color.rgb(i32::from(word(y*s+x*2)>>8),i32::from(word(uv)>>8)-128,i32::from(word(uv+2)>>8)-128);[r,g,b].map(|v|v.clamp(0,255) as f32/255.)}
+        };
+        let at=(y*w+x)*4;for c in 0..3 {output[at+c]=(rgb[c]*255.).round() as u8;}output[at+3]=255;
+    }}
+    output
+}
+fn half_to_float(value:u16)->f32 {
+    let sign=if value&0x8000!=0 {-1.}else{1.};let exponent=(value>>10)&31;let mantissa=value&1023;
+    let v=match exponent {0=>f32::from(mantissa)*2_f32.powi(-24),31=>0.,_ => (1.+f32::from(mantissa)/1024.)*2_f32.powi(i32::from(exponent)-15)};
+    sign*v
+}
+
+#[cfg(test)] mod hdr_output_tests {
+    use super::*;
+    #[test] fn p010_snapshot_uses_absolute_pq_and_range_before_sdr_mapping() {
+        let mut frame=RawFrame{width:4,height:2,format:PixelFormat::P010,stride:12,data:vec![0;36].into(),pts:crate::Timestamp(0),gpu:false,dma_buf:None,d3d11:None};
+        for (nits,expected) in [(0.,0u8),(203.,244u8)] {
+            let code=(64.+876.*crate::hdr::nits_to_pq(nits)).round() as u16;
+            let mut bytes=vec![19;36];for y in 0..2 {for x in 0..4 {bytes[y*12+x*2..y*12+x*2+2].copy_from_slice(&(code<<6).to_le_bytes());}}
+            for x in 0..4 {bytes[24+x*2..26+x*2].copy_from_slice(&(512u16<<6).to_le_bytes());}
+            frame.data=bytes.into();
+            let pixels=frame_to_rgba_with_color(&frame,crate::color::YuvColor::Limited2020Pq);
+            assert_eq!(pixels.len(),32);for p in pixels.chunks_exact(4){assert!(p[..3].iter().all(|v|v.abs_diff(expected)<=2));assert_eq!(p[3],255);}
+            assert!(to_i420(&frame).is_err(),"HDR must never be silently read as 8-bit planes");
+        }
     }
 }

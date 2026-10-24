@@ -1,4 +1,4 @@
-//! AV1 Main 8-bit low-overhead OBUs and independent sequence/recovery metadata.
+//! AV1 Main 8/10-bit low-overhead OBUs and independent sequence/recovery metadata.
 use crate::color::YuvColor;
 use cros_codecs::codec::av1::parser::{FrameType, ObuAction, ParsedObu, Parser};
 const MAX_HEADER: usize = 64 * 1024;
@@ -56,6 +56,7 @@ pub struct Sequence {
     pub width: u32,
     pub height: u32,
     pub color: YuvColor,
+    pub bit_depth: u8,
 }
 pub fn sequence(data: &[u8]) -> Option<Sequence> {
     let mut parser = Parser::default();
@@ -80,8 +81,7 @@ pub fn sequence(data: &[u8]) -> Option<Sequence> {
         }
         if let ParsedObu::SequenceHeader(seq) = parser.parse_obu(obu).ok()? {
             let c = &seq.color_config;
-            if c.high_bitdepth
-                || c.twelve_bit
+            if c.twelve_bit
                 || c.mono_chrome
                 || !c.subsampling_x
                 || !c.subsampling_y
@@ -94,16 +94,18 @@ pub fn sequence(data: &[u8]) -> Option<Sequence> {
                 return None;
             }
             let bt709 = !matches!(c.matrix_coefficients as u32, 5 | 6);
-            let color = match (c.color_range, bt709) {
+            let hdr=c.color_primaries as u32==9 && c.transfer_characteristics as u32==16 && c.matrix_coefficients as u32==9;
+            let color = if hdr {if c.color_range {YuvColor::Full2020Pq}else{YuvColor::Limited2020Pq}}else{match (c.color_range, bt709) {
                 (true, true) => YuvColor::Full709,
                 (false, true) => YuvColor::Limited709,
                 (true, false) => YuvColor::Full601,
                 (false, false) => YuvColor::Limited601,
-            };
+            }};
             return Some(Sequence {
                 width,
                 height,
                 color,
+                bit_depth:if c.high_bitdepth{10}else{8},
             });
         }
         input = &input[used..];
@@ -287,7 +289,7 @@ mod tests {
             Some(Sequence {
                 width: 128,
                 height: 128,
-                color: YuvColor::Limited709
+                color: YuvColor::Limited709, bit_depth:8
             })
         );
         assert!(is_keyframe(PROBE));
@@ -303,7 +305,7 @@ mod tests {
         // Generated uniform grey NV12, 720p60, AV1 Main/8-bit, limited BT.601.
         // Its timing_info_present_flag requires the standard 32-bit fields.
         let frame=include_bytes!("amf_av1_probe.obu");
-        assert_eq!(sequence(frame),Some(Sequence{width:1280,height:720,color:YuvColor::Limited601}));
+        assert_eq!(sequence(frame),Some(Sequence{width:1280,height:720,color:YuvColor::Limited601,bit_depth:8}));
         assert!(is_keyframe(frame));
         let mut parser=Parser::default();
         let mut input=frame.as_slice();
@@ -320,5 +322,15 @@ mod tests {
         }
         assert!(found);
         for end in 0..frame.len() {let _=sequence(&frame[..end]);let _=is_keyframe(&frame[..end]);}
+    }
+}
+
+#[cfg(test)] mod hdr_tests {
+    #[test] fn reads_main10_pq_2020_and_rejects_truncation() {
+        let bytes=include_bytes!("av1_hdr10_probe.obu");
+        let seq=super::sequence(bytes).unwrap();
+        assert_eq!((seq.width,seq.height,seq.bit_depth),(128,128,10));
+        assert_eq!(seq.color,crate::color::YuvColor::Limited2020Pq);
+        for end in 0..bytes.len(){let _=super::sequence(&bytes[..end]);}
     }
 }
