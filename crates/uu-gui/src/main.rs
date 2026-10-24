@@ -1624,9 +1624,7 @@ impl App {
 fn main() -> eframe::Result {
     uu_core::install_crypto_provider();
     #[cfg(windows)]
-    if std::env::args().skip(1).eq(["--manage-background-service"]) {
-        return service_ui::run();
-    }
+    if let Some(result)=service_ui::dispatch() {return result;}
     let stream_target = match sessions::StreamTarget::parse(std::env::args().skip(1)) {
         Ok(target) => target,
         Err(error) => { eprintln!("{error}"); return Ok(()); }

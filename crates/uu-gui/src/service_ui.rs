@@ -57,11 +57,11 @@ impl Entry {
             self.install_started = true;
             let result = (|| -> anyhow::Result<_> {
                 let config = uu_core::Config::from_env()?;
-                let exe = std::env::current_exe()?.with_file_name("uu.exe");
+                let exe = std::env::current_exe()?;
                 Ok((
                     exe,
                     format!(
-                        "service install --open-manager --source-data \"{}\"",
+                        "--background-service-action install --source-data \"{}\"",
                         config.data_dir.display()
                     ),
                 ))
@@ -78,8 +78,8 @@ impl Entry {
             let busy=self.job.is_some()||self.pending_install;
             if self.status.is_some() {
                 if ui.add_enabled(!busy,egui::Button::new("管理后台服务")).clicked() {
-                    match std::env::current_exe().map(|p|p.with_file_name("uu.exe")) {
-                        Ok(exe)=>self.launch(exe,"service manage".into()),Err(error)=>self.notice=error.to_string(),
+                    match std::env::current_exe() {
+                        Ok(exe)=>self.launch(exe,"--open-background-service-manager".into()),Err(error)=>self.notice=error.to_string(),
                     }
                 }
                 if ui.add_enabled(!busy,egui::Button::new("更新后台程序")).clicked() {
@@ -88,8 +88,8 @@ impl Entry {
                 if ui.add_enabled(!busy,egui::Button::new("同步主窗口的 UU 账号状态")).clicked() {
                     let result=(||->anyhow::Result<_>{
                         let config=uu_core::Config::from_env()?;
-                        let exe=std::env::current_exe()?.with_file_name("uu.exe");
-                        Ok((exe,format!("service import-account --source-data \"{}\"",config.data_dir.display())))
+                        let exe=std::env::current_exe()?;
+                        Ok((exe,format!("--background-service-action import-account --source-data \"{}\"",config.data_dir.display())))
                     })();
                     match result {Ok((exe,args))=>self.launch(exe,args),Err(error)=>self.notice=error.to_string()}
                 }
@@ -106,7 +106,13 @@ impl Entry {
         let (send, receive) = mpsc::channel();
         self.job = Some(receive);
         std::thread::spawn(move || {
-            let _ = send.send(elevated(&exe, &args).map_err(|e| e.to_string()));
+            let result=(||->anyhow::Result<()> {
+                if args.starts_with("--background-service-action ") {
+                    uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("无法确定安装包目录"))?,env!("UU_BUILD_COMMIT"))?;
+                }
+                elevated(&exe,&args)
+            })();
+            let _ = send.send(result.map_err(|e| format!("{e:#}")));
         });
     }
 }
@@ -612,6 +618,44 @@ pub(super) fn run() -> eframe::Result {
             Ok(Box::new(manager))
         }),
     )
+}
+
+/// Each UAC action is launched through this GUI version. Management does not
+/// depend on an adjacent CLI; install/import still use a verified complete set.
+pub(super) fn dispatch() -> Option<eframe::Result> {
+    let args:Vec<_>=std::env::args_os().skip(1).collect();
+    if args==["--manage-background-service"] {
+        let result=run();
+        if let Err(error)=&result {show_error(&format!("无法打开后台服务管理：{error}"));}
+        return Some(result);
+    }
+    let opening=args==["--open-background-service-manager"];
+    let action=if args.len()==4 && args[0]=="--background-service-action" && args[2]=="--source-data" {
+        args[1].to_str().filter(|s|matches!(*s,"install"|"import-account"))
+    }else{None};
+    if !opening && action.is_none(){return None;}
+    let result=(||->anyhow::Result<()> {
+        require_administrator()?;
+        let exe=std::env::current_exe()?;
+        if opening {
+            std::process::Command::new(exe).arg("--manage-background-service").spawn()?;
+        }else if let Some(action)=action {
+            use std::os::windows::process::CommandExt;
+            uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("无法确定安装包目录"))?,env!("UU_BUILD_COMMIT"))?;
+            let mut command=std::process::Command::new(exe.with_file_name("uu.exe"));
+            command.args(["service",action,"--source-data"]).arg(&args[3]);
+            if action=="install"{command.arg("--open-manager");}
+            let output=command.creation_flags(0x08000000).output()?;
+            anyhow::ensure!(output.status.success(),"后台服务操作失败（{}）：\n{}",output.status,String::from_utf8_lossy(&output.stderr).trim());
+        }
+        Ok(())
+    })();
+    if let Err(error)=result {show_error(&format!("{error:#}"));std::process::exit(1);}
+    Some(Ok(()))
+}
+fn show_error(message:&str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW,MB_ICONERROR,MB_OK};
+    unsafe{MessageBoxW(std::ptr::null_mut(),wide(message).as_ptr(),wide("Eclipse · 后台服务").as_ptr(),MB_OK|MB_ICONERROR);}
 }
 
 #[cfg(test)]

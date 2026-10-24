@@ -8,6 +8,7 @@ use crate::{
 use anyhow::{ensure, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+pub mod package;
 
 pub const MAX_MESSAGE: usize = 256 * 1024;
 #[derive(Clone, Serialize, Deserialize)]
