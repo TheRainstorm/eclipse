@@ -23,7 +23,7 @@ LICENSES = ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt
 
 SOURCE_PATHS = ['crates', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                 '.cargo', 'tools/linux', 'tools/licenses', 'licenses', *LICENSES]
-FEATURES = ['vaapi', 'intel-vpl', 'opus', 'wayland-portal', 'x11', 'gamepad']
+FEATURES = ['vaapi', 'intel-vpl', 'opus', 'wayland-portal', 'wayland-screencopy', 'x11', 'gamepad']
 
 
 def reuse_archive(archive, destination, revision):

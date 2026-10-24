@@ -2,8 +2,8 @@
 //!
 //! * Windows: DXGI Desktop Duplication for active whole monitors. Window
 //!   capture and compositor cursor composition are not implemented yet.
-//! * Linux: desktop portal / PipeWire on Wayland, authenticated X11 GetImage
-//!   on X11. Xwayland cannot substitute for Wayland desktop authorization.
+//! * Linux: advertised native compositor capture or desktop portal / PipeWire
+//!   on Wayland, authenticated X11 GetImage on X11.
 //! * Everywhere: [`synthetic::SyntheticCapture`], used by tests and the
 //!   headless self-loop so no display is required.
 
