@@ -132,7 +132,10 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
         s->set(s->prop(AMF_VIDEO_ENCODER_OUTPUT_COLOR_PRIMARIES,AMF_VIDEO_ENCODER_HEVC_OUTPUT_COLOR_PRIMARIES,AMF_VIDEO_ENCODER_AV1_OUTPUT_COLOR_PRIMARIES),amf_int64(AMF_COLOR_PRIMARIES_SMPTE170M));
         s->set(s->prop(AMF_VIDEO_ENCODER_OUTPUT_TRANSFER_CHARACTERISTIC,AMF_VIDEO_ENCODER_HEVC_OUTPUT_TRANSFER_CHARACTERISTIC,AMF_VIDEO_ENCODER_AV1_OUTPUT_TRANSFER_CHARACTERISTIC),amf_int64(AMF_COLOR_TRANSFER_CHARACTERISTIC_BT709));
         if(codec==0) {
-            s->set(AMF_VIDEO_ENCODER_PROFILE,amf_int64(AMF_VIDEO_ENCODER_PROFILE_BASELINE));
+            // Windows' H.264 DXVA path requires Main-compatible Baseline.
+            // Plain AMF Baseline omits constraint_set1_flag and the system MFT
+            // can decode on the CPU while still returning a GPU texture.
+            s->set(AMF_VIDEO_ENCODER_PROFILE,amf_int64(AMF_VIDEO_ENCODER_PROFILE_CONSTRAINED_BASELINE));
             s->set(AMF_VIDEO_ENCODER_PROFILE_LEVEL,amf_int64(52));
             s->set(AMF_VIDEO_ENCODER_B_PIC_PATTERN,amf_int64(0));
         }
