@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import latency_lab as lab
-from windows_latency_worker import stimulus_fps
+from windows_latency_worker import stimulus_fps, query_timeout_ms
 
 CRITERIA = dict(min_paint_fps_ratio=.9, min_new_source_ratio=.7, max_paint_gap_ms=100,
                 max_mailbox_p99_ms=30, max_first_frame_ms=3000, max_memory_growth_mb=128,
@@ -18,6 +18,13 @@ CASE = dict(name='desktop', seconds=10, warmup_seconds=1, source='desktop', hdr=
 
 
 class Gates(unittest.TestCase):
+    def test_query_experiment_retains_default_and_rejects_ambiguous_values(self):
+        self.assertEqual(query_timeout_ms({}), 1)
+        for value in (0, 1):
+            self.assertEqual(query_timeout_ms({'amf_query_timeout_ms':value}),value)
+        for value in (True, -1, 2, 1.0, '0'):
+            with self.assertRaises(ValueError):query_timeout_ms({'amf_query_timeout_ms':value})
+
     def test_stimulus_rate_is_independent_and_validated(self):
         self.assertEqual(stimulus_fps(dict(fps=60)), 60)
         self.assertEqual(stimulus_fps(dict(fps=60, stimulus_fps=120)), 120)

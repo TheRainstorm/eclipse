@@ -10,6 +10,10 @@
 #include <string>
 #include <atomic>
 #include <cstdlib>
+#include <array>
+#include <chrono>
+#include <sstream>
+#include <algorithm>
 #include "core/Factory.h"
 #include "components/VideoEncoderVCE.h"
 #include "components/VideoEncoderHEVC.h"
@@ -42,6 +46,61 @@ struct InputLease : amf::AMFSurfaceObserver, std::enable_shared_from_this<InputL
     void AMF_STD_CALL OnSurfaceDataRelease(amf::AMFSurface*) override {release();}
 };
 using LeaseHandle=std::shared_ptr<InputLease>;
+// Fixed memory and no I/O on the encode path. These are CPU/API wall times,
+// including driver waits, not GPU execution times. Quantiles are bucket bounds.
+struct ApiTime {
+    unsigned long long count=0,total_ns=0,max_ns=0;
+    std::array<unsigned long long,2049> buckets{};
+    void add(unsigned long long ns) {
+        ++count;total_ns+=ns;max_ns=std::max(max_ns,ns);
+        ++buckets[std::min<unsigned long long>(ns/25000,2048)];
+    }
+    double percentile(unsigned numerator)const {
+        auto rank=(count*numerator+99)/100,seen=0ull;
+        for(size_t i=0;i<buckets.size();++i) {
+            seen+=buckets[i];if(seen>=rank)return i==2048?max_ns/1000.0:(i+1)*25.0;
+        }
+        return 0;
+    }
+    void json(std::ostream& out)const {
+        out<<"{\"samples\":"<<count<<",\"mean_us\":"<<(count?total_ns/1000.0/count:0)
+           <<",\"max_us\":"<<max_ns/1000.0<<",\"p50_upper_us\":"<<(count?percentile(50):0)
+           <<",\"p95_upper_us\":"<<(count?percentile(95):0)<<",\"p99_upper_us\":"<<(count?percentile(99):0)
+           <<",\"over_51200_us\":"<<buckets.back()<<"}";
+    }
+};
+static unsigned long long monotonic_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+struct NativeProfile {
+    bool enabled=std::getenv("UU_ENCODE_PROFILE")!=nullptr;
+    ApiTime surface,wrap_api,submit,query_api,wait_wall,yield_api,total,query_call;
+    unsigned long long queries=0,ok=0,repeat=0,need_input=0,other=0,yields=0,yield_switched=0,outputs=0,errors=0,pts_mismatch=0;
+    void print()const {
+        if(!enabled)return;
+        std::ostringstream out;
+        out<<"{\"event\":\"amf_native_profile\",\"scope\":\"CPU/API monotonic wall time; 25us histogram upper bounds, not GPU time\",\"surface\":";
+        surface.json(out);out<<",\"wrap_dx11_api\":";wrap_api.json(out);out<<",\"submit\":";submit.json(out);out<<",\"query_api_per_frame\":";query_api.json(out);
+        out<<",\"output_wait_wall\":";wait_wall.json(out);out<<",\"yield_api_per_frame\":";yield_api.json(out);
+        out<<",\"native_encode_total\":";total.json(out);out<<",\"query_api_per_call\":";query_call.json(out);
+        out<<",\"queries\":"<<queries<<",\"query_ok\":"<<ok<<",\"query_repeat\":"<<repeat<<",\"query_need_input\":"<<need_input
+           <<",\"query_other\":"<<other<<",\"yields\":"<<yields<<",\"yield_switched\":"<<yield_switched
+           <<",\"outputs\":"<<outputs<<",\"errors\":"<<errors<<",\"pts_mismatch\":"<<pts_mismatch<<"}\n";
+        auto line=out.str();std::fwrite(line.data(),1,line.size(),stderr);
+    }
+};
+struct ProfileCall {
+    NativeProfile& p;
+    unsigned long long start=0,wait_start=0,wait_end=0,query_ns=0,yield_ns=0;
+    bool success=false;
+    explicit ProfileCall(NativeProfile& profile):p(profile) {if(p.enabled)start=monotonic_ns();}
+    ~ProfileCall() {
+        if(!p.enabled)return;
+        auto end=monotonic_ns();p.total.add(end-start);p.query_api.add(query_ns);p.yield_api.add(yield_ns);
+        if(wait_start)p.wait_wall.add((wait_end?wait_end:end)-wait_start);
+        if(!success)++p.errors;
+    }
+};
 extern "C" void* eclipse_amf_lease_new() {
     try{return new LeaseHandle(std::make_shared<InputLease>());}catch(...){return nullptr;}
 }
@@ -58,12 +117,14 @@ struct Session {
     int codec=0;
     unsigned width=0,height=0,fps=0;
     std::shared_ptr<LeaseStats> leases=std::make_shared<LeaseStats>();
+    NativeProfile profile;
     ~Session() {
         output=nullptr;
         if(encoder) encoder->Terminate();
         encoder=nullptr;
         if(context) context->Terminate();
         context=nullptr;
+        profile.print();
         if(std::getenv("UU_ENCODE_PROFILE"))std::fprintf(stderr,"uu-amf-leases submitted=%llu released=%llu pending=%llu duplicates=%llu\n",
             leases->submitted.load(),leases->released.load(),leases->submitted.load()-leases->released.load(),leases->duplicates.load());
         if(device) device->Release();
@@ -81,6 +142,16 @@ struct Session {
     }
     void bitrate(unsigned kbps) {
         set(prop(AMF_VIDEO_ENCODER_TARGET_BITRATE,AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE,AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE),amf_int64(kbps)*1000);
+    }
+    void log_property(const char* label,const wchar_t* name)const {
+        amf::AMFVariant value;
+        auto result=encoder->GetProperty(name,static_cast<amf::AMFVariantStruct*>(&value));
+        std::fprintf(stderr,"{\"event\":\"amf_property\",\"name\":\"%s\",\"result\":%d,\"supported\":%s,\"value\":",
+            label,int(result),result==AMF_OK?"true":"false");
+        if(result==AMF_OK && (value.type==amf::AMF_VARIANT_INT64 || value.type==amf::AMF_VARIANT_BOOL))
+            std::fprintf(stderr,"%lld",(long long)value.ToInt64());
+        else std::fputs("null",stderr);
+        std::fputs("}\n",stderr);
     }
 };
 static ID3D11Device* amd_device(bool default_adapter) {
@@ -181,7 +252,12 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
         const auto gop_name=s->prop(AMF_VIDEO_ENCODER_IDR_PERIOD,AMF_VIDEO_ENCODER_HEVC_GOP_SIZE,AMF_VIDEO_ENCODER_AV1_GOP_SIZE);
         s->set(gop_name,amf_int64(0));
         // A native timed output wait avoids a fixed application sleep per frame.
-        s->encoder->SetProperty(s->prop(AMF_VIDEO_ENCODER_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_AV1_QUERY_TIMEOUT),amf_int64(1));
+        // Opt-in experiment only. Keep the production wait policy as default.
+        const char* timeout_env=std::getenv("UU_AMF_QUERY_TIMEOUT_MS");
+        if(timeout_env && std::strcmp(timeout_env,"0") && std::strcmp(timeout_env,"1"))throw std::runtime_error("UU_AMF_QUERY_TIMEOUT_MS must be 0 or 1");
+        amf_int64 query_timeout=timeout_env && !std::strcmp(timeout_env,"0")?0:1;
+        const auto timeout_name=s->prop(AMF_VIDEO_ENCODER_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_AV1_QUERY_TIMEOUT);
+        auto timeout_result=s->encoder->SetProperty(timeout_name,query_timeout);
         checked(s->encoder->Init(hdr?amf::AMF_SURFACE_P010:amf::AMF_SURFACE_NV12,width,height),"initialize encoder");
         amf_int64 actual_gop=-1;
         checked(s->encoder->GetProperty(gop_name,&actual_gop),"read GOP policy");
@@ -193,6 +269,23 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
         checked(s->encoder->GetProperty(s->prop(AMF_VIDEO_ENCODER_FRAMESIZE,AMF_VIDEO_ENCODER_HEVC_FRAMESIZE,AMF_VIDEO_ENCODER_AV1_FRAMESIZE),&actual_size),"read frame size");
         checked(s->encoder->GetProperty(s->prop(AMF_VIDEO_ENCODER_FRAMERATE,AMF_VIDEO_ENCODER_HEVC_FRAMERATE,AMF_VIDEO_ENCODER_AV1_FRAMERATE),&actual_rate),"read frame rate");
         if(actual_size.width!=(int)width||actual_size.height!=(int)height||actual_rate.num!=fps||actual_rate.den!=1)throw std::runtime_error("AMF changed the requested geometry or frame rate");
+        if(s->profile.enabled) {
+            amf_int64 actual_timeout=-1;auto timeout_read=s->encoder->GetProperty(timeout_name,&actual_timeout);
+            std::fprintf(stderr,"{\"event\":\"amf_init\",\"codec\":%d,\"runtime_version\":%llu,\"sdk_version\":%llu,\"query_timeout_requested_ms\":%lld,\"query_timeout_set_result\":%d,\"query_timeout_get_result\":%d,\"query_timeout_actual_ms\":%lld}\n",
+                codec,(unsigned long long)version,(unsigned long long)AMF_FULL_VERSION,(long long)query_timeout,int(timeout_result),int(timeout_read),(long long)actual_timeout);
+            s->log_property("usage",s->prop(AMF_VIDEO_ENCODER_USAGE,AMF_VIDEO_ENCODER_HEVC_USAGE,AMF_VIDEO_ENCODER_AV1_USAGE));
+            s->log_property("quality",quality_name);s->log_property("query_timeout_ms",timeout_name);
+            s->log_property("input_queue_size",s->prop(AMF_VIDEO_ENCODER_INPUT_QUEUE_SIZE,AMF_VIDEO_ENCODER_HEVC_INPUT_QUEUE_SIZE,AMF_VIDEO_ENCODER_AV1_INPUT_QUEUE_SIZE));
+            s->log_property("preanalysis",s->prop(AMF_VIDEO_ENCODER_PRE_ANALYSIS_ENABLE,AMF_VIDEO_ENCODER_HEVC_PRE_ANALYSIS_ENABLE,AMF_VIDEO_ENCODER_AV1_PRE_ANALYSIS_ENABLE));
+            s->log_property("gop",gop_name);
+            s->log_property("rate_control",s->prop(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD,AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD,AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD));
+            s->log_property("target_bitrate",s->prop(AMF_VIDEO_ENCODER_TARGET_BITRATE,AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE,AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE));
+            s->log_property("peak_bitrate",s->prop(AMF_VIDEO_ENCODER_PEAK_BITRATE,AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE,AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE));
+            if(codec==2) {
+                s->log_property("latency_mode",AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE);
+                s->log_property("b_pictures",AMF_VIDEO_ENCODER_AV1_B_PIC_PATTERN);
+            } else if(codec==0)s->log_property("b_pictures",AMF_VIDEO_ENCODER_B_PIC_PATTERN);
+        }
         return s.release();
     } catch(const std::exception& e) {if(capacity)std::snprintf(error,capacity,"%s",e.what());return nullptr;}
 }
@@ -209,7 +302,7 @@ extern "C" int eclipse_amf_bitrate(void* session,unsigned kbps,char* error,size_
 extern "C" int eclipse_amf_encode(void* session,void* native_texture,const unsigned char* cpu_nv12,
     size_t cpu_length,long long pts,int keyframe,void* lease_handle,const unsigned char** bytes,size_t* length,long long* timestamp,char* error,size_t capacity) {
     try {
-        auto s=(Session*)session;s->output=nullptr;
+        auto s=(Session*)session;s->output=nullptr;ProfileCall profile(s->profile);
         amf::AMFSurfacePtr surface;
         if(!native_texture) {
             if(!cpu_nv12||cpu_length!=size_t(s->width)*s->height*3/2)throw std::runtime_error("invalid CPU NV12 input");
@@ -242,10 +335,13 @@ extern "C" int eclipse_amf_encode(void* session,void* native_texture,const unsig
                 lease->texture=texture;texture->AddRef();lease->stats=s->leases;
                 lease->keepalive=lease;s->leases->submitted++;
             }
+            auto wrap_start=s->profile.enabled?monotonic_ns():0;
             auto wrapped=s->context->CreateSurfaceFromDX11Native(texture,&surface,lease.get());
+            if(s->profile.enabled)s->profile.wrap_api.add(monotonic_ns()-wrap_start);
             if(wrapped!=AMF_OK && lease && !surface)lease->release();
             checked(wrapped,"wrap DX11 surface");
         }
+        if(s->profile.enabled)s->profile.surface.add(monotonic_ns()-profile.start);
         surface->SetCrop(0,0,s->width,s->height);
         surface->SetPts(pts);surface->SetDuration(10000000/s->fps);
         if(keyframe) {
@@ -261,19 +357,33 @@ extern "C" int eclipse_amf_encode(void* session,void* native_texture,const unsig
                 checked(surface->SetProperty(AMF_VIDEO_ENCODER_AV1_FORCE_INSERT_SEQUENCE_HEADER,true),"insert AV1 sequence");
             }
         }
-        checked(s->encoder->SubmitInput(surface),"submit current frame");
+        auto submit_start=s->profile.enabled?monotonic_ns():0;
+        auto submitted=s->encoder->SubmitInput(surface);
+        if(s->profile.enabled) {profile.wait_start=monotonic_ns();s->profile.submit.add(profile.wait_start-submit_start);}
+        checked(submitted,"submit current frame");
         auto deadline=GetTickCount64()+2000;
         while(GetTickCount64()<deadline) {
             amf::AMFDataPtr output;
+            auto query_start=s->profile.enabled?monotonic_ns():0;
             AMF_RESULT result=s->encoder->QueryOutput(&output);
+            if(s->profile.enabled) {
+                auto ns=monotonic_ns()-query_start;profile.query_ns+=ns;s->profile.query_call.add(ns);++s->profile.queries;
+                if(result==AMF_OK)++s->profile.ok;else if(result==AMF_REPEAT)++s->profile.repeat;
+                else if(result==AMF_NEED_MORE_INPUT)++s->profile.need_input;else ++s->profile.other;
+            }
             if(output) {
+                if(s->profile.enabled)profile.wait_end=monotonic_ns();
                 s->output=amf::AMFBufferPtr(output);
                 if(!s->output)throw std::runtime_error("encoder returned no bitstream buffer");
                 *bytes=(const unsigned char*)s->output->GetNative();*length=s->output->GetSize();*timestamp=s->output->GetPts();
+                profile.success=true;
+                if(s->profile.enabled){++s->profile.outputs;if(*timestamp!=pts)++s->profile.pts_mismatch;}
                 return 0;
             }
             if(result!=AMF_OK && result!=AMF_REPEAT && result!=AMF_NEED_MORE_INPUT)checked(result,"query current frame");
-            SwitchToThread();
+            auto yield_start=s->profile.enabled?monotonic_ns():0;
+            auto switched=SwitchToThread();
+            if(s->profile.enabled){profile.yield_ns+=monotonic_ns()-yield_start;++s->profile.yields;if(switched)++s->profile.yield_switched;}
         }
         throw std::runtime_error("AMF did not complete the current frame within two seconds");
     } catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}

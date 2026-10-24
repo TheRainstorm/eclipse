@@ -35,6 +35,13 @@ def stimulus_fps(config):
     return value
 
 
+def query_timeout_ms(config):
+    value = config.get('amf_query_timeout_ms', 1)
+    if isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1):
+        raise ValueError('amf_query_timeout_ms must be 0 or 1')
+    return value
+
+
 def owned_job():
     """Kernel-owned descendant cleanup even if the scheduler kills the worker."""
     kernel = C.WinDLL('kernel32', use_last_error=True)
@@ -267,11 +274,14 @@ def main():
     env.update(APPDATA=str(root/'profile'), LOCALAPPDATA=str(root/'local'), XDG_DATA_HOME=str(root/'data'),
                XDG_STATE_HOME=str(root/'state'), UU_SIGNING_KEY_FILE=str(root/'absent-key'), RUST_LOG='error', ECLIPSE_FRAME_TRACE='1')
     env['UU_AMF_INPUT_POOL'] = '0'
+    query_timeout = query_timeout_ms(config)
+    env['UU_AMF_QUERY_TIMEOUT_MS'] = str(query_timeout)
     if config.get('continuous_trace') is True:
         env['ECLIPSE_CONTINUOUS_TRACE'] = '1'
     if config.get('encode_profile') is True:
         env['UU_ENCODE_PROFILE'] = '1'
-    atomic(root/'diagnostic-switches.json',{'continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL']})
+    atomic(root/'diagnostic-switches.json',{'continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL'],
+                                         'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config)})
     processes = []; logs = []; samples = []; completed = False; error = None; moving = None
     try:
         def launch(argv, logfile):
