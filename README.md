@@ -57,7 +57,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 
 ## 开始使用
 
-当前为 **v0.18.6 测试版，尚未正式发布**，包含主窗口启动、Windows 首帧后断开、Wayland 原生采集与默认远程切屏修复，见[测试说明](docs/releases/v0.18.6.md)。最新正式版仍为 [v0.18.5](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.5)。
+当前为 **v0.18.6 测试版，尚未正式发布**，包含 Windows 首帧后断开、Wayland 原生采集与默认远程切屏修复，见[测试说明](docs/releases/v0.18.6.md)。最新正式版仍为 [v0.18.5](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.5)。
 
 安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
 

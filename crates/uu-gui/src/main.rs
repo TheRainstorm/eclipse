@@ -1659,9 +1659,8 @@ fn main() -> eframe::Result {
         Some(target) => format!("{} · {}", target.alias, brand::NAME),
         None => brand::NAME.into(),
     };
-    // The preference belongs to visible stream surfaces (Workspace requests
-    // it per viewport). The launcher and hidden coordinator must not wait for
-    // vertical blank: a stalled driver swap would block their message pump.
+    // Vertical sync is on by default (tear-free). `UU_VSYNC=0` disables it
+    // (e.g. for very low latency on a tearing-tolerant setup).
     let mut preferences=settings::Settings::path().and_then(|p|settings::Settings::load(&p).ok()).unwrap_or_default();
     if let Some(sessions::StreamTarget { connection:sessions::ConnectionTarget::NativeProfile{snapshot,..},..})=&stream_target {
         if let Ok(launch)=uu_core::device_book::Launch::read(snapshot) {
@@ -1678,7 +1677,7 @@ fn main() -> eframe::Result {
             .with_app_id(brand::NAME)
             .with_icon(brand::window_icon())
             .with_visible(stream_workspace.is_none()),
-        vsync:false,
+        vsync:vsync && stream_workspace.is_none(),
         centered: !cfg!(windows),
         ..Default::default()
     };
@@ -1687,7 +1686,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             if let Some((launch,owner))=stream_workspace {Ok(Box::new(stream_workspace::Workspace::new(cc,launch,owner,vsync,origin)))}
-            else {Ok(Box::new(App::new(cc,stream_target,origin,false,assistance)))}
+            else {Ok(Box::new(App::new(cc,stream_target,origin,vsync,assistance)))}
         }),
     )
 }
