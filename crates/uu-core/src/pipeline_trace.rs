@@ -98,7 +98,10 @@ impl Trace {
                 let old = s.rows.pop_front().unwrap();
                 s.keys.remove(&(old.epoch, old.track, old.ssrc, old.rtp));
                 if let Some(pts) = old.pts_us {
-                    s.pts.remove(&(old.epoch, old.track, pts));
+                    let key = (old.epoch, old.track, pts);
+                    if s.pts.get(&key) == Some(&old.id) {
+                        s.pts.remove(&key);
+                    }
                 }
                 s.evicted += 1;
             }
@@ -220,6 +223,23 @@ mod tests {
         assert!(r["frames"][0]["at_us"][5].is_number());
         assert!(r["frames"][0]["at_us"][7].is_null());
         assert_eq!(r["unmatched_events"], 1);
+    }
+    #[test]
+    fn retiring_an_old_ssrc_does_not_delete_the_rebound_pts_mapping() {
+        let t = Trace::new(true);
+        for ssrc in [9, 10] {
+            t.packet(1, 0, ssrc, 1, true, Instant::now());
+            t.frame(1, 0, ssrc, 1, Stage::DecodeStart, Some((0, ssrc as u64)));
+        }
+        for n in 2..LIMIT + 1 {
+            t.packet(1, 0, 10, n as u32, true, Instant::now());
+        }
+        t.image(1, 0, 0, Stage::Draw);
+        let r = t.report().unwrap();
+        assert_eq!(r["evicted_frames"], 1);
+        assert_eq!(r["frames"][0]["ssrc"], 10);
+        assert!(r["frames"][0]["at_us"][7].is_number());
+        assert_eq!(r["unmatched_events"], 0);
     }
     #[test]
     fn disabled_has_no_observations() {
