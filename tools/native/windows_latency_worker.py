@@ -28,6 +28,13 @@ def sha(path):
         return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
+def stimulus_fps(config):
+    value = config.get('stimulus_fps', config['fps'])
+    if isinstance(value, bool) or not isinstance(value, int) or not 30 <= value <= 240:
+        raise ValueError('stimulus_fps must be an integer in 30..240')
+    return value
+
+
 def owned_job():
     """Kernel-owned descendant cleanup even if the scheduler kills the worker."""
     kernel = C.WinDLL('kernel32', use_last_error=True)
@@ -124,7 +131,7 @@ def stimulus(config):
         steady = [at for at in completions if at >= 1_000_000]
         gaps = sorted((b-a)/1000 for a,b in zip(steady,steady[1:]))
         def rank(p,d=100):return gaps[max(0,(len(gaps)*p+d-1)//d-1)] if gaps else None
-        return {'version':2,'pid':os.getpid(),'hwnd':int(hwnd or 0),'clock':clock,'updates':count,
+        return {'version':2,'pid':os.getpid(),'hwnd':int(hwnd or 0),'clock':clock,'requested_fps':stimulus_fps(config),'updates':count,
                 'elapsed_seconds':time.perf_counter()-started,'completion_offsets_us':completions,
                 'steady_completed_hz':(len(steady)-1)*1e6/(steady[-1]-steady[0]) if len(steady)>1 else None,
                 'paint_completion_gap_ms':{'samples':len(gaps),'p50':rank(50),'p95':rank(95),'p99':rank(99),
@@ -166,7 +173,7 @@ def stimulus(config):
     timer=None
     try:
         if clock=='legacy_wm_timer':
-            if not user.SetTimer(hwnd,1,max(1,round(1000/config['fps'])),None):raise C.WinError(C.get_last_error())
+            if not user.SetTimer(hwnd,1,max(1,round(1000/stimulus_fps(config))),None):raise C.WinError(C.get_last_error())
             message=W.MSG()
             while user.GetMessageW(C.byref(message),None,0,0)>0:
                 user.TranslateMessage(C.byref(message));user.DispatchMessageW(C.byref(message))
@@ -174,7 +181,7 @@ def stimulus(config):
             # Per-process high-resolution wait, no timeBeginPeriod/global state.
             timer=kernel.CreateWaitableTimerExW(None,None,2,0x1F0003)
             if not timer:raise C.WinError(C.get_last_error())
-            handles=(W.HANDLE*1)(timer);period=1/config['fps'];deadline=started+period;running=True
+            handles=(W.HANDLE*1)(timer);period=1/stimulus_fps(config);deadline=started+period;running=True
             while running:
                 due=C.c_int64(-max(1,round((deadline-time.perf_counter())*10_000_000)))
                 if not kernel.SetWaitableTimer(timer,C.byref(due),0,None,None,False):raise C.WinError(C.get_last_error())

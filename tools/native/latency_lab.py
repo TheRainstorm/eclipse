@@ -124,6 +124,9 @@ def load_config(path):
             raise ValueError('this first real-desktop lab requires explicit SDR desktop capture')
         if not 30 <= case['fps'] <= 240 or not 64 <= case['bitrate_kbps'] <= 1_000_000:
             raise ValueError('invalid frame rate or bitrate')
+        stimulus_fps = case.get('stimulus_fps', case['fps'])
+        if isinstance(stimulus_fps, bool) or not isinstance(stimulus_fps, int) or not 30 <= stimulus_fps <= 240:
+            raise ValueError('invalid stimulus frame rate')
         if case['codec'] not in ('h264', 'hevc', 'av1') or not isinstance(case['vsync'], bool):
             raise ValueError('invalid codec or VSync')
         if len(case['size']) != 2 or any(not isinstance(v, int) or v < 2 or v > 8192 or v % 2 for v in case['size']):
@@ -165,8 +168,9 @@ def summarize(output, request):
     require(isinstance(environment, dict) and all(environment.get(key) for key in
             ('host_gpu', 'client_gpu', 'host_display', 'client_display', 'network', 'stimulus')), 'incomplete environment fingerprint')
     require(worker.get('desktop_capture') is True, 'not real desktop capture')
-    require(worker.get('stimulus_updates', 0) >= case['seconds'] * case['fps'] * .5, 'insufficient desktop stimulus updates')
-    require(isinstance(worker.get('stimulus_completed_hz'), (int,float)) and worker['stimulus_completed_hz'] >= case['fps']*.9,
+    stimulus_fps = case.get('stimulus_fps', case['fps'])
+    require(worker.get('stimulus_updates', 0) >= case['seconds'] * stimulus_fps * .5, 'insufficient desktop stimulus updates')
+    require(isinstance(worker.get('stimulus_completed_hz'), (int,float)) and worker['stimulus_completed_hz'] >= stimulus_fps*.9,
             'desktop stimulus did not complete drawings at target cadence')
     source=environment.get('host_source', {}) if isinstance(environment,dict) else {}
     require(isinstance(source,dict) and source.get('name') and source.get('physical_bounds') and

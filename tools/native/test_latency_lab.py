@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import latency_lab as lab
+from windows_latency_worker import stimulus_fps
 
 CRITERIA = dict(min_paint_fps_ratio=.9, min_new_source_ratio=.7, max_paint_gap_ms=100,
                 max_mailbox_p99_ms=30, max_first_frame_ms=3000, max_memory_growth_mb=128,
@@ -17,6 +18,22 @@ CASE = dict(name='desktop', seconds=10, warmup_seconds=1, source='desktop', hdr=
 
 
 class Gates(unittest.TestCase):
+    def test_stimulus_rate_is_independent_and_validated(self):
+        self.assertEqual(stimulus_fps(dict(fps=60)), 60)
+        self.assertEqual(stimulus_fps(dict(fps=60, stimulus_fps=120)), 120)
+        for invalid in (True, 29, 241, 120.5):
+            with self.assertRaises(ValueError):
+                stimulus_fps(dict(fps=60, stimulus_fps=invalid))
+
+    def test_fast_stimulus_cannot_pass_with_stream_rate_drawings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); request,_,worker=self.fixture(root)
+            request['case']={**CASE, 'stimulus_fps':120}
+            self.assertIn('desktop stimulus did not complete drawings at target cadence',lab.summarize(root,request)['failures'])
+            worker['stimulus_completed_hz']=120;worker['stimulus_updates']=1400
+            (root/'worker.json').write_text(json.dumps(worker))
+            self.assertEqual(lab.summarize(root,request)['failures'],[])
+
     def fixture(self, path):
         context = dict(generation=1,width=1920,height=1080,fps=60,bitrate_kbps=20000,codec='h264',hdr=False,backend='amf')
         def trace(end, ms, start=None):
