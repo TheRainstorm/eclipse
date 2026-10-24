@@ -221,6 +221,7 @@ pub(crate) struct NativePeer {
     closed: AtomicBool,
     development_relay: bool,
     pending_decoder: Arc<Mutex<Option<crate::media::PreparedVideoDecoder>>>,
+    wlan: Mutex<Option<crate::wlan_streaming::Guard>>,
 }
 impl NativePeer {
     pub async fn new(
@@ -349,6 +350,11 @@ impl NativePeer {
             .with_setting_engine(settings)
             .with_interceptor_registry(registry)
             .build();
+        // Each connection owns an independent request. Opening is a low-rate
+        // blocking boundary; cancellation drops the unclaimed task result.
+        let wlan=if let Some(requested)=crate::wlan_streaming::experiment_request() {
+            tokio::task::spawn_blocking(move||crate::wlan_streaming::Guard::acquire(uuid::Uuid::new_v4().to_string(),requested)).await.ok()
+        }else{None};
         let pc = match api.new_peer_connection(configuration).await {
             Ok(pc) => Arc::new(pc),
             Err(e) => {
@@ -371,6 +377,7 @@ impl NativePeer {
             closed: AtomicBool::new(false),
             development_relay:false,
             pending_decoder: Arc::new(Mutex::new(None)),
+            wlan: Mutex::new(wlan),
         })
     }
     pub async fn receiver(&self, frames: FrameSender, stats: Arc<MediaStats>) -> Result<()> {
@@ -561,12 +568,18 @@ impl NativePeer {
             if let Some(mux) = &self.mux { let _ = mux.close().await; }
             self.closed.store(true, Ordering::Release);
         }
+        let wlan=self.wlan.lock().unwrap().take();
+        if let Some(wlan)=wlan {let _=tokio::task::spawn_blocking(move||drop(wlan)).await;}
     }
 }
 impl Drop for NativePeer {
     fn drop(&mut self) {
         self.fec.stop();
         self.pending_decoder.lock().unwrap().take();
+        if let Some(wlan)=self.wlan.get_mut().unwrap().take() {
+            if let Ok(runtime)=tokio::runtime::Handle::try_current(){runtime.spawn_blocking(move||drop(wlan));}
+            else {drop(wlan);}
+        }
         if !self.closed.swap(true, Ordering::AcqRel) {
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 let pc = self.pc.clone();

@@ -42,6 +42,74 @@ def query_timeout_ms(config):
     return value
 
 
+
+class WlanObserver:
+    """Read-only lab observer: never resolves/calls WlanSetInterface.
+
+    One separate client handle; enumerate once, query at most once per second.
+    Runtime GUIDs are written only to private experiment evidence.
+    """
+    def __init__(self):
+        self.handle = W.HANDLE(); self.api = None; self.interfaces = []; self.error = None
+        try:
+            class Guid(C.Structure):
+                _fields_ = [('bytes', C.c_ubyte * 16)]
+            class Info(C.Structure):
+                _fields_ = [('guid', Guid), ('description', W.WCHAR * 256), ('state', W.DWORD)]
+            self.Guid = Guid
+            self.api = C.WinDLL('wlanapi.dll', winmode=0x800)
+            self.api.WlanOpenHandle.argtypes = [W.DWORD, C.c_void_p, C.POINTER(W.DWORD), C.POINTER(W.HANDLE)]
+            self.api.WlanOpenHandle.restype = W.DWORD
+            self.api.WlanCloseHandle.argtypes = [W.HANDLE, C.c_void_p]; self.api.WlanCloseHandle.restype = W.DWORD
+            self.api.WlanEnumInterfaces.argtypes = [W.HANDLE, C.c_void_p, C.POINTER(C.c_void_p)]
+            self.api.WlanEnumInterfaces.restype = W.DWORD
+            self.api.WlanQueryInterface.argtypes = [W.HANDLE, C.POINTER(Guid), C.c_int, C.c_void_p,
+                    C.POINTER(W.DWORD), C.POINTER(C.c_void_p), C.POINTER(C.c_int)]
+            self.api.WlanQueryInterface.restype = W.DWORD
+            self.api.WlanFreeMemory.argtypes = [C.c_void_p]
+            version = W.DWORD(); status = self.api.WlanOpenHandle(2, None, C.byref(version), C.byref(self.handle))
+            if status: raise RuntimeError('WlanOpenHandle=' + str(status))
+            data = C.c_void_p()
+            try:
+                status = self.api.WlanEnumInterfaces(self.handle, None, C.byref(data))
+                if status or not data.value: raise RuntimeError('WlanEnumInterfaces=' + str(status))
+                count = C.cast(data, C.POINTER(W.DWORD))[0]
+                if count > 1024: raise RuntimeError('invalid WLAN interface count')
+                array = C.cast(data.value + 8, C.POINTER(Info))
+                self.interfaces = [Info.from_buffer_copy(array[i]) for i in range(count)]
+            finally:
+                if data.value: self.api.WlanFreeMemory(data)
+        except Exception as error:
+            self.error = type(error).__name__ + ': ' + str(error)
+    def snapshot(self):
+        rows = []
+        if self.error is None:
+            for index, info in enumerate(self.interfaces):
+                size = W.DWORD(); data = C.c_void_p(); kind = C.c_int()
+                status = self.api.WlanQueryInterface(self.handle, C.byref(info.guid), 3, None,
+                        C.byref(size), C.byref(data), C.byref(kind))
+                try:
+                    rows.append({'index':index, 'guid_bytes':list(info.guid.bytes), 'initial_state':info.state,
+                        'result':status, 'bytes':size.value,
+                        'media':bool(C.cast(data, C.POINTER(W.BOOL))[0]) if not status and data.value and size.value == C.sizeof(W.BOOL) else None})
+                finally:
+                    if data.value: self.api.WlanFreeMemory(data)
+                state_size = W.DWORD(); state_data = C.c_void_p(); state_kind = C.c_int()
+                state_result = self.api.WlanQueryInterface(self.handle, C.byref(info.guid), 6, None,
+                        C.byref(state_size), C.byref(state_data), C.byref(state_kind))
+                try:
+                    rows[-1].update(state_result=state_result, state_bytes=state_size.value,
+                        state=C.cast(state_data, C.POINTER(C.c_int))[0] if not state_result and state_data.value and state_size.value == C.sizeof(C.c_int) else None)
+                finally:
+                    if state_data.value: self.api.WlanFreeMemory(state_data)
+        return {'at':time.monotonic(), 'read_only':True, 'error':self.error, 'interfaces':rows}
+    def close(self):
+        if self.handle.value:
+            handle = self.handle; self.handle = W.HANDLE()
+            return self.api.WlanCloseHandle(handle, None)
+        return None
+
+
 def owned_job():
     """Kernel-owned descendant cleanup even if the scheduler kills the worker."""
     kernel = C.WinDLL('kernel32', use_last_error=True)
@@ -274,6 +342,10 @@ def main():
     env.update(APPDATA=str(root/'profile'), LOCALAPPDATA=str(root/'local'), XDG_DATA_HOME=str(root/'data'),
                XDG_STATE_HOME=str(root/'state'), UU_SIGNING_KEY_FILE=str(root/'absent-key'), RUST_LOG='error', ECLIPSE_FRAME_TRACE='1')
     env['UU_AMF_INPUT_POOL'] = '0'
+    wlan_mode = config.get('wlan_streaming_mode', 0)
+    if isinstance(wlan_mode, bool) or not isinstance(wlan_mode, int) or wlan_mode not in (0, 1):
+        raise ValueError('wlan_streaming_mode must be 0 or 1')
+    env['UU_WLAN_STREAMING_MODE'] = str(wlan_mode)
     query_timeout = query_timeout_ms(config)
     env['UU_AMF_QUERY_TIMEOUT_MS'] = str(query_timeout)
     if config.get('continuous_trace') is True:
@@ -281,8 +353,9 @@ def main():
     if config.get('encode_profile') is True:
         env['UU_ENCODE_PROFILE'] = '1'
     atomic(root/'diagnostic-switches.json',{'continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL'],
-                                         'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config)})
+                                         'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config),'wlan_streaming_mode':wlan_mode})
     processes = []; logs = []; samples = []; completed = False; error = None; moving = None
+    observer = WlanObserver(); wlan_samples = [observer.snapshot()]; next_wlan = time.monotonic() + 1
     try:
         def launch(argv, logfile):
             log = (root / logfile).open('wb'); logs.append(log)
@@ -310,6 +383,8 @@ def main():
                 raise RuntimeError('owned desktop stimulus stopped before the host')
             sample = resources(process)
             if sample: samples.append(sample)
+            if time.monotonic() >= next_wlan:
+                wlan_samples.append(observer.snapshot()); next_wlan = time.monotonic() + 1
             if time.monotonic()-started > config['deadline_seconds']:
                 raise TimeoutError('owned native process exceeded its deadline')
             time.sleep(.25)
@@ -339,6 +414,8 @@ def main():
                 try: process.wait(timeout=5)
                 except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
         for log in logs: log.close()
+        wlan_samples.append(observer.snapshot()); wlan_close = observer.close()
+        atomic(root/'wlan-observations.json', {'samples':wlan_samples,'observer_close_result':wlan_close,'requester':'native process, not this read-only observer'})
         atomic(root/'worker-result.json', {'completed': completed, 'cleanup_ok': all(p.poll() is not None for p in processes),
                'error': error, 'session': session.value, 'pid': os.getpid(), 'child_pids': [p.pid for p in processes], 'resources': samples})
     return 0 if completed else 1

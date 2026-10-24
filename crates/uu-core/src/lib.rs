@@ -101,3 +101,4 @@ pub mod native_color;
 pub mod local_workspace;
 
 pub mod pipeline_trace;
+pub mod wlan_streaming;
