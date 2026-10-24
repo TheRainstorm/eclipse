@@ -80,9 +80,14 @@ def load_config(path):
 
 
 def summarize(output, request):
-    viewer = json.loads((output / 'viewer.json').read_text())
     worker = json.loads((output / 'worker.json').read_text())
+    if not (output / 'viewer.json').is_file():
+        raise RuntimeError(worker.get('error') or 'viewer did not create a report')
+    viewer = json.loads((output / 'viewer.json').read_text())
     variant, case = request['variant'], request['case']
+    if not viewer.get('completed') or not worker.get('completed'):
+        return {'failures': [worker.get('error') or viewer.get('close_error') or 'native trial did not complete'],
+                'metrics': {}, 'environment': worker.get('environment')}
     failures = []
     def require(condition, message):
         if not condition:
@@ -156,6 +161,8 @@ def summarize(output, request):
 
 def absolute_failures(row, case, criteria):
     m = row['metrics']; failures = list(row['failures'])
+    if not m:
+        return failures or ['missing measurements']
     for name, passes in (
         ('paint FPS below floor', m['paint_fps'] is not None and m['paint_fps'] >= case['fps'] * criteria['min_paint_fps_ratio']),
         ('insufficient unique desktop source frames', m['new_source_ratio'] >= criteria['min_new_source_ratio']),
@@ -175,7 +182,9 @@ def compare(rows, cases, criteria, paired):
         group = [r for r in rows if r['case'] == case['name']]
         failures = [f"{r['run']}: {reason}" for r in group for reason in r['failures']]
         fingerprints = {json.dumps(r.get('environment'), sort_keys=True) for r in group}
-        if len(fingerprints) != 1:
+        if not group:
+            failures.append('no completed trials')
+        elif len(fingerprints) != 1:
             failures.append('environment changed; comparison invalid')
         medians = {}
         for variant in ('baseline', 'candidate') if paired else ('baseline',):
@@ -270,6 +279,7 @@ def main():
                         code = run_adapter(config['adapter'], trial / 'request.json', trial,
                                            case['seconds'] + case['warmup_seconds'] + config.get('adapter_overhead_seconds', 180))
                         row.update(summarize(trial, request))
+                        row['measurement_valid'] = not row['failures']
                         row['failures'] = absolute_failures(row, case, config['criteria'])
                         if code:
                             row['failures'].append(f'adapter exit {code}')
@@ -280,7 +290,7 @@ def main():
                     print(json.dumps({'run': run, 'failures': row['failures'], 'metrics': row.get('metrics')}), flush=True)
                     # Infrastructure/cleanup failures stop further trials. A valid
                     # performance failure keeps its evidence and completes ABBA.
-                    if not row.get('metrics') or not json.loads((trial/'worker.json').read_text()).get('cleanup_ok'):
+                    if not row.get('measurement_valid') or not json.loads((trial/'worker.json').read_text()).get('cleanup_ok'):
                         raise RuntimeError('invalid trial or cleanup; subsequent hardware work stopped')
     except (Exception, KeyboardInterrupt) as error:
         interrupted = True

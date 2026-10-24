@@ -164,6 +164,27 @@ def main():
     with marker.open('x', encoding='utf8') as file:
         json.dump({'pid': os.getpid(), 'session': session.value}, file)
     job_handle = owned_job()
+    # Query the interactive worker's display context. SSH/session-zero screen
+    # enumeration can report a fictitious WinDisc 1024x768 display.
+    inventory = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+        "[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false);Add-Type -AssemblyName System.Windows.Forms;$s=@([System.Windows.Forms.Screen]::AllScreens|Sort-Object DeviceName|ForEach-Object{@{name=$_.DeviceName;bounds=@($_.Bounds.X,$_.Bounds.Y,$_.Bounds.Width,$_.Bounds.Height);primary=$_.Primary}});$g=@(Get-CimInstance Win32_VideoController|Sort-Object Name|Select-Object Name,DriverVersion,CurrentHorizontalResolution,CurrentVerticalResolution,CurrentRefreshRate);@{display=$s;gpu=$g}|ConvertTo-Json -Depth 8 -Compress"],
+        capture_output=True, text=True, encoding='utf8', timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+    if inventory.returncode:
+        raise RuntimeError('interactive display inventory failed')
+    actual_environment = json.loads(inventory.stdout)
+    user = C.WinDLL('user32', use_last_error=True)
+    kernel.GetCurrentThreadId.restype = W.DWORD
+    user.GetProcessWindowStation.restype = W.HANDLE
+    user.GetThreadDesktop.argtypes = [W.DWORD]; user.GetThreadDesktop.restype = W.HANDLE
+    user.GetUserObjectInformationW.argtypes = [W.HANDLE, C.c_int, C.c_void_p, W.DWORD, C.POINTER(W.DWORD)]
+    for label, handle in [('window_station', user.GetProcessWindowStation()), ('desktop', user.GetThreadDesktop(kernel.GetCurrentThreadId()))]:
+        name = C.create_unicode_buffer(256); needed = W.DWORD()
+        if not user.GetUserObjectInformationW(handle, 2, name, C.sizeof(name), C.byref(needed)):
+            raise C.WinError(C.get_last_error())
+        actual_environment[label] = name.value
+    actual_environment['python_version'] = sys.version
+    actual_environment['python_sha256'] = sha(sys.executable)
+    atomic(root/'environment.json', actual_environment)
     for name, expected in config['sha256'].items():
         if sha(name) != expected:
             raise ValueError('staged executable mismatch')
