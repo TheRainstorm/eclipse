@@ -152,7 +152,7 @@ impl SendInputInjector {
             };
             if sent != inputs.len() as u32 {
                 return Err(InputError::Backend(
-                    "SendInput did not accept the event; check target window permissions".into(),
+                    format!("SendInput accepted {sent}/{} events (Windows error {}); check the active desktop and target window permissions",inputs.len(),std::io::Error::last_os_error()),
                 ));
             }
         }
@@ -166,6 +166,8 @@ impl InputInjector for SendInputInjector {
         self.send(event)
     }
     fn release_all(&mut self) -> Result<(), InputError> {
+        // No desktop access is needed when this session owns no presses.
+        if self.held.releases().is_empty() {return Ok(());}
         self.prepare_desktop()?;
         self.release_owned()
     }
@@ -180,6 +182,11 @@ impl Drop for SendInputInjector {
 mod tests {
     use super::*;
     use crate::KeyCode;
+    #[test]
+    fn empty_release_does_not_require_an_interactive_desktop() {
+        // This also runs in a service/SSH test process without desktop access.
+        assert!(SendInputInjector::new().release_all().is_ok());
+    }
     fn screen() -> DesktopRect {
         DesktopRect::new(-1920, 0, 3840, 1080).unwrap()
     }

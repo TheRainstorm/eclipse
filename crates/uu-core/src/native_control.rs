@@ -77,18 +77,33 @@ struct WorkerState {
     seen: Mutex<Instant>,
     applied: AtomicU64,
     errors: AtomicU64,
+    failure: Mutex<Option<String>>,
     timing:Arc<crate::native_timing::HostTiming>,
 }
 impl WorkerState {
     fn release(&self, injector: &mut dyn InputInjector, final_release: bool) -> bool {
         let mut ownership = self.ownership.lock().unwrap();
-        let keyboard = injector.release_all().is_ok();
+        let keyboard = injector.release_all();
         let pads=self.gamepads.lock().unwrap().clone();
-        let result = pads.as_ref().is_none_or(|pads|pads.reset()) && keyboard;
+        let controllers = pads.as_ref().is_none_or(|pads|pads.reset());
+        let result = keyboard.is_ok() && controllers;
+        if let Err(error)=keyboard {*self.failure.lock().unwrap()=Some(error.to_string());}
+        else if !controllers {*self.failure.lock().unwrap()=Some("虚拟手柄释放失败".into());}
         if final_release {if let Some(pads)=pads {pads.stop();}}
-        if !result { if let Some(lease) = ownership.as_ref() { lease.poison(); } }
-        if final_release || !self.enabled.load(Ordering::Acquire) { ownership.take(); }
+        // Keep ownership while retrying cleanup. Only an unrecoverable final
+        // shutdown poisons the host; a temporary desktop transition must not.
+        if !result && final_release {if let Some(lease)=ownership.as_ref(){lease.poison();}}
+        if result && (final_release || !self.enabled.load(Ordering::Acquire)) { ownership.take(); }
         result
+    }
+    fn suspend(&self,error:String) {
+        self.enabled.store(false,Ordering::Release);
+        if self.available.swap(false,Ordering::AcqRel) {
+            self.epoch.fetch_add(1,Ordering::AcqRel);
+            self.errors.fetch_add(1,Ordering::Relaxed);
+            tracing::warn!(%error,"native input suspended; retrying owned input cleanup");
+        }
+        *self.failure.lock().unwrap()=Some(error);
     }
 }
 struct InputApplied {queue_us:u32,inject_us:u32}
@@ -125,6 +140,7 @@ impl InputWorker {
             seen: Mutex::new(Instant::now()),
             applied: AtomicU64::new(0),
             errors: AtomicU64::new(0),
+            failure: Mutex::new(None),
             timing,
         });
         let (tx, rx) = sync_channel::<InputJob>(128);
@@ -150,6 +166,18 @@ impl InputWorker {
                     if actor.stop.load(Ordering::Acquire) {
                         break;
                     }
+                    if !actor.available.load(Ordering::Acquire) {
+                        // Drop queued events from the old grant. Never replay
+                        // failed presses; the viewer requests a fresh grant.
+                        if actor.release(&mut *injector,false) {
+                            epoch=actor.epoch.load(Ordering::Acquire);
+                            actor.applied_epoch.store(epoch,Ordering::Release);
+                            *actor.failure.lock().unwrap()=None;
+                            actor.available.store(true,Ordering::Release);
+                            tracing::info!("native input cleanup recovered; waiting for a fresh control grant");
+                        }
+                        continue;
+                    }
                     if actor.enabled.load(Ordering::Acquire)
                         && actor.seen.lock().unwrap().elapsed() > LEASE
                     {
@@ -159,8 +187,9 @@ impl InputWorker {
                     let current = actor.epoch.load(Ordering::Acquire);
                     if current != epoch {
                         if !actor.release(&mut *injector, false) {
-                            actor.errors.fetch_add(1, Ordering::Relaxed);
-                            break;
+                            let error=actor.failure.lock().unwrap().clone().unwrap_or_else(||"输入释放失败".into());
+                            actor.suspend(error);
+                            continue;
                         }
                         epoch = current;
                         actor.applied_epoch.store(current,Ordering::Release);
@@ -176,9 +205,12 @@ impl InputWorker {
                                 Some(event) => injector.inject(event),
                                 None => injector.release_all(),
                             };
-                            if result.is_err() {
-                                actor.errors.fetch_add(1, Ordering::Relaxed);
-                                break;
+                            if let Err(error)=result {
+                                if matches!(error,uu_input::InputError::UnsupportedKey(_)) {
+                                    actor.errors.fetch_add(1,Ordering::Relaxed);
+                                    tracing::debug!(%error,"unsupported native input event skipped");
+                                }else{actor.suspend(error.to_string());}
+                                continue;
                             }
                             let inject_us=started.elapsed().as_micros().min(u32::MAX as u128) as u32;
                             actor.timing.input(queue_us,inject_us);
@@ -261,16 +293,18 @@ impl InputWorker {
             return false;
         }
         self.touch();
-        if self
-            .tx
-            .try_send(InputJob {epoch:self.state.epoch.load(Ordering::Acquire),command:Some(command),queued:Instant::now(),reply})
-            .is_err()
-        {
-            self.state.stop.store(true, Ordering::Release);
-            self.state.enabled.store(false, Ordering::Release);
-            return false;
+        match self.tx.try_send(InputJob {epoch:self.state.epoch.load(Ordering::Acquire),command:Some(command),queued:Instant::now(),reply}) {
+            Ok(())=>true,
+            Err(std::sync::mpsc::TrySendError::Full(_))=>{
+                self.state.suspend("输入队列积压，正在释放并恢复".into());
+                false
+            },
+            Err(std::sync::mpsc::TrySendError::Disconnected(_))=>{
+                self.state.stop.store(true,Ordering::Release);
+                self.state.suspend("输入工作线程已关闭".into());
+                false
+            },
         }
-        true
     }
     async fn stop(&self) {
         self.state.stop.store(true, Ordering::Release);
@@ -667,14 +701,16 @@ impl ViewerControl {
                     }
                 }
                 Some(Packet::InputStatus { available, enabled }) => {
-                    incoming
-                        .native_input_available
-                        .store(available, Ordering::Release);
+                    let previous_available=incoming.native_input_available.swap(available,Ordering::AcqRel);
+                    let previous_grant=incoming.capabilities.allows(Capability::Input);
                     let enabled = available && enabled && requested_copy.load(Ordering::Acquire);
                     if enabled && !incoming.capabilities.allows(Capability::Input) {
                         generation.fetch_add(1, Ordering::AcqRel);
                     }
                     incoming.capabilities.enable(Capability::Input, enabled);
+                    if previous_available!=available || previous_grant!=enabled {
+                        incoming.diagnostics.record(serde_json::json!({"event":"native_input_status","available":available,"granted":enabled,"requested":requested_copy.load(Ordering::Acquire)}));
+                    }
                 }
                 Some(Packet::Telemetry{version:1,stages})=>incoming.native_timing.host(stages),
                 Some(Packet::InputApplied{sequence,queue_us,inject_us})=>incoming.native_timing.applied(sequence,queue_us,inject_us),
@@ -824,6 +860,76 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+    #[tokio::test]
+    async fn temporary_input_failure_releases_before_regrant_and_drops_old_events() {
+        struct Interrupted {fail:Arc<AtomicBool>,cleanup:Arc<AtomicBool>,events:Arc<Mutex<Vec<uu_input::InputEvent>>>}
+        impl InputInjector for Interrupted {
+            fn inject(&mut self,event:uu_input::InputEvent)->std::result::Result<(),uu_input::InputError>{
+                if self.fail.swap(false,Ordering::AcqRel){return Err(uu_input::InputError::Unavailable("owned desktop temporarily unavailable".into()));}
+                self.events.lock().unwrap().push(event);Ok(())
+            }
+            fn release_all(&mut self)->std::result::Result<(),uu_input::InputError>{
+                if !self.cleanup.load(Ordering::Acquire){return Err(uu_input::InputError::Unavailable("owned releases temporarily blocked".into()));}Ok(())
+            }
+        }
+        let fail=Arc::new(AtomicBool::new(false));let cleanup=Arc::new(AtomicBool::new(true));let events=Arc::new(Mutex::new(Vec::new()));
+        let (failure,release,recorded)=(fail.clone(),cleanup.clone(),events.clone());
+        let authority=Arc::new(crate::input_ownership::Authority::default());let rect=DesktopRect::new(0,0,640,480).unwrap();
+        let a=InputWorker::with_timing_factory(rect,move||Ok(Box::new(Interrupted{fail:failure,cleanup:release,events:recorded})),Arc::default(),authority.clone()).await.unwrap();
+        let b=InputWorker::with_timing_factory(rect,||Ok(Box::new(Fixture{events:Arc::default(),releases:Arc::default()})),Arc::default(),authority).await.unwrap();
+        a.request(true);assert!(a.push(InputCommand::Key{usage:4,pressed:true}));wait(||a.state.applied.load(Ordering::Acquire)==1).await;
+        cleanup.store(false,Ordering::Release);fail.store(true,Ordering::Release);
+        assert!(a.push(InputCommand::Relative{dx:1,dy:1}));
+        wait(||!a.available()).await;
+        b.request(true);assert!(!b.state.enabled.load(Ordering::Acquire),"failed releases retain the previous owner");
+        assert!(!a.push(InputCommand::Key{usage:5,pressed:true}));
+        cleanup.store(true,Ordering::Release);wait(||a.available()).await;
+        assert!(!a.state.enabled.load(Ordering::Acquire),"backend recovery does not grant control itself");
+        a.request(true);assert!(a.push(InputCommand::Key{usage:6,pressed:true}));
+        wait(||a.state.applied.load(Ordering::Acquire)==2).await;
+        assert_eq!(events.lock().unwrap().len(),2);
+        a.request(false);wait(||a.state.ownership.lock().unwrap().is_none()).await;
+        b.request(true);assert!(b.push(InputCommand::Relative{dx:2,dy:2}));wait(||b.state.applied.load(Ordering::Acquire)==1).await;
+        a.stop().await;b.stop().await;
+    }
+    #[tokio::test]
+    async fn overflowing_input_queue_recovers_without_replaying_queued_presses() {
+        struct Blocked {entered:Option<oneshot::Sender<()>>,gate:Arc<(Mutex<bool>,std::sync::Condvar)>}
+        impl InputInjector for Blocked {
+            fn inject(&mut self,_:uu_input::InputEvent)->std::result::Result<(),uu_input::InputError>{
+                if let Some(entered)=self.entered.take(){let _=entered.send(());let mut open=self.gate.0.lock().unwrap();while !*open {open=self.gate.1.wait(open).unwrap();}}
+                Ok(())
+            }
+            fn release_all(&mut self)->std::result::Result<(),uu_input::InputError>{Ok(())}
+        }
+        let gate=Arc::new((Mutex::new(false),std::sync::Condvar::new()));let wait_gate=gate.clone();let (started,entered)=oneshot::channel();
+        let worker=InputWorker::with_factory(DesktopRect::new(0,0,640,480).unwrap(),move||Ok(Box::new(Blocked{entered:Some(started),gate:wait_gate}))).await.unwrap();
+        worker.request(true);assert!(worker.push(InputCommand::Key{usage:4,pressed:true}));entered.await.unwrap();
+        for _ in 0..128 {assert!(worker.push(InputCommand::Key{usage:5,pressed:true}));}
+        let overflow=worker.push(InputCommand::Key{usage:5,pressed:true});
+        *gate.0.lock().unwrap()=true;gate.1.notify_all();
+        assert!(!overflow);assert!(!worker.state.stop.load(Ordering::Acquire));
+        wait(||worker.available()).await;worker.request(true);
+        assert!(worker.push(InputCommand::Key{usage:6,pressed:true}));
+        wait(||worker.state.applied.load(Ordering::Acquire)==2).await;
+        assert_eq!(worker.state.applied.load(Ordering::Acquire),2,"old queued events must not execute after a fresh grant");
+        worker.stop().await;
+    }
+    #[tokio::test]
+    async fn unsupported_platform_key_does_not_stop_other_input() {
+        struct Unsupported;
+        impl InputInjector for Unsupported {
+            fn inject(&mut self,event:uu_input::InputEvent)->std::result::Result<(),uu_input::InputError>{
+                match event {uu_input::InputEvent::Key{key,..}=>Err(uu_input::InputError::UnsupportedKey(key.0)),_=>Ok(())}
+            }
+            fn release_all(&mut self)->std::result::Result<(),uu_input::InputError>{Ok(())}
+        }
+        let worker=InputWorker::with_factory(DesktopRect::new(0,0,640,480).unwrap(),||Ok(Box::new(Unsupported))).await.unwrap();
+        worker.request(true);assert!(worker.push(InputCommand::Key{usage:4,pressed:true}));
+        wait(||worker.state.errors.load(Ordering::Acquire)==1).await;
+        assert!(worker.available());assert!(worker.push(InputCommand::Relative{dx:1,dy:1}));
+        wait(||worker.state.applied.load(Ordering::Acquire)==1).await;worker.stop().await;
     }
     #[tokio::test]
     async fn input_ack_waits_for_the_injector_and_includes_its_processing_time() {
