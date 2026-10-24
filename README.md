@@ -57,7 +57,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 
 ## 开始使用
 
-本次版本为 **v0.18.4**，修复 Windows 高 DPI 后台主机首连退出，设备离线仅通过卡片变灰表示并保留清晰名称，见[发布说明](docs/releases/v0.18.4.md)。包含 [v0.18.3](docs/releases/v0.18.3.md) 的 Windows 安全桌面键鼠修复；手柄、设备状态与截图功能见 [v0.18.2 说明](docs/releases/v0.18.2.md)。
+本次版本为 **v0.18.5**，修复 Wayland 等待选屏时的连接进度与取消清理，见[发布说明](docs/releases/v0.18.5.md)。包含 [v0.18.4](docs/releases/v0.18.4.md) 的 Windows 首连与设备卡片修复，以及 [v0.18.3](docs/releases/v0.18.3.md) 的安全桌面键鼠修复。
 
 安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
 
