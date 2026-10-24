@@ -10,6 +10,8 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <array>
+#include <cstdlib>
 using Microsoft::WRL::ComPtr;
 namespace {
 void check(HRESULT result,const char* operation) {
@@ -86,6 +88,10 @@ float4 decode(float4 position:SV_Position):SV_Target {
     return float4(rgb,1);
 }
 )";
+struct EncodeTarget {
+    ComPtr<ID3D11Texture2D> output;
+    std::array<ComPtr<ID3D11RenderTargetView>,2> planes;
+};
 struct Color {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
@@ -102,6 +108,15 @@ struct Color {
     unsigned width,height;
     bool decoder,hdr,shared;
     float white;
+    struct SourceView {ComPtr<ID3D11Texture2D> texture;ComPtr<ID3D11ShaderResourceView> view;};
+    std::array<SourceView,2> cached_sources;
+    unsigned next_source=0;
+    unsigned long long pooled_frames=0,fresh_frames=0,target_allocations=0,source_view_allocations=0;
+    ~Color() {
+        if(!decoder && std::getenv("UU_ENCODE_PROFILE"))std::fprintf(stderr,
+            "uu-color-input pooled_frames=%llu fresh_frames=%llu target_allocations=%llu source_view_allocations=%llu output=%s\n",
+            pooled_frames,fresh_frames,target_allocations,source_view_allocations,hdr?"P010":"NV12");
+    }
     Color(ID3D11Device* native,unsigned w,unsigned h,bool decoding,bool high,bool exportable,float sdr_white)
         :device(native),width(w),height(h),decoder(decoding),hdr(high),shared(exportable),white(sdr_white) {
         if(!native||w<2||h<2||w>8192||h>8192||w%2||h%2||sdr_white<40||sdr_white>1000)throw std::runtime_error("invalid HDR converter layout");
@@ -129,6 +144,17 @@ struct Color {
         td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_RENDER_TARGET;td.MiscFlags=exportable?D3D11_RESOURCE_MISC_SHARED:0;
         ComPtr<ID3D11Texture2D> value;check(device->CreateTexture2D(&td,nullptr,&value),"create HDR texture");return value;
     }
+    std::unique_ptr<EncodeTarget> make_target() {
+        if(decoder)throw std::runtime_error("decoder conversion cannot lease encoder targets");
+        auto value=std::make_unique<EncodeTarget>();
+        value->output=texture(hdr?DXGI_FORMAT_P010:DXGI_FORMAT_NV12,width,height,false);
+        for(unsigned plane=0;plane<2;plane++) {
+            D3D11_RENDER_TARGET_VIEW_DESC vd{};vd.ViewDimension=D3D11_RTV_DIMENSION_TEXTURE2D;
+            vd.Format=hdr?(plane?DXGI_FORMAT_R16G16_UNORM:DXGI_FORMAT_R16_UNORM):(plane?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM);
+            check(device->CreateRenderTargetView(value->output.Get(),&vd,&value->planes[plane]),"create pooled encoder plane view");
+        }
+        target_allocations++;return value;
+    }
     void draw(ID3D11RenderTargetView* destination,unsigned w,unsigned h,const float* values) {
         context->UpdateSubresource(params.Get(),0,nullptr,values,0,0);
         context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -140,7 +166,7 @@ struct Color {
         D3D11_VIEWPORT viewport{0,0,(float)w,(float)h,0,1};context->RSSetViewports(1,&viewport);
         context->OMSetRenderTargets(1,&destination,nullptr);context->Draw(3,0);context->OMSetRenderTargets(0,nullptr,nullptr);
     }
-    ComPtr<ID3D11Texture2D> convert(ID3D11Texture2D* input,unsigned index,bool full) {
+    ComPtr<ID3D11Texture2D> convert(ID3D11Texture2D* input,unsigned index,bool full,EncodeTarget* destination=nullptr) {
         struct Lock {ID3D10Multithread* p;Lock(ID3D10Multithread* v):p(v){p->Enter();}~Lock(){p->Leave();}} lock(threading.Get());
         D3D11_TEXTURE2D_DESC td{};input->GetDesc(&td);
         ComPtr<ID3D11Device> owner;input->GetDevice(&owner);
@@ -162,13 +188,28 @@ struct Color {
         } else {
             if((td.Format!=DXGI_FORMAT_R16G16B16A16_FLOAT && td.Format!=DXGI_FORMAT_B8G8R8A8_UNORM) || index!=0)throw std::runtime_error("HDR capture requires linear_rgb FP16 scRGB");
             values[6]=td.Format==DXGI_FORMAT_B8G8R8A8_UNORM?1.f:0.f;
-            check(device->CreateShaderResourceView(input,nullptr,&input_view),"create RGB source view");
+            if(destination) {
+                ComPtr<ID3D11Device> owner;destination->output->GetDevice(&owner);
+                D3D11_TEXTURE2D_DESC out{};destination->output->GetDesc(&out);
+                if(owner.Get()!=device.Get()||out.Width!=width||out.Height!=height||out.Format!=(hdr?DXGI_FORMAT_P010:DXGI_FORMAT_NV12))throw std::runtime_error("encoder target device/layout mismatch");
+                for(auto& cached:cached_sources)if(cached.texture.Get()==input)input_view=cached.view;
+                if(!input_view) {
+                    check(device->CreateShaderResourceView(input,nullptr,&input_view),"create cached RGB source view");
+                    cached_sources[next_source]={input,input_view};next_source=(next_source+1)%cached_sources.size();source_view_allocations++;
+                }
+                output=destination->output;pooled_frames++;
+            } else {
+                check(device->CreateShaderResourceView(input,nullptr,&input_view),"create RGB source view");
+                source_view_allocations++;fresh_frames++;
+                output=texture(hdr?DXGI_FORMAT_P010:DXGI_FORMAT_NV12,width,height,false);
+            }
             ID3D11ShaderResourceView* view=input_view.Get();context->PSSetShaderResources(0,1,&view);
-            output=texture(hdr?DXGI_FORMAT_P010:DXGI_FORMAT_NV12,width,height,false);
             for(unsigned plane=0;plane<2;plane++) {
                 D3D11_RENDER_TARGET_VIEW_DESC vd{};vd.ViewDimension=D3D11_RTV_DIMENSION_TEXTURE2D;
                 vd.Format=hdr?(plane?DXGI_FORMAT_R16G16_UNORM:DXGI_FORMAT_R16_UNORM):(plane?DXGI_FORMAT_R8G8_UNORM:DXGI_FORMAT_R8_UNORM);
-                ComPtr<ID3D11RenderTargetView> out;check(device->CreateRenderTargetView(output.Get(),&vd,&out),"create encoder plane view");
+                ComPtr<ID3D11RenderTargetView> out;
+                if(destination)out=destination->planes[plane];
+                else check(device->CreateRenderTargetView(output.Get(),&vd,&out),"create encoder plane view");
                 values[4]=(float)plane;draw(out.Get(),plane?width/2:width,plane?height/2:height,values);
             }
         }
@@ -181,6 +222,15 @@ extern "C" void* eclipse_color_open(void* device,unsigned width,unsigned height,
     catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return nullptr;}
 }
 extern "C" void eclipse_color_close(void* value){delete (Color*)value;}
+extern "C" void* eclipse_color_target_new(void* value,char* error,size_t capacity) {
+    try{return ((Color*)value)->make_target().release();}
+    catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return nullptr;}
+}
+extern "C" void eclipse_color_target_close(void* value){delete (EncodeTarget*)value;}
+extern "C" void* eclipse_color_convert_into(void* value,void* source,void* destination,char* error,size_t capacity) {
+    try{auto output=((Color*)value)->convert((ID3D11Texture2D*)source,0,false,(EncodeTarget*)destination);return output.Detach();}
+    catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return nullptr;}
+}
 extern "C" void* eclipse_color_output(void* value){return ((Color*)value)->output.Get();}
 extern "C" void* eclipse_color_convert(void* value,void* source,unsigned index,int full,char* error,size_t capacity) {
     try{auto output=((Color*)value)->convert((ID3D11Texture2D*)source,index,full!=0);return output.Detach();}

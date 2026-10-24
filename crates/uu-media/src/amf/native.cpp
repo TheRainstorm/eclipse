@@ -8,6 +8,8 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <atomic>
+#include <cstdlib>
 #include "core/Factory.h"
 #include "components/VideoEncoderVCE.h"
 #include "components/VideoEncoderHEVC.h"
@@ -20,6 +22,33 @@ static void checked(AMF_RESULT result,const char* operation) {
 static void hr(HRESULT result,const char* operation) {
     if(FAILED(result)) throw std::runtime_error(std::string(operation)+": HRESULT="+std::to_string((unsigned long)result));
 }
+struct LeaseStats {
+    std::atomic<unsigned long long> submitted{0},released{0},duplicates{0};
+};
+// One observer per submission, never rebound to another slot or generation.
+// The callback retains itself and its texture independently of Session/Rust.
+struct InputLease : amf::AMFSurfaceObserver, std::enable_shared_from_this<InputLease> {
+    std::atomic<int> state{0}; // fresh, armed, released
+    std::shared_ptr<InputLease> keepalive;
+    std::shared_ptr<LeaseStats> stats;
+    ID3D11Texture2D* texture=nullptr;
+    ~InputLease(){if(texture)texture->Release();}
+    void release() {
+        auto hold=shared_from_this();
+        if(state.exchange(2,std::memory_order_acq_rel)==2) {if(stats)stats->duplicates++;return;}
+        if(stats)stats->released++;
+        keepalive.reset();
+    }
+    void AMF_STD_CALL OnSurfaceDataRelease(amf::AMFSurface*) override {release();}
+};
+using LeaseHandle=std::shared_ptr<InputLease>;
+extern "C" void* eclipse_amf_lease_new() {
+    try{return new LeaseHandle(std::make_shared<InputLease>());}catch(...){return nullptr;}
+}
+extern "C" int eclipse_amf_lease_released(void* value) {
+    return (*(LeaseHandle*)value)->state.load(std::memory_order_acquire)!=1;
+}
+extern "C" void eclipse_amf_lease_close(void* value) {delete (LeaseHandle*)value;}
 struct Session {
     HMODULE library=nullptr;
     amf::AMFContextPtr context;
@@ -28,12 +57,15 @@ struct Session {
     ID3D11Device* device=nullptr;
     int codec=0;
     unsigned width=0,height=0,fps=0;
+    std::shared_ptr<LeaseStats> leases=std::make_shared<LeaseStats>();
     ~Session() {
         output=nullptr;
         if(encoder) encoder->Terminate();
         encoder=nullptr;
         if(context) context->Terminate();
         context=nullptr;
+        if(std::getenv("UU_ENCODE_PROFILE"))std::fprintf(stderr,"uu-amf-leases submitted=%llu released=%llu pending=%llu duplicates=%llu\n",
+            leases->submitted.load(),leases->released.load(),leases->submitted.load()-leases->released.load(),leases->duplicates.load());
         if(device) device->Release();
         if(library) FreeLibrary(library);
     }
@@ -164,14 +196,18 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
         return s.release();
     } catch(const std::exception& e) {if(capacity)std::snprintf(error,capacity,"%s",e.what());return nullptr;}
 }
-extern "C" void eclipse_amf_close(void* session) {delete (Session*)session;}
+extern "C" unsigned long long eclipse_amf_close(void* session) {
+    auto stats=((Session*)session)->leases;
+    delete (Session*)session;
+    return stats->submitted.load()-stats->released.load();
+}
 extern "C" void* eclipse_amf_device(void* session) {return ((Session*)session)->device;}
 extern "C" int eclipse_amf_bitrate(void* session,unsigned kbps,char* error,size_t capacity) {
     try {((Session*)session)->bitrate(kbps);return 0;}
     catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}
 }
 extern "C" int eclipse_amf_encode(void* session,void* native_texture,const unsigned char* cpu_nv12,
-    size_t cpu_length,long long pts,int keyframe,const unsigned char** bytes,size_t* length,long long* timestamp,char* error,size_t capacity) {
+    size_t cpu_length,long long pts,int keyframe,void* lease_handle,const unsigned char** bytes,size_t* length,long long* timestamp,char* error,size_t capacity) {
     try {
         auto s=(Session*)session;s->output=nullptr;
         amf::AMFSurfacePtr surface;
@@ -198,7 +234,17 @@ extern "C" int eclipse_amf_encode(void* session,void* native_texture,const unsig
             static const GUID array_index_id={0x28115527,0xe7c3,0x4b66,{0x99,0xd3,0x4f,0x2a,0xe6,0xb4,0x7f,0xaf}};
             unsigned array_index=0;
             hr(texture->SetPrivateData(array_index_id,sizeof(array_index),&array_index),"set DX11 texture array index");
-            checked(s->context->CreateSurfaceFromDX11Native(texture,&surface,nullptr),"wrap DX11 surface");
+            LeaseHandle lease;
+            if(lease_handle) {
+                lease=*(LeaseHandle*)lease_handle;
+                int fresh=0;
+                if(!lease->state.compare_exchange_strong(fresh,1))throw std::runtime_error("AMF input lease already submitted");
+                lease->texture=texture;texture->AddRef();lease->stats=s->leases;
+                lease->keepalive=lease;s->leases->submitted++;
+            }
+            auto wrapped=s->context->CreateSurfaceFromDX11Native(texture,&surface,lease.get());
+            if(wrapped!=AMF_OK && lease && !surface)lease->release();
+            checked(wrapped,"wrap DX11 surface");
         }
         surface->SetCrop(0,0,s->width,s->height);
         surface->SetPts(pts);surface->SetDuration(10000000/s->fps);

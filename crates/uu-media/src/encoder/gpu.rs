@@ -17,6 +17,18 @@ pub(super) struct Input {
     hdr:Option<crate::d3d11_color::Converter>,
 }
 impl Input {
+    pub fn amf_target(&self)->Result<Option<crate::d3d11_color::EncodeTarget>,String> {
+        self.hdr.as_ref().map(crate::d3d11_color::Converter::target).transpose()
+    }
+    pub fn amf_convert(&self,frame:&RawFrame,target:&crate::d3d11_color::EncodeTarget)->Result<ID3D11Texture2D,String> {
+        let surface=frame.d3d11.as_ref().ok_or("missing AMF HDR input")?;
+        let (texture,device)=surface.capture_texture()?;
+        let mut desc=D3D11_TEXTURE2D_DESC::default();unsafe{texture.GetDesc(&mut desc);}
+        if device.as_raw()!=self.device.as_raw() || [desc.Width,desc.Height]!=self.source || !frame.is_consistent()
+            || (frame.width,frame.height)!=(self.settings.width,self.settings.height) {return Err("AMF source device/layout changed".into());}
+        self.hdr.as_ref().ok_or("AMF pooled conversion requires the color converter")?.convert_into(texture,target)
+    }
+    pub fn amf_pooled(&self)->bool {self.hdr.is_some()}
     pub fn new(frame:&RawFrame,settings:Settings)->Result<Self,String> {
         Self::create(frame,settings).map_err(|e|format!("GPU encoder input: {e}"))
     }

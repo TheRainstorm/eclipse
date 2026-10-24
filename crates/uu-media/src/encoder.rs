@@ -12,6 +12,8 @@ mod amf;
 mod low_delay;
 mod upload;
 mod profile;
+#[cfg(any(windows,test))]
+mod input_pool;
 mod tuning;
 pub use tuning::{AmdQuality,LowPower,Tuning};
 #[cfg(all(target_os = "linux", feature = "vaapi"))]

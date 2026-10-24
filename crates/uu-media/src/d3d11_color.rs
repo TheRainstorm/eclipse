@@ -20,6 +20,9 @@ unsafe extern "C" {
         len: usize,
     ) -> *mut c_void;
     fn eclipse_color_close(value: *mut c_void);
+    fn eclipse_color_target_new(value:*mut c_void,error:*mut c_char,len:usize)->*mut c_void;
+    fn eclipse_color_target_close(value:*mut c_void);
+    fn eclipse_color_convert_into(value:*mut c_void,source:*mut c_void,target:*mut c_void,error:*mut c_char,len:usize)->*mut c_void;
     fn eclipse_color_output(value: *mut c_void) -> *mut c_void;
     fn eclipse_color_convert(
         value: *mut c_void,
@@ -36,7 +39,20 @@ fn message(error: &[c_char]) -> String {
         .into_owned()
 }
 pub(crate) struct Converter(NonNull<c_void>);
+/// An encoder-only destination. Reuse requires the AMF input lease to return;
+/// ordinary convert() still allocates an independent texture for every sample.
+pub(crate) struct EncodeTarget(NonNull<c_void>);
+impl Drop for EncodeTarget {fn drop(&mut self){unsafe{eclipse_color_target_close(self.0.as_ptr());}}}
 impl Converter {
+    pub fn target(&self)->Result<EncodeTarget,String> {
+        let mut error=[0;1024];
+        NonNull::new(unsafe{eclipse_color_target_new(self.0.as_ptr(),error.as_mut_ptr(),error.len())}).map(EncodeTarget).ok_or_else(||message(&error))
+    }
+    pub fn convert_into(&self,source:&ID3D11Texture2D,target:&EncodeTarget)->Result<ID3D11Texture2D,String> {
+        let mut error=[0;1024];
+        let raw=unsafe{eclipse_color_convert_into(self.0.as_ptr(),source.as_raw(),target.0.as_ptr(),error.as_mut_ptr(),error.len())};
+        if raw.is_null(){Err(message(&error))}else{Ok(unsafe{ID3D11Texture2D::from_raw(raw)})}
+    }
     pub fn new(
         device: &ID3D11Device,
         size: [u32; 2],
