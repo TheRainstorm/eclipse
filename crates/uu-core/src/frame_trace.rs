@@ -94,16 +94,36 @@ pub(crate) async fn viewer_channel(
         {
             if let Ok(report) = serde_json::from_slice::<Report>(&message.data) {
                 if report.valid() {
-                    stats
-                        .diagnostics
-                        .record(serde_json::json!({"event":"host_frame_trace","report":report}));
-                    *stats.native_frame_trace.lock().unwrap() = Some(report);
+                    receive_report(&stats, epoch, report);
                 }
             }
         }
         Box::pin(async {})
     }));
     Ok(channel)
+}
+
+fn receive_report(stats: &crate::media::MediaStats, epoch: u64, report: Report) -> bool {
+    use std::sync::atomic::Ordering;
+    // Build JSON outside the slot lock. A reconnect may retire this callback
+    // while it is parsing or serializing, so check again at the write boundary.
+    let diagnostic =
+        serde_json::json!({"event":"host_frame_trace","client_media_epoch":epoch,"report":report});
+    let mut slot = stats.native_frame_trace.lock().unwrap();
+    if stats.native_media_epoch.load(Ordering::Acquire) != epoch {
+        return false;
+    }
+    if slot.as_ref().is_some_and(|previous| {
+        previous.epoch != report.epoch
+            || previous.context.generation > report.context.generation
+            || previous.window_end_us >= report.window_end_us
+    }) {
+        return false;
+    }
+    *slot = Some(report);
+    drop(slot);
+    stats.diagnostics.record(diagnostic);
+    true
 }
 
 pub(crate) fn offered(
@@ -533,6 +553,83 @@ impl HostTrace {
 mod tests {
     use super::*;
     use std::time::Duration;
+    #[test]
+    fn retired_callbacks_cannot_overwrite_a_new_session_while_waiting_for_the_slot() {
+        use std::sync::atomic::Ordering;
+        let stats = Arc::new(crate::media::MediaStats::default());
+        stats.native_media_epoch.store(1, Ordering::Release);
+        let trace = HostTrace::new(true);
+        trace.configure(settings(), "fixture");
+        let report = trace.report().unwrap();
+        let mut slot = stats.native_frame_trace.lock().unwrap();
+        let callback = stats.clone();
+        let (entered, started) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            entered.send(()).unwrap();
+            receive_report(&callback, 1, report)
+        });
+        started.recv().unwrap();
+        stats.native_media_epoch.store(2, Ordering::Release);
+        *slot = None;
+        drop(slot);
+        assert!(!worker.join().unwrap());
+        assert!(stats.native_frame_trace.lock().unwrap().is_none());
+        let current = HostTrace::new(true);
+        current.configure(settings(), "new session");
+        assert!(receive_report(&stats, 2, current.report().unwrap()));
+        assert_eq!(
+            stats
+                .native_frame_trace
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .epoch,
+            current.epoch
+        );
+    }
+    #[test]
+    fn unordered_reports_cannot_rewind_a_bound_epoch_generation_or_window() {
+        use std::sync::atomic::Ordering;
+        let stats = crate::media::MediaStats::default();
+        stats.native_media_epoch.store(7, Ordering::Release);
+        let mut trace = HostTrace::new(true);
+        trace.started -= Duration::from_secs(1);
+        trace.configure(settings(), "fixture");
+        trace.configure(settings(), "updated");
+        let report = trace.report().unwrap();
+        assert!(report.valid());
+        assert!(receive_report(&stats, 7, report.clone()));
+        assert!(
+            !receive_report(&stats, 7, report.clone()),
+            "duplicate window"
+        );
+        let mut older = report.clone();
+        older.window_end_us = 0;
+        older.window_start_us = 0;
+        assert!(older.valid());
+        assert!(!receive_report(&stats, 7, older));
+        let mut generation = report.clone();
+        generation.context.generation = 1;
+        generation.window_end_us += 1;
+        assert!(generation.valid());
+        assert!(!receive_report(&stats, 7, generation));
+        let mut another = report.clone();
+        another.epoch = another.epoch.wrapping_add(1).max(1);
+        another.window_end_us += 1;
+        assert!(!receive_report(&stats, 7, another));
+        assert!(!receive_report(&stats, 6, report.clone()));
+        assert_eq!(
+            stats
+                .native_frame_trace
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .window_end_us,
+            report.window_end_us
+        );
+    }
     #[test]
     fn capability_requires_one_explicit_supported_version() {
         let description = |sdp: &str| {

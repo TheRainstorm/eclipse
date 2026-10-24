@@ -1567,7 +1567,7 @@ mod tests {
                 if stats.decoded_total.load(Ordering::Relaxed) >= 30
                     && stats.control_open.load(Ordering::Acquire) == 1
                     && stats.native_timing.snapshot().host.is_some_and(|host|host.video.is_some())
-                    && stats.native_frame_trace.lock().unwrap().is_some()
+                    && stats.native_frame_trace.lock().unwrap().as_ref().is_some_and(|report|report.stages.contains_key("ready_to_dequeue"))
                 {
                     break;
                 }
