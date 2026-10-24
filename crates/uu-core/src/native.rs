@@ -905,7 +905,13 @@ async fn receive_session(
     stats.diagnostics.record(serde_json::json!({"event":"native_local_ice_gather","elapsed_us":elapsed_us(ice_started)}));
     crate::native_clipboard::advertise(&mut description);
     crate::native_gamepad::advertise(&mut description);
-    if let Some(request)=stats.native_quality_request.get(){request.add(&mut description)?;}
+    let mut quality_request=stats.native_quality_request.get().cloned();
+    if let (Some(request),Some(current))=(quality_request.as_mut(),*stats.native_quality_current.lock().unwrap()) {
+        // A source renewal keeps the latest applied live settings instead of
+        // replaying the frame rate and bitrate from the original launch.
+        request.fps=current.fps;request.bitrate_kbps=current.bitrate_kbps;
+    }
+    if let Some(request)=&quality_request {request.add(&mut description)?;}
     stream.send(serde_json::to_value(Offer {
         version: 1,
         sdp: description,
@@ -934,13 +940,13 @@ async fn receive_session(
     let typed_gamepads=crate::native_gamepad::typed_offered(&answer.sdp);
     if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"主机实际编码与能力回报不一致");}
     stats.capabilities.enable(crate::capabilities::Capability::Quality,quality.is_some());
-    stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":stats.native_quality_request.get(),"host_capabilities":quality}));
+    stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":quality_request,"host_capabilities":quality}));
     *stats.native_quality_response.lock().unwrap()=quality;
     // Complete dimension-dependent driver work before setting remote SDP can
     // start ICE/DTLS and release the first burst of video into the AU queue.
     peer.prepare_video(answer.width, answer.height, answer.codec,&stats).await?;
     stats.configured_fps.store(answer.fps,Ordering::Release);
-    *stats.native_quality_current.lock().unwrap()=stats.native_quality_request.get().map(|request|crate::native_quality::Update{fps:answer.fps,bitrate_kbps:request.bitrate_kbps});
+    *stats.native_quality_current.lock().unwrap()=quality_request.as_ref().map(|request|crate::native_quality::Update{fps:answer.fps,bitrate_kbps:request.bitrate_kbps});
     match stream.lan_peer() {
         Some(ip) => peer.remote(answer.sdp, ip).await?,
         None => peer.remote_direct(answer.sdp).await?,
