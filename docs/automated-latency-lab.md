@@ -26,7 +26,7 @@ Windows 编译增加 `--target x86_64-pc-windows-gnu`。探针旁放置经过完
 
 ## 私有实验配置和适配器
 
-配置 `version` 为 1；`adapter` 是 argv 数组，不经过 shell。`variants.baseline` 和可选的 `variants.candidate` 分别提供 `revision`（完整提交）、`artifacts`（包含 `path`、`sha256` 的数组）和适配器需要的额外字段。所有文件在实验前和每轮前核对 SHA-256。`adapter_options` 仅交给本地适配器，放入机器配置等私有内容。
+配置 `implementation_files` 必须提前列出 `runner`、`adapter` 及私有辅助文件的绝对 `path`、`sha256` 和 `source`（Git完整提交或明确的本地文件来源）。入口身份在实验前核对、留存源码快照，每轮前后重新核对；产物另外按清单固定。配置 `version` 为 1；`adapter` 是 argv 数组，不经过 shell。`variants.baseline` 和可选的 `variants.candidate` 分别提供 `revision`（完整提交）、`artifacts`（包含 `path`、`sha256` 的数组）和适配器需要的额外字段。所有文件在实验前和每轮前核对 SHA-256。`adapter_options` 仅交给本地适配器，放入机器配置等私有内容。
 
 `cases` 为不同条件的数组，每项明确：
 
@@ -43,6 +43,7 @@ Windows 编译增加 `--target x86_64-pc-windows-gnu`。探针旁放置经过完
 
 | 字段 | 判断 |
 | --- | --- |
+| `min_host_coverage_seconds` | 热身截断后主机窗口区间并集的最少覆盖秒数；不足失败 |
 | `min_paint_fps_ratio` | 绘制新图帧率至少为目标帧率的此比例 |
 | `min_new_source_ratio` | 主机采集样本中至少有此比例是真实新源帧 |
 | `max_paint_gap_ms` | 热身后任意新图绘制间隔的上限 |
@@ -66,6 +67,10 @@ Windows 编译增加 `--target x86_64-pc-windows-gnu`。探针旁放置经过完
 
 探针对热身后的新图绘制间隔、**同一张邮箱图像**的发布到绘制回调时间记录 p50/p95/p99/p99.9/max，及超过 2T/50/100/250ms 的数量。样本有上限，溢出即失败。原始报告保留每秒解码均值、接收/解码队列节奏与主机有限轨迹。
 
-主机轨迹是重叠的 512 帧窗口。汇总使用“每窗口 p99 的中位数”，不会把重叠窗口重复计数后冒充整场 p99。全场主机 p99、GPU 完成、跨机时钟对应、实际扫描输出、图像质量一致性和网络故障恢复仍需补充测量。报告中的 FPS、码率是配置目标；实际输出帧率另记，不能视为驱动参数回读。
+主机轨迹是重叠的 512 帧窗口。客户端热身后观察到新的主机快照时，以其主机 `window_end_us` 加相同热身时长建立保守截断点；只有 `window_start_us` 严格越过该点的整个窗口才进入稳态汇总。仅按快照到达时间过滤不成立。时钟域、epoch、generation 或配置变化都使试验失败；报告有效窗口数和区间并集覆盖，覆盖不足不得填零。汇总使用“每窗口 p99 的中位数”，不会把重叠窗口重复计数后冒充整场 p99。全场主机 p99、GPU 完成、跨机时钟对应、实际扫描输出、图像质量一致性和网络故障恢复仍需补充测量。报告中的 FPS、码率是配置目标；实际输出帧率另记，不能视为驱动参数回读。
 
 短基线用于检查流程和定位瓶颈，不能声称已经完成长稳验收。长测可为关键条件设置 `seconds: 3600` 并运行三轮以上，同时检查资源变化和退出。新候选应先复现短对照，再扩大长测、完整 GUI 与受控故障场景。每个优化保留基线、候选、门槛、证据与独立 Git 提交，失败候选不晋级。
+
+实验主机必须显式使用 `native-host --client-quality`，才接受受限于 `--codec` 的客户端尺寸/帧率/码率请求；普通 CLI 的默认静态合同不变。`native-sources --json` 在交互桌面导出物理像素清单、当前模式刷新率和 DXGI 色彩空间/HDR状态；WinForms 的逻辑尺寸另外标注单位。worker将选中输出显式传给主机，并检查试验前后物理清单一致。
+
+刺激默认使用独立的高精度 waitable timer 与消息联合等待，不调用全局 `timeBeginPeriod`；保留旧 WM_TIMER 模式仅用于有界时钟对照。计数和间隔来自 GDI EndPaint 完成，另由真实采集源身份比例验证 DWM 是否产生了新画面。绘制完成不代表扫描输出。[Microsoft 计时器接口说明](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw)。

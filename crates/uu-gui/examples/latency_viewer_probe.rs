@@ -90,6 +90,8 @@ struct Probe {
     ended: Arc<std::sync::atomic::AtomicBool>,
     duration_completed: Arc<std::sync::atomic::AtomicBool>,
     mailbox_counts: Arc<Mutex<[u64; 3]>>,
+    formats: Arc<Mutex<Vec<serde_json::Value>>>,
+    last_format: Option<(uu_core::display_frames::PixelFormat,uu_core::display_frames::YuvColor,bool,u32,u32)>,
 }
 impl eframe::App for Probe {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
@@ -107,6 +109,15 @@ impl eframe::App for Probe {
             return;
         }
         while let Ok((image, published)) = self.images.try_recv_timed_image() {
+            if let uu_core::display_frames::DisplayImage::Decoded(_,frame,color)=&image {
+                let signature=(frame.format,*color,frame.gpu,frame.width,frame.height);
+                if self.last_format!=Some(signature) {
+                    self.formats.lock().unwrap().push(serde_json::json!({"at_ms":self.started.elapsed().as_millis(),
+                        "pixel_format":format!("{:?}",frame.format),"color":format!("{color:?}"),"hdr":color.hdr(),
+                        "gpu":frame.gpu,"visible_size":[frame.width,frame.height]}));
+                    self.last_format=Some(signature);
+                }
+            }
             self.first.lock().unwrap().get_or_insert(published);
             self.serial += 1;
             self.pending = Some((self.serial, published));
@@ -219,6 +230,7 @@ fn main() -> Result<()> {
     let first = Arc::new(Mutex::new(None));
     let duration_completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mailbox_counts = Arc::new(Mutex::new([0; 3]));
+    let formats=Arc::new(Mutex::new(Vec::new()));
     let started = Instant::now();
     let worker_stats = stats.clone();
     let worker_ended = ended.clone();
@@ -234,6 +246,7 @@ fn main() -> Result<()> {
     let ui_first = first.clone();
     let ui_complete = duration_completed.clone();
     let ui_counts = mailbox_counts.clone();
+    let ui_formats=formats.clone();
     let duration = Duration::from_secs(config.seconds);
     let warmup = Duration::from_secs(config.warmup_seconds);
     let gui = eframe::run_native(
@@ -269,6 +282,7 @@ fn main() -> Result<()> {
                 ended,
                 duration_completed: ui_complete,
                 mailbox_counts: ui_counts,
+                formats:ui_formats,last_format:None,
             }))
         }),
     );
@@ -304,7 +318,7 @@ fn main() -> Result<()> {
         "decoder_backend":stats.backend(),"render_paths":*paths.lock().unwrap(),
         "decoded":stats.decoded_total.load(Ordering::Relaxed),"errors":stats.errors.load(Ordering::Relaxed),
         "decode_display_skips":stats.decoded_display_skips.load(Ordering::Relaxed),
-        "mailbox_counts":*mailbox_counts.lock().unwrap(),
+        "mailbox_counts":*mailbox_counts.lock().unwrap(),"decoded_formats":*formats.lock().unwrap(),
         "samples":*samples.lock().unwrap(),"host_frame_trace":stats.native_frame_trace.lock().unwrap().clone(),
         "close_error":close_error,"gui_error":gui.as_ref().err().map(ToString::to_string)});
     report.write_all(serde_json::to_string_pretty(&value)?.as_bytes())?;

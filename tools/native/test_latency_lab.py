@@ -25,7 +25,7 @@ class Gates(unittest.TestCase):
                         frames=[dict(gpu_input=True,source={'frame_id':1})],
                         stages={name:dict(p99_us=ms*1000) for name in ('encode_call','ready_to_last_rtp','au_to_dequeue')})
         viewer = dict(version=1,completed=True,errors=0,decoder_backend='mf (d3d11)',render_paths=['d3d11-wgl-gpu'],
-                      coverage_ms=9900,configuration={key:CASE[key] for key in ('fps','bitrate_kbps','codec','seconds','warmup_seconds','vsync')},
+                      coverage_ms=9900,decoded_formats=[dict(visible_size=[1920,1080],hdr=False,gpu=True,color='Limited709',pixel_format='Nv12')],configuration={key:CASE[key] for key in ('fps','bitrate_kbps','codec','seconds','warmup_seconds','vsync')},
                       paint_fps=59.9,first_frame_ms=500,
                       paint_gap_ms=dict(p99=18,max=25,over_50ms=0,overflow=False),
                       mailbox_to_draw_ms=dict(p99=4,overflow=False),

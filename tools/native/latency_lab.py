@@ -174,6 +174,9 @@ def summarize(output, request):
     require(viewer.get('errors') == 0, 'decoder errors')
     require(case['decoder_contains'].lower() in viewer.get('decoder_backend', '').lower(), 'wrong decoder / fallback')
     require(viewer.get('render_paths') == [case['render_path']], 'wrong renderer / fallback')
+    formats=viewer.get('decoded_formats') or []
+    require(bool(formats) and formats[-1].get('visible_size')==case['size'] and formats[-1].get('hdr')==case['hdr'],
+            'missing or mismatched decoded format/color identity')
     require(viewer.get('coverage_ms', 0) >= (case['seconds'] - .5) * 1000, 'insufficient steady-state duration')
     configuration = viewer.get('configuration', {})
     for key, expected in (('fps', case['fps']), ('bounds', case['size']), ('bitrate_kbps', case['bitrate_kbps']),
