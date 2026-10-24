@@ -6,9 +6,6 @@ use uu_core::{device_book::{Book,Destination},Config};
 
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub(super) enum Status {Online,Offline,#[default] Unknown}
-impl Status {
-    pub fn label(self)->&'static str {match self{Self::Online=>"在线",Self::Offline=>"离线",Self::Unknown=>"状态未知"}}
-}
 fn aggregate(states:impl IntoIterator<Item=Status>)->Status {
     let mut any=false;let mut unknown=false;
     for state in states {any=true;match state{Status::Online=>return Status::Online,Status::Unknown=>unknown=true,Status::Offline=>{}}}

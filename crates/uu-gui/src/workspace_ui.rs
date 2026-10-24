@@ -1053,23 +1053,25 @@ impl Workspace {
     fn device_tile(&mut self,ui:&mut egui::Ui,profile:&Profile,actions:&mut Vec<Action>) {
         ui.push_id(&profile.id,|ui| {
             let width=230_f32.min(ui.available_width());
-            let (rect,response)=ui.allocate_exact_size(egui::vec2(width,width*9./16.+42.),egui::Sense::click());
+            let offline=self.presence.status(&profile.id)==super::device_presence::Status::Offline;
+            let color=if offline {
+                egui::Color32::from_gray(if self.dark_background {200}else{96})
+            }else if self.dark_background {egui::Color32::WHITE}else{theme::INK};
+            let mut label=egui::text::LayoutJob::simple(profile.name.clone(),egui::FontId::proportional(17.),color,width);
+            label.halign=egui::Align::Center;
+            let text=ui.painter().layout_job(label);
+            let (rect,response)=ui.allocate_exact_size(egui::vec2(width,width*9./16.+20.+text.size().y),egui::Sense::click());
             response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),format!("连接 {}",profile.name)));
             if response.hovered()||response.has_focus(){ui.painter().rect_filled(rect.expand(7.),10.,egui::Color32::from_rgba_unmultiplied(80,140,220,55));}
             let picture=egui::Rect::from_min_size(rect.min,egui::vec2(width,width*9./16.));
-            let status=self.presence.status(&profile.id);
-            let offline=status==super::device_presence::Status::Offline;
             let mut painter=ui.painter().clone();
             if offline{ui.painter().rect_filled(picture,8.,egui::Color32::from_gray(50));painter.multiply_opacity(0.35);}
             self.paint_device_picture(&painter,picture,profile);
-            let color=if offline{egui::Color32::GRAY}else if self.dark_background {egui::Color32::WHITE}else{theme::INK};
-            let text=ui.painter().layout(profile.name.clone(),egui::FontId::proportional(17.),color,width);
             let pos=egui::pos2(rect.center().x-text.size().x/2.,picture.bottom()+12.);
-            ui.painter().with_clip_rect(egui::Rect::from_min_max(egui::pos2(rect.left(),picture.bottom()+8.),rect.max)).galley(pos,text,color);
-            let status_color=match status{super::device_presence::Status::Online=>egui::Color32::from_rgb(58,190,110),super::device_presence::Status::Offline=>egui::Color32::GRAY,_=>egui::Color32::from_rgb(170,170,170)};
-            let badge=egui::Rect::from_min_size(picture.left_top()+egui::vec2(8.,8.),egui::vec2(68.,23.));
-            ui.painter().rect_filled(badge,5.,egui::Color32::from_black_alpha(180));
-            ui.painter().text(badge.center(),egui::Align2::CENTER_CENTER,status.label(),egui::FontId::proportional(13.),status_color);
+            if self.dark_background {
+                ui.painter().galley_with_override_text_color(pos+egui::vec2(0.,1.),text.clone(),egui::Color32::from_black_alpha(210));
+            }
+            ui.painter().galley(pos,text,color);
             if response.clicked(){actions.push(Action::Open(profile.id.clone()));}
             response.context_menu(|ui| {
                 ui.set_min_width(170.);

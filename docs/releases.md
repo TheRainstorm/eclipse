@@ -2,7 +2,7 @@
 
 大功能里程碑使用 `v主版本.次版本.修订号` 标签，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
-本次发布 [v0.18.3](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.3)，修复 Windows 管理员确认及锁屏桌面切换后的键鼠注入权限，详见 [0.18.3 发布说明](releases/v0.18.3.md)。[v0.18.2](releases/v0.18.2.md) 增加设备状态与截图固定，修复输入恢复、手柄及后台管理入口。[v0.18.1](releases/v0.18.1.md) 修复 AMD H.264 解码回退，[v0.18.0](releases/v0.18.0.md) 包含连接恢复、图文剪贴板、Windows 后台服务、原生 XOR FEC 与视频路径优化。已有发布保持不变，正式产物以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+本次发布 [v0.18.4](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.4)，去掉设备卡片状态角标，以变灰表示离线并保留清晰名称，详见 [0.18.4 发布说明](releases/v0.18.4.md)。包含 [v0.18.3](releases/v0.18.3.md) 的 Windows 安全桌面键鼠修复。[v0.18.2](releases/v0.18.2.md) 增加设备状态与截图固定，修复输入恢复、手柄及后台管理入口。[v0.18.1](releases/v0.18.1.md) 修复 AMD H.264 解码回退，[v0.18.0](releases/v0.18.0.md) 包含连接恢复、图文剪贴板、Windows 后台服务、原生 XOR FEC 与视频路径优化。已有发布保持不变，正式产物以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
 
 ```sh
 python3 tools/release/download.py
