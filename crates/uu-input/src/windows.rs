@@ -1,8 +1,5 @@
 //! Windows desktop input through the documented SendInput API.
 use crate::{DesktopRect, HeldInput, InputError, InputEvent, InputInjector, MouseButton};
-use windows_sys::Win32::UI::HiDpi::{
-    SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-};
 use windows_sys::Win32::UI::{Input::KeyboardAndMouse as kbm, WindowsAndMessaging as wm};
 
 #[derive(Default)]
@@ -41,12 +38,8 @@ fn virtual_screen() -> Result<DesktopRect, InputError> {
     // DXGI capture and normalized pointer coordinates use physical pixels.
     // A CLI host need not have a DPI-aware GUI, so query in a temporary
     // per-monitor context on this input thread, then restore its old context.
-    let old = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
-    if old.is_null() {
-        return Err(InputError::Unavailable(
-            "physical desktop coordinates are unavailable".into(),
-        ));
-    }
+    let _coordinates = crate::windows_desktop::PhysicalCoordinates::enter()
+        .map_err(|error| InputError::Unavailable(format!("physical desktop coordinates are unavailable: {error}")))?;
     let (left, top, width, height) = unsafe {
         (
             wm::GetSystemMetrics(wm::SM_XVIRTUALSCREEN),
@@ -55,9 +48,6 @@ fn virtual_screen() -> Result<DesktopRect, InputError> {
             wm::GetSystemMetrics(wm::SM_CYVIRTUALSCREEN),
         )
     };
-    unsafe {
-        SetThreadDpiAwarenessContext(old);
-    }
     if width <= 0 || height <= 0 {
         return Err(InputError::Unavailable("no active virtual desktop".into()));
     }

@@ -572,6 +572,7 @@ async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling,
     let mut answered=false;
     let result=send_video(peer,signaling,config,stop,offer,status,displays,&mut answered,authority).await;
     if let Err(error)=&result {
+        tracing::warn!(error=%format!("{error:#}"),answered,"native media session failed");
         if !answered {
             let reason=format!("{error:#}").chars().map(|c|if c.is_control(){' '}else{c}).take(512).collect::<String>();
             let _=timeout(Duration::from_secs(1),signaling.send(serde_json::json!({"version":1,"preparation_error":reason}))).await;

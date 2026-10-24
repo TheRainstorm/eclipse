@@ -4,7 +4,35 @@ use std::{cell::RefCell, io, ptr};
 use windows_sys::Win32::{
     Foundation::HANDLE,
     System::{StationsAndDesktops::*, Threading::GetCurrentThreadId},
+    UI::HiDpi::{
+        SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT,
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    },
 };
+
+/// Scope physical pixel queries to this thread and restore its caller's DPI
+/// context on every exit path. The raw context also keeps this guard !Send.
+#[must_use]
+pub struct PhysicalCoordinates {
+    previous: DPI_AWARENESS_CONTEXT,
+}
+impl PhysicalCoordinates {
+    pub fn enter() -> io::Result<Self> {
+        let previous =
+            unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        if previous.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { previous })
+    }
+}
+impl Drop for PhysicalCoordinates {
+    fn drop(&mut self) {
+        unsafe {
+            SetThreadDpiAwarenessContext(self.previous);
+        }
+    }
+}
 
 struct Binding {
     original: HDESK,
@@ -116,6 +144,43 @@ pub fn access_error(error: &io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn physical_coordinates_restore_the_callers_context_after_nested_and_failed_queries() {
+        use windows_sys::Win32::UI::HiDpi::{
+            AreDpiAwarenessContextsEqual, GetThreadDpiAwarenessContext,
+            DPI_AWARENESS_CONTEXT_UNAWARE,
+        };
+        std::thread::spawn(|| unsafe {
+            let original = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE);
+            assert!(!original.is_null());
+            let result = (|| -> io::Result<()> {
+                let _outer = PhysicalCoordinates::enter()?;
+                {
+                    let _inner = PhysicalCoordinates::enter()?;
+                }
+                assert_ne!(
+                    AreDpiAwarenessContextsEqual(
+                        GetThreadDpiAwarenessContext(),
+                        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+                    ),
+                    0
+                );
+                Err(io::Error::other("owned query failure"))
+            })();
+            assert!(result.is_err());
+            assert_ne!(
+                AreDpiAwarenessContextsEqual(
+                    GetThreadDpiAwarenessContext(),
+                    DPI_AWARENESS_CONTEXT_UNAWARE
+                ),
+                0
+            );
+            SetThreadDpiAwarenessContext(original);
+        })
+        .join()
+        .unwrap();
+    }
 
     #[test]
     #[ignore = "requires an accessible interactive input desktop; never switches the visible desktop"]

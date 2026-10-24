@@ -42,6 +42,10 @@ struct Output {
     rotation: Rotation,
 }
 fn outputs() -> Result<Vec<Output>, CaptureError> {
+    // DXGI caches DPI-virtualized coordinates when its factory is created.
+    // Establish physical pixels before CreateDXGIFactory1, not just GetDesc,
+    // so a service's first negotiation matches duplication textures and input.
+    let _coordinates = uu_input::windows_desktop::PhysicalCoordinates::enter().map_err(backend)?;
     let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1().map_err(backend)? };
     let mut list = Vec::new();
     for index in 0..128 {
@@ -290,7 +294,7 @@ impl DxgiCapture {
         }
         if self.gpu && self.rotation == Rotation::None {
             if (desc.Width, desc.Height) != (self.source.width, self.source.height) {
-                return Err(backend("desktop layout changed; reopen capture"));
+                return Err(backend(format!("desktop layout changed: expected {}x{}, acquired {}x{}; reopen capture",self.source.width,self.source.height,desc.Width,desc.Height)));
             }
             if self.capture_pool.is_none() {
                 let device = uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).map_err(backend)?;
@@ -365,7 +369,7 @@ impl DxgiCapture {
             self.rotation,
         )?;
         if width != self.source.width as usize || height != self.source.height as usize {
-            return Err(backend("desktop layout changed; reopen capture"));
+            return Err(backend(format!("desktop layout changed: expected {}x{}, acquired {}x{}; reopen capture",self.source.width,self.source.height,width,height)));
         }
         Ok(Some(RawFrame {
             width: width as u32,
@@ -440,5 +444,26 @@ impl Drop for MappedSurface {
         unsafe {
             self.context.Unmap(&self.surface, 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an interactive output; checks duplication geometry without acquiring desktop pixels"]
+    fn capture_inventory_and_duplication_use_same_physical_geometry() {
+        std::thread::spawn(|| {
+            let capture=DxgiCapture::open(&CaptureSource::Primary).unwrap();
+            let duplication=capture.duplication.as_ref().expect("active duplication is required");
+            let desc=unsafe {duplication.GetDesc()};
+            let (width,height)=match capture.rotation {
+                Rotation::Clockwise90|Rotation::Clockwise270=>(desc.ModeDesc.Height,desc.ModeDesc.Width),
+                _=>(desc.ModeDesc.Width,desc.ModeDesc.Height),
+            };
+            println!("capture={}x{} duplication={}x{}",capture.source.width,capture.source.height,width,height);
+            assert_eq!((capture.source.width,capture.source.height),(width,height));
+        }).join().unwrap();
     }
 }
