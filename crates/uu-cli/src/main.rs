@@ -157,7 +157,11 @@ enum Command {
     /// Allow this machine to be controlled.
     Host,
     /// List native capture monitors without reading desktop pixels.
-    NativeSources,
+    NativeSources {
+        /// Machine-readable physical output and color inventory (no desktop pixels).
+        #[arg(long)]
+        json: bool,
+    },
     /// Native LAN host; desktop input requires an explicit --allow-input.
     NativeHost {
         #[command(flatten)]
@@ -342,7 +346,7 @@ async fn main() -> Result<()> {
         Command::Internet{command}=>internet_cli::run(command,config).await,
         Command::Lan {command} => lan_cli::run(command,config.at("native-lan")).await,
         Command::Probe { h264, frame } => probe(&config, h264.as_deref(), frame.as_deref()),
-        Command::NativeSources => native_cli::sources(),
+        Command::NativeSources {json} => native_cli::sources(json),
         Command::NativeHost { video,bind, invitation_file, monitor, all_monitors, synthetic, synthetic_width, synthetic_height, allow_input, audio, synthetic_audio, fps, bitrate_kbps, encoder, pairing_seconds, max_seconds, client_quality } => {
             let source=if all_monitors {uu_capture::CaptureSource::Desktop{initial_monitor:None}}else if synthetic {uu_capture::CaptureSource::Synthetic{width:synthetic_width,height:synthetic_height,fps}}else if let Some(name)=monitor {uu_capture::CaptureSource::Monitor(name)}else{uu_capture::CaptureSource::Primary};
             let (codec,rate_control)=video.policy(bitrate_kbps)?;

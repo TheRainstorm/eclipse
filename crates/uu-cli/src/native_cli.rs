@@ -192,7 +192,15 @@ fn snapshot(stats: &MediaStats, elapsed: Duration) -> serde_json::Value {
     value
 }
 
-pub fn sources() -> Result<()> {
+pub fn sources(json: bool) -> Result<()> {
+    if json {
+        #[cfg(windows)]
+        let monitors = uu_capture::windows::diagnostic_monitors()?;
+        #[cfg(not(windows))]
+        let monitors = uu_core::native::monitors()?.into_iter().map(|m|serde_json::json!({"name":m.name,"physical_bounds":[m.x,m.y,m.width as i32,m.height as i32],"primary":m.primary})).collect::<Vec<_>>();
+        println!("{}",serde_json::json!({"version":1,"coordinate_units":"physical_pixels","monitors":monitors}));
+        return Ok(());
+    }
     for source in uu_core::native::monitors()? {
         println!(
             "{} {}x{} origin=({},{}) primary={}",

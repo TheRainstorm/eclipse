@@ -118,6 +118,43 @@ pub fn monitors() -> Result<Vec<Monitor>, CaptureError> {
         .map_err(|_| backend("显示器枚举工作线程异常"))?
 }
 
+/// Read-only diagnostics from the authorized desktop, with explicit units.
+#[derive(serde::Serialize)]
+pub struct MonitorDiagnostic {
+    pub name: String,
+    /// X, Y, width, height in physical desktop pixels.
+    pub physical_bounds: [i32;4],
+    pub primary: bool,
+    pub adapter: String,
+    pub adapter_vendor: u32,
+    pub refresh_hz: Option<u32>,
+    pub color_space: Option<i32>,
+    pub bits_per_color: Option<u32>,
+    pub hdr_enabled: Option<bool>,
+}
+pub fn diagnostic_monitors() -> Result<Vec<MonitorDiagnostic>,CaptureError> {
+    std::thread::spawn(|| {
+        use windows::Win32::Graphics::Gdi::{EnumDisplaySettingsW,DEVMODEW,ENUM_CURRENT_SETTINGS};
+        uu_input::windows_desktop::sync_input_desktop().map_err(backend)?;
+        let _coordinates=uu_input::windows_desktop::PhysicalCoordinates::enter().map_err(backend)?;
+        outputs()?.into_iter().map(|output| {
+            let adapter=unsafe{output.adapter.GetDesc1()}.map_err(backend)?;
+            let advanced=output.output.cast::<IDXGIOutput6>().ok().and_then(|o|unsafe{o.GetDesc1().ok()});
+            let mut mode=DEVMODEW::default();mode.dmSize=std::mem::size_of::<DEVMODEW>() as u16;
+            let name:Vec<u16>=output.monitor.name.encode_utf16().chain(Some(0)).collect();
+            let current=unsafe{EnumDisplaySettingsW(windows::core::PCWSTR(name.as_ptr()),ENUM_CURRENT_SETTINGS,&mut mode)}.as_bool();
+            let end=adapter.Description.iter().position(|v|*v==0).unwrap_or(adapter.Description.len());
+            Ok(MonitorDiagnostic {
+                name:output.monitor.name,physical_bounds:[output.monitor.x,output.monitor.y,output.monitor.width as i32,output.monitor.height as i32],
+                primary:output.monitor.primary,adapter:String::from_utf16_lossy(&adapter.Description[..end]),adapter_vendor:adapter.VendorId,
+                refresh_hz:current.then_some(mode.dmDisplayFrequency).filter(|hz|*hz>1),
+                color_space:advanced.as_ref().map(|a|a.ColorSpace.0),bits_per_color:advanced.as_ref().map(|a|a.BitsPerColor),
+                hdr_enabled:advanced.map(|a|a.ColorSpace==DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020),
+            })
+        }).collect()
+    }).join().map_err(|_|backend("显示诊断工作线程异常"))?
+}
+
 pub struct DxgiCapture {
     source: Monitor,
     rotation: Rotation,
