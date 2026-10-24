@@ -60,6 +60,7 @@ mod wallpapers;
 mod background;
 mod device_preview;
 mod device_library;
+mod device_presence;
 use login::LoginEvent;
 
 #[derive(Clone, Debug, Deserialize)]

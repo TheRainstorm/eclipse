@@ -29,6 +29,7 @@ use tokio_tungstenite::{
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Request {
+    Probe { version: u32, devices: Vec<String> },
     Host { version: u32, device: String },
     Join { version: u32, device: String },
     Signal { session: String, body: Value },
@@ -37,6 +38,7 @@ pub(crate) enum Request {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Event {
+    Presence { online: Vec<String> },
     Ready,
     Connected { session: String, stun: Vec<String> },
     Signal { session: String, body: Value },
@@ -83,6 +85,12 @@ enum Membership {
     },
 }
 impl State {
+    fn presence(&self, version:u32,devices:&[String])->Result<Vec<String>> {
+        ensure!(version==1 && !devices.is_empty() && devices.len()<=128,"invalid_probe");
+        for device in devices {validate_identity(1,device,1)?;}
+        let rooms=self.rooms.lock().unwrap();
+        Ok(devices.iter().filter(|id|rooms.hosts.get(*id).is_some_and(|host|!host.tx.is_closed())).cloned().collect())
+    }
     fn register(&self, request: Request, tx: Sender) -> Result<Membership> {
         let mut rooms = self.rooms.lock().unwrap();
         match request {
@@ -308,6 +316,14 @@ async fn handle<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         .context("closed before registration")??;
     let request = serde_json::from_str::<Request>(first.to_text()?)
         .map_err(|_| anyhow::anyhow!("invalid registration"))?;
+    // Authenticated metadata only: a probe never joins a room, consumes a host
+    // session or wakes its desktop/capture/pairing paths.
+    if let Request::Probe{version,devices}=&request {
+        let online=state.presence(*version,devices)?;
+        ws.send(Message::Text(serde_json::to_string(&Event::Presence{online})?.into())).await?;
+        let _=ws.close(None).await;
+        return Ok(());
+    }
     let (tx, mut rx) = mpsc::channel(16);
     let member = match state.register(request, tx) {
         Ok(member) => member,

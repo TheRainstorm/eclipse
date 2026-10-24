@@ -617,9 +617,12 @@ mod tests {
         })
         .await
         .unwrap();
+        assert_eq!(self_hosted::presence(&config,&["generated".into(),"absent".into()]).await.unwrap(),vec!["generated"]);
         let viewer = self_hosted::join(&config, "generated").await.unwrap();
         let host = online.accept().await.unwrap();
         assert_eq!(viewer.session, host.session);
+        // A busy legacy host remains online and receives no extra connection.
+        assert_eq!(self_hosted::presence(&config,&["generated".into()]).await.unwrap(),vec!["generated"]);
         let (viewer, ice) = Authenticated::new(viewer, AccessKey([9; 32]), Role::Viewer);
         let (host, _) = Authenticated::new(host, AccessKey([9; 32]), Role::Host);
         generated_session(viewer, host, ice).await;

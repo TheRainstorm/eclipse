@@ -99,6 +99,22 @@ async fn receive(socket: &mut Socket) -> Result<Event> {
 pub struct Host {
     socket: Option<Socket>,
 }
+/// Read presence using the service credential, without creating a viewer or
+/// asking the host to start a media/authentication session. Old servers fail
+/// this request; callers must display unknown rather than offline in that case.
+pub async fn presence(config:&Config,devices:&[String])->Result<Vec<String>> {
+    ensure!(!devices.is_empty() && devices.len()<=128,"invalid presence query");
+    let mut socket=open(config,Request::Probe{version:1,devices:devices.to_vec()}).await?;
+    let result=match receive(&mut socket).await? {
+        Event::Presence{online}=>{
+            ensure!(online.len()<=devices.len() && online.iter().all(|id|devices.contains(id)),"invalid presence response");
+            Ok(online)
+        },
+        _=>bail!("连接服务尚不支持在线状态查询"),
+    };
+    let _=socket.close(None).await;
+    result
+}
 impl Host {
     pub async fn online(config: &Config, device: &str) -> Result<Self> {
         let mut socket = open(

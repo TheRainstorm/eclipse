@@ -141,6 +141,7 @@ pub(super) struct Workspace {
     autostart_checked: bool,
     previews:std::collections::HashMap<String,PreviewSlot>,
     preview_jobs:Vec<PreviewJob>,
+    presence:super::device_presence::Monitor,
 }
 
 #[cfg(test)]
@@ -753,7 +754,7 @@ impl Workspace {
             pairing_visible: false,
             pairing_settings:Default::default(),
             autostart_checked: false,
-            previews:Default::default(),preview_jobs:Vec::new(),
+            previews:Default::default(),preview_jobs:Vec::new(),presence:Default::default(),
         }
     }
     pub fn poll(&mut self, ctx: &egui::Context, window: isize) {
@@ -1056,14 +1057,23 @@ impl Workspace {
             response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),format!("连接 {}",profile.name)));
             if response.hovered()||response.has_focus(){ui.painter().rect_filled(rect.expand(7.),10.,egui::Color32::from_rgba_unmultiplied(80,140,220,55));}
             let picture=egui::Rect::from_min_size(rect.min,egui::vec2(width,width*9./16.));
-            self.paint_device_picture(ui.painter(),picture,profile);
-            let color=if self.dark_background {egui::Color32::WHITE}else{theme::INK};
+            let status=self.presence.status(&profile.id);
+            let offline=status==super::device_presence::Status::Offline;
+            let mut painter=ui.painter().clone();
+            if offline{ui.painter().rect_filled(picture,8.,egui::Color32::from_gray(50));painter.multiply_opacity(0.35);}
+            self.paint_device_picture(&painter,picture,profile);
+            let color=if offline{egui::Color32::GRAY}else if self.dark_background {egui::Color32::WHITE}else{theme::INK};
             let text=ui.painter().layout(profile.name.clone(),egui::FontId::proportional(17.),color,width);
             let pos=egui::pos2(rect.center().x-text.size().x/2.,picture.bottom()+12.);
             ui.painter().with_clip_rect(egui::Rect::from_min_max(egui::pos2(rect.left(),picture.bottom()+8.),rect.max)).galley(pos,text,color);
+            let status_color=match status{super::device_presence::Status::Online=>egui::Color32::from_rgb(58,190,110),super::device_presence::Status::Offline=>egui::Color32::GRAY,_=>egui::Color32::from_rgb(170,170,170)};
+            let badge=egui::Rect::from_min_size(picture.left_top()+egui::vec2(8.,8.),egui::vec2(68.,23.));
+            ui.painter().rect_filled(badge,5.,egui::Color32::from_black_alpha(180));
+            ui.painter().text(badge.center(),egui::Align2::CENTER_CENTER,status.label(),egui::FontId::proportional(13.),status_color);
             if response.clicked(){actions.push(Action::Open(profile.id.clone()));}
             response.context_menu(|ui| {
                 ui.set_min_width(170.);
+                if ui.button("刷新在线状态").clicked(){self.presence.refresh();ui.close_menu();}
                 if ui.button("详情").clicked(){self.route.device=DeviceView::Details(profile.id.clone());ui.close_menu();}
                 ui.menu_button("连接方式",|ui| {
                     for route in &profile.routes {
@@ -2385,6 +2395,7 @@ impl super::App {
             return;
         }
         self.workspace.poll(ctx, self.platform.window_id());
+        self.workspace.presence.poll(ctx,self.config.as_ref(),&self.workspace.book,self.account_token.as_deref());
         if self.logged_in {
             if let Some(id) = self.workspace.resume_connect.take() {
                 self.open_device_profile(&id);
