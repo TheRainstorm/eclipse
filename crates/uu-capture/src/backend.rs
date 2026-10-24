@@ -42,6 +42,8 @@ pub enum CaptureError {
 /// into the encoder; `RawFrame::gpu` distinguishes a CPU buffer from a GPU
 /// handle that still needs a copy/download step.
 pub trait Capture: Send {
+    /// Last returned source image; unsupported metadata is unknown, never inferred from PTS.
+    fn frame_info(&self) -> Option<crate::frame_info::FrameInfo> { None }
     /// Actual HDR source metadata, never inferred from bit depth alone.
     fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{None}
     /// Hint capture pacing without replacing the authorized desktop session.

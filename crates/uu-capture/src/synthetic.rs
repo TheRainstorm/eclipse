@@ -19,6 +19,7 @@ pub struct SyntheticCapture {
     width: u32,
     height: u32,
     frame_index: u64,
+    source_frames: crate::frame_info::SourceFrames,
     started: Instant,
     pace_started:Instant,
     pace_index:u64,
@@ -34,6 +35,7 @@ impl SyntheticCapture {
             width,
             height,
             frame_index: 0,
+            source_frames: Default::default(),
             started: Instant::now(),
             pace_started:Instant::now(),pace_index:0,
             fps: fps.max(1),
@@ -94,6 +96,7 @@ impl SyntheticCapture {
 }
 
 impl Capture for SyntheticCapture {
+    fn frame_info(&self)->Option<crate::frame_info::FrameInfo>{self.source_frames.snapshot(None)}
     fn set_frame_rate(&mut self,fps:u32)->Result<(),CaptureError> {
         if !(1..=240).contains(&fps){return Err(CaptureError::Backend("invalid generated capture rate".into()));}
         self.fps=fps;self.pace_started=Instant::now();self.pace_index=0;Ok(())
@@ -114,6 +117,7 @@ impl Capture for SyntheticCapture {
         let mut frame = self.pattern(self.frame_index);
         frame.pts=Timestamp(self.started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64);
         self.frame_index += 1;
+        self.source_frames.new_frame(None, 1);
         self.pace_index+=1;
         Ok(frame)
     }

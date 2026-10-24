@@ -9,11 +9,12 @@ description = "Screen capture backends (Windows: WGC/DXGI, Linux: PipeWire/X11)"
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde.workspace = true
 uu-media = { path = "../uu-media" }
 uu-input = { path = "../uu-input" }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D10", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D10", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_System_Performance"] }
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -22,7 +23,6 @@ ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 pipewire = "0.9"
 tokio.workspace = true
 futures-util = "0.3"
-serde.workspace = true
 libc = "0.2"
 memmap2 = "0.9"
 wayland-client = { version = "0.31", features = ["system"] }

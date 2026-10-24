@@ -15,6 +15,7 @@ pub fn bounded(inner:Box<dyn Capture>,bounds:Option<[u32;2]>)->Box<dyn Capture> 
 }
 struct Scaled {inner:Box<dyn Capture>,output:(u32,u32)}
 impl Capture for Scaled {
+    fn frame_info(&self)->Option<crate::frame_info::FrameInfo>{self.inner.frame_info()}
     fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{self.inner.hdr_metadata()}
     fn encoder_input_device(&self)->Option<uu_media::encoder::InputDevice>{self.inner.encoder_input_device()}
     fn set_frame_rate(&mut self,fps:u32)->Result<(),CaptureError>{self.inner.set_frame_rate(fps)}
@@ -89,5 +90,6 @@ mod tests {
         let inner=Box::new(crate::SyntheticCapture::new(640,360,60));
         let mut capture=bounded(inner,Some([320,180]));let frame=capture.next_frame().unwrap();
         assert_eq!((frame.width,frame.height,frame.stride),(320,180,320));assert!(frame.is_consistent());
+        let info=capture.frame_info().unwrap();assert_eq!(info.frame_id,1);assert!(!info.duplicate);
     }
 }

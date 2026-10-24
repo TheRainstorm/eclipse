@@ -8,6 +8,7 @@
 //!   headless self-loop so no display is required.
 
 pub mod backend;
+pub mod frame_info;
 mod pixels;
 pub mod scale;
 #[cfg(target_os = "linux")]

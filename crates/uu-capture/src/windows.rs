@@ -122,6 +122,10 @@ pub struct DxgiCapture {
     source: Monitor,
     rotation: Rotation,
     last: Option<RawFrame>,
+    source_frames: crate::frame_info::SourceFrames,
+    present_info: Option<crate::frame_info::SourceTime>,
+    accumulated_frames: u32,
+    qpc_frequency: u64,
     started: Instant,
     staging: Option<ID3D11Texture2D>,
     capture_pool: Option<uu_media::encoder::CapturePool>,
@@ -190,6 +194,10 @@ impl DxgiCapture {
             source: selected.monitor,
             rotation: selected.rotation,
             last: None,
+            source_frames: Default::default(),
+            present_info: None,
+            accumulated_frames: 0,
+            qpc_frequency: qpc_frequency(),
             started: Instant::now(),
             staging: None,
             capture_pool: None,
@@ -207,6 +215,7 @@ impl DxgiCapture {
         Timestamp(self.started.elapsed().as_micros().min(u64::MAX as u128) as u64)
     }
     fn invalidate(&mut self) {
+        if self.duplication.is_some() { self.source_frames.retire(); }
         self.last = None;
         self.staging = None;
         self.capture_pool = None;
@@ -291,6 +300,10 @@ impl DxgiCapture {
         if info.LastPresentTime == 0 && info.AccumulatedFrames == 0 {
             return Ok(None);
         }
+        self.present_info = u64::try_from(info.LastPresentTime).ok().filter(|ticks| *ticks > 0)
+            .filter(|_| self.qpc_frequency > 0)
+            .map(|qpc_ticks| crate::frame_info::SourceTime { qpc_ticks, frequency_hz: self.qpc_frequency });
+        self.accumulated_frames = info.AccumulatedFrames;
         let texture: ID3D11Texture2D = resource
             .ok_or_else(|| backend("frame resource unavailable"))?
             .cast()
@@ -404,6 +417,9 @@ impl DxgiCapture {
     }
 }
 impl Capture for DxgiCapture {
+    fn frame_info(&self)->Option<crate::frame_info::FrameInfo> {
+        self.source_frames.snapshot(qpc_now())
+    }
     fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{self.hdr}
     fn encoder_input_device(&self)->Option<uu_media::encoder::InputDevice> {
         uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).ok()
@@ -433,10 +449,12 @@ impl Capture for DxgiCapture {
         let deadline = Instant::now() + Duration::from_millis(250);
         loop {
             if let Some(frame) = self.acquire()? {
+                self.source_frames.new_frame(self.present_info, self.accumulated_frames);
                 self.last = Some(frame.clone());
                 return Ok(frame);
             }
             if let Some(last) = &self.last {
+                self.source_frames.repeated();
                 let mut frame = last.clone();
                 frame.pts = self.timestamp();
                 return Ok(frame);
@@ -446,6 +464,16 @@ impl Capture for DxgiCapture {
             }
         }
     }
+}
+fn qpc_now() -> Option<u64> {
+    let mut value = 0;
+    unsafe { windows::Win32::System::Performance::QueryPerformanceCounter(&mut value).ok()?; }
+    u64::try_from(value).ok()
+}
+fn qpc_frequency() -> u64 {
+    let mut value = 0;
+    unsafe { if windows::Win32::System::Performance::QueryPerformanceFrequency(&mut value).is_err() { return 0; } }
+    u64::try_from(value).unwrap_or(0)
 }
 struct FrameLease(IDXGIOutputDuplication);
 impl Drop for FrameLease {
