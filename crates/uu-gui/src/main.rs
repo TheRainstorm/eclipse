@@ -1670,22 +1670,6 @@ fn main() -> eframe::Result {
     }
     let vsync = std::env::var("UU_VSYNC").map(|v| v != "0").unwrap_or(preferences.vsync);
     let options = eframe::NativeOptions {
-        // Ordinary Windows UI uses the desktop's Direct3D presentation path.
-        // Some WGL drivers report successful draws/swaps while their window
-        // framebuffer remains empty, leaving a taskbar icon and no UI.
-        // Stream processes keep the renderer that imports decoder textures.
-        renderer: {
-            #[cfg(windows)]
-            { if stream_target.is_none() { eframe::Renderer::Wgpu } else { eframe::Renderer::Glow } }
-            #[cfg(not(windows))]
-            { eframe::Renderer::Glow }
-        },
-        #[cfg(windows)]
-        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-            supported_backends: wgpu::Backends::DX12,
-            present_mode: wgpu::PresentMode::AutoNoVsync,
-            ..Default::default()
-        },
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 760.0])
             .with_decorations(false)

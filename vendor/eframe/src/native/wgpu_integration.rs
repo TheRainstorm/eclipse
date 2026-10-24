@@ -196,7 +196,6 @@ impl<'app> WgpuWinitApp<'app> {
         );
 
         let window = Arc::new(window);
-        crate::viewport_window::register(&egui_ctx, ViewportId::ROOT, &window);
 
         {
             crate::profile_scope!("set_window");
@@ -857,7 +856,6 @@ impl Viewport {
                 windows_id.insert(window.id(), viewport_id);
 
                 let window = Arc::new(window);
-                crate::viewport_window::register(egui_ctx, viewport_id, &window);
 
                 if let Err(err) =
                     pollster::block_on(painter.set_window(viewport_id, Some(window.clone())))
