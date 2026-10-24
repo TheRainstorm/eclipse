@@ -50,7 +50,7 @@ def inside(args):
     try:
         config = runtime / 'sway.conf'
         config.write_text('output HEADLESS-1 mode 320x240 position 0 0 scale 1\n'
-                          'output HEADLESS-2 mode 1280x800 position 320 0 scale 2\n'
+                          f'output HEADLESS-2 mode 1280x800 position 320 0 scale 2 transform {args.output_transform}\n'
                           'for_window [app_id="uu-portal-generated"] fullscreen enable\n'
                           'xwayland disable\nseat seat0 fallback true\n')
         start('sway', ['sway', '--unsupported-gpu', '-c', str(config)])
@@ -74,7 +74,13 @@ def inside(args):
             'import sys,time,os,select,tty,json\nfrom pathlib import Path\n'
             'tty.setraw(0);os.write(1,b"\\x1b[?1003h\\x1b[?1006h");i=0\nwhile True:\n'
             ' if i==0 or not os.environ.get("ECLIPSE_STATIC_DESKTOP"):\n'
-            '  sys.stdout.write("\\x1b[48;5;"+str(24+i%2)+"m\\x1b[2J\\x1b[Hgenerated capture fixture");sys.stdout.flush()\n'
+            '  if os.environ.get("ECLIPSE_NATIVE_QUADRANTS"):\n'
+            '   size=os.get_terminal_size(0);sys.stdout.write("\\x1b[?7l")\n'
+            '   for row in range(size.lines):\n'
+            '    colors=("255;0;0","0;255;0") if row<size.lines//2 else ("0;0;255","255;255;255")\n'
+            '    sys.stdout.write(f"\\x1b[{row+1};1H\\x1b[48;2;{colors[0]}m"+" "*(size.columns//2)+f"\\x1b[48;2;{colors[1]}m"+" "*(size.columns-size.columns//2))\n'
+            '  else:sys.stdout.write("\\x1b[48;5;"+str(24+i%2)+"m\\x1b[2J\\x1b[Hgenerated capture fixture")\n'
+            '  sys.stdout.flush()\n'
             ' i+=1\n'
             ' if select.select([0],[],[],.1)[0]:\n'
             '  data=os.read(0,4096)\n'
@@ -129,13 +135,15 @@ def inside(args):
             wait(lambda: owns('org.freedesktop.impl.portal.desktop.wlr'))
             start('portal', [str(args.portal)])
             wait(lambda: owns('org.freedesktop.portal.Desktop'))
-        env.update(ECLIPSE_PORTAL_FIXTURE='1', ECLIPSE_STARTUP_EXPECTED_SIZE='1280x800',
+        expected_size='800x1280' if args.output_transform in ('90','270','flipped-90','flipped-270') else '1280x800'
+        env.update(ECLIPSE_PORTAL_FIXTURE='1', ECLIPSE_STARTUP_EXPECTED_SIZE=expected_size,
                    ECLIPSE_STARTUP_FRAMES=str(args.frames_per_session),
                    ECLIPSE_STARTUP_ROUNDS=str(args.sessions),
                    ECLIPSE_STARTUP_EXERCISE_QUALITY='1' if args.exercise_quality else '0',
                    ECLIPSE_STARTUP_EXERCISE_INPUT='1' if args.exercise_input else '0')
         if args.native_capture:
             env.update(ECLIPSE_STARTUP_MONITOR='HEADLESS-2',
+                       ECLIPSE_STARTUP_VERIFY_ORIENTATION='1',
                        ECLIPSE_STARTUP_EXERCISE_DISPLAYS='1' if args.exercise_displays else '0')
         probe = subprocess.Popen([str(args.probe)], env=env, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True)
@@ -261,6 +269,7 @@ def main():
     parser.add_argument('--native-capture',action='store_true',help='Exercise compositor capture with no portal or PipeWire process')
     parser.add_argument('--static-desktop',action='store_true',help='Do not animate the generated surface')
     parser.add_argument('--exercise-displays',action='store_true',help='Switch between actual owned outputs and back')
+    parser.add_argument('--output-transform',choices=('normal','90','180','270','flipped','flipped-90','flipped-180','flipped-270'),default='normal')
     parser.add_argument('--terminate-backend-after',type=float,default=0)
     parser.add_argument('--inside-owned-bus', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -295,6 +304,7 @@ def main():
             WLR_BACKENDS='headless', WLR_HEADLESS_OUTPUTS='2', WLR_RENDERER='pixman',
             WLR_LIBINPUT_NO_DEVICES='1', UU_OWNED_WAYLAND_TEST='1')
         if args.native_capture:
+            env['ECLIPSE_NATIVE_QUADRANTS']='1'
             if args.static_desktop:env['ECLIPSE_STATIC_DESKTOP']='1'
         else:
             env['UU_WAYLAND_CAPTURE']='portal'
@@ -302,6 +312,7 @@ def main():
             '--inside-owned-bus', '--probe', str(args.probe), '--output', str(args.output),
             '--portal', str(args.portal), '--backend', str(args.backend),
             '--frames-per-session', str(args.frames_per_session), '--sessions', str(args.sessions),
+            '--output-transform',args.output_transform,
             '--terminate-backend-after',str(args.terminate_backend_after)]
         if args.exercise_quality:
             command.append('--exercise-quality')

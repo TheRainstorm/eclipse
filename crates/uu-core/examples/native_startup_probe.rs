@@ -29,6 +29,7 @@ async fn main() -> Result<()> {
     let exercise_quality=std::env::var("ECLIPSE_STARTUP_EXERCISE_QUALITY").as_deref()==Ok("1");
     let exercise_input=std::env::var("ECLIPSE_STARTUP_EXERCISE_INPUT").as_deref()==Ok("1");
     let exercise_displays=std::env::var("ECLIPSE_STARTUP_EXERCISE_DISPLAYS").as_deref()==Ok("1");
+    let orientation=std::env::var("ECLIPSE_STARTUP_VERIFY_ORIENTATION").as_deref()==Ok("1");
     ensure!(!exercise_input||owned_compositor,"input requires the owned compositor");
     ensure!(!exercise_displays||owned_compositor,"display switching requires the owned compositor");
     let source=if let Ok(monitor)=std::env::var("ECLIPSE_STARTUP_MONITOR") {
@@ -105,13 +106,21 @@ async fn main() -> Result<()> {
             let mut count = 0;
             let mut requested=0;
             while count < target_frames || (exercise_quality && applied_quality.len()<2) {
-                while let Ok((_, width, height, _)) = images.try_recv() {
+                while let Ok((_, width, height, rgba)) = images.try_recv() {
                     ensure!(
                         (width, height) == expected,
                         "unexpected generated frame geometry"
                     );
                     first_frame_ms.get_or_insert_with(|| started.elapsed().as_millis());
                     count += 1;
+                    if orientation && count>=10 {
+                        for (x,y,wanted) in [(width/4,height/4,[255u8,0,0]),(width*3/4,height/4,[0,255,0]),
+                            (width/4,height*3/4,[0,0,255]),(width*3/4,height*3/4,[255,255,255])] {
+                            let index=((y as usize*width as usize)+x as usize)*4;
+                            let actual=&rgba[index..index+3];
+                            ensure!(actual.iter().zip(wanted).all(|(a,b)|a.abs_diff(b)<70),"captured output orientation/color mismatch: {actual:?} expected {wanted:?}");
+                        }
+                    }
                 }
                 if exercise_quality {
                     if let Some(applied)=stats.native_quality_applied.lock().unwrap().clone() {
@@ -165,7 +174,9 @@ async fn main() -> Result<()> {
                             tokio::time::sleep(Duration::from_millis(10)).await;
                         }
                     }).await.context("native display switch timed out")??;
-                    display_switches.push(serde_json::json!({"name":output.display_name,"width":output.width,"height":output.height,"generation":images.generation()}));
+                    let fps=stats.configured_fps.load(Ordering::Acquire);
+                    if exercise_quality {ensure!(fps==24,"display switching reset the live frame rate");}
+                    display_switches.push(serde_json::json!({"name":output.display_name,"width":output.width,"height":output.height,"fps":fps,"generation":images.generation()}));
                 }
             }
             Ok::<_, anyhow::Error>(count)

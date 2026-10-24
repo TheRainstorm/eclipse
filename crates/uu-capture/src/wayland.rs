@@ -37,6 +37,7 @@ struct Output {
     logical: Option<(i32, i32)>,
     scale: i32,
     rotated: bool,
+    transform: Option<wl_output::Transform>,
 }
 impl Output {
     fn size(&self) -> (u32, u32) {
@@ -172,6 +173,7 @@ impl Dispatch<wl_output::WlOutput, u32> for State {
                 ..
             } => {
                 o.position = (x, y);
+                o.transform = Some(t);
                 o.rotated = matches!(
                     t,
                     wl_output::Transform::_90
@@ -470,6 +472,7 @@ pub struct WaylandCapture {
     options: OpenOptions,
     output: wl_output::WlOutput,
     target: uu_input::wayland::OutputTarget,
+    transform: wl_output::Transform,
     buffer: Option<Buffer>,
     size: (u32, u32),
     started: Instant,
@@ -492,10 +495,11 @@ impl WaylandCapture {
             _ => None,
         }
         .ok_or_else(|| error("没有找到指定的活动显示器"))?;
-        let (output, target, global) = (
+        let (output, target, global, transform) = (
             selected.proxy.clone().unwrap(),
             selected.target(),
             selected.global,
+            selected.transform.unwrap_or(wl_output::Transform::Normal),
         );
         session.state.selected = Some(global);
         let mut this = Self {
@@ -503,6 +507,7 @@ impl WaylandCapture {
             options,
             output,
             target,
+            transform,
             buffer: None,
             size: (0, 0),
             started: Instant::now(),
@@ -560,16 +565,17 @@ impl WaylandCapture {
         if s.state.failed {
             return Err(CaptureError::Suspended("合成器暂时拒绝屏幕采集".into()));
         }
-        let pixels = unpack(
+        let (width, height, pixels) = unpack(
             &self.buffer.as_ref().unwrap().pixels,
             layout,
             s.state.inverted,
+            self.transform,
         )?;
         Ok(RawFrame {
-            width: layout.width,
-            height: layout.height,
+            width,
+            height,
             format: PixelFormat::Bgra8,
-            stride: layout.width * 4,
+            stride: width * 4,
             data: pixels.into(),
             pts: Timestamp(self.started.elapsed().as_micros().min(u64::MAX as u128) as u64),
             gpu: false,
@@ -578,7 +584,12 @@ impl WaylandCapture {
         })
     }
 }
-fn unpack(bytes: &[u8], layout: Layout, inverted: bool) -> Result<Vec<u8>, CaptureError> {
+fn unpack(
+    bytes: &[u8],
+    layout: Layout,
+    inverted: bool,
+    transform: wl_output::Transform,
+) -> Result<(u32, u32, Vec<u8>), CaptureError> {
     let length = layout.length()?;
     if bytes.len() < length {
         return Err(error("屏幕缓冲区不完整"));
@@ -589,6 +600,53 @@ fn unpack(bytes: &[u8], layout: Layout, inverted: bool) -> Result<Vec<u8>, Captu
         layout.format,
         wl_shm::Format::Abgr8888 | wl_shm::Format::Xbgr8888
     );
+    use wl_output::Transform as T;
+    let rotation = match transform {
+        T::_90 | T::Flipped90 => 1,
+        T::_180 | T::Flipped180 => 2,
+        T::_270 | T::Flipped270 => 3,
+        _ => 0,
+    };
+    let flipped = matches!(
+        transform,
+        T::Flipped | T::Flipped90 | T::Flipped180 | T::Flipped270
+    );
+    let (width, height) = if rotation % 2 == 1 {
+        (layout.height, layout.width)
+    } else {
+        (layout.width, layout.height)
+    };
+    if transform != T::Normal {
+        for y in 0..layout.height as usize {
+            let source_y = if inverted {
+                layout.height as usize - 1 - y
+            } else {
+                y
+            };
+            for x in 0..layout.width as usize {
+                let (mut dx, dy) = match rotation {
+                    1 => (layout.height as usize - 1 - y, x),
+                    2 => (
+                        layout.width as usize - 1 - x,
+                        layout.height as usize - 1 - y,
+                    ),
+                    3 => (y, layout.width as usize - 1 - x),
+                    _ => (x, y),
+                };
+                if flipped {
+                    dx = width as usize - 1 - dx;
+                }
+                let input = source_y * layout.stride as usize + x * 4;
+                let output = (dy * width as usize + dx) * 4;
+                pixels[output..output + 4].copy_from_slice(&bytes[input..input + 4]);
+                if rgba {
+                    pixels.swap(output, output + 2);
+                }
+                pixels[output + 3] = 255;
+            }
+        }
+        return Ok((width, height, pixels));
+    }
     for (y, dst) in pixels.chunks_exact_mut(row).enumerate() {
         let source = if inverted {
             layout.height as usize - 1 - y
@@ -603,7 +661,7 @@ fn unpack(bytes: &[u8], layout: Layout, inverted: bool) -> Result<Vec<u8>, Captu
             p[3] = 255;
         }
     }
-    Ok(pixels)
+    Ok((width, height, pixels))
 }
 impl Capture for WaylandCapture {
     fn resolution(&self) -> (u32, u32) {
@@ -662,8 +720,13 @@ mod tests {
                     p.swap(0, 2);
                 }
             }
-            assert_eq!(unpack(&bytes, layout, true).unwrap(), expected);
-            assert!(unpack(&bytes[..15], layout, false).is_err());
+            assert_eq!(
+                unpack(&bytes, layout, true, wl_output::Transform::Normal)
+                    .unwrap()
+                    .2,
+                expected
+            );
+            assert!(unpack(&bytes[..15], layout, false, wl_output::Transform::Normal).is_err());
         }
     }
 }
