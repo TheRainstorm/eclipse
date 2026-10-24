@@ -89,13 +89,9 @@ impl Default for Sharing {
 impl Sharing {
     pub fn native(&self) -> SharingConfig {
         SharingConfig {encoder_tuning:self.encoder_tuning,session:None,video_policy:Some(crate::native_quality::Policy{codecs:self.allowed_codecs.clone(),preferred_codec:self.codec}),codec:self.codec.unwrap_or_default(),rate_control:match self.rate_control {RateMode::Cbr=>uu_media::encoder::RateControl::Cbr,RateMode::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:36_000}},
-            source: if self.monitor == crate::native_displays::ALL_MONITORS {
-                native::CaptureSource::Desktop
-            } else if self.monitor.is_empty() {
-                native::CaptureSource::Primary
-            } else {
-                native::CaptureSource::Monitor(self.monitor.clone())
-            },
+            source: native::CaptureSource::Desktop {initial_monitor:
+                (!self.monitor.is_empty() && self.monitor != crate::native_displays::ALL_MONITORS)
+                    .then(||self.monitor.clone())},
             fps: 60,
             bitrate_kbps: 18_000,
             encoder: self.encoding.native(),

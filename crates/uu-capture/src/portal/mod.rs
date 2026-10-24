@@ -258,7 +258,7 @@ pub struct PortalCapture {
 }
 impl PortalCapture {
     pub fn open(source: &CaptureSource, options: OpenOptions) -> Result<Self, CaptureError> {
-        if !matches!(source, CaptureSource::Primary | CaptureSource::Desktop) {
+        if !matches!(source, CaptureSource::Primary | CaptureSource::Desktop { .. }) {
             return Err(error("Wayland 请通过系统屏幕选择器选择共享屏幕"));
         }
         let frames = Arc::new(FrameSlot::default());

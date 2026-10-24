@@ -1,5 +1,5 @@
 //! wlroots input for a compositor-authorized monitor capture. The caller must
-//! already hold both capture consent and a native control grant. This backend
+//! already hold compositor capture access and a native control grant. This backend
 //! never chooses an arbitrary output or opens a kernel input device.
 use crate::{HeldInput, InputError, InputEvent, InputInjector, MouseButton};
 use std::{

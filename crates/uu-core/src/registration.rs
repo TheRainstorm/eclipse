@@ -109,11 +109,9 @@ fn platform_info() -> ComputerInfo {
         devices.sort();
         info.mac=devices.iter().map(|p|read(p.join("address"))).find(|mac|!mac.is_empty() && mac!="00:00:00:00:00:00").unwrap_or_default();
     }
-    if !uu_capture::uses_desktop_portal() {
-        if let Ok(monitors)=uu_capture::x11::monitors(None) {
-            if let Some(m)=monitors.iter().find(|m|m.primary).or_else(||monitors.first()) {
-                info.screen=format!("{}x{}",m.width,m.height);
-            }
+    if let Ok(monitors)=crate::native::monitors() {
+        if let Some(m)=monitors.iter().find(|m|m.primary).or_else(||monitors.first()) {
+            info.screen=format!("{}x{}",m.width,m.height);
         }
     }
     info

@@ -30,6 +30,12 @@ pub(crate) struct Host {
     switching: AtomicBool,
 }
 impl Host {
+    pub fn for_source(source: &CaptureSource) -> Option<std::sync::Arc<Self>> {
+        let CaptureSource::Desktop { initial_monitor } = source else { return None; };
+        let host=Self::default();
+        host.state.lock().unwrap().selected=initial_monitor.clone();
+        Some(std::sync::Arc::new(host))
+    }
     pub fn prepare(&self) -> anyhow::Result<CaptureSource> {
         self.switching.store(false, Ordering::Release);
         if crate::native::uses_desktop_portal() {

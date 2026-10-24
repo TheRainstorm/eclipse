@@ -127,7 +127,7 @@ jobs:
       - name: Install Linux development libraries
         if: matrix.platform == 'linux-x86_64'
         run: |
-          sudo apt-get install --no-install-recommends -y libasound2-dev libpulse-dev pulseaudio pulseaudio-utils libva-dev libgbm-dev libdrm-dev libclang-dev libxkbcommon-dev libxkbcommon-x11-dev libpipewire-0.3-dev pipewire pipewire-bin libpipewire-0.3-modules python3-dbus python3-gi sway grim xvfb libegl1 libgl1-mesa-dri
+          sudo apt-get install --no-install-recommends -y libasound2-dev libpulse-dev pulseaudio pulseaudio-utils libva-dev libgbm-dev libdrm-dev libclang-dev libxkbcommon-dev libxkbcommon-x11-dev libpipewire-0.3-dev pipewire pipewire-bin libpipewire-0.3-modules python3-dbus python3-gi sway foot grim xvfb libegl1 libgl1-mesa-dri
       - name: Install Windows cross toolchain
         if: matrix.platform == 'windows-x64'
         run: |
@@ -238,6 +238,11 @@ jobs:
           python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe --cli target/release/uu --case stream-native
           cargo build --release -p uu-core --example native_display_probe --locked
           python3 tools/native/portal_smoke.py --probe target/release/examples/native_display_probe --case stream-displays
+      - name: Test native Wayland capture and default display switching without a portal
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          cargo build --release -p uu-core --example native_startup_probe --features vaapi --locked
+          python3 tools/native/wayland_portal_startup.py --probe target/release/examples/native_startup_probe --output artifacts/native-compositor --native-capture --static-desktop --exercise-input --exercise-quality --exercise-displays
       - name: Package Windows
         if: matrix.platform == 'windows-x64'
         run: |

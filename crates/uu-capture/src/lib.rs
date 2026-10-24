@@ -17,6 +17,8 @@ pub mod synthetic;
 pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod x11;
+#[cfg(target_os = "linux")]
+pub mod wayland;
 
 pub use backend::{available_backends, Capture, CaptureError, CaptureTarget, DesktopRect};
 pub use synthetic::SyntheticCapture;
@@ -39,6 +41,12 @@ impl Default for OpenOptions {
 }
 
 pub fn uses_desktop_portal() -> bool {
+    #[cfg(target_os = "linux")]
+    return uses_wayland() && !wayland::available();
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+pub fn uses_wayland() -> bool {
     cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
 }
 
@@ -52,7 +60,7 @@ pub enum CaptureSource {
     /// Let the backend pick the primary output.
     Primary,
     /// Explicit permission to select among desktop monitors during a session.
-    Desktop,
+    Desktop { initial_monitor: Option<String> },
     /// Deterministic test pattern (no display required).
     Synthetic { width: u32, height: u32, fps: u32 },
 }
@@ -73,6 +81,10 @@ pub fn open_with_options(
         #[cfg(target_os = "linux")]
         other if uses_desktop_portal() => {
             Ok(Box::new(portal::PortalCapture::open(other, options)?))
+        }
+        #[cfg(target_os = "linux")]
+        other if uses_wayland() => {
+            Ok(Box::new(wayland::WaylandCapture::open(other, options)?))
         }
         #[cfg(target_os = "linux")]
         other => Ok(Box::new(x11::X11Capture::open(None, other)?)),

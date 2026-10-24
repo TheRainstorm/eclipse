@@ -66,13 +66,14 @@ impl CaptureMonitor {
 
 /// Enumerate the current authorized desktop without reading its pixels.
 pub fn monitors() -> Result<Vec<CaptureMonitor>> {
-    // Wayland output selection and dimensions are only known after consent.
-    // Enumerating Xwayland would describe an unrelated desktop.
+    // Portal-only desktops expose a source after consent. Native Wayland
+    // compositors advertise their actual outputs; never enumerate Xwayland.
     if uses_desktop_portal() { return Ok(Vec::new()); }
     #[cfg(windows)]
     let sources = uu_capture::windows::monitors()?;
     #[cfg(target_os = "linux")]
-    let sources = uu_capture::x11::monitors(None)?;
+    let sources = if uu_capture::uses_wayland() {uu_capture::wayland::monitors()?}
+        else {uu_capture::x11::monitors(None)?};
     #[cfg(any(windows, target_os = "linux"))]
     return Ok(sources.into_iter().map(|m| CaptureMonitor {
         name: m.name, x: m.x, y: m.y, width: m.width, height: m.height, primary: m.primary,
@@ -220,7 +221,7 @@ impl SharingConfig {
         let peak=self.rate_control.peak(self.bitrate_kbps);
         ensure!(peak>=self.bitrate_kbps && peak<=2_000_000,"VBR 峰值超出编码接口范围");
         ensure!(self.encoder!=EncoderPreference::Software || (self.codec==VideoCodec::H264 && self.rate_control==uu_media::encoder::RateControl::Cbr),"所选编码格式或 VBR 需要硬件编码");
-        let monitor = matches!(self.source,CaptureSource::Primary|CaptureSource::Desktop|CaptureSource::Monitor(_));
+        let monitor = matches!(self.source,CaptureSource::Primary|CaptureSource::Desktop { .. }|CaptureSource::Monitor(_));
         ensure!(!self.allow_input || monitor, "desktop input requires an explicitly shared monitor");
         ensure!(self.audio != Some(AudioSource::System) || monitor, "system audio requires an explicitly shared monitor");
         Ok(())
@@ -237,7 +238,7 @@ pub(crate) async fn serve_direct_with_authority(signaling: &mut dyn SessionSigna
     config: SharingConfig, stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>, authority: Arc<crate::input_ownership::Authority>) -> Result<HostReport> {
     let _clipboard=ClipboardLifetime(config.clipboard.clone());
     config.validate()?;
-    let displays=matches!(config.source,CaptureSource::Desktop).then(||Arc::new(crate::native_displays::Host::default()));
+    let displays=crate::native_displays::Host::for_source(&config.source);
     let mut report=HostReport::default();
     let started=Instant::now();
     loop {
@@ -541,7 +542,7 @@ async fn host_session(
 ) -> Result<HostReport> {
     let local_ip = stream.get_ref().0.local_addr()?.ip();
     let peer_ip = stream.get_ref().0.peer_addr()?.ip();
-    let displays=matches!(config.source,CaptureSource::Desktop).then(||Arc::new(crate::native_displays::Host::default()));
+    let displays=crate::native_displays::Host::for_source(&config.source);
     let config:SharingConfig=config.into();
     let mut signaling = TlsSignaling { stream, peer: peer_ip };
     let mut report=HostReport::default();

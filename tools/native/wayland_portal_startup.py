@@ -73,65 +73,70 @@ def inside(args):
             sys.executable, '-u', '-c',
             'import sys,time,os,select,tty,json\nfrom pathlib import Path\n'
             'tty.setraw(0);os.write(1,b"\\x1b[?1003h\\x1b[?1006h");i=0\nwhile True:\n'
-            ' sys.stdout.write("\\x1b[48;5;"+str(24+i%2)+"m\\x1b[2J\\x1b[Hgenerated portal fixture")\n'
-            ' sys.stdout.flush();i+=1\n'
+            ' if i==0 or not os.environ.get("ECLIPSE_STATIC_DESKTOP"):\n'
+            '  sys.stdout.write("\\x1b[48;5;"+str(24+i%2)+"m\\x1b[2J\\x1b[Hgenerated capture fixture");sys.stdout.flush()\n'
+            ' i+=1\n'
             ' if select.select([0],[],[],.1)[0]:\n'
             '  data=os.read(0,4096)\n'
             '  with open(sys.argv[1],"ab") as output:output.write(data)\n'
             '  size=os.get_terminal_size(0);Path(sys.argv[1]+".json").write_text(json.dumps(dict(columns=size.columns,lines=size.lines)))\n',
             str(args.output/'generated-input.bin')])
-        (runtime / 'client.conf').write_text('''
-context.spa-libs = { support.* = support/libspa-support }
-context.modules = [
- { name = libpipewire-module-protocol-native }
- { name = libpipewire-module-client-node }
- { name = libpipewire-module-client-device }
- { name = libpipewire-module-adapter }
- { name = libpipewire-module-metadata }
-]
-''')
-        (runtime / 'pipewire.conf').write_text('''
-context.properties = { core.daemon = true core.name = pipewire-0 support.dbus = false }
-context.spa-libs = { support.* = support/libspa-support }
-context.modules = [
- { name = libpipewire-module-protocol-native }
- { name = libpipewire-module-metadata }
- { name = libpipewire-module-spa-node-factory }
- { name = libpipewire-module-client-node }
- { name = libpipewire-module-link-factory }
- { name = libpipewire-module-access args = { access.force = unrestricted } }
-]
-context.objects = [
- { factory = spa-node-factory args = { factory.name = support.node.driver node.name = Dummy-Driver node.group = pipewire.dummy priority.driver = 20000 } }
-]
-''')
-        env['PIPEWIRE_CONFIG_DIR'] = str(runtime)
-        start('pipewire', ['pipewire', '-c', str(runtime / 'pipewire.conf')])
-        wait(lambda: (runtime / 'pipewire-0').exists())
-        backend_config = Path(env['XDG_CONFIG_HOME']) / 'xdg-desktop-portal-wlr'
-        backend_config.mkdir(parents=True)
-        (backend_config / 'config').write_text('[screencast]\noutput_name=HEADLESS-2\n'
-            'chooser_type=none\nmax_fps=60\nforce_mod_linear=true\n')
-        portal_config = Path(env['XDG_CONFIG_HOME']) / 'xdg-desktop-portal'
-        portal_config.mkdir()
-        (portal_config / 'portals.conf').write_text('[preferred]\ndefault=wlr\n'
-            'org.freedesktop.impl.portal.ScreenCast=wlr\n'
-            'org.freedesktop.impl.portal.Screenshot=wlr\n')
-        # This updates only our private D-Bus activation environment. Backends
-        # activated by the portal must see the same owned compositor/daemon.
-        subprocess.run(['dbus-update-activation-environment', 'WAYLAND_DISPLAY',
-            'XDG_CURRENT_DESKTOP', 'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME',
-            'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'PIPEWIRE_CONFIG_DIR'],
-            env=env, capture_output=True, check=True, timeout=3)
-        wlr = start('wlr', [str(args.backend), '--loglevel=DEBUG'])
-        wait(lambda: owns('org.freedesktop.impl.portal.desktop.wlr'))
-        start('portal', [str(args.portal)])
-        wait(lambda: owns('org.freedesktop.portal.Desktop'))
+        if not args.native_capture:
+            (runtime / 'client.conf').write_text('''
+    context.spa-libs = { support.* = support/libspa-support }
+    context.modules = [
+     { name = libpipewire-module-protocol-native }
+     { name = libpipewire-module-client-node }
+     { name = libpipewire-module-client-device }
+     { name = libpipewire-module-adapter }
+     { name = libpipewire-module-metadata }
+    ]
+    ''')
+            (runtime / 'pipewire.conf').write_text('''
+    context.properties = { core.daemon = true core.name = pipewire-0 support.dbus = false }
+    context.spa-libs = { support.* = support/libspa-support }
+    context.modules = [
+     { name = libpipewire-module-protocol-native }
+     { name = libpipewire-module-metadata }
+     { name = libpipewire-module-spa-node-factory }
+     { name = libpipewire-module-client-node }
+     { name = libpipewire-module-link-factory }
+     { name = libpipewire-module-access args = { access.force = unrestricted } }
+    ]
+    context.objects = [
+     { factory = spa-node-factory args = { factory.name = support.node.driver node.name = Dummy-Driver node.group = pipewire.dummy priority.driver = 20000 } }
+    ]
+    ''')
+            env['PIPEWIRE_CONFIG_DIR'] = str(runtime)
+            start('pipewire', ['pipewire', '-c', str(runtime / 'pipewire.conf')])
+            wait(lambda: (runtime / 'pipewire-0').exists())
+            backend_config = Path(env['XDG_CONFIG_HOME']) / 'xdg-desktop-portal-wlr'
+            backend_config.mkdir(parents=True)
+            (backend_config / 'config').write_text('[screencast]\noutput_name=HEADLESS-2\n'
+                'chooser_type=none\nmax_fps=60\nforce_mod_linear=true\n')
+            portal_config = Path(env['XDG_CONFIG_HOME']) / 'xdg-desktop-portal'
+            portal_config.mkdir()
+            (portal_config / 'portals.conf').write_text('[preferred]\ndefault=wlr\n'
+                'org.freedesktop.impl.portal.ScreenCast=wlr\n'
+                'org.freedesktop.impl.portal.Screenshot=wlr\n')
+            # This updates only our private D-Bus activation environment. Backends
+            # activated by the portal must see the same owned compositor/daemon.
+            subprocess.run(['dbus-update-activation-environment', 'WAYLAND_DISPLAY',
+                'XDG_CURRENT_DESKTOP', 'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME',
+                'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'PIPEWIRE_CONFIG_DIR'],
+                env=env, capture_output=True, check=True, timeout=3)
+            wlr = start('wlr', [str(args.backend), '--loglevel=DEBUG'])
+            wait(lambda: owns('org.freedesktop.impl.portal.desktop.wlr'))
+            start('portal', [str(args.portal)])
+            wait(lambda: owns('org.freedesktop.portal.Desktop'))
         env.update(ECLIPSE_PORTAL_FIXTURE='1', ECLIPSE_STARTUP_EXPECTED_SIZE='1280x800',
                    ECLIPSE_STARTUP_FRAMES=str(args.frames_per_session),
                    ECLIPSE_STARTUP_ROUNDS=str(args.sessions),
                    ECLIPSE_STARTUP_EXERCISE_QUALITY='1' if args.exercise_quality else '0',
                    ECLIPSE_STARTUP_EXERCISE_INPUT='1' if args.exercise_input else '0')
+        if args.native_capture:
+            env.update(ECLIPSE_STARTUP_MONITOR='HEADLESS-2',
+                       ECLIPSE_STARTUP_EXERCISE_DISPLAYS='1' if args.exercise_displays else '0')
         probe = subprocess.Popen([str(args.probe)], env=env, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True)
         processes.append(probe)
@@ -139,16 +144,23 @@ context.objects = [
         deadline = time.monotonic() + args.frames_per_session*args.sessions/24 + 85
         links = 0
         graphs = set()
-        source_started = terminated_at = None
+        source_started = time.monotonic() if args.native_capture else None
+        terminated_at = None
         while probe.poll() is None:
             if time.monotonic() > deadline:
                 raise TimeoutError('Real owned portal stream timed out')
             if (args.terminate_backend_after and source_started and terminated_at is None
                     and time.monotonic()>=source_started+args.terminate_backend_after):
-                wlr.terminate()
+                if args.native_capture:
+                    subprocess.run(['swaymsg','output','HEADLESS-2','disable'],env=env,check=True,capture_output=True,timeout=2)
+                else:
+                    wlr.terminate()
                 terminated_at=time.monotonic()
             if terminated_at and time.monotonic()-terminated_at>8:
                 raise TimeoutError('Owned backend loss left the viewer running on cached frames')
+            if args.native_capture:
+                time.sleep(.04)
+                continue
             # This private PipeWire intentionally has no session manager or
             # hardware discovery. Link only its finite, owned video ports.
             outputs = subprocess.run(['pw-link', '-o'], env=env, capture_output=True,
@@ -191,9 +203,16 @@ context.objects = [
         reports = [json.loads(line) for line in stdout.splitlines() if line.startswith('{')]
         assert len(reports) == args.sessions and all(
             r['ok'] and r['frames'] >= args.frames_per_session for r in reports), reports
-        backend_log = (args.output / 'wlr.log').read_text()
-        negotiated = [int(value) for value in re.findall(r'max_framerate: \((\d+) / 1\)', backend_log)]
-        assert len(negotiated)>=args.sessions and all(0<fps<=240 for fps in negotiated)
+        negotiated=[]
+        if args.native_capture:
+            assert all(r['first_frame_ms']<3000 for r in reports), reports
+            if args.exercise_displays:
+                assert all(len(r['display_switches'])==2 for r in reports),reports
+            assert 'portal' not in process_names and 'pipewire' not in process_names, process_names
+        else:
+            backend_log = (args.output / 'wlr.log').read_text()
+            negotiated = [int(value) for value in re.findall(r'max_framerate: \((\d+) / 1\)', backend_log)]
+            assert len(negotiated)>=args.sessions and all(0<fps<=240 for fps in negotiated)
         if args.exercise_quality:
             assert all([value['settings']['fps'] for value in report['applied_quality']]==[60,24]
                        for report in reports), 'Native output frame rates were not applied'
@@ -207,7 +226,8 @@ context.objects = [
             assert b'a' in data and len(centered)>=args.sessions, \
                 'Native input did not reach the selected scaled terminal surface'
             observed_input=dict(keyboard=True,centered_clicks=len(centered),sessions=args.sessions)
-        result = dict(ok=True, real_wlr_portal=True, isolated_compositor=True,
+        result = dict(ok=True, real_wlr_portal=not args.native_capture,native_capture=args.native_capture,
+                      static_desktop=args.static_desktop,isolated_compositor=True,
                       user_desktop_accessed=False, explicit_owned_links=links,
                       capture_max_fps=negotiated, observed_input=observed_input,reports=reports)
         (args.output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
@@ -238,6 +258,9 @@ def main():
     parser.add_argument('--sessions', type=int, default=2)
     parser.add_argument('--exercise-quality', action='store_true')
     parser.add_argument('--exercise-input', action='store_true')
+    parser.add_argument('--native-capture',action='store_true',help='Exercise compositor capture with no portal or PipeWire process')
+    parser.add_argument('--static-desktop',action='store_true',help='Do not animate the generated surface')
+    parser.add_argument('--exercise-displays',action='store_true',help='Switch between actual owned outputs and back')
     parser.add_argument('--terminate-backend-after',type=float,default=0)
     parser.add_argument('--inside-owned-bus', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -249,11 +272,15 @@ def main():
     if args.inside_owned_bus:
         inside(args)
         return
-    for name in ['sway', 'swaymsg', 'foot', 'pipewire', 'pw-link', 'pw-dump', 'gdbus',
-                 'dbus-run-session','dbus-update-activation-environment']:
+    if args.exercise_displays and not args.native_capture:
+        parser.error('Display switching requires --native-capture')
+    required=['sway','swaymsg','foot','dbus-run-session']
+    if not args.native_capture:
+        required+=['pipewire','pw-link','pw-dump','gdbus','dbus-update-activation-environment']
+    for name in required:
         if shutil.which(name) is None:
             raise RuntimeError('Missing fixture dependency: ' + name)
-    for path in [args.probe, args.portal, args.backend]:
+    for path in [args.probe]+([] if args.native_capture else [args.portal,args.backend]):
         if not path.is_file():
             raise RuntimeError('Missing fixture binary: ' + str(path))
     args.output.mkdir(parents=True, exist_ok=False)
@@ -267,6 +294,10 @@ def main():
             XDG_CACHE_HOME=temporary+'/cache', XDG_CURRENT_DESKTOP='sway',
             WLR_BACKENDS='headless', WLR_HEADLESS_OUTPUTS='2', WLR_RENDERER='pixman',
             WLR_LIBINPUT_NO_DEVICES='1', UU_OWNED_WAYLAND_TEST='1')
+        if args.native_capture:
+            if args.static_desktop:env['ECLIPSE_STATIC_DESKTOP']='1'
+        else:
+            env['UU_WAYLAND_CAPTURE']='portal'
         command = ['dbus-run-session', '--', sys.executable, str(Path(__file__).resolve()),
             '--inside-owned-bus', '--probe', str(args.probe), '--output', str(args.output),
             '--portal', str(args.portal), '--backend', str(args.backend),
@@ -276,6 +307,9 @@ def main():
             command.append('--exercise-quality')
         if args.exercise_input:
             command.append('--exercise-input')
+        if args.native_capture:command.append('--native-capture')
+        if args.static_desktop:command.append('--static-desktop')
+        if args.exercise_displays:command.append('--exercise-displays')
         process = subprocess.Popen(command, env=env, start_new_session=True)
         try:
             code = process.wait(timeout=args.frames_per_session*args.sessions/24+115)

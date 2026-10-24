@@ -84,12 +84,14 @@ pub fn device_name(ui:&mut egui::Ui,s:&mut Sharing,enabled:bool) {
 }
 pub fn capture(ui:&mut egui::Ui,s:&mut Sharing,monitors:&[(String,String)],portal:bool) {
         ui.add_space(8.);
-        egui::ComboBox::from_id_salt("server-monitor").selected_text(if s.monitor.is_empty(){"主显示器 / 系统选择"}else if s.monitor==uu_core::native_displays::ALL_MONITORS{"允许远程切换显示器"}else{&s.monitor}).show_ui(ui,|ui| {
-            ui.selectable_value(&mut s.monitor,String::new(),"主显示器 / 系统选择");
-            ui.selectable_value(&mut s.monitor,uu_core::native_displays::ALL_MONITORS.into(),"允许远程切换显示器");
+        ui.label("初始显示器");
+        let default_label=if portal {"系统选择"} else {"主显示器"};
+        egui::ComboBox::from_id_salt("server-monitor").selected_text(if s.monitor.is_empty()||s.monitor==uu_core::native_displays::ALL_MONITORS{default_label}else{&s.monitor}).show_ui(ui,|ui| {
+            ui.selectable_value(&mut s.monitor,String::new(),default_label);
             for (name,label) in monitors {ui.selectable_value(&mut s.monitor,name.clone(),label);}
         });
         if portal {ui.weak("屏幕选择由主机系统授权，远程重选仍需主机确认。");}
+        else {ui.weak("连接后可在客户端切换显示器。");}
         ui.add_space(10.);ui.checkbox(&mut s.audio,"传输系统声音");
         ui.weak("帧率、输出尺寸和码率由各客户端调整。");
 

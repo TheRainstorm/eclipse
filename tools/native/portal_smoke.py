@@ -323,7 +323,7 @@ def main():
         env = os.environ.copy()
         for name in ('DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', *(() if args.owned_compositor_output else ('WAYLAND_DISPLAY',))):
             env.pop(name, None)
-        env.update(ECLIPSE_PORTAL_FIXTURE='1', XDG_DATA_HOME=temporary + '/data', XDG_STATE_HOME=temporary + '/state')
+        env.update(ECLIPSE_PORTAL_FIXTURE='1', UU_WAYLAND_CAPTURE='portal', XDG_DATA_HOME=temporary + '/data', XDG_STATE_HOME=temporary + '/state')
         if not args.owned_compositor_output:
             env.update(WAYLAND_DISPLAY='owned-fixture', XDG_RUNTIME_DIR=temporary)
         command = ['dbus-run-session', '--', sys.executable, str(Path(__file__).resolve()),

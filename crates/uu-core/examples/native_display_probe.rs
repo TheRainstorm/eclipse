@@ -24,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
     host_clipboard.enabled.store(true, Ordering::Release);
     let config = uu_core::native::HostConfig {encoder_tuning:Default::default(),session:None,video_policy:None,codec:Default::default(),rate_control:Default::default(),
         bind: "127.0.0.1:0".parse()?,
-        source: uu_core::native::CaptureSource::Desktop,
+        source: uu_core::native::CaptureSource::Desktop {initial_monitor:None},
         invitation_file: invitation.clone(),
         invitation_lifetime: Duration::from_secs(30),
         fps: 30,

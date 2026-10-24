@@ -19,15 +19,7 @@ fn backend(error: impl std::fmt::Display) -> CaptureError {
     CaptureError::Backend(format!("X11: {error}"))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Monitor {
-    pub name: String,
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-    pub primary: bool,
-}
+pub use crate::backend::Monitor;
 
 fn connect(display: Option<&str>) -> Result<(RustConnection, usize), CaptureError> {
     if display.is_none() && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|s| !s.is_empty()) {
@@ -137,10 +129,10 @@ impl X11Capture {
                     attributes.visual,
                 )
             }
-            CaptureSource::Primary | CaptureSource::Desktop | CaptureSource::Monitor(_) => {
+            CaptureSource::Primary | CaptureSource::Desktop { .. } | CaptureSource::Monitor(_) => {
                 let list = monitors_on(&conn, screen_index)?;
                 let selected = match source {
-                    CaptureSource::Monitor(name) => {
+                    CaptureSource::Monitor(name) | CaptureSource::Desktop {initial_monitor:Some(name)} => {
                         list.into_iter().find(|m| &m.name == name).ok_or_else(|| {
                             CaptureError::TargetNotFound(CaptureTarget::Output(name.clone()))
                         })?
@@ -176,7 +168,7 @@ impl X11Capture {
             depth,
             masks,
             started: Instant::now(),
-            desktop: matches!(source, CaptureSource::Primary | CaptureSource::Desktop | CaptureSource::Monitor(_)),
+            desktop: matches!(source, CaptureSource::Primary | CaptureSource::Desktop { .. } | CaptureSource::Monitor(_)),
         })
     }
 }

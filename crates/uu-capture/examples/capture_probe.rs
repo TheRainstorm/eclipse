@@ -20,8 +20,12 @@ fn main() -> Result<()> {
     }
     if list {
         #[cfg(target_os = "linux")]
-        if display.is_none() && uu_capture::uses_desktop_portal() {
-            println!("Wayland: select an authorized monitor in the system screen-sharing dialog when capture starts");
+        if display.is_none() && uu_capture::uses_wayland() {
+            if uu_capture::uses_desktop_portal() {
+                println!("Wayland: select an authorized monitor in the system screen-sharing dialog when capture starts");
+            } else {
+                for monitor in uu_capture::wayland::monitors()? { println!("{monitor:?}"); }
+            }
             return Ok(());
         }
         #[cfg(target_os = "linux")]

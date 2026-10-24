@@ -5345,6 +5345,8 @@ dependencies = [
  "anyhow",
  "ashpd",
  "futures-util",
+ "libc",
+ "memmap2",
  "pipewire",
  "serde",
  "thiserror 2.0.21",
@@ -5352,6 +5354,9 @@ dependencies = [
  "tracing",
  "uu-input",
  "uu-media",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
  "windows 0.62.2",
  "x11rb",
 ]

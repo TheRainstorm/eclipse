@@ -23,3 +23,8 @@ pipewire = "0.9"
 tokio.workspace = true
 futures-util = "0.3"
 serde.workspace = true
+libc = "0.2"
+memmap2 = "0.9"
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }

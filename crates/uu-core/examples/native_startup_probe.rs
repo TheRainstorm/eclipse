@@ -28,7 +28,14 @@ async fn main() -> Result<()> {
     let rounds=std::env::var("ECLIPSE_STARTUP_ROUNDS").unwrap_or_else(|_|"2".into()).parse::<usize>()?;
     let exercise_quality=std::env::var("ECLIPSE_STARTUP_EXERCISE_QUALITY").as_deref()==Ok("1");
     let exercise_input=std::env::var("ECLIPSE_STARTUP_EXERCISE_INPUT").as_deref()==Ok("1");
+    let exercise_displays=std::env::var("ECLIPSE_STARTUP_EXERCISE_DISPLAYS").as_deref()==Ok("1");
     ensure!(!exercise_input||owned_compositor,"input requires the owned compositor");
+    ensure!(!exercise_displays||owned_compositor,"display switching requires the owned compositor");
+    let source=if let Ok(monitor)=std::env::var("ECLIPSE_STARTUP_MONITOR") {
+        ensure!(owned_compositor&&!uu_core::native::uses_desktop_portal(),"requires native capture in the owned compositor");
+        let mut sharing=uu_core::device_book::Sharing::default();sharing.monitor=monitor;
+        sharing.native().source
+    } else {native::CaptureSource::Primary};
     ensure!((60..=18000).contains(&target_frames)&&(1..=8).contains(&rounds)
         &&target_frames*rounds<=108000,"invalid owned portal test duration");
     let session_duration=Duration::from_secs((target_frames as u64/24+20).max(40));
@@ -37,7 +44,7 @@ async fn main() -> Result<()> {
         let invitation_path = runtime.join(format!("startup-{round}.eclipse-invite.json"));
         let config = native::HostConfig {
             bind: "127.0.0.1:0".parse()?,
-            source: native::CaptureSource::Primary,
+            source: source.clone(),
             invitation_file: invitation_path.clone(),
             invitation_lifetime: Duration::from_secs(60),
             fps: 30,
@@ -93,6 +100,7 @@ async fn main() -> Result<()> {
         let mut first_frame_ms = None;
         let mut applied_quality=Vec::new();
         let mut input_sent=false;
+        let mut display_switches=Vec::new();
         let received = tokio::time::timeout(session_duration+Duration::from_secs(5), async {
             let mut count = 0;
             let mut requested=0;
@@ -134,6 +142,31 @@ async fn main() -> Result<()> {
                     "viewer ended before generated frames"
                 );
                 tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            if exercise_displays {
+                let catalog=stats.remote_screens.lock().unwrap().clone();
+                ensure!(catalog.screens.len()==2,"native host must list both real outputs");
+                let initial=catalog.current_id;
+                let other=catalog.screens.iter().find(|s|s.id!=initial).context("missing alternate display")?.id;
+                for (request,target) in [(100,other),(101,initial)] {
+                    let output=catalog.screens.iter().find(|s|s.id==target).unwrap();
+                    let before=images.generation();
+                    quality.select_display(request,target)?;
+                    tokio::time::timeout(Duration::from_secs(7),async {
+                        let mut frames=0;
+                        loop {
+                            if images.generation()>before && stats.native_displays.catalog_epoch()==images.generation() {
+                                while let Ok((_,w,h,_))=images.try_recv(){
+                                    ensure!((w,h)==(output.width,output.height),"new output geometry mismatch");frames+=1;
+                                }
+                            }
+                            if frames>=8 {break Ok::<_,anyhow::Error>(());}
+                            ensure!(!viewer.is_finished(),"viewer ended during display switch");
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    }).await.context("native display switch timed out")??;
+                    display_switches.push(serde_json::json!({"name":output.display_name,"width":output.width,"height":output.height,"generation":images.generation()}));
+                }
             }
             Ok::<_, anyhow::Error>(count)
         })
@@ -186,7 +219,7 @@ async fn main() -> Result<()> {
         println!(
             "{}",
             serde_json::json!({"ok":true,"round":round,"frames":frames,"errors":0,
-            "first_frame_ms":first_frame_ms,"phases":phases,"applied_quality":applied_quality,"input_sent":input_sent,"generated_video":true,"no_user_desktop":true})
+            "first_frame_ms":first_frame_ms,"phases":phases,"applied_quality":applied_quality,"input_sent":input_sent,"display_switches":display_switches,"generated_video":true,"no_user_desktop":true})
         );
     }
     Ok(())

@@ -2,6 +2,16 @@
 
 use uu_media::frame::RawFrame;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Monitor {
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+}
+
 /// Which source to capture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureTarget {
@@ -68,6 +78,7 @@ pub fn available_backends() -> Vec<&'static str> {
     #[cfg(target_os = "linux")]
     {
         v.push("portal-pipewire");
+        v.push("wayland-screencopy");
         v.push("x11-getimage");
     }
     #[cfg(target_os = "windows")]
