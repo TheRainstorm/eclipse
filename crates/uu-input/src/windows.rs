@@ -15,7 +15,7 @@ impl SendInputInjector {
         Self::default()
     }
     fn prepare_desktop(&mut self) -> Result<(), InputError> {
-        let changed = crate::windows_desktop::sync_input_desktop()
+        let changed = crate::windows_desktop::sync_injection_desktop()
             .map_err(|e| InputError::Unavailable(crate::windows_desktop::access_error(&e)))?;
         self.desktop_reset |= changed;
         if self.desktop_reset {

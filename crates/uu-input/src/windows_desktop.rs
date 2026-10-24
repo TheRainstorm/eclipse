@@ -9,6 +9,7 @@ use windows_sys::Win32::{
 struct Binding {
     original: HDESK,
     owned: HDESK,
+    access: u32,
 }
 impl Drop for Binding {
     fn drop(&mut self) {
@@ -24,6 +25,7 @@ thread_local! {
     static BINDING: RefCell<Binding> = RefCell::new(Binding {
         original: unsafe { GetThreadDesktop(GetCurrentThreadId()) },
         owned: ptr::null_mut(),
+        access: 0,
     });
 }
 
@@ -51,39 +53,55 @@ fn name(desktop: HDESK) -> io::Result<Vec<u16>> {
     Ok(value)
 }
 
-/// Returns true after switching this worker. Call before querying coordinates,
-/// opening DXGI duplication, or injecting an event. GUI threads must not call it.
+/// Returns true when this worker changes desktop. Capture workers call this
+/// before opening DXGI duplication. GUI threads must not call it.
 pub fn sync_input_desktop() -> io::Result<bool> {
-    let input = unsafe {
-        OpenInputDesktop(
-            0,
-            0,
-            DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP,
-        )
-    };
+    sync_desktop(DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP)
+}
+
+/// SendInput also requires journal playback access on the attached desktop.
+/// This is a desktop handle right, not a journal hook or a token privilege.
+pub fn sync_injection_desktop() -> io::Result<bool> {
+    sync_desktop(
+        DESKTOP_READOBJECTS
+            | DESKTOP_WRITEOBJECTS
+            | DESKTOP_SWITCHDESKTOP
+            | DESKTOP_JOURNALPLAYBACK,
+    )
+}
+
+fn sync_desktop(access: u32) -> io::Result<bool> {
+    let input = unsafe { OpenInputDesktop(0, 0, access) };
     if input.is_null() {
         return Err(io::Error::last_os_error());
     }
+    let mut retained = false;
     let result = (|| {
         let current = unsafe { GetThreadDesktop(GetCurrentThreadId()) };
-        if name(current)? == name(input)? {
-            return Ok(false);
-        }
+        let changed = name(current)? != name(input)?;
         BINDING.with(|binding| {
             let mut binding = binding.borrow_mut();
+            // The desktop name alone does not describe the assigned handle's
+            // access. Bind our checked handle on first use and upgrade a capture
+            // binding before injecting, even when the desktop did not change.
+            if !changed && current == binding.owned && binding.access & access == access {
+                return Ok(false);
+            }
             if unsafe { SetThreadDesktop(input) } == 0 {
                 return Err(io::Error::last_os_error());
             }
             let old = std::mem::replace(&mut binding.owned, input);
+            binding.access = access;
+            retained = true;
             if !old.is_null() {
                 unsafe {
                     CloseDesktop(old);
                 }
             }
-            Ok(true)
+            Ok(changed)
         })
     })();
-    if !matches!(result, Ok(true)) {
+    if !retained {
         unsafe {
             CloseDesktop(input);
         }
@@ -146,6 +164,7 @@ mod tests {
                     Binding {
                         original,
                         owned: ptr::null_mut(),
+                        access: 0,
                     },
                 );
                 drop(previous);
@@ -156,6 +175,44 @@ mod tests {
             );
             assert_ne!(SetThreadDesktop(original), 0);
             assert_ne!(CloseDesktop(fixture), 0);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires accessible interactive desktop; sends only mouse packets with no action flags"]
+    fn injection_binding_upgrades_same_desktop_access_without_mouse_actions() {
+        std::thread::spawn(|| {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT, INPUT_MOUSE};
+            fn action_free_packet() -> u32 {
+                let mut packet: INPUT = unsafe { std::mem::zeroed() };
+                packet.r#type = INPUT_MOUSE;
+                // All mouse action flags are zero: no pointer movement, click,
+                // button release, scrolling, keyboard input or consent action.
+                unsafe { SendInput(1, &packet, std::mem::size_of::<INPUT>() as i32) }
+            }
+            assert!(!sync_input_desktop().unwrap());
+            assert_eq!(
+                action_free_packet(),
+                0,
+                "capture binding lacks playback access"
+            );
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(5));
+            // Equal desktop names must still permit upgrading the handle.
+            assert!(!sync_injection_desktop().unwrap());
+            assert_eq!(
+                action_free_packet(),
+                1,
+                "injection binding must permit SendInput"
+            );
+            assert!(!sync_input_desktop().unwrap());
+            assert!(!sync_injection_desktop().unwrap());
+            assert_eq!(
+                action_free_packet(),
+                1,
+                "capture sync must not downgrade access"
+            );
         })
         .join()
         .unwrap();
