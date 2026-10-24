@@ -367,11 +367,14 @@ def main():
     av1_queue = av1_input_queue_size(config)
     if av1_queue is not None:
         env['UU_AMF_AV1_INPUT_QUEUE_SIZE'] = str(av1_queue)
+    if binary_switch(config, 'socket_trace'):
+        env['ECLIPSE_SOCKET_TRACE'] = '1'
+        env['ECLIPSE_SOCKET_TRACE_FILE'] = str(root/'socket-trace.json')
     if config.get('continuous_trace') is True:
         env['ECLIPSE_CONTINUOUS_TRACE'] = '1'
     if config.get('encode_profile') is True:
         env['UU_ENCODE_PROFILE'] = '1'
-    atomic(root/'diagnostic-switches.json',{'continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL'],
+    atomic(root/'diagnostic-switches.json',{'socket_trace':env.get('ECLIPSE_SOCKET_TRACE')=='1','continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL'],
                                          'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config),'wlan_streaming_mode':wlan_mode,
                                          'amf_av1_input_queue_size':av1_queue,'gpu_encode_profile':env.get('UU_GPU_ENCODE_PROFILE')=='1'})
     processes = []; logs = []; samples = []; completed = False; error = None; moving = None
@@ -420,24 +423,41 @@ def main():
     except BaseException as failure:
         error = f'{type(failure).__name__}: {failure}'
     finally:
+        cleanup_details = {'stimulus_wm_close_attempted':False,'stimulus_wm_close_posted':False,'stimulus_wm_close_timed_out':False,'stimulus_wm_close_error':None,'children':[]}
         if moving is not None and moving.poll() is None:
             try:
                 data=json.loads(Path(config['stimulus_report']).read_text())
                 user=C.WinDLL('user32');user.GetWindowThreadProcessId.argtypes=[W.HWND,C.POINTER(W.DWORD)]
                 user.PostMessageW.argtypes=[W.HWND,W.UINT,W.WPARAM,W.LPARAM]
                 pid=W.DWORD();user.GetWindowThreadProcessId(W.HWND(data['hwnd']),C.byref(pid))
-                if pid.value==moving.pid:user.PostMessageW(W.HWND(data['hwnd']),0x10,0,0);moving.wait(timeout=3)
-            except Exception:pass
+                if pid.value != moving.pid:raise RuntimeError('stimulus window PID changed')
+                cleanup_details['stimulus_wm_close_attempted'] = True
+                cleanup_details['stimulus_wm_close_posted'] = bool(user.PostMessageW(W.HWND(data['hwnd']),0x10,0,0))
+                if not cleanup_details['stimulus_wm_close_posted']:raise RuntimeError('stimulus WM_CLOSE failed')
+                moving.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                cleanup_details['stimulus_wm_close_timed_out'] = True
+            except Exception as failure:
+                cleanup_details['stimulus_wm_close_error'] = f'{type(failure).__name__}: {failure}'
         for process in reversed(processes):
+            detail = {'pid':process.pid,'role':'stimulus' if process is moving or config['role']=='stimulus-clock' else 'native',
+                      'exit_before_fallback':process.poll(),'terminate_used':False,'kill_used':False}
             if process.poll() is None:
+                detail['terminate_used'] = True
                 process.terminate()
                 try: process.wait(timeout=5)
-                except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    detail['kill_used'] = True
+                    process.kill(); process.wait(timeout=5)
+            detail['exit_code'] = process.poll()
+            cleanup_details['children'].append(detail)
+        cleanup_details['forced_cleanup'] = any(p['terminate_used'] or p['kill_used'] for p in cleanup_details['children'])
+        cleanup_details['product_forced_cleanup'] = any(p['role']=='native' and (p['terminate_used'] or p['kill_used']) for p in cleanup_details['children'])
         for log in logs: log.close()
         wlan_samples.append(observer.snapshot()); wlan_close = observer.close()
         atomic(root/'wlan-observations.json', {'samples':wlan_samples,'observer_close_result':wlan_close,'requester':'native process, not this read-only observer'})
         atomic(root/'worker-result.json', {'completed': completed, 'cleanup_ok': all(p.poll() is not None for p in processes),
-               'error': error, 'session': session.value, 'pid': os.getpid(), 'child_pids': [p.pid for p in processes], 'resources': samples})
+               'cleanup_details':cleanup_details,'error': error, 'session': session.value, 'pid': os.getpid(), 'child_pids': [p.pid for p in processes], 'resources': samples})
     return 0 if completed else 1
 
 
