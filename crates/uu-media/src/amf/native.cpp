@@ -76,6 +76,7 @@ struct NativeProfile {
     bool enabled=std::getenv("UU_ENCODE_PROFILE")!=nullptr;
     ApiTime surface,wrap_api,submit,query_api,wait_wall,yield_api,total,query_call;
     unsigned long long queries=0,ok=0,repeat=0,need_input=0,other=0,yields=0,yield_switched=0,outputs=0,errors=0,pts_mismatch=0;
+    unsigned long long encoded_bytes=0,first_output_bytes=0,first_output_ns=0,last_output_ns=0;
     void print()const {
         if(!enabled)return;
         std::ostringstream out;
@@ -85,7 +86,9 @@ struct NativeProfile {
         out<<",\"native_encode_total\":";total.json(out);out<<",\"query_api_per_call\":";query_call.json(out);
         out<<",\"queries\":"<<queries<<",\"query_ok\":"<<ok<<",\"query_repeat\":"<<repeat<<",\"query_need_input\":"<<need_input
            <<",\"query_other\":"<<other<<",\"yields\":"<<yields<<",\"yield_switched\":"<<yield_switched
-           <<",\"outputs\":"<<outputs<<",\"errors\":"<<errors<<",\"pts_mismatch\":"<<pts_mismatch<<"}\n";
+           <<",\"outputs\":"<<outputs<<",\"errors\":"<<errors<<",\"pts_mismatch\":"<<pts_mismatch
+           <<",\"encoded_bytes\":"<<encoded_bytes<<",\"first_output_bytes\":"<<first_output_bytes
+           <<",\"output_span_us\":"<<(last_output_ns-first_output_ns)/1000.0<<"}\n";
         auto line=out.str();std::fwrite(line.data(),1,line.size(),stderr);
     }
 };
@@ -377,7 +380,11 @@ extern "C" int eclipse_amf_encode(void* session,void* native_texture,const unsig
                 if(!s->output)throw std::runtime_error("encoder returned no bitstream buffer");
                 *bytes=(const unsigned char*)s->output->GetNative();*length=s->output->GetSize();*timestamp=s->output->GetPts();
                 profile.success=true;
-                if(s->profile.enabled){++s->profile.outputs;if(*timestamp!=pts)++s->profile.pts_mismatch;}
+                if(s->profile.enabled){
+                    if(!s->profile.outputs){s->profile.first_output_bytes=*length;s->profile.first_output_ns=profile.wait_end;}
+                    s->profile.last_output_ns=profile.wait_end;s->profile.encoded_bytes+=*length;
+                    ++s->profile.outputs;if(*timestamp!=pts)++s->profile.pts_mismatch;
+                }
                 return 0;
             }
             if(result!=AMF_OK && result!=AMF_REPEAT && result!=AMF_NEED_MORE_INPUT)checked(result,"query current frame");

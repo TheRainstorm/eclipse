@@ -180,6 +180,7 @@ impl eframe::App for Probe {
             self.samples.lock().unwrap().push(serde_json::json!({
                 "at_ms":self.started.elapsed().as_millis(),"decoded":self.stats.decoded_total.load(Ordering::Relaxed),
                 "width":w,"height":h,"backend":self.stats.backend(),
+                "received_video_bitrate_kbps":self.stats.bitrate_kbps.load(Ordering::Relaxed),
                 "decode_ms_window_mean":self.stats.decode_ms(),
                 "errors":self.stats.errors.load(Ordering::Relaxed),
                 "queue_drops":self.stats.queue_drops.load(Ordering::Relaxed),
