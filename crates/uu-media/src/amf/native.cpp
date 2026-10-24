@@ -261,7 +261,25 @@ extern "C" void* eclipse_amf_open(int codec,unsigned width,unsigned height,unsig
         amf_int64 query_timeout=timeout_env && !std::strcmp(timeout_env,"0")?0:1;
         const auto timeout_name=s->prop(AMF_VIDEO_ENCODER_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT,AMF_VIDEO_ENCODER_AV1_QUERY_TIMEOUT);
         auto timeout_result=s->encoder->SetProperty(timeout_name,query_timeout);
+        // AV1-only experiment: capacity is not a count of queued frames. The
+        // unset path retains the driver's policy without an extra property set.
+        const char* queue_env=codec==2?std::getenv("UU_AMF_AV1_INPUT_QUEUE_SIZE"):nullptr;
+        amf_int64 requested_queue=0;
+        if(queue_env) {
+            if(std::strcmp(queue_env,"1") && std::strcmp(queue_env,"16"))throw std::runtime_error("UU_AMF_AV1_INPUT_QUEUE_SIZE must be 1 or 16");
+            requested_queue=!std::strcmp(queue_env,"1")?1:16;
+            auto result=s->encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_INPUT_QUEUE_SIZE,requested_queue);
+            std::fprintf(stderr,"{\"event\":\"amf_av1_input_queue\",\"phase\":\"before_init\",\"requested\":%lld,\"set_result\":%d}\n",(long long)requested_queue,int(result));
+            checked(result,"set experimental AV1 input queue capacity");
+        }
         checked(s->encoder->Init(hdr?amf::AMF_SURFACE_P010:amf::AMF_SURFACE_NV12,width,height),"initialize encoder");
+        if(queue_env) {
+            amf_int64 actual_queue=-1;
+            auto result=s->encoder->GetProperty(AMF_VIDEO_ENCODER_AV1_INPUT_QUEUE_SIZE,&actual_queue);
+            std::fprintf(stderr,"{\"event\":\"amf_av1_input_queue\",\"phase\":\"after_init\",\"requested\":%lld,\"get_result\":%d,\"actual\":%lld}\n",(long long)requested_queue,int(result),(long long)actual_queue);
+            checked(result,"read experimental AV1 input queue capacity");
+            if(actual_queue!=requested_queue)throw std::runtime_error("AMF changed the experimental AV1 input queue capacity");
+        }
         amf_int64 actual_gop=-1;
         checked(s->encoder->GetProperty(gop_name,&actual_gop),"read GOP policy");
         if(actual_gop!=0)throw std::runtime_error("AMF changed the requested on-demand keyframe policy");

@@ -42,6 +42,13 @@ def query_timeout_ms(config):
     return value
 
 
+def av1_input_queue_size(config):
+    value = config.get('amf_av1_input_queue_size')
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value not in (1, 16)):
+        raise ValueError('amf_av1_input_queue_size must be 1 or 16 when specified')
+    return value
+
+
 
 class WlanObserver:
     """Read-only lab observer: never resolves/calls WlanSetInterface.
@@ -348,12 +355,16 @@ def main():
     env['UU_WLAN_STREAMING_MODE'] = str(wlan_mode)
     query_timeout = query_timeout_ms(config)
     env['UU_AMF_QUERY_TIMEOUT_MS'] = str(query_timeout)
+    av1_queue = av1_input_queue_size(config)
+    if av1_queue is not None:
+        env['UU_AMF_AV1_INPUT_QUEUE_SIZE'] = str(av1_queue)
     if config.get('continuous_trace') is True:
         env['ECLIPSE_CONTINUOUS_TRACE'] = '1'
     if config.get('encode_profile') is True:
         env['UU_ENCODE_PROFILE'] = '1'
     atomic(root/'diagnostic-switches.json',{'continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL'],
-                                         'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config),'wlan_streaming_mode':wlan_mode})
+                                         'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config),'wlan_streaming_mode':wlan_mode,
+                                         'amf_av1_input_queue_size':av1_queue})
     processes = []; logs = []; samples = []; completed = False; error = None; moving = None
     observer = WlanObserver(); wlan_samples = [observer.snapshot()]; next_wlan = time.monotonic() + 1
     try:
