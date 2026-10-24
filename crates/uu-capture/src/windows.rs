@@ -141,6 +141,9 @@ pub struct DxgiCapture {
 impl DxgiCapture {
     pub fn open(source: &CaptureSource) -> Result<Self, CaptureError> {Self::open_hdr(source,false)}
     pub fn open_hdr(source: &CaptureSource,allow_hdr:bool) -> Result<Self,CaptureError> {
+        // Enumeration and duplication must share physical DPI semantics. An
+        // aware output restored into an unaware caller can reject HDR duplication.
+        let _coordinates = uu_input::windows_desktop::PhysicalCoordinates::enter().map_err(backend)?;
         uu_input::windows_desktop::sync_input_desktop()
             .map_err(|e| backend(uu_input::windows_desktop::access_error(&e)))?;
         let selected = match source {
@@ -255,6 +258,9 @@ impl DxgiCapture {
         Ok(())
     }
     fn acquire(&mut self) -> Result<Option<RawFrame>, CaptureError> {
+        // Includes desktop rebind/reopen and release on all exit paths; restore
+        // the caller rather than changing process-wide DPI or user settings.
+        let _coordinates = uu_input::windows_desktop::PhysicalCoordinates::enter().map_err(backend)?;
         let changed = match uu_input::windows_desktop::sync_input_desktop() {
             Ok(changed) => changed,
             Err(error) => {
@@ -503,7 +509,7 @@ mod tests {
     #[ignore = "requires an interactive output; checks duplication geometry without acquiring desktop pixels"]
     fn capture_inventory_and_duplication_use_same_physical_geometry() {
         std::thread::spawn(|| {
-            let capture=DxgiCapture::open(&CaptureSource::Primary).unwrap();
+            let capture=DxgiCapture::open_hdr(&CaptureSource::Primary,true).unwrap();
             let duplication=capture.duplication.as_ref().expect("active duplication is required");
             let desc=unsafe {duplication.GetDesc()};
             let (width,height)=match capture.rotation {
