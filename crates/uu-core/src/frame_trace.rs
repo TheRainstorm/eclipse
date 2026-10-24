@@ -507,7 +507,7 @@ impl HostTrace {
     pub fn continuous_report(&self)->Option<serde_json::Value> {
         let state=self.state.lock().unwrap();let rows=state.continuous.as_ref()?.clone();
         let (captured,sent,evicted)=(state.counts.captured,state.counts.sent,state.continuous_evicted);drop(state);
-        Some(serde_json::json!({"clock":"host_monotonic","epoch":self.epoch,"events":EVENTS,"limit":self.continuous_limit,"captured":captured,"sent":sent,"evicted":evicted,"frames":rows}))
+        Some(serde_json::json!({"qpc_anchor":crate::socket_trace::clock_anchor(self.started),"clock":"host_monotonic","epoch":self.epoch,"events":EVENTS,"limit":self.continuous_limit,"captured":captured,"sent":sent,"evicted":evicted,"frames":rows}))
     }
     /// Called off the media hot path. Clone under the lock; sort/serialize after releasing it.
     pub fn report(&self) -> Option<Report> {

@@ -14,6 +14,44 @@ use std::{
 };
 use tokio::net::UdpSocket;
 use webrtc::util::{conn::Conn, Result};
+/// Bracket a common same-machine QPC reading with this trace's Instant clock.
+/// Never compare anchors from different machines.
+#[derive(Serialize)]
+pub(crate) struct ClockAnchor {
+    before_us: u64,
+    after_us: u64,
+    qpc_ticks: i64,
+    qpc_frequency: i64,
+}
+pub(crate) fn clock_anchor(started: Instant) -> Option<ClockAnchor> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Performance::{
+            QueryPerformanceCounter, QueryPerformanceFrequency,
+        };
+        let (mut ticks, mut frequency) = (0i64, 0i64);
+        if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0 || frequency <= 0 {
+            return None;
+        }
+        let before = Instant::now();
+        let ok = unsafe { QueryPerformanceCounter(&mut ticks) };
+        let after = Instant::now();
+        if ok == 0 {
+            return None;
+        }
+        Some(ClockAnchor {
+            before_us: before.saturating_duration_since(started).as_micros() as u64,
+            after_us: after.saturating_duration_since(started).as_micros() as u64,
+            qpc_ticks: ticks,
+            qpc_frequency: frequency,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = started;
+        None
+    }
+}
 const LIMIT: usize = 524_288;
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, Hash)]
 pub(crate) struct Header {
@@ -195,6 +233,7 @@ impl Observation {
         let s = std::mem::take(&mut *self.state.lock().unwrap());
         #[derive(Serialize)]
         struct Report<'a> {
+            qpc_anchor: Option<ClockAnchor>,
             version: u8,
             instance: String,
             clock: &'static str,
@@ -212,6 +251,7 @@ impl Observation {
             primary: &'a VecDeque<Primary>,
         }
         let report = Report {
+            qpc_anchor: clock_anchor(self.started),
             version: 1,
             instance: self.instance.clone(),
             clock: "connection_monotonic_us",

@@ -178,7 +178,7 @@ impl eframe::App for Probe {
             self.next_sample = Instant::now() + Duration::from_secs(1);
             let (w, h) = self.stats.res();
             self.samples.lock().unwrap().push(serde_json::json!({
-                "at_ms":self.started.elapsed().as_millis(),"decoded":self.stats.decoded_total.load(Ordering::Relaxed),
+                "pipeline_at_us":self.stats.pipeline_trace.now_us(),"at_ms":self.started.elapsed().as_millis(),"decoded":self.stats.decoded_total.load(Ordering::Relaxed),
                 "width":w,"height":h,"backend":self.stats.backend(),
                 "received_video_bitrate_kbps":self.stats.bitrate_kbps.load(Ordering::Relaxed),
                 "decode_ms_window_mean":self.stats.decode_ms(),

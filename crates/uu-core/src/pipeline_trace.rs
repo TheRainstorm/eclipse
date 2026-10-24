@@ -69,6 +69,8 @@ impl Trace {
             }),
         }
     }
+    /// Diagnostic snapshot time in the same local domain as frame stages.
+    pub fn now_us(&self)->Option<u64>{self.enabled.then(||self.offset(Instant::now()))}
     pub(crate) fn clock_offset(&self,at:Instant)->u64{self.offset(at)}
     fn offset(&self, at: Instant) -> u64 {
         at.saturating_duration_since(self.started)
@@ -187,7 +189,7 @@ impl Trace {
         let (total,evicted,missing,rows)=(s.total,s.evicted,s.missing,s.rows.clone());
         drop(s);
         Some(
-            serde_json::json!({"clock":"client_monotonic","stages":["first_rtp_read","last_rtp_read","complete_au","decode_start","decode_return","publish_call","mailbox_take","draw_callback","output_available_by_pts"],"limit":self.limit,"total_frames":total,"evicted_frames":evicted,"unmatched_events":missing,"frames":rows}),
+            serde_json::json!({"qpc_anchor":crate::socket_trace::clock_anchor(self.started),"clock":"client_monotonic","stages":["first_rtp_read","last_rtp_read","complete_au","decode_start","decode_return","publish_call","mailbox_take","draw_callback","output_available_by_pts"],"limit":self.limit,"total_frames":total,"evicted_frames":evicted,"unmatched_events":missing,"frames":rows}),
         )
     }
 }
@@ -262,6 +264,12 @@ mod tests {
         let r=t.report().unwrap();
         assert!(r["frames"][0]["at_us"][8].is_number());
         assert!(r["frames"][1]["at_us"][8].is_null());
+    }
+    #[test]
+    fn diagnostic_capacity_retains_a_full_five_minute_frame_arm() {
+        let mut t=Trace::new(true);t.limit=32768;
+        for n in 0..18060{t.packet(1,0,9,n,true,Instant::now());}
+        let r=t.report().unwrap();assert_eq!(r["evicted_frames"],0);assert_eq!(r["frames"].as_array().unwrap().len(),18060);
     }
     #[test]
     fn disabled_has_no_observations() {

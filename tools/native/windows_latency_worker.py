@@ -166,7 +166,9 @@ def resources(process):
         return None
     kernel.GetProcessHandleCount(handle, C.byref(handles))
     kernel.GetProcessTimes(handle, C.byref(creation), C.byref(exit_time), C.byref(kernel_time), C.byref(user_time))
-    return {'at': time.monotonic(), 'working_set_mb': counters.working_set / 1048576,
+    ticks, frequency = C.c_int64(), C.c_int64()
+    qpc_ok = kernel.QueryPerformanceCounter(C.byref(ticks)) and kernel.QueryPerformanceFrequency(C.byref(frequency))
+    return {'at': time.monotonic(), 'qpc':{'ticks':ticks.value,'frequency':frequency.value} if qpc_ok else None, 'working_set_mb': counters.working_set / 1048576,
             'private_mb': counters.private / 1048576, 'handles': handles.value,
             'cpu_seconds': (kernel_time.value + user_time.value) / 1e7}
 
