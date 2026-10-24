@@ -888,6 +888,9 @@ async fn receive_session(
     stats: Arc<MediaStats>,
     input:Option<crate::native_input::NativeInputReceiver>,
 ) -> Result<ViewOutcome> {
+    use crate::native_controller::Stage;
+    // All callers authenticate signaling before entering this shared path.
+    stats.native_progress.set(Stage::PreparingHost);
     let first_frame_baseline=stats.decoded_total.load(Ordering::Acquire);
     peer.receiver(frames, stats.clone()).await?;
     let channel = peer
@@ -919,6 +922,7 @@ async fn receive_session(
         "unsupported native session capabilities"
     );
     validate_video(answer.width, answer.height, answer.fps)?;
+    stats.native_progress.set(Stage::ConnectingMedia);
     match crate::native_quality::Startup::read(&answer.sdp) {
         Ok(Some(startup))=>stats.diagnostics.record(serde_json::json!({"event":"native_host_preparation","timing":startup})),
         Err(_)=>stats.diagnostics.record(serde_json::json!({"event":"native_host_preparation_invalid"})),
@@ -954,6 +958,7 @@ async fn receive_session(
     crate::native_clipboard::viewer(clipboard,stats.clone());
     peer.connected().await?;
     if stream.lan_peer().is_none() {stats.diagnostics.record(peer.direct_path().await?);}
+    stats.native_progress.set(Stage::WaitingVideo);
     let first_frame=wait_first_frame(&stats,first_frame_baseline,Duration::from_secs(20));
     tokio::pin!(first_frame);
     let mut awaiting_first_frame=true;
@@ -962,7 +967,10 @@ async fn receive_session(
     let control=controls.run();tokio::pin!(control);
     loop {
         tokio::select! {
-            result=&mut first_frame,if awaiting_first_frame=>{awaiting_first_frame=false;result?;},
+            result=&mut first_frame,if awaiting_first_frame=>{
+                awaiting_first_frame=false;result?;
+                stats.native_progress.set(Stage::Streaming);
+            },
             _=stats.native_displays.changed.notified()=>{if let Some(request)=stats.native_displays.take_switch(){break Some(request);}},
             result=&mut control,if control_active=>{
                 control_active=false;
@@ -1000,6 +1008,32 @@ async fn wait_first_frame(stats:&MediaStats,baseline:u64,limit:Duration)->Result
 mod tests {
     use super::*;
     use crate::media::frame_channel;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authenticated_host_preparation_is_visible_and_cancellable_before_answer() {
+        struct PendingHost(tokio::sync::mpsc::UnboundedSender<()>);
+        #[async_trait::async_trait]
+        impl SessionSignaling for PendingHost {
+            async fn send(&mut self, _: serde_json::Value) -> Result<()> {
+                self.0.send(())?;
+                Ok(())
+            }
+            async fn receive(&mut self) -> Result<serde_json::Value> {
+                std::future::pending().await
+            }
+        }
+        let stats = Arc::new(MediaStats::default());
+        let phases = stats.native_progress.subscribe();
+        let (offered, mut offers) = tokio::sync::mpsc::unbounded_channel();
+        let (stop, stopped) = watch::channel(false);
+        let (frames, _) = frame_channel();
+        let client = tokio::spawn(async move {
+            view_direct(&mut PendingHost(offered), &Default::default(), frames, stats, stopped, None).await
+        });
+        timeout(Duration::from_secs(5), offers.recv()).await.unwrap().unwrap();
+        assert_eq!(*phases.borrow(), Some(crate::native_controller::Stage::PreparingHost));
+        stop.send(true).unwrap();
+        timeout(Duration::from_secs(2), client).await.unwrap().unwrap().unwrap();
+    }
     #[tokio::test(flavor="multi_thread",worker_threads=2)]
     async fn capture_requests_initial_idr_without_adding_a_periodic_refresh() {
         struct Source {inner:Box<dyn uu_capture::Capture>,count:u32}
@@ -1476,6 +1510,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(stats.rtt_updated_ms.load(Ordering::Relaxed)>0,"native RTT must stay visible in the HUD");
+        assert_eq!(*stats.native_progress.subscribe().borrow(), Some(crate::native_controller::Stage::Streaming));
         assert_ne!(
             first.unwrap(),
             latest.unwrap(),

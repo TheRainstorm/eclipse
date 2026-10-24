@@ -34,6 +34,7 @@ pub use uu_media::DecoderKind;
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
 pub struct MediaStats {
+    pub native_progress:crate::native_controller::Progress,
     pub decoder_preference:std::sync::OnceLock<DecoderKind>,
     pub host_admin:crate::host_admin::Client,
     pub native_quality_request:std::sync::OnceLock<crate::native_quality::Request>,

@@ -5,6 +5,7 @@ use crate::{
     native_pairing::Invitation,
 };
 use anyhow::{Context, Result};
+
 use std::{
     path::PathBuf,
     sync::{
@@ -17,6 +18,29 @@ use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedReceiver},
     watch,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stage { PreparingHost, ConnectingMedia, WaitingVideo, Streaming }
+impl Stage {
+    fn message(self) -> &'static str {
+        match self {
+            Self::PreparingHost => "正在等待被控端共享屏幕并准备编码…",
+            Self::ConnectingMedia => "正在建立媒体连接…",
+            Self::WaitingVideo => "正在等待首帧…",
+            Self::Streaming => "原生串流已连接",
+        }
+    }
+}
+
+/// Latest connection phase, without queuing old progress behind media work.
+pub struct Progress(watch::Sender<Option<Stage>>);
+impl Default for Progress {
+    fn default() -> Self { Self(watch::channel(None).0) }
+}
+impl Progress {
+    pub(crate) fn set(&self, stage: Stage) { self.0.send_replace(Some(stage)); }
+    pub(crate) fn subscribe(&self) -> watch::Receiver<Option<Stage>> { self.0.subscribe() }
+}
 
 pub fn spawn(invitation_file: PathBuf, stats: Arc<MediaStats>) -> Result<ControllerHandle> {
     spawn_with_input(invitation_file,stats,false)
@@ -138,6 +162,7 @@ impl Worker {
         })};
         let (stop, stop_rx) = watch::channel(false);
         let native=self.native.take().context("native input interface was already consumed")?;
+        let mut progress = self.stats.native_progress.subscribe();
         let session = async {
             if let Source::Profile{launch,config}=&self.source {
                 crate::device_profile::view(launch.clone(),config.clone(),self.frames.clone(),self.stats.clone(),stop_rx,Some(native)).await
@@ -151,6 +176,13 @@ impl Worker {
         loop {
             tokio::select! {
                 result=&mut session=>return result,
+                changed=progress.changed()=>{
+                    if changed.is_ok() {
+                        if let Some(stage) = *progress.borrow_and_update() {
+                            let _ = self.events.send(ControllerEvent::Status(stage.message().into()));
+                        }
+                    }
+                },
                 _=self.close.recv()=>{let _=stop.send(true);return session.await;},
                 data=self.input.recv()=>{if data.is_none(){let _=stop.send(true);return session.await;}},
                 data=self.settings.recv()=>{if data.is_none(){let _=stop.send(true);return session.await;}},
