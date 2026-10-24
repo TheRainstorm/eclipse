@@ -281,6 +281,13 @@ impl DxgiCapture {
         }
         // Every successful acquisition releases its frame, including all error paths.
         let _lease = FrameLease(duplication);
+        // AcquireNextFrame also reports pointer-only changes. Their resource
+        // is not a new desktop image (some drivers expose the display's native
+        // RGB10 surface here). Keep the last real image instead of inspecting
+        // or submitting this resource as a BGRA video frame.
+        if info.LastPresentTime == 0 && info.AccumulatedFrames == 0 {
+            return Ok(None);
+        }
         let texture: ID3D11Texture2D = resource
             .ok_or_else(|| backend("frame resource unavailable"))?
             .cast()
@@ -290,7 +297,7 @@ impl DxgiCapture {
             texture.GetDesc(&mut desc);
         }
         if desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
-            return Err(backend("unsupported desktop surface format"));
+            return Err(backend(format!("unsupported desktop surface format: format={}, size={}x{}, accumulated={}, present={}",desc.Format.0,desc.Width,desc.Height,info.AccumulatedFrames,info.LastPresentTime)));
         }
         if self.gpu && self.rotation == Rotation::None {
             if (desc.Width, desc.Height) != (self.source.width, self.source.height) {
