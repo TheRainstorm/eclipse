@@ -7,7 +7,7 @@ fn key(viewport: ViewportId) -> Id {
     Id::new(("eframe-native-window", viewport))
 }
 
-/// Borrow the live Glow viewport's native window. A weak entry ensures that
+/// Borrow the live viewport's native window. A weak entry ensures that
 /// removing a viewport still destroys its window and surface normally.
 pub fn viewport_window(ctx: &Context) -> Option<Arc<Window>> {
     viewport_window_for(ctx, ctx.viewport_id())
