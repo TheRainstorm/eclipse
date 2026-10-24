@@ -57,7 +57,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 
 ## 开始使用
 
-本次版本为 **v0.18.0**，功能、验证范围和已知限制见[发布说明](docs/releases/v0.18.0.md)。
+本次版本为 **v0.18.1**，修复 AMD H.264 码流约束导致 Windows 解码回退的问题，见[发布说明](docs/releases/v0.18.1.md)；其它功能和限制见 [v0.18.0](docs/releases/v0.18.0.md)。
 
 安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
 
