@@ -164,6 +164,11 @@ struct Sampler {
     pads: [Option<sdl2::controller::GameController>; SLOTS],
     events: sdl2::EventPump,
     controllers: sdl2::GameControllerSubsystem,
+    // Windows Raw Input arrives through SDL's message-only window. Without
+    // the video event pump SDL updates XInput triggers but misses WM_INPUT
+    // buttons/sticks. No visible window or focus change is needed.
+    #[cfg(windows)]
+    _video:sdl2::VideoSubsystem,
     _sdl: sdl2::Sdl,
     start: Instant,
     last_scan: Instant,
@@ -175,6 +180,8 @@ impl Sampler {
     fn new() -> Result<Self, String> {
         sdl2::hint::set("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
         let sdl = sdl2::init().map_err(|e| format!("SDL 手柄初始化失败：{e}"))?;
+        #[cfg(windows)]
+        let video=sdl.video().map_err(|e|format!("无法启动 Windows 手柄消息泵：{e}"))?;
         let controllers = sdl
             .game_controller()
             .map_err(|e| format!("无法打开本地手柄子系统：{e}"))?;
@@ -185,6 +192,8 @@ impl Sampler {
             pads: std::array::from_fn(|_| None),
             events,
             controllers,
+            #[cfg(windows)]
+            _video:video,
             _sdl: sdl,
             start: Instant::now(),
             last_scan: Instant::now() - Duration::from_secs(2),
@@ -361,10 +370,45 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Rust SDL owns one initialization thread per process, just like Reader's
+    // single workspace owner. These native fixtures must not compete for it.
+    static SDL_OWNER:Mutex<()>=Mutex::new(());
+    #[cfg(windows)]
+    #[test]
+    fn sampler_dispatches_owned_windows_messages_without_a_visible_window(){
+        std::thread::spawn(||{
+            let _owner=SDL_OWNER.lock().unwrap();
+            use windows_sys::Win32::{Foundation::*,UI::WindowsAndMessaging::*,System::LibraryLoader::GetModuleHandleW};
+            const PROBE:u32=WM_APP+71;
+            unsafe extern "system" fn procedure(window:HWND,message:u32,wparam:WPARAM,lparam:LPARAM)->LRESULT {
+                if message==PROBE {
+                    let seen=unsafe{GetWindowLongPtrW(window,GWLP_USERDATA)} as *const std::sync::atomic::AtomicBool;
+                    if !seen.is_null(){unsafe{&*seen}.store(true,Ordering::Release);}return 0;
+                }
+                unsafe{DefWindowProcW(window,message,wparam,lparam)}
+            }
+            let mut sampler=Sampler::new().unwrap();
+            let name:Vec<u16>=format!("OwnedGamepadPump-{}",uuid::Uuid::new_v4()).encode_utf16().chain(Some(0)).collect();
+            let module=unsafe{GetModuleHandleW(std::ptr::null())};
+            let mut class:WNDCLASSW=unsafe{std::mem::zeroed()};class.lpfnWndProc=Some(procedure);class.lpszClassName=name.as_ptr();class.hInstance=module;
+            assert_ne!(unsafe{RegisterClassW(&class)},0);
+            let window=unsafe{CreateWindowExW(0,name.as_ptr(),name.as_ptr(),0,0,0,0,0,HWND_MESSAGE,std::ptr::null_mut(),module,std::ptr::null())};
+            assert!(!window.is_null());
+            struct OwnedWindow{window:HWND,module:HINSTANCE,name:Vec<u16>}
+            impl Drop for OwnedWindow{fn drop(&mut self){unsafe{DestroyWindow(self.window);UnregisterClassW(self.name.as_ptr(),self.module);}}}
+            let window=OwnedWindow{window,module,name};
+            let seen=std::sync::atomic::AtomicBool::new(false);
+            unsafe{SetWindowLongPtrW(window.window,GWLP_USERDATA,&seen as *const _ as isize);}
+            assert_ne!(unsafe{PostMessageW(window.window,PROBE,0,0)},0);
+            let deadline=Instant::now()+Duration::from_secs(2);
+            while !seen.load(Ordering::Acquire){sampler.sample();assert!(Instant::now()<deadline,"SDL did not dispatch its thread's Windows messages");std::thread::sleep(Duration::from_millis(5));}
+        }).join().unwrap();
+    }
     #[test]
     #[ignore="reads attached physical controllers for 25 seconds; run only with the device owner's authorization"]
     fn authorized_physical_controller_sampling(){
         std::thread::spawn(||{
+            let _owner=SDL_OWNER.lock().unwrap();
             use std::io::Write;
             let mut sampler=Sampler::new().unwrap();let start=Instant::now();let mut last=None;let mut observed=false;let mut changes=0;
             while start.elapsed()<Duration::from_secs(25){
@@ -403,6 +447,7 @@ mod tests {
     #[test]
     fn owned_sdl_virtual_gamepad_preserves_axes_buttons_slots_and_hot_unplug() {
         std::thread::spawn(|| {
+            let _owner=SDL_OWNER.lock().unwrap();
             let mut sampler = Sampler::new().unwrap();
             let index = unsafe {
                 sdl2::sys::SDL_JoystickAttachVirtual(
