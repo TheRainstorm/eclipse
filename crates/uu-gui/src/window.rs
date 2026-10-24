@@ -49,6 +49,30 @@ pub fn resize_border(ctx: &egui::Context, fullscreen: bool) -> bool {
 
 pub const CONNECTION_BAR_HEIGHT: f32 = 36.0;
 
+// Native size requests can update the API's cached size before the compositor
+// applies them. Keep ownership through a short stable observation interval,
+// including a late configure that restores a smaller size. Never block input
+// or keep fighting an uncooperative window manager indefinitely.
+struct SizeTransition {
+    target: egui::Vec2,
+    started: std::time::Instant,
+    stable_since: Option<std::time::Instant>,
+}
+#[derive(Debug,PartialEq,Eq)]
+enum SizeProgress { Retry, Waiting, Complete }
+impl SizeTransition {
+    fn new(target:egui::Vec2,now:std::time::Instant)->Self {Self{target,started:now,stable_since:None}}
+    fn observe(&mut self,actual:egui::Vec2,now:std::time::Instant)->SizeProgress {
+        if now.duration_since(self.started)>=std::time::Duration::from_secs(2) {return SizeProgress::Complete;}
+        let delta=(actual-self.target).abs();
+        if delta.x>1.0 || delta.y>1.0 {
+            self.stable_since=None;return SizeProgress::Retry;
+        }
+        let stable=*self.stable_since.get_or_insert(now);
+        if now.duration_since(stable)>=std::time::Duration::from_millis(500) {SizeProgress::Complete}else{SizeProgress::Waiting}
+    }
+}
+
 /// Fit the complete window inside 80% of the destination work area.
 /// Preserve video aspect ratio, including when enlarging a small source.
 fn stream_size(video_px: egui::Vec2, pixels_per_point: f32, available: egui::Vec2) -> egui::Vec2 {
@@ -69,6 +93,7 @@ pub struct WindowSizing {
     home_points: Option<egui::Vec2>,
     resizing: bool,
     previous: Option<(f32, egui::Vec2, egui::Rect)>,
+    transition: Option<SizeTransition>,
 }
 
 impl WindowSizing {
@@ -87,6 +112,10 @@ impl WindowSizing {
         resize_started: bool,
         native: Option<Geometry>,
     ) {
+        self.update_at(ctx,streaming,video_px,resize_started,native,std::time::Instant::now());
+    }
+    fn update_at(&mut self,ctx:&egui::Context,streaming:bool,video_px:Option<egui::Vec2>,
+        resize_started:bool,native:Option<Geometry>,now:std::time::Instant) {
         let viewport = ctx.input(|i| i.viewport().clone());
         if viewport.minimized == Some(true) {
             return;
@@ -104,6 +133,7 @@ impl WindowSizing {
             self.stream_pending = false;
         }
         if viewport.fullscreen == Some(true) || viewport.maximized == Some(true) {
+            self.transition=None;
             return;
         }
         let Some(geometry) = native.or_else(|| Geometry::from_context(ctx)) else {
@@ -133,6 +163,7 @@ impl WindowSizing {
             ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(minimum.min(capacity)));
         }
         if self.settings_page {
+            self.transition=None;
             // A settings page uses the application minimum, even in a live
             // stream process. Keep pending video sizing until the user returns.
             let size=inner.size().max(egui::vec2(560.0,360.0).min(capacity)).min(capacity);
@@ -148,6 +179,7 @@ impl WindowSizing {
             return;
         }
         if resize_started {
+            self.transition=None;
             self.resizing = true;
         }
         if self.resizing {
@@ -162,7 +194,7 @@ impl WindowSizing {
             }
         }
         let initial_stream = self.stream_pending && video_px.is_some();
-        let desired = if initial_stream {
+        let mut desired = if initial_stream {
             self.stream_pending = false;
             self.canvas_px = video_px;
             Some(stream_size(video_px.unwrap(), ppp, capacity))
@@ -170,9 +202,13 @@ impl WindowSizing {
             self.home_points = Some(egui::vec2(1100.0, 760.0));
             Some(self.home_points.unwrap().min(capacity))
         } else if let Some((old_ppp, _, old_work)) = self.previous {
-            if (old_ppp - ppp).abs() > 0.01 || old_work != work {
+            if (old_ppp - ppp).abs() > 0.01 || old_work != work
+                || (!self.resizing && self.transition.is_none() && (inner.width() > capacity.x + 1.0 || inner.height() > capacity.y + 1.0)) {
                 // A monitor move must constrain position even if the size fits
                 // (Win+Shift+Arrow can place an otherwise small window outside).
+                // A delayed compositor configure may restore the old size
+                // after our resize request. Converge using observed geometry,
+                // while preserving manual sizes that fit the current work area.
                 Some(if streaming {
                     stream_size(video_px.or(self.canvas_px).unwrap_or(inner.size() * ppp), ppp, capacity)
                 } else {
@@ -184,6 +220,16 @@ impl WindowSizing {
         } else {
             None
         };
+        if let Some(size)=desired {
+            self.transition=Some(SizeTransition::new(size,now));
+        } else if let Some(transition)=self.transition.as_mut() {
+            match transition.observe(inner.size(),now) {
+                SizeProgress::Retry=>desired=Some(transition.target),
+                SizeProgress::Complete=>self.transition=None,
+                SizeProgress::Waiting=>{},
+            }
+        }
+        if self.transition.is_some() {ctx.request_repaint_after(std::time::Duration::from_millis(50));}
         if let Some(size) = desired {
             let position = if initial_stream || !self.initialized || streaming {
                 available.center() - (size + chrome) / 2.0
@@ -381,23 +427,68 @@ mod tests {
         let ctx = egui::Context::default();
         let mut sizing = WindowSizing::default();
         sizing.begin_stream();
-        let mut run = |work: egui::Rect, ppp: f32| {
+        let mut run = |work: egui::Rect, ppp: f32, manual:bool| {
             let inner = egui::Rect::from_min_size(work.min,egui::vec2(750.0,450.0));
             ctx.run(egui::RawInput::default(), |ctx| sizing.update(ctx,true,
-                Some(egui::vec2(1920.0,1080.0)),false,Some(Geometry {inner,outer:inner,work,ppp})))
+                Some(egui::vec2(1920.0,1080.0)),manual,Some(Geometry {inner,outer:inner,work,ppp})))
                 .viewport_output[&egui::ViewportId::ROOT].commands.clone()
         };
         let work = egui::Rect::from_min_size(egui::pos2(-1920.0,0.0),egui::vec2(1920.0,1040.0));
-        let commands = run(work,1.0);
+        let commands = run(work,1.0,false);
         let size = stream_size(egui::vec2(1920.0,1080.0),1.0,work.shrink(8.0).size());
         assert!(commands.contains(&egui::ViewportCommand::InnerSize(size)));
         assert!(commands.contains(&egui::ViewportCommand::OuterPosition(work.center()-size/2.0)));
-        assert!(!run(work,1.0).iter().any(|c|matches!(c,egui::ViewportCommand::InnerSize(_))));
+        assert!(!run(work,1.0,true).iter().any(|c|matches!(c,egui::ViewportCommand::InnerSize(_))));
         let work = egui::Rect::from_min_size(egui::pos2(0.0,-1080.0),egui::vec2(1280.0,720.0));
-        let commands = run(work,1.5);
+        let commands = run(work,1.5,false);
         let size = stream_size(egui::vec2(1920.0,1080.0),1.5,work.shrink(8.0).size());
         assert!(commands.contains(&egui::ViewportCommand::InnerSize(size)));
         assert!(commands.contains(&egui::ViewportCommand::OuterPosition(work.center()-size/2.0)));
+    }
+    #[test]
+    fn late_large_and_small_configures_converge_before_releasing_size_ownership() {
+        use std::time::{Duration,Instant};
+        for streaming in [false,true] {
+            let ctx=egui::Context::default();let mut sizing=WindowSizing::default();
+            if streaming {sizing.begin_stream();}
+            let started=Instant::now();
+            let mut run=|work:egui::Rect,ppp:f32,size:egui::Vec2,ms:u64,manual:bool| {
+                let inner=egui::Rect::from_min_size(work.min,size);
+                ctx.run(egui::RawInput::default(),|ctx|sizing.update_at(ctx,streaming,
+                    streaming.then_some(egui::vec2(1280.,720.)),manual,Some(Geometry{inner,outer:inner,work,ppp}),started+Duration::from_millis(ms)))
+                    .viewport_output[&egui::ViewportId::ROOT].commands.clone()
+            };
+            let requested=|commands:Vec<egui::ViewportCommand>|commands.into_iter().find_map(|c|if let egui::ViewportCommand::InnerSize(s)=c{Some(s)}else{None});
+            let low=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1600.,1000.));
+            let large=requested(run(low,1.,egui::vec2(1100.,760.),0,false)).unwrap();
+            assert!(requested(run(low,1.,large,100,false)).is_none());
+            assert!(requested(run(low,1.,large,700,false)).is_none());
+            let high=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(853.,533.));
+            let small=requested(run(high,1.5,large,1000,false)).unwrap();
+            assert!(requested(run(high,1.5,small,1100,false)).is_none());
+            assert_eq!(requested(run(high,1.5,large,1200,false)),Some(small));
+            assert!(requested(run(high,1.5,small,1300,false)).is_none());
+            assert!(requested(run(high,1.5,small,1900,false)).is_none());
+            let restored=requested(run(low,1.,small,2000,false)).unwrap();
+            assert_eq!(restored,large);
+            assert!(requested(run(low,1.,large,2100,false)).is_none());
+            // A smaller stale size fits the new monitor but still belongs to
+            // the previous configure; accepting it would cancel enlargement.
+            assert_eq!(requested(run(low,1.,small,2200,false)),Some(large));
+            assert!(requested(run(low,1.,large,2300,false)).is_none());
+            assert!(requested(run(low,1.,large,2900,false)).is_none());
+            let manual=low.shrink(8.).size()*0.95;
+            assert!(requested(run(low,1.,manual,3000,false)).is_none());
+            run(high,1.5,large,3100,false);
+            assert!(requested(run(high,1.5,high.shrink(8.).size()*0.95,3200,true)).is_none(),"explicit resizing takes ownership immediately");
+        }
+    }
+    #[test]
+    fn an_uncooperative_compositor_cannot_hold_size_ownership_forever() {
+        use std::time::{Duration,Instant};
+        let now=Instant::now();let mut state=SizeTransition::new(egui::vec2(670.,413.),now);
+        assert_eq!(state.observe(egui::vec2(1267.,749.),now),SizeProgress::Retry);
+        assert_eq!(state.observe(egui::vec2(1267.,749.),now+Duration::from_secs(2)),SizeProgress::Complete);
     }
     #[test]
     fn launcher_uses_native_dpi_and_fits_position_on_negative_origin_monitor() {
