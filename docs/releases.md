@@ -2,7 +2,7 @@
 
 大功能里程碑使用 `v主版本.次版本.修订号` 标签，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
-本次发布 [v0.18.5](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.5)，修复 Wayland 等待系统选屏时的连接进度与取消请求清理，详见 [0.18.5 发布说明](releases/v0.18.5.md)。包含 [v0.18.4](releases/v0.18.4.md) 的 Windows 首连及设备卡片修复和 [v0.18.3](releases/v0.18.3.md) 的安全桌面输入修复。已有发布保持不变，正式产物以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+本次发布 [v0.18.6](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.6)，修复主页继承串流垂直同步设置导致部分 Windows 驱动在首次呈现时阻塞，详见 [0.18.6 发布说明](releases/v0.18.6.md)。包含 [v0.18.5](releases/v0.18.5.md) 的 Wayland 连接进度及选屏取消修复。已有发布保持不变，正式产物以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
 
 ```sh
 python3 tools/release/download.py
