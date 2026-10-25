@@ -33,12 +33,12 @@ struct Lease(NonNull<c_void>);
 impl Lease {fn new()->Result<Self,String>{NonNull::new(unsafe{eclipse_amf_lease_new()}).map(Self).ok_or_else(||"AMF lease allocation failed".into())}}
 impl super::input_pool::Released for Lease {fn released(&self)->bool{unsafe{eclipse_amf_lease_released(self.0.as_ptr())!=0}}}
 impl Drop for Lease {fn drop(&mut self){unsafe{eclipse_amf_lease_close(self.0.as_ptr());}}}
-struct Inputs(super::input_pool::Pool<crate::d3d11_color::EncodeTarget,Lease>);
+struct Inputs(super::input_pool::Pool<super::gpu::AmfTarget,Lease>,&'static str);
 impl Drop for Inputs {
     fn drop(&mut self) {
         self.0.retire();
-        if std::env::var_os("UU_ENCODE_PROFILE").is_some(){eprintln!("uu-amf-input-pool generation={} slots={} allocations={} reuses={} submissions={} pending={} path=color-converter",
-            self.0.generation(),self.0.slots(),self.0.allocations,self.0.reuses,self.0.submissions,self.0.pending());}
+        if std::env::var_os("UU_ENCODE_PROFILE").is_some(){eprintln!("uu-amf-input-pool generation={} slots={} allocations={} reuses={} submissions={} pending={} path={}",
+            self.0.generation(),self.0.slots(),self.0.allocations,self.0.reuses,self.0.submissions,self.0.pending(),self.1);}
     }
 }
 pub(super) struct Driver {
@@ -63,7 +63,7 @@ impl Driver {
         // The candidate remains opt-in until GPU lifetime and ABBA acceptance.
         let pool_enabled=std::env::var("UU_AMF_INPUT_POOL").is_ok_and(|v|v=="1");
         if std::env::var_os("UU_ENCODE_PROFILE").is_some(){eprintln!("uu-amf-input-mode pool_enabled={pool_enabled}");}
-        Ok(Self{native,shared_proof:None,gpu:None,inputs:Inputs(super::input_pool::Pool::new(1)),pool_enabled,upload:Vec::new(),settings,headers:Default::default(),name:format!("amf ({codec} {mode}, AMD D3D11, {:?})",settings.tuning.amd_quality),profile:super::profile::Profile::new("amf"),_runtime:runtime})
+        Ok(Self{native,shared_proof:None,gpu:None,inputs:Inputs(super::input_pool::Pool::new(1),"uninitialized"),pool_enabled,upload:Vec::new(),settings,headers:Default::default(),name:format!("amf ({codec} {mode}, AMD D3D11, {:?})",settings.tuning.amd_quality),profile:super::profile::Profile::new("amf"),_runtime:runtime})
     }
 }
 impl super::worker::Driver for Driver {
@@ -91,7 +91,7 @@ impl super::worker::Driver for Driver {
                 }
                 self.native=next;
                 self.gpu=None;
-                self.inputs=Inputs(super::input_pool::Pool::new(self.inputs.0.generation()+1));
+                self.inputs=Inputs(super::input_pool::Pool::new(self.inputs.0.generation()+1),"uninitialized");
             }
             if self.gpu.is_none(){self.gpu=Some(super::gpu::Input::new(frame,self.settings)?);}
             let input=self.gpu.as_ref().unwrap();
@@ -110,8 +110,12 @@ impl super::worker::Driver for Driver {
                 let mut first=proof.clone();first["event"]="shared_capture_first_input".into();crate::shared_capture::log(first);
                 self.shared_proof=Some(proof);
             }
-            if self.pool_enabled && input.amf_pooled() {
-                let key=self.inputs.0.acquire(timestamp,Lease::new()?,||input.amf_target()?.ok_or_else(||"no AMF color target".into()))?;
+            self.inputs.1=input.amf_path();
+            if self.pool_enabled {
+                let lease=match Lease::new(){Ok(lease)=>lease,Err(error)=>{self.inputs.0.retire();return Err(error);}};
+                let key=match self.inputs.0.acquire(timestamp,lease,||input.amf_target()) {
+                    Ok(key)=>key,Err(error)=>{self.inputs.0.retire();return Err(error);}
+                };
                 let (target,_)=self.inputs.0.target(key)?;
                 match input.amf_convert(frame,target) {
                     Ok(output)=>texture=Some(output),
@@ -119,7 +123,8 @@ impl super::worker::Driver for Driver {
                 }
                 lease_key=Some(key);
             }else {
-                // MFT and the BGRA VideoProcessor retain their fresh-input path.
+                // Pool0 uses the same fresh sample path as ordinary MF. Pooled AMF
+                // targets need no intermediate MFSample/DXGI buffer wrapper.
                 sample=input.sample(frame)?;
                 unsafe {
                 let buffer:IMFDXGIBuffer=sample.GetBufferByIndex(0).map_err(|e|e.to_string())?.cast().map_err(|e|e.to_string())?;
@@ -141,7 +146,7 @@ impl super::worker::Driver for Driver {
             self.upload.as_ptr(),self.upload.len(),timestamp,i32::from(keyframe),lease,&mut data,&mut len,&mut pts,error.as_mut_ptr(),error.len())};
         if result!=0{self.inputs.0.retire();return Err(message(&error));}
         if data.is_null() || len==0 || len>64*1024*1024 || pts!=timestamp {self.inputs.0.retire();return Err("AMF returned an invalid or reordered frame".into());}
-        if let Some(key)=lease_key {self.inputs.0.complete(key,pts)?;}
+        if let Some(key)=lease_key {if let Err(error)=self.inputs.0.complete(key,pts){self.inputs.0.retire();return Err(error);}}
         let mut bytes=unsafe{std::slice::from_raw_parts(data,len)}.to_vec();
         let codec=self.settings.codec;
         let idr=match codec {VideoCodec::H264=>EncodedFrame::detect_h264_keyframe(&bytes),VideoCodec::Hevc=>crate::hevc::is_keyframe(&bytes),VideoCodec::Av1=>crate::av1::is_keyframe(&bytes)};

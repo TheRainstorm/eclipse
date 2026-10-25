@@ -1,5 +1,5 @@
-//! Dynamic scRGB16 -> AMD AMF -> hardware decode lifecycle correctness probe.
-//! Usage: amf_input_probe [sdr|hdr] [width] [height] [frames] [generations].
+//! Dynamic BGRA8/scRGB16 -> AMD AMF -> hardware decode correctness probe.
+//! Usage: amf_input_probe [sdr|hdr] [width] [height] [frames] [generations] [scrgb|bgra].
 //! Readback and per-frame records are correctness work, never a latency benchmark.
 #[cfg(not(windows))]
 fn main() {
@@ -35,11 +35,15 @@ fn run(generation: u32) -> anyhow::Result<()> {
     };
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let codec = VideoCodec::Av1;
+    let bgra = match args.get(5).map(String::as_str).unwrap_or("scrgb") {
+        "scrgb"=>false, "bgra"=>true, _=>anyhow::bail!("source must be scrgb or bgra"),
+    };
     let hdr = match args.first().map(String::as_str).unwrap_or("sdr") {
         "sdr" => false,
         "hdr" => true,
         _ => anyhow::bail!("mode must be sdr or hdr"),
     };
+    anyhow::ensure!(!bgra || !hdr,"BGRA probe requires SDR output");
     let width = args
         .get(1)
         .map(|v| v.parse())
@@ -92,7 +96,7 @@ fn run(generation: u32) -> anyhow::Result<()> {
                 Height: height,
                 MipLevels: 1,
                 ArraySize: 1,
-                Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
+                Format: if bgra {DXGI_FORMAT_B8G8R8A8_UNORM}else{DXGI_FORMAT_R16G16B16A16_FLOAT},
                 SampleDesc: DXGI_SAMPLE_DESC {
                     Count: 1,
                     Quality: 0,
@@ -108,12 +112,12 @@ fn run(generation: u32) -> anyhow::Result<()> {
     }
     let texture = texture.unwrap();
     let view = view.unwrap();
-    let colors = [
+    let colors = if bgra {[[0.75,0.15,0.25,1.],[0.15,0.70,0.25,1.],[0.15,0.25,0.65,1.],[0.08,0.08,0.08,1.]]}else{[
         [12.5, 0.05, 0.05, 1.],
         [0.05, 2.5375, 0.05, 1.],
         [0.05, 0.05, 1.25, 1.],
         [0.01, 0.01, 0.01, 1.],
-    ];
+    ]};
     for (i, color) in colors.iter().enumerate() {
         let x = (i % 2) as i32 * width as i32 / 2;
         let y = (i / 2) as i32 * height as i32 / 2;
@@ -134,6 +138,8 @@ fn run(generation: u32) -> anyhow::Result<()> {
     // Centers are far from lossy/chroma boundaries; all 32 bits are checked.
     let marker_y = height as i32 * 7 / 8;
     let mut expected_ids = std::collections::BTreeMap::new();
+    let mut expected_colors = std::collections::BTreeMap::new();
+    let mut held:Option<(uu_media::RawFrame,Vec<u8>)>=None;
     let mut last_pts = None;
     let mut sequence = None;
     let mut capture = encoder::CapturePool::new(input.clone(), width, height)?;
@@ -174,17 +180,24 @@ fn run(generation: u32) -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::json!({"event":"generation_start", "generation":generation,
-        "codec":"av1", "source":"R16G16B16A16_FLOAT/scRGB", "width":width,"height":height,
+        "codec":"av1", "source":if bgra {"B8G8R8A8_UNORM/Bgra8"}else{"R16G16B16A16_FLOAT/scRGB"}, "expected_path":if bgra {"video-processor"}else{"color-converter"}, "width":width,"height":height,
         "bit_depth":if hdr {10} else {8}, "storage":if hdr {"P010"} else {"NV12"},
         "vendor_id":desc.VendorId,"device_id":desc.DeviceId,"luid":[desc.AdapterLuid.HighPart,desc.AdapterLuid.LowPart],
         "encoder":encoder.backend_name(),"decoder":decoder.backend_name(),"pool":std::env::var("UU_AMF_INPUT_POOL").ok()})
     );
     let (mut encode_times, mut decode_times) = (vec![], vec![]);
     for i in 0..count {
+        let frame_colors=std::array::from_fn::<_,4,_>(|patch|colors[if bgra{(patch+i)%4}else{patch}]);
+        if bgra {
+            for (index,color) in frame_colors.iter().enumerate() {
+                let x=(index%2) as i32*width as i32/2;let y=(index/2) as i32*height as i32/2;
+                unsafe{v1.ClearView(&view,color,Some(&[RECT{left:x,top:y,right:x+width as i32/2,bottom:y+height as i32/2}]));}
+            }
+        }
         let id = ((generation - 1) * count as u32 + i as u32) as u16;
         let code = u32::from(id) | (u32::from(!id) << 16);
         for bit in 0..32 {
-            let level = if code & (1 << bit) != 0 { 1.5 } else { 0.01 };
+            let level = if code & (1 << bit) != 0 { if bgra {0.9}else{1.5} } else { if bgra {0.05}else{0.01} };
             unsafe {
                 v1.ClearView(
                     &view,
@@ -203,12 +216,14 @@ fn run(generation: u32) -> anyhow::Result<()> {
             expected_ids.insert(pts, id).is_none(),
             "duplicate input PTS"
         );
+        expected_colors.insert(pts,frame_colors);
         if i % 137 == 0 {
             encoder.request_keyframe();
         }
         let frame = capture
             .capture(&texture, Timestamp(pts))?
             .ok_or_else(|| anyhow::anyhow!("capture pool saturated"))?;
+        anyhow::ensure!(frame.gpu && frame.format==if bgra {PixelFormat::Bgra8}else{PixelFormat::ScRgb16},"unexpected actual capture source format");
         let at = std::time::Instant::now();
         let encoded = encoder.encode(&frame)?;
         encode_times.push(at.elapsed().as_secs_f64() * 1000.);
@@ -249,6 +264,7 @@ fn run(generation: u32) -> anyhow::Result<()> {
                     "out-of-order decoded PTS {pts}"
                 );
                 last_pts = Some(pts);
+                let frame_colors=expected_colors.remove(&pts).ok_or_else(||anyhow::anyhow!("unknown color PTS"))?;
                 anyhow::ensure!(
                     (picture.width, picture.height) == (width, height),
                     "decoded geometry mismatch"
@@ -296,21 +312,33 @@ fn run(generation: u32) -> anyhow::Result<()> {
                             let at = (y * width as usize + x) * 4;
                             f32::from(pixels[at]) / 255.
                         })?;
-                        for (index, expected) in colors.iter().enumerate() {
-                            let x = width as usize / 4 + (index % 2) * width as usize / 2;
-                            let y = height as usize / 4 + (index / 2) * height as usize / 2;
-                            let at = (y * width as usize + x) * 4;
-                            let reference = uu_media::hdr::sc_rgb_to_sdr(
-                                [expected[0], expected[1], expected[2]],
-                                203.,
-                            );
-                            for c in 0..3 {
-                                let actual = pixels[at + 2 - c] as f32 / 255.;
-                                anyhow::ensure!(
-                                    (actual - reference[c]).abs() < 0.055,
-                                    "SDR tone-mapped patch {index}/{c}: {actual} expected {}",
-                                    reference[c]
-                                );
+                        if bgra {
+                            let mut points=Vec::new();let mut expected_rgb=Vec::new();
+                            for (index,expected) in frame_colors.iter().enumerate() {
+                                points.push([width as usize/4+(index%2)*width as usize/2,height as usize/4+(index/2)*height as usize/2]);
+                                expected_rgb.push([0,1,2].map(|c|(expected[c]*255.).round() as u8));
+                            }
+                            let code=u32::from(expected)|(u32::from(!expected)<<16);
+                            for bit in 0..32 {
+                                points.push([(2*bit+1)*width as usize/64,height as usize*15/16]);
+                                expected_rgb.push([if code&(1<<bit)!=0{230}else{13};3]);
+                            }
+                            let actual_rgb:Vec<[u8;3]>=points.iter().map(|[x,y]|{let at=(y*width as usize+x)*4;[pixels[at+2],pixels[at+1],pixels[at]]}).collect();
+                            let errors:Vec<[u8;3]>=actual_rgb.iter().zip(&expected_rgb).map(|(a,b)|[0,1,2].map(|c|a[c].abs_diff(b[c]))).collect();
+                            let max_error=*errors.iter().flatten().max().unwrap();
+                            println!("{}",serde_json::json!({"event":"bgra_pixel_evidence","generation":generation,"pts":pts,"id":expected,"points":points,"expected_rgb":expected_rgb,"actual_rgb":actual_rgb,"errors":errors,"rgb_error_limit":14,"max_rgb_error":max_error,"actual_source":"Bgra8","path":"video-processor"}));
+                            anyhow::ensure!(max_error<=14,"BGRA color oracle failed: max {max_error}>14");
+                            if held.is_none(){held=Some((picture.clone(),pixels.clone()));}
+                        } else {
+                            for (index, expected) in frame_colors.iter().enumerate() {
+                                let x = width as usize / 4 + (index % 2) * width as usize / 2;
+                                let y = height as usize / 4 + (index / 2) * height as usize / 2;
+                                let at = (y * width as usize + x) * 4;
+                                let reference = uu_media::hdr::sc_rgb_to_sdr([expected[0],expected[1],expected[2]],203.);
+                                for c in 0..3 {
+                                    let actual = pixels[at + 2 - c] as f32 / 255.;
+                                    anyhow::ensure!((actual-reference[c]).abs()<0.055,"SDR patch {index}/{c}: {actual} expected {}",reference[c]);
+                                }
                             }
                         }
                     } else {
@@ -318,7 +346,7 @@ fn run(generation: u32) -> anyhow::Result<()> {
                         verify_marker(width, height, expected, |x, y| {
                             half(words[(y * width as usize + x) * 4])
                         })?;
-                        for (index, expected) in colors.iter().enumerate() {
+                        for (index, expected) in frame_colors.iter().enumerate() {
                             let x = width as usize / 4 + (index % 2) * width as usize / 2;
                             let y = height as usize / 4 + (index / 2) * height as usize / 2;
                             for c in 0..3 {
@@ -347,6 +375,16 @@ fn run(generation: u32) -> anyhow::Result<()> {
                 produced += 1;
             }
         }
+    }
+    println!("{}",serde_json::json!({"event":"generation_output_summary","generation":generation,"inputs":count,"decoded":produced,"checked":checked,"unconsumed_pts":expected_ids.keys().collect::<Vec<_>>()}));
+    if let Some((picture,before))=held.take() {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let surface=picture.d3d11.as_ref().unwrap();let converter=converted.as_ref().unwrap();
+        converter.convert(surface,sequence.unwrap().color).map_err(anyhow::Error::msg)?;
+        let after=converter.readback().map_err(anyhow::Error::msg)?;
+        let same=before==after;
+        println!("{}",serde_json::json!({"event":"bgra_held_frame","generation":generation,"held_pts":picture.pts.0,"held_across_inputs":count,"hold_ms":50,"compared_bytes":before.len(),"immutable":same}));
+        anyhow::ensure!(same,"held decoded frame changed across later submissions");
     }
     anyhow::ensure!(
         produced == count && checked == count && expected_ids.is_empty(),
