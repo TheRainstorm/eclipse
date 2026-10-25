@@ -1,16 +1,29 @@
 //! Pure probe oracle: capture references are RGB; converter readbacks are BGRA.
 pub const MAX_RGB_ERROR: u8 = 18;
-pub fn mode(args: &[String]) -> Result<bool, String> {
-    match args
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        ["--mode", "serial"] => Ok(false),
-        ["--mode", "overlap"] => Ok(true),
-        _ => Err("required: --mode serial|overlap (no other arguments)".into()),
-    }
+#[derive(Debug, PartialEq, Eq)]
+pub struct Options {
+    pub overlap: bool,
+    pub monitor: Option<String>,
+}
+pub fn options(args: &[String]) -> Result<Options, String> {
+    let values = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let (mode, monitor) = match values.as_slice() {
+        ["--mode", mode] => (*mode, None),
+        ["--mode", mode, "--monitor", name] if !name.is_empty() && !name.starts_with("--") => {
+            (*mode, Some((*name).to_owned()))
+        }
+        _ => {
+            return Err(
+                "required: --mode serial|overlap [--monitor NAME]; no other arguments".into(),
+            )
+        }
+    };
+    let overlap = match mode {
+        "serial" => false,
+        "overlap" => true,
+        _ => return Err("mode must be serial or overlap".into()),
+    };
+    Ok(Options { overlap, monitor })
 }
 pub fn bgra_to_rgb(v: [u8; 4]) -> [u8; 3] {
     [v[2], v[1], v[0]]
@@ -111,15 +124,54 @@ mod tests {
     }
     #[test]
     fn explicit_modes_only() {
-        assert!(!mode(&["--mode".into(), "serial".into()]).unwrap());
-        assert!(mode(&["--mode".into(), "overlap".into()]).unwrap());
+        assert!(
+            !options(&["--mode".into(), "serial".into()])
+                .unwrap()
+                .overlap
+        );
+        assert!(
+            options(&["--mode".into(), "overlap".into()])
+                .unwrap()
+                .overlap
+        );
         for v in [
             vec![],
             vec!["serial"],
             vec!["--mode", "auto"],
             vec!["--mode", "overlap", "extra"],
         ] {
-            assert!(mode(&v.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
+            assert!(options(&v.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
+        }
+    }
+    #[test]
+    fn worker_appended_monitor_is_pinned_without_loosening_mode_or_extra_args() {
+        let values = |ss: &[&str]| ss.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            options(&values(&[
+                "--mode",
+                "serial",
+                "--monitor",
+                r"\\.\DISPLAY13"
+            ]))
+            .unwrap(),
+            Options {
+                overlap: false,
+                monitor: Some(r"\\.\DISPLAY13".into())
+            }
+        );
+        assert!(
+            options(&values(&["--mode", "overlap", "--monitor", "display"]))
+                .unwrap()
+                .overlap
+        );
+        for args in [
+            vec!["--mode", "auto", "--monitor", "display"],
+            vec!["--mode", "serial", "--monitor", ""],
+            vec!["--mode", "serial", "--monitor", "--bad"],
+            vec!["--mode", "serial", "--monitor", "display", "extra"],
+            vec!["--mode", "serial", "--monitor"],
+        ] {
+            assert!(options(&values(&args)).is_err());
         }
     }
     #[test]

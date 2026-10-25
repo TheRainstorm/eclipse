@@ -8,15 +8,23 @@ fn main() {
 }
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
-    let overlap =
-        oracle::mode(&std::env::args().skip(1).collect::<Vec<_>>()).map_err(anyhow::Error::msg)?;
+    let options = oracle::options(&std::env::args().skip(1).collect::<Vec<_>>())
+        .map_err(anyhow::Error::msg)?;
+    let source = options.monitor.map_or(
+        uu_capture::CaptureSource::Primary,
+        uu_capture::CaptureSource::Monitor,
+    );
+    println!(
+        "{}",
+        serde_json::json!({"event":"overlap_gpu_arguments","overlap":options.overlap,"source":format!("{:?}",source)})
+    );
     for generation in 1..=2 {
-        run(generation, overlap)?;
+        run(generation, options.overlap, &source)?;
     }
     Ok(())
 }
 #[cfg(windows)]
-fn run(generation: u32, overlap: bool) -> anyhow::Result<()> {
+fn run(generation: u32, overlap: bool, source: &uu_capture::CaptureSource) -> anyhow::Result<()> {
     use anyhow::{ensure, Context};
     use std::{collections::BTreeMap, time::Duration};
     use uu_media::{
@@ -26,7 +34,7 @@ fn run(generation: u32, overlap: bool) -> anyhow::Result<()> {
     use uu_proto::media::VideoCodec;
     let mode = if overlap { "overlap" } else { "serial" };
     let capture = uu_capture::open_with_options(
-        &uu_capture::CaptureSource::Primary,
+        source,
         uu_capture::OpenOptions {
             hdr: true,
             ..Default::default()

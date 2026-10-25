@@ -50,6 +50,8 @@ snapshots at most once per second; query/close errors are retained as unknown,
 not converted to zero. This is separate from capture-owner lifecycle counters.
 
 The correctness probe requires an explicit `--mode serial` or `--mode overlap`.
+An optional `--monitor NAME` pins the physical output selected by the worker;
+unknown modes, missing values and extra arguments fail before capture.
 Both modes use the same RGB oracle, an owned fixed-coordinate marker window,
 and a strict 18-level per-channel limit. Capture samples are RGB; converter
 readbacks are BGRA and are reordered only at the probe's comparison boundary.
