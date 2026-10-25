@@ -86,3 +86,5 @@ Windows 编译增加 `--target x86_64-pc-windows-gnu`。探针旁放置经过完
 `tools/native/socket_trace_analysis.py` 离线关联同一连接内唯一的认证 primary 包；重复头、未知来源、缺失和负差单独报告。FEC 合成包不进入 primary tap。primary 同时记录同一 Instant 在连接和客户端帧 trace 的偏移，以关联实际输出 PTS。主机 socket 与帧 trace 仅按 RTP 身份比较各自间隔；不可直接相减不同机器或不同起点的时钟。socket API 返回也不等于网卡到包/发包，不能据此独断网络、驱动或内核原因。完整覆盖结论要求记录无淘汰。
 
 Windows 诊断报告另含 QPC 锚点：以该 trace 的 Instant 前后读数括住一次 QueryPerformanceCounter。夹具资源采样也保留 QPC 与频率，因此可在同一机器内给出有误差范围的 socket/帧/CPU 对齐；探针低频快照保留客户端 pipeline 时钟偏移。锚点缺失时只比较身份及各自间隔，不推算绝对阶段差。
+
+Windows native LAN 发送端还提供默认关闭的 `UU_NATIVE_QOS=1` 实验。它只为经过认证、实际选定的 IPv4 UDP 目的流申请 qWAVE AudioVideo 非自适应 QoS；同一流内的视频、音频、控制与修复共享该配置。每个连接独占句柄和流，创建与退役在阻塞工作线程执行，取消时保留原 socket 所有权直至清理。没有逐包 QoS API 调用，也不设置带宽整形、全局策略或网卡属性。日志包含申请、PacketPriority 读回、错误及清理结果；读回成功不代表链路设备实际执行，更不代表延迟改善。`native_qos_probe` 是只操作自有 socket 的 Windows 能力验证入口；视频对照仍须独立进行。

@@ -224,6 +224,14 @@ pub(crate) struct NativePeer {
     development_relay: bool,
     pending_decoder: Arc<Mutex<Option<crate::media::PreparedVideoDecoder>>>,
     wlan: Mutex<Option<crate::wlan_streaming::Guard>>,
+    #[cfg(windows)]
+    qos_socket: Option<Arc<UdpSocket>>,
+    #[cfg(windows)]
+    qos: Mutex<Option<crate::native_qos::Guard>>,
+    #[cfg(windows)]
+    qos_started: AtomicBool,
+    #[cfg(windows)]
+    authenticated_ip: Mutex<Option<IpAddr>>,
 }
 impl NativePeer {
     pub async fn new(
@@ -274,6 +282,24 @@ impl NativePeer {
         let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
         #[cfg(windows)]
         configure_udp_probing(&socket).context("cannot configure native UDP probing")?;
+        #[cfg(windows)]
+        crate::native_qos::event(serde_json::json!({"action":"policy","requested":crate::native_qos::requested(sender),"sender":sender}));
+        #[cfg(windows)]
+        let (params,qos_socket)=if crate::native_qos::requested(sender) {
+            let socket=Arc::new(socket);
+            let params=match &observation {
+                Some(trace)=>UDPMuxParams::new(crate::socket_trace::Observed{socket:crate::native_qos::SharedSocket(socket.clone()),trace:trace.clone()}),
+                None=>UDPMuxParams::new(crate::native_qos::SharedSocket(socket.clone())),
+            };
+            (params,Some(socket))
+        } else {
+            let params=match &observation {
+                Some(trace)=>UDPMuxParams::new(crate::socket_trace::Observed{socket,trace:trace.clone()}),
+                None=>UDPMuxParams::new(socket),
+            };
+            (params,None)
+        };
+        #[cfg(not(windows))]
         let params=match &observation {
             Some(trace)=>UDPMuxParams::new(crate::socket_trace::Observed{socket,trace:trace.clone()}),
             None=>UDPMuxParams::new(socket),
@@ -293,6 +319,8 @@ impl NativePeer {
         let mut peer=Self::build(settings, Some(mux), RTCConfiguration::default(), stats, sender).await?;
         peer.trace_receivers=observation.as_ref().map(|_|Arc::new(Mutex::new(Vec::new())));
         peer.socket_trace=observation;
+        #[cfg(windows)]
+        {peer.qos_socket=qos_socket;}
         Ok(peer)
     }
 
@@ -394,6 +422,14 @@ impl NativePeer {
             development_relay:false,
             pending_decoder: Arc::new(Mutex::new(None)),
             wlan: Mutex::new(wlan),
+            #[cfg(windows)]
+            qos_socket: None,
+            #[cfg(windows)]
+            qos: Mutex::new(None),
+            #[cfg(windows)]
+            qos_started: AtomicBool::new(false),
+            #[cfg(windows)]
+            authenticated_ip: Mutex::new(None),
         })
     }
     pub async fn receiver(&self, frames: FrameSender, stats: Arc<MediaStats>) -> Result<()> {
@@ -544,6 +580,8 @@ impl NativePeer {
         self.repairs.configure(&description.sdp);
         self.fec.remote(&self.pc, &description).await?;
         self.pc.set_remote_description(description).await?;
+        #[cfg(windows)]
+        {*self.authenticated_ip.lock().unwrap()=Some(peer_ip);}
         Ok(())
     }
     pub async fn remote_direct(&self, description: RTCSessionDescription) -> Result<()> {
@@ -571,7 +609,41 @@ impl NativePeer {
             }
         })
         .await
-        .context("native WebRTC connection timed out")?
+        .context("native WebRTC connection timed out")??;
+        #[cfg(windows)]
+        self.prepare_qos().await;
+        Ok(())
+    }
+    #[cfg(windows)]
+    async fn prepare_qos(&self) {
+        use crate::native_qos::{event,Guard};
+        let Some(socket)=self.qos_socket.clone() else{return};
+        if self.qos_started.swap(true,Ordering::AcqRel){return;}
+        let selected=async {
+            use webrtc::ice_transport::ice_protocol::RTCIceProtocol;
+            let pair=self.pc.sctp().transport().ice_transport().get_selected_candidate_pair().await
+                .context("missing selected ICE pair")?;
+            let local=pair.local();let remote=pair.remote();
+            ensure!(local.protocol==RTCIceProtocol::Udp && remote.protocol==RTCIceProtocol::Udp
+                && local.typ!=RTCIceCandidateType::Relay && remote.typ!=RTCIceCandidateType::Relay,"QoS requires selected direct UDP");
+            let remote_ip:IpAddr=remote.address.parse()?;
+            ensure!(*self.authenticated_ip.lock().unwrap()==Some(remote_ip),"QoS destination does not match authenticated LAN peer");
+            let bound=socket.local_addr()?;
+            ensure!(bound.is_ipv4() && !bound.ip().is_unspecified() && local.port==bound.port(),"QoS requires original bound IPv4 socket");
+            let IpAddr::V4(ip)=remote_ip else{anyhow::bail!("QoS IPv6/mapped endpoints unsupported")};
+            ensure!(remote.port!=0 && !ip.is_unspecified() && !ip.is_multicast(),"invalid selected destination");
+            Ok::<_,anyhow::Error>(std::net::SocketAddrV4::new(ip,remote.port))
+        }.await;
+        let destination=match selected{Ok(d)=>d,Err(e)=>{event(serde_json::json!({"action":"unsupported","reason":e.to_string()}));return;}};
+        // The blocking task and returned Guard both own the original socket.
+        // Cancellation drops a late result on the worker, including its flow.
+        let task=tokio::task::spawn_blocking(move||Guard::acquire(socket,destination));
+        match timeout(Duration::from_secs(2),task).await {
+            Ok(Ok(Ok(guard)))=>{*self.qos.lock().unwrap()=Some(guard);},
+            Ok(Ok(Err(_)))=>{}, // acquire already records API error and cleanup
+            Ok(Err(e))=>event(serde_json::json!({"action":"setup_incomplete","reason":e.to_string()})),
+            Err(_)=>event(serde_json::json!({"action":"setup_incomplete","reason":"blocking API exceeded two-second setup budget; late result owns cleanup"})),
+        }
     }
     pub async fn direct_path(&self) -> Result<serde_json::Value> {
         let pair=self.pc.sctp().transport().ice_transport().get_selected_candidate_pair().await
@@ -583,6 +655,15 @@ impl NativePeer {
             "development_relay":self.development_relay,"local_type":local_type,"remote_type":remote_type,"transport":"udp"}))
     }
     pub async fn close(&self) {
+        #[cfg(windows)]
+        {
+            let qos=self.qos.lock().unwrap().take();
+            if let Some(qos)=qos {
+                if timeout(Duration::from_secs(2),tokio::task::spawn_blocking(move||drop(qos))).await.is_err(){
+                    crate::native_qos::event(serde_json::json!({"action":"cleanup_pending","reason":"owned API worker exceeded two-second close budget"}));
+                }
+            }
+        }
         self.fec.stop();
         self.pending_decoder.lock().unwrap().take();
         if !self.closed.load(Ordering::Acquire) {
@@ -612,6 +693,11 @@ async fn finish_trace(receivers:Option<Arc<Mutex<Vec<tokio::task::JoinHandle<()>
 }
 impl Drop for NativePeer {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        if let Some(qos)=self.qos.get_mut().unwrap().take(){
+            if let Ok(runtime)=tokio::runtime::Handle::try_current(){runtime.spawn_blocking(move||drop(qos));}
+            else{drop(qos);}
+        }
         self.fec.stop();
         self.pending_decoder.lock().unwrap().take();
         if let Some(wlan)=self.wlan.get_mut().unwrap().take() {

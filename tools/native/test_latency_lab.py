@@ -19,7 +19,7 @@ CASE = dict(name='desktop', seconds=10, warmup_seconds=1, source='desktop', hdr=
 
 class Gates(unittest.TestCase):
     def test_pool_and_gpu_diagnostic_switches_are_explicit_and_unambiguous(self):
-        for name in ('amf_input_pool', 'gpu_encode_profile', 'socket_trace'):
+        for name in ('amf_input_pool', 'gpu_encode_profile', 'socket_trace', 'native_qos'):
             self.assertEqual(binary_switch({}, name), 0)
             for value in (0, 1):
                 self.assertEqual(binary_switch({name:value}, name), value)

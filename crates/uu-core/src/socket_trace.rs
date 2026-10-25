@@ -335,12 +335,12 @@ impl Drop for Call<'_> {
         self.trace.active.fetch_sub(1, Ordering::Release);
     }
 }
-pub(crate) struct Observed {
-    pub socket: UdpSocket,
+pub(crate) struct Observed<C = UdpSocket> {
+    pub socket: C,
     pub trace: Arc<Observation>,
 }
 #[async_trait]
-impl Conn for Observed {
+impl<C: Conn + Send + Sync> Conn for Observed<C> {
     async fn connect(&self, addr: SocketAddr) -> Result<()> {
         Conn::connect(&self.socket, addr).await
     }
