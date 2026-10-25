@@ -23,7 +23,7 @@ struct Version {
     major: u16,
     minor: u16,
 }
-#[repr(C)]
+#[repr(C, align(4))]
 struct Address {
     family: u16,
     port: u16,

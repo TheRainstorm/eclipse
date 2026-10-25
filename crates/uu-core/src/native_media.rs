@@ -696,7 +696,7 @@ impl Drop for NativePeer {
         #[cfg(windows)]
         if let Some(qos)=self.qos.get_mut().unwrap().take(){
             if let Ok(runtime)=tokio::runtime::Handle::try_current(){runtime.spawn_blocking(move||drop(qos));}
-            else{drop(qos);}
+            else{std::thread::spawn(move||drop(qos));}
         }
         self.fec.stop();
         self.pending_decoder.lock().unwrap().take();

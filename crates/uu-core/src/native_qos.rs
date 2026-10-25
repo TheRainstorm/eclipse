@@ -164,25 +164,25 @@ pub(crate) fn event(mut value: serde_json::Value) {
 
 /// Only enabled QoS connections need shared ownership. Disabled connections
 /// continue to pass the original UdpSocket directly into UDPMuxParams.
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 pub(crate) struct SharedSocket(pub Arc<UdpSocket>);
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 #[async_trait::async_trait]
 impl webrtc::util::conn::Conn for SharedSocket {
     async fn connect(&self, a: std::net::SocketAddr) -> webrtc::util::Result<()> {
-        webrtc::util::conn::Conn::connect(&*self.0, a).await
+        Ok(self.0.connect(a).await?)
     }
     async fn recv(&self, b: &mut [u8]) -> webrtc::util::Result<usize> {
-        webrtc::util::conn::Conn::recv(&*self.0, b).await
+        Ok(self.0.recv(b).await?)
     }
     async fn recv_from(&self, b: &mut [u8]) -> webrtc::util::Result<(usize, std::net::SocketAddr)> {
-        webrtc::util::conn::Conn::recv_from(&*self.0, b).await
+        Ok(self.0.recv_from(b).await?)
     }
     async fn send(&self, b: &[u8]) -> webrtc::util::Result<usize> {
-        webrtc::util::conn::Conn::send(&*self.0, b).await
+        Ok(self.0.send(b).await?)
     }
     async fn send_to(&self, b: &[u8], a: std::net::SocketAddr) -> webrtc::util::Result<usize> {
-        webrtc::util::conn::Conn::send_to(&*self.0, b, a).await
+        Ok(self.0.send_to(b, a).await?)
     }
     fn local_addr(&self) -> webrtc::util::Result<std::net::SocketAddr> {
         webrtc::util::conn::Conn::local_addr(&*self.0)
@@ -323,6 +323,46 @@ mod tests {
         .await
         .unwrap();
         assert!(api.live.lock().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn shared_socket_preserves_original_udp_and_ownership() {
+        use webrtc::util::conn::Conn;
+        let owned = socket().await;
+        let weak = Arc::downgrade(&owned);
+        let wrapped = SharedSocket(owned);
+        let other = socket().await;
+        let address = Conn::local_addr(&wrapped).unwrap();
+        let mut buf = [0; 64];
+        assert!(Conn::send(&wrapped, b"unconnected").await.is_err());
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(5),
+            Conn::recv_from(&wrapped, &mut buf)
+        )
+        .await
+        .is_err());
+        Conn::send_to(&wrapped, b"one", other.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (n, from) = other.recv_from(&mut buf).await.unwrap();
+        assert_eq!(from, address);
+        assert_eq!(&buf[..n], b"one");
+        other.send_to(b"two", address).await.unwrap();
+        let (n, from) = Conn::recv_from(&wrapped, &mut buf).await.unwrap();
+        assert_eq!(from, other.local_addr().unwrap());
+        assert_eq!(&buf[..n], b"two");
+        Conn::connect(&wrapped, other.local_addr().unwrap())
+            .await
+            .unwrap();
+        Conn::send(&wrapped, b"three").await.unwrap();
+        other.recv_from(&mut buf).await.unwrap();
+        other.send_to(b"four", address).await.unwrap();
+        assert_eq!(Conn::recv(&wrapped, &mut buf).await.unwrap(), 4);
+        assert!(Conn::remote_addr(&wrapped).is_none());
+        assert!(Conn::as_any(&wrapped).is::<UdpSocket>());
+        Conn::close(&wrapped).await.unwrap();
+        assert!(weak.upgrade().is_some());
+        drop(wrapped);
+        assert!(weak.upgrade().is_none());
     }
     #[test]
     fn default_off_policy() {
