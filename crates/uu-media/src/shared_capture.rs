@@ -81,10 +81,9 @@ impl Stats {
 impl Drop for Stats {
     fn drop(&mut self) {
         let c = self.counts.get_mut().unwrap_or_else(|e| e.into_inner());
-        eprintln!(
-            "{}",
+        log(
             serde_json::json!({"event":"shared_capture_closed","generation":self.generation,"capture":self.capture,"encode":self.encode,
-            "actual_separate":true,"retired":self.retired.load(Ordering::Acquire),"poisoned":self.poisoned.load(Ordering::Acquire),"counts":c})
+            "actual_separate":true,"retired":self.retired.load(Ordering::Acquire),"poisoned":self.poisoned.load(Ordering::Acquire),"counts":c}),
         );
     }
 }
@@ -108,11 +107,34 @@ impl Drop for Handle {
         }
     }
 }
+/// Serialize before writing so the C encoder close record cannot split JSON
+/// into individual formatting fragments. This is never called per frame.
+pub(crate) fn log(value: serde_json::Value) {
+    use std::io::Write;
+    let mut line = value.to_string();
+    line.push('\n');
+    let _ = std::io::stderr().lock().write_all(line.as_bytes());
+}
+#[derive(Debug)]
+struct View {
+    texture: Option<ID3D11Texture2D>,
+    stats: Arc<Stats>,
+}
+impl Drop for View {
+    fn drop(&mut self) {
+        self.texture.take();
+        self.stats
+            .counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .views_closed += 1;
+    }
+}
 #[derive(Debug)]
 pub(crate) struct Slot {
     // Explicitly cleared before the final Stats Arc can emit its close proof.
     capture: Option<ID3D11Texture2D>,
-    encode: Option<ID3D11Texture2D>,
+    encode: Option<View>,
     writer: Option<IDXGIKeyedMutex>,
     reader: Option<IDXGIKeyedMutex>,
     handle: Option<Handle>,
@@ -158,11 +180,24 @@ impl Slot {
         let device: ID3D11Device1 = encode.device.cast().map_err(|e| e.to_string())?;
         let opened: ID3D11Texture2D =
             unsafe { device.OpenSharedResource1(handle.value) }.map_err(|e| e.to_string())?;
+        stats
+            .counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .views_opened += 1;
+        let opened = View {
+            texture: Some(opened),
+            stats: stats.clone(),
+        };
         let writer = texture.cast().map_err(|e| e.to_string())?;
-        let reader = opened.cast().map_err(|e| e.to_string())?;
+        let reader = opened
+            .texture
+            .as_ref()
+            .unwrap()
+            .cast()
+            .map_err(|e| e.to_string())?;
         {
             let mut c = stats.counts.lock().unwrap_or_else(|e| e.into_inner());
-            c.views_opened += 1;
             c.slots_created += 1;
         }
         Ok(Arc::new(Self {
@@ -175,7 +210,13 @@ impl Slot {
         }))
     }
     pub fn view(&self) -> ID3D11Texture2D {
-        self.encode.as_ref().unwrap().clone()
+        self.encode
+            .as_ref()
+            .unwrap()
+            .texture
+            .as_ref()
+            .unwrap()
+            .clone()
     }
     pub fn proof(&self) -> serde_json::Value {
         self.stats.proof()
@@ -207,7 +248,6 @@ impl Drop for Slot {
         self.capture.take();
         self.handle.take();
         let mut c = self.stats.counts.lock().unwrap_or_else(|e| e.into_inner());
-        c.views_closed += 1;
         c.slots_closed += 1;
     }
 }
@@ -385,6 +425,7 @@ mod platform_tests {
     #[ignore = "requires AMD D3D11 hardware; run explicitly in the isolated Windows lab"]
     fn separate_device_lifecycle_preserves_live_pixels_and_reclaims_unconsumed_slots() {
         let (capture, encode) = devices();
+        assert!(Stats::new(&capture, &capture).is_err());
         let context = unsafe { capture.device.GetImmediateContext().unwrap() };
         let (source, view) = texture(&capture);
         let mut pool = CapturePool::separate(capture.clone(), encode.clone(), 4, 4).unwrap();
@@ -466,10 +507,12 @@ mod platform_tests {
         );
         let writer = Guard::acquire(slot.writer.as_ref().unwrap(), &stats).unwrap();
         let reader = frame.clone();
+        let timeout_started = Instant::now();
         let failed = std::thread::spawn(move || reader.capture_read().is_err())
             .join()
             .unwrap();
         assert!(failed);
+        assert!(timeout_started.elapsed() < std::time::Duration::from_secs(2));
         {
             let c = stats.counts.lock().unwrap();
             assert_eq!(c.acquires, 1);

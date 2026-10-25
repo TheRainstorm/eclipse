@@ -107,7 +107,7 @@ impl super::worker::Driver for Driver {
                 }
                 proof["conversion"]=serde_json::to_value(conversion).map_err(|e|e.to_string())?;
                 proof["native_amf"]=serde_json::to_value(native).map_err(|e|e.to_string())?;
-                let mut first=proof.clone();first["event"]="shared_capture_first_input".into();eprintln!("{}",first);
+                let mut first=proof.clone();first["event"]="shared_capture_first_input".into();crate::shared_capture::log(first);
                 self.shared_proof=Some(proof);
             }
             if self.pool_enabled && input.amf_pooled() {
@@ -166,6 +166,6 @@ impl Drop for Driver {fn drop(&mut self){
     if let Some(mut proof)=self.shared_proof.take(){
         let pending=self.native.close();
         proof["event"]="shared_capture_amf_closed".into();proof["native_pending"]=pending.into();
-        eprintln!("{}",proof);
+        crate::shared_capture::log(proof);
     }
 }}

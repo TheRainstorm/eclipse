@@ -50,6 +50,7 @@ impl CapturePool {
             return Err(super::error("capture pool source/device layout changed"));
         }
         if self.slots.first().is_some_and(|slot|slot.capture_texture().ok().is_some_and(|(old,_)|{let mut before=D3D11_TEXTURE2D_DESC::default();unsafe{old.GetDesc(&mut before);}before.Format!=desc.Format})) {
+            if self.separate.is_some(){return Err(super::error("shared capture format changed; retire and reopen the generation"));}
             self.slots.clear(); // Old frames retain their own immutable leases.
         }
         let free = self.slots.iter_mut().position(|slot| Arc::get_mut(slot).is_some());

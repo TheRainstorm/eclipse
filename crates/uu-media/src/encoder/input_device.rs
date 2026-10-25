@@ -28,7 +28,7 @@ impl InputDevice {
                 }
                 let context = device.GetImmediateContext()?;
                 let threading: ID3D10Multithread = context.cast()?;
-                threading.SetMultithreadProtected(true);
+                let _ = threading.SetMultithreadProtected(true);
                 if !threading.GetMultithreadProtected().as_bool() {
                     return Err(windows::core::Error::empty());
                 }
