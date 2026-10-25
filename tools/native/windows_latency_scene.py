@@ -191,3 +191,27 @@ def validate_pixels(scene,pixel):
     mae=sum(abs(a-b)for a,b in zip(actual,expected))/len(actual);am=sum(actual)/len(actual);em=sum(expected)/len(expected);den=math.sqrt(sum((a-am)**2 for a in actual)*sum((b-em)**2 for b in expected));correlation=sum((a-am)*(b-em)for a,b in zip(actual,expected))/den if den else None
     checks={'all_borders':border_ok,'all_corners':corner_ok,'phase_marker':barcode_ok,'six_stripes':stripe_error<=20,'texture_matches_phase':mae<=55 and correlation is not None and correlation>=.45}
     return {'passed':all(checks.values()),'checks':checks,'raw_samples':{'borders':[{'xy':list(xy),'RGB':rgb,'expected_RGB':exp} for xy,rgb,exp in zip(border_points,borders,scene['border_RGB'])],'corners':[{'xy':list(xy),'RGB':rgb,'expected_RGB':exp} for xy,rgb,exp in zip([(16,16),(w-17,16),(16,h-17),(w-17,h-17)],corners,scene['corner_RGB'])],'barcode':[{'xy':[1136+i*48,96],'RGB':pixel(1136+i*48,96),'expected_RGB':[224 if binary[i] else 32]*3} for i in range(8)],'stripes':[{'xy':[112+b*160,302],'RGB':rgb,'expected_RGB':[(stripe_phase*3+b*37)%220+20,(b*41+stripe_phase)%220+20,(stripe_phase*2+b*31)%220+20]} for b,rgb in enumerate(stripes)],'texture':samples},'borders':borders,'corners':corners,'barcode_samples':bits,'texture_phase':phase,'stripe_phase':stripe_phase,'stripe_RGB_error':stripe_error,'texture_RGB_mean_absolute_error':mae,'texture_RGB_correlation':correlation,'tolerances':{'marker_and_stripes_max_error':20,'barcode_max_error_exclusive':40,'texture_MAE_max':55,'texture_correlation_min':.45},'scope':'Finite sample markers/256 texture points, not full-frame quality or all-frame pixel proof'}
+
+
+def decoded_content_identity(scene, strict):
+    """Prospective content identity, independent of unchanged colour fidelity.
+
+    Exclusion radii derive only from the complete design palette. A marker must
+    be uniquely closest to its expected colour and strictly within half the
+    distance to every other colour, using RGB maximum-channel distance.
+    """
+    palette=[scene['background']]+scene['border_RGB']+scene['corner_RGB']
+    if len({tuple(c) for c in palette})!=9:raise ValueError('design palette is not unique')
+    distance=lambda a,b:max(abs(x-y) for x,y in zip(a,b))
+    rows={};radii={}
+    for group,expected in [('borders',scene['border_RGB']),('corners',scene['corner_RGB'])]:
+        rows[group]=[];radii[group]=[];points=strict['raw_samples'][group]
+        if len(points)!=4:raise ValueError('marker sample set incomplete')
+        for point,target in zip(points,expected):
+            others=[c for c in palette if c!=target];radius=min(distance(target,c)for c in others)/2;actual=point['RGB']
+            if len(actual)!=3 or any(type(v)is not int or not 0<=v<=255 for v in actual):raise ValueError('marker RGB invalid')
+            own=distance(actual,target);other=min(distance(actual,c)for c in others);valid=own<other and own<radius
+            rows[group].append({'xy':point['xy'],'RGB':actual,'expected_RGB':target,'target_distance':own,'closest_other_distance':other,'exclusive_radius':radius,'unique_nearest_target':own<other,'inside_exclusive_radius':own<radius,'valid':valid});radii[group].append(radius)
+    if radii!={'borders':[40,30,70,60],'corners':[40,60,70,30]}:raise ValueError('design palette separation changed')
+    checks={'all_border_identities':all(r['valid']for r in rows['borders']),'all_corner_identities':all(r['valid']for r in rows['corners']),'phase_marker':strict['checks']['phase_marker'],'six_stripes':strict['checks']['six_stripes'],'texture_matches_phase':strict['checks']['texture_matches_phase']}
+    return {'valid':all(checks.values()),'checks':checks,'markers':rows,'exclusive_radii':radii,'palette':palette,'rule':'RGB Linfinity, unique nearest target and strict distance < half minimum other design colour separation','strict_fidelity_passed':strict['passed'],'scope':'Finite decoded content identity only, not colour fidelity or product acceptance'}
