@@ -422,6 +422,10 @@ def stimulus(config):
     if clock not in ('high_res_waitable', 'legacy_wm_timer'):
         raise ValueError('unknown bounded stimulus clock')
     renderer=full_scene.Renderer(scene,user,gdi) if scene else None
+    if scene:
+        import windows_latency_observer as observer_module
+        paint_page=observer_module.PaintPage()
+    else:paint_page=None
     initial_windows=full_scene.window_snapshot() if scene else None
     class Startup(C.Structure):
         _fields_=[('cb',W.DWORD),('reserved',W.LPWSTR),('desktop',W.LPWSTR),('title',W.LPWSTR),('x',W.DWORD),('y',W.DWORD),('xs',W.DWORD),('ys',W.DWORD),('xc',W.DWORD),('yc',W.DWORD),('fill',W.DWORD),('flags',W.DWORD),('show',W.WORD),('reserved2',W.WORD),('bytes',C.c_void_p),('stdin',W.HANDLE),('stdout',W.HANDLE),('stderr',W.HANDLE)]
@@ -435,7 +439,7 @@ def stimulus(config):
         'pid':os.getpid(),'hwnd':int(hwnd or 0),'clock':clock,
         'requested_fps':stimulus_fps(config),'elapsed_seconds':time.perf_counter()-started,
         'dpi':dpi,'physical_rect':bounds,'geometry':geometry,'scene_manifest':scene,
-        'window_calls':window_calls,'window_lifecycle':{'initial':initial_windows,'samples':window_samples if recorder.closed else window_samples[-1:],'after':after_windows,'foreign_changes':full_scene.foreign_changes(initial_windows,after_windows,os.getpid()) if after_windows else None,'own_windows_absent':not any(r['pid']==os.getpid() for r in after_windows['windows']) if after_windows else None},
+        'observer_binding':{'paint_page':paint_page.name,'target':{'hwnd':int(hwnd or 0),'pid':os.getpid(),'identity':initial_windows['observer']},'session':initial_windows['session'],'bounds':bounds} if scene else None,'window_calls':window_calls,'window_lifecycle':{'initial':initial_windows,'samples':window_samples if recorder.closed else window_samples[-1:],'after':after_windows,'foreign_changes':full_scene.foreign_changes(initial_windows,after_windows,os.getpid()) if after_windows else None,'own_windows_absent':not any(r['pid']==os.getpid() for r in after_windows['windows']) if after_windows else None},
         'scene_pixels':{'start':start_pixels,'end':end_pixels},'paint_qpc_frequency':frequency.value,
         'paint_qpc':paint_qpc if recorder.closed else [],'scene_cache_bytes':sum(map(len,renderer.cache)) if renderer else 0})
     def audit_window(label):
@@ -475,10 +479,10 @@ def stimulus(config):
             finally:user.EndPaint(hwnd,C.byref(paint))
             recorder.record(round((time.perf_counter()-started)*1e6))
             if scene:
-                ticks=C.c_int64();kernel.QueryPerformanceCounter(C.byref(ticks));paint_qpc.append({'paint_index':count,'texture_phase':count%16,'stripe_phase':count%220,'ticks':ticks.value})
+                ticks=C.c_int64();kernel.QueryPerformanceCounter(C.byref(ticks));paint_qpc.append({'paint_index':count,'texture_phase':count%16,'stripe_phase':count%220,'ticks':ticks.value});paint_page.record(count+1,ticks.value)
             count+=1
-            if time.perf_counter()-last_write>=1:
-                audit_window('periodic');recorder.progress();last_write=time.perf_counter()
+            if not scene and time.perf_counter()-last_write>=1:
+                recorder.progress();last_write=time.perf_counter()
             return 0
         if message == 2:
             recorder.close();user.PostQuitMessage(0);return 0
@@ -550,14 +554,18 @@ def stimulus(config):
             if scene:after_windows=full_scene.window_snapshot()
             if timer:kernel.CancelWaitableTimer(timer);kernel.CloseHandle(timer)
             recorder.finalize()
+            if paint_page:paint_page.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__); parser.add_argument('--config', required=True, type=Path)
-    parser.add_argument('--stimulus', action='store_true'); args = parser.parse_args()
+    parser.add_argument('--stimulus', action='store_true'); parser.add_argument('--observer',action='store_true'); args = parser.parse_args()
     if sys.platform != 'win32':
         parser.error('Windows interactive console required')
     config_path = args.config.resolve(); config = json.loads(config_path.read_text(encoding='utf8'))
+    if args.observer:
+        import windows_latency_observer
+        return windows_latency_observer.run(config)
     if args.stimulus:
         stimulus(config); return 0
     session = W.DWORD(); kernel = C.WinDLL('kernel32', use_last_error=True)
@@ -650,7 +658,7 @@ def main():
                                          'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config),'wlan_streaming_mode':wlan_mode,
                                          'amf_av1_input_queue_size':av1_queue,'gpu_encode_profile':env.get('UU_GPU_ENCODE_PROFILE')=='1','workload_diagnostic':env.get('UU_AMF_WORKLOAD_DIAGNOSTIC') is not None})
     processes = []; logs = []; samples = []; completed = False; error = None; moving = None
-    product_process = None; monitored_process = None
+    product_process = None; monitored_process = None; observing=None; observer_event=None; observer_kernel=None
     observer = WlanObserver(); wlan_samples = [observer.snapshot()]; next_wlan = time.monotonic() + 1
     try:
         def launch(argv, logfile):
@@ -659,17 +667,26 @@ def main():
                                        creationflags=subprocess.CREATE_NO_WINDOW)
             processes.append(process); return process
         moving = None
-        if config['role'] == 'stimulus-clock':
-            moving = launch([sys.executable,str(Path(__file__).resolve()),'--config',str(config_path),'--stimulus'],'stimulus.log')
-            monitored_process = moving
-        elif config['role'] == 'host':
-            moving = launch([sys.executable, str(Path(__file__).resolve()), '--config', str(config_path), '--stimulus'], 'stimulus.log')
-            deadline = time.monotonic()+10
+        if config['role'] in ('stimulus-clock','host'):
+            moving=launch([sys.executable,str(Path(__file__).resolve()),'--config',str(config_path),'--stimulus'],'stimulus.log')
+            deadline=time.monotonic()+10
             while not Path(config['stimulus_report']).exists():
-                if moving.poll() is not None or time.monotonic() > deadline:
-                    raise RuntimeError('owned stimulus did not start')
+                if moving.poll() is not None or time.monotonic()>deadline:raise RuntimeError('owned stimulus did not start')
                 time.sleep(.1)
-            product_process = launch(config['command'], 'host.log')
+            initial_scene=json.loads(Path(config['stimulus_report']).read_text())
+            if config.get('stimulus_scene') is not None:
+                import windows_latency_observer as observer_module
+                import uuid,math
+                binding=initial_scene['observer_binding'];binding.update(stop_event='Local\\EclipseLatencyStop-'+uuid.uuid4().hex,max_seconds=min(600,math.ceil(config['deadline_seconds']+15)),max_records=min(608,math.ceil(config['deadline_seconds']+19)))
+                observer_kernel,observer_event=observer_module.event(binding['stop_event'],create=True)
+                observer_config=root/'observer-config.json';atomic(observer_config,dict(config,observer=binding))
+                observing=launch([sys.executable,str(Path(__file__).resolve()),'--config',str(observer_config),'--observer'],'observer.log')
+                ready=time.monotonic()+5
+                while not (root/'stimulus-progress.json').exists():
+                    if observing.poll() is not None or time.monotonic()>ready:raise RuntimeError('owned observer did not start')
+                    time.sleep(.05)
+            if config['role']=='host':product_process=launch(config['command'],'host.log')
+            else:monitored_process=moving
         elif config['role'] == 'viewer':
             product_process = launch(config['command'], 'viewer.log')
         else:
@@ -679,6 +696,7 @@ def main():
         while monitored_process.poll() is None:
             if product_process is not None and moving is not None and moving.poll() is not None:
                 raise RuntimeError('owned desktop stimulus stopped before the host')
+            if observing is not None and observing.poll() is not None:raise RuntimeError('owned observer ended before planned stop')
             sample = resources(monitored_process)
             if sample: samples.append(sample)
             if time.monotonic() >= next_progress:
@@ -702,6 +720,11 @@ def main():
         error = f'{type(failure).__name__}: {failure}'
     finally:
         cleanup_details = {'stimulus_wm_close_attempted':False,'stimulus_wm_close_posted':False,'stimulus_wm_close_timed_out':False,'stimulus_wm_close_error':None,'children':[]}
+        if observer_event:
+            observer_kernel.SetEvent(observer_event)
+            if observing is not None and observing.poll() is None:
+                try:observing.wait(timeout=5)
+                except subprocess.TimeoutExpired:pass
         if moving is not None and moving.poll() is None:
             try:
                 data=json.loads(Path(config['stimulus_report']).read_text())
@@ -718,7 +741,10 @@ def main():
             except Exception as failure:
                 cleanup_details['stimulus_wm_close_error'] = f'{type(failure).__name__}: {failure}'
         for process in reversed(processes):
-            detail = {'pid':process.pid,'role':'stimulus' if process is moving or config['role']=='stimulus-clock' else 'native',
+            if process is observing and process.poll() is None:
+                try:process.wait(timeout=5)
+                except subprocess.TimeoutExpired:pass
+            detail = {'pid':process.pid,'role':'observer' if process is observing else 'stimulus' if process is moving else 'native',
                       'exit_before_fallback':process.poll(),'terminate_used':False,'kill_used':False}
             if process.poll() is None:
                 detail['terminate_used'] = True
@@ -731,6 +757,17 @@ def main():
             cleanup_details['children'].append(detail)
         cleanup_details['forced_cleanup'] = any(p['terminate_used'] or p['kill_used'] for p in cleanup_details['children'])
         cleanup_details['product_forced_cleanup'] = any(p['role']=='native' and (p['terminate_used'] or p['kill_used']) for p in cleanup_details['children'])
+        if observer_event:observer_kernel.CloseHandle(observer_event)
+        if observing is not None:
+            try:
+                scene_report=json.loads(Path(config['stimulus_report']).read_text());observed=json.loads((root/'stimulus-observer.json').read_text())
+                scene_report['observer_report']=observed;scene_report['observer_exit_verified']=observing.poll()==0;scene_report['window_lifecycle']['samples'] += [{'label':'periodic','snapshot':x['snapshot'],'coverage':x['coverage'],'observer_sequence':x['sequence'],'observation_begin_ticks':x['begin_ticks'],'observation_end_ticks':x['end_ticks']} for x in observed['records'] if 'snapshot' in x]
+                if not observed['completed'] or observing.poll()!=0:
+                    scene_report['completed']=False;scene_report['state']='failed';scene_report['error']='observer failed: '+str(observed.get('error'))
+                atomic(Path(config['stimulus_report']),scene_report)
+                if not observed['completed'] or observing.poll()!=0:raise RuntimeError(scene_report['error'])
+            except BaseException as failure:
+                completed=False;error=(error or '')+' observer collection '+str(failure)
         for log in logs: log.close()
         wlan_samples.append(observer.snapshot()); wlan_close = observer.close()
         atomic(root/'wlan-observations.json', {'samples':wlan_samples,'observer_close_result':wlan_close,'requester':'native process, not this read-only observer'})
