@@ -461,7 +461,7 @@ impl Drop for CaptureWorker {
 }
 
 fn encode_source(
-    mut capture: Box<dyn uu_capture::Capture>,
+    capture: Box<dyn uu_capture::Capture>,
     mut settings: uu_media::encoder::Settings,
     mut encoder: Box<dyn uu_media::VideoEncoder>,
     refresh: Arc<AtomicBool>,
@@ -520,7 +520,6 @@ fn encode_source(
             })().map_err(|error|error.to_string());
             let _=change.reply.send(result);
         }
-        let started = Instant::now();
         capture.prefer_gpu(encoder.gpu_input(),encoder.gpu_vendor())?;
         let observed = match capture.next(live_timing.trace.enabled()) {
             Ok(frame) => frame,
@@ -1707,6 +1706,7 @@ mod overlap_integration_tests {
     impl uu_media::VideoEncoder for Encoder {
         fn codec(&self)->VideoCodec{VideoCodec::H264}
         fn backend_name(&self)->&str{"owned overlap encoder"}
+        fn set_bitrate(&mut self,_:u32)->std::result::Result<(),uu_media::CodecError>{Ok(())}
         fn request_keyframe(&mut self){self.keyframe=true;}
         fn encode(&mut self,frame:&uu_media::RawFrame)->std::result::Result<Vec<uu_media::EncodedFrame>,uu_media::CodecError>{
             let id=frame.data[0];

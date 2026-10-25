@@ -1,7 +1,6 @@
 //! Default-off DXGI capture ownership. Encoding/AMF remains on its driver thread.
 use crate::latest_capture::{self, Owner, Packet};
-use anyhow::{ensure, Result};
-use std::sync::Arc;
+use anyhow::Result;
 use std::time::{Duration, Instant};
 use uu_capture::{frame_info::FrameInfo, Capture, CaptureError};
 use uu_media::{encoder::InputDevice, RawFrame};
