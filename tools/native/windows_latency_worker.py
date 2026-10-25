@@ -486,6 +486,8 @@ def main():
     if binary_switch(config, 'socket_trace'):
         env['ECLIPSE_SOCKET_TRACE'] = '1'
         env['ECLIPSE_SOCKET_TRACE_FILE'] = str(root/'socket-trace.json')
+    if config.get('local_frame_trace') is True:
+        env['ECLIPSE_LOCAL_FRAME_TRACE'] = str(root/'host-local-trace.json')
     if config.get('continuous_trace') is True:
         env['ECLIPSE_CONTINUOUS_TRACE'] = '1'
     if config.get('encode_profile') is True:

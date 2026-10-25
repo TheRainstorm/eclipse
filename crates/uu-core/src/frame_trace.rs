@@ -37,6 +37,8 @@ pub(crate) fn host_channel(
     channel: Arc<webrtc::data_channel::RTCDataChannel>,
     trace: Arc<HostTrace>,
 ) {
+    // A local experiment never serializes per-frame observations over the network.
+    if trace.local_output.is_some() { return; }
     let weak = Arc::downgrade(&channel);
     channel.on_open(Box::new(move || {
         Box::pin(async move {
@@ -356,9 +358,12 @@ struct State {
     slow: Option<u64>,
     continuous:Option<VecDeque<Frame>>,
     continuous_evicted:u64,
+    local_overflow:u64,
+    contexts:Vec<Context>,
 }
 pub(crate) struct HostTrace {
     enabled: bool,
+    local_output: Option<std::path::PathBuf>,
     continuous_limit:usize,
     started: Instant,
     epoch: u64,
@@ -371,19 +376,28 @@ impl Default for HostTrace {
 }
 impl HostTrace {
     fn new(enabled: bool) -> Self {
+        let local_output = std::env::var_os("ECLIPSE_LOCAL_FRAME_TRACE")
+            .filter(|value| !value.is_empty()).map(std::path::PathBuf::from);
+        Self::with_local_output(enabled, local_output)
+    }
+    fn with_local_output(enabled: bool, local_output: Option<std::path::PathBuf>) -> Self {
+        let capacity = if local_output.is_some() { LOCAL_CAPACITY } else { CAPACITY };
         Self {
             enabled,
+            local_output,
             continuous_limit:crate::pipeline_trace::diagnostic_limit(),
             started: Instant::now(),
             epoch: rand::random::<u64>().max(1),
             state: Mutex::new(State {
                 context: None,
-                rows: VecDeque::with_capacity(if enabled { CAPACITY } else { 0 }),
+                rows: VecDeque::with_capacity(if enabled { capacity } else { 0 }),
                 pending: VecDeque::with_capacity(if enabled { PENDING } else { 0 }),
                 counts: Counts::default(),
                 slow: None,
                 continuous:std::env::var("ECLIPSE_CONTINUOUS_TRACE").is_ok_and(|v|v=="1").then(VecDeque::new),
                 continuous_evicted:0,
+                local_overflow:0,
+                contexts:Vec::with_capacity(if capacity == LOCAL_CAPACITY { LOCAL_CONTEXTS } else { 0 }),
             }),
         }
     }
@@ -412,6 +426,10 @@ impl HostTrace {
             hdr: settings.hdr,
             backend: label,
         });
+        if self.local_output.is_some() && state.contexts.len() < LOCAL_CONTEXTS {
+            let context = state.context.clone().unwrap();
+            state.contexts.push(context);
+        }
         state.slow = None;
     }
     fn offset(&self, at: Instant) -> u64 {
@@ -443,7 +461,13 @@ impl HostTrace {
             id: state.counts.captured,
             generation,
         };
-        if state.rows.len() == CAPACITY {
+        // Keep the first bounded interval intact. Overflow is explicit, never
+        // silently replace slow or missing observations with later frames.
+        if self.local_output.is_some() && state.rows.len() == LOCAL_CAPACITY {
+            state.local_overflow += 1;
+            return Some(token);
+        }
+        if self.local_output.is_none() && state.rows.len() == CAPACITY {
             state.rows.pop_front();
             state.counts.ring_evictions += 1;
         }
@@ -551,9 +575,30 @@ impl HostTrace {
         let (captured,sent,evicted)=(state.counts.captured,state.counts.sent,state.continuous_evicted);drop(state);
         Some(serde_json::json!({"qpc_anchor":crate::socket_trace::clock_anchor(self.started),"clock":"host_monotonic","epoch":self.epoch,"events":EVENTS,"limit":self.continuous_limit,"captured":captured,"sent":sent,"evicted":evicted,"frames":rows}))
     }
+    /// Only after the capture/encode producer has stopped. No hot-path file I/O.
+    pub fn write_local_report(&self) -> std::io::Result<()> {
+        let Some(path) = &self.local_output else { return Ok(()); };
+        let state = self.state.lock().unwrap();
+        let rows: Vec<_> = state.rows.iter().copied().collect();
+        let report = serde_json::json!({
+            "version":1, "epoch":self.epoch, "clock":"host_monotonic",
+            "events":EVENTS, "limit":LOCAL_CAPACITY, "overflow":state.local_overflow,
+            "context_limit":LOCAL_CONTEXTS, "contexts":state.contexts,
+            "last_generation":state.context.as_ref().map(|c|c.generation),
+            "counts":state.counts, "pending_at_close":state.pending.len(),
+            "closed_at_us":self.offset(Instant::now()),
+            "observer":"local_close_only; frame-trace data channel silent",
+            "summary":local_summary(&rows), "frames":rows,
+        });
+        drop(state);
+        use std::io::Write;
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        serde_json::to_writer(&mut file, &report)?;
+        file.flush()
+    }
     /// Called off the media hot path. Clone under the lock; sort/serialize after releasing it.
     pub fn report(&self) -> Option<Report> {
-        if !self.enabled {
+        if !self.enabled || self.local_output.is_some() {
             return None;
         }
         let (context, rows, counts, slow) = {
@@ -623,10 +668,124 @@ impl HostTrace {
     }
 }
 
+const LOCAL_CAPACITY: usize = 16_384;
+const LOCAL_CONTEXTS: usize = 128;
+
+// Quantization matches the installed Sunshine short-frame-header formula.
+// Duplicate source frames are included whenever capture_ready is available:
+// the trace start overrides the missing duplicate presentation timestamp.
+fn host_latency_field(us: u64) -> u16 {
+    ((u128::from(us) + 50) / 100).min(u128::from(u16::MAX)) as u16
+}
+fn local_summary(rows: &[Frame]) -> serde_json::Value {
+    let mut intervals = serde_json::Map::new();
+    for (name, a, b) in INTERVALS {
+        let (mut count, mut sum, mut missing, mut backwards) = (0u64, 0u128, 0u64, 0u64);
+        for row in rows {
+            match row.events_us[a].zip(row.events_us[b]) {
+                None => missing += 1,
+                Some((begin, end)) => match end.checked_sub(begin) {
+                    None => backwards += 1,
+                    Some(us) => { count += 1; sum += u128::from(us); }
+                }
+            }
+        }
+        intervals.insert(name.into(), serde_json::json!({"count":count,
+            "sum_us_decimal":sum.to_string(),
+            "mean_us":(count>0).then(||sum as f64/count as f64),
+            "missing":missing,"backwards":backwards}));
+    }
+    let (mut nonzero, mut sum, mut zero) = (0u64, 0u64, 0u64);
+    for row in rows {
+        if let Some(us) = row.events_us[1].zip(row.events_us[6])
+            .and_then(|(a,b)|b.checked_sub(a)) {
+            let field = host_latency_field(us);
+            if field == 0 { zero += 1; }
+            else { nonzero += 1; sum += u64::from(field); }
+        }
+    }
+    serde_json::json!({"intervals":intervals,"sunshine_matched":{
+        "nonzero_count":nonzero,"zero_count":zero,"sum_100us":sum,
+        "mean_ms":(nonzero>0).then(||sum as f64/10.0/nonzero as f64),
+        "duplicate_rule":"include known-ready duplicates; missing/invalid start excluded"}})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+    fn local_trace() -> HostTrace {
+        HostTrace::with_local_output(true, Some("unused-local-experiment.json".into()))
+    }
+    #[test]
+    fn local_quantization_zero_rounding_and_overflow_are_exact() {
+        assert_eq!(host_latency_field(49),0);
+        assert_eq!(host_latency_field(50),1);
+        assert_eq!(host_latency_field(149),1);
+        assert_eq!(host_latency_field(150),2);
+        assert_eq!(host_latency_field(u64::MAX),u16::MAX);
+    }
+    #[test]
+    fn local_full_stream_keeps_order_generations_missing_and_weighted_sums() {
+        let trace=local_trace();trace.configure(settings(),"first");
+        let at=|us|trace.started+Duration::from_micros(us);
+        let a=trace.captured(1,None,true,at(0),at(100),at(100));
+        let b=trace.captured(2,None,true,at(0),at(100),at(100));
+        trace.output(2,false,at(200));trace.mark(b,Event::Dequeue,at(400));
+        trace.output(1,false,at(200));trace.mark(a,Event::Dequeue,at(200));
+        trace.mark(a,Event::Dequeue,at(900)); // duplicate callback must not count twice
+        trace.configure(settings(),"second");
+        trace.captured(3,None,true,at(500),at(500),at(500)); // missing output
+        let state=trace.state.lock().unwrap();let rows=state.rows.iter().copied().collect::<Vec<_>>();
+        assert_eq!(rows.iter().map(|r|r.generation).collect::<Vec<_>>(),[1,1,2]);
+        assert_eq!(state.contexts.len(),2);assert_eq!(state.counts.outputs,2);
+        let summary=local_summary(&rows);let interval=&summary["intervals"]["ready_to_dequeue"];
+        assert_eq!(interval["count"],2);assert_eq!(interval["sum_us_decimal"],"400");
+        assert_eq!(interval["mean_us"],200.0);assert_eq!(interval["missing"],1);
+        assert_eq!(summary["sunshine_matched"]["mean_ms"],0.2);
+        assert!(trace.report().is_none());
+    }
+    #[test]
+    fn local_invalid_times_and_unknown_sources_are_not_silently_zero_samples() {
+        let trace=local_trace();trace.configure(settings(),"fixture");
+        let at=|us|trace.started+Duration::from_micros(us);
+        let a=trace.captured(1,None,true,at(0),at(100),at(100));
+        trace.mark(a,Event::Dequeue,at(99));
+        let b=trace.captured(2,None,true,at(0),at(100),at(100));
+        trace.mark(b,Event::Dequeue,at(120));
+        let state=trace.state.lock().unwrap();let rows=state.rows.iter().copied().collect::<Vec<_>>();
+        assert_eq!(state.counts.unknown_source,2);
+        let summary=local_summary(&rows);
+        assert_eq!(summary["intervals"]["ready_to_dequeue"]["backwards"],1);
+        assert_eq!(summary["intervals"]["ready_to_dequeue"]["count"],1);
+        assert_eq!(summary["sunshine_matched"]["zero_count"],1);
+        assert!(summary["sunshine_matched"]["mean_ms"].is_null());
+    }
+    #[test]
+    fn local_known_ready_duplicates_keep_their_latency_and_source_identity() {
+        let trace=local_trace();trace.configure(settings(),"fixture");
+        let at=|us|trace.started+Duration::from_micros(us);
+        let source=FrameInfo { generation:7,frame_id:9,duplicate:true,
+            accumulated_frames:0,present:None,present_age_us:None };
+        let token=trace.captured(1,Some(source),true,at(0),at(100),at(100));
+        trace.mark(token,Event::Dequeue,at(400));
+        let state=trace.state.lock().unwrap();let rows=state.rows.iter().copied().collect::<Vec<_>>();
+        assert_eq!(state.counts.repeated_source,1);assert_eq!(rows[0].source,Some(source));
+        assert_eq!(local_summary(&rows)["sunshine_matched"]["nonzero_count"],1);
+        assert_eq!(local_summary(&rows)["sunshine_matched"]["mean_ms"],0.3);
+    }
+    #[test]
+    fn local_capacity_preserves_first_interval_and_counts_overflow() {
+        let trace=local_trace();trace.configure(settings(),"fixture");let at=trace.started;
+        for pts in 0..LOCAL_CAPACITY as u64+2 {
+            let token=trace.captured(pts,None,true,at,at,at);
+            trace.output(pts,false,at);trace.mark(token,Event::Dequeue,at);
+        }
+        let state=trace.state.lock().unwrap();assert_eq!(state.rows.len(),LOCAL_CAPACITY);
+        assert_eq!(state.rows.front().unwrap().input_id,1);
+        assert_eq!(state.local_overflow,2);assert_eq!(state.counts.unmatched_outputs,2);
+        assert_eq!(state.counts.captured,LOCAL_CAPACITY as u64+2);
+    }
     #[test]
     fn retired_callbacks_cannot_overwrite_a_new_session_while_waiting_for_the_slot() {
         use std::sync::atomic::Ordering;
