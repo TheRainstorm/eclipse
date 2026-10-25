@@ -52,13 +52,15 @@ impl Update {
 pub struct Applied {pub request:u64,pub settings:Update,pub bitrate_kbps:u32,pub error:Option<String>}
 pub(crate) struct Change {pub settings:Update,pub reply:tokio::sync::oneshot::Sender<std::result::Result<u32,String>>}
 #[derive(Clone)]
-pub(crate) struct Runtime(std::sync::mpsc::SyncSender<Change>);
+pub(crate) struct Runtime(std::sync::mpsc::SyncSender<Change>,std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn()+Send+Sync>>>>);
 impl Runtime {
-    pub fn channel()->(Self,std::sync::mpsc::Receiver<Change>){let(tx,rx)=std::sync::mpsc::sync_channel(1);(Self(tx),rx)}
+    pub fn channel()->(Self,std::sync::mpsc::Receiver<Change>){let(tx,rx)=std::sync::mpsc::sync_channel(1);(Self(tx,Default::default()),rx)}
+    pub fn set_wake(&self,wake:Option<std::sync::Arc<dyn Fn()+Send+Sync>>) { *self.1.lock().unwrap()=wake; }
+    pub fn wake(&self) { let wake=self.1.lock().unwrap().clone();if let Some(wake)=wake {wake();} }
     pub fn request(&self,settings:Update)->Result<tokio::sync::oneshot::Receiver<std::result::Result<u32,String>>> {
         settings.validate()?;
         let(reply,rx)=tokio::sync::oneshot::channel();
-        self.0.try_send(Change{settings,reply}).map_err(|_|anyhow::anyhow!("画质更新尚未完成或会话已关闭"))?;Ok(rx)
+        self.0.try_send(Change{settings,reply}).map_err(|_|anyhow::anyhow!("画质更新尚未完成或会话已关闭"))?;self.wake();Ok(rx)
     }
 }
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
@@ -145,5 +147,20 @@ mod tests {
         assert!(crate::native_media::offers_codec(&sdp,VideoCodec::H264));
         assert!(request.add(&mut sdp).is_err());
         sdp.sdp.push_str(&format!("a={REQUEST}:ff\r\n"));assert!(Request::read(&sdp).is_err());
+    }
+}
+
+#[cfg(test)]
+mod owner_wake_tests {
+    use super::*;
+    #[test]
+    fn quality_request_wakes_waiter_and_cancellation_keeps_receiver_closed() {
+        use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+        let(runtime,changes)=Runtime::channel();let calls=Arc::new(AtomicUsize::new(0));let seen=calls.clone();
+        runtime.set_wake(Some(Arc::new(move ||{seen.fetch_add(1,Ordering::SeqCst);})));
+        let reply=runtime.request(Update{fps:120,bitrate_kbps:Some(40000)}).unwrap();assert_eq!(calls.load(Ordering::SeqCst),1);
+        drop(reply);let change=changes.recv().unwrap();assert!(change.reply.is_closed());
+        runtime.wake();assert_eq!(calls.load(Ordering::SeqCst),2);
+        runtime.set_wake(None);runtime.wake();assert_eq!(calls.load(Ordering::SeqCst),2);
     }
 }

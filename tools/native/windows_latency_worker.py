@@ -128,6 +128,13 @@ def binary_switch(config, name):
     return value
 
 
+def owner_pacing_switch(config, overlap, separate):
+    paced=binary_switch(config,'capture_owner_pacing')
+    if paced and not (overlap and separate):
+        raise ValueError('capture owner pacing requires overlap and separate device')
+    return paced
+
+
 def capture_device_switches(config):
     overlap=binary_switch(config,'capture_overlap')
     separate=binary_switch(config,'capture_separate_device')
@@ -469,6 +476,8 @@ def main():
     overlap,separate=capture_device_switches(config)
     env['UU_CAPTURE_ENCODE_OVERLAP'] = str(overlap)
     env['UU_CAPTURE_ENCODE_SEPARATE_DEVICE'] = str(separate)
+    owner_pacing=owner_pacing_switch(config,overlap,separate)
+    env['UU_CAPTURE_OWNER_PACING'] = str(owner_pacing)
     env['UU_AMF_INPUT_POOL'] = str(binary_switch(config, 'amf_input_pool'))
     env['UU_NATIVE_QOS'] = str(binary_switch(config, 'native_qos'))
     env['UU_NATIVE_DEDICATED_IO'] = str(binary_switch(config, 'native_dedicated_io'))
@@ -492,7 +501,7 @@ def main():
         env['ECLIPSE_CONTINUOUS_TRACE'] = '1'
     if config.get('encode_profile') is True:
         env['UU_ENCODE_PROFILE'] = '1'
-    atomic(root/'diagnostic-switches.json',{'capture_separate_device':int(env['UU_CAPTURE_ENCODE_SEPARATE_DEVICE']),'capture_overlap':int(env['UU_CAPTURE_ENCODE_OVERLAP']),'native_dedicated_io':int(env['UU_NATIVE_DEDICATED_IO']),'native_qos':int(env['UU_NATIVE_QOS']),'socket_trace':env.get('ECLIPSE_SOCKET_TRACE')=='1','continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL'],
+    atomic(root/'diagnostic-switches.json',{'capture_owner_pacing':owner_pacing,'capture_separate_device':int(env['UU_CAPTURE_ENCODE_SEPARATE_DEVICE']),'capture_overlap':int(env['UU_CAPTURE_ENCODE_OVERLAP']),'native_dedicated_io':int(env['UU_NATIVE_DEDICATED_IO']),'native_qos':int(env['UU_NATIVE_QOS']),'socket_trace':env.get('ECLIPSE_SOCKET_TRACE')=='1','continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL'],
                                          'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config),'wlan_streaming_mode':wlan_mode,
                                          'amf_av1_input_queue_size':av1_queue,'gpu_encode_profile':env.get('UU_GPU_ENCODE_PROFILE')=='1'})
     processes = []; logs = []; samples = []; completed = False; error = None; moving = None

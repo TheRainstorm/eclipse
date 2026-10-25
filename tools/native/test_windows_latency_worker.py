@@ -9,6 +9,16 @@ import unittest
 import windows_latency_worker as worker
 
 
+class OwnerPacing(unittest.TestCase):
+    def test_strict_switch_only_with_supported_device_combination(self):
+        self.assertEqual(worker.owner_pacing_switch({},0,0),0)
+        self.assertEqual(worker.owner_pacing_switch({'capture_owner_pacing':1},1,1),1)
+        for overlap,separate in ((0,0),(1,0),(0,1)):
+            with self.assertRaises(ValueError):worker.owner_pacing_switch({'capture_owner_pacing':1},overlap,separate)
+        for value in ('1',True,2,-1):
+            with self.assertRaises(ValueError):worker.owner_pacing_switch({'capture_owner_pacing':value},1,1)
+
+
 class FinalReports(unittest.TestCase):
     def test_close_then_finally_never_downgrades_the_final_file(self):
         with tempfile.TemporaryDirectory() as directory:

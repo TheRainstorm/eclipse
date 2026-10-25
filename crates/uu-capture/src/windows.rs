@@ -323,7 +323,8 @@ impl DxgiCapture {
         // The producer already paces each frame. Once a cached desktop exists,
         // poll for updates without adding another blocking wait to that interval.
         // Initial acquisition keeps a short wait to avoid spinning on an idle desktop.
-        let wait_ms = bounded_wait.map(|v|v.as_millis().clamp(1,16) as u32).unwrap_or_else(||if self.last.is_some() {0}else{5});
+        // An owner deadline probe may explicitly request a nonblocking check.
+        let wait_ms = bounded_wait.map(|v|v.as_millis().min(16) as u32).unwrap_or_else(||if self.last.is_some() {0}else{5});
         match unsafe { duplication.AcquireNextFrame(wait_ms, &mut info, &mut resource) } {
             Ok(()) => {}
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),

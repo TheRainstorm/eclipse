@@ -426,8 +426,9 @@ impl CaptureWorker {
         let (encoder_status,encoder_state)=watch::channel(encoder.backend_name().to_owned());
         let (quality,changes)=crate::native_quality::Runtime::channel();
         let (quality_status,quality_state)=watch::channel(settings);
+        let capture_control=quality.clone();
         let task = tokio::task::spawn_blocking(move || {
-            let result = encode_source(capture, settings, encoder, refresh, worker_stop, counter, worker_timings, live_timing,encoder_status,changes,quality_status, &tx,mode);
+            let result = encode_source(capture, settings, encoder, refresh, worker_stop, counter, worker_timings, live_timing,encoder_status,changes,quality_status, &tx,mode,capture_control);
             if let Err(error) = result {
                 let _ = tx.blocking_send(Err(error));
             }
@@ -447,6 +448,7 @@ impl CaptureWorker {
     }
     async fn stop(&mut self) -> Result<()> {
         self.stopped.store(true, Ordering::Release);
+        self.quality.wake();
         self.frames.close();
         if let Some(task) = self.task.take() {
             task.await.context("native capture worker failed")?;
@@ -457,7 +459,12 @@ impl CaptureWorker {
 impl Drop for CaptureWorker {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Release);
+        self.quality.wake();
     }
+}
+
+fn apply_refresh_request(refresh:&AtomicBool,encoder:&mut dyn uu_media::VideoEncoder) {
+    if refresh.swap(false,Ordering::AcqRel) { encoder.request_keyframe(); }
 }
 
 fn encode_source(
@@ -474,16 +481,20 @@ fn encode_source(
     quality_status:watch::Sender<uu_media::encoder::Settings>,
     output: &mpsc::Sender<Result<TracedEncoded>>,
     mode:Option<bool>,
+    capture_control:crate::native_quality::Runtime,
 ) -> Result<()> {
     let overlap=match mode{Some(enabled)=>enabled,None=>crate::capture_overlap::requested_from_env()?};
     let mut capture=crate::capture_overlap::Input::new(capture,overlap,settings.fps,encoder.gpu_input(),encoder.gpu_vendor())?;
+    capture_control.set_wake(capture.interrupt_handle());
     let result=(||->Result<()> {
     let mut backend=encoder.backend_name().to_owned();
     let mut interval = Duration::from_secs_f64(1.0 / settings.fps as f64);
     let mut next = Instant::now();
     encoder.request_keyframe();
     while !stopped.load(Ordering::Acquire) {
-        std::thread::sleep(next.saturating_duration_since(Instant::now()));
+        if !capture.owner_pacing() {
+            std::thread::sleep(next.saturating_duration_since(Instant::now()));
+        }
         if stopped.load(Ordering::Acquire) {
             break;
         }
@@ -546,10 +557,7 @@ fn encode_source(
         // RTCP already coalesces and limits recovery requests. Once requested,
         // renew references on the next frame, even just after a previous IDR.
         // Swap also preserves a request arriving while this frame is encoded.
-        let requested = refresh.swap(false, Ordering::AcqRel);
-        if requested {
-            encoder.request_keyframe();
-        }
+        apply_refresh_request(&refresh,encoder.as_mut());
         let started = Instant::now();
         let frame_token=live_timing.trace.captured(frame.pts.0,source_info,frame.gpu,capture_started,capture_ready,started);
         let encoded_frames = encoder.encode(frame)?;
@@ -580,6 +588,7 @@ fn encode_source(
     Ok(())
     })();
     let joined=capture.finish();
+    capture_control.set_wake(None);
     result.and(joined)
 }
 
@@ -1766,5 +1775,24 @@ mod overlap_integration_tests {
         let(mut worker,tx,entered,release,_)=setup(true);tx.send(Event::Frame(1)).unwrap();entered.recv_timeout(Duration::from_secs(1)).unwrap();release.send(()).unwrap();
         assert!(timeout(Duration::from_secs(1),worker.frames.recv()).await.unwrap().unwrap().is_err());worker.stop().await.unwrap();assert!(tx.send(Event::Frame(2)).is_err());
         let(mut idle,_tx,_entered,_release,_)=setup(false);timeout(Duration::from_millis(600),idle.stop()).await.unwrap().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod owner_pacing_idr_tests {
+    use super::*;
+    struct Encoder { requests:u32 }
+    impl uu_media::VideoEncoder for Encoder {
+        fn codec(&self)->VideoCodec { VideoCodec::Av1 }
+        fn encode(&mut self,_frame:&uu_media::RawFrame)->Result<Vec<uu_media::EncodedFrame>,uu_media::CodecError> { Ok(vec![]) }
+        fn request_keyframe(&mut self) { self.requests+=1; }
+        fn set_bitrate(&mut self,_kbps:u32)->Result<(),uu_media::CodecError> { Ok(()) }
+    }
+    #[test]
+    fn repeat_opportunity_consumes_idr_once_without_requiring_new_source() {
+        let refresh=AtomicBool::new(true);let mut encoder=Encoder{requests:0};
+        apply_refresh_request(&refresh,&mut encoder);assert_eq!(encoder.requests,1);
+        apply_refresh_request(&refresh,&mut encoder);assert_eq!(encoder.requests,1);
+        refresh.store(true,Ordering::Release);apply_refresh_request(&refresh,&mut encoder);assert_eq!(encoder.requests,2);
     }
 }

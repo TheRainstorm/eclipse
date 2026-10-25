@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     );
     println!(
         "{}",
-        serde_json::json!({"event":"overlap_gpu_arguments","overlap":options.overlap,"separate":options.separate,"source":format!("{:?}",source),"argv":std::env::args().collect::<Vec<_>>()})
+        serde_json::json!({"event":"overlap_gpu_arguments","overlap":options.overlap,"separate":options.separate,"owner_pacing":std::env::var("UU_CAPTURE_OWNER_PACING").as_deref()==Ok("1"),"source":format!("{:?}",source),"argv":std::env::args().collect::<Vec<_>>()})
     );
     for generation in 1..=2 {
         run(generation, options.overlap, options.separate, &source)?;

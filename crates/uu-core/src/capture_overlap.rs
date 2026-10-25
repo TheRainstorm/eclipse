@@ -21,8 +21,20 @@ pub(crate) fn requested_from_env() -> Result<bool> {
 }
 pub fn separate_requested(value:Option<&str>)->Result<bool>{match value{None|Some("0")=>Ok(false),Some("1")=>Ok(true),_=>anyhow::bail!("UU_CAPTURE_ENCODE_SEPARATE_DEVICE must be exactly 0 or 1")}}
 pub(crate) fn separate_from_env()->Result<bool>{match std::env::var("UU_CAPTURE_ENCODE_SEPARATE_DEVICE"){Ok(v)=>separate_requested(Some(&v)),Err(std::env::VarError::NotPresent)=>Ok(false),Err(e)=>Err(e.into())}}
+pub fn owner_pacing_requested(value:Option<&str>)->Result<bool> {
+    match value { None|Some("0")=>Ok(false),Some("1")=>Ok(true),
+        _=>anyhow::bail!("UU_CAPTURE_OWNER_PACING must be exactly 0 or 1") }
+}
+fn pacing_from_env()->Result<bool> {
+    match std::env::var("UU_CAPTURE_OWNER_PACING") { Ok(v)=>owner_pacing_requested(Some(&v)),
+        Err(std::env::VarError::NotPresent)=>Ok(false),Err(e)=>Err(e.into()) }
+}
+pub fn validate_owner_pacing(paced:bool,overlap:bool,separate:bool)->Result<()> {
+    anyhow::ensure!(!paced || (overlap && separate),"capture owner pacing requires overlap and separate encode device");Ok(())
+}
 /// Must precede encoder initialization: the encoder lease is the encode device.
 pub fn prepare_device(capture:&mut dyn Capture,overlap:bool,separate:bool)->Result<()>{
+    validate_owner_pacing(pacing_from_env()?,overlap,separate)?;
     if separate {anyhow::ensure!(overlap,"separate encode device requires capture/encode overlap");capture.enable_separate_encode_device()?;}Ok(())
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -30,6 +42,7 @@ struct Config {
     fps: u32,
     gpu: bool,
     vendor: Option<u16>,
+    owner_pacing: bool,
 }
 #[derive(Clone)]
 struct Image {
@@ -45,6 +58,9 @@ struct Desktop {
 impl latest_capture::Source for Desktop {
     type Frame = Image;
     type Config = Config;
+    fn cadence(c:&Config)->Option<Duration> {
+        c.owner_pacing.then(||Duration::from_secs_f64(1.0/f64::from(c.fps)))
+    }
     fn configure(&mut self, c: Config) -> std::result::Result<Option<Image>, String> {
         self.capture.prefer_gpu(c.gpu, c.vendor);
         self.capture.enable_overlap().map_err(|e| e.to_string())?;
@@ -149,7 +165,10 @@ impl Input {
         gpu: bool,
         vendor: Option<u16>,
     ) -> Result<Self> {
-        let config = Config { fps, gpu, vendor };
+        let owner_pacing=pacing_from_env()?;
+        validate_owner_pacing(owner_pacing,enabled,separate_from_env()?)?;
+        anyhow::ensure!((1..=240).contains(&fps),"invalid capture frame rate");
+        let config = Config { fps, gpu, vendor, owner_pacing };
         let mode = if enabled {
             let device = capture.encoder_input_device();
             let owner = Owner::start(
@@ -162,7 +181,7 @@ impl Input {
             .map_err(anyhow::Error::msg)?;
             println!(
                 "{}",
-                serde_json::json!({"event":"capture_overlap","action":"start","requested":true,"actual":true,"pending_limit":1,"capture_pool_limit":3,"owner_thread":owner.summary().owner_thread,"owner_native_thread":owner.summary().owner_native_thread,"generation":owner.summary().generation})
+                serde_json::json!({"event":"capture_overlap","action":"start","requested":true,"actual":true,"pending_limit":1,"capture_pool_limit":3,"owner_thread":owner.summary().owner_thread,"owner_native_thread":owner.summary().owner_native_thread,"generation":owner.summary().generation,"owner_pacing":owner_pacing,"target_fps":fps})
             );
             Mode::Overlap {
                 owner,
@@ -187,6 +206,10 @@ impl Input {
             finished: false,
         })
     }
+    pub fn owner_pacing(&self)->bool { self.config.owner_pacing }
+    pub fn interrupt_handle(&self)->Option<std::sync::Arc<dyn Fn()+Send+Sync>> {
+        match &self.mode { Mode::Overlap{owner,..} if self.config.owner_pacing=>Some(owner.interrupt_handle()),_=>None }
+    }
     pub fn encoder_input_device(&self) -> Option<InputDevice> {
         match &self.mode {
             Mode::Serial(c) => c.encoder_input_device(),
@@ -194,6 +217,7 @@ impl Input {
         }
     }
     pub fn set_frame_rate(&mut self, fps: u32) -> Result<()> {
+        anyhow::ensure!((1..=240).contains(&fps),"invalid capture frame rate");
         match &mut self.mode {
             Mode::Serial(c) => c.set_frame_rate(fps)?,
             Mode::Overlap {
@@ -207,6 +231,9 @@ impl Input {
             }
         }
         self.config.fps = fps;
+        if self.config.owner_pacing {
+            println!("{}",serde_json::json!({"event":"capture_owner_pacing","action":"configure","actual":true,"target_fps":fps}));
+        }
         Ok(())
     }
     pub fn prefer_gpu(&mut self, gpu: bool, vendor: Option<u16>) -> Result<()> {
@@ -255,8 +282,15 @@ impl Input {
                 } else {
                     Duration::from_millis(250)
                 };
-                let fresh = match owner.latest(wait) {
-                    Ok(f) => f,
+                let delivery = if self.config.owner_pacing { owner.next_event(Duration::from_millis(250)) }
+                    else { owner.latest(wait).map(|v|v.map(latest_capture::Delivery::Fresh)) };
+                let (fresh, repeat_allowed) = match delivery {
+                    Ok(Some(latest_capture::Delivery::Fresh(packet)))=>(Some(packet),false),
+                    Ok(Some(latest_capture::Delivery::Repeat))=>(None,true),
+                    Ok(Some(latest_capture::Delivery::NoFrame))|Ok(None) if self.config.owner_pacing=>{
+                        return Err(CaptureError::Suspended("等待采集周期的新图像".into()));
+                    },
+                    Ok(None)|Ok(Some(latest_capture::Delivery::NoFrame))=>(None,true),
                     Err(latest_capture::Failure::Paused(e)) => {
                         *last = None;
                         return Err(CaptureError::Suspended(e));
@@ -266,7 +300,7 @@ impl Input {
                         return Err(CaptureError::Backend(e));
                     }
                 };
-                let mut repeated = fresh.is_none();
+                let mut repeated = fresh.is_none() && repeat_allowed;
                 if let Some(image) = fresh {
                     *last = Some(image);
                 }
@@ -282,16 +316,14 @@ impl Input {
                 let mut source = image.source;
                 if let Some(info) = source {
                     let id = (info.generation, info.frame_id);
-                    repeated = self.last_source == Some(id);
+                    repeated = self.last_source == Some(id) || (self.config.owner_pacing && (info.duplicate || repeat_allowed));
                     self.last_source = Some(id);
                 }
                 // Repeating at output cadence is explicit, never a capture-owner
                 // cache publication. Observation timestamps remain unchanged.
                 if repeated {
                     self.repeats += 1;
-                    frame.pts.0 = frame.pts.0.saturating_add(
-                        image.ready.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
-                    );
+                    frame.pts.0 = repeat_pts(frame.pts.0,image.ready.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,self.last_pts);
                 }
                 if let Some(info) = &mut source {
                     info.duplicate = repeated;
@@ -328,7 +360,7 @@ impl Input {
             let s = owner.summary();
             println!(
                 "{}",
-                serde_json::json!({"event":"capture_overlap","action":"stop","actual":true,"pending_limit":1,"capture_pool_limit":3,"produced":s.produced,"replaced":s.replaced,"pauses":s.pauses,"configurations":s.configurations,"owner_thread":s.owner_thread,"owner_native_thread":s.owner_native_thread,"generation":s.generation,"phase":s.phase,"joined":s.joined,"repeated_outputs":self.repeats,"retired_outputs":self.retired_outputs,"error":stopped.as_ref().err()})
+                serde_json::json!({"event":"capture_overlap","action":"stop","actual":true,"pending_limit":1,"capture_pool_limit":3,"produced":s.produced,"replaced":s.replaced,"pauses":s.pauses,"configurations":s.configurations,"owner_thread":s.owner_thread,"owner_native_thread":s.owner_native_thread,"generation":s.generation,"phase":s.phase,"joined":s.joined,"repeated_outputs":self.repeats,"retired_outputs":self.retired_outputs,"error":stopped.as_ref().err(),"owner_pacing":s.owner_pacing,"target_fps":self.config.fps,"ticks":s.ticks,"repeat_opportunities":s.repeat_opportunities,"no_frame_opportunities":s.no_frame_opportunities,"skipped_periods":s.skipped_periods})
             );
             stopped.map_err(anyhow::Error::msg)?;
         }
@@ -339,6 +371,11 @@ impl Drop for Input {
     fn drop(&mut self) {
         let _ = self.finish();
     }
+}
+
+fn repeat_pts(base:u64,elapsed:u64,previous:Option<u64>)->u64 {
+    let pts=base.saturating_add(elapsed);
+    previous.map_or(pts,|previous|pts.max(previous.saturating_add(1)))
 }
 
 #[cfg(test)]
@@ -376,5 +413,25 @@ mod separate_flag_tests {
         assert!(prepare_device(&mut capture,false,false).is_ok());
         assert!(prepare_device(&mut capture,true,false).is_ok());
         assert!(prepare_device(&mut capture,true,true).is_err());
+    }
+}
+
+#[cfg(test)]
+mod owner_pacing_tests {
+    use super::*;
+    #[test]
+    fn strict_default_off_only_supported_with_overlap_and_separate() {
+        assert!(!owner_pacing_requested(None).unwrap());assert!(!owner_pacing_requested(Some("0")).unwrap());assert!(owner_pacing_requested(Some("1")).unwrap());
+        for v in ["", "true", "false", "01", " 1", "2"] {assert!(owner_pacing_requested(Some(v)).is_err());}
+        for (o,s) in [(false,false),(true,false),(false,true)] {assert!(validate_owner_pacing(true,o,s).is_err());}
+        assert!(validate_owner_pacing(true,true,true).is_ok());assert!(validate_owner_pacing(false,false,false).is_ok());
+    }
+    #[test]
+    fn static_repeat_pts_remain_monotonic_without_changing_capture_identity() {
+        let mut previous=None;
+        for elapsed in [0,16_667,16_667,33_333,33_332] {
+            let pts=repeat_pts(1000,elapsed,previous);assert!(previous.is_none_or(|p|pts>p));previous=Some(pts);
+        }
+        assert_eq!(repeat_pts(u64::MAX,1,None),u64::MAX);
     }
 }
