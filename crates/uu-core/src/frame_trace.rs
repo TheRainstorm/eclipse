@@ -304,10 +304,14 @@ impl Report {
             && self.frames.len() <= RECENT
             && self.source_age.raw_qpc.len()<=CAPACITY
             && self.source_age.raw_qpc.iter().all(|v|v[0]>0&&v[1]>0&&v[2]>0&&v[3]>0&&v[4]>=v[3]&&v[5]>0)
+            && self.source_age.raw_qpc.windows(2).all(|w|w[0][0]<w[1][0])
+            && self.source_age.raw_qpc.len() as u64+u64::from(self.source_age.unknown_source)+u64::from(self.source_age.repeated_source)+u64::from(self.source_age.invalid_clock)<=u64::from(self.window_frames)
+            && Distribution::from_values(self.source_age.raw_qpc.iter().map(|v|((u128::from(v[4]-v[3])*1_000_000/u128::from(v[5])).min(u128::from(u64::MAX))) as u64).collect())==self.stages.get("source_present_to_last_rtp").copied()
             && self.stages.len() <= INTERVALS.len()+1
             && self.stages.iter().all(|(name, d)| {
                 (name=="source_present_to_last_rtp" || INTERVALS.iter().any(|(known, ..)| name == known))
                     && (1..=CAPACITY as u32).contains(&d.samples)
+                    && d.mean_us<=d.max_us
                     && d.p50_us <= d.p95_us
                     && d.p95_us <= d.p99_us
                     && d.p99_us <= d.p999_us
@@ -849,5 +853,23 @@ mod source_age_tests {
         assert_eq!(report.stages["source_present_to_last_rtp"].mean_us,1900);assert_eq!(report.stages["source_present_to_last_rtp"].p99_us,1900);
         trace.configure(settings,"replacement");trace.sent(a,4,at,at,Some(clock(3900,1_000_000)));
         let next=trace.report().unwrap();assert!(next.source_age.raw_qpc.is_empty());assert_eq!(next.source_age.retired_generation,1);assert!(!next.stages.contains_key("source_present_to_last_rtp"));
+    }
+}
+
+#[cfg(test)]
+mod source_window_bound_tests {
+    use super::*;
+    #[test]
+    fn complete_source_window_fits_bounded_channel_and_roundtrips(){
+        let mut trace=HostTrace::new(true);trace.started-=Duration::from_secs(1);
+        let settings=uu_media::encoder::Settings{width:64,height:64,fps:60,bitrate_kbps:1000,codec:Default::default(),preference:uu_media::encoder::Preference::Software,rate_control:Default::default(),tuning:Default::default(),hdr:false,source_hdr:None};trace.configure(settings,"fixture");
+        for input in 1..=600 {
+            let at=Instant::now();let source=uu_capture::frame_info::SourceTime{qpc_ticks:100_000_000_000+input*60000,frequency_hz:10_000_000};
+            let info=FrameInfo{generation:1,frame_id:input,duplicate:false,accumulated_frames:1,present:Some(source),present_age_us:None};
+            let token=trace.captured(input,Some(info),true,at,at,at);trace.output(input,false,at);trace.sent(token,input as u32,at,at,Some(uu_capture::frame_info::SourceTime{qpc_ticks:source.qpc_ticks+50000,..source}));
+        }
+        let report=trace.report().unwrap();assert!(report.valid());assert_eq!(report.source_age.raw_qpc.len(),CAPACITY);assert_eq!(report.stages["source_present_to_last_rtp"].samples,CAPACITY as u32);
+        let data=serde_json::to_vec(&report).unwrap();assert!(data.len()<MAX_JSON);let replay:Report=serde_json::from_slice(&data).unwrap();assert!(replay.valid());
+        let values:Vec<_>=replay.source_age.raw_qpc.iter().map(|v|((v[4]-v[3]) as u128*1_000_000/v[5] as u128) as u64).collect();assert_eq!(Distribution::from_values(values).unwrap(),replay.stages["source_present_to_last_rtp"]);
     }
 }

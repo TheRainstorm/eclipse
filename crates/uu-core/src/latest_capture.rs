@@ -31,6 +31,9 @@ pub struct Summary {
     pub pauses: u64,
     pub configurations: u64,
     pub owner_thread: String,
+    pub owner_native_thread: Option<u32>,
+    pub generation: u64,
+    pub phase: String,
     pub joined: bool,
 }
 #[derive(Clone)]
@@ -94,6 +97,7 @@ impl<S: Source> Owner<S> {
         let thread = std::thread::Builder::new()
             .name("EclipseCapture".into())
             .spawn(move || {
+                worker.state.lock().unwrap().summary.owner_native_thread = native_thread_id();
                 worker.state.lock().unwrap().summary.owner_thread =
                     format!("{:?}", std::thread::current().id());
                 let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -130,6 +134,9 @@ impl<S: Source> Owner<S> {
         }
     }
     pub fn configure(&self, config: S::Config) -> Result<(), String> {
+        self.configure_with_limit(config, JOIN_LIMIT)
+    }
+    fn configure_with_limit(&self, config: S::Config, limit: Duration) -> Result<(), String> {
         let (reply, received) = mpsc::sync_channel(1);
         {
             let mut state = self.shared.state.lock().unwrap();
@@ -152,9 +159,14 @@ impl<S: Source> Owner<S> {
             state.command = Some((config, reply));
         }
         self.shared.changed.notify_all();
-        received
-            .recv_timeout(JOIN_LIMIT)
-            .map_err(|e| format!("capture configuration acknowledgement: {e}"))?
+        match received.recv_timeout(limit) {
+            Ok(result) => result,
+            Err(error) => {
+                let message = format!("capture configuration acknowledgement: {error}");
+                fail(&self.shared, message.clone());
+                Err(message)
+            }
+        }
     }
     /// Wait only for the first image. A paced encoder can request zero wait
     /// after that and explicitly repeat its own leased last image.
@@ -178,11 +190,12 @@ impl<S: Source> Owner<S> {
         }
         Ok(state.slot.take())
     }
-    pub fn phase(&self) -> Phase {
-        self.shared.state.lock().unwrap().phase
-    }
     pub fn summary(&self) -> Summary {
-        self.shared.state.lock().unwrap().summary.clone()
+        let state = self.shared.state.lock().unwrap();
+        let mut summary = state.summary.clone();
+        summary.generation = state.generation;
+        summary.phase = format!("{:?}", state.phase);
+        summary
     }
     pub fn stop(&mut self) -> Result<Summary, String> {
         {
@@ -208,7 +221,10 @@ impl<S: Source> Owner<S> {
         if let Some(error) = &state.error {
             return Err(error.clone());
         }
-        Ok(state.summary.clone())
+        let mut summary = state.summary.clone();
+        summary.generation = state.generation;
+        summary.phase = format!("{:?}", state.phase);
+        Ok(summary)
     }
 }
 impl<S: Source> Drop for Owner<S> {
@@ -216,6 +232,16 @@ impl<S: Source> Drop for Owner<S> {
         if self.done.is_some() {
             let _ = self.stop();
         }
+    }
+}
+fn native_thread_id() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        Some(unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() })
+    }
+    #[cfg(not(windows))]
+    {
+        None
     }
 }
 fn fail<T: Clone, C>(shared: &Shared<T, C>, error: String) {
@@ -310,7 +336,9 @@ fn produce<S: Source>(source: &mut S, shared: &Shared<S::Frame, S::Config>) {
                 // unavailable. Use a cancellable condition wait, not a poll loop.
                 let _ = shared
                     .changed
-                    .wait_timeout(state, Duration::from_millis(25))
+                    .wait_timeout_while(state, Duration::from_millis(25), |s| {
+                        !s.stop && s.command.is_none()
+                    })
                     .unwrap();
             }
             Err(Failure::Failed(error)) => {
@@ -449,6 +477,43 @@ mod tests {
         tx.send(Input::Error).unwrap();
         let result = owner.latest(Duration::from_secs(1));
         assert!(matches!(result, Err(Failure::Failed(_))));
+        assert!(owner.stop().is_err());
+        assert!(owner.summary().joined);
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    struct Blocking {
+        release: mpsc::Receiver<()>,
+    }
+    impl Source for Blocking {
+        type Frame = u32;
+        type Config = u32;
+        fn configure(&mut self, c: u32) -> Result<(), String> {
+            if c == 99 {
+                self.release.recv().unwrap();
+            }
+            Ok(())
+        }
+        fn next(&mut self, wait: Duration) -> Result<Option<u32>, Failure> {
+            std::thread::sleep(wait);
+            Ok(None)
+        }
+    }
+    #[test]
+    fn configuration_timeout_retires_generation_before_late_acknowledgement() {
+        let (release, rx) = mpsc::sync_channel(1);
+        let mut owner = Owner::start(Blocking { release: rx }, 60).unwrap();
+        assert!(owner
+            .configure_with_limit(99, Duration::from_millis(50))
+            .is_err());
+        assert!(matches!(
+            owner.latest(Duration::ZERO),
+            Err(Failure::Failed(_))
+        ));
+        release.send(()).unwrap();
         assert!(owner.stop().is_err());
         assert!(owner.summary().joined);
     }
