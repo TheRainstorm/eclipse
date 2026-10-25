@@ -423,7 +423,10 @@ def stimulus(config):
         raise ValueError('unknown bounded stimulus clock')
     renderer=full_scene.Renderer(scene,user,gdi) if scene else None
     initial_windows=full_scene.window_snapshot() if scene else None
-    window_samples=[];paint_qpc=[];after_windows=None;start_pixels=None;end_pixels=None
+    class Startup(C.Structure):
+        _fields_=[('cb',W.DWORD),('reserved',W.LPWSTR),('desktop',W.LPWSTR),('title',W.LPWSTR),('x',W.DWORD),('y',W.DWORD),('xs',W.DWORD),('ys',W.DWORD),('xc',W.DWORD),('yc',W.DWORD),('fill',W.DWORD),('flags',W.DWORD),('show',W.WORD),('reserved2',W.WORD),('bytes',C.c_void_p),('stdin',W.HANDLE),('stdout',W.HANDLE),('stderr',W.HANDLE)]
+    startup=Startup();startup.cb=C.sizeof(startup);kernel.GetStartupInfoW(C.byref(startup))
+    window_calls=[{'call':'GetStartupInfoW','flags':startup.flags,'show':startup.show,'desktop':startup.desktop}];window_samples=[];paint_qpc=[];after_windows=None;start_pixels=None;end_pixels=None
     frequency=C.c_int64();kernel.QueryPerformanceFrequency(C.byref(frequency))
     count = 0; started = time.perf_counter(); last_write = started
     errors = []; hwnd = None
@@ -432,7 +435,7 @@ def stimulus(config):
         'pid':os.getpid(),'hwnd':int(hwnd or 0),'clock':clock,
         'requested_fps':stimulus_fps(config),'elapsed_seconds':time.perf_counter()-started,
         'dpi':dpi,'physical_rect':bounds,'geometry':geometry,'scene_manifest':scene,
-        'window_lifecycle':{'initial':initial_windows,'samples':window_samples if recorder.closed else window_samples[-1:],'after':after_windows,'foreign_changes':full_scene.foreign_changes(initial_windows,after_windows,os.getpid()) if after_windows else None,'own_windows_absent':not any(r['pid']==os.getpid() for r in after_windows['windows']) if after_windows else None},
+        'window_calls':window_calls,'window_lifecycle':{'initial':initial_windows,'samples':window_samples if recorder.closed else window_samples[-1:],'after':after_windows,'foreign_changes':full_scene.foreign_changes(initial_windows,after_windows,os.getpid()) if after_windows else None,'own_windows_absent':not any(r['pid']==os.getpid() for r in after_windows['windows']) if after_windows else None},
         'scene_pixels':{'start':start_pixels,'end':end_pixels},'paint_qpc_frequency':frequency.value,
         'paint_qpc':paint_qpc if recorder.closed else [],'scene_cache_bytes':sum(map(len,renderer.cache)) if renderer else 0})
     def audit_window(label):
@@ -462,13 +465,14 @@ def stimulus(config):
         if message == 0xF:
             if recorder.closed:return user.DefWindowProcW(hwnd,message,wp,lp)
             paint=Paint();dc=user.BeginPaint(hwnd,C.byref(paint))
-            if renderer:renderer.paint(dc,count)
-            else:
-                for index in range(6):
-                    color=((count*3+index*37)%220+20)|(((index*41+count)%220+20)<<8)|(((count*2+index*31)%220+20)<<16)
-                    brush=gdi.CreateSolidBrush(color);rectangle=W.RECT(index*160,0,(index+1)*160,540)
-                    user.FillRect(dc,C.byref(rectangle),brush);gdi.DeleteObject(brush)
-            user.EndPaint(hwnd,C.byref(paint))
+            try:
+                if renderer:renderer.paint(dc,count)
+                else:
+                    for index in range(6):
+                        color=((count*3+index*37)%220+20)|(((index*41+count)%220+20)<<8)|(((count*2+index*31)%220+20)<<16)
+                        brush=gdi.CreateSolidBrush(color);rectangle=W.RECT(index*160,0,(index+1)*160,540)
+                        user.FillRect(dc,C.byref(rectangle),brush);gdi.DeleteObject(brush)
+            finally:user.EndPaint(hwnd,C.byref(paint))
             recorder.record(round((time.perf_counter()-started)*1e6))
             if scene:
                 ticks=C.c_int64();kernel.QueryPerformanceCounter(C.byref(ticks));paint_qpc.append({'paint_index':count,'texture_phase':count%16,'stripe_phase':count%220,'ticks':ticks.value})
@@ -492,10 +496,12 @@ def stimulus(config):
                                   *bounds,None,None,instance,None)
         if not hwnd:raise C.WinError(C.get_last_error())
         if scene:
+            window_calls.append({'call':'CreateWindowExW','after':full_scene.window_snapshot()})
             # Show first, then establish visible topmost without activation.
             # Establish final placement after startup show handling; verify it.
-            user.ShowWindow(hwnd,4)
-            if not user.SetWindowPos(hwnd,W.HWND(-1),*bounds,0x10|0x40):raise C.WinError(C.get_last_error())
+            before=full_scene.window_snapshot();previous_visible=user.ShowWindow(hwnd,4);window_calls.append({'call':'ShowWindow','command':4,'previous_visible':bool(previous_visible),'zero_is_not_failure':True,'before':before,'after':full_scene.window_snapshot()})
+            before=full_scene.window_snapshot();C.set_last_error(0);ok=user.SetWindowPos(hwnd,W.HWND(-1),*bounds,0x10|0x40);error=C.get_last_error() if not ok else None;window_calls.append({'call':'SetWindowPos','return':bool(ok),'error_if_failed':error,'before':before,'after':full_scene.window_snapshot()})
+            if not ok:raise C.WinError(error)
         else:
             if not user.SetWindowPos(hwnd,W.HWND(-1),*bounds,0x10):raise C.WinError(C.get_last_error())
             user.ShowWindow(hwnd,4)
@@ -617,7 +623,7 @@ def main():
     owner_pacing=owner_pacing_switch(config,overlap,separate)
     env['UU_CAPTURE_OWNER_PACING'] = str(owner_pacing)
     env['UU_AMF_INPUT_POOL'] = str(binary_switch(config, 'amf_input_pool'))
-    if config.get('workload_diagnostic') is True:env['UU_AMF_WORKLOAD_DIAGNOSTIC']=str(root/'workload')
+    if config.get('workload_diagnostic') is True:env['UU_AMF_WORKLOAD_DIAGNOSTIC']=str(config.get('workload_diagnostic_path') or root/'workload')
     env['UU_NATIVE_QOS'] = str(binary_switch(config, 'native_qos'))
     env['UU_NATIVE_DEDICATED_IO'] = str(binary_switch(config, 'native_dedicated_io'))
     if binary_switch(config, 'gpu_encode_profile'):
