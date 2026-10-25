@@ -16,7 +16,6 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-import windows_latency_scene as full_scene
 
 
 def atomic(path, value):
@@ -327,8 +326,14 @@ def establish_pm_v2():
         'process_pm_v2':bool(user.AreDpiAwarenessContextsEqual(process, desired))})
 
 
+def configured_scene(config):
+    if config.get('stimulus_scene') is None:return None
+    import windows_latency_scene
+    return windows_latency_scene.manifest(config)
+
+
 def stimulus_rect(config):
-    scene=full_scene.manifest(config)
+    scene=configured_scene(config)
     if scene is not None:return scene['bounds']
     origin = config.get('stimulus_source_origin', [0, 0])
     if (not isinstance(origin, list) or len(origin) != 2 or
@@ -377,7 +382,8 @@ def stimulus(config):
     """
     dpi = establish_pm_v2()
     bounds = stimulus_rect(config)
-    scene=full_scene.manifest(config)
+    scene=configured_scene(config)
+    if scene:import windows_latency_scene as full_scene
     geometry = None
     user = C.WinDLL('user32', use_last_error=True); gdi = C.WinDLL('gdi32', use_last_error=True)
     kernel = C.WinDLL('kernel32', use_last_error=True)
@@ -482,11 +488,17 @@ def stimulus(config):
         callback=callback_type(checked);instance=kernel.GetModuleHandleW(None);name='EclipseLatencyStimulus-'+str(os.getpid())
         cls=Class(0,callback,0,0,instance,None,None,None,None,name)
         if not user.RegisterClassW(C.byref(cls)):raise C.WinError(C.get_last_error())
-        hwnd=user.CreateWindowExW(0x08000000|0x80,name,'Eclipse owned desktop latency stimulus',0x80000000,
+        hwnd=user.CreateWindowExW(0x08000000|0x80|(0x8 if scene else 0),name,'Eclipse owned desktop latency stimulus',0x80000000,
                                   *bounds,None,None,instance,None)
         if not hwnd:raise C.WinError(C.get_last_error())
-        if not user.SetWindowPos(hwnd,W.HWND(-1),*bounds,0x10):raise C.WinError(C.get_last_error())
-        user.ShowWindow(hwnd,4)
+        if scene:
+            # Show first, then establish visible topmost without activation.
+            # Establish final placement after startup show handling; verify it.
+            user.ShowWindow(hwnd,4)
+            if not user.SetWindowPos(hwnd,W.HWND(-1),*bounds,0x10|0x40):raise C.WinError(C.get_last_error())
+        else:
+            if not user.SetWindowPos(hwnd,W.HWND(-1),*bounds,0x10):raise C.WinError(C.get_last_error())
+            user.ShowWindow(hwnd,4)
         geometry = stimulus_geometry(hwnd)
         expected = [bounds[0],bounds[1],bounds[0]+bounds[2],bounds[1]+bounds[3]]
         if (geometry['dwm_frame'] != expected or geometry['client_screen'] != expected or
@@ -550,7 +562,7 @@ def main():
     root = Path(config['root']).resolve(); root.mkdir(exist_ok=True)
     marker = root / 'worker-started.json'
     with marker.open('x', encoding='utf8') as file:
-        json.dump({'pid': os.getpid(), 'parent_pid':os.getppid(),'started_utc':time.time(),'python':sys.executable,'config':str(config_path),'identity':full_scene.identity(os.getpid()),'session': session.value}, file)
+        json.dump({'pid': os.getpid(), 'parent_pid':os.getppid(),'started_utc':time.time(),'python':sys.executable,'config':str(config_path),'identity':__import__('windows_latency_scene').identity(os.getpid()) if configured_scene(config) else None,'session': session.value}, file)
     job_handle = owned_job()
     # Query the interactive worker's display context. SSH/session-zero screen
     # enumeration can report a fictitious WinDisc 1024x768 display.
@@ -585,7 +597,7 @@ def main():
             config['stimulus_source_origin']=primary[0]['physical_bounds'][:2]
             # Pin the exact physical output examined above, not an implicit primary
             # which could change between inventory and stream preparation.
-            if full_scene.manifest(config) is not None and primary[0]['physical_bounds']!=full_scene.manifest(config)['bounds']:raise RuntimeError('full scene/source mismatch')
+            if configured_scene(config) is not None and primary[0]['physical_bounds']!=configured_scene(config)['bounds']:raise RuntimeError('full scene/source mismatch')
             config['command'] += ['--monitor',primary[0]['name']]
             atomic(root/'selected-source.json',primary[0])
             atomic(root/'actual-host-command.json',config['command'])

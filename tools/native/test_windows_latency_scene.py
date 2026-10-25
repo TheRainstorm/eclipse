@@ -10,8 +10,9 @@ class FullScene(unittest.TestCase):
             with self.assertRaises(ValueError):scene.manifest({'fps':60,'stimulus_scene':spec})
         a=scene.texture_grid(self.spec,3);self.assertEqual(a,scene.texture_grid(self.spec,19));self.assertNotEqual(a,scene.texture_grid(self.spec,4));cache=scene.texture_cache(self.spec);self.assertEqual(sum(map(len,cache)),64*1024*1024);self.assertEqual(cache[3][0:4],bytes([a[2],a[1],a[0],0]));self.assertEqual(cache[3][:4096],cache[3][4096:8192])
     def test_window_identity_geometry_occlusion_and_foreign_changes(self):
-        own={'hwnd':10,'pid':20,'identity':{'known':True,'creation_filetime':1},'z':1,'rect':[-20,30,3820,2190],'visible':True,'minimized':False,'cloaked':0}
+        own={'hwnd':10,'pid':20,'identity':{'known':True,'creation_filetime':1},'z':1,'extended_style':8,'rect':[-20,30,3820,2190],'visible':True,'minimized':False,'cloaked':0}
         snap={'windows':[own]};self.assertTrue(scene.coverage(snap,10,20,self.spec['bounds'])['passed'])
+        own['extended_style']=0;self.assertFalse(scene.coverage(snap,10,20,self.spec['bounds'])['passed']);own['extended_style']=8
         self.assertFalse(scene.coverage(snap,10,21,self.spec['bounds'])['passed']);own['identity']['known']=False;self.assertFalse(scene.coverage(snap,10,20,self.spec['bounds'])['passed']);own['identity']['known']=True
         occluder={**own,'hwnd':11,'pid':22,'z':0,'rect':[0,0,30,80]};self.assertFalse(scene.coverage({'windows':[occluder,own]},10,20,self.spec['bounds'])['passed']);occluder['minimized']=True;self.assertTrue(scene.coverage({'windows':[occluder,own]},10,20,self.spec['bounds'])['passed'])
         old={'windows':[occluder]};new={'windows':[{**occluder,'rect':[100,100,130,180]}]};self.assertTrue(scene.foreign_changes(old,new,20));self.assertEqual(occluder['rect'],[0,0,30,80]);self.assertEqual(scene.foreign_changes(old,old,20),[])

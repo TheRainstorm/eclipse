@@ -55,12 +55,12 @@ def identity(pid):
 def window_snapshot():
     k=C.WinDLL('kernel32',use_last_error=True);sid=W.DWORD();k.ProcessIdToSessionId(os.getpid(),C.byref(sid))
     if sid.value==0:raise RuntimeError('window inventory requires interactive session')
-    u=C.WinDLL('user32',use_last_error=True);d=C.WinDLL('dwmapi');u.GetWindowThreadProcessId.argtypes=[W.HWND,C.POINTER(W.DWORD)];u.GetWindowRect.argtypes=[W.HWND,C.POINTER(W.RECT)];u.GetWindowTextW.argtypes=[W.HWND,W.LPWSTR,C.c_int];u.IsWindowVisible.argtypes=[W.HWND];u.IsIconic.argtypes=[W.HWND];u.GetForegroundWindow.restype=W.HWND;d.DwmGetWindowAttribute.argtypes=[W.HWND,W.DWORD,C.c_void_p,W.DWORD]
+    u=C.WinDLL('user32',use_last_error=True);d=C.WinDLL('dwmapi');u.GetWindowThreadProcessId.argtypes=[W.HWND,C.POINTER(W.DWORD)];u.GetWindowRect.argtypes=[W.HWND,C.POINTER(W.RECT)];u.GetWindowTextW.argtypes=[W.HWND,W.LPWSTR,C.c_int];u.IsWindowVisible.argtypes=[W.HWND];u.IsIconic.argtypes=[W.HWND];u.GetForegroundWindow.restype=W.HWND;u.GetWindowLongPtrW.argtypes=[W.HWND,C.c_int];u.GetWindowLongPtrW.restype=C.c_ssize_t;d.DwmGetWindowAttribute.argtypes=[W.HWND,W.DWORD,C.c_void_p,W.DWORD]
     rows=[];cache={};callback=C.WINFUNCTYPE(W.BOOL,W.HWND,W.LPARAM)
     def each(hwnd,_):
         pid=W.DWORD();u.GetWindowThreadProcessId(hwnd,C.byref(pid));rect=W.RECT();ok=u.GetWindowRect(hwnd,C.byref(rect));title=C.create_unicode_buffer(512);u.GetWindowTextW(hwnd,title,512);cloaked=W.DWORD();status=d.DwmGetWindowAttribute(hwnd,14,C.byref(cloaked),C.sizeof(cloaked))
         if pid.value not in cache:cache[pid.value]=identity(pid.value)
-        rows.append({'hwnd':int(hwnd),'pid':pid.value,'identity':cache[pid.value],'z':len(rows),'title':title.value,'rect':[rect.left,rect.top,rect.right,rect.bottom] if ok else None,'visible':bool(u.IsWindowVisible(hwnd)),'minimized':bool(u.IsIconic(hwnd)),'cloaked':cloaked.value if status==0 else None})
+        rows.append({'hwnd':int(hwnd),'pid':pid.value,'identity':cache[pid.value],'z':len(rows),'extended_style':int(u.GetWindowLongPtrW(hwnd,-20)),'title':title.value,'rect':[rect.left,rect.top,rect.right,rect.bottom] if ok else None,'visible':bool(u.IsWindowVisible(hwnd)),'minimized':bool(u.IsIconic(hwnd)),'cloaked':cloaked.value if status==0 else None})
         return True
     cb=callback(each);u.EnumWindows.argtypes=[callback,W.LPARAM]
     if not u.EnumWindows(cb,0):raise C.WinError(C.get_last_error())
@@ -76,7 +76,7 @@ def coverage(snapshot,hwnd,pid,bounds):
     above=[]
     if own:
         above=[r for r in snapshot['windows'] if r['z']<own['z'] and r['visible'] and not r['minimized'] and r['cloaked']!=1 and (r['rect'] is None or intersects(r['rect'],expected))]
-    checks={'owned_identity':own is not None and own['pid']==pid and own['identity']['known'],'physical_full_bounds':own is not None and own['rect']==expected,'visible':own is not None and own['visible'] and not own['minimized'],'uncloaked_known':own is not None and own['cloaked']==0,'no_visible_occluder':own is not None and not above}
+    checks={'owned_identity':own is not None and own['pid']==pid and own['identity']['known'],'physical_full_bounds':own is not None and own['rect']==expected,'visible':own is not None and own['visible'] and not own['minimized'],'uncloaked_known':own is not None and own['cloaked']==0,'topmost_style_known':own is not None and bool(own.get('extended_style',0)&8),'no_visible_occluder':own is not None and not above}
     return {'passed':all(checks.values()),'checks':checks,'own':own,'above_intersecting':above}
 
 
