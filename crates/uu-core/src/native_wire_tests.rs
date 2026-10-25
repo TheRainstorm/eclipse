@@ -415,3 +415,73 @@ async fn encrypted_fec_recovers_a_lost_keyframe_fragment_when_every_retransmissi
     if let Some(task)=relay_task{task.abort();let _=task.await;}
     result.expect("encrypted FEC regression");
 }
+
+/// Same session statistics, three actual encrypted UDP receiver generations.
+/// This exercises on->on and on->off without process-global environment races.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encrypted_receiver_generations_keep_connection_owned_observations() {
+    use std::{collections::HashSet, path::PathBuf};
+    use uu_media::VideoEncoder;
+    let ip: IpAddr = "127.0.0.1".parse().unwrap();
+    let stats=Arc::new(MediaStats::default());
+    stats.decoder_preference.set(uu_media::DecoderKind::Software).unwrap();
+    stats.native_codec_capabilities.set(vec![VideoCodec::H264]).unwrap();
+    let retained=std::env::var_os("UU_WIRE_TEST_EVIDENCE_DIR");
+    let root=retained.as_ref().map(PathBuf::from).unwrap_or_else(||std::env::temp_dir().join(format!("uu-wire-generations-{}",uuid::Uuid::new_v4())));
+    std::fs::create_dir(&root).unwrap();
+    let mut previous:Vec<(PathBuf,Vec<u8>,std::sync::Weak<crate::socket_trace::Observation>)>=Vec::new();
+    let mut instances=HashSet::new();
+    for generation in 0..3u64 {
+        stats.native_media_epoch.store(generation,Ordering::Release);
+        let path=root.join(format!("generation-{generation}.json"));
+        let trace=(generation<2).then(||Arc::new(crate::socket_trace::Observation::new(path.clone())));
+        let weak=trace.as_ref().map(Arc::downgrade);
+        let mut host=NativePeer::new_lan(ip,ip,None,true,None).await.unwrap();
+        let mut viewer=NativePeer::new_lan(ip,ip,Some(stats.clone()),false,trace).await.unwrap();
+        let (frames,mut images)=crate::media::frame_channel();
+        viewer.receiver(frames,stats.clone()).await.unwrap();
+        let mut sender=host.sender_for_color(Arc::new(AtomicBool::new(false)),VideoCodec::H264,false).await.unwrap();
+        let before=stats.decoded_total.load(Ordering::Acquire);
+        let result=async {
+            let offer=viewer.description(true).await?;host.remote(offer,ip).await?;
+            let answer=host.description(false).await?;viewer.remote(answer,ip).await?;
+            tokio::try_join!(host.connected(),viewer.connected())?;
+            let mut encoder=uu_media::H264Encoder::with_frame_rate(1000,60)?;
+            for index in 0..4u64 {
+                let pixels=vec![128;64*64*3/2];
+                for frame in encoder.encode(&uu_media::RawFrame::new_i420(64,64,pixels,uu_media::Timestamp(index*16_666)))? {
+                    sender.frame(&frame).await?;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            timeout(Duration::from_secs(4),async {
+                while stats.decoded_total.load(Ordering::Acquire)<before+4 {
+                    while images.try_recv_image().is_ok(){}
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            }).await.context("generation did not decode")?;
+            Ok::<_,anyhow::Error>(())
+        }.await;
+        host.close().await;
+        timeout(Duration::from_secs(3),viewer.close()).await.expect("bounded diagnostic close");
+        result.unwrap();
+        drop(sender);drop(viewer);drop(host);
+        for (old,bytes,_) in &previous {assert_eq!(std::fs::read(old).unwrap(),*bytes);}
+        if let Some(weak)=weak {
+            let bytes=std::fs::read(&path).unwrap();
+            let data:serde_json::Value=serde_json::from_slice(&bytes).unwrap();
+            assert!(instances.insert(data["instance"].as_str().unwrap().to_owned()));
+            let primary=data["primary"].as_array().unwrap();assert!(!primary.is_empty());
+            for row in primary {
+                assert_eq!(row["epoch"],generation);
+                let matches=data["wire"].as_array().unwrap().iter().filter(|w|w["direction"]==0&&w["outcome"]==0&&w["header"]==row["header"]).count();
+                assert_eq!(matches,1,"authenticated identity needs its own unique socket read");
+            }
+            timeout(Duration::from_secs(2),async{while weak.upgrade().is_some(){tokio::task::yield_now().await;}}).await.expect("old connection must release observer");
+            previous.push((path,bytes,weak));
+        } else {assert!(!path.exists());}
+    }
+    assert_eq!(instances.len(),2);
+    for (_,_,weak) in previous {assert!(weak.upgrade().is_none());}
+    if retained.is_none(){std::fs::remove_dir_all(root).unwrap();}
+}

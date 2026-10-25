@@ -137,7 +137,7 @@ impl Observation {
             .ok_or_else(|| anyhow::anyhow!("socket trace needs an owned output file"))?;
         Ok(Some(Arc::new(Self::new(path.into()))))
     }
-    fn new(path: PathBuf) -> Self {
+    pub(crate) fn new(path: PathBuf) -> Self {
         let instance = uuid::Uuid::new_v4().to_string();
         let path = PathBuf::from(path.to_string_lossy().replace("{instance}", &instance));
         Self {
@@ -178,6 +178,7 @@ impl Observation {
     }
     fn wire(&self, row: Wire) {
         let mut s = self.state.lock().unwrap();
+        if self.dumped.load(Ordering::Acquire) { return; }
         s.wire_total += 1;
         if s.wire.len() == LIMIT {
             s.wire.pop_front();
@@ -207,6 +208,7 @@ impl Observation {
             pipeline_us,
         };
         let mut s = self.state.lock().unwrap();
+        if self.dumped.load(Ordering::Acquire) { return; }
         s.primary_total += 1;
         if s.primary.len() == LIMIT {
             s.primary.pop_front();
@@ -424,6 +426,24 @@ mod tests {
         assert_eq!(t.cancelled.load(Ordering::Relaxed), 1);
         assert_eq!(t.failed.load(Ordering::Relaxed), 1);
         assert_eq!(t.active.load(Ordering::Relaxed), 0);
+    }
+    #[tokio::test]
+    async fn dump_seals_late_primary_and_cancelled_socket_calls() {
+        let path=std::env::temp_dir().join(format!("uu-trace-seal-{}.json",uuid::Uuid::new_v4()));
+        let trace=Arc::new(Observation::new(path.clone()));
+        let late=trace.call(0,1);
+        trace.dump();
+        let bytes=std::fs::read(&path).unwrap();
+        drop(late);
+        trace.primary(1,0,&Default::default(),Instant::now(),0);
+        trace.call(0,1).finish(Some(&[1,2,3]));
+        trace.finish().await;
+        assert_eq!(std::fs::read(&path).unwrap(),bytes);
+        let state=trace.state.lock().unwrap();
+        assert!(state.wire.is_empty()&&state.primary.is_empty());
+        assert_eq!(state.wire_total+state.primary_total,0);
+        assert_eq!(trace.active.load(Ordering::Acquire),0);
+        drop(state);std::fs::remove_file(path).unwrap();
     }
     #[test]
     fn classification_and_fixed_ring() {

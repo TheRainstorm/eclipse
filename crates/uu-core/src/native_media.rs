@@ -242,6 +242,11 @@ impl NativePeer {
         stats: Option<Arc<MediaStats>>,
         sender: bool,
     ) -> Result<Self> {
+        Self::new_lan(local_ip, advertised_ip, stats, sender,
+            crate::socket_trace::Observation::configured()?).await
+    }
+    async fn new_lan(local_ip: IpAddr, advertised_ip: IpAddr, stats: Option<Arc<MediaStats>>,
+        sender: bool, observation: Option<Arc<crate::socket_trace::Observation>>) -> Result<Self> {
         crate::install_crypto_provider();
         ensure!(
             !local_ip.is_unspecified() && !local_ip.is_multicast(),
@@ -269,7 +274,6 @@ impl NativePeer {
         let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
         #[cfg(windows)]
         configure_udp_probing(&socket).context("cannot configure native UDP probing")?;
-        let observation=crate::socket_trace::Observation::configured()?;
         let params=match &observation {
             Some(trace)=>UDPMuxParams::new(crate::socket_trace::Observed{socket,trace:trace.clone()}),
             None=>UDPMuxParams::new(socket),
@@ -393,7 +397,6 @@ impl NativePeer {
         })
     }
     pub async fn receiver(&self, frames: FrameSender, stats: Arc<MediaStats>) -> Result<()> {
-        if let Some(trace)=&self.socket_trace{let _=stats.socket_trace.set(trace.clone());}
         self.fec.receiver(&self.pc).await?;
         // Driver startup must finish before the peer can send video, otherwise
         // the bounded AU queue can overflow while the first decoder boots.
@@ -411,11 +414,13 @@ impl NativePeer {
         let repairs = self.repairs.clone();
         let fec = self.fec.receive.clone();
         let trace_receivers=self.trace_receivers.clone();
+        let socket_trace=self.socket_trace.clone();
         self.pc.on_track(Box::new(move |track, _, _| {
             let weak = weak.clone();
             let repairs = repairs.clone();
             let fec = fec.clone();
             let trace_receivers=trace_receivers.clone();
+            let socket_trace=socket_trace.clone();
             let frames = frames.clone();
             let stats = stats.clone();
             let prepared = prepared.clone();
@@ -436,6 +441,7 @@ impl NativePeer {
                             repairs,
                             Some(decoder),
                             Some(fec),
+                            socket_trace,
                         ));
                         if let Some(tasks)=trace_receivers{tasks.lock().unwrap().push(task);}
                     }
