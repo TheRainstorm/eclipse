@@ -6,6 +6,7 @@ folder. A machine-specific adapter stages verified artifacts and collects the
 reports. This worker never installs a service or opens an existing profile.
 """
 import argparse
+import bisect
 import ctypes as C
 from ctypes import wintypes as W
 import hashlib
@@ -26,6 +27,76 @@ def atomic(path, value):
 def sha(path):
     with Path(path).open('rb') as source:
         return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+class StimulusReport:
+    """One owner: sample while running, seal on close, persist once in finally.
+
+    Closing stops samples immediately. A failed write leaves a sealed report
+    available for retry and raises to the caller; it never advertises success.
+    """
+    def __init__(self, path, metadata, writer=atomic, capacity=900_000):
+        self.path = Path(path)
+        self.metadata = metadata
+        self.writer = writer
+        self.capacity = capacity
+        self.completions = []
+        self.closed = False
+        self.error = None
+        self.final = None
+
+    def record(self, at_us):
+        if self.closed:
+            raise RuntimeError('stimulus already closed')
+        if len(self.completions) >= self.capacity:
+            raise RuntimeError('stimulus samples overflow')
+        if self.completions and at_us <= self.completions[-1]:
+            raise RuntimeError('stimulus clock did not advance')
+        self.completions.append(at_us)
+
+    def close(self, error=None):
+        self.closed = True
+        if error is not None and self.error is None:
+            self.error = str(error)
+
+    def report(self, final=False):
+        first = bisect.bisect_left(self.completions, 1_000_000)
+        count = len(self.completions)-first
+        gaps = sorted((b-a)/1000 for a,b in zip(self.completions[first:], self.completions[first+1:])) if final else []
+        def rank(p,d=100):
+            return gaps[max(0,(len(gaps)*p+d-1)//d-1)] if gaps else None
+        return {**self.metadata(), 'version':3, 'updates':len(self.completions),
+                'completion_offsets_retained':len(self.completions),
+                'completion_offsets_us':list(self.completions) if final else [],
+                'final_raw_timestamps':final, 'completed':final and self.error is None,
+                'state':'completed' if final and self.error is None else 'failed' if final else 'running',
+                'steady_completed_hz':(count-1)*1e6/(self.completions[-1]-self.completions[first]) if count>1 else None,
+                'paint_completion_gap_ms':{'samples':len(gaps),'p50':rank(50),'p95':rank(95),
+                    'p99':rank(99),'p999':rank(999,1000),'max':gaps[-1] if gaps else None},
+                'scope':'GDI EndPaint API completion, not DWM composition or scanout', 'error':self.error}
+
+    def progress(self):
+        if self.closed:
+            return self.final
+        value = self.report()
+        self.writer(self.path, value)
+        return value
+
+    def finalize(self, error=None):
+        if self.final is not None:
+            return self.final
+        self.close(error)
+        value = self.report(final=True)
+        self.writer(self.path, value)
+        self.final = value
+        return value
+
+
+def process_identity(product_process, stimulus_process, monitored_process):
+    """Stimulus-clock has no product; its monitored PID is the stimulus PID."""
+    return {'product_pid':product_process.pid if product_process is not None else None,
+            'stimulus_pid':stimulus_process.pid if stimulus_process is not None else None,
+            'monitored_pid':monitored_process.pid if monitored_process is not None else None}
 
 
 def stimulus_fps(config):
@@ -216,18 +287,11 @@ def stimulus(config):
     if clock not in ('high_res_waitable', 'legacy_wm_timer'):
         raise ValueError('unknown bounded stimulus clock')
     count = 0; started = time.perf_counter(); last_write = started
-    completions = []; errors = []; hwnd = None
+    errors = []; hwnd = None
     duration = config.get('stimulus_seconds', config['deadline_seconds'])
-    def report():
-        steady = [at for at in completions if at >= 1_000_000]
-        gaps = sorted((b-a)/1000 for a,b in zip(steady,steady[1:]))
-        def rank(p,d=100):return gaps[max(0,(len(gaps)*p+d-1)//d-1)] if gaps else None
-        return {'version':2,'pid':os.getpid(),'hwnd':int(hwnd or 0),'clock':clock,'requested_fps':stimulus_fps(config),'updates':count,
-                'elapsed_seconds':time.perf_counter()-started,'completion_offsets_us':completions,
-                'steady_completed_hz':(len(steady)-1)*1e6/(steady[-1]-steady[0]) if len(steady)>1 else None,
-                'paint_completion_gap_ms':{'samples':len(gaps),'p50':rank(50),'p95':rank(95),'p99':rank(99),
-                                          'p999':rank(999,1000),'max':max(gaps) if gaps else None},
-                'scope':'GDI EndPaint API completion, not DWM composition or scanout','error':errors[0] if errors else None}
+    recorder = StimulusReport(config['stimulus_report'], lambda: {
+        'pid':os.getpid(),'hwnd':int(hwnd or 0),'clock':clock,
+        'requested_fps':stimulus_fps(config),'elapsed_seconds':time.perf_counter()-started})
     def procedure(hwnd, message, wp, lp):
         nonlocal count, last_write
         if message == 0x113:
@@ -235,34 +299,34 @@ def stimulus(config):
             else:user.InvalidateRect(hwnd,None,False)
             return 0
         if message == 0xF:
+            if recorder.closed:return user.DefWindowProcW(hwnd,message,wp,lp)
             paint=Paint();dc=user.BeginPaint(hwnd,C.byref(paint))
             for index in range(6):
                 color=((count*3+index*37)%220+20)|(((index*41+count)%220+20)<<8)|(((count*2+index*31)%220+20)<<16)
                 brush=gdi.CreateSolidBrush(color);rectangle=W.RECT(index*160,0,(index+1)*160,540)
                 user.FillRect(dc,C.byref(rectangle),brush);gdi.DeleteObject(brush)
-            user.EndPaint(hwnd,C.byref(paint));count+=1
-            if len(completions)>=900_000:raise RuntimeError('stimulus samples overflow')
-            completions.append(round((time.perf_counter()-started)*1e6))
+            user.EndPaint(hwnd,C.byref(paint))
+            recorder.record(round((time.perf_counter()-started)*1e6));count+=1
             if time.perf_counter()-last_write>=1:
-                atomic(Path(config['stimulus_report']),report());last_write=time.perf_counter()
+                recorder.progress();last_write=time.perf_counter()
             return 0
         if message == 2:
-            atomic(Path(config['stimulus_report']),report());user.PostQuitMessage(0);return 0
+            recorder.close();user.PostQuitMessage(0);return 0
         return user.DefWindowProcW(hwnd,message,wp,lp)
     def checked(hwnd,message,wp,lp):
         try:return procedure(hwnd,message,wp,lp)
         except BaseException as error:
-            errors.append(str(error));user.PostQuitMessage(1);return 0
-    callback=callback_type(checked);instance=kernel.GetModuleHandleW(None);name='EclipseLatencyStimulus-'+str(os.getpid())
-    cls=Class(0,callback,0,0,instance,None,None,None,None,name)
-    if not user.RegisterClassW(C.byref(cls)):raise C.WinError(C.get_last_error())
-    hwnd=user.CreateWindowExW(0x08000000|0x80,name,'Eclipse owned desktop latency stimulus',0x80000000,
-                              32,32,960,540,None,None,instance,None)
-    if not hwnd:raise C.WinError(C.get_last_error())
-    user.SetWindowPos(hwnd,W.HWND(-1),32,32,960,540,0x10);user.ShowWindow(hwnd,4)
-    atomic(Path(config['stimulus_report']),report())
+            errors.append(str(error));recorder.close(error);user.PostQuitMessage(1);return 0
     timer=None
     try:
+        callback=callback_type(checked);instance=kernel.GetModuleHandleW(None);name='EclipseLatencyStimulus-'+str(os.getpid())
+        cls=Class(0,callback,0,0,instance,None,None,None,None,name)
+        if not user.RegisterClassW(C.byref(cls)):raise C.WinError(C.get_last_error())
+        hwnd=user.CreateWindowExW(0x08000000|0x80,name,'Eclipse owned desktop latency stimulus',0x80000000,
+                                  32,32,960,540,None,None,instance,None)
+        if not hwnd:raise C.WinError(C.get_last_error())
+        user.SetWindowPos(hwnd,W.HWND(-1),32,32,960,540,0x10);user.ShowWindow(hwnd,4)
+        recorder.progress()
         if clock=='legacy_wm_timer':
             if not user.SetTimer(hwnd,1,max(1,round(1000/stimulus_fps(config))),None):raise C.WinError(C.get_last_error())
             message=W.MSG()
@@ -289,9 +353,13 @@ def stimulus(config):
                     if message.message==0x12:running=False;break
                     user.TranslateMessage(C.byref(message));user.DispatchMessageW(C.byref(message))
         if errors:raise RuntimeError(errors[0])
+    except BaseException as error:
+        recorder.close(error)
+        raise
     finally:
+        recorder.close()
         if timer:kernel.CancelWaitableTimer(timer);kernel.CloseHandle(timer)
-        atomic(Path(config['stimulus_report']),report())
+        recorder.finalize()
 
 
 def main():
@@ -382,6 +450,7 @@ def main():
                                          'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config),'wlan_streaming_mode':wlan_mode,
                                          'amf_av1_input_queue_size':av1_queue,'gpu_encode_profile':env.get('UU_GPU_ENCODE_PROFILE')=='1'})
     processes = []; logs = []; samples = []; completed = False; error = None; moving = None
+    product_process = None; monitored_process = None
     observer = WlanObserver(); wlan_samples = [observer.snapshot()]; next_wlan = time.monotonic() + 1
     try:
         def launch(argv, logfile):
@@ -391,7 +460,8 @@ def main():
             processes.append(process); return process
         moving = None
         if config['role'] == 'stimulus-clock':
-            process = launch([sys.executable,str(Path(__file__).resolve()),'--config',str(config_path),'--stimulus'],'stimulus.log')
+            moving = launch([sys.executable,str(Path(__file__).resolve()),'--config',str(config_path),'--stimulus'],'stimulus.log')
+            monitored_process = moving
         elif config['role'] == 'host':
             moving = launch([sys.executable, str(Path(__file__).resolve()), '--config', str(config_path), '--stimulus'], 'stimulus.log')
             deadline = time.monotonic()+10
@@ -399,24 +469,28 @@ def main():
                 if moving.poll() is not None or time.monotonic() > deadline:
                     raise RuntimeError('owned stimulus did not start')
                 time.sleep(.1)
-            process = launch(config['command'], 'host.log')
+            product_process = launch(config['command'], 'host.log')
         elif config['role'] == 'viewer':
-            process = launch(config['command'], 'viewer.log')
+            product_process = launch(config['command'], 'viewer.log')
         else:
             raise ValueError('unknown worker role')
-        started = time.monotonic()
-        while process.poll() is None:
-            if moving is not None and moving.poll() is not None:
+        monitored_process = product_process if product_process is not None else monitored_process
+        started = time.monotonic(); next_progress = started
+        while monitored_process.poll() is None:
+            if product_process is not None and moving is not None and moving.poll() is not None:
                 raise RuntimeError('owned desktop stimulus stopped before the host')
-            sample = resources(process)
+            sample = resources(monitored_process)
             if sample: samples.append(sample)
+            if time.monotonic() >= next_progress:
+                atomic(root/'progress.json',{'worker_pid':os.getpid(),**process_identity(product_process,moving,monitored_process),'elapsed_seconds':time.monotonic()-started,'last_resource':sample,'resource_samples':len(samples),'wlan_samples':len(wlan_samples)})
+                next_progress=time.monotonic()+10
             if time.monotonic() >= next_wlan:
                 wlan_samples.append(observer.snapshot()); next_wlan = time.monotonic() + 1
             if time.monotonic()-started > config['deadline_seconds']:
                 raise TimeoutError('owned native process exceeded its deadline')
             time.sleep(.25)
-        if process.returncode:
-            raise RuntimeError('native process exit ' + str(process.returncode))
+        if monitored_process.returncode:
+            raise RuntimeError('native process exit ' + str(monitored_process.returncode))
         if config['role'] != 'stimulus-clock':
             end=subprocess.run(inventory_command,capture_output=True,text=True,encoding='utf8',timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
             if end.returncode or json.loads(end.stdout)!=actual_environment['physical_capture_inventory']:
@@ -461,7 +535,7 @@ def main():
         wlan_samples.append(observer.snapshot()); wlan_close = observer.close()
         atomic(root/'wlan-observations.json', {'samples':wlan_samples,'observer_close_result':wlan_close,'requester':'native process, not this read-only observer'})
         atomic(root/'worker-result.json', {'completed': completed, 'cleanup_ok': all(p.poll() is not None for p in processes),
-               'cleanup_details':cleanup_details,'error': error, 'session': session.value, 'pid': os.getpid(), 'child_pids': [p.pid for p in processes], 'resources': samples})
+               'cleanup_details':cleanup_details,'error': error, 'session': session.value, 'pid': os.getpid(), 'child_pids': [p.pid for p in processes], **process_identity(product_process,moving,monitored_process), 'fixture_retention':{'resource_samples':len(samples),'wlan_samples':len(wlan_samples),'bounded_deadline_seconds':config['deadline_seconds']}, 'resources': samples})
     return 0 if completed else 1
 
 
