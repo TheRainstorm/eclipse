@@ -7,6 +7,7 @@ use windows::{core::Interface,Win32::{Graphics::Direct3D11::ID3D11Texture2D,Medi
 unsafe extern "C" {
     fn eclipse_amf_open(codec:i32,width:u32,height:u32,fps:u32,kbps:u32,peak:u32,vbr:i32,quality:i32,hdr:i32,default_adapter:i32,device:*mut c_void,error:*mut c_char,capacity:usize)->*mut c_void;
     fn eclipse_amf_close(session:*mut c_void)->u64;
+    fn eclipse_amf_properties(session:*mut c_void,output:*mut c_char,capacity:usize)->i32;
     fn eclipse_amf_device(session:*mut c_void)->*mut c_void;
     fn eclipse_amf_bitrate(session:*mut c_void,kbps:u32,error:*mut c_char,capacity:usize)->i32;
     fn eclipse_amf_lease_new()->*mut c_void;
@@ -44,6 +45,10 @@ impl Drop for Inputs {
 pub(super) struct Driver {
     native:Native,
     shared_proof:Option<serde_json::Value>,
+    observation:Option<super::amf_workload::Observation>,
+    closed_observations:Vec<super::amf_workload::Observation>,
+    observation_generation_overflow:u64,
+    observation_requested:bool,
     gpu:Option<super::gpu::Input>,
     inputs:Inputs,
     pool_enabled:bool,
@@ -63,8 +68,23 @@ impl Driver {
         // The candidate remains opt-in until GPU lifetime and ABBA acceptance.
         let pool_enabled=std::env::var("UU_AMF_INPUT_POOL").is_ok_and(|v|v=="1");
         if std::env::var_os("UU_ENCODE_PROFILE").is_some(){eprintln!("uu-amf-input-mode pool_enabled={pool_enabled}");}
-        Ok(Self{native,shared_proof:None,gpu:None,inputs:Inputs(super::input_pool::Pool::new(1),"uninitialized"),pool_enabled,upload:Vec::new(),settings,headers:Default::default(),name:format!("amf ({codec} {mode}, AMD D3D11, {:?})",settings.tuning.amd_quality),profile:super::profile::Profile::new("amf"),_runtime:runtime})
+        let observation=if settings.codec==VideoCodec::Av1{super::amf_workload::Observation::enabled(1,64*1024*1024)}else{None};
+        let observation_requested=observation.is_some();
+        let mut driver=Self{native,observation_requested,observation,closed_observations:Vec::new(),observation_generation_overflow:0,shared_proof:None,gpu:None,inputs:Inputs(super::input_pool::Pool::new(1),"uninitialized"),pool_enabled,upload:Vec::new(),settings,headers:Default::default(),name:format!("amf ({codec} {mode}, AMD D3D11, {:?})",settings.tuning.amd_quality),profile:super::profile::Profile::new("amf"),_runtime:runtime};
+        driver.observe_properties("initialized",None);
+        Ok(driver)
     }
+}
+impl Driver {
+ fn observe_properties(&mut self,phase:&str,pts:Option<u64>){
+  if self.observation.is_none()||self.native.0.is_none(){return}
+  let start=std::time::Instant::now();let mut buffer=[0 as c_char;16384];
+  let result=unsafe{eclipse_amf_properties(self.native.ptr(),buffer.as_mut_ptr(),buffer.len())};
+  let properties=if result==0{serde_json::from_str(&message(&buffer)).unwrap_or_else(|e|serde_json::json!({"decode_error":e.to_string()}))}else{serde_json::json!({"read_error":result})};
+  self.observation.as_mut().unwrap().snapshot(phase,pts,properties,start.elapsed().as_nanos());
+ }
+ fn retire_observation(&mut self){self.observe_properties("before_close",None);if let Some(d)=self.observation.take(){self.closed_observations.push(d);}}
+ fn close_observation(&mut self){self.retire_observation();for d in self.closed_observations.drain(..){if let Err(e)=d.finish(){tracing::error!(error=%e,"AMF workload diagnostic write failed");}}if self.observation_generation_overflow>0{tracing::error!(generations=self.observation_generation_overflow,"AMF workload diagnostic generation cap exceeded");}}
 }
 impl super::worker::Driver for Driver {
     fn codec(&self)->VideoCodec {self.settings.codec}
@@ -74,6 +94,7 @@ impl super::worker::Driver for Driver {
     fn encode(&mut self,frame:&RawFrame,keyframe:bool)->Result<Vec<EncodedFrame>,String> {
         if self.native.0.is_none(){return Err("AMF input generation is closed".into());}
         let started=self.profile.start();
+        if let Some(d)=self.observation.as_mut(){d.input();}
         let sample;
         let mut texture=None;
         let timestamp=frame.pts.0.checked_mul(10).and_then(|v|i64::try_from(v).ok()).ok_or("AMF timestamp overflow")?;
@@ -85,11 +106,16 @@ impl super::worker::Driver for Driver {
                 if surface.shared_capture_info().is_some(){return Err("separate capture: native AMF device mismatch; refusing capture-device rebind".into());}
                 // Rebind before accepting this capture device's first sample.
                 let next=Native::open(self.settings,device.as_raw())?;
+                self.retire_observation();
                 if self.native.close()!=0 {
                     self.inputs.0.retire();
                     return Err("AMF retained inputs after termination; refusing device rebuild".into());
                 }
                 self.native=next;
+                let budget=(64*1024*1024usize).saturating_sub(self.closed_observations.iter().map(|d|d.retained_bytes()).sum());
+                self.observation=if self.observation_requested&&self.closed_observations.len()<4{super::amf_workload::Observation::enabled(self.inputs.0.generation()+1,budget)}else{if self.observation_requested{self.observation_generation_overflow+=1;}None};
+                self.observe_properties("initialized",None);
+                if let Some(d)=self.observation.as_mut(){d.input();}
                 self.gpu=None;
                 self.inputs=Inputs(super::input_pool::Pool::new(self.inputs.0.generation()+1),"uninitialized");
             }
@@ -155,6 +181,8 @@ impl super::worker::Driver for Driver {
         let mut frame=EncodedFrame{data:bytes.into(),pts:frame.pts,is_keyframe:idr};
         self.headers.prepare(codec,&mut frame)?;
         super::validate_hdr_output(&frame,codec,self.settings.hdr)?;
+        if let Some(d)=self.observation.as_mut(){d.output(unsafe{std::slice::from_raw_parts(data,len)},&frame.data,frame.pts.0,frame.is_keyframe);}
+        if self.observation.as_ref().is_some_and(|d|d.wants_snapshot()){self.observe_properties("output",Some(frame.pts.0));}
         self.profile.record(started,uploaded);
         Ok(vec![frame])
     }
@@ -162,12 +190,14 @@ impl super::worker::Driver for Driver {
         if self.native.0.is_none(){return Err("AMF input generation is closed".into());}
         let mut error=[0;512];
         let result=unsafe{eclipse_amf_bitrate(self.native.ptr(),kbps,error.as_mut_ptr(),error.len())};
+        if let Some(d)=self.observation.as_mut(){d.update(kbps,result);}
         if result!=0 {return Err(message(&error));}
         self.settings.bitrate_kbps=kbps;Ok(super::worker::BitrateChange::Preserved)
     }
 }
 
 impl Drop for Driver {fn drop(&mut self){
+    self.close_observation();
     if let Some(mut proof)=self.shared_proof.take(){
         let pending=self.native.close();
         proof["event"]="shared_capture_amf_closed".into();proof["native_pending"]=pending.into();

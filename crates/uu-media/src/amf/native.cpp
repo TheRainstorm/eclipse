@@ -316,6 +316,43 @@ extern "C" unsigned long long eclipse_amf_close(void* session) {
     return stats->submitted.load()-stats->released.load();
 }
 extern "C" void* eclipse_amf_device(void* session) {return ((Session*)session)->device;}
+// Read-only observation; caller controls frequency and bounded storage. SDK
+// variants retain their actual type: unsupported/type mismatch is null, not0.
+extern "C" int eclipse_amf_properties(void* session,char* output,size_t capacity) {
+ try {
+  auto s=(Session*)session;std::ostringstream out;out<<"{";bool first=true;
+  auto get=[&](const char* label,const wchar_t* name,amf::AMF_VARIANT_TYPE expected){
+   amf::AMFVariant value;auto result=s->encoder->GetProperty(name,static_cast<amf::AMFVariantStruct*>(&value));
+   if(!first)out<<",";first=false;out<<"\""<<label<<"\":{\"result\":"<<int(result)<<",\"type\":"<<int(value.type)<<",\"expected_type\":"<<int(expected)<<",\"value\":";
+   if(result==AMF_OK&&value.type==expected){if(expected==amf::AMF_VARIANT_BOOL)out<<(value.ToBool()?"true":"false");else out<<value.ToInt64();}else out<<"null";out<<"}";
+  };
+  get("target_bitrate",AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE,amf::AMF_VARIANT_INT64);
+  get("peak_bitrate",AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE,amf::AMF_VARIANT_INT64);
+  get("rate_control",AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD,amf::AMF_VARIANT_INT64);
+  get("usage",AMF_VIDEO_ENCODER_AV1_USAGE,amf::AMF_VARIANT_INT64);
+  get("quality",AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET,amf::AMF_VARIANT_INT64);
+  get("query_timeout_ms",AMF_VIDEO_ENCODER_AV1_QUERY_TIMEOUT,amf::AMF_VARIANT_INT64);
+  get("latency_mode",AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE,amf::AMF_VARIANT_INT64);
+  get("gop",AMF_VIDEO_ENCODER_AV1_GOP_SIZE,amf::AMF_VARIANT_INT64);
+  get("input_queue_size",AMF_VIDEO_ENCODER_AV1_INPUT_QUEUE_SIZE,amf::AMF_VARIANT_INT64);
+  get("initial_vbv_fullness",AMF_VIDEO_ENCODER_AV1_INITIAL_VBV_BUFFER_FULLNESS,amf::AMF_VARIANT_INT64);
+  get("vbv_bits",AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE,amf::AMF_VARIANT_INT64);
+  get("min_q_intra",AMF_VIDEO_ENCODER_AV1_MIN_Q_INDEX_INTRA,amf::AMF_VARIANT_INT64);
+  get("max_q_intra",AMF_VIDEO_ENCODER_AV1_MAX_Q_INDEX_INTRA,amf::AMF_VARIANT_INT64);
+  get("min_q_inter",AMF_VIDEO_ENCODER_AV1_MIN_Q_INDEX_INTER,amf::AMF_VARIANT_INT64);
+  get("max_q_inter",AMF_VIDEO_ENCODER_AV1_MAX_Q_INDEX_INTER,amf::AMF_VARIANT_INT64);
+  get("q_intra",AMF_VIDEO_ENCODER_AV1_Q_INDEX_INTRA,amf::AMF_VARIANT_INT64);
+  get("q_inter",AMF_VIDEO_ENCODER_AV1_Q_INDEX_INTER,amf::AMF_VARIANT_INT64);
+  get("filler",AMF_VIDEO_ENCODER_AV1_FILLER_DATA,amf::AMF_VARIANT_BOOL);
+  get("skip_frame",AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_SKIP_FRAME,amf::AMF_VARIANT_BOOL);
+  get("preanalysis",AMF_VIDEO_ENCODER_AV1_PRE_ANALYSIS_ENABLE,amf::AMF_VARIANT_BOOL);
+  get("preencode",AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_PREENCODE,amf::AMF_VARIANT_BOOL);
+  get("hrd",AMF_VIDEO_ENCODER_AV1_ENFORCE_HRD,amf::AMF_VARIANT_BOOL);
+  get("high_motion_boost",AMF_VIDEO_ENCODER_AV1_HIGH_MOTION_QUALITY_BOOST,amf::AMF_VARIANT_BOOL);
+  get("aq_mode",AMF_VIDEO_ENCODER_AV1_AQ_MODE,amf::AMF_VARIANT_INT64);
+  out<<"}";auto text=out.str();if(text.size()+1>capacity)return -2;std::memcpy(output,text.c_str(),text.size()+1);return 0;
+ }catch(...){return -1;}
+}
 extern "C" int eclipse_amf_bitrate(void* session,unsigned kbps,char* error,size_t capacity) {
     try {((Session*)session)->bitrate(kbps);return 0;}
     catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}

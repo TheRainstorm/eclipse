@@ -12,6 +12,7 @@ mod amf;
 mod low_delay;
 mod upload;
 mod profile;
+mod amf_workload;
 #[cfg(any(windows,test))]
 mod input_pool;
 mod tuning;
