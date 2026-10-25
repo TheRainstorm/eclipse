@@ -167,6 +167,7 @@ pub struct DxgiCapture {
     staging: Option<ID3D11Texture2D>,
     capture_pool: Option<uu_media::encoder::CapturePool>,
     gpu: bool,
+    overlap:bool,
     hdr: Option<uu_media::hdr::Metadata>,
     allow_hdr:bool,
     adapter_vendor: u16,
@@ -242,6 +243,7 @@ impl DxgiCapture {
             staging: None,
             capture_pool: None,
             gpu: false,
+            overlap:false,
             hdr,
             allow_hdr:allow_hdr && selected.rotation==Rotation::None,
             adapter_vendor,
@@ -294,7 +296,7 @@ impl DxgiCapture {
         });
         Ok(())
     }
-    fn acquire(&mut self) -> Result<Option<RawFrame>, CaptureError> {
+    fn acquire(&mut self, bounded_wait:Option<Duration>) -> Result<Option<RawFrame>, CaptureError> {
         // Includes desktop rebind/reopen and release on all exit paths; restore
         // the caller rather than changing process-wide DPI or user settings.
         let _coordinates = uu_input::windows_desktop::PhysicalCoordinates::enter().map_err(backend)?;
@@ -319,7 +321,7 @@ impl DxgiCapture {
         // The producer already paces each frame. Once a cached desktop exists,
         // poll for updates without adding another blocking wait to that interval.
         // Initial acquisition keeps a short wait to avoid spinning on an idle desktop.
-        let wait_ms = if self.last.is_some() { 0 } else { 5 };
+        let wait_ms = bounded_wait.map(|v|v.as_millis().clamp(1,16) as u32).unwrap_or_else(||if self.last.is_some() {0}else{5});
         match unsafe { duplication.AcquireNextFrame(wait_ms, &mut info, &mut resource) } {
             Ok(()) => {}
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
@@ -364,7 +366,7 @@ impl DxgiCapture {
             }
             if self.capture_pool.is_none() {
                 let device = uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).map_err(backend)?;
-                self.capture_pool = Some(uu_media::encoder::CapturePool::new(device, desc.Width, desc.Height).map_err(backend)?);
+                self.capture_pool = Some(uu_media::encoder::CapturePool::with_limit(device, desc.Width, desc.Height,if self.overlap{3}else{2}).map_err(backend)?);
             }
             let pts = self.timestamp();
             return self.capture_pool.as_mut().unwrap().capture(&texture, pts).map_err(backend);
@@ -460,6 +462,18 @@ impl DxgiCapture {
     }
 }
 impl Capture for DxgiCapture {
+    fn enable_overlap(&mut self)->Result<(),CaptureError> {
+        if !self.gpu || self.rotation!=Rotation::None {return Err(backend("overlap requires same-adapter GPU capture without rotation"));}
+        if !self.overlap{self.overlap=true;self.last=None;self.capture_pool=None;}Ok(())
+    }
+    fn wait_updated_frame(&mut self,wait:Duration)->Result<Option<RawFrame>,CaptureError> {
+        if !self.overlap || !self.gpu{return Err(backend("overlap GPU capture was not enabled"));}
+        if let Some(frame)=self.acquire(Some(wait))? {
+            self.source_frames.new_frame(self.present_info,self.accumulated_frames);
+            self.last=Some(frame.clone());Ok(Some(frame))
+        } else {Ok(None)}
+    }
+
     fn frame_info(&self)->Option<crate::frame_info::FrameInfo> {
         self.source_frames.snapshot(qpc_now())
     }
@@ -491,7 +505,7 @@ impl Capture for DxgiCapture {
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
         let deadline = Instant::now() + Duration::from_millis(250);
         loop {
-            if let Some(frame) = self.acquire()? {
+            if let Some(frame) = self.acquire(None)? {
                 self.source_frames.new_frame(self.present_info, self.accumulated_frames);
                 self.last = Some(frame.clone());
                 return Ok(frame);

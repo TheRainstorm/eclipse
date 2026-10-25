@@ -425,6 +425,7 @@ def main():
             env.pop(name)
     env.update(APPDATA=str(root/'profile'), LOCALAPPDATA=str(root/'local'), XDG_DATA_HOME=str(root/'data'),
                XDG_STATE_HOME=str(root/'state'), UU_SIGNING_KEY_FILE=str(root/'absent-key'), RUST_LOG='error', ECLIPSE_FRAME_TRACE='1')
+    env['UU_CAPTURE_ENCODE_OVERLAP'] = str(binary_switch(config, 'capture_overlap'))
     env['UU_AMF_INPUT_POOL'] = str(binary_switch(config, 'amf_input_pool'))
     env['UU_NATIVE_QOS'] = str(binary_switch(config, 'native_qos'))
     env['UU_NATIVE_DEDICATED_IO'] = str(binary_switch(config, 'native_dedicated_io'))
@@ -446,7 +447,7 @@ def main():
         env['ECLIPSE_CONTINUOUS_TRACE'] = '1'
     if config.get('encode_profile') is True:
         env['UU_ENCODE_PROFILE'] = '1'
-    atomic(root/'diagnostic-switches.json',{'native_dedicated_io':int(env['UU_NATIVE_DEDICATED_IO']),'native_qos':int(env['UU_NATIVE_QOS']),'socket_trace':env.get('ECLIPSE_SOCKET_TRACE')=='1','continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL'],
+    atomic(root/'diagnostic-switches.json',{'capture_overlap':int(env['UU_CAPTURE_ENCODE_OVERLAP']),'native_dedicated_io':int(env['UU_NATIVE_DEDICATED_IO']),'native_qos':int(env['UU_NATIVE_QOS']),'socket_trace':env.get('ECLIPSE_SOCKET_TRACE')=='1','continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL'],
                                          'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config),'wlan_streaming_mode':wlan_mode,
                                          'amf_av1_input_queue_size':av1_queue,'gpu_encode_profile':env.get('UU_GPU_ENCODE_PROFILE')=='1'})
     processes = []; logs = []; samples = []; completed = False; error = None; moving = None

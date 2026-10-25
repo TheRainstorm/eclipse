@@ -5438,6 +5438,7 @@ dependencies = [
  "uu-proto",
  "uuid",
  "webrtc",
+ "windows 0.62.2",
  "windows-sys 0.59.0",
  "x11rb",
  "zeroize",

@@ -57,3 +57,10 @@ python3 tools/native/frame_trace_compare.py --exe target/release/examples/frame_
 ```
 
 对照工具先保存门槛再运行三轮 ABBA（12 个独立进程）：稳态吞吐中位数下降不超过 1%，解码帧发布间隔 p99 的中位数增加不超过 0.5 ms。间隔在 mailbox 发布回调中记录，避开观察者轮询节奏。此门槛仅评估生成源的软件自环遥测开销，不能替代真实 4K HDR、硬编硬解、网络、GPU 完成或显示器 A/B。Windows 的 `source_identity_probe --desktop` 可额外只读验证当前桌面的源身份，输出元数据而不导出像素。
+
+## Capture overlap measurement extension
+
+Frame trace v2 adds replayable source-host QPC source-present-to-last-RTP-API
+statistics and capture-slot waiting while retaining the existing stage boundaries.
+See [the default-off capture overlap experiment](capture-overlap-experiment.md)
+for ownership, bounded reporting, compatibility and acceptance limits.

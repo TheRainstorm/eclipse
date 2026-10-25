@@ -32,6 +32,7 @@ pub(crate) struct SendTiming {
     pub timestamp: u32,
     pub first: std::time::Instant,
     pub last: std::time::Instant,
+    pub last_qpc: Option<uu_capture::frame_info::SourceTime>,
 }
 impl Sender {
     pub fn new(track:Arc<TrackLocalStaticRTP>,codec:VideoCodec)->Self{
@@ -56,17 +57,18 @@ impl Sender {
         let payloads=self.payloader.payload(mtu,&encoded.data)?;
         ensure!(!payloads.is_empty(),"native encoder emitted no packetizable video");
         let count=payloads.len();
-        let mut first=None;let mut last=None;
+        let mut first=None;let mut last=None;let mut last_qpc=None;
         for (index,payload) in payloads.into_iter().enumerate(){
             let packet=Packet{header:Header{version:2,sequence_number:self.sequence.next_sequence_number(),timestamp,marker:index+1==count,..Default::default()},payload};
             self.track.write_rtp(&packet).await?;
             if timed && (index==0 || index+1==count) {
                 let now=std::time::Instant::now();
                 if index==0 {first=Some(now);}last=Some(now);
+                if index+1==count {last_qpc=crate::frame_trace::source_clock();}
             }
             if let Some(fec)=&mut self.fec {fec.packet(&packet);}
         }self.last_pts=Some(encoded.pts.0);
-        Ok(first.zip(last).map(|(first,last)|SendTiming{timestamp,first,last}))
+        Ok(first.zip(last).map(|(first,last)|SendTiming{timestamp,first,last,last_qpc}))
     }
 
 }

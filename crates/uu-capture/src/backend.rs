@@ -42,6 +42,10 @@ pub enum CaptureError {
 /// into the encoder; `RawFrame::gpu` distinguishes a CPU buffer from a GPU
 /// handle that still needs a copy/download step.
 pub trait Capture: Send {
+    /// Opt-in overlap requires a real bounded source wait and immutable GPU snapshots.
+    /// Unsupported backends fail explicitly; they never poll their cached next_frame.
+    fn enable_overlap(&mut self)->Result<(),CaptureError>{Err(CaptureError::Backend("capture/encode overlap requires unscaled same-device DXGI GPU capture".into()))}
+    fn wait_updated_frame(&mut self,_wait:std::time::Duration)->Result<Option<RawFrame>,CaptureError>{Err(CaptureError::NoBackend)}
     /// Last returned source image; unsupported metadata is unknown, never inferred from PTS.
     fn frame_info(&self) -> Option<crate::frame_info::FrameInfo> { None }
     /// Actual HDR source metadata, never inferred from bit depth alone.

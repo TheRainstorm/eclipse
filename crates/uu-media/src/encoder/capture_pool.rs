@@ -10,15 +10,21 @@ pub struct CapturePool {
     context: ID3D11DeviceContext,
     size: [u32; 2],
     slots: Vec<Arc<Frame>>,
+    limit:usize,
 }
 impl CapturePool {
     pub fn new(input: InputDevice, width: u32, height: u32) -> Result<Self, CodecError> {
+        Self::with_limit(input,width,height,2)
+    }
+    /// One encoding, one pending, one producer snapshot; immutable leases still gate reuse.
+    pub fn with_limit(input:InputDevice,width:u32,height:u32,limit:usize)->Result<Self,CodecError> {
+        if !(2..=3).contains(&limit){return Err(super::error("capture pool limit must be 2..3"));}
         if !(2..=8192).contains(&width) || !(2..=8192).contains(&height) {
             return Err(super::error("capture pool dimensions must be 2..8192"));
         }
         let context = unsafe { input.device.GetImmediateContext() }
             .map_err(|e| super::error(e.to_string()))?;
-        Ok(Self { input, context, size: [width, height], slots: Vec::with_capacity(2) })
+        Ok(Self { input, context, size: [width, height], slots: Vec::with_capacity(limit), limit })
     }
 
     /// Snapshot an acquired BGRA resource on this device's protected immediate
@@ -40,7 +46,7 @@ impl CapturePool {
         let free = self.slots.iter_mut().position(|slot| Arc::get_mut(slot).is_some());
         let index = match free {
             Some(index) => index,
-            None if self.slots.len() < 2 => {
+            None if self.slots.len() < self.limit => {
                 let owned_desc = D3D11_TEXTURE2D_DESC {
                     Usage: D3D11_USAGE_DEFAULT,
                     BindFlags: (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE).0 as u32,

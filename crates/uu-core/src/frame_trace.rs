@@ -21,10 +21,10 @@ pub const EVENTS: [&str; 9] = [
     "first_rtp_write_return",
     "last_rtp_write_return",
 ];
-const CAPABILITY: &str = "a=x-eclipse-frame-trace:1";
-const LABEL: &str = "eclipse-frame-trace-v1";
+const CAPABILITY: &str = "a=x-eclipse-frame-trace:2";
+const LABEL: &str = "eclipse-frame-trace-v2";
 const LIFETIME_MS: u16 = 100;
-const MAX_JSON: usize = 12 * 1024;
+const MAX_JSON: usize = 64 * 1024;
 
 pub(crate) fn accepts_channel(channel: &webrtc::data_channel::RTCDataChannel) -> bool {
     channel.label() == LABEL
@@ -177,6 +177,8 @@ pub struct Frame {
     pub pts_us: u64,
     pub source: Option<FrameInfo>,
     pub gpu_input: bool,
+    /// Actual source-host QPC sampled at the last RTP write API return.
+    pub last_rtp_qpc: Option<uu_capture::frame_info::SourceTime>,
     pub keyframe: bool,
     pub rtp_timestamp: Option<u32>,
     /// Local monotonic offsets; positions are specified by `EVENTS`, schema v1.
@@ -195,11 +197,13 @@ pub struct Counts {
     pub pending_evictions: u64,
     pub retired_inputs: u64,
     pub unmatched_outputs: u64,
+    pub source_age_retired: u64,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Distribution {
     pub samples: u32,
+    pub mean_us: u64,
     pub p50_us: u64,
     pub p95_us: u64,
     pub p99_us: u64,
@@ -216,6 +220,7 @@ impl Distribution {
         let rank = |p: usize, q: usize| values[(n * p).div_ceil(q) - 1];
         Some(Self {
             samples: n as u32,
+            mean_us: (values.iter().map(|v|u128::from(*v)).sum::<u128>()/n as u128).min(u128::from(u64::MAX)) as u64,
             p50_us: rank(50, 100),
             p95_us: rank(95, 100),
             p99_us: rank(99, 100),
@@ -237,17 +242,45 @@ pub struct Report {
     pub counts: Counts,
     /// Only same-clock intervals; no network one-way or actual display latency.
     pub stages: BTreeMap<String, Distribution>,
+    pub source_age: SourceAgeWindow,
     /// Latest bounded observations around a slow frame, otherwise latest frames.
     pub frames: Vec<Frame>,
     pub slow_input_id: Option<u64>,
+}
+/// Bounded, replayable same-host samples from the current trace generation.
+/// Each tuple: input id, source generation, source frame id, present QPC,
+/// last-write QPC, QPC frequency. No cross-machine clock subtraction.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceAgeWindow {
+    pub raw_qpc: Vec<[u64;6]>,
+    pub unknown_source: u32,
+    pub repeated_source: u32,
+    pub invalid_clock: u32,
+    pub retired_generation:u64,
+}
+pub(crate) fn source_clock() -> Option<uu_capture::frame_info::SourceTime> {
+    #[cfg(windows)] {
+        use windows_sys::Win32::System::Performance::{QueryPerformanceCounter,QueryPerformanceFrequency};
+        let (mut ticks,mut hz)=(0i64,0i64);
+        if unsafe{QueryPerformanceCounter(&mut ticks)}==0 || unsafe{QueryPerformanceFrequency(&mut hz)}==0{return None;}
+        Some(uu_capture::frame_info::SourceTime{qpc_ticks:u64::try_from(ticks).ok().filter(|v|*v>0)?,frequency_hz:u64::try_from(hz).ok().filter(|v|*v>0)?})
+    }
+    #[cfg(not(windows))] {None}
+}
+fn source_interval(source: uu_capture::frame_info::SourceTime, end: uu_capture::frame_info::SourceTime) -> Option<u64> {
+    if source.frequency_hz==0 || source.frequency_hz!=end.frequency_hz || source.qpc_ticks==0 {return None;}
+    let ticks=end.qpc_ticks.checked_sub(source.qpc_ticks)?;
+    u64::try_from(u128::from(ticks)*1_000_000/u128::from(source.frequency_hz)).ok()
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClockDomain {
     HostMonotonic,
 }
-const INTERVALS: [(&str, usize, usize); 8] = [
+const INTERVALS: [(&str, usize, usize); 9] = [
     ("capture_call", 0, 1),
+    ("capture_slot_wait", 1, 2),
     ("encode_call", 2, 3),
     ("ready_to_au", 1, 4),
     ("au_to_dequeue", 4, 6),
@@ -259,7 +292,7 @@ const INTERVALS: [(&str, usize, usize); 8] = [
 impl Report {
     pub(crate) fn valid(&self) -> bool {
         let max_time = self.window_end_us;
-        self.version == 1
+        self.version == 2
             && self.epoch != 0
             && self.context.generation > 0
             && (2..=8192).contains(&self.context.width)
@@ -269,15 +302,17 @@ impl Report {
             && self.window_start_us <= max_time
             && self.window_frames <= CAPACITY as u32
             && self.frames.len() <= RECENT
-            && self.stages.len() <= INTERVALS.len()
+            && self.source_age.raw_qpc.len()<=CAPACITY
+            && self.source_age.raw_qpc.iter().all(|v|v[0]>0&&v[1]>0&&v[2]>0&&v[3]>0&&v[4]>=v[3]&&v[5]>0)
+            && self.stages.len() <= INTERVALS.len()+1
             && self.stages.iter().all(|(name, d)| {
-                INTERVALS.iter().any(|(known, ..)| name == known)
+                (name=="source_present_to_last_rtp" || INTERVALS.iter().any(|(known, ..)| name == known))
                     && (1..=CAPACITY as u32).contains(&d.samples)
                     && d.p50_us <= d.p95_us
                     && d.p95_us <= d.p99_us
                     && d.p99_us <= d.p999_us
                     && d.p999_us <= d.max_us
-                    && d.max_us <= max_time
+                    && (name=="source_present_to_last_rtp" || d.max_us <= max_time)
             })
             && self.frames.iter().all(|f| {
                 f.input_id > 0
@@ -419,6 +454,7 @@ impl HostTrace {
             pts_us: pts,
             source,
             gpu_input: gpu,
+            last_rtp_qpc: None,
             keyframe: false,
             rtp_timestamp: None,
             events_us: times,
@@ -469,7 +505,7 @@ impl HostTrace {
         }
         Some(token)
     }
-    pub fn sent(&self, token: Option<Token>, timestamp: u32, first: Instant, last: Instant) {
+    pub fn sent(&self, token: Option<Token>, timestamp: u32, first: Instant, last: Instant, last_qpc: Option<uu_capture::frame_info::SourceTime>) {
         if !self.enabled {
             return;
         }
@@ -478,6 +514,7 @@ impl HostTrace {
         let Some(token) = token else {
             return;
         };
+        if state.context.as_ref().is_none_or(|c|c.generation!=token.generation){state.counts.source_age_retired+=1;return;}
         let threshold = state
             .context
             .as_ref()
@@ -486,6 +523,7 @@ impl HostTrace {
             row.events_us[7] = Some(self.offset(first));
             row.events_us[8] = Some(self.offset(last));
             row.rtp_timestamp = Some(timestamp);
+            row.last_rtp_qpc = last_qpc;
             // Detect a slow processing stage, not a static source's intentional age.
             let slow = [(0, 1), (2, 3), (1, 6)].iter().any(|&(a, b)| {
                 row.events_us[a]
@@ -543,6 +581,19 @@ impl HostTrace {
                 stages.insert(name.to_owned(), d);
             }
         }
+        let mut source_age=SourceAgeWindow{retired_generation:counts.source_age_retired,..Default::default()};
+        let mut values=Vec::new();
+        for row in rows.iter().filter(|row|row.events_us[8].is_some()) {
+            match row.source {
+                None=>source_age.unknown_source+=1,
+                Some(info) if info.duplicate=>source_age.repeated_source+=1,
+                Some(info)=>match info.present.zip(row.last_rtp_qpc).and_then(|(p,e)|source_interval(p,e).map(|us|(p,e,us))) {
+                    Some((p,e,us))=>{source_age.raw_qpc.push([row.input_id,info.generation,info.frame_id,p.qpc_ticks,e.qpc_ticks,p.frequency_hz]);values.push(us);},
+                    None=>source_age.invalid_clock+=1,
+                },
+            }
+        }
+        if let Some(d)=Distribution::from_values(values){stages.insert("source_present_to_last_rtp".into(),d);}
         let mut frames = Vec::new();
         if let Some(index) = slow.and_then(|id| rows.iter().position(|f| f.input_id == id)) {
             // Keep six observations before the trigger and up to five after it.
@@ -552,7 +603,7 @@ impl HostTrace {
             frames.extend_from_slice(&rows[rows.len().saturating_sub(RECENT)..]);
         }
         Some(Report {
-            version: 1,
+            version: 2,
             epoch: self.epoch,
             clock_domain: ClockDomain::HostMonotonic,
             context,
@@ -561,6 +612,7 @@ impl HostTrace {
             window_frames: rows.len() as u32,
             counts,
             stages,
+            source_age,
             frames,
             slow_input_id: slow,
         })
@@ -654,9 +706,9 @@ mod tests {
             serde_json::from_value(serde_json::json!({"type":"offer","sdp":sdp})).unwrap()
         };
         assert!(!offered(&description("v=0\r\n")));
-        assert!(!offered(&description("a=x-eclipse-frame-trace:2\r\n")));
+        assert!(!offered(&description("a=x-eclipse-frame-trace:1\r\n")));
         assert!(!offered(&description(
-            "a=x-eclipse-frame-trace:1\r\na=x-eclipse-frame-trace:2\r\n"
+            "a=x-eclipse-frame-trace:2\r\na=x-eclipse-frame-trace:2\r\n"
         )));
         let mut supported = description("v=0\r\n");
         advertise(&mut supported);
@@ -685,11 +737,11 @@ mod tests {
             let at=Instant::now();
             let token=trace.captured(pts,None,true,at,at,at);
             trace.output(pts,false,at);
-            trace.sent(token,pts as u32,at,at);
+            trace.sent(token,pts as u32,at,at,None);
         }
         trace.configure(settings(),"rebuilt");
         let at=Instant::now();let token=trace.captured(9000,None,true,at,at,at);
-        trace.output(9000,false,at);trace.sent(token,9000,at,at);
+        trace.output(9000,false,at);trace.sent(token,9000,at,at,None);
         let report=trace.continuous_report().unwrap();
         let rows=report["frames"].as_array().unwrap();
         assert_eq!(rows.len(),8192);assert_eq!(report["evicted"],3);
@@ -714,7 +766,7 @@ mod tests {
         let output = trace.output(10, true, at(700));
         trace.mark(output, Event::Dequeue, at(1700));
         trace.mark(output, Event::EnqueueReturn, at(1701));
-        trace.sent(output, u32::MAX, at(1800), at(1900));
+        trace.sent(output, u32::MAX, at(1800), at(1900),None);
         let report = trace.report().unwrap();
         assert_eq!(report.frames[0].output_id, Some(1));
         assert_eq!(report.frames[1].output_id, None);
@@ -752,7 +804,7 @@ mod tests {
         invalid.frames[0].events_us[1] = Some(u64::MAX);
         assert!(!invalid.valid());
         let mut invalid = report;
-        invalid.version = 2;
+        invalid.version = 3;
         assert!(!invalid.valid());
         let off = HostTrace::new(false);
         off.configure(settings(), "fixture");
@@ -767,5 +819,35 @@ mod tests {
             )
             .is_none());
         assert!(off.report().is_none());
+    }
+}
+
+#[cfg(test)]
+mod source_age_tests {
+    use super::*;
+    use uu_capture::frame_info::SourceTime;
+    fn clock(ticks:u64,hz:u64)->SourceTime{SourceTime{qpc_ticks:ticks,frequency_hz:hz}}
+    #[test]
+    fn qpc_interval_checks_frequency_order_and_integer_conversion(){
+        assert_eq!(source_interval(clock(100,10_000),clock(119,10_000)),Some(1900));
+        assert_eq!(source_interval(clock(100,10_000),clock(99,10_000)),None);
+        assert_eq!(source_interval(clock(100,10_000),clock(119,1000)),None);
+        assert_eq!(source_interval(clock(1,0),clock(2,0)),None);
+        assert_eq!(source_interval(clock(0,10),clock(100,10)),None);
+    }
+    #[test]
+    fn raw_source_age_replays_and_retired_or_duplicate_inputs_do_not_enter_it(){
+        let mut trace=HostTrace::new(true);trace.started-=Duration::from_secs(1);
+        let settings=uu_media::encoder::Settings{width:64,height:64,fps:60,bitrate_kbps:1000,codec:Default::default(),preference:uu_media::encoder::Preference::Software,rate_control:Default::default(),tuning:Default::default(),hdr:false,source_hdr:None};
+        trace.configure(settings,"fixture");let at=trace.started+Duration::from_millis(1);
+        let info=FrameInfo{generation:9,frame_id:7,duplicate:false,accumulated_frames:1,present:Some(clock(1000,1_000_000)),present_age_us:Some(1)};
+        let a=trace.captured(1,Some(info),true,at,at,at);trace.output(1,true,at);trace.sent(a,1,at,at,Some(clock(2900,1_000_000)));
+        let repeated=FrameInfo{duplicate:true,..info};let b=trace.captured(2,Some(repeated),true,at,at,at);trace.output(2,false,at);trace.sent(b,2,at,at,Some(clock(9000,1_000_000)));
+        let c=trace.captured(3,Some(info),true,at,at,at);trace.output(3,false,at);trace.sent(c,3,at,at,Some(clock(2900,2000)));
+        let report=trace.report().unwrap();assert!(report.valid());assert_eq!(report.source_age.raw_qpc,vec![[1,9,7,1000,2900,1_000_000]]);
+        assert_eq!(report.source_age.repeated_source,1);assert_eq!(report.source_age.invalid_clock,1);
+        assert_eq!(report.stages["source_present_to_last_rtp"].mean_us,1900);assert_eq!(report.stages["source_present_to_last_rtp"].p99_us,1900);
+        trace.configure(settings,"replacement");trace.sent(a,4,at,at,Some(clock(3900,1_000_000)));
+        let next=trace.report().unwrap();assert!(next.source_age.raw_qpc.is_empty());assert_eq!(next.source_age.retired_generation,1);assert!(!next.stages.contains_key("source_present_to_last_rtp"));
     }
 }
