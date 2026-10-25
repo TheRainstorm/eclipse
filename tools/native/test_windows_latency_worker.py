@@ -107,7 +107,6 @@ class FinalReports(unittest.TestCase):
                          dict(product_pid=None,stimulus_pid=None,monitored_pid=None))
 
 
-if __name__=='__main__':unittest.main()
 
 
 class CaptureDeviceSwitches(unittest.TestCase):
@@ -118,3 +117,5 @@ class CaptureDeviceSwitches(unittest.TestCase):
         for value in [True,'1',None,2]:
             with self.assertRaises(ValueError):worker.capture_device_switches({'capture_overlap':1,'capture_separate_device':value})
         with self.assertRaises(ValueError):worker.capture_device_switches({'capture_overlap':0,'capture_separate_device':1})
+
+if __name__=='__main__':unittest.main()

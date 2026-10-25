@@ -32,6 +32,12 @@ struct Counts {
     release_errors: u64,
     wait_ns: u64,
     max_wait_ns: u64,
+    writer_attempts: u64,
+    writer_wait_ns: u64,
+    writer_max_wait_ns: u64,
+    reader_attempts: u64,
+    reader_wait_ns: u64,
+    reader_max_wait_ns: u64,
 }
 #[derive(Debug)]
 pub(crate) struct Stats {
@@ -229,7 +235,7 @@ impl Slot {
         if self.stats.retired.load(Ordering::Acquire) {
             return Err("shared capture generation retired".into());
         }
-        let guard = Guard::acquire(self.writer.as_ref().unwrap(), &self.stats)?;
+        let guard = Guard::acquire(self.writer.as_ref().unwrap(), &self.stats, true)?;
         unsafe {
             context.CopyResource(self.capture.as_ref().unwrap(), source);
             context.Flush();
@@ -237,7 +243,7 @@ impl Slot {
         guard.finish()
     }
     pub fn read(&self) -> Result<Guard<'_>, String> {
-        Guard::acquire(self.reader.as_ref().unwrap(), &self.stats)
+        Guard::acquire(self.reader.as_ref().unwrap(), &self.stats, false)
     }
 }
 impl Drop for Slot {
@@ -274,7 +280,7 @@ pub(crate) struct Guard<'a> {
     held: bool,
 }
 impl<'a> Guard<'a> {
-    fn acquire(mutex: &'a IDXGIKeyedMutex, stats: &'a Stats) -> Result<Self, String> {
+    fn acquire(mutex: &'a IDXGIKeyedMutex, stats: &'a Stats, writer: bool) -> Result<Self, String> {
         stats.valid()?;
         let started = Instant::now();
         let hr = unsafe { (mutex.vtable().AcquireSync)(mutex.as_raw(), 0, WAIT_MS) }.0;
@@ -282,6 +288,15 @@ impl<'a> Guard<'a> {
         let mut c = stats.counts.lock().unwrap_or_else(|e| e.into_inner());
         c.wait_ns = c.wait_ns.saturating_add(ns);
         c.max_wait_ns = c.max_wait_ns.max(ns);
+        if writer {
+            c.writer_attempts += 1;
+            c.writer_wait_ns = c.writer_wait_ns.saturating_add(ns);
+            c.writer_max_wait_ns = c.writer_max_wait_ns.max(ns);
+        } else {
+            c.reader_attempts += 1;
+            c.reader_wait_ns = c.reader_wait_ns.saturating_add(ns);
+            c.reader_max_wait_ns = c.reader_max_wait_ns.max(ns);
+        }
         match classify(hr) {
             Acquire::Owned => {
                 c.acquires += 1;
@@ -505,7 +520,7 @@ mod platform_tests {
         let frame = Arc::new(
             crate::d3d11_frame::Frame::shared_capture(slot.clone(), encode.device.clone()).unwrap(),
         );
-        let writer = Guard::acquire(slot.writer.as_ref().unwrap(), &stats).unwrap();
+        let writer = Guard::acquire(slot.writer.as_ref().unwrap(), &stats, true).unwrap();
         let reader = frame.clone();
         let timeout_started = Instant::now();
         let failed = std::thread::spawn(move || reader.capture_read().is_err())
