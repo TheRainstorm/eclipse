@@ -43,7 +43,7 @@ use webrtc::{
 // connectionless socket. Otherwise Windows reports 10054 to the mux, whose
 // reader exits before authenticated peer-reflexive checks can arrive.
 #[cfg(windows)]
-fn configure_udp_probing(socket: &UdpSocket) -> std::io::Result<()> {
+pub(crate) fn configure_udp_probing(socket: &UdpSocket) -> std::io::Result<()> {
     use std::{os::windows::io::AsRawSocket, ptr::{null_mut}, mem::size_of};
     use windows_sys::Win32::Networking::WinSock::{WSAIoctl, WSAGetLastError, SIO_UDP_CONNRESET, SOCKET_ERROR};
     let report_reset: u32 = 0;
@@ -217,6 +217,7 @@ pub(crate) struct NativePeer {
     _connection_monitor:Option<crate::connection_info::Monitor>,
     pub pc: Arc<RTCPeerConnection>,
     mux: Option<Arc<UDPMuxDefault>>,
+    io: Option<crate::native_io::Owner>,
     pub repairs: Arc<RepairBus>,
     fec: Arc<crate::native_fec::Transport>,
     pub states: watch::Receiver<RTCPeerConnectionState>,
@@ -255,6 +256,10 @@ impl NativePeer {
     }
     async fn new_lan(local_ip: IpAddr, advertised_ip: IpAddr, stats: Option<Arc<MediaStats>>,
         sender: bool, observation: Option<Arc<crate::socket_trace::Observation>>) -> Result<Self> {
+        let dedicated=crate::native_io::requested(sender)?;
+        Self::new_lan_io(local_ip,advertised_ip,stats,sender,observation,dedicated).await
+    }
+    async fn new_lan_io(local_ip: IpAddr,advertised_ip: IpAddr,stats: Option<Arc<MediaStats>>,sender: bool,observation: Option<Arc<crate::socket_trace::Observation>>,dedicated:bool)->Result<Self> {
         crate::install_crypto_provider();
         ensure!(
             !local_ip.is_unspecified() && !local_ip.is_multicast(),
@@ -279,11 +284,16 @@ impl NativePeer {
         } else {
             local_ip
         };
+        println!("{}",serde_json::json!({"event":"native_dedicated_io_policy","requested":dedicated,"actual":dedicated,"sender":sender}));
+        #[cfg(windows)]
+        crate::native_qos::event(serde_json::json!({"action":"policy","requested":crate::native_qos::requested(sender),"sender":sender}));
+        let (mux,io,qos_socket)=if dedicated {
+            let (mux,io)=crate::native_io::Owner::start(local_ip,observation.clone()).await?;
+            (mux,Some(io),None::<Arc<UdpSocket>>)
+        } else {
         let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
         #[cfg(windows)]
         configure_udp_probing(&socket).context("cannot configure native UDP probing")?;
-        #[cfg(windows)]
-        crate::native_qos::event(serde_json::json!({"action":"policy","requested":crate::native_qos::requested(sender),"sender":sender}));
         #[cfg(windows)]
         let (params,qos_socket)=if crate::native_qos::requested(sender) {
             let socket=Arc::new(socket);
@@ -304,7 +314,10 @@ impl NativePeer {
             Some(trace)=>UDPMuxParams::new(crate::socket_trace::Observed{socket,trace:trace.clone()}),
             None=>UDPMuxParams::new(socket),
         };
-        let mux = UDPMuxDefault::new(params);
+        #[cfg(not(windows))]
+        let qos_socket=None::<Arc<UdpSocket>>;
+        (UDPMuxDefault::new(params),None,qos_socket)
+        };
         let mut settings = SettingEngine::default();
         crate::srtp_policy::configure(&mut settings);
         settings.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
@@ -316,12 +329,21 @@ impl NativePeer {
         settings.set_ip_filter(Box::new(move |ip| ip == gather_ip));
         settings.set_nat_1to1_ips(vec![advertised_ip.to_string()], RTCIceCandidateType::Host);
         settings.set_udp_network(UDPNetwork::Muxed(mux.clone()));
-        let mut peer=Self::build(settings, Some(mux), RTCConfiguration::default(), stats, sender).await?;
+        let mut peer=Self::build_with_io(settings,mux,io,RTCConfiguration::default(),stats,sender).await?;
+        #[cfg(not(windows))]
+        let _=qos_socket;
         peer.trace_receivers=observation.as_ref().map(|_|Arc::new(Mutex::new(Vec::new())));
         peer.socket_trace=observation;
         #[cfg(windows)]
         {peer.qos_socket=qos_socket;}
         Ok(peer)
+    }
+
+    async fn build_with_io(settings:SettingEngine,mux:Arc<UDPMuxDefault>,io:Option<crate::native_io::Owner>,configuration:RTCConfiguration,stats:Option<Arc<MediaStats>>,sender:bool)->Result<Self> {
+        match Self::build(settings,Some(mux.clone()),configuration,stats,sender).await {
+            Ok(mut peer)=>{peer.io=io;Ok(peer)},
+            Err(e)=>{let _=mux.close().await;if let Some(io)=io {io.stop().await.context("failed PC build I/O cleanup")?;}Err(e)}
+        }
     }
 
     /// Internet mode enumerates interfaces and obtains mapped addresses using
@@ -410,6 +432,7 @@ impl NativePeer {
             Box::pin(async {})
         }));
         Ok(Self {
+            io:None,
             socket_trace:None,
             trace_receivers:None,
             _connection_monitor:stats.as_ref().map(|stats|crate::connection_info::Monitor::start(&pc,stats)),
@@ -669,6 +692,7 @@ impl NativePeer {
         if !self.closed.load(Ordering::Acquire) {
             let _ = self.pc.close().await;
             if let Some(mux) = &self.mux { let _ = mux.close().await; }
+            if let Some(io)=&self.io {if let Err(e)=io.stop().await {tracing::error!(error=%e,"dedicated I/O close incomplete");}}
             finish_trace(self.trace_receivers.clone(),self.socket_trace.clone()).await;
             self.closed.store(true, Ordering::Release);
         }
@@ -706,6 +730,7 @@ impl Drop for NativePeer {
         }
         if !self.closed.swap(true, Ordering::AcqRel) {
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let io=self.io.take();
                 let pc = self.pc.clone();
                 let mux = self.mux.clone();
                 let trace=self.socket_trace.clone();
@@ -713,7 +738,15 @@ impl Drop for NativePeer {
                 runtime.spawn(async move {
                     let _ = pc.close().await;
                     if let Some(mux) = mux { let _ = mux.close().await; }
+                    if let Some(io)=io {let _=io.stop().await;}
                     finish_trace(receivers,trace).await;
+                });
+            } else if let Some(io)=self.io.take() {
+                let pc=self.pc.clone();let mux=self.mux.clone();
+                std::thread::spawn(move||{
+                    if let Ok(runtime)=tokio::runtime::Builder::new_current_thread().enable_all().build(){runtime.block_on(async move{
+                        let _=pc.close().await;if let Some(mux)=mux{let _=mux.close().await;}let _=io.stop().await;
+                    });}
                 });
             }
         }
@@ -723,6 +756,42 @@ impl Drop for NativePeer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dropping_peer_outside_runtime_keeps_driver_until_cleanup_then_joins() {
+        crate::install_crypto_provider();
+        let runtime=tokio::runtime::Runtime::new().unwrap();
+        let peer=runtime.block_on(NativePeer::new_lan_io("127.0.0.1".parse().unwrap(),"127.0.0.1".parse().unwrap(),None,false,None,true)).unwrap();
+        let mut done=peer.io.as_ref().unwrap().join_observer();
+        drop(runtime);drop(peer);
+        let runtime=tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            timeout(Duration::from_secs(4),async {
+                loop {if let Some(exit)=done.borrow_and_update().clone(){assert!(exit.error.is_none());break;}done.changed().await.unwrap();}
+            }).await.expect("Drop outside runtime must confirm I/O join");
+        });
+    }
+
+    #[tokio::test]
+    async fn failed_connection_drop_joins_its_driver() {
+        let ip="127.0.0.1".parse().unwrap();
+        let mut peer=NativePeer::new_lan_io(ip,ip,None,false,None,true).await.unwrap();
+        let mut done=peer.io.as_ref().unwrap().join_observer();
+        peer.pc.close().await.unwrap();assert!(peer.connected().await.is_err());drop(peer);
+        timeout(Duration::from_secs(3),async {
+            loop {if let Some(exit)=done.borrow_and_update().clone(){assert!(exit.error.is_none());break;}done.changed().await.unwrap();}
+        }).await.expect("failed connect must retire its driver");
+    }
+
+    #[tokio::test]
+    async fn failed_peer_build_retires_dedicated_driver() {
+        let (mux,io)=crate::native_io::Owner::start("127.0.0.1".parse().unwrap(),None).await.unwrap();
+        let done=io.join_observer();
+        let mut settings=SettingEngine::default();settings.set_udp_network(UDPNetwork::Muxed(mux.clone()));
+        let config=RTCConfiguration{ice_servers:vec![webrtc::ice_transport::ice_server::RTCIceServer{urls:vec!["invalid://server".into()],..Default::default()}],..Default::default()};
+        assert!(NativePeer::build_with_io(settings,mux,Some(io),config,None,false).await.is_err());
+        assert!(done.borrow().as_ref().is_some_and(|v|v.error.is_none()));
+    }
+
     #[test]
     fn format_support_requires_a_video_payload_in_the_offer(){
         let description=|sdp:&str|serde_json::from_value(serde_json::json!({"type":"offer","sdp":sdp})).unwrap();

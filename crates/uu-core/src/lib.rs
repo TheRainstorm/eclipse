@@ -102,6 +102,7 @@ pub mod local_workspace;
 
 pub mod pipeline_trace;
 mod socket_trace;
+mod native_io;
 #[cfg(any(windows,test))]
 pub mod native_qos;
 pub mod wlan_streaming;

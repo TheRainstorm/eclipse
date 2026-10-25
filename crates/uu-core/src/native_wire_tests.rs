@@ -39,7 +39,10 @@ fn via_relay(mut description: RTCSessionDescription, port: u16) -> RTCSessionDes
 }
 
 #[tokio::test(flavor="multi_thread",worker_threads=3)]
-async fn encrypted_twelve_frame_burst_preserves_references_while_a_fast_decoder_is_briefly_busy() {
+async fn encrypted_twelve_frame_burst_preserves_references_while_a_fast_decoder_is_briefly_busy() {run_encrypted_twelve_frame_burst_preserves_references_while_a_fast_decoder_is_briefly_busy(false).await;}
+#[tokio::test(flavor="multi_thread",worker_threads=3)]
+async fn dedicated_encrypted_twelve_frame_burst_preserves_references_while_a_fast_decoder_is_briefly_busy() {run_encrypted_twelve_frame_burst_preserves_references_while_a_fast_decoder_is_briefly_busy(true).await;}
+async fn run_encrypted_twelve_frame_burst_preserves_references_while_a_fast_decoder_is_briefly_busy(dedicated:bool) {
     use uu_media::{EncodedFrame,RawFrame,Timestamp,VideoDecoder,VideoEncoder};
     struct Pause {
         entered:AtomicBool,
@@ -70,7 +73,7 @@ async fn encrypted_twelve_frame_burst_preserves_references_while_a_fast_decoder_
     let ip:IpAddr="127.0.0.1".parse().unwrap();
     let stats=Arc::new(MediaStats::default());let _=stats.decoder_preference.set(uu_media::DecoderKind::Software);
     let mut host=NativePeer::new(ip,None,true).await.unwrap();
-    let mut viewer=NativePeer::new(ip,Some(stats.clone()),false).await.unwrap();
+    let mut viewer=NativePeer::new_lan_io(ip,ip,Some(stats.clone()),false,None,dedicated).await.unwrap();
     let pause=Arc::new(Pause{entered:false.into(),released:std::sync::Mutex::new(false),ready:Default::default()});
     let release=Release(pause.clone());
     let (frames,mut images)=crate::media::frame_channel();
@@ -127,14 +130,17 @@ async fn encrypted_twelve_frame_burst_preserves_references_while_a_fast_decoder_
     result.expect("encrypted reference-preserving burst regression");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets() {
+#[tokio::test(flavor="multi_thread",worker_threads=3)]
+async fn encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets() {run_encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets(false).await;}
+#[tokio::test(flavor="multi_thread",worker_threads=3)]
+async fn dedicated_encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets() {run_encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets(true).await;}
+async fn run_encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets(dedicated:bool) {
     const FIRST: u16 = 7000;
     const MISSING: u16 = FIRST + 100;
     const LAST: u16 = FIRST + 400;
     let ip: IpAddr = "127.0.0.1".parse().unwrap();
     let mut host = NativePeer::new(ip, None, true).await.unwrap();
-    let mut viewer = NativePeer::new(ip, None, false).await.unwrap();
+    let mut viewer = NativePeer::new_lan_io(ip,ip,None,false,None,dedicated).await.unwrap();
     let relay = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
     let relay_port = relay.local_addr().unwrap().port();
     let retransmitted = Arc::new(AtomicUsize::new(0));
@@ -349,12 +355,15 @@ async fn encrypted_wire_loss_is_repaired_once_after_three_hundred_new_packets() 
 }
 
 #[tokio::test(flavor="multi_thread",worker_threads=3)]
-async fn encrypted_fec_recovers_a_lost_keyframe_fragment_when_every_retransmission_is_dropped() {
+async fn encrypted_fec_recovers_a_lost_keyframe_fragment_when_every_retransmission_is_dropped() {run_encrypted_fec_recovers_a_lost_keyframe_fragment_when_every_retransmission_is_dropped(false).await;}
+#[tokio::test(flavor="multi_thread",worker_threads=3)]
+async fn dedicated_encrypted_fec_recovers_a_lost_keyframe_fragment_when_every_retransmission_is_dropped() {run_encrypted_fec_recovers_a_lost_keyframe_fragment_when_every_retransmission_is_dropped(true).await;}
+async fn run_encrypted_fec_recovers_a_lost_keyframe_fragment_when_every_retransmission_is_dropped(dedicated:bool) {
     use uu_media::{RawFrame,Timestamp,VideoEncoder};
     let ip:IpAddr="127.0.0.1".parse().unwrap();
     let stats=Arc::new(MediaStats::default());let _=stats.decoder_preference.set(uu_media::DecoderKind::Software);
     let mut host=NativePeer::new(ip,None,true).await.unwrap();
-    let mut viewer=NativePeer::new(ip,Some(stats.clone()),false).await.unwrap();
+    let mut viewer=NativePeer::new_lan_io(ip,ip,Some(stats.clone()),false,None,dedicated).await.unwrap();
     let(frames,mut images)=crate::media::frame_channel();viewer.receiver(frames,stats.clone()).await.unwrap();
     let mut sender=host.sender_for_color(Arc::new(AtomicBool::new(false)),VideoCodec::H264,false).await.unwrap();
     let relay=UdpSocket::bind((ip,0)).await.unwrap();let port=relay.local_addr().unwrap().port();
@@ -437,7 +446,7 @@ async fn encrypted_receiver_generations_keep_connection_owned_observations() {
         let trace=(generation<2).then(||Arc::new(crate::socket_trace::Observation::new(path.clone())));
         let weak=trace.as_ref().map(Arc::downgrade);
         let mut host=NativePeer::new_lan(ip,ip,None,true,None).await.unwrap();
-        let mut viewer=NativePeer::new_lan(ip,ip,Some(stats.clone()),false,trace).await.unwrap();
+        let mut viewer=NativePeer::new_lan_io(ip,ip,Some(stats.clone()),false,trace,generation<2).await.unwrap();
         let (frames,mut images)=crate::media::frame_channel();
         viewer.receiver(frames,stats.clone()).await.unwrap();
         let mut sender=host.sender_for_color(Arc::new(AtomicBool::new(false)),VideoCodec::H264,false).await.unwrap();
@@ -464,6 +473,8 @@ async fn encrypted_receiver_generations_keep_connection_owned_observations() {
         }.await;
         host.close().await;
         timeout(Duration::from_secs(3),viewer.close()).await.expect("bounded diagnostic close");
+        if let Some(io)=&viewer.io {io.stop().await.unwrap();}
+        viewer.close().await;
         result.unwrap();
         drop(sender);drop(viewer);drop(host);
         for (old,bytes,_) in &previous {assert_eq!(std::fs::read(old).unwrap(),*bytes);}
