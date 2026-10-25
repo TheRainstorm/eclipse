@@ -43,6 +43,7 @@ impl Drop for Inputs {
 }
 pub(super) struct Driver {
     native:Native,
+    shared_proof:Option<serde_json::Value>,
     gpu:Option<super::gpu::Input>,
     inputs:Inputs,
     pool_enabled:bool,
@@ -62,7 +63,7 @@ impl Driver {
         // The candidate remains opt-in until GPU lifetime and ABBA acceptance.
         let pool_enabled=std::env::var("UU_AMF_INPUT_POOL").is_ok_and(|v|v=="1");
         if std::env::var_os("UU_ENCODE_PROFILE").is_some(){eprintln!("uu-amf-input-mode pool_enabled={pool_enabled}");}
-        Ok(Self{native,gpu:None,inputs:Inputs(super::input_pool::Pool::new(1)),pool_enabled,upload:Vec::new(),settings,headers:Default::default(),name:format!("amf ({codec} {mode}, AMD D3D11, {:?})",settings.tuning.amd_quality),profile:super::profile::Profile::new("amf"),_runtime:runtime})
+        Ok(Self{native,shared_proof:None,gpu:None,inputs:Inputs(super::input_pool::Pool::new(1)),pool_enabled,upload:Vec::new(),settings,headers:Default::default(),name:format!("amf ({codec} {mode}, AMD D3D11, {:?})",settings.tuning.amd_quality),profile:super::profile::Profile::new("amf"),_runtime:runtime})
     }
 }
 impl super::worker::Driver for Driver {
@@ -81,6 +82,7 @@ impl super::worker::Driver for Driver {
             let surface=frame.d3d11.as_ref().ok_or("missing GPU capture surface")?;
             let (_,device)=surface.capture_texture()?;
             if unsafe{eclipse_amf_device(self.native.ptr())}!=device.as_raw() {
+                if surface.shared_capture_info().is_some(){return Err("separate capture: native AMF device mismatch; refusing capture-device rebind".into());}
                 // Rebind before accepting this capture device's first sample.
                 let next=Native::open(self.settings,device.as_raw())?;
                 if self.native.close()!=0 {
@@ -93,6 +95,21 @@ impl super::worker::Driver for Driver {
             }
             if self.gpu.is_none(){self.gpu=Some(super::gpu::Input::new(frame,self.settings)?);}
             let input=self.gpu.as_ref().unwrap();
+            if self.shared_proof.is_none(){
+                let actual=super::input_device::device_identity(device)?;
+                let mut proof=surface.shared_capture_info().unwrap_or_else(||serde_json::json!({"capture":actual,"encode":actual,"actual_separate":false}));
+                let conversion=input.device_identity()?;
+                let native_raw=unsafe{eclipse_amf_device(self.native.ptr())};
+                let native_device=unsafe{windows::Win32::Graphics::Direct3D11::ID3D11Device::from_raw_borrowed(&native_raw)}.ok_or("native AMF device absent")?;
+                let native=super::input_device::device_identity(native_device)?;
+                if serde_json::to_value(conversion).map_err(|e|e.to_string())?!=proof["encode"] || native!=conversion {
+                    return Err("capture: conversion/native device identity or LUID mismatch".into());
+                }
+                proof["conversion"]=serde_json::to_value(conversion).map_err(|e|e.to_string())?;
+                proof["native_amf"]=serde_json::to_value(native).map_err(|e|e.to_string())?;
+                let mut first=proof.clone();first["event"]="shared_capture_first_input".into();eprintln!("{}",first);
+                self.shared_proof=Some(proof);
+            }
             if self.pool_enabled && input.amf_pooled() {
                 let key=self.inputs.0.acquire(timestamp,Lease::new()?,||input.amf_target()?.ok_or_else(||"no AMF color target".into()))?;
                 let (target,_)=self.inputs.0.target(key)?;
@@ -144,3 +161,11 @@ impl super::worker::Driver for Driver {
         self.settings.bitrate_kbps=kbps;Ok(super::worker::BitrateChange::Preserved)
     }
 }
+
+impl Drop for Driver {fn drop(&mut self){
+    if let Some(mut proof)=self.shared_proof.take(){
+        let pending=self.native.close();
+        proof["event"]="shared_capture_amf_closed".into();proof["native_pending"]=pending.into();
+        eprintln!("{}",proof);
+    }
+}}

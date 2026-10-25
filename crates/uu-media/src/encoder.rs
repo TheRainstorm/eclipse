@@ -140,6 +140,8 @@ fn requires_vpl(settings: Settings, windows: bool) -> bool {
 
 mod input_device;
 pub use input_device::InputDevice;
+#[cfg(all(windows,feature="mf-encode"))]
+pub use input_device::DeviceIdentity;
 #[cfg(all(windows, feature="mf-encode"))]
 mod capture_pool;
 #[cfg(all(windows, feature="mf-encode"))]

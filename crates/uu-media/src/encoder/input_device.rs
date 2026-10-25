@@ -3,7 +3,7 @@
 #[derive(Clone)]
 pub struct InputDevice {
     #[cfg(all(windows, feature = "mf-encode"))]
-    pub(super) device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
+    pub(crate) device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
     #[cfg(all(windows, feature = "mf-encode"))]
     pub(super) vendor: u16,
     _private: (),
@@ -44,6 +44,78 @@ impl InputDevice {
             _private: (),
         })
     }
+}
+
+/// Canonical COM identity plus the complete adapter LUID. Vendor IDs cannot
+/// establish that two resources belong to the same physical adapter.
+#[cfg(all(windows, feature = "mf-encode"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct DeviceIdentity {
+    pub object: u64,
+    pub adapter_low: u32,
+    pub adapter_high: i32,
+}
+#[cfg(all(windows, feature = "mf-encode"))]
+impl InputDevice {
+    pub fn identity(&self) -> Result<DeviceIdentity, crate::CodecError> {
+        device_identity(&self.device).map_err(super::error)
+    }
+    /// One protected encode device on the capture device's exact adapter.
+    pub fn separate_on_same_adapter(&self) -> Result<Self, crate::CodecError> {
+        use windows::{
+            core::Interface,
+            Win32::{
+                Foundation::HMODULE,
+                Graphics::{Direct3D::D3D_DRIVER_TYPE_UNKNOWN, Direct3D11::*, Dxgi::IDXGIDevice},
+            },
+        };
+        let create = || -> windows::core::Result<_> {
+            unsafe {
+                let dxgi: IDXGIDevice = self.device.cast()?;
+                let adapter = dxgi.GetAdapter()?;
+                let mut device = None;
+                D3D11CreateDevice(
+                    &adapter,
+                    D3D_DRIVER_TYPE_UNKNOWN,
+                    HMODULE::default(),
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                    None,
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    None,
+                )?;
+                device.ok_or_else(windows::core::Error::empty)
+            }
+        };
+        let next = Self::from_d3d11(create().map_err(|e| super::error(e.to_string()))?)?;
+        let (a, b) = (self.identity()?, next.identity()?);
+        if a.object == b.object
+            || (a.adapter_low, a.adapter_high) != (b.adapter_low, b.adapter_high)
+        {
+            return Err(super::error(
+                "separate encode device identity/LUID mismatch",
+            ));
+        }
+        Ok(next)
+    }
+}
+#[cfg(all(windows, feature = "mf-encode"))]
+pub(crate) fn device_identity(
+    device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
+) -> Result<DeviceIdentity, String> {
+    use windows::{
+        core::{IUnknown, Interface},
+        Win32::Graphics::Dxgi::IDXGIDevice,
+    };
+    let id: IUnknown = device.cast().map_err(|e| e.to_string())?;
+    let dxgi: IDXGIDevice = device.cast().map_err(|e| e.to_string())?;
+    let desc = unsafe { dxgi.GetAdapter().and_then(|a| a.GetDesc()) }.map_err(|e| e.to_string())?;
+    Ok(DeviceIdentity {
+        object: id.as_raw() as usize as u64,
+        adapter_low: desc.AdapterLuid.LowPart,
+        adapter_high: desc.AdapterLuid.HighPart,
+    })
 }
 
 // Construction rejects SINGLETHREADED devices and enables immediate-context

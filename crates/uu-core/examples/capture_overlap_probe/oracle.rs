@@ -3,6 +3,7 @@ pub const MAX_RGB_ERROR: u8 = 18;
 #[derive(Debug, PartialEq, Eq)]
 pub struct Options {
     pub overlap: bool,
+    pub separate: bool,
     pub monitor: Option<String>,
 }
 pub fn options(args: &[String]) -> Result<Options, String> {
@@ -14,16 +15,16 @@ pub fn options(args: &[String]) -> Result<Options, String> {
         }
         _ => {
             return Err(
-                "required: --mode serial|overlap [--monitor NAME]; no other arguments".into(),
+                "required: --mode serial|overlap|separate [--monitor NAME]; no other arguments".into(),
             )
         }
     };
     let overlap = match mode {
         "serial" => false,
-        "overlap" => true,
-        _ => return Err("mode must be serial or overlap".into()),
+        "overlap" | "separate" => true,
+        _ => return Err("mode must be serial, overlap or separate".into()),
     };
-    Ok(Options { overlap, monitor })
+    Ok(Options { overlap, separate:mode=="separate", monitor })
 }
 pub fn bgra_to_rgb(v: [u8; 4]) -> [u8; 3] {
     [v[2], v[1], v[0]]
@@ -156,6 +157,7 @@ mod tests {
             .unwrap(),
             Options {
                 overlap: false,
+                separate:false,
                 monitor: Some(r"\\.\DISPLAY13".into())
             }
         );
@@ -226,4 +228,8 @@ mod tests {
             assert_eq!(marker(&bits(v)), Ok(v));
         }
     }
+}
+
+#[cfg(test)] mod separate_tests {use super::*;
+    #[test] fn separate_mode_requires_explicit_exact_name(){let v=|x:&str|vec!["--mode".to_owned(),x.to_owned()];let s=options(&v("separate")).unwrap();assert!(s.overlap&&s.separate);for old in ["serial","overlap"]{assert!(!options(&v(old)).unwrap().separate);}assert!(options(&v("separate1")).is_err());}
 }

@@ -11,6 +11,8 @@ pub struct CapturePool {
     size: [u32; 2],
     slots: Vec<Arc<Frame>>,
     limit:usize,
+    separate:Option<InputDevice>,
+    shared:Option<Arc<crate::shared_capture::Stats>>,
 }
 impl CapturePool {
     pub fn new(input: InputDevice, width: u32, height: u32) -> Result<Self, CodecError> {
@@ -24,9 +26,16 @@ impl CapturePool {
         }
         let context = unsafe { input.device.GetImmediateContext() }
             .map_err(|e| super::error(e.to_string()))?;
-        Ok(Self { input, context, size: [width, height], slots: Vec::with_capacity(limit), limit })
+        Ok(Self { input, context, size: [width, height], slots: Vec::with_capacity(limit), limit, separate:None, shared:None })
     }
 
+    #[cfg(test)]
+    pub(crate) fn shared_stats(&self)->Arc<crate::shared_capture::Stats>{self.shared.as_ref().unwrap().clone()}
+    pub fn separate(input:InputDevice,encode:InputDevice,width:u32,height:u32)->Result<Self,CodecError>{
+        let stats=crate::shared_capture::Stats::new(&input,&encode).map_err(super::error)?;
+        let mut pool=Self::with_limit(input,width,height,3)?;
+        pool.separate=Some(encode);pool.shared=Some(stats);Ok(pool)
+    }
     /// Snapshot an acquired BGRA resource on this device's protected immediate
     /// context. All consumers enqueue their source reads on that same context;
     /// the next copy follows those reads in GPU order. A live Frame lease also
@@ -52,11 +61,15 @@ impl CapturePool {
                     BindFlags: (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE).0 as u32,
                     CPUAccessFlags: 0, MiscFlags: 0, ..desc
                 };
-                let mut texture = None;
-                unsafe { self.input.device.CreateTexture2D(&owned_desc, None, Some(&mut texture)) }
-                    .map_err(|e| super::error(e.to_string()))?;
-                let texture = texture.ok_or_else(||super::error("capture pool texture unavailable"))?;
-                let snapshot = Frame::captured(texture, self.input.device.clone()).map_err(super::error)?;
+                let snapshot=if let Some(encode)=&self.separate {
+                    let slot=crate::shared_capture::Slot::new(&self.input,encode,&owned_desc,self.shared.as_ref().unwrap().clone()).map_err(super::error)?;
+                    Frame::shared_capture(slot,encode.device.clone()).map_err(super::error)?
+                }else{
+                    let mut texture = None;
+                    unsafe { self.input.device.CreateTexture2D(&owned_desc, None, Some(&mut texture)) }
+                        .map_err(|e| super::error(e.to_string()))?;
+                    Frame::captured(texture.ok_or_else(||super::error("capture pool texture unavailable"))?,self.input.device.clone()).map_err(super::error)?
+                };
                 self.slots.push(Arc::new(snapshot));
                 self.slots.len() - 1
             }
@@ -64,10 +77,10 @@ impl CapturePool {
         };
         let snapshot = Arc::get_mut(&mut self.slots[index]).expect("capture slot exclusively owned");
         let (texture, _) = snapshot.capture_texture().map_err(super::error)?;
-        unsafe {
+        if let Some(result)=snapshot.shared_write(&self.context,source){result.map_err(super::error)?;}else{unsafe {
             self.context.CopyResource(texture, source);
             self.context.Flush();
-        }
+        }}
         Ok(Some(RawFrame {
             width: self.size[0], height: self.size[1], stride: self.size[0] * if desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT{8}else{4},
             format: if desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT{PixelFormat::ScRgb16}else{PixelFormat::Bgra8}, data: Default::default(), pts, gpu: true,
@@ -75,6 +88,8 @@ impl CapturePool {
         }))
     }
 }
+
+impl Drop for CapturePool {fn drop(&mut self){if let Some(stats)=&self.shared{stats.retire();}}}
 
 /// Offline probe-only lease view of the same captured texture. A Weak to this
 /// per-input view observes the encoder's lease without placing Weak references
@@ -91,6 +106,7 @@ pub fn capture_probe_lease(frame:&RawFrame)->Result<RawFrame,String> {
 /// the media path. Points use the underlying physical capture coordinates.
 pub fn capture_rgb_samples(frame:&RawFrame,points:&[(usize,usize)],white:f32)->Result<Vec<[u8;3]>,String> {
     let surface=frame.d3d11.as_ref().ok_or("missing capture texture")?;
+    let guard=surface.capture_read()?;
     let(texture,device)=surface.capture_texture()?;
     let mut desc=D3D11_TEXTURE2D_DESC::default();unsafe{texture.GetDesc(&mut desc);}
     if !matches!(desc.Format,DXGI_FORMAT_B8G8R8A8_UNORM|DXGI_FORMAT_R16G16B16A16_FLOAT)
@@ -109,7 +125,7 @@ pub fn capture_rgb_samples(frame:&RawFrame,points:&[(usize,usize)],white:f32)->R
             let rgb=std::array::from_fn(|i|half(unsafe{std::ptr::read_unaligned(ptr.add(i*2).cast::<u16>())}));
             crate::hdr::sc_rgb_to_sdr(rgb,white).map(|v|(v*255.).round() as u8)
         }else{unsafe{[*ptr.add(2),*ptr.add(1),*ptr]}}
-    }).collect();unsafe{context.Unmap(&staging,0);}Ok(values)
+    }).collect();unsafe{context.Unmap(&staging,0);}if let Some(guard)=guard{guard.finish()?;}Ok(values)
 }
 fn half(v:u16)->f32 {let sign=if v&0x8000!=0{-1.}else{1.};let e=(v>>10)&31;let m=v&1023;sign*match e{0=>f32::from(m)*2_f32.powi(-24),31=>0.,_=>(1.+f32::from(m)/1024.)*2_f32.powi(i32::from(e)-15)}}
 

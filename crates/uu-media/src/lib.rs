@@ -22,6 +22,8 @@ pub mod convert;
 pub mod decoder;
 pub mod dma_buf;
 pub mod d3d11_frame;
+#[cfg(all(windows, feature="mf-encode"))]
+mod shared_capture;
 #[cfg(all(windows,any(feature="d3d11va",feature="mf-encode")))]
 mod d3d11_color;
 pub mod frame;

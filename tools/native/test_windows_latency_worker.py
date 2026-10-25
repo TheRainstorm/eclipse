@@ -108,3 +108,13 @@ class FinalReports(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class CaptureDeviceSwitches(unittest.TestCase):
+    def test_actual_worker_contract_accepts_only_s_a_b(self):
+        self.assertEqual(worker.capture_device_switches({}),(0,0))
+        for pair in [(0,0),(1,0),(1,1)]:
+            self.assertEqual(worker.capture_device_switches(dict(zip(['capture_overlap','capture_separate_device'],pair))),pair)
+        for value in [True,'1',None,2]:
+            with self.assertRaises(ValueError):worker.capture_device_switches({'capture_overlap':1,'capture_separate_device':value})
+        with self.assertRaises(ValueError):worker.capture_device_switches({'capture_overlap':0,'capture_separate_device':1})

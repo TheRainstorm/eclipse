@@ -23,6 +23,9 @@ pub struct Frame {
     visible: [u32; 2],
     allocation: [u32; 2],
     format: DXGI_FORMAT,
+    // Drop opened view/device references before the shared owner emits its close proof.
+    #[cfg(feature="mf-encode")]
+    shared: Option<std::sync::Arc<crate::shared_capture::Slot>>,
 }
 // Shared frame leases are immutable. MFT samples retain their decoder slots;
 // capture snapshots may be updated only after exclusive ownership is recovered.
@@ -52,6 +55,7 @@ impl Frame {
             return Err("unsupported D3D11 decoder texture layout".into());
         }
         let frame = Self {
+            #[cfg(feature="mf-encode")] shared:None,
             _parent: None,
             _sample: Some(sample),
             _foundation: Some(foundation),
@@ -91,15 +95,25 @@ impl Frame {
         }
         let actual=unsafe{texture.GetDevice()}.map_err(|e|e.to_string())?;
         if actual.as_raw()!=device.as_raw(){return Err("capture texture/device mismatch".into());}
-        Ok(Self{_parent:None,_sample:None,_foundation:None,texture,device,index:0,
+        Ok(Self{#[cfg(feature="mf-encode")] shared:None,_parent:None,_sample:None,_foundation:None,texture,device,index:0,
             visible:[desc.Width,desc.Height],allocation:[desc.Width,desc.Height],format:desc.Format})
     }
+    #[cfg(feature="mf-encode")]
+    pub(crate) fn shared_capture(slot:std::sync::Arc<crate::shared_capture::Slot>,device:ID3D11Device)->Result<Self,String>{
+        let mut frame=Self::captured(slot.view(),device)?;frame.shared=Some(slot);Ok(frame)
+    }
+    #[cfg(feature="mf-encode")]
+    pub fn shared_capture_info(&self)->Option<serde_json::Value>{self.shared.as_ref().map(|s|s.proof())}
+    #[cfg(feature="mf-encode")]
+    pub(crate) fn capture_read(&self)->Result<Option<crate::shared_capture::Guard<'_>>,String>{self.shared.as_ref().map(|s|s.read()).transpose()}
+    #[cfg(feature="mf-encode")]
+    pub(crate) fn shared_write(&self,context:&ID3D11DeviceContext,source:&ID3D11Texture2D)->Option<Result<(),String>>{self.shared.as_ref().map(|s|s.write(context,source))}
     pub(crate) fn cropped_view(source:&std::sync::Arc<Self>,visible:[u32;2])->Result<Self,String> {
         if !source.valid(source.visible) || visible.iter().any(|v|*v<2 || *v%2!=0)
             || visible[0]>source.visible[0] || visible[1]>source.visible[1] {
             return Err("invalid decoded GPU display geometry".into());
         }
-        Ok(Self{_parent:Some(source.clone()),_sample:None,_foundation:None,
+        Ok(Self{#[cfg(feature="mf-encode")] shared:source.shared.clone(),_parent:Some(source.clone()),_sample:None,_foundation:None,
             texture:source.texture.clone(),device:source.device.clone(),index:source.index,
             visible,allocation:source.allocation,format:source.format})
     }

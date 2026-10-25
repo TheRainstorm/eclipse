@@ -168,6 +168,7 @@ pub struct DxgiCapture {
     capture_pool: Option<uu_media::encoder::CapturePool>,
     gpu: bool,
     overlap:bool,
+    encode_device:Option<uu_media::encoder::InputDevice>,
     hdr: Option<uu_media::hdr::Metadata>,
     allow_hdr:bool,
     adapter_vendor: u16,
@@ -244,6 +245,7 @@ impl DxgiCapture {
             capture_pool: None,
             gpu: false,
             overlap:false,
+            encode_device:None,
             hdr,
             allow_hdr:allow_hdr && selected.rotation==Rotation::None,
             adapter_vendor,
@@ -366,11 +368,12 @@ impl DxgiCapture {
             }
             if self.capture_pool.is_none() {
                 let device = uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).map_err(backend)?;
-                self.capture_pool = Some(uu_media::encoder::CapturePool::with_limit(device, desc.Width, desc.Height,if self.overlap{3}else{2}).map_err(backend)?);
+                self.capture_pool = Some(if let Some(encode)=&self.encode_device {uu_media::encoder::CapturePool::separate(device,encode.clone(),desc.Width,desc.Height)}else{uu_media::encoder::CapturePool::with_limit(device,desc.Width,desc.Height,if self.overlap{3}else{2})}.map_err(backend)?);
             }
             let pts = self.timestamp();
             return self.capture_pool.as_mut().unwrap().capture(&texture, pts).map_err(backend);
         }
+        if self.encode_device.is_some(){return Err(backend("separate encode device requested but GPU capture is inactive"));}
         let mut needs_staging = true;
         if let Some(staging) = &self.staging {
             let mut old = D3D11_TEXTURE2D_DESC::default();
@@ -462,6 +465,13 @@ impl DxgiCapture {
     }
 }
 impl Capture for DxgiCapture {
+    fn enable_separate_encode_device(&mut self)->Result<(),CaptureError>{
+        if self.rotation!=Rotation::None || self.adapter_vendor!=0x1002{return Err(backend("separate capture requires unrotated AMD DXGI / native AMF"));}
+        if self.encode_device.is_some(){return Err(backend("separate capture already configured"));}
+        let capture=uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).map_err(backend)?;
+        self.encode_device=Some(capture.separate_on_same_adapter().map_err(backend)?);Ok(())
+    }
+
     fn enable_overlap(&mut self)->Result<(),CaptureError> {
         if !self.gpu || self.rotation!=Rotation::None {return Err(backend("overlap requires same-adapter GPU capture without rotation"));}
         if !self.overlap{self.overlap=true;self.last=None;self.capture_pool=None;}Ok(())
@@ -479,7 +489,7 @@ impl Capture for DxgiCapture {
     }
     fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{self.hdr}
     fn encoder_input_device(&self)->Option<uu_media::encoder::InputDevice> {
-        uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).ok()
+        self.encode_device.clone().or_else(||uu_media::encoder::InputDevice::from_d3d11(self.device.clone()).ok())
     }
     fn prefer_gpu(&mut self, enabled: bool, vendor: Option<u16>) {
         let enabled = enabled

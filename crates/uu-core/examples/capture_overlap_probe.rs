@@ -32,15 +32,15 @@ fn main() -> anyhow::Result<()> {
     );
     println!(
         "{}",
-        serde_json::json!({"event":"overlap_gpu_arguments","overlap":options.overlap,"source":format!("{:?}",source),"argv":std::env::args().collect::<Vec<_>>()})
+        serde_json::json!({"event":"overlap_gpu_arguments","overlap":options.overlap,"separate":options.separate,"source":format!("{:?}",source),"argv":std::env::args().collect::<Vec<_>>()})
     );
     for generation in 1..=2 {
-        run(generation, options.overlap, &source)?;
+        run(generation, options.overlap, options.separate, &source)?;
     }
     Ok(())
 }
 #[cfg(windows)]
-fn run(generation: u32, overlap: bool, source: &uu_capture::CaptureSource) -> anyhow::Result<()> {
+fn run(generation: u32, overlap: bool, separate:bool, source: &uu_capture::CaptureSource) -> anyhow::Result<()> {
     use anyhow::{ensure, Context};
     use std::{collections::BTreeMap, time::Duration};
     use uu_media::{
@@ -48,14 +48,15 @@ fn run(generation: u32, overlap: bool, source: &uu_capture::CaptureSource) -> an
         encoder::{self, Preference, RateControl},
     };
     use uu_proto::media::VideoCodec;
-    let mode = if overlap { "overlap" } else { "serial" };
-    let capture = uu_capture::open_with_options(
+    let mode = if separate {"separate"} else if overlap { "overlap" } else { "serial" };
+    let mut capture = uu_capture::open_with_options(
         source,
         uu_capture::OpenOptions {
             hdr: true,
             ..Default::default()
         },
     )?;
+    uu_core::capture_overlap::prepare_device(capture.as_mut(),overlap,separate)?;
     let (width, height) = capture.resolution();
     let white = capture.hdr_metadata().map_or(203., |v| v.sdr_white_nits);
     let settings = encoder::Settings {

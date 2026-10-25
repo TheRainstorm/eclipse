@@ -26,7 +26,9 @@ impl Input {
         let mut desc=D3D11_TEXTURE2D_DESC::default();unsafe{texture.GetDesc(&mut desc);}
         if device.as_raw()!=self.device.as_raw() || [desc.Width,desc.Height]!=self.source || !frame.is_consistent()
             || (frame.width,frame.height)!=(self.settings.width,self.settings.height) {return Err("AMF source device/layout changed".into());}
-        self.hdr.as_ref().ok_or("AMF pooled conversion requires the color converter")?.convert_into(texture,target)
+        let guard=surface.capture_read()?;
+        let output=self.hdr.as_ref().ok_or("AMF pooled conversion requires the color converter")?.convert_into(texture,target)?;
+        if let Some(guard)=guard{guard.finish()?;}Ok(output)
     }
     pub fn amf_pooled(&self)->bool {self.hdr.is_some()}
     pub fn new(frame:&RawFrame,settings:Settings)->Result<Self,String> {
@@ -74,6 +76,13 @@ impl Input {
         }
     }
     pub fn sample(&self,frame:&RawFrame)->Result<IMFSample,String> {
+        let surface=frame.d3d11.as_ref().ok_or("missing GPU input")?;
+        let guard=surface.capture_read()?;
+        let result=self.sample_locked(frame);
+        if let Some(guard)=guard{guard.finish()?;}result
+    }
+    pub fn device_identity(&self)->Result<super::DeviceIdentity,String>{super::input_device::device_identity(&self.device)}
+    fn sample_locked(&self,frame:&RawFrame)->Result<IMFSample,String> {
         if let Some(converter)=&self.hdr {
             if !frame.is_consistent() || (frame.width,frame.height)!=(self.settings.width,self.settings.height) {return Err("HDR source geometry changed".into());}
             let surface=frame.d3d11.as_ref().ok_or("missing HDR source")?;

@@ -88,3 +88,23 @@ Windows 编译增加 `--target x86_64-pc-windows-gnu`。探针旁放置经过完
 Windows 诊断报告另含 QPC 锚点：以该 trace 的 Instant 前后读数括住一次 QueryPerformanceCounter。夹具资源采样也保留 QPC 与频率，因此可在同一机器内给出有误差范围的 socket/帧/CPU 对齐；探针低频快照保留客户端 pipeline 时钟偏移。锚点缺失时只比较身份及各自间隔，不推算绝对阶段差。
 
 Windows native LAN 发送端还提供默认关闭的 `UU_NATIVE_QOS=1` 实验。它只为经过认证、实际选定的 IPv4 UDP 目的流申请 qWAVE AudioVideo 非自适应 QoS；同一流内的视频、音频、控制与修复共享该配置。每个连接独占句柄和流，创建与退役在阻塞工作线程执行，取消时保留原 socket 所有权直至清理。没有逐包 QoS API 调用，也不设置带宽整形、全局策略或网卡属性。日志包含申请、PacketPriority 读回、错误及清理结果；读回成功不代表链路设备实际执行，更不代表延迟改善。`native_qos_probe` 是只操作自有 socket 的 Windows 能力验证入口；视频对照仍须独立进行。
+
+### Experimental capture/encode device separation
+
+`UU_CAPTURE_ENCODE_SEPARATE_DEVICE=1` requires
+`UU_CAPTURE_ENCODE_OVERLAP=1` and native AMD AMF with unscaled, unrotated
+Windows DXGI GPU capture. It is disabled by default; values other than `0`/`1`
+are rejected. Unsupported capture/encoder combinations fail explicitly.
+Capture and encode devices have different COM identities on the same adapter
+LUID. Three leased snapshot slots cache NT shared handles and opened encode
+views. Keyed mutex key 0 protects both writes and reads, with a finite 50 ms
+acquisition timeout; timeout, abandoned ownership or failed release terminates
+the candidate rather than falling back. Arc lifetime prevents overwriting live
+frames; keyed synchronization separately orders GPU access. AMF and color
+conversion remain on the encode device. This path is experimental and is not
+an accepted latency improvement.
+
+The correctness probe accepts `--mode serial|overlap|separate [--monitor NAME]`;
+private workers set and record `capture_separate_device` alongside
+`capture_overlap`. Device proofs and bounded handle/view/lock closing counters
+supplement frame Weak checks, which alone do not prove complete VRAM release.

@@ -19,6 +19,12 @@ pub(crate) fn requested_from_env() -> Result<bool> {
         Err(e) => Err(e.into()),
     }
 }
+pub fn separate_requested(value:Option<&str>)->Result<bool>{match value{None|Some("0")=>Ok(false),Some("1")=>Ok(true),_=>anyhow::bail!("UU_CAPTURE_ENCODE_SEPARATE_DEVICE must be exactly 0 or 1")}}
+pub(crate) fn separate_from_env()->Result<bool>{match std::env::var("UU_CAPTURE_ENCODE_SEPARATE_DEVICE"){Ok(v)=>separate_requested(Some(&v)),Err(std::env::VarError::NotPresent)=>Ok(false),Err(e)=>Err(e.into())}}
+/// Must precede encoder initialization: the encoder lease is the encode device.
+pub fn prepare_device(capture:&mut dyn Capture,overlap:bool,separate:bool)->Result<()>{
+    if separate {anyhow::ensure!(overlap,"separate encode device requires capture/encode overlap");capture.enable_separate_encode_device()?;}Ok(())
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Config {
     fps: u32,
@@ -352,4 +358,8 @@ mod tests {
         let capture = Box::new(uu_capture::SyntheticCapture::new(64, 64, 60));
         assert!(Input::new(capture, true, 60, false, None).is_err());
     }
+}
+
+#[cfg(test)] mod separate_flag_tests {use super::*;
+#[test] fn strict_default_off_and_overlap_required(){assert!(!separate_requested(None).unwrap());assert!(!separate_requested(Some("0")).unwrap());assert!(separate_requested(Some("1")).unwrap());for v in ["true","", "2"," 1"]{assert!(separate_requested(Some(v)).is_err());}}
 }

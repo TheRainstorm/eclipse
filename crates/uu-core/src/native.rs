@@ -712,7 +712,9 @@ async fn send_video(
             let started=Instant::now();
             let mut capture=uu_capture::open_with_options(&config.source,capture_options)?;
             capture.set_frame_rate(fps)?;
-            let capture=uu_capture::scale::bounded(capture,bounds);
+            let mut capture=uu_capture::scale::bounded(capture,bounds);
+            let separate=crate::capture_overlap::separate_from_env()?;
+            crate::capture_overlap::prepare_device(capture.as_mut(),crate::capture_overlap::requested_from_env()?,separate)?;
             let (width,height)=capture.resolution();validate_video(width,height,fps)?;
             let kbps=if automatic {crate::native_quality::Update{fps,bitrate_kbps:None}.bitrate(width,height)}else{kbps};
             let rate_control=match rate_control {uu_media::encoder::RateControl::Cbr=>rate_control,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:kbps.saturating_mul(2)}};
@@ -732,6 +734,7 @@ async fn send_video(
                 }
             }
             let (codec,encoder,hdr)=selected.ok_or_else(||anyhow::anyhow!("主机无法初始化请求的编码器：{}",last_error.map(|e|e.to_string()).unwrap_or_default()))?;
+            anyhow::ensure!(!separate || encoder.backend_name().starts_with("amf"),"separate encode device requires native AMF; selected backend refused");
             let encoder_us=elapsed_us(started);let started=Instant::now();
             let mut available=vec![codec];
             if policy.is_some(){
