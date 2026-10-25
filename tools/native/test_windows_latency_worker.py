@@ -128,4 +128,21 @@ class CaptureDeviceSwitches(unittest.TestCase):
             with self.assertRaises(ValueError):worker.capture_device_switches({'capture_overlap':1,'capture_separate_device':value})
         with self.assertRaises(ValueError):worker.capture_device_switches({'capture_overlap':0,'capture_separate_device':1})
 
+class StimulusDpi(unittest.TestCase):
+    def test_only_verified_pmv2_may_create_the_window(self):
+        for success, error in ((True,0),(False,5)):
+            value=dict(set_succeeded=success,last_error=error,thread_pm_v2=True,process_pm_v2=True)
+            self.assertEqual(worker.verify_pm_v2(value),value)
+        for change in (dict(thread_pm_v2=False),dict(process_pm_v2=False),
+                       dict(set_succeeded=False,last_error=87),dict(set_succeeded=False,last_error=0)):
+            value=dict(set_succeeded=True,last_error=0,thread_pm_v2=True,process_pm_v2=True)
+            value.update(change)
+            with self.assertRaises(RuntimeError):worker.verify_pm_v2(value)
+
+    def test_source_relative_physical_bounds_are_shared(self):
+        self.assertEqual(worker.stimulus_rect({}),[32,32,960,540])
+        self.assertEqual(worker.stimulus_rect({'stimulus_source_origin':[-3840,200]}),[-3808,232,960,540])
+        for bad in ([True,0],['0',0],[0],None,[0,999999]):
+            with self.assertRaises(ValueError):worker.stimulus_rect({'stimulus_source_origin':bad})
+
 if __name__=='__main__':unittest.main()

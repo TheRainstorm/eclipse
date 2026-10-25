@@ -292,12 +292,89 @@ def resources(process):
             'cpu_seconds': (kernel_time.value + user_time.value) / 1e7, 'thread_count':thread_count(process.pid)}
 
 
+def verify_pm_v2(result):
+    """An already-set process is acceptable only when both contexts are PMv2."""
+    if (not result['thread_pm_v2'] or not result['process_pm_v2'] or
+            (not result['set_succeeded'] and result['last_error'] != 5)):
+        raise RuntimeError('Per-Monitor V2 unavailable: '+json.dumps(result))
+    return result
+
+
+def establish_pm_v2():
+    """Call in the stimulus/observer process before any DPI-dependent API."""
+    user = C.WinDLL('user32', use_last_error=True)
+    kernel = C.WinDLL('kernel32', use_last_error=True)
+    user.SetProcessDpiAwarenessContext.argtypes = [W.HANDLE]
+    user.SetProcessDpiAwarenessContext.restype = W.BOOL
+    user.GetThreadDpiAwarenessContext.argtypes = []
+    user.GetThreadDpiAwarenessContext.restype = W.HANDLE
+    user.GetDpiAwarenessContextForProcess.argtypes = [W.HANDLE]
+    user.GetDpiAwarenessContextForProcess.restype = W.HANDLE
+    user.AreDpiAwarenessContextsEqual.argtypes = [W.HANDLE, W.HANDLE]
+    user.AreDpiAwarenessContextsEqual.restype = W.BOOL
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = W.HANDLE
+    desired = W.HANDLE(-4)
+    C.set_last_error(0)
+    succeeded = bool(user.SetProcessDpiAwarenessContext(desired))
+    error = C.get_last_error()
+    thread = user.GetThreadDpiAwarenessContext()
+    process = user.GetDpiAwarenessContextForProcess(kernel.GetCurrentProcess())
+    return verify_pm_v2({'set_succeeded':succeeded, 'last_error':error,
+        'thread_context':thread, 'process_context':process,
+        'thread_pm_v2':bool(user.AreDpiAwarenessContextsEqual(thread, desired)),
+        'process_pm_v2':bool(user.AreDpiAwarenessContextsEqual(process, desired))})
+
+
+def stimulus_rect(config):
+    origin = config.get('stimulus_source_origin', [0, 0])
+    if (not isinstance(origin, list) or len(origin) != 2 or
+            any(type(v) is not int or abs(v) > 65536 for v in origin)):
+        raise ValueError('stimulus_source_origin must contain two physical pixel coordinates')
+    return [origin[0]+32, origin[1]+32, 960, 540]
+
+
+def stimulus_geometry(hwnd):
+    """Read physical DWM frame and mapped client bounds; never resize a window."""
+    user = C.WinDLL('user32', use_last_error=True)
+    dwm = C.WinDLL('dwmapi')
+    user.GetClientRect.argtypes = [W.HWND, C.POINTER(W.RECT)]
+    user.ClientToScreen.argtypes = [W.HWND, C.POINTER(W.POINT)]
+    user.GetWindowDpiAwarenessContext.argtypes = [W.HWND]
+    user.GetWindowDpiAwarenessContext.restype = W.HANDLE
+    user.AreDpiAwarenessContextsEqual.argtypes = [W.HANDLE, W.HANDLE]
+    user.AreDpiAwarenessContextsEqual.restype = W.BOOL
+    user.GetDpiForWindow.argtypes = [W.HWND]
+    user.GetDpiForWindow.restype = W.UINT
+    user.IsWindowVisible.argtypes = [W.HWND]
+    user.IsIconic.argtypes = [W.HWND]
+    dwm.DwmGetWindowAttribute.argtypes = [W.HWND, W.DWORD, C.c_void_p, W.DWORD]
+    dwm.DwmGetWindowAttribute.restype = C.c_long
+    frame = W.RECT(); client = W.RECT()
+    status = dwm.DwmGetWindowAttribute(hwnd, 9, C.byref(frame), C.sizeof(frame))
+    if status != 0:raise RuntimeError('DWM frame query failed: '+str(status))
+    if not user.GetClientRect(hwnd, C.byref(client)):raise C.WinError(C.get_last_error())
+    first = W.POINT(client.left, client.top); last = W.POINT(client.right, client.bottom)
+    if not user.ClientToScreen(hwnd, C.byref(first)) or not user.ClientToScreen(hwnd, C.byref(last)):
+        raise C.WinError(C.get_last_error())
+    context = user.GetWindowDpiAwarenessContext(hwnd)
+    return {'dwm_status':status, 'dwm_frame':[frame.left,frame.top,frame.right,frame.bottom],
+        'client_screen':[first.x,first.y,last.x,last.y],
+        'client_size':[client.right-client.left,client.bottom-client.top],
+        'window_pm_v2':bool(user.AreDpiAwarenessContextsEqual(context, W.HANDLE(-4))),
+        'window_context':context, 'dpi':user.GetDpiForWindow(hwnd),
+        'visible':bool(user.IsWindowVisible(hwnd)), 'minimized':bool(user.IsIconic(hwnd))}
+
+
 def stimulus(config):
     """One nonactivating GDI surface; count completed EndPaint calls, not ticks.
 
     Waitable timer API: https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw
     The legacy WM_TIMER mode is a bounded diagnostic control, never the default.
     """
+    dpi = establish_pm_v2()
+    bounds = stimulus_rect(config)
+    geometry = None
     user = C.WinDLL('user32', use_last_error=True); gdi = C.WinDLL('gdi32', use_last_error=True)
     kernel = C.WinDLL('kernel32', use_last_error=True)
     callback_type = C.WINFUNCTYPE(C.c_ssize_t, W.HWND, W.UINT, W.WPARAM, W.LPARAM)
@@ -339,7 +416,8 @@ def stimulus(config):
     duration = config.get('stimulus_seconds', config['deadline_seconds'])
     recorder = StimulusReport(config['stimulus_report'], lambda: {
         'pid':os.getpid(),'hwnd':int(hwnd or 0),'clock':clock,
-        'requested_fps':stimulus_fps(config),'elapsed_seconds':time.perf_counter()-started})
+        'requested_fps':stimulus_fps(config),'elapsed_seconds':time.perf_counter()-started,
+        'dpi':dpi,'physical_rect':bounds,'geometry':geometry})
     def procedure(hwnd, message, wp, lp):
         nonlocal count, last_write
         if message == 0x113:
@@ -371,9 +449,15 @@ def stimulus(config):
         cls=Class(0,callback,0,0,instance,None,None,None,None,name)
         if not user.RegisterClassW(C.byref(cls)):raise C.WinError(C.get_last_error())
         hwnd=user.CreateWindowExW(0x08000000|0x80,name,'Eclipse owned desktop latency stimulus',0x80000000,
-                                  32,32,960,540,None,None,instance,None)
+                                  *bounds,None,None,instance,None)
         if not hwnd:raise C.WinError(C.get_last_error())
-        user.SetWindowPos(hwnd,W.HWND(-1),32,32,960,540,0x10);user.ShowWindow(hwnd,4)
+        if not user.SetWindowPos(hwnd,W.HWND(-1),*bounds,0x10):raise C.WinError(C.get_last_error())
+        user.ShowWindow(hwnd,4)
+        geometry = stimulus_geometry(hwnd)
+        expected = [bounds[0],bounds[1],bounds[0]+bounds[2],bounds[1]+bounds[3]]
+        if (geometry['dwm_frame'] != expected or geometry['client_screen'] != expected or
+                not geometry['window_pm_v2'] or not geometry['visible'] or geometry['minimized']):
+            raise RuntimeError('stimulus physical geometry mismatch: '+json.dumps(geometry))
         recorder.progress()
         if clock=='legacy_wm_timer':
             if not user.SetTimer(hwnd,1,max(1,round(1000/stimulus_fps(config))),None):raise C.WinError(C.get_last_error())
@@ -458,6 +542,7 @@ def main():
             primary=[m for m in actual_environment['physical_capture_inventory']['monitors'] if m['primary']]
             if len(primary)!=1:raise RuntimeError('no unique primary output for the owned fixture')
             actual_environment['selected_capture_source']=primary[0]
+            config['stimulus_source_origin']=primary[0]['physical_bounds'][:2]
             # Pin the exact physical output examined above, not an implicit primary
             # which could change between inventory and stream preparation.
             config['command'] += ['--monitor',primary[0]['name']]
