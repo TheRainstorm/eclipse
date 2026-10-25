@@ -557,6 +557,18 @@ def stimulus(config):
             if paint_page:paint_page.close()
 
 
+def source_stop_file(config, root):
+    """A fresh control file owned by the finite source-only parent."""
+    stop_file = None
+    if config.get('parent_stop_file') is not None:
+        if config['role'] != 'stimulus-clock':
+            raise ValueError('parent stop is only supported by the source-only role')
+        stop_file = Path(config['parent_stop_file']).resolve()
+        if stop_file.parent != root or stop_file.exists():
+            raise ValueError('fresh parent stop file in the owned root required')
+    return stop_file
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__); parser.add_argument('--config', required=True, type=Path)
     parser.add_argument('--stimulus', action='store_true'); parser.add_argument('--observer',action='store_true'); args = parser.parse_args()
@@ -574,6 +586,7 @@ def main():
     if not 10 <= config['deadline_seconds'] <= 3750:
         raise ValueError('bounded deadline required')
     root = Path(config['root']).resolve(); root.mkdir(exist_ok=True)
+    stop_file = source_stop_file(config, root)
     marker = root / 'worker-started.json'
     with marker.open('x', encoding='utf8') as file:
         json.dump({'pid': os.getpid(), 'parent_pid':os.getppid(),'started_utc':time.time(),'python':sys.executable,'config':str(config_path),'identity':__import__('windows_latency_scene').identity(os.getpid()) if configured_scene(config) else None,'session': session.value}, file)
@@ -694,6 +707,9 @@ def main():
         monitored_process = product_process if product_process is not None else monitored_process
         started = time.monotonic(); next_progress = started
         while monitored_process.poll() is None:
+            if stop_file is not None and stop_file.exists():
+                atomic(root/'parent-stop-observed.json', {'monotonic':time.monotonic(),'qpc_ns':time.perf_counter_ns(),'reason':'owned parent control'})
+                break
             if product_process is not None and moving is not None and moving.poll() is not None:
                 raise RuntimeError('owned desktop stimulus stopped before the host')
             if observing is not None and observing.poll() is not None:raise RuntimeError('owned observer ended before planned stop')
@@ -707,6 +723,8 @@ def main():
             if time.monotonic()-started > config['deadline_seconds']:
                 raise TimeoutError('owned native process exceeded its deadline')
             time.sleep(.25)
+        if stop_file is not None and not stop_file.exists():
+            raise RuntimeError('source expired before explicit parent stop')
         if monitored_process.returncode:
             raise RuntimeError('native process exit ' + str(monitored_process.returncode))
         if config['role'] != 'stimulus-clock':
