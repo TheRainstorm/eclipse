@@ -507,6 +507,9 @@ fn encode_source(
                         bail!("画质请求已取消");
                     }
                     encoder=replacement;
+                    if encoder.backend_name()!=backend {
+                        backend=encoder.backend_name().to_owned();encoder_status.send_replace(backend.clone());
+                    }
                     encoder.request_keyframe();
                     interval=Duration::from_secs_f64(1.0/updated.fps as f64);
                     next=Instant::now();
@@ -1738,6 +1741,18 @@ mod overlap_integration_tests {
         tx.send(Event::Pause).unwrap();fence(&tx);release.send(()).unwrap();assert!(timeout(Duration::from_millis(80),worker.frames.recv()).await.is_err());
         tx.send(Event::Frame(2)).unwrap();let resumed=timeout(Duration::from_secs(1),worker.frames.recv()).await.unwrap().unwrap().unwrap();assert_eq!(resumed.data[0],2);assert!(resumed.is_keyframe);assert!(resumed.capture_lease.as_ref().unwrap().valid());
         timeout(Duration::from_millis(500),worker.stop()).await.unwrap().unwrap();
+    }
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn applied_quality_ack_retires_old_raw_and_new_encoder_starts_a_matching_chain(){
+        let(mut worker,tx,entered,release,_)=setup(false);tx.send(Event::Frame(1)).unwrap();entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        tx.send(Event::Frame(2)).unwrap();fence(&tx);
+        let applied=worker.quality.request(crate::native_quality::Update{fps:24,bitrate_kbps:Some(500)}).unwrap();release.send(()).unwrap();
+        let first=timeout(Duration::from_secs(1),worker.frames.recv()).await.unwrap().unwrap().unwrap();assert_eq!(first.data[0],1);
+        assert_eq!(timeout(Duration::from_secs(2),applied).await.unwrap().unwrap().unwrap(),500);
+        assert!(!first.capture_lease.as_ref().unwrap().valid(),"old raw generation survived quality acknowledgement");
+        let next=timeout(Duration::from_secs(2),worker.frames.recv()).await.unwrap().unwrap().unwrap();assert!(next.is_keyframe);assert!(uu_media::software_decoder().unwrap().decode(&next).unwrap().is_some());assert_eq!(worker.quality_state.borrow().fps,24);
+        assert_eq!(worker.trace.report().unwrap().counts.unmatched_outputs,0,"new encoder was retired again after capture");
+        worker.stop().await.unwrap();
     }
     #[tokio::test(flavor="multi_thread",worker_threads=2)]
     async fn encoder_failure_and_closed_output_stop_the_owned_source(){
