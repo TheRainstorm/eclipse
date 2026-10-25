@@ -16,6 +16,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import windows_latency_scene as full_scene
 
 
 def atomic(path, value):
@@ -327,6 +328,8 @@ def establish_pm_v2():
 
 
 def stimulus_rect(config):
+    scene=full_scene.manifest(config)
+    if scene is not None:return scene['bounds']
     origin = config.get('stimulus_source_origin', [0, 0])
     if (not isinstance(origin, list) or len(origin) != 2 or
             any(type(v) is not int or abs(v) > 65536 for v in origin)):
@@ -374,6 +377,7 @@ def stimulus(config):
     """
     dpi = establish_pm_v2()
     bounds = stimulus_rect(config)
+    scene=full_scene.manifest(config)
     geometry = None
     user = C.WinDLL('user32', use_last_error=True); gdi = C.WinDLL('gdi32', use_last_error=True)
     kernel = C.WinDLL('kernel32', use_last_error=True)
@@ -411,30 +415,60 @@ def stimulus(config):
     clock = config.get('stimulus_clock', 'high_res_waitable')
     if clock not in ('high_res_waitable', 'legacy_wm_timer'):
         raise ValueError('unknown bounded stimulus clock')
+    renderer=full_scene.Renderer(scene,user,gdi) if scene else None
+    initial_windows=full_scene.window_snapshot() if scene else None
+    window_samples=[];paint_qpc=[];after_windows=None;start_pixels=None;end_pixels=None
+    frequency=C.c_int64();kernel.QueryPerformanceFrequency(C.byref(frequency))
     count = 0; started = time.perf_counter(); last_write = started
     errors = []; hwnd = None
     duration = config.get('stimulus_seconds', config['deadline_seconds'])
     recorder = StimulusReport(config['stimulus_report'], lambda: {
         'pid':os.getpid(),'hwnd':int(hwnd or 0),'clock':clock,
         'requested_fps':stimulus_fps(config),'elapsed_seconds':time.perf_counter()-started,
-        'dpi':dpi,'physical_rect':bounds,'geometry':geometry})
+        'dpi':dpi,'physical_rect':bounds,'geometry':geometry,'scene_manifest':scene,
+        'window_lifecycle':{'initial':initial_windows,'samples':window_samples if recorder.closed else window_samples[-1:],'after':after_windows,'foreign_changes':full_scene.foreign_changes(initial_windows,after_windows,os.getpid()) if after_windows else None,'own_windows_absent':not any(r['pid']==os.getpid() for r in after_windows['windows']) if after_windows else None},
+        'scene_pixels':{'start':start_pixels,'end':end_pixels},'paint_qpc_frequency':frequency.value,
+        'paint_qpc':paint_qpc if recorder.closed else [],'scene_cache_bytes':sum(map(len,renderer.cache)) if renderer else 0})
+    def audit_window(label):
+        if scene:
+            snapshot=full_scene.window_snapshot();window_samples.append({'label':label,'snapshot':snapshot,'coverage':full_scene.coverage(snapshot,int(hwnd),os.getpid(),bounds)})
+    def destroy_owned():
+        nonlocal end_pixels
+        if not hwnd:return
+        user.IsWindow.argtypes=[W.HWND]
+        if not user.IsWindow(hwnd):return
+        owner=W.DWORD();user.GetWindowThreadProcessId.argtypes=[W.HWND,C.POINTER(W.DWORD)];user.GetWindowThreadProcessId(hwnd,C.byref(owner))
+        if owner.value!=os.getpid():raise RuntimeError('refusing to destroy changed HWND owner')
+        if scene:
+            audit_window('before_destroy')
+            try:
+                C.WinDLL('dwmapi').DwmFlush();end_pixels=full_scene.screen_probe(scene)
+            except BaseException as error:end_pixels={'passed':False,'error':str(error)}
+        user.DestroyWindow(hwnd)
     def procedure(hwnd, message, wp, lp):
         nonlocal count, last_write
         if message == 0x113:
-            if time.perf_counter()-started >= duration:user.DestroyWindow(hwnd)
+            if time.perf_counter()-started >= duration:destroy_owned()
             else:user.InvalidateRect(hwnd,None,False)
             return 0
+        if message == 0x10:
+            destroy_owned();return 0
         if message == 0xF:
             if recorder.closed:return user.DefWindowProcW(hwnd,message,wp,lp)
             paint=Paint();dc=user.BeginPaint(hwnd,C.byref(paint))
-            for index in range(6):
-                color=((count*3+index*37)%220+20)|(((index*41+count)%220+20)<<8)|(((count*2+index*31)%220+20)<<16)
-                brush=gdi.CreateSolidBrush(color);rectangle=W.RECT(index*160,0,(index+1)*160,540)
-                user.FillRect(dc,C.byref(rectangle),brush);gdi.DeleteObject(brush)
+            if renderer:renderer.paint(dc,count)
+            else:
+                for index in range(6):
+                    color=((count*3+index*37)%220+20)|(((index*41+count)%220+20)<<8)|(((count*2+index*31)%220+20)<<16)
+                    brush=gdi.CreateSolidBrush(color);rectangle=W.RECT(index*160,0,(index+1)*160,540)
+                    user.FillRect(dc,C.byref(rectangle),brush);gdi.DeleteObject(brush)
             user.EndPaint(hwnd,C.byref(paint))
-            recorder.record(round((time.perf_counter()-started)*1e6));count+=1
+            recorder.record(round((time.perf_counter()-started)*1e6))
+            if scene:
+                ticks=C.c_int64();kernel.QueryPerformanceCounter(C.byref(ticks));paint_qpc.append({'paint_index':count,'texture_phase':count%16,'stripe_phase':count%220,'ticks':ticks.value})
+            count+=1
             if time.perf_counter()-last_write>=1:
-                recorder.progress();last_write=time.perf_counter()
+                audit_window('periodic');recorder.progress();last_write=time.perf_counter()
             return 0
         if message == 2:
             recorder.close();user.PostQuitMessage(0);return 0
@@ -458,6 +492,8 @@ def stimulus(config):
         if (geometry['dwm_frame'] != expected or geometry['client_screen'] != expected or
                 not geometry['window_pm_v2'] or not geometry['visible'] or geometry['minimized']):
             raise RuntimeError('stimulus physical geometry mismatch: '+json.dumps(geometry))
+        if scene:
+            user.UpdateWindow(hwnd);C.WinDLL('dwmapi').DwmFlush();audit_window('shown');start_pixels=full_scene.screen_probe(scene)
         recorder.progress()
         if clock=='legacy_wm_timer':
             if not user.SetTimer(hwnd,1,max(1,round(1000/stimulus_fps(config))),None):raise C.WinError(C.get_last_error())
@@ -475,7 +511,7 @@ def stimulus(config):
                 result=user.MsgWaitForMultipleObjectsEx(1,handles,1000,0x4FF,4)
                 if result==0:
                     now=time.perf_counter()
-                    if now-started>=duration:user.DestroyWindow(hwnd)
+                    if now-started>=duration:destroy_owned()
                     else:user.InvalidateRect(hwnd,None,False);user.UpdateWindow(hwnd)
                     deadline+=period
                     if deadline<=now:deadline=now+period  # Never burst stale catch-up frames.
@@ -490,8 +526,12 @@ def stimulus(config):
         raise
     finally:
         recorder.close()
-        if timer:kernel.CancelWaitableTimer(timer);kernel.CloseHandle(timer)
-        recorder.finalize()
+        try:destroy_owned()
+        finally:
+            if renderer:renderer.close()
+            if scene:after_windows=full_scene.window_snapshot()
+            if timer:kernel.CancelWaitableTimer(timer);kernel.CloseHandle(timer)
+            recorder.finalize()
 
 
 def main():
@@ -510,7 +550,7 @@ def main():
     root = Path(config['root']).resolve(); root.mkdir(exist_ok=True)
     marker = root / 'worker-started.json'
     with marker.open('x', encoding='utf8') as file:
-        json.dump({'pid': os.getpid(), 'session': session.value}, file)
+        json.dump({'pid': os.getpid(), 'parent_pid':os.getppid(),'started_utc':time.time(),'python':sys.executable,'config':str(config_path),'identity':full_scene.identity(os.getpid()),'session': session.value}, file)
     job_handle = owned_job()
     # Query the interactive worker's display context. SSH/session-zero screen
     # enumeration can report a fictitious WinDisc 1024x768 display.
@@ -545,6 +585,7 @@ def main():
             config['stimulus_source_origin']=primary[0]['physical_bounds'][:2]
             # Pin the exact physical output examined above, not an implicit primary
             # which could change between inventory and stream preparation.
+            if full_scene.manifest(config) is not None and primary[0]['physical_bounds']!=full_scene.manifest(config)['bounds']:raise RuntimeError('full scene/source mismatch')
             config['command'] += ['--monitor',primary[0]['name']]
             atomic(root/'selected-source.json',primary[0])
             atomic(root/'actual-host-command.json',config['command'])
@@ -564,6 +605,7 @@ def main():
     owner_pacing=owner_pacing_switch(config,overlap,separate)
     env['UU_CAPTURE_OWNER_PACING'] = str(owner_pacing)
     env['UU_AMF_INPUT_POOL'] = str(binary_switch(config, 'amf_input_pool'))
+    if config.get('workload_diagnostic') is True:env['UU_AMF_WORKLOAD_DIAGNOSTIC']=str(root/'workload')
     env['UU_NATIVE_QOS'] = str(binary_switch(config, 'native_qos'))
     env['UU_NATIVE_DEDICATED_IO'] = str(binary_switch(config, 'native_dedicated_io'))
     if binary_switch(config, 'gpu_encode_profile'):
@@ -588,7 +630,7 @@ def main():
         env['UU_ENCODE_PROFILE'] = '1'
     atomic(root/'diagnostic-switches.json',{'capture_owner_pacing':owner_pacing,'capture_separate_device':int(env['UU_CAPTURE_ENCODE_SEPARATE_DEVICE']),'capture_overlap':int(env['UU_CAPTURE_ENCODE_OVERLAP']),'native_dedicated_io':int(env['UU_NATIVE_DEDICATED_IO']),'native_qos':int(env['UU_NATIVE_QOS']),'socket_trace':env.get('ECLIPSE_SOCKET_TRACE')=='1','continuous_trace':env.get('ECLIPSE_CONTINUOUS_TRACE')=='1','amf_input_pool':env['UU_AMF_INPUT_POOL'],
                                          'amf_query_timeout_ms':query_timeout,'encode_profile':env.get('UU_ENCODE_PROFILE')=='1','stimulus_fps':stimulus_fps(config),'wlan_streaming_mode':wlan_mode,
-                                         'amf_av1_input_queue_size':av1_queue,'gpu_encode_profile':env.get('UU_GPU_ENCODE_PROFILE')=='1'})
+                                         'amf_av1_input_queue_size':av1_queue,'gpu_encode_profile':env.get('UU_GPU_ENCODE_PROFILE')=='1','workload_diagnostic':env.get('UU_AMF_WORKLOAD_DIAGNOSTIC') is not None})
     processes = []; logs = []; samples = []; completed = False; error = None; moving = None
     product_process = None; monitored_process = None
     observer = WlanObserver(); wlan_samples = [observer.snapshot()]; next_wlan = time.monotonic() + 1
@@ -680,4 +722,9 @@ def main():
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:raise SystemExit(main())
+    except Exception as error:
+        import traceback
+        try:
+            config_file=Path(sys.argv[sys.argv.index('--config')+1]);cfg=json.loads(config_file.read_text());atomic(Path(cfg['root'])/'startup-error.json',{'pid':os.getpid(),'error':repr(error),'traceback':traceback.format_exc()})
+        finally:raise SystemExit(1)
