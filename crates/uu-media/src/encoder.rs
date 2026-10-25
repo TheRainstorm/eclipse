@@ -143,7 +143,7 @@ pub use input_device::InputDevice;
 #[cfg(all(windows, feature="mf-encode"))]
 mod capture_pool;
 #[cfg(all(windows, feature="mf-encode"))]
-pub use capture_pool::CapturePool;
+pub use capture_pool::{CapturePool,capture_rgb_samples};
 
 fn hardware(settings: Settings, input:Option<InputDevice>) -> Result<Box<dyn VideoEncoder>, CodecError> {
     if settings.hdr && !cfg!(windows) {return Err(error("HDR encoding is unavailable on this platform"));}

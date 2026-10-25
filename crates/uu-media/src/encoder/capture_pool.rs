@@ -76,6 +76,33 @@ impl CapturePool {
     }
 }
 
+/// Read a few immutable capture pixels for offline correctness probes. This
+/// function exposes no mutable texture/device handle and is never called by
+/// the media path. Points use the underlying physical capture coordinates.
+pub fn capture_rgb_samples(frame:&RawFrame,points:&[(usize,usize)],white:f32)->Result<Vec<[u8;3]>,String> {
+    let surface=frame.d3d11.as_ref().ok_or("missing capture texture")?;
+    let(texture,device)=surface.capture_texture()?;
+    let mut desc=D3D11_TEXTURE2D_DESC::default();unsafe{texture.GetDesc(&mut desc);}
+    if !matches!(desc.Format,DXGI_FORMAT_B8G8R8A8_UNORM|DXGI_FORMAT_R16G16B16A16_FLOAT)
+        || points.len()>64 || points.iter().any(|&(x,y)|x>=desc.Width as usize||y>=desc.Height as usize)
+        || !(40.0..=1000.0).contains(&white) {return Err("invalid capture readback points/layout/white".into());}
+    desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ.0 as u32;desc.MiscFlags=0;
+    let mut staging=None;unsafe{device.CreateTexture2D(&desc,None,Some(&mut staging)).map_err(|e|e.to_string())?;}
+    let staging=staging.ok_or("missing capture staging texture")?;
+    let context=unsafe{device.GetImmediateContext().map_err(|e|e.to_string())?};
+    let mut mapped=D3D11_MAPPED_SUBRESOURCE::default();
+    unsafe{context.CopyResource(&staging,texture);context.Map(&staging,0,D3D11_MAP_READ,0,Some(&mut mapped)).map_err(|e|e.to_string())?;}
+    if mapped.pData.is_null(){unsafe{context.Unmap(&staging,0);}return Err("capture staging pixels absent".into());}
+    let values=points.iter().map(|&(x,y)|{
+        let ptr=unsafe{mapped.pData.cast::<u8>().add(y*mapped.RowPitch as usize+x*if desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT{8}else{4})};
+        if desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT {
+            let rgb=std::array::from_fn(|i|half(unsafe{std::ptr::read_unaligned(ptr.add(i*2).cast::<u16>())}));
+            crate::hdr::sc_rgb_to_sdr(rgb,white).map(|v|(v*255.).round() as u8)
+        }else{unsafe{[*ptr.add(2),*ptr.add(1),*ptr]}}
+    }).collect();unsafe{context.Unmap(&staging,0);}Ok(values)
+}
+fn half(v:u16)->f32 {let sign=if v&0x8000!=0{-1.}else{1.};let e=(v>>10)&31;let m=v&1023;sign*match e{0=>f32::from(m)*2_f32.powi(-24),31=>0.,_=>(1.+f32::from(m)/1024.)*2_f32.powi(i32::from(e)-15)}}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +200,24 @@ mod tests {
         assert_eq!(pixel(&device,&held), [0,0,255,255]);
         assert!(CapturePool::new(InputDevice::from_d3d11(device).unwrap(), 8193, 4).is_err());
         assert_eq!(pool.slots.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod overlap_pool_tests {
+    use super::*;
+    use windows::Win32::{Foundation::HMODULE,Graphics::Direct3D::D3D_DRIVER_TYPE_WARP};
+    #[test]
+    fn three_snapshot_overlap_limit_preserves_every_live_gpu_lease(){
+        let mut device=None;unsafe{D3D11CreateDevice(None,D3D_DRIVER_TYPE_WARP,HMODULE::default(),D3D11_CREATE_DEVICE_BGRA_SUPPORT,None,D3D11_SDK_VERSION,Some(&mut device),None,None).unwrap();}
+        let device=device.unwrap();let context=unsafe{device.GetImmediateContext().unwrap()};let mut texture=None;let mut view=None;
+        let desc=D3D11_TEXTURE2D_DESC{Width:4,Height:4,MipLevels:1,ArraySize:1,Format:DXGI_FORMAT_B8G8R8A8_UNORM,SampleDesc:DXGI_SAMPLE_DESC{Count:1,Quality:0},Usage:D3D11_USAGE_DEFAULT,BindFlags:D3D11_BIND_RENDER_TARGET.0 as u32,..Default::default()};
+        unsafe{device.CreateTexture2D(&desc,None,Some(&mut texture)).unwrap();device.CreateRenderTargetView(texture.as_ref().unwrap(),None,Some(&mut view)).unwrap();}
+        let texture=texture.unwrap();let view=view.unwrap();let mut pool=CapturePool::with_limit(InputDevice::from_d3d11(device).unwrap(),4,4,3).unwrap();let mut held=Vec::new();
+        for (i,color) in [[1.,0.,0.,1.],[0.,1.,0.,1.],[0.,0.,1.,1.]].into_iter().enumerate(){unsafe{context.ClearRenderTargetView(&view,&color);}held.push(pool.capture(&texture,Timestamp(i as u64)).unwrap().unwrap());}
+        assert!(pool.capture(&texture,Timestamp(4)).unwrap().is_none());assert_eq!(pool.slots.len(),3);
+        for (frame,expected) in held.iter().zip([[255,0,0],[0,255,0],[0,0,255]]){assert_eq!(capture_rgb_samples(frame,&[(1,1)],203.).unwrap(),vec![expected]);}
+        held.remove(1);unsafe{context.ClearRenderTargetView(&view,&[1.,1.,0.,1.]);}let yellow=pool.capture(&texture,Timestamp(5)).unwrap().unwrap();assert_eq!(pool.slots.len(),3);assert_eq!(capture_rgb_samples(&yellow,&[(1,1)],203.).unwrap(),vec![[255,255,0]]);
+        assert_eq!(capture_rgb_samples(&held[0],&[(1,1)],203.).unwrap(),vec![[255,0,0]]);assert_eq!(capture_rgb_samples(&held[1],&[(1,1)],203.).unwrap(),vec![[0,0,255]]);
     }
 }
