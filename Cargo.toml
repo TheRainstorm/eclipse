@@ -10,9 +10,10 @@ members = [
     "crates/uu-cli",
     "crates/uu-gui",
 ]
-exclude = ["vendor/webrtc-dtls", "vendor/egui-winit", "vendor/cros-codecs", "vendor/winit", "vendor/webrtc-srtp", "vendor/webrtc", "vendor/eframe"]
+exclude = ["vendor/webrtc-dtls", "vendor/egui-winit", "vendor/cros-codecs", "vendor/winit", "vendor/webrtc-srtp", "vendor/webrtc", "vendor/eframe", "vendor/webrtc-ice"]
 
 [patch.crates-io]
+webrtc-ice = { path = "vendor/webrtc-ice" }
 eframe = { path = "vendor/eframe" }
 webrtc = { path = "vendor/webrtc" }
 webrtc-srtp = { path = "vendor/webrtc-srtp" }
