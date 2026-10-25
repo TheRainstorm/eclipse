@@ -19,7 +19,10 @@ and clears pending images. Retired desktop AUs cannot leave the encoded queue;
 resume starts a new reference chain. An AU accepted for transmission before
 retirement finishes under the existing packet/reference contract; bytes already
 sent cannot be undone. Retirement rejects subsequent AU acceptance. Configuration has an acknowledgement and
-retires pending work before the encoder generation changes. Stop wakes capture
+retires pending work before the encoder generation changes. No old pending
+slot is retagged: the source owner confirms the current desktop again before
+acknowledgement. A static current image is an explicit duplicate retaining its
+original observation times, not a new source frame. Stop wakes capture
 and waits at most two seconds for its owner; an unjoined owner is an error and is
 never logged as clean. Driver cancellation/teardown remains separately bounded
 by the existing encoder interface.

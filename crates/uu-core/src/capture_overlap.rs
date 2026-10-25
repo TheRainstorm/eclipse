@@ -34,16 +34,48 @@ struct Image {
 }
 struct Desktop {
     capture: Box<dyn Capture>,
+    last: Option<Image>,
 }
 impl latest_capture::Source for Desktop {
     type Frame = Image;
     type Config = Config;
-    fn configure(&mut self, c: Config) -> std::result::Result<(), String> {
+    fn configure(&mut self, c: Config) -> std::result::Result<Option<Image>, String> {
         self.capture.prefer_gpu(c.gpu, c.vendor);
         self.capture.enable_overlap().map_err(|e| e.to_string())?;
         self.capture
             .set_frame_rate(c.fps)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // Re-check the actual input desktop on its owner before acknowledging
+        // a new generation. Static desktops may yield an explicit duplicate;
+        // retain its original observation times rather than relabel dequeue.
+        let started = Instant::now();
+        let frame = match self.capture.next_frame() {
+            Ok(frame) => frame,
+            Err(CaptureError::Suspended(_)) => {
+                self.last = None;
+                return Ok(None);
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        let ready = Instant::now();
+        let source = self.capture.frame_info();
+        let same = source
+            .zip(self.last.as_ref().and_then(|v| v.source))
+            .is_some_and(|(a, b)| a.generation == b.generation && a.frame_id == b.frame_id);
+        let (started, ready) = if same {
+            let previous = self.last.as_ref().unwrap();
+            (previous.started, previous.ready)
+        } else {
+            (started, ready)
+        };
+        let image = Image {
+            frame,
+            source,
+            started,
+            ready,
+        };
+        self.last = Some(image.clone());
+        Ok(Some(image))
     }
     fn next(
         &mut self,
@@ -54,15 +86,20 @@ impl latest_capture::Source for Desktop {
             Ok(Some(frame)) => {
                 let ready = Instant::now();
                 let source = self.capture.frame_info();
-                Ok(Some(Image {
+                let image = Image {
                     frame,
                     source,
                     started,
                     ready,
-                }))
+                };
+                self.last = Some(image.clone());
+                Ok(Some(image))
             }
             Ok(None) => Ok(None),
-            Err(CaptureError::Suspended(error)) => Err(latest_capture::Failure::Paused(error)),
+            Err(CaptureError::Suspended(error)) => {
+                self.last = None;
+                Err(latest_capture::Failure::Paused(error))
+            }
             Err(error) => Err(latest_capture::Failure::Failed(error.to_string())),
         }
     }
@@ -109,7 +146,14 @@ impl Input {
         let config = Config { fps, gpu, vendor };
         let mode = if enabled {
             let device = capture.encoder_input_device();
-            let owner = Owner::start(Desktop { capture }, config).map_err(anyhow::Error::msg)?;
+            let owner = Owner::start(
+                Desktop {
+                    capture,
+                    last: None,
+                },
+                config,
+            )
+            .map_err(anyhow::Error::msg)?;
             println!(
                 "{}",
                 serde_json::json!({"event":"capture_overlap","action":"start","requested":true,"actual":true,"pending_limit":1,"capture_pool_limit":3,"owner_thread":owner.summary().owner_thread,"owner_native_thread":owner.summary().owner_native_thread,"generation":owner.summary().generation})
@@ -232,7 +276,7 @@ impl Input {
                 let mut source = image.source;
                 if let Some(info) = source {
                     let id = (info.generation, info.frame_id);
-                    repeated |= self.last_source == Some(id);
+                    repeated = self.last_source == Some(id);
                     self.last_source = Some(id);
                 }
                 // Repeating at output cadence is explicit, never a capture-owner
@@ -244,7 +288,7 @@ impl Input {
                     );
                 }
                 if let Some(info) = &mut source {
-                    info.duplicate |= repeated;
+                    info.duplicate = repeated;
                     if repeated {
                         info.accumulated_frames = 0;
                     }

@@ -21,7 +21,7 @@ pub enum Failure {
 pub trait Source: Send + 'static {
     type Frame: Clone + Send + 'static;
     type Config: Clone + Send + 'static;
-    fn configure(&mut self, config: Self::Config) -> Result<(), String>;
+    fn configure(&mut self, config: Self::Config) -> Result<Option<Self::Frame>, String>;
     fn next(&mut self, wait: Duration) -> Result<Option<Self::Frame>, Failure>;
 }
 #[derive(Clone, Debug, Default)]
@@ -255,7 +255,6 @@ fn fail<T: Clone, C>(shared: &Shared<T, C>, error: String) {
     shared.changed.notify_all();
 }
 fn produce<S: Source>(source: &mut S, shared: &Shared<S::Frame, S::Config>) {
-    let mut last: Option<S::Frame> = None;
     loop {
         let command = {
             let mut state = shared.state.lock().unwrap();
@@ -265,12 +264,14 @@ fn produce<S: Source>(source: &mut S, shared: &Shared<S::Frame, S::Config>) {
             state.command.take()
         };
         if let Some((config, reply)) = command {
-            let applied = source.configure(config);
-            if let Err(error) = &applied {
-                fail(shared, error.clone());
-                let _ = reply.send(applied);
-                break;
-            }
+            let confirmed = match source.configure(config) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    fail(shared, error.clone());
+                    let _ = reply.send(Err(error));
+                    break;
+                }
+            };
             let mut state = shared.state.lock().unwrap();
             if state.stop {
                 let _ = reply.send(Err("capture stopped during configuration".into()));
@@ -279,11 +280,12 @@ fn produce<S: Source>(source: &mut S, shared: &Shared<S::Frame, S::Config>) {
             state.summary.configurations += 1;
             state.phase = Phase::Running;
             shared.current.store(state.generation, Ordering::Release);
-            // A quality change can reuse this desktop's last immutable image,
-            // with its original observation times. A desktop pause clears last.
-            if let Some(frame) = &last {
+            // Only an image explicitly confirmed by the source owner after
+            // configuration may enter this generation. Never retag an old slot.
+            if let Some(frame) = confirmed {
+                state.summary.produced += 1;
                 state.slot = Some(Packet {
-                    frame: frame.clone(),
+                    frame,
                     lease: Lease {
                         current: shared.current.clone(),
                         generation: state.generation,
@@ -309,7 +311,6 @@ fn produce<S: Source>(source: &mut S, shared: &Shared<S::Frame, S::Config>) {
                     state.summary.replaced += 1;
                 }
                 state.summary.produced += 1;
-                last = Some(frame.clone());
                 state.slot = Some(Packet {
                     frame,
                     lease: Lease {
@@ -322,7 +323,6 @@ fn produce<S: Source>(source: &mut S, shared: &Shared<S::Frame, S::Config>) {
             }
             Ok(None) => {}
             Err(Failure::Paused(_)) => {
-                last = None;
                 let mut state = shared.state.lock().unwrap();
                 if state.phase != Phase::Paused {
                     state.generation += 1;
@@ -365,9 +365,9 @@ mod tests {
     impl Source for Controlled {
         type Frame = Arc<Vec<u8>>;
         type Config = u32;
-        fn configure(&mut self, c: u32) -> Result<(), String> {
+        fn configure(&mut self, c: u32) -> Result<Option<Self::Frame>, String> {
             self.configured.send(c).unwrap();
-            Ok(())
+            Ok(None)
         }
         fn next(&mut self, wait: Duration) -> Result<Option<Self::Frame>, Failure> {
             loop {
@@ -461,12 +461,21 @@ mod tests {
         owner.configure(120).unwrap();
         assert_eq!(configs.recv().unwrap(), 120);
         assert!(!old.lease.valid());
-        let seed = owner
+        assert!(
+            owner
+                .latest(Duration::ZERO)
+                .unwrap_or_else(|_| panic!())
+                .is_none(),
+            "old pending image crossed configuration"
+        );
+        tx.send(Input::Image(Arc::new(vec![2]))).unwrap();
+        fence(&tx);
+        let fresh = owner
             .latest(Duration::ZERO)
             .unwrap_or_else(|_| panic!())
             .unwrap();
-        assert!(seed.lease.valid());
-        assert_eq!(seed.frame, old.frame);
+        assert!(fresh.lease.valid());
+        assert_eq!(*fresh.frame, vec![2]);
         let start = std::time::Instant::now();
         assert!(owner.stop().unwrap().joined);
         assert!(start.elapsed() < Duration::from_secs(1));
@@ -491,11 +500,11 @@ mod timeout_tests {
     impl Source for Blocking {
         type Frame = u32;
         type Config = u32;
-        fn configure(&mut self, c: u32) -> Result<(), String> {
+        fn configure(&mut self, c: u32) -> Result<Option<Self::Frame>, String> {
             if c == 99 {
                 self.release.recv().unwrap();
             }
-            Ok(())
+            Ok(None)
         }
         fn next(&mut self, wait: Duration) -> Result<Option<u32>, Failure> {
             std::thread::sleep(wait);

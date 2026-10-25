@@ -1691,7 +1691,10 @@ mod overlap_integration_tests {
         fn resolution(&self)->(u32,u32){(64,64)}
         fn enable_overlap(&mut self)->std::result::Result<(),uu_capture::CaptureError>{Ok(())}
         fn frame_info(&self)->Option<uu_capture::frame_info::FrameInfo>{self.info}
-        fn next_frame(&mut self)->std::result::Result<uu_media::RawFrame,uu_capture::CaptureError>{panic!("overlap must use bounded source wait")}
+        fn next_frame(&mut self)->std::result::Result<uu_media::RawFrame,uu_capture::CaptureError>{
+            let info=self.info.as_mut().ok_or_else(||uu_capture::CaptureError::Suspended("waiting owned image".into()))?;info.duplicate=true;let id=info.frame_id as u8;
+            Ok(uu_media::RawFrame::new_i420(64,64,vec![id;64*64*3/2],uu_media::Timestamp(u64::from(id)*10000)))
+        }
         fn wait_updated_frame(&mut self,wait:Duration)->std::result::Result<Option<uu_media::RawFrame>,uu_capture::CaptureError>{
             loop {match self.rx.recv_timeout(wait) {
                 Ok(Event::Frame(id))=>{
