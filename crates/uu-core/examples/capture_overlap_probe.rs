@@ -122,13 +122,21 @@ fn run(generation: u32) -> anyhow::Result<()> {
                     .map_err(anyhow::Error::msg)?;
                 let rgba = converter.readback().map_err(anyhow::Error::msg)?;
                 let mut max_error = 0u8;
+                let mut actual_samples = Vec::new();
                 for (n, (x, y)) in points().into_iter().enumerate() {
                     let at = (y * width as usize + x) * 4;
+                    actual_samples.push([rgba[at], rgba[at + 1], rgba[at + 2]]);
                     for channel in 0..3 {
                         max_error =
                             max_error.max(rgba[at + channel].abs_diff(reference[n][channel]));
                     }
                 }
+                let expected_marker = marker(&reference[6..])?;
+                let actual_marker = marker(&actual_samples[6..])?;
+                ensure!(
+                    actual_marker == expected_marker,
+                    "decoded marker/PTS mismatch: {actual_marker} vs {expected_marker}"
+                );
                 ensure!(
                     max_error <= 18,
                     "decoded pixel identity mismatch: max RGB error {max_error}"
@@ -136,7 +144,7 @@ fn run(generation: u32) -> anyhow::Result<()> {
                 decoded += 1;
                 println!(
                     "{}",
-                    serde_json::json!({"event":"overlap_gpu_frame","generation":generation,"input":index,"source":expected_info,"pts":picture.pts.0,"max_rgb_error":max_error,"immutable_held_pixels":true})
+                    serde_json::json!({"event":"overlap_gpu_frame","generation":generation,"input":index,"source":expected_info,"pts":picture.pts.0,"max_rgb_error":max_error,"expected_marker":expected_marker,"actual_marker":actual_marker,"immutable_held_pixels":true})
                 );
             }
         }
@@ -165,8 +173,29 @@ fn run(generation: u32) -> anyhow::Result<()> {
     Ok(())
 }
 #[cfg(windows)]
-fn points() -> [(usize, usize); 6] {
-    std::array::from_fn(|i| (32 + 80 + i * 160, 32 + 270))
+fn points() -> Vec<(usize, usize)> {
+    (0..6)
+        .map(|i| (32 + 80 + i * 160, 32 + 270))
+        .chain((0..32).map(|bit| (32 + 15 + bit * 30, 32 + 450)))
+        .collect()
+}
+#[cfg(windows)]
+fn marker(samples: &[[u8; 3]]) -> anyhow::Result<u16> {
+    anyhow::ensure!(samples.len() == 32, "marker width missing");
+    let mut code = 0u32;
+    for (bit, rgb) in samples.iter().enumerate() {
+        let level = (u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2])) / 3;
+        anyhow::ensure!(
+            level < 80 || level > 180,
+            "ambiguous marker bit {bit}: {level}"
+        );
+        if level > 180 {
+            code |= 1 << bit;
+        }
+    }
+    let low = code as u16;
+    anyhow::ensure!((code >> 16) as u16 == !low, "marker complement invalid");
+    Ok(low)
 }
 #[cfg(windows)]
 fn samples(frame: &uu_media::RawFrame, white: f32) -> anyhow::Result<Vec<[u8; 3]>> {

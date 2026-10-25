@@ -36,6 +36,7 @@ without the v2 diagnostic capability can stream without this diagnostic channel.
 
 `capture_overlap_probe` exercises real DXGI capture through this same handoff,
 holds frames while newer images are captured, verifies immutable pixels and
+a 16-bit source marker with its complement across encoded PTS, and checks
 AV1 AMF/MF GPU PTS/pixel identity, and checks lease release across recreation.
 Its readback and deliberate blocking are correctness checks, excluded from
 performance measurements. Unit tests and a short run do not establish desktop
