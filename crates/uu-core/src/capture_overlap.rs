@@ -360,6 +360,21 @@ mod tests {
     }
 }
 
-#[cfg(test)] mod separate_flag_tests {use super::*;
-#[test] fn strict_default_off_and_overlap_required(){assert!(!separate_requested(None).unwrap());assert!(!separate_requested(Some("0")).unwrap());assert!(separate_requested(Some("1")).unwrap());for v in ["true","", "2"," 1"]{assert!(separate_requested(Some(v)).is_err());}}
+#[cfg(test)]
+mod separate_flag_tests {
+    use super::*;
+    #[test]
+    fn strict_default_off_and_overlap_required() {
+        assert!(!separate_requested(None).unwrap());assert!(!separate_requested(Some("0")).unwrap());assert!(separate_requested(Some("1")).unwrap());
+        for v in ["true","", "2"," 1"]{assert!(separate_requested(Some(v)).is_err());}
+        let mut capture=uu_capture::SyntheticCapture::new(64,64,60);
+        assert!(prepare_device(&mut capture,false,true).unwrap_err().to_string().contains("requires capture/encode overlap"));
+    }
+    #[test]
+    fn production_prepare_rejects_unsupported_requested_backend() {
+        let mut capture=uu_capture::SyntheticCapture::new(64,64,60);
+        assert!(prepare_device(&mut capture,false,false).is_ok());
+        assert!(prepare_device(&mut capture,true,false).is_ok());
+        assert!(prepare_device(&mut capture,true,true).is_err());
+    }
 }
