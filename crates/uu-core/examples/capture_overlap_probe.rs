@@ -2,6 +2,22 @@
 //! Requires an owned changing marker window; samples only its fixed coordinates.
 #[path = "capture_overlap_probe/oracle.rs"]
 mod oracle;
+#[path = "capture_overlap_probe/startup.rs"]
+mod startup;
+#[cfg(windows)]
+impl startup::Driver for uu_core::capture_overlap::Input {
+    type Frame = uu_core::capture_overlap::Observed;
+    type Error = anyhow::Error;
+    fn set_frame_rate(&mut self, fps: u32) -> anyhow::Result<()> {
+        Self::set_frame_rate(self, fps)
+    }
+    fn prefer_gpu(&mut self, gpu: bool, vendor: Option<u16>) -> anyhow::Result<()> {
+        Self::prefer_gpu(self, gpu, vendor)
+    }
+    fn next_frame(&mut self) -> anyhow::Result<Self::Frame> {
+        self.next(true).map_err(anyhow::Error::from)
+    }
+}
 #[cfg(not(windows))]
 fn main() {
     eprintln!("Windows GPU correctness probe required");
@@ -16,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     );
     println!(
         "{}",
-        serde_json::json!({"event":"overlap_gpu_arguments","overlap":options.overlap,"source":format!("{:?}",source)})
+        serde_json::json!({"event":"overlap_gpu_arguments","overlap":options.overlap,"source":format!("{:?}",source),"argv":std::env::args().collect::<Vec<_>>()})
     );
     for generation in 1..=2 {
         run(generation, options.overlap, &source)?;
@@ -63,6 +79,10 @@ fn run(generation: u32, overlap: bool, source: &uu_capture::CaptureSource) -> an
         encoder.backend_name().starts_with("amf") && encoder.is_hardware(),
         "AMF required"
     );
+    println!(
+        "{}",
+        serde_json::json!({"event":"overlap_gpu_capture_request","mode":mode,"generation":generation,"gpu":encoder.gpu_input(),"vendor":encoder.gpu_vendor(),"fps":60,"source":format!("{:?}",source),"white":white,"output_hdr":false,"bitrate_kbps":40000})
+    );
     let mut input = uu_core::capture_overlap::Input::new(
         capture,
         overlap,
@@ -70,6 +90,17 @@ fn run(generation: u32, overlap: bool, source: &uu_capture::CaptureSource) -> an
         encoder.gpu_input(),
         encoder.gpu_vendor(),
     )?;
+    startup::prepare(
+        &mut input,
+        overlap,
+        60,
+        encoder.gpu_input(),
+        encoder.gpu_vendor(),
+    )?;
+    println!(
+        "{}",
+        serde_json::json!({"event":"overlap_gpu_prepared","mode":mode,"generation":generation,"requested_gpu":encoder.gpu_input(),"requested_vendor":encoder.gpu_vendor(),"fps":60,"owner_rate_reconfigure_requested":false})
+    );
     d3d11_frame::set_rendering(true);
     let mut decoder =
         uu_media::decoder_for_codec_with_kind(VideoCodec::Av1, uu_media::DecoderKind::Hardware)?;
@@ -86,7 +117,7 @@ fn run(generation: u32, overlap: bool, source: &uu_capture::CaptureSource) -> an
     let mut weak = Vec::new();
     let mut sequence = None;
     for index in 0..16 {
-        let observed = input.next(true)?;
+        let observed = startup::next(&mut input, encoder.gpu_input(), encoder.gpu_vendor())?;
         println!(
             "{}",
             serde_json::json!({"event":"overlap_gpu_observation","mode":mode,"generation":generation,"input":index,"pts":observed.frame.pts.0,"source":observed.source,"current":observed.current(),"gpu":observed.frame.gpu})

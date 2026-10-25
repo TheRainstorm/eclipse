@@ -65,3 +65,10 @@ would block exclusive reuse and alter the experiment; probe-only lease views
 avoid that observer effect. A WARP regression verifies 16 such views release
 while the unmodified pool reuses one slot. Readbacks and deliberate 50ms holds
 remain excluded from performance data.
+
+Probe startup mirrors the production caller: the serial capture receives its
+frame rate before acquisition, and both modes apply the encoder's GPU/vendor
+preference before every acquisition. The overlap owner already applies its
+initial rate, so probe startup does not request a second owner configuration.
+The real runner's preparation/first-acquisition functions have deterministic
+call-order regressions; those mocks do not establish real GPU correctness.
