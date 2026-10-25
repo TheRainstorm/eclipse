@@ -48,3 +48,18 @@ transition, device-loss, HDR, interaction or long-term production acceptance.
 The external worker records product thread counts from read-only Toolhelp
 snapshots at most once per second; query/close errors are retained as unknown,
 not converted to zero. This is separate from capture-owner lifecycle counters.
+
+The correctness probe requires an explicit `--mode serial` or `--mode overlap`.
+Both modes use the same RGB oracle, an owned fixed-coordinate marker window,
+and a strict 18-level per-channel limit. Capture samples are RGB; converter
+readbacks are BGRA and are reordered only at the probe's comparison boundary.
+Per-point expected RGB, actual BGRA/RGB, errors, source/PTS and marker evidence
+are emitted before assertions; no full desktop image is written.
+
+The probe retains Weak references to every per-input lease view and checks them
+all after encoder/capture shutdown. These views retain the same texture and
+parent capture lease without copying pixels. Weak references on pool-slot Arcs
+would block exclusive reuse and alter the experiment; probe-only lease views
+avoid that observer effect. A WARP regression verifies 16 such views release
+while the unmodified pool reuses one slot. Readbacks and deliberate 50ms holds
+remain excluded from performance data.

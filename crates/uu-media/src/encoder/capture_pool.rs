@@ -76,6 +76,16 @@ impl CapturePool {
     }
 }
 
+/// Offline probe-only lease view of the same captured texture. A Weak to this
+/// per-input view observes the encoder's lease without placing Weak references
+/// on pool slots (which would prevent Arc::get_mut and change capture behavior).
+/// No pixel copy, new capture slot, or production-path use is involved.
+pub fn capture_probe_lease(frame:&RawFrame)->Result<RawFrame,String> {
+    let source=frame.d3d11.as_ref().ok_or("missing capture texture")?;
+    let view=Frame::cropped_view(source,[frame.width,frame.height])?;
+    let mut lease=frame.clone();lease.d3d11=Some(Arc::new(view));Ok(lease)
+}
+
 /// Read a few immutable capture pixels for offline correctness probes. This
 /// function exposes no mutable texture/device handle and is never called by
 /// the media path. Points use the underlying physical capture coordinates.
@@ -147,6 +157,23 @@ mod tests {
             pixel
         }
     }
+    #[test]
+    fn probe_weak_views_release_every_input_without_blocking_pool_reuse() {
+        let device=device();let context=unsafe{device.GetImmediateContext().unwrap()};
+        let (texture,view)=source(&device);
+        let mut pool=CapturePool::with_limit(InputDevice::from_d3d11(device.clone()).unwrap(),4,4,3).unwrap();
+        let mut weak=Vec::new();
+        for i in 0..16 {
+            unsafe{context.ClearRenderTargetView(&view,&[1.,0.,0.,1.]);}
+            let frame=pool.capture(&texture,Timestamp(i)).unwrap().unwrap();
+            let observed=capture_probe_lease(&frame).unwrap();
+            let one=Arc::downgrade(observed.d3d11.as_ref().unwrap());
+            assert!(one.upgrade().is_some());assert_eq!(capture_rgb_samples(&observed,&[(1,1)],203.).unwrap(),vec![[255,0,0]]);
+            weak.push(one);drop(observed);drop(frame);
+        }
+        assert_eq!(pool.slots.len(),1);assert!(weak.iter().all(|v|v.upgrade().is_none()));drop(pool);
+    }
+
     #[test]
     fn capture_leases_preserve_pixels_and_bound_slots_across_reuse_and_reset() {
         let device = device();
