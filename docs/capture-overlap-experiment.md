@@ -16,7 +16,9 @@ implementation or CPU image copy is introduced into the media path.
 
 States are running, paused, retiring and stopped. Pause invalidates old leases
 and clears pending images. Retired desktop AUs cannot leave the encoded queue;
-resume starts a new reference chain. Configuration has an acknowledgement and
+resume starts a new reference chain. An AU accepted for transmission before
+retirement finishes under the existing packet/reference contract; bytes already
+sent cannot be undone. Retirement rejects subsequent AU acceptance. Configuration has an acknowledgement and
 retires pending work before the encoder generation changes. Stop wakes capture
 and waits at most two seconds for its owner; an unjoined owner is an error and is
 never logged as clean. Driver cancellation/teardown remains separately bounded
@@ -38,3 +40,7 @@ AV1 AMF/MF GPU PTS/pixel identity, and checks lease release across recreation.
 Its readback and deliberate blocking are correctness checks, excluded from
 performance measurements. Unit tests and a short run do not establish desktop
 transition, device-loss, HDR, interaction or long-term production acceptance.
+
+The external worker records product thread counts from read-only Toolhelp
+snapshots at most once per second; query/close errors are retained as unknown,
+not converted to zero. This is separate from capture-owner lifecycle counters.

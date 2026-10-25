@@ -222,6 +222,39 @@ def owned_job():
     return job
 
 
+def thread_count(pid):
+    """Read-only Toolhelp snapshot at most once per second, one target PID.
+
+    https://learn.microsoft.com/windows/win32/api/tlhelp32/ns-tlhelp32-threadentry32
+    """
+    now=time.monotonic();cache=getattr(thread_count,'cached',None)
+    if cache and cache['pid']==pid and now-cache['at']<1:return cache
+    class Entry(C.Structure):
+        _fields_=[('size',W.DWORD),('usage',W.DWORD),('thread',W.DWORD),('owner',W.DWORD),('priority',W.LONG),('delta',W.LONG),('flags',W.DWORD)]
+    api=C.WinDLL('kernel32',use_last_error=True)
+    api.CreateToolhelp32Snapshot.argtypes=[W.DWORD,W.DWORD];api.CreateToolhelp32Snapshot.restype=W.HANDLE
+    api.Thread32First.argtypes=[W.HANDLE,C.POINTER(Entry)];api.Thread32First.restype=W.BOOL
+    api.Thread32Next.argtypes=[W.HANDLE,C.POINTER(Entry)];api.Thread32Next.restype=W.BOOL
+    api.CloseHandle.argtypes=[W.HANDLE];api.CloseHandle.restype=W.BOOL
+    result={'pid':pid,'at':now,'count':None,'error':None};handle=api.CreateToolhelp32Snapshot(4,0)
+    if handle==C.c_void_p(-1).value:result['error']=C.get_last_error()
+    else:
+        try:
+            row=Entry();row.size=C.sizeof(row);count=0
+            if not api.Thread32First(handle,C.byref(row)):result['error']=C.get_last_error()
+            else:
+                while True:
+                    count+=int(row.owner==pid);row.size=C.sizeof(row)
+                    if not api.Thread32Next(handle,C.byref(row)):break
+                error=C.get_last_error()
+                if error!=18:result['error']=error
+                else:result['count']=count
+        finally:
+            if not api.CloseHandle(handle):result['error']=C.get_last_error();result['count']=None
+    thread_count.cached=result
+    return result
+
+
 def resources(process):
     class Counters(C.Structure):
         _fields_ = [('cb', W.DWORD), ('faults', W.DWORD)] + [(name, C.c_size_t) for name in
@@ -241,7 +274,7 @@ def resources(process):
     qpc_ok = kernel.QueryPerformanceCounter(C.byref(ticks)) and kernel.QueryPerformanceFrequency(C.byref(frequency))
     return {'at': time.monotonic(), 'qpc':{'ticks':ticks.value,'frequency':frequency.value} if qpc_ok else None, 'working_set_mb': counters.working_set / 1048576,
             'private_mb': counters.private / 1048576, 'handles': handles.value,
-            'cpu_seconds': (kernel_time.value + user_time.value) / 1e7}
+            'cpu_seconds': (kernel_time.value + user_time.value) / 1e7, 'thread_count':thread_count(process.pid)}
 
 
 def stimulus(config):
