@@ -58,6 +58,51 @@ pub struct Sequence {
     pub color: YuvColor,
     pub bit_depth: u8,
 }
+
+/// Declare the signal of our encoder input, preserving coded pixels and every
+/// other sequence field. Some MFTs emit default 709 tags despite receiving our
+/// explicit 601 NV12 (or BT.2020/PQ P010) input media type.
+#[cfg(any(windows, test))]
+pub(crate) fn declare_encoder_color(data: &[u8], hdr: bool) -> Result<Vec<u8>, String> {
+    use cros_codecs::codec::av1::{
+        parser::{BitDepth, ColorPrimaries, MatrixCoefficients, Profile, SequenceHeaderObu, TransferCharacteristics},
+        synthesizer::Synthesizer,
+    };
+    let mut output = Vec::with_capacity(data.len());
+    for unit in obus(data)? {
+        if (unit[0] >> 3) & 15 != 1 {
+            output.extend_from_slice(unit);
+            continue;
+        }
+        if unit.len() > MAX_HEADER {
+            return Err("oversized encoder AV1 sequence header".into());
+        }
+        let mut parser = Parser::default();
+        let ObuAction::Process(obu) = parser.read_obu(unit)? else {
+            return Err("encoder AV1 sequence header was dropped".into());
+        };
+        let ParsedObu::SequenceHeader(sequence) = parser.parse_obu(obu)? else {
+            return Err("invalid encoder AV1 sequence header".into());
+        };
+        let mut sequence = (*sequence).clone();
+        let color = &mut sequence.color_config;
+        if sequence.seq_profile != Profile::Profile0
+            || sequence.bit_depth != if hdr { BitDepth::Depth10 } else { BitDepth::Depth8 }
+            || color.mono_chrome || !color.subsampling_x || !color.subsampling_y
+        {
+            return Err("encoder AV1 input requires negotiated Main 4:2:0 bit depth".into());
+        }
+        color.color_description_present_flag = true;
+        color.color_range = false;
+        color.color_primaries = if hdr { ColorPrimaries::Bt2020 } else { ColorPrimaries::Bt601 };
+        color.transfer_characteristics = if hdr { TransferCharacteristics::Smpte2084 } else { TransferCharacteristics::Bt709 };
+        color.matrix_coefficients = if hdr { MatrixCoefficients::Bt2020Ncl } else { MatrixCoefficients::Bt601 };
+        Synthesizer::<'_, SequenceHeaderObu, _>::synthesize(&sequence, &mut output)
+            .map_err(|error| format!("encoder AV1 colour declaration: {error}"))?;
+    }
+    Ok(output)
+}
+
 pub fn sequence(data: &[u8]) -> Option<Sequence> {
     let mut parser = Parser::default();
     let mut input = data;
@@ -332,5 +377,45 @@ mod tests {
         assert_eq!((seq.width,seq.height,seq.bit_depth),(128,128,10));
         assert_eq!(seq.color,crate::color::YuvColor::Limited2020Pq);
         for end in 0..bytes.len(){let _=super::sequence(&bytes[..end]);}
+    }
+}
+
+#[cfg(test)]
+mod encoder_color_tests {
+    use super::*;
+    fn header(data: &[u8]) -> cros_codecs::codec::av1::parser::SequenceHeaderObu {
+        let unit = obus(data).unwrap().into_iter().find(|u| (u[0] >> 3) & 15 == 1).unwrap();
+        let mut parser = Parser::default();
+        let ObuAction::Process(obu) = parser.read_obu(unit).unwrap() else { panic!("sequence dropped") };
+        let ParsedObu::SequenceHeader(seq) = parser.parse_obu(obu).unwrap() else { panic!("sequence missing") };
+        (*seq).clone()
+    }
+    #[test]
+    fn encoder_color_preserves_sequence_structure_and_coded_payloads() {
+        for (input, hdr, expected) in [
+            (PROBE, false, YuvColor::Limited601),
+            (&include_bytes!("av1_hdr10_probe.obu")[..], true, YuvColor::Limited2020Pq),
+        ] {
+            let output = declare_encoder_color(input, hdr).unwrap();
+            let before = header(input);
+            let mut after = header(&output);
+            assert_eq!(sequence(&output).unwrap().color, expected);
+            assert_eq!(is_keyframe(&output), is_keyframe(input));
+            assert_eq!(sequence(&output).unwrap().width, sequence(input).unwrap().width);
+            after.color_config = before.color_config.clone();
+            assert_eq!(after, before, "only the colour description may change");
+            let payloads = |bytes: &[u8]| obus(bytes).unwrap().into_iter()
+                .filter(|u| (u[0] >> 3) & 15 != 1).map(Vec::from).collect::<Vec<_>>();
+            assert_eq!(payloads(input), payloads(&output));
+            assert_eq!(declare_encoder_color(&output, hdr).unwrap(), output);
+        }
+        assert_eq!(declare_encoder_color(PROBE_UNITS[1], false).unwrap(), PROBE_UNITS[1]);
+    }
+    #[test]
+    fn encoder_color_cannot_disguise_depth_or_truncated_headers() {
+        assert!(declare_encoder_color(PROBE, true).is_err());
+        assert!(declare_encoder_color(include_bytes!("av1_hdr10_probe.obu"), false).is_err());
+        let unit = obus(PROBE).unwrap().into_iter().find(|u| (u[0] >> 3) & 15 == 1).unwrap();
+        for end in 1..unit.len() { assert!(declare_encoder_color(&unit[..end], false).is_err()); }
     }
 }

@@ -511,6 +511,9 @@ impl Driver {
                 VideoCodec::Av1=>crate::av1::is_keyframe(&data),
             };
             if keyframe && !idr {return Err("hardware MFT did not honour the requested recovery keyframe".into());}
+            // GPU conversion and CPU upload have a defined signal. Keep the
+            // emitted AV1 description consistent before caching recovery headers.
+            if codec==VideoCodec::Av1 {data=crate::av1::declare_encoder_color(&data,self.settings.hdr)?;}
             let mut encoded=EncodedFrame{data:data.into(),pts:frame.pts,is_keyframe:idr};
             self.headers.prepare(codec,&mut encoded)?;
             if idr {
@@ -520,7 +523,8 @@ impl Driver {
                     VideoCodec::Hevc=>crate::hevc::sequence(&encoded.data).map(|s|((s.width,s.height),s.color)),
                     VideoCodec::Av1=>crate::av1::sequence(&encoded.data).map(|s|((s.width,s.height),s.color)),
                 };
-                if metadata!=Some(((frame.width,frame.height),crate::color::YuvColor::Limited601)) {
+                let color=if self.settings.hdr {crate::color::YuvColor::Limited2020Pq}else{crate::color::YuvColor::Limited601};
+                if metadata!=Some(((frame.width,frame.height),color)) {
                     return Err(format!("hardware recovery frame has incompatible geometry/colour: {metadata:?}"));
                 }
             }
