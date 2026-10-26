@@ -14,6 +14,28 @@ fn swap_interval(enabled: bool) -> glutin::surface::SwapInterval {
     else { glutin::surface::SwapInterval::DontWait }
 }
 
+#[cfg(windows)]
+#[allow(unsafe_code)] // cached WGL entry point; called with this drawable current
+fn restore_swap_interval(
+    ctx: &egui::Context,
+    viewport: egui::ViewportId,
+    query: Option<unsafe extern "system" fn() -> i32>,
+    surface: &glutin::surface::Surface<glutin::surface::WindowSurface>,
+    context: &glutin::context::PossiblyCurrentContext,
+) {
+    if crate::glow_presentation::color_target_for(ctx, viewport).is_some() {
+        crate::vsync::observe(ctx, viewport, None);
+        return;
+    }
+    let actual = query.map(|query| unsafe { query() }).filter(|value| *value >= 0);
+    let drifted = crate::vsync::observe(ctx, viewport, actual);
+    crate::vsync::apply(ctx, viewport, drifted, |enabled| {
+        surface.set_swap_interval(context, swap_interval(enabled)).map_err(|e| e.to_string())
+    });
+    // Include the result of a pending request or restoration in diagnostics.
+    crate::vsync::observe(ctx, viewport, query.map(|query| unsafe { query() }).filter(|value| *value >= 0));
+}
+
 fn presentation_visible(current: Option<bool>, output: &egui::ViewportOutput) -> bool {
     output.commands.iter().rev().find_map(|command| {
         if let egui::ViewportCommand::Visible(visible) = command { Some(*visible) } else { None }
@@ -98,6 +120,7 @@ struct GlutinWindowContext {
     egui_ctx: egui::Context,
 
     swap_interval: glutin::surface::SwapInterval,
+    swap_query: Option<unsafe extern "system" fn() -> i32>,
     gl_config: glutin::config::Config,
 
     max_texture_side: Option<usize>,
@@ -580,6 +603,7 @@ impl<'app> GlowWinitRunning<'app> {
                 viewports,
                 current_gl_context,
                 not_current_gl_context,
+                swap_query: _swap_query,
                 ..
             } = &mut *glutin;
             let viewport = &viewports[&viewport_id];
@@ -597,6 +621,9 @@ impl<'app> GlowWinitRunning<'app> {
                 change_gl_context(current_gl_context, not_current_gl_context, gl_surface);
                 frame_timer.resume();
             }
+
+            #[cfg(windows)]
+            restore_swap_interval(&self.integration.egui_ctx, viewport_id, *_swap_query, gl_surface, current_gl_context.as_ref().unwrap());
 
             self.painter
                 .borrow()
@@ -640,6 +667,7 @@ impl<'app> GlowWinitRunning<'app> {
             viewports,
             current_gl_context,
             not_current_gl_context,
+            swap_query: _swap_query,
             ..
         } = &mut *glutin;
 
@@ -662,6 +690,10 @@ impl<'app> GlowWinitRunning<'app> {
             change_gl_context(current_gl_context, not_current_gl_context, gl_surface);
             frame_timer.resume();
         }
+
+        #[cfg(windows)]
+        restore_swap_interval(&integration.egui_ctx, viewport_id, *_swap_query, gl_surface, current_gl_context.as_ref().unwrap());
+
 
         let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
 
@@ -1093,6 +1125,7 @@ impl GlutinWindowContext {
         let mut slf = Self {
             egui_ctx: egui_ctx.clone(),
             swap_interval,
+            swap_query: None,
             gl_config,
             current_gl_context: None,
             not_current_gl_context,
@@ -1217,6 +1250,15 @@ impl GlutinWindowContext {
                 };
             let current_gl_context = not_current_gl_context.make_current(&gl_surface)?;
 
+            #[cfg(windows)]
+            if self.swap_query.is_none()
+                && matches!(self.gl_config.display(), glutin::display::Display::Wgl(_)) {
+                let raw = self.gl_config.display().get_proc_address(c"wglGetSwapIntervalEXT");
+                if !matches!(raw as usize, 0..=3 | usize::MAX) {
+                    self.swap_query = Some(unsafe { std::mem::transmute::<*const std::ffi::c_void, unsafe extern "system" fn() -> i32>(raw) });
+                }
+            }
+
             // try setting swap interval. but its not absolutely necessary, so don't panic on failure.
             log::trace!("made context current. setting swap interval for surface");
             if let Err(err) = gl_surface.set_swap_interval(&current_gl_context, self.swap_interval)
@@ -1305,6 +1347,7 @@ impl GlutinWindowContext {
         for id in retired {
             crate::glow_presentation::remove_closed(&self.egui_ctx,id);
             crate::viewport_timing::remove(&self.egui_ctx,id);
+            crate::vsync::remove(&self.egui_ctx,id);
         }
         // GC old viewports
         self.viewports
@@ -1529,6 +1572,7 @@ fn render_immediate_viewport(
         current_gl_context,
         not_current_gl_context,
         viewports,
+        swap_query: _swap_query,
         ..
     } = &mut *glutin;
 
@@ -1551,6 +1595,9 @@ fn render_immediate_viewport(
     change_gl_context(current_gl_context, not_current_gl_context, gl_surface);
 
     let current_gl_context = current_gl_context.as_ref().unwrap();
+
+    #[cfg(windows)]
+    restore_swap_interval(egui_ctx, viewport_id, *_swap_query, gl_surface, current_gl_context);
 
     if !gl_surface.is_current(current_gl_context) {
         log::error!(

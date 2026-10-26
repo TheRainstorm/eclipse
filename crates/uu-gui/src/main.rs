@@ -1585,6 +1585,7 @@ impl App {
                     "keyboard_repeats_forwarded":self.pressed_vks.forwarded_repeats(),
                     "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()});
                 report["build"]=self.build_label.clone().into();
+                report["presentation_swap_interval"]=eframe::vsync_interval(ctx).into();
                 report["native_input_available"]=s.native_input_available.load(Relaxed).into();
                 report["input_granted"]=s.capabilities.allows(uu_core::capabilities::Capability::Input).into();
                 report["input_requested"]=h.native_input.as_ref().is_some_and(|sender|sender.requested()).into();

@@ -154,7 +154,7 @@ mod vsync;
 #[cfg(all(not(target_arch="wasm32"),feature="glow"))]
 pub mod glow_presentation;
 #[cfg(all(not(target_arch = "wasm32"), feature = "glow"))]
-pub use vsync::{request_vsync, vsync_result};
+pub use vsync::{request_vsync, vsync_result, vsync_interval};
 
 #[cfg(all(not(target_arch = "wasm32"),feature="glow"))]
 mod viewport_window;
