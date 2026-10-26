@@ -6,11 +6,11 @@ v0.18.7 为 Windows 原生串流加入 HDR10。客户端与被控端都需要更
 
 “画面”菜单显示实际协商结果。只具备 10 位色深不代表显示输出已开启 HDR；虚拟显示器和多显示器环境也按当前选中的输出判断。更改远端 HDR 状态或串流 HDR/编码偏好后重新连接。已经接收 HDR 的窗口移到 SDR 输出上时，会应用 SDR 映射。
 
-Windows AMD 编码使用原生 AMF 的 HEVC Main10 或 AV1 10 位模式；其它 Windows 显卡会尝试支持 P010 的硬件 MFT，按实际能力决定是否使用 HDR。当前 HDR 采集支持未旋转的整屏输出。无法协商 HDR 时回退 SDR，HDR 桌面先做亮度映射；软件或只能接受 CPU 像素的编码器需要 CPU 处理，建议使用自动硬件编码以减少延迟。
+Windows AMD 编码使用原生 AMF 的 HEVC Main10 或 AV1 10 位模式；其它 Windows 显卡会尝试支持 P010 的硬件 MFT，按实际能力决定是否使用 HDR。当前 HDR 采集支持未旋转的整屏输出。关闭 HDR、旧客户端或本次编码不支持 HDR 时，主机使用平台的 SDR 采集路径。已请求 HDR 采集、但 HDR 编码初始化失败时才对采集的 HDR 桌面应用 SDR 映射；软件或只能接受 CPU 像素的编码器需要 CPU 处理，建议使用自动硬件编码以减少延迟。
 
 ## 色彩与数据路径
 
-HDR 采集与 HDR 输出分别决定。Windows Desktop Duplication 使用 `DuplicateOutput1` 保留浮点 scRGB 桌面，GPU 将其转换为 BT.2020、ST 2084（PQ）的 P010。10 位样本在 16 位字中左对齐，使用有限范围的亮度和色度编码。源为 SDR BGRA 时，先还原其传递函数并按 SDR 白色亮度转换。
+采集格式遵循本次客户端请求、活动 RTP profile 与候选编码的共同能力；普通 SDR 会话不额外经过 scRGB 映射。HDR 会话的 Windows Desktop Duplication 使用 `DuplicateOutput1` 保留浮点 scRGB 桌面，GPU 将其转换为 BT.2020、ST 2084（PQ）的 P010。10 位样本在 16 位字中左对齐，使用有限范围的亮度和色度编码。源为 SDR BGRA 时，先还原其传递函数并按 SDR 白色亮度转换。
 
 编码器必须产生实际的 10 位 PQ/BT.2020 码流，关键帧头会再次校验，不能只修改编码标签。原生会话使用独立的可选 SDP 属性传递 HDR 能力和显示信息，HEVC Main10 使用独立的 RTP profile；旧版信令和普通 SDR 设置保持兼容。
 
