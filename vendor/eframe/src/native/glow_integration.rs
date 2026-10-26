@@ -570,6 +570,7 @@ impl<'app> GlowWinitRunning<'app> {
 
         let has_many_viewports = self.glutin.borrow().viewports.len() > 1;
         let clear_before_update = !has_many_viewports; // HACK: for some reason, an early clear doesn't "take" on Mac with multiple viewports.
+        let prepared_seconds = frame_timer.total_time_sec();
 
         if clear_before_update {
             // clear before we call update, so users can paint between clear-color and egui windows:
@@ -606,9 +607,11 @@ impl<'app> GlowWinitRunning<'app> {
         // The update function, which could call immediate viewports,
         // so make sure we don't hold any locks here required by the immediate viewports rendeer.
 
+        let before_ui_seconds = frame_timer.total_time_sec();
         let full_output =
             self.integration
                 .update(self.app.as_mut(), viewport_ui_cb.as_deref(), raw_input);
+        let after_ui_seconds = frame_timer.total_time_sec();
 
         // ------------------------------------------------------------
 
@@ -710,12 +713,15 @@ impl<'app> GlowWinitRunning<'app> {
             integration.post_rendering(&window);
         }
 
+        let before_present_seconds = frame_timer.total_time_sec();
+        let mut present_seconds = 0.;
         // On Wayland set_visible(false) is unsupported: attaching a buffer
         // maps the surface. Hidden viewports still run UI and upload shared
         // textures, but must never present their coordinating surface.
         if presentation_visible(viewport.builder.visible, &viewport_output[&viewport_id]) {
             // vsync - don't count as frame-time:
             frame_timer.pause();
+            let present_started = std::time::Instant::now();
             crate::profile_scope!("swap_buffers");
             let context = current_gl_context
                 .as_ref()
@@ -732,6 +738,7 @@ impl<'app> GlowWinitRunning<'app> {
                 });
                 gl_surface.swap_buffers(context)?;
             }
+            present_seconds = present_started.elapsed().as_secs_f32();
             frame_timer.resume();
         }
 
@@ -746,8 +753,17 @@ impl<'app> GlowWinitRunning<'app> {
 
         glutin.handle_viewport_output(event_loop, &integration.egui_ctx, &viewport_output);
 
-        integration.report_frame_time(frame_timer.total_time_sec()); // don't count auto-save time as part of regular frame time
-        crate::viewport_window::report_cpu_usage(&integration.egui_ctx,viewport_id,frame_timer.total_time_sec());
+        let cpu_seconds = frame_timer.total_time_sec();
+        integration.report_frame_time(cpu_seconds); // don't count auto-save time as part of regular frame time
+        crate::viewport_window::report_cpu_usage(&integration.egui_ctx,viewport_id,cpu_seconds);
+        crate::viewport_timing::report(&integration.egui_ctx, viewport_id, [
+            prepared_seconds,
+            before_ui_seconds - prepared_seconds,
+            after_ui_seconds - before_ui_seconds,
+            before_present_seconds - after_ui_seconds,
+            cpu_seconds - before_present_seconds,
+            present_seconds,
+        ].map(|seconds| f64::from(seconds) * 1000.));
 
         integration.maybe_autosave(app.as_mut(), Some(&window));
 
@@ -1286,7 +1302,10 @@ impl GlutinWindowContext {
     ) {
         // Release custom GL/DXGI resources while the context and HWND live.
         let retired=self.viewports.keys().filter(|id|!viewport_output.contains_key(id)).copied().collect::<Vec<_>>();
-        for id in retired {crate::glow_presentation::remove_closed(&self.egui_ctx,id);}
+        for id in retired {
+            crate::glow_presentation::remove_closed(&self.egui_ctx,id);
+            crate::viewport_timing::remove(&self.egui_ctx,id);
+        }
         // GC old viewports
         self.viewports
             .retain(|id, _| viewport_output.contains_key(id));

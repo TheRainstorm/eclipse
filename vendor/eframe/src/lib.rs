@@ -160,6 +160,10 @@ pub use vsync::{request_vsync, vsync_result};
 mod viewport_window;
 #[cfg(all(not(target_arch = "wasm32"),feature="glow"))]
 pub use viewport_window::{viewport_window,viewport_window_for,viewport_cpu_usage};
+#[cfg(all(not(target_arch = "wasm32"),feature="glow"))]
+mod viewport_timing;
+#[cfg(all(not(target_arch = "wasm32"),feature="glow"))]
+pub use viewport_timing::{viewport_frame_timings, ViewportFrameTimings};
 
 // ----------------------------------------------------------------------------
 // When compiling for web

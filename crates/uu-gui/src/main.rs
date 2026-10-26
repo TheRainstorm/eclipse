@@ -1551,7 +1551,7 @@ impl App {
             if let Some(h) = &self.controller {
                 use std::sync::atomic::Ordering::Relaxed;
                 let s = &h.stats;
-                let mut report = serde_json::json!({"event":"video_stats",
+                let mut report = serde_json::json!({"event":"video_stats","build":self.build_label,
                     "backend":s.backend(),"decoded":s.decoded_total.load(Relaxed),
                     "errors":s.errors.load(Relaxed),"damaged":s.damaged_frames.load(Relaxed),
                     "rx_fps":s.src_fps(),"decode_fps":s.dec_fps(),
@@ -1594,6 +1594,15 @@ impl App {
                 report["recovery_causes"]=serde_json::json!({"receive_damage":s.recovery_receive_damage.load(Relaxed),"decode_queue":s.recovery_decode_queue.load(Relaxed),"decoder_error":s.recovery_decoder_error.load(Relaxed),"format_change":s.recovery_format_change.load(Relaxed)});
                 report["bitrate_kbps"] = s.bitrate_kbps.load(Relaxed).into();
                 report["codec"] = s.codec.lock().unwrap().clone().into();
+                if let Some(timing) = eframe::viewport_frame_timings(ctx) {
+                    let [prepare, clear, update, paint, finish, present] = timing.mean_ms;
+                    report["render_frame_window"] = serde_json::json!({
+                        "samples":timing.samples,"window_ms":timing.window_ms,
+                        "prepare_ms":prepare,"clear_ms":clear,"ui_ms":update,
+                        "paint_ms":paint,"viewport_commands_ms":finish,"present_ms":present,
+                        "cpu_ms":prepare+clear+update+paint+finish,"cpu_max_ms":timing.cpu_max_ms,
+                    });
+                }
                 s.diagnostics.record(report);
             }
         }
