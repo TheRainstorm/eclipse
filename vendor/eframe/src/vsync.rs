@@ -65,15 +65,31 @@ pub(crate) fn apply(
 ) {
     let Some(mut request) = ctx.data(|data| data.get_temp::<Request>(key(viewport))) else { return };
     if !request.pending && !recreated { return; }
+    let notify = request.pending;
     request.result = Some(set(request.desired).map(|()| request.desired));
     request.pending = false;
     ctx.data_mut(|data| data.insert_temp(key(viewport), request));
-    ctx.request_repaint_of(viewport);
+    // Restoring an existing policy already happens inside a paint. Scheduling
+    // another paint here can keep windows with different intervals repainting
+    // each other indefinitely on drivers sharing swap state across contexts.
+    if notify { ctx.request_repaint_of(viewport); }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restoration_does_not_keep_an_idle_window_repainting() {
+        let ctx=Context::default();let id=ViewportId::ROOT;
+        request_for(&ctx,id,false);apply(&ctx,id,false,|_|Ok(()));
+        for _ in 0..5 {let _=ctx.run(egui::RawInput::default(),|_|{});}
+        assert!(!ctx.has_requested_repaint());
+        assert!(observe(&ctx,id,Some(1)));
+        apply(&ctx,id,true,|_|Ok(()));
+        assert!(!ctx.has_requested_repaint(),"restoring a paint must not schedule another paint");
+        request_for(&ctx,id,true);
+        assert!(ctx.has_requested_repaint());
+    }
     #[test]
     fn actual_drawable_interval_is_restored_without_changing_other_viewports() {
         let ctx=Context::default();let a=ViewportId::ROOT;let b=ViewportId::from_hash_of("other");
