@@ -1551,7 +1551,7 @@ impl App {
             if let Some(h) = &self.controller {
                 use std::sync::atomic::Ordering::Relaxed;
                 let s = &h.stats;
-                let mut report = serde_json::json!({"event":"video_stats","build":self.build_label,
+                let mut report = serde_json::json!({"event":"video_stats",
                     "backend":s.backend(),"decoded":s.decoded_total.load(Relaxed),
                     "errors":s.errors.load(Relaxed),"damaged":s.damaged_frames.load(Relaxed),
                     "rx_fps":s.src_fps(),"decode_fps":s.dec_fps(),
@@ -1584,6 +1584,7 @@ impl App {
                     "input_sent":s.input_messages_sent.load(Relaxed),"input_errors":s.input_send_errors.load(Relaxed),
                     "keyboard_repeats_forwarded":self.pressed_vks.forwarded_repeats(),
                     "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()});
+                report["build"]=self.build_label.clone().into();
                 report["native_input_available"]=s.native_input_available.load(Relaxed).into();
                 report["input_granted"]=s.capabilities.allows(uu_core::capabilities::Capability::Input).into();
                 report["input_requested"]=h.native_input.as_ref().is_some_and(|sender|sender.requested()).into();
