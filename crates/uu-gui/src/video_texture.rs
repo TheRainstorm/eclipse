@@ -211,6 +211,10 @@ struct Planes {
     layout_uniform: Option<glow::UniformLocation>,
     coefficients_uniform: Option<glow::UniformLocation>,
     levels_uniform: Option<glow::UniformLocation>,
+    hdr_input_uniform: Option<glow::UniformLocation>,
+    hdr_output_uniform: Option<glow::UniformLocation>,
+    sdr_white_uniform: Option<glow::UniformLocation>,
+    source_white_uniform: Option<glow::UniformLocation>,
     vao: glow::VertexArray,
     textures: [glow::Texture; 3],
     size: [u32; 2],
@@ -285,6 +289,12 @@ impl Planes {
         let layout_uniform = gl.get_uniform_location(program, "pixel_layout");
         let coefficients_uniform = gl.get_uniform_location(program, "coeff");
         let levels_uniform = gl.get_uniform_location(program, "levels");
+        // Locations belong to the linked program, including when HDR is off.
+        // Resolve them once, like the existing SDR shader uniforms.
+        let hdr_input_uniform = gl.get_uniform_location(program, "hdr_input");
+        let hdr_output_uniform = gl.get_uniform_location(program, "hdr_output");
+        let sdr_white_uniform = gl.get_uniform_location(program, "sdr_white");
+        let source_white_uniform = gl.get_uniform_location(program, "source_white");
         let previous_program = gl.get_parameter_program(glow::CURRENT_PROGRAM);
         gl.use_program(Some(program));
         for (unit, name) in ["plane0", "plane1", "plane2"].iter().enumerate() {
@@ -302,6 +312,10 @@ impl Planes {
             layout_uniform,
             coefficients_uniform,
             levels_uniform,
+            hdr_input_uniform,
+            hdr_output_uniform,
+            sdr_white_uniform,
+            source_white_uniform,
             vao,
             textures: textures.try_into().unwrap(),
             size: [0, 0],
@@ -616,10 +630,10 @@ impl Planes {
         let (levels,matrix)=self.color.shader_conversion(self.layout==Some(PixelFormat::P010)&&!self.d3d_active);
         gl.uniform_4_f32(self.coefficients_uniform.as_ref(),matrix[0],matrix[1],matrix[2],matrix[3]);
         gl.uniform_4_f32(self.levels_uniform.as_ref(),levels[0],levels[1],levels[2],levels[3]);
-        gl.uniform_1_i32(gl.get_uniform_location(self.program,"hdr_input").as_ref(),i32::from(self.color.hdr() || self.layout==Some(PixelFormat::ScRgb16)));
-        gl.uniform_1_i32(gl.get_uniform_location(self.program,"hdr_output").as_ref(),i32::from(hdr_output));
-        gl.uniform_1_f32(gl.get_uniform_location(self.program,"sdr_white").as_ref(),white_nits/80.);
-        gl.uniform_1_f32(gl.get_uniform_location(self.program,"source_white").as_ref(),source_white);
+        gl.uniform_1_i32(self.hdr_input_uniform.as_ref(),i32::from(self.color.hdr() || self.layout==Some(PixelFormat::ScRgb16)));
+        gl.uniform_1_i32(self.hdr_output_uniform.as_ref(),i32::from(hdr_output));
+        gl.uniform_1_f32(self.sdr_white_uniform.as_ref(),white_nits/80.);
+        gl.uniform_1_f32(self.source_white_uniform.as_ref(),source_white);
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
         #[cfg(target_os = "linux")]
         if self.dma_active {
