@@ -682,8 +682,6 @@ async fn send_video(
     let preparation_started=Instant::now();
     let dynamic=crate::native_quality::runtime_requested(&offer.sdp)?;
     let request=crate::native_quality::Request::read(&offer.sdp)?;
-    let mut hdr_codecs=crate::native_color::Request::read(&offer.sdp)?.map(|r|r.codecs).unwrap_or_default();
-    hdr_codecs.retain(|codec|crate::native_media::offers_hdr_codec(&offer.sdp,*codec));
     let policy=config.video_policy.clone();
     let request=if policy.is_some(){request}else{None};
     if let Some(request)=&request {
@@ -699,6 +697,7 @@ async fn send_video(
     let mut choices=codec_choices(&allowed,host_codec,request.as_ref().and_then(|r|r.codec))?;
     choices.retain(|codec|crate::native_media::offers_codec(&offer.sdp,*codec));
     ensure!(!choices.is_empty(),"两端没有共同可用的视频编码，请检查主机编码设置和客户端解码支持");
+    let hdr_codecs=crate::native_color::capture_codecs(&offer.sdp,&choices)?;
     let advertised:Vec<_>=ordered.into_iter().filter(|c|crate::native_media::offers_codec(&offer.sdp,*c)).collect();
     let audio_mode=if config.audio.is_some(){crate::native_media::offered_audio(&offer.sdp)?}else{None};
     let clipboard_images=crate::native_clipboard::images_offered(&offer.sdp);
@@ -715,7 +714,7 @@ async fn send_video(
     struct CancelCaptureOpen(Arc<AtomicBool>);
     impl Drop for CancelCaptureOpen { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
     let capture_cancel = CancelCaptureOpen(Arc::new(AtomicBool::new(false)));
-    let capture_options = uu_capture::OpenOptions { hdr:true,allow_input: config.allow_input, fps, cancelled:capture_cancel.0.clone() };
+    let capture_options = uu_capture::OpenOptions { hdr:!hdr_codecs.is_empty(),allow_input: config.allow_input, fps, cancelled:capture_cancel.0.clone() };
     let (capture,encoder,codec,available,encoder_settings,mut startup) = tokio::select! {
         result=tokio::task::spawn_blocking(move || -> Result<_> {
             let started=Instant::now();

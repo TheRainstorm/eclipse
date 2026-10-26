@@ -8,6 +8,18 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 const REQUEST: &str = "x-eclipse-hdr10-client-v1";
 const RESPONSE: &str = "x-eclipse-hdr10-host-v1";
 pub use uu_media::hdr::Metadata;
+/// Only a mutually usable HDR request may change the desktop capture domain.
+/// Legacy/SDR sessions keep the platform's SDR capture and colour conversion.
+pub(crate) fn capture_codecs(
+    sdp: &RTCSessionDescription,
+    candidates: &[VideoCodec],
+) -> Result<Vec<VideoCodec>> {
+    Ok(Request::read(sdp)?
+        .map(|request| request.codecs.into_iter().filter(|codec| {
+            candidates.contains(codec) && crate::native_media::offers_hdr_codec(sdp, *codec)
+        }).collect())
+        .unwrap_or_default())
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -68,6 +80,25 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_domain_follows_hdr_request_active_profile_and_selected_codecs() {
+        let base="v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n";
+        let offer=|port,profile|RTCSessionDescription::offer(format!(
+            "{base}m=video {port} UDP/TLS/RTP/SAVPF 104 106\r\na=rtpmap:104 H265/90000\r\na=fmtp:104 profile-id={profile}\r\na=rtpmap:106 AV1/90000\r\na=fmtp:106 profile=0\r\n")).unwrap();
+        let mut sdp=offer(9,2);
+        let candidates=[VideoCodec::Hevc,VideoCodec::Av1];
+        assert!(capture_codecs(&sdp,&candidates).unwrap().is_empty(),"HDR-capable RTP alone must retain SDR capture");
+        Request{codecs:candidates.to_vec()}.add(&mut sdp).unwrap();
+        assert_eq!(capture_codecs(&sdp,&candidates).unwrap(),candidates);
+        assert_eq!(capture_codecs(&sdp,&[VideoCodec::Av1]).unwrap(),[VideoCodec::Av1]);
+        assert!(capture_codecs(&sdp,&[VideoCodec::H264]).unwrap().is_empty());
+        let mut eight_bit=offer(9,1);
+        Request{codecs:vec![VideoCodec::Hevc]}.add(&mut eight_bit).unwrap();
+        assert!(capture_codecs(&eight_bit,&candidates).unwrap().is_empty());
+        let mut inactive=offer(0,2);
+        Request{codecs:candidates.to_vec()}.add(&mut inactive).unwrap();
+        assert!(capture_codecs(&inactive,&candidates).unwrap().is_empty());
+    }
     #[test]
     fn hdr_attributes_are_optional_bounded_and_independent_of_legacy_video_settings() {
         let mut sdp=RTCSessionDescription::offer("v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 104\r\na=rtpmap:104 H265/90000\r\n".into()).unwrap();
