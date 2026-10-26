@@ -1602,6 +1602,7 @@ impl App {
                         "samples":timing.samples,"window_ms":timing.window_ms,
                         "prepare_ms":prepare,"clear_ms":clear,"ui_ms":update,
                         "paint_ms":paint,"viewport_commands_ms":finish,"present_ms":present,
+                        "paint_setup_clear_draw_post_ms":timing.mean_paint_ms,
                         "cpu_ms":prepare+clear+update+paint+finish,"cpu_max_ms":timing.cpu_max_ms,
                     });
                 }

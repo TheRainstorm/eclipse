@@ -694,6 +694,7 @@ impl<'app> GlowWinitRunning<'app> {
         #[cfg(windows)]
         restore_swap_interval(&integration.egui_ctx, viewport_id, *_swap_query, gl_surface, current_gl_context.as_ref().unwrap());
 
+        let paint_prepared_seconds = frame_timer.total_time_sec();
 
         let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
 
@@ -701,6 +702,7 @@ impl<'app> GlowWinitRunning<'app> {
         if custom_surface.is_some() || !clear_before_update {
             painter.clear(screen_size_in_pixels, clear_color);
         }
+        let paint_cleared_seconds = frame_timer.total_time_sec();
 
         painter.paint_and_update_textures(
             screen_size_in_pixels,
@@ -708,6 +710,7 @@ impl<'app> GlowWinitRunning<'app> {
             &clipped_primitives,
             &textures_delta,
         );
+        let paint_drawn_seconds = frame_timer.total_time_sec();
 
         {
             for action in viewport.actions_requested.drain() {
@@ -795,7 +798,12 @@ impl<'app> GlowWinitRunning<'app> {
             before_present_seconds - after_ui_seconds,
             cpu_seconds - before_present_seconds,
             present_seconds,
-        ].map(|seconds| f64::from(seconds) * 1000.));
+        ].map(|seconds| f64::from(seconds) * 1000.), [
+            paint_prepared_seconds-after_ui_seconds,
+            paint_cleared_seconds-paint_prepared_seconds,
+            paint_drawn_seconds-paint_cleared_seconds,
+            before_present_seconds-paint_drawn_seconds,
+        ].map(|seconds| f64::from(seconds)*1000.));
 
         integration.maybe_autosave(app.as_mut(), Some(&window));
 
