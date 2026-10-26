@@ -65,8 +65,9 @@ impl Driver {
         let native=Native::open(settings,input.as_ref().map_or(ptr::null_mut(),|device|device.device.as_raw()))?;
         let codec=match settings.codec{VideoCodec::H264=>"H.264",VideoCodec::Hevc=>"HEVC",VideoCodec::Av1=>"AV1"};
         let mode=if matches!(settings.rate_control,super::RateControl::Vbr{..}){"VBR"}else{"CBR"};
-        // The candidate remains opt-in until GPU lifetime and ABBA acceptance.
-        let pool_enabled=std::env::var("UU_AMF_INPUT_POOL").is_ok_and(|v|v=="1");
+        // Reuse only after matching output and surface release; an explicit
+        // override keeps the existing 1/other-value diagnostic behavior.
+        let pool_enabled=std::env::var_os("UU_AMF_INPUT_POOL").is_none_or(|v|v=="1");
         if std::env::var_os("UU_ENCODE_PROFILE").is_some(){eprintln!("uu-amf-input-mode pool_enabled={pool_enabled}");}
         let observation=if settings.codec==VideoCodec::Av1{super::amf_workload::Observation::enabled(1,64*1024*1024)}else{None};
         let observation_requested=observation.is_some();
