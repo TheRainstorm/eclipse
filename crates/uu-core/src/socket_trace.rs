@@ -279,7 +279,7 @@ impl Observation {
             out.flush()?;
             Ok(())
         })();
-        println!(
+        eprintln!(
             "{}",
             serde_json::json!({"event":"native_socket_trace","path":self.path,"written":result.is_ok(),"error":result.err().map(|e|e.to_string()),"wire_total":s.wire_total,"primary_total":s.primary_total,"active_at_dump":report.active_at_dump})
         );

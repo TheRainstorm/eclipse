@@ -159,7 +159,7 @@ fn raw(socket: &UdpSocket) -> usize {
 }
 pub(crate) fn event(mut value: serde_json::Value) {
     value["event"] = "native_qos".into();
-    println!("{value}");
+    eprintln!("{value}");
 }
 
 /// Only enabled QoS connections need shared ownership. Disabled connections

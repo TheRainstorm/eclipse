@@ -914,10 +914,10 @@ async fn send_video(
     report.encode_us = producer.timings.encode_us.load(Ordering::Relaxed);
     report.backpressure_us = producer.timings.backpressure_us.load(Ordering::Relaxed);
     report.encoder=producer.encoder.borrow().clone();
-    println!("{}",serde_json::json!({"event":"capture_overlap_delivery","retired_encoded_aus":producer.retired_outputs.load(Ordering::Relaxed)}));
+    eprintln!("{}",serde_json::json!({"event":"capture_overlap_delivery","retired_encoded_aus":producer.retired_outputs.load(Ordering::Relaxed)}));
     producer.trace.write_local_report()?;
     report.frame_trace=producer.trace.report();
-    if let Some(continuous)=producer.trace.continuous_report(){println!("{}",serde_json::json!({"event":"host_continuous_trace","report":continuous}));}
+    if let Some(continuous)=producer.trace.continuous_report(){eprintln!("{}",serde_json::json!({"event":"host_continuous_trace","report":continuous}));}
     active?;
     stopped?;
     Ok(report)

@@ -179,7 +179,7 @@ impl Input {
                 config,
             )
             .map_err(anyhow::Error::msg)?;
-            println!(
+            eprintln!(
                 "{}",
                 serde_json::json!({"event":"capture_overlap","action":"start","requested":true,"actual":true,"pending_limit":1,"capture_pool_limit":3,"owner_thread":owner.summary().owner_thread,"owner_native_thread":owner.summary().owner_native_thread,"generation":owner.summary().generation,"owner_pacing":owner_pacing,"target_fps":fps})
             );
@@ -190,7 +190,7 @@ impl Input {
                 epoch: None,
             }
         } else {
-            println!(
+            eprintln!(
                 "{}",
                 serde_json::json!({"event":"capture_overlap","action":"policy","requested":false,"actual":false})
             );
@@ -232,7 +232,7 @@ impl Input {
         }
         self.config.fps = fps;
         if self.config.owner_pacing {
-            println!("{}",serde_json::json!({"event":"capture_owner_pacing","action":"configure","actual":true,"target_fps":fps}));
+            eprintln!("{}",serde_json::json!({"event":"capture_owner_pacing","action":"configure","actual":true,"target_fps":fps}));
         }
         Ok(())
     }
@@ -358,7 +358,7 @@ impl Input {
             *last = None;
             let stopped = owner.stop();
             let s = owner.summary();
-            println!(
+            eprintln!(
                 "{}",
                 serde_json::json!({"event":"capture_overlap","action":"stop","actual":true,"pending_limit":1,"capture_pool_limit":3,"produced":s.produced,"replaced":s.replaced,"pauses":s.pauses,"configurations":s.configurations,"owner_thread":s.owner_thread,"owner_native_thread":s.owner_native_thread,"generation":s.generation,"phase":s.phase,"joined":s.joined,"repeated_outputs":self.repeats,"retired_outputs":self.retired_outputs,"error":stopped.as_ref().err(),"owner_pacing":s.owner_pacing,"target_fps":self.config.fps,"ticks":s.ticks,"repeat_opportunities":s.repeat_opportunities,"no_frame_opportunities":s.no_frame_opportunities,"skipped_periods":s.skipped_periods})
             );

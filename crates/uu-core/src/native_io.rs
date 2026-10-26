@@ -36,7 +36,7 @@ fn enabled(windows: bool, sender: bool, value: Option<&str>) -> Result<bool> {
 }
 
 fn event(instance: &str, action: &str, detail: serde_json::Value) {
-    println!(
+    eprintln!(
         "{}",
         serde_json::json!({"event":"native_dedicated_io","instance":instance,"action":action,"thread":format!("{:?}",std::thread::current().id()),"detail":detail})
     );

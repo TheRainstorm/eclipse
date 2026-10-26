@@ -284,7 +284,7 @@ impl NativePeer {
         } else {
             local_ip
         };
-        println!("{}",serde_json::json!({"event":"native_dedicated_io_policy","requested":dedicated,"actual":dedicated,"sender":sender}));
+        eprintln!("{}",serde_json::json!({"event":"native_dedicated_io_policy","requested":dedicated,"actual":dedicated,"sender":sender}));
         #[cfg(windows)]
         crate::native_qos::event(serde_json::json!({"action":"policy","requested":crate::native_qos::requested(sender),"sender":sender}));
         let (mux,io,qos_socket)=if dedicated {
@@ -712,7 +712,7 @@ async fn finish_trace(receivers:Option<Arc<Mutex<Vec<tokio::task::JoinHandle<()>
             Err(_)=>{aborted+=1;task.abort();let _=tokio::time::timeout(Duration::from_millis(100),task).await;},
         }
     }
-    println!("{}",serde_json::json!({"event":"native_socket_receiver_shutdown","normal":normal,"aborted":aborted,"failed":failed}));
+    eprintln!("{}",serde_json::json!({"event":"native_socket_receiver_shutdown","normal":normal,"aborted":aborted,"failed":failed}));
     trace.finish().await;
 }
 impl Drop for NativePeer {
