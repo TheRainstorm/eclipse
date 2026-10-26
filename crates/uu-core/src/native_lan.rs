@@ -419,7 +419,12 @@ impl Server {
               let (socket,address)=accepted?;let Ok(permit)=permits.clone().try_acquire_owned() else{continue;};
               let now=Instant::now();attempts.retain(|_,(at,_)|now.duration_since(*at)<Duration::from_secs(60));if attempts.len()>=64&&!attempts.contains_key(&address.ip()){continue;}
               let entry=attempts.entry(address.ip()).or_insert((now,0));if entry.1>=24{continue;}entry.1+=1;
-              let state=self.state.clone();clients.spawn(async move{let _permit=permit;let _=handle_socket(socket,state).await;});
+              let state=self.state.clone();clients.spawn(async move {
+                  let _permit=permit;
+                  if let Err(error)=handle_socket(socket,state).await {
+                      tracing::warn!(peer=%address,error=%format!("{error:#}"),"native device connection failed");
+                  }
+              });
              },
              _=clients.join_next(),if !clients.is_empty()=>{},
             }
@@ -681,7 +686,7 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
         let _guard = guard;
         let _ = task_state.events.send(Event::SessionStarted {
             id: task_id.clone(),
-            client,
+            client: client.clone(),
         });
         let mut observed = phase.subscribe();
         let serving = native::serve_with_authority(config, serving_stop, Some(phase), task_state.input.clone());
@@ -700,10 +705,16 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
                 }
             }
         };
-        if result.is_err() {
+        if let Err(error) = &result {
+            // Keep the cause in the host log even when there is no GUI event
+            // consumer (the Windows service forwards only entrance notices).
+            // Session IDs, peer IDs and status contain no capability secrets.
+            tracing::warn!(session=%task_id,peer=%client,status=?*observed.borrow(),error=%format!("{error:#}"),"native LAN media session failed");
             let _ = task_state.events.send(Event::Warning(
                 "原生串流未正常结束，请检查共享屏幕与采集、编码后端。".into(),
             ));
+        } else {
+            tracing::info!(session=%task_id,peer=%client,"native LAN media session ended");
         }
         let _ = done.send(
             result
