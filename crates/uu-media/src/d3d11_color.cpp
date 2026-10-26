@@ -79,6 +79,19 @@ float4 encode(float4 position:SV_Position):SV_Target {
     }
     return options.x<0.5?float4((16+219*y)/255,0,0,1):float4((128+224*uv)/255,0,1);
 }
+float4 decode_sdr(float4 position:SV_Position):SV_Target {
+    float2 coord=position.xy/dimensions.zw;
+    // MPEG-2/LEFT 4:2:0: chroma is horizontally co-sited with luma.
+    // Bound both planes to visible samples, excluding codec alignment rows.
+    float2 uv_coord=clamp(coord+float2(0.5/dimensions.z,0),1/dimensions.zw,(dimensions.xy-1)/dimensions.zw);
+    float y=image.SampleLevel(bilinear,coord,0).r*255;
+    float2 uv=chroma.SampleLevel(bilinear,uv_coord,0)*255;
+    bool full=options.z>0.5;
+    y=(y-(full?0:16))/(full?255:219);
+    uv=(uv-128)/(full?255:224);
+    float4 c=options.x>0.5?float4(1.5748,0.187324,0.468124,1.8556):float4(1.402,0.344136,0.714136,1.772);
+    return float4(saturate(float3(y+c.x*uv.y,y-c.y*uv.x-c.z*uv.y,y+c.w*uv.x)),1);
+}
 float4 decode(float4 position:SV_Position):SV_Target {
     float2 coord=position.xy/dimensions.zw;
     float y=image.SampleLevel(bilinear,coord,0).r*65535/64;
@@ -182,14 +195,14 @@ struct Color {
     }
     Color(ID3D11Device* native,unsigned w,unsigned h,bool decoding,bool high,bool exportable,float sdr_white)
         :device(native),width(w),height(h),decoder(decoding),hdr(high),shared(exportable),white(sdr_white) {
-        if(!native||w<2||h<2||w>8192||h>8192||w%2||h%2||sdr_white<40||sdr_white>1000)throw std::runtime_error("invalid HDR converter layout");
+        if(!native||w<2||h<2||w>8192||h>8192||w%2||h%2||sdr_white<40||sdr_white>1000)throw std::runtime_error("invalid GPU color converter layout");
         device->GetImmediateContext(&context);
         check(context.As(&threading),"query HDR context threading");threading->SetMultithreadProtected(TRUE);
         ComPtr<ID3DBlob> vertex,pixel,errors;
-        check(D3DCompile(shader,sizeof(shader)-1,nullptr,nullptr,nullptr,"vertex","vs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&vertex,&errors),"compile HDR vertex shader");
-        HRESULT result=D3DCompile(shader,sizeof(shader)-1,nullptr,nullptr,nullptr,decoder?"decode":"encode","ps_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&pixel,&errors);
+        check(D3DCompile(shader,sizeof(shader)-1,nullptr,nullptr,nullptr,"vertex","vs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&vertex,&errors),"compile color vertex shader");
+        HRESULT result=D3DCompile(shader,sizeof(shader)-1,nullptr,nullptr,nullptr,decoder?(hdr?"decode":"decode_sdr"):"encode","ps_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&pixel,&errors);
         if(FAILED(result)&&errors)throw std::runtime_error(std::string((const char*)errors->GetBufferPointer(),errors->GetBufferSize()));
-        check(result,"compile HDR pixel shader");
+        check(result,"compile color pixel shader");
         check(device->CreateVertexShader(vertex->GetBufferPointer(),vertex->GetBufferSize(),nullptr,&vs),"create HDR vertex shader");
         check(device->CreatePixelShader(pixel->GetBufferPointer(),pixel->GetBufferSize(),nullptr,&ps),"create HDR pixel shader");
         D3D11_BUFFER_DESC bd{};bd.ByteWidth=32;bd.Usage=D3D11_USAGE_DEFAULT;bd.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
@@ -202,7 +215,7 @@ struct Color {
         check(device->CreateDepthStencilState(&dd,&depth),"create HDR depth state");
         const char* profiling=std::getenv("UU_GPU_ENCODE_PROFILE");
         if(!decoder&&profiling&&std::strcmp(profiling,"1")==0)profile=std::make_unique<GpuProfile>(device.Get());
-        if(decoder){output=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,w,h,shared);check(device->CreateRenderTargetView(output.Get(),nullptr,&target),"create HDR RGB output view");}
+        if(decoder){output=texture(hdr?DXGI_FORMAT_R16G16B16A16_FLOAT:DXGI_FORMAT_B8G8R8A8_UNORM,w,h,shared);check(device->CreateRenderTargetView(output.Get(),nullptr,&target),"create decoder RGB output view");if(!hdr)prepare_source(w,h);}
     }
     ComPtr<ID3D11Texture2D> texture(DXGI_FORMAT format,unsigned w,unsigned h,bool exportable) {
         D3D11_TEXTURE2D_DESC td{};td.Width=w;td.Height=h;td.ArraySize=1;td.MipLevels=1;td.Format=format;td.SampleDesc.Count=1;
@@ -231,23 +244,28 @@ struct Color {
         D3D11_VIEWPORT viewport{0,0,(float)w,(float)h,0,1};context->RSSetViewports(1,&viewport);
         context->OMSetRenderTargets(1,&destination,nullptr);context->Draw(3,0);context->OMSetRenderTargets(0,nullptr,nullptr);
     }
-    ComPtr<ID3D11Texture2D> convert(ID3D11Texture2D* input,unsigned index,bool full,EncodeTarget* destination=nullptr) {
+    void prepare_source(unsigned w,unsigned h) {
+        y.Reset();uv.Reset();source=texture(hdr?DXGI_FORMAT_P010:DXGI_FORMAT_NV12,w,h,false);
+        D3D11_SHADER_RESOURCE_VIEW_DESC vd{};vd.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2D;vd.Texture2D.MipLevels=1;
+        vd.Format=hdr?DXGI_FORMAT_R16_UNORM:DXGI_FORMAT_R8_UNORM;
+        check(device->CreateShaderResourceView(source.Get(),&vd,&y),"create decoder luma view");
+        vd.Format=hdr?DXGI_FORMAT_R16G16_UNORM:DXGI_FORMAT_R8G8_UNORM;
+        check(device->CreateShaderResourceView(source.Get(),&vd,&uv),"create decoder chroma view");
+    }
+    ComPtr<ID3D11Texture2D> convert(ID3D11Texture2D* input,unsigned index,bool full,EncodeTarget* destination=nullptr,bool matrix709=false) {
         struct Lock {ID3D10Multithread* p;Lock(ID3D10Multithread* v):p(v){p->Enter();}~Lock(){p->Leave();}} lock(threading.Get());
         const auto cpu_start=profile?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
         if(profile)profile->collect(context.Get());
         D3D11_TEXTURE2D_DESC td{};input->GetDesc(&td);
         ComPtr<ID3D11Device> owner;input->GetDevice(&owner);
-        if(owner.Get()!=device.Get()||index>=td.ArraySize||td.MipLevels!=1||td.SampleDesc.Count!=1||td.Width<width||td.Height<height)throw std::runtime_error("HDR source device/layout mismatch");
-        float values[8]={(float)width,(float)height,(float)td.Width,(float)td.Height,0,hdr?1.f:0.f,full?1.f:0.f,white};
+        if(owner.Get()!=device.Get()||index>=td.ArraySize||td.MipLevels!=1||td.SampleDesc.Count!=1||td.Width<width||td.Height<height)throw std::runtime_error("GPU source device/layout mismatch");
+        float values[8]={(float)width,(float)height,(float)td.Width,(float)td.Height,matrix709?1.f:0.f,hdr?1.f:0.f,full?1.f:0.f,white};
         ComPtr<ID3D11ShaderResourceView> input_view;
         if(decoder) {
-            if(td.Format!=DXGI_FORMAT_P010)throw std::runtime_error("HDR decoder requires P010");
+            if(td.Format!=(hdr?DXGI_FORMAT_P010:DXGI_FORMAT_NV12))throw std::runtime_error("decoder plane format mismatch");
             D3D11_TEXTURE2D_DESC old{};if(source)source->GetDesc(&old);
             if(!source||old.Width!=td.Width||old.Height!=td.Height) {
-                y.Reset();uv.Reset();source=texture(DXGI_FORMAT_P010,td.Width,td.Height,false);
-                D3D11_SHADER_RESOURCE_VIEW_DESC vd{};vd.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2D;vd.Texture2D.MipLevels=1;
-                vd.Format=DXGI_FORMAT_R16_UNORM;check(device->CreateShaderResourceView(source.Get(),&vd,&y),"create P010 luma view");
-                vd.Format=DXGI_FORMAT_R16G16_UNORM;check(device->CreateShaderResourceView(source.Get(),&vd,&uv),"create P010 chroma view");
+                prepare_source(td.Width,td.Height);
             }
             context->CopySubresourceRegion(source.Get(),0,0,0,0,input,index,nullptr);
             ID3D11ShaderResourceView* views[]={y.Get(),uv.Get()};context->PSSetShaderResources(0,2,views);
@@ -309,5 +327,10 @@ extern "C" void* eclipse_color_convert_into(void* value,void* source,void* desti
 extern "C" void* eclipse_color_output(void* value){return ((Color*)value)->output.Get();}
 extern "C" void* eclipse_color_convert(void* value,void* source,unsigned index,int full,char* error,size_t capacity) {
     try{auto output=((Color*)value)->convert((ID3D11Texture2D*)source,index,full!=0);return output.Detach();}
+    catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return nullptr;}
+}
+
+extern "C" void* eclipse_color_convert_sdr(void* value,void* source,unsigned index,int full,int matrix709,char* error,size_t capacity) {
+    try{auto p=(Color*)value;if(!p->decoder||p->hdr)throw std::runtime_error("SDR decoder conversion required");auto output=p->convert((ID3D11Texture2D*)source,index,full!=0,nullptr,matrix709!=0);return output.Detach();}
     catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return nullptr;}
 }

@@ -16,6 +16,8 @@ Windows AMD 编码使用原生 AMF 的 HEVC Main10 或 AV1 10 位模式；其它
 
 客户端保留 P010 硬解纹理，在 GPU 转换为浮点线性 RGB。HDR 窗口的画面和菜单一起进入浮点缓冲，再经 Windows scRGB 交换链显示；SDR 窗口继续使用普通呈现。窗口激活、SDR 回退和关闭都按窗口管理资源。正常硬编硬解不逐帧读回 CPU；GPU 内仍有格式转换和纹理复制。
 
+Windows SDR 硬解后的 NV12 使用显式着色器转换为 RGB，按 BT.601/BT.709、全范围/有限范围和左对齐色度采样规则重建，并限制采样到实际可见区域，避免读取编码对齐填充。缺少所需着色器或平面纹理能力的旧设备保留视频处理器回退。诊断中的 `video_color` 会记录实际格式、色彩解释及转换后端。
+
 scRGB 的 `1.0` 对应 80 cd/m²，PQ 表示绝对亮度；界面白色使用 Windows 当前 SDR 白色亮度。实现参考 [Windows Advanced Color 文档](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range)、[Sunshine](https://github.com/LizardByte/Sunshine) 和 [Moonlight 的 D3D11 呈现设计](https://github.com/moonlight-stream/moonlight-qt/blob/master/app/streaming/video/ffmpeg-renderers/d3d11va.cpp)。
 
 ## 验证边界

@@ -51,6 +51,9 @@ impl Importer {
     pub fn shared_export(&self) -> Option<bool> {
         self.shared_export
     }
+    pub fn color_backend(&self) -> Option<&'static str> {
+        self.converter.as_ref().map(|converter| converter.backend_name())
+    }
     pub fn timings_ms(&self) -> [f64; 3] {
         std::array::from_fn(|i| self.timings[i] * 1000. / self.samples[i].max(1) as f64)
     }

@@ -1,4 +1,4 @@
-//! Same-device GPU HDR conversion; native texture references retain GPU work.
+//! Same-device GPU SDR/HDR conversion; native texture references retain GPU work.
 use std::{
     ffi::{c_char, c_void, CStr},
     ptr::NonNull,
@@ -24,6 +24,7 @@ unsafe extern "C" {
     fn eclipse_color_target_close(value:*mut c_void);
     fn eclipse_color_convert_into(value:*mut c_void,source:*mut c_void,target:*mut c_void,error:*mut c_char,len:usize)->*mut c_void;
     fn eclipse_color_output(value: *mut c_void) -> *mut c_void;
+    fn eclipse_color_convert_sdr(value:*mut c_void,source:*mut c_void,index:u32,full:i32,matrix709:i32,error:*mut c_char,len:usize)->*mut c_void;
     fn eclipse_color_convert(
         value: *mut c_void,
         source: *mut c_void,
@@ -79,6 +80,14 @@ impl Converter {
     }
     pub fn output(&self) -> *mut c_void {
         unsafe { eclipse_color_output(self.0.as_ptr()) }
+    }
+    pub fn convert_sdr(&self,source:&ID3D11Texture2D,index:u32,color:crate::color::YuvColor)->Result<ID3D11Texture2D,String> {
+        use crate::color::YuvColor;
+        if color.hdr(){return Err("SDR decoder cannot use HDR colour metadata".into());}
+        let mut error=[0;1024];
+        let raw=unsafe{eclipse_color_convert_sdr(self.0.as_ptr(),source.as_raw(),index,
+            i32::from(matches!(color,YuvColor::Full601|YuvColor::Full709)),i32::from(matches!(color,YuvColor::Full709|YuvColor::Limited709)),error.as_mut_ptr(),error.len())};
+        if raw.is_null(){Err(message(&error))}else{Ok(unsafe{ID3D11Texture2D::from_raw(raw)})}
     }
     pub fn convert(
         &self,

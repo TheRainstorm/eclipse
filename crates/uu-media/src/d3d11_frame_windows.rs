@@ -354,53 +354,55 @@ impl SdrConverter {
     }
     /// CPU readback for offline correctness tests and synchronization on interop
     /// failure only. The normal rendering path never calls this method.
-    pub fn readback(&self) -> Result<Vec<u8>, String> {
-        unsafe {
-            let mut staging = None;
-            let desc = D3D11_TEXTURE2D_DESC {
-                Width: self.size[0],
-                Height: self.size[1],
-                MipLevels: 1,
-                ArraySize: 1,
-                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Usage: D3D11_USAGE_STAGING,
-                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-                ..Default::default()
-            };
-            self.device
-                .CreateTexture2D(&desc, None, Some(&mut staging))
-                .map_err(|e| e.to_string())?;
-            let staging = staging.unwrap();
-            self.context.CopyResource(&staging, &self.output);
-            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            self.context
-                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-                .map_err(|e| e.to_string())?;
-            let row = self.size[0] as usize * 4;
-            let mut data = vec![0; row * self.size[1] as usize];
-            for y in 0..self.size[1] as usize {
-                std::ptr::copy_nonoverlapping(
-                    (mapped.pData as *const u8).add(y * mapped.RowPitch as usize),
-                    data.as_mut_ptr().add(y * row),
-                    row,
-                );
-            }
-            self.context.Unmap(&staging, 0);
-            Ok(data)
+    pub fn readback(&self) -> Result<Vec<u8>, String> {readback_bgra(&self.device,&self.context,&self.output,self.size)}
+
+}
+fn readback_bgra(device:&ID3D11Device,context:&ID3D11DeviceContext,output:&ID3D11Texture2D,size:[u32;2])->Result<Vec<u8>,String>{
+    unsafe {
+        let mut staging = None;
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: size[0],
+            Height: size[1],
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_STAGING,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            ..Default::default()
+        };
+        device
+            .CreateTexture2D(&desc, None, Some(&mut staging))
+            .map_err(|e| e.to_string())?;
+        let staging = staging.unwrap();
+        context.CopyResource(&staging, output);
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        context
+            .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+            .map_err(|e| e.to_string())?;
+        let row = size[0] as usize * 4;
+        let mut data = vec![0; row * size[1] as usize];
+        for y in 0..size[1] as usize {
+            std::ptr::copy_nonoverlapping(
+                (mapped.pData as *const u8).add(y * mapped.RowPitch as usize),
+                data.as_mut_ptr().add(y * row),
+                row,
+            );
         }
+        context.Unmap(&staging, 0);
+        Ok(data)
     }
 }
 
 
-/// HDR uses shader conversion to an FP16 scRGB texture. SDR retains the
-/// established video-processor path and its measured WGL sharing policy.
+/// Explicit shader colour conversion; video-processor fallback for older SDR devices.
 pub struct Converter(Conversion);
-enum Conversion {Sdr(SdrConverter),Hdr(HdrConverter)}
-struct HdrConverter {
+enum Conversion {Sdr(SdrConverter),Shader(ShaderConverter)}
+struct ShaderConverter {
+    hdr:bool,
     color:crate::d3d11_color::Converter,
     device:ID3D11Device,
     context:ID3D11DeviceContext,
@@ -410,35 +412,47 @@ struct HdrConverter {
 impl Converter {
     pub fn new(frame:&Frame)->Result<Self,String>{Self::with_shared_export(frame,false)}
     pub fn with_shared_export(frame:&Frame,shared:bool)->Result<Self,String> {
-        if frame.format!=DXGI_FORMAT_P010 {return SdrConverter::with_shared_export(frame,shared).map(|c|Self(Conversion::Sdr(c)));}
-        let color=crate::d3d11_color::Converter::new(&frame.device,frame.visible,true,true,shared,203.)?;
-        let context=unsafe{frame.device.GetImmediateContext()}.map_err(|e|e.to_string())?;
-        let mut completion=None;
-        unsafe{frame.device.CreateQuery(&D3D11_QUERY_DESC{Query:D3D11_QUERY_EVENT,MiscFlags:0},Some(&mut completion))}.map_err(|e|e.to_string())?;
-        Ok(Self(Conversion::Hdr(HdrConverter{color,device:frame.device.clone(),context,completion:completion.ok_or("missing HDR GPU query")?,size:frame.visible,allocation:frame.allocation})))
+        let hdr=frame.format==DXGI_FORMAT_P010;
+        let shader:Result<Self,String>=(|| {
+            let color=crate::d3d11_color::Converter::new(&frame.device,frame.visible,true,hdr,shared,203.)?;
+            let context=unsafe{frame.device.GetImmediateContext()}.map_err(|e|e.to_string())?;
+            let mut completion=None;
+            unsafe{frame.device.CreateQuery(&D3D11_QUERY_DESC{Query:D3D11_QUERY_EVENT,MiscFlags:0},Some(&mut completion))}.map_err(|e|e.to_string())?;
+            Ok(Self(Conversion::Shader(ShaderConverter{hdr,color,device:frame.device.clone(),context,completion:completion.ok_or("missing GPU query")?,size:frame.visible,allocation:frame.allocation})))
+        })();
+        if hdr{return shader;}
+        match shader {Ok(value)=>Ok(value),Err(error)=>{
+            tracing::warn!(%error,"SDR shader unavailable; using video processor");
+            SdrConverter::with_shared_export(frame,shared).map(|c|Self(Conversion::Sdr(c)))
+        }}
     }
+    pub fn backend_name(&self)->&'static str {match &self.0 {Conversion::Sdr(_)=>"video-processor",Conversion::Shader(c)=>if c.hdr{"p010-shader"}else{"nv12-shader"}}}
+
     pub fn matches(&self,frame:&Frame)->bool {match &self.0 {
         Conversion::Sdr(c)=>frame.format==DXGI_FORMAT_NV12 && c.matches(frame),
-        Conversion::Hdr(c)=>frame.format==DXGI_FORMAT_P010 && c.device.as_raw()==frame.device.as_raw() && c.size==frame.visible && c.allocation==frame.allocation,
+        Conversion::Shader(c)=>frame.format==(if c.hdr{DXGI_FORMAT_P010}else{DXGI_FORMAT_NV12}) && c.device.as_raw()==frame.device.as_raw() && c.size==frame.visible && c.allocation==frame.allocation,
     }}
-    pub fn device_ptr(&self)->*mut c_void {match &self.0 {Conversion::Sdr(c)=>c.device_ptr(),Conversion::Hdr(c)=>c.device.as_raw()}}
-    pub fn texture_ptr(&self)->*mut c_void {match &self.0 {Conversion::Sdr(c)=>c.texture_ptr(),Conversion::Hdr(c)=>c.color.output()}}
+    pub fn device_ptr(&self)->*mut c_void {match &self.0 {Conversion::Sdr(c)=>c.device_ptr(),Conversion::Shader(c)=>c.device.as_raw()}}
+    pub fn texture_ptr(&self)->*mut c_void {match &self.0 {Conversion::Sdr(c)=>c.texture_ptr(),Conversion::Shader(c)=>c.color.output()}}
     pub fn convert(&self,frame:&Frame,color:YuvColor)->Result<(),String> {
         if !self.matches(frame){return Err("D3D11 conversion layout changed".into());}
-        match &self.0 {Conversion::Sdr(c)=>c.convert(frame,color),Conversion::Hdr(c)=>{
+        match &self.0 {Conversion::Sdr(c)=>c.convert(frame,color),Conversion::Shader(c)=>{
+            if !c.hdr{return c.color.convert_sdr(&frame.texture,frame.index,color).map(|_|());}
             if !color.hdr(){return Err("P010 presentation requires PQ/BT.2020 metadata".into());}
             c.color.convert(&frame.texture,frame.index,color==YuvColor::Full2020Pq).map(|_|())
         }}
     }
     pub fn synchronize(&self)->Result<(),String> {match &self.0 {
-        Conversion::Sdr(c)=>c.synchronize(),Conversion::Hdr(c)=>unsafe{
+        Conversion::Sdr(c)=>c.synchronize(),Conversion::Shader(c)=>unsafe{
             c.context.End(&c.completion);c.context.Flush();let started=std::time::Instant::now();
             loop {let mut done=0i32;c.context.GetData(&c.completion,Some((&mut done as *mut i32).cast()),4,D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32).map_err(|e|e.to_string())?;
-                if done!=0{return Ok(());}if started.elapsed()>std::time::Duration::from_secs(5){return Err("HDR GPU completion timed out".into());}std::thread::yield_now();}
+                if done!=0{return Ok(());}if started.elapsed()>std::time::Duration::from_secs(5){return Err("GPU conversion completion timed out".into());}std::thread::yield_now();}
         }
     }}
     pub fn readback(&self)->Result<Vec<u8>,String> {match &self.0 {
-        Conversion::Sdr(c)=>c.readback(),Conversion::Hdr(c)=>{
+        Conversion::Sdr(c)=>c.readback(),Conversion::Shader(c)=>{
+            if !c.hdr{let raw=c.color.output();let texture=unsafe{ID3D11Texture2D::from_raw_borrowed(&raw)}.ok_or("missing SDR shader output")?;return readback_bgra(&c.device,&c.context,texture,c.size);}
+
             let words=self.readback_fp16()?;
             let data=words.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>();
             let frame=crate::RawFrame{width:c.size[0],height:c.size[1],format:crate::PixelFormat::ScRgb16,stride:c.size[0]*8,data:data.into(),pts:crate::Timestamp(0),gpu:false,dma_buf:None,d3d11:None};
@@ -447,7 +461,8 @@ impl Converter {
     }}
     /// Offline HDR correctness inspection. The live renderer never maps pixels.
     pub fn readback_fp16(&self)->Result<Vec<u16>,String> {
-        let Conversion::Hdr(c)=&self.0 else{return Err("FP16 readback requires HDR conversion".into())};
+        let Conversion::Shader(c)=&self.0 else{return Err("FP16 readback requires HDR conversion".into())};
+        if !c.hdr{return Err("FP16 readback requires HDR conversion".into());}
         unsafe {
             let mut staging=None;
             c.device.CreateTexture2D(&D3D11_TEXTURE2D_DESC{Width:c.size[0],Height:c.size[1],MipLevels:1,ArraySize:1,Format:DXGI_FORMAT_R16G16B16A16_FLOAT,

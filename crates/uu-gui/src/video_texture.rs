@@ -108,6 +108,14 @@ impl VideoTexture {
             None => "cpu-rgba-upload",
         }
     }
+    pub fn color_diagnostics(&self) -> Option<serde_json::Value> {
+        let gpu=self.gpu.as_ref()?.lock().unwrap();
+        #[cfg(windows)]
+        let conversion=if gpu.d3d_active {gpu.d3d_importer.as_ref().and_then(|i|i.color_backend())}else{None};
+        #[cfg(not(windows))]
+        let conversion:Option<&str>=None;
+        Some(serde_json::json!({"layout":format!("{:?}",gpu.layout),"yuv_color":format!("{:?}",gpu.color),"conversion":conversion}))
+    }
     pub fn gpu_shared_export(&self) -> Option<bool> {
         #[cfg(windows)]
         if let Some(gpu) = &self.gpu {
