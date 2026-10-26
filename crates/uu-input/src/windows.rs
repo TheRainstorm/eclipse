@@ -35,11 +35,9 @@ impl SendInputInjector {
 }
 
 fn virtual_screen() -> Result<DesktopRect, InputError> {
-    // DXGI capture and normalized pointer coordinates use physical pixels.
-    // A CLI host need not have a DPI-aware GUI, so query in a temporary
-    // per-monitor context on this input thread, then restore its old context.
-    let _coordinates = crate::windows_desktop::PhysicalCoordinates::enter()
-        .map_err(|error| InputError::Unavailable(format!("physical desktop coordinates are unavailable: {error}")))?;
+    // The caller keeps the physical DPI context through SendInput as well.
+    // On mixed-DPI desktops SendInput maps absolute coordinates using its
+    // caller's context, so restoring it after this query changes the scale.
     let (left, top, width, height) = unsafe {
         (
             wm::GetSystemMetrics(wm::SM_XVIRTUALSCREEN),
@@ -131,6 +129,8 @@ impl SendInputInjector {
         if !self.held.should_emit(event) {
             return Ok(());
         }
+        let _coordinates = crate::windows_desktop::PhysicalCoordinates::enter()
+            .map_err(|error| InputError::Unavailable(format!("physical desktop coordinates are unavailable: {error}")))?;
         let mut inputs = packets(event, virtual_screen()?)?;
         if !inputs.is_empty() {
             let sent = unsafe {
@@ -176,6 +176,61 @@ mod tests {
     fn empty_release_does_not_require_an_interactive_desktop() {
         // This also runs in a service/SSH test process without desktop access.
         assert!(SendInputInjector::new().release_all().is_ok());
+    }
+    #[test]
+    #[ignore = "explicit interactive cursor-only check: moves across attached monitors and restores the original position; never clicks"]
+    fn absolute_mouse_preserves_physical_coordinates_and_restores_caller_dpi() {
+        std::thread::spawn(|| unsafe {
+            use windows_sys::Win32::{
+                Foundation::{POINT, RECT},
+                Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR},
+                UI::HiDpi::{AreDpiAwarenessContextsEqual, GetThreadDpiAwarenessContext,
+                    SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_UNAWARE},
+            };
+            struct Caller(DPI_AWARENESS_CONTEXT);
+            impl Drop for Caller { fn drop(&mut self) { unsafe { SetThreadDpiAwarenessContext(self.0); } } }
+            struct Cursor(POINT);
+            impl Drop for Cursor {
+                fn drop(&mut self) { unsafe {
+                    let _physical = crate::windows_desktop::PhysicalCoordinates::enter().unwrap();
+                    assert_ne!(wm::SetPhysicalCursorPos(self.0.x, self.0.y), 0);
+                } }
+            }
+            unsafe extern "system" fn monitor(_: HMONITOR, _: HDC, rect: *mut RECT, data: isize) -> i32 {
+                (*(data as *mut Vec<RECT>)).push(*rect);
+                1
+            }
+            let previous = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE);
+            assert!(!previous.is_null());
+            let _caller = Caller(previous);
+            let mut monitors = Vec::<RECT>::new();
+            let mut position: POINT = std::mem::zeroed();
+            {
+                let _physical = crate::windows_desktop::PhysicalCoordinates::enter().unwrap();
+                assert_ne!(wm::GetPhysicalCursorPos(&mut position), 0);
+                assert_ne!(EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(),
+                    Some(monitor), (&mut monitors as *mut Vec<RECT>) as isize), 0);
+            }
+            let _cursor = Cursor(position);
+            assert!(!monitors.is_empty());
+            let mut injector = SendInputInjector::new();
+            for rect in monitors {
+                for fraction in [1, 2, 3] {
+                    let x = rect.left + (rect.right - rect.left) * fraction / 4;
+                    let y = rect.top + (rect.bottom - rect.top) / 2;
+                    injector.inject(InputEvent::MouseMoveAbsolute { x, y }).unwrap();
+                    assert_ne!(AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(),
+                        DPI_AWARENESS_CONTEXT_UNAWARE), 0);
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                    let _physical = crate::windows_desktop::PhysicalCoordinates::enter().unwrap();
+                    let mut actual: POINT = std::mem::zeroed();
+                    assert_ne!(wm::GetPhysicalCursorPos(&mut actual), 0);
+                    println!("requested=({x},{y}) physical=({},{})", actual.x, actual.y);
+                    assert!((actual.x - x).abs() <= 1 && (actual.y - y).abs() <= 1,
+                        "absolute pointer escaped the physical capture coordinate system");
+                }
+            }
+        }).join().unwrap();
     }
     fn screen() -> DesktopRect {
         DesktopRect::new(-1920, 0, 3840, 1080).unwrap()
