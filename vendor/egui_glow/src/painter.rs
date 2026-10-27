@@ -21,6 +21,9 @@ pub use glow::Context;
 const VERT_SRC: &str = include_str!("shader/vertex.glsl");
 const FRAG_SRC: &str = include_str!("shader/fragment.glsl");
 
+#[path = "font_atlas.rs"]
+mod font_atlas;
+
 trait TextureFilterExt {
     fn glow_code(&self, mipmap: Option<egui::TextureFilter>) -> u32;
 }
@@ -95,6 +98,10 @@ pub struct Painter {
     element_array_buffer: glow::Buffer,
 
     textures: HashMap<egui::TextureId, glow::Texture>,
+
+    // egui 0.29 sends a full TextureId(0) atlas every frame when DPI scales
+    // differ. Keep its per-scale ownership here, without changing glyph pixels.
+    font_atlases: font_atlas::FontAtlases<glow::Texture>,
 
     next_native_tex_id: u64,
 
@@ -275,6 +282,7 @@ impl Painter {
                 vbo,
                 element_array_buffer,
                 textures: Default::default(),
+                font_atlases: font_atlas::FontAtlases::new(),
                 next_native_tex_id: 1 << 32,
                 textures_to_destroy: Vec::new(),
                 destroyed: false,
@@ -386,8 +394,14 @@ impl Painter {
         self.cpu_timings_ms = [0.; 9];
         let textures_started = web_time::Instant::now();
 
+        self.font_atlases.select(pixels_per_point);
+
         for (id, image_delta) in &textures_delta.set {
-            self.set_texture(*id, image_delta);
+            if *id != egui::TextureId::default()
+                || !self.set_font_texture_cached(pixels_per_point, image_delta)
+            {
+                self.set_texture(*id, image_delta);
+            }
         }
         self.record_cpu(0, textures_started);
 
@@ -427,6 +441,7 @@ impl Painter {
         clipped_primitives: &[egui::ClippedPrimitive],
     ) {
         self.cpu_timings_ms = [0.; 9];
+        self.font_atlases.select(pixels_per_point);
         self.paint_primitives_inner(screen_size_px, pixels_per_point, clipped_primitives);
     }
 
@@ -561,6 +576,12 @@ impl Painter {
 
         self.assert_not_destroyed();
 
+        // Direct/manual updates have no scale argument. Preserve that API's
+        // single-atlas semantics and invalidate any previously cached atlases.
+        if tex_id == egui::TextureId::default() {
+            self.clear_font_atlases();
+        }
+
         let glow_texture = *self
             .textures
             .entry(tex_id)
@@ -599,6 +620,52 @@ impl Painter {
                 self.upload_texture_srgb(delta.pos, image.size, delta.options, &data);
             }
         };
+    }
+
+    fn clear_font_atlases(&mut self) {
+        for texture in self.font_atlases.drain() {
+            unsafe { self.gl.delete_texture(texture) };
+        }
+    }
+
+    fn set_font_texture_cached(
+        &mut self,
+        pixels_per_point: f32,
+        delta: &egui::epaint::ImageDelta,
+    ) -> bool {
+        self.assert_not_destroyed();
+        let egui::ImageData::Font(image) = &delta.image else {
+            return false;
+        };
+        // A partial update without a cached base still follows the original
+        // public set_texture path, which may have been used by the integrator.
+        if delta.pos.is_some() && self.font_atlases.texture().is_none() {
+            return false;
+        }
+        if delta.pos.is_none() && self.font_atlases.unchanged(image, delta.options) {
+            return true;
+        }
+        assert_eq!(image.width() * image.height(), image.pixels.len());
+        let texture = self
+            .font_atlases
+            .texture()
+            .unwrap_or_else(|| unsafe { self.gl.create_texture().unwrap() });
+        unsafe { self.gl.bind_texture(glow::TEXTURE_2D, Some(texture)) };
+        let data: Vec<u8> = image
+            .srgba_pixels(None)
+            .flat_map(|p| p.to_array())
+            .collect();
+        self.upload_texture_srgb(delta.pos, image.size, delta.options, &data);
+        if let Some(evicted) =
+            self.font_atlases
+                .uploaded(pixels_per_point, texture, image, delta.pos, delta.options)
+        {
+            unsafe { self.gl.delete_texture(evicted) };
+        }
+        if let Some(legacy) = self.textures.remove(&egui::TextureId::default()) {
+            unsafe { self.gl.delete_texture(legacy) };
+        }
+        true
     }
 
     fn upload_texture_srgb(
@@ -697,6 +764,9 @@ impl Painter {
     }
 
     pub fn free_texture(&mut self, tex_id: egui::TextureId) {
+        if tex_id == egui::TextureId::default() {
+            self.clear_font_atlases();
+        }
         if let Some(old_tex) = self.textures.remove(&tex_id) {
             unsafe { self.gl.delete_texture(old_tex) };
         }
@@ -704,6 +774,11 @@ impl Painter {
 
     /// Get the [`glow::Texture`] bound to a [`egui::TextureId`].
     pub fn texture(&self, texture_id: egui::TextureId) -> Option<glow::Texture> {
+        if texture_id == egui::TextureId::default() {
+            if let Some(texture) = self.font_atlases.texture() {
+                return Some(texture);
+            }
+        }
         self.textures.get(&texture_id).copied()
     }
 
@@ -718,6 +793,9 @@ impl Painter {
 
     #[allow(clippy::needless_pass_by_value)] // False positive
     pub fn replace_native_texture(&mut self, id: egui::TextureId, replacing: glow::Texture) {
+        if id == egui::TextureId::default() {
+            self.clear_font_atlases();
+        }
         if let Some(old_tex) = self.textures.insert(id, replacing) {
             self.textures_to_destroy.push(old_tex);
         }
@@ -771,6 +849,9 @@ impl Painter {
             self.gl.delete_program(self.program);
             for tex in self.textures.values() {
                 self.gl.delete_texture(*tex);
+            }
+            for tex in self.font_atlases.textures() {
+                self.gl.delete_texture(tex);
             }
             self.gl.delete_buffer(self.vbo);
             self.gl.delete_buffer(self.element_array_buffer);

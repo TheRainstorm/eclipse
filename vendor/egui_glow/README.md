@@ -26,3 +26,11 @@ cargo run -p egui_glow --example pure_glow --features=winit,egui/default_fonts
 ```
 
 Local Eclipse patch: CPU attribution for texture updates, state, clipping, mesh buffer uploads, texture binding, mesh drawing, callbacks and cleanup. The embedding eframe viewport owns bounded sampling windows. Upstream version: 0.29.1; MIT OR Apache-2.0.
+
+Font atlases use separate GPU textures for each DPI scale (up to four recently
+used scales). Identical full font deltas reuse their texture without repeating
+coverage-to-sRGBA conversion or uploading it again. Glyph patches, font/size or
+sampler changes still update the atlas. Manual `set_texture` calls retain their
+single-atlas behavior; freeing the font texture releases every cached scale.
+This avoids egui 0.29's full font upload on every frame with mixed-DPI viewports,
+without changing glyph rasterization, display scaling or video presentation.
