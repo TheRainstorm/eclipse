@@ -10,10 +10,11 @@ pub(super) struct Cache {
     updated:Option<Instant>,
     metrics:Metrics,
     layout:Option<Layout>,
+    hover:crate::hud_panel::HoverCard,
 }
 impl super::App {
-    pub(super) fn paint_hud(&mut self,ui:&egui::Ui,rect:Rect) {
-        let Some(controller)=&self.controller else{return;};
+    pub(super) fn paint_hud(&mut self,ui:&egui::Ui,rect:Rect)->bool {
+        let Some(controller)=&self.controller else{return false;};
         let s=&controller.stats;
         let (w,h)=self.textures.get(&self.selected_track).map(|t|(t.size()[0] as u32,t.size()[1] as u32)).unwrap_or_else(||s.res());
         let width=(rect.width()-32.).max(1.);
@@ -69,7 +70,9 @@ impl super::App {
             self.hud_cache.key=Some(key);self.hud_cache.updated=Some(Instant::now());
         }
         if let Some(layout)=&self.hud_cache.layout {
-            layout.paint(ui,rect).on_hover_ui(|ui|crate::hud_panel::details(ui,&self.hud_cache.metrics));
+            let response=layout.paint(ui,rect);
+            return self.hud_cache.hover.show(ui,&response,&self.hud_cache.metrics,rect);
         }
+        false
     }
 }
