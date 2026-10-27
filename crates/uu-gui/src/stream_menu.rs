@@ -418,7 +418,7 @@ impl super::App {
                         let (text, help) = if self.is_native() && !self.view_only && self.native_input_available() {
                             let requested = self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|s|s.requested());
                             if requested {("等待控制权", "主机一次允许一个控制端操作；当前控制端释放后会自动重试。")}
-                            else {("控制已暂停", "返回串流画面后恢复控制；Ctrl+Alt+Z 可释放或重新请求控制。")}
+                            else {("控制已暂停", "点击画面或恢复控制可重新申请，快捷键可在输入设置中调整。")}
                         } else {("仅观看", "当前未启用远端输入；主机需允许控制并具有可用的输入后端。")};
                         ui.label(RichText::new(text).color(Color32::from_rgb(98, 125, 160))).on_hover_text(help);
                         if !self.view_only && self.native_input_available() && !self.input_capture.requested()
@@ -874,17 +874,17 @@ impl super::App {
                                         if self.is_native() {
                                             if self.controller.as_ref().is_some_and(|h|h.stats.native_cursor.supported()) {ui.small("远端光标按主机实际位置显示，不改变视频画质。");}
                                             else{ui.small("主机未提供独立远端光标，当前保留本地指针。");}
-                                            ui.small("Ctrl+Alt+C 切换光标显示");
+                                            ui.small(format!("{} 切换光标显示",self.preferences.hotkeys.label(uu_core::hotkeys::Action::CursorMode)));
                                         } else {
-                                            ui.small("Ctrl+Alt+C 切换光标显示");
+                                            ui.small(format!("{} 切换光标显示",self.preferences.hotkeys.label(uu_core::hotkeys::Action::CursorMode)));
                                             ui.small(&self.settings_feedback);
                                         }
                                         separator(ui);
                                         ui.label("指针移动");
                                         ui.selectable_value(&mut self.preferences.relative_mouse,false,"桌面模式 · 绝对定位");
                                         ui.selectable_value(&mut self.preferences.relative_mouse,true,"游戏模式 · 相对移动");
-                                        ui.small("Ctrl+Alt+P 切换桌面／游戏模式");
-                                        ui.small("Ctrl+Alt+Z 释放／捕获输入");
+                                        ui.small(format!("{} 切换桌面／游戏模式",self.preferences.hotkeys.label(uu_core::hotkeys::Action::MouseMode)));
+                                        ui.small(format!("{} 释放／捕获输入",self.preferences.hotkeys.label(uu_core::hotkeys::Action::Capture)));
                                         if old!=(self.preferences.relative_mouse,self.preferences.cursor_mode) {
                                             self.release_pointer_capture(ctx);self.persist_preferences();
                                             ctx.memory_mut(|m|m.close_popup());
@@ -942,7 +942,7 @@ impl super::App {
                                     if menu_row(ui,"串流设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
                                     side_submenu(ui,&mut blocked,Icon::Grid,"HUD",|ui| {
                                         let mut changed=false;
-                                        if menu_row(ui,"Show HUD",None,self.hud,false,"Ctrl+Alt+S",false).clicked(){self.hud=!self.hud;changed=true;}
+                                        if menu_row(ui,"Show HUD",None,self.hud,false,&self.preferences.hotkeys.label(uu_core::hotkeys::Action::Stats),false).clicked(){self.hud=!self.hud;changed=true;}
                                         separator(ui);
                                         for mode in super::settings::HudDetail::ALL {
                                             if menu_row(ui,mode.label(),None,self.preferences.hud_detail==mode,false,"",false).clicked(){self.preferences.hud_detail=mode;self.hud=true;changed=true;}
@@ -956,7 +956,7 @@ impl super::App {
                                             None,
                                             false,
                                             false,
-                                            "Ctrl+Alt+H",
+                                            &self.preferences.hotkeys.label(uu_core::hotkeys::Action::Menu),
                                             false,
                                         )
                                         .clicked()

@@ -26,6 +26,7 @@ mod sessions;
 mod single_instance;
 mod platform;
 mod shortcuts;
+mod shortcuts_ui;
 mod hud;
 mod hud_panel;
 mod video_texture;
@@ -930,9 +931,9 @@ impl App {
             shortcuts::Action::ToggleNested=>{
                 self.nested_passthrough=!self.nested_passthrough;
                 self.status=if self.nested_passthrough {
-                    "嵌套快捷键：Ctrl+Alt 客户端命令发送到远端；F12 切回本机".into()
+                    format!("嵌套快捷键发送到远端；{} 切回本机",self.preferences.hotkeys.label(shortcuts::Action::ToggleNested))
                 } else {
-                    "嵌套快捷键：Ctrl+Alt 客户端命令由本机处理".into()
+                    "嵌套快捷键：客户端命令由本机处理".into()
                 };
                 self.persist_preferences();
             },
@@ -965,8 +966,9 @@ impl App {
         if self.input_capture.stopped(conditions){self.release_all_keys();}
         // Client commands remain local while viewing, in menus, or after
         // releasing remote input. They do not depend on a host control grant.
-        let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused);
-        let window=self.platform.window_keyboard(remote,shortcuts,self.nested_passthrough);
+        let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused) && !shortcuts_ui::recording(ctx);
+        self.shortcuts.configure(&self.preferences.hotkeys,ctx.input(|i|i.modifiers));
+        let window=self.platform.window_keyboard(remote,shortcuts,self.nested_passthrough,&self.preferences.hotkeys);
         let active=self.platform.capture_keyboard(self.input_capture.system(conditions,self.fullscreen,self.preferences.capture_keyboard));
         if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {
             if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
@@ -1217,7 +1219,7 @@ impl App {
         self.release_pointer_capture(&self.context.clone());
         self.gamepad.borrow_mut().configure(self.instance_id,None);
         self.shortcuts.clear();self.focused=false;
-        self.platform.window_keyboard(false,false,false);self.platform.capture_keyboard(false);
+        self.platform.window_keyboard(false,false,false,&self.preferences.hotkeys);self.platform.capture_keyboard(false);
         if let Some(handle)=&self.controller {
             if let Some(input)=&handle.native_input{input.set_enabled(false);}
             use std::sync::atomic::Ordering::{AcqRel,Release};
@@ -1504,6 +1506,7 @@ impl App {
             }
         }
         if self.focused && !focused {
+            shortcuts_ui::cancel(ctx);
             self.shortcuts.clear();
             self.release_all_keys();
             for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
@@ -1542,7 +1545,8 @@ impl App {
                 if std::env::var_os("UU_UI_DEBUG").is_some() && matches!(key, egui::Key::S | egui::Key::M | egui::Key::F) {
                     eprintln!("ui shortcut {key:?} pressed={pressed} repeat={repeat} ctrl={} alt={}", modifiers.ctrl, modifiers.alt);
                 }
-                if self.stream_target.is_none() { continue; }
+                if shortcuts_ui::consume_key(ctx,*key,*pressed) {continue;}
+                if self.stream_target.is_none() || shortcuts_ui::recording(ctx) { continue; }
                 match self.shortcuts.key(*key, *pressed, *repeat, *modifiers, true, self.nested_passthrough) {
                     shortcuts::KeyAction::Consumed => continue,
                     shortcuts::KeyAction::Trigger(action) => {

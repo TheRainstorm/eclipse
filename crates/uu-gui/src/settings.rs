@@ -487,6 +487,7 @@ impl super::App {
                 if let Err(error)=super::app_startup::apply(self.settings_draft.app_autostart){self.set_settings_notice(format!("无法保存软件自启动：{error:#}"));return;}
             }
             let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
+            if self.preferences.hotkeys!=self.settings_draft.hotkeys {self.recover_input("hotkeys_changed");}
             if self.preferences.vsync!=self.settings_draft.vsync {
                 eframe::request_vsync(ctx,self.settings_draft.vsync);
             }

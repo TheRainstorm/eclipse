@@ -113,3 +113,5 @@ pub mod wlan_streaming;
 
 mod latest_capture;
 pub mod capture_overlap;
+
+pub mod hotkeys;

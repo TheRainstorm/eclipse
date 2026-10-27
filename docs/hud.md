@@ -1,6 +1,6 @@
 # 串流 HUD
 
-串流菜单的 HUD 子菜单可开关统计并选择 Compact / Detailed。默认档位为 Compact；开关状态沿用已有配置。Ctrl+Alt+S 切换显示，悬停可展开诊断详情。HUD 与悬停内容统一使用英文。
+串流菜单的 HUD 子菜单可开关统计并选择 Compact / Detailed。默认档位为 Compact；开关状态沿用已有配置。默认 Ctrl+Alt+S 切换显示（可在输入设置修改），悬停可展开诊断详情。HUD 与悬停内容统一使用英文。
 
 Compact 使用窄幅半透明黑底与青绿色文字，依次显示实际分辨率@目标 FPS、编码、`FPS[recv/dec/rnd]`、`RTT ±`、`Loss`、`Bandwidth`、`enc/dec/rnd` 和预估延迟。窗口较窄时按字段组换行，保持帧率字号。HDR 仅在实际协商 HDR10 时标注。
 

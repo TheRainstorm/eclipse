@@ -26,6 +26,8 @@ impl Modifiers {
         let bit = match vk { 0xa0..=0xa5 => 1 << (vk-0xa0), 0x5b => 1 << 6, 0x5c => 1 << 7, _ => return };
         if pressed { self.down |= bit; } else { self.down &= !bit; }
     }
+    pub fn shortcut_modifiers(&self)->uu_core::hotkeys::Modifiers {uu_core::hotkeys::Modifiers {ctrl:self.down&0x0c!=0,alt:self.down&0x30!=0,shift:self.down&3!=0,meta:self.win()}}
+    pub fn altgr(&self)->bool {self.down&0x20!=0}
     pub fn shortcut_chord(&self) -> bool {
         shortcut_chord(self.down & 0x0c != 0, self.down & 0x30 != 0, self.down & 0x20 != 0)
     }
@@ -58,11 +60,12 @@ pub struct WindowRoute {
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 pub struct Keys {
     held: [u8; 256],
+    bindings:uu_core::hotkeys::Bindings,
 }
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 impl Keys {
     pub const fn new() -> Self {
-        Self { held: [0; 256] }
+        Self { held: [0; 256],bindings:uu_core::hotkeys::Bindings::new() }
     }
     pub fn down(&self, vk: usize) -> bool {
         self.held.get(vk) == Some(&1)
@@ -87,8 +90,8 @@ impl Keys {
     {
         let remote = route.input && route.foreground
             && (route.system_capture || !local_system_key(vk,modifiers.win()));
-        self.event_with_shortcuts(vk,pressed,remote,route.shortcuts && route.foreground,
-            route.nested_passthrough,modifiers.shortcut_chord(),already_down)
+        self.event_with_bindings(vk,pressed,remote,route.shortcuts && route.foreground,
+            route.nested_passthrough,modifiers.shortcut_modifiers(),modifiers.altgr(),already_down)
     }
     #[cfg(test)]
     pub fn event(
@@ -101,6 +104,7 @@ impl Keys {
     ) -> Decision {
         self.event_with_shortcuts(vk, pressed, active, active, false, ctrl_alt, already_down)
     }
+    #[cfg(test)]
     pub fn event_with_shortcuts(
         &mut self,
         vk: u32,
@@ -111,6 +115,11 @@ impl Keys {
         ctrl_alt: bool,
         already_down: bool,
     ) -> Decision {
+        self.event_with_bindings(vk,pressed,remote_active,shortcuts_active,nested_passthrough,
+            uu_core::hotkeys::Modifiers{ctrl:ctrl_alt,alt:ctrl_alt,..Default::default()},false,already_down)
+    }
+    fn event_with_bindings(&mut self,vk:u32,pressed:bool,remote_active:bool,shortcuts_active:bool,nested_passthrough:bool,
+        modifiers:uu_core::hotkeys::Modifiers,right_alt:bool,already_down:bool)->Decision {
         let altgr = self.down(0xa5);
         let Some(held) = self.held.get_mut(vk as usize) else {
             return Decision::Forward;
@@ -140,24 +149,8 @@ impl Keys {
         if already_down && !matches!(vk,0x5b|0x5c) {
             return Decision::Forward;
         }
-        if shortcuts_active && ctrl_alt && !altgr {
-            let action = if vk == 0x7b {
-                Some(Action::ToggleNested)
-            } else if nested_passthrough {
-                None
-            } else {
-                match vk {
-                    0x53 => Some(Action::Stats),
-                    0x4d => Some(Action::Mute),
-                    0x48 => Some(Action::Menu),
-                    0x46 | 0x58 => Some(Action::Fullscreen),
-                    0x51 => Some(Action::Exit),
-                    0x5a => Some(Action::Capture),
-                    0x50 => Some(Action::MouseMode),
-                    0x43 => Some(Action::CursorMode),
-                    _ => None,
-                }
-            };
+        if shortcuts_active {
+            let action=self.bindings.find(vk,modifiers,nested_passthrough,true,altgr||right_alt);
             if let Some(action) = action {
                 *held = 2;
                 return Decision::Shortcut(action);
@@ -189,6 +182,13 @@ impl RecipientKeys {
             self.recipient = recipient;
         }
     }
+    pub fn configure(&mut self,bindings:&uu_core::hotkeys::Bindings,modifiers:&Modifiers) {
+        if self.keys.bindings!=*bindings {
+            let held=modifiers.any()||self.keys.remote_modifier();
+            self.keys.suspend();self.keys.bindings=bindings.clone();
+            self.blocked_chord=held;self.consume_chord=held;
+        }
+    }
     pub fn ready(&mut self,modifiers:&Modifiers)->bool {
         if !modifiers.any() { self.blocked_chord=false;self.consume_chord=false; }
         !self.blocked_chord
@@ -196,8 +196,8 @@ impl RecipientKeys {
     pub fn event(&mut self,vk:u32,pressed:bool,route:WindowRoute,modifiers:&Modifiers,already_down:bool)->Decision {
         let ready=self.ready(modifiers);
         if !ready && self.consume_chord {return self.keys.consume(vk,pressed);}
-        self.keys.event_with_shortcuts(vk,pressed,route.input&&ready,route.shortcuts&&ready,
-            route.nested_passthrough,modifiers.shortcut_chord(),already_down)
+        self.keys.event_with_bindings(vk,pressed,route.input&&ready,route.shortcuts&&ready,
+            route.nested_passthrough,modifiers.shortcut_modifiers(),modifiers.altgr(),already_down)
     }
 }
 /// WM_KEY* uses generic modifiers; scan code and extended bit retain sides.
@@ -213,6 +213,29 @@ pub fn sided_vk(vk:u32,lparam:usize)->u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configured_native_bindings_preserve_transition_ownership_and_altgr_text() {
+        let mut keys=RecipientKeys::new();let mut mods=Modifiers::new();
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
+        let mut bindings=uu_core::hotkeys::Bindings::default();
+        bindings.set(Action::Stats,vec![uu_core::hotkeys::Chord::ctrl_alt(0x41)]);
+        keys.configure(&bindings,&mods);
+        mods.observe(0xa2,true);mods.observe(0xa4,true);
+        assert_eq!(keys.event(0x41,true,route,&mods,false),Decision::Shortcut(Action::Stats));
+        assert_eq!(keys.event(0x41,true,route,&mods,true),Decision::Consume);
+        assert_eq!(keys.event(0x41,false,route,&Modifiers::new(),true),Decision::Consume);
+        mods.observe(0xa5,true);
+        assert_eq!(keys.event(0x41,true,route,&mods,false),Decision::Remote{vk:0x41,pressed:true});
+        keys.event(0x41,false,route,&mods,true);
+        mods.observe(0xa5,false);
+        bindings.set(Action::Stats,vec![uu_core::hotkeys::Chord::ctrl_alt(0x42)]);
+        keys.configure(&bindings,&mods);
+        assert_eq!(keys.event(0x42,true,route,&mods,false),Decision::Consume);
+        assert_eq!(keys.event(0x42,false,route,&Modifiers::new(),true),Decision::Consume);
+        mods=Modifiers::new();keys.event(0x20,false,route,&mods,true);
+        mods.observe(0xa2,true);mods.observe(0xa4,true);
+        assert_eq!(keys.event(0x42,true,route,&mods,false),Decision::Shortcut(Action::Stats));
+    }
     #[test]
     fn recipient_change_consumes_old_chord_until_every_modifier_is_released() {
         let mut keys=RecipientKeys::new();

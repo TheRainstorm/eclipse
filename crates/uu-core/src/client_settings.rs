@@ -62,6 +62,7 @@ pub struct ClientSettings {
     pub muted: bool,
     pub hud: bool,
     pub hud_detail: HudDetail,
+    pub hotkeys: crate::hotkeys::Bindings,
     pub capture_keyboard: bool,
     pub vsync: bool,
     /// Prefer negotiated HDR10 when the current display and decoder support it.
@@ -75,20 +76,21 @@ pub struct ClientSettings {
     /// Native consent is independent of the compatibility clipboard default.
     pub native_clipboard: bool,
     pub gamepad: bool,
-    /// Send Ctrl+Alt client command chords to the remote while excluding F12.
+    /// Forward client commands except the configured nested-mode toggle.
     pub nested_shortcuts: bool,
 }
 impl Default for ClientSettings {
     fn default() -> Self {
         Self { fps:60, display_mode:crate::screen_control::DisplayMode::Preserve,
             bitrate:5,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,rate_control:None,
-            volume:100,muted:false,hud:false,hud_detail:HudDetail::Compact,capture_keyboard:true,
+            volume:100,muted:false,hud:false,hud_detail:HudDetail::Compact,hotkeys:crate::hotkeys::Bindings::default(),capture_keyboard:true,
             vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
             cursor_mode:CursorMode::Remote,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
     }
 }
 impl ClientSettings {
     pub fn validate(&self) -> Result<()> {
+        self.hotkeys.validate()?;
         ensure!((5..=240).contains(&self.fps) && self.bitrate<=5
             && (1..=1000).contains(&self.custom_mbps) && self.resolution<=3 && self.volume<=100,
             "客户端分辨率、帧率、码率或音量无效");

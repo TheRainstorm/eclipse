@@ -52,11 +52,12 @@ impl super::App {
             super::ui::Icon::Volume
         };
         let tip = if muted {
-            "启用声音 · Ctrl+Alt+M"
+            "启用声音"
         } else {
-            "静音 · Ctrl+Alt+M"
+            "静音"
         };
-        if super::ui::icon_button_selected(ui, icon, tip, muted).clicked() {
+        let tip=format!("{tip} · {}",self.preferences.hotkeys.label(uu_core::hotkeys::Action::Mute));
+        if super::ui::icon_button_selected(ui, icon, &tip, muted).clicked() {
             self.toggle_audio_mute();
         }
     }

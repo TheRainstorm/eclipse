@@ -62,7 +62,7 @@ impl super::App {
                 input_timing:[native.client_input_queue_us.map(ms),native.input.map(|v|ms(v.confirmation_rtt_us)),
                     native.input.map(|v|ms(v.host_queue_us)),native.input.map(|v|ms(v.host_inject_us))],
                 waiting_for_keyframe:s.waiting_for_keyframe.load(Relaxed)!=0,
-                toggle_hint:"Ctrl+Alt+S · Toggle HUD".into(),
+                toggle_hint:format!("{} · Toggle HUD",self.preferences.hotkeys.label(uu_core::hotkeys::Action::Stats)),
             };
             self.hud_cache.layout=Some(Layout::new(ui,&m,detail,width));
             self.hud_cache.metrics=m;

@@ -3,41 +3,30 @@
 use std::collections::HashSet;
 use eframe::egui::{Key, Modifiers};
 
-#[derive(Debug, PartialEq)]
-pub enum Action { Stats, Menu, Mute, Fullscreen, Exit, Capture, MouseMode, CursorMode, ToggleNested }
+pub use uu_core::hotkeys::Action;
+use uu_core::hotkeys::{Bindings,Modifiers as ChordModifiers};
 #[derive(Debug, PartialEq)]
 pub enum KeyAction { Forward, Consumed, Trigger(Action) }
 #[derive(Default)]
-pub struct Shortcuts { held: HashSet<Key> }
+pub struct Shortcuts { held: HashSet<Key>, bindings:Bindings, blocked:bool }
 impl Shortcuts {
+    pub fn configure(&mut self,bindings:&Bindings,modifiers:Modifiers) {if self.bindings!=*bindings{self.bindings=bindings.clone();self.blocked=modifiers.any();}}
     pub fn clear(&mut self) { self.held.clear(); }
     pub fn key(&mut self, key: Key, pressed: bool, repeat: bool, modifiers: Modifiers, streaming: bool, nested_passthrough: bool) -> KeyAction {
         if !pressed {
             return if self.held.remove(&key) { KeyAction::Consumed } else { KeyAction::Forward };
         }
         if self.held.contains(&key) { return KeyAction::Consumed; }
+        if self.blocked {
+            if modifiers.any() {self.held.insert(key);return KeyAction::Consumed;}
+            self.blocked=false;
+        }
         // If this key was already sent remotely before the chord formed,
         // preserve its repeat/release rather than claiming half a transition.
         if repeat { return KeyAction::Forward; }
-        let action = if modifiers.ctrl && modifiers.alt {
-            if key == Key::F12 {
-                Some(Action::ToggleNested)
-            } else if nested_passthrough {
-                None
-            } else {
-                match key {
-                    Key::S if streaming => Some(Action::Stats),
-                    Key::M if streaming => Some(Action::Mute),
-                    Key::H if streaming => Some(Action::Menu),
-                    Key::F | Key::X => Some(Action::Fullscreen),
-                    Key::Q if streaming => Some(Action::Exit),
-                    Key::Z if streaming => Some(Action::Capture),
-                    Key::P if streaming => Some(Action::MouseMode),
-                    Key::C if streaming => Some(Action::CursorMode),
-                    _ => None,
-                }
-            }
-        } else { None };
+        let action=crate::vk_for(key).and_then(|vk|self.bindings.find(vk,ChordModifiers {
+            ctrl:modifiers.ctrl,alt:modifiers.alt,shift:modifiers.shift,meta:modifiers.mac_cmd
+        },nested_passthrough,streaming,false));
         if let Some(action) = action {
             self.held.insert(key);
             KeyAction::Trigger(action)
@@ -48,6 +37,21 @@ impl Shortcuts {
 mod tests {
     use super::*;
     const CHORD: Modifiers = Modifiers { ctrl: true, alt: true, ..Modifiers::NONE };
+    #[test]
+    fn rebound_shortcuts_keep_old_release_and_do_not_repeat_or_steal_a_held_chord() {
+        let mut keys=Shortcuts::default();
+        assert_eq!(keys.key(Key::S,true,false,CHORD,true,false),KeyAction::Trigger(Action::Stats));
+        let mut bindings=Bindings::default();bindings.set(Action::Stats,vec![uu_core::hotkeys::Chord::ctrl_alt(0x41)]);
+        keys.configure(&bindings,CHORD);
+        assert_eq!(keys.key(Key::S,false,false,Modifiers::NONE,true,false),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::A,true,false,CHORD,true,false),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::A,false,false,Modifiers::NONE,true,false),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::S,true,false,Modifiers::NONE,true,false),KeyAction::Forward);
+        assert_eq!(keys.key(Key::A,true,false,CHORD,true,false),KeyAction::Trigger(Action::Stats));
+        assert_eq!(keys.key(Key::A,true,true,CHORD,true,false),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::A,false,false,Modifiers::NONE,true,false),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::S,true,false,CHORD,true,false),KeyAction::Forward);
+    }
     #[test]
     fn stats_toggle_once_and_owns_release_even_after_modifiers_are_up() {
         let mut keys = Shortcuts::default();

@@ -59,6 +59,8 @@ pub struct Platform {
     route: std::sync::Arc<windows::Route>,
     #[cfg(windows)]
     focus_events: std::cell::RefCell<std::collections::VecDeque<serde_json::Value>>,
+    #[cfg(windows)]
+    bindings:std::cell::RefCell<uu_core::hotkeys::Bindings>,
     show_pending: std::cell::Cell<bool>,
 }
 impl Platform {
@@ -85,6 +87,7 @@ impl Platform {
                 hook,
                 route,
                 focus_events: Default::default(),
+                bindings:Default::default(),
                 show_pending: std::cell::Cell::new(true),
             }
         }
@@ -125,13 +128,17 @@ impl Platform {
         #[cfg(windows)] self.route.select(session);
         #[cfg(not(windows))] let _=session;
     }
-    pub fn window_keyboard(&self,active:bool,shortcuts:bool,nested_passthrough:bool)->bool {
+    pub fn window_keyboard(&self,active:bool,shortcuts:bool,nested_passthrough:bool,bindings:&uu_core::hotkeys::Bindings)->bool {
         #[cfg(windows)] {
             let active=active&&self.route.old_proc!=0;
+            if *self.bindings.borrow()!=*bindings {
+                self.route.configure_bindings(bindings);
+                *self.bindings.borrow_mut()=bindings.clone();
+            }
             self.route.set_policy(active,shortcuts,nested_passthrough);
             active
         }
-        #[cfg(not(windows))] {let _=(active,shortcuts,nested_passthrough);false}
+        #[cfg(not(windows))] {let _=(active,shortcuts,nested_passthrough,bindings);false}
     }
     pub fn capture_keyboard(&self, active: bool) -> bool {
         #[cfg(windows)] {
@@ -296,6 +303,10 @@ mod windows {
         pub overflow:std::sync::atomic::AtomicBool,
     }
     impl Route {
+        pub fn configure_bindings(&self,bindings:&uu_core::hotkeys::Bindings) {
+            let modifiers=crate::keyboard_capture::Modifiers::from_key_state(|vk|unsafe{GetAsyncKeyState(vk as i32)<0});
+            self.keys.lock().unwrap().configure(bindings,&modifiers);
+        }
         pub fn set_policy(&self,input:bool,shortcuts:bool,nested:bool) {
             self.policy.fetch_update(Relaxed,Relaxed,|old|Some((old&CAPTURE)
                 |if input{INPUT}else{0}|if shortcuts{SHORTCUTS}else{0}|if nested{NESTED}else{0})).ok();

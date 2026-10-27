@@ -248,13 +248,13 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
         if state.native&&state.streaming&&!state.native_cursor {note(ui,"主机未提供独立远端光标，当前保留本地指针。");}
         note(
             ui,
-            "Ctrl+Alt+C 切换光标显示。新 Windows 原生主机独立传输远端光标的位置与形状；仅远端模式隐藏客户端光标。旧主机需更新后使用。",
+            &format!("{} 切换光标显示。新 Windows 原生主机独立传输远端光标的位置与形状；仅远端模式隐藏客户端光标。旧主机需更新后使用。",s.hotkeys.label(uu_core::hotkeys::Action::CursorMode)),
         );
     });
     group(ui, "指针移动", |ui| {
         ui.radio_value(&mut s.relative_mouse, false, "桌面 · 绝对定位");
         ui.radio_value(&mut s.relative_mouse, true, "游戏 · 相对移动");
-        note(ui,"Ctrl+Alt+P 切换移动方式。游戏模式单击画面捕获鼠标，Ctrl+Alt+Z 释放或重新捕获；菜单和失焦时自动释放。");
+        note(ui,&format!("{} 切换移动方式。游戏模式单击画面捕获鼠标，{} 释放或重新捕获；菜单和失焦时自动释放。",s.hotkeys.label(uu_core::hotkeys::Action::MouseMode),s.hotkeys.label(uu_core::hotkeys::Action::Capture)));
     });
     group(ui, "手柄与运动传感器", |ui| {
         ui.checkbox(&mut s.gamepad, "转发本地手柄和陀螺仪");
@@ -263,9 +263,9 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
     });
     group(ui, "键盘与协作", |ui| {
         ui.checkbox(&mut s.capture_keyboard, "全屏时将系统快捷键交给远端");
-        ui.checkbox(&mut s.nested_shortcuts, "将 Ctrl+Alt 客户端快捷键交给远端（嵌套串流）");
-        note(ui,"Ctrl+Alt+F12 随时切换；开启后除 F12 外的客户端 Ctrl+Alt 命令会发送到远端，适合内外两层 Eclipse / 远程桌面。");
-        note(ui,"系统键跟随全屏画面的输入焦点。Ctrl+左 Alt+F / X 切换全屏，Q 退出串流，Z 释放或捕获输入；这些本地命令始终由客户端处理。Ctrl+Alt+Del 由 Windows 保留。");
+        ui.checkbox(&mut s.nested_shortcuts, "将客户端快捷键交给远端（嵌套串流）");
+        note(ui,&format!("{} 随时切换嵌套透传；其它客户端命令发送到远端。",s.hotkeys.label(uu_core::hotkeys::Action::ToggleNested)));
+        note(ui,"系统键跟随全屏画面的输入焦点。客户端命令可在下方设置；Ctrl+Alt+Del 由 Windows 保留。");
         ui.add_space(8.0);
         if state.native {
             ui.checkbox(&mut s.native_clipboard, "同步剪贴板（文本和图片）");
@@ -278,13 +278,14 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
             "仅同步当前前台串流；原生共享需主机许可，支持最多30 KiB文本和8 MiB PNG图片，文件不传输。兼容连接只支持文本。",
         );
     });
+    group(ui,"客户端快捷键",|ui|super::shortcuts_ui::editor(ui,&mut s.hotkeys));
 }
 fn stream(ui:&mut egui::Ui,s:&mut Settings) {
     group(ui, "串流界面", |ui| {
         ui.label("全屏悬浮入口默认开启");
         note(
             ui,
-            "默认位于右边缘、距顶部 15%。悬停展开、离开收起，Ctrl+Alt+H 隐藏或显示。",
+            &format!("默认位于右边缘、距顶部 15%。悬停展开、离开收起，{} 隐藏或显示。",s.hotkeys.label(uu_core::hotkeys::Action::Menu)),
         );
         ui.add_space(8.0);
         ui.checkbox(&mut s.hud, "Show HUD");
@@ -293,7 +294,7 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
         });
         note(
             ui,
-            "Ctrl+Alt+S toggles HUD. Estimates are pipeline stage means, not input-to-display latency.",
+            &format!("{} toggles HUD. Estimates are pipeline stage means, not input-to-display latency.",s.hotkeys.label(uu_core::hotkeys::Action::Stats)),
         );
     });
 }
@@ -324,6 +325,7 @@ pub fn show(
     mut extra:impl FnMut(&mut egui::Ui,Section),
 ) -> Actions {
     let mut actions = Actions::default();
+    let hotkeys_valid=s.hotkeys.issues().is_empty();
     if !state.streaming { *section=Section::Application; }
     let compact = ctx.screen_rect().height() < 520.0;
     egui::TopBottomPanel::top("settings-title")
@@ -395,7 +397,7 @@ pub fn show(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if state.can_save_profile
                         && ui
-                            .button("保存到设备配置")
+                            .add_enabled(hotkeys_valid,egui::Button::new("保存到设备配置"))
                             .on_hover_text("将当前串流设置为该设备的命名配置，下次连接继续使用")
                             .clicked()
                     {
@@ -403,7 +405,7 @@ pub fn show(
                         actions.save_profile = true;
                     }
                     if ui
-                        .add(
+                        .add_enabled(hotkeys_valid,
                             egui::Button::new(
                                 RichText::new("保存并应用").color(egui::Color32::WHITE),
                             )
