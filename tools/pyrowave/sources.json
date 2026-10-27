@@ -1,0 +1,21 @@
+{
+  "api": [
+    1,
+    0,
+    0
+  ],
+  "sources": {
+    "pyrowave": {
+      "url": "https://github.com/Themaister/pyrowave.git",
+      "commit": "d7a03df74bff7f54724be3850ab4b2a673e1bede"
+    },
+    "Granite": {
+      "url": "https://github.com/Themaister/Granite.git",
+      "commit": "53090429539bf3404250d18fe58db971f0907c04"
+    }
+  },
+  "submodules": {
+    "third_party/volk": "47cddf7ed97b94118a08aacb548a411188e016cc",
+    "third_party/khronos/vulkan-headers": "6802bb4733b63ed5efd3adb308a6c885ef180ea1"
+  }
+}
