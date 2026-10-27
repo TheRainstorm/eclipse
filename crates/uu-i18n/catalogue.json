@@ -1616,5 +1616,16 @@
   "仍受本机服务的输入、声音和剪贴板许可限制。保存后重启服务生效。": "Also subject to the host service's input, audio and clipboard permissions. Restart the service after saving.",
   "保存兼容设置": "Save compatibility settings",
   "兼容设置已保存，重启服务后生效": "Compatibility settings saved; restart the service to apply",
-  "启动服务后发布已启用入口。Eclipse 原生连接仍需设备配对。": "Starting the service publishes enabled endpoints. Eclipse native connections still require device pairing."
+  "启动服务后发布已启用入口。Eclipse 原生连接仍需设备配对。": "Starting the service publishes enabled endpoints. Eclipse native connections still require device pairing.",
+  "视频阶段和": "Video stage sum",
+  "已知视频阶段窗口均值之和，并非同一帧的完整测量。包含采集、编码、解码、UI提交、RTT/2及已测队列；不含输入设备与去程、应用响应、等待下次采集、未测装帧等待、GPU完成、呈现队列、合成、扫描及像素响应。RTT/2仅是对称假设，不能当作输入到显示延迟。": "Sum of measured video-stage window means, not a complete measurement of one frame. Includes capture, encode, decode, UI submission, RTT/2 and measured queues. Excludes input-device sampling and outbound input, application response, waiting for the next capture, unmeasured frame assembly, GPU completion, presentation queues, composition, scanout and pixel response. RTT/2 assumes symmetry; this is not input-to-display latency.",
+  "仅统计前台可见串流提交的新画面。间隔超过3个预期帧周期且至少20ms记一次，预期帧率取目标与已知源刷新率较小值；持续停图只计一次，完成后保留60秒。失焦、最小化、切屏或帧率改变会重置比较基线。源空闲、丢帧、网络、解码或UI都可能产生长间隔，不能据此归因，也不等于物理屏幕卡顿。少于两帧时显示未知。": "Counts new-image submissions in the visible, focused stream. A gap longer than max(3 expected frame periods, 20 ms) counts once; expected FPS is the lower of target FPS and known source refresh rate. An ongoing gap counts once and remains for 60 seconds after completion. Focus loss, minimization, display changes or FPS changes reset the baseline. Source inactivity, missing frames, network, decode or UI scheduling may cause gaps; this does not identify the cause or measure physical display stutter. Fewer than two frames is unknown.",
+  "长间隔/60s": "Long gaps/60s",
+  "最长/阈值": "Max/threshold",
+  "当前观测": "Observed run",
+  "正在等待": "Waiting now",
+  "源至发完": "Source to RTP end",
+  "RTP跨度": "RTP write span",
+  "主机同一QPC时钟内，源画面呈现到最后一个RTP包写入API返回的均值/P95。仅新源画面；包含采集前画面年龄、编码、排队和RTP发送，与视频阶段和重叠，不能再相加。不是网卡发完或客户端显示完成；超过5秒未更新则未知。": "Mean/P95 from source presentation to the last RTP write returning, measured on the same host QPC clock for new source images. Includes image age before capture, encode, queues and RTP sending. Overlaps the video stage sum; do not add them. Does not measure NIC transmission completion or client display. Unknown after 5 seconds without an update.",
+  "同一视频帧首个到最后一个RTP写入API返回的均值/P95；用于观察分包与传输调用耗时，区别于编码线程等待发送队列。它与源至发完重叠，不是线速或单程网络时间。": "Mean/P95 from the first to last RTP write returning for a video frame. Shows packetization/transport call span, distinct from encoder-thread send-queue waiting. Overlaps source-to-RTP end; this is not wire time or one-way network latency."
 }

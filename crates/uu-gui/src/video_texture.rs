@@ -6,6 +6,8 @@ mod d3d11_renderer;
 mod dma_buf_renderer;
 #[path = "video_timing.rs"]
 mod video_timing;
+use uu_core::frame_continuity;
+pub use frame_continuity::Snapshot as ContinuitySnapshot;
 #[path = "video_cursor.rs"]
 mod video_cursor;
 
@@ -29,6 +31,7 @@ pub(crate) struct NativeImage {
     pub rect:[f32;4],pub hdr:bool,pub source_white:f32,pub cursor:Option<uu_core::native_cursor::Snapshot>,
 }
 pub struct VideoTexture {
+    continuity:Mutex<frame_continuity::Continuity>,
     cursor:Mutex<Option<uu_core::native_cursor::Snapshot>>,
     fallback_cursor:Mutex<video_cursor::Fallback>,
     size: [usize; 2],
@@ -55,6 +58,7 @@ impl VideoTexture {
             }
         });
         let mut texture = Self {
+            continuity:Mutex::new(Default::default()),
             cursor:Mutex::new(None),fallback_cursor:Mutex::new(Default::default()),
             size: [0, 0],
             gpu,
@@ -66,6 +70,9 @@ impl VideoTexture {
         texture
     }
     pub fn set_source_white(&mut self,white:f32){if white.is_finite()&&(40.0..=1000.0).contains(&white){self.source_white_nits=white;}}
+    pub fn set_continuity_active(&self,active:bool,fps:u32){self.continuity.lock().unwrap().set_active(active,fps);}
+    pub fn record_new_image(&self){self.continuity.lock().unwrap().submit(std::time::Instant::now());}
+    pub fn continuity(&self)->Option<ContinuitySnapshot>{self.continuity.lock().unwrap().snapshot(std::time::Instant::now())}
     pub fn set(&mut self, ctx: &egui::Context, image: DisplayImage) {
         if let DisplayImage::Decoded(_, frame, color) = &image {
             if let Some(gpu) = &self.gpu {

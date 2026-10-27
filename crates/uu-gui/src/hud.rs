@@ -67,6 +67,8 @@ impl super::App {
                 waiting_for_keyframe:s.waiting_for_keyframe.load(Relaxed)!=0,
                 toggle_hint:format!("{} · Toggle HUD",self.preferences.hotkeys.label(uu_core::hotkeys::Action::Stats)),
                 history:Default::default(),
+                continuity:self.textures.get(&self.selected_track).and_then(|t|t.continuity()),
+                host_video:uu_core::frame_trace::video_latency(s),
             };
             m.history=self.hud_cache.history.record([
                 m.estimate().missing.is_empty().then(||m.estimate().known),m.process[0],m.process[1],m.process[2],m.process[3],m.rtt.map(|v|v[0]/2.),m.queues.iter().copied().collect::<Option<Vec<_>>>().map(|v|v.iter().sum())

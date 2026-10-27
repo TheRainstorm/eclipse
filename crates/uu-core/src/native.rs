@@ -1014,7 +1014,7 @@ async fn receive_session(
     let ice_started=Instant::now();
     let mut description=peer.description(true).await?;
     stats.native_frame_trace_supported.store(false,Ordering::Release);
-    *stats.native_frame_trace.lock().unwrap()=None;
+    {let mut trace=stats.native_frame_trace.lock().unwrap();*stats.native_frame_trace_received.lock().unwrap()=None;*trace=None;}
     crate::frame_trace::advertise(&mut description);
     stats.diagnostics.record(serde_json::json!({"event":"native_local_ice_gather","elapsed_us":elapsed_us(ice_started)}));
     crate::native_clipboard::advertise(&mut description);

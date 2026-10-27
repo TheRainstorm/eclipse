@@ -1011,7 +1011,7 @@ impl App {
                 let cursor=if self.is_native()&&self.preferences.cursor_mode.remote(){self.controller.as_ref().and_then(|h|h.stats.native_cursor.snapshot())}else{None};
                 texture.set_native_cursor(cursor);
                 texture.paint(ui,draw);
-                if self.unpresented.remove(&track) { *self.frame_count.entry(track).or_insert(0) += 1; }
+                if self.unpresented.remove(&track) { texture.record_new_image();*self.frame_count.entry(track).or_insert(0) += 1; }
                 let pointer=ctx.input(|i|i.pointer.hover_pos());
                 let hud_pointer=self.hud&&self.paint_hud(ui,rect);
                 let controls_active=controls_active||hud_pointer;

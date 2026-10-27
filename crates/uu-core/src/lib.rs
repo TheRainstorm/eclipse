@@ -74,6 +74,7 @@ pub mod clipboard;
 mod congestion;
 
 pub mod frame_cadence;
+pub mod frame_continuity;
 pub mod native_timing;
 pub mod native_displays;
 mod native_video;

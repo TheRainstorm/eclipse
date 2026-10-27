@@ -122,10 +122,27 @@ fn receive_report(stats: &crate::media::MediaStats, epoch: u64, report: Report) 
     }) {
         return false;
     }
+    *stats.native_frame_trace_received.lock().unwrap()=Some((epoch,Instant::now()));
     *slot = Some(report);
     drop(slot);
     stats.diagnostics.record(diagnostic);
     true
+}
+
+/// Same-host video spans, kept separate from stage sums because they overlap
+/// capture/encode/queue measurements. Neither span includes remote scanout.
+#[derive(Clone, Debug, Serialize)]
+pub struct VideoLatency {
+    pub source_to_last_rtp: Option<Distribution>,
+    pub rtp_write: Option<Distribution>,
+}
+pub fn video_latency(stats:&crate::media::MediaStats)->Option<VideoLatency> {
+    use std::sync::atomic::Ordering;
+    let slot=stats.native_frame_trace.lock().unwrap();
+    let (epoch,received)=(*stats.native_frame_trace_received.lock().unwrap())?;
+    if epoch!=stats.native_media_epoch.load(Ordering::Acquire)||received.elapsed()>Duration::from_secs(5){return None;}
+    let report=slot.as_ref()?;
+    Some(VideoLatency{source_to_last_rtp:report.stages.get("source_present_to_last_rtp").copied(),rtp_write:report.stages.get("rtp_write_span").copied()})
 }
 
 pub(crate) fn offered(
@@ -714,6 +731,20 @@ fn local_summary(rows: &[Frame]) -> serde_json::Value {
 mod tests {
     use super::*;
     use std::time::Duration;
+    #[test]
+    fn display_latency_expires_and_cannot_cross_media_epochs() {
+        use std::sync::atomic::Ordering;
+        let stats=crate::media::MediaStats::default();stats.native_media_epoch.store(1,Ordering::Release);
+        let trace=HostTrace::new(true);trace.configure(settings(),"fixture");
+        let report=trace.report().unwrap();assert!(receive_report(&stats,1,report.clone()));
+        assert!(video_latency(&stats).is_some());
+        *stats.native_frame_trace_received.lock().unwrap()=Some((1,Instant::now()-Duration::from_secs(6)));
+        assert!(video_latency(&stats).is_none());
+        // Receiving the same old window cannot make it fresh again.
+        assert!(!receive_report(&stats,1,report));assert!(video_latency(&stats).is_none());
+        *stats.native_frame_trace_received.lock().unwrap()=Some((1,Instant::now()));
+        stats.native_media_epoch.store(2,Ordering::Release);assert!(video_latency(&stats).is_none());
+    }
     fn local_trace() -> HostTrace {
         HostTrace::with_local_output(true, Some("unused-local-experiment.json".into()))
     }

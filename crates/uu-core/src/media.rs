@@ -56,6 +56,7 @@ pub struct MediaStats {
     pub pipeline_trace:crate::pipeline_trace::Trace,
     pub native_frame_trace_supported: std::sync::atomic::AtomicBool,
     pub native_frame_trace: std::sync::Mutex<Option<crate::frame_trace::Report>>,
+    pub(crate) native_frame_trace_received: std::sync::Mutex<Option<(u64,std::time::Instant)>>,
     pub control_open: AtomicU32,
     /// Snapshot of the user's connection policy: 0 preserve, 1 exclusive UU.
     pub display_mode: AtomicU32,

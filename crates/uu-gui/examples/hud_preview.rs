@@ -56,6 +56,7 @@ impl eframe::App for Preview {
             input_ready: true,
             input_counts: [1420, 0],
             input_timing: [Some(0.04), Some(2.2), Some(0.06), Some(0.03)],
+            continuity:Some(uu_core::frame_continuity::Snapshot{long_gaps:1,max_gap_ms:31.6,threshold_ms:25.,ongoing_gap_ms:None,observed_seconds:60.}),
             history: (0..=360).map(|n| {let w=(n as f32/15.).sin();hud_panel::HistorySample {seconds:n as f64/2.,values:[Some(5.+w),Some(0.8),Some(1.1+w*0.2),Some(0.32),Some(0.32),Some(1.05+w*0.1),Some(0.34)]}}).collect(),
             toggle_hint: "Ctrl+Alt+S · Toggle HUD".into(),
             ..Default::default()

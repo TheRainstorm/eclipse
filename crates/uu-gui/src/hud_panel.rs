@@ -33,6 +33,8 @@ pub struct Metrics {
     pub waiting_for_keyframe: bool,
     pub toggle_hint: String,
     pub history: Arc<[HistorySample]>,
+    pub continuity: Option<uu_core::frame_continuity::Snapshot>,
+    pub host_video:Option<uu_core::frame_trace::VideoLatency>,
 }
 #[derive(Clone, Default)]
 pub struct Counters {
@@ -105,11 +107,11 @@ impl Metrics {
     pub fn total_label(&self) -> String {
         let e = self.estimate();
         if e.samples == 0 {
-            "Est. Total —".into()
+            "Video sum —".into()
         } else if e.missing.is_empty() {
-            format!("Est. Total ≈{} ms", number(Some(e.known)))
+            format!("Video sum ≈{} ms", number(Some(e.known)))
         } else {
-            format!("Known ≈{} ms", number(Some(e.known)))
+            format!("Video known ≈{} ms", number(Some(e.known)))
         }
     }
     pub fn fps_label(&self) -> String {
@@ -136,6 +138,9 @@ impl Metrics {
             number(self.process[2]),
             number(self.process[3])
         )
+    }
+    fn continuity_label(&self)->String {
+        self.continuity.as_ref().map_or_else(||"Stalls(60s) —".into(),|s|format!("Stalls(60s) {} · Max gap {:.1} ms",s.long_gaps,s.max_gap_ms))
     }
 }
 struct Placed {
@@ -179,6 +184,7 @@ impl Layout {
                 (m.network_label(), 14., color),
                 (m.stages_label(), 14., color),
                 (m.total_label(), 14., color),
+                (m.continuity_label(), 14., color),
             ];
         } else {
             let mode = if m.mode.is_empty() {
@@ -202,6 +208,7 @@ impl Layout {
                     primary,
                 ),
             ]);
+            rows.push(vec![(m.continuity_label(),12.5,muted)]);
             rows.push(vec![(
                 format!(
                     "Process  cap/enc/dec/rnd {}/{}/{}/{} ms",
@@ -341,9 +348,15 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     let green=Color32::from_rgb(143,225,184);let blue=Color32::from_rgb(139,194,255);let orange=Color32::from_rgb(255,190,108);
     let pct=|v:Option<f32>|valid(v).map_or_else(||"—".into(),|v|format!("{v:.2}%"));let c=&m.counters;
     let e=m.estimate();let total=if e.samples==0{"—".into()}else{format!("≈{} ms",number(Some(e.known)))};
-    let mut latency=vec![field(if e.missing.is_empty(){uu_i18n::text("预估")}else{uu_i18n::text("已知小计")},total,uu_i18n::text("已知阶段窗口均值之和。包含采集、编码、解码、渲染、RTT/2及排队；不含应用响应、合成与扫描，不能当作实测端到端延迟。"))];
+    let mut latency=vec![field(if e.missing.is_empty(){uu_i18n::text("视频阶段和")}else{uu_i18n::text("已知小计")},total,uu_i18n::text("已知视频阶段窗口均值之和，并非同一帧的完整测量。包含采集、编码、解码、UI提交、RTT/2及已测队列；不含输入设备与去程、应用响应、等待下次采集、未测装帧等待、GPU完成、呈现队列、合成、扫描及像素响应。RTT/2仅是对称假设，不能当作输入到显示延迟。"))];
     for (i,(label,help)) in [(uu_i18n::text("采"),uu_i18n::text("主机获取本帧桌面图像的时间。")),(uu_i18n::text("编"),uu_i18n::text("主机编码调用耗时，可包含硬件队列等待。")),(uu_i18n::text("解"),uu_i18n::text("客户端解码调用耗时。")),(uu_i18n::text("渲"),uu_i18n::text("客户端UI准备与渲染提交的CPU墙钟时间，可能包含驱动等待；不是GPU计时或扫描延迟。"))].into_iter().enumerate() {let mut v=field(label,format!("{} ms",number(m.process[i])),help);v.group=1;latency.push(v);}
     for (label,value,help) in [(uu_i18n::text("网"),m.rtt.map(|v|v[0]/2.),uu_i18n::text("RTT的一半，仅在往返对称时近似单程。RTT还可能包含应用调度、处理与队列等待。")),(uu_i18n::text("排"),sum(&m.queues),uu_i18n::text("主机发送等待、客户端解码队列和画面邮箱等待的合计。未知阶段不按零计算。"))]{let mut v=field(label,format!("{} ms",number(value)),help);v.group=2;latency.push(v);}
+    for (label,span,help) in [
+        (uu_i18n::text("源至发完"),m.host_video.as_ref().and_then(|v|v.source_to_last_rtp),uu_i18n::text("主机同一QPC时钟内，源画面呈现到最后一个RTP包写入API返回的均值/P95。仅新源画面；包含采集前画面年龄、编码、排队和RTP发送，与视频阶段和重叠，不能再相加。不是网卡发完或客户端显示完成；超过5秒未更新则未知。")),
+        (uu_i18n::text("RTP跨度"),m.host_video.as_ref().and_then(|v|v.rtp_write),uu_i18n::text("同一视频帧首个到最后一个RTP写入API返回的均值/P95；用于观察分包与传输调用耗时，区别于编码线程等待发送队列。它与源至发完重叠，不是线速或单程网络时间。"))] {
+        let value=span.map_or_else(||"—".into(),|v|format!("{:.1}/{:.1} ms",v.mean_us as f64/1000.,v.p95_us as f64/1000.));
+        let mut value=field(label,value,help);value.group=3;latency.push(value);
+    }
     let mut network=vec![field("RTT",m.rtt.map_or_else(||"—".into(),|v|format!("{}±{} ms",number(Some(v[0])),number(Some(v[1])))),uu_i18n::text("控制消息往返均值±标准差，最近32个样本。包含传输、排队和两端处理，不等于ICMP ping。")),field(uu_i18n::text("链路丢包"),pct(m.loss),uu_i18n::text("修复前的原始RTP缺包率。乱序宽限期后仍未到达的包计入，即使随后由FEC或RTX恢复也保留。它反映接收端看到的网络交付，不只代表物理线路。")),field(uu_i18n::text("修复后丢包"),pct(m.unrecovered_loss),uu_i18n::text("接收器超时后仍未恢复的RTP丢包率；FEC/重传成功会降低这个值。"))];
     if let Some(v)=m.rtt_distribution {network.push(field(uu_i18n::text("末/低/中/P95/高"),format!("{:.1}/{:.1}/{:.1}/{:.1}/{:.1} ms",v[0],v[1],v[2],v[3],v[4]),uu_i18n::text("最近一分钟内RTT的末值、最小值、中位数、95分位和最大值，用于观察波动。")));}
     let mut receive=vec![];
@@ -354,6 +367,13 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     }else {receive.push(field(uu_i18n::text("原始包统计"),"—",uu_i18n::text("当前还没有新鲜、可解释的原始包窗口；不会伪造零丢包。")));}
     let mut fps=vec![field(uu_i18n::text("接收"),format!("{} FPS",number(m.fps[0])),uu_i18n::text("进入接收管线的完整视频帧率。")),field(uu_i18n::text("解码"),format!("{} FPS",number(m.fps[1])),uu_i18n::text("成功解码帧率。")),field(uu_i18n::text("渲染"),format!("{} FPS",number(m.fps[2])),uu_i18n::text("当前视图提交的新画面帧率；不是显示器扫描输出帧率。"))];
     fps.push(field(uu_i18n::text("源"),m.source_hz.map_or_else(||"—".into(),|v|format!("{v} Hz")),uu_i18n::text("主机报告的显示器模式刷新率，未知或旧主机显示缺省。")));
+    let continuity_help=uu_i18n::text("仅统计前台可见串流提交的新画面。间隔超过3个预期帧周期且至少20ms记一次，预期帧率取目标与已知源刷新率较小值；持续停图只计一次，完成后保留60秒。失焦、最小化、切屏或帧率改变会重置比较基线。源空闲、丢帧、网络、解码或UI都可能产生长间隔，不能据此归因，也不等于物理屏幕卡顿。少于两帧时显示未知。");
+    fps.push(field(uu_i18n::text("长间隔/60s"),m.continuity.as_ref().map_or_else(||"—".into(),|s|s.long_gaps.to_string()),continuity_help));
+    if let Some(s)=&m.continuity {
+        fps.push(field(uu_i18n::text("最长/阈值"),format!("{:.1}/{:.1} ms",s.max_gap_ms,s.threshold_ms),continuity_help));
+        fps.push(field(uu_i18n::text("当前观测"),format!("{:.1} s",s.observed_seconds),continuity_help));
+        if let Some(gap)=s.ongoing_gap_ms {fps.push(field(uu_i18n::text("正在等待"),format!("{gap:.1} ms"),continuity_help));}
+    }
     vec![
         row(uu_i18n::text("画面"),cyan,vec![field("",format!("{}×{}@{}",m.size[0],m.size[1],m.target_fps),uu_i18n::text("当前视频尺寸与目标帧率；不会改变远端桌面模式。")),field(uu_i18n::text("编码"),if m.codec.is_empty(){"—"}else{&m.codec},uu_i18n::text("实际协商的编码与色彩模式，区别于请求偏好。")),field(uu_i18n::text("解码器"),decoder_label(&m.backend),uu_i18n::text("客户端当前实际使用的解码后端。")),field(uu_i18n::text("码率"),format!("{} Mbps",number(m.bitrate)),uu_i18n::text("近期接收到的视频码率；不是目标码率或总链路带宽。"))]),
         row(uu_i18n::text("帧率"),cyan,fps),row(uu_i18n::text("延迟"),green,latency),
@@ -410,11 +430,13 @@ pub fn details(ui: &mut egui::Ui, m: &Metrics) {
 }
 fn detail_origin(view: Rect, anchor: Rect, size: egui::Vec2) -> egui::Pos2 {
     let safe = view.shrink(6.);
+    let below=anchor.bottom()+4.;
+    let y=if below+size.y<=safe.bottom(){below}else if anchor.top()-4.-size.y>=safe.top(){anchor.top()-4.-size.y}else{below.clamp(safe.top(),(safe.bottom()-size.y).max(safe.top()))};
     egui::pos2(
         anchor
             .left()
             .clamp(safe.left(), (safe.right() - size.x).max(safe.left())),
-        (anchor.bottom() + 4.).clamp(safe.top(), (safe.bottom() - size.y).max(safe.top())),
+        y,
     )
 }
 pub fn details_at(
@@ -424,7 +446,9 @@ pub fn details_at(
     anchor: Rect,
     previous: Option<Rect>,
 ) -> Rect {
-    let limits = detail_limits(view);
+    let mut limits = detail_limits(view);
+    let available=(view.bottom()-6.-anchor.bottom()-4.).max(anchor.top()-view.top()-10.).max(1.);
+    limits.y=limits.y.min(available);
     let size = egui::vec2(
         limits.x,
         previous.map_or(260., |r| r.height()).min(limits.y),
@@ -656,15 +680,15 @@ mod tests {
         };
         assert!((m.estimate().known - 14.8).abs() < 0.001);
         assert!(m.estimate().missing.is_empty());
-        assert_eq!(m.total_label(), "Est. Total ≈14.8 ms");
+        assert_eq!(m.total_label(), "Video sum ≈14.8 ms");
         let partial = Metrics {
             process: [None, Some(0.), None, None],
             ..Default::default()
         };
         assert_eq!(partial.estimate().samples, 1);
         assert!(!partial.estimate().missing.is_empty());
-        assert!(partial.total_label().starts_with("Known"));
-        assert_eq!(Metrics::default().total_label(), "Est. Total —");
+        assert!(partial.total_label().starts_with("Video known"));
+        assert_eq!(Metrics::default().total_label(), "Video sum —");
     }
     #[test]
     fn fps_and_timing_triplets_have_consistent_order() {

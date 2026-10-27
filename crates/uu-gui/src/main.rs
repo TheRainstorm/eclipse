@@ -1458,6 +1458,13 @@ impl App {
         self.poll_account();
         self.poll(ctx);
         self.poll_controller(ctx);
+        let observed=self.stream_target.is_some()&&!self.stream_settings_open&&self.active_session&&ctx.input(|i|i.focused&&!i.viewport().minimized.unwrap_or(false))&&!self.disconnecting&&!self.displays.waiting_binding();
+        let expected=self.controller.as_ref().map_or(self.target_fps,|h|{
+            let fps=h.stats.configured_fps.load(std::sync::atomic::Ordering::Relaxed);
+            let fps=if fps>0{fps}else{self.target_fps};
+            h.stats.remote_screens.lock().unwrap().for_track(self.selected_track).map(|s|s.refresh_hz).filter(|hz|*hz>1).map_or(fps,|hz|fps.min(hz))
+        });
+        for (track,texture) in &self.textures {texture.set_continuity_active(observed&&*track==self.selected_track,expected);}
         self.sample_hud();
         #[cfg(windows)]
         {
@@ -1637,6 +1644,8 @@ impl App {
                 let cursor=s.native_cursor.snapshot();
                 report["native_cursor"]=serde_json::json!({"supported":s.native_cursor.supported(),"revision":cursor.as_ref().map(|c|c.revision),"shape_id":cursor.as_ref().map(|c|c.shape_id),"position":cursor.as_ref().and_then(|c|c.position),"desktop":cursor.as_ref().map(|c|c.desktop),"shape_size":cursor.as_ref().and_then(|c|c.shape.as_ref()).and_then(|s|s.description.size())});
                 report["video_paint_window"]=self.textures.get(&self.selected_track).and_then(|t|t.paint_diagnostics()).into();
+                report["video_continuity"]=self.textures.get(&self.selected_track).and_then(|t|t.continuity()).map(|s|serde_json::json!({"scope":"focused visible new-image submissions, not display scanout or content motion","window_seconds":60,"long_gaps":s.long_gaps,"threshold_ms":s.threshold_ms,"max_gap_ms":s.max_gap_ms,"ongoing_gap_ms":s.ongoing_gap_ms,"observed_seconds":s.observed_seconds})).into();
+                report["host_video_latency"]=serde_json::to_value(uu_core::frame_trace::video_latency(s)).unwrap_or_default();
                 report["native_input_available"]=s.native_input_available.load(Relaxed).into();
                 report["input_granted"]=s.capabilities.allows(uu_core::capabilities::Capability::Input).into();
                 report["input_requested"]=h.native_input.as_ref().is_some_and(|sender|sender.requested()).into();
