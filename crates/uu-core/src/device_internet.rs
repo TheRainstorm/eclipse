@@ -25,12 +25,12 @@ pub enum EndpointStatus {
 impl EndpointStatus {
     pub fn label(&self) -> String {
         match self {
-            Self::Starting => "正在连接服务…".into(),
-            Self::Ready => "可连接".into(),
-            Self::Authenticating => "正在验证设备…".into(),
-            Self::Streaming => "正在串流".into(),
+            Self::Starting => uu_i18n::text("正在连接服务…").into(),
+            Self::Ready => uu_i18n::text("可连接").into(),
+            Self::Authenticating => uu_i18n::text("正在验证设备…").into(),
+            Self::Streaming => uu_i18n::text("正在串流").into(),
             Self::Error(e) => e.clone(),
-            Self::Stopped => "已停止".into(),
+            Self::Stopped => uu_i18n::text("已停止").into(),
         }
     }
 }
@@ -59,8 +59,8 @@ pub(crate) async fn view(
     let name = book.read()?.sharing.name;
     let ice = connection.ice.clone();
     stats.connection.set_service(match settings.provider {
-        Provider::Uu => "UU 连接服务",
-        Provider::SelfHosted => "自建连接服务",
+        Provider::Uu => uu_i18n::text("UU 连接服务"),
+        Provider::SelfHosted => uu_i18n::text("自建连接服务"),
     });
     let mut bootstrap = tokio::select! {
         result=Bootstrap::viewer(connection)=>result?,
@@ -102,8 +102,7 @@ pub async fn serve_connection(
     };
     ensure!(
         crate::device_channel::is_bootstrap(&first),
-        "控制端仍使用旧配对文件协议，请升级并通过短码完成设备配对"
-    );
+        "{}", uu_i18n::format!("控制端仍使用旧配对文件协议，请升级并通过短码完成设备配对"));
     let ice = connection.ice.clone();
     let mut bootstrap = tokio::select! {
         result=Bootstrap::host(connection,first)=>result?,
@@ -186,7 +185,7 @@ async fn listen_concurrent(settings: Settings, config: Config, sharing: SharingC
     status: watch::Sender<EndpointStatus>, stream_status: watch::Sender<HostStatus>, clipboard: Option<crate::native_lan::ClipboardFactory>) {
     while !*stop.borrow() {
         status.send_replace(EndpointStatus::Starting);
-        let opening=async { tokio::time::timeout(Duration::from_secs(20),Listener::online(&settings,&config)).await.context("连接服务上线超时")? };
+        let opening=async { tokio::time::timeout(Duration::from_secs(20),Listener::online(&settings,&config)).await.context(uu_i18n::text("连接服务上线超时"))? };
         let opened=tokio::select! { result=opening=>result, _=cancelled(&mut stop)=>break };
         let mut listener=match opened {
             Ok(listener)=>listener,

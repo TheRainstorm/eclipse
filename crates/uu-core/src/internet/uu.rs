@@ -18,13 +18,12 @@ enum RoomRequest { Create, Join }
 fn room_data(response: Value, request: RoomRequest) -> Result<Value> {
     let code=response["code"].as_i64().unwrap_or(-1);
     if code==2001 && matches!(request,RoomRequest::Join) {
-        bail!("目标设备未上线，无法发起远控（UU 2001）。请先在目标设备的“共享本机”中勾选 UU 连接服务并点击“开始共享”，保持共享运行后再连接。更换账号或配对文件不能解决设备离线。");
+        bail!("{}", uu_i18n::format!("目标设备未上线，无法发起远控（UU 2001）。请先在目标设备的“共享本机”中勾选 UU 连接服务并点击“开始共享”，保持共享运行后再连接。更换账号或配对文件不能解决设备离线。"));
     }
     ensure!(
         code == 0,
-        "UU {}失败（错误码 {}）",
-        if matches!(request,RoomRequest::Create) {"创建主机房间"}else{"加入目标主机房间"}, code
-    );
+        "{}", uu_i18n::format!("UU {}失败（错误码 {}）",
+        if matches!(request,RoomRequest::Create) {"创建主机房间"}else{"加入目标主机房间"}, code));
     Ok(response["data"].clone())
 }
 async fn connect(data: &Value) -> Result<SocketIo> {
@@ -133,7 +132,7 @@ pub async fn join(config: &Config, device: &str, development_relay: bool) -> Res
     );
     let api = UuApi::new(SignalClient::new(config)?, config.at("state.json"))?;
     ensure!(api.state.device_id.as_deref()!=Some(device),
-        "目标编号与本机 UU 编号相同。控制端应填写另一台设备的编号；更换 UU 账号不会更改本机设备编号。");
+        "{}", uu_i18n::format!("目标编号与本机 UU 编号相同。控制端应填写另一台设备的编号；更换 UU 账号不会更改本机设备编号。"));
     let data = room_data(api.room_join(device, false).await?,RoomRequest::Join)?;
     let mut socket = connect(&data).await?;
     let ctrl = uuid::Uuid::new_v4().to_string();

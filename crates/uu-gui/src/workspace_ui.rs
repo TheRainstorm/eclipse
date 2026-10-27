@@ -265,7 +265,7 @@ mod tests {
         assert!(name.ends_with("-Eclipse"));
         assert!(matches!(&h.click("登录 UU 账号")[..], [Action::Login]));
         h.logged_in = true;
-        assert!(matches!(&h.click("更新注册信息")[..], [Action::RenameUu]));
+        assert!(matches!(&h.click(uu_i18n::text("更新注册信息"))[..], [Action::RenameUu]));
         assert!(matches!(&h.click("管理 UU 设备")[..], [Action::ManageUu]));
         assert_eq!(h.workspace.draft.name, "My native host");
     }
@@ -577,11 +577,11 @@ fn device_initial(name: &str) -> String {
 }
 
 fn last_connection(time:Option<u64>)->String {
-    let Some(time)=time else{return "尚未连接".into();};
+    let Some(time)=time else{return uu_i18n::text("尚未连接").into();};
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_secs()).unwrap_or(time);
     let seconds=now.saturating_sub(time);
-    let relative=if seconds<60 {"刚刚".into()}else if seconds<3600{format!("{} 分钟前",seconds/60)}else if seconds<86400{format!("{} 小时前",seconds/3600)}else{format!("{} 天前",seconds/86400)};
-    format!("上次连接 · {relative}")
+    let relative=if seconds<60 {uu_i18n::text("刚刚").into()}else if seconds<3600{uu_i18n::format!("{} 分钟前",seconds/60)}else if seconds<86400{uu_i18n::format!("{} 小时前",seconds/3600)}else{uu_i18n::format!("{} 天前",seconds/86400)};
+    uu_i18n::format!("上次连接 · {relative}")
 }
 fn primary(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(egui::Button::new(RichText::new(text).color(egui::Color32::WHITE)).fill(theme::ACCENT))
@@ -610,7 +610,7 @@ fn field(ui: &mut egui::Ui, label: &str, text: &mut String, hint: &str) {
 impl Workspace {
     pub fn load(config: Option<&uu_core::Config>, ports: (u16, u16)) -> Self {
         let loaded = (|| -> anyhow::Result<_> {
-            let config = config.ok_or_else(|| anyhow::anyhow!("无法确定设备配置目录"))?;
+            let config = config.ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定设备配置目录")))?;
             let store = Store::open(config.at("device-trust"))?;
             let trust = TrustStore::open(config.at("device-trust"))?;
             let old = store.read()?;
@@ -647,7 +647,7 @@ impl Workspace {
                         for address in &legacy.manual {
                             if !legacy.devices.iter().any(|d| &d.endpoint == address) {
                                 book.devices.push(Profile::new(
-                                    "手动设备",
+                                    uu_i18n::text("手动设备"),
                                     Destination::Ip {
                                         address: address.clone(),
                                         legacy_device: None,
@@ -662,7 +662,7 @@ impl Workspace {
                                 book.sharing.uu_enabled = true;
                                 if !settings.device.is_empty() {
                                     book.devices.push(Profile::new(
-                                        "UU 设备",
+                                        uu_i18n::text("UU 设备"),
                                         Destination::Uu {
                                             device: settings.device.clone(),
                                         },
@@ -673,7 +673,7 @@ impl Workspace {
                                 if !settings.server.trim().is_empty() {
                                     let service = Service {
                                         id: uuid::Uuid::new_v4().to_string(),
-                                        name: "已导入的服务器".into(),
+                                        name: uu_i18n::text("已导入的服务器").into(),
                                         address: settings.server.clone(),
                                         token_file: settings.server_token.clone(),
                                         certificate: settings.server_ca.clone(),
@@ -685,7 +685,7 @@ impl Workspace {
                                     };
                                     if !settings.device.is_empty() {
                                         book.devices.push(Profile::new(
-                                            "服务器设备",
+                                            uu_i18n::text("服务器设备"),
                                             Destination::Vps {
                                                 service: service.id.clone(),
                                                 device: settings.device.clone(),
@@ -710,7 +710,7 @@ impl Workspace {
                 None,
                 None,
                 Book::default(),
-                format!("无法读取设备配置：{e:#}。原文件已保留。"),
+                uu_i18n::format!("无法读取设备配置：{e:#}。原文件已保留。"),
             ),
         };
         let draft = book.sharing.clone();
@@ -823,7 +823,7 @@ impl Workspace {
                 }
                 Err(e) => self.feedback.error(
                     super::ui_feedback::Scope::Devices,
-                    format!("无法读取设备配置：{e:#}，原文件已保留"),
+                    uu_i18n::format!("无法读取设备配置：{e:#}，原文件已保留"),
                 ),
             }
         }
@@ -832,12 +832,12 @@ impl Workspace {
         Ok(uu_core::config::uu_device_name())
     }
     fn update_connections(&mut self, edit: impl FnOnce(&mut Sharing)) {
-        let result = self.store.as_ref().ok_or_else(|| anyhow::anyhow!("设备配置不可用"))
+        let result = self.store.as_ref().ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))
             .and_then(|store| store.edit(|book| { edit(&mut book.sharing); Ok(()) }));
         if let Err(error) = result {
             self.feedback.error(
                 super::ui_feedback::Scope::Services(self.service_tab),
-                format!("无法保存连接服务：{error:#}"),
+                uu_i18n::format!("无法保存连接服务：{error:#}"),
             );
         }
         self.refresh();
@@ -854,7 +854,7 @@ impl Workspace {
         let result = self
             .store
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("设备配置不可用"))
+            .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))
             .and_then(|s| s.edit(|book| {
                 let mut media = self.draft.clone();
                 media.ip_enabled = book.sharing.ip_enabled;
@@ -868,11 +868,11 @@ impl Workspace {
         match result {
             Ok(()) => self.feedback.success(
                 super::ui_feedback::Scope::Services(self.service_tab),
-                if self.host.running() {"服务端设置已保存，下次启动生效"}else{"服务端设置已保存"},
+                if self.host.running() {uu_i18n::text("服务端设置已保存，下次启动生效")}else{uu_i18n::text("服务端设置已保存")},
             ),
             Err(e) => self.feedback.error(
                 super::ui_feedback::Scope::Services(self.service_tab),
-                format!("无法保存：{e:#}"),
+                uu_i18n::format!("无法保存：{e:#}"),
             ),
         }
         self.refresh();
@@ -936,12 +936,12 @@ impl Workspace {
         let store = self
             .store
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("设备配置不可用"))?;
+            .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))?;
         let mut profile = if let Some(id) = editor.profile {
             store.read()?.device(&id)?.clone()
         } else {
             let name = if editor.name.trim().is_empty() {
-                "远端设备"
+                uu_i18n::text("远端设备")
             } else {
                 editor.name.trim()
             };
@@ -956,13 +956,12 @@ impl Workspace {
                     .routes
                     .iter()
                     .any(|r| r.id != id && r.destination.same_target(&destination)),
-                "这个连接地址已经存在"
-            );
+                "{}", uu_i18n::format!("这个连接地址已经存在"));
             let route = profile
                 .routes
                 .iter_mut()
                 .find(|r| r.id == id)
-                .ok_or_else(|| anyhow::anyhow!("连接地址已移除"))?;
+                .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("连接地址已移除")))?;
             // A previously paired IP may change address but retains its old
             // pinned identity until the v2 migration has been verified.
             let mut updated = destination;
@@ -1001,8 +1000,8 @@ impl Workspace {
             Page::Services => self.service_workspace(ui, info, &mut actions),
             Page::Compatibility => {
                 if self.route.compatibility == CompatibilityView::Assistance {
-                    ui.heading("远程协助");
-                    muted(ui, "通过临时邀请帮助另一台设备");
+                    ui.heading(uu_i18n::text("远程协助"));
+                    muted(ui, uu_i18n::text("通过临时邀请帮助另一台设备"));
                     ui.add_space(18.);
                     self.assistance(ui, &mut actions);
                 }
@@ -1019,9 +1018,9 @@ impl Workspace {
         self.feedback.show(ui, super::ui_feedback::Scope::Devices);
         let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
         blank.context_menu(|ui| {
-            if ui.button("添加设备").clicked(){self.new_device(None,None);ui.close_menu();}
+            if ui.button(uu_i18n::text("添加设备")).clicked(){self.new_device(None,None);ui.close_menu();}
             if !info.nearby.is_empty() {
-                ui.menu_button("添加附近设备",|ui| {
+                ui.menu_button(uu_i18n::text("添加附近设备"),|ui| {
                     for (name,address) in &info.nearby {
                         if ui.button(name).on_hover_text(address).clicked() {
                             if let Some(store)=&self.store {
@@ -1029,7 +1028,7 @@ impl Workspace {
                                 if let Err(error)=result {
                                     self.feedback.error(
                                         super::ui_feedback::Scope::Devices,
-                                        format!("无法添加设备：{error:#}"),
+                                        uu_i18n::format!("无法添加设备：{error:#}"),
                                     );
                                 }
                                 self.refresh();
@@ -1061,7 +1060,7 @@ impl Workspace {
             label.halign=egui::Align::Center;
             let text=ui.painter().layout_job(label);
             let (rect,response)=ui.allocate_exact_size(egui::vec2(width,width*9./16.+20.+text.size().y),egui::Sense::click());
-            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),format!("连接 {}",profile.name)));
+            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),uu_i18n::format!("连接 {}",profile.name)));
             if response.hovered()||response.has_focus(){ui.painter().rect_filled(rect.expand(7.),10.,egui::Color32::from_rgba_unmultiplied(80,140,220,55));}
             let picture=egui::Rect::from_min_size(rect.min,egui::vec2(width,width*9./16.));
             let mut painter=ui.painter().clone();
@@ -1075,32 +1074,32 @@ impl Workspace {
             if response.clicked(){actions.push(Action::Open(profile.id.clone()));}
             response.context_menu(|ui| {
                 ui.set_min_width(170.);
-                if ui.button("刷新在线状态").clicked(){self.presence.refresh();ui.close_menu();}
-                if ui.button("详情").clicked(){self.route.device=DeviceView::Details(profile.id.clone());ui.close_menu();}
-                ui.menu_button("连接方式",|ui| {
+                if ui.button(uu_i18n::text("刷新在线状态")).clicked(){self.presence.refresh();ui.close_menu();}
+                if ui.button(uu_i18n::text("详情")).clicked(){self.route.device=DeviceView::Details(profile.id.clone());ui.close_menu();}
+                ui.menu_button(uu_i18n::text("连接方式"),|ui| {
                     for route in &profile.routes {
                         if ui.selectable_label(profile.selected_route==route.id,format!("{} · {}",route.destination.label(),route.destination.target())).clicked() {
                             let mut updated=profile.clone();updated.selected_route=route.id.clone();
                             if let Some(store)=&self.store {if let Err(e)=store.save_device(updated){
                                 let scope=self.device_scope();
-                                self.feedback.error(scope,format!("无法保存连接方式：{e:#}"));
+                                self.feedback.error(scope,uu_i18n::format!("无法保存连接方式：{e:#}"));
                             }}
                             self.refresh();ui.close_menu();
                         }
                     }
                 });
-                ui.menu_button("配置选择",|ui| {
-                    for (id,name) in std::iter::once((None,"默认配置")).chain(profile.client_configs.iter().map(|v|(Some(v.id.clone()),v.name.as_str()))) {
+                ui.menu_button(uu_i18n::text("配置选择"),|ui| {
+                    for (id,name) in std::iter::once((None,uu_i18n::text("默认配置"))).chain(profile.client_configs.iter().map(|v|(Some(v.id.clone()),v.name.as_str()))) {
                         if ui.selectable_label(profile.selected_client==id,name).clicked() {
                             if let Some(store)=&self.store {if let Err(e)=store.select_client_config(&profile.id,id){
                                 let scope=self.device_scope();
-                                self.feedback.error(scope,format!("无法选择配置：{e:#}"));
+                                self.feedback.error(scope,uu_i18n::format!("无法选择配置：{e:#}"));
                             }}
                             self.refresh();ui.close_menu();
                         }
                     }
                 });
-                if ui.button("配置编辑").clicked(){
+                if ui.button(uu_i18n::text("配置编辑")).clicked(){
                     let selected=profile.client_configs.iter().find(|v|Some(&v.id)==profile.selected_client.as_ref()).cloned();
                     self.edit_client_config(profile,selected,false);ui.close_menu();
                 }
@@ -1110,8 +1109,8 @@ impl Workspace {
     fn route_picker(&mut self,ui:&mut egui::Ui,profile:&Profile) {
                 let mut selected=profile.selected_route.clone();
                 ui.horizontal(|ui| {
-                    ui.label("连接方式");
-                    egui::ComboBox::from_id_salt("device-route").selected_text(profile.route().map(|r|r.destination.label()).unwrap_or("请选择")).width(150.).show_ui(ui,|ui| {
+                    ui.label(uu_i18n::text("连接方式"));
+                    egui::ComboBox::from_id_salt("device-route").selected_text(profile.route().map(|r|r.destination.label()).unwrap_or(uu_i18n::text("请选择"))).width(150.).show_ui(ui,|ui| {
                         for route in &profile.routes {ui.selectable_value(&mut selected,route.id.clone(),format!("{} · {}",route.destination.label(),route.destination.target()));}
                     });
                 });
@@ -1119,7 +1118,7 @@ impl Workspace {
                     let mut updated=profile.clone();updated.selected_route=selected;
                     if let Some(store)=&self.store {if let Err(e)=store.save_device(updated){
                         let scope=self.device_scope();
-                        self.feedback.error(scope,format!("无法保存连接方式：{e:#}"));
+                        self.feedback.error(scope,uu_i18n::format!("无法保存连接方式：{e:#}"));
                     }}
                     self.refresh();
                 }
@@ -1145,14 +1144,14 @@ impl Workspace {
         }
     }
     fn edit_client_config(&mut self,profile:&Profile, value:Option<uu_core::client_settings::NamedClientSettings>, duplicate:bool) {
-        let mut value=value.unwrap_or_else(||uu_core::client_settings::NamedClientSettings::new("新配置",self.client_defaults.clone()));
-        if duplicate { value.id=uuid::Uuid::new_v4().to_string(); value.name=format!("{} 副本",value.name); }
+        let mut value=value.unwrap_or_else(||uu_core::client_settings::NamedClientSettings::new(uu_i18n::text("新配置"),self.client_defaults.clone()));
+        if duplicate { value.id=uuid::Uuid::new_v4().to_string(); value.name=uu_i18n::format!("{} 副本",value.name); }
         self.client_editor=Some(ClientEditor {device:profile.id.clone(),value,section:super::settings_page::Section::Video,global:false,error:String::new()});
     }
     fn edit_global_client_config(&mut self) {
         self.client_editor=Some(ClientEditor {
             device:String::new(),
-            value:uu_core::client_settings::NamedClientSettings::new("全局默认",self.client_defaults.clone()),
+            value:uu_core::client_settings::NamedClientSettings::new(uu_i18n::text("全局默认"),self.client_defaults.clone()),
             section:super::settings_page::Section::Video,
             global:true,
             error:String::new(),
@@ -1160,11 +1159,11 @@ impl Workspace {
     }
     fn client_config_picker(&mut self,ui:&mut egui::Ui,profile:&Profile) {
         ui.horizontal_wrapped(|ui| {
-            ui.label("客户端配置");
+            ui.label(uu_i18n::text("客户端配置"));
             let mut selected=profile.selected_client.clone();
-            let title=profile.client_configs.iter().find(|v|Some(&v.id)==selected.as_ref()).map(|v|v.name.as_str()).unwrap_or("默认配置");
+            let title=profile.client_configs.iter().find(|v|Some(&v.id)==selected.as_ref()).map(|v|v.name.as_str()).unwrap_or(uu_i18n::text("默认配置"));
             egui::ComboBox::from_id_salt(("client-config",&profile.id)).selected_text(title).width(160.).show_ui(ui,|ui| {
-                ui.selectable_value(&mut selected,None,"默认配置");
+                ui.selectable_value(&mut selected,None,uu_i18n::text("默认配置"));
                 for value in &profile.client_configs {ui.selectable_value(&mut selected,Some(value.id.clone()),&value.name);}
             });
             if selected!=profile.selected_client {
@@ -1173,17 +1172,17 @@ impl Workspace {
                         Ok(())=>self.refresh(),
                         Err(e)=>{
                             let scope=self.device_scope();
-                            self.feedback.error(scope,format!("无法选择配置：{e:#}"));
+                            self.feedback.error(scope,uu_i18n::format!("无法选择配置：{e:#}"));
                         }
                     }
                 }
             }
-            if ui.small_button("配置…").clicked() {
+            if ui.small_button(uu_i18n::text("配置…")).clicked() {
                 let value=profile.client_configs.iter().find(|v|Some(&v.id)==profile.selected_client.as_ref()).cloned();
                 self.edit_client_config(profile,value,false);
             }
-            if matches!(self.route.device, DeviceView::Details(_)) && ui.small_button("新建").clicked(){self.edit_client_config(profile,None,false);}
-            if ui.small_button("编辑全局默认").clicked(){self.edit_global_client_config();}
+            if matches!(self.route.device, DeviceView::Details(_)) && ui.small_button(uu_i18n::text("新建")).clicked(){self.edit_client_config(profile,None,false);}
+            if ui.small_button(uu_i18n::text("编辑全局默认")).clicked(){self.edit_global_client_config();}
         });
     }
     fn device_details(&mut self, ui: &mut egui::Ui, id: &str, actions: &mut Vec<Action>) {
@@ -1210,48 +1209,48 @@ impl Workspace {
                     ui.add_space(4.0);
                     muted(ui, last_connection(profile.last_connected));
                     let mut pinned=profile.preview.as_ref().is_some_and(|p|p.pinned);
-                    if ui.add_enabled(profile.preview.is_some(),egui::Checkbox::new(&mut pinned,"固定当前截图")).on_hover_text("固定后保留这张截图；取消固定后，下次串流结束时自动更新").changed() {
+                    if ui.add_enabled(profile.preview.is_some(),egui::Checkbox::new(&mut pinned,uu_i18n::text("固定当前截图"))).on_hover_text(uu_i18n::text("固定后保留这张截图；取消固定后，下次串流结束时自动更新")).changed() {
                         if let (Some(store),Some(preview))=(&self.store,&profile.preview) {
                             if let Err(error)=store.pin_preview(&profile.id,&preview.id,pinned) {
-                                self.feedback.error(super::ui_feedback::Scope::DeviceDetails(id.to_owned()),format!("无法保存截图设置：{error:#}"));
+                                self.feedback.error(super::ui_feedback::Scope::DeviceDetails(id.to_owned()),uu_i18n::format!("无法保存截图设置：{error:#}"));
                             }
                             self.refresh();
                         }
                     }
                     let route = profile.route().map(|route| {
                         format!("{} · {}", route.destination.label(), route.destination.target())
-                    }).unwrap_or_else(|_| "未选择连接方式".into());
+                    }).unwrap_or_else(|_| uu_i18n::text("未选择连接方式").into());
                     muted(ui, route);
                     if profile.peer.is_some() {
-                        ui.label(RichText::new("已完成设备配对").color(theme::SUCCESS));
+                        ui.label(RichText::new(uu_i18n::text("已完成设备配对")).color(theme::SUCCESS));
                     } else {
-                        ui.label(RichText::new("首次连接需要配对").color(theme::MUTED));
+                        ui.label(RichText::new(uu_i18n::text("首次连接需要配对")).color(theme::MUTED));
                     }
                     ui.add_space(8.0);
-                    if primary(ui, "连接此设备").clicked() {
+                    if primary(ui, uu_i18n::text("连接此设备")).clicked() {
                         actions.push(Action::Open(profile.id.clone()));
                     }
                 });
             });
             ui.add_space(18.0);
             card(ui, |ui| {
-                ui.strong("设备身份");
+                ui.strong(uu_i18n::text("设备身份"));
                 ui.add_space(8.0);
                 if let Some(peer) = &profile.peer {
-                    ui.label(RichText::new("已完成配对").color(theme::SUCCESS));
-                    muted(ui,"设备公钥指纹");
+                    ui.label(RichText::new(uu_i18n::text("已完成配对")).color(theme::SUCCESS));
+                    muted(ui,uu_i18n::text("设备公钥指纹"));
                     ui.monospace(peer);
-                    if ui.small_button("复制指纹").clicked() {
+                    if ui.small_button(uu_i18n::text("复制指纹")).clicked() {
                         ui.ctx().copy_text(peer.clone());
                     }
                 } else {
-                    ui.label("首次连接时，被控端输入控制端显示的短码即可保存授权。");
+                    ui.label(uu_i18n::text("首次连接时，被控端输入控制端显示的短码即可保存授权。"));
                 }
             });
         card(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("连接地址");
-                if ui.button("添加地址").clicked() {
+                ui.strong(uu_i18n::text("连接地址"));
+                if ui.button(uu_i18n::text("添加地址")).clicked() {
                     self.new_device(Some(profile.id.clone()), None);
                 }
             });
@@ -1265,13 +1264,13 @@ impl Workspace {
                             route.destination.label(),
                             route.destination.target()
                         ));
-                        if ui.small_button("编辑").clicked() {
+                        if ui.small_button(uu_i18n::text("编辑")).clicked() {
                             self.new_device(Some(profile.id.clone()), Some(route.id.clone()));
                         }
                         if ui
                             .add_enabled(
                                 profile.routes.len() > 1,
-                                egui::Button::new("移除").small(),
+                                egui::Button::new(uu_i18n::text("移除")).small(),
                             )
                             .clicked()
                         {
@@ -1289,29 +1288,29 @@ impl Workspace {
                 if let Some(store) = &self.store {
                     match store.save_device(updated) {
                         Ok(()) => self.refresh(),
-                        Err(e) => self.feedback.error(self.device_scope(), format!("无法移除地址：{e}")),
+                        Err(e) => self.feedback.error(self.device_scope(), uu_i18n::format!("无法移除地址：{e}")),
                     }
                 }
             }
         });
         card(ui,|ui| {
-            ui.strong("客户端配置");
-            muted(ui,"每台设备可保存多个配置；选择全局默认会跟随应用设置。修改配置只影响下次连接。");
+            ui.strong(uu_i18n::text("客户端配置"));
+            muted(ui,uu_i18n::text("每台设备可保存多个配置；选择全局默认会跟随应用设置。修改配置只影响下次连接。"));
             self.client_config_picker(ui,&profile);
             for value in &profile.client_configs {
                 ui.push_id(&value.id,|ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.strong(&value.name);
                         muted(ui,format!("{} FPS · {}",value.settings.fps,value.settings.codec.label()));
-                        if ui.small_button("编辑").clicked(){self.edit_client_config(&profile,Some(value.clone()),false);}
-                        if ui.small_button("复制").clicked(){self.edit_client_config(&profile,Some(value.clone()),true);}
-                        if ui.small_button("删除").clicked(){
+                        if ui.small_button(uu_i18n::text("编辑")).clicked(){self.edit_client_config(&profile,Some(value.clone()),false);}
+                        if ui.small_button(uu_i18n::text("复制")).clicked(){self.edit_client_config(&profile,Some(value.clone()),true);}
+                        if ui.small_button(uu_i18n::text("删除")).clicked(){
                             if let Some(store)=&self.store {
                                 match store.remove_client_config(&profile.id,&value.id){
                                     Ok(())=>self.refresh(),
                                     Err(e)=>{
                                         let scope=self.device_scope();
-                                        self.feedback.error(scope,format!("无法删除配置：{e:#}"));
+                                        self.feedback.error(scope,uu_i18n::format!("无法删除配置：{e:#}"));
                                     }
                                 }
                             }
@@ -1321,18 +1320,18 @@ impl Workspace {
             }
         });
         ui.add_space(12.);
-        if ui.button("移除本地设备记录").clicked() {
+        if ui.button(uu_i18n::text("移除本地设备记录")).clicked() {
             if let Some(store) = &self.store {
                 match store.forget(&profile.id) {
                     Ok(()) => {
                         self.route.device = DeviceView::List;
                         self.refresh();
                     }
-                    Err(e) => self.feedback.error(self.device_scope(), format!("无法移除：{e}")),
+                    Err(e) => self.feedback.error(self.device_scope(), uu_i18n::format!("无法移除：{e}")),
                 }
             }
         }
-        muted(ui,"移除本地记录不会撤销被控端已授予的权限。授权在被控端的“共享本机”中管理。");
+        muted(ui,uu_i18n::text("移除本地记录不会撤销被控端已授予的权限。授权在被控端的“共享本机”中管理。"));
         });
     }
     fn refresh_monitors(&mut self) {
@@ -1346,17 +1345,17 @@ impl Workspace {
             Ok(monitors) => {
                 self.monitors = monitors;
                 self.monitor_error = if self.monitors.is_empty() {
-                    "当前会话没有可共享的屏幕".into()
+                    uu_i18n::text("当前会话没有可共享的屏幕").into()
                 } else {
                     String::new()
                 };
             }
-            Err(e) => self.monitor_error = format!("无法读取屏幕：{e}"),
+            Err(e) => self.monitor_error = uu_i18n::format!("无法读取屏幕：{e}"),
         }
     }
     fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>) {
         ui.horizontal_wrapped(|ui| {
-            for (tab,label) in [(0,"连接服务"),(1,"输入"),(2,"音频 / 视频"),(3,"编码器"),(4,"配对设置")] {
+            for (tab,label) in [(0,uu_i18n::text("连接服务")),(1,uu_i18n::text("输入")),(2,uu_i18n::text("音频 / 视频")),(3,uu_i18n::text("编码器")),(4,uu_i18n::text("配对设置"))] {
                 ui.selectable_value(&mut self.service_tab,tab,label);
             }
         });
@@ -1369,31 +1368,31 @@ impl Workspace {
         } else {
             ui.horizontal(|ui| {
                 let running=self.host.running();
-                if ui.add_enabled(self.server_dirty(),egui::Button::new(RichText::new("保存设置").color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked(){self.save_sharing();}
-                if running && ui.add_enabled(!self.host.stopping(),egui::Button::new("保存并重启服务")).clicked() {
+                if ui.add_enabled(self.server_dirty(),egui::Button::new(RichText::new(uu_i18n::text("保存设置")).color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked(){self.save_sharing();}
+                if running && ui.add_enabled(!self.host.stopping(),egui::Button::new(uu_i18n::text("保存并重启服务"))).clicked() {
                     if !self.server_dirty() || self.save_sharing() {actions.push(Action::RestartSharing);}
                 }
-                if ui.add_enabled(self.server_dirty(),egui::Button::new("还原修改")).clicked(){self.discard_server_draft();}
-                muted(ui,if self.server_dirty(){"有未保存的修改"}else if self.host.changes_pending(&self.book.sharing){"已保存，下次启动生效"}else{"已保存"});
+                if ui.add_enabled(self.server_dirty(),egui::Button::new(uu_i18n::text("还原修改"))).clicked(){self.discard_server_draft();}
+                muted(ui,if self.server_dirty(){uu_i18n::text("有未保存的修改")}else if self.host.changes_pending(&self.book.sharing){uu_i18n::text("已保存，下次启动生效")}else{uu_i18n::text("已保存")});
             });
             ui.add_space(12.);
             self.host_section=match self.service_tab {1=>2,2=>0,_=>1};
             if self.service_tab==3 {
                 ui.horizontal_wrapped(|ui| {
-                    for (vendor,label) in [(0,"自动"),(1,"NVIDIA"),(2,"Intel"),(3,"AMD")] {
+                    for (vendor,label) in [(0,uu_i18n::text("自动")),(1,"NVIDIA"),(2,"Intel"),(3,"AMD")] {
                         ui.selectable_value(&mut self.encoder_vendor_tab,vendor,label);
                     }
                 });
                 muted(ui,match self.encoder_vendor_tab {
-                    1=>"NVIDIA：Windows 使用驱动提供的 Media Foundation 编码，可调整画质与速度；驱动须支持所选参数。",
-                    2=>"Intel QSV 使用 oneVPL，可调整 Target Usage 与低功耗引擎；驱动需支持所选组合。",
-                    3=>"AMD：Windows 使用原生 AMF 低延迟编码，支持驱动可用的 H.264 / HEVC / AV1。",
-                    _=>"编码参数应用于当前主机。自动模式按已安装驱动选择可用后端；客户端仍需支持所选格式。",
+                    1=>uu_i18n::text("NVIDIA：Windows 使用驱动提供的 Media Foundation 编码，可调整画质与速度；驱动须支持所选参数。"),
+                    2=>uu_i18n::text("Intel QSV 使用 oneVPL，可调整 Target Usage 与低功耗引擎；驱动需支持所选组合。"),
+                    3=>uu_i18n::text("AMD：Windows 使用原生 AMF 低延迟编码，支持驱动可用的 H.264 / HEVC / AV1。"),
+                    _=>uu_i18n::text("编码参数应用于当前主机。自动模式按已安装驱动选择可用后端；客户端仍需支持所选格式。"),
                 });
                 let choice=match self.encoder_vendor_tab {1=>Some(Encoding::Nvidia),2=>Some(Encoding::Intel),3=>Some(Encoding::Amd),_=>None};
                 if let Some(choice)=choice {
                     let mut selected=self.draft.encoding==choice;
-                    if ui.checkbox(&mut selected,"使用此厂商硬件编码").changed() {
+                    if ui.checkbox(&mut selected,uu_i18n::text("使用此厂商硬件编码")).changed() {
                         self.draft.encoding=if selected {choice}else{Encoding::Auto};
                     }
                 }
@@ -1413,23 +1412,23 @@ impl Workspace {
                 ui.label(
                     RichText::new(if self.host.running() {
                         if self.host.stopping() {
-                            "正在停止服务…"
+                            uu_i18n::text("正在停止服务…")
                         } else {
-                            "本机服务运行中"
+                            uu_i18n::text("本机服务运行中")
                         }
                     } else {
-                        "本机服务已停止"
+                        uu_i18n::text("本机服务已停止")
                     })
                     .size(18.)
                     .strong(),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.host.running() {
-                        if ui.add_enabled(!self.host.stopping(),egui::Button::new("停止服务")).clicked(){self.host.stop();}
-                        if ui.add_enabled(!self.host.stopping(),egui::Button::new("保存并重启服务")).clicked() {
+                        if ui.add_enabled(!self.host.stopping(),egui::Button::new(uu_i18n::text("停止服务"))).clicked(){self.host.stop();}
+                        if ui.add_enabled(!self.host.stopping(),egui::Button::new(uu_i18n::text("保存并重启服务"))).clicked() {
                             if !self.server_dirty() || self.save_sharing() {actions.push(Action::RestartSharing);}
                         }
-                    } else if ui.add_enabled(self.store.is_some(),egui::Button::new(RichText::new("启动服务").color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked() {
+                    } else if ui.add_enabled(self.store.is_some(),egui::Button::new(RichText::new(uu_i18n::text("启动服务")).color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked() {
                         if !self.server_dirty() || self.save_sharing() { actions.push(Action::StartSharing); }
                     }
                 });
@@ -1445,7 +1444,7 @@ impl Workspace {
                             theme::SUCCESS
                         }),
                     );
-                    if error && ui.small_button("关闭").clicked() {
+                    if error && ui.small_button(uu_i18n::text("关闭")).clicked() {
                         dismiss = true;
                     }
                 });
@@ -1454,20 +1453,20 @@ impl Workspace {
                 }
             }
             let mut auto = self.book.sharing.auto_start;
-            if ui.checkbox(&mut auto, "打开软件时自动启动服务").changed() {
+            if ui.checkbox(&mut auto, uu_i18n::text("打开软件时自动启动服务")).changed() {
                 self.update_connections(|s| s.auto_start = auto);
                 self.draft.auto_start = auto;
             }
             if self.host.running() {
                 ui.add_space(12.);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("新设备可直接发起配对").color(theme::SUCCESS));
+                    ui.label(RichText::new(uu_i18n::text("新设备可直接发起配对")).color(theme::SUCCESS));
                     if self
                         .host
                         .access
                         .as_ref()
                         .is_some_and(|a| a.sessions.active_peer().is_some())
-                        && ui.button("断开全部串流").clicked()
+                        && ui.button(uu_i18n::text("断开全部串流")).clicked()
                     {
                         self.host.disconnect();
                     }
@@ -1480,8 +1479,8 @@ impl Workspace {
         let sessions=self.host.sessions();
         if !sessions.is_empty() {
             card(ui,|ui| {
-                ui.strong(format!("已连接 {} / {} 个会话",sessions.len(),uu_core::shared_host::MAX_SESSIONS));
-                muted(ui,"多台设备可同时观看；键鼠由当前取得控制权的一台设备操作，释放或离线后交接。");
+                ui.strong(uu_i18n::format!("已连接 {} / {} 个会话",sessions.len(),uu_core::shared_host::MAX_SESSIONS));
+                muted(ui,uu_i18n::text("多台设备可同时观看；键鼠由当前取得控制权的一台设备操作，释放或离线后交接。"));
                 for session in sessions {
                     ui.horizontal_wrapped(|ui| {
                         ui.strong(&session.name);
@@ -1490,19 +1489,19 @@ impl Workspace {
                             match self.host.set_session_permissions(&session.peer_id,permissions) {
                                 Ok(())=>self.feedback.success(
                                     super::ui_feedback::Scope::Services(0),
-                                    "已更新设备控制权限；该设备需要重新连接",
+                                    uu_i18n::text("已更新设备控制权限；该设备需要重新连接"),
                                 ),
                                 Err(error)=>self.feedback.error(
                                     super::ui_feedback::Scope::Services(0),
-                                    format!("无法更新设备控制权限：{error:#}"),
+                                    uu_i18n::format!("无法更新设备控制权限：{error:#}"),
                                 ),
                             }
                         }
-                        if ui.small_button("断开此会话").clicked(){self.host.disconnect_session(&session.id);}
+                        if ui.small_button(uu_i18n::text("断开此会话")).clicked(){self.host.disconnect_session(&session.id);}
                     });
                     muted(ui,match session.status {
-                        HostStatus::Starting|HostStatus::Preparing=>"正在准备串流…".into(),
-                        HostStatus::Waiting{..}=>"等待控制端建立媒体连接…".into(),
+                        HostStatus::Starting|HostStatus::Preparing=>uu_i18n::text("正在准备串流…").into(),
+                        HostStatus::Waiting{..}=>uu_i18n::text("等待控制端建立媒体连接…").into(),
                         HostStatus::Streaming{width,height,fps,encoder,audio}=>format!("{width}×{height} · {fps} FPS · {encoder} · {audio}"),
                     });
                 }
@@ -1512,9 +1511,9 @@ impl Workspace {
     pub(super) fn server_settings(&mut self, ui: &mut egui::Ui, info: &Info, _actions: &mut Vec<Action>) {
         if self.service_tab==4 {
             card(ui,|ui| {
-                ui.strong("设备身份");
+                ui.strong(uu_i18n::text("设备身份"));
                 super::server_config_ui::device_name(ui,&mut self.draft,true);
-                muted(ui,"名称用于原生设备配对和公钥备注，保存后使用新名称。");
+                muted(ui,uu_i18n::text("名称用于原生设备配对和公钥备注，保存后使用新名称。"));
             });
             if let Some(trust)=&self.trust {
                 card(ui,|ui|{self.pairing_settings.show(ui,trust,&self.book.sharing.name,self.host.access.as_ref());});
@@ -1528,14 +1527,14 @@ impl Workspace {
         }
         let running = self.host.running();
         card(ui, |ui| {
-            ui.strong(match self.host_section {0=>"采集与声音",1=>"编码",_=>"访问权限"});
+            ui.strong(match self.host_section {0=>uu_i18n::text("采集与声音"),1=>uu_i18n::text("编码"),_=>uu_i18n::text("访问权限")});
             ui.add_space(10.);
             let monitors:Vec<_>=self.monitors.iter().map(|m|(m.name.clone(),format!("{} · {}×{}",m.name,m.width,m.height))).collect();
             if self.host_section==0 {super::server_config_ui::capture(ui,&mut self.draft,&monitors,uu_core::native::uses_desktop_portal());}
             else {super::server_config_ui::edit(ui,&mut self.draft,self.host_section,&monitors,uu_core::native::uses_desktop_portal(),!info.login_busy);}
             if !self.monitor_error.is_empty(){ui.colored_label(theme::DANGER,&self.monitor_error);}
             if running {
-                muted(ui,"运行期间可编辑并保存；下次启动生效，或保存后重启服务。重启会断开当前串流。");
+                muted(ui,uu_i18n::text("运行期间可编辑并保存；下次启动生效，或保存后重启服务。重启会断开当前串流。"));
             }
         });
         ui.add_space(14.);
@@ -1546,19 +1545,19 @@ impl Workspace {
             Some(store) => match store.peers() {
                 Ok(peers) => peers,
                 Err(e) => {
-                    ui.colored_label(theme::DANGER, format!("无法读取授权：{e}"));
+                    ui.colored_label(theme::DANGER, uu_i18n::format!("无法读取授权：{e}"));
                     return;
                 }
             },
             None => return,
         };
         card(ui, |ui| {
-            ui.strong("已授权的控制端");
-            muted(ui,"这些设备通过 IP、UU 或 VPS 连接时，都使用相同的身份和权限。");
+            ui.strong(uu_i18n::text("已授权的控制端"));
+            muted(ui,uu_i18n::text("这些设备通过 IP、UU 或 VPS 连接时，都使用相同的身份和权限。"));
             ui.add_space(10.);
             let active: Vec<_> = peers.iter().filter(|p| p.inbound.is_some()).collect();
             if active.is_empty() {
-                muted(ui,"还没有已授权的控制端。可预先添加公钥，或在启动服务后发起配对。");
+                muted(ui,uu_i18n::text("还没有已授权的控制端。可预先添加公钥，或在启动服务后发起配对。"));
             }
             for peer in active {
                 ui.push_id(peer.device.id(), |ui| {
@@ -1579,15 +1578,15 @@ impl Workspace {
                             match result {
                                 Ok(()) => self.feedback.success(
                                     super::ui_feedback::Scope::Services(self.service_tab),
-                                    "权限已保存，重新连接后生效",
+                                    uu_i18n::text("权限已保存，重新连接后生效"),
                                 ),
                                 Err(e) => self.feedback.error(
                                     super::ui_feedback::Scope::Services(self.service_tab),
-                                    format!("无法修改权限：{e}"),
+                                    uu_i18n::format!("无法修改权限：{e}"),
                                 ),
                             }
                         }
-                        if ui.small_button("撤销授权").clicked() {
+                        if ui.small_button(uu_i18n::text("撤销授权")).clicked() {
                             let result = if let Some(access) = &self.host.access {
                                 access.revoke(&peer.device.id())
                             } else {
@@ -1596,11 +1595,11 @@ impl Workspace {
                             match result {
                                 Ok(()) => self.feedback.success(
                                     super::ui_feedback::Scope::Services(self.service_tab),
-                                    "已撤销设备授权",
+                                    uu_i18n::text("已撤销设备授权"),
                                 ),
                                 Err(e) => self.feedback.error(
                                     super::ui_feedback::Scope::Services(self.service_tab),
-                                    format!("撤销失败：{e}"),
+                                    uu_i18n::format!("撤销失败：{e}"),
                                 ),
                             }
                         }
@@ -1615,8 +1614,8 @@ impl Workspace {
             {
                 ui.horizontal(|ui| {
                     ui.label(&legacy.name);
-                    muted(ui,"旧版 IP 配对");
-                    if ui.small_button("撤销授权").clicked() {
+                    muted(ui,uu_i18n::text("旧版 IP 配对"));
+                    if ui.small_button(uu_i18n::text("撤销授权")).clicked() {
                         self.host.revoke_legacy(&legacy.id);
                     }
                 });
@@ -1625,108 +1624,108 @@ impl Workspace {
     }
     fn services(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>) {
         let locked = self.host.stopping();
-        if self.host.running() { muted(ui,"连接入口修改后保存，下次启动服务生效。可保存并重启服务立即应用。"); }
+        if self.host.running() { muted(ui,uu_i18n::text("连接入口修改后保存，下次启动服务生效。可保存并重启服务立即应用。")); }
         card(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("IP 直连");
+                ui.strong(uu_i18n::text("IP 直连"));
                 let mut enabled = self.book.sharing.ip_enabled;
-                if ui.add_enabled(!locked, egui::Checkbox::new(&mut enabled,"启用")).changed() {
+                if ui.add_enabled(!locked, egui::Checkbox::new(&mut enabled,uu_i18n::text("启用"))).changed() {
                     self.update_connections(|s| s.ip_enabled=enabled);
                 }
             });
-            muted(ui,"同一网络或已有路由时直接连接，默认开启。");
+            muted(ui,uu_i18n::text("同一网络或已有路由时直接连接，默认开启。"));
             let mut tcp=self.book.sharing.service_port;
             let mut udp=self.book.sharing.discovery_port;
             ui.add_enabled_ui(!locked, |ui| {
                 egui::Grid::new("connection-ip-ports").spacing([20.,10.]).show(ui,|ui| {
-                    ui.label("服务端口 · TCP"); ui.add(egui::DragValue::new(&mut tcp).range(1..=65535)); ui.end_row();
-                    ui.label("发现端口 · UDP"); ui.add(egui::DragValue::new(&mut udp).range(1..=65535)); ui.end_row();
+                    ui.label(uu_i18n::text("服务端口 · TCP")); ui.add(egui::DragValue::new(&mut tcp).range(1..=65535)); ui.end_row();
+                    ui.label(uu_i18n::text("发现端口 · UDP")); ui.add(egui::DragValue::new(&mut udp).range(1..=65535)); ui.end_row();
                 });
             });
             if tcp!=self.book.sharing.service_port || udp!=self.book.sharing.discovery_port {
                 self.update_connections(|s| {s.service_port=tcp; s.discovery_port=udp;});
             }
-            self.endpoint_state(ui,"IP 直连");
-            ui.collapsing("本机地址",|ui| {
+            self.endpoint_state(ui,uu_i18n::text("IP 直连"));
+            ui.collapsing(uu_i18n::text("本机地址"),|ui| {
                 if let Ok(addresses)=super::native_interfaces::enumerate() {
                     for address in addresses.into_iter().filter(|a| a.ip.is_ipv4()) {
                         let endpoint=format!("{}:{}",address.ip,self.book.sharing.service_port);
-                        ui.horizontal(|ui| {ui.monospace(&endpoint); if ui.small_button("复制").clicked(){ui.ctx().copy_text(endpoint);}});
+                        ui.horizontal(|ui| {ui.monospace(&endpoint); if ui.small_button(uu_i18n::text("复制")).clicked(){ui.ctx().copy_text(endpoint);}});
                     }
                 }
-                muted(ui,"手动输入可达地址支持跨网段；自动发现通常不跨路由。");
+                muted(ui,uu_i18n::text("手动输入可达地址支持跨网段；自动发现通常不跨路由。"));
             });
         });
         card(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("UU 账号连接服务");
+                ui.strong(uu_i18n::text("UU 账号连接服务"));
                 let mut enabled=self.book.sharing.uu_enabled;
-                if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,"启用")).changed(){self.update_connections(|s|s.uu_enabled=enabled);}
+                if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,uu_i18n::text("启用"))).changed(){self.update_connections(|s|s.uu_enabled=enabled);}
             });
-            self.endpoint_state(ui,"UU 账号");
+            self.endpoint_state(ui,uu_i18n::text("UU 账号"));
             ui.add_space(8.);
             ui.horizontal(|ui| {
-                ui.label("UU 本机名称");
+                ui.label(uu_i18n::text("UU 本机名称"));
                 ui.monospace(uu_core::config::uu_device_name());
-                if info.logged_in && ui.add_enabled(!info.login_busy, egui::Button::new("更新注册信息")).clicked() {
+                if info.logged_in && ui.add_enabled(!info.login_busy, egui::Button::new(uu_i18n::text("更新注册信息"))).clicked() {
                     actions.push(Action::RenameUu);
                 }
             });
-            muted(ui,"自动使用电脑名加 -Eclipse，便于与官方客户端区分；原生共享名称独立设置。");
+            muted(ui,uu_i18n::text("自动使用电脑名加 -Eclipse，便于与官方客户端区分；原生共享名称独立设置。"));
             if info.logged_in {
-                ui.label(RichText::new("账号状态：已登录").color(theme::SUCCESS));
+                ui.label(RichText::new(uu_i18n::text("账号状态：已登录")).color(theme::SUCCESS));
                 ui.horizontal(|ui| {
-                    if ui.button("登出 UU 账号").clicked() { actions.push(Action::Logout); }
-                    if ui.button("管理 UU 设备").clicked() { actions.push(Action::ManageUu); }
+                    if ui.button(uu_i18n::text("登出 UU 账号")).clicked() { actions.push(Action::Logout); }
+                    if ui.button(uu_i18n::text("管理 UU 设备")).clicked() { actions.push(Action::ManageUu); }
                 });
                 if self.host.uses_uu_account() {
-                    muted(ui, "登出会停止当前使用 UU 入口的本机共享服务。");
+                    muted(ui, uu_i18n::text("登出会停止当前使用 UU 入口的本机共享服务。"));
                 }
                 if let Some(id) = &info.uu_id {
                     ui.horizontal(|ui| {
-                        ui.label(format!("本机 UU 编号：{id}"));
-                        if ui.small_button("复制").clicked() {
+                        ui.label(uu_i18n::format!("本机 UU 编号：{id}"));
+                        if ui.small_button(uu_i18n::text("复制")).clicked() {
                             ui.ctx().copy_text(id.clone());
                         }
                     });
                 }
             } else {
-                ui.label("账号状态：未登录");
-                ui.label("登录后可通过 UU 寻址原生设备。");
+                ui.label(uu_i18n::text("账号状态：未登录"));
+                ui.label(uu_i18n::text("登录后可通过 UU 寻址原生设备。"));
                 if let Some(qr) = info.qr {
                     ui.image((qr, egui::vec2(180., 180.)));
                 }
                 if primary(
                     ui,
                     if info.qr.is_some() {
-                        "刷新登录二维码"
+                        uu_i18n::text("刷新登录二维码")
                     } else {
-                        "登录 UU 账号"
+                        uu_i18n::text("登录 UU 账号")
                     },
                 )
                 .clicked()
                 {
                     actions.push(Action::Login);
                 }
-                if info.login_busy && ui.button("取消登录").clicked() {
+                if info.login_busy && ui.button(uu_i18n::text("取消登录")).clicked() {
                     actions.push(Action::CancelLogin);
                 }
             }
             if info.login_busy { ui.spinner(); }
             if !info.login_status.is_empty() { ui.label(&info.login_status); }
             ui.add_space(8.);
-            muted(ui,"启动服务后，启用的入口会发布本机。连接仍需经过设备配对授权。");
+            muted(ui,uu_i18n::text("启动服务后，启用的入口会发布本机。连接仍需经过设备配对授权。"));
         });
         ui.horizontal(|ui| {
-            ui.label(RichText::new("自建服务器").strong());
+            ui.label(RichText::new(uu_i18n::text("自建服务器")).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                if ui.add_enabled(!locked,egui::Button::new(RichText::new("＋ 添加服务器").color(theme::ACCENT))).clicked(){self.edit_service(None);}
+                if ui.add_enabled(!locked,egui::Button::new(RichText::new(uu_i18n::text("＋ 添加服务器")).color(theme::ACCENT))).clicked(){self.edit_service(None);}
             });
         });
         ui.add_space(10.);
         if self.book.services.is_empty() {
             card(ui, |ui| {
-                ui.label("还没有服务器。你可以使用自己的 VPS 运行连接服务，再添加地址和访问凭据。");
+                ui.label(uu_i18n::text("还没有服务器。你可以使用自己的 VPS 运行连接服务，再添加地址和访问凭据。"));
             });
         }
         for service in self.book.services.clone() {
@@ -1739,42 +1738,42 @@ impl Workspace {
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
-                                .add_enabled(!locked, egui::Button::new("编辑"))
+                                .add_enabled(!locked, egui::Button::new(uu_i18n::text("编辑")))
                                 .clicked()
                             {
                                 self.edit_service(Some(service.clone()));
                             }
                             if ui
-                                .add_enabled(!locked, egui::Button::new("移除"))
+                                .add_enabled(!locked, egui::Button::new(uu_i18n::text("移除")))
                                 .clicked()
                             {
                                 if let Some(store) = &self.store {
                                     match store.remove_service(&service.id) {
                                         Ok(()) => self.refresh(),
-                                        Err(e) => self.feedback.error(self.device_scope(), format!("无法移除：{e}")),
+                                        Err(e) => self.feedback.error(self.device_scope(), uu_i18n::format!("无法移除：{e}")),
                                     }
                                 }
                             }
                         });
                     });
                     ui.horizontal(|ui| {
-                        ui.label("本机在此服务的设备名称");
+                        ui.label(uu_i18n::text("本机在此服务的设备名称"));
                         ui.monospace(&service.published_name);
-                        if ui.small_button("复制").clicked() {
+                        if ui.small_button(uu_i18n::text("复制")).clicked() {
                             ui.ctx().copy_text(service.published_name.clone());
                         }
                     });
                     let mut enabled=service.host_enabled;
-                    if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,"启用此连接服务")).changed() {
+                    if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,uu_i18n::text("启用此连接服务"))).changed() {
                         if let Some(store)=&self.store {
                             let result=store.edit(|book| {
-                                let item=book.services.iter_mut().find(|s|s.id==service.id).ok_or_else(||anyhow::anyhow!("服务器已移除"))?;
+                                let item=book.services.iter_mut().find(|s|s.id==service.id).ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("服务器已移除")))?;
                                 item.host_enabled=enabled; Ok(())
                             });
                             if let Err(e)=result {
                                 self.feedback.error(
                                     super::ui_feedback::Scope::Services(0),
-                                    format!("无法保存：{e:#}"),
+                                    uu_i18n::format!("无法保存：{e:#}"),
                                 );
                             }
                         }
@@ -1782,15 +1781,15 @@ impl Workspace {
                     }
                     self.endpoint_state(ui,&service.name);
                     muted(ui,if service.host_enabled {
-                        "共享开启时，会在此服务器发布本机"
+                        uu_i18n::text("共享开启时，会在此服务器发布本机")
                     } else {
-                        "仅用于连接其它设备"
+                        uu_i18n::text("仅用于连接其它设备")
                     });
                 });
             });
         }
         if self.host.running() {
-            muted(ui,"已运行的服务继续使用启动时配置；服务器配置更改在下次启动生效。");
+            muted(ui,uu_i18n::text("已运行的服务继续使用启动时配置；服务器配置更改在下次启动生效。"));
         }
     }
     fn edit_service(&mut self, service: Option<Service>) {
@@ -1829,17 +1828,17 @@ impl Workspace {
 
     fn assistance(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         card(ui, |ui| {
-            ui.strong("UU 官方远程协助");
-            ui.label("让对方在 UU 官方被控端开启远程协助，再发送设备 ID 和验证码。");
+            ui.strong(uu_i18n::text("UU 官方远程协助"));
+            ui.label(uu_i18n::text("让对方在 UU 官方被控端开启远程协助，再发送设备 ID 和验证码。"));
             ui.add_space(10.);
-            ui.label("粘贴对方分享的完整文本");
+            ui.label(uu_i18n::text("粘贴对方分享的完整文本"));
             ui.add(
                 egui::TextEdit::multiline(&mut self.assist_text)
                     .desired_rows(3)
                     .desired_width(f32::INFINITY)
-                    .hint_text("设备ID：…\n设备验证码：…"),
+                    .hint_text(uu_i18n::text("设备ID：…\n设备验证码：…")),
             );
-            if ui.button("识别分享文本").clicked() {
+            if ui.button(uu_i18n::text("识别分享文本")).clicked() {
                 match uu_core::assistance::Request::parse(&self.assist_text) {
                     Ok(request) => {
                         self.assist_id = request.id.clone();
@@ -1851,8 +1850,8 @@ impl Workspace {
                 }
             }
             ui.add_space(10.);
-            field(ui, "设备 ID", &mut self.assist_id, "对方分享的数字 ID");
-            ui.label("设备验证码");
+            field(ui, uu_i18n::text("设备 ID"), &mut self.assist_id, uu_i18n::text("对方分享的数字 ID"));
+            ui.label(uu_i18n::text("设备验证码"));
             ui.add(
                 egui::TextEdit::singleline(&mut self.assist_code)
                     .password(true)
@@ -1862,18 +1861,18 @@ impl Workspace {
             if !self.assist_error.is_empty() {
                 ui.colored_label(theme::DANGER, &self.assist_error);
             }
-            if primary(ui, "发起远程协助").clicked() {
+            if primary(ui, uu_i18n::text("发起远程协助")).clicked() {
                 match uu_core::assistance::Request::new(&self.assist_id, &self.assist_code) {
                     Ok(request) => actions.push(Action::Assist(request)),
                     Err(e) => self.assist_error = e.to_string(),
                 }
             }
-            muted(ui,"需登录 UU 账号。验证码只用于本次连接，不保存为设备授权。");
+            muted(ui,uu_i18n::text("需登录 UU 账号。验证码只用于本次连接，不保存为设备授权。"));
         });
-        ui.collapsing("连接原生设备", |ui| {
-            ui.label("主机启动服务后即可配对。控制端添加 IP、UU 或 VPS 设备并连接，可选择配对码、密码、临时配对码，或使用主机预先授权的公钥。");
-            if primary(ui, "添加设备").clicked() {self.route.page=Page::Devices;self.new_device(None,None);}
-            if ui.button("让别人连接本机").clicked(){self.route.page=Page::Services;}
+        ui.collapsing(uu_i18n::text("连接原生设备"), |ui| {
+            ui.label(uu_i18n::text("主机启动服务后即可配对。控制端添加 IP、UU 或 VPS 设备并连接，可选择配对码、密码、临时配对码，或使用主机预先授权的公钥。"));
+            if primary(ui, uu_i18n::text("添加设备")).clicked() {self.route.page=Page::Devices;self.new_device(None,None);}
+            if ui.button(uu_i18n::text("让别人连接本机")).clicked(){self.route.page=Page::Services;}
         });
     }
     pub fn dialogs(&mut self, ctx: &egui::Context, info: &Info) -> Vec<Action> {
@@ -1881,45 +1880,45 @@ impl Workspace {
         self.host.dialogs(ctx);
         if let Some(mut editor)=self.client_editor.take() {
             let mut open=true; let mut save=false; let mut cancel=false;
-            egui::Window::new(if editor.global {"全局默认客户端配置"} else {"设备客户端配置"}).id("device-client-editor".into()).open(&mut open)
+            egui::Window::new(if editor.global {uu_i18n::text("全局默认客户端配置")} else {uu_i18n::text("设备客户端配置")}).id("device-client-editor".into()).open(&mut open)
                 .default_width(720.).default_height(600.).max_height((ctx.screen_rect().height()-70.).max(200.)).max_width((ctx.screen_rect().width()-40.).max(280.))
                 .collapsible(false).show(ctx,|ui| {
                     if !editor.error.is_empty(){ui.colored_label(theme::DANGER,&editor.error);}
-                    if !editor.global && ui.small_button("编辑全局默认").clicked() {
+                    if !editor.global && ui.small_button(uu_i18n::text("编辑全局默认")).clicked() {
                         editor.global = true;
                         editor.device.clear();
                         editor.value = uu_core::client_settings::NamedClientSettings::new(
-                            "全局默认",
+                            uu_i18n::text("全局默认"),
                             self.client_defaults.clone(),
                         );
                     }
                     if editor.global {
-                        muted(ui,"全局默认会用于未指定独立配置的设备；修改只影响下一次连接。");
+                        muted(ui,uu_i18n::text("全局默认会用于未指定独立配置的设备；修改只影响下一次连接。"));
                     } else {
-                        field(ui,"配置名称",&mut editor.value.name,"例如：桌面 4K / 游戏 120 FPS");
-                        muted(ui,"仅用于这台设备，不改变本机共享设置和其它设备。");
+                        field(ui,uu_i18n::text("配置名称"),&mut editor.value.name,uu_i18n::text("例如：桌面 4K / 游戏 120 FPS"));
+                        muted(ui,uu_i18n::text("仅用于这台设备，不改变本机共享设置和其它设备。"));
                     }
                     ui.separator();
                     egui::ScrollArea::vertical().id_salt("device-client-fields").max_height((ui.available_height()-70.).max(80.).min((ctx.screen_rect().height()-260.).max(80.))).show(ui,|ui| {
                         super::settings_page::client_editor(ui,&mut editor.value.settings,&mut editor.section);
                     });
                     ui.separator();
-                    ui.horizontal(|ui| {save=primary(ui,"保存配置").clicked();cancel=ui.button("取消").clicked();});
+                    ui.horizontal(|ui| {save=primary(ui,uu_i18n::text("保存配置")).clicked();cancel=ui.button(uu_i18n::text("取消")).clicked();});
                 });
             if save {
                 if editor.global {
                     actions.push(Action::SaveClientDefaults(editor.value.settings.clone()));
                 } else {
-                    let result=self.store.as_ref().ok_or_else(||anyhow::anyhow!("设备配置不可用")).and_then(|store| {
+                    let result=self.store.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用"))).and_then(|store| {
                         store.save_and_select_client_config(&editor.device,editor.value.clone())
                     });
                     match result {
                         Ok(())=>{
                             let scope=self.device_scope();
-                            self.feedback.success(scope,"设备配置已保存；下次连接生效");
+                            self.feedback.success(scope,uu_i18n::text("设备配置已保存；下次连接生效"));
                             self.refresh();
                         }
-                        Err(e)=>{editor.error=format!("无法保存：{e:#}");self.client_editor=Some(editor);}
+                        Err(e)=>{editor.error=uu_i18n::format!("无法保存：{e:#}");self.client_editor=Some(editor);}
                     }
                 }
             }else if open && !cancel {self.client_editor=Some(editor);}
@@ -1930,11 +1929,11 @@ impl Workspace {
             let mut connect = false;
             let mut cancel = false;
             egui::Window::new(if editor.profile.is_none() {
-                "添加设备"
+                uu_i18n::text("添加设备")
             } else if editor.route.is_some() {
-                "修改连接地址"
+                uu_i18n::text("修改连接地址")
             } else {
-                "添加连接地址"
+                uu_i18n::text("添加连接地址")
             })
             .id("device-editor".into())
             .open(&mut open)
@@ -1946,15 +1945,15 @@ impl Workspace {
                 if !editor.error.is_empty() {
                     ui.colored_label(theme::DANGER, &editor.error);
                 }
-                field(ui, "设备名称（可选）", &mut editor.name, "例如：工作电脑");
+                field(ui, uu_i18n::text("设备名称（可选）"), &mut editor.name, uu_i18n::text("例如：工作电脑"));
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut editor.kind, 0, "IP 直连");
-                    ui.selectable_value(&mut editor.kind, 1, "UU 账号");
-                    ui.selectable_value(&mut editor.kind, 2, "自建服务器");
+                    ui.selectable_value(&mut editor.kind, 0, uu_i18n::text("IP 直连"));
+                    ui.selectable_value(&mut editor.kind, 1, uu_i18n::text("UU 账号"));
+                    ui.selectable_value(&mut editor.kind, 2, uu_i18n::text("自建服务器"));
                 });
                 ui.add_space(12.);
                 match editor.kind {
-                    0 => field(ui, "目标地址", &mut editor.address, "主机 IP:端口"),
+                    0 => field(ui, uu_i18n::text("目标地址"), &mut editor.address, uu_i18n::text("主机 IP:端口")),
                     1 => {
                         let choices = match &info.uu_devices {
                             UuDeviceList::Loaded(devices) => devices.as_slice(),
@@ -1962,27 +1961,27 @@ impl Workspace {
                         };
                         match &info.uu_devices {
                             UuDeviceList::SignedOut => {
-                                muted(ui, "尚未登录 UU 账号，可在连接服务或 UU 兼容页登录。");
+                                muted(ui, uu_i18n::text("尚未登录 UU 账号，可在连接服务或 UU 兼容页登录。"));
                             }
                             UuDeviceList::Loading => {
-                                ui.horizontal(|ui| { ui.spinner(); ui.label("正在加载 UU 设备列表…"); });
+                                ui.horizontal(|ui| { ui.spinner(); ui.label(uu_i18n::text("正在加载 UU 设备列表…")); });
                             }
                             UuDeviceList::Failed(error) => {
-                                ui.colored_label(theme::DANGER, format!("无法加载 UU 设备：{error}"));
-                                if ui.button("重试加载 UU 设备").clicked() { actions.push(Action::RefreshUuDevices); }
+                                ui.colored_label(theme::DANGER, uu_i18n::format!("无法加载 UU 设备：{error}"));
+                                if ui.button(uu_i18n::text("重试加载 UU 设备")).clicked() { actions.push(Action::RefreshUuDevices); }
                             }
                             UuDeviceList::Loaded(devices) => {
-                                if devices.is_empty() { muted(ui, "此账号暂无可选 UU 设备。"); }
-                                if ui.button("刷新 UU 设备").clicked() { actions.push(Action::RefreshUuDevices); }
+                                if devices.is_empty() { muted(ui, uu_i18n::text("此账号暂无可选 UU 设备。")); }
+                                if ui.button(uu_i18n::text("刷新 UU 设备")).clicked() { actions.push(Action::RefreshUuDevices); }
                             }
                         }
                         if !choices.is_empty() {
-                            ui.label("选择账号中的设备");
+                            ui.label(uu_i18n::text("选择账号中的设备"));
                             let selected = choices
                                 .iter()
                                 .find(|(id, _)| id == &editor.device)
                                 .map(|(_, name)| name.as_str())
-                                .unwrap_or("请选择设备");
+                                .unwrap_or(uu_i18n::text("请选择设备"));
                             egui::ComboBox::from_id_salt("route-uu-device")
                                 .selected_text(selected)
                                 .width(360.0)
@@ -1999,20 +1998,20 @@ impl Workspace {
                                         }
                                     }
                                 });
-                            ui.collapsing("手动输入设备编号", |ui| {
-                                field(ui, "目标 UU 设备编号", &mut editor.device, "被控端“连接服务”中的本机 UU 编号");
+                            ui.collapsing(uu_i18n::text("手动输入设备编号"), |ui| {
+                                field(ui, uu_i18n::text("目标 UU 设备编号"), &mut editor.device, uu_i18n::text("被控端“连接服务”中的本机 UU 编号"));
                             });
                         } else {
                             field(
                                 ui,
-                                "目标 UU 设备编号",
+                                uu_i18n::text("目标 UU 设备编号"),
                                 &mut editor.device,
-                                "被控端“连接服务”中的本机 UU 编号",
+                                uu_i18n::text("被控端“连接服务”中的本机 UU 编号"),
                             );
                         }
                     }
                     _ => {
-                        ui.label("连接服务器");
+                        ui.label(uu_i18n::text("连接服务器"));
                         egui::ComboBox::from_id_salt("route-service")
                             .selected_text(
                                 self.book
@@ -2020,7 +2019,7 @@ impl Workspace {
                                     .iter()
                                     .find(|s| s.id == editor.service)
                                     .map(|s| s.name.as_str())
-                                    .unwrap_or("请先添加服务器"),
+                                    .unwrap_or(uu_i18n::text("请先添加服务器")),
                             )
                             .show_ui(ui, |ui| {
                                 for service in &self.book.services {
@@ -2033,23 +2032,23 @@ impl Workspace {
                             });
                         field(
                             ui,
-                            "目标设备名称",
+                            uu_i18n::text("目标设备名称"),
                             &mut editor.device,
-                            "被控端在该服务器发布的名称",
+                            uu_i18n::text("被控端在该服务器发布的名称"),
                         );
                     }
                 }
-                muted(ui,"首次连接时确认设备身份，以后不再重复配对。");
+                muted(ui,uu_i18n::text("首次连接时确认设备身份，以后不再重复配对。"));
                 ui.add_space(12.);
                 ui.horizontal(|ui| {
-                    if primary(ui, "保存并连接").clicked() {
+                    if primary(ui, uu_i18n::text("保存并连接")).clicked() {
                         save = true;
                         connect = true;
                     }
-                    if ui.button("仅保存").clicked() {
+                    if ui.button(uu_i18n::text("仅保存")).clicked() {
                         save = true;
                     }
-                    if ui.button("取消").clicked() {
+                    if ui.button(uu_i18n::text("取消")).clicked() {
                         cancel = true;
                     }
                 });
@@ -2062,7 +2061,7 @@ impl Workspace {
                         }
                     }
                     Err(e) => {
-                        editor.error = format!("无法保存设备：{e:#}");
+                        editor.error = uu_i18n::format!("无法保存设备：{e:#}");
                         self.editor = Some(editor);
                     }
                 }
@@ -2073,7 +2072,7 @@ impl Workspace {
         if let Some(mut editor) = self.service_editor.take() {
             let mut open = true;
             let mut save = false;
-            egui::Window::new("连接服务器")
+            egui::Window::new(uu_i18n::text("连接服务器"))
                 .id("service-editor".into())
                 .open(&mut open)
                 .collapsible(false)
@@ -2084,50 +2083,50 @@ impl Workspace {
                     if !editor.error.is_empty() {
                         ui.colored_label(theme::DANGER, &editor.error);
                     }
-                    field(ui, "名称", &mut editor.value.name, "例如：家庭服务器");
+                    field(ui, uu_i18n::text("名称"), &mut editor.value.name, uu_i18n::text("例如：家庭服务器"));
                     field(
                         ui,
-                        "服务器地址",
+                        uu_i18n::text("服务器地址"),
                         &mut editor.value.address,
-                        "signal.example:8443 或 wss://…/v1/signal",
+                        uu_i18n::text("signal.example:8443 或 wss://…/v1/signal"),
                     );
-                    ui.label("访问令牌");
+                    ui.label(uu_i18n::text("访问令牌"));
                     ui.add(
                         egui::TextEdit::singleline(&mut editor.credential)
                             .password(true)
                             .desired_width(f32::INFINITY)
                             .hint_text(if editor.token.is_empty() {
-                                "粘贴服务器提供的访问令牌"
+                                uu_i18n::text("粘贴服务器提供的访问令牌")
                             } else {
-                                "留空则保留已保存的凭据"
+                                uu_i18n::text("留空则保留已保存的凭据")
                             }),
                     );
                     ui.add_space(6.);
-                    ui.collapsing("证书与高级设置", |ui| {
+                    ui.collapsing(uu_i18n::text("证书与高级设置"), |ui| {
                         field(
                             ui,
-                            "使用现有访问凭据文件（可选）",
+                            uu_i18n::text("使用现有访问凭据文件（可选）"),
                             &mut editor.token,
                             "server.token",
                         );
                         field(
                             ui,
-                            "自签名或私有 CA 证书（可选）",
+                            uu_i18n::text("自签名或私有 CA 证书（可选）"),
                             &mut editor.certificate,
-                            "公开可信证书可留空",
+                            uu_i18n::text("公开可信证书可留空"),
                         );
                     });
-                    ui.checkbox(&mut editor.value.host_enabled, "共享本机时使用此服务器");
+                    ui.checkbox(&mut editor.value.host_enabled, uu_i18n::text("共享本机时使用此服务器"));
                     if editor.value.host_enabled {
                         field(
                             ui,
-                            "本机在服务器的设备名称",
+                            uu_i18n::text("本机在服务器的设备名称"),
                             &mut editor.value.published_name,
-                            "my-desktop（字母、数字、-、_）",
+                            uu_i18n::text("my-desktop（字母、数字、-、_）"),
                         );
                     }
                     ui.add_space(12.);
-                    if primary(ui, "保存服务器").clicked() {
+                    if primary(ui, uu_i18n::text("保存服务器")).clicked() {
                         save = true;
                     }
                 });
@@ -2139,7 +2138,7 @@ impl Workspace {
                     let store = self
                         .store
                         .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("设备配置不可用"))?;
+                        .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))?;
                     if !editor.credential.trim().is_empty() {
                         editor.value.token_file =
                             store.store_service_credential(&editor.value.id, &editor.credential)?;
@@ -2158,12 +2157,12 @@ impl Workspace {
                     Ok(()) => {
                         self.feedback.success(
                             super::ui_feedback::Scope::Services(0),
-                            "服务器配置已保存",
+                            uu_i18n::text("服务器配置已保存"),
                         );
                         self.refresh();
                     }
                     Err(e) => {
-                        editor.error = format!("无法保存：{e:#}");
+                        editor.error = uu_i18n::format!("无法保存：{e:#}");
                         self.service_editor = Some(editor);
                     }
                 }
@@ -2281,7 +2280,7 @@ impl super::App {
                     self.workspace.client_defaults = self.preferences.client.clone();
                     self.persist_preferences();
                     let scope = self.workspace.device_scope();
-                    self.workspace.feedback.success(scope, "全局默认客户端配置已保存；下次连接生效");
+                    self.workspace.feedback.success(scope, uu_i18n::text("全局默认客户端配置已保存；下次连接生效"));
                 }
                 Action::Login => self.start_login(),
                 Action::Logout => self.sign_out(),
@@ -2295,7 +2294,7 @@ impl super::App {
                 Action::CancelLogin => {
                     self.login_rx = None;
                     self.login_texture = None;
-                    self.login_status = "已取消登录".into();
+                    self.login_status = uu_i18n::text("已取消登录").into();
                     self.workspace.resume_connect = None;
                 }
                 // The start button is dispatched after rendering to keep one
@@ -2306,32 +2305,32 @@ impl super::App {
                         let config = self
                             .config
                             .clone()
-                            .ok_or_else(|| anyhow::anyhow!("设备目录不可用"))?;
+                            .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备目录不可用")))?;
                         let book = self
                             .workspace
                             .store
                             .as_ref()
-                            .ok_or_else(|| anyhow::anyhow!("设备配置不可用"))?
+                            .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))?
                             .read()?;
                         let trust = self
                             .workspace
                             .trust
                             .clone()
-                            .ok_or_else(|| anyhow::anyhow!("设备身份不可用"))?;
+                            .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备身份不可用")))?;
                         if restart {self.workspace.host.restart(config,book,trust,ctx)}
                         else {self.workspace.host.start(config, book, trust, ctx)}
                     })();
                     if let Err(e) = result {
                         self.workspace.feedback.error(
                             super::ui_feedback::Scope::Services(0),
-                            format!("无法开始共享：{e:#}"),
+                            uu_i18n::format!("无法开始共享：{e:#}"),
                         );
                     }
                 }
                 Action::Assist(request) => {
                     if !self.logged_in {
                         self.workspace.assist_error =
-                            "请先在 UU 兼容页登录账号，再发起远程协助。".into();
+                            uu_i18n::text("请先在 UU 兼容页登录账号，再发起远程协助。").into();
                         self.workspace.route.page = Page::Compatibility;
                         self.workspace.route.compatibility = CompatibilityView::Devices;
                         self.start_login();
@@ -2346,11 +2345,11 @@ impl super::App {
                                 self.workspace.assist_error.clear();
                                 self.workspace.feedback.success(
                                     super::ui_feedback::Scope::Compatibility,
-                                    "已打开远程协助窗口",
+                                    uu_i18n::text("已打开远程协助窗口"),
                                 );
                             }
                             Err(e) => {
-                                self.workspace.assist_error = format!("无法打开协助窗口：{e}")
+                                self.workspace.assist_error = uu_i18n::format!("无法打开协助窗口：{e}")
                             }
                         }
                     }
@@ -2364,7 +2363,7 @@ impl super::App {
                 .workspace
                 .store
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("设备配置不可用"))?;
+                .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))?;
             let launch = store.launch(id)?;
             if matches!(launch.route.destination, Destination::Uu { .. }) && !self.logged_in {
                 self.workspace.resume_connect = Some(id.into());
@@ -2388,7 +2387,7 @@ impl super::App {
         if let Err(e) = result {
             self.workspace.feedback.error(
                 self.workspace.device_scope(),
-                format!("无法连接设备：{e:#}"),
+                uu_i18n::format!("无法连接设备：{e:#}"),
             );
         }
     }

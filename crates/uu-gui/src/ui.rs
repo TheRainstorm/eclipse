@@ -269,10 +269,10 @@ impl App {
             _ => None,
         };
         let current = match page {
-            super::workspace_ui::Page::Devices => "设备列表".to_owned(),
-            super::workspace_ui::Page::Services => "服务管理".into(),
-            super::workspace_ui::Page::Compatibility => "UU 兼容".into(),
-            super::workspace_ui::Page::Settings => "应用设置".into(),
+            super::workspace_ui::Page::Devices => uu_i18n::text("设备列表").to_owned(),
+            super::workspace_ui::Page::Services => uu_i18n::text("服务管理").into(),
+            super::workspace_ui::Page::Compatibility => uu_i18n::text("UU 兼容").into(),
+            super::workspace_ui::Page::Settings => uu_i18n::text("应用设置").into(),
         };
         let running = self.workspace.host.running();
         let failed = self
@@ -314,7 +314,7 @@ impl App {
                         ui.label(RichText::new("/").size(17.0).color(separator_color));
                     }
                     if let Some(name) = detail_name {
-                        if ui.link(RichText::new("设备列表").size(17.0)).clicked() {
+                        if ui.link(RichText::new(uu_i18n::text("设备列表")).size(17.0)).clicked() {
                             self.workspace.route.device = super::workspace_ui::DeviceView::List;
                         }
                         ui.label(RichText::new("/").size(17.0).color(separator_color));
@@ -336,23 +336,23 @@ impl App {
                         self.toggle_maximized(ctx);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icon_button(ui, Icon::Close, "关闭").clicked() {
+                        if icon_button(ui, Icon::Close, uu_i18n::text("关闭")).clicked() {
                             self.disconnect();
                             self.close_at = Some(
                                 std::time::Instant::now() + std::time::Duration::from_millis(200),
                             );
                         }
-                        if icon_button(ui, Icon::Max, "最大化 / 还原").clicked() {
+                        if icon_button(ui, Icon::Max, uu_i18n::text("最大化 / 还原")).clicked() {
                             self.toggle_maximized(ctx);
                         }
-                        if icon_button(ui, Icon::Min, "最小化").clicked() {
+                        if icon_button(ui, Icon::Min, uu_i18n::text("最小化")).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                         ui.add_space(4.0);
                         if icon_button_tinted(
                             ui,
                             Icon::Settings,
-                            "应用设置",
+                            uu_i18n::text("应用设置"),
                             page == super::workspace_ui::Page::Settings,
                             if wallpaper_root { C::WHITE } else { INK },
                         )
@@ -363,7 +363,7 @@ impl App {
                         if icon_button_selected(
                             ui,
                             Icon::Uu,
-                            "UU 兼容",
+                            uu_i18n::text("UU 兼容"),
                             page == super::workspace_ui::Page::Compatibility,
                         )
                         .clicked()
@@ -393,16 +393,16 @@ impl App {
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::Button,
                                 ui.is_enabled(),
-                                "服务管理",
+                                uu_i18n::text("服务管理"),
                             )
                         });
                         if response
                             .on_hover_text(if failed {
-                                "服务管理 · 部分入口异常"
+                                uu_i18n::text("服务管理 · 部分入口异常")
                             } else if running {
-                                "服务管理 · 运行中"
+                                uu_i18n::text("服务管理 · 运行中")
                             } else {
-                                "服务管理 · 已停止"
+                                uu_i18n::text("服务管理 · 已停止")
                             })
                             .clicked()
                         {
@@ -411,7 +411,7 @@ impl App {
                         if icon_button_tinted(
                             ui,
                             Icon::Desktop,
-                            "设备列表",
+                            uu_i18n::text("设备列表"),
                             page == super::workspace_ui::Page::Devices,
                             if wallpaper_root { C::WHITE } else { INK },
                         )
@@ -445,20 +445,20 @@ impl App {
         if let Some(error) = self.account_error.clone() {
             egui::TopBottomPanel::top("local-account-error").show(ctx, |ui| {
                 ui.add(egui::Label::new(RichText::new(error).color(C::from_rgb(177, 48, 48))).wrap());
-                if ui.button("检查配置后重试").clicked() { self.retry_account_read(); }
+                if ui.button(uu_i18n::text("检查配置后重试")).clicked() { self.retry_account_read(); }
             });
         }
         if !self.logged_in {
             egui::CentralPanel::default().show(ctx,|ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(38.0);
-                    ui.heading("连接你的每一台设备");
+                    ui.heading(uu_i18n::text("连接你的每一台设备"));
                     ui.add_space(12.0);
-                    ui.label(RichText::new("登录 UU 账号访问官方设备；点击左上角标志返回原生设备页").color(MUTED));
+                    ui.label(RichText::new(uu_i18n::text("登录 UU 账号访问官方设备；点击左上角标志返回原生设备页")).color(MUTED));
                     ui.add_space(24.0);
-                    ui.label("UU 本机名称");
+                    ui.label(uu_i18n::text("UU 本机名称"));
                     ui.monospace(uu_core::config::uu_device_name());
-                    ui.small("自动使用电脑名加 -Eclipse，与官方客户端区分。");
+                    ui.small(uu_i18n::text("自动使用电脑名加 -Eclipse，与官方客户端区分。"));
                     ui.add_space(12.0);
                     if let Some(texture)=&self.login_texture {
                         ui.image((texture.id(),egui::vec2(224.0,224.0)));
@@ -467,13 +467,13 @@ impl App {
                         ui.add(egui::Spinner::new().size(28.0));ui.add_space(14.0);
                     }
                     if !self.login_status.is_empty(){ui.label(&self.login_status);ui.add_space(10.0);}
-                    if ui.add_enabled_ui(self.account_error.is_none(), |ui| ui.add_sized([180.0,36.0],egui::Button::new(RichText::new(if self.login_texture.is_some(){"刷新二维码"}else{"扫码登录"}).color(C::WHITE)).fill(BLUE))).inner.clicked(){self.start_login();}
-                    if self.login_rx.is_some()&&ui.button("取消登录").clicked(){self.login_rx=None;self.login_texture=None;self.login_status="已取消登录".into();}
+                    if ui.add_enabled_ui(self.account_error.is_none(), |ui| ui.add_sized([180.0,36.0],egui::Button::new(RichText::new(if self.login_texture.is_some(){uu_i18n::text("刷新二维码")}else{uu_i18n::text("扫码登录")}).color(C::WHITE)).fill(BLUE))).inner.clicked(){self.start_login();}
+                    if self.login_rx.is_some()&&ui.button(uu_i18n::text("取消登录")).clicked(){self.login_rx=None;self.login_texture=None;self.login_status=uu_i18n::text("已取消登录").into();}
                     ui.add_space(14.0);
                     ui.add_space(8.0);
-                    if ui.add_sized([180.0,32.0],egui::Button::new(if self.workspace.host.running(){"管理当前共享"}else{"共享此设备"})).clicked(){self.open_native_host();}
+                    if ui.add_sized([180.0,32.0],egui::Button::new(if self.workspace.host.running(){uu_i18n::text("管理当前共享")}else{uu_i18n::text("共享此设备")})).clicked(){self.open_native_host();}
                     ui.add_space(8.0);
-                    ui.small("原生 IP 直连无需账号；旧邀请文件仍可拖入窗口");
+                    ui.small(uu_i18n::text("原生 IP 直连无需账号；旧邀请文件仍可拖入窗口"));
                     if !self.status.is_empty(){ui.add_space(16.0);ui.label(RichText::new(&self.status).color(MUTED));}
                 });
             });
@@ -508,7 +508,7 @@ impl App {
                 text_at(
                     ui.painter(),
                     card.left_top() + egui::vec2(18.0, 72.0),
-                    "开源连接，自由协作",
+                    uu_i18n::text("开源连接，自由协作"),
                     13.0,
                     C::from_white_alpha(220),
                 );
@@ -528,9 +528,9 @@ impl App {
                                 ui.selectable_value(&mut self.device_filter, filter, filter.label());
                             }
                         });
-                    } else { ui.label(RichText::new("我的设备").size(16.0)); }
+                    } else { ui.label(RichText::new(uu_i18n::text("我的设备")).size(16.0)); }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icon_button(ui, Icon::Refresh, "刷新设备").clicked() {
+                        if icon_button(ui, Icon::Refresh, uu_i18n::text("刷新设备")).clicked() {
                             self.start_load();
                         }
                     });
@@ -538,7 +538,7 @@ impl App {
                 ui.add_space(8.0);
                 if ui.add(
                     egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("搜索设备")
+                        .hint_text(uu_i18n::text("搜索设备"))
                         .desired_width(f32::INFINITY)
                         .margin(egui::vec2(10.0, 6.0)),
                 ).changed() { self.ensure_visible_device_selection(); }
@@ -629,9 +629,9 @@ impl App {
                 let devices_view = self.workspace.route.compatibility
                     == super::workspace_ui::CompatibilityView::Devices;
                 for (kind, label, filter) in [
-                    (Icon::Grid, "全部设备", super::device_library::Filter::All),
-                    (Icon::Clock, "最近使用", super::device_library::Filter::Recent),
-                    (Icon::Star, "收藏设备", super::device_library::Filter::Favorites),
+                    (Icon::Grid, uu_i18n::text("全部设备"), super::device_library::Filter::All),
+                    (Icon::Clock, uu_i18n::text("最近使用"), super::device_library::Filter::Recent),
+                    (Icon::Star, uu_i18n::text("收藏设备"), super::device_library::Filter::Favorites),
                 ] {
                     let active = devices_view && filter == self.device_filter;
                     let (row, response) = ui.allocate_exact_size(
@@ -683,7 +683,7 @@ impl App {
                 text_at(
                     ui.painter(),
                     row.left_center() + egui::vec2(55.0, 0.0),
-                    "远程协助",
+                    uu_i18n::text("远程协助"),
                     15.0,
                     INK,
                 );
@@ -708,8 +708,8 @@ impl App {
                 )
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.heading("远程协助");
-                        ui.label(RichText::new("通过临时邀请帮助另一台设备").color(MUTED));
+                        ui.heading(uu_i18n::text("远程协助"));
+                        ui.label(RichText::new(uu_i18n::text("通过临时邀请帮助另一台设备")).color(MUTED));
                         ui.add_space(18.0);
                         actions = self.workspace.assistance_page(ui);
                     });
@@ -728,32 +728,32 @@ impl App {
                     let Some(index) = self.selected.filter(|i| *i < self.devices.len()) else {
                         ui.add_space(80.0);
                         if let Some(error) = &self.device_load_error {
-                            ui.heading("设备加载失败");
+                            ui.heading(uu_i18n::text("设备加载失败"));
                             ui.add_space(12.0);
                             ui.add(egui::Label::new(RichText::new(error).color(C::from_rgb(177, 48, 48))).wrap());
                             ui.add_space(12.0);
-                            ui.label("设备列表暂时无法获取；本次加载失败不会清除本地登录状态。");
-                            ui.hyperlink_to("连接凭据配置说明", "https://github.com/TheRainstorm/uu-client/blob/master/docs/connection-credentials.md");
-                            if ui.button("重试加载设备").clicked() {
+                            ui.label(uu_i18n::text("设备列表暂时无法获取；本次加载失败不会清除本地登录状态。"));
+                            ui.hyperlink_to(uu_i18n::text("连接凭据配置说明"), "https://github.com/TheRainstorm/uu-client/blob/master/docs/connection-credentials.md");
+                            if ui.button(uu_i18n::text("重试加载设备")).clicked() {
                                 self.start_load();
                             }
                         } else if self.rx.is_some() {
-                            ui.heading("正在加载设备…");
+                            ui.heading(uu_i18n::text("正在加载设备…"));
                             ui.spinner();
                         } else if self.devices.is_empty() {
-                            ui.heading("此账号暂无设备");
-                            if ui.button("刷新设备").clicked() {
+                            ui.heading(uu_i18n::text("此账号暂无设备"));
+                            if ui.button(uu_i18n::text("刷新设备")).clicked() {
                                 self.start_load();
                             }
                         } else {
-                            ui.heading(if self.search.trim().is_empty() { self.device_filter.empty_message() } else { "没有匹配的设备" });
+                            ui.heading(if self.search.trim().is_empty() { self.device_filter.empty_message() } else { uu_i18n::text("没有匹配的设备") });
                             ui.label(match self.device_filter {
-                                super::device_library::Filter::Favorites => "点击设备标题旁的星标，即可加入收藏。",
-                                super::device_library::Filter::Recent => "打开过串流窗口的设备会显示在这里。",
-                                super::device_library::Filter::All => "调整搜索条件，或刷新设备列表。",
+                                super::device_library::Filter::Favorites => uu_i18n::text("点击设备标题旁的星标，即可加入收藏。"),
+                                super::device_library::Filter::Recent => uu_i18n::text("打开过串流窗口的设备会显示在这里。"),
+                                super::device_library::Filter::All => uu_i18n::text("调整搜索条件，或刷新设备列表。"),
                             });
-                            if !self.search.is_empty() && ui.button("清除搜索").clicked() { self.search.clear(); self.ensure_visible_device_selection(); }
-                            if self.device_filter != super::device_library::Filter::All && ui.button("查看全部设备").clicked() { self.device_filter = super::device_library::Filter::All; self.ensure_visible_device_selection(); }
+                            if !self.search.is_empty() && ui.button(uu_i18n::text("清除搜索")).clicked() { self.search.clear(); self.ensure_visible_device_selection(); }
+                            if self.device_filter != super::device_library::Filter::All && ui.button(uu_i18n::text("查看全部设备")).clicked() { self.device_filter = super::device_library::Filter::All; self.ensure_visible_device_selection(); }
                         }
                         return;
                     };
@@ -775,7 +775,7 @@ impl App {
                         text_at(
                             ui.painter(),
                             pill.left_center() + egui::vec2(24.0, 0.0),
-                            if is_online { "在线" } else { "离线" },
+                            if is_online { uu_i18n::text("在线") } else { uu_i18n::text("离线") },
                             13.0,
                             C::WHITE,
                         );
@@ -790,13 +790,13 @@ impl App {
                                 })
                                 .color(INK)).truncate())).inner.on_hover_text(&device.alias);
                         let favorite = self.device_library.is_favorite(&device.device_id);
-                        if icon_button_selected(ui, Icon::Star, if favorite { "取消收藏" } else { "收藏设备" }, favorite).clicked() {
+                        if icon_button_selected(ui, Icon::Star, if favorite { uu_i18n::text("取消收藏") } else { uu_i18n::text("收藏设备") }, favorite).clicked() {
                             self.device_library.toggle_favorite(&device.device_id);
                             self.ensure_visible_device_selection();
                         }
                         ui.menu_button("···", |ui| {
                             ui.label(&device.device_id);
-                            if ui.button("复制设备 ID").clicked() {
+                            if ui.button(uu_i18n::text("复制设备 ID")).clicked() {
                                 ui.output_mut(|o| o.copied_text = device.device_id.clone());
                                 ui.close_menu();
                             }
@@ -827,11 +827,11 @@ impl App {
                         }
                     }
                     let label = if !is_online {
-                        "设备当前离线"
+                        uu_i18n::text("设备当前离线")
                     } else if !device.controllable {
-                        "设备暂不可连接"
+                        uu_i18n::text("设备暂不可连接")
                     } else {
-                        "进入桌面  →"
+                        uu_i18n::text("进入桌面  →")
                     };
                     let enter = Rect::from_center_size(
                         hero.center_bottom() + egui::vec2(0.0, -46.0),
@@ -871,10 +871,10 @@ impl App {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 0.0;
                                 for (kind, label, enabled) in [
-                                    (Icon::Folder, "文件传输", false),
-                                    (Icon::Play, "观看模式", is_online && device.controllable),
-                                    (Icon::Terminal, "终端", false),
-                                    (Icon::Link, "端口映射", false),
+                                    (Icon::Folder, uu_i18n::text("文件传输"), false),
+                                    (Icon::Play, uu_i18n::text("观看模式"), is_online && device.controllable),
+                                    (Icon::Terminal, uu_i18n::text("终端"), false),
+                                    (Icon::Link, uu_i18n::text("端口映射"), false),
                                 ] {
                                     let (r, response) = ui.allocate_exact_size(
                                         egui::vec2(cell, 30.0),
@@ -912,7 +912,7 @@ impl App {
                                         );
                                     }
                                     if !enabled {
-                                        response.on_hover_text("暂未开放");
+                                        response.on_hover_text(uu_i18n::text("暂未开放"));
                                     } else if response.on_hover_text(label).clicked() {
                                         self.view_only = true;
                                         self.connect();
@@ -921,7 +921,7 @@ impl App {
                             });
                         });
                     ui.add_space(24.0);
-                    ui.label(RichText::new("快速启动").size(17.0).color(MUTED));
+                    ui.label(RichText::new(uu_i18n::text("快速启动")).size(17.0).color(MUTED));
                     ui.add_space(11.0);
                     let (quick, response) =
                         ui.allocate_exact_size(egui::vec2(width, 115.0), Sense::click());
@@ -969,7 +969,7 @@ impl App {
                     ui.painter().text(
                         center + egui::vec2(0.0, 38.0),
                         egui::Align2::CENTER_CENTER,
-                        "连接此设备",
+                        uu_i18n::text("连接此设备"),
                         egui::FontId::proportional(13.0),
                         INK,
                     );
@@ -1041,12 +1041,12 @@ impl App {
                     if self.displays.ready() || self.displays.switching() {
                         ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(24.0,24.0)),egui::Spinner::new());
                     } else if let Some(id)=self.displays.selected {
-                        if ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(156.0,34.0)),egui::Button::new("重试当前显示器")).clicked(){self.select_remote_screen(id);}
+                        if ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(156.0,34.0)),egui::Button::new(uu_i18n::text("重试当前显示器"))).clicked(){self.select_remote_screen(id);}
                     }
-                    if !self.disconnecting && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),egui::Button::new("取消连接")).clicked(){self.disconnect();}
+                    if !self.disconnecting && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),egui::Button::new(uu_i18n::text("取消连接"))).clicked(){self.disconnect();}
                 } else {
-                    if ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),egui::Button::new(RichText::new("重新连接").color(C::WHITE)).fill(BLUE)).clicked(){self.connect();}
-                    if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),egui::Button::new("关闭串流窗口")).clicked(){self.disconnect();}
+                    if ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),egui::Button::new(RichText::new(uu_i18n::text("重新连接")).color(C::WHITE)).fill(BLUE)).clicked(){self.connect();}
+                    if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),egui::Button::new(uu_i18n::text("关闭串流窗口"))).clicked(){self.disconnect();}
                 }
             }
             if chosen.is_some() && !self.displays.notice.is_empty() {
@@ -1057,7 +1057,7 @@ impl App {
             if chosen.is_some() && self.fullscreen && !ctx.input(|i|i.focused) {
                 let hint=Rect::from_center_size(rect.center_bottom()-egui::vec2(0.0,54.0),egui::vec2((rect.width()-40.0).clamp(1.0,360.0),40.0));
                 ui.painter().rect_filled(hint,6.0,C::from_black_alpha(170));
-                ui.put(hint,egui::Label::new(RichText::new("点击画面以获取键盘控制").color(C::WHITE)).wrap());
+                ui.put(hint,egui::Label::new(RichText::new(uu_i18n::text("点击画面以获取键盘控制")).color(C::WHITE)).wrap());
             }
             if self.hud && chosen.is_none() { self.paint_hud(ui, rect); }
 

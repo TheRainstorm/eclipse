@@ -18,12 +18,12 @@ pub(crate) enum State {
 impl State {
     pub fn label(&self) -> String {
         match self {
-            Self::Starting => "声音准备中".into(),
+            Self::Starting => uu_i18n::text("声音准备中").into(),
             Self::Active(backend) => {
                 tracing::debug!(backend, "native output audio active");
-                "声音已共享".into()
+                uu_i18n::text("声音已共享").into()
             }
-            Self::Unavailable(message) => format!("声音暂不可用：{message}；正在重试"),
+            Self::Unavailable(message) => uu_i18n::format!("声音暂不可用：{message}；正在重试"),
         }
     }
 }

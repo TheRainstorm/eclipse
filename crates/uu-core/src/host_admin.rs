@@ -60,10 +60,10 @@ pub struct Client {
 }
 impl Client {
     pub fn request(&self,request:Request)->Result<u64> {
-        ensure!(self.available.load(Ordering::Acquire),"主机未提供连接管理，请更新两端并重新连接");
+        ensure!(self.available.load(Ordering::Acquire),"{}", uu_i18n::format!("主机未提供连接管理，请更新两端并重新连接"));
         let id=self.next.fetch_add(1,Ordering::Relaxed)+1;
-        self.sender.lock().unwrap().as_ref().context("控制通路未连接")?
-            .try_send(Command{id,request}).map_err(|_|anyhow::anyhow!("管理请求队列已满或连接已关闭"))?;
+        self.sender.lock().unwrap().as_ref().context(uu_i18n::text("控制通路未连接"))?
+            .try_send(Command{id,request}).map_err(|_|anyhow::anyhow!("{}", uu_i18n::format!("管理请求队列已满或连接已关闭")))?;
         Ok(id)
     }
     pub(crate) fn attach(&self)->mpsc::Receiver<Command> {
@@ -95,7 +95,7 @@ impl Service {
         Self {store,active,restart:Arc::new(restart)}
     }
     fn grant(context:&SessionContext)->Result<Permissions> {
-        Ok(context.access.peer_permissions(&context.peer)?.context("设备授权已撤销")?.1)
+        Ok(context.access.peer_permissions(&context.peer)?.context(uu_i18n::text("设备授权已撤销"))?.1)
     }
     pub(crate) fn execute(&self,context:&SessionContext,request:Request)->Result<Response> {
         let grant=Self::grant(context)?;
@@ -110,16 +110,16 @@ impl Service {
     pub fn restart_local_administrator(&self)->Result<()> {(self.restart)()}
     fn execute_granted(&self,access:&crate::shared_host::Access,grant:Permissions,request:Request)->Result<Response> {
         grant.validate()?;
-        if !matches!(request,Request::Inspect) {ensure!(grant.details().manage_server,"本机未授予管理服务和连接权限");}
+        if !matches!(request,Request::Inspect) {ensure!(grant.details().manage_server,"{}", uu_i18n::format!("本机未授予管理服务和连接权限"));}
         match request {
             Request::Inspect=>{
                 let connections=access.sessions.details().into_iter().map(|(id,peer,status)| {
                     let record=access.peer_permissions(&peer).ok().flatten();
-                    let name=record.as_ref().map_or_else(||"已授权设备".into(),|(device,_)|device.name.clone());
+                    let name=record.as_ref().map_or_else(||uu_i18n::text("已授权设备").into(),|(device,_)|device.name.clone());
                     let permissions=record.map(|(_,p)|p).unwrap_or(Permissions::VIEW);
                     let status=match status {
                         crate::native::HostStatus::Streaming{width,height,fps,..}=>format!("{width}×{height} · {fps} FPS"),
-                        _=>"正在建立串流".into(),
+                        _=>uu_i18n::text("正在建立串流").into(),
                     };
                     Connection{id,peer,name,status,permissions}
                 }).collect();
@@ -132,10 +132,10 @@ impl Service {
             },
             Request::Save{revision:expected,settings,restart}=>{
                 settings.validate()?;
-                ensure!(expected.len()==64,"服务配置版本无效，请重新读取");
+                ensure!(expected.len()==64,"{}", uu_i18n::format!("服务配置版本无效，请重新读取"));
                 self.store.edit(|book| {
-                    ensure!(revision(&book.sharing)?==expected,"服务配置已被其它窗口修改，请重新读取后保存");
-                    ensure!(settings.ip_enabled||settings.uu_enabled||book.services.iter().any(|s|s.host_enabled),"至少保留一个连接入口");
+                    ensure!(revision(&book.sharing)?==expected,"{}", uu_i18n::format!("服务配置已被其它窗口修改，请重新读取后保存"));
+                    ensure!(settings.ip_enabled||settings.uu_enabled||book.services.iter().any(|s|s.host_enabled),"{}", uu_i18n::format!("至少保留一个连接入口"));
                     book.sharing=settings;
                     Ok(())
                 })?;
@@ -147,14 +147,14 @@ impl Service {
                 Ok(Response::Applied)
             },
             Request::Disconnect{session}=>{
-                ensure!(access.sessions.sessions().iter().any(|(id,_)|id==&session),"会话已经结束");
+                ensure!(access.sessions.sessions().iter().any(|(id,_)|id==&session),"{}", uu_i18n::format!("会话已经结束"));
                 access.sessions.disconnect_session(&session);
                 Ok(Response::Applied)
             },
         }
     }
     pub(crate) fn restart(&self,context:&SessionContext)->Result<()> {
-        ensure!(Self::grant(context)?.details().manage_server,"本机未授予管理服务权限");
+        ensure!(Self::grant(context)?.details().manage_server,"{}", uu_i18n::format!("本机未授予管理服务权限"));
         (self.restart)()
     }
 }

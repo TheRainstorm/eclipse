@@ -51,7 +51,7 @@ pub fn rename(config: Config, name: String) -> Worker {
         let mut api = UuApi::new(client, config.at("state.json"))?;
         api.register(&name).await?;
         api.rename_current_device(&name).await?;
-        let token = api.state.token.context("账号未登录")?;
+        let token = api.state.token.context(uu_i18n::text("账号未登录"))?;
         let _ = tx.send(LoginEvent::NameSaved { name, token });
         Ok(())
     })
@@ -95,24 +95,23 @@ async fn run(config: Config, name: String, tx: &std::sync::mpsc::Sender<LoginEve
     let mut api = UuApi::new(client, config.at("state.json"))?;
     // The phone sees init's stored name before authentication. Refresh that
     // record using the existing ids before generating the QR, including upgrades.
-    let _ = tx.send(LoginEvent::Status("更新本机注册信息…".into()));
+    let _ = tx.send(LoginEvent::Status(uu_i18n::text("更新本机注册信息…").into()));
     api.register(&name).await?;
     if api.state.device_name.as_deref()!=Some(name.as_str()) {
         if api.state.token.is_some() {
-            let _=tx.send(LoginEvent::Status("同步 UU 设备名称…".into()));
+            let _=tx.send(LoginEvent::Status(uu_i18n::text("同步 UU 设备名称…").into()));
             if api.rename_current_device(&name).await.is_ok() { api.state.device_name=Some(name.clone()); }
         }
         if api.state.device_name.as_deref()!=Some(name.as_str()) {
-            let _=tx.send(LoginEvent::Status("旧设备未认证时，手机可能仍显示原名；登录确认后会自动更新。".into()));
+            let _=tx.send(LoginEvent::Status(uu_i18n::text("旧设备未认证时，手机可能仍显示原名；登录确认后会自动更新。").into()));
         }
     }
     loop {
-        let _ = tx.send(LoginEvent::Status("获取二维码…".into()));
+        let _ = tx.send(LoginEvent::Status(uu_i18n::text("获取二维码…").into()));
         let qr = api.gen_qr_login().await?;
         anyhow::ensure!(
             !qr.jump_url.is_empty() && !qr.token.is_empty(),
-            "服务未返回有效登录二维码"
-        );
+            "{}", uu_i18n::format!("服务未返回有效登录二维码"));
         let _ = tx.send(LoginEvent::Qr(qr.jump_url.clone()));
         let mut status = 1i32;
         let mut last = None;
@@ -126,9 +125,9 @@ async fn run(config: Config, name: String, tx: &std::sync::mpsc::Sender<LoginEve
                 .unwrap_or(0);
             if Some(state) != last {
                 let msg = match state {
-                    2 => "已扫码，等待确认…",
-                    3 => "已确认，正在登录…",
-                    _ => "等待扫码…",
+                    2 => uu_i18n::text("已扫码，等待确认…"),
+                    3 => uu_i18n::text("已确认，正在登录…"),
+                    _ => uu_i18n::text("等待扫码…"),
                 };
                 let _ = tx.send(LoginEvent::Status(msg.into()));
                 last = Some(state);
@@ -137,7 +136,7 @@ async fn run(config: Config, name: String, tx: &std::sync::mpsc::Sender<LoginEve
                 match api.exchange_qr(&qr).await {
                     Ok(v) => {
                         if let Some(tok) = v["data"]["token"].as_str() {
-                            anyhow::ensure!(!tok.is_empty(), "登录响应缺少凭据");
+                            anyhow::ensure!(!tok.is_empty(), "{}", uu_i18n::format!("登录响应缺少凭据"));
                             let uid = v["data"]["user_id"]
                                 .as_str()
                                 .map(str::to_string)
@@ -150,7 +149,7 @@ async fn run(config: Config, name: String, tx: &std::sync::mpsc::Sender<LoginEve
                             let renamed = if api.state.device_name.as_deref() == Some(name.as_str()) {
                                 Ok(())
                             } else {
-                                let _ = tx.send(LoginEvent::Status("登录成功，正在更新设备名称…".into()));
+                                let _ = tx.send(LoginEvent::Status(uu_i18n::text("登录成功，正在更新设备名称…").into()));
                                 api.rename_current_device(&name).await
                             };
                             let name_error = renamed.as_ref().err().map(ToString::to_string);
@@ -166,7 +165,7 @@ async fn run(config: Config, name: String, tx: &std::sync::mpsc::Sender<LoginEve
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(LoginEvent::Status(format!("登录失败: {e}")));
+                        let _ = tx.send(LoginEvent::Status(uu_i18n::format!("登录失败: {e}")));
                     }
                 }
                 break;

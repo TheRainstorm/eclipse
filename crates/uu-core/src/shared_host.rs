@@ -22,7 +22,7 @@ impl HostOwner {
         }
         let file = options.open(directory.join("host.lock"))?;
         fs2::FileExt::try_lock_exclusive(&file)
-            .context("另一个窗口已开启本机共享，请在原窗口管理共享")?;
+            .context(uu_i18n::text("另一个窗口已开启本机共享，请在原窗口管理共享"))?;
         Ok(Self(file))
     }
 }
@@ -49,7 +49,7 @@ pub struct SessionGate {
 impl SessionGate {
     pub fn claim(self: &Arc<Self>, peer: &str) -> Result<SessionLease> {
         let mut active = self.active.lock().unwrap();
-        ensure!(active.len() < MAX_SESSIONS, "主机最多同时接受 {MAX_SESSIONS} 个串流，请先断开一个设备");
+        ensure!(active.len() < MAX_SESSIONS, "{}", uu_i18n::format!("主机最多同时接受 {MAX_SESSIONS} 个串流，请先断开一个设备"));
         let session = uuid::Uuid::new_v4().to_string();
         let (stop, receiver) = watch::channel(false);
         active.insert(session.clone(), Active { peer: peer.into(), stop, status: crate::native::HostStatus::Starting });
@@ -101,8 +101,8 @@ impl Access {
             self.sessions.revoke(peer);
             return Ok(());
         }
-        let record=self.store.peer(peer)?.context("设备授权不存在")?;
-        ensure!(!record.revoked && record.inbound.is_some(),"设备授权已撤销");
+        let record=self.store.peer(peer)?.context(uu_i18n::text("设备授权不存在"))?;
+        ensure!(!record.revoked && record.inbound.is_some(),"{}", uu_i18n::format!("设备授权已撤销"));
         self.store.authorize(record.device,permissions,None)?;
         self.sessions.revoke(peer);
         Ok(())
@@ -110,21 +110,20 @@ impl Access {
     pub fn revoke(&self, peer: &str) -> Result<()> {
         let temporary=self.pairing.revoke_temporary(peer);
         if self.store.peer(peer)?.is_some() {self.store.revoke(peer)?;}
-        else {ensure!(temporary,"设备授权不存在");}
+        else {ensure!(temporary,"{}", uu_i18n::format!("设备授权不存在"));}
         self.sessions.revoke(peer);
         Ok(())
     }
     pub fn claim(&self, peer: &str) -> Result<SessionLease> {
-        let record = self.store.peer(peer)?.context("控制端尚未配对")?;
+        let record = self.store.peer(peer)?.context(uu_i18n::text("控制端尚未配对"))?;
         ensure!(
             !record.revoked && record.inbound.is_some(),
-            "控制端授权已经撤销"
-        );
+            "{}", uu_i18n::format!("控制端授权已经撤销"));
         self.sessions.claim(peer)
     }
     pub(crate) fn claim_authenticated(&self,authorized:&mut crate::device_auth::AuthenticatedPeer)->Result<SessionLease> {
         if let Some(temporary)=authorized.temporary.take() {
-            ensure!(self.pairing.valid_temporary(&temporary.probe()),"临时授权已结束");
+            ensure!(self.pairing.valid_temporary(&temporary.probe()),"{}", uu_i18n::format!("临时授权已结束"));
             let mut lease=self.sessions.claim(&authorized.device.id())?;
             lease.temporary=Some(temporary);
             Ok(lease)

@@ -1,0 +1,16 @@
+[package]
+name = "uu-i18n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared application language and translation catalogue"
+
+[dependencies]
+serde.workspace = true
+uu-i18n-macros = { path = "../uu-i18n-macros" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true

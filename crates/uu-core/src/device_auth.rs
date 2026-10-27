@@ -70,11 +70,11 @@ enum Rejection {
 impl std::fmt::Display for Rejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::PairingClosed => "被控端已停止接收配对，或配对尝试过于频繁；请稍后重试",
-            Self::Busy => "被控端正在确认另一台设备，请稍后重试",
-            Self::Declined => "被控端拒绝或取消了配对，请重新发起",
-            Self::AuthenticationFailed => "设备身份认证失败，请核对短码和被控端授权后重新连接",
-            Self::MethodUnavailable => "主机未启用所选配对方式，请核对密码设置或升级两端",
+            Self::PairingClosed => uu_i18n::text("被控端已停止接收配对，或配对尝试过于频繁；请稍后重试"),
+            Self::Busy => uu_i18n::text("被控端正在确认另一台设备，请稍后重试"),
+            Self::Declined => uu_i18n::text("被控端拒绝或取消了配对，请重新发起"),
+            Self::AuthenticationFailed => uu_i18n::text("设备身份认证失败，请核对短码和被控端授权后重新连接"),
+            Self::MethodUnavailable => uu_i18n::text("主机未启用所选配对方式，请核对密码设置或升级两端"),
         })
     }
 }
@@ -83,21 +83,19 @@ async fn send(io: &mut dyn AuthIo, message: Message) -> Result<()> {
     let value = serde_json::to_value(message)?;
     ensure!(
         serde_json::to_vec(&value)?.len() <= MAX_AUTH_MESSAGE,
-        "配对消息过大"
-    );
+        "{}", uu_i18n::format!("配对消息过大"));
     tokio::time::timeout(Duration::from_secs(10), io.send(value))
         .await
-        .context("配对发送超时")?
+        .context(uu_i18n::text("配对发送超时"))?
 }
 async fn receive(io: &mut dyn AuthIo) -> Result<Message> {
     let value = tokio::time::timeout(WAIT, io.receive())
         .await
-        .context("等待配对超时")??;
+        .context(uu_i18n::text("等待配对超时"))??;
     ensure!(
         serde_json::to_vec(&value)?.len() <= MAX_AUTH_MESSAGE,
-        "配对消息过大"
-    );
-    let message = serde_json::from_value(value).map_err(|_| anyhow::anyhow!("设备认证协议无效"))?;
+        "{}", uu_i18n::format!("配对消息过大"));
+    let message = serde_json::from_value(value).map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("设备认证协议无效")))?;
     if let Message::Rejected { reason } = message {
         anyhow::bail!(reason);
     }
@@ -117,12 +115,11 @@ fn hello(value: Message, host: bool) -> Result<(PublicDevice, String, bool)> {
         resumable,
     } = value
     else {
-        anyhow::bail!("缺少设备身份握手");
+        anyhow::bail!("{}", uu_i18n::format!("缺少设备身份握手"));
     };
     ensure!(
         version == 2 && role == host && nonce.len() == 64 && hex::decode(&nonce).is_ok(),
-        "设备认证版本、角色或挑战无效"
-    );
+        "{}", uu_i18n::format!("设备认证版本、角色或挑战无效"));
     device.validate()?;
     Ok((device, nonce, resumable))
 }
@@ -133,14 +130,14 @@ fn context(
     a: &str,
     b: &str,
 ) -> Result<Vec<u8>> {
-    ensure!(binding.len() == 32, "缺少安全通道绑定");
+    ensure!(binding.len() == 32, "{}", uu_i18n::format!("缺少安全通道绑定"));
     Ok(Sha256::digest(serde_json::to_vec(&serde_json::json!({"domain":"eclipse-device-auth-v2",
         "binding":hex::encode(binding),"viewer":viewer,"host":host,"viewer_nonce":a,"host_nonce":b}))?).to_vec())
 }
 fn method_context(base:Vec<u8>,method:PairingMethod,salt:Option<&str>)->Result<Vec<u8>> {
     if matches!(method,PairingMethod::Code|PairingMethod::PublicKey) {return Ok(base);}
-    if method==PairingMethod::TemporaryCode {ensure!(salt.is_none(),"临时配对参数无效");}
-    if method==PairingMethod::Password {ensure!(salt.is_some_and(|v|v.len()==32 && hex::decode(v).is_ok()),"密码配对参数无效");}
+    if method==PairingMethod::TemporaryCode {ensure!(salt.is_none(),"{}", uu_i18n::format!("临时配对参数无效"));}
+    if method==PairingMethod::Password {ensure!(salt.is_some_and(|v|v.len()==32 && hex::decode(v).is_ok()),"{}", uu_i18n::format!("密码配对参数无效"));}
     Ok(Sha256::digest(serde_json::to_vec(&serde_json::json!({"domain":"eclipse-device-auth-method-v1","context":hex::encode(base),"method":method,"salt":salt}))?).to_vec())
 }
 fn proof(context: &[u8], host: bool, permissions: Option<Permissions>) -> Result<Vec<u8>> {
@@ -165,18 +162,18 @@ fn confirmation(
 }
 fn share(value: Message) -> Result<Vec<u8>> {
     let Message::Pake { share } = value else {
-        anyhow::bail!("缺少短码配对消息");
+        anyhow::bail!("{}", uu_i18n::format!("缺少短码配对消息"));
     };
-    ensure!(share.len() == 66, "短码配对消息长度无效");
-    Ok(hex::decode(share).context("短码配对消息格式无效")?)
+    ensure!(share.len() == 66, "{}", uu_i18n::format!("短码配对消息长度无效"));
+    Ok(hex::decode(share).context(uu_i18n::text("短码配对消息格式无效"))?)
 }
 fn check_tag(value: Message, mac: Hmac<Sha256>) -> Result<()> {
     let Message::Confirm { tag } = value else {
-        anyhow::bail!("缺少配对确认");
+        anyhow::bail!("{}", uu_i18n::format!("缺少配对确认"));
     };
-    ensure!(tag.len() == 64, "配对确认长度无效");
+    ensure!(tag.len() == 64, "{}", uu_i18n::format!("配对确认长度无效"));
     mac.verify_slice(&hex::decode(tag)?)
-        .map_err(|_| anyhow::anyhow!("配对码不匹配或会话被修改"))
+        .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("配对码不匹配或会话被修改")))
 }
 
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
@@ -214,8 +211,8 @@ impl PairingDisplay {
     pub fn prompt(&self)->Option<PairingPrompt> {self.prompt.lock().unwrap().as_ref().map(|p|p.0.clone())}
     pub fn selected_method(&self)->PairingMethod {*self.selected.lock().unwrap()}
     pub fn choose(&self,choice:PairingChoice)->Result<()> {
-        self.prompt.lock().unwrap().take().context("配对请求已结束")?.1.send(choice)
-            .map_err(|_|anyhow::anyhow!("配对请求已结束"))
+        self.prompt.lock().unwrap().take().context(uu_i18n::text("配对请求已结束"))?.1.send(choice)
+            .map_err(|_|anyhow::anyhow!("{}", uu_i18n::format!("配对请求已结束")))
     }
     async fn select(&self,remote:&PublicDevice,preauthorized:bool)->Result<PairingChoice> {
         if !self.interactive.load(std::sync::atomic::Ordering::Acquire) {
@@ -223,8 +220,8 @@ impl PairingDisplay {
         }
         let (send,receive)=oneshot::channel();
         *self.prompt.lock().unwrap()=Some((PairingPrompt{device:remote.clone(),preauthorized},send));
-        tokio::time::timeout(Duration::from_secs(120),receive).await.context("等待选择配对方式超时")?
-            .context("本机已取消配对")
+        tokio::time::timeout(Duration::from_secs(120),receive).await.context(uu_i18n::text("等待选择配对方式超时"))?
+            .context(uu_i18n::text("本机已取消配对"))
     }
 }
 struct ClearDisplay<'a>(&'a PairingDisplay);
@@ -243,8 +240,7 @@ impl PairApproval {
         let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
         ensure!(
             code.len() == 8 && code.bytes().all(|b| b.is_ascii_digit()),
-            "请输入 8 位配对码"
-        );
+            "{}", uu_i18n::format!("请输入 8 位配对码"));
         permissions.validate()?;
         Ok(Self {
             code: Zeroizing::new(code),
@@ -380,7 +376,7 @@ impl PairingControl {
                 status: updates,
                 method,
             })
-            .map_err(|_| anyhow::anyhow!("被控端配对确认页面不可用"))?;
+            .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("被控端配对确认页面不可用")))?;
         tokio::pin!(receive);
         let approval = tokio::time::timeout(Duration::from_secs(120), async {
             let mut timer=tokio::time::interval(Duration::from_millis(100));
@@ -390,8 +386,8 @@ impl PairingControl {
                     _=timer.tick()=>if !self.is_open(){anyhow::bail!(Rejection::PairingClosed);},
                 }
             }
-        }).await.context("等待被控端批准超时")??;
-        ensure!(self.is_open(), "被控端已停止接收配对");
+        }).await.context(uu_i18n::text("等待被控端批准超时"))??;
+        ensure!(self.is_open(), "{}", uu_i18n::format!("被控端已停止接收配对"));
         completion.status.send_replace(PairStatus::Verifying);
         Ok(Approved {
             approval,
@@ -435,10 +431,9 @@ pub async fn client(
     let (remote, b, resumable) = hello(receive(io).await?, true)?;
     ensure!(
         remote.id() != local.id(),
-        "目标与本机使用了相同的原生设备身份"
-    );
+        "{}", uu_i18n::format!("目标与本机使用了相同的原生设备身份"));
     if let Some(id) = expected {
-        ensure!(id == remote.id(), "目标设备身份发生变化，请核实后重新配对");
+        ensure!(id == remote.id(), "{}", uu_i18n::format!("目标设备身份发生变化，请核实后重新配对"));
     }
     let known = store.peer(&remote.id())?.is_some() || prior_pair;
     let mut pair = !(known && resumable);
@@ -446,7 +441,7 @@ pub async fn client(
     let method=choice.method;
     *display.selected.lock().unwrap()=method;
     if method==PairingMethod::PublicKey {
-        ensure!(resumable,"主机尚未授权本机公钥，请先在主机添加本机公钥");
+        ensure!(resumable,"{}", uu_i18n::format!("主机尚未授权本机公钥，请先在主机添加本机公钥"));
         pair=false;
     }
     if matches!(method,PairingMethod::TemporaryCode|PairingMethod::Password) {
@@ -455,13 +450,13 @@ pub async fn client(
     let salt=match receive(io).await? {
         Message::Ready{pair:p} if p==pair && matches!(method,PairingMethod::Code|PairingMethod::PublicKey)=>None,
         Message::ReadyMethod{method:m,salt} if m==method=>salt,
-        _=>anyhow::bail!("被控端未接受本次配对方式，请核对设置并升级两端"),
+        _=>anyhow::bail!("{}", uu_i18n::format!("被控端未接受本次配对方式，请核对设置并升级两端")),
     };
     let ctx=method_context(context(binding,&local,&remote,&a,&b)?,method,salt.as_deref())?;
     if pair {
         let password=if method==PairingMethod::Password {
-            let salt: [u8;16]=hex::decode(salt.context("主机未提供密码配对参数")?)?.try_into()
-                .map_err(|_|anyhow::anyhow!("密码配对参数无效"))?;
+            let salt: [u8;16]=hex::decode(salt.context(uu_i18n::text("主机未提供密码配对参数"))?)?.try_into()
+                .map_err(|_|anyhow::anyhow!("{}", uu_i18n::format!("密码配对参数无效")))?;
             let password=choice.password;
             tokio::task::spawn_blocking(move||crate::pairing_password::derive(&password,&salt)).await??
         }else{
@@ -485,7 +480,7 @@ pub async fn client(
         let b_share = share(receive(io).await?)?;
         let key = Zeroizing::new(
             pake.finish(&b_share)
-                .map_err(|_| anyhow::anyhow!("短码配对交换失败"))?,
+                .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("短码配对交换失败")))?,
         );
         let tag = confirmation(&key, &ctx, &a_share, &b_share, false)?
             .finalize()
@@ -514,7 +509,7 @@ pub async fn client(
         permissions,
     } = receive(io).await?
     else {
-        anyhow::bail!("未收到设备授权确认");
+        anyhow::bail!("{}", uu_i18n::format!("未收到设备授权确认"));
     };
     permissions.validate()?;
     remote.verify(&proof(&ctx, true, Some(permissions))?, &signature)?;
@@ -560,14 +555,12 @@ async fn host_inner(
     local.validate()?;
     ensure!(
         remote.id() != local.id(),
-        "控制端与本机使用了相同的原生设备身份"
-    );
+        "{}", uu_i18n::format!("控制端与本机使用了相同的原生设备身份"));
     let old = store.peer(&remote.id())?;
     if let Some(alias) = legacy {
         ensure!(
             store.legacy_migratable(alias, &remote.id())?,
-            "旧配对授权已经撤销或迁移到其它身份"
-        );
+            "{}", uu_i18n::format!("旧配对授权已经撤销或迁移到其它身份"));
     }
     let permission = old
         .as_ref()
@@ -588,10 +581,10 @@ async fn host_inner(
     let (pair,method)=match receive(io).await? {
         Message::Select{pair}=>(pair,PairingMethod::Code),
         Message::SelectMethod{method} if matches!(method,PairingMethod::TemporaryCode|PairingMethod::Password)=>(true,method),
-        _=>anyhow::bail!("缺少有效设备认证方式"),
+        _=>anyhow::bail!("{}", uu_i18n::format!("缺少有效设备认证方式")),
     };
     let _slot=if pair {Some(pairing.reserve()?)}else{
-        ensure!(permission.is_some(),"该客户端尚未获得本机授权");None
+        ensure!(permission.is_some(),"{}", uu_i18n::format!("该客户端尚未获得本机授权"));None
     };
     let password_record=if method==PairingMethod::Password {
         Some(crate::pairing_password::read(store)?.ok_or(Rejection::MethodUnavailable)?)
@@ -629,7 +622,7 @@ async fn host_inner(
         .await?;
         let key = Zeroizing::new(
             pake.finish(&a_share)
-                .map_err(|_| anyhow::anyhow!("短码配对交换失败"))?,
+                .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("短码配对交换失败")))?,
         );
         check_tag(
             receive(io).await?,
@@ -651,12 +644,12 @@ async fn host_inner(
         permission.unwrap()
     };
     let Message::Proof { signature } = receive(io).await? else {
-        anyhow::bail!("缺少控制端身份验证");
+        anyhow::bail!("{}", uu_i18n::format!("缺少控制端身份验证"));
     };
     remote.verify(&proof(&ctx, false, None)?, &signature)?;
     if pair {ensure!(pairing.is_open(),Rejection::PairingClosed);}
     if let Some(record)=&password_record {
-        ensure!(crate::pairing_password::read(store)?.is_some_and(|current|current.salt==record.salt),"主机配对密码已更改，请重新配对");
+        ensure!(crate::pairing_password::read(store)?.is_some_and(|current|current.salt==record.salt),"{}", uu_i18n::format!("主机配对密码已更改，请重新配对"));
     }
     let temporary=if method==PairingMethod::TemporaryCode {
         // Choosing a temporary session must not leave an older permanent
@@ -666,7 +659,7 @@ async fn host_inner(
         Some(pairing.grant_temporary(remote.clone(),permission))
     }else{
         if pair || legacy.is_some() {store.authorize(remote.clone(),permission,legacy)?;}
-        ensure!(store.peer(&remote.id())?.and_then(|p|p.inbound)==Some(permission),"设备授权已被撤销或更改");
+        ensure!(store.peer(&remote.id())?.and_then(|p|p.inbound)==Some(permission),"{}", uu_i18n::format!("设备授权已被撤销或更改"));
         None
     };
     send(
@@ -679,8 +672,7 @@ async fn host_inner(
     .await?;
     ensure!(
         matches!(receive(io).await?, Message::Finished),
-        "控制端未完成设备配对保存"
-    );
+        "{}", uu_i18n::format!("控制端未完成设备配对保存"));
     if let Some(completion) = &mut completion {
         completion.complete();
     }

@@ -341,7 +341,7 @@ async fn transmit(
                         epoch,
                     });
                 } else {
-                    control.status("对端仅支持文本剪贴板，请更新两端以传输图片");
+                    control.status(uu_i18n::text("对端仅支持文本剪贴板，请更新两端以传输图片"));
                 }
             }
         }
@@ -350,7 +350,7 @@ async fn transmit(
         p.epoch != epoch || p.revision != shared.revision.load(Ordering::Acquire) || p.expired()
     }) {
         *pending = None;
-        control.status("图片同步已取消或超时，请重新复制");
+        control.status(uu_i18n::text("图片同步已取消或超时，请重新复制"));
     }
     for _ in 0..2 {
         if !control.ready()
@@ -385,7 +385,7 @@ async fn transmit(
         if sending.offset == sending.image.png.len() {
             *pending = None;
             control.sent.fetch_add(1, Ordering::Relaxed);
-            control.status("图片已发送");
+            control.status(uu_i18n::text("图片已发送"));
             break;
         }
     }
@@ -600,14 +600,14 @@ pub(crate) fn viewer(channel: Arc<RTCDataChannel>, stats: Arc<MediaStats>) {
                     {
                         state.clipboard.status(if enabled {
                             if wire_version == 2 {
-                                "文本和图片剪贴板已开启"
+                                uu_i18n::text("文本和图片剪贴板已开启")
                             } else {
-                                "文本剪贴板已开启；对端版本暂不支持图片"
+                                uu_i18n::text("文本剪贴板已开启；对端版本暂不支持图片")
                             }
                         } else if available {
-                            "同步已关闭，可在菜单或输入设置中开启"
+                            uu_i18n::text("同步已关闭，可在菜单或输入设置中开启")
                         } else {
-                            "主机未允许剪贴板同步"
+                            uu_i18n::text("主机未允许剪贴板同步")
                         });
                     }
                     if !enabled {

@@ -68,8 +68,8 @@ pub fn editor(ui: &mut egui::Ui, bindings: &mut Bindings) {
     if let Some(mut active) = active.filter(|_| listening(&ctx)) {
         active.seen = pass;
         ctx.data_mut(|d| d.insert_temp(record_id, active));
-        ui.label(format!("为“{}”按下快捷键；Esc 取消", active.action.label()));
-        if ui.small_button("取消录入").clicked() {
+        ui.label(uu_i18n::format!("为“{}”按下快捷键；Esc 取消", active.action.label()));
+        if ui.small_button(uu_i18n::text("取消录入")).clicked() {
             clear(&ctx);
         }
         let event = ctx.input(|i| {
@@ -138,7 +138,7 @@ pub fn editor(ui: &mut egui::Ui, bindings: &mut Bindings) {
     }
     let issues = bindings.issues();
     if issues.is_empty() {
-        ui.colored_label(egui::Color32::from_rgb(55, 155, 110), "Eclipse 内部无冲突");
+        ui.colored_label(egui::Color32::from_rgb(55, 155, 110), uu_i18n::text("Eclipse 内部无冲突"));
     } else {
         for issue in &issues {
             ui.colored_label(egui::Color32::from_rgb(210, 70, 70), &issue.message);
@@ -162,7 +162,7 @@ pub fn editor(ui: &mut egui::Ui, bindings: &mut Bindings) {
                     for (index, chord) in chords.iter().enumerate() {
                         if ui
                             .button(chord.label())
-                            .on_hover_text("点击重新录入")
+                            .on_hover_text(uu_i18n::text("点击重新录入"))
                             .clicked()
                         {
                             ctx.data_mut(|d| {
@@ -176,7 +176,7 @@ pub fn editor(ui: &mut egui::Ui, bindings: &mut Bindings) {
                                 )
                             });
                         }
-                        if ui.small_button("×").on_hover_text("移除此绑定").clicked() {
+                        if ui.small_button("×").on_hover_text(uu_i18n::text("移除此绑定")).clicked() {
                             remove = Some(index);
                         }
                         if let Some(warning) = chord.warning() {
@@ -188,9 +188,9 @@ pub fn editor(ui: &mut egui::Ui, bindings: &mut Bindings) {
                         }
                     }
                     if chords.is_empty() {
-                        ui.weak("已禁用");
+                        ui.weak(uu_i18n::text("已禁用"));
                     }
-                    if chords.len() < 3 && ui.small_button("＋").on_hover_text("增加绑定").clicked()
+                    if chords.len() < 3 && ui.small_button("＋").on_hover_text(uu_i18n::text("增加绑定")).clicked()
                     {
                         ctx.data_mut(|d| {
                             d.insert_temp(
@@ -210,15 +210,15 @@ pub fn editor(ui: &mut egui::Ui, bindings: &mut Bindings) {
                     if changed {
                         bindings.set(action, chords);
                     }
-                    if ui.small_button("默认").clicked() {
+                    if ui.small_button(uu_i18n::text("默认")).clicked() {
                         bindings.reset(action);
                     }
                 });
                 ui.end_row();
             }
         });
-    ui.small("仅检查本软件内的冲突；系统与其它应用的快捷键可能仍会抢占。右 Alt / AltGr 保留给远端文本输入。");
-    ui.small("嵌套模式把其它客户端命令交给远端，只有“嵌套快捷键透传”的绑定始终在本机切换；此项须保留一个绑定。");
+    ui.small(uu_i18n::text("仅检查本软件内的冲突；系统与其它应用的快捷键可能仍会抢占。右 Alt / AltGr 保留给远端文本输入。"));
+    ui.small(uu_i18n::text("嵌套模式把其它客户端命令交给远端，只有“嵌套快捷键透传”的绑定始终在本机切换；此项须保留一个绑定。"));
 }
 
 #[cfg(test)]

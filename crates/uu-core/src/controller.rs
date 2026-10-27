@@ -148,15 +148,15 @@ async fn run(
     let mut peer = None;
     let attempt = async {
     let hevc = if stats.prefer_hevc.load(std::sync::atomic::Ordering::Acquire) {
-        status("正在检查 H.265 硬件解码…");
+        status(uu_i18n::text("正在检查 H.265 硬件解码…"));
         let probe = tokio::task::spawn_blocking(uu_media::hevc::probe_decoder).await;
         let result = match probe { Ok(result) => result.map_err(|e|e.to_string()), Err(e) => Err(e.to_string()) };
         stats.diagnostics.record(json!({"event":"hevc_decoder_probe","available":result.is_ok(),"reason":result.as_ref().err()}));
-        if result.is_err() { status("H.265 硬件解码不可用，使用 H.264"); }
+        if result.is_err() { status(uu_i18n::text("H.265 硬件解码不可用，使用 H.264")); }
         result.is_ok()
     } else { false };
     let _ = stats.hevc_enabled.set(hevc);
-    status("正在加入房间…");
+    status(uu_i18n::text("正在加入房间…"));
     let client = SignalClient::new(&config)?;
     let api = UuApi::new(client, config.at("state.json"))?;
     // A controller needs a fresh controlled-side media session. Reusing an
@@ -184,7 +184,7 @@ async fn run(
         "{}/socket.io/?EIO=4&transport=websocket&t={ts}",
         server.trim_end_matches('/')
     );
-    status("连接信令服务器…");
+    status(uu_i18n::text("连接信令服务器…"));
     socket = Some(SocketIo::connect(&url, &token).await?);
     let sio = socket.as_mut().unwrap();
     let dev_id = api.state.device_id.clone().unwrap_or_default();
@@ -221,7 +221,7 @@ async fn run(
     )
     .await?;
 
-    status("等待被控端…");
+    status(uu_i18n::text("等待被控端…"));
     let mut success = None;
     let mut forwarded = 0;
     while success.is_none() || forwarded < 2 {
@@ -234,17 +234,17 @@ async fn run(
         }
     }
     let success = success.context("missing success event")?;
-    status("收到被控端参数");
+    status(uu_i18n::text("收到被控端参数"));
     eprintln!("ICE server entries={}", success["iceServers"].as_array().map_or(0,Vec::len));
     let ice = ice_servers_from_json(&success["iceServers"]);
     stats.diagnostics.record(serde_json::json!({"event":"ice_servers","count":ice.len()}));
-    status("建立 WebRTC…");
+    status(uu_i18n::text("建立 WebRTC…"));
     peer = Some(ControllerMedia::new_with_frames(ice, Some(frame_tx), Some(stats.clone())).await?);
     let media = peer.as_ref().unwrap();
     let ice_id = success["ice_id"].as_str().unwrap_or_default().to_string();
     let target = success["client_id"].as_str().unwrap_or_default().to_string();
     let mut local_ice = offer_and_answer(sio, media, &ctrl, &target, &ice_id, &ev, &status).await?;
-    status("等待 WebRTC 控制通道…");
+    status(uu_i18n::text("等待 WebRTC 控制通道…"));
     // Ask the controlled end for the target frame rate. Without this the host
     // streams at its idle default (~21 fps); the official client sends the same
     // CaptureSettingRequest. Retry a few times while CONTROL settles.
@@ -280,7 +280,7 @@ async fn run(
     stats.audio.stop();
     stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);
     stats.clipboard.active.store(false,std::sync::atomic::Ordering::Release);
-    status("正在释放连接…");
+    status(uu_i18n::text("正在释放连接…"));
     // Flush pending key/button releases before tearing down CONTROL. Bound
     // every cleanup operation so a dead network cannot trap the UI on exit.
     if let Some(media) = &peer {
@@ -296,7 +296,7 @@ async fn run(
         }
     }
     close_session(socket.as_mut(), peer.as_ref(), &ctrl).await;
-    status("已断开");
+    status(uu_i18n::text("已断开"));
     result
 }
 
@@ -314,8 +314,8 @@ async fn offer_and_answer(
         "app_control_id": ctrl, "gzip_sdp": {"_placeholder": true, "num": 0},
         "ice_id": ice_id, "ice_network_type": 0, "sdp": "", "type": "offer"
     }}), &[gzip_sdp04(&offer)?]).await?;
-    status("已发送SDP offer");
-    status("等待 SDP answer…");
+    status(uu_i18n::text("已发送SDP offer"));
+    status(uu_i18n::text("等待 SDP answer…"));
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
     let mut early_candidates = Vec::new();
     loop {
@@ -358,7 +358,7 @@ async fn send_local_candidate(
     } else {
         // UU's candidate event has no negotiated end-of-candidates extension.
         // Completion is local progress only; do not invent a wire message.
-        status("ICE收集完成");
+        status(uu_i18n::text("ICE收集完成"));
     }
     Ok(())
 }

@@ -33,21 +33,21 @@ fn describe(compiled: &str, dirty: &str, manifest: Manifest) -> String {
     let compiled = support::valid_revision(compiled).then_some(compiled);
     let mut label = match (compiled, &manifest) {
         (Some(revision), _) => revision[..12].to_owned(),
-        (None, Manifest::Revision(revision)) => format!("{}（包清单）", &revision[..12]),
-        _ => "开发构建（无 Git 信息）".to_owned(),
+        (None, Manifest::Revision(revision)) => uu_i18n::format!("{}（包清单）", &revision[..12]),
+        _ => uu_i18n::text("开发构建（无 Git 信息）").to_owned(),
     };
     if compiled.is_some() {
         match dirty {
-            "true" => label.push_str(" · 本地修改"),
+            "true" => label.push_str(uu_i18n::text(" · 本地修改")),
             "false" => {}
-            _ => label.push_str(" · 工作区状态未知"),
+            _ => label.push_str(uu_i18n::text(" · 工作区状态未知")),
         }
     }
     match manifest {
         Manifest::Revision(revision) if compiled.is_some_and(|actual| actual != revision) => {
-            label.push_str(" · 安装清单与程序不一致");
+            label.push_str(uu_i18n::text(" · 安装清单与程序不一致"));
         }
-        Manifest::Invalid => label.push_str(" · 安装清单无效"),
+        Manifest::Invalid => label.push_str(uu_i18n::text(" · 安装清单无效")),
         _ => {}
     }
     label

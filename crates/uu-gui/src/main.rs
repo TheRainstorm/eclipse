@@ -98,7 +98,7 @@ struct DeviceListResp {
 
 fn parse_devices(body: serde_json::Value) -> anyhow::Result<Vec<Device>> {
     let resp: DeviceListResp = serde_json::from_value(body)?;
-    anyhow::ensure!(resp.code == 0, "获取设备列表失败，服务返回代码 {}", resp.code);
+    anyhow::ensure!(resp.code == 0, "{}", uu_i18n::format!("获取设备列表失败，服务返回代码 {}", resp.code));
     Ok(resp.data.map(|d| d.my_binded_devices).unwrap_or_default())
 }
 
@@ -152,14 +152,14 @@ fn load_devices(config: uu_core::Config, token: String) -> anyhow::Result<Vec<De
     let result = rt.block_on(async {
         let client = uu_core::SignalClient::new(&config)?;
         let api = uu_core::UuApi::new(client, config.at("state.json"))?;
-        anyhow::ensure!(api.state.token.as_deref() == Some(token.as_str()), "账号已变化，请刷新设备列表");
+        anyhow::ensure!(api.state.token.as_deref() == Some(token.as_str()), "{}", uu_i18n::format!("账号已变化，请刷新设备列表"));
         let body = tokio::time::timeout(std::time::Duration::from_secs(15), api.device_list())
-            .await.map_err(|_| anyhow::anyhow!("获取设备列表超时，请检查网络后重试"))??;
+            .await.map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("获取设备列表超时，请检查网络后重试")))??;
         let mut devices = parse_devices(body)?;
         // Opt-in privacy for screen sharing/documentation; no account data is changed.
         if std::env::var("UU_SCREENSHOT_PRIVACY").as_deref() == Ok("1") {
             for (index, device) in devices.iter_mut().enumerate() {
-                device.alias = format!("远程设备 {:02}", index + 1);
+                device.alias = uu_i18n::format!("远程设备 {:02}", index + 1);
                 device.wallpaper_url.clear();
             }
         }
@@ -423,8 +423,9 @@ impl App {
         let logged_in = account_token.is_some();
         let device_library = if native { device_library::Library::default() } else { device_library::Library::for_account(config.as_ref(), account_token.as_deref()) };
         let (mut preferences, settings_notice, settings_storage_error) = match settings::Settings::path().map(|p|settings::Settings::load(&p)) {
-            Some(Ok(s))=>(s,String::new(),false),Some(Err(e))=>(settings::Settings::default(),format!("读取设置失败：{e}"),true),None=>(settings::Settings::default(),"无法确定设置目录，当前使用默认设置".into(),true),
+            Some(Ok(s))=>(s,String::new(),false),Some(Err(e))=>(settings::Settings::default(),uu_i18n::format!("读取设置失败：{e}"),true),None=>(settings::Settings::default(),uu_i18n::text("无法确定设置目录，当前使用默认设置").into(),true),
         };
+        uu_i18n::set_language(preferences.language);
         let application_hotkeys=preferences.application_hotkeys().clone();
         if let Some(sessions::StreamTarget {connection:sessions::ConnectionTarget::NativeProfile{snapshot,..},..}) = &stream_target {
             if let Ok(launch) = uu_core::device_book::Launch::read(snapshot) {
@@ -550,7 +551,7 @@ impl App {
         } else if logged_in {
             app.start_load();
         } else {
-            app.status = "选择连接方式".into();
+            app.status = uu_i18n::text("选择连接方式").into();
         }
         app
     }
@@ -567,7 +568,7 @@ impl App {
             context.request_repaint();
         });
         self.rx = Some(rx);
-        self.status = "正在加载设备…".to_string();
+        self.status = uu_i18n::text("正在加载设备…").to_string();
     }
 
     fn ensure_visible_device_selection(&mut self) {
@@ -581,14 +582,14 @@ impl App {
             return;
         }
         let Some(config) = self.config.clone() else {
-            self.login_status = "无法确定登录目录，请检查本机用户目录配置".into();
+            self.login_status = uu_i18n::text("无法确定登录目录，请检查本机用户目录配置").into();
             return;
         };
         let name = match self.workspace.prepare_device_name() {
             Ok(name) => name,
             Err(error) => { self.login_status = error.to_string(); return; }
         };
-        self.login_status = "获取二维码…".into();
+        self.login_status = uu_i18n::text("获取二维码…").into();
         self.login_rx = None;
         self.login_texture = None;
         self.login_rx = Some(login::spawn(config, name));
@@ -602,7 +603,7 @@ impl App {
         };
         self.login_rx = None;
         self.login_texture = None;
-        self.login_status = "正在更新 UU 注册信息…".into();
+        self.login_status = uu_i18n::text("正在更新 UU 注册信息…").into();
         self.login_rx = Some(login::rename(config, name));
     }
 
@@ -627,35 +628,35 @@ impl App {
                         let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
                         self.login_texture =
                             Some(ctx.load_texture("qr", img, egui::TextureOptions::NEAREST));
-                        self.login_status = "请用手机扫码".into();
+                        self.login_status = uu_i18n::text("请用手机扫码").into();
                     }
-                    Err(e) => self.login_status = format!("二维码生成失败: {e}"),
+                    Err(e) => self.login_status = uu_i18n::format!("二维码生成失败: {e}"),
                 },
                 LoginEvent::Status(s) => self.login_status = s,
                 LoginEvent::Done {token, user_id, device_name, name_error} => {
-                    let saved = self.config.as_ref().ok_or_else(||anyhow::anyhow!("无法确定登录目录"))
+                    let saved = self.config.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定登录目录")))
                         .and_then(|config|account::store_login(&config.at("state.json"),token.clone(),user_id,device_name));
                     self.login_rx = None;
                     match saved {
                         Ok(()) => {
                             self.apply_account(Some(token));
-                            if let Some(error) = name_error { self.login_status = format!("账号已登录，设备改名失败：{error}；可点击“保存名称”重试。"); }
+                            if let Some(error) = name_error { self.login_status = uu_i18n::format!("账号已登录，设备改名失败：{error}；可点击“保存名称”重试。"); }
                         },
-                        Err(error) => self.login_status = format!("保存登录失败：{error}"),
+                        Err(error) => self.login_status = uu_i18n::format!("保存登录失败：{error}"),
                     }
                 }
                 LoginEvent::NameSaved { name, token } => {
                     self.login_rx = None;
                     self.login_status = match self.config.as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("无法确定登录目录"))
+                        .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定登录目录")))
                         .and_then(|c| account::store_device_name(&c.at("state.json"), &token, name)) {
-                        Ok(()) => { self.rx = None; self.start_load(); "UU 设备名称已更新".into() },
-                        Err(error) => format!("云端名称已更新，保存本地记录失败：{error}"),
+                        Ok(()) => { self.rx = None; self.start_load(); uu_i18n::text("UU 设备名称已更新").into() },
+                        Err(error) => uu_i18n::format!("云端名称已更新，保存本地记录失败：{error}"),
                     };
                 }
                 LoginEvent::Error(e) => {
                     self.login_rx = None;
-                    self.login_status = if self.logged_in { format!("保存设备名称失败：{e}") } else { format!("登录失败：{e}") };
+                    self.login_status = if self.logged_in { uu_i18n::format!("保存设备名称失败：{e}") } else { uu_i18n::format!("登录失败：{e}") };
                 },
             }
         }
@@ -666,13 +667,13 @@ impl App {
             let result = match rx.try_recv() {
                 Ok(result) => Some(result),
                 Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(anyhow::anyhow!("设备列表加载已中断，请重试"))),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(anyhow::anyhow!("{}", uu_i18n::format!("设备列表加载已中断，请重试")))),
             };
             if let Some(result) = result {
                 match result {
                     Ok(devices) => {
                         self.device_load_error = None;
-                        self.status = format!("已加载 {} 台设备", devices.len());
+                        self.status = uu_i18n::format!("已加载 {} 台设备", devices.len());
                         self.wallpapers.clear();
                         let requests = devices.iter().filter(|d| !d.wallpaper_url.is_empty())
                             .map(|d| wallpapers::Request { device_id: d.device_id.clone(), url: d.wallpaper_url.clone() }).collect::<Vec<_>>();
@@ -703,7 +704,7 @@ impl App {
                     }
                     Err(e) => {
                         let error = e.to_string();
-                        self.status = format!("加载失败: {error}");
+                        self.status = uu_i18n::format!("加载失败: {error}");
                         self.device_load_error = Some(error);
                     }
                 }
@@ -731,10 +732,10 @@ impl App {
         while let Ok(ev) = h.events.try_recv() {
             match ev {
                 ControllerEvent::Status(s) => {
-                    apply_settings |= s == "已请求目标画质/码率";
+                    apply_settings |= uu_i18n::matches(&s,"已请求目标画质/码率");
                     self.status = s;
                 }
-                ControllerEvent::Error(e) => self.status = format!("错误: {e}"),
+                ControllerEvent::Error(e) => self.status = uu_i18n::format!("错误: {e}"),
             }
         }
         if native && self.displays.native_frame_epoch!=h.frames.generation(){
@@ -760,7 +761,7 @@ impl App {
             match self.textures.get_mut(&idx) {
                 Some(t) => t.set(ctx, image),
                 None => {
-                    if native && self.status.starts_with("正在") {self.status="原生串流已连接".into();}
+                    if native && (self.status.starts_with("正在")||["Establishing", "Connecting", "Preparing", "Verifying", "Waiting"].iter().any(|p|self.status.starts_with(p))) {self.status=uu_i18n::text("原生串流已连接").into();}
                     h.stats.diagnostics.record(serde_json::json!({"event":"first_frame","track":idx,"backend":h.stats.backend(),"video_size":h.stats.res()}));
                     self.textures.insert(idx, video_texture::VideoTexture::new(ctx, self.video_gl.as_ref(), image));
                 }
@@ -770,14 +771,14 @@ impl App {
         }
         if let Some(h) = &self.controller {
             if let Some(applied)=h.stats.native_quality_applied.lock().unwrap().as_ref().filter(|a|a.request==self.settings_seq) {
-                self.settings_feedback=match &applied.error {Some(error)=>format!("画质修改失败：{error}"),None=>format!("远端已应用：{} FPS · {:.1} Mbps",applied.settings.fps,applied.bitrate_kbps as f64/1000.)};
+                self.settings_feedback=match &applied.error {Some(error)=>uu_i18n::format!("画质修改失败：{error}"),None=>uu_i18n::format!("远端已应用：{} FPS · {:.1} Mbps",applied.settings.fps,applied.bitrate_kbps as f64/1000.)};
             }
             let response = h.stats.settings_response.load(std::sync::atomic::Ordering::Acquire);
-            if response >> 1 == 2000 + self.settings_seq && self.settings_feedback.starts_with("已发送") {
+            if response >> 1 == 2000 + self.settings_seq && uu_i18n::starts_with(&self.settings_feedback,"已发送") {
                 if response & 1 != 0 {self.remote_cursor_active=self.preferences.cursor_mode.remote();}
                 self.settings_feedback = if response & 1 != 0 {
-                    format!("远端已确认请求：{} FPS · {}", self.target_fps, settings::bitrate_label(self.bitrate_idx,self.is_native()))
-                } else { "远端拒绝了画质设置，请重新选择".into() };
+                    uu_i18n::format!("远端已确认请求：{} FPS · {}", self.target_fps, settings::bitrate_label(self.bitrate_idx,self.is_native()))
+                } else { uu_i18n::text("远端拒绝了画质设置，请重新选择").into() };
             }
         }
         if self.supports_remote(uu_core::capabilities::Capability::Displays) {self.poll_displays(&arrived);}
@@ -847,27 +848,27 @@ impl App {
             let reconnect=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_request.get().is_some_and(|old|if dynamic {old.bounds!=request.bounds||old.codec!=request.codec}else{old!=&request}));
             let reconnect=reconnect || self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_requested.get().is_some_and(|old|*old!=self.preferences.hdr));
             if reconnect {
-                self.output_reconnect_pending=true;self.stop_connection();self.status="正在应用原生串流画质…".into();
+                self.output_reconnect_pending=true;self.stop_connection();self.status=uu_i18n::text("正在应用原生串流画质…").into();
             }else if dynamic {
                 if let Some(h)=&self.controller {
                     let rate=*h.stats.native_rate_response.lock().unwrap();
                     if rate.is_none() && self.preferences.rate_control.is_some() {
-                        self.settings_feedback="此主机不支持客户端选择码率模式，请升级主机".into();return;
+                        self.settings_feedback=uu_i18n::text("此主机不支持客户端选择码率模式，请升级主机").into();return;
                     }
                     let settings=uu_core::native_quality::Update{fps:request.fps,bitrate_kbps:request.bitrate_kbps,rate_control:rate.map(|r|self.preferences.rate_control.unwrap_or(r.default))};
                     if h.stats.native_quality_current.lock().unwrap().as_ref()==Some(&settings){return;}
                     self.settings_seq=self.settings_seq.wrapping_add(1);
-                    self.settings_feedback=match h.native_input.as_ref().ok_or("画质控制通路未连接").and_then(|input|input.set_quality(self.settings_seq,settings).map_err(|_|"画质请求队列已满或连接已关闭")) {
-                        Ok(())=>"已发送原生画质更新，等待主机实际应用…".into(),Err(error)=>error.into(),
+                    self.settings_feedback=match h.native_input.as_ref().ok_or(uu_i18n::text("画质控制通路未连接")).and_then(|input|input.set_quality(self.settings_seq,settings).map_err(|_|uu_i18n::text("画质请求队列已满或连接已关闭"))) {
+                        Ok(())=>uu_i18n::text("已发送原生画质更新，等待主机实际应用…").into(),Err(error)=>error.into(),
                     };
                 }
             }else{
-                self.settings_feedback=if self.controller.as_ref().is_some_and(|h|h.stats.native_quality_response.lock().unwrap().is_some()) {"画质已与主机协商，实际参数见串流信息"}else{"旧版主机使用其本机画质设置；升级主机后可协商"}.into();
+                self.settings_feedback=if self.controller.as_ref().is_some_and(|h|h.stats.native_quality_response.lock().unwrap().is_some()) {uu_i18n::text("画质已与主机协商，实际参数见串流信息")}else{uu_i18n::text("旧版主机使用其本机画质设置；升级主机后可协商")}.into();
             }
             return;
         }
-        if !self.supports_remote(uu_core::capabilities::Capability::Quality) {self.settings_feedback="当前画质由被控端设置".into();return;}
-        let Some(frame_rate)=uu_core::control_wire::CaptureFrameRate::new(self.target_fps) else {self.settings_feedback="UU 兼容协议支持 5–144 FPS；请选择有效帧率".into();return;};
+        if !self.supports_remote(uu_core::capabilities::Capability::Quality) {self.settings_feedback=uu_i18n::text("当前画质由被控端设置").into();return;}
+        let Some(frame_rate)=uu_core::control_wire::CaptureFrameRate::new(self.target_fps) else {self.settings_feedback=uu_i18n::text("UU 兼容协议支持 5–144 FPS；请选择有效帧率").into();return;};
         if self.disconnecting { return; }
         let resolution = self.capture_resolution();
         if self.controller.as_ref().is_some_and(|h| h.stats.output_resolution.get()
@@ -878,7 +879,7 @@ impl App {
             // bounds. Release the old session before negotiating a new bound.
             self.output_reconnect_pending = true;
             self.stop_connection();
-            self.status = "正在切换视频设置…".into();
+            self.status = uu_i18n::text("正在切换视频设置…").into();
             return;
         }
         let profile = self.capture_profile();
@@ -905,11 +906,11 @@ impl App {
         self.displays.settings_sent(request, source, self.selected_track, profile);
         let sent=if immediate {h.input.send(msg)}else{h.settings.send(msg)};
         self.settings_feedback = if sent.is_ok() {
-            format!("已发送：{} FPS · {} · {}", self.target_fps, settings::bitrate_label(self.bitrate_idx,self.is_native()),
+            uu_i18n::format!("已发送：{} FPS · {} · {}", self.target_fps, settings::bitrate_label(self.bitrate_idx,self.is_native()),
                 if quality == 6 { format!("{} Mbps", preset_mbps.unwrap_or(self.custom_mbps)) }
-                else { "以实际接收码率为准".into() })
+                else { uu_i18n::text("以实际接收码率为准").into() })
         } else {
-            "设置发送失败：连接已关闭".into()
+            uu_i18n::text("设置发送失败：连接已关闭").into()
         };
     }
 
@@ -924,20 +925,20 @@ impl App {
             shortcuts::Action::MouseMode=>{
                 self.release_pointer_capture(ctx);
                 self.preferences.relative_mouse=!self.preferences.relative_mouse;
-                self.status=if self.preferences.relative_mouse {"鼠标：游戏模式 · 相对移动"} else {"鼠标：桌面模式 · 绝对定位"}.into();
+                self.status=if self.preferences.relative_mouse {uu_i18n::text("鼠标：游戏模式 · 相对移动")} else {uu_i18n::text("鼠标：桌面模式 · 绝对定位")}.into();
                 self.persist_preferences();
             },
             shortcuts::Action::CursorMode=>{
                 self.preferences.cursor_mode=self.preferences.cursor_mode.next();
-                self.status=format!("光标：{}",self.preferences.cursor_mode.label());
+                self.status=uu_i18n::format!("光标：{}",self.preferences.cursor_mode.label());
                 self.persist_preferences();
             },
             shortcuts::Action::ToggleNested=>{
                 self.nested_passthrough=!self.nested_passthrough;
                 self.status=if self.nested_passthrough {
-                    format!("嵌套快捷键发送到远端；{} 切回本机",self.preferences.hotkeys.label(shortcuts::Action::ToggleNested))
+                    uu_i18n::format!("嵌套快捷键发送到远端；{} 切回本机",self.preferences.hotkeys.label(shortcuts::Action::ToggleNested))
                 } else {
-                    "嵌套快捷键：客户端命令由本机处理".into()
+                    uu_i18n::text("嵌套快捷键：客户端命令由本机处理").into()
                 };
                 self.persist_preferences();
             },
@@ -1243,7 +1244,7 @@ impl App {
             if let Some(texture)=self.textures.get(&self.selected_track).or_else(||self.textures.values().next()) {
                 match texture.snapshot() {
                     Ok(image)=>self.preview_writer.submit(store.clone(),id.clone(),Some(image)),
-                    Err(error)=>self.set_settings_notice(format!("本次预览未更新：{error}")),
+                    Err(error)=>self.set_settings_notice(uu_i18n::format!("本次预览未更新：{error}")),
                 }
             }
         }
@@ -1274,7 +1275,7 @@ impl App {
             self.hud_cache=Default::default();
         self.frame_count.clear();
         self.fps.clear();
-        self.status = if self.disconnecting { "正在释放连接…" } else { "已断开" }.into();
+        self.status = if self.disconnecting { uu_i18n::text("正在释放连接…") } else { uu_i18n::text("已断开") }.into();
     }
 
     fn open_stream_window(&mut self) {
@@ -1287,9 +1288,9 @@ impl App {
             if let sessions::ConnectionTarget::UuDevice(id) = &target.connection { self.device_library.record_opened(id); }
         }
         self.status = match result {
-            Ok(true) => format!("已打开 {} 的串流窗口，可继续选择其他设备", target.alias),
-            Ok(false) => format!("{} 的串流窗口已打开", target.alias),
-            Err(error) => format!("无法打开串流窗口：{error}"),
+            Ok(true) => uu_i18n::format!("已打开 {} 的串流窗口，可继续选择其他设备", target.alias),
+            Ok(false) => uu_i18n::format!("{} 的串流窗口已打开", target.alias),
+            Err(error) => uu_i18n::format!("无法打开串流窗口：{error}"),
         };
     }
 
@@ -1313,14 +1314,14 @@ impl App {
             self.connect_native_device(id);return;
         }
         if matches!(self.preferences.codec,settings::CodecPreference::Av1|settings::CodecPreference::Pyrowave) {
-            self.status="AV1 / PyroWave 仅适用于原生连接；UU 兼容连接请选择自动、H.264 或 HEVC".into();
+            self.status=uu_i18n::text("AV1 / PyroWave 仅适用于原生连接；UU 兼容连接请选择自动、H.264 或 HEVC").into();
             return;
         }
-        if uu_core::control_wire::CaptureFrameRate::new(self.target_fps).is_none() {self.status="UU 兼容协议支持 5–144 FPS，请调整客户端帧率".into();return;}
+        if uu_core::control_wire::CaptureFrameRate::new(self.target_fps).is_none() {self.status=uu_i18n::text("UU 兼容协议支持 5–144 FPS，请调整客户端帧率").into();return;}
         self.displays=displays::Displays::default();self.selected_track=0;
         let Some(i) = self.selected else { return };
         let Some(config) = self.config.clone() else {
-            self.status = "配置不可用".into();
+            self.status = uu_i18n::text("配置不可用").into();
             return;
         };
         let device = self.devices[i].device_id.clone();
@@ -1328,7 +1329,7 @@ impl App {
         if let Some(path) = &self.displays.layout_path {
             match display_layout::DisplayLayout::load(path) {
                 Ok(layout) => self.displays.layout = layout,
-                Err(error) => self.set_settings_notice(format!("显示器排序读取失败：{error}")),
+                Err(error) => self.set_settings_notice(uu_i18n::format!("显示器排序读取失败：{error}")),
             }
         }
         let geo = uu_core::config::geo_exit_ip();
@@ -1345,7 +1346,7 @@ impl App {
         stats.clipboard.enabled.store(self.preferences.clipboard && cfg!(any(windows, target_os = "linux")),std::sync::atomic::Ordering::Release);
         let target=match &self.stream_target {
             Some(target) if matches!(target.connection,sessions::ConnectionTarget::UuAssistance(_))=>{
-                let Some(request)=self.assistance.clone() else {self.status="远程协助验证码不可用，请从主页重新发起".into();return;};
+                let Some(request)=self.assistance.clone() else {self.status=uu_i18n::text("远程协助验证码不可用，请从主页重新发起").into();return;};
                 uu_core::controller::Target::Assistance(request)
             },
             _=>uu_core::controller::Target::Device(device),
@@ -1358,7 +1359,7 @@ impl App {
                 h.stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
                 h.stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
                 if let Err(error)=clipboard::start_following(h.stats.clipboard.clone(),self.clipboard_window.clone()) {
-                    h.stats.clipboard.status(format!("剪贴板线程启动失败：{error}"));h.stats.clipboard.enabled.store(false,std::sync::atomic::Ordering::Release);h.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);
+                    h.stats.clipboard.status(uu_i18n::format!("剪贴板线程启动失败：{error}"));h.stats.clipboard.enabled.store(false,std::sync::atomic::Ordering::Release);h.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);
                 }
                 self.controller = Some(h);
                 self.window_sizing.borrow_mut().begin_stream();
@@ -1368,10 +1369,10 @@ impl App {
                 self.input_capture.request();
                 self.context.send_viewport_cmd(egui::ViewportCommand::Focus);
                 if self.active_session {self.platform.focus_window();}
-                self.status = "连接中…".into();
+                self.status = uu_i18n::text("连接中…").into();
                 // Apply UI settings once CONTROL is ready, in poll_controller.
             }
-            Err(e) => self.status = format!("连接失败: {e}"),
+            Err(e) => self.status = uu_i18n::format!("连接失败: {e}"),
         }
     }
 }
@@ -1410,7 +1411,7 @@ impl App {
                     self.preferences.vsync=self.presentation_vsync;
                     self.settings_draft.vsync=self.presentation_vsync;
                     self.persist_preferences();
-                    self.set_settings_notice(format!("垂直同步修改失败：{error}"));
+                    self.set_settings_notice(uu_i18n::format!("垂直同步修改失败：{error}"));
                 }
                 Err(_)=>{}
             }
@@ -1492,12 +1493,12 @@ impl App {
         if let Some(current) = self.uu_devices.show(ctx, self.config.as_ref(), self.account_token.as_deref()) {
             if current {
                 self.login_rx = None;
-                let result = self.config.as_ref().ok_or_else(|| anyhow::anyhow!("无法确定登录目录"))
+                let result = self.config.as_ref().ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定登录目录")))
                     .and_then(|config| account::sign_out_matching(&config.at("state.json"), self.account_token.as_deref()));
                 match result {
                     Ok(true) => self.apply_account(None),
                     Ok(false) => self.retry_account_read(),
-                    Err(error) => self.status = format!("设备已解绑，退出本地账号失败：{error}"),
+                    Err(error) => self.status = uu_i18n::format!("设备已解绑，退出本地账号失败：{error}"),
                 }
             }
             else {
@@ -1711,6 +1712,7 @@ impl App {
 
 fn main() -> eframe::Result {
     uu_core::install_crypto_provider();
+    if let Some(settings)=settings::Settings::path().and_then(|p|settings::Settings::load(&p).ok()) {uu_i18n::set_language(settings.language);}
     #[cfg(windows)]
     if let Some(result)=service_ui::dispatch() {return result;}
     let stream_target = match sessions::StreamTarget::parse(std::env::args().skip(1)) {

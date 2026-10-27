@@ -22,7 +22,7 @@ impl Default for Writer {
                         job.store.record_preview(&job.device,job.at,&jpeg)
                     }else{job.store.record_connected(&job.device,job.at)}
                 })();
-                if let Err(e)=result{*state.lock().unwrap()=Some(format!("设备记录保存失败：{e:#}"));}
+                if let Err(e)=result{*state.lock().unwrap()=Some(uu_i18n::format!("设备记录保存失败：{e:#}"));}
             }
         }).ok();
         Self{tx:Some(tx),worker,error}
@@ -32,7 +32,7 @@ impl Writer {
     pub fn submit(&self,store:Store,device:String,image:Option<egui::ColorImage>) {
         let at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_secs()).unwrap_or(0);
         let result=self.tx.as_ref().is_some_and(|tx|tx.try_send(Job{store,device,at,image}).is_ok());
-        if !result{*self.error.lock().unwrap()=Some("设备记录保存队列繁忙，可在下一次连接更新预览".into());}
+        if !result{*self.error.lock().unwrap()=Some(uu_i18n::text("设备记录保存队列繁忙，可在下一次连接更新预览").into());}
     }
 }
 impl Drop for Writer {

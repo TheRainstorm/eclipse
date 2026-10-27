@@ -1,0 +1,15 @@
+[package]
+name = "uu-i18n-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Checked bilingual format templates"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["parsing"] }
+quote = "1"
+serde_json.workspace = true
+proc-macro2 = "1"

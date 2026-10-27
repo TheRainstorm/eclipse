@@ -52,7 +52,7 @@ fn spawn(ctx: &egui::Context, events: mpsc::Sender<Event>, work: Work) -> Result
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(runtime) => runtime,
                 Err(error) => {
-                    let error=format!("无法启动连接线程：{error}");
+                    let error=uu_i18n::format!("无法启动连接线程：{error}");
                     let event=match &work {
                         Work::Scan(epoch,_)=>Event::Scan(*epoch,Err(error)),
                         Work::Pair {..}=>Event::Paired(Err(error)),
@@ -108,9 +108,9 @@ fn spawn(ctx: &egui::Context, events: mpsc::Sender<Event>, work: Work) -> Result
 fn targets(port: u16) -> Result<Vec<SocketAddr>, String> {
     if let Ok(value) = std::env::var("ECLIPSE_DISCOVERY_TARGETS") {
         let addresses: Result<Vec<_>, _> = value.split(',').map(str::parse::<SocketAddr>).collect();
-        let addresses = addresses.map_err(|_| "局域网发现地址配置无效".to_owned())?;
+        let addresses = addresses.map_err(|_| uu_i18n::text("局域网发现地址配置无效").to_owned())?;
         if addresses.is_empty() || addresses.len() > 32 {
-            return Err("局域网发现地址数量无效".into());
+            return Err(uu_i18n::text("局域网发现地址数量无效").into());
         }
         return Ok(addresses);
     }
@@ -211,10 +211,10 @@ impl LanUi {
         let (book, notice) = if let Some(dir) = &dir {
             match Devices::open(&dir.join("paired-devices.json")) {
                 Ok(book) => (Some(book), String::new()),
-                Err(error) => (None, format!("无法读取原生设备配置，原文件已保留：{error}")),
+                Err(error) => (None, uu_i18n::format!("无法读取原生设备配置，原文件已保留：{error}")),
             }
         } else {
-            (None, "无法确定设备配置目录，请检查本机用户目录。".into())
+            (None, uu_i18n::text("无法确定设备配置目录，请检查本机用户目录。").into())
         };
         Self {
             host: super::lan_host_ui::HostUi::default(),
@@ -291,7 +291,7 @@ impl LanUi {
                         self.found
                             .retain(|_, seen| seen.at.elapsed() < Duration::from_secs(20));
                     }
-                    Err(error) => self.notice = format!("局域网发现失败：{error}"),
+                    Err(error) => self.notice = uu_i18n::format!("局域网发现失败：{error}"),
                 },
                 Event::Code(code) => {
                     if self.client_dialog {self.pair_code = Some(code);}
@@ -305,11 +305,11 @@ impl LanUi {
                             if let (Some(path), Some(book)) = (self.path(), &mut self.book) {
                                 match book.remember(&path, device.clone()) {
                                     Ok(()) => {
-                                        self.notice = "设备已就绪，正在打开串流窗口…".into();
+                                        self.notice = uu_i18n::text("设备已就绪，正在打开串流窗口…").into();
                                         self.open_device = Some(device);
                                     }
                                     Err(error) => {
-                                        let message=format!("无法保存设备授权：{error}");
+                                        let message=uu_i18n::format!("无法保存设备授权：{error}");
                                         self.notice=message.clone();
                                         self.client_error=Some(message);
                                         self.client_dialog=true;
@@ -318,7 +318,7 @@ impl LanUi {
                             }
                         }
                         Err(error) => {
-                            self.notice = format!("连接 {} 未完成：{error}",self.pair_target);
+                            self.notice = uu_i18n::format!("连接 {} 未完成：{error}",self.pair_target);
                             self.client_error=Some(error);
                         },
                     }
@@ -326,7 +326,7 @@ impl LanUi {
             }
         }
         if client_finished && self.client_dialog && self.client_error.is_none() {
-            let error="连接线程意外退出，请重试连接。".to_owned();
+            let error=uu_i18n::text("连接线程意外退出，请重试连接。").to_owned();
             self.notice=error.clone();
             self.client_error=Some(error);
             self.pair_code=None;
@@ -368,11 +368,11 @@ impl LanUi {
                     name: device.name.clone(),
                     endpoint,
                     detail: if changed {
-                        "设备身份已变化，请核实后重新配对"
+                        uu_i18n::text("设备身份已变化，请核实后重新配对")
                     } else if found.is_some() {
-                        "已配对 · 在线"
+                        uu_i18n::text("已配对 · 在线")
                     } else {
-                        "已配对 · 未在局域网发现，仍可尝试连接"
+                        uu_i18n::text("已配对 · 未在局域网发现，仍可尝试连接")
                     }
                     .into(),
                     kind: RowKind::Paired(device.clone()),
@@ -391,7 +391,7 @@ impl LanUi {
                 key: device.info.id.clone(),
                 name: device.info.name.clone(),
                 endpoint,
-                detail: "局域网设备 · 尚未配对".into(),
+                detail: uu_i18n::text("局域网设备 · 尚未配对").into(),
                 kind: RowKind::New,
                 changed: false,
             });
@@ -403,9 +403,9 @@ impl LanUi {
                 }
                 rows.push(Row {
                     key: endpoint.clone(),
-                    name: "手动添加的设备".into(),
+                    name: uu_i18n::text("手动添加的设备").into(),
                     endpoint: endpoint.clone(),
-                    detail: "尚未配对 · 连接时检查设备".into(),
+                    detail: uu_i18n::text("尚未配对 · 连接时检查设备").into(),
                     kind: RowKind::Manual,
                     changed: false,
                 });
@@ -434,7 +434,7 @@ impl LanUi {
                 if row.changed {
                     self.client_dialog=false;
                     self.notice =
-                        "设备身份已变化，请先核实目标设备；确认后可忘记旧配对并重新连接。".into();
+                        uu_i18n::text("设备身份已变化，请先核实目标设备；确认后可忘记旧配对并重新连接。").into();
                     return;
                 }
                 if device.endpoint == row.endpoint {
@@ -502,9 +502,9 @@ impl LanUi {
                 Ok(()) => {
                     self.add_open = false;
                     self.address.clear();
-                    self.notice = "设备已添加，点击配对即可连接。".into();
+                    self.notice = uu_i18n::text("设备已添加，点击配对即可连接。").into();
                 }
-                Err(error) => self.notice = format!("无法添加设备：{error}"),
+                Err(error) => self.notice = uu_i18n::format!("无法添加设备：{error}"),
             }
         }
     }
@@ -521,19 +521,19 @@ impl LanUi {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("局域网设备").size(25.).strong());
+                        ui.label(RichText::new(uu_i18n::text("局域网设备")).size(25.).strong());
                         ui.label(
-                            RichText::new("Eclipse · 无需账号，直接连接你的设备").color(MUTED),
+                            RichText::new(uu_i18n::text("Eclipse · 无需账号，直接连接你的设备")).color(MUTED),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui::icon_label_button(ui, Icon::Desktop, "共享本机").clicked() {
+                        if ui::icon_label_button(ui, Icon::Desktop, uu_i18n::text("共享本机")).clicked() {
                             self.host.show();
                         }
-                        if ui::icon_label_button(ui, Icon::Link, "添加设备").clicked() {
+                        if ui::icon_label_button(ui, Icon::Link, uu_i18n::text("添加设备")).clicked() {
                             self.add_open = true;
                         }
-                        if ui::icon_button(ui, Icon::Refresh, "刷新局域网设备").clicked() {
+                        if ui::icon_button(ui, Icon::Refresh, uu_i18n::text("刷新局域网设备")).clicked() {
                             self.scan(ctx);
                         }
                     });
@@ -552,7 +552,7 @@ impl LanUi {
                 if !self.discovery_enabled || self.scan.is_some() {
                     ui.horizontal(|ui| {
                         ui.add(egui::Spinner::new().size(14.));
-                        ui.weak("正在查找局域网设备…");
+                        ui.weak(uu_i18n::text("正在查找局域网设备…"));
                     });
                     ui.add_space(8.);
                 }
@@ -563,19 +563,19 @@ impl LanUi {
                             ui.allocate_exact_size(egui::vec2(54., 54.), egui::Sense::hover());
                         ui::icon(ui.painter(), rect, Icon::Desktop, BLUE);
                         ui.add_space(16.);
-                        ui.label(RichText::new("还没有发现设备").size(19.));
+                        ui.label(RichText::new(uu_i18n::text("还没有发现设备")).size(19.));
                         ui.add_space(8.);
                         ui.label(
-                            RichText::new("在目标电脑启用共享，或输入 IP 添加设备。").color(MUTED),
+                            RichText::new(uu_i18n::text("在目标电脑启用共享，或输入 IP 添加设备。")).color(MUTED),
                         );
                         ui.add_space(8.);
                         ui.label(
-                            RichText::new("原账号设备请切换顶部“兼容设备”，登录状态与设置仍保留。")
+                            RichText::new(uu_i18n::text("原账号设备请切换顶部“兼容设备”，登录状态与设置仍保留。"))
                                 .size(12.)
                                 .color(MUTED),
                         );
                         ui.add_space(16.);
-                        if ui.button("添加设备").clicked() {
+                        if ui.button(uu_i18n::text("添加设备")).clicked() {
                             self.add_open = true;
                         }
                     });
@@ -648,9 +648,9 @@ impl LanUi {
                                         );
                                         ui.vertical(|ui| {
                                             let label = if matches!(row.kind, RowKind::Paired(_)) {
-                                                "连接"
+                                                uu_i18n::text("连接")
                                             } else {
-                                                "配对"
+                                                uu_i18n::text("配对")
                                             };
                                             if ui
                                                 .add_enabled(
@@ -667,13 +667,13 @@ impl LanUi {
                                             {
                                                 connect = Some(row.clone());
                                             }
-                                            ui.menu_button("更多", |ui| {
+                                            ui.menu_button(uu_i18n::text("更多"), |ui| {
                                                 if ui
                                                     .button(
                                                         if matches!(row.kind, RowKind::Paired(_)) {
-                                                            "忘记配对"
+                                                            uu_i18n::text("忘记配对")
                                                         } else {
-                                                            "移除设备"
+                                                            uu_i18n::text("移除设备")
                                                         },
                                                     )
                                                     .clicked()
@@ -700,20 +700,20 @@ impl LanUi {
         if self.add_open {
             let mut open = true;
             let mut add = false;
-            egui::Window::new("添加局域网设备")
+            egui::Window::new(uu_i18n::text("添加局域网设备"))
                 .id("lan-add-device".into())
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
                 .default_width(380.)
                 .show(ctx, |ui| {
-                    ui.label("输入目标电脑的 IP 地址或主机名");
-                    ui.weak("先在目标电脑启用共享并允许新设备配对。");
-                    ui.weak("未填写端口时使用 TCP 48998；其它端口请填写 IP:端口。");
-                    ui.weak("不同网段可手动连接，需路由及防火墙允许互通。");
+                    ui.label(uu_i18n::text("输入目标电脑的 IP 地址或主机名"));
+                    ui.weak(uu_i18n::text("先在目标电脑启用共享并允许新设备配对。"));
+                    ui.weak(uu_i18n::text("未填写端口时使用 TCP 48998；其它端口请填写 IP:端口。"));
+                    ui.weak(uu_i18n::text("不同网段可手动连接，需路由及防火墙允许互通。"));
                     let edit = ui.add(
                         egui::TextEdit::singleline(&mut self.address)
-                            .hint_text("IP 或 主机名[:端口]")
+                            .hint_text(uu_i18n::text("IP 或 主机名[:端口]"))
                             .desired_width(350.),
                     );
                     if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -721,7 +721,7 @@ impl LanUi {
                     }
                     ui.add_space(10.);
                     if ui
-                        .add_enabled(self.book.is_some(), egui::Button::new("添加设备"))
+                        .add_enabled(self.book.is_some(), egui::Button::new(uu_i18n::text("添加设备")))
                         .clicked()
                     {
                         add = true;
@@ -734,7 +734,7 @@ impl LanUi {
         }
         if self.client_dialog && (self.client.is_some() || self.client_error.is_some()) {
             let mut cancel = false;
-            egui::Window::new("连接设备")
+            egui::Window::new(uu_i18n::text("连接设备"))
                 .id("lan-client-progress".into())
                 .collapsible(false)
                 .resizable(false)
@@ -742,26 +742,26 @@ impl LanUi {
                 .show(ctx, |ui| {
                     ui.label(&self.pair_target);
                     if let Some(error) = &self.client_error {
-                        ui.colored_label(C::from_rgb(170,60,50),"连接未完成");
+                        ui.colored_label(C::from_rgb(170,60,50),uu_i18n::text("连接未完成"));
                         ui.add(egui::Label::new(error).wrap());
                         ui.add_space(8.);
-                        ui.label("请确认目标已启用共享、服务端口正确，并允许防火墙中的 TCP 入站连接。");
-                        ui.weak("跨网段请使用手动地址，广播发现通常不跨路由器。");
+                        ui.label(uu_i18n::text("请确认目标已启用共享、服务端口正确，并允许防火墙中的 TCP 入站连接。"));
+                        ui.weak(uu_i18n::text("跨网段请使用手动地址，广播发现通常不跨路由器。"));
                     } else if let Some(code) = &self.pair_code {
                         ui.add_space(12.);
                         ui.label(RichText::new(code).size(34.).strong().color(BLUE));
                         ui.add_space(12.);
-                        ui.label("请在目标电脑输入此配对码并允许连接。");
-                        ui.weak("等待主机确认，最长 90 秒；无需在本机再次输入。");
+                        ui.label(uu_i18n::text("请在目标电脑输入此配对码并允许连接。"));
+                        ui.weak(uu_i18n::text("等待主机确认，最长 90 秒；无需在本机再次输入。"));
                     } else {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             let elapsed=self.client_started.map(|at|at.elapsed().as_secs()).unwrap_or(0);
-                            ui.label(format!("正在检查设备并建立安全连接… {elapsed} 秒"));
+                            ui.label(uu_i18n::format!("正在检查设备并建立安全连接… {elapsed} 秒"));
                         });
                     }
                     ui.add_space(12.);
-                    if ui.button(if self.client_error.is_some() {"关闭"} else {"取消"}).clicked() {
+                    if ui.button(if self.client_error.is_some() {uu_i18n::text("关闭")} else {uu_i18n::text("取消")}).clicked() {
                         cancel = true;
                     }
                 });
@@ -772,7 +772,7 @@ impl LanUi {
                 self.pair_code = None;
                 self.client_error=None;
                 self.client_dialog=false;
-                self.notice="已关闭连接窗口，可点击设备重试。".into();
+                self.notice=uu_i18n::text("已关闭连接窗口，可点击设备重试。").into();
             }
         }
         self.host.ui(ctx, self.dir.as_deref(), owner_window);
@@ -790,9 +790,9 @@ impl App {
             match std::env::current_exe()
                 .and_then(|exe| self.sessions.open(&exe, &target, self.platform.origin()))
             {
-                Ok(true) => self.lan.notice = "已打开原生串流窗口".into(),
-                Ok(false) => self.lan.notice = "此设备的串流窗口已经打开".into(),
-                Err(error) => self.lan.notice = format!("无法打开串流窗口：{error}"),
+                Ok(true) => self.lan.notice = uu_i18n::text("已打开原生串流窗口").into(),
+                Ok(false) => self.lan.notice = uu_i18n::text("此设备的串流窗口已经打开").into(),
+                Err(error) => self.lan.notice = uu_i18n::format!("无法打开串流窗口：{error}"),
             }
         }
     }

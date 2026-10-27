@@ -69,7 +69,7 @@ impl Displays {
             settings_request: None,
             settings_accepted: true,
         });
-        self.notice = "正在切换显示器…".into();
+        self.notice = uu_i18n::text("正在切换显示器…").into();
         request
     }
     fn begin_activation(&mut self, id: i32, now: Instant) -> u64 {
@@ -78,7 +78,7 @@ impl Displays {
         p.track = None;
         p.activation = true;
         self.unbound = true;
-        self.notice = "正在切换采集源…".into();
+        self.notice = uu_i18n::text("正在切换采集源…").into();
         request
     }
     pub fn waiting_binding(&self) -> bool {
@@ -112,7 +112,7 @@ impl Displays {
         if code != 0 {
             self.pending = None;
             self.blocked = true;
-            self.notice = format!("切换失败（远端错误 {code}），请重新选择显示器");
+            self.notice = uu_i18n::format!("切换失败（远端错误 {code}），请重新选择显示器");
         } else {
             self.pending.as_mut().unwrap().accepted = true;
             self.complete();
@@ -151,7 +151,7 @@ impl Displays {
         } else {
             self.pending = None;
             self.blocked = true;
-            self.notice = "远端拒绝了目标显示器设置，请重新选择".into();
+            self.notice = uu_i18n::text("远端拒绝了目标显示器设置，请重新选择").into();
         }
     }
     fn complete(&mut self) {
@@ -181,19 +181,19 @@ impl Displays {
                 .as_ref()
                 .map(|p| {
                     if !p.accepted {
-                        "等待远端切屏确认"
+                        uu_i18n::text("等待远端切屏确认")
                     } else if p.track.is_none() {
-                        "等待采集源通知"
+                        uu_i18n::text("等待采集源通知")
                     } else if !p.settings_accepted {
-                        "等待画质确认"
+                        uu_i18n::text("等待画质确认")
                     } else {
-                        "等待目标画面"
+                        uu_i18n::text("等待目标画面")
                     }
                 })
-                .unwrap_or("未完成");
+                .unwrap_or(uu_i18n::text("未完成"));
             self.pending = None;
             self.blocked = true;
-            self.notice = format!("显示器切换超时（{stage}），可重试或切回其它显示器");
+            self.notice = uu_i18n::format!("显示器切换超时（{stage}），可重试或切回其它显示器");
         }
     }
 }
@@ -218,7 +218,7 @@ impl super::App {
     fn save_display_layout(&mut self) {
         if let Some(path) = &self.displays.layout_path {
             if let Err(error) = self.displays.layout.save(path) {
-                self.set_settings_notice(format!("显示器排序保存失败：{error}"));
+                self.set_settings_notice(uu_i18n::format!("显示器排序保存失败：{error}"));
             }
         }
     }
@@ -231,8 +231,8 @@ impl super::App {
         self.displays
             .selected
             .and_then(|id| self.displays.layout.number(id))
-            .map(|number| format!("显示屏 {number}"))
-            .unwrap_or_else(|| "显示器".into())
+            .map(|number| uu_i18n::format!("显示屏 {number}"))
+            .unwrap_or_else(|| uu_i18n::text("显示器").into())
     }
     pub(super) fn select_remote_screen(&mut self, id: i32) {
         if self.is_native(){self.select_native_display(id);return;}
@@ -311,7 +311,7 @@ impl super::App {
             .is_err()
         {
             self.displays.pending = None;
-            self.displays.notice = "切换失败：连接已关闭".into();
+            self.displays.notice = uu_i18n::text("切换失败：连接已关闭").into();
         }
         if target.is_some() && !settings_match {
             self.send_capture_settings_through(true);
@@ -334,7 +334,7 @@ impl super::App {
         if !sent {
             self.displays.pending=None;self.displays.blocked=false;
             self.displays.selected=Some(screens.current_id);
-            self.displays.notice="切换失败：控制连接不可用".into();
+            self.displays.notice=uu_i18n::text("切换失败：控制连接不可用").into();
         }
         self.displays.menu_open=false;self.stream_menu.open=false;
         self.context.memory_mut(|m|m.close_popup());
@@ -350,7 +350,7 @@ impl super::App {
             else {
                 self.displays.pending=None;self.displays.blocked=false;
                 self.displays.selected=Some(screens.current_id);
-                self.displays.notice=if response.accepted{String::new()}else{"被控端未允许切换到该显示器".into()};
+                self.displays.notice=if response.accepted{String::new()}else{uu_i18n::text("被控端未允许切换到该显示器").into()};
             }
         }
         if self.displays.pending.is_some(){
@@ -366,7 +366,7 @@ impl super::App {
         // bound as native SDP rather than the interoperability RPC's 8 seconds.
         if self.displays.pending.as_ref().is_some_and(|p|p.sent.elapsed()>Duration::from_secs(125)){
             self.displays.pending=None;self.displays.blocked=true;
-            self.displays.notice="等待新屏幕超时，请检查被控端授权或重新连接".into();
+            self.displays.notice=uu_i18n::text("等待新屏幕超时，请检查被控端授权或重新连接").into();
         }
         self.selected_track=0;
         if let Some(id)=self.displays.queued_selection(){self.select_native_display(id);}
@@ -410,7 +410,7 @@ impl super::App {
             self.displays.pending = None;
             self.displays.queued = None;
             self.displays.blocked = true;
-            self.displays.notice = "远端当前没有可用显示器，等待重新连接显示器…".into();
+            self.displays.notice = uu_i18n::text("远端当前没有可用显示器，等待重新连接显示器…").into();
             self.textures.clear();
         }
         if !screens.screens.is_empty() {

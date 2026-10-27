@@ -181,7 +181,7 @@ impl VideoTexture {
     /// Call on the UI thread with the window's current GL context, once at disconnect.
     /// This draws only remote pixels, including imported hardware frames.
     pub fn snapshot(&self)->Result<egui::ColorImage,String> {
-        if self.size.contains(&0){return Err("尚无串流画面".into());}
+        if self.size.contains(&0){return Err(uu_i18n::text("尚无串流画面").into());}
         let ratio=(480.0/self.size[0] as f64).min(270.0/self.size[1] as f64).min(1.);
         let size=[(self.size[0] as f64*ratio).max(1.) as usize,(self.size[1] as f64*ratio).max(1.) as usize];
         if let Some(gpu)=&self.gpu {
@@ -190,7 +190,7 @@ impl VideoTexture {
             state.restore_native_frame();
             if state.pending.is_some()||state.size!=[0,0] {return unsafe{state.snapshot(size,self.source_white_nits)};}
         }
-        let image=self.fallback_pixels.as_ref().ok_or("没有可保存的远端画面")?;
+        let image=self.fallback_pixels.as_ref().ok_or(uu_i18n::text("没有可保存的远端画面"))?;
         let mut output=egui::ColorImage::new(size,egui::Color32::BLACK);
         for y in 0..size[1] {for x in 0..size[0] {
             output.pixels[y*size[0]+x]=image.pixels[(y*image.size[1]/size[1])*image.size[0]+x*image.size[0]/size[0]];
@@ -455,16 +455,16 @@ impl Planes {
             gl.tex_image_2d(glow::TEXTURE_2D,0,glow::RGBA8 as i32,size[0] as i32,size[1] as i32,0,glow::RGBA,glow::UNSIGNED_BYTE,None);
             gl.bind_framebuffer(glow::FRAMEBUFFER,Some(framebuffer));
             gl.framebuffer_texture_2d(glow::FRAMEBUFFER,glow::COLOR_ATTACHMENT0,glow::TEXTURE_2D,Some(texture),0);
-            if gl.check_framebuffer_status(glow::FRAMEBUFFER)!=glow::FRAMEBUFFER_COMPLETE {return Err("无法建立远端预览缓冲".into());}
+            if gl.check_framebuffer_status(glow::FRAMEBUFFER)!=glow::FRAMEBUFFER_COMPLETE {return Err(uu_i18n::text("无法建立远端预览缓冲").into());}
             gl.viewport(0,0,size[0] as i32,size[1] as i32);gl.disable(glow::SCISSOR_TEST);gl.disable(glow::BLEND);
             for unit in 0..3 {gl.bind_sampler(unit,None);}
             self.paint(false,80.,source_white);
-            if self.size==[0,0]{return Err("远端 GPU 画面暂不可用".into());}
+            if self.size==[0,0]{return Err(uu_i18n::text("远端 GPU 画面暂不可用").into());}
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER,None);gl.pixel_store_i32(glow::PACK_ALIGNMENT,1);
             gl.pixel_store_i32(glow::PACK_ROW_LENGTH,0);gl.pixel_store_i32(glow::PACK_SKIP_PIXELS,0);gl.pixel_store_i32(glow::PACK_SKIP_ROWS,0);
             let mut rgba=vec![0;size[0]*size[1]*4];
             gl.read_pixels(0,0,size[0] as i32,size[1] as i32,glow::RGBA,glow::UNSIGNED_BYTE,glow::PixelPackData::Slice(&mut rgba));
-            if gl.get_error()!=glow::NO_ERROR{return Err("读取远端预览失败".into());}
+            if gl.get_error()!=glow::NO_ERROR{return Err(uu_i18n::text("读取远端预览失败").into());}
             let row=size[0]*4;
             for y in 0..size[1]/2 {let (top,bottom)=rgba.split_at_mut((size[1]-1-y)*row);top[y*row..(y+1)*row].swap_with_slice(&mut bottom[..row]);}
             Ok(egui::ColorImage::from_rgba_unmultiplied(size,&rgba))

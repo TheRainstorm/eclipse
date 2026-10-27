@@ -50,21 +50,21 @@ impl ClientState {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                return Err(CoreError::AccountState("没有读取权限"));
+                return Err(CoreError::AccountState(uu_i18n::text("没有读取权限")));
             },
-            Err(_) => return Err(CoreError::AccountState("无法读取文件")),
+            Err(_) => return Err(CoreError::AccountState(uu_i18n::text("无法读取文件"))),
         };
         const LIMIT: usize = 1024 * 1024;
         let mut bytes = Vec::new();
         file.take(LIMIT as u64 + 1).read_to_end(&mut bytes)
-            .map_err(|_| CoreError::AccountState("无法读取文件"))?;
+            .map_err(|_| CoreError::AccountState(uu_i18n::text("无法读取文件")))?;
         if bytes.len() > LIMIT {
-            return Err(CoreError::AccountState("文件超过 1 MiB 大小限制"));
+            return Err(CoreError::AccountState(uu_i18n::text("文件超过 1 MiB 大小限制")));
         }
         // serde errors may quote the rejected value, including account tokens.
         // Report the category without echoing any account contents or paths.
         serde_json::from_slice(&bytes).map(Some)
-            .map_err(|_| CoreError::AccountState("文件格式无效"))
+            .map_err(|_| CoreError::AccountState(uu_i18n::text("文件格式无效")))
     }
 
     pub fn load(path: &Path) -> Result<Self, CoreError> {
@@ -290,19 +290,19 @@ fn parse_account_devices(body: serde_json::Value, current: &str) -> Result<Vec<A
     if body["code"].as_i64() != Some(0) {
         return Err(CoreError::Service {
             code: body["code"].as_i64().unwrap_or(-1) as i32,
-            message: body["msg"].as_str().unwrap_or("获取账号设备失败").into(),
+            message: body["msg"].as_str().unwrap_or(uu_i18n::text("获取账号设备失败")).into(),
         });
     }
-    let data = body["data"].as_object().ok_or_else(|| CoreError::Config("账号设备列表格式无效".into()))?;
+    let data = body["data"].as_object().ok_or_else(|| CoreError::Config(uu_i18n::text("账号设备列表格式无效").into()))?;
     let mut values = data.get("my_binded_devices").and_then(serde_json::Value::as_array)
-        .ok_or_else(|| CoreError::Config("账号设备列表格式无效".into()))?.clone();
+        .ok_or_else(|| CoreError::Config(uu_i18n::text("账号设备列表格式无效").into()))?.clone();
     if let Some(device) = data.get("current_device").filter(|d| !d.is_null()) {
         values.insert(0, device.clone());
     }
     let mut devices = Vec::<AccountDevice>::new();
     for value in values {
         let mut device: AccountDevice = serde_json::from_value(value)
-            .map_err(|_| CoreError::Config("账号设备记录格式无效".into()))?;
+            .map_err(|_| CoreError::Config(uu_i18n::text("账号设备记录格式无效").into()))?;
         device_path(&device.device_id)?;
         device.current = device.device_id == current;
         if !devices.iter().any(|d| d.device_id == device.device_id) { devices.push(device); }
@@ -326,7 +326,7 @@ fn unix_now() -> u64 {
 pub fn validate_device_name(name: &str) -> Result<&str, CoreError> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
-        return Err(CoreError::Config("请输入有效的设备名称（最多64字）".into()));
+        return Err(CoreError::Config(uu_i18n::text("请输入有效的设备名称（最多64字）").into()));
     }
     Ok(name)
 }
@@ -334,7 +334,7 @@ pub fn validate_device_name(name: &str) -> Result<&str, CoreError> {
 fn device_path(device: &str) -> Result<String, CoreError> {
     if device.is_empty() || device.len() > 128
         || !device.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
-        return Err(CoreError::Config("UU 设备编号无效".into()));
+        return Err(CoreError::Config(uu_i18n::text("UU 设备编号无效").into()));
     }
     Ok(format!("/api/v1/device/{device}"))
 }
@@ -349,11 +349,11 @@ fn device_name_update(device: &str, name: &str) -> Result<(String, serde_json::V
 /// changes in another window must survive a slow registration refresh.
 fn merge_registration(initial: &ClientState, mut latest: ClientState, device: &str, alias: &str) -> Result<ClientState, CoreError> {
     if initial.device_id.as_deref().is_some_and(|expected| expected != device) {
-        return Err(CoreError::Config("UU 刷新注册返回了不同设备编号，已保留原身份，请勿重新注册".into()));
+        return Err(CoreError::Config(uu_i18n::text("UU 刷新注册返回了不同设备编号，已保留原身份，请勿重新注册").into()));
     }
     if latest.device_id != initial.device_id || (!latest.identity.client_id.is_empty()
         && latest.identity.client_id != initial.identity.client_id) {
-        return Err(CoreError::Config("本机 UU 身份已变化，请重新打开登录页面".into()));
+        return Err(CoreError::Config(uu_i18n::text("本机 UU 身份已变化，请重新打开登录页面").into()));
     }
     if latest.identity.client_id.is_empty() { latest.identity = initial.identity.clone(); }
     latest.device_id = Some(device.into());
@@ -421,7 +421,7 @@ impl UuApi {
                     body: Some(body),
                 },
             )
-            ).await.map_err(|_| CoreError::Config("UU 注册信息更新超时，请重试".into()))??;
+            ).await.map_err(|_| CoreError::Config(uu_i18n::text("UU 注册信息更新超时，请重试").into()))??;
         let data = &resp.body["data"];
         let device_id = data["device_id"]
             .as_str()
@@ -453,11 +453,11 @@ impl UuApi {
         let resp = tokio::time::timeout(std::time::Duration::from_secs(15),
             self.client.call(&identity, Some(token), SignedRequest {
                 method: "PUT", path_with_query: &path, body: Some(body),
-            })).await.map_err(|_| CoreError::Config("设备改名请求超时，请重试".into()))??;
+            })).await.map_err(|_| CoreError::Config(uu_i18n::text("设备改名请求超时，请重试").into()))??;
         if !(200..300).contains(&resp.status) || resp.body["code"].as_i64() != Some(0) {
             return Err(CoreError::Service {
                 code: resp.body["code"].as_i64().unwrap_or(resp.status as i64) as i32,
-                message: resp.body["msg"].as_str().unwrap_or("设备改名失败").into(),
+                message: resp.body["msg"].as_str().unwrap_or(uu_i18n::text("设备改名失败")).into(),
             });
         }
         Ok(())
@@ -479,7 +479,7 @@ impl UuApi {
         }).await?;
         if !(200..300).contains(&resp.status) || resp.body["code"].as_i64() != Some(0) {
             return Err(CoreError::Service {code:resp.body["code"].as_i64().unwrap_or(resp.status as i64) as i32,
-                message:resp.body["msg"].as_str().unwrap_or("设备解绑失败").into()});
+                message:resp.body["msg"].as_str().unwrap_or(uu_i18n::text("设备解绑失败")).into()});
         }
         Ok(())
     }

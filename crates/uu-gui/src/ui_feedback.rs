@@ -96,7 +96,7 @@ impl Feedback {
                     Kind::Error => super::theme::DANGER,
                 }),
             );
-            if message.kind == Kind::Error && ui.small_button("关闭").clicked() {
+            if message.kind == Kind::Error && ui.small_button(uu_i18n::text("关闭")).clicked() {
                 dismiss = true;
             }
         });
@@ -121,7 +121,8 @@ pub(super) fn looks_like_error(text: &str) -> bool {
         "失败", "无法", "错误", "异常", "占用", "未完成", "意外", "拒绝", "超时",
     ]
     .iter()
-    .any(|needle| text.contains(needle))
+    .any(|needle| text.contains(needle)) || ["failed","cannot","error","invalid","unavailable","timed out","denied","unexpected","incomplete"]
+        .iter().any(|needle|text.to_ascii_lowercase().contains(needle))
 }
 
 #[cfg(test)]

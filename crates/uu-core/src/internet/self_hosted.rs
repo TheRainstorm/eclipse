@@ -28,13 +28,13 @@ pub struct Config {
 impl Config {
     /// Check local inputs before saving a service. This makes no connection.
     pub fn validate_local(&self)->Result<()> {
-        let url=reqwest::Url::parse(&self.url).context("服务器地址格式无效")?;
-        ensure!(url.scheme()=="wss" && url.host_str().is_some() && url.username().is_empty() && url.password().is_none(),"服务器需要有效的 WSS 地址，访问凭据请单独填写");
-        let _=read_token(&self.token_file).context("无法读取服务器访问凭据文件")?;
+        let url=reqwest::Url::parse(&self.url).context(uu_i18n::text("服务器地址格式无效"))?;
+        ensure!(url.scheme()=="wss" && url.host_str().is_some() && url.username().is_empty() && url.password().is_none(),uu_i18n::text("服务器需要有效的 WSS 地址，访问凭据请单独填写"));
+        let _=read_token(&self.token_file).context(uu_i18n::text("无法读取服务器访问凭据文件"))?;
         if let Some(path)=&self.ca_file {
             let mut roots=rustls::RootCertStore::empty();
-            for cert in CertificateDer::pem_file_iter(path).context("无法读取服务器证书")? {roots.add(cert?)?;}
-            ensure!(!roots.is_empty(),"证书文件中没有有效的 PEM 证书");
+            for cert in CertificateDer::pem_file_iter(path).context(uu_i18n::text("无法读取服务器证书"))? {roots.add(cert?)?;}
+            ensure!(!roots.is_empty(),"{}", uu_i18n::format!("证书文件中没有有效的 PEM 证书"));
         }
         Ok(())
     }
@@ -110,7 +110,7 @@ pub async fn presence(config:&Config,devices:&[String])->Result<Vec<String>> {
             ensure!(online.len()<=devices.len() && online.iter().all(|id|devices.contains(id)),"invalid presence response");
             Ok(online)
         },
-        _=>bail!("连接服务尚不支持在线状态查询"),
+        _=>bail!("{}", uu_i18n::format!("连接服务尚不支持在线状态查询")),
     };
     let _=socket.close(None).await;
     result

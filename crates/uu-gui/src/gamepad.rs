@@ -54,7 +54,7 @@ impl Reader {
                 Err(error) => {
                     if let Some(target) = &self.shared.0.lock().unwrap().target {
                         *target.stats.gamepad.local_status.lock().unwrap() =
-                            format!("无法启动手柄线程：{error}");
+                            uu_i18n::format!("无法启动手柄线程：{error}");
                     }
                 }
             }
@@ -179,15 +179,15 @@ struct Sampler {
 impl Sampler {
     fn new() -> Result<Self, String> {
         sdl2::hint::set("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
-        let sdl = sdl2::init().map_err(|e| format!("SDL 手柄初始化失败：{e}"))?;
+        let sdl = sdl2::init().map_err(|e| uu_i18n::format!("SDL 手柄初始化失败：{e}"))?;
         #[cfg(windows)]
-        let video=sdl.video().map_err(|e|format!("无法启动 Windows 手柄消息泵：{e}"))?;
+        let video=sdl.video().map_err(|e|uu_i18n::format!("无法启动 Windows 手柄消息泵：{e}"))?;
         let controllers = sdl
             .game_controller()
-            .map_err(|e| format!("无法打开本地手柄子系统：{e}"))?;
+            .map_err(|e| uu_i18n::format!("无法打开本地手柄子系统：{e}"))?;
         let events = sdl
             .event_pump()
-            .map_err(|e| format!("无法读取本地手柄：{e}"))?;
+            .map_err(|e| uu_i18n::format!("无法读取本地手柄：{e}"))?;
         Ok(Self {
             pads: std::array::from_fn(|_| None),
             events,
@@ -248,13 +248,13 @@ impl Sampler {
                         ] {
                             if pad.has_sensor(sensor) {
                                 if let Err(e) = pad.sensor_set_enabled(sensor, true) {
-                                    self.notice = format!("手柄可用，但运动传感器未能启用：{e}");
+                                    self.notice = uu_i18n::format!("手柄可用，但运动传感器未能启用：{e}");
                                 }
                             }
                         }
                         *self.pads.iter_mut().find(|slot| slot.is_none()).unwrap() = Some(pad);
                     }
-                    Err(e) => self.notice = format!("本地手柄不可用：{e}"),
+                    Err(e) => self.notice = uu_i18n::format!("本地手柄不可用：{e}"),
                 }
             }
         }
@@ -267,11 +267,11 @@ impl Sampler {
         let notice = if !self.notice.is_empty() {
             self.notice.clone()
         } else if state.iter().all(Option::is_none) {
-            "未检测到本地手柄".into()
+            uu_i18n::text("未检测到本地手柄").into()
         } else {
             let xbox=state.iter().flatten().filter(|pad|pad.kind==Kind::Xbox360).count();
             let ds4=state.iter().flatten().count()-xbox;
-            format!("模拟类型：Xbox 360 × {xbox}，DS4 × {ds4}")
+            uu_i18n::format!("模拟类型：Xbox 360 × {xbox}，DS4 × {ds4}")
         };
         (state, notice)
     }
@@ -341,18 +341,18 @@ impl super::App {
             return None;
         }
         let stats = &self.controller.as_ref()?.stats.gamepad;
-        let mut text = format!(
+        let mut text = uu_i18n::format!(
             "最近检测到 {} 个本地手柄 · {} · {}",
             stats.local_count.load(Ordering::Acquire),
             if stats.motion.load(Ordering::Acquire) {
-                "陀螺仪可用"
+                uu_i18n::text("陀螺仪可用")
             } else {
-                "无陀螺仪数据"
+                uu_i18n::text("无陀螺仪数据")
             },
             if stats.active.load(Ordering::Acquire) {
-                "正在转发"
+                uu_i18n::text("正在转发")
             } else {
-                "已暂停转发"
+                uu_i18n::text("已暂停转发")
             }
         );
         let local = stats.local_status.lock().unwrap();
@@ -361,7 +361,7 @@ impl super::App {
         }
         let remote = stats.status.lock().unwrap();
         if !remote.is_empty() {
-            text.push_str(&format!("\n被控端：{remote}"));
+            text.push_str(&uu_i18n::format!("\n被控端：{remote}"));
         }
         Some(text)
     }

@@ -34,13 +34,13 @@ impl History {
 
 pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32) {
     use eframe::egui::{self,Color32,FontId,Stroke};
-    let names=["合计","采集","编码","解码","渲染","网络","排队"];
+    let names=[uu_i18n::text("合计"),uu_i18n::text("采集"),uu_i18n::text("编码"),uu_i18n::text("解码"),uu_i18n::text("渲染"),uu_i18n::text("网络"),uu_i18n::text("排队")];
     let colors=[Color32::WHITE,Color32::from_rgb(159,176,255),Color32::from_rgb(255,190,108),Color32::from_rgb(114,215,185),Color32::from_rgb(109,205,255),Color32::from_rgb(202,156,255),Color32::from_rgb(255,145,157)];
     let id=ui.id().with("latency-curve-series");let mut selected=ui.data_mut(|d|d.get_temp::<[bool;7]>(id)).unwrap_or([true,false,true,true,true,true,true]);
-    ui.horizontal(|ui|{ui.strong("最近 3 分钟");ui.label(egui::RichText::new("延迟 · ms").small().weak());});
+    ui.horizontal(|ui|{ui.strong(uu_i18n::text("最近 3 分钟"));ui.label(egui::RichText::new(uu_i18n::text("延迟 · ms")).small().weak());});
     ui.horizontal_wrapped(|ui|{for i in 0..7 {
         let text=egui::RichText::new(names[i]).size(11.).color(if selected[i]{colors[i]}else{Color32::from_gray(110)});
-        if ui.selectable_label(selected[i],text).on_hover_text("点击显示或隐藏这条曲线；数值为采样窗口均值，缺失样本不补零").clicked(){selected[i]=!selected[i];}
+        if ui.selectable_label(selected[i],text).on_hover_text(uu_i18n::text("点击显示或隐藏这条曲线；数值为采样窗口均值，缺失样本不补零")).clicked(){selected[i]=!selected[i];}
     }});ui.data_mut(|d|d.insert_temp(id,selected));
     let (bounds,response)=ui.allocate_exact_size(egui::vec2(ui.available_width().max(1.),height.max(80.)),egui::Sense::hover());
     let plot=egui::Rect::from_min_max(bounds.min+egui::vec2(32.,8.),bounds.max-egui::vec2(8.,22.));
@@ -53,7 +53,7 @@ pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32) {
         painter.hline(plot.x_range(),y,Stroke::new(0.5,Color32::from_white_alpha(25)));
         painter.text(egui::pos2(plot.left()-5.,y),egui::Align2::RIGHT_CENTER,format!("{:.1}",max*i as f32/4.),FontId::proportional(10.),Color32::from_gray(165));
     }
-    for (fraction,label) in [(0.,"-3m"),(0.5,"-90s"),(1.,"现在")] {let x=egui::lerp(plot.x_range(),fraction);painter.text(egui::pos2(x,plot.bottom()+6.),egui::Align2::CENTER_TOP,label,FontId::proportional(10.),Color32::from_gray(165));}
+    for (fraction,label) in [(0.,"-3m"),(0.5,"-90s"),(1.,uu_i18n::text("现在"))] {let x=egui::lerp(plot.x_range(),fraction);painter.text(egui::pos2(x,plot.bottom()+6.),egui::Align2::CENTER_TOP,label,FontId::proportional(10.),Color32::from_gray(165));}
     for series in 0..7 {if !selected[series]{continue;}let mut points=Vec::new();
         let flush=|points:&mut Vec<egui::Pos2>|{if points.len()>1{painter.add(egui::Shape::line(std::mem::take(points),Stroke::new(if series==0{1.5}else{1.1},colors[series])));}else{points.clear();}};
         for sample in samples {
@@ -61,12 +61,12 @@ pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32) {
             else{flush(&mut points);}
         }flush(&mut points);
     }
-    if samples.is_empty(){painter.text(plot.center(),egui::Align2::CENTER_CENTER,"连接后开始记录",FontId::proportional(12.),Color32::from_gray(155));}
+    if samples.is_empty(){painter.text(plot.center(),egui::Align2::CENTER_CENTER,uu_i18n::text("连接后开始记录"),FontId::proportional(12.),Color32::from_gray(155));}
     if let Some(pointer)=response.hover_pos().filter(|p|plot.contains(*p)) {
         let wanted=end-(plot.right()-pointer.x) as f64/plot.width() as f64*WINDOW_SECONDS;
         if let Some(sample)=samples.iter().min_by(|a,b|(a.seconds-wanted).abs().total_cmp(&(b.seconds-wanted).abs())) {
             let x=plot.right()-((end-sample.seconds)/WINDOW_SECONDS) as f32*plot.width();painter.vline(x,plot.y_range(),Stroke::new(1.,Color32::from_white_alpha(120)));
-            response.on_hover_ui(|ui| {ui.small(format!("{:.1} 秒前",end-sample.seconds));for i in 0..7 {if selected[i]{ui.colored_label(colors[i],format!("{}  {} ms",names[i],sample.values[i].map_or_else(||"—".into(),|v|format!("{v:.2}"))));}}});
+            response.on_hover_ui(|ui| {ui.small(uu_i18n::format!("{:.1} 秒前",end-sample.seconds));for i in 0..7 {if selected[i]{ui.colored_label(colors[i],format!("{}  {} ms",names[i],sample.values[i].map_or_else(||"—".into(),|v|format!("{v:.2}"))));}}});
         }
     }
 }

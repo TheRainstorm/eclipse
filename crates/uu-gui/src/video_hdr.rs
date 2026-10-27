@@ -59,7 +59,7 @@ pub fn enable(ctx: &egui::Context, gl: Arc<glow::Context>, vsync: bool) -> Resul
     }
     ctx.data_mut(|data| data.insert_temp(key, now));
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let window = eframe::viewport_window_for(ctx, ctx.viewport_id()).ok_or("串流窗口尚未建立")?;
+    let window = eframe::viewport_window_for(ctx, ctx.viewport_id()).ok_or(uu_i18n::text("串流窗口尚未建立"))?;
     let RawWindowHandle::Win32(handle) =
         window.window_handle().map_err(|e| e.to_string())?.as_raw()
     else {
@@ -75,7 +75,7 @@ pub fn enable(ctx: &egui::Context, gl: Arc<glow::Context>, vsync: bool) -> Resul
 }
 impl HdrPresenter {
     unsafe fn new(gl: Arc<glow::Context>, hwnd: Handle) -> Result<Self, String> {
-        let api = Api::load().ok_or("HDR 需要 WGL/D3D11 共享纹理支持")?;
+        let api = Api::load().ok_or(uu_i18n::text("HDR 需要 WGL/D3D11 共享纹理支持"))?;
         let native = Presentation::new(hwnd)?;
         let program = program(&gl)?;
         let vao = match gl.create_vertex_array() {
@@ -89,7 +89,7 @@ impl HdrPresenter {
         if device.is_null() {
             gl.delete_vertex_array(vao);
             gl.delete_program(program);
-            return Err("HDR 呈现设备不能与 OpenGL 共享纹理".into());
+            return Err(uu_i18n::text("HDR 呈现设备不能与 OpenGL 共享纹理").into());
         }
         let white = gl.get_uniform_location(program, "sdr_white");
         Ok(Self {
@@ -188,7 +188,7 @@ impl HdrPresenter {
             0,
         );
         if self.gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
-            return Err("HDR UI 浮点缓冲不完整".into());
+            return Err(uu_i18n::text("HDR UI 浮点缓冲不完整").into());
         }
         let shared_texture = self.gl.create_texture()?;
         let shared_fbo = match self.gl.create_framebuffer() {
@@ -210,10 +210,10 @@ impl HdrPresenter {
             2,
         ); // WRITE_DISCARD_NV
         if self.object.is_null() {
-            return Err("HDR FP16 纹理注册失败".into());
+            return Err(uu_i18n::text("HDR FP16 纹理注册失败").into());
         }
         if (self.api.lock)(self.device, 1, &mut self.object) == 0 {
-            return Err("HDR FP16 纹理锁定失败".into());
+            return Err(uu_i18n::text("HDR FP16 纹理锁定失败").into());
         }
         self.locked = true;
         self.gl
@@ -226,10 +226,10 @@ impl HdrPresenter {
             0,
         );
         if self.gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
-            return Err("HDR Windows 浮点缓冲不完整".into());
+            return Err(uu_i18n::text("HDR Windows 浮点缓冲不完整").into());
         }
         if (self.api.unlock)(self.device, 1, &mut self.object) == 0 {
-            return Err("HDR FP16 纹理解锁失败".into());
+            return Err(uu_i18n::text("HDR FP16 纹理解锁失败").into());
         }
         self.locked = false;
         self.size = size;
@@ -256,7 +256,7 @@ impl Presenter for HdrPresenter {
     fn present(&mut self, vsync: bool) -> Result<(), String> {
         unsafe {
             if (self.api.lock)(self.device, 1, &mut self.object) == 0 {
-                return Err("HDR 呈现纹理锁定失败".into());
+                return Err(uu_i18n::text("HDR 呈现纹理锁定失败").into());
             }
             self.locked = true;
             let gl = &self.gl;
@@ -280,7 +280,7 @@ impl Presenter for HdrPresenter {
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             if (self.api.unlock)(self.device, 1, &mut self.object) == 0 {
-                return Err("HDR 呈现纹理解锁失败".into());
+                return Err(uu_i18n::text("HDR 呈现纹理解锁失败").into());
             }
             self.locked = false;
         }

@@ -85,6 +85,7 @@ impl eframe::App for Preview {
 }
 fn main() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args().collect();
+    if args.iter().any(|a|a=="--english"){uu_i18n::set_language(uu_i18n::Language::English);}
     #[cfg(target_os = "linux")]
     {
         let index = args

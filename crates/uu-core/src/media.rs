@@ -480,7 +480,7 @@ impl ControllerMedia {
         let dc = control_dc.expect("CONTROL_DATA_CHANNEL must be created");
 
         Ok(Self {
-            _connection_monitor:stats.as_ref().map(|stats|{stats.connection.set_service("UU 兼容连接");crate::connection_info::Monitor::start(&pc,stats)}),
+            _connection_monitor:stats.as_ref().map(|stats|{stats.connection.set_service(uu_i18n::text("UU 兼容连接"));crate::connection_info::Monitor::start(&pc,stats)}),
             pc,
             repairs,
             data_channel: dc,
@@ -656,23 +656,23 @@ impl ControllerMedia {
 fn queue_clipboard(data:&[u8],stats:&Option<Arc<MediaStats>>,sender:&tokio::sync::mpsc::Sender<Vec<u8>>) {
     if let Some(stats)=stats {
         if stats.clipboard.ready() && crate::clipboard::is_clipboard(data) && sender.try_send(data.to_vec()).is_err() {
-            stats.clipboard.status("剪贴板队列繁忙，已跳过过期更新");
+            stats.clipboard.status(uu_i18n::text("剪贴板队列繁忙，已跳过过期更新"));
         }
     }
 }
 async fn flush_clipboard(stats:&Option<Arc<MediaStats>>,seq:&Arc<AtomicU64>,weak_channel:&std::sync::Weak<webrtc::data_channel::RTCDataChannel>) {
         let Some(stats)=stats else{return;};let clipboard=&stats.clipboard;
         if !clipboard.ready() || clipboard.read_only.load(Ordering::Acquire){return;}
-        if !clipboard.supported.load(Ordering::Acquire){clipboard.status("等待远端启用文本剪贴板");return;}
+        if !clipboard.supported.load(Ordering::Acquire){clipboard.status(uu_i18n::text("等待远端启用文本剪贴板"));return;}
         let Some(channel)=weak_channel.upgrade() else{return;};
         if channel.ready_state()!=webrtc::data_channel::data_channel_state::RTCDataChannelState::Open{return;}
         let value=clipboard.local.lock().unwrap().take();let Some(value)=value else{return;};
-        let Some(text)=value.as_text() else{clipboard.status("此兼容连接只支持文本剪贴板");return;};
+        let Some(text)=value.as_text() else{clipboard.status(uu_i18n::text("此兼容连接只支持文本剪贴板"));return;};
         let seq=seq.fetch_add(1,Ordering::Relaxed);
-        let Ok(message)=crate::clipboard::text_change(seq,text) else{clipboard.status("文本超过30 KiB或包含无效字符");return;};
+        let Ok(message)=crate::clipboard::text_change(seq,text) else{clipboard.status(uu_i18n::text("文本超过30 KiB或包含无效字符"));return;};
         match tokio::time::timeout(Duration::from_millis(200),channel.send(&bytes::Bytes::from(message))).await {
-            Ok(Ok(_))=>{clipboard.last_sent.store(seq,Ordering::Release);clipboard.sent.fetch_add(1,Ordering::Relaxed);clipboard.status("文本已发送，等待远端确认");},
-            _=>{let mut pending=clipboard.local.lock().unwrap();if pending.is_none(){*pending=Some(value);}clipboard.status("剪贴板发送失败，将重试");},
+            Ok(Ok(_))=>{clipboard.last_sent.store(seq,Ordering::Release);clipboard.sent.fetch_add(1,Ordering::Relaxed);clipboard.status(uu_i18n::text("文本已发送，等待远端确认"));},
+            _=>{let mut pending=clipboard.local.lock().unwrap();if pending.is_none(){*pending=Some(value);}clipboard.status(uu_i18n::text("剪贴板发送失败，将重试"));},
         }
     }
 
@@ -686,10 +686,10 @@ async fn receive_clipboard(data:&[u8],stats:&Option<Arc<MediaStats>>,seq:&Arc<At
             if let Some(text)=received.text {
                 if clipboard.ready(){*clipboard.remote.lock().unwrap()=Some(text.into());clipboard.received.fetch_add(1,Ordering::Relaxed);}
             }
-            if received.acknowledged.is_some_and(|id|id==clipboard.last_sent.load(Ordering::Acquire)){clipboard.status("文本剪贴板已同步");}
+            if received.acknowledged.is_some_and(|id|id==clipboard.last_sent.load(Ordering::Acquire)){clipboard.status(uu_i18n::text("文本剪贴板已同步"));}
             if let Some(channel)=channel.upgrade(){for reply in received.replies{let _=tokio::time::timeout(Duration::from_millis(200),channel.send(&bytes::Bytes::from(reply))).await;}}
         }
-        Err(_)=>clipboard.status("已忽略无效或超出范围的剪贴板数据"),
+        Err(_)=>clipboard.status(uu_i18n::text("已忽略无效或超出范围的剪贴板数据")),
     }
 }
 

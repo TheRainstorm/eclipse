@@ -85,14 +85,14 @@ impl DataIo {
                 match self.dc.ready_state() {
                     RTCDataChannelState::Open => return Ok(()),
                     RTCDataChannelState::Closed | RTCDataChannelState::Closing => {
-                        anyhow::bail!("设备配对通道已关闭")
+                        anyhow::bail!("{}", uu_i18n::format!("设备配对通道已关闭"))
                     }
                     _ => tokio::time::sleep(Duration::from_millis(5)).await,
                 }
             }
         })
         .await
-        .context("建立设备配对通道超时")?
+        .context(uu_i18n::text("建立设备配对通道超时"))?
     }
 }
 #[async_trait::async_trait]
@@ -106,13 +106,12 @@ impl AuthIo for DataIo {
         };
         ensure!(
             bytes.len() <= max && self.dc.buffered_amount().await <= MAX_SIGNAL,
-            "设备消息超出通道限制"
-        );
+            "{}", uu_i18n::format!("设备消息超出通道限制"));
         self.dc.send(&Bytes::from(bytes)).await?;
         Ok(())
     }
     async fn receive(&mut self) -> Result<Value> {
-        ensure!(!*self.state.borrow(), "设备配对通道已关闭");
+        ensure!(!*self.state.borrow(), "{}", uu_i18n::format!("设备配对通道已关闭"));
         tokio::select! {
             result=self.messages.recv()=>result.context("设备消息通道已关闭"),
             _=self.state.changed()=>anyhow::bail!("设备配对通道已关闭"),
@@ -212,9 +211,8 @@ pub fn is_bootstrap(value: &Value) -> bool {
 fn description(value: &Value) -> Result<RTCSessionDescription> {
     ensure!(
         is_bootstrap(value),
-        "对端尚不支持设备公钥配对，请升级两端或使用已有配对入口"
-    );
-    serde_json::from_value(value["payload"]["sdp"].clone()).context("设备引导 SDP 无效")
+        "{}", uu_i18n::format!("对端尚不支持设备公钥配对，请升级两端或使用已有配对入口"));
+    serde_json::from_value(value["payload"]["sdp"].clone()).context(uu_i18n::text("设备引导 SDP 无效"))
 }
 fn binding(session: &str, offer: &Value, answer: &Value) -> Result<Vec<u8>> {
     Ok(Sha256::digest(serde_json::to_vec(
@@ -231,7 +229,7 @@ impl Bootstrap {
         connection.transport.send(offer.clone()).await?;
         let answer = tokio::time::timeout(Duration::from_secs(30), connection.transport.receive())
             .await
-            .context("等待主机配对应答超时")??;
+            .context(uu_i18n::text("等待主机配对应答超时"))??;
         peer.remote_direct(description(&answer)?).await?;
         peer.connected().await?;
         peer.direct_path().await?;
@@ -269,7 +267,7 @@ impl Bootstrap {
         peer.direct_path().await?;
         let io = tokio::time::timeout(Duration::from_secs(15), receive)
             .await
-            .context("等待设备配对通道超时")??;
+            .context(uu_i18n::text("等待设备配对通道超时"))??;
         io.opened().await?;
         let bound = binding(&connection.session, &offer, &answer)?;
         let provider = Provider::start(connection.transport, &peer.pc);
@@ -290,12 +288,11 @@ impl Bootstrap {
             let ready =
                 tokio::time::timeout(Duration::from_secs(15), AuthIo::receive(&mut self.io))
                     .await
-                    .context("等待设备授权完成超时")??;
-            ensure!(ready["stage"]!="media-rejected","主机正在串流或设备授权已变更，请在被控端检查后重试");
+                    .context(uu_i18n::text("等待设备授权完成超时"))??;
+            ensure!(ready["stage"]!="media-rejected",uu_i18n::text("主机正在串流或设备授权已变更，请在被控端检查后重试"));
             ensure!(
                 ready == json!({"stage":"media-ready"}),
-                "主机未完成设备授权"
-            );
+                "{}", uu_i18n::format!("主机未完成设备授权"));
             self.io.authenticated.store(true, Ordering::Release);
         }
         Ok(())
@@ -315,19 +312,17 @@ impl SessionSignaling for Bootstrap {
     async fn send(&mut self, value: Value) -> Result<()> {
         ensure!(
             self.io.authenticated.load(Ordering::Acquire),
-            "设备尚未获得授权"
-        );
+            "{}", uu_i18n::format!("设备尚未获得授权"));
         AuthIo::send(&mut self.io, value).await
     }
     async fn receive(&mut self) -> Result<Value> {
         ensure!(
             self.io.authenticated.load(Ordering::Acquire),
-            "设备尚未获得授权"
-        );
+            "{}", uu_i18n::format!("设备尚未获得授权"));
         AuthIo::receive(&mut self.io).await
     }
     async fn disconnected(&mut self) -> Result<()> {
-        ensure!(!*self.provider.closed.borrow(), "连接服务已关闭");
+        ensure!(!*self.provider.closed.borrow(), "{}", uu_i18n::format!("连接服务已关闭"));
         tokio::select! {
             _=AuthIo::receive(&mut self.io)=>anyhow::bail!("原生设备信令已结束"),
             _=self.provider.closed.changed()=>anyhow::bail!("连接服务会话已结束"),

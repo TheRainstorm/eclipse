@@ -13,7 +13,7 @@ pub fn read_token(path: &Path) -> anyhow::Result<Option<String>> {
 }
 
 pub fn store_login(path: &Path, token: String, user_id: Option<String>, device_name: Option<String>) -> anyhow::Result<()> {
-    anyhow::ensure!(!token.is_empty(), "登录响应缺少凭据");
+    anyhow::ensure!(!token.is_empty(), "{}", uu_i18n::format!("登录响应缺少凭据"));
     let mut state = read_state(path)?.unwrap_or_default();
     state.token = Some(token);
     state.user_id = user_id.clone();
@@ -24,8 +24,8 @@ pub fn store_login(path: &Path, token: String, user_id: Option<String>, device_n
 }
 
 pub fn store_device_name(path: &Path, token: &str, name: String) -> anyhow::Result<()> {
-    let mut state = read_state(path)?.ok_or_else(|| anyhow::anyhow!("本地账号配置不存在"))?;
-    anyhow::ensure!(state.token.as_deref() == Some(token), "账号已变化，请重新保存设备名称");
+    let mut state = read_state(path)?.ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("本地账号配置不存在")))?;
+    anyhow::ensure!(state.token.as_deref() == Some(token), "{}", uu_i18n::format!("账号已变化，请重新保存设备名称"));
     state.device_name = Some(name);
     state.save(&path.to_path_buf())?;
     Ok(())
@@ -56,16 +56,16 @@ impl super::App {
         let result = self
             .config
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("无法确定登录目录"))
+            .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定登录目录")))
             .and_then(|config| sign_out_matching(&config.at("state.json"), Some(&expected)));
         match result {
             Ok(true) => self.apply_account(None),
             Ok(false) => {
                 self.retry_account_read();
-                self.workspace.feedback.error(super::ui_feedback::Scope::Services(0), "UU 账号已变化，请确认后重新登出。");
+                self.workspace.feedback.error(super::ui_feedback::Scope::Services(0), uu_i18n::text("UU 账号已变化，请确认后重新登出。"));
             }
             Err(error) => {
-                self.status = format!("登出账号失败：{error}");
+                self.status = uu_i18n::format!("登出账号失败：{error}");
                 self.workspace.feedback.error(super::ui_feedback::Scope::Services(0), self.status.clone());
             }
         }
@@ -74,7 +74,7 @@ impl super::App {
     pub(super) fn apply_account(&mut self, token: Option<String>) {
         self.uu_devices = Default::default();
         if self.account_token.is_some() && self.account_token!=token && self.workspace.host.uses_uu_account() {
-            self.workspace.host.stop();self.workspace.feedback.error(super::ui_feedback::Scope::Services(0),"UU 账号已变化，已停止本机共享；确认账号后可重新开启。");
+            self.workspace.host.stop();self.workspace.feedback.error(super::ui_feedback::Scope::Services(0),uu_i18n::text("UU 账号已变化，已停止本机共享；确认账号后可重新开启。"));
         }
         self.account_token = token;
         self.account_error = None;
@@ -98,7 +98,7 @@ impl super::App {
         } else if self.logged_in {
             self.start_load();
         } else {
-            self.status = "已退出账号，请重新扫码登录".into();
+            self.status = uu_i18n::text("已退出账号，请重新扫码登录").into();
         }
     }
 

@@ -14,7 +14,7 @@ pub enum CursorMode {
 }
 impl CursorMode {
     pub const ALL: [Self; 2] = [Self::Remote, Self::Both];
-    pub fn label(self) -> &'static str { match self { Self::Both => "本地和远端光标", Self::Remote => "仅远端光标" } }
+    pub fn label(self) -> &'static str { match self { Self::Both => uu_i18n::text("本地和远端光标"), Self::Remote => uu_i18n::text("仅远端光标") } }
     pub fn local(self) -> bool { self == Self::Both }
     pub fn local_visible(self,remote_available:bool)->bool {self.local()||!remote_available}
     pub fn remote(self) -> bool { true }
@@ -36,7 +36,7 @@ fn cursor<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CursorMode, D::Error
 pub enum CodecPreference { #[default] Auto, H264, Hevc, Av1, Pyrowave }
 impl CodecPreference {
     pub const ALL: [Self; 5] = [Self::Auto, Self::H264, Self::Hevc, Self::Av1,Self::Pyrowave];
-    pub fn label(self) -> &'static str { match self { Self::Auto => "自动协商", Self::H264 => "H.264", Self::Hevc => "H.265 / HEVC", Self::Av1 => "AV1",Self::Pyrowave=>"PyroWave（实验性 / SDR）" } }
+    pub fn label(self) -> &'static str { match self { Self::Auto => uu_i18n::text("自动协商"), Self::H264 => "H.264", Self::Hevc => "H.265 / HEVC", Self::Av1 => "AV1",Self::Pyrowave=>uu_i18n::text("PyroWave（实验性 / SDR）") } }
 }
 
 #[derive(Clone,Copy,Debug,Default,Serialize,Deserialize,PartialEq,Eq)]
@@ -44,7 +44,7 @@ impl CodecPreference {
 pub enum HudDetail { #[default] Compact, Detailed }
 impl HudDetail {
     pub const ALL:[Self;2]=[Self::Compact,Self::Detailed];
-    pub fn label(self)->&'static str {match self {Self::Compact=>"Compact",Self::Detailed=>"Detailed"}}
+    pub fn label(self)->&'static str {match self {Self::Compact=>uu_i18n::text("精简"),Self::Detailed=>uu_i18n::text("详细")}}
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -93,10 +93,10 @@ impl ClientSettings {
         self.hotkeys.validate()?;
         ensure!((5..=240).contains(&self.fps) && self.bitrate<=5
             && (1..=1000).contains(&self.custom_mbps) && self.resolution<=3 && self.volume<=100,
-            "客户端分辨率、帧率、码率或音量无效");
+            "{}", uu_i18n::format!("客户端分辨率、帧率、码率或音量无效"));
         ensure!(!self.software_decoder || !matches!(self.codec,CodecPreference::Hevc|CodecPreference::Av1|CodecPreference::Pyrowave),
-            "HEVC / AV1 / PyroWave 需要可用的 GPU 解码；请选择自动或 H.264");
-        ensure!(self.codec!=CodecPreference::Pyrowave || self.rate_control!=Some(crate::native_quality::RateMode::Vbr),"PyroWave 当前只支持 CBR 帧预算，请选择 CBR");
+            "{}", uu_i18n::format!("HEVC / AV1 / PyroWave 需要可用的 GPU 解码；请选择自动或 H.264"));
+        ensure!(self.codec!=CodecPreference::Pyrowave || self.rate_control!=Some(crate::native_quality::RateMode::Vbr),"{}", uu_i18n::format!("PyroWave 当前只支持 CBR 帧预算，请选择 CBR"));
         Ok(())
     }
     pub fn native_request(&self)->crate::native_quality::Request {
@@ -123,8 +123,8 @@ impl NamedClientSettings {
         Self { id:uuid::Uuid::new_v4().to_string(),name:name.into(),settings }
     }
     pub fn validate(&self) -> Result<()> {
-        ensure!(uuid::Uuid::parse_str(&self.id).is_ok(),"客户端配置标识无效");
-        ensure!(!self.name.trim().is_empty() && self.name.chars().count()<=64 && !self.name.chars().any(char::is_control),"请输入有效的配置名称（最多64字）");
+        ensure!(uuid::Uuid::parse_str(&self.id).is_ok(),"{}", uu_i18n::format!("客户端配置标识无效"));
+        ensure!(!self.name.trim().is_empty() && self.name.chars().count()<=64 && !self.name.chars().any(char::is_control),"{}", uu_i18n::format!("请输入有效的配置名称（最多64字）"));
         self.settings.validate()
     }
 }

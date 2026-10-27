@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/uu-proto",
+    "crates/uu-i18n",
+    "crates/uu-i18n-macros",
     "crates/uu-media",
     "crates/uu-capture",
     "crates/uu-input",

@@ -54,8 +54,7 @@ pub fn prepare(
         book.sharing.ip_enabled
             || book.sharing.uu_enabled
             || book.services.iter().any(|s| s.host_enabled),
-        "请先在连接服务中启用至少一个入口"
-    );
+        "{}", uu_i18n::format!("请先在连接服务中启用至少一个入口"));
     let owner = HostOwner::claim(&config.at("device-trust"))?;
     let (requests, receive) = mpsc::unbounded_channel();
     let access = Arc::new(Access {
@@ -74,7 +73,7 @@ pub fn prepare(
     let mut endpoints = Vec::new();
     if book.sharing.ip_enabled {
         endpoints.push(Endpoint {
-            name: "IP 直连".into(),
+            name: uu_i18n::text("IP 直连").into(),
             state,
         });
     }
@@ -86,7 +85,7 @@ pub fn prepare(
     };
     if book.sharing.uu_enabled {
         add(
-            "UU 账号".into(),
+            uu_i18n::text("UU 账号").into(),
             Settings {
                 provider: Provider::Uu,
                 device_auth: true,
@@ -185,13 +184,13 @@ impl Runner {
                         let result = server.run().await;
                         ip_status.send_replace(match &result {
                             Ok(()) => EndpointStatus::Stopped,
-                            Err(e) => EndpointStatus::Error(format!("IP 服务异常：{e:#}")),
+                            Err(e) => EndpointStatus::Error(uu_i18n::format!("IP 服务异常：{e:#}")),
                         });
                         result
                     });
                 }
                 Err(error) => {
-                    let text = format!("IP 共享不可用：{error:#}");
+                    let text = uu_i18n::format!("IP 共享不可用：{error:#}");
                     ip_status.send_replace(EndpointStatus::Error(text.clone()));
                     emit(Event::Notice(text));
                 }

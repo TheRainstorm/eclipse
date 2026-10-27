@@ -570,7 +570,7 @@ impl NativePeer {
                     }
                 }
             }
-            anyhow::bail!("控制端没有可用的媒体接收通道");
+            anyhow::bail!("{}", uu_i18n::format!("控制端没有可用的媒体接收通道"));
         }
         Ok(self.pc.add_track(track).await?)
     }

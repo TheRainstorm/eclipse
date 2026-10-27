@@ -334,7 +334,7 @@ impl Server {
         let identity = Identity::open(&config.data_dir.join("server-identity.json"))?;
         let acceptor = tls_acceptor(&identity,access.is_some())?;
         let listener = crate::listen_socket::tcp(config.bind).with_context(|| {
-            format!("无法监听共享端口 TCP {}；端口可能已被占用或没有监听权限，请更换服务端口后重试", config.bind.port())
+            uu_i18n::format!("无法监听共享端口 TCP {}；端口可能已被占用或没有监听权限，请更换服务端口后重试", config.bind.port())
         })?;
         let info = ServerInfo {
             id: identity.id.clone(),
@@ -352,7 +352,7 @@ impl Server {
                 Ok(socket) => Some(socket),
                 Err(error) => {
                     let _ = events.send(Event::Warning(
-                        format!("局域网发现端口 UDP {} 不可用：{error}。自动发现已停用，仍可通过 IP:{} 连接；停止共享后可修改发现端口", address.port(), info.port),
+                        uu_i18n::format!("局域网发现端口 UDP {} 不可用：{error}。自动发现已停用，仍可通过 IP:{} 连接；停止共享后可修改发现端口", address.port(), info.port),
                     ));
                     None
                 }
@@ -476,23 +476,23 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
     let request: Request = read(&mut stream).await?;
     match request {
         Request::Device {media,legacy_id,legacy_token}=>{
-            let access=state.access.as_ref().context("主机尚未启用统一设备配对")?;
+            let access=state.access.as_ref().context(uu_i18n::text("主机尚未启用统一设备配对"))?;
             let legacy=match (&legacy_id,&legacy_token) {
                 (Some(id),Some(token))=>{
-                    ensure!(state.grants.lock().unwrap().accepts(id,&token.0),"旧配对已经失效，请重新配对");Some(id.as_str())
+                    ensure!(state.grants.lock().unwrap().accepts(id,&token.0),"{}", uu_i18n::format!("旧配对已经失效，请重新配对"));Some(id.as_str())
                 },
                 (None,None)=>None,
-                _=>anyhow::bail!("旧配对凭据不完整"),
+                _=>anyhow::bail!("{}", uu_i18n::format!("旧配对凭据不完整")),
             };
             let binding=stream.get_ref().1.export_keying_material([0;32],b"EXPORTER-Eclipse-Device-v2",Some(b"native"))?;
             let mut authorized={let mut wire=DeviceWire(&mut stream);
                 crate::device_auth::host(&mut wire,&access.store,&access.name,&binding,&access.pairing,legacy).await?};
             ensure!(read::<serde_json::Value>(&mut stream).await?==serde_json::json!({"begin_media":media}),
-                "控制端未确认串流请求");
+                "{}", uu_i18n::format!("控制端未确认串流请求"));
             let peer_id=authorized.device.id();
             let invitation=if media {
                 let lease=match access.claim_authenticated(&mut authorized) {Ok(lease)=>lease,Err(error)=>{
-                    write(&mut stream,&Reply::Error {message:format!("无法开始串流：{error}").chars().take(256).collect()}).await?;return Err(error);
+                    write(&mut stream,&Reply::Error {message:uu_i18n::format!("无法开始串流：{error}").chars().take(256).collect()}).await?;return Err(error);
                 }};
                 Some(start_authorized_session(state.clone(),peer_id.clone(),local,authorized.permissions,Some(lease)).await?)
             }else{None};
@@ -507,7 +507,7 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
                 return write(
                     &mut stream,
                     &Reply::Error {
-                        message: "主机已停止接收配对".into(),
+                        message: uu_i18n::text("主机已停止接收配对").into(),
                     },
                 )
                 .await;
@@ -516,7 +516,7 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
                 return write(
                     &mut stream,
                     &Reply::Error {
-                        message: "主机正在处理另一项配对请求".into(),
+                        message: uu_i18n::text("主机正在处理另一项配对请求").into(),
                     },
                 )
                 .await;
@@ -562,7 +562,7 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
                 return write(
                     &mut stream,
                     &Reply::Error {
-                        message: "主机未允许配对或请求已超时".into(),
+                        message: uu_i18n::text("主机未允许配对或请求已超时").into(),
                     },
                 )
                 .await;
@@ -582,7 +582,7 @@ async fn handle_socket(mut socket: TcpStream, state: Arc<State>) -> Result<()> {
                 return write(
                     &mut stream,
                     &Reply::Error {
-                        message: "配对已失效，请在主机允许后重新配对".into(),
+                        message: uu_i18n::text("配对已失效，请在主机允许后重新配对").into(),
                     },
                 )
                 .await;
@@ -633,7 +633,7 @@ async fn start_session(state: Arc<State>, client: String, local: SocketAddr) -> 
     let mut peer=client.clone();
     let lease=if let Some(access)=&state.access {
         if let Some(record)=access.store.peers()?.into_iter().find(|p|p.legacy_ids.iter().any(|id|id==&client)) {
-            permission=record.inbound.context("设备授权已经撤销")?;peer=record.device.id();
+            permission=record.inbound.context(uu_i18n::text("设备授权已经撤销"))?;peer=record.device.id();
         }
         Some(access.sessions.claim(&peer)?)
     }else{None};
@@ -645,7 +645,7 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
     let id = uuid::Uuid::new_v4().to_string();
     {
         let mut active = state.active.lock().unwrap();
-        ensure!(active.len() < crate::shared_host::MAX_SESSIONS, "主机并发串流已达上限，请先断开一个设备");
+        ensure!(active.len() < crate::shared_host::MAX_SESSIONS, "{}", uu_i18n::format!("主机并发串流已达上限，请先断开一个设备"));
         active.insert(id.clone(), Active { client: client.clone(), stop: stop.clone() });
     }
     let mut guard = SessionGuard { _lease: lease, _cancellation: None, state: state.clone(), id: id.clone(), clipboard: None };
@@ -711,7 +711,7 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
             // Session IDs, peer IDs and status contain no capability secrets.
             tracing::warn!(session=%task_id,peer=%client,status=?*observed.borrow(),error=%format!("{error:#}"),"native LAN media session failed");
             let _ = task_state.events.send(Event::Warning(
-                "原生串流未正常结束，请检查共享屏幕与采集、编码后端。".into(),
+                uu_i18n::text("原生串流未正常结束，请检查共享屏幕与采集、编码后端。").into(),
             ));
         } else {
             tracing::info!(session=%task_id,peer=%client,"native LAN media session ended");
@@ -719,7 +719,7 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
         let _ = done.send(
             result
                 .map(|_| ())
-                .map_err(|_| "原生串流服务启动或运行失败".to_string()),
+                .map_err(|_| uu_i18n::text("原生串流服务启动或运行失败").to_string()),
         );
     });
     {
@@ -738,7 +738,7 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
         }
         Err(_) => {
             stop.send_replace(true);
-            Err(anyhow::anyhow!("原生串流服务启动超时"))
+            Err(anyhow::anyhow!("{}", uu_i18n::format!("原生串流服务启动超时")))
         }
     }
 }
@@ -769,12 +769,12 @@ pub async fn connect_device(endpoint:&str,store:&crate::device_trust::TrustStore
     let found=inspect(endpoint).await?;
     if let Some((old,_))=legacy {
         ensure!(old.id==found.info.id && old.certificate==found.certificate,
-            "旧设备证书已经变化，未发送任何配对凭据，请核实设备身份");
+            "{}", uu_i18n::format!("旧设备证书已经变化，未发送任何配对凭据，请核实设备身份"));
     }
     let mut stream=tls_connect_versioned(found.address,&found.certificate,true).await?;
     if stream.get_ref().1.alpn_protocol()!=Some(b"eclipse-device-v2") {
-        ensure!(expected.is_none(),"已升级的设备不能降级到旧配对协议，请检查被控端版本");
-        let (old,id)=legacy.context("被控端版本尚不支持设备公钥配对，请先升级被控端")?;
+        ensure!(expected.is_none(),"{}", uu_i18n::format!("已升级的设备不能降级到旧配对协议，请检查被控端版本"));
+        let (old,id)=legacy.context(uu_i18n::text("被控端版本尚不支持设备公钥配对，请先升级被控端"))?;
         drop(stream);
         return Ok(DeviceConnection {invitation:if media {Some(connect(old,id).await?)}else{None},peer:None});
     }
@@ -790,9 +790,9 @@ pub async fn connect_device(endpoint:&str,store:&crate::device_trust::TrustStore
     let (invitation,peer_id,observed_client_ip)=match read::<Reply>(&mut stream).await? {
         Reply::Device{invitation,peer_id,observed_client_ip}=>(invitation,peer_id,observed_client_ip),
         Reply::Error{message}=>anyhow::bail!(message),
-        _=>anyhow::bail!("被控端未确认设备连接"),
+        _=>anyhow::bail!("{}", uu_i18n::format!("被控端未确认设备连接")),
     };
-    ensure!(peer_id==remote.device.id() && invitation.is_some()==media,"设备串流授权响应不匹配");
+    ensure!(peer_id==remote.device.id() && invitation.is_some()==media,"{}", uu_i18n::format!("设备串流授权响应不匹配"));
     let invitation=invitation.map(|v|v.from_authenticated_broker(requested_at,observed_client_ip)).transpose()?;
     Ok(DeviceConnection {invitation,peer:Some(remote.device)})
 }
@@ -802,19 +802,18 @@ pub async fn inspect(endpoint: &str) -> Result<Found> {
     timeout(IO_WAIT, async {
         let mut socket = TcpStream::connect(&endpoint)
             .await
-            .with_context(||format!("无法连接 {endpoint}；请确认目标已启用共享、服务端口正确，并允许防火墙 TCP 入站连接"))?;
+            .with_context(||uu_i18n::format!("无法连接 {endpoint}；请确认目标已启用共享、服务端口正确，并允许防火墙 TCP 入站连接"))?;
         let address = socket.peer_addr()?;
         socket.write_all(INFO).await?;
         let public: PublicInfo = read(&mut socket).await.with_context(||
-            format!("无法读取设备 {endpoint} 的 Eclipse 服务信息（5 秒超时）；请确认该 TCP 端口属于已开启的共享服务"))?;
+            uu_i18n::format!("无法读取设备 {endpoint} 的 Eclipse 服务信息（5 秒超时）；请确认该 TCP 端口属于已开启的共享服务"))?;
         public.server.validate()?;
         ensure!(
             public.version == 1
                 && !public.certificate.is_empty()
                 && public.certificate.len() <= 8192
                 && hex::encode(Sha256::digest(&public.certificate)) == public.server.fingerprint,
-            "服务端身份信息无效"
-        );
+            "{}", uu_i18n::format!("服务端身份信息无效"));
         Ok(Found {
             info: public.server,
             address,
@@ -823,7 +822,7 @@ pub async fn inspect(endpoint: &str) -> Result<Found> {
         })
     })
     .await
-    .with_context(||format!("检查设备 {endpoint} 超时（5 秒）；请确认目标已启用共享、TCP 服务端口与路由及防火墙允许连接"))?
+    .with_context(||uu_i18n::format!("检查设备 {endpoint} 超时（5 秒）；请确认目标已启用共享、TCP 服务端口与路由及防火墙允许连接"))?
 }
 pub async fn pair(
     endpoint: &str,
@@ -832,9 +831,9 @@ pub async fn pair(
     progress: mpsc::UnboundedSender<String>,
 ) -> Result<Device> {
     let found = inspect(endpoint).await?;
-    ensure!(found.pairing_open, "已连接设备，但主机已停止接收配对");
+    ensure!(found.pairing_open, "{}", uu_i18n::format!("已连接设备，但主机已停止接收配对"));
     let mut stream = tls_connect(found.address, &found.certificate).await
-        .with_context(||format!("无法与 {} 建立安全配对连接",found.address))?;
+        .with_context(||uu_i18n::format!("无法与 {} 建立安全配对连接",found.address))?;
     let nonce = store::fresh_token();
     let context = context(&found.info.id, client_id, &nonce);
     let code = comparison(stream.get_ref().1.export_keying_material(
@@ -852,19 +851,19 @@ pub async fn pair(
     )
     .await?;
     match read::<Reply>(&mut stream).await? {
-        Reply::Pending { server_id } => ensure!(server_id == found.info.id, "服务端身份发生变化"),
+        Reply::Pending { server_id } => ensure!(server_id == found.info.id, "{}", uu_i18n::format!("服务端身份发生变化")),
         Reply::Error { message } => return Err(anyhow::anyhow!(message)),
-        _ => anyhow::bail!("配对响应无效"),
+        _ => anyhow::bail!("{}", uu_i18n::format!("配对响应无效")),
     }
     progress
         .send(code)
-        .map_err(|_| anyhow::anyhow!("配对窗口已关闭"))?;
+        .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("配对窗口已关闭")))?;
     let response = read_with_wait::<Reply>(&mut stream, PAIR_WAIT)
         .await
-        .context("等待主机确认超时")?;
+        .context(uu_i18n::text("等待主机确认超时"))?;
     match response {
         Reply::Paired { mut token } => {
-            ensure!(token.0.len() == 32, "配对凭据无效");
+            ensure!(token.0.len() == 32, "{}", uu_i18n::format!("配对凭据无效"));
             Ok(Device {
                 id: found.info.id,
                 name: found.info.name,
@@ -874,7 +873,7 @@ pub async fn pair(
             })
         }
         Reply::Error { message } => Err(anyhow::anyhow!(message)),
-        _ => Err(anyhow::anyhow!("配对响应无效")),
+        _ => Err(anyhow::anyhow!("{}", uu_i18n::format!("配对响应无效"))),
     }
 }
 /// Check a discovered new address against an already-paired certificate before
@@ -883,8 +882,7 @@ pub async fn verify_address(device: &Device, endpoint: &str) -> Result<Device> {
     let found = inspect(endpoint).await?;
     ensure!(
         found.info.id == device.id && found.certificate == device.certificate,
-        "服务端身份已变化，未发送连接凭据"
-    );
+        "{}", uu_i18n::format!("服务端身份已变化，未发送连接凭据"));
     let _stream = tls_connect(found.address, &device.certificate).await?;
     let mut updated = device.clone();
     updated.endpoint = crate::native_discovery::endpoint(endpoint)?;
@@ -894,8 +892,7 @@ pub async fn connect(device: &Device, client_id: &str) -> Result<Invitation> {
     let found = inspect(&device.endpoint).await?;
     ensure!(
         found.info.id == device.id && found.certificate == device.certificate,
-        "服务端身份已变化；请核实设备后重新配对，未发送连接凭据"
-    );
+        "{}", uu_i18n::format!("服务端身份已变化；请核实设备后重新配对，未发送连接凭据"));
     let mut stream = tls_connect(found.address, &device.certificate).await?;
     let requested_at = Instant::now();
     write(
@@ -912,7 +909,7 @@ pub async fn connect(device: &Device, client_id: &str) -> Result<Invitation> {
             observed_client_ip,
         } => invitation.from_authenticated_broker(requested_at, observed_client_ip),
         Reply::Error { message } => Err(anyhow::anyhow!(message)),
-        _ => Err(anyhow::anyhow!("连接响应无效")),
+        _ => Err(anyhow::anyhow!("{}", uu_i18n::format!("连接响应无效"))),
     }
 }
 

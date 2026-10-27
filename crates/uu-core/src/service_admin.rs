@@ -54,7 +54,7 @@ pub enum Response {
 }
 pub async fn read<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin)) -> Result<T> {
     let length = stream.read_u32().await? as usize;
-    ensure!(length > 0 && length <= MAX_MESSAGE, "后台服务消息长度无效");
+    ensure!(length > 0 && length <= MAX_MESSAGE, "{}", uu_i18n::format!("后台服务消息长度无效"));
     let mut bytes = zeroize::Zeroizing::new(vec![0u8; length]);
     stream.read_exact(&mut bytes).await?;
     Ok(serde_json::from_slice(&bytes)?)
@@ -63,8 +63,7 @@ pub async fn write<T: Serialize>(stream: &mut (impl AsyncWrite + Unpin), value: 
     let bytes = zeroize::Zeroizing::new(serde_json::to_vec(value)?);
     ensure!(
         !bytes.is_empty() && bytes.len() <= MAX_MESSAGE,
-        "后台服务消息过大"
-    );
+        "{}", uu_i18n::format!("后台服务消息过大"));
     stream.write_u32(bytes.len() as u32).await?;
     stream.write_all(&bytes).await?;
     stream.flush().await?;

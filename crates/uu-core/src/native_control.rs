@@ -88,7 +88,7 @@ impl WorkerState {
         let controllers = pads.as_ref().is_none_or(|pads|pads.reset());
         let result = keyboard.is_ok() && controllers;
         if let Err(error)=keyboard {*self.failure.lock().unwrap()=Some(error.to_string());}
-        else if !controllers {*self.failure.lock().unwrap()=Some("虚拟手柄释放失败".into());}
+        else if !controllers {*self.failure.lock().unwrap()=Some(uu_i18n::text("虚拟手柄释放失败").into());}
         if final_release {if let Some(pads)=pads {pads.stop();}}
         // Keep ownership while retrying cleanup. Only an unrecoverable final
         // shutdown poisons the host; a temporary desktop transition must not.
@@ -187,7 +187,7 @@ impl InputWorker {
                     let current = actor.epoch.load(Ordering::Acquire);
                     if current != epoch {
                         if !actor.release(&mut *injector, false) {
-                            let error=actor.failure.lock().unwrap().clone().unwrap_or_else(||"输入释放失败".into());
+                            let error=actor.failure.lock().unwrap().clone().unwrap_or_else(||uu_i18n::text("输入释放失败").into());
                             actor.suspend(error);
                             continue;
                         }
@@ -296,12 +296,12 @@ impl InputWorker {
         match self.tx.try_send(InputJob {epoch:self.state.epoch.load(Ordering::Acquire),command:Some(command),queued:Instant::now(),reply}) {
             Ok(())=>true,
             Err(std::sync::mpsc::TrySendError::Full(_))=>{
-                self.state.suspend("输入队列积压，正在释放并恢复".into());
+                self.state.suspend(uu_i18n::text("输入队列积压，正在释放并恢复").into());
                 false
             },
             Err(std::sync::mpsc::TrySendError::Disconnected(_))=>{
                 self.state.stop.store(true,Ordering::Release);
-                self.state.suspend("输入工作线程已关闭".into());
+                self.state.suspend(uu_i18n::text("输入工作线程已关闭").into());
                 false
             },
         }
@@ -356,7 +356,7 @@ impl HostControl {
     async fn administer(self:Arc<Self>,channel:Arc<RTCDataChannel>,request:u64,command:crate::host_admin::Request) {
         use crate::host_admin::Response;
         if self.admin_busy.swap(true,Ordering::AcqRel) {
-            let _=send(&channel,Packet::AdminResponse{request,response:Response::Error{message:"另一项管理请求尚未完成".into()}}).await;
+            let _=send(&channel,Packet::AdminResponse{request,response:Response::Error{message:uu_i18n::text("另一项管理请求尚未完成").into()}}).await;
             return;
         }
         struct Reset<'a>(&'a AtomicBool);
@@ -366,7 +366,7 @@ impl HostControl {
         let service=context.as_ref().and_then(|c|c.access.sessions.administration.lock().unwrap().clone());
         let result=match (context,service) {
             (Some(context),Some(service))=>tokio::task::spawn_blocking(move||service.execute(&context,command)).await.map_err(anyhow::Error::from).and_then(|r|r),
-            _=>Err(anyhow::anyhow!("主机未提供连接管理")),
+            _=>Err(anyhow::anyhow!("{}", uu_i18n::format!("主机未提供连接管理"))),
         };
         if self.stopped.load(Ordering::Acquire){return;}
         let response=result.unwrap_or_else(|error|Response::Error{message:error.to_string().chars().take(512).collect()});
@@ -500,8 +500,8 @@ impl HostControl {
                                 let quality=host.quality.lock().unwrap().clone();
                                 tokio::spawn(async move {
                                     let result=async {
-                                        let receiver=quality.context("主机尚未准备好动态画质")?.request(settings)?;
-                                        timeout(Duration::from_secs(10),receiver).await.context("主机画质更新超时")?.context("画质更新已经取消")?.map_err(anyhow::Error::msg)
+                                        let receiver=quality.context(uu_i18n::text("主机尚未准备好动态画质"))?.request(settings)?;
+                                        timeout(Duration::from_secs(10),receiver).await.context(uu_i18n::text("主机画质更新超时"))?.context(uu_i18n::text("画质更新已经取消"))?.map_err(anyhow::Error::msg)
                                     }.await;
                                     let (bitrate_kbps,error)=match result {Ok(kbps)=>(kbps,None),Err(error)=>(0,Some(error.to_string()))};
                                     let _=send(&channel,Packet::QualityApplied{applied:crate::native_quality::Applied{request,settings,bitrate_kbps,error}}).await;
@@ -591,7 +591,7 @@ impl HostControl {
                     if let Some(worker)=&worker {worker.gamepads(state,generation);}
                     let reporting={let mut at=reported.lock().unwrap();if worker.as_ref().is_some_and(|w|w.state.epoch.load(Ordering::Acquire)!=generation)||at.elapsed()>=Duration::from_secs(1){*at=Instant::now();true}else{false}};
                     if reporting {if let Some(channel)=weak.upgrade(){
-                        let status=worker.as_ref().map_or_else(||crate::native_gamepad::Status{connected:0,error:Some("被控端未允许控制或输入后端不可用".into())},|worker|worker.gamepad_status());
+                        let status=worker.as_ref().map_or_else(||crate::native_gamepad::Status{connected:0,error:Some(uu_i18n::text("被控端未允许控制或输入后端不可用").into())},|worker|worker.gamepad_status());
                         let packet=crate::native_gamepad::Packet::Status{version,connected:status.connected,generation:worker.as_ref().map_or(0,|w|w.state.epoch.load(Ordering::Acquire)),error:status.error};
                         if let Ok(bytes)=serde_json::to_vec(&packet){let _=timeout(Duration::from_millis(20),channel.send(&bytes.into())).await;}
                     }}
@@ -781,7 +781,7 @@ impl ViewerControl {
                 if matches!(self.channel.ready_state(),RTCDataChannelState::Closing|RTCDataChannelState::Closed){break;}
                 self.ready.notified().await;
             }
-        }).await.context("被控端未完成显示器切换")?;
+        }).await.context(uu_i18n::text("被控端未完成显示器切换"))?;
         Ok(())
     }
     pub fn take_input(&mut self)->Option<NativeInputReceiver>{self.input.take()}

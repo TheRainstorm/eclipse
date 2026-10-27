@@ -4,10 +4,10 @@ use uu_core::connection_info::{Endpoint, Kind, Snapshot};
 
 fn kind_label(kind: Kind) -> &'static str {
     match kind {
-        Kind::Interface => "网卡地址",
-        Kind::StunMapping => "STUN 映射",
-        Kind::PeerMapping => "对端观测",
-        Kind::Relay => "TURN 中继",
+        Kind::Interface => uu_i18n::text("网卡地址"),
+        Kind::StunMapping => uu_i18n::text("STUN 映射"),
+        Kind::PeerMapping => uu_i18n::text("对端观测"),
+        Kind::Relay => uu_i18n::text("TURN 中继"),
     }
 }
 fn address(ui: &mut egui::Ui, endpoint: &Endpoint) {
@@ -37,37 +37,37 @@ fn grid(ui: &mut egui::Ui, snapshot: &Snapshot) {
         .spacing([20., 14.])
         .striped(true)
         .show(ui, |ui| {
-            ui.strong("地址信息");
-            ui.strong("本机（控制端）");
-            ui.strong("远端（被控端）");
+            ui.strong(uu_i18n::text("地址信息"));
+            ui.strong(uu_i18n::text("本机（控制端）"));
+            ui.strong(uu_i18n::text("远端（被控端）"));
             ui.end_row();
-            ui.label("实际使用的端点");
+            ui.label(uu_i18n::text("实际使用的端点"));
             if let Some(path) = &snapshot.selected {
                 ui.vertical(|ui| address(ui, &path.local));
                 ui.vertical(|ui| address(ui, &path.remote));
             } else {
-                ui.weak("尚未选中");
-                ui.weak("尚未选中");
+                ui.weak(uu_i18n::text("尚未选中"));
+                ui.weak(uu_i18n::text("尚未选中"));
             }
             ui.end_row();
-            ui.label("内网 / 网卡候选");
-            ui.vertical(|ui| list(ui, &snapshot.local, &[Kind::Interface], "未收到网卡地址"));
+            ui.label(uu_i18n::text("内网 / 网卡候选"));
+            ui.vertical(|ui| list(ui, &snapshot.local, &[Kind::Interface], uu_i18n::text("未收到网卡地址")));
             ui.vertical(|ui| {
                 list(
                     ui,
                     &snapshot.remote,
                     &[Kind::Interface],
-                    "对端未提供网卡地址",
+                    uu_i18n::text("对端未提供网卡地址"),
                 )
             });
             ui.end_row();
-            ui.label("公网 / 映射候选");
+            ui.label(uu_i18n::text("公网 / 映射候选"));
             ui.vertical(|ui| {
                 list(
                     ui,
                     &snapshot.local,
                     &[Kind::StunMapping, Kind::PeerMapping],
-                    "未发现 STUN 或对端观测映射",
+                    uu_i18n::text("未发现 STUN 或对端观测映射"),
                 )
             });
             ui.vertical(|ui| {
@@ -75,24 +75,24 @@ fn grid(ui: &mut egui::Ui, snapshot: &Snapshot) {
                     ui,
                     &snapshot.remote,
                     &[Kind::StunMapping, Kind::PeerMapping],
-                    "未收到 STUN 或对端观测映射",
+                    uu_i18n::text("未收到 STUN 或对端观测映射"),
                 )
             });
             ui.end_row();
             if let Some(path) = &snapshot.selected {
                 if path.local.base.is_some() || path.remote.base.is_some() {
-                    ui.label("当前端点关联地址");
+                    ui.label(uu_i18n::text("当前端点关联地址"));
                     ui.monospace(
                         path.local
                             .base
                             .map(|v| v.to_string())
-                            .unwrap_or_else(|| "未提供".into()),
+                            .unwrap_or_else(|| uu_i18n::text("未提供").into()),
                     );
                     ui.monospace(
                         path.remote
                             .base
                             .map(|v| v.to_string())
-                            .unwrap_or_else(|| "未提供".into()),
+                            .unwrap_or_else(|| uu_i18n::text("未提供").into()),
                     );
                     ui.end_row();
                 }
@@ -103,9 +103,9 @@ fn grid(ui: &mut egui::Ui, snapshot: &Snapshot) {
                 .chain(&snapshot.remote)
                 .any(|v| v.kind == Kind::Relay)
             {
-                ui.label("中继候选");
-                ui.vertical(|ui| list(ui, &snapshot.local, &[Kind::Relay], "无"));
-                ui.vertical(|ui| list(ui, &snapshot.remote, &[Kind::Relay], "无"));
+                ui.label(uu_i18n::text("中继候选"));
+                ui.vertical(|ui| list(ui, &snapshot.local, &[Kind::Relay], uu_i18n::text("无")));
+                ui.vertical(|ui| list(ui, &snapshot.remote, &[Kind::Relay], uu_i18n::text("无")));
                 ui.end_row();
             }
         });
@@ -113,7 +113,7 @@ fn grid(ui: &mut egui::Ui, snapshot: &Snapshot) {
 
 pub(super) fn show(ctx: &egui::Context, open: &mut bool, snapshot: &Snapshot) {
     let width = (ctx.screen_rect().width() - 48.).clamp(300., 900.);
-    egui::Window::new("连接详情").id("stream-connection-details".into()).open(open)
+    egui::Window::new(uu_i18n::text("连接详情")).id("stream-connection-details".into()).open(open)
         .collapsible(false).resizable(true).default_width(width.min(780.))
         .max_width(width).max_height((ctx.screen_rect().height()-48.).max(160.))
         .anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO)
@@ -123,16 +123,16 @@ pub(super) fn show(ctx: &egui::Context, open: &mut bool, snapshot: &Snapshot) {
                 ui.label(RichText::new(snapshot.service.as_str()).strong());
                 ui.separator();
                 if let Some(path)=&snapshot.selected {
-                    ui.label(RichText::new(if path.relayed(){"媒体路径：中继"}else{"媒体路径：直连"}).color(super::theme::ACCENT));
-                }else{ui.label("媒体路径：等待 ICE 选路");}
-                ui.label(format!("连接 {} · ICE {}",snapshot.peer_state,snapshot.ice_state));
+                    ui.label(RichText::new(if path.relayed(){uu_i18n::text("媒体路径：中继")}else{uu_i18n::text("媒体路径：直连")}).color(super::theme::ACCENT));
+                }else{ui.label(uu_i18n::text("媒体路径：等待 ICE 选路"));}
+                ui.label(uu_i18n::format!("连接 {} · ICE {}",snapshot.peer_state,snapshot.ice_state));
             });
             ui.add_space(12.);
             egui::ScrollArea::both().max_height((ctx.screen_rect().height()-240.).max(100.)).show(ui,|ui|grid(ui,snapshot));
             ui.add_space(12.);ui.separator();
-            ui.weak("候选地址用于尝试连接；顶部实际端点才是当前媒体使用的路径。映射地址可能仍属于上级内网，未发现映射不表示连接失败。");
-            ui.weak("网卡候选也可能含公网 IPv6；中继端点属于 TURN 服务器。这里显示的是媒体端点，不是信令服务器地址。");
-            if ui.button("复制连接信息").clicked(){ui.output_mut(|o|o.copied_text=snapshot.copy_text());}
+            ui.weak(uu_i18n::text("候选地址用于尝试连接；顶部实际端点才是当前媒体使用的路径。映射地址可能仍属于上级内网，未发现映射不表示连接失败。"));
+            ui.weak(uu_i18n::text("网卡候选也可能含公网 IPv6；中继端点属于 TURN 服务器。这里显示的是媒体端点，不是信令服务器地址。"));
+            if ui.button(uu_i18n::text("复制连接信息")).clicked(){ui.output_mut(|o|o.copied_text=snapshot.copy_text());}
         });
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         *open = false;

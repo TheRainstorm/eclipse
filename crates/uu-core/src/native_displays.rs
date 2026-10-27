@@ -43,8 +43,8 @@ impl Host {
             state.catalog = RemoteScreens {
                 current_id: 0,
                 screens: vec![
-                    screen(0, "当前授权屏幕".into(), 2, 2, true, true,None),
-                    screen(1, "重新选择共享屏幕…".into(), 2, 2, false, false,None),
+                    screen(0, uu_i18n::text("当前授权屏幕").into(), 2, 2, true, true,None),
+                    screen(1, uu_i18n::text("重新选择共享屏幕…").into(), 2, 2, false, false,None),
                 ],
             };
             return Ok(CaptureSource::Primary);
@@ -52,7 +52,7 @@ impl Host {
         self.prepare_monitors(crate::native::monitors()?)
     }
     fn prepare_monitors(&self, mut monitors: Vec<CaptureMonitor>) -> anyhow::Result<CaptureSource> {
-        anyhow::ensure!(!monitors.is_empty(), "当前没有可共享的显示器");
+        anyhow::ensure!(!monitors.is_empty(), "{}", uu_i18n::format!("当前没有可共享的显示器"));
         monitors.sort_by(|a, b| a.name.cmp(&b.name));
         monitors.truncate(MAX_DISPLAYS);
         let mut state = self.state.lock().unwrap();

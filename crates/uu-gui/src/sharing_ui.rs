@@ -29,11 +29,11 @@ enum Event {
 pub(super) fn permissions(ui:&mut egui::Ui,value:&mut Permissions)->bool {
     let mut details=value.details();
     let mut changed=false;
-    changed|=ui.checkbox(&mut details.keyboard,"键盘").changed();
-    changed|=ui.checkbox(&mut details.mouse,"鼠标").changed();
-    changed|=ui.checkbox(&mut details.gamepad,"手柄").changed();
-    changed|=ui.checkbox(&mut details.clipboard,"剪贴板").changed();
-    changed|=ui.checkbox(&mut details.manage_server,"管理服务和连接权限").changed();
+    changed|=ui.checkbox(&mut details.keyboard,uu_i18n::text("键盘")).changed();
+    changed|=ui.checkbox(&mut details.mouse,uu_i18n::text("鼠标")).changed();
+    changed|=ui.checkbox(&mut details.gamepad,uu_i18n::text("手柄")).changed();
+    changed|=ui.checkbox(&mut details.clipboard,uu_i18n::text("剪贴板")).changed();
+    changed|=ui.checkbox(&mut details.manage_server,uu_i18n::text("管理服务和连接权限")).changed();
     if changed {*value=value.with_details(details);}
     changed
 }
@@ -259,12 +259,12 @@ impl HostUi {
     }
     pub fn restart(&mut self,config:uu_core::Config,book:Book,trust:TrustStore,ctx:&egui::Context)->anyhow::Result<()> {
         book.sharing.validate()?;
-        anyhow::ensure!(book.sharing.ip_enabled || book.sharing.uu_enabled || book.services.iter().any(|s|s.host_enabled),"请先启用至少一个连接入口");
+        anyhow::ensure!(book.sharing.ip_enabled || book.sharing.uu_enabled || book.services.iter().any(|s|s.host_enabled),"{}", uu_i18n::format!("请先启用至少一个连接入口"));
         if !self.running() {return self.start(config,book,trust,ctx);}
-        anyhow::ensure!(!self.stopping,"服务正在停止，请稍后重试");
+        anyhow::ensure!(!self.stopping,"{}", uu_i18n::format!("服务正在停止，请稍后重试"));
         self.stop();
         self.restart=Some((config,book,trust));
-        self.notice="正在停止旧服务，清理完成后应用已保存配置…".into();
+        self.notice=uu_i18n::text("正在停止旧服务，清理完成后应用已保存配置…").into();
         Ok(())
     }
     pub fn notice_is_error(&self) -> bool {
@@ -285,13 +285,13 @@ impl HostUi {
         let Some(access)=&self.access else{return Vec::new();};
         access.sessions.details().into_iter().map(|(id,peer,status)| {
             let record=access.peer_permissions(&peer).ok().flatten();
-            let name=record.as_ref().map(|(d,_)|d.name.clone()).unwrap_or_else(||"已授权设备".into());
+            let name=record.as_ref().map(|(d,_)|d.name.clone()).unwrap_or_else(||uu_i18n::text("已授权设备").into());
             let permissions=record.map(|(_,p)|p).unwrap_or(Permissions::VIEW);
             SessionView{id,peer_id:peer,name,status,permissions}
         }).collect()
     }
     pub fn set_session_permissions(&self, peer_id:&str, permissions:Permissions) -> anyhow::Result<()> {
-        let access=self.access.as_ref().ok_or_else(||anyhow::anyhow!("本机共享未运行"))?;
+        let access=self.access.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("本机共享未运行")))?;
         access.set_permissions(peer_id,permissions)?;
         Ok(())
     }
@@ -309,7 +309,7 @@ impl HostUi {
             handle.allow_pairing();
         }
         self.notice =
-            "已允许新设备配对。请在控制端发起连接，再输入控制端显示的 8 位配对码。".into();
+            uu_i18n::text("已允许新设备配对。请在控制端发起连接，再输入控制端显示的 8 位配对码。").into();
     }
     pub fn close_pairing(&mut self) {
         if let Some(access) = &self.access {
@@ -353,8 +353,8 @@ impl HostUi {
     pub fn revoke_legacy(&mut self, id: &str) {
         if let Some(handle) = &self.handle {
             self.notice = match handle.revoke(id) {
-                Ok(()) => "已撤销设备授权".into(),
-                Err(e) => format!("无法撤销：{e}"),
+                Ok(()) => uu_i18n::text("已撤销设备授权").into(),
+                Err(e) => uu_i18n::format!("无法撤销：{e}"),
             };
         }
     }
@@ -365,7 +365,7 @@ impl HostUi {
         trust: TrustStore,
         ctx: &egui::Context,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.running(), "共享已经开启");
+        anyhow::ensure!(!self.running(), "{}", uu_i18n::format!("共享已经开启"));
         let (send, events) = mpsc::channel();
         let factory = book.sharing.clipboard.then(|| {
             let send = send.clone();
@@ -373,7 +373,7 @@ impl HostUi {
                 let state = Arc::new(uu_core::clipboard::Clipboard::default());
                 state.enabled.store(true, Ordering::Release);
                 send.send(Event::Clipboard(state.clone()))
-                    .map_err(|_| anyhow::anyhow!("共享界面已关闭"))?;
+                    .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("共享界面已关闭")))?;
                 Ok(state)
             }) as lan::ClipboardFactory
         });
@@ -382,7 +382,7 @@ impl HostUi {
         let forward = send.clone();
         let prepared = uu_core::host_runtime::prepare(config.clone(), book.clone(), trust, factory,
             move || {
-                restart_send.send(Event::Restart).map_err(|_|anyhow::anyhow!("服务管理窗口已经关闭"))?;
+                restart_send.send(Event::Restart).map_err(|_|anyhow::anyhow!("{}", uu_i18n::format!("服务管理窗口已经关闭")))?;
                 restart_context.request_repaint(); Ok(())
             },
             move |event| {
@@ -407,7 +407,7 @@ impl HostUi {
                 runtime.shutdown_timeout(Duration::from_secs(2));
                 result
             })();
-            if let Err(error) = result { let _ = send.send(Event::Notice(format!("无法开启共享：{error:#}"))); }
+            if let Err(error) = result { let _ = send.send(Event::Notice(uu_i18n::format!("无法开启共享：{error:#}"))); }
             let _ = send.send(Event::Ended);
             context.request_repaint();
         })?;
@@ -457,7 +457,7 @@ impl HostUi {
                         } else if let Err(error) =
                             super::clipboard::start_host(state.clone(), window)
                         {
-                            state.status(format!("剪贴板不可用：{error}"));
+                            state.status(uu_i18n::format!("剪贴板不可用：{error}"));
                         }
                     }
                     Event::Legacy(event) => match event {
@@ -500,22 +500,22 @@ impl HostUi {
         }
         self.pending.retain(|p| match *p.status.borrow() {
             PairStatus::Paired => {
-                self.notice = format!("已保存 {} 的设备授权", p.name);
+                self.notice = uu_i18n::format!("已保存 {} 的设备授权", p.name);
                 false
             }
             PairStatus::Failed => {
-                self.notice = format!("{} 的配对未完成，请核对短码后重新发起。", p.name);
+                self.notice = uu_i18n::format!("{} 的配对未完成，请核对短码后重新发起。", p.name);
                 false
             }
             _ => true,
         });
         if restart_requested&&!self.stopping {
             let result=(||->anyhow::Result<()> {
-                let (config,trust)=self.restart_context.clone().ok_or_else(||anyhow::anyhow!("服务管理已关闭"))?;
+                let (config,trust)=self.restart_context.clone().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("服务管理已关闭")))?;
                 let book=uu_core::device_book::Store::open(config.at("device-trust"))?.read()?;
                 self.restart(config,book,trust,ctx)
             })();
-            if let Err(error)=result {self.notice=format!("远程重启服务失败：{error:#}");}
+            if let Err(error)=result {self.notice=uu_i18n::format!("远程重启服务失败：{error:#}");}
         }
         if self
             .worker
@@ -535,7 +535,7 @@ impl HostUi {
         if !self.running() {
             if let Some((config,book,trust))=self.restart.take() {
                 if let Err(error)=self.start(config,book,trust,ctx) {
-                    self.notice=format!("重新启动服务失败：{error:#}");
+                    self.notice=uu_i18n::format!("重新启动服务失败：{error:#}");
                 }
             }
         }
@@ -545,32 +545,32 @@ impl HostUi {
         for (index, pending) in self.pending.iter_mut().enumerate() {
             let mut open = true;
             let waiting = *pending.status.borrow() == PairStatus::Waiting;
-            egui::Window::new("允许新设备")
+            egui::Window::new(uu_i18n::text("允许新设备"))
                 .id(egui::Id::new(("device-pair", &pending.id)))
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
                 .default_width(430.)
                 .show(ctx, |ui| {
-                    ui.heading(format!("{} 希望连接本机", pending.name));
+                    ui.heading(uu_i18n::format!("{} 希望连接本机", pending.name));
                     ui.add_space(8.);
                     if waiting {
-                        ui.label("输入控制端显示的 8 位配对码：");
+                        ui.label(uu_i18n::text("输入控制端显示的 8 位配对码："));
                         ui.add(
                             egui::TextEdit::singleline(&mut pending.code)
-                                .hint_text("例如 4827 1936")
+                                .hint_text(uu_i18n::text("例如 4827 1936"))
                                 .char_limit(12),
                         );
                         ui.add_enabled_ui(self.allow_control, |ui| {
-                            ui.checkbox(&mut pending.control, "允许键盘、鼠标和手柄控制");
+                            ui.checkbox(&mut pending.control, uu_i18n::text("允许键盘、鼠标和手柄控制"));
                         });
-                        ui.weak(if pending.temporary{"本次为临时配对。批准后撤销此前长期授权，仅允许这次串流，断开后必须重新配对。"}else{"批准后记住这台设备，以后连接不再输入配对码。"});
+                        ui.weak(if pending.temporary{uu_i18n::text("本次为临时配对。批准后撤销此前长期授权，仅允许这次串流，断开后必须重新配对。")}else{uu_i18n::text("批准后记住这台设备，以后连接不再输入配对码。")});
                         let permission = if pending.control {
                             Permissions::CONTROL
                         } else {
                             Permissions::VIEW
                         };
-                        ui.checkbox(&mut pending.manage,"允许管理服务配置和连接权限");
+                        ui.checkbox(&mut pending.manage,uu_i18n::text("允许管理服务配置和连接权限"));
                         let mut details=permission.details();details.manage_server=pending.manage;
                         let permission=if pending.manage {permission.with_details(details)}else{permission};
                         let approval = PairApproval::new(&pending.code, permission);
@@ -579,7 +579,7 @@ impl HostUi {
                                 .add_enabled(
                                     approval.is_ok(),
                                     egui::Button::new(
-                                        egui::RichText::new(if pending.temporary{"允许本次串流"}else{"允许并保存设备"})
+                                        egui::RichText::new(if pending.temporary{uu_i18n::text("允许本次串流")}else{uu_i18n::text("允许并保存设备")})
                                             .color(egui::Color32::WHITE),
                                     )
                                     .fill(super::theme::ACCENT),
@@ -590,13 +590,13 @@ impl HostUi {
                                     let _ = respond.send(approval.ok());
                                 }
                             }
-                            if ui.button("拒绝").clicked() {
+                            if ui.button(uu_i18n::text("拒绝")).clicked() {
                                 remove = Some(index);
                             }
                         });
                     } else {
                         ui.spinner();
-                        ui.label("正在核验并保存设备身份…");
+                        ui.label(uu_i18n::text("正在核验并保存设备身份…"));
                     }
                 });
             if !open {
@@ -611,13 +611,13 @@ impl HostUi {
         }
         let mut decision = None;
         if let Some(pending) = self.legacy_pending.first_mut() {
-            egui::Window::new("确认旧版 IP 设备配对")
+            egui::Window::new(uu_i18n::text("确认旧版 IP 设备配对"))
                 .id("legacy-device-pair".into())
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label(format!("{} 请求配对", pending.request.client_name));
-                    ui.label("输入控制端显示的八位核对码：");
+                    ui.label(uu_i18n::format!("{} 请求配对", pending.request.client_name));
+                    ui.label(uu_i18n::text("输入控制端显示的八位核对码："));
                     ui.text_edit_singleline(&mut pending.entered);
                     let entered: String = pending
                         .entered
@@ -632,12 +632,12 @@ impl HostUi {
                         .collect();
                     ui.horizontal(|ui| {
                         if ui
-                            .add_enabled(entered == expected, egui::Button::new("允许配对"))
+                            .add_enabled(entered == expected, egui::Button::new(uu_i18n::text("允许配对")))
                             .clicked()
                         {
                             decision = Some(true);
                         }
-                        if ui.button("拒绝").clicked() {
+                        if ui.button(uu_i18n::text("拒绝")).clicked() {
                             decision = Some(false);
                         }
                     });

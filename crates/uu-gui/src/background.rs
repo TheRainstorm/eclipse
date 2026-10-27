@@ -47,7 +47,7 @@ impl Background {
         while let Some(image)=self.worker.as_mut().and_then(|w|w.try_recv()) {self.received=true;self.set(image,ctx,true);}
         if self.worker.as_ref().is_some_and(|w|w.finished()) {
             self.worker=None;
-            if !self.received {self.notice=if self.texture.is_some(){"壁纸更新失败，继续使用已有图片"}else{"图片暂时无法获取，正在使用内置背景；可在应用设置中刷新"}.into();}
+            if !self.received {self.notice=if self.texture.is_some(){uu_i18n::text("壁纸更新失败，继续使用已有图片")}else{uu_i18n::text("图片暂时无法获取，正在使用内置背景；可在应用设置中刷新")}.into();}
         }
         if self.worker.is_some()||self.cache_rx.is_some(){ctx.request_repaint_after(Duration::from_millis(100));}
     }
@@ -73,7 +73,7 @@ impl Background {
         self.retry_at=Some(Instant::now());
         self.worker=None;self.received=false;
         match wallpapers::Worker::start(vec![wallpapers::Request{device_id:"background".into(),url:self.source.clone()}],ctx.clone()) {
-            Ok(worker)=>{self.worker=Some(worker);self.notice="正在更新壁纸…".into();},Err(e)=>self.notice=format!("壁纸加载失败：{e}")
+            Ok(worker)=>{self.worker=Some(worker);self.notice=uu_i18n::text("正在更新壁纸…").into();},Err(e)=>self.notice=uu_i18n::format!("壁纸加载失败：{e}")
         }
     }
     pub fn paint_background(&self, ctx: &egui::Context, rect: egui::Rect) {

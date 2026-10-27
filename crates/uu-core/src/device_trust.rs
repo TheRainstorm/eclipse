@@ -16,24 +16,22 @@ use zeroize::Zeroizing;
 const MAX_FILE: u64 = 1024 * 1024;
 
 pub(crate) fn read_private(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
-    let meta = fs::symlink_metadata(path).context("无法读取设备私有配置")?;
+    let meta = fs::symlink_metadata(path).context(uu_i18n::text("无法读取设备私有配置"))?;
     ensure!(
         meta.is_file() && !meta.file_type().is_symlink() && meta.len() <= MAX_FILE,
-        "设备配置必须是有界普通文件，原文件已保留"
-    );
+        "{}", uu_i18n::format!("设备配置必须是有界普通文件，原文件已保留"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         ensure!(
             meta.permissions().mode() & 0o077 == 0,
-            "设备私有配置权限必须为 600"
-        );
+            "{}", uu_i18n::format!("设备私有配置权限必须为 600"));
     }
     let mut bytes = Zeroizing::new(Vec::new());
     fs::File::open(path)?
         .take(MAX_FILE + 1)
         .read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= MAX_FILE as usize, "设备配置过大");
+    ensure!(bytes.len() <= MAX_FILE as usize, "{}", uu_i18n::format!("设备配置过大"));
     Ok(bytes)
 }
 
@@ -46,29 +44,29 @@ pub struct PublicDevice {
 impl PublicDevice {
     pub fn export_public_key(&self)->String {format!("eclipse-ed25519 {} {}",self.public_key,self.name)}
     pub fn from_public_key(text:&str,name:&str)->Result<Self> {
-        ensure!(text.len()<=8192,"公钥文本过长");
+        ensure!(text.len()<=8192,"{}", uu_i18n::format!("公钥文本过长"));
         let mut parts=text.split_whitespace();
-        let first=parts.next().context("请输入控制端公钥")?;
+        let first=parts.next().context(uu_i18n::text("请输入控制端公钥"))?;
         let key=match first {
-            "eclipse-ed25519"=>parts.next().context("缺少公钥内容")?.to_owned(),
+            "eclipse-ed25519"=>parts.next().context(uu_i18n::text("缺少公钥内容"))?.to_owned(),
             "ssh-ed25519"=>{
                 use base64::Engine;
-                let bytes=base64::engine::general_purpose::STANDARD.decode(parts.next().context("缺少 SSH 公钥内容")?)
-                    .context("SSH 公钥格式无效")?;
+                let bytes=base64::engine::general_purpose::STANDARD.decode(parts.next().context(uu_i18n::text("缺少 SSH 公钥内容"))?)
+                    .context(uu_i18n::text("SSH 公钥格式无效"))?;
                 let mut remaining=bytes.as_slice();
                 fn field<'a>(input:&mut &'a [u8])->Result<&'a [u8]> {
-                    ensure!(input.len()>=4,"SSH 公钥字段无效");
+                    ensure!(input.len()>=4,"{}", uu_i18n::format!("SSH 公钥字段无效"));
                     let length=u32::from_be_bytes(input[..4].try_into().unwrap()) as usize;
-                    *input=&input[4..];ensure!(length<=input.len(),"SSH 公钥字段超出长度");
+                    *input=&input[4..];ensure!(length<=input.len(),"{}", uu_i18n::format!("SSH 公钥字段超出长度"));
                     let (value,rest)=input.split_at(length);*input=rest;Ok(value)
                 }
-                ensure!(field(&mut remaining)?==b"ssh-ed25519","仅支持 Ed25519 公钥");
+                ensure!(field(&mut remaining)?==b"ssh-ed25519",uu_i18n::text("仅支持 Ed25519 公钥"));
                 let key=field(&mut remaining)?;
-                ensure!(key.len()==32 && remaining.is_empty(),"SSH 公钥长度无效");
+                ensure!(key.len()==32 && remaining.is_empty(),"{}", uu_i18n::format!("SSH 公钥长度无效"));
                 hex::encode(key)
             },
             raw if raw.len()==64=>raw.to_owned(),
-            _=>anyhow::bail!("请输入 Eclipse 或 SSH Ed25519 公钥"),
+            _=>anyhow::bail!("{}", uu_i18n::format!("请输入 Eclipse 或 SSH Ed25519 公钥")),
         };
         let comment=parts.collect::<Vec<_>>().join(" ");
         let value=Self {name:if name.trim().is_empty(){comment}else{name.trim().to_owned()},public_key:key.to_ascii_lowercase()};
@@ -80,13 +78,11 @@ impl PublicDevice {
             !self.name.trim().is_empty()
                 && self.name.chars().count() <= 64
                 && !self.name.chars().any(char::is_control),
-            "设备名称无效"
-        );
+            "{}", uu_i18n::format!("设备名称无效"));
         ensure!(
             self.public_key.len() == 64
                 && hex::decode(&self.public_key).is_ok_and(|k| k.len() == 32),
-            "设备公钥无效"
-        );
+            "{}", uu_i18n::format!("设备公钥无效"));
         Ok(())
     }
     pub fn id(&self) -> String {
@@ -97,11 +93,11 @@ impl PublicDevice {
     }
     pub fn verify(&self, data: &[u8], proof: &str) -> Result<()> {
         self.validate()?;
-        let signature = hex::decode(proof).context("设备身份凭据格式无效")?;
-        ensure!(signature.len() == 64, "设备身份凭据长度无效");
+        let signature = hex::decode(proof).context(uu_i18n::text("设备身份凭据格式无效"))?;
+        ensure!(signature.len() == 64, "{}", uu_i18n::format!("设备身份凭据长度无效"));
         signature::UnparsedPublicKey::new(&signature::ED25519, hex::decode(&self.public_key)?)
             .verify(data, &signature)
-            .map_err(|_| anyhow::anyhow!("设备身份验证失败"))
+            .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("设备身份验证失败")))
     }
 }
 
@@ -148,12 +144,11 @@ impl Permissions {
     }
     pub fn validate(self) -> Result<()> {
         if let Some(d)=self.details {
-            ensure!(self.control==(d.keyboard||d.mouse||d.gamepad),"输入权限与控制状态不一致");
+            ensure!(self.control==(d.keyboard||d.mouse||d.gamepad),"{}", uu_i18n::format!("输入权限与控制状态不一致"));
         }
         ensure!(
             self.view && (!self.control || self.view),
-            "设备授权必须允许观看"
-        );
+            "{}", uu_i18n::format!("设备授权必须允许观看"));
         Ok(())
     }
 }
@@ -188,28 +183,24 @@ impl Book {
     fn validate(&self) -> Result<()> {
         ensure!(
             self.version == 2 && self.peers.len() <= 256,
-            "设备授权配置无效，原文件已保留"
-        );
+            "{}", uu_i18n::format!("设备授权配置无效，原文件已保留"));
         let mut ids = std::collections::HashSet::new();
         let mut aliases = std::collections::HashSet::new();
         for peer in &self.peers {
             peer.device.validate()?;
             ensure!(
                 ids.insert(peer.device.id()) && peer.legacy_ids.len() <= 64,
-                "设备授权记录重复"
-            );
+                "{}", uu_i18n::format!("设备授权记录重复"));
             if let Some(grant) = peer.inbound {
                 grant.validate()?;
             }
             ensure!(
                 !peer.revoked || peer.inbound.is_none(),
-                "撤销的设备仍有访问权限"
-            );
+                "{}", uu_i18n::format!("撤销的设备仍有访问权限"));
             for alias in &peer.legacy_ids {
                 ensure!(
                     alias.len() <= 128 && !alias.is_empty() && aliases.insert(alias),
-                    "旧设备授权映射重复"
-                );
+                    "{}", uu_i18n::format!("旧设备授权映射重复"));
             }
         }
         Ok(())
@@ -239,12 +230,12 @@ impl TrustStore {
         let path = directory.join("identity.pk8");
         if !path.try_exists()? {
             let generated = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
-                .map_err(|_| anyhow::anyhow!("无法生成设备身份"))?;
+                .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("无法生成设备身份")))?;
             crate::private_file::write_atomic(&path, generated.as_ref())?;
         }
         let bytes = read_private(&path)?;
         let identity = Ed25519KeyPair::from_pkcs8(&bytes)
-            .map_err(|_| anyhow::anyhow!("设备私钥损坏，原文件已保留；不会自动更换身份"))?;
+            .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("设备私钥损坏，原文件已保留；不会自动更换身份")))?;
         let value = Self {
             directory: directory.clone(),
             identity: Arc::new(identity),
@@ -270,7 +261,7 @@ impl TrustStore {
             return Ok(Book::default());
         }
         let book: Book = serde_json::from_slice(&read_private(&path)?)
-            .map_err(|_| anyhow::anyhow!("设备授权配置损坏，原文件已保留"))?;
+            .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("设备授权配置损坏，原文件已保留")))?;
         book.validate()?;
         Ok(book)
     }
@@ -331,8 +322,7 @@ impl TrustStore {
                 {
                     ensure!(
                         existing.device.id() == device.id() && !existing.revoked,
-                        "旧授权已迁移或撤销，不能用旧凭据重新授权"
-                    );
+                        "{}", uu_i18n::format!("旧授权已迁移或撤销，不能用旧凭据重新授权"));
                 }
             }
             if !b.peers.iter().any(|p| p.device.id() == device.id()) {
@@ -365,7 +355,7 @@ impl TrustStore {
                 .peers
                 .iter_mut()
                 .find(|p| p.device.id() == id)
-                .context("未找到设备授权")?;
+                .context(uu_i18n::text("未找到设备授权"))?;
             peer.inbound = None;
             peer.revoked = true;
             Ok(())

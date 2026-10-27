@@ -29,13 +29,11 @@ impl Request {
     fn validate(&self) -> Result<()> {
         ensure!(
             !self.codecs.is_empty() && self.codecs.len() <= 2,
-            "HDR 解码能力列表无效"
-        );
+            "{}", uu_i18n::format!("HDR 解码能力列表无效"));
         for (i, codec) in self.codecs.iter().enumerate() {
             ensure!(
                 matches!(codec,VideoCodec::Hevc|VideoCodec::Av1) && !self.codecs[..i].contains(codec),
-                "HDR 需要 10 位 HEVC 或 AV1 解码"
-            );
+                "{}", uu_i18n::format!("HDR 需要 10 位 HEVC 或 AV1 解码"));
         }
         Ok(())
     }
@@ -61,8 +59,7 @@ impl Response {
     fn validate(&self) -> Result<()> {
         ensure!(
             matches!(self.codec,VideoCodec::Hevc|VideoCodec::Av1) && self.metadata.valid(),
-            "主机 HDR10 色彩信息无效"
-        );
+            "{}", uu_i18n::format!("主机 HDR10 色彩信息无效"));
         Ok(())
     }
     pub fn add(&self, sdp: &mut RTCSessionDescription) -> Result<()> {

@@ -100,17 +100,15 @@ impl Sharing {
         }
     }
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.codec.is_none_or(|c|self.allowed_codecs.contains(&c)),"默认编码须包含在允许的编码中");
+        ensure!(self.codec.is_none_or(|c|self.allowed_codecs.contains(&c)),"{}", uu_i18n::format!("默认编码须包含在允许的编码中"));
         valid_name(&self.name)?;
         ensure!(
             self.monitor.len() <= 256 && !self.monitor.chars().any(char::is_control),
-            "屏幕名称无效"
-        );
+            "{}", uu_i18n::format!("屏幕名称无效"));
         ensure!(
             self.service_port > 0
                 && self.discovery_port > 0,
-            "共享端口无效"
-        );
+            "{}", uu_i18n::format!("共享端口无效"));
         self.native().validate()?;
         Ok(())
     }
@@ -176,17 +174,17 @@ impl Destination {
     }
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Ip { .. } => "IP 直连",
+            Self::Ip { .. } => uu_i18n::text("IP 直连"),
             Self::Uu { .. } => "UU",
             Self::Vps { .. } => "VPS",
-            Self::LegacyInternet { .. } => "旧版连接服务",
+            Self::LegacyInternet { .. } => uu_i18n::text("旧版连接服务"),
         }
     }
     pub fn target(&self) -> String {
         match self {
             Self::Ip { address, .. } => address.clone(),
             Self::Uu { device } | Self::Vps { device, .. } => device.clone(),
-            Self::LegacyInternet { .. } => "已迁移的旧配置".into(),
+            Self::LegacyInternet { .. } => uu_i18n::text("已迁移的旧配置").into(),
         }
     }
 }
@@ -249,7 +247,7 @@ impl Profile {
         self.routes
             .iter()
             .find(|v| v.id == self.selected_route)
-            .context("请选择设备连接地址")
+            .context(uu_i18n::text("请选择设备连接地址"))
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -273,7 +271,7 @@ impl Default for Book {
     }
 }
 fn valid_id(id: &str) -> Result<()> {
-    ensure!(uuid::Uuid::parse_str(id).is_ok(), "配置标识无效");
+    ensure!(uuid::Uuid::parse_str(id).is_ok(), "{}", uu_i18n::format!("配置标识无效"));
     Ok(())
 }
 fn valid_name(name: &str) -> Result<()> {
@@ -281,8 +279,7 @@ fn valid_name(name: &str) -> Result<()> {
         !name.trim().is_empty()
             && name.chars().count() <= 64
             && !name.chars().any(char::is_control),
-        "请输入有效的名称（最多64字）"
-    );
+        "{}", uu_i18n::format!("请输入有效的名称（最多64字）"));
     Ok(())
 }
 fn service_device(name: &str) -> Result<()> {
@@ -292,8 +289,7 @@ fn service_device(name: &str) -> Result<()> {
             && name
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)),
-        "服务器中的设备名称只能使用字母、数字、短横线或下划线（最多80字节）"
-    );
+        "{}", uu_i18n::format!("服务器中的设备名称只能使用字母、数字、短横线或下划线（最多80字节）"));
     Ok(())
 }
 impl Book {
@@ -304,25 +300,24 @@ impl Book {
                 .devices
                 .iter()
                 .find(|p| p.id == current)
-                .context("设备配置已移除")?;
+                .context(uu_i18n::text("设备配置已移除"))?;
             match &profile.redirect {
                 Some(id) => current = id,
                 None => return Ok(profile),
             }
         }
-        anyhow::bail!("设备配置存在循环引用")
+        anyhow::bail!("{}", uu_i18n::format!("设备配置存在循环引用"))
     }
     pub fn service(&self, id: &str) -> Result<&Service> {
         self.services
             .iter()
             .find(|p| p.id == id)
-            .context("请先配置连接服务器")
+            .context(uu_i18n::text("请先配置连接服务器"))
     }
     fn validate(&self) -> Result<()> {
         ensure!(
             self.version == 5 && self.devices.len() <= 256 && self.services.len() <= 32,
-            "设备配置版本或数量无效"
-        );
+            "{}", uu_i18n::format!("设备配置版本或数量无效"));
         self.sharing.validate()?;
         let mut ids = std::collections::HashSet::new();
         for service in &self.services {
@@ -332,13 +327,11 @@ impl Book {
                 ids.insert(&service.id)
                     && service.address.len() <= 2048
                     && !service.address.trim().is_empty(),
-                "服务器地址或标识无效"
-            );
+                "{}", uu_i18n::format!("服务器地址或标识无效"));
             service_device(&service.published_name)?;
             ensure!(
                 !service.token_file.as_os_str().is_empty(),
-                "请选择服务器访问凭据文件"
-            );
+                "{}", uu_i18n::format!("请选择服务器访问凭据文件"));
         }
         let mut ids = std::collections::HashSet::new();
         for profile in &self.devices {
@@ -346,29 +339,27 @@ impl Book {
             valid_name(&profile.name)?;
             if let Some(preview)=&profile.preview {valid_id(&preview.id)?;}
             let mut config_ids=std::collections::HashSet::new();
-            for config in &profile.client_configs {config.validate()?;ensure!(config_ids.insert(&config.id),"客户端配置标识重复");}
-            ensure!(profile.selected_client.as_ref().is_none_or(|id|config_ids.contains(id)),"请选择有效的客户端配置");
-            ensure!(ids.insert(&profile.id), "设备配置标识重复");
+            for config in &profile.client_configs {config.validate()?;ensure!(config_ids.insert(&config.id),"{}", uu_i18n::format!("客户端配置标识重复"));}
+            ensure!(profile.selected_client.as_ref().is_none_or(|id|config_ids.contains(id)),"{}", uu_i18n::format!("请选择有效的客户端配置"));
+            ensure!(ids.insert(&profile.id), "{}", uu_i18n::format!("设备配置标识重复"));
             ensure!(
                 profile
                     .peer
                     .as_ref()
                     .is_none_or(|id| id.len() == 64 && hex::decode(id).is_ok()),
-                "设备身份指纹无效"
-            );
+                "{}", uu_i18n::format!("设备身份指纹无效"));
             if profile.redirect.is_some() {
                 self.device(&profile.id)?;
                 continue;
             }
             ensure!(
                 !profile.routes.is_empty() && profile.routes.len() <= 16,
-                "每台设备需要1至16个连接地址"
-            );
+                "{}", uu_i18n::format!("每台设备需要1至16个连接地址"));
             profile.route()?;
             let mut routes = std::collections::HashSet::new();
             for route in &profile.routes {
                 valid_id(&route.id)?;
-                ensure!(routes.insert(&route.id), "连接地址标识重复");
+                ensure!(routes.insert(&route.id), "{}", uu_i18n::format!("连接地址标识重复"));
                 match &route.destination {
                     Destination::Ip {
                         address,
@@ -385,14 +376,13 @@ impl Book {
                             && device
                                 .bytes()
                                 .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)),
-                        "UU 设备编号无效"
-                    ),
+                        "{}", uu_i18n::format!("UU 设备编号无效")),
                     Destination::Vps { service, device } => {
                         self.service(service)?;
                         service_device(device)?;
                     }
                     Destination::LegacyInternet { settings } => {
-                        ensure!(!settings.as_os_str().is_empty(), "旧配置路径无效")
+                        ensure!(!settings.as_os_str().is_empty(), "{}", uu_i18n::format!("旧配置路径无效"))
                     }
                 }
             }
@@ -417,7 +407,7 @@ pub struct Launch {
 }
 impl Launch {
     fn validate(&self) -> Result<()> {
-        ensure!(self.version == 2, "串流配置版本无效");
+        ensure!(self.version == 2, "{}", uu_i18n::format!("串流配置版本无效"));
         let profile = Profile {
             id: self.profile.clone(),
             name: self.name.clone(),
@@ -437,7 +427,7 @@ impl Launch {
     }
     pub fn read(path: &std::path::Path) -> Result<Self> {
         let value: Self = serde_json::from_slice(&read_private(path)?)
-            .map_err(|_| anyhow::anyhow!("串流目标配置格式无效"))?;
+            .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("串流目标配置格式无效")))?;
         value.validate()?;
         Ok(value)
     }
@@ -453,8 +443,7 @@ impl Store {
         let text = text.trim();
         ensure!(
             text.len() == 64 && hex::decode(text).is_ok(),
-            "服务器访问令牌应为64位十六进制字符"
-        );
+            "{}", uu_i18n::format!("服务器访问令牌应为64位十六进制字符"));
         // Existing stream snapshots retain their own credential version.
         let path = self.directory.join(format!(
             "service-access-{id}-{}.token",
@@ -513,7 +502,7 @@ impl Store {
             return Ok(Book::default());
         }
         let mut value: Book = serde_json::from_slice(&read_private(&path)?)
-            .map_err(|_| anyhow::anyhow!("设备连接配置损坏，原文件已保留"))?;
+            .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("设备连接配置损坏，原文件已保留")))?;
         if matches!(value.version, 2 | 3) {
             // Move the old default listeners away from Sunshine once. Values
             // saved by current versions, and all custom ports, remain explicit.
@@ -531,7 +520,7 @@ impl Store {
         f(&mut value)?;
         value.validate()?;
         let encoded=serde_json::to_vec_pretty(&value)?;
-        ensure!(encoded.len()<=1024*1024,"设备与配置记录总量超过1 MiB，请先移除不再使用的记录");
+        ensure!(encoded.len()<=1024*1024,"{}", uu_i18n::format!("设备与配置记录总量超过1 MiB，请先移除不再使用的记录"));
         let original=self.directory.join("connections.json");
         if original.exists() {
             let bytes=read_private(&original)?;
@@ -569,8 +558,7 @@ impl Store {
                     && p.routes.iter().any(
                         |r| matches!(&r.destination,Destination::Vps{service,..} if service==id)
                     )),
-                "该服务器仍用于设备连接，请先移除对应的连接地址"
-            );
+                "{}", uu_i18n::format!("该服务器仍用于设备连接，请先移除对应的连接地址"));
             book.services.retain(|s| s.id != id);
             Ok(())
         })
@@ -578,11 +566,10 @@ impl Store {
     pub fn save_device(&self, profile: Profile) -> Result<()> {
         self.edit(|b| {
             if let Some(v) = b.devices.iter_mut().find(|v| v.id == profile.id) {
-                ensure!(v.redirect.is_none() && profile.redirect.is_none(),"设备已合并，请刷新设备列表后重试");
+                ensure!(v.redirect.is_none() && profile.redirect.is_none(),"{}", uu_i18n::format!("设备已合并，请刷新设备列表后重试"));
                 ensure!(
                     v.peer == profile.peer,
-                    "设备身份刚刚更新，请重新打开设备详情后保存"
-                );
+                    "{}", uu_i18n::format!("设备身份刚刚更新，请重新打开设备详情后保存"));
                 let mut profile=profile;
                 profile.client_configs=v.client_configs.clone();
                 profile.selected_client=v.selected_client.clone();
@@ -603,7 +590,7 @@ impl Store {
         })
     }
     pub fn record_preview(&self,device:&str,at:u64,jpeg:&[u8])->Result<()> {
-        ensure!(!jpeg.is_empty()&&jpeg.len()<=1024*1024,"设备预览大小无效");
+        ensure!(!jpeg.is_empty()&&jpeg.len()<=1024*1024,"{}", uu_i18n::format!("设备预览大小无效"));
         let id=uuid::Uuid::new_v4().to_string();
         let path=self.directory.join("previews").join(format!("{id}.jpg"));
         crate::private_file::write_atomic(&path,jpeg)?;
@@ -626,8 +613,8 @@ impl Store {
         self.edit(|book| {
             let target=book.device(device)?.id.clone();
             let profile=book.devices.iter_mut().find(|p|p.id==target).unwrap();
-            let preview=profile.preview.as_mut().context("设备还没有截图，请先连接一次")?;
-            ensure!(preview.id==expected,"设备截图已更新，请重新查看后再固定");
+            let preview=profile.preview.as_mut().context(uu_i18n::text("设备还没有截图，请先连接一次"))?;
+            ensure!(preview.id==expected,"{}", uu_i18n::format!("设备截图已更新，请重新查看后再固定"));
             preview.pinned=pinned;
             Ok(())
         })
@@ -676,8 +663,7 @@ impl Store {
             let current = b.devices.iter().position(|p| p.id == canonical).unwrap();
             ensure!(
                 b.devices[current].peer.as_ref().is_none_or(|v| v == peer),
-                "设备身份与保存的记录不一致"
-            );
+                "{}", uu_i18n::format!("设备身份与保存的记录不一致"));
             if let Some(other) = b.devices.iter().position(|p| {
                 p.id != canonical && p.redirect.is_none() && p.peer.as_deref() == Some(peer)
             }) {

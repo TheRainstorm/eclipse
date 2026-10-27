@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering::Relaxed;
 pub(super) fn volume_slider(ui: &mut eframe::egui::Ui, volume: &mut u32) -> bool {
     use eframe::egui;
     let before = *volume;
-    ui.label("音量");
+    ui.label(uu_i18n::text("音量"));
     ui.horizontal(|ui| {
         ui.spacing_mut().slider_width = (ui.available_width() - 72.0).clamp(80.0, 240.0);
         ui.add(egui::Slider::new(volume, 0..=100).show_value(false));
@@ -52,9 +52,9 @@ impl super::App {
             super::ui::Icon::Volume
         };
         let tip = if muted {
-            "启用声音"
+            uu_i18n::text("启用声音")
         } else {
-            "静音"
+            uu_i18n::text("静音")
         };
         let tip=format!("{tip} · {}",self.preferences.hotkeys.label(uu_core::hotkeys::Action::Mute));
         if super::ui::icon_button_selected(ui, icon, &tip, muted).clicked() {

@@ -35,14 +35,14 @@ impl SigningKey {
             }
             Err(_) => {
                 return Err(CoreError::Config(
-                    "无法读取连接签名配置，请检查文件访问权限".into(),
+                    uu_i18n::text("无法读取连接签名配置，请检查文件访问权限").into(),
                 ))
             }
         };
         let metadata = file.metadata()?;
         if !metadata.is_file() || metadata.len() > 4096 {
             return Err(CoreError::Config(
-                "连接签名配置应为不超过 4096 字节的本地文本文件".into(),
+                uu_i18n::text("连接签名配置应为不超过 4096 字节的本地文本文件").into(),
             ));
         }
         #[cfg(unix)]
@@ -50,7 +50,7 @@ impl SigningKey {
             use std::os::unix::fs::PermissionsExt;
             if metadata.permissions().mode() & 0o077 != 0 {
                 return Err(CoreError::Config(
-                    "连接签名配置仅允许本人访问，请设置文件权限为 600".into(),
+                    uu_i18n::text("连接签名配置仅允许本人访问，请设置文件权限为 600").into(),
                 ));
             }
         }
@@ -85,7 +85,7 @@ impl SigningKey {
             || !data[start..end].iter().all(u8::is_ascii_graphic)
         {
             return Err(CoreError::Config(
-                "连接签名配置格式无效，应为单行有效凭据".into(),
+                uu_i18n::text("连接签名配置格式无效，应为单行有效凭据").into(),
             ));
         }
         Ok(Self {

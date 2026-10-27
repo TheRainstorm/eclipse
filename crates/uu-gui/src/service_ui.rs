@@ -44,7 +44,7 @@ impl Entry {
                 self.next = None;
                 match result {
                     Ok(()) => {
-                        self.notice = "后台服务管理操作已完成".into();
+                        self.notice = uu_i18n::text("后台服务管理操作已完成").into();
                         installed = self.install_started;
                     }
                     Err(error) => self.notice = error,
@@ -72,20 +72,20 @@ impl Entry {
             }
         }
         egui::Frame::group(ui.style()).show(ui,|ui| {
-            ui.strong("Windows 后台服务 · 锁屏串流");
-            ui.label(match self.status {Some(SERVICE_RUNNING)=>"后台服务运行中",Some(SERVICE_STOPPED)=>"后台服务已停止",Some(_)=>"后台服务正在转换状态",None=>"后台服务尚未安装"});
-            ui.weak("安装后随 Windows 启动，在已登录的控制台用户中支持锁屏串流。首次安装使用已保存的共享设置、账号和配对授权。");
+            ui.strong(uu_i18n::text("Windows 后台服务 · 锁屏串流"));
+            ui.label(match self.status {Some(SERVICE_RUNNING)=>uu_i18n::text("后台服务运行中"),Some(SERVICE_STOPPED)=>uu_i18n::text("后台服务已停止"),Some(_)=>uu_i18n::text("后台服务正在转换状态"),None=>uu_i18n::text("后台服务尚未安装")});
+            ui.weak(uu_i18n::text("安装后随 Windows 启动，在已登录的控制台用户中支持锁屏串流。首次安装使用已保存的共享设置、账号和配对授权。"));
             let busy=self.job.is_some()||self.pending_install;
             if self.status.is_some() {
-                if ui.add_enabled(!busy,egui::Button::new("管理后台服务")).clicked() {
+                if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("管理后台服务"))).clicked() {
                     match std::env::current_exe() {
                         Ok(exe)=>self.launch(exe,"--open-background-service-manager".into()),Err(error)=>self.notice=error.to_string(),
                     }
                 }
-                if ui.add_enabled(!busy,egui::Button::new("更新后台程序")).clicked() {
+                if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("更新后台程序"))).clicked() {
                     if host.running(){host.stop();}self.pending_install=true;
                 }
-                if ui.add_enabled(!busy,egui::Button::new("同步主窗口的 UU 账号状态")).clicked() {
+                if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("同步主窗口的 UU 账号状态"))).clicked() {
                     let result=(||->anyhow::Result<_>{
                         let config=uu_core::Config::from_env()?;
                         let exe=std::env::current_exe()?;
@@ -93,8 +93,8 @@ impl Entry {
                     })();
                     match result {Ok((exe,args))=>self.launch(exe,args),Err(error)=>self.notice=error.to_string()}
                 }
-            }else if ui.add_enabled(available&&!busy,egui::Button::new("安装并启动后台服务")).clicked() {
-                if host.running(){host.stop();}self.pending_install=true;self.notice="正在准备后台服务安装…".into();
+            }else if ui.add_enabled(available&&!busy,egui::Button::new(uu_i18n::text("安装并启动后台服务"))).clicked() {
+                if host.running(){host.stop();}self.pending_install=true;self.notice=uu_i18n::text("正在准备后台服务安装…").into();
             }
             if busy {ui.spinner();ui.ctx().request_repaint_after(Duration::from_millis(100));}
             if !self.notice.is_empty(){ui.label(&self.notice);}
@@ -108,7 +108,7 @@ impl Entry {
         std::thread::spawn(move || {
             let result=(||->anyhow::Result<()> {
                 if args.starts_with("--background-service-action ") {
-                    uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("无法确定安装包目录"))?,env!("UU_BUILD_COMMIT"))?;
+                    uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定安装包目录")))?,env!("UU_BUILD_COMMIT"))?;
                 }
                 elevated(&exe,&args)
             })();
@@ -166,7 +166,7 @@ fn control(exe: &std::path::Path, command: &str) -> Result<(), String> {
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!(
+        Err(uu_i18n::format!(
             "后台服务操作失败：{}",
             String::from_utf8_lossy(&output.stderr).trim()
         ))
@@ -227,21 +227,18 @@ impl Manager {
                                 } => {
                                     anyhow::ensure!(
                                         status()? == SERVICE_STOPPED,
-                                        "后台服务已启动，请重新读取后保存"
-                                    );
+                                        "{}", uu_i18n::format!("后台服务已启动，请重新读取后保存"));
                                     value.validate()?;
                                     let store = Store::open(worker_config.at("device-trust"))?;
                                     store.edit(|book| {
                                         anyhow::ensure!(
                                             book.sharing == expected,
-                                            "配置已在其它窗口修改，请重新读取"
-                                        );
+                                            "{}", uu_i18n::format!("配置已在其它窗口修改，请重新读取"));
                                         anyhow::ensure!(
                                             value.ip_enabled
                                                 || value.uu_enabled
                                                 || book.services.iter().any(|s| s.host_enabled),
-                                            "至少保留一个连接入口"
-                                        );
+                                            "{}", uu_i18n::format!("至少保留一个连接入口"));
                                         book.sharing = value;
                                         Ok(())
                                     })?;
@@ -319,7 +316,7 @@ impl Manager {
         self.busy = true;
         if self.sender.send(job).is_err() {
             self.busy = false;
-            self.notice = "后台管理工作线程已结束".into();
+            self.notice = uu_i18n::text("后台管理工作线程已结束").into();
         }
     }
     fn poll(&mut self) {
@@ -332,7 +329,7 @@ impl Manager {
                             if saved {
                                 self.dirty = false;
                             }
-                            self.notice = "操作已完成".into();
+                            self.notice = uu_i18n::text("操作已完成").into();
                         }
                         Err(error) => self.notice = error,
                     }
@@ -394,17 +391,17 @@ impl eframe::App for Manager {
         self.poll();
         ctx.request_repaint_after(Duration::from_millis(200));
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Windows 后台服务");
+            ui.heading(uu_i18n::text("Windows 后台服务"));
             ui.label(match self.state {
-                SERVICE_RUNNING => "运行中 · 后台服务独立运行",
-                SERVICE_STOPPED => "已停止",
-                _ => "正在读取服务状态…",
+                SERVICE_RUNNING => uu_i18n::text("运行中 · 后台服务独立运行"),
+                SERVICE_STOPPED => uu_i18n::text("已停止"),
+                _ => uu_i18n::text("正在读取服务状态…"),
             });
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(
                         !self.busy && self.state == SERVICE_STOPPED,
-                        egui::Button::new("启动服务"),
+                        egui::Button::new(uu_i18n::text("启动服务")),
                     )
                     .clicked()
                 {
@@ -413,13 +410,13 @@ impl eframe::App for Manager {
                 if ui
                     .add_enabled(
                         !self.busy && self.state == SERVICE_RUNNING,
-                        egui::Button::new("停止服务"),
+                        egui::Button::new(uu_i18n::text("停止服务")),
                     )
                     .clicked()
                 {
                     self.submit(Job::Control("stop"));
                 }
-                if ui.button("重新读取配置").clicked() {
+                if ui.button(uu_i18n::text("重新读取配置")).clicked() {
                     self.dirty = false;
                     self.submit(Job::Refresh);
                 }
@@ -436,12 +433,12 @@ impl eframe::App for Manager {
             ui.separator();
             for request in self.pending.clone() {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.strong(format!("配对请求 · {}", request.device.name));
+                    ui.strong(uu_i18n::format!("配对请求 · {}", request.device.name));
                     ui.monospace(request.device.id());
                     let code = self.codes.entry(request.id.clone()).or_default();
                     ui.add(
                         egui::TextEdit::singleline(&mut **code)
-                            .hint_text("控制端显示的 8 位配对码")
+                            .hint_text(uu_i18n::text("控制端显示的 8 位配对码"))
                             .char_limit(8),
                     );
                     let permissions = self
@@ -455,7 +452,7 @@ impl eframe::App for Manager {
                         if ui
                             .add_enabled(
                                 !self.busy && request.waiting && code.len() == 8,
-                                egui::Button::new("批准配对"),
+                                egui::Button::new(uu_i18n::text("批准配对")),
                             )
                             .clicked()
                         {
@@ -466,7 +463,7 @@ impl eframe::App for Manager {
                             }));
                         }
                         if ui
-                            .add_enabled(!self.busy, egui::Button::new("拒绝"))
+                            .add_enabled(!self.busy, egui::Button::new(uu_i18n::text("拒绝")))
                             .clicked()
                         {
                             self.submit(Job::Rpc(Request::Reject {
@@ -478,11 +475,11 @@ impl eframe::App for Manager {
             }
             ui.horizontal_wrapped(|ui| {
                 for (section, name) in [
-                    (0, "画面"),
-                    (1, "编码"),
-                    (2, "权限"),
-                    (3, "配对设置"),
-                    (4, "连接"),
+                    (0, uu_i18n::text("画面")),
+                    (1, uu_i18n::text("编码")),
+                    (2, uu_i18n::text("权限")),
+                    (3, uu_i18n::text("配对设置")),
+                    (4, uu_i18n::text("连接")),
                 ] {
                     ui.selectable_value(&mut self.section, section, name);
                 }
@@ -511,7 +508,7 @@ impl eframe::App for Manager {
                             super::server_config_ui::device_name(ui, &mut self.draft, true);
                             self.pairing.show(ui, &self.trust, &self.draft.name, None);
                             ui.separator();
-                            ui.strong("已授权设备");
+                            ui.strong(uu_i18n::text("已授权设备"));
                             match self.trust.peers() {
                                 Ok(peers) => {
                                     for peer in peers
@@ -529,14 +526,14 @@ impl eframe::App for Manager {
                                                     permissions,
                                                     None,
                                                 ) {
-                                                    Ok(()) => "设备授权已更新".into(),
+                                                    Ok(()) => uu_i18n::text("设备授权已更新").into(),
                                                     Err(error) => error.to_string(),
                                                 };
                                             }
-                                            if ui.small_button("撤销授权").clicked() {
+                                            if ui.small_button(uu_i18n::text("撤销授权")).clicked() {
                                                 self.notice =
                                                     match self.trust.revoke(&peer.device.id()) {
-                                                        Ok(()) => "设备授权已撤销".into(),
+                                                        Ok(()) => uu_i18n::text("设备授权已撤销").into(),
                                                         Err(error) => error.to_string(),
                                                     };
                                             }
@@ -549,15 +546,15 @@ impl eframe::App for Manager {
                             }
                         }
                         _ => {
-                            ui.checkbox(&mut self.draft.ip_enabled, "IP 直连");
-                            ui.checkbox(&mut self.draft.uu_enabled, "UU 账号入口");
+                            ui.checkbox(&mut self.draft.ip_enabled, uu_i18n::text("IP 直连"));
+                            ui.checkbox(&mut self.draft.uu_enabled, uu_i18n::text("UU 账号入口"));
                             ui.horizontal(|ui| {
-                                ui.label("服务端口");
+                                ui.label(uu_i18n::text("服务端口"));
                                 ui.add(
                                     egui::DragValue::new(&mut self.draft.service_port)
                                         .range(1..=65535),
                                 );
-                                ui.label("发现端口");
+                                ui.label(uu_i18n::text("发现端口"));
                                 ui.add(
                                     egui::DragValue::new(&mut self.draft.discovery_port)
                                         .range(1..=65535),
@@ -569,13 +566,13 @@ impl eframe::App for Manager {
                     ui.add_space(14.);
                     ui.horizontal(|ui| {
                         if ui
-                            .add_enabled(!self.busy, egui::Button::new("保存，下次启动生效"))
+                            .add_enabled(!self.busy, egui::Button::new(uu_i18n::text("保存，下次启动生效")))
                             .clicked()
                         {
                             self.save(false);
                         }
                         if ui
-                            .add_enabled(!self.busy, egui::Button::new("保存并重启服务"))
+                            .add_enabled(!self.busy, egui::Button::new(uu_i18n::text("保存并重启服务")))
                             .clicked()
                         {
                             self.save(true);
@@ -583,11 +580,11 @@ impl eframe::App for Manager {
                     });
                     if let Some(snapshot) = self.snapshot.clone() {
                         ui.separator();
-                        ui.strong("当前连接");
+                        ui.strong(uu_i18n::text("当前连接"));
                         for connection in snapshot.connections.clone() {
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(format!("{} · {}", connection.name, connection.status));
-                                if ui.small_button("断开").clicked() {
+                                if ui.small_button(uu_i18n::text("断开")).clicked() {
                                     self.submit(Job::Rpc(Request::Admin {
                                         request: host_admin::Request::Disconnect {
                                             session: connection.id,
@@ -597,7 +594,7 @@ impl eframe::App for Manager {
                             });
                         }
                     }
-                    ui.weak("服务运行时接受新设备配对；已有授权、密码和公钥规则继续生效。");
+                    ui.weak(uu_i18n::text("服务运行时接受新设备配对；已有授权、密码和公钥规则继续生效。"));
                 });
             });
         });
@@ -606,7 +603,7 @@ impl eframe::App for Manager {
 pub(super) fn run() -> eframe::Result {
     let manager = Manager::new().map_err(|error| eframe::Error::AppCreation(error.into()))?;
     eframe::run_native(
-        "Eclipse · 后台服务管理",
+        uu_i18n::text("Eclipse · 后台服务管理"),
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([850., 760.])
@@ -626,7 +623,7 @@ pub(super) fn dispatch() -> Option<eframe::Result> {
     let args:Vec<_>=std::env::args_os().skip(1).collect();
     if args==["--manage-background-service"] {
         let result=run();
-        if let Err(error)=&result {show_error(&format!("无法打开后台服务管理：{error}"));}
+        if let Err(error)=&result {show_error(&uu_i18n::format!("无法打开后台服务管理：{error}"));}
         return Some(result);
     }
     let opening=args==["--open-background-service-manager"];
@@ -641,12 +638,12 @@ pub(super) fn dispatch() -> Option<eframe::Result> {
             std::process::Command::new(exe).arg("--manage-background-service").spawn()?;
         }else if let Some(action)=action {
             use std::os::windows::process::CommandExt;
-            uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("无法确定安装包目录"))?,env!("UU_BUILD_COMMIT"))?;
+            uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定安装包目录")))?,env!("UU_BUILD_COMMIT"))?;
             let mut command=std::process::Command::new(exe.with_file_name("uu.exe"));
             command.args(["service",action,"--source-data"]).arg(&args[3]);
             if action=="install"{command.arg("--open-manager");}
             let output=command.creation_flags(0x08000000).output()?;
-            anyhow::ensure!(output.status.success(),"后台服务操作失败（{}）：\n{}",output.status,String::from_utf8_lossy(&output.stderr).trim());
+            anyhow::ensure!(output.status.success(),"{}", uu_i18n::format!("后台服务操作失败（{}）：\n{}",output.status,String::from_utf8_lossy(&output.stderr).trim()));
         }
         Ok(())
     })();
@@ -655,7 +652,7 @@ pub(super) fn dispatch() -> Option<eframe::Result> {
 }
 fn show_error(message:&str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW,MB_ICONERROR,MB_OK};
-    unsafe{MessageBoxW(std::ptr::null_mut(),wide(message).as_ptr(),wide("Eclipse · 后台服务").as_ptr(),MB_OK|MB_ICONERROR);}
+    unsafe{MessageBoxW(std::ptr::null_mut(),wide(message).as_ptr(),wide(uu_i18n::text("Eclipse · 后台服务")).as_ptr(),MB_OK|MB_ICONERROR);}
 }
 
 #[cfg(test)]

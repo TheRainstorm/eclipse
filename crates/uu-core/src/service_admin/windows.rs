@@ -80,8 +80,7 @@ fn folder(id: &GUID) -> Result<PathBuf> {
     let result = unsafe { SHGetKnownFolderPath(id, 0, ptr::null_mut(), &mut value) };
     ensure!(
         result >= 0 && !value.is_null(),
-        "无法确定 Windows 服务目录（{result:#x}）"
-    );
+        "{}", uu_i18n::format!("无法确定 Windows 服务目录（{result:#x}）"));
     let mut length = 0;
     unsafe {
         while *value.add(length) != 0 {
@@ -119,7 +118,7 @@ impl Paths {
     }
     pub fn manifest(&self) -> Result<Installed> {
         let bytes = std::fs::read(self.root.join("service.json"))?;
-        ensure!(bytes.len() < 16 * 1024, "服务安装记录过大");
+        ensure!(bytes.len() < 16 * 1024, "{}", uu_i18n::format!("服务安装记录过大"));
         let value: Installed = serde_json::from_slice(&bytes)?;
         value.validate()?;
         Ok(value)
@@ -152,12 +151,10 @@ impl Installed {
             self.version == 1
                 && self.revision.len() == 40
                 && self.revision.bytes().all(|v| v.is_ascii_hexdigit()),
-            "服务安装记录版本无效"
-        );
+            "{}", uu_i18n::format!("服务安装记录版本无效"));
         ensure!(
             self.build.len() == 64 && self.build.bytes().all(|v| v.is_ascii_hexdigit()),
-            "服务安装构建标识无效"
-        );
+            "{}", uu_i18n::format!("服务安装构建标识无效"));
         ensure!(
             self.owner_sid.starts_with("S-1-")
                 && self.owner_sid.len() < 192
@@ -165,8 +162,7 @@ impl Installed {
                     .owner_sid
                     .bytes()
                     .all(|v| v.is_ascii_digit() || matches!(v, b'S' | b'-')),
-            "服务所有者标识无效"
-        );
+            "{}", uu_i18n::format!("服务所有者标识无效"));
         Ok(())
     }
 }
@@ -190,7 +186,7 @@ pub fn token_user(token: HANDLE) -> Result<String> {
     unsafe {
         GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut length);
     }
-    ensure!(length > 0 && length < 64 * 1024, "无法读取进程身份");
+    ensure!(length > 0 && length < 64 * 1024, "{}", uu_i18n::format!("无法读取进程身份"));
     let mut storage = vec![
         0usize;
         (length as usize + std::mem::size_of::<usize>() - 1)
@@ -232,8 +228,7 @@ pub fn require_administrator() -> Result<()> {
     })?;
     ensure!(
         elevation.TokenIsElevated != 0,
-        "请以管理员身份管理 Windows 后台服务"
-    );
+        "{}", uu_i18n::format!("请以管理员身份管理 Windows 后台服务"));
     Ok(())
 }
 /// Service installer/manager processes create protected configuration on behalf
@@ -287,10 +282,10 @@ fn verify_server(handle: HANDLE) -> Result<()> {
     let mut pid = 0;
     winok(unsafe { GetNamedPipeServerProcessId(handle, &mut pid) })?;
     let process = Handle(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) });
-    ensure!(!process.0.is_null(), "无法验证后台服务进程");
+    ensure!(!process.0.is_null(), "{}", uu_i18n::format!("无法验证后台服务进程"));
     ensure!(
         process_user(process.0)? == "S-1-5-18",
-        "后台管理通路不是已安装的 System 服务"
+        uu_i18n::text("后台管理通路不是已安装的 System 服务")
     );
     let mut path = vec![0u16; 32768];
     let mut size = path.len() as u32;
@@ -307,8 +302,7 @@ fn verify_server(handle: HANDLE) -> Result<()> {
             .as_os_str()
             .to_string_lossy()
             .eq_ignore_ascii_case(&actual.as_os_str().to_string_lossy()),
-        "后台服务程序位置不符合安装记录"
-    );
+        "{}", uu_i18n::format!("后台服务程序位置不符合安装记录"));
     Ok(())
 }
 pub async fn request(request: Request) -> Result<Response> {
@@ -319,7 +313,7 @@ pub async fn request(request: Request) -> Result<Response> {
                 Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
                     tokio::time::sleep(Duration::from_millis(50)).await
                 }
-                Err(error) => return Err(error).context("后台服务尚未在当前用户控制台会话中启动"),
+                Err(error) => return Err(error).context(uu_i18n::text("后台服务尚未在当前用户控制台会话中启动")),
             }
         };
         verify_server(pipe.as_raw_handle() as _)?;
@@ -327,7 +321,7 @@ pub async fn request(request: Request) -> Result<Response> {
         super::read(&mut pipe).await
     })
     .await
-    .context("后台服务管理请求超时")?
+    .context(uu_i18n::text("后台服务管理请求超时"))?
 }
 pub struct ServiceHandle(pub SC_HANDLE);
 impl Drop for ServiceHandle {
@@ -341,13 +335,13 @@ pub fn open_service(access: u32) -> Result<ServiceHandle> {
     let manager =
         ServiceHandle(unsafe { OpenSCManagerW(ptr::null(), ptr::null(), SC_MANAGER_CONNECT) });
     if manager.0.is_null() {
-        return Err(std::io::Error::last_os_error()).context("无法访问 Windows 服务管理器");
+        return Err(std::io::Error::last_os_error()).context(uu_i18n::text("无法访问 Windows 服务管理器"));
     }
     let service =
         ServiceHandle(unsafe { OpenServiceW(manager.0, wide(SERVICE_NAME).as_ptr(), access) });
     if service.0.is_null() {
         return Err(std::io::Error::last_os_error())
-            .context("Windows 后台服务尚未安装或没有管理权限");
+            .context(uu_i18n::text("Windows 后台服务尚未安装或没有管理权限"));
     }
     Ok(service)
 }
@@ -371,13 +365,12 @@ pub fn elevated(exe: &Path, arguments: &str) -> Result<()> {
     info.nShow = 1;
     winok(unsafe { ShellExecuteExW(&mut info) })?;
     let process = Handle(info.hProcess);
-    ensure!(!process.0.is_null(), "后台服务管理程序未启动");
+    ensure!(!process.0.is_null(), "{}", uu_i18n::format!("后台服务管理程序未启动"));
     ensure!(
         unsafe { WaitForSingleObject(process.0, 180_000) } == WAIT_OBJECT_0,
-        "后台服务管理程序仍在执行"
-    );
+        "{}", uu_i18n::format!("后台服务管理程序仍在执行"));
     let mut code = 0;
     winok(unsafe { GetExitCodeProcess(process.0, &mut code) })?;
-    ensure!(code == 0, "后台服务管理未成功（退出码 {code}）");
+    ensure!(code == 0, "{}", uu_i18n::format!("后台服务管理未成功（退出码 {code}）"));
     Ok(())
 }

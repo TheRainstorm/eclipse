@@ -117,7 +117,7 @@ impl Default for HostUi {
             events: None,
             handle: None,
             notice: String::new(),
-            status: "尚未启用共享".into(),
+            status: uu_i18n::text("尚未启用共享").into(),
             active_session: None,
             pending: Vec::new(),
             addresses: Vec::new(),
@@ -137,7 +137,7 @@ impl HostUi {
         if let Some(worker) = &self.worker {
             worker.stop.send_replace(true);
             self.stopping = true;
-            self.status = "正在停止共享…".into();
+            self.status = uu_i18n::text("正在停止共享…").into();
         }
     }
     pub fn show(&mut self) {
@@ -151,7 +151,7 @@ impl HostUi {
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
             self.monitors.clear();
             self.notice =
-                "当前 Wayland 会话尚未支持共享屏幕；可连接其它主机，或在 X11 会话共享本机。".into();
+                uu_i18n::text("当前 Wayland 会话尚未支持共享屏幕；可连接其它主机，或在 X11 会话共享本机。").into();
             return;
         }
         match native::monitors() {
@@ -162,7 +162,7 @@ impl HostUi {
             }
             Err(error) => {
                 self.monitors.clear();
-                self.notice = format!("无法获取共享屏幕：{error}");
+                self.notice = uu_i18n::format!("无法获取共享屏幕：{error}");
             }
         }
     }
@@ -176,15 +176,15 @@ impl HostUi {
                                 super::clipboard::start_host(state.clone(), self.owner_window)
                             {
                                 state.available.store(false, Ordering::Release);
-                                state.status("无法启动本机剪贴板");
-                                self.notice = format!("无法启用剪贴板：{error}");
+                                state.status(uu_i18n::text("无法启动本机剪贴板"));
+                                self.notice = uu_i18n::format!("无法启用剪贴板：{error}");
                             }
                             self.clipboard_state = Some((id, state));
                         }
                     }
                     Ready::Listening(handle, address) => {
                         self.handle = Some(handle);
-                        self.status = "共享已开启，等待连接".into();
+                        self.status = uu_i18n::text("共享已开启，等待连接").into();
                         self.addresses = super::native_interfaces::enumerate()
                             .unwrap_or_default()
                             .into_iter()
@@ -195,10 +195,10 @@ impl HostUi {
                     Ready::Ended(result) => {
                         self.addresses.clear();
                         if let Err(error) = result {
-                            self.notice = format!("无法保持共享：{error}");
+                            self.notice = uu_i18n::format!("无法保持共享：{error}");
                             self.open = true;
                         }
-                        self.status = "共享已停止".into();
+                        self.status = uu_i18n::text("共享已停止").into();
                     }
                 }
             }
@@ -227,18 +227,18 @@ impl HostUi {
                             .as_ref()
                             .and_then(|h| h.clients().into_iter().find(|p| p.id == client))
                             .map(|p| p.name)
-                            .unwrap_or_else(|| "已配对设备".into());
-                        self.status = format!("正在为 {name} 建立串流");
+                            .unwrap_or_else(|| uu_i18n::text("已配对设备").into());
+                        self.status = uu_i18n::format!("正在为 {name} 建立串流");
                         self.active_session = Some(id);
                     }
                     lan::Event::SessionProgress { id, status } => {
                         if self.active_session.as_deref() == Some(&id) {
                             self.status = match status {
-                                native::HostStatus::Starting => "正在准备串流…".into(),
+                                native::HostStatus::Starting => uu_i18n::text("正在准备串流…").into(),
                                 native::HostStatus::Waiting { .. } => {
-                                    "等待已授权设备建立媒体连接…".into()
+                                    uu_i18n::text("等待已授权设备建立媒体连接…").into()
                                 }
-                                native::HostStatus::Preparing => "正在准备屏幕采集与编码…".into(),
+                                native::HostStatus::Preparing => uu_i18n::text("正在准备屏幕采集与编码…").into(),
                                 native::HostStatus::Streaming {
                                     width,
                                     height,
@@ -246,7 +246,7 @@ impl HostUi {
                                     audio,
                                     encoder,
                                 } => {
-                                    format!("串流中 · {width}×{height} @ {fps} FPS · {encoder} · {audio}")
+                                    uu_i18n::format!("串流中 · {width}×{height} @ {fps} FPS · {encoder} · {audio}")
                                 }
                             };
                         }
@@ -261,7 +261,7 @@ impl HostUi {
                         }
                         if self.active_session.as_deref() == Some(&id) {
                             self.active_session = None;
-                            self.status = "共享已开启，等待连接".into();
+                            self.status = uu_i18n::text("共享已开启，等待连接").into();
                         }
                     }
                 }
@@ -275,9 +275,9 @@ impl HostUi {
             // The worker can finish between the first drain and this check.
             // Consume its final notification before dropping the receiver.
             self.poll_ready();
-            if self.status == "正在开启共享…" {
-                self.status = "共享启动失败".into();
-                self.notice = "共享线程意外退出，请检查端口设置后重试".into();
+            if uu_i18n::matches(&self.status,"正在开启共享…") {
+                self.status = uu_i18n::text("共享启动失败").into();
+                self.notice = uu_i18n::text("共享线程意外退出，请检查端口设置后重试").into();
                 self.open = true;
             }
             self.worker = None;
@@ -294,15 +294,14 @@ impl HostUi {
         }
     }
     fn start(&mut self, data_dir: &Path, ctx: &egui::Context) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.running(), "共享已经开启");
+        anyhow::ensure!(!self.running(), "{}", uu_i18n::format!("共享已经开启"));
         let monitor = self
             .monitors
             .get(self.monitor)
-            .ok_or_else(|| anyhow::anyhow!("请选择可用屏幕"))?;
+            .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("请选择可用屏幕")))?;
         anyhow::ensure!(
             monitor.encodable(self.encoder, self.fps),
-            "此屏幕尺寸暂不支持，请选择其它屏幕"
-        );
+            "{}", uu_i18n::format!("此屏幕尺寸暂不支持，请选择其它屏幕"));
         let (ready, ready_rx) = mpsc::channel();
         let clipboard = self.clipboard.then(|| {
             let requests = ready.clone();
@@ -315,7 +314,7 @@ impl HostUi {
                         id: id.to_owned(),
                         state: state.clone(),
                     })
-                    .map_err(|_| anyhow::anyhow!("共享窗口已关闭"))?;
+                    .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("共享窗口已关闭")))?;
                 context.request_repaint();
                 Ok(state)
             }) as lan::ClipboardFactory
@@ -359,7 +358,7 @@ impl HostUi {
                     let address = server.address()?;
                     ready
                         .send(Ready::Listening(handle, address))
-                        .map_err(|_| anyhow::anyhow!("共享窗口已关闭"))?;
+                        .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("共享窗口已关闭")))?;
                     context.request_repaint();
                     server.run().await
                 });
@@ -374,7 +373,7 @@ impl HostUi {
         self.ready = Some(ready_rx);
         self.events = Some(event_rx);
         self.notice.clear();
-        self.status = "正在开启共享…".into();
+        self.status = uu_i18n::text("正在开启共享…").into();
         self.stopping = false;
         Ok(())
     }
@@ -384,7 +383,7 @@ impl HostUi {
             let mut open = true;
             let mut start = false;
             let mut stop = false;
-            egui::Window::new("共享本机")
+            egui::Window::new(uu_i18n::text("共享本机"))
                 .id("lan-host-settings".into())
                 .open(&mut open)
                 .collapsible(false)
@@ -399,42 +398,42 @@ impl HostUi {
                     ui.label(egui::RichText::new(&self.status).strong());
                     ui.add_space(10.);
                     if self.running() {
-                        ui.weak(format!("监听所有 IPv4 网卡：0.0.0.0:{}（TCP）",self.port));
-                        ui.weak("控制端请填写下面的网卡地址；不同网段需路由与防火墙允许连接。");
+                        ui.weak(uu_i18n::format!("监听所有 IPv4 网卡：0.0.0.0:{}（TCP）",self.port));
+                        ui.weak(uu_i18n::text("控制端请填写下面的网卡地址；不同网段需路由与防火墙允许连接。"));
                         for address in &self.addresses {
                             ui.horizontal(|ui| {
                                 ui.label(address);
-                                if ui.small_button("复制地址").clicked() {
+                                if ui.small_button(uu_i18n::text("复制地址")).clicked() {
                                     ctx.copy_text(address.clone());
                                 }
                             });
                         }
                         if let Some(handle) = &self.handle {
-                            if self.active_session.is_some() && ui.button("断开当前串流").clicked()
+                            if self.active_session.is_some() && ui.button(uu_i18n::text("断开当前串流")).clicked()
                             {
                                 handle.stop_session();
-                                self.status = "正在断开串流…".into();
+                                self.status = uu_i18n::text("正在断开串流…").into();
                             }
                             ui.horizontal(|ui| {
-                                if ui.button("允许新设备配对（2 分钟）").clicked() {
+                                if ui.button(uu_i18n::text("允许新设备配对（2 分钟）")).clicked() {
                                     handle.allow_pairing();
                                     self.notice =
-                                        "请在另一台设备发起配对，并核对客户端显示的配对码。".into();
+                                        uu_i18n::text("请在另一台设备发起配对，并核对客户端显示的配对码。").into();
                                 }
-                                if ui.small_button("停止接收配对").clicked() {
+                                if ui.small_button(uu_i18n::text("停止接收配对")).clicked() {
                                     handle.close_pairing();
                                 }
                             });
                             ui.add_space(8.);
-                            ui.label("已授权设备");
+                            ui.label(uu_i18n::text("已授权设备"));
                             let peers = handle.clients();
                             if peers.is_empty() {
-                                ui.weak("尚无已配对设备");
+                                ui.weak(uu_i18n::text("尚无已配对设备"));
                             }
                             for peer in peers {
                                 ui.horizontal(|ui| {
                                     ui.label(&peer.name);
-                                    if ui.small_button("撤销授权").clicked() {
+                                    if ui.small_button(uu_i18n::text("撤销授权")).clicked() {
                                         if let Err(error) = handle.revoke(&peer.id) {
                                             self.notice = error.to_string();
                                         }
@@ -444,9 +443,9 @@ impl HostUi {
                         }
                         if let Some((_, state)) = &self.clipboard_state {
                             let status = if state.ready() {
-                                "剪贴板已由双方启用".to_owned()
+                                uu_i18n::text("剪贴板已由双方启用").to_owned()
                             } else if state.available.load(Ordering::Acquire) {
-                                "剪贴板等待控制端启用".to_owned()
+                                uu_i18n::text("剪贴板等待控制端启用").to_owned()
                             } else {
                                 state.status.lock().unwrap().clone()
                             };
@@ -456,7 +455,7 @@ impl HostUi {
                         }
                         ui.add_space(10.);
                         if ui
-                            .add_enabled(!self.stopping, egui::Button::new("停止共享"))
+                            .add_enabled(!self.stopping, egui::Button::new(uu_i18n::text("停止共享")))
                             .clicked()
                         {
                             stop = true;
@@ -466,10 +465,10 @@ impl HostUi {
                             .num_columns(2)
                             .spacing([18., 12.])
                             .show(ui, |ui| {
-                                ui.label("设备名称");
+                                ui.label(uu_i18n::text("设备名称"));
                                 ui.text_edit_singleline(&mut self.name);
                                 ui.end_row();
-                                ui.label("共享屏幕");
+                                ui.label(uu_i18n::text("共享屏幕"));
                                 egui::ComboBox::from_id_salt("lan-monitor")
                                     .selected_text(
                                         self.monitors
@@ -477,7 +476,7 @@ impl HostUi {
                                             .map(|m| {
                                                 format!("{} · {}×{}", m.name, m.width, m.height)
                                             })
-                                            .unwrap_or_else(|| "未找到可用屏幕".into()),
+                                            .unwrap_or_else(|| uu_i18n::text("未找到可用屏幕").into()),
                                     )
                                     .show_ui(ui, |ui| {
                                         for (i, m) in self.monitors.iter().enumerate() {
@@ -489,7 +488,7 @@ impl HostUi {
                                         }
                                     });
                                 ui.end_row();
-                                ui.label("编码加速");
+                                ui.label(uu_i18n::text("编码加速"));
                                 egui::ComboBox::from_id_salt("lan-host-encoder")
                                     .selected_text(super::native_host_ui::preference_label(self.encoder))
                                     .show_ui(ui,|ui| {
@@ -498,44 +497,44 @@ impl HostUi {
                                         }
                                     });
                                 ui.end_row();
-                                ui.label("帧率");
+                                ui.label(uu_i18n::text("帧率"));
                                 ui.horizontal(|ui| {
                                     ui.selectable_value(&mut self.fps, 30, "30 FPS");
                                     ui.selectable_value(&mut self.fps, 60, "60 FPS");
                                 });
                                 ui.end_row();
-                                ui.label("码率");
+                                ui.label(uu_i18n::text("码率"));
                                 ui.add(
                                     egui::DragValue::new(&mut self.mbps)
                                         .range(1..=100)
                                         .suffix(" Mbps"),
                                 );
                                 ui.end_row();
-                                ui.label("服务端口");
+                                ui.label(uu_i18n::text("服务端口"));
                                 ui.add(egui::DragValue::new(&mut self.port).range(1..=65535));
                                 ui.end_row();
-                                ui.label("发现端口");
+                                ui.label(uu_i18n::text("发现端口"));
                                 ui.add(egui::DragValue::new(&mut self.discovery_port).range(1..=65535));
                                 ui.end_row();
                             });
                         ui.add_space(10.);
-                        ui.weak("服务端口使用 TCP，发现端口使用 UDP；端口自动保存。更改发现端口时，请将控制端设为相同端口，也可用 IP:服务端口 手动连接。");
-                        ui.checkbox(&mut self.input, "允许已配对设备控制键盘、鼠标和手柄");
-                        ui.checkbox(&mut self.audio, "共享系统声音");
-                        ui.checkbox(&mut self.clipboard, "允许双方启用文本和图片剪贴板");
-                        ui.weak("只有在你确认配对后，设备才能访问本机。关闭软件会停止共享。");
+                        ui.weak(uu_i18n::text("服务端口使用 TCP，发现端口使用 UDP；端口自动保存。更改发现端口时，请将控制端设为相同端口，也可用 IP:服务端口 手动连接。"));
+                        ui.checkbox(&mut self.input, uu_i18n::text("允许已配对设备控制键盘、鼠标和手柄"));
+                        ui.checkbox(&mut self.audio, uu_i18n::text("共享系统声音"));
+                        ui.checkbox(&mut self.clipboard, uu_i18n::text("允许双方启用文本和图片剪贴板"));
+                        ui.weak(uu_i18n::text("只有在你确认配对后，设备才能访问本机。关闭软件会停止共享。"));
                         ui.add_space(10.);
                         ui.horizontal(|ui| {
                             if ui
                                 .add_enabled(
                                     data_dir.is_some() && !self.monitors.is_empty(),
-                                    egui::Button::new("启用共享"),
+                                    egui::Button::new(uu_i18n::text("启用共享")),
                                 )
                                 .clicked()
                             {
                                 start = true;
                             }
-                            if ui.button("刷新屏幕").clicked() {
+                            if ui.button(uu_i18n::text("刷新屏幕")).clicked() {
                                 self.refresh_monitors();
                             }
                         });
@@ -549,25 +548,25 @@ impl HostUi {
             if start {
                 if let Some(dir) = data_dir {
                     if let Err(error) = self.start(dir, ctx) {
-                        self.notice = format!("无法开启共享：{error}");
+                        self.notice = uu_i18n::format!("无法开启共享：{error}");
                     }
                 }
             }
         }
         let mut decision = None;
         if let Some(pending) = self.pending.first_mut() {
-            egui::Window::new("确认新设备配对")
+            egui::Window::new(uu_i18n::text("确认新设备配对"))
                 .id("lan-pair-host".into())
                 .collapsible(false)
                 .resizable(false)
                 .default_width(420.)
                 .show(ctx, |ui| {
-                    ui.label(format!("{} 希望连接本机", pending.request.client_name));
+                    ui.label(uu_i18n::format!("{} 希望连接本机", pending.request.client_name));
                     ui.add_space(8.);
-                    ui.label("请在发起连接的设备查看配对码，并在这里输入：");
+                    ui.label(uu_i18n::text("请在发起连接的设备查看配对码，并在这里输入："));
                     ui.add(
                         egui::TextEdit::singleline(&mut pending.entered)
-                            .hint_text("8 位配对码")
+                            .hint_text(uu_i18n::text("8 位配对码"))
                             .char_limit(12),
                     );
                     let entered: String = pending
@@ -585,17 +584,17 @@ impl HostUi {
                     if entered.len() == 8 && !matches {
                         ui.colored_label(
                             egui::Color32::from_rgb(170, 55, 55),
-                            "号码不匹配，请核对发起连接的设备。",
+                            uu_i18n::text("号码不匹配，请核对发起连接的设备。"),
                         );
                     }
                     ui.horizontal(|ui| {
                         if ui
-                            .add_enabled(matches, egui::Button::new("允许配对"))
+                            .add_enabled(matches, egui::Button::new(uu_i18n::text("允许配对")))
                             .clicked()
                         {
                             decision = Some(true);
                         }
-                        if ui.button("拒绝").clicked() {
+                        if ui.button(uu_i18n::text("拒绝")).clicked() {
                             decision = Some(false);
                         }
                     });
@@ -604,7 +603,7 @@ impl HostUi {
         if let Some(allowed) = decision {
             let pending = self.pending.remove(0);
             if pending.request.decision.send(allowed).is_err() {
-                self.notice = "配对请求已结束，请从客户端重试。".into();
+                self.notice = uu_i18n::text("配对请求已结束，请从客户端重试。").into();
             }
         }
     }

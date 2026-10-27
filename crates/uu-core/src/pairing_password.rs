@@ -21,12 +21,12 @@ impl Drop for Record {fn drop(&mut self){self.verifier.zeroize();}}
 impl Record {
     pub fn key(&self)->Zeroizing<Vec<u8>> {Zeroizing::new(self.verifier.to_vec())}
     fn validate(&self)->Result<()> {
-        ensure!(self.version==1,"配对密码配置版本无效，原文件已保留");
+        ensure!(self.version==1,"{}", uu_i18n::format!("配对密码配置版本无效，原文件已保留"));
         self.permissions.validate()
     }
 }
 pub(crate) fn derive(password:&str,salt:&[u8;16])->Result<Zeroizing<Vec<u8>>> {
-    ensure!((8..=256).contains(&password.len()),"配对密码须为 8–256 字节");
+    ensure!((8..=256).contains(&password.len()),"{}", uu_i18n::format!("配对密码须为 8–256 字节"));
     let mut output=Zeroizing::new(vec![0;32]);
     pbkdf2::derive(pbkdf2::PBKDF2_HMAC_SHA256,NonZeroU32::new(ITERATIONS).unwrap(),salt,password.as_bytes(),&mut output);
     Ok(output)
@@ -35,7 +35,7 @@ pub(crate) fn read(store:&TrustStore)->Result<Option<Record>> {
     let path=store.directory().join("pairing-password.json");
     if !path.try_exists()? {return Ok(None);}
     let record:Record=serde_json::from_slice(&read_private(&path)?)
-        .map_err(|_|anyhow::anyhow!("配对密码配置损坏，原文件已保留"))?;
+        .map_err(|_|anyhow::anyhow!("{}", uu_i18n::format!("配对密码配置损坏，原文件已保留")))?;
     record.validate()?;
     Ok(Some(record))
 }

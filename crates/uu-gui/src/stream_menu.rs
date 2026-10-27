@@ -229,7 +229,7 @@ fn menu_row(
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
     let ink = if !ui.is_enabled() {
         Color32::from_gray(160)
-    } else if label == "退出串流" {
+    } else if label == uu_i18n::text("退出串流") {
         Color32::from_rgb(187, 65, 55)
     } else {
         MENU_INK
@@ -370,11 +370,11 @@ fn nested_submenu<R>(ui:&mut egui::Ui,blocked:&mut Vec<Rect>,label:&str,status:&
 }
 fn hud_submenu(ui:&mut egui::Ui,blocked:&mut Vec<Rect>,enabled:&mut bool,level:&mut super::settings::HudDetail,hint:&str)->bool {
     let mut changed=false;
-    nested_submenu(ui,blocked,"统计信息",if *enabled {match level{super::settings::HudDetail::Compact=>"精简",super::settings::HudDetail::Detailed=>"详细"}}else{"关闭"},|ui|{
-        menu_heading(ui,"HUD","统计显示");
-        if menu_row(ui,"显示统计",None,*enabled,false,hint,false).on_hover_text("开关画面上的统计信息；悬停后查看详情和最近三分钟曲线。").clicked(){*enabled=!*enabled;changed=true;}
+    nested_submenu(ui,blocked,uu_i18n::text("统计信息"),if *enabled {match level{super::settings::HudDetail::Compact=>uu_i18n::text("精简"),super::settings::HudDetail::Detailed=>uu_i18n::text("详细")}}else{uu_i18n::text("关闭")},|ui|{
+        menu_heading(ui,"HUD",uu_i18n::text("统计显示"));
+        if menu_row(ui,uu_i18n::text("显示统计"),None,*enabled,false,hint,false).on_hover_text(uu_i18n::text("开关画面上的统计信息；悬停后查看详情和最近三分钟曲线。")).clicked(){*enabled=!*enabled;changed=true;}
         separator(ui);
-        for (mode,label) in [(super::settings::HudDetail::Compact,"精简"),(super::settings::HudDetail::Detailed,"详细")] {
+        for (mode,label) in [(super::settings::HudDetail::Compact,uu_i18n::text("精简")),(super::settings::HudDetail::Detailed,uu_i18n::text("详细"))] {
             if menu_row(ui,label,None,*level==mode,false,"",false).clicked(){*level=mode;*enabled=true;changed=true;}
         }
     });changed
@@ -442,7 +442,7 @@ impl super::App {
                         .selected
                         .and_then(|i| self.devices.get(i))
                         .map(|d| d.alias.as_str())
-                        .unwrap_or("远程桌面");
+                        .unwrap_or(uu_i18n::text("远程桌面"));
                     let roomy=ui.available_width()>740.0;
                     let wide=ui.available_width()>1100.0;
                     if self.workspace_tabs.is_none() && ui.available_width()>520.0 {ui.add_sized([76.0,24.0],egui::Label::new(RichText::new(title).size(12.0)).truncate());}
@@ -451,12 +451,12 @@ impl super::App {
                     if (self.view_only || (self.is_native()&&!self.supports_remote(uu_core::capabilities::Capability::Input))) && (roomy || self.is_native()) {
                         let (text, help) = if self.is_native() && !self.view_only && self.native_input_available() {
                             let requested = self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|s|s.requested());
-                            if requested {("等待控制权", "主机一次允许一个控制端操作；当前控制端释放后会自动重试。")}
-                            else {("控制已暂停", "点击画面或恢复控制可重新申请，快捷键可在输入设置中调整。")}
-                        } else {("仅观看", "当前未启用远端输入；主机需允许控制并具有可用的输入后端。")};
+                            if requested {(uu_i18n::text("等待控制权"), uu_i18n::text("主机一次允许一个控制端操作；当前控制端释放后会自动重试。"))}
+                            else {(uu_i18n::text("控制已暂停"), uu_i18n::text("点击画面或恢复控制可重新申请，快捷键可在输入设置中调整。"))}
+                        } else {(uu_i18n::text("仅观看"), uu_i18n::text("当前未启用远端输入；主机需允许控制并具有可用的输入后端。"))};
                         ui.label(RichText::new(text).color(Color32::from_rgb(98, 125, 160))).on_hover_text(help);
                         if !self.view_only && self.native_input_available() && !self.input_capture.requested()
-                            && ui.small_button("恢复控制").on_hover_text("重新请求此串流的键鼠控制").clicked() {
+                            && ui.small_button(uu_i18n::text("恢复控制")).on_hover_text(uu_i18n::text("重新请求此串流的键鼠控制")).clicked() {
                             self.input_capture.request();
                             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                             self.platform.focus_window();
@@ -464,11 +464,11 @@ impl super::App {
                     }
                     if wide && !self.view_only && self.controller.is_some() && !self.input_ready() && (!self.is_native()||self.displays.switching()) {
                         ui.label(
-                            RichText::new(if self.displays.switching(){"正在切换显示器…"}else{"输入连接中…"})
+                            RichText::new(if self.displays.switching(){uu_i18n::text("正在切换显示器…")}else{uu_i18n::text("输入连接中…")})
                                 .size(12.0)
                                 .color(Color32::from_gray(110)),
                         )
-                        .on_hover_text("视频和输入分别建立连接，输入就绪后可操作");
+                        .on_hover_text(uu_i18n::text("视频和输入分别建立连接，输入就绪后可操作"));
                     }
                     if let Some(controller) = self.controller.as_ref().filter(|_|roomy && !self.is_native()) {
                         ui.label(
@@ -492,16 +492,16 @@ impl super::App {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icon_button(ui, Icon::Close, "退出串流").clicked() {
+                        if icon_button(ui, Icon::Close, uu_i18n::text("退出串流")).clicked() {
                             self.disconnect();
                         }
-                        if icon_button(ui, Icon::Max, "最大化 / 还原窗口").clicked() {
+                        if icon_button(ui, Icon::Max, uu_i18n::text("最大化 / 还原窗口")).clicked() {
                             self.toggle_maximized(ctx);
                         }
-                        if icon_button(ui, Icon::Min, "最小化").clicked() {
+                        if icon_button(ui, Icon::Min, uu_i18n::text("最小化")).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        let control = icon_label_button(ui, Icon::Settings, "设置");
+                        let control = icon_label_button(ui, Icon::Settings, uu_i18n::text("设置"));
                         self.stream_menu.trigger_rect = Some(control.rect);
                         if control.clicked() {
                             self.displays.menu_open=false;
@@ -545,12 +545,12 @@ impl super::App {
                             }
                             icon(ui.painter(),Rect::from_center_size(rect.left_center()+egui::vec2(16.0,0.0),egui::vec2(15.0,15.0)),Icon::Desktop,MENU_INK);
                             ui.painter().with_clip_rect(Rect::from_min_max(rect.min+egui::vec2(30.0,0.0),rect.max-egui::vec2(8.0,0.0))).text(rect.left_center()+egui::vec2(30.0,0.0),egui::Align2::LEFT_CENTER,&label,egui::FontId::proportional(12.0),MENU_INK);
-                            if response.on_hover_text(format!("{}{} · {} × {} · {} Hz\n拖动调整标签顺序；编号为本地标记，重连后保留",label,if screen.primary{" · 主屏"}else{""},screen.width,screen.height,screen.refresh_hz)).clicked(){chosen=Some(screen.id);}
+                            if response.on_hover_text(uu_i18n::format!("{}{} · {} × {} · {} Hz\n拖动调整标签顺序；编号为本地标记，重连后保留",label,if screen.primary{uu_i18n::text(" · 主屏")}else{""},screen.width,screen.height,screen.refresh_hz)).clicked(){chosen=Some(screen.id);}
                         }
-                        if screens.screens.is_empty(){ui.label("等待显示器…");}
+                        if screens.screens.is_empty(){ui.label(uu_i18n::text("等待显示器…"));}
                     });
                 });
-            let response=ui.add_sized([26.0,28.0],egui::Button::new(RichText::new("+").size(20.0)).frame(false)).on_hover_text("选择远端显示器");
+            let response=ui.add_sized([26.0,28.0],egui::Button::new(RichText::new("+").size(20.0)).frame(false)).on_hover_text(uu_i18n::text("选择远端显示器"));
             if response.clicked(){self.displays.menu_open=!self.displays.menu_open;self.stream_menu.open=false;self.context.memory_mut(|m|m.close_popup());self.displays.anchor=response.rect.left_bottom();self.release_all_keys();}
         });
         if let Some((source,target,after))=reorder{self.reorder_display_tab(source,target,after);}
@@ -580,14 +580,14 @@ impl super::App {
         ui.set_min_width(260.0);
         for screen in &screens.screens {
             let response=menu_row(ui,&self.displays.layout.label(screen),None,
-                self.displays.selected==Some(screen.id),false,if screen.primary {"主屏"}else{""},false)
+                self.displays.selected==Some(screen.id),false,if screen.primary {uu_i18n::text("主屏")}else{""},false)
                 .on_hover_text(format!("{} · {} × {} · {} Hz · {}",screen.display_name,screen.width,screen.height,screen.refresh_hz,screen.kind_label()));
             if response.clicked(){self.select_remote_screen(screen.id);ui.close_menu();}
         }
-        if screens.screens.is_empty(){ui.add_enabled(false,egui::Label::new("等待远端显示器列表…"));}
+        if screens.screens.is_empty(){ui.add_enabled(false,egui::Label::new(uu_i18n::text("等待远端显示器列表…")));}
         if !self.displays.notice.is_empty(){separator(ui);ui.label(&self.displays.notice);}
         separator(ui);
-        if menu_row(ui,"显示器模式设置…",None,false,false,"",false).on_hover_text("设置远端物理或虚拟显示器的使用方式。").clicked(){self.displays.menu_open=false;self.open_stream_settings();}
+        if menu_row(ui,uu_i18n::text("显示器模式设置…"),None,false,false,"",false).on_hover_text(uu_i18n::text("设置远端物理或虚拟显示器的使用方式。")).clicked(){self.displays.menu_open=false;self.open_stream_settings();}
     }
 
     fn confirm_quality(&mut self, ui: &mut egui::Ui) {
@@ -599,25 +599,25 @@ impl super::App {
 
     fn picture_menu(&mut self, ui: &mut egui::Ui) {
         if self.is_native() {
-            ui.add_enabled_ui(cfg!(windows),|ui|{if menu_row(ui,"优先 HDR",None,self.preferences.hdr,false,"10-bit",false).on_hover_text("需要两端显示输出、采集和编解码支持；连接时协商，无法使用时回退SDR。").clicked(){self.preferences.hdr=!self.preferences.hdr;self.persist_preferences();self.send_capture_settings();}});
+            ui.add_enabled_ui(cfg!(windows),|ui|{if menu_row(ui,uu_i18n::text("优先 HDR"),None,self.preferences.hdr,false,"10-bit",false).on_hover_text(uu_i18n::text("需要两端显示输出、采集和编解码支持；连接时协商，无法使用时回退SDR。")).clicked(){self.preferences.hdr=!self.preferences.hdr;self.persist_preferences();self.send_capture_settings();}});
             let hdr=self.controller.as_ref().and_then(|h|*h.stats.native_hdr_response.lock().unwrap()).is_some();
             let displaying=eframe::glow_presentation::color_target_for(ui.ctx(),ui.ctx().viewport_id()).is_some_and(|c|c.hdr);
-            ui.small(if hdr&&displaying {"当前 HDR10 · 10 位 PQ / BT.2020"}else if hdr {"当前 HDR10 → SDR 映射"}else{"当前 SDR；HDR 需要两端显示输出和编解码支持"});
+            ui.small(if hdr&&displaying {uu_i18n::text("当前 HDR10 · 10 位 PQ / BT.2020")}else if hdr {uu_i18n::text("当前 HDR10 → SDR 映射")}else{uu_i18n::text("当前 SDR；HDR 需要两端显示输出和编解码支持")});
             separator(ui);
         }
         if self.stream_menu.quality_detail.is_some_and(|(kind,_)|!matches!(kind,QualityDetail::Resolution|QualityDetail::FrameRate)) {self.stream_menu.quality_detail=None;}
-        let response=menu_row(ui,"分辨率",None,false,true,"",false);
+        let response=menu_row(ui,uu_i18n::text("分辨率"),None,false,true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::Resolution,response.rect));}
         separator(ui);
         for fps in [30,60,120,165] {
-            let response=menu_row(ui,&format!("{fps} 帧"),None,self.target_fps==fps,false,"",false);
+            let response=menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,self.target_fps==fps,false,"",false);
             if response.hovered(){self.stream_menu.quality_detail=None;}
             if response.clicked(){self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);}
         }
-        let response=menu_row(ui,"其它帧数",None,![30,60,120,165].contains(&self.target_fps),true,"",false);
+        let response=menu_row(ui,uu_i18n::text("其它帧数"),None,![30,60,120,165].contains(&self.target_fps),true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::FrameRate,response.rect));}
         separator(ui);
-        let response=menu_row(ui,"垂直同步",None,self.preferences.vsync,false,"",false);
+        let response=menu_row(ui,uu_i18n::text("垂直同步"),None,self.preferences.vsync,false,"",false);
         if response.hovered(){self.stream_menu.quality_detail=None;}
         if response.clicked(){
             self.preferences.vsync=!self.preferences.vsync;
@@ -629,10 +629,10 @@ impl super::App {
     fn encoding_menu(&mut self, ui: &mut egui::Ui) {
         if self.stream_menu.quality_detail.is_some_and(|(kind,_)|!matches!(kind,QualityDetail::Bitrate|QualityDetail::RateMode)) {self.stream_menu.quality_detail=None;}
         let options: &[(super::settings::CodecPreference,&str)]=if self.is_native() {
-            &[(super::settings::CodecPreference::Auto,"自动协商"),(super::settings::CodecPreference::H264,"H.264"),
-              (super::settings::CodecPreference::Hevc,"H.265 / HEVC"),(super::settings::CodecPreference::Av1,"AV1"),(super::settings::CodecPreference::Pyrowave,"PyroWave（实验性 / SDR）")]
+            &[(super::settings::CodecPreference::Auto,uu_i18n::text("自动协商")),(super::settings::CodecPreference::H264,"H.264"),
+              (super::settings::CodecPreference::Hevc,"H.265 / HEVC"),(super::settings::CodecPreference::Av1,"AV1"),(super::settings::CodecPreference::Pyrowave,uu_i18n::text("PyroWave（实验性 / SDR）"))]
         }else{
-            &[(super::settings::CodecPreference::H264,"H.264"),(super::settings::CodecPreference::Hevc,"H.265 / HEVC（优先）")]
+            &[(super::settings::CodecPreference::H264,"H.264"),(super::settings::CodecPreference::Hevc,uu_i18n::text("H.265 / HEVC（优先）"))]
         };
         for (codec,label) in options {
             let selected=self.preferences.codec==*codec || (!self.is_native()&&*codec==super::settings::CodecPreference::Hevc
@@ -645,17 +645,17 @@ impl super::App {
         }
         if let Some(controller)=&self.controller {
             let actual=controller.stats.codec.lock().unwrap();
-            if !actual.is_empty(){ui.small(format!("当前编码：{}",actual.trim_start_matches("video/")));}
+            if !actual.is_empty(){ui.small(uu_i18n::format!("当前编码：{}",actual.trim_start_matches("video/")));}
         }
         separator(ui);
         if self.is_native() {
-            let value=match self.preferences.rate_control {None=>"跟随主机",Some(uu_core::native_quality::RateMode::Cbr)=>"CBR",Some(uu_core::native_quality::RateMode::Vbr)=>"VBR"};
-            let response=menu_row(ui,"编码模式",None,false,true,value,self.stream_menu.quality_detail.is_some_and(|(v,_)|v==QualityDetail::RateMode));
+            let value=match self.preferences.rate_control {None=>uu_i18n::text("跟随主机"),Some(uu_core::native_quality::RateMode::Cbr)=>"CBR",Some(uu_core::native_quality::RateMode::Vbr)=>"VBR"};
+            let response=menu_row(ui,uu_i18n::text("编码模式"),None,false,true,value,self.stream_menu.quality_detail.is_some_and(|(v,_)|v==QualityDetail::RateMode));
             if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::RateMode,response.rect));}
-            response.on_hover_text("连接偏好：跟随主机、固定码率CBR或可变码率VBR。主机应用后可在HUD查看实际模式。");
+            response.on_hover_text(uu_i18n::text("连接偏好：跟随主机、固定码率CBR或可变码率VBR。主机应用后可在HUD查看实际模式。"));
             separator(ui);
         }
-        menu_heading(ui,"码率","");
+        menu_heading(ui,uu_i18n::text("码率"),"");
         let native=self.is_native();
         let actual=self.controller.as_ref().map(|h|{let(w,h)=h.stats.res();[w,h]});
         let codec=self.controller.as_ref().map(|h|h.stats.codec.lock().unwrap().clone());
@@ -663,28 +663,29 @@ impl super::App {
         let order=if native{[5,1,2,3,4]}else{[0,1,2,3,4]};
         for index in order {
             let (label,_,_)=super::BITRATE_PRESETS[index];
-            let title=if index==5{"推荐码率"}else if index==0{"原画 · 服务端策略"}else{label};
-            let hint=if index==5 {recommended.map_or_else(||"自动计算".into(),|kbps|format!("{:.1} Mbps",kbps as f64/1000.))}else if index==4{format!("{} Mbps",self.custom_mbps)}else{String::new()};
+            let label=uu_i18n::text(label);
+            let title=if index==5{uu_i18n::text("推荐码率")}else if index==0{uu_i18n::text("原画 · 服务端策略")}else{label};
+            let hint=if index==5 {recommended.map_or_else(||uu_i18n::text("自动计算").into(),|kbps|format!("{:.1} Mbps",kbps as f64/1000.))}else if index==4{format!("{} Mbps",self.custom_mbps)}else{String::new()};
             let custom=index==4;
             let response=menu_row(ui,title,None,self.bitrate_idx==index||(native&&index==5&&self.bitrate_idx==0)||(!native&&index==0&&self.bitrate_idx==5),custom,&hint,false);
             if custom&&(response.hovered()||response.clicked()){self.stream_menu.quality_detail=Some((QualityDetail::Bitrate,response.rect));}
             else if response.hovered(){self.stream_menu.quality_detail=None;}
             if !custom&&response.clicked(){self.bitrate_idx=index;self.confirm_quality(ui);}
             response.on_hover_text(match index {
-                5=>"按当前实际分辨率、帧率和编码计算LAN Quality推荐值，随参数改变。PyroWave需要较高带宽。",
-                0=>"UU兼容服务端的原画档：发送原画档位请求，由服务端决定质量与码率，不等于固定30Mbps。原生连接使用推荐码率或自定义。",
-                4=>"输入自己的目标码率，单位Mbps。设置保存在当前串流偏好中。",
-                _=>"固定目标码率；画面复杂度和编码实现会使实际接收码率有所差异。",
+                5=>uu_i18n::text("按当前实际分辨率、帧率和编码计算LAN Quality推荐值，随参数改变。PyroWave需要较高带宽。"),
+                0=>uu_i18n::text("UU兼容服务端的原画档：发送原画档位请求，由服务端决定质量与码率，不等于固定30Mbps。原生连接使用推荐码率或自定义。"),
+                4=>uu_i18n::text("输入自己的目标码率，单位Mbps。设置保存在当前串流偏好中。"),
+                _=>uu_i18n::text("固定目标码率；画面复杂度和编码实现会使实际接收码率有所差异。"),
             });
         }
     }
     fn rate_mode_choices(&mut self,ui:&mut egui::Ui) {
         use uu_core::native_quality::RateMode;
         let response=self.controller.as_ref().and_then(|h|*h.stats.native_rate_response.lock().unwrap());
-        menu_heading(ui,"编码模式",response.map_or("连接后协商",|r|r.applied.label()));
-        for (mode,label,tip) in [(None,"跟随主机","使用主机启动时保存的默认码率模式。"),(Some(RateMode::Cbr),"CBR · 固定码率","使用固定目标码率控制，适合带宽稳定、重视延迟的串流。PyroWave仅支持CBR。"),(Some(RateMode::Vbr),"VBR · 可变码率","按画面复杂度使用可变码率；具体行为取决于主机编码器。")]{
+        menu_heading(ui,uu_i18n::text("编码模式"),response.map_or(uu_i18n::text("连接后协商"),|r|r.applied.label()));
+        for (mode,label,tip) in [(None,uu_i18n::text("跟随主机"),uu_i18n::text("使用主机启动时保存的默认码率模式。")),(Some(RateMode::Cbr),uu_i18n::text("CBR · 固定码率"),uu_i18n::text("使用固定目标码率控制，适合带宽稳定、重视延迟的串流。PyroWave仅支持CBR。")),(Some(RateMode::Vbr),uu_i18n::text("VBR · 可变码率"),uu_i18n::text("按画面复杂度使用可变码率；具体行为取决于主机编码器。"))]{
             let supported=self.preferences.codec!=super::settings::CodecPreference::Pyrowave || mode==Some(RateMode::Cbr) || (mode.is_none()&&response.is_some_and(|r|r.default==RateMode::Cbr));
-            ui.add_enabled_ui(supported,|ui|{if menu_row(ui,label,None,self.preferences.rate_control==mode,false,"",false).on_hover_text(tip).clicked(){self.preferences.rate_control=mode;self.confirm_quality(ui);}}).response.on_disabled_hover_text("PyroWave仅支持固定码率CBR。");
+            ui.add_enabled_ui(supported,|ui|{if menu_row(ui,label,None,self.preferences.rate_control==mode,false,"",false).on_hover_text(tip).clicked(){self.preferences.rate_control=mode;self.confirm_quality(ui);}}).response.on_disabled_hover_text(uu_i18n::text("PyroWave仅支持固定码率CBR。"));
         }
     }
 
@@ -714,7 +715,7 @@ impl super::App {
                             QualityDetail::Bitrate => {
                                 ui.add_space(5.0);
                                 ui.horizontal(|ui| {
-                                    ui.label("码率");
+                                    ui.label(uu_i18n::text("码率"));
                                     ui.add(
                                         egui::DragValue::new(&mut self.custom_mbps)
                                             .range(1..=1000)
@@ -723,22 +724,22 @@ impl super::App {
                                 });
                                 ui.add_space(5.0);
                                 separator(ui);
-                                if menu_row(ui, "确认", None, false, false, "", false).clicked() {
+                                if menu_row(ui, uu_i18n::text("确认"), None, false, false, "", false).clicked() {
                                     self.bitrate_idx = 4;
                                     self.confirm_quality(ui);
                                 }
                             }
                             QualityDetail::FrameRate => {
                                 for fps in [24,90,120,144] {
-                                    if menu_row(ui,&format!("{fps} 帧"),None,self.target_fps==fps,false,"",false).clicked() {
+                                    if menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,self.target_fps==fps,false,"",false).clicked() {
                                         self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);
                                     }
                                 }
                                 separator(ui);
-                                ui.label("自定义帧数");
+                                ui.label(uu_i18n::text("自定义帧数"));
                                 ui.add_space(5.0);
                                 ui.horizontal(|ui| {
-                                    ui.label("帧率");
+                                    ui.label(uu_i18n::text("帧率"));
                                     ui.add(
                                         egui::DragValue::new(&mut self.fps_draft)
                                             .range(5..=240)
@@ -747,17 +748,17 @@ impl super::App {
                                 });
                                 ui.add_space(5.0);
                                 separator(ui);
-                                if menu_row(ui, "确认", None, false, false, "", false).clicked() {
+                                if menu_row(ui, uu_i18n::text("确认"), None, false, false, "", false).clicked() {
                                     self.target_fps = self.fps_draft.clamp(5, 240);
                                     self.confirm_quality(ui);
                                 }
                             }
                             QualityDetail::Resolution => {
                                 for (index, label) in [
-                                    "保持远端桌面分辨率",
-                                    "输出 1920 × 1080",
-                                    "输出 2560 × 1440",
-                                    "输出 3840 × 2160",
+                                    uu_i18n::text("保持远端桌面分辨率"),
+                                    uu_i18n::text("输出 1920 × 1080"),
+                                    uu_i18n::text("输出 2560 × 1440"),
+                                    uu_i18n::text("输出 3840 × 2160"),
                                 ]
                                 .iter()
                                 .enumerate()
@@ -778,7 +779,7 @@ impl super::App {
                                     }
                                 }
                                 separator(ui);
-                                ui.response().on_hover_text("输出尺寸保持宽高比；更改会重新准备媒体，不改变远端桌面显示模式。");
+                                ui.response().on_hover_text(uu_i18n::text("输出尺寸保持宽高比；更改会重新准备媒体，不改变远端桌面显示模式。"));
                             }
 
                         }
@@ -877,57 +878,57 @@ impl super::App {
                                         ui,
                                         &mut blocked,
                                         Icon::Picture,
-                                        "画面",
+                                        uu_i18n::text("画面"),
                                         |ui| self.picture_menu(ui),
                                     )
                                     .inner
                                     .is_some();
-                                    quality_open |= side_submenu(ui,&mut blocked,Icon::Encoding,"编码",|ui|self.encoding_menu(ui)).inner.is_some();
+                                    quality_open |= side_submenu(ui,&mut blocked,Icon::Encoding,uu_i18n::text("编码"),|ui|self.encoding_menu(ui)).inner.is_some();
                                     }
                                     {
-                                    side_submenu(ui, &mut blocked, Icon::Play, "声音", |ui| {
+                                    side_submenu(ui, &mut blocked, Icon::Play, uu_i18n::text("声音"), |ui| {
                                         let mut changed=false;
                                         if let Some(h) = &self.controller {
                                             use std::sync::atomic::Ordering::Relaxed;
                                             let audio = &h.stats.audio;
                                             let mut muted = audio.muted.load(Relaxed);
-                                            if menu_row(ui,"静音",None,muted,false,"",false).on_hover_text("仅控制本串流窗口的声音播放。").clicked() { muted=!muted;audio.muted.store(muted,Relaxed);self.preferences.muted=muted;changed=true; }
+                                            if menu_row(ui,uu_i18n::text("静音"),None,muted,false,"",false).on_hover_text(uu_i18n::text("仅控制本串流窗口的声音播放。")).clicked() { muted=!muted;audio.muted.store(muted,Relaxed);self.preferences.muted=muted;changed=true; }
                                             let mut volume=audio.volume.load(Relaxed);
                                             if super::audio_controls::volume_slider(ui,&mut volume) {audio.volume.store(volume,Relaxed);self.preferences.volume=volume;changed=true;}
                                             ui.label(audio.status.lock().unwrap().as_str());
-                                            ui.label(format!("播放排队 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
-                                            ui.small(format!("音频包 {} ms · 接收→解码 {:.1} ms",audio.packet_ms.load(Relaxed),audio.receive_decode_us.load(Relaxed) as f32/1000.0));
-                                            ui.small(format!("设备回调块 {:.1} ms · 欠载 {} 次",audio.output_block_us.load(Relaxed) as f32/1000.0,audio.underruns.load(Relaxed)));
-                                            ui.response().on_hover_text("这些是客户端音频阶段数据，不是端到端声音延迟。");
+                                            ui.label(uu_i18n::format!("播放排队 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
+                                            ui.small(uu_i18n::format!("音频包 {} ms · 接收→解码 {:.1} ms",audio.packet_ms.load(Relaxed),audio.receive_decode_us.load(Relaxed) as f32/1000.0));
+                                            ui.small(uu_i18n::format!("设备回调块 {:.1} ms · 欠载 {} 次",audio.output_block_us.load(Relaxed) as f32/1000.0,audio.underruns.load(Relaxed)));
+                                            ui.response().on_hover_text(uu_i18n::text("这些是客户端音频阶段数据，不是端到端声音延迟。"));
                                         } else {
-                                            if menu_row(ui,"静音",None,self.preferences.muted,false,"",false).clicked(){self.preferences.muted=!self.preferences.muted;changed=true;}
+                                            if menu_row(ui,uu_i18n::text("静音"),None,self.preferences.muted,false,"",false).clicked(){self.preferences.muted=!self.preferences.muted;changed=true;}
                                             changed|=super::audio_controls::volume_slider(ui,&mut self.preferences.volume);
                                         }
                                         if changed{self.audio_save_after=Some(std::time::Instant::now()+std::time::Duration::from_millis(250));}
                                     });
                                     }
                                     {
-                                    side_submenu(ui, &mut blocked, Icon::Keyboard, "输入", |ui| {
+                                    side_submenu(ui, &mut blocked, Icon::Keyboard, uu_i18n::text("输入"), |ui| {
                                         let old=(self.preferences.relative_mouse,self.preferences.cursor_mode);
-                                        menu_heading(ui,"光标显示","");
+                                        menu_heading(ui,uu_i18n::text("光标显示"),"");
                                         for mode in super::settings::CursorMode::ALL {
-                                            if menu_row(ui,mode.label(),None,self.preferences.cursor_mode==mode,false,"",false).on_hover_text("远端光标使用主机传输的位置与形状；旧主机不提供时保留本地指针。切换不会改变视频画质。").clicked(){self.preferences.cursor_mode=mode;}
+                                            if menu_row(ui,mode.label(),None,self.preferences.cursor_mode==mode,false,"",false).on_hover_text(uu_i18n::text("远端光标使用主机传输的位置与形状；旧主机不提供时保留本地指针。切换不会改变视频画质。")).clicked(){self.preferences.cursor_mode=mode;}
                                         }
-                                        separator(ui);menu_heading(ui,"指针移动","");
-                                        for (relative,label,tip) in [(false,"桌面模式 · 绝对定位","按画面中的位置定位鼠标，适合桌面操作。"),(true,"游戏模式 · 相对移动","发送鼠标移动增量；单击画面捕获，失焦或进入菜单时释放。")]{if menu_row(ui,label,None,self.preferences.relative_mouse==relative,false,"",false).on_hover_text(tip).clicked(){self.preferences.relative_mouse=relative;}}
+                                        separator(ui);menu_heading(ui,uu_i18n::text("指针移动"),"");
+                                        for (relative,label,tip) in [(false,uu_i18n::text("桌面模式 · 绝对定位"),uu_i18n::text("按画面中的位置定位鼠标，适合桌面操作。")),(true,uu_i18n::text("游戏模式 · 相对移动"),uu_i18n::text("发送鼠标移动增量；单击画面捕获，失焦或进入菜单时释放。"))]{if menu_row(ui,label,None,self.preferences.relative_mouse==relative,false,"",false).on_hover_text(tip).clicked(){self.preferences.relative_mouse=relative;}}
                                         if old!=(self.preferences.relative_mouse,self.preferences.cursor_mode) {self.release_pointer_capture(ctx);self.persist_preferences();}
-                                        if self.is_native(){separator(ui);if menu_row(ui,"转发手柄与陀螺仪",None,self.preferences.gamepad,false,"",false).on_hover_text("取得输入控制后转发，菜单和失焦时释放；最多4个手柄。").clicked(){self.preferences.gamepad=!self.preferences.gamepad;self.persist_preferences();}}
+                                        if self.is_native(){separator(ui);if menu_row(ui,uu_i18n::text("转发手柄与陀螺仪"),None,self.preferences.gamepad,false,"",false).on_hover_text(uu_i18n::text("取得输入控制后转发，菜单和失焦时释放；最多4个手柄。")).clicked(){self.preferences.gamepad=!self.preferences.gamepad;self.persist_preferences();}}
                                     });
                                     }
                                     {
-                                    side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
+                                    side_submenu(ui, &mut blocked, Icon::Person, uu_i18n::text("安全"), |ui| {
                                         if self.native_input_available()&&!self.supports_remote(uu_core::capabilities::Capability::Input)
-                                            &&menu_row(ui,"请求输入控制",None,false,false,"",false).on_hover_text("向允许输入的主机请求控制权。").clicked() {
+                                            &&menu_row(ui,uu_i18n::text("请求输入控制"),None,false,false,"",false).on_hover_text(uu_i18n::text("向允许输入的主机请求控制权。")).clicked() {
                                             self.view_only=false;
                                             self.input_capture.request();
                                             ui.close_menu();
                                         }
-                                        if menu_row(ui,"仅观看，禁止远程输入",None,self.view_only,false,"",false).on_hover_text("启用时释放全部远端键鼠与手柄；关闭后按主机授权恢复控制。").clicked()
+                                        if menu_row(ui,uu_i18n::text("仅观看，禁止远程输入"),None,self.view_only,false,"",false).on_hover_text(uu_i18n::text("启用时释放全部远端键鼠与手柄；关闭后按主机授权恢复控制。")).clicked()
                                         {
                                             self.view_only=!self.view_only;
                                             self.release_all_keys();
@@ -942,32 +943,32 @@ impl super::App {
                                     });
                                     }
                                     {
-                                    side_submenu(ui,&mut blocked,Icon::Folder,"剪贴板",|ui| {
-                                        if self.is_native(){if menu_row(ui,"同步文本和图片",None,self.preferences.native_clipboard,false,"",false).on_hover_text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许。").clicked(){self.preferences.native_clipboard=!self.preferences.native_clipboard;self.persist_preferences();}}
-                                        else if menu_row(ui,"同步文本剪贴板",None,self.preferences.clipboard,false,"",false).on_hover_text("兼容连接仅支持最多30KiB文本；双方均需允许。").clicked(){self.preferences.clipboard=!self.preferences.clipboard;self.persist_preferences();}
-                                        if self.is_native(){ui.response().on_hover_text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许，不传输文件。");}
-                                        else{ui.response().on_hover_text("兼容连接仅支持最多30KiB的文本同步。");}
+                                    side_submenu(ui,&mut blocked,Icon::Folder,uu_i18n::text("剪贴板"),|ui| {
+                                        if self.is_native(){if menu_row(ui,uu_i18n::text("同步文本和图片"),None,self.preferences.native_clipboard,false,"",false).on_hover_text(uu_i18n::text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许。")).clicked(){self.preferences.native_clipboard=!self.preferences.native_clipboard;self.persist_preferences();}}
+                                        else if menu_row(ui,uu_i18n::text("同步文本剪贴板"),None,self.preferences.clipboard,false,"",false).on_hover_text(uu_i18n::text("兼容连接仅支持最多30KiB文本；双方均需允许。")).clicked(){self.preferences.clipboard=!self.preferences.clipboard;self.persist_preferences();}
+                                        if self.is_native(){ui.response().on_hover_text(uu_i18n::text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许，不传输文件。"));}
+                                        else{ui.response().on_hover_text(uu_i18n::text("兼容连接仅支持最多30KiB的文本同步。"));}
                                         if let Some(h)=&self.controller {ui.label(h.stats.clipboard.status.lock().unwrap().as_str());}
                                     });
                                     }
                                     if !self.is_native() {
-                                    unavailable(ui, Icon::Link, "外设", "外设透传尚未接入");
+                                    unavailable(ui, Icon::Link, uu_i18n::text("外设"), uu_i18n::text("外设透传尚未接入"));
                                     unavailable(
                                         ui,
                                         Icon::Folder,
-                                        "工具",
-                                        "文件、终端和端口映射尚未接入",
+                                        uu_i18n::text("工具"),
+                                        uu_i18n::text("文件、终端和端口映射尚未接入"),
                                     );
                                     }
-                                    if menu_row(ui,"连接详情",Some(Icon::Link),false,false,"",false).clicked(){self.open_connection_details();}
-                                    if menu_row(ui,"串流设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
+                                    if menu_row(ui,uu_i18n::text("连接详情"),Some(Icon::Link),false,false,"",false).clicked(){self.open_connection_details();}
+                                    if menu_row(ui,uu_i18n::text("串流设置"),Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
                                     let mut more_children=Vec::new();
-                                    side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
+                                    side_submenu(ui, &mut blocked, Icon::Grid, uu_i18n::text("更多"), |ui| {
                                         let hint=self.preferences.hotkeys.label(uu_core::hotkeys::Action::Stats);
                                         if hud_submenu(ui,&mut more_children,&mut self.hud,&mut self.preferences.hud_detail,&hint) {self.persist_preferences();}
                                         if menu_row(
                                             ui,
-                                            "隐藏悬浮入口",
+                                            uu_i18n::text("隐藏悬浮入口"),
                                             None,
                                             false,
                                             false,
@@ -986,7 +987,7 @@ impl super::App {
                                     ui.scope(|ui| {
                                         if menu_row(
                                             ui,
-                                            "退出串流",
+                                            uu_i18n::text("退出串流"),
                                             Some(Icon::Exit),
                                             false,
                                             false,

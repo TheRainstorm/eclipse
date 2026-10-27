@@ -67,10 +67,10 @@ impl RemoteScreen {
     }
     pub fn kind_label(&self) -> &'static str {
         match self.kind {
-            0 => "物理屏",
-            1 => "虚拟屏",
-            2 => "超级屏",
-            _ => "未知屏幕",
+            0 => uu_i18n::text("物理屏"),
+            1 => uu_i18n::text("虚拟屏"),
+            2 => uu_i18n::text("超级屏"),
+            _ => uu_i18n::text("未知屏幕"),
         }
     }
 }
@@ -145,7 +145,7 @@ pub enum DisplayMode {
 }
 impl DisplayMode {
     pub fn label(self)->&'static str {
-        match self {Self::Preserve=>"保持远端显示器现状",Self::ExclusiveVirtual=>"UU虚拟屏独占（关闭其它显示器）"}
+        match self {Self::Preserve=>uu_i18n::text("保持远端显示器现状"),Self::ExclusiveVirtual=>uu_i18n::text("UU虚拟屏独占（关闭其它显示器）")}
     }
 }
 

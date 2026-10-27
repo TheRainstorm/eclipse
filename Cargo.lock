@@ -5432,6 +5432,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "uu-capture",
+ "uu-i18n",
  "uu-input",
  "uu-media",
  "uu-proto",
@@ -5464,6 +5465,7 @@ dependencies = [
  "tokio",
  "uu-clipboard",
  "uu-core",
+ "uu-i18n",
  "uu-input",
  "uu-media",
  "uu-proto",
@@ -5477,6 +5479,25 @@ dependencies = [
  "x11rb",
  "xkbcommon-dl",
  "zeroize",
+]
+
+[[package]]
+name = "uu-i18n"
+version = "0.19.6"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uu-i18n-macros",
+]
+
+[[package]]
+name = "uu-i18n-macros"
+version = "0.19.6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]

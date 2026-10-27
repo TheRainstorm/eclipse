@@ -18,8 +18,7 @@ impl Image {
                 && width <= MAX_IMAGE_DIMENSION
                 && height <= MAX_IMAGE_DIMENSION
                 && u64::from(width) * u64::from(height) <= MAX_IMAGE_PIXELS,
-            "剪贴板图片尺寸超限（最大8192边长、16M像素）"
-        );
+            "{}", uu_i18n::format!("剪贴板图片尺寸超限（最大8192边长、16M像素）"));
         Ok(())
     }
     pub fn new(width: u32, height: u32, png: impl Into<Arc<[u8]>>) -> Result<Self> {
@@ -27,19 +26,17 @@ impl Image {
         let png = png.into();
         ensure!(
             png.len() >= 33 && png.len() <= MAX_IMAGE_BYTES,
-            "剪贴板PNG超出8MiB限制或不完整"
-        );
+            "{}", uu_i18n::format!("剪贴板PNG超出8MiB限制或不完整"));
         ensure!(
             &png[..8] == b"\x89PNG\r\n\x1a\n"
                 && &png[8..12] == 13u32.to_be_bytes().as_slice()
                 && &png[12..16] == b"IHDR",
-            "剪贴板图片不是PNG"
+            uu_i18n::text("剪贴板图片不是PNG")
         );
         ensure!(
             u32::from_be_bytes(png[16..20].try_into().unwrap()) == width
                 && u32::from_be_bytes(png[20..24].try_into().unwrap()) == height,
-            "剪贴板PNG尺寸与声明不符"
-        );
+            "{}", uu_i18n::format!("剪贴板PNG尺寸与声明不符"));
         Ok(Self { width, height, png })
     }
 }

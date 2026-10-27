@@ -37,14 +37,14 @@ impl Launch {
         })
     }
     fn assistance(&self) -> anyhow::Result<Option<uu_core::assistance::Request>> {
-        anyhow::ensure!(self.target.alias.len() <= 512, "设备名称过长");
+        anyhow::ensure!(self.target.alias.len() <= 512, "{}", uu_i18n::format!("设备名称过长"));
         match (&self.target.connection, &self.code) {
             (ConnectionTarget::UuAssistance(id), Some(code)) => {
                 Ok(Some(uu_core::assistance::Request::new(id, code)?))
             }
-            (ConnectionTarget::UuAssistance(_), None) => anyhow::bail!("远程协助需要验证码"),
+            (ConnectionTarget::UuAssistance(_), None) => anyhow::bail!("{}", uu_i18n::format!("远程协助需要验证码")),
             (_, None) => Ok(None),
-            (_, Some(_)) => anyhow::bail!("连接方式与凭据不匹配"),
+            (_, Some(_)) => anyhow::bail!("{}", uu_i18n::format!("连接方式与凭据不匹配")),
         }
     }
 }
@@ -133,11 +133,11 @@ impl Tabs {
                                             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                                         }
                                         label.context_menu(|ui| {
-                                            if ui.button("移到独立窗口").clicked() {
+                                            if ui.button(uu_i18n::text("移到独立窗口")).clicked() {
                                                 actions.push(Action::Detach(group.id));
                                                 ui.close_menu();
                                             }
-                                            if ui.button("断开此设备").clicked() {
+                                            if ui.button(uu_i18n::text("断开此设备")).clicked() {
                                                 actions.push(Action::Close(group.id));
                                                 ui.close_menu();
                                             }
@@ -414,7 +414,7 @@ impl Window {
             app.update_frame(ctx, eframe::viewport_cpu_usage(ctx));
         } else {
             egui::CentralPanel::default().show(ctx, |ui| {
-                ui.label("正在释放连接…");
+                ui.label(uu_i18n::text("正在释放连接…"));
             });
         }
         self.sessions
@@ -621,7 +621,7 @@ impl eframe::App for Workspace {
                 let id = window.id;
                 let viewport = window.viewport();
                 let mut builder = egui::ViewportBuilder::default()
-                    .with_title(format!("串流 · {}", crate::brand::NAME))
+                    .with_title(uu_i18n::format!("串流 · {}", crate::brand::NAME))
                     .with_inner_size([1100., 760.])
                     .with_min_inner_size([320., 200.])
                     .with_decorations(false)

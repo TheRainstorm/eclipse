@@ -13,21 +13,21 @@ use uu_core::native::{CaptureMonitor, CaptureSource, EncoderPreference, HostConf
 
 pub(super) fn preference_label(preference:EncoderPreference)->&'static str {
     match preference {
-        EncoderPreference::Software=>"软件编码（兼容）",
-        EncoderPreference::Auto=>"自动（优先硬件）",
-        EncoderPreference::Hardware=>"硬件编码（必需）",
+        EncoderPreference::Software=>uu_i18n::text("软件编码（兼容）"),
+        EncoderPreference::Auto=>uu_i18n::text("自动（优先硬件）"),
+        EncoderPreference::Hardware=>uu_i18n::text("硬件编码（必需）"),
         EncoderPreference::Intel=>"Intel QSV",
-        EncoderPreference::Nvidia=>"NVIDIA 硬件",
-        EncoderPreference::Amd=>"AMD 硬件",
+        EncoderPreference::Nvidia=>uu_i18n::text("NVIDIA 硬件"),
+        EncoderPreference::Amd=>uu_i18n::text("AMD 硬件"),
         EncoderPreference::Vaapi=>"VA-API（Linux）",
     }
 }
 fn actual_encoder_label(backend:&str)->&'static str {
-    if backend.starts_with("vaapi ") {"硬件编码 · VA-API"}
-    else if backend.starts_with("mf ") {"硬件编码 · Media Foundation"}
-    else if backend.starts_with("amf ") {"硬件编码 · AMD AMF"}
-    else if backend.contains("fallback")||backend.contains("unavailable") {"软件编码 · 硬件不可用，已回退"}
-    else {"软件编码 · H.264"}
+    if backend.starts_with("vaapi ") {uu_i18n::text("硬件编码 · VA-API")}
+    else if backend.starts_with("mf ") {uu_i18n::text("硬件编码 · Media Foundation")}
+    else if backend.starts_with("amf ") {uu_i18n::text("硬件编码 · AMD AMF")}
+    else if backend.contains("fallback")||backend.contains("unavailable") {uu_i18n::text("软件编码 · 硬件不可用，已回退")}
+    else {uu_i18n::text("软件编码 · H.264")}
 }
 
 #[cfg(test)]
@@ -141,12 +141,12 @@ impl NativeHostUi {
         }
         let mut sharing = self.sharing.take().unwrap();
         self.notice = match sharing.worker.take().unwrap().join() {
-            Ok(Ok(report)) => format!(
+            Ok(Ok(report)) => uu_i18n::format!(
                 "共享已结束 · 已发送 {} 帧 · 输入错误 {}",
                 report.sent, report.input_errors
             ),
-            Ok(Err(error)) => format!("共享已停止：{error}"),
-            Err(_) => "共享线程意外结束".into(),
+            Ok(Err(error)) => uu_i18n::format!("共享已停止：{error}"),
+            Err(_) => uu_i18n::text("共享线程意外结束").into(),
         };
         ctx.request_repaint();
     }
@@ -166,14 +166,14 @@ impl NativeHostUi {
             }
             Err(error) => {
                 self.monitors.clear();
-                self.notice = format!("无法访问显示器：{error}");
+                self.notice = uu_i18n::format!("无法访问显示器：{error}");
             }
         }
     }
     fn refresh_addresses(&mut self) {
         match super::native_interfaces::enumerate() {
             Ok(addresses) => {self.addresses=addresses;self.address_error=None;},
-            Err(error) => {self.addresses.clear();self.address_error=Some(format!("无法读取本机地址：{error}；仍可手动填写。"));},
+            Err(error) => {self.addresses.clear();self.address_error=Some(uu_i18n::format!("无法读取本机地址：{error}；仍可手动填写。"));},
         }
         // Refresh never changes the selected bind address or starts a listener.
     }
@@ -188,34 +188,29 @@ impl NativeHostUi {
             .map_or(true, |monitor|monitor.encodable(self.encoder,self.fps))
     }
     fn start(&mut self, owner_window: isize) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.running(), "共享正在进行");
-        anyhow::ensure!(!self.monitors.is_empty(), "请先获取可用显示器");
+        anyhow::ensure!(!self.running(), "{}", uu_i18n::format!("共享正在进行"));
+        anyhow::ensure!(!self.monitors.is_empty(), "{}", uu_i18n::format!("请先获取可用显示器"));
         anyhow::ensure!(
             self.source_size_supported(),
-            "当前显示器超出所选编码器的尺寸范围，请调整编码方式或选择其它显示器"
-        );
+            "{}", uu_i18n::format!("当前显示器超出所选编码器的尺寸范围，请调整编码方式或选择其它显示器"));
         let ip: IpAddr = self
             .bind
             .trim()
             .parse()
-            .map_err(|_| anyhow::anyhow!("请填写本机网卡 IP 地址"))?;
+            .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("请填写本机网卡 IP 地址")))?;
         anyhow::ensure!(
             !ip.is_unspecified() && !ip.is_multicast(),
-            "请选择本机的具体网卡地址"
-        );
+            "{}", uu_i18n::format!("请选择本机的具体网卡地址"));
         anyhow::ensure!(
             !matches!(ip,IpAddr::V6(ip) if ip.is_unicast_link_local()),
-            "暂不支持需要接口作用域的 IPv6 链路本地地址，请选择本机 IPv4 或其它 IPv6 地址"
-        );
+            "{}", uu_i18n::format!("暂不支持需要接口作用域的 IPv6 链路本地地址，请选择本机 IPv4 或其它 IPv6 地址"));
         let invitation_file = PathBuf::from(self.invitation.trim().trim_matches('"'));
         anyhow::ensure!(
             invitation_file.file_name().is_some(),
-            "请选择新的邀请文件路径"
-        );
+            "{}", uu_i18n::format!("请选择新的邀请文件路径"));
         anyhow::ensure!(
             !invitation_file.exists(),
-            "邀请文件已存在，请更换路径；不会覆盖已有文件"
-        );
+            "{}", uu_i18n::format!("邀请文件已存在，请更换路径；不会覆盖已有文件"));
         if let Some(parent) = invitation_file
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -292,7 +287,7 @@ impl App {
             self.select_workspace_page(super::workspace_ui::Page::Services);
         }else {
             let result=std::env::current_exe().and_then(|exe|std::process::Command::new(exe).env_remove("UU_AUTOCONNECT").env("ECLIPSE_SHOW_SHARING","1").spawn());
-            self.status=match result {Ok(_)=>"已打开主页，可在服务管理中调整".into(),Err(e)=>format!("无法打开主页：{e}")};
+            self.status=match result {Ok(_)=>uu_i18n::text("已打开主页，可在服务管理中调整").into(),Err(e)=>uu_i18n::format!("无法打开主页：{e}")};
         }
     }
 
@@ -303,7 +298,7 @@ impl App {
         let mut open = true;
         let owner_window = self.platform.window_id();
         let host = &mut self.native_host;
-        egui::Window::new("共享此设备")
+        egui::Window::new(uu_i18n::text("共享此设备"))
             .id("native-host".into())
             .open(&mut open)
             .collapsible(false)
@@ -319,21 +314,21 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().max_height((ctx.screen_rect().height()-120.0).max(120.0)).show(ui,|ui| {
-                ui.label("通过原生邀请共享当前桌面，无需账号。");
-                ui.weak("H.264 视频 · 系统声音由本次共享选择");
+                ui.label(uu_i18n::text("通过原生邀请共享当前桌面，无需账号。"));
+                ui.weak(uu_i18n::text("H.264 视频 · 系统声音由本次共享选择"));
                 #[cfg(target_os="linux")]
                 if std::env::var("XDG_SESSION_TYPE").is_ok_and(|session|session.eq_ignore_ascii_case("wayland")) {
-                    ui.weak("Wayland 完整桌面采集尚未接入；当前共享只能使用可访问的 X11 显示源。");
+                    ui.weak(uu_i18n::text("Wayland 完整桌面采集尚未接入；当前共享只能使用可访问的 X11 显示源。"));
                 }
                 ui.add_space(10.0);
                 if let Some(sharing) = &mut host.sharing {
                     let status = sharing.status.borrow().clone();
                     let backend=match &status {HostStatus::Streaming {encoder,..}=>Some(encoder.clone()),_=>None};
                     let text = if sharing.stopping {
-                        "正在停止共享并释放键鼠…".into()
+                        uu_i18n::text("正在停止共享并释放键鼠…").into()
                     } else {
                         match status {
-                            HostStatus::Starting => "正在启动共享…".into(),
+                            HostStatus::Starting => uu_i18n::text("正在启动共享…").into(),
                             HostStatus::Waiting {
                                 address,
                                 expires_at,
@@ -342,12 +337,12 @@ impl App {
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
                                     .as_secs();
-                                format!(
+                                uu_i18n::format!(
                                     "等待连接 · {address} · 邀请剩余 {} 秒",
                                     expires_at.saturating_sub(now)
                                 )
                             }
-                            HostStatus::Preparing => "正在建立加密串流…".into(),
+                            HostStatus::Preparing => uu_i18n::text("正在建立加密串流…").into(),
                             HostStatus::Streaming {
                                 width,
                                 height,
@@ -355,35 +350,35 @@ impl App {
                                 audio,
                                 encoder: _,
                             } => {
-                                format!("正在共享 · {width}×{height} · 目标 {fps} FPS  {audio}")
+                                uu_i18n::format!("正在共享 · {width}×{height} · 目标 {fps} FPS  {audio}")
                             }
                         }
                     };
                     ui.label(egui::RichText::new(text).strong());
                     if let Some(backend)=backend {
                         ui.label(actual_encoder_label(&backend));
-                        ui.collapsing("编码详情",|ui|{ui.add(egui::Label::new(backend).wrap());});
+                        ui.collapsing(uu_i18n::text("编码详情"),|ui|{ui.add(egui::Label::new(backend).wrap());});
                     }
                     ui.add_space(8.0);
                     ui.label(if host.allow_input {
-                        "本次共享允许受邀端请求输入控制"
+                        uu_i18n::text("本次共享允许受邀端请求输入控制")
                     } else {
-                        "键鼠：仅观看"
+                        uu_i18n::text("键鼠：仅观看")
                     });
                     if let Some(clipboard) = &sharing.clipboard {
                         ui.label(if clipboard.active.load(Ordering::Acquire) {
-                            "剪贴板：同步中"
+                            uu_i18n::text("剪贴板：同步中")
                         } else {
-                            "剪贴板：已允许，等待控制端开启"
+                            uu_i18n::text("剪贴板：已允许，等待控制端开启")
                         });
                     }
-                    ui.label("将邀请文件私下发给要连接的设备：");
+                    ui.label(uu_i18n::text("将邀请文件私下发给要连接的设备："));
                     ui.add(
                         egui::TextEdit::singleline(&mut host.invitation)
                             .desired_width(460.0)
                             .interactive(false),
                     );
-                    if ui.button("复制邀请路径").clicked() {
+                    if ui.button(uu_i18n::text("复制邀请路径")).clicked() {
                         ui.output_mut(|o| o.copied_text = host.invitation.clone());
                     }
                     ui.add_space(12.0);
@@ -391,7 +386,7 @@ impl App {
                         .add_enabled(
                             !sharing.stopping,
                             egui::Button::new(
-                                egui::RichText::new("停止共享")
+                                egui::RichText::new(uu_i18n::text("停止共享"))
                                     .color(egui::Color32::from_rgb(175, 65, 60)),
                             )
                             .fill(egui::Color32::from_rgb(255, 241, 239))
@@ -404,7 +399,7 @@ impl App {
                     ctx.request_repaint_after(Duration::from_millis(100));
                 } else {
                     ui.horizontal(|ui| {
-                        ui.label("编码");
+                        ui.label(uu_i18n::text("编码"));
                         egui::ComboBox::from_id_salt("native-host-encoder").selected_text(preference_label(host.encoder))
                             .show_ui(ui,|ui| {
                                 ui.selectable_value(&mut host.encoder,EncoderPreference::Software,preference_label(EncoderPreference::Software));
@@ -415,15 +410,15 @@ impl App {
                                 }
                             });
                     });
-                    if host.encoder==EncoderPreference::Auto {ui.weak("硬件不可用或运行失败时回退软件，开始后显示实际编码方式。");}
-                    else if matches!(host.encoder,EncoderPreference::Hardware|EncoderPreference::Vaapi) {ui.weak("驱动不支持时停止并显示原因。当前仍有CPU颜色转换和上传。");}
+                    if host.encoder==EncoderPreference::Auto {ui.weak(uu_i18n::text("硬件不可用或运行失败时回退软件，开始后显示实际编码方式。"));}
+                    else if matches!(host.encoder,EncoderPreference::Hardware|EncoderPreference::Vaapi) {ui.weak(uu_i18n::text("驱动不支持时停止并显示原因。当前仍有CPU颜色转换和上传。"));}
                     ui.horizontal(|ui| {
-                        ui.label("显示器");
+                        ui.label(uu_i18n::text("显示器"));
                         egui::ComboBox::from_id_salt("native-host-monitor")
-                            .selected_text(host.monitor.as_deref().unwrap_or("主显示器"))
+                            .selected_text(host.monitor.as_deref().unwrap_or(uu_i18n::text("主显示器")))
                             .width(300.0)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut host.monitor, None, "主显示器");
+                                ui.selectable_value(&mut host.monitor, None, uu_i18n::text("主显示器"));
                                 for m in &host.monitors {
                                     ui.selectable_value(
                                         &mut host.monitor,
@@ -433,52 +428,52 @@ impl App {
                                             m.name,
                                             m.width,
                                             m.height,
-                                            if m.primary { " · 主屏" } else { "" }
+                                            if m.primary { uu_i18n::text(" · 主屏") } else { "" }
                                         ),
                                     );
                                 }
                             });
-                        if ui.button("刷新").clicked() {
+                        if ui.button(uu_i18n::text("刷新")).clicked() {
                             host.refresh();
                         }
                     });
                     if !host.source_size_supported() {
                         ui.colored_label(
                             egui::Color32::from_rgb(180, 75, 65),
-                            "当前源尺寸超出所选编码器支持范围，请调整编码方式或选择其它显示器。",
+                            uu_i18n::text("当前源尺寸超出所选编码器支持范围，请调整编码方式或选择其它显示器。"),
                         );
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        ui.label("连接地址");
+                        ui.label(uu_i18n::text("连接地址"));
                         let selected=host.addresses.iter().find(|address|address.ip.to_string()==host.bind.trim())
                             .map(|address|format!("{} · {}",address.name,address.ip))
-                            .unwrap_or_else(||if host.bind.trim()=="127.0.0.1" {"仅本机（默认）".into()}else{"手动地址".into()});
+                            .unwrap_or_else(||if host.bind.trim()=="127.0.0.1" {uu_i18n::text("仅本机（默认）").into()}else{uu_i18n::text("手动地址").into()});
                         egui::ComboBox::from_id_salt("native-host-address").selected_text(selected.as_str()).width(250.0).truncate()
                             .show_ui(ui,|ui| {
-                                ui.selectable_value(&mut host.bind,"127.0.0.1".into(),"仅本机（默认）");
+                                ui.selectable_value(&mut host.bind,"127.0.0.1".into(),uu_i18n::text("仅本机（默认）"));
                                 for address in &host.addresses {
                                     ui.selectable_value(&mut host.bind,address.ip.to_string(),format!("{} · {}",address.name,address.ip));
                                 }
                             }).response.on_hover_text(selected);
-                        if ui.button("刷新地址").clicked() {host.refresh_addresses();}
+                        if ui.button(uu_i18n::text("刷新地址")).clicked() {host.refresh_addresses();}
                     });
                     ui.horizontal(|ui| {
-                        ui.label("本机网卡 IP");
+                        ui.label(uu_i18n::text("本机网卡 IP"));
                         ui.add(egui::TextEdit::singleline(&mut host.bind).desired_width(250.0));
                     });
-                    ui.weak("跨设备连接时填写本机局域网地址；127.0.0.1 仅限本机。");
+                    ui.weak(uu_i18n::text("跨设备连接时填写本机局域网地址；127.0.0.1 仅限本机。"));
                     if let Some(error)=&host.address_error {ui.colored_label(egui::Color32::from_rgb(180,75,65),error);}
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        ui.label("帧率");
+                        ui.label(uu_i18n::text("帧率"));
                         ui.add(
                             egui::DragValue::new(&mut host.fps)
                                 .range(1..=60)
                                 .suffix(" FPS"),
                         );
                         ui.add_space(16.0);
-                        ui.label("码率");
+                        ui.label(uu_i18n::text("码率"));
                         ui.add(
                             egui::DragValue::new(&mut host.bitrate_kbps)
                                 .range(64..=100_000)
@@ -487,22 +482,22 @@ impl App {
                         );
                     });
                     ui.add_space(8.0);
-                    ui.checkbox(&mut host.allow_input, "允许受邀端请求键盘、鼠标和手柄控制");
-                    ui.checkbox(&mut host.share_audio, "共享系统声音（输出设备）");
+                    ui.checkbox(&mut host.allow_input, uu_i18n::text("允许受邀端请求键盘、鼠标和手柄控制"));
+                    ui.checkbox(&mut host.share_audio, uu_i18n::text("共享系统声音（输出设备）"));
                     ui.checkbox(
                         &mut host.share_clipboard,
-                        "允许文本和图片剪贴板同步（控制端需主动开启）",
+                        uu_i18n::text("允许文本和图片剪贴板同步（控制端需主动开启）"),
                     );
                     ui.add_space(8.0);
-                    ui.label("新邀请文件（10 分钟内可连接）");
+                    ui.label(uu_i18n::text("新邀请文件（10 分钟内可连接）"));
                     ui.add(egui::TextEdit::singleline(&mut host.invitation).desired_width(460.0));
-                    ui.weak("停止或关闭共享后邀请失效。每次只接受一个连接。");
+                    ui.weak(uu_i18n::text("停止或关闭共享后邀请失效。每次只接受一个连接。"));
                     ui.add_space(12.0);
                     if ui
                         .add_enabled(
                             !host.monitors.is_empty() && host.source_size_supported(),
                             egui::Button::new(
-                                egui::RichText::new("开始共享").color(egui::Color32::WHITE),
+                                egui::RichText::new(uu_i18n::text("开始共享")).color(egui::Color32::WHITE),
                             )
                             .fill(egui::Color32::from_rgb(53, 131, 255))
                             .min_size(egui::vec2(130.0, 32.0)),
@@ -510,7 +505,7 @@ impl App {
                         .clicked()
                     {
                         if let Err(error) = host.start(owner_window) {
-                            host.notice = format!("无法启动共享：{error}");
+                            host.notice = uu_i18n::format!("无法启动共享：{error}");
                         }
                     }
                 }

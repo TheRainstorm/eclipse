@@ -78,7 +78,7 @@ impl App {
         let mut open = true;
         let mut connect = false;
         let mut share = false;
-        egui::Window::new("原生直连")
+        egui::Window::new(uu_i18n::text("原生直连"))
             .id("native-connect".into())
             .frame(egui::Frame::window(&ctx.style()).fill(egui::Color32::WHITE).rounding(10.0).inner_margin(14.0))
             .open(&mut open)
@@ -87,11 +87,11 @@ impl App {
             .default_width(440.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                if ui.button("共享此设备 →").clicked(){ share = true; }
+                if ui.button(uu_i18n::text("共享此设备 →")).clicked(){ share = true; }
                 ui.add_space(8.0);
-                ui.label("使用主机生成的邀请，不需要登录账号。");
+                ui.label(uu_i18n::text("使用主机生成的邀请，不需要登录账号。"));
                 ui.add_space(10.0);
-                ui.label("将邀请文件拖入窗口，或填写文件路径：");
+                ui.label(uu_i18n::text("将邀请文件拖入窗口，或填写文件路径："));
                 let edited = ui.add_sized(
                     [420.0, 30.0],
                     egui::TextEdit::singleline(&mut self.native_ui.path)
@@ -101,8 +101,8 @@ impl App {
                     self.native_ui.notice.clear();
                 }
                 ui.add_space(8.0);
-                ui.checkbox(&mut self.native_ui.request_control,"请求输入控制（需主机允许）");
-                ui.weak("未获主机许可时仅观看；画质由主机设置。");
+                ui.checkbox(&mut self.native_ui.request_control,uu_i18n::text("请求输入控制（需主机允许）"));
+                ui.weak(uu_i18n::text("未获主机许可时仅观看；画质由主机设置。"));
                 if !self.native_ui.notice.is_empty() {
                     ui.colored_label(egui::Color32::from_rgb(180, 75, 65), &self.native_ui.notice);
                 }
@@ -110,7 +110,7 @@ impl App {
                 if ui
                     .add_enabled(
                         !self.native_ui.path.trim().is_empty(),
-                        egui::Button::new(egui::RichText::new("打开共享画面").color(egui::Color32::WHITE))
+                        egui::Button::new(egui::RichText::new(uu_i18n::text("打开共享画面")).color(egui::Color32::WHITE))
                             .fill(egui::Color32::from_rgb(53,131,255)).min_size(egui::vec2(140.0, 32.0)),
                     )
                     .clicked()
@@ -131,7 +131,7 @@ impl App {
             drop(invitation);
             let target = StreamTarget {
                 connection: ConnectionTarget::NativeInvitation(path.canonicalize()?),
-                alias: "原生直连".into(),
+                alias: uu_i18n::text("原生直连").into(),
                 view_only: !self.native_ui.request_control,
             };
             Ok(self
@@ -142,13 +142,13 @@ impl App {
             Ok(opened) => {
                 self.native_ui.open = false;
                 self.status = if opened {
-                    "已打开原生串流窗口"
+                    uu_i18n::text("已打开原生串流窗口")
                 } else {
-                    "原生串流窗口已打开"
+                    uu_i18n::text("原生串流窗口已打开")
                 }
                 .into();
             }
-            Err(error) => self.native_ui.notice = format!("无法使用邀请：{error}"),
+            Err(error) => self.native_ui.notice = uu_i18n::format!("无法使用邀请：{error}"),
         }
     }
     pub(super) fn connect_native(&mut self, path: PathBuf) {
@@ -198,25 +198,25 @@ impl App {
         self.selected_track = 0;
         let result=if let Some(path)=profile {
             (||->anyhow::Result<_>{
-                let config=self.config.clone().ok_or_else(||anyhow::anyhow!("无法读取设备配置目录"))?;
+                let config=self.config.clone().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法读取设备配置目录")))?;
                 let launch=uu_core::device_book::Launch::read(&path)?;
                 uu_core::native_controller::spawn_profile(launch,config,stats,!self.view_only)
             })()
         }else if let Some(profile)=internet {
             (|| -> anyhow::Result<_> {
-                let config=self.config.clone().ok_or_else(||anyhow::anyhow!("无法读取连接配置目录"))?;
+                let config=self.config.clone().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法读取连接配置目录")))?;
                 let settings=super::internet_ui::read_profile(&profile)?;
                 uu_core::native_controller::spawn_internet(settings,config,stats,!self.view_only)
             })()
         }else if let Some(id)=device {
-            self.config.as_ref().ok_or_else(||anyhow::anyhow!("无法确定原生设备配置目录")).and_then(|config|uu_core::native_controller::spawn_device(config.at("native-lan/paired-devices.json"),id,stats,!self.view_only))
+            self.config.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定原生设备配置目录"))).and_then(|config|uu_core::native_controller::spawn_device(config.at("native-lan/paired-devices.json"),id,stats,!self.view_only))
         }else{uu_core::native_controller::spawn_with_input(path.unwrap(),stats,!self.view_only)};
         match result {
             Ok(handle) => {
                 let context = self.context.clone();
                 handle.frames.enable_planar();
                 handle.frames.set_waker(move || context.request_video_frame());
-                if let Err(error)=super::clipboard::start_following(handle.stats.clipboard.clone(),self.clipboard_window.clone()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(format!("剪贴板不可用：{error}"));}
+                if let Err(error)=super::clipboard::start_following(handle.stats.clipboard.clone(),self.clipboard_window.clone()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(uu_i18n::format!("剪贴板不可用：{error}"));}
                 self.controller = Some(handle);
                 self.window_sizing.borrow_mut().begin_stream();
                 self.input_capture.request();
@@ -224,9 +224,9 @@ impl App {
                     self.context
                         .send_viewport_cmd(egui::ViewportCommand::Maximized(false));
                 }
-                self.status = "正在建立原生串流…".into();
+                self.status = uu_i18n::text("正在建立原生串流…").into();
             }
-            Err(error) => self.status = format!("原生连接失败：{error}"),
+            Err(error) => self.status = uu_i18n::format!("原生连接失败：{error}"),
         }
     }
 }

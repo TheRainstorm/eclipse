@@ -341,29 +341,29 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     let green=Color32::from_rgb(143,225,184);let blue=Color32::from_rgb(139,194,255);let orange=Color32::from_rgb(255,190,108);
     let pct=|v:Option<f32>|valid(v).map_or_else(||"—".into(),|v|format!("{v:.2}%"));let c=&m.counters;
     let e=m.estimate();let total=if e.samples==0{"—".into()}else{format!("≈{} ms",number(Some(e.known)))};
-    let mut latency=vec![field(if e.missing.is_empty(){"预估"}else{"已知小计"},total,"已知阶段窗口均值之和。包含采集、编码、解码、渲染、RTT/2及排队；不含应用响应、合成与扫描，不能当作实测端到端延迟。")];
-    for (i,(label,help)) in [("采","主机获取本帧桌面图像的时间。"),("编","主机编码调用耗时，可包含硬件队列等待。"),("解","客户端解码调用耗时。"),("渲","客户端UI准备与渲染提交的CPU墙钟时间，可能包含驱动等待；不是GPU计时或扫描延迟。")].into_iter().enumerate() {let mut v=field(label,format!("{} ms",number(m.process[i])),help);v.group=1;latency.push(v);}
-    for (label,value,help) in [("网",m.rtt.map(|v|v[0]/2.),"RTT的一半，仅在往返对称时近似单程。RTT还可能包含应用调度、处理与队列等待。"),("排",sum(&m.queues),"主机发送等待、客户端解码队列和画面邮箱等待的合计。未知阶段不按零计算。")]{let mut v=field(label,format!("{} ms",number(value)),help);v.group=2;latency.push(v);}
-    let mut network=vec![field("RTT",m.rtt.map_or_else(||"—".into(),|v|format!("{}±{} ms",number(Some(v[0])),number(Some(v[1])))),"控制消息往返均值±标准差，最近32个样本。包含传输、排队和两端处理，不等于ICMP ping。"),field("链路丢包",pct(m.loss),"修复前的原始RTP缺包率。乱序宽限期后仍未到达的包计入，即使随后由FEC或RTX恢复也保留。它反映接收端看到的网络交付，不只代表物理线路。"),field("修复后丢包",pct(m.unrecovered_loss),"接收器超时后仍未恢复的RTP丢包率；FEC/重传成功会降低这个值。")];
-    if let Some(v)=m.rtt_distribution {network.push(field("末/低/中/P95/高",format!("{:.1}/{:.1}/{:.1}/{:.1}/{:.1} ms",v[0],v[1],v[2],v[3],v[4]),"最近一分钟内RTT的末值、最小值、中位数、95分位和最大值，用于观察波动。"));}
+    let mut latency=vec![field(if e.missing.is_empty(){uu_i18n::text("预估")}else{uu_i18n::text("已知小计")},total,uu_i18n::text("已知阶段窗口均值之和。包含采集、编码、解码、渲染、RTT/2及排队；不含应用响应、合成与扫描，不能当作实测端到端延迟。"))];
+    for (i,(label,help)) in [(uu_i18n::text("采"),uu_i18n::text("主机获取本帧桌面图像的时间。")),(uu_i18n::text("编"),uu_i18n::text("主机编码调用耗时，可包含硬件队列等待。")),(uu_i18n::text("解"),uu_i18n::text("客户端解码调用耗时。")),(uu_i18n::text("渲"),uu_i18n::text("客户端UI准备与渲染提交的CPU墙钟时间，可能包含驱动等待；不是GPU计时或扫描延迟。"))].into_iter().enumerate() {let mut v=field(label,format!("{} ms",number(m.process[i])),help);v.group=1;latency.push(v);}
+    for (label,value,help) in [(uu_i18n::text("网"),m.rtt.map(|v|v[0]/2.),uu_i18n::text("RTT的一半，仅在往返对称时近似单程。RTT还可能包含应用调度、处理与队列等待。")),(uu_i18n::text("排"),sum(&m.queues),uu_i18n::text("主机发送等待、客户端解码队列和画面邮箱等待的合计。未知阶段不按零计算。"))]{let mut v=field(label,format!("{} ms",number(value)),help);v.group=2;latency.push(v);}
+    let mut network=vec![field("RTT",m.rtt.map_or_else(||"—".into(),|v|format!("{}±{} ms",number(Some(v[0])),number(Some(v[1])))),uu_i18n::text("控制消息往返均值±标准差，最近32个样本。包含传输、排队和两端处理，不等于ICMP ping。")),field(uu_i18n::text("链路丢包"),pct(m.loss),uu_i18n::text("修复前的原始RTP缺包率。乱序宽限期后仍未到达的包计入，即使随后由FEC或RTX恢复也保留。它反映接收端看到的网络交付，不只代表物理线路。")),field(uu_i18n::text("修复后丢包"),pct(m.unrecovered_loss),uu_i18n::text("接收器超时后仍未恢复的RTP丢包率；FEC/重传成功会降低这个值。"))];
+    if let Some(v)=m.rtt_distribution {network.push(field(uu_i18n::text("末/低/中/P95/高"),format!("{:.1}/{:.1}/{:.1}/{:.1}/{:.1} ms",v[0],v[1],v[2],v[3],v[4]),uu_i18n::text("最近一分钟内RTT的末值、最小值、中位数、95分位和最大值，用于观察波动。")));}
     let mut receive=vec![];
     if let Some(n)=&m.network {
-        receive.push(field("窗口缺/应",format!("{}/{}",n.window_lost,n.window_expected),"当前原始包窗口中的缺失数与期望数，二者用于计算链路丢包率。"));
-        receive.push(field("累计收/缺",format!("{}/{}",n.original_received,n.original_lost),"会话内收到的原始RTP包与在宽限期后认定缺失的原始包。"));
-        receive.push(field("乱/重/迟/重置",format!("{}/{}/{}/{}",n.reordered,n.duplicates,n.late,n.resyncs),"原始包乱序、重复、超宽限期迟到和无法解释序号跳变后的统计重置次数。"));
-    }else {receive.push(field("原始包统计","—","当前还没有新鲜、可解释的原始包窗口；不会伪造零丢包。"));}
-    let mut fps=vec![field("接收",format!("{} FPS",number(m.fps[0])),"进入接收管线的完整视频帧率。"),field("解码",format!("{} FPS",number(m.fps[1])),"成功解码帧率。"),field("渲染",format!("{} FPS",number(m.fps[2])),"当前视图提交的新画面帧率；不是显示器扫描输出帧率。")];
-    fps.push(field("源",m.source_hz.map_or_else(||"—".into(),|v|format!("{v} Hz")),"主机报告的显示器模式刷新率，未知或旧主机显示缺省。"));
+        receive.push(field(uu_i18n::text("窗口缺/应"),format!("{}/{}",n.window_lost,n.window_expected),uu_i18n::text("当前原始包窗口中的缺失数与期望数，二者用于计算链路丢包率。")));
+        receive.push(field(uu_i18n::text("累计收/缺"),format!("{}/{}",n.original_received,n.original_lost),uu_i18n::text("会话内收到的原始RTP包与在宽限期后认定缺失的原始包。")));
+        receive.push(field(uu_i18n::text("乱/重/迟/重置"),format!("{}/{}/{}/{}",n.reordered,n.duplicates,n.late,n.resyncs),uu_i18n::text("原始包乱序、重复、超宽限期迟到和无法解释序号跳变后的统计重置次数。")));
+    }else {receive.push(field(uu_i18n::text("原始包统计"),"—",uu_i18n::text("当前还没有新鲜、可解释的原始包窗口；不会伪造零丢包。")));}
+    let mut fps=vec![field(uu_i18n::text("接收"),format!("{} FPS",number(m.fps[0])),uu_i18n::text("进入接收管线的完整视频帧率。")),field(uu_i18n::text("解码"),format!("{} FPS",number(m.fps[1])),uu_i18n::text("成功解码帧率。")),field(uu_i18n::text("渲染"),format!("{} FPS",number(m.fps[2])),uu_i18n::text("当前视图提交的新画面帧率；不是显示器扫描输出帧率。"))];
+    fps.push(field(uu_i18n::text("源"),m.source_hz.map_or_else(||"—".into(),|v|format!("{v} Hz")),uu_i18n::text("主机报告的显示器模式刷新率，未知或旧主机显示缺省。")));
     vec![
-        row("画面",cyan,vec![field("",format!("{}×{}@{}",m.size[0],m.size[1],m.target_fps),"当前视频尺寸与目标帧率；不会改变远端桌面模式。"),field("编码",if m.codec.is_empty(){"—"}else{&m.codec},"实际协商的编码与色彩模式，区别于请求偏好。"),field("解码器",decoder_label(&m.backend),"客户端当前实际使用的解码后端。"),field("码率",format!("{} Mbps",number(m.bitrate)),"近期接收到的视频码率；不是目标码率或总链路带宽。")]),
-        row("帧率",cyan,fps),row("延迟",green,latency),
-        row("网络",if m.loss.is_some_and(|v|v>1.){orange}else{blue},network),
-        row("排队",green,vec![field("发",format!("{} ms",number(m.queues[0])),"主机发送视频包时等待传输API完成的时间，可能包含套接字背压和调度。"),field("解",format!("{} ms",number(m.queues[1])),"完整帧进入解码工作队列到开始解码的等待。"),field("邮箱",format!("{} ms",number(m.queues[2])),"解码画面发布到UI领取之间的等待；受UI唤醒、绘制预算和负载影响。"),field("合计",format!("{} ms",number(sum(&m.queues))),"发送、解码、邮箱等待的均值之和；缺样本时显示未知。")]),
-        row("恢复累计",plain,vec![field("FEC恢复/冗余",format!("{}/{}",c.fec_recovered,c.fec_packets),"FEC恢复的包数与收到的冗余包数，会话累计。"),field("冗余量",format!("{:.2} MiB",c.fec_bytes as f64/1048576.),"会话收到的FEC冗余数据量。"),field("FEC丢弃",c.fec_drops,"无法使用或被丢弃的FEC数据。"),field("RTX",c.rtx,"收到的重传包数。"),field("NACK",c.nack,"发送的缺包重传请求数。")]),
-        row("异常累计",if c.errors+c.damaged+c.queue_drops>0{orange}else{plain},vec![field("未恢复包",c.lost,"会话累计超时未恢复包。"),field("损帧",c.damaged,"接收器丢弃的不完整或损坏视频帧。"),field("解码错",c.errors,"解码后端返回的错误次数。"),field("队列丢帧",c.queue_drops,"解码队列为保留新鲜画面而丢弃的帧数。"),field("刷新",c.keyframes,"请求关键帧的次数。"),field("乱/迟",format!("{}/{}",c.reordered,c.late),"修复接收器记录的乱序与迟到次数。")]),
-        row("输入",plain,vec![field("状态",if m.input_ready{"已就绪"}else{"未就绪"},"当前窗口、主机授权和本地输入归属共同决定是否能远程输入。"),field("发/错",format!("{}/{}",m.input_counts[0],m.input_counts[1]),"客户端发送的输入消息数和发送错误数。"),field("排队/确认/主机队列/注入",m.input_timing.map(|v|number(v)).join("/"),"输入在客户端的排队、确认往返、主机队列与系统注入耗时，单位毫秒；确认不代表画面响应。")]),
-        row("收包",plain,receive),
-        row("恢复原因",plain,vec![field("接收/排队/解码/格式",format!("{}/{}/{}/{} 次",c.recovery[0],c.recovery[1],c.recovery[2],c.recovery[3]),"分别由接收损坏、解码队列溢出、解码错误和格式改变触发的恢复次数。")]),
+        row(uu_i18n::text("画面"),cyan,vec![field("",format!("{}×{}@{}",m.size[0],m.size[1],m.target_fps),uu_i18n::text("当前视频尺寸与目标帧率；不会改变远端桌面模式。")),field(uu_i18n::text("编码"),if m.codec.is_empty(){"—"}else{&m.codec},uu_i18n::text("实际协商的编码与色彩模式，区别于请求偏好。")),field(uu_i18n::text("解码器"),decoder_label(&m.backend),uu_i18n::text("客户端当前实际使用的解码后端。")),field(uu_i18n::text("码率"),format!("{} Mbps",number(m.bitrate)),uu_i18n::text("近期接收到的视频码率；不是目标码率或总链路带宽。"))]),
+        row(uu_i18n::text("帧率"),cyan,fps),row(uu_i18n::text("延迟"),green,latency),
+        row(uu_i18n::text("网络"),if m.loss.is_some_and(|v|v>1.){orange}else{blue},network),
+        row(uu_i18n::text("排队"),green,vec![field(uu_i18n::text("发"),format!("{} ms",number(m.queues[0])),uu_i18n::text("主机发送视频包时等待传输API完成的时间，可能包含套接字背压和调度。")),field(uu_i18n::text("解"),format!("{} ms",number(m.queues[1])),uu_i18n::text("完整帧进入解码工作队列到开始解码的等待。")),field(uu_i18n::text("邮箱"),format!("{} ms",number(m.queues[2])),uu_i18n::text("解码画面发布到UI领取之间的等待；受UI唤醒、绘制预算和负载影响。")),field(uu_i18n::text("合计"),format!("{} ms",number(sum(&m.queues))),uu_i18n::text("发送、解码、邮箱等待的均值之和；缺样本时显示未知。"))]),
+        row(uu_i18n::text("恢复累计"),plain,vec![field(uu_i18n::text("FEC恢复/冗余"),format!("{}/{}",c.fec_recovered,c.fec_packets),uu_i18n::text("FEC恢复的包数与收到的冗余包数，会话累计。")),field(uu_i18n::text("冗余量"),format!("{:.2} MiB",c.fec_bytes as f64/1048576.),uu_i18n::text("会话收到的FEC冗余数据量。")),field(uu_i18n::text("FEC丢弃"),c.fec_drops,uu_i18n::text("无法使用或被丢弃的FEC数据。")),field("RTX",c.rtx,uu_i18n::text("收到的重传包数。")),field("NACK",c.nack,uu_i18n::text("发送的缺包重传请求数。"))]),
+        row(uu_i18n::text("异常累计"),if c.errors+c.damaged+c.queue_drops>0{orange}else{plain},vec![field(uu_i18n::text("未恢复包"),c.lost,uu_i18n::text("会话累计超时未恢复包。")),field(uu_i18n::text("损帧"),c.damaged,uu_i18n::text("接收器丢弃的不完整或损坏视频帧。")),field(uu_i18n::text("解码错"),c.errors,uu_i18n::text("解码后端返回的错误次数。")),field(uu_i18n::text("队列丢帧"),c.queue_drops,uu_i18n::text("解码队列为保留新鲜画面而丢弃的帧数。")),field(uu_i18n::text("刷新"),c.keyframes,uu_i18n::text("请求关键帧的次数。")),field(uu_i18n::text("乱/迟"),format!("{}/{}",c.reordered,c.late),uu_i18n::text("修复接收器记录的乱序与迟到次数。"))]),
+        row(uu_i18n::text("输入"),plain,vec![field(uu_i18n::text("状态"),if m.input_ready{uu_i18n::text("已就绪")}else{uu_i18n::text("未就绪")},uu_i18n::text("当前窗口、主机授权和本地输入归属共同决定是否能远程输入。")),field(uu_i18n::text("发/错"),format!("{}/{}",m.input_counts[0],m.input_counts[1]),uu_i18n::text("客户端发送的输入消息数和发送错误数。")),field(uu_i18n::text("排队/确认/主机队列/注入"),m.input_timing.map(|v|number(v)).join("/"),uu_i18n::text("输入在客户端的排队、确认往返、主机队列与系统注入耗时，单位毫秒；确认不代表画面响应。"))]),
+        row(uu_i18n::text("收包"),plain,receive),
+        row(uu_i18n::text("恢复原因"),plain,vec![field(uu_i18n::text("接收/排队/解码/格式"),uu_i18n::format!("{}/{}/{}/{} 次",c.recovery[0],c.recovery[1],c.recovery[2],c.recovery[3]),uu_i18n::text("分别由接收损坏、解码队列溢出、解码错误和格式改变触发的恢复次数。"))]),
     ]
 }
 fn detail_text(m:&Metrics)->String {detail_rows(m).iter().map(|r|format!("{}  {}",r.label,r.text)).collect::<Vec<_>>().join("\n")}
@@ -377,17 +377,19 @@ pub fn detail_limits(view: Rect) -> egui::Vec2 {
 fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32) {
     ui.set_width(width.max(1.));ui.set_max_height(max_height.max(1.));
     *ui.visuals_mut()=egui::Visuals::dark();ui.spacing_mut().item_spacing=egui::vec2(5.,3.);
-    ui.horizontal(|ui|{ui.strong("串流诊断");ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-        if ui.small_button("复制详情").on_hover_text("复制当前全部诊断数值。也可拖选单个数值后按Ctrl+C；点击画面恢复远程键盘。").clicked(){ui.ctx().copy_text(detail_text(m));}
+    ui.horizontal(|ui|{ui.strong(uu_i18n::text("串流诊断"));ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+        if ui.small_button(uu_i18n::text("复制详情")).on_hover_text(uu_i18n::text("复制当前全部诊断数值。也可拖选单个数值后按Ctrl+C；点击画面恢复远程键盘。")).clicked(){ui.ctx().copy_text(detail_text(m));}
     });});
     let remaining=(max_height-27.).max(1.);let chart_width=(width*0.37).clamp(90.,400.);let data_width=(width-chart_width-18.).max(1.);
     ui.horizontal_top(|ui|{
         ui.allocate_ui_with_layout(egui::vec2(data_width,remaining),egui::Layout::top_down(egui::Align::Min),|ui|{
             egui::ScrollArea::vertical().id_salt("hud-detail-scroll").max_height(remaining).min_scrolled_height(0.).auto_shrink([false,true]).show(ui,|ui|{
-                for row in detail_rows(m){
+                let rows=detail_rows(m);
+                let title_width=rows.iter().map(|r|ui.fonts(|fonts|fonts.layout_no_wrap(r.label.into(),FontId::proportional(12.),r.color).size().x)).fold(50.,f32::max).min(110.).min(data_width*0.30);
+                for row in rows{
                     ui.horizontal_top(|ui|{
-                        ui.add_sized([50.,16.],egui::Label::new(RichText::new(row.label).size(12.).color(row.color).strong()));
-                        ui.vertical(|ui|{ui.set_width((data_width-57.).max(1.));ui.horizontal_wrapped(|ui|{
+                        ui.add_sized([title_width,16.],egui::Label::new(RichText::new(row.label).size(12.).color(row.color).strong()));
+                        ui.vertical(|ui|{ui.set_width((data_width-title_width-7.).max(1.));ui.horizontal_wrapped(|ui|{
                             let mut group=0;
                             for v in row.values {
                                 if v.group!=group&&group>0{ui.add(egui::Separator::default().vertical().spacing(6.));}group=v.group;

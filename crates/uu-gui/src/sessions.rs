@@ -39,41 +39,41 @@ impl StreamTarget {
             match arg.as_str() {
                 "--stream-device" | "--assist-device" | "--native-invitation" | "--native-device" | "--native-internet" | "--device-profile" => {
                     if connection.is_some() {
-                        return Err("一次只能选择一种连接方式".into());
+                        return Err(uu_i18n::text("一次只能选择一种连接方式").into());
                     }
                     let value = args
                         .next()
                         .filter(|s| !s.is_empty())
-                        .ok_or("缺少连接目标")?;
+                        .ok_or(uu_i18n::text("缺少连接目标"))?;
                     connection = Some(if arg == "--stream-device" {
                         ConnectionTarget::UuDevice(value)
                     } else if arg=="--assist-device" {
-                        if value.len()>64 || !value.bytes().all(|b|b.is_ascii_digit()) {return Err("远程协助设备 ID 无效".into());}
+                        if value.len()>64 || !value.bytes().all(|b|b.is_ascii_digit()) {return Err(uu_i18n::text("远程协助设备 ID 无效").into());}
                         ConnectionTarget::UuAssistance(value)
                     } else if arg=="--device-profile" {
                         let path=PathBuf::from(value);
-                        let launch=uu_core::device_book::Launch::read(&path).map_err(|e|format!("无法读取设备配置：{e}"))?;
+                        let launch=uu_core::device_book::Launch::read(&path).map_err(|e|uu_i18n::format!("无法读取设备配置：{e}"))?;
                         ConnectionTarget::NativeProfile{id:launch.profile,snapshot:path}
                     } else if arg=="--native-internet" {
                         ConnectionTarget::NativeInternet(value.into())
                     } else if arg=="--native-device" {
-                        if uuid::Uuid::parse_str(&value).is_err(){return Err("无效的原生设备编号".into());}
+                        if uuid::Uuid::parse_str(&value).is_err(){return Err(uu_i18n::text("无效的原生设备编号").into());}
                         ConnectionTarget::NativeDevice(value)
                     } else {
                         ConnectionTarget::NativeInvitation(value.into())
                     });
                 }
-                "--stream-alias" => alias = Some(args.next().ok_or("缺少设备名称")?),
+                "--stream-alias" => alias = Some(args.next().ok_or(uu_i18n::text("缺少设备名称"))?),
                 "--view-only" => view_only = true,
-                _ => return Err(format!("未知参数：{arg}")),
+                _ => return Err(uu_i18n::format!("未知参数：{arg}")),
             }
         }
         match connection {
             Some(connection) => {
                 let default = match &connection {
                     ConnectionTarget::UuDevice(id) => id.clone(),
-                    ConnectionTarget::UuAssistance(id) => format!("远程协助 {id}"),
-                    ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..} => "原生设备".into(),
+                    ConnectionTarget::UuAssistance(id) => uu_i18n::format!("远程协助 {id}"),
+                    ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..} => uu_i18n::text("原生设备").into(),
                 };
                 Ok(Some(Self {
                     connection,
@@ -81,7 +81,7 @@ impl StreamTarget {
                     view_only,
                 }))
             }
-            None if alias.is_some() || view_only => Err("串流参数需要设备或原生邀请".into()),
+            None if alias.is_some() || view_only => Err(uu_i18n::text("串流参数需要设备或原生邀请").into()),
             None => Ok(None),
         }
     }
@@ -138,13 +138,13 @@ impl Sessions {
         self.open_inner(exe,target,origin,None)
     }
     pub fn open_assistance(&mut self,exe:&Path,request:&uu_core::assistance::Request,origin:Option<(i32,i32)>)->std::io::Result<bool> {
-        let target=StreamTarget {connection:ConnectionTarget::UuAssistance(request.id.clone()),alias:format!("远程协助 {}",request.id),view_only:false};
+        let target=StreamTarget {connection:ConnectionTarget::UuAssistance(request.id.clone()),alias:uu_i18n::format!("远程协助 {}",request.id),view_only:false};
         self.open_inner(exe,&target,origin,Some(request.code()))
     }
     fn open_inner(&mut self,exe:&Path,target:&StreamTarget,origin:Option<(i32,i32)>,code:Option<&str>)->std::io::Result<bool> {
         self.reap();
         if matches!(target.connection,ConnectionTarget::UuAssistance(_)) && code.is_none() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"远程协助需要验证码"));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,uu_i18n::text("远程协助需要验证码")));
         }
         let key = match &target.connection {
             ConnectionTarget::NativeProfile{id,..}=>ConnectionTarget::NativeProfile{id:id.clone(),snapshot:PathBuf::new()},
@@ -158,7 +158,7 @@ impl Sessions {
         let mut child = target.command(exe, origin).spawn()?;
         if let Some(code)=code {
             use std::io::Write;
-            let result=child.stdin.take().ok_or_else(||std::io::Error::new(std::io::ErrorKind::BrokenPipe,"无法传递协助验证码"))
+            let result=child.stdin.take().ok_or_else(||std::io::Error::new(std::io::ErrorKind::BrokenPipe,uu_i18n::text("无法传递协助验证码")))
                 .and_then(|mut pipe|{pipe.write_all(code.as_bytes())?;pipe.write_all(b"\n")});
             if let Err(error)=result {let _=child.kill();let _=child.wait();return Err(error);}
         }

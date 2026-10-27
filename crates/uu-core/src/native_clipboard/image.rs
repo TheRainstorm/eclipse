@@ -42,7 +42,7 @@ impl Assembly {
         self.partial = None;
     }
     pub fn push(&mut self, chunk: Chunk<'_>, now: Instant) -> anyhow::Result<Option<Image>> {
-        anyhow::ensure!(chunk.valid(), "剪贴板图片分片无效");
+        anyhow::ensure!(chunk.valid(), "{}", uu_i18n::format!("剪贴板图片分片无效"));
         if chunk.offset == 0 {
             self.partial = Some(Partial {
                 revision: chunk.revision,
@@ -66,8 +66,7 @@ impl Assembly {
                 && partial.height == chunk.height
                 && partial.total == chunk.total
                 && partial.bytes.len() == chunk.offset as usize,
-            "剪贴板图片分片次序不一致"
-        );
+            "{}", uu_i18n::format!("剪贴板图片分片次序不一致"));
         partial.bytes.extend_from_slice(chunk.bytes);
         if partial.bytes.len() != partial.total as usize {
             return Ok(None);

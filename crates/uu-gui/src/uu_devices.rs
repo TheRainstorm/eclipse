@@ -116,26 +116,26 @@ impl Manager {
                 }
                 Event::Unbound { id, current } => {
                     self.devices.retain(|d| d.device_id != id);
-                    self.notice = "已解除 UU 账号绑定；原生配对和授权保持不变。".into();
+                    self.notice = uu_i18n::text("已解除 UU 账号绑定；原生配对和授权保持不变。").into();
                     unbound = Some(current);
                     if current {
                         self.open = false;
                         return unbound;
                     }
                 }
-                Event::Error(error) => self.notice = format!("操作失败：{error}"),
+                Event::Error(error) => self.notice = uu_i18n::format!("操作失败：{error}"),
             }
         }
         let mut open = self.open;
         let mut operation = None;
-        egui::Window::new("管理 UU 设备").open(&mut open).default_width(580.).resizable(true)
+        egui::Window::new(uu_i18n::text("管理 UU 设备")).open(&mut open).default_width(580.).resizable(true)
             .show(ctx, |ui| {
-                ui.label("这里显示当前 UU 账号绑定的设备，包含本客户端和官方客户端。");
-                ui.weak("“解绑”移除账号绑定，不删除系统上的软件、本机注册身份或原生设备授权；重新登录后设备可能再次出现在账号中。");
+                ui.label(uu_i18n::text("这里显示当前 UU 账号绑定的设备，包含本客户端和官方客户端。"));
+                ui.weak(uu_i18n::text("“解绑”移除账号绑定，不删除系统上的软件、本机注册身份或原生设备授权；重新登录后设备可能再次出现在账号中。"));
                 ui.add_space(10.);
                 let busy = self.worker.is_some();
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(!busy, egui::Button::new("刷新列表")).clicked() { operation = Some(Operation::List); }
+                    if ui.add_enabled(!busy, egui::Button::new(uu_i18n::text("刷新列表"))).clicked() { operation = Some(Operation::List); }
                     if busy { ui.spinner(); }
                 });
                 if !self.notice.is_empty() { ui.label(&self.notice); }
@@ -145,30 +145,30 @@ impl Manager {
                             ui.separator();
                             ui.horizontal(|ui| {
                                 ui.strong(&device.alias);
-                                if device.current { ui.weak("本客户端"); }
+                                if device.current { ui.weak(uu_i18n::text("本客户端")); }
                                 if !device.status.is_empty() { ui.weak(&device.status); }
-                                if ui.add_enabled(!busy, egui::Button::new("解绑")).clicked() {
+                                if ui.add_enabled(!busy, egui::Button::new(uu_i18n::text("解绑"))).clicked() {
                                     self.confirmation = Some(device.clone());
                                 }
                             });
                             ui.horizontal(|ui| {
                                 ui.monospace(&device.device_id);
-                                if ui.small_button("复制编号").clicked() { ui.ctx().copy_text(device.device_id.clone()); }
+                                if ui.small_button(uu_i18n::text("复制编号")).clicked() { ui.ctx().copy_text(device.device_id.clone()); }
                             });
                         });
                     }
-                    if self.loaded && self.devices.is_empty() && !busy { ui.weak("当前列表没有绑定设备。"); }
+                    if self.loaded && self.devices.is_empty() && !busy { ui.weak(uu_i18n::text("当前列表没有绑定设备。")); }
                 });
                 if let Some(device) = self.confirmation.clone() {
                     ui.separator();
-                    ui.label(format!("确认解绑“{}”（{}）？", device.alias, device.device_id));
-                    if device.current { ui.label("解绑本客户端会退出 UU 登录；若当前共享启用了 UU 入口，也会停止该次共享。"); }
+                    ui.label(uu_i18n::format!("确认解绑“{}”（{}）？", device.alias, device.device_id));
+                    if device.current { ui.label(uu_i18n::text("解绑本客户端会退出 UU 登录；若当前共享启用了 UU 入口，也会停止该次共享。")); }
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(!busy, egui::Button::new("确认解绑")).clicked() {
+                        if ui.add_enabled(!busy, egui::Button::new(uu_i18n::text("确认解绑"))).clicked() {
                             operation = Some(Operation::Unbind(device.device_id));
                             self.confirmation = None;
                         }
-                        if ui.button("取消").clicked() { self.confirmation = None; }
+                        if ui.button(uu_i18n::text("取消")).clicked() { self.confirmation = None; }
                     });
                 }
             });

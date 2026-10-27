@@ -21,16 +21,16 @@ pub(super) enum Filter {
 impl Filter {
     pub fn label(self) -> &'static str {
         match self {
-            Self::All => "全部设备",
-            Self::Recent => "最近使用",
-            Self::Favorites => "收藏设备",
+            Self::All => uu_i18n::text("全部设备"),
+            Self::Recent => uu_i18n::text("最近使用"),
+            Self::Favorites => uu_i18n::text("收藏设备"),
         }
     }
     pub fn empty_message(self) -> &'static str {
         match self {
-            Self::All => "没有匹配的设备",
-            Self::Recent => "还没有最近使用的设备",
-            Self::Favorites => "还没有收藏设备",
+            Self::All => uu_i18n::text("没有匹配的设备"),
+            Self::Recent => uu_i18n::text("还没有最近使用的设备"),
+            Self::Favorites => uu_i18n::text("还没有收藏设备"),
         }
     }
 }
@@ -139,7 +139,7 @@ impl Library {
             },
             Err(_) => Self {
                 path: Some(path),
-                notice: Some("本地收藏读取失败；原文件已保留，当前更改仅本次有效。".into()),
+                notice: Some(uu_i18n::text("本地收藏读取失败；原文件已保留，当前更改仅本次有效。").into()),
                 ..Self::default()
             },
         }
@@ -160,7 +160,7 @@ impl Library {
         self.refresh_before_change();
         if desired && !self.is_favorite(id) {
             if self.preferences.favorites.len() >= MAX_FAVORITES {
-                self.notice = Some("收藏数量已达上限，请先取消部分收藏。".into());
+                self.notice = Some(uu_i18n::text("收藏数量已达上限，请先取消部分收藏。").into());
                 return;
             }
             self.preferences.favorites.insert(id.to_owned());
@@ -191,7 +191,7 @@ impl Library {
                 Err(_) => {
                     self.writable = false;
                     self.notice =
-                        Some("本地收藏读取失败；原文件已保留，当前更改仅本次有效。".into());
+                        Some(uu_i18n::text("本地收藏读取失败；原文件已保留，当前更改仅本次有效。").into());
                 }
             }
         }
@@ -206,7 +206,7 @@ impl Library {
             Ok(()) => None,
             Err(_) => {
                 self.writable = false;
-                Some("本地收藏未能保存，当前更改仅本次有效。".into())
+                Some(uu_i18n::text("本地收藏未能保存，当前更改仅本次有效。").into())
             }
         };
     }

@@ -30,14 +30,14 @@ impl Action {
     pub fn label(self) -> &'static str {
         match self {
             Self::Stats => "HUD",
-            Self::Menu => "悬浮菜单",
-            Self::Mute => "静音",
-            Self::Fullscreen => "全屏",
-            Self::Exit => "结束串流",
-            Self::Capture => "释放 / 恢复控制",
-            Self::MouseMode => "桌面 / 游戏鼠标",
-            Self::CursorMode => "光标显示",
-            Self::ToggleNested => "嵌套快捷键透传",
+            Self::Menu => uu_i18n::text("悬浮菜单"),
+            Self::Mute => uu_i18n::text("静音"),
+            Self::Fullscreen => uu_i18n::text("全屏"),
+            Self::Exit => uu_i18n::text("结束串流"),
+            Self::Capture => uu_i18n::text("释放 / 恢复控制"),
+            Self::MouseMode => uu_i18n::text("桌面 / 游戏鼠标"),
+            Self::CursorMode => uu_i18n::text("光标显示"),
+            Self::ToggleNested => uu_i18n::text("嵌套快捷键透传"),
         }
     }
     fn defaults(self) -> &'static [Chord] {
@@ -136,9 +136,9 @@ impl Chord {
             || (m.alt && self.key == 0x73)
             || (m.ctrl && self.key == 0x1b)
         {
-            Some("可能与系统快捷键冲突，是否可截获取决于平台与全屏捕获设置")
+            Some(uu_i18n::text("可能与系统快捷键冲突，是否可截获取决于平台与全屏捕获设置"))
         } else if m == Modifiers::default() {
-            Some("无修饰键；此键将在串流前台被客户端占用")
+            Some(uu_i18n::text("无修饰键；此键将在串流前台被客户端占用"))
         } else {
             None
         }
@@ -201,33 +201,33 @@ impl Bindings {
         if self.chords(Action::ToggleNested).is_empty() {
             issues.push(Issue {
                 actions: vec![Action::ToggleNested],
-                message: "嵌套透传必须保留一个切回本机的快捷键".into(),
+                message: uu_i18n::text("嵌套透传必须保留一个切回本机的快捷键").into(),
             });
         }
         for a in Action::ALL {
             if self.chords(a).len() > 3 {
                 issues.push(Issue {
                     actions: vec![a],
-                    message: "每项最多三个快捷键".into(),
+                    message: uu_i18n::text("每项最多三个快捷键").into(),
                 });
             }
             for c in self.chords(a) {
                 if !c.valid() {
                     issues.push(Issue {
                         actions: vec![a],
-                        message: "不是可用的普通按键".into(),
+                        message: uu_i18n::text("不是可用的普通按键").into(),
                     });
                 }
                 if cfg!(windows) && c.key == 0x2e && c.modifiers.ctrl && c.modifiers.alt {
                     issues.push(Issue {
                         actions: vec![a],
-                        message: "Ctrl+Alt+Delete 由 Windows 安全桌面保留".into(),
+                        message: uu_i18n::text("Ctrl+Alt+Delete 由 Windows 安全桌面保留").into(),
                     });
                 }
                 if let Some(previous) = owners.insert(*c, a) {
                     issues.push(Issue {
                         actions: vec![previous, a],
-                        message: format!(
+                        message: uu_i18n::format!(
                             "{} 同时用于 {} 与 {}",
                             c.label(),
                             previous.label(),
@@ -241,7 +241,7 @@ impl Bindings {
     }
     pub fn validate(&self) -> anyhow::Result<()> {
         if let Some(issue) = self.issues().first() {
-            anyhow::bail!("快捷键冲突：{}", issue.message);
+            anyhow::bail!("{}", uu_i18n::format!("快捷键冲突：{}", issue.message));
         }
         Ok(())
     }

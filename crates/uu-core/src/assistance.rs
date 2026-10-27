@@ -21,12 +21,10 @@ impl Request {
         let code = code.trim();
         ensure!(
             !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_digit()),
-            "请输入对方分享的数字设备 ID"
-        );
+            "{}", uu_i18n::format!("请输入对方分享的数字设备 ID"));
         ensure!(
             !code.is_empty() && code.len() <= 64 && code.bytes().all(|b| b.is_ascii_alphanumeric()),
-            "请输入有效的设备验证码（字母或数字）"
-        );
+            "{}", uu_i18n::format!("请输入有效的设备验证码（字母或数字）"));
         Ok(Self {
             id: id.into(),
             code: Zeroizing::new(code.into()),
@@ -41,11 +39,11 @@ impl Request {
         input
             .take(66)
             .read_to_string(&mut text)
-            .context("无法接收远程协助验证码")?;
+            .context(uu_i18n::text("无法接收远程协助验证码"))?;
         Self::new(id, &text)
     }
     pub fn parse(text: &str) -> Result<Self> {
-        ensure!(text.len() <= 4096, "分享文本过长");
+        ensure!(text.len() <= 4096, "{}", uu_i18n::format!("分享文本过长"));
         let (mut id, mut code) = (None, None);
         for line in text.lines() {
             let Some((label, value)) = line.split_once([':', '：']) else {
@@ -63,8 +61,8 @@ impl Request {
             }
         }
         Self::new(
-            id.context("分享文本中没有设备 ID")?,
-            code.context("分享文本中没有设备验证码")?,
+            id.context(uu_i18n::text("分享文本中没有设备 ID"))?,
+            code.context(uu_i18n::text("分享文本中没有设备验证码"))?,
         )
     }
 }
@@ -81,7 +79,7 @@ pub(crate) fn room(
 ) -> Result<serde_json::Value> {
     let code = body["code"]
         .as_i64()
-        .context("远程协助服务返回了无效响应")?;
+        .context(uu_i18n::text("远程协助服务返回了无效响应"))?;
     if code != 0 || status != 200 {
         let message = body["msg"]
             .as_str()
@@ -97,18 +95,17 @@ pub(crate) fn room(
             .filter(|c| !c.is_control())
             .take(160)
             .collect();
-        anyhow::bail!("远程协助失败：{message}（code {code}，HTTP {status}）");
+        anyhow::bail!("{}", uu_i18n::format!("远程协助失败：{message}（code {code}，HTTP {status}）"));
     }
     let data = body
         .get_mut("data")
         .and_then(serde_json::Value::as_object_mut)
-        .context("远程协助服务没有返回房间")?;
+        .context(uu_i18n::text("远程协助服务没有返回房间"))?;
     ensure!(
         data.get("token")
             .and_then(|v| v.as_str())
             .is_some_and(|s| !s.is_empty()),
-        "远程协助房间缺少访问凭据"
-    );
+        "{}", uu_i18n::format!("远程协助房间缺少访问凭据"));
     if !data
         .get("signaling_server")
         .and_then(|v| v.as_str())
@@ -120,7 +117,7 @@ pub(crate) fn room(
             .and_then(|a| a.first())
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .context("远程协助房间缺少信令地址")?
+            .context(uu_i18n::text("远程协助房间缺少信令地址"))?
             .to_owned();
         data.insert("signaling_server".into(), server.into());
     }

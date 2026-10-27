@@ -223,8 +223,8 @@ impl SharingConfig {
         ensure!((1..=crate::native_quality::MAX_FPS).contains(&self.fps) && (64..=crate::native_quality::MAX_BITRATE_KBPS).contains(&self.bitrate_kbps),
             "native frame rate or bitrate exceeds the encoder interface range");
         let peak=self.rate_control.peak(self.bitrate_kbps);
-        ensure!(peak>=self.bitrate_kbps && peak<=2_000_000,"VBR 峰值超出编码接口范围");
-        ensure!(self.encoder!=EncoderPreference::Software || (self.codec==VideoCodec::H264 && self.rate_control==uu_media::encoder::RateControl::Cbr),"所选编码格式或 VBR 需要硬件编码");
+        ensure!(peak>=self.bitrate_kbps && peak<=2_000_000,"{}", uu_i18n::format!("VBR 峰值超出编码接口范围"));
+        ensure!(self.encoder!=EncoderPreference::Software || (self.codec==VideoCodec::H264 && self.rate_control==uu_media::encoder::RateControl::Cbr),"{}", uu_i18n::format!("所选编码格式或 VBR 需要硬件编码"));
         let monitor = matches!(self.source,CaptureSource::Primary|CaptureSource::Desktop { .. }|CaptureSource::Monitor(_));
         ensure!(!self.allow_input || monitor, "desktop input requires an explicitly shared monitor");
         ensure!(self.audio != Some(AudioSource::System) || monitor, "system audio requires an explicitly shared monitor");
@@ -505,7 +505,7 @@ fn encode_source(
         }
         if let Ok(change)=changes.try_recv() {
             let result=(||->Result<u32> {
-                ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"画质请求已取消");
+                ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"{}", uu_i18n::format!("画质请求已取消"));
                 change.settings.validate()?;
                 let bitrate_kbps=change.settings.bitrate_for(settings.width,settings.height,settings.codec);
                 let rate_control=change.settings.rate_control.unwrap_or_else(||crate::native_quality::RateMode::from_encoder(settings.rate_control)).encoder(bitrate_kbps);
@@ -516,11 +516,11 @@ fn encode_source(
                     // then start a fresh reference chain on the same transport.
                     let reopen=if encoder.is_hardware()&&updated.preference==EncoderPreference::Auto {uu_media::encoder::Settings{preference:EncoderPreference::Hardware,..updated}}else{updated};
                     let replacement=uu_media::encoder::create_with_device(reopen,capture.encoder_input_device())?;
-                    ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"画质请求已取消");
+                    ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"{}", uu_i18n::format!("画质请求已取消"));
                     capture.set_frame_rate(updated.fps)?;
                     if change.reply.is_closed() || stopped.load(Ordering::Acquire) {
                         capture.set_frame_rate(settings.fps)?;
-                        bail!("画质请求已取消");
+                        bail!("{}", uu_i18n::format!("画质请求已取消"));
                     }
                     encoder=replacement;
                     if encoder.backend_name()!=backend {
@@ -664,7 +664,7 @@ fn ordered_codecs(codecs: &[VideoCodec]) -> Vec<VideoCodec> {
 
 fn codec_choices(allowed:&[VideoCodec],host:Option<VideoCodec>,client:Option<VideoCodec>)->Result<Vec<VideoCodec>> {
     if let Some(codec)=host.or(client) {
-        ensure!(allowed.contains(&codec),"主机未允许 {:?} 编码，请选择允许的格式",codec);
+        ensure!(allowed.contains(&codec),"{}", uu_i18n::format!("主机未允许 {:?} 编码，请选择允许的格式",codec));
         // An explicit format is a requirement. Report backend failures instead
         // of silently substituting H.264 while the UI still shows HEVC/AV1.
         Ok(vec![codec])
@@ -707,7 +707,7 @@ async fn send_video(
     let host_codec=policy.as_ref().map_or(Some(config.codec),|p|p.preferred_codec);
     let mut choices=codec_choices(&allowed,host_codec,request.as_ref().and_then(|r|r.codec))?;
     choices.retain(|codec|crate::native_media::offers_codec(&offer.sdp,*codec));
-    ensure!(!choices.is_empty(),"两端没有共同可用的视频编码，请检查主机编码设置和客户端解码支持");
+    ensure!(!choices.is_empty(),"{}", uu_i18n::format!("两端没有共同可用的视频编码，请检查主机编码设置和客户端解码支持"));
     let hdr_codecs=crate::native_color::capture_codecs(&offer.sdp,&choices)?;
     let advertised:Vec<_>=ordered.into_iter().filter(|c|crate::native_media::offers_codec(&offer.sdp,*c)).collect();
     let audio_mode=if config.audio.is_some(){crate::native_media::offered_audio(&offer.sdp)?}else{None};
@@ -840,11 +840,11 @@ async fn send_video(
     if dynamic {controls.set_quality(producer.quality.clone());}
     let mut encoder_label=producer.encoder.borrow().clone();
     let mut encoder_state=Some(producer.encoder.clone());
-    let mut audio_label=if config.audio.is_none(){String::new()}else if audio_sender.is_none(){"控制端未接收声音".into()}else{"声音准备中".into()};
+    let mut audio_label=if config.audio.is_none(){String::new()}else if audio_sender.is_none(){uu_i18n::text("控制端未接收声音").into()}else{uu_i18n::text("声音准备中").into()};
     let (mut audio_worker,mut audio_frames,mut audio_state)=if let Some(source)=config.audio.filter(|_|audio_sender.is_some()) {
         match crate::native_audio::Worker::start(source) {
             Ok((worker,frames,state))=>(Some(worker),Some(frames),Some(state)),
-            Err(error)=>{audio_label=format!("声音不可用：{error}");(None,None,None)},
+            Err(error)=>{audio_label=uu_i18n::format!("声音不可用：{error}");(None,None,None)},
         }
     }else{(None,None,None)};
     progress(&status, HostStatus::Streaming { width, height, fps: config.fps, audio:audio_label.clone(),encoder:encoder_label.clone() });
@@ -962,7 +962,7 @@ pub async fn view_with_input(invitation:&Invitation,frames:FrameSender,stats:Arc
 async fn view_session(invitation:&Invitation,frames:FrameSender,stats:Arc<MediaStats>,mut stop:watch::Receiver<bool>,mut input:Option<crate::native_input::NativeInputReceiver>)->Result<()> {
     let _lifetime=ViewerLifetime(stats.clone());
     tokio::select! {_=crate::native_media::receive_codecs(&stats)=>{},_=cancelled(&mut stop)=>return Ok(())}
-    stats.connection.set_service("IP 直连");
+    stats.connection.set_service(uu_i18n::text("IP 直连"));
     stats.capabilities.set(0);
     stats.native_input_available.store(false,Ordering::Release);
     let stream = tokio::select! {
@@ -1040,10 +1040,10 @@ async fn receive_session(
     })?).await?;
     let answer_started=Instant::now();
     let message=timeout(crate::native_signaling::PREPARATION_WAIT,stream.receive_answer()).await
-        .context("等待被控端屏幕共享授权或编码器准备超时")??;
+        .context(uu_i18n::text("等待被控端屏幕共享授权或编码器准备超时"))??;
     stats.diagnostics.record(serde_json::json!({"event":"native_answer_wait","elapsed_us":elapsed_us(answer_started)}));
     if let Some(reason)=message.get("preparation_error").and_then(|v|v.as_str()) {
-        bail!("被控端准备失败：{}",reason.chars().take(512).collect::<String>());
+        bail!("{}", uu_i18n::format!("被控端准备失败：{}",reason.chars().take(512).collect::<String>()));
     }
     let answer:Answer=serde_json::from_value(message).map_err(|_|anyhow::anyhow!("invalid native answer"))?;
     ensure!(
@@ -1052,7 +1052,7 @@ async fn receive_session(
     );
     validate_video(answer.width, answer.height, answer.fps)?;
     if quality_request.as_ref().is_some_and(|r|r.codec==Some(VideoCodec::Pyrowave)) {
-        ensure!(answer.codec==VideoCodec::Pyrowave&&crate::native_media::offers_codec(&answer.sdp,VideoCodec::Pyrowave),"主机不支持所请求的 PyroWave v1 格式，请升级两端并启用此编码");
+        ensure!(answer.codec==VideoCodec::Pyrowave&&crate::native_media::offers_codec(&answer.sdp,VideoCodec::Pyrowave),"{}", uu_i18n::format!("主机不支持所请求的 PyroWave v1 格式，请升级两端并启用此编码"));
     }
     stats.native_frame_trace_supported.store(crate::frame_trace::offered(&answer.sdp),Ordering::Release);
     stats.native_progress.set(Stage::ConnectingMedia);
@@ -1063,16 +1063,16 @@ async fn receive_session(
     }
     let quality=crate::native_quality::Response::read(&answer.sdp)?;
     let rate:Option<crate::native_quality::RateResponse>=crate::native_quality::get(&answer.sdp,crate::native_quality::RATE_ATTRIBUTE)?;
-    ensure!(rate.is_none()||stats.native_rate_request.get().is_some(),"主机返回未请求的码率模式");
+    ensure!(rate.is_none()||stats.native_rate_request.get().is_some(),"{}", uu_i18n::format!("主机返回未请求的码率模式"));
     if let Some(requested)=rate_request.and_then(|r|r.selection) {
-        ensure!(rate.is_some(),"此主机不支持客户端选择码率模式，请升级主机或选择跟随主机");
-        ensure!(rate.is_some_and(|r|r.applied==requested),"主机未应用请求的码率模式");
+        ensure!(rate.is_some(),"{}", uu_i18n::format!("此主机不支持客户端选择码率模式，请升级主机或选择跟随主机"));
+        ensure!(rate.is_some_and(|r|r.applied==requested),"{}", uu_i18n::format!("主机未应用请求的码率模式"));
     }
     *stats.native_rate_response.lock().unwrap()=rate;
     let hdr=crate::native_color::Response::read(&answer.sdp)?;
     if let Some(response)=&hdr {
         ensure!(response.codec==answer.codec && crate::native_media::offers_hdr_codec(&answer.sdp,answer.codec) && stats.native_hdr_capable.load(Ordering::Acquire)
-            && stats.native_hdr_codecs.get().is_some_and(|codecs|codecs.contains(&answer.codec)),"主机返回未协商的 HDR10 格式");
+            && stats.native_hdr_codecs.get().is_some_and(|codecs|codecs.contains(&answer.codec)),"{}", uu_i18n::format!("主机返回未协商的 HDR10 格式"));
     }
     *stats.native_hdr_response.lock().unwrap()=hdr;
     stats.diagnostics.record(serde_json::json!({"event":"native_color_negotiated","hdr":hdr}));
@@ -1080,7 +1080,7 @@ async fn receive_session(
     let typed_gamepads=crate::native_gamepad::typed_offered(&answer.sdp);
     let cursor_available=crate::native_cursor::offered(&answer.sdp)?;
     stats.native_cursor.reset(cursor_available);
-    if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"主机实际编码与能力回报不一致");}
+    if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"{}", uu_i18n::format!("主机实际编码与能力回报不一致"));}
     stats.capabilities.enable(crate::capabilities::Capability::Quality,quality.is_some());
     stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":quality_request,"host_capabilities":quality,"rate_control":rate}));
     *stats.native_quality_response.lock().unwrap()=quality;
@@ -1157,7 +1157,7 @@ async fn wait_first_frame(stats:&MediaStats,baseline:u64,limit:Duration)->Result
         while stats.decoded_total.load(Ordering::Acquire)<=baseline {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-    }).await.context("连接已建立，但 20 秒内未解码出首帧；请检查两端编码支持或改用其它编码，诊断日志已记录协商编码和解码错误")
+    }).await.context(uu_i18n::text("连接已建立，但 20 秒内未解码出首帧；请检查两端编码支持或改用其它编码，诊断日志已记录协商编码和解码错误"))
 }
 
 #[cfg(test)]

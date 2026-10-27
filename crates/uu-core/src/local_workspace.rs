@@ -75,8 +75,7 @@ impl Drop for Owner {
 pub fn join(directory: &Path, bytes: &[u8]) -> Result<Join> {
     ensure!(
         !bytes.is_empty() && bytes.len() <= MAX_MESSAGE,
-        "本地串流请求过大"
-    );
+        "{}", uu_i18n::format!("本地串流请求过大"));
     private_directory(directory)?;
     let mut options = fs::OpenOptions::new();
     options.read(true).write(true).create(true);
@@ -104,8 +103,7 @@ pub fn join(directory: &Path, bytes: &[u8]) -> Result<Join> {
         }
         ensure!(
             Instant::now() < deadline,
-            "串流窗口正在启动或退出，请稍后重试"
-        );
+            "{}", uu_i18n::format!("串流窗口正在启动或退出，请稍后重试"));
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -113,7 +111,7 @@ fn nonce() -> Result<[u8; 32]> {
     let mut value = [0; 32];
     SystemRandom::new()
         .fill(&mut value)
-        .map_err(|_| anyhow::anyhow!("无法创建本地串流随机数"))?;
+        .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("无法创建本地串流随机数")))?;
     Ok(value)
 }
 fn transcript(side: u8, client: &[u8; 32], server: &[u8; 32], bytes: &[u8]) -> Zeroizing<Vec<u8>> {
@@ -146,7 +144,7 @@ fn attach(endpoint: &Endpoint, bytes: &[u8]) -> Result<()> {
     stream.read_exact(&mut server)?;
     stream.read_exact(&mut proof)?;
     hmac::verify(&key, &transcript(0, &client, &server, &[]), &proof)
-        .map_err(|_| anyhow::anyhow!("本地串流窗口身份验证失败"))?;
+        .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("本地串流窗口身份验证失败")))?;
     stream.write_all(&(bytes.len() as u32).to_be_bytes())?;
     stream.write_all(bytes)?;
     stream.write_all(hmac::sign(&key, &transcript(1, &client, &server, bytes)).as_ref())?;
@@ -157,7 +155,7 @@ fn attach(endpoint: &Endpoint, bytes: &[u8]) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut response = [0];
     stream.read_exact(&mut response)?;
-    ensure!(response == [1], "串流窗口未接受连接请求");
+    ensure!(response == [1], "{}", uu_i18n::format!("串流窗口未接受连接请求"));
     Ok(())
 }
 fn owner(directory: &Path, lock: fs::File) -> Result<Owner> {
@@ -214,7 +212,7 @@ fn receive(
     let mut magic = [0; 8];
     let mut client = [0; 32];
     stream.read_exact(&mut magic)?;
-    ensure!(&magic == MAGIC, "本地协议不匹配");
+    ensure!(&magic == MAGIC, "{}", uu_i18n::format!("本地协议不匹配"));
     stream.read_exact(&mut client)?;
     let server = nonce()?;
     let key = hmac::Key::new(hmac::HMAC_SHA256, token);
@@ -223,16 +221,16 @@ fn receive(
     let mut length = [0; 4];
     stream.read_exact(&mut length)?;
     let length = u32::from_be_bytes(length) as usize;
-    ensure!(length > 0 && length <= MAX_MESSAGE, "本地串流请求过大");
+    ensure!(length > 0 && length <= MAX_MESSAGE, "{}", uu_i18n::format!("本地串流请求过大"));
     let mut bytes = Zeroizing::new(vec![0; length]);
     stream.read_exact(&mut bytes)?;
     let mut proof = [0; 32];
     stream.read_exact(&mut proof)?;
     hmac::verify(&key, &transcript(1, &client, &server, &bytes), &proof)
-        .map_err(|_| anyhow::anyhow!("本地请求身份验证失败"))?;
+        .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("本地请求身份验证失败")))?;
     let (reply, receipt) = mpsc::sync_channel(1);
     send.try_send(Request { bytes, reply })
-        .map_err(|_| anyhow::anyhow!("本地串流请求队列已满"))?;
+        .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("本地串流请求队列已满")))?;
     if let Some(wake) = wake.lock().unwrap().clone() {
         wake();
     }
@@ -247,7 +245,7 @@ fn receive(
             Err(_) => break,
         }
     }
-    anyhow::bail!("本地串流请求已取消")
+    anyhow::bail!("{}", uu_i18n::format!("本地串流请求已取消"))
 }
 
 fn private_directory(path: &Path) -> Result<()> {
@@ -261,8 +259,7 @@ fn private_directory(path: &Path) -> Result<()> {
         let meta = fs::symlink_metadata(path)?;
         ensure!(
             meta.is_dir() && !meta.file_type().is_symlink(),
-            "串流工作区目录无效"
-        );
+            "{}", uu_i18n::format!("串流工作区目录无效"));
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     }
     #[cfg(windows)]
@@ -279,8 +276,7 @@ fn private_directory(path: &Path) -> Result<()> {
         let meta = fs::symlink_metadata(path)?;
         ensure!(
             meta.is_dir() && !meta.file_type().is_symlink(),
-            "串流工作区目录无效"
-        );
+            "{}", uu_i18n::format!("串流工作区目录无效"));
         // Owner Rights only, inherited by the private endpoint and lock files.
         // https://learn.microsoft.com/windows/win32/secauthz/security-descriptor-string-format
         let descriptor: Vec<u16> = "D:P(A;OICI;FA;;;OW)\0".encode_utf16().collect();
@@ -294,8 +290,7 @@ fn private_directory(path: &Path) -> Result<()> {
                     std::ptr::null_mut(),
                 )
             } != 0,
-            "无法保护本地串流目录"
-        );
+            "{}", uu_i18n::format!("无法保护本地串流目录"));
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         let ok = unsafe {
             SetFileSecurityW(
@@ -309,9 +304,8 @@ fn private_directory(path: &Path) -> Result<()> {
         }
         ensure!(
             ok != 0,
-            "无法设置本地串流目录权限：{}",
-            std::io::Error::last_os_error()
-        );
+            "{}", uu_i18n::format!("无法设置本地串流目录权限：{}",
+            std::io::Error::last_os_error()));
     }
     Ok(())
 }

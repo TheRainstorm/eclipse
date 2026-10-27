@@ -75,14 +75,14 @@ pub struct Snapshot {
 impl Snapshot {
     /// Explicit copy action only; never automatically write address information.
     pub fn copy_text(&self) -> String {
-        let mut text = format!(
+        let mut text = uu_i18n::format!(
             "连接服务：{}\n连接状态：{} / ICE {}\n",
             self.service, self.peer_state, self.ice_state
         );
         if let Some(path) = &self.selected {
-            text += &format!(
+            text += &uu_i18n::format!(
                 "实际媒体路径：{}\n本机：{} ({:?}, {})\n远端：{} ({:?}, {})\n",
-                if path.relayed() { "中继" } else { "直连" },
+                if path.relayed() { uu_i18n::text("中继") } else { uu_i18n::text("直连") },
                 path.local.address,
                 path.local.kind,
                 path.local.protocol,
@@ -91,15 +91,15 @@ impl Snapshot {
                 path.remote.protocol
             );
         }
-        for (side, candidates) in [("本机", &self.local), ("远端", &self.remote)] {
-            text += &format!("{side}地址：\n");
+        for (side, candidates) in [(uu_i18n::text("本机"), &self.local), (uu_i18n::text("远端"), &self.remote)] {
+            text += &uu_i18n::format!("{side}地址：\n");
             for candidate in candidates {
                 text += &format!(
                     "  {:?} {} {}",
                     candidate.kind, candidate.protocol, candidate.address
                 );
                 if let Some(base) = candidate.base {
-                    text += &format!(" → 网卡 {base}");
+                    text += &uu_i18n::format!(" → 网卡 {base}");
                 }
                 text.push('\n');
             }

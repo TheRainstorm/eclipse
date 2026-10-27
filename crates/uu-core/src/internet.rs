@@ -49,8 +49,7 @@ impl Settings {
     pub fn self_hosted(&self) -> Result<self_hosted::Config> {
         ensure!(
             !self.server.trim().is_empty(),
-            "请填写连接服务器的 IP 和端口"
-        );
+            "{}", uu_i18n::format!("请填写连接服务器的 IP 和端口"));
         let server = self.server.trim().trim_end_matches('/');
         let url = if server.starts_with("wss://") {
             server.to_owned()
@@ -140,7 +139,7 @@ pub async fn view(
         return crate::device_internet::view(connection,&settings,&config,frames,stats,stop,input).await;
     }
     let (mut signal, ice) = Authenticated::new(connection, key.unwrap(), Role::Viewer);
-    stats.connection.set_service(match settings.provider {Provider::Uu=>"UU 连接服务",Provider::SelfHosted=>"自建连接服务"});
+    stats.connection.set_service(match settings.provider {Provider::Uu=>uu_i18n::text("UU 连接服务"),Provider::SelfHosted=>uu_i18n::text("自建连接服务")});
     stats.diagnostics.record(
         json!({"event":"native_provider","provider":settings.provider,
         "stun_services":ice.urls().len(),"development_relay":settings.development_relay}),

@@ -55,7 +55,7 @@ impl Startup {
         let value:Option<Self>=get(sdp,STARTUP)?;if let Some(value)=&value{value.validate()?;}Ok(value)
     }
     fn validate(&self)->Result<()> {
-        ensure!(self.total_us<=600_000_000&&[self.capture_us,self.encoder_us,self.other_encoders_us,self.ice_us].into_iter().all(|value|value<=self.total_us),"主机准备阶段计时无效");Ok(())
+        ensure!(self.total_us<=600_000_000&&[self.capture_us,self.encoder_us,self.other_encoders_us,self.ice_us].into_iter().all(|value|value<=self.total_us),"{}", uu_i18n::format!("主机准备阶段计时无效"));Ok(())
     }
 }
 
@@ -69,8 +69,8 @@ pub struct Update {
 }
 impl Update {
     pub fn validate(self)->Result<()> {
-        ensure!((5..=MAX_FPS).contains(&self.fps),"帧率请求超出编码接口范围");
-        ensure!(self.bitrate_kbps.is_none_or(|kbps|(64..=MAX_BITRATE_KBPS).contains(&kbps)),"码率请求无效");Ok(())
+        ensure!((5..=MAX_FPS).contains(&self.fps),"{}", uu_i18n::format!("帧率请求超出编码接口范围"));
+        ensure!(self.bitrate_kbps.is_none_or(|kbps|(64..=MAX_BITRATE_KBPS).contains(&kbps)),"{}", uu_i18n::format!("码率请求无效"));Ok(())
     }
     pub fn bitrate(self,width:u32,height:u32)->u32 {
         self.bitrate_for(width,height,VideoCodec::H264)
@@ -92,7 +92,7 @@ impl Runtime {
     pub fn request(&self,settings:Update)->Result<tokio::sync::oneshot::Receiver<std::result::Result<u32,String>>> {
         settings.validate()?;
         let(reply,rx)=tokio::sync::oneshot::channel();
-        self.0.try_send(Change{settings,reply}).map_err(|_|anyhow::anyhow!("画质更新尚未完成或会话已关闭"))?;self.wake();Ok(rx)
+        self.0.try_send(Change{settings,reply}).map_err(|_|anyhow::anyhow!("{}", uu_i18n::format!("画质更新尚未完成或会话已关闭")))?;self.wake();Ok(rx)
     }
 }
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
@@ -105,16 +105,16 @@ pub struct Request {
 }
 impl Request {
     pub fn validate(&self)->Result<()> {
-        ensure!((5..=MAX_FPS).contains(&self.fps),"客户端请求帧率无效");
-        if let Some([w,h])=self.bounds {ensure!((2..=8192).contains(&w)&&(2..=8192).contains(&h)&&w%2==0&&h%2==0,"客户端请求分辨率无效");}
-        if let Some(kbps)=self.bitrate_kbps {ensure!((64..=MAX_BITRATE_KBPS).contains(&kbps),"客户端请求码率无效");}
+        ensure!((5..=MAX_FPS).contains(&self.fps),"{}", uu_i18n::format!("客户端请求帧率无效"));
+        if let Some([w,h])=self.bounds {ensure!((2..=8192).contains(&w)&&(2..=8192).contains(&h)&&w%2==0&&h%2==0,"{}", uu_i18n::format!("客户端请求分辨率无效"));}
+        if let Some(kbps)=self.bitrate_kbps {ensure!((64..=MAX_BITRATE_KBPS).contains(&kbps),"{}", uu_i18n::format!("客户端请求码率无效"));}
         Ok(())
     }
     pub fn add(&self,sdp:&mut RTCSessionDescription)->Result<()> {
         self.validate()?;
         let mut legacy=self.clone();
         if self.codec==Some(VideoCodec::Pyrowave) {
-            ensure!(crate::native_media::offers_codec(sdp,VideoCodec::Pyrowave),"此设备的 PyroWave 运行库、Vulkan 驱动或解码能力不可用");
+            ensure!(crate::native_media::offers_codec(sdp,VideoCodec::Pyrowave),"{}", uu_i18n::format!("此设备的 PyroWave 运行库、Vulkan 驱动或解码能力不可用"));
             legacy.codec=None;put(sdp,PYROWAVE,&true)?;
         }
         put(sdp,REQUEST,&legacy)?;put(sdp,RUNTIME,&true)
@@ -144,8 +144,8 @@ impl Response {
     pub fn add(&self,sdp:&mut RTCSessionDescription)->Result<()> {self.validate()?;put(sdp,RESPONSE,self)}
     pub fn read(sdp:&RTCSessionDescription)->Result<Option<Self>> {let value:Option<Self>=get(sdp,RESPONSE)?;if let Some(v)=&value{v.validate()?;}Ok(value)}
     fn validate(&self)->Result<()> {
-        ensure!(!self.codecs.is_empty()&&self.codecs.len()<=4&&(1..=MAX_FPS).contains(&self.max_fps)&&(64..=MAX_BITRATE_KBPS).contains(&self.max_bitrate_kbps),"原生主机画质能力无效");
-        for (i,codec) in self.codecs.iter().enumerate(){ensure!(!self.codecs[..i].contains(codec),"重复的主机编码能力");} Ok(())
+        ensure!(!self.codecs.is_empty()&&self.codecs.len()<=4&&(1..=MAX_FPS).contains(&self.max_fps)&&(64..=MAX_BITRATE_KBPS).contains(&self.max_bitrate_kbps),"{}", uu_i18n::format!("原生主机画质能力无效"));
+        for (i,codec) in self.codecs.iter().enumerate(){ensure!(!self.codecs[..i].contains(codec),"{}", uu_i18n::format!("重复的主机编码能力"));} Ok(())
     }
 }
 #[derive(Clone,Debug)]
@@ -156,13 +156,13 @@ pub struct Policy {
 }
 impl Policy {
     pub fn validate(&self)->Result<()> {
-        ensure!(self.preferred_codec.is_none_or(|c|self.codecs.contains(&c)),"默认编码须包含在允许的编码中");
+        ensure!(self.preferred_codec.is_none_or(|c|self.codecs.contains(&c)),"{}", uu_i18n::format!("默认编码须包含在允许的编码中"));
         Response{dynamic:true,codecs:self.codecs.clone(),max_fps:MAX_FPS,max_bitrate_kbps:MAX_BITRATE_KBPS}.validate()
     }
 }
 pub(crate) fn put(sdp:&mut RTCSessionDescription,key:&str,value:&impl Serialize)->Result<()> {
-    ensure!(get::<serde_json::Value>(sdp,key)?.is_none(),"重复的画质属性");
-    let value=serde_json::to_vec(value)?;ensure!(value.len()<=LIMIT/2,"画质属性过长");
+    ensure!(get::<serde_json::Value>(sdp,key)?.is_none(),"{}", uu_i18n::format!("重复的画质属性"));
+    let value=serde_json::to_vec(value)?;ensure!(value.len()<=LIMIT/2,"{}", uu_i18n::format!("画质属性过长"));
     let line=format!("a={key}:{}\r\n",hex::encode(value));
     // Session-level attributes must precede the first m= section.
     let at=sdp.sdp.find("m=").unwrap_or(sdp.sdp.len());sdp.sdp.insert_str(at,&line);
@@ -172,9 +172,9 @@ pub(crate) fn get<T:DeserializeOwned>(sdp:&RTCSessionDescription,key:&str)->Resu
     let prefix=format!("a={key}:");let mut found=None;
     for line in sdp.sdp.lines() {
         if let Some(value)=line.strip_prefix(&prefix) {
-            ensure!(found.is_none()&&value.len()<=LIMIT,"画质属性重复或过长");
-            let data=hex::decode(value).context("画质属性编码无效")?;
-            found=Some(serde_json::from_slice(&data).map_err(|_|anyhow::anyhow!("画质属性格式无效"))?);
+            ensure!(found.is_none()&&value.len()<=LIMIT,"{}", uu_i18n::format!("画质属性重复或过长"));
+            let data=hex::decode(value).context(uu_i18n::text("画质属性编码无效"))?;
+            found=Some(serde_json::from_slice(&data).map_err(|_|anyhow::anyhow!("{}", uu_i18n::format!("画质属性格式无效")))?);
         }
     }
     Ok(found)

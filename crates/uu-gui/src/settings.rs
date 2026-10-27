@@ -9,7 +9,7 @@ use std::{
 pub use uu_core::client_settings::{ClientSettings, CodecPreference, CursorMode, HudDetail};
 
 pub(super) fn bitrate_label(index:usize,native:bool)->&'static str {
-    super::BITRATE_PRESETS[if native&&index==0 {5}else if !native&&index==5 {0}else{index}].0
+    uu_i18n::text(super::BITRATE_PRESETS[if native&&index==0 {5}else if !native&&index==5 {0}else{index}].0)
 }
 pub(super) fn recommended_bitrate(settings:&ClientSettings,actual_size:Option<[u32;2]>,actual_codec:Option<&str>)->Option<u32> {
     use uu_core::native::VideoCodec;
@@ -36,6 +36,7 @@ pub struct Settings {
     /// Global application bindings. Legacy files migrate from the global client
     /// defaults; per-device/profile bindings no longer override application keys.
     pub application_hotkeys: Option<uu_core::hotkeys::Bindings>,
+    pub language: uu_i18n::Language,
     pub lan_discovery: bool,
     // Retained only to migrate older configurations into connection services.
     pub lan_service_port: u16,
@@ -47,7 +48,7 @@ pub struct Settings {
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { client: ClientSettings::default(), application_hotkeys:None, lan_discovery:true,
+        Self { client: ClientSettings::default(), application_hotkeys:None, language:uu_i18n::Language::default(), lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
             device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,
@@ -70,12 +71,12 @@ impl Settings {
     }
     fn validate(&self)->anyhow::Result<()> {
         self.client.validate()?;
-        anyhow::ensure!(self.application_hotkeys().issues().is_empty(),"客户端快捷键存在冲突，请在应用设置中修正");
-        anyhow::ensure!(self.lan_service_port>0&&self.lan_discovery_port>0,"局域网端口必须在 1–65535 之间");
+        anyhow::ensure!(self.application_hotkeys().issues().is_empty(),"{}", uu_i18n::format!("客户端快捷键存在冲突，请在应用设置中修正"));
+        anyhow::ensure!(self.lan_service_port>0&&self.lan_discovery_port>0,"{}", uu_i18n::format!("局域网端口必须在 1–65535 之间"));
         if self.wallpaper_enabled {
-            anyhow::ensure!(self.wallpaper_api.len()<=2048,"壁纸接口地址过长");
-            let url=reqwest::Url::parse(&self.wallpaper_api).map_err(|_|anyhow::anyhow!("请输入有效的壁纸图片 URL"))?;
-            anyhow::ensure!(matches!(url.scheme(),"http"|"https")&&url.host_str().is_some()&&url.username().is_empty()&&url.password().is_none(),"壁纸接口须为不含登录凭据的 HTTP / HTTPS 图片地址");
+            anyhow::ensure!(self.wallpaper_api.len()<=2048,"{}", uu_i18n::format!("壁纸接口地址过长"));
+            let url=reqwest::Url::parse(&self.wallpaper_api).map_err(|_|anyhow::anyhow!("{}", uu_i18n::format!("请输入有效的壁纸图片 URL")))?;
+            anyhow::ensure!(matches!(url.scheme(),"http"|"https")&&url.host_str().is_some()&&url.username().is_empty()&&url.password().is_none(),"{}", uu_i18n::format!("壁纸接口须为不含登录凭据的 HTTP / HTTPS 图片地址"));
         }
         Ok(())
     }
@@ -91,10 +92,10 @@ impl Settings {
         let bytes = match read_bounded(path, 64 * 1024) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(_) => anyhow::bail!("无法读取设置，或文件超过 64 KiB；原文件已保留"),
+            Err(_) => anyhow::bail!("{}", uu_i18n::format!("无法读取设置，或文件超过 64 KiB；原文件已保留")),
         };
         let mut s: Self = serde_json::from_slice(&bytes)
-            .map_err(|_| anyhow::anyhow!("设置文件格式无效；原文件已保留，未自动覆盖"))?;
+            .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("设置文件格式无效；原文件已保留，未自动覆盖")))?;
         // These two legacy fields only seed first migration into services.
         if s.lan_service_port==47998 { s.lan_service_port=uu_core::native_discovery::SERVICE_PORT; }
         if s.lan_discovery_port==47999 { s.lan_discovery_port=uu_core::native_discovery::DISCOVERY_PORT; }
@@ -104,14 +105,14 @@ impl Settings {
         s.resolution = s.resolution.min(3);
         s.volume = s.volume.min(100);
         anyhow::ensure!(s.lan_service_port != 0 && s.lan_discovery_port != 0,
-            "局域网端口必须在 1–65535 之间；原文件已保留");
+            "{}", uu_i18n::format!("局域网端口必须在 1–65535 之间；原文件已保留"));
         s.validate()?;
         Ok(s)
     }
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         self.validate()?;
         anyhow::ensure!(self.lan_service_port != 0 && self.lan_discovery_port != 0,
-            "局域网端口必须在 1–65535 之间");
+            "{}", uu_i18n::format!("局域网端口必须在 1–65535 之间"));
         // Automatic HUD/audio changes must not overwrite a broken original.
         // Recheck on every write, including after a second window changes it.
         Self::load(path)?;
@@ -136,7 +137,7 @@ impl Settings {
             return Ok(None);
         }
         let original = read_bounded(path, 1024 * 1024)
-            .map_err(|_| anyhow::anyhow!("无法安全备份异常设置；请先修复文件或读取权限后重试"))?;
+            .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("无法安全备份异常设置；请先修复文件或读取权限后重试")))?;
         let backup = path.with_file_name(format!("gui-settings.backup-{}.json", uuid::Uuid::new_v4()));
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -152,8 +153,8 @@ impl Settings {
         }
         drop(file);
         anyhow::ensure!(read_bounded(path, 1024 * 1024)? == original,
-            "设置在备份期间发生变化，已保留备份；请重新读取后重试");
-        save_json(self, path).map_err(|_| anyhow::anyhow!("异常设置已备份，但新设置保存失败；请检查目录写权限"))?;
+            "{}", uu_i18n::format!("设置在备份期间发生变化，已保留备份；请重新读取后重试"));
+        save_json(self, path).map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("异常设置已备份，但新设置保存失败；请检查目录写权限")))?;
         Ok(Some(backup))
     }
 }
@@ -174,7 +175,7 @@ pub(super) fn save_json(value: &impl Serialize, path: &Path) -> anyhow::Result<(
 pub(super) fn save_bytes(path:&Path,bytes:&[u8])->anyhow::Result<()> {
     std::fs::create_dir_all(
         path.parent()
-            .ok_or_else(|| anyhow::anyhow!("设置目录无效"))?,
+            .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设置目录无效")))?,
     )?;
     let temp = path.with_extension(format!(
         "{}.{}.tmp",
@@ -260,6 +261,10 @@ impl super::App {
                 self.preferences.hotkeys=keys.clone();self.settings_draft.hotkeys=keys;
             }
             self.preferences.application_hotkeys=value.application_hotkeys;
+            if self.preferences.language!=value.language {
+                self.preferences.language=value.language;self.settings_draft.language=value.language;
+                uu_i18n::set_language(value.language);self.hud_cache.invalidate();self.context.request_repaint();
+            }
         }
     }
 
@@ -318,11 +323,11 @@ impl super::App {
                     .inner_margin(egui::Margin::symmetric(14.0, 18.0)),
             )
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("应用设置").size(13.0).strong().color(super::theme::MUTED));
+                ui.label(egui::RichText::new(uu_i18n::text("应用设置")).size(13.0).strong().color(super::theme::MUTED));
                 ui.add_space(10.0);
                 for (tab, label) in [
-                    (super::workspace_ui::SettingsView::Software, "软件设置"),
-                    (super::workspace_ui::SettingsView::About, "关于"),
+                    (super::workspace_ui::SettingsView::Software, uu_i18n::text("软件设置")),
+                    (super::workspace_ui::SettingsView::About, uu_i18n::text("关于")),
                 ] {
                     if ui
                         .add_sized(
@@ -346,17 +351,17 @@ impl super::App {
                 )
                 .show(ctx, |ui| {
                     ui.horizontal_centered(|ui| {
-                        if ui.button("恢复默认").clicked() {
+                        if ui.button(uu_i18n::text("恢复默认")).clicked() {
                             actions.reset = true;
                         }
                         if dirty {
-                            ui.label(egui::RichText::new("有未保存的更改").size(12.0).color(super::theme::MUTED));
+                            ui.label(egui::RichText::new(uu_i18n::text("有未保存的更改")).size(12.0).color(super::theme::MUTED));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        egui::RichText::new("保存并应用").color(egui::Color32::WHITE),
+                                        egui::RichText::new(uu_i18n::text("保存并应用")).color(egui::Color32::WHITE),
                                     )
                                     .fill(super::theme::ACCENT),
                                 )
@@ -364,7 +369,7 @@ impl super::App {
                             {
                                 actions.apply = true;
                             }
-                            if ui.button("取消").clicked() {
+                            if ui.button(uu_i18n::text("取消")).clicked() {
                                 actions.back = true;
                             }
                         });
@@ -384,14 +389,13 @@ impl super::App {
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width().min(860.0));
                         ui.heading(match view {
-                            super::workspace_ui::SettingsView::Software => "软件设置",
-                            super::workspace_ui::SettingsView::About => "关于 Eclipse",
+                            super::workspace_ui::SettingsView::Software => uu_i18n::text("软件设置"),
+                            super::workspace_ui::SettingsView::About => uu_i18n::text("关于 Eclipse"),
                         });
                         ui.add_space(12.0);
                         if !self.settings_notice.is_empty() {
                             let error = self.settings_storage_error
-                                || self.settings_notice.contains("失败")
-                                || self.settings_notice.contains("无法");
+                                || super::ui_feedback::looks_like_error(&self.settings_notice);
                             ui.label(
                                 egui::RichText::new(&self.settings_notice)
                                     .color(if error { super::theme::DANGER } else { super::theme::SUCCESS }),
@@ -421,6 +425,7 @@ impl super::App {
             self.settings_draft.wallpaper_api = defaults.wallpaper_api;
             self.settings_draft.lan_discovery = defaults.lan_discovery;
             self.settings_draft.app_autostart = defaults.app_autostart;
+            self.settings_draft.language=defaults.language;
         }
         if actions.refresh_wallpaper && self.settings_draft.wallpaper_enabled {
             self.background.sync(&self.settings_draft, ctx);
@@ -429,13 +434,13 @@ impl super::App {
         if actions.apply {
             if let Err(error) = self.settings_draft.validate() {
                 self.settings_storage_error = true;
-                self.set_settings_notice(format!("无法应用：{error:#}"));
+                self.set_settings_notice(uu_i18n::format!("无法应用：{error:#}"));
                 return;
             }
             if self.preferences.app_autostart != self.settings_draft.app_autostart {
                 if let Err(error) = super::app_startup::apply(self.settings_draft.app_autostart) {
                     self.settings_storage_error = true;
-                    self.set_settings_notice(format!("无法保存软件自启动：{error:#}"));
+                    self.set_settings_notice(uu_i18n::format!("无法保存软件自启动：{error:#}"));
                     return;
                 }
             }
@@ -444,6 +449,7 @@ impl super::App {
             self.preferences = self.settings_draft.clone();
             self.preferences.use_application_hotkeys();
             self.persist_preferences();
+            if !self.settings_storage_error {uu_i18n::set_language(self.preferences.language);self.hud_cache.invalidate();self.set_settings_notice(uu_i18n::text("已保存应用设置"));ctx.request_repaint();}
             if wallpaper_changed {
                 self.background.sync(&self.preferences, ctx);
             }
@@ -487,11 +493,11 @@ impl super::App {
     pub(super) fn persist_preferences(&mut self) {
         self.snapshot_preferences();
         if self.is_native() {
-            self.set_settings_notice("已应用到当前串流");
+            self.set_settings_notice(uu_i18n::text("已应用到当前串流"));
             return;
         }
         let result = Settings::path()
-            .ok_or_else(|| anyhow::anyhow!("无法确定设置目录"))
+            .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定设置目录")))
             .and_then(|p| if self.stream_target.is_some() {
                 self.preferences.save_client(&p)
             } else {
@@ -499,8 +505,8 @@ impl super::App {
             });
         self.settings_storage_error = result.is_err();
         let notice = match result {
-            Ok(()) => "已保存应用设置".to_owned(),
-            Err(error) => format!("设置保存失败：{error}"),
+            Ok(()) => uu_i18n::text("已保存应用设置").to_owned(),
+            Err(error) => uu_i18n::format!("设置保存失败：{error}"),
         };
         self.set_settings_notice(notice);
     }
@@ -553,9 +559,9 @@ impl super::App {
         let save_profile=actions.save_profile;
         let recover=actions.recover;
         if apply {
-            if let Err(error)=self.settings_draft.validate() {self.set_settings_notice(format!("无法应用：{error:#}"));return;}
+            if let Err(error)=self.settings_draft.validate() {self.set_settings_notice(uu_i18n::format!("无法应用：{error:#}"));return;}
             if !child && self.preferences.app_autostart!=self.settings_draft.app_autostart {
-                if let Err(error)=super::app_startup::apply(self.settings_draft.app_autostart){self.set_settings_notice(format!("无法保存软件自启动：{error:#}"));return;}
+                if let Err(error)=super::app_startup::apply(self.settings_draft.app_autostart){self.set_settings_notice(uu_i18n::format!("无法保存软件自启动：{error:#}"));return;}
             }
             let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
             if self.preferences.hotkeys!=self.settings_draft.hotkeys {self.recover_input("hotkeys_changed");}
@@ -579,13 +585,13 @@ impl super::App {
             }
             if recover && self.stream_target.is_none() {
                 self.snapshot_preferences();
-                let result = Settings::path().ok_or_else(|| anyhow::anyhow!("无法确定设置目录"))
+                let result = Settings::path().ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定设置目录")))
                     .and_then(|path|self.preferences.backup_and_save(&path));
                 self.settings_storage_error = result.is_err();
                 let notice = match result {
-                    Ok(Some(path)) => format!("已保存。原设置已备份为 {}",path.file_name().unwrap_or_default().to_string_lossy()),
-                    Ok(None) => "设置文件已恢复正常，当前设置已保存".into(),
-                    Err(error) => format!("设置恢复失败：{error}"),
+                    Ok(Some(path)) => uu_i18n::format!("已保存。原设置已备份为 {}",path.file_name().unwrap_or_default().to_string_lossy()),
+                    Ok(None) => uu_i18n::text("设置文件已恢复正常，当前设置已保存").into(),
+                    Err(error) => uu_i18n::format!("设置恢复失败：{error}"),
                 };
                 self.set_settings_notice(notice);
             } else { self.persist_preferences(); }
@@ -593,9 +599,9 @@ impl super::App {
             if save_profile {
                 if let Err(error) = self.save_stream_profile_settings() {
                     self.settings_storage_error = true;
-                    self.set_settings_notice(format!("无法保存到设备配置：{error:#}"));
+                    self.set_settings_notice(uu_i18n::format!("无法保存到设备配置：{error:#}"));
                 } else {
-                    self.set_settings_notice("已保存到设备配置；下次连接继续使用");
+                    self.set_settings_notice(uu_i18n::text("已保存到设备配置；下次连接继续使用"));
                 }
             }
         }
@@ -607,13 +613,13 @@ impl super::App {
                 connection: super::sessions::ConnectionTarget::NativeProfile { id, .. },
                 ..
             }) => id.clone(),
-            _ => anyhow::bail!("当前串流没有可编辑的设备配置"),
+            _ => anyhow::bail!("{}", uu_i18n::format!("当前串流没有可编辑的设备配置")),
         };
         let store = self
             .workspace
             .store
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("设备配置不可用"))?;
+            .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))?;
         let mut profile = store.read()?.device(&id)?.clone();
         let settings = self.preferences.client.clone();
         if let Some(selected) = profile.selected_client.clone() {
@@ -624,12 +630,12 @@ impl super::App {
             {
                 config.settings = settings;
             } else {
-                let config = uu_core::client_settings::NamedClientSettings::new("串流设置", settings);
+                let config = uu_core::client_settings::NamedClientSettings::new(uu_i18n::text("串流设置"), settings);
                 profile.selected_client = Some(config.id.clone());
                 profile.client_configs.push(config);
             }
         } else {
-            let config = uu_core::client_settings::NamedClientSettings::new("串流设置", settings);
+            let config = uu_core::client_settings::NamedClientSettings::new(uu_i18n::text("串流设置"), settings);
             profile.selected_client = Some(config.id.clone());
             profile.client_configs.push(config);
         }
@@ -825,4 +831,17 @@ mod tests {
         assert!(Settings::load(&p).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn application_language_migrates_and_survives_stream_preference_saves() {
+        let root=std::env::temp_dir().join(format!("eclipse-language-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();let path=root.join("settings.json");
+        std::fs::write(&path,b"{\"fps\":60}").unwrap();
+        let mut stream=Settings::load(&path).unwrap();assert_eq!(stream.language,uu_i18n::Language::Chinese);
+        let mut app=stream.clone();app.language=uu_i18n::Language::English;app.save(&path).unwrap();
+        stream.fps=120;stream.save_client(&path).unwrap();
+        let latest=Settings::load(&path).unwrap();assert_eq!(latest.language,uu_i18n::Language::English);assert_eq!(latest.fps,120);
+        let json=serde_json::to_value(uu_core::client_settings::ClientSettings::default()).unwrap();assert!(json.get("language").is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
 }

@@ -6,6 +6,7 @@ license.workspace = true
 description = "Session orchestration, signaling client and device model"
 
 [dependencies]
+uu-i18n = { path = "../uu-i18n" }
 async-trait = "0.1"
 anyhow.workspace = true
 bytes.workspace = true

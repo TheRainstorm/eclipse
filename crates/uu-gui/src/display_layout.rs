@@ -27,7 +27,7 @@ impl DisplayLayout {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(e) => return Err(e.into()),
         };
-        anyhow::ensure!(data.len() <= 65536, "显示器排序文件过大");
+        anyhow::ensure!(data.len() <= 65536, "{}", uu_i18n::format!("显示器排序文件过大"));
         let mut layout: Self = serde_json::from_slice(&data)?;
         for ids in [&mut layout.numbers, &mut layout.order] {
             let mut seen = std::collections::HashSet::new();
@@ -65,9 +65,9 @@ impl DisplayLayout {
             .map(|n| format!(" {n}"))
             .unwrap_or_default();
         if screen.display_name.is_empty() {
-            format!("显示屏{number}")
+            uu_i18n::format!("显示屏{number}")
         } else {
-            format!("显示屏{number}（{}）", screen.display_name)
+            uu_i18n::format!("显示屏{number}（{}）", screen.display_name)
         }
     }
     pub fn sort(&self, screens: &mut [RemoteScreen]) {

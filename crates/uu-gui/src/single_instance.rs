@@ -117,7 +117,7 @@ mod windows {
         unsafe {
             MessageBoxW(
                 std::ptr::null_mut(),
-                wide("客户端正在启动或退出，请稍后再次打开。").as_ptr(),
+                wide(uu_i18n::text("客户端正在启动或退出，请稍后再次打开。")).as_ptr(),
                 wide(super::super::brand::NAME).as_ptr(),
                 MB_OK | MB_ICONINFORMATION,
             );

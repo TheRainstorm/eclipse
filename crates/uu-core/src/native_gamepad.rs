@@ -562,7 +562,7 @@ impl Viewer {
     ) -> Self {
         let media_epoch = stats.native_media_epoch.load(Ordering::Acquire);
         stats.gamepad.remote_count.store(0, Ordering::Release);
-        *stats.gamepad.status.lock().unwrap() = "等待被控端手柄状态".into();
+        *stats.gamepad.status.lock().unwrap() = uu_i18n::text("等待被控端手柄状态").into();
         let notify = Arc::new(tokio::sync::Notify::new());
         let opened = notify.clone();
         channel.on_open(Box::new(move || {
@@ -594,9 +594,9 @@ impl Viewer {
                         .store(connected, Ordering::Release);
                     *incoming.gamepad.status.lock().unwrap() = error.unwrap_or_else(|| {
                         if connected > 0 {
-                            if version==1 {format!("已转发 {connected} 个手柄（旧版被控端统一模拟 DS4）")}else{format!("已转发 {connected} 个手柄")}
+                            if version==1 {uu_i18n::format!("已转发 {connected} 个手柄（旧版被控端统一模拟 DS4）")}else{uu_i18n::format!("已转发 {connected} 个手柄")}
                         } else {
-                            "等待本地手柄或控制权".into()
+                            uu_i18n::text("等待本地手柄或控制权").into()
                         }
                     });
                 }
@@ -607,7 +607,7 @@ impl Viewer {
         channel.on_close(Box::new(move || {
             if closed.native_media_epoch.load(Ordering::Acquire) == media_epoch {
                 closed.gamepad.remote_count.store(0, Ordering::Release);
-                *closed.gamepad.status.lock().unwrap() = "手柄通道已关闭或被控端不支持".into();
+                *closed.gamepad.status.lock().unwrap() = uu_i18n::text("手柄通道已关闭或被控端不支持").into();
             }
             Box::pin(async {})
         }));

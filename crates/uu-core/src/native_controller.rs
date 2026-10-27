@@ -24,10 +24,10 @@ pub(crate) enum Stage { PreparingHost, ConnectingMedia, WaitingVideo, Streaming 
 impl Stage {
     fn message(self) -> &'static str {
         match self {
-            Self::PreparingHost => "正在等待被控端共享屏幕并准备编码…",
-            Self::ConnectingMedia => "正在建立媒体连接…",
-            Self::WaitingVideo => "正在等待首帧…",
-            Self::Streaming => "原生串流已连接",
+            Self::PreparingHost => uu_i18n::text("正在等待被控端共享屏幕并准备编码…"),
+            Self::ConnectingMedia => uu_i18n::text("正在建立媒体连接…"),
+            Self::WaitingVideo => uu_i18n::text("正在等待首帧…"),
+            Self::Streaming => uu_i18n::text("原生串流已连接"),
         }
     }
 }
@@ -49,7 +49,7 @@ pub fn spawn_with_input(invitation_file: PathBuf, stats: Arc<MediaStats>,request
     spawn_source(Source::Invitation(invitation_file),stats,requested)
 }
 pub fn spawn_device(devices_file:PathBuf,id:String,stats:Arc<MediaStats>,requested:bool)->Result<ControllerHandle>{
-    anyhow::ensure!(uuid::Uuid::parse_str(&id).is_ok(),"无效的原生设备编号");
+    anyhow::ensure!(uuid::Uuid::parse_str(&id).is_ok(),"{}", uu_i18n::format!("无效的原生设备编号"));
     spawn_source(Source::Device{devices_file,id},stats,requested)
 }
 pub fn spawn_internet(settings:crate::internet::Settings,config:crate::Config,stats:Arc<MediaStats>,requested:bool)->Result<ControllerHandle> {
@@ -65,7 +65,7 @@ impl Source {
         Self::Internet{..}|Self::Profile{..}=>anyhow::bail!("profile sessions resolve their own connection"),
         Self::Device{devices_file,id}=>{
             let book=crate::native_lan_store::Devices::open(devices_file)?;
-            let device=book.paired(id).context("该原生设备尚未配对，请返回设备页重新配对")?;
+            let device=book.paired(id).context(uu_i18n::text("该原生设备尚未配对，请返回设备页重新配对"))?;
             crate::native_lan::connect(device,&book.client_id).await
         }
     }}
@@ -136,12 +136,12 @@ impl Worker {
             Err(error) => {
                 let _ = self
                     .events
-                    .send(ControllerEvent::Error(format!("原生连接失败：{error:#}")));
+                    .send(ControllerEvent::Error(uu_i18n::format!("原生连接失败：{error:#}")));
             }
             Ok(()) => {
                 let _ = self
                     .events
-                    .send(ControllerEvent::Status("原生会话已结束".into()));
+                    .send(ControllerEvent::Status(uu_i18n::text("原生会话已结束").into()));
             }
         }
         self.stop_local();
@@ -154,7 +154,7 @@ impl Worker {
     async fn network(&mut self) -> Result<()> {
         let _ = self
             .events
-            .send(ControllerEvent::Status(match &self.source {Source::Invitation(_)=>"正在验证原生邀请…",Source::Device{..}=>"正在连接已配对的原生服务端…",Source::Internet{..}=>"正在通过连接服务建立原生串流…",Source::Profile{..}=>"正在验证并连接设备…"}.into()));
+            .send(ControllerEvent::Status(match &self.source {Source::Invitation(_)=>uu_i18n::text("正在验证原生邀请…"),Source::Device{..}=>uu_i18n::text("正在连接已配对的原生服务端…"),Source::Internet{..}=>uu_i18n::text("正在通过连接服务建立原生串流…"),Source::Profile{..}=>uu_i18n::text("正在验证并连接设备…")}.into()));
         let invitation=if matches!(&self.source,Source::Internet{..}|Source::Profile{..}){None}else{Some(tokio::select!{
             biased;
             _=self.close.recv()=>return Ok(()),

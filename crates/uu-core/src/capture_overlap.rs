@@ -288,7 +288,7 @@ impl Input {
                     Ok(Some(latest_capture::Delivery::Fresh(packet)))=>(Some(packet),false),
                     Ok(Some(latest_capture::Delivery::Repeat))=>(None,true),
                     Ok(Some(latest_capture::Delivery::NoFrame))|Ok(None) if self.config.owner_pacing=>{
-                        return Err(CaptureError::Suspended("等待采集周期的新图像".into()));
+                        return Err(CaptureError::Suspended(uu_i18n::text("等待采集周期的新图像").into()));
                     },
                     Ok(None)|Ok(Some(latest_capture::Delivery::NoFrame))=>(None,true),
                     Err(latest_capture::Failure::Paused(e)) => {
@@ -307,7 +307,7 @@ impl Input {
                 let packet = last
                     .as_ref()
                     .filter(|p| p.lease.valid())
-                    .ok_or_else(|| CaptureError::Suspended("等待当前桌面首帧".into()))?;
+                    .ok_or_else(|| CaptureError::Suspended(uu_i18n::text("等待当前桌面首帧").into()))?;
                 let current = packet.lease.generation();
                 let retired = epoch.is_some_and(|old| old != current);
                 *epoch = Some(current);
