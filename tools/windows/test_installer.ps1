@@ -8,11 +8,12 @@ $baseFiles = @('uu-gui.exe','uu.exe','libgcc_s_seh-1.dll','libstdc++-6.dll','REA
 $target = Join-Path $root 'installed'
 $archive = Join-Path $root 'archive'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
-function New-TestPackage([string]$Name, [int]$Format = 2) {
+function New-TestPackage([string]$Name, [int]$Format = 3) {
     $dir = Join-Path $root $Name
     New-Item -ItemType Directory -Path $dir | Out-Null
     $files = @($baseFiles)
-    if ($Format -eq 2) { $files += 'libvpl.dll' }
+    if ($Format -ge 2) { $files += 'libvpl.dll' }
+    if ($Format -ge 3) { $files += 'libpyrowave-shared-1.dll' }
     $hashes = @{}
     foreach ($file in $files) {
         if ($file -eq 'install.ps1') { Copy-Item -LiteralPath $Installer -Destination (Join-Path $dir $file) }
@@ -45,7 +46,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $target 'user-config.json'), 'preserved user settings', $utf8)
     $before = Get-TestHashes
     # Denying delete on the last DLL forces a failure after earlier EXE/DLL replacements.
-    $locked = [IO.File]::Open((Join-Path $target 'libvpl.dll'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $locked = [IO.File]::Open((Join-Path $target 'libpyrowave-shared-1.dll'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
         $failed = $false
         try { & $Installer -SourceDir $new -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null }
@@ -54,7 +55,7 @@ try {
         Assert-TestHashes $before
     } finally { $locked.Dispose() }
     & $Installer -SourceDir $new -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null
-    foreach ($file in @($baseFiles) + @('libvpl.dll', 'version.json')) {
+    foreach ($file in @($baseFiles) + @('libvpl.dll','libpyrowave-shared-1.dll', 'version.json')) {
         Assert-Test ((Get-FileHash -LiteralPath (Join-Path $target $file)).Hash -eq (Get-FileHash -LiteralPath (Join-Path $new $file)).Hash) "New payload mismatch: $file"
     }
     Assert-Test ([IO.File]::ReadAllText((Join-Path $target 'user-config.json')) -eq 'preserved user settings') 'User settings changed'

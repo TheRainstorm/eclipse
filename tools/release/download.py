@@ -72,6 +72,10 @@ def linux_manifest(path):
         prefix = name[:-len('version.json')]
         required = {'uu', 'uu-gui', 'install.py', 'README.txt', 'eclipse.png',
                     'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt'}
+        version=manifest.get('format_version',1)
+        if type(version) is not int or version not in (1,2):
+            raise ValueError('Unsupported Linux package format version')
+        if version==2:required.add('libpyrowave-shared.so.1')
         if set(manifest.get('sha256', {})) != required or set(files) != {prefix + n for n in required | {'version.json'}}:
             raise ValueError('Unexpected Linux payload inventory')
         for filename, expected in manifest['sha256'].items():

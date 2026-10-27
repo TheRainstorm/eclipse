@@ -37,7 +37,7 @@ class DownloadTests(unittest.TestCase):
         # Inventory is imported by the same strict Windows installer verifier.
         from package import REQUIRED
         files = {name: ('fixture ' + name).encode() for name in REQUIRED}
-        files['version.json'] = self.manifest(files, format_version=2)
+        files['version.json'] = self.manifest(files, format_version=3)
         with zipfile.ZipFile(self.assets / self.windows, 'w') as archive:
             for name, data in files.items():
                 archive.writestr(name, data)

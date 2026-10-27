@@ -22,14 +22,14 @@ sudo update-alternatives --config x86_64-w64-mingw32-g++
 
 ## 编译与打包
 
-Windows 本机编译需准备 Rust 的 `x86_64-pc-windows-gnu` 工具链、64 位 MinGW（win32 线程模型）、CMake、NASM、Git 和 Python 3.11+，并在当前终端的 PATH 中提供这些工具。脚本会使用本机的 `gcc`、`g++`、`objdump` 和 `windres`；无需 Visual Studio。MSVC 工具链暂不适用于此打包脚本。
+Windows 本机编译需准备 Rust 的 `x86_64-pc-windows-gnu` 工具链、64 位 MinGW（win32 线程模型）、CMake 3.27+、NASM、Git 和 Python 3.11+，并在当前终端的 PATH 中提供这些工具。脚本会使用本机的 `gcc`、`g++`、`objdump` 和 `windres`；无需 Visual Studio。MSVC 工具链暂不适用于此打包脚本。
 
 ```bash
 python3 tools/windows/package.py
 ```
 
 脚本执行 `cargo build --release -p uu-gui -p uu-cli --target x86_64-pc-windows-gnu --locked`，
-从固定提交构建 MIT 许可的 Intel VPL dispatcher，检查 EXE / DLL 的 MinGW 动态依赖并收集运行库，再生成：
+从固定提交构建 MIT 许可的 Intel VPL dispatcher 和 PyroWave Vulkan 运行库，检查 EXE / DLL 的 MinGW 动态依赖并收集运行库，再生成：
 
 ```text
 artifacts/packages/uu-client-windows-x64-<提交号前12位>.zip
@@ -41,7 +41,7 @@ ZIP 解压后直接是 `uu-gui.exe`、`uu.exe`、两个 MinGW 运行 DLL、`libv
 `windows-latest.json` 指向最近一次成功完成的 Windows 包，并记录 ZIP 的 SHA256。
 源码或 `tools/windows` 有未提交改动时拒绝打包，避免版本号与实际源码不一致；提交后再运行即可。
 
-重复执行会先核验已有同提交 ZIP 的完整文件清单、哈希和目标平台，符合时直接复用并更新最新包指针，不调用 Cargo 或下载 VPL。`--rebuild` 可强制执行构建流程，仍保留 Cargo 缓存；显式提供 `--vpl-archive` 时也执行构建流程。`cargo check` 和 `cargo test` 分别产生检查与测试产物，不等于已经生成可安装的 release 包。
+重复执行会先核验已有同提交 ZIP 的完整文件清单、哈希和目标平台，符合时直接复用并更新最新包指针，不调用 Cargo 或下载运行库源码。`--rebuild` 可强制执行构建流程，仍保留 Cargo 缓存；显式提供 `--vpl-archive` 时也执行构建流程。`cargo check` 和 `cargo test` 分别产生检查与测试产物，不等于已经生成可安装的 release 包。
 构建沿用 Cargo 配置的目标目录（支持 `CARGO_TARGET_DIR`），输出目录可用 `--output-dir /path/to/packages` 指定。
 新包统一输出到忽略 Git 的 `artifacts/packages`；仓库旧 `dist/uu-gui-win64` 不再更新。
 
@@ -66,3 +66,5 @@ python3 -m unittest discover -s tools/windows -p 'test_*.py' -v
 ```
 
 Windows 还可运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/windows/test_installer.ps1`。它只在独立临时目录生成测试包，验证共享冲突回滚、配置保留与旧包兼容，不修改已有安装。
+
+PyroWave 运行库同样要求 CMake 3.27+（包括 Linux 上的 Windows 交叉构建），通过 Git 获取固定的上游和最小 Granite 依赖，使用预生成 shader。无需安装 Vulkan SDK 或 shader 编译器；GPU 功能由运行时驱动提供。完整包包含 `libpyrowave-shared-1.dll` 和许可；构建来源、限制与生成图复测见 [PyroWave](pyrowave.md)。

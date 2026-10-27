@@ -123,3 +123,7 @@ UU_DECODER=hw target/release/uu probe --h264 TEST.h264
 硬解必须检查最终仍为 `vaapi`、无错误和无线程崩溃；“初始化成功”不足以证明硬解可用。当前采用驱动分配的 DMA surfaces 和 VAImage 映射，避开桌面 Mesa 不支持的 ChromeOS GBM 标志与上游 DMA 去平铺越界。新版完整AU提交后，无重排120 AU样本输出120帧、首帧由AU2提前到AU0；含B帧样本仍有尾帧需要flush。不能把尾差当网络丢包，也不能据离线吞吐声称实机持续60/120FPS。
 
 实测多轮完整 Wayland 套件及正式安装包相对模式60秒持续运行均退出码0，四次切屏均完成、无切屏超时，元数据保持 AMD vDisplay 和 Zako HDR 两个物理源；键盘固定文本逐字匹配、C/V/X 均确认。Opus 空声卡录到440Hz测试音。正式包60秒运动画面测试末帧HUD约57 Rx / 56.7 De / 59.2 Rd FPS，解码4.60ms、解码错误0、坏帧0；只作为该次短测快照。仍需日常长稳、相对鼠标游戏手感、真实多屏跨DPI和其它GPU回归。
+
+### PyroWave 运行库
+
+v0.19.0 完整包增加 `libpyrowave-shared.so.1`。源码打包首次需要 Git、CMake 3.20+ 与 C++14 编译器以构建固定上游，之后核验散列并复用缓存。启用此格式还需 Vulkan 驱动；当前 Linux 路径包含像素上传/读回，范围、带宽与测量见 [PyroWave](pyrowave.md)。默认编码不变。

@@ -11,7 +11,13 @@ import tempfile
 
 LICENSES = ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt']
 
-PAYLOAD = ['uu-gui', 'uu', 'README.txt', 'install.py', 'eclipse.png', *LICENSES]
+LEGACY_PAYLOAD = ['uu-gui', 'uu', 'README.txt', 'install.py', 'eclipse.png', *LICENSES]
+PAYLOAD = [*LEGACY_PAYLOAD,'libpyrowave-shared.so.1']
+def required_files(manifest):
+    version=manifest.get('format_version',1)
+    if type(version) is not int or version not in (1,2):
+        raise ValueError('Unsupported Linux package format version')
+    return PAYLOAD if version==2 else LEGACY_PAYLOAD
 
 
 def verify_package(package):
@@ -25,9 +31,10 @@ def verify_package(package):
     if not isinstance(revision, str) or len(revision) != 40 or any(c not in '0123456789abcdef' for c in revision):
         raise ValueError('Invalid source revision')
     hashes = manifest.get('sha256')
-    if not isinstance(hashes, dict) or set(hashes) != set(PAYLOAD):
+    required=required_files(manifest)
+    if not isinstance(hashes, dict) or set(hashes) != set(required):
         raise ValueError('Invalid package hash manifest')
-    for name in PAYLOAD:
+    for name in required:
         path = package / name
         if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != hashes[name]:
             raise ValueError(f'Integrity check failed: {name}')
@@ -67,7 +74,7 @@ def main():
     package = args.package.resolve()
     manifest = verify_package(package)
     revision = manifest['source_commit']
-    for name in ['uu-gui', 'uu']:
+    for name in ['uu-gui', 'uu',*(['libpyrowave-shared.so.1'] if manifest.get('format_version')==2 else [])]:
         deps = subprocess.check_output(['ldd', str(package / name)], text=True)
         if 'not found' in deps: raise RuntimeError(f'Missing shared libraries for {name}: {deps}')
     prefix = args.prefix.expanduser().resolve()
@@ -81,7 +88,7 @@ def main():
     if not dest.exists():
         staging = Path(tempfile.mkdtemp(prefix='.install-', dir=releases))
         try:
-            for name in [*PAYLOAD, 'version.json']:
+            for name in [*required_files(manifest), 'version.json']:
                 shutil.copy2(package / name, staging / name)
             for name in ['uu-gui', 'uu']: (staging / name).chmod(0o755)
             staging.rename(dest)

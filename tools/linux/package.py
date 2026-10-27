@@ -19,11 +19,14 @@ _spec.loader.exec_module(_installer)
 PAYLOAD, verify_package = _installer.PAYLOAD, _installer.verify_package
 
 ROOT = Path(__file__).resolve().parents[2]
+_pyro_spec=importlib.util.spec_from_file_location('eclipse_pyrowave_runtime',ROOT/'tools/pyrowave/build.py')
+pyrowave_runtime=importlib.util.module_from_spec(_pyro_spec)
+_pyro_spec.loader.exec_module(pyrowave_runtime)
 LICENSES = ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt']
 
 SOURCE_PATHS = ['crates', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
-                '.cargo', 'tools/linux', 'tools/licenses', 'licenses', *LICENSES]
-FEATURES = ['vaapi', 'intel-vpl', 'opus', 'wayland-portal', 'wayland-screencopy', 'x11', 'gamepad']
+                '.cargo', 'tools/linux','tools/pyrowave', 'tools/licenses', 'licenses', *LICENSES]
+FEATURES = ['vaapi', 'intel-vpl', 'pyrowave','opus', 'wayland-portal', 'wayland-screencopy', 'x11', 'gamepad']
 
 
 def reuse_archive(archive, destination, revision):
@@ -97,15 +100,17 @@ def main(argv=None):
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], cwd=ROOT, text=True))
     binaries = Path(metadata['target_directory']) / 'release'
     subprocess.run(['cargo', 'build', '--release', '-p', 'uu-gui', '-p', 'uu-cli', '--features', 'vaapi', '--locked'], cwd=ROOT, check=True)
+    pyrowave=pyrowave_runtime.build(jobs=min(6,int(os.environ.get('CARGO_BUILD_JOBS','6'))),output=Path(metadata['target_directory'])/'pyrowave-runtime'/pyrowave_runtime.NATIVE)
     if source_revision() != revision: raise RuntimeError('Source revision changed during the build; package was not created')
     dest.mkdir(parents=True, exist_ok=True)
     for name in ['uu-gui', 'uu']: shutil.copy2(binaries / name, dest / name)
+    shutil.copy2(pyrowave,dest/'libpyrowave-shared.so.1')
     shutil.copy2(ROOT / 'tools/linux/install.py', dest / 'install.py')
     shutil.copy2(ROOT / 'assets/branding/eclipse-512.png', dest / 'eclipse.png')
     for name in LICENSES: shutil.copy2(ROOT / name, dest / name)
     shutil.copy2(ROOT / 'tools/linux/README.txt', dest / 'README.txt')
-    files = {name: hashlib.sha256((dest / name).read_bytes()).hexdigest() for name in ['uu-gui', 'uu', 'install.py', 'README.txt', 'eclipse.png', *LICENSES]}
-    manifest = {'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(), 'platform': f'linux-{platform.machine()}', 'features': FEATURES, 'build_glibc': platform.libc_ver(), 'sha256': files}
+    files = {name: hashlib.sha256((dest / name).read_bytes()).hexdigest() for name in PAYLOAD}
+    manifest = {'format_version':2,'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(), 'platform': f'linux-{platform.machine()}', 'features': FEATURES, 'build_glibc': platform.libc_ver(),'runtime_sources':{'pyrowave':pyrowave_runtime.LOCK}, 'sha256': files}
     (dest / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     archive = str(dest) + '.tar.gz'
     with tempfile.TemporaryDirectory(prefix='.linux-package-', dir=dest.parent) as temp:

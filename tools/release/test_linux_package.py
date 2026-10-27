@@ -74,9 +74,9 @@ class LinuxPackageTests(unittest.TestCase):
         package = self.root / revision[:12];package.mkdir()
         for name in installer.PAYLOAD:
             target = package / name
-            if name in ('uu', 'uu-gui'): shutil.copy2('/bin/true', target)
+            if name in ('uu', 'uu-gui','libpyrowave-shared.so.1'): shutil.copy2('/bin/true', target)
             else: target.write_text('owned fixture/' + name)
-        manifest = {'source_commit': revision, 'sha256': {name: hashlib.sha256((package / name).read_bytes()).hexdigest() for name in installer.PAYLOAD}}
+        manifest = {'format_version':2,'source_commit': revision, 'sha256': {name: hashlib.sha256((package / name).read_bytes()).hexdigest() for name in installer.PAYLOAD}}
         (package / 'version.json').write_text(json.dumps(manifest))
         return package
 
@@ -158,7 +158,7 @@ class LinuxPackageTests(unittest.TestCase):
 
     def test_revision_change_during_build_never_publishes_a_package(self):
         metadata = json.dumps({'target_directory': str(self.root / 'custom-target')})
-        with patch.object(packager, 'ROOT', self.root), patch.object(packager, 'source_revision', side_effect=['a' * 40, 'b' * 40]), patch.object(packager.subprocess, 'check_output', return_value=metadata), patch.object(packager.subprocess, 'run'):
+        with patch.object(packager, 'ROOT', self.root), patch.object(packager, 'source_revision', side_effect=['a' * 40, 'b' * 40]), patch.object(packager.subprocess, 'check_output', return_value=metadata), patch.object(packager.subprocess, 'run'), patch.object(packager.pyrowave_runtime,'build',return_value=self.root/'fixture-runtime.so'):
             with self.assertRaisesRegex(RuntimeError, 'changed during'):packager.main([])
         self.assertFalse((self.root / 'artifacts').exists())
 
@@ -166,9 +166,10 @@ class LinuxPackageTests(unittest.TestCase):
         metadata = json.dumps({'target_directory': str(self.root / 'custom-target')})
         binaries = self.root / 'custom-target/release';binaries.mkdir(parents=True)
         for name in ('uu', 'uu-gui'):(binaries / name).write_bytes(('owned ' + name).encode())
+        (self.root/'fixture-runtime.so').write_bytes(b'owned Vulkan runtime fixture')
         for path in ['tools/linux/install.py', 'tools/linux/README.txt', 'assets/branding/eclipse-512.png', *packager.LICENSES]:
             target = self.root / path;target.parent.mkdir(parents=True, exist_ok=True);target.write_text(path)
-        with patch.object(packager, 'ROOT', self.root), patch.object(packager, 'source_revision', return_value='a' * 40), patch.object(packager.subprocess, 'check_output', return_value=metadata), patch.object(packager.subprocess, 'run'), contextlib.redirect_stdout(io.StringIO()):packager.main([])
+        with patch.object(packager, 'ROOT', self.root), patch.object(packager, 'source_revision', return_value='a' * 40), patch.object(packager.subprocess, 'check_output', return_value=metadata), patch.object(packager.subprocess, 'run'), patch.object(packager.pyrowave_runtime,'build',return_value=self.root/'fixture-runtime.so'), contextlib.redirect_stdout(io.StringIO()):packager.main([])
         archives = list((self.root / 'artifacts/packages').glob('*.tar.gz'));self.assertEqual(len(archives), 1)
         with tarfile.open(archives[0]) as archive:
             manifest = next(entry for entry in archive if entry.name.endswith('/version.json'))

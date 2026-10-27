@@ -15,22 +15,27 @@ import tempfile
 import zipfile
 
 import vpl_runtime
+import importlib.util
 
 ROOT = Path(__file__).resolve().parents[2]
+_pyro_spec=importlib.util.spec_from_file_location('eclipse_pyrowave_runtime',ROOT/'tools/pyrowave/build.py')
+pyrowave_runtime=importlib.util.module_from_spec(_pyro_spec)
+_pyro_spec.loader.exec_module(pyrowave_runtime)
 OUTPUT = ROOT / 'artifacts/packages'
 TARGET = 'x86_64-pc-windows-gnu'
 LICENSES = ('LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt')
 LEGACY_REQUIRED = ('uu-gui.exe', 'uu.exe', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll',
             'README.txt', 'install.ps1', *LICENSES)
-REQUIRED = (*LEGACY_REQUIRED, 'libvpl.dll')
+VPL_REQUIRED = (*LEGACY_REQUIRED, 'libvpl.dll')
+REQUIRED = (*VPL_REQUIRED,'libpyrowave-shared-1.dll')
 
 def required_files(manifest):
     version = manifest.get('format_version', 1)
-    if type(version) is not int or version not in (1, 2):
+    if type(version) is not int or version not in (1, 2, 3):
         raise ValueError('不支持的 Windows 包格式版本')
-    return REQUIRED if version == 2 else LEGACY_REQUIRED
+    return REQUIRED if version == 3 else VPL_REQUIRED if version==2 else LEGACY_REQUIRED
 SOURCE_PATHS = ('crates', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
-                '.cargo', 'tools/windows', 'tools/licenses', 'licenses', *LICENSES)
+                '.cargo', 'tools/windows', 'tools/pyrowave','tools/licenses', 'licenses', *LICENSES)
 
 
 
@@ -120,7 +125,7 @@ def build_package(output, vpl_archive=None, rebuild=False):
     if not rebuild and vpl_archive is None and archive.is_file():
         try:
             manifest = verify_package(archive)
-            if manifest['source_commit'] == revision and manifest.get('target') == TARGET and manifest.get('format_version') == 2:
+            if manifest['source_commit'] == revision and manifest.get('target') == TARGET and manifest.get('format_version') == 3:
                 if clean_revision() != revision:
                     raise RuntimeError('核验缓存期间源码版本发生变化')
                 result = {'source_commit': revision, 'archive': archive.name, 'sha256': sha256(archive)}
@@ -140,6 +145,8 @@ def build_package(output, vpl_archive=None, rebuild=False):
     subprocess.run(['cargo', 'build', '--release', '-p', 'uu-gui', '-p', 'uu-cli',
                     '--target', TARGET, '--locked'], cwd=ROOT, check=True)
     dispatcher = vpl_runtime.build_dispatcher(Path(metadata['target_directory']) / 'vpl-runtime', vpl_archive)
+    pyrowave = pyrowave_runtime.build(jobs=min(6,int(os.environ.get('CARGO_BUILD_JOBS','6'))),
+        output=Path(metadata['target_directory'])/'pyrowave-runtime'/TARGET,target=TARGET)
     if clean_revision() != revision:
         raise RuntimeError('构建期间提交号发生变化，请重新打包')
     output.mkdir(parents=True, exist_ok=True)
@@ -154,14 +161,15 @@ def build_package(output, vpl_archive=None, rebuild=False):
                                    ('libstdc++-6.dll', compiler_tool('g++'))]:
             shutil.copy2(runtime_dll(compiler, filename), staging / filename)
         shutil.copy2(dispatcher, staging / 'libvpl.dll')
+        shutil.copy2(pyrowave,staging/'libpyrowave-shared-1.dll')
         for filename in ('README.txt', 'install.ps1'):
             shutil.copy2(ROOT / 'tools/windows' / filename, staging / filename)
         for filename in LICENSES:
             shutil.copy2(ROOT / filename, staging / filename)
         verify_imports(staging)
-        manifest = {'format_version': 2, 'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
+        manifest = {'format_version': 3, 'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
                     'target': TARGET,
-                    'runtime_sources': {'intel_vpl': vpl_runtime.COMMIT},
+                    'runtime_sources': {'intel_vpl': vpl_runtime.COMMIT,'pyrowave':pyrowave_runtime.LOCK},
                     'sha256': {filename: sha256(staging / filename) for filename in REQUIRED}}
         (staging / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         zip_path = Path(temp) / archive.name

@@ -34,11 +34,12 @@ if ($null -ne $manifest.format_version) {
     }
     $format = $manifest.format_version
 }
-if ($format -notin @(1, 2)) { throw 'Unsupported package format version' }
+if ($format -notin @(1, 2, 3)) { throw 'Unsupported package format version' }
 if ($manifest.source_commit -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid source commit' }
 $required = @('uu-gui.exe','uu.exe','libgcc_s_seh-1.dll','libstdc++-6.dll','README.txt','install.ps1',
               'LICENSE','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt')
-if ($format -eq 2) { $required += 'libvpl.dll' }
+if ($format -ge 2) { $required += 'libvpl.dll' }
+if ($format -ge 3) { $required += 'libpyrowave-shared-1.dll' }
 $hashNames = @($manifest.sha256.PSObject.Properties.Name)
 if ($hashNames.Count -ne $required.Count -or @($hashNames | Where-Object { $_ -cnotin $required }).Count) {
     throw 'Invalid package hash manifest'
