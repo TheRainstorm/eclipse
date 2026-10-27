@@ -842,8 +842,12 @@ impl App {
             if reconnect {
                 self.output_reconnect_pending=true;self.stop_connection();self.status="正在应用原生串流画质…".into();
             }else if dynamic {
-                let settings=uu_core::native_quality::Update{fps:request.fps,bitrate_kbps:request.bitrate_kbps};
                 if let Some(h)=&self.controller {
+                    let rate=*h.stats.native_rate_response.lock().unwrap();
+                    if rate.is_none() && self.preferences.rate_control.is_some() {
+                        self.settings_feedback="此主机不支持客户端选择码率模式，请升级主机".into();return;
+                    }
+                    let settings=uu_core::native_quality::Update{fps:request.fps,bitrate_kbps:request.bitrate_kbps,rate_control:rate.map(|r|self.preferences.rate_control.unwrap_or(r.default))};
                     if h.stats.native_quality_current.lock().unwrap().as_ref()==Some(&settings){return;}
                     self.settings_seq=self.settings_seq.wrapping_add(1);
                     self.settings_feedback=match h.native_input.as_ref().ok_or("画质控制通路未连接").and_then(|input|input.set_quality(self.settings_seq,settings).map_err(|_|"画质请求队列已满或连接已关闭")) {

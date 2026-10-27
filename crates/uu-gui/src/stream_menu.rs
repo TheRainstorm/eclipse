@@ -606,6 +606,23 @@ impl super::App {
             if !actual.is_empty(){ui.small(format!("当前编码：{}",actual.trim_start_matches("video/")));}
         }
         separator(ui);
+        if self.is_native() {
+            ui.small("码率模式");
+            let response=self.controller.as_ref().and_then(|h|*h.stats.native_rate_response.lock().unwrap());
+            ui.add_enabled_ui(response.is_some(),|ui| {
+                use uu_core::native_quality::RateMode;
+                for (mode,label) in [(None,"跟随主机"),(Some(RateMode::Cbr),"CBR · 固定码率"),(Some(RateMode::Vbr),"VBR · 可变码率")] {
+                    if menu_row(ui,label,None,self.preferences.rate_control==mode,false,"",false).clicked() {
+                        self.preferences.rate_control=mode;self.confirm_quality(ui);
+                    }
+                }
+            });
+            if let Some(response)=response {
+                let current=self.controller.as_ref().and_then(|h|*h.stats.native_quality_current.lock().unwrap()).and_then(|s|s.rate_control).unwrap_or(response.applied);
+                ui.small(format!("当前 {} · 主机默认 {}",current.label(),response.default.label()));
+            }else {ui.small("主机未提供码率模式切换");}
+            separator(ui);
+        }
         ui.small("码率");
         for (index,(label,_,_)) in super::BITRATE_PRESETS.iter().enumerate() {
             let custom=index==4;

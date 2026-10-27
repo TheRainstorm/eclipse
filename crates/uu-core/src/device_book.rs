@@ -33,9 +33,7 @@ impl Encoding {
     }
 }
 
-#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
-#[serde(rename_all="snake_case")]
-pub enum RateMode {#[default] Cbr,Vbr}
+pub use crate::native_quality::RateMode;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Sharing {

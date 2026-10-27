@@ -503,7 +503,7 @@ fn encode_source(
                 ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"画质请求已取消");
                 change.settings.validate()?;
                 let bitrate_kbps=change.settings.bitrate(settings.width,settings.height);
-                let rate_control=match settings.rate_control {uu_media::encoder::RateControl::Cbr=>uu_media::encoder::RateControl::Cbr,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:bitrate_kbps.saturating_mul(2)}};
+                let rate_control=change.settings.rate_control.unwrap_or_else(||crate::native_quality::RateMode::from_encoder(settings.rate_control)).encoder(bitrate_kbps);
                 let updated=uu_media::encoder::Settings{fps:change.settings.fps,bitrate_kbps,rate_control,..settings};
                 updated.validate()?;
                 if updated.fps!=settings.fps || updated.rate_control!=settings.rate_control {
@@ -681,6 +681,11 @@ async fn send_video(
     let refresh = Arc::new(AtomicBool::new(false));
     let preparation_started=Instant::now();
     let dynamic=crate::native_quality::runtime_requested(&offer.sdp)?;
+    let rate_request:Option<crate::native_quality::RateRequest>=crate::native_quality::get(&offer.sdp,crate::native_quality::RATE_ATTRIBUTE)?;
+    let default_rate=crate::native_quality::RateMode::from_encoder(config.rate_control);
+    if let Some(mode)=rate_request.and_then(|r|r.selection).filter(|_|config.video_policy.is_some()) {
+        config.rate_control=mode.encoder(config.bitrate_kbps);
+    }
     let request=crate::native_quality::Request::read(&offer.sdp)?;
     let policy=config.video_policy.clone();
     let request=if policy.is_some(){request}else{None};
@@ -724,7 +729,7 @@ async fn send_video(
             let separate=crate::capture_overlap::separate_from_env()?;
             crate::capture_overlap::prepare_device(capture.as_mut(),crate::capture_overlap::requested_from_env()?,separate)?;
             let (width,height)=capture.resolution();validate_video(width,height,fps)?;
-            let kbps=if automatic {crate::native_quality::Update{fps,bitrate_kbps:None}.bitrate(width,height)}else{kbps};
+            let kbps=if automatic {crate::native_quality::Update{fps,bitrate_kbps:None,rate_control:None}.bitrate(width,height)}else{kbps};
             let rate_control=match rate_control {uu_media::encoder::RateControl::Cbr=>rate_control,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:kbps.saturating_mul(2)}};
             let source_metadata=capture.hdr_metadata();
             let settings=|codec,hdr|uu_media::encoder::Settings {hdr,source_hdr:source_metadata,tuning:config.encoder_tuning,codec,rate_control,width,height,fps,bitrate_kbps:kbps,preference};
@@ -791,6 +796,9 @@ async fn send_video(
     if typed_gamepads {crate::native_gamepad::advertise(&mut description);}
     if config.video_policy.is_some() {
         crate::native_quality::Response{dynamic,codecs:available,max_fps:if dynamic{crate::native_quality::MAX_FPS}else{60},max_bitrate_kbps:if dynamic{crate::native_quality::MAX_BITRATE_KBPS}else{100_000}}.add(&mut description)?;
+        if rate_request.is_some() {
+            crate::native_quality::put(&mut description,crate::native_quality::RATE_ATTRIBUTE,&crate::native_quality::RateResponse{default:default_rate,applied:crate::native_quality::RateMode::from_encoder(encoder_settings.rate_control)})?;
+        }
     }
     let answer = Answer {
         codec:config.codec,
@@ -1000,6 +1008,12 @@ async fn receive_session(
         request.fps=current.fps;request.bitrate_kbps=current.bitrate_kbps;
     }
     if let Some(request)=&quality_request {request.add(&mut description)?;}
+    let rate_request=stats.native_rate_request.get().map(|request| {
+        let mut request=*request;
+        if let Some(current)=*stats.native_quality_current.lock().unwrap() {request.selection=current.rate_control.or(request.selection);}
+        request
+    });
+    if let Some(request)=rate_request {crate::native_quality::put(&mut description,crate::native_quality::RATE_ATTRIBUTE,&request)?;}
     if let Some(codecs)=stats.native_hdr_codecs.get().filter(|codecs|!codecs.is_empty()) {
         crate::native_color::Request{codecs:codecs.clone()}.add(&mut description)?;
     }
@@ -1028,6 +1042,13 @@ async fn receive_session(
         Ok(None)=>{},
     }
     let quality=crate::native_quality::Response::read(&answer.sdp)?;
+    let rate:Option<crate::native_quality::RateResponse>=crate::native_quality::get(&answer.sdp,crate::native_quality::RATE_ATTRIBUTE)?;
+    ensure!(rate.is_none()||stats.native_rate_request.get().is_some(),"主机返回未请求的码率模式");
+    if let Some(requested)=rate_request.and_then(|r|r.selection) {
+        ensure!(rate.is_some(),"此主机不支持客户端选择码率模式，请升级主机或选择跟随主机");
+        ensure!(rate.is_some_and(|r|r.applied==requested),"主机未应用请求的码率模式");
+    }
+    *stats.native_rate_response.lock().unwrap()=rate;
     let hdr=crate::native_color::Response::read(&answer.sdp)?;
     if let Some(response)=&hdr {
         ensure!(response.codec==answer.codec && crate::native_media::offers_hdr_codec(&answer.sdp,answer.codec) && stats.native_hdr_capable.load(Ordering::Acquire)
@@ -1039,13 +1060,13 @@ async fn receive_session(
     let typed_gamepads=crate::native_gamepad::typed_offered(&answer.sdp);
     if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"主机实际编码与能力回报不一致");}
     stats.capabilities.enable(crate::capabilities::Capability::Quality,quality.is_some());
-    stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":quality_request,"host_capabilities":quality}));
+    stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":quality_request,"host_capabilities":quality,"rate_control":rate}));
     *stats.native_quality_response.lock().unwrap()=quality;
     // Complete dimension-dependent driver work before setting remote SDP can
     // start ICE/DTLS and release the first burst of video into the AU queue.
     peer.prepare_video(answer.width, answer.height, answer.codec,&stats).await?;
     stats.configured_fps.store(answer.fps,Ordering::Release);
-    *stats.native_quality_current.lock().unwrap()=quality_request.as_ref().map(|request|crate::native_quality::Update{fps:answer.fps,bitrate_kbps:request.bitrate_kbps});
+    *stats.native_quality_current.lock().unwrap()=quality_request.as_ref().map(|request|crate::native_quality::Update{fps:answer.fps,bitrate_kbps:request.bitrate_kbps,rate_control:rate.map(|r|r.applied)});
     match stream.lan_peer() {
         Some(ip) => peer.remote(answer.sdp, ip).await?,
         None => peer.remote_direct(answer.sdp).await?,
@@ -1400,14 +1421,16 @@ mod tests {
         let stats=Arc::new(MediaStats::default());let observed=stats.clone();
         stats.native_codec_capabilities.set(vec![VideoCodec::H264]).unwrap();
         stats.native_quality_request.set(crate::native_quality::Request{fps:120,bounds:None,bitrate_kbps:Some(8000),codec:None}).unwrap();
+        stats.native_rate_request.set(crate::native_quality::RateRequest{selection:None}).unwrap();
         let (frames,_images)=frame_channel();let (stop,rx)=watch::channel(false);
         let (input,receive)=crate::native_input::channel(false);
         let viewer=tokio::spawn(async move{view_with_input(&invite,frames,observed,rx,receive).await});
         let result=timeout(Duration::from_secs(16),async {
             while stats.decoded_total.load(Ordering::Acquire)<8 {tokio::time::sleep(Duration::from_millis(5)).await;}
             ensure!(stats.configured_fps.load(Ordering::Acquire)==120,"old host FPS still caps the client");
+            ensure!(stats.native_rate_response.lock().unwrap().is_some_and(|r|r.default==crate::native_quality::RateMode::Cbr&&r.applied==r.default),"missing host rate default");
             let epoch=stats.native_media_epoch.load(Ordering::Acquire);
-            for (index,settings) in [crate::native_quality::Update{fps:24,bitrate_kbps:Some(500)},crate::native_quality::Update{fps:120,bitrate_kbps:Some(150_000)},crate::native_quality::Update{fps:240,bitrate_kbps:None}].into_iter().enumerate() {
+            for (index,settings) in [crate::native_quality::Update{fps:24,bitrate_kbps:Some(500),rate_control:None},crate::native_quality::Update{fps:120,bitrate_kbps:Some(150_000),rate_control:None},crate::native_quality::Update{fps:240,bitrate_kbps:None,rate_control:None}].into_iter().enumerate() {
                 let request=index as u64+1;
                 input.set_quality(request,settings)?;
                 loop {
@@ -1426,7 +1449,20 @@ mod tests {
                 ensure!(matches!(*host_phase.borrow(),HostStatus::Streaming{fps,..} if fps==settings.fps),"host status retains old FPS");
             }
             ensure!(stats.errors.load(Ordering::Acquire)==0,"decoder errors after reconfiguration");
-            ensure!(input.set_quality(99,crate::native_quality::Update{fps:0,bitrate_kbps:None}).is_err(),"invalid update entered control queue");
+            let previous=*stats.native_quality_current.lock().unwrap();
+            input.set_quality(20,crate::native_quality::Update{fps:60,bitrate_kbps:Some(8000),rate_control:Some(crate::native_quality::RateMode::Vbr)})?;
+            loop {
+                if let Some(applied)=stats.native_quality_applied.lock().unwrap().as_ref().filter(|a|a.request==20) {
+                    ensure!(applied.error.is_some(),"software VBR silently accepted");break;
+                }
+                ensure!(!viewer.is_finished(),"viewer stopped on unsupported rate mode");
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            ensure!(*stats.native_quality_current.lock().unwrap()==previous,"failed replacement changed live settings");
+            let baseline=stats.decoded_total.load(Ordering::Acquire);
+            while stats.decoded_total.load(Ordering::Acquire)<baseline+8 {tokio::time::sleep(Duration::from_millis(5)).await;}
+            ensure!(stats.native_media_epoch.load(Ordering::Acquire)==epoch,"failed replacement reconnected media");
+            ensure!(input.set_quality(99,crate::native_quality::Update{fps:0,bitrate_kbps:None,rate_control:None}).is_err(),"invalid update entered control queue");
             Ok::<_,anyhow::Error>(())
         }).await;
         stop.send_replace(true);host_stop.send_replace(true);
@@ -1745,7 +1781,7 @@ mod overlap_integration_tests {
     async fn slow_encode_gets_latest_pixels_preserves_idr_and_ignores_cancelled_quality(){
         let(mut worker,tx,entered,release,refresh)=setup(false);tx.send(Event::Frame(1)).unwrap();assert_eq!(entered.recv_timeout(Duration::from_secs(1)).unwrap(),1);
         for id in 2..=10 {tx.send(Event::Frame(id)).unwrap();}fence(&tx);
-        let cancelled=worker.quality.request(crate::native_quality::Update{fps:24,bitrate_kbps:Some(500)}).unwrap();drop(cancelled);refresh.store(true,Ordering::Release);release.send(()).unwrap();
+        let cancelled=worker.quality.request(crate::native_quality::Update{fps:24,bitrate_kbps:Some(500),rate_control:None}).unwrap();drop(cancelled);refresh.store(true,Ordering::Release);release.send(()).unwrap();
         let first=timeout(Duration::from_secs(1),worker.frames.recv()).await.unwrap().unwrap().unwrap();assert_eq!(first.data[0],1);
         let latest=timeout(Duration::from_secs(1),worker.frames.recv()).await.unwrap().unwrap().unwrap();assert_eq!(latest.data[0],10);assert!(latest.is_keyframe,"IDR arriving during encode was lost");assert_eq!(worker.quality_state.borrow().fps,60);
         worker.stop().await.unwrap();
@@ -1761,7 +1797,7 @@ mod overlap_integration_tests {
     async fn applied_quality_ack_retires_old_raw_and_new_encoder_starts_a_matching_chain(){
         let(mut worker,tx,entered,release,_)=setup(false);tx.send(Event::Frame(1)).unwrap();entered.recv_timeout(Duration::from_secs(1)).unwrap();
         tx.send(Event::Frame(2)).unwrap();fence(&tx);
-        let applied=worker.quality.request(crate::native_quality::Update{fps:24,bitrate_kbps:Some(500)}).unwrap();release.send(()).unwrap();
+        let applied=worker.quality.request(crate::native_quality::Update{fps:24,bitrate_kbps:Some(500),rate_control:None}).unwrap();release.send(()).unwrap();
         let first=timeout(Duration::from_secs(1),worker.frames.recv()).await.unwrap().unwrap().unwrap();assert_eq!(first.data[0],1);
         assert_eq!(timeout(Duration::from_secs(2),applied).await.unwrap().unwrap().unwrap(),500);
         assert!(!first.capture_lease.as_ref().unwrap().valid(),"old raw generation survived quality acknowledgement");

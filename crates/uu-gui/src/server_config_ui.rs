@@ -21,12 +21,13 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
             egui::ComboBox::from_id_salt("server-codec").selected_text(match s.codec{None=>"自动协商",Some(VideoCodec::H264)=>"H.264",Some(VideoCodec::Hevc)=>"HEVC",Some(VideoCodec::Av1)=>"AV1"}).show_ui(ui,|ui| {
                 for (codec,label) in [(None,"自动协商"),(Some(VideoCodec::H264),"H.264"),(Some(VideoCodec::Hevc),"HEVC"),(Some(VideoCodec::Av1),"AV1")] {ui.selectable_value(&mut s.codec,codec,label);}
             });
-            ui.label("码率模式");
+            ui.label("默认码率模式");
             egui::ComboBox::from_id_salt("server-rate").selected_text(match s.rate_control{RateMode::Cbr=>"CBR",RateMode::Vbr=>"VBR"}).show_ui(ui,|ui|{
                 ui.selectable_value(&mut s.rate_control,RateMode::Cbr,"CBR");ui.selectable_value(&mut s.rate_control,RateMode::Vbr,"VBR");
             });
         });
         ui.weak("服务端明确选择时优先；服务端自动时使用客户端选择，双方自动按 AV1 → HEVC → H.264 协商。");
+        ui.weak("码率模式默认由主机提供；客户端可为当前串流切换 CBR / VBR，不改写主机配置。VBR 峰值随客户端目标码率调整为两倍。");
         ui.add_space(10.);
         let label=match s.encoding{Encoding::Auto=>"自动",Encoding::Hardware=>"硬件",Encoding::Intel=>"Intel QSV",Encoding::Nvidia=>"NVIDIA 硬件",Encoding::Amd=>"AMD AMF",Encoding::Software=>"软件 H.264"};
         egui::ComboBox::from_id_salt("server-encoding").selected_text(label).show_ui(ui,|ui| {

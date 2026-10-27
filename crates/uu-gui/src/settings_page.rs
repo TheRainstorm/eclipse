@@ -178,6 +178,14 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                     }
                 });
                 ui.end_row();
+                ui.label("原生码率模式");
+                combo(ui,"settings-rate-control",s.rate_control.map_or("跟随主机",|r|r.label()),|ui| {
+                    use uu_core::native_quality::RateMode;
+                    ui.selectable_value(&mut s.rate_control,None,"跟随主机");
+                    ui.selectable_value(&mut s.rate_control,Some(RateMode::Cbr),"CBR · 固定码率");
+                    ui.selectable_value(&mut s.rate_control,Some(RateMode::Vbr),"VBR · 可变码率");
+                });
+                ui.end_row();
                 ui.label("码率");
                 combo(
                     ui,

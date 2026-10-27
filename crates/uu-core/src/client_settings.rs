@@ -47,6 +47,8 @@ pub struct ClientSettings {
     pub custom_mbps: u32,
     pub resolution: usize,
     pub codec: CodecPreference,
+    /// None follows the host default; explicit modes affect only this session.
+    pub rate_control: Option<crate::native_quality::RateMode>,
     pub volume: u32,
     pub muted: bool,
     pub hud: bool,
@@ -69,7 +71,7 @@ pub struct ClientSettings {
 impl Default for ClientSettings {
     fn default() -> Self {
         Self { fps:60, display_mode:crate::screen_control::DisplayMode::Preserve,
-            bitrate:0,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,
+            bitrate:0,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,rate_control:None,
             volume:100,muted:false,hud:false,capture_keyboard:true,
             vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
             cursor_mode:CursorMode::Both,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }

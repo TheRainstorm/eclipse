@@ -14,6 +14,29 @@ pub fn runtime_requested(sdp:&RTCSessionDescription)->Result<bool>{Ok(get::<bool
 pub const MAX_FPS:u32=240;
 pub const MAX_BITRATE_KBPS:u32=1_000_000;
 
+/// Separate attributes keep the original, strict quality request compatible
+/// with peers that do not understand client rate-control selection.
+pub const RATE_ATTRIBUTE:&str="x-eclipse-rate-v1";
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum RateMode { Cbr, Vbr }
+impl Default for RateMode { fn default()->Self {Self::Cbr} }
+impl RateMode {
+    pub fn label(self)->&'static str {match self {Self::Cbr=>"CBR",Self::Vbr=>"VBR"}}
+    pub fn encoder(self,target:u32)->uu_media::encoder::RateControl {
+        match self {Self::Cbr=>uu_media::encoder::RateControl::Cbr,Self::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:target.saturating_mul(2)}}
+    }
+    pub fn from_encoder(rate:uu_media::encoder::RateControl)->Self {
+        match rate {uu_media::encoder::RateControl::Cbr=>Self::Cbr,_=>Self::Vbr}
+    }
+}
+#[derive(Clone,Copy,Debug,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateRequest { pub selection:Option<RateMode> }
+#[derive(Clone,Copy,Debug,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateResponse { pub default:RateMode,pub applied:RateMode }
+
 /// Relative preparation durations on the host's own monotonic clock. This is
 /// optional diagnostic metadata, independent of frame latency and wall clocks.
 #[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
@@ -37,7 +60,12 @@ impl Startup {
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Update {pub fps:u32,pub bitrate_kbps:Option<u32>}
+pub struct Update {
+    pub fps:u32,pub bitrate_kbps:Option<u32>,
+    /// Absent for old peers. Send only after RATE_ATTRIBUTE was negotiated.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub rate_control:Option<RateMode>,
+}
 impl Update {
     pub fn validate(self)->Result<()> {
         ensure!((5..=MAX_FPS).contains(&self.fps),"帧率请求超出编码接口范围");
@@ -134,6 +162,19 @@ pub(crate) fn get<T:DeserializeOwned>(sdp:&RTCSessionDescription,key:&str)->Resu
 mod tests {
     use super::*;
     #[test]
+    fn rate_extension_leaves_legacy_updates_unchanged_and_roundtrips_separately() {
+        let legacy=br#"{"fps":60,"bitrate_kbps":8000}"#;
+        let update:Update=serde_json::from_slice(legacy).unwrap();
+        assert_eq!(update.rate_control,None);
+        assert_eq!(serde_json::to_vec(&update).unwrap(),legacy);
+        let mut sdp=RTCSessionDescription::offer("v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H264/90000\r\na=recvonly\r\n".into()).unwrap();
+        put(&mut sdp,RATE_ATTRIBUTE,&RateRequest{selection:Some(RateMode::Vbr)}).unwrap();
+        assert_eq!(get::<RateRequest>(&sdp,RATE_ATTRIBUTE).unwrap().unwrap().selection,Some(RateMode::Vbr));
+        assert!(Request::read(&sdp).unwrap().is_none());
+        assert!(serde_json::from_str::<RateRequest>(r#"{"selection":"garbage"}"#).is_err());
+        assert_eq!(RateMode::Vbr.encoder(1_000_000).peak(1_000_000),2_000_000);
+    }
+    #[test]
     fn attributes_round_trip_through_real_sdp_parser_and_leave_v1_envelope_unchanged() {
         let mut sdp=RTCSessionDescription::offer("v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H264/90000\r\na=recvonly\r\n".into()).unwrap();
         let request=Request{fps:120,bounds:Some([1920,1080]),bitrate_kbps:Some(8000),codec:Some(VideoCodec::H264)};
@@ -158,7 +199,7 @@ mod owner_wake_tests {
         use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
         let(runtime,changes)=Runtime::channel();let calls=Arc::new(AtomicUsize::new(0));let seen=calls.clone();
         runtime.set_wake(Some(Arc::new(move ||{seen.fetch_add(1,Ordering::SeqCst);})));
-        let reply=runtime.request(Update{fps:120,bitrate_kbps:Some(40000)}).unwrap();assert_eq!(calls.load(Ordering::SeqCst),1);
+        let reply=runtime.request(Update{fps:120,bitrate_kbps:Some(40000),rate_control:None}).unwrap();assert_eq!(calls.load(Ordering::SeqCst),1);
         drop(reply);let change=changes.recv().unwrap();assert!(change.reply.is_closed());
         runtime.wake();assert_eq!(calls.load(Ordering::SeqCst),2);
         runtime.set_wake(None);runtime.wake();assert_eq!(calls.load(Ordering::SeqCst),2);

@@ -165,6 +165,7 @@ impl App {
         let kind=self.decoder_kind();
         let _=stats.decoder_preference.set(kind);
         let _=stats.native_quality_request.set(self.preferences.native_request());
+        let _=stats.native_rate_request.set(uu_core::native_quality::RateRequest{selection:self.preferences.rate_control});
         let _=stats.native_hdr_requested.set(self.preferences.hdr);
         #[cfg(windows)]
         if self.preferences.hdr && kind!=uu_core::media::DecoderKind::Software && self.preferences.codec!=super::settings::CodecPreference::H264 {

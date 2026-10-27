@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
                     }
                     if (count>=20&&requested==0)||(count>=40&&requested==1&&applied_quality.len()==1) {
                         requested+=1;
-                        quality.set_quality(requested,native_quality::Update{fps:if requested==1{60}else{24},bitrate_kbps:Some(2000)})?;
+                        quality.set_quality(requested,native_quality::Update{fps:if requested==1{60}else{24},bitrate_kbps:Some(2000),rate_control:None})?;
                     }
                 }
                 if exercise_input && !input_sent && count>=10
