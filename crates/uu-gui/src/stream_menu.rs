@@ -830,7 +830,7 @@ impl super::App {
                                         if changed{self.audio_save_after=Some(std::time::Instant::now()+std::time::Duration::from_millis(250));}
                                     });
                                     }
-                                    if self.supports_remote(uu_core::capabilities::Capability::Input) {
+                                    if self.input_controls_available() {
                                     side_submenu(ui, &mut blocked, Icon::Keyboard, "输入", |ui| {
                                         let old=(self.preferences.relative_mouse,self.preferences.cursor_mode);
                                         ui.label("光标显示");
@@ -864,7 +864,7 @@ impl super::App {
                                         }
                                     });
                                     }
-                                    if self.supports_remote(uu_core::capabilities::Capability::Input) || self.native_input_available() {
+                                    if self.input_controls_available() {
                                     side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
                                         if self.native_input_available()&&!self.supports_remote(uu_core::capabilities::Capability::Input)
                                             &&ui.button("请求输入控制").clicked() {

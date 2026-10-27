@@ -31,6 +31,11 @@ impl App {
     pub(super) fn native_input_available(&self)->bool {
         self.is_native()&&self.controller.as_ref().is_some_and(|h|h.stats.native_input_available.load(std::sync::atomic::Ordering::Acquire))
     }
+    /// Local input controls remain configurable while a menu, lost focus or
+    /// view-only policy temporarily relinquishes the remote control grant.
+    pub(super) fn input_controls_available(&self) -> bool {
+        self.supports_remote(Capability::Input) || self.native_input_available()
+    }
     pub(super) fn send_native(&mut self,command:uu_core::native_input::InputCommand) {
         use uu_core::native_input::InputCommand as I;
         let release=matches!(command,I::Key{pressed:false,..}|I::Button{pressed:false,..}|I::ReleaseAll{});
