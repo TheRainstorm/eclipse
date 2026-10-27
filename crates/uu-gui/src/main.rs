@@ -238,6 +238,7 @@ struct App {
     settings_section: settings_page::Section,
     about_open: bool,
     settings_draft: settings::Settings,
+    application_settings_watch: settings::ApplicationWatch,
     settings_notice: String,
     settings_notice_at: Option<std::time::Instant>,
     settings_storage_error: bool,
@@ -424,11 +425,13 @@ impl App {
         let (mut preferences, settings_notice, settings_storage_error) = match settings::Settings::path().map(|p|settings::Settings::load(&p)) {
             Some(Ok(s))=>(s,String::new(),false),Some(Err(e))=>(settings::Settings::default(),format!("读取设置失败：{e}"),true),None=>(settings::Settings::default(),"无法确定设置目录，当前使用默认设置".into(),true),
         };
+        let application_hotkeys=preferences.application_hotkeys().clone();
         if let Some(sessions::StreamTarget {connection:sessions::ConnectionTarget::NativeProfile{snapshot,..},..}) = &stream_target {
             if let Ok(launch) = uu_core::device_book::Launch::read(snapshot) {
                 if let Some(client) = launch.client { preferences.client = client; }
             }
         }
+        preferences.hotkeys=application_hotkeys;
         if stream_target.is_some() {
             if let Ok(value)=std::env::var("UU_VSYNC"){preferences.vsync=value!="0";}
         }
@@ -500,6 +503,7 @@ impl App {
             settings_section: settings_page::Section::default(),
             about_open: false,
             settings_draft: preferences.clone(),
+            application_settings_watch:Default::default(),
             settings_notice,
             settings_notice_at: None,
             settings_storage_error,
@@ -1449,15 +1453,16 @@ impl App {
             self.close_at = None;
         }
         self.sessions.reap();
+        self.poll_application_settings();
         self.poll_account();
         self.poll(ctx);
         self.poll_controller(ctx);
+        self.sample_hud();
         #[cfg(windows)]
         {
             let hdr=self.is_native() && self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_response.lock().unwrap().is_some());
             if hdr && eframe::glow_presentation::available_color_for(ctx,ctx.viewport_id()).is_none() {
                 if let Some(gl)=self.video_gl.clone(){let _=video_hdr::enable(ctx,gl,self.preferences.vsync);}
-        self.sample_hud();
             }
             eframe::glow_presentation::set_active(ctx,ctx.viewport_id(),hdr,self.preferences.vsync);
         }

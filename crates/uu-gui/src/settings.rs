@@ -33,6 +33,9 @@ pub enum DeviceView { #[default] Cards, List }
 pub struct Settings {
     #[serde(flatten)]
     pub client: ClientSettings,
+    /// Global application bindings. Legacy files migrate from the global client
+    /// defaults; per-device/profile bindings no longer override application keys.
+    pub application_hotkeys: Option<uu_core::hotkeys::Bindings>,
     pub lan_discovery: bool,
     // Retained only to migrate older configurations into connection services.
     pub lan_service_port: u16,
@@ -44,7 +47,7 @@ pub struct Settings {
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { client: ClientSettings::default(), lan_discovery:true,
+        Self { client: ClientSettings::default(), application_hotkeys:None, lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
             device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,
@@ -59,8 +62,15 @@ impl std::ops::DerefMut for Settings {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.client }
 }
 impl Settings {
+    pub fn application_hotkeys(&self)->&uu_core::hotkeys::Bindings {
+        self.application_hotkeys.as_ref().unwrap_or(&self.client.hotkeys)
+    }
+    fn use_application_hotkeys(&mut self) {
+        if let Some(keys)=&self.application_hotkeys {self.client.hotkeys=keys.clone();}
+    }
     fn validate(&self)->anyhow::Result<()> {
         self.client.validate()?;
+        anyhow::ensure!(self.application_hotkeys().issues().is_empty(),"客户端快捷键存在冲突，请在应用设置中修正");
         anyhow::ensure!(self.lan_service_port>0&&self.lan_discovery_port>0,"局域网端口必须在 1–65535 之间");
         if self.wallpaper_enabled {
             anyhow::ensure!(self.wallpaper_api.len()<=2048,"壁纸接口地址过长");
@@ -112,7 +122,9 @@ impl Settings {
     /// may have changed in the launcher while this window was open.
     fn save_client(&self, path: &Path) -> anyhow::Result<()> {
         let mut latest = Self::load(path)?;
+        let hotkeys=latest.application_hotkeys().clone();
         latest.client = self.client.clone();
+        latest.client.hotkeys=hotkeys;
         latest.save(path)
     }
 
@@ -193,7 +205,64 @@ pub(super) fn save_bytes(path:&Path,bytes:&[u8])->anyhow::Result<()> {
     result
 }
 
+/// File reads stay off the rendering thread. One bounded mailbox per window
+/// carries the newest global settings; dropping the owner wakes the worker.
+#[derive(Default)]
+pub(super) struct ApplicationWatch {
+    worker:Option<ApplicationWorker>,
+}
+struct ApplicationWorker {
+    stopped:std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread:std::thread::JoinHandle<()>,
+    values:std::sync::mpsc::Receiver<Settings>,
+}
+impl Drop for ApplicationWorker {
+    fn drop(&mut self) {
+        self.stopped.store(true,std::sync::atomic::Ordering::Release);
+        self.thread.thread().unpark();
+        // Filesystem completion owns the remaining cleanup; never join on UI.
+    }
+}
+impl ApplicationWatch {
+    fn changed(&mut self,path:&Path)->Option<Settings> {
+        if self.worker.is_none() {
+            let path=path.to_owned();let stopped=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));let stop=stopped.clone();
+            let (tx,values)=std::sync::mpsc::sync_channel(1);
+            let thread=std::thread::spawn(move||{
+                let mut modified=None;
+                while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                    if let Some(at)=std::fs::metadata(&path).ok().and_then(|m|m.modified().ok()).filter(|at|Some(*at)!=modified) {
+                        if let Ok(settings)=Settings::load(&path) {
+                            match tx.try_send(settings) {
+                                Ok(())=>modified=Some(at),
+                                Err(std::sync::mpsc::TrySendError::Disconnected(_))=>break,
+                                Err(std::sync::mpsc::TrySendError::Full(_))=>{},
+                            }
+                        }
+                    }
+                    if !stop.load(std::sync::atomic::Ordering::Acquire){std::thread::park_timeout(std::time::Duration::from_millis(750));}
+                }
+            });
+            self.worker=Some(ApplicationWorker{stopped,thread,values});
+        }
+        self.worker.as_ref()?.values.try_recv().ok()
+    }
+}
+
 impl super::App {
+    pub(super) fn poll_application_settings(&mut self) {
+        if self.stream_target.is_none(){return;}
+        let Some(path)=Settings::path() else{return;};
+        if let Some(value)=self.application_settings_watch.changed(&path) {
+            let keys=value.application_hotkeys().clone();
+            if self.preferences.hotkeys!=keys {
+                self.recover_input("application_hotkeys_changed");
+                self.preferences.hotkeys=keys.clone();self.settings_draft.hotkeys=keys;
+            }
+            self.preferences.application_hotkeys=value.application_hotkeys;
+        }
+    }
+
     pub(super) fn set_settings_notice(&mut self, text: impl Into<String>) {
         self.settings_notice = text.into();
         self.settings_notice_at = Some(std::time::Instant::now());
@@ -373,6 +442,7 @@ impl super::App {
             let wallpaper_changed = self.preferences.wallpaper_api != self.settings_draft.wallpaper_api
                 || self.preferences.wallpaper_enabled != self.settings_draft.wallpaper_enabled;
             self.preferences = self.settings_draft.clone();
+            self.preferences.use_application_hotkeys();
             self.persist_preferences();
             if wallpaper_changed {
                 self.background.sync(&self.preferences, ctx);
@@ -469,6 +539,7 @@ impl super::App {
                 self.settings_draft.wallpaper_api=defaults.wallpaper_api;
                 self.settings_draft.lan_discovery=defaults.lan_discovery;
                 self.settings_draft.app_autostart=defaults.app_autostart;
+                self.settings_draft.application_hotkeys=Some(Default::default());
             }
             if self.workspace.host.running() {
                 self.settings_draft.lan_service_port=self.preferences.lan_service_port;
@@ -492,6 +563,7 @@ impl super::App {
                 eframe::request_vsync(ctx,self.settings_draft.vsync);
             }
             self.preferences=self.settings_draft.clone();
+            self.preferences.use_application_hotkeys();
             self.release_pointer_capture(ctx);
             self.target_fps = self.preferences.fps;
             self.fps_draft = self.target_fps;
@@ -568,6 +640,31 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn application_bindings_migrate_and_survive_stream_saves() {
+        use uu_core::hotkeys::{Action,Chord};
+        let root=std::env::temp_dir().join(format!("eclipse-application-keys-{}",uuid::Uuid::new_v4()));
+        let path=root.join("gui-settings.json");
+        let mut legacy=Settings::default();
+        legacy.client.hotkeys.set(Action::Stats,vec![Chord::ctrl_alt(0x54)]);
+        legacy.save(&path).unwrap();
+        let mut stream=Settings::load(&path).unwrap();
+        assert_eq!(stream.application_hotkeys().chords(Action::Stats),&[Chord::ctrl_alt(0x54)]);
+        let mut launcher=stream.clone();
+        let mut global=launcher.application_hotkeys().clone();
+        global.set(Action::Stats,vec![Chord::ctrl_alt(0x44)]);
+        launcher.application_hotkeys=Some(global.clone());launcher.save(&path).unwrap();
+        stream.client.hotkeys=Default::default();stream.fps=165;
+        stream.save_client(&path).unwrap();
+        let mut reopened=Settings::load(&path).unwrap();
+        assert_eq!(reopened.application_hotkeys(),&global);
+        assert_eq!(reopened.fps,165);
+        reopened.use_application_hotkeys();assert_eq!(reopened.client.hotkeys,global);
+        let mut watch=ApplicationWatch::default();let until=std::time::Instant::now()+std::time::Duration::from_secs(2);
+        while watch.changed(&path).is_none(){assert!(std::time::Instant::now()<until);std::thread::sleep(std::time::Duration::from_millis(5));}
+        assert!(watch.changed(&path).is_none());drop(watch);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn bitrate_preview_waits_for_unknown_geometry_and_uses_negotiated_codec() {
         let mut settings=ClientSettings::default();

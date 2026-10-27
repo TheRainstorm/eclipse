@@ -278,7 +278,6 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
             "仅同步当前前台串流；原生共享需主机许可，支持最多30 KiB文本和8 MiB PNG图片，文件不传输。兼容连接只支持文本。",
         );
     });
-    group(ui,"客户端快捷键",|ui|super::shortcuts_ui::editor(ui,&mut s.hotkeys));
 }
 fn stream(ui:&mut egui::Ui,s:&mut Settings) {
     group(ui, "串流界面", |ui| {
@@ -299,6 +298,11 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
     });
 }
 pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions) {
+    group(ui,"客户端快捷键",|ui|{
+        let legacy=s.client.hotkeys.clone();
+        super::shortcuts_ui::editor(ui,s.application_hotkeys.get_or_insert(legacy));
+        note(ui,"快捷键属于本机应用，所有串流窗口共用；保存后会更新已打开的新版窗口。设备画质配置不覆盖快捷键。");
+    });
     group(ui,"常规",|ui| {
         ui.horizontal(|ui| {ui.label("界面语言");ui.label("简体中文");});
         ui.checkbox(&mut s.app_autostart,"登录系统时自动打开软件");
@@ -325,8 +329,9 @@ pub fn show(
     mut extra:impl FnMut(&mut egui::Ui,Section),
 ) -> Actions {
     let mut actions = Actions::default();
-    let hotkeys_valid=s.hotkeys.issues().is_empty();
+    let hotkeys_valid=if state.streaming {true}else{s.application_hotkeys().issues().is_empty()};
     if !state.streaming { *section=Section::Application; }
+    else if *section==Section::Application {*section=Section::Stream;}
     let compact = ctx.screen_rect().height() < 520.0;
     egui::TopBottomPanel::top("settings-title")
         .exact_height(58.0)
