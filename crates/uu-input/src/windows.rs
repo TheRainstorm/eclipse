@@ -5,6 +5,7 @@ use windows_sys::Win32::UI::{Input::KeyboardAndMouse as kbm, WindowsAndMessaging
 #[derive(Default)]
 pub struct SendInputInjector {
     held: HeldInput,
+    unicode_held: Option<u16>,
     desktop_reset: bool,
 }
 impl SendInputInjector {
@@ -24,13 +25,23 @@ impl SendInputInjector {
         Ok(())
     }
     fn release_owned(&mut self) -> Result<(), InputError> {
-        let mut error = None;
+        let mut error = self.release_unicode().err();
         for event in self.held.releases() {
             if let Err(e) = self.send(event) {
                 error.get_or_insert(e);
             }
         }
         error.map_or(Ok(()), Err)
+    }
+    fn release_unicode(&mut self)->Result<(),InputError> {
+        if let Some(unit)=self.unicode_held {
+            let input=unicode_packet(unit,true);
+            if unsafe{kbm::SendInput(1,&input,std::mem::size_of::<kbm::INPUT>() as i32)}!=1 {
+                return Err(InputError::Backend("Unicode release was not accepted".into()));
+            }
+            self.unicode_held=None;
+        }
+        Ok(())
     }
 }
 
@@ -124,14 +135,18 @@ fn packets(event: InputEvent, screen: DesktopRect) -> Result<Vec<kbm::INPUT>, In
     }
     Ok(out)
 }
-fn unicode_packets(text: &str) -> Vec<kbm::INPUT> {
-    text.encode_utf16().flat_map(|unit| [false,true].map(|released| {
+fn unicode_packet(unit:u16,released:bool)->kbm::INPUT {
         let mut input:kbm::INPUT=unsafe {std::mem::zeroed()};
         input.r#type=kbm::INPUT_KEYBOARD;
         input.Anonymous.ki.wScan=unit;
         input.Anonymous.ki.dwFlags=kbm::KEYEVENTF_UNICODE | if released {kbm::KEYEVENTF_KEYUP}else{0};
         input
-    })).collect()
+}
+fn unicode_packets(text: &str) -> Vec<kbm::INPUT> {
+    text.encode_utf16().flat_map(|unit| [false,true].map(|released|unicode_packet(unit,released))).collect()
+}
+fn pending_unicode(inputs:&[kbm::INPUT],sent:usize)->Option<u16>{
+    (sent>0&&sent<inputs.len()&&sent%2==1).then(||unsafe{inputs[sent-1].Anonymous.ki.wScan})
 }
 #[cfg(test)]
 #[test]
@@ -176,8 +191,10 @@ impl InputInjector for SendInputInjector {
     fn text(&mut self,value:&str)->Result<(),InputError> {
         if value.len()>16*1024 || value.contains('\0') {return Err(InputError::Backend("invalid text input".into()));}
         self.prepare_desktop()?;
+        self.release_unicode()?;
         for inputs in unicode_packets(value).chunks(128) {
             let sent=unsafe {kbm::SendInput(inputs.len() as u32,inputs.as_ptr(),std::mem::size_of::<kbm::INPUT>() as i32)};
+            self.unicode_held=pending_unicode(inputs,sent as usize);
             if sent!=inputs.len() as u32 {return Err(InputError::Backend("Unicode input was not fully accepted".into()));}
         }
         Ok(())
@@ -188,7 +205,7 @@ impl InputInjector for SendInputInjector {
     }
     fn release_all(&mut self) -> Result<(), InputError> {
         // No desktop access is needed when this session owns no presses.
-        if self.held.releases().is_empty() {return Ok(());}
+        if self.held.releases().is_empty()&&self.unicode_held.is_none() {return Ok(());}
         self.prepare_desktop()?;
         self.release_owned()
     }
@@ -203,6 +220,15 @@ impl Drop for SendInputInjector {
 mod tests {
     use super::*;
     use crate::KeyCode;
+    #[test]
+    fn partial_unicode_delivery_retains_only_the_accepted_unreleased_press(){
+        let packets=unicode_packets("生成🙂");
+        for sent in 0..=packets.len(){
+            let pending=pending_unicode(&packets,sent);
+            if sent%2==1 {assert_eq!(pending,Some(unsafe{packets[sent-1].Anonymous.ki.wScan}));}
+            else {assert_eq!(pending,None);}
+        }
+    }
     #[test]
     fn empty_release_does_not_require_an_interactive_desktop() {
         // This also runs in a service/SSH test process without desktop access.
