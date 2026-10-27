@@ -3,7 +3,7 @@ use super::ui::{icon, icon_button, icon_label_button, Icon};
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke};
 
 const MENU_INK: Color32 = super::theme::INK;
-const MENU_WIDTH: f32 = 220.0;
+const MENU_WIDTH: f32 = 264.0;
 
 // A 30-point face has 30.6% less area than the previous 36-point button.
 const HANDLE_SIZE: f32 = 30.0;
@@ -205,8 +205,8 @@ fn popup_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::popup(ui.style())
         .fill(Color32::WHITE)
         .stroke(Stroke::new(1.0, super::theme::BORDER))
-        .rounding(7.0)
-        .inner_margin(egui::Margin::same(3.0))
+        .rounding(10.0)
+        .inner_margin(egui::Margin::same(6.0))
         .shadow(egui::epaint::Shadow {
             offset: egui::vec2(0.0, 3.0),
             blur: 10.0,
@@ -226,7 +226,7 @@ fn menu_row(
     active: bool,
 ) -> egui::Response {
     let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
     let ink = if !ui.is_enabled() {
         Color32::from_gray(160)
     } else if label == "退出串流" {
@@ -234,9 +234,9 @@ fn menu_row(
     } else {
         MENU_INK
     };
-    if ui.is_enabled() && (response.hovered() || active) {
+    if ui.is_enabled() && (response.hovered() || active || selected) {
         ui.painter()
-            .rect_filled(rect, 3.0, super::theme::TINT);
+            .rect_filled(rect.shrink(1.), 6.0, if selected {Color32::from_rgb(227,244,241)} else {super::theme::TINT});
     }
     if let Some(kind) = kind {
         icon(
@@ -248,17 +248,19 @@ fn menu_row(
             kind,
             ink,
         );
-    } else if selected {
-        ui.painter()
-            .circle_filled(egui::pos2(rect.left() + 16.0, rect.center().y), 1.8, ink);
     }
-    ui.painter().text(
-        egui::pos2(rect.left() + 36.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(14.0),
-        ink,
-    );
+    let label_x=rect.left()+if kind.is_some(){36.}else{13.};
+    let hint_width=if hint.is_empty(){0.}else{ui.fonts(|f|f.layout_no_wrap(hint.into(),egui::FontId::proportional(12.5),ink)).size().x+12.};
+    let mut job=egui::text::LayoutJob::simple_singleline(label.into(),egui::FontId::proportional(14.),if selected{super::theme::ACCENT}else{ink});
+    job.wrap.max_width=(rect.right()-label_x-28.-hint_width).max(1.);job.wrap.max_rows=1;job.wrap.break_anywhere=true;
+    let galley=ui.fonts(|fonts|fonts.layout_job(job));
+    ui.painter().galley(egui::pos2(label_x,rect.center().y-galley.size().y/2.),galley,ink);
+    if selected && !arrow {
+        let c=egui::pos2(rect.right()-14.,rect.center().y);
+        ui.painter().circle_filled(c,7.,super::theme::ACCENT);
+        ui.painter().line_segment([c+egui::vec2(-3.,0.),c+egui::vec2(-1.,2.)],Stroke::new(1.4,Color32::WHITE));
+        ui.painter().line_segment([c+egui::vec2(-1.,2.),c+egui::vec2(3.,-2.)],Stroke::new(1.4,Color32::WHITE));
+    }
     if arrow {
         let center = egui::pos2(rect.right() - 13.0, rect.center().y);
         ui.painter().line_segment(
@@ -272,13 +274,14 @@ fn menu_row(
             ],
             Stroke::new(1.0, Color32::from_gray(125)),
         );
-    } else if !hint.is_empty() {
+    }
+    if !hint.is_empty() {
         ui.painter().text(
-            egui::pos2(rect.right() - 12.0, rect.center().y),
+            egui::pos2(rect.right() - if arrow||selected {30.}else{12.}, rect.center().y),
             egui::Align2::RIGHT_CENTER,
             hint,
-            egui::FontId::proportional(12.0),
-            Color32::from_gray(145),
+            egui::FontId::proportional(12.5),
+            Color32::from_rgb(113,130,148),
         );
     }
     response
@@ -288,7 +291,7 @@ fn separator(ui: &mut egui::Ui) {
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 9.0), egui::Sense::hover());
     ui.painter().line_segment(
         [rect.left_center(), rect.right_center()],
-        Stroke::new(1.0, Color32::from_gray(233)),
+        Stroke::new(1.0, Color32::from_rgb(235,240,244)),
     );
 }
 fn child_position(row: Rect, screen: Rect, width: f32) -> Pos2 {
@@ -311,10 +314,9 @@ fn side_submenu<R>(
     let id = ui.make_persistent_id((ui.ctx().viewport_id(),"side-menu", &label));
     let open = ui.memory(|m| m.is_popup_open(id));
     let response = menu_row(ui, &label, Some(kind), false, true, "", open);
-    if response.clicked() {
-        ui.memory_mut(|m| m.toggle_popup(id));
-    } else if response.hovered() {
-        ui.memory_mut(|m| m.open_popup(id));
+    if response.clicked() || response.hovered() {
+        if !open {let key=egui::Id::new((ui.ctx().viewport_id(),"stream-nested-menu"));ui.data_mut(|d|d.remove::<egui::Id>(key));}
+        if response.clicked(){ui.memory_mut(|m|m.toggle_popup(id));}else{ui.memory_mut(|m|m.open_popup(id));}
     }
     let mut inner = None;
     if ui.memory(|m| m.is_popup_open(id)) {
@@ -346,24 +348,36 @@ fn side_submenu<R>(
     }
     egui::InnerResponse::new(inner, response)
 }
-// egui's menu tree keeps this child independent of the custom parent's
-// popup ID. Reusing the one-slot popup API would close More when HUD opened.
-fn hud_submenu(ui:&mut egui::Ui,blocked:&mut Vec<Rect>,enabled:&mut bool,level:&mut super::settings::HudDetail,hint:&str)->bool {
-    let mut changed=false;let mut child=None;
-    let response=ui.menu_button("HUD",|ui| {
-        ui.set_width(MENU_WIDTH);
-        if menu_row(ui,"Show HUD",None,*enabled,false,hint,false).clicked(){*enabled=!*enabled;changed=true;}
-        separator(ui);
-        for mode in super::settings::HudDetail::ALL {
-            if menu_row(ui,mode.label(),None,*level==mode,false,"",false).clicked(){*level=mode;*enabled=true;changed=true;}
-        }
-        child=Some(ui.min_rect().expand(4.));
-    }).response;
-    if let Some(child)=child {
-        blocked.push(response.rect);blocked.push(child);
-        if let Some(bridge)=hover_bridge(response.rect,child) {blocked.push(bridge);}
+fn menu_heading(ui:&mut egui::Ui,title:&str,status:&str) {
+    ui.horizontal(|ui|{ui.add_space(7.);ui.label(RichText::new(title).size(11.5).color(super::theme::MUTED).strong());if !status.is_empty(){ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{ui.label(RichText::new(status).size(11.5).color(super::theme::ACCENT));});}});ui.add_space(4.);
+}
+fn nested_submenu<R>(ui:&mut egui::Ui,blocked:&mut Vec<Rect>,label:&str,status:&str,body:impl FnOnce(&mut egui::Ui)->R)->egui::InnerResponse<Option<R>> {
+    let key=egui::Id::new((ui.ctx().viewport_id(),"stream-nested-menu"));let id=ui.make_persistent_id(("nested",label));
+    let open=ui.data(|d|d.get_temp::<egui::Id>(key))==Some(id);
+    let response=menu_row(ui,label,None,false,true,status,open);
+    if response.hovered()||response.clicked(){ui.data_mut(|d|d.insert_temp(key,id));}
+    let mut inner=None;
+    if ui.data(|d|d.get_temp::<egui::Id>(key))==Some(id) {
+        let screen=ui.ctx().screen_rect().shrink(4.);
+        let area=egui::Area::new(id).order(egui::Order::Foreground).fixed_pos(child_position(response.rect,screen,MENU_WIDTH)).constrain_to(screen).show(ui.ctx(),|ui|{
+            popup_frame(ui).show(ui,|ui|{ui.set_width(MENU_WIDTH);ui.spacing_mut().item_spacing=egui::Vec2::ZERO;
+                egui::ScrollArea::vertical().max_height((screen.height()-24.).max(1.)).show(ui,|ui|{inner=Some(ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min),body).inner);});
+            });
+        });
+        blocked.push(response.rect);blocked.push(area.response.rect);if let Some(bridge)=hover_bridge(response.rect,area.response.rect){blocked.push(bridge);}
     }
-    changed
+    egui::InnerResponse::new(inner,response)
+}
+fn hud_submenu(ui:&mut egui::Ui,blocked:&mut Vec<Rect>,enabled:&mut bool,level:&mut super::settings::HudDetail,hint:&str)->bool {
+    let mut changed=false;
+    nested_submenu(ui,blocked,"统计信息",if *enabled {match level{super::settings::HudDetail::Compact=>"精简",super::settings::HudDetail::Detailed=>"详细"}}else{"关闭"},|ui|{
+        menu_heading(ui,"HUD","统计显示");
+        if menu_row(ui,"显示统计",None,*enabled,false,hint,false).on_hover_text("开关画面上的统计信息；悬停后查看详情和最近三分钟曲线。").clicked(){*enabled=!*enabled;changed=true;}
+        separator(ui);
+        for (mode,label) in [(super::settings::HudDetail::Compact,"精简"),(super::settings::HudDetail::Detailed,"详细")] {
+            if menu_row(ui,label,None,*level==mode,false,"",false).clicked(){*level=mode;*enabled=true;changed=true;}
+        }
+    });changed
 }
 fn unavailable(ui: &mut egui::Ui, kind: Icon, label: &str, hint: &str) {
     ui.add_enabled_ui(false, |ui| {
@@ -377,6 +391,7 @@ pub(super) enum QualityDetail {
     Bitrate,
     Resolution,
     FrameRate,
+    RateMode,
 }
 
 pub(super) struct StreamMenu {
@@ -572,7 +587,7 @@ impl super::App {
         if screens.screens.is_empty(){ui.add_enabled(false,egui::Label::new("等待远端显示器列表…"));}
         if !self.displays.notice.is_empty(){separator(ui);ui.label(&self.displays.notice);}
         separator(ui);
-        if ui.button("显示器模式设置…").clicked(){self.displays.menu_open=false;self.open_stream_settings();}
+        if menu_row(ui,"显示器模式设置…",None,false,false,"",false).on_hover_text("设置远端物理或虚拟显示器的使用方式。").clicked(){self.displays.menu_open=false;self.open_stream_settings();}
     }
 
     fn confirm_quality(&mut self, ui: &mut egui::Ui) {
@@ -584,13 +599,13 @@ impl super::App {
 
     fn picture_menu(&mut self, ui: &mut egui::Ui) {
         if self.is_native() {
-            ui.add_enabled_ui(cfg!(windows),|ui|{if ui.checkbox(&mut self.preferences.hdr,"优先 HDR").changed(){self.persist_preferences();self.send_capture_settings();}});
+            ui.add_enabled_ui(cfg!(windows),|ui|{if menu_row(ui,"优先 HDR",None,self.preferences.hdr,false,"10-bit",false).on_hover_text("需要两端显示输出、采集和编解码支持；连接时协商，无法使用时回退SDR。").clicked(){self.preferences.hdr=!self.preferences.hdr;self.persist_preferences();self.send_capture_settings();}});
             let hdr=self.controller.as_ref().and_then(|h|*h.stats.native_hdr_response.lock().unwrap()).is_some();
             let displaying=eframe::glow_presentation::color_target_for(ui.ctx(),ui.ctx().viewport_id()).is_some_and(|c|c.hdr);
             ui.small(if hdr&&displaying {"当前 HDR10 · 10 位 PQ / BT.2020"}else if hdr {"当前 HDR10 → SDR 映射"}else{"当前 SDR；HDR 需要两端显示输出和编解码支持"});
             separator(ui);
         }
-        if self.stream_menu.quality_detail.is_some_and(|(kind,_)|kind==QualityDetail::Bitrate) {self.stream_menu.quality_detail=None;}
+        if self.stream_menu.quality_detail.is_some_and(|(kind,_)|!matches!(kind,QualityDetail::Resolution|QualityDetail::FrameRate)) {self.stream_menu.quality_detail=None;}
         let response=menu_row(ui,"分辨率",None,false,true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::Resolution,response.rect));}
         separator(ui);
@@ -612,7 +627,7 @@ impl super::App {
     }
 
     fn encoding_menu(&mut self, ui: &mut egui::Ui) {
-        if self.stream_menu.quality_detail.is_some_and(|(kind,_)|kind!=QualityDetail::Bitrate) {self.stream_menu.quality_detail=None;}
+        if self.stream_menu.quality_detail.is_some_and(|(kind,_)|!matches!(kind,QualityDetail::Bitrate|QualityDetail::RateMode)) {self.stream_menu.quality_detail=None;}
         let options: &[(super::settings::CodecPreference,&str)]=if self.is_native() {
             &[(super::settings::CodecPreference::Auto,"自动协商"),(super::settings::CodecPreference::H264,"H.264"),
               (super::settings::CodecPreference::Hevc,"H.265 / HEVC"),(super::settings::CodecPreference::Av1,"AV1"),(super::settings::CodecPreference::Pyrowave,"PyroWave（实验性 / SDR）")]
@@ -634,38 +649,42 @@ impl super::App {
         }
         separator(ui);
         if self.is_native() {
-            ui.small("码率模式");
-            let response=self.controller.as_ref().and_then(|h|*h.stats.native_rate_response.lock().unwrap());
-            ui.add_enabled_ui(response.is_some(),|ui| {
-                use uu_core::native_quality::RateMode;
-                for (mode,label) in [(None,"跟随主机"),(Some(RateMode::Cbr),"CBR · 固定码率"),(Some(RateMode::Vbr),"VBR · 可变码率")] {
-                    let supported=self.preferences.codec!=super::settings::CodecPreference::Pyrowave || mode==Some(RateMode::Cbr)
-                        || (mode.is_none()&&response.is_some_and(|r|r.default==RateMode::Cbr));
-                    ui.add_enabled_ui(supported,|ui|{if menu_row(ui,label,None,self.preferences.rate_control==mode,false,"",false).clicked() {
-                        self.preferences.rate_control=mode;self.confirm_quality(ui);
-                    }});
-                }
-            });
-            if let Some(response)=response {
-                let current=self.controller.as_ref().and_then(|h|*h.stats.native_quality_current.lock().unwrap()).and_then(|s|s.rate_control).unwrap_or(response.applied);
-                ui.small(format!("当前 {} · 主机默认 {}",current.label(),response.default.label()));
-            }else {ui.small("主机未提供码率模式切换");}
+            let value=match self.preferences.rate_control {None=>"跟随主机",Some(uu_core::native_quality::RateMode::Cbr)=>"CBR",Some(uu_core::native_quality::RateMode::Vbr)=>"VBR"};
+            let response=menu_row(ui,"编码模式",None,false,true,value,self.stream_menu.quality_detail.is_some_and(|(v,_)|v==QualityDetail::RateMode));
+            if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::RateMode,response.rect));}
+            response.on_hover_text("连接偏好：跟随主机、固定码率CBR或可变码率VBR。主机应用后可在HUD查看实际模式。");
             separator(ui);
         }
-        if self.preferences.codec==super::settings::CodecPreference::Pyrowave {ui.small("PyroWave：SDR / 高带宽，建议有线连接");}
-        ui.small("码率");
+        menu_heading(ui,"码率","");
         let native=self.is_native();
         let actual=self.controller.as_ref().map(|h|{let(w,h)=h.stats.res();[w,h]});
         let codec=self.controller.as_ref().map(|h|h.stats.codec.lock().unwrap().clone());
         let recommended=super::settings::recommended_bitrate(&self.preferences,actual,codec.as_deref());
-        for (index,(label,_,_)) in super::BITRATE_PRESETS.iter().enumerate() {
-            if (native&&index==0)||(!native&&index==5){continue;}
-            let title=if index==5 {recommended.map_or_else(||"推荐码率 · LAN Quality".into(),|kbps|format!("推荐码率 · {:.1} Mbps",kbps as f64/1000.))}else{(*label).into()};
+        let order=if native{[5,1,2,3,4]}else{[0,1,2,3,4]};
+        for index in order {
+            let (label,_,_)=super::BITRATE_PRESETS[index];
+            let title=if index==5{"推荐码率"}else if index==0{"原画 · 服务端策略"}else{label};
+            let hint=if index==5 {recommended.map_or_else(||"自动计算".into(),|kbps|format!("{:.1} Mbps",kbps as f64/1000.))}else if index==4{format!("{} Mbps",self.custom_mbps)}else{String::new()};
             let custom=index==4;
-            let response=menu_row(ui,&title,None,self.bitrate_idx==index||(native&&index==5&&self.bitrate_idx==0)||(!native&&index==0&&self.bitrate_idx==5),custom,"",false);
-            if custom&&(response.hovered()||response.clicked()) {self.stream_menu.quality_detail=Some((QualityDetail::Bitrate,response.rect));}
+            let response=menu_row(ui,title,None,self.bitrate_idx==index||(native&&index==5&&self.bitrate_idx==0)||(!native&&index==0&&self.bitrate_idx==5),custom,&hint,false);
+            if custom&&(response.hovered()||response.clicked()){self.stream_menu.quality_detail=Some((QualityDetail::Bitrate,response.rect));}
             else if response.hovered(){self.stream_menu.quality_detail=None;}
             if !custom&&response.clicked(){self.bitrate_idx=index;self.confirm_quality(ui);}
+            response.on_hover_text(match index {
+                5=>"按当前实际分辨率、帧率和编码计算LAN Quality推荐值，随参数改变。PyroWave需要较高带宽。",
+                0=>"UU兼容服务端的原画档：发送原画档位请求，由服务端决定质量与码率，不等于固定30Mbps。原生连接使用推荐码率或自定义。",
+                4=>"输入自己的目标码率，单位Mbps。设置保存在当前串流偏好中。",
+                _=>"固定目标码率；画面复杂度和编码实现会使实际接收码率有所差异。",
+            });
+        }
+    }
+    fn rate_mode_choices(&mut self,ui:&mut egui::Ui) {
+        use uu_core::native_quality::RateMode;
+        let response=self.controller.as_ref().and_then(|h|*h.stats.native_rate_response.lock().unwrap());
+        menu_heading(ui,"编码模式",response.map_or("连接后协商",|r|r.applied.label()));
+        for (mode,label,tip) in [(None,"跟随主机","使用主机启动时保存的默认码率模式。"),(Some(RateMode::Cbr),"CBR · 固定码率","使用固定目标码率控制，适合带宽稳定、重视延迟的串流。PyroWave仅支持CBR。"),(Some(RateMode::Vbr),"VBR · 可变码率","按画面复杂度使用可变码率；具体行为取决于主机编码器。")]{
+            let supported=self.preferences.codec!=super::settings::CodecPreference::Pyrowave || mode==Some(RateMode::Cbr) || (mode.is_none()&&response.is_some_and(|r|r.default==RateMode::Cbr));
+            ui.add_enabled_ui(supported,|ui|{if menu_row(ui,label,None,self.preferences.rate_control==mode,false,"",false).on_hover_text(tip).clicked(){self.preferences.rate_control=mode;self.confirm_quality(ui);}}).response.on_disabled_hover_text("PyroWave仅支持固定码率CBR。");
         }
     }
 
@@ -674,12 +693,12 @@ impl super::App {
             return;
         };
         let screen = ctx.screen_rect().shrink(4.0);
-        let mut position = child_position(row, screen, 204.0);
+        let mut position = child_position(row, screen, MENU_WIDTH);
         if ctx.memory(|m| m.area_rect(egui::Id::new("stream-control-menu")))
             .is_some_and(|root| root.center().x > row.center().x)
-            && row.left() - screen.left() >= 217.0
+            && row.left() - screen.left() >= MENU_WIDTH+13.
         {
-            position.x = row.left() - 217.0;
+            position.x = row.left() - MENU_WIDTH-13.;
         }
         let response = egui::Area::new("quality-detail".into())
             .order(egui::Order::Foreground)
@@ -687,10 +706,11 @@ impl super::App {
             .constrain_to(screen)
             .show(ctx, |ui| {
                 popup_frame(ui).show(ui, |ui| {
-                    ui.set_width(204.0);
+                    ui.set_width(MENU_WIDTH);
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                         match kind {
+                            QualityDetail::RateMode => self.rate_mode_choices(ui),
                             QualityDetail::Bitrate => {
                                 ui.add_space(5.0);
                                 ui.horizontal(|ui| {
@@ -758,7 +778,7 @@ impl super::App {
                                     }
                                 }
                                 separator(ui);
-                                ui.small("输出档位限制串流编码尺寸，保持宽高比；切换会短暂重连，被控端桌面分辨率不变。");
+                                ui.response().on_hover_text("输出尺寸保持宽高比；更改会重新准备媒体，不改变远端桌面显示模式。");
                             }
 
                         }
@@ -843,7 +863,7 @@ impl super::App {
                             ui.with_layout(
                                 egui::Layout::top_down_justified(egui::Align::Min),
                                 |ui| {
-                                    if self.supports_remote(uu_core::capabilities::Capability::Displays) {
+                                    {
                                     side_submenu(
                                         ui,
                                         &mut blocked,
@@ -852,7 +872,7 @@ impl super::App {
                                         |ui| self.display_menu(ui),
                                     );
                                     }
-                                    if self.supports_remote(uu_core::capabilities::Capability::Quality) {
+                                    {
                                     quality_open = side_submenu(
                                         ui,
                                         &mut blocked,
@@ -864,70 +884,52 @@ impl super::App {
                                     .is_some();
                                     quality_open |= side_submenu(ui,&mut blocked,Icon::Encoding,"编码",|ui|self.encoding_menu(ui)).inner.is_some();
                                     }
-                                    if self.supports_remote(uu_core::capabilities::Capability::Audio) {
+                                    {
                                     side_submenu(ui, &mut blocked, Icon::Play, "声音", |ui| {
                                         let mut changed=false;
                                         if let Some(h) = &self.controller {
                                             use std::sync::atomic::Ordering::Relaxed;
                                             let audio = &h.stats.audio;
                                             let mut muted = audio.muted.load(Relaxed);
-                                            if ui.checkbox(&mut muted, "静音").changed() { audio.muted.store(muted,Relaxed);self.preferences.muted=muted;changed=true; }
+                                            if menu_row(ui,"静音",None,muted,false,"",false).on_hover_text("仅控制本串流窗口的声音播放。").clicked() { muted=!muted;audio.muted.store(muted,Relaxed);self.preferences.muted=muted;changed=true; }
                                             let mut volume=audio.volume.load(Relaxed);
                                             if super::audio_controls::volume_slider(ui,&mut volume) {audio.volume.store(volume,Relaxed);self.preferences.volume=volume;changed=true;}
                                             ui.label(audio.status.lock().unwrap().as_str());
                                             ui.label(format!("播放排队 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
                                             ui.small(format!("音频包 {} ms · 接收→解码 {:.1} ms",audio.packet_ms.load(Relaxed),audio.receive_decode_us.load(Relaxed) as f32/1000.0));
                                             ui.small(format!("设备回调块 {:.1} ms · 欠载 {} 次",audio.output_block_us.load(Relaxed) as f32/1000.0,audio.underruns.load(Relaxed)));
-                                            ui.small("这些是客户端阶段数据，不是端到端声音延迟。");
+                                            ui.response().on_hover_text("这些是客户端音频阶段数据，不是端到端声音延迟。");
+                                        } else {
+                                            if menu_row(ui,"静音",None,self.preferences.muted,false,"",false).clicked(){self.preferences.muted=!self.preferences.muted;changed=true;}
+                                            changed|=super::audio_controls::volume_slider(ui,&mut self.preferences.volume);
                                         }
                                         if changed{self.audio_save_after=Some(std::time::Instant::now()+std::time::Duration::from_millis(250));}
                                     });
                                     }
-                                    if self.input_controls_available() {
+                                    {
                                     side_submenu(ui, &mut blocked, Icon::Keyboard, "输入", |ui| {
                                         let old=(self.preferences.relative_mouse,self.preferences.cursor_mode);
-                                        ui.label("光标显示");
+                                        menu_heading(ui,"光标显示","");
                                         for mode in super::settings::CursorMode::ALL {
-                                            ui.selectable_value(&mut self.preferences.cursor_mode,mode,mode.label());
+                                            if menu_row(ui,mode.label(),None,self.preferences.cursor_mode==mode,false,"",false).on_hover_text("远端光标使用主机传输的位置与形状；旧主机不提供时保留本地指针。切换不会改变视频画质。").clicked(){self.preferences.cursor_mode=mode;}
                                         }
-                                        if self.is_native() {
-                                            if self.controller.as_ref().is_some_and(|h|h.stats.native_cursor.supported()) {ui.small("远端光标按主机实际位置显示，不改变视频画质。");}
-                                            else{ui.small("主机未提供独立远端光标，当前保留本地指针。");}
-                                            ui.small(format!("{} 切换光标显示",self.preferences.hotkeys.label(uu_core::hotkeys::Action::CursorMode)));
-                                        } else {
-                                            ui.small(format!("{} 切换光标显示",self.preferences.hotkeys.label(uu_core::hotkeys::Action::CursorMode)));
-                                            ui.small(&self.settings_feedback);
-                                        }
-                                        separator(ui);
-                                        ui.label("指针移动");
-                                        ui.selectable_value(&mut self.preferences.relative_mouse,false,"桌面模式 · 绝对定位");
-                                        ui.selectable_value(&mut self.preferences.relative_mouse,true,"游戏模式 · 相对移动");
-                                        ui.small(format!("{} 切换桌面／游戏模式",self.preferences.hotkeys.label(uu_core::hotkeys::Action::MouseMode)));
-                                        ui.small(format!("{} 释放／捕获输入",self.preferences.hotkeys.label(uu_core::hotkeys::Action::Capture)));
-                                        if old!=(self.preferences.relative_mouse,self.preferences.cursor_mode) {
-                                            self.release_pointer_capture(ctx);self.persist_preferences();
-                                            ctx.memory_mut(|m|m.close_popup());
-                                        }
-                                        if self.is_native() {
-                                            separator(ui);
-                                            if ui.checkbox(&mut self.preferences.gamepad,"转发手柄和陀螺仪").changed(){self.persist_preferences();}
-                                            if let Some(status)=self.gamepad_status(){ui.label(egui::RichText::new(status).size(12.));}
-                                            ui.small("离开菜单并捕获输入后恢复转发；最多 4 个手柄。");
-                                        }
+                                        separator(ui);menu_heading(ui,"指针移动","");
+                                        for (relative,label,tip) in [(false,"桌面模式 · 绝对定位","按画面中的位置定位鼠标，适合桌面操作。"),(true,"游戏模式 · 相对移动","发送鼠标移动增量；单击画面捕获，失焦或进入菜单时释放。")]{if menu_row(ui,label,None,self.preferences.relative_mouse==relative,false,"",false).on_hover_text(tip).clicked(){self.preferences.relative_mouse=relative;}}
+                                        if old!=(self.preferences.relative_mouse,self.preferences.cursor_mode) {self.release_pointer_capture(ctx);self.persist_preferences();}
+                                        if self.is_native(){separator(ui);if menu_row(ui,"转发手柄与陀螺仪",None,self.preferences.gamepad,false,"",false).on_hover_text("取得输入控制后转发，菜单和失焦时释放；最多4个手柄。").clicked(){self.preferences.gamepad=!self.preferences.gamepad;self.persist_preferences();}}
                                     });
                                     }
-                                    if self.input_controls_available() {
+                                    {
                                     side_submenu(ui, &mut blocked, Icon::Person, "安全", |ui| {
                                         if self.native_input_available()&&!self.supports_remote(uu_core::capabilities::Capability::Input)
-                                            &&ui.button("请求输入控制").clicked() {
+                                            &&menu_row(ui,"请求输入控制",None,false,false,"",false).on_hover_text("向允许输入的主机请求控制权。").clicked() {
                                             self.view_only=false;
                                             self.input_capture.request();
                                             ui.close_menu();
                                         }
-                                        if ui
-                                            .checkbox(&mut self.view_only, "仅观看，禁止远程输入")
-                                            .changed()
+                                        if menu_row(ui,"仅观看，禁止远程输入",None,self.view_only,false,"",false).on_hover_text("启用时释放全部远端键鼠与手柄；关闭后按主机授权恢复控制。").clicked()
                                         {
+                                            self.view_only=!self.view_only;
                                             self.release_all_keys();
                                             for message in self
                                                 .pointer
@@ -939,12 +941,12 @@ impl super::App {
                                         }
                                     });
                                     }
-                                    if self.is_native() || self.supports_remote(uu_core::capabilities::Capability::Clipboard) {
+                                    {
                                     side_submenu(ui,&mut blocked,Icon::Folder,"剪贴板",|ui| {
-                                        if self.is_native(){if ui.checkbox(&mut self.preferences.native_clipboard,"同步剪贴板（文本和图片）").changed(){self.persist_preferences();}}
-                                        else if ui.checkbox(&mut self.preferences.clipboard,"同步文本剪贴板").changed(){self.persist_preferences();}
-                                        if self.is_native(){ui.small("仅同步当前前台串流：文本最多30 KiB，图片最多8 MiB PNG；双方均需允许，文件不传输。");}
-                                        else{ui.small("兼容连接仅同步最多30 KiB文本。");}
+                                        if self.is_native(){if menu_row(ui,"同步文本和图片",None,self.preferences.native_clipboard,false,"",false).on_hover_text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许。").clicked(){self.preferences.native_clipboard=!self.preferences.native_clipboard;self.persist_preferences();}}
+                                        else if menu_row(ui,"同步文本剪贴板",None,self.preferences.clipboard,false,"",false).on_hover_text("兼容连接仅支持最多30KiB文本；双方均需允许。").clicked(){self.preferences.clipboard=!self.preferences.clipboard;self.persist_preferences();}
+                                        if self.is_native(){ui.response().on_hover_text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许，不传输文件。");}
+                                        else{ui.response().on_hover_text("兼容连接仅支持最多30KiB的文本同步。");}
                                         if let Some(h)=&self.controller {ui.label(h.stats.clipboard.status.lock().unwrap().as_str());}
                                     });
                                     }
@@ -1071,12 +1073,12 @@ mod tests {
         let more=text["更多"].center();
         frame(vec![egui::Event::PointerMoved(more)]);
         let (_,_,text,_,_)=frame(vec![egui::Event::PointerMoved(more)]);
-        let hud=text["HUD"].center();
-        frame(vec![egui::Event::PointerMoved(hud),button(hud,true)]);
-        frame(vec![button(hud,false)]);
+        let hud=text["统计信息"].center();
+        frame(vec![egui::Event::PointerMoved(hud)]);
+        frame(vec![egui::Event::PointerMoved(hud)]);
         let (open,blocked,text,_,_)=frame(vec![egui::Event::PointerMoved(hud)]);
         assert!(open,"opening HUD must preserve More's popup ID");
-        let detailed=text["Detailed"].center();
+        let detailed=text["详细"].center();
         assert!(blocked.iter().any(|r|r.contains(detailed)),"child controls must not reach remote input");
         frame(vec![egui::Event::PointerMoved(detailed),button(detailed,true)]);
         let (open,_,_,enabled,level)=frame(vec![button(detailed,false)]);
