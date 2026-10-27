@@ -11,16 +11,18 @@ pub(super) struct Cache {
     metrics:Metrics,
     layout:Option<Layout>,
     hover:crate::hud_panel::HoverCard,
+    history:crate::hud_panel::History,
+}
+impl Cache {
+    pub(super) fn keyboard_owned(&self)->bool {self.hover.keyboard_owned()}
+    pub(super) fn invalidate(&mut self) {self.key=None;self.updated=None;self.hover=Default::default();}
 }
 impl super::App {
-    pub(super) fn paint_hud(&mut self,ui:&egui::Ui,rect:Rect)->bool {
-        let Some(controller)=&self.controller else{return false;};
+    pub(super) fn sample_hud(&mut self) {
+        let Some(controller)=&self.controller else{return;};
         let s=&controller.stats;
         let (w,h)=self.textures.get(&self.selected_track).map(|t|(t.size()[0] as u32,t.size()[1] as u32)).unwrap_or_else(||s.res());
-        let width=(rect.width()-32.).max(1.);
-        let detail=self.preferences.hud_detail;
-        let key=(self.selected_track,width.to_bits(),ui.ctx().pixels_per_point().to_bits(),w,h,detail);
-        if self.hud_cache.key!=Some(key)||self.hud_cache.updated.is_none_or(|t|t.elapsed().as_millis()>=500) {
+        if self.hud_cache.updated.is_none_or(|t|t.elapsed().as_millis()>=500) {
             let native=s.native_timing.snapshot();
             let network=s.network_loss.lock().unwrap().clone().filter(|v|v.fresh());
             let host=native.host.and_then(|v|v.video);
@@ -30,12 +32,12 @@ impl super::App {
             let decoded=s.decoded_total.load(Relaxed)>0;
             let ms=|v:u32|v as f32/1000.;
             let configured=s.configured_fps.load(Relaxed);
-            let m=Metrics {
+            let mut m=Metrics {
                 size:[w,h],
                 fps:[received.then(||s.src_fps()),decoded.then(||s.dec_fps()),self.fps.get(&self.selected_track).copied()],
                 target_fps:if configured>0{configured}else{self.target_fps},
                 source_hz:s.remote_screens.lock().unwrap().for_track(self.selected_track).map(|v|v.refresh_hz).filter(|hz|*hz>1),
-                codec:format!("{}{}",s.codec.lock().unwrap().rsplit('/').next().unwrap_or("").to_uppercase(),if s.native_hdr_response.lock().unwrap().is_some(){" 10-bit HDR"}else{""}),
+                codec:{let codec=s.codec.lock().unwrap().rsplit('/').next().unwrap_or("").to_uppercase();if codec.is_empty(){String::new()}else{format!("{codec} {}",if s.native_hdr_response.lock().unwrap().is_some(){"10-bit HDR"}else{"SDR"})}},
                 mode:s.native_quality_current.lock().unwrap().and_then(|v|v.rate_control).map_or_else(String::new,|r|r.label().into()),
                 backend:s.backend(),
                 bitrate:received.then(||s.bitrate_kbps.load(Relaxed) as f32/1000.),
@@ -64,10 +66,23 @@ impl super::App {
                     native.input.map(|v|ms(v.host_queue_us)),native.input.map(|v|ms(v.host_inject_us))],
                 waiting_for_keyframe:s.waiting_for_keyframe.load(Relaxed)!=0,
                 toggle_hint:format!("{} · Toggle HUD",self.preferences.hotkeys.label(uu_core::hotkeys::Action::Stats)),
+                history:Default::default(),
             };
-            self.hud_cache.layout=Some(Layout::new(ui,&m,detail,width));
+            m.history=self.hud_cache.history.record([
+                m.estimate().missing.is_empty().then(||m.estimate().known),m.process[0],m.process[1],m.process[2],m.process[3],m.rtt.map(|v|v[0]/2.),m.queues.iter().copied().collect::<Option<Vec<_>>>().map(|v|v.iter().sum())
+            ]);
             self.hud_cache.metrics=m;
-            self.hud_cache.key=Some(key);self.hud_cache.updated=Some(Instant::now());
+            self.hud_cache.key=None;self.hud_cache.updated=Some(Instant::now());
+        }
+    }
+    pub(super) fn paint_hud(&mut self,ui:&egui::Ui,rect:Rect)->bool {
+        if self.controller.is_none(){return false;}
+        self.sample_hud();
+        let [w,h]=self.hud_cache.metrics.size;
+        let width=(rect.width()-32.).max(1.);let detail=self.preferences.hud_detail;
+        let key=(self.selected_track,width.to_bits(),ui.ctx().pixels_per_point().to_bits(),w,h,detail);
+        if self.hud_cache.key!=Some(key) {
+            self.hud_cache.layout=Some(Layout::new(ui,&self.hud_cache.metrics,detail,width));self.hud_cache.key=Some(key);
         }
         if let Some(layout)=&self.hud_cache.layout {
             let response=layout.paint(ui,rect);

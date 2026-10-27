@@ -736,7 +736,7 @@ impl App {
         if native && self.displays.native_frame_epoch!=h.frames.generation(){
             self.displays.native_frame_epoch=h.frames.generation();
             self.textures.clear();self.unpresented.clear();self.frame_count.clear();self.fps.clear();
-            self.hud_cache=Default::default();
+            self.hud_cache.invalidate();
         }
         let mut frames = Vec::new();
         while let Ok(f) = h.frames.try_recv_image() {
@@ -947,7 +947,7 @@ impl App {
     fn input_conditions(&self,ctx:&egui::Context)->input_capture::Conditions {
         input_capture::Conditions {
             ready:self.input_ready(), focused:self.active_session && ctx.input(|i|i.focused), view_only:self.view_only,
-            local_ui:self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open || self.local_dialog_open()
+            local_ui:(self.hud && self.hud_cache.keyboard_owned()) || self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open || self.local_dialog_open()
                 || self.workspace_tabs.as_ref().is_some_and(|tabs|tabs.owns_input(ctx)),
         }
     }
@@ -966,7 +966,7 @@ impl App {
         if self.input_capture.stopped(conditions){self.release_all_keys();}
         // Client commands remain local while viewing, in menus, or after
         // releasing remote input. They do not depend on a host control grant.
-        let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused) && !shortcuts_ui::recording(ctx);
+        let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused) && !shortcuts_ui::recording(ctx) && !(self.hud && self.hud_cache.keyboard_owned());
         self.shortcuts.configure(&self.preferences.hotkeys,ctx.input(|i|i.modifiers));
         let window=self.platform.window_keyboard(remote,shortcuts,self.nested_passthrough,&self.preferences.hotkeys);
         let active=self.platform.capture_keyboard(self.input_capture.system(conditions,self.fullscreen,self.preferences.capture_keyboard));
@@ -1457,6 +1457,7 @@ impl App {
             let hdr=self.is_native() && self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_response.lock().unwrap().is_some());
             if hdr && eframe::glow_presentation::available_color_for(ctx,ctx.viewport_id()).is_none() {
                 if let Some(gl)=self.video_gl.clone(){let _=video_hdr::enable(ctx,gl,self.preferences.vsync);}
+        self.sample_hud();
             }
             eframe::glow_presentation::set_active(ctx,ctx.viewport_id(),hdr,self.preferences.vsync);
         }
