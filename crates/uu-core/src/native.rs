@@ -732,10 +732,14 @@ async fn send_video(
             let separate=crate::capture_overlap::separate_from_env()?;
             crate::capture_overlap::prepare_device(capture.as_mut(),crate::capture_overlap::requested_from_env()?,separate)?;
             let (width,height)=capture.resolution();validate_video(width,height,fps)?;
-            let kbps=if automatic {crate::native_quality::Update{fps,bitrate_kbps:None,rate_control:None}.bitrate_for(width,height,choices[0])}else{kbps};
-            let rate_control=match rate_control {uu_media::encoder::RateControl::Cbr=>rate_control,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:kbps.saturating_mul(2)}};
             let source_metadata=capture.hdr_metadata();
-            let settings=|codec,hdr|uu_media::encoder::Settings {hdr,source_hdr:source_metadata,tuning:config.encoder_tuning,codec,rate_control,width,height,fps,bitrate_kbps:kbps,preference};
+            let settings=|codec,hdr| {
+                // A fallback must use its own codec's target, not the first
+                // candidate's lower bitrate. This also covers HDR/SDR retries.
+                let bitrate_kbps=if automatic {crate::bitrate::recommended_kbps(width,height,fps,codec)}else{kbps};
+                let rate_control=match rate_control {uu_media::encoder::RateControl::Cbr=>rate_control,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:bitrate_kbps.saturating_mul(2)}};
+                uu_media::encoder::Settings {hdr,source_hdr:source_metadata,tuning:config.encoder_tuning,codec,rate_control,width,height,fps,bitrate_kbps,preference}
+            };
             let capture_us=elapsed_us(started);let started=Instant::now();
             let mut selected=None;let mut last_error=None;let mut attempted=Vec::new();
             let source_hdr=capture.hdr_metadata().is_some();

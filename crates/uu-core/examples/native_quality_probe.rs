@@ -16,6 +16,7 @@ use uu_core::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let recommended=std::env::args().any(|arg|arg=="--recommended");
     let codec = match std::env::args().nth(1).as_deref().unwrap_or("h264") {
         "h264" => native::VideoCodec::H264,
         "hevc" => native::VideoCodec::Hevc,
@@ -96,7 +97,7 @@ async fn main() -> Result<()> {
         .set(native_quality::Request {
             fps: 60,
             bounds: None,
-            bitrate_kbps: Some(bitrate),
+            bitrate_kbps: if recommended {None}else{Some(bitrate)},
             codec: Some(codec),
         })
         .unwrap();
@@ -116,9 +117,9 @@ async fn main() -> Result<()> {
         let epoch=stats.native_media_epoch.load(Ordering::Acquire);let mut transitions=Vec::new();
         let modes=if codec==native::VideoCodec::Pyrowave{[RateMode::Cbr;3]}else{[RateMode::Cbr,RateMode::Vbr,RateMode::Cbr]};
         for (index,mode) in modes.into_iter().enumerate() {
-            let fps=if codec==native::VideoCodec::Pyrowave&&index==1{120}else{60};
-            let target=if fps==120{bitrate*2}else{bitrate};
-            let request=index as u64*2+1;input.set_quality(request,native_quality::Update{fps,bitrate_kbps:Some(target),rate_control:Some(mode)})?;
+            let fps=if (recommended||codec==native::VideoCodec::Pyrowave)&&index==1{120}else{60};
+            let target=if recommended {uu_core::bitrate::recommended_kbps(640,360,fps,codec)}else if fps==120{bitrate*2}else{bitrate};
+            let request=index as u64*2+1;input.set_quality(request,native_quality::Update{fps,bitrate_kbps:if recommended{None}else{Some(target)},rate_control:Some(mode)})?;
             loop {
                 let applied=stats.native_quality_applied.lock().unwrap().clone();
                 if let Some(applied)=applied.filter(|a|a.request==request){ensure!(applied.error.is_none(),"rate switch failed: {:?}",applied.error);ensure!(applied.settings.rate_control==Some(mode)&&applied.bitrate_kbps==target&&applied.settings.fps==fps,"wrong applied settings");break;}
@@ -137,7 +138,7 @@ async fn main() -> Result<()> {
                     if let Some(applied)=applied.filter(|a|a.request==next){ensure!(applied.error.is_none(),"VBR bitrate update failed: {:?}",applied.error);break;}
                     ensure!(!viewer.is_finished(),"viewer ended during bitrate update");sleep(Duration::from_millis(5)).await;
                 }
-                ensure!(stats.native_quality_current.lock().unwrap().is_some_and(|s|s.rate_control==Some(RateMode::Vbr)),"bitrate-only update lost VBR");
+                ensure!(stats.native_quality_current.lock().unwrap().is_some_and(|s|s.rate_control==Some(RateMode::Vbr)&&s.bitrate_kbps==Some(4000)),"bitrate-only update lost VBR or the explicit target");
                 let baseline=stats.decoded_total.load(Ordering::Acquire);
                 while stats.decoded_total.load(Ordering::Acquire)<baseline+8 {ensure!(!viewer.is_finished(),"no pictures after VBR bitrate update");sleep(Duration::from_millis(5)).await;}
                 transitions.push(serde_json::json!({"mode":"vbr_preserved_after_bitrate_only_update","bitrate_kbps":4000,"decoded":stats.decoded_total.load(Ordering::Acquire)}));
@@ -154,7 +155,7 @@ async fn main() -> Result<()> {
     let report = hosted??;
     println!(
         "{}",
-        serde_json::json!({"quality":"passed","codec":codec,"transitions":transitions,"host_backend":report.encoder,"decoded":stats.decoded_total.load(Ordering::Acquire),"errors":stats.errors.load(Ordering::Acquire),"desktop_captured":false,"input_enabled":false,"clean_shutdown":true})
+        serde_json::json!({"quality":"passed","recommended":recommended,"codec":codec,"transitions":transitions,"host_backend":report.encoder,"decoded":stats.decoded_total.load(Ordering::Acquire),"errors":stats.errors.load(Ordering::Acquire),"desktop_captured":false,"input_enabled":false,"clean_shutdown":true})
     );
     Ok(())
 }

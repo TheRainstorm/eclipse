@@ -270,14 +270,15 @@ struct App {
     window_edge_active: bool,
 }
 
-/// Match the supplied official menu. Explicit rates use quality 6 and are
-/// encoded as bits/second; automatic quality 5 remains controlled by the host.
+/// Preserve saved legacy indices. Native recommendations are calculated by the
+/// host at the actual output geometry; compatibility quality 5 stays automatic.
 const BITRATE_PRESETS: &[(&str, u64, Option<u32>)] = &[
     ("自动（原画）", 5, None),
     ("原画 30M", 6, Some(30)),
     ("超清 14M", 6, Some(14)),
     ("高清 8M", 6, Some(8)),
     ("自定义", 6, None),
+    ("推荐码率（LAN Quality）", 5, None),
 ];
 
 fn vk_for(key: egui::Key) -> Option<u32> {
@@ -769,7 +770,7 @@ impl App {
             if response >> 1 == 2000 + self.settings_seq && self.settings_feedback.starts_with("已发送") {
                 if response & 1 != 0 {self.remote_cursor_active=self.preferences.cursor_mode.remote();}
                 self.settings_feedback = if response & 1 != 0 {
-                    format!("远端已确认请求：{} FPS · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0)
+                    format!("远端已确认请求：{} FPS · {}", self.target_fps, settings::bitrate_label(self.bitrate_idx,self.is_native()))
                 } else { "远端拒绝了画质设置，请重新选择".into() };
             }
         }
@@ -898,7 +899,7 @@ impl App {
         self.displays.settings_sent(request, source, self.selected_track, profile);
         let sent=if immediate {h.input.send(msg)}else{h.settings.send(msg)};
         self.settings_feedback = if sent.is_ok() {
-            format!("已发送：{} FPS · {} · {}", self.target_fps, BITRATE_PRESETS[self.bitrate_idx].0,
+            format!("已发送：{} FPS · {} · {}", self.target_fps, settings::bitrate_label(self.bitrate_idx,self.is_native()),
                 if quality == 6 { format!("{} Mbps", preset_mbps.unwrap_or(self.custom_mbps)) }
                 else { "以实际接收码率为准".into() })
         } else {

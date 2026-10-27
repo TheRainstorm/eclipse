@@ -63,6 +63,7 @@ pub struct State<'a> {
     pub presentation_vsync: bool,
     pub gamepad_status: Option<&'a str>,
     pub actual_codec: Option<&'a str>,
+    pub actual_size: Option<[u32;2]>,
 }
 #[derive(Default)]
 pub struct Actions {
@@ -192,10 +193,15 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                 combo(
                     ui,
                     "settings-bitrate",
-                    super::BITRATE_PRESETS[s.bitrate].0,
+                    if state.streaming {super::settings::bitrate_label(s.bitrate,state.native)}else{super::BITRATE_PRESETS[s.bitrate].0},
                     |ui| {
                         for (i, (label, _, _)) in super::BITRATE_PRESETS.iter().enumerate() {
-                            ui.selectable_value(&mut s.bitrate, i, *label);
+                            if (state.native&&i==0)||(!state.native&&state.streaming&&i==5){continue;}
+                            if state.native&&i==5 {
+                                if ui.selectable_label(matches!(s.bitrate,0|5),*label).clicked(){s.bitrate=5;}
+                            }else if !state.native&&state.streaming&&i==0 {
+                                if ui.selectable_label(matches!(s.bitrate,0|5),*label).clicked(){s.bitrate=0;}
+                            }else{ui.selectable_value(&mut s.bitrate, i, *label);}
                         }
                     },
                 );
@@ -206,13 +212,23 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                     ui.end_row();
                 }
         });
+        if state.native||!state.streaming {
+            match super::settings::recommended_bitrate(&s.client,state.actual_size,state.actual_codec) {
+                Some(kbps)=>{ui.label(format!("LAN Quality 推荐约 {:.1} Mbps",kbps as f64/1000.));},
+                None=>{ui.label("推荐码率将在连接后按实际分辨率、帧率和协商编码计算。");},
+            }
+            if super::settings::recommended_bitrate(&s.client,state.actual_size,state.actual_codec)==Some(uu_core::native_quality::MAX_BITRATE_KBPS) {
+                note(ui,"推荐值已达到当前 1000 Mbps 上限；此组合需要降低分辨率或 FPS，或自行调整画质目标。");
+            }
+            note(ui,"推荐档随分辨率、FPS 和编码更新；以良好画质为目标，复杂场景可手动提高。不是网络测速或所有画面的最低码率保证。UU 兼容模式的自动档由官方主机决定。");
+        }
         if let Some(codec)=state.actual_codec.filter(|c|!c.is_empty()){ui.label(format!("当前编码：{}",codec.trim_start_matches("video/")));}
         note(
             ui,
             "原生连接按两端能力协商，明确选择不可用时会提示；UU 兼容模式支持 H.264 或优先 HEVC。切换编码需要重连。",
         );
         if s.codec==super::settings::CodecPreference::Pyrowave {
-            note(ui,"PyroWave 仅用于两端新版原生连接，当前支持 SDR、CBR 帧预算，需要较高带宽。自动码率约为 1080p60 200 Mbps、4K60 800 Mbps，建议使用有线网络；主机需允许此编码。");
+            note(ui,"PyroWave 当前支持 SDR、CBR；60 FPS 下推荐约 1080p 170 Mbps、4K 288 Mbps，帧率翻倍时码率约翻倍。还需预留协议与纠错带宽；主机需允许此编码。");
         }
     });
 }
@@ -510,7 +526,7 @@ pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::Cli
     });
     ui.add_space(12.);
     let mut wrapper=Settings {client:settings.clone(),..Default::default()};
-    let state=State { native:false,native_cursor:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None,actual_codec:None };
+    let state=State { native:false,native_cursor:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None,actual_codec:None,actual_size:None };
     match section {Section::Encoding=>encoding(ui,&mut wrapper,&state),Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
     *settings=wrapper.client;
 }

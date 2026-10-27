@@ -8,6 +8,22 @@ use std::{
 
 pub use uu_core::client_settings::{ClientSettings, CodecPreference, CursorMode};
 
+pub(super) fn bitrate_label(index:usize,native:bool)->&'static str {
+    super::BITRATE_PRESETS[if native&&index==0 {5}else if !native&&index==5 {0}else{index}].0
+}
+pub(super) fn recommended_bitrate(settings:&ClientSettings,actual_size:Option<[u32;2]>,actual_codec:Option<&str>)->Option<u32> {
+    use uu_core::native::VideoCodec;
+    let [width,height]=actual_size.filter(|s|s[0]>0&&s[1]>0).or(settings.native_request().bounds)?;
+    let codec=match settings.codec {
+        CodecPreference::H264=>VideoCodec::H264,CodecPreference::Hevc=>VideoCodec::Hevc,
+        CodecPreference::Av1=>VideoCodec::Av1,CodecPreference::Pyrowave=>VideoCodec::Pyrowave,
+        CodecPreference::Auto=>match actual_codec?.rsplit('/').next()?.to_ascii_lowercase().as_str() {
+            "h264"=>VideoCodec::H264,"h265"|"hevc"=>VideoCodec::Hevc,"av1"=>VideoCodec::Av1,"pyrowave"=>VideoCodec::Pyrowave,_=>return None,
+        },
+    };
+    Some(uu_core::bitrate::recommended_kbps(width,height,settings.fps,codec))
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceView { #[default] Cards, List }
@@ -73,7 +89,7 @@ impl Settings {
         if s.lan_service_port==47998 { s.lan_service_port=uu_core::native_discovery::SERVICE_PORT; }
         if s.lan_discovery_port==47999 { s.lan_discovery_port=uu_core::native_discovery::DISCOVERY_PORT; }
         s.fps = s.fps.clamp(5, 240);
-        s.bitrate = s.bitrate.min(4);
+        s.bitrate = s.bitrate.min(5);
         s.custom_mbps = s.custom_mbps.clamp(1, 1000);
         s.resolution = s.resolution.min(3);
         s.volume = s.volume.min(100);
@@ -427,6 +443,8 @@ impl super::App {
         let native=self.is_native();
         let stats=self.controller.as_ref().map(|h|h.stats.clone());
         let actual_codec=stats.as_ref().map(|s|s.codec.lock().unwrap().clone());
+        let actual_size=stats.as_ref().filter(|s|s.native_quality_request.get().is_some_and(|r|r.bounds==self.settings_draft.native_request().bounds))
+            .map(|s|{let(w,h)=s.res();[w,h]});
         let remote=&mut self.remote_admin_ui;
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
             super::settings_page::State {
@@ -439,6 +457,7 @@ impl super::App {
                 presentation_vsync:self.presentation_vsync,
                 gamepad_status:gamepad_status.as_deref(),
                 actual_codec:actual_codec.as_deref(),
+                actual_size,
             },|ui,section|remote.show(ui,section,stats.as_deref()));
         if actions.back {self.workspace.discard_server_draft();self.stream_settings_open=false;ctx.request_repaint();}
         if actions.maximize {self.toggle_maximized(ctx);}
@@ -548,6 +567,18 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bitrate_preview_waits_for_unknown_geometry_and_uses_negotiated_codec() {
+        let mut settings=ClientSettings::default();
+        assert_eq!(recommended_bitrate(&settings,None,None),None);
+        assert_eq!(recommended_bitrate(&settings,Some([3840,2160]),Some("video/AV1")),Some(48_000));
+        settings.fps=120;
+        assert_eq!(recommended_bitrate(&settings,Some([3840,2160]),Some("video/AV1")),Some(67_900));
+        settings.codec=CodecPreference::Pyrowave;settings.resolution=1;settings.fps=60;
+        assert_eq!(recommended_bitrate(&settings,None,Some("video/AV1")),Some(170_200));
+        assert_eq!(bitrate_label(0,true),bitrate_label(5,true));
+        assert_eq!(bitrate_label(5,false),bitrate_label(0,false));
+    }
     #[test]
     fn compatibility_preferences_survive_reopen_without_reverting_launcher_settings() {
         let root=std::env::temp_dir().join(format!("eclipse-client-settings-{}",uuid::Uuid::new_v4()));
@@ -685,7 +716,7 @@ mod tests {
         assert_eq!(s.volume, 100);
         assert!(s.capture_keyboard);
         assert_eq!(s.display_mode,uu_core::screen_control::DisplayMode::Preserve);
-        assert_eq!(s.bitrate, 4);
+        assert_eq!(s.bitrate, 5);
         s.save(&p).unwrap();
         s.fps = 90;
         s.save(&p).unwrap();

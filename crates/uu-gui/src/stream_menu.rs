@@ -629,9 +629,15 @@ impl super::App {
         }
         if self.preferences.codec==super::settings::CodecPreference::Pyrowave {ui.small("PyroWave：SDR / 高带宽，建议有线连接");}
         ui.small("码率");
+        let native=self.is_native();
+        let actual=self.controller.as_ref().map(|h|{let(w,h)=h.stats.res();[w,h]});
+        let codec=self.controller.as_ref().map(|h|h.stats.codec.lock().unwrap().clone());
+        let recommended=super::settings::recommended_bitrate(&self.preferences,actual,codec.as_deref());
         for (index,(label,_,_)) in super::BITRATE_PRESETS.iter().enumerate() {
+            if (native&&index==0)||(!native&&index==5){continue;}
+            let title=if index==5 {recommended.map_or_else(||"推荐码率 · LAN Quality".into(),|kbps|format!("推荐码率 · {:.1} Mbps",kbps as f64/1000.))}else{(*label).into()};
             let custom=index==4;
-            let response=menu_row(ui,label,None,self.bitrate_idx==index,custom,"",false);
+            let response=menu_row(ui,&title,None,self.bitrate_idx==index||(native&&index==5&&self.bitrate_idx==0)||(!native&&index==0&&self.bitrate_idx==5),custom,"",false);
             if custom&&(response.hovered()||response.clicked()) {self.stream_menu.quality_detail=Some((QualityDetail::Bitrate,response.rect));}
             else if response.hovered(){self.stream_menu.quality_detail=None;}
             if !custom&&response.clicked(){self.bitrate_idx=index;self.confirm_quality(ui);}

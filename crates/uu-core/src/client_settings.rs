@@ -71,7 +71,7 @@ pub struct ClientSettings {
 impl Default for ClientSettings {
     fn default() -> Self {
         Self { fps:60, display_mode:crate::screen_control::DisplayMode::Preserve,
-            bitrate:0,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,rate_control:None,
+            bitrate:5,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,rate_control:None,
             volume:100,muted:false,hud:false,capture_keyboard:true,
             vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
             cursor_mode:CursorMode::Both,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
@@ -79,7 +79,7 @@ impl Default for ClientSettings {
 }
 impl ClientSettings {
     pub fn validate(&self) -> Result<()> {
-        ensure!((5..=240).contains(&self.fps) && self.bitrate<=4
+        ensure!((5..=240).contains(&self.fps) && self.bitrate<=5
             && (1..=1000).contains(&self.custom_mbps) && self.resolution<=3 && self.volume<=100,
             "客户端分辨率、帧率、码率或音量无效");
         ensure!(!self.software_decoder || !matches!(self.codec,CodecPreference::Hevc|CodecPreference::Av1|CodecPreference::Pyrowave),
@@ -127,5 +127,23 @@ mod clipboard_tests {
         settings.native_clipboard=true;
         let restored:ClientSettings=serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
         assert!(restored.native_clipboard);assert_eq!(restored,settings);
+    }
+}
+
+#[cfg(test)]
+mod bitrate_tests {
+    use super::*;
+    #[test]
+    fn recommended_bitrate_is_default_and_fixed_presets_keep_their_values() {
+        let mut s=ClientSettings::default();
+        assert_eq!(s.bitrate,5);assert!(s.native_request().bitrate_kbps.is_none());
+        for (index,kbps) in [(1,30_000),(2,14_000),(3,8_000),(4,55_000)] {
+            s.bitrate=index;assert_eq!(s.native_request().bitrate_kbps,Some(kbps));
+        }
+        let legacy:ClientSettings=serde_json::from_str(r#"{"bitrate":0}"#).unwrap();
+        assert_eq!(legacy.bitrate,0);assert!(legacy.native_request().bitrate_kbps.is_none());
+        let selected:ClientSettings=serde_json::from_str(r#"{"bitrate":5,"codec":"pyrowave"}"#).unwrap();
+        selected.validate().unwrap();
+        assert_eq!(serde_json::from_slice::<ClientSettings>(&serde_json::to_vec(&selected).unwrap()).unwrap(),selected);
     }
 }

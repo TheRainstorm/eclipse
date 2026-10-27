@@ -13,6 +13,7 @@ pub mod frame_trace;
 mod video_receiver;
 pub mod error;
 pub mod media;
+pub mod bitrate;
 pub mod native_pairing;
 pub mod native_discovery;
 pub mod native_lan_store;

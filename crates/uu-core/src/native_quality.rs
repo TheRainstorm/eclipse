@@ -73,12 +73,10 @@ impl Update {
         ensure!(self.bitrate_kbps.is_none_or(|kbps|(64..=MAX_BITRATE_KBPS).contains(&kbps)),"码率请求无效");Ok(())
     }
     pub fn bitrate(self,width:u32,height:u32)->u32 {
-        self.bitrate_kbps.unwrap_or_else(||(u64::from(width)*u64::from(height)*u64::from(self.fps)/12/1000).clamp(1000,u64::from(MAX_BITRATE_KBPS)) as u32)
+        self.bitrate_for(width,height,VideoCodec::H264)
     }
     pub fn bitrate_for(self,width:u32,height:u32,codec:VideoCodec)->u32 {
-        if codec==VideoCodec::Pyrowave {
-            self.bitrate_kbps.unwrap_or_else(||(u64::from(width)*u64::from(height)*u64::from(self.fps)*8/5/1000).clamp(1000,u64::from(MAX_BITRATE_KBPS)) as u32)
-        }else{self.bitrate(width,height)}
+        self.bitrate_kbps.unwrap_or_else(||crate::bitrate::recommended_kbps(width,height,self.fps,codec))
     }
 }
 #[derive(Clone,Debug,Serialize,Deserialize)]
@@ -198,8 +196,8 @@ mod tests {
             assert!(request.add(&mut wrong).is_err());
         }
         let update=Update{fps:60,bitrate_kbps:None,rate_control:None};
-        assert_eq!(update.bitrate_for(1920,1080,VideoCodec::Pyrowave),199_065);
-        assert_eq!(update.bitrate_for(3840,2160,VideoCodec::Pyrowave),796_262);
+        assert_eq!(update.bitrate_for(1920,1080,VideoCodec::Pyrowave),170_200);
+        assert_eq!(update.bitrate_for(3840,2160,VideoCodec::Pyrowave),288_100);
     }
     #[test]
     fn rate_extension_leaves_legacy_updates_unchanged_and_roundtrips_separately() {
