@@ -590,7 +590,7 @@ fn encode_source(
         let wait_us=elapsed_us(started);
         timings.backpressure_us.fetch_add(wait_us, Ordering::Relaxed);
         live_timing.video(capture_us,encode_us,wait_us);
-        next = (next + interval).max(Instant::now());
+        next = crate::video_pacing::next_deadline(next,interval,Instant::now());
     }
     Ok(())
     })();

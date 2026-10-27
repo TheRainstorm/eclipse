@@ -77,6 +77,7 @@ pub mod frame_cadence;
 pub mod native_timing;
 pub mod native_displays;
 mod native_video;
+mod video_pacing;
 mod native_fec;
 mod av1_rtp;
 mod pyrowave_rtp;
