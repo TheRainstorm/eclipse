@@ -1614,6 +1614,7 @@ impl App {
                     "input_sent":s.input_messages_sent.load(Relaxed),"input_errors":s.input_send_errors.load(Relaxed),
                     "keyboard_repeats_forwarded":self.pressed_vks.forwarded_repeats(),
                     "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()});
+                report["network_loss"]=serde_json::to_value(s.network_loss.lock().unwrap().as_ref()).unwrap_or_default();
                 report["build"]=self.build_label.clone().into();
                 report["presentation_swap_interval"]=eframe::vsync_interval(ctx).into();
                 report["video_color"]=self.textures.get(&self.selected_track).and_then(|t|t.color_diagnostics()).into();

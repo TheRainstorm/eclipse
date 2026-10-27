@@ -118,6 +118,8 @@ pub struct MediaStats {
     pub remote_screens_revision: AtomicU64,
     /// Unrecovered RTP packet loss in the current receive window, parts/million.
     pub loss_ppm: AtomicU32,
+    /// Original RTP before FEC/RTX; independent of the post-repair loss above.
+    pub network_loss:std::sync::Mutex<Option<crate::network_loss::Snapshot>>,
     pub codec: std::sync::Mutex<String>,
     pub nack_requests: AtomicU64,
     pub rtx_packets: AtomicU64,
@@ -158,6 +160,7 @@ impl MediaStats {
         if self.selected_video_track.swap(track,Ordering::AcqRel)!=track {
             for value in [&self.src_fps_x100,&self.dec_fps_x100,&self.decode_us,&self.bitrate_kbps,&self.width,&self.height,&self.loss_ppm] {value.store(0,Ordering::Relaxed);}
             *self.frame_cadence.lock().unwrap() = Default::default();
+            *self.network_loss.lock().unwrap()=None;
             self.set_backend("");
         }
     }
@@ -1054,6 +1057,7 @@ pub(crate) async fn receive_video(
     let nack_sender = u32::from_be_bytes(uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap());
     let mut last_nack = Instant::now();
     let mut receiver = VideoReceiver::with_codec(Duration::from_millis(wait_ms), codec);
+    let mut network_loss=crate::network_loss::Observer::new(Duration::from_millis(wait_ms));
     let mut ticker = tokio::time::interval(Duration::from_millis(5));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let strict = !std::env::var("UU_STRICT_RECOVERY").is_ok_and(|v| v == "0");
@@ -1096,11 +1100,13 @@ pub(crate) async fn receive_video(
             due=ticker.tick()=>{tick_late.push(due.elapsed().as_secs_f64() * 1000.0);None},
         };
         let now = Instant::now();
+        network_loss.advance(now);
         if packet.as_ref().is_some_and(|(p,_)| test_loss.drop_packet(p.header.sequence_number, now)) {
             if let Some(s) = &stats { s.injected_loss.fetch_add(1, Ordering::Relaxed); }
             continue;
         }
         let units = if let Some((packet, primary)) = packet {
+            if primary {network_loss.observe(packet.header.sequence_number,now);}
             if packet.header.payload_type != active_payload_type {
                 // Old RTX/late primary packets cannot switch the format back.
                 if !primary || latest_primary.is_some_and(|last| (packet.header.sequence_number.wrapping_sub(last) as i16) < 0) { continue; }
@@ -1210,11 +1216,13 @@ pub(crate) async fn receive_video(
                 .store(receiver.stats.damaged, Ordering::Relaxed);
         }
         if window.elapsed() >= Duration::from_millis(500) {
+            let network_snapshot=network_loss.report(now);
             let decoded = track_decoded.load(Ordering::Relaxed);
             let mut timing = crate::frame_cadence::Snapshot::default();
             cadence.publish(&mut timing);
             timing.receiver_tick_late_ms = tick_late.take();
             if let Some(s) = stats.as_ref().filter(|s|s.selected_video_track.load(Ordering::Acquire)==track_idx) {
+                *s.network_loss.lock().unwrap()=Some(network_snapshot);
                 {
                     let mut snapshot = s.frame_cadence.lock().unwrap();
                     snapshot.source_spacing_ms = timing.source_spacing_ms;

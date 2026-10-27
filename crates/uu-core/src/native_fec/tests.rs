@@ -159,3 +159,26 @@ fn negotiation_is_exact_optional_and_duplicate_attributes_do_not_enable_fec() {
         "a=x-eclipse-video-fec:future-unknown-version\r\n"
     ));
 }
+
+#[test]
+fn fec_repair_preserves_pre_repair_network_loss() {
+    for base in [0,65532] {
+        let packets=packets(base,9000);
+        let parity=protect(&packets);
+        let now=Instant::now();
+        let mut original=crate::network_loss::Observer::new(Duration::from_millis(60));
+        let mut decoder=Decoder::default();decoder.source(1234,102);
+        for (i,p) in packets.iter().enumerate() {
+            if i==3 {continue;}
+            original.observe(p.header.sequence_number,now);
+            assert!(decoder.packet(p,now).is_empty());
+        }
+        let repaired=decoder.parity(Parity::parse(&parity).unwrap(),now);
+        assert_eq!(repaired,vec![packets[3].clone()]);
+        let snapshot=original.report(now+Duration::from_millis(70));
+        assert_eq!(snapshot.loss_ppm,Some(125000));
+        assert_eq!(snapshot.original_received,7);
+        assert_eq!(snapshot.original_lost,1);
+        assert_eq!(repaired.len() as u64,snapshot.original_lost);
+    }
+}

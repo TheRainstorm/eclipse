@@ -197,6 +197,7 @@ fn snapshot(stats: &MediaStats, elapsed: Duration) -> serde_json::Value {
         "waiting_for_keyframe":stats.waiting_for_keyframe.load(Ordering::Relaxed),
     });
     value["recovery_causes"]=serde_json::json!({"receive_damage":stats.recovery_receive_damage.load(Ordering::Relaxed),"decode_queue":stats.recovery_decode_queue.load(Ordering::Relaxed),"decoder_error":stats.recovery_decoder_error.load(Ordering::Relaxed),"format_change":stats.recovery_format_change.load(Ordering::Relaxed)});
+    value["network_loss"]=serde_json::to_value(stats.network_loss.lock().unwrap().as_ref()).unwrap_or_default();
     value["frame_cadence"]=serde_json::to_value(stats.frame_cadence.lock().unwrap().clone()).unwrap_or_default();
     value
 }
