@@ -1460,14 +1460,15 @@ impl App {
         self.sample_hud();
         #[cfg(windows)]
         {
-            if self.is_native()&&std::env::var("UU_D3D11_NATIVE_VIDEO").as_deref()!=Ok("0") {
+            let gpu_video=self.textures.get(&self.selected_track).is_some_and(|t|t.native_gpu_source());
+            if self.is_native()&&gpu_video&&std::env::var("UU_D3D11_NATIVE_VIDEO").as_deref()!=Ok("0") {
                 if let Some(gl)=self.video_gl.clone(){if !eframe::glow_presentation::native_video_available(ctx,ctx.viewport_id()){if let Err(e)=video_hdr::enable_native(ctx,gl,self.preferences.vsync){eprintln!("native video presentation unavailable: {e}");}}}
             }
             let hdr=self.is_native() && self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_response.lock().unwrap().is_some());
             if hdr && eframe::glow_presentation::available_color_for(ctx,ctx.viewport_id()).is_none() {
                 if let Some(gl)=self.video_gl.clone(){let _=video_hdr::enable(ctx,gl,self.preferences.vsync);}
             }
-            eframe::glow_presentation::set_active(ctx,ctx.viewport_id(),hdr||(self.controller.is_some()&&eframe::glow_presentation::native_video_available(ctx,ctx.viewport_id())),self.preferences.vsync);
+            eframe::glow_presentation::set_active(ctx,ctx.viewport_id(),hdr||(gpu_video&&eframe::glow_presentation::native_video_available(ctx,ctx.viewport_id())),self.preferences.vsync);
         }
         let video_px = self.textures.get(&self.selected_track)
             .map(|texture| texture.size_vec2());

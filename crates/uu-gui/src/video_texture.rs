@@ -165,6 +165,15 @@ impl VideoTexture {
     pub fn size_vec2(&self) -> egui::Vec2 {
         egui::vec2(self.size[0] as f32, self.size[1] as f32)
     }
+    /// Native composition is useful only for actual D3D images. Software
+    /// frames and unsupported sharing keep the regular GL presentation path.
+    #[cfg(windows)]
+    pub fn native_gpu_source(&self)->bool {
+        self.gpu.as_ref().is_some_and(|gpu|{
+            let state=gpu.lock().unwrap();
+            !state.native_disabled&&(state.native_active||state.d3d_active||state.pending.as_ref().is_some_and(|(frame,_)|frame.gpu&&frame.d3d11.is_some()))
+        })
+    }
     pub fn set_native_cursor(&self,state:Option<uu_core::native_cursor::Snapshot>) {
         if let Some(gpu)=&self.gpu {gpu.lock().unwrap().cursor.state=state.clone();}
         *self.cursor.lock().unwrap()=state;
