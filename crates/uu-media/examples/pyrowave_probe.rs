@@ -11,7 +11,7 @@ fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     anyhow::ensure!(
         args.len() >= 1,
-        "usage: pyrowave_probe RUNTIME [WIDTH HEIGHT FRAMES KBPS] [--gpu]"
+        "usage: pyrowave_probe RUNTIME [WIDTH HEIGHT FRAMES KBPS] [--gpu] [--tuning-json FILE]"
     );
     let runtime = PathBuf::from(&args[0]).canonicalize()?;
     let value = |i: usize, default: u32| {
@@ -41,6 +41,12 @@ fn main() -> anyhow::Result<()> {
         uu_media::d3d11_frame::set_rendering(gpu);
         uu_media::pyrowave::probe_decoder()?;
     }
+    let tuning = if let Some(at) = args.iter().position(|v| v == "--tuning-json") {
+        let path = args.get(at + 1).ok_or_else(|| anyhow::anyhow!("missing tuning file"))?;
+        serde_json::from_slice(&std::fs::read(path)?)?
+    } else {
+        Default::default()
+    };
     let settings = Settings {
         codec: uu_proto::media::VideoCodec::Pyrowave,
         width,
@@ -49,7 +55,7 @@ fn main() -> anyhow::Result<()> {
         bitrate_kbps: kbps,
         preference: Preference::Auto,
         rate_control: RateControl::Cbr,
-        tuning: Default::default(),
+        tuning,
         hdr: false,
         source_hdr: None,
     };
