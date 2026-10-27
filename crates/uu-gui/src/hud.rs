@@ -34,7 +34,7 @@ impl super::App {
                 size:[w,h],
                 fps:[received.then(||s.src_fps()),decoded.then(||s.dec_fps()),self.fps.get(&self.selected_track).copied()],
                 target_fps:if configured>0{configured}else{self.target_fps},
-                source_hz:s.remote_screens.lock().unwrap().for_track(self.selected_track).map(|v|v.refresh_hz),
+                source_hz:s.remote_screens.lock().unwrap().for_track(self.selected_track).map(|v|v.refresh_hz).filter(|hz|*hz>1),
                 codec:format!("{}{}",s.codec.lock().unwrap().rsplit('/').next().unwrap_or("").to_uppercase(),if s.native_hdr_response.lock().unwrap().is_some(){" 10-bit HDR"}else{""}),
                 mode:s.native_quality_current.lock().unwrap().and_then(|v|v.rate_control).map_or_else(String::new,|r|r.label().into()),
                 backend:s.backend(),

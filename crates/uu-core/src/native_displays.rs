@@ -43,8 +43,8 @@ impl Host {
             state.catalog = RemoteScreens {
                 current_id: 0,
                 screens: vec![
-                    screen(0, "当前授权屏幕".into(), 2, 2, true, true),
-                    screen(1, "重新选择共享屏幕…".into(), 2, 2, false, false),
+                    screen(0, "当前授权屏幕".into(), 2, 2, true, true,None),
+                    screen(1, "重新选择共享屏幕…".into(), 2, 2, false, false,None),
                 ],
             };
             return Ok(CaptureSource::Primary);
@@ -86,6 +86,7 @@ impl Host {
                         m.height,
                         m.primary,
                         m.name == selected_name,
+                        m.refresh_hz,
                     )
                 })
                 .collect(),
@@ -135,6 +136,7 @@ fn screen(
     height: u32,
     primary: bool,
     selected: bool,
+    refresh_hz:Option<u32>,
 ) -> RemoteScreen {
     RemoteScreen {
         id,
@@ -142,7 +144,7 @@ fn screen(
         width,
         height,
         primary,
-        refresh_hz: 0,
+        refresh_hz: refresh_hz.filter(|hz|*hz>1).unwrap_or(0),
         kind: 0,
         dpi_scale: None,
         video_track_index: if selected { 0 } else { -1 },
@@ -228,6 +230,7 @@ mod tests {
             y: 0,
             width: 640,
             height: 480,
+            refresh_hz:Some(165),
         }
     }
     #[test]
@@ -239,6 +242,7 @@ mod tests {
             CaptureSource::Monitor("a".into())
         );
         assert!(valid(&host.catalog()));
+        assert_eq!(host.catalog().screens[0].refresh_hz,165);
         assert_eq!(host.select(999), None);
         assert_eq!(host.select(1), Some(true));
         assert_eq!(
@@ -274,7 +278,7 @@ mod tests {
         assert_eq!(client.responses().len(), 1);
         let mut catalog = RemoteScreens {
             current_id: 0,
-            screens: vec![screen(0, "a".into(), 640, 480, true, true)],
+            screens: vec![screen(0, "a".into(), 640, 480, true, true,None)],
         };
         assert!(valid(&catalog));
         catalog.screens.push(catalog.screens[0].clone());

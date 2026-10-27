@@ -174,6 +174,7 @@ impl Layout {
                 (m.network_label(), 14., color),
                 (format!("Bandwidth {rate}"), 14., color),
                 (m.stages_label(), 14., color),
+                (format!("net/que ≈{}/{} ms",number(m.rtt.map(|v|v[0]/2.)),number(sum(&m.queues))),14.,color),
                 (m.total_label(), 14., color),
             ];
         } else {
@@ -432,21 +433,22 @@ fn detail_rows(m: &Metrics) -> Vec<DetailRow> {
         DetailRow {
             label: "延迟",
             text: format!(
-                "{total} · 采/编/解/渲 {}/{}/{}/{} ms{missing}",
+                "{total} · 采/编/解/渲/网/排 {}/{}/{}/{}/{}/{} ms{missing}",
                 number(m.process[0]),
                 number(m.process[1]),
                 number(m.process[2]),
-                number(m.process[3])
+                number(m.process[3]),
+                number(m.rtt.map(|v|v[0]/2.)),
+                number(sum(&m.queues))
             ),
             color: green,
         },
         DetailRow {
             label: "网络",
             text: format!(
-                "{rtt} · 原丢 {} / 残丢 {} · 单程 ≈{} ms{distribution}",
+                "{rtt} · 原丢 {} / 残丢 {}{distribution}",
                 pct(m.loss),
-                pct(m.unrecovered_loss),
-                number(m.rtt.map(|v| v[0] / 2.))
+                pct(m.unrecovered_loss)
             ),
             color: if m.loss.is_some_and(|v| v > 1.) {
                 orange

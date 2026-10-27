@@ -51,6 +51,7 @@ pub struct CaptureMonitor {
     pub width: u32,
     pub height: u32,
     pub primary: bool,
+    pub refresh_hz:Option<u32>,
 }
 
 impl CaptureMonitor {
@@ -70,13 +71,16 @@ pub fn monitors() -> Result<Vec<CaptureMonitor>> {
     // compositors advertise their actual outputs; never enumerate Xwayland.
     if uses_desktop_portal() { return Ok(Vec::new()); }
     #[cfg(windows)]
-    let sources = uu_capture::windows::monitors()?;
+    return Ok(uu_capture::windows::diagnostic_monitors()?.into_iter().map(|m|CaptureMonitor {
+        name:m.name,x:m.physical_bounds[0],y:m.physical_bounds[1],width:m.physical_bounds[2] as u32,height:m.physical_bounds[3] as u32,
+        primary:m.primary,refresh_hz:m.refresh_hz,
+    }).collect());
     #[cfg(target_os = "linux")]
     let sources = if uu_capture::uses_wayland() {uu_capture::wayland::monitors()?}
         else {uu_capture::x11::monitors(None)?};
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     return Ok(sources.into_iter().map(|m| CaptureMonitor {
-        name: m.name, x: m.x, y: m.y, width: m.width, height: m.height, primary: m.primary,
+        name: m.name, x: m.x, y: m.y, width: m.width, height: m.height, primary: m.primary,refresh_hz:None,
     }).collect());
     #[cfg(not(any(windows, target_os = "linux")))]
     bail!("native desktop capture is unavailable on this platform")

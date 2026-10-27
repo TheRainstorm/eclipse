@@ -346,6 +346,25 @@ fn side_submenu<R>(
     }
     egui::InnerResponse::new(inner, response)
 }
+// egui's menu tree keeps this child independent of the custom parent's
+// popup ID. Reusing the one-slot popup API would close More when HUD opened.
+fn hud_submenu(ui:&mut egui::Ui,blocked:&mut Vec<Rect>,enabled:&mut bool,level:&mut super::settings::HudDetail,hint:&str)->bool {
+    let mut changed=false;let mut child=None;
+    let response=ui.menu_button("HUD",|ui| {
+        ui.set_width(MENU_WIDTH);
+        if menu_row(ui,"Show HUD",None,*enabled,false,hint,false).clicked(){*enabled=!*enabled;changed=true;}
+        separator(ui);
+        for mode in super::settings::HudDetail::ALL {
+            if menu_row(ui,mode.label(),None,*level==mode,false,"",false).clicked(){*level=mode;*enabled=true;changed=true;}
+        }
+        child=Some(ui.min_rect().expand(4.));
+    }).response;
+    if let Some(child)=child {
+        blocked.push(response.rect);blocked.push(child);
+        if let Some(bridge)=hover_bridge(response.rect,child) {blocked.push(bridge);}
+    }
+    changed
+}
 fn unavailable(ui: &mut egui::Ui, kind: Icon, label: &str, hint: &str) {
     ui.add_enabled_ui(false, |ui| {
         menu_row(ui, label, Some(kind), false, true, "", false)
@@ -940,16 +959,10 @@ impl super::App {
                                     }
                                     if menu_row(ui,"连接详情",Some(Icon::Link),false,false,"",false).clicked(){self.open_connection_details();}
                                     if menu_row(ui,"串流设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
-                                    side_submenu(ui,&mut blocked,Icon::Grid,"HUD",|ui| {
-                                        let mut changed=false;
-                                        if menu_row(ui,"Show HUD",None,self.hud,false,&self.preferences.hotkeys.label(uu_core::hotkeys::Action::Stats),false).clicked(){self.hud=!self.hud;changed=true;}
-                                        separator(ui);
-                                        for mode in super::settings::HudDetail::ALL {
-                                            if menu_row(ui,mode.label(),None,self.preferences.hud_detail==mode,false,"",false).clicked(){self.preferences.hud_detail=mode;self.hud=true;changed=true;}
-                                        }
-                                        if changed {self.persist_preferences();}
-                                    });
+                                    let mut more_children=Vec::new();
                                     side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
+                                        let hint=self.preferences.hotkeys.label(uu_core::hotkeys::Action::Stats);
+                                        if hud_submenu(ui,&mut more_children,&mut self.hud,&mut self.preferences.hud_detail,&hint) {self.persist_preferences();}
                                         if menu_row(
                                             ui,
                                             "隐藏悬浮入口",
@@ -966,6 +979,7 @@ impl super::App {
                                             ctx.memory_mut(|m| m.close_popup());
                                         }
                                     });
+                                    blocked.extend(more_children);
                                     separator(ui);
                                     ui.scope(|ui| {
                                         if menu_row(

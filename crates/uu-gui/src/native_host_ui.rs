@@ -37,7 +37,7 @@ mod tests {
     fn sharing_keeps_software_default_and_reports_actual_fallback() {
         let mut host=NativeHostUi::default();assert_eq!(host.encoder,EncoderPreference::Software);
         assert_eq!(host.bind,"127.0.0.1");
-        host.monitors.push(CaptureMonitor {name:"generated".into(),x:0,y:0,width:4096,height:2160,primary:true});
+        host.monitors.push(CaptureMonitor {name:"generated".into(),x:0,y:0,width:4096,height:2160,primary:true,refresh_hz:None});
         assert!(!host.source_size_supported());host.encoder=EncoderPreference::Auto;
         assert!(host.source_size_supported());host.fps=61;assert!(!host.source_size_supported());
         assert_eq!(actual_encoder_label("vaapi (generated)"),"硬件编码 · VA-API");
