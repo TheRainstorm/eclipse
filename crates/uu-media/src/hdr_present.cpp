@@ -3,6 +3,7 @@
 #include <d3d11.h>
 #include <d3d10.h>
 #include <dcomp.h>
+#include <dxgi1_5.h>
 #include <wrl/client.h>
 #include <cstdio>
 #include <stdexcept>
@@ -31,6 +32,7 @@ struct Presentation {
     ComPtr<IDCompositionVisual> visual;
     unsigned width=0,height=0;
     bool hdr=false;
+    bool allow_tearing=false;
     float white=80;
     HMONITOR monitor=nullptr;
     ULONGLONG queried=0;
@@ -51,6 +53,9 @@ struct Presentation {
         check(D3D11CreateDevice(selected.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,&level,1,D3D11_SDK_VERSION,&device,nullptr,&context),"create HDR presentation device");
         ComPtr<ID3D10Multithread> threading;check(context.As(&threading),"query HDR presentation threading");threading->SetMultithreadProtected(TRUE);
         check(selected->GetParent(__uuidof(IDXGIFactory2),(void**)factory.GetAddressOf()),"get HDR composition factory");
+        ComPtr<IDXGIFactory5> modern;
+        BOOL supported=FALSE;
+        if(SUCCEEDED(factory.As(&modern)) && SUCCEEDED(modern->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,&supported,sizeof(supported))))allow_tearing=supported!=FALSE;
         refresh(true);
         if(!hdr)throw std::runtime_error("the current display output has HDR disabled");
         ComPtr<IDXGIDevice> dxgi;check(device.As(&dxgi),"query HDR DXGI device");
@@ -96,11 +101,19 @@ struct Presentation {
             desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=2;
             desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;desc.AlphaMode=DXGI_ALPHA_MODE_PREMULTIPLIED;
             desc.Scaling=DXGI_SCALING_STRETCH;
-            ComPtr<IDXGISwapChain1> initial;check(factory->CreateSwapChainForComposition(device.Get(),&desc,nullptr,&initial),"create FP16 HDR swap chain");
+            desc.Flags=allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0;
+            ComPtr<IDXGISwapChain1> initial;
+            HRESULT created=factory->CreateSwapChainForComposition(device.Get(),&desc,nullptr,&initial);
+            if(allow_tearing&&(created==DXGI_ERROR_INVALID_CALL||created==DXGI_ERROR_UNSUPPORTED)) {
+                allow_tearing=false;desc.Flags=0;
+                created=factory->CreateSwapChainForComposition(device.Get(),&desc,nullptr,&initial);
+            }
+            check(created,"create FP16 HDR swap chain");
+            std::fprintf(stderr,"HDR composition allow_tearing=%s buffers=2\n",allow_tearing?"true":"false");
             check(initial.As(&chain),"query HDR swap chain");
             check(chain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709),"set scRGB HDR color space");
             ComPtr<IDXGIDevice1> latency;check(device.As(&latency),"query HDR frame latency");check(latency->SetMaximumFrameLatency(1),"limit HDR frame latency");
-        }else check(chain->ResizeBuffers(2,w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,0),"resize HDR swap chain");
+        }else check(chain->ResizeBuffers(2,w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0),"resize HDR swap chain");
         D3D11_TEXTURE2D_DESC td{};td.Width=w;td.Height=h;td.MipLevels=1;td.ArraySize=1;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
         td.SampleDesc.Count=1;td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;td.MiscFlags=D3D11_RESOURCE_MISC_SHARED;
         check(device->CreateTexture2D(&td,nullptr,&shared_texture),"create HDR GL composition texture");
@@ -118,7 +131,7 @@ struct Presentation {
         if(!chain||!shared_texture)throw std::runtime_error("HDR presentation surface is not ready");
         ComPtr<ID3D11Texture2D> backbuffer;check(chain->GetBuffer(0,__uuidof(ID3D11Texture2D),(void**)backbuffer.GetAddressOf()),"get HDR backbuffer");
         context->CopyResource(backbuffer.Get(),shared_texture.Get());
-        check(chain->Present(vsync?1:0,0),"present scRGB HDR frame");
+        check(chain->Present(vsync?1:0,!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0),"present scRGB HDR frame");
         if(!visual_attached) {
             check(visual->SetContent(chain.Get()),"attach HDR swap chain");check(target->SetRoot(visual.Get()),"attach HDR composition visual");
             check(composition->Commit(),"commit HDR composition");visual_attached=true;
