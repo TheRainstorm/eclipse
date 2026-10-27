@@ -32,10 +32,10 @@ fn cursor<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CursorMode, D::Error
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CodecPreference { #[default] Auto, H264, Hevc, Av1 }
+pub enum CodecPreference { #[default] Auto, H264, Hevc, Av1, Pyrowave }
 impl CodecPreference {
-    pub const ALL: [Self; 4] = [Self::Auto, Self::H264, Self::Hevc, Self::Av1];
-    pub fn label(self) -> &'static str { match self { Self::Auto => "自动协商", Self::H264 => "H.264", Self::Hevc => "H.265 / HEVC", Self::Av1 => "AV1" } }
+    pub const ALL: [Self; 5] = [Self::Auto, Self::H264, Self::Hevc, Self::Av1,Self::Pyrowave];
+    pub fn label(self) -> &'static str { match self { Self::Auto => "自动协商", Self::H264 => "H.264", Self::Hevc => "H.265 / HEVC", Self::Av1 => "AV1",Self::Pyrowave=>"PyroWave（实验性 / SDR）" } }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -82,8 +82,9 @@ impl ClientSettings {
         ensure!((5..=240).contains(&self.fps) && self.bitrate<=4
             && (1..=1000).contains(&self.custom_mbps) && self.resolution<=3 && self.volume<=100,
             "客户端分辨率、帧率、码率或音量无效");
-        ensure!(!self.software_decoder || !matches!(self.codec,CodecPreference::Hevc|CodecPreference::Av1),
-            "HEVC / AV1 需要可用的硬件解码；请选择自动或 H.264");
+        ensure!(!self.software_decoder || !matches!(self.codec,CodecPreference::Hevc|CodecPreference::Av1|CodecPreference::Pyrowave),
+            "HEVC / AV1 / PyroWave 需要可用的 GPU 解码；请选择自动或 H.264");
+        ensure!(self.codec!=CodecPreference::Pyrowave || self.rate_control!=Some(crate::native_quality::RateMode::Vbr),"PyroWave 当前只支持 CBR 帧预算，请选择 CBR");
         Ok(())
     }
     pub fn native_request(&self)->crate::native_quality::Request {
@@ -91,7 +92,7 @@ impl ClientSettings {
         crate::native_quality::Request { fps:self.fps,
             bounds:match self.resolution {1=>Some([1920,1080]),2=>Some([2560,1440]),3=>Some([3840,2160]),_=>None},
             bitrate_kbps:match self.bitrate {1=>Some(30_000),2=>Some(14_000),3=>Some(8_000),4=>Some(self.custom_mbps*1000),_=>None},
-            codec:match self.codec {CodecPreference::Auto=>None,CodecPreference::H264=>Some(VideoCodec::H264),CodecPreference::Hevc=>Some(VideoCodec::Hevc),CodecPreference::Av1=>Some(VideoCodec::Av1)} }
+            codec:match self.codec {CodecPreference::Auto=>None,CodecPreference::H264=>Some(VideoCodec::H264),CodecPreference::Hevc=>Some(VideoCodec::Hevc),CodecPreference::Av1=>Some(VideoCodec::Av1),CodecPreference::Pyrowave=>Some(VideoCodec::Pyrowave)} }
     }
     pub fn hevc_preferred(&self) -> bool {
         !self.software_decoder && (self.codec == CodecPreference::Hevc || (self.codec == CodecPreference::Auto && self.prefer_hevc))

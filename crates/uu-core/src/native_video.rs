@@ -36,7 +36,7 @@ pub(crate) struct SendTiming {
 }
 impl Sender {
     pub fn new(track:Arc<TrackLocalStaticRTP>,codec:VideoCodec)->Self{
-        let payloader:Box<dyn Payloader+Send+Sync>=match codec{VideoCodec::H264=>Box::<webrtc::rtp::codecs::h264::H264Payloader>::default(),VideoCodec::Hevc=>Box::<HevcPayloader>::default(),VideoCodec::Av1=>Box::<webrtc::rtp::codecs::av1::Av1Payloader>::default()};
+        let payloader:Box<dyn Payloader+Send+Sync>=match codec{VideoCodec::H264=>Box::<webrtc::rtp::codecs::h264::H264Payloader>::default(),VideoCodec::Hevc=>Box::<HevcPayloader>::default(),VideoCodec::Av1=>Box::<webrtc::rtp::codecs::av1::Av1Payloader>::default(),VideoCodec::Pyrowave=>Box::<crate::pyrowave_rtp::Fragmenter>::default()};
         Self{track,payloader,sequence:Box::new(new_random_sequencer()),origin:None,last_pts:None,timestamp:rand::random(),fec:None}
     }
     pub fn with_fec(track:Arc<TrackLocalStaticRTP>,codec:VideoCodec,transport:Arc<crate::native_fec::Transport>)->Self {

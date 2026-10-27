@@ -30,7 +30,13 @@ impl NativeEncoder {
 }
 
 #[derive(clap::ValueEnum,Clone,Copy,Debug)]
-enum NativeCodec {H264,#[value(alias="h265")] Hevc,Av1}
+enum NativeCodec {H264,#[value(alias="h265")] Hevc,Av1,Pyrowave}
+impl NativeCodec {
+    fn codec(self)->uu_core::native::VideoCodec {
+        use uu_core::native::VideoCodec as V;
+        match self{Self::H264=>V::H264,Self::Hevc=>V::Hevc,Self::Av1=>V::Av1,Self::Pyrowave=>V::Pyrowave}
+    }
+}
 #[derive(clap::ValueEnum,Clone,Copy,Debug)]
 enum NativeRate {Cbr,Vbr}
 #[derive(clap::Args,Clone,Debug)]
@@ -44,7 +50,7 @@ struct NativeVideoOptions {
 }
 impl NativeVideoOptions {
     fn policy(&self,target:u32)->Result<(uu_core::native::VideoCodec,uu_media::encoder::RateControl)>{
-        let codec=match self.codec {NativeCodec::H264=>uu_core::native::VideoCodec::H264,NativeCodec::Hevc=>uu_core::native::VideoCodec::Hevc,NativeCodec::Av1=>uu_core::native::VideoCodec::Av1};
+        let codec=self.codec.codec();
         let rate=match self.rate_control {NativeRate::Cbr=>{anyhow::ensure!(self.peak_kbps.is_none(),"--peak-kbps requires --rate-control vbr");uu_media::encoder::RateControl::Cbr},NativeRate::Vbr=>uu_media::encoder::RateControl::Vbr{peak_kbps:self.peak_kbps.unwrap_or(target.saturating_mul(2))}};
         Ok((codec,rate))
     }
@@ -211,6 +217,9 @@ enum Command {
     },
     /// Decode native video without saving pictures or opening a GUI.
     NativeProbe {
+        /// Explicit native codec selection; PyroWave requires the pinned runtime on both peers.
+        #[arg(long,value_enum)]
+        codec:Option<NativeCodec>,
         #[arg(long)]
         invitation_file: std::path::PathBuf,
         #[arg(long, default_value_t = 120)]
@@ -352,7 +361,7 @@ async fn main() -> Result<()> {
             let (codec,rate_control)=video.policy(bitrate_kbps)?;
             native_cli::host(uu_core::native::HostConfig{encoder_tuning:Default::default(),session:None,video_policy:client_quality.then(||uu_core::native_quality::Policy{codecs:vec![codec],preferred_codec:Some(codec)}),codec,rate_control,bind,source,invitation_file,invitation_lifetime:std::time::Duration::from_secs(pairing_seconds),fps,bitrate_kbps,encoder:encoder.preference(),session_limit:max_seconds.map(std::time::Duration::from_secs),allow_input,clipboard:None,audio:if audio{Some(uu_core::native::AudioSource::System)}else if synthetic_audio{Some(uu_core::native::AudioSource::Synthetic)}else{None}}).await
         },
-        Command::NativeProbe {invitation_file,frames,timeout_seconds,report,audio_loss_every,progress_seconds,max_frame_gap_seconds} => native_cli::probe(invitation_file,frames,timeout_seconds,report,audio_loss_every.unwrap_or(0),progress_seconds,max_frame_gap_seconds).await,
+        Command::NativeProbe {codec,invitation_file,frames,timeout_seconds,report,audio_loss_every,progress_seconds,max_frame_gap_seconds} => native_cli::probe(invitation_file,frames,timeout_seconds,report,audio_loss_every.unwrap_or(0),progress_seconds,max_frame_gap_seconds,codec.map(NativeCodec::codec)).await,
         Command::ReleaseCheck => release_check(&config).await,
         Command::Devices => {
             let client = SignalClient::new(&config)?;

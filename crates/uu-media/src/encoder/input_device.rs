@@ -5,7 +5,7 @@ pub struct InputDevice {
     #[cfg(all(windows, feature = "mf-encode"))]
     pub(crate) device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
     #[cfg(all(windows, feature = "mf-encode"))]
-    pub(super) vendor: u16,
+    pub(crate) vendor: u16,
     _private: (),
 }
 

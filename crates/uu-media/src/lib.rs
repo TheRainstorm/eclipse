@@ -17,6 +17,8 @@ pub mod codec;
 #[cfg(feature = "h264")]
 pub mod encoder;
 pub mod color;
+#[cfg(feature="pyrowave")]
+pub mod pyrowave;
 pub mod hdr;
 pub mod convert;
 pub mod decoder;
@@ -139,6 +141,11 @@ pub fn decoder_for_codec_with_kind(codec:uu_proto::media::VideoCodec,kind:Decode
 fn decoder_for_codec_impl(codec:uu_proto::media::VideoCodec,kind:DecoderKind)->Result<Box<dyn VideoDecoder>,CodecError> {
     use uu_proto::media::VideoCodec;
     if codec == VideoCodec::H264 { return default_decoder_with_kind(kind); }
+    if codec==VideoCodec::Pyrowave {
+        #[cfg(feature="pyrowave")]
+        if kind!=DecoderKind::Software {return Ok(Box::new(pyrowave::Decoder::new()?));}
+        return Err(CodecError::Unsupported(codec));
+    }
     #[cfg(all(windows, feature = "d3d11va"))]
     if codec == VideoCodec::Hevc && kind != DecoderKind::Software {
         return Ok(Box::new(hw::d3d11va::D3d11VaDecoder::with_codec(codec)?));

@@ -17,6 +17,7 @@ pub struct Frame {
     // A COM reference to the texture alone does not prevent MFT sample reuse.
     _sample: Option<IMFSample>,
     _foundation: Option<std::sync::Arc<Foundation>>,
+    _external: Option<std::sync::Arc<dyn std::fmt::Debug+Send+Sync>>,
     texture: ID3D11Texture2D,
     device: ID3D11Device,
     index: u32,
@@ -59,6 +60,7 @@ impl Frame {
             _parent: None,
             _sample: Some(sample),
             _foundation: Some(foundation),
+            _external: None,
             texture,
             device,
             index,
@@ -95,8 +97,14 @@ impl Frame {
         }
         let actual=unsafe{texture.GetDevice()}.map_err(|e|e.to_string())?;
         if actual.as_raw()!=device.as_raw(){return Err("capture texture/device mismatch".into());}
-        Ok(Self{#[cfg(all(feature="mf-encode",feature="h264"))] shared:None,_parent:None,_sample:None,_foundation:None,texture,device,index:0,
+        Ok(Self{#[cfg(all(feature="mf-encode",feature="h264"))] shared:None,_parent:None,_sample:None,_foundation:None,_external:None,texture,device,index:0,
             visible:[desc.Width,desc.Height],allocation:[desc.Width,desc.Height],format:desc.Format})
+    }
+    /// A foreign decoder owns this immutable RGB slot until its frame lease
+    /// is dropped. Keeping only the texture's COM reference is insufficient.
+    pub(crate) fn external_rgb(texture:ID3D11Texture2D,device:ID3D11Device,
+        owner:std::sync::Arc<dyn std::fmt::Debug+Send+Sync>)->Result<Self,String> {
+        let mut frame=Self::captured(texture,device)?;frame._external=Some(owner);Ok(frame)
     }
     #[cfg(all(feature="mf-encode",feature="h264"))]
     pub(crate) fn shared_capture(slot:std::sync::Arc<crate::shared_capture::Slot>,device:ID3D11Device)->Result<Self,String>{
@@ -113,7 +121,7 @@ impl Frame {
             || visible[0]>source.visible[0] || visible[1]>source.visible[1] {
             return Err("invalid decoded GPU display geometry".into());
         }
-        Ok(Self{#[cfg(all(feature="mf-encode",feature="h264"))] shared:source.shared.clone(),_parent:Some(source.clone()),_sample:None,_foundation:None,
+        Ok(Self{#[cfg(all(feature="mf-encode",feature="h264"))] shared:source.shared.clone(),_parent:Some(source.clone()),_sample:None,_foundation:None,_external:source._external.clone(),
             texture:source.texture.clone(),device:source.device.clone(),index:source.index,
             visible,allocation:source.allocation,format:source.format})
     }
@@ -400,7 +408,24 @@ fn readback_bgra(device:&ID3D11Device,context:&ID3D11DeviceContext,output:&ID3D1
 
 /// Explicit shader colour conversion; video-processor fallback for older SDR devices.
 pub struct Converter(Conversion);
-enum Conversion {Sdr(SdrConverter),Shader(ShaderConverter)}
+enum Conversion {Sdr(SdrConverter),Shader(ShaderConverter),Rgb(RgbConverter)}
+struct RgbConverter {
+    device:ID3D11Device,context:ID3D11DeviceContext,output:ID3D11Texture2D,
+    completion:ID3D11Query,size:[u32;2],
+}
+impl RgbConverter {
+    fn create(frame:&Frame,shared:bool)->Result<Self,String> {
+        (||->windows::core::Result<_>{unsafe {
+            let mut output=None;let mut completion=None;
+            frame.device.CreateTexture2D(&D3D11_TEXTURE2D_DESC{Width:frame.visible[0],Height:frame.visible[1],MipLevels:1,ArraySize:1,
+                Format:DXGI_FORMAT_B8G8R8A8_UNORM,SampleDesc:DXGI_SAMPLE_DESC{Count:1,Quality:0},Usage:D3D11_USAGE_DEFAULT,
+                BindFlags:(D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE).0 as u32,
+                MiscFlags:if shared{D3D11_RESOURCE_MISC_SHARED.0 as u32}else{0},..Default::default()},None,Some(&mut output))?;
+            frame.device.CreateQuery(&D3D11_QUERY_DESC{Query:D3D11_QUERY_EVENT,MiscFlags:0},Some(&mut completion))?;
+            Ok(Self{device:frame.device.clone(),context:frame.device.GetImmediateContext()?,output:output.unwrap(),completion:completion.unwrap(),size:frame.visible})
+        }})().map_err(|e|format!("RGB presentation surface: {e}"))
+    }
+}
 struct ShaderConverter {
     hdr:bool,
     color:crate::d3d11_color::Converter,
@@ -412,6 +437,7 @@ struct ShaderConverter {
 impl Converter {
     pub fn new(frame:&Frame)->Result<Self,String>{Self::with_shared_export(frame,false)}
     pub fn with_shared_export(frame:&Frame,shared:bool)->Result<Self,String> {
+        if frame.format==DXGI_FORMAT_B8G8R8A8_UNORM {return RgbConverter::create(frame,shared).map(|v|Self(Conversion::Rgb(v)));}
         let hdr=frame.format==DXGI_FORMAT_P010;
         let shader:Result<Self,String>=(|| {
             let color=crate::d3d11_color::Converter::new(&frame.device,frame.visible,true,hdr,shared,203.)?;
@@ -426,20 +452,24 @@ impl Converter {
             SdrConverter::with_shared_export(frame,shared).map(|c|Self(Conversion::Sdr(c)))
         }}
     }
-    pub fn backend_name(&self)->&'static str {match &self.0 {Conversion::Sdr(_)=>"video-processor",Conversion::Shader(c)=>if c.hdr{"p010-shader"}else{"nv12-shader"}}}
+    pub fn backend_name(&self)->&'static str {match &self.0 {Conversion::Sdr(_)=>"video-processor",Conversion::Shader(c)=>if c.hdr{"p010-shader"}else{"nv12-shader"},Conversion::Rgb(_)=>"rgb-copy"}}
 
     pub fn matches(&self,frame:&Frame)->bool {match &self.0 {
         Conversion::Sdr(c)=>frame.format==DXGI_FORMAT_NV12 && c.matches(frame),
         Conversion::Shader(c)=>frame.format==(if c.hdr{DXGI_FORMAT_P010}else{DXGI_FORMAT_NV12}) && c.device.as_raw()==frame.device.as_raw() && c.size==frame.visible && c.allocation==frame.allocation,
+        Conversion::Rgb(c)=>frame.format==DXGI_FORMAT_B8G8R8A8_UNORM && frame.device.as_raw()==c.device.as_raw() && frame.visible==c.size,
     }}
-    pub fn device_ptr(&self)->*mut c_void {match &self.0 {Conversion::Sdr(c)=>c.device_ptr(),Conversion::Shader(c)=>c.device.as_raw()}}
-    pub fn texture_ptr(&self)->*mut c_void {match &self.0 {Conversion::Sdr(c)=>c.texture_ptr(),Conversion::Shader(c)=>c.color.output()}}
+    pub fn device_ptr(&self)->*mut c_void {match &self.0 {Conversion::Sdr(c)=>c.device_ptr(),Conversion::Shader(c)=>c.device.as_raw(),Conversion::Rgb(c)=>c.device.as_raw()}}
+    pub fn texture_ptr(&self)->*mut c_void {match &self.0 {Conversion::Sdr(c)=>c.texture_ptr(),Conversion::Shader(c)=>c.color.output(),Conversion::Rgb(c)=>c.output.as_raw()}}
     pub fn convert(&self,frame:&Frame,color:YuvColor)->Result<(),String> {
         if !self.matches(frame){return Err("D3D11 conversion layout changed".into());}
         match &self.0 {Conversion::Sdr(c)=>c.convert(frame,color),Conversion::Shader(c)=>{
             if !c.hdr{return c.color.convert_sdr(&frame.texture,frame.index,color).map(|_|());}
             if !color.hdr(){return Err("P010 presentation requires PQ/BT.2020 metadata".into());}
             c.color.convert(&frame.texture,frame.index,color==YuvColor::Full2020Pq).map(|_|())
+        },Conversion::Rgb(c)=>unsafe{
+            let area=windows::Win32::Graphics::Direct3D11::D3D11_BOX{left:0,top:0,front:0,right:c.size[0],bottom:c.size[1],back:1};
+            c.context.CopySubresourceRegion(&c.output,0,0,0,0,&frame.texture,frame.index,Some(&area));Ok(())
         }}
     }
     pub fn synchronize(&self)->Result<(),String> {match &self.0 {
@@ -447,6 +477,10 @@ impl Converter {
             c.context.End(&c.completion);c.context.Flush();let started=std::time::Instant::now();
             loop {let mut done=0i32;c.context.GetData(&c.completion,Some((&mut done as *mut i32).cast()),4,D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32).map_err(|e|e.to_string())?;
                 if done!=0{return Ok(());}if started.elapsed()>std::time::Duration::from_secs(5){return Err("GPU conversion completion timed out".into());}std::thread::yield_now();}
+        },Conversion::Rgb(c)=>unsafe{
+            c.context.End(&c.completion);c.context.Flush();let started=std::time::Instant::now();
+            loop {let mut done=0i32;c.context.GetData(&c.completion,Some((&mut done as *mut i32).cast()),4,D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32).map_err(|e|e.to_string())?;
+                if done!=0{return Ok(());}if started.elapsed()>std::time::Duration::from_secs(5){return Err("RGB presentation completion timed out".into());}std::thread::yield_now();}
         }
     }}
     pub fn readback(&self)->Result<Vec<u8>,String> {match &self.0 {
@@ -457,7 +491,7 @@ impl Converter {
             let data=words.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>();
             let frame=crate::RawFrame{width:c.size[0],height:c.size[1],format:crate::PixelFormat::ScRgb16,stride:c.size[0]*8,data:data.into(),pts:crate::Timestamp(0),gpu:false,dma_buf:None,d3d11:None};
             let mut rgba=crate::convert::frame_to_rgba(&frame);for p in rgba.chunks_exact_mut(4){p.swap(0,2);}Ok(rgba)
-        },
+        },Conversion::Rgb(c)=>readback_bgra(&c.device,&c.context,&c.output,c.size),
     }}
     /// Offline HDR correctness inspection. The live renderer never maps pixels.
     pub fn readback_fp16(&self)->Result<Vec<u16>,String> {

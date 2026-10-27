@@ -37,15 +37,23 @@ pub async fn probe(
     audio_loss_every: u32,
     progress_seconds: Option<u64>,
     max_frame_gap_seconds: Option<u64>,
+    codec:Option<uu_core::native::VideoCodec>,
 ) -> Result<()> {
     let invitation = uu_core::native_pairing::Invitation::load(&path)?;
-    probe_invitation(invitation, frames, seconds, report, audio_loss_every, progress_seconds, max_frame_gap_seconds).await
+    probe_selected(invitation, frames, seconds, report, audio_loss_every, progress_seconds, max_frame_gap_seconds,codec).await
 }
 
 pub async fn probe_invitation(
     invitation: uu_core::native_pairing::Invitation,
     frames:u64, seconds:u64, report:Option<PathBuf>, audio_loss_every:u32,
     progress_seconds:Option<u64>, max_frame_gap_seconds:Option<u64>,
+)->Result<()> {
+    probe_selected(invitation,frames,seconds,report,audio_loss_every,progress_seconds,max_frame_gap_seconds,None).await
+}
+async fn probe_selected(
+    invitation:uu_core::native_pairing::Invitation,
+    frames:u64,seconds:u64,report:Option<PathBuf>,audio_loss_every:u32,
+    progress_seconds:Option<u64>,max_frame_gap_seconds:Option<u64>,codec:Option<uu_core::native::VideoCodec>,
 )->Result<()> {
     ensure!(
         (1..=100_000).contains(&frames) && (1..=3600).contains(&seconds),
@@ -66,6 +74,7 @@ pub async fn probe_invitation(
         })
         .transpose()?;
     let stats = Arc::new(uu_core::media::MediaStats::default());
+    if let Some(codec)=codec {let _=stats.native_quality_request.set(uu_core::native_quality::Request{fps:60,bounds:None,bitrate_kbps:None,codec:Some(codec)});}
     let diagnostics = report.as_ref().and_then(|_|stats.diagnostics.capture());
     stats.audio.output_enabled.store(false, Ordering::Release);
     stats

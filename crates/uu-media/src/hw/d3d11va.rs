@@ -54,6 +54,7 @@ fn subtype(codec: VideoCodec) -> windows::core::GUID {
         VideoCodec::Hevc => MFVideoFormat_HEVC,
         VideoCodec::Av1 => MFVideoFormat_AV1,
         VideoCodec::H264 => MFVideoFormat_H264,
+        VideoCodec::Pyrowave=>windows::core::GUID::zeroed(),
     }
 }
 
@@ -69,6 +70,7 @@ impl D3d11VaDecoder {
     }
 
     pub fn with_codec(codec: VideoCodec) -> Result<Self, CodecError> {
+        if codec==VideoCodec::Pyrowave{return Err(CodecError::Unsupported(codec));}
         Ok(Self {
             worker: super::Worker::spawn(move || Decoder::open(codec))?,
             codec,
@@ -243,6 +245,7 @@ impl super::Backend for Decoder {
             VideoCodec::Hevc => crate::hevc::sequence(&frame.data).map(|s| (s.width, s.height,s.bit_depth)),
             VideoCodec::Av1 => crate::av1::sequence(&frame.data).map(|s| (s.width, s.height,s.bit_depth)),
             VideoCodec::H264 => h264_dimensions(&frame.data).map(|(w,h)|(w,h,8)),
+            VideoCodec::Pyrowave=>None,
         };
         if let Some((width, height,bit_depth)) = geometry {
             self.bit_depth=bit_depth;

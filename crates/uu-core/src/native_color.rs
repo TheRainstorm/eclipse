@@ -33,7 +33,7 @@ impl Request {
         );
         for (i, codec) in self.codecs.iter().enumerate() {
             ensure!(
-                *codec != VideoCodec::H264 && !self.codecs[..i].contains(codec),
+                matches!(codec,VideoCodec::Hevc|VideoCodec::Av1) && !self.codecs[..i].contains(codec),
                 "HDR 需要 10 位 HEVC 或 AV1 解码"
             );
         }
@@ -60,7 +60,7 @@ pub struct Response {
 impl Response {
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.codec != VideoCodec::H264 && self.metadata.valid(),
+            matches!(self.codec,VideoCodec::Hevc|VideoCodec::Av1) && self.metadata.valid(),
             "主机 HDR10 色彩信息无效"
         );
         Ok(())

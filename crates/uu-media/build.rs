@@ -2,6 +2,18 @@ fn main() {
     println!("cargo:rerun-if-changed=src/vpl/native.c");
     println!("cargo:rerun-if-changed=../../vendor/libvpl-api/include");
     let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    println!("cargo:rerun-if-changed=src/pyrowave/native.cpp");
+    println!("cargo:rerun-if-changed=../../vendor/pyrowave-api/include");
+    if std::env::var_os("CARGO_FEATURE_PYROWAVE").is_some() && matches!(target.as_str(),"windows"|"linux") {
+        cc::Build::new().cpp(true).file("src/pyrowave/native.cpp")
+            .include("../../vendor/pyrowave-api/include").flag_if_supported("-std=c++17")
+            .warnings(true).compile("eclipse_pyrowave_adapter");
+        if target=="linux" {println!("cargo:rustc-link-lib=dl");}
+        if target=="windows" {
+            println!("cargo:rustc-link-lib=d3d11");println!("cargo:rustc-link-lib=dxgi");
+            println!("cargo:rustc-link-lib=d3dcompiler");
+        }
+    }
     println!("cargo:rerun-if-changed=src/amf/native.cpp");
     println!("cargo:rerun-if-changed=../../vendor/amf-api/include");
     println!("cargo:rerun-if-changed=src/d3d11_color.cpp");

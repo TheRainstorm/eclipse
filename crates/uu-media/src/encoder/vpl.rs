@@ -80,6 +80,7 @@ impl Driver {
             uu_proto::media::VideoCodec::H264 => 0,
             uu_proto::media::VideoCodec::Hevc => 1,
             uu_proto::media::VideoCodec::Av1 => 2,
+            uu_proto::media::VideoCodec::Pyrowave=>return Err("PyroWave uses the Vulkan backend".into()),
         };
         let mut error = [0 as c_char; 512];
         let mut encoder = std::ptr::null_mut();

@@ -184,6 +184,7 @@ fn main() -> anyhow::Result<()> {
                         Some(d3d11_frame::Converter::new(surface).map_err(anyhow::Error::msg)?);
                 }
                 let color = match codec {
+                    uu_proto::media::VideoCodec::Pyrowave=>anyhow::bail!("PyroWave v1 has no HDR path"),
                     VideoCodec::Hevc => uu_media::hevc::sequence(&sample.data).map(|s| s.color),
                     VideoCodec::Av1 => uu_media::av1::sequence(&sample.data).map(|s| s.color),
                     VideoCodec::H264 => uu_media::color::from_h264(&sample.data),

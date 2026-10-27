@@ -229,6 +229,12 @@ pub fn create(settings: Settings) -> Result<Box<dyn VideoEncoder>, CodecError> {
 /// Other backends keep their existing initialization and fallback policy.
 pub fn create_with_device(settings: Settings,input:Option<InputDevice>) -> Result<Box<dyn VideoEncoder>, CodecError> {
     settings.validate()?;
+    if settings.codec==VideoCodec::Pyrowave {
+        #[cfg(feature="pyrowave")]
+        {return Ok(Box::new(crate::pyrowave::Encoder::new(settings,input)?));}
+        #[cfg(not(feature="pyrowave"))]
+        {return Err(CodecError::Unsupported(settings.codec));}
+    }
     let (active, can_fallback, note) = match settings.preference {
         Preference::Software => (software(settings)?, false, false),
         Preference::Hardware | Preference::Intel | Preference::Nvidia | Preference::Amd => (hardware(settings,input)?, false, false),
@@ -538,7 +544,7 @@ fn validate_hdr_output(frame:&EncodedFrame,codec:VideoCodec,hdr:bool)->Result<()
     let actual=match codec {
         VideoCodec::Hevc=>crate::hevc::sequence(&frame.data).map(|s|(s.bit_depth,s.color)),
         VideoCodec::Av1=>crate::av1::sequence(&frame.data).map(|s|(s.bit_depth,s.color)),
-        VideoCodec::H264=>None,
+        VideoCodec::H264|VideoCodec::Pyrowave=>None,
     };
     if actual==Some((10,crate::color::YuvColor::Limited2020Pq)) {Ok(())}
     else {Err("encoder did not produce the negotiated 10-bit PQ/BT.2020 signal".into())}

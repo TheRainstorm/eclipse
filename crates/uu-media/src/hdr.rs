@@ -207,9 +207,9 @@ pub fn probe_decoder(
     let data: &'static [u8] = match codec {
         VideoCodec::Hevc => HEVC_PROBE,
         VideoCodec::Av1 => AV1_PROBE,
-        VideoCodec::H264 => {
+        VideoCodec::H264|VideoCodec::Pyrowave => {
             return Err(crate::CodecError::Backend(
-                "HDR is unavailable with H.264".into(),
+                "HDR requires 10-bit HEVC or AV1".into(),
             ))
         }
     };
@@ -229,7 +229,7 @@ pub fn probe_decoder(
                 }
             }
         }
-        VideoCodec::H264 => unreachable!(),
+        VideoCodec::H264|VideoCodec::Pyrowave => unreachable!(),
     }
     if starts.first() != Some(&0) {
         starts.insert(0, 0);

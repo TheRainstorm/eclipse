@@ -590,7 +590,7 @@ impl super::App {
         if self.stream_menu.quality_detail.is_some_and(|(kind,_)|kind!=QualityDetail::Bitrate) {self.stream_menu.quality_detail=None;}
         let options: &[(super::settings::CodecPreference,&str)]=if self.is_native() {
             &[(super::settings::CodecPreference::Auto,"自动协商"),(super::settings::CodecPreference::H264,"H.264"),
-              (super::settings::CodecPreference::Hevc,"H.265 / HEVC"),(super::settings::CodecPreference::Av1,"AV1")]
+              (super::settings::CodecPreference::Hevc,"H.265 / HEVC"),(super::settings::CodecPreference::Av1,"AV1"),(super::settings::CodecPreference::Pyrowave,"PyroWave（实验性 / SDR）")]
         }else{
             &[(super::settings::CodecPreference::H264,"H.264"),(super::settings::CodecPreference::Hevc,"H.265 / HEVC（优先）")]
         };
@@ -599,7 +599,9 @@ impl super::App {
                 &&self.preferences.codec==super::settings::CodecPreference::Auto&&self.preferences.hevc_preferred());
             let response=menu_row(ui,label,None,selected,false,"",false);
             if response.hovered(){self.stream_menu.quality_detail=None;}
-            if response.clicked(){self.preferences.codec=*codec;self.preferences.prefer_hevc=*codec==super::settings::CodecPreference::Hevc;self.confirm_quality(ui);}
+            if response.clicked(){self.preferences.codec=*codec;self.preferences.prefer_hevc=*codec==super::settings::CodecPreference::Hevc;
+                if *codec==super::settings::CodecPreference::Pyrowave{self.preferences.rate_control=Some(uu_core::native_quality::RateMode::Cbr);}
+                self.confirm_quality(ui);}
         }
         if let Some(controller)=&self.controller {
             let actual=controller.stats.codec.lock().unwrap();
@@ -612,9 +614,11 @@ impl super::App {
             ui.add_enabled_ui(response.is_some(),|ui| {
                 use uu_core::native_quality::RateMode;
                 for (mode,label) in [(None,"跟随主机"),(Some(RateMode::Cbr),"CBR · 固定码率"),(Some(RateMode::Vbr),"VBR · 可变码率")] {
-                    if menu_row(ui,label,None,self.preferences.rate_control==mode,false,"",false).clicked() {
+                    let supported=self.preferences.codec!=super::settings::CodecPreference::Pyrowave || mode==Some(RateMode::Cbr)
+                        || (mode.is_none()&&response.is_some_and(|r|r.default==RateMode::Cbr));
+                    ui.add_enabled_ui(supported,|ui|{if menu_row(ui,label,None,self.preferences.rate_control==mode,false,"",false).clicked() {
                         self.preferences.rate_control=mode;self.confirm_quality(ui);
-                    }
+                    }});
                 }
             });
             if let Some(response)=response {
@@ -623,6 +627,7 @@ impl super::App {
             }else {ui.small("主机未提供码率模式切换");}
             separator(ui);
         }
+        if self.preferences.codec==super::settings::CodecPreference::Pyrowave {ui.small("PyroWave：SDR / 高带宽，建议有线连接");}
         ui.small("码率");
         for (index,(label,_,_)) in super::BITRATE_PRESETS.iter().enumerate() {
             let custom=index==4;

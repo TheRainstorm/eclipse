@@ -1295,8 +1295,8 @@ impl App {
         if let Some(sessions::ConnectionTarget::NativeDevice(id))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
             self.connect_native_device(id);return;
         }
-        if self.preferences.codec==settings::CodecPreference::Av1 {
-            self.status="UU 兼容连接暂不支持 AV1，请在串流设置中选择自动、H.264 或 HEVC".into();
+        if matches!(self.preferences.codec,settings::CodecPreference::Av1|settings::CodecPreference::Pyrowave) {
+            self.status="AV1 / PyroWave 仅适用于原生连接；UU 兼容连接请选择自动、H.264 或 HEVC".into();
             return;
         }
         if uu_core::control_wire::CaptureFrameRate::new(self.target_fps).is_none() {self.status="UU 兼容协议支持 5–144 FPS，请调整客户端帧率".into();return;}

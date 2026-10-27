@@ -152,6 +152,7 @@ fn video_capability(codec:VideoCodec)->RTCRtpCodecCapability {
         VideoCodec::H264=>{},
         VideoCodec::Hevc=>{capability.mime_type="video/H265".into();capability.sdp_fmtp_line="profile-id=1;tier-flag=1;level-id=156;sprop-max-don-diff=0".into();},
         VideoCodec::Av1=>{capability.mime_type="video/AV1".into();capability.sdp_fmtp_line="profile=0;level-idx=14;tier=1".into();},
+        VideoCodec::Pyrowave=>{capability.mime_type="video/PYROWAVE".into();capability.sdp_fmtp_line=uu_proto::media::PYROWAVE_FMTP.into();},
     }capability
 }
 fn video_color_capability(codec:VideoCodec,hdr:bool)->RTCRtpCodecCapability {
@@ -160,7 +161,14 @@ fn video_color_capability(codec:VideoCodec,hdr:bool)->RTCRtpCodecCapability {
     capability
 }
 pub(crate) fn offers_codec(description:&RTCSessionDescription,codec:VideoCodec)->bool{
-    let name=match codec {VideoCodec::H264=>"H264/90000",VideoCodec::Hevc=>"H265/90000",VideoCodec::Av1=>"AV1/90000"};
+    if codec==VideoCodec::Pyrowave {
+        let Ok(sdp)=description.unmarshal() else{return false};
+        return sdp.media_descriptions.iter().filter(|m|m.media_name.media=="video"&&m.media_name.port.value!=0).any(|media|
+            media.media_name.formats.iter().any(|pt|
+                media.attributes.iter().any(|a|a.key=="rtpmap"&&a.value.as_ref().is_some_and(|v|v.split_once(' ').is_some_and(|(p,m)|p==pt&&m.eq_ignore_ascii_case("PYROWAVE/90000"))))
+                &&media.attributes.iter().any(|a|a.key=="fmtp"&&a.value.as_ref().is_some_and(|v|v.split_once(' ').is_some_and(|(p,f)|p==pt&&pyrowave_format(f))))));
+    }
+    let name=match codec {VideoCodec::H264=>"H264/90000",VideoCodec::Hevc=>"H265/90000",VideoCodec::Av1=>"AV1/90000",VideoCodec::Pyrowave=>unreachable!()};
     let mut video=false;let mut payloads=Vec::new();
     for line in description.sdp.lines().map(str::trim){
         if let Some(media)=line.strip_prefix("m="){
@@ -174,9 +182,13 @@ pub(crate) fn offers_codec(description:&RTCSessionDescription,codec:VideoCodec)-
         }}
     }false
 }
+pub(crate) fn pyrowave_format(value:&str)->bool {
+    let mut fields=value.split(';').map(str::trim).collect::<Vec<_>>();fields.sort_unstable();
+    let mut required=uu_proto::media::PYROWAVE_FMTP.split(';').collect::<Vec<_>>();required.sort_unstable();fields==required
+}
 /// A 10-bit claim must also match the negotiated RTP profile.
 pub(crate) fn offers_hdr_codec(description:&RTCSessionDescription,codec:VideoCodec)->bool {
-    let (mime,name,profile)=match codec {VideoCodec::Hevc=>("H265/90000","profile-id","2"),VideoCodec::Av1=>("AV1/90000","profile","0"),VideoCodec::H264=>return false};
+    let (mime,name,profile)=match codec {VideoCodec::Hevc=>("H265/90000","profile-id","2"),VideoCodec::Av1=>("AV1/90000","profile","0"),VideoCodec::H264|VideoCodec::Pyrowave=>return false};
     let Ok(sdp)=description.unmarshal() else{return false};
     sdp.media_descriptions.iter().filter(|m|m.media_name.media=="video"&&m.media_name.port.value!=0).any(|media| {
         media.media_name.formats.iter().any(|pt| {
@@ -195,7 +207,9 @@ pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
     let probe=|codec|async move {
         let started=std::time::Instant::now();
         let result=timeout(Duration::from_secs(5),tokio::task::spawn_blocking(move||match codec {
-            VideoCodec::Hevc=>uu_media::hevc::probe_decoder_with_kind(kind),VideoCodec::Av1=>uu_media::av1::probe_decoder_with_kind(kind),VideoCodec::H264=>unreachable!()
+            VideoCodec::Hevc=>uu_media::hevc::probe_decoder_with_kind(kind),VideoCodec::Av1=>uu_media::av1::probe_decoder_with_kind(kind),VideoCodec::Pyrowave=>{
+                if kind==uu_media::DecoderKind::Software {Err(uu_media::CodecError::Unsupported(codec))}else{uu_media::pyrowave::probe_decoder()}
+            },VideoCodec::H264=>unreachable!()
         })).await;
         let (available,reason)=match result {
             Ok(Ok(Ok(())))=>(true,String::new()),
@@ -206,8 +220,12 @@ pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
         stats.diagnostics.record(serde_json::json!({"event":"native_decoder_probe","codec":codec,"available":available,"reason":reason,"elapsed_us":started.elapsed().as_micros().min(u64::MAX as u128) as u64}));
         (codec,available)
     };
-    let (hevc,av1)=tokio::join!(probe(VideoCodec::Hevc),probe(VideoCodec::Av1));
-    for (codec,available) in [hevc,av1] {if available {codecs.push(codec);}}
+    if stats.native_quality_request.get().is_some_and(|r|r.codec==Some(VideoCodec::Pyrowave)) {
+        let (codec,available)=probe(VideoCodec::Pyrowave).await;if available{codecs.push(codec);}
+    }else{
+        let (hevc,av1)=tokio::join!(probe(VideoCodec::Hevc),probe(VideoCodec::Av1));
+        for (codec,available) in [hevc,av1] {if available {codecs.push(codec);}}
+    }
     let _=stats.native_codec_capabilities.set(codecs.clone());codecs
 }
 
@@ -362,9 +380,9 @@ impl NativePeer {
     async fn build(settings: SettingEngine, mux: Option<Arc<UDPMuxDefault>>, configuration: RTCConfiguration,
         stats: Option<Arc<MediaStats>>, sender: bool) -> Result<Self> {
         let mut media = MediaEngine::default();
-        let codecs=match &stats {Some(stats) if !sender=>receive_codecs(stats).await,_=>vec![VideoCodec::H264,VideoCodec::Hevc,VideoCodec::Av1]};
+        let codecs=match &stats {Some(stats) if !sender=>receive_codecs(stats).await,_=>vec![VideoCodec::H264,VideoCodec::Hevc,VideoCodec::Av1,VideoCodec::Pyrowave]};
         for codec in codecs {
-            let pt=match codec {VideoCodec::H264=>102,VideoCodec::Hevc=>104,VideoCodec::Av1=>106};
+            let pt=match codec {VideoCodec::H264=>102,VideoCodec::Hevc=>104,VideoCodec::Av1=>106,VideoCodec::Pyrowave=>118};
             media.register_codec(webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
                 capability:video_capability(codec),payload_type:pt,..Default::default()
             },RTPCodecType::Video)?;

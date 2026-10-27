@@ -27,6 +27,7 @@ pub struct ReceiverStats {
 struct Picture {
     timestamp: u32,
     av1:crate::av1_rtp::Assembler,
+    pyrowave:crate::pyrowave_rtp::Assembler,
     data: Vec<u8>,
     fragment: Option<(u16, Vec<u8>)>,
     damaged: bool,
@@ -336,6 +337,7 @@ impl VideoReceiver {
                 VideoCodec::H264 => picture.payload(&packet.payload),
                 VideoCodec::Hevc => picture.hevc_payload(&packet.payload),
                 VideoCodec::Av1 => picture.av1.push(&packet.payload),
+                VideoCodec::Pyrowave=>picture.pyrowave.push(&packet.payload),
             };
             picture.damaged = result.is_err();
         }
@@ -343,6 +345,9 @@ impl VideoReceiver {
             let mut picture = self.picture.take().unwrap();
             if self.codec==VideoCodec::Av1 {
                 match picture.av1.finish(){Ok((data,frame))=>{picture.data=data;picture.vcl=frame;},Err(())=>picture.damaged=true}
+            }
+            if self.codec==VideoCodec::Pyrowave {
+                match picture.pyrowave.finish(){Ok(data)=>{picture.data=data;picture.vcl=true;},Err(())=>picture.damaged=true}
             }
             self.completed_ts = Some(ts);
             if picture.damaged || picture.fragment.is_some() {

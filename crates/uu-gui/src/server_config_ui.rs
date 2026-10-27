@@ -10,7 +10,7 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
     } else if section==1 {
         ui.horizontal_wrapped(|ui| {
             ui.label("允许的编码");
-            for (codec,label) in [(VideoCodec::H264,"H.264"),(VideoCodec::Hevc,"HEVC"),(VideoCodec::Av1,"AV1")] {
+            for (codec,label) in [(VideoCodec::H264,"H.264"),(VideoCodec::Hevc,"HEVC"),(VideoCodec::Av1,"AV1"),(VideoCodec::Pyrowave,"PyroWave（实验性 / SDR）")] {
                 let mut selected=s.allowed_codecs.contains(&codec);
                 if ui.checkbox(&mut selected,label).changed() {if selected{s.allowed_codecs.push(codec);}else{s.allowed_codecs.retain(|c|*c!=codec);}}
             }
@@ -18,8 +18,8 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
         ui.add_space(10.);
         ui.horizontal_wrapped(|ui| {
             ui.label("编码优先级");
-            egui::ComboBox::from_id_salt("server-codec").selected_text(match s.codec{None=>"自动协商",Some(VideoCodec::H264)=>"H.264",Some(VideoCodec::Hevc)=>"HEVC",Some(VideoCodec::Av1)=>"AV1"}).show_ui(ui,|ui| {
-                for (codec,label) in [(None,"自动协商"),(Some(VideoCodec::H264),"H.264"),(Some(VideoCodec::Hevc),"HEVC"),(Some(VideoCodec::Av1),"AV1")] {ui.selectable_value(&mut s.codec,codec,label);}
+            egui::ComboBox::from_id_salt("server-codec").selected_text(match s.codec{None=>"自动协商",Some(VideoCodec::H264)=>"H.264",Some(VideoCodec::Hevc)=>"HEVC",Some(VideoCodec::Av1)=>"AV1",Some(VideoCodec::Pyrowave)=>"PyroWave（实验性 / SDR）"}).show_ui(ui,|ui| {
+                for (codec,label) in [(None,"自动协商"),(Some(VideoCodec::H264),"H.264"),(Some(VideoCodec::Hevc),"HEVC"),(Some(VideoCodec::Av1),"AV1"),(Some(VideoCodec::Pyrowave),"PyroWave（实验性 / SDR）")] {ui.selectable_value(&mut s.codec,codec,label);}
             });
             ui.label("默认码率模式");
             egui::ComboBox::from_id_salt("server-rate").selected_text(match s.rate_control{RateMode::Cbr=>"CBR",RateMode::Vbr=>"VBR"}).show_ui(ui,|ui|{
@@ -27,6 +27,7 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
             });
         });
         ui.weak("服务端明确选择时优先；服务端自动时使用客户端选择，双方自动按 AV1 → HEVC → H.264 协商。");
+        ui.weak("PyroWave 需客户端明确选择，当前支持 SDR 与 CBR 帧预算，建议使用有线网络；不加入默认自动编码列表。");
         ui.weak("码率模式默认由主机提供；客户端可为当前串流切换 CBR / VBR，不改写主机配置。VBR 峰值随客户端目标码率调整为两倍。");
         ui.add_space(10.);
         let label=match s.encoding{Encoding::Auto=>"自动",Encoding::Hardware=>"硬件",Encoding::Intel=>"Intel QSV",Encoding::Nvidia=>"NVIDIA 硬件",Encoding::Amd=>"AMD AMF",Encoding::Software=>"软件 H.264"};

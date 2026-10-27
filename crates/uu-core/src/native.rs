@@ -503,7 +503,7 @@ fn encode_source(
             let result=(||->Result<u32> {
                 ensure!(!change.reply.is_closed()&&!stopped.load(Ordering::Acquire),"画质请求已取消");
                 change.settings.validate()?;
-                let bitrate_kbps=change.settings.bitrate(settings.width,settings.height);
+                let bitrate_kbps=change.settings.bitrate_for(settings.width,settings.height,settings.codec);
                 let rate_control=change.settings.rate_control.unwrap_or_else(||crate::native_quality::RateMode::from_encoder(settings.rate_control)).encoder(bitrate_kbps);
                 let updated=uu_media::encoder::Settings{fps:change.settings.fps,bitrate_kbps,rate_control,..settings};
                 updated.validate()?;
@@ -647,6 +647,7 @@ fn codec_rank(codec: VideoCodec) -> u8 {
         VideoCodec::Av1 => 0,
         VideoCodec::Hevc => 1,
         VideoCodec::H264 => 2,
+        VideoCodec::Pyrowave=>3,
     }
 }
 
@@ -664,7 +665,7 @@ fn codec_choices(allowed:&[VideoCodec],host:Option<VideoCodec>,client:Option<Vid
         // of silently substituting H.264 while the UI still shows HEVC/AV1.
         Ok(vec![codec])
     } else {
-        Ok(ordered_codecs(allowed))
+        Ok(ordered_codecs(allowed).into_iter().filter(|c|*c!=VideoCodec::Pyrowave).collect())
     }
 }
 
@@ -731,7 +732,7 @@ async fn send_video(
             let separate=crate::capture_overlap::separate_from_env()?;
             crate::capture_overlap::prepare_device(capture.as_mut(),crate::capture_overlap::requested_from_env()?,separate)?;
             let (width,height)=capture.resolution();validate_video(width,height,fps)?;
-            let kbps=if automatic {crate::native_quality::Update{fps,bitrate_kbps:None,rate_control:None}.bitrate(width,height)}else{kbps};
+            let kbps=if automatic {crate::native_quality::Update{fps,bitrate_kbps:None,rate_control:None}.bitrate_for(width,height,choices[0])}else{kbps};
             let rate_control=match rate_control {uu_media::encoder::RateControl::Cbr=>rate_control,_=>uu_media::encoder::RateControl::Vbr{peak_kbps:kbps.saturating_mul(2)}};
             let source_metadata=capture.hdr_metadata();
             let settings=|codec,hdr|uu_media::encoder::Settings {hdr,source_hdr:source_metadata,tuning:config.encoder_tuning,codec,rate_control,width,height,fps,bitrate_kbps:kbps,preference};
@@ -1042,6 +1043,9 @@ async fn receive_session(
         "unsupported native session capabilities"
     );
     validate_video(answer.width, answer.height, answer.fps)?;
+    if quality_request.as_ref().is_some_and(|r|r.codec==Some(VideoCodec::Pyrowave)) {
+        ensure!(answer.codec==VideoCodec::Pyrowave&&crate::native_media::offers_codec(&answer.sdp,VideoCodec::Pyrowave),"主机不支持所请求的 PyroWave v1 格式，请升级两端并启用此编码");
+    }
     stats.native_frame_trace_supported.store(crate::frame_trace::offered(&answer.sdp),Ordering::Release);
     stats.native_progress.set(Stage::ConnectingMedia);
     match crate::native_quality::Startup::read(&answer.sdp) {
@@ -1331,6 +1335,8 @@ mod tests {
         use VideoCodec::*;
         let all=[H264,Hevc,Av1];
         assert_eq!(codec_choices(&all,None,None).unwrap(),vec![Av1,Hevc,H264]);
+        assert_eq!(codec_choices(&[H264,Hevc,Av1,Pyrowave],None,None).unwrap(),vec![Av1,Hevc,H264]);
+        assert_eq!(codec_choices(&[H264,Hevc,Av1,Pyrowave],None,Some(Pyrowave)).unwrap(),vec![Pyrowave]);
         for codec in all {
             assert_eq!(codec_choices(&all,None,Some(codec)).unwrap(),vec![codec]);
             assert_eq!(codec_choices(&all,Some(codec),None).unwrap(),vec![codec]);

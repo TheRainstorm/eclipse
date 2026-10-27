@@ -170,7 +170,7 @@ impl App {
         let _=stats.native_rate_request.set(uu_core::native_quality::RateRequest{selection:self.preferences.rate_control});
         let _=stats.native_hdr_requested.set(self.preferences.hdr);
         #[cfg(windows)]
-        if self.preferences.hdr && kind!=uu_core::media::DecoderKind::Software && self.preferences.codec!=super::settings::CodecPreference::H264 {
+        if self.preferences.hdr && kind!=uu_core::media::DecoderKind::Software && !matches!(self.preferences.codec,super::settings::CodecPreference::H264|super::settings::CodecPreference::Pyrowave) {
             if let Some(gl)=self.video_gl.clone() {
                 match super::video_hdr::enable(&self.context,gl,self.preferences.vsync) {
                     Ok(capable)=>stats.native_hdr_capable.store(capable,std::sync::atomic::Ordering::Release),

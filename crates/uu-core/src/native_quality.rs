@@ -9,6 +9,7 @@ const REQUEST:&str="x-eclipse-client-video";
 const RESPONSE:&str="x-eclipse-host-video";
 const RUNTIME:&str="x-eclipse-video-runtime";
 const STARTUP:&str="x-eclipse-startup-v1";
+const PYROWAVE:&str="x-eclipse-pyrowave-v1";
 fn is_false(value:&bool)->bool{!*value}
 pub fn runtime_requested(sdp:&RTCSessionDescription)->Result<bool>{Ok(get::<bool>(sdp,RUNTIME)?.unwrap_or(false))}
 pub const MAX_FPS:u32=240;
@@ -74,6 +75,11 @@ impl Update {
     pub fn bitrate(self,width:u32,height:u32)->u32 {
         self.bitrate_kbps.unwrap_or_else(||(u64::from(width)*u64::from(height)*u64::from(self.fps)/12/1000).clamp(1000,u64::from(MAX_BITRATE_KBPS)) as u32)
     }
+    pub fn bitrate_for(self,width:u32,height:u32,codec:VideoCodec)->u32 {
+        if codec==VideoCodec::Pyrowave {
+            self.bitrate_kbps.unwrap_or_else(||(u64::from(width)*u64::from(height)*u64::from(self.fps)*8/5/1000).clamp(1000,u64::from(MAX_BITRATE_KBPS)) as u32)
+        }else{self.bitrate(width,height)}
+    }
 }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -106,8 +112,25 @@ impl Request {
         if let Some(kbps)=self.bitrate_kbps {ensure!((64..=MAX_BITRATE_KBPS).contains(&kbps),"客户端请求码率无效");}
         Ok(())
     }
-    pub fn add(&self,sdp:&mut RTCSessionDescription)->Result<()> {self.validate()?;put(sdp,REQUEST,self)?;put(sdp,RUNTIME,&true)}
-    pub fn read(sdp:&RTCSessionDescription)->Result<Option<Self>> {let value:Option<Self>=get(sdp,REQUEST)?;if let Some(v)=&value{v.validate()?;}Ok(value)}
+    pub fn add(&self,sdp:&mut RTCSessionDescription)->Result<()> {
+        self.validate()?;
+        let mut legacy=self.clone();
+        if self.codec==Some(VideoCodec::Pyrowave) {
+            ensure!(crate::native_media::offers_codec(sdp,VideoCodec::Pyrowave),"此设备的 PyroWave 运行库、Vulkan 驱动或解码能力不可用");
+            legacy.codec=None;put(sdp,PYROWAVE,&true)?;
+        }
+        put(sdp,REQUEST,&legacy)?;put(sdp,RUNTIME,&true)
+    }
+    pub fn read(sdp:&RTCSessionDescription)->Result<Option<Self>> {
+        let mut value:Option<Self>=get(sdp,REQUEST)?;
+        if get::<bool>(sdp,PYROWAVE)?.unwrap_or(false) {
+            let request=value.as_mut().context("PyroWave selection requires a client video request")?;
+            ensure!(request.codec.is_none(),"conflicting video codec selection");
+            ensure!(crate::native_media::offers_codec(sdp,VideoCodec::Pyrowave),"PyroWave wire contract was not offered");
+            request.codec=Some(VideoCodec::Pyrowave);
+        }
+        if let Some(v)=&value{v.validate()?;}Ok(value)
+    }
 }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -123,7 +146,7 @@ impl Response {
     pub fn add(&self,sdp:&mut RTCSessionDescription)->Result<()> {self.validate()?;put(sdp,RESPONSE,self)}
     pub fn read(sdp:&RTCSessionDescription)->Result<Option<Self>> {let value:Option<Self>=get(sdp,RESPONSE)?;if let Some(v)=&value{v.validate()?;}Ok(value)}
     fn validate(&self)->Result<()> {
-        ensure!(!self.codecs.is_empty()&&self.codecs.len()<=3&&(1..=MAX_FPS).contains(&self.max_fps)&&(64..=MAX_BITRATE_KBPS).contains(&self.max_bitrate_kbps),"原生主机画质能力无效");
+        ensure!(!self.codecs.is_empty()&&self.codecs.len()<=4&&(1..=MAX_FPS).contains(&self.max_fps)&&(64..=MAX_BITRATE_KBPS).contains(&self.max_bitrate_kbps),"原生主机画质能力无效");
         for (i,codec) in self.codecs.iter().enumerate(){ensure!(!self.codecs[..i].contains(codec),"重复的主机编码能力");} Ok(())
     }
 }
@@ -161,6 +184,23 @@ pub(crate) fn get<T:DeserializeOwned>(sdp:&RTCSessionDescription,key:&str)->Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pyrowave_is_separate_from_the_legacy_request_and_pins_the_wire_contract() {
+        let raw=format!("v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 118\r\na=rtpmap:118 PYROWAVE/90000\r\na=fmtp:118 {}\r\na=recvonly\r\n",uu_proto::media::PYROWAVE_FMTP);
+        let mut sdp=RTCSessionDescription::offer(raw.clone()).unwrap();
+        let request=Request{fps:60,bounds:Some([1920,1080]),bitrate_kbps:None,codec:Some(VideoCodec::Pyrowave)};
+        request.add(&mut sdp).unwrap();
+        assert_eq!(get::<Request>(&sdp,REQUEST).unwrap().unwrap().codec,None);
+        assert_eq!(Request::read(&sdp).unwrap(),Some(request.clone()));
+        for replacement in ["api=9.0.0","chroma=444","depth=10"] {
+            let old=if replacement.starts_with("api") {"api=1.0.0"}else if replacement.starts_with("chroma"){"chroma=420"}else{"depth=8"};
+            let mut wrong=RTCSessionDescription::offer(raw.replace(old,replacement)).unwrap();
+            assert!(request.add(&mut wrong).is_err());
+        }
+        let update=Update{fps:60,bitrate_kbps:None,rate_control:None};
+        assert_eq!(update.bitrate_for(1920,1080,VideoCodec::Pyrowave),199_065);
+        assert_eq!(update.bitrate_for(3840,2160,VideoCodec::Pyrowave),796_262);
+    }
     #[test]
     fn rate_extension_leaves_legacy_updates_unchanged_and_roundtrips_separately() {
         let legacy=br#"{"fps":60,"bitrate_kbps":8000}"#;

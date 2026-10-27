@@ -89,6 +89,7 @@ pub mod native_displays;
 mod native_video;
 mod native_fec;
 mod av1_rtp;
+mod pyrowave_rtp;
 
 #[cfg(windows)]
 mod video_timing;

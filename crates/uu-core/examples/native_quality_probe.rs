@@ -20,8 +20,10 @@ async fn main() -> Result<()> {
         "h264" => native::VideoCodec::H264,
         "hevc" => native::VideoCodec::Hevc,
         "av1" => native::VideoCodec::Av1,
-        _ => anyhow::bail!("expected h264, hevc or av1"),
+        "pyrowave"=>native::VideoCodec::Pyrowave,
+        _ => anyhow::bail!("expected h264, hevc, av1 or pyrowave"),
     };
+    let bitrate=if codec==native::VideoCodec::Pyrowave{30_000}else{2000};
     let root = std::env::temp_dir().join(format!("eclipse-quality-probe-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root)?;
     #[cfg(unix)]
@@ -47,7 +49,7 @@ async fn main() -> Result<()> {
         invitation_file: file.clone(),
         invitation_lifetime: Duration::from_secs(30),
         fps: 60,
-        bitrate_kbps: 2000,
+        bitrate_kbps: bitrate,
         encoder: native::EncoderPreference::Hardware,
         session_limit: Some(Duration::from_secs(25)),
         allow_input: false,
@@ -94,7 +96,7 @@ async fn main() -> Result<()> {
         .set(native_quality::Request {
             fps: 60,
             bounds: None,
-            bitrate_kbps: Some(2000),
+            bitrate_kbps: Some(bitrate),
             codec: Some(codec),
         })
         .unwrap();
@@ -112,18 +114,21 @@ async fn main() -> Result<()> {
     let result=timeout(Duration::from_secs(20),async {
         while stats.decoded_total.load(Ordering::Acquire)<8 {ensure!(!viewer.is_finished(),"viewer ended before first pictures");sleep(Duration::from_millis(5)).await;}
         let epoch=stats.native_media_epoch.load(Ordering::Acquire);let mut transitions=Vec::new();
-        for (index,mode) in [RateMode::Cbr,RateMode::Vbr,RateMode::Cbr].into_iter().enumerate() {
-            let request=index as u64*2+1;input.set_quality(request,native_quality::Update{fps:60,bitrate_kbps:Some(2000),rate_control:Some(mode)})?;
+        let modes=if codec==native::VideoCodec::Pyrowave{[RateMode::Cbr;3]}else{[RateMode::Cbr,RateMode::Vbr,RateMode::Cbr]};
+        for (index,mode) in modes.into_iter().enumerate() {
+            let fps=if codec==native::VideoCodec::Pyrowave&&index==1{120}else{60};
+            let target=if fps==120{bitrate*2}else{bitrate};
+            let request=index as u64*2+1;input.set_quality(request,native_quality::Update{fps,bitrate_kbps:Some(target),rate_control:Some(mode)})?;
             loop {
                 let applied=stats.native_quality_applied.lock().unwrap().clone();
-                if let Some(applied)=applied.filter(|a|a.request==request){ensure!(applied.error.is_none(),"rate switch failed: {:?}",applied.error);ensure!(applied.settings.rate_control==Some(mode)&&applied.bitrate_kbps==2000,"wrong applied settings");break;}
+                if let Some(applied)=applied.filter(|a|a.request==request){ensure!(applied.error.is_none(),"rate switch failed: {:?}",applied.error);ensure!(applied.settings.rate_control==Some(mode)&&applied.bitrate_kbps==target&&applied.settings.fps==fps,"wrong applied settings");break;}
                 ensure!(!viewer.is_finished(),"viewer ended during rate switch");sleep(Duration::from_millis(5)).await;
             }
             let baseline=stats.decoded_total.load(Ordering::Acquire);
             while stats.decoded_total.load(Ordering::Acquire)<baseline+8 {ensure!(!viewer.is_finished(),"no pictures after rate switch");sleep(Duration::from_millis(5)).await;}
             ensure!(stats.native_media_epoch.load(Ordering::Acquire)==epoch&&stats.errors.load(Ordering::Acquire)==0,"media reconnected or decoder errors");
             let phase=host_status.borrow().clone();
-            transitions.push(serde_json::json!({"mode":mode,"decoded":stats.decoded_total.load(Ordering::Acquire),"host":format!("{phase:?}")}));
+            transitions.push(serde_json::json!({"mode":mode,"fps":fps,"bitrate_kbps":target,"decoded":stats.decoded_total.load(Ordering::Acquire),"host":format!("{phase:?}")}));
             if mode==RateMode::Vbr {
                 let next=request+1;
                 input.set_quality(next,native_quality::Update{fps:60,bitrate_kbps:Some(4000),rate_control:None})?;

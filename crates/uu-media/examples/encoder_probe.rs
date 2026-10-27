@@ -253,7 +253,7 @@ fn main() -> anyhow::Result<()> {
             if encode_only {keys+=u32::from(coded.is_keyframe);continue;}
             if coded.is_keyframe {
                 keys += 1;
-                color = match settings.codec {VideoCodec::H264=>uu_media::color::from_h264(&coded.data),VideoCodec::Hevc=>uu_media::hevc::sequence(&coded.data).map(|s|s.color),VideoCodec::Av1=>uu_media::av1::sequence(&coded.data).map(|s|s.color)}
+                color = match settings.codec {VideoCodec::Pyrowave=>Some(YuvColor::Full709),VideoCodec::H264=>uu_media::color::from_h264(&coded.data),VideoCodec::Hevc=>uu_media::hevc::sequence(&coded.data).map(|s|s.color),VideoCodec::Av1=>uu_media::av1::sequence(&coded.data).map(|s|s.color)}
                     .context("keyframe needs colour metadata")?;
                 let mut fresh=if settings.codec==VideoCodec::H264{uu_media::software_decoder()?}else{uu_media::decoder_for_codec(settings.codec)?};
                 fresh.prepare(settings.width,settings.height)?;

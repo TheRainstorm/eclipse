@@ -22,10 +22,10 @@ fn pack(a: u32, b: u32) -> u64 {
     (u64::from(a) << 32) | u64::from(b)
 }
 fn subtype(codec:VideoCodec)->GUID {
-    match codec {VideoCodec::H264=>MFVideoFormat_H264,VideoCodec::Hevc=>MFVideoFormat_HEVC,VideoCodec::Av1=>MFVideoFormat_AV1}
+    match codec {VideoCodec::H264=>MFVideoFormat_H264,VideoCodec::Hevc=>MFVideoFormat_HEVC,VideoCodec::Av1=>MFVideoFormat_AV1,VideoCodec::Pyrowave=>GUID::zeroed()}
 }
 fn codec_label(codec:VideoCodec)->&'static str {
-    match codec {VideoCodec::H264=>"H.264",VideoCodec::Hevc=>"HEVC",VideoCodec::Av1=>"AV1"}
+    match codec {VideoCodec::H264=>"H.264",VideoCodec::Hevc=>"HEVC",VideoCodec::Av1=>"AV1",VideoCodec::Pyrowave=>"PyroWave"}
 }
 
 // Declared last in Driver: the transform is released before COM/MF shut down.
@@ -295,6 +295,7 @@ impl Driver {
             out.SetUINT32(&MF_MT_AVG_BITRATE, settings.bitrate_kbps * 1000)
                 .map_err(reason)?;
             let profile=match settings.codec {
+                VideoCodec::Pyrowave=>return Err("PyroWave uses the Vulkan backend".into()),
                 VideoCodec::H264=>eAVEncH264VProfile_Base.0,
                 VideoCodec::Hevc=>if settings.hdr{eAVEncH265VProfile_Main_420_10.0}else{eAVEncH265VProfile_Main_420_8.0},
                 VideoCodec::Av1=>if settings.hdr{eAVEncAV1VProfile_Main_420_10.0}else{eAVEncAV1VProfile_Main_420_8.0},
@@ -491,6 +492,7 @@ impl Driver {
                 VideoCodec::H264=>crate::bitstream::h264_dimensions(bytes).is_some(),
                 VideoCodec::Hevc=>crate::hevc::sequence(bytes).is_some(),
                 VideoCodec::Av1=>crate::av1::sequence(bytes).is_some(),
+                VideoCodec::Pyrowave=>false,
             };
             let clean=sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0)!=0;
             if (keyframe || clean) && !has_sequence(&data) {
@@ -509,6 +511,7 @@ impl Driver {
                 VideoCodec::H264=>EncodedFrame::detect_h264_keyframe(&data),
                 VideoCodec::Hevc=>crate::hevc::is_keyframe(&data),
                 VideoCodec::Av1=>crate::av1::is_keyframe(&data),
+                VideoCodec::Pyrowave=>false,
             };
             if keyframe && !idr {return Err("hardware MFT did not honour the requested recovery keyframe".into());}
             // GPU conversion and CPU upload have a defined signal. Keep the
@@ -522,6 +525,7 @@ impl Driver {
                     VideoCodec::H264=>crate::bitstream::h264_dimensions(&encoded.data).zip(crate::color::from_h264(&encoded.data)),
                     VideoCodec::Hevc=>crate::hevc::sequence(&encoded.data).map(|s|((s.width,s.height),s.color)),
                     VideoCodec::Av1=>crate::av1::sequence(&encoded.data).map(|s|((s.width,s.height),s.color)),
+                    VideoCodec::Pyrowave=>None,
                 };
                 let color=if self.settings.hdr {crate::color::YuvColor::Limited2020Pq}else{crate::color::YuvColor::Limited601};
                 if metadata!=Some(((frame.width,frame.height),color)) {

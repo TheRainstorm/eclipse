@@ -130,6 +130,7 @@ impl Decoder {
     fn open(codec:VideoCodec) -> Result<Self, String> {
         let (path, display) = open_display(codec)?;
         let decoder=match codec {
+            VideoCodec::Pyrowave=>return Err("PyroWave uses the Vulkan decoder".into()),
             VideoCodec::H264=>BitstreamDecoder::H264(StatelessDecoder::<H264,_>::new_vaapi(display.clone(),BlockingMode::Blocking).map_err(|e|format!("VA-API H.264 decoder: {e}"))?),
             VideoCodec::Hevc=>BitstreamDecoder::Hevc(StatelessDecoder::<H265,_>::new_vaapi(display.clone(),BlockingMode::Blocking).map_err(|e|format!("VA-API HEVC decoder: {e}"))?),
             VideoCodec::Av1=>BitstreamDecoder::Av1(StatelessDecoder::<Av1,_>::new_vaapi(display.clone(),BlockingMode::Blocking).map_err(|e|format!("VA-API AV1 decoder: {e}"))?),
@@ -139,7 +140,7 @@ impl Decoder {
             codec,
             display,
             pool: None,
-            name: format!("vaapi (cros-codecs hw, {}{})", match codec {VideoCodec::H264=>"",VideoCodec::Hevc=>"HEVC, ",VideoCodec::Av1=>"AV1, "}, path.display()),
+            name: format!("vaapi (cros-codecs hw, {}{})", match codec {VideoCodec::H264=>"",VideoCodec::Hevc=>"HEVC, ",VideoCodec::Av1=>"AV1, ",VideoCodec::Pyrowave=>"PyroWave, "}, path.display()),
             pending: VecDeque::new(),
             pixels: super::pixels::Pool::default(),
             dma_readback: std::env::var("UU_VAAPI_READBACK").as_deref() != Ok("legacy"),
@@ -478,6 +479,7 @@ fn open_node(path: &Path,codec:VideoCodec) -> Result<std::rc::Rc<Display>, Strin
         VideoCodec::H264=>&[VAProfile::VAProfileH264High,VAProfile::VAProfileH264Main],
         VideoCodec::Hevc=>&[VAProfile::VAProfileHEVCMain],
         VideoCodec::Av1=>&[VAProfile::VAProfileAV1Profile0],
+        VideoCodec::Pyrowave=>return Err("PyroWave uses the Vulkan decoder".into()),
     };
     for &profile in requested {
         if !profiles.contains(&profile) {

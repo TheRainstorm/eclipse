@@ -2,7 +2,7 @@
 
 大功能里程碑使用 `v主版本.次版本.修订号` 标签，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
-当前开发版本 **v0.18.10** 增加客户端 CBR/VBR 选择、Windows 原生独立光标与分组 HUD，见[0.18.10 说明](releases/v0.18.10.md)。此前的外屏和菜单修复见[0.18.9 说明](releases/v0.18.9.md)。正式产物以 GitHub 上实际可用的发布为准，旧标签和产物保持不变。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+当前开发版本 **v0.19.0** 增加实验性 PyroWave 原生编解码，范围、GPU 实测与限制见[0.19.0 说明](releases/v0.19.0.md)和[使用文档](pyrowave.md)。此前客户端码率、光标与 HUD 见[0.18.10 说明](releases/v0.18.10.md)。此前的外屏和菜单修复见[0.18.9 说明](releases/v0.18.9.md)。正式产物以 GitHub 上实际可用的发布为准，旧标签和产物保持不变。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
 
 ```sh
 python3 tools/release/download.py

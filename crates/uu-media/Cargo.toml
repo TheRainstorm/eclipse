@@ -6,6 +6,10 @@ license.workspace = true
 description = "Video/audio pipeline abstractions (encode, decode, frame transport)"
 
 [[example]]
+name = "pyrowave_probe"
+required-features = ["pyrowave", "h264"]
+
+[[example]]
 name = "vpl_contract_probe"
 required-features = ["h264", "intel-vpl"]
 
@@ -45,7 +49,9 @@ cc = "1.2"
 serde_json.workspace = true
 
 [features]
-default = ["h264", "d3d11va", "mf-encode", "intel-vpl"]
+default = ["h264", "d3d11va", "mf-encode", "intel-vpl", "pyrowave"]
+# Pinned, packaged C runtime; Vulkan is loaded only when explicitly selected.
+pyrowave = ["h264"]
 # Optional runtime-loaded Intel hardware API; no SDK import library is linked.
 intel-vpl = []
 h264 = ["dep:openh264"]

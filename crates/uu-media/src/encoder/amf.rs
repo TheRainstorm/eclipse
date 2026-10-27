@@ -23,7 +23,7 @@ impl Native {
     fn close(&mut self)->u64 {self.0.take().map_or(0,|p|unsafe{eclipse_amf_close(p.as_ptr())})}
     fn open(settings:Settings,device:*mut c_void)->Result<Self,String> {
         let mut error=[0;512];
-        let codec=match settings.codec {VideoCodec::H264=>0,VideoCodec::Hevc=>1,VideoCodec::Av1=>2};
+        let codec=match settings.codec {VideoCodec::H264=>0,VideoCodec::Hevc=>1,VideoCodec::Av1=>2,VideoCodec::Pyrowave=>return Err("PyroWave uses the Vulkan backend".into())};
         let session=unsafe{eclipse_amf_open(codec,settings.width,settings.height,settings.fps,settings.bitrate_kbps,
             settings.rate_control.peak(settings.bitrate_kbps),i32::from(matches!(settings.rate_control,super::RateControl::Vbr{..})),match settings.tuning.amd_quality{super::AmdQuality::Speed=>0,super::AmdQuality::Balanced=>1,super::AmdQuality::Quality=>2},i32::from(settings.hdr),i32::from(settings.preference!=super::Preference::Amd),device,error.as_mut_ptr(),error.len())};
         NonNull::new(session).map(|p|Self(Some(p))).ok_or_else(||message(&error))
@@ -63,7 +63,7 @@ impl Driver {
     pub fn open_with_device(settings:Settings,input:Option<super::InputDevice>)->Result<Self,String> {
         let runtime=super::mf::Runtime::start()?;
         let native=Native::open(settings,input.as_ref().map_or(ptr::null_mut(),|device|device.device.as_raw()))?;
-        let codec=match settings.codec{VideoCodec::H264=>"H.264",VideoCodec::Hevc=>"HEVC",VideoCodec::Av1=>"AV1"};
+        let codec=match settings.codec{VideoCodec::H264=>"H.264",VideoCodec::Hevc=>"HEVC",VideoCodec::Av1=>"AV1",VideoCodec::Pyrowave=>"PyroWave"};
         let mode=if matches!(settings.rate_control,super::RateControl::Vbr{..}){"VBR"}else{"CBR"};
         // Reuse only after matching output and surface release; an explicit
         // override keeps the existing 1/other-value diagnostic behavior.
@@ -176,7 +176,7 @@ impl super::worker::Driver for Driver {
         if let Some(key)=lease_key {if let Err(error)=self.inputs.0.complete(key,pts){self.inputs.0.retire();return Err(error);}}
         let mut bytes=unsafe{std::slice::from_raw_parts(data,len)}.to_vec();
         let codec=self.settings.codec;
-        let idr=match codec {VideoCodec::H264=>EncodedFrame::detect_h264_keyframe(&bytes),VideoCodec::Hevc=>crate::hevc::is_keyframe(&bytes),VideoCodec::Av1=>crate::av1::is_keyframe(&bytes)};
+        let idr=match codec {VideoCodec::H264=>EncodedFrame::detect_h264_keyframe(&bytes),VideoCodec::Hevc=>crate::hevc::is_keyframe(&bytes),VideoCodec::Av1=>crate::av1::is_keyframe(&bytes),VideoCodec::Pyrowave=>false};
         if keyframe && !idr {return Err("AMF did not honor the requested recovery keyframe".into());}
         if codec==VideoCodec::H264 {bytes=super::low_delay::declare_no_reordering(&bytes)?;}
         let mut frame=EncodedFrame{data:bytes.into(),pts:frame.pts,is_keyframe:idr};

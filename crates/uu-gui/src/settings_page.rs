@@ -175,7 +175,8 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                 ui.label("视频编码");
                 combo(ui,"settings-codec",s.codec.label(),|ui| {
                     for codec in super::settings::CodecPreference::ALL {
-                        if ui.selectable_value(&mut s.codec,codec,codec.label()).changed(){s.prefer_hevc=false;}
+                        if ui.selectable_value(&mut s.codec,codec,codec.label()).changed(){s.prefer_hevc=false;
+                            if codec==super::settings::CodecPreference::Pyrowave{s.rate_control=Some(uu_core::native_quality::RateMode::Cbr);}}
                     }
                 });
                 ui.end_row();
@@ -184,7 +185,7 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                     use uu_core::native_quality::RateMode;
                     ui.selectable_value(&mut s.rate_control,None,"跟随主机");
                     ui.selectable_value(&mut s.rate_control,Some(RateMode::Cbr),"CBR · 固定码率");
-                    ui.selectable_value(&mut s.rate_control,Some(RateMode::Vbr),"VBR · 可变码率");
+                    ui.add_enabled_ui(s.codec!=super::settings::CodecPreference::Pyrowave,|ui|{ui.selectable_value(&mut s.rate_control,Some(RateMode::Vbr),"VBR · 可变码率");});
                 });
                 ui.end_row();
                 ui.label("码率");
@@ -208,8 +209,11 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
         if let Some(codec)=state.actual_codec.filter(|c|!c.is_empty()){ui.label(format!("当前编码：{}",codec.trim_start_matches("video/")));}
         note(
             ui,
-            "原生连接按两端能力协商，明确选择不可用时会提示；UU 兼容模式支持 H.264 或优先 HEVC，暂不支持 AV1。切换编码需要重连。",
+            "原生连接按两端能力协商，明确选择不可用时会提示；UU 兼容模式支持 H.264 或优先 HEVC。切换编码需要重连。",
         );
+        if s.codec==super::settings::CodecPreference::Pyrowave {
+            note(ui,"PyroWave 仅用于两端新版原生连接，当前支持 SDR、CBR 帧预算，需要较高带宽。自动码率约为 1080p60 200 Mbps、4K60 800 Mbps，建议使用有线网络；主机需允许此编码。");
+        }
     });
 }
 fn audio(ui: &mut egui::Ui, s: &mut Settings) {
