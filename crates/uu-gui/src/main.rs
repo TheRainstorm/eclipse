@@ -1617,6 +1617,15 @@ impl App {
                         "paint_setup_clear_draw_post_ms":timing.mean_paint_ms,
                         "cpu_ms":prepare+clear+update+paint+finish,"cpu_max_ms":timing.cpu_max_ms,
                     });
+                    let [textures,state,clip,vertices,indices,texture_bind,draw,callbacks,cleanup]=timing.mean_glow_ms;
+                    report["glow_draw_window"] = serde_json::json!({
+                        "samples":timing.samples,"window_ms":timing.window_ms,
+                        "textures_ms":textures,"state_ms":state,"clip_ms":clip,
+                        "vertex_upload_ms":vertices,"index_upload_ms":indices,
+                        "texture_bind_ms":texture_bind,"mesh_draw_ms":draw,
+                        "callbacks_ms":callbacks,"cleanup_ms":cleanup,
+                        "scope":"CPU wall time in GL call groups, including driver waits; not GPU execution or scanout",
+                    });
                 }
                 s.diagnostics.record(report);
             }

@@ -710,6 +710,7 @@ impl<'app> GlowWinitRunning<'app> {
             &clipped_primitives,
             &textures_delta,
         );
+        let glow_cpu_ms = painter.cpu_paint_timings_ms();
         let paint_drawn_seconds = frame_timer.total_time_sec();
 
         {
@@ -803,7 +804,7 @@ impl<'app> GlowWinitRunning<'app> {
             paint_cleared_seconds-paint_prepared_seconds,
             paint_drawn_seconds-paint_cleared_seconds,
             before_present_seconds-paint_drawn_seconds,
-        ].map(|seconds| f64::from(seconds)*1000.));
+        ].map(|seconds| f64::from(seconds)*1000.), glow_cpu_ms);
 
         integration.maybe_autosave(app.as_mut(), Some(&window));
 

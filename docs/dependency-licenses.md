@@ -117,6 +117,7 @@
 | [crc32fast](https://github.com/srijs/rust-crc32fast) | 1.5.2 | `MIT OR Apache-2.0` |
 | [cros-codecs](https://github.com/chromeos/cros-codecs) | 0.0.6 | `BSD-3-Clause` |
 | [crossbeam-utils](https://github.com/crossbeam-rs/crossbeam) | 0.8.23 | `MIT OR Apache-2.0` |
+| [crunchy](https://github.com/eira-fransham/crunchy) | 0.2.4 | `MIT` |
 | [crypto-bigint](https://github.com/RustCrypto/crypto-bigint) | 0.5.5 | `Apache-2.0 OR MIT` |
 | [crypto-common](https://github.com/RustCrypto/traits) | 0.1.7 | `MIT OR Apache-2.0` |
 | [ctr](https://github.com/RustCrypto/block-modes) | 0.9.2 | `MIT OR Apache-2.0` |
@@ -159,6 +160,7 @@
 | [event-listener](https://github.com/smol-rs/event-listener) | 5.4.2 | `Apache-2.0 OR MIT` |
 | [event-listener-strategy](https://github.com/smol-rs/event-listener-strategy) | 0.5.4 | `Apache-2.0 OR MIT` |
 | [fastrand](https://github.com/smol-rs/fastrand) | 2.5.0 | `Apache-2.0 OR MIT` |
+| [fax](https://github.com/pdf-rs/fax) | 0.2.7 | `MIT` |
 | [fdeflate](https://github.com/image-rs/fdeflate) | 0.3.7 | `MIT OR Apache-2.0` |
 | [ff](https://github.com/zkcrypto/ff) | 0.13.1 | `MIT/Apache-2.0` |
 | [fiat-crypto](https://github.com/mit-plv/fiat-crypto) | 0.2.9 | `MIT OR Apache-2.0 OR BSD-1-Clause` |
@@ -203,6 +205,7 @@
 | [gpu-descriptor](https://github.com/zakarumych/gpu-descriptor) | 0.3.2 | `MIT OR Apache-2.0` |
 | [gpu-descriptor-types](https://github.com/zakarumych/gpu-descriptor) | 0.2.0 | `MIT OR Apache-2.0` |
 | [group](https://github.com/zkcrypto/group) | 0.13.0 | `MIT/Apache-2.0` |
+| [half](https://github.com/VoidStarKat/half-rs) | 2.7.1 | `MIT OR Apache-2.0` |
 | [hashbrown](https://github.com/rust-lang/hashbrown) | 0.15.5 | `MIT OR Apache-2.0` |
 | [hashbrown](https://github.com/rust-lang/hashbrown) | 0.17.1 | `MIT OR Apache-2.0` |
 | [hassle-rs](https://github.com/Traverse-Research/hassle-rs) | 0.11.0 | `MIT` |
@@ -368,6 +371,7 @@
 | [profiling](https://github.com/aclysma/profiling) | 1.0.18 | `MIT OR Apache-2.0` |
 | [pxfm](https://github.com/awxkee/pxfm) | 0.1.30 | `BSD-3-Clause OR Apache-2.0` |
 | [qrcode](https://github.com/kennytm/qrcode-rust) | 0.14.1 | `MIT OR Apache-2.0` |
+| [quick-error](http://github.com/tailhook/quick-error) | 2.0.1 | `MIT/Apache-2.0` |
 | [quick-xml](https://github.com/tafia/quick-xml) | 0.41.0 | `MIT` |
 | [quinn](https://github.com/quinn-rs/quinn) | 0.11.12 | `MIT OR Apache-2.0` |
 | [quinn-proto](https://github.com/quinn-rs/quinn) | 0.11.19 | `MIT OR Apache-2.0` |
@@ -470,6 +474,7 @@
 | [thiserror-impl](https://github.com/dtolnay/thiserror) | 1.0.69 | `MIT OR Apache-2.0` |
 | [thiserror-impl](https://github.com/dtolnay/thiserror) | 2.0.21 | `MIT OR Apache-2.0` |
 | [thread_local](https://github.com/Amanieu/thread_local-rs) | 1.1.10 | `MIT OR Apache-2.0` |
+| [tiff](https://github.com/image-rs/image-tiff) | 0.11.3 | `MIT` |
 | [time](https://github.com/time-rs/time) | 0.3.55 | `MIT OR Apache-2.0` |
 | [time-core](https://github.com/time-rs/time) | 0.1.9 | `MIT OR Apache-2.0` |
 | [time-macros](https://github.com/time-rs/time) | 0.2.32 | `MIT OR Apache-2.0` |
@@ -555,6 +560,7 @@
 | [webrtc-sctp](https://github.com/webrtc-rs/sctp) | 0.10.0 | `MIT OR Apache-2.0` |
 | [webrtc-srtp](https://github.com/webrtc-rs/srtp) | 0.13.0 | `MIT OR Apache-2.0` |
 | [webrtc-util](https://github.com/webrtc-rs/util) | 0.9.0 | `MIT OR Apache-2.0` |
+| [weezl](https://github.com/image-rs/weezl) | 0.1.12 | `MIT OR Apache-2.0` |
 | [wgpu](https://github.com/gfx-rs/wgpu) | 22.1.0 | `MIT OR Apache-2.0` |
 | [wgpu-core](https://github.com/gfx-rs/wgpu) | 22.1.0 | `MIT OR Apache-2.0` |
 | [wgpu-hal](https://github.com/gfx-rs/wgpu) | 22.0.0 | `MIT OR Apache-2.0` |
