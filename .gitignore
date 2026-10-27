@@ -49,3 +49,7 @@ uu-session-*.jsonl
 server-identity.json
 paired-devices.json
 authorized-clients.json
+
+# AOCI agent host integration (machine-bound; do not commit)
+.codex/config.toml
+.codex/config.toml.backup.*
