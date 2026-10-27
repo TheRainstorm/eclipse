@@ -57,7 +57,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 
 ## 开始使用
 
-当前版本 **[v0.18.9](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.9)** 修复混合 DPI 外屏 Render 高延迟、悬浮菜单输入入口闪烁，并汇总原生文字色彩、鼠标比例、Intel AV1 首帧与此前 AMD AMF 输入复用等更新。完整改动、实测范围和已知限制见[发布说明](docs/releases/v0.18.9.md)，外屏问题的前因后果见[诊断报告](docs/performance/mixed-dpi-render-latency.md)。旧版本与产物独立保留。
+当前开发版本 **v0.18.10** 新增客户端 CBR/VBR 切换、Windows 原生远端光标和分组 HUD，见[0.18.10 说明](docs/releases/v0.18.10.md)。继承[0.18.9 外屏延迟与悬浮菜单修复](docs/releases/v0.18.9.md)。正式安装包以 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 实际可用版本为准，旧标签与产物独立保留。
 
 安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
 

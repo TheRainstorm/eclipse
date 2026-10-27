@@ -2,7 +2,7 @@
 
 大功能里程碑使用 `v主版本.次版本.修订号` 标签，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
-当前版本 **[v0.18.9](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.9)** 修复混合 DPI 外屏 Render 高延迟与悬浮输入菜单，并汇总此前本地 0.18.8 的 AMD AMF 输入复用、诊断、色彩、连接与输入修复，见 [0.18.9 发布说明](releases/v0.18.9.md)和[外屏延迟报告](performance/mixed-dpi-render-latency.md)。已有标签和产物保持不变，正式产物以 GitHub 上实际可用的发布为准。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+当前开发版本 **v0.18.10** 增加客户端 CBR/VBR 选择、Windows 原生独立光标与分组 HUD，见[0.18.10 说明](releases/v0.18.10.md)。此前的外屏和菜单修复见[0.18.9 说明](releases/v0.18.9.md)。正式产物以 GitHub 上实际可用的发布为准，旧标签和产物保持不变。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
 
 ```sh
 python3 tools/release/download.py
