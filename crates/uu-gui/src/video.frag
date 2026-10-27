@@ -29,7 +29,7 @@ uniform vec4 cursor_bounds;
 void video_main() {
     vec2 video_uv=uv*video_uv_layout.xy;
     vec2 luma_uv=clamp(video_uv,video_uv_layout.zw*0.5,video_uv_layout.xy-video_uv_layout.zw*0.5);
-    vec2 chroma_uv=clamp(video_uv,video_uv_layout.zw,video_uv_layout.xy-video_uv_layout.zw);
+    vec2 chroma_uv=clamp(video_uv+vec2(pixel_layout==5?video_uv_layout.z*0.5:0.0,0.0),video_uv_layout.zw,video_uv_layout.xy-video_uv_layout.zw);
     if(pixel_layout==3 || pixel_layout==4) {vec3 rgb=texture(plane0,luma_uv).rgb;output_color=vec4(hdr_input?hdr_color(rgb):(hdr_output?cursor_linear(rgb):rgb),1.0);return;}
     if(pixel_layout==2) {vec3 rgb=texture(plane0,luma_uv).bgr;output_color=vec4(hdr_output?cursor_linear(rgb):rgb,1.0);return;}
     float factor=pixel_layout==5 ? 65535.0/(64.0*1023.0) : 1.0;

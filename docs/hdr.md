@@ -14,14 +14,21 @@ Windows AMD 编码使用原生 AMF 的 HEVC Main10 或 AV1 10 位模式；其它
 
 编码器必须产生实际的 10 位 PQ/BT.2020 码流，关键帧头会再次校验，不能只修改编码标签。原生会话使用独立的可选 SDP 属性传递 HDR 能力和显示信息，HEVC Main10 使用独立的 RTP profile；旧版信令和普通 SDR 设置保持兼容。
 
-客户端保留 P010 硬解纹理，在 GPU 转换为浮点线性 RGB。HDR 窗口的画面和菜单一起进入浮点缓冲，再经 Windows scRGB 交换链显示；SDR 窗口继续使用普通呈现。窗口激活、SDR 回退和关闭都按窗口管理资源。正常硬编硬解不逐帧读回 CPU；GPU 内仍有格式转换和纹理复制。
+客户端保留 P010 硬解纹理，在 GPU 转换为浮点线性 RGB。HDR 窗口的画面和菜单直接绘入共享的线性 FP16 缓冲，再经 Windows scRGB 交换链显示，不再经过整窗的 gamma 编码与解码。SDR 窗口继续使用普通呈现。窗口激活、SDR 回退和关闭都按窗口管理资源。正常硬编硬解不逐帧读回 CPU；GPU 内仍有格式转换和纹理复制。
 
 Windows SDR 硬解后的 NV12 使用显式着色器转换为 RGB，按 BT.601/BT.709、全范围/有限范围和左对齐色度采样规则重建，并限制采样到实际可见区域，避免读取编码对齐填充。缺少所需着色器或平面纹理能力的旧设备保留视频处理器回退。诊断中的 `video_color` 会记录实际格式、色彩解释及转换后端。
 
-Windows 硬编的 SDR GPU 输入也显式转换为 NV12：先按输出分辨率采样 RGB，再以水平方向的三点滤波与垂直方向的两点平均生成左对齐色度，减少文字子像素边缘在降采样时产生的彩色走样。普通 BGRA 保留原有 SDR 信号，浮点 scRGB 的 SDR 回退先应用原亮度映射；HDR P010 编码保持原路径。转换和缩放均在 GPU 完成，平面渲染能力不足时使用原视频处理器。4:2:0 仍会损失细小真彩色细节，不能等同于 4:4:4 或 RGB 无损传输。
+Windows 硬编的 SDR GPU 输入也显式转换为 NV12：先按输出分辨率采样 RGB，再以水平方向的三点滤波与垂直方向的两点平均生成左对齐色度，减少文字子像素边缘在降采样时产生的彩色走样。普通 BGRA 保留原有 SDR 信号，浮点 scRGB 的 SDR 回退先应用原亮度映射。HDR P010 同样使用左对齐色度，在转为 PQ 前先在线性 RGB 中滤波；GPU 解码和 P010 平面渲染按相同采样位置重建，并排除编码填充区域。转换和缩放均在 GPU 完成，平面渲染能力不足时使用原视频处理器。4:2:0 仍会损失细小真彩色细节，不能等同于 4:4:4 或 RGB 无损传输。
 
 scRGB 的 `1.0` 对应 80 cd/m²，PQ 表示绝对亮度；界面白色使用 Windows 当前 SDR 白色亮度。实现参考 [Windows Advanced Color 文档](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range)、[Sunshine](https://github.com/LizardByte/Sunshine) 和 [Moonlight 的 D3D11 呈现设计](https://github.com/moonlight-stream/moonlight-qt/blob/master/app/streaming/video/ffmpeg-renderers/d3d11va.cpp)。
 
 ## 验证边界
 
 生成的 HDR 图案可检查亮度、色彩矩阵、位深、硬编硬解和呈现表面；这些检查不能替代显示器上的视觉验收。HDR 效果还取决于显示器、Windows HDR 校准、驱动和内容本身。实际桌面延迟应在使用中的分辨率、帧率和内容下测量。
+
+`tools/native/hdr_color_probe.cpp` 使用生成的浮点细边缘，对生产 GPU 转换结果与独立 CPU PQ、滤波和采样参考逐像素比较，不采集桌面。在 Windows MinGW 环境可运行：
+
+```sh
+g++ -std=c++17 -O2 tools/native/hdr_color_probe.cpp -o hdr_color_probe.exe -ld3d11 -ld3dcompiler -ldxgi -static-libgcc -static-libstdc++
+./hdr_color_probe.exe
+```

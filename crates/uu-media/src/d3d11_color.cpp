@@ -46,9 +46,13 @@ float3 srgb_decode(float3 value) {
         value.g<=0.04045?value.g/12.92:pow((value.g+0.055)/1.055,2.4),
         value.b<=0.04045?value.b/12.92:pow((value.b+0.055)/1.055,2.4));
 }
-float3 signal_at(float2 uv) {
+float3 linear_at(float2 uv) {
+    uv=clamp(uv,0.5/dimensions.xy,1-0.5/dimensions.xy);
     float3 linear_rgb=image.SampleLevel(bilinear,uv,0).rgb;
     if(options.z>0.5)linear_rgb=srgb_decode(linear_rgb)*options.w/80;
+    return linear_rgb;
+}
+float3 signal_from_linear(float3 linear_rgb) {
     if(options.y>0.5) {
         float3 wide=mul(float3x3(0.627404,0.329283,0.043313,0.069097,0.919540,0.011362,0.016391,0.088013,0.895595),linear_rgb);
         return pq_encode(wide*80);
@@ -60,13 +64,21 @@ float3 signal_at(float2 uv) {
     if(peak>0.75) linear_rgb=(linear_rgb/peak)*(1-0.25*exp(-4*(peak-0.75)));
     return srgb_encode(linear_rgb);
 }
+float3 signal_at(float2 uv) {return signal_from_linear(linear_at(uv));}
 float4 encode(float4 position:SV_Position):SV_Target {
     float3 rgb;
     if(options.x<0.5) rgb=signal_at(position.xy/dimensions.xy);
     else {
-        float2 uv=(position.xy*2-0.5)/dimensions.xy;
+        // LEFT 4:2:0: co-sited horizontally, centered between the two rows.
+        // Filter in linear light before PQ so bright subpixel text cannot
+        // alias into saturated chroma when reducing to half resolution.
+        float2 center=float2(position.x*2-0.5,position.y*2)/dimensions.xy;
         float2 step=1/dimensions.xy;
-        rgb=(signal_at(uv)+signal_at(uv+float2(step.x,0))+signal_at(uv+float2(0,step.y))+signal_at(uv+step))*0.25;
+        float2 top=center-float2(0,step.y*0.5),bottom=center+float2(0,step.y*0.5);
+        float3 filtered=(linear_at(top)+linear_at(bottom))*0.25;
+        filtered+=(linear_at(top-float2(step.x,0))+linear_at(bottom-float2(step.x,0))
+            +linear_at(top+float2(step.x,0))+linear_at(bottom+float2(step.x,0)))*0.125;
+        rgb=signal_from_linear(filtered);
     }
     bool hdr=options.y>0.5;
     float3 weights=hdr?float3(0.2627,0.6780,0.0593):float3(0.299,0.587,0.114);
@@ -116,9 +128,10 @@ float4 decode_sdr(float4 position:SV_Position):SV_Target {
     return float4(saturate(float3(y+c.x*uv.y,y-c.y*uv.x-c.z*uv.y,y+c.w*uv.x)),1);
 }
 float4 decode(float4 position:SV_Position):SV_Target {
-    float2 coord=position.xy/dimensions.zw;
+    float2 coord=clamp(position.xy/dimensions.zw,0.5/dimensions.zw,(dimensions.xy-0.5)/dimensions.zw);
+    float2 uv_coord=clamp(coord+float2(0.5/dimensions.z,0),1/dimensions.zw,(dimensions.xy-1)/dimensions.zw);
     float y=image.SampleLevel(bilinear,coord,0).r*65535/64;
-    float2 uv=chroma.SampleLevel(bilinear,coord,0)*65535/64;
+    float2 uv=chroma.SampleLevel(bilinear,uv_coord,0)*65535/64;
     y=(y-(options.z>0.5?0:64))/(options.z>0.5?1023:876);
     uv=(uv-512)/(options.z>0.5?1023:896);
     float3 rgb=float3(y+1.4746*uv.y,y-0.164553*uv.x-0.571353*uv.y,y+1.8814*uv.x);
