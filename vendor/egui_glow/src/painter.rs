@@ -90,8 +90,6 @@ pub struct Painter {
     program: glow::Program,
     u_screen_size: glow::UniformLocation,
     u_sampler: glow::UniformLocation,
-    u_linear_white: glow::UniformLocation,
-    linear_white: f32,
     is_webgl_1: bool,
     vao: crate::vao::VertexArrayObject,
     srgb_textures: bool,
@@ -231,7 +229,6 @@ impl Painter {
             gl.delete_shader(frag);
             let u_screen_size = gl.get_uniform_location(program, "u_screen_size").unwrap();
             let u_sampler = gl.get_uniform_location(program, "u_sampler").unwrap();
-            let u_linear_white = gl.get_uniform_location(program, "u_linear_white").unwrap();
 
             let vbo = gl.create_buffer()?;
 
@@ -278,8 +275,6 @@ impl Painter {
                 program,
                 u_screen_size,
                 u_sampler,
-                u_linear_white,
-                linear_white: 0.,
                 is_webgl_1,
                 vao,
                 srgb_textures,
@@ -299,13 +294,6 @@ impl Painter {
     /// Access the shared glow context.
     pub fn gl(&self) -> &Arc<glow::Context> {
         &self.gl
-    }
-
-    /// Select the current viewport's framebuffer encoding. `Some` means linear
-    /// scRGB, where 1.0 is 80 nits; `None` retains egui's ordinary gamma output.
-    /// All viewports share this painter, so the backend sets it before each paint.
-    pub fn set_linear_output(&mut self, sdr_white_nits: Option<f32>) {
-        self.linear_white = sdr_white_nits.map_or(0., |nits| nits.max(1.) / 80.);
     }
 
     /// Texture updates, state, clip, vertex upload, index upload, texture bind,
@@ -379,7 +367,6 @@ impl Painter {
             self.gl
                 .uniform_2_f32(Some(&self.u_screen_size), width_in_points, height_in_points);
             self.gl.uniform_1_i32(Some(&self.u_sampler), 0);
-            self.gl.uniform_1_f32(Some(&self.u_linear_white), self.linear_white);
             self.gl.active_texture(glow::TEXTURE0);
 
             self.vao.bind(&self.gl);

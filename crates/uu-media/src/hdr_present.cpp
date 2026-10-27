@@ -117,11 +117,6 @@ struct Presentation {
         D3D11_TEXTURE2D_DESC td{};td.Width=w;td.Height=h;td.MipLevels=1;td.ArraySize=1;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
         td.SampleDesc.Count=1;td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;td.MiscFlags=D3D11_RESOURCE_MISC_SHARED;
         check(device->CreateTexture2D(&td,nullptr,&shared_texture),"create HDR GL composition texture");
-        // GL framebuffer rows start at the bottom. Let the composition visual
-        // express that orientation instead of drawing a second full-screen pass.
-        D2D_MATRIX_3X2_F origin{1,0,0,-1,0,(float)h};
-        check(visual->SetTransform(origin),"set GL composition origin");
-        if(visual_attached)check(composition->Commit(),"commit HDR resize transform");
         width=w;height=h;
     }
     void deactivate() {

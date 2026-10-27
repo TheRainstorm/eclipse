@@ -699,7 +699,6 @@ impl<'app> GlowWinitRunning<'app> {
         let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
 
         let custom_surface=crate::glow_presentation::begin(&integration.egui_ctx,viewport_id,screen_size_in_pixels);
-        painter.set_linear_output(custom_surface.as_ref().map(|surface| surface.color().sdr_white_nits));
         if custom_surface.is_some() || !clear_before_update {
             painter.clear(screen_size_in_pixels, clear_color);
         }
@@ -1618,7 +1617,6 @@ fn render_immediate_viewport(
     }
 
     let custom_surface=crate::glow_presentation::begin(egui_ctx,viewport_id,screen_size_in_pixels);
-    painter.borrow_mut().set_linear_output(custom_surface.as_ref().map(|surface| surface.color().sdr_white_nits));
     egui_glow::painter::clear(
         painter.borrow().gl(),
         screen_size_in_pixels,

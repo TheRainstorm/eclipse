@@ -190,7 +190,7 @@ impl VideoTexture {
                         let color=eframe::glow_presentation::color_target_for(&ctx,viewport);
                         let mut state=gpu.lock().unwrap();
                         let new_image=state.pending.is_some();
-                        if let Some(phases)=state.paint(color.is_some(),color.is_some_and(|c|c.hdr),color.map_or(80.,|c|c.sdr_white_nits),source_white) {
+                        if let Some(phases)=state.paint(color.is_some_and(|c|c.hdr),color.map_or(80.,|c|c.sdr_white_nits),source_white) {
                             state.paint_timings.record(new_image,phases);
                         }
                     })),
@@ -243,7 +243,6 @@ struct Planes {
     levels_uniform: Option<glow::UniformLocation>,
     hdr_input_uniform: Option<glow::UniformLocation>,
     hdr_output_uniform: Option<glow::UniformLocation>,
-    linear_output_uniform: Option<glow::UniformLocation>,
     sdr_white_uniform: Option<glow::UniformLocation>,
     source_white_uniform: Option<glow::UniformLocation>,
     vao: glow::VertexArray,
@@ -325,7 +324,6 @@ impl Planes {
         // Resolve them once, like the existing SDR shader uniforms.
         let hdr_input_uniform = gl.get_uniform_location(program, "hdr_input");
         let hdr_output_uniform = gl.get_uniform_location(program, "hdr_output");
-        let linear_output_uniform = gl.get_uniform_location(program, "linear_output");
         let sdr_white_uniform = gl.get_uniform_location(program, "sdr_white");
         let source_white_uniform = gl.get_uniform_location(program, "source_white");
         let previous_program = gl.get_parameter_program(glow::CURRENT_PROGRAM);
@@ -349,7 +347,6 @@ impl Planes {
             levels_uniform,
             hdr_input_uniform,
             hdr_output_uniform,
-            linear_output_uniform,
             sdr_white_uniform,
             source_white_uniform,
             vao,
@@ -399,7 +396,7 @@ impl Planes {
             if gl.check_framebuffer_status(glow::FRAMEBUFFER)!=glow::FRAMEBUFFER_COMPLETE {return Err("无法建立远端预览缓冲".into());}
             gl.viewport(0,0,size[0] as i32,size[1] as i32);gl.disable(glow::SCISSOR_TEST);gl.disable(glow::BLEND);
             for unit in 0..3 {gl.bind_sampler(unit,None);}
-            self.paint(false,false,80.,source_white);
+            self.paint(false,80.,source_white);
             if self.size==[0,0]{return Err("远端 GPU 画面暂不可用".into());}
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER,None);gl.pixel_store_i32(glow::PACK_ALIGNMENT,1);
             gl.pixel_store_i32(glow::PACK_ROW_LENGTH,0);gl.pixel_store_i32(glow::PACK_SKIP_PIXELS,0);gl.pixel_store_i32(glow::PACK_SKIP_ROWS,0);
@@ -496,7 +493,7 @@ impl Planes {
         }
         gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
     }
-    unsafe fn paint(&mut self,linear_output:bool,hdr_output:bool,white_nits:f32,source_white:f32) -> Option<[f64;5]> {
+    unsafe fn paint(&mut self,hdr_output:bool,white_nits:f32,source_white:f32) -> Option<[f64;5]> {
         let started=std::time::Instant::now();
         if let Some((f, color)) = self.pending.take() {
             if f.gpu {
@@ -672,7 +669,6 @@ impl Planes {
         gl.uniform_4_f32(self.levels_uniform.as_ref(),levels[0],levels[1],levels[2],levels[3]);
         gl.uniform_1_i32(self.hdr_input_uniform.as_ref(),i32::from(self.color.hdr() || self.layout==Some(PixelFormat::ScRgb16)));
         gl.uniform_1_i32(self.hdr_output_uniform.as_ref(),i32::from(hdr_output));
-        gl.uniform_1_i32(self.linear_output_uniform.as_ref(),i32::from(linear_output));
         gl.uniform_1_f32(self.sdr_white_uniform.as_ref(),white_nits/80.);
         gl.uniform_1_f32(self.source_white_uniform.as_ref(),source_white);
         self.cursor.bind(gl);

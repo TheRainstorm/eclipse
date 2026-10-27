@@ -114,9 +114,6 @@ pub(crate) fn begin(ctx: &Context, viewport: ViewportId, size: [u32; 2]) -> Opti
     }
 }
 impl Surface {
-    pub fn color(&self) -> ColorTarget {
-        self.0.lock().unwrap().color
-    }
     pub fn finish(&self) {
         self.0.lock().unwrap().presenter.finish();
     }
