@@ -215,15 +215,8 @@ fn main() -> anyhow::Result<()> {
                                         84. + (i / 2) as f32 * 72.,
                                     );
                                     for c in 0..3 {
-                                        let v = reference[c] * 80.
-                                            / color.map_or(80., |c| c.sdr_white_nits);
                                         let expected = if hdr {
-                                            if v.abs() <= 0.0031308 {
-                                                v * 12.92
-                                            } else {
-                                                v.signum()
-                                                    * (1.055 * v.abs().powf(1. / 2.4) - 0.055)
-                                            }
+                                            reference[c]
                                         } else {
                                             uu_media::hdr::sc_rgb_to_sdr(*reference, 203.)[c]
                                         };
@@ -237,7 +230,8 @@ fn main() -> anyhow::Result<()> {
                                     }
                                 }
                                 let overlay = read(32., 16.);
-                                if overlay[..3].iter().any(|v| (*v - 1.).abs() > 0.01) {
+                                let white = color.map_or(1., |c| c.sdr_white_nits / 80.);
+                                if overlay[..3].iter().any(|v| (*v - white).abs() > 0.01) {
                                     *error.lock().unwrap() =
                                         Some(format!("SDR overlay missing: {overlay:?}"));
                                     return;

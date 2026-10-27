@@ -3,6 +3,8 @@
 #endif
 
 uniform sampler2D u_sampler;
+// Zero: ordinary gamma framebuffer. Positive: linear scRGB SDR white / 80 nits.
+uniform float u_linear_white;
 
 #if NEW_SHADER_INTERFACE
     in vec4 v_rgba_in_gamma;
@@ -50,6 +52,12 @@ vec4 srgba_gamma_from_linear(vec4 rgba) {
     return vec4(srgb_gamma_from_linear(rgba.rgb), rgba.a);
 }
 
+vec3 srgb_linear_from_gamma(vec3 rgb) {
+    vec3 magnitude = abs(rgb);
+    return sign(rgb) * mix(pow((magnitude + 0.055) / 1.055, vec3(2.4)),
+                          magnitude / 12.92, vec3(lessThanEqual(magnitude, vec3(0.04045))));
+}
+
 void main() {
 #if SRGB_TEXTURES
     vec4 texture_in_gamma = srgba_gamma_from_linear(texture2D(u_sampler, v_tc));
@@ -59,6 +67,14 @@ void main() {
 
     // We multiply the colors in gamma space, because that's the only way to get text to look right.
     vec4 frag_color_gamma = v_rgba_in_gamma * texture_in_gamma;
+
+    if (u_linear_white > 0.0) {
+        // egui 0.29 stores sRGB-encoded, linear-premultiplied Color32 values.
+        // Decode the encoded color directly; dividing by alpha before decoding
+        // would brighten translucent UI and discard additive (alpha=0) colors.
+        gl_FragColor = vec4(srgb_linear_from_gamma(frag_color_gamma.rgb) * u_linear_white, frag_color_gamma.a);
+        return;
+    }
 
     // Dither the float color down to eight bits to reduce banding.
     // This step is optional for egui backends.

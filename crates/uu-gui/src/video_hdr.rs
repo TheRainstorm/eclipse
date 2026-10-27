@@ -18,12 +18,8 @@ struct HdrPresenter {
     api: Api,
     device: Handle,
     object: Handle,
-    gui: Option<Target>,
     shared: Option<Target>,
     size: [u32; 2],
-    program: glow::Program,
-    vao: glow::VertexArray,
-    white: Option<glow::UniformLocation>,
     color: ColorTarget,
     locked: bool,
 }
@@ -62,33 +58,18 @@ impl HdrPresenter {
     unsafe fn new(gl: Arc<glow::Context>, hwnd: Handle) -> Result<Self, String> {
         let api = Api::load().ok_or("HDR 需要 WGL/D3D11 共享纹理支持")?;
         let native = Presentation::new(hwnd)?;
-        let program = program(&gl)?;
-        let vao = match gl.create_vertex_array() {
-            Ok(v) => v,
-            Err(e) => {
-                gl.delete_program(program);
-                return Err(e);
-            }
-        };
         let device = (api.open)(native.device_ptr());
         if device.is_null() {
-            gl.delete_vertex_array(vao);
-            gl.delete_program(program);
             return Err("HDR 呈现设备不能与 OpenGL 共享纹理".into());
         }
-        let white = gl.get_uniform_location(program, "sdr_white");
         Ok(Self {
             gl,
             native,
             api,
             device,
             object: ptr::null_mut(),
-            gui: None,
             shared: None,
             size: [0, 0],
-            program,
-            vao,
-            white,
             color: ColorTarget {
                 hdr: true,
                 sdr_white_nits: 80.,
@@ -106,7 +87,7 @@ impl HdrPresenter {
             (self.api.unregister)(self.device, self.object);
             self.object = ptr::null_mut();
         }
-        for target in [self.shared.take(), self.gui.take()].into_iter().flatten() {
+        if let Some(target) = self.shared.take() {
             self.gl.delete_framebuffer(target.framebuffer);
             self.gl.delete_texture(target.texture);
         }
@@ -118,63 +99,6 @@ impl HdrPresenter {
         }
         self.clear_targets();
         self.native.resize(size)?;
-        let gui_texture = self.gl.create_texture()?;
-        let gui_fbo = match self.gl.create_framebuffer() {
-            Ok(v) => v,
-            Err(e) => {
-                self.gl.delete_texture(gui_texture);
-                return Err(e);
-            }
-        };
-        self.gui = Some(Target {
-            texture: gui_texture,
-            framebuffer: gui_fbo,
-        });
-        self.gl.active_texture(glow::TEXTURE0);
-        self.gl.bind_texture(glow::TEXTURE_2D, Some(gui_texture));
-        self.gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MIN_FILTER,
-            glow::LINEAR as i32,
-        );
-        self.gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MAG_FILTER,
-            glow::LINEAR as i32,
-        );
-        self.gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_S,
-            glow::CLAMP_TO_EDGE as i32,
-        );
-        self.gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_T,
-            glow::CLAMP_TO_EDGE as i32,
-        );
-        self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
-        self.gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            glow::RGBA16F as i32,
-            size[0] as i32,
-            size[1] as i32,
-            0,
-            glow::RGBA,
-            glow::HALF_FLOAT,
-            None,
-        );
-        self.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(gui_fbo));
-        self.gl.framebuffer_texture_2d(
-            glow::FRAMEBUFFER,
-            glow::COLOR_ATTACHMENT0,
-            glow::TEXTURE_2D,
-            Some(gui_texture),
-            0,
-        );
-        if self.gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
-            return Err("HDR UI 浮点缓冲不完整".into());
-        }
         let shared_texture = self.gl.create_texture()?;
         let shared_fbo = match self.gl.create_framebuffer() {
             Ok(v) => v,
@@ -226,9 +150,13 @@ impl Presenter for HdrPresenter {
         let size = size.map(|v| v.max(1));
         unsafe {
             self.resize(size)?;
+            if (self.api.lock)(self.device, 1, &mut self.object) == 0 {
+                return Err("HDR 呈现纹理锁定失败".into());
+            }
+            self.locked = true;
             self.gl.bind_framebuffer(
                 glow::FRAMEBUFFER,
-                Some(self.gui.as_ref().unwrap().framebuffer),
+                Some(self.shared.as_ref().unwrap().framebuffer),
             );
         }
         let (hdr, white) = self.native.info();
@@ -240,30 +168,7 @@ impl Presenter for HdrPresenter {
     }
     fn present(&mut self, vsync: bool) -> Result<(), String> {
         unsafe {
-            if (self.api.lock)(self.device, 1, &mut self.object) == 0 {
-                return Err("HDR 呈现纹理锁定失败".into());
-            }
-            self.locked = true;
-            let gl = &self.gl;
-            gl.bind_framebuffer(
-                glow::FRAMEBUFFER,
-                Some(self.shared.as_ref().unwrap().framebuffer),
-            );
-            gl.viewport(0, 0, self.size[0] as i32, self.size[1] as i32);
-            gl.disable(glow::SCISSOR_TEST);
-            gl.disable(glow::BLEND);
-            gl.disable(glow::DEPTH_TEST);
-            gl.disable(glow::CULL_FACE);
-            gl.disable(glow::FRAMEBUFFER_SRGB);
-            gl.color_mask(true, true, true, true);
-            gl.use_program(Some(self.program));
-            gl.bind_vertex_array(Some(self.vao));
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_sampler(0, None);
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.gui.as_ref().unwrap().texture));
-            gl.uniform_1_f32(self.white.as_ref(), self.color.sdr_white_nits / 80.);
-            gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             if (self.api.unlock)(self.device, 1, &mut self.object) == 0 {
                 return Err("HDR 呈现纹理解锁失败".into());
             }
@@ -274,6 +179,10 @@ impl Presenter for HdrPresenter {
     fn finish(&mut self) {
         unsafe {
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            if self.locked {
+                (self.api.unlock)(self.device, 1, &mut self.object);
+                self.locked = false;
+            }
         }
     }
     fn deactivate(&mut self) -> Result<(), String> {
@@ -285,51 +194,6 @@ impl Drop for HdrPresenter {
         unsafe {
             self.clear_targets();
             (self.api.close)(self.device);
-            self.gl.delete_program(self.program);
-            self.gl.delete_vertex_array(self.vao);
         }
     }
-}
-unsafe fn program(gl: &glow::Context) -> Result<glow::Program, String> {
-    let program = gl.create_program()?;
-    for (kind, source) in [
-        (
-            glow::VERTEX_SHADER,
-            r#"#version 330
-out vec2 uv;
-void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=vec4(p*2.0-1.0,0,1);uv=vec2(p.x,1.0-p.y);}"#,
-        ),
-        (
-            glow::FRAGMENT_SHADER,
-            r#"#version 330
-in vec2 uv;out vec4 result;uniform sampler2D image;uniform float sdr_white;
-float linear_channel(float v){float a=abs(v);return sign(v)*(a<=0.04045?a/12.92:pow((a+0.055)/1.055,2.4));}
-void main(){vec3 v=texture(image,uv).rgb;result=vec4(vec3(linear_channel(v.r),linear_channel(v.g),linear_channel(v.b))*sdr_white,1);}"#,
-        ),
-    ] {
-        let shader = match gl.create_shader(kind) {
-            Ok(v) => v,
-            Err(e) => {
-                gl.delete_program(program);
-                return Err(e);
-            }
-        };
-        gl.shader_source(shader, source);
-        gl.compile_shader(shader);
-        if !gl.get_shader_compile_status(shader) {
-            let e = gl.get_shader_info_log(shader);
-            gl.delete_shader(shader);
-            gl.delete_program(program);
-            return Err(e);
-        }
-        gl.attach_shader(program, shader);
-        gl.delete_shader(shader);
-    }
-    gl.link_program(program);
-    if !gl.get_program_link_status(program) {
-        let e = gl.get_program_info_log(program);
-        gl.delete_program(program);
-        return Err(e);
-    }
-    Ok(program)
 }
