@@ -331,10 +331,10 @@ impl Layout {
 }
 // Ten categories, each rendered as a compact, wrapping data row.
 struct DetailValue { label: &'static str, value: String, help: &'static str, group: u8 }
-struct DetailRow { label: &'static str, text: String, color: Color32, values: Vec<DetailValue> }
+struct DetailRow { label: &'static str, color: Color32, values: Vec<DetailValue> }
 fn field(label:&'static str,value:impl ToString,help:&'static str)->DetailValue {DetailValue{label,value:value.to_string(),help,group:0}}
 fn row(label:&'static str,color:Color32,values:Vec<DetailValue>)->DetailRow {
-    DetailRow{label,text:values.iter().map(|v|format!("{} {}",v.label,v.value)).collect::<Vec<_>>().join(" · "),color,values}
+    DetailRow{label,color,values}
 }
 fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     let plain=Color32::from_rgb(216,224,232);let cyan=Color32::from_rgb(0,235,214);
@@ -366,7 +366,6 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
         row(uu_i18n::text("恢复原因"),plain,vec![field(uu_i18n::text("接收/排队/解码/格式"),uu_i18n::format!("{}/{}/{}/{} 次",c.recovery[0],c.recovery[1],c.recovery[2],c.recovery[3]),uu_i18n::text("分别由接收损坏、解码队列溢出、解码错误和格式改变触发的恢复次数。"))]),
     ]
 }
-fn detail_text(m:&Metrics)->String {detail_rows(m).iter().map(|r|format!("{}  {}",r.label,r.text)).collect::<Vec<_>>().join("\n")}
 /// Height and width include the complete frame, in viewport logical points.
 pub fn detail_limits(view: Rect) -> egui::Vec2 {
     egui::vec2(
@@ -377,10 +376,7 @@ pub fn detail_limits(view: Rect) -> egui::Vec2 {
 fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32) {
     ui.set_width(width.max(1.));ui.set_max_height(max_height.max(1.));
     *ui.visuals_mut()=egui::Visuals::dark();ui.spacing_mut().item_spacing=egui::vec2(5.,3.);
-    ui.horizontal(|ui|{ui.strong(uu_i18n::text("串流诊断"));ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-        if ui.small_button(uu_i18n::text("复制详情")).on_hover_text(uu_i18n::text("复制当前全部诊断数值。也可拖选单个数值后按Ctrl+C；点击画面恢复远程键盘。")).clicked(){ui.ctx().copy_text(detail_text(m));}
-    });});
-    let remaining=(max_height-27.).max(1.);let chart_width=(width*0.37).clamp(90.,400.);let data_width=(width-chart_width-18.).max(1.);
+    let remaining=max_height.max(1.);let chart_width=(width*0.37).clamp(90.,400.);let data_width=(width-chart_width-18.).max(1.);
     ui.horizontal_top(|ui|{
         ui.allocate_ui_with_layout(egui::vec2(data_width,remaining),egui::Layout::top_down(egui::Align::Min),|ui|{
             egui::ScrollArea::vertical().id_salt("hud-detail-scroll").max_height(remaining).min_scrolled_height(0.).auto_shrink([false,true]).show(ui,|ui|{
@@ -388,11 +384,14 @@ fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32) {
                 let title_width=rows.iter().map(|r|ui.fonts(|fonts|fonts.layout_no_wrap(r.label.into(),FontId::proportional(12.),r.color).size().x)).fold(50.,f32::max).min(110.).min(data_width*0.30);
                 for row in rows{
                     ui.horizontal_top(|ui|{
-                        ui.add_sized([title_width,16.],egui::Label::new(RichText::new(row.label).size(12.).color(row.color).strong()));
+                        ui.allocate_ui_with_layout(egui::vec2(title_width,0.),egui::Layout::top_down(egui::Align::Min),|ui|{
+                            ui.set_width(title_width);
+                            ui.add(egui::Label::new(RichText::new(row.label).size(12.).color(row.color).strong()).selectable(true));
+                        });
                         ui.vertical(|ui|{ui.set_width((data_width-title_width-7.).max(1.));ui.horizontal_wrapped(|ui|{
                             let mut group=0;
                             for v in row.values {
-                                if v.group!=group&&group>0{ui.add(egui::Separator::default().vertical().spacing(6.));}group=v.group;
+                                if v.group!=group&&group>0{ui.label(RichText::new("│").size(12.).color(Color32::from_gray(100)));}group=v.group;
                                 ui.add(egui::Label::new(RichText::new(format!("{} {}",v.label,v.value)).size(12.).color(row.color)).selectable(true).wrap()).on_hover_text(v.help);
                             }
                         });});
@@ -554,23 +553,31 @@ mod tests {
         frame(&mut card,vec![],false);assert!(!card.keyboard_owned());assert!(card.bounds.is_none());
     }
     #[test]
-    fn details_offer_explained_fields_and_copy_all_values() {
+    fn details_keep_explained_fields_and_align_category_with_the_first_value() {
         let m=Metrics {codec:"PYROWAVE SDR".into(),process:[Some(1.);4],rtt:Some([2.,0.2]),loss:Some(0.4),unrecovered_loss:Some(0.),..Default::default()};
         let rows=detail_rows(&m);
         assert!(rows.iter().flat_map(|r|&r.values).all(|v|!v.help.is_empty()));
         let latency=&rows.iter().find(|r|r.label=="延迟").unwrap().values;
         assert_eq!(latency.iter().filter(|v|v.group==1).count(),4);
         assert_eq!(latency.iter().filter(|v|v.group==2).count(),2);
-        let text=detail_text(&m);assert!(text.contains("链路丢包 0.40%"));assert!(text.contains("修复后丢包 0.00%"));
-        let ctx=egui::Context::default();let view=Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
-        let mut button=None;
-        for _ in 0..3 {let output=ctx.run(egui::RawInput{screen_rect:Some(view),..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|details(ui,&m));});
-            for shape in output.shapes {if let egui::Shape::Text(t)=shape.shape {if t.galley.job.text=="复制详情"{button=Some(Rect::from_min_size(t.pos,t.galley.size()).center());}}}
+        for width in [1280.,640.,320.] {
+            let ctx=egui::Context::default();let view=Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,720.));
+            let mut checked=0;
+            for _ in 0..3 {
+                let output=ctx.run(egui::RawInput{screen_rect:Some(view),..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|details(ui,&m));});
+                let texts:Vec<_>=output.shapes.iter().filter_map(|s|if let egui::Shape::Text(t)=&s.shape {Some(t)}else{None}).collect();
+                assert!(!texts.iter().any(|t|matches!(t.galley.job.text.as_str(),"串流诊断"|"复制详情")));
+                checked=0;
+                for row in &rows {
+                    let first=&row.values[0];let value=format!("{} {}",first.label,first.value);
+                    if let (Some(label),Some(value))=(texts.iter().find(|t|t.galley.job.text==row.label),texts.iter().find(|t|t.galley.job.text==value)){
+                        assert!((label.pos.y-value.pos.y).abs()<=1.,"{width}: {} is not aligned: {:?} {:?}",row.label,label.pos,value.pos);
+                        checked+=1;
+                    }
+                }
+            }
+            assert!(checked>=3,"not enough visible rows at {width}");
         }
-        let point=button.unwrap();
-        let frame=|pressed|ctx.run(egui::RawInput{screen_rect:Some(view),events:vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}],..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|details(ui,&m));});
-        frame(true);let copied=frame(false);
-        assert_eq!(copied.platform_output.copied_text,text);
     }
     #[test]
     fn actual_detail_card_fits_windowed_viewports_and_has_scrollable_content() {

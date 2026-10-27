@@ -57,7 +57,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 
 ## 开始使用
 
-当前版本 **v0.20.0** 将 UU 连接与兼容协议拆到[独立插件仓库](https://github.com/TheRainstorm/uu-client-plugins)，并提供默认关闭的实验性官方客户端被控入口，见[版本说明](docs/releases/v0.20.0.md)。真实官方手机互通仍待验收。正式安装包以 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 实际可用版本为准。源码构建先运行 `git submodule update --init --recursive`，完整说明见[插件文档](docs/plugins.md)。
+当前版本 **v0.20.1** 整理 HUD 详情行对齐与手动复制，统一悬浮菜单、HDR/编码状态和声音控件，见[版本说明](docs/releases/v0.20.1.md)。[v0.20.0](docs/releases/v0.20.0.md) 将 UU 协议拆到独立插件仓库，并提供默认关闭的实验性官方被控入口，真实官方手机互通仍待验收。正式包见 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)。源码构建先运行 `git submodule update --init --recursive`，详见[插件文档](docs/plugins.md)。
 
 安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
 
