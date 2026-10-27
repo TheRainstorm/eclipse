@@ -14,6 +14,8 @@ Windows 编码按采集设备的完整 LUID 选择同一块 Vulkan GPU。画面�
 
 Windows 解码将 Y/U/V 写入共享 GPU 平面，再由 D3D11 转换成带租约的 BGRA 输出，接入原有 WGL 显示。输出池最多四槽；渲染器仍持有某帧时，该槽不能被覆盖。池满时丢弃新帧，释放后重用；帧还可在解码器句柄释放后保留其会话和设备。正常显示路径不读回完整图像。
 
+Windows 能力探测验证实际使用的 D3D11 NT 纹理、D3D fence 导入和 GPU 解码，不要求驱动支持未使用的旧式 KMT 句柄。驱动可以不支持后者；其缺失不代表上述串流路径不可用。参见 [Vulkan Windows 外部显存规范](https://docs.vulkan.org/refpages/latest/refpages/source/VK_KHR_external_memory_win32.html)。
+
 Linux 当前通过 CPU 上传、GPU 编解码、CPU 读回接入，后端明确显示为 `pyrowave-vulkan-cpu-upload` / `pyrowave-vulkan-cpu-readback`。它可以互通与验证格式，不能据此宣称实现了 GPU 直接传输或亚毫秒完整管线。
 
 新格式使用独立 SDP 选择属性和固定的 RTP 格式契约，保留旧版严格解析的画质请求。沿用原生连接的加密、重排、丢包修复和资源上限；RTP 分片携带完整帧长度及偏移。解码前检查图像尺寸、块索引、序号、重复块、位平面和符号数据长度。旧客户端未提出该格式时不会收到它。

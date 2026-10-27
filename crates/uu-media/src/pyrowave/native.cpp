@@ -42,7 +42,7 @@ void error_text(char *error, size_t capacity, const char *message) {
 #define PW_FUNCTIONS(X) \
     X(pyrowave_get_api_version) X(pyrowave_create_default_device) \
     X(pyrowave_create_device_by_compat) X(pyrowave_device_destroy) \
-    X(pyrowave_device_set_queue_type) X(pyrowave_device_confirm_interop_support) \
+    X(pyrowave_device_set_queue_type) \
     X(pyrowave_device_report_performance_stats) \
     X(pyrowave_encoder_create) X(pyrowave_encoder_destroy) \
     X(pyrowave_encoder_encode_cpu) X(pyrowave_encoder_encode_gpu_scaled) \
@@ -233,7 +233,11 @@ struct Session {
                 unsigned(desc.VendorId),unsigned(desc.AdapterLuid.HighPart),unsigned(desc.AdapterLuid.LowPart));
             checked(device_result,details);
         }
-        require(api->pyrowave_device_confirm_interop_support(device), "GPU does not support PyroWave external-memory interop");
+        // Upstream's aggregate predicate also requires legacy KMT images and
+        // opaque semaphores. They are not used by this adapter and may be
+        // unsupported even when D3D11 NT textures and D3D fences work. Validate
+        // the actual imports below instead; the receive capability probe also
+        // completes a GPU decode before advertising this codec.
         ComPtr<ID3D11Device5> device5;
         hr(d3d.As(&device5), "D3D11 fence device"); hr(context.As(&context4), "D3D11 fence context");
         hr(device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence)), "create shared D3D11 fence");
