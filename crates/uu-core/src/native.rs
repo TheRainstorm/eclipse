@@ -1457,6 +1457,7 @@ mod tests {
                 while stats.decoded_total.load(Ordering::Acquire)<baseline+8 {tokio::time::sleep(Duration::from_millis(5)).await;}
                 ensure!(stats.native_media_epoch.load(Ordering::Acquire)==epoch,"quality change reconnected media");
                 ensure!(stats.configured_fps.load(Ordering::Acquire)==settings.fps,"target FPS not applied");
+                ensure!(stats.native_quality_current.lock().unwrap().is_some_and(|s|s.rate_control==Some(crate::native_quality::RateMode::Cbr)),"frame-rate-only update lost the applied rate mode");
                 ensure!(matches!(*host_phase.borrow(),HostStatus::Streaming{fps,..} if fps==settings.fps),"host status retains old FPS");
             }
             ensure!(stats.errors.load(Ordering::Acquire)==0,"decoder errors after reconfiguration");

@@ -687,7 +687,12 @@ impl ViewerControl {
                     let mut previous=incoming.native_quality_applied.lock().unwrap();
                     if previous.as_ref().is_none_or(|old|applied.request>=old.request) {
                         if applied.error.is_none()&&applied.settings.validate().is_ok() {
-                            *incoming.native_quality_current.lock().unwrap()=Some(applied.settings);
+                            let mut current=incoming.native_quality_current.lock().unwrap();
+                            // An omitted mode preserves the encoder's current
+                            // policy. Keep it across FPS/bitrate-only updates
+                            // so source renewal does not replay the old default.
+                            let rate_control=applied.settings.rate_control.or_else(||current.as_ref().and_then(|s|s.rate_control));
+                            *current=Some(crate::native_quality::Update{rate_control,..applied.settings});
                             incoming.configured_fps.store(applied.settings.fps,Ordering::Release);
                         }
                         *previous=Some(applied);
