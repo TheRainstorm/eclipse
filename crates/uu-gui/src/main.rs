@@ -246,6 +246,7 @@ struct App {
     nested_passthrough: bool,
     autoconnect_done: bool,
     fullscreen: bool,
+    window_snapshot: Option<window::Snapshot>,
     restore_maximized: std::rc::Rc<std::cell::Cell<bool>>,
     bitrate_idx: usize,
     resolution_idx: usize,
@@ -506,6 +507,7 @@ impl App {
             nested_passthrough: preferences.nested_shortcuts,
             autoconnect_done: false,
             fullscreen: false,
+            window_snapshot: None,
             restore_maximized: Default::default(),
             bitrate_idx: preferences.bitrate,
             resolution_idx: preferences.resolution,
@@ -1443,9 +1445,17 @@ impl App {
         }
         let video_px = self.textures.get(&self.selected_track)
             .map(|texture| texture.size_vec2());
+        let native_geometry=window::native_geometry(ctx);
+        if let Some(h)=&self.controller {
+            let snapshot=window::Snapshot::new(ctx,native_geometry);
+            if self.window_snapshot!=Some(snapshot) {
+                h.stats.diagnostics.record(snapshot.report(ctx));
+                self.window_snapshot=Some(snapshot);
+            }
+        }else{self.window_snapshot=None;}
         self.window_sizing.borrow_mut().set_settings_page(self.stream_settings_open || self.workspace.route.page == workspace_ui::Page::Settings);
         self.window_sizing.borrow_mut().update(ctx, self.stream_target.is_some(), video_px,
-            self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), window::native_geometry(ctx));
+            self.window_edge_active && ctx.input(|i| i.pointer.primary_pressed()), native_geometry);
         if self.exit_requested { self.native_host.stop(); self.lan.host.stop(); self.workspace.host.stop();}
         if self.workspace_tabs.is_none() && self.exit_requested && self.controller.is_none() && !self.native_host.running() && !self.lan.host.running() && !self.workspace.host.running() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1587,6 +1597,7 @@ impl App {
                 report["build"]=self.build_label.clone().into();
                 report["presentation_swap_interval"]=eframe::vsync_interval(ctx).into();
                 report["video_color"]=self.textures.get(&self.selected_track).and_then(|t|t.color_diagnostics()).into();
+                report["video_paint_window"]=self.textures.get(&self.selected_track).and_then(|t|t.paint_diagnostics()).into();
                 report["native_input_available"]=s.native_input_available.load(Relaxed).into();
                 report["input_granted"]=s.capabilities.allows(uu_core::capabilities::Capability::Input).into();
                 report["input_requested"]=h.native_input.as_ref().is_some_and(|sender|sender.requested()).into();

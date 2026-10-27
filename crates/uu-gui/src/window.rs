@@ -258,12 +258,49 @@ impl WindowSizing {
 
 /// Consistent geometry in current native DPI units. Never reconstruct physical
 /// coordinates by multiplying an egui rect from a previous DPI event/pass.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Geometry {
     pub inner: egui::Rect,
     pub outer: egui::Rect,
     pub work: egui::Rect,
     pub ppp: f32,
+}
+
+/// Observe geometry independently of the user's requested window mode.
+/// This never changes focus, fullscreen, styles or the display configuration.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Snapshot {
+    native: Option<Geometry>,
+    logical: egui::Rect,
+    ppp: f32,
+    focused: bool,
+    fullscreen: Option<bool>,
+    maximized: Option<bool>,
+}
+impl Snapshot {
+    pub fn new(ctx:&egui::Context,native:Option<Geometry>)->Self {
+        let ppp=ctx.pixels_per_point();
+        ctx.input(|i|Self{native,logical:i.screen_rect(),ppp,
+            focused:i.focused,fullscreen:i.viewport().fullscreen,maximized:i.viewport().maximized})
+    }
+    pub fn report(&self,ctx:&egui::Context)->serde_json::Value {
+        let rect=|r:egui::Rect|[r.left(),r.top(),r.right(),r.bottom()];
+        #[cfg(windows)]
+        let style=eframe::viewport_window(ctx).and_then(|w|{
+            use raw_window_handle::{HasWindowHandle,RawWindowHandle};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW,GWL_STYLE};
+            let RawWindowHandle::Win32(handle)=w.window_handle().ok()?.as_raw() else{return None;};
+            Some(unsafe{GetWindowLongPtrW(handle.hwnd.get() as _,GWL_STYLE)} as u32)
+        });
+        #[cfg(not(windows))]
+        let style:Option<u32>={let _=ctx;None};
+        serde_json::json!({"event":"window_geometry","focused":self.focused,
+            "fullscreen":self.fullscreen,"maximized":self.maximized,"pixels_per_point":self.ppp,
+            "logical_screen_rect":rect(self.logical),"native_style":style,
+            "native_geometry":self.native.map(|g|serde_json::json!({
+                "inner":rect(g.inner),"outer":rect(g.outer),"work":rect(g.work),"pixels_per_point":g.ppp,
+            }))})
+    }
 }
 impl Geometry {
     fn from_context(ctx: &egui::Context) -> Option<Self> {

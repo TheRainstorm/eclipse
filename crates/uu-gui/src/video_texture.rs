@@ -4,6 +4,8 @@ mod d3d11_renderer;
 #[cfg(target_os = "linux")]
 #[path = "video_dma_buf.rs"]
 mod dma_buf_renderer;
+#[path = "video_timing.rs"]
+mod video_timing;
 
 // Upload decoded planes directly. No per-pixel ColorImage or CPU YUV conversion.
 // EGL-capable Linux clients may import leased DMA-BUF planes directly.
@@ -116,6 +118,9 @@ impl VideoTexture {
         let conversion:Option<&str>=None;
         Some(serde_json::json!({"layout":format!("{:?}",gpu.layout),"yuv_color":format!("{:?}",gpu.color),"conversion":conversion}))
     }
+    pub fn paint_diagnostics(&self) -> Option<serde_json::Value> {
+        self.gpu.as_ref()?.lock().unwrap().paint_timings.report()
+    }
     pub fn gpu_shared_export(&self) -> Option<bool> {
         #[cfg(windows)]
         if let Some(gpu) = &self.gpu {
@@ -174,7 +179,11 @@ impl VideoTexture {
                     rect,
                     callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |_, _| unsafe {
                         let color=eframe::glow_presentation::color_target_for(&ctx,viewport);
-                        gpu.lock().unwrap().paint(color.is_some_and(|c|c.hdr),color.map_or(80.,|c|c.sdr_white_nits),source_white);
+                        let mut state=gpu.lock().unwrap();
+                        let new_image=state.pending.is_some();
+                        if let Some(phases)=state.paint(color.is_some_and(|c|c.hdr),color.map_or(80.,|c|c.sdr_white_nits),source_white) {
+                            state.paint_timings.record(new_image,phases);
+                        }
                     })),
                 });
                 return;
@@ -228,6 +237,7 @@ struct Planes {
     size: [u32; 2],
     layout: Option<PixelFormat>,
     color: YuvColor,
+    paint_timings: video_timing::Timings,
     pending: Option<(RawFrame, YuvColor)>,
     uv_scale_uniform: Option<glow::UniformLocation>,
     dma_active: bool,
@@ -329,6 +339,7 @@ impl Planes {
             size: [0, 0],
             layout: None,
             color: YuvColor::default(),
+            paint_timings: Default::default(),
             pending: None,
             uv_scale_uniform,
             dma_active: false,
@@ -467,7 +478,8 @@ impl Planes {
         }
         gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
     }
-    unsafe fn paint(&mut self,hdr_output:bool,white_nits:f32,source_white:f32) {
+    unsafe fn paint(&mut self,hdr_output:bool,white_nits:f32,source_white:f32) -> Option<[f64;5]> {
+        let started=std::time::Instant::now();
         if let Some((f, color)) = self.pending.take() {
             if f.gpu {
                 #[cfg(windows)]
@@ -577,6 +589,7 @@ impl Planes {
                 self.color = color;
             }
         }
+        let uploaded=started.elapsed().as_secs_f64();
         let gl = &self.gl;
         gl.use_program(Some(self.program));
         gl.bind_vertex_array(Some(self.vao));
@@ -593,13 +606,14 @@ impl Planes {
                     importer.clear();
                     self.d3d_active = false;
                     self.size = [0, 0];
-                    return;
+                    return None;
                 }
             }
         }
         if self.size == [0, 0] {
-            return;
+            return None;
         }
+        let bound=started.elapsed().as_secs_f64();
         let uv_scale = [
             1.0,
             1.0,
@@ -642,7 +656,9 @@ impl Planes {
         gl.uniform_1_i32(self.hdr_output_uniform.as_ref(),i32::from(hdr_output));
         gl.uniform_1_f32(self.sdr_white_uniform.as_ref(),white_nits/80.);
         gl.uniform_1_f32(self.source_white_uniform.as_ref(),source_white);
+        let configured=started.elapsed().as_secs_f64();
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
+        let drawn=started.elapsed().as_secs_f64();
         #[cfg(target_os = "linux")]
         if self.dma_active {
             if let Some(importer) = &mut self.importer {
@@ -652,6 +668,8 @@ impl Planes {
         // egui restores its program, VAO and blend state after the callback.
         // Restore texture unit and pixel unpack state explicitly.
         gl.active_texture(glow::TEXTURE0);
+        let finished=started.elapsed().as_secs_f64();
+        Some([uploaded,bound-uploaded,configured-bound,drawn-configured,finished-drawn].map(|v|v*1000.))
     }
 }
 impl Drop for Planes {

@@ -138,7 +138,7 @@ impl super::App {
                 let value = native_pipeline
                     .map(|ms| format!("≈{ms:.1}ms"))
                     .unwrap_or_else(|| "—".into());
-                format!("已知画面段估计 {value} · 待绘制 {queue} · 输入到光子延迟未测")
+                format!("阶段均值合计 {value}（非端到端延迟）· 待绘制 {queue} · 输入到光子延迟未测")
             } else {
                 format!("已知段合计 {partial} · 待绘制 {queue} · 总延迟待测（远端/呈现未计）")
             };
@@ -170,13 +170,14 @@ impl super::App {
             };
             // This sum is an approximation across different sample populations,
             // not an input-correlated end-to-end measurement or strict lower bound.
-            // Render is CPU preparation/submission time, excluding vsync wait.
+            // Render is whole UI-frame CPU preparation/submission wall time.
+            // It excludes SwapBuffers, but GL calls may still block in the driver.
             let fec_line = if s.fec_enabled.load(Relaxed) || s.fec_packets.load(Relaxed)>0 {
                 format!("\nFEC XOR · 校验 {} 包 · 恢复 {} 包 · 校验内容 {:.2} MiB · 无效/丢弃 {}",s.fec_packets.load(Relaxed),s.fec_recovered.load(Relaxed),s.fec_bytes.load(Relaxed) as f64/1048576.,s.fec_drops.load(Relaxed))
             } else {String::new()};
             let text = format!(
             "{w}×{h}@{rd:.0}   {codec} · {decoder}   目标 {} FPS{source}   FPS {:.1} Rx · {:.1} De · {rd:.1} Rd\n\
-             控制 RTT {network}{rtt_tail}   Loss {:.2}%   Bandwidth {:.2} Mbps | Render {:.2}ms · Decode {:.2}ms\n\
+             控制 RTT {network}{rtt_tail}   Loss {:.2}%   Bandwidth {:.2} Mbps | Render CPU {:.2}ms · Decode {:.2}ms\n\
              {pipeline_line}{native_line}\n\
              丢包 {} · NACK {} · RTX {} · 乱序 {} · 迟到 {} · 坏帧 {} · 解码错误 {} · 丢队列 {} · 恢复请求 {}\n\
              恢复触发：接收损坏 {} · 解码积压 {} · 解码器错误 {} · 格式切换 {}{fec_line}",
