@@ -1161,12 +1161,17 @@ unsafe fn public_window_callback_inner(
     let callback = || match msg {
         WM_NCCALCSIZE => {
             let window_flags = userdata.window_state_lock().window_flags;
-            if wparam == 0 || window_flags.contains(WindowFlags::MARKER_DECORATIONS) {
+            if window_flags.contains(WindowFlags::MARKER_DECORATIONS) {
                 result = ProcResult::DefWindowProc(wparam);
                 return;
             }
 
-            let params = unsafe { &mut *(lparam as *mut NCCALCSIZE_PARAMS) };
+            // Both forms describe the same client rectangle. Capture tools
+            // and other callers may use the RECT form without valid-area data.
+            let client = unsafe {
+                if wparam == 0 { &mut *(lparam as *mut RECT) }
+                else { &mut (*(lparam as *mut NCCALCSIZE_PARAMS)).rgrc[0] }
+            };
 
             if util::is_maximized(window) {
                 // Limit the window size when maximized to the current monitor.
@@ -1175,9 +1180,9 @@ unsafe fn public_window_callback_inner(
                 // Use `MonitorFromRect` instead of `MonitorFromWindow` to select
                 // the correct monitor here.
                 // See https://github.com/MicrosoftEdge/WebView2Feedback/issues/2549
-                let monitor = unsafe { MonitorFromRect(&params.rgrc[0], MONITOR_DEFAULTTONULL) };
+                let monitor = unsafe { MonitorFromRect(&*client, MONITOR_DEFAULTTONULL) };
                 if let Ok(monitor_info) = monitor::get_monitor_info(monitor) {
-                    params.rgrc[0] = monitor_info.monitorInfo.rcWork;
+                    *client = monitor_info.monitorInfo.rcWork;
                 }
             } else if window_flags.contains(WindowFlags::MARKER_UNDECORATED_SHADOW) {
                 // Extend the client area to cover the whole non-client area.
@@ -1191,8 +1196,8 @@ unsafe fn public_window_callback_inner(
                 // Unfortunately this results in janky resize behavior, where the compositor is
                 // ahead of the window surface. Currently, there seems no option to achieve this
                 // with the Windows API.
-                params.rgrc[0].top += 1;
-                params.rgrc[0].bottom += 1;
+                client.top += 1;
+                client.bottom += 1;
             }
 
             result = ProcResult::Value(0);
