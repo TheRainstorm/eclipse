@@ -1046,6 +1046,42 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn more_keeps_ownership_while_hud_child_is_open_and_changes_detail() {
+        use super::super::settings::HudDetail;
+        let ctx=egui::Context::default();
+        let mut enabled=false;let mut level=HudDetail::Compact;
+        let mut time=0.;
+        let mut frame=|events:Vec<egui::Event>| {
+            time+=0.05;
+            let mut blocked=Vec::new();let mut open=false;
+            let output=ctx.run(egui::RawInput{time:Some(time),screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(1280.,720.))),events,focused:true,..Default::default()},|ctx| {
+                egui::CentralPanel::default().show(ctx,|ui| {
+                    let mut children=Vec::new();
+                    open=side_submenu(ui,&mut blocked,Icon::Grid,"更多",|ui|hud_submenu(ui,&mut children,&mut enabled,&mut level,"Ctrl+Alt+S")).inner.is_some();
+                    blocked.extend(children);
+                });
+            });
+            let mut text=std::collections::HashMap::new();
+            fn labels(shapes:&[egui::epaint::Shape],out:&mut std::collections::HashMap<String,Rect>){for shape in shapes {match shape {egui::epaint::Shape::Text(t)=>{out.insert(t.galley.text().into(),Rect::from_min_size(t.pos,t.galley.size()));},egui::epaint::Shape::Vec(shapes)=>labels(shapes,out),_=>{}}}}
+            labels(&output.shapes.into_iter().map(|s|s.shape).collect::<Vec<_>>(),&mut text);
+            (open,blocked,text,enabled,level)
+        };
+        frame(vec![]);let (_,_,text,_,_)=frame(vec![]);
+        let more=text["更多"].center();
+        frame(vec![egui::Event::PointerMoved(more)]);
+        let (_,_,text,_,_)=frame(vec![egui::Event::PointerMoved(more)]);
+        let hud=text["HUD"].center();
+        frame(vec![egui::Event::PointerMoved(hud),button(hud,true)]);
+        frame(vec![button(hud,false)]);
+        let (open,blocked,text,_,_)=frame(vec![egui::Event::PointerMoved(hud)]);
+        assert!(open,"opening HUD must preserve More's popup ID");
+        let detailed=text["Detailed"].center();
+        assert!(blocked.iter().any(|r|r.contains(detailed)),"child controls must not reach remote input");
+        frame(vec![egui::Event::PointerMoved(detailed),button(detailed,true)]);
+        let (open,_,_,enabled,level)=frame(vec![button(detailed,false)]);
+        assert!(open);assert!(enabled);assert_eq!(level,HudDetail::Detailed);
+    }
     struct HandleUi {
         context: egui::Context,
         handle: FloatingHandle,
