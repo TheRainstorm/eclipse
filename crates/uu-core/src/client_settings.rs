@@ -39,6 +39,14 @@ impl CodecPreference {
     pub fn label(self) -> &'static str { match self { Self::Auto => "自动协商", Self::H264 => "H.264", Self::Hevc => "H.265 / HEVC", Self::Av1 => "AV1",Self::Pyrowave=>"PyroWave（实验性 / SDR）" } }
 }
 
+#[derive(Clone,Copy,Debug,Default,Serialize,Deserialize,PartialEq,Eq)]
+#[serde(rename_all="snake_case")]
+pub enum HudDetail { #[default] Compact, Detailed }
+impl HudDetail {
+    pub const ALL:[Self;2]=[Self::Compact,Self::Detailed];
+    pub fn label(self)->&'static str {match self {Self::Compact=>"Compact",Self::Detailed=>"Detailed"}}
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ClientSettings {
@@ -53,6 +61,7 @@ pub struct ClientSettings {
     pub volume: u32,
     pub muted: bool,
     pub hud: bool,
+    pub hud_detail: HudDetail,
     pub capture_keyboard: bool,
     pub vsync: bool,
     /// Prefer negotiated HDR10 when the current display and decoder support it.
@@ -73,7 +82,7 @@ impl Default for ClientSettings {
     fn default() -> Self {
         Self { fps:60, display_mode:crate::screen_control::DisplayMode::Preserve,
             bitrate:5,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,rate_control:None,
-            volume:100,muted:false,hud:false,capture_keyboard:true,
+            volume:100,muted:false,hud:false,hud_detail:HudDetail::Compact,capture_keyboard:true,
             vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
             cursor_mode:CursorMode::Remote,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
     }

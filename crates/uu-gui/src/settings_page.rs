@@ -287,10 +287,13 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
             "默认位于右边缘、距顶部 15%。悬停展开、离开收起，Ctrl+Alt+H 隐藏或显示。",
         );
         ui.add_space(8.0);
-        ui.checkbox(&mut s.hud, "显示串流统计");
+        ui.checkbox(&mut s.hud, "Show HUD");
+        ui.horizontal(|ui| {
+            for level in super::settings::HudDetail::ALL {ui.radio_value(&mut s.hud_detail,level,level.label());}
+        });
         note(
             ui,
-            "Ctrl+Alt+S 隐藏或显示。统计中的已知段合计不等于完整输入到屏幕延迟。",
+            "Ctrl+Alt+S toggles HUD. Estimates are pipeline stage means, not input-to-display latency.",
         );
     });
 }

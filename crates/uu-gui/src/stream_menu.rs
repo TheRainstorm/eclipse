@@ -940,20 +940,16 @@ impl super::App {
                                     }
                                     if menu_row(ui,"连接详情",Some(Icon::Link),false,false,"",false).clicked(){self.open_connection_details();}
                                     if menu_row(ui,"串流设置",Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
-                                                                        side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
-                                        if menu_row(
-                                            ui,
-                                            "串流统计",
-                                            None,
-                                            self.hud,
-                                            false,
-                                            "Ctrl+Alt+S",
-                                            false,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.hud = !self.hud;self.persist_preferences();
+                                    side_submenu(ui,&mut blocked,Icon::Grid,"HUD",|ui| {
+                                        let mut changed=false;
+                                        if menu_row(ui,"Show HUD",None,self.hud,false,"Ctrl+Alt+S",false).clicked(){self.hud=!self.hud;changed=true;}
+                                        separator(ui);
+                                        for mode in super::settings::HudDetail::ALL {
+                                            if menu_row(ui,mode.label(),None,self.preferences.hud_detail==mode,false,"",false).clicked(){self.preferences.hud_detail=mode;self.hud=true;changed=true;}
                                         }
+                                        if changed {self.persist_preferences();}
+                                    });
+                                    side_submenu(ui, &mut blocked, Icon::Grid, "更多", |ui| {
                                         if menu_row(
                                             ui,
                                             "隐藏悬浮入口",

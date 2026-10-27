@@ -27,6 +27,7 @@ mod single_instance;
 mod platform;
 mod shortcuts;
 mod hud;
+mod hud_panel;
 mod video_texture;
 #[cfg(windows)]
 mod wgl_interop;
