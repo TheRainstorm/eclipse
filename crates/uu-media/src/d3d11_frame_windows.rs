@@ -1,3 +1,6 @@
+#[path="d3d11_external.rs"]
+mod external;
+pub use external::ExternalSync;
 use crate::color::YuvColor;
 use std::{ffi::c_void, mem::ManuallyDrop};
 use windows::{
@@ -81,6 +84,7 @@ impl Frame {
             && self.allocation[0] >= visible[0]
             && self.allocation[1] >= visible[1]
     }
+    pub fn visible_size(&self)->[u32;2]{self.visible}
     pub fn device_ptr(&self) -> *mut c_void {
         self.device.as_raw()
     }
@@ -414,13 +418,13 @@ struct RgbConverter {
     completion:ID3D11Query,size:[u32;2],
 }
 impl RgbConverter {
-    fn create(frame:&Frame,shared:bool)->Result<Self,String> {
+    fn create(frame:&Frame,sharing:i32)->Result<Self,String> {
         (||->windows::core::Result<_>{unsafe {
             let mut output=None;let mut completion=None;
             frame.device.CreateTexture2D(&D3D11_TEXTURE2D_DESC{Width:frame.visible[0],Height:frame.visible[1],MipLevels:1,ArraySize:1,
                 Format:DXGI_FORMAT_B8G8R8A8_UNORM,SampleDesc:DXGI_SAMPLE_DESC{Count:1,Quality:0},Usage:D3D11_USAGE_DEFAULT,
                 BindFlags:(D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE).0 as u32,
-                MiscFlags:if shared{D3D11_RESOURCE_MISC_SHARED.0 as u32}else{0},..Default::default()},None,Some(&mut output))?;
+                MiscFlags:if sharing!=0{(D3D11_RESOURCE_MISC_SHARED.0|if sharing==2{D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0}else{0}) as u32}else{0},..Default::default()},None,Some(&mut output))?;
             frame.device.CreateQuery(&D3D11_QUERY_DESC{Query:D3D11_QUERY_EVENT,MiscFlags:0},Some(&mut completion))?;
             Ok(Self{device:frame.device.clone(),context:frame.device.GetImmediateContext()?,output:output.unwrap(),completion:completion.unwrap(),size:frame.visible})
         }})().map_err(|e|format!("RGB presentation surface: {e}"))
@@ -436,17 +440,21 @@ struct ShaderConverter {
 }
 impl Converter {
     pub fn new(frame:&Frame)->Result<Self,String>{Self::with_shared_export(frame,false)}
-    pub fn with_shared_export(frame:&Frame,shared:bool)->Result<Self,String> {
-        if frame.format==DXGI_FORMAT_B8G8R8A8_UNORM {return RgbConverter::create(frame,shared).map(|v|Self(Conversion::Rgb(v)));}
+    pub fn with_shared_export(frame:&Frame,shared:bool)->Result<Self,String> {Self::with_sharing(frame,i32::from(shared))}
+    pub fn with_external_export(frame:&Frame)->Result<Self,String>{Self::with_sharing(frame,2)}
+    pub fn external_sync(&self)->Result<ExternalSync,String>{ExternalSync::new(self)}
+    fn with_sharing(frame:&Frame,sharing:i32)->Result<Self,String> {
+        let shared=sharing!=0;
+        if frame.format==DXGI_FORMAT_B8G8R8A8_UNORM {return RgbConverter::create(frame,sharing).map(|v|Self(Conversion::Rgb(v)));}
         let hdr=frame.format==DXGI_FORMAT_P010;
         let shader:Result<Self,String>=(|| {
-            let color=crate::d3d11_color::Converter::new(&frame.device,frame.visible,true,hdr,shared,203.)?;
+            let color=crate::d3d11_color::Converter::with_sharing(&frame.device,frame.visible,true,hdr,sharing,203.)?;
             let context=unsafe{frame.device.GetImmediateContext()}.map_err(|e|e.to_string())?;
             let mut completion=None;
             unsafe{frame.device.CreateQuery(&D3D11_QUERY_DESC{Query:D3D11_QUERY_EVENT,MiscFlags:0},Some(&mut completion))}.map_err(|e|e.to_string())?;
             Ok(Self(Conversion::Shader(ShaderConverter{hdr,color,device:frame.device.clone(),context,completion:completion.ok_or("missing GPU query")?,size:frame.visible,allocation:frame.allocation})))
         })();
-        if hdr{return shader;}
+        if hdr||sharing>=2{return shader;}
         match shader {Ok(value)=>Ok(value),Err(error)=>{
             tracing::warn!(%error,"SDR shader unavailable; using video processor");
             SdrConverter::with_shared_export(frame,shared).map(|c|Self(Conversion::Sdr(c)))

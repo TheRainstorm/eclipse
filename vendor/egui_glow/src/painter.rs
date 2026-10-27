@@ -414,6 +414,23 @@ impl Painter {
         self.record_cpu(0, textures_started);
     }
 
+    /// Update native video metadata while retaining an unchanged GPU UI layer.
+    /// Called only after the presentation owner validated identical UI meshes,
+    /// clips, DPI, dimensions and an empty texture delta.
+    pub fn paint_callbacks_only(&mut self,screen_size_px:[u32;2],pixels_per_point:f32,primitives:&[egui::ClippedPrimitive]) {
+        self.cpu_timings_ms=[0.;9];self.assert_not_destroyed();
+        for p in primitives {
+            if let Primitive::Callback(callback)=&p.primitive {
+                if !callback.rect.is_positive(){continue;}
+                let info=egui::PaintCallbackInfo{viewport:callback.rect,clip_rect:p.clip_rect,pixels_per_point,screen_size_px};
+                let viewport=info.viewport_in_pixels();let at=web_time::Instant::now();
+                unsafe{self.gl.viewport(viewport.left_px,viewport.from_bottom_px,viewport.width_px,viewport.height_px);}
+                if let Some(callback)=callback.callback.downcast_ref::<CallbackFn>(){(callback.f)(info,self);}
+                self.record_cpu(7,at);
+            }
+        }
+    }
+
     /// Main entry-point for painting a frame.
     ///
     /// You should call `target.clear_color(..)` before

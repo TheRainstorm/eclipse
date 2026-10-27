@@ -18,9 +18,10 @@ fn main() {
     println!("cargo:rerun-if-changed=../../vendor/amf-api/include");
     println!("cargo:rerun-if-changed=src/d3d11_color.cpp");
     println!("cargo:rerun-if-changed=src/hdr_present.cpp");
+    println!("cargo:rerun-if-changed=src/d3d11_external.cpp");
     println!("cargo:rerun-if-changed=src/d3d11_hdr_display.h");
     if target=="windows" && (std::env::var_os("CARGO_FEATURE_MF_ENCODE").is_some() || std::env::var_os("CARGO_FEATURE_D3D11VA").is_some()) {
-        cc::Build::new().cpp(true).file("src/d3d11_color.cpp").file("src/hdr_present.cpp").flag_if_supported("-std=c++17").warnings(true).compile("eclipse_hdr_color");
+        cc::Build::new().cpp(true).file("src/d3d11_color.cpp").file("src/hdr_present.cpp").file("src/d3d11_external.cpp").flag_if_supported("-std=c++17").warnings(true).compile("eclipse_hdr_color");
         println!("cargo:rustc-link-lib=d3dcompiler");
         println!("cargo:rustc-link-lib=dcomp");
         println!("cargo:rustc-link-lib=user32");

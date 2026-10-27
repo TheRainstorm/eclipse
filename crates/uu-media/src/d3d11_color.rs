@@ -62,6 +62,9 @@ impl Converter {
         shared: bool,
         white: f32,
     ) -> Result<Self, String> {
+        Self::with_sharing(device,size,decode,hdr,i32::from(shared),white)
+    }
+    pub(crate) fn with_sharing(device:&ID3D11Device,size:[u32;2],decode:bool,hdr:bool,sharing:i32,white:f32)->Result<Self,String> {
         let mut error = [0; 1024];
         let raw = unsafe {
             eclipse_color_open(
@@ -70,7 +73,7 @@ impl Converter {
                 size[1],
                 decode.into(),
                 hdr.into(),
-                shared.into(),
+                sharing,
                 white,
                 error.as_mut_ptr(),
                 error.len(),

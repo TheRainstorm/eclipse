@@ -155,7 +155,7 @@ impl eframe::App for Probe {
             }
         }
         #[cfg(windows)]
-        eframe::glow_presentation::set_active(ctx,ctx.viewport_id(),self.last_format.is_some_and(|v|v.1.hdr()),self.vsync);
+        eframe::glow_presentation::set_active(ctx,ctx.viewport_id(),self.last_format.is_some_and(|v|v.1.hdr()||eframe::glow_presentation::native_video_available(ctx,ctx.viewport_id())),self.vsync);
         if let Some(texture) = &self.texture {
             egui::CentralPanel::default()
                 .frame(egui::Frame::none())
@@ -302,6 +302,8 @@ fn main() -> Result<()> {
         Box::new(move |cc| {
             let gl = cc.gl.clone().ok_or("missing OpenGL context")?;
             video_texture::enable_gpu_video(&gl);
+            #[cfg(windows)]
+            if std::env::var("UU_D3D11_NATIVE_VIDEO").as_deref()!=Ok("0"){let _=video_hdr::enable_native(&cc.egui_ctx,gl.clone(),vsync).map_err(|e|->Box<dyn std::error::Error+Send+Sync>{e.into()})?;}
             #[cfg(windows)]
             if hdr {
                 let capable=video_hdr::enable(&cc.egui_ctx,gl.clone(),vsync).map_err(|e|->Box<dyn std::error::Error+Send+Sync>{e.into()})?;

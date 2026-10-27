@@ -595,7 +595,8 @@ impl<'app> GlowWinitRunning<'app> {
         let clear_before_update = !has_many_viewports; // HACK: for some reason, an early clear doesn't "take" on Mac with multiple viewports.
         let prepared_seconds = frame_timer.total_time_sec();
 
-        if clear_before_update {
+        let cleared_before_update=clear_before_update&&crate::glow_presentation::color_target_for(&self.integration.egui_ctx,viewport_id).is_none();
+        if cleared_before_update {
             // clear before we call update, so users can paint between clear-color and egui windows:
 
             let mut glutin = self.glutin.borrow_mut();
@@ -698,18 +699,22 @@ impl<'app> GlowWinitRunning<'app> {
 
         let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
 
+        crate::glow_presentation::prepare_ui(&integration.egui_ctx,viewport_id,screen_size_in_pixels,pixels_per_point,&clipped_primitives,&textures_delta,clear_color);
         let custom_surface=crate::glow_presentation::begin(&integration.egui_ctx,viewport_id,screen_size_in_pixels);
-        if custom_surface.is_some() || !clear_before_update {
+        let reuse_ui=custom_surface.is_some()&&crate::glow_presentation::ui_reused(&integration.egui_ctx,viewport_id);
+        if !reuse_ui && (custom_surface.is_some() || !cleared_before_update) {
             painter.clear(screen_size_in_pixels, clear_color);
         }
         let paint_cleared_seconds = frame_timer.total_time_sec();
 
+        if reuse_ui {painter.paint_callbacks_only(screen_size_in_pixels,pixels_per_point,&clipped_primitives);} else {
         painter.paint_and_update_textures(
             screen_size_in_pixels,
             pixels_per_point,
             &clipped_primitives,
             &textures_delta,
         );
+        }
         let glow_cpu_ms = painter.cpu_paint_timings_ms();
         let paint_drawn_seconds = frame_timer.total_time_sec();
 
@@ -1616,19 +1621,21 @@ fn render_immediate_viewport(
         );
     }
 
+    crate::glow_presentation::prepare_ui(egui_ctx,viewport_id,screen_size_in_pixels,pixels_per_point,&clipped_primitives,&textures_delta,[0.;4]);
     let custom_surface=crate::glow_presentation::begin(egui_ctx,viewport_id,screen_size_in_pixels);
-    egui_glow::painter::clear(
+    let reuse_ui=custom_surface.is_some()&&crate::glow_presentation::ui_reused(egui_ctx,viewport_id);
+    if !reuse_ui {egui_glow::painter::clear(
         painter.borrow().gl(),
         screen_size_in_pixels,
         [0.0, 0.0, 0.0, 0.0],
-    );
+    );}
 
-    painter.borrow_mut().paint_and_update_textures(
+    if reuse_ui {painter.borrow_mut().paint_callbacks_only(screen_size_in_pixels,pixels_per_point,&clipped_primitives);} else {painter.borrow_mut().paint_and_update_textures(
         screen_size_in_pixels,
         pixels_per_point,
         &clipped_primitives,
         &textures_delta,
-    );
+    );}
 
     if presentation_visible(viewport.builder.visible, &viewport_output[&viewport_id]) {
         crate::profile_scope!("swap_buffers");

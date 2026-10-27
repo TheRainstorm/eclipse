@@ -1,5 +1,8 @@
 //! Render one complete stream viewport through a floating-point scRGB surface.
 //! The regular GL backend and other viewports retain their own presentation.
+#[path="video_native.rs"]
+pub(crate) mod native;
+pub(crate) use native::enable as enable_native;
 use crate::wgl_interop::{Api, Handle};
 use eframe::{
     egui,
@@ -30,6 +33,18 @@ struct HdrPresenter {
 // eframe's registry is Send; all methods and destruction run on its native GL
 // thread with the owning context current, as required by Presenter.
 unsafe impl Send for HdrPresenter {}
+/// Prefer the verified D3D video path before negotiating HDR capability.
+/// A surface on an SDR output stays available for SDR video, but never
+/// advertises HDR just because it can allocate a floating-point swap chain.
+pub fn enable_for_stream(ctx:&egui::Context,gl:Arc<glow::Context>,vsync:bool)->Result<bool,String>{
+    if std::env::var("UU_D3D11_NATIVE_VIDEO").as_deref()!=Ok("0") {
+        if let Err(error)=enable_native(ctx,gl.clone(),vsync){eprintln!("native video target unavailable: {error}");}
+        if eframe::glow_presentation::native_video_available(ctx,ctx.viewport_id()) {
+            return Ok(eframe::glow_presentation::available_color_for(ctx,ctx.viewport_id()).is_some_and(|c|c.hdr));
+        }
+    }
+    enable(ctx,gl,vsync)
+}
 pub fn enable(ctx: &egui::Context, gl: Arc<glow::Context>, vsync: bool) -> Result<bool, String> {
     if let Some(color) = eframe::glow_presentation::available_color_for(ctx, ctx.viewport_id()) {
         return Ok(color.hdr);

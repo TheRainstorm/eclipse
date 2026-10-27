@@ -11,6 +11,15 @@ pub struct ColorTarget {
     pub sdr_white_nits: f32,
 }
 pub trait Presenter: Send {
+    /// Optional native image metadata, scoped to this viewport and paint frame.
+    fn native_video(&mut self,_:Arc<dyn std::any::Any+Send+Sync>)->Result<bool,String>{Ok(false)}
+    fn supports_native_video(&self)->bool{false}
+    /// Opt-in UI-layer reuse. Video callbacks still run for every frame.
+    fn cache_ui(&self)->bool{false}
+    fn prepare_ui(&mut self,_signature:Option<u64>){}
+    fn ui_reused(&self)->bool{false}
+    fn invalidate_ui(&mut self){}
+
     /// Bind the render target before clear/egui painting. Called on the owning
     /// native GL thread with its context current. No UI lock is held.
     fn begin(&mut self, size: [u32; 2]) -> Result<ColorTarget, String>;
@@ -69,6 +78,42 @@ pub fn available_color_for(ctx: &Context, viewport: ViewportId) -> Option<ColorT
     let surface = ctx.data(|data| data.get_temp::<Surface>(key(viewport)))?;
     let color = surface.0.lock().unwrap().color;
     Some(color)
+}
+pub fn native_video_available(ctx:&Context,viewport:ViewportId)->bool{
+    ctx.data(|d|d.get_temp::<Surface>(key(viewport))).is_some_and(|s|s.0.lock().unwrap().presenter.supports_native_video())
+}
+pub fn native_video(ctx:&Context,viewport:ViewportId,image:Arc<dyn std::any::Any+Send+Sync>)->Result<bool,String>{
+    let Some(surface)=ctx.data(|d|d.get_temp::<Surface>(key(viewport))) else{return Ok(false);};
+    let mut state=surface.0.lock().unwrap();if !state.active{return Ok(false);}
+    state.presenter.native_video(image)
+}
+/// Hash UI meshes only; callback payloads are live per-frame video metadata.
+/// Texture changes force repaint, as do dimensions, DPI, clips and clear color.
+pub(crate) fn prepare_ui(ctx:&Context,viewport:ViewportId,size:[u32;2],ppp:f32,primitives:&[egui::ClippedPrimitive],textures:&egui::TexturesDelta,clear:[f32;4]) {
+    let Some(surface)=ctx.data(|d|d.get_temp::<Surface>(key(viewport))) else{return;};
+    let mut state=surface.0.lock().unwrap();if !state.active||!state.presenter.cache_ui(){return;}
+    use std::hash::{Hash,Hasher};
+    let mut hash=std::collections::hash_map::DefaultHasher::new();
+    size.hash(&mut hash);ppp.to_bits().hash(&mut hash);clear.map(f32::to_bits).hash(&mut hash);
+    let rect=|r:egui::Rect|[r.min.x.to_bits(),r.min.y.to_bits(),r.max.x.to_bits(),r.max.y.to_bits()];
+    for p in primitives {
+        rect(p.clip_rect).hash(&mut hash);
+        match &p.primitive {
+            egui::epaint::Primitive::Mesh(mesh)=>{
+                0u8.hash(&mut hash);mesh.texture_id.hash(&mut hash);mesh.indices.hash(&mut hash);
+                for v in &mesh.vertices {v.pos.x.to_bits().hash(&mut hash);v.pos.y.to_bits().hash(&mut hash);v.uv.x.to_bits().hash(&mut hash);v.uv.y.to_bits().hash(&mut hash);v.color.to_array().hash(&mut hash);}
+            },
+            egui::epaint::Primitive::Callback(c)=>{1u8.hash(&mut hash);rect(c.rect).hash(&mut hash);},
+        }
+    }
+    let signature=(textures.set.is_empty()&&textures.free.is_empty()).then(||hash.finish());
+    state.presenter.prepare_ui(signature);
+}
+pub fn ui_reused(ctx:&Context,viewport:ViewportId)->bool{
+    ctx.data(|d|d.get_temp::<Surface>(key(viewport))).is_some_and(|s|{let state=s.0.lock().unwrap();state.active&&state.presenter.ui_reused()})
+}
+pub fn invalidate_ui(ctx:&Context,viewport:ViewportId){
+    if let Some(surface)=ctx.data(|d|d.get_temp::<Surface>(key(viewport))){surface.0.lock().unwrap().presenter.invalidate_ui();ctx.request_repaint();}
 }
 /// The active stream owns whether this viewport needs the custom surface.
 pub fn set_active(ctx: &Context, viewport: ViewportId, active: bool, vsync: bool) {

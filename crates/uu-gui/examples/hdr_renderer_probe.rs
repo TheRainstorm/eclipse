@@ -1,5 +1,9 @@
 //! Inspect only this probe's FP16 framebuffer on an HDR-enabled Windows output.
 //! Supply a generated HEVC/AV1 HDR10 stream; no existing user window is read.
+//! --offscreen validates generated FP16 pixels, not desktop HDR presentation.
+#[cfg(windows)]
+#[path="support/hdr_offscreen_target.rs"]
+mod offscreen_target;
 #[cfg(windows)]
 #[path = "../src/video_hdr.rs"]
 mod video_hdr;
@@ -30,6 +34,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         uu_proto::media::VideoCodec::Hevc
     };
+    let offscreen=std::env::args().any(|v|v=="--offscreen");
     let bytes = std::fs::read(path)?;
     anyhow::ensure!(bytes.len() < 16 * 1024 * 1024, "probe input too large");
     let sequence = match codec {
@@ -111,6 +116,7 @@ fn main() -> anyhow::Result<()> {
         count: Arc<AtomicUsize>,
         error: Arc<Mutex<Option<String>>>,
         enabled: bool,
+        offscreen:bool,
     }
     impl eframe::App for Probe {
         fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
@@ -120,7 +126,7 @@ fn main() -> anyhow::Result<()> {
             }
             if !self.enabled {
                 eprintln!("HDR renderer: enabling verified surface");
-                match video_hdr::enable(ctx, self.gl.clone(), false) {
+                match if self.offscreen{offscreen_target::enable(ctx,self.gl.clone())}else{video_hdr::enable(ctx,self.gl.clone(),false)} {
                     Ok(true) => self.enabled = true,
                     Ok(false) => {
                         *self.error.lock().unwrap() = Some("probe output is not HDR".into());
@@ -288,7 +294,7 @@ fn main() -> anyhow::Result<()> {
                 references,
                 count,
                 error,
-                enabled: false,
+                enabled: false,offscreen,
             }))
         }),
     )
@@ -300,7 +306,7 @@ fn main() -> anyhow::Result<()> {
         result_count.load(Ordering::Acquire) >= 9,
         "too few rendered HDR frames"
     );
-    println!("HDR → SDR → HDR, resize, VSync and SDR overlay: 9 frames passed");
+    println!("{}",serde_json::json!({"passed_frames":9,"floating_point_pixels":true,"resize":true,"sdr_overlay":true,"offscreen":offscreen,"desktop_hdr_presentation":!offscreen}));
     Ok(())
 }
 #[cfg(windows)]

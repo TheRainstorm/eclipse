@@ -171,7 +171,7 @@ impl App {
         #[cfg(windows)]
         if self.preferences.hdr && kind!=uu_core::media::DecoderKind::Software && !matches!(self.preferences.codec,super::settings::CodecPreference::H264|super::settings::CodecPreference::Pyrowave) {
             if let Some(gl)=self.video_gl.clone() {
-                match super::video_hdr::enable(&self.context,gl,self.preferences.vsync) {
+                match super::video_hdr::enable_for_stream(&self.context,gl,self.preferences.vsync) {
                     Ok(capable)=>stats.native_hdr_capable.store(capable,std::sync::atomic::Ordering::Release),
                     Err(error)=>stats.diagnostics.record(serde_json::json!({"event":"hdr_presentation_unavailable","reason":error})),
                 }

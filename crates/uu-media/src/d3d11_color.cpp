@@ -217,7 +217,7 @@ struct Color {
     ComPtr<ID3D11RasterizerState> rasterizer;
     ComPtr<ID3D11DepthStencilState> depth;
     unsigned width,height;
-    bool decoder,hdr,shared;
+    bool decoder,hdr;unsigned shared;
     float white;
     struct SourceView {ComPtr<ID3D11Texture2D> texture;ComPtr<ID3D11ShaderResourceView> view;};
     std::array<SourceView,2> cached_sources;
@@ -229,7 +229,7 @@ struct Color {
             "uu-color-input pooled_frames=%llu fresh_frames=%llu target_allocations=%llu source_view_allocations=%llu output=%s\n",
             pooled_frames,fresh_frames,target_allocations,source_view_allocations,hdr?"P010":"NV12");
     }
-    Color(ID3D11Device* native,unsigned w,unsigned h,bool decoding,bool high,bool exportable,float sdr_white)
+    Color(ID3D11Device* native,unsigned w,unsigned h,bool decoding,bool high,unsigned exportable,float sdr_white)
         :device(native),width(w),height(h),decoder(decoding),hdr(high),shared(exportable),white(sdr_white) {
         if(!native||w<2||h<2||w>8192||h>8192||w%2||h%2||sdr_white<40||sdr_white>1000)throw std::runtime_error("invalid GPU color converter layout");
         device->GetImmediateContext(&context);
@@ -251,11 +251,11 @@ struct Color {
         check(device->CreateDepthStencilState(&dd,&depth),"create HDR depth state");
         const char* profiling=std::getenv("UU_GPU_ENCODE_PROFILE");
         if(!decoder&&profiling&&std::strcmp(profiling,"1")==0)profile=std::make_unique<GpuProfile>(device.Get());
-        if(decoder){output=texture(hdr?DXGI_FORMAT_R16G16B16A16_FLOAT:DXGI_FORMAT_B8G8R8A8_UNORM,w,h,shared);check(device->CreateRenderTargetView(output.Get(),nullptr,&target),"create decoder RGB output view");if(!hdr)prepare_source(w,h);}
+        if(decoder){output=texture(hdr?DXGI_FORMAT_R16G16B16A16_FLOAT:(shared>=2?DXGI_FORMAT_R8G8B8A8_UNORM:DXGI_FORMAT_B8G8R8A8_UNORM),w,h,shared);check(device->CreateRenderTargetView(output.Get(),nullptr,&target),"create decoder RGB output view");if(!hdr)prepare_source(w,h);}
     }
-    ComPtr<ID3D11Texture2D> texture(DXGI_FORMAT format,unsigned w,unsigned h,bool exportable) {
+    ComPtr<ID3D11Texture2D> texture(DXGI_FORMAT format,unsigned w,unsigned h,unsigned exportable) {
         D3D11_TEXTURE2D_DESC td{};td.Width=w;td.Height=h;td.ArraySize=1;td.MipLevels=1;td.Format=format;td.SampleDesc.Count=1;
-        td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_RENDER_TARGET;td.MiscFlags=exportable?D3D11_RESOURCE_MISC_SHARED:0;
+        td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_RENDER_TARGET;td.MiscFlags=exportable?(D3D11_RESOURCE_MISC_SHARED|(exportable==2?D3D11_RESOURCE_MISC_SHARED_NTHANDLE:0)):0;
         ComPtr<ID3D11Texture2D> value;check(device->CreateTexture2D(&td,nullptr,&value),"create HDR texture");return value;
     }
     std::unique_ptr<EncodeTarget> make_target() {
@@ -347,7 +347,7 @@ struct Color {
 };
 }
 extern "C" void* eclipse_color_open(void* device,unsigned width,unsigned height,int decoder,int hdr,int shared,float white,char* error,size_t capacity) {
-    try{return new Color((ID3D11Device*)device,width,height,decoder!=0,hdr!=0,shared!=0,white);}
+    try{return new Color((ID3D11Device*)device,width,height,decoder!=0,hdr!=0,shared,white);}
     catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return nullptr;}
 }
 extern "C" void eclipse_color_close(void* value){delete (Color*)value;}

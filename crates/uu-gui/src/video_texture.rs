@@ -18,6 +18,16 @@ use eframe::{
 use std::sync::{Arc, Mutex};
 use uu_core::display_frames::{DisplayImage, PixelFormat, RawFrame, YuvColor};
 
+#[cfg(windows)]
+#[path="video_native_source.rs"]
+mod native_source;
+#[cfg(windows)]
+#[derive(Clone)]
+pub(crate) struct NativeImage {
+    pub id:u64,pub handles:[usize;3],pub ready:u64,
+    pub consumed:Arc<std::sync::atomic::AtomicU64>,pub valid:Arc<std::sync::atomic::AtomicBool>,
+    pub rect:[f32;4],pub hdr:bool,pub source_white:f32,pub cursor:Option<uu_core::native_cursor::Snapshot>,
+}
 pub struct VideoTexture {
     cursor:Mutex<Option<uu_core::native_cursor::Snapshot>>,
     fallback_cursor:Mutex<video_cursor::Fallback>,
@@ -108,6 +118,8 @@ impl VideoTexture {
         self.gpu.is_some()
     }
     pub fn render_path(&self) -> &'static str {
+        #[cfg(windows)]
+        if self.gpu.as_ref().is_some_and(|g|g.lock().unwrap().native_active){return "d3d11-native-gpu";}
         match &self.gpu {
             Some(gpu) if gpu.lock().unwrap().d3d_active => "d3d11-wgl-gpu",
             Some(gpu) if gpu.lock().unwrap().dma_active => "dma-buf-egl",
@@ -165,6 +177,8 @@ impl VideoTexture {
         let size=[(self.size[0] as f64*ratio).max(1.) as usize,(self.size[1] as f64*ratio).max(1.) as usize];
         if let Some(gpu)=&self.gpu {
             let mut state=gpu.lock().unwrap();
+            #[cfg(windows)]
+            state.restore_native_frame();
             if state.pending.is_some()||state.size!=[0,0] {return unsafe{state.snapshot(size,self.source_white_nits)};}
         }
         let image=self.fallback_pixels.as_ref().ok_or("没有可保存的远端画面")?;
@@ -186,10 +200,33 @@ impl VideoTexture {
                 let ctx=ui.ctx().clone();let viewport=ctx.viewport_id();let source_white=self.source_white_nits;
                 ui.painter().add(egui::PaintCallback {
                     rect,
-                    callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |_, _| unsafe {
+                    callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |info, _| unsafe {
                         let color=eframe::glow_presentation::color_target_for(&ctx,viewport);
                         let mut state=gpu.lock().unwrap();
                         let new_image=state.pending.is_some();
+                        #[cfg(windows)]
+                        if eframe::glow_presentation::native_video_available(&ctx,viewport) {
+                            let started=std::time::Instant::now();let pixels=info.viewport_in_pixels();
+                            let rect=[pixels.left_px as f32,pixels.top_px as f32,pixels.width_px as f32,pixels.height_px as f32];
+                            if let Some(image)=state.native_image(rect,source_white) {
+                                match eframe::glow_presentation::native_video(&ctx,viewport,Arc::new(image)) {
+                                    Ok(true)=>{
+                                        if !eframe::glow_presentation::ui_reused(&ctx,viewport) {
+                                        let gl=&state.gl;let mut scissor=[0;4];gl.get_parameter_i32_slice(glow::SCISSOR_BOX,&mut scissor);
+                                        gl.enable(glow::SCISSOR_TEST);gl.scissor(pixels.left_px,pixels.from_bottom_px,pixels.width_px,pixels.height_px);gl.clear_color(0.,0.,0.,0.);gl.clear(glow::COLOR_BUFFER_BIT);gl.scissor(scissor[0],scissor[1],scissor[2],scissor[3]);
+                                        }
+                                        state.paint_timings.record(new_image,[started.elapsed().as_secs_f64()*1000.,0.,0.,0.,0.]);return;
+                                    },
+                                    Ok(false)=>{},Err(e)=>{eprintln!("native video composition unavailable: {e}");state.native_disabled=true;},
+                                }
+                                state.restore_native_frame();
+                            }
+                        }
+                        #[cfg(windows)]
+                        {
+                            if eframe::glow_presentation::ui_reused(&ctx,viewport){eframe::glow_presentation::invalidate_ui(&ctx,viewport);}
+                            state.restore_native_frame();
+                        }
                         if let Some(phases)=state.paint(color.is_some_and(|c|c.hdr),color.map_or(80.,|c|c.sdr_white_nits),source_white) {
                             state.paint_timings.record(new_image,phases);
                         }
@@ -257,6 +294,14 @@ struct Planes {
     d3d_active: bool,
     #[cfg(windows)]
     d3d_importer: Option<d3d11_renderer::Importer>,
+    #[cfg(windows)]
+    native:Option<native_source::Source>,
+    #[cfg(windows)]
+    native_last:Option<(RawFrame,YuvColor)>,
+    #[cfg(windows)]
+    native_active:bool,
+    #[cfg(windows)]
+    native_disabled:bool,
     #[cfg(target_os = "linux")]
     importer: Option<dma_buf_renderer::Importer>,
 }
@@ -361,6 +406,14 @@ impl Planes {
             d3d_active: false,
             #[cfg(windows)]
             d3d_importer,
+            #[cfg(windows)]
+            native:None,
+            #[cfg(windows)]
+            native_last:None,
+            #[cfg(windows)]
+            native_active:false,
+            #[cfg(windows)]
+            native_disabled:false,
             #[cfg(target_os = "linux")]
             importer,
         })
@@ -492,6 +545,25 @@ impl Planes {
             );
         }
         gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+    }
+    #[cfg(windows)]
+    fn restore_native_frame(&mut self){
+        if self.native_active {if self.pending.is_none(){self.pending=self.native_last.take();}else{self.native_last=None;}self.native_active=false;self.native.take();}
+    }
+    #[cfg(windows)]
+    fn native_image(&mut self,rect:[f32;4],source_white:f32)->Option<NativeImage>{
+        if self.native_disabled{return None;}
+        if let Some((frame,color))=self.pending.as_ref(){
+            let Some(surface)=frame.d3d11.as_ref().filter(|_|frame.gpu) else{self.restore_native_frame();return None;};
+            let prepared=(||->Result<(),String>{
+                if self.native.as_ref().is_none_or(|n|!n.matches(surface)){self.native.take();self.native=Some(native_source::Source::new(surface)?);}
+                self.native.as_mut().unwrap().set(surface.clone(),*color)
+            })();
+            if let Err(e)=prepared {eprintln!("native video image unavailable, using WGL: {e}");self.native_disabled=true;self.native.take();self.native_active=false;return None;}
+            let frame=self.pending.take().unwrap();self.size=[frame.0.width,frame.0.height];self.layout=Some(frame.0.format);self.color=frame.1;
+            self.native_last=Some(frame);self.native_active=true;self.d3d_active=false;
+        }
+        self.native_active.then(||self.native.as_ref().unwrap().image(rect,self.color.hdr(),source_white,self.cursor.state.clone()))
     }
     unsafe fn paint(&mut self,hdr_output:bool,white_nits:f32,source_white:f32) -> Option<[f64;5]> {
         let started=std::time::Instant::now();

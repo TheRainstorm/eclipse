@@ -186,7 +186,7 @@ mod tests {
 #[path = "hdr_windows.rs"]
 mod platform;
 #[cfg(all(windows, any(feature = "mf-encode", feature = "d3d11va")))]
-pub use platform::{desktop_sdr_white, Presentation};
+pub use platform::{desktop_sdr_white, Presentation,NativePresentation};
 
 /// Generated 128×128 Main10/PQ/BT.2020 probes; no third-party video content.
 pub const HEVC_PROBE: &[u8] = include_bytes!("hevc_hdr10_probe.h265");
