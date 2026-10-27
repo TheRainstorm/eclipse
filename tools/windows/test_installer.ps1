@@ -104,7 +104,7 @@ try {
     & $Installer -SourceDir $legacy -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null
     Assert-Test ((Get-FileHash -LiteralPath (Join-Path $target 'uu.exe')).Hash -eq (Get-FileHash -LiteralPath (Join-Path $legacy 'uu.exe')).Hash) 'Legacy bundle did not install'
     $before = Get-TestHashes
-    $unknown = New-TestPackage 'unsupported' 3
+    $unknown = New-TestPackage 'unsupported' 4
     $failed = $false
     try { & $Installer -SourceDir $unknown -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null }
     catch { $failed = $true }
