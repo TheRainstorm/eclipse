@@ -11,6 +11,7 @@ fn main() -> anyhow::Result<()> {
         "pass --desktop to inspect the current desktop's source identity"
     );
     let mut capture = uu_capture::open(&uu_capture::CaptureSource::Primary)?;
+    let cursor=capture.cursor();
     capture.prefer_gpu(true, None);
     let started = std::time::Instant::now();
     let mut previous = None;
@@ -50,9 +51,16 @@ fn main() -> anyhow::Result<()> {
         }
         if index < 3 || index == 59 {
             println!("sample={index} gpu={} source={info:?}", frame.gpu);
+            if let Some(cursor)=&cursor {
+                let state=cursor.snapshot();
+                if let Some(shape)=&state.shape {anyhow::ensure!(shape.valid(),"invalid DXGI cursor shape");}
+                println!("cursor revision={} shape={} position={:?} desktop={:?} description={:?}",state.revision,state.shape_id,state.position,state.desktop,state.shape.as_ref().map(|s|s.description));
+            }
         }
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
+    drop(capture);
+    if let Some(cursor)=cursor {let retired=cursor.snapshot();anyhow::ensure!(retired.position.is_none()&&retired.shape.is_none(),"cursor retained after capture closed");println!("cursor capture release: passed");}
     println!("source identity: new={fresh} repeated={repeated}");
     Ok(())
 }
