@@ -57,7 +57,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 
 ## 开始使用
 
-当前版本 **[v0.18.8](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.8)** 默认启用 AMD AMF 编码输入表面复用，加入[主机同帧测量](docs/frame-tracing.md)，并包含连接、采集、输入菜单与 Windows HDR 更新。完整改动、实测范围和已知限制见[发布说明](docs/releases/v0.18.8.md)。旧版本与产物独立保留。
+当前版本 **[v0.18.9](https://github.com/TheRainstorm/uu-client/releases/tag/v0.18.9)** 修复混合 DPI 外屏 Render 高延迟、悬浮菜单输入入口闪烁，并汇总原生文字色彩、鼠标比例、Intel AV1 首帧与此前 AMD AMF 输入复用等更新。完整改动、实测范围和已知限制见[发布说明](docs/releases/v0.18.9.md)，外屏问题的前因后果见[诊断报告](docs/performance/mixed-dpi-render-latency.md)。旧版本与产物独立保留。
 
 安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
 
