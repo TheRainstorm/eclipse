@@ -182,6 +182,7 @@ mod tests {
                 .unwrap();
         }
         assert!(sender.send(InputCommand::ReleaseAll {}).is_err());
+        assert!(sender.requested(),"a transient queue reset must preserve control intent");
         assert_eq!(*receiver.reset.borrow_and_update(), 1);
         assert!(receiver.rx.try_recv().unwrap().epoch < receiver.epoch.load(Ordering::Acquire));
         sender.set_enabled(false);

@@ -1191,6 +1191,20 @@ impl App {
         self.mod_state = [false; 4];
     }
 
+    /// A transport/routing reset releases held input without cancelling the
+    /// user's request. Focus, UI ownership and host authorization still gate it.
+    fn recover_input(&mut self, reason:&str) {
+        if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
+            "event":"input_reset", "reason":reason, "requested":self.input_capture.requested()
+        }));}
+        self.release_all_keys();
+        let screen=self.input_screen(self.selected_track);
+        let releases=self.pointer.release_all(screen);
+        // Native release_all is out of band and invalidates queued commands.
+        // Do not enqueue more releases into the queue that just failed.
+        if !self.is_native() {for release in releases {self.send_input(release,15);}}
+    }
+
     fn deactivate_session(&mut self) {
         self.active_session=false;
         if let Some(handle)=&self.controller {handle.frames.set_waker(||{});}
@@ -1497,7 +1511,13 @@ impl App {
         }
         self.focused = focused;
         self.update_keyboard_capture(ctx);
-        if self.platform.capture_overflowed() {self.release_all_keys();self.input_capture.release();self.update_keyboard_capture(ctx);}
+        if self.platform.capture_overflowed() {
+            // The retained queue can contain half of a transition; discard it
+            // before the out-of-band release. Preserve the user's control intent.
+            self.platform.captured_keys();
+            self.recover_input("keyboard_queue_overflow");
+            self.update_keyboard_capture(ctx);
+        }
         for event in self.platform.captured_keys() {
             match event {
                 keyboard_capture::Decision::Remote{vk,pressed}=> {

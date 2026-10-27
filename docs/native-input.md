@@ -59,3 +59,9 @@ python3 tools/native/wayland_host_input.py \
 ```
 
 需要 Sway 与 Foot。脚本启动全新的无物理输入设备合成器和两个不同缩放的虚拟输出，验证第二块屏幕上的实际指针、按钮、双轴滚轮、双 Shift、重置及重连释放。它不会连接工作桌面的 Wayland socket。虚拟指针的输出绑定、键盘 keymap 与修饰键分别遵循 [wlr virtual pointer](https://wayland.app/protocols/wlr-virtual-pointer-unstable-v1) 与 [virtual keyboard](https://wayland.app/protocols/virtual-keyboard-unstable-v1) 协议；逻辑几何使用 [XDG output](https://wayland.app/protocols/xdg-output-unstable-v1)。
+
+## 暂停与恢复控制
+
+视频连接与输入控制权分别维护。焦点离开、操作本地菜单、切换设备或仅观看时释放远端输入；回到画面后仍按用户的控制意图申请授权。Ctrl+Alt+Z 显式释放或重新请求控制，点击画面也可重新申请，即使主机尚未授予控制权。暂停提示提供“恢复控制”按钮。
+
+输入队列临时故障会通过独立复位通道释放已按下的键鼠并丢弃旧队列，保留用户的控制请求。恢复仍受前台焦点、本地菜单和主机授权约束。诊断 `input_reset` 记录复位原因与请求状态，便于区分临时复位、显式暂停和等待主机授权。

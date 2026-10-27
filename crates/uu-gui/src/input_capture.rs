@@ -21,6 +21,13 @@ impl Capture {
     pub fn toggle(&mut self) {
         self.requested = !self.requested;
     }
+    /// Activating the picture requests a grant even while ready is false.
+    /// UI ownership and view-only policy still gate this explicit action.
+    pub fn activate_picture(&mut self, conditions: Conditions, over_controls: bool) -> bool {
+        if conditions.view_only || conditions.local_ui || over_controls { return false; }
+        self.request();
+        true
+    }
     pub fn requested(&self) -> bool {
         self.requested
     }
@@ -134,6 +141,20 @@ impl RemoteKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn picture_activation_can_reacquire_a_released_grant_but_never_steals_local_ui() {
+        let mut capture=Capture::default();
+        let waiting=Conditions{ready:false,focused:true,view_only:false,local_ui:false};
+        assert!(capture.activate_picture(waiting,false));
+        assert!(capture.wants_control(waiting));
+        assert!(!capture.active(waiting));
+        assert!(capture.active(Conditions{ready:true,..waiting}));
+        for (conditions,over) in [(Conditions{local_ui:true,..waiting},false),(Conditions{view_only:true,..waiting},false),(waiting,true)] {
+            capture.release();
+            assert!(!capture.activate_picture(conditions,over));
+            assert!(!capture.requested());
+        }
+    }
     #[test]
     fn native_chords_keep_one_modifier_down_until_release_without_keepalives() {
         for modifier in [0x5b, 0x5c, 0xa0, 0xa2, 0xa4, 0xa5] {

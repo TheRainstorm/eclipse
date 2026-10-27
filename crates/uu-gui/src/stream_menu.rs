@@ -421,6 +421,12 @@ impl super::App {
                             else {("控制已暂停", "返回串流画面后恢复控制；Ctrl+Alt+Z 可释放或重新请求控制。")}
                         } else {("仅观看", "当前未启用远端输入；主机需允许控制并具有可用的输入后端。")};
                         ui.label(RichText::new(text).color(Color32::from_rgb(98, 125, 160))).on_hover_text(help);
+                        if !self.view_only && self.native_input_available() && !self.input_capture.requested()
+                            && ui.small_button("恢复控制").on_hover_text("重新请求此串流的键鼠控制").clicked() {
+                            self.input_capture.request();
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                            self.platform.focus_window();
+                        }
                     }
                     if wide && !self.view_only && self.controller.is_some() && !self.input_ready() && (!self.is_native()||self.displays.switching()) {
                         ui.label(

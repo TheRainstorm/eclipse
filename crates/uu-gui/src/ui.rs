@@ -995,8 +995,9 @@ impl App {
         let mut controls = self.stream_controls(ctx);
         controls.extend(workspace_bar);
         let control_pointer = !self.mouse_captured && ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
-        let controls_active = self.displays.menu_open || self.local_dialog_open() || !self.input_ready() || self.window_edge_active || was_open || self.stream_menu.owns_input(self.fullscreen) || control_pointer
+        let picture_blocked = self.displays.menu_open || self.local_dialog_open() || self.window_edge_active || was_open || self.stream_menu.owns_input(self.fullscreen) || control_pointer
             || self.workspace_tabs.as_ref().is_some_and(|tabs|tabs.owns_input(ctx));
+        let controls_active = picture_blocked || !self.input_ready();
         let mut messages = Vec::new();
         egui::CentralPanel::default().frame(egui::Frame::none().fill(C::BLACK)).show(ctx,|ui| {
             ui.set_clip_rect(ui.max_rect());
@@ -1012,8 +1013,7 @@ impl App {
                 texture.paint(ui,draw);
                 if self.unpresented.remove(&track) { *self.frame_count.entry(track).or_insert(0) += 1; }
                 let pointer=ctx.input(|i|i.pointer.hover_pos());
-                if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) && !controls_active {
-                    self.input_capture.request();
+                if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) && self.active_session && self.input_capture.activate_picture(self.input_conditions(ctx),picture_blocked) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     self.platform.focus_window();
                 }

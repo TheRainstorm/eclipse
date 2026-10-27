@@ -43,8 +43,7 @@ impl App {
         let failed=self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|sender|sender.send(command).is_err());
         if failed {
             if let Some(h)=&self.controller{h.stats.input_send_errors.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
-            self.input_capture.release();self.pressed_vks.clear();self.mod_state=[false;4];
-            let screen=self.input_screen(self.selected_track);let _=self.pointer.release_all(screen);
+            self.recover_input("native_queue_reset");
         }
     }
     pub(super) fn open_native(&mut self) {
