@@ -36,6 +36,8 @@ pub use uu_capture::CaptureSource;
 pub use uu_media::audio_capture::Source as AudioSource;
 pub use uu_media::encoder::Preference as EncoderPreference;
 pub use uu_proto::media::VideoCodec;
+mod encoded_capture;
+pub use encoded_capture::{EncodedCapture, CapturedSample, CaptureOptions};
 
 pub fn hardware_encoding_compiled() -> bool {
     uu_media::encoder::hardware_compiled()

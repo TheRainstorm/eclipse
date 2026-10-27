@@ -177,7 +177,7 @@ impl Listener {
             Provider::SelfHosted=>Ok(Self::SelfHosted(internet::self_hosted::Listener::online(&settings.self_hosted()?,&settings.device).await?)),
         }
     }
-    async fn accept(&mut self)->Result<Connection>{match self{Self::Plugin(listener)=>listener.accept().await,Self::SelfHosted(listener)=>listener.accept().await}}
+    async fn accept(&mut self)->Result<crate::plugins::Incoming>{match self{Self::Plugin(listener)=>listener.accept_session().await,Self::SelfHosted(listener)=>listener.accept().await.map(crate::plugins::Incoming::Native)}}
     async fn close(&mut self){match self{Self::Plugin(listener)=>listener.close().await,Self::SelfHosted(listener)=>listener.close().await}}
 }
 
@@ -201,9 +201,18 @@ async fn listen_concurrent(settings: Settings, config: Config, sharing: SharingC
                 },
                 connection=listener.accept()=>{
                     let connection=match connection {Ok(connection)=>connection,Err(error)=>{status.send_replace(EndpointStatus::Error(format!("{error:#}")));break;}};
-                    if sessions.len()>=crate::shared_host::MAX_SESSIONS {let mut connection=connection;connection.transport.close().await;continue;}
+                    if sessions.len()>=crate::shared_host::MAX_SESSIONS {
+                        if let crate::plugins::Incoming::Native(mut connection)=connection {connection.transport.close().await;}
+                        continue;
+                    }
                     let access=access.clone();let sharing=sharing.clone();let stop=stop.clone();let clipboard=clipboard.clone();let progress=stream_status.clone();
                     sessions.spawn(async move {
+                        let crate::plugins::Incoming::Native(connection)=connection else {
+                            if let crate::plugins::Incoming::Protocol(session)=connection {
+                                return session.serve(crate::plugins::HostContext {sharing,sessions:access.sessions.clone(),stop,progress,clipboard}).await;
+                            }
+                            unreachable!()
+                        };
                         let (phase,mut updates)=watch::channel(HostStatus::Starting);
                         let serving=serve_connection(connection,sharing,&access,stop,Some(phase),clipboard);
                         tokio::pin!(serving);

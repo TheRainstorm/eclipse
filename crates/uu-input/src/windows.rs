@@ -124,6 +124,27 @@ fn packets(event: InputEvent, screen: DesktopRect) -> Result<Vec<kbm::INPUT>, In
     }
     Ok(out)
 }
+fn unicode_packets(text: &str) -> Vec<kbm::INPUT> {
+    text.encode_utf16().flat_map(|unit| [false,true].map(|released| {
+        let mut input:kbm::INPUT=unsafe {std::mem::zeroed()};
+        input.r#type=kbm::INPUT_KEYBOARD;
+        input.Anonymous.ki.wScan=unit;
+        input.Anonymous.ki.dwFlags=kbm::KEYEVENTF_UNICODE | if released {kbm::KEYEVENTF_KEYUP}else{0};
+        input
+    })).collect()
+}
+#[cfg(test)]
+#[test]
+fn unicode_input_preserves_utf16_surrogates_and_has_balanced_transitions() {
+    let packets=unicode_packets("中🙂");
+    let units:Vec<u16>="中🙂".encode_utf16().collect();
+    assert_eq!(packets.len(),units.len()*2);
+    for (pair,unit) in packets.chunks_exact(2).zip(units) {
+        let down=unsafe{pair[0].Anonymous.ki};let up=unsafe{pair[1].Anonymous.ki};
+        assert_eq!((down.wVk,down.wScan,down.dwFlags),(0,unit,kbm::KEYEVENTF_UNICODE));
+        assert_eq!((up.wVk,up.wScan,up.dwFlags),(0,unit,kbm::KEYEVENTF_UNICODE|kbm::KEYEVENTF_KEYUP));
+    }
+}
 impl SendInputInjector {
     fn send(&mut self, event: InputEvent) -> Result<(), InputError> {
         if !self.held.should_emit(event) {
@@ -151,6 +172,16 @@ impl SendInputInjector {
     }
 }
 impl InputInjector for SendInputInjector {
+    fn supports_text(&self)->bool {true}
+    fn text(&mut self,value:&str)->Result<(),InputError> {
+        if value.len()>16*1024 || value.contains('\0') {return Err(InputError::Backend("invalid text input".into()));}
+        self.prepare_desktop()?;
+        for inputs in unicode_packets(value).chunks(128) {
+            let sent=unsafe {kbm::SendInput(inputs.len() as u32,inputs.as_ptr(),std::mem::size_of::<kbm::INPUT>() as i32)};
+            if sent!=inputs.len() as u32 {return Err(InputError::Backend("Unicode input was not fully accepted".into()));}
+        }
+        Ok(())
+    }
     fn inject(&mut self, event: InputEvent) -> Result<(), InputError> {
         self.prepare_desktop()?;
         self.send(event)

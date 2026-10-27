@@ -76,6 +76,9 @@ pub(crate) struct AudioSender {
     track:Arc<TrackLocalStaticRTP>,red:bool,sequence:u16,base:u32,previous:Option<(u32,bytes::Bytes)>,
 }
 impl AudioSender {
+    pub(crate) fn new(track:Arc<TrackLocalStaticRTP>,red:bool)->Self {
+        Self {track,red,sequence:rand::random(),base:rand::random(),previous:None}
+    }
     pub async fn send(&mut self,frame:uu_media::audio_capture::EncodedAudio)->Result<usize> {
         let timestamp=self.base.wrapping_add(frame.sample_index as u32);
         let payload=if self.red {
@@ -578,7 +581,7 @@ impl NativePeer {
         let track=Arc::new(TrackLocalStaticRTP::new(opus_capability(red),"audio_0".into(),"eclipse-native".into()));
         let sender=self.attach_sender(track.clone() as Arc<dyn TrackLocal+Send+Sync>).await?;
         tokio::spawn(async move{while sender.read_rtcp().await.is_ok(){}});
-        Ok(AudioSender {track,red,sequence:rand::random(),base:rand::random(),previous:None})
+        Ok(AudioSender::new(track,red))
     }
     pub async fn sender_for_color(&self,refresh:Arc<AtomicBool>,codec:VideoCodec,hdr:bool)->Result<crate::native_video::Sender>{
         let track=Arc::new(TrackLocalStaticRTP::new(video_color_capability(codec,hdr),"video_0".into(),"eclipse-native".into()));

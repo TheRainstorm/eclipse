@@ -11,9 +11,29 @@ pub struct Descriptor {
     pub version: &'static str,
 }
 
+/// A provider may host another wire protocol without weakening the native
+/// device-authentication handshake. It receives session ownership, not native
+/// administrative credentials or a fabricated public-key pairing.
+pub struct HostContext {
+    pub sharing:crate::native::SharingConfig,
+    pub sessions:Arc<crate::shared_host::SessionGate>,
+    pub stop:tokio::sync::watch::Receiver<bool>,
+    pub progress:tokio::sync::watch::Sender<crate::native::HostStatus>,
+    pub clipboard:Option<crate::native_lan::ClipboardFactory>,
+}
+#[async_trait::async_trait]
+pub trait ProtocolSession: Send {
+    async fn serve(self:Box<Self>, context:HostContext)->Result<crate::native::HostReport>;
+}
+pub enum Incoming {
+    Native(Connection),
+    Protocol(Box<dyn ProtocolSession>),
+}
+
 #[async_trait::async_trait]
 pub trait Listener: Send {
     async fn accept(&mut self) -> Result<Connection>;
+    async fn accept_session(&mut self)->Result<Incoming> {self.accept().await.map(Incoming::Native)}
     async fn close(&mut self);
 }
 

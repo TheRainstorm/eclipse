@@ -27,6 +27,8 @@ use webrtc::{
 
 const MAX_CONTROL: usize = 16 * 1024;
 const LEASE: Duration = Duration::from_secs(5);
+mod protocol_input;
+pub use protocol_input::InputSession;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Packet {
@@ -64,6 +66,7 @@ async fn send(channel: &RTCDataChannel, packet: Packet) -> Result<()> {
 }
 
 struct WorkerState {
+    text_supported: AtomicBool,
     allowed: std::sync::atomic::AtomicU8,
     gamepads: Mutex<Option<Arc<crate::native_gamepad::Worker>>>,
     gamepad_error: Mutex<Option<String>>,
@@ -107,7 +110,7 @@ impl WorkerState {
     }
 }
 struct InputApplied {queue_us:u32,inject_us:u32}
-struct InputJob {epoch:u64,command:Option<InputCommand>,queued:Instant,reply:Option<oneshot::Sender<InputApplied>>}
+struct InputJob {epoch:u64,command:Option<InputCommand>,text:Option<String>,queued:Instant,reply:Option<oneshot::Sender<InputApplied>>}
 struct InputWorker {
     state: Arc<WorkerState>,
     tx: SyncSender<InputJob>,
@@ -129,6 +132,7 @@ impl InputWorker {
             + 'static,
     {
         let state = Arc::new(WorkerState {
+            text_supported:AtomicBool::new(false),
             allowed:std::sync::atomic::AtomicU8::new(7),
             gamepads:Mutex::new(None),gamepad_error:Mutex::new(None),
             authority, ownership: Mutex::new(None),
@@ -157,6 +161,7 @@ impl InputWorker {
                     }
                 };
                 actor.available.store(true, Ordering::Release);
+                actor.text_supported.store(injector.supports_text(),Ordering::Release);
                 if ready.send(Ok(())).is_err() {
                     return;
                 }
@@ -198,13 +203,13 @@ impl InputWorker {
                         Ok(job)
                             if job.epoch == epoch && actor.enabled.load(Ordering::Acquire) =>
                         {
-                            let Some(command)=job.command else{continue;};
+                            if job.command.is_none() && job.text.is_none() {continue;}
                             let queue_us=job.queued.elapsed().as_micros().min(u32::MAX as u128) as u32;
                             let started=Instant::now();
-                            let result = match command.event(rect) {
+                            let result = if let Some(text)=job.text {injector.text(&text)} else {match job.command.unwrap().event(rect) {
                                 Some(event) => injector.inject(event),
                                 None => injector.release_all(),
-                            };
+                            }};
                             if let Err(error)=result {
                                 if matches!(error,uu_input::InputError::UnsupportedKey(_)) {
                                     actor.errors.fetch_add(1,Ordering::Relaxed);
@@ -248,7 +253,7 @@ impl InputWorker {
         self.state.available.load(Ordering::Acquire) && !self.state.stop.load(Ordering::Acquire)
     }
     fn wake(&self) {
-        let _=self.tx.try_send(InputJob{epoch:self.state.epoch.load(Ordering::Acquire),command:None,queued:Instant::now(),reply:None});
+        let _=self.tx.try_send(InputJob{epoch:self.state.epoch.load(Ordering::Acquire),command:None,text:None,queued:Instant::now(),reply:None});
     }
     fn request(&self, enabled: bool) {
         self.touch();
@@ -293,7 +298,17 @@ impl InputWorker {
             return false;
         }
         self.touch();
-        match self.tx.try_send(InputJob {epoch:self.state.epoch.load(Ordering::Acquire),command:Some(command),queued:Instant::now(),reply}) {
+        self.enqueue(Some(command),None,reply)
+    }
+    fn push_text(&self,text:&str)->bool {
+        if !self.available() || !self.state.enabled.load(Ordering::Acquire)
+            || !self.state.text_supported.load(Ordering::Acquire) || self.state.allowed.load(Ordering::Acquire)&1==0
+            || text.len()>16*1024 || text.contains('\0') {return false;}
+        self.touch();
+        self.enqueue(None,Some(text.into()),None)
+    }
+    fn enqueue(&self,command:Option<InputCommand>,text:Option<String>,reply:Option<oneshot::Sender<InputApplied>>)->bool {
+        match self.tx.try_send(InputJob {epoch:self.state.epoch.load(Ordering::Acquire),command,text,queued:Instant::now(),reply}) {
             Ok(())=>true,
             Err(std::sync::mpsc::TrySendError::Full(_))=>{
                 self.state.suspend(uu_i18n::text("输入队列积压，正在释放并恢复").into());

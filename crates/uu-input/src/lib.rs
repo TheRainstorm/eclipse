@@ -101,6 +101,11 @@ pub enum InputEvent {
 
 pub trait InputInjector: Send {
     fn inject(&mut self, event: InputEvent) -> Result<(), InputError>;
+    fn supports_text(&self) -> bool { false }
+    /// Authorized text input stays on the injector's owning thread.
+    fn text(&mut self, _value: &str) -> Result<(), InputError> {
+        Err(InputError::Unavailable("text input is not supported by this backend".into()))
+    }
     /// Release only successfully pressed keys/buttons owned by this injector.
     fn release_all(&mut self) -> Result<(), InputError>;
 }
