@@ -863,14 +863,11 @@ impl super::App {
                                         let old=(self.preferences.relative_mouse,self.preferences.cursor_mode);
                                         ui.label("光标显示");
                                         for mode in super::settings::CursorMode::ALL {
-                                            let supported=self.controller.as_ref().is_some_and(|h|h.stats.native_cursor.supported());
-                                            ui.add_enabled_ui(!self.is_native() || supported || mode!=super::settings::CursorMode::Remote,|ui| {
-                                                ui.selectable_value(&mut self.preferences.cursor_mode,mode,mode.label());
-                                            });
+                                            ui.selectable_value(&mut self.preferences.cursor_mode,mode,mode.label());
                                         }
                                         if self.is_native() {
                                             if self.controller.as_ref().is_some_and(|h|h.stats.native_cursor.supported()) {ui.small("远端光标按主机实际位置显示，不改变视频画质。");}
-                                            else{ui.small("主机未提供独立光标；Windows 主机需更新后使用仅远端模式。");}
+                                            else{ui.small("主机未提供独立远端光标，当前保留本地指针。");}
                                             ui.small("Ctrl+Alt+C 切换光标显示");
                                         } else {
                                             ui.small("Ctrl+Alt+C 切换光标显示");
@@ -884,7 +881,6 @@ impl super::App {
                                         ui.small("Ctrl+Alt+Z 释放／捕获输入");
                                         if old!=(self.preferences.relative_mouse,self.preferences.cursor_mode) {
                                             self.release_pointer_capture(ctx);self.persist_preferences();
-                                            if old.1.remote()!=self.preferences.cursor_mode.remote() {self.send_capture_settings();}
                                             ctx.memory_mut(|m|m.close_popup());
                                         }
                                         if self.is_native() {

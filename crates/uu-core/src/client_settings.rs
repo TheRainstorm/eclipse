@@ -6,18 +6,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CursorMode {
-    #[default]
     #[serde(alias = "local")]
     Both,
+    #[default]
+    #[serde(alias = "hidden")]
     Remote,
-    Hidden,
 }
 impl CursorMode {
-    pub const ALL: [Self; 3] = [Self::Both, Self::Remote, Self::Hidden];
-    pub fn label(self) -> &'static str { match self { Self::Both => "本地和远端光标", Self::Remote => "仅远端光标", Self::Hidden => "隐藏光标" } }
+    pub const ALL: [Self; 2] = [Self::Remote, Self::Both];
+    pub fn label(self) -> &'static str { match self { Self::Both => "本地和远端光标", Self::Remote => "仅远端光标" } }
     pub fn local(self) -> bool { self == Self::Both }
-    pub fn remote(self) -> bool { self != Self::Hidden }
-    pub fn next(self) -> Self { match self { Self::Both => Self::Remote, Self::Remote => Self::Hidden, Self::Hidden => Self::Both } }
+    pub fn local_visible(self,remote_available:bool)->bool {self.local()||!remote_available}
+    pub fn remote(self) -> bool { true }
+    pub fn next(self) -> Self { match self { Self::Both => Self::Remote, Self::Remote => Self::Both } }
 }
 fn cursor<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CursorMode, D::Error> {
     #[derive(Deserialize)]
@@ -74,7 +75,7 @@ impl Default for ClientSettings {
             bitrate:5,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,rate_control:None,
             volume:100,muted:false,hud:false,capture_keyboard:true,
             vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
-            cursor_mode:CursorMode::Both,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
+            cursor_mode:CursorMode::Remote,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
     }
 }
 impl ClientSettings {

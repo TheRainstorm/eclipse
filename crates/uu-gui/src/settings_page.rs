@@ -243,10 +243,9 @@ fn audio(ui: &mut egui::Ui, s: &mut Settings) {
 fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
     group(ui, "光标显示", |ui| {
         for mode in CursorMode::ALL {
-            ui.add_enabled_ui(!state.native || !state.streaming || state.native_cursor || mode!=CursorMode::Remote,|ui| {
-                ui.radio_value(&mut s.cursor_mode, mode, mode.label());
-            });
+            ui.radio_value(&mut s.cursor_mode, mode, mode.label());
         }
+        if state.native&&state.streaming&&!state.native_cursor {note(ui,"主机未提供独立远端光标，当前保留本地指针。");}
         note(
             ui,
             "Ctrl+Alt+C 切换光标显示。新 Windows 原生主机独立传输远端光标的位置与形状；仅远端模式隐藏客户端光标。旧主机需更新后使用。",

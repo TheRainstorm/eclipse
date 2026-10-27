@@ -623,27 +623,29 @@ mod tests {
     }
     #[test]
     fn cursor_modes_migrate_legacy_settings_and_keep_display_ownership() {
-        for (json,expected) in [(r#"{}"#,CursorMode::Both),
+        for (json,expected) in [(r#"{}"#,CursorMode::Remote),
             (r#"{"remote_cursor":false}"#,CursorMode::Both),
             (r#"{"remote_cursor":true}"#,CursorMode::Remote),
             (r#"{"cursor_mode":"local"}"#,CursorMode::Both),
             (r#"{"cursor_mode":"remote"}"#,CursorMode::Remote),
             (r#"{"cursor_mode":"both"}"#,CursorMode::Both),
-            (r#"{"cursor_mode":"hidden"}"#,CursorMode::Hidden)] {
+            (r#"{"cursor_mode":"hidden"}"#,CursorMode::Remote)] {
             let settings:Settings=serde_json::from_str(json).unwrap();
             assert_eq!(settings.cursor_mode,expected);
             let saved=serde_json::to_value(&settings).unwrap();
             assert!(saved.get("remote_cursor").is_none());
             assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(),settings);
         }
-        let mut mode=CursorMode::Both;
+        let mut mode=CursorMode::Remote;
         for expected in CursorMode::ALL {
             assert_eq!(mode,expected);
             assert_eq!(mode.local(),mode==CursorMode::Both);
-            assert_eq!(mode.remote(),mode!=CursorMode::Hidden);
+            assert!(mode.remote());
+            assert!(mode.local_visible(false));
+            assert_eq!(mode.local_visible(true),mode==CursorMode::Both);
             mode=mode.next();
         }
-        assert_eq!(mode,CursorMode::Both);
+        assert_eq!(mode,CursorMode::Remote);
         assert!(serde_json::from_str::<Settings>(r#"{"cursor_mode":"unknown"}"#).is_err());
     }
 

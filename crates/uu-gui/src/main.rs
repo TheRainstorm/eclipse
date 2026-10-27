@@ -922,14 +922,9 @@ impl App {
                 self.persist_preferences();
             },
             shortcuts::Action::CursorMode=>{
-                let remote=self.preferences.cursor_mode.remote();
-                self.preferences.cursor_mode=if self.is_native()&&!self.controller.as_ref().is_some_and(|h|h.stats.native_cursor.supported()) {
-                    if self.preferences.cursor_mode==settings::CursorMode::Hidden {settings::CursorMode::Both}
-                    else {settings::CursorMode::Hidden}
-                } else {self.preferences.cursor_mode.next()};
+                self.preferences.cursor_mode=self.preferences.cursor_mode.next();
                 self.status=format!("光标：{}",self.preferences.cursor_mode.label());
                 self.persist_preferences();
-                if !self.is_native() && remote!=self.preferences.cursor_mode.remote() {self.send_capture_settings();}
             },
             shortcuts::Action::ToggleNested=>{
                 self.nested_passthrough=!self.nested_passthrough;
