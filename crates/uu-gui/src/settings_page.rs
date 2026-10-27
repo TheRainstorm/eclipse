@@ -54,6 +54,7 @@ impl Section {
 }
 pub struct State<'a> {
     pub native:bool,
+    pub native_cursor:bool,
     pub streaming: bool,
     pub can_save_profile: bool,
     pub dirty: bool,
@@ -222,13 +223,13 @@ fn audio(ui: &mut egui::Ui, s: &mut Settings) {
 fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
     group(ui, "光标显示", |ui| {
         for mode in CursorMode::ALL {
-            ui.add_enabled_ui(!state.native || mode!=CursorMode::Remote,|ui| {
+            ui.add_enabled_ui(!state.native || !state.streaming || state.native_cursor || mode!=CursorMode::Remote,|ui| {
                 ui.radio_value(&mut s.cursor_mode, mode, mode.label());
             });
         }
         note(
             ui,
-            "Ctrl+Alt+C 切换光标显示。原生串流支持显示或隐藏本机光标；仅远端光标需要被控端合成支持。",
+            "Ctrl+Alt+C 切换光标显示。新 Windows 原生主机独立传输远端光标的位置与形状；仅远端模式隐藏客户端光标。旧主机需更新后使用。",
         );
     });
     group(ui, "指针移动", |ui| {
@@ -505,7 +506,7 @@ pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::Cli
     });
     ui.add_space(12.);
     let mut wrapper=Settings {client:settings.clone(),..Default::default()};
-    let state=State { native:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None,actual_codec:None };
+    let state=State { native:false,native_cursor:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None,actual_codec:None };
     match section {Section::Encoding=>encoding(ui,&mut wrapper,&state),Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
     *settings=wrapper.client;
 }

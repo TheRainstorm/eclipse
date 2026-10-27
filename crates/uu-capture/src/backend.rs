@@ -42,6 +42,8 @@ pub enum CaptureError {
 /// into the encoder; `RawFrame::gpu` distinguishes a CPU buffer from a GPU
 /// handle that still needs a copy/download step.
 pub trait Capture: Send {
+    /// Independently updated pointer metadata, scoped to this capture source.
+    fn cursor(&self)->Option<crate::cursor::Stream>{None}
     /// Opt-in overlap requires a real bounded source wait and immutable GPU snapshots.
     /// Unsupported backends fail explicitly; they never poll their cached next_frame.
     fn enable_separate_encode_device(&mut self)->Result<(),CaptureError>{Err(CaptureError::Backend("separate encode device requires unscaled unrotated AMD DXGI capture".into()))}

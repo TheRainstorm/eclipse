@@ -322,6 +322,8 @@ impl Drop for InputWorker {
 }
 
 pub(crate) struct HostControl {
+    cursor:Mutex<Option<crate::native_cursor::Stream>>,
+    cursor_registered:AtomicBool,
     frame_trace_allowed: AtomicBool,
     frame_trace_registered: AtomicBool,
     quality:Mutex<Option<crate::native_quality::Runtime>>,
@@ -342,6 +344,7 @@ pub(crate) struct HostControl {
     gamepad_typed: AtomicBool,
 }
 impl HostControl {
+    pub fn set_cursor(&self,cursor:Option<crate::native_cursor::Stream>){*self.cursor.lock().unwrap()=cursor;}
     pub fn frame_trace(&self,enabled:bool){self.frame_trace_allowed.store(enabled,Ordering::Release);}
     pub fn clipboard_images(&self,enabled:bool){self.clipboard_version.store(if enabled{2}else{1},Ordering::Release);}
     pub fn gamepad_types(&self,enabled:bool){self.gamepad_typed.store(enabled,Ordering::Release);}
@@ -418,6 +421,7 @@ impl HostControl {
             worker,
             clipboard,
             clipboard_registered: AtomicBool::new(false),
+            cursor:Mutex::new(None),cursor_registered:AtomicBool::new(false),
             clipboard_version: std::sync::atomic::AtomicU8::new(1),
             gamepad_registered: AtomicBool::new(false),
             gamepad_typed: AtomicBool::new(false),
@@ -440,6 +444,11 @@ impl HostControl {
         pc.on_data_channel(Box::new(move |channel| {
             let host = host.clone();
             Box::pin(async move {
+                if host.stopped.load(Ordering::Acquire){let _=channel.close().await;return;}
+                if crate::native_cursor::accepts(&channel) && !host.cursor_registered.swap(true,Ordering::AcqRel) {
+                    let source=host.cursor.lock().unwrap().clone();
+                    if let Some(source)=source {crate::native_cursor::host_channel(channel,source);return;}
+                }
                 if crate::frame_trace::accepts_channel(&channel)
                     && host.frame_trace_allowed.load(Ordering::Acquire) && host.timing.trace.enabled()
                     && !host.frame_trace_registered.swap(true,Ordering::AcqRel) {

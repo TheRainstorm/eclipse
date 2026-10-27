@@ -25,6 +25,7 @@ pub mod native_signaling;
 pub mod internet;
 pub mod native_input;
 mod native_control;
+pub mod native_cursor;
 mod native_clipboard;
 mod native_audio;
 mod native_media;

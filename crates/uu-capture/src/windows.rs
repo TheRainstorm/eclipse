@@ -156,6 +156,7 @@ pub fn diagnostic_monitors() -> Result<Vec<MonitorDiagnostic>,CaptureError> {
 }
 
 pub struct DxgiCapture {
+    cursor:crate::cursor::Stream,
     source: Monitor,
     rotation: Rotation,
     last: Option<RawFrame>,
@@ -233,6 +234,7 @@ impl DxgiCapture {
             else{backend(format!("{} for {}: {e}", if hdr.is_some(){"DuplicateOutput1 HDR"}else{"DuplicateOutput SDR"}, selected.monitor.name))}
         })?;
         Ok(Self {
+            cursor:Default::default(),
             source: selected.monitor,
             rotation: selected.rotation,
             last: None,
@@ -258,7 +260,31 @@ impl DxgiCapture {
     fn timestamp(&self) -> Timestamp {
         Timestamp(self.started.elapsed().as_micros().min(u64::MAX as u128) as u64)
     }
+    fn update_cursor(&self,duplication:&IDXGIOutputDuplication,frame:&DXGI_OUTDUPL_FRAME_INFO) {
+        let previous=self.cursor.snapshot();
+        let position=if frame.LastMouseUpdateTime!=0 {
+            frame.PointerPosition.Visible.as_bool().then_some([frame.PointerPosition.Position.x,frame.PointerPosition.Position.y])
+        }else{previous.position};
+        let mut shape=None;
+        if frame.PointerShapeBufferSize>0 || (position.is_some()&&previous.shape.is_none()) {
+            let mut size=frame.PointerShapeBufferSize.max(4096);
+            for _ in 0..2 {
+                if size as usize>crate::cursor::MAX_BYTES {break;}
+                let mut data=vec![0;size as usize];let mut needed=0;let mut info=DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
+                let result=unsafe{duplication.GetFramePointerShape(size,data.as_mut_ptr().cast(),&mut needed,&mut info)};
+                if result.is_ok()&&needed<=size {
+                    data.truncate(needed as usize);
+                    let value=crate::cursor::Shape{description:crate::cursor::Description{kind:info.Type,width:info.Width,height:info.Height,pitch:info.Pitch,hotspot:[info.HotSpot.x,info.HotSpot.y]},data};
+                    if value.valid(){shape=Some(value);}break;
+                }
+                if needed<=size {break;}size=needed;
+            }
+            if shape.is_none() {self.cursor.clear();return;}
+        }
+        self.cursor.update([self.source.width,self.source.height],position,shape);
+    }
     fn invalidate(&mut self) {
+        self.cursor.clear();
         if self.duplication.is_some() { self.source_frames.retire(); }
         self.last = None;
         self.staging = None;
@@ -340,7 +366,8 @@ impl DxgiCapture {
             Err(e) => return Err(backend(e)),
         }
         // Every successful acquisition releases its frame, including all error paths.
-        let _lease = FrameLease(duplication);
+        let _lease = FrameLease(duplication.clone());
+        self.update_cursor(&duplication,&info);
         // AcquireNextFrame also reports pointer-only changes. Their resource
         // is not a new desktop image (some drivers expose the display's native
         // RGB10 surface here). Keep the last real image instead of inspecting
@@ -466,6 +493,7 @@ impl DxgiCapture {
     }
 }
 impl Capture for DxgiCapture {
+    fn cursor(&self)->Option<crate::cursor::Stream>{Some(self.cursor.clone())}
     fn enable_separate_encode_device(&mut self)->Result<(),CaptureError>{
         if self.rotation!=Rotation::None || self.adapter_vendor!=0x1002{return Err(backend("separate capture requires unrotated AMD DXGI / native AMF"));}
         if self.encode_device.is_some(){return Err(backend("separate capture already configured"));}
@@ -533,6 +561,7 @@ impl Capture for DxgiCapture {
         }
     }
 }
+impl Drop for DxgiCapture {fn drop(&mut self){self.cursor.clear();}}
 fn qpc_now() -> Option<u64> {
     let mut value = 0;
     unsafe { windows::Win32::System::Performance::QueryPerformanceCounter(&mut value).ok()?; }

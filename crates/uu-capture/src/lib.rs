@@ -1,13 +1,14 @@
 //! Screen capture.
 //!
 //! * Windows: DXGI Desktop Duplication for active whole monitors. Window
-//!   capture and compositor cursor composition are not implemented yet.
+//!   capture is unavailable; separate cursor metadata follows the DXGI desktop.
 //! * Linux: advertised native compositor capture or desktop portal / PipeWire
 //!   on Wayland, authenticated X11 GetImage on X11.
 //! * Everywhere: [`synthetic::SyntheticCapture`], used by tests and the
 //!   headless self-loop so no display is required.
 
 pub mod backend;
+pub mod cursor;
 pub mod frame_info;
 mod pixels;
 pub mod scale;

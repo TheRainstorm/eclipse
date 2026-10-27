@@ -34,6 +34,7 @@ pub use uu_media::DecoderKind;
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
 pub struct MediaStats {
+    pub native_cursor:crate::native_cursor::Client,
     pub native_hdr_requested:std::sync::OnceLock<bool>,
     pub native_hdr_capable:std::sync::atomic::AtomicBool,
     pub native_hdr_codecs:std::sync::OnceLock<Vec<uu_proto::media::VideoCodec>>,

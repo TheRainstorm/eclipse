@@ -15,6 +15,7 @@ pub fn bounded(inner:Box<dyn Capture>,bounds:Option<[u32;2]>)->Box<dyn Capture> 
 }
 struct Scaled {inner:Box<dyn Capture>,output:(u32,u32)}
 impl Capture for Scaled {
+    fn cursor(&self)->Option<crate::cursor::Stream>{self.inner.cursor()}
     fn frame_info(&self)->Option<crate::frame_info::FrameInfo>{self.inner.frame_info()}
     fn hdr_metadata(&self)->Option<uu_media::hdr::Metadata>{self.inner.hdr_metadata()}
     fn encoder_input_device(&self)->Option<uu_media::encoder::InputDevice>{self.inner.encoder_input_device()}

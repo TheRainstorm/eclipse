@@ -6,6 +6,8 @@ mod d3d11_renderer;
 mod dma_buf_renderer;
 #[path = "video_timing.rs"]
 mod video_timing;
+#[path = "video_cursor.rs"]
+mod video_cursor;
 
 // Upload decoded planes directly. No per-pixel ColorImage or CPU YUV conversion.
 // EGL-capable Linux clients may import leased DMA-BUF planes directly.
@@ -17,6 +19,8 @@ use std::sync::{Arc, Mutex};
 use uu_core::display_frames::{DisplayImage, PixelFormat, RawFrame, YuvColor};
 
 pub struct VideoTexture {
+    cursor:Mutex<Option<uu_core::native_cursor::Snapshot>>,
+    fallback_cursor:Mutex<video_cursor::Fallback>,
     size: [usize; 2],
     gpu: Option<Arc<Mutex<Planes>>>,
     fallback: Option<egui::TextureHandle>,
@@ -41,6 +45,7 @@ impl VideoTexture {
             }
         });
         let mut texture = Self {
+            cursor:Mutex::new(None),fallback_cursor:Mutex::new(Default::default()),
             size: [0, 0],
             gpu,
             fallback: None,
@@ -148,6 +153,10 @@ impl VideoTexture {
     pub fn size_vec2(&self) -> egui::Vec2 {
         egui::vec2(self.size[0] as f32, self.size[1] as f32)
     }
+    pub fn set_native_cursor(&self,state:Option<uu_core::native_cursor::Snapshot>) {
+        if let Some(gpu)=&self.gpu {gpu.lock().unwrap().cursor.state=state.clone();}
+        *self.cursor.lock().unwrap()=state;
+    }
     /// Call on the UI thread with the window's current GL context, once at disconnect.
     /// This draws only remote pixels, including imported hardware frames.
     pub fn snapshot(&self)->Result<egui::ColorImage,String> {
@@ -196,6 +205,9 @@ impl VideoTexture {
                 egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
+            if let (Some(cursor),Some(background))=(&*self.cursor.lock().unwrap(),&self.fallback_pixels) {
+                self.fallback_cursor.lock().unwrap().paint(ui,rect,cursor,background);
+            }
         }
     }
 }
@@ -223,6 +235,7 @@ fn valid(frame: &RawFrame) -> bool {
         && frame.data.len() >= len
 }
 struct Planes {
+    cursor:video_cursor::Textures,
     gl: Arc<glow::Context>,
     program: glow::Program,
     layout_uniform: Option<glow::UniformLocation>,
@@ -318,6 +331,7 @@ impl Planes {
         for (unit, name) in ["plane0", "plane1", "plane2"].iter().enumerate() {
             gl.uniform_1_i32(gl.get_uniform_location(program, name).as_ref(), unit as i32);
         }
+        let cursor=video_cursor::Textures::new(&gl,program);
         gl.use_program(previous_program);
         #[cfg(target_os = "linux")]
         let importer = dma_buf_renderer::Importer::new(gl.clone());
@@ -325,6 +339,7 @@ impl Planes {
         let d3d_importer = d3d11_renderer::Importer::new(gl.clone());
         let uv_scale_uniform = gl.get_uniform_location(program, "video_uv_layout");
         Ok(Self {
+            cursor,
             gl,
             program,
             layout_uniform,
@@ -656,6 +671,7 @@ impl Planes {
         gl.uniform_1_i32(self.hdr_output_uniform.as_ref(),i32::from(hdr_output));
         gl.uniform_1_f32(self.sdr_white_uniform.as_ref(),white_nits/80.);
         gl.uniform_1_f32(self.source_white_uniform.as_ref(),source_white);
+        self.cursor.bind(gl);
         let configured=started.elapsed().as_secs_f64();
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
         let drawn=started.elapsed().as_secs_f64();
@@ -675,6 +691,7 @@ impl Planes {
 impl Drop for Planes {
     fn drop(&mut self) {
         unsafe {
+            self.cursor.destroy(&self.gl);
             #[cfg(windows)]
             drop(self.d3d_importer.take());
             #[cfg(target_os = "linux")]

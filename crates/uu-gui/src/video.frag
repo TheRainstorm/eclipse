@@ -20,7 +20,11 @@ vec3 hdr_color(vec3 rgb){
 uniform vec4 coeff;
 uniform vec4 levels;
 uniform vec4 video_uv_layout;
-void main() {
+uniform sampler2D cursor_alpha;
+uniform sampler2D cursor_xor;
+uniform bool cursor_enabled;
+uniform vec4 cursor_bounds;
+void video_main() {
     vec2 video_uv=uv*video_uv_layout.xy;
     vec2 luma_uv=clamp(video_uv,video_uv_layout.zw*0.5,video_uv_layout.xy-video_uv_layout.zw*0.5);
     vec2 chroma_uv=clamp(video_uv,video_uv_layout.zw,video_uv_layout.xy-video_uv_layout.zw);
@@ -37,4 +41,19 @@ void main() {
         rgb=vec3(dot(wide,vec3(1.660491,-0.587641,-0.072850)),dot(wide,vec3(-0.124550,1.132900,-0.008349)),dot(wide,vec3(-0.018151,-0.100579,1.118730)));
         output_color=vec4(hdr_color(rgb),1.0);
     } else {output_color=vec4(clamp(rgb,0.0,1.0),1.0);}
+}
+void main() {
+    video_main();
+    if(cursor_enabled) {
+        vec2 p=(uv-cursor_bounds.xy)/cursor_bounds.zw;
+        if(all(greaterThanEqual(p,vec2(0))) && all(lessThan(p,vec2(1)))) {
+            vec4 cursor=texture(cursor_alpha,p);
+            vec3 rgb=mix(output_color.rgb,cursor.rgb,cursor.a);
+            ivec3 operand=ivec3(round(texture(cursor_xor,p).rgb*255.0));
+            if(any(notEqual(operand,ivec3(0)))) {
+                rgb=vec3(ivec3(round(clamp(rgb,0.0,1.0)*255.0))^operand)/255.0;
+            }
+            output_color=vec4(rgb,1.0);
+        }
+    }
 }

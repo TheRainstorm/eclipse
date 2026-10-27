@@ -161,6 +161,8 @@ impl App {
     fn connect_native_source(&mut self,path:Option<PathBuf>,device:Option<String>,internet:Option<PathBuf>,profile:Option<PathBuf>){
         self.remote_admin_ui=Default::default();
         let stats = Arc::new(uu_core::media::MediaStats::default());
+        let cursor_context=self.context.clone();
+        stats.native_cursor.set_waker(move||cursor_context.request_repaint());
         stats.pairing.enable_choices();
         let kind=self.decoder_kind();
         let _=stats.decoder_preference.set(kind);

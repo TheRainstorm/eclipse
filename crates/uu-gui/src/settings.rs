@@ -431,6 +431,7 @@ impl super::App {
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
             super::settings_page::State {
                 native,
+                native_cursor:stats.as_ref().is_some_and(|s|s.native_cursor.supported()),
                 streaming:self.stream_target.is_some(),
                 can_save_profile:self.stream_target.as_ref().is_some_and(|target| matches!(target.connection,super::sessions::ConnectionTarget::NativeProfile{..})),
                 dirty,

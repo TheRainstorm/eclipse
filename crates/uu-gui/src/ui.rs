@@ -1006,6 +1006,9 @@ impl App {
                 let input_screen = self.input_screen(track);
                 let texture=&self.textures[&track];let size=texture.size_vec2();let scale=(rect.width()/size.x).min(rect.height()/size.y);
                 let draw=Rect::from_center_size(rect.center(),size*scale);
+                let native_cursor=self.is_native()&&self.controller.as_ref().is_some_and(|h|h.stats.native_cursor.supported());
+                let cursor=if self.is_native()&&self.preferences.cursor_mode.remote(){self.controller.as_ref().and_then(|h|h.stats.native_cursor.snapshot())}else{None};
+                texture.set_native_cursor(cursor);
                 texture.paint(ui,draw);
                 if self.unpresented.remove(&track) { *self.frame_count.entry(track).or_insert(0) += 1; }
                 let pointer=ctx.input(|i|i.pointer.hover_pos());
@@ -1021,9 +1024,9 @@ impl App {
                     } else {messages.extend(self.pointer.events(events,draw,pointer,input_screen));}
                 }
                 let hidden=self.preferences.cursor_mode==super::settings::CursorMode::Hidden;
-                let local_cursor=!hidden && (self.is_native() || self.preferences.cursor_mode.local());
-                if (hidden || (!local_cursor && self.remote_cursor_active)) && !controls_active && pointer.is_some_and(|p|draw.contains(p)) {ctx.set_cursor_icon(egui::CursorIcon::None);}
-                if !hidden && (local_cursor || !self.remote_cursor_active) && !self.preferences.relative_mouse && !controls_active {
+                let local_cursor=!hidden && (self.preferences.cursor_mode.local() || (self.is_native()&&!native_cursor));
+                if (hidden || (!local_cursor && (native_cursor||self.remote_cursor_active))) && !controls_active && pointer.is_some_and(|p|draw.contains(p)) {ctx.set_cursor_icon(egui::CursorIcon::None);}
+                if !self.is_native() && !hidden && (local_cursor || !self.remote_cursor_active) && !self.preferences.relative_mouse && !controls_active {
                     let revision=self.cursor.revision();
                     let shape=self.controller.as_ref().and_then(|h|h.stats.cursor.lock().unwrap().as_ref().filter(|(r,_)|*r!=revision).cloned());
                     self.cursor.paint(ctx,shape,pointer,draw,input_screen,self.platform.cursor_size(ctx));

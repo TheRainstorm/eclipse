@@ -922,7 +922,7 @@ impl App {
             },
             shortcuts::Action::CursorMode=>{
                 let remote=self.preferences.cursor_mode.remote();
-                self.preferences.cursor_mode=if self.is_native() {
+                self.preferences.cursor_mode=if self.is_native()&&!self.controller.as_ref().is_some_and(|h|h.stats.native_cursor.supported()) {
                     if self.preferences.cursor_mode==settings::CursorMode::Hidden {settings::CursorMode::Both}
                     else {settings::CursorMode::Hidden}
                 } else {self.preferences.cursor_mode.next()};
@@ -1601,6 +1601,8 @@ impl App {
                 report["build"]=self.build_label.clone().into();
                 report["presentation_swap_interval"]=eframe::vsync_interval(ctx).into();
                 report["video_color"]=self.textures.get(&self.selected_track).and_then(|t|t.color_diagnostics()).into();
+                let cursor=s.native_cursor.snapshot();
+                report["native_cursor"]=serde_json::json!({"supported":s.native_cursor.supported(),"revision":cursor.as_ref().map(|c|c.revision),"shape_id":cursor.as_ref().map(|c|c.shape_id),"position":cursor.as_ref().and_then(|c|c.position),"desktop":cursor.as_ref().map(|c|c.desktop),"shape_size":cursor.as_ref().and_then(|c|c.shape.as_ref()).and_then(|s|s.description.size())});
                 report["video_paint_window"]=self.textures.get(&self.selected_track).and_then(|t|t.paint_diagnostics()).into();
                 report["native_input_available"]=s.native_input_available.load(Relaxed).into();
                 report["input_granted"]=s.capabilities.allows(uu_core::capabilities::Capability::Input).into();

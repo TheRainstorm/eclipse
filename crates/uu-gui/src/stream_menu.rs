@@ -852,12 +852,15 @@ impl super::App {
                                         let old=(self.preferences.relative_mouse,self.preferences.cursor_mode);
                                         ui.label("光标显示");
                                         for mode in super::settings::CursorMode::ALL {
-                                            ui.add_enabled_ui(!self.is_native() || mode!=super::settings::CursorMode::Remote,|ui| {
+                                            let supported=self.controller.as_ref().is_some_and(|h|h.stats.native_cursor.supported());
+                                            ui.add_enabled_ui(!self.is_native() || supported || mode!=super::settings::CursorMode::Remote,|ui| {
                                                 ui.selectable_value(&mut self.preferences.cursor_mode,mode,mode.label());
                                             });
                                         }
                                         if self.is_native() {
-                                            ui.small("原生串流目前由本机显示光标，尚不支持远端光标合成。");
+                                            if self.controller.as_ref().is_some_and(|h|h.stats.native_cursor.supported()) {ui.small("远端光标按主机实际位置显示，不改变视频画质。");}
+                                            else{ui.small("主机未提供独立光标；Windows 主机需更新后使用仅远端模式。");}
+                                            ui.small("Ctrl+Alt+C 切换光标显示");
                                         } else {
                                             ui.small("Ctrl+Alt+C 切换光标显示");
                                             ui.small(&self.settings_feedback);

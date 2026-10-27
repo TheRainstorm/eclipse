@@ -307,6 +307,7 @@ impl HostReport {
 struct ViewerLifetime(Arc<MediaStats>);
 impl Drop for ViewerLifetime {
     fn drop(&mut self){
+        self.0.native_cursor.reset(false);
         self.0.control_open.store(0,Ordering::Release);
         self.0.host_admin.disconnect();
         self.0.capabilities.enable(crate::capabilities::Capability::Input,false);
@@ -708,6 +709,7 @@ async fn send_video(
     let clipboard_images=crate::native_clipboard::images_offered(&offer.sdp);
     let typed_gamepads=crate::native_gamepad::typed_offered(&offer.sdp);
     let frame_trace=crate::frame_trace::offered(&offer.sdp);
+    let cursor_requested=crate::native_cursor::offered(&offer.sdp)?;
     match stream.lan_peer() {
         Some(ip) => peer.remote(offer.sdp, ip).await?,
         None => peer.remote_direct(offer.sdp).await?,
@@ -781,11 +783,15 @@ async fn send_video(
     controls.gamepad_types(typed_gamepads);
     controls.frame_trace(frame_trace);
     controls.set_session(config.session.clone());
+    let cursor=capture.cursor().filter(|_|cursor_requested);
+    let cursor_available=cursor.is_some();
+    controls.set_cursor(cursor);
     if let Some(displays)=&displays {displays.dimensions(width,height);}
     controls.set_displays(displays.clone());
     controls.attach(&peer.pc);
     let ice_started=Instant::now();
     let mut description=peer.description(false).await?;
+    if cursor_available {crate::native_cursor::advertise(&mut description)?;}
     if frame_trace && controls.timing().trace.enabled() {crate::frame_trace::advertise(&mut description);}
     startup.ice_us=elapsed_us(ice_started);startup.total_us=elapsed_us(preparation_started);
     startup.add(&mut description)?;
@@ -985,6 +991,7 @@ async fn receive_session(
     use crate::native_controller::Stage;
     // All callers authenticate signaling before entering this shared path.
     stats.native_progress.set(Stage::PreparingHost);
+    stats.native_cursor.reset(false);
     let first_frame_baseline=stats.decoded_total.load(Ordering::Acquire);
     peer.receiver(frames, stats.clone()).await?;
     let channel = peer
@@ -1001,6 +1008,7 @@ async fn receive_session(
     stats.diagnostics.record(serde_json::json!({"event":"native_local_ice_gather","elapsed_us":elapsed_us(ice_started)}));
     crate::native_clipboard::advertise(&mut description);
     crate::native_gamepad::advertise(&mut description);
+    crate::native_cursor::advertise(&mut description)?;
     let mut quality_request=stats.native_quality_request.get().cloned();
     if let (Some(request),Some(current))=(quality_request.as_mut(),*stats.native_quality_current.lock().unwrap()) {
         // A source renewal keeps the latest applied live settings instead of
@@ -1058,6 +1066,8 @@ async fn receive_session(
     stats.diagnostics.record(serde_json::json!({"event":"native_color_negotiated","hdr":hdr}));
     let clipboard_images=crate::native_clipboard::images_offered(&answer.sdp);
     let typed_gamepads=crate::native_gamepad::typed_offered(&answer.sdp);
+    let cursor_available=crate::native_cursor::offered(&answer.sdp)?;
+    stats.native_cursor.reset(cursor_available);
     if let Some(response)=&quality {ensure!(response.codecs.contains(&answer.codec),"主机实际编码与能力回报不一致");}
     stats.capabilities.enable(crate::capabilities::Capability::Quality,quality.is_some());
     stats.diagnostics.record(serde_json::json!({"event":"native_video_negotiated","width":answer.width,"height":answer.height,"fps":answer.fps,"bitrate_kbps":answer.bitrate_kbps,"codec":answer.codec,"client_request":quality_request,"host_capabilities":quality,"rate_control":rate}));
@@ -1071,6 +1081,7 @@ async fn receive_session(
         Some(ip) => peer.remote(answer.sdp, ip).await?,
         None => peer.remote_direct(answer.sdp).await?,
     }
+    let _cursor_channel=if cursor_available {Some(crate::native_cursor::viewer_channel(&peer.pc,stats.clone()).await?)}else{None};
     let _frame_telemetry=if stats.native_frame_trace_supported.load(Ordering::Acquire) {
         match crate::frame_trace::viewer_channel(&peer.pc,stats.clone()).await {
             Ok(channel)=>Some(channel),
