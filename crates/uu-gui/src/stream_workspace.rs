@@ -315,7 +315,7 @@ impl Window {
             if session.app.active_session {
                 if let Some(handle) = &session.app.controller {
                     let context = session.app.context.clone();
-                    handle.frames.set_waker(move || context.request_repaint());
+                    handle.frames.set_waker(move || context.request_video_frame());
                 }
             }
         }
@@ -350,7 +350,7 @@ impl Window {
                 );
                 if let Some(handle) = &session.app.controller {
                     let context = session.app.context.clone();
-                    handle.frames.set_waker(move || context.request_repaint());
+                    handle.frames.set_waker(move || context.request_video_frame());
                 }
             }
             eframe::request_vsync(ctx, vsync);

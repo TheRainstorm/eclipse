@@ -215,7 +215,7 @@ impl App {
             Ok(handle) => {
                 let context = self.context.clone();
                 handle.frames.enable_planar();
-                handle.frames.set_waker(move || context.request_repaint());
+                handle.frames.set_waker(move || context.request_video_frame());
                 if let Err(error)=super::clipboard::start_following(handle.stats.clipboard.clone(),self.clipboard_window.clone()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(format!("剪贴板不可用：{error}"));}
                 self.controller = Some(handle);
                 self.window_sizing.borrow_mut().begin_stream();

@@ -1350,7 +1350,7 @@ impl App {
             Ok(h) => {
                 let context = self.context.clone();
                 h.frames.enable_planar();
-                h.frames.set_waker(move || context.request_repaint());
+                h.frames.set_waker(move || context.request_video_frame());
                 h.stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
                 h.stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
                 if let Err(error)=clipboard::start_following(h.stats.clipboard.clone(),self.clipboard_window.clone()) {

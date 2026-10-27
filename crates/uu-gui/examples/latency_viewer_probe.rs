@@ -9,6 +9,9 @@ mod wgl_interop;
 #[cfg(windows)]
 #[path="../src/video_hdr.rs"]
 mod video_hdr;
+#[allow(dead_code)]
+#[path="../src/window_context.rs"]
+mod window_context;
 use anyhow::{ensure, Context, Result};
 use eframe::egui;
 use serde::Deserialize;
@@ -202,6 +205,7 @@ impl eframe::App for Probe {
             self.samples.lock().unwrap().push(serde_json::json!({
                 "pipeline_at_us":self.stats.pipeline_trace.now_us(),"at_ms":self.started.elapsed().as_millis(),"decoded":self.stats.decoded_total.load(Ordering::Relaxed),
                 "width":w,"height":h,"backend":self.stats.backend(),
+                "source_refresh_hz":self.stats.remote_screens.lock().unwrap().for_track(0).map(|s|s.refresh_hz).filter(|hz|*hz>1),
                 "received_video_bitrate_kbps":self.stats.bitrate_kbps.load(Ordering::Relaxed),
                 "decode_ms_window_mean":self.stats.decode_ms(),
                 "errors":self.stats.errors.load(Ordering::Relaxed),
@@ -306,7 +310,7 @@ fn main() -> Result<()> {
             }
             if let Some(ready)=ui_ready.take(){let _=ready.send(());}
             let ctx = cc.egui_ctx.clone();
-            images.set_waker(move || ctx.request_repaint());
+            images.set_waker(move || window_context::request_video_frame(&ctx,egui::ViewportId::ROOT));
             Ok(Box::new(Probe {
                 gl,
                 context:cc.egui_ctx.clone(),
