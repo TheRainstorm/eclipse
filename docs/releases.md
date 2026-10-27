@@ -2,7 +2,7 @@
 
 功能里程碑以及每组可交付的小功能或修复使用 `v主版本.次版本.修订号` 标签；小组更新递增修订号，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases) 提供。
 
-当前版本 **v0.19.5** 更新 HUD 三分钟延迟曲线、逐项说明与复制，统一悬浮菜单样式，并将客户端快捷键移到应用设置，见[0.19.5 说明](releases/v0.19.5.md)。此前 HDR、刷新率与渲染改进见[0.19.4 说明](releases/v0.19.4.md)。自定义快捷键与中文悬停详情见[0.19.3 说明](releases/v0.19.3.md)。此前 HUD、原始丢包与控制恢复见[0.19.2 说明](releases/v0.19.2.md)。实验性 PyroWave 原生编解码的范围、GPU 实测与限制见[0.19.0 说明](releases/v0.19.0.md)和[使用文档](pyrowave.md)。此前客户端码率、光标与 HUD 见[0.18.10 说明](releases/v0.18.10.md)。此前的外屏和菜单修复见[0.18.9 说明](releases/v0.18.9.md)。正式产物以 GitHub 上实际可用的发布为准，旧标签和产物保持不变。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
+当前版本 **v0.19.6** 改用 Windows 原生 D3D 视频合成并复用未变化的 UI 图层，降低 WGL 同步等待，见[0.19.6 说明](releases/v0.19.6.md)。HUD、菜单与全局快捷键见[0.19.5 说明](releases/v0.19.5.md)。此前 HDR、刷新率与渲染改进见[0.19.4 说明](releases/v0.19.4.md)。自定义快捷键与中文悬停详情见[0.19.3 说明](releases/v0.19.3.md)。此前 HUD、原始丢包与控制恢复见[0.19.2 说明](releases/v0.19.2.md)。实验性 PyroWave 原生编解码的范围、GPU 实测与限制见[0.19.0 说明](releases/v0.19.0.md)和[使用文档](pyrowave.md)。此前客户端码率、光标与 HUD 见[0.18.10 说明](releases/v0.18.10.md)。此前的外屏和菜单修复见[0.18.9 说明](releases/v0.18.9.md)。正式产物以 GitHub 上实际可用的发布为准，旧标签和产物保持不变。已有源码目录时可直接获取正式产物，无需本机 Rust 编译：
 
 ```sh
 python3 tools/release/download.py
