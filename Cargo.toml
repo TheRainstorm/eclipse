@@ -26,7 +26,7 @@ webrtc-dtls = { path = "vendor/webrtc-dtls" }
 winit = { path = "vendor/winit" }
 
 [workspace.package]
-version = "0.19.6"
+version = "0.19.7"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/TheRainstorm/uu-client"
