@@ -79,6 +79,29 @@ float4 encode(float4 position:SV_Position):SV_Target {
     }
     return options.x<0.5?float4((16+219*y)/255,0,0,1):float4((128+224*uv)/255,0,1);
 }
+// SDR desktop samples stay in their original nonlinear RGB signal. LEFT
+// 4:2:0 places chroma at the left luma column and between the two rows.
+// A horizontal [1/4, 1/2, 1/4] tent limits subpixel text aliasing before decimation.
+float3 sdr_signal_at(float2 uv) {
+    uv=clamp(uv,0.5/dimensions.xy,1-0.5/dimensions.xy);
+    return options.z>0.5?image.SampleLevel(bilinear,uv,0).rgb:signal_at(uv);
+}
+float4 encode_sdr(float4 position:SV_Position):SV_Target {
+    float3 rgb;
+    if(options.x<0.5)rgb=sdr_signal_at(position.xy/dimensions.xy);
+    else {
+        float2 center=float2(position.x*2-0.5,position.y*2)/dimensions.xy;
+        float2 step=1/dimensions.xy;
+        float2 top=center-float2(0,step.y*0.5);
+        float2 bottom=center+float2(0,step.y*0.5);
+        rgb=(sdr_signal_at(top)+sdr_signal_at(bottom))*0.25;
+        rgb+=(sdr_signal_at(top-float2(step.x,0))+sdr_signal_at(bottom-float2(step.x,0))
+            +sdr_signal_at(top+float2(step.x,0))+sdr_signal_at(bottom+float2(step.x,0)))*0.125;
+    }
+    float y=dot(rgb,float3(0.299,0.587,0.114));
+    float2 uv=float2((rgb.b-y)/1.772,(rgb.r-y)/1.402);
+    return options.x<0.5?float4((16+219*y)/255,0,0,1):float4((128+224*uv)/255,0,1);
+}
 float4 decode_sdr(float4 position:SV_Position):SV_Target {
     float2 coord=position.xy/dimensions.zw;
     // MPEG-2/LEFT 4:2:0: chroma is horizontally co-sited with luma.
@@ -200,7 +223,7 @@ struct Color {
         check(context.As(&threading),"query HDR context threading");threading->SetMultithreadProtected(TRUE);
         ComPtr<ID3DBlob> vertex,pixel,errors;
         check(D3DCompile(shader,sizeof(shader)-1,nullptr,nullptr,nullptr,"vertex","vs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&vertex,&errors),"compile color vertex shader");
-        HRESULT result=D3DCompile(shader,sizeof(shader)-1,nullptr,nullptr,nullptr,decoder?(hdr?"decode":"decode_sdr"):"encode","ps_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&pixel,&errors);
+        HRESULT result=D3DCompile(shader,sizeof(shader)-1,nullptr,nullptr,nullptr,decoder?(hdr?"decode":"decode_sdr"):(hdr?"encode":"encode_sdr"),"ps_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&pixel,&errors);
         if(FAILED(result)&&errors)throw std::runtime_error(std::string((const char*)errors->GetBufferPointer(),errors->GetBufferSize()));
         check(result,"compile color pixel shader");
         check(device->CreateVertexShader(vertex->GetBufferPointer(),vertex->GetBufferSize(),nullptr,&vs),"create HDR vertex shader");

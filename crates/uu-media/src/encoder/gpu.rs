@@ -40,12 +40,12 @@ pub(super) struct Input {
     pixel_format:PixelFormat,
     profile:Option<VpProfile>,
     settings:Settings,
-    hdr:Option<crate::d3d11_color::Converter>,
+    color:Option<crate::d3d11_color::Converter>,
 }
 impl Input {
-    pub fn amf_path(&self)->&'static str {if self.hdr.is_some(){"color-converter"}else{"video-processor"}}
+    pub fn amf_path(&self)->&'static str {if self.color.is_some(){"color-converter"}else{"video-processor"}}
     pub fn amf_target(&self)->Result<AmfTarget,String> {
-        if let Some(converter)=&self.hdr {return converter.target().map(AmfTarget::ColorConverter);}
+        if let Some(converter)=&self.color {return converter.target().map(AmfTarget::ColorConverter);}
         self.video_target().map(AmfTarget::VideoProcessor).map_err(|e|e.to_string())
     }
     pub fn amf_convert(&self,frame:&RawFrame,target:&AmfTarget)->Result<ID3D11Texture2D,String> {
@@ -53,7 +53,7 @@ impl Input {
         let (texture,device)=surface.capture_texture()?;
         self.validate_source(frame,texture,device).map_err(|e|e.to_string())?;
         let guard=surface.capture_read()?;
-        let output=match (&self.hdr,target) {
+        let output=match (&self.color,target) {
             (Some(converter),AmfTarget::ColorConverter(target))=>converter.convert_into(texture,target),
             (None,AmfTarget::VideoProcessor(target))=>self.video_convert_into(frame,target,true).map_err(|e|e.to_string()),
             _=>Err("AMF target conversion path changed".into()),
@@ -73,10 +73,18 @@ impl Input {
             let video_context:ID3D11VideoContext=context.cast()?;
             let mut desc=D3D11_TEXTURE2D_DESC::default();texture.GetDesc(&mut desc);
             let source=[desc.Width,desc.Height];
-            let hdr=if settings.hdr || frame.format==crate::PixelFormat::ScRgb16 {
+            let color=if settings.hdr || frame.format==crate::PixelFormat::ScRgb16 {
                 Some(crate::d3d11_color::Converter::new(&device,[settings.width,settings.height],false,settings.hdr,false,settings.source_hdr.map_or(203.,|m|m.sdr_white_nits))
                     .map_err(|e|{tracing::warn!(%e,"HDR GPU conversion unavailable");windows::core::Error::empty()})?)
-            }else{None};
+            }else {
+                // Validate NV12 plane render views once; older video devices
+                // retain the established video-processor conversion path.
+                match crate::d3d11_color::Converter::new(&device,[settings.width,settings.height],false,false,false,203.)
+                    .and_then(|converter|{let _=converter.target()?;Ok(converter)}) {
+                    Ok(converter)=>Some(converter),
+                    Err(error)=>{tracing::warn!(%error,"SDR encoder shader unavailable; using video processor");None}
+                }
+            };
             let rate=DXGI_RATIONAL{Numerator:settings.fps,Denominator:1};
             let enumerator=video.CreateVideoProcessorEnumerator(&D3D11_VIDEO_PROCESSOR_CONTENT_DESC{
                 InputFrameFormat:D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,InputFrameRate:rate,
@@ -101,7 +109,7 @@ impl Input {
             MFCreateDXGIDeviceManager(&mut token,&mut manager)?;
             let manager=manager.ok_or_else(windows::core::Error::empty)?;
             manager.ResetDevice(&device,token)?;
-            Ok(Self{device,context,video,video_context,enumerator,processor,manager,source,source_format:desc.Format,pixel_format:frame.format,profile:std::env::var_os("UU_ENCODE_PROFILE").map(|_|VpProfile::default()),settings,hdr})
+            Ok(Self{device,context,video,video_context,enumerator,processor,manager,source,source_format:desc.Format,pixel_format:frame.format,profile:std::env::var_os("UU_ENCODE_PROFILE").map(|_|VpProfile::default()),settings,color})
         }
     }
     pub fn sample(&self,frame:&RawFrame)->Result<IMFSample,String> {
@@ -112,9 +120,9 @@ impl Input {
     }
     pub fn device_identity(&self)->Result<super::DeviceIdentity,String>{super::input_device::device_identity(&self.device)}
     fn sample_locked(&self,frame:&RawFrame)->Result<IMFSample,String> {
-        if let Some(converter)=&self.hdr {
-            if !frame.is_consistent() || (frame.width,frame.height)!=(self.settings.width,self.settings.height) {return Err("HDR source geometry changed".into());}
-            let surface=frame.d3d11.as_ref().ok_or("missing HDR source")?;
+        if let Some(converter)=&self.color {
+            if !frame.is_consistent() || (frame.width,frame.height)!=(self.settings.width,self.settings.height) {return Err("GPU source geometry changed".into());}
+            let surface=frame.d3d11.as_ref().ok_or("missing GPU source")?;
             let (texture,_)=surface.capture_texture()?;
             let output=converter.convert(texture,0,false)?;
             return unsafe{make_sample(&output,frame,self.settings.fps)}.map_err(|e|e.to_string());

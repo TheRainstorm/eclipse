@@ -18,6 +18,8 @@ Windows AMD 编码使用原生 AMF 的 HEVC Main10 或 AV1 10 位模式；其它
 
 Windows SDR 硬解后的 NV12 使用显式着色器转换为 RGB，按 BT.601/BT.709、全范围/有限范围和左对齐色度采样规则重建，并限制采样到实际可见区域，避免读取编码对齐填充。缺少所需着色器或平面纹理能力的旧设备保留视频处理器回退。诊断中的 `video_color` 会记录实际格式、色彩解释及转换后端。
 
+Windows 硬编的 SDR GPU 输入也显式转换为 NV12：先按输出分辨率采样 RGB，再以水平方向的三点滤波与垂直方向的两点平均生成左对齐色度，减少文字子像素边缘在降采样时产生的彩色走样。普通 BGRA 保留原有 SDR 信号，浮点 scRGB 的 SDR 回退先应用原亮度映射；HDR P010 编码保持原路径。转换和缩放均在 GPU 完成，平面渲染能力不足时使用原视频处理器。4:2:0 仍会损失细小真彩色细节，不能等同于 4:4:4 或 RGB 无损传输。
+
 scRGB 的 `1.0` 对应 80 cd/m²，PQ 表示绝对亮度；界面白色使用 Windows 当前 SDR 白色亮度。实现参考 [Windows Advanced Color 文档](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range)、[Sunshine](https://github.com/LizardByte/Sunshine) 和 [Moonlight 的 D3D11 呈现设计](https://github.com/moonlight-stream/moonlight-qt/blob/master/app/streaming/video/ffmpeg-renderers/d3d11va.cpp)。
 
 ## 验证边界
