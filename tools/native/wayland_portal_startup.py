@@ -72,8 +72,10 @@ def inside(args):
         start('generated-surface', ['foot', '--app-id=uu-portal-generated', '--',
             sys.executable, '-u', '-c',
             'import sys,time,os,select,tty,json\nfrom pathlib import Path\n'
-            'tty.setraw(0);os.write(1,b"\\x1b[?1003h\\x1b[?1006h");i=0\nwhile True:\n'
-            ' if i==0 or not os.environ.get("ECLIPSE_STATIC_DESKTOP"):\n'
+            'tty.setraw(0);os.write(1,b"\\x1b[?1003h\\x1b[?1006h");i=0;last_size=None\nwhile True:\n'
+            ' size=os.get_terminal_size(0)\n'
+            ' if i==0 or size!=last_size or not os.environ.get("ECLIPSE_STATIC_DESKTOP"):\n'
+            '  last_size=size\n'
             '  if os.environ.get("ECLIPSE_NATIVE_QUADRANTS"):\n'
             '   size=os.get_terminal_size(0);sys.stdout.write("\\x1b[?7l")\n'
             '   for row in range(size.lines):\n'
