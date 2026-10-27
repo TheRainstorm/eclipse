@@ -101,11 +101,11 @@ def inspect(name, data, forbidden=(), source=False):
     return [dict(path=name, reason=reason) for reason in issues]
 
 
-def history(root, forbidden):
+def history(root, forbidden, prefix=''):
     names = {}
     for record in subprocess.check_output(['git', 'rev-list', '--objects', '--all'], cwd=root).splitlines():
         obj, _, name = record.partition(b' ')
-        names.setdefault(obj, name.decode('utf-8', errors='replace'))
+        names.setdefault(obj, prefix + name.decode('utf-8', errors='replace'))
     result = []
     proc = subprocess.Popen(['git', 'cat-file', '--batch'], cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     try:
@@ -151,6 +151,14 @@ def artifact(path, forbidden):
     return result
 
 
+def source_repositories(root, prefix=''):
+    yield root, prefix
+    for record in subprocess.check_output(['git', 'ls-files', '--stage', '-z'], cwd=root).split(b'\0'):
+        if record.startswith(b'160000 '):
+            path = record.split(b'\t', 1)[1].decode('utf-8')
+            yield from source_repositories(root / path, prefix + path + '/')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[2])
@@ -159,13 +167,18 @@ def main():
     parser.add_argument('--artifact', type=Path, action='append', default=[], help='Scan a ZIP, tarball or executable')
     args = parser.parse_args()
     forbidden = variants([file.read_bytes() for file in args.forbid_file])
-    names = subprocess.check_output(['git', 'ls-files', '-z'], cwd=args.root).split(b'\0')
+    modules = subprocess.check_output(['git', 'submodule', 'status', '--recursive'], cwd=args.root, text=True)
+    if any(line and not line.startswith((' ', '+')) for line in modules.splitlines()):
+        raise RuntimeError('Initialize submodules before scanning their source: git submodule update --init --recursive')
+    names = subprocess.check_output(['git', 'ls-files', '--recurse-submodules', '-z'], cwd=args.root).split(b'\0')
     issues = []
     for name in names:
         if not name: continue
         path = name.decode('utf-8')
         issues += inspect(path, (args.root / path).read_bytes(), forbidden, source=True)
-    if args.history: issues += history(args.root, forbidden)
+    if args.history:
+        for root, prefix in source_repositories(args.root):
+            issues += history(root, forbidden, prefix)
     for path in args.artifact: issues += artifact(path, forbidden)
     if issues:
         print(json.dumps({'result':'failed', 'findings':issues}, ensure_ascii=False, indent=2))

@@ -4,6 +4,16 @@ Eclipse 的原生串流、设备身份与授权、采集、编解码、输入所
 
 当前插件采用 Rust 构建时链接与显式注册，不是可热加载的 DLL，也不承诺跨版本二进制 ABI。默认构建启用 `uu-compat` 功能，保留已有配置与连接方式。核心库可以独立构建、测试，不加载插件时注册表为空。
 
+`plugins/` 是独立公开仓库 [uu-client-plugins](https://github.com/TheRainstorm/uu-client-plugins) 的 Git 子模块。主项目固定具体提交，不跟随插件分支自动升级。首次获取源码和更新主项目后应初始化相应提交：
+
+```sh
+git clone --recurse-submodules https://github.com/TheRainstorm/uu-client.git
+# 已有检出：
+git submodule update --init --recursive
+```
+
+插件 crate 在主 workspace 内构建并继承版本及依赖；单独克隆插件仓库不能独立运行 Cargo。插件仓库维护代码、许可及固定 SDK 的回归工作流，主项目维护应用集成、Cargo.lock 和发布。先提交并推送插件改动，再提交主项目的子模块指针。CI 递归检出子模块；打包拒绝未初始化、提交不符或包含未提交源码的插件检出。GitHub 自动生成的主仓库源码压缩包不含子模块内容，构建请使用递归克隆。
+
 ```sh
 cargo build --release -p uu-gui -p uu-cli --no-default-features
 cargo test --release -p uu-core

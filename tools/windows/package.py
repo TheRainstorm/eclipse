@@ -21,6 +21,9 @@ ROOT = Path(__file__).resolve().parents[2]
 _pyro_spec=importlib.util.spec_from_file_location('eclipse_pyrowave_runtime',ROOT/'tools/pyrowave/build.py')
 pyrowave_runtime=importlib.util.module_from_spec(_pyro_spec)
 _pyro_spec.loader.exec_module(pyrowave_runtime)
+_source_spec=importlib.util.spec_from_file_location('eclipse_release_source',ROOT/'tools/release/source.py')
+release_source=importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(release_source)
 OUTPUT = ROOT / 'artifacts/packages'
 TARGET = 'x86_64-pc-windows-gnu'
 LICENSES = ('LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt')
@@ -34,7 +37,7 @@ def required_files(manifest):
     if type(version) is not int or version not in (1, 2, 3):
         raise ValueError('不支持的 Windows 包格式版本')
     return REQUIRED if version == 3 else VPL_REQUIRED if version==2 else LEGACY_REQUIRED
-SOURCE_PATHS = ('crates', 'plugins', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
+SOURCE_PATHS = ('crates', 'plugins', '.gitmodules', 'tools/release/source.py', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                 '.cargo', 'tools/windows', 'tools/pyrowave','tools/licenses', 'licenses', *LICENSES)
 
 
@@ -79,12 +82,7 @@ def sha256(path):
 
 
 def clean_revision():
-    status = subprocess.check_output(
-        ['git', 'status', '--porcelain', '--untracked-files=all', '--', *SOURCE_PATHS],
-        cwd=ROOT, text=True)
-    if status.strip():
-        raise RuntimeError('请先提交构建源码和 tools/windows 中的改动，再打包：\n' + status)
-    return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+    return release_source.revision(ROOT, SOURCE_PATHS)
 
 
 def check_tools():

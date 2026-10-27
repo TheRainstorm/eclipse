@@ -1609,5 +1609,12 @@
   "加入目标主机房间": "Join target host room",
   "目标编号与本机 UU 编号相同。控制端应填写另一台设备的编号；更换 UU 账号不会更改本机设备编号。": "Target ID matches this device's UU ID. Enter the other device's ID on the controller. Changing UU accounts does not change the local device ID.",
   "UU 兼容插件": "UU compatibility plugin",
-  "插件未安装或已禁用；IP 直连与自建连接服务可继续使用。": "Plugin is not installed or is disabled. IP and self-hosted connections remain available."
+  "插件未安装或已禁用；IP 直连与自建连接服务可继续使用。": "Plugin is not installed or is disabled. IP and self-hosted connections remain available.",
+  "官方 UU 客户端连接本机（实验性）": "Official UU clients connecting to this PC (experimental)",
+  "允许官方 UU 客户端连接本机": "Allow official UU clients to connect to this PC",
+  "默认关闭。使用 UU 账号允许的连接，不授予 Eclipse 设备管理权限。": "Disabled by default. Uses connections authorized by the UU account and grants no Eclipse administration privileges.",
+  "仍受本机服务的输入、声音和剪贴板许可限制。保存后重启服务生效。": "Also subject to the host service's input, audio and clipboard permissions. Restart the service after saving.",
+  "保存兼容设置": "Save compatibility settings",
+  "兼容设置已保存，重启服务后生效": "Compatibility settings saved; restart the service to apply",
+  "启动服务后发布已启用入口。Eclipse 原生连接仍需设备配对。": "Starting the service publishes enabled endpoints. Eclipse native connections still require device pairing."
 }

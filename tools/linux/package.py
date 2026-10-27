@@ -22,9 +22,12 @@ ROOT = Path(__file__).resolve().parents[2]
 _pyro_spec=importlib.util.spec_from_file_location('eclipse_pyrowave_runtime',ROOT/'tools/pyrowave/build.py')
 pyrowave_runtime=importlib.util.module_from_spec(_pyro_spec)
 _pyro_spec.loader.exec_module(pyrowave_runtime)
+_source_spec=importlib.util.spec_from_file_location('eclipse_release_source',ROOT/'tools/release/source.py')
+release_source=importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(release_source)
 LICENSES = ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt']
 
-SOURCE_PATHS = ['crates', 'plugins', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
+SOURCE_PATHS = ['crates', 'plugins', '.gitmodules', 'tools/release/source.py', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                 '.cargo', 'tools/linux','tools/pyrowave', 'tools/licenses', 'licenses', *LICENSES]
 FEATURES = ['vaapi', 'intel-vpl', 'pyrowave','opus', 'wayland-portal', 'wayland-screencopy', 'x11', 'gamepad']
 
@@ -77,9 +80,7 @@ def reuse_archive(archive, destination, revision):
 
 
 def source_revision():
-    status = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all', '--', *SOURCE_PATHS], cwd=ROOT, text=True)
-    if status.strip(): raise RuntimeError('Commit all package sources first:\n' + status)
-    return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+    return release_source.revision(ROOT, SOURCE_PATHS)
 
 
 def main(argv=None):

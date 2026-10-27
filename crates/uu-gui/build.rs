@@ -32,6 +32,8 @@ fn embed_provenance() {
     };
     let inputs = [
         "crates",
+        "plugins",
+        ".gitmodules",
         "vendor",
         "assets",
         "Cargo.toml",
@@ -54,7 +56,7 @@ fn embed_provenance() {
             );
         }
     }
-    let mut args = vec!["status", "--porcelain", "--untracked-files=normal", "--"];
+    let mut args = vec!["status", "--porcelain", "--ignore-submodules=none", "--untracked-files=normal", "--"];
     args.extend(inputs);
     let dirty = match git(&args) {
         Some(status) if status.trim().is_empty() => "false",

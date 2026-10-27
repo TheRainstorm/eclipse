@@ -111,6 +111,8 @@ struct ServiceEditor {
 struct PreviewSlot {revision:String,texture:Option<egui::TextureHandle>,loaded:bool}
 struct PreviewJob {device:String,revision:String,rx:std::sync::mpsc::Receiver<Result<super::wallpapers::Thumbnail,String>>}
 pub(super) struct Workspace {
+    official_config:Option<uu_core::Config>,
+    official:Result<uu_compat::official::Settings,String>,
     #[cfg(windows)]
     background_service:super::service_ui::Entry,
     pub route: HomeRoute,
@@ -719,6 +721,8 @@ impl Workspace {
             feedback.error(super::ui_feedback::Scope::Devices, notice);
         }
         Self {
+            official_config:config.cloned(),
+            official:config.map(|c|uu_compat::official::Settings::load(c).map_err(|e|e.to_string())).unwrap_or_else(||Err(uu_i18n::text("无法确定设备配置目录").into())),
             route: HomeRoute {
                 page: if std::env::var_os("ECLIPSE_SHOW_SHARING").is_some() {
                     Page::Services
@@ -1718,8 +1722,34 @@ impl Workspace {
             }
             if info.login_busy { ui.spinner(); }
             if !info.login_status.is_empty() { ui.label(&info.login_status); }
+            ui.collapsing(uu_i18n::text("官方 UU 客户端连接本机（实验性）"),|ui| {
+                let Ok(settings)=&mut self.official else {
+                    if let Err(error)=&self.official {ui.colored_label(theme::DANGER,error);}
+                    return;
+                };
+                ui.checkbox(&mut settings.enabled,uu_i18n::text("允许官方 UU 客户端连接本机"));
+                muted(ui,uu_i18n::text("默认关闭。使用 UU 账号允许的连接，不授予 Eclipse 设备管理权限。"));
+                ui.add_enabled_ui(settings.enabled,|ui| {
+                    ui.checkbox(&mut settings.control,uu_i18n::text("键盘和鼠标"));
+                    ui.checkbox(&mut settings.audio,uu_i18n::text("共享系统声音"));
+                    ui.checkbox(&mut settings.clipboard,uu_i18n::text("文本剪贴板"));
+                });
+                muted(ui,uu_i18n::text("仍受本机服务的输入、声音和剪贴板许可限制。保存后重启服务生效。"));
+                let mut save=false;let mut restart=false;
+                ui.horizontal(|ui| {
+                    save=ui.button(uu_i18n::text("保存兼容设置")).clicked();
+                    if self.host.running(){restart=ui.button(uu_i18n::text("保存并重启服务")).clicked();}
+                });
+                if save||restart {
+                    let result=self.official_config.as_ref().ok_or_else(||anyhow::anyhow!("configuration unavailable")).and_then(|config|settings.save(config));
+                    match result {
+                        Ok(())=>{self.feedback.success(super::ui_feedback::Scope::Services(0),uu_i18n::text("兼容设置已保存，重启服务后生效"));if restart {actions.push(Action::RestartSharing);}},
+                        Err(error)=>self.feedback.error(super::ui_feedback::Scope::Services(0),error.to_string()),
+                    }
+                }
+            });
             ui.add_space(8.);
-            muted(ui,uu_i18n::text("启动服务后，启用的入口会发布本机。连接仍需经过设备配对授权。"));
+            muted(ui,uu_i18n::text("启动服务后发布已启用入口。Eclipse 原生连接仍需设备配对。"));
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new(uu_i18n::text("自建服务器")).strong());

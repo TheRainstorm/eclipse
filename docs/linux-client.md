@@ -1,5 +1,7 @@
 # Linux 客户端与自动验收
 
+源码检出包含独立插件子模块；首次构建和更新主项目后运行 `git submodule update --init --recursive`。主项目固定插件提交，详见[插件维护说明](plugins.md)。
+
 Linux VA-API 支持完整访问单元提交，并依据 H.264 色彩标记选择范围和 BT.601 / BT.709 转换。
 
 开发分支的“应用设置 → 串流 → 视频编码”可选择优先 H.265 / HEVC。Linux 通过 VA-API 解码 HEVC Main 8 位视频；连接前先用生成流验证实际解码输出，成功后才向 UU 被控端声明支持，失败时使用 H.264。需要启用 `vaapi` 构建和支持 HEVC Main 的显卡驱动；强制软件解码时不会声明 HEVC，不能把 OpenH264 当作 HEVC 回退。
