@@ -59,6 +59,9 @@ def build(jobs=6, source=None, output=None, target=None):
     toolchain = subprocess.check_output([compiler, '--version'], text=True).splitlines()[0]
     fingerprint = {'lock': LOCK, 'compiler': toolchain, 'platform': sys.platform,
                    'machine': platform.machine(), 'target':target,'fp32_math': True}
+    if cross:
+        fingerprint['system_processor']='x86_64'
+        fingerprint['granite_swapchain']=False
     stamp = output / 'runtime.json'
     library = output / library_name(target)
     if stamp.is_file() and library.is_file():
@@ -77,7 +80,11 @@ def build(jobs=6, source=None, output=None, target=None):
                  '-DCMAKE_BUILD_TYPE=Release', '-DPYROWAVE_UTILS=OFF', '-DPYROWAVE_DEVEL=OFF',
                  '-DPYROWAVE_FP32_MATH=ON', '-DPYROWAVE_FP32_STORAGE=OFF']
     if cross:
-        configure += ['-DCMAKE_SYSTEM_NAME=Windows', '-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc',
+        # The runtime uses compute and external images, never Granite's D3D12
+        # presenter. MinGW cross SDKs may not declare ID3D12Device4; the Eclipse
+        # D3D11/fence imports remain enabled independently of this WSI option.
+        configure += ['-DCMAKE_SYSTEM_NAME=Windows','-DCMAKE_SYSTEM_PROCESSOR=x86_64',
+                      '-DGRANITE_VULKAN_DXGI_INTEROP=OFF','-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc',
                       '-DCMAKE_CXX_COMPILER=' + compiler]
     elif os.name == 'nt':
         configure += ['-G', 'MinGW Makefiles']
