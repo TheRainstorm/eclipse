@@ -219,10 +219,10 @@ pub(crate) async fn refresh(pc: &RTCPeerConnection, details: &Details) {
         local,
         remote,
         selected,
-        updated_ms: crate::control_wire::now_ms(),
+        updated_ms: crate::time::now_ms(),
     };
 }
-pub(crate) struct Monitor(tokio::task::JoinHandle<()>);
+pub struct Monitor(tokio::task::JoinHandle<()>);
 impl Monitor {
     pub fn start(pc: &Arc<RTCPeerConnection>, stats: &Arc<crate::media::MediaStats>) -> Self {
         let pc = Arc::downgrade(pc);

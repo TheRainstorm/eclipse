@@ -58,12 +58,13 @@ pub struct SignalClient {
 
 impl SignalClient {
     pub fn new(config: &Config) -> Result<Self, CoreError> {
+        if !crate::available() { return Err(CoreError::Config("UU compatibility plugin is not installed or enabled".into())); }
         let http = reqwest::Client::builder()
             .user_agent("uu-remote-rs/0.0.1")
             .build()?;
         Ok(Self {
             http,
-            host: config.signaling_host.clone(),
+            host: if config.signaling_host.is_empty(){crate::protocol::SIGNALING_HOST.to_owned()}else{config.signaling_host.clone()},
             signing_key_path: crate::signing_key::SigningKey::path(config),
             signing_key_builtin_fallback: std::env::var_os("UU_SIGNING_KEY_FILE").is_none(),
         })
@@ -163,6 +164,7 @@ impl SignalClient {
         token: Option<&str>,
         req: SignedRequest<'_>,
     ) -> Result<ApiResponse, CoreError> {
+        if !crate::available() { return Err(CoreError::Config("UU compatibility plugin is not installed or enabled".into())); }
         let signing_key = crate::signing_key::SigningKey::load_for_pc(
             &self.signing_key_path,
             self.signing_key_builtin_fallback,

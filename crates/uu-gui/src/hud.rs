@@ -27,7 +27,7 @@ impl super::App {
             let network=s.network_loss.lock().unwrap().clone().filter(|v|v.fresh());
             let host=native.host.and_then(|v|v.video);
             let updated=s.rtt_updated_ms.load(Relaxed);
-            let fresh=updated!=0&&uu_core::control_wire::now_ms().saturating_sub(updated)<5000;
+            let fresh=updated!=0&&uu_core::time::now_ms().saturating_sub(updated)<5000;
             let received=s.packets.load(Relaxed)>0;
             let decoded=s.decoded_total.load(Relaxed)>0;
             let ms=|v:u32|v as f32/1000.;

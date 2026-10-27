@@ -1607,5 +1607,7 @@
   "UU {}失败（错误码 {}）": "UU {} failed (error code {})",
   "创建主机房间": "Create host room",
   "加入目标主机房间": "Join target host room",
-  "目标编号与本机 UU 编号相同。控制端应填写另一台设备的编号；更换 UU 账号不会更改本机设备编号。": "Target ID matches this device's UU ID. Enter the other device's ID on the controller. Changing UU accounts does not change the local device ID."
+  "目标编号与本机 UU 编号相同。控制端应填写另一台设备的编号；更换 UU 账号不会更改本机设备编号。": "Target ID matches this device's UU ID. Enter the other device's ID on the controller. Changing UU accounts does not change the local device ID.",
+  "UU 兼容插件": "UU compatibility plugin",
+  "插件未安装或已禁用；IP 直连与自建连接服务可继续使用。": "Plugin is not installed or is disabled. IP and self-hosted connections remain available."
 }

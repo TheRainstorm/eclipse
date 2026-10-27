@@ -140,35 +140,7 @@ pub fn capture_setting_request(
     )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CaptureResolution {
-    Unchanged,
-    Native,
-    /// Encoded output bounds; preserves the desktop and its aspect ratio.
-    Exact(u32, u32),
-}
-impl CaptureResolution {
-    pub fn output_bounds(self) -> (u32, u32) {
-        match self { Self::Exact(width, height) => (width, height), _ => (3840, 2160) }
-    }
-    pub fn from_env() -> Self {
-        let value = std::env::var("UU_RESOLUTION").unwrap_or_default();
-        match value
-            .split_once('x')
-            .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
-        {
-            Some((w, h))
-                if (320..=3840).contains(&w)
-                    && (240..=2160).contains(&h)
-                    && w % 2 == 0
-                    && h % 2 == 0 =>
-            {
-                Self::Exact(w, h)
-            }
-            _ => Self::Native,
-        }
-    }
-}
+pub use uu_core::video_options::CaptureResolution;
 
 pub fn capture_setting_request_with_resolution(
     seq: u64,
@@ -266,13 +238,7 @@ pub(crate) fn capture_setting_metadata(data: &[u8]) -> Option<serde_json::Value>
         "timestamp":number(&envelope,2), "request":number(&header,1), "fields":fields}))
 }
 
-/// Current UNIX time in milliseconds (the outer Message field 2).
-pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+pub use uu_core::time::now_ms;
 
 /// `Message { 1: seq, 3: SimpleAction { 1: 0, 4: features } }`.
 pub fn echo_request(seq: u64) -> Vec<u8> {echo_request_with_clipboard(seq,false)}

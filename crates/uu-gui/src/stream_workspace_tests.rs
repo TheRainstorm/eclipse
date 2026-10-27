@@ -37,7 +37,7 @@ fn connection_identity_groups_profiles_independently_of_the_launch_snapshot() {
         view_only: false,
     };
     assert_eq!(target("one.json").key(), target("two.json").key());
-    let request = uu_core::assistance::Request::new("12345678", "TEST99").unwrap();
+    let request = uu_compat::assistance::Request::new("12345678", "TEST99").unwrap();
     let launch = Launch::new(
         StreamTarget {
             connection: ConnectionTarget::UuAssistance(request.id.clone()),

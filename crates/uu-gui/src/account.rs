@@ -1,6 +1,6 @@
 //! Local account lifecycle. Device identity and preferences survive sign-out.
 use std::path::Path;
-use uu_core::api::ClientState;
+use uu_compat::api::ClientState;
 
 fn read_state(path: &Path) -> anyhow::Result<Option<ClientState>> {
     Ok(ClientState::read(path)?)
@@ -103,7 +103,7 @@ impl super::App {
     }
 
     pub(super) fn poll_account(&mut self) {
-        if self.is_native(){return;}
+        if self.is_native() || !uu_compat::available(){return;}
         if self.account_poll_at.elapsed() < std::time::Duration::from_millis(500) {
             return;
         }

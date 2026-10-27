@@ -33,6 +33,7 @@ struct PendingEvent {
 impl SocketIo {
     /// Connect and complete the Engine.IO/Socket.IO handshake.
     pub async fn connect(url: &str, auth: &str) -> Result<Self> {
+        crate::require_enabled()?;
         let mut req = url.into_client_request().context("bad websocket url")?;
         let h = req.headers_mut();
         h.insert(HeaderName::from_static("x-nrd-auth"), HeaderValue::from_str(auth)?);

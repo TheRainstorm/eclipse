@@ -77,7 +77,7 @@ async fn probe(config:Config,book:Book,token:Option<String>)->Results {
         tasks.spawn(async move {
             let Ok(_slot)=slots.acquire_owned().await else{return vec![];};
             let result=tokio::time::timeout(Duration::from_secs(5),async{
-                let api=uu_core::UuApi::new(uu_core::SignalClient::new(&config)?,config.at("state.json"))?;
+                let api=uu_compat::UuApi::new(uu_compat::SignalClient::new(&config)?,config.at("state.json"))?;
                 anyhow::ensure!(api.state.token.as_deref()==Some(token.as_str()),"account changed");
                 super::parse_devices(api.device_list().await?)
             }).await;

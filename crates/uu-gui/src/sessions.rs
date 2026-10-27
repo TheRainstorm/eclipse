@@ -137,7 +137,7 @@ impl Sessions {
     ) -> std::io::Result<bool> {
         self.open_inner(exe,target,origin,None)
     }
-    pub fn open_assistance(&mut self,exe:&Path,request:&uu_core::assistance::Request,origin:Option<(i32,i32)>)->std::io::Result<bool> {
+    pub fn open_assistance(&mut self,exe:&Path,request:&uu_compat::assistance::Request,origin:Option<(i32,i32)>)->std::io::Result<bool> {
         let target=StreamTarget {connection:ConnectionTarget::UuAssistance(request.id.clone()),alias:uu_i18n::format!("远程协助 {}",request.id),view_only:false};
         self.open_inner(exe,&target,origin,Some(request.code()))
     }
@@ -186,8 +186,8 @@ mod tests {
         let command=target.command(Path::new("generated-gui"),None);
         let args:Vec<String>=command.get_args().map(|s|s.to_string_lossy().into_owned()).collect();
         assert_eq!(StreamTarget::parse(args).unwrap(),Some(target));
-        assert!(uu_core::assistance::Request::read("123456789",std::io::Cursor::new(b"TEST79\n")).is_ok());
-        assert!(uu_core::assistance::Request::read("123456789",std::io::Cursor::new(vec![b'A';128])).is_err());
+        assert!(uu_compat::assistance::Request::read("123456789",std::io::Cursor::new(b"TEST79\n")).is_ok());
+        assert!(uu_compat::assistance::Request::read("123456789",std::io::Cursor::new(vec![b'A';128])).is_err());
     }
     #[test]
     fn child_arguments_preserve_device_alias_and_mode_without_recursive_autoconnect() {

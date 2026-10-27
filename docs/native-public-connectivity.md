@@ -61,7 +61,7 @@ PeerServer 可以独立运行或使用 Docker 部署，但它不是现有原生�
 | UU 实际信令节点 | 加入房间响应的 `signaling_server`，随后访问其 `/socket.io/?EIO=4&transport=websocket` | 必须采用返回 URL 的端口；WSS 未显式指定端口时才使用 TCP 443 |
 | UU STUN/TURN | 具体会话事件下发的 `iceServers[].urls`，中继还可能附带凭据 | 以实际 URL 为准，不能从标准常用端口推断其部署端口 |
 
-源码入口：[业务 API 域名](../crates/uu-proto/src/lib.rs)、[加入房间与实际信令 URL](../crates/uu-core/src/controller.rs)、[ICE 配置来源](../crates/uu-core/src/media.rs)。地址样本不能证明服务对任意第三方公开，也不能当成长期固定配置；已有日志里的动态 IP 与会话资料不作为公开脚本默认值。
+源码入口：[业务 API 域名](../plugins/uu-compat/src/protocol.rs)、[加入房间与实际信令 URL](../plugins/uu-compat/src/controller.rs)、[ICE 配置来源](../plugins/uu-compat/src/media.rs)。地址样本不能证明服务对任意第三方公开，也不能当成长期固定配置；已有日志里的动态 IP 与会话资料不作为公开脚本默认值。
 
 uu-remote-linux 在没有云端 ICE 配置时列出的 Google、小米等 STUN 是它的备用服务，并不是 UU 的 STUN 域名。不要将参考项目的默认服务列表误认为官方下发列表。[上游会话 ICE 实现](https://github.com/VallierDev/uu-remote-linux/blob/50ed54d77a9084d18797061650bed9f85293c421/src/session_ice.rs)
 

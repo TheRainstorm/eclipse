@@ -1,5 +1,6 @@
 //! UU room adapter. Only normal authenticated sessions; never allocates TURN.
-use super::{pack_sdp, unpack_sdp, Connection, Transport};
+use uu_core::internet::{Connection, Transport};
+use uu_core::plugin_backend::{pack_envelope_sdp as pack_sdp,unpack_envelope_sdp as unpack_sdp};
 use crate::{
     api::UuApi,
     config::Config,
@@ -73,7 +74,7 @@ impl Host {
                 ensure!(requests.len() < 8, "too many pending UU requests");
                 let body = header.get("data").unwrap_or(&header);
                 let id = body["ice_id"].as_str().map(str::to_owned);
-                let ice = InternetIce::from_uu_with_policy(&header, self.development_relay)?;
+                let ice = crate::ice::from_room(&header, self.development_relay)?;
                 requests.push((id, ice));
             } else if event == "soac" {
                 let body = header.get("data").unwrap_or(&header);
@@ -154,7 +155,7 @@ pub async fn join(config: &Config, device: &str, development_relay: bool) -> Res
             let (event, header, _) = socket.recv_event().await?;
             match event.as_str() {
                 "success" => {
-                    let ice = InternetIce::from_uu_with_policy(&header, development_relay)?;
+                    let ice = crate::ice::from_room(&header, development_relay)?;
                     let session = header["ice_id"]
                         .as_str()
                         .filter(|v| !v.is_empty())
@@ -278,5 +279,6 @@ mod room_error_tests {
     }
 }
 
+#[path="connection/listener.rs"]
 mod listener;
 pub use listener::Listener;

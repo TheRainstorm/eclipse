@@ -21,7 +21,7 @@ pub struct Launch {
 impl Launch {
     pub fn new(
         mut target: StreamTarget,
-        assistance: Option<&uu_core::assistance::Request>,
+        assistance: Option<&uu_compat::assistance::Request>,
     ) -> anyhow::Result<Self> {
         match &mut target.connection {
             ConnectionTarget::NativeInvitation(path)
@@ -36,11 +36,11 @@ impl Launch {
             code: assistance.map(|r| zeroize::Zeroizing::new(r.code().into())),
         })
     }
-    fn assistance(&self) -> anyhow::Result<Option<uu_core::assistance::Request>> {
+    fn assistance(&self) -> anyhow::Result<Option<uu_compat::assistance::Request>> {
         anyhow::ensure!(self.target.alias.len() <= 512, "{}", uu_i18n::format!("设备名称过长"));
         match (&self.target.connection, &self.code) {
             (ConnectionTarget::UuAssistance(id), Some(code)) => {
-                Ok(Some(uu_core::assistance::Request::new(id, code)?))
+                Ok(Some(uu_compat::assistance::Request::new(id, code)?))
             }
             (ConnectionTarget::UuAssistance(_), None) => anyhow::bail!("{}", uu_i18n::format!("远程协助需要验证码")),
             (_, None) => Ok(None),

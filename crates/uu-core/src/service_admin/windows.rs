@@ -113,7 +113,7 @@ impl Paths {
         crate::Config {
             data_dir: self.root.join("data/uu-remote"),
             state_dir: self.root.join("state/uu-remote"),
-            signaling_host: uu_proto::SIGNALING_HOST.into(),
+            signaling_host: String::new(),
         }
     }
     pub fn manifest(&self) -> Result<Installed> {

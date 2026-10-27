@@ -116,7 +116,7 @@ impl Library {
         let (Some(config), Some(token)) = (config, token.filter(|token| !token.is_empty())) else {
             return Self::default();
         };
-        let state = uu_core::ClientState::read(&config.at("state.json")).ok().flatten();
+        let state = uu_compat::ClientState::read(&config.at("state.json")).ok().flatten();
         let owner = state.as_ref().filter(|state|state.token.as_deref() == Some(token)).and_then(|state| {
             state
                 .user_id

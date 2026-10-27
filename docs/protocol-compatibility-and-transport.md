@@ -179,8 +179,8 @@ HUD 的 Decode 和 Render 只覆盖其中一部分。控制 RTT 包含两端应�
 
 | 内容 | 源码或文档 |
 |---|---|
-| UU API、Socket.IO、SDP 与 ICE | [controller.rs](../crates/uu-core/src/controller.rs)、[socketio.rs](../crates/uu-core/src/socketio.rs) |
-| UU 数据通道、编解码协商与公共接收路径 | [media.rs](../crates/uu-core/src/media.rs)、[control_wire.rs](../crates/uu-core/src/control_wire.rs) |
+| UU API、Socket.IO、SDP 与 ICE | [controller.rs](../plugins/uu-compat/src/controller.rs)、[socketio.rs](../plugins/uu-compat/src/socketio.rs) |
+| UU 数据通道、编解码协商与公共接收路径 | [兼容媒体会话](../plugins/uu-compat/src/media.rs)、[公共接收路径](../crates/uu-core/src/media.rs)、[control_wire.rs](../plugins/uu-compat/src/control_wire.rs) |
 | 原生局域网身份、配对、连接代理 | [native_lan.rs](../crates/uu-core/src/native_lan.rs)、[native_lan_store.rs](../crates/uu-core/src/native_lan_store.rs) |
 | 原生邀请和 TLS 会话信令 | [native_pairing.rs](../crates/uu-core/src/native_pairing.rs)、[native.rs](../crates/uu-core/src/native.rs) |
 | 原生 UDP、SDP 和媒体轨道 | [native_media.rs](../crates/uu-core/src/native_media.rs) |

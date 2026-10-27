@@ -20,10 +20,10 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(35)
         .clamp(10, 120);
     std::env::set_var("UU_FORCE_JOIN", "0");
-    let handle = uu_core::controller::spawn(
-        uu_core::Config::from_env()?,
+    let handle = uu_compat::controller::spawn(
+        uu_compat::Config::from_env()?,
         device,
-        uu_core::config::geo_exit_ip(),
+        uu_compat::config::geo_exit_ip(),
     )?;
     let max_gap = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let gap = max_gap.clone();
@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
     let mut next = started;
     while started.elapsed() < Duration::from_secs(seconds) {
         while let Ok(event) = handle.events.try_recv() {
-            if let uu_core::controller::ControllerEvent::Error(_) = event {
+            if let uu_compat::controller::ControllerEvent::Error(_) = event {
                 let _ = handle.close.send(());
                 anyhow::bail!("controller failed; inspect private diagnostic log");
             }

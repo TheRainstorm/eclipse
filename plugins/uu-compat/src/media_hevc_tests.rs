@@ -117,7 +117,7 @@ fn video_formats_reject_interleaving_and_unsupported_av1_profiles() {
         ("video/rtx", "", false),
     ] {
         assert_eq!(
-            video_codec(&RTCRtpCodecCapability {
+            uu_core::plugin_backend::receive_video_codec(&RTCRtpCodecCapability {
                 mime_type: mime.into(),
                 sdp_fmtp_line: fmtp.into(),
                 ..Default::default()

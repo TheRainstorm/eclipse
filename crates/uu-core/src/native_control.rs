@@ -723,7 +723,7 @@ impl ViewerControl {
                         *incoming.rtt_distribution_us.lock().unwrap() = distribution;
                         incoming.rtt_us.store(mean, Ordering::Relaxed);
                         incoming.rtt_ms.store(mean.div_ceil(1000),Ordering::Relaxed);
-                        incoming.rtt_updated_ms.store(crate::control_wire::now_ms(),Ordering::Relaxed);
+                        incoming.rtt_updated_ms.store(crate::time::now_ms(),Ordering::Relaxed);
                         incoming
                             .rtt_deviation_us
                             .store(deviation, Ordering::Relaxed);

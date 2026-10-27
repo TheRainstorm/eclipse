@@ -1,12 +1,10 @@
 //! Orchestration: configuration, signaling, and the session state machine.
 
-pub mod api;
-mod registration;
-pub mod assistance;
 mod private_file;
 mod listen_socket;
 pub mod config;
-pub mod control_wire;
+pub mod time;
+pub mod video_options;
 pub mod controller;
 pub mod display_frames;
 pub mod frame_trace;
@@ -52,22 +50,12 @@ mod decode_backlog;
 mod diagnostic_writer;
 mod test_loss;
 mod srtp_policy;
-pub mod selfloop;
 pub mod session;
 pub mod session_diagnostics;
-pub mod sign;
-mod compatibility_signing;
-pub mod signing_key;
-pub mod signal;
-pub mod socketio;
 
-pub use api::{ClientState, QrLogin, UuApi};
 pub use config::Config;
 pub use error::CoreError;
 pub use session::{Role, Session, SessionState};
-pub use signal::SignalClient;
-pub use sign::ClientIdentity;
-pub use selfloop::SelfLoopConfig;
 
 
 /// Select a process-wide rustls CryptoProvider. Both `ring` and `aws-lc-rs`
@@ -115,3 +103,6 @@ mod latest_capture;
 pub mod capture_overlap;
 
 pub mod hotkeys;
+
+pub mod plugins;
+pub mod plugin_backend;

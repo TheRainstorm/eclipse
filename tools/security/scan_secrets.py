@@ -16,7 +16,7 @@ RUST_KEY = re.compile(rb'(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?const\s+(?P<name>NATIV
 # at this source path and with this exact fingerprint, is accepted. It is not
 # excluded from an explicit --forbid-file check, and all user credentials remain
 # private. This does not suppress GitHub's own scanning or push protection.
-PUBLIC_PC_SOURCE = 'crates/uu-core/src/compatibility_signing.rs'
+PUBLIC_PC_SOURCE = 'plugins/uu-compat/src/compatibility_signing.rs'
 PUBLIC_PC_SHA256 = '40cb3a32f9f6f90d9962fb9736685bb881979e848b5956649b6dae3cc957528c'
 PLACEHOLDERS = (b'REMOVED_', b'test-', b'test_', b'fake-', b'example-', b'<')
 MAX_ARTIFACT_BYTES = 512 * 1024 * 1024

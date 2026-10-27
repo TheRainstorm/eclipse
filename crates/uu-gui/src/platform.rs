@@ -233,7 +233,7 @@ mod windows {
         SetFocus(window);
         serde_json::json!({
             "event":"window_activation", "target":window as usize,
-            "requested_at_ms":uu_core::control_wire::now_ms(),
+            "requested_at_ms":uu_core::time::now_ms(),
             "elapsed_us":started.elapsed().as_micros() as u64,
             "accepted":accepted, "before":before, "after":foreground_snapshot(),
             "keyboard_focus_matches":windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus()==window

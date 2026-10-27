@@ -227,7 +227,7 @@ fn run_system(control: Arc<Clipboard>, mut system: impl SystemClipboard, publish
                                 Ok(content) => {
                                     if allowed(&system) {
                                         *control.local.lock().unwrap() = Some(content);
-                                        control.protocol.lock().unwrap().cancel_pending();
+                                        control.reset_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                                     } else {
                                         tracker = previous;
                                     }

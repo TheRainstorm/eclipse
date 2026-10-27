@@ -8,6 +8,7 @@ description = "Session orchestration, signaling client and device model"
 [dependencies]
 uu-i18n = { path = "../uu-i18n" }
 async-trait = "0.1"
+url = "2"
 anyhow.workspace = true
 bytes.workspace = true
 base64.workspace = true
@@ -16,12 +17,8 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-reqwest.workspace = true
 hmac.workspace = true
 sha2.workspace = true
-sha1.workspace = true
-md-5.workspace = true
-crc32fast.workspace = true
 hex.workspace = true
 uuid.workspace = true
 zeroize = "1"
@@ -47,6 +44,7 @@ uu-input = { path = "../uu-input" }
 
 [dev-dependencies]
 tokio = { workspace = true }
+crc32fast.workspace = true
 
 [features]
 vaapi = ["uu-media/vaapi"]

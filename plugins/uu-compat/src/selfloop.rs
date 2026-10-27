@@ -23,7 +23,7 @@ use uu_capture::SyntheticCapture;
 use uu_media::{
     default_encoder_with_frame_rate, luma_mse, psnr_from_mse, software_decoder, RawFrame,
 };
-use uu_proto::pkt::{packetize, Reassembler};
+use crate::protocol::pkt::{packetize, Reassembler};
 
 /// Receive buffer for the controller socket. A 720p keyframe is ~100 KB and
 /// the sender bursts ~8 datagrams per frame, so the default ~200 KB kernel
@@ -50,7 +50,7 @@ impl Default for SelfLoopConfig {
             height: 360,
             fps: 30,
             bitrate_kbps: 4_000,
-            mtu: uu_proto::pkt::DEFAULT_MTU,
+            mtu: crate::protocol::pkt::DEFAULT_MTU,
             min_psnr_db: 30.0,
         }
     }

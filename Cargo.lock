@@ -5377,6 +5377,7 @@ dependencies = [
  "tracing-subscriber",
  "uu-capture",
  "uu-clipboard",
+ "uu-compat",
  "uu-core",
  "uu-input",
  "uu-media",
@@ -5398,7 +5399,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "uu-core"
+name = "uu-compat"
 version = "0.19.7"
 dependencies = [
  "anyhow",
@@ -5414,14 +5415,48 @@ dependencies = [
  "hmac",
  "md-5",
  "rand 0.8.8",
- "rcgen",
  "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "socket2 0.5.10",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uu-capture",
+ "uu-core",
+ "uu-i18n",
+ "uu-media",
+ "uu-proto",
+ "uuid",
+ "webrtc",
+ "zeroize",
+]
+
+[[package]]
+name = "uu-core"
+version = "0.19.7"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "crc32fast",
+ "flate2",
+ "fs2",
+ "futures-util",
+ "gethostname",
+ "hex",
+ "hmac",
+ "rand 0.8.8",
+ "rcgen",
  "ring",
  "rustls",
  "rustls-pki-types",
  "serde",
  "serde_json",
- "sha1",
  "sha2",
  "socket2 0.5.10",
  "spake2",
@@ -5431,6 +5466,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tracing",
+ "url",
  "uu-capture",
  "uu-i18n",
  "uu-input",
@@ -5464,6 +5500,7 @@ dependencies = [
  "sha2",
  "tokio",
  "uu-clipboard",
+ "uu-compat",
  "uu-core",
  "uu-i18n",
  "uu-input",

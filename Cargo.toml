@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "plugins/uu-compat",
     "crates/uu-proto",
     "crates/uu-i18n",
     "crates/uu-i18n-macros",

@@ -1,5 +1,5 @@
 //! Headless, read-only-input session probe using the same controller as the GUI.
-//! cargo run -p uu-core --example session_probe -- DEVICE [SCREEN_ID ...]
+//! cargo run -p uu-compat --example session_probe -- DEVICE [SCREEN_ID ...]
 //! Explicit source selections affect capture only. No mouse/keyboard/clipboard
 //! data is sent. Always release the session, including after a failed check.
 use anyhow::{bail, Context, Result};
@@ -7,7 +7,7 @@ use std::{
     sync::{atomic::Ordering, Arc},
     time::{Duration, Instant},
 };
-use uu_core::{
+use uu_compat::{
     controller::{self, ControllerEvent, ControllerHandle},
     media::MediaStats,
     Config,
@@ -92,7 +92,7 @@ fn main() -> Result<()> {
     stats.diagnostics.start([std::path::PathBuf::from(
         "artifacts/live-display-validation",
     )]);
-    let geo = uu_core::config::geo_exit_ip();
+    let geo = uu_compat::config::geo_exit_ip();
     let mut session = Session(controller::spawn_with_stats(
         config,
         device,
@@ -113,8 +113,8 @@ fn main() -> Result<()> {
             },
         )?;
         if std::env::var_os("UU_RESOLUTION").is_some() {
-            if let uu_core::control_wire::CaptureResolution::Exact(width, height) =
-                uu_core::control_wire::CaptureResolution::from_env()
+            if let uu_compat::control_wire::CaptureResolution::Exact(width, height) =
+                uu_compat::config::resolution_from_env()
             {
                 wait(&mut session, Duration::from_secs(10), "encoded output bounds", |s| {
                     let (actual_width, actual_height) = s.res();
@@ -139,8 +139,8 @@ fn main() -> Result<()> {
             let request = 10001 + index as u64;
             let before = stats.decoded_total.load(Ordering::Acquire);
             let command = track
-                .map(|t| uu_core::screen_control::send_video_track(request, t))
-                .unwrap_or_else(|| uu_core::screen_control::activate_screen(request, id));
+                .map(|t| uu_compat::screen_control::send_video_track(request, t))
+                .unwrap_or_else(|| uu_compat::screen_control::activate_screen(request, id));
             session.0.input.send(command)?;
             wait(
                 &mut session,
@@ -181,13 +181,13 @@ fn main() -> Result<()> {
             session
                 .0
                 .input
-                .send(uu_core::control_wire::capture_setting_for_screen(
+                .send(uu_compat::control_wire::capture_setting_for_screen(
                     settings_id,
-                    uu_core::control_wire::now_ms(),
-                    uu_core::control_wire::CaptureFrameRate::default(),
+                    uu_compat::control_wire::now_ms(),
+                    uu_compat::control_wire::CaptureFrameRate::default(),
                     5,
                     None,
-                    uu_core::control_wire::CaptureResolution::Unchanged,
+                    uu_compat::control_wire::CaptureResolution::Unchanged,
                     false,
                     id,
                 ))?;

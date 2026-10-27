@@ -588,10 +588,10 @@ pub fn import_account(source: PathBuf) -> Result<()> {
         caller_session == session && console_owner(session)? == installed.owner_sid,
         "请在后台服务所属的 Windows 控制台用户中同步账号"
     );
-    let state = uu_core::ClientState::load(&source.join("state.json"))?;
+    let state = uu_compat::ClientState::load(&source.join("state.json"))?;
     let key = source.join("signing-key");
     if key.try_exists()? {
-        let _ = uu_core::signing_key::SigningKey::load_file(&key)?;
+        let _ = uu_compat::signing_key::SigningKey::load_file(&key)?;
     }
     let was_running = status()? == SERVICE_RUNNING;
     if was_running {

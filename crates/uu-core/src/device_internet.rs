@@ -169,16 +169,16 @@ pub async fn listen(
     listen_concurrent(settings, config, sharing, access, stop, status, stream_status, clipboard).await;
 }
 
-enum Listener { Uu(internet::uu::Listener), SelfHosted(internet::self_hosted::Listener) }
+enum Listener { Plugin(Box<dyn crate::plugins::Listener>), SelfHosted(internet::self_hosted::Listener) }
 impl Listener {
     async fn online(settings:&Settings,config:&Config)->Result<Self> {
         match settings.provider {
-            Provider::Uu=>Ok(Self::Uu(internet::uu::Listener::online(config,settings.development_relay).await?)),
+            Provider::Uu=>Ok(Self::Plugin(crate::plugins::registry().get("uu")?.listen(config,settings.development_relay).await?)),
             Provider::SelfHosted=>Ok(Self::SelfHosted(internet::self_hosted::Listener::online(&settings.self_hosted()?,&settings.device).await?)),
         }
     }
-    async fn accept(&mut self)->Result<Connection>{match self{Self::Uu(listener)=>listener.accept().await,Self::SelfHosted(listener)=>listener.accept().await}}
-    async fn close(&mut self){match self{Self::Uu(listener)=>listener.close().await,Self::SelfHosted(listener)=>listener.close().await}}
+    async fn accept(&mut self)->Result<Connection>{match self{Self::Plugin(listener)=>listener.accept().await,Self::SelfHosted(listener)=>listener.accept().await}}
+    async fn close(&mut self){match self{Self::Plugin(listener)=>listener.close().await,Self::SelfHosted(listener)=>listener.close().await}}
 }
 
 async fn listen_concurrent(settings: Settings, config: Config, sharing: SharingConfig, access: Arc<Access>, mut stop: watch::Receiver<bool>,

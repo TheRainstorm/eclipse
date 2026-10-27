@@ -2,7 +2,8 @@
 use anyhow::{ensure, Context, Result};
 use eframe::egui;
 use std::sync::mpsc::{channel, Receiver};
-use uu_core::{api::AccountDevice, Config, SignalClient, UuApi};
+use uu_core::Config;
+use uu_compat::{api::AccountDevice,SignalClient,UuApi};
 
 enum Operation {
     List,

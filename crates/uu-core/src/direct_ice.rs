@@ -1,6 +1,5 @@
 //! Native internet ICE: direct by default, optional explicit development relay.
 use anyhow::{ensure, Context, Result};
-use serde_json::Value;
 use webrtc::{
     ice::url::{ProtoType, SchemeType, Url},
     ice_transport::ice_server::RTCIceServer,
@@ -43,31 +42,16 @@ impl InternetIce {
             ..Default::default()
         })
     }
-    /// Session-supplied TURN entries are discarded before creating an ICE agent.
-    pub fn from_uu(header: &Value) -> Result<Self> {
-        Self::from_uu_with_policy(header, false)
-    }
-    pub fn from_uu_with_policy(header: &Value, development_relay: bool) -> Result<Self> {
-        let nested = header.get("data").unwrap_or(header);
-        let field = |key| header.get(key).or_else(|| nested.get(key));
-        let force_relay = field("force_relay")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        ensure!(
-            development_relay || !force_relay,
-            "UU requires relay for this session; native direct-only policy rejects it"
-        );
+    /// Enforce common ICE policy after a provider parses its own message.
+    pub fn from_servers(entries: Vec<RTCIceServer>, development_relay: bool, force_relay: bool) -> Result<Self> {
+        ensure!(development_relay || !force_relay,"connection requires relay but direct-only policy rejects it");
         let mut urls = Vec::new();
         let mut turn = Vec::new();
-        if let Some(entries) = field("iceServers").and_then(Value::as_array) {
+        {
+            let entries=&entries;
             ensure!(entries.len() <= 32, "too many session ICE services");
             for entry in entries {
-                let values = entry.get("urls").or_else(|| entry.get("url"));
-                let values: Vec<&str> = match values {
-                    Some(Value::String(url)) => vec![url],
-                    Some(Value::Array(urls)) => urls.iter().filter_map(Value::as_str).collect(),
-                    _ => continue,
-                };
+                let values:Vec<&str>=entry.urls.iter().map(String::as_str).collect();
                 ensure!(values.len() <= 32, "too many session ICE URLs");
                 for url in values {
                     if development_relay
@@ -76,8 +60,8 @@ impl InternetIce {
                             u.scheme == SchemeType::Turn && u.proto == ProtoType::Udp
                         })
                     {
-                        let username = entry["username"].as_str().unwrap_or_default();
-                        let credential = entry["credential"].as_str().unwrap_or_default();
+                        let username = entry.username.as_str();
+                        let credential = entry.credential.as_str();
                         ensure!(
                             username.len() <= 4096 && credential.len() <= 4096,
                             "ICE credential too long"
@@ -118,7 +102,7 @@ impl InternetIce {
     pub fn urls(&self) -> &[String] {
         &self.urls
     }
-    pub(crate) fn configuration(&self) -> RTCConfiguration {
+    pub fn configuration(&self) -> RTCConfiguration {
         let mut servers: Vec<_> = self
             .urls
             .iter()
@@ -176,16 +160,23 @@ pub(crate) fn validate_sdp(sdp: &str, development_relay: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn room(value:&serde_json::Value,relay:bool)->Result<InternetIce>{
+        let entries=value["iceServers"].as_array().map(|v|v.iter().map(|entry|RTCIceServer {
+            urls:match &entry["urls"] {serde_json::Value::String(s)=>vec![s.clone()],serde_json::Value::Array(v)=>v.iter().filter_map(|v|v.as_str().map(str::to_owned)).collect(),_=>vec![]},
+            username:entry["username"].as_str().unwrap_or_default().into(),credential:entry["credential"].as_str().unwrap_or_default().into(),..Default::default()
+        }).collect()).unwrap_or_default();
+        InternetIce::from_servers(entries,relay,value["force_relay"].as_bool().unwrap_or(false))
+    }
     #[test]
     fn session_turn_is_never_allocated_and_force_relay_never_falls_back() {
-        let config = InternetIce::from_uu(&serde_json::json!({"iceServers":[
+        let config = room(&serde_json::json!({"iceServers":[
             {"urls":["turn:relay.example:3478", "turns:relay.example:443", "stun:stun.example:3478"], "credential":"secret"},
-            {"urls":"stun:other.example:2580"}]})).unwrap().configuration();
+            {"urls":"stun:other.example:2580"}]}),false).unwrap().configuration();
         assert_eq!(config.ice_servers.len(), 2);
         assert!(config.ice_servers.iter().all(|s| s.username.is_empty()
             && s.credential.is_empty()
             && s.urls.iter().all(|u| u.starts_with("stun:"))));
-        assert!(InternetIce::from_uu(&serde_json::json!({"force_relay":true})).is_err());
+        assert!(room(&serde_json::json!({"force_relay":true}),false).is_err());
         assert!(InternetIce::new(vec!["turn:relay.example:3478".into()]).is_err());
         assert!(InternetIce::default()
             .configuration()
@@ -205,7 +196,7 @@ mod tests {
         let header = serde_json::json!({"force_relay":true,"iceServers":[{
             "urls":["turn:relay.example:3478?transport=udp","turns:relay.example:443"],
             "username":"fixture-user","credential":"fixture-secret"}]});
-        let ice = InternetIce::from_uu_with_policy(&header, true).unwrap();
+        let ice = room(&header,true).unwrap();
         assert_eq!(
             ice.configuration().ice_transport_policy,
             RTCIceTransportPolicy::Relay
@@ -213,6 +204,6 @@ mod tests {
         assert_eq!(ice.configuration().ice_servers.len(), 1);
         assert!(!format!("{ice:?}").contains("fixture-secret"));
         assert!(validate_sdp("a=candidate:1 1 udp 1 192.0.2.1 1234 typ relay\r\n", true).is_ok());
-        assert!(InternetIce::from_uu(&header).is_err());
+        assert!(room(&header,false).is_err());
     }
 }

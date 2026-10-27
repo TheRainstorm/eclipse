@@ -62,7 +62,7 @@ pub(super) enum Action {
     StartSharing,
     RestartSharing,
     SaveClientDefaults(uu_core::client_settings::ClientSettings),
-    Assist(uu_core::assistance::Request),
+    Assist(uu_compat::assistance::Request),
 }
 #[derive(Clone, Debug)]
 pub(super) enum UuDeviceList {
@@ -261,7 +261,7 @@ mod tests {
         h.workspace.route.page = Page::Services;
         h.workspace.draft.name = "My native host".into();
         let name = h.workspace.prepare_device_name().unwrap();
-        assert_eq!(name, uu_core::config::uu_device_name());
+        assert_eq!(name, uu_compat::config::uu_device_name());
         assert!(name.ends_with("-Eclipse"));
         assert!(matches!(&h.click("登录 UU 账号")[..], [Action::Login]));
         h.logged_in = true;
@@ -829,7 +829,7 @@ impl Workspace {
         }
     }
     pub fn prepare_device_name(&self) -> anyhow::Result<String> {
-        Ok(uu_core::config::uu_device_name())
+        Ok(uu_compat::config::uu_device_name())
     }
     fn update_connections(&mut self, edit: impl FnOnce(&mut Sharing)) {
         let result = self.store.as_ref().ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))
@@ -1657,6 +1657,11 @@ impl Workspace {
             });
         });
         card(ui, |ui| {
+            if !uu_compat::available() {
+                ui.strong(uu_i18n::text("UU 兼容插件"));
+                muted(ui,uu_i18n::text("插件未安装或已禁用；IP 直连与自建连接服务可继续使用。"));
+                return;
+            }
             ui.horizontal(|ui| {
                 ui.strong(uu_i18n::text("UU 账号连接服务"));
                 let mut enabled=self.book.sharing.uu_enabled;
@@ -1666,7 +1671,7 @@ impl Workspace {
             ui.add_space(8.);
             ui.horizontal(|ui| {
                 ui.label(uu_i18n::text("UU 本机名称"));
-                ui.monospace(uu_core::config::uu_device_name());
+                ui.monospace(uu_compat::config::uu_device_name());
                 if info.logged_in && ui.add_enabled(!info.login_busy, egui::Button::new(uu_i18n::text("更新注册信息"))).clicked() {
                     actions.push(Action::RenameUu);
                 }
@@ -1839,7 +1844,7 @@ impl Workspace {
                     .hint_text(uu_i18n::text("设备ID：…\n设备验证码：…")),
             );
             if ui.button(uu_i18n::text("识别分享文本")).clicked() {
-                match uu_core::assistance::Request::parse(&self.assist_text) {
+                match uu_compat::assistance::Request::parse(&self.assist_text) {
                     Ok(request) => {
                         self.assist_id = request.id.clone();
                         self.assist_code = request.code().into();
@@ -1862,7 +1867,7 @@ impl Workspace {
                 ui.colored_label(theme::DANGER, &self.assist_error);
             }
             if primary(ui, uu_i18n::text("发起远程协助")).clicked() {
-                match uu_core::assistance::Request::new(&self.assist_id, &self.assist_code) {
+                match uu_compat::assistance::Request::new(&self.assist_id, &self.assist_code) {
                     Ok(request) => actions.push(Action::Assist(request)),
                     Err(e) => self.assist_error = e.to_string(),
                 }
@@ -2232,7 +2237,7 @@ impl super::App {
     pub(super) fn workspace_info(&self)->Info {
         Info {
             logged_in:self.logged_in,
-            uu_id:self.config.as_ref().and_then(|c|uu_core::ClientState::read(&c.at("state.json")).ok().flatten()).and_then(|s|s.device_id),
+            uu_id:self.config.as_ref().and_then(|c|uu_compat::ClientState::read(&c.at("state.json")).ok().flatten()).and_then(|s|s.device_id),
             qr:self.login_texture.as_ref().map(|t|t.id()),
             login_status:self.account_error.clone().unwrap_or_else(||self.login_status.clone()),
             login_busy:self.login_rx.is_some(), nearby:self.lan.nearby(self.workspace.host.server_id()),

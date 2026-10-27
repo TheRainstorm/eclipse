@@ -457,7 +457,7 @@ impl App {
                     ui.label(RichText::new(uu_i18n::text("登录 UU 账号访问官方设备；点击左上角标志返回原生设备页")).color(MUTED));
                     ui.add_space(24.0);
                     ui.label(uu_i18n::text("UU 本机名称"));
-                    ui.monospace(uu_core::config::uu_device_name());
+                    ui.monospace(uu_compat::config::uu_device_name());
                     ui.small(uu_i18n::text("自动使用电脑名加 -Eclipse，与官方客户端区分。"));
                     ui.add_space(12.0);
                     if let Some(texture)=&self.login_texture {

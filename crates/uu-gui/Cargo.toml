@@ -10,6 +10,7 @@ name = "uu-gui"
 path = "src/main.rs"
 
 [dependencies]
+uu-compat = { path = "../../plugins/uu-compat", default-features = false }
 uu-i18n = { path = "../uu-i18n" }
 anyhow.workspace = true
 serde.workspace = true
@@ -45,6 +46,8 @@ arboard = { version = "3.7", default-features = false, features = ["wayland-data
 uu-media = { path = "../uu-media" }
 
 [features]
+default = ["uu-compat"]
+uu-compat = ["uu-compat/enabled"]
 vaapi = ["uu-core/vaapi"]
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

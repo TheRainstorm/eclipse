@@ -2,7 +2,7 @@
 use std::{collections::VecDeque, time::Instant};
 
 #[derive(Default)]
-pub(crate) struct NetworkProbe {
+pub struct NetworkProbe {
     pending: Option<(u64, Instant)>,
     samples: VecDeque<f64>,
 }
@@ -10,21 +10,11 @@ impl NetworkProbe {
     pub fn begin(&mut self, seq: u64) {
         self.pending = Some((seq, Instant::now()));
     }
-    #[cfg(test)]
-    pub fn reply(&mut self, data: &[u8]) -> Option<(u32, u32)> {
-        self.reply_at(data, Instant::now())
-    }
-    pub fn reply_at(&mut self, data: &[u8], now: Instant) -> Option<(u32, u32)> {
-        let (seq, _) = self.pending?;
-        if !crate::control_wire::echo_matches(data, seq) {
-            return None;
-        }
-        self.reply_sequence_at(seq, now)
-    }
+    pub fn pending_sequence(&self)->Option<u64>{self.pending.map(|v|v.0)}
     pub fn reply_sequence(&mut self, seq: u64) -> Option<(u32, u32)> {
         self.reply_sequence_at(seq, Instant::now())
     }
-    fn reply_sequence_at(&mut self, seq: u64, now: Instant) -> Option<(u32, u32)> {
+    pub fn reply_sequence_at(&mut self, seq: u64, now: Instant) -> Option<(u32, u32)> {
         let (expected, at) = self.pending?;
         if seq != expected {
             return None;
@@ -71,13 +61,13 @@ mod tests {
         let mut probe = NetworkProbe::default();
         probe.begin(10);
         assert!(probe
-            .reply(&crate::control_wire::echo_response(1, 9))
+            .reply_sequence(9)
             .is_none());
         assert!(probe
-            .reply(&crate::control_wire::echo_response(2, 10))
+            .reply_sequence(10)
             .is_some());
         assert!(probe
-            .reply(&crate::control_wire::echo_response(2, 10))
+            .reply_sequence(10)
             .is_none());
         let mut p = NetworkProbe::default();
         p.sample(1000.0);

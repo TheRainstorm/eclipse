@@ -141,8 +141,8 @@ X-Param-device-id: <16 位>           X-Param-user-id: <登录后才有>
 ### 验证边界
 
 规范串和 HMAC 格式曾与实际交互进行本地对照；默认 PC 共享值按兼容数据明确分发，测试不保留真实账号请求或依赖它的线上抓包。
-实现见 `crates/uu-core/src/sign.rs`，公开测试采用 RFC 4231 和虚构请求，验证排序、空值、签名头过滤与原始请求体。
-凭据读取、权限及缺失处理见 `crates/uu-core/src/signing_key.rs`。
+实现见 `plugins/uu-compat/src/sign.rs`，公开测试采用 RFC 4231 和虚构请求，验证排序、空值、签名头过滤与原始请求体。
+凭据读取、权限及缺失处理见 `plugins/uu-compat/src/signing_key.rs`。
 
 ### 实现状态
 

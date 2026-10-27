@@ -34,7 +34,7 @@ def required_files(manifest):
     if type(version) is not int or version not in (1, 2, 3):
         raise ValueError('不支持的 Windows 包格式版本')
     return REQUIRED if version == 3 else VPL_REQUIRED if version==2 else LEGACY_REQUIRED
-SOURCE_PATHS = ('crates', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
+SOURCE_PATHS = ('crates', 'plugins', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                 '.cargo', 'tools/windows', 'tools/pyrowave','tools/licenses', 'licenses', *LICENSES)
 
 

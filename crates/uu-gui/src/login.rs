@@ -3,7 +3,8 @@
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 
 use anyhow::{Context, Result};
-use uu_core::{Config, SignalClient, UuApi};
+use uu_core::Config;
+use uu_compat::{SignalClient, UuApi};
 
 pub enum LoginEvent {
     Qr(String),
@@ -90,7 +91,7 @@ fn spawn_task<F: std::future::Future<Output = Result<()>> + 'static>(
 }
 
 async fn run(config: Config, name: String, tx: &std::sync::mpsc::Sender<LoginEvent>) -> Result<()> {
-    let name = uu_core::api::validate_device_name(&name)?.to_string();
+    let name = uu_compat::api::validate_device_name(&name)?.to_string();
     let client = SignalClient::new(&config)?;
     let mut api = UuApi::new(client, config.at("state.json"))?;
     // The phone sees init's stored name before authentication. Refresh that

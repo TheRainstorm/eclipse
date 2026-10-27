@@ -112,7 +112,7 @@ mod launcher_tests {
             state_dir: root.join("state"),
             signaling_host: "unreachable.example.invalid".into(),
         };
-        let mut state = uu_core::ClientState::new();
+        let mut state = uu_compat::ClientState::new();
         state.token = Some("new-account".into());
         state.save(&config.at("state.json")).unwrap();
         let before = std::fs::read(config.at("state.json")).unwrap();
@@ -150,8 +150,8 @@ mod launcher_tests {
 fn load_devices(config: uu_core::Config, token: String) -> anyhow::Result<Vec<Device>> {
     let rt = tokio::runtime::Runtime::new()?;
     let result = rt.block_on(async {
-        let client = uu_core::SignalClient::new(&config)?;
-        let api = uu_core::UuApi::new(client, config.at("state.json"))?;
+        let client = uu_compat::SignalClient::new(&config)?;
+        let api = uu_compat::UuApi::new(client, config.at("state.json"))?;
         anyhow::ensure!(api.state.token.as_deref() == Some(token.as_str()), "{}", uu_i18n::format!("账号已变化，请刷新设备列表"));
         let body = tokio::time::timeout(std::time::Duration::from_secs(15), api.device_list())
             .await.map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("获取设备列表超时，请检查网络后重试")))??;
@@ -174,7 +174,7 @@ struct App {
     stream_target: Option<sessions::StreamTarget>,
     workspace_tabs:Option<stream_workspace::Tabs>,
     active_session:bool,
-    assistance:Option<uu_core::assistance::Request>,
+    assistance:Option<uu_compat::assistance::Request>,
     native_ui: native_ui::NativeUi,
     gamepad: std::rc::Rc<std::cell::RefCell<gamepad::Reader>>,
     workspace:workspace_ui::Workspace,
@@ -401,19 +401,19 @@ fn setup_style(ctx: &egui::Context) {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>, presentation_vsync: bool, assistance:Option<uu_core::assistance::Request>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>, presentation_vsync: bool, assistance:Option<uu_compat::assistance::Request>) -> Self {
         setup_style(&cc.egui_ctx);
         if let Some(gl)=&cc.gl {video_texture::enable_gpu_video(gl);}
         Self::new_session(&cc.egui_ctx,cc.gl.clone(),std::rc::Rc::new(platform::Platform::new(cc,origin)),stream_target,presentation_vsync,assistance)
     }
-    fn new_session(ctx:&egui::Context,gl:Option<std::sync::Arc<eframe::glow::Context>>,platform:std::rc::Rc<platform::Platform>,stream_target:Option<sessions::StreamTarget>,presentation_vsync:bool,assistance:Option<uu_core::assistance::Request>)->Self {
+    fn new_session(ctx:&egui::Context,gl:Option<std::sync::Arc<eframe::glow::Context>>,platform:std::rc::Rc<platform::Platform>,stream_target:Option<sessions::StreamTarget>,presentation_vsync:bool,assistance:Option<uu_compat::assistance::Request>)->Self {
         static NEXT_INSTANCE:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
         let (config, config_error) = match uu_core::Config::from_env() {
             Ok(config) => (Some(config), None),
             Err(error) => (None, Some(error.to_string())),
         };
         let native=stream_target.as_ref().is_some_and(|target|target.is_native());
-        let (account_token, account_error) = if native {(None, None)} else {
+        let (account_token, account_error) = if native || !uu_compat::available() {(None, None)} else {
             match config.as_ref().map(|config| account::read_token(&config.at("state.json"))) {
                 Some(Ok(token)) => (token, None),
                 Some(Err(error)) => (None, Some(error.to_string())),
@@ -520,7 +520,7 @@ impl App {
             bitrate_idx: preferences.bitrate,
             resolution_idx: preferences.resolution,
             custom_mbps: preferences.custom_mbps,
-            target_fps: if std::env::var_os("UU_FPS").is_some(){uu_core::control_wire::CaptureFrameRate::from_env().fps()}else{preferences.fps},
+            target_fps: if std::env::var_os("UU_FPS").is_some(){uu_compat::control_wire::CaptureFrameRate::from_env().fps()}else{preferences.fps},
             fps_draft: preferences.fps,
             settings_seq: 0,
             settings_feedback: String::new(),
@@ -832,12 +832,12 @@ impl App {
     fn capture_profile(&self) -> displays::CaptureProfile {
         (self.target_fps, self.bitrate_idx, if self.bitrate_idx == 4 {self.custom_mbps} else {0}, self.resolution_idx, self.preferences.cursor_mode.remote())
     }
-    fn capture_resolution(&self) -> uu_core::control_wire::CaptureResolution {
+    fn capture_resolution(&self) -> uu_core::video_options::CaptureResolution {
         match self.resolution_idx {
-            1=>uu_core::control_wire::CaptureResolution::Exact(1920,1080),
-            2=>uu_core::control_wire::CaptureResolution::Exact(2560,1440),
-            3=>uu_core::control_wire::CaptureResolution::Exact(3840,2160),
-            _=>uu_core::control_wire::CaptureResolution::Unchanged,
+            1=>uu_core::video_options::CaptureResolution::Exact(1920,1080),
+            2=>uu_core::video_options::CaptureResolution::Exact(2560,1440),
+            3=>uu_core::video_options::CaptureResolution::Exact(3840,2160),
+            _=>uu_core::video_options::CaptureResolution::Unchanged,
         }
     }
     fn send_capture_settings_through(&mut self,immediate:bool) {
@@ -868,7 +868,7 @@ impl App {
             return;
         }
         if !self.supports_remote(uu_core::capabilities::Capability::Quality) {self.settings_feedback=uu_i18n::text("当前画质由被控端设置").into();return;}
-        let Some(frame_rate)=uu_core::control_wire::CaptureFrameRate::new(self.target_fps) else {self.settings_feedback=uu_i18n::text("UU 兼容协议支持 5–144 FPS；请选择有效帧率").into();return;};
+        let Some(frame_rate)=uu_compat::control_wire::CaptureFrameRate::new(self.target_fps) else {self.settings_feedback=uu_i18n::text("UU 兼容协议支持 5–144 FPS；请选择有效帧率").into();return;};
         if self.disconnecting { return; }
         let resolution = self.capture_resolution();
         if self.controller.as_ref().is_some_and(|h| h.stats.output_resolution.get()
@@ -892,9 +892,9 @@ impl App {
         };
         self.settings_seq = self.settings_seq.wrapping_add(1);
         let source=self.displays.selected.unwrap_or_else(||h.stats.remote_screens.lock().unwrap().for_track(self.selected_track).map_or(-1,|s|s.id));
-        let msg = uu_core::control_wire::capture_setting_for_screen(
+        let msg = uu_compat::control_wire::capture_setting_for_screen(
             2000 + self.settings_seq,
-            uu_core::control_wire::now_ms(),
+            uu_core::time::now_ms(),
             frame_rate,
             quality,
             custom_bps,
@@ -1051,7 +1051,7 @@ impl App {
             if !active || !enabled {
                 clipboard.local.lock().unwrap().take();
                 clipboard.remote.lock().unwrap().take();
-                if previous { *clipboard.protocol.lock().unwrap() = Default::default(); }
+                if previous { clipboard.reset_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel); }
             }
         }
     }
@@ -1317,7 +1317,7 @@ impl App {
             self.status=uu_i18n::text("AV1 / PyroWave 仅适用于原生连接；UU 兼容连接请选择自动、H.264 或 HEVC").into();
             return;
         }
-        if uu_core::control_wire::CaptureFrameRate::new(self.target_fps).is_none() {self.status=uu_i18n::text("UU 兼容协议支持 5–144 FPS，请调整客户端帧率").into();return;}
+        if uu_compat::control_wire::CaptureFrameRate::new(self.target_fps).is_none() {self.status=uu_i18n::text("UU 兼容协议支持 5–144 FPS，请调整客户端帧率").into();return;}
         self.displays=displays::Displays::default();self.selected_track=0;
         let Some(i) = self.selected else { return };
         let Some(config) = self.config.clone() else {
@@ -1332,7 +1332,7 @@ impl App {
                 Err(error) => self.set_settings_notice(uu_i18n::format!("显示器排序读取失败：{error}")),
             }
         }
-        let geo = uu_core::config::geo_exit_ip();
+        let geo = uu_compat::config::geo_exit_ip();
         let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
         let _=stats.decoder_preference.set(self.decoder_kind());
         stats.diagnostics.start([config.state_dir.join("diagnostics")]);
@@ -1347,11 +1347,11 @@ impl App {
         let target=match &self.stream_target {
             Some(target) if matches!(target.connection,sessions::ConnectionTarget::UuAssistance(_))=>{
                 let Some(request)=self.assistance.clone() else {self.status=uu_i18n::text("远程协助验证码不可用，请从主页重新发起").into();return;};
-                uu_core::controller::Target::Assistance(request)
+                uu_compat::controller::Target::Assistance(request)
             },
-            _=>uu_core::controller::Target::Device(device),
+            _=>uu_compat::controller::Target::Device(device),
         };
-        match uu_core::controller::spawn_target(config, target, geo,stats) {
+        match uu_compat::controller::spawn_target(config, target, geo,stats) {
             Ok(h) => {
                 let context = self.context.clone();
                 h.frames.enable_planar();
@@ -1711,6 +1711,7 @@ impl App {
 }
 
 fn main() -> eframe::Result {
+    if let Err(error) = uu_compat::register() { panic!("cannot register connection plugin: {error}"); }
     uu_core::install_crypto_provider();
     if let Some(settings)=settings::Settings::path().and_then(|p|settings::Settings::load(&p).ok()) {uu_i18n::set_language(settings.language);}
     #[cfg(windows)]
@@ -1720,7 +1721,7 @@ fn main() -> eframe::Result {
         Err(error) => { eprintln!("{error}"); return Ok(()); }
     };
     let assistance=if let Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::UuAssistance(id),..})=&stream_target {
-        let request=uu_core::assistance::Request::read(id,std::io::stdin().lock());
+        let request=uu_compat::assistance::Request::read(id,std::io::stdin().lock());
         match request {Ok(request)=>Some(request),Err(error)=>{eprintln!("{error}");return Ok(());}}
     }else{None};
     let stream_workspace=if let Some(target)=stream_target.clone() {

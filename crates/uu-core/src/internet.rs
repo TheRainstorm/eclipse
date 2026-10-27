@@ -15,7 +15,6 @@ use zeroize::Zeroize;
 pub mod self_hosted;
 pub mod server;
 pub mod stun;
-pub mod uu;
 
 pub const MAX_MESSAGE: usize = 256 * 1024;
 
@@ -87,8 +86,9 @@ pub async fn host(
     let accepting = async {
         match settings.provider {
             Provider::Uu => {
+                let service=crate::plugins::registry().get("uu")?;
                 let mut host=tokio::select! {
-                    result=tokio::time::timeout(std::time::Duration::from_secs(20),uu::Host::online(&config,settings.development_relay))=>result.context("UU host startup timed out")??,
+                    result=tokio::time::timeout(std::time::Duration::from_secs(20),service.host(&config,settings.development_relay))=>result.context("connection plugin startup timed out")??,
                     _=cancelled(&mut startup_cancel)=>anyhow::bail!("sharing cancelled"),
                 };
                 let result = tokio::select! {result=host.accept()=>result,_=cancelled(&mut stop)=>Err(anyhow::anyhow!("sharing cancelled"))};
@@ -128,7 +128,7 @@ pub async fn view(
     let key = if settings.device_auth {None}else{Some(AccessKey::load(&settings.access_key)?)};
     let joining = async {
         match settings.provider {
-            Provider::Uu => uu::join(&config, &settings.device, settings.development_relay).await,
+            Provider::Uu => crate::plugins::registry().get("uu")?.join(&config, &settings.device, settings.development_relay).await,
             Provider::SelfHosted => {
                 self_hosted::join(&settings.self_hosted()?, &settings.device).await
             }

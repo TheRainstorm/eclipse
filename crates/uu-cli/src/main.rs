@@ -16,9 +16,10 @@ mod service_cli;
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
 use clap::{Parser, Subcommand};
-use uu_core::signal::SignedRequest;
-use uu_core::UuApi;
-use uu_core::{Config, Role, Session, SessionState, SignalClient};
+use uu_compat::signal::SignedRequest;
+use uu_compat::UuApi;
+use uu_core::{Config, Role, Session, SessionState};
+use uu_compat::SignalClient;
 
 #[derive(clap::ValueEnum,Clone,Copy,Debug)]
 enum NativeEncoder { Software, Auto, Hardware, Vaapi }
@@ -242,7 +243,7 @@ enum Command {
     /// Register this machine (once) and log in by scanning a QR code.
     Login {
         /// Registration name; defaults to the computer name with -Eclipse.
-        #[arg(long, default_value_t = uu_core::config::uu_device_name())]
+        #[arg(long, default_value_t = uu_compat::config::uu_device_name())]
         name: String,
     },
     /// Send one signed API request and print the JSON response.
@@ -314,7 +315,7 @@ enum Command {
         #[arg(long, default_value_t = 4000)]
         bitrate_kbps: u32,
         /// Datagram payload budget.
-        #[arg(long, default_value_t = uu_proto::pkt::DEFAULT_MTU)]
+        #[arg(long, default_value_t = uu_compat::protocol::pkt::DEFAULT_MTU)]
         mtu: usize,
         /// Fail the run if average decoded PSNR falls below this.
         #[arg(long, default_value_t = 30.0)]
@@ -324,6 +325,7 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Err(error) = uu_compat::register() { panic!("cannot register connection plugin: {error}"); }
     let cli = Cli::parse();
     #[cfg(windows)]
     let background=matches!(&cli.command,Command::Service{command:service_cli::Command::Daemon|service_cli::Command::SessionHost{..}});
@@ -394,10 +396,10 @@ async fn main() -> Result<()> {
                 server.trim_end_matches('/')
             );
             println!("signaling {url}");
-            let mut sio = uu_core::socketio::SocketIo::connect(&url, &token).await?;
+            let mut sio = uu_compat::socketio::SocketIo::connect(&url, &token).await?;
             let ctrl = uuid::Uuid::new_v4().to_string();
             let dev_id = api.state.device_id.clone().unwrap_or_default();
-            let app = uu_core::socketio::encode_app_data(&dev_id);
+            let app = uu_compat::socketio::encode_app_data(&dev_id);
             let streamer = serde_json::json!({
                 "control_id": ctrl,
                 "device_capability": {
@@ -413,7 +415,7 @@ async fn main() -> Result<()> {
             let body = serde_json::json!({
                 "app_control_id": ctrl,
                 "app_data": {"_placeholder": true, "num": 0},
-                "geo_exit_ip": uu_core::config::geo_exit_ip(),
+                "geo_exit_ip": uu_compat::config::geo_exit_ip(),
                 "streamer_data": streamer,
             });
             sio.emit("control", body, &[app]).await?;
@@ -433,11 +435,11 @@ async fn main() -> Result<()> {
             }
             let success = success.context("missing success event")?;
             eprintln!("iceServers={}", success["iceServers"]);
-            let ice = uu_core::media::ice_servers_from_json(&success["iceServers"]);
-            let media = uu_core::media::ControllerMedia::new(ice).await?;
+            let ice = uu_compat::media::ice_servers_from_json(&success["iceServers"]);
+            let media = uu_compat::media::ControllerMedia::new(ice).await?;
             let sdp = media.offer().await?;
             std::fs::write("/tmp/offer_rust.sdp", &sdp).ok();
-            let gz = uu_core::socketio::gzip_sdp04(&sdp)?;
+            let gz = uu_compat::socketio::gzip_sdp04(&sdp)?;
             let ice_id = success["ice_id"].as_str().unwrap_or_default().to_string();
             let target = success["client_id"].as_str().unwrap_or_default().to_string();
             sio.emit(
@@ -490,7 +492,7 @@ async fn main() -> Result<()> {
                 let d = &data["data"];
                 match d["type"].as_str() {
                     Some("answer") if !atts.is_empty() => {
-                        let answer = uu_core::socketio::gunzip_sdp04(&atts[0])?;
+                        let answer = uu_compat::socketio::gunzip_sdp04(&atts[0])?;
                         std::fs::write("/tmp/answer_rust.sdp", &answer).ok();
                         for line in answer.lines().filter(|l| l.contains("candidate")) {
                             println!("ANS {}", line);
@@ -639,7 +641,7 @@ async fn main() -> Result<()> {
         }
         Command::Api { method, path, body, token, device_id, user_id, language } => {
             let client = SignalClient::new(&config)?;
-            let saved = uu_core::ClientState::load(&config.at("state.json"))?;
+            let saved = uu_compat::ClientState::load(&config.at("state.json"))?;
             let mut identity = saved.identity.clone();
             identity.language = language.clone();
             identity.country = language;
@@ -666,9 +668,9 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::KbdProbe { device } => {
-            let geo = uu_core::config::geo_exit_ip();
+            let geo = uu_compat::config::geo_exit_ip();
             let uu_core::controller::ControllerHandle { events, frames, input, close, settings: _, stats: _, stopped: _, native_input:_ } =
-                uu_core::controller::spawn(config, device, geo)?;
+                uu_compat::controller::spawn(config, device, geo)?;
             std::thread::spawn(move || {
                 let mut frames = frames;
                 while frames.blocking_recv().is_some() {}
@@ -707,8 +709,8 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::KbdTest { device, text } => {
-            let geo = uu_core::config::geo_exit_ip();
-            let h = uu_core::controller::spawn(config, device, geo)?;
+            let geo = uu_compat::config::geo_exit_ip();
+            let h = uu_compat::controller::spawn(config, device, geo)?;
             {
                 let mut frames = h.frames;
                 std::thread::spawn(move || { while frames.blocking_recv().is_some() {} });
@@ -760,8 +762,8 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::MouseMove { device, x, y, kind: _kind, channel: _channel, click } => {
-            let geo = uu_core::config::geo_exit_ip();
-            let h = uu_core::controller::spawn(config, device, geo)?;
+            let geo = uu_compat::config::geo_exit_ip();
+            let h = uu_compat::controller::spawn(config, device, geo)?;
             {
                 let mut frames = h.frames;
                 std::thread::spawn(move || { while frames.blocking_recv().is_some() {} });
@@ -802,7 +804,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::SelfLoop { frames, width, height, fps, bitrate_kbps, mtu, min_psnr } => {
-            let cfg = uu_core::SelfLoopConfig {
+            let cfg = uu_compat::SelfLoopConfig {
                 frames,
                 width,
                 height,
@@ -811,7 +813,7 @@ async fn main() -> Result<()> {
                 mtu,
                 min_psnr_db: min_psnr,
             };
-            uu_core::selfloop::run(cfg).await
+            uu_compat::selfloop::run(cfg).await
         }
     }
 }
@@ -850,14 +852,14 @@ fn probe(config: &Config, h264: Option<&std::path::Path>, frame: Option<&std::pa
     // self-describing.
     let mut session = Session::new(Role::Controller);
     session.transition(SessionState::Authenticating)?;
-    println!("protocol          {}", uu_proto::PROTOCOL_REVISION);
+    println!("protocol          {}", uu_compat::protocol::PROTOCOL_REVISION);
     Ok(())
 }
 
 async fn release_check(config: &Config) -> Result<()> {
     let client = SignalClient::new(config)?;
     println!("official release feed ({})\n", config.signaling_host);
-    for target in uu_core::signal::RELEASE_TARGETS {
+    for target in uu_compat::signal::RELEASE_TARGETS {
         match client.release_url(target.id).await {
             Ok(url) => {
                 let name = url.rsplit('/').next().unwrap_or(&url);

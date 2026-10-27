@@ -12,21 +12,6 @@ pub fn local_device_name() -> String {
     if name.is_empty() { "Eclipse".into() } else { name }
 }
 
-/// Service-facing label is derived from this computer, not shared-host preferences.
-pub fn uu_device_name() -> String {
-    uu_name_for_host(&local_device_name())
-}
-fn uu_name_for_host(host: &str) -> String {
-    const SUFFIX: &str = "-Eclipse";
-    let prefix: String = host.chars().take(64 - SUFFIX.chars().count()).collect();
-    format!("{prefix}{SUFFIX}")
-}
-
-/// Optional routing hint. Never ship a developer's public IP as a default.
-pub fn geo_exit_ip() -> String {
-    std::env::var("UU_GEO_IP").unwrap_or_else(|_| "0.0.0.0".into())
-}
-
 /// Where we keep installer caches, the Wine-less client state, and logs.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -61,7 +46,7 @@ impl Config {
         Ok(Self {
             data_dir,
             state_dir,
-            signaling_host: uu_proto::SIGNALING_HOST.to_string(),
+            signaling_host: String::new(),
         })
     }
 
@@ -87,17 +72,5 @@ impl Config {
 
     pub fn at(&self, rel: impl AsRef<Path>) -> PathBuf {
         self.data_dir.join(rel)
-    }
-}
-
-#[cfg(test)]
-mod device_label_tests {
-    #[test]
-    fn uu_suffix_is_explicit_and_fits_the_service_character_limit() {
-        assert_eq!(super::uu_name_for_host("Workstation"), "Workstation-Eclipse");
-        let label = super::uu_name_for_host(&"名".repeat(64));
-        assert_eq!(label.chars().count(), 64);
-        assert!(label.ends_with("-Eclipse"));
-        assert!(crate::api::validate_device_name(&label).is_ok());
     }
 }

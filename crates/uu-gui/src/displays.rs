@@ -297,8 +297,8 @@ impl super::App {
             self.displays.pending.as_mut().unwrap().frame = true;
         }
         let command = target
-            .map(|track| uu_core::screen_control::send_video_track(request, track))
-            .unwrap_or_else(|| uu_core::screen_control::activate_screen(request, id));
+            .map(|track| uu_compat::screen_control::send_video_track(request, track))
+            .unwrap_or_else(|| uu_compat::screen_control::activate_screen(request, id));
         if let Some(h) = &self.controller {
             h.stats.diagnostics.record(serde_json::json!({"event":"select_display","source":id,"track":target,"request":request,"activation":target.is_none()}));
         }

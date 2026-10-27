@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{DeviceId, SessionId, UserId};
-use crate::media::{MediaAnswer, MediaOffer};
+use super::ids::{DeviceId, SessionId, UserId};
+use super::media::{MediaAnswer, MediaOffer};
 
 /// Controller -> service.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
