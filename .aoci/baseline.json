@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-10-27T22:25:09Z",
+  "updated_at": "2026-10-27T22:54:14Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -35,15 +35,15 @@
     },
     "Cargo.lock": {
       "role": "index",
-      "sha256": "7f8cae2bd035207a4d91ba894c5aac769dff0e28a350d883ebe4044b40232a22",
+      "sha256": "f786fa2b58cb698cacb2671f801d2296a3d5525a5c4b4ccf984c3fd458eaad00",
       "size": 168574,
-      "normalized_sha256": "7f8cae2bd035207a4d91ba894c5aac769dff0e28a350d883ebe4044b40232a22"
+      "normalized_sha256": "f786fa2b58cb698cacb2671f801d2296a3d5525a5c4b4ccf984c3fd458eaad00"
     },
     "Cargo.toml": {
       "role": "index",
-      "sha256": "271c155bd82c47f1de2d0cd8e60d19b6234dd96cc7c2c5303982a7820be72ad7",
+      "sha256": "cd521e53f2cf3aeae13a9c5eb413fb3c39fa9ce0501152f1db3ec80857b585b2",
       "size": 1746,
-      "normalized_sha256": "271c155bd82c47f1de2d0cd8e60d19b6234dd96cc7c2c5303982a7820be72ad7"
+      "normalized_sha256": "cd521e53f2cf3aeae13a9c5eb413fb3c39fa9ce0501152f1db3ec80857b585b2"
     },
     "LICENSE": {
       "role": "index",
@@ -65,9 +65,9 @@
     },
     "README.md": {
       "role": "index",
-      "sha256": "9143705bd6aece813c9f01200a3a032f91d39e0515a17147baa72dff01490150",
-      "size": 18849,
-      "normalized_sha256": "9143705bd6aece813c9f01200a3a032f91d39e0515a17147baa72dff01490150"
+      "sha256": "0ae61d24928bbcd86177db23a5e222c775b0b815e98d27b0ced7e7469ef47fbe",
+      "size": 18867,
+      "normalized_sha256": "0ae61d24928bbcd86177db23a5e222c775b0b815e98d27b0ced7e7469ef47fbe"
     },
     "SECURITY.md": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "3ea448fc92f53522d35737e6e6b87953ef6dca5c500f48ea929dd0f4c80962a2",
-      "size": 129216,
-      "normalized_sha256": "3ea448fc92f53522d35737e6e6b87953ef6dca5c500f48ea929dd0f4c80962a2"
+      "sha256": "4a7971e23e2a1e4f449754779deb6b491ecd2954df874d909dbbb1894a4b335b",
+      "size": 129360,
+      "normalized_sha256": "4a7971e23e2a1e4f449754779deb6b491ecd2954df874d909dbbb1894a4b335b"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1104,9 +1104,9 @@
     },
     "crates/uu-gui/src/audio_controls.rs": {
       "role": "index",
-      "sha256": "07e6c1a092496898ce18cbe232cbdb736e1c6ebae8cb227e559e84d6fbecbdb0",
-      "size": 2550,
-      "normalized_sha256": "07e6c1a092496898ce18cbe232cbdb736e1c6ebae8cb227e559e84d6fbecbdb0"
+      "sha256": "991a743772f3cd41cb03c179368c8182da1c96afea258834694ff14104d82291",
+      "size": 3091,
+      "normalized_sha256": "991a743772f3cd41cb03c179368c8182da1c96afea258834694ff14104d82291"
     },
     "crates/uu-gui/src/background.rs": {
       "role": "index",
@@ -1194,9 +1194,9 @@
     },
     "crates/uu-gui/src/hud_panel.rs": {
       "role": "index",
-      "sha256": "ae23b0d58f06c1ac4f408e8a0dfa88f4ed3aa6fe2b32444eb3c31e26a1f79fe9",
-      "size": 35875,
-      "normalized_sha256": "ae23b0d58f06c1ac4f408e8a0dfa88f4ed3aa6fe2b32444eb3c31e26a1f79fe9"
+      "sha256": "df6be11dc1fe403c661dd10255c77a84c4f492d6ac55a1a7e050cda8e95bcae3",
+      "size": 35638,
+      "normalized_sha256": "df6be11dc1fe403c661dd10255c77a84c4f492d6ac55a1a7e050cda8e95bcae3"
     },
     "crates/uu-gui/src/input.rs": {
       "role": "index",
@@ -1350,9 +1350,9 @@
     },
     "crates/uu-gui/src/stream_menu.rs": {
       "role": "index",
-      "sha256": "221bfb13abc62295ce9015c83e7cb91c0fad372cfc83fe5e53a2fc70076ec1ff",
-      "size": 75024,
-      "normalized_sha256": "221bfb13abc62295ce9015c83e7cb91c0fad372cfc83fe5e53a2fc70076ec1ff"
+      "sha256": "18e5da7b209bc4352b0fa4a54d761fa29dfad5743390f6ce46a472b9f5331d6b",
+      "size": 79294,
+      "normalized_sha256": "18e5da7b209bc4352b0fa4a54d761fa29dfad5743390f6ce46a472b9f5331d6b"
     },
     "crates/uu-gui/src/stream_workspace.rs": {
       "role": "index",
@@ -2210,9 +2210,9 @@
     },
     "docs/hud.md": {
       "role": "index",
-      "sha256": "219ba47ba8b7526e9efa7c18a42de35547ee191c6d6e0ce306e4c86f0e8d41fc",
-      "size": 3373,
-      "normalized_sha256": "219ba47ba8b7526e9efa7c18a42de35547ee191c6d6e0ce306e4c86f0e8d41fc"
+      "sha256": "4cbd97088773446dbf62c5cc621fcfcd78b9c055bf96e983dceb106719605e9a",
+      "size": 3548,
+      "normalized_sha256": "4cbd97088773446dbf62c5cc621fcfcd78b9c055bf96e983dceb106719605e9a"
     },
     "docs/images/home-windows.png": {
       "role": "index",
@@ -2603,6 +2603,12 @@
       "sha256": "8a9be5b3b575e86118864f5c987c3179b9cde769be0e62d87240c0160a3f26ae",
       "size": 1806,
       "normalized_sha256": "8a9be5b3b575e86118864f5c987c3179b9cde769be0e62d87240c0160a3f26ae"
+    },
+    "docs/releases/v0.20.1.md": {
+      "role": "index",
+      "sha256": "e98de36eb7362dd1d89318f84a6aa3273b9fd07e1cbb21d5aa36dc7388c70aa0",
+      "size": 973,
+      "normalized_sha256": "e98de36eb7362dd1d89318f84a6aa3273b9fd07e1cbb21d5aa36dc7388c70aa0"
     },
     "docs/releases/v0.3.0.md": {
       "role": "index",

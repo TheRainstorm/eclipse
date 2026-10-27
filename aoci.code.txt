@@ -9,9 +9,8 @@ Cargo.toml[FV8T]: F:组织引擎应用及子模块插件的Rust workspace，统�
 LICENSE[SG6T]: F:声明项目自有代码可选择MIT或Apache-2.0并划定第三方权利边界 | R:code:LICENSE-MIT,code:LICENSE-APACHE,code:docs/licensing-and-compatibility.md | A:- | S:代码许可不授予第三方服务接入或商标使用权
 LICENSE-APACHE[SG4M]: F:提供Apache-2.0完整许可、专利授权及分发条件 | R:code:LICENSE | A:- | S:-
 LICENSE-MIT[SG4T]: F:提供MIT授权、保留版权声明条件与免责条款 | R:code:LICENSE | A:- | S:-
-README.md[SG7S]: F:介绍原生串流、UU兼容与实验被控入口、安装构建及公开文档导航 | R:code:docs/plugins.md,code:docs/releases/v0.20.0.md,code:docs/native-streaming.md | A:- | S:源码构建须初始化子模块；官方手机互通尚未验收，原生协议不兼容Sunshine
+README.md[SG7S]: F:介绍原生串流、UU插件、界面版本更新与安装构建及文档导航 | R:code:docs/plugins.md,code:docs/releases/v0.20.1.md,code:docs/native-streaming.md | A:- | S:源码构建须初始化子模块；官方手机互通尚未验收，原生协议不兼容Sunshine
 SECURITY.md[SS8T]: F:定义公开PC兼容值和个人凭据的分发边界、私密报告与扫描流程 | R:code:tools/security/scan_secrets.py,code:docs/connection-credentials.md | A:- | S:公开常量仅按精确路径与指纹放行；历史清理不撤回已下载副本
-todo.md[SW3T]: F:记录用户按版本提出的插件、HUD菜单和延迟稳定性需求与汇报时点 | R:code:docs/releases.md | A:- | S:本地需求清单不代表功能已完成或实机验收
 .gitmodules[FE7T]: F:声明plugins子模块的公开仓库地址与检出位置 | R:code:Cargo.toml,code:docs/plugins.md | A:submodule.plugins | S:实际插件提交由主仓库gitlink固定；更新主项目后须初始化对应子模块
 
 ===/home/yfy/Repo/uu_remote/.github/workflows/===
@@ -236,7 +235,7 @@ hdr_offscreen_target.rs[TH5T]: F:给HDR渲染探针提供可调整尺寸的FP16�
 ===/home/yfy/Repo/uu_remote/crates/uu-gui/src/===
 account.rs[AI8M]: F:管理GUI兼容账号登录保存、退出及跨进程账号变化响应 | R:code:plugins/uu-compat/src/api.rs,code:crates/uu-gui/src/login.rs | A:store_login,sign_out_matching,read_token | S:退出保留设备身份与偏好；异步结果只作用于匹配token，临时读取失败不当作退出或覆盖损坏状态
 app_startup.rs[IO6T]: F:按保存选项更新当前用户Windows Run或Linux自启动项 | R:code:crates/uu-gui/src/settings.rs | A:apply | S:只在显式保存时修改；Desktop Entry百分号等按自身语法转义
-audio_controls.rs[AU5T]: F:统一音量编辑和静音状态同步到当前串流及偏好 | R:code:crates/uu-gui/src/settings.rs | A:volume_slider | S:静音不改变已选音量，需会话声音能力
+audio_controls.rs[AU5T]: F:统一紧凑音量滑块与百分比编辑，协调当前串流和偏好的静音状态 | R:code:crates/uu-gui/src/settings.rs,code:crates/uu-gui/src/stream_menu.rs | A:volume_slider | S:静音不改变已选音量，播放控制仍需会话声音能力
 background.rs[AU5S]: F:异步加载缓存壁纸、刷新图片并在失败时提供背景绘制 | R:code:crates/uu-gui/src/wallpapers.rs | A:Background | S:来源变化退役旧结果，图片服务失败不阻塞设备页
 brand.rs[DU5S]: F:提供产品名称图标、可选UU入口标识和关于窗口 | R:code:assets/branding/README.md,code:crates/uu-gui/src/build_info.rs | A:window_icon,paint_logo,paint_uu_logo | S:UU标识只用于可选兼容入口
 build_info.rs[DV6S]: F:显示程序编译来源并核对相邻安装包清单与本地修改状态 | R:code:crates/uu-gui/build.rs | A:label | S:二进制来源优先于清单，不一致应显式显示而非冒用清单版本
@@ -251,7 +250,7 @@ displays.rs[AU8L]: F:按远端源ID管理轨道绑定、画质确认与切屏状
 gamepad.rs[IH7L]: F:在唯一SDL线程采集实体手柄与传感器并按GUI输入焦点投递 | R:code:crates/uu-core/src/native_input.rs | A:Reader | S:后台窗口只释放自己的租约；打开驱动后重验generation，Windows需视频消息泵处理Raw Input
 hud.rs[AO6T]: F:从当前串流采样有界指标并缓存HUD布局与历史悬停 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-core/src/media.rs | A:Cache | S:500ms采样，缺失和陈旧指标保持未知而非0
 hud_history.rs[KO5T]: F:保存三分钟有界单调时序指标并绘制可选延迟曲线 | R:code:crates/uu-gui/src/hud_panel.rs | A:History,chart | S:缺失项保持缺失，重绘不重复采样，时钟倒退清历史
-hud_panel.rs[AU7L]: F:共用HUD布局、诊断详情、逐值说明复制与历史曲线呈现 | R:code:crates/uu-gui/src/hud_history.rs,code:crates/uu-gui/src/hud.rs | A:Metrics,Layout,HoverCard | S:未知值不是0，合计显示已知阶段和缺项；详情编辑占用本地键盘，渲染提交不等于显示完成
+hud_panel.rs[AU7L]: F:呈现共用HUD、对齐可选详情字段、逐值说明与历史曲线 | R:code:crates/uu-gui/src/hud_history.rs,code:crates/uu-gui/src/hud.rs | A:Metrics,Layout,HoverCard | S:未知不补零，合计列出缺项；详情点击后复制归本机，渲染提交不是显示完成
 input.rs[AU7S]: F:把真实鼠标转移转换为远端绝对或相对移动及按住释放事件 | R:code:crates/uu-gui/src/input_capture.rs | A:RemotePointer | S:不在抬起时合成点击；只释放本会话按下，黑边忽略按下而拖动可在画面外抬起
 input_capture.rs[DU9L]: F:分离捕获意图与临时条件并跟踪本会话远端长按与释放 | R:code:crates/uu-gui/src/keyboard_capture.rs,code:crates/uu-gui/src/shortcuts.rs | A:Capture,Conditions,RemoteKeys | S:失焦或本地UI暂停不清用户意图；只有真实停止才释放；UU保活修饰键重复限兼容主机，原生不得重复注入
 internet_ui.rs[AU4T]: F:有界读取保留的旧公网连接快照以供迁移和启动 | R:code:crates/uu-core/src/internet.rs | A:read_profile | S:格式错误保留原文件
@@ -277,7 +276,7 @@ sharing_ui.rs[AU8L]: F:统一GUI主机IP、UU和VPS入口、人工配对、会�
 shortcuts.rs[DU7S]: F:按绑定识别客户端命令并拥有完整按下重复抬起过程 | R:code:crates/uu-core/src/hotkeys.rs | A:Shortcuts,KeyAction | S:重复不反复切换，已远发的长按不能中途截走；嵌套模式只保留切换命令
 shortcuts_ui.rs[AU6M]: F:在设置草稿录制快捷键、显示冲突并消费录制键完整转移 | R:code:crates/uu-core/src/hotkeys.rs | A:editor,recording,consume_key | S:Apply前不改变实际路由，快速同批抬起与重复布局均不能留下录制占用
 single_instance.rs[RU6S]: F:在Windows复用已有启动器并保持串流窗口独立 | R:code:crates/uu-gui/src/main.rs | A:launcher | S:互斥按登录会话而非exe路径或版本，兼容未使用互斥的旧启动器
-stream_menu.rs[AU8L]: F:管理串流连接栏与悬浮菜单拖动、靠边折叠、悬停和设置子面板 | R:code:crates/uu-gui/src/input_capture.rs,code:crates/uu-gui/src/settings_page.rs | A:FloatingHandle | S:统一交互所有者；仅可见活跃编辑占键盘，菜单间桥只覆盖窄缝；失焦和指针离开按状态收起
+stream_menu.rs[AU8L]: F:管理连接栏与悬浮菜单生命周期，统一开关、选项、状态及声音画质编辑 | R:code:crates/uu-gui/src/input_capture.rs,code:crates/uu-gui/src/settings_page.rs,code:crates/uu-gui/src/audio_controls.rs | A:FloatingHandle | S:仅可见活跃编辑占键盘；菜单间桥限窄缝；实际编码状态与偏好分开，失焦离开按统一所有权收起
 stream_workspace.rs[AU9L]: F:在一个串流进程拥有多个设备会话并将设备组移动到不同原生窗口 | R:code:crates/uu-core/src/local_workspace.rs,code:crates/uu-gui/src/sessions.rs | A:Workspace,Launch | S:拆并窗口不重建controller、decoder或传输；新surface存在后才重定向句柄与输入，GL状态限定事件循环线程
 stream_workspace_tests.rs[TU6L]: F:以真实窗口与加密生成视频验证会话挂接、排序拆分及独立关闭 | R:code:crates/uu-gui/src/stream_workspace.rs | A:- | S:不采桌面或注入输入；子viewport截图在该viewport自己的pass采集
 theme.rs[DU5S]: F:定义应用共用颜色和控件状态并检查文本与控件边界对比度 | R:code:crates/uu-gui/src/ui.rs | A:apply | S:-
@@ -463,7 +462,7 @@ device-library.md[SU4T]: F:说明兼容设备收藏、最近使用和按账号�
 frame-rate.md[SN5T]: F:整理UU实际帧率字段、屏幕ID、CONTROL初始化和目标与实测区别 | R:code:plugins/uu-compat/src/control_wire.rs,code:docs/windows-latency.md | A:- | S:120须实际count而非枚举；请求确认不代表源或呈现达标
 frame-tracing.md[SO6T]: F:定义主机逐帧身份、同钟事件、遥测边界和生成源开销对照 | R:code:crates/uu-core/src/frame_trace.rs | A:- | S:只在同epoch和generation匹配PTS，不跨主机减时钟；统计溢出丢观测不丢视频
 hdr.md[SH5T]: F:说明Windows原生HDR10的启用条件、色彩GPU路径和验证范围 | R:code:crates/uu-core/src/native_color.rs | A:- | S:实际10位PQ码流与输出HDR均须验证；生成图不能替代显示器视觉验收
-hud.md[SO5T]: F:定义串流HUD档位、指标口径、悬停交互与缺失值呈现 | R:code:crates/uu-gui/src/hud_panel.rs | A:- | S:Est.Total为不同窗口阶段估算，未知不可填零，原始Loss独立于FEC恢复
+hud.md[SO5T]: F:定义HUD指标口径、详情对齐选择复制、悬停与缺失值呈现 | R:code:crates/uu-gui/src/hud_panel.rs | A:- | S:阶段均值和不等于输入到显示延迟；原始Loss不因FEC恢复而抵消
 keyboard-capture.md[SU6T]: F:规定整条键盘流的捕获归属、临时暂停、长按释放和平台限制 | R:code:crates/uu-gui/src/keyboard_capture.rs | A:- | S:UU修饰键刷新限官方兼容；状态与隔离hook测试不能替代实体桌面验收
 keyboard-shortcuts.md[SU5T]: F:说明客户端快捷键录制、配置作用域、冲突及嵌套透传 | R:code:crates/uu-core/src/hotkeys.rs | A:- | S:透传退出动作必须保留至少一绑定；修改先松修饰键，AltGr仍归文本
 licensing-and-compatibility.md[SS6T]: F:区分项目双许可、第三方来源、官方服务接入和编解码专利边界 | R:code:LICENSE,code:THIRD-PARTY-NOTICES.txt | A:- | S:原创代码许可不代表网易接入授权；依赖生成清单不是法律审计
@@ -548,6 +547,7 @@ v0.8.0.md[SV3T]: F:记录迟到补包防重放窗口和Linux硬件码流互通�
 v0.9.0.md[SV3T]: F:记录GPU平面颜色呈现、CPU读回池与HUD缓存 | R:code:docs/windows-latency.md | A:- | S:-
 v0.9.1.md[SV3T]: F:记录Linux只读DMA下载与硬解后端和低功耗客户端改善 | R:code:docs/linux-client.md | A:- | S:仍是CPU下载，不是GPU直通
 v0.20.0.md[SV4T]: F:记录独立插件仓库、共用协议SDK与实验性官方被控入口的版本交付范围 | R:code:docs/plugins.md,code:docs/official-mobile-client-feasibility.md | A:- | S:真实官方手机互通尚未验收，旧窗口与后台程序需分别更新
+v0.20.1.md[SV4T]: F:记录HUD手动复制与行对齐、统一悬浮菜单和声音控件的更新 | R:code:docs/hud.md,code:crates/uu-gui/src/stream_menu.rs | A:- | S:界面更新需重开旧窗口，后台服务无需因此重启
 
 ===/home/yfy/Repo/uu_remote/licenses/===
 README.md[SG4T]: F:记录SPDX标准文本来源版本及第三方原始通知优先规则 | R:code:tools/licenses/generate.py | A:- | S:附带GPL或LGPL文本不等于项目选用该许可
