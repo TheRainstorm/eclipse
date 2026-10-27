@@ -241,6 +241,15 @@ impl Session {
     }
 }
 
+// Hardware-specific H.264/HEVC/AV1 knobs do not apply to this Vulkan codec.
+// Keep the user's shared host tuning intact when selecting a different backend.
+fn validate_encoder_profile(settings:&crate::encoder::Settings)->Result<(),CodecError> {
+    settings.validate()?;
+    if settings.hdr || settings.rate_control!=crate::encoder::RateControl::Cbr {
+        return Err(fail("PyroWave v1 supports SDR 4:2:0 with a fixed maximum frame budget; select CBR"));
+    }
+    Ok(())
+}
 pub struct Encoder {
     session: Session,
     settings: crate::encoder::Settings,
@@ -260,13 +269,7 @@ impl Encoder {
         input: Option<crate::encoder::InputDevice>,
         runtime: &Path,
     ) -> Result<Self, CodecError> {
-        settings.validate()?;
-        if settings.hdr
-            || settings.rate_control != crate::encoder::RateControl::Cbr
-            || settings.tuning != Default::default()
-        {
-            return Err(fail("PyroWave v1 supports SDR 4:2:0 with a fixed maximum frame budget; select CBR and default hardware tuning"));
-        }
+        validate_encoder_profile(&settings)?;
         if matches!(
             settings.preference,
             crate::encoder::Preference::Software | crate::encoder::Preference::Vaapi
@@ -660,6 +663,16 @@ mod tests {
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&[0; 4]);
         bytes
+    }
+    #[test]
+    fn hardware_tuning_does_not_disable_the_unrelated_pyrowave_backend() {
+        use crate::encoder::{Settings,Tuning,AmdQuality,LowPower,Preference,RateControl};
+        let settings=Settings{codec:VideoCodec::Pyrowave,width:1920,height:1080,fps:165,bitrate_kbps:200000,
+            preference:Preference::Hardware,rate_control:RateControl::Cbr,hdr:false,source_hdr:None,
+            tuning:Tuning{amd_quality:AmdQuality::Balanced,intel_target_usage:4,intel_low_power:LowPower::Off,nvidia_quality_vs_speed:Some(75)}};
+        validate_encoder_profile(&settings).unwrap();
+        assert!(validate_encoder_profile(&Settings{hdr:true,..settings}).is_err());
+        assert!(validate_encoder_profile(&Settings{rate_control:RateControl::Vbr{peak_kbps:400000},..settings}).is_err());
     }
     #[test]
     fn validates_frames_across_sequence_wrap_and_rejects_truncation() {
