@@ -6,6 +6,9 @@ mod video_texture;
 #[cfg(windows)]
 #[path = "../src/wgl_interop.rs"]
 mod wgl_interop;
+#[cfg(windows)]
+#[path="../src/video_hdr.rs"]
+mod video_hdr;
 use anyhow::{ensure, Context, Result};
 use eframe::egui;
 use serde::Deserialize;
@@ -31,6 +34,16 @@ struct Config {
     bitrate_kbps: u32,
     codec: uu_proto::media::VideoCodec,
     vsync: bool,
+    #[serde(default)]
+    hdr:bool,
+    #[serde(default)]
+    fullscreen:bool,
+    #[serde(default)]
+    foreground:bool,
+    #[serde(default)]
+    viewport_size:Option<[f32;2]>,
+    #[serde(default)]
+    position:Option<[f32;2]>,
 }
 // Exact samples, bounded by the probe's maximum duration and supported cadence.
 // A full buffer fails the probe instead of silently truncating its tail.
@@ -74,6 +87,7 @@ struct Draws {
 }
 struct Probe {
     gl: Arc<eframe::glow::Context>,
+    context:egui::Context,
     images: FrameReceiver,
     stats: Arc<MediaStats>,
     started: Instant,
@@ -91,9 +105,15 @@ struct Probe {
     duration_completed: Arc<std::sync::atomic::AtomicBool>,
     mailbox_counts: Arc<Mutex<[u64; 3]>>,
     formats: Arc<Mutex<Vec<serde_json::Value>>>,
+    vsync:bool,
     last_format: Option<(uu_core::display_frames::PixelFormat,uu_core::display_frames::YuvColor,bool,u32,u32)>,
 }
 impl eframe::App for Probe {
+    fn on_exit(&mut self,_:Option<&eframe::glow::Context>) {
+        self.texture=None;
+        #[cfg(windows)]
+        eframe::glow_presentation::remove(&self.context,self.context.viewport_id());
+    }
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let first = *self.first.lock().unwrap();
         let complete = first.is_some_and(|t| t.elapsed() >= self.warmup + self.duration);
@@ -131,6 +151,8 @@ impl eframe::App for Probe {
                 }
             }
         }
+        #[cfg(windows)]
+        eframe::glow_presentation::set_active(ctx,ctx.viewport_id(),self.last_format.is_some_and(|v|v.1.hdr()),self.vsync);
         if let Some(texture) = &self.texture {
             egui::CentralPanel::default()
                 .frame(egui::Frame::none())
@@ -188,6 +210,10 @@ impl eframe::App for Probe {
                 "rtt_us":self.stats.rtt_us.load(Ordering::Relaxed),
                 "cadence":self.stats.frame_cadence.lock().unwrap().clone(),
                 "host_frame_trace":self.stats.native_frame_trace.lock().unwrap().clone(),
+                "render_frame_window":eframe::viewport_frame_timings(ctx).map(|v|serde_json::json!({"samples":v.samples,"window_ms":v.window_ms,"cpu_mean_ms":v.mean_ms[..5].iter().map(|v|*v as f64).sum::<f64>(),"present_mean_ms":v.mean_ms[5],"phases_ms":v.mean_ms})),
+                "video_gpu_submit_acquire_release_ms":self.texture.as_ref().and_then(|t|t.gpu_timings_ms()),
+                "video_paint_window":self.texture.as_ref().and_then(|t|t.paint_diagnostics()),
+                "color_target":eframe::glow_presentation::color_target_for(ctx,ctx.viewport_id()).map(|v|serde_json::json!({"hdr":v.hdr,"sdr_white_nits":v.sdr_white_nits})),
             }));
         }
         // Wake on decoder publication, plus a bounded watchdog if the stream dies.
@@ -206,7 +232,7 @@ fn main() -> Result<()> {
     let quality = native_quality::Request {
         fps: config.fps,
         bounds: Some(config.bounds),
-        bitrate_kbps: Some(config.bitrate_kbps),
+        bitrate_kbps: (config.bitrate_kbps>0).then_some(config.bitrate_kbps),
         codec: Some(config.codec),
     };
     quality.validate()?;
@@ -237,9 +263,14 @@ fn main() -> Result<()> {
     let mailbox_counts = Arc::new(Mutex::new([0; 3]));
     let formats=Arc::new(Mutex::new(Vec::new()));
     let started = Instant::now();
+    let (ui_ready,ready)=tokio::sync::oneshot::channel::<()>();
+    let hdr=config.hdr;let vsync=config.vsync;
+    let _=stats.native_hdr_requested.set(hdr);
+    let mut ui_ready=Some(ui_ready);
     let worker_stats = stats.clone();
     let worker_ended = ended.clone();
     let mut worker = runtime.spawn(async move {
+        ready.await.context("probe window did not initialize")?;
         let result = native::view(&invitation, frames, worker_stats, rx).await;
         worker_ended.store(true, Ordering::Release);
         result
@@ -254,23 +285,31 @@ fn main() -> Result<()> {
     let ui_formats=formats.clone();
     let duration = Duration::from_secs(config.seconds);
     let warmup = Duration::from_secs(config.warmup_seconds);
+    let mut viewport=egui::ViewportBuilder::default().with_inner_size(config.viewport_size.unwrap_or([960.,540.])).with_fullscreen(config.fullscreen).with_active(config.foreground);
+    if let Some(position)=config.position{viewport=viewport.with_position(position);}
     let gui = eframe::run_native(
         "Eclipse latency test (receive only)",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Glow,
             vsync: config.vsync,
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([960., 540.])
-                .with_active(false),
+            viewport,
             ..Default::default()
         },
         Box::new(move |cc| {
             let gl = cc.gl.clone().ok_or("missing OpenGL context")?;
             video_texture::enable_gpu_video(&gl);
+            #[cfg(windows)]
+            if hdr {
+                let capable=video_hdr::enable(&cc.egui_ctx,gl.clone(),vsync).map_err(|e|->Box<dyn std::error::Error+Send+Sync>{e.into()})?;
+                if !capable{return Err("requested HDR output is unavailable on the probe window".into());}
+                ui_stats.native_hdr_capable.store(capable,Ordering::Release);
+            }
+            if let Some(ready)=ui_ready.take(){let _=ready.send(());}
             let ctx = cc.egui_ctx.clone();
             images.set_waker(move || ctx.request_repaint());
             Ok(Box::new(Probe {
                 gl,
+                context:cc.egui_ctx.clone(),
                 images,
                 stats: ui_stats,
                 started,
@@ -287,7 +326,7 @@ fn main() -> Result<()> {
                 ended,
                 duration_completed: ui_complete,
                 mailbox_counts: ui_counts,
-                formats:ui_formats,last_format:None,
+                formats:ui_formats,last_format:None,vsync,
             }))
         }),
     );
