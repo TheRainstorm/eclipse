@@ -9,7 +9,7 @@ Cargo.toml[FV8T]: F:组织引擎应用及子模块插件的Rust workspace，统�
 LICENSE[SG6T]: F:声明项目自有代码可选择MIT或Apache-2.0并划定第三方权利边界 | R:code:LICENSE-MIT,code:LICENSE-APACHE,code:docs/licensing-and-compatibility.md | A:- | S:代码许可不授予第三方服务接入或商标使用权
 LICENSE-APACHE[SG4M]: F:提供Apache-2.0完整许可、专利授权及分发条件 | R:code:LICENSE | A:- | S:-
 LICENSE-MIT[SG4T]: F:提供MIT授权、保留版权声明条件与免责条款 | R:code:LICENSE | A:- | S:-
-README.md[SG7S]: F:介绍原生串流、UU插件、界面版本更新与安装构建及文档导航 | R:code:docs/plugins.md,code:docs/releases/v0.20.1.md,code:docs/native-streaming.md | A:- | S:源码构建须初始化子模块；官方手机互通尚未验收，原生协议不兼容Sunshine
+README.md[SG7S]: F:介绍原生串流、独立UU插件、版本交付与安装构建及文档导航 | R:code:docs/plugins.md,code:docs/releases/v0.20.2.md,code:docs/native-streaming.md | A:- | S:源码构建须初始化子模块；官方手机互通尚未验收，原生协议不兼容Sunshine
 SECURITY.md[SS8T]: F:定义公开PC兼容值和个人凭据的分发边界、私密报告与扫描流程 | R:code:tools/security/scan_secrets.py,code:docs/connection-credentials.md | A:- | S:公开常量仅按精确路径与指纹放行；历史清理不撤回已下载副本
 .gitmodules[FE7T]: F:声明plugins子模块的公开仓库地址与检出位置 | R:code:Cargo.toml,code:docs/plugins.md | A:submodule.plugins | S:实际插件提交由主仓库gitlink固定；更新主项目后须初始化对应子模块
 
@@ -88,6 +88,7 @@ native_startup_probe.rs[TH6M]: F:在隔离门户或合成器中检查首帧、�
 srtp_retransmit_probe.rs[TR6T]: F:构造跨序号回绕及迟到重传的SRTP流检查后续新包仍可认证 | R:code:crates/uu-core/src/srtp_policy.rs | A:main | S:纯合成数据，无socket和服务凭据
 timer_resolution_probe.rs[TP5T]: F:对照Windows计时器分辨率守卫生效和异步取消后的定时误差 | R:code:crates/uu-core/src/video_timing.rs | A:main | S:请求随会话任务取消释放，不改变持久系统设置
 wlan_mode_probe.rs[TN5T]: F:检查WLAN流模式快照、并存引用与有界持有释放生命周期 | R:code:crates/uu-core/src/wlan_streaming.rs | A:main | S:能力检查不代表稳定性收益
+capture_pacing_probe.rs[TP5T]: F:以有界ABBA线程等待模型比较旧采集时钟与保留相位后的节拍 | R:code:crates/uu-core/src/video_pacing.rs,code:crates/uu-core/src/video_timing.rs | A:main | S:每轮1至20秒；没有GPU或串流，迭代率不能称作实机视频收益
 
 ===/home/yfy/Repo/uu_remote/crates/uu-core/examples/capture_overlap_probe/===
 oracle.rs[TH5M]: F:解析实验模式并以颜色和互补位标记核验解码图像与源帧一致性 | R:code:crates/uu-core/examples/capture_overlap_probe.rs | A:options,assess,marker | S:参考为RGB而读回为BGRA；必须同时满足标记和颜色误差
@@ -119,7 +120,7 @@ direct_ice.rs[FS8M]: F:校验原生公网ICE服务、候选与SDP并形成统一
 display_frames.rs[DP8M]: F:用每显示轨道一个最新图像邮箱交付解码帧并统计替换与停留时间 | R:code:crates/uu-core/src/media.rs,code:crates/uu-media/src/frame.rs | A:FrameSender,FrameReceiver,DisplayImage | S:换代后旧发送者不可再发布；只替换解码图像而非压缩参考帧，邮箱时间不是显示完成时间
 error.rs[LG4T]: F:定义配置不可用、非法会话转移及IO统一核心错误 | R:code:crates/uu-core/src/session.rs | A:CoreError | S:-
 frame_cadence.rs[KO6T]: F:分别汇总源RTP帧间距、本地到达间距及接收解码节拍分布 | R:code:crates/uu-core/src/video_receiver.rs | A:Cadence,Snapshot | S:不跨主机减时钟，源帧间距不能作为单向网络延迟
-frame_trace.rs[DO8L]: F:以有界逐帧事件和源身份关联采集、编码、排队与RTP写入阶段 | R:code:crates/uu-core/src/socket_trace.rs,code:crates/uu-core/src/media.rs | A:HostTrace,Frame,Report | S:仅同钟区间可相减；API返回不是GPU或显示完成；网络报告须绑定当前媒体epoch，本地实验不外发逐帧数据
+frame_trace.rs[DO8L]: F:以有界源身份和逐帧事件关联采集编码至RTP写入，并提供新鲜的主机跨度 | R:code:crates/uu-core/src/socket_trace.rs,code:crates/uu-core/src/media.rs | A:HostTrace,Frame,Report,video_latency | S:仅同钟区间可相减；API返回不是GPU或显示完成；跨度重叠不能再相加；接收快照绑定媒体epoch且五秒过期，本地实验不外发逐帧数据
 host_admin.rs[AS8S]: F:通过现有原生控制通道检查主机状态、保存配置、改授权和断开会话 | R:code:crates/uu-core/src/shared_host.rs,code:crates/uu-core/src/device_book.rs | A:Service,Request,Response | S:网络操作实时重验设备管理权限；本地管理员入口要求先验OS边界；重启需等保存回执确认
 host_runtime.rs[AG8M]: F:统一GUI和后台服务的主机准备、入口发布、配置与授权和会话门 | R:code:crates/uu-core/src/shared_host.rs,code:crates/uu-core/src/device_internet.rs,code:crates/uu-core/src/native_lan.rs | A:prepare,Runner | S:所有入口共享身份与会话限额；启动先取得HostOwner，至少一个入口启用
 hotkeys.rs[DU7M]: F:定义客户端动作和可配置前台快捷键并检查冲突及嵌套透传 | R:code:crates/uu-core/src/client_settings.rs,code:crates/uu-gui/src/shortcuts.rs | A:Action,Chord,Bindings | S:缺失动作继承默认，显式空列表禁用；嵌套模式必须保留退出透传开关
@@ -129,8 +130,8 @@ latest_capture.rs[RP8L]: F:在单一线程拥有采集源，以可替换单槽�
 lib.rs[LG7S]: F:声明核心模块和对外导出并统一安装rustls加密提供方 | R:code:crates/uu-core/Cargo.toml,code:crates/uu-core/src/plugins.rs | A:install_crypto_provider | S:同时存在ring和aws-lc时显式选择ring，避免rustls猜测失败
 listen_socket.rs[RN7T]: F:创建固定接口TCP和UDP监听器并实施平台正确的端口所有权 | R:code:crates/uu-core/src/native_lan.rs | A:tcp,udp | S:Windows bind前启用SO_EXCLUSIVEADDRUSE；不可用SO_REUSEADDR模拟Unix语义
 local_workspace.rs[RS7L]: F:通过本地认证监听器把新串流请求交给已有工作区并避免重复启动 | R:code:crates/uu-gui/src/stream_workspace.rs | A:join,Join,Owner | S:落盘仅短期能力，密码和连接请求留内存；首进程持有监听直到全部串流关闭
-media.rs[AN9L]: F:封装接收端WebRTC媒体、解码交付与会话能力及HUD统计 | R:code:crates/uu-core/src/video_receiver.rs,code:crates/uu-core/src/display_frames.rs,code:crates/uu-core/src/congestion.rs | A:MediaStats,Peer | S:HEVC须真实硬解产出有效帧才启用；原始网络丢包与修复后丢包分开，CONTROL RTT不是纯链路时间
-native.rs[AN9L]: F:编排原生授权后的采集编码、媒体协商、音视频发送接收和共享生命周期 | R:code:crates/uu-core/src/native_media.rs,code:crates/uu-core/src/native_control.rs,code:crates/uu-core/src/native_quality.rs | A:HostConfig,SharingConfig,serve,view,serve_direct | S:认证offer与候选通过后才开采集；输入需主机许可及独立请求；门户授权不从Xwayland替代
+media.rs[AN9L]: F:封装接收端WebRTC媒体、解码交付与会话能力及HUD统计 | R:code:crates/uu-core/src/video_receiver.rs,code:crates/uu-core/src/display_frames.rs,code:crates/uu-core/src/congestion.rs | A:MediaStats,Peer | S:HEVC须真实硬解出图才启用；原始与修复后丢包分开；主机逐帧快照和接收时间须在同一锁顺序下更新，CONTROL RTT不是纯链路时间
+native.rs[AN9L]: F:编排原生授权后的采集编码、媒体协商、音视频发送接收和共享生命周期 | R:code:crates/uu-core/src/native_media.rs,code:crates/uu-core/src/native_control.rs,code:crates/uu-core/src/native_quality.rs,code:crates/uu-core/src/video_pacing.rs | A:HostConfig,SharingConfig,serve,view,serve_direct | S:认证offer与候选通过后才开采集；输入需主机许可及独立请求；门户授权不从Xwayland替代；媒体重启清除旧主机跨度的新鲜时间
 native_audio.rs[AH7S]: F:在OS线程持有声音采集后端并向媒体任务交付编码声音与恢复状态 | R:code:crates/uu-media/src/audio_capture.rs | A:Worker | S:声音独立于视频输入，停止请求后有界等待线程退出
 native_clipboard.rs[IU8L]: F:在有序SCTP流协商并传输双方许可的文本和PNG剪贴板内容 | R:code:crates/uu-core/src/native_clipboard/image.rs,code:crates/uu-core/src/clipboard.rs | A:host,viewer,suspend,stop | S:不读取OS剪贴板；transport epoch与焦点generation均防陈旧写入；无显式主机backend不得打开设备
 native_color.rs[FN7S]: F:通过独立SDP属性协商可选HDR10编解码与源显示元数据 | R:code:crates/uu-core/src/native_quality.rs | A:Request,Response,capture_codecs | S:无属性即SDR；只有双方实际支持的HEVC或AV1 HDR请求才改变采集域
@@ -176,6 +177,8 @@ video_options.rs[DC5T]: F:表示提供方无关的编码输出尺寸边界 | R:c
 video_receiver.rs[KN9L]: F:统一有界RTP重排、NACK缺口与多编码AU装配和丢包恢复epoch | R:code:crates/uu-core/src/av1_rtp.rs,code:crates/uu-core/src/pyrowave_rtp.rs,code:crates/uu-core/src/decode_gate.rs | A:VideoReceiver,AccessUnit | S:健康帧不额外等待；缺口到期废弃AU；限制2048包和16MiB，切编码先退役旧碎片而保留累计统计
 video_timing.rs[RP7T]: F:为Windows活动接收会话持有平衡的1ms计时器分辨率请求 | R:code:crates/uu-core/src/media.rs | A:VideoTimerResolution | S:每会话独立guard且取消时释放，只改善等待粒度，不修改QPC或目标FPS
 wlan_streaming.rs[RP6M]: F:为每连接管理可选WLAN媒体提示与只读回查 | R:code:crates/uu-core/src/wlan_streaming/windows.rs | A:Guard,experiment_request | S:不设置FALSE或恢复全局快照；未配置时无API调用，关闭仅释放自己的客户端句柄
+frame_continuity.rs[KO6M]: F:在调用方活动区间统计新画面提交的60秒长间隔、极值与持续等待 | R:code:crates/uu-gui/src/video_texture.rs,code:docs/hud.md | A:Continuity,Snapshot | S:持续等待只计一次；暂停或FPS变化重置比较但保留窗口事件；不足两帧未知，提交不等于扫描
+video_pacing.rs[KP7T]: F:计算后续采集期限，在轻微超时时保留目标时钟相位 | R:code:crates/uu-core/src/native.rs | A:next_deadline | S:超时债务达到一个周期便重新定时；只调度新采集，不积累无界追赶或重放历史图像
 
 ===/home/yfy/Repo/uu_remote/crates/uu-core/src/clipboard/===
 content.rs[DU7T]: F:表示统一最新文本或PNG图片内容并在构造时验证尺寸与头部 | R:code:crates/uu-core/src/clipboard.rs | A:Content,Image | S:图片最多8MiB与16M像素，Debug仅打印大小不泄露内容
@@ -217,7 +220,7 @@ build_support.rs[KV5T]: F:校验Git来源提交并把语义版本转换为Window
 ===/home/yfy/Repo/uu_remote/crates/uu-gui/examples/===
 clipboard_probe.rs[TU4T]: F:在隔离Linux桌面检验系统剪贴板读取、远端写入和只读暂停行为 | R:code:crates/uu-gui/src/clipboard.rs | A:main | S:会改固定测试文本，只能在隔离合成器执行
 hdr_renderer_probe.rs[TH6M]: F:用生成HDR10流检查生产纹理渲染与FP16像素 | R:code:crates/uu-gui/src/video_texture.rs,code:crates/uu-gui/examples/support/hdr_offscreen_target.rs | A:main | S:offscreen只验证生成像素，不等于物理HDR呈现
-hud_preview.rs[TU5S]: F:用生成指标在私有Xvfb渲染生产HUD并保存预览图 | R:code:crates/uu-gui/src/hud_panel.rs | A:main | S:拒绝覆盖截图，不使用真实会话或桌面数据
+hud_preview.rs[TU5S]: F:用生成指标在私有Xvfb渲染生产HUD、长间隔与详情布局并保存预览 | R:code:crates/uu-gui/src/hud_panel.rs | A:main | S:拒绝覆盖截图，不使用真实会话或桌面数据
 latency_viewer_probe.rs[TO6M]: F:让有期限只接收原生会话通过生产渲染器记录帧时序与停顿 | R:code:crates/uu-gui/src/video_texture.rs,code:crates/uu-core/src/pipeline_trace.rs | A:main | S:不注入输入或改显示；样本满即失败，不静默截尾，绘制统计不等同物理显示延迟
 native_clipboard_probe.rs[TU5S]: F:在两个自有Xvfb间检查原生文本图片、许可与停止释放闭环 | R:code:crates/uu-gui/src/clipboard.rs,code:crates/uu-core/src/native_clipboard.rs | A:main | S:验证Xvfb进程与私有Xauthority所有权，禁止初始主机内容无许可广播
 native_renderer_probe.rs[TH6L]: F:用生成HDR图验证D3D视频与GL UI合成的真实像素和呈现路径 | R:code:crates/uu-gui/src/video_native.rs,code:crates/uu-gui/src/video_texture.rs | A:main | S:不改变OS HDR；测试自有窗口，生成图通过不代表物理HDR验收
@@ -248,9 +251,9 @@ device_preview.rs[AP6T]: F:在每窗口有界worker保存末帧小图或最后�
 display_layout.rs[PD6S]: F:保存本地显示标签顺序、稳定编号与最后选择 | R:code:crates/uu-gui/src/displays.rs | A:DisplayLayout | S:排序不改变远端显示布局，暂时消失再出现不重新编号
 displays.rs[AU8L]: F:按远端源ID管理轨道绑定、画质确认与切屏状态及标签交互 | R:code:crates/uu-gui/src/display_layout.rs,code:crates/uu-core/src/native_displays.rs | A:Displays | S:切屏需源确认、设置确认和新帧共同完成；进行中仅保留最新选择，不能按到包顺序认显示器
 gamepad.rs[IH7L]: F:在唯一SDL线程采集实体手柄与传感器并按GUI输入焦点投递 | R:code:crates/uu-core/src/native_input.rs | A:Reader | S:后台窗口只释放自己的租约；打开驱动后重验generation，Windows需视频消息泵处理Raw Input
-hud.rs[AO6T]: F:从当前串流采样有界指标并缓存HUD布局与历史悬停 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-core/src/media.rs | A:Cache | S:500ms采样，缺失和陈旧指标保持未知而非0
+hud.rs[AO6T]: F:采样串流阶段、画面连续性与主机跨度并缓存HUD布局历史和悬停 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-core/src/media.rs | A:Cache | S:500ms采样，缺失和陈旧指标保持未知而非0
 hud_history.rs[KO5T]: F:保存三分钟有界单调时序指标并绘制可选延迟曲线 | R:code:crates/uu-gui/src/hud_panel.rs | A:History,chart | S:缺失项保持缺失，重绘不重复采样，时钟倒退清历史
-hud_panel.rs[AU7L]: F:呈现共用HUD、对齐可选详情字段、逐值说明与历史曲线 | R:code:crates/uu-gui/src/hud_history.rs,code:crates/uu-gui/src/hud.rs | A:Metrics,Layout,HoverCard | S:未知不补零，合计列出缺项；详情点击后复制归本机，渲染提交不是显示完成
+hud_panel.rs[AU7L]: F:呈现共用HUD、长间隔与视频跨度、对齐可选详情和历史曲线 | R:code:crates/uu-gui/src/hud_history.rs,code:crates/uu-gui/src/hud.rs | A:Metrics,Layout,HoverCard | S:未知不补零；视频阶段和不是端到端，主机跨度重叠不再相加；点击详情后复制归本机，面板按上下可用空间限高
 input.rs[AU7S]: F:把真实鼠标转移转换为远端绝对或相对移动及按住释放事件 | R:code:crates/uu-gui/src/input_capture.rs | A:RemotePointer | S:不在抬起时合成点击；只释放本会话按下，黑边忽略按下而拖动可在画面外抬起
 input_capture.rs[DU9L]: F:分离捕获意图与临时条件并跟踪本会话远端长按与释放 | R:code:crates/uu-gui/src/keyboard_capture.rs,code:crates/uu-gui/src/shortcuts.rs | A:Capture,Conditions,RemoteKeys | S:失焦或本地UI暂停不清用户意图；只有真实停止才释放；UU保活修饰键重复限兼容主机，原生不得重复注入
 internet_ui.rs[AU4T]: F:有界读取保留的旧公网连接快照以供迁移和启动 | R:code:crates/uu-core/src/internet.rs | A:read_profile | S:格式错误保留原文件
@@ -259,7 +262,7 @@ lan_host_ui.rs[AU6L]: F:管理旧LAN前台共享窗口、配对决定和异步�
 lan_ui.rs[AU6L]: F:提供无账号LAN设备发现、手工地址、配对持久化和串流启动页面 | R:code:crates/uu-gui/src/lan_host_ui.rs,code:crates/uu-core/src/native_discovery.rs | A:LanUi | S:关闭发现递增scan epoch并丢旧结果，取消完成后才join，不阻塞偏好修改
 lan_ui_tests.rs[TU5M]: F:以真实回环配对生成视频覆盖LAN页面保存、错误显示和发现取消 | R:code:crates/uu-gui/src/lan_ui.rs | A:- | S:不访问真实桌面
 login.rs[AI7M]: F:异步执行UU注册和二维码轮询并生成二维码图像 | R:code:plugins/uu-compat/src/api.rs,code:crates/uu-gui/src/account.rs | A:Worker,spawn,rename,qr_rgba | S:只有当前UI接收者可落盘登录凭据，取消旧二维码不能迟到重新登录；取消后退出runtime不等待DNS
-main.rs[EG9L]: F:创建GUI应用并协调主页、设备工作区、兼容账号及独立串流窗口与资源生命周期 | R:code:crates/uu-gui/src/stream_workspace.rs,code:crates/uu-gui/src/platform.rs,code:crates/uu-gui/src/settings.rs | A:App,main | S:关闭本地键盘缩放让Ctrl加减归远端；兼容设备列表失败不能解释为空账号，实例各自持有输入与控制状态
+main.rs[EG9L]: F:创建GUI应用并协调主页、设备工作区、账号及串流窗口与资源生命周期 | R:code:crates/uu-gui/src/stream_workspace.rs,code:crates/uu-gui/src/platform.rs,code:crates/uu-gui/src/settings.rs | A:App,main | S:关闭本地键盘缩放让Ctrl加减归远端；设备列表失败不解释为空账号；各实例持有输入与控制状态；连续性只观察当前可见前台视频页，媒体换代清轨道
 native_host_ui.rs[AU6L]: F:提供旧邀请式原生前台共享及显示源和绑定地址选择 | R:code:crates/uu-core/src/native.rs,code:crates/uu-gui/src/native_interfaces.rs | A:NativeHostUi | S:刷新不改变显式地址或启动监听；保留软件编码与loopback默认，不改账号服务或显示设置
 native_interfaces.rs[IN5T]: F:只读枚举可绑定活动网卡地址供共享界面选择 | R:code:crates/uu-gui/src/native_host_ui.rs | A:enumerate | S:排除无scope ID的IPv6链路本地地址及loopback广播多播
 native_keys.rs[IU7S]: F:把GUI物理键和指针语义转换成标准HID与原生归一化命令 | R:code:crates/uu-core/src/native_input.rs,code:crates/uu-input/src/lib.rs | A:hid_for_egui,command | S:协议适配转换语义，不能把UU鼠标位掩码当原生键值；Windows由扫描码确定物理键
@@ -280,7 +283,7 @@ stream_menu.rs[AU8L]: F:管理连接栏与悬浮菜单生命周期，统一开�
 stream_workspace.rs[AU9L]: F:在一个串流进程拥有多个设备会话并将设备组移动到不同原生窗口 | R:code:crates/uu-core/src/local_workspace.rs,code:crates/uu-gui/src/sessions.rs | A:Workspace,Launch | S:拆并窗口不重建controller、decoder或传输；新surface存在后才重定向句柄与输入，GL状态限定事件循环线程
 stream_workspace_tests.rs[TU6L]: F:以真实窗口与加密生成视频验证会话挂接、排序拆分及独立关闭 | R:code:crates/uu-gui/src/stream_workspace.rs | A:- | S:不采桌面或注入输入；子viewport截图在该viewport自己的pass采集
 theme.rs[DU5S]: F:定义应用共用颜色和控件状态并检查文本与控件边界对比度 | R:code:crates/uu-gui/src/ui.rs | A:apply | S:-
-ui.rs[AU7L]: F:绘制主页导航、兼容设备页、串流画面和共用图标控件 | R:code:crates/uu-gui/src/workspace_ui.rs,code:crates/uu-gui/src/stream_menu.rs | A:Icon | S:主界面与串流视图由应用状态分派，品牌来自嵌入Eclipse资源
+ui.rs[AU7L]: F:绘制主页导航、兼容设备页、串流画面和共用图标控件 | R:code:crates/uu-gui/src/workspace_ui.rs,code:crates/uu-gui/src/stream_menu.rs | A:Icon | S:只有邮箱的新图像首次提交才更新绘制帧率和连续性；普通UI重绘不计新视频帧
 ui_feedback.rs[DU5S]: F:按页面作用域显示可关闭的错误和短期成功信息提示 | R:code:crates/uu-gui/src/workspace_ui.rs | A:Feedback,Scope,Kind | S:成功2秒、信息4秒，错误保留直到处理或关闭
 uu_devices.rs[AI6M]: F:异步管理UU账号注册设备列表和明确解绑操作 | R:code:plugins/uu-compat/src/api.rs,code:crates/uu-gui/src/account.rs | A:Manager | S:账号切换清旧行和待确认操作；当前账号明确解绑本机才请求退出
 video.frag[KU7T]: F:采样多平面视频并进行范围矩阵转换、HDR映射与光标合成 | R:code:crates/uu-gui/src/video_texture.rs,code:crates/uu-gui/src/video_cursor.rs | A:main | S:HDR输出按目标SDR白点归一化；SDR回退按源白点映射
@@ -291,7 +294,7 @@ video_dma_buf.rs[IH7M]: F:把租赁且同步完成的Linux DMA-BUF视频平面�
 video_hdr.rs[IH8M]: F:为单串流viewport安装浮点scRGB呈现器并协调原生D3D与WGL回退 | R:code:crates/uu-gui/src/video_native.rs,code:crates/uu-media/src/hdr.rs | A:enable_for_stream,enable | S:FP16可分配不代表输出支持HDR，实际分配与注册完成且显示器支持后才宣告能力
 video_native.rs[IH8M]: F:将同适配器D3D视频与三槽GL UI叠加合成为原生呈现 | R:code:crates/uu-gui/src/video_native_source.rs,code:crates/uu-media/src/hdr_windows.rs | A:enable,Inspection | S:每窗口仅一个合成目标；UI缓存键只有实际复用条件相同才有效，隐藏绘制不得沿用旧内容键
 video_native_source.rs[DP8S]: F:跨D3D设备导出转换图像并跟踪消费fence和有界解码帧租约 | R:code:crates/uu-gui/src/video_texture.rs,code:crates/uu-media/src/d3d11_external.rs | A:Source | S:创建使用析构限定render线程；退役置valid=false，未消费的转换不能提前释放底层样本
-video_texture.rs[AU9L]: F:统一CPU平面上传、DMA-BUF、WGL与原生GPU视频绘制及回退和诊断 | R:code:crates/uu-gui/src/video.frag,code:crates/uu-gui/src/video_d3d11.rs,code:crates/uu-gui/src/video_dma_buf.rs | A:VideoTexture,enable_gpu_video | S:实际D3D图像才启用原生合成；早期旧帧不能永久关平面渲染；P010 GLES需norm16否则显式CPU色调映射
+video_texture.rs[AU9L]: F:统一CPU与GPU视频绘制回退、诊断和按轨道连续性观察 | R:code:crates/uu-gui/src/video.frag,code:crates/uu-gui/src/video_d3d11.rs,code:crates/uu-gui/src/video_dma_buf.rs,code:crates/uu-core/src/frame_continuity.rs | A:VideoTexture,enable_gpu_video | S:实际D3D图像才启用原生合成；早期旧帧不能永久关平面渲染；P010 GLES需norm16否则显式CPU色调映射；连续性记录的是提交而非GPU或扫描完成
 video_timing.rs[KO5T]: F:分组记录视频回调上传绑定绘制等CPU阶段和近期窗口统计 | R:code:crates/uu-gui/src/video_texture.rs | A:Timings | S:新图像与相同图像UI重绘分开，驱动等待计入CPU耗时
 wallpapers.rs[IN6M]: F:异步有界下载解码设备与主页缩略图并支持及时取消 | R:code:crates/uu-gui/src/background.rs | A:Worker,decode | S:最多两并发、4MiB下载和40MiB解码分配；取消后阻止迟到发布，不阻塞设备列表
 wayland_capture.rs[IU7S]: F:对所属Wayland surface启停合成器系统快捷键抑制 | R:code:crates/uu-gui/src/platform.rs | A:Capture | S:借用eframe显示和surface不取得其所有权，不建立全局hook，Drop销毁抑制器
@@ -462,7 +465,7 @@ device-library.md[SU4T]: F:说明兼容设备收藏、最近使用和按账号�
 frame-rate.md[SN5T]: F:整理UU实际帧率字段、屏幕ID、CONTROL初始化和目标与实测区别 | R:code:plugins/uu-compat/src/control_wire.rs,code:docs/windows-latency.md | A:- | S:120须实际count而非枚举；请求确认不代表源或呈现达标
 frame-tracing.md[SO6T]: F:定义主机逐帧身份、同钟事件、遥测边界和生成源开销对照 | R:code:crates/uu-core/src/frame_trace.rs | A:- | S:只在同epoch和generation匹配PTS，不跨主机减时钟；统计溢出丢观测不丢视频
 hdr.md[SH5T]: F:说明Windows原生HDR10的启用条件、色彩GPU路径和验证范围 | R:code:crates/uu-core/src/native_color.rs | A:- | S:实际10位PQ码流与输出HDR均须验证；生成图不能替代显示器视觉验收
-hud.md[SO5T]: F:定义HUD指标口径、详情对齐选择复制、悬停与缺失值呈现 | R:code:crates/uu-gui/src/hud_panel.rs | A:- | S:阶段均值和不等于输入到显示延迟；原始Loss不因FEC恢复而抵消
+hud.md[SO5T]: F:定义HUD阶段小计、主机跨度、60秒长间隔与手动选择复制的统计和呈现口径 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-core/src/frame_continuity.rs | A:- | S:阶段和不是输入到显示延迟，主机跨度重叠不相加；长间隔含源空闲，不归因网络或扫描；原始Loss不被FEC抵消
 keyboard-capture.md[SU6T]: F:规定整条键盘流的捕获归属、临时暂停、长按释放和平台限制 | R:code:crates/uu-gui/src/keyboard_capture.rs | A:- | S:UU修饰键刷新限官方兼容；状态与隔离hook测试不能替代实体桌面验收
 keyboard-shortcuts.md[SU5T]: F:说明客户端快捷键录制、配置作用域、冲突及嵌套透传 | R:code:crates/uu-core/src/hotkeys.rs | A:- | S:透传退出动作必须保留至少一绑定；修改先松修饰键，AltGr仍归文本
 licensing-and-compatibility.md[SS6T]: F:区分项目双许可、第三方来源、官方服务接入和编解码专利边界 | R:code:LICENSE,code:THIRD-PARTY-NOTICES.txt | A:- | S:原创代码许可不代表网易接入授权；依赖生成清单不是法律审计
@@ -477,7 +480,7 @@ native-gamepad.md[SH5T]: F:说明四槽原生手柄传感器、焦点控制权�
 native-input.md[SU6T]: F:说明主机输入许可、HID坐标、租约释放与隔离平台验证 | R:code:crates/uu-core/src/native_control.rs | A:- | S:按下成功才拥有，复位带外不受队列满影响；Windows DPI上下文保持至SendInput完成
 native-internet.md[SN6S]: F:说明UU与自建公网寻址、设备授权、直连策略和WSS与STUN部署 | R:code:crates/uu-core/src/internet.rs | A:- | S:信令服务不等于媒体中继；候选存在不能证明实际选中路径
 native-lan.md[SN5T]: F:说明默认LAN发现、持久配对、监听冲突、多会话及共享范围内切屏 | R:code:crates/uu-core/src/native_lan.rs | A:- | S:发现不是授权；TCP冲突不换端口伪装成功，UDP失败仍可手动连接
-native-latency.md[SO5T]: F:解释原生主机阶段与输入确认统计、HUD合计公式及缺失阶段 | R:code:crates/uu-core/src/native_timing.rs | A:- | S:RTT折半依赖对称假设，阶段均值合计不是单帧输入到显示测量
+native-latency.md[SO5T]: F:解释视频阶段、输入确认、主机同钟跨度与未测环节和采集时钟模型 | R:code:crates/uu-core/src/native_timing.rs,code:crates/uu-core/src/frame_trace.rs | A:- | S:RTT折半依赖对称假设；窗口均值和不是单帧全程，不同比较总体的均值不能相减推导精确阶段
 native-pairing.md[SS5T]: F:说明早期邀请文件TLS固定证书与短期访问凭据的生命周期 | R:code:crates/uu-core/src/native_pairing.rs | A:- | S:邀请等同访问许可且可在期限内复用，不是一次性码；新GUI授权以设备文档为准
 native-public-connectivity.md[SN4S]: F:保留原生公网信令与可替换STUN的前期架构及服务适配比较 | R:code:docs/native-internet.md | A:- | S:其中未实现与取消描述属历史，以文首链接的当前实现说明为准
 native-streaming.md[SN5T]: F:保留早期邀请式原生观看与CLI生成源和桌面共享操作 | R:code:docs/native-lan.md,code:crates/uu-cli/src/native_cli.rs | A:- | S:旧入口默认loopback与软件编码，不能据此推断新GUI默认设置
@@ -548,6 +551,7 @@ v0.9.0.md[SV3T]: F:记录GPU平面颜色呈现、CPU读回池与HUD缓存 | R:co
 v0.9.1.md[SV3T]: F:记录Linux只读DMA下载与硬解后端和低功耗客户端改善 | R:code:docs/linux-client.md | A:- | S:仍是CPU下载，不是GPU直通
 v0.20.0.md[SV4T]: F:记录独立插件仓库、共用协议SDK与实验性官方被控入口的版本交付范围 | R:code:docs/plugins.md,code:docs/official-mobile-client-feasibility.md | A:- | S:真实官方手机互通尚未验收，旧窗口与后台程序需分别更新
 v0.20.1.md[SV4T]: F:记录HUD手动复制与行对齐、统一悬浮菜单和声音控件的更新 | R:code:docs/hud.md,code:crates/uu-gui/src/stream_menu.rs | A:- | S:界面更新需重开旧窗口，后台服务无需因此重启
+v0.20.2.md[SV4T]: F:发布采集相位修正、滚动长间隔及准确视频阶段与主机跨度统计 | R:code:docs/hud.md,code:docs/native-latency.md | A:- | S:调度模型收益不代表4KHDR实流或物理延迟下降；主机节拍需更新共享端并重启其进程
 
 ===/home/yfy/Repo/uu_remote/licenses/===
 README.md[SG4T]: F:记录SPDX标准文本来源版本及第三方原始通知优先规则 | R:code:tools/licenses/generate.py | A:- | S:附带GPL或LGPL文本不等于项目选用该许可
