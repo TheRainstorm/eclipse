@@ -156,6 +156,7 @@ pub fn diagnostic_monitors() -> Result<Vec<MonitorDiagnostic>,CaptureError> {
 }
 
 pub struct DxgiCapture {
+    diagnostics: Option<crate::capture_diagnostics::Recorder>,
     cursor:crate::cursor::Stream,
     source: Monitor,
     rotation: Rotation,
@@ -233,7 +234,14 @@ impl DxgiCapture {
             if e.code()==windows::Win32::Foundation::E_ACCESSDENIED {backend("当前桌面拒绝采集；锁屏和 UAC 安全桌面需要 Windows 后台服务以 LocalSystem 运行")}
             else{backend(format!("{} for {}: {e}", if hdr.is_some(){"DuplicateOutput1 HDR"}else{"DuplicateOutput SDR"}, selected.monitor.name))}
         })?;
+        let qpc_frequency = qpc_frequency();
+        let diagnostics = crate::capture_diagnostics::requested(
+            std::env::var("ECLIPSE_CONTINUOUS_TRACE").ok().as_deref(),
+            std::env::var("ECLIPSE_CAPTURE_DIAGNOSTIC").ok().as_deref(),
+        ).then(|| crate::capture_diagnostics::Recorder::new(qpc_now(), qpc_frequency,
+            unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }, crate::capture_diagnostics::CAPACITY));
         Ok(Self {
+            diagnostics,
             cursor:Default::default(),
             source: selected.monitor,
             rotation: selected.rotation,
@@ -241,7 +249,7 @@ impl DxgiCapture {
             source_frames: Default::default(),
             present_info: None,
             accumulated_frames: 0,
-            qpc_frequency: qpc_frequency(),
+            qpc_frequency,
             started: Instant::now(),
             staging: None,
             capture_pool: None,
@@ -284,6 +292,9 @@ impl DxgiCapture {
         self.cursor.update([self.source.width,self.source.height],position,shape);
     }
     fn invalidate(&mut self) {
+        if let Some(observer) = &mut self.diagnostics {
+            observer.retired(self.source_frames.snapshot(None), qpc_now(), "desktop_invalidated", self.duplication.is_some());
+        }
         self.cursor.clear();
         if self.duplication.is_some() { self.source_frames.retire(); }
         self.last = None;
@@ -351,7 +362,26 @@ impl DxgiCapture {
         // Initial acquisition keeps a short wait to avoid spinning on an idle desktop.
         // An owner deadline probe may explicitly request a nonblocking check.
         let wait_ms = bounded_wait.map(|v|v.as_millis().min(16) as u32).unwrap_or_else(||if self.last.is_some() {0}else{5});
-        match unsafe { duplication.AcquireNextFrame(wait_ms, &mut info, &mut resource) } {
+        let before = self.diagnostics.as_ref().and_then(|_| qpc_now());
+        let acquired = unsafe { duplication.AcquireNextFrame(wait_ms, &mut info, &mut resource) };
+        let after = self.diagnostics.as_ref().and_then(|_| qpc_now());
+        if let Some(observer) = &mut self.diagnostics {
+            use crate::capture_diagnostics::{Acquisition, Outcome};
+            let (hresult, outcome) = match &acquired {
+                Ok(()) if info.LastPresentTime == 0 && info.AccumulatedFrames == 0 => (0, Outcome::PointerOnly),
+                Ok(()) => (0, Outcome::AcquiredNotReturned),
+                Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => (error.code().0, Outcome::WaitTimeout),
+                Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST || error.code() == DXGI_ERROR_SESSION_DISCONNECTED
+                    || error.code() == DXGI_ERROR_UNSUPPORTED || error.code() == windows::Win32::Foundation::E_ACCESSDENIED => (error.code().0, Outcome::Retired),
+                Err(error) => (error.code().0, Outcome::Error),
+            };
+            observer.acquired(Acquisition { thread_id: unsafe { windows::Win32::System::Threading::GetCurrentThreadId() },
+                qpc_before: before, qpc_after: after, timeout_ms: wait_ms, hresult, frame_info_valid: acquired.is_ok(),
+                last_present_qpc: info.LastPresentTime, last_mouse_update_qpc: info.LastMouseUpdateTime,
+                accumulated_frames: info.AccumulatedFrames, gpu: self.gpu, overlap: self.overlap,
+                separate_encode_device: self.encode_device.is_some() }, outcome);
+        }
+        match acquired {
             Ok(()) => {}
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
             Err(e)
@@ -399,7 +429,11 @@ impl DxgiCapture {
                 self.capture_pool = Some(if let Some(encode)=&self.encode_device {uu_media::encoder::CapturePool::separate(device,encode.clone(),desc.Width,desc.Height)}else{uu_media::encoder::CapturePool::with_limit(device,desc.Width,desc.Height,if self.overlap{3}else{2})}.map_err(backend)?);
             }
             let pts = self.timestamp();
-            return self.capture_pool.as_mut().unwrap().capture(&texture, pts).map_err(backend);
+            let frame = self.capture_pool.as_mut().unwrap().capture(&texture, pts).map_err(backend)?;
+            if frame.is_none() {
+                if let Some(observer) = &mut self.diagnostics { observer.pool_busy(); }
+            }
+            return Ok(frame);
         }
         if self.encode_device.is_some(){return Err(backend("separate encode device requested but GPU capture is inactive"));}
         let mut needs_staging = true;
@@ -503,12 +537,20 @@ impl Capture for DxgiCapture {
 
     fn enable_overlap(&mut self)->Result<(),CaptureError> {
         if !self.gpu || self.rotation!=Rotation::None {return Err(backend("overlap requires same-adapter GPU capture without rotation"));}
-        if !self.overlap{self.overlap=true;self.last=None;self.capture_pool=None;}Ok(())
+        if !self.overlap {
+            if let Some(observer) = &mut self.diagnostics {
+                observer.retired(self.source_frames.snapshot(None), qpc_now(), "overlap_cache_reset", false);
+            }
+            self.overlap=true;self.last=None;self.capture_pool=None;
+        }Ok(())
     }
     fn wait_updated_frame(&mut self,wait:Duration)->Result<Option<RawFrame>,CaptureError> {
         if !self.overlap || !self.gpu{return Err(backend("overlap GPU capture was not enabled"));}
         if let Some(frame)=self.acquire(Some(wait))? {
             self.source_frames.new_frame(self.present_info,self.accumulated_frames);
+            if let Some(observer) = &mut self.diagnostics {
+                observer.returned(self.source_frames.snapshot(None), frame.pts.0, false);
+            }
             self.last=Some(frame.clone());Ok(Some(frame))
         } else {Ok(None)}
     }
@@ -525,6 +567,9 @@ impl Capture for DxgiCapture {
             && self.rotation == Rotation::None
             && vendor.is_none_or(|v| v == self.adapter_vendor);
         if self.gpu != enabled {
+            if let Some(observer) = &mut self.diagnostics {
+                observer.retired(self.source_frames.snapshot(None), qpc_now(), "gpu_mode_cache_reset", false);
+            }
             self.last = None;
             self.capture_pool = None;
             self.gpu = enabled;
@@ -547,12 +592,18 @@ impl Capture for DxgiCapture {
             if let Some(frame) = self.acquire(None)? {
                 self.source_frames.new_frame(self.present_info, self.accumulated_frames);
                 self.last = Some(frame.clone());
+                if let Some(observer) = &mut self.diagnostics {
+                    observer.returned(self.source_frames.snapshot(None), frame.pts.0, false);
+                }
                 return Ok(frame);
             }
             if let Some(last) = &self.last {
                 self.source_frames.repeated();
                 let mut frame = last.clone();
                 frame.pts = self.timestamp();
+                if let Some(observer) = &mut self.diagnostics {
+                    observer.returned(self.source_frames.snapshot(None), frame.pts.0, true);
+                }
                 return Ok(frame);
             }
             if Instant::now() >= deadline {
@@ -561,7 +612,15 @@ impl Capture for DxgiCapture {
         }
     }
 }
-impl Drop for DxgiCapture {fn drop(&mut self){self.cursor.clear();}}
+impl Drop for DxgiCapture {
+    fn drop(&mut self) {
+        self.cursor.clear();
+        if let Some(observer) = self.diagnostics.take() {
+            let _ = observer.write(&mut std::io::stderr().lock(), std::process::id(),
+                unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }, std::thread::panicking());
+        }
+    }
+}
 fn qpc_now() -> Option<u64> {
     let mut value = 0;
     unsafe { windows::Win32::System::Performance::QueryPerformanceCounter(&mut value).ok()?; }

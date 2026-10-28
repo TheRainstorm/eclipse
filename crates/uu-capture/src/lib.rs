@@ -10,6 +10,8 @@
 pub mod backend;
 pub mod cursor;
 pub mod frame_info;
+#[cfg(any(windows, test))]
+mod capture_diagnostics;
 mod pixels;
 pub mod scale;
 #[cfg(target_os = "linux")]

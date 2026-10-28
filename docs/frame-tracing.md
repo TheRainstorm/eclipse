@@ -64,3 +64,39 @@ Frame trace v2 adds replayable source-host QPC source-present-to-last-RTP-API
 statistics and capture-slot waiting while retaining the existing stage boundaries.
 See [the default-off capture overlap experiment](capture-overlap-experiment.md)
 for ownership, bounded reporting, compatibility and acceptance limits.
+
+## DXGI capture-attempt diagnostics
+
+For an explicitly instrumented run, set both `ECLIPSE_CONTINUOUS_TRACE=1`
+and `ECLIPSE_CAPTURE_DIAGNOSTIC=1` before opening the capture source. The
+default is disabled. A single capture owner retains up to 32768 metadata
+records in memory and writes one `dxgi_capture_diagnostics` JSON line to stderr
+when its capture object is dropped. No per-frame file IO, logging lock, GPU
+wait or texture retention is added; recording does add QPC/thread reads and
+bounded metadata work when explicitly enabled.
+
+Each actual AcquireNextFrame attempt preserves its sequence, raw QPC bracket,
+requested timeout, HRESULT, desktop/pointer update QPC, accumulated updates,
+and actual GPU/overlap/separate-device mode. `frame_info_valid=false` means the
+DXGI fields on an unsuccessful call must not be interpreted as returned data.
+The result distinguishes `wait_timeout`, `pointer_only`, `pool_busy`, a
+successfully returned `fresh` snapshot, retirement and other errors. An
+acquired resource that never becomes an output remains `acquired_not_returned`.
+Returning a cached image keeps the actual failure/no-update reason and records
+`cache_replay=true`, the old source identity and the new capture-return PTS.
+Retirement records distinguish a source-generation retirement from a cache-only
+reset; neither relabels an old image as a new source.
+
+`returned_capture_pts_us` is the RawFrame PTS at the capture API boundary, not
+an encoded AU or RTP timestamp. In particular, the overlap consumer may later
+retimestamp an authorized replay without another DXGI attempt. Join a full
+HostTrace by explicit PTS/source/QPC evidence; do not assume one acquire per
+encoded frame. `LastPresentTime` is the OS desktop update time, not an encode
+start, physical pixel time or causal mouse response.
+
+Overflow explicitly increments `evicted`; retained metadata is not a proof of
+complete capture history. The terminal means only that Drop serialized this
+recorder (`clean_session_proven=false`); session exit and cleanup require their
+own evidence. A forced exit, abort, failed write, partial JSON line or missing
+terminal remains unknown. These fields are local diagnostic data and do not
+extend FrameInfo or the older strict frame-trace wire protocol.
