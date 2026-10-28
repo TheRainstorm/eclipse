@@ -381,6 +381,17 @@ impl Painter {
         clear(&self.gl, screen_size_in_pixels, clear_color);
     }
 
+    /// Whether pending texture updates leave a retained UI layer unchanged.
+    /// Full font deltas repeated by mixed-DPI viewports can be no-ops; all
+    /// other updates conservatively require drawing through the normal path.
+    pub fn textures_delta_is_unchanged(
+        &self,
+        pixels_per_point: f32,
+        delta: &egui::TexturesDelta,
+    ) -> bool {
+        self.font_atlases.delta_is_unchanged(pixels_per_point, delta)
+    }
+
     /// You are expected to have cleared the color buffer before calling this.
     pub fn paint_and_update_textures(
         &mut self,
@@ -416,7 +427,7 @@ impl Painter {
 
     /// Update native video metadata while retaining an unchanged GPU UI layer.
     /// Called only after the presentation owner validated identical UI meshes,
-    /// clips, DPI, dimensions and an empty texture delta.
+    /// clips, DPI, dimensions and a proven unchanged texture delta.
     pub fn paint_callbacks_only(&mut self,screen_size_px:[u32;2],pixels_per_point:f32,primitives:&[egui::ClippedPrimitive]) {
         self.cpu_timings_ms=[0.;9];self.assert_not_destroyed();
         for p in primitives {

@@ -47,6 +47,25 @@ impl<T: Copy> FontAtlases<T> {
             .is_some_and(|e| e.options == options && e.image.as_ref() == Some(image))
     }
 
+    /// Prove that a pending delta cannot change a retained UI image. Inspect
+    /// the requested scale, which can differ from the painter's active scale
+    /// after another viewport painted. Unknown/partial updates stay dirty.
+    pub fn delta_is_unchanged(&self, pixels_per_point: f32, delta: &egui::TexturesDelta) -> bool {
+        delta.free.is_empty()
+            && delta.set.iter().all(|(id, update)| {
+                if *id != egui::TextureId::default() || update.pos.is_some() {
+                    return false;
+                }
+                let egui::ImageData::Font(image) = &update.image else {
+                    return false;
+                };
+                self.entries
+                    .iter()
+                    .find(|e| e.scale == pixels_per_point.to_bits())
+                    .is_some_and(|e| e.options == update.options && e.image.as_ref() == Some(image))
+            })
+    }
+
     /// Record only after the upload. Partial glyph updates also update the CPU
     /// shadow, so the next upstream full atlas can be recognized as unchanged.
     pub fn uploaded(
@@ -181,5 +200,54 @@ mod tests {
         cache.uploaded(1., 10, &image, None, LINEAR);
         cache.uploaded(1., 10, &image, Some([2, 2]), LINEAR);
         assert!(!cache.unchanged(&image, LINEAR));
+    }
+
+    #[test]
+    fn repeated_full_font_delta_uses_requested_scale_without_changing_active_atlas() {
+        let mut cache = FontAtlases::new();
+        let low = FontImage::new([4, 3]);
+        let mut high = FontImage::new([4, 3]);
+        high.pixels[0] = 1.;
+        cache.uploaded(1., 10, &low, None, LINEAR);
+        cache.uploaded(1.5, 20, &high, None, LINEAR);
+        let mut delta = egui::TexturesDelta::default();
+        delta.set.push((
+            egui::TextureId::default(),
+            egui::epaint::ImageDelta::full(low, LINEAR),
+        ));
+        assert!(cache.delta_is_unchanged(1., &delta));
+        assert!(!cache.delta_is_unchanged(1.5, &delta));
+        assert!(!cache.delta_is_unchanged(2., &delta));
+        assert_eq!(cache.texture(), Some(20));
+        delta.set[0].1.options = TextureOptions::NEAREST;
+        assert!(!cache.delta_is_unchanged(1., &delta));
+    }
+
+    #[test]
+    fn ui_reuse_requires_every_update_to_be_proven_unchanged() {
+        let mut cache = FontAtlases::new();
+        let image = FontImage::new([4, 3]);
+        cache.uploaded(1., 10, &image, None, LINEAR);
+        let mut delta = egui::TexturesDelta::default();
+        assert!(cache.delta_is_unchanged(1., &delta));
+        let full = egui::epaint::ImageDelta::full(image.clone(), LINEAR);
+        delta.set.push((egui::TextureId::default(), full.clone()));
+        assert!(cache.delta_is_unchanged(1., &delta));
+        delta.set.push((egui::TextureId::Managed(1), full));
+        assert!(!cache.delta_is_unchanged(1., &delta));
+        delta.set.pop();
+        delta.free.push(egui::TextureId::default());
+        assert!(!cache.delta_is_unchanged(1., &delta));
+        delta.free.clear();
+        delta.set[0].1.pos = Some([0, 0]);
+        assert!(!cache.delta_is_unchanged(1., &delta));
+        delta.set[0].1 = egui::epaint::ImageDelta::full(
+            egui::ColorImage::new([4, 3], egui::Color32::WHITE),
+            LINEAR,
+        );
+        assert!(!cache.delta_is_unchanged(1., &delta));
+        delta.set[0].1 = egui::epaint::ImageDelta::full(image, LINEAR);
+        cache.drain();
+        assert!(!cache.delta_is_unchanged(1., &delta));
     }
 }

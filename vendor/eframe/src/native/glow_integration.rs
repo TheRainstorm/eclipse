@@ -699,7 +699,7 @@ impl<'app> GlowWinitRunning<'app> {
 
         let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
 
-        crate::glow_presentation::prepare_ui(&integration.egui_ctx,viewport_id,screen_size_in_pixels,pixels_per_point,&clipped_primitives,&textures_delta,clear_color);
+        crate::glow_presentation::prepare_ui(&integration.egui_ctx,viewport_id,screen_size_in_pixels,pixels_per_point,&clipped_primitives,||painter.textures_delta_is_unchanged(pixels_per_point,&textures_delta),clear_color);
         let custom_surface=crate::glow_presentation::begin(&integration.egui_ctx,viewport_id,screen_size_in_pixels);
         let reuse_ui=custom_surface.is_some()&&crate::glow_presentation::ui_reused(&integration.egui_ctx,viewport_id);
         if !reuse_ui && (custom_surface.is_some() || !cleared_before_update) {
@@ -1621,7 +1621,7 @@ fn render_immediate_viewport(
         );
     }
 
-    crate::glow_presentation::prepare_ui(egui_ctx,viewport_id,screen_size_in_pixels,pixels_per_point,&clipped_primitives,&textures_delta,[0.;4]);
+    crate::glow_presentation::prepare_ui(egui_ctx,viewport_id,screen_size_in_pixels,pixels_per_point,&clipped_primitives,||painter.borrow().textures_delta_is_unchanged(pixels_per_point,&textures_delta),[0.;4]);
     let custom_surface=crate::glow_presentation::begin(egui_ctx,viewport_id,screen_size_in_pixels);
     let reuse_ui=custom_surface.is_some()&&crate::glow_presentation::ui_reused(egui_ctx,viewport_id);
     if !reuse_ui {egui_glow::painter::clear(

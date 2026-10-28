@@ -88,8 +88,10 @@ pub fn native_video(ctx:&Context,viewport:ViewportId,image:Arc<dyn std::any::Any
     state.presenter.native_video(image)
 }
 /// Hash UI meshes only; callback payloads are live per-frame video metadata.
-/// Texture changes force repaint, as do dimensions, DPI, clips and clear color.
-pub(crate) fn prepare_ui(ctx:&Context,viewport:ViewportId,size:[u32;2],ppp:f32,primitives:&[egui::ClippedPrimitive],textures:&egui::TexturesDelta,clear:[f32;4]) {
+/// Effective texture changes force repaint, as do dimensions, DPI, clips and
+/// clear color. Query the painter lazily so ordinary GL windows pay no atlas
+/// comparison cost for a presentation cache they do not use.
+pub(crate) fn prepare_ui(ctx:&Context,viewport:ViewportId,size:[u32;2],ppp:f32,primitives:&[egui::ClippedPrimitive],textures_unchanged:impl FnOnce()->bool,clear:[f32;4]) {
     let Some(surface)=ctx.data(|d|d.get_temp::<Surface>(key(viewport))) else{return;};
     let mut state=surface.0.lock().unwrap();if !state.active||!state.presenter.cache_ui(){return;}
     use std::hash::{Hash,Hasher};
@@ -106,7 +108,7 @@ pub(crate) fn prepare_ui(ctx:&Context,viewport:ViewportId,size:[u32;2],ppp:f32,p
             egui::epaint::Primitive::Callback(c)=>{1u8.hash(&mut hash);rect(c.rect).hash(&mut hash);},
         }
     }
-    let signature=(textures.set.is_empty()&&textures.free.is_empty()).then(||hash.finish());
+    let signature=textures_unchanged().then(||hash.finish());
     state.presenter.prepare_ui(signature);
 }
 pub fn ui_reused(ctx:&Context,viewport:ViewportId)->bool{
@@ -175,6 +177,45 @@ impl Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct CacheProbe {
+        enabled: bool,
+        keys: Arc<Mutex<Vec<Option<u64>>>>,
+    }
+    impl Presenter for CacheProbe {
+        fn cache_ui(&self) -> bool { self.enabled }
+        fn prepare_ui(&mut self, key: Option<u64>) { self.keys.lock().unwrap().push(key); }
+        fn begin(&mut self, _: [u32; 2]) -> Result<ColorTarget, String> {
+            Ok(ColorTarget { hdr: false, sdr_white_nits: 80. })
+        }
+        fn present(&mut self, _: bool) -> Result<(), String> { Ok(()) }
+        fn finish(&mut self) {}
+        fn deactivate(&mut self) -> Result<(), String> { Ok(()) }
+    }
+
+    #[test]
+    fn texture_content_proof_is_lazy_and_dpi_remains_part_of_ui_identity() {
+        let ctx = Context::default();
+        let viewport = ViewportId::ROOT;
+        let keys = Arc::new(Mutex::new(vec![]));
+        let color = ColorTarget { hdr: false, sdr_white_nits: 80. };
+        prepare_ui(&ctx, viewport, [640, 480], 1., &[], || panic!("no surface"), [0.; 4]);
+        install(&ctx, Box::new(CacheProbe { enabled: false, keys: keys.clone() }), false, color);
+        set_active(&ctx, viewport, true, false);
+        prepare_ui(&ctx, viewport, [640, 480], 1., &[], || panic!("cache disabled"), [0.; 4]);
+        install(&ctx, Box::new(CacheProbe { enabled: true, keys: keys.clone() }), false, color);
+        prepare_ui(&ctx, viewport, [640, 480], 1., &[], || panic!("inactive surface"), [0.; 4]);
+        set_active(&ctx, viewport, true, false);
+        prepare_ui(&ctx, viewport, [640, 480], 1., &[], || true, [0.; 4]);
+        prepare_ui(&ctx, viewport, [640, 480], 1., &[], || false, [0.; 4]);
+        prepare_ui(&ctx, viewport, [640, 480], 1., &[], || true, [0.; 4]);
+        prepare_ui(&ctx, viewport, [640, 480], 1.5, &[], || true, [0.; 4]);
+        let keys = keys.lock().unwrap();
+        assert!(keys[0].is_some());
+        assert!(keys[1].is_none());
+        assert_eq!(keys[0], keys[2]);
+        assert_ne!(keys[0], keys[3]);
+    }
+
     struct Mock(Arc<Mutex<Vec<&'static str>>>);
     impl Presenter for Mock {
         fn begin(&mut self, _: [u32; 2]) -> Result<ColorTarget, String> {
