@@ -3,7 +3,7 @@
 ===/home/yfy/Repo/uu_remote/===
 .gitattributes[FV5T]: F:统一文本检出为LF，维持跨平台源码字节与AOCI基线一致 | R:code:.gitignore | A:- | S:二进制由Git自动识别，不强制换行转换
 .gitignore[FS6T]: F:排除构建产物、账号凭据、邀请及本地开发资料 | R:code:SECURITY.md | A:- | S:handoff与notes仅本地保留，不能强制加入Git
-AGENTS.md[SG8S]: F:规定本地与公开资料边界、输入所有权原则、版本交付及AOCI运行合同 | R:code:.gitignore,code:aoci.txt | A:- | S:状态测试不能声称真实桌面验收；索引语义须由模型基于证据创作
+AGENTS.md[SG8S]: F:约束本地资料、统一实现原则、提交规范及开发交付和AOCI认知维护 | R:code:.gitignore,code:aoci.txt | A:- | S:修复先以本地开发编号交付，用户确认后才推送，验收并要求release后才递增正式版本及发布；状态测试不能替代桌面验收；索引语义仅由模型基于证据创作
 Cargo.lock[FV6L]: F:锁定workspace与平台依赖的版本、来源和校验和，使发布构建可复现 | R:code:Cargo.toml | A:- | S:由Cargo生成，发布与CI使用--locked
 Cargo.toml[FV8T]: F:组织引擎应用及子模块插件的Rust workspace，统一版本依赖与第三方补丁 | R:code:crates/uu-core/Cargo.toml,code:.gitmodules | A:workspace,patch.crates-io,profile.release | S:插件继承主workspace元数据，须联合检出；vendor补丁通过patch覆盖上游
 LICENSE[SG6T]: F:声明项目自有代码可选择MIT或Apache-2.0并划定第三方权利边界 | R:code:LICENSE-MIT,code:LICENSE-APACHE,code:docs/licensing-and-compatibility.md | A:- | S:代码许可不授予第三方服务接入或商标使用权
