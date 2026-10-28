@@ -30,3 +30,7 @@ $env:ECLIPSE_NATIVE_PRESENT_TRACE_FILE = Join-Path $env:TEMP ('uu-present-' + [g
 离线匹配先限定同一进程、同一交换链，并要求 PresentMon 的 `TimeInQPC` 唯一落入原生 Present 前后QPC区间。`CPUStartQPC`不是这个 API 边界。PresentMon 的显示层 PresentId 与 DXGI 调用计数可能属于不同计数域，须先验证关系，再作为附加约束；不能仅靠最近时间或最近输入编号匹配。缺失、重复或歧义均保持未知。
 
 `GetFrameStatistics` 的错误、全零值及 disjoint 均保留原样，查询不会调用 `DwmFlush` 或新增 GPU 等待。`SyncQPCTime`对应调度器采样的刷新计数，不能直接解释为该 Present 的显示时刻。实际显示端点应来自经过唯一关联的 OS 显示证据；跨主机源时刻还必须经过带误差的时钟映射。系统显示端点仍不包含显示器像素响应。参考：[DXGI帧统计定义](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/ns-dxgi-dxgi_frame_statistics)、[统计限制](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-getframestatistics)。
+
+双方协商视频端到端扩展后，`ECLIPSE_CONTINUOUS_TRACE=1` 还会向现有会话诊断记录 `video_e2e_sources` 和 `video_e2e_clock`。前者保留通过当前媒体代次门禁的源身份批次及 host epoch，后者保留实际接受的四时间戳交换及各自时钟身份、频率。离线关联应逐项核验源时间、SSRC、RTP、媒体代次和时钟有效期；不能直接相减两台机器的 QPC。
+
+这些事件覆盖通道中可用的源描述，旧 `HostTrace.Report.frames` 的最近或慢帧子集不能代表完整总体。通道丢弃、诊断队列拥塞和轮转仍可能造成缺样；已匹配样本的延迟与总体覆盖率必须分开报告，缺失记录不能证明该帧未产生或未显示。关闭该环境变量后不生成上述批次诊断，正常 HUD 测量仍使用独立的内存观测模型。

@@ -193,6 +193,41 @@ pub(crate) async fn viewer_channel(
     pc: &RTCPeerConnection,
     stats: Arc<crate::media::MediaStats>,
 ) -> anyhow::Result<Arc<RTCDataChannel>> {
+    viewer_channel_observed(
+        pc,
+        stats,
+        std::env::var("ECLIPSE_CONTINUOUS_TRACE").as_deref() == Ok("1"),
+    )
+    .await
+}
+
+#[derive(Serialize)]
+struct ClockExchange {
+    #[serde(with = "Stamp")]
+    client_send: WireClockStamp,
+    #[serde(with = "Stamp")]
+    host_receive: WireClockStamp,
+    #[serde(with = "Stamp")]
+    host_send: WireClockStamp,
+    #[serde(with = "Stamp")]
+    client_receive: WireClockStamp,
+}
+impl From<FourTimestamp> for ClockExchange {
+    fn from(sample: FourTimestamp) -> Self {
+        Self {
+            client_send: sample.client_send,
+            host_receive: sample.host_receive,
+            host_send: sample.host_send,
+            client_receive: sample.client_receive,
+        }
+    }
+}
+
+async fn viewer_channel_observed(
+    pc: &RTCPeerConnection,
+    stats: Arc<crate::media::MediaStats>,
+    trace: bool,
+) -> anyhow::Result<Arc<RTCDataChannel>> {
     let channel = pc
         .create_data_channel(
             LABEL,
@@ -226,22 +261,36 @@ pub(crate) async fn viewer_channel(
                     };
                     if let (Some((_, expected, sent)), Some(client_receive)) = (expected, now) {
                         if expected == client_send && sent.elapsed() <= Duration::from_secs(2) {
-                            received_stats.video_e2e.clock_sample(
-                                epoch,
-                                FourTimestamp {
-                                    client_send,
-                                    host_receive,
-                                    host_send,
-                                    client_receive,
-                                },
-                            );
+                            let sample = FourTimestamp {
+                                client_send,
+                                host_receive,
+                                host_send,
+                                client_receive,
+                            };
+                            if received_stats.video_e2e.clock_sample(epoch, sample) && trace {
+                                received_stats.diagnostics.record(serde_json::json!({
+                                    "event": "video_e2e_clock", "media_epoch": epoch,
+                                    "sample": ClockExchange::from(sample),
+                                }));
+                            }
                         }
                     }
                 }
                 Some(Packet::Frames { host_epoch, frames }) => {
-                    received_stats
+                    if received_stats
                         .video_e2e
-                        .source_frames(epoch, host_epoch, &frames);
+                        .source_frames(epoch, host_epoch, &frames)
+                        && trace
+                    {
+                        // Source batches include every available descriptor,
+                        // unlike the older recent/slow-frame HostTrace subset.
+                        // The existing bounded diagnostic sink may drop or
+                        // rotate observations; absence never proves no frame.
+                        received_stats.diagnostics.record(serde_json::json!({
+                            "event": "video_e2e_sources", "media_epoch": epoch,
+                            "host_epoch": host_epoch, "frames": frames,
+                        }));
+                    }
                 }
                 _ => {}
             }
@@ -325,7 +374,10 @@ mod tests {
         let stats = Arc::new(MediaStats::default());
         stats.native_media_epoch.store(7, Ordering::Release);
         stats.video_e2e.begin(7, true);
-        let _channel = viewer_channel(&viewer.pc, stats.clone()).await.unwrap();
+        let diagnostics = stats.diagnostics.capture().unwrap();
+        let _channel = viewer_channel_observed(&viewer.pc, stats.clone(), true)
+            .await
+            .unwrap();
         let source = host.clock.stamp().unwrap();
         host.sent(
             Some(super::super::SourceEndpoint {
@@ -342,6 +394,7 @@ mod tests {
             host_peer.remote(offer, ip).await.unwrap();
             let answer = host_peer.description(false).await.unwrap();
             viewer.remote(answer, ip).await.unwrap();
+            let mut events = Vec::new();
             loop {
                 let mapped = {
                     let state = stats.video_e2e.state.lock().unwrap();
@@ -351,11 +404,40 @@ mod tests {
                             .map_host(source, stats.video_e2e.clock_stamp().unwrap())
                             .is_some()
                 };
-                if mapped {
+                events.extend(diagnostics.try_iter());
+                if mapped
+                    && events
+                        .iter()
+                        .any(|event| event["event"] == "video_e2e_sources")
+                    && events
+                        .iter()
+                        .any(|event| event["event"] == "video_e2e_clock")
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
+            let sources = events
+                .iter()
+                .find(|event| event["event"] == "video_e2e_sources")
+                .unwrap();
+            let frames: Vec<SourceFrame> =
+                serde_json::from_value(sources["frames"].clone()).unwrap();
+            assert_eq!(sources["media_epoch"], 7);
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].ssrc, 42);
+            assert_eq!(frames[0].source.unwrap().presented, source);
+            let exchange = events
+                .iter()
+                .find(|event| event["event"] == "video_e2e_clock")
+                .unwrap();
+            assert_eq!(exchange["sample"]["host_receive"]["epoch"], source.epoch);
+            assert!(
+                exchange["sample"]["client_receive"]["ticks"]
+                    .as_u64()
+                    .unwrap()
+                    > 0
+            );
             assert!(
                 stats.video_e2e.snapshot().measurement.is_none(),
                 "clock + source must never stand in for display"
