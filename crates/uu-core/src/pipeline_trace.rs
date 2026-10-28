@@ -5,7 +5,11 @@ use std::{
     sync::Mutex,
     time::Instant,
 };
+#[path = "pipeline_trace/export.rs"]
+mod export;
 const LIMIT: usize = 8192;
+const EXPORT_LIMIT: usize = 32768;
+const STAGES: [&str; 9] = ["first_rtp_read", "last_rtp_read", "complete_au", "decode_start", "decode_return", "publish_call", "mailbox_take", "draw_callback", "output_available_by_pts"];
 pub(crate) fn diagnostic_limit()->usize {if std::env::var("ECLIPSE_SOCKET_TRACE").as_deref()==Ok("1"){32768}else{LIMIT}}
 #[derive(Clone, Copy)]
 #[repr(usize)]
@@ -57,6 +61,7 @@ pub struct Trace {
     limit: usize,
     started: Instant,
     state: Mutex<State>,
+    terminal_export: Option<export::Export>,
 }
 impl Default for Trace {
     fn default() -> Self {
@@ -65,9 +70,13 @@ impl Default for Trace {
 }
 impl Trace {
     fn new(enabled: bool) -> Self {
+        Self::with_export(enabled, export::Export::configured(enabled))
+    }
+    fn with_export(enabled: bool, terminal_export: Option<export::Export>) -> Self {
+        let terminal_export = terminal_export.filter(|_| enabled);
         Self {
             enabled,
-            limit: diagnostic_limit(),
+            limit: if terminal_export.is_some() { EXPORT_LIMIT } else { diagnostic_limit() },
             started: Instant::now(),
             state: Mutex::new(State {
                 rows: VecDeque::new(),
@@ -78,6 +87,7 @@ impl Trace {
                 evicted: 0,
                 missing: 0,
             }),
+            terminal_export,
         }
     }
     /// Diagnostic snapshot time in the same local domain as frame stages.
@@ -200,7 +210,7 @@ impl Trace {
         let (total,evicted,missing,rows)=(s.total,s.evicted,s.missing,s.rows.clone());
         drop(s);
         Some(
-            serde_json::json!({"qpc_anchor":crate::socket_trace::clock_anchor(self.started),"clock":"client_monotonic","stages":["first_rtp_read","last_rtp_read","complete_au","decode_start","decode_return","publish_call","mailbox_take","draw_callback","output_available_by_pts"],"limit":self.limit,"total_frames":total,"evicted_frames":evicted,"unmatched_events":missing,"frames":rows}),
+            serde_json::json!({"qpc_anchor":crate::socket_trace::clock_anchor(self.started),"clock":"client_monotonic","stages":STAGES,"limit":self.limit,"total_frames":total,"evicted_frames":evicted,"unmatched_events":missing,"frames":rows}),
         )
     }
     /// Metadata-only profiler lookup at decode output publication. Contention,
@@ -212,6 +222,21 @@ impl Trace {
         let row=matches.next()?;
         if matches.next().is_some(){return None;}
         Some(ImageIdentity{row_id:row.id,media_epoch:epoch,track,ssrc:row.ssrc,rtp_timestamp:row.rtp,decode_generation:row.generation?,pts_us:pts})
+    }
+}
+impl Drop for Trace {
+    fn drop(&mut self) {
+        let Some(export) = self.terminal_export.take() else { return; };
+        // The last owner has gone; no decoder/render observer can still use
+        // this Trace. A poisoned state must never panic again during teardown.
+        let (state, poisoned) = match self.state.get_mut() {
+            Ok(state) => (state, false),
+            Err(error) => (error.into_inner(), true),
+        };
+        if state.total == 0 { return; }
+        if let Err(error) = export.write(self.started, self.limit, state, poisoned) {
+            export::failure(&error);
+        }
     }
 }
 #[cfg(test)]
