@@ -314,6 +314,7 @@ struct ViewerLifetime(Arc<MediaStats>);
 impl Drop for ViewerLifetime {
     fn drop(&mut self){
         self.0.native_cursor.reset(false);
+        self.0.native_media_retired.store(true,Ordering::Release);
         self.0.video_e2e.begin(self.0.native_media_epoch.load(Ordering::Acquire),false);
         self.0.control_open.store(0,Ordering::Release);
         self.0.host_admin.disconnect();
@@ -1016,6 +1017,7 @@ async fn receive_session(
     // All callers authenticate signaling before entering this shared path.
     stats.native_progress.set(Stage::PreparingHost);
     stats.native_cursor.reset(false);
+    stats.native_media_retired.store(false,Ordering::Release);
     stats.video_e2e.begin(stats.native_media_epoch.load(Ordering::Acquire),false);
     let first_frame_baseline=stats.decoded_total.load(Ordering::Acquire);
     peer.receiver(frames, stats.clone()).await?;

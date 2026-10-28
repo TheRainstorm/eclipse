@@ -10,6 +10,12 @@ use uu_core::frame_continuity;
 pub use frame_continuity::Snapshot as ContinuitySnapshot;
 #[path = "video_cursor.rs"]
 mod video_cursor;
+#[path="video_frame_observation.rs"]
+pub(crate) mod frame_observation;
+#[path="video_present_trace.rs"]
+#[cfg(any(windows,test))]
+pub(crate) mod present_trace;
+use frame_observation::FrameObservation;
 
 // Upload decoded planes directly. No per-pixel ColorImage or CPU YUV conversion.
 // EGL-capable Linux clients may import leased DMA-BUF planes directly.
@@ -29,6 +35,7 @@ pub(crate) struct NativeImage {
     pub id:u64,pub handles:[usize;3],pub ready:u64,
     pub consumed:Arc<std::sync::atomic::AtomicU64>,pub valid:Arc<std::sync::atomic::AtomicBool>,
     pub rect:[f32;4],pub hdr:bool,pub source_white:f32,pub cursor:Option<uu_core::native_cursor::Snapshot>,
+    pub observation:Option<FrameObservation>,
 }
 pub struct VideoTexture {
     continuity:Mutex<frame_continuity::Continuity>,
@@ -38,6 +45,7 @@ pub struct VideoTexture {
     gpu: Option<Arc<Mutex<Planes>>>,
     fallback: Option<egui::TextureHandle>,
     fallback_pixels:Option<Arc<egui::ColorImage>>,
+    fallback_observation:Option<FrameObservation>,
     source_white_nits:f32,
 }
 pub fn enable_gpu_video(gl: &glow::Context) {
@@ -50,6 +58,13 @@ pub fn enable_gpu_video(gl: &glow::Context) {
 }
 impl VideoTexture {
     pub fn new(ctx: &egui::Context, gl: Option<&Arc<glow::Context>>, image: DisplayImage) -> Self {
+        Self::new_with_observation(ctx,gl,image,None)
+    }
+    pub fn new_observed(ctx:&egui::Context,gl:Option<&Arc<glow::Context>>,image:DisplayImage,stats:&Arc<uu_core::media::MediaStats>,frozen:Option<uu_core::display_frames::DecodedObservation>)->Self {
+        let observation=FrameObservation::new(stats,&image,frozen);
+        Self::new_with_observation(ctx,gl,image,observation)
+    }
+    fn new_with_observation(ctx:&egui::Context,gl:Option<&Arc<glow::Context>>,image:DisplayImage,observation:Option<FrameObservation>)->Self {
         let gpu = gl.and_then(|gl| match unsafe { Planes::new(gl.clone()) } {
             Ok(p) => Some(Arc::new(Mutex::new(p))),
             Err(e) => {
@@ -64,9 +79,10 @@ impl VideoTexture {
             gpu,
             fallback: None,
             fallback_pixels:None,
+            fallback_observation:None,
             source_white_nits:203.,
         };
-        texture.set(ctx, image);
+        texture.set_with_observation(ctx, image,observation);
         texture
     }
     pub fn set_source_white(&mut self,white:f32){if white.is_finite()&&(40.0..=1000.0).contains(&white){self.source_white_nits=white;}}
@@ -74,6 +90,13 @@ impl VideoTexture {
     pub fn record_new_image(&self){self.continuity.lock().unwrap().submit(std::time::Instant::now());}
     pub fn continuity(&self)->Option<ContinuitySnapshot>{self.continuity.lock().unwrap().snapshot(std::time::Instant::now())}
     pub fn set(&mut self, ctx: &egui::Context, image: DisplayImage) {
+        self.set_with_observation(ctx,image,None)
+    }
+    pub fn set_observed(&mut self,ctx:&egui::Context,image:DisplayImage,stats:&Arc<uu_core::media::MediaStats>,frozen:Option<uu_core::display_frames::DecodedObservation>) {
+        let observation=FrameObservation::new(stats,&image,frozen);
+        self.set_with_observation(ctx,image,observation)
+    }
+    fn set_with_observation(&mut self,ctx:&egui::Context,image:DisplayImage,observation:Option<FrameObservation>) {
         if let DisplayImage::Decoded(_, frame, color) = &image {
             if let Some(gpu) = &self.gpu {
                 if valid(frame) || (frame.gpu && frame.is_consistent()) {
@@ -84,7 +107,7 @@ impl VideoTexture {
                     let supported=frame.gpu || frame.format!=PixelFormat::P010 || !state.gl.version().is_embedded || state.gl.supported_extensions().contains("GL_EXT_texture_norm16");
                     if supported {
                         self.size = [frame.width as usize, frame.height as usize];
-                        state.pending = Some((frame.clone(), *color));
+                        state.pending = Some((frame.clone(), *color,observation));
                         return;
                     }
                 }
@@ -109,6 +132,7 @@ impl VideoTexture {
         self.size = [w as usize, h as usize];
         let image = Arc::new(egui::ColorImage::from_rgba_unmultiplied(self.size, &rgba));
         self.fallback_pixels=Some(image.clone());
+        self.fallback_observation=observation;
         match &mut self.fallback {
             Some(t) => t.set(egui::ImageData::Color(image), egui::TextureOptions::LINEAR),
             None => {
@@ -116,6 +140,12 @@ impl VideoTexture {
                     Some(ctx.load_texture("remote-fallback", egui::ImageData::Color(image), egui::TextureOptions::LINEAR))
             }
         }
+    }
+    /// Identity of these exact fallback pixels, retained for a future GL/UI
+    /// submission observer. Absence never triggers a lookup of newer inputs.
+    #[allow(dead_code)]
+    pub(crate) fn fallback_frame_identity(&self)->Option<frame_observation::FrameIdentity> {
+        self.fallback_observation.as_ref()?.current_identity()
     }
     #[allow(
         dead_code,
@@ -178,7 +208,7 @@ impl VideoTexture {
     pub fn native_gpu_source(&self)->bool {
         self.gpu.as_ref().is_some_and(|gpu|{
             let state=gpu.lock().unwrap();
-            !state.native_disabled&&(state.native_active||state.d3d_active||state.pending.as_ref().is_some_and(|(frame,_)|frame.gpu&&frame.d3d11.is_some()))
+            !state.native_disabled&&(state.native_active||state.d3d_active||state.pending.as_ref().is_some_and(|(frame,..)|frame.gpu&&frame.d3d11.is_some()))
         })
     }
     pub fn set_native_cursor(&self,state:Option<uu_core::native_cursor::Snapshot>) {
@@ -304,7 +334,7 @@ struct Planes {
     layout: Option<PixelFormat>,
     color: YuvColor,
     paint_timings: video_timing::Timings,
-    pending: Option<(RawFrame, YuvColor)>,
+    pending: Option<(RawFrame, YuvColor,Option<FrameObservation>)>,
     uv_scale_uniform: Option<glow::UniformLocation>,
     dma_active: bool,
     d3d_active: bool,
@@ -313,7 +343,7 @@ struct Planes {
     #[cfg(windows)]
     native:Option<native_source::Source>,
     #[cfg(windows)]
-    native_last:Option<(RawFrame,YuvColor)>,
+    native_last:Option<(RawFrame,YuvColor,Option<FrameObservation>)>,
     #[cfg(windows)]
     native_active:bool,
     #[cfg(windows)]
@@ -569,11 +599,11 @@ impl Planes {
     #[cfg(windows)]
     fn native_image(&mut self,rect:[f32;4],source_white:f32)->Option<NativeImage>{
         if self.native_disabled{return None;}
-        if let Some((frame,color))=self.pending.as_ref(){
+        if let Some((frame,color,observation))=self.pending.as_ref(){
             let Some(surface)=frame.d3d11.as_ref().filter(|_|frame.gpu) else{self.restore_native_frame();return None;};
             let prepared=(||->Result<(),String>{
                 if self.native.as_ref().is_none_or(|n|!n.matches(surface)){self.native.take();self.native=Some(native_source::Source::new(surface)?);}
-                self.native.as_mut().unwrap().set(surface.clone(),*color)
+                self.native.as_mut().unwrap().set(surface.clone(),*color,observation.clone())
             })();
             if let Err(e)=prepared {eprintln!("native video image unavailable, using WGL: {e}");self.native_disabled=true;self.native.take();self.native_active=false;return None;}
             let frame=self.pending.take().unwrap();self.size=[frame.0.width,frame.0.height];self.layout=Some(frame.0.format);self.color=frame.1;
@@ -583,7 +613,7 @@ impl Planes {
     }
     unsafe fn paint(&mut self,hdr_output:bool,white_nits:f32,source_white:f32) -> Option<[f64;5]> {
         let started=std::time::Instant::now();
-        if let Some((f, color)) = self.pending.take() {
+        if let Some((f, color, observation)) = self.pending.take() {
             if f.gpu {
                 #[cfg(windows)]
                 if let (Some(importer), Some(surface)) = (&mut self.d3d_importer, &f.d3d11) {
@@ -615,7 +645,7 @@ impl Planes {
                             self.dma_active = true;
                         }
                         Ok(false) => {
-                            self.pending = Some((f, color));
+                            self.pending = Some((f, color,observation));
                         }
                         Err(error) => {
                             eprintln!(

@@ -128,6 +128,8 @@ unsafe extern "C" {
     fn eclipse_native_present_cursor(value:*mut c_void,w:u32,h:u32,alpha:*const u8,xored:*const u8,error:*mut c_char,len:usize)->i32;
     fn eclipse_native_present_cursor_position(value:*mut c_void,rect:*const f32);
     fn eclipse_native_present_frame(value:*mut c_void,index:u32,vsync:i32,submitted:*mut u64,error:*mut c_char,len:usize)->i32;
+    fn eclipse_native_present_observe(value:*mut c_void,enabled:i32);
+    fn eclipse_native_present_observation(value:*mut c_void,observation:*mut super::RawPresentObservation,size:usize)->i32;
 }
 /// D3D video and GL UI share the final scRGB composition; no video WGL import.
 /// All methods run on the owning native window's rendering thread.
@@ -149,6 +151,14 @@ impl NativePresentation {
     }
     pub fn cursor_position(&mut self,rect:Option<[f32;4]>){unsafe{eclipse_native_present_cursor_position(self.0.as_ptr(),rect.as_ref().map_or(std::ptr::null(),|r|r.as_ptr()));}}
     pub fn present(&mut self,index:u32,vsync:bool,submitted:&mut u64)->Result<(),String>{let mut e=[0;1024];if unsafe{eclipse_native_present_frame(self.0.as_ptr(),index,i32::from(vsync),submitted,e.as_mut_ptr(),e.len())}==0{Ok(())}else{Err(message(&e))}}
+    /// Explicit profiler opt-in. Disabled means no QPC/statistics query calls.
+    pub fn observe_presents(&mut self,enabled:bool){unsafe{eclipse_native_present_observe(self.0.as_ptr(),i32::from(enabled));}}
+    /// Raw submission/statistics evidence; never a display completion receipt.
+    pub fn take_present_observation(&mut self)->Option<super::RawPresentObservation>{
+        let mut raw=super::RawPresentObservation::default();
+        let result=unsafe{eclipse_native_present_observation(self.0.as_ptr(),&mut raw,std::mem::size_of::<super::RawPresentObservation>())};
+        (result==1&&raw.valid_layout()).then_some(raw)
+    }
     /// Generated-pixel diagnostics; this does not change desktop HDR settings.
     pub fn inspect_pixels(&mut self,enabled:bool,color:Option<(bool,f32)>){unsafe{eclipse_native_present_debug(self.0.as_ptr(),i32::from(enabled),color.map_or(-1,|v|i32::from(v.0)),color.map_or(0.,|v|v.1));}}
     pub fn inspected_pixels(&self)->Option<([u32;2],u64,Vec<u16>)>{

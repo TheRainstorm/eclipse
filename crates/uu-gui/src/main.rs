@@ -744,11 +744,11 @@ impl App {
             self.hud_cache.invalidate();
         }
         let mut frames = Vec::new();
-        while let Ok(f) = h.frames.try_recv_image() {
+        while let Ok(f) = h.frames.try_recv_observed_image() {
             frames.push(f);
         }
         let mut arrived=Vec::new();
-        for image in frames {
+        for (image,observation) in frames {
             let idx=match &image {uu_core::display_frames::DisplayImage::Rgba(f)=>f.0,uu_core::display_frames::DisplayImage::Decoded(track,..)=>*track};
             if !self.recorded_connection {
                 if let (Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::NativeProfile{id,..},..}),Some(store))=(&self.stream_target,&self.workspace.store) {
@@ -759,11 +759,11 @@ impl App {
             let source_white=h.stats.native_hdr_response.lock().unwrap().as_ref().map_or(203.,|r|r.metadata.sdr_white_nits);
             arrived.push(idx);
             match self.textures.get_mut(&idx) {
-                Some(t) => t.set(ctx, image),
+                Some(t) => t.set_observed(ctx, image,&h.stats,observation),
                 None => {
                     if native && (self.status.starts_with("正在")||["Establishing", "Connecting", "Preparing", "Verifying", "Waiting"].iter().any(|p|self.status.starts_with(p))) {self.status=uu_i18n::text("原生串流已连接").into();}
                     h.stats.diagnostics.record(serde_json::json!({"event":"first_frame","track":idx,"backend":h.stats.backend(),"video_size":h.stats.res()}));
-                    self.textures.insert(idx, video_texture::VideoTexture::new(ctx, self.video_gl.as_ref(), image));
+                    self.textures.insert(idx, video_texture::VideoTexture::new_observed(ctx, self.video_gl.as_ref(), image,&h.stats,observation));
                 }
             }
             if let Some(texture)=self.textures.get_mut(&idx){texture.set_source_white(source_white);}
@@ -1787,13 +1787,16 @@ fn main() -> eframe::Result {
         centered: !cfg!(windows),
         ..Default::default()
     };
-    eframe::run_native(
+    let result=eframe::run_native(
         brand::NAME,
         options,
         Box::new(move |cc| {
             if let Some((launch,owner))=stream_workspace {Ok(Box::new(stream_workspace::Workspace::new(cc,launch,owner,vsync,origin)))}
             else {Ok(Box::new(App::new(cc,stream_target,origin,vsync,assistance)))}
         }),
-    )
+    );
+    #[cfg(windows)]
+    video_texture::present_trace::shutdown();
+    result
 }
 

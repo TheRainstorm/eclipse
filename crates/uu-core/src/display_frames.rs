@@ -14,6 +14,17 @@ pub enum DisplayImage {
     Rgba(DisplayFrame),
     Decoded(u32, RawFrame, YuvColor),
 }
+/// Frozen at actual decoder output and replaced atomically with its image.
+/// A legacy RGBA send has no identity; conversion of an observed decoded image
+/// preserves this same sidecar even when the resulting pixels become RGBA.
+#[derive(Clone, Copy, Debug)]
+pub struct DecodedObservation {
+    pub media_epoch:u64,
+    pub track:u32,
+    pub pts_us:u64,
+    pub token:Option<crate::video_e2e::FrameToken>,
+    pub receive:Option<crate::pipeline_trace::ImageIdentity>,
+}
 impl DisplayImage {
     fn track(&self) -> u32 { match self { Self::Rgba(f) => f.0, Self::Decoded(track, ..) => *track } }
     pub fn into_rgba(self) -> DisplayFrame {
@@ -26,20 +37,20 @@ impl DisplayImage {
 #[derive(Default)]
 struct Mailbox {
     generation: u64,
-    images: BTreeMap<u32, (DisplayImage, std::time::Instant)>,
+    images: BTreeMap<u32, (DisplayImage, std::time::Instant, Option<DecodedObservation>)>,
     waits: BTreeMap<u32, std::collections::VecDeque<(std::time::Instant, f32)>>,
     // Per-track lifetime totals: published, replaced before delivery, delivered.
     counts: BTreeMap<u32, [u64; 3]>,
 }
 impl Mailbox {
-    fn pop_first(&mut self) -> Option<(DisplayImage, std::time::Instant)> {
-        let (track, (frame, published)) = self.images.pop_first()?;
+    fn pop_first(&mut self) -> Option<(DisplayImage, std::time::Instant, Option<DecodedObservation>)> {
+        let (track, (frame, published, observation)) = self.images.pop_first()?;
         let now = std::time::Instant::now();
         let waits = self.waits.entry(track).or_default();
         waits.push_back((now, now.duration_since(published).as_secs_f32() * 1000.0));
         while waits.len() > 120 { waits.pop_front(); }
         self.counts.entry(track).or_default()[2] += 1;
-        Some((frame, published))
+        Some((frame, published, observation))
     }
 }
 type Pending = Arc<Mutex<Mailbox>>;
@@ -95,20 +106,27 @@ impl FrameSender {
         self.send_image(DisplayImage::Rgba(frame))
     }
     pub fn send_decoded(&self, track: u32, frame: RawFrame, color: YuvColor) -> Result<(), mpsc::SendError<()>> {
+        self.send_observed_decoded(track,frame,color,None)
+    }
+    pub(crate) fn send_observed_decoded(&self, track:u32, frame:RawFrame, color:YuvColor, observation:Option<DecodedObservation>)->Result<(),mpsc::SendError<()>> {
+        let observation=observation.filter(|value| value.media_epoch==self.generation&&value.track==track&&value.pts_us==frame.pts.0);
         let image = DisplayImage::Decoded(track, frame, color);
         if matches!(&image,DisplayImage::Decoded(_,frame,_) if frame.gpu)
             || self.planar.load(std::sync::atomic::Ordering::Acquire) {
-            self.send_image(image)
+            self.send_delivery(image,observation)
         } else {
-            self.send(image.into_rgba())
+            self.send_delivery(DisplayImage::Rgba(image.into_rgba()),observation)
         }
     }
     fn send_image(&self, frame: DisplayImage) -> Result<(), mpsc::SendError<()>> {
+        self.send_delivery(frame,None)
+    }
+    fn send_delivery(&self, frame:DisplayImage, observation:Option<DecodedObservation>)->Result<(),mpsc::SendError<()>> {
         {
             let mut mailbox = self.pending.lock().unwrap();
             if mailbox.generation != self.generation { return Ok(()); }
             let track = frame.track();
-            let replaced = mailbox.images.insert(track, (frame, std::time::Instant::now())).is_some();
+            let replaced = mailbox.images.insert(track, (frame, std::time::Instant::now(), observation)).is_some();
             let counts = mailbox.counts.entry(track).or_default();
             counts[0] += 1;
             counts[1] += u64::from(replaced);
@@ -154,6 +172,12 @@ impl FrameReceiver {
     /// Publication time of this exact mailbox image, on the local monotonic
     /// clock. It is neither the host capture time nor GPU/display completion.
     pub fn try_recv_timed_image(&mut self) -> Result<(DisplayImage, std::time::Instant), mpsc::TryRecvError> {
+        self.try_recv_delivery().map(|(image,published,_)|(image,published))
+    }
+    pub fn try_recv_observed_image(&mut self)->Result<(DisplayImage,Option<DecodedObservation>),mpsc::TryRecvError> {
+        self.try_recv_delivery().map(|(image,_,observation)|(image,observation))
+    }
+    fn try_recv_delivery(&mut self)->Result<(DisplayImage,std::time::Instant,Option<DecodedObservation>),mpsc::TryRecvError> {
         loop {
             if let Some(frame) = self.pending.lock().unwrap().pop_first() {
                 return Ok(frame);
@@ -163,7 +187,7 @@ impl FrameReceiver {
     }
     pub fn blocking_recv(&mut self) -> Option<DisplayFrame> {
         loop {
-            if let Some((frame, _)) = self.pending.lock().unwrap().pop_first() {
+            if let Some((frame, _, _)) = self.pending.lock().unwrap().pop_first() {
                 return Some(frame.into_rgba());
             }
             self.wake.recv().ok()?;
@@ -173,6 +197,56 @@ impl FrameReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn observed(client:&crate::video_e2e::Client,epoch:u64,pts:u64)->DecodedObservation {
+        DecodedObservation{media_epoch:epoch,track:0,pts_us:pts,token:client.frame_for_pts(epoch,0,pts),receive:None}
+    }
+    fn decoded(pts:u64,value:u8)->RawFrame {RawFrame::new_i420(2,2,vec![value;6],Timestamp(pts))}
+    #[test]
+    fn mailbox_freezes_old_image_identity_while_ssrc_reuses_its_pts() {
+        let (tx,mut rx)=channel();rx.enable_planar();
+        let client=crate::video_e2e::Client::default();client.begin(0,true);
+        client.decode_input(0,0,9,100,0);
+        tx.send_observed_decoded(0,decoded(0,16),YuvColor::Limited709,Some(observed(&client,0,0))).unwrap();
+        // The old image is still in the mailbox when a new source reuses PTS.
+        client.decode_input(0,0,10,200,0);
+        assert_eq!(client.frame_for_pts(0,0,0).unwrap().ssrc,10);
+        let (image,frozen)=rx.try_recv_observed_image().unwrap();
+        assert!(matches!(image,DisplayImage::Decoded(_,frame,_) if frame.pts.0==0&&frame.data[0]==16));
+        assert_eq!(frozen.unwrap().token.unwrap().ssrc,9);
+    }
+    #[test]
+    fn image_and_sidecar_are_replaced_and_retired_as_one_delivery() {
+        let (tx,mut rx)=channel();rx.enable_planar();
+        let client=crate::video_e2e::Client::default();client.begin(0,true);
+        for (rtp,pts,value) in [(100,0,16),(200,1,32)] {
+            client.decode_input(0,0,9,rtp,pts);
+            tx.send_observed_decoded(0,decoded(pts,value),YuvColor::Limited709,Some(observed(&client,0,pts))).unwrap();
+        }
+        let (image,frozen)=rx.try_recv_observed_image().unwrap();
+        assert!(matches!(image,DisplayImage::Decoded(_,frame,_) if frame.pts.0==1&&frame.data[0]==32));
+        assert_eq!(frozen.unwrap().token.unwrap().rtp_timestamp,200);
+        tx.send_observed_decoded(0,decoded(1,32),YuvColor::Limited709,Some(observed(&client,0,1))).unwrap();
+        let current=tx.renew();
+        tx.send_observed_decoded(0,decoded(1,32),YuvColor::Limited709,Some(observed(&client,0,1))).unwrap();
+        assert!(rx.try_recv_observed_image().is_err());
+        current.send_observed_decoded(0,decoded(1,48),YuvColor::Limited709,Some(observed(&client,0,1))).unwrap();
+        let (_,metadata)=rx.try_recv_observed_image().unwrap();
+        assert!(metadata.is_none(),"retired epoch metadata must not be relabelled as the new source");
+    }
+    #[test]
+    fn decoded_rgba_keeps_frozen_identity_but_legacy_rgba_and_mismatched_pts_do_not() {
+        let (tx,mut rx)=channel();
+        let client=crate::video_e2e::Client::default();client.begin(0,true);client.decode_input(0,0,9,100,0);
+        tx.send_observed_decoded(0,decoded(0,16),YuvColor::Limited709,Some(observed(&client,0,0))).unwrap();
+        let (image,frozen)=rx.try_recv_observed_image().unwrap();
+        assert!(matches!(image,DisplayImage::Rgba(_)));
+        assert_eq!(frozen.unwrap().token.unwrap().rtp_timestamp,100);
+        tx.send((0,2,2,vec![0;16])).unwrap();
+        assert!(rx.try_recv_observed_image().unwrap().1.is_none());
+        rx.enable_planar();
+        tx.send_observed_decoded(0,decoded(2,16),YuvColor::Limited709,Some(observed(&client,0,0))).unwrap();
+        assert!(rx.try_recv_observed_image().unwrap().1.is_none());
+    }
     #[test]
     fn renewed_source_drops_pending_and_late_old_images_even_at_the_same_size() {
         let (old, mut rx) = channel();

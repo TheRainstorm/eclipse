@@ -14,8 +14,33 @@
 #include <stdexcept>
 #include <memory>
 #include <string>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 using Microsoft::WRL::ComPtr;
 namespace {
+// Raw opt-in evidence for an offline profiler, never a display-time contract.
+struct RawPresentObservation {
+    uint32_t version,struct_size;
+    uint64_t serial,chain_id,surface_epoch,chain_address,native_source_id,native_source_ready,qpc_frequency;
+    int64_t present_before_qpc,present_after_qpc;
+    int32_t present_hresult;
+    uint32_t sync_interval,present_flags;
+    int32_t last_present_count_hresult;
+    uint32_t last_present_count,stats_present_count,stats_present_refresh_count,stats_sync_refresh_count;
+    int32_t stats_hresult;
+    uint32_t reserved;
+    int64_t last_count_query_before_qpc,last_count_query_after_qpc,stats_query_before_qpc,stats_query_after_qpc,stats_sync_qpc_time,stats_sync_gpu_time;
+    uint64_t surface_epoch_after_query;
+};
+static_assert(sizeof(RawPresentObservation)==176,"present observation Rust/C++ size");
+static_assert(offsetof(RawPresentObservation,chain_id)==16,"present observation chain offset");
+static_assert(offsetof(RawPresentObservation,present_before_qpc)==64,"present observation QPC offset");
+static_assert(offsetof(RawPresentObservation,last_count_query_before_qpc)==120,"present observation query offset");
+static_assert(offsetof(RawPresentObservation,surface_epoch_after_query)==168,"present observation epoch offset");
+std::atomic<uint64_t> next_present_identity{1};
+uint64_t present_identity(){auto value=next_present_identity.fetch_add(1,std::memory_order_relaxed);return value?value:next_present_identity.fetch_add(1,std::memory_order_relaxed);}
+int64_t present_qpc(){LARGE_INTEGER value{};return QueryPerformanceCounter(&value)?value.QuadPart:0;}
 void check(HRESULT hr,const char* operation){if(FAILED(hr))throw std::runtime_error(std::string(operation)+": HRESULT="+std::to_string((unsigned long)hr));}
 struct Apartment {
     HRESULT result=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
@@ -81,6 +106,9 @@ struct Presentation {
     float white=80;
     HMONITOR monitor=nullptr;
     ULONGLONG queried=0;
+    uint64_t chain_id=0,surface_epoch=0,observation_serial=0,observation_frequency=0;
+    bool observation_enabled=false,observation_ready=false;
+    RawPresentObservation observation{};
     Presentation(HWND hwnd,bool allow_sdr=false):content_window(hwnd),window(hwnd) {
         if(!IsWindow(hwnd))throw std::runtime_error("HDR presentation requires a live native window");
         check(CreateDXGIFactory1(__uuidof(IDXGIFactory1),(void**)inventory.GetAddressOf()),"create HDR inventory");
@@ -117,6 +145,7 @@ struct Presentation {
             inventory.Reset();active_output.Reset();changed=true;
             if(FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),(void**)inventory.GetAddressOf())))return;
         }
+        if(changed&&chain)surface_epoch=present_identity();
         if(changed||!active_output) {
             active_output.Reset();
             for(UINT ai=0;ai<32&&!active_output;ai++) {
@@ -156,15 +185,18 @@ struct Presentation {
             check(created,"create FP16 HDR swap chain");
             std::fprintf(stderr,"HDR HWND flip-discard allow_tearing=%s buffers=2\n",allow_tearing?"true":"false");
             check(initial.As(&chain),"query HDR swap chain");
+            chain_id=present_identity();
             check(chain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709),"set scRGB HDR color space");
             ComPtr<IDXGIDevice1> latency;check(device.As(&latency),"query HDR frame latency");check(latency->SetMaximumFrameLatency(1),"limit HDR frame latency");
         }else check(chain->ResizeBuffers(2,w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0),"resize HDR swap chain");
+        surface_epoch=present_identity();observation_ready=false;
         D3D11_TEXTURE2D_DESC td{};td.Width=w;td.Height=h;td.MipLevels=1;td.ArraySize=1;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
         td.SampleDesc.Count=1;td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;td.MiscFlags=D3D11_RESOURCE_MISC_SHARED;
         if(allocate_shared)check(device->CreateTexture2D(&td,nullptr,&shared_texture),"create HDR GL composition texture");
         width=w;height=h;
     }
     void deactivate() {
+        surface_epoch=present_identity();observation_ready=false;
         content_window.visible(false);
         content_visible=false;
     }
@@ -172,7 +204,7 @@ struct Presentation {
         if(!chain||!shared_texture)throw std::runtime_error("HDR presentation surface is not ready");
         ComPtr<ID3D11Texture2D> backbuffer;check(chain->GetBuffer(0,__uuidof(ID3D11Texture2D),(void**)backbuffer.GetAddressOf()),"get HDR backbuffer");
         context->CopyResource(backbuffer.Get(),shared_texture.Get());
-        check(chain->Present(vsync?1:0,!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0),"present scRGB HDR frame");
+        check(present_chain(vsync?1:0,!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0),"present scRGB HDR frame");
         attach();
     }
     void attach() {
@@ -182,6 +214,37 @@ struct Presentation {
         }
     }
     bool content_visible=false;
+    void observe(bool enabled) {
+        observation_enabled=enabled;observation_ready=false;
+        LARGE_INTEGER frequency{};
+        observation_frequency=enabled&&QueryPerformanceFrequency(&frequency)&&frequency.QuadPart>0?uint64_t(frequency.QuadPart):0;
+    }
+    HRESULT present_chain(UINT interval,UINT flags,uint64_t source=0,uint64_t ready=0) {
+        if(!observation_enabled)return chain->Present(interval,flags);
+        RawPresentObservation raw{};raw.version=1;raw.struct_size=sizeof(raw);
+        raw.serial=++observation_serial;raw.chain_id=chain_id;raw.surface_epoch=surface_epoch;
+        raw.chain_address=uint64_t(reinterpret_cast<uintptr_t>(chain.Get()));
+        raw.native_source_id=source;raw.native_source_ready=ready;raw.qpc_frequency=observation_frequency;
+        raw.sync_interval=interval;raw.present_flags=flags;
+        raw.present_before_qpc=present_qpc();
+        const HRESULT result=chain->Present(interval,flags);
+        raw.present_after_qpc=present_qpc();raw.present_hresult=int32_t(result);
+        UINT count=0;
+        raw.last_count_query_before_qpc=present_qpc();
+        raw.last_present_count_hresult=int32_t(chain->GetLastPresentCount(&count));
+        raw.last_count_query_after_qpc=present_qpc();raw.last_present_count=count;
+        DXGI_FRAME_STATISTICS stats{};
+        raw.stats_query_before_qpc=present_qpc();
+        const HRESULT statistics=chain->GetFrameStatistics(&stats);
+        raw.stats_query_after_qpc=present_qpc();raw.stats_hresult=int32_t(statistics);
+        raw.stats_present_count=stats.PresentCount;raw.stats_present_refresh_count=stats.PresentRefreshCount;raw.stats_sync_refresh_count=stats.SyncRefreshCount;
+        raw.stats_sync_qpc_time=stats.SyncQPCTime.QuadPart;raw.stats_sync_gpu_time=stats.SyncGPUTime.QuadPart;
+        if(statistics==DXGI_ERROR_FRAME_STATISTICS_DISJOINT)surface_epoch=present_identity();
+        raw.surface_epoch_after_query=surface_epoch;
+        observation=raw;observation_ready=true;
+        return result;
+    }
+
 };
 struct NativePresentation:Presentation {
     std::array<ComPtr<ID3D11Texture2D>,3> overlays;
@@ -287,7 +350,7 @@ float4 ps(float4 pos:SV_Position):SV_Target{
         offered=false;submitted_return=0;params.flags[3]=0;
         for(auto& v:cursor_views)v.Reset();for(auto& c:cursors)c.Reset();cursor_width=cursor_height=0;
     }
-    void begin(){offered=false;params.flags[3]=0;}
+    void begin(){offered=false;params.flags[3]=0;observation_ready=false;}
     void present(unsigned index,bool vsync){
         submitted_return=0;
         if(index>=3||!chain)throw std::runtime_error("native presentation ring is not ready");
@@ -312,7 +375,7 @@ float4 ps(float4 pos:SV_Position):SV_Target{
             debug_pixels.resize(size_t(width)*height*4);for(unsigned y=0;y<height;y++)std::memcpy(debug_pixels.data()+size_t(y)*width*4,(const unsigned char*)map.pData+size_t(y)*map.RowPitch,size_t(width)*8);context->Unmap(debug_target.Get(),0);
             debug_width=width;debug_height=height;debug_serial++;
         }
-        check(chain->Present(vsync?1:0,!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0),"present native composed video");attach();
+        check(present_chain(vsync?1:0,!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0,offered?source_id:0,offered?ready_value:0),"present native composed video");attach();
     }
 };
 
@@ -345,6 +408,12 @@ extern "C" int eclipse_native_present_image(void* value,uint64_t id,void* const*
 extern "C" int eclipse_native_present_cursor(void* value,unsigned w,unsigned h,const unsigned char* alpha,const unsigned char* xored,char* error,size_t capacity){try{((NativePresentation*)value)->cursor_shape(w,h,alpha,xored);return 0;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
 extern "C" void eclipse_native_present_cursor_position(void* value,const float* rect){((NativePresentation*)value)->cursor_position(rect);}
 extern "C" int eclipse_native_present_frame(void* value,unsigned index,int vsync,uint64_t* submitted,char* error,size_t capacity){auto p=(NativePresentation*)value;try{p->present(index,vsync!=0);*submitted=p->submitted_return;return 0;}catch(const std::exception& e){p->context->Flush();*submitted=p->submitted_return;if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
+extern "C" void eclipse_native_present_observe(void* value,int enabled){((NativePresentation*)value)->observe(enabled!=0);}
+extern "C" int eclipse_native_present_observation(void* value,RawPresentObservation* observation,size_t size){
+    if(!value||!observation||size!=sizeof(RawPresentObservation))return -1;
+    auto p=(NativePresentation*)value;if(!p->observation_ready)return 0;
+    *observation=p->observation;p->observation_ready=false;return 1;
+}
 
 extern "C" void eclipse_native_present_debug(void* value,int enabled,int hdr,float white){auto p=(NativePresentation*)value;p->debug_enabled=enabled!=0;p->debug_hdr=hdr;p->debug_white=white;if(!enabled){p->debug_target.Reset();p->debug_pixels.clear();}}
 extern "C" size_t eclipse_native_present_debug_pixels(void* value,uint16_t* data,size_t capacity,unsigned* w,unsigned* h,uint64_t* serial){auto p=(NativePresentation*)value;*w=p->debug_width;*h=p->debug_height;*serial=p->debug_serial;if(data&&capacity>=p->debug_pixels.size())std::memcpy(data,p->debug_pixels.data(),p->debug_pixels.size()*2);return p->debug_pixels.size();}

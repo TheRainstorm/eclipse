@@ -19,6 +19,17 @@ pub enum Stage {
     OutputAvailable = 8,
 }
 type Key = (u64, u32, u32, u32); // media epoch, track, SSRC, RTP timestamp
+/// Frozen receive identity for an actual decoded output, not the newest input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ImageIdentity {
+    pub row_id: u64,
+    pub media_epoch: u64,
+    pub track: u32,
+    pub ssrc: u32,
+    pub rtp_timestamp: u32,
+    pub decode_generation: u64,
+    pub pts_us: u64,
+}
 #[derive(Clone, Serialize)]
 struct Row {
     id: u64,
@@ -192,10 +203,35 @@ impl Trace {
             serde_json::json!({"qpc_anchor":crate::socket_trace::clock_anchor(self.started),"clock":"client_monotonic","stages":["first_rtp_read","last_rtp_read","complete_au","decode_start","decode_return","publish_call","mailbox_take","draw_callback","output_available_by_pts"],"limit":self.limit,"total_frames":total,"evicted_frames":evicted,"unmatched_events":missing,"frames":rows}),
         )
     }
+    /// Metadata-only profiler lookup at decode output publication. Contention,
+    /// missing PTS, or competing source identities with equal PTS are unknown.
+    pub fn image_identity(&self, epoch:u64, track:u32, pts:u64)->Option<ImageIdentity> {
+        if !self.enabled {return None;}
+        let s=self.state.try_lock().ok()?;
+        let mut matches=s.rows.iter().filter(|row|row.epoch==epoch&&row.track==track&&row.pts_us==Some(pts));
+        let row=matches.next()?;
+        if matches.next().is_some(){return None;}
+        Some(ImageIdentity{row_id:row.id,media_epoch:epoch,track,ssrc:row.ssrc,rtp_timestamp:row.rtp,decode_generation:row.generation?,pts_us:pts})
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn frozen_output_identity_rejects_pts_aliases_and_never_waits_for_trace_lock() {
+        let t=Trace::new(true);
+        t.packet(1,0,9,100,true,Instant::now());
+        t.frame(1,0,9,100,Stage::DecodeStart,Some((0,3)));
+        let old=t.image_identity(1,0,0).unwrap();
+        assert_eq!((old.ssrc,old.rtp_timestamp),(9,100));
+        t.packet(1,0,10,200,true,Instant::now());
+        t.frame(1,0,10,200,Stage::DecodeStart,Some((0,4)));
+        assert!(t.image_identity(1,0,0).is_none(),"a reused output PTS is ambiguous, not the latest source");
+        assert_eq!(old.ssrc,9,"a previously frozen identity stays with its image");
+        assert!(t.image_identity(2,0,0).is_none());
+        let _held=t.state.lock().unwrap();
+        assert!(t.image_identity(1,0,0).is_none());
+    }
     #[test]
     fn wrap_duplicates_reorder_and_epoch_are_distinct() {
         let t = Trace::new(true);

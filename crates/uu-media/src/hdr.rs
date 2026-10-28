@@ -1,6 +1,9 @@
 //! HDR10 signal math. scRGB is linear BT.709 with 1.0 = 80 cd/m².
 //! PQ uses absolute luminance; it must never be interpreted as an SDR gamma.
 use serde::{Deserialize, Serialize};
+#[path="present_observation.rs"]
+mod observation;
+pub use observation::RawPresentObservation;
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {

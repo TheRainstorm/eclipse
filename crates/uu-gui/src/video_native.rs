@@ -1,5 +1,6 @@
 //! Same-adapter D3D video plus a three-slot GL UI overlay. No video WGL lock.
 use crate::video_texture::NativeImage;
+use crate::video_texture::present_trace;
 use crate::wgl_interop::{Api, Handle};
 use eframe::{
     egui,
@@ -52,6 +53,8 @@ struct NativePresenter {
     inspection: Option<Inspection>,
     image: Option<NativeImage>,
     shape: Option<Arc<uu_core::native_cursor::Shape>>,
+    trace:Option<present_trace::Producer>,
+    observing:bool,
 }
 unsafe impl Send for NativePresenter {}
 pub fn enable(ctx: &egui::Context, gl: Arc<glow::Context>, vsync: bool) -> Result<bool, String> {
@@ -93,7 +96,10 @@ pub fn enable(ctx: &egui::Context, gl: Arc<glow::Context>, vsync: bool) -> Resul
 impl NativePresenter {
     unsafe fn new(gl: Arc<glow::Context>, hwnd: Handle) -> Result<Self, String> {
         let api = Api::load().ok_or("native UI requires WGL interop")?;
-        let native = NativePresentation::new(hwnd)?;
+        let mut native = NativePresentation::new(hwnd)?;
+        let trace=present_trace::from_env();
+        let observing=trace.as_ref().is_some_and(|trace|trace.active());
+        native.observe_presents(observing);
         let device = (api.open)(native.device_ptr());
         if device.is_null() {
             return Err("native UI device sharing failed".into());
@@ -117,6 +123,7 @@ impl NativePresenter {
                 sdr_white_nits: 80.,
             },
             image: None,
+            trace,observing,
             inspection: None,
             shape: None,
         })
@@ -328,9 +335,17 @@ impl Presenter for NativePresenter {
             return Err(error);
         }
         let mut submitted = 0;
+        if self.observing&&self.trace.as_ref().is_none_or(|trace|!trace.active()) {self.native.observe_presents(false);self.observing=false;}
         let result = self
             .native
             .present(self.index as u32, vsync, &mut submitted);
+        if self.observing {
+            if let (Some(trace),Some(raw))=(&self.trace,self.native.take_present_observation()) {
+                let offered=self.image.as_ref().map(|image|(image.id,image.ready));
+                let frame=self.image.as_ref().and_then(|image|image.observation.as_ref());
+                trace.record(present_trace::Row::new(raw,offered,frame,self.reuse_ui,self.inspection.is_some()));
+            }
+        }
         self.last_native = self.image.is_some() && result.is_ok();
         self.ui_key = if self.last_native {
             self.next_ui_key

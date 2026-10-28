@@ -19,6 +19,7 @@ pub(super) struct Source {
     ready: u64,
     consumed: Arc<AtomicU64>,
     valid: Arc<AtomicBool>,
+    observation:Option<super::frame_observation::FrameObservation>,
 }
 // Created, used and dropped on the owning render thread. Native immediate
 // contexts themselves are protected; only immutable handles cross presenters.
@@ -35,12 +36,14 @@ impl Source {
             ready: 0,
             consumed: Arc::new(AtomicU64::new(0)),
             valid: Arc::new(AtomicBool::new(true)),
+            observation:None,
         })
     }
     pub fn matches(&self, frame: &Frame) -> bool {
         self.converter.matches(frame) && self.valid.load(Ordering::Acquire)
     }
-    pub fn set(&mut self, frame: Arc<Frame>, color: YuvColor) -> Result<(), String> {
+    pub fn set(&mut self, frame: Arc<Frame>, color: YuvColor, observation:Option<super::frame_observation::FrameObservation>) -> Result<(), String> {
+        self.observation=None;
         if !self.valid.load(Ordering::Acquire) {
             return Err("native source ownership is retired".into());
         }
@@ -60,6 +63,7 @@ impl Source {
         self.converter.convert(&frame, color)?;
         self.ready = self.sync.ready()?;
         self.leases.back_mut().unwrap().0 = self.ready;
+        self.observation=observation;
         Ok(())
     }
     pub fn image(
@@ -79,6 +83,7 @@ impl Source {
             hdr,
             source_white,
             cursor,
+            observation:self.observation.clone(),
         }
     }
     pub fn backend(&self) -> &'static str {

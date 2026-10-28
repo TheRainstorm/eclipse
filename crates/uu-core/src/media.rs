@@ -38,6 +38,8 @@ pub struct MediaStats {
     pub native_quality_applied:std::sync::Mutex<Option<crate::native_quality::Applied>>,
     pub native_codec_capabilities:std::sync::OnceLock<Vec<uu_proto::media::VideoCodec>>,
     pub native_media_epoch:AtomicU64,
+    /// Retires cached-image observations when the native controller ends.
+    pub native_media_retired:std::sync::atomic::AtomicBool,
     pub native_displays:crate::native_displays::Client,
     pub native_timing:crate::native_timing::ClientTiming,
     pub pairing:crate::device_auth::PairingDisplay,
@@ -432,7 +434,12 @@ pub(crate) async fn receive_video(
                         // upload work only on the newest one after a burst.
                         if let Some(tx) = frame_tx.as_ref().filter(|_| index == last && (key || sample_rx.is_empty())) {
                             if let Some(s)=&worker_stats{s.pipeline_trace.image(trace_epoch,track_idx,frame.pts.0,crate::pipeline_trace::Stage::Publish);}
-                            let _ = tx.send_decoded(track_idx, frame, color);
+                            let observation=worker_stats.as_ref().map(|s|crate::display_frames::DecodedObservation {
+                                media_epoch:trace_epoch,track:track_idx,pts_us:frame.pts.0,
+                                token:s.video_e2e.frame_for_pts(trace_epoch,track_idx,frame.pts.0),
+                                receive:s.pipeline_trace.image_identity(trace_epoch,track_idx,frame.pts.0),
+                            });
+                            let _ = tx.send_observed_decoded(track_idx, frame, color,observation);
                         } else if let Some(s) = worker_stats.as_ref().filter(|_|frame_tx.is_some()) {
                             s.decoded_display_skips.fetch_add(1, Ordering::Relaxed);
                         }
