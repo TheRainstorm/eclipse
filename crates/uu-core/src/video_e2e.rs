@@ -76,7 +76,7 @@ pub enum DisplayMethod {
 
 /// A renderer may supply this only after identifying the actually displayed
 /// present. Both timestamps use the client's clock, never GPU completion time.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DisplayObservation {
     /// Changes when the swap chain/observer is recreated or becomes disjoint.
     pub surface_epoch: u64,
@@ -251,10 +251,37 @@ struct Record {
     source: Option<SourceEndpoint>,
     display: Option<DisplayObservation>,
     sampled: bool,
+    evidence_registered: bool,
+    first_display_eligible: bool,
+}
+type SourceId = (u64, u64, u64);
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FirstDisplay {
+    token: FrameToken,
+    display: DisplayObservation,
+}
+#[derive(Clone, Copy)]
+struct SourceProof {
+    source_id: SourceId,
+    original: Option<FirstDisplay>,
+    earliest_duplicate_ns: Option<u128>,
+}
+impl SourceProof {
+    fn permits(&self, first: FirstDisplay) -> bool {
+        self.original == Some(first)
+            && self.earliest_duplicate_ns.is_none_or(|duplicate| {
+                first
+                    .display
+                    .latest
+                    .interval_ns()
+                    .is_some_and(|latest| latest.latest_ns <= duplicate)
+            })
+    }
 }
 #[derive(Clone, Copy)]
 struct Sample {
-    source_id: (u64, u64, u64),
+    source_id: SourceId,
+    first: FirstDisplay,
     display_ns: u128,
     interval: TimeInterval,
     method: DisplayMethod,
@@ -273,6 +300,7 @@ struct State {
     pts: VecDeque<(u32, u64, FrameToken)>,
     streams: Vec<(u32, u32)>,
     samples: VecDeque<Sample>,
+    source_proofs: VecDeque<SourceProof>,
     receipts: VecDeque<(u64, u64, FrameToken)>,
     source_frames: u64,
     displayed_frames: u64,
@@ -294,6 +322,7 @@ impl Default for State {
             pts: VecDeque::new(),
             streams: Vec::new(),
             samples: VecDeque::new(),
+            source_proofs: VecDeque::new(),
             receipts: VecDeque::new(),
             source_frames: 0,
             displayed_frames: 0,
@@ -384,6 +413,14 @@ impl Client {
             || s.method != method
             || (previous_active == 0 && s.surface_epoch.is_some())
         {
+            // A cached AU decoded under an older observer has no first-display
+            // coverage in the replacement observer. Only later decoded AUs
+            // may become new first-display candidates there.
+            if s.surface_epoch.is_some() || !s.retired_surfaces.is_empty() {
+                for record in &mut s.records {
+                    record.first_display_eligible = false;
+                }
+            }
             if let Some(previous) = s
                 .surface_epoch
                 .filter(|previous| Some(*previous) != surface)
@@ -475,6 +512,8 @@ impl Client {
                     source: frame.source,
                     display: None,
                     sampled: false,
+                    evidence_registered: false,
+                    first_display_eligible: false,
                 });
             }
         }
@@ -541,6 +580,7 @@ impl Client {
             .find(|record| record.token.ssrc == ssrc && record.token.rtp_timestamp == rtp_timestamp)
         {
             record.token = token;
+            record.first_display_eligible = true;
         } else {
             if s.records.len() == LIMIT {
                 s.records.pop_front();
@@ -551,6 +591,8 @@ impl Client {
                 source: None,
                 display: None,
                 sampled: false,
+                evidence_registered: false,
+                first_display_eligible: true,
             });
         }
     }
@@ -575,8 +617,15 @@ impl Client {
             .find(|(current, candidate, _)| *current == track && *candidate == pts)
             .map(|(_, _, token)| *token)
     }
+    /// Lifetime check for an already frozen token. It never looks up a newer
+    /// PTS mapping and does not itself prove source-first-display eligibility.
+    pub fn current_token(&self, token: FrameToken) -> bool {
+        self.supported.load(Ordering::Acquire)
+            && self.media_epoch.load(Ordering::Acquire) == token.media_epoch
+            && self.observation_epoch.load(Ordering::Acquire) == token.observation_epoch
+    }
     pub fn displayed(&self, token: FrameToken, display: DisplayObservation) -> bool {
-        if !self.supported() {
+        if !self.current_token(token) {
             return false;
         }
         let Some(now) = self.local.stamp() else {
@@ -594,6 +643,9 @@ impl Client {
         }
         let Ok(mut s) = self.state.try_lock() else {
             self.dropped.fetch_add(1, Ordering::Relaxed);
+            // An observed display was lost. A later redraw of the same cached
+            // original AU must not stand in for its missing first receipt.
+            self.observation_epoch.fetch_add(1, Ordering::AcqRel);
             return false;
         };
         if s.media_epoch != token.media_epoch
@@ -613,16 +665,16 @@ impl Client {
         let Some(index) = s.records.iter().position(|record| record.token == token) else {
             return false;
         };
-        if s.records[index].display.is_some_and(|previous| {
-            previous.surface_epoch == display.surface_epoch
-                && previous.method == display.method
-                && previous.earliest.ticks <= display.earliest.ticks
-        }) {
+        if s.records[index]
+            .display
+            .is_some_and(|previous| previous.earliest.ticks <= display.earliest.ticks)
+        {
             return false;
         }
         let record = &mut s.records[index];
         record.display = Some(display);
         record.sampled = false;
+        record.evidence_registered = false;
         if s.receipts.len() == LIMIT {
             s.receipts.pop_front();
         }
@@ -633,6 +685,64 @@ impl Client {
         true
     }
     fn join_all(s: &mut State, now: WireClockStamp) {
+        // First-display evidence outlives HUD/surface windows. Late telemetry
+        // still describes the old display; it cannot borrow a newer redraw.
+        for record in &mut s.records {
+            if record.evidence_registered {
+                continue;
+            }
+            let (Some(source), Some(display)) = (record.source, record.display) else {
+                continue;
+            };
+            let Some(earliest) = display.earliest.interval_ns() else {
+                continue;
+            };
+            let source_id = (source.presented.epoch, source.generation, source.frame_id);
+            let index = if let Some(index) = s
+                .source_proofs
+                .iter()
+                .position(|proof| proof.source_id == source_id)
+            {
+                index
+            } else {
+                if s.source_proofs.len() == LIMIT {
+                    if let Some(old) = s.source_proofs.pop_front() {
+                        s.samples.retain(|sample| sample.source_id != old.source_id);
+                    }
+                    s.dropped += 1;
+                }
+                s.source_proofs.push_back(SourceProof {
+                    source_id,
+                    original: None,
+                    earliest_duplicate_ns: None,
+                });
+                s.source_proofs.len() - 1
+            };
+            let proof = &mut s.source_proofs[index];
+            if source.duplicate {
+                proof.earliest_duplicate_ns = Some(
+                    proof
+                        .earliest_duplicate_ns
+                        .map_or(earliest.earliest_ns, |previous| {
+                            previous.min(earliest.earliest_ns)
+                        }),
+                );
+            } else if proof
+                .original
+                .is_none_or(|previous| display.earliest.ticks < previous.display.earliest.ticks)
+            {
+                proof.original = Some(FirstDisplay {
+                    token: record.token,
+                    display,
+                });
+            }
+            let proof = *proof;
+            // An earlier/overlapping duplicate receipt disproves the original
+            // AU's first-display eligibility; remove even an existing sample.
+            s.samples
+                .retain(|sample| sample.source_id != source_id || proof.permits(sample.first));
+            record.evidence_registered = true;
+        }
         for record in &mut s.records {
             if record.sampled {
                 continue;
@@ -640,6 +750,24 @@ impl Client {
             let (Some(source), Some(display)) = (record.source, record.display) else {
                 continue;
             };
+            let source_id = (source.presented.epoch, source.generation, source.frame_id);
+            let first_display = FirstDisplay {
+                token: record.token,
+                display,
+            };
+            // Capture repetition is not evidence of first system display,
+            // even if the original AU was really lost. No coverage proof is
+            // carried by this protocol, so duplicate AUs never create samples.
+            if source.duplicate
+                || !record.first_display_eligible
+                || !s
+                    .source_proofs
+                    .iter()
+                    .any(|proof| proof.source_id == source_id && proof.permits(first_display))
+            {
+                record.sampled = true;
+                continue;
+            }
             if Some(display.surface_epoch) != s.surface_epoch || Some(display.method) != s.method {
                 record.sampled = true;
                 continue;
@@ -672,13 +800,13 @@ impl Client {
                 continue;
             }
             record.sampled = true;
-            let source_id = (source.presented.epoch, source.generation, source.frame_id);
             if let Some(old) = s.samples.iter_mut().find(|old| old.source_id == source_id) {
                 if first.earliest_ns >= old.display_ns {
                     continue;
                 }
                 *old = Sample {
                     source_id,
+                    first: first_display,
                     display_ns: first.earliest_ns,
                     interval,
                     method: display.method,
@@ -690,6 +818,7 @@ impl Client {
                 }
                 s.samples.push_back(Sample {
                     source_id,
+                    first: first_display,
                     display_ns: first.earliest_ns,
                     interval,
                     method: display.method,
@@ -947,7 +1076,7 @@ mod tests {
         assert!(client.snapshot().measurement.is_none());
     }
     #[test]
-    fn repeated_source_first_display_is_measured_when_original_au_was_dropped() {
+    fn duplicate_without_original_first_display_proof_stays_unknown() {
         let (client, source) = setup_client();
         client.decode_input(7, 0, 42, 2, 200);
         client.source_frames(7, 9, &[descriptor(source, 2, 1, true)]);
@@ -955,7 +1084,7 @@ mod tests {
             client.frame_for_pts(7, 0, 200).unwrap(),
             display(&client, 2)
         ));
-        assert_eq!(client.snapshot().measurement.unwrap().samples, 1);
+        assert!(client.snapshot().measurement.is_none(),"even a genuinely lost original AU does not prove a duplicate is the source's first display");
     }
     #[test]
     fn delayed_source_telemetry_does_not_revive_an_expired_display_sample() {
@@ -1035,10 +1164,124 @@ mod tests {
         let mut next = display(&client, 1);
         next.surface_epoch = 2;
         assert!(client.set_display_observer(7, 2, DisplayMethod::PlatformDisplayed));
-        assert!(client.displayed(token, next));
+        assert!(!client.displayed(token, next));
         assert_ne!(old, client.snapshot().generation);
+        assert!(client.snapshot().measurement.is_none());
+        client.decode_input(7, 0, 42, 2, 200);
+        client.source_frames(7, 9, &[descriptor(source, 2, 2, false)]);
+        let mut fresh = display(&client, 3);
+        fresh.surface_epoch = 2;
+        assert!(client.displayed(client.frame_for_pts(7, 0, 200).unwrap(), fresh));
         assert_eq!(client.snapshot().measurement.unwrap().samples, 1);
         assert!(!client.displayed(token, display(&client, 2)));
+    }
+    #[test]
+    fn missing_original_observation_does_not_turn_static_frame_age_into_latency() {
+        let (client, source) = setup_client();
+        client.decode_input(7, 0, 42, 1, 100);
+        let original = client.frame_for_pts(7, 0, 100).unwrap();
+        assert!(client.displayed(original, display(&client, 1)));
+        // The original was really displayed, but its source report is absent
+        // and the bounded receive record is later lost before joining it.
+        for n in 0..LIMIT {
+            client.decode_input(7, 0, 42, 10 + n as u32, 1000 + n as u64);
+        }
+        assert!(!client
+            .state
+            .lock()
+            .unwrap()
+            .records
+            .iter()
+            .any(|record| record.token == original));
+        client.decode_input(7, 0, 42, 9000, 9000);
+        client.source_frames(7, 9, &[descriptor(source, 9000, 1, true)]);
+        assert!(client.displayed(
+            client.frame_for_pts(7, 0, 9000).unwrap(),
+            display(&client, 2)
+        ));
+        assert!(client.snapshot().measurement.is_none());
+    }
+    #[test]
+    fn late_original_source_report_uses_early_display_not_a_later_duplicate() {
+        let (client, source) = setup_client();
+        client.decode_input(7, 0, 42, 1, 100);
+        let early = display(&client, 1);
+        assert!(client.displayed(client.frame_for_pts(7, 0, 100).unwrap(), early));
+        client.decode_input(7, 0, 42, 2, 200);
+        assert!(client.displayed(
+            client.frame_for_pts(7, 0, 200).unwrap(),
+            display(&client, 2)
+        ));
+        client.source_frames(7, 9, &[descriptor(source, 2, 1, true)]);
+        assert!(client.snapshot().measurement.is_none());
+        client.source_frames(7, 9, &[descriptor(source, 1, 1, false)]);
+        assert_eq!(client.snapshot().measurement.unwrap().samples, 1);
+        assert_eq!(
+            client.state.lock().unwrap().samples[0].display_ns,
+            early.earliest.interval_ns().unwrap().earliest_ns
+        );
+    }
+    #[test]
+    fn an_earlier_duplicate_receipt_with_late_metadata_revokes_false_first_display() {
+        let (client, mut source) = setup_client();
+        source.ticks -= source.frequency_hz / 100;
+        for (rtp, pts) in [(1, 100), (2, 200)] {
+            client.decode_input(7, 0, 42, rtp, pts);
+        }
+        client.source_frames(7, 9, &[descriptor(source, 1, 1, false)]);
+        let original = display(&client, 1);
+        assert!(client.displayed(client.frame_for_pts(7, 0, 100).unwrap(), original));
+        assert_eq!(client.snapshot().measurement.unwrap().samples, 1);
+        let mut earlier = display(&client, 2);
+        earlier.earliest.ticks = original.earliest.ticks - earlier.earliest.frequency_hz / 1000;
+        earlier.latest = earlier.earliest;
+        assert!(client.displayed(client.frame_for_pts(7, 0, 200).unwrap(), earlier));
+        client.source_frames(7, 9, &[descriptor(source, 2, 1, true)]);
+        assert!(client.snapshot().measurement.is_none());
+    }
+    #[test]
+    fn late_source_metadata_across_surfaces_cannot_borrow_a_cached_redraw() {
+        let (client, source) = setup_client();
+        client.decode_input(7, 0, 42, 1, 100);
+        let token = client.frame_for_pts(7, 0, 100).unwrap();
+        let early = display(&client, 1);
+        assert!(client.displayed(token, early));
+        assert!(client.set_display_observer(7, 2, DisplayMethod::PlatformDisplayed));
+        let mut redraw = display(&client, 2);
+        redraw.surface_epoch = 2;
+        assert!(!client.displayed(token, redraw));
+        client.source_frames(7, 9, &[descriptor(source, 1, 1, false)]);
+        assert!(client.snapshot().measurement.is_none());
+        let state = client.state.lock().unwrap();
+        assert_eq!(state.source_proofs[0].original.unwrap().display, early);
+    }
+    #[test]
+    fn cached_au_without_old_receipt_is_unproven_after_observer_replacement() {
+        let (client, source) = setup_client();
+        client.decode_input(7, 0, 42, 1, 100);
+        client.source_frames(7, 9, &[descriptor(source, 1, 1, false)]);
+        let token = client.frame_for_pts(7, 0, 100).unwrap();
+        assert!(client.set_display_observer(7, 2, DisplayMethod::PlatformDisplayed));
+        let mut redraw = display(&client, 1);
+        redraw.surface_epoch = 2;
+        assert!(client.displayed(token, redraw));
+        assert!(client.snapshot().measurement.is_none());
+    }
+    #[test]
+    fn lost_display_hook_retires_cached_token_without_querying_newer_pts() {
+        let (client, source) = setup_client();
+        client.decode_input(7, 0, 42, 1, 100);
+        client.source_frames(7, 9, &[descriptor(source, 1, 1, false)]);
+        let token = client.frame_for_pts(7, 0, 100).unwrap();
+        assert!(client.current_token(token));
+        let held = client.state.lock().unwrap();
+        assert!(!client.displayed(token, display(&client, 1)));
+        drop(held);
+        assert!(!client.current_token(token));
+        assert!(!client.displayed(token, display(&client, 2)));
+        assert!(client.snapshot().measurement.is_none());
+        client.begin(8, true);
+        assert!(!client.current_token(token));
     }
     #[test]
     fn detached_or_undeclared_surface_receipts_cannot_reactivate_an_observer() {
