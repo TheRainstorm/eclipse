@@ -3,6 +3,7 @@ use super::{FourTimestamp, Host, SourceFrame, Stamp, WireClockStamp};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
+    future::Future,
     sync::{atomic::Ordering, Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -77,17 +78,76 @@ fn parse(data: &[u8]) -> Option<Packet> {
         _ => Some(packet),
     }
 }
-async fn send(channel: &RTCDataChannel, packet: Packet) {
-    if channel.ready_state() != RTCDataChannelState::Open || channel.buffered_amount().await > 0 {
-        return;
-    }
+/// True means the full message was accepted by the local SCTP send API. It is
+/// not a peer acknowledgement; timeout/cancellation can have an unknown result.
+async fn send(channel: &RTCDataChannel, packet: Packet) -> bool {
     let Ok(data) = serde_json::to_vec(&packet) else {
-        return;
+        return false;
     };
     if data.len() > MAX_JSON {
-        return;
+        return false;
     }
-    let _ = tokio::time::timeout(Duration::from_millis(20), channel.send(&data.into())).await;
+    let len = data.len();
+    tokio::time::timeout(Duration::from_millis(20), async {
+        if channel.ready_state() != RTCDataChannelState::Open || channel.buffered_amount().await > 0
+        {
+            return false;
+        }
+        matches!(channel.send(&data.into()).await, Ok(written) if written == len)
+    })
+    .await
+    .unwrap_or(false)
+}
+fn same_frame(a: &SourceFrame, b: &SourceFrame) -> bool {
+    a.ssrc == b.ssrc
+        && a.rtp_timestamp == b.rtp_timestamp
+        && match (a.source, b.source) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                a.generation == b.generation
+                    && a.frame_id == b.frame_id
+                    && a.duplicate == b.duplicate
+                    && a.presented == b.presented
+            }
+            _ => false,
+        }
+}
+/// Copy without draining, then remove only the exact accepted descriptors.
+/// No queue guard crosses the send await. A busy cleanup lock leaves harmless
+/// duplicates queued; accepting a retry never proves delivery of either copy.
+async fn send_frames<F, W>(host: &Host, write: F) -> bool
+where
+    F: FnOnce(Packet) -> W,
+    W: Future<Output = bool>,
+{
+    let frames = {
+        let Ok(frames) = host.frames.try_lock() else {
+            return false;
+        };
+        frames.iter().take(MAX_FRAMES).copied().collect::<Vec<_>>()
+    };
+    if frames.is_empty() {
+        return false;
+    }
+    if !write(Packet::Frames {
+        host_epoch: host.clock.epoch,
+        frames: frames.clone(),
+    })
+    .await
+    {
+        return false;
+    }
+    if let Ok(mut pending) = host.frames.try_lock() {
+        for accepted in &frames {
+            if let Some(index) = pending
+                .iter()
+                .position(|queued| same_frame(queued, accepted))
+            {
+                pending.remove(index);
+            }
+        }
+    }
+    true
 }
 pub(crate) fn offered(description: &RTCSessionDescription) -> bool {
     let mut attributes = description
@@ -169,21 +229,7 @@ pub(crate) fn host_channel(channel: Arc<RTCDataChannel>, host: Arc<Host>) {
                     if channel.buffered_amount().await > 0 {
                         continue;
                     }
-                    let frames = {
-                        let mut frames = host.frames.lock().unwrap();
-                        let count = frames.len().min(MAX_FRAMES);
-                        frames.drain(..count).collect::<Vec<_>>()
-                    };
-                    if !frames.is_empty() {
-                        send(
-                            &channel,
-                            Packet::Frames {
-                                host_epoch: host.clock.epoch,
-                                frames,
-                            },
-                        )
-                        .await;
-                    }
+                    send_frames(&host, |packet| send(&channel, packet)).await;
                 }
             });
         })
@@ -354,7 +400,230 @@ async fn viewer_channel_observed(
 
 #[cfg(test)]
 mod tests {
+    use super::super::{Client, DisplayMethod, DisplayObservation, SourceEndpoint};
     use super::*;
+
+    fn queued(host: &Host) -> Vec<SourceFrame> {
+        host.frames.lock().unwrap().iter().copied().collect()
+    }
+    fn queue(host: &Host, n: u32) {
+        host.sent(
+            Some(SourceEndpoint {
+                generation: 1,
+                frame_id: u64::from(n),
+                duplicate: false,
+                presented: WireClockStamp {
+                    epoch: host.clock.epoch,
+                    ticks: u64::from(n) + 1,
+                    frequency_hz: 1_000_000_000,
+                },
+            }),
+            17,
+            n,
+        );
+    }
+    fn host() -> Host {
+        let host = Host::default();
+        host.enable(true);
+        host
+    }
+    #[tokio::test]
+    async fn refused_or_uncertain_batch_keeps_every_descriptor_queued() {
+        let host = host();
+        for n in 0..6 {
+            queue(&host, n);
+        }
+        let before = serde_json::to_value(queued(&host)).unwrap();
+        for _ in 0..3 {
+            let accepted = send_frames(&host, |packet| {
+                let Packet::Frames { frames, .. } = packet else {
+                    panic!("not a frame batch");
+                };
+                assert_eq!(frames.len(), 6);
+                assert_eq!(
+                    serde_json::to_value(queued(&host)).unwrap(),
+                    before,
+                    "the batch must remain queued while the local send is unresolved"
+                );
+                async { false }
+            })
+            .await;
+            assert!(!accepted);
+            assert_eq!(serde_json::to_value(queued(&host)).unwrap(), before);
+        }
+    }
+    #[tokio::test]
+    async fn accepted_batch_removes_exact_items_and_keeps_concurrent_new_frames() {
+        let host = host();
+        queue(&host, 1);
+        queue(&host, 2);
+        let accepted = send_frames(&host, |packet| {
+            let Packet::Frames { frames, .. } = packet else {
+                panic!("not a frame batch");
+            };
+            assert_eq!(frames.len(), 2);
+            assert_eq!(queued(&host).len(), 2);
+            queue(&host, 3);
+            let mut replacement = frames[0];
+            replacement.source.as_mut().unwrap().generation += 1;
+            host.sent(
+                replacement.source,
+                replacement.ssrc,
+                replacement.rtp_timestamp,
+            );
+            async { true }
+        })
+        .await;
+        assert!(accepted);
+        let left = queued(&host);
+        assert_eq!(left.len(), 2);
+        assert_eq!(left[0].rtp_timestamp, 3);
+        assert_eq!(left[1].rtp_timestamp, 1);
+        assert_eq!(left[1].source.unwrap().generation, 2);
+    }
+    #[tokio::test]
+    async fn accepted_cleanup_never_deletes_a_new_identity_reusing_ssrc_or_rtp() {
+        for field in 0..9 {
+            let host = host();
+            queue(&host, 7);
+            let mut replacement = queued(&host)[0];
+            match field {
+                0 => replacement.ssrc += 1,
+                1 => replacement.rtp_timestamp += 1,
+                2 => replacement.source.as_mut().unwrap().generation += 1,
+                3 => replacement.source.as_mut().unwrap().frame_id += 1,
+                4 => replacement.source.as_mut().unwrap().duplicate = true,
+                5 => replacement.source.as_mut().unwrap().presented.epoch += 1,
+                6 => replacement.source.as_mut().unwrap().presented.ticks += 1,
+                7 => replacement.source.as_mut().unwrap().presented.frequency_hz += 1,
+                _ => replacement.source = None,
+            }
+            assert!(
+                send_frames(&host, |_| {
+                    let mut pending = host.frames.lock().unwrap();
+                    pending.clear();
+                    pending.push_back(replacement);
+                    async { true }
+                })
+                .await
+            );
+            assert_eq!(
+                serde_json::to_value(queued(&host)).unwrap(),
+                serde_json::to_value(vec![replacement]).unwrap(),
+                "identity field {field}"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn bounded_overflow_during_send_does_not_remove_unrelated_new_tail() {
+        let host = host();
+        for n in 0..super::super::LIMIT as u32 {
+            queue(&host, n);
+        }
+        assert!(
+            send_frames(&host, |packet| {
+                let Packet::Frames { frames, .. } = packet else {
+                    panic!("not a frame batch");
+                };
+                assert_eq!(frames.len(), MAX_FRAMES);
+                for n in super::super::LIMIT as u32..super::super::LIMIT as u32 + 10 {
+                    queue(&host, n);
+                }
+                assert_eq!(queued(&host).len(), super::super::LIMIT);
+                async { true }
+            })
+            .await
+        );
+        let left = queued(&host);
+        assert_eq!(
+            left.iter().map(|f| f.rtp_timestamp).collect::<Vec<_>>(),
+            (MAX_FRAMES as u32..super::super::LIMIT as u32 + 10).collect::<Vec<_>>()
+        );
+        for n in 1000..2000 {
+            queue(&host, n);
+        }
+        assert!(!send_frames(&host, |_| async { false }).await);
+        assert_eq!(queued(&host).len(), super::super::LIMIT);
+    }
+    #[tokio::test]
+    async fn busy_cleanup_retains_accepted_items_for_idempotent_retry() {
+        let host = host();
+        queue(&host, 1);
+        let mut held = None;
+        assert!(
+            send_frames(&host, |_| {
+                held = Some(host.frames.lock().unwrap());
+                async { true }
+            })
+            .await
+        );
+        drop(held);
+        assert_eq!(queued(&host).len(), 1);
+        assert!(send_frames(&host, |_| async { true }).await);
+        assert!(queued(&host).is_empty());
+    }
+    #[test]
+    fn duplicate_source_metadata_does_not_duplicate_same_frame_latency() {
+        let host = host();
+        let client = Client::default();
+        client.begin(7, true);
+        assert!(client.set_display_observer(7, 1, DisplayMethod::PlatformDisplayed));
+        let client_send = client.clock_stamp().unwrap();
+        let source = host.clock.stamp().unwrap();
+        let host_send = host.clock.stamp().unwrap();
+        let client_receive = client.clock_stamp().unwrap();
+        assert!(client.clock_sample(
+            7,
+            FourTimestamp {
+                client_send,
+                host_receive: source,
+                host_send,
+                client_receive
+            }
+        ));
+        client.decode_input(7, 0, 17, 1, 100);
+        host.sent(
+            Some(SourceEndpoint {
+                generation: 1,
+                frame_id: 1,
+                duplicate: false,
+                presented: source,
+            }),
+            17,
+            1,
+        );
+        let frames = queued(&host);
+        assert!(client.source_frames(7, host.clock.epoch, &frames));
+        let at = client.clock_stamp().unwrap();
+        assert!(client.displayed(
+            client.frame_for_pts(7, 0, 100).unwrap(),
+            DisplayObservation {
+                surface_epoch: 1,
+                present_id: 1,
+                earliest: at,
+                latest: at,
+                method: DisplayMethod::PlatformDisplayed
+            }
+        ));
+        let original = serde_json::to_value(client.snapshot().measurement.unwrap()).unwrap();
+        assert!(client.source_frames(7, host.clock.epoch, &frames));
+        assert_eq!(
+            serde_json::to_value(client.snapshot().measurement.unwrap()).unwrap(),
+            original
+        );
+    }
+    #[tokio::test]
+    async fn channel_not_open_refuses_without_removing_the_batch() {
+        let peer = crate::native_media::NativePeer::new("127.0.0.1".parse().unwrap(), None, false)
+            .await
+            .unwrap();
+        let channel = peer.pc.create_data_channel(LABEL, None).await.unwrap();
+        let host = host();
+        queue(&host, 1);
+        assert!(!send_frames(&host, |packet| send(&channel, packet)).await);
+        assert_eq!(queued(&host).len(), 1);
+        peer.close().await;
+    }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn optional_channel_exchanges_clocks_and_sources_without_a_display_endpoint() {
         use crate::{media::MediaStats, native_media::NativePeer};
@@ -427,6 +696,22 @@ mod tests {
             assert_eq!(frames.len(), 1);
             assert_eq!(frames[0].ssrc, 42);
             assert_eq!(frames[0].source.unwrap().presented, source);
+            // A local retry can deliver an identical descriptor twice. It must
+            // stay the same source image and must not create a display endpoint.
+            host.sent(frames[0].source, frames[0].ssrc, frames[0].rtp_timestamp);
+            loop {
+                events.extend(diagnostics.try_iter());
+                if events
+                    .iter()
+                    .filter(|event| event["event"] == "video_e2e_sources")
+                    .count()
+                    >= 2
+                    && host.frames.lock().unwrap().is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
             let exchange = events
                 .iter()
                 .find(|event| event["event"] == "video_e2e_clock")
