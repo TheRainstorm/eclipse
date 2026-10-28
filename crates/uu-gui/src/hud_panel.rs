@@ -384,17 +384,21 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     let empirical=measured.is_some_and(|value|value.method==uu_core::video_e2e::DisplayMethod::DxgiReceiptInterval);
     let video_help=if empirical {uu_i18n::text("按同帧身份将源时间关联至DXGI已报告的PresentCount，显示区间取该图像最早提交前至首次回执查询后。多显示器或其它全屏应用可能使DXGI统计不可靠；这是经验估测，不是平台保证的硬界，也不是鼠标到像素延迟。")}
         else {uu_i18n::text("按同一源画面身份关联主机源呈现和客户端系统显示回执。四时间戳只约束时钟偏移区间，不假定上下行对称；数值是带误差的估测，不是物理像素响应或鼠标到屏幕延迟。缺少任一端点或校时数据时保持未知，绝不回退阶段和。")};
-    let percentile_help=if empirical {uu_i18n::text("最近3秒同帧区间中点的均值及P50/P95估测。±包含校时界、DXGI回执区间半宽和舍入，仅在API统计可信的假设下成立；不保证多屏环境的硬误差界，中点不是精确显示时间。")}
-        else {uu_i18n::text("最近3秒同帧延迟区间中点的均值及P50/P95估测，±为该窗口内最大保守误差，包含时钟、显示区间和微秒舍入；中点不是精确时间。")};
+    let mean_help=uu_i18n::text("最近3秒同一批延迟区间的上下界分别取均值，±为该均值的向外舍入界，包含校时和显示区间误差；不要求样本独立，也不把共同校时误差按样本数消除。DXGI方法仍受统计可信假设限制，中点不是精确时间。");
+    let percentile_help=uu_i18n::text("同一批单帧延迟区间中点的P50/P95估测；不是未知实际端点的精确分位数。主均值的±不适用于这两个分位数，最大单帧区间误差另列。DXGI方法仍受统计可信假设限制。");
     let mut video=vec![
-        field(uu_i18n::text("均值估测"),m.video_value(),percentile_help),
+        field(uu_i18n::text("均值估测"),m.video_value(),mean_help),
         field("P50/P95",measured.map_or_else(||"—".into(),|v|format!("≈{:.3}/{:.3} ms",v.p50_us as f64/1000.,v.p95_us as f64/1000.)),percentile_help),
         field(uu_i18n::text("方法"),if measured.is_some(){m.video_method()}else{m.video_status()},video_help),
         field(uu_i18n::text("样本"),measured.map_or_else(||"—".into(),|v|v.samples.to_string()),video_help),
     ];
+    if let Some(value)=measured {
+        video.push(field(uu_i18n::text("单帧最大半宽"),format!("±{:.3} ms",value.max_sample_uncertainty_us as f64/1000.),uu_i18n::text("当前样本中最大的单帧区间半宽，包含时钟、显示和微秒舍入；与主项的整批均值误差分别计算。DXGI方法的范围仅在统计可信假设下成立。")));
+    }
     if let Some(snapshot)=m.video_e2e {
         video.push(field(uu_i18n::text("漂移假设"),format!("{} ppm",snapshot.relative_drift_ppm),uu_i18n::text("两端时钟换算后的相对漂移工程上限，用于扩大时间区间；不是平台保证的精度。样本过期后停止估测。")));
-        video.push(field(uu_i18n::text("源/显/丢"),format!("{}/{}/{}",snapshot.source_frames,snapshot.displayed_frames,snapshot.observations_dropped),uu_i18n::text("有界遥测中的源帧、系统显示回执和丢弃观测累计数；不是视频成功率、显示帧率或媒体丢帧数。")));
+        video.push(field(uu_i18n::text("源/显/观测丢弃"),format!("{}/{}/{}",snapshot.source_frames,snapshot.displayed_frames,snapshot.observations_dropped),uu_i18n::text("源帧、系统显示回执及真实丢弃的观测累计数；丢弃包含钩子或队列丢失及非法元数据，不含历史容量淘汰，也不是媒体丢帧数。")));
+        video.push(field(uu_i18n::text("历史淘汰"),snapshot.history_evicted,uu_i18n::text("PTS关联、接收记录、源首显证明及延迟样本达到容量上限后移除的历史条目累计数。同一帧可能占多个表；这是保留历史的维护，不表示丢观测或媒体丢帧。")));
     }
     let mut latency=vec![field("",m.stage_sum_label(),uu_i18n::text("已知视频阶段窗口均值之和，并非同一帧的完整测量。包含采集、编码、解码、UI提交、RTT/2及已测队列；不含输入设备与去程、应用响应、等待下次采集、未测装帧等待、GPU完成、呈现队列、合成、扫描及像素响应。RTT/2仅是对称假设，不能当作输入到显示延迟。"))];
     for (i,(label,help)) in [(uu_i18n::text("采"),uu_i18n::text("主机获取本帧桌面图像的时间。")),(uu_i18n::text("编"),uu_i18n::text("主机编码调用耗时，可包含硬件队列等待。")),(uu_i18n::text("解"),uu_i18n::text("客户端解码调用耗时。")),(uu_i18n::text("渲"),uu_i18n::text("客户端UI准备与渲染提交的CPU墙钟时间，可能包含驱动等待；不是GPU计时或扫描延迟。"))].into_iter().enumerate() {let mut v=field(label,format!("{} ms",number(m.process[i])),help);v.group=1;latency.push(v);}
@@ -760,13 +764,13 @@ mod tests {
         assert_eq!(Metrics::default().stage_sum_label(), "阶段小计 —");
     }
     fn e2e_snapshot(measurement:Option<uu_core::video_e2e::Measurement>,unknown:Option<uu_core::video_e2e::UnknownReason>)->uu_core::video_e2e::Snapshot {
-        uu_core::video_e2e::Snapshot {generation:1,relative_drift_ppm:1000,measurement,unknown,source_frames:120,displayed_frames:24,observations_dropped:0}
+        uu_core::video_e2e::Snapshot {generation:1,relative_drift_ppm:1000,measurement,unknown,source_frames:120,displayed_frames:24,observations_dropped:0,history_evicted:0}
     }
     #[test]
     fn primary_estimate_keeps_uncertainty_method_and_input_response_separate_in_both_languages() {
         use uu_core::video_e2e::{DisplayMethod,Measurement};
         let m=Metrics {
-            video_e2e:Some(e2e_snapshot(Some(Measurement {samples:24,mean_us:21_163,p50_us:20_000,p95_us:26_000,uncertainty_us:999,method:DisplayMethod::PlatformDisplayed}),None)),
+            video_e2e:Some(e2e_snapshot(Some(Measurement {samples:24,mean_us:21_163,p50_us:20_000,p95_us:26_000,uncertainty_us:999,max_sample_uncertainty_us:1500,method:DisplayMethod::PlatformDisplayed}),None)),
             input_timing:[Some(0.1),Some(2.2),Some(0.2),Some(0.1)],
             ..Default::default()
         };
@@ -789,14 +793,14 @@ mod tests {
     fn dxgi_method_exposes_empirical_quality_and_multiple_monitor_limitation() {
         use uu_core::video_e2e::{DisplayMethod,Measurement};
         let m=Metrics {video_e2e:Some(e2e_snapshot(Some(Measurement {samples:2,
-            mean_us:21_000,p50_us:20_000,p95_us:22_000,uncertainty_us:10_000,
+            mean_us:21_000,p50_us:20_000,p95_us:22_000,uncertainty_us:10_000,max_sample_uncertainty_us:15_000,
             method:DisplayMethod::DxgiReceiptInterval}),None)),..Default::default()};
         uu_i18n::with_language(uu_i18n::Language::Chinese,||{
             assert!(m.total_label().ends_with("DXGI回执估测"));
             let rows=detail_rows(&m);
             let values=&rows.iter().find(|row|row.label=="视频端到端").unwrap().values;
             assert!(values.iter().any(|v|v.help.contains("多显示器")&&v.help.contains("经验估测")));
-            assert!(values.iter().any(|v|v.help.contains("API统计可信的假设")&&v.help.contains("硬误差界")));
+            assert!(values.iter().any(|v|v.help.contains("不是平台保证的硬界")));
         });
         uu_i18n::with_language(uu_i18n::Language::English,||{
             assert!(m.total_label().ends_with("DXGI receipt estimate"));
@@ -804,6 +808,28 @@ mod tests {
             let values=&rows.iter().find(|row|row.label=="Video E2E").unwrap().values;
             assert!(values.iter().any(|v|v.help.contains("empirical")&&v.help.contains("multiple monitors")));
         });
+    }
+    #[test]
+    fn mean_bound_single_frame_bound_and_history_evictions_have_separate_fields() {
+        use uu_core::video_e2e::{DisplayMethod,Measurement};
+        let mut snapshot=e2e_snapshot(Some(Measurement {samples:2,
+            mean_us:15_000,p50_us:10_000,p95_us:20_000,uncertainty_us:5_000,
+            max_sample_uncertainty_us:10_000,method:DisplayMethod::DxgiReceiptInterval}),None);
+        snapshot.history_evicted=42;
+        let m=Metrics {video_e2e:Some(snapshot),..Default::default()};
+        for (language,row,history,max_frame,discard) in [
+            (uu_i18n::Language::Chinese,"视频端到端","历史淘汰","单帧最大半宽","源/显/观测丢弃"),
+            (uu_i18n::Language::English,"Video E2E","History evictions","Max frame half-width","Src/disp/obs drops")
+        ] {
+            uu_i18n::with_language(language,||{
+                assert!(m.total_label().contains("≈15.000 ±5.000 ms"));
+                let rows=detail_rows(&m);
+                let fields=&rows.iter().find(|r|r.label==row).unwrap().values;
+                assert!(fields.iter().any(|f|f.label==history&&f.value=="42"));
+                assert!(fields.iter().any(|f|f.label==max_frame&&f.value=="±10.000 ms"));
+                assert!(fields.iter().any(|f|f.label==discard&&f.value=="120/24/0"));
+            });
+        }
     }
     #[test]
     fn unknown_causes_stay_explicit_and_a_measured_zero_is_available() {
@@ -820,7 +846,7 @@ mod tests {
                 assert_eq!(m.total_label(),format!("Video E2E — · {label}"));
                 assert_eq!(m.video_mean_ms(),None);
             }
-            let zero=Measurement {samples:1,mean_us:0,p50_us:0,p95_us:0,uncertainty_us:0,method:DisplayMethod::RefreshInterval};
+            let zero=Measurement {samples:1,mean_us:0,p50_us:0,p95_us:0,uncertainty_us:0,max_sample_uncertainty_us:0,method:DisplayMethod::RefreshInterval};
             let m=Metrics {video_e2e:Some(e2e_snapshot(Some(zero),None)),..Default::default()};
             assert_eq!(m.video_mean_ms(),Some(0.));
             assert_eq!(m.total_label(),"Video E2E ≈0.000 ±0.000 ms · Refresh interval");

@@ -109,11 +109,61 @@ pub struct Measurement {
     pub mean_us: u64,
     pub p50_us: u64,
     pub p95_us: u64,
-    /// Largest half-width of any contributing same-frame latency interval.
-    /// DxgiReceiptInterval assumes reliable DXGI statistics; its half-width is
-    /// not a platform guarantee for multiple-monitor configurations.
+    /// Outward-rounded bound on the mean of this same batch of intervals.
+    /// This is deterministic interval arithmetic, not a confidence interval
+    /// or a reduction based on independent samples. DXGI quality assumptions
+    /// still apply; this is not a multiple-monitor platform guarantee.
     pub uncertainty_us: u64,
+    /// Largest half-width of a contributing single-frame interval, retained
+    /// separately from the mean bound. P50/P95 are midpoint quantiles.
+    pub max_sample_uncertainty_us: u64,
     pub method: DisplayMethod,
+}
+impl Measurement {
+    fn from_intervals(
+        intervals: impl IntoIterator<Item = TimeInterval>,
+        method: DisplayMethod,
+    ) -> Option<Self> {
+        let (mut sum_lower, mut sum_upper) = (0u128, 0u128);
+        let mut midpoints = Vec::new();
+        let mut max_sample_uncertainty_us = 0;
+        for interval in intervals {
+            if interval.earliest_ns > interval.latest_ns || midpoints.len() == LIMIT {
+                return None;
+            }
+            sum_lower = sum_lower.checked_add(interval.earliest_ns)?;
+            sum_upper = sum_upper.checked_add(interval.latest_ns)?;
+            let center_us =
+                (interval.earliest_ns + (interval.latest_ns - interval.earliest_ns) / 2) / 1000;
+            midpoints.push(u64::try_from(center_us).ok()?);
+            max_sample_uncertainty_us = max_sample_uncertainty_us
+                .max(u64::try_from((interval.latest_ns - center_us * 1000).div_ceil(1000)).ok()?);
+        }
+        if midpoints.is_empty() {
+            return None;
+        }
+        let n = midpoints.len();
+        let denominator = (n as u128) * 1000;
+        // The same batch's actual mean belongs to [sum_lower/n,sum_upper/n].
+        // This requires no independent samples or cancellation of clock error.
+        // Keep the rational endpoints until the final outward microsecond bound.
+        let center_us = (sum_lower + (sum_upper - sum_lower) / 2) / denominator;
+        let center_numerator = center_us.checked_mul(denominator)?;
+        let uncertainty_us = sum_lower
+            .abs_diff(center_numerator)
+            .max(sum_upper.abs_diff(center_numerator))
+            .div_ceil(denominator);
+        midpoints.sort_unstable();
+        Some(Self {
+            samples: n as u32,
+            mean_us: u64::try_from(center_us).ok()?,
+            p50_us: midpoints[(n * 50).div_ceil(100) - 1],
+            p95_us: midpoints[(n * 95).div_ceil(100) - 1],
+            uncertainty_us: u64::try_from(uncertainty_us).ok()?,
+            max_sample_uncertainty_us,
+            method,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -127,6 +177,9 @@ pub struct Snapshot {
     pub source_frames: u64,
     pub displayed_frames: u64,
     pub observations_dropped: u64,
+    /// Capacity removals from PTS, receive, source-proof and sample histories.
+    /// One frame may occupy several histories; this is not a media-frame count.
+    pub history_evicted: u64,
 }
 
 pub(crate) struct LocalClock {
@@ -356,6 +409,7 @@ struct State {
     source_frames: u64,
     displayed_frames: u64,
     dropped: u64,
+    history_evicted: u64,
 }
 impl Default for State {
     fn default() -> Self {
@@ -378,6 +432,7 @@ impl Default for State {
             source_frames: 0,
             displayed_frames: 0,
             dropped: 0,
+            history_evicted: 0,
         }
     }
 }
@@ -394,6 +449,7 @@ pub struct Client {
     qualification_cutoff: AtomicU64,
     generation: AtomicU64,
     dropped: AtomicU64,
+    history_evicted: AtomicU64,
     local: LocalClock,
     associations: Mutex<DecodeAssociations>,
     metadata: MetadataQueue,
@@ -557,7 +613,7 @@ impl Client {
                             .and_then(|record| record.source);
                         if s.records.len() == LIMIT {
                             s.records.pop_front();
-                            s.dropped += 1;
+                            s.history_evicted += 1;
                         }
                         s.records.push_back(Record {
                             token,
@@ -778,7 +834,7 @@ impl Client {
             if !found {
                 if s.records.len() == LIMIT {
                     s.records.pop_front();
-                    s.dropped += 1;
+                    s.history_evicted += 1;
                 }
                 let observation_epoch = s.observation_epoch;
                 s.records.push_back(Record {
@@ -880,6 +936,7 @@ impl Client {
                     .is_some_and(|(_, current)| *current == old_sequence)
                 {
                     associations.pts.remove(&key);
+                    self.history_evicted.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -965,7 +1022,7 @@ impl Client {
                     if let Some(old) = s.source_proofs.pop_front() {
                         s.samples.retain(|sample| sample.source_id != old.source_id);
                     }
-                    s.dropped += 1;
+                    s.history_evicted += 1;
                 }
                 s.source_proofs.push_back(SourceProof {
                     source_id,
@@ -1070,7 +1127,7 @@ impl Client {
             } else {
                 if s.samples.len() == LIMIT {
                     s.samples.pop_front();
-                    s.dropped += 1;
+                    s.history_evicted += 1;
                 }
                 s.samples.push_back(Sample {
                     source_id,
@@ -1114,32 +1171,8 @@ impl Client {
             && Some(self.active_surface.load(Ordering::Acquire)) == s.surface_epoch;
         let measurement = method
             .filter(|_| observer_active && !samples.is_empty())
-            .map(|method| {
-                let mut values: Vec<_> = samples
-                    .iter()
-                    .map(|sample| {
-                        ((sample.interval.earliest_ns + sample.interval.latest_ns) / 2 / 1000)
-                            as u64
-                    })
-                    .collect();
-                values.sort_unstable();
-                Measurement {
-                    samples: values.len() as u32,
-                    mean_us: values.iter().sum::<u64>() / values.len() as u64,
-                    p50_us: values[(values.len() * 50).div_ceil(100) - 1],
-                    p95_us: values[(values.len() * 95).div_ceil(100) - 1],
-                    uncertainty_us: samples
-                        .iter()
-                        .map(|sample| {
-                            let center_us =
-                                (sample.interval.earliest_ns + sample.interval.latest_ns) / 2000;
-                            (sample.interval.latest_ns - center_us * 1000).div_ceil(1000) as u64
-                        })
-                        .max()
-                        .unwrap_or(0)
-                        .saturating_add(1),
-                    method,
-                }
+            .and_then(|method| {
+                Measurement::from_intervals(samples.iter().map(|sample| sample.interval), method)
             });
         let unknown = if measurement.is_some() {
             None
@@ -1167,6 +1200,9 @@ impl Client {
             observations_dropped: s
                 .dropped
                 .saturating_add(self.dropped.load(Ordering::Relaxed)),
+            history_evicted: s
+                .history_evicted
+                .saturating_add(self.history_evicted.load(Ordering::Relaxed)),
         }
     }
 }
@@ -1230,6 +1266,96 @@ mod tests {
             latest: at,
             method: DisplayMethod::PlatformDisplayed,
         }
+    }
+    fn measured(intervals: &[(u128, u128)]) -> Measurement {
+        Measurement::from_intervals(
+            intervals
+                .iter()
+                .map(|&(earliest_ns, latest_ns)| TimeInterval {
+                    earliest_ns,
+                    latest_ns,
+                }),
+            DisplayMethod::DxgiReceiptInterval,
+        )
+        .unwrap()
+    }
+    #[test]
+    fn mean_bound_averages_the_same_endpoints_instead_of_the_widest_sample() {
+        let m = measured(&[(10_000_000, 10_000_000), (10_000_000, 30_000_000)]);
+        assert_eq!((m.mean_us, m.uncertainty_us), (15_000, 5_000));
+        assert_eq!(m.max_sample_uncertainty_us, 10_000);
+        assert_eq!(
+            (m.p50_us, m.p95_us),
+            (10_000, 20_000),
+            "quantiles still describe interval midpoints"
+        );
+    }
+    #[test]
+    fn shared_clock_error_does_not_shrink_with_sample_count() {
+        let one = measured(&[(10_000_000, 20_000_000)]);
+        let correlated = measured(&[(10_000_000, 20_000_000); 64]);
+        assert_eq!(one.mean_us, correlated.mean_us);
+        assert_eq!(one.uncertainty_us, correlated.uncertainty_us);
+        assert_eq!(correlated.uncertainty_us, 5_000);
+    }
+    #[test]
+    fn mean_microsecond_rounding_contains_both_rational_endpoints() {
+        // Every individual point is exact; the mean is half a microsecond.
+        let m = measured(&[(0, 0), (1000, 1000)]);
+        assert_eq!(
+            (m.mean_us, m.uncertainty_us, m.max_sample_uncertainty_us),
+            (0, 1, 0)
+        );
+        for a in 0..6u128 {
+            for b in a..7 {
+                for c in 0..6u128 {
+                    for d in c..7 {
+                        let intervals = [(a * 401, b * 401), (c * 599, d * 599)];
+                        let m = measured(&intervals);
+                        let lo = intervals.iter().map(|i| i.0).sum::<u128>();
+                        let hi = intervals.iter().map(|i| i.1).sum::<u128>();
+                        assert!((m.mean_us.saturating_sub(m.uncertainty_us) as u128) * 2000 <= lo);
+                        assert!(((m.mean_us + m.uncertainty_us) as u128) * 2000 >= hi);
+                    }
+                }
+            }
+        }
+        let at_limit = measured(&[(9_999_999_999, 10_000_000_000); LIMIT]);
+        assert_eq!((at_limit.mean_us, at_limit.uncertainty_us), (9_999_999, 1));
+        assert!(Measurement::from_intervals(
+            [TimeInterval {
+                earliest_ns: 2,
+                latest_ns: 1
+            }],
+            DisplayMethod::PlatformDisplayed
+        )
+        .is_none());
+        assert!(Measurement::from_intervals(
+            [TimeInterval {
+                earliest_ns: u128::MAX,
+                latest_ns: u128::MAX
+            }],
+            DisplayMethod::PlatformDisplayed
+        )
+        .is_none());
+    }
+    #[test]
+    fn source_history_capacity_eviction_is_not_an_invalid_observation() {
+        let (client, source) = setup_client();
+        for n in 1..=LIMIT + 1 {
+            assert!(client.source_frames(7, 9, &[descriptor(source, n as u32, n as u64, false)]));
+        }
+        let snapshot = client.snapshot();
+        assert_eq!(snapshot.observations_dropped, 0);
+        assert_eq!(snapshot.history_evicted, 1);
+        let invalid = WireClockStamp {
+            epoch: 10,
+            ..source
+        };
+        assert!(client.source_frames(7, 9, &[descriptor(invalid, 9000, 9000, false)]));
+        let snapshot = client.snapshot();
+        assert_eq!(snapshot.observations_dropped, 1);
+        assert_eq!(snapshot.history_evicted, 1);
     }
     #[test]
     fn no_endpoint_remains_unknown_instead_of_becoming_zero_or_stage_sum() {
@@ -1520,6 +1646,12 @@ mod tests {
         assert_eq!(client.observation_epoch.load(Ordering::Acquire), epoch);
         let snapshot = client.snapshot();
         assert_eq!(snapshot.displayed_frames, 1024);
+        assert_eq!(snapshot.observations_dropped, 0);
+        assert_eq!(
+            snapshot.history_evicted,
+            ((1024 - LIMIT) * 3) as u64,
+            "PTS, receive and source-proof histories evict independently"
+        );
         assert!(snapshot.measurement.is_some());
         assert_eq!(
             client.frame_for_pts(7, 0, 1024).unwrap().rtp_timestamp,

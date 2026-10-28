@@ -61,11 +61,11 @@ impl eframe::App for Preview {
             video_e2e:Some(uu_core::video_e2e::Snapshot {
                 generation:1,relative_drift_ppm:1000,
                 measurement:self.measured_fixture.then_some(uu_core::video_e2e::Measurement {
-                    samples:24,mean_us:18_500,p50_us:18_100,p95_us:23_000,uncertainty_us:2000,
+                    samples:24,mean_us:18_500,p50_us:18_100,p95_us:23_000,uncertainty_us:2000,max_sample_uncertainty_us:3000,
                     method:uu_core::video_e2e::DisplayMethod::RefreshInterval,
                 }),
                 unknown:(!self.measured_fixture).then_some(uu_core::video_e2e::UnknownReason::DisplayTimestampUnavailable),
-                source_frames:120,displayed_frames:if self.measured_fixture{24}else{0},observations_dropped:0,
+                source_frames:120,displayed_frames:if self.measured_fixture{24}else{0},observations_dropped:0,history_evicted:0,
             }),
             history: (0..=360).map(|n| {let w=(n as f32/15.).sin();hud_panel::HistorySample {seconds:n as f64/2.,values:[self.measured_fixture.then_some(18.5+w),Some(0.8),Some(1.1+w*0.2),Some(0.32),Some(0.32),Some(1.05+w*0.1),Some(0.34)],video_uncertainty_ms:self.measured_fixture.then_some(2.)}}).collect(),
             toggle_hint: "Ctrl+Alt+S · Toggle HUD".into(),

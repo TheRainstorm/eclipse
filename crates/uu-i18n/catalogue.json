@@ -1663,5 +1663,13 @@
   "抽样输入从客户端发出、主机系统接受注入，到确认返回客户端的往返时间；不表示应用已处理，也不表示对应画面已显示。": "Round trip from sending a sampled input through OS injection acceptance on the host to acknowledgment at the client. This does not show that the application handled it or that its response was displayed.",
   "输入在客户端的排队、主机队列与系统注入耗时，单位毫秒；这些阶段不构成视觉响应测量。": "Client input queue, host queue and OS injection times in milliseconds. These stages do not measure a visible response.",
   "端到端曲线为同帧测量的估计均值，竖线为误差范围；其它曲线是独立阶段窗口均值。未知不补零，测量代次改变后重新记录。点击切换曲线。": "The E2E curve shows estimated same-frame means; vertical lines show uncertainty. Other curves are independent stage-window means. Unknown values stay empty, and a new measurement generation starts fresh. Click to toggle a curve.",
-  "生成数据预览 · 非实测": "Generated preview data · Not measured"
+  "生成数据预览 · 非实测": "Generated preview data · Not measured",
+  "最近3秒同一批延迟区间的上下界分别取均值，±为该均值的向外舍入界，包含校时和显示区间误差；不要求样本独立，也不把共同校时误差按样本数消除。DXGI方法仍受统计可信假设限制，中点不是精确时间。": "The mean bounds come from averaging the lower and upper endpoints of the same 3-second sample set. ± bounds that mean with outward rounding, including clock and display uncertainty. No independent-sample assumption or cancellation of shared clock error is used. DXGI estimates remain conditional on reliable statistics; the midpoint is not exact time.",
+  "同一批单帧延迟区间中点的P50/P95估测；不是未知实际端点的精确分位数。主均值的±不适用于这两个分位数，最大单帧区间误差另列。DXGI方法仍受统计可信假设限制。": "P50/P95 of the same samples’ interval midpoints, not exact quantiles of unknown display times. The mean’s ± does not apply to these quantiles; the maximum single-frame uncertainty is listed separately. DXGI estimates remain conditional on reliable statistics.",
+  "单帧最大半宽": "Max frame half-width",
+  "当前样本中最大的单帧区间半宽，包含时钟、显示和微秒舍入；与主项的整批均值误差分别计算。DXGI方法的范围仅在统计可信假设下成立。": "Largest single-frame interval half-width in this sample set, including clock, display and microsecond rounding. It is calculated separately from the mean uncertainty. DXGI bounds remain conditional on reliable statistics.",
+  "源/显/观测丢弃": "Src/disp/obs drops",
+  "源帧、系统显示回执及真实丢弃的观测累计数；丢弃包含钩子或队列丢失及非法元数据，不含历史容量淘汰，也不是媒体丢帧数。": "Totals of source frames, system display receipts and actual observation discards. Discards include lost hooks or queue entries and invalid metadata, excluding history capacity evictions. They are not media-frame losses.",
+  "历史淘汰": "History evictions",
+  "PTS关联、接收记录、源首显证明及延迟样本达到容量上限后移除的历史条目累计数。同一帧可能占多个表；这是保留历史的维护，不表示丢观测或媒体丢帧。": "History entries removed at the capacity limit of PTS associations, receive records, source-first-display proofs and latency samples. A frame can occupy several histories. These are retention evictions, not lost observations or media frames."
 }

@@ -12,9 +12,11 @@ Windows 原生 D3D 路径在双方协商端到端扩展后默认接入 DXGI Coun
 
 解码输入与实际输出的 PTS 关联由独立的有界短锁维护，源遥测、校时和 HUD 的聚合锁不会使它退役。解码及显示钩子只投递固定大小的元数据，512 项队列不等待容量；关联与统计在源报告、校时回复或快照时批量完成，不在每次 Present 回执中重扫全部样本。显示钩子返回成功只表示元数据已入队，最终仍需同帧来源、有效校时和首显证明。真正的队列满或解码关联丢失继续退役观测代次并显示未知。观察者切换使用解码时的单调序号划定资格，晚消费的旧事件及重复解码的旧 AU 都不能重新获得首显资格；批处理也不改变原显示事件时间或刷新样本年龄。
 
+`observations_dropped` 只计实际钩子或队列丢失及非法元数据，不计正常历史容量淘汰。`history_evicted` 独立累计 PTS 关联、接收记录、源首显证明和延迟样本在容量上限时移除的历史条目；同一帧可占多个历史表，因此它既不是丢帧数，也不是被淘汰的独立画面数。历史保留有限不代表当前观测丢失，判断测量覆盖还需结合冻结身份、观测代次和来源/回执完整性。
+
 两台机器的 QPC 或单调时钟属于独立域，不能直接相减。四时间戳探针分别记录客户端发送、主机接收与发送、客户端接收，以路径延迟非负约束时钟偏移上下界，不假设上下行对称。不同频率使用向外舍入换算成纳秒，相对漂移继续扩大区间；epoch 或频率变化、逆序、不可能的负 RTT、无效源时间及过期样本均不用于估测。当前最大源帧及校时样本年龄为五秒，相对漂移使用 1000 ppm 的工程假设并在详情显示，不能当作平台保证。探针和逐帧遥测使用单独协商的有界通道，拥塞时允许丢观测，不要求视频等待测量消息。
 
-端点方法区分系统显示回执、有同帧证据的刷新时间区间和 DXGI回执估测。刷新区间不能简单填入半个刷新周期。DXGI 方法以成功 GetLastPresentCount 的 ID 唯一关联已报告的 FrameStatistics.PresentCount，区间取该图像最早已知提交前至首次回执查询后；不使用 SyncQPCTime 推显示时刻，也不因刷新计数为零排除非零 Count。HUD 的 `≈均值 ±误差` 及 P50/P95 是最近三秒同帧区间中点的估测，包含校时界、显示区间半宽和舍入；DXGI 方法的范围仅在统计可信假设下成立，中点不是精确显示时间。窗口年龄绑定原端点，晚到遥测或校时回复不会刷新旧显示的年龄。系统显示终点仍不覆盖物理像素响应，也不等于输入到视觉响应。参考：[DXGI ID 关联](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-flip-model)、[统计可靠性限制](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-getframestatistics)。
+端点方法区分系统显示回执、有同帧证据的刷新时间区间和 DXGI回执估测。刷新区间不能简单填入半个刷新周期。DXGI 方法以成功 GetLastPresentCount 的 ID 唯一关联已报告的 FrameStatistics.PresentCount，区间取该图像最早已知提交前至首次回执查询后；不使用 SyncQPCTime 推显示时刻，也不因刷新计数为零排除非零 Count。HUD 的主均值将同一批最近三秒同帧区间 `[Lᵢ,Uᵢ]` 分别求上下界均值，实际均值位于 `[ΣLᵢ/n,ΣUᵢ/n]`；`mean_us` 取该区间中点并向微秒取整，`uncertainty_us` 向外覆盖上下端点及最终舍入。这不要求样本独立，不使用 `1/√n`，也不消除共同的校时偏移。`max_sample_uncertainty_us` 另列当前最宽的单帧区间误差；P50/P95 仍为单帧区间中点的分位数，主均值的误差不能套用于它们。DXGI 方法的范围仅在统计可信假设下成立，中点不是精确显示时间。窗口年龄绑定原端点，晚到遥测或校时回复不会刷新旧显示的年龄。系统显示终点仍不覆盖物理像素响应，也不等于输入到视觉响应。参考：[DXGI ID 关联](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-flip-model)、[统计可靠性限制](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-getframestatistics)。
 
 ```mermaid
 flowchart LR
