@@ -96,7 +96,10 @@ float4 encode(float4 position:SV_Position):SV_Target {
 // A horizontal [1/4, 1/2, 1/4] tent limits subpixel text aliasing before decimation.
 float3 sdr_signal_at(float2 uv) {
     uv=clamp(uv,0.5/dimensions.xy,1-0.5/dimensions.xy);
-    return options.z>0.5?image.SampleLevel(bilinear,uv,0).rgb:signal_at(uv);
+    // The source domain is uniform per draw. Keep FXC from eagerly evaluating
+    // and then discarding the linear-light tone-map path for SDR RGB input.
+    [branch] if(options.z>0.5) return image.SampleLevel(bilinear,uv,0).rgb;
+    return signal_at(uv);
 }
 float4 encode_sdr(float4 position:SV_Position):SV_Target {
     float3 rgb;
