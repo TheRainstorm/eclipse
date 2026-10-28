@@ -35,6 +35,7 @@ pub struct Metrics {
     pub history: Arc<[HistorySample]>,
     pub continuity: Option<uu_core::frame_continuity::Snapshot>,
     pub host_video:Option<uu_core::frame_trace::VideoLatency>,
+    pub video_e2e:Option<uu_core::video_e2e::Snapshot>,
 }
 #[derive(Clone, Default)]
 pub struct Counters {
@@ -104,15 +105,55 @@ impl Metrics {
         }
         result
     }
-    pub fn total_label(&self) -> String {
+    /// Diagnostic sum of independent stage windows; never the primary latency.
+    pub fn stage_sum_label(&self) -> String {
         let e = self.estimate();
         if e.samples == 0 {
-            "Video sum —".into()
+            uu_i18n::text("阶段小计 —").into()
         } else if e.missing.is_empty() {
-            format!("Video sum ≈{} ms", number(Some(e.known)))
+            uu_i18n::format!("阶段小计 ≈{} ms", number(Some(e.known)))
         } else {
-            format!("Video known ≈{} ms", number(Some(e.known)))
+            uu_i18n::format!("已知阶段小计 ≈{} ms", number(Some(e.known)))
         }
+    }
+    fn video_measurement(&self) -> Option<uu_core::video_e2e::Measurement> {
+        self.video_e2e.and_then(|snapshot|snapshot.measurement).filter(|value|value.samples>0)
+    }
+    pub fn video_mean_ms(&self) -> Option<f32> {
+        self.video_measurement().map(|value|value.mean_us as f32/1000.)
+    }
+    pub fn video_uncertainty_ms(&self) -> Option<f32> {
+        self.video_measurement().map(|value|value.uncertainty_us as f32/1000.)
+    }
+    fn video_value(&self) -> String {
+        self.video_measurement().map_or_else(||"—".into(),|value|
+            format!("≈{:.3} ±{:.3} ms",value.mean_us as f64/1000.,value.uncertainty_us as f64/1000.))
+    }
+    fn video_status(&self) -> &'static str {
+        use uu_core::video_e2e::UnknownReason;
+        uu_i18n::text(match self.video_e2e.and_then(|snapshot|snapshot.unknown) {
+            Some(UnknownReason::UnsupportedHost)=>"不支持",
+            Some(UnknownReason::SourceTimestampUnavailable)=>"源时间未知",
+            Some(UnknownReason::ClockUnsynchronized)=>"正在校时",
+            Some(UnknownReason::DisplayTimestampUnavailable)=>"显示时间未知",
+            Some(UnknownReason::NoCurrentSample)=>"等待当前样本",
+            None=>"未知",
+        })
+    }
+    fn video_method(&self) -> &'static str {
+        use uu_core::video_e2e::DisplayMethod;
+        uu_i18n::text(match self.video_measurement().map(|value|value.method) {
+            Some(DisplayMethod::PlatformDisplayed)=>"系统显示回执",
+            Some(DisplayMethod::RefreshInterval)=>"刷新区间",
+            None=>"未知",
+        })
+    }
+    pub fn total_label(&self) -> String {
+        let status=if self.video_measurement().is_some(){self.video_method()}else{self.video_status()};
+        uu_i18n::format!("视频端到端 {} · {}",self.video_value(),status)
+    }
+    fn input_response_label(&self) -> String {
+        uu_i18n::format!("输入响应 — · 注入确认 {} ms",number(self.input_timing[1]))
     }
     pub fn fps_label(&self) -> String {
         let values = self
@@ -182,8 +223,8 @@ impl Layout {
                 (m.fps_label(), 14., color),
                 (format!("Bandwidth {rate}"), 14., color),
                 (m.network_label(), 14., color),
-                (m.stages_label(), 14., color),
                 (m.total_label(), 14., color),
+                (m.input_response_label(), 14., color),
                 (m.continuity_label(), 14., color),
             ];
         } else {
@@ -196,18 +237,9 @@ impl Layout {
             rows[0].push((decoder_label(&m.backend).into(), 12.5, muted));
             rows.push(vec![
                 (m.network_label(), 13., network),
-                (
-                    format!(
-                        "{} = Proc {} + Net ≈{} + Queue {} ms",
-                        m.total_label(),
-                        number(sum(&m.process)),
-                        number(m.rtt.map(|v| v[0] / 2.)),
-                        number(sum(&m.queues))
-                    ),
-                    13.,
-                    primary,
-                ),
+                (m.total_label(), 13., primary),
             ]);
+            rows.push(vec![(m.input_response_label(),12.5,muted)]);
             rows.push(vec![(m.continuity_label(),12.5,muted)]);
             rows.push(vec![(
                 format!(
@@ -336,7 +368,7 @@ impl Layout {
         ui.interact(bounds, ui.id().with("hud-details"), egui::Sense::hover())
     }
 }
-// Ten categories, each rendered as a compact, wrapping data row.
+// Each category is a compact, wrapping data row with an aligned title.
 struct DetailValue { label: &'static str, value: String, help: &'static str, group: u8 }
 struct DetailRow { label: &'static str, color: Color32, values: Vec<DetailValue> }
 fn field(label:&'static str,value:impl ToString,help:&'static str)->DetailValue {DetailValue{label,value:value.to_string(),help,group:0}}
@@ -347,8 +379,20 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     let plain=Color32::from_rgb(216,224,232);let cyan=Color32::from_rgb(0,235,214);
     let green=Color32::from_rgb(143,225,184);let blue=Color32::from_rgb(139,194,255);let orange=Color32::from_rgb(255,190,108);
     let pct=|v:Option<f32>|valid(v).map_or_else(||"—".into(),|v|format!("{v:.2}%"));let c=&m.counters;
-    let e=m.estimate();let total=if e.samples==0{"—".into()}else{format!("≈{} ms",number(Some(e.known)))};
-    let mut latency=vec![field(if e.missing.is_empty(){uu_i18n::text("视频阶段和")}else{uu_i18n::text("已知小计")},total,uu_i18n::text("已知视频阶段窗口均值之和，并非同一帧的完整测量。包含采集、编码、解码、UI提交、RTT/2及已测队列；不含输入设备与去程、应用响应、等待下次采集、未测装帧等待、GPU完成、呈现队列、合成、扫描及像素响应。RTT/2仅是对称假设，不能当作输入到显示延迟。"))];
+    let measured=m.video_measurement();
+    let video_help=uu_i18n::text("按同一源画面身份关联主机源呈现和客户端系统显示回执。四时间戳只约束时钟偏移区间，不假定上下行对称；数值是带误差的估测，不是物理像素响应或鼠标到屏幕延迟。缺少任一端点或校时数据时保持未知，绝不回退阶段和。");
+    let percentile_help=uu_i18n::text("最近3秒同帧延迟区间中点的均值及P50/P95估测，±为该窗口内最大保守误差，包含时钟、显示区间和微秒舍入；中点不是精确时间。");
+    let mut video=vec![
+        field(uu_i18n::text("均值估测"),m.video_value(),percentile_help),
+        field("P50/P95",measured.map_or_else(||"—".into(),|v|format!("≈{:.3}/{:.3} ms",v.p50_us as f64/1000.,v.p95_us as f64/1000.)),percentile_help),
+        field(uu_i18n::text("方法"),if measured.is_some(){m.video_method()}else{m.video_status()},video_help),
+        field(uu_i18n::text("样本"),measured.map_or_else(||"—".into(),|v|v.samples.to_string()),video_help),
+    ];
+    if let Some(snapshot)=m.video_e2e {
+        video.push(field(uu_i18n::text("漂移假设"),format!("{} ppm",snapshot.relative_drift_ppm),uu_i18n::text("两端时钟换算后的相对漂移工程上限，用于扩大时间区间；不是平台保证的精度。样本过期后停止估测。")));
+        video.push(field(uu_i18n::text("源/显/丢"),format!("{}/{}/{}",snapshot.source_frames,snapshot.displayed_frames,snapshot.observations_dropped),uu_i18n::text("有界遥测中的源帧、系统显示回执和丢弃观测累计数；不是视频成功率、显示帧率或媒体丢帧数。")));
+    }
+    let mut latency=vec![field("",m.stage_sum_label(),uu_i18n::text("已知视频阶段窗口均值之和，并非同一帧的完整测量。包含采集、编码、解码、UI提交、RTT/2及已测队列；不含输入设备与去程、应用响应、等待下次采集、未测装帧等待、GPU完成、呈现队列、合成、扫描及像素响应。RTT/2仅是对称假设，不能当作输入到显示延迟。"))];
     for (i,(label,help)) in [(uu_i18n::text("采"),uu_i18n::text("主机获取本帧桌面图像的时间。")),(uu_i18n::text("编"),uu_i18n::text("主机编码调用耗时，可包含硬件队列等待。")),(uu_i18n::text("解"),uu_i18n::text("客户端解码调用耗时。")),(uu_i18n::text("渲"),uu_i18n::text("客户端UI准备与渲染提交的CPU墙钟时间，可能包含驱动等待；不是GPU计时或扫描延迟。"))].into_iter().enumerate() {let mut v=field(label,format!("{} ms",number(m.process[i])),help);v.group=1;latency.push(v);}
     for (label,value,help) in [(uu_i18n::text("网"),m.rtt.map(|v|v[0]/2.),uu_i18n::text("RTT的一半，仅在往返对称时近似单程。RTT还可能包含应用调度、处理与队列等待。")),(uu_i18n::text("排"),sum(&m.queues),uu_i18n::text("主机发送等待、客户端解码队列和画面邮箱等待的合计。未知阶段不按零计算。"))]{let mut v=field(label,format!("{} ms",number(value)),help);v.group=2;latency.push(v);}
     for (label,span,help) in [
@@ -376,12 +420,20 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     }
     vec![
         row(uu_i18n::text("画面"),cyan,vec![field("",format!("{}×{}@{}",m.size[0],m.size[1],m.target_fps),uu_i18n::text("当前视频尺寸与目标帧率；不会改变远端桌面模式。")),field(uu_i18n::text("编码"),if m.codec.is_empty(){"—"}else{&m.codec},uu_i18n::text("实际协商的编码与色彩模式，区别于请求偏好。")),field(uu_i18n::text("解码器"),decoder_label(&m.backend),uu_i18n::text("客户端当前实际使用的解码后端。")),field(uu_i18n::text("码率"),format!("{} Mbps",number(m.bitrate)),uu_i18n::text("近期接收到的视频码率；不是目标码率或总链路带宽。"))]),
-        row(uu_i18n::text("帧率"),cyan,fps),row(uu_i18n::text("延迟"),green,latency),
+        row(uu_i18n::text("帧率"),cyan,fps),
+        row(uu_i18n::text("视频端到端"),green,video),
+        row(uu_i18n::text("阶段小计"),green,latency),
         row(uu_i18n::text("网络"),if m.loss.is_some_and(|v|v>1.){orange}else{blue},network),
         row(uu_i18n::text("排队"),green,vec![field(uu_i18n::text("发"),format!("{} ms",number(m.queues[0])),uu_i18n::text("主机发送视频包时等待传输API完成的时间，可能包含套接字背压和调度。")),field(uu_i18n::text("解"),format!("{} ms",number(m.queues[1])),uu_i18n::text("完整帧进入解码工作队列到开始解码的等待。")),field(uu_i18n::text("邮箱"),format!("{} ms",number(m.queues[2])),uu_i18n::text("解码画面发布到UI领取之间的等待；受UI唤醒、绘制预算和负载影响。")),field(uu_i18n::text("合计"),format!("{} ms",number(sum(&m.queues))),uu_i18n::text("发送、解码、邮箱等待的均值之和；缺样本时显示未知。"))]),
         row(uu_i18n::text("恢复累计"),plain,vec![field(uu_i18n::text("FEC恢复/冗余"),format!("{}/{}",c.fec_recovered,c.fec_packets),uu_i18n::text("FEC恢复的包数与收到的冗余包数，会话累计。")),field(uu_i18n::text("冗余量"),format!("{:.2} MiB",c.fec_bytes as f64/1048576.),uu_i18n::text("会话收到的FEC冗余数据量。")),field(uu_i18n::text("FEC丢弃"),c.fec_drops,uu_i18n::text("无法使用或被丢弃的FEC数据。")),field("RTX",c.rtx,uu_i18n::text("收到的重传包数。")),field("NACK",c.nack,uu_i18n::text("发送的缺包重传请求数。"))]),
         row(uu_i18n::text("异常累计"),if c.errors+c.damaged+c.queue_drops>0{orange}else{plain},vec![field(uu_i18n::text("未恢复包"),c.lost,uu_i18n::text("会话累计超时未恢复包。")),field(uu_i18n::text("损帧"),c.damaged,uu_i18n::text("接收器丢弃的不完整或损坏视频帧。")),field(uu_i18n::text("解码错"),c.errors,uu_i18n::text("解码后端返回的错误次数。")),field(uu_i18n::text("队列丢帧"),c.queue_drops,uu_i18n::text("解码队列为保留新鲜画面而丢弃的帧数。")),field(uu_i18n::text("刷新"),c.keyframes,uu_i18n::text("请求关键帧的次数。")),field(uu_i18n::text("乱/迟"),format!("{}/{}",c.reordered,c.late),uu_i18n::text("修复接收器记录的乱序与迟到次数。"))]),
-        row(uu_i18n::text("输入"),plain,vec![field(uu_i18n::text("状态"),if m.input_ready{uu_i18n::text("已就绪")}else{uu_i18n::text("未就绪")},uu_i18n::text("当前窗口、主机授权和本地输入归属共同决定是否能远程输入。")),field(uu_i18n::text("发/错"),format!("{}/{}",m.input_counts[0],m.input_counts[1]),uu_i18n::text("客户端发送的输入消息数和发送错误数。")),field(uu_i18n::text("排队/确认/主机队列/注入"),m.input_timing.map(|v|number(v)).join("/"),uu_i18n::text("输入在客户端的排队、确认往返、主机队列与系统注入耗时，单位毫秒；确认不代表画面响应。"))]),
+        row(uu_i18n::text("输入响应"),plain,vec![
+            field(uu_i18n::text("视觉响应"),"—",uu_i18n::text("尚无输入事件到对应画面显示的因果关联测量，视觉响应保持未知；注入确认、视频端到端和阶段和均不能代替它。")),
+            field(uu_i18n::text("注入确认"),format!("{} ms",number(m.input_timing[1])),uu_i18n::text("抽样输入从客户端发出、主机系统接受注入，到确认返回客户端的往返时间；不表示应用已处理，也不表示对应画面已显示。")),
+            field(uu_i18n::text("状态"),if m.input_ready{uu_i18n::text("已就绪")}else{uu_i18n::text("未就绪")},uu_i18n::text("当前窗口、主机授权和本地输入归属共同决定是否能远程输入。")),
+            field(uu_i18n::text("发/错"),format!("{}/{}",m.input_counts[0],m.input_counts[1]),uu_i18n::text("客户端发送的输入消息数和发送错误数。")),
+            field(uu_i18n::text("排队/主机队列/注入"),[m.input_timing[0],m.input_timing[2],m.input_timing[3]].map(number).join("/"),uu_i18n::text("输入在客户端的排队、主机队列与系统注入耗时，单位毫秒；这些阶段不构成视觉响应测量。")),
+        ]),
         row(uu_i18n::text("收包"),plain,receive),
         row(uu_i18n::text("恢复原因"),plain,vec![field(uu_i18n::text("接收/排队/解码/格式"),uu_i18n::format!("{}/{}/{}/{} 次",c.recovery[0],c.recovery[1],c.recovery[2],c.recovery[3]),uu_i18n::text("分别由接收损坏、解码队列溢出、解码错误和格式改变触发的恢复次数。"))]),
     ]
@@ -581,7 +633,7 @@ mod tests {
         let m=Metrics {codec:"PYROWAVE SDR".into(),process:[Some(1.);4],rtt:Some([2.,0.2]),loss:Some(0.4),unrecovered_loss:Some(0.),..Default::default()};
         let rows=detail_rows(&m);
         assert!(rows.iter().flat_map(|r|&r.values).all(|v|!v.help.is_empty()));
-        let latency=&rows.iter().find(|r|r.label=="延迟").unwrap().values;
+        let latency=&rows.iter().find(|r|r.label=="阶段小计").unwrap().values;
         assert_eq!(latency.iter().filter(|v|v.group==1).count(),4);
         assert_eq!(latency.iter().filter(|v|v.group==2).count(),2);
         for width in [1280.,640.,320.] {
@@ -619,12 +671,21 @@ mod tests {
                 backend: "d3d11va".into(),
                 ..Default::default()
             };
-            let mut bounds = None;
+            let mut bounds: Option<Rect> = None;
             let mut final_category_visible=false;
-            for _ in 0..3 {
+            for frame in 0..14 {
+                let mut events=Vec::new();
+                if frame>=3 {
+                    if let Some(bounds)=bounds {
+                        events.push(egui::Event::PointerMoved(bounds.min+egui::vec2(40.,40.)));
+                        if frame<7 {events.push(egui::Event::MouseWheel {unit:egui::MouseWheelUnit::Point,delta:egui::vec2(0.,-1200.),modifiers:Default::default()});}
+                    }
+                }
                 let output = ctx.run(
                     egui::RawInput {
                         screen_rect: Some(view),
+                        time:Some(frame as f64/30.),
+                        events,
                         ..Default::default()
                     },
                     |ctx| {
@@ -641,12 +702,12 @@ mod tests {
                             });
                     },
                 );
-                final_category_visible=output.shapes.iter().any(|shape|match &shape.shape {
+                final_category_visible|=output.shapes.iter().any(|shape|match &shape.shape {
                     egui::Shape::Text(text) if text.galley.job.text=="恢复原因"=>shape.clip_rect.contains_rect(Rect::from_min_size(text.pos,text.galley.size())),
                     _=>false
                 });
             }
-            if size.y>=300. {assert!(final_category_visible,"the final category must fit without hidden clipping at {size:?}");}
+            assert!(final_category_visible,"the final category must be reachable by scrolling at {size:?}");
             let bounds = bounds.unwrap();
             assert!(
                 view.contains_rect(bounds),
@@ -671,7 +732,7 @@ mod tests {
         );
     }
     #[test]
-    fn estimated_total_distinguishes_missing_from_measured_zero() {
+    fn stage_sum_never_substitutes_missing_same_frame_measurement() {
         let m = Metrics {
             process: [Some(1.), Some(1.6), Some(0.8), Some(5.4)],
             queues: [Some(0.7), Some(0.3), Some(3.)],
@@ -680,15 +741,68 @@ mod tests {
         };
         assert!((m.estimate().known - 14.8).abs() < 0.001);
         assert!(m.estimate().missing.is_empty());
-        assert_eq!(m.total_label(), "Video sum ≈14.8 ms");
+        assert_eq!(m.stage_sum_label(), "阶段小计 ≈14.8 ms");
+        assert_eq!(m.total_label(), "视频端到端 — · 未知");
+        assert_eq!(m.video_mean_ms(),None);
+        assert_eq!(m.video_uncertainty_ms(),None);
         let partial = Metrics {
             process: [None, Some(0.), None, None],
             ..Default::default()
         };
         assert_eq!(partial.estimate().samples, 1);
         assert!(!partial.estimate().missing.is_empty());
-        assert!(partial.total_label().starts_with("Video known"));
-        assert_eq!(Metrics::default().total_label(), "Video sum —");
+        assert!(partial.stage_sum_label().starts_with("已知阶段小计"));
+        assert_eq!(partial.total_label(), "视频端到端 — · 未知");
+        assert_eq!(Metrics::default().stage_sum_label(), "阶段小计 —");
+    }
+    fn e2e_snapshot(measurement:Option<uu_core::video_e2e::Measurement>,unknown:Option<uu_core::video_e2e::UnknownReason>)->uu_core::video_e2e::Snapshot {
+        uu_core::video_e2e::Snapshot {generation:1,relative_drift_ppm:1000,measurement,unknown,source_frames:120,displayed_frames:24,observations_dropped:0}
+    }
+    #[test]
+    fn primary_estimate_keeps_uncertainty_method_and_input_response_separate_in_both_languages() {
+        use uu_core::video_e2e::{DisplayMethod,Measurement};
+        let m=Metrics {
+            video_e2e:Some(e2e_snapshot(Some(Measurement {samples:24,mean_us:21_163,p50_us:20_000,p95_us:26_000,uncertainty_us:999,method:DisplayMethod::PlatformDisplayed}),None)),
+            input_timing:[Some(0.1),Some(2.2),Some(0.2),Some(0.1)],
+            ..Default::default()
+        };
+        uu_i18n::with_language(uu_i18n::Language::Chinese,||{
+            assert_eq!(m.total_label(),"视频端到端 ≈21.163 ±0.999 ms · 系统显示回执");
+            assert_eq!(m.input_response_label(),"输入响应 — · 注入确认 2.2 ms");
+        });
+        uu_i18n::with_language(uu_i18n::Language::English,||{
+            assert_eq!(m.total_label(),"Video E2E ≈21.163 ±0.999 ms · System display receipt");
+            assert_eq!(m.input_response_label(),"Input response — · Injection ack 2.2 ms");
+            let rows=detail_rows(&m);
+            assert!(rows.iter().any(|row|row.label=="Stage sum"));
+            let input=&rows.iter().find(|row|row.label=="Input response").unwrap().values;
+            assert!(input.iter().any(|value|value.label=="Visible response"&&value.value=="—"));
+        });
+        assert_eq!(m.video_mean_ms(),Some(21.163));
+        assert_eq!(m.video_uncertainty_ms(),Some(0.999));
+    }
+    #[test]
+    fn unknown_causes_stay_explicit_and_a_measured_zero_is_available() {
+        use uu_core::video_e2e::{DisplayMethod,Measurement,UnknownReason};
+        uu_i18n::with_language(uu_i18n::Language::English,||{
+            for (reason,label) in [
+                (UnknownReason::UnsupportedHost,"Unsupported"),
+                (UnknownReason::SourceTimestampUnavailable,"Source time unknown"),
+                (UnknownReason::ClockUnsynchronized,"Synchronizing clocks"),
+                (UnknownReason::DisplayTimestampUnavailable,"Display time unknown"),
+                (UnknownReason::NoCurrentSample,"Waiting for a current sample"),
+            ] {
+                let m=Metrics {video_e2e:Some(e2e_snapshot(None,Some(reason))),process:[Some(1.);4],queues:[Some(1.);3],rtt:Some([2.,0.1]),..Default::default()};
+                assert_eq!(m.total_label(),format!("Video E2E — · {label}"));
+                assert_eq!(m.video_mean_ms(),None);
+            }
+            let zero=Measurement {samples:1,mean_us:0,p50_us:0,p95_us:0,uncertainty_us:0,method:DisplayMethod::RefreshInterval};
+            let m=Metrics {video_e2e:Some(e2e_snapshot(Some(zero),None)),..Default::default()};
+            assert_eq!(m.video_mean_ms(),Some(0.));
+            assert_eq!(m.total_label(),"Video E2E ≈0.000 ±0.000 ms · Refresh interval");
+            let invalid=Metrics {video_e2e:Some(e2e_snapshot(Some(Measurement {samples:0,..zero}),None)),..Default::default()};
+            assert_eq!(invalid.video_mean_ms(),None);
+        });
     }
     #[test]
     fn fps_and_timing_triplets_have_consistent_order() {

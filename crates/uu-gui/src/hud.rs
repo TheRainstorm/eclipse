@@ -12,6 +12,7 @@ pub(super) struct Cache {
     layout:Option<Layout>,
     hover:crate::hud_panel::HoverCard,
     history:crate::hud_panel::History,
+    history_owner:std::sync::Weak<uu_core::media::MediaStats>,
 }
 impl Cache {
     pub(super) fn keyboard_owned(&self)->bool {self.hover.keyboard_owned()}
@@ -24,6 +25,7 @@ impl super::App {
         let (w,h)=self.textures.get(&self.selected_track).map(|t|(t.size()[0] as u32,t.size()[1] as u32)).unwrap_or_else(||s.res());
         if self.hud_cache.updated.is_none_or(|t|t.elapsed().as_millis()>=500) {
             let native=s.native_timing.snapshot();
+            let video_e2e=s.video_e2e.snapshot();
             let network=s.network_loss.lock().unwrap().clone().filter(|v|v.fresh());
             let host=native.host.and_then(|v|v.video);
             let updated=s.rtt_updated_ms.load(Relaxed);
@@ -69,10 +71,17 @@ impl super::App {
                 history:Default::default(),
                 continuity:self.textures.get(&self.selected_track).and_then(|t|t.continuity()),
                 host_video:uu_core::frame_trace::video_latency(s),
+                video_e2e:Some(video_e2e),
             };
-            m.history=self.hud_cache.history.record([
-                m.estimate().missing.is_empty().then(||m.estimate().known),m.process[0],m.process[1],m.process[2],m.process[3],m.rtt.map(|v|v[0]/2.),m.queues.iter().copied().collect::<Option<Vec<_>>>().map(|v|v.iter().sum())
-            ]);
+            if self.hud_cache.history_owner.upgrade().is_none_or(|previous|!std::sync::Arc::ptr_eq(&previous,s)) {
+                self.hud_cache.history=Default::default();
+                self.hud_cache.history_owner=std::sync::Arc::downgrade(s);
+            }
+            m.history=self.hud_cache.history.record(
+                [s.native_media_epoch.load(Relaxed),u64::from(self.selected_track),video_e2e.generation],
+                [m.video_mean_ms(),m.process[0],m.process[1],m.process[2],m.process[3],m.rtt.map(|v|v[0]/2.),m.queues.iter().copied().collect::<Option<Vec<_>>>().map(|v|v.iter().sum())],
+                m.video_uncertainty_ms(),
+            );
             self.hud_cache.metrics=m;
             self.hud_cache.key=None;self.hud_cache.updated=Some(Instant::now());
         }

@@ -12,6 +12,7 @@ struct Preview {
     frames: usize,
     saved: std::sync::Arc<std::sync::atomic::AtomicBool>,
     bounds: Option<egui::Rect>,
+    measured_fixture: bool,
 }
 impl eframe::App for Preview {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
@@ -57,14 +58,25 @@ impl eframe::App for Preview {
             input_counts: [1420, 0],
             input_timing: [Some(0.04), Some(2.2), Some(0.06), Some(0.03)],
             continuity:Some(uu_core::frame_continuity::Snapshot{long_gaps:1,max_gap_ms:31.6,threshold_ms:25.,ongoing_gap_ms:None,observed_seconds:60.}),
-            history: (0..=360).map(|n| {let w=(n as f32/15.).sin();hud_panel::HistorySample {seconds:n as f64/2.,values:[Some(5.+w),Some(0.8),Some(1.1+w*0.2),Some(0.32),Some(0.32),Some(1.05+w*0.1),Some(0.34)]}}).collect(),
+            video_e2e:Some(uu_core::video_e2e::Snapshot {
+                generation:1,relative_drift_ppm:1000,
+                measurement:self.measured_fixture.then_some(uu_core::video_e2e::Measurement {
+                    samples:24,mean_us:18_500,p50_us:18_100,p95_us:23_000,uncertainty_us:2000,
+                    method:uu_core::video_e2e::DisplayMethod::RefreshInterval,
+                }),
+                unknown:(!self.measured_fixture).then_some(uu_core::video_e2e::UnknownReason::DisplayTimestampUnavailable),
+                source_frames:120,displayed_frames:if self.measured_fixture{24}else{0},observations_dropped:0,
+            }),
+            history: (0..=360).map(|n| {let w=(n as f32/15.).sin();hud_panel::HistorySample {seconds:n as f64/2.,values:[self.measured_fixture.then_some(18.5+w),Some(0.8),Some(1.1+w*0.2),Some(0.32),Some(0.32),Some(1.05+w*0.1),Some(0.34)],video_uncertainty_ms:self.measured_fixture.then_some(2.)}}).collect(),
             toggle_hint: "Ctrl+Alt+S · Toggle HUD".into(),
             ..Default::default()
         };
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::from_rgb(42, 49, 62)))
             .show(ctx, |ui| {
-                let screen = ui.max_rect();
+                let view = ui.max_rect();
+                let screen = egui::Rect::from_min_max(view.min,view.max-egui::vec2(0.,22.));
+                ui.painter().text(view.left_bottom()-egui::vec2(-8.,2.),egui::Align2::LEFT_BOTTOM,uu_i18n::text("生成数据预览 · 非实测"),egui::FontId::proportional(12.),egui::Color32::from_gray(200));
                 let response =
                     hud_panel::Layout::new(ui, &m, HudDetail::Compact, screen.width() - 32.)
                         .paint(ui, screen);
@@ -147,6 +159,7 @@ fn main() -> anyhow::Result<()> {
                 frames: 0,
                 saved,
                 bounds: None,
+                measured_fixture:args.iter().any(|arg|arg=="--measured-fixture"),
             }))
         }),
     )
