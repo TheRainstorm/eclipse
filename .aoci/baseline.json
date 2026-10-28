@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-10-28T02:40:13Z",
+  "updated_at": "2026-10-28T04:24:34Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -35,15 +35,15 @@
     },
     "Cargo.lock": {
       "role": "index",
-      "sha256": "b4f9e64bdaa2eff212a56574a9dce93ec149c40c75a1019f8d7d39b182a64ded",
+      "sha256": "de4433e927495dac72a27467921143f6bbb9bf4679836f0ebe86aba50b83f539",
       "size": 168574,
-      "normalized_sha256": "b4f9e64bdaa2eff212a56574a9dce93ec149c40c75a1019f8d7d39b182a64ded"
+      "normalized_sha256": "de4433e927495dac72a27467921143f6bbb9bf4679836f0ebe86aba50b83f539"
     },
     "Cargo.toml": {
       "role": "index",
-      "sha256": "f6157ed205d2aef0f75c6b934f55add5a2c357edf341c9a93e9a5737f952cf75",
+      "sha256": "82004e61451661c5b7c3d67bf0f3ad4ec48b2aca7888949ea8b36b5f6d32ac51",
       "size": 1746,
-      "normalized_sha256": "f6157ed205d2aef0f75c6b934f55add5a2c357edf341c9a93e9a5737f952cf75"
+      "normalized_sha256": "82004e61451661c5b7c3d67bf0f3ad4ec48b2aca7888949ea8b36b5f6d32ac51"
     },
     "LICENSE": {
       "role": "index",
@@ -65,9 +65,9 @@
     },
     "README.md": {
       "role": "index",
-      "sha256": "5723c907b4dbed91e0ba5a8eec33c9f8930579172df92955f7f9f0f699d0d798",
-      "size": 19183,
-      "normalized_sha256": "5723c907b4dbed91e0ba5a8eec33c9f8930579172df92955f7f9f0f699d0d798"
+      "sha256": "a78cad1169e62c87bec43f97fba70eec11d48fd6f99d2ea54d7e71b1ae933e0a",
+      "size": 19202,
+      "normalized_sha256": "a78cad1169e62c87bec43f97fba70eec11d48fd6f99d2ea54d7e71b1ae933e0a"
     },
     "SECURITY.md": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "99a7e5800df4b820b18bba32715e18803085254690496519295d217938cce49a",
-      "size": 131919,
-      "normalized_sha256": "99a7e5800df4b820b18bba32715e18803085254690496519295d217938cce49a"
+      "sha256": "5ee9f59f6b47654dcd2fc34025ecaa3fa3e5ae278e96613c0b72e69e9670fa94",
+      "size": 132168,
+      "normalized_sha256": "5ee9f59f6b47654dcd2fc34025ecaa3fa3e5ae278e96613c0b72e69e9670fa94"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1446,9 +1446,9 @@
     },
     "crates/uu-gui/src/video_native.rs": {
       "role": "index",
-      "sha256": "9b29642de962fa50daeb20aab0d9fde9e27e5938e302dbb31da29cb5fc9981b8",
-      "size": 13906,
-      "normalized_sha256": "9b29642de962fa50daeb20aab0d9fde9e27e5938e302dbb31da29cb5fc9981b8"
+      "sha256": "f5ea78c91d2d7ae7839668cf055c20659422f803981aabbc4c919eba0b493ce6",
+      "size": 13554,
+      "normalized_sha256": "f5ea78c91d2d7ae7839668cf055c20659422f803981aabbc4c919eba0b493ce6"
     },
     "crates/uu-gui/src/video_native_source.rs": {
       "role": "index",
@@ -2645,6 +2645,12 @@
       "sha256": "dbabfc3ea0c028273f9c45705f148cc531d54ddd5b20f2e104653886ec8fa458",
       "size": 1238,
       "normalized_sha256": "dbabfc3ea0c028273f9c45705f148cc531d54ddd5b20f2e104653886ec8fa458"
+    },
+    "docs/releases/v0.20.5.md": {
+      "role": "index",
+      "sha256": "d3112c8fbe189d07242517936405c0cee4500eaad6cbdcc102816ade8de7d57c",
+      "size": 1199,
+      "normalized_sha256": "d3112c8fbe189d07242517936405c0cee4500eaad6cbdcc102816ade8de7d57c"
     },
     "docs/releases/v0.3.0.md": {
       "role": "index",
