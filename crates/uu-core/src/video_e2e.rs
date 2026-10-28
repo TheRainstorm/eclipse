@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 #[cfg(not(windows))]
 use std::time::Instant;
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{sync_channel, Receiver, SyncSender},
         Mutex,
     },
     time::Duration,
@@ -261,6 +262,46 @@ struct Record {
     sampled: bool,
     evidence_registered: bool,
     first_display_eligible: bool,
+    decoded_sequence: Option<u64>,
+}
+
+/// Decoder input/output associations have their own short ownership domain.
+/// Source telemetry, clock fitting and HUD aggregation never acquire this lock.
+#[derive(Default)]
+struct DecodeAssociations {
+    media_epoch: u64,
+    observation_epoch: u64,
+    streams: HashMap<u32, u32>,
+    pts: HashMap<(u32, u64), (FrameToken, u64)>,
+    order: VecDeque<((u32, u64), u64)>,
+}
+
+#[derive(Clone, Copy)]
+enum MetadataEvent {
+    Decoded {
+        token: FrameToken,
+        sequence: u64,
+    },
+    Displayed {
+        token: FrameToken,
+        display: DisplayObservation,
+    },
+}
+
+/// try_send never waits for capacity or for the aggregate State lock. The
+/// receiver is consumed only by aggregate owners, outside decoder/render hooks.
+struct MetadataQueue {
+    sender: SyncSender<MetadataEvent>,
+    receiver: Mutex<Receiver<MetadataEvent>>,
+}
+impl Default for MetadataQueue {
+    fn default() -> Self {
+        let (sender, receiver) = sync_channel(LIMIT);
+        Self {
+            sender,
+            receiver: Mutex::new(receiver),
+        }
+    }
 }
 type SourceId = (u64, u64, u64);
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -305,8 +346,10 @@ struct State {
     clock: clock::ClockMap,
     clock_anchor: Option<WireClockStamp>,
     records: VecDeque<Record>,
-    pts: VecDeque<(u32, u64, FrameToken)>,
     streams: Vec<(u32, u32)>,
+    // Decoder sequence at the last observer/coverage barrier. A late queued
+    // input must not become eligible merely because aggregation happened later.
+    decode_cutoff: u64,
     samples: VecDeque<Sample>,
     source_proofs: VecDeque<SourceProof>,
     receipts: VecDeque<(u64, u64, FrameToken)>,
@@ -327,8 +370,8 @@ impl Default for State {
             clock: clock::ClockMap::new(FRESH, RELATIVE_DRIFT_PPM),
             clock_anchor: None,
             records: VecDeque::new(),
-            pts: VecDeque::new(),
             streams: Vec::new(),
+            decode_cutoff: 0,
             samples: VecDeque::new(),
             source_proofs: VecDeque::new(),
             receipts: VecDeque::new(),
@@ -345,16 +388,22 @@ pub struct Client {
     supported: AtomicBool,
     media_epoch: AtomicU64,
     active_surface: AtomicU64,
+    active_method: AtomicU64,
     observation_epoch: AtomicU64,
+    decode_sequence: AtomicU64,
+    qualification_cutoff: AtomicU64,
     generation: AtomicU64,
     dropped: AtomicU64,
     local: LocalClock,
+    associations: Mutex<DecodeAssociations>,
+    metadata: MetadataQueue,
     state: Mutex<State>,
 }
 impl Client {
     pub(crate) fn begin(&self, media_epoch: u64, supported: bool) {
         self.supported.store(false, Ordering::Release);
         self.active_surface.store(0, Ordering::Release);
+        self.active_method.store(0, Ordering::Release);
         let observation_epoch = self
             .observation_epoch
             .fetch_add(1, Ordering::AcqRel)
@@ -363,12 +412,18 @@ impl Client {
             .generation
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
-        *self.state.lock().unwrap() = State {
+        let cutoff = self.decode_sequence.load(Ordering::Acquire);
+        self.qualification_cutoff.store(cutoff, Ordering::Release);
+        let mut state = self.state.lock().unwrap();
+        *state = State {
             media_epoch,
             observation_epoch,
             generation,
+            decode_cutoff: cutoff,
             ..State::default()
         };
+        let receiver = self.metadata.receiver.lock().unwrap();
+        while receiver.try_recv().is_ok() {}
         self.media_epoch.store(media_epoch, Ordering::Release);
         self.supported.store(supported, Ordering::Release);
     }
@@ -378,6 +433,180 @@ impl Client {
     /// Native display bridges use this epoch for QPC receipts on Windows.
     pub fn clock_stamp(&self) -> Option<WireClockStamp> {
         self.local.stamp()
+    }
+    fn method_code(method: DisplayMethod) -> u64 {
+        match method {
+            DisplayMethod::PlatformDisplayed => 1,
+            DisplayMethod::RefreshInterval => 2,
+            DisplayMethod::DxgiReceiptInterval => 3,
+        }
+    }
+    fn retire_metadata(&self, observation_epoch: u64) {
+        self.qualification_cutoff.fetch_max(
+            self.decode_sequence.load(Ordering::Acquire),
+            Ordering::AcqRel,
+        );
+        let _ = self.observation_epoch.compare_exchange(
+            observation_epoch,
+            observation_epoch.wrapping_add(1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+    fn enqueue(&self, event: MetadataEvent, token: FrameToken) -> bool {
+        if !self.current_token(token) {
+            return false;
+        }
+        if self.metadata.sender.try_send(event).is_err() {
+            // Losing first-display coverage must not let a cached redraw stand
+            // in for the missing first receipt. This is genuine queue loss,
+            // independent of source/clock/HUD aggregate lock contention.
+            let owner_current = match event {
+                MetadataEvent::Decoded { .. } => true,
+                MetadataEvent::Displayed { display, .. } => {
+                    self.active_surface.load(Ordering::Acquire) == display.surface_epoch
+                        && self.active_method.load(Ordering::Acquire)
+                            == Self::method_code(display.method)
+                }
+            };
+            if self.current_token(token) && owner_current {
+                self.retire_metadata(token.observation_epoch);
+            }
+            return false;
+        }
+        true
+    }
+    fn sync_coverage(&self, s: &mut State) {
+        let observation_epoch = self.observation_epoch.load(Ordering::Acquire);
+        if s.observation_epoch != observation_epoch {
+            s.observation_epoch = observation_epoch;
+            s.decode_cutoff = s
+                .decode_cutoff
+                .max(self.qualification_cutoff.load(Ordering::Acquire));
+            s.streams.clear();
+            // Keep old source/receipt evidence for late source reports. It can
+            // disqualify a later duplicate, but cannot create current samples.
+            for record in &mut s.records {
+                record.first_display_eligible = false;
+            }
+            s.samples.clear();
+            s.generation = self
+                .generation
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1);
+        }
+    }
+    fn drain_metadata(&self, s: &mut State) {
+        self.sync_coverage(s);
+        let receiver = self.metadata.receiver.lock().unwrap();
+        // The queue is bounded; arrivals while draining cannot extend this
+        // operation indefinitely. Only aggregate callers own this receiver.
+        for _ in 0..LIMIT {
+            let Ok(event) = receiver.try_recv() else {
+                break;
+            };
+            match event {
+                MetadataEvent::Decoded { token, sequence } => {
+                    if token.media_epoch != s.media_epoch
+                        || token.observation_epoch != s.observation_epoch
+                    {
+                        continue;
+                    }
+                    if let Some((_, old)) = s
+                        .streams
+                        .iter_mut()
+                        .find(|(track, _)| *track == token.track)
+                    {
+                        *old = token.ssrc;
+                    } else if s.streams.len() < 32 {
+                        s.streams.push((token.track, token.ssrc));
+                    } else {
+                        s.dropped += 1;
+                        continue;
+                    }
+                    let index = s
+                        .records
+                        .iter()
+                        .position(|record| record.token == token)
+                        .or_else(|| {
+                            s.records.iter().position(|record| {
+                                record.token.track == u32::MAX
+                                    && record.token.ssrc == token.ssrc
+                                    && record.token.rtp_timestamp == token.rtp_timestamp
+                            })
+                        });
+                    if let Some(index) = index {
+                        let record = &mut s.records[index];
+                        // A repeated decoder input cannot re-qualify an AU
+                        // retired by an observer or coverage barrier.
+                        if record.decoded_sequence.is_none() {
+                            record.token = token;
+                            record.decoded_sequence = Some(sequence);
+                            record.first_display_eligible = sequence > s.decode_cutoff;
+                        }
+                    } else {
+                        let source = s
+                            .records
+                            .iter()
+                            .rev()
+                            .find(|record| {
+                                record.token.ssrc == token.ssrc
+                                    && record.token.rtp_timestamp == token.rtp_timestamp
+                            })
+                            .and_then(|record| record.source);
+                        if s.records.len() == LIMIT {
+                            s.records.pop_front();
+                            s.dropped += 1;
+                        }
+                        s.records.push_back(Record {
+                            token,
+                            source,
+                            display: None,
+                            sampled: false,
+                            evidence_registered: false,
+                            first_display_eligible: sequence > s.decode_cutoff,
+                            decoded_sequence: Some(sequence),
+                        });
+                    }
+                }
+                MetadataEvent::Displayed { token, display } => {
+                    if token.media_epoch != s.media_epoch
+                        || token.observation_epoch != s.observation_epoch
+                        || !s.streams.contains(&(token.track, token.ssrc))
+                    {
+                        continue;
+                    }
+                    if s.receipts.iter().any(|(surface, present, _)| {
+                        *surface == display.surface_epoch && *present == display.present_id
+                    }) {
+                        continue;
+                    }
+                    let Some(record) = s.records.iter_mut().find(|record| record.token == token)
+                    else {
+                        continue;
+                    };
+                    if record
+                        .display
+                        .is_some_and(|old| old.earliest.ticks <= display.earliest.ticks)
+                    {
+                        continue;
+                    }
+                    record.display = Some(display);
+                    record.sampled = false;
+                    record.evidence_registered = false;
+                    if s.receipts.len() == LIMIT {
+                        s.receipts.pop_front();
+                    }
+                    s.receipts
+                        .push_back((display.surface_epoch, display.present_id, token));
+                    s.displayed_frames += 1;
+                }
+            }
+        }
+        // A producer can report genuine overflow while this batch is drained.
+        // Do not publish the now-retired batch as a current measurement.
+        self.sync_coverage(s);
     }
     /// The renderer declares ownership before supplying receipts. A new unique
     /// epoch is required after recreation/disjoint. A receipt never selects its
@@ -410,17 +639,29 @@ impl Client {
     fn change_observer(&self, media_epoch: u64, observer: Option<(u64, DisplayMethod)>) -> bool {
         self.change_owned_observer(media_epoch, observer, None)
     }
-    fn change_owned_observer(&self, media_epoch: u64, observer: Option<(u64, DisplayMethod)>, expected: Option<u64>) -> bool {
+    fn change_owned_observer(
+        &self,
+        media_epoch: u64,
+        observer: Option<(u64, DisplayMethod)>,
+        expected: Option<u64>,
+    ) -> bool {
         if !self.supported() || self.media_epoch.load(Ordering::Acquire) != media_epoch {
             return expected.is_some();
         }
         let previous_active = if let Some(expected) = expected {
-            match self.active_surface.compare_exchange(expected, 0, Ordering::AcqRel, Ordering::Acquire) {
+            match self.active_surface.compare_exchange(
+                expected,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
                 Ok(previous) => previous,
                 Err(0) => 0,
                 Err(_) => return true,
             }
-        } else { self.active_surface.swap(0, Ordering::AcqRel) };
+        } else {
+            self.active_surface.swap(0, Ordering::AcqRel)
+        };
         let Ok(mut s) = self.state.try_lock() else {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
@@ -428,12 +669,15 @@ impl Client {
         if s.media_epoch != media_epoch {
             return expected.is_some();
         }
-        if expected.is_some_and(|surface| s.surface_epoch != Some(surface)) { return true; }
+        if expected.is_some_and(|surface| s.surface_epoch != Some(surface)) {
+            return true;
+        }
         if observer.is_some_and(|(surface, _)| s.retired_surfaces.contains(&surface)) {
             self.active_surface
                 .store(previous_active, Ordering::Release);
             return false;
         }
+        self.drain_metadata(&mut s);
         let surface = observer.map(|(surface, _)| surface);
         let method = observer.map(|(_, method)| method);
         if s.surface_epoch != surface
@@ -444,6 +688,9 @@ impl Client {
             // coverage in the replacement observer. Only later decoded AUs
             // may become new first-display candidates there.
             if s.surface_epoch.is_some() || !s.retired_surfaces.is_empty() {
+                s.decode_cutoff = s
+                    .decode_cutoff
+                    .max(self.decode_sequence.load(Ordering::Acquire));
                 for record in &mut s.records {
                     record.first_display_eligible = false;
                 }
@@ -465,6 +712,8 @@ impl Client {
                 .wrapping_add(1);
             s.samples.clear();
         }
+        self.active_method
+            .store(method.map_or(0, Self::method_code), Ordering::Release);
         self.active_surface
             .store(surface.unwrap_or(0), Ordering::Release);
         true
@@ -485,7 +734,10 @@ impl Client {
         }
         s.host_epoch = Some(sample.host_receive.epoch);
         s.clock_anchor = Some(sample.host_receive);
-        Self::join_all(&mut s, sample.client_receive);
+        self.drain_metadata(&mut s);
+        if let Some(now) = self.local.stamp() {
+            Self::join_all(&mut s, now);
+        }
         true
     }
     pub(crate) fn source_frames(
@@ -497,13 +749,11 @@ impl Client {
         if !self.supported() || host_epoch == 0 {
             return false;
         }
-        let Some(now) = self.local.stamp() else {
-            return false;
-        };
         let mut s = self.state.lock().unwrap();
         if s.media_epoch != epoch || s.host_epoch.is_some_and(|host| host != host_epoch) {
             return false;
         }
+        self.drain_metadata(&mut s);
         s.host_epoch = Some(host_epoch);
         for frame in frames {
             if frame.ssrc == 0
@@ -516,13 +766,16 @@ impl Client {
             }
             s.source_frames += 1;
             // Telemetry may arrive before decode and has no local track yet.
-            if let Some(record) = s.records.iter_mut().find(|record| {
+            let mut found = false;
+            for record in s.records.iter_mut().filter(|record| {
                 record.token.ssrc == frame.ssrc && record.token.rtp_timestamp == frame.rtp_timestamp
             }) {
+                found = true;
                 if record.source.is_none() {
                     record.source = frame.source;
                 }
-            } else {
+            }
+            if !found {
                 if s.records.len() == LIMIT {
                     s.records.pop_front();
                     s.dropped += 1;
@@ -541,10 +794,13 @@ impl Client {
                     sampled: false,
                     evidence_registered: false,
                     first_display_eligible: false,
+                    decoded_sequence: None,
                 });
             }
         }
-        Self::join_all(&mut s, now);
+        if let Some(now) = self.local.stamp() {
+            Self::join_all(&mut s, now);
+        }
         true
     }
     /// Called for each encoded input. Output PTS may refer to a previous input.
@@ -560,33 +816,47 @@ impl Client {
             return;
         }
         let observation_epoch = self.observation_epoch.load(Ordering::Acquire);
-        let Ok(mut s) = self.state.try_lock() else {
-            // No subsequent output may reuse an old association for equal PTS
-            // after a missed SSRC/source transition.
-            self.observation_epoch.fetch_add(1, Ordering::AcqRel);
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+        let Ok(mut associations) = self.associations.try_lock() else {
+            // This lock is private to decoder association/lifetime operations.
+            // Actual missed input metadata still retires the old PTS namespace.
+            self.retire_metadata(observation_epoch);
             return;
         };
-        if s.media_epoch != epoch {
+        if !self.supported()
+            || self.media_epoch.load(Ordering::Acquire) != epoch
+            || self.observation_epoch.load(Ordering::Acquire) != observation_epoch
+        {
             return;
         }
-        if s.observation_epoch != observation_epoch {
-            s.observation_epoch = observation_epoch;
-            s.pts.clear();
-            s.streams.clear();
+        if associations.media_epoch != epoch || associations.observation_epoch != observation_epoch
+        {
+            *associations = DecodeAssociations {
+                media_epoch: epoch,
+                observation_epoch,
+                ..DecodeAssociations::default()
+            };
         }
-        if let Some((_, old_ssrc)) = s.streams.iter_mut().find(|(current, _)| *current == track) {
-            if *old_ssrc != ssrc {
-                *old_ssrc = ssrc;
-                s.pts.retain(|(current, _, _)| *current != track);
+        if let Some(old_ssrc) = associations.streams.get(&track).copied() {
+            if old_ssrc != ssrc {
+                associations.pts.retain(|(current, _), _| *current != track);
+                associations.streams.insert(track, ssrc);
             }
+        } else if associations.streams.len() < 32 {
+            associations.streams.insert(track, ssrc);
         } else {
-            if s.streams.len() == 32 {
-                s.dropped += 1;
-                return;
-            }
-            s.streams.push((track, ssrc));
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
         }
+        let Ok(sequence) = self
+            .decode_sequence
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
+                previous.checked_add(1)
+            })
+            .map(|previous| previous + 1)
+        else {
+            self.retire_metadata(observation_epoch);
+            return;
+        };
         let token = FrameToken {
             media_epoch: epoch,
             observation_epoch,
@@ -594,55 +864,48 @@ impl Client {
             ssrc,
             rtp_timestamp,
         };
-        if s.pts.len() == LIMIT {
-            s.pts.pop_front();
-            s.dropped += 1;
+        // Publish aggregate registration before making the token visible to
+        // decoder outputs. Keeping this bounded send in the short association
+        // ownership also preserves input ordering across decoder threads.
+        if !self.enqueue(MetadataEvent::Decoded { token, sequence }, token) {
+            return;
         }
-        s.pts
-            .retain(|(current, previous, _)| *current != track || *previous != pts);
-        s.pts.push_back((track, pts, token));
-        if let Some(record) = s
-            .records
-            .iter_mut()
-            .find(|record| record.token.ssrc == ssrc && record.token.rtp_timestamp == rtp_timestamp)
-        {
-            record.token = token;
-            record.first_display_eligible = true;
-        } else {
-            if s.records.len() == LIMIT {
-                s.records.pop_front();
-                s.dropped += 1;
+        // Sequence-tagged FIFO entries permit O(1) replacement and expiry even
+        // when the same PTS is reused. Rare SSRC changes clear that track above.
+        if associations.order.len() == LIMIT {
+            if let Some((key, old_sequence)) = associations.order.pop_front() {
+                if associations
+                    .pts
+                    .get(&key)
+                    .is_some_and(|(_, current)| *current == old_sequence)
+                {
+                    associations.pts.remove(&key);
+                }
             }
-            s.records.push_back(Record {
-                token,
-                source: None,
-                display: None,
-                sampled: false,
-                evidence_registered: false,
-                first_display_eligible: true,
-            });
         }
+        associations.pts.insert((track, pts), (token, sequence));
+        associations.order.push_back(((track, pts), sequence));
     }
-    /// The renderer carries this token with the actual decoded image, including
-    /// CPU RGBA fallback. Looking up a newer input instead is incorrect.
+    /// The decoder output freezes this token with its actual image, including
+    /// CPU RGBA fallback. Source/clock/HUD aggregation cannot block this lookup.
     pub fn frame_for_pts(&self, epoch: u64, track: u32, pts: u64) -> Option<FrameToken> {
         if !self.supported() || self.media_epoch.load(Ordering::Acquire) != epoch {
             return None;
         }
-        let Ok(s) = self.state.try_lock() else {
+        let Ok(associations) = self.associations.try_lock() else {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return None;
         };
-        if s.media_epoch != epoch
-            || s.observation_epoch != self.observation_epoch.load(Ordering::Acquire)
+        if associations.media_epoch != epoch
+            || associations.observation_epoch != self.observation_epoch.load(Ordering::Acquire)
         {
             return None;
         }
-        s.pts
-            .iter()
-            .rev()
-            .find(|(current, candidate, _)| *current == track && *candidate == pts)
-            .map(|(_, _, token)| *token)
+        associations
+            .pts
+            .get(&(track, pts))
+            .map(|(token, _)| *token)
+            .filter(|token| self.current_token(*token))
     }
     /// Lifetime check for an already frozen token. It never looks up a newer
     /// PTS mapping and does not itself prove source-first-display eligibility.
@@ -651,70 +914,31 @@ impl Client {
             && self.media_epoch.load(Ordering::Acquire) == token.media_epoch
             && self.observation_epoch.load(Ordering::Acquire) == token.observation_epoch
     }
+    /// Queues one immutable receipt without taking the aggregate lock. True
+    /// means accepted for asynchronous association, not a new measured sample;
+    /// duplicates and unavailable source evidence are resolved by aggregation.
     pub fn displayed(&self, token: FrameToken, display: DisplayObservation) -> bool {
-        if !self.current_token(token) || display.surface_epoch == 0
-            || self.active_surface.load(Ordering::Acquire) != display.surface_epoch {
+        if !self.current_token(token)
+            || display.surface_epoch == 0
+            || self.active_surface.load(Ordering::Acquire) != display.surface_epoch
+            || self.active_method.load(Ordering::Acquire) != Self::method_code(display.method)
+        {
             return false;
         }
         let Some(now) = self.local.stamp() else {
             return false;
         };
-        if display.surface_epoch == 0
-            || display.earliest.epoch != now.epoch
+        if display.earliest.epoch != now.epoch
             || display.latest.epoch != now.epoch
             || display.earliest.frequency_hz != now.frequency_hz
             || display.latest.frequency_hz != now.frequency_hz
             || display.earliest.ticks > display.latest.ticks
             || display.latest.ticks > now.ticks
-        {
-            return false;
-        }
-        let Ok(mut s) = self.state.try_lock() else {
-            if self.current_token(token)
-                && self.active_surface.load(Ordering::Acquire) == display.surface_epoch {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-                // Only a current owner's lost display retires metadata. A late
-                // replaced-window receipt must not invalidate its replacement.
-                let _ = self.observation_epoch.compare_exchange(token.observation_epoch,
-                    token.observation_epoch.wrapping_add(1), Ordering::AcqRel, Ordering::Acquire);
-            }
-            return false;
-        };
-        if s.media_epoch != token.media_epoch
-            || token.observation_epoch != self.observation_epoch.load(Ordering::Acquire)
             || self.active_surface.load(Ordering::Acquire) != display.surface_epoch
-            || s.surface_epoch != Some(display.surface_epoch)
-            || s.method != Some(display.method)
-            || !s.streams.contains(&(token.track, token.ssrc))
         {
             return false;
         }
-        if s.receipts.iter().any(|(surface, present, _)| {
-            *surface == display.surface_epoch && *present == display.present_id
-        }) {
-            return false;
-        }
-        let Some(index) = s.records.iter().position(|record| record.token == token) else {
-            return false;
-        };
-        if s.records[index]
-            .display
-            .is_some_and(|previous| previous.earliest.ticks <= display.earliest.ticks)
-        {
-            return false;
-        }
-        let record = &mut s.records[index];
-        record.display = Some(display);
-        record.sampled = false;
-        record.evidence_registered = false;
-        if s.receipts.len() == LIMIT {
-            s.receipts.pop_front();
-        }
-        s.receipts
-            .push_back((display.surface_epoch, display.present_id, token));
-        s.displayed_frames += 1;
-        Self::join_all(&mut s, now);
-        true
+        self.enqueue(MetadataEvent::Displayed { token, display }, token)
     }
     fn join_all(s: &mut State, now: WireClockStamp) {
         // First-display evidence outlives HUD/surface windows. Late telemetry
@@ -859,10 +1083,13 @@ impl Client {
         }
     }
     pub fn snapshot(&self) -> Snapshot {
-        let s = self.state.lock().unwrap();
-        let now = self
-            .local
-            .stamp()
+        let mut s = self.state.lock().unwrap();
+        self.drain_metadata(&mut s);
+        let stamp = self.local.stamp();
+        if let Some(stamp) = stamp {
+            Self::join_all(&mut s, stamp);
+        }
+        let now = stamp
             .and_then(WireClockStamp::interval_ns)
             .map(|now| now.latest_ns);
         let current = |sample: &&Sample| {
@@ -882,6 +1109,7 @@ impl Client {
             .filter(|sample| Some(sample.method) == method && current(sample))
             .collect();
         let observer_active = self.supported()
+            && s.observation_epoch == self.observation_epoch.load(Ordering::Acquire)
             && self.active_surface.load(Ordering::Acquire) != 0
             && Some(self.active_surface.load(Ordering::Acquire)) == s.surface_epoch;
         let measurement = method
@@ -1052,8 +1280,8 @@ mod tests {
         let measured = client.snapshot().measurement.unwrap();
         assert_eq!(measured.samples, 1);
         assert_eq!(measured.method, DisplayMethod::PlatformDisplayed);
-        assert!(!client.displayed(token, display(&client, 5)));
-        assert!(!client.displayed(token, display(&client, 6)));
+        assert!(client.displayed(token, display(&client, 5)));
+        assert!(client.displayed(token, display(&client, 6)));
         assert!(client.source_frames(7, 9, &[descriptor(source, 88, 2, false)]));
         assert_eq!(client.snapshot().measurement.unwrap().samples, 1);
         client.begin(8, true);
@@ -1077,7 +1305,7 @@ mod tests {
         );
         let receipt = display(&client, 1);
         assert!(client.displayed(client.frame_for_pts(7, 0, 100).unwrap(), receipt));
-        assert!(!client.displayed(client.frame_for_pts(7, 0, 200).unwrap(), receipt));
+        assert!(client.displayed(client.frame_for_pts(7, 0, 200).unwrap(), receipt));
         let mut future = display(&client, 2);
         future.earliest.ticks += future.earliest.frequency_hz;
         future.latest = future.earliest;
@@ -1131,10 +1359,11 @@ mod tests {
         assert!(client.snapshot().measurement.is_none());
     }
     #[test]
-    fn hot_hooks_drop_without_waiting_and_retire_pts_after_contention() {
+    fn host_hot_hooks_drop_and_client_mapping_survives_aggregate_contention() {
         let (client, _) = setup_client();
         let client = std::sync::Arc::new(client);
         client.decode_input(7, 0, 42, 1, 100);
+        let epoch = client.observation_epoch.load(Ordering::Acquire);
         assert!(client.frame_for_pts(7, 0, 100).is_some());
         let host = std::sync::Arc::new(Host::default());
         host.enable(true);
@@ -1177,13 +1406,148 @@ mod tests {
             completed.is_ok(),
             "metadata contention must not wait on media threads"
         );
-        assert!(client.frame_for_pts(7, 0, 100).is_none());
+        assert_eq!(client.observation_epoch.load(Ordering::Acquire), epoch);
+        assert_eq!(client.frame_for_pts(7, 0, 100).unwrap().ssrc, 99);
         assert_eq!(client.active_surface.load(Ordering::Acquire), 0);
         client.decode_input(7, 0, 99, 3, 200);
-        assert!(client.frame_for_pts(7, 0, 100).is_none());
+        assert_eq!(client.frame_for_pts(7, 0, 100).unwrap().rtp_timestamp, 2);
         assert_eq!(client.frame_for_pts(7, 0, 200).unwrap().ssrc, 99);
         assert!(client.snapshot().observations_dropped > 0);
         assert!(host.output(300).is_none());
+    }
+    #[test]
+    fn source_clock_or_hud_lock_cannot_retire_decoder_identity_or_delay_receipts() {
+        let (client, source) = setup_client();
+        let client = std::sync::Arc::new(client);
+        let epoch = client.observation_epoch.load(Ordering::Acquire);
+        // Exactly the aggregate ownership held by source batches, clock fitting
+        // and HUD snapshots. The media/render worker must finish while held.
+        let aggregate = client.state.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker_client = client.clone();
+        let worker = std::thread::spawn(move || {
+            for n in 1..=64 {
+                worker_client.decode_input(7, 0, 42, n, u64::from(n));
+                let token = worker_client.frame_for_pts(7, 0, u64::from(n)).unwrap();
+                assert_eq!(token.rtp_timestamp, n);
+                assert_eq!(token.observation_epoch, epoch);
+                assert!(worker_client.displayed(token, display(&worker_client, u64::from(n))));
+            }
+            tx.send(()).unwrap();
+        });
+        let finished = rx.recv_timeout(Duration::from_secs(1));
+        drop(aggregate);
+        worker.join().unwrap();
+        assert!(
+            finished.is_ok(),
+            "aggregate work must never be media/render ownership"
+        );
+        assert_eq!(client.observation_epoch.load(Ordering::Acquire), epoch);
+        client.source_frames(
+            7,
+            9,
+            &(1..=64)
+                .map(|n| descriptor(source, n, u64::from(n), false))
+                .collect::<Vec<_>>(),
+        );
+        let snapshot = client.snapshot();
+        assert_eq!(snapshot.displayed_frames, 64);
+        assert_eq!(snapshot.measurement.unwrap().samples, 64);
+        assert_eq!(snapshot.observations_dropped, 0);
+    }
+    #[test]
+    fn genuine_decoder_association_loss_still_retires_old_equal_pts() {
+        let (client, _) = setup_client();
+        let client = std::sync::Arc::new(client);
+        client.decode_input(7, 0, 42, 1, 100);
+        let old = client.frame_for_pts(7, 0, 100).unwrap();
+        let association = client.associations.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker_client = client.clone();
+        let worker = std::thread::spawn(move || {
+            worker_client.decode_input(7, 0, 99, 2, 100);
+            tx.send(()).unwrap();
+        });
+        let finished = rx.recv_timeout(Duration::from_secs(1));
+        drop(association);
+        worker.join().unwrap();
+        assert!(finished.is_ok());
+        assert!(!client.current_token(old));
+        assert!(client.frame_for_pts(7, 0, 100).is_none());
+        client.decode_input(7, 0, 99, 3, 200);
+        assert!(client.frame_for_pts(7, 0, 100).is_none());
+        assert_eq!(client.frame_for_pts(7, 0, 200).unwrap().ssrc, 99);
+    }
+    #[test]
+    fn repeated_aggregate_pressure_preserves_one_epoch_and_all_queued_receipts() {
+        let (client, source) = setup_client();
+        let client = std::sync::Arc::new(client);
+        let epoch = client.observation_epoch.load(Ordering::Acquire);
+        let (go, commands) = std::sync::mpsc::channel();
+        let (done, completed) = std::sync::mpsc::channel();
+        let worker_client = client.clone();
+        let worker = std::thread::spawn(move || {
+            for batch in 0..16u32 {
+                commands.recv().unwrap();
+                for n in batch * 64 + 1..=batch * 64 + 64 {
+                    worker_client.decode_input(7, 0, 42, n, u64::from(n));
+                    let token = worker_client.frame_for_pts(7, 0, u64::from(n)).unwrap();
+                    assert_eq!(token.observation_epoch, epoch);
+                    assert_eq!(token.rtp_timestamp, n);
+                    assert!(worker_client.displayed(token, display(&worker_client, u64::from(n))));
+                }
+                done.send(()).unwrap();
+            }
+        });
+        for batch in 0..16u32 {
+            let aggregate = client.state.lock().unwrap();
+            go.send(()).unwrap();
+            let finished = completed.recv_timeout(Duration::from_secs(1));
+            drop(aggregate);
+            assert!(
+                finished.is_ok(),
+                "media must finish a whole batch under aggregate contention"
+            );
+            client.source_frames(
+                7,
+                9,
+                &(batch * 64 + 1..=batch * 64 + 64)
+                    .map(|n| descriptor(source, n, u64::from(n), false))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        worker.join().unwrap();
+        assert_eq!(client.observation_epoch.load(Ordering::Acquire), epoch);
+        let snapshot = client.snapshot();
+        assert_eq!(snapshot.displayed_frames, 1024);
+        assert!(snapshot.measurement.is_some());
+        assert_eq!(
+            client.frame_for_pts(7, 0, 1024).unwrap().rtp_timestamp,
+            1024
+        );
+        assert!(
+            client.frame_for_pts(7, 0, 1).is_none(),
+            "bounded PTS retention still applies"
+        );
+    }
+    #[test]
+    fn queued_inputs_before_observer_barrier_cannot_gain_first_display_eligibility() {
+        let (client, source) = setup_client();
+        client.decode_input(7, 0, 42, 1, 100);
+        let token = client.frame_for_pts(7, 0, 100).unwrap();
+        // Do not aggregate the decode event first. A late consumer must apply
+        // the capture-time sequence, not treat consumption as a new decode.
+        assert!(client.set_display_observer(7, 2, DisplayMethod::PlatformDisplayed));
+        let mut redraw = display(&client, 1);
+        redraw.surface_epoch = 2;
+        assert!(client.displayed(token, redraw));
+        client.source_frames(7, 9, &[descriptor(source, 1, 1, false)]);
+        assert!(client.snapshot().measurement.is_none());
+        // Repeating the original encoded input must not re-qualify it either.
+        client.decode_input(7, 0, 42, 1, 100);
+        redraw.present_id += 1;
+        assert!(client.displayed(token, redraw));
+        assert!(client.snapshot().measurement.is_none());
     }
     #[test]
     fn replacing_display_observer_retires_old_generation_and_receipts() {
@@ -1196,7 +1560,7 @@ mod tests {
         let mut next = display(&client, 1);
         next.surface_epoch = 2;
         assert!(client.set_display_observer(7, 2, DisplayMethod::PlatformDisplayed));
-        assert!(!client.displayed(token, next));
+        assert!(client.displayed(token, next));
         assert_ne!(old, client.snapshot().generation);
         assert!(client.snapshot().measurement.is_none());
         client.decode_input(7, 0, 42, 2, 200);
@@ -1213,7 +1577,10 @@ mod tests {
         assert!(client.set_display_observer(7, 2, DisplayMethod::DxgiReceiptInterval));
         let generation = client.generation.load(Ordering::Acquire);
         let state = client.state.lock().unwrap();
-        assert!(client.clear_display_observer_if(7, 1), "stale cleanup must not need the state lock");
+        assert!(
+            client.clear_display_observer_if(7, 1),
+            "stale cleanup must not need the state lock"
+        );
         assert_eq!(client.active_surface.load(Ordering::Acquire), 2);
         assert_eq!(client.generation.load(Ordering::Acquire), generation);
         drop(state);
@@ -1232,7 +1599,10 @@ mod tests {
         assert!(client.set_display_observer(7, 2, DisplayMethod::DxgiReceiptInterval));
         assert!(client.clear_display_observer_if(7, 1));
         assert_eq!(client.active_surface.load(Ordering::Acquire), 2);
-        assert!(client.clear_display_observer_if(8, 2), "old media cleanup is already retired");
+        assert!(
+            client.clear_display_observer_if(8, 2),
+            "old media cleanup is already retired"
+        );
         assert_eq!(client.active_surface.load(Ordering::Acquire), 2);
     }
     #[test]
@@ -1251,6 +1621,36 @@ mod tests {
         drop(state);
     }
     #[test]
+    fn replaced_surface_cannot_retire_new_owner_when_its_enqueue_loses_the_race() {
+        let (client, _) = setup_client();
+        client.decode_input(7, 0, 42, 1, 100);
+        let old = client.frame_for_pts(7, 0, 100).unwrap();
+        let old_receipt = display(&client, 1);
+        assert!(client.set_display_observer(7, 2, DisplayMethod::DxgiReceiptInterval));
+        client.decode_input(7, 0, 42, 2, 200);
+        let current = client.frame_for_pts(7, 0, 200).unwrap();
+        client.source_frames(7, 9, &[]);
+        let epoch = client.observation_epoch.load(Ordering::Acquire);
+        for n in 0..LIMIT {
+            let mut receipt = display(&client, n as u64);
+            receipt.surface_epoch = 2;
+            receipt.method = DisplayMethod::DxgiReceiptInterval;
+            assert!(client.displayed(current, receipt));
+        }
+        // Model a callback that passed its initial guard before replacement,
+        // but reaches the now-full queue only after the new owner is active.
+        assert!(!client.enqueue(
+            MetadataEvent::Displayed {
+                token: old,
+                display: old_receipt
+            },
+            old
+        ));
+        assert_eq!(client.observation_epoch.load(Ordering::Acquire), epoch);
+        assert!(client.current_token(current));
+        assert_eq!(client.active_surface.load(Ordering::Acquire), 2);
+    }
+    #[test]
     fn missing_original_observation_does_not_turn_static_frame_age_into_latency() {
         let (client, source) = setup_client();
         client.decode_input(7, 0, 42, 1, 100);
@@ -1260,6 +1660,7 @@ mod tests {
         // and the bounded receive record is later lost before joining it.
         for n in 0..LIMIT {
             client.decode_input(7, 0, 42, 10 + n as u32, 1000 + n as u64);
+            client.snapshot();
         }
         assert!(!client
             .state
@@ -1324,7 +1725,7 @@ mod tests {
         assert!(client.set_display_observer(7, 2, DisplayMethod::PlatformDisplayed));
         let mut redraw = display(&client, 2);
         redraw.surface_epoch = 2;
-        assert!(!client.displayed(token, redraw));
+        assert!(client.displayed(token, redraw));
         client.source_frames(7, 9, &[descriptor(source, 1, 1, false)]);
         assert!(client.snapshot().measurement.is_none());
         let state = client.state.lock().unwrap();
@@ -1343,14 +1744,17 @@ mod tests {
         assert!(client.snapshot().measurement.is_none());
     }
     #[test]
-    fn lost_display_hook_retires_cached_token_without_querying_newer_pts() {
+    fn full_receipt_queue_retires_cached_token_without_querying_newer_pts() {
         let (client, source) = setup_client();
         client.decode_input(7, 0, 42, 1, 100);
         client.source_frames(7, 9, &[descriptor(source, 1, 1, false)]);
         let token = client.frame_for_pts(7, 0, 100).unwrap();
         assert!(client.current_token(token));
         let held = client.state.lock().unwrap();
-        assert!(!client.displayed(token, display(&client, 1)));
+        for n in 0..LIMIT {
+            assert!(client.displayed(token, display(&client, n as u64)));
+        }
+        assert!(!client.displayed(token, display(&client, LIMIT as u64)));
         drop(held);
         assert!(!client.current_token(token));
         assert!(!client.displayed(token, display(&client, 2)));
