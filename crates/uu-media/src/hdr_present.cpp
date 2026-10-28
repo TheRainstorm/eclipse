@@ -1,4 +1,4 @@
-// FP16 scRGB composition for a single native video window. MIT OR Apache-2.0.
+// FP16 scRGB presentation for a single native video window. MIT OR Apache-2.0.
 #include "d3d11_hdr_display.h"
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -8,7 +8,6 @@
 #include <cstring>
 #include <cstdlib>
 #include <d3d10.h>
-#include <dcomp.h>
 #include <dxgi1_5.h>
 #include <wrl/client.h>
 #include <cstdio>
@@ -23,8 +22,8 @@ struct Apartment {
     Apartment(){if(FAILED(result)&&result!=RPC_E_CHANGED_MODE)check(result,"initialize composition apartment");}
     ~Apartment(){if(SUCCEEDED(result))CoUninitialize();}
 };
-// Keep DComp and the WGL drawable on different HWNDs. A fullscreen WGL window
-// can otherwise stop DWM from consuming the composition chain. This child has
+// Keep the D3D swap chain and the WGL drawable on different HWNDs. A fullscreen
+// WGL window can otherwise prevent the native surface from displaying. This child has
 // no GL drawable or redirection bitmap and always passes input to its parent.
 struct CompositionWindow {
     HWND value=nullptr;
@@ -76,9 +75,6 @@ struct Presentation {
     ComPtr<EclipseOutput6> active_output;
     ComPtr<IDXGISwapChain3> chain;
     ComPtr<ID3D11Texture2D> shared_texture;
-    ComPtr<IDCompositionDevice> composition;
-    ComPtr<IDCompositionTarget> target;
-    ComPtr<IDCompositionVisual> visual;
     unsigned width=0,height=0;
     bool hdr=false;
     bool allow_tearing=false;
@@ -107,13 +103,12 @@ struct Presentation {
         if(SUCCEEDED(factory.As(&modern)) && SUCCEEDED(modern->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,&supported,sizeof(supported))))allow_tearing=supported!=FALSE;
         refresh(true);
         if(!hdr&&!allow_sdr)throw std::runtime_error("the current display output has HDR disabled");
-        ComPtr<IDXGIDevice> dxgi;check(device.As(&dxgi),"query HDR DXGI device");
-        check(DCompositionCreateDevice(dxgi.Get(),__uuidof(IDCompositionDevice),(void**)composition.GetAddressOf()),"create HDR composition device");
-        check(composition->CreateTargetForHwnd(content_window.value,TRUE,&target),"create HDR window composition target");
-        check(composition->CreateVisual(&visual),"create HDR composition visual");
-        // Content is attached only after GL registration and the first frame.
+        // This child owns no WGL drawable, so it can own a normal HWND flip
+        // chain. A composition chain routes even SyncInterval=0 through DWM;
+        // the direct chain permits independent presentation/tearing instead.
+        check(factory->MakeWindowAssociation(content_window.value,DXGI_MWA_NO_WINDOW_CHANGES|DXGI_MWA_NO_ALT_ENTER),"own native window presentation");
+        // The child becomes visible only after GL registration and the first frame.
     }
-    ~Presentation(){if(target&&composition){target->SetRoot(nullptr);composition->Commit();}}
     void refresh(bool force=false) {
         auto now=GetTickCount64();auto active=MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST);
         if(!force&&active==monitor&&now-queried<500)return;
@@ -149,17 +144,17 @@ struct Presentation {
         if(!chain) {
             DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=w;desc.Height=h;desc.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
             desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=2;
-            desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;desc.AlphaMode=DXGI_ALPHA_MODE_PREMULTIPLIED;
+            desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
             desc.Scaling=DXGI_SCALING_STRETCH;
             desc.Flags=allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0;
             ComPtr<IDXGISwapChain1> initial;
-            HRESULT created=factory->CreateSwapChainForComposition(device.Get(),&desc,nullptr,&initial);
+            HRESULT created=factory->CreateSwapChainForHwnd(device.Get(),content_window.value,&desc,nullptr,nullptr,&initial);
             if(allow_tearing&&(created==DXGI_ERROR_INVALID_CALL||created==DXGI_ERROR_UNSUPPORTED)) {
                 allow_tearing=false;desc.Flags=0;
-                created=factory->CreateSwapChainForComposition(device.Get(),&desc,nullptr,&initial);
+                created=factory->CreateSwapChainForHwnd(device.Get(),content_window.value,&desc,nullptr,nullptr,&initial);
             }
             check(created,"create FP16 HDR swap chain");
-            std::fprintf(stderr,"HDR composition allow_tearing=%s buffers=2\n",allow_tearing?"true":"false");
+            std::fprintf(stderr,"HDR HWND flip-discard allow_tearing=%s buffers=2\n",allow_tearing?"true":"false");
             check(initial.As(&chain),"query HDR swap chain");
             check(chain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709),"set scRGB HDR color space");
             ComPtr<IDXGIDevice1> latency;check(device.As(&latency),"query HDR frame latency");check(latency->SetMaximumFrameLatency(1),"limit HDR frame latency");
@@ -171,7 +166,7 @@ struct Presentation {
     }
     void deactivate() {
         content_window.visible(false);
-        if(visual_attached){check(target->SetRoot(nullptr),"detach HDR composition");check(composition->Commit(),"commit HDR deactivation");visual_attached=false;}
+        content_visible=false;
     }
     void present(bool vsync) {
         if(!chain||!shared_texture)throw std::runtime_error("HDR presentation surface is not ready");
@@ -181,13 +176,12 @@ struct Presentation {
         attach();
     }
     void attach() {
-        if(!visual_attached) {
-            check(visual->SetContent(chain.Get()),"attach HDR swap chain");check(target->SetRoot(visual.Get()),"attach HDR composition visual");
-            check(composition->Commit(),"commit HDR composition");visual_attached=true;
+        if(!content_visible) {
+            content_visible=true;
             content_window.visible(true);
         }
     }
-    bool visual_attached=false;
+    bool content_visible=false;
 };
 struct NativePresentation:Presentation {
     std::array<ComPtr<ID3D11Texture2D>,3> overlays;
