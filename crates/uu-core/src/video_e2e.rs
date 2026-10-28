@@ -372,11 +372,17 @@ impl SourceProof {
     fn permits(&self, first: FirstDisplay) -> bool {
         self.original == Some(first)
             && self.earliest_duplicate_ns.is_none_or(|duplicate| {
+                // The measured endpoint is this source image's first display,
+                // not necessarily the original AU's display order. An original
+                // display in [L,U] and all repetitions no earlier than D >= L
+                // keep min(original,repetitions) inside [L,U]. Only D < L can
+                // make that interval unsafe. Ceil L against floor D preserves
+                // this proof even at fractional-nanosecond clock boundaries.
                 first
                     .display
-                    .latest
+                    .earliest
                     .interval_ns()
-                    .is_some_and(|latest| latest.latest_ns <= duplicate)
+                    .is_some_and(|lower| lower.latest_ns <= duplicate)
             })
     }
 }
@@ -1050,8 +1056,8 @@ impl Client {
                 });
             }
             let proof = *proof;
-            // An earlier/overlapping duplicate receipt disproves the original
-            // AU's first-display eligibility; remove even an existing sample.
+            // A repetition possibly before the original interval's lower bound
+            // invalidates the source-first interval, even an existing sample.
             s.samples
                 .retain(|sample| sample.source_id != source_id || proof.permits(sample.first));
             record.evidence_registered = true;
@@ -1356,6 +1362,213 @@ mod tests {
         let snapshot = client.snapshot();
         assert_eq!(snapshot.observations_dropped, 1);
         assert_eq!(snapshot.history_evicted, 1);
+    }
+    fn proof_display(lower: u64, upper: u64, frequency_hz: u64) -> FirstDisplay {
+        let earliest = WireClockStamp {
+            epoch: 77,
+            ticks: lower,
+            frequency_hz,
+        };
+        FirstDisplay {
+            token: FrameToken {
+                media_epoch: 7,
+                observation_epoch: 2,
+                track: 0,
+                ssrc: 42,
+                rtp_timestamp: 1,
+            },
+            display: DisplayObservation {
+                surface_epoch: 1,
+                present_id: 1,
+                earliest,
+                latest: WireClockStamp {
+                    ticks: upper,
+                    ..earliest
+                },
+                method: DisplayMethod::RefreshInterval,
+            },
+        }
+    }
+    #[test]
+    fn source_first_interval_does_not_require_the_original_au_to_display_first() {
+        for lower in 0..=6 {
+            for upper in lower..=8 {
+                for duplicate in 0..=10 {
+                    let first = proof_display(lower, upper, 1_000_000_000);
+                    let proof = SourceProof {
+                        source_id: (9, 1, 1),
+                        original: Some(first),
+                        earliest_duplicate_ns: Some(duplicate as u128),
+                    };
+                    assert_eq!(proof.permits(first), duplicate >= lower);
+                    if proof.permits(first) {
+                        for original_display in lower..=upper {
+                            for duplicate_display in
+                                [duplicate, duplicate + 1, duplicate.max(upper) + 3]
+                            {
+                                let source_first = original_display.min(duplicate_display);
+                                assert!(lower <= source_first && source_first <= upper);
+                            }
+                        }
+                    } else {
+                        // A valid competitor could display at D < L. Discarding it
+                        // would falsely claim that the source's first display >= L.
+                        assert!(duplicate.min(upper) < lower);
+                    }
+                }
+            }
+        }
+        let first = proof_display(4, 4, 3_000_000_000);
+        let mut proof = SourceProof {
+            source_id: (9, 1, 1),
+            original: Some(first),
+            earliest_duplicate_ns: Some(1),
+        };
+        assert!(
+            !proof.permits(first),
+            "ceil L vs floor D must not hide a sub-ns earlier competitor"
+        );
+        proof.earliest_duplicate_ns = Some(2);
+        assert!(proof.permits(first));
+        proof.original = None;
+        assert!(
+            !proof.permits(first),
+            "duplicates never create a positive endpoint without an original receipt"
+        );
+    }
+    fn interval_receipt(
+        client: &Client,
+        present: u64,
+        surface: u64,
+        lower_back_ms: u64,
+        upper_back_ms: u64,
+    ) -> DisplayObservation {
+        let now = client.clock_stamp().unwrap();
+        DisplayObservation {
+            surface_epoch: surface,
+            present_id: present,
+            earliest: WireClockStamp {
+                ticks: now.ticks - now.frequency_hz * lower_back_ms / 1000,
+                ..now
+            },
+            latest: WireClockStamp {
+                ticks: now.ticks - now.frequency_hz * upper_back_ms / 1000,
+                ..now
+            },
+            method: DisplayMethod::DxgiReceiptInterval,
+        }
+    }
+    #[test]
+    fn overlapping_duplicate_and_late_source_keep_the_original_source_interval_and_age() {
+        let (client, mut source) = setup_client();
+        source.ticks -= source.frequency_hz / 10;
+        assert!(client.set_display_observer(7, 2, DisplayMethod::DxgiReceiptInterval));
+        client.decode_input(7, 0, 42, 1, 100);
+        let original = interval_receipt(&client, 1, 2, 10, 1);
+        assert!(client.displayed(client.frame_for_pts(7, 0, 100).unwrap(), original));
+        client.decode_input(7, 0, 42, 2, 200);
+        let mut duplicate = original;
+        duplicate.present_id = 2;
+        duplicate.earliest.ticks += duplicate.earliest.frequency_hz / 250;
+        assert!(client.displayed(client.frame_for_pts(7, 0, 200).unwrap(), duplicate));
+        client.source_frames(7, 9, &[descriptor(source, 2, 1, true)]);
+        assert!(client.snapshot().measurement.is_none());
+        client.source_frames(7, 9, &[descriptor(source, 1, 1, false)]);
+        assert_eq!(client.snapshot().measurement.unwrap().samples, 1);
+        let (interval, age) = {
+            let s = client.state.lock().unwrap();
+            let m = s.samples[0];
+            assert_eq!(m.first.display, original);
+            (m.interval, m.display_ns)
+        };
+        client.decode_input(7, 0, 42, 3, 300);
+        duplicate.present_id = 3;
+        assert!(client.displayed(client.frame_for_pts(7, 0, 300).unwrap(), duplicate));
+        client.source_frames(7, 9, &[descriptor(source, 3, 1, true)]);
+        assert_eq!(client.snapshot().measurement.unwrap().samples, 1);
+        let s = client.state.lock().unwrap();
+        assert_eq!(s.samples[0].interval, interval);
+        assert_eq!(
+            s.samples[0].display_ns, age,
+            "a duplicate cannot refresh sample age"
+        );
+        assert_eq!(age, original.earliest.interval_ns().unwrap().earliest_ns);
+    }
+    #[test]
+    fn duplicate_just_before_a_wide_original_lower_bound_still_revokes_it() {
+        let (client, mut source) = setup_client();
+        source.ticks -= source.frequency_hz / 10;
+        assert!(client.set_display_observer(7, 2, DisplayMethod::DxgiReceiptInterval));
+        client.decode_input(7, 0, 42, 1, 100);
+        client.source_frames(7, 9, &[descriptor(source, 1, 1, false)]);
+        let original = interval_receipt(&client, 1, 2, 10, 1);
+        let token = client.frame_for_pts(7, 0, 100).unwrap();
+        assert!(client.displayed(token, original));
+        assert!(client.snapshot().measurement.is_some());
+        client.decode_input(7, 0, 42, 2, 200);
+        let mut earlier = original;
+        earlier.present_id = 2;
+        earlier.earliest.ticks -= 1;
+        assert!(client.displayed(client.frame_for_pts(7, 0, 200).unwrap(), earlier));
+        client.source_frames(7, 9, &[descriptor(source, 2, 1, true)]);
+        assert!(client.snapshot().measurement.is_none());
+        let mut redraw = interval_receipt(&client, 3, 2, 1, 0);
+        redraw.present_id = 3;
+        assert!(client.displayed(token, redraw));
+        assert!(
+            client.snapshot().measurement.is_none(),
+            "a later cached redraw cannot replace the lost lower-bound proof"
+        );
+    }
+    #[test]
+    fn overlap_does_not_revive_expired_or_retired_observer_source_intervals() {
+        let (client, mut source) = setup_client();
+        source.ticks -= source.frequency_hz * 9 / 2;
+        assert!(client.set_display_observer(7, 2, DisplayMethod::DxgiReceiptInterval));
+        client.decode_input(7, 0, 42, 1, 100);
+        let old = interval_receipt(&client, 1, 2, 4000, 2000);
+        assert!(client.displayed(client.frame_for_pts(7, 0, 100).unwrap(), old));
+        client.decode_input(7, 0, 42, 2, 200);
+        let duplicate = interval_receipt(&client, 2, 2, 3000, 1000);
+        assert!(client.displayed(client.frame_for_pts(7, 0, 200).unwrap(), duplicate));
+        client.source_frames(
+            7,
+            9,
+            &[
+                descriptor(source, 1, 1, false),
+                descriptor(source, 2, 1, true),
+            ],
+        );
+        assert!(
+            client.snapshot().measurement.is_none(),
+            "late telemetry must not reset the original lower-bound age"
+        );
+
+        let (client, mut source) = setup_client();
+        source.ticks -= source.frequency_hz / 10;
+        assert!(client.set_display_observer(7, 1, DisplayMethod::DxgiReceiptInterval));
+        client.decode_input(7, 0, 42, 1, 100);
+        let old = interval_receipt(&client, 1, 1, 10, 1);
+        assert!(client.displayed(client.frame_for_pts(7, 0, 100).unwrap(), old));
+        assert!(client.set_display_observer(7, 2, DisplayMethod::DxgiReceiptInterval));
+        client.decode_input(7, 0, 42, 2, 200);
+        let mut duplicate = old;
+        duplicate.surface_epoch = 2;
+        duplicate.present_id = 2;
+        duplicate.earliest.ticks += duplicate.earliest.frequency_hz / 250;
+        assert!(client.displayed(client.frame_for_pts(7, 0, 200).unwrap(), duplicate));
+        client.source_frames(
+            7,
+            9,
+            &[
+                descriptor(source, 2, 1, true),
+                descriptor(source, 1, 1, false),
+            ],
+        );
+        assert!(
+            client.snapshot().measurement.is_none(),
+            "overlap cannot restore an old observer's cached original"
+        );
     }
     #[test]
     fn no_endpoint_remains_unknown_instead_of_becoming_zero_or_stage_sum() {
