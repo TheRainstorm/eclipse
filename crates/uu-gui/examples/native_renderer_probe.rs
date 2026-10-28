@@ -1,4 +1,6 @@
 //! Generated HDR pixels through native D3D video + GL UI, without changing OS HDR.
+//! Optional --fullscreen-cycle [--position x y] also exercises borderless
+//! fullscreen on a test output no larger than the 2048x2048 inspection limit.
 #[cfg(windows)]
 #[path = "../src/video_hdr.rs"]
 mod video_hdr;
@@ -18,14 +20,36 @@ fn main() -> anyhow::Result<()> {
     use std::sync::{Arc, Mutex};
     use uu_core::display_frames::{DisplayImage, RawFrame};
     use uu_media::{EncodedFrame, PixelFormat, Timestamp, VideoDecoder};
-    let path = std::env::args()
-        .nth(1)
+    let args: Vec<String> = std::env::args().collect();
+    let fullscreen_cycle = args.iter().any(|s| s == "--fullscreen-cycle");
+    let position = args
+        .iter()
+        .position(|s| s == "--position")
+        .map(|at| -> anyhow::Result<[f32; 2]> {
+            Ok([
+                args.get(at + 1)
+                    .ok_or_else(|| anyhow::anyhow!("missing position x"))?
+                    .parse()?,
+                args.get(at + 2)
+                    .ok_or_else(|| anyhow::anyhow!("missing position y"))?
+                    .parse()?,
+            ])
+        })
+        .transpose()?
+        .unwrap_or([200., 200.]);
+    let path = args
+        .get(1)
+        .cloned()
         .ok_or_else(|| anyhow::anyhow!("provide a generated HDR10 .h265 or .obu stream"))?;
     let codec = if path.ends_with(".obu") {
         uu_proto::media::VideoCodec::Av1
     } else {
         uu_proto::media::VideoCodec::Hevc
     };
+    anyhow::ensure!(
+        position.iter().all(|p| p.is_finite()),
+        "position must be finite"
+    );
     let bytes = std::fs::read(path)?;
     anyhow::ensure!(bytes.len() < 16 * 1024 * 1024, "probe input too large");
     let sequence = match codec {
@@ -114,6 +138,7 @@ fn main() -> anyhow::Result<()> {
         last: u64,
         hidden: bool,
         snapshot: bool,
+        fullscreen_cycle: bool,
     }
     impl eframe::App for Probe {
         fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
@@ -124,7 +149,8 @@ fn main() -> anyhow::Result<()> {
             let inspected = self.result.lock().unwrap().take();
             if let Some(data) = inspected.filter(|d| d.serial > self.last) {
                 self.last = data.serial;
-                let ppp = ctx.pixels_per_point();
+                let ppp = f32::from_bits((data.tag >> 32) as u32);
+                let tag = data.tag & u32::MAX as u64;
                 let read = |x: f32, y: f32| -> [f32; 3] {
                     let x = (x * ppp) as usize;
                     let y = (y * ppp) as usize;
@@ -136,8 +162,9 @@ fn main() -> anyhow::Result<()> {
                     ]
                 };
                 let (hdr, white) = data.color.unwrap();
-                let phase = data.tag >> 8;
-                let ui_code = data.tag & 255;
+                let phase = (tag >> 8) & 255;
+                let fullscreen = tag & (1 << 24) != 0;
+                let ui_code = tag & 255;
                 let mut worst = 0_f32;
                 for (i, reference) in self.references.iter().enumerate() {
                     let actual = read(80. + (i % 2) as f32 * 128., 84. + (i / 2) as f32 * 72.);
@@ -219,7 +246,7 @@ fn main() -> anyhow::Result<()> {
                     data.size,
                     read(32., data.size[1] as f32 / ppp - 16.)
                 );
-                self.checked.lock().unwrap().push(serde_json::json!({"phase":phase,"ui_code":ui_code,"ui_reused":data.ui_reused,"logical_hdr":hdr,"actual_desktop_hdr":data.actual_hdr,"white_nits":white,"max_quad_error":worst,"ui":ui,"size":data.size}));
+                self.checked.lock().unwrap().push(serde_json::json!({"phase":phase,"ui_code":ui_code,"pixels_per_point":ppp,"fullscreen":fullscreen,"ui_reused":data.ui_reused,"logical_hdr":hdr,"actual_desktop_hdr":data.actual_hdr,"white_nits":white,"max_quad_error":worst,"ui":ui,"size":data.size}));
                 self.count += 1;
             }
             if self.count >= 12 || self.error.lock().unwrap().is_some() {
@@ -259,7 +286,14 @@ fn main() -> anyhow::Result<()> {
             }
             let phase = (self.count / 3) as u64;
             if self.count == 6 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(384., 256.)));
+                ctx.send_viewport_cmd(if self.fullscreen_cycle {
+                    egui::ViewportCommand::Fullscreen(true)
+                } else {
+                    egui::ViewportCommand::InnerSize(egui::vec2(384., 256.))
+                });
+            }
+            if self.count == 9 && self.fullscreen_cycle {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             }
             eframe::glow_presentation::set_active(ctx, ctx.viewport_id(), true, false);
             let color = match phase {
@@ -271,7 +305,11 @@ fn main() -> anyhow::Result<()> {
                 ctx,
                 ctx.viewport_id(),
                 Arc::new(video_hdr::native::Inspection {
-                    tag: (phase << 8) | self.count as u64,
+                    tag: ((ctx.pixels_per_point().to_bits() as u64) << 32)
+                        | (u64::from(ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)))
+                            << 24)
+                        | (phase << 8)
+                        | self.count as u64,
                     color: Some(color),
                     result: self.result.clone(),
                 }),
@@ -351,7 +389,7 @@ fn main() -> anyhow::Result<()> {
             vsync: false,
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([304., 216.])
-                .with_position([200., 200.])
+                .with_position(position)
                 .with_active(false),
             ..Default::default()
         },
@@ -379,6 +417,7 @@ fn main() -> anyhow::Result<()> {
                 last: 0,
                 hidden: false,
                 snapshot: false,
+                fullscreen_cycle,
             }))
         }),
     )
@@ -402,6 +441,14 @@ fn main() -> anyhow::Result<()> {
             .any(|v| v["ui_reused"] == true),
         "UI layer reuse was not exercised"
     );
+    if fullscreen_cycle {
+        let checks = result_checked.lock().unwrap();
+        anyhow::ensure!(
+            checks.iter().any(|v| v["fullscreen"] == true)
+                && checks.last().is_some_and(|v| v["fullscreen"] == false),
+            "fullscreen enter/exit was not observed"
+        );
+    }
     println!(
         "{}",
         serde_json::json!({"passed_frames":12,"scope":"generated native scRGB composition before DWM, no OS display changes; logical HDR override is not desktop HDR acceptance","checks":*result_checked.lock().unwrap()})

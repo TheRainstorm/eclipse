@@ -366,6 +366,11 @@ impl Presenter for NativePresenter {
     fn finish(&mut self) {
         unsafe {
             if self.locked {
+                // DirectComposition replaces SwapBuffers, so complete GL writes
+                // before returning this UI slot to D3D. Merely flushing/unlocking
+                // can expose an unfinished layer, especially after a resize.
+                // Cached UI frames never lock a slot and do not wait here.
+                self.gl.finish();
                 if (self.api.unlock)(self.device, 1, &mut self.overlays[self.index].object) == 0 {
                     self.finish_error = Some("native UI ring release failed".into());
                 } else {

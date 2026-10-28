@@ -9,7 +9,7 @@ Cargo.toml[FV8T]: F:组织引擎应用及子模块插件的Rust workspace，统�
 LICENSE[SG6T]: F:声明项目自有代码可选择MIT或Apache-2.0并划定第三方权利边界 | R:code:LICENSE-MIT,code:LICENSE-APACHE,code:docs/licensing-and-compatibility.md | A:- | S:代码许可不授予第三方服务接入或商标使用权
 LICENSE-APACHE[SG4M]: F:提供Apache-2.0完整许可、专利授权及分发条件 | R:code:LICENSE | A:- | S:-
 LICENSE-MIT[SG4T]: F:提供MIT授权、保留版权声明条件与免责条款 | R:code:LICENSE | A:- | S:-
-README.md[SG7S]: F:介绍原生串流、独立UU插件、版本交付与安装构建及文档导航 | R:code:docs/plugins.md,code:docs/releases/v0.20.3.md,code:docs/native-streaming.md | A:- | S:源码构建须初始化子模块；官方手机互通尚未验收，原生协议不兼容Sunshine
+README.md[SG7S]: F:介绍原生串流、独立UU插件、版本交付与安装构建及文档导航 | R:code:docs/plugins.md,code:docs/releases/v0.20.4.md,code:docs/native-streaming.md | A:- | S:源码构建须初始化子模块；官方手机互通尚未验收，原生协议不兼容Sunshine
 SECURITY.md[SS8T]: F:定义公开PC兼容值和个人凭据的分发边界、私密报告与扫描流程 | R:code:tools/security/scan_secrets.py,code:docs/connection-credentials.md | A:- | S:公开常量仅按精确路径与指纹放行；历史清理不撤回已下载副本
 .gitmodules[FE7T]: F:声明plugins子模块的公开仓库地址与检出位置 | R:code:Cargo.toml,code:docs/plugins.md | A:submodule.plugins | S:实际插件提交由主仓库gitlink固定；更新主项目后须初始化对应子模块
 
@@ -223,7 +223,7 @@ hdr_renderer_probe.rs[TH6M]: F:用生成HDR10流检查生产纹理渲染与FP16�
 hud_preview.rs[TU5S]: F:用生成指标在私有Xvfb渲染生产HUD、长间隔与详情布局并保存预览 | R:code:crates/uu-gui/src/hud_panel.rs | A:main | S:拒绝覆盖截图，不使用真实会话或桌面数据
 latency_viewer_probe.rs[TO6M]: F:让有期限只接收原生会话通过生产渲染器记录帧时序与停顿 | R:code:crates/uu-gui/src/video_texture.rs,code:crates/uu-core/src/pipeline_trace.rs | A:main | S:不注入输入或改显示；样本满即失败，不静默截尾，绘制统计不等同物理显示延迟
 native_clipboard_probe.rs[TU5S]: F:在两个自有Xvfb间检查原生文本图片、许可与停止释放闭环 | R:code:crates/uu-gui/src/clipboard.rs,code:crates/uu-core/src/native_clipboard.rs | A:main | S:验证Xvfb进程与私有Xauthority所有权，禁止初始主机内容无许可广播
-native_renderer_probe.rs[TH6L]: F:用生成HDR图验证D3D视频与GL UI合成的真实像素和呈现路径 | R:code:crates/uu-gui/src/video_native.rs,code:crates/uu-gui/src/video_texture.rs | A:main | S:不改变OS HDR；测试自有窗口，生成图通过不代表物理HDR验收
+native_renderer_probe.rs[TH6L]: F:用生成HDR图校验D3D视频与GL界面像素、缓存和全屏及DPI转换 | R:code:crates/uu-gui/src/video_native.rs,code:crates/uu-gui/src/video_texture.rs | A:main | S:像素检查绑定被测帧DPI；读回限2048边长，不改OS HDR，不能代替物理HDR验收
 presentation_probe.rs[TH5T]: F:在自有主子窗口检验已有surface的VSync开启关闭再开启 | R:code:crates/uu-gui/src/window.rs | A:main | S:不连接远端；最多300次绘制等待
 video_cursor_probe.rs[TH5M]: F:在自有窗口中核验透明、掩码和XOR光标的合成像素 | R:code:crates/uu-gui/src/video_cursor.rs | A:main | S:仅生成指针像素，要求隔离显示或窗口站
 video_dma_probe.rs[TH6M]: F:对照生成视频GPU表面导入与CPU平面上传的像素和渲染路径 | R:code:crates/uu-gui/src/video_texture.rs | A:main | S:仅读自有帧缓冲；Windows色度滤波顺序差异采用明确误差界限
@@ -292,7 +292,7 @@ video_cursor.rs[AU6M]: F:以小型透明和XOR纹理把原生光标合成到现�
 video_d3d11.rs[IH8M]: F:将D3D11解码表面转换并通过WGL共享RGB纹理供GL采样 | R:code:crates/uu-gui/src/wgl_interop.rs,code:crates/uu-media/src/d3d11_frame.rs | A:Importer,enable | S:方法与析构须在所属GL线程当前context；持有解码帧直到转换完成，错误路径也要同步后释放
 video_dma_buf.rs[IH7M]: F:把租赁且同步完成的Linux DMA-BUF视频平面导入EGL | R:code:crates/uu-media/src/dma_buf.rs,code:crates/uu-gui/src/video_texture.rs | A:enable | S:默认CPU平面，UU_GPU_VIDEO=1才开；fence后归还表面，最多3个退役槽且繁忙时不阻塞UI
 video_hdr.rs[IH8M]: F:为单串流viewport安装浮点scRGB呈现器并协调原生D3D与WGL回退 | R:code:crates/uu-gui/src/video_native.rs,code:crates/uu-media/src/hdr.rs | A:enable_for_stream,enable | S:FP16可分配不代表输出支持HDR，实际分配与注册完成且显示器支持后才宣告能力
-video_native.rs[IH8M]: F:将同适配器D3D视频与三槽GL UI叠加合成为原生呈现 | R:code:crates/uu-gui/src/video_native_source.rs,code:crates/uu-media/src/hdr_windows.rs | A:enable,Inspection | S:每窗口仅一个合成目标；UI缓存键只有实际复用条件相同才有效，隐藏绘制不得沿用旧内容键
+video_native.rs[IH8M]: F:将同适配器D3D视频与三槽GL UI叠加合成为原生呈现 | R:code:crates/uu-gui/src/video_native_source.rs,code:crates/uu-media/src/hdr_windows.rs | A:enable,Inspection | S:每窗口仅一目标；GL实际写入完成后才能解锁交D3D，缓存复用不等待；隐藏重绘不能沿用旧UI键
 video_native_source.rs[DP8S]: F:跨D3D设备导出转换图像并跟踪消费fence和有界解码帧租约 | R:code:crates/uu-gui/src/video_texture.rs,code:crates/uu-media/src/d3d11_external.rs | A:Source | S:创建使用析构限定render线程；退役置valid=false，未消费的转换不能提前释放底层样本
 video_texture.rs[AU9L]: F:统一CPU与GPU视频绘制回退、诊断和按轨道连续性观察 | R:code:crates/uu-gui/src/video.frag,code:crates/uu-gui/src/video_d3d11.rs,code:crates/uu-gui/src/video_dma_buf.rs,code:crates/uu-core/src/frame_continuity.rs | A:VideoTexture,enable_gpu_video | S:实际D3D图像才启用原生合成；早期旧帧不能永久关平面渲染；P010 GLES需norm16否则显式CPU色调映射；连续性记录的是提交而非GPU或扫描完成
 video_timing.rs[KO5T]: F:分组记录视频回调上传绑定绘制等CPU阶段和近期窗口统计 | R:code:crates/uu-gui/src/video_texture.rs | A:Timings | S:新图像与相同图像UI重绘分开，驱动等待计入CPU耗时
@@ -553,6 +553,7 @@ v0.20.0.md[SV4T]: F:记录独立插件仓库、共用协议SDK与实验性官方
 v0.20.1.md[SV4T]: F:记录HUD手动复制与行对齐、统一悬浮菜单和声音控件的更新 | R:code:docs/hud.md,code:crates/uu-gui/src/stream_menu.rs | A:- | S:界面更新需重开旧窗口，后台服务无需因此重启
 v0.20.2.md[SV4T]: F:发布采集相位修正、滚动长间隔及准确视频阶段与主机跨度统计 | R:code:docs/hud.md,code:docs/native-latency.md | A:- | S:调度模型收益不代表4KHDR实流或物理延迟下降；主机节拍需更新共享端并重启其进程
 v0.20.3.md[SV4T]: F:发布HUD已观察停图的暂停保留、标签切换及缓冲失焦边界修正 | R:code:docs/hud.md,code:crates/uu-core/src/frame_continuity.rs | A:- | S:后台时间不累加；客户端重开生效，可保留v0.20.2共享端
+v0.20.4.md[SV4T]: F:发布原生合成UI写入同步修复及全屏与DPI像素回归 | R:code:crates/uu-gui/src/video_native.rs,code:crates/uu-gui/examples/native_renderer_probe.rs | A:- | S:客户端重开生效；同步可能增加重绘帧等待，生成图不替代实流或物理HDR验收
 
 ===/home/yfy/Repo/uu_remote/licenses/===
 README.md[SG4T]: F:记录SPDX标准文本来源版本及第三方原始通知优先规则 | R:code:tools/licenses/generate.py | A:- | S:附带GPL或LGPL文本不等于项目选用该许可
