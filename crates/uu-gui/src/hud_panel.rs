@@ -145,6 +145,7 @@ impl Metrics {
         uu_i18n::text(match self.video_measurement().map(|value|value.method) {
             Some(DisplayMethod::PlatformDisplayed)=>"系统显示回执",
             Some(DisplayMethod::RefreshInterval)=>"刷新区间",
+            Some(DisplayMethod::DxgiReceiptInterval)=>"DXGI回执估测",
             None=>"未知",
         })
     }
@@ -380,8 +381,11 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     let green=Color32::from_rgb(143,225,184);let blue=Color32::from_rgb(139,194,255);let orange=Color32::from_rgb(255,190,108);
     let pct=|v:Option<f32>|valid(v).map_or_else(||"—".into(),|v|format!("{v:.2}%"));let c=&m.counters;
     let measured=m.video_measurement();
-    let video_help=uu_i18n::text("按同一源画面身份关联主机源呈现和客户端系统显示回执。四时间戳只约束时钟偏移区间，不假定上下行对称；数值是带误差的估测，不是物理像素响应或鼠标到屏幕延迟。缺少任一端点或校时数据时保持未知，绝不回退阶段和。");
-    let percentile_help=uu_i18n::text("最近3秒同帧延迟区间中点的均值及P50/P95估测，±为该窗口内最大保守误差，包含时钟、显示区间和微秒舍入；中点不是精确时间。");
+    let empirical=measured.is_some_and(|value|value.method==uu_core::video_e2e::DisplayMethod::DxgiReceiptInterval);
+    let video_help=if empirical {uu_i18n::text("按同帧身份将源时间关联至DXGI已报告的PresentCount，显示区间取该图像最早提交前至首次回执查询后。多显示器或其它全屏应用可能使DXGI统计不可靠；这是经验估测，不是平台保证的硬界，也不是鼠标到像素延迟。")}
+        else {uu_i18n::text("按同一源画面身份关联主机源呈现和客户端系统显示回执。四时间戳只约束时钟偏移区间，不假定上下行对称；数值是带误差的估测，不是物理像素响应或鼠标到屏幕延迟。缺少任一端点或校时数据时保持未知，绝不回退阶段和。")};
+    let percentile_help=if empirical {uu_i18n::text("最近3秒同帧区间中点的均值及P50/P95估测。±包含校时界、DXGI回执区间半宽和舍入，仅在API统计可信的假设下成立；不保证多屏环境的硬误差界，中点不是精确显示时间。")}
+        else {uu_i18n::text("最近3秒同帧延迟区间中点的均值及P50/P95估测，±为该窗口内最大保守误差，包含时钟、显示区间和微秒舍入；中点不是精确时间。")};
     let mut video=vec![
         field(uu_i18n::text("均值估测"),m.video_value(),percentile_help),
         field("P50/P95",measured.map_or_else(||"—".into(),|v|format!("≈{:.3}/{:.3} ms",v.p50_us as f64/1000.,v.p95_us as f64/1000.)),percentile_help),
@@ -780,6 +784,26 @@ mod tests {
         });
         assert_eq!(m.video_mean_ms(),Some(21.163));
         assert_eq!(m.video_uncertainty_ms(),Some(0.999));
+    }
+    #[test]
+    fn dxgi_method_exposes_empirical_quality_and_multiple_monitor_limitation() {
+        use uu_core::video_e2e::{DisplayMethod,Measurement};
+        let m=Metrics {video_e2e:Some(e2e_snapshot(Some(Measurement {samples:2,
+            mean_us:21_000,p50_us:20_000,p95_us:22_000,uncertainty_us:10_000,
+            method:DisplayMethod::DxgiReceiptInterval}),None)),..Default::default()};
+        uu_i18n::with_language(uu_i18n::Language::Chinese,||{
+            assert!(m.total_label().ends_with("DXGI回执估测"));
+            let rows=detail_rows(&m);
+            let values=&rows.iter().find(|row|row.label=="视频端到端").unwrap().values;
+            assert!(values.iter().any(|v|v.help.contains("多显示器")&&v.help.contains("经验估测")));
+            assert!(values.iter().any(|v|v.help.contains("API统计可信的假设")&&v.help.contains("硬误差界")));
+        });
+        uu_i18n::with_language(uu_i18n::Language::English,||{
+            assert!(m.total_label().ends_with("DXGI receipt estimate"));
+            let rows=detail_rows(&m);
+            let values=&rows.iter().find(|row|row.label=="Video E2E").unwrap().values;
+            assert!(values.iter().any(|v|v.help.contains("empirical")&&v.help.contains("multiple monitors")));
+        });
     }
     #[test]
     fn unknown_causes_stay_explicit_and_a_measured_zero_is_available() {

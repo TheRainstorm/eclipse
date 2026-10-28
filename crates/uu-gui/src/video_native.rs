@@ -1,6 +1,7 @@
 //! Same-adapter D3D video plus a three-slot GL UI overlay. No video WGL lock.
 use crate::video_texture::NativeImage;
 use crate::video_texture::present_trace;
+use crate::video_texture::dxgi_receipt;
 use crate::wgl_interop::{Api, Handle};
 use eframe::{
     egui,
@@ -55,6 +56,7 @@ struct NativePresenter {
     shape: Option<Arc<uu_core::native_cursor::Shape>>,
     trace:Option<present_trace::Producer>,
     observing:bool,
+    receipt:dxgi_receipt::Bridge,
 }
 unsafe impl Send for NativePresenter {}
 pub fn enable(ctx: &egui::Context, gl: Arc<glow::Context>, vsync: bool) -> Result<bool, String> {
@@ -124,11 +126,13 @@ impl NativePresenter {
             },
             image: None,
             trace,observing,
+            receipt:dxgi_receipt::Bridge::default(),
             inspection: None,
             shape: None,
         })
     }
     unsafe fn clear(&mut self) {
+        self.receipt.reset();
         self.finish();
         self.gl.finish();
         self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
@@ -329,23 +333,37 @@ impl Presenter for NativePresenter {
     fn present(&mut self, vsync: bool) -> Result<(), String> {
         self.finish();
         if let Some(error) = self.finish_error.take() {
+            self.receipt.reset();
             if let Some(image) = self.image.take() {
                 image.valid.store(false, Ordering::Release);
             }
             return Err(error);
         }
         let mut submitted = 0;
-        if self.observing&&self.trace.as_ref().is_none_or(|trace|!trace.active()) {self.native.observe_presents(false);self.observing=false;}
+        let frame=self.image.as_ref().and_then(|image|image.observation.as_ref());
+        let wanted=self.trace.as_ref().is_some_and(|trace|trace.active())
+            || dxgi_receipt::Bridge::wanted(frame);
+        if wanted!=self.observing {
+            self.native.observe_presents(wanted);
+            self.observing=wanted;
+        }
+        if !wanted {self.receipt.reset();}
         let result = self
             .native
             .present(self.index as u32, vsync, &mut submitted);
         if self.observing {
-            if let (Some(trace),Some(raw))=(&self.trace,self.native.take_present_observation()) {
+            if let Some(raw)=self.native.take_present_observation() {
                 let offered=self.image.as_ref().map(|image|(image.id,image.ready));
                 let frame=self.image.as_ref().and_then(|image|image.observation.as_ref());
-                trace.record(present_trace::Row::new(raw,offered,frame,self.reuse_ui,self.inspection.is_some()));
+                if let Some(trace)=&self.trace {
+                    trace.record(present_trace::Row::new(raw,offered,frame,self.reuse_ui,self.inspection.is_some()));
+                }
+                self.receipt.record(raw,offered,frame,self.inspection.is_some());
+            }else {
+                self.receipt.reset();
             }
         }
+        if result.is_err() {self.receipt.reset();}
         self.last_native = self.image.is_some() && result.is_ok();
         self.ui_key = if self.last_native {
             self.next_ui_key
@@ -391,6 +409,7 @@ impl Presenter for NativePresenter {
         }
     }
     fn deactivate(&mut self) -> Result<(), String> {
+        self.receipt.reset();
         self.finish();
         self.image = None;
         self.shape = None;

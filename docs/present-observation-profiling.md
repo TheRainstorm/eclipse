@@ -1,8 +1,8 @@
 # 同帧原生 Present 诊断
 
-此通路记录“实际解码图像→原生 Present 调用”的身份与原始 Windows 统计，供离线 profiler 与 PresentMon/ETW 关联。它不生成 HUD 的系统显示端点，也不把 API 返回、GPU fence 或 `SyncQPCTime` 当作显示完成。
+此通路记录“实际解码图像→原生 Present 调用”的身份与原始 Windows 统计，供离线 profiler 与 PresentMon/ETW 关联。后台文件与默认 HUD 的 DXGI 回执估测共用同一次原始查询；文件自身仍只有原始证据，不把 API 返回、GPU fence 或 `SyncQPCTime` 当作显示完成。
 
-默认关闭。Windows PowerShell 中可为承载被测串流的新进程设置：
+原始文件记录默认关闭；双方已协商 E2E 时默认的内存回执估测不依赖此开关。Windows PowerShell 中可为承载被测串流的新进程设置：
 
 ```powershell
 $env:ECLIPSE_CONTINUOUS_TRACE = '1'
@@ -17,6 +17,8 @@ $env:ECLIPSE_NATIVE_PRESENT_TRACE_FILE = Join-Path $env:TEMP ('uu-present-' + [g
 当前可确认提交关联的是原生 D3D 视频路径：转换图像的 `native_source_id + native_source_ready` 必须与同次 Present 的原始观测一致，且会话仍有效。相同图像重绘保留原身份。共同路径转 RGBA 时保留已冻结的 sidecar；裸 `send(Rgba)` 没有身份。GL/UI-overlay 的图像到原生 Present 桥尚未接通时，提交记录保持 `no_native_image`，不重建或猜测身份。纯 WGL SwapBuffers 尚无此原生 FFI 观测。
 
 输出按一秒或256条批量写入；渲染线程只提交固定元数据，不序列化 JSON 或写盘。队列最多512条，文件预算32MiB；慢消费者会丢观测并报告计数，不等待串流。启用观测会额外查询 Windows 统计，性能对照应固定该开关。
+
+`video_stats.video_e2e` 在既有会话统计周期记录 HUD 同一快照，包含样本、源/回执/丢观测数、方法及 unknown 原因，便于不选中 HUD 文字时核验。方法 `dxgi_receipt_interval` 明确为经验区间；多屏/竞争全屏的统计限制不因 HRESULT 为 S_OK 而消失。ETW 仍是独立显示时间对照，参见 [HUD](hud.md)。
 
 窗口完整性以最终 `native_present_trace_end` 记录验证，检查 `complete=true`、`reason=normal_shutdown`、`attempted_rows=rows_written` 和零 `dropped_rows_total`。达到文件预算、写入失败、退出等待超时或强制终止进程时，最终记录会标明不完整，或无法产生该记录；缺少它不能称为完整采集。
 

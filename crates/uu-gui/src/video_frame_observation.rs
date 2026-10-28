@@ -33,6 +33,12 @@ impl From<uu_core::video_e2e::FrameToken> for FrameToken {
         }
     }
 }
+impl From<FrameToken> for uu_core::video_e2e::FrameToken {
+    fn from(value: FrameToken) -> Self {
+        Self { media_epoch: value.media_epoch, observation_epoch: value.observation_epoch,
+            track: value.track, ssrc: value.ssrc, rtp_timestamp: value.rtp_timestamp }
+    }
+}
 #[derive(Clone)]
 pub(crate) struct FrameObservation {
     stats: Weak<MediaStats>,
@@ -77,10 +83,33 @@ impl FrameObservation {
     }
     /// A queued or cached image cannot regain the identity of a retired session.
     pub(crate) fn current_identity(&self) -> Option<FrameIdentity> {
+        self.current_stats().map(|_| self.identity)
+    }
+    pub(crate) fn current_stats(&self) -> Option<Arc<MediaStats>> {
         let stats = self.stats.upgrade()?;
         (stats.native_media_epoch.load(Ordering::Acquire) == self.identity.media_epoch
-            && !stats.native_media_retired.load(Ordering::Acquire))
-        .then_some(self.identity)
+            && !stats.native_media_retired.load(Ordering::Acquire)
+            && self.identity.token.is_none_or(|token| stats.video_e2e.current_token(token.into())))
+        .then_some(stats)
+    }
+    #[cfg(any(windows, test))]
+    pub(crate) fn same_display_owner(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.stats, &other.stats)
+            && self.identity.media_epoch == other.identity.media_epoch
+            && self.identity.token.zip(other.identity.token).is_some_and(|(a,b)|
+                a.media_epoch == b.media_epoch && a.observation_epoch == b.observation_epoch
+                    && a.track == b.track && a.ssrc == b.ssrc)
+    }
+    #[cfg(any(windows, test))]
+    pub(crate) fn set_display_observer(&self, surface: u64) -> bool {
+        self.current_stats().is_some_and(|stats| stats.video_e2e.set_display_observer(
+            self.identity.media_epoch, surface, uu_core::video_e2e::DisplayMethod::DxgiReceiptInterval))
+    }
+    #[cfg(any(windows, test))]
+    pub(crate) fn clear_display_observer(&self, surface: u64) -> bool {
+        // Cleanup must still run after the token/observation epoch is retired.
+        self.stats.upgrade().is_none_or(|stats| stats.video_e2e.clear_display_observer_if(
+            self.identity.media_epoch, surface))
     }
 }
 
@@ -115,9 +144,13 @@ mod tests {
         };
         let observation = FrameObservation::new(&stats, &image(), Some(frozen)).unwrap();
         let redraw = observation.clone();
-        assert_eq!(redraw.current_identity().unwrap().token.unwrap().ssrc, 9);
+        assert_eq!(redraw.identity.token.unwrap().ssrc, 9);
+        assert!(redraw.current_identity().is_none(), "a token from an inactive observation epoch is not current");
+        let untracked = FrameObservation::new(&stats, &image(), Some(DecodedObservation { token: None, ..frozen })).unwrap();
+        assert_eq!(untracked.current_identity().unwrap().media_epoch, 7);
         stats.native_media_epoch.store(8, Ordering::Release);
         assert!(observation.current_identity().is_none());
+        assert!(untracked.current_identity().is_none());
         assert!(FrameObservation::new(&stats, &image(), Some(frozen)).is_none());
     }
     #[test]

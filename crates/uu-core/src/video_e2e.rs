@@ -72,10 +72,16 @@ pub enum DisplayMethod {
     PlatformDisplayed,
     /// An identified displayed present has a bounded refresh-time estimate.
     RefreshInterval,
+    /// Same-chain DXGI PresentCount feedback bounds a submission-to-query
+    /// interval empirically. Multiple-monitor/competing-fullscreen statistics
+    /// may be unreliable; this is not a platform-guaranteed display-time bound.
+    DxgiReceiptInterval,
 }
 
 /// A renderer may supply this only after identifying the actually displayed
 /// present. Both timestamps use the client's clock, never GPU completion time.
+/// DxgiReceiptInterval preserves its API-reported, empirical quality and must
+/// not be promoted to PlatformDisplayed or a guaranteed display-time bound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DisplayObservation {
     /// Changes when the swap chain/observer is recreated or becomes disjoint.
@@ -103,6 +109,8 @@ pub struct Measurement {
     pub p50_us: u64,
     pub p95_us: u64,
     /// Largest half-width of any contributing same-frame latency interval.
+    /// DxgiReceiptInterval assumes reliable DXGI statistics; its half-width is
+    /// not a platform guarantee for multiple-monitor configurations.
     pub uncertainty_us: u64,
     pub method: DisplayMethod,
 }
@@ -390,18 +398,37 @@ impl Client {
     pub fn clear_display_observer(&self, media_epoch: u64) -> bool {
         self.change_observer(media_epoch, None)
     }
-    fn change_observer(&self, media_epoch: u64, observer: Option<(u64, DisplayMethod)>) -> bool {
-        if !self.supported() || self.media_epoch.load(Ordering::Acquire) != media_epoch {
-            return false;
+    /// Retires only this renderer's observer. A late old-window destructor must
+    /// not clear a replacement window's receipt. False means cleanup contended;
+    /// the active observer is already invalid and the caller retries later.
+    pub fn clear_display_observer_if(&self, media_epoch: u64, surface_epoch: u64) -> bool {
+        if surface_epoch == 0 {
+            return true;
         }
-        let previous_active = self.active_surface.swap(0, Ordering::AcqRel);
+        self.change_owned_observer(media_epoch, None, Some(surface_epoch))
+    }
+    fn change_observer(&self, media_epoch: u64, observer: Option<(u64, DisplayMethod)>) -> bool {
+        self.change_owned_observer(media_epoch, observer, None)
+    }
+    fn change_owned_observer(&self, media_epoch: u64, observer: Option<(u64, DisplayMethod)>, expected: Option<u64>) -> bool {
+        if !self.supported() || self.media_epoch.load(Ordering::Acquire) != media_epoch {
+            return expected.is_some();
+        }
+        let previous_active = if let Some(expected) = expected {
+            match self.active_surface.compare_exchange(expected, 0, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(previous) => previous,
+                Err(0) => 0,
+                Err(_) => return true,
+            }
+        } else { self.active_surface.swap(0, Ordering::AcqRel) };
         let Ok(mut s) = self.state.try_lock() else {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         };
         if s.media_epoch != media_epoch {
-            return false;
+            return expected.is_some();
         }
+        if expected.is_some_and(|surface| s.surface_epoch != Some(surface)) { return true; }
         if observer.is_some_and(|(surface, _)| s.retired_surfaces.contains(&surface)) {
             self.active_surface
                 .store(previous_active, Ordering::Release);
@@ -625,7 +652,8 @@ impl Client {
             && self.observation_epoch.load(Ordering::Acquire) == token.observation_epoch
     }
     pub fn displayed(&self, token: FrameToken, display: DisplayObservation) -> bool {
-        if !self.current_token(token) {
+        if !self.current_token(token) || display.surface_epoch == 0
+            || self.active_surface.load(Ordering::Acquire) != display.surface_epoch {
             return false;
         }
         let Some(now) = self.local.stamp() else {
@@ -642,10 +670,14 @@ impl Client {
             return false;
         }
         let Ok(mut s) = self.state.try_lock() else {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            // An observed display was lost. A later redraw of the same cached
-            // original AU must not stand in for its missing first receipt.
-            self.observation_epoch.fetch_add(1, Ordering::AcqRel);
+            if self.current_token(token)
+                && self.active_surface.load(Ordering::Acquire) == display.surface_epoch {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                // Only a current owner's lost display retires metadata. A late
+                // replaced-window receipt must not invalidate its replacement.
+                let _ = self.observation_epoch.compare_exchange(token.observation_epoch,
+                    token.observation_epoch.wrapping_add(1), Ordering::AcqRel, Ordering::Acquire);
+            }
             return false;
         };
         if s.media_epoch != token.media_epoch
@@ -1174,6 +1206,49 @@ mod tests {
         assert!(client.displayed(client.frame_for_pts(7, 0, 200).unwrap(), fresh));
         assert_eq!(client.snapshot().measurement.unwrap().samples, 1);
         assert!(!client.displayed(token, display(&client, 2)));
+    }
+    #[test]
+    fn late_old_window_cleanup_does_not_clear_the_replacement_observer() {
+        let (client, _) = setup_client();
+        assert!(client.set_display_observer(7, 2, DisplayMethod::DxgiReceiptInterval));
+        let generation = client.generation.load(Ordering::Acquire);
+        let state = client.state.lock().unwrap();
+        assert!(client.clear_display_observer_if(7, 1), "stale cleanup must not need the state lock");
+        assert_eq!(client.active_surface.load(Ordering::Acquire), 2);
+        assert_eq!(client.generation.load(Ordering::Acquire), generation);
+        drop(state);
+        assert!(client.clear_display_observer_if(7, 2));
+        assert_eq!(client.active_surface.load(Ordering::Acquire), 0);
+        assert!(client.state.lock().unwrap().surface_epoch.is_none());
+        assert!(!client.set_display_observer(7, 2, DisplayMethod::DxgiReceiptInterval));
+    }
+    #[test]
+    fn owned_cleanup_invalidates_without_waiting_and_retries_only_its_owner() {
+        let (client, _) = setup_client();
+        let state = client.state.lock().unwrap();
+        assert!(!client.clear_display_observer_if(7, 1));
+        assert_eq!(client.active_surface.load(Ordering::Acquire), 0);
+        drop(state);
+        assert!(client.set_display_observer(7, 2, DisplayMethod::DxgiReceiptInterval));
+        assert!(client.clear_display_observer_if(7, 1));
+        assert_eq!(client.active_surface.load(Ordering::Acquire), 2);
+        assert!(client.clear_display_observer_if(8, 2), "old media cleanup is already retired");
+        assert_eq!(client.active_surface.load(Ordering::Acquire), 2);
+    }
+    #[test]
+    fn late_old_surface_receipt_cannot_retire_new_owner_during_contention() {
+        let (client, _) = setup_client();
+        assert!(client.set_display_observer(7, 2, DisplayMethod::DxgiReceiptInterval));
+        client.decode_input(7, 0, 42, 2, 200);
+        let token = client.frame_for_pts(7, 0, 200).unwrap();
+        let receipt = display(&client, 1); // old surface 1
+        let epoch = client.observation_epoch.load(Ordering::Acquire);
+        let state = client.state.lock().unwrap();
+        assert!(!client.displayed(token, receipt));
+        assert_eq!(client.observation_epoch.load(Ordering::Acquire), epoch);
+        assert!(client.current_token(token));
+        assert_eq!(client.active_surface.load(Ordering::Acquire), 2);
+        drop(state);
     }
     #[test]
     fn missing_original_observation_does_not_turn_static_frame_age_into_latency() {

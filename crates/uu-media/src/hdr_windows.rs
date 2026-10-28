@@ -151,7 +151,8 @@ impl NativePresentation {
     }
     pub fn cursor_position(&mut self,rect:Option<[f32;4]>){unsafe{eclipse_native_present_cursor_position(self.0.as_ptr(),rect.as_ref().map_or(std::ptr::null(),|r|r.as_ptr()));}}
     pub fn present(&mut self,index:u32,vsync:bool,submitted:&mut u64)->Result<(),String>{let mut e=[0;1024];if unsafe{eclipse_native_present_frame(self.0.as_ptr(),index,i32::from(vsync),submitted,e.as_mut_ptr(),e.len())}==0{Ok(())}else{Err(message(&e))}}
-    /// Explicit profiler opt-in. Disabled means no QPC/statistics query calls.
+    /// Negotiated E2E receipts or explicit raw profiling. Disabled means no
+    /// QPC/statistics query calls; consumers share this single observation.
     pub fn observe_presents(&mut self,enabled:bool){unsafe{eclipse_native_present_observe(self.0.as_ptr(),i32::from(enabled));}}
     /// Raw submission/statistics evidence; never a display completion receipt.
     pub fn take_present_observation(&mut self)->Option<super::RawPresentObservation>{

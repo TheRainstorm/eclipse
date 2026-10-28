@@ -15,6 +15,9 @@ pub(crate) mod frame_observation;
 #[path="video_present_trace.rs"]
 #[cfg(any(windows,test))]
 pub(crate) mod present_trace;
+#[path="video_dxgi_receipt.rs"]
+#[cfg(any(windows,test))]
+pub(crate) mod dxgi_receipt;
 use frame_observation::FrameObservation;
 
 // Upload decoded planes directly. No per-pixel ColorImage or CPU YUV conversion.
