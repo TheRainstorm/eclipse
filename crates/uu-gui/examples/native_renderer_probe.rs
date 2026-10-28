@@ -216,6 +216,7 @@ fn main() -> anyhow::Result<()> {
                         worst = worst.max((actual[c] - expected[c]).abs());
                     }
                     if actual.iter().any(|v| !v.is_finite()) || worst > 0.035 {
+                        eprintln!("native generated quad failure: index={i} actual={actual:?} expected={expected:?}");
                         *self.error.lock().unwrap() = Some(format!(
                             "native quad {i} phase{}: {actual:?} expected{expected:?}",
                             data.tag
@@ -234,11 +235,15 @@ fn main() -> anyhow::Result<()> {
                     .zip(expected_ui)
                     .any(|(v, e)| !v.is_finite() || (*v - e).abs() > 0.015)
                 {
-                    *self.error.lock().unwrap() =
-                        Some(format!("native UI white {ui:?} expected{}", white / 80.));
+                    let mut error = self.error.lock().unwrap();
+                    if error.is_none() {
+                        *error = Some(format!("native UI white {ui:?} expected{}", white / 80.));
+                    }
                 }
                 eprintln!(
-                    "native check tag={} ppp={} ui={:?} expected={:?} size={:?} sample_bottom={:?}",
+                    "native check serial={} image={} tag={} ppp={} ui={:?} expected={:?} size={:?} sample_bottom={:?}",
+                    data.serial,
+                    data.native_image_submitted,
                     data.tag,
                     ppp,
                     ui,
@@ -246,6 +251,20 @@ fn main() -> anyhow::Result<()> {
                     data.size,
                     read(32., data.size[1] as f32 / ppp - 16.)
                 );
+                if self.error.lock().unwrap().is_some() {
+                    let nonzero = data.pixels.iter().filter(|word| **word != 0).count();
+                    let alpha_nonzero = data.pixels.chunks_exact(4).filter(|px| px[3] != 0).count();
+                    let rgb_nonzero = data.pixels.chunks_exact(4).filter(|px| px[..3].iter().any(|v| *v != 0)).count();
+                    let mut bounds = [data.size[0], data.size[1], 0, 0];
+                    for (index, px) in data.pixels.chunks_exact(4).enumerate() {
+                        if px[..3].iter().any(|word| *word != 0) {
+                            let x = index as u32 % data.size[0];
+                            let y = index as u32 / data.size[0];
+                            bounds = [bounds[0].min(x), bounds[1].min(y), bounds[2].max(x + 1), bounds[3].max(y + 1)];
+                        }
+                    }
+                    eprintln!("native generated-frame failure metadata: words_nonzero={nonzero} alpha_pixels_nonzero={alpha_nonzero} rgb_pixels_nonzero={rgb_nonzero} rgb_bounds={bounds:?}");
+                }
                 self.checked.lock().unwrap().push(serde_json::json!({"phase":phase,"ui_code":ui_code,"pixels_per_point":ppp,"fullscreen":fullscreen,"ui_reused":data.ui_reused,"logical_hdr":hdr,"actual_desktop_hdr":data.actual_hdr,"white_nits":white,"max_quad_error":worst,"ui":ui,"size":data.size}));
                 self.count += 1;
             }
@@ -383,7 +402,7 @@ fn main() -> anyhow::Result<()> {
     let error = Arc::new(Mutex::new(None));
     let result_checked = checked.clone();
     let result_error = error.clone();
-    eframe::run_native(
+    let run_result = eframe::run_native(
         "Native generated-pixel composition probe",
         eframe::NativeOptions {
             vsync: false,
@@ -420,8 +439,11 @@ fn main() -> anyhow::Result<()> {
                 fullscreen_cycle,
             }))
         }),
-    )
-    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    );
+    // Flush an explicitly enabled raw Present trace on failure as well as
+    // success; a short failing probe may exit before the periodic batch write.
+    video_texture::present_trace::shutdown();
+    run_result.map_err(|e| anyhow::anyhow!(e.to_string()))?;
     if let Some(e) = result_error.lock().unwrap().as_ref() {
         eprintln!(
             "checks_before_failure={}",

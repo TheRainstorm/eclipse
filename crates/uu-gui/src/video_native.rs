@@ -30,6 +30,7 @@ pub struct InspectedFrame {
     pub actual_hdr: bool,
     pub color: Option<(bool, f32)>,
     pub ui_reused: bool,
+    pub native_image_submitted: bool,
 }
 struct Overlay {
     texture: glow::Texture,
@@ -390,6 +391,7 @@ impl Presenter for NativePresenter {
                         actual_hdr,
                         color: inspection.color,
                         ui_reused: self.reuse_ui,
+                        native_image_submitted: self.last_native,
                     });
                 }
             }
