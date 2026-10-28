@@ -234,6 +234,15 @@ impl eframe::App for Probe {
                         .iter()
                         .map(|s| s.native_media_epoch.load(Ordering::Acquire))
                         .collect();
+                    // Switch away without another UI pass: inactive sessions
+                    // must pause observation immediately, including parked tabs.
+                    state.apply(Action::Select(self.first,None),ctx);
+                    let first=&state.windows[0].sessions.iter().find(|s|s.id==self.first).unwrap().app;
+                    let texture=first.textures.values().next().expect("generated image is visible");
+                    texture.set_continuity_active(true,60);texture.record_new_image();texture.record_new_image();
+                    assert!(texture.continuity().is_some());
+                    state.apply(Action::Select(self.second_id,None),ctx);
+                    assert!(state.windows[0].sessions.iter().find(|s|s.id==self.first).unwrap().app.textures.values().all(|t|t.continuity().is_none()));
                     state.apply(
                         Action::Reorder {
                             source: self.second_id,

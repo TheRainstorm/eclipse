@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-10-28T00:16:08Z",
+  "updated_at": "2026-10-28T00:35:27Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "077840eb316bec5d6fa01f06a17a4390bdd4f172b6f4fd42cf9d3a98e67b3887",
-      "size": 131494,
-      "normalized_sha256": "077840eb316bec5d6fa01f06a17a4390bdd4f172b6f4fd42cf9d3a98e67b3887"
+      "sha256": "b32aa9cbeb6afeb3b5870c77a2f3bcfa507d4c7864e2f0d10dc5a98cd301dd43",
+      "size": 131600,
+      "normalized_sha256": "b32aa9cbeb6afeb3b5870c77a2f3bcfa507d4c7864e2f0d10dc5a98cd301dd43"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1266,9 +1266,9 @@
     },
     "crates/uu-gui/src/main.rs": {
       "role": "index",
-      "sha256": "7cc48e3aab3a35521115c87a36214667547f5879255c0d510d5287bc53868d0d",
-      "size": 93074,
-      "normalized_sha256": "7cc48e3aab3a35521115c87a36214667547f5879255c0d510d5287bc53868d0d"
+      "sha256": "d7ab7db052f5fa07ed498684be6d2763cf990c3e33b12599e757773e8de73fc5",
+      "size": 93542,
+      "normalized_sha256": "d7ab7db052f5fa07ed498684be6d2763cf990c3e33b12599e757773e8de73fc5"
     },
     "crates/uu-gui/src/native_host_ui.rs": {
       "role": "index",
@@ -1380,9 +1380,9 @@
     },
     "crates/uu-gui/src/stream_workspace_tests.rs": {
       "role": "index",
-      "sha256": "bd2cc43a1e328f5fb90d749b10353e40674f9157f55392b4f22fe86c9d5eca06",
-      "size": 19334,
-      "normalized_sha256": "bd2cc43a1e328f5fb90d749b10353e40674f9157f55392b4f22fe86c9d5eca06"
+      "sha256": "17bdfc5972011b520ea0d71efc0d5ad702311c6dca662c656b0294314bec7053",
+      "size": 20171,
+      "normalized_sha256": "17bdfc5972011b520ea0d71efc0d5ad702311c6dca662c656b0294314bec7053"
     },
     "crates/uu-gui/src/theme.rs": {
       "role": "index",
@@ -2636,9 +2636,9 @@
     },
     "docs/releases/v0.20.3.md": {
       "role": "index",
-      "sha256": "7f52ae340ae161b29ee09b43b02bb742a115a228b122d48bbf42f363ebbcef1e",
-      "size": 795,
-      "normalized_sha256": "7f52ae340ae161b29ee09b43b02bb742a115a228b122d48bbf42f363ebbcef1e"
+      "sha256": "b5a0774e36a264ca09af83d3b24c4e8f299e43ef1e87a653cc6a9fc9f8a792af",
+      "size": 1158,
+      "normalized_sha256": "b5a0774e36a264ca09af83d3b24c4e8f299e43ef1e87a653cc6a9fc9f8a792af"
     },
     "docs/releases/v0.3.0.md": {
       "role": "index",

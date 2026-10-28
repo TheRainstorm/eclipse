@@ -262,7 +262,7 @@ lan_host_ui.rs[AU6L]: F:管理旧LAN前台共享窗口、配对决定和异步�
 lan_ui.rs[AU6L]: F:提供无账号LAN设备发现、手工地址、配对持久化和串流启动页面 | R:code:crates/uu-gui/src/lan_host_ui.rs,code:crates/uu-core/src/native_discovery.rs | A:LanUi | S:关闭发现递增scan epoch并丢旧结果，取消完成后才join，不阻塞偏好修改
 lan_ui_tests.rs[TU5M]: F:以真实回环配对生成视频覆盖LAN页面保存、错误显示和发现取消 | R:code:crates/uu-gui/src/lan_ui.rs | A:- | S:不访问真实桌面
 login.rs[AI7M]: F:异步执行UU注册和二维码轮询并生成二维码图像 | R:code:plugins/uu-compat/src/api.rs,code:crates/uu-gui/src/account.rs | A:Worker,spawn,rename,qr_rgba | S:只有当前UI接收者可落盘登录凭据，取消旧二维码不能迟到重新登录；取消后退出runtime不等待DNS
-main.rs[EG9L]: F:创建GUI应用并协调主页、设备工作区、账号及串流窗口与资源生命周期 | R:code:crates/uu-gui/src/stream_workspace.rs,code:crates/uu-gui/src/platform.rs,code:crates/uu-gui/src/settings.rs | A:App,main | S:关闭本地键盘缩放让Ctrl加减归远端；设备列表失败不解释为空账号；各实例持有输入与控制状态；连续性只观察当前可见前台视频页，媒体换代清轨道
+main.rs[EG9L]: F:创建GUI应用并协调主页、设备工作区、账号及串流窗口与资源生命周期 | R:code:crates/uu-gui/src/stream_workspace.rs,code:crates/uu-gui/src/platform.rs,code:crates/uu-gui/src/settings.rs | A:App,main | S:关闭本地键盘缩放让Ctrl加减归远端；设备列表失败不解释为空账号；各实例持有输入与控制状态；连续性只观察可见前台视频，退役会话立即暂停且识别缓冲失焦事件，媒体换代清轨道
 native_host_ui.rs[AU6L]: F:提供旧邀请式原生前台共享及显示源和绑定地址选择 | R:code:crates/uu-core/src/native.rs,code:crates/uu-gui/src/native_interfaces.rs | A:NativeHostUi | S:刷新不改变显式地址或启动监听；保留软件编码与loopback默认，不改账号服务或显示设置
 native_interfaces.rs[IN5T]: F:只读枚举可绑定活动网卡地址供共享界面选择 | R:code:crates/uu-gui/src/native_host_ui.rs | A:enumerate | S:排除无scope ID的IPv6链路本地地址及loopback广播多播
 native_keys.rs[IU7S]: F:把GUI物理键和指针语义转换成标准HID与原生归一化命令 | R:code:crates/uu-core/src/native_input.rs,code:crates/uu-input/src/lib.rs | A:hid_for_egui,command | S:协议适配转换语义，不能把UU鼠标位掩码当原生键值；Windows由扫描码确定物理键
@@ -281,7 +281,7 @@ shortcuts_ui.rs[AU6M]: F:在设置草稿录制快捷键、显示冲突并消费�
 single_instance.rs[RU6S]: F:在Windows复用已有启动器并保持串流窗口独立 | R:code:crates/uu-gui/src/main.rs | A:launcher | S:互斥按登录会话而非exe路径或版本，兼容未使用互斥的旧启动器
 stream_menu.rs[AU8L]: F:管理连接栏与悬浮菜单生命周期，统一开关、选项、状态及声音画质编辑 | R:code:crates/uu-gui/src/input_capture.rs,code:crates/uu-gui/src/settings_page.rs,code:crates/uu-gui/src/audio_controls.rs | A:FloatingHandle | S:仅可见活跃编辑占键盘；菜单间桥限窄缝；实际编码状态与偏好分开，失焦离开按统一所有权收起
 stream_workspace.rs[AU9L]: F:在一个串流进程拥有多个设备会话并将设备组移动到不同原生窗口 | R:code:crates/uu-core/src/local_workspace.rs,code:crates/uu-gui/src/sessions.rs | A:Workspace,Launch | S:拆并窗口不重建controller、decoder或传输；新surface存在后才重定向句柄与输入，GL状态限定事件循环线程
-stream_workspace_tests.rs[TU6L]: F:以真实窗口与加密生成视频验证会话挂接、排序拆分及独立关闭 | R:code:crates/uu-gui/src/stream_workspace.rs | A:- | S:不采桌面或注入输入；子viewport截图在该viewport自己的pass采集
+stream_workspace_tests.rs[TU6L]: F:以真实窗口与加密生成视频验证会话挂接、切换暂停观察、排序拆分及独立关闭 | R:code:crates/uu-gui/src/stream_workspace.rs,code:crates/uu-gui/src/main.rs | A:- | S:不采桌面或注入输入；子viewport截图在该viewport自己的pass采集
 theme.rs[DU5S]: F:定义应用共用颜色和控件状态并检查文本与控件边界对比度 | R:code:crates/uu-gui/src/ui.rs | A:apply | S:-
 ui.rs[AU7L]: F:绘制主页导航、兼容设备页、串流画面和共用图标控件 | R:code:crates/uu-gui/src/workspace_ui.rs,code:crates/uu-gui/src/stream_menu.rs | A:Icon | S:只有邮箱的新图像首次提交才更新绘制帧率和连续性；普通UI重绘不计新视频帧
 ui_feedback.rs[DU5S]: F:按页面作用域显示可关闭的错误和短期成功信息提示 | R:code:crates/uu-gui/src/workspace_ui.rs | A:Feedback,Scope,Kind | S:成功2秒、信息4秒，错误保留直到处理或关闭
@@ -552,7 +552,7 @@ v0.9.1.md[SV3T]: F:记录Linux只读DMA下载与硬解后端和低功耗客户�
 v0.20.0.md[SV4T]: F:记录独立插件仓库、共用协议SDK与实验性官方被控入口的版本交付范围 | R:code:docs/plugins.md,code:docs/official-mobile-client-feasibility.md | A:- | S:真实官方手机互通尚未验收，旧窗口与后台程序需分别更新
 v0.20.1.md[SV4T]: F:记录HUD手动复制与行对齐、统一悬浮菜单和声音控件的更新 | R:code:docs/hud.md,code:crates/uu-gui/src/stream_menu.rs | A:- | S:界面更新需重开旧窗口，后台服务无需因此重启
 v0.20.2.md[SV4T]: F:发布采集相位修正、滚动长间隔及准确视频阶段与主机跨度统计 | R:code:docs/hud.md,code:docs/native-latency.md | A:- | S:调度模型收益不代表4KHDR实流或物理延迟下降；主机节拍需更新共享端并重启其进程
-v0.20.3.md[SV4T]: F:发布HUD已观察持续停图在暂停和帧率变化后的保留修正 | R:code:docs/hud.md,code:crates/uu-core/src/frame_continuity.rs | A:- | S:后台时间不累加；客户端重开生效，可保留v0.20.2共享端
+v0.20.3.md[SV4T]: F:发布HUD已观察停图的暂停保留、标签切换及缓冲失焦边界修正 | R:code:docs/hud.md,code:crates/uu-core/src/frame_continuity.rs | A:- | S:后台时间不累加；客户端重开生效，可保留v0.20.2共享端
 
 ===/home/yfy/Repo/uu_remote/licenses/===
 README.md[SG4T]: F:记录SPDX标准文本来源版本及第三方原始通知优先规则 | R:code:tools/licenses/generate.py | A:- | S:附带GPL或LGPL文本不等于项目选用该许可

@@ -1214,9 +1214,13 @@ impl App {
     }
 
     fn deactivate_session(&mut self) {
+        self.pause_video_observation();
         self.active_session=false;
         if let Some(handle)=&self.controller {handle.frames.set_waker(||{});}
         self.release_session_input();
+    }
+    fn pause_video_observation(&self){
+        for texture in self.textures.values(){texture.set_continuity_active(false,0);}
     }
     fn release_session_input(&mut self) {
         self.release_all_keys();
@@ -1457,6 +1461,9 @@ impl App {
         self.poll_application_settings();
         self.poll_account();
         self.poll(ctx);
+        // A hidden/minimized viewport can buffer both focus loss and recovery
+        // before its next UI pass. Preserve that boundary even if focused=true.
+        if ctx.input(|i|i.events.iter().any(|event|matches!(event,egui::Event::WindowFocused(false)))){self.pause_video_observation();}
         self.poll_controller(ctx);
         let observed=self.stream_target.is_some()&&!self.stream_settings_open&&self.active_session&&ctx.input(|i|i.focused&&!i.viewport().minimized.unwrap_or(false))&&!self.disconnecting&&!self.displays.waiting_binding();
         let expected=self.controller.as_ref().map_or(self.target_fps,|h|{
