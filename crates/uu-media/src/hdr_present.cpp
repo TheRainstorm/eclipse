@@ -23,8 +23,51 @@ struct Apartment {
     Apartment(){if(FAILED(result)&&result!=RPC_E_CHANGED_MODE)check(result,"initialize composition apartment");}
     ~Apartment(){if(SUCCEEDED(result))CoUninitialize();}
 };
+// Keep DComp and the WGL drawable on different HWNDs. A fullscreen WGL window
+// can otherwise stop DWM from consuming the composition chain. This child has
+// no GL drawable or redirection bitmap and always passes input to its parent.
+struct CompositionWindow {
+    HWND value=nullptr;
+    static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM w,LPARAM l) {
+        if(message==WM_NCCREATE) {
+            SetWindowLongPtrW(window,GWLP_USERDATA,(LONG_PTR)((CREATESTRUCTW*)l)->lpCreateParams);
+        }else if(message==WM_NCDESTROY) {
+            auto owner=(CompositionWindow*)GetWindowLongPtrW(window,GWLP_USERDATA);
+            if(owner)owner->value=nullptr;
+        }
+        if(message==WM_NCHITTEST)return HTTRANSPARENT;
+        if(message==WM_MOUSEACTIVATE)return MA_NOACTIVATE;
+        return DefWindowProcW(window,message,w,l);
+    }
+    explicit CompositionWindow(HWND parent) {
+        // HTTRANSPARENT only routes through windows on the same UI thread.
+        if(!IsWindow(parent)||GetWindowThreadProcessId(parent,nullptr)!=GetCurrentThreadId())
+            throw std::runtime_error("native composition requires its parent's UI thread");
+        static const ATOM registered=[] {
+            WNDCLASSW definition{};
+            definition.lpfnWndProc=procedure;
+            definition.hInstance=GetModuleHandleW(nullptr);
+            definition.lpszClassName=L"EclipseNativeCompositionSurface";
+            return RegisterClassW(&definition);
+        }();
+        if(!registered)throw std::runtime_error("register native composition window");
+        value=CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP|WS_EX_NOACTIVATE|WS_EX_TRANSPARENT,
+            L"EclipseNativeCompositionSurface",L"",WS_CHILD|WS_CLIPSIBLINGS,
+            0,0,1,1,parent,nullptr,GetModuleHandleW(nullptr),this);
+        if(!value)throw std::runtime_error("create native composition window");
+    }
+    CompositionWindow(const CompositionWindow&)=delete;
+    CompositionWindow& operator=(const CompositionWindow&)=delete;
+    ~CompositionWindow(){if(value)DestroyWindow(value);}
+    void resize(unsigned width,unsigned height) {
+        if(value&&!SetWindowPos(value,HWND_TOP,0,0,width,height,SWP_NOACTIVATE))
+            throw std::runtime_error("resize native composition window");
+    }
+    void visible(bool show){if(value)ShowWindow(value,show?SW_SHOWNOACTIVATE:SW_HIDE);}
+};
 struct Presentation {
     Apartment apartment;
+    CompositionWindow content_window;
     HWND window;
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
@@ -42,7 +85,7 @@ struct Presentation {
     float white=80;
     HMONITOR monitor=nullptr;
     ULONGLONG queried=0;
-    Presentation(HWND hwnd,bool allow_sdr=false):window(hwnd) {
+    Presentation(HWND hwnd,bool allow_sdr=false):content_window(hwnd),window(hwnd) {
         if(!IsWindow(hwnd))throw std::runtime_error("HDR presentation requires a live native window");
         check(CreateDXGIFactory1(__uuidof(IDXGIFactory1),(void**)inventory.GetAddressOf()),"create HDR inventory");
         ComPtr<IDXGIAdapter1> selected;
@@ -66,7 +109,7 @@ struct Presentation {
         if(!hdr&&!allow_sdr)throw std::runtime_error("the current display output has HDR disabled");
         ComPtr<IDXGIDevice> dxgi;check(device.As(&dxgi),"query HDR DXGI device");
         check(DCompositionCreateDevice(dxgi.Get(),__uuidof(IDCompositionDevice),(void**)composition.GetAddressOf()),"create HDR composition device");
-        check(composition->CreateTargetForHwnd(window,TRUE,&target),"create HDR window composition target");
+        check(composition->CreateTargetForHwnd(content_window.value,TRUE,&target),"create HDR window composition target");
         check(composition->CreateVisual(&visual),"create HDR composition visual");
         // Content is attached only after GL registration and the first frame.
     }
@@ -100,6 +143,7 @@ struct Presentation {
     void resize(unsigned w,unsigned h,bool allocate_shared=true) {
         if(!w||!h||w>16384||h>16384)throw std::runtime_error("invalid HDR window size");
         if(width==w&&height==h)return;
+        content_window.resize(w,h);
         // Caller has unregistered the old WGL object before this replacement.
         shared_texture.Reset();
         if(!chain) {
@@ -126,6 +170,7 @@ struct Presentation {
         width=w;height=h;
     }
     void deactivate() {
+        content_window.visible(false);
         if(visual_attached){check(target->SetRoot(nullptr),"detach HDR composition");check(composition->Commit(),"commit HDR deactivation");visual_attached=false;}
     }
     void present(bool vsync) {
@@ -139,6 +184,7 @@ struct Presentation {
         if(!visual_attached) {
             check(visual->SetContent(chain.Get()),"attach HDR swap chain");check(target->SetRoot(visual.Get()),"attach HDR composition visual");
             check(composition->Commit(),"commit HDR composition");visual_attached=true;
+            content_window.visible(true);
         }
     }
     bool visual_attached=false;

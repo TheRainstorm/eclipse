@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-10-28T05:03:10Z",
+  "updated_at": "2026-10-28T05:34:35Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "468727e2bb4f83696d886d69bf4034776fca88c8e2a528dce8fbabd12411db78",
-      "size": 132283,
-      "normalized_sha256": "468727e2bb4f83696d886d69bf4034776fca88c8e2a528dce8fbabd12411db78"
+      "sha256": "4207bfe2626c0eb0e2586baf71d438df57c7eb8d81df31926ef17c81469f374b",
+      "size": 132433,
+      "normalized_sha256": "4207bfe2626c0eb0e2586baf71d438df57c7eb8d81df31926ef17c81469f374b"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2026,9 +2026,9 @@
     },
     "crates/uu-media/src/hdr_present.cpp": {
       "role": "index",
-      "sha256": "ea4b74fd2d3a8633c63aa10ecf7a16b50f9c30919332e2143c71b39f0f326c73",
-      "size": 25313,
-      "normalized_sha256": "ea4b74fd2d3a8633c63aa10ecf7a16b50f9c30919332e2143c71b39f0f326c73"
+      "sha256": "d5e98fd773f8f9411cb61e5dc1ddbb88a7c5ed116f763bf46888b2ae6a4a39fd",
+      "size": 27877,
+      "normalized_sha256": "d5e98fd773f8f9411cb61e5dc1ddbb88a7c5ed116f763bf46888b2ae6a4a39fd"
     },
     "crates/uu-media/src/hdr_windows.rs": {
       "role": "index",
@@ -2768,9 +2768,9 @@
     },
     "docs/windows-latency.md": {
       "role": "index",
-      "sha256": "733136c254d979c585071f68375c9c49433d9c621a7d2a3a81eeaa3209177920",
-      "size": 31377,
-      "normalized_sha256": "733136c254d979c585071f68375c9c49433d9c621a7d2a3a81eeaa3209177920"
+      "sha256": "4f658deab5fa3337a9490ad7ac68bf9b48a7daf0c9d883e81a6e535f2914b77c",
+      "size": 32501,
+      "normalized_sha256": "4f658deab5fa3337a9490ad7ac68bf9b48a7daf0c9d883e81a6e535f2914b77c"
     },
     "handoff/local-development/2026-10-27-a-direct-render/test_sync_pipeline.py": {
       "role": "observe",

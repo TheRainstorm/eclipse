@@ -394,7 +394,7 @@ encoder.rs[AH9L]: F:按格式、速率策略、厂商和输入设备选择编码
 frame.rs[DH8M]: F:定义带PTS的CPU或GPU帧、像素布局与确认显示尺寸裁剪 | R:code:crates/uu-media/src/d3d11_frame.rs,code:crates/uu-media/src/dma_buf.rs | A:RawFrame,EncodedFrame,PixelFormat | S:GPU帧data为空且须持有类型租约；stride是实际首平面跨度，CPU裁剪保留原色度偏移
 h264.rs[IH8M]: F:用OpenH264实现软件编解码、输入限制和可恢复码率重配置 | R:code:crates/uu-media/src/bitstream.rs | A:H264Encoder,H264Decoder | S:接收禁止逐调用flush以免破坏参考链；码率先建替代编码器再交换并输出IDR
 hdr.rs[KH8M]: F:提供HDR元数据、PQ绝对亮度与BT2020和scRGB转换及能力探针 | R:code:crates/uu-media/src/color.rs | A:Metadata,pq_to_nits,nits_to_pq,p010_to_sc_rgb | S:scRGB的1等于80nits；PQ不可当SDR伽马，缺EDID元数据不关闭OS已确认的HDR采集
-hdr_present.cpp[IH8M]: F:为单窗口组合FP16 scRGB视频与GL界面并管理原生呈现同步 | R:code:crates/uu-media/src/hdr_windows.rs | A:eclipse_hdr_present_open,eclipse_native_present_open | S:GL注册和首帧后才挂内容；resize前注销旧WGL对象；UI遵循伽马域预乘合成
+hdr_present.cpp[IH8M]: F:在专用子窗口呈现FP16 scRGB视频和GL界面并管理D3D合成同步 | R:code:crates/uu-media/src/hdr_windows.rs,code:crates/uu-gui/src/video_native.rs | A:eclipse_hdr_present_open,eclipse_native_present_open | S:子窗口须与父同UI线程并透传命中测试；首帧后显示、停用隐藏；resize前注销WGL对象；UI按伽马域预乘合成
 hdr_windows.rs[IH7S]: F:以RAII封装Windows FP16和原生视频呈现器的FFI生命周期 | R:code:crates/uu-media/src/hdr_present.cpp | A:Presentation,NativePresentation | S:HWND及所属UI线程必须活过表面；原生方法限定render线程，resize前先注销WGL纹理
 hevc.rs[KH7S]: F:解析HEVC几何颜色位深与随机访问帧并以生成图验证硬解能力 | R:code:crates/uu-media/src/decoder.rs | A:Sequence,sequence,is_keyframe,probe_decoder | S:prepare成功不足以宣告能力，必须真实产出有效GPU图像；SPS最多64KiB
 lib.rs[LH8M]: F:导出媒体组件并按协商格式与设备能力构建编码和解码门面 | R:code:crates/uu-media/src/decoder.rs,code:crates/uu-media/src/codec.rs | A:default_encoder,default_decoder,decoder_for_codec | S:H264软件回退不能解HEVC；能力探针后为真实会话重建解码器，避免残留参考与PTS
@@ -503,7 +503,7 @@ uu-device-identity.md[SI5T]: F:说明独立UU注册身份、硬件资料更新�
 vision.md[SW4T]: F:区分日常兼容客户端、自有Eclipse串流和长期产品方向 | R:code:docs/roadmap.md | A:- | S:路线不代表已交付能力或日期承诺
 windows-background-service.md[SS6T]: F:说明受保护Windows后台安装、控制台身份、锁屏与管理员管理 | R:code:crates/uu-cli/src/service_cli/supervisor.rs | A:- | S:System媒体绑定已选用户控制台，注销需停止；关闭管理窗口不停止服务
 windows-build.md[SV5T]: F:说明子模块初始化、Windows GNU与Linux交叉构建、完整包安装和运行库要求 | R:code:tools/windows/package.py,code:docs/plugins.md | A:- | S:使用win32线程模型；缓存须核验来源，更新安装文件不结束原有进程
-windows-latency.md[SP5M]: F:记录Windows呈现路径演进、解码和绘制计时边界与实测限制 | R:code:docs/performance/optimization-scope.md | A:- | S:同名HUD字段不一定同口径，读回与渲染提交均不等于显示完成
+windows-latency.md[SP5M]: F:解释Windows呈现路径、合成窗口归属及延迟统计的验证边界 | R:code:crates/uu-media/src/hdr_present.cpp,code:docs/performance/optimization-scope.md | A:- | S:Present成功或非黑读回不能证明新帧显示；HUD的CPU耗时与GPU执行和屏幕扫描分开
 
 ===/home/yfy/Repo/uu_remote/docs/performance/===
 mixed-dpi-render-latency.md[SP5S]: F:记录混合DPI共享字体纹理重传导致UI耗时的根因与缓存修复 | R:code:vendor/egui_glow/src/painter.rs,code:docs/windows-latency.md | A:- | S:Render是CPU墙钟含驱动等待，不能当作GPU或端到端延迟
