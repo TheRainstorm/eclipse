@@ -2,6 +2,7 @@
 use crate::frame_info::FrameInfo;
 use serde::Serialize;
 use std::collections::VecDeque;
+use std::io::{BufWriter, Write};
 
 pub(crate) const CAPACITY: usize = 32_768;
 pub(crate) fn requested(continuous: Option<&str>, capture: Option<&str>) -> bool {
@@ -185,8 +186,11 @@ impl Recorder {
             capacity: usize,
             rows: &'a VecDeque<Row>,
         }
+        // Serde emits small fragments. Buffer only this terminal write so an
+        // owned stderr file does not receive one WriteFile call per JSON token.
+        let mut buffered = BufWriter::with_capacity(64 * 1024, out);
         serde_json::to_writer(
-            &mut *out,
+            &mut buffered,
             &Report {
                 event: "dxgi_capture_diagnostics",
                 version: 1,
@@ -208,7 +212,8 @@ impl Recorder {
             },
         )
         .map_err(std::io::Error::other)?;
-        out.write_all(b"\n")
+        buffered.write_all(b"\n")?;
+        buffered.flush()
     }
 }
 
@@ -295,5 +300,48 @@ mod tests {
         assert_eq!(value["unwinding"], true);
         assert_eq!(value["clean_session_proven"], false);
         assert_eq!(value["rows"][0]["event_sequence"], 2);
+    }
+
+    #[test]
+    fn terminal_write_is_buffered_flushed_and_reports_sink_failure() {
+        #[derive(Default)]
+        struct Sink {
+            bytes: Vec<u8>,
+            writes: usize,
+            flushes: usize,
+        }
+        impl Write for Sink {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushes += 1;
+                Ok(())
+            }
+        }
+        let mut r = Recorder::new(None, 0, 1, 1024);
+        for _ in 0..1000 {
+            r.acquired(acquisition(), Outcome::WaitTimeout);
+        }
+        let mut sink = Sink::default();
+        r.write(&mut sink, 5, 1, false).unwrap();
+        assert!(sink.writes < 32);
+        assert_eq!(sink.flushes, 1);
+        assert_eq!(sink.bytes.last(), Some(&b'\n'));
+        let value: serde_json::Value = serde_json::from_slice(&sink.bytes).unwrap();
+        assert_eq!(value["attempts"], 1000);
+        assert_eq!(value["rows"].as_array().unwrap().len(), 1000);
+        struct Failed;
+        impl Write for Failed {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("owned sink failed"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert!(r.write(&mut Failed, 5, 1, false).is_err());
     }
 }
