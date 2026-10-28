@@ -28,6 +28,9 @@ pub struct Continuity {
     started: Option<Instant>,
     previous: Option<Instant>,
     intervals: usize,
+    // Latest foreground observation of an unfinished stall. Pausing preserves
+    // that observation without adding time spent inactive to the interval.
+    ongoing: Option<Gap>,
     // Only long intervals are retained: at least 20 ms each, at most 3001/min.
     gaps: VecDeque<Gap>,
     // Monotonic maximum queue: dominated intervals leave immediately; every
@@ -42,12 +45,28 @@ impl Continuity {
     pub fn set_active(&mut self, active: bool, fps: u32) {
         let active = active && fps > 0;
         if self.active != active || self.fps != fps {
+            if let Some(observed) = self.ongoing.take() {
+                self.remember(observed.ended, observed.duration, true);
+            }
             self.previous = None;
             self.started = None;
             self.intervals = 0;
         }
         self.active = active;
         self.fps = fps;
+    }
+    fn remember(&mut self, ended: Instant, duration: Duration, long: bool) {
+        if long {
+            self.gaps.push_back(Gap { ended, duration });
+        }
+        while self
+            .maxima
+            .back()
+            .is_some_and(|(_, maximum)| *maximum <= duration)
+        {
+            self.maxima.pop_back();
+        }
+        self.maxima.push_back((ended, duration));
     }
     fn expire(&mut self, now: Instant) {
         while self
@@ -70,23 +89,12 @@ impl Continuity {
         if !self.active {
             return;
         }
+        // A completed interval replaces its projected observation; count once.
+        self.ongoing = None;
         if let Some(previous) = self.previous {
             let gap = now.saturating_duration_since(previous);
             self.intervals = self.intervals.saturating_add(1);
-            if gap > self.threshold() {
-                self.gaps.push_back(Gap {
-                    ended: now,
-                    duration: gap,
-                });
-            }
-            while self
-                .maxima
-                .back()
-                .is_some_and(|(_, maximum)| *maximum <= gap)
-            {
-                self.maxima.pop_back();
-            }
-            self.maxima.push_back((now, gap));
+            self.remember(now, gap, gap > self.threshold());
         } else {
             self.started = Some(now);
         }
@@ -99,6 +107,10 @@ impl Continuity {
         }
         let current = now.saturating_duration_since(self.previous?);
         let ongoing = (current > self.threshold()).then_some(current);
+        self.ongoing = ongoing.map(|duration| Gap {
+            ended: now,
+            duration,
+        });
         let maximum = self
             .maxima
             .iter()
@@ -123,6 +135,75 @@ impl Continuity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn observed_stall_survives_pause_and_resumes_without_double_counting() {
+        let start = Instant::now();
+        let mut c = Continuity::default();
+        c.set_active(true, 165);
+        c.submit(start);
+        c.submit(start + Duration::from_millis(6));
+        let observed = start + Duration::from_millis(40);
+        assert_eq!(c.snapshot(observed).unwrap().long_gaps, 1);
+        c.set_active(false, 165);
+        assert!(c.snapshot(start + Duration::from_secs(1)).is_none());
+        c.set_active(true, 165);
+        c.submit(start + Duration::from_secs(2));
+        c.submit(start + Duration::from_secs(2) + Duration::from_millis(6));
+        let s = c
+            .snapshot(start + Duration::from_secs(2) + Duration::from_millis(6))
+            .unwrap();
+        assert_eq!(s.long_gaps, 1);
+        assert_eq!(s.max_gap_ms, 34.);
+        assert!(s.ongoing_gap_ms.is_none());
+        c.set_active(false, 165);
+        c.set_active(true, 165);
+        c.submit(start + Duration::from_secs(61));
+        c.submit(start + Duration::from_secs(61) + Duration::from_millis(6));
+        assert_eq!(
+            c.snapshot(start + Duration::from_secs(61) + Duration::from_millis(6))
+                .unwrap()
+                .long_gaps,
+            0
+        );
+    }
+    #[test]
+    fn fps_change_preserves_only_previously_observed_stalls() {
+        let start = Instant::now();
+        let mut c = Continuity::default();
+        c.set_active(true, 165);
+        c.submit(start);
+        c.submit(start + Duration::from_millis(6));
+        assert_eq!(
+            c.snapshot(start + Duration::from_millis(40))
+                .unwrap()
+                .long_gaps,
+            1
+        );
+        c.set_active(true, 24);
+        c.submit(start + Duration::from_secs(2));
+        c.submit(start + Duration::from_secs(2) + Duration::from_millis(42));
+        assert_eq!(
+            c.snapshot(start + Duration::from_secs(2) + Duration::from_millis(42))
+                .unwrap()
+                .long_gaps,
+            1
+        );
+        let mut unseen = Continuity::default();
+        unseen.set_active(true, 165);
+        unseen.submit(start);
+        unseen.submit(start + Duration::from_millis(6));
+        unseen.set_active(false, 165);
+        unseen.set_active(true, 24);
+        unseen.submit(start + Duration::from_secs(5));
+        unseen.submit(start + Duration::from_secs(5) + Duration::from_millis(42));
+        assert_eq!(
+            unseen
+                .snapshot(start + Duration::from_secs(5) + Duration::from_millis(42))
+                .unwrap()
+                .long_gaps,
+            0
+        );
+    }
     #[test]
     fn one_freeze_counts_once_during_and_after_the_gap_then_expires() {
         let start = Instant::now();

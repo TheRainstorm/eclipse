@@ -9,7 +9,7 @@ Cargo.toml[FV8T]: F:组织引擎应用及子模块插件的Rust workspace，统�
 LICENSE[SG6T]: F:声明项目自有代码可选择MIT或Apache-2.0并划定第三方权利边界 | R:code:LICENSE-MIT,code:LICENSE-APACHE,code:docs/licensing-and-compatibility.md | A:- | S:代码许可不授予第三方服务接入或商标使用权
 LICENSE-APACHE[SG4M]: F:提供Apache-2.0完整许可、专利授权及分发条件 | R:code:LICENSE | A:- | S:-
 LICENSE-MIT[SG4T]: F:提供MIT授权、保留版权声明条件与免责条款 | R:code:LICENSE | A:- | S:-
-README.md[SG7S]: F:介绍原生串流、独立UU插件、版本交付与安装构建及文档导航 | R:code:docs/plugins.md,code:docs/releases/v0.20.2.md,code:docs/native-streaming.md | A:- | S:源码构建须初始化子模块；官方手机互通尚未验收，原生协议不兼容Sunshine
+README.md[SG7S]: F:介绍原生串流、独立UU插件、版本交付与安装构建及文档导航 | R:code:docs/plugins.md,code:docs/releases/v0.20.3.md,code:docs/native-streaming.md | A:- | S:源码构建须初始化子模块；官方手机互通尚未验收，原生协议不兼容Sunshine
 SECURITY.md[SS8T]: F:定义公开PC兼容值和个人凭据的分发边界、私密报告与扫描流程 | R:code:tools/security/scan_secrets.py,code:docs/connection-credentials.md | A:- | S:公开常量仅按精确路径与指纹放行；历史清理不撤回已下载副本
 .gitmodules[FE7T]: F:声明plugins子模块的公开仓库地址与检出位置 | R:code:Cargo.toml,code:docs/plugins.md | A:submodule.plugins | S:实际插件提交由主仓库gitlink固定；更新主项目后须初始化对应子模块
 
@@ -177,7 +177,7 @@ video_options.rs[DC5T]: F:表示提供方无关的编码输出尺寸边界 | R:c
 video_receiver.rs[KN9L]: F:统一有界RTP重排、NACK缺口与多编码AU装配和丢包恢复epoch | R:code:crates/uu-core/src/av1_rtp.rs,code:crates/uu-core/src/pyrowave_rtp.rs,code:crates/uu-core/src/decode_gate.rs | A:VideoReceiver,AccessUnit | S:健康帧不额外等待；缺口到期废弃AU；限制2048包和16MiB，切编码先退役旧碎片而保留累计统计
 video_timing.rs[RP7T]: F:为Windows活动接收会话持有平衡的1ms计时器分辨率请求 | R:code:crates/uu-core/src/media.rs | A:VideoTimerResolution | S:每会话独立guard且取消时释放，只改善等待粒度，不修改QPC或目标FPS
 wlan_streaming.rs[RP6M]: F:为每连接管理可选WLAN媒体提示与只读回查 | R:code:crates/uu-core/src/wlan_streaming/windows.rs | A:Guard,experiment_request | S:不设置FALSE或恢复全局快照；未配置时无API调用，关闭仅释放自己的客户端句柄
-frame_continuity.rs[KO6M]: F:在调用方活动区间统计新画面提交的60秒长间隔、极值与持续等待 | R:code:crates/uu-gui/src/video_texture.rs,code:docs/hud.md | A:Continuity,Snapshot | S:持续等待只计一次；暂停或FPS变化重置比较但保留窗口事件；不足两帧未知，提交不等于扫描
+frame_continuity.rs[KO6M]: F:在调用方活动区间统计新画面提交的60秒长间隔、极值与持续等待 | R:code:crates/uu-gui/src/video_texture.rs,code:docs/hud.md | A:Continuity,Snapshot | S:持续等待只计一次；暂停保存已在前台观察到的部分，后台不续算；恢复重置比较，不足两帧未知，提交不等于扫描
 video_pacing.rs[KP7T]: F:计算后续采集期限，在轻微超时时保留目标时钟相位 | R:code:crates/uu-core/src/native.rs | A:next_deadline | S:超时债务达到一个周期便重新定时；只调度新采集，不积累无界追赶或重放历史图像
 
 ===/home/yfy/Repo/uu_remote/crates/uu-core/src/clipboard/===
@@ -465,7 +465,7 @@ device-library.md[SU4T]: F:说明兼容设备收藏、最近使用和按账号�
 frame-rate.md[SN5T]: F:整理UU实际帧率字段、屏幕ID、CONTROL初始化和目标与实测区别 | R:code:plugins/uu-compat/src/control_wire.rs,code:docs/windows-latency.md | A:- | S:120须实际count而非枚举；请求确认不代表源或呈现达标
 frame-tracing.md[SO6T]: F:定义主机逐帧身份、同钟事件、遥测边界和生成源开销对照 | R:code:crates/uu-core/src/frame_trace.rs | A:- | S:只在同epoch和generation匹配PTS，不跨主机减时钟；统计溢出丢观测不丢视频
 hdr.md[SH5T]: F:说明Windows原生HDR10的启用条件、色彩GPU路径和验证范围 | R:code:crates/uu-core/src/native_color.rs | A:- | S:实际10位PQ码流与输出HDR均须验证；生成图不能替代显示器视觉验收
-hud.md[SO5T]: F:定义HUD阶段小计、主机跨度、60秒长间隔与手动选择复制的统计和呈现口径 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-core/src/frame_continuity.rs | A:- | S:阶段和不是输入到显示延迟，主机跨度重叠不相加；长间隔含源空闲，不归因网络或扫描；原始Loss不被FEC抵消
+hud.md[SO5T]: F:定义HUD阶段小计、主机跨度、60秒长间隔及暂停保留与手动复制的口径 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-core/src/frame_continuity.rs | A:- | S:阶段和不是输入到显示延迟，跨度重叠不相加；长间隔含源空闲，不归因网络或扫描；暂停只保留已观测部分，原始Loss不被FEC抵消
 keyboard-capture.md[SU6T]: F:规定整条键盘流的捕获归属、临时暂停、长按释放和平台限制 | R:code:crates/uu-gui/src/keyboard_capture.rs | A:- | S:UU修饰键刷新限官方兼容；状态与隔离hook测试不能替代实体桌面验收
 keyboard-shortcuts.md[SU5T]: F:说明客户端快捷键录制、配置作用域、冲突及嵌套透传 | R:code:crates/uu-core/src/hotkeys.rs | A:- | S:透传退出动作必须保留至少一绑定；修改先松修饰键，AltGr仍归文本
 licensing-and-compatibility.md[SS6T]: F:区分项目双许可、第三方来源、官方服务接入和编解码专利边界 | R:code:LICENSE,code:THIRD-PARTY-NOTICES.txt | A:- | S:原创代码许可不代表网易接入授权；依赖生成清单不是法律审计
@@ -552,6 +552,7 @@ v0.9.1.md[SV3T]: F:记录Linux只读DMA下载与硬解后端和低功耗客户�
 v0.20.0.md[SV4T]: F:记录独立插件仓库、共用协议SDK与实验性官方被控入口的版本交付范围 | R:code:docs/plugins.md,code:docs/official-mobile-client-feasibility.md | A:- | S:真实官方手机互通尚未验收，旧窗口与后台程序需分别更新
 v0.20.1.md[SV4T]: F:记录HUD手动复制与行对齐、统一悬浮菜单和声音控件的更新 | R:code:docs/hud.md,code:crates/uu-gui/src/stream_menu.rs | A:- | S:界面更新需重开旧窗口，后台服务无需因此重启
 v0.20.2.md[SV4T]: F:发布采集相位修正、滚动长间隔及准确视频阶段与主机跨度统计 | R:code:docs/hud.md,code:docs/native-latency.md | A:- | S:调度模型收益不代表4KHDR实流或物理延迟下降；主机节拍需更新共享端并重启其进程
+v0.20.3.md[SV4T]: F:发布HUD已观察持续停图在暂停和帧率变化后的保留修正 | R:code:docs/hud.md,code:crates/uu-core/src/frame_continuity.rs | A:- | S:后台时间不累加；客户端重开生效，可保留v0.20.2共享端
 
 ===/home/yfy/Repo/uu_remote/licenses/===
 README.md[SG4T]: F:记录SPDX标准文本来源版本及第三方原始通知优先规则 | R:code:tools/licenses/generate.py | A:- | S:附带GPL或LGPL文本不等于项目选用该许可
