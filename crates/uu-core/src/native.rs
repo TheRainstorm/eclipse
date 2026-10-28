@@ -314,6 +314,7 @@ struct ViewerLifetime(Arc<MediaStats>);
 impl Drop for ViewerLifetime {
     fn drop(&mut self){
         self.0.native_cursor.reset(false);
+        self.0.video_e2e.begin(self.0.native_media_epoch.load(Ordering::Acquire),false);
         self.0.control_open.store(0,Ordering::Release);
         self.0.host_admin.disconnect();
         self.0.capabilities.enable(crate::capabilities::Capability::Input,false);
@@ -388,6 +389,7 @@ fn elapsed_us(started: Instant) -> u64 {
 
 struct CaptureWorker {
     trace: Arc<crate::frame_trace::HostTrace>,
+    video_e2e: Arc<crate::video_e2e::Host>,
     quality:crate::native_quality::Runtime,
     quality_state:watch::Receiver<uu_media::encoder::Settings>,
     started: Instant,
@@ -402,6 +404,7 @@ struct CaptureWorker {
 struct TracedEncoded {
     frame: uu_media::EncodedFrame,
     trace: Option<crate::frame_trace::Token>,
+    source_e2e: Option<crate::video_e2e::SourceEndpoint>,
     capture_lease:Option<crate::latest_capture::Lease>,
 }
 impl std::ops::Deref for TracedEncoded {
@@ -421,6 +424,7 @@ impl CaptureWorker {
     fn start_mode(capture:Box<dyn uu_capture::Capture>,settings:uu_media::encoder::Settings,
         refresh:Arc<AtomicBool>,encoder:Box<dyn uu_media::VideoEncoder>,live_timing:Arc<crate::native_timing::HostTiming>,mode:Option<bool>)->Self {
         let trace=live_timing.trace.clone();
+        let video_e2e=live_timing.video_e2e.clone();
         trace.configure(settings,encoder.backend_name());
         let stopped = Arc::new(AtomicBool::new(false));
         let captured = Arc::new(AtomicU64::new(0));
@@ -442,6 +446,7 @@ impl CaptureWorker {
         });
         Self {
             trace,
+            video_e2e,
             quality,quality_state,
             started,
             timings,
@@ -536,13 +541,14 @@ fn encode_source(
                 // references; replacement encoders already start a new chain.
                 settings=updated;
                 live_timing.trace.configure(settings,encoder.backend_name());
+                live_timing.video_e2e.retire();
                 quality_status.send_replace(settings);
                 Ok(bitrate_kbps)
             })().map_err(|error|error.to_string());
             let _=change.reply.send(result);
         }
         capture.prefer_gpu(encoder.gpu_input(),encoder.gpu_vendor())?;
-        let observed = match capture.next(live_timing.trace.enabled()) {
+        let observed = match capture.next(live_timing.trace.enabled() || live_timing.video_e2e.enabled()) {
             Ok(frame) => frame,
             Err(uu_capture::CaptureError::Suspended(_)) => {
                 // Desktop transitions must not terminate an authenticated
@@ -553,7 +559,7 @@ fn encode_source(
             }
             Err(error) => return Err(error.into()),
         };
-        if observed.retired {live_timing.trace.configure(settings,encoder.backend_name());refresh.store(true,Ordering::Release);}
+        if observed.retired {live_timing.trace.configure(settings,encoder.backend_name());live_timing.video_e2e.retire();refresh.store(true,Ordering::Release);}
         let capture_ready=observed.ready;
         let capture_started=observed.started;
         let source_info=observed.source;
@@ -567,6 +573,7 @@ fn encode_source(
         apply_refresh_request(&refresh,encoder.as_mut());
         let started = Instant::now();
         let frame_token=live_timing.trace.captured(frame.pts.0,source_info,frame.gpu,capture_started,capture_ready,started);
+        live_timing.video_e2e.captured(frame.pts.0,source_info);
         let encoded_frames = encoder.encode(frame)?;
         if !observed.current(){capture.retired_output();refresh.store(true,Ordering::Release);continue;}
         let output_ready=Instant::now();
@@ -576,13 +583,15 @@ fn encode_source(
             // A runtime fallback is a new measurement generation. Do not
             // attribute its first output to the retired backend's input.
             live_timing.trace.configure(settings,&backend);
+            live_timing.video_e2e.retire();
         }
         let encode_us=output_ready.duration_since(started).as_micros().min(u128::from(u64::MAX)) as u64;
         timings.encode_us.fetch_add(encode_us, Ordering::Relaxed);
         let started = Instant::now();
         for encoded in encoded_frames {
             let token=live_timing.trace.output(encoded.pts.0,encoded.is_keyframe,output_ready);
-            if output.blocking_send(Ok(TracedEncoded{frame:encoded,trace:token,capture_lease:observed.lease.clone()})).is_err() {
+            let source_e2e=live_timing.video_e2e.output(encoded.pts.0);
+            if output.blocking_send(Ok(TracedEncoded{frame:encoded,trace:token,source_e2e,capture_lease:observed.lease.clone()})).is_err() {
                 return Ok(());
             }
             live_timing.trace.mark(token,crate::frame_trace::Event::EnqueueReturn,Instant::now());
@@ -716,6 +725,7 @@ async fn send_video(
     let clipboard_images=crate::native_clipboard::images_offered(&offer.sdp);
     let typed_gamepads=crate::native_gamepad::typed_offered(&offer.sdp);
     let frame_trace=crate::frame_trace::offered(&offer.sdp);
+    let video_e2e=crate::video_e2e::offered(&offer.sdp);
     let cursor_requested=crate::native_cursor::offered(&offer.sdp)?;
     match stream.lan_peer() {
         Some(ip) => peer.remote(offer.sdp, ip).await?,
@@ -793,6 +803,7 @@ async fn send_video(
     controls.clipboard_images(clipboard_images);
     controls.gamepad_types(typed_gamepads);
     controls.frame_trace(frame_trace);
+    controls.video_e2e(video_e2e);
     controls.set_session(config.session.clone());
     let cursor=capture.cursor().filter(|_|cursor_requested);
     let cursor_available=cursor.is_some();
@@ -804,6 +815,7 @@ async fn send_video(
     let mut description=peer.description(false).await?;
     if cursor_available {crate::native_cursor::advertise(&mut description)?;}
     if frame_trace && controls.timing().trace.enabled() {crate::frame_trace::advertise(&mut description);}
+    if video_e2e {crate::video_e2e::advertise(&mut description);}
     startup.ice_us=elapsed_us(ice_started);startup.total_us=elapsed_us(preparation_started);
     startup.add(&mut description)?;
     if encoder_settings.hdr {
@@ -919,6 +931,7 @@ async fn send_video(
                         let sent=track.frame_timed(&encoded).await?;
                         producer.trace.sent(encoded.trace,sent.timestamp,sent.first,sent.last,sent.last_qpc);
                     }else{track.frame(&encoded).await?;}
+                    if let Some(timestamp)=track.last_timestamp(){producer.video_e2e.sent(encoded.source_e2e,track.ssrc(),timestamp);}
                     report.sent += 1; report.bytes += bytes;
                 }
             }
@@ -1003,6 +1016,7 @@ async fn receive_session(
     // All callers authenticate signaling before entering this shared path.
     stats.native_progress.set(Stage::PreparingHost);
     stats.native_cursor.reset(false);
+    stats.video_e2e.begin(stats.native_media_epoch.load(Ordering::Acquire),false);
     let first_frame_baseline=stats.decoded_total.load(Ordering::Acquire);
     peer.receiver(frames, stats.clone()).await?;
     let channel = peer
@@ -1016,6 +1030,7 @@ async fn receive_session(
     stats.native_frame_trace_supported.store(false,Ordering::Release);
     {let mut trace=stats.native_frame_trace.lock().unwrap();*stats.native_frame_trace_received.lock().unwrap()=None;*trace=None;}
     crate::frame_trace::advertise(&mut description);
+    crate::video_e2e::advertise(&mut description);
     stats.diagnostics.record(serde_json::json!({"event":"native_local_ice_gather","elapsed_us":elapsed_us(ice_started)}));
     crate::native_clipboard::advertise(&mut description);
     crate::native_gamepad::advertise(&mut description);
@@ -1057,6 +1072,7 @@ async fn receive_session(
         ensure!(answer.codec==VideoCodec::Pyrowave&&crate::native_media::offers_codec(&answer.sdp,VideoCodec::Pyrowave),"{}", uu_i18n::format!("主机不支持所请求的 PyroWave v1 格式，请升级两端并启用此编码"));
     }
     stats.native_frame_trace_supported.store(crate::frame_trace::offered(&answer.sdp),Ordering::Release);
+    stats.video_e2e.begin(stats.native_media_epoch.load(Ordering::Acquire),crate::video_e2e::offered(&answer.sdp));
     stats.native_progress.set(Stage::ConnectingMedia);
     match crate::native_quality::Startup::read(&answer.sdp) {
         Ok(Some(startup))=>stats.diagnostics.record(serde_json::json!({"event":"native_host_preparation","timing":startup})),
@@ -1100,6 +1116,12 @@ async fn receive_session(
         match crate::frame_trace::viewer_channel(&peer.pc,stats.clone()).await {
             Ok(channel)=>Some(channel),
             Err(error)=>{stats.diagnostics.record(serde_json::json!({"event":"frame_trace_unavailable","reason":error.to_string()}));None},
+        }
+    }else{None};
+    let _video_e2e_telemetry=if stats.video_e2e.supported() {
+        match crate::video_e2e::viewer_channel(&peer.pc,stats.clone()).await {
+            Ok(channel)=>Some(channel),
+            Err(error)=>{stats.video_e2e.begin(stats.native_media_epoch.load(Ordering::Acquire),false);stats.diagnostics.record(serde_json::json!({"event":"video_e2e_unavailable","reason":error.to_string()}));None},
         }
     }else{None};
     if let Some((samples,requested,epoch))=gamepad {

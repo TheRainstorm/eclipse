@@ -341,6 +341,7 @@ pub(crate) struct HostControl {
     cursor_registered:AtomicBool,
     frame_trace_allowed: AtomicBool,
     frame_trace_registered: AtomicBool,
+    video_e2e_registered: AtomicBool,
     quality:Mutex<Option<crate::native_quality::Runtime>>,
     session:Mutex<Option<crate::shared_host::SessionContext>>,
     admin_busy:AtomicBool,
@@ -361,6 +362,7 @@ pub(crate) struct HostControl {
 impl HostControl {
     pub fn set_cursor(&self,cursor:Option<crate::native_cursor::Stream>){*self.cursor.lock().unwrap()=cursor;}
     pub fn frame_trace(&self,enabled:bool){self.frame_trace_allowed.store(enabled,Ordering::Release);}
+    pub fn video_e2e(&self,enabled:bool){self.timing.video_e2e.enable(enabled);}
     pub fn clipboard_images(&self,enabled:bool){self.clipboard_version.store(if enabled{2}else{1},Ordering::Release);}
     pub fn gamepad_types(&self,enabled:bool){self.gamepad_typed.store(enabled,Ordering::Release);}
     pub fn set_quality(&self,quality:crate::native_quality::Runtime){*self.quality.lock().unwrap()=Some(quality);}
@@ -426,6 +428,7 @@ impl HostControl {
         };
         Arc::new(Self {
             frame_trace_allowed:AtomicBool::new(false),frame_trace_registered:AtomicBool::new(false),
+            video_e2e_registered:AtomicBool::new(false),
             quality:Mutex::new(None),
             session:Mutex::new(None),admin_busy:AtomicBool::new(false),pending_restart:Mutex::new(None),
             displays:Mutex::new(None),
@@ -468,6 +471,11 @@ impl HostControl {
                     && host.frame_trace_allowed.load(Ordering::Acquire) && host.timing.trace.enabled()
                     && !host.frame_trace_registered.swap(true,Ordering::AcqRel) {
                     crate::frame_trace::host_channel(channel,host.timing.trace.clone());return;
+                }
+                if crate::video_e2e::accepts_channel(&channel)
+                    && host.timing.video_e2e.enabled()
+                    && !host.video_e2e_registered.swap(true,Ordering::AcqRel) {
+                    crate::video_e2e::host_channel(channel,host.timing.video_e2e.clone());return;
                 }
                 let gamepad_label=if host.gamepad_typed.load(Ordering::Acquire){crate::native_gamepad::LABEL_V2}else{crate::native_gamepad::LABEL};
                 if channel.label()==gamepad_label && !channel.ordered() && channel.max_packet_lifetime()==crate::native_gamepad::LIFETIME_MS && channel.max_retransmits()==0 && !host.gamepad_registered.swap(true,Ordering::AcqRel) {

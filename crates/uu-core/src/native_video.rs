@@ -26,6 +26,7 @@ pub(crate) struct Sender {
     track:Arc<TrackLocalStaticRTP>,payloader:Box<dyn Payloader+Send+Sync>,sequence:Box<dyn Sequencer+Send+Sync>,
     origin:Option<u64>,last_pts:Option<u64>,timestamp:u32,
     fec:Option<crate::native_fec::Encoder>,
+    ssrc:u32,last_rtp:Option<u32>,
 
 }
 pub(crate) struct SendTiming {
@@ -37,11 +38,14 @@ pub(crate) struct SendTiming {
 impl Sender {
     pub fn new(track:Arc<TrackLocalStaticRTP>,codec:VideoCodec)->Self{
         let payloader:Box<dyn Payloader+Send+Sync>=match codec{VideoCodec::H264=>Box::<webrtc::rtp::codecs::h264::H264Payloader>::default(),VideoCodec::Hevc=>Box::<HevcPayloader>::default(),VideoCodec::Av1=>Box::<webrtc::rtp::codecs::av1::Av1Payloader>::default(),VideoCodec::Pyrowave=>Box::<crate::pyrowave_rtp::Fragmenter>::default()};
-        Self{track,payloader,sequence:Box::new(new_random_sequencer()),origin:None,last_pts:None,timestamp:rand::random(),fec:None}
+        Self{track,payloader,sequence:Box::new(new_random_sequencer()),origin:None,last_pts:None,timestamp:rand::random(),fec:None,ssrc:0,last_rtp:None}
     }
     pub fn with_fec(track:Arc<TrackLocalStaticRTP>,codec:VideoCodec,transport:Arc<crate::native_fec::Transport>)->Self {
         let mut sender=Self::new(track,codec);sender.fec=Some(crate::native_fec::Encoder::new(transport));sender
     }
+    pub(crate) fn with_ssrc(mut self,ssrc:u32)->Self {self.ssrc=ssrc;self}
+    pub(crate) fn ssrc(&self)->u32 {self.ssrc}
+    pub(crate) fn last_timestamp(&self)->Option<u32> {self.last_rtp}
     pub async fn frame(&mut self,encoded:&uu_media::EncodedFrame)->Result<()>{
         self.transmit(encoded,false).await.map(|_|())
     }
@@ -67,7 +71,7 @@ impl Sender {
                 if index+1==count {last_qpc=crate::frame_trace::source_clock();}
             }
             if let Some(fec)=&mut self.fec {fec.packet(&packet);}
-        }self.last_pts=Some(encoded.pts.0);
+        }self.last_pts=Some(encoded.pts.0);self.last_rtp=Some(timestamp);
         Ok(first.zip(last).map(|(first,last)|SendTiming{timestamp,first,last,last_qpc}))
     }
 

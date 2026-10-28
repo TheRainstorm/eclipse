@@ -8,6 +8,7 @@ pub mod video_options;
 pub mod controller;
 pub mod display_frames;
 pub mod frame_trace;
+pub mod video_e2e;
 mod video_receiver;
 pub mod error;
 pub mod media;

@@ -586,6 +586,7 @@ impl NativePeer {
     pub async fn sender_for_color(&self,refresh:Arc<AtomicBool>,codec:VideoCodec,hdr:bool)->Result<crate::native_video::Sender>{
         let track=Arc::new(TrackLocalStaticRTP::new(video_color_capability(codec,hdr),"video_0".into(),"eclipse-native".into()));
         let sender = self.attach_sender(track.clone() as Arc<dyn TrackLocal + Send + Sync>).await?;
+        let ssrc=sender.get_parameters().await.encodings.first().map_or(0,|encoding|encoding.ssrc);
         tokio::spawn(async move {
             use webrtc::rtcp::payload_feedbacks::{
                 full_intra_request::FullIntraRequest,
@@ -599,7 +600,7 @@ impl NativePeer {
                 }
             }
         });
-        Ok(crate::native_video::Sender::with_fec(track,codec,self.fec.clone()))
+        Ok(crate::native_video::Sender::with_fec(track,codec,self.fec.clone()).with_ssrc(ssrc))
     }
     pub async fn description(&self, offer: bool) -> Result<RTCSessionDescription> {
         let description = if offer {

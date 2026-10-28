@@ -54,6 +54,7 @@ pub struct MediaStats {
     pub hevc_enabled: std::sync::OnceLock<bool>,
     pub diagnostics: crate::session_diagnostics::SessionDiagnostics,
     pub pipeline_trace:crate::pipeline_trace::Trace,
+    pub video_e2e:crate::video_e2e::Client,
     pub native_frame_trace_supported: std::sync::atomic::AtomicBool,
     pub native_frame_trace: std::sync::Mutex<Option<crate::frame_trace::Report>>,
     pub(crate) native_frame_trace_received: std::sync::Mutex<Option<(u64,std::time::Instant)>>,
@@ -392,6 +393,7 @@ pub(crate) async fn receive_video(
                 recovery = Some((sample_epoch, sample_request, encoded.pts));
             }
             if let Some(s)=&worker_stats{s.pipeline_trace.frame(trace_epoch,track_idx,source_ssrc,timestamp,crate::pipeline_trace::Stage::DecodeStart,Some((encoded.pts.0,sample_epoch)));}
+            if let Some(s)=&worker_stats{s.video_e2e.decode_input(trace_epoch,track_idx,source_ssrc,timestamp,encoded.pts.0);}
             let started = Instant::now();
             let outcome=decoder.decode_frames(&encoded);
             let output_available=Instant::now();
