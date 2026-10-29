@@ -53,7 +53,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(sync.verify_package(self.make_bundle())['source_commit'], 'a' * 40)
 
     def test_same_revision_package_is_verified_and_reused_without_a_compiler(self):
-        archive=self.make_bundle().rename(self.root/('uu-client-windows-x64-'+'a'*12+'.zip'))
+        archive=self.make_bundle().rename(self.root/(package.archive_name('a'*40)))
         with patch.object(package,'clean_revision',return_value='a'*40), patch.object(package,'check_tools',side_effect=AssertionError('compiler must not run')), contextlib.redirect_stdout(io.StringIO()):
             result=package.build_package(self.root)
         self.assertEqual(result['sha256'],package.sha256(archive))
@@ -67,7 +67,7 @@ class ReleaseTests(unittest.TestCase):
                 if kind=='stale':metadata['source_commit']='b'*40
                 if kind=='target':metadata['target']='other-target'
                 files['version.json']=json.dumps(metadata).encode()
-            self.make_bundle(change).replace(self.root/('uu-client-windows-x64-'+'a'*12+'.zip'))
+            self.make_bundle(change).replace(self.root/(package.archive_name('a'*40)))
             with self.subTest(kind=kind), patch.object(package,'clean_revision',return_value='a'*40), patch.object(package,'check_tools',side_effect=RuntimeError('build required')), contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(RuntimeError,'build required'):
                 package.build_package(self.root,rebuild=kind=='force')
 

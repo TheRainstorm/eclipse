@@ -4,7 +4,7 @@ autobins = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "uu — native Eclipse client (Windows/Linux)"
+description = "Eclipse command-line tools (Windows/Linux)"
 
 [[bin]]
 name = "eclipse-cli"

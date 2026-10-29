@@ -22,7 +22,7 @@ _linux_installer = importlib.util.module_from_spec(_linux_spec)
 _linux_spec.loader.exec_module(_linux_installer)
 
 TAG = re.compile(r'v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?')
-ARCHIVE = re.compile(r'uu-client-(windows-x64|linux-x86_64)-([0-9a-f]{12})\.(zip|tar\.gz)')
+ARCHIVE = re.compile(r'(?:eclipse|uu-client)-(windows-x64|linux-x86_64)-([0-9a-f]{12})\.(zip|tar\.gz)')
 
 
 def gh(arguments):
@@ -147,7 +147,7 @@ def download(repo, tag, output, platform='all'):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tag', help='Published version; defaults to the latest stable release')
-    parser.add_argument('--repo', default='TheRainstorm/uu-client')
+    parser.add_argument('--repo', default='TheRainstorm/eclipse')
     parser.add_argument('--platform', choices=('all', 'windows', 'linux'), default='all')
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'artifacts/packages')
     args = parser.parse_args()

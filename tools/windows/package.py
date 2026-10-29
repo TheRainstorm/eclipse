@@ -130,9 +130,13 @@ def verify_imports(directory):
                 raise RuntimeError(f'{path.name} 缺少 {name}；请使用 MinGW win32 线程模型工具链，见构建文档')
 
 
+def archive_name(revision):
+    return f'eclipse-windows-x64-{revision[:12]}.zip'
+
+
 def build_package(output, vpl_archive=None, rebuild=False):
     revision = clean_revision()
-    archive = output / f'uu-client-windows-x64-{revision[:12]}.zip'
+    archive = output / archive_name(revision)
     if not rebuild and vpl_archive is None and archive.is_file():
         try:
             manifest = verify_package(archive)
@@ -160,8 +164,8 @@ def build_package(output, vpl_archive=None, rebuild=False):
     if clean_revision() != revision:
         raise RuntimeError('构建期间提交号发生变化，请重新打包')
     output.mkdir(parents=True, exist_ok=True)
-    name = f'uu-client-windows-x64-{revision[:12]}'
-    archive = output / (name + '.zip')
+    name = Path(archive_name(revision)).stem
+    archive = output / archive_name(revision)
     with tempfile.TemporaryDirectory(prefix='.windows-package-', dir=output) as temp:
         staging = Path(temp) / name
         staging.mkdir()

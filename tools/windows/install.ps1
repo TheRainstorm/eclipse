@@ -1,7 +1,7 @@
 # Keep loaded images on their original volume when archiving an upgrade.
 param(
     [string]$SourceDir = $PSScriptRoot,
-    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\uu-client'),
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\Eclipse'),
     [string]$ArchiveRoot = '',
     [switch]$NoShortcut
 )
@@ -18,6 +18,32 @@ function Resolve-PackagePath([string]$Value) {
         return $full.TrimEnd([IO.Path]::DirectorySeparatorChar)
     }
     return $full
+}
+function Resolve-EclipseShortcut($Shell, [string]$Directory, [string[]]$OwnedTargets) {
+    for ($index = 0; ; $index++) {
+        $name = if ($index -eq 0) { 'Eclipse.lnk' } else { "Eclipse ($index).lnk" }
+        $candidate = Join-Path $Directory $name
+        if (!(Test-Path -LiteralPath $candidate)) { return $candidate }
+        if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and
+            $Shell.CreateShortcut($candidate).TargetPath -in $OwnedTargets) { return $candidate }
+    }
+}
+function Set-EclipseShortcut($Shell, [string]$Path, [string]$Directory, [string]$GuiName) {
+    $link = $Shell.CreateShortcut($Path)
+    $link.TargetPath = Join-Path $Directory $GuiName
+    $link.WorkingDirectory = $Directory
+    $link.IconLocation = (Join-Path $Directory $GuiName) + ',0'
+    $link.Description = 'Eclipse - remote streaming'
+    $link.Save()
+}
+function Update-EclipseShortcut($Shell, [string]$Path, [string[]]$OwnedTargets, [string]$Directory, [string]$GuiName) {
+    # Shell links can use non-file targets. Compare only known application paths.
+    if ($Shell.CreateShortcut($Path).TargetPath -notin $OwnedTargets) { return }
+    Set-EclipseShortcut $Shell $Path $Directory $GuiName
+    if ([IO.Path]::GetFileNameWithoutExtension($Path) -in @('UU Remote Rust','uu-client')) {
+        $destination = Resolve-EclipseShortcut $Shell ([IO.Path]::GetDirectoryName($Path)) $OwnedTargets
+        Move-Item -LiteralPath $Path -Destination $destination -Force
+    }
 }
 $SourceDir = Resolve-PackagePath $SourceDir
 $InstallDir = Resolve-PackagePath $InstallDir
@@ -143,31 +169,20 @@ Get-ChildItem $InstallDir -File | Where-Object {
 $shortcut = $null
 if (!$NoShortcut) {
     $shell = New-Object -ComObject WScript.Shell
+    $ownedTargets = @(
+        (Join-Path $InstallDir 'uu-gui.exe'), (Join-Path $InstallDir 'eclipse.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\uu-client\uu-gui.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\uu-client\eclipse.exe'),
+        (Join-Path $env:USERPROFILE 'uu-gui-demo\uu-gui.exe')
+    )
     $roots = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('StartMenu'))
     foreach ($root in $roots) {
         Get-ChildItem $root -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-            $link = $shell.CreateShortcut($_.FullName)
-            $previousExe = Join-Path (Join-Path $env:USERPROFILE 'uu-gui-demo') 'uu-gui.exe'
-            if (($link.TargetPath.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase) -and
-                [IO.Path]::GetFileName($link.TargetPath) -eq 'uu-gui.exe') -or
-                $link.TargetPath.Equals($previousExe, [StringComparison]::OrdinalIgnoreCase)) {
-                $link.TargetPath = Join-Path $InstallDir $guiName
-                $link.WorkingDirectory = $InstallDir
-                $link.IconLocation = (Join-Path $InstallDir $guiName) + ',0'
-                $link.Save()
-                if ($_.BaseName -eq 'UU Remote Rust') {
-                    Move-Item -LiteralPath $_.FullName -Destination (Join-Path $_.DirectoryName 'uu-client.lnk') -Force
-                }
-            }
+            Update-EclipseShortcut $shell $_.FullName $ownedTargets $InstallDir $guiName
         }
     }
-    $shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'uu-client.lnk'
-    $link = $shell.CreateShortcut($shortcut)
-    $link.TargetPath = Join-Path $InstallDir $guiName
-    $link.WorkingDirectory = $InstallDir
-    $link.IconLocation = (Join-Path $InstallDir $guiName) + ',0'
-    $link.Description = 'uu-client - canonical installation'
-    $link.Save()
+    $shortcut = Resolve-EclipseShortcut $shell ([Environment]::GetFolderPath('Desktop')) $ownedTargets
+    Set-EclipseShortcut $shell $shortcut $InstallDir $guiName
 }
 foreach ($name in $required) {
     if ((Get-FileHash -LiteralPath (Join-Path $InstallDir $name)).Hash -ne $manifest.sha256.$name) {

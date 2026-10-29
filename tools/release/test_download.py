@@ -94,6 +94,19 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual(record['sha256'], download.digest(self.output / name))
         self.assertFalse(list(self.output.glob('.release-download-*')))
 
+    def test_eclipse_archives_keep_legacy_download_verification(self):
+        for attribute in ('windows', 'linux'):
+            old = getattr(self, attribute)
+            current = old.replace('uu-client-', 'eclipse-', 1)
+            (self.assets / old).rename(self.assets / current)
+            setattr(self, attribute, current)
+        self.hashes()
+        with patch.object(download, 'gh', side_effect=self.fake_gh):
+            result = download.download('example/project', 'v1.2.3', self.output)
+        self.assertEqual(result['source_commit'], self.revision)
+        self.assertEqual(json.loads((self.output / 'windows-latest.json').read_text())['archive'], self.windows)
+        self.assertEqual(json.loads((self.output / 'linux-latest.json').read_text())['archive'], self.linux)
+
     def test_corrupt_second_platform_preserves_previous_pointer_and_packages(self):
         self.output.mkdir()
         previous = b'{"archive":"previous.zip"}\n'

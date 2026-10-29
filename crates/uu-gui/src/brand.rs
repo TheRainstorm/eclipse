@@ -3,7 +3,7 @@ use eframe::egui;
 
 pub const NAME: &str = "Eclipse";
 pub const TAGLINE: &str = "远端，如在眼前";
-pub const REPOSITORY: &str = "https://github.com/TheRainstorm/uu-client";
+pub const REPOSITORY: &str = "https://github.com/TheRainstorm/eclipse";
 const ICON_PNG: &[u8] = include_bytes!("../../../assets/branding/eclipse-256.png");
 
 pub fn window_icon() -> egui::IconData {
@@ -85,7 +85,7 @@ impl super::App {
             ui.end_row();
         });
         ui.add_space(12.0);
-        ui.hyperlink_to("GitHub · TheRainstorm/uu-client", REPOSITORY);
+        ui.hyperlink_to("GitHub · Eclipse", REPOSITORY);
         ui.add_space(8.0);
         ui.small(uu_i18n::text("独立开源项目，与所兼容服务的提供方无隶属关系。"));
         ui.collapsing(uu_i18n::text("诊断信息"), |ui| {

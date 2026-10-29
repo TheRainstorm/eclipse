@@ -4,7 +4,7 @@
 
 个人账号令牌、二维码凭据、原生邀请和本地覆盖文件始终属于私有数据，不进入源码、CI secrets 或安装包。除已明确记录的 PC 共享值外，不分发其它第三方服务密钥。
 
-发现凭据或安全问题时，请使用 [GitHub 私密漏洞报告](https://github.com/TheRainstorm/uu-client/security/advisories/new)。请勿在公开 issue、截图、日志或 PR 中粘贴密钥、账号 token、设备访问凭据或原始抓包。
+发现凭据或安全问题时，请使用 [GitHub 私密漏洞报告](https://github.com/TheRainstorm/eclipse/security/advisories/new)。请勿在公开 issue、截图、日志或 PR 中粘贴密钥、账号 token、设备访问凭据或原始抓包。
 
 ## 开发与发布检查
 

@@ -96,7 +96,7 @@ def main(argv=None):
     parser.add_argument('--rebuild', action='store_true', help='执行构建流程而非复用已核验同提交的安装包；仍使用 Cargo 缓存')
     args = parser.parse_args(argv)
     revision = source_revision()
-    dest = ROOT / 'artifacts' / 'packages' / f'uu-client-linux-{platform.machine()}-{revision[:12]}'
+    dest = ROOT / 'artifacts' / 'packages' / f'eclipse-linux-{platform.machine()}-{revision[:12]}'
     archive = Path(str(dest) + '.tar.gz')
     if not args.rebuild:
         try:

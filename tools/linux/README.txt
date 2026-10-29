@@ -1,11 +1,11 @@
-uu-client — Linux
+Eclipse — Linux
 
 安装：python3 install.py
-启动：~/.local/bin/uu-client，或应用菜单 uu-client。
-CLI：~/.local/bin/uu-rust
+启动：~/.local/bin/eclipse，或应用菜单 Eclipse；旧 uu-client 启动别名保留。
+CLI：~/.local/bin/eclipse-cli（保留 uu-rust 别名）
 
 首次使用：默认 Eclipse 局域网，无需第三方账号。目标电脑启动服务后默认接收配对申请，将控制端八位码输入主机确认，不自动批准。
-已有官方被控端选择“兼容设备”后登录；原账号与设置保留。
+使用官方被控端需另行安装并启用兼容插件，再从“UU 兼容客户端”登录；原账号与设置保留。
 原生连接提供 IP 直连、UU 寻址与自建连接服务，统一使用设备授权和共享设置。
 
 共享支持 X11 与 Wayland。Wayland 通过系统门户选择画面及许可键鼠，需要 PipeWire、xdg-desktop-portal 和对应桌面后端；Sway等wlroots桌面在屏幕授权后可使用同合成器提供的虚拟键鼠，按所选输出与缩放定位；明确拒绝输入授权时保持只观看。不支持绕过系统授权的无人值守采集。

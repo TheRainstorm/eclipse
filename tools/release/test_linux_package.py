@@ -41,7 +41,7 @@ class LinuxPackageTests(unittest.TestCase):
         manifest.update(source_commit=revision,platform=f'linux-{platform.machine()}',features=packager.FEATURES,build_glibc=list(platform.libc_ver()))
         (package/'version.json').write_text(json.dumps(manifest))
         if changed:(package/'eclipse-cli').write_text('corrupt')
-        destination=self.root/f'uu-client-linux-{platform.machine()}-aaaaaaaaaaaa'
+        destination=self.root/f'eclipse-linux-{platform.machine()}-aaaaaaaaaaaa'
         package.rename(destination)
         archive=Path(shutil.make_archive(str(self.root/'cache'),'gztar',root_dir=self.root,base_dir=destination.name))
         if extra:
@@ -101,13 +101,22 @@ class LinuxPackageTests(unittest.TestCase):
         prefix = self.root / 'owned prefix % with spaces'
         config = prefix / 'share/uu-remote/user-settings.json'
         config.parent.mkdir(parents=True);config.write_text('user configuration')
+        old_desktop = prefix / 'share/applications/uu-client.desktop'
+        old_desktop.parent.mkdir(parents=True)
+        old_desktop.write_text('[Desktop Entry]\nName=uu-client\nExec=old-launcher\n')
+        old_release = prefix / 'opt/uu-remote-rust/releases/old'
+        old_release.mkdir(parents=True); (old_release / 'preserved').write_text('old version')
         for package in (first, second):
             with patch('sys.argv', ['install.py', '--package', str(package), '--prefix', str(prefix)]), contextlib.redirect_stdout(io.StringIO()):
                 installer.main()
-        base = prefix / 'opt/uu-remote-rust'
+        base = prefix / 'opt/eclipse'
         self.assertEqual((base / 'current').resolve(), base / 'releases' / ('b' * 12))
         self.assertTrue((base / 'releases' / ('a' * 12) / 'eclipse').exists())
         self.assertEqual(config.read_text(), 'user configuration')
+        self.assertEqual((old_release / 'preserved').read_text(), 'old version')
+        self.assertIn('NoDisplay=true', old_desktop.read_text())
+        self.assertIn(str(base / 'current/eclipse'), old_desktop.read_text())
+        self.assertIn('Name=Eclipse', (prefix / 'share/applications/Eclipse.desktop').read_text())
         self.assertEqual(subprocess.run([str(prefix / 'bin/uu-client')]).returncode, 0)
         before = (base / 'current').resolve()
         (second / 'README.txt').write_text('corrupt')
@@ -121,10 +130,10 @@ class LinuxPackageTests(unittest.TestCase):
             with patch('sys.argv', ['install.py', '--package', str(package), '--prefix', str(prefix)]), contextlib.redirect_stdout(io.StringIO()):
                 installer.main()
         install(first); install(second)
-        base = prefix / 'opt/uu-remote-rust'
+        base = prefix / 'opt/eclipse'
         metadata = base / 'releases' / ('a' * 12) / 'version.json'
         original = metadata.read_text()
-        desktop = prefix / 'share/applications/uu-client.desktop'
+        desktop = prefix / 'share/applications/Eclipse.desktop'
         before = ((base / 'current').resolve(), desktop.read_bytes())
         malformed = [None, 'not json', '[]', json.dumps(dict(json.loads(original), source_commit='c' * 40))]
         for content in malformed:
@@ -147,7 +156,7 @@ class LinuxPackageTests(unittest.TestCase):
         metadata = package / 'version.json'
         value = json.loads(metadata.read_text()); value['built_at_utc'] = '2000-01-01T00:00:00Z'
         metadata.write_text(json.dumps(value)); install()
-        current = prefix / 'opt/uu-remote-rust/current'
+        current = prefix / 'opt/eclipse/current'
         self.assertEqual(installer.verify_package(current)['source_commit'], 'a' * 40)
         self.assertEqual(subprocess.run([str(prefix / 'bin/uu-client')]).returncode, 0)
 

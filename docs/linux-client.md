@@ -17,21 +17,15 @@ Linux VA-API 支持完整访问单元提交，并依据 H.264 色彩标记选择
 ```sh
 cargo run -p uu-gui --features vaapi
 python3 tools/linux/package.py
-# 到生成的 artifacts/packages/uu-client-linux-x86_64-<revision>/ 内：
+# 到生成的 artifacts/packages/eclipse-linux-x86_64-<revision>/ 内：
 python3 install.py
 ```
 
 同一提交已有完整安装包时，打包脚本核验内容、目标平台、功能和 glibc 兼容性后直接复用，不调用 Cargo；解包目录缺失时从已核验归档恢复。`--rebuild` 可强制执行构建流程，仍使用 Cargo 缓存。检查与测试产物不等于 release 安装包，因此首次打包仍需要 release 构建。
 
-正式入口：`~/.local/bin/uu-client`（保留旧 `uu-remote-rust` 启动别名），或应用菜单 **uu-client**。实际文件在 `~/.local/opt/uu-remote-rust/releases/<revision>/`，`current` 为统一版本入口。开发分支还提供 `~/.local/bin/eclipse` 和 `~/.local/bin/eclipse-cli`，CLI 保留旧 `~/.local/bin/uu-rust` 别名。安装器校验二进制 SHA256 和动态依赖，原子切换入口，旧版本保留。0.6起版本显示优先使用程序内嵌的源提交，并核对同目录 `version.json`；请使用完整包以保持程序、资源与清单一致。
+正式入口为 `~/.local/bin/eclipse`、`~/.local/bin/eclipse-cli` 或应用菜单 **Eclipse**。实际文件在 `~/.local/opt/eclipse/releases/<revision>/`，`current` 指向当前版本。旧 `uu-client`、`uu-remote-rust` 和 `uu-rust` 命令保留为兼容别名。升级保留原用户配置和旧版本文件；请退出旧窗口后重新启动。
 
-0.7起应用菜单使用与窗口标识一致的 `uu-client.desktop`，以便桌面识别图标和任务栏分组。旧启动项保留为隐藏兼容入口，避免已有固定图标失效；如固定项仍显示旧图标，可从应用菜单重新固定 uu-client。安装路径中的空格和特殊字符会按桌面启动项规则转义，启动不经过 shell。
-
-凭据和设置在 `$XDG_DATA_HOME/uu-remote`（默认 `~/.local/share/uu-remote`）。安装包不含凭据，首次运行可扫码登录。安装升级不覆盖设置或凭据。
-
-默认保持远端显示器布局；独占虚拟屏只在用户显式选择时启用。支持绝对桌面鼠标、Locked 相对游戏鼠标、本地/远端光标偏好。窗口按目标屏幕约 80% 容量计算大小；Wayland 的位置由合成器决定，应用不能强制全局居中坐标。
-
-快捷键：Ctrl+Alt+Shift+S 信息，F/X 串流全屏，Q 退出串流，M 静音；H 悬浮入口，Z 释放/捕获。Wayland 全屏系统快捷键使用 `keyboard-shortcuts-inhibit`，是否允许由合成器决定。退出全屏/失焦时释放。窗口模式将 Super 留给本地桌面。X11 普通键盘、鼠标、文本剪贴板可用；X11 的全屏系统键抓取尚未实机闭环。
+应用菜单使用与窗口 app_id 一致的 `Eclipse.desktop`。旧桌面启动项保留为隐藏兼容入口；需要更新固定图标时，从应用菜单重新固定 Eclipse。安装路径中的空格和特殊字符按桌面启动项规则转义，启动不经过 shell。
 
 ## Wayland 本机共享
 

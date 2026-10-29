@@ -1,6 +1,6 @@
 # 混合 DPI 导致外屏 Render 升高：定位、修复与实测
 
-日期：2026-10-27。修复提交：[`7cef038`](https://github.com/TheRainstorm/uu-client/commit/7cef0389f107f1906ab7e4ef37ca65afe8b934a8)，随 v0.18.9 发布。
+日期：2026-10-27。修复提交：[`7cef038`](https://github.com/TheRainstorm/eclipse/commit/7cef0389f107f1906ab7e4ef37ca65afe8b934a8)，随 v0.18.9 发布。
 
 ## 现象与影响
 

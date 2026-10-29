@@ -1,16 +1,16 @@
-uu-client — Windows / Linux 远程串流客户端（Windows x64 包）
+Eclipse — Windows / Linux 远程串流客户端（Windows x64 包）
 
 安装与更新
 
 在解压目录打开 PowerShell，执行：
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
-默认安装到 %LOCALAPPDATA%\Programs\uu-client。-InstallDir 可指定安装位置；
+默认安装到 %LOCALAPPDATA%\Programs\Eclipse。-InstallDir 可指定安装位置；
 -SourceDir、-InstallDir 和 -ArchiveRoot 的相对路径按当前 PowerShell 目录解析。
 安装目录不能为盘根。安装器校验 version.json 中的全部文件摘要，保留登录态、
 设置与现有进程。旧包默认移入安装目录内的 .upgrade-archive，文件替换失败会回滚。
 
-完成后关闭旧主页及串流窗口，再从桌面 uu-client 打开新版。在“关于软件”查看版本、
+完成后关闭旧主页及串流窗口，再从桌面 Eclipse 打开新版。在“关于软件”查看版本、
 构建提交和程序路径。保留包内运行 DLL；libvpl.dll 是 MIT 许可的标准 Intel VPL
 调度器，不含 GPU 驱动。实际硬件功能需要系统驱动及 GPU runtime。
 
@@ -93,6 +93,6 @@ Decode + Render 不是总延迟；已知画面段估计也缺远程应用、采�
 控制 RTT 包含应用调度，不等同于 ping；输入确认仅证明操作系统接受了事件。
 地址、端口、候选和实际直连路径在悬浮菜单“连接详情”查看，不增加 HUD 行数。
 
-HDR、文件传输、终端与端口映射尚未实现。原生NVENC和发送端包节奏尚未接入。原生功能与官方兼容模式的
+Windows 原生串流支持 HDR10；文件传输、终端与端口映射尚未实现。原生NVENC和发送端包节奏尚未接入。原生功能与官方兼容模式的
 能力不同，不与 Moonlight / Sunshine 直接互通。项目及各功能说明：
-https://github.com/TheRainstorm/uu-client
+https://github.com/TheRainstorm/eclipse

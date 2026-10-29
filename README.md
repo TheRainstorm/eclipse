@@ -1,195 +1,125 @@
-# uu-client
-
-> **版权与项目声明**：本项目由个人维护，目前无盈利，与网易及其 UU 远程产品无隶属、合作或官方授权关系。第三方名称仅用于说明兼容对象，相关商标与权利归原权利人所有。如 UU 官方或相关权利人要求下架，维护者将配合停止公开分发并处理相关内容。独立实现、非盈利及此声明不代表已获得接入许可，也不消除服务协议或知识产权风险；使用前请阅读[许可与兼容接入说明](docs/licensing-and-compatibility.md)。
+# Eclipse / 日蚀
 
 <p align="center">
-  <img src="assets/branding/eclipse-256.png" width="88" height="88" alt="清新日蚀图标">
+  <img src="assets/branding/eclipse-256.png" width="88" height="88" alt="Eclipse 日蚀图标">
 </p>
-<p align="center"><strong>远端，如在眼前。</strong><br>面向 Windows 与 Linux 的原生远程串流客户端</p>
+<p align="center"><strong>远端，如在眼前。</strong><br>使用 Rust 构建的 Windows / Linux 远程桌面与低延迟串流</p>
 
-uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键鼠和多显示器操作。Linux 客户端原生运行，无需 Wine。当前开发分支默认进入 **设备工作区**：保存多台原生设备及 IP、UU、VPS 地址，首次短码配对后跨入口复用公钥授权。服务管理集中管理连接、采集、编码、权限与会话，应用设置保留软件通用选项。主页显示壁纸与最后画面卡片，右键管理连接方式和多个命名客户端配置；可选连接方式由单独安装并启用的插件提供。详见[新版配置与设备页](docs/client-and-server-settings.md)。详见[局域网连接与配对](docs/native-lan.md)。
+Eclipse 将设备管理、画面共享、声音和输入控制放在同一个应用中。主程序提供独立的原生串流：可以在局域网直接连接，也可以通过自建连接服务寻址。首次配对后，设备使用公钥身份确认授权，无需第三方账号。Linux 客户端原生运行，无需 Wine。
 
-目前已达到日常远程桌面基本可用的 demo 阶段，仍在快速迭代。原生通路提供图形共享、公钥授权的输入控制、[系统声音与恢复](docs/native-audio.md)及[双方许可的文本与图片剪贴板](docs/native-clipboard.md)，IP 直连不需要第三方账号。Linux 共享支持 X11 和 [Wayland 门户 / PipeWire](docs/linux-client.md#wayland-本机共享)；Windows 锁屏共享使用可选的[后台服务](docs/windows-background-service.md)。
+可选功能通过独立下载的插件提供。主程序完整包不包含 UU 插件，也不需要插件才能构建或使用原生串流。项目仍在快速迭代，实际格式、帧率和延迟取决于两端硬件、驱动、显示与网络。
 
-开发分支增加[硬件 H.264 / HEVC / AV1 与 CBR / VBR](docs/native-encoding.md)、[原生分段延迟统计](docs/native-latency.md)、[运行中切换共享显示器](docs/native-lan.md#串流中切换显示器)和[手柄与陀螺仪](docs/native-gamepad.md)。共享最多接受 4 个会话，按设备授权和单独断开，输入控制权统一交接；硬件格式、帧率和实体外设仍需按目标驱动验证。“共享本机”默认自动选择硬编，旧邀请入口与 CLI 保留软件默认值。**原生协议仍在迭代，不兼容 Sunshine / GameStream。** 两种模式的互通边界、UDP/WebRTC 传输、Moonlight 对比见[协议与传输架构](docs/protocol-compatibility-and-transport.md)。
-
-原生公网入口与自建连接服务见[使用说明](docs/native-internet.md)：IP 直连和连接服务共用原生串流，用户已确认两台不同 UU 设备连接成功，跨 NAT 和中继仍待验收。新版共享设置、多设备配置、公钥配对和官方协助入口见[设备连接、共享与授权](docs/device-connection-and-trust.md)。
+[下载正式版](https://github.com/TheRainstorm/eclipse/releases) · [版本说明](docs/releases.md) · [设备连接与授权](docs/device-connection-and-trust.md) · [插件安装](docs/plugins.md)
 
 ## 界面
 
-**新版原生设备工作区（Linux 隔离演示配置，设备与地址均为示例）**
+以下为 Windows 实机截图。
 
-![设备、共享与连接服务工作区](docs/images/workspace.png)
+**设备列表**：保存多台设备、连接方式与客户端配置，显示壁纸和最近画面；右键可编辑设备、切换配置或刷新壁纸。
 
-以下两张均为 Windows 实机截图。主界面的设备别名与壁纸使用客户端隐私显示；串流界面的远端运行专用演示画面。
+![Eclipse 设备列表](docs/images/eclipse-devices.png)
 
-**设备主界面（兼容模式）**
+**串流与诊断**：悬浮菜单集中提供画面、声音、输入和连接设置。精简 HUD 可展开串流诊断，查看阶段耗时、网络和历史曲线。
 
-![uu-client 设备主界面](docs/images/home-windows.png)
+![Eclipse 串流 HUD 与展开的悬浮菜单](docs/images/eclipse-streaming.png)
 
-**串流界面**
+**应用设置与插件**：软件设置按类别组织。插件独立启用，插件提供的模块还可分别控制。
 
-![uu-client 串流界面与统计](docs/images/stream-windows.png)
+![Eclipse 设置与独立插件模块](docs/images/eclipse-settings.png)
 
-## 已有功能
+截图中的版本和勾选状态是拍摄时的示例。新安装的插件总开关默认关闭；手动启用 UU 插件后，兼容客户端和账号连接服务默认开启，实验性兼容服务器、官方中转默认关闭。HUD 的阶段估计与视频端到端指标口径不同，都不能直接当作完整操作响应时间，详见[统计定义](docs/hud.md)。
 
-下表描述 UU 兼容模式。原生模式提供独立主机、图形端共享与显式授权的键鼠控制，具体范围见[原生串流说明](docs/native-streaming.md)。
+## 能力
 
-| 方面 | 当前支持 |
+| 方面 | 原生串流 |
 |---|---|
-| 账号与设备 | 扫码登录、取消或刷新二维码、设备列表与搜索、异步设备预览、本地收藏与最近使用、退出账号；退出后断开本客户端串流，保留软件偏好。 |
-| 视频 | H.264（Windows D3D11VA / Linux VA-API，失败回退 OpenH264）；Windows 与 Linux UU 串流可在设置中优先选择 H.265 / HEVC，硬解能力按实际探针确认。 |
-| 画质 | 自动 / 预设 / 自定义码率，保持远端或指定分辨率，预设与自定义 5–144 FPS。实际帧率受被控端、屏幕和网络限制。 |
-| 音频 | Opus 播放、音量、静音、限长缓冲与丢包平滑；顶部声音快捷按钮。 |
-| 键盘与鼠标 | 标点与组合键、鼠标中键与拖动；桌面绝对定位 / 游戏相对移动，本地 / 远端光标。 |
-| 多显示器 | 真实显示源标签、切屏、拖动排序；新设备默认加入现有串流窗口，可整组排序或移到独立窗口。 |
-| 桌面体验 | 保留设备主窗口、窗口缩放、跨 DPI 适配、全屏串流、可隐藏悬浮菜单、居中统计 HUD。 |
-| 剪贴板 | Windows 与 Linux 的前台串流双向文本同步，单次上限约 30 KiB。 |
-| 网络恢复 | RTP 重排、NACK / RTX 重传、序号回绕与参考链恢复、限长呈现队列；尚未接入视频 FEC。 |
+| 连接与授权 | 局域网发现、IP 直连、自建连接服务、公钥配对、设备权限与撤销。连接服务负责寻址，设备授权独立校验。 |
+| 视频 | H.264 / HEVC / AV1，按实际能力选择软硬件后端；CBR / VBR、分辨率与 5–240 FPS 请求。Windows 支持满足条件的 HDR10。 |
+| 桌面与窗口 | 多显示器切换、多设备串流工作区、独立窗口、全屏、跨 DPI、可拖动的悬浮菜单。 |
+| 输入与协作 | 桌面绝对定位 / 游戏相对移动、远端光标、系统快捷键捕获、双方许可的文本与 PNG 剪贴板、可选手柄与陀螺仪。 |
+| 声音 | 系统输出采集与 Opus 播放、音量和静音、限长缓冲与恢复。 |
+| 共享管理 | 最多四个并发会话，按设备授权和断开；一次只有一个会话持有输入控制权。Windows 可安装后台服务支持锁屏后的共享。 |
+| 诊断与恢复 | 精简 HUD、3 / 10 / 60 分钟曲线、带区间的视频端到端估测、RTP 重排、NACK / RTX、可协商的 XOR FEC。 |
 
-默认使用自动画质、60 FPS 目标、远端原分辨率，串流窗口在目标显示器工作区约 80% 范围内等比居中。设置中可以修改默认偏好；窗口右上角按钮负责最大化 / 还原，快捷键进入串流全屏，多设备时保留顶部设备标签。
-
-全屏悬浮按钮默认贴右边缘、距顶部 15%，可自由拖动。按钮白色面积较旧版减少约 30%；悬停立即展开菜单，悬停离开立即收起。点击后保持交互，离开菜单或窗口失焦约 2 秒收起；菜单内编辑时保留键盘焦点。靠边收起后只露出约三分之一，Ctrl+Alt+Shift+H 可隐藏或显示入口。
-
-0.6起提供[收藏与最近使用](docs/device-library.md)（0.5旧标签不含）；小窗口使用紧凑筛选栏，设备长名称按实际宽度省略并可悬停查看。
-
-0.7修复了[丢包与重传跨 SRTP 序号回绕时可能永久停图的问题](docs/stream-recovery.md)，并保留加密认证与重放保护。该修复覆盖兼容模式接收端和原生模式；原生串流建议主机与控制端一起升级。0.8进一步修正Linux原生硬件编码与硬件解码的互通，减少BGRA转换开销，并在停图后及时将解码FPS归零。0.9将图形观看切换为 GPU 平面颜色转换，减少 CPU 与纹理上传工作；[延迟路径和计时说明](docs/windows-latency.md)明确保留的同步读回及测试范围。
+自动模式优先使用可用硬编，显式选择的硬件或格式不可用时会报告失败。高帧率请求不保证实际接收与呈现达到同样帧率。[编解码与硬件条件](docs/native-encoding.md) · [HDR](docs/hdr.md) · [声音](docs/native-audio.md) · [剪贴板](docs/native-clipboard.md) · [手柄](docs/native-gamepad.md)
 
 ## 开始使用
 
-当前版本 **v0.20.10** 恢复插件原界面并提供三个独立模块，统一 Eclipse 程序文件名并精简分发体积，详见[0.20.10 版本说明](docs/releases/v0.20.10.md)。v0.20.9 起将 UU 功能改为独立下载、手动启用的运行时插件；主程序不再依赖具体插件，默认只分发主程序完整包。新增插件管理和显式官方 TURN/UDP 中转选项（默认关闭）。详见[版本说明](docs/releases/v0.20.9.md)与[插件安装说明](docs/plugins.md)。[v0.20.7](docs/releases/v0.20.7.md) 的原生呈现修复和端到端观测继续保留，Windows 主机偶发的 DXGI 重连失败仍在排查。[v0.20.3](docs/releases/v0.20.3.md) 修复 HUD 已观察停图在暂停后丢失的计数。[v0.20.2](docs/releases/v0.20.2.md) 调整采集节拍、增加一分钟长间隔统计，并明确视频阶段小计与完整操作延迟的边界。[v0.20.1](docs/releases/v0.20.1.md) 整理 HUD 行对齐、手动复制与悬浮菜单。[v0.20.0](docs/releases/v0.20.0.md) 将 UU 协议拆到独立插件仓库，并提供默认关闭的实验性官方被控入口，真实官方手机互通仍待验收。正式包见 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)。从 v0.20.9 起，插件作为独立下载的动态库：主程序无需插件源码即可构建，插件默认关闭，详见[插件文档](docs/plugins.md)。
+当前版本 **v0.21.0** 将项目、安装包和入口统一为 **Eclipse**，主仓库改为 [`TheRainstorm/eclipse`](https://github.com/TheRainstorm/eclipse)。旧配置继续使用，兼容启动别名保留。详见 [0.21.0 版本说明](docs/releases/v0.21.0.md)。
 
-安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
+从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包，保留包内全部运行库与清单。
 
-已有源码目录且已安装并登录 GitHub CLI、Python 3.11+ 时，可直接下载已发布产物，无需本机编译：
-
-```sh
-python3 tools/release/download.py
-# 指定版本或平台：--tag v0.8.0 --platform windows
-```
-
-校验后的包统一位于 `artifacts/packages/`；工具核对发布标签对应提交、压缩包校验和及每个文件的哈希。下载不会安装或启动软件。
-
-主机点击顶部互联网图标进入“服务管理”，在连接服务页启用所需入口并启动服务；启动后默认接受配对申请。控制端在设备主页空白处右键添加地址，将八位配对码输入主机确认。之后单击设备卡片即可串流，右键可切换连接方式和客户端配置。默认 TCP / UDP 监听端口为 48998 / 48999。详见[局域网连接与配对](docs/native-lan.md)。
-
-v0.5.0 起的 UU 兼容模式内置 PC 客户端共享的请求签名值，首次使用无需手工创建签名文件；账号仍需扫码登录，远端操作仍受账号与设备权限控制。该共享值可从源码或程序中读取，不是用户个人令牌，也不代表获得官方接入授权。需要覆盖默认值时，见[连接签名配置说明](docs/connection-credentials.md)。v0.1–v0.4 发布包仍要求本地配置。
-
-在你有权控制的远端设备上安装并配置官方被控端。启动 uu-client，点击顶部“UU 兼容”，扫码登录后从原版设备列表选择设备连接。主页在串流期间保留，可继续连接其它设备。
-
-UU 本机显示名自动使用“电脑名-Eclipse”，原生共享名称独立设置。扫码登录或“服务管理 → 连接服务 → UU 账号 → 更新注册信息”会提交真实系统与硬件资料，保留编号和原生配对。旧设备尚未认证时，手机可能仍显示旧名；确认登录后同步名称。
-
-“服务管理 → 连接服务 → UU 账号 → 管理 UU 设备”可查看和确认解绑本账号设备。与官方客户端共存时可能有两条同名、不同编号的记录；身份与解绑范围见[UU 设备名称与管理](docs/uu-device-identity.md)。
-
-顶部依次提供设备列表、服务管理、UU 兼容与应用设置入口。服务管理集中本机连接、采集、编码和权限；应用设置使用“软件设置 / 关于”页签，仅管理壁纸、软件自启动、设备发现等通用选项。客户端画质通过设备右键的配置编辑设置，串流内设置只应用于当前会话。主页、设置和菜单沿用蓝白风格，版本与构建提交在应用设置的“关于”页查看。登录态和设置保存在本地用户目录，安装包不包含账号数据。账号文件使用原子替换，Unix 权限仅当前用户可读写；诊断不记录认证或二维码凭据。
-
-0.6起会明确提示本地账号文件损坏、过大或不可读取，保留原文件并阻止重新注册覆盖；修复配置后可重试。短暂读取失败不自动退出已经建立的串流。
-设置文件异常时使用内存默认值，自动保存不会覆盖原件；可在设置中主动备份异常文件后保存当前选项。
-
-0.6起在 Windows / Linux 和软件解码路径中统一读取 H.264 的色彩范围与 BT.601 / BT.709 矩阵，避免因构建未启用 Linux 硬解而忽略色彩信息。
-
-### Windows
-
-在 Linux 上交叉编译并打包 Windows x64：
-
-```bash
-python3 tools/windows/package.py
-```
-
-将 `artifacts/packages/uu-client-windows-x64-<提交号>.zip` 复制到 Windows，解压后运行：
+**Windows**：解压 `eclipse-windows-x64-<提交号>.zip`，在解压目录执行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装会保留登录态、设置和现有进程。完成后关闭旧主页与串流窗口，再从桌面 **uu-client** 打开新版。工具链准备、自定义安装目录和校验方法见 [Windows 编译与打包](docs/windows-build.md)。
+默认安装到 `%LOCALAPPDATA%\Programs\Eclipse`，桌面入口为 **Eclipse**；`-InstallDir` 可指定位置。升级已有安装时，请指定原安装目录以更新原程序。安装保留用户配置与现有进程，完成后退出旧主页、串流窗口再重新打开。后台共享服务需在服务管理中单独更新并重启。[安装与运行库说明](docs/windows-build.md) · [后台服务](docs/windows-background-service.md)
 
-### Linux
+**Linux**：解压 `eclipse-linux-x86_64-<提交号>.tar.gz`，在包目录执行：
 
-安装 Rust 稳定版及系统开发依赖，构建原生客户端：
-
-```bash
-# Ubuntu / Debian
-sudo apt install build-essential pkg-config cmake nasm libssl-dev \
-  libasound2-dev libpulse-dev libva-dev libgbm-dev libclang-dev libxkbcommon-dev libxkbcommon-x11-dev libpipewire-0.3-dev
-cargo run --release -p uu-gui --features vaapi --locked
+```sh
+python3 install.py
+~/.local/bin/eclipse
 ```
 
-生成含安装器的 Linux 包：
+应用菜单入口为 **Eclipse**，命令行为 `eclipse-cli`。旧 `uu-client`、`uu-remote-rust` 和 `uu-rust` 别名保留，原用户数据目录继续使用。共享支持 X11 与 Wayland；Wayland 需要门户授权或合成器提供的采集与输入能力。[运行依赖与平台差异](docs/linux-client.md)
 
-```bash
-python3 tools/linux/package.py
+**连接两台设备**：在被控端打开“服务管理”，启用所需入口并启动共享；在控制端设备页右键添加地址，发起配对，将八位码输入被控端确认。之后可从设备卡片连接，并按设备保存画质配置。[局域网连接与配对](docs/native-lan.md) · [公网与自建服务](docs/native-internet.md)
+
+已有源码和 GitHub CLI 时，也可下载并校验发布包，无需本机编译：
+
+```sh
+python3 tools/release/download.py
+# 也可指定 --tag v0.21.0 --platform windows
 ```
 
-解压后执行 `python3 install.py`，从应用菜单 **uu-client** 或 `~/.local/bin/uu-client` 启动。支持 Wayland / X11；运行库、驱动及平台差异见 [Linux 客户端说明](docs/linux-client.md)。
+下载工具核对标签提交、归档校验和与包内全部文件，保存到 `artifacts/packages/`，不会安装或启动程序。
 
-### 快捷键
+## 可选 UU 兼容插件
 
-Windows 上再次打开程序会唤起已有主页，避免并行运行多个主实例。串流工作区独立于主页运行；新连接默认加入已有串流窗口，各设备保留独立会话，也可移到独立窗口。更新后需要关闭旧主页和旧串流窗口，再打开新版本；替换文件不会升级正在运行的进程。
+插件在[独立仓库](https://github.com/TheRainstorm/uu-client-plugins)分发。下载与主程序 SDK 匹配的版本，解压到软件目录，使文件位于 `plugins/uu/`，重启 Eclipse 后在“应用设置 → 插件”手动启用。
 
-以下字母键均与 **Ctrl+Alt+Shift** 同时按下：
+三个模块可分别开关：**UU 兼容客户端**提供原设备列表和远程协助；**UU 账号连接服务**为原生设备提供账号寻址；**UU 兼容服务器（实验性）**提供官方客户端连接本机的兼容入口。允许官方中转默认关闭，只有显式开启后才允许无法 P2P 时使用官方中转。真实官方手机互通仍待验收。[插件安装与默认值](docs/plugins.md)
 
-| 按键 | 功能 |
-|---|---|
-| S | 显示 / 隐藏串流统计 |
-| F 或 X | 进入 / 退出串流全屏 |
-| Q | 退出当前串流 |
-| M | 静音 / 恢复声音 |
-| H | 显示 / 隐藏全屏悬浮入口 |
-| Z | 捕获 / 释放输入 |
-| P | 切换桌面绝对定位 / 游戏相对移动 |
-| C | 切换本地和远端 / 仅远端光标（UU 兼容串流） |
+本项目由个人维护，目前无盈利，与网易及其 UU 远程产品无隶属、合作或官方授权关系。第三方名称仅说明兼容对象，商标及权利归原权利人所有。如相关权利人要求下架，维护者将配合停止公开分发并处理相关内容。[许可与兼容接入说明](docs/licensing-and-compatibility.md)
 
-光标显示提供“本地和远端光标”与“仅远端光标”，Ctrl+Alt+Shift+C 在两者间切换；旧的仅本地设置自动迁移为本地和远端。鼠标移动方式仍可选择桌面绝对定位或游戏相对移动，游戏捕获时隐藏本地光标。原生主机目前不支持远端光标合成切换。
+## 快捷键与统计
 
-上述快捷键由客户端处理，不发送到远端；窗口、全屏、仅观看或打开菜单时均可使用，与“全屏时将系统快捷键发送到远端”设置独立。按住或切换全屏时不会重复触发。
+默认客户端快捷键均以 **Ctrl+Alt+Shift** 开头：`F / X` 全屏或窗口、`S` 启用 HUD、`Q` 退出当前串流、`M` 静音、`H` 悬浮入口、`Z` 释放或捕获输入。可在应用设置中自定义，菜单按实际绑定显示。[完整快捷键](docs/keyboard-shortcuts.md) · [键盘捕获规则](docs/keyboard-capture.md)
 
-开启系统快捷键捕获后，仅当前台全屏串流画面获得输入焦点时，Win、Alt+Tab 等组合键才发送到远端。打开菜单、仅观看或失焦时暂停，关闭菜单、恢复控制或重新获得焦点后自动恢复；鼠标悬停工具栏不释放键盘。Ctrl+Alt+Shift+Z 可显式释放／重新捕获输入。退出全屏后系统快捷键交回本机，普通远端键鼠仍可使用。Win+Shift+方向键与其它系统组合键遵循同一捕获设置；捕获开启时作用于远端，释放时作用于本机。Ctrl+Alt+Del 由 Windows 保留。Wayland 是否允许快捷键抑制取决于合成器支持。
-
-0.7起在 Windows 原生捕获路径中保留右 Alt / AltGr 作为远端输入，避免输入 `@` 等字符时误触退出或其它本地操作；本地快捷键请使用 Ctrl+左 Alt。
+视频端到端统计从源画面到客户端显示回执区间，不包含此前的输入上行和远端应用响应。`Est.Total` 是已知阶段的独立窗口估计；帧周期是节拍参考，不会额外加入视频 E2E。两者都不能用来直接判断完整鼠标跟随延迟。[延迟口径](docs/native-latency.md) · [HUD](docs/hud.md)
 
 ## 当前边界
 
-- 原生被控端目前为实验性共享通路，默认 IP 连接，也可使用 [UU / 自建连接服务](docs/native-internet.md)寻址；含 Windows DXGI、Linux X11 / Wayland 门户采集、可选系统声音和输入控制。H.264 默认自动选择硬编，Windows Media Foundation 支持 H.264 CBR / VBR；Windows AMD 使用原生 AMF，Intel 可使用 VPL，NVIDIA 使用驱动 MFT；Linux 保留 VA-API，Intel 自定义参数使用 VPL。可用格式与码控受硬件和驱动限制。Windows 锁屏共享需安装后台服务、保持该用户登录及有效显示输出；Wayland 仍需系统门户授权。
-- Windows UU 串流支持 H.264 和可选 H.265 Main 8-bit 硬解；HEVC 需要系统解码扩展与兼容 GPU，连接前检查失败时使用 H.264。Linux UU 接收可选 HEVC 硬解；原生支持 H.264 / HEVC / AV1，GUI 可请求 5–240 FPS，分辨率与实际吞吐受格式、硬件及驱动限制。Windows 原生连接支持 [HDR10](docs/hdr.md)，需要两端系统显示输出及 10 位编解码支持，Linux 当前使用 SDR；新版原生两端支持有预算上限的 [XOR 视频 FEC](docs/native-fec.md)，每组可恢复一包，不兼容官方 UU 的 FEC。高帧率选项不保证所有远端都能达到对应实际帧率。
-- 文件传输、终端和端口映射尚未实现。新版“远程协助”可按官方设备 ID 与验证码发起兼容连接；原生主机发布官方协助码尚未实现。
-- 本项目原生主机暂不能供官方手机客户端连接；当前认证与协商需要独立兼容入口，详见[官方手机客户端兼容可行性分析](docs/official-mobile-client-feasibility.md)。
-- 硬解仍存在 CPU 回读，尚未做到完整零拷贝；网络波动、恢复与音频长稳体验仍需持续打磨。
-- 服务兼容性依赖官方接口与被控端版本，可能随更新失效；未获官方认可或授权，账号与服务使用存在协议风险。
+- 原生协议仍在迭代，不兼容 Sunshine / GameStream。Windows 锁屏共享需要后台服务、已登录用户及有效显示输出；Wayland 仍受系统授权约束。
+- Linux 当前为 SDR。硬件格式和 GPU 直通受平台、驱动与适配器限制，部分路径仍有 CPU 读回。窗口提交或 DXGI 回执估测不能证明物理显示器已经发光。
+- 文件传输、终端、端口映射、手柄震动与自适应扳机尚未实现。Windows 偶发 DXGI 断链后重连失败、高帧率卡顿和输入跟随延迟仍在排查。
+- 可选插件依赖第三方接口，服务更新可能影响兼容；项目开源许可不代表第三方服务接入授权。
 
-## 实现与开发
+## 构建与开发
 
-GUI 使用 egui / eframe，媒体面采用 WebRTC/UDP 与 Opus；原生视频支持 H.264 / HEVC / AV1，UU 兼容模式协商 H.264 / HEVC。协议、输入和呈现分层，账号配置与软件偏好分开保存。
+GUI 使用 egui / eframe，媒体传输使用 WebRTC / UDP 与 Opus。主程序工作区与具体插件分仓，运行时通过精确匹配的共享 SDK 加载插件。
 
 ```text
-crates/uu-gui      设备主页、设置、串流窗口、输入捕获与呈现
-crates/uu-core     账号 API、信令、WebRTC、显示源与恢复策略
-crates/uu-proto    协议类型、控制消息与帧格式
-crates/uu-media    解码、音频播放与媒体抽象
-crates/uu-cli      调试与诊断命令 uu
-crates/uu-capture  DXGI / X11 / Wayland 门户采集与合成测试源
-crates/uu-input    按会话许可工作的 Windows / Linux 输入注入后端
-tools/            构建、打包及隔离验证工具
-vendor/           带有来源、许可与修改记录的局部依赖
+crates/uu-gui         Eclipse 图形应用、设备、设置与串流窗口
+crates/uu-cli         eclipse-cli 与 eclipse-signal
+crates/uu-core        原生连接、设备授权、会话、恢复与观测
+crates/uu-media       编解码、声音、GPU 图像与呈现支持
+crates/uu-capture     DXGI / X11 / Wayland 采集与生成源
+crates/uu-input       按会话授权的输入注入
+crates/uu-plugin-sdk  通用插件契约、加载与共用界面
 ```
 
-```bash
-cargo test --workspace --locked
-cargo run -p uu-cli -- devices
-cargo run -p uu-cli -- probe
+```sh
+cargo test --workspace --release --locked
+python3 tools/windows/package.py
+# Linux 构建环境中：python3 tools/linux/package.py
 ```
 
-详细文档：[协议兼容与 Moonlight 技术对比](docs/protocol-compatibility-and-transport.md) · [串流质量与恢复](docs/streaming-quality.md) · [帧率协商](docs/frame-rate.md) · [功能与源码参考索引](docs/reference-index.md) · [协议笔记](docs/protocol-notes.md)。诊断输出可能包含设备标识或网络信息，提交 issue 前请自行清理。
+[Windows 构建](docs/windows-build.md) · [Linux 构建](docs/linux-client.md) · [插件架构](docs/plugins.md) · [协议与传输](docs/protocol-compatibility-and-transport.md) · [源码参考索引](docs/reference-index.md)
 
-原生公网架构见[公网直连与可替换 STUN 服务](docs/native-public-connectivity.md)，当前使用方法和验证边界以[原生连接服务说明](docs/native-internet.md)为准。已接入 UU 和自建信令，正式默认仅直连，开发可显式测试中继；跨 NAT 与实际中继能力仍需验证。
+感谢 [Moonlight](https://github.com/moonlight-stream/moonlight-qt)、[Sunshine](https://github.com/LizardByte/Sunshine)、[Foundation Sunshine](https://github.com/AlkaidLab/foundation-sunshine)、[uu-remote-linux](https://github.com/VallierDev/uu-remote-linux)，以及 Rust WebRTC、egui、OpenH264、Opus 等项目。参考机制与引用代码分别遵守来源许可。
 
-## 方向与致谢
-
-当前名称 **uu-client** 说明其兼容客户端定位。下一阶段计划以 **Eclipse / 日蚀** 为名，探索采集端与客户端一体化、自主串流协议与更完整的跨平台体验；原生局域网基础已实现，后续范围与验收顺序见[产品远景](docs/vision.md)和[交付路线图](docs/roadmap.md)。
-
-感谢 [Moonlight](https://github.com/moonlight-stream/moonlight-qt)、[Sunshine](https://github.com/LizardByte/Sunshine)、[Foundation Sunshine](https://github.com/AlkaidLab/foundation-sunshine)、[uu-remote-linux](https://github.com/VallierDev/uu-remote-linux)，以及 Rust WebRTC、egui、OpenH264、Opus 等项目。参考机制与引用代码应分别遵守来源许可，具体参考版本和入口见源码参考索引。
-
-## 许可证
-
-本项目原创部分采用 **[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)** 双许可，由使用者任选其一，允许按许可商用。第三方组件保留各自许可证，见 [第三方通知](THIRD-PARTY-NOTICES.txt) 与 [依赖清单](docs/dependency-licenses.md)。
-
-开源许可只涵盖维护者有权授予的代码权利，不授予官方服务接入、第三方商标或全部编解码专利许可。详见[许可与兼容接入说明](docs/licensing-and-compatibility.md)。
+本项目原创部分采用 **[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)** 双许可，由使用者任选。第三方组件保留各自许可证，见[第三方通知](THIRD-PARTY-NOTICES.txt)与[依赖清单](docs/dependency-licenses.md)。

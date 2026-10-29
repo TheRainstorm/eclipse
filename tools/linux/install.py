@@ -73,7 +73,7 @@ def desktop_entry(base, legacy=False, gui='eclipse'):
             'Comment=Windows / Linux remote streaming client\n'
             f'Exec={command}\n'
             f'TryExec={desktop_value(executable)}\nIcon={desktop_value(base / "current" / "eclipse.png")}\n'
-            'Terminal=false\nCategories=Network;RemoteAccess;\nStartupNotify=true\nStartupWMClass=uu-client\n'
+            'Terminal=false\nCategories=Network;RemoteAccess;\nStartupNotify=true\nStartupWMClass=Eclipse\n'
             + ('NoDisplay=true\n' if legacy else ''))
 
 
@@ -92,7 +92,7 @@ def main():
     prefix = args.prefix.expanduser().resolve()
     if any(ord(c) < 32 for c in str(prefix)):
         raise ValueError('Installation prefix must not contain control characters')
-    base = prefix / 'opt' / 'uu-remote-rust'
+    base = prefix / 'opt' / 'eclipse'
     desktop_contents = [(False, desktop_entry(base,gui=gui)), (True, desktop_entry(base, legacy=True,gui=gui))]
     releases = base / 'releases'
     releases.mkdir(parents=True, exist_ok=True)
@@ -122,8 +122,8 @@ def main():
     link(dest, base / 'current')
     for name in ['eclipse','uu-client','uu-remote-rust']:link(base/'current'/gui,prefix/'bin'/name)
     for name in ['eclipse-cli','uu-rust']:link(base/'current'/cli,prefix/'bin'/name)
-    # The filename must match the window's Wayland app_id (uu-client).
-    desktop = prefix / 'share' / 'applications' / 'uu-client.desktop'
+    # The filename matches the window's Wayland app_id (brand::NAME).
+    desktop = prefix / 'share' / 'applications' / 'Eclipse.desktop'
     desktop.parent.mkdir(parents=True, exist_ok=True)
     for legacy, contents in desktop_contents:
         path = desktop.with_name('uu-remote-rust.desktop') if legacy else desktop
@@ -133,6 +133,14 @@ def main():
             pending.replace(path)
         finally:
             pending.unlink(missing_ok=True)
+    # Old pinned launchers remain usable without duplicate application entries.
+    old_desktop=desktop.with_name('uu-client.desktop')
+    if old_desktop.exists():
+        pending=old_desktop.with_name(old_desktop.name+f'.tmp-{os.getpid()}')
+        try:
+            pending.write_text(desktop_entry(base,legacy=True,gui=gui),encoding='utf-8')
+            pending.replace(old_desktop)
+        finally:pending.unlink(missing_ok=True)
     subprocess.run(['update-desktop-database', str(desktop.parent)], check=False) if shutil.which('update-desktop-database') else None
     print(json.dumps({'source_commit': revision, 'executable': str(base / 'current' / gui), 'desktop': str(desktop)}, ensure_ascii=False))
 

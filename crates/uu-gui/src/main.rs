@@ -1,4 +1,4 @@
-//! uu-client remote desktop client.
+//! Eclipse remote streaming client.
 //!
 //! Layout mirrors the official client: a device sidebar on the left, a large
 //! remote-screen area on the right, and a status/footer bar.

@@ -124,7 +124,34 @@ try {
     catch { $failed = $true }
     Assert-Test $failed 'Unknown package format was accepted'
     Assert-TestHashes $before
-    [pscustomobject]@{passed=$true;rollback=$true;legacy=$true;user_configuration_preserved=$true;user_processes_stopped=$false} | ConvertTo-Json -Compress
+    # Load only function declarations, then exercise real COM shortcuts entirely
+    # inside this test directory. Never scan the user's desktop or Start menu.
+    $tokens = $null; $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($Installer, [ref]$tokens, [ref]$parseErrors)
+    Assert-Test ($parseErrors.Count -eq 0) 'Installer has PowerShell parser errors'
+    $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false) |
+        ForEach-Object { Invoke-Expression $_.Extent.Text }
+    $links = Join-Path $root 'shortcuts'
+    New-Item -ItemType Directory -Path $links | Out-Null
+    $shell = New-Object -ComObject WScript.Shell
+    $oldExe = Join-Path $root 'previous/uu-gui.exe'
+    $newExe = Join-Path $renamedTarget 'eclipse.exe'
+    $ownedTargets = @($oldExe, $newExe)
+    $unrelated = Join-Path $links 'Eclipse.lnk'
+    $link = $shell.CreateShortcut($unrelated)
+    $link.TargetPath = Join-Path $root 'another-program/eclipse.exe'; $link.Save()
+    $unrelatedHash = (Get-FileHash -LiteralPath $unrelated).Hash
+    $legacyLink = Join-Path $links 'uu-client.lnk'
+    $link = $shell.CreateShortcut($legacyLink); $link.TargetPath = $oldExe; $link.Save()
+    Update-EclipseShortcut $shell $unrelated $ownedTargets $renamedTarget 'eclipse.exe'
+    Update-EclipseShortcut $shell $legacyLink $ownedTargets $renamedTarget 'eclipse.exe'
+    Assert-Test ((Get-FileHash -LiteralPath $unrelated).Hash -eq $unrelatedHash) 'Unrelated shortcut changed'
+    Assert-Test (!(Test-Path -LiteralPath $legacyLink)) 'Legacy shortcut name remains'
+    $migrated = Join-Path $links 'Eclipse (1).lnk'
+    Assert-Test ($shell.CreateShortcut($migrated).TargetPath -eq $newExe) 'Owned shortcut was not migrated'
+    Assert-Test ((Resolve-EclipseShortcut $shell $links $ownedTargets) -eq $migrated) 'Repeated installation duplicated its shortcut'
+    Assert-Test ($shell.CreateShortcut($migrated).WorkingDirectory -eq $renamedTarget) 'Shortcut working directory mismatch'
+    [pscustomobject]@{passed=$true;rollback=$true;legacy=$true;shortcuts=$true;user_configuration_preserved=$true;user_processes_stopped=$false} | ConvertTo-Json -Compress
 } finally {
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }

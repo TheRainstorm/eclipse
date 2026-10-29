@@ -27,10 +27,10 @@ webrtc-dtls = { path = "vendor/webrtc-dtls" }
 winit = { path = "vendor/winit" }
 
 [workspace.package]
-version = "0.20.10"
+version = "0.21.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/TheRainstorm/uu-client"
+repository = "https://github.com/TheRainstorm/eclipse"
 rust-version = "1.88"
 
 [workspace.dependencies]

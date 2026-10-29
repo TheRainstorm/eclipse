@@ -37,7 +37,7 @@ pub fn apply(enabled:bool)->Result<()> {
     // must be doubled to avoid desktop field-code expansion.
     let exe=exe.replace('\\',"\\\\").replace('"',"\\\"").replace('`',"\\`").replace('$',"\\$").replace('%',"%%");
     let command=format!("\"/usr/bin/env\" \"{exe}\"").replace('\\',"\\\\");
-    let content=format!("[Desktop Entry]\nType=Application\nName=uu-client\nExec={command}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n");
+    let content=format!("[Desktop Entry]\nType=Application\nName=Eclipse\nExec={command}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n");
     super::settings::save_bytes(&path,content.as_bytes())
 }
 #[cfg(not(any(windows,target_os="linux")))]

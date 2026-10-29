@@ -3,7 +3,7 @@ name = "uu-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "uu-client — open-source remote desktop streaming client"
+description = "Eclipse — open-source remote desktop streaming"
 
 [[bin]]
 name = "eclipse"
