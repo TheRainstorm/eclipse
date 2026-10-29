@@ -302,12 +302,14 @@ float4 ps(float4 pos:SV_Position):SV_Target{
   if(flags.w>0){float2 c=(uv-cursor.xy)/cursor.zw;
    if(all(c>=0)&&all(c<1)){float4 a=cursor_alpha.SampleLevel(point_sample,c,0);rgb=lerp(rgb,a.rgb,a.a);uint3 x=(uint3)round(cursor_xor.SampleLevel(point_sample,c,0).rgb*255);if(any(x!=0))rgb=float3(((uint3)round(saturate(rgb)*255))^x)/255;}
   }
-  base=linear_rgb(rgb)*output.z;
+  // Keep video in gamma space until UI blending. The former linear-to-gamma
+  // round trip cancelled itself and spent two extra transfer functions per pixel.
+  base=rgb;
  }
  float2 screen=pos.xy/output.xy;float4 ui=overlay.SampleLevel(bilinear,float2(screen.x,1-screen.y),0);
  // Match egui's gamma-space premultiplied blending, including additive
  // colors with zero alpha. Never unpremultiply gamma channels as linear RGB.
- float3 composite=ui.rgb+gamma_rgb(base/output.z)*(1-ui.a);
+ float3 composite=ui.rgb+base*(1-ui.a);
  return float4(linear_rgb(composite)*output.z,1);
 })";
         ComPtr<ID3DBlob> vs,ps,error;
