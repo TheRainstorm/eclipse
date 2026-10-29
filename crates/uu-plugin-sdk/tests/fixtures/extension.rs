@@ -1,7 +1,7 @@
 use uu_plugin_sdk::{anyhow::Result,Context,Plugin,Page,Placement,PageState,egui};
 struct Extension;
 impl Plugin for Extension {
-    fn pages(&self)->Vec<Page>{vec![Page{id:"fixture".into(),title:"Fixture".into(),placement:Placement::Navigation}]}
+    fn pages(&self)->Vec<Page>{vec![Page{id:"fixture".into(),title:"Fixture".into(),placement:Placement::Navigation,icon:None}]}
     fn gui(&self)->Result<Box<dyn PageState>>{Ok(Box::new(State))}
     fn cli(&self,_arguments:Vec<String>)->Result<()> {
         // Resolving this handle and timer in a separately compiled DLL proves

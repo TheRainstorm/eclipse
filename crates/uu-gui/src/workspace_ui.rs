@@ -123,6 +123,27 @@ pub(super) struct Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn extension_settings_stay_with_their_provider_between_ip_and_self_hosted_cards() {
+        let mut h=Harness::new();h.workspace.route.page=Page::Services;
+        let info=Info{wallpaper_enabled:false,nearby:Vec::new(),providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Generated provider",version:"1"}]};
+        let draw=|ctx:&egui::Context,workspace:&mut Workspace| {
+            egui::CentralPanel::default().show(ctx,|ui| {
+                workspace.show_with_connections(ui,&info,&mut |ui,id| {assert_eq!(id,"example-addon");ui.label("Generated account controls");});
+            });
+        };
+        let input=||egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1200.,1400.))),..Default::default()};
+        let _=h.ctx.run(input(),|ctx|draw(ctx,&mut h.workspace));
+        let output=h.ctx.run(input(),|ctx|draw(ctx,&mut h.workspace));
+        fn position(shape:&egui::Shape,label:&str)->Option<f32>{match shape {
+            egui::Shape::Text(text) if text.galley.job.text==label=>Some(text.pos.y),
+            egui::Shape::Vec(shapes)=>shapes.iter().find_map(|s|position(s,label)),_=>None,
+        }}
+        let y=|label|output.shapes.iter().find_map(|s|position(&s.shape,label)).unwrap_or_else(||panic!("missing {label}"));
+        assert!(y("IP 直连")<y("Generated provider"));
+        assert!(y("Generated provider")<y("Generated account controls"));
+        assert!(y("Generated account controls")<y("自建服务器"));
+    }
     struct Harness {
         workspace: Workspace,
         ctx: egui::Context,
@@ -872,11 +893,14 @@ impl Workspace {
         Ok(id)
     }
     pub fn show(&mut self, ui: &mut egui::Ui, info: &Info) -> Vec<Action> {
+        self.show_with_connections(ui,info,&mut |_,_|{})
+    }
+    pub fn show_with_connections(&mut self, ui: &mut egui::Ui, info: &Info, connection:&mut dyn FnMut(&mut egui::Ui,&str)) -> Vec<Action> {
         self.providers=info.providers.clone();
         let mut actions = Vec::new();
         match self.route.page {
             Page::Devices => self.devices(ui, info, &mut actions),
-            Page::Services => self.service_workspace(ui, info, &mut actions),
+            Page::Services => self.service_workspace(ui, info, &mut actions,connection),
             Page::Plugin => {},
             Page::Settings => {}
         }
@@ -1227,7 +1251,7 @@ impl Workspace {
             Err(e) => self.monitor_error = uu_i18n::format!("无法读取屏幕：{e}"),
         }
     }
-    fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>) {
+    fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,&str)) {
         ui.horizontal_wrapped(|ui| {
             for (tab,label) in [(0,uu_i18n::text("连接服务")),(1,uu_i18n::text("输入")),(2,uu_i18n::text("音频 / 视频")),(3,uu_i18n::text("编码器")),(4,uu_i18n::text("配对设置"))] {
                 ui.selectable_value(&mut self.service_tab,tab,label);
@@ -1238,7 +1262,7 @@ impl Workspace {
         self.feedback.show(ui, scope);
         if self.service_tab==0 {
             self.service_control(ui,actions);
-            self.services(ui,info,actions);
+            self.services(ui,info,actions,connection);
         } else {
             ui.horizontal(|ui| {
                 let running=self.host.running();
@@ -1496,7 +1520,7 @@ impl Workspace {
             }
         });
     }
-    fn services(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>) {
+    fn services(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,&str)) {
         let locked = self.host.stopping();
         if self.host.running() { muted(ui,uu_i18n::text("连接入口修改后保存，下次启动服务生效。可保存并重启服务立即应用。")); }
         card(ui, |ui| {
@@ -1538,6 +1562,7 @@ impl Workspace {
                     if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,uu_i18n::text("启用"))).changed(){self.update_connections(|sharing|{sharing.plugin_services.retain(|id|id!=provider.id);if enabled{sharing.plugin_services.push(provider.id.into());}});}
                 });
                 self.endpoint_state(ui,provider.name);
+                connection(ui,provider.id);
             });
         }
         ui.horizontal(|ui| {
@@ -1941,12 +1966,11 @@ impl super::App {
             )
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    actions = self.workspace.show(ui, &info);
-                    if self.workspace.route.page==Page::Services&&self.workspace.service_tab==0 {
+                    actions = self.workspace.show_with_connections(ui, &info,&mut |ui,provider| {
                         for (id,page) in self.plugins.pages(uu_plugin_sdk::Placement::Connections) {
-                            card(ui,|ui|{for action in self.plugins.show_page(ui,&id,&page.id){extensions.push((id.clone(),action));}});
+                            if id==provider {for action in self.plugins.show_page(ui,&id,&page.id){extensions.push((id.clone(),action));}}
                         }
-                    }
+                    });
                     if wallpaper_root && !self.background.notice.is_empty() {
                         muted(ui, &self.background.notice);
                     }

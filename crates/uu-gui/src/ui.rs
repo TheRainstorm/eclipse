@@ -112,7 +112,7 @@ impl App {
                         }
                         for (id,page) in self.plugins.pages(uu_plugin_sdk::Placement::Navigation) {
                             let selected=self.workspace.route.page==super::workspace_ui::Page::Plugin&&self.workspace.route.plugin.as_ref()==Some(&(id.clone(),page.id.clone()));
-                            if icon_button_selected(ui,Icon::Extension,&page.title,selected).clicked(){self.select_plugin_page(id,page.id);}
+                            if icon_button_selected(ui,page.icon.unwrap_or(Icon::Extension),&page.title,selected).clicked(){self.select_plugin_page(id,page.id);}
                         }
                         let response = ui.add_sized([30.0, 30.0], egui::Button::new("").frame(false));
                         let selected = page == super::workspace_ui::Page::Services;

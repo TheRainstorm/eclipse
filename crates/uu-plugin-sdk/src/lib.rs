@@ -9,6 +9,7 @@ pub use tokio;
 pub use uu_core as engine;
 pub use uu_i18n as i18n;
 pub use anyhow;
+pub use image;
 use anyhow::{bail,Result};
 use serde::{Deserialize,Serialize};
 use std::sync::Arc;
@@ -53,16 +54,26 @@ impl Context {
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum Placement { Navigation, Connections, Settings }
 #[derive(Clone,Debug)]
-pub struct Page {pub id:String,pub title:String,pub placement:Placement}
+pub struct Page {pub id:String,pub title:String,pub placement:Placement,pub icon:Option<ui::Icon>}
 pub enum Action {
     /// Identity is public and used for tab reuse. The opaque target can contain
     /// authentication material and is passed only through bounded stdin/IPC.
     Connect {identity:String,target:zeroize::Zeroizing<String>,name:String,view_only:bool},
     RefreshDevices,
     ProviderReset,
+    OpenDevices,
+    OpenSharing,
 }
 pub trait PageState {
     fn show(&mut self,ui:&mut egui::Ui,page:&str)->Vec<Action>;
+    /// Navigation pages may own their sidebar and central panel, just like
+    /// application pages. Embedded connection/settings pages use `show`.
+    fn show_navigation(&mut self,ctx:&egui::Context,page:&str)->Vec<Action> {
+        let mut actions=Vec::new();
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(theme::CANVAS).inner_margin(24.)).show(ctx,|ui| {
+            egui::ScrollArea::vertical().show(ui,|ui|{actions=self.show(ui,page);});
+        });actions
+    }
 }
 #[derive(Clone)]
 pub struct ClientSupport {

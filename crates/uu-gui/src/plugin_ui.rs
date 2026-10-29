@@ -73,13 +73,23 @@ impl Manager {
         let active=self.runtime.as_ref().map(|r|r.lock().unwrap().active()).unwrap_or_default();
         active.into_iter().flat_map(|(id,p)|p.plugin.pages().into_iter().filter(move|p|p.placement==placement).map(move|p|(id.clone(),p))).collect()
     }
-    pub fn show_page(&mut self,ui:&mut egui::Ui,id:&str,page:&str)->Vec<Action> {
+    fn ensure_page(&mut self,id:&str)->anyhow::Result<()> {
         if !self.pages.contains_key(id) {
             let result=self.runtime.as_ref().ok_or_else(||anyhow::anyhow!("plugin runtime unavailable"))
                 .and_then(|runtime|runtime.lock().unwrap().get(id)).and_then(|loaded|loaded.plugin.gui());
-            match result {Ok(state)=>{self.pages.insert(id.into(),state);},Err(error)=>{ui.colored_label(super::theme::DANGER,error.to_string());return Vec::new();}}
+            self.pages.insert(id.into(),result?);
         }
+        Ok(())
+    }
+    pub fn show_page(&mut self,ui:&mut egui::Ui,id:&str,page:&str)->Vec<Action> {
+        if let Err(error)=self.ensure_page(id){ui.colored_label(super::theme::DANGER,error.to_string());return Vec::new();}
         self.pages.get_mut(id).map(|state|state.show(ui,page)).unwrap_or_default()
+    }
+    pub fn show_navigation(&mut self,ctx:&egui::Context,id:&str,page:&str)->Vec<Action> {
+        if let Err(error)=self.ensure_page(id) {
+            egui::CentralPanel::default().show(ctx,|ui|{ui.colored_label(super::theme::DANGER,error.to_string());});return Vec::new();
+        }
+        self.pages.get_mut(id).map(|state|state.show_navigation(ctx,page)).unwrap_or_default()
     }
     pub fn settings(&mut self,ui:&mut egui::Ui)->Vec<(String,Action)> {
         let mut actions=Vec::new();
@@ -133,10 +143,7 @@ impl super::App {
     }
     pub(super) fn plugin_page_ui(&mut self,ctx:&egui::Context) {
         let Some((id,page))=self.workspace.route.plugin.clone() else{return;};
-        let mut actions=Vec::new();
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(super::theme::CANVAS).inner_margin(24.)).show(ctx,|ui| {
-            egui::ScrollArea::vertical().show(ui,|ui|{actions=self.plugins.show_page(ui,&id,&page);});
-        });
+        let actions=self.plugins.show_navigation(ctx,&id,&page);
         self.plugin_actions(actions.into_iter().map(|a|(id.clone(),a)).collect());
     }
     pub(super) fn plugin_actions(&mut self,actions:Vec<(String,Action)>) {
@@ -149,6 +156,8 @@ impl super::App {
                 },
                 Action::RefreshDevices=>{uu_core::plugins::registry().invalidate();self.workspace.reload();},
                 Action::ProviderReset=>{uu_core::plugins::registry().invalidate();if self.workspace.host.uses_provider(&id){self.workspace.host.stop();}},
+                Action::OpenDevices=>self.select_workspace_page(super::workspace_ui::Page::Devices),
+                Action::OpenSharing=>self.select_workspace_page(super::workspace_ui::Page::Services),
             }
         }
     }

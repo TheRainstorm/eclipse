@@ -5,8 +5,9 @@ pub const INK: C = crate::theme::INK;
 pub const MUTED: C = crate::theme::MUTED;
 pub const SIDEBAR: C = crate::theme::SIDEBAR;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Icon {
+    Image { id: &'static str, bytes: &'static [u8] },
     Desktop,
     Globe,
     Extension,
@@ -39,6 +40,17 @@ pub fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
         p.line_segment([pt(a.0, a.1), pt(b.0, b.1)], stroke);
     };
     match kind {
+        Icon::Image{id,bytes} => {
+            let key=egui::Id::new(("extension-icon",id));
+            let ctx=p.ctx();
+            let cached=ctx.data_mut(|data|data.get_temp::<egui::TextureHandle>(key));
+            let texture=cached.or_else(|| {
+                let image=image::load_from_memory(bytes).ok()?.into_rgba8();
+                let texture=ctx.load_texture(id,egui::ColorImage::from_rgba_unmultiplied([image.width() as usize,image.height() as usize],image.as_raw()),egui::TextureOptions::LINEAR);
+                ctx.data_mut(|data|data.insert_temp(key,texture.clone()));Some(texture)
+            });
+            if let Some(texture)=texture {p.image(texture.id(),rect.shrink(5.),Rect::from_min_max(Pos2::ZERO,egui::pos2(1.,1.)),C::WHITE);}
+        }
         Icon::Keyboard => {
             p.rect_stroke(Rect::from_min_max(pt(1.0,4.0),pt(17.0,14.0)),2.0,stroke);
             for y in [7.0,10.0] {for x in [4.0,7.0,10.0,13.0] {p.circle_filled(pt(x,y),0.7,color);}}
