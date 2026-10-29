@@ -311,7 +311,6 @@ impl super::App {
 
     pub(super) fn settings_home(&mut self, ctx: &egui::Context) {
         self.expire_settings_notice(ctx);
-        let view = self.workspace.route.settings;
         let dirty = self.settings_draft != self.preferences;
         let mut actions = super::settings_page::Actions::default();
         egui::SidePanel::left("home-settings-navigation")
@@ -323,16 +322,12 @@ impl super::App {
                     .inner_margin(egui::Margin::symmetric(14.0, 18.0)),
             )
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new(uu_i18n::text("应用设置")).size(13.0).strong().color(super::theme::MUTED));
-                ui.add_space(10.0);
-                for (tab, label) in [
-                    (super::workspace_ui::SettingsView::Software, uu_i18n::text("软件设置")),
-                    (super::workspace_ui::SettingsView::About, uu_i18n::text("关于")),
-                ] {
+                for section in super::settings_page::SoftwareSection::ALL {
+                    let tab=super::workspace_ui::SettingsView::Software(section);
                     if ui
                         .add_sized(
                             [ui.available_width(), 40.0],
-                            egui::SelectableLabel::new(view == tab, label),
+                            egui::SelectableLabel::new(self.workspace.route.settings == tab, section.label()),
                         )
                         .clicked()
                     {
@@ -340,8 +335,12 @@ impl super::App {
                     }
                     ui.add_space(4.0);
                 }
+                ui.separator();
+                let about=super::workspace_ui::SettingsView::About;
+                if ui.add_sized([ui.available_width(),40.],egui::SelectableLabel::new(self.workspace.route.settings==about,uu_i18n::text("关于"))).clicked(){self.workspace.route.settings=about;}
             });
-        if view == super::workspace_ui::SettingsView::Software {
+        let view = self.workspace.route.settings;
+        if matches!(view,super::workspace_ui::SettingsView::Software(_)) {
             egui::TopBottomPanel::bottom("home-settings-actions")
                 .exact_height(if ctx.screen_rect().height() < 520.0 { 54.0 } else { 66.0 })
                 .frame(
@@ -384,12 +383,12 @@ impl super::App {
             )
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
-                    .id_salt(("home-settings-content", view as u8))
+                    .id_salt(("home-settings-content", view))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width().min(860.0));
                         ui.heading(match view {
-                            super::workspace_ui::SettingsView::Software => uu_i18n::text("软件设置"),
+                            super::workspace_ui::SettingsView::Software(section) => section.label(),
                             super::workspace_ui::SettingsView::About => uu_i18n::text("关于 Eclipse"),
                         });
                         ui.add_space(12.0);
@@ -403,11 +402,12 @@ impl super::App {
                             ui.add_space(10.0);
                         }
                         match view {
-                            super::workspace_ui::SettingsView::Software => {
+                            super::workspace_ui::SettingsView::Software(section) => {
                                 super::settings_page::software(
                                     ui,
                                     &mut self.settings_draft,
                                     &mut actions,
+                                    section,
                                 );
                             }
                             super::workspace_ui::SettingsView::About => {
@@ -420,12 +420,7 @@ impl super::App {
             self.leave_settings();
         }
         if actions.reset {
-            let defaults = Settings::default();
-            self.settings_draft.wallpaper_enabled = defaults.wallpaper_enabled;
-            self.settings_draft.wallpaper_api = defaults.wallpaper_api;
-            self.settings_draft.lan_discovery = defaults.lan_discovery;
-            self.settings_draft.app_autostart = defaults.app_autostart;
-            self.settings_draft.language=defaults.language;
+            if let super::workspace_ui::SettingsView::Software(section)=view {section.reset(&mut self.settings_draft);}
         }
         if actions.refresh_wallpaper && self.settings_draft.wallpaper_enabled {
             self.background.sync(&self.settings_draft, ctx);

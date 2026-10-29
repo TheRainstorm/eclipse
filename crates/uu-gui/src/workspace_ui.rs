@@ -36,11 +36,13 @@ pub(super) enum CompatibilityView {
     Assistance,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum SettingsView {
-    #[default]
-    Software,
+    Software(super::settings_page::SoftwareSection),
     About,
+}
+impl Default for SettingsView {
+    fn default()->Self {Self::Software(Default::default())}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]

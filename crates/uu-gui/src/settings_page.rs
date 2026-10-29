@@ -303,32 +303,51 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
         );
     });
 }
-pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions) {
-    group(ui,uu_i18n::text("客户端快捷键"),|ui|{
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Hash)]
+pub(super) enum SoftwareSection { #[default] General, Appearance, Shortcuts, Discovery }
+impl SoftwareSection {
+    pub const ALL:[Self;4]=[Self::General,Self::Appearance,Self::Shortcuts,Self::Discovery];
+    pub fn label(self)->&'static str {uu_i18n::text(match self {
+        Self::General=>"常规",Self::Appearance=>"外观",Self::Shortcuts=>"快捷键",Self::Discovery=>"设备发现",
+    })}
+    pub fn reset(self,s:&mut Settings) {
+        let defaults=Settings::default();
+        match self {
+            Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;}
+            Self::Appearance=>{s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_api=defaults.wallpaper_api;}
+            Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
+            Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
+        }
+    }
+}
+pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions,section:SoftwareSection) {
+    match section {
+    SoftwareSection::Shortcuts=>group(ui,uu_i18n::text("客户端快捷键"),|ui|{
         let mut bindings=s.application_hotkeys().clone();
         super::shortcuts_ui::editor(ui,&mut bindings);
         if &bindings!=s.application_hotkeys(){s.application_hotkeys=Some(bindings);}
         note(ui,uu_i18n::text("快捷键属于本机应用，所有串流窗口共用；保存后会更新已打开的新版窗口。设备画质配置不覆盖快捷键。"));
-    });
-    group(ui,uu_i18n::text("常规"),|ui| {
+    }),
+    SoftwareSection::General=>group(ui,uu_i18n::text("常规"),|ui| {
         ui.horizontal(|ui| {ui.label(uu_i18n::text("界面语言"));
             egui::ComboBox::from_id_salt("application-language").selected_text(s.language.label()).show_ui(ui,|ui|{
                 for language in uu_i18n::Language::ALL {ui.selectable_value(&mut s.language,language,language.label());}
             });});
         ui.checkbox(&mut s.app_autostart,uu_i18n::text("登录系统时自动打开软件"));
         note(ui,uu_i18n::text("本机服务是否随软件启动，在服务管理的连接服务页设置。"));
-    });
-    group(ui,uu_i18n::text("设备页外观"),|ui| {
+    }),
+    SoftwareSection::Appearance=>group(ui,uu_i18n::text("设备页外观"),|ui| {
         ui.checkbox(&mut s.wallpaper_enabled,uu_i18n::text("显示背景壁纸"));
         ui.label(uu_i18n::text("壁纸图片接口"));
         ui.add(egui::TextEdit::singleline(&mut s.wallpaper_api).desired_width(f32::INFINITY).hint_text("https://picsum.photos/1920/1080"));
         note(ui,uu_i18n::text("兼容 Moonlight V+ 使用的图片接口，也可填返回 JPEG / PNG 的图片 URL。缓存每日更新，获取失败继续使用已有壁纸。"));
         if ui.button(uu_i18n::text("刷新壁纸")).clicked(){actions.refresh_wallpaper=true;}
-    });
-    group(ui,uu_i18n::text("设备发现"),|ui| {
+    }),
+    SoftwareSection::Discovery=>group(ui,uu_i18n::text("设备发现"),|ui| {
         ui.checkbox(&mut s.lan_discovery,uu_i18n::text("自动查找局域网设备"));
         note(ui,uu_i18n::text("关闭后仍可使用保存的地址或手动添加设备；本机服务入口在连接服务中管理。"));
-    });
+    }),
+    }
 }
 
 pub fn show(
@@ -528,7 +547,7 @@ pub fn show(
                         Section::Audio => audio(ui, s),
                         Section::Input => input(ui, s, &state),
                         Section::Stream => stream(ui,s),
-                        Section::Application => software(ui, s, &mut actions),
+                        Section::Application => software(ui, s, &mut actions,SoftwareSection::General),
                         Section::Connections|Section::Server=>extra(ui,*section),
                     }
                 });
@@ -555,9 +574,11 @@ mod language_tests {
     #[test]
     fn opening_software_settings_does_not_create_unsaved_hotkey_changes() {
         let ctx=eframe::egui::Context::default();let mut settings=super::Settings::default();let before=settings.clone();
-        let _=ctx.run(eframe::egui::RawInput{screen_rect:Some(eframe::egui::Rect::from_min_size(eframe::egui::Pos2::ZERO,eframe::egui::vec2(900.,900.))),..Default::default()},|ctx|{
-            eframe::egui::CentralPanel::default().show(ctx,|ui|super::software(ui,&mut settings,&mut super::Actions::default()));
-        });
+        for section in super::SoftwareSection::ALL {
+            let _=ctx.run(eframe::egui::RawInput{screen_rect:Some(eframe::egui::Rect::from_min_size(eframe::egui::Pos2::ZERO,eframe::egui::vec2(900.,900.))),..Default::default()},|ctx|{
+                eframe::egui::CentralPanel::default().show(ctx,|ui|super::software(ui,&mut settings,&mut super::Actions::default(),section));
+            });
+        }
         assert_eq!(settings,before);
     }
 }
