@@ -60,6 +60,7 @@ pub(super) enum Action {
     RenameUu,
     ManageUu,
     RefreshUuDevices,
+    RefreshWallpaper,
     CancelLogin,
     StartSharing,
     RestartSharing,
@@ -74,6 +75,7 @@ pub(super) enum UuDeviceList {
     Failed(String),
 }
 pub(super) struct Info {
+    pub wallpaper_enabled:bool,
     pub logged_in: bool,
     pub uu_id: Option<String>,
     pub qr: Option<egui::TextureId>,
@@ -187,6 +189,7 @@ mod tests {
             self.time += 0.02;
             let mut actions = Vec::new();
             let info = Info {
+                wallpaper_enabled:true,
                 logged_in: self.logged_in,
                 uu_id: None,
                 qr: None,
@@ -258,6 +261,16 @@ mod tests {
             self.workspace.host.stop();
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+    #[test]
+    fn device_background_context_menu_requests_wallpaper_refresh() {
+        let mut h=Harness::new();
+        for _ in 0..3 {h.frame(vec![]);}
+        let point=egui::pos2(900.,850.);
+        for pressed in [true,false] {
+            h.frame(vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Secondary,pressed,modifiers:Default::default()}]);
+        }
+        assert!(matches!(&h.click("刷新壁纸")[..],[Action::RefreshWallpaper]));
     }
     #[test]
     fn uu_name_is_automatic_and_does_not_change_native_host_preferences() {
@@ -1024,6 +1037,8 @@ impl Workspace {
         self.feedback.show(ui, super::ui_feedback::Scope::Devices);
         let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
         blank.context_menu(|ui| {
+            if ui.add_enabled(info.wallpaper_enabled,egui::Button::new(uu_i18n::text("刷新壁纸"))).clicked(){actions.push(Action::RefreshWallpaper);ui.close_menu();}
+            ui.separator();
             if ui.button(uu_i18n::text("添加设备")).clicked(){self.new_device(None,None);ui.close_menu();}
             if !info.nearby.is_empty() {
                 ui.menu_button(uu_i18n::text("添加附近设备"),|ui| {
@@ -2268,6 +2283,7 @@ impl super::App {
     }
     pub(super) fn workspace_info(&self)->Info {
         Info {
+            wallpaper_enabled:self.preferences.wallpaper_enabled,
             logged_in:self.logged_in,
             uu_id:self.config.as_ref().and_then(|c|uu_compat::ClientState::read(&c.at("state.json")).ok().flatten()).and_then(|s|s.device_id),
             qr:self.login_texture.as_ref().map(|t|t.id()),
@@ -2322,6 +2338,9 @@ impl super::App {
                 Action::Login => self.start_login(),
                 Action::Logout => self.sign_out(),
                 Action::RefreshUuDevices => self.start_load(),
+                Action::RefreshWallpaper => {
+                    if self.preferences.wallpaper_enabled {self.background.sync(&self.preferences,ctx);self.background.refresh(ctx);}
+                }
                 Action::RenameUu => self.rename_uu_device(),
                 Action::ManageUu => {
                     if let (Some(config), Some(token)) = (self.config.clone(), self.account_token.clone()) {
