@@ -88,3 +88,5 @@ E2E · Video ≈26.91 ±5.26 ms · Input→Frame ≈34.40 ±6.20 ms
 ```
 
 这些数字只说明显示格式，不是性能测量，也不能将两项均值相减推算精确游戏延迟。
+
+同条件输入与呈现对照见[输入时间线与原生重复呈现](performance/input-timeline-and-native-presents.md)，其中分开记录真实等待、显示区间精度和仍未覆盖的视觉响应。
