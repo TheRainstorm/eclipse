@@ -35,6 +35,20 @@ class ReleaseTests(unittest.TestCase):
                 bundle.writestr(name, data)
         return path
 
+    def test_sdk_imports_accept_old_and_new_binutils_tables(self):
+        sdk=package.plugin_sdk
+        for exports in ['  [   0] exported_symbol\n','  [   0] +base[   1] 00ec81e0 Export RVA\n  [   0] +base[   1] 0000 exported_symbol\n']:
+            for row in ['  00123400  12 exported_symbol\n','  00123400  <none>  000c exported_symbol\n']:
+                imports='DLL Name: uu_plugin_sdk.dll\n'+row+'\n  00000000 00000000 00000000 00000000 00000000\n'
+                with self.subTest(row=row,exports=exports),patch.object(sdk.subprocess,'check_output',side_effect=[exports,imports]):
+                    self.assertEqual(sdk.verify_windows_imports(Path('extension.dll'),Path('uu_plugin_sdk.dll')),1)
+
+    def test_sdk_imports_still_reject_missing_symbols(self):
+        sdk=package.plugin_sdk
+        for row in ['  00123400  12 missing_symbol\n','  00123400  <none>  000c missing_symbol\n']:
+            with self.subTest(row=row),patch.object(sdk.subprocess,'check_output',side_effect=['  [0] different_symbol\n','DLL Name: uu_plugin_sdk.dll\n'+row]),self.assertRaisesRegex(RuntimeError,'missing_symbol'):
+                sdk.verify_windows_imports(Path('extension.dll'),Path('uu_plugin_sdk.dll'))
+
     def test_valid_package(self):
         self.assertEqual(sync.verify_package(self.make_bundle())['source_commit'], 'a' * 40)
 
