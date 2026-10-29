@@ -38,7 +38,7 @@ impl History {
 
 pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32) {
     use eframe::egui::{self,Color32,FontId,Stroke};
-    let names=[uu_i18n::text("视频端到端"),uu_i18n::text("采集"),uu_i18n::text("编码"),uu_i18n::text("解码"),uu_i18n::text("渲染"),"RTT/2",uu_i18n::text("排队")];
+    let names=[uu_i18n::text("端到端"),uu_i18n::text("采集"),uu_i18n::text("编码"),uu_i18n::text("解码"),uu_i18n::text("渲染"),"RTT/2",uu_i18n::text("排队")];
     let colors=[Color32::WHITE,Color32::from_rgb(159,176,255),Color32::from_rgb(255,190,108),Color32::from_rgb(114,215,185),Color32::from_rgb(109,205,255),Color32::from_rgb(202,156,255),Color32::from_rgb(255,145,157)];
     let id=ui.id().with("latency-curve-series");let mut selected=ui.data_mut(|d|d.get_temp::<[bool;7]>(id)).unwrap_or([true,false,true,true,true,true,true]);
     ui.horizontal(|ui|{ui.strong(uu_i18n::text("最近 3 分钟"));ui.label(egui::RichText::new(uu_i18n::text("延迟 · ms")).small().weak());});

@@ -292,6 +292,11 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
         ui.horizontal(|ui| {
             for level in super::settings::HudDetail::ALL {ui.radio_value(&mut s.hud_detail,level,level.label());}
         });
+        ui.add(egui::Slider::new(&mut s.hud_appearance.vertical_position,0.0..=1.0).step_by(0.001).text(uu_i18n::text("HUD垂直位置")));
+        note(ui,uu_i18n::text("0为画面顶部，1为底部；默认在1080高度下距顶部约36点，HUD始终保持在画面内。"));
+        ui.add(egui::Slider::new(&mut s.hud_appearance.opacity,0.0..=1.0).step_by(0.01).text(uu_i18n::text("HUD背景不透明度")));
+        ui.add(egui::Slider::new(&mut s.hud_appearance.diagnostic_opacity,0.0..=1.0).step_by(0.01).text(uu_i18n::text("诊断背景不透明度")));
+        if ui.small_button(uu_i18n::text("恢复HUD外观默认值")).clicked(){s.hud_appearance=Default::default();}
         note(
             ui,
             &format!("{} toggles HUD. Estimates are pipeline stage means, not input-to-display latency.",s.hotkeys.label(uu_core::hotkeys::Action::Stats)),

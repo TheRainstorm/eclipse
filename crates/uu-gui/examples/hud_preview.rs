@@ -89,7 +89,7 @@ impl eframe::App for Preview {
                 ui.painter().text(view.left_bottom()-egui::vec2(-8.,2.),egui::Align2::LEFT_BOTTOM,uu_i18n::text("生成数据预览 · 非实测"),egui::FontId::proportional(12.),egui::Color32::from_gray(200));
                 let response =
                     hud_panel::Layout::new(ui, &m, HudDetail::Compact, screen.width() - 32.)
-                        .paint(ui, screen);
+                        .paint(ui, screen, uu_core::client_settings::HudAppearance::default());
                 self.bounds = Some(hud_panel::details_at_with_state(
                     ui,
                     &m,
@@ -97,6 +97,7 @@ impl eframe::App for Preview {
                     response.rect,
                     self.bounds,
                     &mut self.state,
+                    uu_core::client_settings::HudAppearance::default(),
                 ));
             });
 
@@ -161,7 +162,7 @@ fn main() -> anyhow::Result<()> {
                         .families
                         .get_mut(&egui::FontFamily::Proportional)
                         .unwrap()
-                        .push("cjk".into());
+                        .insert(0,"cjk".into());
                 }
             }
             cc.egui_ctx.set_fonts(fonts);

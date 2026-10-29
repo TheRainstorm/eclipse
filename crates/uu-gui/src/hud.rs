@@ -106,8 +106,9 @@ impl super::App {
             self.hud_cache.layout=Some(Layout::new(ui,&self.hud_cache.metrics,detail,width));self.hud_cache.key=Some(key);
         }
         if let Some(layout)=&self.hud_cache.layout {
-            let response=layout.paint(ui,rect);
-            return self.hud_cache.hover.show(ui,&response,&self.hud_cache.metrics,rect);
+            let appearance=self.preferences.hud_appearance;
+            let response=layout.paint(ui,rect,appearance);
+            return self.hud_cache.hover.show(ui,&response,&self.hud_cache.metrics,rect,appearance);
         }
         false
     }

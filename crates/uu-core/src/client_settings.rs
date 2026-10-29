@@ -47,6 +47,25 @@ impl HudDetail {
     pub fn label(self)->&'static str {match self {Self::Compact=>uu_i18n::text("精简"),Self::Detailed=>uu_i18n::text("详细")}}
 }
 
+#[derive(Clone,Copy,Debug,Serialize,Deserialize,PartialEq)]
+#[serde(default)]
+pub struct HudAppearance {
+    /// Fraction of the video area's height; the whole HUD stays in the area.
+    pub vertical_position:f32,
+    pub opacity:f32,
+    pub diagnostic_opacity:f32,
+}
+impl Default for HudAppearance {
+    fn default()->Self {Self {vertical_position:1./30.,opacity:0.75,diagnostic_opacity:0.8}}
+}
+impl HudAppearance {
+    fn validate(&self)->Result<()> {
+        ensure!([self.vertical_position,self.opacity,self.diagnostic_opacity].iter().all(|v|(0.0..=1.0).contains(v)),
+            "{}",uu_i18n::format!("HUD位置和背景不透明度必须在0到1之间"));
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ClientSettings {
@@ -62,6 +81,7 @@ pub struct ClientSettings {
     pub muted: bool,
     pub hud: bool,
     pub hud_detail: HudDetail,
+    pub hud_appearance: HudAppearance,
     pub hotkeys: crate::hotkeys::Bindings,
     pub capture_keyboard: bool,
     pub vsync: bool,
@@ -83,7 +103,7 @@ impl Default for ClientSettings {
     fn default() -> Self {
         Self { fps:60, display_mode:crate::screen_control::DisplayMode::Preserve,
             bitrate:5,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,rate_control:None,
-            volume:100,muted:false,hud:false,hud_detail:HudDetail::Compact,hotkeys:crate::hotkeys::Bindings::default(),capture_keyboard:true,
+            volume:100,muted:false,hud:false,hud_detail:HudDetail::Compact,hud_appearance:HudAppearance::default(),hotkeys:crate::hotkeys::Bindings::default(),capture_keyboard:true,
             vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
             cursor_mode:CursorMode::Remote,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
     }
@@ -91,6 +111,7 @@ impl Default for ClientSettings {
 impl ClientSettings {
     pub fn validate(&self) -> Result<()> {
         self.hotkeys.validate()?;
+        self.hud_appearance.validate()?;
         ensure!((5..=240).contains(&self.fps) && self.bitrate<=5
             && (1..=1000).contains(&self.custom_mbps) && self.resolution<=3 && self.volume<=100,
             "{}", uu_i18n::format!("客户端分辨率、帧率、码率或音量无效"));
@@ -126,6 +147,30 @@ impl NamedClientSettings {
         ensure!(uuid::Uuid::parse_str(&self.id).is_ok(),"{}", uu_i18n::format!("客户端配置标识无效"));
         ensure!(!self.name.trim().is_empty() && self.name.chars().count()<=64 && !self.name.chars().any(char::is_control),"{}", uu_i18n::format!("请输入有效的配置名称（最多64字）"));
         self.settings.validate()
+    }
+}
+
+#[cfg(test)]
+mod hud_tests {
+    use super::*;
+    #[test]
+    fn legacy_and_partial_hud_settings_keep_defaults_and_custom_values_roundtrip() {
+        let legacy:ClientSettings=serde_json::from_str(r#"{"hud":true}"#).unwrap();
+        assert_eq!(legacy.hud_appearance,HudAppearance::default());
+        let partial:ClientSettings=serde_json::from_str(r#"{"hud_appearance":{"opacity":0.2}}"#).unwrap();
+        assert_eq!(partial.hud_appearance.opacity,0.2);
+        assert_eq!(partial.hud_appearance.vertical_position,HudAppearance::default().vertical_position);
+        let mut custom=legacy;custom.hud_appearance=HudAppearance{vertical_position:1.,opacity:0.,diagnostic_opacity:1.};
+        custom.validate().unwrap();
+        let restored:ClientSettings=serde_json::from_slice(&serde_json::to_vec(&custom).unwrap()).unwrap();
+        assert_eq!(restored,custom);
+        for value in [-0.01,1.01,f32::NAN,f32::INFINITY] {
+            for field in 0..3 {
+                let mut invalid=HudAppearance::default();
+                match field {0=>invalid.vertical_position=value,1=>invalid.opacity=value,_=>invalid.diagnostic_opacity=value};
+                assert!(invalid.validate().is_err());
+            }
+        }
     }
 }
 
