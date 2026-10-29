@@ -129,6 +129,15 @@ def build_dispatcher(cache, supplied=None, jobs=None):
                '-DCMAKE_C_COMPILER=' + compiler_tool('gcc'),
                '-DCMAKE_CXX_COMPILER=' + compiler_tool('g++'),
                '-DCMAKE_RC_COMPILER=' + compiler_tool('windres')]
+    # CMake caches contain absolute source/build paths. A restored CI cache can
+    # move with a repository rename; regenerate only that derived build tree.
+    cmake_cache = build / 'CMakeCache.txt'
+    if cmake_cache.is_file():
+        values = dict(line.split('=', 1) for line in cmake_cache.read_text(errors='replace').splitlines()
+                      if line.startswith(('CMAKE_HOME_DIRECTORY:INTERNAL=', 'CMAKE_CACHEFILE_DIR:INTERNAL=')))
+        expected = {'CMAKE_HOME_DIRECTORY:INTERNAL': source, 'CMAKE_CACHEFILE_DIR:INTERNAL': build}
+        if any(key not in values or Path(values[key]).resolve() != path.resolve() for key, path in expected.items()):
+            command.append('--fresh')
     if sys.platform != 'win32':
         command.append('-DCMAKE_SYSTEM_NAME=Windows')
     subprocess.run(command, check=True)

@@ -80,6 +80,25 @@ class DispatcherSourceTests(unittest.TestCase):
                 vpl.verified_archive(self.cache)
         self.assertEqual(list(self.cache.iterdir()), [])
 
+    def test_relocated_cmake_cache_is_regenerated_without_removing_source(self):
+        source = self.cache / 'verified-source'; source.mkdir()
+        build = self.cache / ('build-' + vpl.COMMIT[:12] + '-13')
+        build.mkdir(); (build / 'libvpl.dll').write_bytes(b'owned runtime')
+        symbols = '\n'.join(' [0] ' + name for name in ('MFXLoad', 'MFXCreateSession', 'MFXCreateConfig',
+                            'MFXVideoENCODE_EncodeFrameAsync', 'MFXVideoDECODE_DecodeFrameAsync'))
+        for moved in (False, True):
+            with self.subTest(relocated=moved):
+                previous = self.root / 'previous-location'
+                (build / 'CMakeCache.txt').write_text(
+                    'CMAKE_HOME_DIRECTORY:INTERNAL=' + str(previous if moved else source) + '\n'
+                    'CMAKE_CACHEFILE_DIR:INTERNAL=' + str(previous if moved else build) + '\n')
+                with patch.object(vpl, 'verified_archive'), patch.object(vpl, 'verified_source', return_value=source), \
+                        patch.object(vpl.subprocess, 'check_output', side_effect=['13', symbols]), \
+                        patch.object(vpl.subprocess, 'run') as execute:
+                    self.assertEqual(vpl.build_dispatcher(self.cache), build / 'libvpl.dll')
+                self.assertEqual('--fresh' in execute.call_args_list[0].args[0], moved)
+                self.assertTrue(source.is_dir())
+
     def test_corrupt_cache_is_preserved_for_review_and_not_downloaded_over(self):
         cached = self.cache / (vpl.COMMIT + '.tar.gz')
         cached.write_bytes(b'corrupt cache')
