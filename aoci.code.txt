@@ -231,7 +231,7 @@ presentation_probe.rs[TH5T]: F:在自有主子窗口检验已有surface的VSync�
 video_cursor_probe.rs[TH5M]: F:在自有窗口中核验透明、掩码和XOR光标的合成像素 | R:code:crates/uu-gui/src/video_cursor.rs | A:main | S:仅生成指针像素，要求隔离显示或窗口站
 video_dma_probe.rs[TH6M]: F:对照生成视频GPU表面导入与CPU平面上传的像素和渲染路径 | R:code:crates/uu-gui/src/video_texture.rs | A:main | S:仅读自有帧缓冲；Windows色度滤波顺序差异采用明确误差界限
 video_renderer_probe.rs[TH6M]: F:在真实GL中检查平面格式、跨度、颜色、HDR回退并可比较上传开销 | R:code:crates/uu-gui/src/video_texture.rs | A:main | S:只在自有显示测试生成图；HDR回退应保持16位到GPU映射
-wayland_input.rs[TU5M]: F:在隔离Wayland会话用持久虚拟键鼠执行stdin JSON测试命令 | R:code:tools/native/wayland_smoke.py | A:main | S:使用标准US物理键图，不访问其它会话
+wayland_input.rs[TU5M]: F:在隔离Wayland会话用持久虚拟键鼠执行带完整修饰键的stdin JSON测试命令 | R:code:tools/native/wayland_smoke.py,code:tools/linux/wayland_smoke.py | A:main | S:使用标准US物理键图；显式shift与字符所需Shift合并，不访问其它会话
 windows_clipboard_probe.rs[TU5M]: F:在新建非交互窗口站验证Windows系统文本与图片剪贴板 | R:code:crates/uu-gui/src/clipboard.rs | A:main | S:后台未停时不能恢复其它窗口站，超时退出测试进程保持隔离
 x11_destroyed_window_probe.rs[TR5T]: F:复现自有X11窗口销毁后迟到几何查询以检查窗口生命周期 | R:code:tools/native/owned_display.rs | A:main | S:必须显式指定且证明拥有Xvfb
 

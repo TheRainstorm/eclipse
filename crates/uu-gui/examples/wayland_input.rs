@@ -204,6 +204,7 @@ mod linux {
                     let mut mask = if shift { 1 } else { 0 };
                     for m in v["mods"].as_array().into_iter().flatten() {
                         mask |= match m.as_str() {
+                            Some("shift") => 1,
                             Some("ctrl") => 4,
                             Some("alt") => 8,
                             Some("logo") => 64,
