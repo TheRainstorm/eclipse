@@ -644,7 +644,7 @@ sources.json[FV5T]: F:锁定PyroWave C API、Granite及Vulkan头和volk的完整
 check_version.py[XV5T]: F:校验发布标签格式及其与workspace版本逐字一致 | R:code:Cargo.toml | A:validate,main | S:仅v三段版本与合法预发布后缀可通过
 download.py[OV6S]: F:从正式GitHub发布下载核验含共享SDK的双平台完整包后更新本地指针 | R:code:tools/windows/package.py,code:tools/linux/install.py | A:download,linux_manifest | S:Linux清单复用安装器规则；全部选定包的标签提交和逐文件哈希通过才改指针；只检查不安装或执行
 source.py[OV7T]: F:为双平台打包验证源码清洁及所有递归子模块与固定提交一致 | R:code:tools/windows/package.py,code:tools/linux/package.py | A:revision | S:覆盖Git的子模块忽略配置；未初始化、换提交或未提交插件源码均阻止打包
-plugin_sdk.py[OV8T]: F:捕获生产共享SDK和编译器运行库，核对消费者特性与Windows导入并精简分发符号 | R:code:crates/uu-plugin-sdk/build.rs,code:tools/windows/package.py,code:tools/native/plugin_probe.rs | A:build,verify_consumer,verify_windows_imports,strip_windows_binary | S:使用GUI与CLI生产选择而非裸SDK；要求唯一artifact和元数据；只strip分发副本以保留排障符号；PE整行匹配排除结束记录，特性图不替代实际DLL核验
+plugin_sdk.py[OV8T]: F:捕获生产共享SDK和运行库，校验消费者特性及新旧PE符号表并精简分发副本 | R:code:crates/uu-plugin-sdk/build.rs,code:tools/windows/package.py,code:tools/native/plugin_probe.rs | A:build,verify_consumer,verify_windows_imports,strip_windows_binary | S:使用GUI与CLI生产图而非裸SDK；要求唯一artifact和元数据；只strip副本以保留排障符号；PE导入导出兼容Binutils新旧列且整行排除描述符尾行，特性图不替代实际DLL核验
 
 ===/home/yfy/Repo/uu_remote/tools/security/===
 scan_secrets.py[XS7S]: F:递归扫描主仓库与子模块源码历史及归档中的禁止凭据和邀请 | R:code:SECURITY.md,code:.gitmodules | A:inspect,history,artifact,source_repositories | S:未初始化子模块拒绝扫描；公开PC值仅按精确路径指纹放行，显式forbid仍检查且不打印值
