@@ -107,11 +107,11 @@ pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32,window:usize)
     let colors=[Color32::WHITE,Color32::from_rgb(159,176,255),Color32::from_rgb(255,190,108),Color32::from_rgb(114,215,185),Color32::from_rgb(109,205,255),Color32::from_rgb(202,156,255),Color32::from_rgb(255,145,157),Color32::from_rgb(226,218,119)];
     let id=ui.id().with("latency-curve-series");let mut selected=ui.data_mut(|d|d.get_temp::<[bool;SERIES_COUNT]>(id)).unwrap_or([true,false,true,true,true,true,true,true]);
     ui.horizontal(|ui|{ui.strong(uu_i18n::format!("最近 {} 分钟",window_seconds as u64/60));ui.label(egui::RichText::new(uu_i18n::text("延迟 · ms")).small().weak());});
-    egui::ScrollArea::horizontal().id_salt("latency-curve-legend").auto_shrink([false,true]).show(ui,|ui|{ui.horizontal(|ui|{for i in [0,7,1,2,3,4,5,6] {
+    egui::ScrollArea::horizontal().id_salt("latency-curve-legend").auto_shrink([false,true]).show(ui,|ui|{ui.spacing_mut().button_padding=egui::vec2(6.,3.);ui.spacing_mut().interact_size.y=22.;ui.spacing_mut().item_spacing.x=5.;ui.horizontal(|ui|{for i in [0,7,1,2,3,4,5,6] {
         let text=egui::RichText::new(names[i]).size(11.).color(if selected[i]{colors[i]}else{Color32::from_gray(110)});
         let help=if i==ESTIMATE_SERIES {uu_i18n::text("估计曲线为Est.Total：最近3秒完整分量和采样的均值，±为这些估计值的标准差，不是同帧端到端或测量误差界。缺项留空，样本不足两次时波动未知。点击切换曲线。")}
             else{uu_i18n::text("端到端曲线为同帧测量的估计均值，竖线为误差范围；其它曲线是独立阶段窗口均值。未知不补零，测量代次改变后重新记录。点击切换曲线。")};
-        let response=ui.add(egui::Button::new(text).selected(selected[i]).frame(false).wrap_mode(egui::TextWrapMode::Extend)).on_hover_text(help);
+        let response=ui.add(egui::Button::new(text).selected(selected[i]).frame(true).stroke(Stroke::NONE).rounding(3.).wrap_mode(egui::TextWrapMode::Extend)).on_hover_text(help);
         if response.clicked(){selected[i]=!selected[i];}
     } });});ui.data_mut(|d|d.insert_temp(id,selected));
     let (bounds,response)=ui.allocate_exact_size(egui::vec2(ui.available_width().max(1.),height.max(80.)),egui::Sense::hover());
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn legend_stays_on_one_line_and_estimate_button_toggles_its_curve() {
         use eframe::egui::{self,Rect,Event,PointerButton};
-        for width in [520.,300.] {
+        for width in [520.,420.,300.] {
             let ctx=egui::Context::default();let view=Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,400.));
             let mut now=1.;let mut chart_id=None;
             let mut frame=|events| {
@@ -226,7 +226,7 @@ mod tests {
             let mut output=frame(vec![]);for _ in 0..3{output=frame(vec![]);}
             let names=["端到端","估计","采集","编码","解码","渲染","RTT/2","排队"];
             let labels:Vec<_>=output.shapes.iter().filter_map(|s|if let egui::Shape::Text(t)=&s.shape{names.contains(&t.galley.job.text.as_str()).then_some(t)}else{None}).collect();
-            assert_eq!(labels.len(),8);
+            if width>=420. {assert_eq!(labels.len(),8);}else{assert!(labels.len()>=6,"narrow legends scroll instead of wrapping");}
             assert!(labels.iter().all(|t|(t.pos.y-labels[0].pos.y).abs()<0.1&&t.galley.rows.len()==1));
             let estimate=labels.iter().find(|t|t.galley.job.text=="估计").unwrap();let point=estimate.pos+estimate.galley.size()/2.;
             frame(vec![Event::PointerMoved(point)]);

@@ -493,7 +493,7 @@ fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32,state:&m
             let width=(width-10.).max(1.);data_rows(ui,m,state.window,width);ui.separator();history::chart(ui,&m.history,190.,state.window);
         });
     } else {
-        let chart_width=width*0.46;let data_width=(width-chart_width-20.).max(1.);
+        let columns_width=(width-20.).max(1.);let chart_width=columns_width*0.4;let data_width=columns_width-chart_width;
         ui.horizontal_top(|ui|{
             ui.allocate_ui_with_layout(egui::vec2(data_width,remaining),egui::Layout::top_down(egui::Align::Min),|ui|{
                 egui::ScrollArea::vertical().id_salt("hud-detail-scroll").max_height(remaining).min_scrolled_height(0.).auto_shrink([false,true]).show(ui,|ui|data_rows(ui,m,state.window,(data_width-10.).max(1.)));
