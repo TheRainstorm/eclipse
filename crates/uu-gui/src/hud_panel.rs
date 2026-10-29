@@ -4,7 +4,7 @@ use std::sync::Arc;
 use uu_core::client_settings::{HudDetail,HudAppearance};
 #[path="hud_history.rs"]
 mod history;
-pub use history::{History,Sample as HistorySample};
+pub use history::{History,Sample as HistorySample,EstimatedTotal};
 #[path="hud_statistics.rs"]
 mod statistics;
 pub use statistics::{Statistics,WINDOWS};
@@ -120,12 +120,15 @@ impl Metrics {
     }
     /// Diagnostic sum of independent stage windows; never the primary latency.
     pub fn stage_sum_label(&self) -> String {
-        let e = self.estimate();
-        if e.samples == 0 {
-            uu_i18n::text("已知分量 —").into()
-        } else {
-            uu_i18n::format!("已知分量 ≈{} ms", number(Some(e.known)))
-        }
+        format!("Est.Total {}",self.estimated_value())
+    }
+    fn estimated_total(&self)->Option<EstimatedTotal> {
+        let e=self.estimate();
+        if !e.missing.is_empty()||!e.known.is_finite(){return None;}
+        self.history.last().and_then(|s|s.estimated_total).or(Some(EstimatedTotal{mean_ms:e.known,std_ms:None,samples:1}))
+    }
+    fn estimated_value(&self)->String {
+        self.estimated_total().map_or_else(||"—".into(),|v|format!("≈{:.2} ±{} ms",v.mean_ms,v.std_ms.map_or_else(||"—".into(),|s|format!("{s:.2}"))))
     }
     fn throughput(&self) -> Option<f32> {
         let link=self.link?;
@@ -200,8 +203,7 @@ impl Metrics {
         format!("BW {} Mbps · RTT {rtt} · Loss {loss}",number(self.throughput()))
     }
     fn stages_label(&self) -> String {
-        let estimate=self.estimate();
-        let total=if estimate.missing.is_empty(){format!("≈ {} ms",number(Some(estimate.known)))}else{"—".into()};
+        let total=self.estimated_value();
         format!(
             "Latency · Enc/Dec/Rnd {}/{}/{} ms · Est. {total}",
             number(self.process[1]),
@@ -424,7 +426,7 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
         video.push(field(uu_i18n::text("源/显/观测丢弃"),format!("{}/{}/{}",snapshot.source_frames,snapshot.displayed_frames,snapshot.observations_dropped),uu_i18n::text("源帧、系统显示回执及真实丢弃的观测累计数；丢弃包含钩子或队列丢失及非法元数据，不含历史容量淘汰，也不是媒体丢帧数。")));
         video.push(field(uu_i18n::text("历史淘汰"),snapshot.history_evicted,uu_i18n::text("PTS关联、接收记录、源首显证明及延迟样本达到容量上限后移除的历史条目累计数。同一帧可能占多个表；这是保留历史的维护，不表示丢观测或媒体丢帧。")));
     }
-    let mut latency=vec![field("",m.stage_sum_label(),uu_i18n::text("已知视频阶段窗口均值之和，并非同一帧的完整测量。包含采集、编码、解码、UI提交、RTT/2及已测队列；不含输入设备与去程、应用响应、等待下次采集、未测装帧等待、GPU完成、呈现队列、合成、扫描及像素响应。RTT/2仅是对称假设，不能当作输入到显示延迟。"))];
+    let mut latency=vec![field("",m.stage_sum_label(),uu_i18n::text("Est.Total为最近3秒完整分量和采样的均值±标准差，每500ms记录一次，表示估计值波动，不是同帧测量或准确性误差界。采、编、解、渲、RTT/2与三项队列均有效才纳入；缺项留空，少于两次采样时±未知。未覆盖的采集前等待、GPU完成、呈现队列及物理响应不包含在内。"))];
     for (i,(label,help)) in [(uu_i18n::text("采"),uu_i18n::text("主机获取本帧桌面图像的时间。")),(uu_i18n::text("编"),uu_i18n::text("主机编码调用耗时，可包含硬件队列等待。")),(uu_i18n::text("解"),uu_i18n::text("客户端解码调用耗时。")),(uu_i18n::text("渲"),uu_i18n::text("客户端UI准备与渲染提交的CPU墙钟时间，可能包含驱动等待；不是GPU计时或扫描延迟。"))].into_iter().enumerate() {let mut v=field(label,format!("{} ms",number(m.process[i])),help);v.group=1;latency.push(v);}
     for (label,value,help) in [(uu_i18n::text("网"),m.rtt.map(|v|v[0]/2.),uu_i18n::text("RTT的一半，仅在往返对称时近似单程。RTT还可能包含应用调度、处理与队列等待。")),(uu_i18n::text("排"),sum(&m.queues),uu_i18n::text("主机发送等待、客户端解码队列和画面邮箱等待的合计。未知阶段不按零计算。"))]{let mut v=field(label,format!("{} ms",number(value)),help);v.group=2;latency.push(v);}
     for (i,(label,help)) in [
@@ -566,7 +568,7 @@ fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32,state:&m
             let width=(width-10.).max(1.);data_rows(ui,m,state.window,width);ui.separator();history::chart(ui,&m.history,190.);
         });
     } else {
-        let chart_width=(width*0.36).min(400.);let data_width=(width-chart_width-20.).max(1.);
+        let chart_width=width*0.46;let data_width=(width-chart_width-20.).max(1.);
         ui.horizontal_top(|ui|{
             ui.allocate_ui_with_layout(egui::vec2(data_width,remaining),egui::Layout::top_down(egui::Align::Min),|ui|{
                 egui::ScrollArea::vertical().id_salt("hud-detail-scroll").max_height(remaining).min_scrolled_height(0.).auto_shrink([false,true]).show(ui,|ui|data_rows(ui,m,state.window,(data_width-10.).max(1.)));
@@ -653,17 +655,18 @@ impl HoverCard {
         let (now, pointer, focused) = ui
             .ctx()
             .input(|i| (i.time, i.pointer.hover_pos(), i.focused));
-        if !focused || view.width() < 48. || view.height() < 48. {
+        if !focused {self.selected=false;}
+        if (!focused&&!self.state.pinned) || view.width() < 48. || view.height() < 48. {
             self.selected=false;self.since=None;self.bounds=None;self.dismiss_at=None;
             return false;
         }
         // Use the current pointer and our own regions, rather than the previous
         // pass's layer hover result. The foreground card can cover the HUD while
         // Area visibility/hit testing settles, which must not restart its lifetime.
-        let over_source=pointer.is_some_and(|p|source.rect.contains(p));
-        let over_card = pointer.is_some_and(|p| self.bounds.is_some_and(|r| r.contains(p)));
-        if ui.ctx().input(|i|i.key_pressed(egui::Key::Escape)) {self.selected=false;self.state.pinned=false;}
-        if ui.ctx().input(|i|i.pointer.any_pressed()) {self.selected=over_card;}
+        let over_source=focused&&pointer.is_some_and(|p|source.rect.contains(p));
+        let over_card = focused&&pointer.is_some_and(|p| self.bounds.is_some_and(|r| r.contains(p)));
+        if focused&&ui.ctx().input(|i|i.key_pressed(egui::Key::Escape)) {self.selected=false;self.state.pinned=false;}
+        if focused&&ui.ctx().input(|i|i.pointer.any_pressed()) {self.selected=over_card;}
         // A pending hover needs continuous presence. Only an already visible
         // card gets the bridge grace period; otherwise it can open after exit
         // and flash briefly before the dismissal timer expires.
@@ -685,7 +688,7 @@ impl HoverCard {
         let Some(since) = self.since else {
             return false;
         };
-        if self.bounds.is_none() && now - since < 0.25 {
+        if !self.state.pinned&&self.bounds.is_none() && now - since < 0.25 {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_secs_f64(
                     (0.25 - (now - since)).max(0.),
@@ -694,7 +697,7 @@ impl HoverCard {
         }
         let bounds = details_at_with_state(ui, m, view, source.rect, self.bounds,&mut self.state,appearance);
         self.bounds = Some(bounds);
-        pointer.is_some_and(|p| bounds.contains(p))
+        focused&&pointer.is_some_and(|p| bounds.contains(p))
     }
 }
 
@@ -750,7 +753,7 @@ mod tests {
         for size in [egui::vec2(1280.,720.),egui::vec2(640.,360.)] {
             let ctx=egui::Context::default();let view=Rect::from_min_size(egui::Pos2::ZERO,size);
             let mut card=HoverCard::default();let mut now=0.;
-            let m=Metrics{size:[1920,1080],target_fps:60,history:(0..8).map(|i|HistorySample{seconds:i as f64,values:[Some(1.);7],video_uncertainty_ms:Some(0.1)}).collect(),..Default::default()};
+            let m=Metrics{size:[1920,1080],target_fps:60,history:(0..8).map(|i|HistorySample{seconds:i as f64,values:[Some(1.);7],video_uncertainty_ms:Some(0.1),estimated_total:None}).collect(),..Default::default()};
             let frame=|card:&mut HoverCard,now:f64,p:egui::Pos2| {
                 ctx.run(egui::RawInput{screen_rect:Some(view),time:Some(now),events:vec![egui::Event::PointerMoved(p)],..Default::default()},|ctx|{
                     egui::CentralPanel::default().show(ctx,|ui|{
@@ -790,7 +793,7 @@ mod tests {
     fn compact_network_uses_interface_throughput_and_estimate_requires_all_components() {
         let mut m=Metrics{bitrate:Some(99.),link:Some(uu_core::link_metrics::Snapshot{rx_mbps:Some(12.),tx_mbps:Some(0.4),ping_ms:None}),rtt:Some([1.5,0.32]),loss:Some(0.),process:[Some(1.);4],queues:[Some(0.);3],..Default::default()};
         assert_eq!(m.network_label(),"BW 12.4 Mbps · RTT 1.5 ± 0.32 ms · Loss 0.00%");
-        assert!(m.stages_label().ends_with("Est. ≈ 4.8 ms"));
+        assert!(m.stages_label().ends_with("Est. ≈4.75 ±— ms"));
         m.queues[2]=None;assert!(m.stages_label().ends_with("Est. —"));
         m.link.as_mut().unwrap().tx_mbps=None;assert!(m.network_label().starts_with("BW — Mbps"));
         let rows=detail_rows(&m);
@@ -826,19 +829,22 @@ mod tests {
             now+=0.3;let point=egui::pos2(1270.,710.);
             let mut events=vec![egui::Event::PointerMoved(point)];
             if pressed {events.push(egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()});}
-            let _=ctx.run(egui::RawInput{screen_rect:Some(view),time:Some(now),focused,events,..Default::default()},|ctx|{
+            ctx.run(egui::RawInput{screen_rect:Some(view),time:Some(now),focused,events,..Default::default()},|ctx|{
                 egui::CentralPanel::default().show(ctx,|ui|{
                     let source=ui.interact(Rect::from_min_size(egui::pos2(12.,12.),egui::vec2(160.,24.)),egui::Id::new("source"),egui::Sense::hover());
                     card.show(ui,&source,&Metrics::default(),view,HudAppearance::default());
                 });
-            });
+            })
         };
         for _ in 0..4{frame(&mut card,true,false);}
         assert!(card.bounds.is_some());assert!(!card.keyboard_owned());
         card.selected=true;frame(&mut card,true,true);
         assert!(!card.keyboard_owned());assert!(card.state.pinned);assert!(card.bounds.is_some());
-        card.selected=true;frame(&mut card,false,false);
-        assert!(!card.keyboard_owned());assert!(card.bounds.is_none());assert!(card.state.pinned);
+        card.selected=true;let output=frame(&mut card,false,false);
+        assert!(!card.keyboard_owned());assert!(card.bounds.is_some());assert!(card.state.pinned);
+        assert!(output.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text=="串流诊断")),"pinned content must still be painted without focus");
+        for _ in 0..6 {frame(&mut card,false,false);assert!(card.bounds.is_some());assert!(!card.keyboard_owned());}
+        frame(&mut card,true,false);assert!(card.bounds.is_some());assert!(!card.keyboard_owned(),"focus return must not reclaim keyboard selection");
     }
     #[test]
     fn report_copies_the_selected_counter_window_and_distinguishes_period_from_latency() {
@@ -846,7 +852,7 @@ mod tests {
         m.counters.nack=999;m.statistics[0].nack=2;m.statistics[1].nack=7;
         let short=m.diagnostic_text(0);let long=m.diagnostic_text(1);
         assert!(short.contains("NACK 2"));assert!(long.contains("NACK 7"));assert!(!long.contains("NACK 999"));
-        assert!(long.contains("33.33 ms"));assert!(long.contains("已知分量 —"));assert!(long.contains("视觉响应 —"));
+        assert!(long.contains("33.33 ms"));assert!(long.contains("Est.Total —"));assert!(long.contains("视觉响应 —"));
         assert!(!long.contains("127.0.0.1"));
     }
     #[test]
@@ -995,7 +1001,7 @@ mod tests {
         };
         assert!((m.estimate().known - 14.8).abs() < 0.001);
         assert!(m.estimate().missing.is_empty());
-        assert_eq!(m.stage_sum_label(), "已知分量 ≈14.8 ms");
+        assert_eq!(m.stage_sum_label(), "Est.Total ≈14.80 ±— ms");
         assert_eq!(m.total_label(), "端到端 — · 未知");
         assert_eq!(m.video_mean_ms(),None);
         assert_eq!(m.video_uncertainty_ms(),None);
@@ -1005,9 +1011,9 @@ mod tests {
         };
         assert_eq!(partial.estimate().samples, 1);
         assert!(!partial.estimate().missing.is_empty());
-        assert!(partial.stage_sum_label().starts_with("已知分量"));
+        assert_eq!(partial.stage_sum_label(),"Est.Total —");
         assert_eq!(partial.total_label(), "端到端 — · 未知");
-        assert_eq!(Metrics::default().stage_sum_label(), "已知分量 —");
+        assert_eq!(Metrics::default().stage_sum_label(), "Est.Total —");
     }
     fn e2e_snapshot(measurement:Option<uu_core::video_e2e::Measurement>,unknown:Option<uu_core::video_e2e::UnknownReason>)->uu_core::video_e2e::Snapshot {
         uu_core::video_e2e::Snapshot {generation:1,relative_drift_ppm:1000,measurement,unknown,source_frames:120,displayed_frames:24,observations_dropped:0,history_evicted:0}

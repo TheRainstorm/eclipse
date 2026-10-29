@@ -36,6 +36,11 @@ impl eframe::App for Preview {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+        let mut history=hud_panel::History::default();
+        for n in 0..=360 {
+            let wave=(n as f32/15.).sin()-(360f32/15.).sin();
+            history.record_at(n as f64/2.,[1,0,1],[self.measured_fixture.then_some(26.91+wave*3.),Some(0.24),Some(6.7+wave*0.2),Some(0.62),Some(2.9),Some(0.75+wave*0.1),Some(1.54)],self.measured_fixture.then_some(5.26));
+        }
         let m = hud_panel::Metrics {
             size: [1920, 1080],
             target_fps: 60,
@@ -77,7 +82,7 @@ impl eframe::App for Preview {
                 unknown:(!self.measured_fixture).then_some(uu_core::video_e2e::UnknownReason::DisplayTimestampUnavailable),
                 source_frames:120,displayed_frames:if self.measured_fixture{24}else{0},observations_dropped:0,history_evicted:0,
             }),
-            history: (0..=360).map(|n| {let w=(n as f32/15.).sin();hud_panel::HistorySample {seconds:n as f64/2.,values:[self.measured_fixture.then_some(26.91+w*3.),Some(0.24),Some(6.7+w*0.2),Some(0.62),Some(2.9),Some(0.75+w*0.1),Some(1.54)],video_uncertainty_ms:self.measured_fixture.then_some(5.26)}}).collect(),
+            history: history.snapshot(),
             toggle_hint: "Ctrl+Alt+S · Toggle HUD".into(),
             ..Default::default()
         };
