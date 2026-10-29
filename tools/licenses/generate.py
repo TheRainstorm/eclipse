@@ -16,6 +16,7 @@ def license_text(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--metadata', type=Path, help='Existing cargo metadata JSON; otherwise run cargo metadata --locked')
+    parser.add_argument('--output-root',type=Path,default=ROOT,help='Write the inventory and notices for a separately built consumer')
     args = parser.parse_args()
     metadata = json.loads(args.metadata.read_text() if args.metadata else subprocess.check_output(
         ['cargo', 'metadata', '--locked', '--format-version', '1'], cwd=ROOT, text=True))
@@ -67,8 +68,10 @@ def main():
     output += ['', 'Crates without a separate license file in the published archive:', ', '.join(missing), '']
     for digest, value in sorted(texts.items()):
         output += [f'## License text {digest}', value, '']
-    (ROOT / 'THIRD-PARTY-NOTICES.txt').write_text('\n'.join(line.rstrip() for line in output), encoding='utf-8')
-    (ROOT / 'docs' / 'dependency-licenses.md').write_text('\n'.join(inventory) + '\n', encoding='utf-8')
+    args.output_root.mkdir(parents=True,exist_ok=True)
+    (args.output_root/'docs').mkdir(exist_ok=True)
+    (args.output_root / 'THIRD-PARTY-NOTICES.txt').write_text('\n'.join(line.rstrip() for line in output), encoding='utf-8')
+    (args.output_root / 'docs' / 'dependency-licenses.md').write_text('\n'.join(inventory) + '\n', encoding='utf-8')
     print(json.dumps({'packages': len(packages), 'distinct_license_texts': len(texts),
                       'crates_without_separate_license_file': len(missing)}))
 

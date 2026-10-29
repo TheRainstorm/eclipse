@@ -13,7 +13,7 @@ pub struct ControllerHandle {
     pub frames: crate::media::FrameReceiver,
     /// Non-coalesced CONTROL bytes: JSON input or protobuf RPC commands.
     pub input: UnboundedSender<Vec<u8>>,
-    /// Explicit native commands; interoperability sessions never expose it.
+    /// Shared typed input, quality and display commands; adapters encode their own wire protocol.
     pub native_input: Option<crate::native_input::NativeInputSender>,
     /// Raw CONTROL messages (e.g. CaptureSettingRequest protobufs) to send.
     pub settings: UnboundedSender<Vec<u8>>,

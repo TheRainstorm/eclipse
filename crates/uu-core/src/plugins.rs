@@ -4,12 +4,16 @@ use crate::{internet::Connection, Config};
 use anyhow::{bail, ensure, Result};
 use std::{collections::BTreeMap, sync::{Arc, OnceLock, RwLock}};
 
+mod preferences;
+pub use preferences::{Preferences, PluginPreferences};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Descriptor {
     pub id: &'static str,
     pub name: &'static str,
     pub version: &'static str,
 }
+pub struct RemoteDevice {pub id:String,pub name:String,pub online:Option<bool>}
 
 /// A provider may host another wire protocol without weakening the native
 /// device-authentication handshake. It receives session ownership, not native
@@ -43,26 +47,39 @@ pub trait ConnectionService: Send + Sync {
     async fn join(&self, config: &Config, device: &str, development_relay: bool) -> Result<Connection>;
     async fn host(&self, config: &Config, development_relay: bool) -> Result<Box<dyn Listener>>;
     async fn listen(&self, config: &Config, development_relay: bool) -> Result<Box<dyn Listener>>;
+    async fn devices(&self,_config:&Config)->Result<Vec<RemoteDevice>> {bail!("connection service has no device catalog")}
 }
 
 #[derive(Default)]
-pub struct Registry(RwLock<BTreeMap<&'static str, Arc<dyn ConnectionService>>>);
+pub struct Registry {
+    services:RwLock<BTreeMap<&'static str,Registration>>,
+    generation:std::sync::atomic::AtomicU64,
+}
+struct Registration {service:Arc<dyn ConnectionService>,enabled:bool}
 impl Registry {
     pub fn register(&self, service: Arc<dyn ConnectionService>) -> Result<()> {
         let id = service.descriptor().id;
         ensure!(!id.is_empty() && id.len() <= 64 && id.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'), "invalid plugin id");
-        let mut services = self.0.write().unwrap();
+        let mut services = self.services.write().unwrap();
         ensure!(!services.contains_key(id), "plugin {id} is already registered");
-        services.insert(id, service);
+        services.insert(id, Registration{service,enabled:false});
+        self.invalidate();
         Ok(())
     }
     pub fn get(&self, id: &str) -> Result<Arc<dyn ConnectionService>> {
-        if let Some(service) = self.0.read().unwrap().get(id) { return Ok(service.clone()); }
+        if let Some(record) = self.services.read().unwrap().get(id).filter(|r|r.enabled) { return Ok(record.service.clone()); }
         bail!("connection plugin '{id}' is not installed or enabled")
     }
     pub fn descriptors(&self) -> Vec<Descriptor> {
-        self.0.read().unwrap().values().map(|p| p.descriptor()).collect()
+        self.services.read().unwrap().values().filter(|r|r.enabled).map(|p| p.service.descriptor()).collect()
     }
+    pub fn set_enabled(&self,id:&str,enabled:bool)->Result<()> {
+        let mut services=self.services.write().unwrap();
+        let record=services.get_mut(id).ok_or_else(||anyhow::anyhow!("connection plugin '{id}' is not installed"))?;
+        if record.enabled!=enabled {record.enabled=enabled;self.invalidate();}Ok(())
+    }
+    pub fn invalidate(&self){self.generation.fetch_add(1,std::sync::atomic::Ordering::AcqRel);}
+    pub fn generation(&self)->u64{self.generation.load(std::sync::atomic::Ordering::Acquire)}
 }
 pub fn registry() -> &'static Registry {
     static REGISTRY: OnceLock<Registry> = OnceLock::new();
@@ -86,8 +103,15 @@ mod tests {
         assert!(registry.descriptors().is_empty());
         assert!(registry.get("fixture").is_err());
         registry.register(Arc::new(Fixture)).unwrap();
+        assert!(registry.get("fixture").is_err());
+        registry.set_enabled("fixture",true).unwrap();
         assert_eq!(registry.get("fixture").unwrap().descriptor().id, "fixture");
         assert!(registry.register(Arc::new(Fixture)).is_err());
         assert!(registry.get("other").is_err());
+        let running=registry.get("fixture").unwrap();
+        registry.set_enabled("fixture",false).unwrap();
+        assert!(registry.get("fixture").is_err());
+        assert!(registry.descriptors().is_empty());
+        assert_eq!(running.descriptor().id,"fixture");
     }
 }

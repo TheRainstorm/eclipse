@@ -23,7 +23,7 @@ fn launch(path: PathBuf, name: &str) -> Launch {
             alias: name.into(),
             view_only: true,
         },
-        code: None,
+        payload: None,
     }
 }
 #[test]
@@ -37,18 +37,17 @@ fn connection_identity_groups_profiles_independently_of_the_launch_snapshot() {
         view_only: false,
     };
     assert_eq!(target("one.json").key(), target("two.json").key());
-    let request = uu_compat::assistance::Request::new("12345678", "TEST99").unwrap();
     let launch = Launch::new(
         StreamTarget {
-            connection: ConnectionTarget::UuAssistance(request.id.clone()),
+            connection: ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"generated-target".into()},
             alias: "Generated".into(),
             view_only: true,
         },
-        Some(&request),
+        Some("{\"credential\":\"generated-secret\"}"),
     )
     .unwrap();
     let decoded: Launch = serde_json::from_slice(&serde_json::to_vec(&launch).unwrap()).unwrap();
-    assert_eq!(decoded.assistance().unwrap().unwrap().code(), "TEST99");
+    assert_eq!(&*decoded.plugin_payload().unwrap().unwrap(), "{\"credential\":\"generated-secret\"}");
 }
 
 #[test]

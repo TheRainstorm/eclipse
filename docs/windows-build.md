@@ -1,6 +1,6 @@
 # Windows 编译与打包
 
-源码检出包含独立插件子模块；首次构建和更新主项目后运行 `git submodule update --init --recursive`。主项目固定插件提交，详见[插件维护说明](plugins.md)。
+主程序可直接检出构建，无需下载插件源码。可选插件单独下载、构建和发布，见[插件说明](plugins.md)。
 
 在仓库根目录执行，支持 Linux 交叉编译及 Windows 本机 GNU 编译。脚本使用 Python 3.11+ 标准库，无需安装 pip 依赖。
 Windows x64 包包括 GUI、CLI、MinGW 运行库、Intel VPL dispatcher、安装器、使用说明、双许可与第三方通知、版本校验清单。

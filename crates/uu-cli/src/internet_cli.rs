@@ -28,7 +28,7 @@ pub enum Command {
         #[arg(long)]
         stun: Vec<String>,
     },
-    /// Share a native source using UU or a self-hosted connection service.
+    /// Share a native source using an installed provider or self-hosted service.
     Host {
         #[command(flatten)]
         video:super::NativeVideoOptions,

@@ -54,8 +54,7 @@ impl Capture {
     }
 }
 /// Only this session's forwarded downs may produce remote releases.
-/// UU's host expires a held key unless it keeps receiving the local typematic
-/// downs, unlike hosts that own key-repeat timing themselves.
+/// Protocol adapters declare whether their peer requires held-key refresh.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyChange {
     None,
@@ -102,13 +101,13 @@ impl RemoteKeys {
         }
     }
     /// One refresh timer for all held modifiers. Windows may stop their
-    /// typematic events after a chord key, while UU's host needs regular
-    /// presses to keep the modifier down.
-    pub fn modifier_repeats(&mut self, now: std::time::Instant, uu_compat: bool) -> Vec<u32> {
+    /// typematic events after a chord key. Protocol adapters explicitly declare
+    /// whether their peer needs periodic refresh of held modifiers.
+    pub fn modifier_repeats(&mut self, now: std::time::Instant, refresh_required: bool) -> Vec<u32> {
         // Native hosts retain successful downs until release/reset. Reinjecting
         // modifiers there starts a new shell chord after e.g. Win+V, so the
         // eventual Win up can open Start and dismiss the clipboard flyout.
-        if !uu_compat { return Vec::new(); }
+        if !refresh_required { return Vec::new(); }
         let held: Vec<u32>=self.down.iter().enumerate()
             .filter_map(|(vk,down)|(*down&&is_modifier(vk as u32)).then_some(vk as u32)).collect();
         if held.is_empty() {self.last_modifier_repeat=None;return held;}

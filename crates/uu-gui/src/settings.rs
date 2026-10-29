@@ -9,7 +9,7 @@ use std::{
 pub use uu_core::client_settings::{ClientSettings, CodecPreference, CursorMode};
 
 pub(super) fn bitrate_label(index:usize,native:bool)->&'static str {
-    uu_i18n::text(super::BITRATE_PRESETS[if native&&index==0 {5}else if !native&&index==5 {0}else{index}].0)
+    uu_i18n::text(super::BITRATE_PRESETS[if native&&index==0 {5}else if !native&&index==5 {0}else{index}])
 }
 pub(super) fn recommended_bitrate(settings:&ClientSettings,actual_size:Option<[u32;2]>,actual_codec:Option<&str>)->Option<u32> {
     use uu_core::native::VideoCodec;
@@ -335,11 +335,14 @@ impl super::App {
                     }
                     ui.add_space(4.0);
                 }
+                let plugins=super::workspace_ui::SettingsView::Plugins;
+                if ui.add_sized([ui.available_width(),40.],egui::SelectableLabel::new(self.workspace.route.settings==plugins,uu_i18n::text("插件管理"))).clicked(){self.workspace.route.settings=plugins;}
                 ui.separator();
                 let about=super::workspace_ui::SettingsView::About;
                 if ui.add_sized([ui.available_width(),40.],egui::SelectableLabel::new(self.workspace.route.settings==about,uu_i18n::text("关于"))).clicked(){self.workspace.route.settings=about;}
             });
         let view = self.workspace.route.settings;
+        let mut plugin_actions=Vec::new();
         if matches!(view,super::workspace_ui::SettingsView::Software(_)) {
             egui::TopBottomPanel::bottom("home-settings-actions")
                 .exact_height(if ctx.screen_rect().height() < 520.0 { 54.0 } else { 66.0 })
@@ -389,6 +392,7 @@ impl super::App {
                         ui.set_width(ui.available_width().min(860.0));
                         ui.heading(match view {
                             super::workspace_ui::SettingsView::Software(section) => section.label(),
+                            super::workspace_ui::SettingsView::Plugins => uu_i18n::text("插件管理"),
                             super::workspace_ui::SettingsView::About => uu_i18n::text("关于 Eclipse"),
                         });
                         ui.add_space(12.0);
@@ -413,9 +417,11 @@ impl super::App {
                             super::workspace_ui::SettingsView::About => {
                                 self.about_content(ui);
                             }
+                            super::workspace_ui::SettingsView::Plugins => plugin_actions=self.plugins.settings(ui),
                         }
                     });
             });
+        self.plugin_actions(plugin_actions);
         if actions.back {
             self.leave_settings();
         }
@@ -487,7 +493,12 @@ impl super::App {
     }
     pub(super) fn persist_preferences(&mut self) {
         self.snapshot_preferences();
-        if self.is_native() {
+        if let Some(super::sessions::ConnectionTarget::Plugin{plugin,..})=self.stream_target.as_ref().map(|t|t.connection.clone()) {
+            let result=self.plugins.save_client(&plugin,self.preferences.client.clone());
+            self.settings_storage_error=result.is_err();
+            self.set_settings_notice(match result {Ok(())=>uu_i18n::text("已保存客户端设置").to_owned(),Err(error)=>error.to_string()});return;
+        }
+        if self.uses_engine_controls() {
             self.set_settings_notice(uu_i18n::text("已应用到当前串流"));
             return;
         }
@@ -511,7 +522,7 @@ impl super::App {
         let dirty=self.settings_draft!=self.preferences;
         let gamepad_status=self.gamepad_status();
         let child=self.stream_target.is_some();
-        let native=self.is_native();
+        let native=self.uses_engine_controls();
         let stats=self.controller.as_ref().map(|h|h.stats.clone());
         let actual_codec=stats.as_ref().map(|s|s.codec.lock().unwrap().clone());
         let actual_size=stats.as_ref().filter(|s|s.native_quality_request.get().is_some_and(|r|r.bounds==self.settings_draft.native_request().bounds))
@@ -520,6 +531,8 @@ impl super::App {
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
             super::settings_page::State {
                 native,
+                host_managed_bitrate:self.client_support.host_managed_bitrate,max_fps:self.client_support.max_fps,
+                codecs:Some(&self.client_support.codecs),rate_control_available:!child||stats.as_ref().is_some_and(|s|s.native_rate_response.lock().unwrap().is_some()),
                 native_cursor:stats.as_ref().is_some_and(|s|s.native_cursor.supported()),
                 streaming:self.stream_target.is_some(),
                 can_save_profile:self.stream_target.as_ref().is_some_and(|target| matches!(target.connection,super::sessions::ConnectionTarget::NativeProfile{..})),

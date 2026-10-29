@@ -60,17 +60,31 @@ pub fn with_language<T>(value: Language, f: impl FnOnce() -> T) -> T {
 /// Translate a known static UI label. Never pass names or remote/user text here.
 pub fn text(source: &str) -> &str {
     if is_english() {
-        catalogue::english(source).unwrap_or(source)
+        catalogue::english(source).or_else(||extensions().read().unwrap().get(source).copied()).unwrap_or(source)
     } else {
         source
     }
 }
+fn extensions()->&'static std::sync::RwLock<std::collections::BTreeMap<&'static str,&'static str>> {
+    static VALUES:std::sync::OnceLock<std::sync::RwLock<std::collections::BTreeMap<&'static str,&'static str>>>=std::sync::OnceLock::new();
+    VALUES.get_or_init(Default::default)
+}
+/// Register immutable extension-owned vocabulary for this process lifetime.
+/// The borrowed strings live in a library retained by the plugin loader.
+pub fn register_catalogue(values:&'static [(&'static str,&'static str)])->Result<(),&'static str> {
+    if values.len()>4096{return Err("extension catalogue exceeds limit");}
+    let mut target=extensions().write().unwrap();
+    for (source,english) in values {
+        if source.len()>16384||english.len()>16384||target.get(source).copied().or_else(||catalogue::english(source)).is_some_and(|old|old!=*english){return Err("conflicting extension translation");}
+    }
+    target.extend(values.iter().copied());Ok(())
+}
 /// Match stored status text independently of the current UI language.
 pub fn matches(value: &str, source: &str) -> bool {
-    value == source || catalogue::english(source).is_some_and(|v| v == value)
+    value == source || catalogue::english(source).or_else(||extensions().read().unwrap().get(source).copied()).is_some_and(|v| v == value)
 }
 pub fn starts_with(value: &str, source: &str) -> bool {
-    value.starts_with(source) || catalogue::english(source).is_some_and(|v| value.starts_with(v))
+    value.starts_with(source) || catalogue::english(source).or_else(||extensions().read().unwrap().get(source).copied()).is_some_and(|v| value.starts_with(v))
 }
 mod catalogue;
 
@@ -117,10 +131,10 @@ mod tests {
     }
     #[test]
     fn status_comparisons_survive_a_language_switch() {
-        assert!(matches("已请求目标画质/码率", "已请求目标画质/码率"));
+        assert!(matches("已连接", "已连接"));
         assert!(matches(
-            "Requested target quality/bitrate",
-            "已请求目标画质/码率"
+            "Connected",
+            "已连接"
         ));
         assert!(starts_with("Sent: 60 FPS", "已发送"));
         assert!(!matches("user device name", "已请求目标画质/码率"));

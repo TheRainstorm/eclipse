@@ -7,7 +7,7 @@
 </p>
 <p align="center"><strong>远端，如在眼前。</strong><br>面向 Windows 与 Linux 的原生远程串流客户端</p>
 
-uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键鼠和多显示器操作。Linux 客户端原生运行，无需 Wine。当前开发分支默认进入 **设备工作区**：保存多台原生设备及 IP、UU、VPS 地址，首次短码配对后跨入口复用公钥授权。服务管理集中管理连接、采集、编码、权限与会话，应用设置保留软件通用选项。主页显示壁纸与最后画面卡片，右键管理连接方式和多个命名客户端配置；官方被控端入口集中在顶部“UU 兼容”。详见[新版配置与设备页](docs/client-and-server-settings.md)。详见[局域网连接与配对](docs/native-lan.md)。
+uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键鼠和多显示器操作。Linux 客户端原生运行，无需 Wine。当前开发分支默认进入 **设备工作区**：保存多台原生设备及 IP、UU、VPS 地址，首次短码配对后跨入口复用公钥授权。服务管理集中管理连接、采集、编码、权限与会话，应用设置保留软件通用选项。主页显示壁纸与最后画面卡片，右键管理连接方式和多个命名客户端配置；可选连接方式由单独安装并启用的插件提供。详见[新版配置与设备页](docs/client-and-server-settings.md)。详见[局域网连接与配对](docs/native-lan.md)。
 
 目前已达到日常远程桌面基本可用的 demo 阶段，仍在快速迭代。原生通路提供图形共享、公钥授权的输入控制、[系统声音与恢复](docs/native-audio.md)及[双方许可的文本与图片剪贴板](docs/native-clipboard.md)，IP 直连不需要第三方账号。Linux 共享支持 X11 和 [Wayland 门户 / PipeWire](docs/linux-client.md#wayland-本机共享)；Windows 锁屏共享使用可选的[后台服务](docs/windows-background-service.md)。
 
@@ -57,7 +57,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 
 ## 开始使用
 
-当前版本 **v0.20.8** 改进精简 HUD 与固定诊断，增加 Est.Total 波动和 3/10/60 分钟曲线，整理软件设置分类；默认客户端快捷键统一为 Ctrl+Alt+Shift，保留自定义绑定。详见[版本说明](docs/releases/v0.20.8.md)。[v0.20.7](docs/releases/v0.20.7.md) 的原生呈现修复和端到端观测继续保留，Windows 主机偶发的 DXGI 重连失败仍在排查。[v0.20.3](docs/releases/v0.20.3.md) 修复 HUD 已观察停图在暂停后丢失的计数。[v0.20.2](docs/releases/v0.20.2.md) 调整采集节拍、增加一分钟长间隔统计，并明确视频阶段小计与完整操作延迟的边界。[v0.20.1](docs/releases/v0.20.1.md) 整理 HUD 行对齐、手动复制与悬浮菜单。[v0.20.0](docs/releases/v0.20.0.md) 将 UU 协议拆到独立插件仓库，并提供默认关闭的实验性官方被控入口，真实官方手机互通仍待验收。正式包见 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)。源码构建先运行 `git submodule update --init --recursive`，详见[插件文档](docs/plugins.md)。
+当前版本 **v0.20.8** 改进精简 HUD 与固定诊断，增加 Est.Total 波动和 3/10/60 分钟曲线，整理软件设置分类；默认客户端快捷键统一为 Ctrl+Alt+Shift，保留自定义绑定。详见[版本说明](docs/releases/v0.20.8.md)。[v0.20.7](docs/releases/v0.20.7.md) 的原生呈现修复和端到端观测继续保留，Windows 主机偶发的 DXGI 重连失败仍在排查。[v0.20.3](docs/releases/v0.20.3.md) 修复 HUD 已观察停图在暂停后丢失的计数。[v0.20.2](docs/releases/v0.20.2.md) 调整采集节拍、增加一分钟长间隔统计，并明确视频阶段小计与完整操作延迟的边界。[v0.20.1](docs/releases/v0.20.1.md) 整理 HUD 行对齐、手动复制与悬浮菜单。[v0.20.0](docs/releases/v0.20.0.md) 将 UU 协议拆到独立插件仓库，并提供默认关闭的实验性官方被控入口，真实官方手机互通仍待验收。正式包见 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)。当前开发分支已将插件改为独立下载的动态库：主程序无需插件源码即可构建，插件默认关闭，详见[插件文档](docs/plugins.md)。
 
 安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
 

@@ -16,12 +16,12 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct Launch {
     pub target: StreamTarget,
-    pub code: Option<zeroize::Zeroizing<String>>,
+    pub payload: Option<zeroize::Zeroizing<String>>,
 }
 impl Launch {
     pub fn new(
         mut target: StreamTarget,
-        assistance: Option<&uu_compat::assistance::Request>,
+        payload: Option<&str>,
     ) -> anyhow::Result<Self> {
         match &mut target.connection {
             ConnectionTarget::NativeInvitation(path)
@@ -33,16 +33,18 @@ impl Launch {
         }
         Ok(Self {
             target,
-            code: assistance.map(|r| zeroize::Zeroizing::new(r.code().into())),
+            payload: payload.map(|s| zeroize::Zeroizing::new(s.into())),
         })
     }
-    fn assistance(&self) -> anyhow::Result<Option<uu_compat::assistance::Request>> {
+    fn plugin_payload(&self) -> anyhow::Result<Option<zeroize::Zeroizing<String>>> {
         anyhow::ensure!(self.target.alias.len() <= 512, "{}", uu_i18n::format!("设备名称过长"));
-        match (&self.target.connection, &self.code) {
-            (ConnectionTarget::UuAssistance(id), Some(code)) => {
-                Ok(Some(uu_compat::assistance::Request::new(id, code)?))
+        match (&self.target.connection, &self.payload) {
+            (ConnectionTarget::Plugin{plugin,identity}, Some(payload)) => {
+                anyhow::ensure!(!plugin.is_empty()&&plugin.len()<=64&&plugin.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-')&&!identity.is_empty()&&identity.len()<=256&&!identity.chars().any(char::is_control),"invalid plugin target identity");
+                anyhow::ensure!(!payload.is_empty()&&payload.len()<=crate::sessions::MAX_PLUGIN_PAYLOAD,"invalid plugin launch payload size");
+                Ok(Some(payload.clone()))
             }
-            (ConnectionTarget::UuAssistance(_), None) => anyhow::bail!("{}", uu_i18n::format!("远程协助需要验证码")),
+            (ConnectionTarget::Plugin{..}, None) => anyhow::bail!("plugin launch payload missing"),
             (_, None) => Ok(None),
             (_, Some(_)) => anyhow::bail!("{}", uu_i18n::format!("连接方式与凭据不匹配")),
         }
@@ -365,7 +367,7 @@ impl Window {
             self.pending.clear();
         }
         for launch in std::mem::take(&mut self.pending) {
-            let assistance = match launch.assistance() {
+            let plugin_payload = match launch.plugin_payload() {
                 Ok(value) => value,
                 Err(_) => continue,
             };
@@ -380,7 +382,7 @@ impl Window {
                 self.platform.as_ref().unwrap().clone(),
                 Some(launch.target),
                 vsync,
-                assistance,
+                plugin_payload,
             );
             app.window_sizing = self.sizing.clone();
             app.gamepad = gamepad.clone();
@@ -479,7 +481,7 @@ pub struct Workspace {
 }
 impl State {
     fn attach(&mut self, launch: Launch) -> bool {
-        if launch.assistance().is_err() {
+        if launch.plugin_payload().is_err() {
             return false;
         }
         let key = launch.target.key();

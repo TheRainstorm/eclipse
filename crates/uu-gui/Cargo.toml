@@ -10,14 +10,13 @@ name = "uu-gui"
 path = "src/main.rs"
 
 [dependencies]
-uu-compat = { path = "../../plugins/uu-compat", default-features = false }
+uu-plugin-sdk = {path="../uu-plugin-sdk"}
 uu-i18n = { path = "../uu-i18n" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 zeroize = {version="1",features=["serde"]}
 sha2.workspace = true
-qrcode = "0.14"
 raw-window-handle = "0.6"
 winit = {version="0.30.13",default-features=false,features=["x11","wayland"]}
 reqwest.workspace = true
@@ -46,9 +45,8 @@ arboard = { version = "3.7", default-features = false, features = ["wayland-data
 uu-media = { path = "../uu-media" }
 
 [features]
-default = ["uu-compat"]
-uu-compat = ["uu-compat/enabled"]
-vaapi = ["uu-core/vaapi"]
+default = []
+vaapi = ["uu-core/vaapi","uu-plugin-sdk/vaapi"]
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 x11rb = "0.13"

@@ -32,8 +32,6 @@ fn embed_provenance() {
     };
     let inputs = [
         "crates",
-        "plugins",
-        ".gitmodules",
         "vendor",
         "assets",
         "Cargo.toml",

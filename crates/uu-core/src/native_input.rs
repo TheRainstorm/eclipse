@@ -7,7 +7,7 @@ use std::sync::{
 use tokio::sync::{mpsc, watch};
 pub use uu_input::{KeyCode, MouseButton};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InputCommand {
     Absolute { x: u16, y: u16 },
@@ -87,7 +87,31 @@ pub(crate) enum NextInput {
     Command(Envelope),
     Closed,
 }
+/// Protocol adapters consume the same ordered input, reset and settings stream
+/// as native sessions. Wire encoding and provider-specific limits stay there.
+pub enum ProtocolCommand {
+    Input(InputCommand),
+    Quality(u64,crate::native_quality::Update),
+    Display(u64,i32),
+    Mode(bool),
+    Reset,
+}
 impl NativeInputReceiver {
+    pub async fn next_protocol(&mut self)->Option<ProtocolCommand> {
+        loop {
+            return Some(match self.next().await {
+                NextInput::Command(envelope)=>{
+                    if envelope.epoch!=self.epoch.load(Ordering::Acquire)||!self.requested.load(Ordering::Acquire)||!envelope.command.validate(){continue;}
+                    if envelope.created.elapsed()>std::time::Duration::from_millis(250){ProtocolCommand::Reset}else{ProtocolCommand::Input(envelope.command)}
+                },
+                NextInput::Quality(id,value)=>ProtocolCommand::Quality(id,value),
+                NextInput::Display(id,value)=>ProtocolCommand::Display(id,value),
+                NextInput::Mode(value)=>ProtocolCommand::Mode(value),
+                NextInput::Reset=>ProtocolCommand::Reset,
+                NextInput::Closed=>return None,
+            });
+        }
+    }
     pub(crate) async fn next(&mut self) -> NextInput {
         tokio::select! { biased;
             mode=self.mode.changed()=>if mode.is_ok(){NextInput::Mode(*self.mode.borrow_and_update())}else{NextInput::Closed},
@@ -173,6 +197,27 @@ impl NativeInputSender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn protocol_adapters_share_reset_mode_and_stale_input_rules() {
+        let (sender,mut receiver)=channel(true);
+        sender.send(InputCommand::Key{usage:4,pressed:true}).unwrap();
+        sender.set_enabled(false);
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Mode(false))));
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Reset)));
+        // Old key-down cannot escape after disabling or regain ownership later.
+        sender.set_enabled(true);
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Mode(true))));
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Reset)));
+        sender.send(InputCommand::Key{usage:5,pressed:true}).unwrap();
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Input(InputCommand::Key{usage:5,pressed:true}))));
+        sender.tx.try_send(Envelope{epoch:sender.epoch.load(Ordering::Acquire),command:InputCommand::Key{usage:6,pressed:true},created:std::time::Instant::now()-std::time::Duration::from_secs(1)}).unwrap();
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Reset)));
+        sender.set_enabled(false);
+        let _=receiver.next_protocol().await;let _=receiver.next_protocol().await;
+        let update=crate::native_quality::Update{fps:60,bitrate_kbps:Some(8000),rate_control:None};
+        sender.set_quality(7,update).unwrap();
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Quality(7,_))));
+    }
     #[test]
     fn overflowing_input_invalidates_pending_actions_and_keeps_release_out_of_band() {
         let (sender, mut receiver) = channel(true);

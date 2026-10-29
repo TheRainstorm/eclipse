@@ -13,7 +13,7 @@ pub fn verify(directory: &Path, expected_revision: &str) -> Result<()> {
     let manifest:serde_json::Value=serde_json::from_slice(&bytes)?;
     ensure!(expected_revision.len()==40 && manifest["source_commit"].as_str()==Some(expected_revision),
         "{}", uu_i18n::format!("主窗口与安装包版本不一致，请将整个 Windows 安装包解压到同一目录后重试"));
-    for name in ["uu.exe","uu-gui.exe","libgcc_s_seh-1.dll","libstdc++-6.dll","libvpl.dll"] {
+    for name in executable_files(&manifest)? {
         let path=directory.join(name);
         let file=File::open(path).with_context(||uu_i18n::format!("安装包缺少 {name}，请重新解压整个安装包"))?;
         ensure!(file.metadata()?.len()<=512*1024*1024,"{}", uu_i18n::format!("安装包文件过大：{name}"));
@@ -23,6 +23,25 @@ pub fn verify(directory: &Path, expected_revision: &str) -> Result<()> {
             "{}", uu_i18n::format!("安装包文件版本不一致或已损坏：{name}；请同时更新 uu.exe、uu-gui.exe 和安装包中的其余文件"));
     }
     Ok(())
+}
+
+/// The elevated installer uses the same bounded allowlist as its preflight.
+pub fn executable_files(manifest:&serde_json::Value)->Result<Vec<&str>> {
+    let version=match manifest.get("format_version") {None=>1,Some(value)=>value.as_u64().context("invalid package format")?};
+    ensure!((1..=4).contains(&version),"unsupported package format");
+    let mut files=vec!["uu.exe","uu-gui.exe","libgcc_s_seh-1.dll","libstdc++-6.dll","libvpl.dll"];
+    if manifest["format_version"].as_u64().unwrap_or(1)>=3 {files.push("libpyrowave-shared-1.dll");}
+    if manifest["format_version"]==4 {
+        let runtime=manifest["plugin_runtime"].as_array().context("missing SDK runtime list")?;
+        ensure!(runtime.len()==2&&runtime[0]=="uu_plugin_sdk.dll","invalid SDK runtime list");
+        let standard=runtime[1].as_str().context("invalid compiler runtime")?;
+        let hash=standard.strip_prefix("std-").and_then(|s|s.strip_suffix(".dll")).context("invalid compiler runtime name")?;
+        ensure!(!hash.is_empty()&&hash.len()<=64&&hash.bytes().all(|c|c.is_ascii_hexdigit()),"invalid compiler runtime hash");
+        let sdk=manifest["plugin_sdk_id"].as_str().context("missing SDK identity")?;
+        ensure!(sdk.len()==64&&sdk.bytes().all(|c|c.is_ascii_hexdigit()),"invalid SDK identity");
+        files.extend(["uu_plugin_sdk.dll",standard]);
+    }
+    Ok(files)
 }
 
 #[cfg(test)] mod tests {

@@ -1,0 +1,7 @@
+[build]
+# A single SDK library owns the runtime and shared Rust types across native
+# extensions. Host and plugins must use its matching compiler/SDK build.
+rustflags = ["-C", "prefer-dynamic"]
+
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "prefer-dynamic", "-C", "link-arg=-Wl,-rpath,$ORIGIN"]

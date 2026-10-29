@@ -1,0 +1,50 @@
+[package]
+name = "uu-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared, version-matched engine and UI extension boundary"
+build = "build.rs"
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+uu-core = {path="../uu-core"}
+uu-i18n = {path="../uu-i18n"}
+eframe = {version="0.29",default-features=false,features=["glow","default_fonts","x11","wayland"]}
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libloading = "0.8"
+zeroize = {version="1",features=["serde"]}
+sha2.workspace = true
+
+# The SDK owns the complete shared dependency feature contract. Independent
+# consumers must not select a different ABI through Cargo feature unification.
+tracing-core = "0.1"
+form_urlencoded = "1"
+regex-automata = {version="0.4",features=["dfa-build","dfa-search"]}
+hashbrown = {version="0.15",default-features=false,features=["default-hasher","inline-more"]}
+zerocopy = {version="0.8",features=["derive"]}
+image = {version="0.25",default-features=false,features=["bmp","ico","jpeg","png","tiff"]}
+
+[target.'cfg(any(windows,target_os="linux"))'.dependencies]
+arboard = {version="3.7",default-features=false,features=["image-data"]}
+
+[target.'cfg(target_os="linux")'.dependencies]
+egui-winit = {version="0.29",default-features=false,features=["preserve-key-events"]}
+arboard = {version="3.7",default-features=false,features=["wayland-data-control"]}
+
+[target.'cfg(windows)'.dependencies]
+windows-sys0450 = {package="windows-sys",version="=0.45.0",features=["Win32_Globalization","Win32_Foundation","Win32_Security","Win32_System_Pipes"]}
+windows-sys0520 = {package="windows-sys",version="=0.52.0",features=["Win32", "Win32_Devices", "Win32_Devices_HumanInterfaceDevice", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Graphics_OpenGL", "Win32_Media", "Win32_Networking", "Win32_Networking_WinSock", "Win32_Security", "Win32_System", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI", "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_UI_Input_Ime", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Pointer", "Win32_UI_Input_Touch", "Win32_UI_Shell", "Win32_UI_TextServices", "Win32_UI_WindowsAndMessaging", "default"]}
+windows-sys0590 = {package="windows-sys",version="=0.59.0",features=["Win32", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics", "Win32_Graphics_Gdi", "Win32_Media", "Win32_NetworkManagement", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage", "Win32_Storage_FileSystem", "Win32_System", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Environment", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Performance", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_RemoteDesktop", "Win32_System_Services", "Win32_System_StationsAndDesktops", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_XboxController", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "default"]}
+windows-sys0612 = {package="windows-sys",version="=0.61.2",features=["Wdk", "Wdk_Foundation", "Wdk_Storage", "Wdk_Storage_FileSystem", "Wdk_System", "Wdk_System_IO", "Win32", "Win32_Foundation", "Win32_Graphics", "Win32_Graphics_Gdi", "Win32_NetworkManagement", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage", "Win32_Storage_FileSystem", "Win32_System", "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_Diagnostics", "Win32_System_Diagnostics_Debug", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI", "Win32_UI_Shell", "default"]}
+
+[build-dependencies]
+sha2.workspace = true
+
+[features]
+vaapi = ["uu-core/vaapi"]

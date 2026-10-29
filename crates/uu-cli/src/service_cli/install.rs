@@ -285,13 +285,7 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
     let hashes = manifest["sha256"]
         .as_object()
         .context("安装包缺少完整性记录")?;
-    let payload = [
-        "uu.exe",
-        "uu-gui.exe",
-        "libgcc_s_seh-1.dll",
-        "libstdc++-6.dll",
-        "libvpl.dll",
-    ];
+    let payload=uu_core::service_admin::package::executable_files(&manifest)?;
     // Validate the complete executable set before changing the active service.
     let mut files = Vec::new();
     for name in payload {
@@ -359,8 +353,6 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
             directory(&config.at(folder))?;
         }
         for relative in [
-            "state.json",
-            "signing-key",
             "device-trust/identity.pk8",
             "device-trust/peers.json",
             "device-trust/pairing-password.json",
@@ -576,7 +568,7 @@ fn configure_recovery(service: &ServiceHandle) -> Result<()> {
     .context("设置后台服务错误退出恢复失败")
 }
 
-pub fn import_account(source: PathBuf) -> Result<()> {
+pub fn import_plugins(source: PathBuf) -> Result<()> {
     administrator_file_owner()?;
     let _lock = installation_lock()?;
     let paths = Paths::discover()?;
@@ -586,24 +578,57 @@ pub fn import_account(source: PathBuf) -> Result<()> {
     winok(unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut caller_session) })?;
     ensure!(
         caller_session == session && console_owner(session)? == installed.owner_sid,
-        "请在后台服务所属的 Windows 控制台用户中同步账号"
+        "请在后台服务所属的 Windows 控制台用户中同步插件"
     );
-    let state = uu_compat::ClientState::load(&source.join("state.json"))?;
-    let key = source.join("signing-key");
-    if key.try_exists()? {
-        let _ = uu_compat::signing_key::SigningKey::load_file(&key)?;
+    let target_program=paths.binary_directory(&installed);
+    let package:serde_json::Value=serde_json::from_slice(&regular(&target_program.join("version.json"),1024*1024)?)?;
+    ensure!(package["plugin_sdk_id"].as_str()==Some(uu_plugin_sdk::SDK_ID),"请先更新后台服务程序，再同步匹配的插件");
+    let config=Config{data_dir:source.clone(),state_dir:source.join("state"),signaling_host:String::new()};
+    let preferences=uu_core::plugins::Preferences::load(&config)?;
+    let source_program=std::env::current_exe()?.parent().context("missing application directory")?.to_owned();
+    let found=uu_plugin_sdk::loader::discover(&source_program.join("plugins"));
+    ensure!(found.errors.is_empty(),"插件清单无效：{}",found.errors.join("; "));
+    let mut writes:Vec<(PathBuf,Vec<u8>)>=Vec::new();
+    let mut directories=vec![target_program.join("plugins"),paths.config().at("plugins")];
+    let mut total=0usize;
+    for plugin in found.installed.into_iter().filter(|p|preferences.get(&p.manifest.id).enabled) {
+        ensure!(plugin.compatible(),"插件 {} 与当前程序 SDK 不匹配",plugin.manifest.id);
+        for directory in [source.join("plugins"),source.join("plugins").join(&plugin.manifest.id),source_program.join("plugins"),plugin.directory.clone()] {
+            let meta=fs::symlink_metadata(directory)?;
+            ensure!(meta.is_dir()&&meta.file_attributes()&FILE_ATTRIBUTE_REPARSE_POINT==0,"插件目录不能是重解析点");
+        }
+        let library=regular(&plugin.directory.join(&plugin.manifest.library),256*1024*1024)?;
+        ensure!(hex::encode(Sha256::digest(&library))==plugin.manifest.library_sha256.to_ascii_lowercase(),"插件 {} 完整性校验失败",plugin.manifest.id);
+        let program=target_program.join("plugins").join(&plugin.manifest.id);
+        let data=paths.config().at("plugins").join(&plugin.manifest.id);
+        directories.extend([program.clone(),data.clone()]);
+        total=total.checked_add(library.len()).context("plugin import size overflow")?;
+        ensure!(total<=512*1024*1024,"插件同步超过 512 MiB");
+        writes.push((program.join(&plugin.manifest.library),library));
+        writes.push((program.join("plugin.json"),serde_json::to_vec_pretty(&plugin.manifest)?));
+        for relative in &plugin.manifest.data_files {
+            let from=source.join("plugins").join(&plugin.manifest.id).join(relative);
+            if from.try_exists()? {let bytes=regular(&from,1024*1024)?;total+=bytes.len();ensure!(total<=512*1024*1024,"插件同步超过 512 MiB");writes.push((data.join(relative),bytes));}
+        }
     }
+    writes.push((paths.config().at(uu_core::plugins::Preferences::FILE),serde_json::to_vec_pretty(&preferences)?));
+    // Validate every source before stopping a running host. Preserve old files
+    // so a failed synchronization can restore its exact previous contents.
+    let before=writes.iter().map(|(path,_)|Ok((path.clone(),if path.try_exists()? {Some(regular(path,256*1024*1024)?)}else{None}))).collect::<Result<Vec<_>>>()?;
     let was_running = status()? == SERVICE_RUNNING;
     if was_running {
         super::stop()?;
     }
     let result = (|| -> Result<()> {
-        state.save(&paths.config().at("state.json"))?;
-        if key.try_exists()? {
-            copy(&key, &paths.config().at("signing-key"))?;
-        }
+        for path in directories {directory(&path)?;}
+        for (path,bytes) in &writes {uu_core::plugin_backend::write_private_file(path,bytes)?;protect(path)?;}
         Ok(())
     })();
+    if result.is_err() {
+        for (path,bytes) in before.into_iter().rev() {
+            if let Some(bytes)=bytes {uu_core::plugin_backend::write_private_file(&path,&bytes)?;protect(&path)?;}else if path.try_exists()? {fs::remove_file(path)?;}
+        }
+    }
     if was_running {
         super::start()?;
     }
@@ -743,7 +768,7 @@ mod tests {
                 book.sharing.service_port = port;
                 book.sharing.discovery_port = discovery;
                 book.sharing.ip_enabled = true;
-                book.sharing.uu_enabled = false;
+                book.sharing.plugin_services.clear();
                 book.sharing.control = false;
                 book.sharing.audio = false;
                 book.sharing.clipboard = false;
@@ -773,13 +798,8 @@ mod tests {
         let prior_manifest = fs::read(fixture.paths.root.join("service.json")).unwrap();
         let invalid_package = fixture.source.join("invalid-executable-package");
         fs::create_dir(&invalid_package).unwrap();
-        for name in [
-            "uu.exe",
-            "uu-gui.exe",
-            "libgcc_s_seh-1.dll",
-            "libstdc++-6.dll",
-            "libvpl.dll",
-        ] {
+        let original:serde_json::Value=serde_json::from_slice(&fs::read(package.join("version.json")).unwrap()).unwrap();
+        for name in uu_core::service_admin::package::executable_files(&original).unwrap() {
             fs::copy(package.join(name), invalid_package.join(name)).unwrap();
         }
         let invalid_bytes = b"owned fixture: intentionally invalid Windows executable";

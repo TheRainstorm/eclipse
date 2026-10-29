@@ -337,7 +337,7 @@ fn output_kind(kind:sdl2::sys::SDL_GameControllerType,motion:bool)->Kind {
 
 impl super::App {
     pub(super) fn gamepad_status(&self) -> Option<String> {
-        if !self.is_native() {
+        if !self.uses_engine_controls() {
             return None;
         }
         let stats = &self.controller.as_ref()?.stats.gamepad;

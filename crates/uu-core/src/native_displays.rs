@@ -183,7 +183,7 @@ pub struct Client {
     pub(crate) changed: Notify,
 }
 impl Client {
-    pub(crate) fn request(&self, request: u64) -> bool {
+    pub fn request(&self, request: u64) -> bool {
         let mut state = self.state.lock().unwrap();
         if state.request.is_some() {
             return false;
@@ -191,7 +191,7 @@ impl Client {
         state.request = Some(request);
         true
     }
-    pub(crate) fn response(&self, response: Response) {
+    pub fn response(&self, response: Response) {
         let mut state = self.state.lock().unwrap();
         if state.request != Some(response.request) {
             return;

@@ -54,6 +54,10 @@ impl Section {
 }
 pub struct State<'a> {
     pub native:bool,
+    pub host_managed_bitrate:bool,
+    pub max_fps:u32,
+    pub codecs:Option<&'a [uu_core::native::VideoCodec]>,
+    pub rate_control_available:bool,
     pub native_cursor:bool,
     pub streaming: bool,
     pub can_save_profile: bool,
@@ -112,10 +116,10 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
             .show(ui, |ui| {
                 ui.label(uu_i18n::text("目标帧率"));
                 egui::ComboBox::from_id_salt("settings-frame-rate").selected_text(format!("{} FPS",s.fps)).show_ui(ui,|ui| {
-                    for fps in [30,60,120,165] {ui.selectable_value(&mut s.fps,fps,format!("{fps} FPS"));}
+                    for fps in [30,60,120,165].into_iter().filter(|fps|*fps<=state.max_fps) {ui.selectable_value(&mut s.fps,fps,format!("{fps} FPS"));}
                     ui.menu_button(uu_i18n::text("其它帧数"),|ui| {
-                        for fps in [24,90,120,144] {ui.selectable_value(&mut s.fps,fps,format!("{fps} FPS"));}
-                        ui.separator();ui.label(uu_i18n::text("自定义帧数"));ui.add(egui::DragValue::new(&mut s.fps).range(5..=240).suffix(" FPS"));
+                        for fps in [24,90,120,144].into_iter().filter(|fps|*fps<=state.max_fps) {ui.selectable_value(&mut s.fps,fps,format!("{fps} FPS"));}
+                        ui.separator();ui.label(uu_i18n::text("自定义帧数"));ui.add(egui::DragValue::new(&mut s.fps).range(5..=state.max_fps.clamp(5,240)).suffix(" FPS"));
                     });
                 });
                 ui.end_row();
@@ -176,31 +180,35 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                 ui.label(uu_i18n::text("视频编码"));
                 combo(ui,"settings-codec",s.codec.label(),|ui| {
                     for codec in super::settings::CodecPreference::ALL {
+                        use uu_core::native::VideoCodec as V;
+                        let wire=match codec {super::settings::CodecPreference::Auto=>None,super::settings::CodecPreference::H264=>Some(V::H264),super::settings::CodecPreference::Hevc=>Some(V::Hevc),super::settings::CodecPreference::Av1=>Some(V::Av1),super::settings::CodecPreference::Pyrowave=>Some(V::Pyrowave)};
+                        if state.codecs.is_some_and(|codecs|wire.is_some_and(|value|!codecs.contains(&value))){continue;}
                         if ui.selectable_value(&mut s.codec,codec,codec.label()).changed(){s.prefer_hevc=false;
                             if codec==super::settings::CodecPreference::Pyrowave{s.rate_control=Some(uu_core::native_quality::RateMode::Cbr);}}
                     }
                 });
                 ui.end_row();
                 ui.label(uu_i18n::text("原生码率模式"));
-                combo(ui,"settings-rate-control",s.rate_control.map_or(uu_i18n::text("跟随主机"),|r|r.label()),|ui| {
+                ui.add_enabled_ui(state.rate_control_available,|ui|{combo(ui,"settings-rate-control",s.rate_control.map_or(uu_i18n::text("跟随主机"),|r|r.label()),|ui| {
                     use uu_core::native_quality::RateMode;
                     ui.selectable_value(&mut s.rate_control,None,uu_i18n::text("跟随主机"));
                     ui.selectable_value(&mut s.rate_control,Some(RateMode::Cbr),uu_i18n::text("CBR · 固定码率"));
                     ui.add_enabled_ui(s.codec!=super::settings::CodecPreference::Pyrowave,|ui|{ui.selectable_value(&mut s.rate_control,Some(RateMode::Vbr),uu_i18n::text("VBR · 可变码率"));});
+                });
                 });
                 ui.end_row();
                 ui.label(uu_i18n::text("码率"));
                 combo(
                     ui,
                     "settings-bitrate",
-                    if state.streaming {super::settings::bitrate_label(s.bitrate,state.native)}else{uu_i18n::text(super::BITRATE_PRESETS[s.bitrate].0)},
+                    if state.streaming {super::settings::bitrate_label(s.bitrate,!state.host_managed_bitrate)}else{uu_i18n::text(super::BITRATE_PRESETS[s.bitrate])},
                     |ui| {
-                        for (i, (label, _, _)) in super::BITRATE_PRESETS.iter().enumerate() {
+                        for (i, label) in super::BITRATE_PRESETS.iter().enumerate() {
                             let label=uu_i18n::text(label);
-                            if (state.native&&i==0)||(!state.native&&state.streaming&&i==5){continue;}
-                            if state.native&&i==5 {
+                            if (!state.host_managed_bitrate&&i==0)||(state.host_managed_bitrate&&state.streaming&&i==5){continue;}
+                            if !state.host_managed_bitrate&&i==5 {
                                 if ui.selectable_label(matches!(s.bitrate,0|5),label).clicked(){s.bitrate=5;}
-                            }else if !state.native&&state.streaming&&i==0 {
+                            }else if state.host_managed_bitrate&&state.streaming&&i==0 {
                                 if ui.selectable_label(matches!(s.bitrate,0|5),label).clicked(){s.bitrate=0;}
                             }else{ui.selectable_value(&mut s.bitrate, i, label);}
                         }
@@ -561,7 +569,7 @@ pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::Cli
     });
     ui.add_space(12.);
     let mut wrapper=Settings {client:settings.clone(),..Default::default()};
-    let state=State { native:false,native_cursor:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None,actual_codec:None,actual_size:None };
+    let state=State { native:false,host_managed_bitrate:false,max_fps:240,codecs:None,rate_control_available:true,native_cursor:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None,actual_codec:None,actual_size:None };
     match section {Section::Encoding=>encoding(ui,&mut wrapper,&state),Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
     *settings=wrapper.client;
 }

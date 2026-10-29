@@ -53,3 +53,6 @@ authorized-clients.json
 # AOCI agent host integration (machine-bound; do not commit)
 .codex/config.toml
 .codex/config.toml.backup.*
+
+# Optional extension repositories are developed and distributed separately.
+/plugins/

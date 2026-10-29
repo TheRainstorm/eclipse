@@ -1,4 +1,4 @@
-//! One host owner for IP, UU and VPS. The GUI owns all human decisions and OS
+//! One host owner for IP, installed connection services and VPS. The GUI owns all human decisions and OS
 //! clipboard initialization; listeners share capture defaults and authorization.
 use eframe::egui;
 use std::{
@@ -62,14 +62,13 @@ mod tests {
         let mut host=HostUi::default();
         let mut book=Book::default();book.sharing.ip_enabled=false;
         assert!(host.start(config.clone(),book.clone(),trust.clone(),&ctx).unwrap_err().to_string().contains("至少一个"));
-        book.sharing.uu_enabled=true;
-        host.start(config.clone(),book,trust,&ctx).unwrap();
-        assert!(host.uses_uu_account());
+        book.sharing.plugin_services=vec!["example-addon".into()];
+        assert!(host.start(config.clone(),book,trust,&ctx).unwrap_err().to_string().contains("至少一个"));
+        assert!(!host.uses_provider("example-addon"));
         assert!(host.statuses().iter().all(|(n,_)|n!="IP 直连"));
-        poll_until(&mut host,&ctx,|h|h.statuses().iter().any(|(_,s)|matches!(s,EndpointStatus::Error(_))));
         assert!(!config.at("native-lan").exists(),"disabled IP must never initialize legacy listener identity or keys");
         host.stop();poll_until(&mut host,&ctx,|h|!h.running());
-        assert!(!host.uses_uu_account());
+        assert!(!host.uses_provider("example-addon"));
         let owner=uu_core::shared_host::HostOwner::claim(&config.at("device-trust")).unwrap();drop(owner);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -99,9 +98,9 @@ mod tests {
         assert!(host.changes_pending(&store.read().unwrap().sharing));
         assert!(!host.active_sharing.as_ref().unwrap().audio);
         let mut saved = store.read().unwrap().sharing;
-        saved.uu_enabled = true;
+        saved.plugin_services=vec!["example-addon".into()];
         store.sharing(saved).unwrap();
-        assert!(!host.uses_uu_account(), "a saved UU entry is inactive until restart");
+        assert!(!host.uses_provider("example-addon"), "a saved extension entrance is inactive until restart");
         store.sharing(book.sharing.clone()).unwrap();
         assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,old_port)).is_err());
         let mut invalid=book.clone();invalid.sharing.name.clear();
@@ -199,6 +198,7 @@ impl Drop for Worker {
 }
 struct Endpoint {
     name: String,
+    provider:Option<String>,
     state: watch::Receiver<EndpointStatus>,
 }
 struct Pending {
@@ -253,13 +253,13 @@ impl HostUi {
     pub fn changes_pending(&self,saved:&uu_core::device_book::Sharing)->bool {
         self.active_sharing.as_ref().is_some_and(|active|active!=saved)
     }
-    pub fn uses_uu_account(&self) -> bool {
-        self.active_sharing.as_ref().is_some_and(|active| active.uu_enabled)
-            || self.restart.as_ref().is_some_and(|(_, book, _)| book.sharing.uu_enabled)
+    pub fn uses_provider(&self,id:&str) -> bool {
+        self.endpoints.iter().any(|entry|entry.provider.as_deref()==Some(id))
+            || self.restart.as_ref().is_some_and(|(_,book,_)|book.sharing.plugin_services.iter().any(|provider|provider==id))
     }
     pub fn restart(&mut self,config:uu_core::Config,book:Book,trust:TrustStore,ctx:&egui::Context)->anyhow::Result<()> {
         book.sharing.validate()?;
-        anyhow::ensure!(book.sharing.ip_enabled || book.sharing.uu_enabled || book.services.iter().any(|s|s.host_enabled),"{}", uu_i18n::format!("请先启用至少一个连接入口"));
+        anyhow::ensure!(book.sharing.ip_enabled || !book.sharing.plugin_services.is_empty() || book.services.iter().any(|s|s.host_enabled),"{}", uu_i18n::format!("请先启用至少一个连接入口"));
         if !self.running() {return self.start(config,book,trust,ctx);}
         anyhow::ensure!(!self.stopping,"{}", uu_i18n::format!("服务正在停止，请稍后重试"));
         self.stop();
@@ -396,7 +396,7 @@ impl HostUi {
         )?;
         let access = prepared.access;
         let pair_requests = prepared.requests;
-        let endpoints = prepared.endpoints.into_iter().map(|entry| Endpoint {name:entry.name,state:entry.state}).collect();
+        let endpoints = prepared.endpoints.into_iter().map(|entry| Endpoint {name:entry.name,state:entry.state,provider:entry.provider}).collect();
         self.restart_context = Some((config, access.store.clone()));
         let (stop, receiver) = watch::channel(false);
         let context = ctx.clone();

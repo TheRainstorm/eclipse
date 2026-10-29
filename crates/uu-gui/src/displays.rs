@@ -234,92 +234,7 @@ impl super::App {
             .map(|number| uu_i18n::format!("显示屏 {number}"))
             .unwrap_or_else(|| uu_i18n::text("显示器").into())
     }
-    pub(super) fn select_remote_screen(&mut self, id: i32) {
-        if self.is_native(){self.select_native_display(id);return;}
-        let screens = self.remote_screens();
-        let Some(screen) = screens.screens.iter().find(|s| s.id == id).cloned() else {
-            return;
-        };
-        if self.displays.defer_selection(id) {
-            self.displays.menu_open = false;
-            self.stream_menu.open = false;
-            self.context.memory_mut(|m| m.close_popup());
-            return;
-        }
-        // An activation timeout/rejection leaves the old advertised track
-        // uncertain. Explicitly select the requested source before trusting it.
-        let target = screen.assigned_track().filter(|_| !self.displays.waiting_binding());
-        if self.displays.selected == Some(id)
-            && self.displays.ready()
-            && target.is_some_and(|track| self.textures.contains_key(&track))
-        {
-            return;
-        }
-        if !self.controller.as_ref().is_some_and(|h| {
-            h.stats
-                .control_open
-                .load(std::sync::atomic::Ordering::Acquire)
-                != 0
-        }) {
-            return;
-        }
-        if self.displays.layout.remember_selected(id) {self.save_display_layout();}
-        // Release against the old source before changing its input binding.
-        self.release_all_keys();
-        self.release_pointer_capture(&self.context.clone());
-        self.cursor = super::cursor::Cursor::default();
-        self.selected_track = target.unwrap_or(self.selected_track);
-        if let Some(h) = &self.controller {
-            h.stats.select_video_track(self.selected_track);
-        }
-        let reuse = target.is_some_and(|t| self.displays.bindings.get(&t) == Some(&id));
-        let warm = reuse
-            && self.textures.contains_key(&self.selected_track)
-            && self
-                .displays
-                .last_frames
-                .get(&self.selected_track)
-                .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
-        if !reuse {
-            self.textures.remove(&self.selected_track);
-            self.unpresented.remove(&self.selected_track);
-        }
-        let settings_match = target.is_some_and(|track| {
-            self.displays
-                .settings_match(id, track, self.capture_profile())
-        });
-        let request = if let Some(track) = target {
-            self.displays.begin(id, track, Instant::now())
-        } else {
-            self.displays.begin_activation(id, Instant::now())
-        };
-        if warm {
-            self.displays.pending.as_mut().unwrap().frame = true;
-        }
-        let command = target
-            .map(|track| uu_compat::screen_control::send_video_track(request, track))
-            .unwrap_or_else(|| uu_compat::screen_control::activate_screen(request, id));
-        if let Some(h) = &self.controller {
-            h.stats.diagnostics.record(serde_json::json!({"event":"select_display","source":id,"track":target,"request":request,"activation":target.is_none()}));
-        }
-        if self
-            .controller
-            .as_ref()
-            .unwrap()
-            .input
-            .send(command)
-            .is_err()
-        {
-            self.displays.pending = None;
-            self.displays.notice = uu_i18n::text("切换失败：连接已关闭").into();
-        }
-        if target.is_some() && !settings_match {
-            self.send_capture_settings_through(true);
-        }
-        self.displays.menu_open = false;
-        self.stream_menu.open = false;
-        self.context.memory_mut(|m| m.close_popup());
-    }
+    pub(super) fn select_remote_screen(&mut self,id:i32){self.select_native_display(id);}
     fn select_native_display(&mut self,id:i32){
         let screens=self.remote_screens();
         if !screens.screens.iter().any(|s|s.id==id){return;}
@@ -328,7 +243,10 @@ impl super::App {
         if !self.controller.as_ref().is_some_and(|h|h.stats.control_open.load(std::sync::atomic::Ordering::Acquire)!=0){return;}
         self.release_all_keys();self.release_pointer_capture(&self.context.clone());
         self.cursor=super::cursor::Cursor::default();
-        let request=self.displays.begin(id,0,Instant::now());
+        let binding=self.controller.as_ref().is_some_and(|h|h.stats.display_track_binding.load(std::sync::atomic::Ordering::Acquire));
+        let track=screens.screens.iter().find(|s|s.id==id).and_then(|s|s.assigned_track()).unwrap_or(0);
+        let request=self.displays.begin(id,track,Instant::now());
+        if binding {self.textures.remove(&track);self.unpresented.remove(&track);}
         self.displays.native_request_epoch=self.displays.native_frame_epoch;
         let sent=self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|input|input.select_display(request,id).is_ok());
         if !sent {
@@ -343,10 +261,11 @@ impl super::App {
         let screens=self.remote_screens();
         if self.displays.layout.sync(&screens.screens){self.save_display_layout();}
         let Some(h)=self.controller.as_ref()else{return;};
+        let binding=h.stats.display_track_binding.load(std::sync::atomic::Ordering::Acquire);
         let catalog_epoch=h.stats.native_displays.catalog_epoch();
         for response in h.stats.native_displays.responses(){
             if !self.displays.pending.as_ref().is_some_and(|p|p.request==response.request){continue;}
-            if response.accepted && response.restart {self.displays.pending.as_mut().unwrap().accepted=true;}
+            if response.accepted && (response.restart||binding) {self.displays.pending.as_mut().unwrap().accepted=true;}
             else {
                 self.displays.pending=None;self.displays.blocked=false;
                 self.displays.selected=Some(screens.current_id);
@@ -356,8 +275,12 @@ impl super::App {
         if self.displays.pending.is_some(){
             // Acknowledgment alone is insufficient: require the catalog and an
             // actual frame from the new media generation, even at identical size.
-            if self.displays.native_frame(catalog_epoch,tracks.contains(&0)||self.textures.contains_key(&0)){
-                self.displays.selected=Some(screens.current_id);
+            let bound=screens.screens.iter().find(|s|Some(s.id)==self.displays.selected).and_then(|s|s.assigned_track());
+            let ready=if binding {self.displays.pending.as_ref().is_some_and(|p|p.accepted)&&bound.is_some_and(|track|tracks.contains(&track))}
+                else {self.displays.native_frame(catalog_epoch,tracks.contains(&0)||self.textures.contains_key(&0))};
+            if ready {
+                if binding {self.displays.pending=None;self.displays.blocked=false;self.displays.notice.clear();}
+                if !binding {self.displays.selected=Some(screens.current_id);}
             }
         }else if catalog_epoch==self.displays.native_frame_epoch && !screens.screens.is_empty(){
             self.displays.selected=Some(screens.current_id);
@@ -368,131 +291,12 @@ impl super::App {
             self.displays.pending=None;self.displays.blocked=true;
             self.displays.notice=uu_i18n::text("等待新屏幕超时，请检查被控端授权或重新连接").into();
         }
-        self.selected_track=0;
+        self.selected_track=if binding {screens.screens.iter().find(|s|Some(s.id)==self.displays.selected).or_else(||screens.initial_screen()).and_then(|s|s.assigned_track()).unwrap_or(0)}else{0};
+        h.stats.select_video_track(self.selected_track);
         if let Some(id)=self.displays.queued_selection(){self.select_native_display(id);}
     }
     pub(super) fn poll_displays(&mut self, tracks: &[u32]) {
-        if self.is_native(){self.poll_native_displays(tracks);return;}
-        let pending_at_start = self.displays.pending.as_ref()
-            .map(|p| (p.request, p.sent, self.displays.selected));
-        let received = self.controller.as_ref().is_some_and(|h| {
-            h.stats
-                .remote_screens_revision
-                .load(std::sync::atomic::Ordering::Acquire)
-                != 0
-        });
-        let screens = self.remote_screens();
-        if self.displays.layout.sync(&screens.screens) {
-            self.save_display_layout();
-        }
-        let bindings: HashMap<_, _> = screens
-            .screens
-            .iter()
-            .filter_map(|s| s.assigned_track().map(|t| (t, s.id)))
-            .collect();
-        for (track, source) in &self.displays.bindings {
-            if bindings.get(track) != Some(source) {
-                self.textures.remove(track);
-                self.unpresented.remove(track);
-                self.displays.last_frames.remove(track);
-            }
-        }
-        self.displays
-            .profiles
-            .retain(|id, (track, _)| bindings.get(track) == Some(id));
-        self.displays.bindings = bindings;
-        if received && screens.screens.is_empty() {
-            if self.displays.selected.is_some() {
-                self.release_all_keys();
-                self.release_pointer_capture(&self.context.clone());
-            }
-            self.displays.selected = None;
-            self.displays.pending = None;
-            self.displays.queued = None;
-            self.displays.blocked = true;
-            self.displays.notice = uu_i18n::text("远端当前没有可用显示器，等待重新连接显示器…").into();
-            self.textures.clear();
-        }
-        if !screens.screens.is_empty() {
-            let selected = self
-                .displays
-                .selected
-                .and_then(|id| screens.screens.iter().find(|s| s.id == id));
-            if selected.is_none() {
-                let initial = screens.initial_screen().unwrap();
-                let remembered = self.displays.layout.last_selected()
-                    .and_then(|id| screens.screens.iter().find(|s| s.id == id));
-                if let Some(remembered) = remembered.filter(|s| s.id != initial.id) {
-                    // Ask for the saved source before presenting the host's
-                    // default primary track; otherwise the first frame and
-                    // capture settings belong to the wrong monitor.
-                    self.release_all_keys();
-                    self.release_pointer_capture(&self.context.clone());
-                    self.textures.clear();
-                    self.unpresented.clear();
-                    self.select_remote_screen(remembered.id);
-                } else {
-                    let next = remembered.unwrap_or(initial);
-                    let previous = self.displays.selected;
-                    if previous.is_some() {
-                        self.release_all_keys();
-                        self.release_pointer_capture(&self.context.clone());
-                    }
-                    self.displays.selected = Some(next.id);
-                    self.selected_track = next.assigned_track().unwrap_or(self.selected_track);
-                    if previous.is_some() || self.displays.blocked {
-                        // Invalidate cached frames when an existing source vanished.
-                        self.displays.blocked = true;
-                        self.select_remote_screen(next.id);
-                    }
-                }
-            } else if let Some(screen) = selected {
-                if let Some(track) = screen.assigned_track() {
-                    if self.displays.waiting_binding() && self.displays.switching() {
-                        self.displays.bind_track(track);
-                        self.selected_track = track;
-                        self.textures.remove(&track);
-                        self.unpresented.remove(&track);
-                        self.send_capture_settings_through(true);
-                    } else if self.selected_track != track {
-                        self.select_remote_screen(screen.id);
-                    }
-                }
-            }
-        }
-        if let Some(h) = &self.controller {
-            h.stats.select_video_track(self.selected_track);
-            let response = h
-                .stats
-                .settings_response
-                .load(std::sync::atomic::Ordering::Acquire);
-            self.displays
-                .capture_response(response >> 1, response & 1 != 0);
-            for (id, case, code) in h.stats.display_responses.lock().unwrap().drain(..) {
-                self.displays.response(id, case, code);
-            }
-        }
-        for track in tracks {
-            self.displays.last_frames.insert(*track, Instant::now());
-            self.displays.frame(*track);
-        }
-        if let Some((request, sent, source)) = pending_at_start
-            .filter(|(_, _, source)| self.displays.ready() && self.displays.selected == *source) {
-            if let Some(h) = &self.controller {
-                h.stats.diagnostics.record(serde_json::json!({"event":"display_ready","request":request,
-                    "source":source,"track":self.selected_track,"elapsed_ms":sent.elapsed().as_millis()}));
-            }
-        }
-        let was_switching = self.displays.switching();
-        self.displays.tick(Instant::now());
-        if was_switching && !self.displays.switching() && self.displays.blocked {
-            if let Some(h) = &self.controller {
-                h.stats.diagnostics.record(serde_json::json!({"event":"switch_timeout","source":self.displays.selected,"track":self.selected_track,"stage":self.displays.notice}));
-            }
-        }
-        if let Some(id) = self.displays.queued_selection() {
-            self.select_remote_screen(id);
-        }
+        self.poll_native_displays(tracks);
     }
 }
 

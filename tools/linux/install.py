@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 import os
 from pathlib import Path
 import shutil
@@ -15,8 +16,15 @@ LEGACY_PAYLOAD = ['uu-gui', 'uu', 'README.txt', 'install.py', 'eclipse.png', *LI
 PAYLOAD = [*LEGACY_PAYLOAD,'libpyrowave-shared.so.1']
 def required_files(manifest):
     version=manifest.get('format_version',1)
-    if type(version) is not int or version not in (1,2):
+    if type(version) is not int or version not in (1,2,3):
         raise ValueError('Unsupported Linux package format version')
+    if version==3:
+        runtime=manifest.get('plugin_runtime')
+        if (not isinstance(runtime,list) or len(runtime)!=2 or runtime[0]!='libuu_plugin_sdk.so'
+            or not isinstance(runtime[1],str) or not re.fullmatch(r'libstd-[0-9a-f]+\.so',runtime[1])
+            or not re.fullmatch(r'[0-9a-f]{64}',manifest.get('plugin_sdk_id',''))):
+            raise ValueError('Invalid plugin SDK runtime manifest')
+        return [*PAYLOAD,*runtime]
     return PAYLOAD if version==2 else LEGACY_PAYLOAD
 
 
@@ -74,7 +82,7 @@ def main():
     package = args.package.resolve()
     manifest = verify_package(package)
     revision = manifest['source_commit']
-    for name in ['uu-gui', 'uu',*(['libpyrowave-shared.so.1'] if manifest.get('format_version')==2 else [])]:
+    for name in ['uu-gui', 'uu',*(['libpyrowave-shared.so.1'] if manifest.get('format_version',1)>=2 else []),*manifest.get('plugin_runtime',[])]:
         deps = subprocess.check_output(['ldd', str(package / name)], text=True)
         if 'not found' in deps: raise RuntimeError(f'Missing shared libraries for {name}: {deps}')
     prefix = args.prefix.expanduser().resolve()

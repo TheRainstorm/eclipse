@@ -45,8 +45,6 @@
 | [atomic-waker](https://github.com/smol-rs/atomic-waker) | 1.1.2 | `Apache-2.0 OR MIT` |
 | [audiopus_sys](https://github.com/lakelezz/audiopus_sys.git) | 0.2.2 | `ISC` |
 | [autocfg](https://github.com/cuviper/autocfg) | 1.5.1 | `Apache-2.0 OR MIT` |
-| [aws-lc-rs](https://github.com/aws/aws-lc-rs) | 1.18.2 | `ISC AND (Apache-2.0 OR ISC)` |
-| [aws-lc-sys](https://github.com/aws/aws-lc-rs) | 0.46.0 | `ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)` |
 | [base16ct](https://github.com/RustCrypto/formats/tree/master/base16ct) | 0.2.0 | `Apache-2.0 OR MIT` |
 | [base64](https://github.com/marshallpierce/rust-base64) | 0.21.7 | `MIT OR Apache-2.0` |
 | [base64](https://github.com/marshallpierce/rust-base64) | 0.22.1 | `MIT OR Apache-2.0` |
@@ -138,7 +136,6 @@
 | [document-features](https://github.com/slint-ui/document-features) | 0.2.12 | `MIT OR Apache-2.0` |
 | [downcast-rs](https://github.com/marcianx/downcast-rs) | 1.2.1 | `MIT/Apache-2.0` |
 | [dpi](https://github.com/rust-windowing/winit) | 0.1.2 | `Apache-2.0 AND MIT` |
-| [dunce](https://gitlab.com/kornelski/dunce) | 1.0.5 | `CC0-1.0 OR MIT-0 OR Apache-2.0` |
 | [ecdsa](https://github.com/RustCrypto/signatures/tree/master/ecdsa) | 0.16.9 | `Apache-2.0 OR MIT` |
 | [ecolor](https://github.com/emilk/egui) | 0.29.1 | `MIT OR Apache-2.0` |
 | [eframe](https://github.com/emilk/egui/tree/master/crates/eframe) | 0.29.1 | `MIT OR Apache-2.0` |
@@ -173,7 +170,6 @@
 | [foreign-types-shared](https://github.com/sfackler/foreign-types) | 0.3.1 | `MIT/Apache-2.0` |
 | [form_urlencoded](https://github.com/servo/rust-url) | 1.2.2 | `MIT OR Apache-2.0` |
 | [fs2](https://github.com/danburkert/fs2-rs) | 0.4.3 | `MIT/Apache-2.0` |
-| [fs_extra](https://github.com/webdesus/fs_extra) | 1.3.0 | `MIT` |
 | [futures](https://github.com/rust-lang/futures-rs) | 0.3.34 | `MIT OR Apache-2.0` |
 | [futures-channel](https://github.com/rust-lang/futures-rs) | 0.3.34 | `MIT OR Apache-2.0` |
 | [futures-core](https://github.com/rust-lang/futures-rs) | 0.3.34 | `MIT OR Apache-2.0` |
@@ -370,7 +366,6 @@
 | [proc-macro2](https://github.com/dtolnay/proc-macro2) | 1.0.107 | `MIT OR Apache-2.0` |
 | [profiling](https://github.com/aclysma/profiling) | 1.0.18 | `MIT OR Apache-2.0` |
 | [pxfm](https://github.com/awxkee/pxfm) | 0.1.30 | `BSD-3-Clause OR Apache-2.0` |
-| [qrcode](https://github.com/kennytm/qrcode-rust) | 0.14.1 | `MIT OR Apache-2.0` |
 | [quick-error](http://github.com/tailhook/quick-error) | 2.0.1 | `MIT/Apache-2.0` |
 | [quick-xml](https://github.com/tafia/quick-xml) | 0.41.0 | `MIT` |
 | [quinn](https://github.com/quinn-rs/quinn) | 0.11.12 | `MIT OR Apache-2.0` |

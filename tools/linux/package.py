@@ -17,6 +17,7 @@ _spec = importlib.util.spec_from_file_location('uu_linux_package_verifier', Path
 _installer = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_installer)
 PAYLOAD, verify_package = _installer.PAYLOAD, _installer.verify_package
+required_files = _installer.required_files
 
 ROOT = Path(__file__).resolve().parents[2]
 _pyro_spec=importlib.util.spec_from_file_location('eclipse_pyrowave_runtime',ROOT/'tools/pyrowave/build.py')
@@ -25,9 +26,12 @@ _pyro_spec.loader.exec_module(pyrowave_runtime)
 _source_spec=importlib.util.spec_from_file_location('eclipse_release_source',ROOT/'tools/release/source.py')
 release_source=importlib.util.module_from_spec(_source_spec)
 _source_spec.loader.exec_module(release_source)
+_sdk_spec=importlib.util.spec_from_file_location('eclipse_plugin_sdk',ROOT/'tools/release/plugin_sdk.py')
+plugin_sdk=importlib.util.module_from_spec(_sdk_spec)
+_sdk_spec.loader.exec_module(plugin_sdk)
 LICENSES = ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt']
 
-SOURCE_PATHS = ['crates', 'plugins', '.gitmodules', 'tools/release/source.py', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
+SOURCE_PATHS = ['crates', 'tools/release/source.py', 'tools/release/plugin_sdk.py', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                 '.cargo', 'tools/linux','tools/pyrowave', 'tools/licenses', 'licenses', *LICENSES]
 FEATURES = ['vaapi', 'intel-vpl', 'pyrowave','opus', 'wayland-portal', 'wayland-screencopy', 'x11', 'gamepad']
 
@@ -41,7 +45,11 @@ def reuse_archive(archive, destination, revision):
             members = bundle.getmembers()
             if len({member.name for member in members}) != len(members):
                 raise ValueError('缓存包含重复的归档路径')
-            expected = {destination.name + '/' + name for name in [*PAYLOAD, 'version.json']}
+            manifest_member=bundle.getmember(destination.name+'/version.json')
+            if manifest_member.size>1024*1024 or not manifest_member.isfile(): raise ValueError('Invalid cached manifest')
+            manifest=json.load(bundle.extractfile(manifest_member))
+            payload=required_files(manifest)
+            expected = {destination.name + '/' + name for name in [*payload, 'version.json']}
             actual = set()
             for member in members:
                 if member.name.rstrip('/') == destination.name and member.isdir():
@@ -57,7 +65,7 @@ def reuse_archive(archive, destination, revision):
             if actual != expected:
                 raise ValueError('缓存包文件清单不完整')
         manifest = verify_package(staging)
-        if manifest['source_commit'] != revision or manifest.get('platform') != f'linux-{platform.machine()}' or manifest.get('features') != FEATURES:
+        if manifest['source_commit'] != revision or manifest.get('platform') != f'linux-{platform.machine()}' or manifest.get('features') != FEATURES or manifest.get('format_version')!=3:
             return None
         built = manifest.get('build_glibc')
         current = platform.libc_ver()
@@ -74,7 +82,7 @@ def reuse_archive(archive, destination, revision):
         if destination.is_symlink():
             raise ValueError('解包目录不能是符号链接')
         destination.mkdir(parents=True, exist_ok=True)
-        for name in [*PAYLOAD, 'version.json']:
+        for name in [*payload, 'version.json']:
             os.replace(staging / name, destination / name)
         return {'source_commit': revision, 'directory': str(destination), 'archive': str(archive), 'cached': True}
 
@@ -99,19 +107,21 @@ def main(argv=None):
         except (ValueError, OSError, tarfile.TarError) as error:
             print(f'缓存包校验未通过，将执行构建：{error}', file=sys.stderr)
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], cwd=ROOT, text=True))
-    binaries = Path(metadata['target_directory']) / 'release'
-    subprocess.run(['cargo', 'build', '--release', '-p', 'uu-gui', '-p', 'uu-cli', '--features', 'vaapi', '--locked'], cwd=ROOT, check=True)
+    target=subprocess.check_output(['rustc','-vV'],text=True).split('host: ',1)[1].splitlines()[0]
+    sdk,standard,sdk_metadata=plugin_sdk.build(ROOT,target,['uu-gui','uu-cli'],['vaapi'])
+    binaries = Path(metadata['target_directory']) / target / 'release'
     pyrowave=pyrowave_runtime.build(jobs=min(6,int(os.environ.get('CARGO_BUILD_JOBS','6'))),output=Path(metadata['target_directory'])/'pyrowave-runtime'/pyrowave_runtime.NATIVE)
     if source_revision() != revision: raise RuntimeError('Source revision changed during the build; package was not created')
     dest.mkdir(parents=True, exist_ok=True)
     for name in ['uu-gui', 'uu']: shutil.copy2(binaries / name, dest / name)
     shutil.copy2(pyrowave,dest/'libpyrowave-shared.so.1')
+    for runtime in (sdk,standard):shutil.copy2(runtime,dest/runtime.name)
     shutil.copy2(ROOT / 'tools/linux/install.py', dest / 'install.py')
     shutil.copy2(ROOT / 'assets/branding/eclipse-512.png', dest / 'eclipse.png')
     for name in LICENSES: shutil.copy2(ROOT / name, dest / name)
     shutil.copy2(ROOT / 'tools/linux/README.txt', dest / 'README.txt')
-    files = {name: hashlib.sha256((dest / name).read_bytes()).hexdigest() for name in PAYLOAD}
-    manifest = {'format_version':2,'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(), 'platform': f'linux-{platform.machine()}', 'features': FEATURES, 'build_glibc': platform.libc_ver(),'runtime_sources':{'pyrowave':pyrowave_runtime.LOCK}, 'sha256': files}
+    files = {name: hashlib.sha256((dest / name).read_bytes()).hexdigest() for name in [*PAYLOAD,sdk.name,standard.name]}
+    manifest = {'format_version':3,'plugin_sdk_id':sdk_metadata['sdk_id'],'plugin_runtime':[sdk.name,standard.name],'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(), 'platform': f'linux-{platform.machine()}', 'features': FEATURES, 'build_glibc': platform.libc_ver(),'runtime_sources':{'pyrowave':pyrowave_runtime.LOCK}, 'sha256': files}
     (dest / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     archive = str(dest) + '.tar.gz'
     with tempfile.TemporaryDirectory(prefix='.linux-package-', dir=dest.parent) as temp:

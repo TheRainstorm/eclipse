@@ -85,11 +85,11 @@ impl Entry {
                 if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("更新后台程序"))).clicked() {
                     if host.running(){host.stop();}self.pending_install=true;
                 }
-                if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("同步主窗口的 UU 账号状态"))).clicked() {
+                if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("同步插件并重启后台服务"))).clicked() {
                     let result=(||->anyhow::Result<_>{
                         let config=uu_core::Config::from_env()?;
                         let exe=std::env::current_exe()?;
-                        Ok((exe,format!("--background-service-action import-account --source-data \"{}\"",config.data_dir.display())))
+                        Ok((exe,format!("--background-service-action import-plugins --source-data \"{}\"",config.data_dir.display())))
                     })();
                     match result {Ok((exe,args))=>self.launch(exe,args),Err(error)=>self.notice=error.to_string()}
                 }
@@ -236,7 +236,7 @@ impl Manager {
                                             "{}", uu_i18n::format!("配置已在其它窗口修改，请重新读取"));
                                         anyhow::ensure!(
                                             value.ip_enabled
-                                                || value.uu_enabled
+                                                || !value.plugin_services.is_empty()
                                                 || book.services.iter().any(|s| s.host_enabled),
                                             "{}", uu_i18n::format!("至少保留一个连接入口"));
                                         book.sharing = value;
@@ -547,7 +547,10 @@ impl eframe::App for Manager {
                         }
                         _ => {
                             ui.checkbox(&mut self.draft.ip_enabled, uu_i18n::text("IP 直连"));
-                            ui.checkbox(&mut self.draft.uu_enabled, uu_i18n::text("UU 账号入口"));
+                            for provider in uu_core::plugins::registry().descriptors() {
+                                let mut enabled=self.draft.plugin_services.iter().any(|id|id==provider.id);
+                                if ui.checkbox(&mut enabled,provider.name).changed(){self.draft.plugin_services.retain(|id|id!=provider.id);if enabled {self.draft.plugin_services.push(provider.id.into());}}
+                            }
                             ui.horizontal(|ui| {
                                 ui.label(uu_i18n::text("服务端口"));
                                 ui.add(
@@ -628,7 +631,7 @@ pub(super) fn dispatch() -> Option<eframe::Result> {
     }
     let opening=args==["--open-background-service-manager"];
     let action=if args.len()==4 && args[0]=="--background-service-action" && args[2]=="--source-data" {
-        args[1].to_str().filter(|s|matches!(*s,"install"|"import-account"))
+        args[1].to_str().filter(|s|matches!(*s,"install"|"import-plugins"))
     }else{None};
     if !opening && action.is_none(){return None;}
     let result=(||->anyhow::Result<()> {

@@ -23,8 +23,8 @@ class ReleaseTests(unittest.TestCase):
         self.root = Path(self.temp.name)
 
     def make_bundle(self, transform=None):
-        files = {name: ('test ' + name).encode() for name in package.REQUIRED}
-        manifest = {'format_version': 3, 'target':package.TARGET, 'source_commit': 'a' * 40,
+        files = {name: ('test ' + name).encode() for name in (*package.REQUIRED,"uu_plugin_sdk.dll","std-0123456789abcdef.dll")}
+        manifest = {'format_version': 4,'plugin_sdk_id':'f'*64,'plugin_runtime':['uu_plugin_sdk.dll','std-0123456789abcdef.dll'], 'target':package.TARGET, 'source_commit': 'a' * 40,
                     'sha256': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
         files['version.json'] = json.dumps(manifest).encode()
         if transform:
@@ -86,19 +86,25 @@ class ReleaseTests(unittest.TestCase):
             files.pop('libpyrowave-shared-1.dll')
             manifest = json.loads(files['version.json'])
             manifest.pop('format_version')
+            for name in manifest.pop('plugin_runtime'):
+                files.pop(name);manifest['sha256'].pop(name)
+            manifest.pop('plugin_sdk_id')
             manifest['sha256'].pop('libvpl.dll')
             manifest['sha256'].pop('libpyrowave-shared-1.dll')
             files['version.json'] = json.dumps(manifest).encode()
         self.assertNotIn('format_version', sync.verify_package(self.make_bundle(legacy)))
         def unknown(files):
-            manifest = json.loads(files['version.json']);manifest['format_version'] = 4
+            manifest = json.loads(files['version.json']);manifest['format_version'] = 5
             files['version.json'] = json.dumps(manifest).encode()
         with self.assertRaises(ValueError): sync.verify_package(self.make_bundle(unknown))
 
     def test_vpl_only_format_two_remains_installable_and_pyrowave_runtime_is_verified(self):
         def previous(files):
             files.pop('libpyrowave-shared-1.dll');manifest=json.loads(files['version.json'])
-            manifest['format_version']=2;manifest['sha256'].pop('libpyrowave-shared-1.dll')
+            manifest['format_version']=2
+            for name in manifest.pop('plugin_runtime'):
+                files.pop(name);manifest['sha256'].pop(name)
+            manifest.pop('plugin_sdk_id');manifest['sha256'].pop('libpyrowave-shared-1.dll')
             files['version.json']=json.dumps(manifest).encode()
         self.assertEqual(sync.verify_package(self.make_bundle(previous))['format_version'],2)
         for missing in [False,True]:

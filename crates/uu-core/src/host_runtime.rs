@@ -22,6 +22,7 @@ pub enum Event {
 }
 pub struct Endpoint {
     pub name: String,
+    pub provider:Option<String>,
     pub state: watch::Receiver<EndpointStatus>,
 }
 pub struct Prepared {
@@ -50,9 +51,15 @@ pub fn prepare(
     emit: impl Fn(Event) + Send + Sync + 'static,
 ) -> Result<Prepared> {
     book.sharing.validate()?;
+    // A missing, damaged or unavailable optional extension must not prevent an
+    // otherwise configured native IP/self-hosted entrance from starting.
+    let enabled=crate::plugins::Preferences::load(&config).unwrap_or_default();
+    let providers:Vec<_>=book.sharing.plugin_services.iter().filter(|id|enabled.get(id).enabled)
+        .filter_map(|id|crate::plugins::registry().get(id).ok().map(|service|(id.clone(),service.descriptor().name.to_owned())))
+        .collect();
     ensure!(
         book.sharing.ip_enabled
-            || book.sharing.uu_enabled
+            || !providers.is_empty()
             || book.services.iter().any(|s| s.host_enabled),
         "{}", uu_i18n::format!("请先在连接服务中启用至少一个入口"));
     let owner = HostOwner::claim(&config.at("device-trust"))?;
@@ -74,20 +81,22 @@ pub fn prepare(
     if book.sharing.ip_enabled {
         endpoints.push(Endpoint {
             name: uu_i18n::text("IP 直连").into(),
+            provider:None,
             state,
         });
     }
     let mut services = Vec::new();
     let mut add = |name: String, settings: Settings| {
         let (status, state) = watch::channel(EndpointStatus::Starting);
-        endpoints.push(Endpoint { name, state });
+        let provider=match &settings.provider {Provider::Plugin(id)=>Some(id.clone()),Provider::SelfHosted=>None};
+        endpoints.push(Endpoint { name, state,provider });
         services.push((settings, status));
     };
-    if book.sharing.uu_enabled {
+    for (id,name) in providers {
         add(
-            uu_i18n::text("UU 账号").into(),
+            name,
             Settings {
-                provider: Provider::Uu,
+                provider: Provider::Plugin(id),
                 device_auth: true,
                 ..Default::default()
             },

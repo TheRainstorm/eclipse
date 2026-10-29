@@ -58,8 +58,8 @@ pub(crate) async fn view(
     let book = device_book::Store::open(config.at("device-trust"))?;
     let name = book.read()?.sharing.name;
     let ice = connection.ice.clone();
-    stats.connection.set_service(match settings.provider {
-        Provider::Uu => uu_i18n::text("UU 连接服务"),
+    stats.connection.set_service(match &settings.provider {
+        Provider::Plugin(id) => crate::plugins::registry().get(id)?.descriptor().name,
         Provider::SelfHosted => uu_i18n::text("自建连接服务"),
     });
     let mut bootstrap = tokio::select! {
@@ -172,8 +172,8 @@ pub async fn listen(
 enum Listener { Plugin(Box<dyn crate::plugins::Listener>), SelfHosted(internet::self_hosted::Listener) }
 impl Listener {
     async fn online(settings:&Settings,config:&Config)->Result<Self> {
-        match settings.provider {
-            Provider::Uu=>Ok(Self::Plugin(crate::plugins::registry().get("uu")?.listen(config,settings.development_relay).await?)),
+        match &settings.provider {
+            Provider::Plugin(id)=>Ok(Self::Plugin(crate::plugins::registry().get(id)?.listen(config,settings.development_relay).await?)),
             Provider::SelfHosted=>Ok(Self::SelfHosted(internet::self_hosted::Listener::online(&settings.self_hosted()?,&settings.device).await?)),
         }
     }

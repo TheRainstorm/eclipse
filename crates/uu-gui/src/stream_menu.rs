@@ -444,18 +444,16 @@ impl super::App {
                     let (brand,drag)=ui.allocate_exact_size(egui::vec2(22.0,26.0),egui::Sense::drag());
                     super::ui::logo(ui.painter(),brand);
                     if drag.drag_started(){ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);}
-                    let title = self
-                        .selected
-                        .and_then(|i| self.devices.get(i))
-                        .map(|d| d.alias.as_str())
+                    let title = self.stream_target.as_ref()
+                        .map(|target|target.alias.as_str())
                         .unwrap_or(uu_i18n::text("远程桌面"));
                     let roomy=ui.available_width()>740.0;
                     let wide=ui.available_width()>1100.0;
                     if self.workspace_tabs.is_none() && ui.available_width()>520.0 {ui.add_sized([76.0,24.0],egui::Label::new(RichText::new(title).size(12.0)).truncate());}
                     ui.separator();
                     if self.workspace_tabs.is_some() || self.supports_remote(uu_core::capabilities::Capability::Displays){self.display_tabs(ui);}
-                    if (self.view_only || (self.is_native()&&!self.supports_remote(uu_core::capabilities::Capability::Input))) && (roomy || self.is_native()) {
-                        let (text, help) = if self.is_native() && !self.view_only && self.native_input_available() {
+                    if (self.view_only || (self.uses_engine_controls()&&!self.supports_remote(uu_core::capabilities::Capability::Input))) && (roomy || self.uses_engine_controls()) {
+                        let (text, help) = if self.uses_engine_controls() && !self.view_only && self.native_input_available() {
                             let requested = self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|s|s.requested());
                             if requested {(uu_i18n::text("等待控制权"), uu_i18n::text("主机一次允许一个控制端操作；当前控制端释放后会自动重试。"))}
                             else {(uu_i18n::text("控制已暂停"), uu_i18n::text("点击画面或恢复控制可重新申请，快捷键可在输入设置中调整。"))}
@@ -468,7 +466,7 @@ impl super::App {
                             self.platform.focus_window();
                         }
                     }
-                    if wide && !self.view_only && self.controller.is_some() && !self.input_ready() && (!self.is_native()||self.displays.switching()) {
+                    if wide && !self.view_only && self.controller.is_some() && !self.input_ready() && (!self.uses_engine_controls()||self.displays.switching()) {
                         ui.label(
                             RichText::new(if self.displays.switching(){uu_i18n::text("正在切换显示器…")}else{uu_i18n::text("输入连接中…")})
                                 .size(12.0)
@@ -476,7 +474,7 @@ impl super::App {
                         )
                         .on_hover_text(uu_i18n::text("视频和输入分别建立连接，输入就绪后可操作"));
                     }
-                    if let Some(controller) = self.controller.as_ref().filter(|_|roomy && !self.is_native()) {
+                    if let Some(controller) = self.controller.as_ref().filter(|_|roomy && !self.uses_engine_controls()) {
                         ui.label(
                             RichText::new(format!(
                                 "{:.1} Mbps",
@@ -604,7 +602,7 @@ impl super::App {
     }
 
     fn picture_menu(&mut self, ui: &mut egui::Ui) {
-        if self.is_native() {
+        if self.uses_engine_controls() {
             let hdr=self.controller.as_ref().and_then(|h|*h.stats.native_hdr_response.lock().unwrap()).is_some();
             let displaying=eframe::glow_presentation::color_target_for(ui.ctx(),ui.ctx().viewport_id()).is_some_and(|c|c.hdr);
             let status=if self.controller.is_none(){"—"}else if hdr&&displaying{"HDR10"}else if hdr{"HDR → SDR"}else{"SDR"};
@@ -616,7 +614,8 @@ impl super::App {
         let response=menu_row(ui,uu_i18n::text("分辨率"),None,false,true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::Resolution,response.rect));}
         separator(ui);
-        for fps in [30,60,120,165] {
+        let max_fps=self.client_support.max_fps;
+        for fps in [30,60,120,165].into_iter().filter(move|fps|*fps<=max_fps) {
             let response=menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,self.target_fps==fps,false,"",false);
             if response.hovered(){self.stream_menu.quality_detail=None;}
             if response.clicked(){self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);}
@@ -635,7 +634,7 @@ impl super::App {
 
     fn encoding_menu(&mut self, ui: &mut egui::Ui) {
         if self.stream_menu.quality_detail.is_some_and(|(kind,_)|!matches!(kind,QualityDetail::Bitrate|QualityDetail::RateMode)) {self.stream_menu.quality_detail=None;}
-        let options: &[(super::settings::CodecPreference,&str)]=if self.is_native() {
+        let options: &[(super::settings::CodecPreference,&str)]=if self.uses_engine_controls() {
             &[(super::settings::CodecPreference::Auto,uu_i18n::text("自动协商")),(super::settings::CodecPreference::H264,"H.264"),
               (super::settings::CodecPreference::Hevc,"H.265 / HEVC"),(super::settings::CodecPreference::Av1,"AV1"),(super::settings::CodecPreference::Pyrowave,uu_i18n::text("PyroWave（实验性 / SDR）"))]
         }else{
@@ -643,7 +642,10 @@ impl super::App {
         };
         let actual=self.controller.as_ref().map(|h|h.stats.codec.lock().unwrap().trim_start_matches("video/").to_owned()).filter(|v|!v.is_empty());
         for (codec,label) in options {
-            let selected=self.preferences.codec==*codec || (!self.is_native()&&*codec==super::settings::CodecPreference::Hevc
+            use uu_core::native::VideoCodec as V;
+            let wire=match codec {super::settings::CodecPreference::Auto=>None,super::settings::CodecPreference::H264=>Some(V::H264),super::settings::CodecPreference::Hevc=>Some(V::Hevc),super::settings::CodecPreference::Av1=>Some(V::Av1),super::settings::CodecPreference::Pyrowave=>Some(V::Pyrowave)};
+            if wire.is_some_and(|value|!self.client_support.codecs.contains(&value)){continue;}
+            let selected=self.preferences.codec==*codec || (!self.uses_engine_controls()&&*codec==super::settings::CodecPreference::Hevc
                 &&self.preferences.codec==super::settings::CodecPreference::Auto&&self.preferences.hevc_preferred());
             let hint=if *codec==super::settings::CodecPreference::Auto {actual.as_deref().unwrap_or("—")}else{""};
             let response=menu_row(ui,label,None,selected,false,hint,false);
@@ -653,7 +655,7 @@ impl super::App {
                 self.confirm_quality(ui);}
         }
         separator(ui);
-        if self.is_native() {
+        if self.controller.as_ref().is_some_and(|h|h.stats.native_rate_response.lock().unwrap().is_some()) {
             let value=match self.preferences.rate_control {None=>uu_i18n::text("跟随主机"),Some(uu_core::native_quality::RateMode::Cbr)=>"CBR",Some(uu_core::native_quality::RateMode::Vbr)=>"VBR"};
             let response=menu_row(ui,uu_i18n::text("编码模式"),None,false,true,value,self.stream_menu.quality_detail.is_some_and(|(v,_)|v==QualityDetail::RateMode));
             if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::RateMode,response.rect));}
@@ -661,13 +663,13 @@ impl super::App {
             separator(ui);
         }
         menu_heading(ui,uu_i18n::text("码率"),"");
-        let native=self.is_native();
+        let native=!self.client_support.host_managed_bitrate;
         let actual=self.controller.as_ref().map(|h|{let(w,h)=h.stats.res();[w,h]});
         let codec=self.controller.as_ref().map(|h|h.stats.codec.lock().unwrap().clone());
         let recommended=super::settings::recommended_bitrate(&self.preferences,actual,codec.as_deref());
         let order=if native{[5,1,2,3,4]}else{[0,1,2,3,4]};
         for index in order {
-            let (label,_,_)=super::BITRATE_PRESETS[index];
+            let label=super::BITRATE_PRESETS[index];
             let label=uu_i18n::text(label);
             let title=if index==5{uu_i18n::text("推荐码率")}else if index==0{uu_i18n::text("原画 · 服务端策略")}else{label};
             let hint=if index==5 {recommended.map_or_else(||uu_i18n::text("自动计算").into(),|kbps|format!("{:.1} Mbps",kbps as f64/1000.))}else if index==4{format!("{} Mbps",self.custom_mbps)}else{String::new()};
@@ -678,7 +680,7 @@ impl super::App {
             if !custom&&response.clicked(){self.bitrate_idx=index;self.confirm_quality(ui);}
             response.on_hover_text(match index {
                 5=>uu_i18n::text("按当前实际分辨率、帧率和编码计算LAN Quality推荐值，随参数改变。PyroWave需要较高带宽。"),
-                0=>uu_i18n::text("UU兼容服务端的原画档：发送原画档位请求，由服务端决定质量与码率，不等于固定30Mbps。原生连接使用推荐码率或自定义。"),
+                0=>uu_i18n::text("跟随主机的画质策略；具体码率由主机决定。可选择推荐码率或自定义目标。"),
                 4=>uu_i18n::text("输入自己的目标码率，单位Mbps。设置保存在当前串流偏好中。"),
                 _=>uu_i18n::text("固定目标码率；画面复杂度和编码实现会使实际接收码率有所差异。"),
             });
@@ -758,7 +760,8 @@ impl super::App {
                                 }
                             }
                             QualityDetail::FrameRate => {
-                                for fps in [24,90,120,144] {
+                                let max_fps=self.client_support.max_fps;
+                                for fps in [24,90,120,144].into_iter().filter(move|fps|*fps<=max_fps) {
                                     if menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,self.target_fps==fps,false,"",false).clicked() {
                                         self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);
                                     }
@@ -770,14 +773,14 @@ impl super::App {
                                     ui.label(uu_i18n::text("帧率"));
                                     ui.add(
                                         egui::DragValue::new(&mut self.fps_draft)
-                                            .range(5..=240)
+                                            .range(5..=self.client_support.max_fps.clamp(5,240))
                                             .suffix(" FPS"),
                                     );
                                 });
                                 ui.add_space(5.0);
                                 separator(ui);
                                 if menu_row(ui, uu_i18n::text("确认"), None, false, false, "", false).clicked() {
-                                    self.target_fps = self.fps_draft.clamp(5, 240);
+                                    self.target_fps = self.fps_draft.clamp(5,self.client_support.max_fps.clamp(5,240));
                                     self.confirm_quality(ui);
                                 }
                             }
@@ -926,7 +929,7 @@ impl super::App {
                                         separator(ui);menu_heading(ui,uu_i18n::text("指针移动"),"");
                                         for (relative,label,tip) in [(false,uu_i18n::text("桌面模式 · 绝对定位"),uu_i18n::text("按画面中的位置定位鼠标，适合桌面操作。")),(true,uu_i18n::text("游戏模式 · 相对移动"),uu_i18n::text("发送鼠标移动增量；单击画面捕获，失焦或进入菜单时释放。"))]{if menu_row(ui,label,None,self.preferences.relative_mouse==relative,false,"",false).on_hover_text(tip).clicked(){self.preferences.relative_mouse=relative;}}
                                         if old!=(self.preferences.relative_mouse,self.preferences.cursor_mode) {self.release_pointer_capture(ctx);self.persist_preferences();}
-                                        if self.is_native(){separator(ui);if menu_toggle(ui,uu_i18n::text("转发手柄与陀螺仪"),self.preferences.gamepad,"").on_hover_text(uu_i18n::text("取得输入控制后转发，菜单和失焦时释放；最多4个手柄。")).clicked(){self.preferences.gamepad=!self.preferences.gamepad;self.persist_preferences();}}
+                                        if self.uses_engine_controls(){separator(ui);if menu_toggle(ui,uu_i18n::text("转发手柄与陀螺仪"),self.preferences.gamepad,"").on_hover_text(uu_i18n::text("取得输入控制后转发，菜单和失焦时释放；最多4个手柄。")).clicked(){self.preferences.gamepad=!self.preferences.gamepad;self.persist_preferences();}}
                                     });
                                     }
                                     {
@@ -953,14 +956,14 @@ impl super::App {
                                     }
                                     {
                                     side_submenu(ui,&mut blocked,Icon::Folder,uu_i18n::text("剪贴板"),|ui| {
-                                        if self.is_native(){if menu_toggle(ui,uu_i18n::text("同步文本和图片"),self.preferences.native_clipboard,"").on_hover_text(uu_i18n::text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许。")).clicked(){self.preferences.native_clipboard=!self.preferences.native_clipboard;self.persist_preferences();}}
+                                        if self.uses_engine_controls(){if menu_toggle(ui,uu_i18n::text("同步文本和图片"),self.preferences.native_clipboard,"").on_hover_text(uu_i18n::text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许。")).clicked(){self.preferences.native_clipboard=!self.preferences.native_clipboard;self.persist_preferences();}}
                                         else if menu_toggle(ui,uu_i18n::text("同步文本剪贴板"),self.preferences.clipboard,"").on_hover_text(uu_i18n::text("兼容连接仅支持最多30KiB文本；双方均需允许。")).clicked(){self.preferences.clipboard=!self.preferences.clipboard;self.persist_preferences();}
-                                        if self.is_native(){ui.response().on_hover_text(uu_i18n::text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许，不传输文件。"));}
+                                        if self.uses_engine_controls(){ui.response().on_hover_text(uu_i18n::text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许，不传输文件。"));}
                                         else{ui.response().on_hover_text(uu_i18n::text("兼容连接仅支持最多30KiB的文本同步。"));}
                                         if let Some(h)=&self.controller {ui.label(h.stats.clipboard.status.lock().unwrap().as_str());}
                                     });
                                     }
-                                    if !self.is_native() {
+                                    if !self.uses_engine_controls() {
                                     unavailable(ui, Icon::Link, uu_i18n::text("外设"), uu_i18n::text("外设透传尚未接入"));
                                     unavailable(
                                         ui,

@@ -8,12 +8,13 @@ $baseFiles = @('uu-gui.exe','uu.exe','libgcc_s_seh-1.dll','libstdc++-6.dll','REA
 $target = Join-Path $root 'installed'
 $archive = Join-Path $root 'archive'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
-function New-TestPackage([string]$Name, [int]$Format = 3) {
+function New-TestPackage([string]$Name, [int]$Format = 4) {
     $dir = Join-Path $root $Name
     New-Item -ItemType Directory -Path $dir | Out-Null
     $files = @($baseFiles)
     if ($Format -ge 2) { $files += 'libvpl.dll' }
     if ($Format -ge 3) { $files += 'libpyrowave-shared-1.dll' }
+    if ($Format -eq 4) { $files += @('uu_plugin_sdk.dll','std-0123456789abcdef.dll') }
     $hashes = @{}
     foreach ($file in $files) {
         if ($file -eq 'install.ps1') { Copy-Item -LiteralPath $Installer -Destination (Join-Path $dir $file) }
@@ -22,6 +23,7 @@ function New-TestPackage([string]$Name, [int]$Format = 3) {
     }
     $manifest = @{source_commit=('a' * 40);sha256=$hashes}
     if ($Format -ne 1) { $manifest.format_version = $Format }
+    if ($Format -eq 4) { $manifest.plugin_runtime = @('uu_plugin_sdk.dll','std-0123456789abcdef.dll'); $manifest.plugin_sdk_id = 'f' * 64 }
     [IO.File]::WriteAllText((Join-Path $dir 'version.json'), ($manifest | ConvertTo-Json -Depth 4), $utf8)
     return $dir
 }
@@ -104,7 +106,7 @@ try {
     & $Installer -SourceDir $legacy -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null
     Assert-Test ((Get-FileHash -LiteralPath (Join-Path $target 'uu.exe')).Hash -eq (Get-FileHash -LiteralPath (Join-Path $legacy 'uu.exe')).Hash) 'Legacy bundle did not install'
     $before = Get-TestHashes
-    $unknown = New-TestPackage 'unsupported' 4
+    $unknown = New-TestPackage 'unsupported' 5
     $failed = $false
     try { & $Installer -SourceDir $unknown -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null }
     catch { $failed = $true }

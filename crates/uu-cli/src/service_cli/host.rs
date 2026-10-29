@@ -90,6 +90,7 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
             }) as uu_core::native_lan::ClipboardFactory
         });
         let (restart, mut restarts) = mpsc::channel(1);
+        let _extensions=uu_plugin_sdk::runtime::shared(&config);
         let prepared = uu_core::host_runtime::prepare(
             config.clone(),
             book,

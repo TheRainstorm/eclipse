@@ -74,8 +74,8 @@ pub async fn view(
                 crate::native::view(&invitation, frames, stats, stop).await
             };
         }
-        Destination::Uu { device } => Settings {
-            provider: Provider::Uu,
+        Destination::Plugin { plugin,device } => Settings {
+            provider: Provider::Plugin(plugin.clone()),
             device: device.clone(),
             device_auth: true,
             expected_peer: expected.clone(),
@@ -110,6 +110,7 @@ pub async fn view(
             serde_json::from_slice(&std::fs::read(settings)?)
                 .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("旧连接配置格式错误，原文件已保留")))?
         }
+        Destination::Unavailable(_)=>anyhow::bail!("{}",uu_i18n::text("请先安装并启用此连接方式的插件")),
     };
     crate::internet::view(settings, config, frames, stats, stop, input).await
 }

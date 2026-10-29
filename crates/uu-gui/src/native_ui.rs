@@ -17,19 +17,61 @@ impl Default for NativeUi {
     fn default()->Self{Self{open:false,path:String::new(),notice:String::new(),request_control:true}}
 }
 impl App {
-    pub(super) fn is_native(&self) -> bool {
-        self.stream_target
-            .as_ref()
-            .is_some_and(StreamTarget::is_native)
+    pub(super) fn client_stats(&mut self,transport:&str)->Arc<uu_core::media::MediaStats> {
+        let stats = Arc::new(uu_core::media::MediaStats::default());
+        let cursor_context=self.context.clone();
+        stats.native_cursor.set_waker(move||cursor_context.request_repaint());
+        stats.pairing.enable_choices();
+        let kind=self.decoder_kind();
+        let _=stats.decoder_preference.set(kind);
+        let _=stats.native_quality_request.set(self.preferences.native_request());
+        let _=stats.native_rate_request.set(uu_core::native_quality::RateRequest{selection:self.preferences.rate_control});
+        let _=stats.native_hdr_requested.set(self.preferences.hdr);
+        #[cfg(windows)]
+        if self.preferences.hdr && kind!=uu_core::media::DecoderKind::Software && !matches!(self.preferences.codec,super::settings::CodecPreference::H264|super::settings::CodecPreference::Pyrowave) {
+            if let Some(gl)=self.video_gl.clone() {
+                match super::video_hdr::enable_for_stream(&self.context,gl,self.preferences.vsync) {
+                    Ok(capable)=>stats.native_hdr_capable.store(capable,std::sync::atomic::Ordering::Release),
+                    Err(error)=>stats.diagnostics.record(serde_json::json!({"event":"hdr_presentation_unavailable","reason":error})),
+                }
+            }
+        }
+        if kind==uu_core::media::DecoderKind::Software {let _=stats.native_codec_capabilities.set(vec![uu_core::native::VideoCodec::H264]);}
+        stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Release);
+        stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Release);
+        if let Some(config) = &self.config {
+            stats.diagnostics.start([config.state_dir.join("diagnostics")]);
+        }
+        stats.diagnostics.record(
+            serde_json::json!({"event":"client","transport":transport,"build":self.build_label}),
+        );
+        stats
+            .clipboard
+            .enabled
+            .store(false, std::sync::atomic::Ordering::Release);
+        stats
+            .clipboard
+            .available
+            .store(cfg!(any(windows,target_os="linux")), std::sync::atomic::Ordering::Release);
+        stats
     }
+    pub(super) fn attach_controller(&mut self,handle:uu_core::controller::ControllerHandle) {
+        let context=self.context.clone();handle.frames.enable_planar();handle.frames.set_waker(move||context.request_video_frame());
+        if let Err(error)=super::clipboard::start_following(handle.stats.clipboard.clone(),self.clipboard_window.clone()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(error.to_string());}
+        self.controller=Some(handle);self.window_sizing.borrow_mut().begin_stream();self.input_capture.request();
+        if self.active_session&&!self.fullscreen {self.context.send_viewport_cmd(egui::ViewportCommand::Maximized(false));}
+        self.status=uu_i18n::text("连接中…").into();
+    }
+
+    pub(super) fn uses_engine_controls(&self)->bool {self.stream_target.is_some()}
     pub(super) fn supports_remote(&self, capability: Capability) -> bool {
         self.controller
             .as_ref()
             .map(|h| h.stats.capabilities.allows(capability))
-            .unwrap_or(!self.is_native())
+            .unwrap_or(!self.uses_engine_controls())
     }
     pub(super) fn native_input_available(&self)->bool {
-        self.is_native()&&self.controller.as_ref().is_some_and(|h|h.stats.native_input_available.load(std::sync::atomic::Ordering::Acquire))
+        self.uses_engine_controls()&&self.controller.as_ref().is_some_and(|h|h.stats.native_input_available.load(std::sync::atomic::Ordering::Acquire))
     }
     /// Local input controls remain configurable while a menu, lost focus or
     /// view-only policy temporarily relinquishes the remote control grant.
@@ -48,8 +90,6 @@ impl App {
     }
     pub(super) fn open_native(&mut self) {
         self.native_host.open = false;
-        self.login_rx = None;
-        self.login_texture = None;
         self.native_ui.open = true;
         self.native_ui.notice.clear();
     }
@@ -159,41 +199,7 @@ impl App {
     pub(super) fn connect_native_profile(&mut self,path:PathBuf){self.connect_native_source(None,None,None,Some(path));}
     fn connect_native_source(&mut self,path:Option<PathBuf>,device:Option<String>,internet:Option<PathBuf>,profile:Option<PathBuf>){
         self.remote_admin_ui=Default::default();
-        let stats = Arc::new(uu_core::media::MediaStats::default());
-        let cursor_context=self.context.clone();
-        stats.native_cursor.set_waker(move||cursor_context.request_repaint());
-        stats.pairing.enable_choices();
-        let kind=self.decoder_kind();
-        let _=stats.decoder_preference.set(kind);
-        let _=stats.native_quality_request.set(self.preferences.native_request());
-        let _=stats.native_rate_request.set(uu_core::native_quality::RateRequest{selection:self.preferences.rate_control});
-        let _=stats.native_hdr_requested.set(self.preferences.hdr);
-        #[cfg(windows)]
-        if self.preferences.hdr && kind!=uu_core::media::DecoderKind::Software && !matches!(self.preferences.codec,super::settings::CodecPreference::H264|super::settings::CodecPreference::Pyrowave) {
-            if let Some(gl)=self.video_gl.clone() {
-                match super::video_hdr::enable_for_stream(&self.context,gl,self.preferences.vsync) {
-                    Ok(capable)=>stats.native_hdr_capable.store(capable,std::sync::atomic::Ordering::Release),
-                    Err(error)=>stats.diagnostics.record(serde_json::json!({"event":"hdr_presentation_unavailable","reason":error})),
-                }
-            }
-        }
-        if kind==uu_core::media::DecoderKind::Software {let _=stats.native_codec_capabilities.set(vec![uu_core::native::VideoCodec::H264]);}
-        stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Release);
-        stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Release);
-        if let Some(config) = &self.config {
-            stats.diagnostics.start([config.state_dir.join("diagnostics")]);
-        }
-        stats.diagnostics.record(
-            serde_json::json!({"event":"client","transport":"native","build":self.build_label}),
-        );
-        stats
-            .clipboard
-            .enabled
-            .store(false, std::sync::atomic::Ordering::Release);
-        stats
-            .clipboard
-            .available
-            .store(cfg!(any(windows,target_os="linux")), std::sync::atomic::Ordering::Release);
+        let stats=self.client_stats("native");
         self.displays = super::displays::Displays::default();
         self.selected_track = 0;
         let result=if let Some(path)=profile {
@@ -212,20 +218,7 @@ impl App {
             self.config.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定原生设备配置目录"))).and_then(|config|uu_core::native_controller::spawn_device(config.at("native-lan/paired-devices.json"),id,stats,!self.view_only))
         }else{uu_core::native_controller::spawn_with_input(path.unwrap(),stats,!self.view_only)};
         match result {
-            Ok(handle) => {
-                let context = self.context.clone();
-                handle.frames.enable_planar();
-                handle.frames.set_waker(move || context.request_video_frame());
-                if let Err(error)=super::clipboard::start_following(handle.stats.clipboard.clone(),self.clipboard_window.clone()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(uu_i18n::format!("剪贴板不可用：{error}"));}
-                self.controller = Some(handle);
-                self.window_sizing.borrow_mut().begin_stream();
-                self.input_capture.request();
-                if self.active_session && !self.fullscreen {
-                    self.context
-                        .send_viewport_cmd(egui::ViewportCommand::Maximized(false));
-                }
-                self.status = uu_i18n::text("正在建立原生串流…").into();
-            }
+            Ok(handle)=>self.attach_controller(handle),
             Err(error) => self.status = uu_i18n::format!("原生连接失败：{error}"),
         }
     }

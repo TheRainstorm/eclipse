@@ -22,6 +22,10 @@ pub use uu_media::DecoderKind;
 /// Fixed-point where noted so the hot path stays lock-free.
 #[derive(Default)]
 pub struct MediaStats {
+    /// A protocol adapter can require held-modifier refresh. Native sessions
+    /// leave it false; the UI never identifies a particular provider.
+    pub display_track_binding:std::sync::atomic::AtomicBool,
+    pub refresh_modifiers:std::sync::atomic::AtomicBool,
     pub native_cursor:crate::native_cursor::Client,
     pub native_hdr_requested:std::sync::OnceLock<bool>,
     pub native_hdr_capable:std::sync::atomic::AtomicBool,

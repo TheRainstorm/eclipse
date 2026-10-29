@@ -35,7 +35,7 @@ impl Encoding {
 
 pub use crate::native_quality::RateMode;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Sharing {
     pub codec:Option<native::VideoCodec>,
     pub allowed_codecs:Vec<native::VideoCodec>,
@@ -58,7 +58,9 @@ pub struct Sharing {
     pub clipboard: bool,
     pub service_port: u16,
     pub discovery_port: u16,
-    pub uu_enabled: bool,
+    pub plugin_services: Vec<String>,
+    #[serde(flatten)]
+    pub extensions: std::collections::BTreeMap<String,serde_json::Value>,
     pub ip_enabled: bool,
     pub auto_start: bool,
 }
@@ -78,7 +80,8 @@ impl Default for Sharing {
             clipboard: false,
             service_port: crate::native_discovery::SERVICE_PORT,
             discovery_port: crate::native_discovery::DISCOVERY_PORT,
-            uu_enabled: false,
+            plugin_services: Vec::new(),
+            extensions: Default::default(),
             ip_enabled: true,
             auto_start: false,
         }
@@ -100,6 +103,11 @@ impl Sharing {
         }
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!(self.plugin_services.len()<=64&&self.extensions.len()<=64,"too many extension settings");
+        let mut unique=std::collections::BTreeSet::new();
+        for id in &self.plugin_services {
+            ensure!(!id.is_empty()&&id.len()<=64&&id.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-')&&unique.insert(id),"invalid or duplicate plugin service id");
+        }
         ensure!(self.codec.is_none_or(|c|self.allowed_codecs.contains(&c)),"{}", uu_i18n::format!("默认编码须包含在允许的编码中"));
         valid_name(&self.name)?;
         ensure!(
@@ -128,14 +136,15 @@ pub struct Service {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case",deny_unknown_fields)]
 pub enum Destination {
     Ip {
         address: String,
         #[serde(default)]
         legacy_device: Option<String>,
     },
-    Uu {
+    Plugin {
+        plugin: String,
         device: String,
     },
     Vps {
@@ -146,6 +155,10 @@ pub enum Destination {
     LegacyInternet {
         settings: PathBuf,
     },
+    /// Uninstalled extensions retain their original route without interpreting
+    /// its schema. Only the owning plugin may migrate it after explicit opt-in.
+    #[serde(untagged)]
+    Unavailable(serde_json::Value),
 }
 impl Destination {
     pub fn same_target(&self, other: &Self) -> bool {
@@ -157,7 +170,8 @@ impl Destination {
                 (Ok(a), Ok(b)) => a.eq_ignore_ascii_case(&b),
                 _ => false,
             },
-            (Self::Uu { device: a }, Self::Uu { device: b }) => a == b,
+            (Self::Plugin { plugin:a,device:x }, Self::Plugin { plugin:b,device:y }) => a==b&&x==y,
+            (Self::Unavailable(a),Self::Unavailable(b))=>a==b,
             (
                 Self::Vps {
                     service: a,
@@ -175,7 +189,8 @@ impl Destination {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Ip { .. } => uu_i18n::text("IP 直连"),
-            Self::Uu { .. } => "UU",
+            Self::Plugin { plugin,.. } => crate::plugins::registry().get(plugin).map(|p|p.descriptor().name).unwrap_or(uu_i18n::text("插件连接服务")),
+            Self::Unavailable(_)=>uu_i18n::text("未安装的连接插件"),
             Self::Vps { .. } => "VPS",
             Self::LegacyInternet { .. } => uu_i18n::text("旧版连接服务"),
         }
@@ -183,7 +198,8 @@ impl Destination {
     pub fn target(&self) -> String {
         match self {
             Self::Ip { address, .. } => address.clone(),
-            Self::Uu { device } | Self::Vps { device, .. } => device.clone(),
+            Self::Plugin { device,.. } | Self::Vps { device, .. } => device.clone(),
+            Self::Unavailable(_)=>uu_i18n::text("已保留的插件配置").into(),
             Self::LegacyInternet { .. } => uu_i18n::text("已迁移的旧配置").into(),
         }
     }
@@ -370,13 +386,11 @@ impl Book {
                             valid_id(id)?;
                         }
                     }
-                    Destination::Uu { device } => ensure!(
+                    Destination::Plugin { plugin,device } => {ensure!(!plugin.is_empty()&&plugin.len()<=64&&plugin.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-'),"invalid plugin id");ensure!(
                         !device.trim().is_empty()
-                            && device.len() <= 128
-                            && device
-                                .bytes()
-                                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)),
-                        "{}", uu_i18n::format!("UU 设备编号无效")),
+                            && device.len() <= 512 && !device.chars().any(char::is_control),
+                        "invalid plugin target");},
+                    Destination::Unavailable(value)=>ensure!(value["kind"].as_str().is_some_and(|s|!s.is_empty()&&s.len()<=64&&!matches!(s,"ip"|"plugin"|"vps"|"legacy_internet")),"invalid extension route"),
                     Destination::Vps { service, device } => {
                         self.service(service)?;
                         service_device(device)?;
@@ -713,6 +727,27 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unknown_extension_records_survive_edits_without_becoming_enabled() {
+        let root=std::env::temp_dir().join(format!("extension-book-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        let original=serde_json::json!({"kind":"example-addon-route","device":"generated-target","custom":{"revision":2}});
+        let destination:Destination=serde_json::from_value(original.clone()).unwrap();
+        assert!(matches!(&destination,Destination::Unavailable(_)));
+        let profile=Profile::new("Generated extension host",destination);
+        store.save_device(profile.clone()).unwrap();
+        store.edit(|book|{book.sharing.extensions.insert("example-addon-enabled".into(),serde_json::json!(true));Ok(())}).unwrap();
+        let book=store.read().unwrap();
+        assert!(book.sharing.plugin_services.is_empty());
+        assert_eq!(book.sharing.extensions["example-addon-enabled"],true);
+        assert_eq!(serde_json::to_value(&book.device(&profile.id).unwrap().routes[0].destination).unwrap(),original);
+        let malformed:Destination=serde_json::from_value(serde_json::json!({"kind":"ip","address":42})).unwrap();
+        assert!(store.save_device(Profile::new("Malformed",malformed)).is_err());
+        let a=Destination::Plugin{plugin:"example-a".into(),device:"same-device".into()};
+        let b=Destination::Plugin{plugin:"example-b".into(),device:"same-device".into()};
+        assert!(!a.same_target(&b));
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use crate::client_settings::{ClientSettings,NamedClientSettings};
     #[test]
     fn v4_encoder_defaults_migrate_without_rewriting_until_save_and_keep_exact_backup() {
@@ -771,8 +806,8 @@ mod tests {
     fn pinned_preview_survives_queued_writes_stale_editors_and_identity_merge() {
         let root=std::env::temp_dir().join(format!("eclipse-pinned-preview-{}",uuid::Uuid::new_v4()));
         let store=Store::open(&root).unwrap();
-        let a=Profile::new("First",Destination::Uu{device:"first".into()});
-        let b=Profile::new("Second",Destination::Uu{device:"second".into()});
+        let a=Profile::new("First",Destination::Plugin{plugin:"fixture".into(),device:"first".into()});
+        let b=Profile::new("Second",Destination::Plugin{plugin:"fixture".into(),device:"second".into()});
         store.save_device(a.clone()).unwrap();store.save_device(b.clone()).unwrap();
         store.record_preview(&b.id,100,b"keep this screenshot").unwrap();
         let image=store.read().unwrap().device(&b.id).unwrap().preview.clone().unwrap();
@@ -796,8 +831,8 @@ mod tests {
     fn successful_history_and_latest_private_preview_follow_verified_identity() {
         let root=std::env::temp_dir().join(format!("eclipse-history-{}",uuid::Uuid::new_v4()));
         let store=Store::open(&root).unwrap();
-        let a=Profile::new("First",Destination::Uu{device:"first".into()});
-        let b=Profile::new("Second",Destination::Uu{device:"second".into()});
+        let a=Profile::new("First",Destination::Plugin{plugin:"fixture".into(),device:"first".into()});
+        let b=Profile::new("Second",Destination::Plugin{plugin:"fixture".into(),device:"second".into()});
         store.save_device(a.clone()).unwrap();store.save_device(b.clone()).unwrap();
         assert!(store.read().unwrap().device(&a.id).unwrap().last_connected.is_none());
         store.record_connected(&a.id,100).unwrap();store.record_connected(&a.id,90).unwrap();
@@ -819,7 +854,7 @@ mod tests {
     fn v2_migration_is_read_only_until_save_and_preserves_a_private_exact_backup() {
         let root=std::env::temp_dir().join(format!("eclipse-migrate-{}",uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
-        let profile=Profile::new("Generated host",Destination::Uu{device:"generated-device".into()});
+        let profile=Profile::new("Generated host",Destination::Plugin{plugin:"fixture".into(),device:"generated-device".into()});
         let mut old=serde_json::to_value(Book{devices:vec![profile.clone()],..Default::default()}).unwrap();
         old["version"]=serde_json::json!(2);
         let device=old["devices"][0].as_object_mut().unwrap();device.remove("client_configs");device.remove("selected_client");device.remove("last_connected");device.remove("preview");
@@ -840,7 +875,7 @@ mod tests {
     fn named_and_inherited_settings_freeze_at_launch_and_stale_route_edits_keep_presets() {
         let root=std::env::temp_dir().join(format!("eclipse-presets-{}",uuid::Uuid::new_v4()));
         let store=Store::open(&root).unwrap();
-        let mut profile=Profile::new("Host",Destination::Uu{device:"generated-host".into()});
+        let mut profile=Profile::new("Host",Destination::Plugin{plugin:"fixture".into(),device:"generated-host".into()});
         store.save_device(profile.clone()).unwrap();
         let mut defaults=ClientSettings::default();
         let inherited=store.publish_launch_with_defaults(&profile.id,&defaults).unwrap();defaults.fps=90;
@@ -860,8 +895,8 @@ mod tests {
     #[test]
     fn verified_identity_merges_routes_and_presets_without_merging_similar_names() {
         let root=std::env::temp_dir().join(format!("eclipse-preset-merge-{}",uuid::Uuid::new_v4()));let store=Store::open(&root).unwrap();
-        let a=Profile::new("Same name",Destination::Uu{device:"generated-a".into()});
-        let b=Profile::new("Same name",Destination::Uu{device:"generated-b".into()});
+        let a=Profile::new("Same name",Destination::Plugin{plugin:"fixture".into(),device:"generated-a".into()});
+        let b=Profile::new("Same name",Destination::Plugin{plugin:"fixture".into(),device:"generated-b".into()});
         store.save_device(a.clone()).unwrap();store.save_device(b.clone()).unwrap();
         let ca=NamedClientSettings::new("Office",ClientSettings::default());
         let cb=NamedClientSettings::new("Gaming",ClientSettings{fps:120,..Default::default()});
@@ -928,7 +963,7 @@ mod tests {
         }));
         let a = Profile::new(
             "A",
-            Destination::Uu {
+            Destination::Plugin {plugin:"fixture".into(),
                 device: "generated-a".into(),
             },
         );
@@ -945,7 +980,7 @@ mod tests {
         store
             .edit(|book| {
                 let profile = book.devices.iter_mut().find(|p| p.id == a.id).unwrap();
-                profile.routes[0].destination = Destination::Uu {
+                profile.routes[0].destination = Destination::Plugin {plugin:"fixture".into(),
                     device: "new-destination".into(),
                 };
                 Ok(())
@@ -953,7 +988,7 @@ mod tests {
             .unwrap();
         let frozen = Launch::read(&snapshot).unwrap();
         assert!(
-            matches!(frozen.route.destination,Destination::Uu{device} if device=="generated-a")
+            matches!(frozen.route.destination,Destination::Plugin{plugin,device} if plugin=="fixture"&&device=="generated-a")
         );
         let id = "a".repeat(64);
         store.bind(&a.id, &id).unwrap();

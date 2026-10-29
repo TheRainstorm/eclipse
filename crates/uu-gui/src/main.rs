@@ -5,10 +5,8 @@
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use std::sync::mpsc::{channel, Receiver};
 
 use eframe::egui;
-use serde::Deserialize;
 use uu_core::controller::{ControllerEvent, ControllerHandle};
 
 mod input;
@@ -21,6 +19,7 @@ mod input_capture;
 mod settings;
 mod app_startup;
 mod settings_page;
+mod plugin_ui;
 mod theme;
 mod sessions;
 mod single_instance;
@@ -38,12 +37,9 @@ mod window;
 mod window_context;
 mod stream_workspace;
 mod stream_menu;
-mod login;
 mod ui;
 mod brand;
 mod build_info;
-mod account;
-mod uu_devices;
 mod audio_controls;
 mod native_ui;
 mod gamepad;
@@ -65,70 +61,10 @@ mod native_interfaces;
 mod wallpapers;
 mod background;
 mod device_preview;
-mod device_library;
 mod device_presence;
-use login::LoginEvent;
-
-#[derive(Clone, Debug, Deserialize)]
-struct Device {
-    alias: String,
-    device_id: String,
-    status: String,
-    #[serde(default)]
-    controllable: bool,
-    #[serde(default)]
-    wallpaper_url: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    platform: i64,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeviceListData {
-    #[serde(default)]
-    my_binded_devices: Vec<Device>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeviceListResp {
-    code: i64,
-    #[serde(default)]
-    data: Option<DeviceListData>,
-}
-
-fn parse_devices(body: serde_json::Value) -> anyhow::Result<Vec<Device>> {
-    let resp: DeviceListResp = serde_json::from_value(body)?;
-    anyhow::ensure!(resp.code == 0, "{}", uu_i18n::format!("获取设备列表失败，服务返回代码 {}", resp.code));
-    Ok(resp.data.map(|d| d.my_binded_devices).unwrap_or_default())
-}
 
 #[cfg(test)]
-mod launcher_tests {
-    #[test]
-    fn device_fetch_rejects_a_changed_account_before_requesting_the_list() {
-        let root = std::env::temp_dir().join(format!("uu-list-account-{}", uuid::Uuid::new_v4()));
-        let config = uu_core::Config {
-            data_dir: root.join("data"),
-            state_dir: root.join("state"),
-            signaling_host: "unreachable.example.invalid".into(),
-        };
-        let mut state = uu_compat::ClientState::new();
-        state.token = Some("new-account".into());
-        state.save(&config.at("state.json")).unwrap();
-        let before = std::fs::read(config.at("state.json")).unwrap();
-        let error = super::load_devices(config.clone(), "previous-account".into()).unwrap_err();
-        assert!(error.to_string().contains("账号已变化"), "{error:#}");
-        assert_eq!(std::fs::read(config.at("state.json")).unwrap(), before);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn invalid_or_rejected_responses_are_not_treated_as_an_empty_account() {
-        assert!(super::parse_devices(serde_json::json!({})).is_err());
-        assert!(super::parse_devices(serde_json::json!({"code":1120,"data":{"my_binded_devices":[]}})).is_err());
-        assert!(super::parse_devices(serde_json::json!({"code":0,"data":{"my_binded_devices":[]}})).unwrap().is_empty());
-    }
-
+mod tests {use super::*;
     #[test]
     fn light_theme_keeps_touch_targets_when_started_from_either_theme() {
         for theme in [eframe::egui::Theme::Dark, eframe::egui::Theme::Light] {
@@ -147,34 +83,15 @@ mod launcher_tests {
     }
 }
 
-fn load_devices(config: uu_core::Config, token: String) -> anyhow::Result<Vec<Device>> {
-    let rt = tokio::runtime::Runtime::new()?;
-    let result = rt.block_on(async {
-        let client = uu_compat::SignalClient::new(&config)?;
-        let api = uu_compat::UuApi::new(client, config.at("state.json"))?;
-        anyhow::ensure!(api.state.token.as_deref() == Some(token.as_str()), "{}", uu_i18n::format!("账号已变化，请刷新设备列表"));
-        let body = tokio::time::timeout(std::time::Duration::from_secs(15), api.device_list())
-            .await.map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("获取设备列表超时，请检查网络后重试")))??;
-        let mut devices = parse_devices(body)?;
-        // Opt-in privacy for screen sharing/documentation; no account data is changed.
-        if std::env::var("UU_SCREENSHOT_PRIVACY").as_deref() == Ok("1") {
-            for (index, device) in devices.iter_mut().enumerate() {
-                device.alias = uu_i18n::format!("远程设备 {:02}", index + 1);
-                device.wallpaper_url.clear();
-            }
-        }
-        Ok(devices)
-    });
-    rt.shutdown_background();
-    result
-}
-
 struct App {
+    plugins:plugin_ui::Manager,
+    plugin_client_error:Option<String>,
+    client_support:uu_plugin_sdk::ClientSupport,
     instance_id:u64,
     stream_target: Option<sessions::StreamTarget>,
     workspace_tabs:Option<stream_workspace::Tabs>,
     active_session:bool,
-    assistance:Option<uu_compat::assistance::Request>,
+    plugin_payload:Option<zeroize::Zeroizing<String>>,
     native_ui: native_ui::NativeUi,
     gamepad: std::rc::Rc<std::cell::RefCell<gamepad::Reader>>,
     workspace:workspace_ui::Workspace,
@@ -189,21 +106,12 @@ struct App {
     build_label: String,
     executable_path: String,
     context: window_context::Context,
-    devices: Vec<Device>,
-    device_load_error: Option<String>,
-    device_library: device_library::Library,
-    device_filter: device_library::Filter,
-    selected: Option<usize>,
-    search: String,
     status: String,
-    rx: Option<Receiver<anyhow::Result<Vec<Device>>>>,
     config: Option<uu_core::Config>,
     controller: Option<ControllerHandle>,
     textures: std::collections::HashMap<u32, video_texture::VideoTexture>,
     video_gl: Option<std::sync::Arc<eframe::glow::Context>>,
     presentation_vsync: bool,
-    wallpapers: std::collections::HashMap<usize, egui::TextureHandle>,
-    wallpaper_worker: Option<wallpapers::Worker>,
     background:background::Background,
     preview_writer:device_preview::Writer,
     recorded_connection:bool,
@@ -219,19 +127,10 @@ struct App {
     render_samples: u32,
     selected_track: u32,
     displays: displays::Displays,
-    seq: u32,
     kseq: u32,
     pressed_vks: input_capture::RemoteKeys,
     mod_state: [bool; 4],
     focused: bool,
-    logged_in: bool,
-    login_rx: Option<login::Worker>,
-    account_token: Option<String>,
-    account_error: Option<String>,
-    account_poll_at: std::time::Instant,
-    login_texture: Option<egui::TextureHandle>,
-    login_status: String,
-    uu_devices: uu_devices::Manager,
     hud: bool,
     preferences: settings::Settings,
     stream_settings_open: bool,
@@ -247,7 +146,6 @@ struct App {
     native_keyboard_capture: bool,
     native_window_keyboard: bool,
     nested_passthrough: bool,
-    autoconnect_done: bool,
     fullscreen: bool,
     window_snapshot: Option<window::Snapshot>,
     restore_maximized: std::rc::Rc<std::cell::Cell<bool>>,
@@ -274,14 +172,14 @@ struct App {
 }
 
 /// Preserve saved legacy indices. Native recommendations are calculated by the
-/// host at the actual output geometry; compatibility quality 5 stays automatic.
-const BITRATE_PRESETS: &[(&str, u64, Option<u32>)] = &[
-    ("自动（原画）", 5, None),
-    ("原画 30M", 6, Some(30)),
-    ("超清 14M", 6, Some(14)),
-    ("高清 8M", 6, Some(8)),
-    ("自定义", 6, None),
-    ("推荐码率（LAN Quality）", 5, None),
+/// host at the actual output geometry.
+const BITRATE_PRESETS: &[&str] = &[
+    "自动（原画）",
+    "原画 30M",
+    "超清 14M",
+    "高清 8M",
+    "自定义",
+    "推荐码率（LAN Quality）",
 ];
 
 fn vk_for(key: egui::Key) -> Option<u32> {
@@ -401,27 +299,18 @@ fn setup_style(ctx: &egui::Context) {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>, presentation_vsync: bool, assistance:Option<uu_compat::assistance::Request>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>, presentation_vsync: bool, plugin_payload:Option<zeroize::Zeroizing<String>>) -> Self {
         setup_style(&cc.egui_ctx);
         if let Some(gl)=&cc.gl {video_texture::enable_gpu_video(gl);}
-        Self::new_session(&cc.egui_ctx,cc.gl.clone(),std::rc::Rc::new(platform::Platform::new(cc,origin)),stream_target,presentation_vsync,assistance)
+        Self::new_session(&cc.egui_ctx,cc.gl.clone(),std::rc::Rc::new(platform::Platform::new(cc,origin)),stream_target,presentation_vsync,plugin_payload)
     }
-    fn new_session(ctx:&egui::Context,gl:Option<std::sync::Arc<eframe::glow::Context>>,platform:std::rc::Rc<platform::Platform>,stream_target:Option<sessions::StreamTarget>,presentation_vsync:bool,assistance:Option<uu_compat::assistance::Request>)->Self {
+    fn new_session(ctx:&egui::Context,gl:Option<std::sync::Arc<eframe::glow::Context>>,platform:std::rc::Rc<platform::Platform>,stream_target:Option<sessions::StreamTarget>,presentation_vsync:bool,plugin_payload:Option<zeroize::Zeroizing<String>>)->Self {
         static NEXT_INSTANCE:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
         let (config, config_error) = match uu_core::Config::from_env() {
             Ok(config) => (Some(config), None),
             Err(error) => (None, Some(error.to_string())),
         };
-        let native=stream_target.as_ref().is_some_and(|target|target.is_native());
-        let (account_token, account_error) = if native || !uu_compat::available() {(None, None)} else {
-            match config.as_ref().map(|config| account::read_token(&config.at("state.json"))) {
-                Some(Ok(token)) => (token, None),
-                Some(Err(error)) => (None, Some(error.to_string())),
-                None => (None, config_error),
-            }
-        };
-        let logged_in = account_token.is_some();
-        let device_library = if native { device_library::Library::default() } else { device_library::Library::for_account(config.as_ref(), account_token.as_deref()) };
+        let plugins=plugin_ui::Manager::new(config.as_ref(),ctx);
         let (mut preferences, settings_notice, settings_storage_error) = match settings::Settings::path().map(|p|settings::Settings::load(&p)) {
             Some(Ok(s))=>(s,String::new(),false),Some(Err(e))=>(settings::Settings::default(),uu_i18n::format!("读取设置失败：{e}"),true),None=>(settings::Settings::default(),uu_i18n::text("无法确定设置目录，当前使用默认设置").into(),true),
         };
@@ -432,16 +321,26 @@ impl App {
                 if let Some(client) = launch.client { preferences.client = client; }
             }
         }
+        let mut client_support=uu_plugin_sdk::ClientSupport::default();
+        let mut plugin_client_error=None;
+        if let Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::Plugin{plugin,..},..})=&stream_target {
+            client_support=plugins.client_support(plugin);
+            match plugins.client_settings(plugin,preferences.client.clone()) {
+                Ok(client)=>preferences.client=client,
+                Err(error)=>plugin_client_error=Some(error.to_string()),
+            }
+        }
         preferences.hotkeys=application_hotkeys;
         if stream_target.is_some() {
             if let Ok(value)=std::env::var("UU_VSYNC"){preferences.vsync=value!="0";}
         }
         let mut app = Self {
+            plugins,plugin_client_error,client_support,
             instance_id:NEXT_INSTANCE.fetch_add(1,std::sync::atomic::Ordering::Relaxed),
             stream_target,
             workspace_tabs:None,
             active_session:true,
-            assistance,
+            plugin_payload,
             native_ui: native_ui::NativeUi::default(),
             gamepad:Default::default(),
             workspace:workspace_ui::Workspace::load(config.as_ref(),(preferences.lan_service_port,preferences.lan_discovery_port)),
@@ -456,14 +355,7 @@ impl App {
             build_label: build_info::label(),
             executable_path: std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
             context: window_context::Context::new(ctx),
-            devices: Vec::new(),
-            device_load_error: None,
-            device_library,
-            device_filter: device_library::Filter::All,
-            selected: None,
-            search: String::new(),
             status: String::new(),
-            rx: None,
             preview_writer:Default::default(),recorded_connection:false,
             background:background::Background::new(config.as_ref().map(|c|c.at("appearance/wallpaper.jpg"))),
             config,
@@ -471,8 +363,6 @@ impl App {
             textures: std::collections::HashMap::new(),
             video_gl: gl,
             presentation_vsync,
-            wallpapers: std::collections::HashMap::new(),
-            wallpaper_worker: None,
             frame_count: std::collections::HashMap::new(),
             fps: std::collections::HashMap::new(),
             last_fps: std::time::Instant::now(),
@@ -485,19 +375,10 @@ impl App {
             render_samples: 0,
             selected_track: 0,
             displays: displays::Displays::default(),
-            seq: 1,
             kseq: 1,
             pressed_vks: input_capture::RemoteKeys::default(),
             mod_state: [false; 4],
             focused: false,
-            logged_in,
-            login_rx: None,
-            account_token,
-            account_error,
-            account_poll_at: std::time::Instant::now(),
-            login_texture: None,
-            login_status: String::new(),
-            uu_devices: Default::default(),
             hud: std::env::var("UU_HUD").map(|v| v != "0").unwrap_or(preferences.hud),
             preferences: preferences.clone(),
             stream_settings_open: false,
@@ -513,14 +394,13 @@ impl App {
             native_keyboard_capture: false,
             native_window_keyboard: false,
             nested_passthrough: preferences.nested_shortcuts,
-            autoconnect_done: false,
             fullscreen: false,
             window_snapshot: None,
             restore_maximized: Default::default(),
             bitrate_idx: preferences.bitrate,
             resolution_idx: preferences.resolution,
             custom_mbps: preferences.custom_mbps,
-            target_fps: if std::env::var_os("UU_FPS").is_some(){uu_compat::control_wire::CaptureFrameRate::from_env().fps()}else{preferences.fps},
+            target_fps:preferences.fps,
             fps_draft: preferences.fps,
             settings_seq: 0,
             settings_feedback: String::new(),
@@ -538,193 +418,21 @@ impl App {
             exit_requested: false,
             window_edge_active: false,
         };
-        if let Some(target) = app.stream_target.clone() {
-            app.devices.push(Device {
-                alias: target.alias, device_id: match target.connection {sessions::ConnectionTarget::UuDevice(id) | sessions::ConnectionTarget::UuAssistance(id)=>id,sessions::ConnectionTarget::NativeInvitation(_) | sessions::ConnectionTarget::NativeDevice(_) | sessions::ConnectionTarget::NativeInternet(_) | sessions::ConnectionTarget::NativeProfile{..}=>String::new()},
-                status: "CONNECTED".into(), controllable: true,
-                wallpaper_url: String::new(), platform: 0,
-            });
-            app.selected = Some(0);
-            app.view_only = target.view_only;
-            app.autoconnect_done = true;
-            app.connect();
-        } else if logged_in {
-            app.start_load();
-        } else {
-            app.status = uu_i18n::text("选择连接方式").into();
-        }
+        if let Some(target)=&app.stream_target {
+            app.view_only=target.view_only;app.connect();
+        }else{app.status=uu_i18n::text("选择连接方式").into();}
+
         app
     }
 
-    fn start_load(&mut self) {
-        if self.rx.is_some() { return; }
-        let (Some(config), Some(token)) = (self.config.clone(), self.account_token.clone()) else { return; };
-        self.wallpaper_worker = None;
-        self.device_load_error = None;
-        let (tx, rx) = channel();
-        let context = self.context.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(load_devices(config, token));
-            context.request_repaint();
-        });
-        self.rx = Some(rx);
-        self.status = uu_i18n::text("正在加载设备…").to_string();
-    }
 
-    fn ensure_visible_device_selection(&mut self) {
-        let visible = self.device_library.visible_indices(&self.devices, self.device_filter, &self.search);
-        self.selected = device_library::Library::retain_selection(self.selected, &visible);
-    }
 
-    fn start_login(&mut self) {
-        if let Some(error) = &self.account_error {
-            self.login_status = error.clone();
-            return;
-        }
-        let Some(config) = self.config.clone() else {
-            self.login_status = uu_i18n::text("无法确定登录目录，请检查本机用户目录配置").into();
-            return;
-        };
-        let name = match self.workspace.prepare_device_name() {
-            Ok(name) => name,
-            Err(error) => { self.login_status = error.to_string(); return; }
-        };
-        self.login_status = uu_i18n::text("获取二维码…").into();
-        self.login_rx = None;
-        self.login_texture = None;
-        self.login_rx = Some(login::spawn(config, name));
-    }
 
-    fn rename_uu_device(&mut self) {
-        let Some(config) = self.config.clone() else { return; };
-        let name = match self.workspace.prepare_device_name() {
-            Ok(name) => name,
-            Err(error) => { self.login_status = error.to_string(); return; }
-        };
-        self.login_rx = None;
-        self.login_texture = None;
-        self.login_status = uu_i18n::text("正在更新 UU 注册信息…").into();
-        self.login_rx = Some(login::rename(config, name));
-    }
 
-    fn poll_login(&mut self, ctx: &egui::Context) {
-        if self.login_rx.is_none() {
-            return;
-        }
-        let mut events = Vec::new();
-        if let Some(rx) = &self.login_rx {
-            loop {
-                match rx.try_recv() {
-                    Ok(ev) => events.push(ev),
-                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-                }
-            }
-        }
-        for ev in events {
-            match ev {
-                LoginEvent::Qr(url) => match login::qr_rgba(&url, 6) {
-                    Ok((w, h, rgba)) => {
-                        let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
-                        self.login_texture =
-                            Some(ctx.load_texture("qr", img, egui::TextureOptions::NEAREST));
-                        self.login_status = uu_i18n::text("请用手机扫码").into();
-                    }
-                    Err(e) => self.login_status = uu_i18n::format!("二维码生成失败: {e}"),
-                },
-                LoginEvent::Status(s) => self.login_status = s,
-                LoginEvent::Done {token, user_id, device_name, name_error} => {
-                    let saved = self.config.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定登录目录")))
-                        .and_then(|config|account::store_login(&config.at("state.json"),token.clone(),user_id,device_name));
-                    self.login_rx = None;
-                    match saved {
-                        Ok(()) => {
-                            self.apply_account(Some(token));
-                            if let Some(error) = name_error { self.login_status = uu_i18n::format!("账号已登录，设备改名失败：{error}；可点击“保存名称”重试。"); }
-                        },
-                        Err(error) => self.login_status = uu_i18n::format!("保存登录失败：{error}"),
-                    }
-                }
-                LoginEvent::NameSaved { name, token } => {
-                    self.login_rx = None;
-                    self.login_status = match self.config.as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定登录目录")))
-                        .and_then(|c| account::store_device_name(&c.at("state.json"), &token, name)) {
-                        Ok(()) => { self.rx = None; self.start_load(); uu_i18n::text("UU 设备名称已更新").into() },
-                        Err(error) => uu_i18n::format!("云端名称已更新，保存本地记录失败：{error}"),
-                    };
-                }
-                LoginEvent::Error(e) => {
-                    self.login_rx = None;
-                    self.login_status = if self.logged_in { uu_i18n::format!("保存设备名称失败：{e}") } else { uu_i18n::format!("登录失败：{e}") };
-                },
-            }
-        }
-    }
 
-    fn poll(&mut self, ctx: &egui::Context) {
-        if let Some(rx) = &self.rx {
-            let result = match rx.try_recv() {
-                Ok(result) => Some(result),
-                Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(anyhow::anyhow!("{}", uu_i18n::format!("设备列表加载已中断，请重试")))),
-            };
-            if let Some(result) = result {
-                match result {
-                    Ok(devices) => {
-                        self.device_load_error = None;
-                        self.status = uu_i18n::format!("已加载 {} 台设备", devices.len());
-                        self.wallpapers.clear();
-                        let requests = devices.iter().filter(|d| !d.wallpaper_url.is_empty())
-                            .map(|d| wallpapers::Request { device_id: d.device_id.clone(), url: d.wallpaper_url.clone() }).collect::<Vec<_>>();
-                        self.wallpaper_worker = if requests.is_empty() { None } else { wallpapers::Worker::start(requests, ctx.clone()).ok() };
-                        let selected_id = self.selected.and_then(|i| self.devices.get(i)).map(|d| d.device_id.clone());
-                        self.devices = devices;
-                        self.selected = selected_id.and_then(|id| self.devices.iter().position(|d|d.device_id == id))
-                            .or_else(|| (!self.devices.is_empty()).then_some(0));
-                        self.ensure_visible_device_selection();
-                        // Optional headless auto-connect for testing:
-                        //   UU_AUTOCONNECT=<explicit device_id|alias>
-                        if !self.autoconnect_done {
-                            self.autoconnect_done = true;
-                            // Only an explicit device id or alias is accepted —
-                            // never "first online" (that once picked the wrong
-                            // machine).
-                            if let Ok(want) = std::env::var("UU_AUTOCONNECT") {
-                                if let Some(i) = self
-                                    .devices
-                                    .iter()
-                                    .position(|d| d.device_id == want || d.alias == want)
-                                {
-                                    self.selected = Some(i);
-                                    self.connect();
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let error = e.to_string();
-                        self.status = uu_i18n::format!("加载失败: {error}");
-                        self.device_load_error = Some(error);
-                    }
-                }
-                self.rx = None;
-            }
-        }
-        if let Some(worker) = &mut self.wallpaper_worker {
-            for _ in 0..2 {
-                let Some(preview) = worker.try_recv() else { break };
-                if let Some(index) = self.devices.iter().position(|d| d.device_id == preview.device_id && d.wallpaper_url == preview.url) {
-                    let image = egui::ColorImage::from_rgba_unmultiplied([preview.width as usize, preview.height as usize], &preview.rgba);
-                    self.wallpapers.insert(index, ctx.load_texture(format!("wallpaper-{index}"), image, egui::TextureOptions::LINEAR));
-                }
-            }
-            if worker.finished() { self.wallpaper_worker = None; }
-        }
-    }
 
     fn poll_controller(&mut self, ctx: &egui::Context) {
-        let native=self.is_native();
+        let native=self.uses_engine_controls();
         let Some(h) = &mut self.controller else {
             return;
         };
@@ -777,7 +485,7 @@ impl App {
             if response >> 1 == 2000 + self.settings_seq && uu_i18n::starts_with(&self.settings_feedback,"已发送") {
                 if response & 1 != 0 {self.remote_cursor_active=self.preferences.cursor_mode.remote();}
                 self.settings_feedback = if response & 1 != 0 {
-                    uu_i18n::format!("远端已确认请求：{} FPS · {}", self.target_fps, settings::bitrate_label(self.bitrate_idx,self.is_native()))
+                    uu_i18n::format!("远端已确认请求：{} FPS · {}", self.target_fps, settings::bitrate_label(self.bitrate_idx,!self.client_support.host_managed_bitrate))
                 } else { uu_i18n::text("远端拒绝了画质设置，请重新选择").into() };
             }
         }
@@ -807,9 +515,7 @@ impl App {
         }
     }
 
-    fn send_input(&mut self, payload: serde_json::Value, kind: u32) {
-        self.send_input_ch(payload, kind, 35);
-    }
+    fn send_input(&mut self, command:uu_core::native_input::InputCommand, _kind:u32) {self.send_native(command);}
 
     fn input_screen(&self, track: u32) -> u32 {
         if track==self.selected_track {
@@ -841,7 +547,7 @@ impl App {
         }
     }
     fn send_capture_settings_through(&mut self,immediate:bool) {
-        if self.stream_target.as_ref().is_some_and(|target|target.is_native()) {
+        if self.stream_target.is_some() {
             if self.disconnecting {return;}
             let request=self.preferences.native_request();
             let dynamic=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_response.lock().unwrap().as_ref().is_some_and(|r|r.dynamic));
@@ -867,51 +573,6 @@ impl App {
             }
             return;
         }
-        if !self.supports_remote(uu_core::capabilities::Capability::Quality) {self.settings_feedback=uu_i18n::text("当前画质由被控端设置").into();return;}
-        let Some(frame_rate)=uu_compat::control_wire::CaptureFrameRate::new(self.target_fps) else {self.settings_feedback=uu_i18n::text("UU 兼容协议支持 5–144 FPS；请选择有效帧率").into();return;};
-        if self.disconnecting { return; }
-        let resolution = self.capture_resolution();
-        if self.controller.as_ref().is_some_and(|h| h.stats.output_resolution.get()
-            .is_some_and(|previous| previous.output_bounds() != resolution.output_bounds())
-            || h.stats.prefer_hevc.load(std::sync::atomic::Ordering::Acquire) != self.preferences.hevc_preferred())
-        {
-            // The host replaces runtime scale limits with negotiated decoder
-            // bounds. Release the old session before negotiating a new bound.
-            self.output_reconnect_pending = true;
-            self.stop_connection();
-            self.status = uu_i18n::text("正在切换视频设置…").into();
-            return;
-        }
-        let profile = self.capture_profile();
-        let Some(h) = &self.controller else { return };
-        let (_, quality, preset_mbps) = BITRATE_PRESETS[self.bitrate_idx];
-        let custom_bps = if quality == 6 {
-            Some(preset_mbps.unwrap_or(self.custom_mbps) as u64 * 1_000_000)
-        } else {
-            None
-        };
-        self.settings_seq = self.settings_seq.wrapping_add(1);
-        let source=self.displays.selected.unwrap_or_else(||h.stats.remote_screens.lock().unwrap().for_track(self.selected_track).map_or(-1,|s|s.id));
-        let msg = uu_compat::control_wire::capture_setting_for_screen(
-            2000 + self.settings_seq,
-            uu_core::time::now_ms(),
-            frame_rate,
-            quality,
-            custom_bps,
-            resolution,
-            self.preferences.cursor_mode.remote(),
-            source,
-        );
-        let request=2000+self.settings_seq;
-        self.displays.settings_sent(request, source, self.selected_track, profile);
-        let sent=if immediate {h.input.send(msg)}else{h.settings.send(msg)};
-        self.settings_feedback = if sent.is_ok() {
-            uu_i18n::format!("已发送：{} FPS · {} · {}", self.target_fps, settings::bitrate_label(self.bitrate_idx,self.is_native()),
-                if quality == 6 { format!("{} Mbps", preset_mbps.unwrap_or(self.custom_mbps)) }
-                else { uu_i18n::text("以实际接收码率为准").into() })
-        } else {
-            uu_i18n::text("设置发送失败：连接已关闭").into()
-        };
     }
 
     fn local_shortcut(&mut self, action: shortcuts::Action, ctx: &egui::Context) {
@@ -962,7 +623,7 @@ impl App {
     fn update_keyboard_capture(&mut self,ctx:&egui::Context) {
         let conditions=self.input_conditions(ctx);
         let remote=self.input_capture.active(conditions);
-        if self.is_native() {
+        if self.uses_engine_controls() {
             let requested=self.input_capture.wants_control(conditions)&&!self.disconnecting&&self.displays.ready();
             if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()) {
                 if sender.requested()!=requested {sender.set_enabled(requested);}
@@ -985,7 +646,7 @@ impl App {
                 "keyboard":self.platform.keyboard_diagnostics()
             }));}
         }
-        let gamepad=if self.preferences.gamepad && self.is_native() && remote {
+        let gamepad=if self.preferences.gamepad && self.uses_engine_controls() && remote {
             self.controller.as_ref().and_then(|h|h.native_input.as_ref().map(|input|gamepad::Target{input:input.clone(),stats:h.stats.clone()}))
         }else{None};
         self.gamepad.borrow_mut().configure(self.instance_id,gamepad);
@@ -1028,13 +689,13 @@ impl App {
 
     fn update_clipboard(&mut self, ctx: &egui::Context) {
         use std::sync::atomic::Ordering::{Acquire, AcqRel, Release};
-        let native = self.is_native();
+        let native = self.uses_engine_controls();
         let ready = self.input_ready()
             || (native && self.supports_remote(uu_core::capabilities::Capability::Clipboard)
                 && self.controller.as_ref().is_some_and(|h| h.stats.decoded_total.load(Acquire) > 0));
         if let Some(h) = &self.controller {
             let clipboard = &h.stats.clipboard;
-            let enabled = (if native { self.preferences.native_clipboard } else { self.preferences.clipboard })
+            let enabled = self.preferences.native_clipboard
                 && clipboard.available.load(Acquire);
             let active = self.active_session && ready && ctx.input(|i| i.focused) && !self.disconnecting;
             // Invalidate incoming data before reactivation, even if a complete
@@ -1093,47 +754,16 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
     }
 
-    /// Encode UI semantics for the selected transport. Native sessions use
-    /// typed HID commands; the compatibility path retains its CONTROL JSON.
-    fn send_input_ch(&mut self, payload: serde_json::Value, _kind: u32, _channel: u16) {
-        if self.view_only && !matches!(payload["action"].as_str(), Some("kbd_release" | "mouse_release")) {
-            return;
-        }
-        if !self.input_ready() && !matches!(payload["action"].as_str(), Some("kbd_release" | "mouse_release")) {
-            return;
-        }
-        if self.is_native() {
-            if let Some(command)=native_keys::command(&payload){self.send_native(command);}
-            return;
-        }
-        let Some(h) = &self.controller else { return };
-        self.seq = self.seq.wrapping_add(1);
-        if std::env::var_os("UU_INPUT_AUDIT").is_some()
-            && matches!(
-                payload["action"].as_str(),
-                Some("mouse_press" | "mouse_release")
-            )
-        {
-            println!(
-                "pointer audit: {} button={}",
-                payload["action"], payload["button"]
-            );
-        }
-        let _ = h.input.send(payload.to_string().into_bytes());
-    }
+    /// Send physical key intents through the shared controller input queue.
 
     #[track_caller]
-    fn send_key_repeat(&mut self, vk: u32) {
-        let payload = serde_json::json!({
-            "action": "kbd_press", "interrept": "i", "key": vk, "kseq": self.kseq
-        });
-        self.kseq = self.kseq.wrapping_add(1);
-        self.send_input_ch(payload, 8, 0);
+    fn send_key_repeat(&mut self,vk:u32) {
+        if let Some(usage)=native_keys::hid_for_vk(vk){self.send_native(uu_core::native_input::InputCommand::Key{usage,pressed:true});}
     }
 
     fn send_modifier_repeats(&mut self) {
-        let uu_compat = !self.is_native();
-        for vk in self.pressed_vks.modifier_repeats(std::time::Instant::now(), uu_compat) {
+        let refresh=self.controller.as_ref().is_some_and(|h|h.stats.refresh_modifiers.load(std::sync::atomic::Ordering::Acquire));
+        for vk in self.pressed_vks.modifier_repeats(std::time::Instant::now(), refresh) {
             self.send_key_repeat(vk);
         }
     }
@@ -1151,12 +781,8 @@ impl App {
                 "line":caller.line(),"fullscreen":self.fullscreen,"focused":self.focused
             }));}
         }
-        let payload = serde_json::json!({
-            "action": if pressed { "kbd_press" } else { "kbd_release" },
-            "interrept": "i", "key": vk, "kseq": self.kseq
-        });
-        self.kseq = self.kseq.wrapping_add(1);
-        self.send_input_ch(payload, 8, 0);
+        self.kseq=self.kseq.wrapping_add(1);
+        if let Some(usage)=native_keys::hid_for_vk(vk){self.send_native(uu_core::native_input::InputCommand::Key{usage,pressed});}
     }
 
     fn sync_modifiers(&mut self, modifiers: egui::Modifiers) {
@@ -1175,28 +801,8 @@ impl App {
 
     #[track_caller]
     fn release_all_keys(&mut self) {
-        // A view-only window that never forwarded a key must not send blanket
-        // modifier releases to the host when it gains/loses local focus.
-        if self.view_only && self.pressed_vks.is_empty() && self.mod_state.iter().all(|down| !down) {
-            return;
-        }
-        if self.is_native() {
-            if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()){sender.release_all();}
-            self.pressed_vks.clear();self.mod_state=[false;4];return;
-        }
-        let keys=self.pressed_vks.held();
-        if !keys.is_empty() {
-            let caller=std::panic::Location::caller();
-            if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
-                "event":"input_release_all", "held_count":keys.len(),
-                "win_held":keys.iter().any(|vk|matches!(*vk,0x5b|0x5c)),
-                "alt_held":keys.iter().any(|vk|matches!(*vk,0x12|0xa4|0xa5)),
-                "source":std::path::Path::new(caller.file()).file_name().and_then(|name|name.to_str()),
-                "line":caller.line(),"fullscreen":self.fullscreen,"focused":self.focused
-            }));}
-        }
-        for vk in keys {self.send_key(vk,false);}
-        self.mod_state = [false; 4];
+        if let Some(sender)=self.controller.as_ref().and_then(|h|h.native_input.as_ref()){sender.release_all();}
+        self.pressed_vks.clear();self.mod_state=[false;4];
     }
 
     /// A transport/routing reset releases held input without cancelling the
@@ -1210,7 +816,7 @@ impl App {
         let releases=self.pointer.release_all(screen);
         // Native release_all is out of band and invalidates queued commands.
         // Do not enqueue more releases into the queue that just failed.
-        if !self.is_native() {for release in releases {self.send_input(release,15);}}
+        let _=releases;
     }
 
     fn deactivate_session(&mut self) {
@@ -1282,103 +888,28 @@ impl App {
         self.status = if self.disconnecting { uu_i18n::text("正在释放连接…") } else { uu_i18n::text("已断开") }.into();
     }
 
-    fn open_stream_window(&mut self) {
-        let Some(device) = self.selected.and_then(|i| self.devices.get(i)) else { return };
-        let target = sessions::StreamTarget {
-            connection: sessions::ConnectionTarget::UuDevice(device.device_id.clone()), alias: device.alias.clone(), view_only: self.view_only,
-        };
-        let result = std::env::current_exe().and_then(|exe| self.sessions.open(&exe, &target, self.platform.origin()));
-        if result.is_ok() {
-            if let sessions::ConnectionTarget::UuDevice(id) = &target.connection { self.device_library.record_opened(id); }
-        }
-        self.status = match result {
-            Ok(true) => uu_i18n::format!("已打开 {} 的串流窗口，可继续选择其他设备", target.alias),
-            Ok(false) => uu_i18n::format!("{} 的串流窗口已打开", target.alias),
-            Err(error) => uu_i18n::format!("无法打开串流窗口：{error}"),
-        };
-    }
 
     fn connect(&mut self) {
         self.recorded_connection=false;
-        if self.stream_target.is_none() {
-            self.open_stream_window();
-            return;
-        }
-        if self.controller.is_some() { return; }
-        if let Some(sessions::ConnectionTarget::NativeProfile{snapshot,..})=self.stream_target.as_ref().map(|target|target.connection.clone()) {
-            self.connect_native_profile(snapshot);return;
-        }
-        if let Some(sessions::ConnectionTarget::NativeInvitation(path))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
-            self.connect_native(path);return;
-        }
-        if let Some(sessions::ConnectionTarget::NativeInternet(path))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
-            self.connect_native_internet(path);return;
-        }
-        if let Some(sessions::ConnectionTarget::NativeDevice(id))=self.stream_target.as_ref().map(|target|target.connection.clone()) {
-            self.connect_native_device(id);return;
-        }
-        if matches!(self.preferences.codec,settings::CodecPreference::Av1|settings::CodecPreference::Pyrowave) {
-            self.status=uu_i18n::text("AV1 / PyroWave 仅适用于原生连接；UU 兼容连接请选择自动、H.264 或 HEVC").into();
-            return;
-        }
-        if uu_compat::control_wire::CaptureFrameRate::new(self.target_fps).is_none() {self.status=uu_i18n::text("UU 兼容协议支持 5–144 FPS，请调整客户端帧率").into();return;}
-        self.displays=displays::Displays::default();self.selected_track=0;
-        let Some(i) = self.selected else { return };
-        let Some(config) = self.config.clone() else {
-            self.status = uu_i18n::text("配置不可用").into();
-            return;
-        };
-        let device = self.devices[i].device_id.clone();
-        self.displays.layout_path = display_layout::DisplayLayout::path(&config, &device);
-        if let Some(path) = &self.displays.layout_path {
-            match display_layout::DisplayLayout::load(path) {
-                Ok(layout) => self.displays.layout = layout,
-                Err(error) => self.set_settings_notice(uu_i18n::format!("显示器排序读取失败：{error}")),
-            }
-        }
-        let geo = uu_compat::config::geo_exit_ip();
-        let stats=std::sync::Arc::new(uu_core::media::MediaStats::default());
-        let _=stats.decoder_preference.set(self.decoder_kind());
-        stats.diagnostics.start([config.state_dir.join("diagnostics")]);
-        let _ = stats.output_resolution.set(self.capture_resolution());
-        stats.prefer_hevc.store(self.preferences.hevc_preferred(), std::sync::atomic::Ordering::Release);
-        stats.diagnostics.record(serde_json::json!({"event":"client","build":self.build_label,"display_mode":self.preferences.display_mode,"fps":self.target_fps}));
-        stats.display_mode.store((self.preferences.display_mode==uu_core::screen_control::DisplayMode::ExclusiveVirtual) as u32,std::sync::atomic::Ordering::Release);
-        stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
-        stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
-        stats.clipboard.available.store(cfg!(any(windows, target_os = "linux")),std::sync::atomic::Ordering::Release);
-        stats.clipboard.enabled.store(self.preferences.clipboard && cfg!(any(windows, target_os = "linux")),std::sync::atomic::Ordering::Release);
-        let target=match &self.stream_target {
-            Some(target) if matches!(target.connection,sessions::ConnectionTarget::UuAssistance(_))=>{
-                let Some(request)=self.assistance.clone() else {self.status=uu_i18n::text("远程协助验证码不可用，请从主页重新发起").into();return;};
-                uu_compat::controller::Target::Assistance(request)
-            },
-            _=>uu_compat::controller::Target::Device(device),
-        };
-        match uu_compat::controller::spawn_target(config, target, geo,stats) {
-            Ok(h) => {
-                let context = self.context.clone();
-                h.frames.enable_planar();
-                h.frames.set_waker(move || context.request_video_frame());
-                h.stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Relaxed);
-                h.stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Relaxed);
-                if let Err(error)=clipboard::start_following(h.stats.clipboard.clone(),self.clipboard_window.clone()) {
-                    h.stats.clipboard.status(uu_i18n::format!("剪贴板线程启动失败：{error}"));h.stats.clipboard.enabled.store(false,std::sync::atomic::Ordering::Release);h.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);
+        if self.controller.is_some(){return;}
+        let Some(target)=self.stream_target.as_ref().map(|t|t.connection.clone()) else{return;};
+        match target {
+            sessions::ConnectionTarget::NativeProfile{snapshot,..}=>self.connect_native_profile(snapshot),
+            sessions::ConnectionTarget::NativeInvitation(path)=>self.connect_native(path),
+            sessions::ConnectionTarget::NativeInternet(path)=>self.connect_native_internet(path),
+            sessions::ConnectionTarget::NativeDevice(id)=>self.connect_native_device(id),
+            sessions::ConnectionTarget::Plugin{plugin,..}=> {
+                if let Some(error)=&self.plugin_client_error {self.status=error.clone();return;}
+                let Some(payload)=self.plugin_payload.clone() else{self.status="plugin launch payload missing".into();return;};
+                self.displays=Default::default();self.selected_track=0;
+                let stats=self.client_stats(&plugin);
+                match self.plugins.connect(&plugin,payload,self.preferences.client.clone(),stats) {
+                    Ok(handle)=>self.attach_controller(handle),Err(error)=>self.status=error.to_string(),
                 }
-                self.controller = Some(h);
-                self.window_sizing.borrow_mut().begin_stream();
-                if self.active_session && !self.fullscreen {
-                    self.context.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
-                }
-                self.input_capture.request();
-                self.context.send_viewport_cmd(egui::ViewportCommand::Focus);
-                if self.active_session {self.platform.focus_window();}
-                self.status = uu_i18n::text("连接中…").into();
-                // Apply UI settings once CONTROL is ready, in poll_controller.
             }
-            Err(e) => self.status = uu_i18n::format!("连接失败: {e}"),
         }
     }
+
 }
 
 impl eframe::App for App {
@@ -1428,7 +959,7 @@ impl App {
         self.native_host.poll(ctx);
         self.lan.set_discovery(self.preferences.lan_discovery);
         self.lan.configure_ports(self.workspace.book.sharing.service_port, self.workspace.book.sharing.discovery_port);
-        let lan_active=self.stream_target.is_none()&&!self.compatibility_active();
+        let lan_active=self.stream_target.is_none();
         self.lan.poll(ctx,lan_active);
         if let Some(seconds) = cpu_usage {
             self.render_total_seconds += seconds;
@@ -1459,8 +990,7 @@ impl App {
         }
         self.sessions.reap();
         self.poll_application_settings();
-        self.poll_account();
-        self.poll(ctx);
+        self.plugins.poll();
         // A hidden/minimized viewport can buffer both focus loss and recovery
         // before its next UI pass. Preserve that boundary even if focused=true.
         if ctx.input(|i|i.events.iter().any(|event|matches!(event,egui::Event::WindowFocused(false)))){self.pause_video_observation();}
@@ -1476,10 +1006,10 @@ impl App {
         #[cfg(windows)]
         {
             let gpu_video=self.textures.get(&self.selected_track).is_some_and(|t|t.native_gpu_source());
-            if self.is_native()&&gpu_video&&std::env::var("UU_D3D11_NATIVE_VIDEO").as_deref()!=Ok("0") {
+            if self.uses_engine_controls()&&gpu_video&&std::env::var("UU_D3D11_NATIVE_VIDEO").as_deref()!=Ok("0") {
                 if let Some(gl)=self.video_gl.clone(){if !eframe::glow_presentation::native_video_available(ctx,ctx.viewport_id()){if let Err(e)=video_hdr::enable_native(ctx,gl,self.preferences.vsync){eprintln!("native video presentation unavailable: {e}");}}}
             }
-            let hdr=self.is_native() && self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_response.lock().unwrap().is_some());
+            let hdr=self.uses_engine_controls() && self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_response.lock().unwrap().is_some());
             if hdr && eframe::glow_presentation::available_color_for(ctx,ctx.viewport_id()).is_none() {
                 if let Some(gl)=self.video_gl.clone(){let _=video_hdr::enable(ctx,gl,self.preferences.vsync);}
             }
@@ -1502,25 +1032,7 @@ impl App {
         if self.workspace_tabs.is_none() && self.exit_requested && self.controller.is_none() && !self.native_host.running() && !self.lan.host.running() && !self.workspace.host.running() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        self.poll_login(ctx);
         self.autostart_shared_host(ctx);
-        if let Some(current) = self.uu_devices.show(ctx, self.config.as_ref(), self.account_token.as_deref()) {
-            if current {
-                self.login_rx = None;
-                let result = self.config.as_ref().ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定登录目录")))
-                    .and_then(|config| account::sign_out_matching(&config.at("state.json"), self.account_token.as_deref()));
-                match result {
-                    Ok(true) => self.apply_account(None),
-                    Ok(false) => self.retry_account_read(),
-                    Err(error) => self.status = uu_i18n::format!("设备已解绑，退出本地账号失败：{error}"),
-                }
-            }
-            else {
-                self.rx = None;
-                self.devices.clear();
-                self.start_load();
-            }
-        }
         let (events, focused) = ctx.input(|i| (i.events.clone(), i.focused));
         if self.focused != focused {
             if let Some(h) = &self.controller {
@@ -1585,7 +1097,7 @@ impl App {
                 // keys from another input source or a hook that timed out.
                 if !self.native_window_keyboard && self.remote_input_active(ctx) {
                     self.sync_modifiers(*modifiers);
-                    if self.is_native() {
+                    if self.uses_engine_controls() {
                         if let Some(usage)=native_keys::hid_for_egui(physical_key.unwrap_or(*key)){
                             self.send_native(uu_core::native_input::InputCommand::Key{usage,pressed:*pressed});
                         }
@@ -1718,9 +1230,7 @@ impl App {
         for event in self.platform.focus_events() {
             if let Some(h) = &self.controller { h.stats.diagnostics.record(event); }
         }
-        let idle_poll_ms = if self.controller.is_some() || self.close_at.is_some() { 100 }
-            else if self.rx.is_some() || self.login_rx.is_some() { 150 }
-            else if self.compatibility_active() { 500 } else { 1000 };
+        let idle_poll_ms = if self.controller.is_some() || self.close_at.is_some() { 100 } else { 750 };
         // Frame and input events wake the UI directly. Extra vblank-paced
         // redraws regressed WGL ownership waits on the production client.
         ctx.request_repaint_after(std::time::Duration::from_millis(idle_poll_ms));
@@ -1728,7 +1238,6 @@ impl App {
 }
 
 fn main() -> eframe::Result {
-    if let Err(error) = uu_compat::register() { panic!("cannot register connection plugin: {error}"); }
     uu_core::install_crypto_provider();
     if let Some(settings)=settings::Settings::path().and_then(|p|settings::Settings::load(&p).ok()) {uu_i18n::set_language(settings.language);}
     #[cfg(windows)]
@@ -1737,16 +1246,15 @@ fn main() -> eframe::Result {
         Ok(target) => target,
         Err(error) => { eprintln!("{error}"); return Ok(()); }
     };
-    let assistance=if let Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::UuAssistance(id),..})=&stream_target {
-        let request=uu_compat::assistance::Request::read(id,std::io::stdin().lock());
-        match request {Ok(request)=>Some(request),Err(error)=>{eprintln!("{error}");return Ok(());}}
+    let plugin_payload=if matches!(stream_target.as_ref().map(|t|&t.connection),Some(sessions::ConnectionTarget::Plugin{..})) {
+        match sessions::read_plugin_payload(std::io::stdin().lock()) {Ok(value)=>Some(value),Err(error)=>{eprintln!("{error}");return Ok(());}}
     }else{None};
     let stream_workspace=if let Some(target)=stream_target.clone() {
         let result=(||->anyhow::Result<_> {
-            let launch=stream_workspace::Launch::new(target,assistance.as_ref())?;
+            let launch=stream_workspace::Launch::new(target,plugin_payload.as_ref().map(|s|s.as_str()))?;
             let config=uu_core::Config::from_env()?;
             let bytes=zeroize::Zeroizing::new(serde_json::to_vec(&launch)?);
-            Ok((launch,uu_core::local_workspace::join(&config.at("stream-workspace-v1"),&bytes)?))
+            Ok((launch,uu_core::local_workspace::join(&config.at("stream-workspace-v2"),&bytes)?))
         })();
         match result {
             Ok((_,uu_core::local_workspace::Join::Attached))=>return Ok(()),
@@ -1793,7 +1301,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             if let Some((launch,owner))=stream_workspace {Ok(Box::new(stream_workspace::Workspace::new(cc,launch,owner,vsync,origin)))}
-            else {Ok(Box::new(App::new(cc,stream_target,origin,vsync,assistance)))}
+            else {Ok(Box::new(App::new(cc,stream_target,origin,vsync,plugin_payload)))}
         }),
     );
     #[cfg(windows)]

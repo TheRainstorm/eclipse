@@ -18,7 +18,7 @@ pub(super) enum Page {
     #[default]
     Devices,
     Services,
-    Compatibility,
+    Plugin,
     Settings,
 }
 
@@ -29,16 +29,10 @@ pub(super) enum DeviceView {
     Details(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(super) enum CompatibilityView {
-    #[default]
-    Devices,
-    Assistance,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum SettingsView {
     Software(super::settings_page::SoftwareSection),
+    Plugins,
     About,
 }
 impl Default for SettingsView {
@@ -49,40 +43,21 @@ impl Default for SettingsView {
 pub(super) struct HomeRoute {
     pub page: Page,
     pub device: DeviceView,
-    pub compatibility: CompatibilityView,
+    pub plugin: Option<(String,String)>,
     pub settings: SettingsView,
     pub settings_return: Page,
 }
 pub(super) enum Action {
     Open(String),
-    Login,
-    Logout,
-    RenameUu,
-    ManageUu,
-    RefreshUuDevices,
     RefreshWallpaper,
-    CancelLogin,
     StartSharing,
     RestartSharing,
     SaveClientDefaults(uu_core::client_settings::ClientSettings),
-    Assist(uu_compat::assistance::Request),
-}
-#[derive(Clone, Debug)]
-pub(super) enum UuDeviceList {
-    SignedOut,
-    Loading,
-    Loaded(Vec<(String, String)>),
-    Failed(String),
 }
 pub(super) struct Info {
     pub wallpaper_enabled:bool,
-    pub logged_in: bool,
-    pub uu_id: Option<String>,
-    pub qr: Option<egui::TextureId>,
-    pub login_status: String,
-    pub login_busy: bool,
-    pub nearby: Vec<(String, String)>,
-    pub uu_devices: UuDeviceList,
+    pub nearby:Vec<(String,String)>,
+    pub providers:Vec<uu_core::plugins::Descriptor>,
 }
 #[derive(Clone)]
 struct DeviceEditor {
@@ -91,6 +66,7 @@ struct DeviceEditor {
     route: Option<String>,
     name: String,
     kind: u8,
+    provider:String,
     address: String,
     device: String,
     service: String,
@@ -115,8 +91,7 @@ struct ServiceEditor {
 struct PreviewSlot {revision:String,texture:Option<egui::TextureHandle>,loaded:bool}
 struct PreviewJob {device:String,revision:String,rx:std::sync::mpsc::Receiver<Result<super::wallpapers::Thumbnail,String>>}
 pub(super) struct Workspace {
-    official_config:Option<uu_core::Config>,
-    official:Result<uu_compat::official::Settings,String>,
+    providers:Vec<uu_core::plugins::Descriptor>,
     #[cfg(windows)]
     background_service:super::service_ui::Entry,
     pub route: HomeRoute,
@@ -136,12 +111,7 @@ pub(super) struct Workspace {
     client_editor: Option<ClientEditor>,
     pub client_defaults: uu_core::client_settings::ClientSettings,
     dark_background:bool,
-    assist_text: String,
-    assist_id: String,
-    assist_code: String,
-    assist_error: String,
     last_read: Instant,
-    pub resume_connect: Option<String>,
     pub pairing_visible: bool,
     pairing_settings:super::pairing_ui::HostUi,
     autostart_checked: bool,
@@ -159,8 +129,8 @@ mod tests {
         root: PathBuf,
         time: f64,
         texts: Vec<(String, egui::Pos2)>,
-        logged_in: bool,
-        uu_devices: UuDeviceList,
+
+
     }
     impl Harness {
         fn new() -> Self {
@@ -181,22 +151,15 @@ mod tests {
                 root,
                 time: 0.,
                 texts: Vec::new(),
-                logged_in: false,
-                uu_devices: UuDeviceList::Loaded(Vec::new()),
+
+
             }
         }
         fn frame(&mut self, events: Vec<egui::Event>) -> Vec<Action> {
             self.time += 0.02;
             let mut actions = Vec::new();
             let info = Info {
-                wallpaper_enabled:true,
-                logged_in: self.logged_in,
-                uu_id: None,
-                qr: None,
-                login_status: String::new(),
-                login_busy: false,
-                nearby: Vec::new(),
-                uu_devices: if self.logged_in { self.uu_devices.clone() } else { UuDeviceList::SignedOut },
+                wallpaper_enabled:true,nearby:Vec::new(),providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Example connection",version:"1"}],
             };
             let output = self.ctx.run(
                 egui::RawInput {
@@ -272,85 +235,9 @@ mod tests {
         }
         assert!(matches!(&h.click("刷新壁纸")[..],[Action::RefreshWallpaper]));
     }
-    #[test]
-    fn uu_name_is_automatic_and_does_not_change_native_host_preferences() {
-        let mut h = Harness::new();
-        h.workspace.route.page = Page::Services;
-        h.workspace.draft.name = "My native host".into();
-        let name = h.workspace.prepare_device_name().unwrap();
-        assert_eq!(name, uu_compat::config::uu_device_name());
-        assert!(name.ends_with("-Eclipse"));
-        assert!(matches!(&h.click("登录 UU 账号")[..], [Action::Login]));
-        h.logged_in = true;
-        assert!(matches!(&h.click(uu_i18n::text("更新注册信息"))[..], [Action::RenameUu]));
-        assert!(matches!(&h.click("管理 UU 设备")[..], [Action::ManageUu]));
-        assert_eq!(h.workspace.draft.name, "My native host");
-    }
 
-    #[test]
-    fn uu_service_shows_login_status_and_logout_even_when_the_entry_is_disabled() {
-        let mut h = Harness::new();
-        h.workspace.route.page = Page::Services;
-        assert!(!h.workspace.book.sharing.uu_enabled);
-        assert!(matches!(&h.click("登录 UU 账号")[..], [Action::Login]));
-        assert!(h.texts.iter().any(|(s, _)| s == "账号状态：未登录"));
-        assert!(!h.texts.iter().any(|(s, _)| s == "登出 UU 账号"));
-        let before = serde_json::to_value(&h.workspace.book).unwrap();
-        h.logged_in = true;
-        assert!(matches!(&h.click("登出 UU 账号")[..], [Action::Logout]));
-        assert!(h.texts.iter().any(|(s, _)| s == "账号状态：已登录"));
-        assert!(!h.texts.iter().any(|(s, _)| s == "登录 UU 账号"));
-        assert_eq!(serde_json::to_value(&h.workspace.book).unwrap(), before);
-        h.logged_in = false;
-        h.frame(Vec::new());
-        assert!(h.texts.iter().any(|(s, _)| s == "账号状态：未登录"));
-    }
 
-    #[test]
-    fn uu_picker_on_device_home_tracks_loading_errors_empty_and_signed_out() {
-        let mut h = Harness::new();
-        h.logged_in = true;
-        h.uu_devices = UuDeviceList::Loading;
-        h.workspace.new_device(None, None);
-        h.click("UU 账号");
-        assert_eq!(h.workspace.route.page, Page::Devices);
-        assert!(h.texts.iter().any(|(s, _)| s == "正在加载 UU 设备列表…"));
-        assert!(!h.texts.iter().any(|(s, _)| s.contains("尚未登录")));
 
-        h.uu_devices = UuDeviceList::Failed("网络暂不可用".into());
-        assert!(matches!(&h.click("重试加载 UU 设备")[..], [Action::RefreshUuDevices]));
-        assert!(h.texts.iter().any(|(s, _)| s.contains("网络暂不可用")));
-        assert!(!h.texts.iter().any(|(s, _)| s.contains("尚未登录")));
-
-        h.uu_devices = UuDeviceList::Loaded(Vec::new());
-        assert!(matches!(&h.click("刷新 UU 设备")[..], [Action::RefreshUuDevices]));
-        assert!(h.texts.iter().any(|(s, _)| s == "此账号暂无可选 UU 设备。"));
-        assert!(!h.texts.iter().any(|(s, _)| s.contains("尚未登录")));
-
-        h.logged_in = false;
-        for _ in 0..3 { h.frame(Vec::new()); }
-        assert!(h.texts.iter().any(|(s, _)| s.contains("尚未登录")));
-        assert!(!h.texts.iter().any(|(s, _)| s == "刷新 UU 设备"));
-    }
-
-    #[test]
-    fn uu_picker_selects_account_device_without_visiting_compatibility_page() {
-        let mut h = Harness::new();
-        h.logged_in = true;
-        h.uu_devices = UuDeviceList::Loaded(vec![("generated-uu-device".into(), "Generated laptop".into())]);
-        h.workspace.new_device(None, None);
-        h.click("UU 账号");
-        h.click("请选择设备");
-        h.click("Generated laptop · generated-uu-device");
-        let editor = h.workspace.editor.as_ref().unwrap();
-        assert_eq!(editor.device, "generated-uu-device");
-        assert_eq!(editor.name, "Generated laptop");
-        h.click("仅保存");
-        let device = &h.workspace.book.devices[0];
-        assert_eq!(device.name, "Generated laptop");
-        assert!(matches!(&device.routes[0].destination, Destination::Uu { device } if device == "generated-uu-device"));
-        assert_eq!(h.workspace.route.page, Page::Devices);
-    }
 
     #[test]
     fn pairing_tab_owns_identity_and_authorization_controls() {
@@ -493,12 +380,12 @@ mod tests {
     fn media_draft_does_not_restore_old_connection_ports_or_enable_flags() {
         let mut h=Harness::new();
         h.workspace.draft.audio=false;
-        h.workspace.update_connections(|s|{s.ip_enabled=false;s.uu_enabled=true;s.service_port=51001;s.discovery_port=51002;});
+        h.workspace.update_connections(|s|{s.ip_enabled=false;s.plugin_services=vec!["example-addon".into()];s.service_port=51001;s.discovery_port=51002;});
         assert!(h.workspace.save_sharing());
         assert!(!h.workspace.server_dirty());
         let book=h.workspace.store.as_ref().unwrap().read().unwrap();
         assert!(!book.sharing.audio);
-        assert!(!book.sharing.ip_enabled && book.sharing.uu_enabled);
+        assert!(!book.sharing.ip_enabled && book.sharing.plugin_services==vec!["example-addon".to_owned()]);
         assert_eq!((book.sharing.service_port,book.sharing.discovery_port),(51001,51002));
     }
     #[test]
@@ -533,29 +420,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn assistance_import_uses_its_own_invitation_and_never_creates_a_device_grant() {
-        let mut h = Harness::new();
-        h.workspace.route.page = Page::Compatibility; h.workspace.route.compatibility = CompatibilityView::Assistance;
-        h.workspace.assist_text = "设备ID：123456789\n设备验证码：TEST79".into();
-        h.click("识别分享文本");
-        assert_eq!(h.workspace.assist_id, "123456789");
-        assert!(h.workspace.assist_text.is_empty());
-        let actions = h.click("发起远程协助");
-        assert!(
-            matches!(&actions[..],[Action::Assist(request)] if request.id=="123456789" && request.code()=="TEST79")
-        );
-        assert!(h.workspace.book.devices.is_empty());
-        assert!(h
-            .workspace
-            .trust
-            .as_ref()
-            .unwrap()
-            .peers()
-            .unwrap()
-            .is_empty());
-        assert!(!h.texts.iter().any(|(s, _)| s.contains("TEST79")));
-    }
 }
 fn muted(ui:&mut egui::Ui,text:impl Into<String>)->egui::Response {
     ui.label(RichText::new(text).size(12.).color(theme::MUTED))
@@ -674,13 +538,13 @@ impl Workspace {
                         }
                     }
                     if let Some(settings) = &internet {
-                        match settings.provider {
-                            uu_core::internet::Provider::Uu => {
-                                book.sharing.uu_enabled = true;
+                        match &settings.provider {
+                            uu_core::internet::Provider::Plugin(id) => {
+                                if !book.sharing.plugin_services.contains(id){book.sharing.plugin_services.push(id.clone());}
                                 if !settings.device.is_empty() {
                                     book.devices.push(Profile::new(
                                         uu_i18n::text("UU 设备"),
-                                        Destination::Uu {
+                                        Destination::Plugin {plugin:id.clone(),
                                             device: settings.device.clone(),
                                         },
                                     ));
@@ -736,8 +600,7 @@ impl Workspace {
             feedback.error(super::ui_feedback::Scope::Devices, notice);
         }
         Self {
-            official_config:config.cloned(),
-            official:config.map(|c|uu_compat::official::Settings::load(c).map_err(|e|e.to_string())).unwrap_or_else(||Err(uu_i18n::text("无法确定设备配置目录").into())),
+            providers:Vec::new(),
             route: HomeRoute {
                 page: if std::env::var_os("ECLIPSE_SHOW_SHARING").is_some() {
                     Page::Services
@@ -764,12 +627,7 @@ impl Workspace {
             client_editor: None,
             client_defaults:Default::default(),
             dark_background:false,
-            assist_text: String::new(),
-            assist_id: String::new(),
-            assist_code: String::new(),
-            assist_error: String::new(),
             last_read: Instant::now(),
-            resume_connect: None,
             pairing_visible: false,
             pairing_settings:Default::default(),
             autostart_checked: false,
@@ -847,9 +705,7 @@ impl Workspace {
             }
         }
     }
-    pub fn prepare_device_name(&self) -> anyhow::Result<String> {
-        Ok(uu_compat::config::uu_device_name())
-    }
+    pub(super) fn reload(&mut self){self.refresh();self.presence.refresh();}
     fn update_connections(&mut self, edit: impl FnOnce(&mut Sharing)) {
         let result = self.store.as_ref().ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))
             .and_then(|store| store.edit(|book| { edit(&mut book.sharing); Ok(()) }));
@@ -877,7 +733,7 @@ impl Workspace {
             .and_then(|s| s.edit(|book| {
                 let mut media = self.draft.clone();
                 media.ip_enabled = book.sharing.ip_enabled;
-                media.uu_enabled = book.sharing.uu_enabled;
+                media.plugin_services = book.sharing.plugin_services.clone();
                 media.service_port = book.sharing.service_port;
                 media.discovery_port = book.sharing.discovery_port;
                 book.sharing = media;
@@ -905,6 +761,7 @@ impl Workspace {
             route,
             name: String::new(),
             kind: 0,
+            provider:self.providers.first().map(|p|p.id.to_owned()).unwrap_or_default(),
             address: String::new(),
             device: String::new(),
             service: self
@@ -921,8 +778,8 @@ impl Workspace {
                     if let Some(route) = profile.routes.iter().find(|r| &r.id == id) {
                         match &route.destination {
                             Destination::Ip { address, .. } => editor.address = address.clone(),
-                            Destination::Uu { device } => {
-                                editor.kind = 1;
+                            Destination::Plugin { plugin,device } => {
+                                editor.kind = 1;editor.provider=plugin.clone();
                                 editor.device = device.clone();
                             }
                             Destination::Vps { service, device } => {
@@ -930,7 +787,7 @@ impl Workspace {
                                 editor.service = service.clone();
                                 editor.device = device.clone();
                             }
-                            Destination::LegacyInternet { .. } => {}
+                            Destination::LegacyInternet { .. } | Destination::Unavailable(_) => {editor.kind=3;}
                         }
                     }
                 }
@@ -944,13 +801,15 @@ impl Workspace {
                 address: uu_core::native_discovery::endpoint(&editor.address)?,
                 legacy_device: None,
             },
-            1 => Destination::Uu {
+            1 => Destination::Plugin {
+                plugin:editor.provider,
                 device: editor.device.trim().into(),
             },
-            _ => Destination::Vps {
+            2 => Destination::Vps {
                 service: editor.service,
                 device: editor.device.trim().into(),
             },
+            _=>anyhow::bail!("此连接方式需要安装所属插件后编辑"),
         };
         let store = self
             .store
@@ -1013,18 +872,12 @@ impl Workspace {
         Ok(id)
     }
     pub fn show(&mut self, ui: &mut egui::Ui, info: &Info) -> Vec<Action> {
+        self.providers=info.providers.clone();
         let mut actions = Vec::new();
         match self.route.page {
             Page::Devices => self.devices(ui, info, &mut actions),
             Page::Services => self.service_workspace(ui, info, &mut actions),
-            Page::Compatibility => {
-                if self.route.compatibility == CompatibilityView::Assistance {
-                    ui.heading(uu_i18n::text("远程协助"));
-                    muted(ui, uu_i18n::text("通过临时邀请帮助另一台设备"));
-                    ui.add_space(18.);
-                    self.assistance(ui, &mut actions);
-                }
-            }
+            Page::Plugin => {},
             Page::Settings => {}
         }
         actions
@@ -1552,7 +1405,7 @@ impl Workspace {
             ui.add_space(10.);
             let monitors:Vec<_>=self.monitors.iter().map(|m|(m.name.clone(),format!("{} · {}×{}",m.name,m.width,m.height))).collect();
             if self.host_section==0 {super::server_config_ui::capture(ui,&mut self.draft,&monitors,uu_core::native::uses_desktop_portal());}
-            else {super::server_config_ui::edit(ui,&mut self.draft,self.host_section,&monitors,uu_core::native::uses_desktop_portal(),!info.login_busy);}
+            else {super::server_config_ui::edit(ui,&mut self.draft,self.host_section,&monitors,uu_core::native::uses_desktop_portal(),true);}
             if !self.monitor_error.is_empty(){ui.colored_label(theme::DANGER,&self.monitor_error);}
             if running {
                 muted(ui,uu_i18n::text("运行期间可编辑并保存；下次启动生效，或保存后重启服务。重启会断开当前串流。"));
@@ -1677,97 +1530,16 @@ impl Workspace {
                 muted(ui,uu_i18n::text("手动输入可达地址支持跨网段；自动发现通常不跨路由。"));
             });
         });
-        card(ui, |ui| {
-            if !uu_compat::available() {
-                ui.strong(uu_i18n::text("UU 兼容插件"));
-                muted(ui,uu_i18n::text("插件未安装或已禁用；IP 直连与自建连接服务可继续使用。"));
-                return;
-            }
-            ui.horizontal(|ui| {
-                ui.strong(uu_i18n::text("UU 账号连接服务"));
-                let mut enabled=self.book.sharing.uu_enabled;
-                if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,uu_i18n::text("启用"))).changed(){self.update_connections(|s|s.uu_enabled=enabled);}
-            });
-            self.endpoint_state(ui,uu_i18n::text("UU 账号"));
-            ui.add_space(8.);
-            ui.horizontal(|ui| {
-                ui.label(uu_i18n::text("UU 本机名称"));
-                ui.monospace(uu_compat::config::uu_device_name());
-                if info.logged_in && ui.add_enabled(!info.login_busy, egui::Button::new(uu_i18n::text("更新注册信息"))).clicked() {
-                    actions.push(Action::RenameUu);
-                }
-            });
-            muted(ui,uu_i18n::text("自动使用电脑名加 -Eclipse，便于与官方客户端区分；原生共享名称独立设置。"));
-            if info.logged_in {
-                ui.label(RichText::new(uu_i18n::text("账号状态：已登录")).color(theme::SUCCESS));
+        for provider in &info.providers {
+            card(ui,|ui| {
                 ui.horizontal(|ui| {
-                    if ui.button(uu_i18n::text("登出 UU 账号")).clicked() { actions.push(Action::Logout); }
-                    if ui.button(uu_i18n::text("管理 UU 设备")).clicked() { actions.push(Action::ManageUu); }
+                    ui.strong(provider.name);
+                    let mut enabled=self.book.sharing.plugin_services.iter().any(|id|id==provider.id);
+                    if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,uu_i18n::text("启用"))).changed(){self.update_connections(|sharing|{sharing.plugin_services.retain(|id|id!=provider.id);if enabled{sharing.plugin_services.push(provider.id.into());}});}
                 });
-                if self.host.uses_uu_account() {
-                    muted(ui, uu_i18n::text("登出会停止当前使用 UU 入口的本机共享服务。"));
-                }
-                if let Some(id) = &info.uu_id {
-                    ui.horizontal(|ui| {
-                        ui.label(uu_i18n::format!("本机 UU 编号：{id}"));
-                        if ui.small_button(uu_i18n::text("复制")).clicked() {
-                            ui.ctx().copy_text(id.clone());
-                        }
-                    });
-                }
-            } else {
-                ui.label(uu_i18n::text("账号状态：未登录"));
-                ui.label(uu_i18n::text("登录后可通过 UU 寻址原生设备。"));
-                if let Some(qr) = info.qr {
-                    ui.image((qr, egui::vec2(180., 180.)));
-                }
-                if primary(
-                    ui,
-                    if info.qr.is_some() {
-                        uu_i18n::text("刷新登录二维码")
-                    } else {
-                        uu_i18n::text("登录 UU 账号")
-                    },
-                )
-                .clicked()
-                {
-                    actions.push(Action::Login);
-                }
-                if info.login_busy && ui.button(uu_i18n::text("取消登录")).clicked() {
-                    actions.push(Action::CancelLogin);
-                }
-            }
-            if info.login_busy { ui.spinner(); }
-            if !info.login_status.is_empty() { ui.label(&info.login_status); }
-            ui.collapsing(uu_i18n::text("官方 UU 客户端连接本机（实验性）"),|ui| {
-                let Ok(settings)=&mut self.official else {
-                    if let Err(error)=&self.official {ui.colored_label(theme::DANGER,error);}
-                    return;
-                };
-                ui.checkbox(&mut settings.enabled,uu_i18n::text("允许官方 UU 客户端连接本机"));
-                muted(ui,uu_i18n::text("默认关闭。使用 UU 账号允许的连接，不授予 Eclipse 设备管理权限。"));
-                ui.add_enabled_ui(settings.enabled,|ui| {
-                    ui.checkbox(&mut settings.control,uu_i18n::text("键盘和鼠标"));
-                    ui.checkbox(&mut settings.audio,uu_i18n::text("共享系统声音"));
-                    ui.checkbox(&mut settings.clipboard,uu_i18n::text("文本剪贴板"));
-                });
-                muted(ui,uu_i18n::text("仍受本机服务的输入、声音和剪贴板许可限制。保存后重启服务生效。"));
-                let mut save=false;let mut restart=false;
-                ui.horizontal(|ui| {
-                    save=ui.button(uu_i18n::text("保存兼容设置")).clicked();
-                    if self.host.running(){restart=ui.button(uu_i18n::text("保存并重启服务")).clicked();}
-                });
-                if save||restart {
-                    let result=self.official_config.as_ref().ok_or_else(||anyhow::anyhow!("configuration unavailable")).and_then(|config|settings.save(config));
-                    match result {
-                        Ok(())=>{self.feedback.success(super::ui_feedback::Scope::Services(0),uu_i18n::text("兼容设置已保存，重启服务后生效"));if restart {actions.push(Action::RestartSharing);}},
-                        Err(error)=>self.feedback.error(super::ui_feedback::Scope::Services(0),error.to_string()),
-                    }
-                }
+                self.endpoint_state(ui,provider.name);
             });
-            ui.add_space(8.);
-            muted(ui,uu_i18n::text("启动服务后发布已启用入口。Eclipse 原生连接仍需设备配对。"));
-        });
+        }
         ui.horizontal(|ui| {
             ui.label(RichText::new(uu_i18n::text("自建服务器")).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
@@ -1870,63 +1642,7 @@ impl Workspace {
             value,
         });
     }
-    pub(super) fn assistance_page(&mut self, ui: &mut egui::Ui) -> Vec<Action> {
-        let mut actions = Vec::new();
-        self.feedback
-            .show(ui, super::ui_feedback::Scope::Compatibility);
-        self.assistance(ui, &mut actions);
-        actions
-    }
 
-    fn assistance(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        card(ui, |ui| {
-            ui.strong(uu_i18n::text("UU 官方远程协助"));
-            ui.label(uu_i18n::text("让对方在 UU 官方被控端开启远程协助，再发送设备 ID 和验证码。"));
-            ui.add_space(10.);
-            ui.label(uu_i18n::text("粘贴对方分享的完整文本"));
-            ui.add(
-                egui::TextEdit::multiline(&mut self.assist_text)
-                    .desired_rows(3)
-                    .desired_width(f32::INFINITY)
-                    .hint_text(uu_i18n::text("设备ID：…\n设备验证码：…")),
-            );
-            if ui.button(uu_i18n::text("识别分享文本")).clicked() {
-                match uu_compat::assistance::Request::parse(&self.assist_text) {
-                    Ok(request) => {
-                        self.assist_id = request.id.clone();
-                        self.assist_code = request.code().into();
-                        self.assist_text.clear();
-                        self.assist_error.clear();
-                    }
-                    Err(e) => self.assist_error = e.to_string(),
-                }
-            }
-            ui.add_space(10.);
-            field(ui, uu_i18n::text("设备 ID"), &mut self.assist_id, uu_i18n::text("对方分享的数字 ID"));
-            ui.label(uu_i18n::text("设备验证码"));
-            ui.add(
-                egui::TextEdit::singleline(&mut self.assist_code)
-                    .password(true)
-                    .desired_width(f32::INFINITY),
-            );
-            ui.add_space(10.);
-            if !self.assist_error.is_empty() {
-                ui.colored_label(theme::DANGER, &self.assist_error);
-            }
-            if primary(ui, uu_i18n::text("发起远程协助")).clicked() {
-                match uu_compat::assistance::Request::new(&self.assist_id, &self.assist_code) {
-                    Ok(request) => actions.push(Action::Assist(request)),
-                    Err(e) => self.assist_error = e.to_string(),
-                }
-            }
-            muted(ui,uu_i18n::text("需登录 UU 账号。验证码只用于本次连接，不保存为设备授权。"));
-        });
-        ui.collapsing(uu_i18n::text("连接原生设备"), |ui| {
-            ui.label(uu_i18n::text("主机启动服务后即可配对。控制端添加 IP、UU 或 VPS 设备并连接，可选择配对码、密码、临时配对码，或使用主机预先授权的公钥。"));
-            if primary(ui, uu_i18n::text("添加设备")).clicked() {self.route.page=Page::Devices;self.new_device(None,None);}
-            if ui.button(uu_i18n::text("让别人连接本机")).clicked(){self.route.page=Page::Services;}
-        });
-    }
     pub fn dialogs(&mut self, ctx: &egui::Context, info: &Info) -> Vec<Action> {
         let mut actions = Vec::new();
         self.host.dialogs(ctx);
@@ -2000,68 +1716,13 @@ impl Workspace {
                 field(ui, uu_i18n::text("设备名称（可选）"), &mut editor.name, uu_i18n::text("例如：工作电脑"));
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut editor.kind, 0, uu_i18n::text("IP 直连"));
-                    ui.selectable_value(&mut editor.kind, 1, uu_i18n::text("UU 账号"));
+                    for provider in &info.providers {if ui.selectable_label(editor.kind==1&&editor.provider==provider.id,provider.name).clicked(){editor.kind=1;editor.provider=provider.id.into();}}
                     ui.selectable_value(&mut editor.kind, 2, uu_i18n::text("自建服务器"));
                 });
                 ui.add_space(12.);
                 match editor.kind {
                     0 => field(ui, uu_i18n::text("目标地址"), &mut editor.address, uu_i18n::text("主机 IP:端口")),
-                    1 => {
-                        let choices = match &info.uu_devices {
-                            UuDeviceList::Loaded(devices) => devices.as_slice(),
-                            _ => &[],
-                        };
-                        match &info.uu_devices {
-                            UuDeviceList::SignedOut => {
-                                muted(ui, uu_i18n::text("尚未登录 UU 账号，可在连接服务或 UU 兼容页登录。"));
-                            }
-                            UuDeviceList::Loading => {
-                                ui.horizontal(|ui| { ui.spinner(); ui.label(uu_i18n::text("正在加载 UU 设备列表…")); });
-                            }
-                            UuDeviceList::Failed(error) => {
-                                ui.colored_label(theme::DANGER, uu_i18n::format!("无法加载 UU 设备：{error}"));
-                                if ui.button(uu_i18n::text("重试加载 UU 设备")).clicked() { actions.push(Action::RefreshUuDevices); }
-                            }
-                            UuDeviceList::Loaded(devices) => {
-                                if devices.is_empty() { muted(ui, uu_i18n::text("此账号暂无可选 UU 设备。")); }
-                                if ui.button(uu_i18n::text("刷新 UU 设备")).clicked() { actions.push(Action::RefreshUuDevices); }
-                            }
-                        }
-                        if !choices.is_empty() {
-                            ui.label(uu_i18n::text("选择账号中的设备"));
-                            let selected = choices
-                                .iter()
-                                .find(|(id, _)| id == &editor.device)
-                                .map(|(_, name)| name.as_str())
-                                .unwrap_or(uu_i18n::text("请选择设备"));
-                            egui::ComboBox::from_id_salt("route-uu-device")
-                                .selected_text(selected)
-                                .width(360.0)
-                                .show_ui(ui, |ui| {
-                                    for (id, name) in choices {
-                                        if ui
-                                            .selectable_label(editor.device == *id, format!("{name} · {id}"))
-                                            .clicked()
-                                        {
-                                            editor.device = id.clone();
-                                            if editor.name.trim().is_empty() {
-                                                editor.name = name.clone();
-                                            }
-                                        }
-                                    }
-                                });
-                            ui.collapsing(uu_i18n::text("手动输入设备编号"), |ui| {
-                                field(ui, uu_i18n::text("目标 UU 设备编号"), &mut editor.device, uu_i18n::text("被控端“连接服务”中的本机 UU 编号"));
-                            });
-                        } else {
-                            field(
-                                ui,
-                                uu_i18n::text("目标 UU 设备编号"),
-                                &mut editor.device,
-                                uu_i18n::text("被控端“连接服务”中的本机 UU 编号"),
-                            );
-                        }
-                    }
+                    1 => {field(ui,uu_i18n::text("目标设备编号"),&mut editor.device,uu_i18n::text("由连接插件提供的设备标识"));},
                     _ => {
                         ui.label(uu_i18n::text("连接服务器"));
                         egui::ComboBox::from_id_salt("route-service")
@@ -2260,45 +1921,8 @@ impl super::App {
         self.workspace.route.device = DeviceView::List;
         self.context.request_repaint();
     }
-    pub(super) fn select_uu_compatibility(&mut self, assistance: bool) {
-        if self.workspace.route.page == Page::Settings {
-            self.discard_home_settings();
-        }
-        self.workspace.route.page = Page::Compatibility;
-        self.workspace.route.compatibility = if assistance {
-            CompatibilityView::Assistance
-        } else {
-            CompatibilityView::Devices
-        };
-        self.workspace.route.device = DeviceView::List;
-        if !assistance && self.logged_in && self.devices.is_empty() {
-            self.start_load();
-        }
-        self.workspace.editor = None;
-        self.workspace.service_editor = None;
-        self.context.request_repaint();
-    }
-    pub(super) fn compatibility_active(&self) -> bool {
-        self.workspace.route.page == Page::Compatibility
-    }
     pub(super) fn workspace_info(&self)->Info {
-        Info {
-            wallpaper_enabled:self.preferences.wallpaper_enabled,
-            logged_in:self.logged_in,
-            uu_id:self.config.as_ref().and_then(|c|uu_compat::ClientState::read(&c.at("state.json")).ok().flatten()).and_then(|s|s.device_id),
-            qr:self.login_texture.as_ref().map(|t|t.id()),
-            login_status:self.account_error.clone().unwrap_or_else(||self.login_status.clone()),
-            login_busy:self.login_rx.is_some(), nearby:self.lan.nearby(self.workspace.host.server_id()),
-            uu_devices: if !self.logged_in {
-                UuDeviceList::SignedOut
-            } else if self.rx.is_some() {
-                UuDeviceList::Loading
-            } else if let Some(error) = &self.device_load_error {
-                UuDeviceList::Failed(error.clone())
-            } else {
-                UuDeviceList::Loaded(self.devices.iter().map(|device|(device.device_id.clone(),device.alias.clone())).collect())
-            },
-        }
+        Info {wallpaper_enabled:self.preferences.wallpaper_enabled,nearby:self.lan.nearby(self.workspace.host.server_id()),providers:uu_core::plugins::registry().descriptors()}
     }
     pub(super) fn workspace_home(&mut self, ctx: &egui::Context) {
         let info = self.workspace_info();
@@ -2308,6 +1932,7 @@ impl super::App {
         self.workspace.client_defaults = self.preferences.client.clone();
         self.workspace.dark_background = wallpaper_root;
         let mut actions = Vec::new();
+        let mut extensions=Vec::new();
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
@@ -2317,12 +1942,17 @@ impl super::App {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     actions = self.workspace.show(ui, &info);
+                    if self.workspace.route.page==Page::Services&&self.workspace.service_tab==0 {
+                        for (id,page) in self.plugins.pages(uu_plugin_sdk::Placement::Connections) {
+                            card(ui,|ui|{for action in self.plugins.show_page(ui,&id,&page.id){extensions.push((id.clone(),action));}});
+                        }
+                    }
                     if wallpaper_root && !self.background.notice.is_empty() {
                         muted(ui, &self.background.notice);
                     }
                 });
             });
-        self.workspace_actions(actions, ctx);
+        self.workspace_actions(actions, ctx);self.plugin_actions(extensions);
     }
     pub(super) fn workspace_actions(&mut self, actions: Vec<Action>, ctx: &egui::Context) {
         for action in actions {
@@ -2335,23 +1965,8 @@ impl super::App {
                     let scope = self.workspace.device_scope();
                     self.workspace.feedback.success(scope, uu_i18n::text("全局默认客户端配置已保存；下次连接生效"));
                 }
-                Action::Login => self.start_login(),
-                Action::Logout => self.sign_out(),
-                Action::RefreshUuDevices => self.start_load(),
                 Action::RefreshWallpaper => {
                     if self.preferences.wallpaper_enabled {self.background.sync(&self.preferences,ctx);self.background.refresh(ctx);}
-                }
-                Action::RenameUu => self.rename_uu_device(),
-                Action::ManageUu => {
-                    if let (Some(config), Some(token)) = (self.config.clone(), self.account_token.clone()) {
-                        self.uu_devices.open(config, token);
-                    }
-                }
-                Action::CancelLogin => {
-                    self.login_rx = None;
-                    self.login_texture = None;
-                    self.login_status = uu_i18n::text("已取消登录").into();
-                    self.workspace.resume_connect = None;
                 }
                 // The start button is dispatched after rendering to keep one
                 // owner of the runtime and immutable sharing configuration.
@@ -2383,33 +1998,6 @@ impl super::App {
                         );
                     }
                 }
-                Action::Assist(request) => {
-                    if !self.logged_in {
-                        self.workspace.assist_error =
-                            uu_i18n::text("请先在 UU 兼容页登录账号，再发起远程协助。").into();
-                        self.workspace.route.page = Page::Compatibility;
-                        self.workspace.route.compatibility = CompatibilityView::Devices;
-                        self.start_login();
-                    } else {
-                        match std::env::current_exe().and_then(|exe| {
-                            self.sessions
-                                .open_assistance(&exe, &request, self.platform.origin())
-                        }) {
-                            Ok(_) => {
-                                self.workspace.assist_code.clear();
-                                self.workspace.assist_text.clear();
-                                self.workspace.assist_error.clear();
-                                self.workspace.feedback.success(
-                                    super::ui_feedback::Scope::Compatibility,
-                                    uu_i18n::text("已打开远程协助窗口"),
-                                );
-                            }
-                            Err(e) => {
-                                self.workspace.assist_error = uu_i18n::format!("无法打开协助窗口：{e}")
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -2421,12 +2009,7 @@ impl super::App {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))?;
             let launch = store.launch(id)?;
-            if matches!(launch.route.destination, Destination::Uu { .. }) && !self.logged_in {
-                self.workspace.resume_connect = Some(id.into());
-                self.workspace.route.page = Page::Services;
-                self.start_login();
-                return Ok(());
-            }
+            if let Destination::Plugin{plugin,..}=&launch.route.destination {anyhow::ensure!(self.plugins.enabled(plugin),"请先安装并启用此连接方式的插件");}
             let snapshot = store.publish_launch_with_defaults(id,&self.preferences.client)?;
             let target = super::sessions::StreamTarget {
                 connection: super::sessions::ConnectionTarget::NativeProfile {
@@ -2452,12 +2035,7 @@ impl super::App {
             return;
         }
         self.workspace.poll(ctx, self.platform.window_id());
-        self.workspace.presence.poll(ctx,self.config.as_ref(),&self.workspace.book,self.account_token.as_deref());
-        if self.logged_in {
-            if let Some(id) = self.workspace.resume_connect.take() {
-                self.open_device_profile(&id);
-            }
-        }
+        self.workspace.presence.poll(ctx,self.config.as_ref(),&self.workspace.book,uu_core::plugins::registry().generation());
     }
     pub(super) fn workspace_dialogs(&mut self, ctx: &egui::Context) {
         let info = self.workspace_info();

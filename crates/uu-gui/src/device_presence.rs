@@ -23,11 +23,11 @@ impl Monitor {
         if self.at.is_some_and(|at|at.elapsed()<Duration::from_secs(20)){self.results.get(id).copied().unwrap_or_default()}else{Status::Unknown}
     }
     pub fn refresh(&mut self){self.next=None;}
-    pub fn poll(&mut self,ctx:&egui::Context,config:Option<&Config>,book:&Book,token:Option<&str>) {
+    pub fn poll(&mut self,ctx:&egui::Context,config:Option<&Config>,book:&Book,provider_generation:u64) {
         // Edits and account switches retire the whole old snapshot, including
         // replies already queued by a previous worker.
         let routes:Vec<_>=book.devices.iter().filter(|p|p.redirect.is_none()).map(|p|(&p.id,&p.routes)).collect();
-        let key: [u8;32]=Sha256::digest(serde_json::to_vec(&(routes,&book.services,token)).unwrap_or_default()).into();
+        let key: [u8;32]=Sha256::digest(serde_json::to_vec(&(routes,&book.services,provider_generation)).unwrap_or_default()).into();
         if self.key!=Some(key){*self=Self{key:Some(key),..Default::default()};}
         if let Some(job)=&self.job {
             match job.events.try_recv(){
@@ -38,13 +38,13 @@ impl Monitor {
         }
         if self.job.is_none() && self.next.is_none_or(|at|Instant::now()>=at) {
             if let Some(config)=config.filter(|_|!book.devices.is_empty()) {
-                let config=config.clone();let book=book.clone();let token=token.map(str::to_owned);let context=ctx.clone();
+                let config=config.clone();let book=book.clone();let context=ctx.clone();
                 let (send,events)=mpsc::channel();let (cancel,cancelled)=tokio::sync::oneshot::channel();
                 std::thread::spawn(move|| {
                     let Ok(runtime)=tokio::runtime::Builder::new_current_thread().enable_all().build() else{return;};
                     runtime.block_on(async{tokio::select!{
                         _=cancelled=>{},
-                        results=probe(config,book,token)=>{let _=send.send(results);context.request_repaint();},
+                        results=probe(config,book)=>{let _=send.send(results);context.request_repaint();},
                     }});
                     runtime.shutdown_background();
                 });
@@ -54,7 +54,7 @@ impl Monitor {
         ctx.request_repaint_after(Duration::from_millis(if self.job.is_some(){100}else{1000}));
     }
 }
-async fn probe(config:Config,book:Book,token:Option<String>)->Results {
+async fn probe(config:Config,book:Book)->Results {
     let profiles:Vec<_>=book.devices.iter().filter(|p|p.redirect.is_none()).collect();
     let mut routes:HashMap<String,Status>=profiles.iter().flat_map(|p|p.routes.iter()).map(|r|(r.id.clone(),Status::Unknown)).collect();
     let slots=Arc::new(tokio::sync::Semaphore::new(8));
@@ -71,26 +71,21 @@ async fn probe(config:Config,book:Book,token:Option<String>)->Results {
             });
         }
     }
-    let uu:Vec<_>=profiles.iter().flat_map(|p|p.routes.iter()).filter_map(|r|if let Destination::Uu{device}=&r.destination{Some((r.id.clone(),device.clone()))}else{None}).collect();
-    if !uu.is_empty(){if let Some(token)=token {
-        let slots=slots.clone();
+    let mut providers:std::collections::BTreeMap<String,Vec<(String,String)>>=Default::default();
+    for route in profiles.iter().flat_map(|p|p.routes.iter()) {
+        if let Destination::Plugin{plugin,device}=&route.destination {providers.entry(plugin.clone()).or_default().push((route.id.clone(),device.clone()));}
+    }
+    for (id,targets) in providers {
+        let Ok(provider)=uu_core::plugins::registry().get(&id) else{continue;};
+        let slots=slots.clone();let config=config.clone();
         tasks.spawn(async move {
             let Ok(_slot)=slots.acquire_owned().await else{return vec![];};
-            let result=tokio::time::timeout(Duration::from_secs(5),async{
-                let api=uu_compat::UuApi::new(uu_compat::SignalClient::new(&config)?,config.at("state.json"))?;
-                anyhow::ensure!(api.state.token.as_deref()==Some(token.as_str()),"account changed");
-                super::parse_devices(api.device_list().await?)
-            }).await;
-            let Ok(Ok(devices))=result else{return vec![];};
-            uu.into_iter().map(|(id,device)|{
-                let status=devices.iter().find(|d|d.device_id==device).map_or(Status::Unknown,|d|match d.status.as_str(){
-                    "CONNECTED"|"ONLINE"|"ready"=>Status::Online,
-                    "DISCONNECTED"|"OFFLINE"|"UNCONNECTED"=>Status::Offline,
-                    _=>Status::Unknown,
-                });(id,status)
+            let Ok(Ok(devices))=tokio::time::timeout(Duration::from_secs(5),provider.devices(&config)).await else{return vec![];};
+            targets.into_iter().map(|(id,target)| {
+                let status=devices.iter().find(|d|d.id==target).and_then(|d|d.online).map_or(Status::Unknown,|online|if online{Status::Online}else{Status::Offline});(id,status)
             }).collect()
         });
-    }}
+    }
     for service in &book.services {
         let targets:Vec<_>=profiles.iter().flat_map(|p|p.routes.iter()).filter_map(|r|match &r.destination{
             Destination::Vps{service:id,device} if id==&service.id=>Some((r.id.clone(),device.clone())),_=>None,
@@ -129,13 +124,13 @@ async fn probe(config:Config,book:Book,token:Option<String>)->Results {
         assert_eq!(aggregate([Status::Offline,Status::Unknown]),Status::Unknown);
         assert_eq!(aggregate([]),Status::Unknown);
     }
-    #[test] fn account_and_route_changes_discard_queued_results_and_stale_observations(){
+    #[test] fn provider_and_route_changes_discard_queued_results_and_stale_observations(){
         let config=Config{data_dir:std::env::temp_dir(),state_dir:std::env::temp_dir(),signaling_host:"unused.example.invalid".into()};
         let mut monitor=Monitor::default();let book=Book::default();let ctx=egui::Context::default();
-        monitor.poll(&ctx,Some(&config),&book,Some("old-account"));
+        monitor.poll(&ctx,Some(&config),&book,1);
         let (send,events)=mpsc::channel();send.send(HashMap::from([("old-device".into(),Status::Online)])).unwrap();
         monitor.job=Some(Job{events,cancel:None});
-        monitor.poll(&ctx,Some(&config),&book,Some("new-account"));
+        monitor.poll(&ctx,Some(&config),&book,2);
         assert_eq!(monitor.status("old-device"),Status::Unknown);assert!(monitor.job.is_none());
         monitor.results.insert("old-device".into(),Status::Online);monitor.at=Some(Instant::now()-Duration::from_secs(30));
         assert_eq!(monitor.status("old-device"),Status::Unknown);
@@ -157,10 +152,10 @@ async fn probe(config:Config,book:Book,token:Option<String>)->Results {
         let online=Profile::new("Reachable",Destination::Ip{address:live,legacy_device:None});
         let offline=Profile::new("Wrong service",Destination::Ip{address:wrong,legacy_device:None});
         let mut uncertain=offline.clone();uncertain.id=uuid::Uuid::new_v4().to_string();
-        uncertain.routes=vec![Route::new(Destination::Uu{device:"generated-unknown".into()})];
+        uncertain.routes=vec![Route::new(Destination::Plugin{plugin:"example-addon".into(),device:"generated-unknown".into()})];
         book.devices=vec![online.clone(),offline.clone(),uncertain.clone()];
         let config=Config{data_dir:root.join("client"),state_dir:root.join("state"),signaling_host:"unused.example.invalid".into()};
-        let states=probe(config,book,None).await;
+        let states=probe(config,book).await;
         assert_eq!(states[&online.id],Status::Online);assert_eq!(states[&offline.id],Status::Offline);assert_eq!(states[&uncertain.id],Status::Unknown);
         assert!(incoming.try_recv().is_err(),"presence must not start a session or pairing prompt");
         stop.send_replace(true);serving.await.unwrap().unwrap();unrelated_task.await.unwrap();drop(handle);std::fs::remove_dir_all(root).unwrap();

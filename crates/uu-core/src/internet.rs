@@ -18,13 +18,22 @@ pub mod stun;
 
 pub const MAX_MESSAGE: usize = 256 * 1024;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from="String",into="String")]
 pub enum Provider {
     #[default]
     SelfHosted,
-    Uu,
+    Plugin(String),
 }
+impl TryFrom<String> for Provider {
+    type Error=anyhow::Error;
+    fn try_from(value:String)->Result<Self> {
+        if value=="self_hosted" {return Ok(Self::SelfHosted);}
+        ensure!(!value.is_empty()&&value.len()<=64&&value.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-'),"invalid connection provider id");
+        Ok(Self::Plugin(value))
+    }
+}
+impl From<Provider> for String {fn from(value:Provider)->Self {match value {Provider::SelfHosted=>"self_hosted".into(),Provider::Plugin(id)=>id}}}
 
 /// Contains file locations, never secret contents. A shared access key is the
 /// current out-of-band pairing method for both internet providers.
@@ -84,9 +93,9 @@ pub async fn host(
     let key = AccessKey::load(&settings.access_key)?;
     let mut startup_cancel=stop.clone();
     let accepting = async {
-        match settings.provider {
-            Provider::Uu => {
-                let service=crate::plugins::registry().get("uu")?;
+        match &settings.provider {
+            Provider::Plugin(id) => {
+                let service=crate::plugins::registry().get(id)?;
                 let mut host=tokio::select! {
                     result=tokio::time::timeout(std::time::Duration::from_secs(20),service.host(&config,settings.development_relay))=>result.context("connection plugin startup timed out")??,
                     _=cancelled(&mut startup_cancel)=>anyhow::bail!("sharing cancelled"),
@@ -127,8 +136,8 @@ pub async fn view(
 ) -> Result<()> {
     let key = if settings.device_auth {None}else{Some(AccessKey::load(&settings.access_key)?)};
     let joining = async {
-        match settings.provider {
-            Provider::Uu => crate::plugins::registry().get("uu")?.join(&config, &settings.device, settings.development_relay).await,
+        match &settings.provider {
+            Provider::Plugin(id) => crate::plugins::registry().get(id)?.join(&config, &settings.device, settings.development_relay).await,
             Provider::SelfHosted => {
                 self_hosted::join(&settings.self_hosted()?, &settings.device).await
             }
@@ -139,7 +148,7 @@ pub async fn view(
         return crate::device_internet::view(connection,&settings,&config,frames,stats,stop,input).await;
     }
     let (mut signal, ice) = Authenticated::new(connection, key.unwrap(), Role::Viewer);
-    stats.connection.set_service(match settings.provider {Provider::Uu=>uu_i18n::text("UU 连接服务"),Provider::SelfHosted=>uu_i18n::text("自建连接服务")});
+    stats.connection.set_service(match &settings.provider {Provider::Plugin(id)=>crate::plugins::registry().get(id)?.descriptor().name,Provider::SelfHosted=>uu_i18n::text("自建连接服务")});
     stats.diagnostics.record(
         json!({"event":"native_provider","provider":settings.provider,
         "stun_services":ice.urls().len(),"development_relay":settings.development_relay}),

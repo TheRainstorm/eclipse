@@ -5,11 +5,17 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
 };
+pub const MAX_PLUGIN_PAYLOAD:usize=16*1024;
+pub fn read_plugin_payload(reader:impl std::io::Read)->anyhow::Result<zeroize::Zeroizing<String>> {
+    use std::io::Read;
+    let mut bytes=zeroize::Zeroizing::new(Vec::new());reader.take(MAX_PLUGIN_PAYLOAD as u64+1).read_to_end(&mut bytes)?;
+    anyhow::ensure!(!bytes.is_empty()&&bytes.len()<=MAX_PLUGIN_PAYLOAD,"invalid plugin launch payload size");
+    Ok(zeroize::Zeroizing::new(std::str::from_utf8(&bytes)?.to_owned()))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash,serde::Serialize,serde::Deserialize)]
 pub enum ConnectionTarget {
-    UuDevice(String),
-    UuAssistance(String),
+    Plugin {plugin:String,identity:String},
     NativeInvitation(PathBuf),
     NativeDevice(String),
     NativeInternet(PathBuf),
@@ -37,7 +43,7 @@ impl StreamTarget {
         let (mut connection, mut alias, mut view_only) = (None, None, false);
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--stream-device" | "--assist-device" | "--native-invitation" | "--native-device" | "--native-internet" | "--device-profile" => {
+                "--plugin" | "--native-invitation" | "--native-device" | "--native-internet" | "--device-profile" => {
                     if connection.is_some() {
                         return Err(uu_i18n::text("一次只能选择一种连接方式").into());
                     }
@@ -45,11 +51,10 @@ impl StreamTarget {
                         .next()
                         .filter(|s| !s.is_empty())
                         .ok_or(uu_i18n::text("缺少连接目标"))?;
-                    connection = Some(if arg == "--stream-device" {
-                        ConnectionTarget::UuDevice(value)
-                    } else if arg=="--assist-device" {
-                        if value.len()>64 || !value.bytes().all(|b|b.is_ascii_digit()) {return Err(uu_i18n::text("远程协助设备 ID 无效").into());}
-                        ConnectionTarget::UuAssistance(value)
+                    connection = Some(if arg == "--plugin" {
+                        if value.len()>64||!value.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'-'){return Err("invalid plugin id".into());}
+                        let identity=args.next().filter(|s|!s.is_empty()&&s.len()<=256&&!s.chars().any(char::is_control)).ok_or("missing public plugin target identity")?;
+                        ConnectionTarget::Plugin{plugin:value,identity}
                     } else if arg=="--device-profile" {
                         let path=PathBuf::from(value);
                         let launch=uu_core::device_book::Launch::read(&path).map_err(|e|uu_i18n::format!("无法读取设备配置：{e}"))?;
@@ -71,8 +76,7 @@ impl StreamTarget {
         match connection {
             Some(connection) => {
                 let default = match &connection {
-                    ConnectionTarget::UuDevice(id) => id.clone(),
-                    ConnectionTarget::UuAssistance(id) => uu_i18n::format!("远程协助 {id}"),
+                    ConnectionTarget::Plugin {identity,..} => identity.clone(),
                     ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..} => uu_i18n::text("原生设备").into(),
                 };
                 Ok(Some(Self {
@@ -88,10 +92,7 @@ impl StreamTarget {
     fn command(&self, exe: &Path, origin: Option<(i32, i32)>) -> Command {
         let mut command = Command::new(exe);
         match &self.connection {
-            ConnectionTarget::UuDevice(id) => {
-                command.arg("--stream-device").arg(id);
-            }
-            ConnectionTarget::UuAssistance(id)=>{command.arg("--assist-device").arg(id).stdin(Stdio::piped());}
+            ConnectionTarget::Plugin{plugin,identity}=>{command.arg("--plugin").arg(plugin).arg(identity).stdin(Stdio::piped());}
             ConnectionTarget::NativeInvitation(path) => {
                 command.arg("--native-invitation").arg(path);
             }
@@ -137,14 +138,13 @@ impl Sessions {
     ) -> std::io::Result<bool> {
         self.open_inner(exe,target,origin,None)
     }
-    pub fn open_assistance(&mut self,exe:&Path,request:&uu_compat::assistance::Request,origin:Option<(i32,i32)>)->std::io::Result<bool> {
-        let target=StreamTarget {connection:ConnectionTarget::UuAssistance(request.id.clone()),alias:uu_i18n::format!("远程协助 {}",request.id),view_only:false};
-        self.open_inner(exe,&target,origin,Some(request.code()))
+    pub fn open_plugin(&mut self,exe:&Path,target:&StreamTarget,payload:&str,origin:Option<(i32,i32)>)->std::io::Result<bool> {
+        self.open_inner(exe,target,origin,Some(payload))
     }
-    fn open_inner(&mut self,exe:&Path,target:&StreamTarget,origin:Option<(i32,i32)>,code:Option<&str>)->std::io::Result<bool> {
+    fn open_inner(&mut self,exe:&Path,target:&StreamTarget,origin:Option<(i32,i32)>,payload:Option<&str>)->std::io::Result<bool> {
         self.reap();
-        if matches!(target.connection,ConnectionTarget::UuAssistance(_)) && code.is_none() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,uu_i18n::text("远程协助需要验证码")));
+        if matches!(target.connection,ConnectionTarget::Plugin{..}) != payload.is_some() || payload.is_some_and(|s|s.is_empty()||s.len()>MAX_PLUGIN_PAYLOAD) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"invalid plugin launch payload"));
         }
         let key = match &target.connection {
             ConnectionTarget::NativeProfile{id,..}=>ConnectionTarget::NativeProfile{id:id.clone(),snapshot:PathBuf::new()},
@@ -156,10 +156,10 @@ impl Sessions {
         // Even an existing target goes through IPC: only the workspace knows
         // which tab and detached native window currently contain that session.
         let mut child = target.command(exe, origin).spawn()?;
-        if let Some(code)=code {
+        if let Some(payload)=payload {
             use std::io::Write;
-            let result=child.stdin.take().ok_or_else(||std::io::Error::new(std::io::ErrorKind::BrokenPipe,uu_i18n::text("无法传递协助验证码")))
-                .and_then(|mut pipe|{pipe.write_all(code.as_bytes())?;pipe.write_all(b"\n")});
+            let result=child.stdin.take().ok_or_else(||std::io::Error::new(std::io::ErrorKind::BrokenPipe,"missing plugin launch pipe"))
+                .and_then(|mut pipe|pipe.write_all(payload.as_bytes()));
             if let Err(error)=result {let _=child.kill();let _=child.wait();return Err(error);}
         }
         #[cfg(windows)]
@@ -181,18 +181,19 @@ impl Sessions {
 mod tests {
     use super::*;
     #[test]
-    fn assistance_arguments_contain_only_the_target_and_receive_a_bounded_stdin_code() {
-        let target=StreamTarget {connection:ConnectionTarget::UuAssistance("123456789".into()),alias:"Generated assistance".into(),view_only:false};
+    fn plugin_arguments_contain_only_public_identity_and_receive_a_bounded_opaque_payload() {
+        let target=StreamTarget {connection:ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"generated-target".into()},alias:"Generated extension".into(),view_only:false};
         let command=target.command(Path::new("generated-gui"),None);
         let args:Vec<String>=command.get_args().map(|s|s.to_string_lossy().into_owned()).collect();
         assert_eq!(StreamTarget::parse(args).unwrap(),Some(target));
-        assert!(uu_compat::assistance::Request::read("123456789",std::io::Cursor::new(b"TEST79\n")).is_ok());
-        assert!(uu_compat::assistance::Request::read("123456789",std::io::Cursor::new(vec![b'A';128])).is_err());
+        assert_eq!(&*read_plugin_payload(std::io::Cursor::new(b"{\"credential\":\"generated-secret\"}")).unwrap(),"{\"credential\":\"generated-secret\"}");
+        assert!(read_plugin_payload(std::io::Cursor::new(vec![b'A';MAX_PLUGIN_PAYLOAD+1])).is_err());
+        assert!(read_plugin_payload(std::io::Cursor::new(Vec::<u8>::new())).is_err());
     }
     #[test]
     fn child_arguments_preserve_device_alias_and_mode_without_recursive_autoconnect() {
         let target = StreamTarget {
-            connection: ConnectionTarget::UuDevice("device-a".into()),
+            connection: ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"device-a".into()},
             alias: "工作电脑 A 中文".into(),
             view_only: true,
         };
@@ -244,18 +245,18 @@ mod tests {
         let running = Command::new("sleep").arg("30").spawn().unwrap();
         let mut sessions = Sessions {
             children: HashMap::from([
-                (ConnectionTarget::UuDevice("finished".into()), completed),
-                (ConnectionTarget::UuDevice("running".into()), running),
+                (ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"finished".into()}, completed),
+                (ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"running".into()}, running),
             ]),
         };
         sessions.reap();
         assert!(!sessions
             .children
-            .contains_key(&ConnectionTarget::UuDevice("finished".into())));
-        assert!(sessions.children[&ConnectionTarget::UuDevice("running".into())].id() != 0);
+            .contains_key(&ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"finished".into()}));
+        assert!(sessions.children[&ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"running".into()}].id() != 0);
         let child = sessions
             .children
-            .get_mut(&ConnectionTarget::UuDevice("running".into()))
+            .get_mut(&ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"running".into()})
             .unwrap();
         assert!(child.try_wait().unwrap().is_none());
         child.kill().unwrap();

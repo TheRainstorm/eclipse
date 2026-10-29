@@ -20,9 +20,19 @@ impl Parse for Arguments {
 #[proc_macro]
 pub fn format(input: TokenStream) -> TokenStream {
     let Arguments { source, rest } = syn::parse_macro_input!(input as Arguments);
-    let catalogue: std::collections::BTreeMap<String, String> =
+    let mut catalogue: std::collections::BTreeMap<String, String> =
         serde_json::from_str(include_str!("../../uu-i18n/catalogue.json"))
             .expect("valid translation catalogue");
+    // A separately built consumer can own its format templates. The main
+    // application does not need to bundle extension-specific vocabulary.
+    if let Some(directory)=std::env::var_os("CARGO_MANIFEST_DIR") {
+        let path=std::path::PathBuf::from(directory).join("catalogue.json");
+        if path.is_file() {
+            let source=std::fs::read_to_string(path).expect("consumer translation catalogue");
+            let extra:std::collections::BTreeMap<String,String>=serde_json::from_str(&source).expect("valid consumer translation catalogue");
+            catalogue.extend(extra);
+        }
+    }
     let Some(english) = catalogue.get(&source.value()) else {
         return syn::Error::new(
             source.span(),

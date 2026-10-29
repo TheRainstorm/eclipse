@@ -91,8 +91,8 @@ pub enum Command {
         #[arg(long)]
         open_manager: bool,
     },
-    /// Apply this user's current UU login state to the protected host profile.
-    ImportAccount {
+    /// Explicitly synchronize enabled plugin binaries/configuration and restart.
+    ImportPlugins {
         #[arg(long)]
         source_data: Option<PathBuf>,
     },
@@ -127,8 +127,8 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
             Ok(())
         }
         Command::Start => start(),
-        Command::ImportAccount { source_data } => {
-            install::import_account(source_data.unwrap_or(config.data_dir))
+        Command::ImportPlugins { source_data } => {
+            install::import_plugins(source_data.unwrap_or(config.data_dir))
         }
         Command::Stop => stop(),
         Command::Restart => {

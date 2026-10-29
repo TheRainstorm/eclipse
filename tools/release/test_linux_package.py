@@ -28,6 +28,12 @@ class LinuxPackageTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        self.runtime=['libuu_plugin_sdk.so','libstd-0123456789abcdef.so']
+        self.sdk=self.root/self.runtime[0];self.sdk.write_bytes(b'owned SDK fixture')
+        self.standard=self.root/self.runtime[1];self.standard.write_bytes(b'owned standard library fixture')
+        self.addCleanup(patch.stopall)
+        patch.object(packager.plugin_sdk,'build',return_value=(self.sdk,self.standard,{'sdk_id':'f'*64})).start()
+        self.original_check=packager.subprocess.check_output
 
     def cached_bundle(self, changed=False, extra=None, revision='a'*40):
         package=self.package()
@@ -72,17 +78,17 @@ class LinuxPackageTests(unittest.TestCase):
 
     def package(self, revision='a' * 40):
         package = self.root / revision[:12];package.mkdir()
-        for name in installer.PAYLOAD:
+        for name in [*installer.PAYLOAD,*self.runtime]:
             target = package / name
-            if name in ('uu', 'uu-gui','libpyrowave-shared.so.1'): shutil.copy2('/bin/true', target)
+            if name in ('uu', 'uu-gui','libpyrowave-shared.so.1',*self.runtime): shutil.copy2('/bin/true', target)
             else: target.write_text('owned fixture/' + name)
-        manifest = {'format_version':2,'source_commit': revision, 'sha256': {name: hashlib.sha256((package / name).read_bytes()).hexdigest() for name in installer.PAYLOAD}}
+        manifest = {'format_version':3,'plugin_sdk_id':'f'*64,'plugin_runtime':self.runtime,'source_commit': revision, 'sha256': {name: hashlib.sha256((package / name).read_bytes()).hexdigest() for name in [*installer.PAYLOAD,*self.runtime]}}
         (package / 'version.json').write_text(json.dumps(manifest))
         return package
 
     def test_every_payload_is_checked_including_installer_and_readme(self):
         package = self.package();installer.verify_package(package)
-        for name in installer.PAYLOAD:
+        for name in [*installer.PAYLOAD,*self.runtime]:
             with self.subTest(name=name):
                 path = package / name;original = path.read_bytes();path.write_bytes(b'corrupt')
                 with self.assertRaisesRegex(ValueError, name): installer.verify_package(package)
@@ -158,23 +164,23 @@ class LinuxPackageTests(unittest.TestCase):
 
     def test_revision_change_during_build_never_publishes_a_package(self):
         metadata = json.dumps({'target_directory': str(self.root / 'custom-target')})
-        with patch.object(packager, 'ROOT', self.root), patch.object(packager, 'source_revision', side_effect=['a' * 40, 'b' * 40]), patch.object(packager.subprocess, 'check_output', return_value=metadata), patch.object(packager.subprocess, 'run'), patch.object(packager.pyrowave_runtime,'build',return_value=self.root/'fixture-runtime.so'):
+        with patch.object(packager, 'ROOT', self.root), patch.object(packager, 'source_revision', side_effect=['a' * 40, 'b' * 40]), patch.object(packager.subprocess, 'check_output', side_effect=lambda cmd,**kwargs:'host: x86_64-unknown-linux-gnu\n' if cmd[0]=='rustc' else metadata), patch.object(packager.subprocess, 'run'), patch.object(packager.pyrowave_runtime,'build',return_value=self.root/'fixture-runtime.so'):
             with self.assertRaisesRegex(RuntimeError, 'changed during'):packager.main([])
         self.assertFalse((self.root / 'artifacts').exists())
 
     def test_custom_cargo_target_and_complete_archive(self):
         metadata = json.dumps({'target_directory': str(self.root / 'custom-target')})
-        binaries = self.root / 'custom-target/release';binaries.mkdir(parents=True)
+        binaries = self.root / 'custom-target/x86_64-unknown-linux-gnu/release';binaries.mkdir(parents=True)
         for name in ('uu', 'uu-gui'):(binaries / name).write_bytes(('owned ' + name).encode())
         (self.root/'fixture-runtime.so').write_bytes(b'owned Vulkan runtime fixture')
         for path in ['tools/linux/install.py', 'tools/linux/README.txt', 'assets/branding/eclipse-512.png', *packager.LICENSES]:
             target = self.root / path;target.parent.mkdir(parents=True, exist_ok=True);target.write_text(path)
-        with patch.object(packager, 'ROOT', self.root), patch.object(packager, 'source_revision', return_value='a' * 40), patch.object(packager.subprocess, 'check_output', return_value=metadata), patch.object(packager.subprocess, 'run'), patch.object(packager.pyrowave_runtime,'build',return_value=self.root/'fixture-runtime.so'), contextlib.redirect_stdout(io.StringIO()):packager.main([])
+        with patch.object(packager, 'ROOT', self.root), patch.object(packager, 'source_revision', return_value='a' * 40), patch.object(packager.subprocess, 'check_output', side_effect=lambda cmd,**kwargs:'host: x86_64-unknown-linux-gnu\n' if cmd[0]=='rustc' else metadata), patch.object(packager.subprocess, 'run'), patch.object(packager.pyrowave_runtime,'build',return_value=self.root/'fixture-runtime.so'), contextlib.redirect_stdout(io.StringIO()):packager.main([])
         archives = list((self.root / 'artifacts/packages').glob('*.tar.gz'));self.assertEqual(len(archives), 1)
         with tarfile.open(archives[0]) as archive:
             manifest = next(entry for entry in archive if entry.name.endswith('/version.json'))
             record = json.load(archive.extractfile(manifest))
-            self.assertEqual(set(record['sha256']), set(installer.PAYLOAD))
+            self.assertEqual(set(record['sha256']), set([*installer.PAYLOAD,*self.runtime]))
             self.assertEqual(record['source_commit'], 'a' * 40)
             self.assertIn('intel-vpl', record['features'])
 

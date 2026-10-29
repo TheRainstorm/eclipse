@@ -135,7 +135,7 @@ impl Service {
                 ensure!(expected.len()==64,"{}", uu_i18n::format!("服务配置版本无效，请重新读取"));
                 self.store.edit(|book| {
                     ensure!(revision(&book.sharing)?==expected,"{}", uu_i18n::format!("服务配置已被其它窗口修改，请重新读取后保存"));
-                    ensure!(settings.ip_enabled||settings.uu_enabled||book.services.iter().any(|s|s.host_enabled),"{}", uu_i18n::format!("至少保留一个连接入口"));
+                    ensure!(settings.ip_enabled||!settings.plugin_services.is_empty()||book.services.iter().any(|s|s.host_enabled),"{}", uu_i18n::format!("至少保留一个连接入口"));
                     book.sharing=settings;
                     Ok(())
                 })?;
