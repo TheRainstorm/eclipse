@@ -13,7 +13,7 @@ README.md[SG7S]: F:介绍独立动态插件与原生串流架构，导航v0.20.9
 SECURITY.md[SS8T]: F:定义公开PC兼容值和个人凭据的分发边界、私密报告与扫描流程 | R:code:tools/security/scan_secrets.py,code:docs/connection-credentials.md | A:- | S:公开常量仅按精确路径与指纹放行；历史清理不撤回已下载副本
 
 ===/home/yfy/Repo/uu_remote/.github/workflows/===
-build-release.yml[OV8L]: F:独立检出主程序并执行Linux媒体桌面回归、Windows构建烟测及标签双平台完整包发布 | R:code:tools/windows/package.py,code:tools/linux/package.py,code:tools/security/scan_secrets.py | A:linux-media,build,windows-smoke,release | S:默认产物不含具体插件；动态运行库搜索供隔离探针使用；分支可取消而标签保留，生成媒体检查不代表实机桌面验收
+build-release.yml[OV8L]: F:独立检出主程序执行媒体桌面回归、Eclipse命名的Windows烟测和标签双平台包发布 | R:code:tools/windows/package.py,code:tools/linux/package.py,code:tools/security/scan_secrets.py | A:linux-media,build,windows-smoke,release | S:默认产物不含具体插件；探针动态库搜索显式配置；分支可取消而标签保留；生成回归不代表实机桌面验收
 
 ===/home/yfy/Repo/uu_remote/assets/branding/===
 README.md[SU4T]: F:说明日蚀图标来源、资源规格和重新导出方法及UU入口标识权属 | R:code:README.md | A:- | S:UU原始favicon不属于本项目双许可
@@ -47,7 +47,7 @@ pipewire.rs[IH7M]: F:在专用线程消费授权PipeWire流，校验像素内存
 request.rs[IH7T]: F:通过ashpd连接发起屏幕选择并管理未完成门户请求 | R:code:crates/uu-capture/src/portal/mod.rs | A:select_sources | S:RemoteDesktop会话不得传persist_mode；先订阅Response，取消时发Request.Close
 
 ===/home/yfy/Repo/uu_remote/crates/uu-cli/===
-Cargo.toml[FV5T]: F:声明原生命令行、信令服务与通用动态插件SDK依赖及VAAPI特性 | R:code:crates/uu-cli/src/main.rs,code:crates/uu-plugin-sdk/Cargo.toml | A:- | S:没有具体插件静态依赖，默认特性为空；VAAPI同时传入核心和共享SDK
+Cargo.toml[FV5T]: F:声明eclipse-cli和eclipse-signal二进制目标、通用SDK及原生网络命令依赖 | R:code:crates/uu-cli/src/main.rs,code:crates/uu-plugin-sdk/Cargo.toml | A:- | S:关闭自动bin发现以避免保留旧名称；无具体插件静态依赖，VAAPI同步核心与SDK
 
 ===/home/yfy/Repo/uu_remote/crates/uu-cli/src/bin/===
 uu-signal.rs[EN7T]: F:启动独立TLS会合服务及可选STUN服务，协调退出 | R:code:crates/uu-core/src/internet/server.rs,code:crates/uu-core/src/internet/stun.rs | A:main | S:任一服务结束会取消另一服务；不访问桌面
@@ -55,17 +55,17 @@ uu-signal.rs[EN7T]: F:启动独立TLS会合服务及可选STUN服务，协调退
 ===/home/yfy/Repo/uu_remote/crates/uu-cli/src/===
 internet_cli.rs[EN6M]: F:提供自建访问密钥、信令服务及通过已安装提供方运行的原生公网共享和探测命令 | R:code:crates/uu-core/src/internet.rs,code:crates/uu-cli/src/native_cli.rs | A:Command,run | S:设置文件有大小上限，生成密钥不覆盖既有文件；具体提供方须由通用注册表取得
 lan_cli.rs[EN7M]: F:提供LAN发现、公钥配对、保存设备和前台共享控制命令 | R:code:crates/uu-core/src/native_lan.rs,code:crates/uu-core/src/native_lan_store.rs | A:Command,run | S:配对需要主机确认；生成图禁止桌面输入，忘记本地设备不撤销主机授权
-main.rs[EG8L]: F:分派原生串流、LAN公网探测、后台服务以及插件发现启停和自有命令 | R:code:crates/uu-cli/src/native_cli.rs,code:crates/uu-cli/src/service_cli.rs,code:crates/uu-plugin-sdk/src/runtime.rs | A:Cli,main,NativeVideoOptions | S:服务管理早于用户插件初始化返回；插件命令仅派给已启用实例；生成图尺寸显式有界，原生CLI保留软件编码默认
+main.rs[EG8L]: F:以eclipse-cli分派原生串流、LAN公网探测、后台服务和通用插件命令 | R:code:crates/uu-cli/src/native_cli.rs,code:crates/uu-cli/src/service_cli.rs,code:crates/uu-plugin-sdk/src/runtime.rs | A:Cli,main,NativeVideoOptions | S:服务管理在用户插件初始化之前返回；插件命令仅派给已启用实例；生成尺寸有界，CLI保留软件编码默认
 native_cli.rs[AN7M]: F:运行原生共享及有期限的媒体探测，输出统计和显示源元数据 | R:code:crates/uu-core/src/native.rs,code:crates/uu-core/src/native_pairing.rs | A:host,probe,sources | S:探测仅处理授权媒体，不注入桌面输入；帧数与时限均有界
-service_cli.rs[EO7M]: F:分派Windows后台服务安装启停、受保护日志与显式插件同步命令 | R:code:crates/uu-cli/src/service_cli/install.rs,code:crates/uu-cli/src/service_cli/supervisor.rs | A:Command,run | S:普通登录不自动导入服务账号或插件；关闭管理窗口不停止共享；bootstrap日志要求System身份
+service_cli.rs[EO7M]: F:分派Windows服务安装启停、受保护日志及显式插件同步与管理窗口 | R:code:crates/uu-cli/src/service_cli/install.rs,code:crates/uu-cli/src/service_cli/supervisor.rs | A:Command,run | S:按安装记录版本选择新旧二进制名；bootstrap日志要求System身份；普通登录不自动导入账号插件，管理窗口关闭不停止共享
 
 ===/home/yfy/Repo/uu_remote/crates/uu-cli/src/service_cli/===
-host.rs[AS8M]: F:在指定控制台会话初始化受保护配置和插件并运行后台共享与管理员通道 | R:code:crates/uu-core/src/host_runtime.rs,code:crates/uu-core/src/service_admin/windows.rs,code:crates/uu-plugin-sdk/src/runtime.rs | A:run | S:必须是指定活动控制台中的LocalSystem；插件使用服务配置而非用户配置；停止时撤销剪贴板状态
-install.rs[OS8L]: F:校验完整包并安装受保护后台服务，显式同步匹配插件和声明的私有配置 | R:code:crates/uu-core/src/service_admin/windows.rs,code:crates/uu-core/src/service_admin/package.rs,code:crates/uu-plugin-sdk/src/loader.rs | A:install,import_plugins,protect | S:安装互斥且绑定实际控制台用户；拒重解析点并保护ACL；同步先验证SDK和全部载荷再停服务，失败恢复原文件；新安装不默认复制插件账号
-supervisor.rs[RS8L]: F:由SCM监督指定用户控制台中的System媒体子进程并管理停止与重启 | R:code:crates/uu-cli/src/service_cli/host.rs,code:crates/uu-core/src/service_admin/windows.rs | A:dispatch,run | S:Job仅拥有本服务子进程；媒体令牌仅保留正常路径遍历权限，系统环境不能裁成最小片段
+host.rs[AS8M]: F:在指定控制台的受保护安装位置初始化插件并运行后台共享与管理员通道 | R:code:crates/uu-core/src/host_runtime.rs,code:crates/uu-core/src/service_admin/windows.rs,code:crates/uu-plugin-sdk/src/runtime.rs | A:run | S:必须是指定活动控制台的LocalSystem且路径匹配安装记录版本；插件使用服务配置，停止撤销剪贴板状态
+install.rs[OS8L]: F:校验完整包并安装Eclipse命名的后台服务，显式同步匹配插件和声明配置 | R:code:crates/uu-core/src/service_admin/windows.rs,code:crates/uu-core/src/service_admin/package.rs,code:crates/uu-plugin-sdk/src/loader.rs | A:install,import_plugins,protect | S:新安装记录为v2，旧v1按旧文件名访问；安装互斥且绑定控制台用户，拒重解析点并保护ACL；同步先验SDK再停服务，失败恢复；不默认复制插件账号
+supervisor.rs[RS8L]: F:由SCM监督指定控制台的System媒体子进程并按安装记录选择程序及停止重启 | R:code:crates/uu-cli/src/service_cli/host.rs,code:crates/uu-core/src/service_admin/windows.rs | A:dispatch,run | S:Job只拥有本服务子进程；媒体令牌仅保留正常路径遍历权限；系统环境不能裁成最小片段，路径校验不得按文件存在猜新旧版本
 
 ===/home/yfy/Repo/uu_remote/crates/uu-cli/src/service_cli/supervisor/===
-system_probe.rs[TS5M]: F:以临时System任务验证生产会话启动器和生成视频并清理自有任务进程 | R:code:crates/uu-cli/src/service_cli/supervisor.rs | A:run | S:使用生成画面且拒绝已有测试目录，不读取真实桌面
+system_probe.rs[TS5M]: F:以临时System任务验证生产启动器、安装版本程序身份和生成媒体并清理自有进程 | R:code:crates/uu-cli/src/service_cli/supervisor.rs | A:run | S:只使用生成画面且拒绝既有测试目录，不读取真实桌面
 
 ===/home/yfy/Repo/uu_remote/crates/uu-clipboard/===
 Cargo.toml[FU5T]: F:声明系统剪贴板库与PNG/BMP以及Windows和Linux适配依赖 | R:code:crates/uu-clipboard/src/lib.rs | A:- | S:-
@@ -208,15 +208,15 @@ tests.rs[TN5S]: F:覆盖XOR单包恢复、乱序回绕、重放过期和原始�
 windows.rs[IH6S]: F:按Windows SDK ABI动态载入qWAVE并适配流添加查询删除与关闭 | R:code:crates/uu-core/src/native_qos.rs | A:load | S:仅从System32加载，不静态链接可选系统库
 
 ===/home/yfy/Repo/uu_remote/crates/uu-core/src/service_admin/===
-package.rs[OS7T]: F:在提权前验证Windows完整包来源、动态SDK运行库白名单和文件摘要 | R:code:crates/uu-core/src/service_admin/windows.rs,code:tools/windows/package.py | A:verify,executable_files | S:format4限定SDK与带哈希名的Rust标准库并要求SDK身份；混版和未知格式拒绝；预检不替代安装侧路径保护及载荷复核
-windows.rs[IS8M]: F:实现后台服务的Windows管理员命名管道、安装路径和进程身份验证 | R:code:crates/uu-core/src/service_admin.rs | A:Paths,Installed,Descriptor | S:仅提升管理员与System可访问；发送配对码前核实服务端为System且执行受保护安装程序
+package.rs[OS7T]: F:提权前验证Windows完整包来源、新旧可执行文件名及SDK运行库白名单和摘要 | R:code:crates/uu-core/src/service_admin/windows.rs,code:tools/windows/package.py | A:verify,executable_files | S:format5限定Eclipse新名称，format1至4保留旧名称；format4起要求SDK身份及哈希名标准库；混版未知格式拒绝，预检不替代安装侧保护
+windows.rs[IS8M]: F:实现Windows管理员管道、受保护安装路径与版本化二进制身份校验 | R:code:crates/uu-core/src/service_admin.rs | A:Paths,Installed,Descriptor | S:安装记录v1使用旧名称，v2使用Eclipse名称；不按文件存在回退；仅提升管理员与System可访问，发送配对码前核实服务端身份及受保护路径
 
 ===/home/yfy/Repo/uu_remote/crates/uu-core/src/wlan_streaming/===
 windows.rs[IH6S]: F:动态加载系统WLAN接口并安全封装枚举查询和媒体提示请求 | R:code:crates/uu-core/src/wlan_streaming.rs | A:load | S:不注册通知或修改全局设置，系统返回数组计数先校验
 
 ===/home/yfy/Repo/uu_remote/crates/uu-gui/===
-Cargo.toml[FV5T]: F:声明原生egui窗口、渲染输入和通用动态插件SDK及平台依赖 | R:code:crates/uu-gui/src/main.rs,code:crates/uu-plugin-sdk/Cargo.toml | A:- | S:没有具体插件数据模型或静态依赖，默认特性为空；VAAPI同时作用于核心和SDK
-build.rs[OV6S]: F:嵌入主程序源码版本、修改状态和Windows产品资源 | R:code:crates/uu-gui/build_support.rs,code:assets/branding/README.md | A:main | S:仅识别自身源码根的Git身份，不借用外部仓库revision；独立插件检出不改变主程序dirty状态
+Cargo.toml[FV5T]: F:声明eclipse图形二进制、原生egui渲染输入和通用动态SDK及平台依赖 | R:code:crates/uu-gui/src/main.rs,code:crates/uu-plugin-sdk/Cargo.toml | A:- | S:crate内部名称保持独立于可执行文件名；无具体插件数据或静态依赖，VAAPI同步核心和SDK
+build.rs[OV6S]: F:嵌入GUI源码版本和修改状态，为eclipse目标链接Windows产品资源 | R:code:crates/uu-gui/build_support.rs,code:assets/branding/README.md | A:main | S:只识别自身源码根Git身份，不借用外部仓库revision；插件检出不改变主程序dirty状态，资源link-arg须匹配bin目标
 build_support.rs[KV5T]: F:校验Git来源提交并把语义版本转换为Windows资源数字版本 | R:code:crates/uu-gui/build.rs | A:windows_version,valid_revision | S:移除预发布与构建后缀，三段数字均需落在u16范围
 
 ===/home/yfy/Repo/uu_remote/crates/uu-gui/examples/===
@@ -270,8 +270,8 @@ pairing_ui.rs[AI7S]: F:呈现公钥短码密码等配对选择及主机权限编
 platform.rs[IU9L]: F:管理原生窗口放置DPI焦点以及Windows和Wayland键盘捕获集成 | R:code:crates/uu-gui/src/keyboard_capture.rs,code:crates/uu-gui/src/wayland_capture.rs | A:Platform,startup_origin | S:切接收会话前释放原远端键鼠手柄；hook需存活才启用系统捕获，诊断只记归属元数据不记键内容
 remote_admin_ui.rs[AU6T]: F:通过认证管理客户端显示主机设置权限并提交保存与断开请求 | R:code:crates/uu-core/src/host_admin.rs | A:RemoteAdminUi | S:刷新快照不覆盖未保存草稿，所有请求跟踪对应回执
 server_config_ui.rs[AU6S]: F:为本地与远程服务设置共用采集编码音频和许可编辑器 | R:code:crates/uu-core/src/device_book.rs | A:edit,capture | S:客户端临时码率选择不改主机配置；PyroWave需明确选择且不加入自动编码列表
-service_ui.rs[AO7L]: F:提供Windows管理员后台服务管理及显式插件同步的UAC动作调度 | R:code:crates/uu-core/src/service_admin/windows.rs,code:crates/uu-gui/src/server_config_ui.rs,code:crates/uu-cli/src/service_cli/install.rs | A:Entry,dispatch | S:退出管理窗口不停止服务；安装需核验完整包；插件同步为显式操作，保留未保存编辑
-sessions.rs[AU7M]: F:把通用插件及原生连接目标和不可变快照交给串流工作区并跟踪子进程 | R:code:crates/uu-gui/src/stream_workspace.rs,code:crates/uu-core/src/local_workspace.rs | A:StreamTarget,ConnectionTarget,Sessions | S:插件敏感载荷以Zeroizing保存并走最大16KiB的stdin，参数只含公开身份；同目标仍走IPC；启动器退出不杀串流
+service_ui.rs[AO7L]: F:提供Windows后台服务管理、显式插件同步与版本匹配程序的UAC动作调度 | R:code:crates/uu-core/src/service_admin/windows.rs,code:crates/uu-gui/src/server_config_ui.rs,code:crates/uu-cli/src/service_cli/install.rs | A:Entry,dispatch | S:安装记录决定新旧CLI名称；退出管理窗不停止服务；安装须完整核验包，插件同步显式执行并保留未保存编辑
+sessions.rs[AU7M]: F:向当前图形程序的串流工作区交付通用插件或原生目标快照并跟踪子进程 | R:code:crates/uu-gui/src/stream_workspace.rs,code:crates/uu-core/src/local_workspace.rs | A:StreamTarget,ConnectionTarget,Sessions | S:启动使用实际exe路径不依赖旧名称；插件敏感载荷Zeroizing且走最多16KiB的stdin，参数只含公开身份；同目标仍走IPC，启动器退出不杀串流
 settings.rs[PC8L]: F:持久化应用客户端偏好、分类草稿与插件管理，并按会话能力保存配置 | R:code:crates/uu-core/src/client_settings.rs,code:crates/uu-gui/src/settings_page.rs,code:crates/uu-gui/src/plugin_ui.rs | A:Settings,save_json,save_bytes | S:分类切换保留草稿且恢复仅当前分类；自动保存重验损坏原件；多窗口合并保留应用偏好，插件客户端设置交给插件私有存储
 settings_page.rs[AU6L]: F:绘制分类软件与共用客户端设置，根据能力限制帧率编码及码率策略 | R:code:crates/uu-gui/src/settings.rs,code:crates/uu-gui/src/shortcuts_ui.rs,code:crates/uu-plugin-sdk/src/lib.rs | A:Section,SoftwareSection,show,client_editor | S:绘制只返回动作不执行副作用；开分类不制造快捷键变化；服务端自动码率与LAN推荐由能力区分
 sharing_ui.rs[AU8L]: F:统一GUI主机IP、自建和已安装插件入口的配对、权限与停止重启 | R:code:crates/uu-core/src/host_runtime.rs,code:crates/uu-core/src/shared_host.rs | A:HostUi,permissions | S:保存下次重启生效；重启先释放旧监听和所有权；插件入口按ID跟踪，OS剪贴板只由授权GUI创建
@@ -282,7 +282,7 @@ stream_menu.rs[AU8L]: F:管理连接悬浮菜单及能力驱动的画质声音�
 stream_workspace.rs[AU9L]: F:在单进程拥有多设备会话并跨原生窗口移动设备组，传递通用插件启动载荷 | R:code:crates/uu-core/src/local_workspace.rs,code:crates/uu-gui/src/sessions.rs | A:Workspace,Launch | S:插件敏感载荷Zeroizing且受16KiB界限；拆并不重建controller解码器或传输；新surface存在后重定向输入，GL限定事件循环线程
 stream_workspace_tests.rs[TU6L]: F:以真实窗口与生成视频覆盖挂接、暂停观察、排序拆分关闭和插件载荷往返 | R:code:crates/uu-gui/src/stream_workspace.rs,code:crates/uu-gui/src/main.rs | A:- | S:不采桌面或注入输入；子viewport截图在该viewport自己的pass采集
 theme.rs[DU5T]: F:向GUI重导出共享SDK的颜色与控件主题 | R:code:crates/uu-plugin-sdk/src/theme.rs | A:apply | S:-
-ui.rs[AU7M]: F:绘制提供方无关的主页导航、插件入口和串流画面并复用SDK控件 | R:code:crates/uu-gui/src/workspace_ui.rs,code:crates/uu-gui/src/stream_menu.rs,code:crates/uu-plugin-sdk/src/ui.rs | A:- | S:仅邮箱新图像首次提交更新绘制帧率和连续性；普通UI重绘不计新视频帧
+ui.rs[AU7M]: F:绘制提供方无关的主页串流与插件自有图标导航并复用SDK控件 | R:code:crates/uu-gui/src/workspace_ui.rs,code:crates/uu-gui/src/stream_menu.rs,code:crates/uu-plugin-sdk/src/ui.rs | A:- | S:插件图标来自页面描述，缺图标才用扩展符号；仅邮箱新图像首次提交更新绘制帧率和连续性，普通重绘不计视频帧
 ui_feedback.rs[DU5S]: F:按页面作用域显示可关闭的错误和短期成功信息提示 | R:code:crates/uu-gui/src/workspace_ui.rs | A:Feedback,Scope,Kind | S:成功2秒、信息4秒，错误保留直到处理或关闭
 video.frag[KU7T]: F:采样多平面视频并进行范围矩阵转换、HDR映射与光标合成 | R:code:crates/uu-gui/src/video_texture.rs,code:crates/uu-gui/src/video_cursor.rs | A:main | S:HDR输出按目标SDR白点归一化；SDR回退按源白点映射
 video.vert[KU5T]: F:用顶点ID生成全屏三角形和翻转垂直纹理坐标 | R:code:crates/uu-gui/src/video.frag | A:main | S:-
@@ -299,12 +299,12 @@ wayland_capture.rs[IU7S]: F:对所属Wayland surface启停合成器系统快捷�
 wgl_interop.rs[IH6T]: F:动态解析WGL DX共享纹理API供解码导入与HDR呈现共用 | R:code:crates/uu-gui/src/video_d3d11.rs,code:crates/uu-gui/src/video_hdr.rs | A:Api | S:需当前DC与扩展支持，拒绝wglGetProcAddress特殊无效指针值
 window.rs[AU7L]: F:处理无边框缩放、串流初始尺寸与跨DPI显示器几何收敛 | R:code:crates/uu-gui/src/platform.rs | A:Geometry,Snapshot | S:按实际当前DPI几何观测而非旧egui坐标换算；窗口限目标工作区80%，尺寸等待有界不无限对抗窗口管理器
 window_context.rs[RU7T]: F:把命令与异步唤醒绑定会话当前viewport并提供视频单次重绘 | R:code:crates/uu-gui/src/stream_workspace.rs | A:Context,request_video_frame | S:视频以1ns延迟选择单pass接口，由egui预测抵消为即时唤醒，避免额外控件settling绘制
-workspace_ui.rs[AU8L]: F:编辑通用设备路由和客户端配置，路由分类与插件管理页并管理共享和背景 | R:code:crates/uu-core/src/device_book.rs,code:crates/uu-gui/src/settings_page.rs,code:crates/uu-gui/src/plugin_ui.rs,code:crates/uu-gui/src/sharing_ui.rs | A:Page,DeviceView,SettingsView,Action | S:提供方来自已启用注册表；未知路由保留；修改路由不改身份，刷新不丢草稿；背景异步刷新且关闭壁纸禁用；共享保存重启生效
+workspace_ui.rs[AU8L]: F:编辑通用设备和客户端配置，路由分类与插件管理并嵌入提供方连接设置 | R:code:crates/uu-core/src/device_book.rs,code:crates/uu-gui/src/plugin_ui.rs,code:crates/uu-gui/src/settings_page.rs,code:crates/uu-gui/src/sharing_ui.rs | A:Page,DeviceView,SettingsView,Action | S:插件连接设置位于所属提供方卡片内且在自建服务之前；提供方只取启用注册表，未知路由保留；改路由不改身份，刷新不丢草稿，共享保存后重启生效
 video_dxgi_receipt.rs[IO8L]: F:在当前呈现所有者内以DXGI Count关联冻结图像，向端到端模型提交经验显示区间 | R:code:crates/uu-gui/src/video_frame_observation.rs,code:crates/uu-media/src/present_observation.rs,code:crates/uu-core/src/video_e2e.rs | A:Bridge | S:区间从图像最早已知提交前至首次对应回执查询后；跳号不能证明未显示；错误、零Count、缺口、溢出或换代退役，缓存不得补首显；清理只作用所属观察者；不使用SyncQPCTime猜显示或增加GPU等待
 video_frame_observation.rs[DO7S]: F:把解码输出冻结身份与弱会话关联并管理原生显示观察者的生命周期 | R:code:crates/uu-core/src/display_frames.rs,code:crates/uu-core/src/video_e2e.rs,code:crates/uu-gui/src/video_dxgi_receipt.rs | A:FrameIdentity,FrameObservation | S:Present不重查较新PTS；RGBA无冻结元数据就无身份；媒体或观测退役后缓存不可复活；旧窗口清理不得清新观察者
 video_present_trace.rs[RO7L]: F:把原生Present原始统计与冻结图像身份非阻塞送至有界后台文件并确认退出完整性 | R:code:crates/uu-gui/src/video_frame_observation.rs,code:crates/uu-media/src/present_observation.rs,code:crates/uu-gui/src/main.rs | A:Producer,Row,from_env,shutdown | S:显式新文件路径才创建sink，create_new不覆盖；渲染只try_send，512项队列及32MiB预算；事件循环退出最多等两秒；缺终止记录或丢项保持不完整，原始提交不代表显示
 hud_statistics.rs[KO5S]: F:保留有界计数器历史，计算3/10/60分钟增量和实际记录覆盖 | R:code:crates/uu-gui/src/hud.rs,code:crates/uu-gui/src/hud_panel.rs | A:Statistics,WINDOWS | S:媒体或轨道换代、倒时和计数回退均清历史；不足窗口不外推，窗口增量不混会话累计
-plugin_ui.rs[AE8S]: F:管理动态插件扫描启停、独立页面状态与能力，并执行通用连接和刷新动作 | R:code:crates/uu-plugin-sdk/src/runtime.rs,code:crates/uu-core/src/plugins/preferences.rs,code:crates/uu-gui/src/sessions.rs | A:Manager | S:手动CAS保存启用状态；坏配置停用新调用而保留文件；每窗口自有页面，跨进程更新按epoch退役；停用不结束已有串流
+plugin_ui.rs[AE8S]: F:管理插件发现启停、自有导航布局和嵌入页面，并执行通用会话及主页导航动作 | R:code:crates/uu-plugin-sdk/src/runtime.rs,code:crates/uu-core/src/plugins/preferences.rs,code:crates/uu-gui/src/sessions.rs | A:Manager | S:每窗口持有页面状态，导航页由插件拥有侧栏与中央面板；启用CAS保存，跨进程回复按epoch退役；坏配置保留原件并停用新调用，既有串流不终止
 
 ===/home/yfy/Repo/uu_remote/crates/uu-i18n-macros/===
 Cargo.toml[FL4T]: F:声明双语格式检查过程宏及语法树和目录读取依赖 | R:code:crates/uu-i18n-macros/src/lib.rs | A:- | S:-
@@ -315,7 +315,7 @@ lib.rs[LL6T]: F:合并主目录与消费crate自有目录，展开双语格式�
 ===/home/yfy/Repo/uu_remote/crates/uu-i18n/===
 Cargo.toml[FL4T]: F:声明应用语言库、双语宏和构建时目录依赖 | R:code:crates/uu-i18n/src/lib.rs | A:- | S:-
 build.rs[OL5T]: F:把翻译JSON生成到OUT_DIR的静态匹配函数 | R:code:crates/uu-i18n/catalogue.json,code:crates/uu-i18n/src/catalogue.rs | A:main | S:目录变化触发重建，生成物不写回源码目录
-catalogue.json[FL6L]: F:维护主程序设置、插件管理、串流及HUD诊断的英文静态模板 | R:code:crates/uu-i18n/build.rs,code:crates/uu-i18n-macros/src/lib.rs | A:- | S:具体插件词汇归插件目录；格式占位符须一致，用户与远端内容不翻译
+catalogue.json[FL6L]: F:维护主程序插件管理、HUD和完整Eclipse包更新提示的英文模板 | R:code:crates/uu-i18n/build.rs,code:crates/uu-i18n-macros/src/lib.rs | A:- | S:具体插件词汇归插件目录；占位符与源模板一致，用户与远端内容不翻译
 
 ===/home/yfy/Repo/uu_remote/crates/uu-i18n/src/===
 catalogue.rs[LL4T]: F:把构建生成的静态英文查询函数引入语言库 | R:code:crates/uu-i18n/build.rs | A:- | S:-
@@ -473,7 +473,7 @@ hud.md[SO5T]: F:说明精简HUD外观与六四诊断布局、Est.Total波动及�
 keyboard-capture.md[SU6T]: F:规定整条键盘流的捕获归属、临时暂停和长按释放，说明可配置客户端命令与平台限制 | R:code:crates/uu-gui/src/keyboard_capture.rs,code:crates/uu-core/src/hotkeys.rs | A:- | S:UU修饰键刷新限官方兼容；状态与隔离hook测试不能替代实体桌面验收
 keyboard-shortcuts.md[SU5T]: F:说明全局应用快捷键录制、Ctrl+Alt+Shift默认值、实际提示与冲突和嵌套透传 | R:code:crates/uu-core/src/hotkeys.rs,code:crates/uu-gui/src/shortcuts_ui.rs | A:- | S:设备配置不覆盖应用绑定；显式自定义和禁用保留；透传须保留退出绑定，改绑定先松修饰键
 licensing-and-compatibility.md[SS6T]: F:区分项目双许可、第三方来源、官方服务接入和编解码专利边界 | R:code:LICENSE,code:THIRD-PARTY-NOTICES.txt | A:- | S:原创代码许可不代表网易接入授权；依赖生成清单不是法律审计
-linux-client.md[SH5S]: F:说明独立主程序的Linux构建、门户共享、硬解诊断和可选动态插件 | R:code:tools/linux/package.py,code:docs/native-capture.md,code:docs/plugins.md | A:- | S:Wayland不以Xwayland替代授权桌面；能力须真实出图验证，具体插件须独立安装启用
+linux-client.md[SH5S]: F:说明Linux主程序构建、Eclipse启动入口与旧别名、门户共享和硬解诊断 | R:code:tools/linux/package.py,code:docs/native-capture.md,code:docs/plugins.md | A:- | S:Wayland不以Xwayland替代授权桌面；能力须实际出图验证；具体插件单独安装启用
 native-audio.md[SH5T]: F:说明显式系统输出采集、Opus与RED恢复和客户端声音控制及隔离验证 | R:code:crates/uu-media/src/audio_capture.rs | A:- | S:无麦克风回退；FEC或PLC尝试不能计作已证实恢复
 native-capture.md[SH5T]: F:记录X11、Wayland与DXGI采集接口、授权和诊断方式 | R:code:crates/uu-capture/src/lib.rs,code:docs/native-encoding.md | A:- | S:包含早期Windows CPU路径描述，当前GPU能力须结合编码和HDR说明
 native-clipboard.md[SU5T]: F:说明原生文本图片剪贴板双边许可、前台范围和隔离验证 | R:code:crates/uu-core/src/native_clipboard.rs | A:- | S:两端默认关闭，半张图片不写系统；只读控制端可接收但不发本地内容
@@ -482,12 +482,12 @@ native-encoding.md[SH6S]: F:说明平台硬编选择、GPU输入所有权、码�
 native-fec.md[SR5T]: F:定义原生XOR视频校验协商、预算、有界缓存与恢复计数 | R:code:crates/uu-core/src/native_fec.rs | A:- | S:不是标准ULPFEC或Sunshine格式；PR寿命需正值，重建数不等于实际丢包数
 native-gamepad.md[SH5T]: F:说明四槽原生手柄传感器、焦点控制权与虚拟驱动要求 | R:code:crates/uu-core/src/native_gamepad.rs | A:- | S:250ms陈旧中立；SI传感器单位和两套DS4校准不能混用，未实现震动
 native-input.md[SU6T]: F:说明主机输入许可、HID坐标、客户端控制命令和租约释放及隔离验证 | R:code:crates/uu-core/src/native_control.rs,code:docs/keyboard-shortcuts.md | A:- | S:按下成功才拥有，复位带外不受队列满影响；Windows DPI上下文保持至SendInput完成
-native-internet.md[SN6S]: F:说明自建和可选插件公网寻址、设备授权、直连与显式中转及服务部署 | R:code:crates/uu-core/src/internet.rs,code:docs/plugins.md | A:- | S:信令服务不是媒体中继；默认关闭TURN，具体插件可显式允许UDP；候选存在不证明选中路径
-native-lan.md[SN5T]: F:说明默认LAN发现、持久配对、监听冲突、多会话及共享范围内切屏 | R:code:crates/uu-core/src/native_lan.rs | A:- | S:发现不是授权；TCP冲突不换端口伪装成功，UDP失败仍可手动连接
+native-internet.md[SN6S]: F:说明自建及可选插件公网寻址授权、显式中转和Eclipse信令程序部署 | R:code:crates/uu-core/src/internet.rs,code:docs/plugins.md | A:- | S:信令不等于媒体中继；默认关闭TURN，可选插件显式允许UDP；存在候选不证明实际选中
+native-lan.md[SN5T]: F:说明LAN发现持久配对、监听冲突与多会话切屏及Eclipse命令行入口 | R:code:crates/uu-core/src/native_lan.rs | A:- | S:发现不是授权；TCP冲突不换端口伪装成功，UDP失败仍可手动连接
 native-latency.md[SO5T]: F:说明同帧端到端区间、跨机校时、输入确认及独立阶段统计与采集时钟边界 | R:code:crates/uu-core/src/native_timing.rs,code:crates/uu-core/src/frame_trace.rs,code:crates/uu-core/src/video_e2e.rs | A:- | S:跨机原始时钟不可相减；四时间戳只约束偏移区间；重复源不增样本，缺首显保持未知；不同总体均值不能相减推精确阶段
 native-pairing.md[SS5T]: F:说明早期邀请文件TLS固定证书与短期访问凭据的生命周期 | R:code:crates/uu-core/src/native_pairing.rs | A:- | S:邀请等同访问许可且可在期限内复用，不是一次性码；新GUI授权以设备文档为准
 native-public-connectivity.md[SN4S]: F:保留原生公网信令与可替换STUN的前期架构及服务适配比较 | R:code:docs/native-internet.md | A:- | S:其中未实现与取消描述属历史，以文首链接的当前实现说明为准
-native-streaming.md[SN5T]: F:保留邀请式原生观看和CLI生成源及桌面共享用法并说明当前客户端快捷键 | R:code:docs/native-lan.md,code:crates/uu-cli/src/native_cli.rs | A:- | S:旧入口默认loopback与软件编码，不能据此推断新GUI默认设置
+native-streaming.md[SN5T]: F:说明邀请式原生观看、Eclipse命令行生成源及桌面共享和快捷键 | R:code:docs/native-lan.md,code:crates/uu-cli/src/native_cli.rs | A:- | S:旧入口默认loopback与软件编码，不能推断GUI默认配置
 official-client-capture.md[SN4S]: F:记录用Frida观察官方客户端应用层明文与PCK帧的诊断方法 | R:code:docs/protocol-notes.md | A:- | S:函数偏移绑定特定二进制，抓包含私有数据不能发布
 official-mobile-client-feasibility.md[SN6T]: F:记录官方客户端兼容协议证据、独立插件实验入口与分阶段实机验收范围 | R:code:docs/plugins.md,code:crates/uu-core/src/plugins.rs | A:- | S:插件和官方被控许可需分别手动开启；生成回归不代表真实手机互通，兼容入口没有Eclipse管理权限
 plugins.md[SE7T]: F:说明独立运行时插件下载启用、精确SDK契约、生命周期和分仓构建发布 | R:code:crates/uu-plugin-sdk/src/lib.rs,code:crates/uu-plugin-sdk/src/loader.rs,code:crates/uu-plugin-sdk/src/runtime.rs | A:- | S:主程序无具体插件依赖；所有安装默认关闭；原生Rust ABI须精确匹配且成功库永久映射；System插件及账号需显式导入
@@ -506,7 +506,7 @@ uu-cloud-native-connection.md[SN4S]: F:保留UU账号寻址、信令与会话ICE
 uu-device-identity.md[SI5T]: F:说明独立UU注册身份、硬件资料更新、显示名与确认解绑规则 | R:code:plugins/uu-compat/src/registration.rs | A:- | S:不复用官方注册资料；同名不合并，解绑不撤销原生公钥权限
 vision.md[SW4T]: F:区分日常兼容客户端、自有Eclipse串流和长期产品方向 | R:code:docs/roadmap.md | A:- | S:路线不代表已交付能力或日期承诺
 windows-background-service.md[SS6T]: F:说明受保护Windows后台安装、控制台身份、锁屏与管理员管理 | R:code:crates/uu-cli/src/service_cli/supervisor.rs | A:- | S:System媒体绑定已选用户控制台，注销需停止；关闭管理窗口不停止服务
-windows-build.md[SV5T]: F:说明独立主程序Windows GNU构建、格式4共享运行库清单及安装更新 | R:code:tools/windows/package.py,code:docs/plugins.md | A:- | S:使用win32线程模型；缓存核验来源；更新文件不结束旧进程，具体插件另行获取
+windows-build.md[SV5T]: F:说明Windows GNU构建、格式5的Eclipse程序与共享运行库及分发符号精简 | R:code:tools/windows/package.py,code:docs/plugins.md | A:- | S:分发副本精简符号，构建目录保留排障符号；新旧包按各自清单核验，运行进程不随文件更新；具体插件另行获取
 windows-latency.md[SP5M]: F:解释Windows呈现路径、独立子窗口翻转交换链及CPU与显示计时和实测边界 | R:code:crates/uu-media/src/hdr_present.cpp,code:docs/performance/optimization-scope.md | A:- | S:Present成功或非黑读回不证明新帧显示，交换链类型不保证收益；HUD CPU耗时与GPU执行及扫描分开
 present-observation-profiling.md[SO6T]: F:说明原始Present诊断启停、身份匹配、文件完整性及与ETW唯一关联的方法 | R:code:crates/uu-gui/src/video_present_trace.rs,code:crates/uu-media/src/present_observation.rs,code:docs/hud.md | A:- | S:文件默认关闭，显式新路径才启用；缺终止或丢观测不称完整；PresentMon须绑定同进程同链和唯一API区间，不能用最近时间或SyncQPCTime猜显示
 
@@ -608,8 +608,8 @@ generate.py[OV5T]: F:根据指定锁定Cargo清单向指定输出目录生成依
 .gitignore[FV2T]: F:忽略Linux工具Python字节码缓存 | R:- | A:- | S:-
 README.txt[SV4T]: F:提供Linux完整包安装、原生兼容入口和Ctrl+Alt+Shift默认快捷键与依赖说明 | R:code:tools/linux/install.py | A:- | S:升级保留凭据和设置，门户控制受系统授权
 audio_smoke.py[TH5T]: F:在自有PipeWire空输出上确认Opus播放信号 | R:code:crates/uu-media/examples/audio_probe.rs | A:main | S:只记录自有测试音，不录工作桌面声音
-install.py[OV7S]: F:核验Linux完整包及动态SDK运行库后安装版本目录并切换入口 | R:code:tools/linux/package.py | A:verify_package,desktop_entry,main | S:format3限定SDK和带哈希的Rust标准库；复用版本也复核摘要和来源；Desktop Entry独立转义不经shell
-package.py[OV7S]: F:构建含VAAPI、PyroWave和共享SDK的Linux主程序包并验证归档缓存 | R:code:tools/linux/install.py,code:tools/release/plugin_sdk.py,code:tools/release/source.py | A:main,source_revision | S:主程序源码须干净且无需具体插件；format3收齐SDK和Rust标准库；缓存恢复核验全部载荷与来源
+install.py[OV7S]: F:核验Linux完整包和动态SDK后安装版本目录，创建Eclipse入口及兼容旧别名 | R:code:tools/linux/package.py | A:verify_package,executables,desktop_entry,main | S:format4用Eclipse名称，旧格式保留原名；format3起限定SDK与哈希名标准库；复用也核来源摘要，Desktop Entry独立转义不经shell
+package.py[OV7S]: F:构建含VAAPI、PyroWave和共享SDK的Eclipse命名Linux包并核验归档缓存 | R:code:tools/linux/install.py,code:tools/release/plugin_sdk.py,code:tools/release/source.py | A:main,source_revision | S:format4收齐新命名程序与SDK标准库；源码须干净且不需具体插件；缓存恢复复核全部载荷和来源及执行权限
 wayland_smoke.py[TU5M]: F:在自有headless合成器启动兼容串流并检查窗口和Ctrl+Alt+Shift快捷键 | R:code:crates/uu-gui/examples/wayland_input.rs | A:main | S:使用明确既有账号与目标，输入仅自有合成器，不向日常桌面注入
 
 ===/home/yfy/Repo/uu_remote/tools/native/===
@@ -625,14 +625,14 @@ portal_smoke.py[TH6M]: F:在私有DBus与生成PipeWire流上模拟门户授权�
 smoke.py[TN5S]: F:用两个真实CLI进程验证localhost认证加密生成音视频与清理 | R:code:crates/uu-cli/src/native_cli.rs | A:run,main | S:独立私有配置和短期邀请，不能读真实账号或桌面
 socket_trace_analysis.py[KO5T]: F:离线唯一关联原始socket头与认证primary记录并统计帧交付间隔 | R:code:crates/uu-core/src/socket_trace.rs | A:analyze | S:不参加线上安全判定，重复头不猜配；API返回不是网卡时间
 uhid_contract_smoke.c[TH5T]: F:以自有UNIX socket核验UHID创建报告输入及回复的真实UAPI布局 | R:code:crates/uu-input/src/gamepad/uhid.c | A:main | S:不打开内核虚拟设备，ABI检查不代表实机手柄验收
-vpl_contract_smoke.py[TH5T]: F:构建隔离伪VPL运行库并演练ABI参数拒绝、所有权及可选原生AV1传输 | R:code:tools/native/vpl_runtime_fixture.c | A:main | S:hardware_used必须false，不是GPU能力验收
+vpl_contract_smoke.py[TH5T]: F:在隔离伪VPL运行库中验证ABI参数拒绝、资源所有权与可选原生AV1传输 | R:code:tools/native/vpl_runtime_fixture.c | A:main | S:夹具目录优先但保留继承的动态库搜索路径以加载Rust运行库；hardware_used必须false，不代表GPU验收
 vpl_runtime_fixture.c[TH5T]: F:模拟VPL公开函数并注入驱动参数变化与资源关闭错误 | R:code:crates/uu-media/src/vpl/native.c | A:MFXLoad,MFXCreateSession | S:只作隔离测试替身，禁止安装为真实运行库
 wayland_host_input.py[TU5S]: F:在自有双缩放Sway输出与终端中验证主机输入真实交付 | R:code:crates/uu-input/examples/wayland_owned_probe.rs | A:main | S:只连私有合成器，终端字节和指针报告证明目标输出而非日常桌面
 wayland_portal_startup.py[TH5M]: F:用自有Sway、DBus和PipeWire验证真实wlr门户启动与取消切屏 | R:code:crates/uu-core/examples/native_startup_probe.rs | A:inside,main | S:只链接自有生成视频端口，不启硬件发现或改变用户门户环境
 wayland_smoke.py[TU5M]: F:在隔离Sway运行原生生成会话验证窗口混合DPI及Ctrl+Alt+Shift快捷键 | R:code:crates/uu-gui/examples/wayland_input.rs | A:main | S:锁定已映射串流surface而非隐藏协调窗口，焦点与输入限夹具
 windows_latency_observer.py[TO6S]: F:在独立进程读取有限绘制进度和窗口资源清单，避免阻塞刺激绘制 | R:code:tools/native/windows_latency_worker.py | A:PaintPage,collect,run | S:seqlock页唯一生产者，父进程join两端后合并；PID须匹配创建时间
 windows_latency_scene.py[TH5M]: F:生成固定种子全源图样并只读核对交互窗口身份、覆盖及外部变化 | R:code:tools/native/windows_latency_worker.py | A:manifest,Renderer,window_snapshot | S:Session0拒绝窗口盘点，不修改外部窗口或显示设置
-windows_latency_worker.py[TP6L]: F:在新隔离目录运行有期限Windows原生延迟刺激、采样和产品进程 | R:code:tools/native/windows_latency_observer.py,code:tools/native/windows_latency_scene.py | A:StimulusReport,main | S:须交互控制台普通用户；不装服务或打开既有配置，失败仍保留最终证据
+windows_latency_worker.py[TP6L]: F:在新隔离目录运行有期限Windows延迟刺激采样与Eclipse产品进程并记录源清单 | R:code:tools/native/windows_latency_observer.py,code:tools/native/windows_latency_scene.py | A:StimulusReport,main | S:须交互控制台普通用户；只使用自有生成源，不装服务或打开既有配置，失败保留最终证据
 windows_owned_station.rs[TS6S]: F:为Windows图形与输入探针创建全新非交互窗口站和桌面并恢复归属 | R:code:crates/uu-gui/examples/video_renderer_probe.rs | A:Station | S:不打开已有站或切用户桌面；全部GL和自有窗口销毁后才恢复站
 plugin_probe.rs[TE6T]: F:用主程序实际SDK验证指定独立插件发现、默认关闭、启用页面与停用后对象存活 | R:code:crates/uu-plugin-sdk/src/runtime.rs,code:tools/release/plugin_sdk.py | A:main | S:只接受新建生成配置目录和显式插件ID；不读取真实账号，不能代表Windows桌面验收
 
@@ -644,19 +644,19 @@ sources.json[FV5T]: F:锁定PyroWave C API、Granite及Vulkan头和volk的完整
 check_version.py[XV5T]: F:校验发布标签格式及其与workspace版本逐字一致 | R:code:Cargo.toml | A:validate,main | S:仅v三段版本与合法预发布后缀可通过
 download.py[OV6S]: F:从正式GitHub发布下载核验含共享SDK的双平台完整包后更新本地指针 | R:code:tools/windows/package.py,code:tools/linux/install.py | A:download,linux_manifest | S:Linux清单复用安装器规则；全部选定包的标签提交和逐文件哈希通过才改指针；只检查不安装或执行
 source.py[OV7T]: F:为双平台打包验证源码清洁及所有递归子模块与固定提交一致 | R:code:tools/windows/package.py,code:tools/linux/package.py | A:revision | S:覆盖Git的子模块忽略配置；未初始化、换提交或未提交插件源码均阻止打包
-plugin_sdk.py[OV8T]: F:从生产Cargo图捕获共享SDK与编译器运行库，核对消费者特性和Windows导入符号 | R:code:crates/uu-plugin-sdk/build.rs,code:tools/windows/package.py,code:tools/native/plugin_probe.rs | A:build,verify_consumer,verify_windows_imports | S:以GUI和CLI生产选择构建而非裸SDK测试；要求唯一artifact和元数据；PE符号匹配整行排除结束记录，特性图相同不替代实际DLL验证
+plugin_sdk.py[OV8T]: F:捕获生产共享SDK和编译器运行库，核对消费者特性与Windows导入并精简分发符号 | R:code:crates/uu-plugin-sdk/build.rs,code:tools/windows/package.py,code:tools/native/plugin_probe.rs | A:build,verify_consumer,verify_windows_imports,strip_windows_binary | S:使用GUI与CLI生产选择而非裸SDK；要求唯一artifact和元数据；只strip分发副本以保留排障符号；PE整行匹配排除结束记录，特性图不替代实际DLL核验
 
 ===/home/yfy/Repo/uu_remote/tools/security/===
 scan_secrets.py[XS7S]: F:递归扫描主仓库与子模块源码历史及归档中的禁止凭据和邀请 | R:code:SECURITY.md,code:.gitmodules | A:inspect,history,artifact,source_repositories | S:未初始化子模块拒绝扫描；公开PC值仅按精确路径指纹放行，显式forbid仍检查且不打印值
 
 ===/home/yfy/Repo/uu_remote/tools/windows/===
 .gitignore[FV2T]: F:忽略Windows工具Python字节码缓存 | R:- | A:- | S:-
-README.txt[SV4T]: F:说明Windows完整包安装更新、独立插件启用及原生媒体与默认快捷键 | R:code:tools/windows/install.ps1,code:docs/plugins.md | A:- | S:安装保留配置与既有进程；更新需退出旧窗口并保留包内运行库
-install.ps1[OV7S]: F:预检含共享SDK的Windows完整包并备份替换白名单载荷和失败回滚 | R:code:tools/windows/package.py | A:Resolve-PackagePath | S:format4限定SDK及哈希名Rust库；默认同卷rename保留已加载文件；拒盘根，配置不在替换白名单
+README.txt[SV4T]: F:说明Windows完整包安装、Eclipse命令行、独立插件与原生媒体和默认快捷键 | R:code:tools/windows/install.ps1,code:docs/plugins.md | A:- | S:保留设置和既有进程；更新需退出旧窗口并保留全部运行库
+install.ps1[OV7S]: F:校验新旧Windows包并归档旧命名程序，替换Eclipse载荷和快捷方式且失败回滚 | R:code:tools/windows/package.py | A:Resolve-PackagePath | S:format5选新名称并将旧EXE移入归档，format1至4保持原名；SDK运行库白名单严格核验；同卷rename保留已加载文件，用户配置不入替换集，退役文件也参与回滚
 keyboard-fixture.ps1[TU4T]: F:在指定交互测试桌面展示自有输入窗并记录有界键鼠交付证明 | R:code:docs/keyboard-capture.md | A:- | S:Ctrl复制剪切只计数不触系统剪贴板，不检查其它窗口文字
-package.py[OV7M]: F:以MinGW构建独立主程序和动态SDK运行库并生成核验完整ZIP及来源清单 | R:code:tools/release/plugin_sdk.py,code:tools/windows/vpl_runtime.py,code:tools/pyrowave/build.py,code:tools/release/source.py | A:build_package,verify_package | S:format4收齐SDK与编译器标准库且不含具体插件；源码须已提交，缓存逐文件核验；运行库取实际工具链，拒未知可执行载荷
+package.py[OV7M]: F:以MinGW构建Eclipse及共享SDK，精简分发PE符号后生成完整ZIP与来源摘要 | R:code:tools/release/plugin_sdk.py,code:tools/windows/vpl_runtime.py,code:tools/pyrowave/build.py,code:tools/release/source.py | A:build_package,verify_package | S:format5用新名称，旧格式仍按原清单；只strip临时载荷后校验依赖与哈希，构建目录保留；默认包不含具体插件，源码须干净且缓存逐文件验证
 sync.py[OV6S]: F:核验Windows发布ZIP后用OpenSSH上传并调用安装器 | R:code:tools/windows/package.py,code:tools/windows/install.ps1 | A:sync_package | S:地址需显式参数无开发机默认；远端再次验证摘要和revision
-test_installer.ps1[TV5S]: F:以临时格式4动态运行库包及旧格式验证Windows安装升级回滚和路径解析 | R:code:tools/windows/install.ps1 | A:New-TestPackage,Assert-TestHashes | S:仅生成隔离测试包不操作已有安装；校验失败须早于任何载荷修改
+test_installer.ps1[TV5S]: F:以隔离新旧包验证Eclipse改名升级、配置保留、锁文件回滚及JSON回执的路径归档 | R:code:tools/windows/install.ps1 | A:New-TestPackage,Assert-TestHashes | S:只生成临时包不操作已有安装；旧名称升级须归档而不残留，校验失败早于任何载荷修改
 vpl_runtime.py[OV6S]: F:下载散列锁定Intel源码并构建MIT Windows VPL dispatcher | R:code:tools/windows/package.py | A:verified_archive,verified_source,build_dispatcher | S:安全解包有大小与路径限制，不安装显卡驱动；重用源码先验证身份
 
 ===/home/yfy/Repo/uu_remote/crates/uu-core/src/pipeline_trace/===
@@ -677,8 +677,8 @@ Cargo.toml[FE8T]: F:声明共享动态引擎UI和异步SDK并固定跨消费者�
 build.rs[OV8T]: F:根据共享源码、锁文件、编译器目标配置与特性计算SDK身份并输出构建元数据 | R:code:crates/uu-plugin-sdk/Cargo.toml,code:tools/release/plugin_sdk.py | A:main | S:独立镜像构建用固定引擎源码和锁计算身份；仅共享src与清单及vendor入指纹，测试例子不入；身份不代表稳定ABI或签名
 
 ===/home/yfy/Repo/uu_remote/crates/uu-plugin-sdk/src/===
-lib.rs[LE9S]: F:定义提供方无关的插件清单、隔离上下文、页面动作、客户端能力及版本匹配工厂 | R:code:crates/uu-plugin-sdk/src/loader.rs,code:crates/uu-plugin-sdk/src/runtime.rs,code:crates/uu-core/src/plugins.rs | A:Manifest,Context,Plugin,Entry,ClientSupport,entry | S:C元数据先校验API大小及SDK身份再调用Rust工厂；编译器目标源码特性和flags必须匹配；连接敏感载荷用Zeroizing，插件不得在停用时终止既有会话
+lib.rs[LE9S]: F:定义插件清单隔离上下文、图标与整页导航及嵌入页面、动作和版本匹配工厂 | R:code:crates/uu-plugin-sdk/src/loader.rs,code:crates/uu-plugin-sdk/src/runtime.rs,code:crates/uu-core/src/plugins.rs | A:Manifest,Context,Plugin,PageState,ClientSupport,entry | S:导航页可拥有侧栏中央面板，嵌入页使用show；C元数据先校验大小API和SDK再调用Rust工厂；编译器源码目标特性flags须匹配；连接载荷Zeroizing，停用不得终止既有会话
 loader.rs[IE9T]: F:扫描通用插件清单并校验平台路径摘要和元数据后加载动态工厂 | R:code:crates/uu-plugin-sdk/src/lib.rs,code:crates/uu-plugin-sdk/src/runtime.rs | A:discover,Installed,Loaded | S:最多128目录、64KiB清单和256MiB库；重复ID双方拒绝；库和数据名须为平面文件；成功库ManuallyDrop永久保留，使页面future及vtable可超出发现者生命周期；摘要不是代码可信签名
 runtime.rs[AE9T]: F:统一进程内插件发现加载注册、持久启停和已启用实例获取 | R:code:crates/uu-plugin-sdk/src/loader.rs,code:crates/uu-core/src/plugins.rs,code:crates/uu-core/src/plugins/preferences.rs | A:Runtime,shared | S:目录取当前exe旁plugins；缺配置默认关闭不运行工厂；服务ID须与清单相同；停用拒新get而保留旧Arc；加载后更新须重启，坏配置不覆盖
 theme.rs[DU5S]: F:为主程序和独立插件统一蓝白颜色、控件状态及对比度规则 | R:code:crates/uu-plugin-sdk/src/ui.rs | A:apply | S:-
-ui.rs[AU6M]: F:向主程序和独立插件提供共用图标、导航按钮和基础界面控件 | R:code:crates/uu-plugin-sdk/src/theme.rs | A:Icon,icon | S:共用视觉控件不持有账号或连接状态
+ui.rs[AU6M]: F:提供共用控件和通用图标，按插件静态图像资源缓存绘制自有入口图标 | R:code:crates/uu-plugin-sdk/src/theme.rs | A:Icon,icon | S:图像纹理缓存于当前egui上下文；资源由插件拥有而非主程序识别提供方；控件不持账号连接状态
