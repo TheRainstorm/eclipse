@@ -111,6 +111,7 @@ impl Snapshot {
 pub struct Details {
     snapshot: RwLock<Snapshot>,
     requested: AtomicBool,
+    pub link: crate::link_metrics::Metrics,
 }
 impl Details {
     pub fn set_service(&self, label: &str) {
@@ -231,6 +232,7 @@ impl Monitor {
             let mut timer = tokio::time::interval(Duration::from_secs(1));
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut connected_snapshot = false;
+            let mut sampler = crate::link_metrics::Sampler::default();
             loop {
                 timer.tick().await;
                 let (Some(pc), Some(stats)) = (pc.upgrade(), stats.upgrade()) else {
@@ -248,8 +250,18 @@ impl Monitor {
                     refresh(&pc, &stats.connection).await;
                     connected_snapshot |= state == RTCPeerConnectionState::Connected;
                 }
-                if closed {
-                    break;
+                if closed { break; }
+                if state == RTCPeerConnectionState::Connected && stats.connection.link.wanted() {
+                    let path=pc.sctp().transport().ice_transport().get_selected_candidate_pair().await.and_then(|pair| {
+                        Some(SelectedPath{local:endpoint(pair.local())?,remote:endpoint(pair.remote())?})
+                    });
+                    // A bounded blocking OS probe never holds the stats slot, UI,
+                    // packet reader or connection alive after monitor cancellation.
+                    let Ok((next,sample))=tokio::task::spawn_blocking(move || {
+                        let sample=sampler.sample(path);(sampler,sample)
+                    }).await else { break; };
+                    sampler=next;
+                    stats.connection.link.publish(sample);
                 }
             }
         }))
