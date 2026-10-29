@@ -8,6 +8,7 @@ const ESTIMATE_WINDOW_SECONDS:f64=3.;
 const SERIES_COUNT:usize=9;
 const ESTIMATE_SERIES:usize=7;
 const INPUT_SERIES:usize=8;
+const SERIES_ORDER:[usize;SERIES_COUNT]=[0,INPUT_SERIES,ESTIMATE_SERIES,1,2,3,4,5,6];
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub struct EstimatedTotal {
     pub mean_ms:f32,
@@ -116,7 +117,7 @@ pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32,window:usize)
     let colors=[Color32::WHITE,Color32::from_rgb(159,176,255),Color32::from_rgb(255,190,108),Color32::from_rgb(114,215,185),Color32::from_rgb(109,205,255),Color32::from_rgb(202,156,255),Color32::from_rgb(255,145,157),Color32::from_rgb(226,218,119),Color32::from_rgb(255,168,228)];
     let id=ui.id().with("latency-curve-series");let mut selected=ui.data_mut(|d|d.get_temp::<[bool;SERIES_COUNT]>(id)).unwrap_or([true;SERIES_COUNT]);
     ui.horizontal(|ui|{ui.strong(uu_i18n::format!("最近 {} 分钟",window_seconds as u64/60));ui.label(egui::RichText::new(uu_i18n::text("延迟 · ms")).small().weak());});
-    egui::ScrollArea::horizontal().id_salt("latency-curve-legend").auto_shrink([false,true]).show(ui,|ui|{ui.spacing_mut().button_padding=egui::vec2(6.,3.);ui.spacing_mut().interact_size.y=22.;ui.spacing_mut().item_spacing.x=5.;ui.horizontal(|ui|{for i in [0,8,7,1,2,3,4,5,6] {
+    egui::ScrollArea::horizontal().id_salt("latency-curve-legend").auto_shrink([false,true]).show(ui,|ui|{ui.spacing_mut().button_padding=egui::vec2(6.,3.);ui.spacing_mut().interact_size.y=22.;ui.spacing_mut().item_spacing.x=5.;ui.horizontal(|ui|{for i in SERIES_ORDER {
         let text=egui::RichText::new(names[i]).size(11.).color(if selected[i]{colors[i]}else{Color32::from_gray(110)});
         let help=if i==ESTIMATE_SERIES {uu_i18n::text("估计曲线为Est.Total：最近3秒完整分量和采样的均值，±为这些估计值的标准差，不是同帧端到端或测量误差界。缺项留空，样本不足两次时波动未知。点击切换曲线。")}
             else if i==INPUT_SERIES {uu_i18n::text("输入→画面为同一次输入至注入后已观测源图像的首显回执估测，竖线保留显示误差；不证明游戏响应。无输入或证据缺失断线，点击切换曲线。")}
@@ -162,8 +163,8 @@ pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32,window:usize)
                 .fixed_pos(pointer+egui::vec2(14.,14.)).constrain_to(ui.ctx().screen_rect().shrink(4.)).show(ui.ctx(),|ui|{
                 egui::Frame::none().fill(Color32::from_black_alpha(238)).rounding(6.).inner_margin(8.)
                     .stroke(Stroke::new(1.,Color32::from_white_alpha(45))).show(ui,|ui|{
-                ui.visuals_mut().override_text_color=Some(Color32::from_gray(220));ui.small(uu_i18n::format!("{:.1} 秒前",end-sample.seconds));for i in [0,7,1,2,3,4,5,6] {if selected[i]{
-                let value=series_value(sample,i).map_or_else(||"—".into(),|v|if i==0||i==ESTIMATE_SERIES{series_spread(sample,i).map_or_else(||format!("≈{v:.3} ±—"),|error|format!("≈{v:.3} ±{error:.3}"))}else{format!("{v:.2}")});
+                ui.visuals_mut().override_text_color=Some(Color32::from_gray(220));ui.small(uu_i18n::format!("{:.1} 秒前",end-sample.seconds));for i in SERIES_ORDER {if selected[i]{
+                let value=series_value(sample,i).map_or_else(||"—".into(),|v|if i==0||i==ESTIMATE_SERIES||i==INPUT_SERIES{series_spread(sample,i).map_or_else(||format!("≈{v:.3} ±—"),|error|format!("≈{v:.3} ±{error:.3}"))}else{format!("{v:.2}")});
                 ui.colored_label(colors[i],format!("{}  {} ms",names[i],value));
             }}});});
         }
@@ -173,6 +174,22 @@ pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32,window:usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hover_reports_input_frame_with_its_own_uncertainty_or_unknown() {
+        use eframe::egui::{self,Event,Rect};
+        for input in [Some([35.,4.]),None] {
+            let ctx=egui::Context::default();let view=Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(520.,380.));
+            let sample=Sample{seconds:0.,values:[Some(1.);7],video_uncertainty_ms:Some(0.1),estimated_total:None,input_frame:input};
+            let mut output=None;
+            for frame in 0..5 {
+                output=Some(ctx.run(egui::RawInput{screen_rect:Some(view),time:Some(frame as f64*0.1),events:vec![Event::PointerMoved(egui::pos2(300.,150.))],..Default::default()},|ctx|{
+                    egui::CentralPanel::default().show(ctx,|ui|chart(ui,std::slice::from_ref(&sample),200.,0));
+                }));
+            }
+            let expected=format!("{}  {} ms",uu_i18n::text("输入→画面"),if input.is_some(){"≈35.000 ±4.000"}else{"—"});
+            assert!(output.unwrap().shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text==expected)),"missing input tooltip: {expected}");
+        }
+    }
     #[test]
     fn input_curve_retains_its_own_bounds_and_gaps_without_entering_the_stage_estimate() {
         let mut h=History::default();
