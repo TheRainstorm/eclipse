@@ -9,7 +9,7 @@ Cargo.toml[FV8T]: F:组织引擎应用及子模块插件的Rust workspace，统�
 LICENSE[SG6T]: F:声明项目自有代码可选择MIT或Apache-2.0并划定第三方权利边界 | R:code:LICENSE-MIT,code:LICENSE-APACHE,code:docs/licensing-and-compatibility.md | A:- | S:代码许可不授予第三方服务接入或商标使用权
 LICENSE-APACHE[SG4M]: F:提供Apache-2.0完整许可、专利授权及分发条件 | R:code:LICENSE | A:- | S:-
 LICENSE-MIT[SG4T]: F:提供MIT授权、保留版权声明条件与免责条款 | R:code:LICENSE | A:- | S:-
-README.md[SG7S]: F:介绍原生串流、独立UU插件、安装交付与默认Ctrl+Alt+Shift快捷键及文档导航 | R:code:docs/plugins.md,code:docs/keyboard-shortcuts.md,code:docs/releases/v0.20.7.md | A:- | S:源码构建须初始化子模块；官方手机互通尚未验收，原生协议不兼容Sunshine
+README.md[SG7S]: F:介绍原生串流与独立UU插件、HUD和软件设置、安装发布及默认客户端快捷键 | R:code:docs/plugins.md,code:docs/keyboard-shortcuts.md,code:docs/releases/v0.20.8.md | A:- | S:源码构建须初始化子模块；官方手机互通尚未验收，原生协议不兼容Sunshine
 SECURITY.md[SS8T]: F:定义公开PC兼容值和个人凭据的分发边界、私密报告与扫描流程 | R:code:tools/security/scan_secrets.py,code:docs/connection-credentials.md | A:- | S:公开常量仅按精确路径与指纹放行；历史清理不撤回已下载副本
 .gitmodules[FE7T]: F:声明plugins子模块的公开仓库地址与检出位置 | R:code:Cargo.toml,code:docs/plugins.md | A:submodule.plugins | S:实际插件提交由主仓库gitlink固定；更新主项目后须初始化对应子模块
 
@@ -255,8 +255,8 @@ display_layout.rs[PD6S]: F:保存本地显示标签顺序、稳定编号与最�
 displays.rs[AU8L]: F:按远端源ID管理轨道绑定、画质确认与切屏状态及标签交互 | R:code:crates/uu-gui/src/display_layout.rs,code:crates/uu-core/src/native_displays.rs | A:Displays | S:切屏需源确认、设置确认和新帧共同完成；进行中仅保留最新选择，不能按到包顺序认显示器
 gamepad.rs[IH7L]: F:在唯一SDL线程采集实体手柄与传感器并按GUI输入焦点投递 | R:code:crates/uu-core/src/native_input.rs | A:Reader | S:后台窗口只释放自己的租约；打开驱动后重验generation，Windows需视频消息泵处理Raw Input
 hud.rs[AO6S]: F:采样串流和端到端指标，缓存精简布局并维护分代历史及分钟计数与当前外观 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-gui/src/hud_statistics.rs,code:crates/uu-core/src/media.rs | A:Cache | S:500ms采样；外观不进入缓存键；媒体轨道换代清历史，E2E代次只重置曲线；陈旧指标未知
-hud_history.rs[KO5M]: F:保留六十分钟指标并计算Est.Total三秒波动，按所选窗口绘制估计和端到端历史 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-gui/src/hud_statistics.rs | A:History,EstimatedTotal,chart | S:估计标准差非测量误差；按像素保留端点及数值误差极值，浮框查原始采样；缺项断线，换代清空
-hud_panel.rs[AU7L]: F:绘制精简HUD与可固定复制诊断卡，按统一3/10/60分钟选择展示统计和曲线 | R:code:crates/uu-gui/src/hud_history.rs,code:crates/uu-gui/src/hud_statistics.rs,code:crates/uu-core/src/video_e2e.rs,code:crates/uu-core/src/client_settings.rs | A:Metrics,Layout,HoverCard,DetailState | S:查看范围不改变短窗估计或E2E口径；固定失焦仍显示但释放选择；Est缺项未知且不替代同帧E2E
+hud_history.rs[KO5M]: F:保留六十分钟指标并计算Est.Total波动，以有内边距的无框单行图例控制窗口曲线 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-gui/src/hud_statistics.rs | A:History,EstimatedTotal,chart | S:估计标准差非测量误差；按像素保留端点及数值误差极值，浮框查原始采样；缺项断线，换代清空
+hud_panel.rs[AU7L]: F:绘制精简HUD与固定诊断卡，宽窗按六四分列并统一3/10/60分钟统计和曲线 | R:code:crates/uu-gui/src/hud_history.rs,code:crates/uu-gui/src/hud_statistics.rs,code:crates/uu-core/src/video_e2e.rs,code:crates/uu-core/src/client_settings.rs | A:Metrics,Layout,HoverCard,DetailState | S:查看范围不改变短窗估计或E2E口径；固定失焦仍显示但释放选择；Est缺项未知且不替代同帧E2E
 input.rs[AU7S]: F:把真实鼠标转移转换为远端绝对或相对移动及按住释放事件 | R:code:crates/uu-gui/src/input_capture.rs | A:RemotePointer | S:不在抬起时合成点击；只释放本会话按下，黑边忽略按下而拖动可在画面外抬起
 input_capture.rs[DU9L]: F:分离捕获意图与临时条件并跟踪本会话远端长按与释放 | R:code:crates/uu-gui/src/keyboard_capture.rs,code:crates/uu-gui/src/shortcuts.rs | A:Capture,Conditions,RemoteKeys | S:失焦或本地UI暂停不清用户意图；只有真实停止才释放；UU保活修饰键重复限兼容主机，原生不得重复注入
 internet_ui.rs[AU4T]: F:有界读取保留的旧公网连接快照以供迁移和启动 | R:code:crates/uu-core/src/internet.rs | A:read_profile | S:格式错误保留原文件
@@ -473,7 +473,7 @@ device-library.md[SU4T]: F:说明兼容设备收藏、最近使用和按账号�
 frame-rate.md[SN5T]: F:整理UU帧率与屏幕协议字段、CONTROL初始化及HUD区分目标和实测的方法 | R:code:plugins/uu-compat/src/control_wire.rs,code:docs/windows-latency.md | A:- | S:120须实际count而非枚举；请求确认不代表源或呈现达标
 frame-tracing.md[SO6S]: F:定义主机逐帧身份、同钟遥测及默认关闭的DXGI采集原因诊断和验证边界 | R:code:crates/uu-core/src/frame_trace.rs,code:crates/uu-capture/src/capture_diagnostics.rs | A:- | S:只在同epoch和generation匹配PTS，不跨主机减时钟；统计溢出丢观测不丢视频；capture返回PTS不等编码AU，Drop报告不证明完整会话
 hdr.md[SH5T]: F:说明Windows原生HDR10的启用条件、色彩GPU路径和验证范围 | R:code:crates/uu-core/src/native_color.rs | A:- | S:实际10位PQ码流与输出HDR均须验证；生成图不能替代显示器视觉验收
-hud.md[SO5T]: F:说明精简HUD开关、外观和Est.Total波动及联动3/10/60分钟曲线与固定诊断 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-core/src/frame_continuity.rs,code:crates/uu-core/src/link_metrics.rs | A:- | S:估计标准差非测量误差，DXGI为经验区间；查看范围不改测量口径；独立阶段不能相减补等待
+hud.md[SO5T]: F:说明精简HUD外观与六四诊断布局、Est.Total波动及联动3/10/60分钟图表 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-core/src/frame_continuity.rs,code:crates/uu-core/src/link_metrics.rs | A:- | S:估计标准差非测量误差，DXGI为经验区间；查看范围不改测量口径；独立阶段不能相减补等待
 keyboard-capture.md[SU6T]: F:规定整条键盘流的捕获归属、临时暂停和长按释放，说明可配置客户端命令与平台限制 | R:code:crates/uu-gui/src/keyboard_capture.rs,code:crates/uu-core/src/hotkeys.rs | A:- | S:UU修饰键刷新限官方兼容；状态与隔离hook测试不能替代实体桌面验收
 keyboard-shortcuts.md[SU5T]: F:说明全局应用快捷键录制、Ctrl+Alt+Shift默认值、实际提示与冲突和嵌套透传 | R:code:crates/uu-core/src/hotkeys.rs,code:crates/uu-gui/src/shortcuts_ui.rs | A:- | S:设备配置不覆盖应用绑定；显式自定义和禁用保留；透传须保留退出绑定，改绑定先松修饰键
 licensing-and-compatibility.md[SS6T]: F:区分项目双许可、第三方来源、官方服务接入和编解码专利边界 | R:code:LICENSE,code:THIRD-PARTY-NOTICES.txt | A:- | S:原创代码许可不代表网易接入授权；依赖生成清单不是法律审计
@@ -499,7 +499,7 @@ protocol-compatibility-and-transport.md[SN5S]: F:比较原生、UU兼容与Moonl
 protocol-notes.md[SN5M]: F:保留UU官方软件样本、媒体控制协议、认证和传输的证据笔记 | R:code:plugins/uu-compat/src/socketio.rs,code:plugins/uu-compat/src/control_wire.rs | A:- | S:采样版本和来源有边界，字符串线索不能替代线上互通证据
 pyrowave.md[SH5T]: F:说明实验性PyroWave格式、运行库、GPU同步与高带宽使用边界 | R:code:crates/uu-media/src/pyrowave.rs | A:- | S:默认自动协商不选它；Linux当前CPU传输不能声称GPU直通
 reference-index.md[SG5M]: F:组织Sunshine、Moonlight与同协议参考项目的固定版本源码入口和适配差异 | R:code:docs/licensing-and-compatibility.md | A:- | S:参考机制不授复制GPL代码许可；能力广告须由本实现真实链路证明
-releases.md[SV6T]: F:规定版本、CI完整包、发布下载验证、来源清单与升级流程 | R:code:.github/workflows/build-release.yml,code:tools/release/check_version.py,code:docs/releases/v0.20.7.md | A:- | S:已发布标签与资产不改写，下载哈希不代替作者身份签名
+releases.md[SV6T]: F:规定版本标签、CI完整包与发布下载核验流程，并导航当前HUD和设置版本 | R:code:.github/workflows/build-release.yml,code:tools/release/check_version.py,code:docs/releases/v0.20.8.md | A:- | S:已发布标签与资产不改写，下载哈希不代替作者身份签名
 roadmap.md[SW4T]: F:按阶段跟踪兼容与原生串流交付路线和后续验收 | R:code:docs/vision.md,code:docs/releases.md | A:- | S:已发布能力以实际版本说明为准
 session-probe.md[SO4T]: F:说明后台兼容会话与显式切屏探针及指标收集 | R:code:plugins/uu-compat/examples/session_probe.rs | A:- | S:默认不启剪贴板、不发送键鼠；文中core示例路径早于插件迁移
 stream-recovery.md[SR6T]: F:解释SRTP最高扩展索引、迟到重传、防重放与取消安全读取修复 | R:code:vendor/webrtc-srtp/UU-PATCH.md,code:crates/uu-core/src/srtp_policy.rs | A:- | S:认证成功后才记bitmap，旧包不能倒退最高索引；零解码错误不证明视频仍增长
@@ -565,6 +565,7 @@ v0.20.3.md[SV4T]: F:发布HUD已观察停图的暂停保留、标签切换及缓
 v0.20.4.md[SV4T]: F:发布原生合成UI写入同步修复及全屏与DPI像素回归 | R:code:crates/uu-gui/src/video_native.rs,code:crates/uu-gui/examples/native_renderer_probe.rs | A:- | S:客户端重开生效；同步可能增加重绘帧等待，生成图不替代实流或物理HDR验收
 v0.20.5.md[SV4T]: F:发布撤销原生UI重绘阻塞等待，并纠正实际全屏黑屏修复结论 | R:code:crates/uu-gui/src/video_native.rs | A:- | S:实际全屏黑屏仍未修复；生成窗口测试不替代实流验收
 v0.20.7.md[SV4T]: F:发布全屏呈现和UI缓存修复、SDR分支改进及带误差的视频端到端观测 | R:code:docs/hud.md,code:docs/native-latency.md,code:docs/present-observation-profiling.md | A:- | S:DXGI断链重连失败仍未修复；完整观测需更新两端，视频估测不等物理输入响应
+v0.20.8.md[SV4T]: F:发布精简HUD和估计波动及分钟曲线、软件分类与Ctrl+Alt+Shift默认快捷键 | R:code:docs/hud.md,code:docs/keyboard-shortcuts.md | A:- | S:界面升级需重开客户端；DXGI断链后重连失败仍未修复
 
 ===/home/yfy/Repo/uu_remote/licenses/===
 README.md[SG4T]: F:记录SPDX标准文本来源版本及第三方原始通知优先规则 | R:code:tools/licenses/generate.py | A:- | S:附带GPL或LGPL文本不等于项目选用该许可
