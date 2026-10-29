@@ -95,6 +95,8 @@ struct Presentation {
     HWND window;
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
+    ComPtr<IDXGIDevice1> frame_queue;
+    UINT frame_queue_limit=3; // DXGI device default.
     ComPtr<IDXGIFactory2> factory;
     ComPtr<IDXGIFactory1> inventory;
     ComPtr<EclipseOutput6> active_output;
@@ -124,6 +126,7 @@ struct Presentation {
         if(!selected)throw std::runtime_error("no adapter owns the HDR window's output");
         D3D_FEATURE_LEVEL level=D3D_FEATURE_LEVEL_11_0;
         check(D3D11CreateDevice(selected.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,&level,1,D3D11_SDK_VERSION,&device,nullptr,&context),"create HDR presentation device");
+        check(device.As(&frame_queue),"query presentation frame queue");
         ComPtr<ID3D10Multithread> threading;check(context.As(&threading),"query HDR presentation threading");threading->SetMultithreadProtected(TRUE);
         check(selected->GetParent(__uuidof(IDXGIFactory2),(void**)factory.GetAddressOf()),"get HDR composition factory");
         ComPtr<IDXGIFactory5> modern;
@@ -172,7 +175,11 @@ struct Presentation {
         shared_texture.Reset();
         if(!chain) {
             DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=w;desc.Height=h;desc.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
-            desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=2;
+            desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;
+            // Retain room for the driver allowance, the backbuffer and DWM.
+            // SyncInterval=0 can replace queued flips; starving this ring or
+            // imposing a one-frame device cap can instead block on composition.
+            desc.BufferCount=5;
             desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
             desc.Scaling=DXGI_SCALING_STRETCH;
             desc.Flags=allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0;
@@ -183,12 +190,11 @@ struct Presentation {
                 created=factory->CreateSwapChainForHwnd(device.Get(),content_window.value,&desc,nullptr,nullptr,&initial);
             }
             check(created,"create FP16 HDR swap chain");
-            std::fprintf(stderr,"HDR HWND flip-discard allow_tearing=%s buffers=2\n",allow_tearing?"true":"false");
+            std::fprintf(stderr,"HDR HWND flip-discard allow_tearing=%s buffers=%u\n",allow_tearing?"true":"false",desc.BufferCount);
             check(initial.As(&chain),"query HDR swap chain");
             chain_id=present_identity();
             check(chain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709),"set scRGB HDR color space");
-            ComPtr<IDXGIDevice1> latency;check(device.As(&latency),"query HDR frame latency");check(latency->SetMaximumFrameLatency(1),"limit HDR frame latency");
-        }else check(chain->ResizeBuffers(2,w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0),"resize HDR swap chain");
+        }else check(chain->ResizeBuffers(5,w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0),"resize HDR swap chain");
         surface_epoch=present_identity();observation_ready=false;
         D3D11_TEXTURE2D_DESC td{};td.Width=w;td.Height=h;td.MipLevels=1;td.ArraySize=1;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
         td.SampleDesc.Count=1;td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;td.MiscFlags=D3D11_RESOURCE_MISC_SHARED;
@@ -220,6 +226,11 @@ struct Presentation {
         observation_frequency=enabled&&QueryPerformanceFrequency(&frequency)&&frequency.QuadPart>0?uint64_t(frequency.QuadPart):0;
     }
     HRESULT present_chain(UINT interval,UINT flags,uint64_t source=0,uint64_t ready=0) {
+        const UINT limit=interval?1:3;
+        if(frame_queue_limit!=limit) {
+            check(frame_queue->SetMaximumFrameLatency(limit),"set presentation frame queue");
+            frame_queue_limit=limit;
+        }
         if(!observation_enabled)return chain->Present(interval,flags);
         RawPresentObservation raw{};raw.version=1;raw.struct_size=sizeof(raw);
         raw.serial=++observation_serial;raw.chain_id=chain_id;raw.surface_epoch=surface_epoch;
