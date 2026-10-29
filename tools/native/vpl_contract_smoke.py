@@ -12,7 +12,7 @@ def main():
         library=Path(directory)/'libvpl.so.2'
         subprocess.run(['cc','-shared','-fPIC','-DMFX_DEPRECATED_OFF','-I'+str(root/'vendor/libvpl-api/include'),
             str(root/'tools/native/vpl_runtime_fixture.c'),'-o',str(library)],check=True)
-        env=os.environ.copy();env.update(LD_LIBRARY_PATH=directory,ECLIPSE_VPL_CONTRACT='1')
+        env=os.environ.copy();env.update(LD_LIBRARY_PATH=directory+os.pathsep+env.get('LD_LIBRARY_PATH',''),ECLIPSE_VPL_CONTRACT='1')
         for case in ('valid','custom_tuning','target_usage_changed','forced_low_power_unavailable','low_power_unavailable','low_power_changed','software','fps','init_fps','codec','mode','partial','timestamp','buffer','decode_alignment','decode_output_crop','decode_allocation','decode_software','decode_size','decode_pool','decode_partial','decode_timestamp','decode_surface'):
             env['ECLIPSE_VPL_CONTRACT_CASE']=case
             result=subprocess.run([str(probe)],env=env,capture_output=True,text=True,timeout=15)
