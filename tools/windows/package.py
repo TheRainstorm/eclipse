@@ -178,6 +178,8 @@ def build_package(output, vpl_archive=None, rebuild=False):
             shutil.copy2(ROOT / 'tools/windows' / filename, staging / filename)
         for filename in LICENSES:
             shutil.copy2(ROOT / filename, staging / filename)
+        for binary in staging.iterdir():
+            if binary.suffix.lower() in ('.exe', '.dll'): plugin_sdk.strip_windows_binary(binary)
         verify_imports(staging)
         manifest = {'format_version': 5, 'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
                     'target': TARGET,

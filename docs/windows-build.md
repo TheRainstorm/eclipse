@@ -71,4 +71,4 @@ Windows 还可运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File to
 
 PyroWave 运行库同样要求 CMake 3.27+（包括 Linux 上的 Windows 交叉构建），通过 Git 获取固定的上游和最小 Granite 依赖，使用预生成 shader。无需安装 Vulkan SDK 或 shader 编译器；GPU 功能由运行时驱动提供。完整包包含 `libpyrowave-shared-1.dll` 和许可；构建来源、限制与生成图复测见 [PyroWave](pyrowave.md)。
 
-开发分支的 GUI 文件名为 `eclipse.exe`，CLI 为 `eclipse-cli.exe`。旧版本的文件名和包格式仍按其原清单校验。
+开发分支的 GUI 文件名为 `eclipse.exe`，CLI 为 `eclipse-cli.exe`。打包会在分发副本上删除不需要的符号，保留 DLL 导出与运行时依赖；Cargo 构建目录保留完整符号用于排障。旧版本的文件名和包格式仍按其原清单校验。

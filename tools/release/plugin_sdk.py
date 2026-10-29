@@ -6,6 +6,12 @@ import re
 from pathlib import Path
 
 
+def strip_windows_binary(path):
+    """Strip distribution copies only; preserve build artifacts for debugging."""
+    command = 'strip' if sys.platform == 'win32' else 'x86_64-w64-mingw32-strip'
+    subprocess.run([command, '--strip-unneeded', str(path)], check=True)
+
+
 def contract(root,target,features=()):
     command=['cargo','metadata','--locked','--format-version','1','--filter-platform',target]
     if features:command+=['--features',','.join(features)]
