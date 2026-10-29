@@ -490,7 +490,7 @@ fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32,state:&m
     let remaining=(max_height-(ui.cursor().top()-top)-2.).max(1.);
     if width<820. {
         egui::ScrollArea::vertical().id_salt("hud-detail-scroll").max_height(remaining).min_scrolled_height(0.).auto_shrink([false,true]).show(ui,|ui|{
-            let width=(width-10.).max(1.);data_rows(ui,m,state.window,width);ui.separator();history::chart(ui,&m.history,190.);
+            let width=(width-10.).max(1.);data_rows(ui,m,state.window,width);ui.separator();history::chart(ui,&m.history,190.,state.window);
         });
     } else {
         let chart_width=width*0.46;let data_width=(width-chart_width-20.).max(1.);
@@ -500,7 +500,7 @@ fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32,state:&m
             });
             ui.separator();
             ui.allocate_ui_with_layout(egui::vec2(chart_width,remaining),egui::Layout::top_down(egui::Align::Min),|ui|{
-                ui.set_max_width(chart_width);egui::ScrollArea::vertical().id_salt("hud-chart-scroll").max_height(remaining).min_scrolled_height(0.).show(ui,|ui|history::chart(ui,&m.history,(remaining-65.).max(80.)));
+                ui.set_max_width(chart_width);egui::ScrollArea::vertical().id_salt("hud-chart-scroll").max_height(remaining).min_scrolled_height(0.).show(ui,|ui|history::chart(ui,&m.history,(remaining-65.).max(80.),state.window));
             });
         });
     }
@@ -649,6 +649,24 @@ pub fn decoder_label(backend: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn diagnostic_time_selection_changes_the_chart_window() {
+        let ctx=egui::Context::default();let mut state=DetailState::default();let mut time=0.;
+        let mut frame=|events| {
+            time+=0.05;
+            let output=ctx.run(egui::RawInput{time:Some(time),screen_rect:Some(Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.))),events,..Default::default()},|ctx|{
+                egui::CentralPanel::default().show(ctx,|ui|detail_contents(ui,&Metrics::default(),1100.,500.,&mut state));
+            });
+            output.shapes.into_iter().filter_map(|s|if let egui::Shape::Text(t)=s.shape {Some((t.galley.job.text.clone(),t.pos+t.galley.size()/2.))}else{None}).collect::<std::collections::HashMap<_,_>>()
+        };
+        let mut labels=frame(vec![]);for _ in 0..3{labels=frame(vec![]);}
+        for (button,title,axis) in [("10 min","最近 10 分钟","-10m"),("60 min","最近 60 分钟","-60m"),("3 min","最近 3 分钟","-3m")] {
+            let point=labels[button];frame(vec![egui::Event::PointerMoved(point)]);
+            frame(vec![egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}]);
+            labels=frame(vec![egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}]);
+            assert!(labels.contains_key(title)&&labels.contains_key(axis),"{button} must change chart title and axis: {labels:?}");
+        }
+    }
     #[test]
     fn appearance_changes_apply_to_cached_layout_and_keep_hud_inside_the_picture() {
         let ctx=egui::Context::default();let view=Rect::from_min_size(egui::pos2(0.,0.),egui::vec2(1920.,1080.));

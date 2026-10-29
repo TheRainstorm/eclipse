@@ -36,8 +36,8 @@ impl eframe::App for Preview {
             }
         }
         let mut history=hud_panel::History::default();
-        for n in 0..=360 {
-            let wave=(n as f32/15.).sin()-(360f32/15.).sin();
+        for n in 0..=7200 {
+            let wave=(n as f32/15.).sin()-(7200f32/15.).sin();
             history.record_at(n as f64/2.,[1,0,1],[self.measured_fixture.then_some(26.91+wave*3.),Some(0.24),Some(6.7+wave*0.2),Some(0.62),Some(2.9),Some(0.75+wave*0.1),Some(1.54)],self.measured_fixture.then_some(5.26));
         }
         let m = hud_panel::Metrics {
@@ -177,7 +177,7 @@ fn main() -> anyhow::Result<()> {
                 bounds: None,
                 measured_fixture:args.iter().any(|arg|arg=="--measured-fixture"),
                 chart_tooltip:args.iter().any(|arg|arg=="--chart-tooltip"),
-                state:Default::default(),
+                state:{let mut state=hud_panel::DetailState::default();state.window=if args.iter().any(|a|a=="--60-min"){2}else if args.iter().any(|a|a=="--10-min"){1}else{0};state},
             }))
         }),
     )

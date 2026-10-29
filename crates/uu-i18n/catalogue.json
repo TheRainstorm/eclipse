@@ -1718,5 +1718,6 @@
   "外观": "Appearance",
   "快捷键": "Shortcuts",
   "启用 HUD": "Enable HUD",
+  "最近 {} 分钟": "Last {} minutes",
   "开关精简HUD；悬停查看诊断和历史曲线。": "Toggle the compact HUD; hover for diagnostics and history curves."
 }
