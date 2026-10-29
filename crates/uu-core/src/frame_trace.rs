@@ -133,6 +133,7 @@ fn receive_report(stats: &crate::media::MediaStats, epoch: u64, report: Report) 
 /// capture/encode/queue measurements. Neither span includes remote scanout.
 #[derive(Clone, Debug, Serialize)]
 pub struct VideoLatency {
+    pub encoder: String,
     pub source_to_last_rtp: Option<Distribution>,
     pub rtp_write: Option<Distribution>,
 }
@@ -142,7 +143,7 @@ pub fn video_latency(stats:&crate::media::MediaStats)->Option<VideoLatency> {
     let (epoch,received)=(*stats.native_frame_trace_received.lock().unwrap())?;
     if epoch!=stats.native_media_epoch.load(Ordering::Acquire)||received.elapsed()>Duration::from_secs(5){return None;}
     let report=slot.as_ref()?;
-    Some(VideoLatency{source_to_last_rtp:report.stages.get("source_present_to_last_rtp").copied(),rtp_write:report.stages.get("rtp_write_span").copied()})
+    Some(VideoLatency{encoder:report.context.backend.clone(),source_to_last_rtp:report.stages.get("source_present_to_last_rtp").copied(),rtp_write:report.stages.get("rtp_write_span").copied()})
 }
 
 pub(crate) fn offered(

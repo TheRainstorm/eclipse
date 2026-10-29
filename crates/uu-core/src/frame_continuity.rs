@@ -20,6 +20,7 @@ struct Gap {
     ended: Instant,
     duration: Duration,
 }
+struct Bucket { ended: Instant, long_gaps: usize, maximum: Duration }
 
 #[derive(Default)]
 pub struct Continuity {
@@ -36,6 +37,8 @@ pub struct Continuity {
     // Monotonic maximum queue: dominated intervals leave immediately; every
     // surviving interval expires at its exact end time, without second buckets.
     maxima: VecDeque<(Instant, Duration)>,
+    // Long-window statistics at one-second resolution; hot-path work is O(1).
+    buckets: VecDeque<Bucket>,
 }
 
 impl Continuity {
@@ -56,6 +59,10 @@ impl Continuity {
         self.fps = fps;
     }
     fn remember(&mut self, ended: Instant, duration: Duration, long: bool) {
+        while self.buckets.front().is_some_and(|b|ended.saturating_duration_since(b.ended)>=Duration::from_secs(3601)) { self.buckets.pop_front(); }
+        if let Some(bucket)=self.buckets.back_mut().filter(|b|ended.saturating_duration_since(b.ended)<Duration::from_secs(1)) {
+            bucket.long_gaps+=usize::from(long);bucket.maximum=bucket.maximum.max(duration);
+        } else { self.buckets.push_back(Bucket{ended,long_gaps:usize::from(long),maximum:duration}); }
         if long {
             self.gaps.push_back(Gap { ended, duration });
         }
@@ -130,11 +137,43 @@ impl Continuity {
                 .as_secs_f64(),
         })
     }
+    /// 3/10/60 minute views share the same observations. Completed intervals
+    /// are bucketed to one second; the legacy 60-second diagnostic stays exact.
+    pub fn snapshot_window(&mut self, now:Instant, seconds:u64)->Option<Snapshot> {
+        let mut snapshot=self.snapshot(now)?;
+        let window=Duration::from_secs(seconds.clamp(1,3600));
+        let eligible=self.buckets.iter().filter(|b|now.saturating_duration_since(b.ended)<window);
+        snapshot.long_gaps=usize::from(snapshot.ongoing_gap_ms.is_some());
+        snapshot.max_gap_ms=snapshot.ongoing_gap_ms.unwrap_or(0.);
+        for b in eligible {snapshot.long_gaps+=b.long_gaps;snapshot.max_gap_ms=snapshot.max_gap_ms.max(b.maximum.as_secs_f64()*1000.);}
+        snapshot.observed_seconds=now.saturating_duration_since(self.started?).min(window).as_secs_f64();
+        Some(snapshot)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn long_windows_keep_the_same_observed_stall_and_expire_independently() {
+        let start=Instant::now();let mut c=Continuity::default();c.set_active(true,60);
+        c.submit(start);c.submit(start+Duration::from_millis(17));
+        assert_eq!(c.snapshot(start+Duration::from_millis(100)).unwrap().long_gaps,1);
+        c.set_active(false,60);c.set_active(true,60);
+        c.submit(start+Duration::from_secs(200));c.submit(start+Duration::from_secs(200)+Duration::from_millis(17));
+        let at=start+Duration::from_secs(201);
+        // Observe at the last submission so no new ongoing stall is invented.
+        c.submit(at);
+        c.submit(at+Duration::from_millis(17));
+        let at=at+Duration::from_millis(17);
+        assert_eq!(c.snapshot_window(at,180).unwrap().long_gaps,1);
+        assert_eq!(c.snapshot_window(at,600).unwrap().long_gaps,2);
+        assert_eq!(c.snapshot_window(at,3600).unwrap().long_gaps,2);
+        c.set_active(false,60);c.set_active(true,60);
+        c.submit(start+Duration::from_secs(4000));c.submit(start+Duration::from_secs(4000)+Duration::from_millis(17));
+        assert_eq!(c.snapshot_window(start+Duration::from_secs(4000)+Duration::from_millis(17),3600).unwrap().long_gaps,0);
+        assert!(c.buckets.len()<=3602);
+    }
     #[test]
     fn observed_stall_survives_pause_and_resumes_without_double_counting() {
         let start = Instant::now();

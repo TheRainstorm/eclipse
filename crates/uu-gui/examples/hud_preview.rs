@@ -13,8 +13,13 @@ struct Preview {
     saved: std::sync::Arc<std::sync::atomic::AtomicBool>,
     bounds: Option<egui::Rect>,
     measured_fixture: bool,
+    chart_tooltip: bool,
+    state: hud_panel::DetailState,
 }
 impl eframe::App for Preview {
+    fn raw_input_hook(&mut self,_:&egui::Context,input:&mut egui::RawInput) {
+        if self.chart_tooltip {input.events.push(egui::Event::PointerMoved(egui::pos2(1040.,250.)));}
+    }
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         for event in ctx.input(|i| i.events.clone()) {
             if let egui::Event::Screenshot { image, .. } = event {
@@ -32,19 +37,19 @@ impl eframe::App for Preview {
             }
         }
         let m = hud_panel::Metrics {
-            size: [3840, 2160],
-            target_fps: 120,
-            source_hz: Some(144),
-            codec: "AV1 10-bit HDR".into(),
+            size: [1920, 1080],
+            target_fps: 60,
+            source_hz: Some(165),
+            codec: "AV1 SDR".into(),
             mode: "CBR".into(),
             backend: "d3d11va".into(),
-            fps: [Some(119.9), Some(119.8), Some(119.7)],
-            bitrate: Some(37.2),
-            rtt: Some([2.1, 0.6]),
-            loss: Some(0.42),
+            fps: [Some(59.9), Some(59.4), Some(59.9)],
+            bitrate: Some(12.5),
+            rtt: Some([1.5, 0.39]),
+            loss: Some(0.),
             unrecovered_loss: Some(0.),
-            process: [Some(0.8), Some(1.1), Some(0.32), Some(0.32)],
-            queues: [Some(0.04), Some(0.1), Some(0.2)],
+            process: [Some(0.24), Some(6.7), Some(0.62), Some(2.9)],
+            queues: [Some(0.01), Some(0.03), Some(1.5)],
             counters: hud_panel::Counters {
                 lost: 0,
                 nack: 24,
@@ -54,20 +59,25 @@ impl eframe::App for Preview {
                 fec_bytes: 12840000,
                 ..Default::default()
             },
+            link:Some(uu_core::link_metrics::Snapshot{ping_ms:Some(1.),rx_mbps:Some(20.4),tx_mbps:Some(0.6)}),
+            host_video:Some(uu_core::frame_trace::VideoLatency {encoder:"Intel / Media Foundation".into(),source_to_last_rtp:Some(uu_core::frame_trace::Distribution{samples:120,mean_us:9200,p50_us:9100,p95_us:12900,p99_us:14500,p999_us:14700,max_us:14700}),rtp_write:Some(uu_core::frame_trace::Distribution{samples:120,mean_us:300,p50_us:290,p95_us:500,p99_us:600,p999_us:650,max_us:650})}),
+            statistics_coverage:[180.,280.,280.],
+            statistics:std::array::from_fn(|i|hud_panel::Counters{nack:if i==0{4}else{9},rtx:3,fec_recovered:2,fec_packets:200,original_received:40_000,..Default::default()}),
+            continuity_windows:std::array::from_fn(|_|Some(uu_core::frame_continuity::Snapshot{long_gaps:1,max_gap_ms:56.9,threshold_ms:50.,ongoing_gap_ms:None,observed_seconds:180.})),
             input_ready: true,
             input_counts: [1420, 0],
             input_timing: [Some(0.04), Some(2.2), Some(0.06), Some(0.03)],
-            continuity:Some(uu_core::frame_continuity::Snapshot{long_gaps:1,max_gap_ms:31.6,threshold_ms:25.,ongoing_gap_ms:None,observed_seconds:60.}),
+            continuity:Some(uu_core::frame_continuity::Snapshot{long_gaps:1,max_gap_ms:56.9,threshold_ms:50.,ongoing_gap_ms:None,observed_seconds:60.}),
             video_e2e:Some(uu_core::video_e2e::Snapshot {
                 generation:1,relative_drift_ppm:1000,
                 measurement:self.measured_fixture.then_some(uu_core::video_e2e::Measurement {
-                    samples:24,mean_us:18_500,p50_us:18_100,p95_us:23_000,uncertainty_us:2000,max_sample_uncertainty_us:3000,
-                    method:uu_core::video_e2e::DisplayMethod::RefreshInterval,
+                    samples:24,mean_us:26_910,p50_us:24_780,p95_us:34_190,uncertainty_us:5260,max_sample_uncertainty_us:8000,
+                    method:uu_core::video_e2e::DisplayMethod::DxgiReceiptInterval,
                 }),
                 unknown:(!self.measured_fixture).then_some(uu_core::video_e2e::UnknownReason::DisplayTimestampUnavailable),
                 source_frames:120,displayed_frames:if self.measured_fixture{24}else{0},observations_dropped:0,history_evicted:0,
             }),
-            history: (0..=360).map(|n| {let w=(n as f32/15.).sin();hud_panel::HistorySample {seconds:n as f64/2.,values:[self.measured_fixture.then_some(18.5+w),Some(0.8),Some(1.1+w*0.2),Some(0.32),Some(0.32),Some(1.05+w*0.1),Some(0.34)],video_uncertainty_ms:self.measured_fixture.then_some(2.)}}).collect(),
+            history: (0..=360).map(|n| {let w=(n as f32/15.).sin();hud_panel::HistorySample {seconds:n as f64/2.,values:[self.measured_fixture.then_some(26.91+w*3.),Some(0.24),Some(6.7+w*0.2),Some(0.62),Some(2.9),Some(0.75+w*0.1),Some(1.54)],video_uncertainty_ms:self.measured_fixture.then_some(5.26)}}).collect(),
             toggle_hint: "Ctrl+Alt+S · Toggle HUD".into(),
             ..Default::default()
         };
@@ -80,12 +90,13 @@ impl eframe::App for Preview {
                 let response =
                     hud_panel::Layout::new(ui, &m, HudDetail::Compact, screen.width() - 32.)
                         .paint(ui, screen);
-                self.bounds = Some(hud_panel::details_at(
+                self.bounds = Some(hud_panel::details_at_with_state(
                     ui,
                     &m,
                     screen,
                     response.rect,
                     self.bounds,
+                    &mut self.state,
                 ));
             });
 
@@ -160,6 +171,8 @@ fn main() -> anyhow::Result<()> {
                 saved,
                 bounds: None,
                 measured_fixture:args.iter().any(|arg|arg=="--measured-fixture"),
+                chart_tooltip:args.iter().any(|arg|arg=="--chart-tooltip"),
+                state:Default::default(),
             }))
         }),
     )

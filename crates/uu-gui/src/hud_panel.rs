@@ -5,6 +5,9 @@ use uu_core::client_settings::HudDetail;
 #[path="hud_history.rs"]
 mod history;
 pub use history::{History,Sample as HistorySample};
+#[path="hud_statistics.rs"]
+mod statistics;
+pub use statistics::{Statistics,WINDOWS};
 
 #[derive(Clone, Default)]
 pub struct Metrics {
@@ -21,6 +24,10 @@ pub struct Metrics {
     pub loss: Option<f32>,
     pub unrecovered_loss: Option<f32>,
     pub network: Option<uu_core::network_loss::Snapshot>,
+    pub link: Option<uu_core::link_metrics::Snapshot>,
+    pub statistics: [Counters;3],
+    pub statistics_coverage: [f64;3],
+    pub continuity_windows: [Option<uu_core::frame_continuity::Snapshot>;3],
     // Capture, encode, decode, UI preparation/render submission.
     pub process: [Option<f32>; 4],
     // Producer send wait, decoder queue, mailbox-to-UI delivery.
@@ -53,6 +60,10 @@ pub struct Counters {
     pub fec_bytes: u64,
     pub fec_drops: u64,
     pub recovery: [u64; 4],
+    pub original_received:u64,
+    pub original_lost:u64,
+    pub duplicates:u64,
+    pub resyncs:u64,
 }
 #[derive(Debug)]
 pub struct Estimate {
@@ -127,7 +138,17 @@ impl Metrics {
     }
     fn video_value(&self) -> String {
         self.video_measurement().map_or_else(||"—".into(),|value|
-            format!("≈{:.3} ±{:.3} ms",value.mean_us as f64/1000.,value.uncertainty_us as f64/1000.))
+            format!("≈{:.2} ±{:.2} ms",value.mean_us as f64/1000.,value.uncertainty_us as f64/1000.))
+    }
+    pub fn diagnostic_text(&self,window:usize)->String {
+        let window=window.min(2);
+        let mut text=format!("Eclipse {} · {}\n",env!("CARGO_PKG_VERSION"),uu_i18n::text("串流诊断"));
+        text+=&uu_i18n::format!("统计窗口 {} 分钟 · 已记录 {:.1} 秒\n",WINDOWS[window]/60,self.statistics_coverage[window]);
+        for row in detail_rows_window(self,window) {
+            text+=&format!("{}: {}\n",row.label,row.values.iter().map(|v|format!("{} {}",v.label,v.value).trim().to_owned()).collect::<Vec<_>>().join(" · "));
+        }
+        text+=uu_i18n::text("视频端到端为区间估测；阶段为独立窗口均值，不能相减推算未测等待。帧周期是节拍参考，不额外加入E2E。\n");
+        text
     }
     fn video_status(&self) -> &'static str {
         use uu_core::video_e2e::UnknownReason;
@@ -161,7 +182,7 @@ impl Metrics {
             .fps
             .map(|v| valid(v).map_or_else(|| "—".into(), |v| format!("{v:.1}")));
         format!(
-            "FPS[recv/dec/rnd] {}/{}/{}",
+            "FPS · Rcv/Dec/Rnd {}/{}/{}",
             values[0], values[1], values[2]
         )
     }
@@ -175,7 +196,7 @@ impl Metrics {
     }
     fn stages_label(&self) -> String {
         format!(
-            "Enc/Dec/Rnd {}/{}/{} ms",
+            "Latency · Enc/Dec/Rnd {}/{}/{} ms",
             number(self.process[1]),
             number(self.process[2]),
             number(self.process[3])
@@ -217,16 +238,14 @@ impl Layout {
             (format!("{codec} · {rate}"), 14., primary),
         ]];
         if mode == HudDetail::Compact {
-            let color = Color32::from_rgb(0, 235, 214);
+            let color = primary;
             rows[0] = vec![
-                (resolution, 14., color),
-                (codec.into(), 14., color),
-                (m.fps_label(), 14., color),
-                (format!("Bandwidth {rate}"), 14., color),
-                (m.network_label(), 14., color),
-                (m.total_label(), 14., color),
-                (m.input_response_label(), 14., color),
-                (m.continuity_label(), 14., color),
+                (format!("{resolution} {codec}"), 13., color),
+                (m.fps_label(), 13., muted),
+                (format!("BW {rate}"), 13., muted),
+                (m.network_label(), 13., network),
+                (m.stages_label(), 13., process),
+                (format!("E2E Lat {}",m.video_value()), 13., color),
             ];
         } else {
             let mode = if m.mode.is_empty() {
@@ -343,16 +362,16 @@ impl Layout {
         let bounds = Rect::from_min_size(
             egui::pos2(
                 video.center().x - self.size.x / 2. - pad.x,
-                video.top() + 4.,
+                video.top() + 28.,
             ),
             self.size + pad * 2.,
         );
         ui.painter().rect_filled(
             bounds,
-            if self.compact { 0. } else { 8. },
-            Color32::from_black_alpha(205),
+            7.,
+            Color32::from_black_alpha(218),
         );
-        if !self.compact {
+        {
             ui.painter().rect_stroke(
                 bounds,
                 8.,
@@ -387,6 +406,7 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     let mean_help=uu_i18n::text("最近3秒同一批延迟区间的上下界分别取均值，±为该均值的向外舍入界，包含校时和显示区间误差；不要求样本独立，也不把共同校时误差按样本数消除。DXGI方法仍受统计可信假设限制，中点不是精确时间。");
     let percentile_help=uu_i18n::text("同一批单帧延迟区间中点的P50/P95估测；不是未知实际端点的精确分位数。主均值的±不适用于这两个分位数，最大单帧区间误差另列。DXGI方法仍受统计可信假设限制。");
     let mut video=vec![
+        field(uu_i18n::text("均值区间"),measured.map_or_else(||"—".into(),|v|format!("{:.2}–{:.2} ms",(v.mean_us.saturating_sub(v.uncertainty_us)/10) as f64/100.,v.mean_us.saturating_add(v.uncertainty_us).div_ceil(10) as f64/100.)),mean_help),
         field(uu_i18n::text("均值估测"),m.video_value(),mean_help),
         field("P50/P95",measured.map_or_else(||"—".into(),|v|format!("≈{:.3}/{:.3} ms",v.p50_us as f64/1000.,v.p95_us as f64/1000.)),percentile_help),
         field(uu_i18n::text("方法"),if measured.is_some(){m.video_method()}else{m.video_status()},video_help),
@@ -409,7 +429,11 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
         let value=span.map_or_else(||"—".into(),|v|format!("{:.1}/{:.1} ms",v.mean_us as f64/1000.,v.p95_us as f64/1000.));
         let mut value=field(label,value,help);value.group=3;latency.push(value);
     }
-    let mut network=vec![field("RTT",m.rtt.map_or_else(||"—".into(),|v|format!("{}±{} ms",number(Some(v[0])),number(Some(v[1])))),uu_i18n::text("控制消息往返均值±标准差，最近32个样本。包含传输、排队和两端处理，不等于ICMP ping。")),field(uu_i18n::text("链路丢包"),pct(m.loss),uu_i18n::text("修复前的原始RTP缺包率。乱序宽限期后仍未到达的包计入，即使随后由FEC或RTX恢复也保留。它反映接收端看到的网络交付，不只代表物理线路。")),field(uu_i18n::text("修复后丢包"),pct(m.unrecovered_loss),uu_i18n::text("接收器超时后仍未恢复的RTP丢包率；FEC/重传成功会降低这个值。"))];
+    let link_help=uu_i18n::text("实际选中直连路径的本机网卡接收/发送吞吐，包含这张网卡的其它应用流量；不是视频码率、网卡标称速率或可用带宽。每秒在后台读取字节计数，路径变化或样本不足时未知。");
+    let ping_help=uu_i18n::text("对实际选中直连媒体端点的ICMP echo往返，每秒一次，超时200ms；区别于应用CONTROL RTT。受防火墙和系统权限影响，不支持或无回复时未知。Windows回执精度为1ms，小于1ms显示<1ms；中继路径不冒充对端ping。");
+    let ping=m.link.and_then(|v|v.ping_ms).map_or_else(||"—".into(),|v|if v<1.{"<1 ms".into()}else{format!("{v:.1} ms")});
+    let throughput=m.link.and_then(|v|Some(v.rx_mbps?+v.tx_mbps?));
+    let mut network=vec![field("ICMP ping",ping,ping_help),field(uu_i18n::text("链路吞吐"),format!("{} Mbps",number(throughput)),link_help),field("RX/TX",format!("{}/{} Mbps",number(m.link.and_then(|v|v.rx_mbps)),number(m.link.and_then(|v|v.tx_mbps))),link_help),field("RTT",m.rtt.map_or_else(||"—".into(),|v|format!("{}±{} ms",number(Some(v[0])),number(Some(v[1])))),uu_i18n::text("控制消息往返均值±标准差，最近32个样本。包含传输、排队和两端处理，不等于ICMP ping。")),field(uu_i18n::text("链路丢包"),pct(m.loss),uu_i18n::text("修复前的原始RTP缺包率。乱序宽限期后仍未到达的包计入，即使随后由FEC或RTX恢复也保留。它反映接收端看到的网络交付，不只代表物理线路。")),field(uu_i18n::text("修复后丢包"),pct(m.unrecovered_loss),uu_i18n::text("接收器超时后仍未恢复的RTP丢包率；FEC/重传成功会降低这个值。"))];
     if let Some(v)=m.rtt_distribution {network.push(field(uu_i18n::text("末/低/中/P95/高"),format!("{:.1}/{:.1}/{:.1}/{:.1}/{:.1} ms",v[0],v[1],v[2],v[3],v[4]),uu_i18n::text("最近一分钟内RTT的末值、最小值、中位数、95分位和最大值，用于观察波动。")));}
     let mut receive=vec![];
     if let Some(n)=&m.network {
@@ -419,20 +443,29 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
     }else {receive.push(field(uu_i18n::text("原始包统计"),"—",uu_i18n::text("当前还没有新鲜、可解释的原始包窗口；不会伪造零丢包。")));}
     let mut fps=vec![field(uu_i18n::text("接收"),format!("{} FPS",number(m.fps[0])),uu_i18n::text("进入接收管线的完整视频帧率。")),field(uu_i18n::text("解码"),format!("{} FPS",number(m.fps[1])),uu_i18n::text("成功解码帧率。")),field(uu_i18n::text("渲染"),format!("{} FPS",number(m.fps[2])),uu_i18n::text("当前视图提交的新画面帧率；不是显示器扫描输出帧率。"))];
     fps.push(field(uu_i18n::text("源"),m.source_hz.map_or_else(||"—".into(),|v|format!("{v} Hz")),uu_i18n::text("主机报告的显示器模式刷新率，未知或旧主机显示缺省。")));
+    fps.push(field(uu_i18n::text("串流帧周期"),if m.target_fps>0{format!("{:.2} ms",1000./m.target_fps as f32)}else{"—".into()},uu_i18n::text("1000/目标FPS，只表示采样节拍，不是额外测得的等待，也不会加进E2E。30fps为33.33ms，60fps为16.67ms；实际等待取决于源画面和采集相位。")));
+    fps.push(field(uu_i18n::text("源帧周期"),m.source_hz.filter(|v|*v>0).map_or_else(||"—".into(),|hz|format!("{:.2} ms",1000./hz as f32)),uu_i18n::text("1000/主机显示器刷新率，是源显示节拍参考；不是客户端扫描或采集等待实测。")));
     let continuity_help=uu_i18n::text("仅统计前台可见串流提交的新画面。间隔超过3个预期帧周期且至少20ms记一次，预期帧率取目标与已知源刷新率较小值；持续停图只计一次，完成后保留60秒。失焦、最小化、切屏或帧率改变会重置比较基线。源空闲、丢帧、网络、解码或UI都可能产生长间隔，不能据此归因，也不等于物理屏幕卡顿。少于两帧时显示未知。");
-    fps.push(field(uu_i18n::text("长间隔/60s"),m.continuity.as_ref().map_or_else(||"—".into(),|s|s.long_gaps.to_string()),continuity_help));
+    let mut continuity=Vec::new();
+    continuity.push(field(uu_i18n::text("长间隔/60s"),m.continuity.as_ref().map_or_else(||"—".into(),|s|s.long_gaps.to_string()),continuity_help));
     if let Some(s)=&m.continuity {
-        fps.push(field(uu_i18n::text("最长/阈值"),format!("{:.1}/{:.1} ms",s.max_gap_ms,s.threshold_ms),continuity_help));
-        fps.push(field(uu_i18n::text("当前观测"),format!("{:.1} s",s.observed_seconds),continuity_help));
-        if let Some(gap)=s.ongoing_gap_ms {fps.push(field(uu_i18n::text("正在等待"),format!("{gap:.1} ms"),continuity_help));}
+        continuity.push(field(uu_i18n::text("最长/阈值"),format!("{:.1}/{:.1} ms",s.max_gap_ms,s.threshold_ms),continuity_help));
+        continuity.push(field(uu_i18n::text("当前观测"),format!("{:.1} s",s.observed_seconds),continuity_help));
+        if let Some(gap)=s.ongoing_gap_ms {continuity.push(field(uu_i18n::text("正在等待"),format!("{gap:.1} ms"),continuity_help));}
     }
     vec![
-        row(uu_i18n::text("画面"),cyan,vec![field("",format!("{}×{}@{}",m.size[0],m.size[1],m.target_fps),uu_i18n::text("当前视频尺寸与目标帧率；不会改变远端桌面模式。")),field(uu_i18n::text("编码"),if m.codec.is_empty(){"—"}else{&m.codec},uu_i18n::text("实际协商的编码与色彩模式，区别于请求偏好。")),field(uu_i18n::text("解码器"),decoder_label(&m.backend),uu_i18n::text("客户端当前实际使用的解码后端。")),field(uu_i18n::text("码率"),format!("{} Mbps",number(m.bitrate)),uu_i18n::text("近期接收到的视频码率；不是目标码率或总链路带宽。"))]),
+        row(uu_i18n::text("画面"),cyan,vec![field("",format!("{}×{}@{}",m.size[0],m.size[1],m.target_fps),uu_i18n::text("当前视频尺寸与目标帧率；不会改变远端桌面模式。")),field(uu_i18n::text("编码"),if m.codec.is_empty(){"—"}else{&m.codec},uu_i18n::text("实际协商的编码与色彩模式，区别于请求偏好。")),field(uu_i18n::text("码率"),format!("{} Mbps",number(m.bitrate)),uu_i18n::text("近期接收到的视频码率；不是目标码率或总链路带宽。"))]),
         row(uu_i18n::text("帧率"),cyan,fps),
+        row(uu_i18n::text("编解码"),green,vec![
+            field(uu_i18n::text("延迟"),format!("{}/{}/{} ms",number(m.process[1]),number(m.process[2]),number(m.process[3])),uu_i18n::text("编码/解码/UI渲染提交的独立窗口均值，UI提交不等于GPU或显示完成。")),
+            field(uu_i18n::text("编码器"),m.host_video.as_ref().map_or("—",|v|v.encoder.as_str()),uu_i18n::text("当前媒体代次中新鲜的主机遥测所报告的真实编码后端，不按显卡品牌猜测。")),
+            field(uu_i18n::text("编码模式"),if m.mode.is_empty(){"—"}else{&m.mode},uu_i18n::text("主机已确认的当前码率控制模式。")),
+            field(uu_i18n::text("解码器"),decoder_label(&m.backend),uu_i18n::text("客户端当前实际使用的解码后端。"))]),
         row(uu_i18n::text("视频端到端"),green,video),
         row(uu_i18n::text("阶段小计"),green,latency),
         row(uu_i18n::text("网络"),if m.loss.is_some_and(|v|v>1.){orange}else{blue},network),
         row(uu_i18n::text("排队"),green,vec![field(uu_i18n::text("发"),format!("{} ms",number(m.queues[0])),uu_i18n::text("主机发送视频包时等待传输API完成的时间，可能包含套接字背压和调度。")),field(uu_i18n::text("解"),format!("{} ms",number(m.queues[1])),uu_i18n::text("完整帧进入解码工作队列到开始解码的等待。")),field(uu_i18n::text("邮箱"),format!("{} ms",number(m.queues[2])),uu_i18n::text("解码画面发布到UI领取之间的等待；受UI唤醒、绘制预算和负载影响。")),field(uu_i18n::text("合计"),format!("{} ms",number(sum(&m.queues))),uu_i18n::text("发送、解码、邮箱等待的均值之和；缺样本时显示未知。"))]),
+        row(uu_i18n::text("统计"),plain,continuity),
         row(uu_i18n::text("恢复累计"),plain,vec![field(uu_i18n::text("FEC恢复/冗余"),format!("{}/{}",c.fec_recovered,c.fec_packets),uu_i18n::text("FEC恢复的包数与收到的冗余包数，会话累计。")),field(uu_i18n::text("冗余量"),format!("{:.2} MiB",c.fec_bytes as f64/1048576.),uu_i18n::text("会话收到的FEC冗余数据量。")),field(uu_i18n::text("FEC丢弃"),c.fec_drops,uu_i18n::text("无法使用或被丢弃的FEC数据。")),field("RTX",c.rtx,uu_i18n::text("收到的重传包数。")),field("NACK",c.nack,uu_i18n::text("发送的缺包重传请求数。"))]),
         row(uu_i18n::text("异常累计"),if c.errors+c.damaged+c.queue_drops>0{orange}else{plain},vec![field(uu_i18n::text("未恢复包"),c.lost,uu_i18n::text("会话累计超时未恢复包。")),field(uu_i18n::text("损帧"),c.damaged,uu_i18n::text("接收器丢弃的不完整或损坏视频帧。")),field(uu_i18n::text("解码错"),c.errors,uu_i18n::text("解码后端返回的错误次数。")),field(uu_i18n::text("队列丢帧"),c.queue_drops,uu_i18n::text("解码队列为保留新鲜画面而丢弃的帧数。")),field(uu_i18n::text("刷新"),c.keyframes,uu_i18n::text("请求关键帧的次数。")),field(uu_i18n::text("乱/迟"),format!("{}/{}",c.reordered,c.late),uu_i18n::text("修复接收器记录的乱序与迟到次数。"))]),
         row(uu_i18n::text("输入响应"),plain,vec![
@@ -446,47 +479,93 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
         row(uu_i18n::text("恢复原因"),plain,vec![field(uu_i18n::text("接收/排队/解码/格式"),uu_i18n::format!("{}/{}/{}/{} 次",c.recovery[0],c.recovery[1],c.recovery[2],c.recovery[3]),uu_i18n::text("分别由接收损坏、解码队列溢出、解码错误和格式改变触发的恢复次数。"))]),
     ]
 }
+fn detail_rows_window(m:&Metrics,window:usize)->Vec<DetailRow> {
+    let mut scoped=m.clone();
+    scoped.counters=m.statistics[window].clone();
+    scoped.continuity=m.continuity_windows[window].clone();
+    let mut rows=detail_rows(&scoped);
+    let c=&scoped.counters;
+    for row in &mut rows {
+        if row.label==uu_i18n::text("恢复累计") {row.label=uu_i18n::text("恢复统计");}
+        if row.label==uu_i18n::text("异常累计") {row.label=uu_i18n::text("异常统计");}
+        if row.label==uu_i18n::text("统计") {
+            for field in &mut row.values {
+                if field.label==uu_i18n::text("长间隔/60s") {field.label=uu_i18n::text("长间隔");}
+                field.help=uu_i18n::text("所选3/10/60分钟内的前台新画面提交统计，完成间隔按1秒时间桶保留；持续停图只计一次，后台时间不续算。按间隔发生时的帧率判定，当前最长/阈值不代表物理扫描。窗口边界精度1秒，恢复后至少两帧才可测。");
+            }
+            row.values.push(field(uu_i18n::text("已记录"),format!("{:.1} s",m.statistics_coverage[window]),uu_i18n::text("本客户端实际记录到的计数器时间跨度，不足所选窗口时不外推；重连、切轨道或计数器重置后重新记录。连续性只在前台活动时观测。")));
+        }
+        if row.label==uu_i18n::text("收包") {
+            row.values=vec![field(uu_i18n::text("原始收/缺"),format!("{}/{}",c.original_received,c.original_lost),uu_i18n::text("所选窗口内原始RTP接收与缺失计数的差值；不是当前短窗口的丢包率。")),field(uu_i18n::text("乱/重/迟/重置"),format!("{}/{}/{}/{}",c.reordered,c.duplicates,c.late,c.resyncs),uu_i18n::text("所选窗口内的乱序、重复、迟到与统计重置次数。"))];
+        }
+        if matches!(row.label,l if l==uu_i18n::text("恢复统计")||l==uu_i18n::text("异常统计")||l==uu_i18n::text("恢复原因")) {
+            for field in &mut row.values {field.help=uu_i18n::text("所选统计窗口内的计数器增量；仅覆盖已记录时段，未满窗口不外推。连接、媒体、轨道或计数器重置时重新记录。");}
+        }
+    }
+    rows
+}
+#[derive(Default)]
+pub struct DetailState { pub pinned:bool, pub window:usize, copied_until:f64 }
 /// Height and width include the complete frame, in viewport logical points.
 pub fn detail_limits(view: Rect) -> egui::Vec2 {
     egui::vec2(
         (view.width() - 12.).clamp(1., 1120.),
-        (view.height() - 12.).clamp(1., 310.),
+        (view.height() - 12.).clamp(1., 520.),
     )
 }
-fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32) {
-    ui.set_width(width.max(1.));ui.set_max_height(max_height.max(1.));
-    *ui.visuals_mut()=egui::Visuals::dark();ui.spacing_mut().item_spacing=egui::vec2(5.,3.);
-    let remaining=max_height.max(1.);let chart_width=(width*0.37).clamp(90.,400.);let data_width=(width-chart_width-18.).max(1.);
-    ui.horizontal_top(|ui|{
-        ui.allocate_ui_with_layout(egui::vec2(data_width,remaining),egui::Layout::top_down(egui::Align::Min),|ui|{
-            egui::ScrollArea::vertical().id_salt("hud-detail-scroll").max_height(remaining).min_scrolled_height(0.).auto_shrink([false,true]).show(ui,|ui|{
-                let rows=detail_rows(m);
-                let title_width=rows.iter().map(|r|ui.fonts(|fonts|fonts.layout_no_wrap(r.label.into(),FontId::proportional(12.),r.color).size().x)).fold(50.,f32::max).min(110.).min(data_width*0.30);
-                for row in rows{
-                    ui.horizontal_top(|ui|{
-                        ui.allocate_ui_with_layout(egui::vec2(title_width,0.),egui::Layout::top_down(egui::Align::Min),|ui|{
-                            ui.set_width(title_width);
-                            ui.add(egui::Label::new(RichText::new(row.label).size(12.).color(row.color).strong()).selectable(true));
-                        });
-                        ui.vertical(|ui|{ui.set_width((data_width-title_width-7.).max(1.));ui.horizontal_wrapped(|ui|{
-                            let mut group=0;
-                            for v in row.values {
-                                if v.group!=group&&group>0{ui.label(RichText::new("│").size(12.).color(Color32::from_gray(100)));}group=v.group;
-                                ui.add(egui::Label::new(RichText::new(format!("{} {}",v.label,v.value)).size(12.).color(row.color)).selectable(true).wrap()).on_hover_text(v.help);
-                            }
-                        });});
-                    });
+fn data_rows(ui:&mut egui::Ui,m:&Metrics,window:usize,width:f32) {
+    let rows=detail_rows_window(m,window);
+    let title_width=rows.iter().map(|r|ui.fonts(|f|f.layout_no_wrap(r.label.into(),FontId::proportional(12.),r.color).size().x)).fold(50.,f32::max).min(106.).min(width*0.27);
+    for row in rows {
+        ui.horizontal_top(|ui|{
+            ui.allocate_ui_with_layout(egui::vec2(title_width,0.),egui::Layout::top_down(egui::Align::Min),|ui|{
+                ui.set_width(title_width);ui.add(egui::Label::new(RichText::new(row.label).size(12.).color(row.color).strong()).selectable(true));
+            });
+            ui.vertical(|ui|{ui.set_width((width-title_width-8.).max(1.));ui.horizontal_wrapped(|ui|{
+                let mut group=0;
+                for v in row.values {
+                    if v.group!=group&&group>0 {ui.label(RichText::new("│").size(12.).color(Color32::from_gray(90)));}group=v.group;
+                    ui.add(egui::Label::new(RichText::new(format!("{} {}",v.label,v.value).trim()).size(12.).color(Color32::from_rgb(219,227,238))).selectable(true).wrap()).on_hover_text(v.help);
                 }
+            });});
+        });
+        ui.add_space(4.);
+    }
+}
+fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32,state:&mut DetailState) {
+    ui.set_width(width.max(1.));ui.set_max_height(max_height.max(1.));
+    *ui.visuals_mut()=egui::Visuals::dark();ui.visuals_mut().panel_fill=Color32::TRANSPARENT;
+    ui.spacing_mut().item_spacing=egui::vec2(7.,4.);
+    let now=ui.input(|i|i.time);let top=ui.cursor().top();
+    ui.horizontal_wrapped(|ui|{
+        ui.label(RichText::new(uu_i18n::text("串流诊断")).size(13.).strong().color(Color32::WHITE));
+        for (i,name) in ["3 min","10 min","60 min"].iter().enumerate(){ui.selectable_value(&mut state.window,i,*name);}
+        if ui.selectable_label(state.pinned,uu_i18n::text(if state.pinned{"已固定"}else{"固定"})).clicked(){state.pinned=!state.pinned;}
+        if ui.button(uu_i18n::text(if now<state.copied_until{"已复制"}else{"复制诊断"})).clicked(){ui.ctx().copy_text(m.diagnostic_text(state.window));state.copied_until=now+1.5;}
+    });
+    ui.separator();
+    let remaining=(max_height-(ui.cursor().top()-top)-2.).max(1.);
+    if width<820. {
+        egui::ScrollArea::vertical().id_salt("hud-detail-scroll").max_height(remaining).min_scrolled_height(0.).auto_shrink([false,true]).show(ui,|ui|{
+            let width=(width-10.).max(1.);data_rows(ui,m,state.window,width);ui.separator();history::chart(ui,&m.history,190.);
+        });
+    } else {
+        let chart_width=(width*0.36).min(400.);let data_width=(width-chart_width-20.).max(1.);
+        ui.horizontal_top(|ui|{
+            ui.allocate_ui_with_layout(egui::vec2(data_width,remaining),egui::Layout::top_down(egui::Align::Min),|ui|{
+                egui::ScrollArea::vertical().id_salt("hud-detail-scroll").max_height(remaining).min_scrolled_height(0.).auto_shrink([false,true]).show(ui,|ui|data_rows(ui,m,state.window,(data_width-10.).max(1.)));
+            });
+            ui.separator();
+            ui.allocate_ui_with_layout(egui::vec2(chart_width,remaining),egui::Layout::top_down(egui::Align::Min),|ui|{
+                ui.set_max_width(chart_width);egui::ScrollArea::vertical().id_salt("hud-chart-scroll").max_height(remaining).min_scrolled_height(0.).show(ui,|ui|history::chart(ui,&m.history,(remaining-65.).max(80.)));
             });
         });
-        ui.separator();
-        ui.allocate_ui_with_layout(egui::vec2(chart_width,remaining),egui::Layout::top_down(egui::Align::Min),|ui|{ui.set_max_width(chart_width);egui::ScrollArea::vertical().id_salt("hud-chart-scroll").max_height(remaining).min_scrolled_height(0.).show(ui,|ui|history::chart(ui,&m.history,(remaining-52.).max(80.)));});
-    });
+    }
 }
 /// Shared by the production hover card and the generated visual probe.
 pub fn details(ui: &mut egui::Ui, m: &Metrics) {
     let limits = detail_limits(ui.ctx().screen_rect());
-    detail_contents(ui, m, limits.x - 16., limits.y - 16.);
+    detail_contents(ui, m, limits.x - 20., limits.y - 20., &mut DetailState::default());
 }
 fn detail_origin(view: Rect, anchor: Rect, size: egui::Vec2) -> egui::Pos2 {
     let safe = view.shrink(6.);
@@ -505,27 +584,29 @@ pub fn details_at(
     view: Rect,
     anchor: Rect,
     previous: Option<Rect>,
-) -> Rect {
+) -> Rect { details_at_with_state(ui,m,view,anchor,previous,&mut DetailState::default()) }
+pub fn details_at_with_state(ui:&egui::Ui,m:&Metrics,view:Rect,anchor:Rect,previous:Option<Rect>,state:&mut DetailState)->Rect {
     let mut limits = detail_limits(view);
     let available=(view.bottom()-6.-anchor.bottom()-4.).max(anchor.top()-view.top()-10.).max(1.);
     limits.y=limits.y.min(available);
     let size = egui::vec2(
         limits.x,
-        previous.map_or(260., |r| r.height()).min(limits.y),
+        previous.map_or(limits.y, |r| r.height()).min(limits.y),
     );
     let pos = detail_origin(view, anchor, size);
     egui::Area::new(ui.id().with("hud-hover-card"))
-        .order(egui::Order::Tooltip)
+        .order(egui::Order::Foreground)
         .movable(false)
         .fixed_pos(pos)
         .constrain_to(view.shrink(6.))
         .show(ui.ctx(), |ui| {
             egui::Frame::none()
                 .fill(Color32::from_black_alpha(228))
-                .rounding(3.)
-                .inner_margin(8.)
+                .rounding(9.)
+                .stroke(egui::Stroke::new(1.,Color32::from_white_alpha(35)))
+                .inner_margin(10.)
                 .show(ui, |ui| {
-                    detail_contents(ui, m, limits.x - 16., limits.y - 16.)
+                    detail_contents(ui, m, limits.x - 22., limits.y - 22.,state)
                 });
         })
         .response
@@ -537,6 +618,7 @@ pub struct HoverCard {
     last_inside: f64,
     pub bounds: Option<Rect>,
     selected: bool,
+    state:DetailState,
 }
 impl HoverCard {
     pub fn keyboard_owned(&self)->bool {self.selected}
@@ -554,17 +636,17 @@ impl HoverCard {
             .ctx()
             .input(|i| (i.time, i.pointer.hover_pos(), i.focused));
         if !focused || view.width() < 48. || view.height() < 48. {
-            *self = Self::default();
+            self.selected=false;self.since=None;self.bounds=None;
             return false;
         }
         let over_card = pointer.is_some_and(|p| self.bounds.is_some_and(|r| r.contains(p)));
-        if ui.ctx().input(|i|i.key_pressed(egui::Key::Escape)) {self.selected=false;}
+        if ui.ctx().input(|i|i.key_pressed(egui::Key::Escape)) {self.selected=false;self.state.pinned=false;}
         if ui.ctx().input(|i|i.pointer.any_pressed()) {self.selected=over_card;}
-        if source.hovered() || over_card || self.selected {
+        if source.hovered() || over_card || self.selected || self.state.pinned {
             self.last_inside = now;
             self.since.get_or_insert(now);
         } else if now - self.last_inside > 0.18 {
-            *self = Self::default();
+            self.since=None;self.bounds=None;self.selected=false;
             return false;
         } else {
             ui.ctx()
@@ -580,7 +662,7 @@ impl HoverCard {
                 ));
             return false;
         }
-        let bounds = details_at(ui, m, view, source.rect, self.bounds);
+        let bounds = details_at_with_state(ui, m, view, source.rect, self.bounds,&mut self.state);
         self.bounds = Some(bounds);
         pointer.is_some_and(|p| bounds.contains(p))
     }
@@ -609,6 +691,58 @@ pub fn decoder_label(backend: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn toolbar_buttons_pin_switch_window_and_copy_through_real_pointer_events() {
+        let ctx=egui::Context::default();let view=Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
+        let mut state=DetailState::default();let mut previous=None;let mut now=1.;
+        let mut frame=|state:&mut DetailState,events:Vec<egui::Event>| {
+            now+=0.05;
+            ctx.run(egui::RawInput{screen_rect:Some(view),time:Some(now),events,..Default::default()},|ctx|{
+                egui::CentralPanel::default().show(ctx,|ui|{previous=Some(details_at_with_state(ui,&Metrics::default(),view,Rect::from_min_size(egui::pos2(20.,28.),egui::vec2(500.,24.)),previous,state));});
+            })
+        };
+        let mut output=frame(&mut state,vec![]);for _ in 0..3{output=frame(&mut state,vec![]);}
+        for label in ["固定","10 min","复制诊断"] {
+            let point=output.shapes.iter().find_map(|s|if let egui::Shape::Text(t)=&s.shape {(t.galley.job.text==label).then_some(t.pos+t.galley.size()/2.)}else{None}).unwrap();
+            frame(&mut state,vec![egui::Event::PointerMoved(point)]);
+            frame(&mut state,vec![egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}]);
+            output=frame(&mut state,vec![egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}]);
+            if label=="固定"{assert!(state.pinned);}
+            if label=="10 min"{assert_eq!(state.window,1);}
+            if label=="复制诊断"{assert!(output.platform_output.copied_text.contains("统计窗口 10 分钟"));}
+        }
+    }
+    #[test]
+    fn pinned_card_survives_pointer_leave_and_releases_keyboard_on_picture_or_focus_loss() {
+        let ctx=egui::Context::default();let view=Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
+        let mut card=HoverCard::default();card.state.pinned=true;let mut now=0.;
+        let mut frame=|card:&mut HoverCard,focused,pressed| {
+            now+=0.3;let point=egui::pos2(1270.,710.);
+            let mut events=vec![egui::Event::PointerMoved(point)];
+            if pressed {events.push(egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()});}
+            let _=ctx.run(egui::RawInput{screen_rect:Some(view),time:Some(now),focused,events,..Default::default()},|ctx|{
+                egui::CentralPanel::default().show(ctx,|ui|{
+                    let source=ui.interact(Rect::from_min_size(egui::pos2(12.,12.),egui::vec2(160.,24.)),egui::Id::new("source"),egui::Sense::hover());
+                    card.show(ui,&source,&Metrics::default(),view);
+                });
+            });
+        };
+        for _ in 0..4{frame(&mut card,true,false);}
+        assert!(card.bounds.is_some());assert!(!card.keyboard_owned());
+        card.selected=true;frame(&mut card,true,true);
+        assert!(!card.keyboard_owned());assert!(card.state.pinned);assert!(card.bounds.is_some());
+        card.selected=true;frame(&mut card,false,false);
+        assert!(!card.keyboard_owned());assert!(card.bounds.is_none());assert!(card.state.pinned);
+    }
+    #[test]
+    fn report_copies_the_selected_counter_window_and_distinguishes_period_from_latency() {
+        let mut m=Metrics{target_fps:30,statistics_coverage:[180.,270.,270.],..Default::default()};
+        m.counters.nack=999;m.statistics[0].nack=2;m.statistics[1].nack=7;
+        let short=m.diagnostic_text(0);let long=m.diagnostic_text(1);
+        assert!(short.contains("NACK 2"));assert!(long.contains("NACK 7"));assert!(!long.contains("NACK 999"));
+        assert!(long.contains("33.33 ms"));assert!(long.contains("阶段小计 —"));assert!(long.contains("视觉响应 —"));
+        assert!(!long.contains("127.0.0.1"));
+    }
     #[test]
     fn clicking_detail_owns_keyboard_until_outside_escape_or_focus_loss() {
         let ctx=egui::Context::default();let mut card=HoverCard::default();
@@ -650,7 +784,7 @@ mod tests {
             for _ in 0..3 {
                 let output=ctx.run(egui::RawInput{screen_rect:Some(view),..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|details(ui,&m));});
                 let texts:Vec<_>=output.shapes.iter().filter_map(|s|if let egui::Shape::Text(t)=&s.shape {Some(t)}else{None}).collect();
-                assert!(!texts.iter().any(|t|matches!(t.galley.job.text.as_str(),"串流诊断"|"复制详情")));
+                assert!(texts.iter().any(|t|t.galley.job.text=="串流诊断"));
                 checked=0;
                 for row in &rows {
                     let first=&row.values[0];let value=format!("{} {}",first.label,first.value);
@@ -681,12 +815,12 @@ mod tests {
             };
             let mut bounds: Option<Rect> = None;
             let mut final_category_visible=false;
-            for frame in 0..14 {
+            for frame in 0..70 {
                 let mut events=Vec::new();
                 if frame>=3 {
                     if let Some(bounds)=bounds {
-                        events.push(egui::Event::PointerMoved(bounds.min+egui::vec2(40.,40.)));
-                        if frame<7 {events.push(egui::Event::MouseWheel {unit:egui::MouseWheelUnit::Point,delta:egui::vec2(0.,-1200.),modifiers:Default::default()});}
+                        events.push(egui::Event::PointerMoved(bounds.min+egui::vec2(40.,80.)));
+                        if frame<64 {events.push(egui::Event::MouseWheel {unit:egui::MouseWheelUnit::Point,delta:egui::vec2(0.,-60.),modifiers:Default::default()});}
                     }
                 }
                 let output = ctx.run(
@@ -775,11 +909,11 @@ mod tests {
             ..Default::default()
         };
         uu_i18n::with_language(uu_i18n::Language::Chinese,||{
-            assert_eq!(m.total_label(),"视频端到端 ≈21.163 ±0.999 ms · 系统显示回执");
+            assert_eq!(m.total_label(),"视频端到端 ≈21.16 ±1.00 ms · 系统显示回执");
             assert_eq!(m.input_response_label(),"输入响应 — · 注入确认 2.2 ms");
         });
         uu_i18n::with_language(uu_i18n::Language::English,||{
-            assert_eq!(m.total_label(),"Video E2E ≈21.163 ±0.999 ms · System display receipt");
+            assert_eq!(m.total_label(),"Video E2E ≈21.16 ±1.00 ms · System display receipt");
             assert_eq!(m.input_response_label(),"Input response — · Injection ack 2.2 ms");
             let rows=detail_rows(&m);
             assert!(rows.iter().any(|row|row.label=="Stage sum"));
@@ -822,7 +956,7 @@ mod tests {
             (uu_i18n::Language::English,"Video E2E","History evictions","Max frame half-width","Src/disp/obs drops")
         ] {
             uu_i18n::with_language(language,||{
-                assert!(m.total_label().contains("≈15.000 ±5.000 ms"));
+                assert!(m.total_label().contains("≈15.00 ±5.00 ms"));
                 let rows=detail_rows(&m);
                 let fields=&rows.iter().find(|r|r.label==row).unwrap().values;
                 assert!(fields.iter().any(|f|f.label==history&&f.value=="42"));
@@ -849,7 +983,7 @@ mod tests {
             let zero=Measurement {samples:1,mean_us:0,p50_us:0,p95_us:0,uncertainty_us:0,max_sample_uncertainty_us:0,method:DisplayMethod::RefreshInterval};
             let m=Metrics {video_e2e:Some(e2e_snapshot(Some(zero),None)),..Default::default()};
             assert_eq!(m.video_mean_ms(),Some(0.));
-            assert_eq!(m.total_label(),"Video E2E ≈0.000 ±0.000 ms · Refresh interval");
+            assert_eq!(m.total_label(),"Video E2E ≈0.00 ±0.00 ms · Refresh interval");
             let invalid=Metrics {video_e2e:Some(e2e_snapshot(Some(Measurement {samples:0,..zero}),None)),..Default::default()};
             assert_eq!(invalid.video_mean_ms(),None);
         });
@@ -861,8 +995,8 @@ mod tests {
             process: [Some(8.), Some(1.2), Some(0.07), Some(2.3)],
             ..Default::default()
         };
-        assert_eq!(m.fps_label(), "FPS[recv/dec/rnd] 60.0/59.9/59.7");
-        assert_eq!(m.stages_label(), "Enc/Dec/Rnd 1.2/0.07/2.3 ms");
+        assert_eq!(m.fps_label(), "FPS · Rcv/Dec/Rnd 60.0/59.9/59.7");
+        assert_eq!(m.stages_label(), "Latency · Enc/Dec/Rnd 1.2/0.07/2.3 ms");
     }
     #[test]
     fn layouts_fit_wide_and_narrow_viewports_without_overlapping_groups() {

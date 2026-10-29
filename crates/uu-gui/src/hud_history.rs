@@ -79,10 +79,14 @@ pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32) {
         let wanted=end-(plot.right()-pointer.x) as f64/plot.width() as f64*WINDOW_SECONDS;
         if let Some(sample)=samples.iter().min_by(|a,b|(a.seconds-wanted).abs().total_cmp(&(b.seconds-wanted).abs())) {
             let x=plot.right()-((end-sample.seconds)/WINDOW_SECONDS) as f32*plot.width();painter.vline(x,plot.y_range(),Stroke::new(1.,Color32::from_white_alpha(120)));
-            response.on_hover_ui(|ui| {ui.small(uu_i18n::format!("{:.1} 秒前",end-sample.seconds));for i in 0..7 {if selected[i]{
+            egui::Area::new(ui.id().with("latency-curve-tooltip")).order(egui::Order::Tooltip).interactable(false)
+                .fixed_pos(pointer+egui::vec2(14.,14.)).constrain_to(ui.ctx().screen_rect().shrink(4.)).show(ui.ctx(),|ui|{
+                egui::Frame::none().fill(Color32::from_black_alpha(238)).rounding(6.).inner_margin(8.)
+                    .stroke(Stroke::new(1.,Color32::from_white_alpha(45))).show(ui,|ui|{
+                ui.visuals_mut().override_text_color=Some(Color32::from_gray(220));ui.small(uu_i18n::format!("{:.1} 秒前",end-sample.seconds));for i in 0..7 {if selected[i]{
                 let value=sample.values[i].map_or_else(||"—".into(),|v|if i==0{sample.video_uncertainty_ms.map_or_else(||format!("≈{v:.3}"),|error|format!("≈{v:.3} ±{error:.3}"))}else{format!("{v:.2}")});
                 ui.colored_label(colors[i],format!("{}  {} ms",names[i],value));
-            }}});
+            }}});});
         }
     }
 }

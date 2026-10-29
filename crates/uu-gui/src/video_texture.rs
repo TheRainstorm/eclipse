@@ -92,6 +92,7 @@ impl VideoTexture {
     pub fn set_continuity_active(&self,active:bool,fps:u32){self.continuity.lock().unwrap().set_active(active,fps);}
     pub fn record_new_image(&self){self.continuity.lock().unwrap().submit(std::time::Instant::now());}
     pub fn continuity(&self)->Option<ContinuitySnapshot>{self.continuity.lock().unwrap().snapshot(std::time::Instant::now())}
+    pub fn continuity_window(&self,seconds:u64)->Option<ContinuitySnapshot>{self.continuity.lock().unwrap().snapshot_window(std::time::Instant::now(),seconds)}
     pub fn set(&mut self, ctx: &egui::Context, image: DisplayImage) {
         self.set_with_observation(ctx,image,None)
     }
