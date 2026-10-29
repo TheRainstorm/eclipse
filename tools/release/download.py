@@ -2,6 +2,7 @@
 """Download and verify published packages without running a Rust build."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -15,6 +16,10 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools/windows'))
 from sync import verify_package  # Reuse the installer's strict ZIP validation.
+
+_linux_spec = importlib.util.spec_from_file_location('release_linux_installer', ROOT / 'tools/linux/install.py')
+_linux_installer = importlib.util.module_from_spec(_linux_spec)
+_linux_spec.loader.exec_module(_linux_installer)
 
 TAG = re.compile(r'v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?')
 ARCHIVE = re.compile(r'uu-client-(windows-x64|linux-x86_64)-([0-9a-f]{12})\.(zip|tar\.gz)')
@@ -70,12 +75,7 @@ def linux_manifest(path):
         name = manifests[0]
         manifest = json.loads(files[name])
         prefix = name[:-len('version.json')]
-        required = {'uu', 'uu-gui', 'install.py', 'README.txt', 'eclipse.png',
-                    'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt'}
-        version=manifest.get('format_version',1)
-        if type(version) is not int or version not in (1,2):
-            raise ValueError('Unsupported Linux package format version')
-        if version==2:required.add('libpyrowave-shared.so.1')
+        required = set(_linux_installer.required_files(manifest))
         if set(manifest.get('sha256', {})) != required or set(files) != {prefix + n for n in required | {'version.json'}}:
             raise ValueError('Unexpected Linux payload inventory')
         for filename, expected in manifest['sha256'].items():

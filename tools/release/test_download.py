@@ -42,11 +42,18 @@ class DownloadTests(unittest.TestCase):
             for name, data in files.items():
                 archive.writestr(name, data)
 
-    def make_linux(self, corrupt=False, symlink=False):
+    def make_linux(self, corrupt=False, symlink=False, sdk=False):
         names = ('uu', 'uu-gui', 'install.py', 'README.txt', 'eclipse.png',
                  'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt')
         files = {name: ('fixture ' + name).encode() for name in names}
         files['version.json'] = self.manifest(files)
+        if sdk:
+            runtime = ['libuu_plugin_sdk.so', 'libstd-0123456789abcdef.so']
+            files.pop('version.json')
+            for name in ['libpyrowave-shared.so.1', *runtime]: files[name] = ('fixture ' + name).encode()
+            manifest = json.loads(self.manifest(files, format_version=3))
+            manifest.update(plugin_runtime=runtime, plugin_sdk_id='f' * 64)
+            files['version.json'] = json.dumps(manifest).encode()
         if corrupt:
             files['uu'] = b'changed executable'
         with tarfile.open(self.assets / self.linux, 'w:gz') as archive:
@@ -132,6 +139,18 @@ class DownloadTests(unittest.TestCase):
         self.make_linux(symlink=True)
         with self.assertRaisesRegex(ValueError, 'entry'):
             download.linux_manifest(self.assets / self.linux)
+
+    def test_shared_sdk_payload_is_verified_and_corruption_preserves_download_state(self):
+        self.make_linux(sdk=True)
+        self.hashes()
+        with patch.object(download, 'gh', side_effect=self.fake_gh):
+            download.download('example/project', 'v1.2.3', self.output)
+        previous = (self.output / 'linux-latest.json').read_bytes()
+        self.make_linux(corrupt=True, sdk=True)
+        self.hashes()
+        with patch.object(download, 'gh', side_effect=self.fake_gh), self.assertRaisesRegex(ValueError, 'payload hash'):
+            download.download('example/project', 'v1.2.3', self.output)
+        self.assertEqual((self.output / 'linux-latest.json').read_bytes(), previous)
 
     def test_invalid_requested_tag_never_reaches_github(self):
         with patch.object(download, 'gh') as github:
