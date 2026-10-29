@@ -134,7 +134,7 @@ try {
     $links = Join-Path $root 'shortcuts'
     New-Item -ItemType Directory -Path $links | Out-Null
     $shell = New-Object -ComObject WScript.Shell
-    $oldExe = Join-Path $root 'previous/uu-gui.exe'
+    $oldExe = [IO.Path]::GetFullPath((Join-Path $root 'previous/uu-gui.exe'))
     $newExe = Join-Path $renamedTarget 'eclipse.exe'
     $ownedTargets = @($oldExe, $newExe)
     $unrelated = Join-Path $links 'Eclipse.lnk'
