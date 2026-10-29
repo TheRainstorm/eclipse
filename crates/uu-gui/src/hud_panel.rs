@@ -461,7 +461,7 @@ fn detail_rows_window(m:&Metrics,window:usize)->Vec<DetailRow> {
     rows
 }
 #[derive(Default)]
-pub struct DetailState { pub pinned:bool, pub window:usize, copied_until:f64 }
+pub struct DetailState { pub pinned:bool, pub window:usize, copied_until:f64, clear_requested:bool }
 /// Height and width include the complete frame, in viewport logical points.
 pub fn detail_limits(view: Rect) -> egui::Vec2 {
     egui::vec2(
@@ -505,6 +505,7 @@ fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32,state:&m
         for (i,name) in ["3 min","10 min","60 min"].iter().enumerate(){ui.selectable_value(&mut state.window,i,*name);}
         if ui.selectable_label(state.pinned,uu_i18n::text(if state.pinned{"已固定"}else{"固定"})).clicked(){state.pinned=!state.pinned;}
         if ui.button(uu_i18n::text(if now<state.copied_until{"已复制"}else{"复制诊断"})).clicked(){ui.ctx().copy_text(m.diagnostic_text(state.window));state.copied_until=now+1.5;}
+        if ui.button(uu_i18n::text("清除")).on_hover_text(uu_i18n::text("清除图表和诊断统计历史，从当前计数重新记录；保留连接和实时测量。")).clicked(){state.clear_requested=true;state.copied_until=0.;}
     });
     ui.separator();
     let remaining=(max_height-(ui.cursor().top()-top)-2.).max(1.);
@@ -586,6 +587,7 @@ pub struct HoverCard {
 }
 impl HoverCard {
     pub fn keyboard_owned(&self)->bool {self.selected}
+    pub fn take_clear_requested(&mut self)->bool {std::mem::take(&mut self.state.clear_requested)}
 
     /// Hover alone keeps keyboard ownership remote. Clicking this local card
     /// owns text selection/copy until a click outside, Escape or focus loss.
@@ -774,7 +776,7 @@ mod tests {
             })
         };
         let mut output=frame(&mut state,vec![]);for _ in 0..3{output=frame(&mut state,vec![]);}
-        for label in ["固定","10 min","复制诊断"] {
+        for label in ["固定","10 min","复制诊断","清除"] {
             let point=output.shapes.iter().find_map(|s|if let egui::Shape::Text(t)=&s.shape {(t.galley.job.text==label).then_some(t.pos+t.galley.size()/2.)}else{None}).unwrap();
             frame(&mut state,vec![egui::Event::PointerMoved(point)]);
             frame(&mut state,vec![egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}]);
@@ -782,6 +784,7 @@ mod tests {
             if label=="固定"{assert!(state.pinned);}
             if label=="10 min"{assert_eq!(state.window,1);}
             if label=="复制诊断"{assert!(output.platform_output.copied_text.contains("统计窗口 10 分钟"));}
+            if label=="清除"{assert!(state.clear_requested);assert!(state.pinned);assert_eq!(state.window,1);}
         }
     }
     #[test]

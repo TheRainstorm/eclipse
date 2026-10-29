@@ -17,6 +17,14 @@ pub(super) struct Cache {
 impl Cache {
     pub(super) fn keyboard_owned(&self)->bool {self.hover.keyboard_owned()}
     pub(super) fn invalidate(&mut self) {self.key=None;self.updated=None;self.hover=Default::default();}
+    fn clear_history(&mut self,now:Instant,generation:[u64;2]) {
+        self.history=Default::default();
+        self.statistics=Default::default();
+        (self.metrics.statistics,self.metrics.statistics_coverage)=self.statistics.record(now,generation,&self.metrics.counters);
+        self.metrics.history=Default::default();
+        self.metrics.continuity=None;self.metrics.continuity_windows=Default::default();
+        self.key=None;self.layout=None;
+    }
 }
 impl super::App {
     pub(super) fn sample_hud(&mut self) {
@@ -108,11 +116,40 @@ impl super::App {
         if self.hud_cache.key!=Some(key) {
             self.hud_cache.layout=Some(Layout::new(ui,&self.hud_cache.metrics,width));self.hud_cache.key=Some(key);
         }
-        if let Some(layout)=&self.hud_cache.layout {
+        let owned=if let Some(layout)=&self.hud_cache.layout {
             let appearance=self.preferences.hud_appearance;
             let response=layout.paint(ui,rect,appearance);
-            return self.hud_cache.hover.show(ui,&response,&self.hud_cache.metrics,rect,appearance);
+            self.hud_cache.hover.show(ui,&response,&self.hud_cache.metrics,rect,appearance)
+        }else{false};
+        if self.hud_cache.hover.take_clear_requested() {
+            // Read current counters at the click, so the next sample measures
+            // only activity after Clear. Media counters and live telemetry
+            // belong to the engine and are never reset by this local view.
+            self.hud_cache.updated=None;self.sample_hud();
+            let epoch=self.controller.as_ref().unwrap().stats.native_media_epoch.load(Relaxed);
+            self.hud_cache.clear_history(Instant::now(),[epoch,u64::from(self.selected_track)]);
+            for texture in self.textures.values(){texture.clear_continuity();}
+            ui.ctx().request_repaint();
         }
-        false
+        owned
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn clear_discards_history_but_uses_current_engine_counters_as_the_new_baseline() {
+        let now=Instant::now();let mut cache=Cache::default();
+        cache.statistics.record(now-std::time::Duration::from_secs(10),[1,0],&Counters{nack:100,..Default::default()});
+        cache.metrics.counters.nack=200;
+        cache.metrics.history=cache.history.record([1,0,1],[Some(1.);7],None);
+        assert!(!cache.metrics.history.is_empty());
+        cache.clear_history(now,[1,0]);
+        assert!(cache.metrics.history.is_empty());assert!(cache.history.snapshot().is_empty());
+        assert_eq!(cache.metrics.counters.nack,200);
+        assert_eq!(cache.metrics.statistics.map(|c|c.nack),[0;3]);
+        let (counts,coverage)=cache.statistics.record(now+std::time::Duration::from_secs(1),[1,0],&Counters{nack:204,..Default::default()});
+        assert_eq!(counts.map(|c|c.nack),[4;3]);assert_eq!(coverage,[1.;3]);
     }
 }

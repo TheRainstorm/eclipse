@@ -90,6 +90,7 @@ impl VideoTexture {
     }
     pub fn set_source_white(&mut self,white:f32){if white.is_finite()&&(40.0..=1000.0).contains(&white){self.source_white_nits=white;}}
     pub fn set_continuity_active(&self,active:bool,fps:u32){self.continuity.lock().unwrap().set_active(active,fps);}
+    pub fn clear_continuity(&self){self.continuity.lock().unwrap().clear();}
     pub fn record_new_image(&self){self.continuity.lock().unwrap().submit(std::time::Instant::now());}
     pub fn continuity(&self)->Option<ContinuitySnapshot>{self.continuity.lock().unwrap().snapshot(std::time::Instant::now())}
     pub fn continuity_window(&self,seconds:u64)->Option<ContinuitySnapshot>{self.continuity.lock().unwrap().snapshot_window(std::time::Instant::now(),seconds)}

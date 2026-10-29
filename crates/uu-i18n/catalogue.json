@@ -1543,6 +1543,8 @@
   "固定": "Pin",
   "复制诊断": "Copy report",
   "已复制": "Copied",
+  "清除": "Clear",
+  "清除图表和诊断统计历史，从当前计数重新记录；保留连接和实时测量。": "Clear chart and diagnostic statistics history and start counting from now. Keep the connection and live measurements.",
   "实际选中直连路径的本机网卡接收/发送吞吐，包含这张网卡的其它应用流量；不是视频码率、网卡标称速率或可用带宽。每秒在后台读取字节计数，路径变化或样本不足时未知。": "Receive/send throughput of the local interface used by the selected direct media path, including other applications. Not video bitrate, link speed or available capacity. Counters are sampled in the background once a second; a changed path or insufficient samples stays unknown.",
   "对实际选中直连媒体端点的ICMP echo往返，每秒一次，超时200ms；区别于应用CONTROL RTT。受防火墙和系统权限影响，不支持或无回复时未知。Windows回执精度为1ms，小于1ms显示<1ms；中继路径不冒充对端ping。": "ICMP echo to the selected direct media endpoint, once a second with a 200 ms timeout. Separate from application CONTROL RTT. Unsupported, blocked or unanswered probes stay unknown. Windows reports integer milliseconds; values below 1 ms show <1 ms. Relays are not presented as peer ping.",
   "1000/目标FPS，只表示采样节拍，不是额外测得的等待，也不会加进E2E。30fps为33.33ms，60fps为16.67ms；实际等待取决于源画面和采集相位。": "1000/target FPS is a cadence reference, not a measured wait or an addition to E2E. At 30 fps it is 33.33 ms; at 60 fps, 16.67 ms. Actual waiting depends on source and capture phase.",

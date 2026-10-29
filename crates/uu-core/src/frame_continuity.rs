@@ -42,6 +42,11 @@ pub struct Continuity {
 }
 
 impl Continuity {
+    /// Start a new observation period without changing the caller's activity
+    /// or expected cadence. The next image starts a baseline, not a long gap.
+    pub fn clear(&mut self) {
+        *self=Self{active:self.active,fps:self.fps,..Self::default()};
+    }
     fn threshold(&self) -> Duration {
         Duration::from_secs_f64(3. / f64::from(self.fps.max(1))).max(Duration::from_millis(20))
     }
@@ -154,6 +159,21 @@ impl Continuity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clear_removes_all_windows_and_restarts_the_active_cadence_without_a_false_stall() {
+        let start=Instant::now();let mut c=Continuity::default();c.set_active(true,165);
+        c.submit(start);c.submit(start+Duration::from_millis(6));
+        assert_eq!(c.snapshot(start+Duration::from_millis(60)).unwrap().long_gaps,1);
+        c.clear();
+        assert!(c.snapshot(start+Duration::from_secs(2)).is_none());
+        c.submit(start+Duration::from_secs(2));c.submit(start+Duration::from_secs(2)+Duration::from_millis(6));
+        for window in [60,180,600,3600] {
+            let s=c.snapshot_window(start+Duration::from_secs(2)+Duration::from_millis(6),window).unwrap();
+            assert_eq!(s.long_gaps,0);assert_eq!(s.max_gap_ms,6.);assert_eq!(s.threshold_ms,20.);
+        }
+        c.set_active(false,165);c.clear();c.submit(start+Duration::from_secs(3));
+        assert!(c.snapshot(start+Duration::from_secs(3)).is_none(),"Clear must not activate a paused observer");
+    }
     #[test]
     fn long_windows_keep_the_same_observed_stall_and_expire_independently() {
         let start=Instant::now();let mut c=Continuity::default();c.set_active(true,60);
