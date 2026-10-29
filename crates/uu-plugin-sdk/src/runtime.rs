@@ -60,12 +60,19 @@ impl Runtime {
                 }
             }
             let record=self.records.get_mut(&id).unwrap();
+            if let Some(loaded)=&record.loaded {
+                if let Err(error)=loaded.plugin.configure(&preferences.get(&id)) {
+                    if record.registered {let _=engine::plugins::registry().set_enabled(&id,false);}
+                    let _=loaded.plugin.set_enabled(false);record.error=error.to_string();record.enabled=false;continue;
+                }
+            }
             if !enabled&&record.registered {let _=engine::plugins::registry().set_enabled(&id,false);}
             if record.enabled!=enabled {
                 if let Some(loaded)=&record.loaded {if let Err(error)=loaded.plugin.set_enabled(enabled){record.error=error.to_string();record.enabled=false;continue;}}
             }
             if record.registered {
-                if let Err(error)=engine::plugins::registry().set_enabled(&id,enabled){record.error=error.to_string();record.enabled=false;continue;}
+                let service_enabled=enabled&&record.loaded.as_ref().is_some_and(|p|p.plugin.connection_enabled());
+                if let Err(error)=engine::plugins::registry().set_enabled(&id,service_enabled){record.error=error.to_string();record.enabled=false;continue;}
             }
             record.enabled=enabled;record.error.clear();
         }

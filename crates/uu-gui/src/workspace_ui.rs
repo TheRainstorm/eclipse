@@ -129,7 +129,7 @@ mod tests {
         let info=Info{wallpaper_enabled:false,nearby:Vec::new(),providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Generated provider",version:"1"}]};
         let draw=|ctx:&egui::Context,workspace:&mut Workspace| {
             egui::CentralPanel::default().show(ctx,|ui| {
-                workspace.show_with_connections(ui,&info,&mut |ui,id| {assert_eq!(id,"example-addon");ui.label("Generated account controls");});
+                workspace.show_with_connections(ui,&info,&mut |ui,id| {if let Some(id)=id{assert_eq!(id,"example-addon");ui.label("Generated account controls");}else{ui.label("Generated independent protocol");}});
             });
         };
         let input=||egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1200.,1400.))),..Default::default()};
@@ -142,7 +142,8 @@ mod tests {
         let y=|label|output.shapes.iter().find_map(|s|position(&s.shape,label)).unwrap_or_else(||panic!("missing {label}"));
         assert!(y("IP 直连")<y("Generated provider"));
         assert!(y("Generated provider")<y("Generated account controls"));
-        assert!(y("Generated account controls")<y("自建服务器"));
+        assert!(y("Generated account controls")<y("Generated independent protocol"));
+        assert!(y("Generated independent protocol")<y("自建服务器"));
     }
     struct Harness {
         workspace: Workspace,
@@ -895,7 +896,7 @@ impl Workspace {
     pub fn show(&mut self, ui: &mut egui::Ui, info: &Info) -> Vec<Action> {
         self.show_with_connections(ui,info,&mut |_,_|{})
     }
-    pub fn show_with_connections(&mut self, ui: &mut egui::Ui, info: &Info, connection:&mut dyn FnMut(&mut egui::Ui,&str)) -> Vec<Action> {
+    pub fn show_with_connections(&mut self, ui: &mut egui::Ui, info: &Info, connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) -> Vec<Action> {
         self.providers=info.providers.clone();
         let mut actions = Vec::new();
         match self.route.page {
@@ -1251,7 +1252,7 @@ impl Workspace {
             Err(e) => self.monitor_error = uu_i18n::format!("无法读取屏幕：{e}"),
         }
     }
-    fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,&str)) {
+    fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) {
         ui.horizontal_wrapped(|ui| {
             for (tab,label) in [(0,uu_i18n::text("连接服务")),(1,uu_i18n::text("输入")),(2,uu_i18n::text("音频 / 视频")),(3,uu_i18n::text("编码器")),(4,uu_i18n::text("配对设置"))] {
                 ui.selectable_value(&mut self.service_tab,tab,label);
@@ -1520,7 +1521,7 @@ impl Workspace {
             }
         });
     }
-    fn services(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,&str)) {
+    fn services(&mut self, ui: &mut egui::Ui, info: &Info, actions: &mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) {
         let locked = self.host.stopping();
         if self.host.running() { muted(ui,uu_i18n::text("连接入口修改后保存，下次启动服务生效。可保存并重启服务立即应用。")); }
         card(ui, |ui| {
@@ -1562,9 +1563,10 @@ impl Workspace {
                     if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,uu_i18n::text("启用"))).changed(){self.update_connections(|sharing|{sharing.plugin_services.retain(|id|id!=provider.id);if enabled{sharing.plugin_services.push(provider.id.into());}});}
                 });
                 self.endpoint_state(ui,provider.name);
-                connection(ui,provider.id);
+                connection(ui,Some(provider.id));
             });
         }
+        connection(ui,None);
         ui.horizontal(|ui| {
             ui.label(RichText::new(uu_i18n::text("自建服务器")).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
@@ -1967,8 +1969,12 @@ impl super::App {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     actions = self.workspace.show_with_connections(ui, &info,&mut |ui,provider| {
-                        for (id,page) in self.plugins.pages(uu_plugin_sdk::Placement::Connections) {
-                            if id==provider {for action in self.plugins.show_page(ui,&id,&page.id){extensions.push((id.clone(),action));}}
+                        let placement=if provider.is_some(){uu_plugin_sdk::Placement::Connections}else{uu_plugin_sdk::Placement::Services};
+                        for (id,page) in self.plugins.pages(placement) {
+                            if provider.is_some_and(|provider|id!=provider){continue;}
+                            if provider.is_none() {
+                                card(ui,|ui|{ui.strong(&page.title);for action in self.plugins.show_page(ui,&id,&page.id){extensions.push((id.clone(),action));}});
+                            }else{for action in self.plugins.show_page(ui,&id,&page.id){extensions.push((id.clone(),action));}}
                         }
                     });
                     if wallpaper_root && !self.background.notice.is_empty() {

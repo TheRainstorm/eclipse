@@ -169,7 +169,7 @@ impl App {
     }
 
     pub(super) fn home_ui(&mut self, ctx: &egui::Context) {
-        if self.workspace.route.page==super::workspace_ui::Page::Plugin&&!self.workspace.route.plugin.as_ref().is_some_and(|(id,_)|self.plugins.enabled(id)){self.workspace.route.page=super::workspace_ui::Page::Devices;}
+        if self.workspace.route.page==super::workspace_ui::Page::Plugin&&!self.workspace.route.plugin.as_ref().is_some_and(|(id,page)|self.plugins.has_page(id,page,uu_plugin_sdk::Placement::Navigation)){self.workspace.route.page=super::workspace_ui::Page::Devices;}
         if self.workspace.route.page == super::workspace_ui::Page::Devices
             && matches!(self.workspace.route.device, super::workspace_ui::DeviceView::List)
         {

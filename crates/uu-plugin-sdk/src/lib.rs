@@ -52,7 +52,7 @@ impl Context {
 }
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum Placement { Navigation, Connections, Settings }
+pub enum Placement { Navigation, Connections, Services, Settings }
 #[derive(Clone,Debug)]
 pub struct Page {pub id:String,pub title:String,pub placement:Placement,pub icon:Option<ui::Icon>}
 pub enum Action {
@@ -61,6 +61,7 @@ pub enum Action {
     Connect {identity:String,target:zeroize::Zeroizing<String>,name:String,view_only:bool},
     RefreshDevices,
     ProviderReset,
+    PreferencesChanged,
     OpenDevices,
     OpenSharing,
 }
@@ -91,6 +92,10 @@ pub trait Plugin:Send+Sync {
     /// Called after explicit persisted opt-in, before opening new entrances.
     /// Disabling must not terminate already admitted sessions.
     fn set_enabled(&self,_enabled:bool)->Result<()> {Ok(())}
+    /// Refresh module policy from the persisted preferences before exposing
+    /// pages or admitting new connections. Existing sessions retain ownership.
+    fn configure(&self,_preferences:&engine::plugins::PluginPreferences)->Result<()> {Ok(())}
+    fn connection_enabled(&self)->bool {true}
     fn pages(&self)->Vec<Page> {Vec::new()}
     fn gui(&self)->Result<Box<dyn PageState>> {bail!("plugin has no UI")}
     fn service(&self)->Option<Arc<dyn engine::plugins::ConnectionService>> {None}

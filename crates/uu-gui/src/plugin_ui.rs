@@ -73,6 +73,17 @@ impl Manager {
         let active=self.runtime.as_ref().map(|r|r.lock().unwrap().active()).unwrap_or_default();
         active.into_iter().flat_map(|(id,p)|p.plugin.pages().into_iter().filter(move|p|p.placement==placement).map(move|p|(id.clone(),p))).collect()
     }
+    pub fn has_page(&self,id:&str,page:&str,placement:Placement)->bool {
+        self.pages(placement).iter().any(|(plugin,p)|plugin==id&&p.id==page)
+    }
+    fn refresh_preferences(&mut self) {
+        match self.config.as_ref().map(Preferences::load) {
+            Some(Ok(value))=>{self.preferences=value;self.error.clear();},
+            Some(Err(error))=>self.error=error.to_string(),None=>return,
+        }
+        if let Some(runtime)=&self.runtime {let off=Preferences::default();runtime.lock().unwrap().apply(if self.error.is_empty(){&self.preferences}else{&off});}
+        if let Some(watch)=&self.watch {watch.epoch.fetch_add(1,Ordering::AcqRel);watch.thread.thread().unpark();}
+    }
     fn ensure_page(&mut self,id:&str)->anyhow::Result<()> {
         if !self.pages.contains_key(id) {
             let result=self.runtime.as_ref().ok_or_else(||anyhow::anyhow!("plugin runtime unavailable"))
@@ -156,6 +167,7 @@ impl super::App {
                 },
                 Action::RefreshDevices=>{uu_core::plugins::registry().invalidate();self.workspace.reload();},
                 Action::ProviderReset=>{uu_core::plugins::registry().invalidate();if self.workspace.host.uses_provider(&id){self.workspace.host.stop();}},
+                Action::PreferencesChanged=>{self.plugins.refresh_preferences();uu_core::plugins::registry().invalidate();self.context.request_repaint();},
                 Action::OpenDevices=>self.select_workspace_page(super::workspace_ui::Page::Devices),
                 Action::OpenSharing=>self.select_workspace_page(super::workspace_ui::Page::Services),
             }

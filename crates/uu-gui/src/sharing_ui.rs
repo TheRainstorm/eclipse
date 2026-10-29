@@ -259,7 +259,8 @@ impl HostUi {
     }
     pub fn restart(&mut self,config:uu_core::Config,book:Book,trust:TrustStore,ctx:&egui::Context)->anyhow::Result<()> {
         book.sharing.validate()?;
-        anyhow::ensure!(book.sharing.ip_enabled || !book.sharing.plugin_services.is_empty() || book.services.iter().any(|s|s.host_enabled),"{}", uu_i18n::format!("请先启用至少一个连接入口"));
+        let preferences=uu_core::plugins::Preferences::load(&config).unwrap_or_default();
+        anyhow::ensure!(book.sharing.ip_enabled || !uu_core::plugins::registry().host_services(&preferences,&book.sharing.plugin_services).is_empty() || book.services.iter().any(|s|s.host_enabled),"{}", uu_i18n::format!("请先启用至少一个连接入口"));
         if !self.running() {return self.start(config,book,trust,ctx);}
         anyhow::ensure!(!self.stopping,"{}", uu_i18n::format!("服务正在停止，请稍后重试"));
         self.stop();

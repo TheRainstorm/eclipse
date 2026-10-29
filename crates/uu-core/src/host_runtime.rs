@@ -54,8 +54,8 @@ pub fn prepare(
     // A missing, damaged or unavailable optional extension must not prevent an
     // otherwise configured native IP/self-hosted entrance from starting.
     let enabled=crate::plugins::Preferences::load(&config).unwrap_or_default();
-    let providers:Vec<_>=book.sharing.plugin_services.iter().filter(|id|enabled.get(id).enabled)
-        .filter_map(|id|crate::plugins::registry().get(id).ok().map(|service|(id.clone(),service.descriptor().name.to_owned())))
+    let providers:Vec<_>=crate::plugins::registry().host_services(&enabled,&book.sharing.plugin_services).into_iter()
+        .map(|service|(service.id.to_owned(),service.name.to_owned()))
         .collect();
     ensure!(
         book.sharing.ip_enabled
