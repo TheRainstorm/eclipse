@@ -111,7 +111,7 @@ try {
     $renamedTarget = Join-Path $root 'renamed-installed'
     & $Installer -SourceDir $previousSdk -InstallDir $renamedTarget -NoShortcut | Out-Null
     [IO.File]::WriteAllText((Join-Path $renamedTarget 'user-config.json'), 'keep configuration', $utf8)
-    $renamed = & $Installer -SourceDir $new -InstallDir $renamedTarget -NoShortcut
+    $renamed = (& $Installer -SourceDir $new -InstallDir $renamedTarget -NoShortcut) | ConvertFrom-Json
     Assert-Test (Test-Path -LiteralPath (Join-Path $renamedTarget 'eclipse.exe')) 'Renamed GUI missing'
     Assert-Test (!(Test-Path -LiteralPath (Join-Path $renamedTarget 'uu-gui.exe'))) 'Legacy GUI left in active installation'
     Assert-Test (!(Test-Path -LiteralPath (Join-Path $renamedTarget 'uu.exe'))) 'Legacy CLI left in active installation'
