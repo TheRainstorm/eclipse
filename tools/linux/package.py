@@ -61,11 +61,11 @@ def reuse_archive(archive, destination, revision):
                 target = staging / Path(member.name).name
                 with bundle.extractfile(member) as source, target.open('wb') as output:
                     shutil.copyfileobj(source, output)
-                target.chmod(0o755 if target.name in ('uu', 'uu-gui') else 0o644)
+                target.chmod(0o755 if target.name in ('eclipse-cli', 'eclipse') else 0o644)
             if actual != expected:
                 raise ValueError('缓存包文件清单不完整')
         manifest = verify_package(staging)
-        if manifest['source_commit'] != revision or manifest.get('platform') != f'linux-{platform.machine()}' or manifest.get('features') != FEATURES or manifest.get('format_version')!=3:
+        if manifest['source_commit'] != revision or manifest.get('platform') != f'linux-{platform.machine()}' or manifest.get('features') != FEATURES or manifest.get('format_version')!=4:
             return None
         built = manifest.get('build_glibc')
         current = platform.libc_ver()
@@ -113,7 +113,7 @@ def main(argv=None):
     pyrowave=pyrowave_runtime.build(jobs=min(6,int(os.environ.get('CARGO_BUILD_JOBS','6'))),output=Path(metadata['target_directory'])/'pyrowave-runtime'/pyrowave_runtime.NATIVE)
     if source_revision() != revision: raise RuntimeError('Source revision changed during the build; package was not created')
     dest.mkdir(parents=True, exist_ok=True)
-    for name in ['uu-gui', 'uu']: shutil.copy2(binaries / name, dest / name)
+    for name in ['eclipse', 'eclipse-cli']: shutil.copy2(binaries / name, dest / name)
     shutil.copy2(pyrowave,dest/'libpyrowave-shared.so.1')
     for runtime in (sdk,standard):shutil.copy2(runtime,dest/runtime.name)
     shutil.copy2(ROOT / 'tools/linux/install.py', dest / 'install.py')
@@ -121,7 +121,7 @@ def main(argv=None):
     for name in LICENSES: shutil.copy2(ROOT / name, dest / name)
     shutil.copy2(ROOT / 'tools/linux/README.txt', dest / 'README.txt')
     files = {name: hashlib.sha256((dest / name).read_bytes()).hexdigest() for name in [*PAYLOAD,sdk.name,standard.name]}
-    manifest = {'format_version':3,'plugin_sdk_id':sdk_metadata['sdk_id'],'plugin_runtime':[sdk.name,standard.name],'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(), 'platform': f'linux-{platform.machine()}', 'features': FEATURES, 'build_glibc': platform.libc_ver(),'runtime_sources':{'pyrowave':pyrowave_runtime.LOCK}, 'sha256': files}
+    manifest = {'format_version':4,'plugin_sdk_id':sdk_metadata['sdk_id'],'plugin_runtime':[sdk.name,standard.name],'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(), 'platform': f'linux-{platform.machine()}', 'features': FEATURES, 'build_glibc': platform.libc_ver(),'runtime_sources':{'pyrowave':pyrowave_runtime.LOCK}, 'sha256': files}
     (dest / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     archive = str(dest) + '.tar.gz'
     with tempfile.TemporaryDirectory(prefix='.linux-package-', dir=dest.parent) as temp:

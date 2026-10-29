@@ -90,7 +90,7 @@ uu lan probe <设备ID> --frames 120
 独立进程回归使用临时私有配置和自建回环服务，覆盖错误配对码、保存授权、解码、重启后复连、撤销和关闭：
 
 ```sh
-python3 tools/native/lan_smoke.py --exe target/release/uu --output artifacts/lan-smoke
+python3 tools/native/lan_smoke.py --exe target/release/eclipse-cli --output artifacts/lan-smoke
 ```
 
 输出目录必须是新目录。结果只保存生成视频的接收统计，不保存私钥、令牌或配对码。

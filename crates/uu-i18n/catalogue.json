@@ -1563,5 +1563,6 @@
   "启用 HUD": "Enable HUD",
   "最近 {} 分钟": "Last {} minutes",
   "开关精简HUD；悬停查看诊断和历史曲线。": "Toggle the compact HUD; hover for diagnostics and history curves.",
-  "跟随主机的画质策略；具体码率由主机决定。可选择推荐码率或自定义目标。": "Follow the host quality policy. Choose a recommended or custom target bitrate when needed."
+  "跟随主机的画质策略；具体码率由主机决定。可选择推荐码率或自定义目标。": "Follow the host quality policy. Choose a recommended or custom target bitrate when needed.",
+  "安装包文件版本不一致或已损坏：{name}；请完整更新 Eclipse 安装包": "Package file is damaged or from a different build: {name}; update the complete Eclipse package"
 }

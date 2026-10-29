@@ -33,13 +33,14 @@ LICENSES = ('LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt
 LEGACY_REQUIRED = ('uu-gui.exe', 'uu.exe', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll',
             'README.txt', 'install.ps1', *LICENSES)
 VPL_REQUIRED = (*LEGACY_REQUIRED, 'libvpl.dll')
-REQUIRED = (*VPL_REQUIRED,'libpyrowave-shared-1.dll')
+V3_REQUIRED = (*VPL_REQUIRED,'libpyrowave-shared-1.dll')
+REQUIRED = ('eclipse.exe', 'eclipse-cli.exe', *V3_REQUIRED[2:])
 
 def required_files(manifest):
     version = manifest.get('format_version', 1)
-    if type(version) is not int or version not in (1, 2, 3, 4):
+    if type(version) is not int or version not in (1, 2, 3, 4, 5):
         raise ValueError('不支持的 Windows 包格式版本')
-    if version == 4:
+    if version >= 4:
         runtime = manifest.get('plugin_runtime')
         if (not isinstance(runtime, list) or len(runtime) != 2
                 or runtime[0] != 'uu_plugin_sdk.dll'
@@ -47,8 +48,8 @@ def required_files(manifest):
                 or not re.fullmatch(r'std-[0-9a-f]+\.dll', runtime[1])
                 or not re.fullmatch(r'[0-9a-f]{64}', manifest.get('plugin_sdk_id', ''))):
             raise ValueError('无效的插件 SDK 运行库清单')
-        return (*REQUIRED, *runtime)
-    return REQUIRED if version == 3 else VPL_REQUIRED if version==2 else LEGACY_REQUIRED
+        return (*(REQUIRED if version == 5 else V3_REQUIRED), *runtime)
+    return V3_REQUIRED if version == 3 else VPL_REQUIRED if version==2 else LEGACY_REQUIRED
 SOURCE_PATHS = ('crates', 'tools/release/source.py', 'tools/release/plugin_sdk.py', 'vendor', 'assets', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                 '.cargo', 'tools/windows', 'tools/pyrowave','tools/licenses', 'licenses', *LICENSES)
 
@@ -99,7 +100,7 @@ def clean_revision():
 
 def check_tools():
     for name in ('cargo', 'rustup', 'git', 'nasm', 'cmake', *(compiler_tool(tool)
-                 for tool in ('gcc', 'g++', 'objdump', 'windres'))):
+                 for tool in ('gcc', 'g++', 'objdump', 'windres', 'strip'))):
         if not shutil.which(name):
             raise RuntimeError(f'缺少 {name}；依赖安装方法见 docs/windows-build.md')
     targets = subprocess.check_output(['rustup', 'target', 'list', '--installed'], text=True)
@@ -135,7 +136,7 @@ def build_package(output, vpl_archive=None, rebuild=False):
     if not rebuild and vpl_archive is None and archive.is_file():
         try:
             manifest = verify_package(archive)
-            if manifest['source_commit'] == revision and manifest.get('target') == TARGET and manifest.get('format_version') == 4:
+            if manifest['source_commit'] == revision and manifest.get('target') == TARGET and manifest.get('format_version') == 5:
                 if clean_revision() != revision:
                     raise RuntimeError('核验缓存期间源码版本发生变化')
                 result = {'source_commit': revision, 'archive': archive.name, 'sha256': sha256(archive)}
@@ -164,7 +165,7 @@ def build_package(output, vpl_archive=None, rebuild=False):
     with tempfile.TemporaryDirectory(prefix='.windows-package-', dir=output) as temp:
         staging = Path(temp) / name
         staging.mkdir()
-        for filename in ('uu-gui.exe', 'uu.exe'):
+        for filename in ('eclipse.exe', 'eclipse-cli.exe'):
             shutil.copy2(binaries / filename, staging / filename)
         for runtime in (sdk, standard):
             shutil.copy2(runtime, staging / runtime.name)
@@ -178,7 +179,7 @@ def build_package(output, vpl_archive=None, rebuild=False):
         for filename in LICENSES:
             shutil.copy2(ROOT / filename, staging / filename)
         verify_imports(staging)
-        manifest = {'format_version': 4, 'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
+        manifest = {'format_version': 5, 'source_commit': revision, 'built_at_utc': datetime.now(timezone.utc).isoformat(),
                     'target': TARGET,
                     'plugin_sdk_id': sdk_metadata['sdk_id'], 'plugin_runtime': [sdk.name, standard.name],
                     'runtime_sources': {'intel_vpl': vpl_runtime.COMMIT,'pyrowave':pyrowave_runtime.LOCK},

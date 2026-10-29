@@ -65,7 +65,7 @@ uu-gui --native-invitation ./demo.eclipse-invite.json
 
 ```bash
 python3 tools/native/wayland_smoke.py \
-  --gui ./target/release/uu-gui --cli ./target/release/uu \
+  --gui ./target/release/eclipse --cli ./target/release/eclipse-cli \
   --input-driver ./target/release/examples/wayland_input \
   --output ./artifacts/native-wayland-test --multi-dpi
 ```

@@ -276,7 +276,7 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
         .context("安装包缺少源码版本")?
         .to_owned();
     let installed = Installed {
-        version: 1,
+        version: 2,
         owner_sid: owner,
         revision,
         build: hex::encode(Sha256::digest(serde_json::to_vec(&manifest["sha256"])?)),
@@ -465,7 +465,7 @@ fn registration(paths: &Paths, installed: &Installed) -> Result<(ServiceHandle, 
         )
     });
     ensure!(!manager.0.is_null(), "无法打开 Windows 服务管理器");
-    let executable = paths.binary_directory(installed).join("uu.exe");
+    let executable = paths.binary_directory(installed).join(installed.cli_name());
     let command = wide(format!("\"{}\" service daemon", executable.display()));
     let name = wide(SERVICE_NAME);
     let service = unsafe {
@@ -803,11 +803,11 @@ mod tests {
             fs::copy(package.join(name), invalid_package.join(name)).unwrap();
         }
         let invalid_bytes = b"owned fixture: intentionally invalid Windows executable";
-        fs::write(invalid_package.join("uu.exe"), invalid_bytes).unwrap();
+        fs::write(invalid_package.join("eclipse-cli.exe"), invalid_bytes).unwrap();
         let mut invalid: serde_json::Value =
             serde_json::from_slice(&fs::read(package.join("version.json")).unwrap()).unwrap();
         invalid["source_commit"] = "1111111111111111111111111111111111111111".into();
-        invalid["sha256"]["uu.exe"] = hex::encode(Sha256::digest(invalid_bytes)).into();
+        invalid["sha256"]["eclipse-cli.exe"] = hex::encode(Sha256::digest(invalid_bytes)).into();
         fs::write(
             invalid_package.join("version.json"),
             serde_json::to_vec(&invalid).unwrap(),

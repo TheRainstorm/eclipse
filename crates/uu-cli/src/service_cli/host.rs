@@ -59,7 +59,7 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
         std::env::current_exe()?.canonicalize()?
             == paths
                 .binary_directory(&installed)
-                .join("uu.exe")
+                .join(installed.cli_name())
                 .canonicalize()?,
         "后台媒体进程必须从受保护的安装位置启动"
     );

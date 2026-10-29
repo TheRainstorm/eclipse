@@ -40,7 +40,7 @@ class LinuxPackageTests(unittest.TestCase):
         manifest=json.loads((package/'version.json').read_text())
         manifest.update(source_commit=revision,platform=f'linux-{platform.machine()}',features=packager.FEATURES,build_glibc=list(platform.libc_ver()))
         (package/'version.json').write_text(json.dumps(manifest))
-        if changed:(package/'uu').write_text('corrupt')
+        if changed:(package/'eclipse-cli').write_text('corrupt')
         destination=self.root/f'uu-client-linux-{platform.machine()}-aaaaaaaaaaaa'
         package.rename(destination)
         archive=Path(shutil.make_archive(str(self.root/'cache'),'gztar',root_dir=self.root,base_dir=destination.name))
@@ -57,7 +57,7 @@ class LinuxPackageTests(unittest.TestCase):
             result=packager.reuse_archive(archive,destination,'a'*40)
         self.assertTrue(result['cached'])
         self.assertEqual(installer.verify_package(destination)['source_commit'],'a'*40)
-        self.assertTrue((destination/'uu').stat().st_mode&0o111)
+        self.assertTrue((destination/'eclipse-cli').stat().st_mode&0o111)
 
     def test_corrupt_and_unsafe_caches_never_materialize_payload(self):
         for changed,extra in [(True,None),(False,'../escape')]:
@@ -80,9 +80,9 @@ class LinuxPackageTests(unittest.TestCase):
         package = self.root / revision[:12];package.mkdir()
         for name in [*installer.PAYLOAD,*self.runtime]:
             target = package / name
-            if name in ('uu', 'uu-gui','libpyrowave-shared.so.1',*self.runtime): shutil.copy2('/bin/true', target)
+            if name in ('eclipse-cli', 'eclipse','libpyrowave-shared.so.1',*self.runtime): shutil.copy2('/bin/true', target)
             else: target.write_text('owned fixture/' + name)
-        manifest = {'format_version':3,'plugin_sdk_id':'f'*64,'plugin_runtime':self.runtime,'source_commit': revision, 'sha256': {name: hashlib.sha256((package / name).read_bytes()).hexdigest() for name in [*installer.PAYLOAD,*self.runtime]}}
+        manifest = {'format_version':4,'plugin_sdk_id':'f'*64,'plugin_runtime':self.runtime,'source_commit': revision, 'sha256': {name: hashlib.sha256((package / name).read_bytes()).hexdigest() for name in [*installer.PAYLOAD,*self.runtime]}}
         (package / 'version.json').write_text(json.dumps(manifest))
         return package
 
@@ -106,7 +106,7 @@ class LinuxPackageTests(unittest.TestCase):
                 installer.main()
         base = prefix / 'opt/uu-remote-rust'
         self.assertEqual((base / 'current').resolve(), base / 'releases' / ('b' * 12))
-        self.assertTrue((base / 'releases' / ('a' * 12) / 'uu-gui').exists())
+        self.assertTrue((base / 'releases' / ('a' * 12) / 'eclipse').exists())
         self.assertEqual(config.read_text(), 'user configuration')
         self.assertEqual(subprocess.run([str(prefix / 'bin/uu-client')]).returncode, 0)
         before = (base / 'current').resolve()
@@ -171,7 +171,7 @@ class LinuxPackageTests(unittest.TestCase):
     def test_custom_cargo_target_and_complete_archive(self):
         metadata = json.dumps({'target_directory': str(self.root / 'custom-target')})
         binaries = self.root / 'custom-target/x86_64-unknown-linux-gnu/release';binaries.mkdir(parents=True)
-        for name in ('uu', 'uu-gui'):(binaries / name).write_bytes(('owned ' + name).encode())
+        for name in ('eclipse-cli', 'eclipse'):(binaries / name).write_bytes(('owned ' + name).encode())
         (self.root/'fixture-runtime.so').write_bytes(b'owned Vulkan runtime fixture')
         for path in ['tools/linux/install.py', 'tools/linux/README.txt', 'assets/branding/eclipse-512.png', *packager.LICENSES]:
             target = self.root / path;target.parent.mkdir(parents=True, exist_ok=True);target.write_text(path)

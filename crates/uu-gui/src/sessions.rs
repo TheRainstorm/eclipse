@@ -197,7 +197,7 @@ mod tests {
             alias: "工作电脑 A 中文".into(),
             view_only: true,
         };
-        let command = target.command(Path::new("uu-gui.exe"), Some((1540, -564)));
+        let command = target.command(Path::new("eclipse.exe"), Some((1540, -564)));
         let args: Vec<_> = command
             .get_args()
             .map(|s| s.to_str().unwrap().to_owned())

@@ -146,9 +146,11 @@ pub struct Installed {
     pub build: String,
 }
 impl Installed {
+    pub fn cli_name(&self)->&'static str {if self.version>=2 {"eclipse-cli.exe"}else{"uu.exe"}}
+    pub fn gui_name(&self)->&'static str {if self.version>=2 {"eclipse.exe"}else{"uu-gui.exe"}}
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 1
+            matches!(self.version,1|2)
                 && self.revision.len() == 40
                 && self.revision.bytes().all(|v| v.is_ascii_hexdigit()),
             "{}", uu_i18n::format!("服务安装记录版本无效"));
@@ -294,7 +296,7 @@ fn verify_server(handle: HANDLE) -> Result<()> {
     let installed = paths.manifest()?;
     let expected = paths
         .binary_directory(&installed)
-        .join("uu.exe")
+        .join(installed.cli_name())
         .canonicalize()?;
     let actual = PathBuf::from(OsString::from_wide(&path[..size as usize])).canonicalize()?;
     ensure!(

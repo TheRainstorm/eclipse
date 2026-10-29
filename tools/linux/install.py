@@ -13,19 +13,22 @@ import tempfile
 LICENSES = ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.txt']
 
 LEGACY_PAYLOAD = ['uu-gui', 'uu', 'README.txt', 'install.py', 'eclipse.png', *LICENSES]
-PAYLOAD = [*LEGACY_PAYLOAD,'libpyrowave-shared.so.1']
+V2_PAYLOAD = [*LEGACY_PAYLOAD,'libpyrowave-shared.so.1']
+PAYLOAD = ['eclipse','eclipse-cli',*V2_PAYLOAD[2:]]
+def executables(manifest):
+    return ('eclipse','eclipse-cli') if manifest.get('format_version',1)>=4 else ('uu-gui','uu')
 def required_files(manifest):
     version=manifest.get('format_version',1)
-    if type(version) is not int or version not in (1,2,3):
+    if type(version) is not int or version not in (1,2,3,4):
         raise ValueError('Unsupported Linux package format version')
-    if version==3:
+    if version>=3:
         runtime=manifest.get('plugin_runtime')
         if (not isinstance(runtime,list) or len(runtime)!=2 or runtime[0]!='libuu_plugin_sdk.so'
             or not isinstance(runtime[1],str) or not re.fullmatch(r'libstd-[0-9a-f]+\.so',runtime[1])
             or not re.fullmatch(r'[0-9a-f]{64}',manifest.get('plugin_sdk_id',''))):
             raise ValueError('Invalid plugin SDK runtime manifest')
-        return [*PAYLOAD,*runtime]
-    return PAYLOAD if version==2 else LEGACY_PAYLOAD
+        return [*(PAYLOAD if version==4 else V2_PAYLOAD),*runtime]
+    return V2_PAYLOAD if version==2 else LEGACY_PAYLOAD
 
 
 def verify_package(package):
@@ -53,8 +56,8 @@ def desktop_value(value):
     return str(value).replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
 
 
-def desktop_entry(base, legacy=False):
-    executable = str(base / 'current' / 'uu-gui')
+def desktop_entry(base, legacy=False, gui='eclipse'):
+    executable = str(base / 'current' / gui)
     # Exec quoting is applied after the desktop string's own escape layer.
     # Percent is a field code even inside quotes; a literal percent is %%.
     def quoted_argument(value):
@@ -66,7 +69,7 @@ def desktop_entry(base, legacy=False):
     if not launcher:
         raise RuntimeError('The standard env utility is required for the desktop launcher')
     command = desktop_value(quoted_argument(launcher) + ' ' + quoted_argument(executable))
-    return ('[Desktop Entry]\nType=Application\nName=uu-client\nName[zh_CN]=uu-client\n'
+    return ('[Desktop Entry]\nType=Application\nName=Eclipse\nName[zh_CN]=Eclipse\n'
             'Comment=Windows / Linux remote streaming client\n'
             f'Exec={command}\n'
             f'TryExec={desktop_value(executable)}\nIcon={desktop_value(base / "current" / "eclipse.png")}\n'
@@ -82,14 +85,15 @@ def main():
     package = args.package.resolve()
     manifest = verify_package(package)
     revision = manifest['source_commit']
-    for name in ['uu-gui', 'uu',*(['libpyrowave-shared.so.1'] if manifest.get('format_version',1)>=2 else []),*manifest.get('plugin_runtime',[])]:
+    gui,cli=executables(manifest)
+    for name in [gui,cli,*(['libpyrowave-shared.so.1'] if manifest.get('format_version',1)>=2 else []),*manifest.get('plugin_runtime',[])]:
         deps = subprocess.check_output(['ldd', str(package / name)], text=True)
         if 'not found' in deps: raise RuntimeError(f'Missing shared libraries for {name}: {deps}')
     prefix = args.prefix.expanduser().resolve()
     if any(ord(c) < 32 for c in str(prefix)):
         raise ValueError('Installation prefix must not contain control characters')
     base = prefix / 'opt' / 'uu-remote-rust'
-    desktop_contents = [(False, desktop_entry(base)), (True, desktop_entry(base, legacy=True))]
+    desktop_contents = [(False, desktop_entry(base,gui=gui)), (True, desktop_entry(base, legacy=True,gui=gui))]
     releases = base / 'releases'
     releases.mkdir(parents=True, exist_ok=True)
     dest = releases / revision[:12]
@@ -98,7 +102,7 @@ def main():
         try:
             for name in [*required_files(manifest), 'version.json']:
                 shutil.copy2(package / name, staging / name)
-            for name in ['uu-gui', 'uu']: (staging / name).chmod(0o755)
+            for name in [gui,cli]: (staging / name).chmod(0o755)
             staging.rename(dest)
         finally:
             if staging.exists(): shutil.rmtree(staging)
@@ -116,9 +120,8 @@ def main():
             pending.replace(path)
         finally: pending.unlink(missing_ok=True)
     link(dest, base / 'current')
-    link(base / 'current' / 'uu-gui', prefix / 'bin' / 'uu-client')
-    link(base / 'current' / 'uu-gui', prefix / 'bin' / 'uu-remote-rust')
-    link(base / 'current' / 'uu', prefix / 'bin' / 'uu-rust')
+    for name in ['eclipse','uu-client','uu-remote-rust']:link(base/'current'/gui,prefix/'bin'/name)
+    for name in ['eclipse-cli','uu-rust']:link(base/'current'/cli,prefix/'bin'/name)
     # The filename must match the window's Wayland app_id (uu-client).
     desktop = prefix / 'share' / 'applications' / 'uu-client.desktop'
     desktop.parent.mkdir(parents=True, exist_ok=True)
@@ -131,7 +134,7 @@ def main():
         finally:
             pending.unlink(missing_ok=True)
     subprocess.run(['update-desktop-database', str(desktop.parent)], check=False) if shutil.which('update-desktop-database') else None
-    print(json.dumps({'source_commit': revision, 'executable': str(base / 'current' / 'uu-gui'), 'desktop': str(desktop)}, ensure_ascii=False))
+    print(json.dumps({'source_commit': revision, 'executable': str(base / 'current' / gui), 'desktop': str(desktop)}, ensure_ascii=False))
 
 if __name__ == '__main__':
     main()

@@ -172,8 +172,8 @@ jobs:
           PY
           cargo test --manifest-path vendor/webrtc-srtp/Cargo.toml --release --target-dir target
           python3 tools/linux/package.py
-          python3 tools/native/smoke.py --exe target/release/uu --decoder sw --audio
-          python3 tools/native/lan_smoke.py --exe target/release/uu --output artifacts/native-lan-cli
+          python3 tools/native/smoke.py --exe target/release/eclipse-cli --decoder sw --audio
+          python3 tools/native/lan_smoke.py --exe target/release/eclipse-cli --output artifacts/native-lan-cli
           for archive in artifacts/packages/*.tar.gz; do
             python3 tools/security/scan_secrets.py --artifact "$archive"
           done
@@ -222,12 +222,12 @@ jobs:
         if: matrix.platform == 'linux-x86_64'
         run: |
           cargo build --release -p uu-gui --example wayland_input --features vaapi --locked
-          python3 tools/native/wayland_smoke.py --gui target/release/uu-gui --cli target/release/uu --input-driver target/release/examples/wayland_input --output artifacts/native-wayland --renderer pixman --decoder sw --multi-dpi
+          python3 tools/native/wayland_smoke.py --gui target/release/eclipse --cli target/release/eclipse-cli --input-driver target/release/examples/wayland_input --output artifacts/native-wayland --renderer pixman --decoder sw --multi-dpi
       - name: Test isolated Intel VPL ABI contracts
         if: matrix.platform == 'linux-x86_64'
         run: |
           cargo build --release -p uu-media --example vpl_contract_probe --features vaapi --locked
-          python3 tools/native/vpl_contract_smoke.py --probe target/release/examples/vpl_contract_probe --cli target/release/uu
+          python3 tools/native/vpl_contract_smoke.py --probe target/release/examples/vpl_contract_probe --cli target/release/eclipse-cli
       - name: Test portal capture, consent cancellation and owned input
         if: matrix.platform == 'linux-x86_64'
         run: |
@@ -235,7 +235,7 @@ jobs:
           for scenario in deny cancel cancel-select cancel-select-call cancel-init stream-view stream-input stream-no-input stream-keyboard-only stream-input-denied; do
             python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe --case "$scenario"
           done
-          python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe --cli target/release/uu --case stream-native
+          python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe --cli target/release/eclipse-cli --case stream-native
           cargo build --release -p uu-core --example native_display_probe --locked
           python3 tools/native/portal_smoke.py --probe target/release/examples/native_display_probe --case stream-displays
       - name: Test native Wayland capture and default display switching without a portal
@@ -258,7 +258,7 @@ jobs:
           cargo build -p uu-media --release --target x86_64-pc-windows-gnu --example color_probe --locked
           cargo build -p uu-gui --release --target x86_64-pc-windows-gnu --example video_renderer_probe --locked
           cargo test -p uu-input --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/input-test-build.jsonl
-          cargo test -p uu-gui --release --target x86_64-pc-windows-gnu --bin uu-gui --no-run --locked --message-format=json-render-diagnostics > artifacts/gui-test-build.jsonl
+          cargo test -p uu-gui --release --target x86_64-pc-windows-gnu --bin eclipse --no-run --locked --message-format=json-render-diagnostics > artifacts/gui-test-build.jsonl
           cargo test -p uu-core --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/core-test-build.jsonl
           cargo test -p uu-media --release --target x86_64-pc-windows-gnu --lib --no-run --locked --message-format=json-render-diagnostics > artifacts/media-test-build.jsonl
           python3 - <<'PY'
@@ -339,9 +339,9 @@ jobs:
               throw 'Payload checksum mismatch'
             }
           }
-          & (Join-Path $unpack 'uu.exe') --version
+          & (Join-Path $unpack 'eclipse-cli.exe') --version
           if ($LASTEXITCODE -ne 0) { throw 'Windows executable could not start' }
-          python tools/native/smoke.py --exe (Join-Path $unpack 'uu.exe') --decoder sw --audio
+          python tools/native/smoke.py --exe (Join-Path $unpack 'eclipse-cli.exe') --decoder sw --audio
           if ($LASTEXITCODE -ne 0) { throw 'Windows native encrypted video smoke failed' }
           $inputTests = Join-Path $unpack 'input-validation.exe'
           Copy-Item -LiteralPath 'platform-validation/input-tests.exe' -Destination $inputTests

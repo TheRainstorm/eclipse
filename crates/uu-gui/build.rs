@@ -109,7 +109,7 @@ BEGIN
             VALUE "FileDescription", "uu-client remote streaming client\0"
             VALUE "FileVersion", "{version}\0"
             VALUE "InternalName", "uu-client\0"
-            VALUE "OriginalFilename", "uu-gui.exe\0"
+            VALUE "OriginalFilename", "eclipse.exe\0"
             VALUE "ProductName", "uu-client\0"
             VALUE "ProductVersion", "{version}\0"
         END
@@ -160,5 +160,5 @@ END
         result.success(),
         "Windows application resource compilation failed"
     );
-    println!("cargo:rustc-link-arg-bin=uu-gui={}", object.display());
+    println!("cargo:rustc-link-arg-bin=eclipse={}", object.display());
 }

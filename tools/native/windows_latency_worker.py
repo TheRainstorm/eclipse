@@ -613,7 +613,7 @@ def main():
     actual_environment['python_sha256'] = sha(sys.executable)
     actual_environment['display'] = {'coordinate_units':'logical_pixels','outputs':actual_environment['display']}
     if config['role'] != 'stimulus-clock':
-        inventory_command=[str(root/'bin/uu.exe'),'native-sources','--json']
+        inventory_command=[str(root/'bin/eclipse-cli.exe'),'native-sources','--json']
         raw=subprocess.run(inventory_command,capture_output=True,text=True,encoding='utf8',timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
         if raw.returncode:raise RuntimeError('physical output inventory failed: '+raw.stderr[-1000:])
         actual_environment['physical_capture_inventory']=json.loads(raw.stdout)

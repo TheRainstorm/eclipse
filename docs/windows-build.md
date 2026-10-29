@@ -38,8 +38,8 @@ artifacts/packages/uu-client-windows-x64-<提交号前12位>.zip
 artifacts/packages/windows-latest.json
 ```
 
-ZIP 解压后直接是 `uu-gui.exe`、`uu.exe`、两个 MinGW 运行 DLL、`libvpl.dll`、`libpyrowave-shared-1.dll`、`uu_plugin_sdk.dll`、`std-<编译器哈希>.dll`、`README.txt`、`install.ps1`、`LICENSE`、`LICENSE-MIT`、`LICENSE-APACHE`、`THIRD-PARTY-NOTICES.txt`、`version.json`。
-`version.json` 包含包格式版本、完整源提交号、dispatcher 源提交、UTC 打包时间和各文件 SHA256。新版为格式 4，包含共享 SDK 身份和运行库清单；安装器与同步脚本仍接受格式 1–3 的旧包。
+ZIP 解压后直接是 `eclipse.exe`、`eclipse-cli.exe`、两个 MinGW 运行 DLL、`libvpl.dll`、`libpyrowave-shared-1.dll`、`uu_plugin_sdk.dll`、`std-<编译器哈希>.dll`、`README.txt`、`install.ps1`、`LICENSE`、`LICENSE-MIT`、`LICENSE-APACHE`、`THIRD-PARTY-NOTICES.txt`、`version.json`。
+`version.json` 包含包格式版本、完整源提交号、dispatcher 源提交、UTC 打包时间和各文件 SHA256。新版为格式 5，包含共享 SDK 身份和运行库清单；安装器与同步脚本仍接受格式 1–4 的旧包。
 `windows-latest.json` 指向最近一次成功完成的 Windows 包，并记录 ZIP 的 SHA256。
 源码或 `tools/windows` 有未提交改动时拒绝打包，避免版本号与实际源码不一致；提交后再运行即可。
 
@@ -70,3 +70,5 @@ python3 -m unittest discover -s tools/windows -p 'test_*.py' -v
 Windows 还可运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/windows/test_installer.ps1`。它只在独立临时目录生成测试包，验证共享冲突回滚、配置保留与旧包兼容，不修改已有安装。
 
 PyroWave 运行库同样要求 CMake 3.27+（包括 Linux 上的 Windows 交叉构建），通过 Git 获取固定的上游和最小 Granite 依赖，使用预生成 shader。无需安装 Vulkan SDK 或 shader 编译器；GPU 功能由运行时驱动提供。完整包包含 `libpyrowave-shared-1.dll` 和许可；构建来源、限制与生成图复测见 [PyroWave](pyrowave.md)。
+
+开发分支的 GUI 文件名为 `eclipse.exe`，CLI 为 `eclipse-cli.exe`。旧版本的文件名和包格式仍按其原清单校验。

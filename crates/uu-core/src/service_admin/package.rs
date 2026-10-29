@@ -20,7 +20,7 @@ pub fn verify(directory: &Path, expected_revision: &str) -> Result<()> {
         let mut hash=Sha256::new();
         std::io::copy(&mut file.take(512*1024*1024+1),&mut hash)?;
         ensure!(manifest["sha256"][name].as_str()==Some(hex::encode(hash.finalize()).as_str()),
-            "{}", uu_i18n::format!("安装包文件版本不一致或已损坏：{name}；请同时更新 uu.exe、uu-gui.exe 和安装包中的其余文件"));
+            "{}", uu_i18n::format!("安装包文件版本不一致或已损坏：{name}；请完整更新 Eclipse 安装包"));
     }
     Ok(())
 }
@@ -28,10 +28,11 @@ pub fn verify(directory: &Path, expected_revision: &str) -> Result<()> {
 /// The elevated installer uses the same bounded allowlist as its preflight.
 pub fn executable_files(manifest:&serde_json::Value)->Result<Vec<&str>> {
     let version=match manifest.get("format_version") {None=>1,Some(value)=>value.as_u64().context("invalid package format")?};
-    ensure!((1..=4).contains(&version),"unsupported package format");
+    ensure!((1..=5).contains(&version),"unsupported package format");
     let mut files=vec!["uu.exe","uu-gui.exe","libgcc_s_seh-1.dll","libstdc++-6.dll","libvpl.dll"];
+    if version==5 {files[0]="eclipse-cli.exe";files[1]="eclipse.exe";}
     if manifest["format_version"].as_u64().unwrap_or(1)>=3 {files.push("libpyrowave-shared-1.dll");}
-    if manifest["format_version"]==4 {
+    if version>=4 {
         let runtime=manifest["plugin_runtime"].as_array().context("missing SDK runtime list")?;
         ensure!(runtime.len()==2&&runtime[0]=="uu_plugin_sdk.dll","invalid SDK runtime list");
         let standard=runtime[1].as_str().context("invalid compiler runtime")?;

@@ -6,7 +6,7 @@ license.workspace = true
 description = "uu-client — open-source remote desktop streaming client"
 
 [[bin]]
-name = "uu-gui"
+name = "eclipse"
 path = "src/main.rs"
 
 [dependencies]

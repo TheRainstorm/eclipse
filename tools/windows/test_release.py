@@ -24,7 +24,7 @@ class ReleaseTests(unittest.TestCase):
 
     def make_bundle(self, transform=None):
         files = {name: ('test ' + name).encode() for name in (*package.REQUIRED,"uu_plugin_sdk.dll","std-0123456789abcdef.dll")}
-        manifest = {'format_version': 4,'plugin_sdk_id':'f'*64,'plugin_runtime':['uu_plugin_sdk.dll','std-0123456789abcdef.dll'], 'target':package.TARGET, 'source_commit': 'a' * 40,
+        manifest = {'format_version': 5,'plugin_sdk_id':'f'*64,'plugin_runtime':['uu_plugin_sdk.dll','std-0123456789abcdef.dll'], 'target':package.TARGET, 'source_commit': 'a' * 40,
                     'sha256': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
         files['version.json'] = json.dumps(manifest).encode()
         if transform:
@@ -48,7 +48,7 @@ class ReleaseTests(unittest.TestCase):
     def test_corrupt_stale_and_wrong_target_caches_require_building(self):
         for kind in ['corrupt','stale','target','force']:
             def change(files):
-                if kind=='corrupt':files['uu.exe']=b'changed'
+                if kind=='corrupt':files['eclipse-cli.exe']=b'changed'
                 metadata=json.loads(files['version.json'])
                 if kind=='stale':metadata['source_commit']='b'*40
                 if kind=='target':metadata['target']='other-target'
@@ -58,8 +58,8 @@ class ReleaseTests(unittest.TestCase):
                 package.build_package(self.root,rebuild=kind=='force')
 
     def test_corrupt_payload_rejected(self):
-        path = self.make_bundle(lambda files: files.update({'uu-gui.exe': b'corrupt'}))
-        with self.assertRaisesRegex(ValueError, 'uu-gui.exe'):
+        path = self.make_bundle(lambda files: files.update({'eclipse.exe': b'corrupt'}))
+        with self.assertRaisesRegex(ValueError, 'eclipse.exe'):
             sync.verify_package(path)
 
     def test_license_notices_are_required_and_verified(self):
@@ -91,10 +91,11 @@ class ReleaseTests(unittest.TestCase):
             manifest.pop('plugin_sdk_id')
             manifest['sha256'].pop('libvpl.dll')
             manifest['sha256'].pop('libpyrowave-shared-1.dll')
+            self.legacy_names(files,manifest)
             files['version.json'] = json.dumps(manifest).encode()
         self.assertNotIn('format_version', sync.verify_package(self.make_bundle(legacy)))
         def unknown(files):
-            manifest = json.loads(files['version.json']);manifest['format_version'] = 5
+            manifest = json.loads(files['version.json']);manifest['format_version'] = 6
             files['version.json'] = json.dumps(manifest).encode()
         with self.assertRaises(ValueError): sync.verify_package(self.make_bundle(unknown))
 
@@ -105,6 +106,7 @@ class ReleaseTests(unittest.TestCase):
             for name in manifest.pop('plugin_runtime'):
                 files.pop(name);manifest['sha256'].pop(name)
             manifest.pop('plugin_sdk_id');manifest['sha256'].pop('libpyrowave-shared-1.dll')
+            self.legacy_names(files,manifest)
             files['version.json']=json.dumps(manifest).encode()
         self.assertEqual(sync.verify_package(self.make_bundle(previous))['format_version'],2)
         for missing in [False,True]:
@@ -112,6 +114,19 @@ class ReleaseTests(unittest.TestCase):
                 if missing:files.pop('libpyrowave-shared-1.dll')
                 else:files['libpyrowave-shared-1.dll']=b'wrong runtime'
             with self.assertRaises(ValueError):sync.verify_package(self.make_bundle(changed))
+
+    @staticmethod
+    def legacy_names(files,manifest):
+        for current,previous in [('eclipse.exe','uu-gui.exe'),('eclipse-cli.exe','uu.exe')]:
+            files[previous]=files.pop(current)
+            manifest['sha256'][previous]=manifest['sha256'].pop(current)
+
+    def test_previous_sdk_format_keeps_its_own_executable_names(self):
+        def previous(files):
+            manifest=json.loads(files['version.json']);manifest['format_version']=4
+            self.legacy_names(files,manifest)
+            files['version.json']=json.dumps(manifest).encode()
+        self.assertEqual(sync.verify_package(self.make_bundle(previous))['format_version'],4)
 
     def test_missing_file_rejected(self):
         path = self.make_bundle(lambda files: files.pop('libstdc++-6.dll'))

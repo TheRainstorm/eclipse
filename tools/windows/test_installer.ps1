@@ -8,13 +8,14 @@ $baseFiles = @('uu-gui.exe','uu.exe','libgcc_s_seh-1.dll','libstdc++-6.dll','REA
 $target = Join-Path $root 'installed'
 $archive = Join-Path $root 'archive'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
-function New-TestPackage([string]$Name, [int]$Format = 4) {
+function New-TestPackage([string]$Name, [int]$Format = 5) {
     $dir = Join-Path $root $Name
     New-Item -ItemType Directory -Path $dir | Out-Null
     $files = @($baseFiles)
+    if ($Format -eq 5) { $files[0]='eclipse.exe'; $files[1]='eclipse-cli.exe' }
     if ($Format -ge 2) { $files += 'libvpl.dll' }
     if ($Format -ge 3) { $files += 'libpyrowave-shared-1.dll' }
-    if ($Format -eq 4) { $files += @('uu_plugin_sdk.dll','std-0123456789abcdef.dll') }
+    if ($Format -ge 4) { $files += @('uu_plugin_sdk.dll','std-0123456789abcdef.dll') }
     $hashes = @{}
     foreach ($file in $files) {
         if ($file -eq 'install.ps1') { Copy-Item -LiteralPath $Installer -Destination (Join-Path $dir $file) }
@@ -23,7 +24,7 @@ function New-TestPackage([string]$Name, [int]$Format = 4) {
     }
     $manifest = @{source_commit=('a' * 40);sha256=$hashes}
     if ($Format -ne 1) { $manifest.format_version = $Format }
-    if ($Format -eq 4) { $manifest.plugin_runtime = @('uu_plugin_sdk.dll','std-0123456789abcdef.dll'); $manifest.plugin_sdk_id = 'f' * 64 }
+    if ($Format -ge 4) { $manifest.plugin_runtime = @('uu_plugin_sdk.dll','std-0123456789abcdef.dll'); $manifest.plugin_sdk_id = 'f' * 64 }
     [IO.File]::WriteAllText((Join-Path $dir 'version.json'), ($manifest | ConvertTo-Json -Depth 4), $utf8)
     return $dir
 }
@@ -57,7 +58,7 @@ try {
         Assert-TestHashes $before
     } finally { $locked.Dispose() }
     & $Installer -SourceDir $new -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null
-    foreach ($file in @($baseFiles) + @('libvpl.dll','libpyrowave-shared-1.dll', 'version.json')) {
+    foreach ($file in @('eclipse.exe','eclipse-cli.exe') + @($baseFiles[2..($baseFiles.Count-1)]) + @('libvpl.dll','libpyrowave-shared-1.dll', 'version.json')) {
         Assert-Test ((Get-FileHash -LiteralPath (Join-Path $target $file)).Hash -eq (Get-FileHash -LiteralPath (Join-Path $new $file)).Hash) "New payload mismatch: $file"
     }
     Assert-Test ([IO.File]::ReadAllText((Join-Path $target 'user-config.json')) -eq 'preserved user settings') 'User settings changed'
@@ -69,7 +70,7 @@ try {
     $actualArchiveRoot = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($installed.Archive))
     Assert-Test ([string]::Equals($actualArchiveRoot, $expectedArchiveRoot, [StringComparison]::OrdinalIgnoreCase)) `
         "Default archive parent mismatch: expected '$expectedArchiveRoot', got '$actualArchiveRoot'"
-    Assert-Test (Test-Path -LiteralPath (Join-Path $installed.Archive 'previous/uu-gui.exe')) 'Default archive did not preserve old executable'
+    Assert-Test (Test-Path -LiteralPath (Join-Path $installed.Archive 'previous/eclipse.exe')) 'Default archive did not preserve old executable'
     # Set-Location does not necessarily update Environment.CurrentDirectory.
     # Source, destination and explicit archive paths must follow the shell.
     $savedLocation = Get-Location
@@ -83,7 +84,7 @@ try {
         [Environment]::CurrentDirectory = $otherWorkingDirectory
         $relative = (& $Installer -SourceDir 'old' -InstallDir 'relative-installed' -ArchiveRoot 'relative-archive' -NoShortcut) | ConvertFrom-Json
         Assert-Test ([string]::Equals($relative.InstallDir, (Join-Path $shellDirectory 'relative-installed'), [StringComparison]::OrdinalIgnoreCase)) "Relative installation mismatch: expected '$(Join-Path $shellDirectory 'relative-installed')', got '$($relative.InstallDir)', shell '$((Get-Location).Path)', process '$([Environment]::CurrentDirectory)'"
-        Assert-Test (Test-Path -LiteralPath (Join-Path $root 'relative-installed/uu-gui.exe')) 'Relative payload was not installed in the shell location'
+        Assert-Test (Test-Path -LiteralPath (Join-Path $root 'relative-installed/eclipse.exe')) 'Relative payload was not installed in the shell location'
         Assert-Test ([string]::Equals([IO.Path]::GetDirectoryName($relative.Archive), (Join-Path $shellDirectory 'relative-archive'), [StringComparison]::OrdinalIgnoreCase)) "Relative archive mismatch: expected '$(Join-Path $shellDirectory 'relative-archive')', got '$([IO.Path]::GetDirectoryName($relative.Archive))'"
         Assert-Test (!(Test-Path -LiteralPath (Join-Path $otherWorkingDirectory 'relative-installed'))) 'Installation leaked into the process working directory'
     } finally {
@@ -96,7 +97,7 @@ try {
     Assert-Test $failed 'Drive root installation should be rejected before mutation'
     # Validation failures must occur before touching any installed payload.
     $before = Get-TestHashes
-    [IO.File]::WriteAllText((Join-Path $old 'uu.exe'), 'corrupt payload', $utf8)
+    [IO.File]::WriteAllText((Join-Path $old 'eclipse-cli.exe'), 'corrupt payload', $utf8)
     $failed = $false
     try { & $Installer -SourceDir $old -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null }
     catch { $failed = $true }
@@ -105,8 +106,19 @@ try {
     $legacy = New-TestPackage 'legacy' 1
     & $Installer -SourceDir $legacy -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null
     Assert-Test ((Get-FileHash -LiteralPath (Join-Path $target 'uu.exe')).Hash -eq (Get-FileHash -LiteralPath (Join-Path $legacy 'uu.exe')).Hash) 'Legacy bundle did not install'
+    # Renaming the product archives old binaries and preserves user files.
+    $previousSdk = New-TestPackage 'previous-sdk' 4
+    $renamedTarget = Join-Path $root 'renamed-installed'
+    & $Installer -SourceDir $previousSdk -InstallDir $renamedTarget -NoShortcut | Out-Null
+    [IO.File]::WriteAllText((Join-Path $renamedTarget 'user-config.json'), 'keep configuration', $utf8)
+    $renamed = & $Installer -SourceDir $new -InstallDir $renamedTarget -NoShortcut
+    Assert-Test (Test-Path -LiteralPath (Join-Path $renamedTarget 'eclipse.exe')) 'Renamed GUI missing'
+    Assert-Test (!(Test-Path -LiteralPath (Join-Path $renamedTarget 'uu-gui.exe'))) 'Legacy GUI left in active installation'
+    Assert-Test (!(Test-Path -LiteralPath (Join-Path $renamedTarget 'uu.exe'))) 'Legacy CLI left in active installation'
+    Assert-Test (Test-Path -LiteralPath (Join-Path $renamed.Archive 'previous/uu-gui.exe')) 'Legacy GUI was not archived'
+    Assert-Test ([IO.File]::ReadAllText((Join-Path $renamedTarget 'user-config.json')) -eq 'keep configuration') 'Renaming changed user configuration'
     $before = Get-TestHashes
-    $unknown = New-TestPackage 'unsupported' 5
+    $unknown = New-TestPackage 'unsupported' 6
     $failed = $false
     try { & $Installer -SourceDir $unknown -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null }
     catch { $failed = $true }

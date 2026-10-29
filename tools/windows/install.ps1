@@ -34,13 +34,15 @@ if ($null -ne $manifest.format_version) {
     }
     $format = $manifest.format_version
 }
-if ($format -notin @(1, 2, 3, 4)) { throw 'Unsupported package format version' }
+if ($format -notin @(1, 2, 3, 4, 5)) { throw 'Unsupported package format version' }
 if ($manifest.source_commit -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid source commit' }
 $required = @('uu-gui.exe','uu.exe','libgcc_s_seh-1.dll','libstdc++-6.dll','README.txt','install.ps1',
               'LICENSE','LICENSE-MIT','LICENSE-APACHE','THIRD-PARTY-NOTICES.txt')
+if ($format -eq 5) { $required[0] = 'eclipse.exe'; $required[1] = 'eclipse-cli.exe' }
+$guiName = $required[0]
 if ($format -ge 2) { $required += 'libvpl.dll' }
 if ($format -ge 3) { $required += 'libpyrowave-shared-1.dll' }
-if ($format -eq 4) {
+if ($format -ge 4) {
     $runtime = @($manifest.plugin_runtime)
     if ($runtime.Count -ne 2 -or $runtime[0] -cne 'uu_plugin_sdk.dll' -or
         $runtime[1] -isnot [string] -or $runtime[1] -cnotmatch '^std-[0-9a-f]+\.dll$' -or
@@ -67,8 +69,10 @@ if (!$SourceDir.Equals($InstallDir, [StringComparison]::OrdinalIgnoreCase)) {
     $previous = Join-Path $archive 'previous'
     New-Item -ItemType Directory -Force $previous | Out-Null
     $payload = @($required) + @('version.json')
+    $retired = @()
+    if ($format -eq 5) { $retired = @('uu-gui.exe','uu.exe') }
     $oldHashes = @{}
-    foreach ($name in $payload) {
+    foreach ($name in @($payload) + $retired) {
         $target = Join-Path $InstallDir $name
         if (Test-Path -LiteralPath $target) {
             if (!(Test-Path -LiteralPath $target -PathType Leaf)) { throw "Installed path is not a file: $name" }
@@ -78,6 +82,13 @@ if (!$SourceDir.Equals($InstallDir, [StringComparison]::OrdinalIgnoreCase)) {
     }
     $changed = New-Object 'System.Collections.Generic.List[string]'
     try {
+        foreach ($name in $retired) {
+            $target = Join-Path $InstallDir $name
+            if (Test-Path -LiteralPath $target) {
+                Move-Item -LiteralPath $target -Destination (Join-Path $previous "running-$name") -Force
+                $changed.Add($name)
+            }
+        }
         foreach ($name in $payload) {
             $target = Join-Path $InstallDir $name
             $source = Join-Path $SourceDir $name
@@ -140,9 +151,9 @@ if (!$NoShortcut) {
             if (($link.TargetPath.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase) -and
                 [IO.Path]::GetFileName($link.TargetPath) -eq 'uu-gui.exe') -or
                 $link.TargetPath.Equals($previousExe, [StringComparison]::OrdinalIgnoreCase)) {
-                $link.TargetPath = Join-Path $InstallDir 'uu-gui.exe'
+                $link.TargetPath = Join-Path $InstallDir $guiName
                 $link.WorkingDirectory = $InstallDir
-                $link.IconLocation = (Join-Path $InstallDir 'uu-gui.exe') + ',0'
+                $link.IconLocation = (Join-Path $InstallDir $guiName) + ',0'
                 $link.Save()
                 if ($_.BaseName -eq 'UU Remote Rust') {
                     Move-Item -LiteralPath $_.FullName -Destination (Join-Path $_.DirectoryName 'uu-client.lnk') -Force
@@ -152,9 +163,9 @@ if (!$NoShortcut) {
     }
     $shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'uu-client.lnk'
     $link = $shell.CreateShortcut($shortcut)
-    $link.TargetPath = Join-Path $InstallDir 'uu-gui.exe'
+    $link.TargetPath = Join-Path $InstallDir $guiName
     $link.WorkingDirectory = $InstallDir
-    $link.IconLocation = (Join-Path $InstallDir 'uu-gui.exe') + ',0'
+    $link.IconLocation = (Join-Path $InstallDir $guiName) + ',0'
     $link.Description = 'uu-client - canonical installation'
     $link.Save()
 }
@@ -164,6 +175,6 @@ foreach ($name in $required) {
     }
 }
 [pscustomobject]@{
-    InstallDir=$InstallDir; Executable=(Join-Path $InstallDir 'uu-gui.exe')
+    InstallDir=$InstallDir; Executable=(Join-Path $InstallDir $guiName)
     SourceCommit=$manifest.source_commit; Shortcut=$shortcut; Archive=$archive
 } | ConvertTo-Json -Compress

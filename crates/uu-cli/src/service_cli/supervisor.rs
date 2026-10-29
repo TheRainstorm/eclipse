@@ -318,7 +318,7 @@ fn launch_entry(paths: &Paths, installed: &Installed, session: u32, entry: Entry
         )
     })?;
     let directory = paths.binary_directory(installed);
-    let executable = directory.join("uu.exe");
+    let executable = directory.join(installed.cli_name());
     let arguments = match entry {
         Entry::SessionHost => format!("service session-host --session {session} --stop-event {event_name}"),
         #[cfg(test)]
@@ -375,7 +375,7 @@ fn run() -> Result<()> {
         std::env::current_exe()?.canonicalize()?
             == paths
                 .binary_directory(&installed)
-                .join("uu.exe")
+                .join(installed.cli_name())
                 .canonicalize()?,
         "后台服务必须从受保护的安装位置运行"
     );

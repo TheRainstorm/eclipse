@@ -1,13 +1,18 @@
 [package]
 name = "uu-cli"
+autobins = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "uu — native Eclipse client (Windows/Linux)"
 
 [[bin]]
-name = "uu"
+name = "eclipse-cli"
 path = "src/main.rs"
+
+[[bin]]
+name = "eclipse-signal"
+path = "src/bin/uu-signal.rs"
 
 [dependencies]
 uu-plugin-sdk = {path="../uu-plugin-sdk"}

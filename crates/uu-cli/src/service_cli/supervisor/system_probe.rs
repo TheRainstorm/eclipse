@@ -232,7 +232,7 @@ async fn owned_system_generated_media() {
             .unwrap(),
         paths
             .binary_directory(&paths.manifest().unwrap())
-            .join("uu.exe")
+            .join(paths.manifest().unwrap().cli_name())
             .canonicalize()
             .unwrap()
     );

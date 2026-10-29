@@ -58,7 +58,7 @@ pub fn init_background_logging() -> Result<()> {
         std::env::current_exe()?.canonicalize().context("解析后台可执行文件失败")?
             == paths
                 .binary_directory(&installed)
-                .join("uu.exe")
+                .join(installed.cli_name())
                 .canonicalize().context("解析受保护后台安装位置失败")?,
         "后台进程必须从安装位置启动"
     );
@@ -210,7 +210,7 @@ fn manage() -> Result<()> {
     require_administrator()?;
     let paths = Paths::discover()?;
     let installed = paths.manifest()?;
-    std::process::Command::new(paths.binary_directory(&installed).join("uu-gui.exe"))
+    std::process::Command::new(paths.binary_directory(&installed).join(installed.gui_name()))
         .arg("--manage-background-service")
         .spawn()
         .context("无法打开后台服务管理窗口")?;

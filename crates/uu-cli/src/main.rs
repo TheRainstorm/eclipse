@@ -110,7 +110,7 @@ mod native_encoder_options {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "uu",
+    name = "eclipse-cli",
     version,
     about = "Native remote streaming client (Windows/Linux)",
     long_about = None,

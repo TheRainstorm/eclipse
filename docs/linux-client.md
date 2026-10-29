@@ -23,7 +23,7 @@ python3 install.py
 
 同一提交已有完整安装包时，打包脚本核验内容、目标平台、功能和 glibc 兼容性后直接复用，不调用 Cargo；解包目录缺失时从已核验归档恢复。`--rebuild` 可强制执行构建流程，仍使用 Cargo 缓存。检查与测试产物不等于 release 安装包，因此首次打包仍需要 release 构建。
 
-正式入口：`~/.local/bin/uu-client`（保留旧 `uu-remote-rust` 启动别名），或应用菜单 **uu-client**。实际文件在 `~/.local/opt/uu-remote-rust/releases/<revision>/`，`current` 为统一版本入口。CLI 是 `~/.local/bin/uu-rust`。安装器校验二进制 SHA256 和动态依赖，原子切换入口，旧版本保留。0.6起版本显示优先使用程序内嵌的源提交，并核对同目录 `version.json`；请使用完整包以保持程序、资源与清单一致。
+正式入口：`~/.local/bin/uu-client`（保留旧 `uu-remote-rust` 启动别名），或应用菜单 **uu-client**。实际文件在 `~/.local/opt/uu-remote-rust/releases/<revision>/`，`current` 为统一版本入口。开发分支还提供 `~/.local/bin/eclipse` 和 `~/.local/bin/eclipse-cli`，CLI 保留旧 `~/.local/bin/uu-rust` 别名。安装器校验二进制 SHA256 和动态依赖，原子切换入口，旧版本保留。0.6起版本显示优先使用程序内嵌的源提交，并核对同目录 `version.json`；请使用完整包以保持程序、资源与清单一致。
 
 0.7起应用菜单使用与窗口标识一致的 `uu-client.desktop`，以便桌面识别图标和任务栏分组。旧启动项保留为隐藏兼容入口，避免已有固定图标失效；如固定项仍显示旧图标，可从应用菜单重新固定 uu-client。安装路径中的空格和特殊字符会按桌面启动项规则转义，启动不经过 shell。
 
@@ -49,7 +49,7 @@ for scenario in deny cancel stream-view stream-input stream-no-input stream-keyb
   python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe --case "$scenario"
 done
 python3 tools/native/portal_smoke.py --probe target/release/examples/portal_probe \
-  --cli target/release/uu --case stream-native
+  --cli target/release/eclipse-cli --case stream-native
 ```
 
 这覆盖真实门户调用、拒绝/取消后关闭、PipeWire 帧传输、同进程重连、缩放坐标、按键释放及生成画面的原生加密串流；不代表各桌面的授权弹窗交互均已实机验收。
@@ -75,7 +75,7 @@ cargo build --release -p uu-gui -p uu-cli --features vaapi --locked
 cargo build -p uu-gui --example wayland_input --locked
 cargo build --release -p uu-gui --example clipboard_probe --locked
 python3 tools/linux/wayland_smoke.py \
-  --binary target/release/uu-gui \
+  --binary target/release/eclipse \
   --input-driver target/debug/examples/wayland_input \
   --clipboard-probe target/release/examples/clipboard_probe \
   --state "$HOME/.local/share/uu-remote/state.json" \
@@ -117,7 +117,7 @@ UU_DECODE_PROFILE=1 UU_VAAPI_READBACK=legacy uu-rust probe --h264 generated.h264
 cargo build --release -p uu-media --example audio_probe --locked
 python3 tools/linux/audio_smoke.py \
   --probe target/release/examples/audio_probe --output /tmp/uu-audio-run-01
-UU_DECODER=hw target/release/uu probe --h264 TEST.h264
+UU_DECODER=hw target/release/eclipse-cli probe --h264 TEST.h264
 ```
 
 音频测试需要 PipeWire/Pulse 兼容服务、`pactl`、ffmpeg Pulse 输入和 ALSA PipeWire 插件。只创建自己的空声卡，使用进程专用 ALSA 配置，不修改默认播放设备；录制其 monitor 并检查 440Hz、RMS 和播放状态，最后卸载自己的模块。用的是实际 Opus 解码、PCM 队列和 CPAL 输出路径。

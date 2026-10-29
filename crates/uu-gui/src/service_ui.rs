@@ -177,7 +177,7 @@ impl Manager {
         administrator_file_owner()?;
         let paths = Paths::discover()?;
         let installed = paths.manifest()?;
-        let executable = paths.binary_directory(&installed).join("uu.exe");
+        let executable = paths.binary_directory(&installed).join(installed.cli_name());
         let config = paths.config();
         let store = Store::open(config.at("device-trust"))?;
         let draft = store.read()?.sharing;
@@ -642,7 +642,7 @@ pub(super) fn dispatch() -> Option<eframe::Result> {
         }else if let Some(action)=action {
             use std::os::windows::process::CommandExt;
             uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定安装包目录")))?,env!("UU_BUILD_COMMIT"))?;
-            let mut command=std::process::Command::new(exe.with_file_name("uu.exe"));
+            let mut command=std::process::Command::new(exe.with_file_name("eclipse-cli.exe"));
             command.args(["service",action,"--source-data"]).arg(&args[3]);
             if action=="install"{command.arg("--open-manager");}
             let output=command.creation_flags(0x08000000).output()?;

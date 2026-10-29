@@ -52,7 +52,7 @@ flowchart LR
 构建：
 
 ```sh
-cargo build --release -p uu-cli --bin uu --bin uu-signal
+cargo build --release -p uu-cli --bin uu --bin eclipse-signal
 ```
 
 服务器准备 TLS 证书、私钥和随机访问凭据。访问凭据可通过 `uu internet keygen --file server.token` 生成，不覆盖已有文件。使用自签名证书时必须包含用户实际连接的 IP 或域名 SAN，客户端通过证书文件建立信任，不能关闭证书校验。
