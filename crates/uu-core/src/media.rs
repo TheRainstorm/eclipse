@@ -88,6 +88,10 @@ pub struct MediaStats {
     pub decode_us: AtomicU32,
     pub frame_cadence: std::sync::Mutex<crate::frame_cadence::Snapshot>,
     pub decoded_display_skips: AtomicU64,
+    /// Older outputs from the same decoder call, superseded by its last image.
+    pub decoded_batch_skips: AtomicU64,
+    /// RGBA conversion deferred while compressed reference pictures remain.
+    pub decoded_conversion_skips: AtomicU64,
     /// Received video bitrate in kbit/s.
     pub bitrate_kbps: AtomicU32,
     /// RTP packets received.
@@ -434,9 +438,13 @@ pub(crate) async fn receive_video(
                             }
                             s.decoded_total.fetch_add(1, Ordering::Relaxed);
                         }
-                        // Decode all reference pictures, but spend RGBA and
-                        // upload work only on the newest one after a burst.
-                        if let Some(tx) = frame_tx.as_ref().filter(|_| index == last && (key || sample_rx.is_empty())) {
+                        // Decode every reference picture. Already leased GPU
+                        // or planar images can reach the latest-image mailbox
+                        // immediately, even while more compressed AUs await
+                        // decoding. Only synchronous RGBA conversion needs to
+                        // wait for a burst to drain; future AUs cannot replace
+                        // a ready picture until they have actually decoded.
+                        if let Some(tx) = frame_tx.as_ref().filter(|tx| index == last && (tx.accepts_decoded(&frame) || key || sample_rx.is_empty())) {
                             if let Some(s)=&worker_stats{s.pipeline_trace.image(trace_epoch,track_idx,frame.pts.0,crate::pipeline_trace::Stage::Publish);}
                             let observation=worker_stats.as_ref().map(|s|crate::display_frames::DecodedObservation {
                                 media_epoch:trace_epoch,track:track_idx,pts_us:frame.pts.0,
@@ -446,6 +454,11 @@ pub(crate) async fn receive_video(
                             let _ = tx.send_observed_decoded(track_idx, frame, color,observation);
                         } else if let Some(s) = worker_stats.as_ref().filter(|_|frame_tx.is_some()) {
                             s.decoded_display_skips.fetch_add(1, Ordering::Relaxed);
+                            if index != last {
+                                s.decoded_batch_skips.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                s.decoded_conversion_skips.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
                 }

@@ -108,11 +108,16 @@ impl FrameSender {
     pub fn send_decoded(&self, track: u32, frame: RawFrame, color: YuvColor) -> Result<(), mpsc::SendError<()>> {
         self.send_observed_decoded(track,frame,color,None)
     }
+    /// These consumers accept a leased image without synchronous RGBA work.
+    /// Their mailbox already replaces stale decoded pictures during a burst.
+    pub(crate) fn accepts_decoded(&self, frame: &RawFrame) -> bool {
+        frame.gpu || self.planar.load(std::sync::atomic::Ordering::Acquire)
+    }
     pub(crate) fn send_observed_decoded(&self, track:u32, frame:RawFrame, color:YuvColor, observation:Option<DecodedObservation>)->Result<(),mpsc::SendError<()>> {
         let observation=observation.filter(|value| value.media_epoch==self.generation&&value.track==track&&value.pts_us==frame.pts.0);
+        let decoded = self.accepts_decoded(&frame);
         let image = DisplayImage::Decoded(track, frame, color);
-        if matches!(&image,DisplayImage::Decoded(_,frame,_) if frame.gpu)
-            || self.planar.load(std::sync::atomic::Ordering::Acquire) {
+        if decoded {
             self.send_delivery(image,observation)
         } else {
             self.send_delivery(DisplayImage::Rgba(image.into_rgba()),observation)

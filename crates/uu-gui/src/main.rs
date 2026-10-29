@@ -1157,6 +1157,8 @@ impl App {
                     "keyboard_repeats_forwarded":self.pressed_vks.forwarded_repeats(),
                     "control_open":s.control_open.load(Relaxed),"keyboard":self.platform.keyboard_diagnostics()});
                 report["network_loss"]=serde_json::to_value(s.network_loss.lock().unwrap().as_ref()).unwrap_or_default();
+                report["decoded_batch_skips_all_tracks"]=s.decoded_batch_skips.load(Relaxed).into();
+                report["decoded_conversion_skips_all_tracks"]=s.decoded_conversion_skips.load(Relaxed).into();
                 report["build"]=self.build_label.clone().into();
                 report["presentation_swap_interval"]=eframe::vsync_interval(ctx).into();
                 report["video_color"]=self.textures.get(&self.selected_track).and_then(|t|t.color_diagnostics()).into();
