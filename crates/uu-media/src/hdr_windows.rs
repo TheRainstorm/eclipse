@@ -127,7 +127,7 @@ unsafe extern "C" {
     fn eclipse_native_present_image(value:*mut c_void,id:u64,handles:*const *mut c_void,ready:u64,consumed:u64,rect:*const f32,hdr:i32,white:f32,error:*mut c_char,len:usize)->i32;
     fn eclipse_native_present_cursor(value:*mut c_void,w:u32,h:u32,alpha:*const u8,xored:*const u8,error:*mut c_char,len:usize)->i32;
     fn eclipse_native_present_cursor_position(value:*mut c_void,rect:*const f32);
-    fn eclipse_native_present_frame(value:*mut c_void,index:u32,vsync:i32,submitted:*mut u64,error:*mut c_char,len:usize)->i32;
+    fn eclipse_native_present_frame(value:*mut c_void,index:u32,vsync:i32,unchanged:i32,submitted:*mut u64,error:*mut c_char,len:usize)->i32;
     fn eclipse_native_present_observe(value:*mut c_void,enabled:i32);
     fn eclipse_native_present_observation(value:*mut c_void,observation:*mut super::RawPresentObservation,size:usize)->i32;
 }
@@ -150,7 +150,13 @@ impl NativePresentation {
         let mut e=[0;1024];if unsafe{eclipse_native_present_cursor(self.0.as_ptr(),size[0],size[1],alpha.as_ptr(),xored.as_ptr(),e.as_mut_ptr(),e.len())}==0{Ok(())}else{Err(message(&e))}
     }
     pub fn cursor_position(&mut self,rect:Option<[f32;4]>){unsafe{eclipse_native_present_cursor_position(self.0.as_ptr(),rect.as_ref().map_or(std::ptr::null(),|r|r.as_ptr()));}}
-    pub fn present(&mut self,index:u32,vsync:bool,submitted:&mut u64)->Result<(),String>{let mut e=[0;1024];if unsafe{eclipse_native_present_frame(self.0.as_ptr(),index,i32::from(vsync),submitted,e.as_mut_ptr(),e.len())}==0{Ok(())}else{Err(message(&e))}}
+    pub fn present(&mut self,index:u32,vsync:bool,submitted:&mut u64)->Result<(),String>{self.present_if_changed(index,vsync,submitted,false).map(|_|())}
+    /// False means the prior successful composition was reused. No GPU read,
+    /// fence signal, Present or statistics query is issued for that redraw.
+    pub fn present_if_changed(&mut self,index:u32,vsync:bool,submitted:&mut u64,unchanged:bool)->Result<bool,String>{
+        let mut e=[0;1024];
+        match unsafe{eclipse_native_present_frame(self.0.as_ptr(),index,i32::from(vsync),i32::from(unchanged),submitted,e.as_mut_ptr(),e.len())}{0=>Ok(true),1=>Ok(false),_=>Err(message(&e))}
+    }
     /// Negotiated E2E receipts or explicit raw profiling. Disabled means no
     /// QPC/statistics query calls; consumers share this single observation.
     pub fn observe_presents(&mut self,enabled:bool){unsafe{eclipse_native_present_observe(self.0.as_ptr(),i32::from(enabled));}}

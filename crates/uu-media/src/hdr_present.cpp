@@ -264,6 +264,7 @@ struct NativePresentation:Presentation {
     unsigned cursor_width=0,cursor_height=0;
     uint64_t source_id=0,ready_value=0,return_value=0;
     bool offered=false;uint64_t submitted_return=0;
+    HRESULT last_present_result=E_FAIL;
     bool debug_enabled=false;int debug_hdr=-1;float debug_white=0;uint64_t debug_serial=0;
     ComPtr<ID3D11Texture2D> debug_target;std::vector<uint16_t> debug_pixels;
     unsigned debug_width=0,debug_height=0;
@@ -346,14 +347,18 @@ float4 ps(float4 pos:SV_Position):SV_Target{
     void cursor_position(const float* rect){params.flags[3]=rect?1:0;if(rect)for(unsigned i=0;i<4;i++)params.cursor[i]=rect[i];}
     void deactivate(){
         Presentation::deactivate();
+        last_present_result=E_FAIL;
         image_view.Reset();image.Reset();ready.Reset();consumed.Reset();source_id=0;
         offered=false;submitted_return=0;params.flags[3]=0;
         for(auto& v:cursor_views)v.Reset();for(auto& c:cursors)c.Reset();cursor_width=cursor_height=0;
     }
     void begin(){offered=false;params.flags[3]=0;observation_ready=false;}
-    void present(unsigned index,bool vsync){
+    bool present(unsigned index,bool vsync,bool unchanged){
         submitted_return=0;
         if(index>=3||!chain)throw std::runtime_error("native presentation ring is not ready");
+        // Retry occluded/failed submissions; only S_OK establishes reusable
+        // content. No D3D read or consumed-fence signal occurs on this path.
+        if(unchanged&&last_present_result==S_OK&&content_visible)return false;
         ComPtr<ID3D11Texture2D> backbuffer;check(chain->GetBuffer(0,IID_PPV_ARGS(&backbuffer)),"get native video backbuffer");
         ComPtr<ID3D11RenderTargetView> target;check(device->CreateRenderTargetView(backbuffer.Get(),nullptr,&target),"create native video target");
         if(offered)check(commands->Wait(ready.Get(),ready_value),"GPU wait for converted native video");
@@ -375,7 +380,8 @@ float4 ps(float4 pos:SV_Position):SV_Target{
             debug_pixels.resize(size_t(width)*height*4);for(unsigned y=0;y<height;y++)std::memcpy(debug_pixels.data()+size_t(y)*width*4,(const unsigned char*)map.pData+size_t(y)*map.RowPitch,size_t(width)*8);context->Unmap(debug_target.Get(),0);
             debug_width=width;debug_height=height;debug_serial++;
         }
-        check(present_chain(vsync?1:0,!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0,offered?source_id:0,offered?ready_value:0),"present native composed video");attach();
+        last_present_result=present_chain(vsync?1:0,!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0,offered?source_id:0,offered?ready_value:0);
+        check(last_present_result,"present native composed video");attach();return true;
     }
 };
 
@@ -407,7 +413,7 @@ extern "C" void eclipse_native_present_begin(void* value){((NativePresentation*)
 extern "C" int eclipse_native_present_image(void* value,uint64_t id,void* const* handles,uint64_t ready,uint64_t consumed,const float* rect,int hdr,float white,char* error,size_t capacity){try{((NativePresentation*)value)->offer(id,handles,ready,consumed,rect,hdr!=0,white);return 0;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
 extern "C" int eclipse_native_present_cursor(void* value,unsigned w,unsigned h,const unsigned char* alpha,const unsigned char* xored,char* error,size_t capacity){try{((NativePresentation*)value)->cursor_shape(w,h,alpha,xored);return 0;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
 extern "C" void eclipse_native_present_cursor_position(void* value,const float* rect){((NativePresentation*)value)->cursor_position(rect);}
-extern "C" int eclipse_native_present_frame(void* value,unsigned index,int vsync,uint64_t* submitted,char* error,size_t capacity){auto p=(NativePresentation*)value;try{p->present(index,vsync!=0);*submitted=p->submitted_return;return 0;}catch(const std::exception& e){p->context->Flush();*submitted=p->submitted_return;if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
+extern "C" int eclipse_native_present_frame(void* value,unsigned index,int vsync,int unchanged,uint64_t* submitted,char* error,size_t capacity){auto p=(NativePresentation*)value;try{const bool presented=p->present(index,vsync!=0,unchanged!=0);*submitted=p->submitted_return;return presented?0:1;}catch(const std::exception& e){p->last_present_result=E_FAIL;p->context->Flush();*submitted=p->submitted_return;if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
 extern "C" void eclipse_native_present_observe(void* value,int enabled){((NativePresentation*)value)->observe(enabled!=0);}
 extern "C" int eclipse_native_present_observation(void* value,RawPresentObservation* observation,size_t size){
     if(!value||!observation||size!=sizeof(RawPresentObservation))return -1;

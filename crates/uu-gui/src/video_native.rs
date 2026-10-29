@@ -37,6 +37,20 @@ struct Overlay {
     fbo: glow::Framebuffer,
     object: Handle,
 }
+/// The image identity is the export owner AND its producer fence value. UI
+/// equality is established separately by the renderer's complete overlay key.
+#[derive(Clone, Copy, PartialEq)]
+struct Scene {
+    image: (u64, u64),
+    rect: [f32; 4],
+    source_hdr: bool,
+    source_white: f32,
+    // A shape can finish arriving without a new position revision.
+    cursor_revision: Option<(u64, Option<usize>)>,
+    output_hdr: bool,
+    output_white: f32,
+    vsync: bool,
+}
 struct NativePresenter {
     gl: Arc<glow::Context>,
     native: NativePresentation,
@@ -46,6 +60,7 @@ struct NativePresenter {
     next_ui_key: Option<u64>,
     reuse_ui: bool,
     last_native: bool,
+    last_scene: Option<Scene>,
     finish_error: Option<String>,
     overlays: Vec<Overlay>,
     size: [u32; 2],
@@ -116,6 +131,7 @@ impl NativePresenter {
             next_ui_key: None,
             reuse_ui: false,
             last_native: false,
+            last_scene: None,
             finish_error: None,
             overlays: Vec::new(),
             size: [0; 2],
@@ -150,6 +166,7 @@ impl NativePresenter {
         self.ui_key = None;
         self.reuse_ui = false;
         self.last_native = false;
+        self.last_scene = None;
     }
     unsafe fn resize(&mut self, size: [u32; 2]) -> Result<(), String> {
         if self.size == size {
@@ -236,6 +253,7 @@ impl Presenter for NativePresenter {
     fn invalidate_ui(&mut self) {
         self.ui_key = None;
         self.last_native = false;
+        self.last_scene = None;
     }
 
     fn begin(&mut self, size: [u32; 2]) -> Result<ColorTarget, String> {
@@ -335,6 +353,7 @@ impl Presenter for NativePresenter {
         self.finish();
         if let Some(error) = self.finish_error.take() {
             self.receipt.reset();
+            self.last_scene = None;
             if let Some(image) = self.image.take() {
                 image.valid.store(false, Ordering::Release);
             }
@@ -349,9 +368,30 @@ impl Presenter for NativePresenter {
             self.observing=wanted;
         }
         if !wanted {self.receipt.reset();}
+        let scene = self.image.as_ref().map(|image| Scene {
+            image: (image.id, image.ready),
+            rect: image.rect,
+            source_hdr: image.hdr,
+            source_white: image.source_white,
+            cursor_revision: image.cursor.as_ref().map(|cursor| (
+                cursor.revision,
+                cursor.shape.as_ref().map(|shape| Arc::as_ptr(shape) as usize),
+            )),
+            output_hdr: self.color.hdr,
+            output_white: self.color.sdr_white_nits,
+            vsync,
+        });
+        let unchanged = self.reuse_ui && self.inspection.is_none()
+            && scene.is_some() && scene == self.last_scene;
         let result = self
             .native
-            .present(self.index as u32, vsync, &mut submitted);
+            .present_if_changed(self.index as u32, vsync, &mut submitted, unchanged);
+        if matches!(result, Ok(false)) {
+            // No GPU read, consumer-fence signal, Present or statistics query
+            // happened. Keep the previous receipt ledger; never synthesize one.
+            self.image = None;
+            return Ok(());
+        }
         if self.observing {
             if let Some(raw)=self.native.take_present_observation() {
                 let offered=self.image.as_ref().map(|image|(image.id,image.ready));
@@ -366,6 +406,7 @@ impl Presenter for NativePresenter {
         }
         if result.is_err() {self.receipt.reset();}
         self.last_native = self.image.is_some() && result.is_ok();
+        self.last_scene = if self.last_native { scene } else { None };
         self.ui_key = if self.last_native {
             self.next_ui_key
         } else {
@@ -396,7 +437,7 @@ impl Presenter for NativePresenter {
                 }
             }
         }
-        result
+        result.map(|_| ())
     }
     fn finish(&mut self) {
         unsafe {
@@ -417,6 +458,7 @@ impl Presenter for NativePresenter {
         self.shape = None;
         self.ui_key = None;
         self.last_native = false;
+        self.last_scene = None;
         self.native.deactivate()
     }
 }
