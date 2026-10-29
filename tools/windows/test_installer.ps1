@@ -43,6 +43,12 @@ function Assert-TestHashes($Expected) {
 }
 try {
     New-Item -ItemType Directory -Path $root | Out-Null
+    # Resolve existing temporary-directory aliases before COM normalizes link
+    # targets (hosted Windows runners may expose TEMP through an 8.3 path).
+    Push-Location -LiteralPath $root
+    try { $root = (Get-Location).ProviderPath } finally { Pop-Location }
+    $target = Join-Path $root 'installed'
+    $archive = Join-Path $root 'archive'
     $old = New-TestPackage 'old'
     $new = New-TestPackage 'new'
     & $Installer -SourceDir $old -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null
@@ -148,7 +154,8 @@ try {
     Assert-Test ((Get-FileHash -LiteralPath $unrelated).Hash -eq $unrelatedHash) 'Unrelated shortcut changed'
     Assert-Test (!(Test-Path -LiteralPath $legacyLink)) 'Legacy shortcut name remains'
     $migrated = Join-Path $links 'Eclipse (1).lnk'
-    Assert-Test ($shell.CreateShortcut($migrated).TargetPath -eq $newExe) 'Owned shortcut was not migrated'
+    $actualTarget = $shell.CreateShortcut($migrated).TargetPath
+    Assert-Test ($actualTarget -eq $newExe) "Owned shortcut was not migrated: expected '$newExe', got '$actualTarget'"
     Assert-Test ((Resolve-EclipseShortcut $shell $links $ownedTargets) -eq $migrated) 'Repeated installation duplicated its shortcut'
     Assert-Test ($shell.CreateShortcut($migrated).WorkingDirectory -eq $renamedTarget) 'Shortcut working directory mismatch'
     [pscustomobject]@{passed=$true;rollback=$true;legacy=$true;shortcuts=$true;user_configuration_preserved=$true;user_processes_stopped=$false} | ConvertTo-Json -Compress
