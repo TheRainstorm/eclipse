@@ -3,6 +3,7 @@ import io
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 import scan_secrets as scan
 
@@ -48,14 +49,17 @@ class CredentialGuardTests(unittest.TestCase):
             self.assertFalse(scan.artifact(path, scan.variants([self.SECRET])))
 
     def test_public_pc_constant_is_explicitly_scoped_and_never_overrides_forbidden_values(self):
-        source = Path(__file__).resolve().parents[2] / scan.PUBLIC_PC_SOURCE
-        data = source.read_bytes()
-        self.assertFalse(scan.inspect(scan.PUBLIC_PC_SOURCE, data))
-        self.assertTrue(scan.inspect('unapproved.rs', data))
-        constant = scan.RUST_KEY.search(data).group('value')
-        self.assertTrue(scan.inspect(scan.PUBLIC_PC_SOURCE, data, scan.variants([constant])))
-        changed = data.replace(constant, self.SECRET)
-        self.assertTrue(scan.inspect(scan.PUBLIC_PC_SOURCE, changed))
+        # The main checkout must be testable without a concrete plugin. Exercise
+        # the exact path/hash policy with generated data, not external source.
+        import hashlib
+        constant = b'owned-public-policy-fixture'
+        data = b'const PUBLIC_PC_SIGNING_KEY: &str = "' + constant + b'";'
+        with patch.object(scan, 'PUBLIC_PC_SHA256', hashlib.sha256(constant).hexdigest()):
+            self.assertFalse(scan.inspect(scan.PUBLIC_PC_SOURCE, data))
+            self.assertTrue(scan.inspect('unapproved.rs', data))
+            self.assertTrue(scan.inspect(scan.PUBLIC_PC_SOURCE, data, scan.variants([constant])))
+            changed = data.replace(constant, self.SECRET)
+            self.assertTrue(scan.inspect(scan.PUBLIC_PC_SOURCE, changed))
 
 
 class NativeInvitationGuard(unittest.TestCase):
