@@ -57,7 +57,7 @@ uu-client 使用 Rust 构建，提供设备列表、远程画面、音频、键�
 
 ## 开始使用
 
-当前版本 **v0.20.7** 修复 Windows 原生合成的全屏整窗黑屏、改善 UI 图层缓存，并增加带误差范围的视频端到端估测与诊断。Windows 主机断链后偶发的 DXGI 重连失败仍在排查，详见[版本说明](docs/releases/v0.20.7.md)。[v0.20.3](docs/releases/v0.20.3.md) 修复 HUD 已观察停图在暂停后丢失的计数。[v0.20.2](docs/releases/v0.20.2.md) 调整采集节拍、增加一分钟长间隔统计，并明确视频阶段小计与完整操作延迟的边界。[v0.20.1](docs/releases/v0.20.1.md) 整理 HUD 行对齐、手动复制与悬浮菜单。[v0.20.0](docs/releases/v0.20.0.md) 将 UU 协议拆到独立插件仓库，并提供默认关闭的实验性官方被控入口，真实官方手机互通仍待验收。正式包见 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)。源码构建先运行 `git submodule update --init --recursive`，详见[插件文档](docs/plugins.md)。
+当前版本 **v0.20.8** 改进精简 HUD 与固定诊断，增加 Est.Total 波动和 3/10/60 分钟曲线，整理软件设置分类；默认客户端快捷键统一为 Ctrl+Alt+Shift，保留自定义绑定。详见[版本说明](docs/releases/v0.20.8.md)。[v0.20.7](docs/releases/v0.20.7.md) 的原生呈现修复和端到端观测继续保留，Windows 主机偶发的 DXGI 重连失败仍在排查。[v0.20.3](docs/releases/v0.20.3.md) 修复 HUD 已观察停图在暂停后丢失的计数。[v0.20.2](docs/releases/v0.20.2.md) 调整采集节拍、增加一分钟长间隔统计，并明确视频阶段小计与完整操作延迟的边界。[v0.20.1](docs/releases/v0.20.1.md) 整理 HUD 行对齐、手动复制与悬浮菜单。[v0.20.0](docs/releases/v0.20.0.md) 将 UU 协议拆到独立插件仓库，并提供默认关闭的实验性官方被控入口，真实官方手机互通仍待验收。正式包见 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)。源码构建先运行 `git submodule update --init --recursive`，详见[插件文档](docs/plugins.md)。
 
 安装包随里程碑版本发布到 [GitHub Releases](https://github.com/TheRainstorm/uu-client/releases)，自动构建与标签规则见[版本发布说明](docs/releases.md)。
 
