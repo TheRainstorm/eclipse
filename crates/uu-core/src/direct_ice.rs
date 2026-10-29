@@ -71,6 +71,7 @@ impl InternetIce {
                                 urls: vec![url.to_owned()],
                                 username: username.into(),
                                 credential: credential.into(),
+                                credential_type:webrtc::ice_transport::ice_credential_type::RTCIceCredentialType::Password,
                                 ..Default::default()
                             });
                         }
