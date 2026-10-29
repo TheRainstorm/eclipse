@@ -7,13 +7,18 @@ on:
   pull_request:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Rebuild and publish an existing immutable tag using this workflow revision; empty builds this ref only'
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  group: build-${{ github.workflow }}-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: ${{ !inputs.release_tag && !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,6 +33,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.sha }}
       - name: Install media development libraries
         run: |
           sudo apt-get update
@@ -36,6 +42,7 @@ jobs:
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
           rustup default "$RUST_TOOLCHAIN"
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$(rustc --print target-libdir):$PWD/target/release:$PWD/target/release/deps:$PWD/target/release/examples" >> "$GITHUB_ENV"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -65,7 +72,7 @@ jobs:
           probe = out / 'vaapi_readback_probe'
           shutil.copy2('target/release/examples/vaapi_readback_probe', probe)
           (out / 'provenance.json').write_text(json.dumps({
-              'source_commit': os.environ['GITHUB_SHA'], 'features': ['vaapi'],
+              'source_commit': os.environ['SOURCE_COMMIT'], 'features': ['vaapi'],
               'sha256': {probe.name: hashlib.sha256(probe.read_bytes()).hexdigest()},
               'scope': 'media-only; full platform validation is still required',
           }, indent=2) + '\n')
@@ -81,16 +88,25 @@ jobs:
     name: Windows installer validation
     runs-on: windows-latest
     timeout-minutes: 5
+    env:
+      INSTALLER: ${{ inputs.release_tag && 'release-source/tools/windows/install.ps1' || 'tools/windows/install.ps1' }}
     steps:
+      # Test-harness repairs can verify the original installer without changing its tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.release_tag != ''
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.release_tag }}
+          path: release-source
       - name: Validate installer with PowerShell 7
         shell: pwsh
-        run: '& ./tools/windows/test_installer.ps1 | Out-Host'
+        run: '& ./tools/windows/test_installer.ps1 -Installer $env:INSTALLER | Out-Host'
       - name: Validate installer with Windows PowerShell
         shell: powershell
-        run: '& ./tools/windows/test_installer.ps1 | Out-Host'
+        run: '& ./tools/windows/test_installer.ps1 -Installer $env:INSTALLER | Out-Host'
 
   build:
     name: Build ${{ matrix.platform }}
@@ -107,10 +123,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.sha }}
       - name: Check source and version
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          REF_TYPE: ${{ inputs.release_tag && 'tag' || github.ref_type }}
         run: |
           python3 tools/security/scan_secrets.py --history
           python3 -m unittest discover -s tools/security -p 'test_*.py' -v
@@ -137,6 +154,7 @@ jobs:
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
           rustup default "$RUST_TOOLCHAIN"
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$(rustc --print target-libdir):$PWD/target/release:$PWD/target/release/deps:$PWD/target/release/examples" >> "$GITHUB_ENV"
           if [ '${{ matrix.platform }}' = windows-x64 ]; then
             rustup target add x86_64-pc-windows-gnu
@@ -151,6 +169,18 @@ jobs:
           restore-keys: |
             cargo-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}-
             cargo-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-
+      - name: Retire relocated CMake build caches
+        run: |
+          python3 - <<'PYCODE'
+          import pathlib, shutil
+          for cache in pathlib.Path('target/vpl-runtime').glob('build-*/CMakeCache.txt'):
+              entries = dict(line.split('=', 1) for line in cache.read_text(errors='replace').splitlines()
+                             if line.startswith('CMAKE_CACHEFILE_DIR:INTERNAL='))
+              recorded = entries.get('CMAKE_CACHEFILE_DIR:INTERNAL')
+              if recorded is None or pathlib.Path(recorded).resolve() != cache.parent.resolve():
+                  # Derived CMake outputs only; preserve the verified source archive and Cargo cache.
+                  shutil.rmtree(cache.parent)
+          PYCODE
       - name: Test and package Linux
         if: matrix.platform == 'linux-x86_64'
         run: |
@@ -165,7 +195,7 @@ jobs:
           probe = out / 'video_dma_probe'
           shutil.copy2('target/release/examples/video_dma_probe', probe)
           (out / 'provenance.json').write_text(json.dumps({
-              'source_commit': os.environ['GITHUB_SHA'],
+              'source_commit': os.environ['SOURCE_COMMIT'],
               'sha256': {probe.name: hashlib.sha256(probe.read_bytes()).hexdigest()},
               'scope': 'built in CI; actual DMA-BUF rendering requires a GPU validation host',
           }, indent=2) + '\n')
@@ -319,6 +349,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.sha }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: eclipse-windows-x64
@@ -399,7 +430,7 @@ jobs:
 
   release:
     name: Publish tagged release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs: [build, windows-smoke, linux-media]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -409,6 +440,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.sha }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: eclipse-*
@@ -418,7 +450,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           notes="$PWD/docs/releases/$RELEASE_TAG.md"
           if [ ! -f "$notes" ]; then
