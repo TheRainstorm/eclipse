@@ -223,7 +223,7 @@ build_support.rs[KV5T]: F:校验Git来源提交并把语义版本转换为Window
 ===/home/yfy/Repo/uu_remote/crates/uu-gui/examples/===
 clipboard_probe.rs[TU4T]: F:在隔离Linux桌面检验系统剪贴板读取、远端写入和只读暂停行为 | R:code:crates/uu-gui/src/clipboard.rs | A:main | S:会改固定测试文本，只能在隔离合成器执行
 hdr_renderer_probe.rs[TH6M]: F:用生成HDR10流检查生产纹理渲染与FP16像素 | R:code:crates/uu-gui/src/video_texture.rs,code:crates/uu-gui/examples/support/hdr_offscreen_target.rs | A:main | S:offscreen只验证生成像素，不等于物理HDR呈现
-hud_preview.rs[TU5S]: F:在私有Xvfb按生产字体和外观默认值检查生成HUD、宽窄布局、双语和曲线浮框 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-core/src/client_settings.rs | A:main | S:拒覆盖截图；只用生成指标并加非实测水印，不能代替真实桌面验收
+hud_preview.rs[TU5S]: F:在私有Xvfb用生产历史采样和字体检查生成HUD、宽窄双语布局及估计曲线浮框 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-gui/src/hud_history.rs | A:main | S:拒覆盖截图；生成指标带非实测水印，不能代替真实桌面验收
 latency_viewer_probe.rs[TO6M]: F:让有期限只接收原生会话通过生产渲染器记录帧时序与停顿 | R:code:crates/uu-gui/src/video_texture.rs,code:crates/uu-core/src/pipeline_trace.rs | A:main | S:不注入输入或改显示；样本满即失败，不静默截尾，绘制统计不等同物理显示延迟
 native_clipboard_probe.rs[TU5S]: F:在两个自有Xvfb间检查原生文本图片、许可与停止释放闭环 | R:code:crates/uu-gui/src/clipboard.rs,code:crates/uu-core/src/native_clipboard.rs | A:main | S:验证Xvfb进程与私有Xauthority所有权，禁止初始主机内容无许可广播
 native_renderer_probe.rs[TH6L]: F:用生成HDR图检查D3D视频与GL界面、缓存和全屏DPI转换并保留首错证据 | R:code:crates/uu-gui/src/video_native.rs,code:crates/uu-gui/src/video_texture.rs | A:main | S:像素检查绑定被测帧DPI；读回限2048边长，不改OS HDR；失败仍排空显式Present诊断；生成像素不能代替实流或物理HDR验收
@@ -255,8 +255,8 @@ display_layout.rs[PD6S]: F:保存本地显示标签顺序、稳定编号与最�
 displays.rs[AU8L]: F:按远端源ID管理轨道绑定、画质确认与切屏状态及标签交互 | R:code:crates/uu-gui/src/display_layout.rs,code:crates/uu-core/src/native_displays.rs | A:Displays | S:切屏需源确认、设置确认和新帧共同完成；进行中仅保留最新选择，不能按到包顺序认显示器
 gamepad.rs[IH7L]: F:在唯一SDL线程采集实体手柄与传感器并按GUI输入焦点投递 | R:code:crates/uu-core/src/native_input.rs | A:Reader | S:后台窗口只释放自己的租约；打开驱动后重验generation，Windows需视频消息泵处理Raw Input
 hud.rs[AO6S]: F:采样串流与端到端指标，缓存布局并维护分代历史、分钟计数和当前外观呈现 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-gui/src/hud_statistics.rs,code:crates/uu-core/src/media.rs | A:Cache | S:500ms采样；外观逐帧应用，不进入布局缓存键；陈旧指标未知，计数保留累计基数；媒体轨道换代清历史，E2E代次只重置曲线
-hud_history.rs[KO5S]: F:保存三分钟有界指标并绘制端到端误差、独立阶段与深色数值浮框 | R:code:crates/uu-gui/src/hud_panel.rs | A:History,chart | S:未知不补零，重绘不重复采样；跨代、倒时重置，超一秒缺口断线；阶段均值不能拼成同帧全程
-hud_panel.rs[AU7L]: F:按客户端外观绘制HUD和两行延迟悬停诊断，显示吞吐、阶段估计、误差及分钟统计并支持固定复制 | R:code:crates/uu-gui/src/hud_history.rs,code:crates/uu-gui/src/hud_statistics.rs,code:crates/uu-core/src/video_e2e.rs,code:crates/uu-core/src/client_settings.rs | A:Metrics,Layout,HoverCard,DetailState | S:位置按画面高度并限制完整HUD；不透明度只改背景；Est缺项未知且不替代同帧E2E，帧周期不加E2E；固定不占键盘，失焦释放选择；待展开离开即取消
+hud_history.rs[KO5M]: F:保存三分钟阶段历史并计算Est.Total滚动波动，绘制单行图例与估计虚线和端到端误差 | R:code:crates/uu-gui/src/hud_panel.rs | A:History,EstimatedTotal,chart | S:估计为三秒完整原始分量和的均值±标准差，非误差界；缺项断窗，单样本波动未知；重绘不采样，换代清空
+hud_panel.rs[AU7L]: F:按外观绘制HUD与可固定复制的诊断卡，展示Est.Total波动和端到端误差及分钟统计 | R:code:crates/uu-gui/src/hud_history.rs,code:crates/uu-gui/src/hud_statistics.rs,code:crates/uu-core/src/video_e2e.rs,code:crates/uu-core/src/client_settings.rs | A:Metrics,Layout,HoverCard,DetailState | S:Est缺项未知，不能替代同帧E2E；固定后失焦仍显示但释放键盘选择；位置限制完整HUD，透明度只改背景
 input.rs[AU7S]: F:把真实鼠标转移转换为远端绝对或相对移动及按住释放事件 | R:code:crates/uu-gui/src/input_capture.rs | A:RemotePointer | S:不在抬起时合成点击；只释放本会话按下，黑边忽略按下而拖动可在画面外抬起
 input_capture.rs[DU9L]: F:分离捕获意图与临时条件并跟踪本会话远端长按与释放 | R:code:crates/uu-gui/src/keyboard_capture.rs,code:crates/uu-gui/src/shortcuts.rs | A:Capture,Conditions,RemoteKeys | S:失焦或本地UI暂停不清用户意图；只有真实停止才释放；UU保活修饰键重复限兼容主机，原生不得重复注入
 internet_ui.rs[AU4T]: F:有界读取保留的旧公网连接快照以供迁移和启动 | R:code:crates/uu-core/src/internet.rs | A:read_profile | S:格式错误保留原文件
@@ -319,7 +319,7 @@ lib.rs[LL6T]: F:生成中英文两条格式化分支供Rust同时检查占位符
 ===/home/yfy/Repo/uu_remote/crates/uu-i18n/===
 Cargo.toml[FL4T]: F:声明应用语言库、双语宏和构建时目录依赖 | R:code:crates/uu-i18n/src/lib.rs | A:- | S:-
 build.rs[OL5T]: F:把翻译JSON生成到OUT_DIR的静态匹配函数 | R:code:crates/uu-i18n/catalogue.json,code:crates/uu-i18n/src/catalogue.rs | A:main | S:目录变化触发重建，生成物不写回源码目录
-catalogue.json[FL6L]: F:维护静态界面、HUD外观设置、诊断复制及链路和延迟统计的英文说明和格式模板 | R:code:crates/uu-i18n/build.rs,code:crates/uu-i18n-macros/src/lib.rs | A:- | S:占位符须与源模板一致，用户设备名和远端内容不在翻译范围
+catalogue.json[FL6L]: F:维护静态界面与HUD外观、链路和延迟统计的英文说明，区分估计波动与端到端误差 | R:code:crates/uu-i18n/build.rs,code:crates/uu-i18n-macros/src/lib.rs | A:- | S:占位符须与源模板一致，用户设备名和远端内容不在翻译范围
 
 ===/home/yfy/Repo/uu_remote/crates/uu-i18n/src/===
 catalogue.rs[LL4T]: F:把构建生成的静态英文查询函数引入语言库 | R:code:crates/uu-i18n/build.rs | A:- | S:-
@@ -473,7 +473,7 @@ device-library.md[SU4T]: F:说明兼容设备收藏、最近使用和按账号�
 frame-rate.md[SN5T]: F:整理UU实际帧率字段、屏幕ID、CONTROL初始化和目标与实测区别 | R:code:plugins/uu-compat/src/control_wire.rs,code:docs/windows-latency.md | A:- | S:120须实际count而非枚举；请求确认不代表源或呈现达标
 frame-tracing.md[SO6S]: F:定义主机逐帧身份、同钟遥测及默认关闭的DXGI采集原因诊断和验证边界 | R:code:crates/uu-core/src/frame_trace.rs,code:crates/uu-capture/src/capture_diagnostics.rs | A:- | S:只在同epoch和generation匹配PTS，不跨主机减时钟；统计溢出丢观测不丢视频；capture返回PTS不等编码AU，Drop报告不证明完整会话
 hdr.md[SH5T]: F:说明Windows原生HDR10的启用条件、色彩GPU路径和验证范围 | R:code:crates/uu-core/src/native_color.rs | A:- | S:实际10位PQ码流与输出HDR均须验证；生成图不能替代显示器视觉验收
-hud.md[SO5T]: F:说明HUD位置及不透明度设置、吞吐和Est.口径、延迟诊断、悬停固定复制及分钟统计 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-core/src/frame_continuity.rs,code:crates/uu-core/src/link_metrics.rs,code:crates/uu-core/src/client_settings.rs | A:- | S:DXGI为经验区间；独立阶段不能相减补等待；帧周期不加E2E，统计窗口不改变E2E或曲线口径，接口吞吐含其它流量
+hud.md[SO5T]: F:说明HUD外观、吞吐、Est.Total均值波动与曲线、端到端误差和固定诊断交互 | R:code:crates/uu-gui/src/hud_panel.rs,code:crates/uu-core/src/frame_continuity.rs,code:crates/uu-core/src/link_metrics.rs | A:- | S:DXGI为经验区间；估计标准差非测量误差；独立阶段不能相减补等待，帧周期不加E2E
 keyboard-capture.md[SU6T]: F:规定整条键盘流的捕获归属、临时暂停、长按释放和平台限制 | R:code:crates/uu-gui/src/keyboard_capture.rs | A:- | S:UU修饰键刷新限官方兼容；状态与隔离hook测试不能替代实体桌面验收
 keyboard-shortcuts.md[SU5T]: F:说明客户端快捷键录制、配置作用域、冲突及嵌套透传 | R:code:crates/uu-core/src/hotkeys.rs | A:- | S:透传退出动作必须保留至少一绑定；修改先松修饰键，AltGr仍归文本
 licensing-and-compatibility.md[SS6T]: F:区分项目双许可、第三方来源、官方服务接入和编解码专利边界 | R:code:LICENSE,code:THIRD-PARTY-NOTICES.txt | A:- | S:原创代码许可不代表网易接入授权；依赖生成清单不是法律审计
