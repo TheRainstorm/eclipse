@@ -134,7 +134,8 @@ struct ClientState {
     host: Option<(Instant, HostSnapshot)>,
     input: Window<3>,
     client_queue: Window<1>,
-    pending: VecDeque<(u64, Instant)>,
+    pending: VecDeque<(u64, Instant, Option<crate::video_e2e::InputEnqueued>)>,
+    timed_input: bool,
     last_probe: Option<Instant>,
     sequence: u64,
 }
@@ -161,7 +162,13 @@ impl ClientTiming {
             .client_queue
             .push([queued.elapsed().as_micros().min(u32::MAX as u128) as u32]);
     }
+    #[cfg(test)]
     pub(crate) fn begin_input(&self) -> Option<u64> {
+        self.begin_input_clock(None)
+    }
+    pub(crate) fn timed_input(&self) -> bool { self.0.lock().unwrap().timed_input }
+    pub(crate) fn enable_timed_input(&self) { self.0.lock().unwrap().timed_input=true; }
+    pub(crate) fn begin_input_clock(&self, enqueued:Option<crate::video_e2e::InputEnqueued>) -> Option<u64> {
         let mut state = self.0.lock().unwrap();
         let now = Instant::now();
         if !state
@@ -175,32 +182,33 @@ impl ClientTiming {
         }
         state.sequence = state.sequence.wrapping_add(1);
         let seq = state.sequence;
-        state.pending.push_back((seq, now));
+        state.pending.push_back((seq, now, enqueued));
         while state.pending.len() > 8 {
             state.pending.pop_front();
         }
         state.last_probe = Some(now);
         Some(seq)
     }
-    pub(crate) fn applied(&self, sequence: u64, queue_us: u32, inject_us: u32) {
+    pub(crate) fn applied(&self, sequence: u64, queue_us: u32, inject_us: u32) -> Option<crate::video_e2e::InputEnqueued> {
         let mut state = self.0.lock().unwrap();
-        let Some(index) = state.pending.iter().position(|(seq, _)| *seq == sequence) else {
-            return;
+        let Some(index) = state.pending.iter().position(|(seq, ..)| *seq == sequence) else {
+            return None;
         };
-        let (_, at) = state.pending.remove(index).unwrap();
+        let (_, at, enqueued) = state.pending.remove(index).unwrap();
         let elapsed = at.elapsed();
         if elapsed > Duration::from_secs(2)
             || queue_us > MAX_US
             || inject_us > MAX_US
             || u64::from(queue_us) + u64::from(inject_us) > elapsed.as_micros() as u64 + 1000
         {
-            return;
+            return None;
         }
         state.input.push([
             elapsed.as_micros().min(u32::MAX as u128) as u32,
             queue_us,
             inject_us,
         ]);
+        enqueued
     }
     pub fn snapshot(&self) -> Snapshot {
         let state = self.0.lock().unwrap();
@@ -224,6 +232,20 @@ impl ClientTiming {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn timed_input_is_opt_in_and_each_matching_ack_consumes_its_own_enqueue_proof() {
+        let stats=ClientTiming::default();
+        assert!(!stats.timed_input());
+        stats.enable_timed_input();assert!(stats.timed_input());
+        stats.host(HostSnapshot{video:None,input:None});
+        let first=crate::video_e2e::InputEnqueued{interval:crate::video_e2e::TimeInterval{earliest_ns:100,latest_ns:200},generation:2,observation_epoch:1};
+        let seq=stats.begin_input_clock(Some(first)).unwrap();
+        assert!(stats.applied(seq+1,0,0).is_none());
+        assert_eq!(stats.applied(seq,0,0),Some(first));
+        assert!(stats.applied(seq,0,0).is_none());
+        stats.reset();assert!(!stats.timed_input());
+        assert!(stats.begin_input().is_none());
+    }
     #[test]
     fn metrics_require_fresh_valid_host_support_and_a_matching_actual_input_ack() {
         let stats = ClientTiming::default();

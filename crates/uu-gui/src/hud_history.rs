@@ -5,8 +5,9 @@ const RETENTION_SECONDS:f64=super::WINDOWS[2] as f64;
 const STEP_SECONDS: f64 = 0.5;
 const MAX_SAMPLES: usize = 7_220;
 const ESTIMATE_WINDOW_SECONDS:f64=3.;
-const SERIES_COUNT:usize=8;
+const SERIES_COUNT:usize=9;
 const ESTIMATE_SERIES:usize=7;
+const INPUT_SERIES:usize=8;
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub struct EstimatedTotal {
     pub mean_ms:f32,
@@ -21,15 +22,16 @@ pub struct Sample {
     pub values: [Option<f32>; 7],
     pub video_uncertainty_ms: Option<f32>,
     pub estimated_total:Option<EstimatedTotal>,
+    pub input_frame:Option<[f32;2]>,
 }
 fn full_total(values:&[Option<f32>;7])->Option<f32> {
     values[1..].iter().copied().sum::<Option<f32>>().filter(|v|v.is_finite()&&*v>=0.)
 }
 fn series_value(sample:&Sample,series:usize)->Option<f32> {
-    if series==ESTIMATE_SERIES {sample.estimated_total.map(|v|v.mean_ms)}else{sample.values[series]}
+    match series {ESTIMATE_SERIES=>sample.estimated_total.map(|v|v.mean_ms),INPUT_SERIES=>sample.input_frame.map(|v|v[0]),_=>sample.values[series]}
 }
 fn series_spread(sample:&Sample,series:usize)->Option<f32> {
-    match series {0=>sample.video_uncertainty_ms,ESTIMATE_SERIES=>sample.estimated_total.and_then(|v|v.std_ms),_=>None}
+    match series {0=>sample.video_uncertainty_ms,ESTIMATE_SERIES=>sample.estimated_total.and_then(|v|v.std_ms),INPUT_SERIES=>sample.input_frame.map(|v|v[1]),_=>None}
 }
 pub struct History {
     origin: Instant,
@@ -41,11 +43,17 @@ impl Default for History {
 }
 impl History {
     pub fn record(&mut self, generation: [u64;3], values: [Option<f32>; 7], video_uncertainty_ms: Option<f32>) -> Arc<[Sample]> {
-        self.record_at(self.origin.elapsed().as_secs_f64(), generation, values, video_uncertainty_ms);
+        self.record_input(generation,values,video_uncertainty_ms,None)
+    }
+    pub fn record_input(&mut self, generation:[u64;3], values:[Option<f32>;7], video_uncertainty_ms:Option<f32>,input_frame:Option<[f32;2]>) -> Arc<[Sample]> {
+        self.record_input_at(self.origin.elapsed().as_secs_f64(),generation,values,video_uncertainty_ms,input_frame);
         self.snapshot()
     }
     pub(crate) fn snapshot(&self)->Arc<[Sample]> {self.samples.iter().cloned().collect()}
     pub(crate) fn record_at(&mut self, now: f64, generation: [u64;3], values: [Option<f32>; 7], video_uncertainty_ms: Option<f32>) {
+        self.record_input_at(now,generation,values,video_uncertainty_ms,None);
+    }
+    pub(crate) fn record_input_at(&mut self, now:f64, generation:[u64;3], values:[Option<f32>;7], video_uncertainty_ms:Option<f32>,input_frame:Option<[f32;2]>) {
         if !now.is_finite() { return; }
         if self.generation!=Some(generation) {self.samples.clear();self.generation=Some(generation);}
         if self.samples.back().is_some_and(|s| now < s.seconds) { self.samples.clear(); }
@@ -62,7 +70,8 @@ impl History {
             }
             EstimatedTotal{mean_ms:mean as f32,std_ms:(count>1).then(||(m2/count as f64).max(0.).sqrt() as f32),samples:count}
         });
-        self.samples.push_back(Sample { seconds: now, values, video_uncertainty_ms: values[0].and(video_uncertainty_ms.filter(|v|v.is_finite() && *v>=0.)),estimated_total });
+        let input_frame=input_frame.filter(|v|v.iter().all(|v|v.is_finite()&&*v>=0.));
+        self.samples.push_back(Sample { seconds: now, values, video_uncertainty_ms: values[0].and(video_uncertainty_ms.filter(|v|v.is_finite() && *v>=0.)),estimated_total,input_frame });
     }
 }
 
@@ -103,13 +112,14 @@ pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32,window:usize)
     use eframe::egui::{self,Color32,FontId,Stroke};
     let window_seconds=super::WINDOWS[window.min(2)] as f64;
     let samples=visible_samples(samples,window_seconds);
-    let names=[uu_i18n::text("端到端"),uu_i18n::text("采集"),uu_i18n::text("编码"),uu_i18n::text("解码"),uu_i18n::text("渲染"),"RTT/2",uu_i18n::text("排队"),uu_i18n::text("估计")];
-    let colors=[Color32::WHITE,Color32::from_rgb(159,176,255),Color32::from_rgb(255,190,108),Color32::from_rgb(114,215,185),Color32::from_rgb(109,205,255),Color32::from_rgb(202,156,255),Color32::from_rgb(255,145,157),Color32::from_rgb(226,218,119)];
+    let names=[uu_i18n::text("视频"),uu_i18n::text("采集"),uu_i18n::text("编码"),uu_i18n::text("解码"),uu_i18n::text("渲染"),"RTT/2",uu_i18n::text("排队"),uu_i18n::text("估计"),uu_i18n::text("输入→画面")];
+    let colors=[Color32::WHITE,Color32::from_rgb(159,176,255),Color32::from_rgb(255,190,108),Color32::from_rgb(114,215,185),Color32::from_rgb(109,205,255),Color32::from_rgb(202,156,255),Color32::from_rgb(255,145,157),Color32::from_rgb(226,218,119),Color32::from_rgb(255,168,228)];
     let id=ui.id().with("latency-curve-series");let mut selected=ui.data_mut(|d|d.get_temp::<[bool;SERIES_COUNT]>(id)).unwrap_or([true;SERIES_COUNT]);
     ui.horizontal(|ui|{ui.strong(uu_i18n::format!("最近 {} 分钟",window_seconds as u64/60));ui.label(egui::RichText::new(uu_i18n::text("延迟 · ms")).small().weak());});
-    egui::ScrollArea::horizontal().id_salt("latency-curve-legend").auto_shrink([false,true]).show(ui,|ui|{ui.spacing_mut().button_padding=egui::vec2(6.,3.);ui.spacing_mut().interact_size.y=22.;ui.spacing_mut().item_spacing.x=5.;ui.horizontal(|ui|{for i in [0,7,1,2,3,4,5,6] {
+    egui::ScrollArea::horizontal().id_salt("latency-curve-legend").auto_shrink([false,true]).show(ui,|ui|{ui.spacing_mut().button_padding=egui::vec2(6.,3.);ui.spacing_mut().interact_size.y=22.;ui.spacing_mut().item_spacing.x=5.;ui.horizontal(|ui|{for i in [0,8,7,1,2,3,4,5,6] {
         let text=egui::RichText::new(names[i]).size(11.).color(if selected[i]{colors[i]}else{Color32::from_gray(110)});
         let help=if i==ESTIMATE_SERIES {uu_i18n::text("估计曲线为Est.Total：最近3秒完整分量和采样的均值，±为这些估计值的标准差，不是同帧端到端或测量误差界。缺项留空，样本不足两次时波动未知。点击切换曲线。")}
+            else if i==INPUT_SERIES {uu_i18n::text("输入→画面为同一次输入至注入后已观测源图像的首显回执估测，竖线保留显示误差；不证明游戏响应。无输入或证据缺失断线，点击切换曲线。")}
             else{uu_i18n::text("端到端曲线为同帧测量的估计均值，竖线为误差范围；其它曲线是独立阶段窗口均值。未知不补零，测量代次改变后重新记录。点击切换曲线。")};
         let response=ui.add(egui::Button::new(text).selected(selected[i]).frame(true).stroke(Stroke::NONE).rounding(3.).wrap_mode(egui::TextWrapMode::Extend)).on_hover_text(help);
         if response.clicked(){selected[i]=!selected[i];}
@@ -164,8 +174,23 @@ pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32,window:usize)
 mod tests {
     use super::*;
     #[test]
+    fn input_curve_retains_its_own_bounds_and_gaps_without_entering_the_stage_estimate() {
+        let mut h=History::default();
+        h.record_input_at(0.,[1,0,1],[Some(1.);7],Some(0.1),Some([35.,4.]));
+        h.record_input_at(0.5,[1,0,1],[Some(1.);7],Some(0.1),None);
+        h.record_input_at(1.,[1,0,1],[Some(1.);7],Some(0.1),Some([40.,5.]));
+        let samples=h.snapshot();
+        assert_eq!(series_value(&samples[0],INPUT_SERIES),Some(35.));
+        assert_eq!(series_spread(&samples[0],INPUT_SERIES),Some(4.));
+        assert_eq!(series_value(&samples[0],ESTIMATE_SERIES),Some(6.));
+        assert_eq!(curve_runs(&samples,INPUT_SERIES,180.,400),vec![vec![0],vec![2]]);
+        h.record_input_at(1.5,[1,1,1],[Some(1.);7],None,Some([f32::NAN,1.]));
+        assert_eq!(h.snapshot().len(),1);
+        assert!(h.snapshot()[0].input_frame.is_none());
+    }
+    #[test]
     fn chart_windows_filter_old_samples_and_downsampling_preserves_spikes_and_gaps() {
-        let mut samples:Vec<_>=(0..=7200).map(|i|Sample{seconds:i as f64*0.5,values:[Some(1.);7],video_uncertainty_ms:Some(0.1),estimated_total:None}).collect();
+        let mut samples:Vec<_>=(0..=7200).map(|i|Sample{seconds:i as f64*0.5,values:[Some(1.);7],video_uncertainty_ms:Some(0.1),estimated_total:None,input_frame:None}).collect();
         assert_eq!(visible_samples(&samples,180.).len(),361);
         assert_eq!(visible_samples(&samples,600.).len(),1201);
         assert_eq!(visible_samples(&samples,3600.).len(),7201);
@@ -224,9 +249,9 @@ mod tests {
                 })
             };
             let mut output=frame(vec![]);for _ in 0..3{output=frame(vec![]);}
-            let names=["端到端","估计","采集","编码","解码","渲染","RTT/2","排队"];
+            let names=["视频","输入→画面","估计","采集","编码","解码","渲染","RTT/2","排队"];
             let labels:Vec<_>=output.shapes.iter().filter_map(|s|if let egui::Shape::Text(t)=&s.shape{names.contains(&t.galley.job.text.as_str()).then_some(t)}else{None}).collect();
-            if width>=420. {assert_eq!(labels.len(),8);}else{assert!(labels.len()>=6,"narrow legends scroll instead of wrapping");}
+            if width>=520. {assert_eq!(labels.len(),9);}else{assert!(labels.len()>=5,"narrow legends scroll instead of wrapping");}
             assert!(labels.iter().all(|t|(t.pos.y-labels[0].pos.y).abs()<0.1&&t.galley.rows.len()==1));
             let estimate=labels.iter().find(|t|t.galley.job.text=="估计").unwrap();let point=estimate.pos+estimate.galley.size()/2.;
             frame(vec![Event::PointerMoved(point)]);

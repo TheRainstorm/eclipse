@@ -50,6 +50,17 @@ enum Packet {
     Telemetry { version:u8, stages:crate::native_timing::HostSnapshot },
     InputMeasured { sequence:u64, event:InputCommand },
     InputApplied { sequence:u64, queue_us:u32, inject_us:u32 },
+    // Advertised independently: old strict peers ignore this new message and
+    // continue using InputMeasured/InputApplied without altered JSON fields.
+    InputTimingSupport { version:u8 },
+    InputMeasuredTimed { sequence:u64, event:InputCommand },
+    InputAppliedTimed {
+        sequence:u64, queue_us:u32, inject_us:u32,
+        #[serde(with="crate::video_e2e::Stamp")]
+        received:crate::video_e2e::WireClockStamp,
+        #[serde(with="crate::video_e2e::Stamp")]
+        injected:crate::video_e2e::WireClockStamp,
+    },
 }
 fn parse(data: &[u8]) -> Option<Packet> {
     if data.len() > MAX_CONTROL {
@@ -109,7 +120,7 @@ impl WorkerState {
         *self.failure.lock().unwrap()=Some(error);
     }
 }
-struct InputApplied {queue_us:u32,inject_us:u32}
+struct InputApplied {queue_us:u32,inject_us:u32,injected:Option<crate::video_e2e::WireClockStamp>}
 struct InputJob {epoch:u64,command:Option<InputCommand>,text:Option<String>,queued:Instant,reply:Option<oneshot::Sender<InputApplied>>}
 struct InputWorker {
     state: Arc<WorkerState>,
@@ -218,8 +229,9 @@ impl InputWorker {
                                 continue;
                             }
                             let inject_us=started.elapsed().as_micros().min(u32::MAX as u128) as u32;
+                            let injected=job.reply.as_ref().and_then(|_|actor.timing.video_e2e.input_clock_stamp());
                             actor.timing.input(queue_us,inject_us);
-                            if let Some(reply)=job.reply {let _=reply.send(InputApplied{queue_us,inject_us});}
+                            if let Some(reply)=job.reply {let _=reply.send(InputApplied{queue_us,inject_us,injected});}
                             actor.applied.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -513,12 +525,14 @@ impl HostControl {
                 channel.on_message(Box::new(move |message| {
                     let host = handler.clone();
                     let weak = weak.clone();
+                    let packet=parse(&message.data);
+                    let received=if matches!(&packet,Some(Packet::InputMeasuredTimed{..})) {host.timing.video_e2e.input_clock_stamp()}else{None};
                     Box::pin(async move {
                         let Some(channel) = weak.upgrade() else {
                             return;
                         };
                         if host.stopped.load(Ordering::Acquire){return;}
-                        match parse(&message.data) {
+                        match packet {
                             Some(Packet::Quality{request,settings})=>{
                                 let quality=host.quality.lock().unwrap().clone();
                                 tokio::spawn(async move {
@@ -551,6 +565,7 @@ impl HostControl {
                                 let _ = send(&channel, host.status()).await;
                                 let _ = send(&channel, host.admin_status()).await;
                                 let _ = send(&channel,Packet::Telemetry{version:1,stages:host.timing.snapshot()}).await;
+                                if host.timing.video_e2e.enabled() {let _=send(&channel,Packet::InputTimingSupport{version:1}).await;}
                                 let displays=host.displays.lock().unwrap().clone();
                                 if let Some(displays)=displays {let _=send(&channel,Packet::Displays{catalog:displays.catalog()}).await;}
 
@@ -582,13 +597,19 @@ impl HostControl {
                                     let _ = send(&channel, host.status()).await;
                                 }
                             }
-                            Some(Packet::InputMeasured{sequence,event})=>{
+                            Some(Packet::InputMeasured{sequence,event})|Some(Packet::InputMeasuredTimed{sequence,event})=>{
                                 let (reply,applied)=oneshot::channel();
                                 if host.worker.as_ref().is_some_and(|worker|worker.push_with_ack(event,Some(reply))) {
                                     let weak=Arc::downgrade(&channel);
                                     tokio::spawn(async move {
                                         if let Ok(Ok(applied))=timeout(Duration::from_secs(1),applied).await {
-                                            if let Some(channel)=weak.upgrade() {let _=send(&channel,Packet::InputApplied{sequence,queue_us:applied.queue_us,inject_us:applied.inject_us}).await;}
+                                            if let Some(channel)=weak.upgrade() {
+                                                let packet=match (received,applied.injected) {
+                                                    (Some(received),Some(injected))=>Packet::InputAppliedTimed{sequence,queue_us:applied.queue_us,inject_us:applied.inject_us,received,injected},
+                                                    _=>Packet::InputApplied{sequence,queue_us:applied.queue_us,inject_us:applied.inject_us},
+                                                };
+                                                let _=send(&channel,packet).await;
+                                            }
                                         }
                                     });
                                 }else{let _=send(&channel,host.status()).await;}
@@ -765,7 +786,13 @@ impl ViewerControl {
                     }
                 }
                 Some(Packet::Telemetry{version:1,stages})=>incoming.native_timing.host(stages),
-                Some(Packet::InputApplied{sequence,queue_us,inject_us})=>incoming.native_timing.applied(sequence,queue_us,inject_us),
+                Some(Packet::InputTimingSupport{version:1})=>incoming.native_timing.enable_timed_input(),
+                Some(Packet::InputApplied{sequence,queue_us,inject_us})=>{incoming.native_timing.applied(sequence,queue_us,inject_us);},
+                Some(Packet::InputAppliedTimed{sequence,queue_us,inject_us,received,injected})=>{
+                    if let Some(enqueued)=incoming.native_timing.applied(sequence,queue_us,inject_us) {
+                        incoming.video_e2e.input_applied(media_epoch,enqueued,received,injected);
+                    }
+                },
                 _ => {}
             }
             Box::pin(async {})
@@ -785,8 +812,13 @@ impl ViewerControl {
     }
     async fn input(&self, command: InputCommand,created:Option<Instant>) -> Result<()> {
         if let Some(created)=created {self.stats.native_timing.client_queue(created);}
-        let measured=if matches!(command,InputCommand::ReleaseAll{}) {None}else{self.stats.native_timing.begin_input()};
-        let packet=match measured {Some(sequence)=>Packet::InputMeasured{sequence,event:command},None=>Packet::Input{event:command}};
+        let timed=self.stats.native_timing.timed_input();
+        let enqueued=if timed {created.and_then(|at|self.stats.video_e2e.input_enqueued(at))}else{None};
+        let measured=if matches!(command,InputCommand::ReleaseAll{}) {None}else{self.stats.native_timing.begin_input_clock(enqueued)};
+        let packet=match measured {
+            Some(sequence) if timed=>Packet::InputMeasuredTimed{sequence,event:command},
+            Some(sequence)=>Packet::InputMeasured{sequence,event:command},None=>Packet::Input{event:command}
+        };
         send(&self.channel,packet).await?;
         self.stats
             .input_messages_sent
@@ -1007,12 +1039,17 @@ mod tests {
         let wait_gate=gate.clone();let (started,entered)=oneshot::channel();
         let worker=InputWorker::with_factory(DesktopRect::new(0,0,640,480).unwrap(),move||Ok(Box::new(Delayed{started:Some(started),gate:wait_gate}))).await.unwrap();
         worker.request(true);let (reply,mut applied)=oneshot::channel();
+        let before=worker.state.timing.video_e2e.input_clock_stamp().unwrap();
         assert!(worker.push_with_ack(InputCommand::Key{usage:4,pressed:true},Some(reply)));
         entered.await.unwrap();
         let early=timeout(Duration::from_millis(20),&mut applied).await;
         *gate.0.lock().unwrap()=true;gate.1.notify_all();
         assert!(early.is_err(),"queuing is not an injection acknowledgement");
         let result=applied.await.unwrap();assert!(result.inject_us>=15_000);
+        let injected=result.injected.unwrap();
+        let after=worker.state.timing.video_e2e.input_clock_stamp().unwrap();
+        assert_eq!((before.epoch,before.frequency_hz),(injected.epoch,injected.frequency_hz));
+        assert!(before.ticks<=injected.ticks && injected.ticks<=after.ticks);
         assert_eq!(worker.state.timing.snapshot().input.unwrap().samples,1);
         worker.stop().await;
     }

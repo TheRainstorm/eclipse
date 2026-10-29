@@ -4,6 +4,9 @@
 //! sums, GPU fences and Present API returns are deliberately not endpoints.
 pub mod clock;
 mod wire;
+mod input;
+pub use input::{Delay as InputDelay, Snapshot as InputSnapshot};
+pub(crate) use input::Enqueued as InputEnqueued;
 
 pub use clock::{FourTimestamp, TimeInterval, WireClockStamp};
 use serde::{Deserialize, Serialize};
@@ -28,7 +31,7 @@ const RELATIVE_DRIFT_PPM: u32 = 1000;
 
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "WireClockStamp", deny_unknown_fields)]
-struct Stamp {
+pub(crate) struct Stamp {
     epoch: u64,
     ticks: u64,
     frequency_hz: u64,
@@ -389,6 +392,7 @@ impl SourceProof {
 #[derive(Clone, Copy)]
 struct Sample {
     source_id: SourceId,
+    source_presented: WireClockStamp,
     first: FirstDisplay,
     display_ns: u128,
     interval: TimeInterval,
@@ -416,6 +420,7 @@ struct State {
     displayed_frames: u64,
     dropped: u64,
     history_evicted: u64,
+    inputs: VecDeque<input::Receipt>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -439,6 +444,7 @@ impl Default for State {
             displayed_frames: 0,
             dropped: 0,
             history_evicted: 0,
+            inputs: VecDeque::new(),
         }
     }
 }
@@ -553,6 +559,7 @@ impl Client {
                 record.first_display_eligible = false;
             }
             s.samples.clear();
+            s.inputs.clear();
             s.generation = self
                 .generation
                 .fetch_add(1, Ordering::AcqRel)
@@ -773,6 +780,7 @@ impl Client {
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1);
             s.samples.clear();
+            s.inputs.clear();
         }
         self.active_method
             .store(method.map_or(0, Self::method_code), Ordering::Release);
@@ -1125,6 +1133,7 @@ impl Client {
                 }
                 *old = Sample {
                     source_id,
+                    source_presented: source.presented,
                     first: first_display,
                     display_ns: first.earliest_ns,
                     interval,
@@ -1137,6 +1146,7 @@ impl Client {
                 }
                 s.samples.push_back(Sample {
                     source_id,
+                    source_presented: source.presented,
                     first: first_display,
                     display_ns: first.earliest_ns,
                     interval,

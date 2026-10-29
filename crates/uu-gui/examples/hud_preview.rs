@@ -38,7 +38,7 @@ impl eframe::App for Preview {
         let mut history=hud_panel::History::default();
         for n in 0..=7200 {
             let wave=(n as f32/15.).sin()-(7200f32/15.).sin();
-            history.record_at(n as f64/2.,[1,0,1],[self.measured_fixture.then_some(26.91+wave*3.),Some(0.24),Some(6.7+wave*0.2),Some(0.62),Some(2.9),Some(0.75+wave*0.1),Some(1.54)],self.measured_fixture.then_some(5.26));
+            history.record_input_at(n as f64/2.,[1,0,1],[self.measured_fixture.then_some(26.91+wave*3.),Some(0.24),Some(6.7+wave*0.2),Some(0.62),Some(2.9),Some(0.75+wave*0.1),Some(1.54)],self.measured_fixture.then_some(5.26),self.measured_fixture.then_some([34.4+wave*4.,6.2]));
         }
         let m = hud_panel::Metrics {
             size: [1920, 1080],
@@ -71,6 +71,13 @@ impl eframe::App for Preview {
             input_ready: true,
             input_counts: [1420, 0],
             input_timing: [Some(0.04), Some(2.2), Some(0.06), Some(0.03)],
+            input_latency:Some(uu_core::video_e2e::InputSnapshot {
+                generation:1,tracked_inputs:12,
+                enqueue_to_host:self.measured_fixture.then_some(uu_core::video_e2e::InputDelay{samples:12,mean_us:1000,uncertainty_us:700,p95_us:1500,std_dev_us:250}),
+                enqueue_to_injected:self.measured_fixture.then_some(uu_core::video_e2e::InputDelay{samples:12,mean_us:1500,uncertainty_us:700,p95_us:2000,std_dev_us:270}),
+                injected_to_source:self.measured_fixture.then_some(uu_core::video_e2e::InputDelay{samples:10,mean_us:6000,uncertainty_us:1,p95_us:10500,std_dev_us:2500}),
+                input_to_frame:self.measured_fixture.then_some(uu_core::video_e2e::Measurement{samples:10,mean_us:34_400,p50_us:33_000,p95_us:42_000,uncertainty_us:6200,max_sample_uncertainty_us:8000,method:uu_core::video_e2e::DisplayMethod::DxgiReceiptInterval}),
+            }),
             continuity:Some(uu_core::frame_continuity::Snapshot{long_gaps:1,max_gap_ms:56.9,threshold_ms:50.,ongoing_gap_ms:None,observed_seconds:60.}),
             video_e2e:Some(uu_core::video_e2e::Snapshot {
                 generation:1,relative_drift_ppm:1000,

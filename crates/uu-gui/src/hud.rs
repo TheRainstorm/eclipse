@@ -26,6 +26,8 @@ impl super::App {
         if self.hud_cache.updated.is_none_or(|t|t.elapsed().as_millis()>=500) {
             let native=s.native_timing.snapshot();
             let video_e2e=s.video_e2e.snapshot();
+            let input_latency=s.video_e2e.input_latency();
+            let input_latency=if input_latency.generation==video_e2e.generation {input_latency}else{Default::default()};
             let network_totals=s.network_loss.lock().unwrap().clone();
             let network=network_totals.clone().filter(|v|v.fresh());
             let host=native.host.and_then(|v|v.video);
@@ -79,6 +81,7 @@ impl super::App {
                 continuity:self.textures.get(&self.selected_track).and_then(|t|t.continuity()),
                 host_video:uu_core::frame_trace::video_latency(s),
                 video_e2e:Some(video_e2e),
+                input_latency:Some(input_latency),
             };
             if self.hud_cache.history_owner.upgrade().is_none_or(|previous|!std::sync::Arc::ptr_eq(&previous,s)) {
                 self.hud_cache.history=Default::default();
@@ -86,10 +89,11 @@ impl super::App {
                 self.hud_cache.history_owner=std::sync::Arc::downgrade(s);
             }
             (m.statistics,m.statistics_coverage)=self.hud_cache.statistics.record(Instant::now(),[s.native_media_epoch.load(Relaxed),u64::from(self.selected_track)],&m.counters);
-            m.history=self.hud_cache.history.record(
+            m.history=self.hud_cache.history.record_input(
                 [s.native_media_epoch.load(Relaxed),u64::from(self.selected_track),video_e2e.generation],
                 [m.video_mean_ms(),m.process[0],m.process[1],m.process[2],m.process[3],m.rtt.map(|v|v[0]/2.),m.queues.iter().copied().collect::<Option<Vec<_>>>().map(|v|v.iter().sum())],
                 m.video_uncertainty_ms(),
+                input_latency.input_to_frame.map(|v|[v.mean_us as f32/1000.,v.uncertainty_us as f32/1000.]),
             );
             self.hud_cache.metrics=m;
             self.hud_cache.key=None;self.hud_cache.updated=Some(Instant::now());

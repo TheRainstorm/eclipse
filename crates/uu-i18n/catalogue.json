@@ -1564,5 +1564,22 @@
   "最近 {} 分钟": "Last {} minutes",
   "开关精简HUD；悬停查看诊断和历史曲线。": "Toggle the compact HUD; hover for diagnostics and history curves.",
   "跟随主机的画质策略；具体码率由主机决定。可选择推荐码率或自定义目标。": "Follow the host quality policy. Choose a recommended or custom target bitrate when needed.",
-  "安装包文件版本不一致或已损坏：{name}；请完整更新 Eclipse 安装包": "Package file is damaged or from a different build: {name}; update the complete Eclipse package"
+  "安装包文件版本不一致或已损坏：{name}；请完整更新 Eclipse 安装包": "Package file is damaged or from a different build: {name}; update the complete Eclipse package",
+  "输入→后继画面 {} · 注入确认 {} ms": "Input→Subsequent frame {} · Injection ack {} ms",
+  "| 采+编 {} ms 解+呈 {} ms": "| Cap+Enc {} ms Dec+Present {} ms",
+  "后继画面": "Subsequent frame",
+  "排队+上行": "Queue+Uplink",
+  "输入至注入": "Input→Injection",
+  "后继源等待": "Next source wait",
+  "输入样本/画面匹配": "Input samples/Frame matches",
+  "送达P95/σ": "Delivery P95/σ",
+  "输入→画面": "Input→Frame",
+  "采集与编码、解码与UI呈现提交的阶段和。呈现提交为CPU耗时，不含系统显示等待；独立阶段窗口不能代替端到端测量。": "Capture+encode and decode+UI submission stage sums. Submission is CPU time and excludes system display waits. Independent stage windows do not replace end-to-end measurements.",
+  "同一次输入入队，到注入后已观测源图像的首显回执；包含输入、后继源等待及视频路径，沿用显示回执的估测方法与误差界。不能证明游戏已处理该输入，也不包含鼠标硬件或物理发光。": "The same input enqueue through the first-display receipt of a subsequently observed source image. Includes input delivery, next-source waiting and video, retaining display estimation and uncertainty. Does not prove game response or include mouse hardware and physical light.",
+  "同一实际输入从客户端入队到主机CONTROL收到的区间，包含客户端等待与上行；复用四时间戳校时，不假设RTT对半。±是均值的校时误差界，非波动标准差。旧主机或未校时保持未知。": "The same real input from client enqueue to host CONTROL receipt, including client wait and uplink. Uses four-timestamp clock bounds without halving RTT. ± bounds the mean clock error, not variation. Unknown with old hosts or unsynchronized clocks.",
+  "同一输入从客户端入队到主机成功完成系统注入，包含上行、主机队列与注入。与排队+上行重叠，不再相加；不代表应用已处理。": "The same input from client enqueue to successful host OS injection, including uplink and host queue/injection. Overlaps Queue+Uplink and must not be added again. Does not establish application response.",
+  "同一主机时钟下，注入完成至后继已观测源图像更新的等待，可能包含应用调度与帧节拍；桌面其它变化也会更新画面，不能当作游戏处理时间。缺少匹配首显则未知。": "Same-host-clock wait from injection completion to a subsequently observed source image. May include scheduling and frame pacing. Other desktop changes also update images, so this is not game processing time. Unknown without matching first-display proof.",
+  "最近3秒收到有效注入回执的实际输入抽样与匹配画面数，至多每250ms抽样一次；输入空闲、换代或证据过期后未知，不借用其它输入样本。": "Real input samples with valid injection acknowledgements and matched images in the last 3 seconds, sampled at most once per 250 ms. Unknown when idle, retired or expired; never borrows other inputs.",
+  "送达区间中点的P95与总体标准差，描述样本波动；与±校时误差界分开。": "P95 and population standard deviation of delivery interval midpoints describe sample variation, separately from the ± clock error bound.",
+  "输入→画面为同一次输入至注入后已观测源图像的首显回执估测，竖线保留显示误差；不证明游戏响应。无输入或证据缺失断线，点击切换曲线。": "Input→Frame estimates the same input through the first-display receipt of a subsequently observed source image. Bars retain display uncertainty; this does not prove game response. Idle or missing evidence breaks the curve. Click to toggle."
 }

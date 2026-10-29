@@ -43,6 +43,7 @@ pub struct Metrics {
     pub continuity: Option<uu_core::frame_continuity::Snapshot>,
     pub host_video:Option<uu_core::frame_trace::VideoLatency>,
     pub video_e2e:Option<uu_core::video_e2e::Snapshot>,
+    pub input_latency:Option<uu_core::video_e2e::InputSnapshot>,
 }
 #[derive(Clone, Default)]
 pub struct Counters {
@@ -183,7 +184,11 @@ impl Metrics {
         uu_i18n::format!("端到端 {} · {}",self.video_value(),status)
     }
     fn input_response_label(&self) -> String {
-        uu_i18n::format!("输入响应 — · 注入确认 {} ms",number(self.input_timing[1]))
+        uu_i18n::format!("输入→后继画面 {} · 注入确认 {} ms",self.input_frame_value(),number(self.input_timing[1]))
+    }
+    fn input_frame_value(&self) -> String {
+        self.input_latency.and_then(|s|s.input_to_frame).map_or_else(||"—".into(),|v|
+            format!("≈{:.2} ±{:.2} ms",v.mean_us as f64/1000.,v.uncertainty_us as f64/1000.))
     }
     pub fn fps_label(&self) -> String {
         let values = self
@@ -205,10 +210,9 @@ impl Metrics {
     fn stages_label(&self) -> String {
         let total=self.estimated_value();
         format!(
-            "Latency · Enc/Dec/Rnd {}/{}/{} ms · Est. {total}",
-            number(self.process[1]),
-            number(self.process[2]),
-            number(self.process[3])
+            "Latency · Cap+Enc/Dec+Rnd {}/{} ms · Est. {total}",
+            number(sum(&self.process[..2])),
+            number(sum(&self.process[2..]))
         )
     }
 
@@ -238,7 +242,7 @@ impl Layout {
             (m.fps_label(),13.,muted),
             (m.network_label(),13.,network),
             (m.stages_label(),13.,process),
-            (format!("E2E Lat {}",m.video_value()),13.,primary),
+            (format!("E2E · Video {} · Input→Frame {}",m.video_value(),m.input_frame_value()),13.,primary),
         ]];
         if m.waiting_for_keyframe {
             rows.push(vec![(
@@ -394,7 +398,7 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
         row(uu_i18n::text("画面"),cyan,vec![field("",format!("{}×{}@{}",m.size[0],m.size[1],m.target_fps),uu_i18n::text("当前视频尺寸与目标帧率；不会改变远端桌面模式。")),field(uu_i18n::text("编码"),if m.codec.is_empty(){"—"}else{&m.codec},uu_i18n::text("实际协商的编码与色彩模式，区别于请求偏好。")),field(uu_i18n::text("码率"),format!("{} Mbps",number(m.bitrate)),uu_i18n::text("近期接收到的视频码率；不是目标码率或总链路带宽。"))]),
         row(uu_i18n::text("帧率"),cyan,fps),
         row(uu_i18n::text("编解码"),green,vec![
-            field(uu_i18n::text("延迟"),uu_i18n::format!("| 编 {} ms 解 {} ms 渲染 {} ms",number(m.process[1]),number(m.process[2]),number(m.process[3])),uu_i18n::text("编码/解码/UI渲染提交的独立窗口均值，UI提交不等于GPU或显示完成。")),
+            field(uu_i18n::text("延迟"),uu_i18n::format!("| 采+编 {} ms 解+呈 {} ms",number(sum(&m.process[..2])),number(sum(&m.process[2..]))),uu_i18n::text("采集与编码、解码与UI呈现提交的阶段和。呈现提交为CPU耗时，不含系统显示等待；独立阶段窗口不能代替端到端测量。")),
             field(uu_i18n::text("编码器"),m.host_video.as_ref().map_or("—",|v|v.encoder.as_str()),uu_i18n::text("当前媒体代次中新鲜的主机遥测所报告的真实编码后端，不按显卡品牌猜测。")),
             field(uu_i18n::text("编码模式"),if m.mode.is_empty(){"—"}else{&m.mode},uu_i18n::text("主机已确认的当前码率控制模式。")),
             field(uu_i18n::text("解码器"),decoder_label(&m.backend),uu_i18n::text("客户端当前实际使用的解码后端。"))]),
@@ -404,16 +408,32 @@ fn detail_rows(m:&Metrics)->Vec<DetailRow> {
         row(uu_i18n::text("统计"),plain,continuity),
         row(uu_i18n::text("恢复累计"),plain,vec![field(uu_i18n::text("FEC恢复/冗余"),format!("{}/{}",c.fec_recovered,c.fec_packets),uu_i18n::text("FEC恢复的包数与收到的冗余包数，会话累计。")),field(uu_i18n::text("冗余量"),format!("{:.2} MiB",c.fec_bytes as f64/1048576.),uu_i18n::text("会话收到的FEC冗余数据量。")),field(uu_i18n::text("FEC丢弃"),c.fec_drops,uu_i18n::text("无法使用或被丢弃的FEC数据。")),field("RTX",c.rtx,uu_i18n::text("收到的重传包数。")),field("NACK",c.nack,uu_i18n::text("发送的缺包重传请求数。"))]),
         row(uu_i18n::text("异常累计"),if c.errors+c.damaged+c.queue_drops>0{orange}else{plain},vec![field(uu_i18n::text("未恢复包"),c.lost,uu_i18n::text("会话累计超时未恢复包。")),field(uu_i18n::text("损帧"),c.damaged,uu_i18n::text("接收器丢弃的不完整或损坏视频帧。")),field(uu_i18n::text("解码错"),c.errors,uu_i18n::text("解码后端返回的错误次数。")),field(uu_i18n::text("队列丢帧"),c.queue_drops,uu_i18n::text("解码队列为保留新鲜画面而丢弃的帧数。")),field(uu_i18n::text("刷新"),c.keyframes,uu_i18n::text("请求关键帧的次数。")),field(uu_i18n::text("乱/迟"),format!("{}/{}",c.reordered,c.late),uu_i18n::text("修复接收器记录的乱序与迟到次数。"))]),
-        row(uu_i18n::text("输入响应"),plain,vec![
+        row(uu_i18n::text("输入响应"),plain,input_fields(m)),
+        row(uu_i18n::text("收包"),plain,receive),
+        row(uu_i18n::text("恢复原因"),plain,vec![field(uu_i18n::text("接收/排队/解码/格式"),uu_i18n::format!("{}/{}/{}/{} 次",c.recovery[0],c.recovery[1],c.recovery[2],c.recovery[3]),uu_i18n::text("分别由接收损坏、解码队列溢出、解码错误和格式改变触发的恢复次数。"))]),
+    ]
+}
+fn input_fields(m:&Metrics)->Vec<DetailValue> {
+    let bound=|value:Option<uu_core::video_e2e::InputDelay>|value.map_or_else(||"—".into(),|v|format!("≈{:.2} ±{:.2} ms",v.mean_us as f64/1000.,v.uncertainty_us as f64/1000.));
+    let latency=m.input_latency.unwrap_or_default();
+    let mut fields=vec![
+            field(uu_i18n::text("后继画面"),m.input_frame_value(),uu_i18n::text("同一次输入入队，到注入后已观测源图像的首显回执；包含输入、后继源等待及视频路径，沿用显示回执的估测方法与误差界。不能证明游戏已处理该输入，也不包含鼠标硬件或物理发光。")),
             field(uu_i18n::text("视觉响应"),"—",uu_i18n::text("尚无输入事件到对应画面显示的因果关联测量，视觉响应保持未知；注入确认、视频端到端和阶段和均不能代替它。")),
             field(uu_i18n::text("注入确认"),format!("{} ms",number(m.input_timing[1])),uu_i18n::text("抽样输入从客户端发出、主机系统接受注入，到确认返回客户端的往返时间；不表示应用已处理，也不表示对应画面已显示。")),
             field(uu_i18n::text("状态"),if m.input_ready{uu_i18n::text("已就绪")}else{uu_i18n::text("未就绪")},uu_i18n::text("当前窗口、主机授权和本地输入归属共同决定是否能远程输入。")),
             field(uu_i18n::text("发/错"),format!("{}/{}",m.input_counts[0],m.input_counts[1]),uu_i18n::text("客户端发送的输入消息数和发送错误数。")),
             field(uu_i18n::text("排队/主机队列/注入"),[m.input_timing[0],m.input_timing[2],m.input_timing[3]].map(number).join("/"),uu_i18n::text("输入在客户端的排队、主机队列与系统注入耗时，单位毫秒；这些阶段不构成视觉响应测量。")),
-        ]),
-        row(uu_i18n::text("收包"),plain,receive),
-        row(uu_i18n::text("恢复原因"),plain,vec![field(uu_i18n::text("接收/排队/解码/格式"),uu_i18n::format!("{}/{}/{}/{} 次",c.recovery[0],c.recovery[1],c.recovery[2],c.recovery[3]),uu_i18n::text("分别由接收损坏、解码队列溢出、解码错误和格式改变触发的恢复次数。"))]),
-    ]
+        ];
+    for (label,value,help) in [
+        (uu_i18n::text("排队+上行"),latency.enqueue_to_host,uu_i18n::text("同一实际输入从客户端入队到主机CONTROL收到的区间，包含客户端等待与上行；复用四时间戳校时，不假设RTT对半。±是均值的校时误差界，非波动标准差。旧主机或未校时保持未知。")),
+        (uu_i18n::text("输入至注入"),latency.enqueue_to_injected,uu_i18n::text("同一输入从客户端入队到主机成功完成系统注入，包含上行、主机队列与注入。与排队+上行重叠，不再相加；不代表应用已处理。")),
+        (uu_i18n::text("后继源等待"),latency.injected_to_source,uu_i18n::text("同一主机时钟下，注入完成至后继已观测源图像更新的等待，可能包含应用调度与帧节拍；桌面其它变化也会更新画面，不能当作游戏处理时间。缺少匹配首显则未知。")),
+    ] { let mut value=field(label,bound(value),help);value.line=1;fields.push(value); }
+    let mut count=field(uu_i18n::text("输入样本/画面匹配"),format!("{}/{}",latency.tracked_inputs,latency.input_to_frame.map_or(0,|v|v.samples)),uu_i18n::text("最近3秒收到有效注入回执的实际输入抽样与匹配画面数，至多每250ms抽样一次；输入空闲、换代或证据过期后未知，不借用其它输入样本。"));count.line=1;fields.push(count);
+    if let Some(v)=latency.enqueue_to_host {
+        let mut spread=field(uu_i18n::text("送达P95/σ"),format!("{:.2}/{:.2} ms",v.p95_us as f64/1000.,v.std_dev_us as f64/1000.),uu_i18n::text("送达区间中点的P95与总体标准差，描述样本波动；与±校时误差界分开。"));spread.line=1;fields.push(spread);
+    }
+    fields
 }
 fn detail_rows_window(m:&Metrics,window:usize)->Vec<DetailRow> {
     let mut scoped=m.clone();
@@ -696,7 +716,7 @@ mod tests {
         for size in [egui::vec2(1280.,720.),egui::vec2(640.,360.)] {
             let ctx=egui::Context::default();let view=Rect::from_min_size(egui::Pos2::ZERO,size);
             let mut card=HoverCard::default();let mut now=0.;
-            let m=Metrics{size:[1920,1080],target_fps:60,history:(0..8).map(|i|HistorySample{seconds:i as f64,values:[Some(1.);7],video_uncertainty_ms:Some(0.1),estimated_total:None}).collect(),..Default::default()};
+            let m=Metrics{size:[1920,1080],target_fps:60,history:(0..8).map(|i|HistorySample{seconds:i as f64,values:[Some(1.);7],video_uncertainty_ms:Some(0.1),estimated_total:None,input_frame:None}).collect(),..Default::default()};
             let frame=|card:&mut HoverCard,now:f64,p:egui::Pos2| {
                 ctx.run(egui::RawInput{screen_rect:Some(view),time:Some(now),events:vec![egui::Event::PointerMoved(p)],..Default::default()},|ctx|{
                     egui::CentralPanel::default().show(ctx,|ui|{
@@ -971,11 +991,11 @@ mod tests {
         };
         uu_i18n::with_language(uu_i18n::Language::Chinese,||{
             assert_eq!(m.total_label(),"端到端 ≈21.16 ±1.00 ms · 系统显示回执");
-            assert_eq!(m.input_response_label(),"输入响应 — · 注入确认 2.2 ms");
+            assert_eq!(m.input_response_label(),"输入→后继画面 — · 注入确认 2.2 ms");
         });
         uu_i18n::with_language(uu_i18n::Language::English,||{
             assert_eq!(m.total_label(),"E2E ≈21.16 ±1.00 ms · System display receipt");
-            assert_eq!(m.input_response_label(),"Input response — · Injection ack 2.2 ms");
+            assert_eq!(m.input_response_label(),"Input→Subsequent frame — · Injection ack 2.2 ms");
             let rows=detail_rows(&m);
             assert!(rows.iter().any(|row|row.label=="Latency"));
             let input=&rows.iter().find(|row|row.label=="Input response").unwrap().values;
@@ -1057,7 +1077,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(m.fps_label(), "FPS · Rcv/Dec/Rnd 60.0/59.9/59.7");
-        assert_eq!(m.stages_label(), "Latency · Enc/Dec/Rnd 1.2/0.07/2.3 ms · Est. —");
+        assert_eq!(m.stages_label(), "Latency · Cap+Enc/Dec+Rnd 9.2/2.4 ms · Est. —");
     }
     #[test]
     fn layouts_fit_wide_and_narrow_viewports_without_overlapping_groups() {
