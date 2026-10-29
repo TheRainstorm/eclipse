@@ -4,12 +4,12 @@
 .gitattributes[FV5T]: F:统一文本检出为LF，维持跨平台源码字节与AOCI基线一致 | R:code:.gitignore | A:- | S:二进制由Git自动识别，不强制换行转换
 .gitignore[FS6T]: F:排除构建产物、账号凭据、邀请、本地资料及独立插件开发检出 | R:code:SECURITY.md,code:docs/plugins.md | A:- | S:handoff与notes只留本地，不强制加入Git；plugins目录由独立仓库维护
 AGENTS.md[SG8S]: F:约束本地资料、统一实现原则、提交规范及开发交付和AOCI认知维护 | R:code:.gitignore,code:aoci.txt | A:- | S:修复先以本地开发编号交付，用户确认后才推送，验收并要求release后才递增正式版本及发布；状态测试不能替代桌面验收；索引语义仅由模型基于证据创作
-Cargo.lock[FV6L]: F:锁定主程序和共享SDK的跨平台依赖版本、来源及校验和 | R:code:Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml | A:- | S:由Cargo生成，发布使用--locked；插件独立锁不替代主程序的SDK证据锁
-Cargo.toml[FV8T]: F:组织原生引擎、应用和共享插件SDK工作区并统一依赖、第三方补丁及发布配置 | R:code:crates/uu-core/Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml,code:.cargo/config.toml | A:workspace,patch.crates-io,profile.release | S:具体插件不属于主工作区，主程序不依赖其检出；动态SDK要求release关闭LTO；vendor补丁覆盖上游
+Cargo.lock[FV6L]: F:锁定v0.20.9主程序及共享SDK的跨平台依赖版本来源与校验和 | R:code:Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml | A:- | S:由Cargo生成且发布使用--locked；插件独立锁不替代主程序SDK证据锁
+Cargo.toml[FV8T]: F:组织v0.20.9原生引擎应用与共享插件SDK工作区及统一依赖和发布配置 | R:code:crates/uu-core/Cargo.toml,code:crates/uu-plugin-sdk/Cargo.toml,code:.cargo/config.toml | A:workspace,patch.crates-io,profile.release | S:具体插件不属于主工作区，主程序无需其检出；动态SDK要求release关闭LTO；vendor补丁覆盖上游
 LICENSE[SG6T]: F:声明项目自有代码可选择MIT或Apache-2.0并划定第三方权利边界 | R:code:LICENSE-MIT,code:LICENSE-APACHE,code:docs/licensing-and-compatibility.md | A:- | S:代码许可不授予第三方服务接入或商标使用权
 LICENSE-APACHE[SG4M]: F:提供Apache-2.0完整许可、专利授权及分发条件 | R:code:LICENSE | A:- | S:-
 LICENSE-MIT[SG4T]: F:提供MIT授权、保留版权声明条件与免责条款 | R:code:LICENSE | A:- | S:-
-README.md[SG7S]: F:介绍原生工作区、可选动态插件、HUD和分类设置及安装发布与快捷键 | R:code:docs/plugins.md,code:docs/keyboard-shortcuts.md,code:docs/releases/v0.20.8.md | A:- | S:开发分支主程序无需插件源码即可构建；插件独立下载且默认关闭；官方手机互通未验收，原生协议不兼容Sunshine
+README.md[SG7S]: F:介绍独立动态插件与原生串流架构，导航v0.20.9发布和安装设置文档 | R:code:docs/plugins.md,code:docs/keyboard-shortcuts.md,code:docs/releases/v0.20.9.md | A:- | S:主程序无具体插件依赖；插件独立下载且默认关闭；真实官方手机互通未验收，原生协议不兼容Sunshine
 SECURITY.md[SS8T]: F:定义公开PC兼容值和个人凭据的分发边界、私密报告与扫描流程 | R:code:tools/security/scan_secrets.py,code:docs/connection-credentials.md | A:- | S:公开常量仅按精确路径与指纹放行；历史清理不撤回已下载副本
 
 ===/home/yfy/Repo/uu_remote/.github/workflows/===
@@ -495,7 +495,7 @@ protocol-compatibility-and-transport.md[SN5S]: F:比较原生、UU兼容与Moonl
 protocol-notes.md[SN5M]: F:保留UU官方软件样本、媒体控制协议、认证和传输的证据笔记 | R:code:plugins/uu-compat/src/socketio.rs,code:plugins/uu-compat/src/control_wire.rs | A:- | S:采样版本和来源有边界，字符串线索不能替代线上互通证据
 pyrowave.md[SH5T]: F:说明实验性PyroWave格式、运行库、GPU同步与高带宽使用边界 | R:code:crates/uu-media/src/pyrowave.rs | A:- | S:默认自动协商不选它；Linux当前CPU传输不能声称GPU直通
 reference-index.md[SG5M]: F:组织Sunshine、Moonlight与同协议参考项目的固定版本源码入口和适配差异 | R:code:docs/licensing-and-compatibility.md | A:- | S:参考机制不授复制GPL代码许可；能力广告须由本实现真实链路证明
-releases.md[SV6T]: F:规定版本标签、CI完整包与发布下载核验流程，并导航当前HUD和设置版本 | R:code:.github/workflows/build-release.yml,code:tools/release/check_version.py,code:docs/releases/v0.20.8.md | A:- | S:已发布标签与资产不改写，下载哈希不代替作者身份签名
+releases.md[SV6T]: F:规定标签CI完整包与下载核验流程并导航v0.20.9独立插件发布 | R:code:.github/workflows/build-release.yml,code:tools/release/check_version.py,code:docs/releases/v0.20.9.md | A:- | S:正式产物以实际发布为准，已发布标签资产不改写；下载哈希不是作者身份签名
 roadmap.md[SW4T]: F:按阶段跟踪兼容与原生串流交付路线和后续验收 | R:code:docs/vision.md,code:docs/releases.md | A:- | S:已发布能力以实际版本说明为准
 session-probe.md[SO4T]: F:说明后台兼容会话与显式切屏探针及指标收集 | R:code:plugins/uu-compat/examples/session_probe.rs | A:- | S:默认不启剪贴板、不发送键鼠；文中core示例路径早于插件迁移
 stream-recovery.md[SR6T]: F:解释SRTP最高扩展索引、迟到重传、防重放与取消安全读取修复 | R:code:vendor/webrtc-srtp/UU-PATCH.md,code:crates/uu-core/src/srtp_policy.rs | A:- | S:认证成功后才记bitmap，旧包不能倒退最高索引；零解码错误不证明视频仍增长
@@ -506,7 +506,7 @@ uu-cloud-native-connection.md[SN4S]: F:保留UU账号寻址、信令与会话ICE
 uu-device-identity.md[SI5T]: F:说明独立UU注册身份、硬件资料更新、显示名与确认解绑规则 | R:code:plugins/uu-compat/src/registration.rs | A:- | S:不复用官方注册资料；同名不合并，解绑不撤销原生公钥权限
 vision.md[SW4T]: F:区分日常兼容客户端、自有Eclipse串流和长期产品方向 | R:code:docs/roadmap.md | A:- | S:路线不代表已交付能力或日期承诺
 windows-background-service.md[SS6T]: F:说明受保护Windows后台安装、控制台身份、锁屏与管理员管理 | R:code:crates/uu-cli/src/service_cli/supervisor.rs | A:- | S:System媒体绑定已选用户控制台，注销需停止；关闭管理窗口不停止服务
-windows-build.md[SV5T]: F:说明无插件源码依赖的Windows GNU构建、运行库打包与安装更新 | R:code:tools/windows/package.py,code:docs/plugins.md | A:- | S:使用win32线程模型；缓存须核验来源，更新文件不结束既有进程；具体插件另行获取
+windows-build.md[SV5T]: F:说明独立主程序Windows GNU构建、格式4共享运行库清单及安装更新 | R:code:tools/windows/package.py,code:docs/plugins.md | A:- | S:使用win32线程模型；缓存核验来源；更新文件不结束旧进程，具体插件另行获取
 windows-latency.md[SP5M]: F:解释Windows呈现路径、独立子窗口翻转交换链及CPU与显示计时和实测边界 | R:code:crates/uu-media/src/hdr_present.cpp,code:docs/performance/optimization-scope.md | A:- | S:Present成功或非黑读回不证明新帧显示，交换链类型不保证收益；HUD CPU耗时与GPU执行及扫描分开
 present-observation-profiling.md[SO6T]: F:说明原始Present诊断启停、身份匹配、文件完整性及与ETW唯一关联的方法 | R:code:crates/uu-gui/src/video_present_trace.rs,code:crates/uu-media/src/present_observation.rs,code:docs/hud.md | A:- | S:文件默认关闭，显式新路径才启用；缺终止或丢观测不称完整；PresentMon须绑定同进程同链和唯一API区间，不能用最近时间或SyncQPCTime猜显示
 
@@ -562,6 +562,7 @@ v0.20.4.md[SV4T]: F:发布原生合成UI写入同步修复及全屏与DPI像素�
 v0.20.5.md[SV4T]: F:发布撤销原生UI重绘阻塞等待，并纠正实际全屏黑屏修复结论 | R:code:crates/uu-gui/src/video_native.rs | A:- | S:实际全屏黑屏仍未修复；生成窗口测试不替代实流验收
 v0.20.7.md[SV4T]: F:发布全屏呈现和UI缓存修复、SDR分支改进及带误差的视频端到端观测 | R:code:docs/hud.md,code:docs/native-latency.md,code:docs/present-observation-profiling.md | A:- | S:DXGI断链重连失败仍未修复；完整观测需更新两端，视频估测不等物理输入响应
 v0.20.8.md[SV4T]: F:发布精简HUD和估计波动及分钟曲线、软件分类与Ctrl+Alt+Shift默认快捷键 | R:code:docs/hud.md,code:docs/keyboard-shortcuts.md | A:- | S:界面升级需重开客户端；DXGI断链后重连失败仍未修复
+v0.20.9.md[SV4T]: F:记录独立运行时插件、默认关闭、显式TURN与完整运行库更新的发布范围 | R:code:docs/plugins.md,code:docs/releases/v0.20.8.md | A:- | S:用户确认插件开关；兼容页面恢复留后续；真实官方手机互通及DXGI重连未验收
 
 ===/home/yfy/Repo/uu_remote/licenses/===
 README.md[SG4T]: F:记录SPDX标准文本来源版本及第三方原始通知优先规则 | R:code:tools/licenses/generate.py | A:- | S:附带GPL或LGPL文本不等于项目选用该许可
@@ -641,7 +642,7 @@ sources.json[FV5T]: F:锁定PyroWave C API、Granite及Vulkan头和volk的完整
 
 ===/home/yfy/Repo/uu_remote/tools/release/===
 check_version.py[XV5T]: F:校验发布标签格式及其与workspace版本逐字一致 | R:code:Cargo.toml | A:validate,main | S:仅v三段版本与合法预发布后缀可通过
-download.py[OV6S]: F:从GitHub已发布版本下载核验完整包后更新本地最新指针 | R:code:tools/windows/package.py,code:tools/linux/install.py | A:download | S:核验标签提交、归档及逐文件哈希，所有选定包通过后才改指针；不安装启动
+download.py[OV6S]: F:从正式GitHub发布下载核验含共享SDK的双平台完整包后更新本地指针 | R:code:tools/windows/package.py,code:tools/linux/install.py | A:download,linux_manifest | S:Linux清单复用安装器规则；全部选定包的标签提交和逐文件哈希通过才改指针；只检查不安装或执行
 source.py[OV7T]: F:为双平台打包验证源码清洁及所有递归子模块与固定提交一致 | R:code:tools/windows/package.py,code:tools/linux/package.py | A:revision | S:覆盖Git的子模块忽略配置；未初始化、换提交或未提交插件源码均阻止打包
 plugin_sdk.py[OV8T]: F:从生产Cargo图捕获共享SDK与编译器运行库，核对消费者特性和Windows导入符号 | R:code:crates/uu-plugin-sdk/build.rs,code:tools/windows/package.py,code:tools/native/plugin_probe.rs | A:build,verify_consumer,verify_windows_imports | S:以GUI和CLI生产选择构建而非裸SDK测试；要求唯一artifact和元数据；PE符号匹配整行排除结束记录，特性图相同不替代实际DLL验证
 

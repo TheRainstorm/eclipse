@@ -38,8 +38,8 @@ artifacts/packages/uu-client-windows-x64-<提交号前12位>.zip
 artifacts/packages/windows-latest.json
 ```
 
-ZIP 解压后直接是 `uu-gui.exe`、`uu.exe`、两个 MinGW 运行 DLL、`libvpl.dll`、`README.txt`、`install.ps1`、`LICENSE`、`LICENSE-MIT`、`LICENSE-APACHE`、`THIRD-PARTY-NOTICES.txt`、`version.json`。
-`version.json` 包含包格式版本、完整源提交号、dispatcher 源提交、UTC 打包时间和各文件 SHA256。新版为格式 2，安装器与同步脚本仍接受格式 1 的旧包。
+ZIP 解压后直接是 `uu-gui.exe`、`uu.exe`、两个 MinGW 运行 DLL、`libvpl.dll`、`libpyrowave-shared-1.dll`、`uu_plugin_sdk.dll`、`std-<编译器哈希>.dll`、`README.txt`、`install.ps1`、`LICENSE`、`LICENSE-MIT`、`LICENSE-APACHE`、`THIRD-PARTY-NOTICES.txt`、`version.json`。
+`version.json` 包含包格式版本、完整源提交号、dispatcher 源提交、UTC 打包时间和各文件 SHA256。新版为格式 4，包含共享 SDK 身份和运行库清单；安装器与同步脚本仍接受格式 1–3 的旧包。
 `windows-latest.json` 指向最近一次成功完成的 Windows 包，并记录 ZIP 的 SHA256。
 源码或 `tools/windows` 有未提交改动时拒绝打包，避免版本号与实际源码不一致；提交后再运行即可。
 
