@@ -38,7 +38,7 @@ def verify_windows_imports(extension,sdk):
     section=imports.split('DLL Name: '+sdk.name,1)
     if len(section)!=2:raise RuntimeError('extension does not import the shared application SDK')
     section=section[1].split('DLL Name:',1)[0].split('The Export Tables',1)[0]
-    required=set(re.findall(r'^\s*[0-9a-f]+\s+\d+\s+(\S+)',section,re.MULTILINE))
+    required=set(re.findall(r'^\s*[0-9a-f]+\s+\d+\s+(\S+)\s*$',section,re.MULTILINE))
     missing=required-available
     if not required or missing:
         raise RuntimeError('extension imports SDK symbols absent from the main package: '+', '.join(sorted(missing)[:8]))
