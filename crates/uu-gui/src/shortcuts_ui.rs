@@ -280,11 +280,8 @@ mod tests {
                 },
             )
         });
-        let m = egui::Modifiers {
-            ctrl: true,
-            alt: true,
-            ..Default::default()
-        };
+        let exit=Bindings::default().chords(Action::Exit)[0];
+        let m=egui::Modifiers{ctrl:exit.modifiers.ctrl,alt:exit.modifiers.alt,shift:exit.modifiers.shift,mac_cmd:exit.modifiers.meta,..Default::default()};
         let key = egui::Key::Q;
         let input = egui::RawInput {
             events: vec![egui::Event::Key {
@@ -307,7 +304,7 @@ mod tests {
                 "recorded key belongs to the editor until key-up"
             );
         });
-        assert_eq!(b.chords(Action::Stats), &[Chord::ctrl_alt(0x51)]);
+        assert_eq!(b.chords(Action::Stats), &[exit]);
         assert!(!listening(&ctx));
         assert!(consume_key(&ctx, key, true));
         let _ = ctx.run(Default::default(), |ctx| {

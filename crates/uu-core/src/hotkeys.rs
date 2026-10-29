@@ -42,15 +42,15 @@ impl Action {
     }
     fn defaults(self) -> &'static [Chord] {
         const DEFAULTS: [&[Chord]; 9] = [
-            &[Chord::ctrl_alt(0x53)],
-            &[Chord::ctrl_alt(0x48)],
-            &[Chord::ctrl_alt(0x4d)],
-            &[Chord::ctrl_alt(0x46), Chord::ctrl_alt(0x58)],
-            &[Chord::ctrl_alt(0x51)],
-            &[Chord::ctrl_alt(0x5a)],
-            &[Chord::ctrl_alt(0x50)],
-            &[Chord::ctrl_alt(0x43)],
-            &[Chord::ctrl_alt(0x7b)],
+            &[Chord::ctrl_alt_shift(0x53)],
+            &[Chord::ctrl_alt_shift(0x48)],
+            &[Chord::ctrl_alt_shift(0x4d)],
+            &[Chord::ctrl_alt_shift(0x46), Chord::ctrl_alt_shift(0x58)],
+            &[Chord::ctrl_alt_shift(0x51)],
+            &[Chord::ctrl_alt_shift(0x5a)],
+            &[Chord::ctrl_alt_shift(0x50)],
+            &[Chord::ctrl_alt_shift(0x43)],
+            &[Chord::ctrl_alt_shift(0x7b)],
         ];
         DEFAULTS[self as usize]
     }
@@ -80,6 +80,9 @@ impl Chord {
                 meta: false,
             },
         }
+    }
+    pub const fn ctrl_alt_shift(key:u32)->Self {
+        let mut chord=Self::ctrl_alt(key);chord.modifiers.shift=true;chord
     }
     pub fn valid(self) -> bool {
         matches!(self.key,0x08|0x09|0x0d|0x1b|0x20..=0x28|0x2d..=0x2e|0x30..=0x39|0x41..=0x5a|0x70..=0x87|0xba..=0xc0|0xdb..=0xde)
@@ -250,16 +253,33 @@ impl Bindings {
 mod tests {
     use super::*;
     #[test]
+    fn defaults_require_shift_and_saved_overrides_remain_exact() {
+        let b:Bindings=serde_json::from_str("{}").unwrap();
+        for (action,keys) in Action::ALL.into_iter().zip([&[0x53][..],&[0x48],&[0x4d],&[0x46,0x58],&[0x51],&[0x5a],&[0x50],&[0x43],&[0x7b]]) {
+            assert_eq!(b.chords(action),keys.iter().map(|key|Chord::ctrl_alt_shift(*key)).collect::<Vec<_>>());
+            for key in keys {
+                assert_eq!(b.find(*key,Chord::ctrl_alt_shift(0).modifiers,false,true,false),Some(action));
+                assert_eq!(b.find(*key,Chord::ctrl_alt(0).modifiers,false,true,false),None);
+            }
+        }
+        // Explicit old combinations are user choices, not implicit defaults.
+        let mut custom=b;custom.set(Action::Stats,vec![Chord::ctrl_alt(0x53)]);custom.set(Action::Menu,vec![]);
+        let restored:Bindings=serde_json::from_slice(&serde_json::to_vec(&custom).unwrap()).unwrap();
+        assert_eq!(restored.label(Action::Stats),"Ctrl+Alt+S");assert!(restored.chords(Action::Menu).is_empty());
+        assert_eq!(restored.label(Action::Mute),"Ctrl+Alt+Shift+M");
+        assert_eq!(restored.find(0x53,Chord::ctrl_alt(0).modifiers,false,true,false),Some(Action::Stats));
+    }
+    #[test]
     fn missing_defaults_disabled_actions_and_conflicts_roundtrip() {
         let mut b: Bindings = serde_json::from_str("{}").unwrap();
         b.validate().unwrap();
-        assert_eq!(b.label(Action::Fullscreen), "Ctrl+Alt+F / Ctrl+Alt+X");
+        assert_eq!(b.label(Action::Fullscreen), "Ctrl+Alt+Shift+F / Ctrl+Alt+Shift+X");
         b.set(Action::Stats, vec![]);
         assert_eq!(
             b.find(0x53, Chord::ctrl_alt(0).modifiers, false, true, false),
             None
         );
-        b.set(Action::Menu, vec![Chord::ctrl_alt(0x46)]);
+        b.set(Action::Menu, vec![Chord::ctrl_alt_shift(0x46)]);
         assert!(!b.issues().is_empty());
         b.reset(Action::Menu);
         b.validate().unwrap();

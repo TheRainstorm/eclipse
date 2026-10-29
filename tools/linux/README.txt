@@ -22,5 +22,5 @@ CLI：~/.local/bin/uu-rust
 支持 Wayland/X11；Wayland 系统快捷键捕获取决于合成器支持 shortcuts-inhibit 协议。
 默认保留被控端原有显示布局，独占虚拟屏仅在显式选择时启用。
 
-快捷键：Ctrl+Alt+S 信息；F/X 全屏；Q 退出串流；M 静音；H 悬浮入口；Z 捕获。
+快捷键：Ctrl+Alt+Shift+S 信息；F/X 全屏；Q 退出串流；M 静音；H 悬浮入口；Z 捕获。
 升级使用版本目录和原子链接切换，保留用户配置与现有进程；重开程序后使用新版。

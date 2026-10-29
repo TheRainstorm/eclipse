@@ -99,10 +99,10 @@ impl Keys {
         vk: u32,
         pressed: bool,
         active: bool,
-        ctrl_alt: bool,
+        default_chord: bool,
         already_down: bool,
     ) -> Decision {
-        self.event_with_shortcuts(vk, pressed, active, active, false, ctrl_alt, already_down)
+        self.event_with_shortcuts(vk, pressed, active, active, false, default_chord, already_down)
     }
     #[cfg(test)]
     pub fn event_with_shortcuts(
@@ -112,11 +112,11 @@ impl Keys {
         remote_active: bool,
         shortcuts_active: bool,
         nested_passthrough: bool,
-        ctrl_alt: bool,
+        default_chord: bool,
         already_down: bool,
     ) -> Decision {
         self.event_with_bindings(vk,pressed,remote_active,shortcuts_active,nested_passthrough,
-            uu_core::hotkeys::Modifiers{ctrl:ctrl_alt,alt:ctrl_alt,..Default::default()},false,already_down)
+            uu_core::hotkeys::Modifiers{ctrl:default_chord,alt:default_chord,shift:default_chord,..Default::default()},false,already_down)
     }
     fn event_with_bindings(&mut self,vk:u32,pressed:bool,remote_active:bool,shortcuts_active:bool,nested_passthrough:bool,
         modifiers:uu_core::hotkeys::Modifiers,right_alt:bool,already_down:bool)->Decision {
@@ -213,6 +213,21 @@ pub fn sided_vk(vk:u32,lparam:usize)->u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn default_commands_require_physical_shift_and_preserve_release_ownership() {
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
+        let mut keys=Keys::new();let mut mods=Modifiers::new();
+        for vk in [0xa2,0xa4] {mods.observe(vk,true);}
+        assert_eq!(keys.window_event(0x53,true,route,&mods,false),Decision::Remote{vk:0x53,pressed:true});
+        assert_eq!(keys.window_event(0x53,false,route,&mods,true),Decision::Remote{vk:0x53,pressed:false});
+        mods.observe(0xa0,true);
+        assert_eq!(keys.window_event(0x53,true,route,&mods,false),Decision::Shortcut(Action::Stats));
+        for vk in [0xa2,0xa4,0xa0] {mods.observe(vk,false);}
+        assert_eq!(keys.window_event(0x53,true,route,&mods,true),Decision::Consume);
+        assert_eq!(keys.window_event(0x53,false,WindowRoute{foreground:false,..route},&mods,true),Decision::Consume);
+        mods.observe(0xa2,true);mods.observe(0xa4,true);mods.observe(0xa0,true);mods.observe(0xa5,true);
+        assert_eq!(keys.window_event(0x53,true,route,&mods,false),Decision::Remote{vk:0x53,pressed:true},"AltGr remains remote even with Shift");
+    }
     #[test]
     fn configured_native_bindings_preserve_transition_ownership_and_altgr_text() {
         let mut keys=RecipientKeys::new();let mut mods=Modifiers::new();
@@ -486,7 +501,7 @@ mod tests {
     #[test]
     fn window_client_commands_work_before_control_is_ready_and_keep_their_release() {
         let pending=WindowRoute{input:false,foreground:true,system_capture:false,shortcuts:true,nested_passthrough:false};
-        let mut modifiers=Modifiers::new();modifiers.observe(0xa2,true);modifiers.observe(0xa4,true);
+        let mut modifiers=Modifiers::new();modifiers.observe(0xa2,true);modifiers.observe(0xa4,true);modifiers.observe(0xa0,true);
         let mut window=Keys::new();
         assert_eq!(window.window_event(0x46,true,pending,&modifiers,false),Decision::Shortcut(Action::Fullscreen));
         let unfocused=WindowRoute{foreground:false,..pending};

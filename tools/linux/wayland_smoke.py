@@ -75,7 +75,7 @@ def main():
         if not select.select([keyboard.stdout], [], [], 8)[0]: raise TimeoutError('Virtual input driver timed out')
         if json.loads(keyboard.stdout.readline()) != {'ok': True}: raise RuntimeError('Virtual input failed')
     def keys(key):
-        driver({'mods': ['ctrl', 'alt'], 'key': key})
+        driver({'mods': ['ctrl', 'alt', 'shift'], 'key': key})
     def screenshot(name):
         subprocess.run(['grim', '-o', 'HEADLESS-1', str(out / f'{name}.png')], env=env, check=True)
     try:

@@ -36,12 +36,12 @@ impl Shortcuts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const CHORD: Modifiers = Modifiers { ctrl: true, alt: true, ..Modifiers::NONE };
+    const CHORD: Modifiers = Modifiers { ctrl: true, alt: true, shift: true, ..Modifiers::NONE };
     #[test]
     fn rebound_shortcuts_keep_old_release_and_do_not_repeat_or_steal_a_held_chord() {
         let mut keys=Shortcuts::default();
         assert_eq!(keys.key(Key::S,true,false,CHORD,true,false),KeyAction::Trigger(Action::Stats));
-        let mut bindings=Bindings::default();bindings.set(Action::Stats,vec![uu_core::hotkeys::Chord::ctrl_alt(0x41)]);
+        let mut bindings=Bindings::default();bindings.set(Action::Stats,vec![uu_core::hotkeys::Chord::ctrl_alt_shift(0x41)]);
         keys.configure(&bindings,CHORD);
         assert_eq!(keys.key(Key::S,false,false,Modifiers::NONE,true,false),KeyAction::Consumed);
         assert_eq!(keys.key(Key::A,true,false,CHORD,true,false),KeyAction::Consumed);

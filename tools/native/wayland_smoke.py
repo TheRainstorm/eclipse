@@ -102,7 +102,7 @@ def main():
     def window_command(command):
         ipc(f'[con_id="{window_id}"] {command}')
 
-    def keys(key, mods=('ctrl', 'alt')):
+    def keys(key, mods=('ctrl', 'alt', 'shift')):
         keyboard.stdin.write(json.dumps(dict(mods=list(mods), key=key)) + '\n')
         keyboard.stdin.flush()
         if not select.select([keyboard.stdout], [], [], 8)[0] or json.loads(keyboard.stdout.readline()) != {'ok': True}:
