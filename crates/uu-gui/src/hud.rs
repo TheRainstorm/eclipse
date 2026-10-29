@@ -1,12 +1,11 @@
 //! Collect a bounded snapshot; layout and hover presentation share one model.
 use eframe::egui::{self, Rect};
 use std::{sync::atomic::Ordering::Relaxed,time::Instant};
-use uu_core::client_settings::HudDetail;
 use crate::hud_panel::{Counters,Layout,Metrics};
 
 #[derive(Default)]
 pub(super) struct Cache {
-    key:Option<(u32,u32,u32,u32,u32,HudDetail,u64)>,
+    key:Option<(u32,u32,u32,u32,u32,u64)>,
     updated:Option<Instant>,
     metrics:Metrics,
     layout:Option<Layout>,
@@ -100,10 +99,10 @@ impl super::App {
         if self.controller.is_none(){return false;}
         self.sample_hud();
         let [w,h]=self.hud_cache.metrics.size;
-        let width=(rect.width()-32.).max(1.);let detail=self.preferences.hud_detail;
-        let key=(self.selected_track,width.to_bits(),ui.ctx().pixels_per_point().to_bits(),w,h,detail,uu_i18n::epoch());
+        let width=(rect.width()-32.).max(1.);
+        let key=(self.selected_track,width.to_bits(),ui.ctx().pixels_per_point().to_bits(),w,h,uu_i18n::epoch());
         if self.hud_cache.key!=Some(key) {
-            self.hud_cache.layout=Some(Layout::new(ui,&self.hud_cache.metrics,detail,width));self.hud_cache.key=Some(key);
+            self.hud_cache.layout=Some(Layout::new(ui,&self.hud_cache.metrics,width));self.hud_cache.key=Some(key);
         }
         if let Some(layout)=&self.hud_cache.layout {
             let appearance=self.preferences.hud_appearance;

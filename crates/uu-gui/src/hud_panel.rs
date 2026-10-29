@@ -1,7 +1,7 @@
 //! Presentation shared by the live HUD and the isolated visual probe.
 use eframe::egui::{self, Color32, FontId, Rect, RichText};
 use std::sync::Arc;
-use uu_core::client_settings::{HudDetail,HudAppearance};
+use uu_core::client_settings::HudAppearance;
 #[path="hud_history.rs"]
 mod history;
 pub use history::{History,Sample as HistorySample,EstimatedTotal};
@@ -211,9 +211,7 @@ impl Metrics {
             number(self.process[3])
         )
     }
-    fn continuity_label(&self)->String {
-        self.continuity.as_ref().map_or_else(||"Stalls(60s) —".into(),|s|format!("Stalls(60s) {} · Max gap {:.1} ms",s.long_gaps,s.max_gap_ms))
-    }
+
 }
 struct Placed {
     offset: egui::Vec2,
@@ -222,10 +220,9 @@ struct Placed {
 pub struct Layout {
     placed: Vec<Placed>,
     pub size: egui::Vec2,
-    compact: bool,
 }
 impl Layout {
-    pub fn new(ui: &egui::Ui, m: &Metrics, mode: HudDetail, width: f32) -> Self {
+    pub fn new(ui: &egui::Ui, m: &Metrics, width: f32) -> Self {
         let primary = Color32::from_rgb(239, 245, 252);
         let muted = Color32::from_rgb(181, 198, 218);
         let network = Color32::from_rgb(154, 202, 255);
@@ -236,80 +233,13 @@ impl Layout {
         } else {
             format!("{}x{}@{}", m.size[0], m.size[1], m.target_fps)
         };
-        let video = format!("{resolution} · {}", m.fps_label());
-        let rate = valid(m.bitrate).map_or_else(|| "— Mbps".into(), |v| format!("{v:.1} Mbps"));
-        let mut rows: Vec<Vec<(String, f32, Color32)>> = vec![vec![
-            (video, 15., primary),
-            (format!("{codec} · {rate}"), 14., primary),
+        let mut rows=vec![vec![
+            (format!("{resolution} {codec}"),13.,primary),
+            (m.fps_label(),13.,muted),
+            (m.network_label(),13.,network),
+            (m.stages_label(),13.,process),
+            (format!("E2E Lat {}",m.video_value()),13.,primary),
         ]];
-        if mode == HudDetail::Compact {
-            let color = primary;
-            rows[0] = vec![
-                (format!("{resolution} {codec}"), 13., color),
-                (m.fps_label(), 13., muted),
-                (m.network_label(), 13., network),
-                (m.stages_label(), 13., process),
-                (format!("E2E Lat {}",m.video_value()), 13., color),
-            ];
-        } else {
-            let mode = if m.mode.is_empty() {
-                String::new()
-            } else {
-                format!(" / {}", m.mode)
-            };
-            rows[0][1].0 = format!("{codec}{mode} · {rate}");
-            rows[0].push((decoder_label(&m.backend).into(), 12.5, muted));
-            rows.push(vec![
-                (m.network_label(), 13., network),
-                (m.total_label(), 13., primary),
-            ]);
-            rows.push(vec![(m.input_response_label(),12.5,muted)]);
-            rows.push(vec![(m.continuity_label(),12.5,muted)]);
-            rows.push(vec![(
-                format!(
-                    "Process  cap/enc/dec/rnd {}/{}/{}/{} ms",
-                    number(m.process[0]),
-                    number(m.process[1]),
-                    number(m.process[2]),
-                    number(m.process[3])
-                ),
-                13.,
-                process,
-            )]);
-            rows.push(vec![
-                (
-                    format!(
-                        "Queue  send/dec/mailbox {}/{}/{} ms",
-                        number(m.queues[0]),
-                        number(m.queues[1]),
-                        number(m.queues[2])
-                    ),
-                    12.5,
-                    muted,
-                ),
-                (
-                    format!(
-                        "Target {} FPS{}",
-                        m.target_fps,
-                        m.source_hz
-                            .map_or_else(String::new, |hz| format!(" · Source {hz} Hz"))
-                    ),
-                    12.5,
-                    muted,
-                ),
-            ]);
-            let c = &m.counters;
-            if c.errors + c.damaged + c.queue_drops > 0 {
-                rows.push(vec![(
-                    format!(
-                        "Session warnings  damaged {} · dec errors {} · queue drops {}",
-                        c.damaged, c.errors, c.queue_drops
-                    ),
-                    12.5,
-                    Color32::from_rgb(255, 195, 108),
-                )]);
-            }
-        }
         if m.waiting_for_keyframe {
             rows.push(vec![(
                 "Recovering reference frame…".into(),
@@ -354,15 +284,10 @@ impl Layout {
         Self {
             placed,
             size: egui::vec2(max_x, y + row_h),
-            compact: mode == HudDetail::Compact,
         }
     }
     pub fn paint(&self, ui: &egui::Ui, video: Rect, appearance:HudAppearance) -> egui::Response {
-        let pad = if self.compact {
-            egui::vec2(8., 5.)
-        } else {
-            egui::vec2(12., 9.)
-        };
+        let pad = egui::vec2(8.,5.);
         let size=self.size+pad*2.;
         let y=(video.height()*unit(appearance.vertical_position,HudAppearance::default().vertical_position)).min((video.height()-size.y).max(0.));
         let bounds = Rect::from_min_size(
@@ -729,7 +654,7 @@ mod tests {
         let ctx=egui::Context::default();let view=Rect::from_min_size(egui::pos2(0.,0.),egui::vec2(1920.,1080.));
         let _=ctx.run(egui::RawInput{screen_rect:Some(view),..Default::default()},|ctx|{
             egui::CentralPanel::default().show(ctx,|ui|{
-                let layout=Layout::new(ui,&Metrics::default(),HudDetail::Compact,view.width()-32.);
+                let layout=Layout::new(ui,&Metrics::default(),view.width()-32.);
                 for position in [0.,0.5,1.,HudAppearance::default().vertical_position] {
                     let appearance=HudAppearance{vertical_position:position,..Default::default()};
                     let bounds=layout.paint(ui,view,appearance).rect;
@@ -742,7 +667,7 @@ mod tests {
         for opacity in [0.,0.2,0.75,1.] {
             let output=ctx.run(egui::RawInput{screen_rect:Some(view),..Default::default()},|ctx|{
                 egui::CentralPanel::default().show(ctx,|ui|{
-                    Layout::new(ui,&Metrics::default(),HudDetail::Compact,view.width()-32.).paint(ui,view,HudAppearance{opacity,..Default::default()});
+                    Layout::new(ui,&Metrics::default(),view.width()-32.).paint(ui,view,HudAppearance{opacity,..Default::default()});
                 });
             });
             assert!(output.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Rect(r) if r.fill==Color32::from_black_alpha((opacity*255.).round() as u8))));
@@ -1121,7 +1046,7 @@ mod tests {
         let ctx = egui::Context::default();
         let _ = ctx.run(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                for mode in HudDetail::ALL {
+                {
                     for width in [240., 640., 1600.] {
                         let m = Metrics {
                             size: [3840, 2160],
@@ -1129,7 +1054,7 @@ mod tests {
                             codec: "PYROWAVE".into(),
                             ..Default::default()
                         };
-                        let layout = Layout::new(ui, &m, mode, width);
+                        let layout = Layout::new(ui, &m, width);
                         assert!(layout.size.x <= width + 0.1);
                         for (i, p) in layout.placed.iter().enumerate() {
                             for q in &layout.placed[i + 1..] {

@@ -161,7 +161,7 @@
   "详细": "Detailed",
   "统计显示": "Statistics display",
   "显示统计": "Show statistics",
-  "开关画面上的统计信息；悬停后查看详情和最近三分钟曲线。": "Toggle on-screen statistics. Hover for details and the last three minutes of history.",
+  "开关画面上的统计信息；悬停后查看详情和最近三分钟曲线。": "Toggle on-screen statistics; hover for details and the last three minutes of curves.",
   "远程桌面": "Remote desktop",
   "等待控制权": "Waiting for control",
   "主机一次允许一个控制端操作；当前控制端释放后会自动重试。": "The host allows one controller at a time. Control is retried automatically after the current controller releases it.",
@@ -1716,5 +1716,7 @@
   "Est.Total为最近3秒完整分量和采样的均值±标准差，每500ms记录一次，表示估计值波动，不是同帧测量或准确性误差界。采、编、解、渲、RTT/2与三项队列均有效才纳入；缺项留空，少于两次采样时±未知。未覆盖的采集前等待、GPU完成、呈现队列及物理响应不包含在内。": "Est.Total is the mean ± standard deviation of complete component-sum samples over 3 seconds, sampled every 500 ms. It describes variation of estimates, not a same-frame measurement or accuracy bound. Capture, encode, decode, render, RTT/2 and all three queues must be available. Missing components leave gaps; fewer than two samples makes ± unknown. Unmeasured pre-capture waiting, GPU completion, presentation queues and physical response are excluded.",
   "估计曲线为Est.Total：最近3秒完整分量和采样的均值，±为这些估计值的标准差，不是同帧端到端或测量误差界。缺项留空，样本不足两次时波动未知。点击切换曲线。": "The Est. curve is Est.Total: the mean of complete component-sum samples over 3 seconds. ± is their standard deviation, not same-frame E2E or a measurement error bound. Missing data leaves gaps; variation is unknown with fewer than two samples. Click to toggle.",
   "外观": "Appearance",
-  "快捷键": "Shortcuts"
+  "快捷键": "Shortcuts",
+  "启用 HUD": "Enable HUD",
+  "开关精简HUD；悬停查看诊断和历史曲线。": "Toggle the compact HUD; hover for diagnostics and history curves."
 }

@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub use uu_core::client_settings::{ClientSettings, CodecPreference, CursorMode, HudDetail};
+pub use uu_core::client_settings::{ClientSettings, CodecPreference, CursorMode};
 
 pub(super) fn bitrate_label(index:usize,native:bool)->&'static str {
     uu_i18n::text(super::BITRATE_PRESETS[if native&&index==0 {5}else if !native&&index==5 {0}else{index}].0)

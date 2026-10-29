@@ -6,7 +6,6 @@ mod hud_panel;
 #[path = "../../../tools/native/owned_display.rs"]
 mod owned_display;
 use eframe::egui;
-use uu_core::client_settings::HudDetail;
 struct Preview {
     output: std::path::PathBuf,
     frames: usize,
@@ -83,7 +82,7 @@ impl eframe::App for Preview {
                 source_frames:120,displayed_frames:if self.measured_fixture{24}else{0},observations_dropped:0,history_evicted:0,
             }),
             history: history.snapshot(),
-            toggle_hint: "Ctrl+Alt+S · Toggle HUD".into(),
+            toggle_hint: uu_core::hotkeys::Bindings::default().label(uu_core::hotkeys::Action::Stats),
             ..Default::default()
         };
         egui::CentralPanel::default()
@@ -93,7 +92,7 @@ impl eframe::App for Preview {
                 let screen = egui::Rect::from_min_max(view.min,view.max-egui::vec2(0.,22.));
                 ui.painter().text(view.left_bottom()-egui::vec2(-8.,2.),egui::Align2::LEFT_BOTTOM,uu_i18n::text("生成数据预览 · 非实测"),egui::FontId::proportional(12.),egui::Color32::from_gray(200));
                 let response =
-                    hud_panel::Layout::new(ui, &m, HudDetail::Compact, screen.width() - 32.)
+                    hud_panel::Layout::new(ui, &m, screen.width() - 32.)
                         .paint(ui, screen, uu_core::client_settings::HudAppearance::default());
                 self.bounds = Some(hud_panel::details_at_with_state(
                     ui,

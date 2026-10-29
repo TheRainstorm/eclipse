@@ -39,14 +39,6 @@ impl CodecPreference {
     pub fn label(self) -> &'static str { match self { Self::Auto => uu_i18n::text("自动协商"), Self::H264 => "H.264", Self::Hevc => "H.265 / HEVC", Self::Av1 => "AV1",Self::Pyrowave=>uu_i18n::text("PyroWave（实验性 / SDR）") } }
 }
 
-#[derive(Clone,Copy,Debug,Default,Serialize,Deserialize,PartialEq,Eq)]
-#[serde(rename_all="snake_case")]
-pub enum HudDetail { #[default] Compact, Detailed }
-impl HudDetail {
-    pub const ALL:[Self;2]=[Self::Compact,Self::Detailed];
-    pub fn label(self)->&'static str {match self {Self::Compact=>uu_i18n::text("精简"),Self::Detailed=>uu_i18n::text("详细")}}
-}
-
 #[derive(Clone,Copy,Debug,Serialize,Deserialize,PartialEq)]
 #[serde(default)]
 pub struct HudAppearance {
@@ -80,7 +72,6 @@ pub struct ClientSettings {
     pub volume: u32,
     pub muted: bool,
     pub hud: bool,
-    pub hud_detail: HudDetail,
     pub hud_appearance: HudAppearance,
     pub hotkeys: crate::hotkeys::Bindings,
     pub capture_keyboard: bool,
@@ -103,7 +94,7 @@ impl Default for ClientSettings {
     fn default() -> Self {
         Self { fps:60, display_mode:crate::screen_control::DisplayMode::Preserve,
             bitrate:5,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,rate_control:None,
-            volume:100,muted:false,hud:false,hud_detail:HudDetail::Compact,hud_appearance:HudAppearance::default(),hotkeys:crate::hotkeys::Bindings::default(),capture_keyboard:true,
+            volume:100,muted:false,hud:false,hud_appearance:HudAppearance::default(),hotkeys:crate::hotkeys::Bindings::default(),capture_keyboard:true,
             vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
             cursor_mode:CursorMode::Remote,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
     }
@@ -155,7 +146,9 @@ mod hud_tests {
     use super::*;
     #[test]
     fn legacy_and_partial_hud_settings_keep_defaults_and_custom_values_roundtrip() {
-        let legacy:ClientSettings=serde_json::from_str(r#"{"hud":true}"#).unwrap();
+        let legacy:ClientSettings=serde_json::from_str(r#"{"hud":true,"hud_detail":"detailed","fps":120}"#).unwrap();
+        assert!(legacy.hud);assert_eq!(legacy.fps,120);
+        assert!(serde_json::to_value(&legacy).unwrap().get("hud_detail").is_none());
         assert_eq!(legacy.hud_appearance,HudAppearance::default());
         let partial:ClientSettings=serde_json::from_str(r#"{"hud_appearance":{"opacity":0.2}}"#).unwrap();
         assert_eq!(partial.hud_appearance.opacity,0.2);

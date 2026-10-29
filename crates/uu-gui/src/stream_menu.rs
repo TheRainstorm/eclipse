@@ -381,16 +381,9 @@ fn nested_submenu<R>(ui:&mut egui::Ui,blocked:&mut Vec<Rect>,label:&str,status:&
     }
     egui::InnerResponse::new(inner,response)
 }
-fn hud_submenu(ui:&mut egui::Ui,blocked:&mut Vec<Rect>,enabled:&mut bool,level:&mut super::settings::HudDetail,hint:&str)->bool {
-    let mut changed=false;
-    nested_submenu(ui,blocked,uu_i18n::text("统计信息"),if *enabled {match level{super::settings::HudDetail::Compact=>uu_i18n::text("精简"),super::settings::HudDetail::Detailed=>uu_i18n::text("详细")}}else{uu_i18n::text("关闭")},|ui|{
-        menu_heading(ui,"HUD",uu_i18n::text("统计显示"));
-        if menu_toggle(ui,uu_i18n::text("显示统计"),*enabled,hint).on_hover_text(uu_i18n::text("开关画面上的统计信息；悬停后查看详情和最近三分钟曲线。")).clicked(){*enabled=!*enabled;changed=true;}
-        separator(ui);
-        for (mode,label) in [(super::settings::HudDetail::Compact,uu_i18n::text("精简")),(super::settings::HudDetail::Detailed,uu_i18n::text("详细"))] {
-            if menu_row(ui,label,None,*level==mode,false,"",false).clicked(){*level=mode;*enabled=true;changed=true;}
-        }
-    });changed
+fn hud_toggle(ui:&mut egui::Ui,enabled:&mut bool,bindings:&uu_core::hotkeys::Bindings)->bool {
+    let hint=bindings.label(uu_core::hotkeys::Action::Stats);
+    if menu_toggle(ui,uu_i18n::text("启用 HUD"),*enabled,&hint).on_hover_text(uu_i18n::text("开关精简HUD；悬停查看诊断和历史曲线。")).clicked(){*enabled=!*enabled;true}else{false}
 }
 fn unavailable(ui: &mut egui::Ui, kind: Icon, label: &str, hint: &str) {
     ui.add_enabled_ui(false, |ui| {
@@ -978,10 +971,8 @@ impl super::App {
                                     }
                                     if menu_row(ui,uu_i18n::text("连接详情"),Some(Icon::Link),false,false,"",false).clicked(){self.open_connection_details();}
                                     if menu_row(ui,uu_i18n::text("串流设置"),Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
-                                    let mut more_children=Vec::new();
                                     side_submenu(ui, &mut blocked, Icon::Grid, uu_i18n::text("更多"), |ui| {
-                                        let hint=self.preferences.hotkeys.label(uu_core::hotkeys::Action::Stats);
-                                        if hud_submenu(ui,&mut more_children,&mut self.hud,&mut self.preferences.hud_detail,&hint) {self.persist_preferences();}
+                                        if hud_toggle(ui,&mut self.hud,&self.preferences.hotkeys) {self.persist_preferences();}
                                         if menu_row(
                                             ui,
                                             uu_i18n::text("隐藏悬浮入口"),
@@ -998,7 +989,6 @@ impl super::App {
                                             ctx.memory_mut(|m| m.close_popup());
                                         }
                                     });
-                                    blocked.extend(more_children);
                                     separator(ui);
                                     ui.scope(|ui| {
                                         if menu_row(
@@ -1117,40 +1107,29 @@ mod tests {
         assert!(check.load(Ordering::Acquire));
     }
     #[test]
-    fn more_keeps_ownership_while_hud_child_is_open_and_changes_detail() {
-        use super::super::settings::HudDetail;
-        let ctx=egui::Context::default();
-        let mut enabled=false;let mut level=HudDetail::Compact;
-        let mut time=0.;
-        let mut frame=|events:Vec<egui::Event>| {
-            time+=0.05;
-            let mut blocked=Vec::new();let mut open=false;
-            let output=ctx.run(egui::RawInput{time:Some(time),screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(1280.,720.))),events,focused:true,..Default::default()},|ctx| {
-                egui::CentralPanel::default().show(ctx,|ui| {
-                    let mut children=Vec::new();
-                    open=side_submenu(ui,&mut blocked,Icon::Grid,"更多",|ui|hud_submenu(ui,&mut children,&mut enabled,&mut level,"Ctrl+Alt+S")).inner.is_some();
-                    blocked.extend(children);
+    fn more_has_direct_hud_toggle_and_uses_the_effective_binding() {
+        for custom in [false,true] {
+            let ctx=egui::Context::default();let mut enabled=false;let mut bindings=uu_core::hotkeys::Bindings::default();
+            if custom {bindings.set(uu_core::hotkeys::Action::Stats,vec![uu_core::hotkeys::Chord{key:0x78,modifiers:Default::default()}]);}
+            let hint=bindings.label(uu_core::hotkeys::Action::Stats);let mut time=0.;
+            let mut frame=|events:Vec<egui::Event>| {
+                time+=0.05;let mut blocked=Vec::new();let mut open=false;
+                let output=ctx.run(egui::RawInput{time:Some(time),screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(1280.,720.))),events,focused:true,..Default::default()},|ctx| {
+                    egui::CentralPanel::default().show(ctx,|ui| {
+                        open=side_submenu(ui,&mut blocked,Icon::Grid,"更多",|ui|hud_toggle(ui,&mut enabled,&bindings)).inner.is_some();
+                    });
                 });
-            });
-            let mut text=std::collections::HashMap::new();
-            fn labels(shapes:&[egui::epaint::Shape],out:&mut std::collections::HashMap<String,Rect>){for shape in shapes {match shape {egui::epaint::Shape::Text(t)=>{out.insert(t.galley.text().into(),Rect::from_min_size(t.pos,t.galley.size()));},egui::epaint::Shape::Vec(shapes)=>labels(shapes,out),_=>{}}}}
-            labels(&output.shapes.into_iter().map(|s|s.shape).collect::<Vec<_>>(),&mut text);
-            (open,blocked,text,enabled,level)
-        };
-        frame(vec![]);let (_,_,text,_,_)=frame(vec![]);
-        let more=text["更多"].center();
-        frame(vec![egui::Event::PointerMoved(more)]);
-        let (_,_,text,_,_)=frame(vec![egui::Event::PointerMoved(more)]);
-        let hud=text["统计信息"].center();
-        frame(vec![egui::Event::PointerMoved(hud)]);
-        frame(vec![egui::Event::PointerMoved(hud)]);
-        let (open,blocked,text,_,_)=frame(vec![egui::Event::PointerMoved(hud)]);
-        assert!(open,"opening HUD must preserve More's popup ID");
-        let detailed=text["详细"].center();
-        assert!(blocked.iter().any(|r|r.contains(detailed)),"child controls must not reach remote input");
-        frame(vec![egui::Event::PointerMoved(detailed),button(detailed,true)]);
-        let (open,_,_,enabled,level)=frame(vec![button(detailed,false)]);
-        assert!(open);assert!(enabled);assert_eq!(level,HudDetail::Detailed);
+                let text:std::collections::HashMap<_,_>=output.shapes.iter().filter_map(|s|if let egui::Shape::Text(t)=&s.shape {Some((t.galley.text().to_owned(),Rect::from_min_size(t.pos,t.galley.size())))}else{None}).collect();
+                (open,blocked,text,enabled)
+            };
+            frame(vec![]);let (_,_,text,_)=frame(vec![]);let more=text["更多"].center();
+            frame(vec![egui::Event::PointerMoved(more)]);let mut last=frame(vec![]);for _ in 0..3{last=frame(vec![]);}
+            let (open,blocked,text,_)=last;assert!(open);assert!(text.contains_key(&hint),"effective hint must be visible: {hint} {text:?}");
+            assert!(!text.contains_key("统计信息"));assert!(!text.contains_key("详细"));
+            let toggle=text["启用 HUD"].center();assert!(blocked.iter().any(|r|r.contains(toggle)));
+            frame(vec![egui::Event::PointerMoved(toggle)]);for _ in 0..3{frame(vec![]);}
+            frame(vec![button(toggle,true)]);let (open,_,_,enabled)=frame(vec![button(toggle,false)]);assert!(open&&enabled);
+        }
     }
     struct HandleUi {
         context: egui::Context,
