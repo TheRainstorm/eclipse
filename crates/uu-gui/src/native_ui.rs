@@ -200,8 +200,6 @@ impl App {
     fn connect_native_source(&mut self,path:Option<PathBuf>,device:Option<String>,internet:Option<PathBuf>,profile:Option<PathBuf>){
         self.remote_admin_ui=Default::default();
         let stats=self.client_stats("native");
-        self.displays = super::displays::Displays::default();
-        self.selected_track = 0;
         let result=if let Some(path)=profile {
             (||->anyhow::Result<_>{
                 let config=self.config.clone().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法读取设备配置目录")))?;

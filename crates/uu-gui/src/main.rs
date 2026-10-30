@@ -893,6 +893,7 @@ impl App {
         self.recorded_connection=false;
         if self.controller.is_some(){return;}
         let Some(target)=self.stream_target.as_ref().map(|t|t.connection.clone()) else{return;};
+        self.prepare_displays();
         match target {
             sessions::ConnectionTarget::NativeProfile{snapshot,..}=>self.connect_native_profile(snapshot),
             sessions::ConnectionTarget::NativeInvitation(path)=>self.connect_native(path),
@@ -901,7 +902,6 @@ impl App {
             sessions::ConnectionTarget::Plugin{plugin,..}=> {
                 if let Some(error)=&self.plugin_client_error {self.status=error.clone();return;}
                 let Some(payload)=self.plugin_payload.clone() else{self.status="plugin launch payload missing".into();return;};
-                self.displays=Default::default();self.selected_track=0;
                 let stats=self.client_stats(&plugin);
                 match self.plugins.connect(&plugin,payload,self.preferences.client.clone(),stats) {
                     Ok(handle)=>self.attach_controller(handle),Err(error)=>self.status=error.to_string(),

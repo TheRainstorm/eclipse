@@ -13,6 +13,8 @@ pub(super) struct Displays {
     pub selected: Option<i32>,
     pending: Option<Pending>,
     queued: Option<i32>,
+    initial_selection_checked: bool,
+    remember_on_confirmation: Option<i32>,
     blocked: bool,
     unbound: bool,
     pub notice: String,
@@ -37,6 +39,17 @@ struct Pending {
     settings_accepted: bool,
 }
 impl Displays {
+    fn restore_selection(&mut self, screens: &RemoteScreens, catalog_current: bool, control_ready: bool) -> Option<i32> {
+        if self.initial_selection_checked || self.pending.is_some() || !catalog_current || !control_ready || screens.screens.is_empty() {return None;}
+        self.initial_selection_checked = true;
+        self.layout.remembered(&screens.screens).filter(|id| *id != screens.current_id)
+    }
+    fn remember_display(&mut self, screens: &RemoteScreens, catalog_current: bool, has_frame: bool) -> bool {
+        if !self.ready() || !catalog_current || !has_frame || self.selected != Some(screens.current_id) {return false;}
+        if self.remember_on_confirmation != self.selected && self.layout.last_selected().is_some() {return false;}
+        self.remember_on_confirmation = None;
+        screens.selected().is_some_and(|screen| self.layout.remember_selected(screen))
+    }
     pub fn ready(&self) -> bool {
         !self.blocked && self.pending.is_none()
     }
@@ -57,6 +70,7 @@ impl Displays {
         self.next_request = self.next_request.wrapping_add(1);
         let request = 10_000 + self.next_request;
         self.selected = Some(id);
+        self.remember_on_confirmation = Some(id);
         self.blocked = true;
         self.unbound = false;
         self.pending = Some(Pending {
@@ -111,6 +125,7 @@ impl Displays {
         }
         if code != 0 {
             self.pending = None;
+            self.remember_on_confirmation = None;
             self.blocked = true;
             self.notice = uu_i18n::format!("切换失败（远端错误 {code}），请重新选择显示器");
         } else {
@@ -150,6 +165,7 @@ impl Displays {
             self.complete();
         } else {
             self.pending = None;
+            self.remember_on_confirmation = None;
             self.blocked = true;
             self.notice = uu_i18n::text("远端拒绝了目标显示器设置，请重新选择").into();
         }
@@ -192,6 +208,7 @@ impl Displays {
                 })
                 .unwrap_or(uu_i18n::text("未完成"));
             self.pending = None;
+            self.remember_on_confirmation = None;
             self.blocked = true;
             self.notice = uu_i18n::format!("显示器切换超时（{stage}），可重试或切回其它显示器");
         }
@@ -199,6 +216,18 @@ impl Displays {
 }
 
 impl super::App {
+    pub(super) fn prepare_displays(&mut self) {
+        self.displays = Displays::default();
+        self.selected_track = 0;
+        let Some(path) = self.config.as_ref().zip(self.stream_target.as_ref())
+            .and_then(|(config, target)| super::display_layout::DisplayLayout::path(config, target)) else {return;};
+        match super::display_layout::DisplayLayout::load(&path) {
+            Ok(layout) => {self.displays.layout = layout; self.displays.layout_path = Some(path);}
+            // Preserve an unreadable original instead of overwriting it when
+            // the first catalog arrives with an otherwise empty layout.
+            Err(error) => self.set_settings_notice(uu_i18n::format!("显示器排序读取失败：{error}")),
+        }
+    }
     pub(super) fn remote_screens(&self) -> RemoteScreens {
         let mut screens = self
             .controller
@@ -238,6 +267,7 @@ impl super::App {
     fn select_native_display(&mut self,id:i32){
         let screens=self.remote_screens();
         if !screens.screens.iter().any(|s|s.id==id){return;}
+        self.displays.initial_selection_checked=true;
         if self.displays.defer_selection(id){return;}
         if self.displays.selected==Some(id) && self.displays.ready(){return;}
         if !self.controller.as_ref().is_some_and(|h|h.stats.control_open.load(std::sync::atomic::Ordering::Acquire)!=0){return;}
@@ -251,6 +281,7 @@ impl super::App {
         let sent=self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|input|input.select_display(request,id).is_ok());
         if !sent {
             self.displays.pending=None;self.displays.blocked=false;
+            self.displays.remember_on_confirmation=None;
             self.displays.selected=Some(screens.current_id);
             self.displays.notice=uu_i18n::text("切换失败：控制连接不可用").into();
         }
@@ -263,11 +294,15 @@ impl super::App {
         let Some(h)=self.controller.as_ref()else{return;};
         let binding=h.stats.display_track_binding.load(std::sync::atomic::Ordering::Acquire);
         let catalog_epoch=h.stats.native_displays.catalog_epoch();
+        let catalog_current=if binding {h.stats.remote_screens_revision.load(std::sync::atomic::Ordering::Acquire)>0}
+            else {catalog_epoch>0 && catalog_epoch==self.displays.native_frame_epoch};
+        let control_ready=h.stats.control_open.load(std::sync::atomic::Ordering::Acquire)!=0;
         for response in h.stats.native_displays.responses(){
             if !self.displays.pending.as_ref().is_some_and(|p|p.request==response.request){continue;}
             if response.accepted && (response.restart||binding) {self.displays.pending.as_mut().unwrap().accepted=true;}
             else {
                 self.displays.pending=None;self.displays.blocked=false;
+                if !response.accepted {self.displays.remember_on_confirmation=None;}
                 self.displays.selected=Some(screens.current_id);
                 self.displays.notice=if response.accepted{String::new()}else{uu_i18n::text("被控端未允许切换到该显示器").into()};
             }
@@ -282,17 +317,25 @@ impl super::App {
                 if binding {self.displays.pending=None;self.displays.blocked=false;self.displays.notice.clear();}
                 if !binding {self.displays.selected=Some(screens.current_id);}
             }
-        }else if catalog_epoch==self.displays.native_frame_epoch && !screens.screens.is_empty(){
+        }else if catalog_current && !screens.screens.is_empty(){
             self.displays.selected=Some(screens.current_id);
         }
         // The compositor may need local permission; use the same preparation
         // bound as native SDP rather than the interoperability RPC's 8 seconds.
         if self.displays.pending.as_ref().is_some_and(|p|p.sent.elapsed()>Duration::from_secs(125)){
             self.displays.pending=None;self.displays.blocked=true;
+            self.displays.remember_on_confirmation=None;
             self.displays.notice=uu_i18n::text("等待新屏幕超时，请检查被控端授权或重新连接").into();
         }
         self.selected_track=if binding {screens.screens.iter().find(|s|Some(s.id)==self.displays.selected).or_else(||screens.initial_screen()).and_then(|s|s.assigned_track()).unwrap_or(0)}else{0};
         h.stats.select_video_track(self.selected_track);
+        let restore=self.displays.restore_selection(&screens,catalog_current,control_ready);
+        let has_frame=tracks.contains(&self.selected_track)||self.textures.contains_key(&self.selected_track);
+        let remembered=self.displays.remember_display(&screens,catalog_current,has_frame);
+        if remembered {h.stats.diagnostics.record(serde_json::json!({"event":"display_selection_confirmed","screen":screens.current_id}));}
+        if let Some(id)=restore {h.stats.diagnostics.record(serde_json::json!({"event":"display_selection_restore","screen":id}));}
+        if remembered {self.save_display_layout();}
+        if let Some(id)=restore {self.select_native_display(id);}
         if let Some(id)=self.displays.queued_selection(){self.select_native_display(id);}
     }
     pub(super) fn poll_displays(&mut self, tracks: &[u32]) {
@@ -303,6 +346,66 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn catalog(current: i32) -> RemoteScreens {
+        RemoteScreens {current_id: current, screens: (0..2).map(|id| uu_core::screen_control::RemoteScreen {
+            id, display_name: format!("Source {id}"), refresh_hz: 60, kind: 0,
+            width: 1920, height: 1080, dpi_scale: None, primary: id == 0,
+            video_track_index: if id == current {0} else {-1},
+        }).collect()}
+    }
+    #[test]
+    fn reconnect_restores_saved_source_once_after_current_catalog_and_control_are_ready() {
+        let mut d = Displays::default();
+        d.layout.remember_selected(&catalog(1).screens[1]);
+        assert_eq!(d.restore_selection(&RemoteScreens::default(), true, true), None);
+        assert_eq!(d.restore_selection(&catalog(0), false, true), None);
+        assert_eq!(d.restore_selection(&catalog(0), true, false), None);
+        assert_eq!(d.restore_selection(&catalog(0), true, true), Some(1));
+        assert_eq!(d.restore_selection(&catalog(0), true, true), None);
+        // A new connection reloads the saved source, regardless of the old
+        // process's transient selected field or the host's default capture.
+        let bytes = serde_json::to_vec(&d.layout).unwrap();
+        let mut reconnected = Displays {layout: serde_json::from_slice(&bytes).unwrap(), ..Default::default()};
+        assert_eq!(reconnected.restore_selection(&catalog(0), true, true), Some(1));
+    }
+    #[test]
+    fn missing_saved_source_keeps_preference_until_a_new_choice_is_confirmed() {
+        let mut d = Displays::default();
+        d.layout.remember_selected(&catalog(1).screens[1]);
+        let mut missing = catalog(0); missing.screens.truncate(1);
+        d.selected = Some(0);
+        assert_eq!(d.restore_selection(&missing, true, true), None);
+        assert!(!d.remember_display(&missing, true, true));
+        assert_eq!(d.layout.last_selected(), Some(1));
+        d.begin(0, 0, Instant::now());
+        d.pending.as_mut().unwrap().accepted = true;
+        d.native_frame_epoch = 2;
+        assert!(d.native_frame(2, true));
+        assert!(d.remember_display(&missing, true, true));
+        assert_eq!(d.layout.last_selected(), Some(0));
+    }
+    #[test]
+    fn pending_rejected_and_stale_source_frames_do_not_overwrite_the_saved_display() {
+        let mut d = Displays {native_frame_epoch: 4, native_request_epoch: 4, ..Default::default()};
+        d.layout.remember_selected(&catalog(0).screens[0]);
+        let request = d.begin(1, 0, Instant::now());
+        assert!(!d.remember_display(&catalog(1), true, true));
+        d.response(request, 11, 3);
+        assert!(!d.remember_display(&catalog(1), true, true));
+        let request = d.begin(1, 0, Instant::now());
+        d.response(request, 11, 0);
+        assert!(!d.native_frame(4, true));
+        assert!(!d.remember_display(&catalog(1), true, true));
+        d.native_frame_epoch = 5;
+        assert!(!d.native_frame(4, true));
+        assert!(!d.native_frame(5, false));
+        assert!(d.native_frame(5, true));
+        assert!(!d.remember_display(&catalog(1), false, true));
+        assert!(!d.remember_display(&catalog(1), true, false));
+        assert_eq!(d.layout.last_selected(), Some(0));
+        assert!(d.remember_display(&catalog(1), true, true));
+        assert_eq!(d.layout.last_selected(), Some(1));
+    }
     #[test]
     fn native_switch_requires_acceptance_inventory_and_image_of_the_new_generation(){
         let mut d=Displays::default();d.native_frame_epoch=4;d.native_request_epoch=4;

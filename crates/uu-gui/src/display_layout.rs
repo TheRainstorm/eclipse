@@ -1,5 +1,6 @@
 //! Local tab order and stable local numbers, independent of capture/OS layout.
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use uu_core::screen_control::RemoteScreen;
 
@@ -9,16 +10,17 @@ pub(super) struct DisplayLayout {
     numbers: Vec<i32>,
     order: Vec<i32>,
     last_selected: Option<i32>,
+    last_source: Option<String>,
 }
 
 pub(super) struct DraggedDisplay(pub i32);
 
 impl DisplayLayout {
-    pub fn path(config: &uu_core::Config, device: &str) -> Option<PathBuf> {
-        if device.is_empty() || device.len() > 96 {
-            return None;
-        }
-        let key: String = device.bytes().map(|b| format!("{b:02x}")).collect();
+    pub fn path(config: &uu_core::Config, target: &super::sessions::StreamTarget) -> Option<PathBuf> {
+        // Use the same connection identity as workspace reuse. A profile's
+        // immutable launch file and alias may change on every connection.
+        let identity = serde_json::to_vec(&target.key()).ok()?;
+        let key = format!("{:x}", Sha256::digest(identity));
         Some(config.at(format!("display-tabs/{key}.json")))
     }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
@@ -51,9 +53,21 @@ impl DisplayLayout {
         changed
     }
     pub fn last_selected(&self) -> Option<i32> {self.last_selected}
-    pub fn remember_selected(&mut self, id: i32) -> bool {
-        if id < 0 || self.last_selected == Some(id) {return false;}
-        self.last_selected = Some(id);
+    pub fn remembered(&self, screens: &[RemoteScreen]) -> Option<i32> {
+        if let Some(name) = &self.last_source {
+            // Native numeric IDs are only stable within a host session. Match
+            // the source name after reconnect, and reject ambiguous names.
+            let mut matches = screens.iter().filter(|s| &s.display_name == name);
+            let screen = matches.next()?;
+            return matches.next().is_none().then_some(screen.id);
+        }
+        self.last_selected.filter(|id| screens.iter().any(|s| s.id == *id))
+    }
+    pub fn remember_selected(&mut self, screen: &RemoteScreen) -> bool {
+        let source = (!screen.display_name.is_empty()).then(|| screen.display_name.clone());
+        if screen.id < 0 || (self.last_selected == Some(screen.id) && self.last_source == source) {return false;}
+        self.last_selected = Some(screen.id);
+        self.last_source = source;
         true
     }
     pub fn number(&self, id: i32) -> Option<usize> {
@@ -138,13 +152,45 @@ mod tests {
         let mut layout = DisplayLayout::default();
         layout.sync(&[screen(7), screen(42)]);
         layout.move_tab(42, 7, false);
-        assert!(layout.remember_selected(42));
-        assert!(!layout.remember_selected(42));
+        assert!(layout.remember_selected(&screen(42)));
+        assert!(!layout.remember_selected(&screen(42)));
         layout.save(&path).unwrap();
         let restored = DisplayLayout::load(&path).unwrap();
         assert_eq!(restored.order, [42, 7]);
         assert_eq!(restored.number(42), Some(2));
         assert_eq!(restored.last_selected(), Some(42));
         std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn reconnect_matches_source_name_instead_of_a_reassigned_numeric_id() {
+        let mut layout = DisplayLayout::default();
+        layout.remember_selected(&screen(42));
+        let mut same_source = screen(9);
+        same_source.display_name = "屏幕42".into();
+        assert_eq!(layout.remembered(&[screen(42), same_source.clone()]), None); // ambiguous names
+        let mut reassigned = screen(42);
+        reassigned.display_name = "Another source".into();
+        assert_eq!(layout.remembered(&[reassigned.clone(), same_source]), Some(9));
+        assert_eq!(layout.remembered(&[reassigned]), None);
+        assert_eq!(layout.last_selected(), Some(42)); // a missing source is retained
+        let legacy: DisplayLayout = serde_json::from_str(r#"{"last_selected":42}"#).unwrap();
+        assert_eq!(legacy.remembered(&[screen(42)]), Some(42));
+    }
+    #[test]
+    fn connection_layout_path_survives_new_snapshot_alias_and_client_mode() {
+        use super::super::sessions::{ConnectionTarget, StreamTarget};
+        let config = uu_core::Config { data_dir: "generated-data".into(), state_dir: "generated-state".into(), signaling_host: String::new() };
+        let mut target = StreamTarget { connection: ConnectionTarget::NativeProfile { id: "profile-one".into(), snapshot: "launch-one.json".into() }, alias: "Original name".into(), view_only: false };
+        let original = DisplayLayout::path(&config, &target).unwrap();
+        target.connection = ConnectionTarget::NativeProfile { id: "profile-one".into(), snapshot: "launch-two.json".into() };
+        target.alias = "Renamed".into(); target.view_only = true;
+        assert_eq!(DisplayLayout::path(&config, &target).unwrap(), original);
+        target.connection = ConnectionTarget::NativeProfile { id: "profile-two".into(), snapshot: "launch-two.json".into() };
+        assert_ne!(DisplayLayout::path(&config, &target).unwrap(), original);
+        target.connection = ConnectionTarget::Plugin { plugin: "example-addon".into(), identity: "generated-device".repeat(16) };
+        let first_plugin = DisplayLayout::path(&config, &target).unwrap();
+        assert!(first_plugin.file_name().unwrap().len() < 100);
+        target.connection = ConnectionTarget::Plugin { plugin: "other-addon".into(), identity: "generated-device".repeat(16) };
+        assert_ne!(DisplayLayout::path(&config, &target).unwrap(), first_plugin);
     }
 }
