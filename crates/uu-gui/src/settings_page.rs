@@ -318,7 +318,7 @@ impl SoftwareSection {
     pub fn reset(self,s:&mut Settings) {
         let defaults=Settings::default();
         match self {
-            Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;}
+            Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;s.close_to_tray=defaults.close_to_tray;}
             Self::Appearance=>{s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
             Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
             Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
@@ -340,6 +340,11 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
             });});
         ui.checkbox(&mut s.app_autostart,uu_i18n::text("登录系统时自动打开软件"));
         note(ui,uu_i18n::text("本机服务是否随软件启动，在服务管理的连接服务页设置。"));
+        if super::tray::supported() {
+            ui.add_space(8.0);
+            ui.checkbox(&mut s.close_to_tray,uu_i18n::text("关闭主窗口时最小化到系统托盘"));
+            note(ui,uu_i18n::text("共享服务继续运行；从托盘菜单重新打开或退出 Eclipse。"));
+        }
     }),
     SoftwareSection::Appearance=>{group(ui,uu_i18n::text("设备页外观"),|ui| {
         ui.checkbox(&mut s.wallpaper_enabled,uu_i18n::text("显示背景壁纸"));

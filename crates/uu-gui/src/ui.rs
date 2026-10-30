@@ -87,10 +87,7 @@ impl App {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if icon_button_tinted(ui, Icon::Close, uu_i18n::text("关闭"), false, title_color).clicked() {
-                            self.disconnect();
-                            self.close_at = Some(
-                                std::time::Instant::now() + std::time::Duration::from_millis(200),
-                            );
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                         if icon_button_tinted(ui, Icon::Max, uu_i18n::text("最大化 / 还原"), false, title_color).clicked() {
                             self.toggle_maximized(ctx);

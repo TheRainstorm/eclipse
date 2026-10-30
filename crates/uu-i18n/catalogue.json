@@ -1594,5 +1594,10 @@
   "当前程序版本：{} · {}": "Current application version: {} · {}",
   "设备与屏幕": "Devices and displays",
   "输入状态显示": "Input status display",
-  "全屏串流失去焦点时，显示“点击画面以获取键盘控制”提示。": "Show the keyboard-control hint when a fullscreen stream loses focus."
+  "全屏串流失去焦点时，显示“点击画面以获取键盘控制”提示。": "Show the keyboard-control hint when a fullscreen stream loses focus.",
+  "关闭主窗口时最小化到系统托盘": "Minimize to the system tray when closing the main window",
+  "共享服务继续运行；从托盘菜单重新打开或退出 Eclipse。": "Sharing continues running. Use the tray menu to reopen or quit Eclipse.",
+  "打开 Eclipse": "Open Eclipse",
+  "退出 Eclipse": "Quit Eclipse",
+  "无法启用系统托盘：{error}": "Could not enable the system tray: {error}"
 }

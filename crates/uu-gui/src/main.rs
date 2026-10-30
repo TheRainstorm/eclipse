@@ -18,6 +18,7 @@ mod keyboard_capture;
 mod input_capture;
 mod settings;
 mod app_startup;
+mod tray;
 mod settings_page;
 mod plugin_ui;
 mod theme;
@@ -164,7 +165,8 @@ struct App {
     view_only: bool,
     stream_menu: stream_menu::StreamMenu,
     window_sizing: std::rc::Rc<std::cell::RefCell<window::WindowSizing>>,
-    close_at: Option<std::time::Instant>,
+    tray: Option<tray::Tray>,
+    launcher_hidden: bool,
     disconnecting: bool,
     output_reconnect_pending: bool,
     exit_requested: bool,
@@ -412,7 +414,8 @@ impl App {
             view_only: false,
             stream_menu: stream_menu::StreamMenu::default(),
             window_sizing: Default::default(),
-            close_at: None,
+            tray: None,
+            launcher_hidden: false,
             disconnecting: false,
             output_reconnect_pending: false,
             exit_requested: false,
@@ -947,7 +950,53 @@ impl eframe::App for App {
     }
 }
 impl App {
+    fn launcher_close(&mut self,ctx:&egui::Context)->bool {
+        if self.stream_target.is_some() || self.workspace_tabs.is_some() {return false;}
+        // A second launcher invocation can restore the native window directly.
+        // Bring eframe's presentation state back in sync with that activation.
+        if self.launcher_hidden && eframe::viewport_window(ctx).is_some_and(|window|window.is_visible()==Some(true)) {
+            self.launcher_hidden=false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        }
+        if let Some(action)=self.tray.as_ref().and_then(tray::Tray::take_action) {
+            match action {
+                tray::Action::Open=>{
+                    self.launcher_hidden=false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                },
+                tray::Action::Exit=>{self.exit_requested=true;self.disconnect();},
+            }
+        }
+        if !self.preferences.close_to_tray || self.exit_requested {
+            if self.launcher_hidden && !self.exit_requested {
+                self.launcher_hidden=false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            }
+            self.tray=None;
+        }
+        let hide_requested=!self.exit_requested && self.preferences.close_to_tray && tray::supported()
+            && ctx.input(|input|input.viewport().close_requested());
+        if hide_requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            let result=(||->std::io::Result<()> {
+                if self.tray.is_none(){self.tray=Some(tray::Tray::new(self.platform.window_id(),ctx)?);}
+                if !self.tray.as_ref().unwrap().ensure() {return Err(std::io::Error::other("Windows notification area unavailable"));}
+                Ok(())
+            })();
+            match result {
+                Ok(())=>{self.launcher_hidden=true;ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));},
+                Err(error)=>{
+                    // Keep a visible recovery path if Explorer cannot own an icon.
+                    self.select_workspace_page(workspace_ui::Page::Settings);
+                    self.set_settings_notice(uu_i18n::format!("无法启用系统托盘：{error}"));
+                },
+            }
+        }
+        hide_requested
+    }
     fn update_frame(&mut self,ctx:&egui::Context,cpu_usage:Option<f32>) {
+        let close_to_tray=self.launcher_close(ctx);
         if let Some(result)=eframe::vsync_result(ctx) {
             match result {
                 Ok(enabled)=>self.presentation_vsync=enabled,
@@ -984,18 +1033,10 @@ impl App {
             self.fullscreen = fullscreen;
         }
         self.window_edge_active = !self.mouse_captured && window::resize_border(ctx, self.fullscreen);
-        if self.workspace_tabs.is_none() && ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running() || self.lan.host.running() || self.workspace.host.running()) {
+        if self.workspace_tabs.is_none() && !close_to_tray && ctx.input(|i| i.viewport().close_requested()) && (self.controller.is_some() || self.native_host.running() || self.lan.host.running() || self.workspace.host.running()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.exit_requested = true;
             self.disconnect();
-        }
-        if self
-            .close_at
-            .is_some_and(|at| std::time::Instant::now() >= at)
-        {
-            self.exit_requested = true;
-            self.disconnect();
-            self.close_at = None;
         }
         self.sessions.reap();
         self.poll_application_settings();
@@ -1243,7 +1284,7 @@ impl App {
         for event in self.platform.focus_events() {
             if let Some(h) = &self.controller { h.stats.diagnostics.record(event); }
         }
-        let idle_poll_ms = if self.controller.is_some() || self.close_at.is_some() { 100 } else { 750 };
+        let idle_poll_ms = if self.controller.is_some() || self.exit_requested { 100 } else { 750 };
         // Frame and input events wake the UI directly. Extra vblank-paced
         // redraws regressed WGL ownership waits on the production client.
         ctx.request_repaint_after(std::time::Duration::from_millis(idle_poll_ms));
