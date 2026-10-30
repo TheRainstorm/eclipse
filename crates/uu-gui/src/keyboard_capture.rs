@@ -171,10 +171,11 @@ pub struct RecipientKeys {
     recipient: (isize,u64),
     blocked_chord: bool,
     consume_chord: bool,
+    bindings_blocked: bool,
 }
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 impl RecipientKeys {
-    pub const fn new() -> Self {Self {keys:Keys::new(),recipient:(0,0),blocked_chord:false,consume_chord:false}}
+    pub const fn new() -> Self {Self {keys:Keys::new(),recipient:(0,0),blocked_chord:false,consume_chord:false,bindings_blocked:false}}
     pub fn select(&mut self, recipient:(isize,u64), modifiers:&Modifiers) {
         if self.recipient != recipient {
             self.consume_chord = modifiers.any() && (self.consume_chord || self.keys.remote_modifier());
@@ -188,17 +189,23 @@ impl RecipientKeys {
             let held=modifiers.any()||self.keys.remote_modifier();
             self.keys.suspend();self.keys.bindings=bindings.clone();
             self.blocked_chord=held;self.consume_chord=held;
+            self.bindings_blocked=held;
         }
     }
     pub fn ready(&mut self,modifiers:&Modifiers)->bool {
-        if !modifiers.any() { self.blocked_chord=false;self.consume_chord=false; }
+        if !modifiers.any() { self.blocked_chord=false;self.consume_chord=false;self.bindings_blocked=false; }
         !self.blocked_chord
     }
     pub fn event(&mut self,vk:u32,pressed:bool,route:WindowRoute,modifiers:&Modifiers,already_down:bool)->Decision {
         let ready=self.ready(modifiers);
-        if !ready && self.consume_chord {return self.keys.consume(vk,pressed);}
-        self.keys.event_with_bindings(vk,pressed,route.input&&ready,route.shortcuts&&ready,
-            route.nested_passthrough,route.fullscreen,modifiers.shortcut_modifiers(),modifiers.altgr(),already_down)
+        // Recipient changes suspend remote input until the old modifiers
+        // unwind. Local commands retain their window ownership and can still
+        // match fresh keys, so a held modifier can navigate several sessions.
+        // Rebinding still requires releasing the old chord before matching.
+        let decision=self.keys.event_with_bindings(vk,pressed,route.input&&route.foreground&&ready,
+            route.shortcuts&&route.foreground&&!self.bindings_blocked,
+            route.nested_passthrough,route.fullscreen,modifiers.shortcut_modifiers(),modifiers.altgr(),already_down);
+        if !ready && self.consume_chord && decision==Decision::Forward {self.keys.consume(vk,pressed)}else{decision}
     }
 }
 /// WM_KEY* uses generic modifiers; scan code and extended bit retain sides.
@@ -292,6 +299,36 @@ mod tests {
         assert_eq!(keys.event(0xa0,false,route,&modifiers,false),Decision::Consume);
         assert_eq!(keys.event(0x41,true,route,&modifiers,false),Decision::Remote{vk:0x41,pressed:true});
         assert_eq!(keys.event(0x41,false,route,&modifiers,false),Decision::Remote{vk:0x41,pressed:false});
+    }
+    #[test]
+    fn local_commands_can_navigate_repeatedly_while_old_remote_modifiers_stay_suspended() {
+        let mut keys=RecipientKeys::new();let mut modifiers=Modifiers::new();
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false,fullscreen:true};
+        keys.select((10,1),&modifiers);
+        for modifier in [0xa2,0xa4] {
+            modifiers.observe(modifier,true);
+            assert_eq!(keys.event(modifier,true,route,&modifiers,false),Decision::Remote{vk:modifier,pressed:true});
+        }
+        for (session,key,action) in [(2,0x27,Action::NextComputer),(1,0x25,Action::PreviousComputer),(2,0x27,Action::NextComputer)] {
+            assert_eq!(keys.event(key,true,route,&modifiers,false),Decision::Shortcut(action));
+            keys.select((10,session),&modifiers);
+            assert_eq!(keys.event(key,true,route,&modifiers,true),Decision::Consume);
+            assert_eq!(keys.event(key,false,route,&modifiers,false),Decision::Consume);
+            assert_eq!(keys.event(0x41,true,route,&modifiers,false),Decision::Consume);
+            assert_eq!(keys.event(0x41,false,route,&modifiers,false),Decision::Consume);
+        }
+        assert_eq!(keys.event(0x25,true,WindowRoute{nested_passthrough:true,..route},&modifiers,false),Decision::Consume);
+        assert_eq!(keys.event(0x25,false,route,&modifiers,false),Decision::Consume);
+        let mut bindings=uu_core::hotkeys::Bindings::default();
+        bindings.set(Action::NextComputer,vec![uu_core::hotkeys::Chord::ctrl_alt(0x70)]);
+        keys.configure(&bindings,&modifiers);
+        assert_eq!(keys.event(0x70,true,route,&modifiers,false),Decision::Consume,"binding changes still wait for modifier release");
+        assert_eq!(keys.event(0x70,false,route,&modifiers,false),Decision::Consume);
+        for modifier in [0xa2,0xa4] {
+            modifiers.observe(modifier,false);
+            assert_eq!(keys.event(modifier,false,route,&modifiers,false),Decision::Consume);
+        }
+        assert_eq!(keys.event(0x41,true,route,&modifiers,false),Decision::Remote{vk:0x41,pressed:true});
     }
     #[test]
     fn a_local_preheld_chord_stays_local_when_a_recipient_is_selected() {
