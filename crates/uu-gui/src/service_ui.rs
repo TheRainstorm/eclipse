@@ -20,6 +20,7 @@ use windows_sys::Win32::System::Services::{SERVICE_RUNNING, SERVICE_STOPPED};
 #[derive(Default)]
 pub(super) struct Entry {
     status: Option<u32>,
+    build:Option<BuildStatus>,
     next: Option<Instant>,
     pending_install: bool,
     install_started: bool,
@@ -35,7 +36,8 @@ impl Entry {
     ) -> bool {
         let mut installed = false;
         if self.next.is_none_or(|next| Instant::now() >= next) {
-            self.status = status().ok();
+            self.build=build_status().ok();
+            self.status = self.build.as_ref().map(|build|build.state).or_else(||status().ok());
             self.next = Some(Instant::now() + Duration::from_secs(1));
         }
         if let Some(job) = &self.job {
@@ -74,6 +76,7 @@ impl Entry {
         egui::Frame::group(ui.style()).show(ui,|ui| {
             ui.strong(uu_i18n::text("Windows 后台服务 · 锁屏串流"));
             ui.label(match self.status {Some(SERVICE_RUNNING)=>uu_i18n::text("后台服务运行中"),Some(SERVICE_STOPPED)=>uu_i18n::text("后台服务已停止"),Some(_)=>uu_i18n::text("后台服务正在转换状态"),None=>uu_i18n::text("后台服务尚未安装")});
+            if let Some(build)=&self.build {version_labels(ui,build);}
             ui.weak(uu_i18n::text("安装后随 Windows 启动，在已登录的控制台用户中支持锁屏串流。首次安装使用已保存的共享设置、账号和配对授权。"));
             let busy=self.job.is_some()||self.pending_install;
             if self.status.is_some() {
@@ -116,6 +119,21 @@ impl Entry {
         });
     }
 }
+fn version_labels(ui:&mut egui::Ui,build:&BuildStatus) {
+    if let Some(running)=&build.running {
+        ui.label(uu_i18n::format!("后台运行版本：{} · PID {}",running.label(),build.process_id))
+            .on_hover_text(&running.revision);
+    } else if build.process_id!=0 {
+        ui.label(uu_i18n::format!("后台运行版本：无法读取 · PID {}",build.process_id))
+            .on_hover_text(build.running_error.as_deref().unwrap_or("Unknown service image"));
+    }
+    if let Some(installed)=&build.installed {
+        if build.running.as_ref().is_none_or(|running|running.revision!=installed.revision) {
+            ui.label(uu_i18n::format!("后台安装版本：{}",installed.label())).on_hover_text(&installed.revision);
+        }
+    }
+    ui.weak(uu_i18n::format!("当前程序版本：{} · {}",env!("CARGO_PKG_VERSION"),crate::build_info::label()));
+}
 
 enum Job {
     Refresh,
@@ -132,6 +150,7 @@ enum Event {
     Done(bool, Result<(), String>),
 }
 struct Manager {
+    build:Option<BuildStatus>,
     trust: TrustStore,
     sender: mpsc::Sender<Job>,
     events: mpsc::Receiver<Event>,
@@ -292,6 +311,7 @@ impl Manager {
             }
         });
         Ok(Self {
+            build:build_status().ok(),
             trust,
             sender,
             events,
@@ -335,6 +355,7 @@ impl Manager {
                     }
                 }
                 Event::State(state, result) => {
+                    self.build=build_status().ok();
                     self.state = state;
                     match result {
                         Ok(Response::Status {
@@ -397,6 +418,7 @@ impl eframe::App for Manager {
                 SERVICE_STOPPED => uu_i18n::text("已停止"),
                 _ => uu_i18n::text("正在读取服务状态…"),
             });
+            if let Some(build)=&self.build {version_labels(ui,build);}
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(
@@ -673,6 +695,7 @@ mod tests {
         let mut saved = Sharing::default();
         saved.name = "Generated service".into();
         let mut manager = Manager {
+            build:None,
             trust,
             sender,
             events,

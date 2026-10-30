@@ -353,6 +353,100 @@ pub fn status() -> Result<u32> {
     winok(unsafe { QueryServiceStatus(service.0, &mut status) })?;
     Ok(status.dwCurrentState)
 }
+/// Read-only display metadata from SCM and the running supervisor image. This
+/// is not an authorization check and never relaxes the protected file ACLs.
+#[derive(Clone, serde::Serialize)]
+pub struct BuildVersion {
+    pub revision:String,
+}
+impl BuildVersion {
+    pub fn label(&self)->String {
+        self.revision[..12].into()
+    }
+}
+#[derive(Clone, serde::Serialize)]
+pub struct BuildStatus {
+    pub state:u32,
+    pub process_id:u32,
+    pub installed:Option<BuildVersion>,
+    pub running:Option<BuildVersion>,
+    pub running_error:Option<String>,
+}
+fn image_build(paths:&Paths,image:&Path)->Option<BuildVersion> {
+    if !matches!(image.file_name()?.to_str()?,"eclipse-cli.exe"|"uu.exe") {return None;}
+    let directory=image.parent()?;
+    let relative=directory.strip_prefix(paths.programs.join("versions")).ok()?;
+    if relative.components().count()!=1 {return None;}
+    let value=relative.to_str()?;
+    let (revision,build)=value.split_once('-')?;
+    if revision.len()!=40 || build.len()!=64 || !revision.bytes().chain(build.bytes()).all(|c|c.is_ascii_hexdigit()) {return None;}
+    Some(BuildVersion{revision:revision.into()})
+}
+fn service_process(service:SC_HANDLE)->Result<SERVICE_STATUS_PROCESS> {
+    let mut value:SERVICE_STATUS_PROCESS=unsafe{std::mem::zeroed()};
+    let mut length=0;
+    winok(unsafe{QueryServiceStatusEx(service,SC_STATUS_PROCESS_INFO,(&mut value as *mut SERVICE_STATUS_PROCESS).cast(),std::mem::size_of_val(&value) as u32,&mut length)})?;
+    Ok(value)
+}
+pub fn build_status()->Result<BuildStatus> {
+    let paths=Paths::discover()?;
+    let service=open_service(SERVICE_QUERY_STATUS|SERVICE_QUERY_CONFIG)?;
+    let state=service_process(service.0)?;
+    let mut length=0;
+    unsafe{QueryServiceConfigW(service.0,ptr::null_mut(),0,&mut length);}
+    ensure!(length>0 && length<=8192,"Invalid service configuration size");
+    let mut storage=vec![0usize;(length as usize+std::mem::size_of::<usize>()-1)/std::mem::size_of::<usize>()];
+    let config=storage.as_mut_ptr().cast::<QUERY_SERVICE_CONFIGW>();
+    winok(unsafe{QueryServiceConfigW(service.0,config,length,&mut length)})?;
+    let command=unsafe{(*config).lpBinaryPathName};
+    let base=storage.as_ptr() as usize;
+    let end=base+storage.len()*std::mem::size_of::<usize>();
+    ensure!(!command.is_null() && (command as usize)>=base && (command as usize)<end,"Invalid service binary path");
+    let capacity=(end-command as usize)/2;
+    let command=unsafe{std::slice::from_raw_parts(command,capacity)};
+    let command=&command[..command.iter().position(|c|*c==0).ok_or_else(||anyhow::anyhow!("Unterminated service binary path"))?];
+    let mut argc=0;
+    let argv=unsafe{CommandLineToArgvW(wide(OsString::from_wide(command)).as_ptr(),&mut argc)};
+    ensure!(!argv.is_null(),"Invalid service command line");
+    let installed=if argc>0 {
+        let first=unsafe{*argv};let mut n=0;
+        unsafe{while *first.add(n)!=0 {n+=1;}}
+        image_build(&paths,&PathBuf::from(unsafe{OsString::from_wide(std::slice::from_raw_parts(first,n))}))
+    } else {None};
+    unsafe{LocalFree(argv.cast());}
+    let mut running_error=None;
+    let running=if state.dwProcessId!=0 && state.dwCurrentState!=SERVICE_STOPPED {
+        let result=(||->Result<Option<BuildVersion>> {
+            let process=Handle(unsafe{OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,0,state.dwProcessId)});
+            ensure!(!process.0.is_null(),"{}",std::io::Error::last_os_error());
+            let mut image=vec![0u16;32768];let mut length=image.len() as u32;
+            winok(unsafe{QueryFullProcessImageNameW(process.0,0,image.as_mut_ptr(),&mut length)})?;
+            ensure!(service_process(service.0)?.dwProcessId==state.dwProcessId,"Service restarted during version query");
+            Ok(image_build(&paths,&PathBuf::from(OsString::from_wide(&image[..length as usize]))))
+        })();
+        match result {Ok(build)=>build,Err(error)=>{running_error=Some(error.to_string());None}}
+    }else{None};
+    Ok(BuildStatus{state:state.dwCurrentState,process_id:state.dwProcessId,installed,running,running_error})
+}
+#[cfg(test)]
+mod build_version_tests {
+    use super::*;
+    #[test]
+    fn service_build_metadata_requires_a_complete_version_directory_and_known_image() {
+        let paths=Paths{root:std::env::temp_dir().join("generated-service-data"),programs:std::env::temp_dir().join("generated-service-programs")};
+        let revision="a".repeat(40);let build="b".repeat(64);
+        let directory=paths.programs.join("versions").join(format!("{revision}-{build}"));
+        for image in ["eclipse-cli.exe","uu.exe"] {
+            let value=image_build(&paths,&directory.join(image)).unwrap();
+            assert_eq!(value.revision,revision);assert_eq!(value.label(),"a".repeat(12));
+        }
+        for image in [directory.join("eclipse.exe"),directory.join("nested/eclipse-cli.exe"),
+            paths.programs.join("versions/development/eclipse-cli.exe"),
+            paths.programs.join("other").join(format!("{revision}-{build}/eclipse-cli.exe"))] {
+            assert!(image_build(&paths,&image).is_none());
+        }
+    }
+}
 /// Run from a GUI worker, never the render thread. No shell is involved.
 pub fn elevated(exe: &Path, arguments: &str) -> Result<()> {
     let verb = wide("runas");

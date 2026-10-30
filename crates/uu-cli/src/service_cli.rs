@@ -99,7 +99,10 @@ pub enum Command {
     Start,
     Stop,
     Restart,
-    Status,
+    Status {
+        #[arg(long)]
+        json:bool,
+    },
     /// Remove the service registration; protected pairing/configuration is kept.
     Remove,
     /// Open the local administrator GUI for the installed host.
@@ -135,7 +138,8 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
             stop()?;
             start()
         }
-        Command::Status => {
+        Command::Status {json} => {
+            if json {println!("{}",serde_json::to_string_pretty(&build_status()?)?);return Ok(());}
             println!(
                 "{}",
                 match status() {
@@ -145,6 +149,11 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
                     Err(_) => "后台服务未安装或不可访问",
                 }
             );
+            if let Ok(build)=build_status() {
+                if let Some(running)=build.running {println!("后台运行版本：{} · PID {}",running.label(),build.process_id);}
+                else if build.process_id!=0 {println!("后台运行版本：无法读取 · PID {}",build.process_id);}
+                if let Some(installed)=build.installed {println!("后台安装版本：{}",installed.label());}
+            }
             Ok(())
         }
         Command::Remove => {

@@ -1587,5 +1587,9 @@
   "上一个远端屏幕（全屏）": "Previous remote display (fullscreen)",
   "下一个远端屏幕（全屏）": "Next remote display (fullscreen)",
   "上一台串流电脑（全屏）": "Previous streaming computer (fullscreen)",
-  "下一台串流电脑（全屏）": "Next streaming computer (fullscreen)"
+  "下一台串流电脑（全屏）": "Next streaming computer (fullscreen)",
+  "后台运行版本：{} · PID {}": "Running service version: {} · PID {}",
+  "后台运行版本：无法读取 · PID {}": "Running service version: unavailable · PID {}",
+  "后台安装版本：{}": "Installed service version: {}",
+  "当前程序版本：{} · {}": "Current application version: {} · {}"
 }
