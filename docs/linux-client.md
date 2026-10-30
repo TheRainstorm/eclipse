@@ -86,7 +86,7 @@ python3 tools/linux/wayland_smoke.py \
 
 ## 确认硬解与定位延迟
 
-串流时按 Ctrl+Alt+Shift+S 开启 HUD，悬停诊断可查看实际使用的 `VAAPI 硬解` 或 `OpenH264 软解` 后端和回退原因。编译时启用 `vaapi` 或 `vainfo` 显示支持 H.264，都不能单独证明当前会话正在硬解。
+串流时按 Ctrl+Alt+S 开启 HUD，悬停诊断可查看实际使用的 `VAAPI 硬解` 或 `OpenH264 软解` 后端和回退原因。编译时启用 `vaapi` 或 `vainfo` 显示支持 H.264，都不能单独证明当前会话正在硬解。
 
 Decode 包含解码调用、线程往返和硬件帧下载，并非只有视频芯片运行时间；De 是解码输出帧率，Rd 是提交的新画面帧率，两者可能不同。新版对线性与普通 Intel Y 平铺 NV12 表面使用只读 DMA-BUF 下载，避免 VAImage 映射时的双向平铺转换，并复用 CPU 输出缓冲。仍然存在 CPU 下载和纹理上传，不是 GPU 零拷贝；未知或压缩布局自动保留驱动下载路径。
 

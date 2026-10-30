@@ -2,19 +2,19 @@
 
 在“应用设置 → 快捷键”中点击现有绑定并按下新组合。`＋` 增加绑定，`×` 移除，单项“默认”恢复原组合。每项最多三个绑定，支持 Ctrl、Alt、Shift、Win/Super 与普通键；录入中按 Esc 取消。更改先保留在草稿中，保存并应用后生效。
 
-快捷键属于本机应用，全部串流窗口共用；保存后会同步到已打开的新版窗口，设备命名配置不覆盖它们。常用动作默认采用 Ctrl+Alt+Shift；全屏导航使用 Ctrl+Alt+方向键。显式自定义组合和禁用状态保持不变，单项“默认”可恢复对应默认值。菜单提示取自当前实际绑定。
+快捷键属于本机应用，全部串流窗口共用；保存后会同步到已打开的新版窗口，设备命名配置不覆盖它们。常用动作默认采用 Ctrl+Alt；全屏导航使用 Ctrl+Alt+方向键。显式自定义组合和禁用状态保持不变，单项“默认”可恢复对应默认值。菜单提示取自当前实际绑定。
 
 | 操作 | 默认组合 |
 |---|---|
-| HUD | Ctrl+Alt+Shift+S |
-| 悬浮菜单 | Ctrl+Alt+Shift+H |
-| 静音 | Ctrl+Alt+Shift+M |
-| 全屏 | Ctrl+Alt+Shift+F 或 Ctrl+Alt+Shift+X |
-| 结束串流 | Ctrl+Alt+Shift+Q |
-| 释放 / 恢复控制 | Ctrl+Alt+Shift+Z |
-| 桌面 / 游戏鼠标 | Ctrl+Alt+Shift+P |
-| 光标显示 | Ctrl+Alt+Shift+C |
-| 嵌套快捷键透传 | Ctrl+Alt+Shift+F12 |
+| HUD | Ctrl+Alt+S |
+| 悬浮菜单 | Ctrl+Alt+H |
+| 静音 | Ctrl+Alt+M |
+| 全屏 | Ctrl+Alt+F 或 Ctrl+Alt+X |
+| 结束串流 | Ctrl+Alt+Q |
+| 释放 / 恢复控制 | Ctrl+Alt+Z |
+| 桌面 / 游戏鼠标 | Ctrl+Alt+P |
+| 光标显示 | Ctrl+Alt+C |
+| 嵌套快捷键透传 | Ctrl+Alt+F12 |
 | 上一个 / 下一个远端屏幕（仅全屏） | Ctrl+Alt+Up / Down |
 | 上一台 / 下一台串流电脑（仅全屏） | Ctrl+Alt+Left / Right |
 
