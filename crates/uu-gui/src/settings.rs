@@ -44,6 +44,7 @@ pub struct Settings {
     pub device_view: DeviceView,
     pub wallpaper_enabled: bool,
     pub app_autostart:bool,
+    pub show_input_status:bool,
     pub wallpaper_api: String,
 }
 impl Default for Settings {
@@ -51,7 +52,7 @@ impl Default for Settings {
         Self { client: ClientSettings::default(), application_hotkeys:None, language:uu_i18n::Language::default(), lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
-            device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,
+            device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,show_input_status:false,
             wallpaper_api:"https://picsum.photos/1920/1080".into() }
     }
 }
@@ -261,6 +262,11 @@ impl super::App {
                 self.preferences.hotkeys=keys.clone();self.settings_draft.hotkeys=keys;
             }
             self.preferences.application_hotkeys=value.application_hotkeys;
+            if self.preferences.show_input_status!=value.show_input_status {
+                self.preferences.show_input_status=value.show_input_status;
+                self.settings_draft.show_input_status=value.show_input_status;
+                self.context.request_repaint();
+            }
             if self.preferences.language!=value.language {
                 self.preferences.language=value.language;self.settings_draft.language=value.language;
                 uu_i18n::set_language(value.language);self.hud_cache.invalidate();self.context.request_repaint();
@@ -553,6 +559,7 @@ impl super::App {
                 self.settings_draft.wallpaper_api=defaults.wallpaper_api;
                 self.settings_draft.lan_discovery=defaults.lan_discovery;
                 self.settings_draft.app_autostart=defaults.app_autostart;
+                self.settings_draft.show_input_status=defaults.show_input_status;
                 self.settings_draft.application_hotkeys=Some(Default::default());
             }
             if self.workspace.host.running() {
@@ -696,8 +703,10 @@ mod tests {
         let root=std::env::temp_dir().join(format!("eclipse-client-settings-{}",uuid::Uuid::new_v4()));
         let path=root.join("gui-settings.json");
         let mut stream=Settings::default();
+        assert!(!stream.show_input_status);
         stream.save(&path).unwrap();
         let mut launcher=Settings::load(&path).unwrap();
+        launcher.show_input_status=true;
         launcher.wallpaper_enabled=false;
         launcher.lan_discovery=false;
         launcher.save(&path).unwrap();
@@ -709,6 +718,7 @@ mod tests {
         assert_eq!(reopened.client,stream.client);
         assert!(!reopened.wallpaper_enabled);
         assert!(!reopened.lan_discovery);
+        assert!(reopened.show_input_status);
         std::fs::write(&path,b"broken").unwrap();
         assert!(stream.save_client(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(),b"broken");

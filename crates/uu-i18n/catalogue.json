@@ -861,7 +861,7 @@
   "原生连接：同步文本和图片剪贴板": "Native: sync text and image clipboard",
   "兼容连接：同步文本剪贴板": "Compatible: sync text clipboard",
   "仅同步当前前台串流；原生共享需主机许可，支持最多30 KiB文本和8 MiB PNG图片，文件不传输。兼容连接只支持文本。": "Syncs only the foreground stream. Native sharing needs host permission and supports text up to 30 KiB and PNG images up to 8 MiB, excluding files. Compatible connections support text only.",
-  "串流界面": "Stream interface",
+  "串流界面": "Streaming interface",
   "全屏悬浮入口默认开启": "Enable floating handle in fullscreen by default",
   "默认位于右边缘、距顶部 15%。悬停展开、离开收起，{} 隐藏或显示。": "By default, placed on the right edge, 15% from the top. Hover to expand, leave to collapse; {} hides or shows it.",
   "客户端快捷键": "Client shortcuts",
@@ -1592,5 +1592,7 @@
   "后台运行版本：无法读取 · PID {}": "Running service version: unavailable · PID {}",
   "后台安装版本：{}": "Installed service version: {}",
   "当前程序版本：{} · {}": "Current application version: {} · {}",
-  "设备与屏幕": "Devices and displays"
+  "设备与屏幕": "Devices and displays",
+  "输入状态显示": "Input status display",
+  "全屏串流失去焦点时，显示“点击画面以获取键盘控制”提示。": "Show the keyboard-control hint when a fullscreen stream loses focus."
 }

@@ -319,7 +319,7 @@ impl SoftwareSection {
         let defaults=Settings::default();
         match self {
             Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;}
-            Self::Appearance=>{s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_api=defaults.wallpaper_api;}
+            Self::Appearance=>{s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
             Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
             Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
         }
@@ -341,13 +341,18 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
         ui.checkbox(&mut s.app_autostart,uu_i18n::text("登录系统时自动打开软件"));
         note(ui,uu_i18n::text("本机服务是否随软件启动，在服务管理的连接服务页设置。"));
     }),
-    SoftwareSection::Appearance=>group(ui,uu_i18n::text("设备页外观"),|ui| {
+    SoftwareSection::Appearance=>{group(ui,uu_i18n::text("设备页外观"),|ui| {
         ui.checkbox(&mut s.wallpaper_enabled,uu_i18n::text("显示背景壁纸"));
         ui.label(uu_i18n::text("壁纸图片接口"));
         ui.add(egui::TextEdit::singleline(&mut s.wallpaper_api).desired_width(f32::INFINITY).hint_text("https://picsum.photos/1920/1080"));
         note(ui,uu_i18n::text("兼容 Moonlight V+ 使用的图片接口，也可填返回 JPEG / PNG 的图片 URL。缓存每日更新，获取失败继续使用已有壁纸。"));
         if ui.button(uu_i18n::text("刷新壁纸")).clicked(){actions.refresh_wallpaper=true;}
-    }),
+    });
+        group(ui,uu_i18n::text("串流界面"),|ui| {
+            ui.checkbox(&mut s.show_input_status,uu_i18n::text("输入状态显示"));
+            note(ui,uu_i18n::text("全屏串流失去焦点时，显示“点击画面以获取键盘控制”提示。"));
+        });
+    },
     SoftwareSection::Discovery=>group(ui,uu_i18n::text("设备发现"),|ui| {
         ui.checkbox(&mut s.lan_discovery,uu_i18n::text("自动查找局域网设备"));
         note(ui,uu_i18n::text("关闭后仍可使用保存的地址或手动添加设备；本机服务入口在连接服务中管理。"));
