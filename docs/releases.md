@@ -1,6 +1,6 @@
 # 构建与版本发布
 
-当前版本：[Eclipse v0.21.0](releases/v0.21.0.md)。上一个源码基线：[v0.20.10](releases/v0.20.10.md)。
+当前版本：[Eclipse v0.21.1](releases/v0.21.1.md)。上一个版本：[v0.21.0](releases/v0.21.0.md)。
 
 功能里程碑以及每组可交付的小功能或修复使用 `v主版本.次版本.修订号` 标签；小组更新递增修订号，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 提供。
 

@@ -45,7 +45,7 @@ Eclipse 将设备管理、画面共享、声音和输入控制放在同一个应
 
 ## 开始使用
 
-当前版本 **v0.21.0** 将项目、安装包和入口统一为 **Eclipse**，主仓库改为 [`TheRainstorm/eclipse`](https://github.com/TheRainstorm/eclipse)。旧配置继续使用，兼容启动别名保留。详见 [0.21.0 版本说明](docs/releases/v0.21.0.md)。
+当前版本 **v0.21.1** 更新 HUD 输入时间线和诊断清除，改进解码画面交付与 Windows 原生呈现，并恢复按设备记住远端显示器。详见 [0.21.1 版本说明](docs/releases/v0.21.1.md)。旧配置继续使用；Windows 后台服务需在服务管理中单独更新。
 
 从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包，保留包内全部运行库与清单。
 
@@ -72,7 +72,7 @@ python3 install.py
 
 ```sh
 python3 tools/release/download.py
-# 也可指定 --tag v0.21.0 --platform windows
+# 也可指定 --tag v0.21.1 --platform windows
 ```
 
 下载工具核对标签提交、归档校验和与包内全部文件，保存到 `artifacts/packages/`，不会安装或启动程序。
