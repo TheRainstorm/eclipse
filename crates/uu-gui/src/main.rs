@@ -142,7 +142,7 @@ struct App {
     settings_notice_at: Option<std::time::Instant>,
     settings_storage_error: bool,
     audio_save_after: Option<std::time::Instant>,
-    shortcuts: shortcuts::Shortcuts,
+    shortcuts: std::rc::Rc<std::cell::RefCell<shortcuts::Shortcuts>>,
     native_keyboard_capture: bool,
     native_window_keyboard: bool,
     nested_passthrough: bool,
@@ -390,11 +390,11 @@ impl App {
             settings_notice_at: None,
             settings_storage_error,
             audio_save_after: None,
-            shortcuts: shortcuts::Shortcuts::default(),
+            shortcuts: Default::default(),
             native_keyboard_capture: false,
             native_window_keyboard: false,
             nested_passthrough: preferences.nested_shortcuts,
-            fullscreen: false,
+            fullscreen: ctx.input(|i|i.viewport().fullscreen.unwrap_or(false)),
             window_snapshot: None,
             restore_maximized: Default::default(),
             bitrate_idx: preferences.bitrate,
@@ -495,7 +495,7 @@ impl App {
         }
         if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
             if let Some(h)=&self.controller {h.stats.audio.stop();h.stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);}
-            self.release_all_keys();self.release_pointer_capture(ctx);self.shortcuts.clear();
+            self.release_all_keys();self.release_pointer_capture(ctx);self.shortcuts.borrow_mut().clear();
             self.save_last_remote_frame();
             self.controller = None;
             self.disconnecting = false;
@@ -582,6 +582,12 @@ impl App {
             shortcuts::Action::Menu=>{self.release_pointer_capture(ctx);self.stream_menu.visible=!self.stream_menu.visible;self.stream_menu.open=false;ctx.memory_mut(|m|m.close_popup());self.persist_preferences();},
             shortcuts::Action::Mute=>{if self.supports_remote(uu_core::capabilities::Capability::Audio){self.toggle_audio_mute();}},
             shortcuts::Action::Fullscreen=>self.toggle_fullscreen(ctx),
+            action @ (shortcuts::Action::PreviousDisplay | shortcuts::Action::NextDisplay
+                | shortcuts::Action::PreviousComputer | shortcuts::Action::NextComputer) => {
+                if self.fullscreen {
+                    if let Some(tabs)=&self.workspace_tabs {tabs.navigate(action);}
+                }
+            },
             shortcuts::Action::Exit=>self.disconnect(),
             shortcuts::Action::MouseMode=>{
                 self.release_pointer_capture(ctx);
@@ -633,8 +639,9 @@ impl App {
         // Client commands remain local while viewing, in menus, or after
         // releasing remote input. They do not depend on a host control grant.
         let shortcuts=self.stream_target.is_some() && !self.disconnecting && ctx.input(|i|i.focused) && !shortcuts_ui::recording(ctx) && !(self.hud && self.hud_cache.keyboard_owned());
-        self.shortcuts.configure(&self.preferences.hotkeys,ctx.input(|i|i.modifiers));
-        let window=self.platform.window_keyboard(remote,shortcuts,self.nested_passthrough,&self.preferences.hotkeys);
+        self.shortcuts.borrow_mut().configure(&self.preferences.hotkeys,ctx.input(|i|i.modifiers));
+        self.shortcuts.borrow_mut().fullscreen=self.fullscreen;
+        let window=self.platform.window_keyboard(remote,shortcuts,self.nested_passthrough,self.fullscreen,&self.preferences.hotkeys);
         let active=self.platform.capture_keyboard(self.input_capture.system(conditions,self.fullscreen,self.preferences.capture_keyboard));
         if self.native_keyboard_capture!=active || self.native_window_keyboard!=window {
             if let Some(h)=&self.controller {h.stats.diagnostics.record(serde_json::json!({
@@ -833,8 +840,10 @@ impl App {
         for message in self.pointer.release_all(self.input_screen(self.selected_track)){self.send_input(message,15);}
         self.release_pointer_capture(&self.context.clone());
         self.gamepad.borrow_mut().configure(self.instance_id,None);
-        self.shortcuts.clear();self.focused=false;
-        self.platform.window_keyboard(false,false,false,&self.preferences.hotkeys);self.platform.capture_keyboard(false);
+        // Client-command key ownership belongs to the window and survives a
+        // session switch until its physical key-up reaches the new active tab.
+        self.focused=false;
+        self.platform.window_keyboard(false,false,false,false,&self.preferences.hotkeys);self.platform.capture_keyboard(false);
         if let Some(handle)=&self.controller {
             if let Some(input)=&handle.native_input{input.set_enabled(false);}
             use std::sync::atomic::Ordering::{AcqRel,Release};
@@ -1044,7 +1053,7 @@ impl App {
         }
         if self.focused && !focused {
             shortcuts_ui::cancel(ctx);
-            self.shortcuts.clear();
+            self.shortcuts.borrow_mut().clear();
             self.release_all_keys();
             for message in self.pointer.release_all(self.input_screen(self.selected_track)) {
                 self.send_input(message, 15);
@@ -1084,7 +1093,8 @@ impl App {
                 }
                 if shortcuts_ui::consume_key(ctx,*key,*pressed) {continue;}
                 if self.stream_target.is_none() || shortcuts_ui::recording(ctx) { continue; }
-                match self.shortcuts.key(*key, *pressed, *repeat, *modifiers, true, self.nested_passthrough) {
+                let shortcut=self.shortcuts.borrow_mut().key(*key, *pressed, *repeat, *modifiers, true, self.nested_passthrough);
+                match shortcut {
                     shortcuts::KeyAction::Consumed => continue,
                     shortcuts::KeyAction::Trigger(action) => {
                         self.local_shortcut(action,ctx);

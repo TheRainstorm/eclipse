@@ -8,7 +8,7 @@ use uu_core::hotkeys::{Bindings,Modifiers as ChordModifiers};
 #[derive(Debug, PartialEq)]
 pub enum KeyAction { Forward, Consumed, Trigger(Action) }
 #[derive(Default)]
-pub struct Shortcuts { held: HashSet<Key>, bindings:Bindings, blocked:bool }
+pub struct Shortcuts { held: HashSet<Key>, bindings:Bindings, blocked:bool, pub fullscreen:bool }
 impl Shortcuts {
     pub fn configure(&mut self,bindings:&Bindings,modifiers:Modifiers) {if self.bindings!=*bindings{self.bindings=bindings.clone();self.blocked=modifiers.any();}}
     pub fn clear(&mut self) { self.held.clear(); }
@@ -24,9 +24,9 @@ impl Shortcuts {
         // If this key was already sent remotely before the chord formed,
         // preserve its repeat/release rather than claiming half a transition.
         if repeat { return KeyAction::Forward; }
-        let action=crate::vk_for(key).and_then(|vk|self.bindings.find(vk,ChordModifiers {
+        let action=crate::vk_for(key).and_then(|vk|self.bindings.find_in_view(vk,ChordModifiers {
             ctrl:modifiers.ctrl,alt:modifiers.alt,shift:modifiers.shift,meta:modifiers.mac_cmd
-        },nested_passthrough,streaming,false));
+        },nested_passthrough,streaming,self.fullscreen,false));
         if let Some(action) = action {
             self.held.insert(key);
             KeyAction::Trigger(action)
@@ -36,6 +36,21 @@ impl Shortcuts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fullscreen_navigation_owns_repeat_and_release_after_leaving_fullscreen() {
+        let modifiers=Modifiers{ctrl:true,alt:true,..Modifiers::NONE};
+        let mut keys=Shortcuts::default();
+        assert_eq!(keys.key(Key::ArrowRight,true,false,modifiers,true,false),KeyAction::Forward);
+        keys.fullscreen=true;
+        // A remotely held arrow remains remote when fullscreen begins.
+        assert_eq!(keys.key(Key::ArrowRight,true,true,modifiers,true,false),KeyAction::Forward);
+        assert_eq!(keys.key(Key::ArrowRight,false,false,modifiers,true,false),KeyAction::Forward);
+        assert_eq!(keys.key(Key::ArrowRight,true,false,modifiers,true,false),KeyAction::Trigger(Action::NextComputer));
+        keys.fullscreen=false;
+        assert_eq!(keys.key(Key::ArrowRight,true,true,Modifiers::NONE,true,false),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::ArrowRight,false,false,Modifiers::NONE,true,false),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::ArrowRight,true,false,modifiers,true,false),KeyAction::Forward);
+    }
     const CHORD: Modifiers = Modifiers { ctrl: true, alt: true, shift: true, ..Modifiers::NONE };
     #[test]
     fn rebound_shortcuts_keep_old_release_and_do_not_repeat_or_steal_a_held_chord() {

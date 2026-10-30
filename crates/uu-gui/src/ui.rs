@@ -189,10 +189,7 @@ impl App {
     pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
         if !self.fullscreen { self.connection_bar(ctx); }
         let workspace_bar=if self.fullscreen {
-            self.workspace_tabs.as_ref().filter(|tabs|tabs.multiple()).map(|tabs|
-                egui::TopBottomPanel::top("fullscreen-device-groups").exact_height(34.)
-                    .frame(egui::Frame::none().fill(super::theme::SIDEBAR))
-                    .show(ctx,|ui|tabs.show(ui)).response.rect)
+            self.workspace_tabs.as_ref().and_then(|tabs|tabs.show_fullscreen(ctx))
         }else{None};
         let was_open = self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open;
         let mut controls = self.stream_controls(ctx);

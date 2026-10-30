@@ -51,6 +51,41 @@ fn connection_identity_groups_profiles_independently_of_the_launch_snapshot() {
 }
 
 #[test]
+fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() {
+    use uu_core::hotkeys::Action as Command;
+    let actions=Rc::new(RefCell::new(Vec::new()));
+    let mut tabs=Tabs{groups:vec![Group{id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7)},
+        Group{id:11,name:"A".into(),screens:vec![],selected:None}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    for command in [Command::NextDisplay,Command::PreviousDisplay,Command::NextComputer,Command::PreviousComputer] {tabs.navigate(command);}
+    assert_eq!(*actions.borrow(),[Action::Select(22,Some(2)),Action::Select(22,Some(9)),Action::Select(11,None),Action::Select(11,None)]);
+    actions.borrow_mut().clear();tabs.active=11;
+    tabs.navigate(Command::NextDisplay);tabs.navigate(Command::NextComputer);
+    assert_eq!(*actions.borrow(),[Action::Select(22,None)]);
+    tabs.groups.pop();tabs.active=22;actions.borrow_mut().clear();tabs.navigate(Command::NextComputer);
+    assert!(actions.borrow().is_empty());
+}
+
+#[test]
+fn fullscreen_device_overlay_keeps_the_entire_video_area_and_hides_after_hover() {
+    let ctx=egui::Context::default();crate::setup_style(&ctx);
+    let tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None},Group{id:2,name:"B".into(),screens:vec![],selected:None}],active:1,actions:Default::default(),local_ui:Default::default()};
+    let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
+    let mut draw=|time,pointer| {
+        let mut visible=false;
+        let _=ctx.run(egui::RawInput{screen_rect:Some(screen),time:Some(time),focused:true,
+            events:vec![egui::Event::PointerMoved(pointer)],..Default::default()},|ctx| {
+                visible=tabs.show_fullscreen(ctx).is_some();
+                assert_eq!(ctx.available_rect(),screen,"overlay must not reserve a top panel");
+            });
+        visible
+    };
+    assert!(!draw(0.,egui::pos2(600.,360.)));
+    assert!(draw(1.,egui::pos2(600.,3.)));
+    assert!(draw(1.1,egui::pos2(600.,360.)));
+    assert!(!draw(1.4,egui::pos2(600.,360.)));
+}
+
+#[test]
 fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
     let context = egui::Context::default();
     crate::setup_style(&context);
@@ -149,6 +184,12 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
 
 std::thread_local! {
     static SCREENSHOTS:std::cell::RefCell<Option<std::collections::HashMap<egui::ViewportId,Arc<egui::ColorImage>>>>=const {std::cell::RefCell::new(None)};
+    static FULLSCREEN_COMMANDS:std::cell::RefCell<std::collections::HashSet<egui::ViewportId>>=std::cell::RefCell::new(std::collections::HashSet::new());
+}
+pub(super) fn apply_fullscreen_command(app:&mut App,ctx:&egui::Context) {
+    if FULLSCREEN_COMMANDS.with(|commands|commands.borrow_mut().remove(&ctx.viewport_id())) {
+        app.local_shortcut(uu_core::hotkeys::Action::Fullscreen,ctx);
+    }
 }
 pub(super) fn observe_screenshot(ctx:&egui::Context) {
     // Viewport input belongs to that viewport's pass. The root must not race
@@ -223,6 +264,7 @@ impl eframe::App for Probe {
                     assert!(!window.sessions[0].app.active_session);
                     assert!(window.sessions[1].app.active_session);
                     assert!(Rc::ptr_eq(&window.sessions[0].app.gamepad,&window.sessions[1].app.gamepad));
+                    assert!(Rc::ptr_eq(&window.sessions[0].app.shortcuts,&window.sessions[1].app.shortcuts));
                     self.stats = window
                         .sessions
                         .iter()
@@ -284,8 +326,27 @@ impl eframe::App for Probe {
                         .iter()
                         .map(|s| s.decoded_total.load(Ordering::Acquire))
                         .collect();
+                    FULLSCREEN_COMMANDS.with(|commands|commands.borrow_mut().insert(state.windows[0].viewport()));
+                    self.phase = 7;
+                }
+                7 if ctx.input_for(state.windows[0].viewport(),|i|i.viewport().fullscreen)==Some(true) => {
+                    let window=eframe::viewport_window_for(ctx,state.windows[0].viewport()).unwrap();
+                    let monitor=window.current_monitor().unwrap();
+                    assert_eq!(window.inner_size(),monitor.size(),"fullscreen must cover the complete monitor");
+                    assert!(state.windows[0].sessions.iter().all(|session|session.app.fullscreen));
+                    state.apply(Action::Select(self.second_id,None),ctx);
+                    self.phase=8;
+                }
+                8 if state.windows[0].sessions.iter().find(|s|s.id==self.second_id).unwrap().app.active_session => {
+                    assert_eq!(ctx.input_for(state.windows[0].viewport(),|i|i.viewport().fullscreen),Some(true));
+                    assert!(state.windows[0].sessions.iter().all(|session|session.app.fullscreen),"fullscreen is shared by parked and active sessions");
+                    FULLSCREEN_COMMANDS.with(|commands|commands.borrow_mut().insert(state.windows[0].viewport()));
+                    self.phase=9;
+                }
+                9 if ctx.input_for(state.windows[0].viewport(),|i|i.viewport().fullscreen)==Some(false) => {
+                    state.apply(Action::Select(self.first,None),ctx);
                     ctx.send_viewport_cmd_to(state.windows[0].viewport(),egui::ViewportCommand::Screenshot);
-                    self.phase = 6;
+                    self.phase=6;
                 }
                 6=>{
                     let image=SCREENSHOTS.with(|slot|slot.borrow_mut().as_mut().unwrap().remove(&state.windows[0].viewport()));

@@ -56,6 +56,7 @@ pub struct WindowRoute {
     pub system_capture: bool,
     pub shortcuts: bool,
     pub nested_passthrough: bool,
+    pub fullscreen: bool,
 }
 #[cfg_attr(not(any(windows,test)),allow(dead_code))]
 pub struct Keys {
@@ -91,7 +92,7 @@ impl Keys {
         let remote = route.input && route.foreground
             && (route.system_capture || !local_system_key(vk,modifiers.win()));
         self.event_with_bindings(vk,pressed,remote,route.shortcuts && route.foreground,
-            route.nested_passthrough,modifiers.shortcut_modifiers(),modifiers.altgr(),already_down)
+            route.nested_passthrough,route.fullscreen,modifiers.shortcut_modifiers(),modifiers.altgr(),already_down)
     }
     #[cfg(test)]
     pub fn event(
@@ -115,10 +116,10 @@ impl Keys {
         default_chord: bool,
         already_down: bool,
     ) -> Decision {
-        self.event_with_bindings(vk,pressed,remote_active,shortcuts_active,nested_passthrough,
+        self.event_with_bindings(vk,pressed,remote_active,shortcuts_active,nested_passthrough,false,
             uu_core::hotkeys::Modifiers{ctrl:default_chord,alt:default_chord,shift:default_chord,..Default::default()},false,already_down)
     }
-    fn event_with_bindings(&mut self,vk:u32,pressed:bool,remote_active:bool,shortcuts_active:bool,nested_passthrough:bool,
+    fn event_with_bindings(&mut self,vk:u32,pressed:bool,remote_active:bool,shortcuts_active:bool,nested_passthrough:bool,fullscreen:bool,
         modifiers:uu_core::hotkeys::Modifiers,right_alt:bool,already_down:bool)->Decision {
         let altgr = self.down(0xa5);
         let Some(held) = self.held.get_mut(vk as usize) else {
@@ -150,7 +151,7 @@ impl Keys {
             return Decision::Forward;
         }
         if shortcuts_active {
-            let action=self.bindings.find(vk,modifiers,nested_passthrough,true,altgr||right_alt);
+            let action=self.bindings.find_in_view(vk,modifiers,nested_passthrough,true,fullscreen,altgr||right_alt);
             if let Some(action) = action {
                 *held = 2;
                 return Decision::Shortcut(action);
@@ -197,7 +198,7 @@ impl RecipientKeys {
         let ready=self.ready(modifiers);
         if !ready && self.consume_chord {return self.keys.consume(vk,pressed);}
         self.keys.event_with_bindings(vk,pressed,route.input&&ready,route.shortcuts&&ready,
-            route.nested_passthrough,modifiers.shortcut_modifiers(),modifiers.altgr(),already_down)
+            route.nested_passthrough,route.fullscreen,modifiers.shortcut_modifiers(),modifiers.altgr(),already_down)
     }
 }
 /// WM_KEY* uses generic modifiers; scan code and extended bit retain sides.
@@ -214,8 +215,22 @@ pub fn sided_vk(vk:u32,lparam:usize)->u32 {
 mod tests {
     use super::*;
     #[test]
+    fn fullscreen_commands_and_remote_arrows_keep_their_original_release_owner() {
+        let mut modifiers=Modifiers::new();modifiers.observe(0xa2,true);modifiers.observe(0xa4,true);
+        let windowed=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false,fullscreen:false};
+        let fullscreen=WindowRoute{fullscreen:true,..windowed};
+        let mut keys=Keys::new();
+        assert_eq!(keys.window_event(0x27,true,windowed,&modifiers,false),Decision::Remote{vk:0x27,pressed:true});
+        assert_eq!(keys.window_event(0x27,true,fullscreen,&modifiers,true),Decision::Remote{vk:0x27,pressed:true});
+        assert_eq!(keys.window_event(0x27,false,fullscreen,&modifiers,false),Decision::Remote{vk:0x27,pressed:false});
+        assert_eq!(keys.window_event(0x27,true,fullscreen,&modifiers,false),Decision::Shortcut(Action::NextComputer));
+        assert_eq!(keys.window_event(0x27,true,windowed,&modifiers,true),Decision::Consume);
+        assert_eq!(keys.window_event(0x27,false,WindowRoute{foreground:false,..windowed},&Modifiers::new(),false),Decision::Consume);
+        assert_eq!(keys.window_event(0x27,true,WindowRoute{nested_passthrough:true,..fullscreen},&modifiers,false),Decision::Remote{vk:0x27,pressed:true});
+    }
+    #[test]
     fn default_commands_require_physical_shift_and_preserve_release_ownership() {
-        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false,fullscreen:false};
         let mut keys=Keys::new();let mut mods=Modifiers::new();
         for vk in [0xa2,0xa4] {mods.observe(vk,true);}
         assert_eq!(keys.window_event(0x53,true,route,&mods,false),Decision::Remote{vk:0x53,pressed:true});
@@ -231,7 +246,7 @@ mod tests {
     #[test]
     fn configured_native_bindings_preserve_transition_ownership_and_altgr_text() {
         let mut keys=RecipientKeys::new();let mut mods=Modifiers::new();
-        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false,fullscreen:false};
         let mut bindings=uu_core::hotkeys::Bindings::default();
         bindings.set(Action::Stats,vec![uu_core::hotkeys::Chord::ctrl_alt(0x41)]);
         keys.configure(&bindings,&mods);
@@ -255,7 +270,7 @@ mod tests {
     fn recipient_change_consumes_old_chord_until_every_modifier_is_released() {
         let mut keys=RecipientKeys::new();
         let mut modifiers=Modifiers::new();
-        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false,fullscreen:false};
         keys.select((1,1),&modifiers);
         for modifier in [0x5b,0xa2,0xa0] {
             modifiers.observe(modifier,true);
@@ -284,7 +299,7 @@ mod tests {
         let mut modifiers=Modifiers::new();
         modifiers.observe(0x5b,true);
         keys.select((1,1),&modifiers);
-        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false,fullscreen:false};
         assert_eq!(keys.event(0x56,true,route,&modifiers,false),Decision::Forward);
         assert_eq!(keys.event(0x56,false,route,&modifiers,false),Decision::Forward);
         modifiers.observe(0x5b,false);
@@ -462,7 +477,7 @@ mod tests {
     }
     #[test]
     fn window_input_is_immediate_with_capture_even_before_any_hook_callback() {
-        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false,fullscreen:false};
         for chord in [vec![0x5b],vec![0x5c,0xa0,0x27],vec![0xa4,0x09],vec![0x41]] {
             let mut modifiers=Modifiers::new();
             let mut window=Keys::new();
@@ -478,7 +493,7 @@ mod tests {
     }
     #[test]
     fn window_releases_keep_ownership_after_capture_focus_or_input_changes() {
-        let active=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
+        let active=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false,fullscreen:false};
         for route in [WindowRoute{system_capture:false,..active},WindowRoute{foreground:false,..active},WindowRoute{input:false,..active}] {
             let mut modifiers=Modifiers::new();let mut keys=Keys::new();
             for vk in [0x5b,0xa0,0x25] {
@@ -500,7 +515,7 @@ mod tests {
     }
     #[test]
     fn window_client_commands_work_before_control_is_ready_and_keep_their_release() {
-        let pending=WindowRoute{input:false,foreground:true,system_capture:false,shortcuts:true,nested_passthrough:false};
+        let pending=WindowRoute{input:false,foreground:true,system_capture:false,shortcuts:true,nested_passthrough:false,fullscreen:false};
         let mut modifiers=Modifiers::new();modifiers.observe(0xa2,true);modifiers.observe(0xa4,true);modifiers.observe(0xa0,true);
         let mut window=Keys::new();
         assert_eq!(window.window_event(0x46,true,pending,&modifiers,false),Decision::Shortcut(Action::Fullscreen));
@@ -510,7 +525,7 @@ mod tests {
     }
     #[test]
     fn duplicate_window_and_hook_modifier_events_do_not_send_extra_transitions() {
-        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false};
+        let route=WindowRoute{input:true,foreground:true,system_capture:true,shortcuts:true,nested_passthrough:false,fullscreen:false};
         let mut window=Keys::new();let mut hook=Keys::new();let mut modifiers=Modifiers::new();
         let mut remote=crate::input_capture::RemoteKeys::default();
         for (vk,pressed) in [(0x5b,true),(0xa4,true),(0xa4,false),(0x5b,false)] {

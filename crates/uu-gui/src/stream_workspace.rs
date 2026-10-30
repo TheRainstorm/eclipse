@@ -89,6 +89,46 @@ struct DragScreen {
     screen: i32,
 }
 impl Tabs {
+    pub fn show_fullscreen(&self,ctx:&egui::Context)->Option<egui::Rect> {
+        if !self.multiple() {return None;}
+        let id=egui::Id::new(("fullscreen-device-groups",ctx.viewport_id()));
+        let previous=ctx.data(|data|data.get_temp::<(egui::Rect,f64)>(id));
+        let (screen,pointer,now,focused)=ctx.input(|i|(i.screen_rect(),i.pointer.hover_pos(),i.time,i.focused));
+        let hovering=pointer.is_some_and(|point|screen.contains(point)
+            && (point.y<=screen.top()+12.||previous.is_some_and(|(rect,_)|rect.expand(8.).contains(point))));
+        let last_hover=if hovering {now}else{previous.map_or(f64::NEG_INFINITY,|(_,time)|time)};
+        if !focused || !(hovering || now-last_hover<0.18 || self.owns_input(ctx)) {
+            self.local_ui.set(false);
+            ctx.data_mut(|data|data.remove::<(egui::Rect,f64)>(id));
+            return None;
+        }
+        let width=(screen.width()-24.).clamp(1.,1400.);
+        let rect=egui::Area::new(id).order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_TOP,[0.,0.])
+            .show(ctx,|ui|egui::Frame::none().fill(crate::theme::SIDEBAR)
+                .inner_margin(6.).show(ui,|ui| {ui.set_width(width);self.show(ui);})).response.rect;
+        ctx.data_mut(|data|data.insert_temp(id,(rect,last_hover)));
+        if !hovering {ctx.request_repaint_after(std::time::Duration::from_millis(180));}
+        Some(rect)
+    }
+    pub fn navigate(&self, action: uu_core::hotkeys::Action) {
+        use uu_core::hotkeys::Action as Command;
+        let Some(current)=self.groups.iter().position(|group|group.id==self.active) else {return;};
+        let previous=matches!(action,Command::PreviousDisplay|Command::PreviousComputer);
+        let selection=match action {
+            Command::PreviousComputer|Command::NextComputer if self.groups.len()>1 => {
+                Some(Action::Select(self.groups[adjacent(self.groups.len(),Some(current),previous)].id,None))
+            },
+            Command::PreviousDisplay|Command::NextDisplay => {
+                let group=&self.groups[current];
+                if group.screens.len()<2 {return;}
+                let selected=group.screens.iter().position(|screen|Some(screen.0)==group.selected);
+                Some(Action::Select(group.id,Some(group.screens[adjacent(group.screens.len(),selected,previous)].0)))
+            },
+            _=>None,
+        };
+        if let Some(selection)=selection {self.actions.borrow_mut().push(selection);}
+    }
     pub fn multiple(&self) -> bool {
         self.groups.len() > 1
     }
@@ -237,11 +277,20 @@ impl Tabs {
         }
     }
 }
+fn adjacent(length:usize,current:Option<usize>,previous:bool)->usize {
+    match current {
+        Some(index) if previous=>(index+length-1)%length,
+        Some(index)=>(index+1)%length,
+        None if previous=>length-1,
+        None=>0,
+    }
+}
 struct Session {
     id: u64,
     app: App,
 }
 struct Window {
+    shortcuts:Rc<RefCell<crate::shortcuts::Shortcuts>>,
     vsync_session: Option<u64>,
     id: u64,
     sessions: Vec<Session>,
@@ -259,6 +308,7 @@ struct Window {
 impl Window {
     fn new(id: u64, pending: Vec<Launch>, position: Option<egui::Pos2>) -> Self {
         Self {
+            shortcuts:Default::default(),
             id,
             sessions: Vec::new(),
             pending,
@@ -344,6 +394,7 @@ impl Window {
                 self.origin,
             )));
             for session in &mut self.sessions {
+                session.app.shortcuts=self.shortcuts.clone();
                 session.app.platform = self.platform.as_ref().unwrap().clone();
                 session.app.context = window_context::Context::new(ctx);
                 session.app.clipboard_window.store(
@@ -356,6 +407,11 @@ impl Window {
                 }
             }
             eframe::request_vsync(ctx, vsync);
+        }
+        // Fullscreen belongs to this native window. Parked sessions must read
+        // the same state before a late controller attach or a tab switch.
+        if let Some(fullscreen)=ctx.input(|i|i.viewport().fullscreen) {
+            for session in &mut self.sessions {session.app.fullscreen=fullscreen;}
         }
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -385,6 +441,7 @@ impl Window {
                 plugin_payload,
             );
             app.window_sizing = self.sizing.clone();
+            app.shortcuts=self.shortcuts.clone();
             app.gamepad = gamepad.clone();
             app.restore_maximized = self.restore_maximized.clone();
             self.sessions.push(Session { id, app });
@@ -414,6 +471,8 @@ impl Window {
             }
             self.platform.as_ref().unwrap().select_session(self.active);
             app.update_frame(ctx, eframe::viewport_cpu_usage(ctx));
+            #[cfg(test)]
+            tests::apply_fullscreen_command(app,ctx);
         } else {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.label(uu_i18n::text("正在释放连接…"));
@@ -591,6 +650,7 @@ impl State {
                 let mut window = Window::new(id, Vec::new(), position);
                 window.active = session.id;
                 session.app.window_sizing = window.sizing.clone();
+                session.app.shortcuts=window.shortcuts.clone();
                 session.app.restore_maximized = window.restore_maximized.clone();
                 // Native handles and wakeups are retargeted when the new native
                 // surface exists, before this session can receive input again.

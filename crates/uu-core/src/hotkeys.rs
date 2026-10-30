@@ -14,9 +14,13 @@ pub enum Action {
     MouseMode,
     CursorMode,
     ToggleNested,
+    PreviousDisplay,
+    NextDisplay,
+    PreviousComputer,
+    NextComputer,
 }
 impl Action {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 13] = [
         Self::Stats,
         Self::Menu,
         Self::Mute,
@@ -26,6 +30,10 @@ impl Action {
         Self::MouseMode,
         Self::CursorMode,
         Self::ToggleNested,
+        Self::PreviousDisplay,
+        Self::NextDisplay,
+        Self::PreviousComputer,
+        Self::NextComputer,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -38,10 +46,14 @@ impl Action {
             Self::MouseMode => uu_i18n::text("桌面 / 游戏鼠标"),
             Self::CursorMode => uu_i18n::text("光标显示"),
             Self::ToggleNested => uu_i18n::text("嵌套快捷键透传"),
+            Self::PreviousDisplay => uu_i18n::text("上一个远端屏幕（全屏）"),
+            Self::NextDisplay => uu_i18n::text("下一个远端屏幕（全屏）"),
+            Self::PreviousComputer => uu_i18n::text("上一台串流电脑（全屏）"),
+            Self::NextComputer => uu_i18n::text("下一台串流电脑（全屏）"),
         }
     }
     fn defaults(self) -> &'static [Chord] {
-        const DEFAULTS: [&[Chord]; 9] = [
+        const DEFAULTS: [&[Chord]; 13] = [
             &[Chord::ctrl_alt_shift(0x53)],
             &[Chord::ctrl_alt_shift(0x48)],
             &[Chord::ctrl_alt_shift(0x4d)],
@@ -51,8 +63,15 @@ impl Action {
             &[Chord::ctrl_alt_shift(0x50)],
             &[Chord::ctrl_alt_shift(0x43)],
             &[Chord::ctrl_alt_shift(0x7b)],
+            &[Chord::ctrl_alt(0x26)],
+            &[Chord::ctrl_alt(0x28)],
+            &[Chord::ctrl_alt(0x25)],
+            &[Chord::ctrl_alt(0x27)],
         ];
         DEFAULTS[self as usize]
+    }
+    pub fn fullscreen_only(self) -> bool {
+        matches!(self, Self::PreviousDisplay | Self::NextDisplay | Self::PreviousComputer | Self::NextComputer)
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -188,6 +207,12 @@ impl Bindings {
         streaming: bool,
         altgr: bool,
     ) -> Option<Action> {
+        self.find_in_view(key, modifiers, nested, streaming, false, altgr)
+    }
+    pub fn find_in_view(
+        &self, key: u32, modifiers: Modifiers, nested: bool, streaming: bool,
+        fullscreen: bool, altgr: bool,
+    ) -> Option<Action> {
         if altgr {
             return None;
         }
@@ -195,6 +220,7 @@ impl Bindings {
         Action::ALL.into_iter().find(|a| {
             (!nested || *a == Action::ToggleNested)
                 && (streaming || *a == Action::Fullscreen)
+                && (fullscreen || !a.fullscreen_only())
                 && self.chords(*a).contains(&chord)
         })
     }
@@ -252,6 +278,27 @@ impl Bindings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn navigation_is_configurable_and_only_claimed_in_fullscreen() {
+        let mut bindings:Bindings=serde_json::from_str("{}").unwrap();
+        for (key,action) in [(0x26,Action::PreviousDisplay),(0x28,Action::NextDisplay),
+            (0x25,Action::PreviousComputer),(0x27,Action::NextComputer)] {
+            let modifiers=Chord::ctrl_alt(key).modifiers;
+            assert_eq!(bindings.find_in_view(key,modifiers,false,true,true,false),Some(action));
+            assert_eq!(bindings.find_in_view(key,modifiers,false,true,false,false),None);
+            assert_eq!(bindings.find_in_view(key,modifiers,false,false,true,false),None);
+            assert_eq!(bindings.find_in_view(key,modifiers,true,true,true,false),None);
+            assert_eq!(bindings.find_in_view(key,modifiers,false,true,true,true),None);
+            assert_eq!(bindings.find_in_view(key,Chord::ctrl_alt_shift(key).modifiers,false,true,true,false),None);
+        }
+        bindings.set(Action::NextComputer,vec![Chord::ctrl_alt_shift(0x70)]);
+        assert_eq!(bindings.label(Action::NextComputer),"Ctrl+Alt+Shift+F1");
+        assert_eq!(bindings.find_in_view(0x27,Chord::ctrl_alt(0).modifiers,false,true,true,false),None);
+        bindings.set(Action::PreviousDisplay,vec![]);
+        let restored:Bindings=serde_json::from_slice(&serde_json::to_vec(&bindings).unwrap()).unwrap();
+        assert!(restored.chords(Action::PreviousDisplay).is_empty());
+        restored.validate().unwrap();
+    }
     #[test]
     fn defaults_require_shift_and_saved_overrides_remain_exact() {
         let b:Bindings=serde_json::from_str("{}").unwrap();

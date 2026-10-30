@@ -1583,5 +1583,9 @@
   "同一主机时钟下，注入完成至后继已观测源图像更新的等待，可能包含应用调度与帧节拍；桌面其它变化也会更新画面，不能当作游戏处理时间。缺少匹配首显则未知。": "Same-host-clock wait from injection completion to a subsequently observed source image. May include scheduling and frame pacing. Other desktop changes also update images, so this is not game processing time. Unknown without matching first-display proof.",
   "最近3秒收到有效注入回执的实际输入抽样与匹配画面数，至多每250ms抽样一次；输入空闲、换代或证据过期后未知，不借用其它输入样本。": "Real input samples with valid injection acknowledgements and matched images in the last 3 seconds, sampled at most once per 250 ms. Unknown when idle, retired or expired; never borrows other inputs.",
   "送达区间中点的P95与总体标准差，描述样本波动；与±校时误差界分开。": "P95 and population standard deviation of delivery interval midpoints describe sample variation, separately from the ± clock error bound.",
-  "输入→画面为同一次输入至注入后已观测源图像的首显回执估测，竖线保留显示误差；不证明游戏响应。无输入或证据缺失断线，点击切换曲线。": "Input→Frame estimates the same input through the first-display receipt of a subsequently observed source image. Bars retain display uncertainty; this does not prove game response. Idle or missing evidence breaks the curve. Click to toggle."
+  "输入→画面为同一次输入至注入后已观测源图像的首显回执估测，竖线保留显示误差；不证明游戏响应。无输入或证据缺失断线，点击切换曲线。": "Input→Frame estimates the same input through the first-display receipt of a subsequently observed source image. Bars retain display uncertainty; this does not prove game response. Idle or missing evidence breaks the curve. Click to toggle.",
+  "上一个远端屏幕（全屏）": "Previous remote display (fullscreen)",
+  "下一个远端屏幕（全屏）": "Next remote display (fullscreen)",
+  "上一台串流电脑（全屏）": "Previous streaming computer (fullscreen)",
+  "下一台串流电脑（全屏）": "Next streaming computer (fullscreen)"
 }
