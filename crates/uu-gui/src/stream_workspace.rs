@@ -89,27 +89,37 @@ struct DragScreen {
     screen: i32,
 }
 impl Tabs {
-    pub fn show_fullscreen(&self,ctx:&egui::Context)->Option<egui::Rect> {
-        if !self.multiple() {return None;}
-        let id=egui::Id::new(("fullscreen-device-groups",ctx.viewport_id()));
-        let previous=ctx.data(|data|data.get_temp::<(egui::Rect,f64)>(id));
-        let (screen,pointer,now,focused)=ctx.input(|i|(i.screen_rect(),i.pointer.hover_pos(),i.time,i.focused));
-        let hovering=pointer.is_some_and(|point|screen.contains(point)
-            && (point.y<=screen.top()+12.||previous.is_some_and(|(rect,_)|rect.expand(8.).contains(point))));
-        let last_hover=if hovering {now}else{previous.map_or(f64::NEG_INFINITY,|(_,time)|time)};
-        if !focused || !(hovering || now-last_hover<0.18 || self.owns_input(ctx)) {
-            self.local_ui.set(false);
-            ctx.data_mut(|data|data.remove::<(egui::Rect,f64)>(id));
+    fn selector_id(ctx:&egui::Context)->egui::Id {
+        egui::Id::new(("workspace-device-selector",ctx.viewport_id()))
+    }
+    pub fn open_selector(&self,ctx:&egui::Context) {
+        let id=Self::selector_id(ctx);
+        ctx.data_mut(|data|data.insert_temp(id,self.active));
+    }
+    pub fn show_selector(&self,ctx:&egui::Context)->Option<egui::Rect> {
+        let id=Self::selector_id(ctx);
+        let owner=ctx.data(|data|data.get_temp::<u64>(id));
+        if owner!=Some(self.active) {
+            if owner.is_some(){ctx.data_mut(|data|data.remove::<u64>(id));}
             return None;
         }
-        let width=(screen.width()-24.).clamp(1.,1400.);
-        let rect=egui::Area::new(id).order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_TOP,[0.,0.])
-            .show(ctx,|ui|egui::Frame::none().fill(crate::theme::SIDEBAR)
-                .inner_margin(6.).show(ui,|ui| {ui.set_width(width);self.show(ui);})).response.rect;
-        ctx.data_mut(|data|data.insert_temp(id,(rect,last_hover)));
-        if !hovering {ctx.request_repaint_after(std::time::Duration::from_millis(180));}
-        Some(rect)
+        let mut open=true;let mut selected=None;
+        let window=egui::Window::new(uu_i18n::text("设备与屏幕"))
+            .id(id).open(&mut open).collapsible(false).resizable(false).default_width(360.)
+            .show(ctx,|ui|egui::ScrollArea::vertical().max_height(440.).show(ui,|ui| {
+                for group in &self.groups {
+                    if ui.selectable_label(group.id==self.active,&group.name).clicked() {selected=Some(Action::Select(group.id,None));}
+                    ui.indent(group.id,|ui| {
+                        for (screen,label) in &group.screens {
+                            if ui.selectable_label(group.id==self.active && group.selected==Some(*screen),label).clicked() {selected=Some(Action::Select(group.id,Some(*screen)));}
+                        }
+                    });
+                    ui.separator();
+                }
+            }));
+        if let Some(selection)=selected {self.actions.borrow_mut().push(selection);open=false;}
+        if !open {ctx.data_mut(|data|data.remove::<u64>(id));}
+        window.map(|window|window.response.rect)
     }
     pub fn navigate(&self, action: uu_core::hotkeys::Action) {
         use uu_core::hotkeys::Action as Command;
@@ -129,11 +139,10 @@ impl Tabs {
         };
         if let Some(selection)=selection {self.actions.borrow_mut().push(selection);}
     }
-    pub fn multiple(&self) -> bool {
-        self.groups.len() > 1
-    }
     pub fn owns_input(&self, ctx: &egui::Context) -> bool {
+        let selector_id=Self::selector_id(ctx);
         self.local_ui.get()
+            || ctx.data(|data|data.get_temp::<u64>(selector_id))==Some(self.active)
             || egui::DragAndDrop::has_payload_of_type::<Drag>(ctx)
             || egui::DragAndDrop::has_payload_of_type::<DragScreen>(ctx)
     }

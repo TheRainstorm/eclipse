@@ -188,12 +188,10 @@ impl App {
 
     pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
         if !self.fullscreen { self.connection_bar(ctx); }
-        let workspace_bar=if self.fullscreen {
-            self.workspace_tabs.as_ref().and_then(|tabs|tabs.show_fullscreen(ctx))
-        }else{None};
+        let device_selector=self.workspace_tabs.as_ref().and_then(|tabs|tabs.show_selector(ctx));
         let was_open = self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open;
         let mut controls = self.stream_controls(ctx);
-        controls.extend(workspace_bar);
+        controls.extend(device_selector);
         let control_pointer = !self.mouse_captured && ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
         let picture_blocked = self.displays.menu_open || self.local_dialog_open() || self.window_edge_active || was_open || self.stream_menu.owns_input(self.fullscreen) || control_pointer
             || self.workspace_tabs.as_ref().is_some_and(|tabs|tabs.owns_input(ctx));

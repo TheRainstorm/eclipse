@@ -972,6 +972,12 @@ impl super::App {
                                         uu_i18n::text("文件、终端和端口映射尚未接入"),
                                     );
                                     }
+                                    if let Some(tabs)=&self.workspace_tabs {
+                                        if menu_row(ui,uu_i18n::text("设备与屏幕"),Some(Icon::Grid),false,false,"",false).clicked() {
+                                            tabs.open_selector(ctx);self.stream_menu.open=false;
+                                            ctx.memory_mut(|memory|memory.close_popup());
+                                        }
+                                    }
                                     if menu_row(ui,uu_i18n::text("连接详情"),Some(Icon::Link),false,false,"",false).clicked(){self.open_connection_details();}
                                     if menu_row(ui,uu_i18n::text("串流设置"),Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
                                     side_submenu(ui, &mut blocked, Icon::Grid, uu_i18n::text("更多"), |ui| {

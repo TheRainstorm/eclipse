@@ -66,23 +66,26 @@ fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() 
 }
 
 #[test]
-fn fullscreen_device_overlay_keeps_the_entire_video_area_and_hides_after_hover() {
+fn device_selector_requires_an_explicit_open_and_keeps_the_video_area() {
     let ctx=egui::Context::default();crate::setup_style(&ctx);
-    let tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None},Group{id:2,name:"B".into(),screens:vec![],selected:None}],active:1,actions:Default::default(),local_ui:Default::default()};
+    let mut tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None},Group{id:2,name:"B".into(),screens:vec![],selected:None}],active:1,actions:Default::default(),local_ui:Default::default()};
     let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
-    let mut draw=|time,pointer| {
+    let draw=|tabs:&Tabs,pointer| {
         let mut visible=false;
-        let _=ctx.run(egui::RawInput{screen_rect:Some(screen),time:Some(time),focused:true,
+        let _=ctx.run(egui::RawInput{screen_rect:Some(screen),focused:true,
             events:vec![egui::Event::PointerMoved(pointer)],..Default::default()},|ctx| {
-                visible=tabs.show_fullscreen(ctx).is_some();
-                assert_eq!(ctx.available_rect(),screen,"overlay must not reserve a top panel");
+                visible=tabs.show_selector(ctx).is_some();
+                assert_eq!(ctx.available_rect(),screen,"selector must not reserve a top panel");
             });
         visible
     };
-    assert!(!draw(0.,egui::pos2(600.,360.)));
-    assert!(draw(1.,egui::pos2(600.,3.)));
-    assert!(draw(1.1,egui::pos2(600.,360.)));
-    assert!(!draw(1.4,egui::pos2(600.,360.)));
+    for _ in 0..3 {assert!(!draw(&tabs,egui::pos2(600.,3.)));}
+    tabs.open_selector(&ctx);
+    assert!(draw(&tabs,egui::pos2(600.,360.)));
+    assert!(tabs.owns_input(&ctx));
+    tabs.active=2;
+    assert!(!draw(&tabs,egui::pos2(600.,3.)),"switching computers closes the previous selector");
+    assert!(!tabs.owns_input(&ctx));
 }
 
 #[test]

@@ -1591,5 +1591,6 @@
   "后台运行版本：{} · PID {}": "Running service version: {} · PID {}",
   "后台运行版本：无法读取 · PID {}": "Running service version: unavailable · PID {}",
   "后台安装版本：{}": "Installed service version: {}",
-  "当前程序版本：{} · {}": "Current application version: {} · {}"
+  "当前程序版本：{} · {}": "Current application version: {} · {}",
+  "设备与屏幕": "Devices and displays"
 }
