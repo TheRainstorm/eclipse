@@ -330,6 +330,8 @@ mod tests {
                         Err(error) => panic!("{error}"),
                     }
                 };
+                // Windows inherits the listener's nonblocking mode on accept.
+                stream.set_nonblocking(false).unwrap();
                 stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
                 let mut buffer = [0; 4096];
                 let count = stream.read(&mut buffer).unwrap();
