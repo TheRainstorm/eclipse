@@ -416,6 +416,17 @@ struct DeviceNode {
     registered: bool,
     keep: bool,
 }
+struct DriverList {
+    devices: HDEVINFO,
+    info: SP_DEVINFO_DATA,
+}
+impl Drop for DriverList {
+    fn drop(&mut self) {
+        unsafe {
+            SetupDiDestroyDriverInfoList(self.devices, &self.info, SPDIT_COMPATDRIVER);
+        }
+    }
+}
 impl DeviceNode {
     fn create() -> Result<Self> {
         no_existing_mtt_node()?;
@@ -492,7 +503,7 @@ impl DeviceNode {
         .to_ascii_lowercase();
         Ok(())
     }
-    fn bind(&self, directory: &Path) -> Result<()> {
+    fn bind(&mut self, directory: &Path) -> Result<()> {
         let inf = path_wide(&directory.join("MttVDD.inf"));
         let mut destination = [0u16; 512];
         win_ok(
@@ -510,18 +521,86 @@ impl DeviceNode {
             },
             "SetupCopyOEMInfW(signed MttVDD)",
         )?;
+        // A hardware-ID-wide update could also bind a node concurrently
+        // registered by another installer. Select the one staged INF for our
+        // exact newly registered device, then install only that device.
+        let mut parameters: SP_DEVINSTALL_PARAMS_W = unsafe { zeroed() };
+        parameters.cbSize = size_of::<SP_DEVINSTALL_PARAMS_W>() as u32;
+        win_ok(
+            unsafe { SetupDiGetDeviceInstallParamsW(self.devices.0, &self.info, &mut parameters) },
+            "SetupDiGetDeviceInstallParamsW(new node)",
+        )?;
+        let length = destination
+            .iter()
+            .position(|value| *value == 0)
+            .ok_or_else(|| Error::Platform("staged driver INF path is not terminated".into()))?;
+        if length == 0 || length >= parameters.DriverPath.len() {
+            return Err(Error::Platform(
+                "staged driver INF path exceeds SetupAPI limits".into(),
+            ));
+        }
+        parameters.DriverPath.fill(0);
+        parameters.DriverPath[..length].copy_from_slice(&destination[..length]);
+        parameters.Flags |= DI_ENUMSINGLEINF | DI_QUIETINSTALL;
+        parameters.FlagsEx |= DI_FLAGSEX_ALLOWEXCLUDEDDRVS;
+        win_ok(
+            unsafe { SetupDiSetDeviceInstallParamsW(self.devices.0, &self.info, &parameters) },
+            "SetupDiSetDeviceInstallParamsW(pinned INF)",
+        )?;
+        win_ok(
+            unsafe {
+                SetupDiBuildDriverInfoList(self.devices.0, &mut self.info, SPDIT_COMPATDRIVER)
+            },
+            "SetupDiBuildDriverInfoList(pinned INF, new node)",
+        )?;
+        let _list = DriverList {
+            devices: self.devices.0,
+            info: self.info,
+        };
+        let mut driver: SP_DRVINFO_DATA_V2_W = unsafe { zeroed() };
+        driver.cbSize = size_of::<SP_DRVINFO_DATA_V2_W>() as u32;
+        win_ok(
+            unsafe {
+                SetupDiEnumDriverInfoW(
+                    self.devices.0,
+                    &self.info,
+                    SPDIT_COMPATDRIVER,
+                    0,
+                    &mut driver,
+                )
+            },
+            "SetupDiEnumDriverInfoW(pinned driver)",
+        )?;
+        let mut other: SP_DRVINFO_DATA_V2_W = unsafe { zeroed() };
+        other.cbSize = size_of::<SP_DRVINFO_DATA_V2_W>() as u32;
+        let extra = unsafe {
+            SetupDiEnumDriverInfoW(
+                self.devices.0,
+                &self.info,
+                SPDIT_COMPATDRIVER,
+                1,
+                &mut other,
+            )
+        };
+        let error = unsafe { GetLastError() };
+        if extra != 0 || error != ERROR_NO_MORE_ITEMS {
+            return Err(Error::Platform(
+                "pinned driver does not identify one unambiguous compatible model".into(),
+            ));
+        }
         let mut reboot = 0;
         win_ok(
             unsafe {
-                UpdateDriverForPlugAndPlayDevicesW(
+                DiInstallDevice(
                     null_mut(),
-                    wide("Root\\MttVDD").as_ptr(),
-                    inf.as_ptr(),
-                    INSTALLFLAG_NONINTERACTIVE,
+                    self.devices.0,
+                    &self.info,
+                    &driver,
+                    0,
                     &mut reboot,
                 )
             },
-            "UpdateDriverForPlugAndPlayDevicesW(signed MttVDD)",
+            "DiInstallDevice(pinned driver, only the new node)",
         )?;
         if reboot != 0 {
             return Err(Error::Platform("Windows requires a restart to load the driver; the newly created device will be rolled back".into()));
