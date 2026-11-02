@@ -1515,6 +1515,13 @@ Authors: The image-rs Developers
 License file: LICENSE-APACHE -> text 4bf96504d6e83ce5c6fc7167f1795d9ceaa68e70ab86bc5d08ab93184262bbbe
 License file: LICENSE-MIT -> text 77949ead506e84e3ff5c31f784bdc17b6c4095d4102edae05dc5557ef6c61c8c
 
+## image-webp 0.2.4
+SPDX: MIT OR Apache-2.0
+Upstream: https://github.com/image-rs/image-webp
+Authors:
+License file: LICENSE-APACHE -> text 4bf96504d6e83ce5c6fc7167f1795d9ceaa68e70ab86bc5d08ab93184262bbbe
+License file: LICENSE-MIT -> text 77949ead506e84e3ff5c31f784bdc17b6c4095d4102edae05dc5557ef6c61c8c
+
 ## indexmap 2.14.2
 SPDX: Apache-2.0 OR MIT
 Upstream: https://github.com/indexmap-rs/indexmap

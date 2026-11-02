@@ -21,8 +21,11 @@ impl Background {
     pub fn sync(&mut self,s:&Settings,ctx:&egui::Context) {
         self.enabled=s.wallpaper_enabled;
         if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.initialized=false;return;}
-        if !self.initialized || self.source!=s.wallpaper_api {
-            self.initialized=true;self.source=s.wallpaper_api.clone();self.notice.clear();
+        if !self.initialized || self.source!=s.wallpaper_url() {
+            self.initialized=true;self.source=s.wallpaper_url().into();self.notice.clear();
+            // A new source owns a new request; neither throttling nor a pending
+            // result from the previous service can suppress its first refresh.
+            self.worker=None;self.cache_rx=None;self.retry_at=None;self.received=false;
             let mut fresh=false;
             if let Some(path)=self.cache.clone() {
                 fresh=std::fs::metadata(&path).and_then(|m|m.modified()).ok().and_then(|m|m.elapsed().ok()).is_some_and(|age|age<Duration::from_secs(86400));
@@ -38,6 +41,9 @@ impl Background {
             }
             if !fresh {self.refresh(ctx);}
         }
+        self.poll(ctx);
+    }
+    pub fn poll(&mut self,ctx:&egui::Context) {
         if let Some(value)=self.cache_rx.as_ref().and_then(|rx|rx.try_recv().ok()) {
             self.cache_rx=None;
             if let Some(image)=value {
@@ -110,18 +116,54 @@ impl Background {
 mod tests {
     use super::*;
     #[test]
+    fn changing_source_bypasses_its_previous_refresh_throttle() {
+        use std::io::{Read, Write};
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let settings=Settings{wallpaper_source:super::super::settings::WallpaperSource::CustomApi,
+            wallpaper_api:format!("http://{}/image",listener.local_addr().unwrap()),..Default::default()};
+        let server=std::thread::spawn(move|| {
+            let deadline=Instant::now()+Duration::from_secs(5);
+            let mut stream=loop {match listener.accept(){
+                Ok((stream,_))=>break stream,
+                Err(e) if e.kind()==std::io::ErrorKind::WouldBlock=>{assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));},
+                Err(e)=>panic!("{e}"),
+            }};
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request=[0;4096];stream.read(&mut request).unwrap();
+            let pixels=image::RgbImage::from_pixel(64,36,image::Rgb([40,100,180]));
+            let mut bytes=Vec::new();image::codecs::jpeg::JpegEncoder::new(&mut bytes).encode_image(&pixels).unwrap();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();
+        });
+        let ctx=egui::Context::default();
+        let mut background=Background::new(None);
+        background.initialized=true;background.enabled=true;
+        background.source="https://old.example.invalid/image".into();
+        background.retry_at=Some(Instant::now());
+        // A source change must start the new request even inside the old
+        // one-second throttle. Poll alone also works while settings is open.
+        background.sync(&settings,&ctx);
+        assert!(background.worker.is_some());
+        let deadline=Instant::now()+Duration::from_secs(5);
+        while background.texture.is_none(){background.poll(&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
+        assert_eq!(background.texture_source,settings.wallpaper_api);
+        assert!(background.notice.is_empty());
+        server.join().unwrap();
+    }
+
+    #[test]
     fn fresh_cached_background_is_loaded_without_requesting_the_image_service() {
         let root=std::env::temp_dir().join(format!("eclipse-background-{}",uuid::Uuid::new_v4()));
         let path=root.join("wallpaper.jpg");
         let pixels=image::RgbImage::from_pixel(64,36,image::Rgb([40,100,180]));
         let mut bytes=Vec::new();image::codecs::jpeg::JpegEncoder::new(&mut bytes).encode_image(&pixels).unwrap();
-        let settings=Settings{wallpaper_api:"https://wallpaper.example.invalid/image".into(),..Default::default()};
+        let settings=Settings{wallpaper_source:super::super::settings::WallpaperSource::CustomApi,wallpaper_api:"https://wallpaper.example.invalid/image".into(),..Default::default()};
         super::super::settings::save_bytes(&path,&bytes).unwrap();super::super::settings::save_bytes(&path.with_extension("source"),settings.wallpaper_api.as_bytes()).unwrap();
         let ctx=egui::Context::default();let mut background=Background::new(Some(path));
         let deadline=Instant::now()+Duration::from_secs(3);
         while background.texture.is_none(){background.sync(&settings,&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
         assert!(background.worker.is_none());assert_eq!(background.texture.as_ref().unwrap().size(),[64,36]);
-        let settings=Settings{wallpaper_api:"https://second.example.invalid/image".into(),..settings};
+        let settings=Settings{wallpaper_source:super::super::settings::WallpaperSource::CustomApi,wallpaper_api:"https://second.example.invalid/image".into(),..settings};
         super::super::settings::save_bytes(&background.cache.as_ref().unwrap().with_extension("source"),settings.wallpaper_api.as_bytes()).unwrap();
         let deadline=Instant::now()+Duration::from_secs(3);
         while background.texture_source!=settings.wallpaper_api {background.sync(&settings,&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}

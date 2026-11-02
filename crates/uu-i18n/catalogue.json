@@ -1,4 +1,9 @@
 {
+  "壁纸图片来源": "Wallpaper source",
+  "摄影": "Photography",
+  "二次元": "Anime",
+  "自定义 API": "Custom API",
+  "摄影使用 Lorem Picsum，二次元使用 Pipw；自定义 API 可填返回 JPEG / PNG / WebP 的图片地址。缓存每日更新，获取失败继续使用已有壁纸。": "Photography uses Lorem Picsum and Anime uses Pipw. Custom API accepts image URLs returning JPEG, PNG, or WebP. The cache updates daily; existing wallpaper is kept if fetching fails.",
   "合计": "Total",
   "采集": "Capture",
   "编码": "Encode",

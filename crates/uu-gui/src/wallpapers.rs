@@ -213,6 +213,68 @@ mod tests {
     }
 
     #[test]
+    fn redirected_webp_api_is_decoded_and_keeps_the_configured_source() {
+        // Pipw redirects to a WebP CDN. Exercise the complete HTTP redirect and
+        // format-sniffing path without relying on the public service uptime.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut bytes = Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(64, 36, image::Rgba([20, 100, 180, 255]))
+            .write_to(&mut bytes, image::ImageFormat::WebP).unwrap();
+        let bytes = bytes.into_inner();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            for step in 0..2 {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "redirect request missing");
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut buffer = [0; 4096];
+                let count = stream.read(&mut buffer).unwrap();
+                if step == 0 {
+                    assert!(buffer[..count].starts_with(b"GET /api "));
+                    write!(stream, "HTTP/1.1 302 Found\r\nLocation: http://{address}/image.webp\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                } else {
+                    assert!(buffer[..count].starts_with(b"GET /image.webp "));
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: image/webp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len()).unwrap();
+                    stream.write_all(&bytes).unwrap();
+                }
+            }
+        });
+        let url = format!("http://{address}/api");
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let thumbnail = runtime.block_on(download(
+            reqwest::Client::builder().no_proxy().build().unwrap(), request(url.clone())
+        )).unwrap();
+        server.join().unwrap();
+        assert_eq!(thumbnail.url, url);
+        assert_eq!((thumbnail.width, thumbnail.height), (64, 36));
+        assert_eq!(&thumbnail.rgba[..4], &[20, 100, 180, 255]);
+    }
+
+    #[test]
+    #[ignore = "explicit public image-service network smoke test"]
+    fn public_wallpaper_sources_deliver_decodable_images() {
+        uu_core::install_crypto_provider();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let client = reqwest::Client::builder().timeout(Duration::from_secs(25))
+            .redirect(reqwest::redirect::Policy::limited(3)).build().unwrap();
+        for url in ["https://img-api.pipw.top", "https://picsum.photos/1920/1080"] {
+            let image = runtime.block_on(download(client.clone(), request(url.into()))).unwrap();
+            assert!(image.width > 0 && image.height > 0);
+            eprintln!("wallpaper source {url}: decoded {}x{}", image.width, image.height);
+        }
+    }
+
+    #[test]
     fn rejects_oversized_source_dimensions_and_compressed_payload() {
         assert!(decode(request(String::new()), png(1, MAX_SOURCE_DIMENSION + 1)).is_err());
         assert!(decode(request(String::new()), vec![0; MAX_DOWNLOAD + 1]).is_err());

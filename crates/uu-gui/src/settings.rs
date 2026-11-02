@@ -28,6 +28,28 @@ pub(super) fn recommended_bitrate(settings:&ClientSettings,actual_size:Option<[u
 #[serde(rename_all = "snake_case")]
 pub enum DeviceView { #[default] Cards, List }
 
+pub(super) const PHOTOGRAPHY_WALLPAPER: &str = "https://picsum.photos/1920/1080";
+pub(super) const ANIME_WALLPAPER: &str = "https://img-api.pipw.top";
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WallpaperSource { #[default] Photography, Anime, CustomApi }
+impl WallpaperSource {
+    pub const ALL: [Self; 3] = [Self::Photography, Self::Anime, Self::CustomApi];
+    pub fn label(self) -> &'static str {
+        uu_i18n::text(match self {
+            Self::Photography => "摄影", Self::Anime => "二次元", Self::CustomApi => "自定义 API",
+        })
+    }
+    fn legacy(api: &str) -> Self {
+        match api.trim().trim_end_matches('/') {
+            PHOTOGRAPHY_WALLPAPER => Self::Photography,
+            ANIME_WALLPAPER => Self::Anime,
+            _ => Self::CustomApi,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -46,6 +68,9 @@ pub struct Settings {
     pub app_autostart:bool,
     pub close_to_tray:bool,
     pub show_input_status:bool,
+    pub wallpaper_source: WallpaperSource,
+    /// Retained while built-in sources are selected, so returning to Custom API
+    /// restores the user's own URL.
     pub wallpaper_api: String,
 }
 impl Default for Settings {
@@ -54,7 +79,7 @@ impl Default for Settings {
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
             device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,close_to_tray:false,show_input_status:false,
-            wallpaper_api:"https://picsum.photos/1920/1080".into() }
+            wallpaper_source:WallpaperSource::Photography, wallpaper_api:PHOTOGRAPHY_WALLPAPER.into() }
     }
 }
 impl std::ops::Deref for Settings {
@@ -65,6 +90,13 @@ impl std::ops::DerefMut for Settings {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.client }
 }
 impl Settings {
+    pub fn wallpaper_url(&self) -> &str {
+        match self.wallpaper_source {
+            WallpaperSource::Photography => PHOTOGRAPHY_WALLPAPER,
+            WallpaperSource::Anime => ANIME_WALLPAPER,
+            WallpaperSource::CustomApi => self.wallpaper_api.trim(),
+        }
+    }
     pub fn application_hotkeys(&self)->&uu_core::hotkeys::Bindings {
         self.application_hotkeys.as_ref().unwrap_or(&self.client.hotkeys)
     }
@@ -75,9 +107,9 @@ impl Settings {
         self.client.validate()?;
         anyhow::ensure!(self.application_hotkeys().issues().is_empty(),"{}", uu_i18n::format!("客户端快捷键存在冲突，请在应用设置中修正"));
         anyhow::ensure!(self.lan_service_port>0&&self.lan_discovery_port>0,"{}", uu_i18n::format!("局域网端口必须在 1–65535 之间"));
-        if self.wallpaper_enabled {
+        if self.wallpaper_enabled && self.wallpaper_source == WallpaperSource::CustomApi {
             anyhow::ensure!(self.wallpaper_api.len()<=2048,"{}", uu_i18n::format!("壁纸接口地址过长"));
-            let url=reqwest::Url::parse(&self.wallpaper_api).map_err(|_|anyhow::anyhow!("{}", uu_i18n::format!("请输入有效的壁纸图片 URL")))?;
+            let url=reqwest::Url::parse(self.wallpaper_url()).map_err(|_|anyhow::anyhow!("{}", uu_i18n::format!("请输入有效的壁纸图片 URL")))?;
             anyhow::ensure!(matches!(url.scheme(),"http"|"https")&&url.host_str().is_some()&&url.username().is_empty()&&url.password().is_none(),"{}", uu_i18n::format!("壁纸接口须为不含登录凭据的 HTTP / HTTPS 图片地址"));
         }
         Ok(())
@@ -96,8 +128,16 @@ impl Settings {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(_) => anyhow::bail!("{}", uu_i18n::format!("无法读取设置，或文件超过 64 KiB；原文件已保留")),
         };
+        // Deserialize directly from bytes so duplicate fields remain invalid;
+        // Value is only used to distinguish a missing source during migration.
         let mut s: Self = serde_json::from_slice(&bytes)
             .map_err(|_| anyhow::anyhow!("{}", uu_i18n::format!("设置文件格式无效；原文件已保留，未自动覆盖")))?;
+        let stored: serde_json::Value = serde_json::from_slice(&bytes)?;
+        // Legacy files only recorded a URL. Infer once on read, without writing
+        // the original file or replacing an explicitly chosen source.
+        if stored.get("wallpaper_source").is_none() {
+            s.wallpaper_source = WallpaperSource::legacy(&s.wallpaper_api);
+        }
         // These two legacy fields only seed first migration into services.
         if s.lan_service_port==47998 { s.lan_service_port=uu_core::native_discovery::SERVICE_PORT; }
         if s.lan_discovery_port==47999 { s.lan_discovery_port=uu_core::native_discovery::DISCOVERY_PORT; }
@@ -420,6 +460,11 @@ impl super::App {
                                     &mut actions,
                                     section,
                                 );
+                                if section == super::settings_page::SoftwareSection::Appearance
+                                    && !self.background.notice.is_empty() {
+                                    ui.add_space(8.0);
+                                    ui.label(&self.background.notice);
+                                }
                             }
                             super::workspace_ui::SettingsView::About => {
                                 self.about_content(ui);
@@ -452,7 +497,7 @@ impl super::App {
                     return;
                 }
             }
-            let wallpaper_changed = self.preferences.wallpaper_api != self.settings_draft.wallpaper_api
+            let wallpaper_changed = self.preferences.wallpaper_url() != self.settings_draft.wallpaper_url()
                 || self.preferences.wallpaper_enabled != self.settings_draft.wallpaper_enabled;
             self.preferences = self.settings_draft.clone();
             self.preferences.use_application_hotkeys();
@@ -557,6 +602,7 @@ impl super::App {
             else {
                 let defaults=Settings::default();
                 self.settings_draft.wallpaper_enabled=defaults.wallpaper_enabled;
+                self.settings_draft.wallpaper_source=defaults.wallpaper_source;
                 self.settings_draft.wallpaper_api=defaults.wallpaper_api;
                 self.settings_draft.lan_discovery=defaults.lan_discovery;
                 self.settings_draft.app_autostart=defaults.app_autostart;
@@ -664,6 +710,63 @@ impl super::App {
 mod tests {
     use super::*;
     #[test]
+    fn legacy_wallpaper_urls_migrate_without_rewriting_the_original() {
+        let root=std::env::temp_dir().join(format!("eclipse-wallpaper-settings-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path=root.join("gui-settings.json");
+        for (json,expected,url) in [
+            (r#"{}"#,WallpaperSource::Photography,PHOTOGRAPHY_WALLPAPER),
+            (r#"{"wallpaper_api":"https://picsum.photos/1920/1080"}"#,WallpaperSource::Photography,PHOTOGRAPHY_WALLPAPER),
+            (r#"{"wallpaper_api":"https://img-api.pipw.top/"}"#,WallpaperSource::Anime,ANIME_WALLPAPER),
+            (r#"{"wallpaper_api":" https://example.invalid/wallpaper?type=landscape "}"#,WallpaperSource::CustomApi,"https://example.invalid/wallpaper?type=landscape"),
+            (r#"{"wallpaper_source":"custom_api","wallpaper_api":"https://img-api.pipw.top"}"#,WallpaperSource::CustomApi,ANIME_WALLPAPER),
+        ] {
+            std::fs::write(&path,json).unwrap();
+            let loaded=Settings::load(&path).unwrap();
+            assert_eq!(loaded.wallpaper_source,expected);
+            assert_eq!(loaded.wallpaper_url(),url);
+            assert_eq!(std::fs::read(&path).unwrap(),json.as_bytes());
+            loaded.save(&path).unwrap();
+            assert_eq!(Settings::load(&path).unwrap(),loaded);
+        }
+        std::fs::write(&path,r#"{"wallpaper_source":"unknown"}"#).unwrap();
+        assert!(Settings::load(&path).is_err());
+        for duplicate in [
+            r#"{"wallpaper_api":"https://example.invalid/first","wallpaper_api":"https://example.invalid/second"}"#,
+            r#"{"wallpaper_source":"photography","wallpaper_source":"anime"}"#,
+        ] {
+            std::fs::write(&path,duplicate).unwrap();
+            assert!(Settings::load(&path).is_err());
+            assert!(Settings::default().save(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(),duplicate.as_bytes());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wallpaper_builtin_sources_retain_custom_url_and_validate_only_active_api() {
+        let mut settings=Settings {wallpaper_api:"invalid custom draft".into(),..Default::default()};
+        assert_eq!(settings.wallpaper_url(),PHOTOGRAPHY_WALLPAPER);
+        assert!(settings.validate().is_ok());
+        settings.wallpaper_source=WallpaperSource::Anime;
+        assert_eq!(settings.wallpaper_url(),ANIME_WALLPAPER);
+        assert_eq!(settings.wallpaper_api,"invalid custom draft");
+        assert!(settings.validate().is_ok());
+        settings.wallpaper_source=WallpaperSource::CustomApi;
+        assert!(settings.validate().is_err());
+        for invalid in ["file:///tmp/wallpaper.png","https://name:secret@example.invalid/image"] {
+            settings.wallpaper_api=invalid.into();
+            assert!(settings.validate().is_err());
+        }
+        settings.wallpaper_api="  https://example.invalid/image  ".into();
+        assert!(settings.validate().is_ok());
+        assert_eq!(settings.wallpaper_url(),"https://example.invalid/image");
+        super::super::settings_page::SoftwareSection::Appearance.reset(&mut settings);
+        assert_eq!(settings.wallpaper_source,WallpaperSource::Photography);
+        assert_eq!(settings.wallpaper_url(),PHOTOGRAPHY_WALLPAPER);
+    }
+
+    #[test]
     fn application_bindings_migrate_and_survive_stream_saves() {
         use uu_core::hotkeys::{Action,Chord};
         let root=std::env::temp_dir().join(format!("eclipse-application-keys-{}",uuid::Uuid::new_v4()));
@@ -712,6 +815,8 @@ mod tests {
         launcher.show_input_status=true;
         launcher.close_to_tray=true;
         launcher.wallpaper_enabled=false;
+        launcher.wallpaper_source=WallpaperSource::Anime;
+        launcher.wallpaper_api="https://custom.example.invalid/wallpaper".into();
         launcher.lan_discovery=false;
         launcher.save(&path).unwrap();
         stream.codec=CodecPreference::Hevc;
@@ -721,6 +826,8 @@ mod tests {
         let reopened=Settings::load(&path).unwrap();
         assert_eq!(reopened.client,stream.client);
         assert!(!reopened.wallpaper_enabled);
+        assert_eq!(reopened.wallpaper_source,WallpaperSource::Anime);
+        assert_eq!(reopened.wallpaper_api,"https://custom.example.invalid/wallpaper");
         assert!(!reopened.lan_discovery);
         assert!(reopened.show_input_status);
         assert!(reopened.close_to_tray);

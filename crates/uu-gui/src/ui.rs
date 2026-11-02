@@ -173,6 +173,9 @@ impl App {
             self.background.sync(&self.preferences, ctx);
             self.background.paint_background(ctx, ctx.screen_rect());
         }
+        // Settings can refresh a draft source without displaying the devices
+        // page; keep consuming that request and its repaint notifications.
+        self.background.poll(ctx);
         self.title_bar(ctx);
         match self.workspace.route.page {
             super::workspace_ui::Page::Devices | super::workspace_ui::Page::Services => {

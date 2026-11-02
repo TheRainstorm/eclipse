@@ -1,6 +1,6 @@
 //! Full-page preferences. Rendering emits actions; App owns applying changes.
 use super::{
-    settings::{CursorMode, Settings},
+    settings::{CursorMode, Settings, WallpaperSource},
     theme,
     ui::{self, Icon},
 };
@@ -319,7 +319,7 @@ impl SoftwareSection {
         let defaults=Settings::default();
         match self {
             Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;s.close_to_tray=defaults.close_to_tray;}
-            Self::Appearance=>{s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
+            Self::Appearance=>{s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
             Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
             Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
         }
@@ -348,9 +348,17 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
     }),
     SoftwareSection::Appearance=>{group(ui,uu_i18n::text("设备页外观"),|ui| {
         ui.checkbox(&mut s.wallpaper_enabled,uu_i18n::text("显示背景壁纸"));
-        ui.label(uu_i18n::text("壁纸图片接口"));
-        ui.add(egui::TextEdit::singleline(&mut s.wallpaper_api).desired_width(f32::INFINITY).hint_text("https://picsum.photos/1920/1080"));
-        note(ui,uu_i18n::text("兼容 Moonlight V+ 使用的图片接口，也可填返回 JPEG / PNG 的图片 URL。缓存每日更新，获取失败继续使用已有壁纸。"));
+        ui.horizontal(|ui| {
+            ui.label(uu_i18n::text("壁纸图片来源"));
+            egui::ComboBox::from_id_salt("wallpaper-source").selected_text(s.wallpaper_source.label()).show_ui(ui,|ui| {
+                for source in WallpaperSource::ALL {ui.selectable_value(&mut s.wallpaper_source,source,source.label());}
+            });
+        });
+        if s.wallpaper_source == WallpaperSource::CustomApi {
+            ui.label(uu_i18n::text("壁纸图片接口"));
+            ui.add(egui::TextEdit::singleline(&mut s.wallpaper_api).desired_width(f32::INFINITY).hint_text("https://example.com/image"));
+        }
+        note(ui,uu_i18n::text("摄影使用 Lorem Picsum，二次元使用 Pipw；自定义 API 可填返回 JPEG / PNG / WebP 的图片地址。缓存每日更新，获取失败继续使用已有壁纸。"));
         if ui.button(uu_i18n::text("刷新壁纸")).clicked(){actions.refresh_wallpaper=true;}
     });
         group(ui,uu_i18n::text("串流界面"),|ui| {
