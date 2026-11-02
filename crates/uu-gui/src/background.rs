@@ -11,6 +11,7 @@ pub(super) struct Background {
     source:String,
     texture_source:String,
     received:bool,
+    failure:Option<String>,
     cache:Option<PathBuf>,
     initialized:bool,
     enabled:bool,
@@ -25,7 +26,7 @@ impl Background {
             self.initialized=true;self.source=s.wallpaper_url().into();self.notice.clear();
             // A new source owns a new request; neither throttling nor a pending
             // result from the previous service can suppress its first refresh.
-            self.worker=None;self.cache_rx=None;self.retry_at=None;self.received=false;
+            self.worker=None;self.cache_rx=None;self.retry_at=None;self.received=false;self.failure=None;
             let mut fresh=false;
             if let Some(path)=self.cache.clone() {
                 fresh=std::fs::metadata(&path).and_then(|m|m.modified()).ok().and_then(|m|m.elapsed().ok()).is_some_and(|age|age<Duration::from_secs(86400));
@@ -50,10 +51,19 @@ impl Background {
                 if self.texture.is_none()||self.texture_source!=self.source {self.set(image,ctx,false);}
             }else if self.worker.is_none(){self.refresh(ctx);}
         }
-        while let Some(image)=self.worker.as_mut().and_then(|w|w.try_recv()) {self.received=true;self.set(image,ctx,true);}
+        while let Some(outcome)=self.worker.as_mut().and_then(|w|w.try_recv()) {
+            match outcome {
+                Ok(image)=>{self.received=true;self.failure=None;self.set(image,ctx,true);},
+                Err(failure) if failure.device_id=="background" && failure.url==self.source => {
+                    self.failure=Some(failure.error.clone());
+                    self.notice=uu_i18n::format!("壁纸加载失败：{e}",e=failure.error);
+                },
+                Err(_)=>{},
+            }
+        }
         if self.worker.as_ref().is_some_and(|w|w.finished()) {
             self.worker=None;
-            if !self.received {self.notice=if self.texture.is_some(){uu_i18n::text("壁纸更新失败，继续使用已有图片")}else{uu_i18n::text("图片暂时无法获取，正在使用内置背景；可在应用设置中刷新")}.into();}
+            if !self.received && self.failure.is_none() {self.notice=if self.texture.is_some(){uu_i18n::text("壁纸更新失败，继续使用已有图片")}else{uu_i18n::text("图片暂时无法获取，正在使用内置背景；可在应用设置中刷新")}.into();}
         }
         if self.worker.is_some()||self.cache_rx.is_some(){ctx.request_repaint_after(Duration::from_millis(100));}
     }
@@ -61,7 +71,8 @@ impl Background {
         if image.url!=self.source{return;}
         self.texture_source=image.url.clone();
         self.texture=Some(ctx.load_texture("workspace-background",egui::ColorImage::from_rgba_unmultiplied([image.width as usize,image.height as usize],&image.rgba),egui::TextureOptions::LINEAR));
-        self.notice.clear();
+        // Loading a fallback after a network failure must not erase its reason.
+        if cache || self.failure.is_none() {self.notice.clear();}
         if cache {if let Some(path)=self.cache.clone() {
             std::thread::spawn(move|| {
                 let result=(||->anyhow::Result<()>{
@@ -77,7 +88,10 @@ impl Background {
     pub fn refresh(&mut self,ctx:&egui::Context) {
         if self.retry_at.is_some_and(|t|t.elapsed()<Duration::from_secs(1)){return;}
         self.retry_at=Some(Instant::now());
-        self.worker=None;self.received=false;
+        // A stale cache is still useful when the new network request fails.
+        // Source changes retire cache receivers in sync; set() prevents a late
+        // cached image from replacing a successfully downloaded texture.
+        self.worker=None;self.received=false;self.failure=None;
         match wallpapers::Worker::start(vec![wallpapers::Request{device_id:"background".into(),url:self.source.clone()}],ctx.clone()) {
             Ok(worker)=>{self.worker=Some(worker);self.notice=uu_i18n::text("正在更新壁纸…").into();},Err(e)=>self.notice=uu_i18n::format!("壁纸加载失败：{e}")
         }
@@ -115,6 +129,68 @@ impl Background {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refresh_reports_actual_failure_and_retains_the_existing_wallpaper() {
+        use std::io::{Read,Write};
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let source=format!("http://{}/image",listener.local_addr().unwrap());
+        let server=std::thread::spawn(move|| {
+            let (mut stream,_)=listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request=[0;4096];let _=stream.read(&mut request).unwrap();
+            write!(stream,"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let ctx=egui::Context::default();
+        let mut background=Background::new(None);background.source=source.clone();background.enabled=true;background.initialized=true;
+        background.set(wallpapers::Thumbnail{device_id:"background".into(),url:source,width:1,height:1,rgba:vec![10,20,30,255]},&ctx,false);
+        let texture=background.texture.as_ref().unwrap().id();
+        background.refresh(&ctx);
+        let deadline=Instant::now()+Duration::from_secs(5);
+        while background.worker.is_some(){background.poll(&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
+        assert_eq!(background.texture.as_ref().unwrap().id(),texture);
+        assert!(background.notice.contains("403"));assert!(background.failure.is_some());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn stale_cache_survives_refresh_failure_and_keeps_the_actual_reason() {
+        use std::io::{Read,Write};
+        use std::time::SystemTime;
+        let root=std::env::temp_dir().join(format!("eclipse-stale-background-{}",uuid::Uuid::new_v4()));
+        let path=root.join("wallpaper.jpg");
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let source=format!("http://{}/image",listener.local_addr().unwrap());
+        let pixels=image::RgbImage::from_pixel(64,36,image::Rgb([40,100,180]));
+        let mut bytes=Vec::new();image::codecs::jpeg::JpegEncoder::new(&mut bytes).encode_image(&pixels).unwrap();
+        super::super::settings::save_bytes(&path,&bytes).unwrap();
+        super::super::settings::save_bytes(&path.with_extension("source"),source.as_bytes()).unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_times(
+            std::fs::FileTimes::new().set_modified(SystemTime::now()-Duration::from_secs(90000))
+        ).unwrap();
+        let server=std::thread::spawn(move|| {
+            let (mut stream,_)=listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request=[0;4096];let _=stream.read(&mut request).unwrap();
+            write!(stream,"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let settings=Settings{wallpaper_source:super::super::settings::WallpaperSource::CustomApi,
+            wallpaper_api:source.clone(),..Default::default()};
+        let ctx=egui::Context::default();let mut background=Background::new(Some(path));
+        background.sync(&settings,&ctx);
+        let deadline=Instant::now()+Duration::from_secs(5);
+        while background.texture.is_none()||background.worker.is_some()||background.cache_rx.is_some(){
+            background.poll(&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(background.texture.as_ref().unwrap().size(),[64,36]);
+        assert_eq!(background.texture_source,source);
+        assert!(background.notice.contains("403"));
+        // Explicitly cover the opposite completion order as well: a late cache
+        // publish cannot clear a network error already shown to the user.
+        background.set(wallpapers::decode(wallpapers::Request{device_id:"background".into(),url:source},bytes).unwrap(),&ctx,false);
+        assert!(background.notice.contains("403"));
+        server.join().unwrap();std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn changing_source_bypasses_its_previous_refresh_throttle() {
         use std::io::{Read, Write};

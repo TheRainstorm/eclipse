@@ -1,4 +1,5 @@
 //! Optional previews never gate the device list or retain full desktop pixels.
+use anyhow::Context as _;
 use std::{
     io::Cursor,
     sync::{
@@ -15,6 +16,8 @@ const MAX_DECODE_ALLOC: u64 = 96 * 1024 * 1024;
 const MAX_SOURCE_DIMENSION: u32 = 8192;
 const MAX_PREVIEW: (u32, u32) = (960, 540);
 const CONCURRENCY: usize = 2;
+const ATTEMPTS: usize = 3;
+const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(30);
 
 pub(super) struct Request {
     pub device_id: String,
@@ -29,8 +32,14 @@ pub(super) struct Thumbnail {
     pub rgba: Vec<u8>,
 }
 
+pub(super) struct Failure {
+    pub device_id: String,
+    pub url: String,
+    pub error: String,
+}
+
 pub(super) struct Worker {
-    rx: tokio::sync::mpsc::Receiver<Thumbnail>,
+    rx: tokio::sync::mpsc::Receiver<Result<Thumbnail, Failure>>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
     finished: Arc<AtomicBool>,
@@ -39,7 +48,7 @@ pub(super) struct Worker {
 impl Worker {
     pub fn start(requests: Vec<Request>, context: eframe::egui::Context) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(3))
+            .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(12))
             .redirect(reqwest::redirect::Policy::limited(3))
             .build()?;
@@ -84,7 +93,7 @@ impl Worker {
         })
     }
 
-    pub fn try_recv(&mut self) -> Option<Thumbnail> {
+    pub fn try_recv(&mut self) -> Option<Result<Thumbnail, Failure>> {
         self.rx.try_recv().ok()
     }
 
@@ -107,7 +116,7 @@ impl Drop for Worker {
 async fn download_all(
     requests: Vec<Request>,
     client: reqwest::Client,
-    tx: tokio::sync::mpsc::Sender<Thumbnail>,
+    tx: tokio::sync::mpsc::Sender<Result<Thumbnail, Failure>>,
     context: eframe::egui::Context,
 ) {
     let mut requests = requests.into_iter();
@@ -118,13 +127,18 @@ async fn download_all(
                 break;
             };
             let client = client.clone();
-            jobs.spawn(download(client, request));
+            jobs.spawn(async move {
+                let identity=(request.device_id.clone(),request.url.clone());
+                let result=tokio::time::timeout(DOWNLOAD_DEADLINE,download(client,request)).await
+                    .unwrap_or_else(|_|Err(anyhow::anyhow!("image download exceeded 30 s")));
+                result.map_err(|error|Failure{device_id:identity.0,url:identity.1,error:format!("{error:#}")})
+            });
         }
         let Some(result) = jobs.join_next().await else {
             break;
         };
-        if let Ok(Ok(thumbnail)) = result {
-            if tx.send(thumbnail).await.is_err() {
+        if let Ok(outcome) = result {
+            if tx.send(outcome).await.is_err() {
                 break;
             }
             context.request_repaint();
@@ -133,37 +147,64 @@ async fn download_all(
 }
 
 async fn download(client: reqwest::Client, request: Request) -> anyhow::Result<Thumbnail> {
-    let url = reqwest::Url::parse(&request.url)?;
+    let url = reqwest::Url::parse(&request.url).context("invalid image URL")?;
     anyhow::ensure!(
-        matches!(url.scheme(), "http" | "https")
-            && url.username().is_empty()
-            && url.password().is_none(),
-        "unsupported preview URL"
+        matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+            && url.username().is_empty() && url.password().is_none(),
+        "unsupported image URL"
     );
-    let mut response = client.get(url).send().await?.error_for_status()?;
-    if let Some(length) = response.content_length() {
-        anyhow::ensure!(length <= MAX_DOWNLOAD as u64, "preview too large");
+    let mut last_error=None;
+    for attempt in 1..=ATTEMPTS {
+        match download_once(&client,&url,Request{device_id:request.device_id.clone(),url:request.url.clone()}).await {
+            Ok(image)=>return Ok(image),
+            Err(error)=> {
+                // Auth/permission errors are actionable, not transient. Random
+                // image endpoints can choose an unavailable or oversized image;
+                // retry their request, never guess a different CDN filename.
+                let permanent=error.downcast_ref::<reqwest::Error>().and_then(|e|e.status())
+                    .is_some_and(|s|s.is_client_error());
+                last_error=Some(error.context(format!("attempt {attempt}/{ATTEMPTS}")));
+                if permanent {break;}
+                if attempt<ATTEMPTS {tokio::time::sleep(Duration::from_millis(200)).await;}
+            }
+        }
     }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        anyhow::ensure!(
-            chunk.len() <= MAX_DOWNLOAD - bytes.len(),
-            "preview too large"
-        );
+    Err(last_error.unwrap())
+}
+
+async fn download_once(client:&reqwest::Client,url:&reqwest::Url,request:Request)->anyhow::Result<Thumbnail> {
+    // Refresh must reach random-image APIs rather than reusing a cached 302.
+    // Keep the configured URL unchanged for source ownership and disk caching.
+    let mut response=client.get(url.clone())
+        .header(reqwest::header::CACHE_CONTROL,"no-cache")
+        .header(reqwest::header::ACCEPT,"image/webp,image/png,image/jpeg,image/*;q=0.8")
+        .header(reqwest::header::USER_AGENT,"Eclipse")
+        .send().await.map_err(reqwest::Error::without_url).context("image request failed")?
+        .error_for_status().map_err(reqwest::Error::without_url)?;
+    if let Some(length)=response.content_length() {
+        anyhow::ensure!(length<=MAX_DOWNLOAD as u64,"image download is {length} bytes; limit is {MAX_DOWNLOAD} bytes");
+    }
+    let mut bytes=Vec::new();
+    while let Some(chunk)=response.chunk().await.map_err(reqwest::Error::without_url).context("image response interrupted")? {
+        anyhow::ensure!(chunk.len()<=MAX_DOWNLOAD-bytes.len(),"image download exceeds {MAX_DOWNLOAD} bytes");
         bytes.extend_from_slice(&chunk);
     }
-    tokio::task::spawn_blocking(move || decode(request, bytes)).await?
+    tokio::task::spawn_blocking(move||decode(request,bytes)).await.context("image decoder task failed")?
 }
 
 pub(super) fn decode(request: Request, bytes: Vec<u8>) -> anyhow::Result<Thumbnail> {
     anyhow::ensure!(bytes.len() <= MAX_DOWNLOAD, "preview too large");
-    let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_SOURCE_DIMENSION);
-    limits.max_image_height = Some(MAX_SOURCE_DIMENSION);
-    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    let mut limits=image::Limits::default();
+    limits.max_image_width=Some(MAX_SOURCE_DIMENSION);
+    limits.max_image_height=Some(MAX_SOURCE_DIMENSION);
+    limits.max_alloc=Some(MAX_DECODE_ALLOC);
+    let mut reader=image::ImageReader::new(Cursor::new(bytes.as_slice())).with_guessed_format()?;
+    reader.limits(limits.clone());
+    let format=reader.format();
+    let (width,height)=reader.into_dimensions().context("invalid image response or source dimensions exceed 8192 pixels")?;
+    let mut reader=image::ImageReader::new(Cursor::new(bytes.as_slice())).with_guessed_format()?;
     reader.limits(limits);
-    let decoded = reader.decode()?;
+    let decoded=reader.decode().with_context(||format!("cannot decode {format:?} {width}x{height}, {} bytes (allocation limit {} MiB)",bytes.len(),MAX_DECODE_ALLOC/1024/1024))?;
     let image = if decoded.width() > MAX_PREVIEW.0 || decoded.height() > MAX_PREVIEW.1 {
         decoded.thumbnail(MAX_PREVIEW.0, MAX_PREVIEW.1)
     } else {
@@ -200,6 +241,55 @@ mod tests {
             device_id: "fixture-device".into(),
             url,
         }
+    }
+
+    #[test]
+    fn worker_reports_http_failure_without_exposing_query_values() {
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let address=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move|| {
+            let (mut stream,_)=listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request=[0;4096];let _=stream.read(&mut request).unwrap();
+            write!(stream,"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let mut worker=Worker::with_client(vec![request(format!("http://{address}/api?token=private-fixture"))],Default::default(),reqwest::Client::builder().no_proxy().build().unwrap()).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(5);
+        let failure=loop {
+            if let Some(result)=worker.try_recv() {break result.err().expect("HTTP failure missing");}
+            assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(failure.device_id,"fixture-device");
+        assert!(failure.error.contains("403"));
+        assert!(!failure.error.contains("private-fixture"));
+        drop(worker);server.join().unwrap();
+    }
+
+    #[test]
+    fn retries_transient_http_and_invalid_random_image_before_publishing() {
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let address=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move|| {
+            for step in 0..3 {
+                let (mut stream,_)=listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut request=[0;4096];let n=stream.read(&mut request).unwrap();
+                let header=String::from_utf8_lossy(&request[..n]).to_ascii_lowercase();
+                assert!(header.starts_with("get /api "));
+                assert!(header.contains("cache-control: no-cache"));
+                if step==0 {
+                    write!(stream,"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                }else{
+                    let bytes=if step==1 {b"unavailable image".to_vec()} else {png(32,18)};
+                    write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();stream.write_all(&bytes).unwrap();
+                }
+            }
+        });
+        let url=format!("http://{address}/api");
+        let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let thumbnail=runtime.block_on(download(reqwest::Client::builder().no_proxy().build().unwrap(),request(url.clone()))).unwrap();
+        assert_eq!(thumbnail.url,url);assert_eq!((thumbnail.width,thumbnail.height),(32,18));
+        server.join().unwrap();
     }
 
     #[test]
@@ -266,14 +356,24 @@ mod tests {
     #[ignore = "explicit public image-service network smoke test"]
     fn public_wallpaper_sources_deliver_decodable_images() {
         uu_core::install_crypto_provider();
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(25))
-            .redirect(reqwest::redirect::Policy::limited(3)).build().unwrap();
-        for url in ["https://img-api.pipw.top", "https://picsum.photos/1920/1080"] {
-            let image = runtime.block_on(download(client.clone(), request(url.into()))).unwrap();
-            assert!(image.width > 0 && image.height > 0);
-            eprintln!("wallpaper source {url}: decoded {}x{}", image.width, image.height);
+        let samples=std::env::var("ECLIPSE_WALLPAPER_TEST_SAMPLES").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(3).clamp(1,30);
+        let mut failures=Vec::new();
+        for url in ["https://img-api.pipw.top","https://picsum.photos/1920/1080"] {
+            for sample in 0..samples {
+                let mut worker=Worker::start(vec![request(url.into())],Default::default()).unwrap();
+                let deadline=Instant::now()+Duration::from_secs(35);
+                let result=loop {
+                    if let Some(result)=worker.try_recv(){break result;}
+                    assert!(Instant::now()<deadline,"wallpaper worker exceeded deadline");
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                match result {
+                    Ok(image)=>eprintln!("wallpaper source {url} sample {sample}: decoded {}x{}",image.width,image.height),
+                    Err(failure)=>{eprintln!("wallpaper source {url} sample {sample}: {}",failure.error);failures.push(failure.error);},
+                }
+            }
         }
+        assert!(failures.is_empty(),"{} public image requests failed: {failures:?}",failures.len());
     }
 
     #[test]
@@ -317,7 +417,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         let preview = loop {
             if let Some(preview) = worker.try_recv() {
-                break preview;
+                break preview.unwrap_or_else(|failure|panic!("{}",failure.error));
             }
             assert!(
                 Instant::now() < deadline,
@@ -427,7 +527,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         let preview = loop {
             if let Some(preview) = worker.try_recv() {
-                break preview;
+                break preview.unwrap_or_else(|failure|panic!("{}",failure.error));
             }
             assert!(
                 Instant::now() < deadline,
