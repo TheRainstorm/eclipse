@@ -9,8 +9,10 @@ use std::{
 };
 
 const MAX_DOWNLOAD: usize = 4 * 1024 * 1024;
-const MAX_DECODE_ALLOC: u64 = 40 * 1024 * 1024;
-const MAX_SOURCE_DIMENSION: u32 = 4096;
+// Random wallpaper APIs also return 5K/8K originals. Bound source decoding
+// separately from the small, fixed-size texture we retain after downsampling.
+const MAX_DECODE_ALLOC: u64 = 96 * 1024 * 1024;
+const MAX_SOURCE_DIMENSION: u32 = 8192;
 const MAX_PREVIEW: (u32, u32) = (960, 540);
 const CONCURRENCY: usize = 2;
 
@@ -272,6 +274,16 @@ mod tests {
             assert!(image.width > 0 && image.height > 0);
             eprintln!("wallpaper source {url}: decoded {}x{}", image.width, image.height);
         }
+    }
+
+    #[test]
+    fn high_resolution_wallpaper_is_downsampled_with_bounded_output() {
+        let preview=decode(request("https://example.invalid/5k".into()),png(5120,2880)).unwrap();
+        assert_eq!((preview.width,preview.height),MAX_PREVIEW);
+        assert_eq!(preview.rgba.len(),960*540*4);
+        // Dimensions alone are insufficient: a compact PNG can expand beyond
+        // the decode allocation budget while remaining inside the edge limit.
+        assert!(decode(request(String::new()),png(8192,4096)).is_err());
     }
 
     #[test]
