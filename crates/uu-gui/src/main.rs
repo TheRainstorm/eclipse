@@ -998,7 +998,7 @@ impl App {
         }
         let foreground_host=self.workspace.host.running()||self.native_host.running()||self.lan.host.running();
         let background_host=self.tray_background.poll(ctx);
-        let tray_needed=self.preferences.close_to_tray||foreground_host||background_host;
+        let tray_needed=self.preferences.close_to_tray||foreground_host||background_host||self.virtual_display.owns_foreground_displays();
         if !tray_needed || self.exit_requested {
             if self.launcher_hidden && !self.exit_requested {
                 self.launcher_hidden=false;
