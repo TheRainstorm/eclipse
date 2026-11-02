@@ -33,6 +33,7 @@ pub mod native_cursor;
 mod native_clipboard;
 mod native_audio;
 mod native_media;
+mod native_tasks;
 mod network_probe;
 pub mod connection_info;
 pub mod device_trust;

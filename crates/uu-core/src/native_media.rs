@@ -39,6 +39,9 @@ use webrtc::{
     util::vnet::{interface::Interface, net::Net},
 };
 
+#[cfg(all(test,target_os="linux"))]
+pub(crate) mod socket_lifetime_test;
+
 // ICMP port-unreachable replies during ICE probing are not a teardown of this
 // connectionless socket. Otherwise Windows reports 10054 to the mux, whose
 // reader exits before authenticated peer-reflexive checks can arrive.
@@ -233,6 +236,7 @@ pub(crate) async fn receive_codecs(stats:&MediaStats)->Vec<VideoCodec>{
 }
 
 pub(crate) struct NativePeer {
+    pub tasks: Arc<crate::native_tasks::Tasks>,
     socket_trace:Option<Arc<crate::socket_trace::Observation>>,
     trace_receivers:Option<Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>>,
     _connection_monitor:Option<crate::connection_info::Monitor>,
@@ -308,11 +312,15 @@ impl NativePeer {
         eprintln!("{}",serde_json::json!({"event":"native_dedicated_io_policy","requested":dedicated,"actual":dedicated,"sender":sender}));
         #[cfg(windows)]
         crate::native_qos::event(serde_json::json!({"action":"policy","requested":crate::native_qos::requested(sender),"sender":sender}));
+        #[cfg(all(test,target_os="linux"))]
+        let mut original_socket = None;
         let (mux,io,qos_socket,mux_worker)=if dedicated {
             let (mux,io)=crate::native_io::Owner::start(local_ip,observation.clone()).await?;
             (mux,Some(io),None::<Arc<UdpSocket>>,None)
         } else {
         let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
+        #[cfg(all(test,target_os="linux"))]
+        { original_socket = Some(socket_lifetime_test::capture(&socket)?); }
         #[cfg(windows)]
         configure_udp_probing(&socket).context("cannot configure native UDP probing")?;
         #[cfg(windows)]
@@ -361,6 +369,10 @@ impl NativePeer {
         peer.socket_trace=observation;
         #[cfg(windows)]
         {peer.qos_socket=qos_socket;}
+        #[cfg(all(test,target_os="linux"))]
+        if let Some(original) = original_socket {
+            socket_lifetime_test::record(original, peer.mux.as_ref().unwrap());
+        }
         Ok(peer)
     }
 
@@ -457,6 +469,7 @@ impl NativePeer {
             Box::pin(async {})
         }));
         Ok(Self {
+            tasks: Arc::default(),
             io:None,
             socket_trace:None,
             trace_receivers:Some(Arc::new(Mutex::new(Vec::new()))),
@@ -708,6 +721,7 @@ impl NativePeer {
             "development_relay":self.development_relay,"local_type":local_type,"remote_type":remote_type,"transport":"udp"}))
     }
     pub async fn close(&self) {
+        self.tasks.begin_close();
         #[cfg(windows)]
         {
             let qos=self.qos.lock().unwrap().take();
@@ -725,6 +739,7 @@ impl NativePeer {
             let worker = self.mux_worker.lock().unwrap().take();
             retire_mux_worker(worker).await;
             if let Some(io)=&self.io {if let Err(e)=io.stop().await {tracing::error!(error=%e,"dedicated I/O close incomplete");}}
+            self.tasks.finish().await;
             finish_trace(self.trace_receivers.clone(),self.socket_trace.clone()).await;
             self.closed.store(true, Ordering::Release);
         }
@@ -764,6 +779,7 @@ async fn finish_trace(receivers:Option<Arc<Mutex<Vec<tokio::task::JoinHandle<()>
 }
 impl Drop for NativePeer {
     fn drop(&mut self) {
+        self.tasks.begin_close();
         #[cfg(windows)]
         if let Some(qos)=self.qos.get_mut().unwrap().take(){
             if let Ok(runtime)=tokio::runtime::Handle::try_current(){runtime.spawn_blocking(move||drop(qos));}
@@ -783,18 +799,20 @@ impl Drop for NativePeer {
                 let mux_worker = self.mux_worker.get_mut().unwrap().take();
                 let trace=self.socket_trace.clone();
                 let receivers=self.trace_receivers.clone();
+                let tasks=self.tasks.clone();
                 runtime.spawn(async move {
                     let _ = pc.close().await;
                     if let Some(mux) = mux { let _ = mux.close().await; }
                     retire_mux_worker(mux_worker).await;
                     if let Some(io)=io {let _=io.stop().await;}
+                    tasks.finish().await;
                     finish_trace(receivers,trace).await;
                 });
             } else if let Some(io)=self.io.take() {
-                let pc=self.pc.clone();let mux=self.mux.clone();
+                let pc=self.pc.clone();let mux=self.mux.clone();let tasks=self.tasks.clone();
                 std::thread::spawn(move||{
                     if let Ok(runtime)=tokio::runtime::Builder::new_current_thread().enable_all().build(){runtime.block_on(async move{
-                        let _=pc.close().await;if let Some(mux)=mux{let _=mux.close().await;}let _=io.stop().await;
+                        let _=pc.close().await;if let Some(mux)=mux{let _=mux.close().await;}let _=io.stop().await;tasks.finish().await;
                     });}
                 });
             }

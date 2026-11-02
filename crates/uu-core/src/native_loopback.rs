@@ -158,6 +158,12 @@ mod tests {
             assert!(!stats.capabilities.allows(capability));
         }
         assert!(!stats.native_input_available.load(Ordering::Acquire));
+        #[cfg(target_os="linux")]
+        let socket_owners = [path.local.address, path.remote.address].map(|address| {
+            let observer = crate::native_media::socket_lifetime_test::observe(address)
+                .expect("live selected native socket has no identity observer");
+            observer
+        });
         // The caller requested input and supplied shared clipboard state and
         // audio source above; transport capabilities still cannot enable them.
         drop(input);
@@ -173,8 +179,15 @@ mod tests {
         assert_eq!(stopped["input_events"], 0);
         assert_eq!(stopped["audio_packets"], 0);
         assert!(stopped["sent"].as_u64().unwrap() >= 12);
-        // The upstream mux close posts a wake; its already-owned receive task
-        // may require another executor turn before the kernel socket is dropped.
+        // Verify this original resource, not whether its released ephemeral
+        // address has subsequently been claimed by a different parallel test.
+        #[cfg(target_os="linux")]
+        for observer in &socket_owners {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !observer.retired() { tokio::time::sleep(Duration::from_millis(10)).await; }
+            }).await.unwrap_or_else(|_| panic!("original loopback media socket did not retire: {}",observer.failure()));
+        }
+        #[cfg(not(target_os="linux"))]
         for address in [path.local.address, path.remote.address] {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
             loop {

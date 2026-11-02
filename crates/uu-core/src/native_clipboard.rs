@@ -393,332 +393,464 @@ async fn transmit(
 }
 
 /// The GUI supplies an explicitly permitted backend. None never opens a device.
-pub(crate) fn host(channel: Arc<RTCDataChannel>, control: Option<Arc<Clipboard>>) {
-    let transport = control.as_ref().map_or(0, |c| {
-        c.transport_epoch
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1)
-    });
-    let shared = Shared::new();
-    let closed = shared.clone();
-    let state = control.clone();
-    channel.on_close(Box::new(move || {
-        closed.closed.store(true, Ordering::Release);
-        closed.image.lock().unwrap().clear();
-        if let Some(state) = state
-            .as_ref()
-            .filter(|s| s.transport_epoch.load(Ordering::Acquire) == transport)
-        {
-            suspend(state);
-        }
-        Box::pin(async {})
-    }));
-    let incoming = shared.clone();
-    let state = control.clone();
-    let weak = Arc::downgrade(&channel);
-    channel.on_message(Box::new(move |message| {
-        let incoming = incoming.clone();
-        let state = state.clone();
-        let weak = weak.clone();
-        Box::pin(async move {
-            if state
+pub(crate) fn host(
+    channel: Arc<RTCDataChannel>,
+    control: Option<Arc<Clipboard>>,
+    tasks: Arc<crate::native_tasks::Tasks>,
+) {
+    tasks.spawn("clipboard host", move |mut stopping| {
+        let transport = control.as_ref().map_or(0, |c| {
+            c.transport_epoch
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1)
+        });
+        let shared = Shared::new();
+        let closed = shared.clone();
+        let state = control.clone();
+        channel.on_close(Box::new(move || {
+            closed.closed.store(true, Ordering::Release);
+            closed.image.lock().unwrap().clear();
+            if let Some(state) = state
                 .as_ref()
-                .is_some_and(|s| s.transport_epoch.load(Ordering::Acquire) != transport)
+                .filter(|s| s.transport_epoch.load(Ordering::Acquire) == transport)
             {
-                return;
+                suspend(state);
             }
-            let Some(channel) = weak.upgrade() else {
-                return;
-            };
-            let Some(packet) = parse_version(&message.data, version(&channel)) else {
-                let _ = channel.close().await;
-                return;
-            };
-            match packet {
-                Packet::Request { epoch, enabled } => {
-                    let previous = incoming.epoch.load(Ordering::Acquire);
-                    if epoch < previous {
-                        return;
-                    }
-                    if epoch != previous {
-                        incoming.image.lock().unwrap().clear();
-                        if let Some(state) = &state {
-                            clear_pending(state);
+            Box::pin(async {})
+        }));
+        let incoming = shared.clone();
+        let state = control.clone();
+        let weak = Arc::downgrade(&channel);
+        channel.on_message(Box::new(move |message| {
+            let incoming = incoming.clone();
+            let state = state.clone();
+            let weak = weak.clone();
+            Box::pin(async move {
+                if state
+                    .as_ref()
+                    .is_some_and(|s| s.transport_epoch.load(Ordering::Acquire) != transport)
+                {
+                    return;
+                }
+                let Some(channel) = weak.upgrade() else {
+                    return;
+                };
+                let Some(packet) = parse_version(&message.data, version(&channel)) else {
+                    let _ = channel.close().await;
+                    return;
+                };
+                match packet {
+                    Packet::Request { epoch, enabled } => {
+                        let previous = incoming.epoch.load(Ordering::Acquire);
+                        if epoch < previous {
+                            return;
                         }
-                    }
-                    incoming.epoch.store(epoch, Ordering::Release);
-                    *incoming.seen.lock().unwrap() = Instant::now();
-                    let available = state.as_ref().is_some_and(|s| {
-                        s.available.load(Ordering::Acquire) && !s.stopped.load(Ordering::Acquire)
-                    });
-                    let enabled = enabled
-                        && available
-                        && state
-                            .as_ref()
-                            .is_some_and(|s| s.enabled.load(Ordering::Acquire));
-                    incoming.remote_enabled.store(enabled, Ordering::Release);
-                    if let Some(state) = &state {
-                        state.supported.store(enabled, Ordering::Release);
-                        state
-                            .images_supported
-                            .store(version(&channel) == 2 && available, Ordering::Release);
-                        state.active.store(enabled, Ordering::Release);
-                        if !enabled {
+                        if epoch != previous {
                             incoming.image.lock().unwrap().clear();
-                            clear_pending(state);
+                            if let Some(state) = &state {
+                                clear_pending(state);
+                            }
                         }
+                        incoming.epoch.store(epoch, Ordering::Release);
+                        *incoming.seen.lock().unwrap() = Instant::now();
+                        let available = state.as_ref().is_some_and(|s| {
+                            s.available.load(Ordering::Acquire)
+                                && !s.stopped.load(Ordering::Acquire)
+                        });
+                        let enabled = enabled
+                            && available
+                            && state
+                                .as_ref()
+                                .is_some_and(|s| s.enabled.load(Ordering::Acquire));
+                        incoming.remote_enabled.store(enabled, Ordering::Release);
+                        if let Some(state) = &state {
+                            state.supported.store(enabled, Ordering::Release);
+                            state
+                                .images_supported
+                                .store(version(&channel) == 2 && available, Ordering::Release);
+                            state.active.store(enabled, Ordering::Release);
+                            if !enabled {
+                                incoming.image.lock().unwrap().clear();
+                                clear_pending(state);
+                            }
+                        }
+                        if !send(
+                            &channel,
+                            Packet::Status {
+                                epoch,
+                                available,
+                                enabled,
+                            },
+                        )
+                        .await
+                        {
+                            let _ = channel.close().await;
+                        }
+                    }
+                    packet @ (Packet::Text { .. }
+                    | Packet::RichText { .. }
+                    | Packet::Image { .. }) => {
+                        if content_epoch(&packet) == Some(incoming.epoch.load(Ordering::Acquire))
+                            && incoming.remote_enabled.load(Ordering::Acquire)
+                            && incoming.seen.lock().unwrap().elapsed() < LEASE
+                        {
+                            if let Some(state) = state.filter(|s| s.ready()) {
+                                if receive_content(&incoming, &state, packet, true).is_err() {
+                                    let _ = channel.close().await;
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        let _ = channel.close().await;
+                    }
+                }
+            })
+        }));
+        async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+            let mut pending_image = None;
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                if *stopping.borrow_and_update() {
+                    break;
+                }
+                tokio::select! {biased; _=stopping.changed()=>break,_=interval.tick()=>{}}
+                if control
+                    .as_ref()
+                    .is_some_and(|s| s.transport_epoch.load(Ordering::Acquire) != transport)
+                    || shared.closed.load(Ordering::Acquire)
+                    || matches!(
+                        channel.ready_state(),
+                        RTCDataChannelState::Closing | RTCDataChannelState::Closed
+                    )
+                {
+                    break;
+                }
+                if shared.seen.lock().unwrap().elapsed() > LEASE {
+                    shared.remote_enabled.store(false, Ordering::Release);
+                    if let Some(state) = &control {
+                        state.active.store(false, Ordering::Release);
+                        clear_pending(state);
+                    }
+                }
+                if shared.remote_enabled.load(Ordering::Acquire) {
+                    if let Some(state) = control.as_ref().filter(|s| s.ready()) {
+                        if !transmit(&channel, &shared, state, false, &mut pending_image).await {
+                            break;
+                        }
+                    }
+                } else {
+                    pending_image = None;
+                }
+            }
+            if let Some(state) = control
+                .as_ref()
+                .filter(|s| s.transport_epoch.load(Ordering::Acquire) == transport)
+            {
+                suspend(state);
+            }
+            let _ = channel.close().await;
+        }
+    });
+}
+
+pub(crate) fn viewer(
+    channel: Arc<RTCDataChannel>,
+    stats: Arc<MediaStats>,
+    tasks: Arc<crate::native_tasks::Tasks>,
+) {
+    tasks.spawn("clipboard viewer", move |mut stopping| {
+        let wire_version = version(&channel);
+        let transport = stats
+            .clipboard
+            .transport_epoch
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        let shared = Shared::new();
+        let closed = shared.clone();
+        let state = stats.clone();
+        channel.on_close(Box::new(move || {
+            closed.closed.store(true, Ordering::Release);
+            closed.image.lock().unwrap().clear();
+            if state.clipboard.transport_epoch.load(Ordering::Acquire) == transport {
+                state.capabilities.enable(Capability::Clipboard, false);
+                suspend(&state.clipboard);
+            }
+            Box::pin(async {})
+        }));
+        let incoming = shared.clone();
+        let state = stats.clone();
+        let weak = Arc::downgrade(&channel);
+        channel.on_message(Box::new(move |message| {
+            let incoming = incoming.clone();
+            let state = state.clone();
+            let weak = weak.clone();
+            Box::pin(async move {
+                if state.clipboard.transport_epoch.load(Ordering::Acquire) != transport {
+                    return;
+                }
+                match parse_version(&message.data, wire_version) {
+                    Some(Packet::Status {
+                        epoch,
+                        available,
+                        enabled,
+                    }) => {
+                        if epoch != incoming.epoch.load(Ordering::Acquire)
+                            || state.clipboard.generation.load(Ordering::Acquire)
+                                != incoming.local_generation.load(Ordering::Acquire)
+                        {
+                            return;
+                        }
+                        let enabled = enabled && state.clipboard.ready();
+                        state.capabilities.enable(Capability::Clipboard, available);
+                        state
+                            .clipboard
+                            .images_supported
+                            .store(wire_version == 2 && available, Ordering::Release);
+                        let previous_enabled =
+                            incoming.remote_enabled.swap(enabled, Ordering::AcqRel);
+                        *incoming.seen.lock().unwrap() = Instant::now();
+                        let previous_supported =
+                            state.clipboard.supported.swap(enabled, Ordering::AcqRel);
+                        let empty_status = state.clipboard.status.lock().unwrap().is_empty();
+                        if state.clipboard.available.load(Ordering::Acquire)
+                            && (previous_enabled != enabled
+                                || previous_supported != enabled
+                                || empty_status)
+                        {
+                            state.clipboard.status(if enabled {
+                                if wire_version == 2 {
+                                    uu_i18n::text("文本和图片剪贴板已开启")
+                                } else {
+                                    uu_i18n::text("文本剪贴板已开启；对端版本暂不支持图片")
+                                }
+                            } else if available {
+                                uu_i18n::text("同步已关闭，可在菜单或输入设置中开启")
+                            } else {
+                                uu_i18n::text("主机未允许剪贴板同步")
+                            });
+                        }
+                        if !enabled {
+                            clear_pending(&state.clipboard);
+                        }
+                    }
+                    Some(
+                        packet @ (Packet::Text { .. }
+                        | Packet::RichText { .. }
+                        | Packet::Image { .. }),
+                    ) => {
+                        if content_epoch(&packet) == Some(incoming.epoch.load(Ordering::Acquire))
+                            && state.clipboard.generation.load(Ordering::Acquire)
+                                == incoming.local_generation.load(Ordering::Acquire)
+                            && state.clipboard.ready()
+                            && incoming.remote_enabled.load(Ordering::Acquire)
+                            && incoming.seen.lock().unwrap().elapsed() < LEASE
+                        {
+                            if receive_content(&incoming, &state.clipboard, packet, false).is_err()
+                            {
+                                if let Some(channel) = weak.upgrade() {
+                                    let _ = channel.close().await;
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(channel) = weak.upgrade() {
+                            let _ = channel.close().await;
+                        }
+                    }
+                }
+            })
+        }));
+        async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+            let mut pending_image = None;
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut next_request = Instant::now();
+            let mut previous = None;
+            loop {
+                if *stopping.borrow_and_update() {
+                    break;
+                }
+                tokio::select! {biased; _=stopping.changed()=>break,_=interval.tick()=>{}}
+                if stats.clipboard.transport_epoch.load(Ordering::Acquire) != transport
+                    || shared.closed.load(Ordering::Acquire)
+                    || stats.clipboard.stopped.load(Ordering::Acquire)
+                    || matches!(
+                        channel.ready_state(),
+                        RTCDataChannelState::Closing | RTCDataChannelState::Closed
+                    )
+                {
+                    break;
+                }
+                if channel.ready_state() != RTCDataChannelState::Open {
+                    continue;
+                }
+                let desired = stats.clipboard.ready();
+                let generation = stats.clipboard.generation.load(Ordering::Acquire);
+                let changed = generation != shared.local_generation.load(Ordering::Acquire);
+                if Instant::now() >= next_request || Some(desired) != previous || changed {
+                    if Some(desired) != previous || changed {
+                        shared.local_generation.store(generation, Ordering::Release);
+                        shared.epoch.fetch_add(1, Ordering::AcqRel);
+                        shared.image.lock().unwrap().clear();
+                        shared.remote_enabled.store(false, Ordering::Release);
+                    }
+                    if !desired {
+                        shared.remote_enabled.store(false, Ordering::Release);
+                        clear_pending(&stats.clipboard);
                     }
                     if !send(
                         &channel,
-                        Packet::Status {
-                            epoch,
-                            available,
-                            enabled,
+                        Packet::Request {
+                            epoch: shared.epoch.load(Ordering::Acquire),
+                            enabled: desired,
                         },
                     )
                     .await
                     {
-                        let _ = channel.close().await;
-                    }
-                }
-                packet @ (Packet::Text { .. } | Packet::RichText { .. } | Packet::Image { .. }) => {
-                    if content_epoch(&packet) == Some(incoming.epoch.load(Ordering::Acquire))
-                        && incoming.remote_enabled.load(Ordering::Acquire)
-                        && incoming.seen.lock().unwrap().elapsed() < LEASE
-                    {
-                        if let Some(state) = state.filter(|s| s.ready()) {
-                            if receive_content(&incoming, &state, packet, true).is_err() {
-                                let _ = channel.close().await;
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    let _ = channel.close().await;
-                }
-            }
-        })
-    }));
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(10));
-        let mut pending_image = None;
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            if control
-                .as_ref()
-                .is_some_and(|s| s.transport_epoch.load(Ordering::Acquire) != transport)
-                || shared.closed.load(Ordering::Acquire)
-                || channel.ready_state() == RTCDataChannelState::Closed
-            {
-                break;
-            }
-            if shared.seen.lock().unwrap().elapsed() > LEASE {
-                shared.remote_enabled.store(false, Ordering::Release);
-                if let Some(state) = &control {
-                    state.active.store(false, Ordering::Release);
-                    clear_pending(state);
-                }
-            }
-            if shared.remote_enabled.load(Ordering::Acquire) {
-                if let Some(state) = control.as_ref().filter(|s| s.ready()) {
-                    if !transmit(&channel, &shared, state, false, &mut pending_image).await {
                         break;
                     }
+                    previous = Some(desired);
+                    next_request = Instant::now() + Duration::from_millis(500);
                 }
-            } else {
-                pending_image = None;
-            }
-        }
-        if let Some(state) = control
-            .as_ref()
-            .filter(|s| s.transport_epoch.load(Ordering::Acquire) == transport)
-        {
-            suspend(state);
-        }
-        let _ = channel.close().await;
-    });
-}
-
-pub(crate) fn viewer(channel: Arc<RTCDataChannel>, stats: Arc<MediaStats>) {
-    let wire_version = version(&channel);
-    let transport = stats
-        .clipboard
-        .transport_epoch
-        .fetch_add(1, Ordering::AcqRel)
-        .wrapping_add(1);
-    let shared = Shared::new();
-    let closed = shared.clone();
-    let state = stats.clone();
-    channel.on_close(Box::new(move || {
-        closed.closed.store(true, Ordering::Release);
-        closed.image.lock().unwrap().clear();
-        if state.clipboard.transport_epoch.load(Ordering::Acquire) == transport {
-            state.capabilities.enable(Capability::Clipboard, false);
-            suspend(&state.clipboard);
-        }
-        Box::pin(async {})
-    }));
-    let incoming = shared.clone();
-    let state = stats.clone();
-    let weak = Arc::downgrade(&channel);
-    channel.on_message(Box::new(move |message| {
-        let incoming = incoming.clone();
-        let state = state.clone();
-        let weak = weak.clone();
-        Box::pin(async move {
-            if state.clipboard.transport_epoch.load(Ordering::Acquire) != transport {
-                return;
-            }
-            match parse_version(&message.data, wire_version) {
-                Some(Packet::Status {
-                    epoch,
-                    available,
-                    enabled,
-                }) => {
-                    if epoch != incoming.epoch.load(Ordering::Acquire)
-                        || state.clipboard.generation.load(Ordering::Acquire)
-                            != incoming.local_generation.load(Ordering::Acquire)
-                    {
-                        return;
-                    }
-                    let enabled = enabled && state.clipboard.ready();
-                    state.capabilities.enable(Capability::Clipboard, available);
-                    state
-                        .clipboard
-                        .images_supported
-                        .store(wire_version == 2 && available, Ordering::Release);
-                    let previous_enabled = incoming.remote_enabled.swap(enabled, Ordering::AcqRel);
-                    *incoming.seen.lock().unwrap() = Instant::now();
-                    let previous_supported =
-                        state.clipboard.supported.swap(enabled, Ordering::AcqRel);
-                    let empty_status = state.clipboard.status.lock().unwrap().is_empty();
-                    if state.clipboard.available.load(Ordering::Acquire)
-                        && (previous_enabled != enabled
-                            || previous_supported != enabled
-                            || empty_status)
-                    {
-                        state.clipboard.status(if enabled {
-                            if wire_version == 2 {
-                                uu_i18n::text("文本和图片剪贴板已开启")
-                            } else {
-                                uu_i18n::text("文本剪贴板已开启；对端版本暂不支持图片")
-                            }
-                        } else if available {
-                            uu_i18n::text("同步已关闭，可在菜单或输入设置中开启")
-                        } else {
-                            uu_i18n::text("主机未允许剪贴板同步")
-                        });
-                    }
-                    if !enabled {
-                        clear_pending(&state.clipboard);
-                    }
+                if stats.clipboard.read_only.load(Ordering::Acquire) {
+                    stats.clipboard.local.lock().unwrap().take();
                 }
-                Some(
-                    packet @ (Packet::Text { .. } | Packet::RichText { .. } | Packet::Image { .. }),
-                ) => {
-                    if content_epoch(&packet) == Some(incoming.epoch.load(Ordering::Acquire))
-                        && state.clipboard.generation.load(Ordering::Acquire)
-                            == incoming.local_generation.load(Ordering::Acquire)
-                        && state.clipboard.ready()
-                        && incoming.remote_enabled.load(Ordering::Acquire)
-                        && incoming.seen.lock().unwrap().elapsed() < LEASE
-                    {
-                        if receive_content(&incoming, &state.clipboard, packet, false).is_err() {
-                            if let Some(channel) = weak.upgrade() {
-                                let _ = channel.close().await;
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    if let Some(channel) = weak.upgrade() {
-                        let _ = channel.close().await;
-                    }
-                }
-            }
-        })
-    }));
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(10));
-        let mut pending_image = None;
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut next_request = Instant::now();
-        let mut previous = None;
-        loop {
-            interval.tick().await;
-            if stats.clipboard.transport_epoch.load(Ordering::Acquire) != transport
-                || shared.closed.load(Ordering::Acquire)
-                || stats.clipboard.stopped.load(Ordering::Acquire)
-                || channel.ready_state() == RTCDataChannelState::Closed
-            {
-                break;
-            }
-            if channel.ready_state() != RTCDataChannelState::Open {
-                continue;
-            }
-            let desired = stats.clipboard.ready();
-            let generation = stats.clipboard.generation.load(Ordering::Acquire);
-            let changed = generation != shared.local_generation.load(Ordering::Acquire);
-            if Instant::now() >= next_request || Some(desired) != previous || changed {
-                if Some(desired) != previous || changed {
-                    shared.local_generation.store(generation, Ordering::Release);
-                    shared.epoch.fetch_add(1, Ordering::AcqRel);
-                    shared.image.lock().unwrap().clear();
-                    shared.remote_enabled.store(false, Ordering::Release);
-                }
-                if !desired {
-                    shared.remote_enabled.store(false, Ordering::Release);
-                    clear_pending(&stats.clipboard);
-                }
-                if !send(
-                    &channel,
-                    Packet::Request {
-                        epoch: shared.epoch.load(Ordering::Acquire),
-                        enabled: desired,
-                    },
-                )
-                .await
+                if desired
+                    && !stats.clipboard.read_only.load(Ordering::Acquire)
+                    && shared.remote_enabled.load(Ordering::Acquire)
+                    && shared.seen.lock().unwrap().elapsed() < LEASE
                 {
-                    break;
+                    if !transmit(
+                        &channel,
+                        &shared,
+                        &stats.clipboard,
+                        true,
+                        &mut pending_image,
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                } else {
+                    pending_image = None;
                 }
-                previous = Some(desired);
-                next_request = Instant::now() + Duration::from_millis(500);
             }
-            if stats.clipboard.read_only.load(Ordering::Acquire) {
-                stats.clipboard.local.lock().unwrap().take();
+            if stats.clipboard.transport_epoch.load(Ordering::Acquire) == transport {
+                stats.capabilities.enable(Capability::Clipboard, false);
+                suspend(&stats.clipboard);
             }
-            if desired
-                && !stats.clipboard.read_only.load(Ordering::Acquire)
-                && shared.remote_enabled.load(Ordering::Acquire)
-                && shared.seen.lock().unwrap().elapsed() < LEASE
-            {
-                if !transmit(
-                    &channel,
-                    &shared,
-                    &stats.clipboard,
-                    true,
-                    &mut pending_image,
-                )
-                .await
-                {
-                    break;
-                }
-            } else {
-                pending_image = None;
-            }
+            let _ = channel.close().await;
         }
-        if stats.clipboard.transport_epoch.load(Ordering::Acquire) == transport {
-            stats.capabilities.enable(Capability::Clipboard, false);
-            suspend(&stats.clipboard);
-        }
-        let _ = channel.close().await;
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn local_close_retires_owned_channel(host_closes: bool, have_backend: bool) {
+        use crate::native_media::NativePeer;
+        let ip = "127.0.0.1".parse().unwrap();
+        let stats = Arc::new(MediaStats::default());
+        stats
+            .clipboard
+            .enabled
+            .store(have_backend, Ordering::Release);
+        stats
+            .clipboard
+            .active
+            .store(have_backend, Ordering::Release);
+        let backend = have_backend.then(|| {
+            let state = Arc::new(Clipboard::default());
+            state.available.store(true, Ordering::Release);
+            state.enabled.store(true, Ordering::Release);
+            state.active.store(true, Ordering::Release);
+            state
+        });
+        let mut server = NativePeer::new(ip, None, true).await.unwrap();
+        let mut client = NativePeer::new(ip, None, false).await.unwrap();
+        let (opened, mut incoming) = tokio::sync::mpsc::channel(1);
+        let tasks = server.tasks.clone();
+        let backend_copy = backend.clone();
+        server.pc.on_data_channel(Box::new(move |channel| {
+            let opened = opened.clone();
+            let tasks = tasks.clone();
+            let backend = backend_copy.clone();
+            Box::pin(async move {
+                let weak = Arc::downgrade(&channel);
+                host(channel, backend, tasks);
+                let _ = opened.send(weak).await;
+            })
+        }));
+        let channel = client.pc.create_data_channel(LABEL, None).await.unwrap();
+        let client_channel = Arc::downgrade(&channel);
+        viewer(channel, stats.clone(), client.tasks.clone());
+        let checks = async {
+            server.remote(client.description(true).await?, ip).await?;
+            client.remote(server.description(false).await?, ip).await?;
+            tokio::try_join!(server.connected(), client.connected())?;
+            let server_channel = tokio::time::timeout(Duration::from_secs(3), incoming.recv())
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("clipboard channel was not accepted"))?;
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while !server_channel
+                    .upgrade()
+                    .is_some_and(|channel| channel.ready_state() == RTCDataChannelState::Open)
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await?;
+            if host_closes {
+                server.close().await;
+                // Closed peer alone is not proof: the task's last channel Arc
+                // and its SettingEngine must also have been retired on return.
+                anyhow::ensure!(
+                    server_channel.strong_count() == 0,
+                    "locally closed host retained its clipboard channel"
+                );
+                if let Some(backend) = &backend {
+                    anyhow::ensure!(
+                        !backend.active.load(Ordering::Acquire),
+                        "host backend stayed active"
+                    );
+                }
+            } else {
+                client.close().await;
+                anyhow::ensure!(
+                    client_channel.strong_count() == 0,
+                    "locally closed viewer retained its clipboard channel"
+                );
+                anyhow::ensure!(
+                    !stats.clipboard.active.load(Ordering::Acquire),
+                    "viewer backend stayed active"
+                );
+            }
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        client.close().await;
+        server.close().await;
+        checks.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_host_close_joins_clipboard_with_and_without_a_backend() {
+        for have_backend in [false, true] {
+            local_close_retires_owned_channel(true, have_backend).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_viewer_close_joins_clipboard_with_and_without_a_backend() {
+        for have_backend in [false, true] {
+            local_close_retires_owned_channel(false, have_backend).await;
+        }
+    }
+
     #[test]
     fn bounded_binary_text_preserves_unicode_without_allowing_unknown_or_partial_packets() {
         for text in ["", "中文🙂\r\ntext", &"a".repeat(MAX_TEXT)] {
@@ -788,7 +920,7 @@ mod tests {
             })
         }));
         let channel = client.pc.create_data_channel(LABEL, None).await.unwrap();
-        viewer(channel, stats.clone());
+        viewer(channel, stats.clone(), client.tasks.clone());
         let validation = async {
             host.remote(client.description(true).await?, ip).await?;
             client.remote(host.description(false).await?, ip).await?;

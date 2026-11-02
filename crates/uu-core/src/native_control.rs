@@ -473,10 +473,11 @@ impl HostControl {
                 .is_some_and(|w| w.state.enabled.load(Ordering::Acquire)),
         }
     }
-    pub fn attach(self: &Arc<Self>, pc: &RTCPeerConnection) {
+    pub fn attach(self: &Arc<Self>, pc: &RTCPeerConnection,tasks:Arc<crate::native_tasks::Tasks>) {
         let host = self.clone();
         pc.on_data_channel(Box::new(move |channel| {
             let host = host.clone();
+            let tasks = tasks.clone();
             Box::pin(async move {
                 if host.stopped.load(Ordering::Acquire){let _=channel.close().await;return;}
                 if crate::native_virtual_display::accepts(&channel) && !host.virtual_displays_registered.swap(true,Ordering::AcqRel) {
@@ -509,7 +510,7 @@ impl HostControl {
                     && channel.max_packet_lifetime() == 0
                     && !host.clipboard_registered.swap(true, Ordering::AcqRel)
                 {
-                    crate::native_clipboard::host(channel, host.clipboard.clone());
+                    crate::native_clipboard::host(channel, host.clipboard.clone(),tasks);
                     return;
                 }
                 if channel.label() != "eclipse-control-v1"
@@ -1181,7 +1182,7 @@ mod tests {
         let input_worker=host.worker.as_ref().unwrap();let weak=Arc::downgrade(&input_worker.state);
         let events=Arc::new(Mutex::new(Vec::new()));let record=events.clone();
         *input_worker.state.gamepads.lock().unwrap()=Some(crate::native_gamepad::Worker::with_factory(Arc::new(move||weak.upgrade().map_or((0,false),|s|(s.epoch.load(Ordering::Acquire),s.enabled.load(Ordering::Acquire)&&!s.stop.load(Ordering::Acquire)&&s.applied_epoch.load(Ordering::Acquire)==s.epoch.load(Ordering::Acquire)))),Box::new(move||Ok(Box::new(Pads(record.clone()))))).unwrap());
-        let ip="127.0.0.1".parse().unwrap();let mut server=NativePeer::new(ip,None,true).await.unwrap();let mut client=NativePeer::new(ip,None,false).await.unwrap();host.attach(&server.pc);
+        let ip="127.0.0.1".parse().unwrap();let mut server=NativePeer::new(ip,None,true).await.unwrap();let mut client=NativePeer::new(ip,None,false).await.unwrap();host.attach(&server.pc,server.tasks.clone());
         let channel=client.pc.create_data_channel("eclipse-control-v1",None).await.unwrap();
         let pad_channel=client.pc.create_data_channel(label,Some(webrtc::data_channel::data_channel_init::RTCDataChannelInit{ordered:Some(false),max_packet_life_time:Some(crate::native_gamepad::LIFETIME_MS),..Default::default()})).await.unwrap();
         let (input,receiver)=crate::native_input::channel(true);let stats=Arc::new(MediaStats::default());

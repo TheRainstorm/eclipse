@@ -398,7 +398,7 @@ mod tests {
         )
         .await;
         controls.set_cursor(Some(source.clone()));
-        controls.attach(&host.pc);
+        controls.attach(&host.pc,host.tasks.clone());
         let channel = viewer_channel(&viewer.pc, stats.clone()).await.unwrap();
         let result = async {
             let mut offer = viewer.description(true).await?;

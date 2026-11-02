@@ -819,7 +819,7 @@ async fn send_video(
     controls.set_displays(displays.clone());
     let virtuals_available=virtuals.is_some()&&config.session.as_ref().is_some_and(crate::native_virtual_display::Host::permitted);
     controls.set_virtual_displays(virtuals.filter(|_|virtuals_available));
-    controls.attach(&peer.pc);
+    controls.attach(&peer.pc,peer.tasks.clone());
     let ice_started=Instant::now();
     let mut description=peer.description(false).await?;
     if cursor_available {crate::native_cursor::advertise(&mut description)?;}
@@ -1149,7 +1149,7 @@ async fn receive_session(
     // text/images share a single ordered content stream on new peers.
     let label=if clipboard_images{crate::native_clipboard::LABEL_V2}else{crate::native_clipboard::LABEL};
     let clipboard=peer.pc.create_data_channel(label,None).await?;
-    crate::native_clipboard::viewer(clipboard,stats.clone());
+    crate::native_clipboard::viewer(clipboard,stats.clone(),peer.tasks.clone());
     peer.connected().await?;
     if stream.lan_peer().is_none() {stats.diagnostics.record(peer.direct_path().await?);}
     stats.native_progress.set(Stage::WaitingVideo);
