@@ -1,7 +1,7 @@
 //! Optional background. Cached artwork and refresh failures never gate devices.
-use super::{settings::Settings,wallpapers};
+use super::{settings::{Settings,WallpaperSource},wallpapers,wallpaper_favorites};
 use eframe::egui;
-use std::{path::PathBuf,sync::mpsc,time::{Duration,Instant}};
+use std::{path::PathBuf,sync::{mpsc,Arc},time::{Duration,Instant}};
 #[derive(Default)]
 pub(super) struct Background {
     pub texture:Option<egui::TextureHandle>,
@@ -16,12 +16,33 @@ pub(super) struct Background {
     initialized:bool,
     enabled:bool,
     retry_at:Option<Instant>,
+    favorites:wallpaper_favorites::Favorites,
+    favorites_mode:bool,
+    favorite_notice:String,
+    current_encoded:Option<Arc<Vec<u8>>>,
+    painted_encoded:std::cell::RefCell<Option<Arc<Vec<u8>>>>,
 }
 impl Background {
     pub fn new(cache:Option<PathBuf>)->Self {Self{cache,..Default::default()}}
     pub fn sync(&mut self,s:&Settings,ctx:&egui::Context) {
-        self.enabled=s.wallpaper_enabled;
-        if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.initialized=false;return;}
+        self.enabled=s.wallpaper_enabled;self.favorites_mode=s.wallpaper_source==WallpaperSource::Favorites;
+        if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.current_encoded=None;self.painted_encoded.get_mut().take();self.initialized=false;return;}
+        if self.favorites_mode {
+            self.worker=None;self.cache_rx=None;self.retry_at=None;
+            self.favorites.ensure_loaded(ctx);self.favorites.poll(ctx);
+            self.source=s.wallpaper_identity();self.initialized=true;
+            if let Some(item)=self.favorites.selected(s.wallpaper_favorite.as_deref()) {
+                let source=format!("favorite:{}",item.id);
+                if self.texture_source!=source||self.texture.is_none() {
+                    self.texture=Some(item.texture.clone());self.current_encoded=Some(item.encoded.clone());self.texture_source=source;
+                }
+                self.notice=self.favorites.notice.clone();
+            }else if self.favorites.loaded {
+                self.texture=None;self.current_encoded=None;
+                self.notice=if self.favorites.notice.is_empty(){uu_i18n::text("还没有收藏壁纸；先从其它来源收藏一张图片。").into()}else{self.favorites.notice.clone()};
+            }
+            self.poll(ctx);return;
+        }
         if !self.initialized || self.source!=s.wallpaper_url() {
             self.initialized=true;self.source=s.wallpaper_url().into();self.notice.clear();
             // A new source owns a new request; neither throttling nor a pending
@@ -45,6 +66,11 @@ impl Background {
         self.poll(ctx);
     }
     pub fn poll(&mut self,ctx:&egui::Context) {
+        self.favorites.poll(ctx);
+        if self.favorite_notice!=self.favorites.notice {
+            self.favorite_notice=self.favorites.notice.clone();
+            if !self.favorite_notice.is_empty(){self.notice=self.favorite_notice.clone();}
+        }
         if let Some(value)=self.cache_rx.as_ref().and_then(|rx|rx.try_recv().ok()) {
             self.cache_rx=None;
             if let Some(image)=value {
@@ -67,8 +93,9 @@ impl Background {
         }
         if self.worker.is_some()||self.cache_rx.is_some(){ctx.request_repaint_after(Duration::from_millis(100));}
     }
-    fn set(&mut self,image:wallpapers::Thumbnail,ctx:&egui::Context,cache:bool) {
+    fn set(&mut self,mut image:wallpapers::Thumbnail,ctx:&egui::Context,cache:bool) {
         if image.url!=self.source{return;}
+        self.current_encoded=if image.encoded.is_empty(){None}else{Some(Arc::new(std::mem::take(&mut image.encoded)))};
         self.texture_source=image.url.clone();
         self.texture=Some(ctx.load_texture("workspace-background",egui::ColorImage::from_rgba_unmultiplied([image.width as usize,image.height as usize],&image.rgba),egui::TextureOptions::LINEAR));
         // Loading a fallback after a network failure must not erase its reason.
@@ -85,7 +112,32 @@ impl Background {
             });
         }}
     }
+    pub fn has_wallpaper(&self)->bool {self.texture.is_some()&&self.current_encoded.is_some()}
+    pub fn favorite(&mut self,ctx:&egui::Context) {
+        let displayed=self.painted_encoded.borrow().clone().or_else(||self.current_encoded.clone());
+        if let Some(bytes)=displayed {self.favorites.save(bytes,ctx);self.notice=self.favorites.notice.clone();}
+        else {self.notice=uu_i18n::text("当前没有可收藏的壁纸").into();}
+    }
+    pub fn favorites_editor(&mut self,ui:&mut egui::Ui,s:&mut Settings)->bool {
+        if s.wallpaper_source!=WallpaperSource::Favorites {return false;}
+        self.favorites.ensure_loaded(ui.ctx());self.favorites.poll(ui.ctx());
+        ui.add_space(10.0);
+        ui.label(uu_i18n::text("收藏按添加顺序保留最近10张；再次收藏相同图片不会占用新位置。"));
+        if self.favorites.loaded&&self.favorites.items.is_empty(){ui.label(uu_i18n::text("还没有收藏壁纸；先从其它来源收藏一张图片。"));}
+        let selected=self.favorites.selected(s.wallpaper_favorite.as_deref()).map(|item|item.id.clone());
+        let mut changed=false;
+        ui.horizontal_wrapped(|ui| {
+            for (index,item) in self.favorites.items.iter().enumerate() {
+                let button=egui::ImageButton::new(egui::Image::from_texture(&item.texture).max_size(egui::vec2(128.0,72.0))).selected(selected.as_ref()==Some(&item.id));
+                if ui.add(button).on_hover_text(uu_i18n::format!("收藏壁纸 {}",index+1)).clicked(){s.wallpaper_favorite=Some(item.id.clone());changed=true;}
+            }
+        });
+        if !self.favorites.notice.is_empty(){ui.label(&self.favorites.notice);}
+        if changed {self.sync(s,ui.ctx());}
+        changed
+    }
     pub fn refresh(&mut self,ctx:&egui::Context) {
+        if self.favorites_mode {self.favorites.reload(ctx);self.notice=self.favorites.notice.clone();return;}
         if self.retry_at.is_some_and(|t|t.elapsed()<Duration::from_secs(1)){return;}
         self.retry_at=Some(Instant::now());
         // A stale cache is still useful when the new network request fails.
@@ -119,6 +171,9 @@ impl Background {
             painter.add(egui::Shape::mesh(mesh));
             return;
         };
+        // A network completion can arrive between painting and the title-bar
+        // click. Save the bytes of the image used by this paint pass.
+        *self.painted_encoded.borrow_mut()=self.current_encoded.clone();
         let source=texture.size_vec2();let ratio=(rect.width()/source.x).max(rect.height()/source.y);
         let fraction=rect.size()/(source*ratio);let uv=egui::Rect::from_center_size(egui::pos2(0.5,0.5),fraction);
         painter.image(texture.id(),rect,uv,egui::Color32::WHITE);
@@ -129,6 +184,36 @@ impl Background {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn favorite_wallpaper_saves_the_painted_bytes_and_local_mode_never_starts_http() {
+        let root=std::env::temp_dir().join(format!("eclipse-displayed-favorite-{}",uuid::Uuid::new_v4()));
+        let pixels=image::RgbImage::from_pixel(64,36,image::Rgb([40,100,180]));
+        let mut output=std::io::Cursor::new(Vec::new());pixels.write_to(&mut output,image::ImageFormat::Png).unwrap();let bytes=output.into_inner();
+        let source="https://no-request.example.invalid/image".to_string();
+        let ctx=egui::Context::default();let mut background=Background::new(None);
+        background.favorites=wallpaper_favorites::Favorites::at(root.clone());background.source=source.clone();background.enabled=true;background.initialized=true;
+        background.set(wallpapers::decode(wallpapers::Request{device_id:"background".into(),url:source},bytes.clone()).unwrap(),&ctx,false);
+        assert!(background.has_wallpaper());
+        let _=ctx.run(Default::default(),|ctx|background.paint_background(ctx,egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(640.0,360.0))));
+        // Simulate a refresh completing after the current image was painted.
+        let mut second=std::io::Cursor::new(Vec::new());image::RgbImage::from_pixel(64,36,image::Rgb([180,30,20])).write_to(&mut second,image::ImageFormat::Png).unwrap();
+        background.set(wallpapers::decode(wallpapers::Request{device_id:"background".into(),url:background.source.clone()},second.into_inner()).unwrap(),&ctx,false);
+        background.favorite(&ctx);
+        let deadline=Instant::now()+Duration::from_secs(5);
+        while background.favorites.busy(){background.poll(&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
+        assert_eq!(background.favorites.items.len(),1);
+        let id=background.favorites.items[0].id.clone();
+        assert_eq!(std::fs::read(root.join(format!("{id}.image"))).unwrap(),bytes);
+        let settings=Settings{wallpaper_source:WallpaperSource::Favorites,wallpaper_favorite:Some(id.clone()),wallpaper_api:"http://127.0.0.1:9/must-not-request".into(),..Default::default()};
+        background.sync(&settings,&ctx);
+        assert!(background.worker.is_none());assert!(background.cache_rx.is_none());
+        assert_eq!(background.texture_source,format!("favorite:{id}"));assert!(background.has_wallpaper());
+        background.favorite(&ctx);
+        while background.favorites.busy(){background.poll(&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
+        assert_eq!(background.favorites.items.len(),1);
+        drop(background);std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn refresh_reports_actual_failure_and_retains_the_existing_wallpaper() {
         use std::io::{Read,Write};
@@ -142,7 +227,7 @@ mod tests {
         });
         let ctx=egui::Context::default();
         let mut background=Background::new(None);background.source=source.clone();background.enabled=true;background.initialized=true;
-        background.set(wallpapers::Thumbnail{device_id:"background".into(),url:source,width:1,height:1,rgba:vec![10,20,30,255]},&ctx,false);
+        background.set(wallpapers::Thumbnail{device_id:"background".into(),url:source,width:1,height:1,rgba:vec![10,20,30,255],encoded:vec![]},&ctx,false);
         let texture=background.texture.as_ref().unwrap().id();
         background.refresh(&ctx);
         let deadline=Instant::now()+Duration::from_secs(5);

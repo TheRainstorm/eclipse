@@ -5416,6 +5416,7 @@ dependencies = [
  "arboard",
  "eframe",
  "egui-winit",
+ "fs2",
  "if-addrs",
  "image",
  "libc",

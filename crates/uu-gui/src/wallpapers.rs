@@ -30,6 +30,7 @@ pub(super) struct Thumbnail {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    pub encoded: Vec<u8>,
 }
 
 pub(super) struct Failure {
@@ -217,6 +218,7 @@ pub(super) fn decode(request: Request, bytes: Vec<u8>) -> anyhow::Result<Thumbna
         width: image.width(),
         height: image.height(),
         rgba: image.into_raw(),
+        encoded: bytes,
     })
 }
 

@@ -60,6 +60,7 @@ mod native_keys;
 mod native_host_ui;
 mod native_interfaces;
 mod wallpapers;
+mod wallpaper_favorites;
 mod background;
 mod device_preview;
 mod device_presence;

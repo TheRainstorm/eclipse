@@ -33,12 +33,12 @@ pub(super) const ANIME_WALLPAPER: &str = "https://img-api.pipw.top";
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WallpaperSource { #[default] Photography, Anime, CustomApi }
+pub enum WallpaperSource { #[default] Photography, Anime, CustomApi, Favorites }
 impl WallpaperSource {
-    pub const ALL: [Self; 3] = [Self::Photography, Self::Anime, Self::CustomApi];
+    pub const ALL: [Self; 4] = [Self::Photography, Self::Anime, Self::CustomApi, Self::Favorites];
     pub fn label(self) -> &'static str {
         uu_i18n::text(match self {
-            Self::Photography => "摄影", Self::Anime => "二次元", Self::CustomApi => "自定义 API",
+            Self::Photography => "摄影", Self::Anime => "二次元", Self::CustomApi => "自定义 API", Self::Favorites => "收藏",
         })
     }
     fn legacy(api: &str) -> Self {
@@ -69,6 +69,7 @@ pub struct Settings {
     pub close_to_tray:bool,
     pub show_input_status:bool,
     pub wallpaper_source: WallpaperSource,
+    pub wallpaper_favorite: Option<String>,
     /// Retained while built-in sources are selected, so returning to Custom API
     /// restores the user's own URL.
     pub wallpaper_api: String,
@@ -79,7 +80,7 @@ impl Default for Settings {
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
             device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,close_to_tray:false,show_input_status:false,
-            wallpaper_source:WallpaperSource::Photography, wallpaper_api:PHOTOGRAPHY_WALLPAPER.into() }
+            wallpaper_source:WallpaperSource::Photography, wallpaper_favorite:None, wallpaper_api:PHOTOGRAPHY_WALLPAPER.into() }
     }
 }
 impl std::ops::Deref for Settings {
@@ -95,7 +96,12 @@ impl Settings {
             WallpaperSource::Photography => PHOTOGRAPHY_WALLPAPER,
             WallpaperSource::Anime => ANIME_WALLPAPER,
             WallpaperSource::CustomApi => self.wallpaper_api.trim(),
+            WallpaperSource::Favorites => "favorites",
         }
+    }
+    pub fn wallpaper_identity(&self)->String {
+        if self.wallpaper_source==WallpaperSource::Favorites {format!("favorites:{}",self.wallpaper_favorite.as_deref().unwrap_or_default())}
+        else {self.wallpaper_url().into()}
     }
     pub fn application_hotkeys(&self)->&uu_core::hotkeys::Bindings {
         self.application_hotkeys.as_ref().unwrap_or(&self.client.hotkeys)
@@ -460,6 +466,16 @@ impl super::App {
                                     &mut actions,
                                     section,
                                 );
+                                if section == super::settings_page::SoftwareSection::Appearance {
+                                    if self.background.favorites_editor(ui,&mut self.settings_draft) {
+                                        // Clicking an image is an explicit wallpaper selection;
+                                        // persist only these appearance fields, not other drafts.
+                                        self.preferences.wallpaper_source=WallpaperSource::Favorites;
+                                        self.preferences.wallpaper_favorite=self.settings_draft.wallpaper_favorite.clone();
+                                        self.preferences.wallpaper_enabled=self.settings_draft.wallpaper_enabled;
+                                        self.persist_preferences();
+                                    }
+                                }
                                 if section == super::settings_page::SoftwareSection::Appearance
                                     && !self.background.notice.is_empty() {
                                     ui.add_space(8.0);
@@ -497,7 +513,7 @@ impl super::App {
                     return;
                 }
             }
-            let wallpaper_changed = self.preferences.wallpaper_url() != self.settings_draft.wallpaper_url()
+            let wallpaper_changed = self.preferences.wallpaper_identity() != self.settings_draft.wallpaper_identity()
                 || self.preferences.wallpaper_enabled != self.settings_draft.wallpaper_enabled;
             self.preferences = self.settings_draft.clone();
             self.preferences.use_application_hotkeys();
@@ -603,6 +619,7 @@ impl super::App {
                 let defaults=Settings::default();
                 self.settings_draft.wallpaper_enabled=defaults.wallpaper_enabled;
                 self.settings_draft.wallpaper_source=defaults.wallpaper_source;
+                self.settings_draft.wallpaper_favorite=defaults.wallpaper_favorite;
                 self.settings_draft.wallpaper_api=defaults.wallpaper_api;
                 self.settings_draft.lan_discovery=defaults.lan_discovery;
                 self.settings_draft.app_autostart=defaults.app_autostart;
@@ -815,7 +832,8 @@ mod tests {
         launcher.show_input_status=true;
         launcher.close_to_tray=true;
         launcher.wallpaper_enabled=false;
-        launcher.wallpaper_source=WallpaperSource::Anime;
+        launcher.wallpaper_source=WallpaperSource::Favorites;
+        launcher.wallpaper_favorite=Some("f".repeat(64));
         launcher.wallpaper_api="https://custom.example.invalid/wallpaper".into();
         launcher.lan_discovery=false;
         launcher.save(&path).unwrap();
@@ -826,7 +844,8 @@ mod tests {
         let reopened=Settings::load(&path).unwrap();
         assert_eq!(reopened.client,stream.client);
         assert!(!reopened.wallpaper_enabled);
-        assert_eq!(reopened.wallpaper_source,WallpaperSource::Anime);
+        assert_eq!(reopened.wallpaper_source,WallpaperSource::Favorites);
+        assert_eq!(reopened.wallpaper_favorite,Some("f".repeat(64)));
         assert_eq!(reopened.wallpaper_api,"https://custom.example.invalid/wallpaper");
         assert!(!reopened.lan_discovery);
         assert!(reopened.show_input_status);
