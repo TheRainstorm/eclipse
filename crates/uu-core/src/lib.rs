@@ -21,6 +21,7 @@ pub mod native_lan;
 pub mod native_controller;
 pub mod capabilities;
 pub mod native;
+pub mod native_loopback;
 pub mod direct_ice;
 pub mod native_signaling;
 pub mod internet;

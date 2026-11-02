@@ -261,7 +261,11 @@ impl UDPMux for UDPMuxDefault {
     }
 
     async fn get_conn(self: Arc<Self>, ufrag: &str) -> Result<Arc<dyn Conn + Send + Sync>, Error> {
-        if self.is_closed().await {
+        // Serialize creation with close: checking and then separately locking
+        // conns could insert a new open connection after close had drained it.
+        // Both paths use the order closed_watch_tx -> conns.
+        let closed = self.closed_watch_tx.lock().await;
+        if closed.is_none() {
             return Err(Error::ErrUseClosedNetworkConn);
         }
 
@@ -275,13 +279,15 @@ impl UDPMux for UDPMuxDefault {
 
             let muxed_conn = self.create_muxed_conn(ufrag)?;
             let mut close_rx = muxed_conn.close_rx();
-            let cloned_self = Arc::clone(&self);
+            // A close observer must not keep the mux/socket alive while it
+            // waits for a connection owned by that same mux to disappear.
+            let weak_mux = Arc::downgrade(&self);
             let cloned_ufrag = ufrag.to_string();
             tokio::spawn(async move {
                 let _ = close_rx.changed().await;
-
-                // Arc needed
-                cloned_self.remove_conn_by_ufrag(&cloned_ufrag).await;
+                if let Some(mux) = weak_mux.upgrade() {
+                    mux.remove_conn_by_ufrag(&cloned_ufrag).await;
+                }
             });
 
             conns.insert(ufrag.into(), muxed_conn.clone());
@@ -312,7 +318,9 @@ impl UDPMux for UDPMuxDefault {
 #[async_trait]
 impl UDPMuxWriter for UDPMuxDefault {
     async fn register_conn_for_address(&self, conn: &UDPMuxConn, addr: SocketAddr) {
-        if self.is_closed().await {
+        // The same close guard also prevents late address-map registration.
+        let closed = self.closed_watch_tx.lock().await;
+        if closed.is_none() {
             return;
         }
 

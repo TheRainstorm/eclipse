@@ -610,7 +610,14 @@ pub(crate) async fn receive_video(
             }
             Some(packet)=repair_rx.recv()=>Some((packet, false)),
             packet=async {match &fec {Some(fec)=>fec.next().await,None=>std::future::pending().await}}=>Some((packet,false)),
-            due=ticker.tick()=>{tick_late.push(due.elapsed().as_secs_f64() * 1000.0);None},
+            due=ticker.tick()=>{
+                // An already-closed peer can leave TrackRemote::read_rtp pending.
+                // Retire through the ordinary cleanup below so its feedback and
+                // decoder workers release their strong peer/socket references.
+                use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+                if matches!(pc.connection_state(),RTCPeerConnectionState::Closed|RTCPeerConnectionState::Failed){break;}
+                tick_late.push(due.elapsed().as_secs_f64() * 1000.0);None
+            },
         };
         let now = Instant::now();
         network_loss.advance(now);
@@ -781,6 +788,7 @@ pub(crate) async fn receive_video(
     }
     repairs.unsubscribe(track.ssrc());
     feedback.abort();
+    let _ = feedback.await;
     drop(sample_tx);
     let _ = worker.await;
 }

@@ -374,7 +374,7 @@ pub(crate) async fn serve_with_authority(config: HostConfig, mut stop: watch::Re
     };
     drop(listener);
     progress(&status, HostStatus::Preparing);
-    host_session(socket, config, stop, status, authority).await
+    host_session(socket, config.into(), stop, status, authority).await
 }
 
 #[derive(Default)]
@@ -609,9 +609,9 @@ fn encode_source(
     result.and(joined)
 }
 
-async fn host_session(
+pub(crate) async fn host_session(
     stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
-    config: HostConfig,
+    config: SharingConfig,
     stop: watch::Receiver<bool>,
     status: Option<watch::Sender<HostStatus>>,
     authority: Arc<crate::input_ownership::Authority>,
@@ -619,7 +619,6 @@ async fn host_session(
     let local_ip = stream.get_ref().0.local_addr()?.ip();
     let peer_ip = stream.get_ref().0.peer_addr()?.ip();
     let displays=crate::native_displays::Host::for_source(&config.source);
-    let config:SharingConfig=config.into();
     let mut signaling = TlsSignaling { stream, peer: peer_ip };
     let mut report=HostReport::default();
     let started=Instant::now();

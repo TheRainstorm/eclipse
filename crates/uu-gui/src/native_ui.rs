@@ -191,6 +191,16 @@ impl App {
             Err(error) => self.native_ui.notice = uu_i18n::format!("无法使用邀请：{error}"),
         }
     }
+    pub(super) fn connect_native_loopback(&mut self) {
+        self.remote_admin_ui=Default::default();
+        self.view_only=true;
+        let stats=self.client_stats("native");
+        let config=self.workspace.book.sharing.native();
+        match uu_core::native_controller::spawn_loopback(config,stats) {
+            Ok(handle)=>self.attach_controller(handle),
+            Err(error)=>self.status=uu_i18n::format!("原生连接失败：{error}"),
+        }
+    }
     pub(super) fn connect_native(&mut self, path: PathBuf) {
         self.connect_native_source(Some(path),None,None,None);
     }

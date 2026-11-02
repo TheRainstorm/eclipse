@@ -1,4 +1,7 @@
 {
+  "本机串流测试": "Local streaming test",
+  "正在启动本机串流测试…": "Starting local streaming test…",
+  "只读采集本机画面，通过本机回环完成编解码和显示；无需开启共享服务。": "Capture this computer in view-only mode and encode, decode, and display over loopback. No sharing service is required.",
   "壁纸图片来源": "Wallpaper source",
   "摄影": "Photography",
   "二次元": "Anime",

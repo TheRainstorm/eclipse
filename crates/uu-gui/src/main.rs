@@ -422,7 +422,7 @@ impl App {
             window_edge_active: false,
         };
         if let Some(target)=&app.stream_target {
-            app.view_only=target.view_only;app.connect();
+            app.view_only=target.view_only || matches!(target.connection,sessions::ConnectionTarget::NativeLoopback);app.connect();
         }else{app.status=uu_i18n::text("选择连接方式").into();}
 
         app
@@ -907,6 +907,7 @@ impl App {
         let Some(target)=self.stream_target.as_ref().map(|t|t.connection.clone()) else{return;};
         self.prepare_displays();
         match target {
+            sessions::ConnectionTarget::NativeLoopback=>self.connect_native_loopback(),
             sessions::ConnectionTarget::NativeProfile{snapshot,..}=>self.connect_native_profile(snapshot),
             sessions::ConnectionTarget::NativeInvitation(path)=>self.connect_native(path),
             sessions::ConnectionTarget::NativeInternet(path)=>self.connect_native_internet(path),
@@ -1220,6 +1221,17 @@ impl App {
                 report["host_video_latency"]=serde_json::to_value(uu_core::frame_trace::video_latency(s)).unwrap_or_default();
                 report["video_e2e"]=serde_json::to_value(s.video_e2e.snapshot()).unwrap_or_default();
                 report["input_latency"]=serde_json::to_value(s.video_e2e.input_latency()).unwrap_or_default();
+                if self.stream_target.as_ref().is_some_and(|t|matches!(t.connection,sessions::ConnectionTarget::NativeLoopback)) {
+                    let path=s.connection.request().selected;
+                    report["local_loopback"]=serde_json::json!({
+                        "selected":path.is_some(),
+                        "local_is_loopback":path.as_ref().map(|p|p.local.address.ip().is_loopback()),
+                        "remote_is_loopback":path.as_ref().map(|p|p.remote.address.ip().is_loopback()),
+                        "relayed":path.as_ref().map(|p|p.relayed()),
+                        "audio_available":s.capabilities.allows(uu_core::capabilities::Capability::Audio),
+                        "clipboard_available":s.capabilities.allows(uu_core::capabilities::Capability::Clipboard),
+                    });
+                }
                 report["native_input_available"]=s.native_input_available.load(Relaxed).into();
                 report["input_granted"]=s.capabilities.allows(uu_core::capabilities::Capability::Input).into();
                 report["input_requested"]=h.native_input.as_ref().is_some_and(|sender|sender.requested()).into();

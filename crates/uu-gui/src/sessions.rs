@@ -17,6 +17,7 @@ pub fn read_plugin_payload(reader:impl std::io::Read)->anyhow::Result<zeroize::Z
 pub enum ConnectionTarget {
     Plugin {plugin:String,identity:String},
     NativeInvitation(PathBuf),
+    NativeLoopback,
     NativeDevice(String),
     NativeInternet(PathBuf),
     NativeProfile {id:String,snapshot:PathBuf},
@@ -36,13 +37,18 @@ impl StreamTarget {
         }
     }
     pub fn is_native(&self) -> bool {
-        matches!(self.connection, ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..})
+        matches!(self.connection, ConnectionTarget::NativeLoopback | ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..})
     }
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Self>, String> {
         let mut args = args.into_iter();
         let (mut connection, mut alias, mut view_only) = (None, None, false);
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--self-stream" => {
+                    if connection.is_some() {return Err(uu_i18n::text("一次只能选择一种连接方式").into());}
+                    connection=Some(ConnectionTarget::NativeLoopback);
+                    view_only=true;
+                }
                 "--plugin" | "--native-invitation" | "--native-device" | "--native-internet" | "--device-profile" => {
                     if connection.is_some() {
                         return Err(uu_i18n::text("一次只能选择一种连接方式").into());
@@ -77,6 +83,7 @@ impl StreamTarget {
             Some(connection) => {
                 let default = match &connection {
                     ConnectionTarget::Plugin {identity,..} => identity.clone(),
+                    ConnectionTarget::NativeLoopback => uu_i18n::text("本机串流测试").into(),
                     ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..} => uu_i18n::text("原生设备").into(),
                 };
                 Ok(Some(Self {
@@ -92,6 +99,7 @@ impl StreamTarget {
     fn command(&self, exe: &Path, origin: Option<(i32, i32)>) -> Command {
         let mut command = Command::new(exe);
         match &self.connection {
+            ConnectionTarget::NativeLoopback => {command.arg("--self-stream");}
             ConnectionTarget::Plugin{plugin,identity}=>{command.arg("--plugin").arg(plugin).arg(identity).stdin(Stdio::piped());}
             ConnectionTarget::NativeInvitation(path) => {
                 command.arg("--native-invitation").arg(path);
@@ -180,6 +188,17 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn self_stream_is_an_explicit_read_only_native_target() {
+        let target=StreamTarget::parse(["--self-stream".into()]).unwrap().unwrap();
+        assert_eq!(target.connection,ConnectionTarget::NativeLoopback);
+        assert!(target.is_native() && target.view_only);
+        let args=target.command(Path::new("generated-gui"),None).get_args().map(|s|s.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        assert_eq!(StreamTarget::parse(args).unwrap(),Some(target));
+        assert!(StreamTarget::parse(["--self-stream".into(),"--native-invitation".into(),"generated.json".into()]).is_err());
+        assert!(StreamTarget::parse(["--native-invitation".into(),"generated.json".into(),"--self-stream".into()]).is_err());
+    }
+
     #[test]
     fn plugin_arguments_contain_only_public_identity_and_receive_a_bounded_opaque_payload() {
         let target=StreamTarget {connection:ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"generated-target".into()},alias:"Generated extension".into(),view_only:false};

@@ -50,6 +50,7 @@ pub(super) struct HomeRoute {
 pub(super) enum Action {
     Open(String),
     RefreshWallpaper,
+    SelfStream,
     StartSharing,
     RestartSharing,
     SaveClientDefaults(uu_core::client_settings::ClientSettings),
@@ -917,6 +918,7 @@ impl Workspace {
         blank.context_menu(|ui| {
             if ui.add_enabled(info.wallpaper_enabled,egui::Button::new(uu_i18n::text("刷新壁纸"))).clicked(){actions.push(Action::RefreshWallpaper);ui.close_menu();}
             ui.separator();
+            if ui.button(uu_i18n::text("本机串流测试")).on_hover_text(uu_i18n::text("只读采集本机画面，通过本机回环完成编解码和显示；无需开启共享服务。")).clicked(){actions.push(Action::SelfStream);ui.close_menu();}
             if ui.button(uu_i18n::text("添加设备")).clicked(){self.new_device(None,None);ui.close_menu();}
             if !info.nearby.is_empty() {
                 ui.menu_button(uu_i18n::text("添加附近设备"),|ui| {
@@ -1988,6 +1990,12 @@ impl super::App {
         for action in actions {
             match action {
                 Action::Open(id) => self.open_device_profile(&id),
+                Action::SelfStream => {
+                    let target=super::sessions::StreamTarget{connection:super::sessions::ConnectionTarget::NativeLoopback,
+                        alias:uu_i18n::text("本机串流测试").into(),view_only:true};
+                    let result=std::env::current_exe().and_then(|exe|self.sessions.open(&exe,&target,self.platform.origin()));
+                    if let Err(e)=result {self.workspace.feedback.error(super::ui_feedback::Scope::Devices,uu_i18n::format!("无法连接设备：{e:#}"));}
+                }
                 Action::SaveClientDefaults(settings) => {
                     self.preferences.client = settings;
                     self.workspace.client_defaults = self.preferences.client.clone();

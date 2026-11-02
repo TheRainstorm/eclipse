@@ -36,7 +36,7 @@ use webrtc::{
         RTCRtpTransceiverInit,
     },
     track::track_local::{track_local_static_rtp::TrackLocalStaticRTP,TrackLocalWriter, TrackLocal},
-    util::vnet::net::Net,
+    util::vnet::{interface::Interface, net::Net},
 };
 
 // ICMP port-unreachable replies during ICE probing are not a teardown of this
@@ -238,6 +238,7 @@ pub(crate) struct NativePeer {
     _connection_monitor:Option<crate::connection_info::Monitor>,
     pub pc: Arc<RTCPeerConnection>,
     mux: Option<Arc<UDPMuxDefault>>,
+    mux_worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
     io: Option<crate::native_io::Owner>,
     pub repairs: Arc<RepairBus>,
     fec: Arc<crate::native_fec::Transport>,
@@ -288,29 +289,28 @@ impl NativePeer {
         );
         ensure!(!advertised_ip.is_unspecified() && !advertised_ip.is_multicast()
             && local_ip.is_ipv4() == advertised_ip.is_ipv4(), "invalid native advertised address");
-        // One socket, explicitly bound to the authenticated signaling interface.
-        // The older ICE library excludes loopback while enumerating interfaces;
-        // its supported UDP mux + 1:1 mapping keeps localhost tests on loopback.
-        let gather_ip = if local_ip.is_loopback() {
-            Net::new(None)
-                .get_interfaces()
-                .await
-                .into_iter()
-                .flat_map(|i| i.addrs().to_vec())
-                .map(|a| a.addr())
-                .find(|a| !a.is_loopback() && a.is_ipv4() == local_ip.is_ipv4())
-                .context(
-                    "native localhost media needs an active network interface for ICE enumeration",
-                )?
-        } else {
-            local_ip
-        };
+        // The old ICE enumerator unconditionally excludes loopback, even with
+        // an explicit IP filter. Supply its public Net::Ifs API a documentation
+        // address for enumeration only; the UDP mux is still a real OS socket
+        // bound to local_ip and 1:1 mapping advertises the authenticated address.
+        // This requires no physical adapter, STUN, virtual router or vendor patch.
+        let enumeration = if local_ip.is_loopback() {
+            let gather_ip = if local_ip.is_ipv4() {
+                "192.0.2.1".parse::<IpAddr>()?
+            } else {
+                "2001:db8::1".parse::<IpAddr>()?
+            };
+            let mut interface = Interface::new("eclipse-loopback-enumeration".into(), Vec::new());
+            interface.add_addr(Interface::convert(SocketAddr::new(gather_ip, 0), None)?);
+            Some((gather_ip, Arc::new(Net::Ifs(vec![interface]))))
+        } else { None };
+        let gather_ip = enumeration.as_ref().map_or(local_ip, |(ip, _)| *ip);
         eprintln!("{}",serde_json::json!({"event":"native_dedicated_io_policy","requested":dedicated,"actual":dedicated,"sender":sender}));
         #[cfg(windows)]
         crate::native_qos::event(serde_json::json!({"action":"policy","requested":crate::native_qos::requested(sender),"sender":sender}));
-        let (mux,io,qos_socket)=if dedicated {
+        let (mux,io,qos_socket,mux_worker)=if dedicated {
             let (mux,io)=crate::native_io::Owner::start(local_ip,observation.clone()).await?;
-            (mux,Some(io),None::<Arc<UdpSocket>>)
+            (mux,Some(io),None::<Arc<UdpSocket>>,None)
         } else {
         let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
         #[cfg(windows)]
@@ -337,7 +337,7 @@ impl NativePeer {
         };
         #[cfg(not(windows))]
         let qos_socket=None::<Arc<UdpSocket>>;
-        (UDPMuxDefault::new(params),None,qos_socket)
+        { let (mux, worker) = UDPMuxDefault::new_with_worker(params); (mux,None,qos_socket,Some(worker)) }
         };
         let mut settings = SettingEngine::default();
         crate::srtp_policy::configure(&mut settings);
@@ -347,13 +347,17 @@ impl NativePeer {
         } else {
             NetworkType::Udp6
         }]);
+        if let Some((_, interfaces)) = enumeration { settings.set_vnet(Some(interfaces)); }
         settings.set_ip_filter(Box::new(move |ip| ip == gather_ip));
         settings.set_nat_1to1_ips(vec![advertised_ip.to_string()], RTCIceCandidateType::Host);
         settings.set_udp_network(UDPNetwork::Muxed(mux.clone()));
-        let mut peer=Self::build_with_io(settings,mux,io,RTCConfiguration::default(),stats,sender).await?;
+        let mut peer=match Self::build_with_io(settings,mux,io,RTCConfiguration::default(),stats,sender).await {
+            Ok(peer) => peer,
+            Err(error) => { retire_mux_worker(mux_worker).await; return Err(error); }
+        };
+        peer.mux_worker = Mutex::new(mux_worker);
         #[cfg(not(windows))]
         let _=qos_socket;
-        peer.trace_receivers=observation.as_ref().map(|_|Arc::new(Mutex::new(Vec::new())));
         peer.socket_trace=observation;
         #[cfg(windows)]
         {peer.qos_socket=qos_socket;}
@@ -455,10 +459,11 @@ impl NativePeer {
         Ok(Self {
             io:None,
             socket_trace:None,
-            trace_receivers:None,
+            trace_receivers:Some(Arc::new(Mutex::new(Vec::new()))),
             _connection_monitor:stats.as_ref().map(|stats|crate::connection_info::Monitor::start(&pc,stats)),
             pc,
             mux,
+            mux_worker: Mutex::new(None),
             repairs,
             fec: crate::native_fec::Transport::new(sender, stats.clone()),
             states,
@@ -527,7 +532,8 @@ impl NativePeer {
                     }
                 } else if track.kind()==RTPCodecType::Audio && !audio_claimed.swap(true,Ordering::AcqRel) {
                     stats.capabilities.enable(crate::capabilities::Capability::Audio,true);
-                    tokio::spawn(crate::media::receive_audio(track,Some(stats)));
+                    let task=tokio::spawn(crate::media::receive_audio(track,Some(stats)));
+                    if let Some(tasks)=trace_receivers{tasks.lock().unwrap().push(task);}
                 }
             })
         }));
@@ -580,14 +586,15 @@ impl NativePeer {
     pub async fn audio_sender(&self,red:bool)->Result<AudioSender> {
         let track=Arc::new(TrackLocalStaticRTP::new(opus_capability(red),"audio_0".into(),"eclipse-native".into()));
         let sender=self.attach_sender(track.clone() as Arc<dyn TrackLocal+Send+Sync>).await?;
-        tokio::spawn(async move{while sender.read_rtcp().await.is_ok(){}});
+        let task=tokio::spawn(async move{while sender.read_rtcp().await.is_ok(){}});
+        if let Some(tasks)=&self.trace_receivers{tasks.lock().unwrap().push(task);}
         Ok(AudioSender::new(track,red))
     }
     pub async fn sender_for_color(&self,refresh:Arc<AtomicBool>,codec:VideoCodec,hdr:bool)->Result<crate::native_video::Sender>{
         let track=Arc::new(TrackLocalStaticRTP::new(video_color_capability(codec,hdr),"video_0".into(),"eclipse-native".into()));
         let sender = self.attach_sender(track.clone() as Arc<dyn TrackLocal + Send + Sync>).await?;
         let ssrc=sender.get_parameters().await.encodings.first().map_or(0,|encoding|encoding.ssrc);
-        tokio::spawn(async move {
+        let task=tokio::spawn(async move {
             use webrtc::rtcp::payload_feedbacks::{
                 full_intra_request::FullIntraRequest,
                 picture_loss_indication::PictureLossIndication,
@@ -600,6 +607,7 @@ impl NativePeer {
                 }
             }
         });
+        if let Some(tasks)=&self.trace_receivers{tasks.lock().unwrap().push(task);}
         Ok(crate::native_video::Sender::with_fec(track,codec,self.fec.clone()).with_ssrc(ssrc))
     }
     pub async fn description(&self, offer: bool) -> Result<RTCSessionDescription> {
@@ -714,6 +722,8 @@ impl NativePeer {
         if !self.closed.load(Ordering::Acquire) {
             let _ = self.pc.close().await;
             if let Some(mux) = &self.mux { let _ = mux.close().await; }
+            let worker = self.mux_worker.lock().unwrap().take();
+            retire_mux_worker(worker).await;
             if let Some(io)=&self.io {if let Err(e)=io.stop().await {tracing::error!(error=%e,"dedicated I/O close incomplete");}}
             finish_trace(self.trace_receivers.clone(),self.socket_trace.clone()).await;
             self.closed.store(true, Ordering::Release);
@@ -722,8 +732,23 @@ impl NativePeer {
         if let Some(wlan)=wlan {let _=tokio::task::spawn_blocking(move||drop(wlan)).await;}
     }
 }
+// The default mux close only publishes a shutdown signal. Await its owned
+// receive task before reporting peer cleanup complete, just as native_io does.
+async fn retire_mux_worker(worker: Option<tokio::task::JoinHandle<()>>) {
+    if let Some(mut worker) = worker {
+        match timeout(Duration::from_secs(2), &mut worker).await {
+            Ok(Ok(())) => {},
+            Ok(Err(error)) => tracing::error!(%error, "native UDP receive task failed during shutdown"),
+            Err(_) => {
+                worker.abort();
+                let _ = worker.await;
+                tracing::error!("native UDP receive retirement exceeded two seconds (aborted)");
+            }
+        }
+    }
+}
+
 async fn finish_trace(receivers:Option<Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>>,trace:Option<Arc<crate::socket_trace::Observation>>) {
-    let Some(trace)=trace else{return};
     let tasks=receivers.map(|r|std::mem::take(&mut *r.lock().unwrap())).unwrap_or_default();
     let deadline=tokio::time::Instant::now()+Duration::from_secs(2);
     let (mut normal,mut aborted,mut failed)=(0,0,0);
@@ -735,7 +760,7 @@ async fn finish_trace(receivers:Option<Arc<Mutex<Vec<tokio::task::JoinHandle<()>
         }
     }
     eprintln!("{}",serde_json::json!({"event":"native_socket_receiver_shutdown","normal":normal,"aborted":aborted,"failed":failed}));
-    trace.finish().await;
+    if let Some(trace)=trace{trace.finish().await;}
 }
 impl Drop for NativePeer {
     fn drop(&mut self) {
@@ -755,11 +780,13 @@ impl Drop for NativePeer {
                 let io=self.io.take();
                 let pc = self.pc.clone();
                 let mux = self.mux.clone();
+                let mux_worker = self.mux_worker.get_mut().unwrap().take();
                 let trace=self.socket_trace.clone();
                 let receivers=self.trace_receivers.clone();
                 runtime.spawn(async move {
                     let _ = pc.close().await;
                     if let Some(mux) = mux { let _ = mux.close().await; }
+                    retire_mux_worker(mux_worker).await;
                     if let Some(io)=io {let _=io.stop().await;}
                     finish_trace(receivers,trace).await;
                 });
@@ -778,6 +805,49 @@ impl Drop for NativePeer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(flavor="multi_thread",worker_threads=4)]
+    async fn mux_concurrent_close_and_creation_retire_connections_and_release_the_socket() {
+        use webrtc::ice::udp_mux::UDPMuxConn;
+        // Exercise the public mux API with real OS sockets. Close races against
+        // creators; every successful connection must already be closed when the
+        // creators and close have joined, including callers retaining a handle.
+        for _ in 0..32 {
+            let socket=UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let address=socket.local_addr().unwrap();
+            let (mux,worker)=UDPMuxDefault::new_with_worker(UDPMuxParams::new(socket));
+            let weak=Arc::downgrade(&mux);
+            let ready=Arc::new(tokio::sync::Barrier::new(5));
+            let mut creators=Vec::new();
+            for index in 0..4 {
+                let mux=mux.clone();let ready=ready.clone();
+                creators.push(tokio::spawn(async move {
+                    ready.wait().await;
+                    mux.get_conn(&format!("owned-{index}")).await
+                }));
+            }
+            ready.wait().await;
+            mux.close().await.unwrap();
+            let mut retained=Vec::new();
+            for creator in creators {
+                if let Ok(conn)=creator.await.unwrap() {
+                    assert!(conn.as_any().downcast_ref::<UDPMuxConn>().unwrap().is_closed(),"connection inserted after close");
+                    retained.push(conn);
+                }
+            }
+            assert!(mux.clone().get_conn("after-close").await.is_err());
+            timeout(Duration::from_secs(2),worker).await.unwrap().unwrap();
+            drop(mux);
+            // A notified weak observer may transiently upgrade while removing
+            // its map entry. Wait only for that existing cleanup to retire;
+            // retaining the mux while still waiting on a Conn would time out.
+            timeout(Duration::from_secs(2),async {
+                while weak.strong_count()!=0 {tokio::task::yield_now().await;}
+            }).await.expect("closed connection observer retained the mux");
+            let rebound=UdpSocket::bind(address).await.expect("closed mux retained the OS socket");
+            drop(rebound);drop(retained);
+        }
+    }
+
     #[test]
     fn dropping_peer_outside_runtime_keeps_driver_until_cleanup_then_joins() {
         crate::install_crypto_provider();

@@ -42,6 +42,10 @@ impl Progress {
     pub(crate) fn subscribe(&self) -> watch::Receiver<Option<Stage>> { self.0.subscribe() }
 }
 
+/// A fresh, private read-only host is owned by this viewing session.
+pub fn spawn_loopback(config:crate::native::SharingConfig,stats:Arc<MediaStats>)->Result<ControllerHandle> {
+    spawn_source(Source::Loopback(config),stats,false)
+}
 pub fn spawn(invitation_file: PathBuf, stats: Arc<MediaStats>) -> Result<ControllerHandle> {
     spawn_with_input(invitation_file,stats,false)
 }
@@ -58,11 +62,11 @@ pub fn spawn_internet(settings:crate::internet::Settings,config:crate::Config,st
 pub fn spawn_profile(launch:crate::device_book::Launch,config:crate::Config,stats:Arc<MediaStats>,requested:bool)->Result<ControllerHandle> {
     spawn_source(Source::Profile{launch,config},stats,requested)
 }
-enum Source {Invitation(PathBuf),Device{devices_file:PathBuf,id:String},Internet{settings:crate::internet::Settings,config:crate::Config},Profile{launch:crate::device_book::Launch,config:crate::Config}}
+enum Source {Loopback(crate::native::SharingConfig),Invitation(PathBuf),Device{devices_file:PathBuf,id:String},Internet{settings:crate::internet::Settings,config:crate::Config},Profile{launch:crate::device_book::Launch,config:crate::Config}}
 impl Source {
     async fn resolve(&self)->Result<Invitation>{match self{
         Self::Invitation(path)=>Invitation::load(path),
-        Self::Internet{..}|Self::Profile{..}=>anyhow::bail!("profile sessions resolve their own connection"),
+        Self::Loopback(_)|Self::Internet{..}|Self::Profile{..}=>anyhow::bail!("profile sessions resolve their own connection"),
         Self::Device{devices_file,id}=>{
             let book=crate::native_lan_store::Devices::open(devices_file)?;
             let device=book.paired(id).context(uu_i18n::text("该原生设备尚未配对，请返回设备页重新配对"))?;
@@ -154,8 +158,8 @@ impl Worker {
     async fn network(&mut self) -> Result<()> {
         let _ = self
             .events
-            .send(ControllerEvent::Status(match &self.source {Source::Invitation(_)=>uu_i18n::text("正在验证原生邀请…"),Source::Device{..}=>uu_i18n::text("正在连接已配对的原生服务端…"),Source::Internet{..}=>uu_i18n::text("正在通过连接服务建立原生串流…"),Source::Profile{..}=>uu_i18n::text("正在验证并连接设备…")}.into()));
-        let invitation=if matches!(&self.source,Source::Internet{..}|Source::Profile{..}){None}else{Some(tokio::select!{
+            .send(ControllerEvent::Status(match &self.source {Source::Loopback(_)=>uu_i18n::text("正在启动本机串流测试…"),Source::Invitation(_)=>uu_i18n::text("正在验证原生邀请…"),Source::Device{..}=>uu_i18n::text("正在连接已配对的原生服务端…"),Source::Internet{..}=>uu_i18n::text("正在通过连接服务建立原生串流…"),Source::Profile{..}=>uu_i18n::text("正在验证并连接设备…")}.into()));
+        let invitation=if matches!(&self.source,Source::Loopback(_)|Source::Internet{..}|Source::Profile{..}){None}else{Some(tokio::select!{
             biased;
             _=self.close.recv()=>return Ok(()),
             result=self.source.resolve()=>result?,
@@ -164,7 +168,9 @@ impl Worker {
         let native=self.native.take().context("native input interface was already consumed")?;
         let mut progress = self.stats.native_progress.subscribe();
         let session = async {
-            if let Source::Profile{launch,config}=&self.source {
+            if let Source::Loopback(config)=&self.source {
+                crate::native_loopback::view(config.clone(),self.frames.clone(),self.stats.clone(),stop_rx,native).await
+            } else if let Source::Profile{launch,config}=&self.source {
                 crate::device_profile::view(launch.clone(),config.clone(),self.frames.clone(),self.stats.clone(),stop_rx,Some(native)).await
             } else if let Source::Internet{settings,config}=&self.source {
                 crate::internet::view(settings.clone(),config.clone(),self.frames.clone(),self.stats.clone(),stop_rx,Some(native)).await
