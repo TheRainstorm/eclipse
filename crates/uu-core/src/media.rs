@@ -34,6 +34,7 @@ pub struct MediaStats {
     pub native_progress:crate::native_controller::Progress,
     pub decoder_preference:std::sync::OnceLock<DecoderKind>,
     pub host_admin:crate::host_admin::Client,
+    pub virtual_displays:crate::native_virtual_display::Client,
     pub native_quality_request:std::sync::OnceLock<crate::native_quality::Request>,
     pub native_rate_request:std::sync::OnceLock<crate::native_quality::RateRequest>,
     pub native_rate_response:std::sync::Mutex<Option<crate::native_quality::RateResponse>>,

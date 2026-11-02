@@ -65,7 +65,7 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
     );
     let config = paths.config();
     config.ensure_dirs().await?;
-    loop {
+    let result=async {loop {
         if unsafe { WaitForSingleObject(stop_event.0, 0) } == WAIT_OBJECT_0 {
             return Ok(());
         }
@@ -152,7 +152,13 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
         if !restart {
             return Ok(());
         }
+    }}.await;
+    match tokio::task::spawn_blocking(||uu_core::virtual_display::Manager::shared().shutdown_manual()).await {
+        Ok(Ok(()))=>{},
+        Ok(Err(error))=>tracing::warn!(%error,"manual virtual display cleanup remains pending"),
+        Err(error)=>tracing::warn!(%error,"manual virtual display cleanup worker failed"),
     }
+    result
 }
 
 type Pending = Arc<Mutex<Vec<PairRequest>>>;
@@ -268,6 +274,10 @@ async fn connection(
                 let restart = matches!(response, host_admin::Response::Saved { restart: true });
                 Ok((Response::Admin { response }, restart))
             }
+            Request::VirtualDisplay{request}=>{
+                let response=uu_core::native_virtual_display::execute_local_owner(request).unwrap_or_else(|error|uu_core::native_virtual_display::Response::Error{message:uu_core::native_virtual_display::error_message(&error)});
+                Ok((Response::VirtualDisplay{response},false))
+            },
             Request::Restart => Ok((Response::Applied, true)),
         }
     })

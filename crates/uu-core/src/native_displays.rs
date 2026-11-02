@@ -105,6 +105,55 @@ impl Host {
     pub fn catalog(&self) -> RemoteScreens {
         self.state.lock().unwrap().catalog.clone()
     }
+    /// Refresh source IDs after a leased target appears. This does not request
+    /// a media restart or change the current capture source.
+    pub(crate) fn refresh(&self)->anyhow::Result<()> {
+        self.refresh_monitors(crate::native::monitors()?)
+    }
+    pub(crate) fn refresh_source(&self,source:&str)->anyhow::Result<()> {
+        // CCD can confirm activation before DXGI publishes the output. Wait
+        // outside input/media threads; otherwise one early refresh would leave
+        // a newly created display absent from this session's cached directory.
+        let started=std::time::Instant::now();
+        loop {
+            if let Ok(monitors)=crate::native::monitors() {
+                self.refresh_monitors(monitors)?;
+                if self.references_catalog_source(source){return Ok(());}
+            }
+            anyhow::ensure!(started.elapsed()<std::time::Duration::from_secs(3),"{}",uu_i18n::text("虚拟显示器尚未出现在可采集目录中，请稍后重试"));
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+    fn references_catalog_source(&self,source:&str)->bool {
+        let state=self.state.lock().unwrap();
+        state.catalog.screens.iter().any(|screen|state.names.get(screen.id as usize).is_some_and(|name|name==source))
+    }
+    fn refresh_monitors(&self,mut monitors:Vec<CaptureMonitor>)->anyhow::Result<()> {
+        let mut state=self.state.lock().unwrap();
+        let current=state.catalog.current_id;
+        let name=state.names.get(current as usize).cloned().ok_or_else(||anyhow::anyhow!("current capture source is not prepared"))?;
+        let previous=state.catalog.screens.iter().find(|screen|screen.id==current).cloned().ok_or_else(||anyhow::anyhow!("current capture catalog is unavailable"))?;
+        monitors.sort_by(|a,b|a.name.cmp(&b.name));
+        let active=monitors.iter().position(|monitor|monitor.name==name).ok_or_else(||anyhow::anyhow!("current capture source disappeared; reconnect before changing virtual displays"))?;
+        if active>=MAX_DISPLAYS {monitors.swap(active,MAX_DISPLAYS-1);}
+        monitors.truncate(MAX_DISPLAYS);
+        for monitor in &monitors {if !state.names.contains(&monitor.name){state.names.push(monitor.name.clone());}}
+        let screens=monitors.iter().map(|monitor| {
+            let id=state.names.iter().position(|name|name==&monitor.name).unwrap() as i32;
+            let mut value=screen(id,monitor.name.chars().filter(|c|!c.is_control()).take(96).collect(),monitor.width,monitor.height,monitor.primary,id==current,monitor.refresh_hz);
+            if id==current {value.width=previous.width;value.height=previous.height;}
+            value
+        }).collect();
+        // selected may already contain a pending client switch. A catalog
+        // refresh must describe the still-active capture, never that future
+        // selection or a fallback source without a new media epoch.
+        state.catalog=RemoteScreens{current_id:current,screens};
+        Ok(())
+    }
+    pub(crate) fn references_source(&self,source:&str)->bool {
+        let state=self.state.lock().unwrap();
+        state.selected.as_deref()==Some(source)||state.names.get(state.catalog.current_id as usize).is_some_and(|name|name==source)
+    }
     pub fn select(&self, id: i32) -> Option<bool> {
         if self.switching.load(Ordering::Acquire) {
             return None;
@@ -256,6 +305,21 @@ mod tests {
             CaptureSource::Monitor("a".into())
         );
         assert_eq!(host.catalog().current_id, 0);
+    }
+    #[test]
+    fn refresh_adds_targets_without_publishing_a_pending_or_missing_source_as_current() {
+        let host=Host::default();
+        host.prepare_monitors(vec![monitor("a",true),monitor("b",false)]).unwrap();
+        host.dimensions(320,240);
+        assert_eq!(host.select(1),Some(true));
+        host.refresh_monitors(vec![monitor("a",true),monitor("b",false),monitor("c",false)]).unwrap();
+        assert_eq!(host.catalog().current_id,0);
+        assert_eq!(host.catalog().screens[0].width,320);
+        assert!(host.references_source("a")&&host.references_source("b"));
+        let before=host.catalog();
+        assert!(host.refresh_monitors(vec![monitor("b",false),monitor("c",true)]).is_err());
+        assert_eq!(host.catalog().current_id,before.current_id);
+        assert_eq!(host.catalog().screens.len(),before.screens.len());
     }
     #[test]
     fn only_matched_acceptance_can_renew_media_and_catalog_is_bounded() {

@@ -349,6 +349,8 @@ impl Drop for InputWorker {
 }
 
 pub(crate) struct HostControl {
+    virtual_displays:Mutex<Option<Arc<crate::native_virtual_display::Host>>>,
+    virtual_displays_registered:AtomicBool,
     cursor:Mutex<Option<crate::native_cursor::Stream>>,
     cursor_registered:AtomicBool,
     frame_trace_allowed: AtomicBool,
@@ -372,6 +374,7 @@ pub(crate) struct HostControl {
     gamepad_typed: AtomicBool,
 }
 impl HostControl {
+    pub fn set_virtual_displays(&self,host:Option<Arc<crate::native_virtual_display::Host>>) {*self.virtual_displays.lock().unwrap()=host;}
     pub fn set_cursor(&self,cursor:Option<crate::native_cursor::Stream>){*self.cursor.lock().unwrap()=cursor;}
     pub fn frame_trace(&self,enabled:bool){self.frame_trace_allowed.store(enabled,Ordering::Release);}
     pub fn video_e2e(&self,enabled:bool){self.timing.video_e2e.enable(enabled);}
@@ -439,6 +442,7 @@ impl HostControl {
             None
         };
         Arc::new(Self {
+            virtual_displays:Mutex::new(None),virtual_displays_registered:AtomicBool::new(false),
             frame_trace_allowed:AtomicBool::new(false),frame_trace_registered:AtomicBool::new(false),
             video_e2e_registered:AtomicBool::new(false),
             quality:Mutex::new(None),
@@ -475,6 +479,11 @@ impl HostControl {
             let host = host.clone();
             Box::pin(async move {
                 if host.stopped.load(Ordering::Acquire){let _=channel.close().await;return;}
+                if crate::native_virtual_display::accepts(&channel) && !host.virtual_displays_registered.swap(true,Ordering::AcqRel) {
+                    let virtuals=host.virtual_displays.lock().unwrap().clone();
+                    let displays=host.displays.lock().unwrap().clone();
+                    if let (Some(virtuals),Some(displays))=(virtuals,displays) {crate::native_virtual_display::host_channel(channel,virtuals,displays);return;}
+                }
                 if crate::native_cursor::accepts(&channel) && !host.cursor_registered.swap(true,Ordering::AcqRel) {
                     let source=host.cursor.lock().unwrap().clone();
                     if let Some(source)=source {crate::native_cursor::host_channel(channel,source);return;}

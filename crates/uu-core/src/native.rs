@@ -245,17 +245,20 @@ pub(crate) async fn serve_direct_with_authority(signaling: &mut dyn SessionSigna
     let _clipboard=ClipboardLifetime(config.clipboard.clone());
     config.validate()?;
     let displays=crate::native_displays::Host::for_source(&config.source);
+    let virtuals=crate::native_virtual_display::Lifetime::new(config.session.clone(),displays.is_some());
     let mut report=HostReport::default();
     let started=Instant::now();
-    loop {
+    let result=async {loop {
         let mut current=config.clone();
         if let Some(limit)=config.session_limit {if started.elapsed()>=limit{return Ok(report);}current.session_limit=Some(limit.saturating_sub(started.elapsed()));}
         let mut peer=NativePeer::new_direct(ice,None,true).await?;
-        let result=serve_peer(&mut peer,signaling,current,stop.clone(),status.clone(),displays.clone(),authority.clone()).await;
+        let result=serve_peer(&mut peer,signaling,current,stop.clone(),status.clone(),displays.clone(),authority.clone(),virtuals.host()).await;
         peer.close().await;
         report.merge(result?);
         if *stop.borrow() || !displays.as_ref().is_some_and(|d|d.switching()){return Ok(report);}
-    }
+    }}.await;
+    virtuals.shutdown().await;
+    result
 }
 
 pub async fn view_direct(signaling: &mut dyn SessionSignaling, ice: &crate::direct_ice::InternetIce,
@@ -619,24 +622,26 @@ pub(crate) async fn host_session(
     let local_ip = stream.get_ref().0.local_addr()?.ip();
     let peer_ip = stream.get_ref().0.peer_addr()?.ip();
     let displays=crate::native_displays::Host::for_source(&config.source);
+    let virtuals=crate::native_virtual_display::Lifetime::new(config.session.clone(),displays.is_some());
     let mut signaling = TlsSignaling { stream, peer: peer_ip };
     let mut report=HostReport::default();
     let started=Instant::now();
-    let result=loop {
+    let result=async {loop {
         let mut current=config.clone();
         if let Some(limit)=config.session_limit {if started.elapsed()>=limit{break Ok(report);}current.session_limit=Some(limit.saturating_sub(started.elapsed()));}
         let mut peer=NativePeer::new(local_ip,None,true).await?;
-        let result=serve_peer(&mut peer,&mut signaling,current,stop.clone(),status.clone(),displays.clone(),authority.clone()).await;
+        let result=serve_peer(&mut peer,&mut signaling,current,stop.clone(),status.clone(),displays.clone(),authority.clone(),virtuals.host()).await;
         peer.close().await;
         match result {Ok(current)=>report.merge(current),Err(error)=>break Err(error)}
         if *stop.borrow() || !displays.as_ref().is_some_and(|d|d.switching()){break Ok(report);}
-    };
+    }}.await;
     let _ = signaling.stream.shutdown().await;
+    virtuals.shutdown().await;
     result
 }
 
 async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling, mut config: SharingConfig,
-    mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>,displays:Option<Arc<crate::native_displays::Host>>,authority:Arc<crate::input_ownership::Authority>) -> Result<HostReport> {
+    mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>,displays:Option<Arc<crate::native_displays::Host>>,authority:Arc<crate::input_ownership::Authority>,virtuals:Option<Arc<crate::native_virtual_display::Host>>) -> Result<HostReport> {
     let message = tokio::select! {result=signaling.receive()=>result?,_=cancelled(&mut stop)=>return Ok(HostReport::default())};
     let offer: Offer = serde_json::from_value(message).map_err(|_| anyhow::anyhow!("invalid native offer"))?;
     ensure!(offer.version == 1, "unsupported native protocol version");
@@ -646,7 +651,7 @@ async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling,
     }
     progress(&status,HostStatus::Preparing);
     let mut answered=false;
-    let result=send_video(peer,signaling,config,stop,offer,status,displays,&mut answered,authority).await;
+    let result=send_video(peer,signaling,config,stop,offer,status,displays,&mut answered,authority,virtuals).await;
     if let Err(error)=&result {
         tracing::warn!(error=%format!("{error:#}"),answered,"native media session failed");
         if !answered {
@@ -694,6 +699,7 @@ async fn send_video(
     displays:Option<Arc<crate::native_displays::Host>>,
     answered:&mut bool,
     authority: Arc<crate::input_ownership::Authority>,
+    virtuals:Option<Arc<crate::native_virtual_display::Host>>,
 ) -> Result<HostReport> {
     let refresh = Arc::new(AtomicBool::new(false));
     let preparation_started=Instant::now();
@@ -726,6 +732,7 @@ async fn send_video(
     let typed_gamepads=crate::native_gamepad::typed_offered(&offer.sdp);
     let frame_trace=crate::frame_trace::offered(&offer.sdp);
     let video_e2e=crate::video_e2e::offered(&offer.sdp);
+    let virtuals=virtuals.filter(|_|crate::native_virtual_display::offered(&offer.sdp));
     let cursor_requested=crate::native_cursor::offered(&offer.sdp)?;
     match stream.lan_peer() {
         Some(ip) => peer.remote(offer.sdp, ip).await?,
@@ -810,12 +817,15 @@ async fn send_video(
     controls.set_cursor(cursor);
     if let Some(displays)=&displays {displays.dimensions(width,height);}
     controls.set_displays(displays.clone());
+    let virtuals_available=virtuals.is_some()&&config.session.as_ref().is_some_and(crate::native_virtual_display::Host::permitted);
+    controls.set_virtual_displays(virtuals.filter(|_|virtuals_available));
     controls.attach(&peer.pc);
     let ice_started=Instant::now();
     let mut description=peer.description(false).await?;
     if cursor_available {crate::native_cursor::advertise(&mut description)?;}
     if frame_trace && controls.timing().trace.enabled() {crate::frame_trace::advertise(&mut description);}
     if video_e2e {crate::video_e2e::advertise(&mut description);}
+    if virtuals_available {crate::native_virtual_display::advertise(&mut description);}
     startup.ice_us=elapsed_us(ice_started);startup.total_us=elapsed_us(preparation_started);
     startup.add(&mut description)?;
     if encoder_settings.hdr {
@@ -1032,6 +1042,7 @@ async fn receive_session(
     {let mut trace=stats.native_frame_trace.lock().unwrap();*stats.native_frame_trace_received.lock().unwrap()=None;*trace=None;}
     crate::frame_trace::advertise(&mut description);
     crate::video_e2e::advertise(&mut description);
+    crate::native_virtual_display::advertise(&mut description);
     stats.diagnostics.record(serde_json::json!({"event":"native_local_ice_gather","elapsed_us":elapsed_us(ice_started)}));
     crate::native_clipboard::advertise(&mut description);
     crate::native_gamepad::advertise(&mut description);
@@ -1108,11 +1119,13 @@ async fn receive_session(
     peer.prepare_video(answer.width, answer.height, answer.codec,&stats).await?;
     stats.configured_fps.store(answer.fps,Ordering::Release);
     *stats.native_quality_current.lock().unwrap()=quality_request.as_ref().map(|request|crate::native_quality::Update{fps:answer.fps,bitrate_kbps:request.bitrate_kbps,rate_control:rate.map(|r|r.applied)});
+    let virtual_displays_available=crate::native_virtual_display::offered(&answer.sdp);
     match stream.lan_peer() {
         Some(ip) => peer.remote(answer.sdp, ip).await?,
         None => peer.remote_direct(answer.sdp).await?,
     }
     let _cursor_channel=if cursor_available {Some(crate::native_cursor::viewer_channel(&peer.pc,stats.clone()).await?)}else{None};
+    let virtual_display_channel=if virtual_displays_available {Some(crate::native_virtual_display::viewer_channel(&peer.pc,stats.clone()).await?)}else{None};
     let _frame_telemetry=if stats.native_frame_trace_supported.load(Ordering::Acquire) {
         match crate::frame_trace::viewer_channel(&peer.pc,stats.clone()).await {
             Ok(channel)=>Some(channel),
@@ -1172,6 +1185,7 @@ async fn receive_session(
         }
     }
     };
+    if let Some(channel)=virtual_display_channel {channel.close().await;}
     if let Some(request)=switching {controls.apply_display(request).await?;Ok(ViewOutcome::Switch(controls.take_input()))}else{Ok(ViewOutcome::Ended)}
 }
 

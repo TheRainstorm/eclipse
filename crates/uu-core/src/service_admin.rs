@@ -26,6 +26,7 @@ pub enum Request {
     Admin {
         request: host_admin::Request,
     },
+    VirtualDisplay {request:crate::native_virtual_display::LocalRequest},
     Restart,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -47,6 +48,7 @@ pub enum Response {
     Admin {
         response: host_admin::Response,
     },
+    VirtualDisplay {response:crate::native_virtual_display::Response},
     Applied,
     Error {
         message: String,
