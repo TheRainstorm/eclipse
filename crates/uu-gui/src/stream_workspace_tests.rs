@@ -50,12 +50,137 @@ fn connection_identity_groups_profiles_independently_of_the_launch_snapshot() {
     assert_eq!(&*decoded.plugin_payload().unwrap().unwrap(), "{\"credential\":\"generated-secret\"}");
 }
 
+fn generated_screen(id:i32)->uu_core::screen_control::RemoteScreen {
+    uu_core::screen_control::RemoteScreen{id,display_name:format!("Generated source {id}"),refresh_hz:60,kind:0,width:320,height:192,dpi_scale:None,primary:id==0,video_track_index:if id==0{0}else{-1}}
+}
+#[test]
+fn display_launch_preserves_base_identity_source_alias_and_read_only_mode() {
+    let base=ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into());
+    for view_only in [false,true] {
+        let target=StreamTarget{connection:base.clone(),alias:"Generated computer".into(),view_only};
+        let launch=display_launch(&target,&generated_screen(1)).unwrap();
+        assert_eq!(launch.target.connection.base(),&base);
+        assert_eq!(launch.target.connection.display(),Some(&DisplayTarget{id:1,source:"Generated source 1".into()}));
+        assert_eq!(launch.target.alias,target.alias);assert_eq!(launch.target.view_only,view_only);
+        assert!(launch.plugin_payload().unwrap().is_none());
+        let another=display_launch(&launch.target,&generated_screen(2)).unwrap();
+        assert_eq!(another.target.connection.base(),&base);
+        assert_eq!(another.target.connection.display().unwrap().id,2);
+        assert!(another.target.connection.validate().is_ok(),"opening another screen must not nest wrappers");
+        assert_ne!(another.target.key(),launch.target.key());
+        assert_eq!(base_key(&another.target),target.key());
+    }
+    let loopback=StreamTarget{connection:ConnectionTarget::NativeLoopback,alias:"Generated local test".into(),view_only:true};
+    assert!(display_launch(&loopback,&generated_screen(0)).unwrap().target.view_only);
+}
+#[test]
+fn independent_display_launch_and_ipc_reject_plugins_invalid_sources_and_nested_wrappers() {
+    let plugin=StreamTarget{connection:ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"generated".into()},alias:"Generated".into(),view_only:true};
+    assert!(display_launch(&plugin,&generated_screen(0)).is_err());
+    let wrapper=|connection,source|ConnectionTarget::NativeDisplay{connection:Box::new(connection),display:DisplayTarget{id:0,source}};
+    for connection in [
+        wrapper(plugin.connection.clone(),String::new()),
+        wrapper(wrapper(ConnectionTarget::NativeLoopback,"Inner".into()),"Outer".into()),
+        wrapper(ConnectionTarget::NativeLoopback,"A".repeat(257)),
+        wrapper(ConnectionTarget::NativeLoopback,"Bad\nsource".into()),
+    ] {
+        let target=StreamTarget{connection,alias:"Generated".into(),view_only:true};
+        assert!(Launch::new(target.clone(),None).is_err());
+        // IPC must validate deserialized targets, not just command-line parses.
+        let bytes=serde_json::to_vec(&Launch{target,payload:None}).unwrap();
+        let decoded:Launch=serde_json::from_slice(&bytes).unwrap();
+        assert!(decoded.plugin_payload().is_err());
+    }
+}
+#[test]
+fn independent_display_ipc_creates_separate_pending_windows_and_reuses_a_stable_source() {
+    let mut state=State{input_owner:None,gamepad:Default::default(),windows:vec![Window::new(1,Vec::new(),None)],gl:None,vsync:false,next:2,actions:Default::default()};
+    let target=StreamTarget{connection:ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into()),alias:"Generated computer".into(),view_only:true};
+    assert!(state.attach(display_launch(&target,&generated_screen(1)).unwrap()));
+    assert!(state.attach(display_launch(&target,&generated_screen(2)).unwrap()));
+    assert_eq!(state.windows.len(),3);
+    assert!(state.windows[0].pending.is_empty());
+    assert_ne!(state.windows[1].viewport(),state.windows[2].viewport());
+    let first_key=state.windows[1].pending[0].target.key();
+    state.windows[1].focus=false;state.windows[2].focus=false;
+    let mut renumbered=generated_screen(1);renumbered.id=42;
+    assert!(state.attach(display_launch(&target,&renumbered).unwrap()));
+    assert_eq!(state.windows.len(),3);assert!(state.windows[1].focus);assert!(!state.windows[2].focus);
+    assert_eq!(state.windows[1].pending.len(),1);assert_eq!(state.windows[1].pending[0].target.key(),first_key);
+}
+
+fn check_display_window_routing(state:&mut State,session:u64,ctx:&egui::Context) {
+    // Synthetic capture has no monitor catalog. This temporary inventory tests
+    // workspace routing only; pending display launches are removed before any
+    // UI pass can start them. Actual media below remains two generated hosts.
+    let source=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==session).unwrap();
+    let original_selected=source.app.displays.selected;
+    source.app.displays.selected=Some(0);
+    let source_target=source.app.stream_target.clone();
+    let stats=source.app.controller.as_ref().unwrap().stats.clone();
+    let original_catalog=std::mem::replace(&mut *stats.remote_screens.lock().unwrap(),uu_core::screen_control::RemoteScreens{current_id:0,screens:(0..3).map(generated_screen).collect()});
+    let original_capture=stats.desktop_capture_source.lock().unwrap().take();
+    // A same-device tab whose catalog is not ready must not match a missing
+    // resolution and selected=None as if it already displayed this source.
+    let sibling=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id!=session).unwrap();
+    let sibling_id=sibling.id;
+    let sibling_target=std::mem::replace(&mut sibling.app.stream_target,source_target.clone());
+    let sibling_selected=sibling.app.displays.selected.take();
+    let sibling_stats=sibling.app.controller.as_ref().unwrap().stats.clone();
+    let sibling_catalog=std::mem::take(&mut *sibling_stats.remote_screens.lock().unwrap());
+    let sibling_capture=sibling_stats.desktop_capture_source.lock().unwrap().take();
+    let original_windows=state.windows.len();
+    state.open_display(session,1,ctx);
+    state.open_display(session,2,ctx);
+    assert_eq!(state.windows.len(),original_windows+2);
+    let first=state.windows[original_windows].id;
+    let second=state.windows[original_windows+1].id;
+    for (index,id) in [(original_windows,1),(original_windows+1,2)] {
+        let window=&state.windows[index];
+        assert!(window.sessions.is_empty());assert_eq!(window.pending.len(),1);
+        assert_eq!(window.pending[0].target.connection.display().unwrap().id,id);
+    }
+    state.windows[original_windows].focus=false;
+    state.windows[original_windows+1].focus=false;
+    state.open_display(session,1,ctx);
+    assert_eq!(state.windows.len(),original_windows+2);
+    assert!(state.windows[original_windows].focus);
+    assert!(!state.windows[original_windows+1].focus);
+    // A completed window can change from its original source A to B. Its old
+    // launch key must not steal a subsequent request for source A.
+    let sibling=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==sibling_id).unwrap();
+    sibling.app.stream_target=Some(display_launch(source_target.as_ref().unwrap(),&generated_screen(1)).unwrap().target);
+    sibling.app.displays.selected=Some(2);
+    *sibling_stats.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:2,screens:(0..3).map(|id| {
+        let mut screen=generated_screen(id);screen.video_track_index=if id==2{0}else{-1};screen
+    }).collect()};
+    state.windows[original_windows].focus=false;
+    let active_before=state.windows[0].active;
+    assert!(state.attach(display_launch(source_target.as_ref().unwrap(),&generated_screen(1)).unwrap()));
+    assert_eq!(state.windows.len(),original_windows+2);
+    assert_eq!(state.windows[0].active,active_before);
+    assert!(state.windows[original_windows].focus,"request A must focus pending A, not the live launch-A window displaying B");
+    state.windows[0].focus=false;
+    assert!(state.attach(display_launch(source_target.as_ref().unwrap(),&generated_screen(2)).unwrap()));
+    assert_eq!(state.windows.len(),original_windows+2);
+    assert!(state.windows[0].focus,"an already confirmed source B is reused regardless of its original launch key");
+    state.windows.retain(|window|window.id!=first&&window.id!=second);
+    assert_eq!(state.windows.len(),original_windows);
+    *stats.remote_screens.lock().unwrap()=original_catalog;
+    *stats.desktop_capture_source.lock().unwrap()=original_capture;
+    state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==session).unwrap().app.displays.selected=original_selected;
+    let sibling=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==sibling_id).unwrap();
+    sibling.app.stream_target=sibling_target;sibling.app.displays.selected=sibling_selected;
+    *sibling_stats.remote_screens.lock().unwrap()=sibling_catalog;
+    *sibling_stats.desktop_capture_source.lock().unwrap()=sibling_capture;
+}
+
 #[test]
 fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() {
     use uu_core::hotkeys::Action as Command;
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let mut tabs=Tabs{groups:vec![Group{id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7)},
-        Group{id:11,name:"A".into(),screens:vec![],selected:None}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let mut tabs=Tabs{groups:vec![Group{id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,},
+        Group{id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,}],active:22,actions:actions.clone(),local_ui:Default::default()};
     for command in [Command::NextDisplay,Command::PreviousDisplay,Command::NextComputer,Command::PreviousComputer] {tabs.navigate(command);}
     assert_eq!(*actions.borrow(),[Action::Select(22,Some(2)),Action::Select(22,Some(9)),Action::Select(11,None),Action::Select(11,None)]);
     actions.borrow_mut().clear();tabs.active=11;
@@ -68,7 +193,7 @@ fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() 
 #[test]
 fn device_selector_requires_an_explicit_open_and_keeps_the_video_area() {
     let ctx=egui::Context::default();crate::setup_style(&ctx);
-    let mut tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None},Group{id:2,name:"B".into(),screens:vec![],selected:None}],active:1,actions:Default::default(),local_ui:Default::default()};
+    let mut tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,},Group{id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,}],active:1,actions:Default::default(),local_ui:Default::default()};
     let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
     let draw=|tabs:&Tabs,pointer| {
         let mut visible=false;
@@ -100,12 +225,16 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
                 name: "Generated A".into(),
                 screens: vec![(1, "Monitor A".into())],
                 selected: Some(1),
+                can_open_displays: true,
+
             },
             Group {
                 id: 22,
                 name: "Generated B".into(),
                 screens: vec![(2, "Monitor B".into())],
                 selected: Some(2),
+                can_open_displays: true,
+
             },
         ],
         active: 11,
@@ -188,10 +317,14 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
 std::thread_local! {
     static SCREENSHOTS:std::cell::RefCell<Option<std::collections::HashMap<egui::ViewportId,Arc<egui::ColorImage>>>>=const {std::cell::RefCell::new(None)};
     static FULLSCREEN_COMMANDS:std::cell::RefCell<std::collections::HashSet<egui::ViewportId>>=std::cell::RefCell::new(std::collections::HashSet::new());
+    static HUD_COMMANDS:std::cell::RefCell<std::collections::HashSet<egui::ViewportId>>=std::cell::RefCell::new(std::collections::HashSet::new());
 }
 pub(super) fn apply_fullscreen_command(app:&mut App,ctx:&egui::Context) {
     if FULLSCREEN_COMMANDS.with(|commands|commands.borrow_mut().remove(&ctx.viewport_id())) {
         app.local_shortcut(uu_core::hotkeys::Action::Fullscreen,ctx);
+    }
+    if HUD_COMMANDS.with(|commands|commands.borrow_mut().remove(&ctx.viewport_id())) {
+        app.local_shortcut(uu_core::hotkeys::Action::Stats,ctx);
     }
 }
 pub(super) fn observe_screenshot(ctx:&egui::Context) {
@@ -215,6 +348,7 @@ struct Probe {
     stats: Vec<Arc<uu_core::media::MediaStats>>,
     epochs: Vec<u64>,
     counts: Vec<u64>,
+    hud_before: Option<[bool;2]>,
     passed: Arc<Mutex<bool>>,
 }
 impl eframe::App for Probe {
@@ -278,6 +412,7 @@ impl eframe::App for Probe {
                         .iter()
                         .map(|s| s.native_media_epoch.load(Ordering::Acquire))
                         .collect();
+                    check_display_window_routing(state,self.first,ctx);
                     // Switch away without another UI pass: inactive sessions
                     // must pause observation immediately, including parked tabs.
                     state.apply(Action::Select(self.first,None),ctx);
@@ -388,8 +523,30 @@ impl eframe::App for Probe {
                         );
                         assert_eq!(session.app.context.viewport(), window.viewport());
                         assert_eq!(self.stats[index].errors.load(Ordering::Acquire), 0);
+                        assert_eq!(self.stats[index].res(),(320+index as u32*64,192),"each native window must retain its distinct generated source");
                         assert!(!session.app.textures.is_empty());
                     }
+                    let first=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==self.first)).unwrap();
+                    let second=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==self.second_id)).unwrap();
+                    self.hud_before=Some([first.sessions[0].app.hud,second.sessions[0].app.hud]);
+                    FULLSCREEN_COMMANDS.with(|commands|commands.borrow_mut().insert(first.viewport()));
+                    HUD_COMMANDS.with(|commands|commands.borrow_mut().insert(first.viewport()));
+                    self.phase=10;
+                }
+                10 if state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==self.first))
+                    .is_some_and(|w|ctx.input_for(w.viewport(),|i|i.viewport().fullscreen)==Some(true)) => {
+                    let first=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==self.first)).unwrap();
+                    let second=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==self.second_id)).unwrap();
+                    assert_eq!(ctx.input_for(second.viewport(),|i|i.viewport().fullscreen),Some(false));
+                    assert!(first.sessions[0].app.fullscreen);assert!(!second.sessions[0].app.fullscreen);
+                    let before=self.hud_before.unwrap();
+                    assert_eq!(first.sessions[0].app.hud,!before[0]);
+                    assert_eq!(second.sessions[0].app.hud,before[1]);
+                    FULLSCREEN_COMMANDS.with(|commands|commands.borrow_mut().insert(first.viewport()));
+                    self.phase=11;
+                }
+                11 if state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==self.first))
+                    .is_some_and(|w|ctx.input_for(w.viewport(),|i|i.viewport().fullscreen)==Some(false)) => {
                     // Closing one native window's session leaves the other
                     // receiving on the exact same media epoch and controller.
                     state.apply(Action::Close(self.first), ctx);
@@ -407,7 +564,7 @@ impl eframe::App for Probe {
                     state.apply(Action::Close(self.second_id), ctx);
                     self.phase = 5;
                     *self.passed.lock().unwrap() = true;
-                    println!("two live sessions: attach, tab selection, independent quality, group reorder, native detach and isolated close; epochs unchanged, decode errors=0");
+                    println!("two distinct generated sources: attach, tab selection, independent quality, group reorder, native detach, independent fullscreen/HUD and isolated close; display-window launch routing checked with catalog fixtures, epochs unchanged, decode errors=0");
                 }
                 _ => {}
             }
@@ -525,6 +682,7 @@ fn native_windows_attach_reorder_and_detach_two_live_generated_sessions() {
                 stats: Vec::new(),
                 epochs: Vec::new(),
                 counts: Vec::new(),
+                hud_before: None,
                 passed: result,
             }))
         }),

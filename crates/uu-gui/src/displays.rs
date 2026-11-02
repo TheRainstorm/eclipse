@@ -14,6 +14,7 @@ pub(super) struct Displays {
     pending: Option<Pending>,
     queued: Option<i32>,
     initial_selection_checked: bool,
+    initial_display: Option<super::sessions::DisplayTarget>,
     remember_on_confirmation: Option<i32>,
     blocked: bool,
     unbound: bool,
@@ -39,10 +40,39 @@ struct Pending {
     settings_accepted: bool,
 }
 impl Displays {
+    fn set_initial_display(&mut self,target:super::sessions::DisplayTarget) {
+        self.initial_display=Some(target);
+        self.blocked=true;
+        self.notice=uu_i18n::text("正在准备指定显示器…").into();
+    }
     fn restore_selection(&mut self, screens: &RemoteScreens, catalog_current: bool, control_ready: bool) -> Option<i32> {
-        if self.initial_selection_checked || self.pending.is_some() || !catalog_current || !control_ready || screens.screens.is_empty() {return None;}
+        if self.initial_selection_checked || self.pending.is_some() || !catalog_current || !control_ready {return None;}
+        if let Some(target)=&self.initial_display {
+            match target.resolve(&screens.screens) {
+                Ok(id)=>{
+                    self.initial_selection_checked=true;
+                    self.selected=Some(id);
+                    self.remember_on_confirmation=Some(id);
+                    return (id!=screens.current_id).then_some(id);
+                }
+                Err(notice)=>{self.notice=notice.into();return None;}
+            }
+        }
+        if screens.screens.is_empty(){return None;}
         self.initial_selection_checked = true;
         self.layout.remembered(&screens.screens).filter(|id| *id != screens.current_id)
+    }
+    fn confirm_initial_current(&mut self,screens:&RemoteScreens,catalog_current:bool,control_ready:bool,has_frame:bool) {
+        // No selection RPC is needed when the host is already capturing the
+        // requested source. Its current catalog and real frame still gate it.
+        if self.pending.is_none() && self.initial_selection_checked && catalog_current && control_ready && has_frame
+            && self.selected==Some(screens.current_id)
+            && self.remember_on_confirmation==self.selected
+            && self.initial_display.as_ref().is_some_and(|target|target.resolve(&screens.screens)==Ok(screens.current_id)) {
+            self.initial_display=None;
+            self.blocked=false;
+            self.notice.clear();
+        }
     }
     fn remember_display(&mut self, screens: &RemoteScreens, catalog_current: bool, has_frame: bool) -> bool {
         if !self.ready() || !catalog_current || !has_frame || self.selected != Some(screens.current_id) {return false;}
@@ -55,6 +85,9 @@ impl Displays {
     }
     pub fn switching(&self) -> bool {
         self.pending.is_some()
+    }
+    pub(super) fn preparing_initial_target(&self)->bool {
+        self.initial_display.is_some()
     }
     // A source change is not cancellable on the host. Keep only the newest
     // selection until the in-flight source, settings and frame are confirmed.
@@ -96,7 +129,9 @@ impl Displays {
         request
     }
     pub fn waiting_binding(&self) -> bool {
-        self.unbound
+        // The initial host frame can belong to another monitor. Keep it hidden
+        // until this window's explicit first selection has been confirmed.
+        self.unbound || self.initial_display.is_some()
     }
     fn bind_track(&mut self, track: u32) {
         if let Some(p) = self
@@ -177,6 +212,7 @@ impl Displays {
             .is_some_and(|p| p.accepted && p.frame && p.settings_accepted)
         {
             self.pending = None;
+            self.initial_display = None;
             self.blocked = false;
             self.notice.clear();
         }
@@ -185,6 +221,9 @@ impl Displays {
         let fresh=self.native_frame_epoch!=self.native_request_epoch && catalog_epoch==self.native_frame_epoch;
         if fresh && has_frame {if let Some(p)=self.pending.as_mut(){p.frame=true;}self.complete();}
         self.ready()
+    }
+    fn native_source_frame(&mut self,screens:&RemoteScreens,catalog_epoch:u64,has_frame:bool)->bool {
+        self.selected==Some(screens.current_id) && self.native_frame(catalog_epoch,has_frame)
     }
     fn tick(&mut self, now: Instant) {
         if self
@@ -218,6 +257,9 @@ impl Displays {
 impl super::App {
     pub(super) fn prepare_displays(&mut self) {
         self.displays = Displays::default();
+        if let Some(display)=self.stream_target.as_ref().and_then(|target|target.connection.display()) {
+            self.displays.set_initial_display(display.clone());
+        }
         self.selected_track = 0;
         let Some(path) = self.config.as_ref().zip(self.stream_target.as_ref())
             .and_then(|(config, target)| super::display_layout::DisplayLayout::path(config, target)) else {return;};
@@ -267,10 +309,10 @@ impl super::App {
     fn select_native_display(&mut self,id:i32){
         let screens=self.remote_screens();
         if !screens.screens.iter().any(|s|s.id==id){return;}
-        self.displays.initial_selection_checked=true;
         if self.displays.defer_selection(id){return;}
         if self.displays.selected==Some(id) && self.displays.ready(){return;}
         if !self.controller.as_ref().is_some_and(|h|h.stats.control_open.load(std::sync::atomic::Ordering::Acquire)!=0){return;}
+        self.displays.initial_selection_checked=true;
         self.release_all_keys();self.release_pointer_capture(&self.context.clone());
         self.cursor=super::cursor::Cursor::default();
         let binding=self.controller.as_ref().is_some_and(|h|h.stats.display_track_binding.load(std::sync::atomic::Ordering::Acquire));
@@ -280,9 +322,9 @@ impl super::App {
         self.displays.native_request_epoch=self.displays.native_frame_epoch;
         let sent=self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|input|input.select_display(request,id).is_ok());
         if !sent {
-            self.displays.pending=None;self.displays.blocked=false;
+            self.displays.pending=None;self.displays.blocked=self.displays.initial_display.is_some();
             self.displays.remember_on_confirmation=None;
-            self.displays.selected=Some(screens.current_id);
+            if self.displays.initial_display.is_none(){self.displays.selected=Some(screens.current_id);}
             self.displays.notice=uu_i18n::text("切换失败：控制连接不可用").into();
         }
         self.displays.menu_open=false;self.stream_menu.open=false;
@@ -301,9 +343,9 @@ impl super::App {
             if !self.displays.pending.as_ref().is_some_and(|p|p.request==response.request){continue;}
             if response.accepted && (response.restart||binding) {self.displays.pending.as_mut().unwrap().accepted=true;}
             else {
-                self.displays.pending=None;self.displays.blocked=false;
+                self.displays.pending=None;self.displays.blocked=self.displays.initial_display.is_some();
                 if !response.accepted {self.displays.remember_on_confirmation=None;}
-                self.displays.selected=Some(screens.current_id);
+                if self.displays.initial_display.is_none(){self.displays.selected=Some(screens.current_id);}
                 self.displays.notice=if response.accepted{String::new()}else{uu_i18n::text("被控端未允许切换到该显示器").into()};
             }
         }
@@ -312,12 +354,12 @@ impl super::App {
             // actual frame from the new media generation, even at identical size.
             let bound=screens.screens.iter().find(|s|Some(s.id)==self.displays.selected).and_then(|s|s.assigned_track());
             let ready=if binding {self.displays.pending.as_ref().is_some_and(|p|p.accepted)&&bound.is_some_and(|track|tracks.contains(&track))}
-                else {self.displays.native_frame(catalog_epoch,tracks.contains(&0)||self.textures.contains_key(&0))};
+                else {self.displays.native_source_frame(&screens,catalog_epoch,tracks.contains(&0)||self.textures.contains_key(&0))};
             if ready {
-                if binding {self.displays.pending=None;self.displays.blocked=false;self.displays.notice.clear();}
+                if binding {self.displays.pending=None;self.displays.initial_display=None;self.displays.blocked=false;self.displays.notice.clear();}
                 if !binding {self.displays.selected=Some(screens.current_id);}
             }
-        }else if catalog_current && !screens.screens.is_empty(){
+        }else if self.displays.initial_display.is_none() && catalog_current && !screens.screens.is_empty(){
             self.displays.selected=Some(screens.current_id);
         }
         // The compositor may need local permission; use the same preparation
@@ -331,6 +373,7 @@ impl super::App {
         h.stats.select_video_track(self.selected_track);
         let restore=self.displays.restore_selection(&screens,catalog_current,control_ready);
         let has_frame=tracks.contains(&self.selected_track)||self.textures.contains_key(&self.selected_track);
+        self.displays.confirm_initial_current(&screens,catalog_current,control_ready,has_frame);
         let remembered=self.displays.remember_display(&screens,catalog_current,has_frame);
         if remembered {h.stats.diagnostics.record(serde_json::json!({"event":"display_selection_confirmed","screen":screens.current_id}));}
         if let Some(id)=restore {h.stats.diagnostics.record(serde_json::json!({"event":"display_selection_restore","screen":id}));}
@@ -352,6 +395,83 @@ mod tests {
             width: 1920, height: 1080, dpi_scale: None, primary: id == 0,
             video_track_index: if id == current {0} else {-1},
         }).collect()}
+    }
+    fn explicit(id:i32,source:&str)->Displays {
+        let mut displays=Displays::default();
+        displays.set_initial_display(super::super::sessions::DisplayTarget{id,source:source.into()});
+        displays
+    }
+    #[test]
+    fn explicit_source_wins_over_saved_selection_and_waits_for_the_target_epoch() {
+        let mut d=explicit(0,"Source 1");
+        d.layout.remember_selected(&catalog(0).screens[0]);
+        assert!(!d.ready());assert!(d.waiting_binding());assert!(d.preparing_initial_target());
+        assert_eq!(d.restore_selection(&catalog(0),false,true),None);
+        assert_eq!(d.restore_selection(&catalog(0),true,false),None);
+        assert_eq!(d.restore_selection(&catalog(0),true,true),Some(1));
+        assert_eq!(d.selected,Some(1));
+        d.native_frame_epoch=4;d.native_request_epoch=4;
+        let request=d.begin(1,0,Instant::now());
+        d.response(request,11,0);
+        assert!(!d.native_source_frame(&catalog(1),4,true));
+        d.native_frame_epoch=5;
+        assert!(!d.native_source_frame(&catalog(0),5,true)); // new epoch alone is insufficient
+        assert!(!d.native_source_frame(&catalog(1),5,false));
+        assert!(d.waiting_binding());
+        assert!(d.native_source_frame(&catalog(1),5,true));
+        assert!(!d.waiting_binding());
+        assert!(!d.preparing_initial_target());
+        // The launch target chooses the first screen, not a permanent pin.
+        let next=d.begin(0,0,Instant::now());
+        assert!(!d.preparing_initial_target());
+        d.native_request_epoch=5;d.response(next,11,0);d.native_frame_epoch=6;
+        assert!(d.native_source_frame(&catalog(0),6,true));
+        assert_eq!(d.selected,Some(0));
+    }
+    #[test]
+    fn explicit_current_source_unlocks_only_after_current_catalog_control_and_frame() {
+        let mut d=explicit(7,"Source 0");
+        assert_eq!(d.restore_selection(&catalog(0),true,true),None);
+        d.confirm_initial_current(&catalog(0),false,true,true);assert!(!d.ready());
+        d.confirm_initial_current(&catalog(0),true,false,true);assert!(!d.ready());
+        d.confirm_initial_current(&catalog(0),true,true,false);assert!(!d.ready());
+        assert!(d.waiting_binding());
+        d.confirm_initial_current(&catalog(0),true,true,true);
+        assert!(d.ready());assert!(!d.waiting_binding());
+        assert!(d.remember_display(&catalog(0),true,true));
+    }
+    #[test]
+    fn missing_or_ambiguous_explicit_source_never_uses_the_numeric_fallback() {
+        let mut d=explicit(0,"Missing");
+        assert_eq!(d.restore_selection(&catalog(0),true,true),None);
+        d.confirm_initial_current(&catalog(0),true,true,true);
+        assert!(!d.ready());assert!(d.waiting_binding());assert!(uu_i18n::matches(&d.notice,"指定显示器不存在，请重新选择显示器"));
+        assert_eq!(d.selected,None);
+        let mut ambiguous=catalog(0);ambiguous.screens[1].display_name="Source 0".into();
+        let mut d=explicit(0,"Source 0");
+        assert_eq!(d.restore_selection(&ambiguous,true,true),None);
+        assert!(!d.ready());assert!(d.waiting_binding());assert!(uu_i18n::matches(&d.notice,"指定显示器名称不唯一，请重新选择显示器"));
+        let mut id_only=explicit(1,"");
+        assert_eq!(id_only.restore_selection(&catalog(0),true,true),Some(1));
+    }
+    #[test]
+    fn independent_display_instances_keep_switches_and_confirmation_separate() {
+        let mut left=explicit(0,"Source 0");
+        let mut right=explicit(1,"Source 1");
+        left.restore_selection(&catalog(0),true,true);
+        left.confirm_initial_current(&catalog(0),true,true,true);
+        assert!(left.ready());assert!(!right.ready());
+        assert_eq!(right.restore_selection(&catalog(0),true,true),Some(1));
+        right.native_frame_epoch=1;right.native_request_epoch=1;
+        let right_request=right.begin(1,0,Instant::now());
+        let left_request=left.begin(1,0,Instant::now());
+        left.response(left_request,11,0);left.frame(0);
+        assert!(left.ready());assert!(!right.ready());
+        right.response(right_request,11,0);right.native_frame_epoch=2;
+        assert!(right.native_source_frame(&catalog(1),2,true));
+        left.begin(0,0,Instant::now());
+        assert_eq!(left.selected,Some(0));assert!(!left.ready());
+        assert_eq!(right.selected,Some(1));assert!(right.ready());
     }
     #[test]
     fn reconnect_restores_saved_source_once_after_current_catalog_and_control_are_ready() {

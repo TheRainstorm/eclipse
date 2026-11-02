@@ -319,11 +319,13 @@ impl App {
         };
         uu_i18n::set_language(preferences.language);
         let application_hotkeys=preferences.application_hotkeys().clone();
-        if let Some(sessions::StreamTarget {connection:sessions::ConnectionTarget::NativeProfile{snapshot,..},..}) = &stream_target {
+        if let Some(sessions::ConnectionTarget::NativeProfile{snapshot,..}) = stream_target.as_ref().map(|t|t.connection.base()) {
             if let Ok(launch) = uu_core::device_book::Launch::read(snapshot) {
                 if let Some(client) = launch.client { preferences.client = client; }
             }
         }
+        // Extra views start silent to avoid duplicated audio from one host.
+        if stream_target.as_ref().is_some_and(|t|t.connection.display().is_some()) {preferences.muted=true;}
         let mut client_support=uu_plugin_sdk::ClientSupport::default();
         let mut plugin_client_error=None;
         if let Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::Plugin{plugin,..},..})=&stream_target {
@@ -423,7 +425,7 @@ impl App {
             window_edge_active: false,
         };
         if let Some(target)=&app.stream_target {
-            app.view_only=target.view_only || matches!(target.connection,sessions::ConnectionTarget::NativeLoopback);app.connect();
+            app.view_only=target.view_only || matches!(target.connection.base(),sessions::ConnectionTarget::NativeLoopback);app.connect();
         }else{app.status=uu_i18n::text("选择连接方式").into();}
 
         app
@@ -463,7 +465,7 @@ impl App {
         for (image,observation) in frames {
             let idx=match &image {uu_core::display_frames::DisplayImage::Rgba(f)=>f.0,uu_core::display_frames::DisplayImage::Decoded(track,..)=>*track};
             if !self.recorded_connection {
-                if let (Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::NativeProfile{id,..},..}),Some(store))=(&self.stream_target,&self.workspace.store) {
+                if let (Some(sessions::ConnectionTarget::NativeProfile{id,..}),Some(store))=(self.stream_target.as_ref().map(|t|t.connection.base()),&self.workspace.store) {
                     self.preview_writer.submit(store.clone(),id.clone(),None);
                 }
                 self.recorded_connection=true;
@@ -863,7 +865,7 @@ impl App {
     }
 
     fn save_last_remote_frame(&mut self) {
-        if let (Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::NativeProfile{id,..},..}),Some(store))=(&self.stream_target,&self.workspace.store) {
+        if let (Some(sessions::ConnectionTarget::NativeProfile{id,..}),Some(store))=(self.stream_target.as_ref().map(|t|t.connection.base()),&self.workspace.store) {
             if let Some(texture)=self.textures.get(&self.selected_track).or_else(||self.textures.values().next()) {
                 match texture.snapshot() {
                     Ok(image)=>self.preview_writer.submit(store.clone(),id.clone(),Some(image)),
@@ -905,7 +907,9 @@ impl App {
     fn connect(&mut self) {
         self.recorded_connection=false;
         if self.controller.is_some(){return;}
-        let Some(target)=self.stream_target.as_ref().map(|t|t.connection.clone()) else{return;};
+        let Some(connection)=self.stream_target.as_ref().map(|t|&t.connection) else{return;};
+        if let Err(error)=connection.validate(){self.status=error;return;}
+        let target=connection.base().clone();
         self.prepare_displays();
         match target {
             sessions::ConnectionTarget::NativeLoopback=>self.connect_native_loopback(),
@@ -921,6 +925,7 @@ impl App {
                     Ok(handle)=>self.attach_controller(handle),Err(error)=>self.status=error.to_string(),
                 }
             }
+            sessions::ConnectionTarget::NativeDisplay{..}=>unreachable!("validated base connection"),
         }
     }
 
@@ -1213,6 +1218,13 @@ impl App {
                 report["decoded_batch_skips_all_tracks"]=s.decoded_batch_skips.load(Relaxed).into();
                 report["decoded_conversion_skips_all_tracks"]=s.decoded_conversion_skips.load(Relaxed).into();
                 report["build"]=self.build_label.clone().into();
+                let display_catalog=self.remote_screens();
+                report["session_instance"]=self.instance_id.into();
+                report["window_id"]=self.platform.window_id().into();
+                report["display_selection"]=serde_json::json!({"selected":self.displays.selected,"current":display_catalog.current_id,
+                    "source":self.displays.selected.and_then(|id|display_catalog.screens.iter().find(|screen|screen.id==id)).map(|screen|&screen.display_name),
+                    "ready":self.displays.ready(),"preparing_initial":self.displays.preparing_initial_target()});
+                report["hud"]=self.hud.into();report["fullscreen"]=self.fullscreen.into();
                 report["presentation_swap_interval"]=eframe::vsync_interval(ctx).into();
                 report["video_color"]=self.textures.get(&self.selected_track).and_then(|t|t.color_diagnostics()).into();
                 let cursor=s.native_cursor.snapshot();
@@ -1222,7 +1234,7 @@ impl App {
                 report["host_video_latency"]=serde_json::to_value(uu_core::frame_trace::video_latency(s)).unwrap_or_default();
                 report["video_e2e"]=serde_json::to_value(s.video_e2e.snapshot()).unwrap_or_default();
                 report["input_latency"]=serde_json::to_value(s.video_e2e.input_latency()).unwrap_or_default();
-                if self.stream_target.as_ref().is_some_and(|t|matches!(t.connection,sessions::ConnectionTarget::NativeLoopback)) {
+                if self.stream_target.as_ref().is_some_and(|t|matches!(t.connection.base(),sessions::ConnectionTarget::NativeLoopback)) {
                     let path=s.connection.request().selected;
                     report["local_loopback"]=serde_json::json!({
                         "selected":path.is_some(),
@@ -1344,7 +1356,7 @@ fn main() -> eframe::Result {
     // Vertical sync is on by default (tear-free). `UU_VSYNC=0` disables it
     // (e.g. for very low latency on a tearing-tolerant setup).
     let mut preferences=settings::Settings::path().and_then(|p|settings::Settings::load(&p).ok()).unwrap_or_default();
-    if let Some(sessions::StreamTarget { connection:sessions::ConnectionTarget::NativeProfile{snapshot,..},..})=&stream_target {
+    if let Some(sessions::ConnectionTarget::NativeProfile{snapshot,..})=stream_target.as_ref().map(|t|t.connection.base()) {
         if let Ok(launch)=uu_core::device_book::Launch::read(snapshot) {
             if let Some(client)=launch.client {preferences.client=client;}
         }

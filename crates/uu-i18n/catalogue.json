@@ -1620,5 +1620,11 @@
   "共享服务继续运行；从托盘菜单重新打开或退出 Eclipse。": "Sharing continues running. Use the tray menu to reopen or quit Eclipse.",
   "打开 Eclipse": "Open Eclipse",
   "退出 Eclipse": "Quit Eclipse",
-  "无法启用系统托盘：{error}": "Could not enable the system tray: {error}"
+  "无法启用系统托盘：{error}": "Could not enable the system tray: {error}",
+  "独立窗口": "Separate window",
+  "所有屏幕独立打开": "Open all displays in separate windows",
+  "在独立窗口中打开": "Open in a separate window",
+  "正在准备指定显示器…": "Preparing the selected display…",
+  "指定显示器不存在，请重新选择显示器": "The selected display is unavailable. Choose another display.",
+  "指定显示器名称不唯一，请重新选择显示器": "The selected display name is ambiguous. Choose another display."
 }

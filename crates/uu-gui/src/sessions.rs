@@ -21,6 +21,57 @@ pub enum ConnectionTarget {
     NativeDevice(String),
     NativeInternet(PathBuf),
     NativeProfile {id:String,snapshot:PathBuf},
+    NativeDisplay {connection:Box<ConnectionTarget>,display:DisplayTarget},
+}
+#[derive(Clone, Debug, PartialEq, Eq, Hash,serde::Serialize,serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplayTarget {
+    pub id:i32,
+    pub source:String,
+}
+impl DisplayTarget {
+    pub fn validate(&self)->Result<(),String> {
+        if self.id<0 || self.source.len()>256 || self.source.chars().any(char::is_control) {
+            return Err("invalid native display target".into());
+        }
+        Ok(())
+    }
+    pub fn resolve(&self,screens:&[uu_core::screen_control::RemoteScreen])->Result<i32,&'static str> {
+        let mut matches=screens.iter().filter(|screen| if self.source.is_empty(){screen.id==self.id}else{screen.display_name==self.source});
+        let screen=matches.next().ok_or_else(||uu_i18n::text("指定显示器不存在，请重新选择显示器"))?;
+        if matches.next().is_some(){return Err(uu_i18n::text("指定显示器名称不唯一，请重新选择显示器"));}
+        Ok(screen.id)
+    }
+}
+impl ConnectionTarget {
+    pub fn base(&self)->&Self {
+        match self {Self::NativeDisplay{connection,..}=>connection.base(),other=>other}
+    }
+    pub fn display(&self)->Option<&DisplayTarget> {
+        match self {Self::NativeDisplay{display,..}=>Some(display),_=>None}
+    }
+    pub fn validate(&self)->Result<(),String> {
+        if let Self::NativeDisplay{connection,display}=self {
+            display.validate()?;
+            if matches!(connection.as_ref(),Self::Plugin{..}|Self::NativeDisplay{..}) {
+                return Err("native display target requires an unwrapped native connection".into());
+            }
+        }
+        Ok(())
+    }
+    fn key(&self)->Self {
+        match self {
+            Self::NativeProfile{id,..}=>Self::NativeProfile{id:id.clone(),snapshot:PathBuf::new()},
+            Self::NativeInvitation(path)=>Self::NativeInvitation(path.canonicalize().unwrap_or_else(|_|path.clone())),
+            Self::NativeDisplay{connection,display}=>Self::NativeDisplay {
+                connection:Box::new(connection.key()),
+                // Host IDs may change after reconnect; a unique source name
+                // identifies the explicit window independently of that ID.
+                display:DisplayTarget{id:if display.source.is_empty(){display.id}else{0},source:display.source.clone()},
+            },
+            other=>other.clone(),
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq,serde::Serialize,serde::Deserialize)]
 pub struct StreamTarget {
@@ -30,18 +81,15 @@ pub struct StreamTarget {
 }
 impl StreamTarget {
     pub fn key(&self)->ConnectionTarget {
-        match &self.connection {
-            ConnectionTarget::NativeProfile{id,..}=>ConnectionTarget::NativeProfile{id:id.clone(),snapshot:PathBuf::new()},
-            ConnectionTarget::NativeInvitation(path)=>ConnectionTarget::NativeInvitation(path.canonicalize().unwrap_or_else(|_|path.clone())),
-            other=>other.clone(),
-        }
+        self.connection.key()
     }
     pub fn is_native(&self) -> bool {
-        matches!(self.connection, ConnectionTarget::NativeLoopback | ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..})
+        !matches!(self.connection.base(),ConnectionTarget::Plugin{..})
     }
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Self>, String> {
         let mut args = args.into_iter();
         let (mut connection, mut alias, mut view_only) = (None, None, false);
+        let (mut display_id,mut display_source)=(None,None);
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--self-stream" => {
@@ -75,16 +123,33 @@ impl StreamTarget {
                     });
                 }
                 "--stream-alias" => alias = Some(args.next().ok_or(uu_i18n::text("缺少设备名称"))?),
+                "--display-id" => {
+                    if display_id.is_some(){return Err("duplicate native display id".into());}
+                    display_id=Some(args.next().ok_or("missing native display id")?.parse::<i32>().map_err(|_|"invalid native display id")?);
+                }
+                "--display-source" => {
+                    if display_source.is_some(){return Err("duplicate native display source".into());}
+                    display_source=Some(args.next().ok_or("missing native display source")?);
+                }
                 "--view-only" => view_only = true,
                 _ => return Err(uu_i18n::format!("未知参数：{arg}")),
             }
         }
         match connection {
             Some(connection) => {
-                let default = match &connection {
+                let connection=if let Some(id)=display_id {
+                    ConnectionTarget::NativeDisplay{connection:Box::new(connection),display:DisplayTarget{id,source:display_source.unwrap_or_default()}}
+                }else{
+                    if display_source.is_some(){return Err("native display source requires a display id".into());}
+                    connection
+                };
+                connection.validate()?;
+                view_only|=matches!(connection.base(),ConnectionTarget::NativeLoopback);
+                let default = match connection.base() {
                     ConnectionTarget::Plugin {identity,..} => identity.clone(),
                     ConnectionTarget::NativeLoopback => uu_i18n::text("本机串流测试").into(),
                     ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..} => uu_i18n::text("原生设备").into(),
+                    ConnectionTarget::NativeDisplay{..}=>unreachable!("base connection is unwrapped"),
                 };
                 Ok(Some(Self {
                     connection,
@@ -92,13 +157,13 @@ impl StreamTarget {
                     view_only,
                 }))
             }
-            None if alias.is_some() || view_only => Err(uu_i18n::text("串流参数需要设备或原生邀请").into()),
+            None if alias.is_some() || view_only || display_id.is_some() || display_source.is_some() => Err(uu_i18n::text("串流参数需要设备或原生邀请").into()),
             None => Ok(None),
         }
     }
     fn command(&self, exe: &Path, origin: Option<(i32, i32)>) -> Command {
         let mut command = Command::new(exe);
-        match &self.connection {
+        match self.connection.base() {
             ConnectionTarget::NativeLoopback => {command.arg("--self-stream");}
             ConnectionTarget::Plugin{plugin,identity}=>{command.arg("--plugin").arg(plugin).arg(identity).stdin(Stdio::piped());}
             ConnectionTarget::NativeInvitation(path) => {
@@ -107,7 +172,9 @@ impl StreamTarget {
             ConnectionTarget::NativeDevice(id) => {command.arg("--native-device").arg(id);}
             ConnectionTarget::NativeInternet(path) => {command.arg("--native-internet").arg(path);}
             ConnectionTarget::NativeProfile{snapshot,..}=>{command.arg("--device-profile").arg(snapshot);}
+            ConnectionTarget::NativeDisplay{..}=>unreachable!("base connection is unwrapped"),
         }
+        if let Some(display)=self.connection.display(){command.arg("--display-id").arg(display.id.to_string()).arg("--display-source").arg(&display.source);}
         command
             .arg("--stream-alias")
             .arg(&self.alias)
@@ -117,7 +184,7 @@ impl StreamTarget {
         } else {
             command.env_remove("UU_WINDOW_ORIGIN");
         }
-        if self.view_only {
+        if self.view_only || matches!(self.connection.base(),ConnectionTarget::NativeLoopback) {
             command.arg("--view-only");
         }
         #[cfg(target_os = "windows")]
@@ -151,16 +218,11 @@ impl Sessions {
     }
     fn open_inner(&mut self,exe:&Path,target:&StreamTarget,origin:Option<(i32,i32)>,payload:Option<&str>)->std::io::Result<bool> {
         self.reap();
+        target.connection.validate().map_err(|error|std::io::Error::new(std::io::ErrorKind::InvalidInput,error))?;
         if matches!(target.connection,ConnectionTarget::Plugin{..}) != payload.is_some() || payload.is_some_and(|s|s.is_empty()||s.len()>MAX_PLUGIN_PAYLOAD) {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"invalid plugin launch payload"));
         }
-        let key = match &target.connection {
-            ConnectionTarget::NativeProfile{id,..}=>ConnectionTarget::NativeProfile{id:id.clone(),snapshot:PathBuf::new()},
-            ConnectionTarget::NativeInvitation(path) => ConnectionTarget::NativeInvitation(
-                path.canonicalize().unwrap_or_else(|_| path.clone()),
-            ),
-            other => other.clone(),
-        };
+        let key = target.key();
         // Even an existing target goes through IPC: only the workspace knows
         // which tab and detached native window currently contain that session.
         let mut child = target.command(exe, origin).spawn()?;
@@ -188,6 +250,61 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn display(connection:ConnectionTarget,id:i32,source:&str)->ConnectionTarget {
+        ConnectionTarget::NativeDisplay{connection:Box::new(connection),display:DisplayTarget{id,source:source.into()}}
+    }
+    #[test]
+    fn native_display_arguments_roundtrip_and_loopback_remains_read_only() {
+        for args in [
+            vec!["--native-invitation","generated.eclipse-invite.json","--display-id","7","--display-source","Stable source"],
+            vec!["--display-id","7","--self-stream"],
+            vec!["--native-internet","generated.json","--display-id","2","--display-source",""],
+        ] {
+            let target=StreamTarget::parse(args.into_iter().map(str::to_owned)).unwrap().unwrap();
+            assert!(target.is_native());
+            assert!(target.connection.display().is_some());
+            let command=target.command(Path::new("generated-gui"),None);
+            let args=command.get_args().map(|arg|arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
+            assert_eq!(StreamTarget::parse(args).unwrap(),Some(target.clone()));
+            if matches!(target.connection.base(),ConnectionTarget::NativeLoopback){assert!(target.view_only);}
+        }
+        let target=StreamTarget{connection:display(ConnectionTarget::NativeLoopback,0,""),alias:"Generated".into(),view_only:false};
+        assert!(target.command(Path::new("generated-gui"),None).get_args().any(|arg|arg=="--view-only"));
+    }
+    #[test]
+    fn display_arguments_and_workspace_targets_reject_invalid_or_nested_selection() {
+        for args in [
+            vec!["--display-id","0"],
+            vec!["--self-stream","--display-source","Source"],
+            vec!["--self-stream","--display-id","-1"],
+            vec!["--self-stream","--display-id","0","--display-id","1"],
+            vec!["--self-stream","--display-id","0","--display-source","A","--display-source","B"],
+            vec!["--plugin","example-addon","device","--display-id","0"],
+        ] {assert!(StreamTarget::parse(args.into_iter().map(str::to_owned)).is_err());}
+        assert!(display(ConnectionTarget::NativeLoopback,0,&"A".repeat(257)).validate().is_err());
+        assert!(display(ConnectionTarget::NativeLoopback,0,"A\nB").validate().is_err());
+        assert!(display(display(ConnectionTarget::NativeLoopback,0,"Source"),1,"Other").validate().is_err());
+        let malformed=display(ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"device".into()},0,"");
+        let decoded:ConnectionTarget=serde_json::from_slice(&serde_json::to_vec(&malformed).unwrap()).unwrap();
+        assert!(decoded.validate().is_err());
+    }
+    #[test]
+    fn display_identity_normalizes_only_the_wrapped_connection_and_stable_source() {
+        let target=|connection|StreamTarget{connection,alias:"Generated".into(),view_only:false};
+        let profile=|snapshot:&str|ConnectionTarget::NativeProfile{id:"device-a".into(),snapshot:snapshot.into()};
+        let first=target(display(profile("one.json"),7,"Source A"));
+        assert_eq!(first.key(),target(display(profile("two.json"),42,"Source A")).key());
+        assert_ne!(first.key(),target(display(profile("one.json"),7,"Source B")).key());
+        assert_ne!(first.key(),target(profile("one.json")).key());
+        assert_ne!(target(display(profile("one.json"),7,"")).key(),target(display(profile("one.json"),42,"")).key());
+        // Existing unwrapped enum bytes are the persisted workspace/layout key.
+        assert_eq!(serde_json::to_string(&target(profile("one.json")).key()).unwrap(),r#"{"NativeProfile":{"id":"device-a","snapshot":""}}"#);
+        assert_eq!(serde_json::to_string(&target(ConnectionTarget::NativeLoopback).key()).unwrap(),r#""NativeLoopback""#);
+        assert_eq!(serde_json::to_string(&target(ConnectionTarget::NativeDevice("device-a".into())).key()).unwrap(),r#"{"NativeDevice":"device-a"}"#);
+        let executable=std::env::current_exe().unwrap();
+        let equivalent=executable.parent().unwrap().join(".").join(executable.file_name().unwrap());
+        assert_eq!(target(display(ConnectionTarget::NativeInvitation(equivalent),7,"Source A")).key(),target(display(ConnectionTarget::NativeInvitation(executable),42,"Source A")).key());
+    }
     #[test]
     fn self_stream_is_an_explicit_read_only_native_target() {
         let target=StreamTarget::parse(["--self-stream".into()]).unwrap().unwrap();

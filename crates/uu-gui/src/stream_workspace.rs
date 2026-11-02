@@ -1,7 +1,7 @@
 //! Live sessions belong to a workspace; native windows only present a group.
 //! Moving a group never recreates its controller, decoder, or media transport.
 use crate::{
-    sessions::{ConnectionTarget, StreamTarget},
+    sessions::{ConnectionTarget, DisplayTarget, StreamTarget},
     window_context, App,
 };
 use eframe::egui;
@@ -23,7 +23,12 @@ impl Launch {
         mut target: StreamTarget,
         payload: Option<&str>,
     ) -> anyhow::Result<Self> {
-        match &mut target.connection {
+        target.connection.validate().map_err(anyhow::Error::msg)?;
+        let connection = match &mut target.connection {
+            ConnectionTarget::NativeDisplay {connection,..}=>connection.as_mut(),
+            connection=>connection,
+        };
+        match connection {
             ConnectionTarget::NativeInvitation(path)
             | ConnectionTarget::NativeInternet(path)
             | ConnectionTarget::NativeProfile { snapshot: path, .. } => {
@@ -37,6 +42,7 @@ impl Launch {
         })
     }
     fn plugin_payload(&self) -> anyhow::Result<Option<zeroize::Zeroizing<String>>> {
+        self.target.connection.validate().map_err(anyhow::Error::msg)?;
         anyhow::ensure!(self.target.alias.len() <= 512, "{}", uu_i18n::format!("设备名称过长"));
         match (&self.target.connection, &self.payload) {
             (ConnectionTarget::Plugin{plugin,identity}, Some(payload)) => {
@@ -65,6 +71,8 @@ pub enum Action {
         after: bool,
     },
     Detach(u64),
+    OpenDisplay { session: u64, screen: i32 },
+    OpenAllDisplays(u64),
     Close(u64),
 }
 #[derive(Clone)]
@@ -73,6 +81,7 @@ pub struct Group {
     name: String,
     screens: Vec<(i32, String)>,
     selected: Option<i32>,
+    can_open_displays: bool,
 }
 #[derive(Clone)]
 pub struct Tabs {
@@ -111,8 +120,12 @@ impl Tabs {
                     if ui.selectable_label(group.id==self.active,&group.name).clicked() {selected=Some(Action::Select(group.id,None));}
                     ui.indent(group.id,|ui| {
                         for (screen,label) in &group.screens {
-                            if ui.selectable_label(group.id==self.active && group.selected==Some(*screen),label).clicked() {selected=Some(Action::Select(group.id,Some(*screen)));}
+                            ui.horizontal(|ui| {
+                                if ui.selectable_label(group.id==self.active && group.selected==Some(*screen),label).clicked() {selected=Some(Action::Select(group.id,Some(*screen)));}
+                                if group.can_open_displays && ui.small_button(uu_i18n::text("独立窗口")).clicked() {selected=Some(Action::OpenDisplay{session:group.id,screen:*screen});}
+                            });
                         }
+                        if group.can_open_displays && group.screens.len()>1 && ui.button(uu_i18n::text("所有屏幕独立打开")).clicked() {selected=Some(Action::OpenAllDisplays(group.id));}
                     });
                     ui.separator();
                 }
@@ -184,6 +197,10 @@ impl Tabs {
                                             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                                         }
                                         label.context_menu(|ui| {
+                                            if group.can_open_displays && group.screens.len()>1 && ui.button(uu_i18n::text("所有屏幕独立打开")).clicked() {
+                                                actions.push(Action::OpenAllDisplays(group.id));
+                                                ui.close_menu();
+                                            }
                                             if ui.button(uu_i18n::text("移到独立窗口")).clicked() {
                                                 actions.push(Action::Detach(group.id));
                                                 ui.close_menu();
@@ -207,6 +224,13 @@ impl Tabs {
                                             if response.clicked() {
                                                 actions.push(Action::Select(group.id, Some(*id)));
                                             }
+                                            response.context_menu(|ui| {
+                                                if group.can_open_displays && ui.button(uu_i18n::text("在独立窗口中打开")).clicked() {
+                                                    actions.push(Action::OpenDisplay{session:group.id,screen:*id});
+                                                    ui.close_menu();
+                                                }
+                                            });
+                                            if response.context_menu_opened() {self.local_ui.set(true);}
                                             response.dnd_set_drag_payload(DragScreen {
                                                 session: group.id,
                                                 screen: *id,
@@ -298,6 +322,24 @@ struct Session {
     id: u64,
     app: App,
 }
+fn session_title(app:&App)->String {
+    let target=app.stream_target.as_ref().expect("stream session target");
+    if target.connection.display().is_some() {format!("{} · {}",target.alias,app.display_label())}
+    else {target.alias.clone()}
+}
+fn base_key(target:&StreamTarget)->ConnectionTarget {
+    StreamTarget{connection:target.connection.base().clone(),alias:String::new(),view_only:target.view_only}.key()
+}
+fn display_launch(target:&StreamTarget,screen:&uu_core::screen_control::RemoteScreen)->anyhow::Result<Launch> {
+    anyhow::ensure!(target.is_native(),"independent displays require a native connection");
+    Launch::new(StreamTarget {
+        connection:ConnectionTarget::NativeDisplay {
+            connection:Box::new(target.connection.base().clone()),
+            display:DisplayTarget{id:screen.id,source:screen.display_name.clone()},
+        },
+        alias:target.alias.clone(),view_only:target.view_only,
+    },None)
+}
 struct Window {
     shortcuts:Rc<RefCell<crate::shortcuts::Shortcuts>>,
     vsync_session: Option<u64>,
@@ -346,7 +388,7 @@ impl Window {
                 .iter()
                 .map(|s| Group {
                     id: s.id,
-                    name: s.app.stream_target.as_ref().unwrap().alias.clone(),
+                    name: session_title(&s.app),
                     screens: s
                         .app
                         .remote_screens()
@@ -355,6 +397,8 @@ impl Window {
                         .map(|screen| (screen.id, s.app.displays.layout.label(screen)))
                         .collect(),
                     selected: s.app.displays.selected,
+                    can_open_displays: s.app.stream_target.as_ref().is_some_and(StreamTarget::is_native)
+                        && s.app.controller.as_ref().is_some_and(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)),
                 })
                 .collect(),
         }
@@ -548,16 +592,56 @@ pub struct Workspace {
     owner: uu_core::local_workspace::Owner,
 }
 impl State {
+    fn open_display(&mut self,session:u64,screen:i32,ctx:&egui::Context) {
+        let Some(source)=self.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==session) else{return;};
+        let screens=source.app.remote_screens();
+        let Some(screen)=screens.screens.iter().find(|s|s.id==screen) else{return;};
+        let target=source.app.stream_target.as_ref().expect("stream target");
+        let identity=base_key(target);
+        let launch=match display_launch(target,screen) {
+            Ok(launch)=>launch,
+            Err(error)=>{
+                if let Some(source)=self.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==session) {source.app.displays.notice=error.to_string();}
+                return;
+            },
+        };
+        let requested=launch.target.connection.display().expect("display launch");
+        // Reuse a live view of this exact source, including an ordinary device
+        // tab already displaying it. Pending views deduplicate by stable key.
+        let existing=self.windows.iter().filter(|w|!w.closing).flat_map(|w|&w.sessions).find(|s| {
+            !s.app.exit_requested && !s.app.disconnecting && s.app.displays.ready()
+                && s.app.stream_target.as_ref().is_some_and(|t|base_key(t)==identity)
+                && requested.resolve(&s.app.remote_screens().screens).is_ok_and(|id|s.app.displays.selected==Some(id))
+        }).map(|s|s.id);
+        if let Some(existing)=existing {self.apply(Action::Detach(existing),ctx);return;}
+        let key=launch.target.key();
+        if let Some(window)=self.windows.iter_mut().filter(|w|!w.closing).find(|w|w.pending.iter().any(|l|l.target.key()==key)) {
+            window.focus=true;return;
+        }
+        let position=self.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==session)).and_then(|w|ctx.input_for(w.viewport(),|i|i.viewport().outer_rect.map(|r|r.min+egui::vec2(36.,36.))));
+        let id=self.next;self.next+=1;
+        self.windows.push(Window::new(id,vec![launch],position));
+    }
     fn attach(&mut self, launch: Launch) -> bool {
         if launch.plugin_payload().is_err() {
             return false;
         }
         let key = launch.target.key();
+        let requested=launch.target.connection.display();
+        let identity=base_key(&launch.target);
         for window in &mut self.windows {
             if let Some(session) = window
                 .sessions
                 .iter()
-                .find(|s| s.app.stream_target.as_ref().is_some_and(|t| t.key() == key))
+                .find(|s| {
+                    !s.app.exit_requested && !s.app.disconnecting && s.app.stream_target.as_ref().is_some_and(|target| {
+                        if let Some(display)=requested {
+                            base_key(target)==identity &&
+                                ((s.app.displays.ready()&&display.resolve(&s.app.remote_screens().screens).is_ok_and(|id|s.app.displays.selected==Some(id)))
+                                || (target.key()==key&&s.app.displays.preparing_initial_target()))
+                        }else{target.key()==key}
+                    })
+                })
             {
                 let id = session.id;
                 window.select(id);
@@ -569,6 +653,11 @@ impl State {
                 return true;
             }
         }
+        if launch.target.connection.display().is_some() {
+            let id=self.next;self.next+=1;
+            self.windows.push(Window::new(id,vec![launch],None));
+            return true;
+        }
         if let Some(window) = self.windows.iter_mut().find(|w| !w.closing) {
             window.pending.push(launch);
             window.focus = true;
@@ -579,6 +668,12 @@ impl State {
     }
     fn apply(&mut self, action: Action, ctx: &egui::Context) {
         match action {
+            Action::OpenDisplay{session,screen}=>self.open_display(session,screen,ctx),
+            Action::OpenAllDisplays(session)=>{
+                let screens=self.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==session)
+                    .map(|s|s.app.remote_screens().screens.iter().map(|s|s.id).collect::<Vec<_>>()).unwrap_or_default();
+                for screen in screens {self.open_display(session,screen,ctx);}
+            },
             Action::Select(id, screen) => {
                 for window in &mut self.windows {
                     if window.sessions.iter().any(|s| s.id == id) {
@@ -637,10 +732,15 @@ impl State {
                 let Some(index) = self
                     .windows
                     .iter()
-                    .position(|w| w.sessions.len() > 1 && w.sessions.iter().any(|s| s.id == id))
+                    .position(|w| !w.closing && w.sessions.iter().any(|s| s.id == id))
                 else {
                     return;
                 };
+                if self.windows[index].sessions.len()==1 {
+                    self.windows[index].select(id);
+                    self.windows[index].focus=true;
+                    return;
+                }
                 let source = &mut self.windows[index];
                 let at = source.sessions.iter().position(|s| s.id == id).unwrap();
                 let mut session = source.sessions.remove(at);
@@ -691,8 +791,10 @@ impl eframe::App for Workspace {
             for window in &mut state.windows {
                 let id = window.id;
                 let viewport = window.viewport();
+                let title=window.sessions.iter().find(|s|s.id==window.active).map(|s|format!("{} · {}",session_title(&s.app),crate::brand::NAME))
+                    .unwrap_or_else(||uu_i18n::format!("串流 · {}",crate::brand::NAME));
                 let mut builder = egui::ViewportBuilder::default()
-                    .with_title(uu_i18n::format!("串流 · {}", crate::brand::NAME))
+                    .with_title(title)
                     .with_inner_size([1100., 760.])
                     .with_min_inner_size([320., 200.])
                     .with_decorations(false)

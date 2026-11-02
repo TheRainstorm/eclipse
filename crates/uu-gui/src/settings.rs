@@ -603,7 +603,7 @@ impl super::App {
                 codecs:Some(&self.client_support.codecs),rate_control_available:!child||stats.as_ref().is_some_and(|s|s.native_rate_response.lock().unwrap().is_some()),
                 native_cursor:stats.as_ref().is_some_and(|s|s.native_cursor.supported()),
                 streaming:self.stream_target.is_some(),
-                can_save_profile:self.stream_target.as_ref().is_some_and(|target| matches!(target.connection,super::sessions::ConnectionTarget::NativeProfile{..})),
+                can_save_profile:self.stream_target.as_ref().is_some_and(|target| matches!(target.connection.base(),super::sessions::ConnectionTarget::NativeProfile{..})),
                 dirty,
                 storage_error:self.settings_storage_error,notice:&self.settings_notice,
                 presentation_vsync:self.presentation_vsync,
@@ -688,11 +688,8 @@ impl super::App {
     }
 
     fn save_stream_profile_settings(&mut self) -> anyhow::Result<()> {
-        let id = match &self.stream_target {
-            Some(super::sessions::StreamTarget {
-                connection: super::sessions::ConnectionTarget::NativeProfile { id, .. },
-                ..
-            }) => id.clone(),
+        let id = match self.stream_target.as_ref().map(|target|target.connection.base()) {
+            Some(super::sessions::ConnectionTarget::NativeProfile { id, .. }) => id.clone(),
             _ => anyhow::bail!("{}", uu_i18n::format!("当前串流没有可编辑的设备配置")),
         };
         let store = self

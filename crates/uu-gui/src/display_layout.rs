@@ -193,4 +193,23 @@ mod tests {
         target.connection = ConnectionTarget::Plugin { plugin: "other-addon".into(), identity: "generated-device".repeat(16) };
         assert_ne!(DisplayLayout::path(&config, &target).unwrap(), first_plugin);
     }
+    #[test]
+    fn explicit_display_windows_have_independent_layouts_without_changing_the_default_device_key() {
+        use super::super::sessions::{ConnectionTarget,DisplayTarget,StreamTarget};
+        let config=uu_core::Config{data_dir:"generated-data".into(),state_dir:"generated-state".into(),signaling_host:String::new()};
+        let base=ConnectionTarget::NativeProfile{id:"profile-one".into(),snapshot:"launch.json".into()};
+        let target=|connection|StreamTarget{connection,alias:"Generated".into(),view_only:false};
+        let display=|id,source:&str|ConnectionTarget::NativeDisplay{connection:Box::new(base.clone()),display:DisplayTarget{id,source:source.into()}};
+        let original=DisplayLayout::path(&config,&target(base.clone())).unwrap();
+        let left=DisplayLayout::path(&config,&target(display(7,"Source A"))).unwrap();
+        let right=DisplayLayout::path(&config,&target(display(9,"Source B"))).unwrap();
+        assert_ne!(left,original);assert_ne!(right,original);assert_ne!(left,right);
+        assert_eq!(left,DisplayLayout::path(&config,&target(display(42,"Source A"))).unwrap());
+        assert_ne!(DisplayLayout::path(&config,&target(display(7,""))),DisplayLayout::path(&config,&target(display(9,""))));
+        let mut default_layout=DisplayLayout::default();default_layout.remember_selected(&screen(7));
+        let mut explicit_layout=DisplayLayout::default();explicit_layout.remember_selected(&screen(9));
+        assert_eq!(default_layout.last_selected(),Some(7));
+        assert_eq!(explicit_layout.last_selected(),Some(9));
+        assert_eq!(original,DisplayLayout::path(&config,&target(base)).unwrap());
+    }
 }
