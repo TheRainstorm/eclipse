@@ -1,0 +1,16 @@
+{
+  "project": "VirtualDrivers/Virtual-Display-Driver",
+  "release": "25.7.23",
+  "driver_version": "11.30.4.434",
+  "architecture": "x86_64",
+  "license": "MIT",
+  "source_url": "https://github.com/VirtualDrivers/Virtual-Display-Driver/tree/25.7.23",
+  "url": "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip",
+  "zip_sha256": "e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a",
+  "files": [
+    { "name": "mttvdd.cat", "bytes": 13017, "sha256": "08a0093fc9b2e32b287a6f8a77ca4de0a31830d29fc33d2b13a918dc859468f6" },
+    { "name": "MttVDD.dll", "bytes": 251640, "sha256": "c9ca837f57a98fbd43bc416a7f535a95843626e7759eaf85cf0cd7ce334dbb05" },
+    { "name": "MttVDD.inf", "bytes": 4132, "sha256": "550d211fe481e74dfe3f9d724ed78be48b3a9113405965d683d9373e8d672f5d" },
+    { "name": "vdd_settings.xml", "bytes": 2779, "sha256": "edb2501d6d5da17f66d15d4b97a6f4a3f0d8963165ac4a6a6259d95118288020" }
+  ]
+}
