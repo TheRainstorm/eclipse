@@ -179,8 +179,8 @@ fn check_display_window_routing(state:&mut State,session:u64,ctx:&egui::Context)
 fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() {
     use uu_core::hotkeys::Action as Command;
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let mut tabs=Tabs{groups:vec![Group{id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,},
-        Group{id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let mut tabs=Tabs{groups:vec![Group{id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false},
+        Group{id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     for command in [Command::NextDisplay,Command::PreviousDisplay,Command::NextComputer,Command::PreviousComputer] {tabs.navigate(command);}
     assert_eq!(*actions.borrow(),[Action::Select(22,Some(2)),Action::Select(22,Some(9)),Action::Select(11,None),Action::Select(11,None)]);
     actions.borrow_mut().clear();tabs.active=11;
@@ -193,7 +193,7 @@ fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() 
 #[test]
 fn device_selector_requires_an_explicit_open_and_keeps_the_video_area() {
     let ctx=egui::Context::default();crate::setup_style(&ctx);
-    let mut tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,},Group{id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,}],active:1,actions:Default::default(),local_ui:Default::default()};
+    let mut tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false},Group{id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false}],active:1,actions:Default::default(),local_ui:Default::default()};
     let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
     let draw=|tabs:&Tabs,pointer| {
         let mut visible=false;
@@ -226,7 +226,7 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
                 screens: vec![(1, "Monitor A".into())],
                 selected: Some(1),
                 can_open_displays: true,
-
+                can_create_display: false,
             },
             Group {
                 id: 22,
@@ -234,7 +234,7 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
                 screens: vec![(2, "Monitor B".into())],
                 selected: Some(2),
                 can_open_displays: true,
-
+                can_create_display: false,
             },
         ],
         active: 11,

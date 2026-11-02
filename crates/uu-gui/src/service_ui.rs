@@ -150,6 +150,7 @@ enum Event {
     Done(bool, Result<(), String>),
 }
 struct Manager {
+    virtual_display:super::virtual_display_ui::State,
     build:Option<BuildStatus>,
     trust: TrustStore,
     sender: mpsc::Sender<Job>,
@@ -311,6 +312,7 @@ impl Manager {
             }
         });
         Ok(Self {
+            virtual_display:Default::default(),
             build:build_status().ok(),
             trust,
             sender,
@@ -410,6 +412,8 @@ async fn request_remote(request: Request) -> anyhow::Result<Response> {
 impl eframe::App for Manager {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        self.virtual_display.poll(None);
+        self.virtual_display.show(ctx,None);
         ctx.request_repaint_after(Duration::from_millis(200));
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(uu_i18n::text("Windows 后台服务"));
@@ -420,6 +424,7 @@ impl eframe::App for Manager {
             });
             if let Some(build)=&self.build {version_labels(ui,build);}
             ui.horizontal(|ui| {
+                if ui.add_enabled(self.state==SERVICE_RUNNING,egui::Button::new(uu_i18n::text("虚拟显示器"))).clicked(){self.virtual_display.open_local(ctx,false);}
                 if ui
                     .add_enabled(
                         !self.busy && self.state == SERVICE_STOPPED,
@@ -626,7 +631,10 @@ impl eframe::App for Manager {
     }
 }
 pub(super) fn run() -> eframe::Result {
-    let manager = Manager::new().map_err(|error| eframe::Error::AppCreation(error.into()))?;
+    run_manager(false)
+}
+fn run_manager(virtual_displays:bool)->eframe::Result {
+    let mut manager = Manager::new().map_err(|error| eframe::Error::AppCreation(error.into()))?;
     eframe::run_native(
         uu_i18n::text("Eclipse · 后台服务管理"),
         eframe::NativeOptions {
@@ -637,6 +645,7 @@ pub(super) fn run() -> eframe::Result {
         },
         Box::new(move |cc| {
             super::setup_style(&cc.egui_ctx);
+            if virtual_displays {manager.virtual_display.open_local(&cc.egui_ctx,false);}
             Ok(Box::new(manager))
         }),
     )
@@ -646,12 +655,18 @@ pub(super) fn run() -> eframe::Result {
 /// depend on an adjacent CLI; install/import still use a verified complete set.
 pub(super) fn dispatch() -> Option<eframe::Result> {
     let args:Vec<_>=std::env::args_os().skip(1).collect();
-    if args==["--manage-background-service"] {
-        let result=run();
+    if args.len()==2&&args[0]=="--install-virtual-display-driver" {
+        let result=super::virtual_display_install::install_downloaded(std::path::Path::new(&args[1]));
+        if let Err(error)=result {show_error(&uu_i18n::format!("安装虚拟显示器驱动失败：{error}"));std::process::exit(1);}
+        return Some(Ok(()));
+    }
+    if args==["--manage-background-service"] || args==["--manage-virtual-displays"] {
+        let result=run_manager(args==["--manage-virtual-displays"]);
         if let Err(error)=&result {show_error(&uu_i18n::format!("无法打开后台服务管理：{error}"));}
         return Some(result);
     }
-    let opening=args==["--open-background-service-manager"];
+    let virtual_displays=args==["--open-virtual-display-manager"];
+    let opening=args==["--open-background-service-manager"]||virtual_displays;
     let action=if args.len()==4 && args[0]=="--background-service-action" && args[2]=="--source-data" {
         args[1].to_str().filter(|s|matches!(*s,"install"|"import-plugins"))
     }else{None};
@@ -660,7 +675,7 @@ pub(super) fn dispatch() -> Option<eframe::Result> {
         require_administrator()?;
         let exe=std::env::current_exe()?;
         if opening {
-            std::process::Command::new(exe).arg("--manage-background-service").spawn()?;
+            std::process::Command::new(exe).arg(if virtual_displays{"--manage-virtual-displays"}else{"--manage-background-service"}).spawn()?;
         }else if let Some(action)=action {
             use std::os::windows::process::CommandExt;
             uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定安装包目录")))?,env!("UU_BUILD_COMMIT"))?;
@@ -695,6 +710,7 @@ mod tests {
         let mut saved = Sharing::default();
         saved.name = "Generated service".into();
         let mut manager = Manager {
+            virtual_display:Default::default(),
             build:None,
             trust,
             sender,

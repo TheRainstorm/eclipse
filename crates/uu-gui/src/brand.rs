@@ -42,7 +42,7 @@ pub fn paint_logo(painter: &egui::Painter, rect: egui::Rect) {
 
 impl super::App {
     pub(super) fn local_dialog_open(&self) -> bool {
-        self.stream_settings_open || self.about_open || self.native_ui.open || self.native_host.open || self.lan.host.open || self.connection_details_open || self.workspace.pairing_visible
+        self.stream_settings_open || self.about_open || self.native_ui.open || self.native_host.open || self.lan.host.open || self.connection_details_open || self.workspace.pairing_visible || self.virtual_display.open
     }
 
     pub(super) fn open_about(&mut self) {

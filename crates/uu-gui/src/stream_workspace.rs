@@ -73,6 +73,8 @@ pub enum Action {
     Detach(u64),
     OpenDisplay { session: u64, screen: i32 },
     OpenAllDisplays(u64),
+    CreateDisplay(u64),
+    ManageDisplays(u64),
     Close(u64),
 }
 #[derive(Clone)]
@@ -82,6 +84,7 @@ pub struct Group {
     screens: Vec<(i32, String)>,
     selected: Option<i32>,
     can_open_displays: bool,
+    can_create_display:bool,
 }
 #[derive(Clone)]
 pub struct Tabs {
@@ -119,6 +122,9 @@ impl Tabs {
                 for group in &self.groups {
                     if ui.selectable_label(group.id==self.active,&group.name).clicked() {selected=Some(Action::Select(group.id,None));}
                     ui.indent(group.id,|ui| {
+                        if group.can_open_displays && ui.add_enabled(group.can_create_display,egui::Button::new(uu_i18n::text("+ 新建临时虚拟显示器")))
+                            .on_disabled_hover_text(uu_i18n::text("远端未提供虚拟显示器管理，请更新后台并授予管理服务权限")).clicked() {selected=Some(Action::CreateDisplay(group.id));}
+                        if group.can_create_display && ui.small_button(uu_i18n::text("管理虚拟显示器")).clicked() {selected=Some(Action::ManageDisplays(group.id));}
                         for (screen,label) in &group.screens {
                             ui.horizontal(|ui| {
                                 if ui.selectable_label(group.id==self.active && group.selected==Some(*screen),label).clicked() {selected=Some(Action::Select(group.id,Some(*screen)));}
@@ -258,6 +264,13 @@ impl Tabs {
                                                     });
                                                 }
                                             }
+                                        }
+                                        if group.can_open_displays {
+                                            let response=ui.add_enabled(group.can_create_display,egui::Button::new("+").small()).on_hover_text(uu_i18n::text("新建临时虚拟显示器，断开此串流后自动移除"))
+                                                .on_disabled_hover_text(uu_i18n::text("远端未提供虚拟显示器管理，请更新后台并授予管理服务权限"));
+                                            if response.clicked(){actions.push(Action::CreateDisplay(group.id));}
+                                            response.context_menu(|ui|{if ui.button(uu_i18n::text("管理虚拟显示器")).clicked(){actions.push(Action::ManageDisplays(group.id));ui.close_menu();}});
+                                            if response.context_menu_opened(){self.local_ui.set(true);}
                                         }
                                     })
                                 })
@@ -399,6 +412,7 @@ impl Window {
                     selected: s.app.displays.selected,
                     can_open_displays: s.app.stream_target.as_ref().is_some_and(StreamTarget::is_native)
                         && s.app.controller.as_ref().is_some_and(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)),
+                    can_create_display:s.app.controller.as_ref().is_some_and(|h|h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire)),
                 })
                 .collect(),
         }
@@ -669,6 +683,8 @@ impl State {
     fn apply(&mut self, action: Action, ctx: &egui::Context) {
         match action {
             Action::OpenDisplay{session,screen}=>self.open_display(session,screen,ctx),
+            Action::CreateDisplay(id)=>{if let Some(session)=self.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==id){session.app.create_remote_virtual_display();}},
+            Action::ManageDisplays(id)=>{if let Some(session)=self.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==id){session.app.manage_remote_virtual_displays();}},
             Action::OpenAllDisplays(session)=>{
                 let screens=self.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==session)
                     .map(|s|s.app.remote_screens().screens.iter().map(|s|s.id).collect::<Vec<_>>()).unwrap_or_default();

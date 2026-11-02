@@ -56,6 +56,7 @@ impl App {
         stats
     }
     pub(super) fn attach_controller(&mut self,handle:uu_core::controller::ControllerHandle) {
+        self.virtual_display.reset_remote();
         let context=self.context.clone();handle.frames.enable_planar();handle.frames.set_waker(move||context.request_video_frame());
         if let Err(error)=super::clipboard::start_following(handle.stats.clipboard.clone(),self.clipboard_window.clone()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(error.to_string());}
         self.controller=Some(handle);self.window_sizing.borrow_mut().begin_stream();self.input_capture.request();

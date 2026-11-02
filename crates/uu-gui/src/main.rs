@@ -61,6 +61,9 @@ mod native_host_ui;
 mod native_interfaces;
 mod wallpapers;
 mod wallpaper_favorites;
+mod virtual_display_ui;
+#[cfg(windows)]
+mod virtual_display_install;
 mod background;
 mod device_preview;
 mod device_presence;
@@ -167,6 +170,9 @@ struct App {
     stream_menu: stream_menu::StreamMenu,
     window_sizing: std::rc::Rc<std::cell::RefCell<window::WindowSizing>>,
     tray: Option<tray::Tray>,
+    virtual_display:virtual_display_ui::State,
+    tray_retry:Option<std::time::Instant>,
+    tray_background:virtual_display_ui::BackgroundHost,
     launcher_hidden: bool,
     disconnecting: bool,
     output_reconnect_pending: bool,
@@ -324,7 +330,8 @@ impl App {
                 if let Some(client) = launch.client { preferences.client = client; }
             }
         }
-        // Extra views start silent to avoid duplicated audio from one host.
+        // Extra views of one host start silent so simultaneous display windows
+        // do not play duplicated system audio. Their own sound menu can unmute.
         if stream_target.as_ref().is_some_and(|t|t.connection.display().is_some()) {preferences.muted=true;}
         let mut client_support=uu_plugin_sdk::ClientSupport::default();
         let mut plugin_client_error=None;
@@ -418,6 +425,9 @@ impl App {
             stream_menu: stream_menu::StreamMenu::default(),
             window_sizing: Default::default(),
             tray: None,
+            virtual_display:Default::default(),
+            tray_retry:None,
+            tray_background:Default::default(),
             launcher_hidden: false,
             disconnecting: false,
             output_reconnect_pending: false,
@@ -882,6 +892,7 @@ impl App {
 
     fn stop_connection(&mut self) {
         if self.disconnecting { return; }
+        self.virtual_display.reset_remote();
         self.save_last_remote_frame();
         self.release_pointer_capture(&self.context.clone());
         self.stream_menu.open = false;
@@ -936,6 +947,9 @@ impl eframe::App for App {
         self.workspace.host.stop();
         self.lan.host.stop();
         self.native_host.stop();
+        if self.stream_target.is_none()&&self.workspace_tabs.is_none() {
+            if let Err(error)=uu_core::virtual_display::Manager::shared().shutdown_manual(){eprintln!("virtual display cleanup remains pending: {error}");}
+        }
         // Delete custom GL textures while eframe still owns a current context.
         self.textures.clear();
             self.hud_cache=Default::default();
@@ -972,15 +986,29 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 },
+                tray::Action::VirtualDisplays=>{
+                    self.launcher_hidden=false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    let foreground=self.workspace.host.running()||self.native_host.running()||self.lan.host.running()||self.virtual_display.owns_foreground_displays();
+                    self.virtual_display.open_local(ctx,foreground);
+                },
                 tray::Action::Exit=>{self.exit_requested=true;self.disconnect();},
             }
         }
-        if !self.preferences.close_to_tray || self.exit_requested {
+        let foreground_host=self.workspace.host.running()||self.native_host.running()||self.lan.host.running();
+        let background_host=self.tray_background.poll(ctx);
+        let tray_needed=self.preferences.close_to_tray||foreground_host||background_host;
+        if !tray_needed || self.exit_requested {
             if self.launcher_hidden && !self.exit_requested {
                 self.launcher_hidden=false;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             }
             self.tray=None;
+            self.tray_retry=None;
+        } else if tray::supported() && self.tray.is_none() && self.tray_retry.is_none_or(|at|at.elapsed()>=std::time::Duration::from_secs(60)) {
+            self.tray_retry=Some(std::time::Instant::now());
+            if let Ok(tray)=tray::Tray::new(self.platform.window_id(),ctx) {if tray.ensure(){self.tray=Some(tray);}}
         }
         let hide_requested=!self.exit_requested && self.preferences.close_to_tray && tray::supported()
             && ctx.input(|input|input.viewport().close_requested());
@@ -1052,6 +1080,7 @@ impl App {
         // before its next UI pass. Preserve that boundary even if focused=true.
         if ctx.input(|i|i.events.iter().any(|event|matches!(event,egui::Event::WindowFocused(false)))){self.pause_video_observation();}
         self.poll_controller(ctx);
+        self.poll_virtual_displays(ctx);
         let observed=self.stream_target.is_some()&&!self.stream_settings_open&&self.active_session&&ctx.input(|i|i.focused&&!i.viewport().minimized.unwrap_or(false))&&!self.disconnecting&&!self.displays.waiting_binding();
         let expected=self.controller.as_ref().map_or(self.target_fps,|h|{
             let fps=h.stats.configured_fps.load(std::sync::atomic::Ordering::Relaxed);

@@ -5,6 +5,7 @@ use eframe::egui;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Open,
+    VirtualDisplays,
     Exit,
 }
 
@@ -44,6 +45,7 @@ mod windows {
     const CALLBACK: u32 = WM_APP + 1;
     const OPEN: usize = 1;
     const EXIT: usize = 2;
+    const VIRTUAL_DISPLAYS:usize=3;
     // winuser.h's keyboard activation notification (not exposed by windows-sys).
     const KEY_SELECT: u32 = NIN_SELECT | 1;
     fn wide(s: &str) -> Vec<u16> {
@@ -93,7 +95,7 @@ mod windows {
                 return;
             }
             self.action.set(Some(action));
-            if action == Action::Open {
+            if matches!(action,Action::Open|Action::VirtualDisplays) {
                 unsafe {
                     ShowWindow(
                         self.target,
@@ -119,6 +121,8 @@ mod windows {
                 OPEN,
                 wide(uu_i18n::text("打开 Eclipse")).as_ptr(),
             );
+            AppendMenuW(menu,MF_SEPARATOR,0,ptr::null());
+            AppendMenuW(menu,MF_STRING,VIRTUAL_DISPLAYS,wide(uu_i18n::text("管理虚拟显示器")).as_ptr());
             AppendMenuW(
                 menu,
                 MF_STRING,
@@ -178,6 +182,7 @@ mod windows {
                 WM_COMMAND => {
                     match wparam & 0xffff {
                         OPEN => state.publish(Action::Open),
+                        VIRTUAL_DISPLAYS=>state.publish(Action::VirtualDisplays),
                         EXIT => state.publish(Action::Exit),
                         _ => {}
                     }
