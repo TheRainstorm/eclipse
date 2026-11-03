@@ -19,6 +19,8 @@ use std::{
 use uuid::Uuid;
 
 #[cfg(any(windows, test))]
+mod color_state;
+#[cfg(any(windows, test))]
 mod config_apply;
 #[cfg(windows)]
 mod install_windows;

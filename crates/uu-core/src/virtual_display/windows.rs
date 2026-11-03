@@ -30,6 +30,8 @@ use windows_sys::{
     },
 };
 
+#[path = "color_windows.rs"]
+mod color_api;
 #[path = "provision_windows.rs"]
 mod provision;
 
@@ -407,39 +409,11 @@ fn source_name(path: &DISPLAYCONFIG_PATH_INFO) -> Result<String> {
     Ok(text(&name.viewGdiDeviceName))
 }
 fn color(path: &DISPLAYCONFIG_PATH_INFO) -> Result<(bool, bool)> {
-    let mut info: DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO = unsafe { zeroed() };
-    info.header = header::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>(
-        DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
-        path.targetInfo.adapterId,
-        path.targetInfo.id,
-    );
-    get_info(&mut info)?;
-    let value = unsafe { info.Anonymous.value };
-    Ok((value & 1 != 0, value & 2 != 0))
+    let state = color_api::read(path)?;
+    Ok((state.hdr_supported, state.hdr_active))
 }
 fn set_color(path: &DISPLAYCONFIG_PATH_INFO, hdr: bool) -> Result<()> {
-    let (supported, enabled) = color(path)?;
-    if enabled == hdr {
-        return Ok(());
-    }
-    if hdr && !supported {
-        return Err(Error::Platform(
-            "this virtual target does not support HDR".into(),
-        ));
-    }
-    let mut info: DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE = unsafe { zeroed() };
-    info.header = header::<DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE>(
-        DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE,
-        path.targetInfo.adapterId,
-        path.targetInfo.id,
-    );
-    info.Anonymous.value = u32::from(hdr);
-    let code = unsafe { DisplayConfigSetDeviceInfo(&info.header) };
-    if code == 0 {
-        Ok(())
-    } else {
-        Err(error("DisplayConfigSetDeviceInfo(HDR)", code as u32))
-    }
+    color_api::set(path, hdr)
 }
 
 struct Scene {
@@ -593,22 +567,24 @@ fn fingerprints(topology: &Topology, exclude: Option<&TargetKey>) -> Result<Fing
             .filter(|mode| mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE)
             .ok_or_else(|| Error::Platform("cannot preserve an active source mode".into()))?;
         let source = unsafe { mode.Anonymous.sourceMode };
-        result.insert(
-            key,
-            vec![
-                i64::from(source.width),
-                i64::from(source.height),
-                i64::from(source.pixelFormat),
-                i64::from(source.position.x),
-                i64::from(source.position.y),
-                i64::from(path.sourceInfo.id),
-                i64::from(path.targetInfo.rotation),
-                i64::from(path.targetInfo.scaling),
-                i64::from(path.targetInfo.refreshRate.Numerator),
-                i64::from(path.targetInfo.refreshRate.Denominator),
-                i64::from(color(path)?.1),
-            ],
-        );
+        let color = color_api::read(path)?;
+        let mut fingerprint = vec![
+            i64::from(source.width),
+            i64::from(source.height),
+            i64::from(source.pixelFormat),
+            i64::from(source.position.x),
+            i64::from(source.position.y),
+            i64::from(path.sourceInfo.id),
+            i64::from(path.targetInfo.rotation),
+            i64::from(path.targetInfo.scaling),
+            i64::from(path.targetInfo.refreshRate.Numerator),
+            i64::from(path.targetInfo.refreshRate.Denominator),
+            i64::from(color.hdr_active),
+        ];
+        // WCG changes must remain visible to the original-output guard even
+        // though actual.hdr now correctly classifies WCG as SDR.
+        fingerprint.extend(color.signature());
+        result.insert(key, fingerprint);
     }
     Ok(result)
 }
