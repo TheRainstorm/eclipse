@@ -67,6 +67,7 @@ pub struct NativeInputSender {
 pub struct NativeInputReceiver {
     quality:mpsc::Receiver<(u64,crate::native_quality::Update)>,
     pub(crate) rx: mpsc::Receiver<Envelope>,
+    pending: Option<Envelope>,
     displays:mpsc::Receiver<(u64,i32)>,
     pub(crate) reset: watch::Receiver<u64>,
     pub(crate) mode: watch::Receiver<bool>,
@@ -78,6 +79,35 @@ pub(crate) struct Envelope {
     pub epoch: u64,
     pub command: InputCommand,
     pub created:std::time::Instant,
+}
+/// Collapse only adjacent motion already waiting in this ordered input stream.
+/// Buttons, keys, wheels, coordinate modes and grant epochs are barriers. No
+/// timer is added: an isolated motion is sent immediately. Keep the earliest
+/// timestamp for relative sums, whose displacement still includes that input.
+async fn next_motion(rx: &mut mpsc::Receiver<Envelope>, pending: &mut Option<Envelope>) -> Option<Envelope> {
+    let mut current = match pending.take() {Some(value)=>value,None=>rx.recv().await?};
+    if !matches!(current.command,InputCommand::Absolute{..}|InputCommand::Relative{..}) {return Some(current);}
+    // A producer can refill the channel concurrently. Bound each drain so mode
+    // and reset notifications get another select even under continuous motion.
+    for _ in 0..255 {
+        let Ok(next)=rx.try_recv() else {break;};
+        if current.epoch==next.epoch {
+            match (current.command,next.command) {
+                (InputCommand::Absolute{..},InputCommand::Absolute{..})=>{current=next;continue;},
+                (InputCommand::Relative{dx,dy},InputCommand::Relative{dx:nx,dy:ny})=>{
+                    if let (Some(dx),Some(dy))=(dx.checked_add(nx),dy.checked_add(ny)) {
+                        current.command=InputCommand::Relative{dx,dy};
+                        current.created=current.created.min(next.created);
+                        continue;
+                    }
+                },
+                _=>{},
+            }
+        }
+        *pending=Some(next);
+        break;
+    }
+    Some(current)
 }
 pub(crate) enum NextInput {
     Quality(u64,crate::native_quality::Update),
@@ -118,7 +148,7 @@ impl NativeInputReceiver {
             reset=self.reset.changed()=>if reset.is_ok(){self.reset.borrow_and_update();NextInput::Reset}else{NextInput::Closed},
             display=self.displays.recv()=>display.map_or(NextInput::Closed,|(request,id)|NextInput::Display(request,id)),
             update=self.quality.recv()=>update.map_or(NextInput::Closed,|(request,settings)|NextInput::Quality(request,settings)),
-            item=self.rx.recv()=>item.map_or(NextInput::Closed,NextInput::Command),
+            item=next_motion(&mut self.rx,&mut self.pending)=>item.map_or(NextInput::Closed,NextInput::Command),
         }
     }
 }
@@ -143,6 +173,7 @@ pub fn channel(requested: bool) -> (NativeInputSender, NativeInputReceiver) {
             epoch: epoch.clone(),
         },
         NativeInputReceiver {
+            pending: None,
             quality:quality_rx,
             rx,
             displays:displays_rx,
@@ -197,6 +228,83 @@ impl NativeInputSender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn input_is(receiver:&mut NativeInputReceiver,expected:InputCommand) {
+        let Some(ProtocolCommand::Input(actual))=receiver.next_protocol().await else {panic!("expected an input command");};
+        assert_eq!(actual,expected);
+    }
+    #[tokio::test]
+    async fn adjacent_absolute_motion_uses_latest_position_and_preserves_drag_edges() {
+        let (sender,mut receiver)=channel(true);
+        for x in 0..200 {sender.send(InputCommand::Absolute{x,y:2}).unwrap();}
+        sender.send(InputCommand::Button{button:MouseButton::Left,pressed:true}).unwrap();
+        for x in 200..220 {sender.send(InputCommand::Absolute{x,y:3}).unwrap();}
+        sender.send(InputCommand::Key{usage:4,pressed:true}).unwrap();
+        sender.send(InputCommand::Absolute{x:221,y:4}).unwrap();
+        sender.send(InputCommand::Button{button:MouseButton::Left,pressed:false}).unwrap();
+        let expected=[InputCommand::Absolute{x:199,y:2},InputCommand::Button{button:MouseButton::Left,pressed:true},
+            InputCommand::Absolute{x:219,y:3},InputCommand::Key{usage:4,pressed:true},
+            InputCommand::Absolute{x:221,y:4},InputCommand::Button{button:MouseButton::Left,pressed:false}];
+        for event in expected {input_is(&mut receiver,event).await;}
+    }
+    #[tokio::test]
+    async fn relative_motion_preserves_displacement_and_does_not_saturate() {
+        let (sender,mut receiver)=channel(true);
+        for command in [InputCommand::Relative{dx:30_000,dy:100},InputCommand::Relative{dx:1000,dy:-200},
+            InputCommand::Relative{dx:2000,dy:0},InputCommand::Relative{dx:-100,dy:1},
+            InputCommand::Wheel{dx:0,dy:120},InputCommand::Relative{dx:5,dy:0},InputCommand::Absolute{x:4,y:8}] {
+            sender.send(command).unwrap();
+        }
+        for event in [InputCommand::Relative{dx:31_000,dy:-100},InputCommand::Relative{dx:1900,dy:1},
+            InputCommand::Wheel{dx:0,dy:120},InputCommand::Relative{dx:5,dy:0},InputCommand::Absolute{x:4,y:8}] {
+            input_is(&mut receiver,event).await;
+        }
+    }
+    #[tokio::test]
+    async fn grant_reset_cannot_merge_or_replay_old_motion() {
+        let (sender,mut receiver)=channel(true);
+        sender.send(InputCommand::Absolute{x:1,y:1}).unwrap();
+        sender.release_all();
+        sender.send(InputCommand::Absolute{x:2,y:2}).unwrap();
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Reset)));
+        input_is(&mut receiver,InputCommand::Absolute{x:2,y:2}).await;
+    }
+    #[tokio::test]
+    async fn buffered_barrier_survives_higher_priority_settings_and_mode_changes() {
+        let (sender,mut receiver)=channel(true);
+        sender.send(InputCommand::Absolute{x:1,y:1}).unwrap();
+        sender.send(InputCommand::Key{usage:4,pressed:true}).unwrap();
+        assert!(matches!(receiver.next().await,NextInput::Command(Envelope{command:InputCommand::Absolute{..},..})));
+        sender.set_quality(7,crate::native_quality::Update{fps:60,bitrate_kbps:None,rate_control:None}).unwrap();
+        assert!(matches!(receiver.next().await,NextInput::Quality(7,_)));
+        input_is(&mut receiver,InputCommand::Key{usage:4,pressed:true}).await;
+        sender.send(InputCommand::Absolute{x:2,y:2}).unwrap();
+        sender.send(InputCommand::Key{usage:5,pressed:true}).unwrap();
+        assert!(matches!(receiver.next().await,NextInput::Command(_)));
+        sender.set_enabled(false);
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Mode(false))));
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Reset)));
+        sender.set_enabled(true);
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Mode(true))));
+        assert!(matches!(receiver.next_protocol().await,Some(ProtocolCommand::Reset)));
+        sender.send(InputCommand::Key{usage:6,pressed:true}).unwrap();
+        input_is(&mut receiver,InputCommand::Key{usage:6,pressed:true}).await;
+    }
+    #[tokio::test]
+    async fn motion_timestamps_describe_the_displacement_that_is_actually_sent() {
+        let (sender,mut receiver)=channel(true);
+        let older=std::time::Instant::now()-std::time::Duration::from_secs(1);
+        let fresh=std::time::Instant::now();
+        for (command,created) in [(InputCommand::Relative{dx:1,dy:0},older),(InputCommand::Relative{dx:2,dy:0},fresh)] {
+            sender.tx.try_send(Envelope{epoch:0,command,created}).unwrap();
+        }
+        let relative=next_motion(&mut receiver.rx,&mut receiver.pending).await.unwrap();
+        assert_eq!(relative.command,InputCommand::Relative{dx:3,dy:0});assert_eq!(relative.created,older);
+        for (command,created) in [(InputCommand::Absolute{x:1,y:0},older),(InputCommand::Absolute{x:2,y:0},fresh)] {
+            sender.tx.try_send(Envelope{epoch:0,command,created}).unwrap();
+        }
+        let absolute=next_motion(&mut receiver.rx,&mut receiver.pending).await.unwrap();
+        assert_eq!(absolute.command,InputCommand::Absolute{x:2,y:0});assert_eq!(absolute.created,fresh);
+    }
     #[tokio::test]
     async fn protocol_adapters_share_reset_mode_and_stale_input_rules() {
         let (sender,mut receiver)=channel(true);
