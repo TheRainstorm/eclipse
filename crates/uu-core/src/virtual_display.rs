@@ -18,14 +18,16 @@ use std::{
 };
 use uuid::Uuid;
 
+#[cfg(any(windows, test))]
+mod config_apply;
 #[cfg(windows)]
 mod install_windows;
 #[cfg(windows)]
 mod ownership_windows;
-#[cfg(windows)]
-mod windows;
 #[cfg(any(windows, test))]
 mod provision_policy;
+#[cfg(windows)]
+mod windows;
 
 pub const INSTALL_URL: &str = "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases";
 
@@ -259,8 +261,9 @@ struct Inventory {
 
 struct ActivationFailure {
     message: String,
-    /// True only after our SetDisplayConfig APPLY succeeded. A validation or
-    /// precondition failure never grants permission to deactivate a target.
+    /// True once our SetDisplayConfig APPLY was submitted, even if it failed.
+    /// A validation or precondition failure does not authorize cleanup; after
+    /// submission, ownership lasts until exact target cleanup is verified.
     activated: bool,
 }
 

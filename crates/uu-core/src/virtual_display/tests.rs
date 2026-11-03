@@ -10,6 +10,9 @@ struct Fake {
     inventory_calls: AtomicUsize,
     fail_remove: AtomicBool,
     fail_after_activate: AtomicBool,
+    fail_validate: AtomicBool,
+    fail_apply: AtomicBool,
+    write_before_apply_error: AtomicBool,
     activated: Mutex<Vec<TargetKey>>,
     removed: Mutex<Vec<TargetKey>>,
     claims: Mutex<BTreeSet<TargetKey>>,
@@ -82,9 +85,34 @@ impl Backend for Arc<Fake> {
                 activated: false,
             });
         };
-        target.active = true;
-        target.actual = Some(spec);
-        self.activated.lock().unwrap().push(key.clone());
+        let mut apply_submitted = false;
+        let result = config_apply::run(&mut apply_submitted, |phase| {
+            match phase {
+                config_apply::Phase::Validate => {
+                    if self.fail_validate.load(Ordering::Relaxed) {
+                        return Err("validation rejected");
+                    }
+                }
+                config_apply::Phase::Apply => {
+                    let fail = self.fail_apply.load(Ordering::Relaxed);
+                    if !fail || self.write_before_apply_error.load(Ordering::Relaxed) {
+                        target.active = true;
+                        target.actual = Some(spec);
+                        self.activated.lock().unwrap().push(key.clone());
+                    }
+                    if fail {
+                        return Err("driver error after APPLY submission");
+                    }
+                }
+            }
+            Ok(())
+        });
+        if let Err(message) = result {
+            return Err(ActivationFailure {
+                message: message.into(),
+                activated: apply_submitted,
+            });
+        }
         if self.fail_after_activate.load(Ordering::Relaxed) {
             return Err(ActivationFailure {
                 message: "mode readback mismatch".into(),
@@ -219,6 +247,72 @@ fn readback_failure_rolls_back_only_the_new_target_and_retains_failed_rollback()
     assert!(manager.list().unwrap()[0].cleanup_pending);
     backend.fail_remove.store(false, Ordering::Relaxed);
     manager.remove(id).unwrap();
+}
+
+#[test]
+fn rejected_validation_releases_claim_without_authorizing_target_cleanup() {
+    let (manager, backend) = fixture();
+    backend.fail_validate.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        manager.create(Owner::Manual, Spec::default()),
+        Err(Error::Platform(_))
+    ));
+    assert!(backend.activated.lock().unwrap().is_empty());
+    assert!(backend.removed.lock().unwrap().is_empty());
+    assert!(backend.claims.lock().unwrap().is_empty());
+    assert!(manager.list().unwrap().is_empty());
+    assert!(backend.targets.lock().unwrap()[0].active);
+}
+
+#[test]
+fn apply_error_cleans_only_claimed_target_even_without_visible_driver_changes() {
+    for driver_changed_target in [false, true] {
+        let (manager, backend) = fixture();
+        let target = backend.targets.lock().unwrap()[1].key.clone();
+        backend.fail_apply.store(true, Ordering::Relaxed);
+        backend
+            .write_before_apply_error
+            .store(driver_changed_target, Ordering::Relaxed);
+        assert!(matches!(
+            manager.create(Owner::Manual, Spec::default()),
+            Err(Error::Platform(_))
+        ));
+        assert_eq!(*backend.removed.lock().unwrap(), [target]);
+        assert!(backend.claims.lock().unwrap().is_empty());
+        assert!(manager.list().unwrap().is_empty());
+        assert!(backend.targets.lock().unwrap()[0].active);
+    }
+}
+
+#[test]
+fn apply_error_with_unproven_cleanup_retains_claim_until_exact_target_retires() {
+    for driver_changed_target in [false, true] {
+        let (manager, backend) = fixture();
+        backend.targets.lock().unwrap().truncate(2);
+        let key = backend.targets.lock().unwrap()[1].key.clone();
+        let second = another_manager(&backend);
+        backend.fail_apply.store(true, Ordering::Relaxed);
+        backend.fail_remove.store(true, Ordering::Relaxed);
+        backend
+            .write_before_apply_error
+            .store(driver_changed_target, Ordering::Relaxed);
+        let id = match manager.create(Owner::Manual, Spec::default()) {
+            Err(Error::CleanupPending { id, .. }) => id,
+            result => panic!("unexpected activation result: {result:?}"),
+        };
+        assert!(manager.list().unwrap()[0].cleanup_pending);
+        assert!(backend.is_claimed(&key).unwrap());
+        assert_eq!(second.status().unwrap().available_slots, 0);
+        assert!(matches!(
+            second.create(Owner::Manual, Spec::default()),
+            Err(Error::NoAvailableSlot)
+        ));
+        backend.fail_remove.store(false, Ordering::Relaxed);
+        manager.remove(id).unwrap();
+        assert!(!backend.is_claimed(&key).unwrap());
+        assert!(manager.list().unwrap().is_empty());
+        assert!(backend.targets.lock().unwrap()[0].active);
+    }
 }
 
 #[test]

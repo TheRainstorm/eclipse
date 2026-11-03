@@ -612,26 +612,31 @@ fn fingerprints(topology: &Topology, exclude: Option<&TargetKey>) -> Result<Fing
     }
     Ok(result)
 }
-fn apply(topology: &Topology) -> Result<()> {
-    for phase in [SDC_VALIDATE, SDC_APPLY] {
+fn apply(topology: &Topology, apply_submitted: &mut bool) -> Result<()> {
+    use super::config_apply::{self, Phase};
+    config_apply::run(apply_submitted, |phase| {
+        let (flag, operation) = match phase {
+            Phase::Validate => (SDC_VALIDATE, "SetDisplayConfig(VALIDATE)"),
+            Phase::Apply => (SDC_APPLY, "SetDisplayConfig(APPLY)"),
+        };
         let code = unsafe {
             SetDisplayConfig(
                 topology.paths.len() as u32,
                 topology.paths.as_ptr(),
                 topology.modes.len() as u32,
                 topology.modes.as_ptr(),
-                SDC_USE_SUPPLIED_DISPLAY_CONFIG | phase,
+                SDC_USE_SUPPLIED_DISPLAY_CONFIG | flag,
             )
         };
         if code != 0 {
-            return Err(error("SetDisplayConfig", code as u32));
+            return Err(error(operation, code as u32));
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn activate(key: &TargetKey, spec: Spec) -> std::result::Result<Target, ActivationFailure> {
-    let mut changed = false;
+    let mut apply_submitted = false;
     let result = (|| -> Result<Target> {
         let mut before = scene()?;
         let targets = inventory(&before)?;
@@ -691,8 +696,7 @@ fn activate(key: &TargetKey, spec: Spec) -> std::result::Result<Target, Activati
         before.active.paths.push(path);
         // Do not use SDC_ALLOW_CHANGES: it could silently change another screen
         // to make an unsupported mode work. Unsupported requests fail instead.
-        apply(&before.active)?;
-        changed = true;
+        apply(&before.active, &mut apply_submitted)?;
         for _ in 0..20 {
             let after = scene()?;
             if fingerprints(&after.active, Some(key))? != preserved {
@@ -751,8 +755,15 @@ fn activate(key: &TargetKey, spec: Spec) -> std::result::Result<Target, Activati
         ))
     })();
     result.map_err(|error| ActivationFailure {
-        message: error.to_string(),
-        activated: changed,
+        message: format!(
+            "requested virtual display {}x{} at {}.{:03} Hz ({}): {error}",
+            spec.width,
+            spec.height,
+            spec.refresh_millihz / 1000,
+            spec.refresh_millihz % 1000,
+            if spec.hdr { "HDR" } else { "SDR" },
+        ),
+        activated: apply_submitted,
     })
 }
 
@@ -763,12 +774,15 @@ fn deactivate_checked(key: &TargetKey, require_other_active: bool) -> Result<()>
     let mut before = scene()?;
     // A numeric ID can be recycled after a driver restart. Never fall back from
     // the full monitor path to a number, a name, or a different driver instance.
-    let Some(index) = before
-        .active
-        .paths
-        .iter()
-        .position(|path| target_key(path).is_ok_and(|(candidate, _)| &candidate == key))
-    else {
+    let index = super::config_apply::exact_index(
+        before
+            .active
+            .paths
+            .iter()
+            .map(|path| target_key(path).map(|(candidate, _)| candidate)),
+        key,
+    )?;
+    let Some(index) = index else {
         return Ok(());
     };
     if require_other_active && before.active.paths.len() <= 1 {
@@ -776,7 +790,8 @@ fn deactivate_checked(key: &TargetKey, require_other_active: bool) -> Result<()>
     }
     let preserved = fingerprints(&before.active, Some(key))?;
     before.active.paths.remove(index);
-    apply(&before.active)?;
+    let mut apply_submitted = false;
+    apply(&before.active, &mut apply_submitted)?;
     let after = scene()?;
     if after
         .active
