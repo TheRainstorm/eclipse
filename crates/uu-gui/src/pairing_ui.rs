@@ -68,6 +68,7 @@ impl ClientUi {
 
 #[derive(Default)]
 pub(super) struct HostUi {
+    method:u8,
     loaded:bool,
     password:Zeroizing<String>,
     configured:bool,
@@ -105,46 +106,55 @@ impl HostUi {
                 }
             }
         }
-        ui.strong(uu_i18n::text("本机公钥"));
-        ui.weak(uu_i18n::text("作为控制端时，复制此公钥到主机的授权公钥列表。"));
-        let card=store.card(name);
         ui.horizontal_wrapped(|ui| {
-            if ui.button(uu_i18n::text("复制本机公钥")).clicked(){ui.ctx().copy_text(card.export_public_key());}
-            if ui.button(uu_i18n::text("复制公钥指纹")).clicked(){ui.ctx().copy_text(card.id());}
+            ui.selectable_value(&mut self.method,0,uu_i18n::text("密码配对"));
+            ui.selectable_value(&mut self.method,1,uu_i18n::text("公钥配对"));
         });
-        ui.add_space(14.);
-        ui.strong(uu_i18n::text("密码配对"));
-        ui.label(if self.configured{uu_i18n::text("已设置配对密码")}else{uu_i18n::text("尚未设置配对密码")});
-        ui.weak(uu_i18n::text("设置后，知道密码的新设备可配对并保存授权。更改密码用于后续配对，已有设备授权仍由下方列表管理。"));
-        ui.add(egui::TextEdit::singleline(&mut *self.password).password(true).char_limit(256).hint_text(uu_i18n::text("新配对密码 · 8–256 字节")));
-        ui.horizontal_wrapped(|ui|{super::sharing_ui::permissions(ui,&mut self.password_permissions);});
-        let mut change=None;
-        ui.horizontal(|ui| {
-            if ui.add_enabled(self.job.is_none()&&(8..=256).contains(&self.password.len()),egui::Button::new(uu_i18n::text("保存配对密码"))).clicked(){change=Some(true);}
-            if ui.add_enabled(self.job.is_none()&&self.configured,egui::Button::new(uu_i18n::text("移除配对密码"))).clicked(){change=Some(false);}
-            if self.job.is_some(){ui.spinner();}
-        });
-        if let Some(set)=change {
-            let store=store.clone();let password=std::mem::take(&mut self.password);let permissions=self.password_permissions;
-            let (send,receive)=std::sync::mpsc::channel();self.job=Some(receive);let ctx=ui.ctx().clone();
-            std::thread::spawn(move|| {
-                let result=if set{store.set_pairing_password(&password,permissions)}else{store.clear_pairing_password()};
-                let result=result.and_then(|_|store.pairing_password_permissions()).map_err(|e|e.to_string());
-                let _=send.send(result);ctx.request_repaint();
+        ui.add_space(12.);
+        if self.method==0 {
+            ui.strong(uu_i18n::text("密码配对"));
+            ui.label(if self.configured{uu_i18n::text("已设置配对密码")}else{uu_i18n::text("尚未设置配对密码")});
+            ui.weak(uu_i18n::text("设置后，知道密码的新设备可配对并保存授权。更改密码用于后续配对，已有设备授权仍由下方列表管理。"));
+            ui.add(egui::TextEdit::singleline(&mut *self.password).password(true).char_limit(256).hint_text(uu_i18n::text("新配对密码 · 8–256 字节")));
+            ui.horizontal_wrapped(|ui|{super::sharing_ui::permissions(ui,&mut self.password_permissions);});
+            let mut change=None;
+            ui.horizontal(|ui| {
+                if ui.add_enabled(self.job.is_none()&&(8..=256).contains(&self.password.len()),egui::Button::new(uu_i18n::text("保存配对密码"))).clicked(){change=Some(true);}
+                if ui.add_enabled(self.job.is_none()&&self.configured,egui::Button::new(uu_i18n::text("移除配对密码"))).clicked(){change=Some(false);}
+                if self.job.is_some(){ui.spinner();}
             });
-        }
-        ui.add_space(14.);
-        ui.strong(uu_i18n::text("预先授权控制端公钥"));
-        ui.add(egui::TextEdit::singleline(&mut self.name).char_limit(64).hint_text(uu_i18n::text("控制端名称")));
-        if ui.add(egui::TextEdit::multiline(&mut self.public_key).char_limit(8192).desired_rows(2).hint_text(uu_i18n::text("粘贴 Eclipse 或 SSH Ed25519 公钥"))).changed(){self.update_key_name();}
-        ui.horizontal_wrapped(|ui|{super::sharing_ui::permissions(ui,&mut self.key_permissions);});
-        if ui.button(uu_i18n::text("添加授权公钥")).clicked() {
-            let result=PublicDevice::from_public_key(&self.public_key,&self.name).and_then(|device| {
-                store.authorize(device.clone(),self.key_permissions,None)?;
-                if let Some(access)=access{access.sessions.revoke(&device.id());}
-                Ok(())
+            if let Some(set)=change {
+                let store=store.clone();let password=std::mem::take(&mut self.password);let permissions=self.password_permissions;
+                let (send,receive)=std::sync::mpsc::channel();self.job=Some(receive);let ctx=ui.ctx().clone();
+                std::thread::spawn(move|| {
+                    let result=if set{store.set_pairing_password(&password,permissions)}else{store.clear_pairing_password()};
+                    let result=result.and_then(|_|store.pairing_password_permissions()).map_err(|e|e.to_string());
+                    let _=send.send(result);ctx.request_repaint();
+                });
+            }
+        } else {
+            ui.strong(uu_i18n::text("预先授权控制端公钥"));
+            ui.add(egui::TextEdit::singleline(&mut self.name).char_limit(64).hint_text(uu_i18n::text("控制端名称")));
+            if ui.add(egui::TextEdit::multiline(&mut self.public_key).char_limit(8192).desired_rows(2).hint_text(uu_i18n::text("粘贴 Eclipse 或 SSH Ed25519 公钥"))).changed(){self.update_key_name();}
+            ui.horizontal_wrapped(|ui|{super::sharing_ui::permissions(ui,&mut self.key_permissions);});
+            if ui.button(uu_i18n::text("添加授权公钥")).clicked() {
+                let result=PublicDevice::from_public_key(&self.public_key,&self.name).and_then(|device| {
+                    store.authorize(device.clone(),self.key_permissions,None)?;
+                    if let Some(access)=access{access.sessions.revoke(&device.id());}
+                    Ok(())
+                });
+                self.notice=match result {Ok(())=>{self.public_key.clear();self.name.clear();self.suggested_name=None;uu_i18n::text("公钥已授权，控制端首次连接时核对主机指纹并选择已授权公钥。").into()},Err(error)=>error.to_string()};
+            }
+            ui.add_space(14.);
+            ui.collapsing(uu_i18n::text("本机公钥"),|ui| {
+                ui.strong(uu_i18n::text("本机公钥"));
+                ui.weak(uu_i18n::text("作为控制端时，复制此公钥到主机的授权公钥列表。"));
+                let card=store.card(name);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(uu_i18n::text("复制本机公钥")).clicked(){ui.ctx().copy_text(card.export_public_key());}
+                    if ui.button(uu_i18n::text("复制公钥指纹")).clicked(){ui.ctx().copy_text(card.id());}
+                });
             });
-            self.notice=match result {Ok(())=>{self.public_key.clear();self.name.clear();self.suggested_name=None;uu_i18n::text("公钥已授权，控制端首次连接时核对主机指纹并选择已授权公钥。").into()},Err(error)=>error.to_string()};
         }
         if !self.notice.is_empty(){ui.add_space(8.);ui.label(&self.notice);}
     }

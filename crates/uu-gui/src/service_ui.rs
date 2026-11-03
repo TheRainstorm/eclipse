@@ -26,105 +26,118 @@ pub(super) struct Entry {
     install_started: bool,
     job: Option<mpsc::Receiver<Result<(), String>>>,
     notice: String,
+    completed: String,
 }
 impl Entry {
-    pub fn show(
-        &mut self,
-        ui: &mut egui::Ui,
-        host: &mut super::sharing_ui::HostUi,
-        available: bool,
-    ) -> bool {
-        let mut installed = false;
-        if self.next.is_none_or(|next| Instant::now() >= next) {
-            self.build=build_status().ok();
-            self.status = self.build.as_ref().map(|build|build.state).or_else(||status().ok());
-            self.next = Some(Instant::now() + Duration::from_secs(1));
-        }
-        if let Some(job) = &self.job {
-            if let Ok(result) = job.try_recv() {
-                self.job = None;
-                self.next = None;
+    pub fn poll(&mut self, ctx:&egui::Context, host:&mut super::sharing_ui::HostUi) -> bool {
+        let mut installed=false;
+        if let Some(job)=&self.job {
+            if let Ok(result)=job.try_recv() {
+                self.job=None;self.next=None;
                 match result {
-                    Ok(()) => {
-                        self.notice = uu_i18n::text("后台服务管理操作已完成").into();
-                        installed = self.install_started;
-                    }
-                    Err(error) => self.notice = error,
+                    Ok(())=>{self.notice=self.completed.clone();installed=self.install_started;},
+                    Err(error)=>self.notice=error,
                 }
-                self.install_started = false;
+                self.install_started=false;
             }
         }
         if self.pending_install && !host.running() {
-            self.pending_install = false;
-            self.install_started = true;
-            let result = (|| -> anyhow::Result<_> {
-                let config = uu_core::Config::from_env()?;
-                let exe = std::env::current_exe()?;
-                Ok((
-                    exe,
-                    format!(
-                        "--background-service-action install --source-data \"{}\"",
-                        config.data_dir.display()
-                    ),
-                ))
+            self.pending_install=false;self.install_started=true;
+            let result=(||->anyhow::Result<_>{
+                let config=uu_core::Config::from_env()?;
+                Ok((std::env::current_exe()?,format!("--background-service-action install --source-data \"{}\"",config.data_dir.display())))
             })();
             match result {
-                Ok((exe, args)) => self.launch(exe, args),
-                Err(error) => self.notice = error.to_string(),
+                Ok((exe,args))=>self.launch(exe,args,uu_i18n::text("后台服务已准备就绪"),ctx),
+                Err(error)=>{self.install_started=false;self.notice=error.to_string();},
             }
+        }
+        if self.job.is_some()||self.pending_install {ctx.request_repaint_after(Duration::from_millis(100));}
+        installed
+    }
+    pub fn show(&mut self,ui:&mut egui::Ui,host:&mut super::sharing_ui::HostUi,available:bool)->bool {
+        let installed=self.poll(ui.ctx(),host);
+        if self.next.is_none_or(|next|Instant::now()>=next) {
+            self.build=build_status().ok();
+            self.status=self.build.as_ref().map(|build|build.state).or_else(||status().ok());
+            self.next=Some(Instant::now()+Duration::from_secs(1));
         }
         egui::Frame::group(ui.style()).show(ui,|ui| {
             ui.strong(uu_i18n::text("Windows 后台服务 · 锁屏串流"));
-            ui.label(match self.status {Some(SERVICE_RUNNING)=>uu_i18n::text("后台服务运行中"),Some(SERVICE_STOPPED)=>uu_i18n::text("后台服务已停止"),Some(_)=>uu_i18n::text("后台服务正在转换状态"),None=>uu_i18n::text("后台服务尚未安装")});
-            if let Some(build)=&self.build {version_labels(ui,build);}
-            ui.weak(uu_i18n::text("后台服务随 Windows 启动，支持已登录控制台用户的锁屏串流。首次安装复制共享设置与配对授权；插件及其账号需单独同步。"));
+            ui.label(match self.status {
+                Some(SERVICE_RUNNING)=>uu_i18n::text("后台服务运行中"),
+                Some(SERVICE_STOPPED)=>uu_i18n::text("后台服务已停止"),
+                Some(_)=>uu_i18n::text("后台服务正在转换状态"),
+                None=>uu_i18n::text("后台服务尚未安装"),
+            });
+            ui.weak(uu_i18n::text("开机后共享此电脑，退出软件后仍可连接。"));
             let busy=self.job.is_some()||self.pending_install;
-            if self.status.is_some() {
-                if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("管理后台服务"))).clicked() {
-                    match std::env::current_exe() {
-                        Ok(exe)=>self.launch(exe,"--open-background-service-manager".into()),Err(error)=>self.notice=error.to_string(),
+            let outdated=self.build.as_ref().and_then(|build|build.installed.as_ref())
+                .is_some_and(|version|version.revision!=env!("UU_BUILD_COMMIT"));
+            ui.horizontal_wrapped(|ui| {
+                if self.status.is_some() {
+                    if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("管理后台服务")))
+                        .on_hover_text(uu_i18n::text("查看后台设置、设备授权和虚拟显示器；不会重启服务。")).clicked() {
+                        match std::env::current_exe() {
+                            Ok(exe)=>self.launch(exe,"--open-background-service-manager".into(),"",ui.ctx()),
+                            Err(error)=>self.notice=error.to_string(),
+                        }
                     }
+                    if outdated && ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("更新后台程序")))
+                        .on_hover_text(uu_i18n::text("保留后台设置和配对；更新会断开串流。")).clicked() {
+                        self.prepare_install(host);
+                    }
+                }else if ui.add_enabled(available&&!busy,egui::Button::new(uu_i18n::text("安装并启动后台服务"))).clicked() {
+                    self.prepare_install(host);
                 }
-                ui.weak(uu_i18n::text("打开管理员管理窗口，查看运行版本、设置及虚拟屏；打开或关闭窗口不更新程序，也不重启服务。"));
-                ui.add_space(6.);
-                if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("更新后台程序"))).clicked() {
-                    if host.running(){host.stop();}self.pending_install=true;
+                if busy {ui.spinner();}
+            });
+            ui.add_space(6.);
+            ui.collapsing(uu_i18n::text("详情"),|ui| {
+                if let Some(build)=&self.build {version_labels(ui,build);}
+                if self.status.is_some() {
+                    if !outdated && ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("更新后台程序"))).clicked() {self.prepare_install(host);}
+                    ui.weak(uu_i18n::text("安装当前完整程序包并启动后台，保留已有设置与配对，不导入插件或账号；会断开后台串流并停止本窗口的前台共享。"));
+                    ui.add_space(8.);
+                    ui.strong(uu_i18n::text("插件与账号"));
+                    if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("同步插件并重启后台服务"))).clicked() {
+                        let result=(||->anyhow::Result<_>{
+                            let config=uu_core::Config::from_env()?;
+                            Ok((std::env::current_exe()?,format!("--background-service-action import-plugins --source-data \"{}\"",config.data_dir.display())))
+                        })();
+                        match result {
+                            Ok((exe,args))=>self.launch(exe,args,uu_i18n::text("后台插件已同步"),ui.ctx()),
+                            Err(error)=>self.notice=error.to_string(),
+                        }
+                    }
+                    ui.weak(uu_i18n::text("将当前已启用插件及其声明的配置、账号复制到后台，覆盖对应状态；后台原来运行时重启，原来停止时保持停止。"));
+                    ui.weak(uu_i18n::text("原生虚拟显示器不依赖插件，无需为管理虚拟屏同步插件。"));
                 }
-                ui.weak(uu_i18n::text("安装当前完整程序包并启动后台，保留已有设置与配对，不导入插件或账号；会断开后台串流并停止本窗口的前台共享。"));
-                ui.add_space(6.);
-                if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("同步插件并重启后台服务"))).clicked() {
-                    let result=(||->anyhow::Result<_>{
-                        let config=uu_core::Config::from_env()?;
-                        let exe=std::env::current_exe()?;
-                        Ok((exe,format!("--background-service-action import-plugins --source-data \"{}\"",config.data_dir.display())))
-                    })();
-                    match result {Ok((exe,args))=>self.launch(exe,args),Err(error)=>self.notice=error.to_string()}
-                }
-                ui.weak(uu_i18n::text("将当前已启用插件及其声明的配置、账号复制到后台，覆盖对应状态；后台原来运行时重启，原来停止时保持停止。"));
-                ui.weak(uu_i18n::text("原生虚拟显示器不依赖插件，无需为管理虚拟屏同步插件。"));
-            }else if ui.add_enabled(available&&!busy,egui::Button::new(uu_i18n::text("安装并启动后台服务"))).clicked() {
-                if host.running(){host.stop();}self.pending_install=true;self.notice=uu_i18n::text("正在准备后台服务安装…").into();
-            }
-            if busy {ui.spinner();ui.ctx().request_repaint_after(Duration::from_millis(100));}
+            });
             if !self.notice.is_empty(){ui.label(&self.notice);}
         });
         ui.add_space(10.);
         installed
     }
-    fn launch(&mut self, exe: std::path::PathBuf, args: String) {
-        let (send, receive) = mpsc::channel();
-        self.job = Some(receive);
-        std::thread::spawn(move || {
+    fn prepare_install(&mut self,host:&mut super::sharing_ui::HostUi) {
+        if host.running(){host.stop();}
+        self.pending_install=true;self.notice=uu_i18n::text("正在准备后台服务安装…").into();
+    }
+    fn launch(&mut self,exe:std::path::PathBuf,args:String,completed:&str,ctx:&egui::Context) {
+        self.completed=completed.to_owned();self.notice.clear();
+        let (send,receive)=mpsc::channel();self.job=Some(receive);let ctx=ctx.clone();
+        std::thread::spawn(move|| {
             let result=(||->anyhow::Result<()> {
                 if args.starts_with("--background-service-action ") {
-                    uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定安装包目录")))?,env!("UU_BUILD_COMMIT"))?;
+                    uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("{}",uu_i18n::format!("无法确定安装包目录")))?,env!("UU_BUILD_COMMIT"))?;
                 }
                 elevated(&exe,&args)
             })();
-            let _ = send.send(result.map_err(|e| format!("{e:#}")));
+            let _=send.send(result.map_err(|e|format!("{e:#}")));ctx.request_repaint();
         });
     }
 }
+
 fn version_labels(ui:&mut egui::Ui,build:&BuildStatus) {
     if let Some(running)=&build.running {
         ui.label(uu_i18n::format!("后台运行版本：{} · PID {}",running.label(),build.process_id))
@@ -132,7 +145,7 @@ fn version_labels(ui:&mut egui::Ui,build:&BuildStatus) {
     } else if build.process_id!=0 {
         ui.label(uu_i18n::format!("后台运行版本：无法读取 · PID {}",build.process_id))
             .on_hover_text(build.running_error.as_deref().unwrap_or("Unknown service image"));
-        ui.weak(uu_i18n::text("当前权限可能无法读取系统后台进程版本。请打开管理员管理窗口核对；安装版本不能代替运行版本。"));
+        ui.weak(uu_i18n::text("运行版本暂不可读。可打开管理窗口核对，或更新旧后台后重试。"));
     }
     if let Some(installed)=&build.installed {
         if build.running.as_ref().is_none_or(|running|running.revision!=installed.revision) {

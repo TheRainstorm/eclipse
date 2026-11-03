@@ -284,12 +284,29 @@ mod tests {
 
 
     #[test]
+    fn service_management_is_separate_from_connection_routes() {
+        let mut h=Harness::new();h.workspace.route.page=Page::Services;
+        h.frame(vec![]);
+        assert!(!h.texts.iter().any(|(s,_)|s=="本机服务已停止"));
+        assert!(h.texts.iter().any(|(s,_)|s=="IP 直连"));
+        h.click("服务管理");
+        assert!(h.texts.iter().any(|(s,_)|s=="本机服务已停止"));
+        assert!(!h.texts.iter().any(|(s,_)|s=="＋ 添加服务器"));
+        h.click("连接服务");
+        assert!(!h.texts.iter().any(|(s,_)|s=="本机服务已停止"));
+        assert!(h.texts.iter().any(|(s,_)|s=="＋ 添加服务器"));
+    }
+
+    #[test]
     fn pairing_tab_owns_identity_and_authorization_controls() {
         let mut h=Harness::new();h.workspace.route.page=Page::Services;
         h.click("配对设置");
         assert!(h.texts.iter().any(|(s,_)|s=="设备名称"));
         assert!(h.texts.iter().any(|(s,_)|s=="密码配对"));
-        assert!(h.texts.iter().any(|(s,_)|s=="复制本机公钥"));
+        assert!(!h.texts.iter().any(|(s,_)|s=="添加授权公钥"));
+        h.click("公钥配对");
+        assert!(h.texts.iter().any(|(s,_)|s=="添加授权公钥"));
+        assert!(!h.texts.iter().any(|(s,_)|s=="保存配对密码"));
         h.click("输入");
         assert!(!h.texts.iter().any(|(s,_)|s=="密码配对"));
         h.click("音频 / 视频");
@@ -681,6 +698,10 @@ impl Workspace {
     pub fn poll(&mut self, ctx: &egui::Context, window: isize) {
         self.feedback.tick(ctx);
         self.host.poll(ctx, window);
+        #[cfg(windows)]
+        if self.background_service.poll(ctx,&mut self.host) {
+            self.book.sharing.auto_start=false;self.draft.auto_start=false;
+        }
         self.poll_previews(ctx);
         if self.last_read.elapsed() >= Duration::from_millis(500) {
             self.last_read = Instant::now();
@@ -1280,15 +1301,16 @@ impl Workspace {
     }
     fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) {
         ui.horizontal_wrapped(|ui| {
-            for (tab,label) in [(0,uu_i18n::text("连接服务")),(1,uu_i18n::text("输入")),(2,uu_i18n::text("音频 / 视频")),(3,uu_i18n::text("编码器")),(4,uu_i18n::text("配对设置"))] {
+            for (tab,label) in [(5,uu_i18n::text("服务管理")),(0,uu_i18n::text("连接服务")),(1,uu_i18n::text("输入")),(2,uu_i18n::text("音频 / 视频")),(3,uu_i18n::text("编码器")),(4,uu_i18n::text("配对设置"))] {
                 ui.selectable_value(&mut self.service_tab,tab,label);
             }
         });
         ui.add_space(14.);
         let scope = self.service_scope();
         self.feedback.show(ui, scope);
-        if self.service_tab==0 {
+        if self.service_tab==5 {
             self.service_control(ui,actions);
+        } else if self.service_tab==0 {
             self.services(ui,info,actions,connection);
         } else {
             ui.horizontal(|ui| {
@@ -1377,6 +1399,7 @@ impl Workspace {
                     self.host.clear_notice();
                 }
             }
+            muted(ui,uu_i18n::text("仅在本软件运行时共享；退出软件后停止。"));
             let mut auto = self.book.sharing.auto_start;
             if ui.checkbox(&mut auto, uu_i18n::text("打开软件时自动启动服务")).changed() {
                 self.update_connections(|s| s.auto_start = auto);
@@ -1413,11 +1436,11 @@ impl Workspace {
                         if super::sharing_ui::permissions(ui,&mut permissions) {
                             match self.host.set_session_permissions(&session.peer_id,permissions) {
                                 Ok(())=>self.feedback.success(
-                                    super::ui_feedback::Scope::Services(0),
+                                    super::ui_feedback::Scope::Services(5),
                                     uu_i18n::text("已更新设备控制权限；该设备需要重新连接"),
                                 ),
                                 Err(error)=>self.feedback.error(
-                                    super::ui_feedback::Scope::Services(0),
+                                    super::ui_feedback::Scope::Services(5),
                                     uu_i18n::format!("无法更新设备控制权限：{error:#}"),
                                 ),
                             }

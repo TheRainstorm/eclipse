@@ -1,4 +1,13 @@
 {
+  "仅在本软件运行时共享；退出软件后停止。": "Shares only while this app is running; exits when the app closes.",
+  "公钥配对": "Public key pairing",
+  "后台服务已准备就绪": "Background service is ready",
+  "开机后共享此电脑，退出软件后仍可连接。": "Share this PC after startup and stay reachable when the app closes.",
+  "查看后台设置、设备授权和虚拟显示器；不会重启服务。": "View background settings, device permissions and virtual displays without restarting the service.",
+  "保留后台设置和配对；更新会断开串流。": "Keeps background settings and pairings; updating disconnects streams.",
+  "插件与账号": "Plugins and accounts",
+  "后台插件已同步": "Background plugins synced",
+  "运行版本暂不可读。可打开管理窗口核对，或更新旧后台后重试。": "The running version is unavailable. Check in the administrator window, or update an older background service and try again.",
   "原图：{} × {} 像素": "Original: {} × {} pixels",
   "下载壁纸": "Download wallpaper",
   "请选择壁纸保存位置…": "Choose where to save the wallpaper…",
