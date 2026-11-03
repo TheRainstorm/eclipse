@@ -62,10 +62,11 @@ service_cli.rs[EO7M]: F:分派Windows后台安装启停、插件同步、版本�
 ===/home/yfy/Repo/uu_remote/crates/uu-cli/src/service_cli/===
 host.rs[AS8M]: F:在活动控制台的System进程运行共享、配对与管理员IPC并拥有虚拟屏收尾 | R:code:crates/uu-core/src/host_runtime.rs,code:crates/uu-core/src/service_admin/windows.rs,code:crates/uu-core/src/native_virtual_display.rs | A:run | S:必须为指定活动控制台的LocalSystem且安装路径版本匹配；插件用服务配置；配置重启保留手动屏；停止先关闭IPC准入并join已接受任务，abort不能取消阻塞Windows变更；最终退出才关闭手动准入并清理
 install.rs[OS8L]: F:验证完整包并事务式切换后台版本及其程序路径防火墙规则，显式同步插件 | R:code:crates/uu-core/src/service_admin/windows.rs,code:crates/uu-core/src/service_admin/package.rs,code:crates/uu-core/src/firewall/windows.rs | A:install,import_plugins,protect | S:安装锁绑定控制台用户，拒重解析并保护ACL；v1/v2决定文件名；迁移旧Installed精确路径，只改Program；普通错误按规则postimage补偿，冲突不覆盖，原服务恢复独立尝试；不默认复制插件账号，不保证断电原子性
-supervisor.rs[RS8L]: F:由SCM监督指定控制台的System媒体子进程，按安装记录启动并协调停止重启 | R:code:crates/uu-cli/src/service_cli/host.rs,code:crates/uu-core/src/service_admin/windows.rs | A:dispatch,run | S:Job只拥有本服务子进程；媒体令牌仅启用正常路径遍历权限，保留必要Windows环境；程序名取安装记录而非存在性；停止先发事件等待90秒，再关闭kill-on-close Job，超期仍可能强退；SCM运行不等于媒体子进程已就绪
+supervisor.rs[RS8L]: F:由SCM监督受保护System媒体进程，在所有者或未登录控制台启动并随资格退出 | R:code:crates/uu-cli/src/service_cli/host.rs,code:crates/uu-core/src/service_admin/windows.rs,code:crates/uu-cli/src/service_cli/supervisor/console_policy.rs | A:dispatch,run | S:仅明确ERROR_NO_TOKEN且成功读取严格空用户名允许登录屏，其它错误拒绝；有用户仍校验owner SID且重查console；资格失效退休旧child；Job仅拥有自身进程，发stop后等90秒再强退；媒体令牌仅正常遍历权限，环境保留；SCM Running非媒体就绪
 
 ===/home/yfy/Repo/uu_remote/crates/uu-cli/src/service_cli/supervisor/===
 system_probe.rs[TS5M]: F:以临时System任务验证生产启动器、安装版本程序身份和生成媒体并清理自有进程 | R:code:crates/uu-cli/src/service_cli/supervisor.rs | A:run | S:只使用生成画面且拒绝既有测试目录，不读取真实桌面
+console_policy.rs[DS8T]: F:定义后台控制台资格和媒体子进程退休的统一状态规则 | R:code:crates/uu-cli/src/service_cli/supervisor.rs | A:Identity,permitted,must_retire | S:0/MAX会话及空owner无资格；用户必须等owner SID；NoToken还须已验证空用户名，Unavailable拒绝；同session空屏转换可保留，资格丢失或换session退休
 
 ===/home/yfy/Repo/uu_remote/crates/uu-clipboard/===
 Cargo.toml[FU5T]: F:声明系统剪贴板库与PNG/BMP以及Windows和Linux适配依赖 | R:code:crates/uu-clipboard/src/lib.rs | A:- | S:-
@@ -518,7 +519,7 @@ ui-design.md[SU4T]: F:规定蓝白主题、页面信息层级、反馈作用域�
 uu-cloud-native-connection.md[SN4S]: F:保留UU账号寻址、信令与会话ICE适配的方案和授权状态更新 | R:code:docs/native-internet.md | A:- | S:正文尚未实现等为历史描述，当前默认直连
 uu-device-identity.md[SI5T]: F:说明独立UU注册身份、硬件资料更新、显示名与确认解绑规则 | R:code:plugins/uu-compat/src/registration.rs | A:- | S:不复用官方注册资料；同名不合并，解绑不撤销原生公钥权限
 vision.md[SW4T]: F:说明Eclipse品牌与原生主程序和独立兼容插件的方向及历史阶段规划 | R:code:docs/roadmap.md,code:README.md | A:- | S:能力表保留历史规划，不能视为当前交付或日期承诺
-windows-background-service.md[SS6T]: F:说明后台生命周期、程序与插件更新及防火墙检查、迁移和补偿边界 | R:code:crates/uu-cli/src/service_cli/install.rs,code:crates/uu-core/src/firewall/windows.rs,code:crates/uu-gui/src/service_ui.rs | A:- | S:程序更新不导入插件账号；运行身份未知不冒用安装版；规则迁移不扩大范围，普通错误补偿不保证断电原子性
+windows-background-service.md[SS6T]: F:说明后台安装更新、防火墙事务及未登录控制台共享与用户登录自启的区别 | R:code:crates/uu-cli/src/service_cli/install.rs,code:crates/uu-core/src/firewall/windows.rs,code:crates/uu-gui/src/service_ui.rs,code:crates/uu-cli/src/service_cli/supervisor.rs | A:- | S:首次安装仍需控制台用户授权；GUI自启只在登录后；注销会话变化可能断流；程序更新不导入账号，规则迁移不扩范围且非断电原子
 windows-build.md[SV5T]: F:说明Windows GNU构建、Eclipse完整包名称与默认安装入口及符号精简 | R:code:tools/windows/package.py,code:docs/plugins.md | A:- | S:分发副本精简符号，构建目录保留排障符号；新旧包按各自清单核验，运行进程不随文件更新；具体插件另行获取
 windows-latency.md[SP5M]: F:解释Windows计时与呈现边界，记录动态码率对照和非阻塞VSync输入调度 | R:code:crates/uu-media/src/hdr_present.cpp,code:crates/uu-gui/src/video_native.rs,code:docs/performance/optimization-scope.md | A:- | S:动态ABBA内容未冻结，30Mbps改画质且非默认；非阻塞调度未证明物理帧延迟收益；插桩绝对耗时非收益，API生成图非物理显示
 present-observation-profiling.md[SO6T]: F:说明原始Present诊断启停、身份匹配、文件完整性及与ETW唯一关联的方法 | R:code:crates/uu-gui/src/video_present_trace.rs,code:crates/uu-media/src/present_observation.rs,code:docs/hud.md | A:- | S:文件默认关闭，显式新路径才启用；缺终止或丢观测不称完整；PresentMon须绑定同进程同链和唯一API区间，不能用最近时间或SyncQPCTime猜显示
