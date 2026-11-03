@@ -179,8 +179,8 @@ fn check_display_window_routing(state:&mut State,session:u64,ctx:&egui::Context)
 fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() {
     use uu_core::hotkeys::Action as Command;
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let mut tabs=Tabs{groups:vec![Group{id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false},
-        Group{id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let mut tabs=Tabs{groups:vec![Group{id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false,can_detach:true},
+        Group{id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
     for command in [Command::NextDisplay,Command::PreviousDisplay,Command::NextComputer,Command::PreviousComputer] {tabs.navigate(command);}
     assert_eq!(*actions.borrow(),[Action::Select(22,Some(2)),Action::Select(22,Some(9)),Action::Select(11,None),Action::Select(11,None)]);
     actions.borrow_mut().clear();tabs.active=11;
@@ -193,7 +193,7 @@ fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() 
 #[test]
 fn device_selector_requires_an_explicit_open_and_keeps_the_video_area() {
     let ctx=egui::Context::default();crate::setup_style(&ctx);
-    let mut tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false},Group{id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false}],active:1,actions:Default::default(),local_ui:Default::default()};
+    let mut tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true},Group{id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true}],active:1,actions:Default::default(),local_ui:Default::default()};
     let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
     let draw=|tabs:&Tabs,pointer| {
         let mut visible=false;
@@ -227,6 +227,7 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
                 selected: Some(1),
                 can_open_displays: true,
                 can_create_display: false,
+                can_detach: true,
             },
             Group {
                 id: 22,
@@ -235,6 +236,7 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
                 selected: Some(2),
                 can_open_displays: true,
                 can_create_display: false,
+                can_detach: true,
             },
         ],
         active: 11,
@@ -314,10 +316,120 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
     assert_eq!(*actions.borrow(), vec![Action::Detach(22)]);
 }
 
+#[test]
+fn device_context_menu_routes_detach_and_disconnect_from_a_child_viewport() {
+    let context=egui::Context::default();
+    crate::setup_style(&context);
+    let actions=Rc::new(RefCell::new(Vec::new()));
+    let tabs=Tabs{groups:vec![Group{id:22,name:"Generated B".into(),screens:vec![(2,"Monitor B".into())],selected:Some(2),can_open_displays:true,can_create_display:false,can_detach:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let viewport=egui::ViewportId::from_hash_of("generated-child");
+    let render=|events|context.run(egui::RawInput{viewport_id:viewport,viewports:[(viewport,egui::ViewportInfo::default())].into_iter().collect(),events,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),focused:true,..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
+    fn text(shape:&egui::epaint::Shape,label:&str)->Option<egui::Pos2>{match shape{egui::epaint::Shape::Text(text) if text.galley.job.text==label=>Some(text.pos+text.galley.rect.center().to_vec2()),egui::epaint::Shape::Vec(shapes)=>shapes.iter().find_map(|shape|text(shape,label)),_=>None}}
+    let locate=|output:&egui::FullOutput,label:&str|output.shapes.iter().find_map(|shape|text(&shape.shape,label)).unwrap_or_else(||panic!("missing {label}"));
+    let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};
+    for (label,expected) in [("移到独立窗口",Action::Detach(22)),("断开此会话",Action::Close(22))] {
+        let output=render(Vec::new());let device=locate(&output,"Generated B");
+        render(vec![egui::Event::PointerMoved(device),button(device,egui::PointerButton::Secondary,true)]);
+        render(vec![button(device,egui::PointerButton::Secondary,false)]);
+        let output=render(Vec::new());
+        assert!(tabs.owns_input(&context),"open context menu owns local input");
+        let action=locate(&output,uu_i18n::text(label));
+        render(vec![egui::Event::PointerMoved(action),button(action,egui::PointerButton::Primary,true)]);
+        render(vec![button(action,egui::PointerButton::Primary,false)]);
+        assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[expected]);
+        render(Vec::new());
+    }
+}
+
+#[test]
+fn display_pills_open_their_own_source_and_keep_connection_ownership() {
+    let context=egui::Context::default();crate::setup_style(&context);
+    let actions=Rc::new(RefCell::new(Vec::new()));
+    let tabs=Tabs{groups:vec![Group{id:22,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let render=|events|context.run(egui::RawInput{events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
+    let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|rects|find(rects.borrow().get(&egui::ViewportId::ROOT).unwrap()).center());
+    let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};
+    render(Vec::new());
+    let screen=region(|r|r.screens.iter().find(|(_,id,_)|*id==7).unwrap().2);
+    render(vec![egui::Event::PointerMoved(screen),button(screen,egui::PointerButton::Secondary,true)]);
+    render(vec![button(screen,egui::PointerButton::Secondary,false)]);render(Vec::new());
+    let independent=region(|r|r.open_display[0].2);
+    render(vec![egui::Event::PointerMoved(independent),button(independent,egui::PointerButton::Primary,true)]);
+    render(vec![button(independent,egui::PointerButton::Primary,false)]);
+    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::OpenDisplay{session:22,screen:7}]);
+    render(Vec::new());let current=region(|r|r.screens.iter().find(|(_,id,_)|*id==16).unwrap().2);
+    render(vec![egui::Event::PointerMoved(current),button(current,egui::PointerButton::Secondary,true)]);
+    render(vec![button(current,egui::PointerButton::Secondary,false)]);render(Vec::new());
+    let independent=region(|r|r.open_display[0].2);
+    render(vec![egui::Event::PointerMoved(independent),button(independent,egui::PointerButton::Primary,true)]);
+    render(vec![button(independent,egui::PointerButton::Primary,false)]);
+    assert!(actions.borrow().is_empty(),"the current source of an independent window must not offer another silent focus action");
+    let outside=egui::pos2(1200.,200.);
+    render(vec![egui::Event::PointerMoved(outside),button(outside,egui::PointerButton::Primary,true)]);
+    render(vec![button(outside,egui::PointerButton::Primary,false)]);
+    render(Vec::new());let device=region(|r|r.devices[0].1);
+    render(vec![egui::Event::PointerMoved(device),button(device,egui::PointerButton::Secondary,true)]);
+    render(vec![button(device,egui::PointerButton::Secondary,false)]);render(Vec::new());
+    let detach=region(|r|r.detach[0].1);
+    render(vec![egui::Event::PointerMoved(detach),button(detach,egui::PointerButton::Primary,true)]);
+    render(vec![button(detach,egui::PointerButton::Primary,false)]);
+    assert!(actions.borrow().is_empty(),"an already independent connection must not queue a silent detach");
+    let outside=egui::pos2(1200.,200.);
+    render(vec![egui::Event::PointerMoved(outside),button(outside,egui::PointerButton::Primary,true)]);
+    render(vec![button(outside,egui::PointerButton::Primary,false)]);render(Vec::new());
+    let create=region(|r|r.create[0].1);
+    render(vec![egui::Event::PointerMoved(create),button(create,egui::PointerButton::Primary,true)]);
+    render(vec![button(create,egui::PointerButton::Primary,false)]);
+    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::CreateDisplay(22)],"temporary screens stay owned by the existing authenticated connection");
+    render(Vec::new());let close=region(|r|r.close[0].1);
+    render(vec![egui::Event::PointerMoved(close),button(close,egui::PointerButton::Primary,true)]);
+    render(vec![button(close,egui::PointerButton::Primary,false)]);
+    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::Close(22)],"close ends this connection, not one source or another window");
+}
+
 std::thread_local! {
     static SCREENSHOTS:std::cell::RefCell<Option<std::collections::HashMap<egui::ViewportId,Arc<egui::ColorImage>>>>=const {std::cell::RefCell::new(None)};
     static FULLSCREEN_COMMANDS:std::cell::RefCell<std::collections::HashSet<egui::ViewportId>>=std::cell::RefCell::new(std::collections::HashSet::new());
     static HUD_COMMANDS:std::cell::RefCell<std::collections::HashSet<egui::ViewportId>>=std::cell::RefCell::new(std::collections::HashSet::new());
+    static TAB_RECTS:RefCell<std::collections::HashMap<egui::ViewportId,crate::stream_tabs_ui::StripRects>>=RefCell::new(Default::default());
+    static POINTER_SCRIPT:RefCell<Option<PointerScript>>=const {RefCell::new(None)};
+}
+pub(super) fn observe_tab_rects(ctx:&egui::Context,rects:crate::stream_tabs_ui::StripRects) {
+    TAB_RECTS.with(|slots|slots.borrow_mut().insert(ctx.viewport_id(),rects));
+}
+#[derive(Clone,Copy)]
+enum PointerAction { Detach, Disconnect, CloseButton }
+struct PointerScript {
+    viewport:egui::ViewportId,
+    session:u64,
+    action:PointerAction,
+    step:u8,
+}
+fn click_session(viewport:egui::ViewportId,session:u64,action:PointerAction,ctx:&egui::Context) {
+    POINTER_SCRIPT.with(|script|*script.borrow_mut()=Some(PointerScript{viewport,session,action,step:0}));
+    ctx.request_repaint_of(viewport);
+}
+fn pointer_script_done()->bool {POINTER_SCRIPT.with(|script|script.borrow().is_none())}
+fn inject_pointer_script(input:&mut egui::RawInput) {
+    POINTER_SCRIPT.with(|slot| {
+        let mut slot=slot.borrow_mut();
+        let Some(script)=slot.as_mut().filter(|script|script.viewport==input.viewport_id) else{return;};
+        let finished=TAB_RECTS.with(|rects| {
+            let rects=rects.borrow();let Some(rects)=rects.get(&script.viewport) else{return false;};
+            let direct=matches!(script.action,PointerAction::CloseButton);
+            let buttons=if direct {&rects.close} else if script.step<3 {&rects.devices} else {match script.action {PointerAction::Detach=>&rects.detach,PointerAction::Disconnect=>&rects.disconnect,PointerAction::CloseButton=>unreachable!()}};
+            let Some((_,rect))=buttons.iter().find(|(id,_)|*id==script.session) else{return false;};
+            let position=rect.center();
+            input.focused=true;
+            input.events.push(egui::Event::PointerMoved(position));
+            let button=if !direct && script.step<3 {egui::PointerButton::Secondary} else {egui::PointerButton::Primary};
+            let stage=if direct {script.step} else if script.step<3 {script.step} else {script.step-3};
+            if stage<2 {input.events.push(egui::Event::PointerButton{pos:position,button,pressed:stage==0,modifiers:Default::default()});}
+            script.step+=1;
+            direct && script.step==2 || !direct && script.step==5
+        });
+        if finished {*slot=None;}
+    });
 }
 pub(super) fn apply_fullscreen_command(app:&mut App,ctx:&egui::Context) {
     if FULLSCREEN_COMMANDS.with(|commands|commands.borrow_mut().remove(&ctx.viewport_id())) {
@@ -350,8 +462,12 @@ struct Probe {
     counts: Vec<u64>,
     hud_before: Option<[bool;2]>,
     passed: Arc<Mutex<bool>>,
+    ui_started:Option<Instant>,
 }
 impl eframe::App for Probe {
+    fn raw_input_hook(&mut self,_ctx:&egui::Context,input:&mut egui::RawInput) {
+        inject_pointer_script(input);
+    }
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if self.reported_phase!=Some(self.phase) {
             eprintln!("generated workspace window probe phase={}",self.phase);
@@ -494,10 +610,15 @@ impl eframe::App for Probe {
                             let pixels=image.pixels.iter().flat_map(|pixel|pixel.to_array()).collect();
                             image::RgbaImage::from_raw(image.size[0] as u32,image.size[1] as u32,pixels).unwrap().save(PathBuf::from(output)).unwrap();
                         }
-                        state.apply(Action::Detach(self.first),ctx);assert_eq!(state.windows.len(),2);
-                        assert!(!Rc::ptr_eq(&state.windows[0].sizing,&state.windows[1].sizing));
-                        self.phase=3;
+                        self.ui_started=Some(Instant::now());
+                        click_session(state.windows[0].viewport(),self.first,PointerAction::Detach,ctx);
+                        self.phase=20;
                     }
+                },
+                20 if pointer_script_done() && state.windows.len()==2=> {
+                    assert!(self.ui_started.take().unwrap().elapsed()<Duration::from_secs(2),"child context menu must wake its hidden coordinator promptly");
+                    assert!(!Rc::ptr_eq(&state.windows[0].sizing,&state.windows[1].sizing));
+                    self.phase=3;
                 },
                 3 if state.windows.len() == 2
                     && state.windows[1].platform.is_some()
@@ -549,7 +670,8 @@ impl eframe::App for Probe {
                     .is_some_and(|w|ctx.input_for(w.viewport(),|i|i.viewport().fullscreen)==Some(false)) => {
                     // Closing one native window's session leaves the other
                     // receiving on the exact same media epoch and controller.
-                    state.apply(Action::Close(self.first), ctx);
+                    let window=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==self.first)).unwrap();
+                    click_session(window.viewport(),self.first,PointerAction::Disconnect,ctx);
                     self.counts[1] = self.stats[1].decoded_total.load(Ordering::Acquire);
                     self.phase = 4;
                 }
@@ -561,15 +683,18 @@ impl eframe::App for Probe {
                         self.stats[1].native_media_epoch.load(Ordering::Acquire),
                         self.epochs[1]
                     );
-                    state.apply(Action::Close(self.second_id), ctx);
+                    click_session(state.windows[0].viewport(),self.second_id,PointerAction::CloseButton,ctx);
                     self.phase = 5;
                     *self.passed.lock().unwrap() = true;
-                    println!("two distinct generated sources: attach, tab selection, independent quality, group reorder, native detach, independent fullscreen/HUD and isolated close; display-window launch routing checked with catalog fixtures, epochs unchanged, decode errors=0");
+                    println!("two distinct generated sources: attach, tab selection, independent quality, group reorder, context-menu detach and disconnect, close button, independent fullscreen/HUD; display-window launch routing checked with catalog fixtures, epochs unchanged, decode errors=0");
                 }
                 _ => {}
             }
         });
-        ctx.request_repaint_after(Duration::from_millis(10));
+        // While waiting for a child UI action, the coordinator must be woken
+        // by that action. A slow watchdog catches a missing wakeup without
+        // turning the probe's normal polling into a false success.
+        ctx.request_repaint_after(if matches!(self.phase,20|4|5){Duration::from_secs(2)}else{Duration::from_millis(10)});
     }
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
         eframe::App::on_exit(&mut self.workspace, gl);
@@ -684,6 +809,7 @@ fn native_windows_attach_reorder_and_detach_two_live_generated_sessions() {
                 counts: Vec::new(),
                 hud_before: None,
                 passed: result,
+                ui_started:None,
             }))
         }),
     )

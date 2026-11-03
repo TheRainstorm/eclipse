@@ -435,7 +435,7 @@ impl super::App {
             .exact_height(super::window::CONNECTION_BAR_HEIGHT)
             .frame(
                 egui::Frame::none()
-                    .fill(super::theme::SIDEBAR)
+                    .fill(super::theme::CANVAS)
                     .inner_margin(egui::Margin::symmetric(10.0, 2.0)),
             )
             .show(ctx, |ui| {
@@ -449,24 +449,34 @@ impl super::App {
                         .unwrap_or(uu_i18n::text("远程桌面"));
                     let roomy=ui.available_width()>740.0;
                     let wide=ui.available_width()>1100.0;
+                    let compact_settings=ctx.screen_rect().width()<560.0;
+                    let settings_width=if compact_settings {30.0} else {40.0+ui.painter().layout_no_wrap(uu_i18n::text("设置").into(),egui::FontId::proportional(14.0),ui.visuals().text_color()).size().x};
+                    let audio=self.supports_remote(uu_core::capabilities::Capability::Audio);
+                    let controls_width=90.0+settings_width+if audio {30.0} else {0.0}
+                        + ui.spacing().item_spacing.x*if audio {4.0} else {3.0};
                     if self.workspace_tabs.is_none() && ui.available_width()>520.0 {ui.add_sized([76.0,24.0],egui::Label::new(RichText::new(title).size(12.0)).truncate());}
                     ui.separator();
-                    if self.workspace_tabs.is_some() || self.supports_remote(uu_core::capabilities::Capability::Displays){self.display_tabs(ui);}
-                    if (self.view_only || (self.uses_engine_controls()&&!self.supports_remote(uu_core::capabilities::Capability::Input))) && (roomy || self.uses_engine_controls()) {
+                    if self.workspace_tabs.is_some() || self.supports_remote(uu_core::capabilities::Capability::Displays){self.display_tabs(ui,controls_width);}
+                    if (self.view_only || (self.uses_engine_controls()&&!self.supports_remote(uu_core::capabilities::Capability::Input))) && roomy {
                         let (text, help) = if self.uses_engine_controls() && !self.view_only && self.native_input_available() {
                             let requested = self.controller.as_ref().and_then(|h|h.native_input.as_ref()).is_some_and(|s|s.requested());
                             if requested {(uu_i18n::text("等待控制权"), uu_i18n::text("主机一次允许一个控制端操作；当前控制端释放后会自动重试。"))}
                             else {(uu_i18n::text("控制已暂停"), uu_i18n::text("点击画面或恢复控制可重新申请，快捷键可在输入设置中调整。"))}
                         } else {(uu_i18n::text("仅观看"), uu_i18n::text("当前未启用远端输入；主机需允许控制并具有可用的输入后端。"))};
-                        ui.label(RichText::new(text).color(Color32::from_rgb(98, 125, 160))).on_hover_text(help);
-                        if !self.view_only && self.native_input_available() && !self.input_capture.requested()
-                            && ui.small_button(uu_i18n::text("恢复控制")).on_hover_text(uu_i18n::text("重新请求此串流的键鼠控制")).clicked() {
-                            self.input_capture.request();
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                            self.platform.focus_window();
+                        let resume = !self.view_only && self.native_input_available() && !self.input_capture.requested();
+                        let text_width = |text: &str, style: egui::TextStyle| ui.painter().layout_no_wrap(text.into(), style.resolve(ui.style()), ui.visuals().text_color()).size().x;
+                        let status_width = text_width(text, egui::TextStyle::Body)
+                            + if resume {text_width(uu_i18n::text("恢复控制"), egui::TextStyle::Body) + 2.0*ui.spacing().button_padding.x + ui.spacing().item_spacing.x} else {0.0};
+                        if ui.available_width() >= controls_width + status_width + 2.0*ui.spacing().item_spacing.x {
+                            ui.label(RichText::new(text).color(Color32::from_rgb(98, 125, 160))).on_hover_text(help);
+                            if resume && ui.small_button(uu_i18n::text("恢复控制")).on_hover_text(uu_i18n::text("重新请求此串流的键鼠控制")).clicked() {
+                                self.input_capture.request();
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                                self.platform.focus_window();
+                            }
                         }
                     }
-                    if wide && !self.view_only && self.controller.is_some() && !self.input_ready() && (!self.uses_engine_controls()||self.displays.switching()) {
+                    if wide && ui.available_width()>controls_width+164.0 && !self.view_only && self.controller.is_some() && !self.input_ready() && (!self.uses_engine_controls()||self.displays.switching()) {
                         ui.label(
                             RichText::new(if self.displays.switching(){uu_i18n::text("正在切换显示器…")}else{uu_i18n::text("输入连接中…")})
                                 .size(12.0)
@@ -474,7 +484,7 @@ impl super::App {
                         )
                         .on_hover_text(uu_i18n::text("视频和输入分别建立连接，输入就绪后可操作"));
                     }
-                    if let Some(controller) = self.controller.as_ref().filter(|_|roomy && !self.uses_engine_controls()) {
+                    if let Some(controller) = self.controller.as_ref().filter(|_|roomy && ui.available_width()>controls_width+94.0 && !self.uses_engine_controls()) {
                         ui.label(
                             RichText::new(format!(
                                 "{:.1} Mbps",
@@ -489,7 +499,7 @@ impl super::App {
                             .color(Color32::from_rgb(51, 159, 126)),
                         );
                     }
-                    let width = (ui.available_width() - 236.0).max(0.0);
+                    let width = (ui.available_width() - controls_width - ui.spacing().item_spacing.x).max(0.0);
                     let (_, drag) =
                         ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::drag());
                     if drag.drag_started() {
@@ -505,7 +515,11 @@ impl super::App {
                         if icon_button(ui, Icon::Min, uu_i18n::text("最小化")).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        let control = icon_label_button(ui, Icon::Settings, uu_i18n::text("设置"));
+                        let control = if compact_settings {
+                            icon_button(ui, Icon::Settings, uu_i18n::text("设置"))
+                        } else {
+                            icon_label_button(ui, Icon::Settings, uu_i18n::text("设置"))
+                        };
                         self.stream_menu.trigger_rect = Some(control.rect);
                         if control.clicked() {
                             self.displays.menu_open=false;
@@ -521,8 +535,8 @@ impl super::App {
             });
     }
 
-    fn display_tabs(&mut self, ui: &mut egui::Ui) {
-        if let Some(tabs)=&self.workspace_tabs {tabs.show(ui);return;}
+    fn display_tabs(&mut self, ui: &mut egui::Ui, controls_width: f32) {
+        if let Some(tabs)=&self.workspace_tabs {tabs.show_with_controls(ui,controls_width);return;}
         let screens=self.remote_screens();
         let reserve=if ui.available_width()>660.0{345.0}else{250.0};
         let width=(ui.available_width()-reserve).clamp(75.0,540.0);

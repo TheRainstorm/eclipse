@@ -79,26 +79,32 @@ pub enum Action {
 }
 #[derive(Clone)]
 pub struct Group {
-    id: u64,
-    name: String,
-    screens: Vec<(i32, String)>,
-    selected: Option<i32>,
-    can_open_displays: bool,
-    can_create_display:bool,
+    pub(super) id: u64,
+    pub(super) name: String,
+    pub(super) screens: Vec<(i32, String)>,
+    pub(super) selected: Option<i32>,
+    pub(super) can_open_displays: bool,
+    pub(super) can_create_display:bool,
+    pub(super) can_detach:bool,
+}
+impl Group {
+    pub(super) fn can_open_display(&self,screen:i32)->bool {
+        self.can_open_displays && (self.can_detach || self.selected!=Some(screen))
+    }
 }
 #[derive(Clone)]
 pub struct Tabs {
-    groups: Vec<Group>,
-    active: u64,
-    actions: Rc<RefCell<Vec<Action>>>,
-    local_ui: Rc<Cell<bool>>,
+    pub(super) groups: Vec<Group>,
+    pub(super) active: u64,
+    pub(super) actions: Rc<RefCell<Vec<Action>>>,
+    pub(super) local_ui: Rc<Cell<bool>>,
 }
 #[derive(Clone, Copy)]
-struct Drag(u64);
+pub(super) struct Drag(pub(super) u64);
 #[derive(Clone, Copy)]
-struct DragScreen {
-    session: u64,
-    screen: i32,
+pub(super) struct DragScreen {
+    pub(super) session: u64,
+    pub(super) screen: i32,
 }
 impl Tabs {
     fn selector_id(ctx:&egui::Context)->egui::Id {
@@ -128,7 +134,8 @@ impl Tabs {
                         for (screen,label) in &group.screens {
                             ui.horizontal(|ui| {
                                 if ui.selectable_label(group.id==self.active && group.selected==Some(*screen),label).clicked() {selected=Some(Action::Select(group.id,Some(*screen)));}
-                                if group.can_open_displays && ui.small_button(uu_i18n::text("独立窗口")).clicked() {selected=Some(Action::OpenDisplay{session:group.id,screen:*screen});}
+                                if group.can_open_displays && ui.add_enabled(group.can_open_display(*screen),egui::Button::new(uu_i18n::text("独立窗口")).small())
+                                    .on_disabled_hover_text(uu_i18n::text("已在独立窗口中")).clicked() {selected=Some(Action::OpenDisplay{session:group.id,screen:*screen});}
                             });
                         }
                         if group.can_open_displays && group.screens.len()>1 && ui.button(uu_i18n::text("所有屏幕独立打开")).clicked() {selected=Some(Action::OpenAllDisplays(group.id));}
@@ -166,162 +173,19 @@ impl Tabs {
             || egui::DragAndDrop::has_payload_of_type::<DragScreen>(ctx)
     }
     pub fn show(&self, ui: &mut egui::Ui) {
-        self.local_ui.set(false);
-        let width = (ui.available_width() - 245.).max(90.);
-        let mut actions = Vec::new();
-        egui::ScrollArea::horizontal()
-            .id_salt("workspace-device-groups")
-            .max_width(width)
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .auto_shrink([true, true])
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for group in &self.groups {
-                        ui.push_id(group.id, |ui| {
-                            let frame = egui::Frame::none()
-                                .fill(if group.id == self.active {
-                                    egui::Color32::WHITE
-                                } else {
-                                    egui::Color32::from_rgb(226, 232, 240)
-                                })
-                                .rounding(5.)
-                                .inner_margin(egui::Margin::symmetric(4., 0.));
-                            let response = frame
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        let label = ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(&group.name).size(12.),
-                                            )
-                                            .sense(egui::Sense::click_and_drag()),
-                                        );
-                                        label.dnd_set_drag_payload(Drag(group.id));
-                                        if label.clicked() {
-                                            actions.push(Action::Select(group.id, None));
-                                        }
-                                        if label.dragged() {
-                                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                                        }
-                                        label.context_menu(|ui| {
-                                            if group.can_open_displays && group.screens.len()>1 && ui.button(uu_i18n::text("所有屏幕独立打开")).clicked() {
-                                                actions.push(Action::OpenAllDisplays(group.id));
-                                                ui.close_menu();
-                                            }
-                                            if ui.button(uu_i18n::text("移到独立窗口")).clicked() {
-                                                actions.push(Action::Detach(group.id));
-                                                ui.close_menu();
-                                            }
-                                            if ui.button(uu_i18n::text("断开此设备")).clicked() {
-                                                actions.push(Action::Close(group.id));
-                                                ui.close_menu();
-                                            }
-                                        });
-                                        if label.context_menu_opened() {
-                                            self.local_ui.set(true);
-                                        }
-                                        for (id, label) in &group.screens {
-                                            let selected = group.id == self.active
-                                                && group.selected == Some(*id);
-                                            let response = ui.add(
-                                                egui::Button::new(label)
-                                                    .selected(selected)
-                                                    .sense(egui::Sense::click_and_drag()),
-                                            );
-                                            if response.clicked() {
-                                                actions.push(Action::Select(group.id, Some(*id)));
-                                            }
-                                            response.context_menu(|ui| {
-                                                if group.can_open_displays && ui.button(uu_i18n::text("在独立窗口中打开")).clicked() {
-                                                    actions.push(Action::OpenDisplay{session:group.id,screen:*id});
-                                                    ui.close_menu();
-                                                }
-                                            });
-                                            if response.context_menu_opened() {self.local_ui.set(true);}
-                                            response.dnd_set_drag_payload(DragScreen {
-                                                session: group.id,
-                                                screen: *id,
-                                            });
-                                            if let Some(drag) = response
-                                                .dnd_hover_payload::<DragScreen>()
-                                                .filter(|drag| {
-                                                    drag.session == group.id && drag.screen != *id
-                                                })
-                                            {
-                                                let after = ui.input(|i| {
-                                                    i.pointer.hover_pos().is_some_and(|p| {
-                                                        p.x > response.rect.center().x
-                                                    })
-                                                });
-                                                if response
-                                                    .dnd_release_payload::<DragScreen>()
-                                                    .is_some()
-                                                {
-                                                    actions.push(Action::ReorderScreen {
-                                                        session: group.id,
-                                                        source: drag.screen,
-                                                        target: *id,
-                                                        after,
-                                                    });
-                                                }
-                                            }
-                                        }
-                                        if group.can_open_displays {
-                                            let response=ui.add_enabled(group.can_create_display,egui::Button::new("+").small()).on_hover_text(uu_i18n::text("新建临时虚拟显示器，断开此串流后自动移除"))
-                                                .on_disabled_hover_text(uu_i18n::text("远端未提供虚拟显示器管理，请更新后台并授予管理服务权限"));
-                                            if response.clicked(){actions.push(Action::CreateDisplay(group.id));}
-                                            response.context_menu(|ui|{if ui.button(uu_i18n::text("管理虚拟显示器")).clicked(){actions.push(Action::ManageDisplays(group.id));ui.close_menu();}});
-                                            if response.context_menu_opened(){self.local_ui.set(true);}
-                                        }
-                                    })
-                                })
-                                .response;
-                            if let Some(drag) = response
-                                .dnd_hover_payload::<Drag>()
-                                .filter(|drag| drag.0 != group.id)
-                            {
-                                let after = ui.input(|i| {
-                                    i.pointer
-                                        .hover_pos()
-                                        .is_some_and(|p| p.x > response.rect.center().x)
-                                });
-                                let x = if after {
-                                    response.rect.right()
-                                } else {
-                                    response.rect.left()
-                                };
-                                ui.painter().line_segment(
-                                    [
-                                        egui::pos2(x, response.rect.top()),
-                                        egui::pos2(x, response.rect.bottom()),
-                                    ],
-                                    egui::Stroke::new(2., crate::theme::ACCENT),
-                                );
-                                if response.dnd_release_payload::<Drag>().is_some() {
-                                    actions.push(Action::Reorder {
-                                        source: drag.0,
-                                        target: group.id,
-                                        after,
-                                    });
-                                }
-                            }
-                        });
-                    }
-                });
-            });
-        self.actions.borrow_mut().extend(actions);
-        if let Some(drag) = egui::DragAndDrop::payload::<Drag>(ui.ctx()) {
-            let detach = ui.input(|i| {
-                i.pointer.any_released()
-                    && i.pointer
-                        .latest_pos()
-                        .is_none_or(|p| !i.screen_rect().contains(p))
-            });
-            if detach {
-                self.actions.borrow_mut().push(Action::Detach(drag.0));
-                egui::DragAndDrop::clear_payload(ui.ctx());
-            }
-        }
+        self.show_with_controls(ui, 245.);
     }
+    pub fn show_with_controls(&self, ui: &mut egui::Ui, controls_width: f32) {
+        let rects=crate::stream_tabs_ui::show(self,ui,controls_width);
+        #[cfg(test)]
+        {
+            gui_probe::observe_tab_rects(ui.ctx(),&rects);
+            tests::observe_tab_rects(ui.ctx(),rects);
+        }
+        #[cfg(not(test))]
+        let _=rects;
+    }
+
 }
 fn adjacent(length:usize,current:Option<usize>,previous:bool)->usize {
     match current {
@@ -410,6 +274,7 @@ impl Window {
                         .map(|screen| (screen.id, s.app.displays.layout.label(screen)))
                         .collect(),
                     selected: s.app.displays.selected,
+                    can_detach:self.sessions.len()>1,
                     can_open_displays: s.app.stream_target.as_ref().is_some_and(StreamTarget::is_native)
                         && s.app.controller.as_ref().is_some_and(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)),
                     can_create_display:s.app.controller.as_ref().is_some_and(|h|h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire)),
@@ -887,3 +752,7 @@ impl eframe::App for Workspace {
 #[cfg(test)]
 #[path = "stream_workspace_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "stream_workspace_gui_probe.rs"]
+mod gui_probe;

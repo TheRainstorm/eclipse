@@ -37,6 +37,7 @@ mod video_hdr;
 mod window;
 mod window_context;
 mod stream_workspace;
+mod stream_tabs_ui;
 mod stream_menu;
 mod ui;
 mod brand;

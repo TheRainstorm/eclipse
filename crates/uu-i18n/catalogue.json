@@ -1114,6 +1114,7 @@
   "设备名称过长": "Device name is too long",
   "连接方式与凭据不匹配": "Connection method does not match credentials",
   "移到独立窗口": "Move to separate window",
+  "已在独立窗口中": "Already in a separate window",
   "断开此设备": "Disconnect this device",
   "串流 · {}": "Stream · {}",
   "默认编码须包含在允许的编码中": "Default codec must be included in allowed codecs",
