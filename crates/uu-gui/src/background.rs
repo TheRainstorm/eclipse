@@ -2,12 +2,38 @@
 use super::{settings::{Settings,WallpaperSource},wallpapers,wallpaper_favorites};
 use eframe::egui;
 use std::{path::PathBuf,sync::{mpsc,Arc},time::{Duration,Instant}};
+
+const CACHE_MAGIC:&[u8]=b"Eclipse-wallpaper-original-1\n";
+fn write_cache(path:&std::path::Path,source:&str,bytes:&[u8])->anyhow::Result<()> {
+    anyhow::ensure!(source.len()<=4096&&bytes.len()<=wallpapers::MAX_WALLPAPER_BYTES,"wallpaper cache too large");
+    let mut saved=Vec::with_capacity(CACHE_MAGIC.len()+4+source.len()+bytes.len());
+    saved.extend_from_slice(CACHE_MAGIC);saved.extend_from_slice(&(source.len() as u32).to_le_bytes());saved.extend_from_slice(source.as_bytes());saved.extend_from_slice(bytes);
+    super::settings::save_bytes(path,&saved)
+}
+fn read_cache(path:&std::path::Path,source:&str,side:usize)->anyhow::Result<(wallpapers::Thumbnail,bool)> {
+    let saved=super::settings::read_bounded(path,wallpapers::MAX_WALLPAPER_BYTES+8192)?;
+    let original=saved.starts_with(CACHE_MAGIC);
+    let bytes=if original {
+        let offset=CACHE_MAGIC.len();
+        let length=u32::from_le_bytes(saved.get(offset..offset+4).ok_or_else(||anyhow::anyhow!("truncated wallpaper cache"))?.try_into()?) as usize;
+        anyhow::ensure!(length<=4096&&saved.get(offset+4..offset+4+length)==Some(source.as_bytes()),"wallpaper source changed");
+        saved[offset+4+length..].to_vec()
+    } else {
+        anyhow::ensure!(super::settings::read_bounded(&path.with_extension("source"),4096)?==source.as_bytes(),"wallpaper source changed");
+        saved
+    };
+    let mut image=wallpapers::decode_wallpaper_with_limit(wallpapers::Request{device_id:"background".into(),url:source.into()},bytes,side)?;
+    if !original {image.encoded.clear();}
+    let fresh=original&&std::fs::metadata(path).and_then(|m|m.modified()).ok().and_then(|m|m.elapsed().ok()).is_some_and(|age|age<Duration::from_secs(86400));
+    Ok((image,fresh))
+}
+
 #[derive(Default)]
 pub(super) struct Background {
     pub texture:Option<egui::TextureHandle>,
     pub notice:String,
     worker:Option<wallpapers::Worker>,
-    cache_rx:Option<mpsc::Receiver<Option<wallpapers::Thumbnail>>>,
+    cache_rx:Option<mpsc::Receiver<Option<(wallpapers::Thumbnail,bool)>>>,
     source:String,
     texture_source:String,
     received:bool,
@@ -20,25 +46,32 @@ pub(super) struct Background {
     favorites_mode:bool,
     favorite_notice:String,
     current_encoded:Option<Arc<Vec<u8>>>,
+    original:Option<wallpapers::Original>,
+    painted_original:std::cell::RefCell<Option<wallpapers::Original>>,
+    download:super::wallpaper_download::Download,
     painted_encoded:std::cell::RefCell<Option<Arc<Vec<u8>>>>,
 }
 impl Background {
     pub fn new(cache:Option<PathBuf>)->Self {Self{cache,..Default::default()}}
     pub fn sync(&mut self,s:&Settings,ctx:&egui::Context) {
         self.enabled=s.wallpaper_enabled;self.favorites_mode=s.wallpaper_source==WallpaperSource::Favorites;
-        if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.current_encoded=None;self.painted_encoded.get_mut().take();self.initialized=false;return;}
+        if !self.enabled {self.worker=None;self.cache_rx=None;self.texture=None;self.current_encoded=None;self.painted_encoded.get_mut().take();self.painted_original.get_mut().take();self.original=None;self.initialized=false;return;}
         if self.favorites_mode {
-            self.worker=None;self.cache_rx=None;self.retry_at=None;
+            self.worker=None;self.retry_at=None;
             self.favorites.ensure_loaded(ctx);self.favorites.poll(ctx);
-            self.source=s.wallpaper_identity();self.initialized=true;
+            self.initialized=true;
             if let Some(item)=self.favorites.selected(s.wallpaper_favorite.as_deref()) {
                 let source=format!("favorite:{}",item.id);
-                if self.texture_source!=source||self.texture.is_none() {
-                    self.texture=Some(item.texture.clone());self.current_encoded=Some(item.encoded.clone());self.texture_source=source;
+                if self.source!=source || (self.texture.is_none()&&self.cache_rx.is_none()) {
+                    self.source=source.clone();
+                    let bytes=item.encoded.clone();let side=ctx.input(|i|i.max_texture_side);let (tx,rx)=mpsc::channel();self.cache_rx=Some(rx);
+                    std::thread::spawn(move|| {
+                        let image=wallpapers::decode_wallpaper_with_limit(wallpapers::Request{device_id:"background".into(),url:source},(*bytes).clone(),side).ok();
+                        let _=tx.send(image.map(|image|(image,true)));
+                    });
                 }
-                self.notice=self.favorites.notice.clone();
             }else if self.favorites.loaded {
-                self.texture=None;self.current_encoded=None;
+                self.texture=None;self.current_encoded=None;self.original=None;self.cache_rx=None;
                 self.notice=if self.favorites.notice.is_empty(){uu_i18n::text("还没有收藏壁纸；先从其它来源收藏一张图片。").into()}else{self.favorites.notice.clone()};
             }
             self.poll(ctx);return;
@@ -48,20 +81,10 @@ impl Background {
             // A new source owns a new request; neither throttling nor a pending
             // result from the previous service can suppress its first refresh.
             self.worker=None;self.cache_rx=None;self.retry_at=None;self.received=false;self.failure=None;
-            let mut fresh=false;
             if let Some(path)=self.cache.clone() {
-                fresh=std::fs::metadata(&path).and_then(|m|m.modified()).ok().and_then(|m|m.elapsed().ok()).is_some_and(|age|age<Duration::from_secs(86400));
-                let source=self.source.clone();let (tx,rx)=mpsc::channel();self.cache_rx=Some(rx);
-                std::thread::spawn(move|| {
-                    let value=(||->anyhow::Result<_>{
-                        let saved=super::settings::read_bounded(&path.with_extension("source"),4096)?;
-                        anyhow::ensure!(saved==source.as_bytes(),"wallpaper source changed");
-                        let bytes=super::settings::read_bounded(&path,4*1024*1024)?;
-                        wallpapers::decode(wallpapers::Request{device_id:"background".into(),url:source},bytes)
-                    })().ok();let _=tx.send(value);
-                });
-            }
-            if !fresh {self.refresh(ctx);}
+                let source=self.source.clone();let side=ctx.input(|i|i.max_texture_side);let (tx,rx)=mpsc::channel();self.cache_rx=Some(rx);
+                std::thread::spawn(move|| {let _=tx.send(read_cache(&path,&source,side).ok());});
+            }else {self.refresh(ctx);}
         }
         self.poll(ctx);
     }
@@ -73,8 +96,9 @@ impl Background {
         }
         if let Some(value)=self.cache_rx.as_ref().and_then(|rx|rx.try_recv().ok()) {
             self.cache_rx=None;
-            if let Some(image)=value {
+            if let Some((image,fresh))=value {
                 if self.texture.is_none()||self.texture_source!=self.source {self.set(image,ctx,false);}
+                if !fresh && self.worker.is_none() {self.refresh(ctx);}
             }else if self.worker.is_none(){self.refresh(ctx);}
         }
         while let Some(outcome)=self.worker.as_mut().and_then(|w|w.try_recv()) {
@@ -91,26 +115,30 @@ impl Background {
             self.worker=None;
             if !self.received && self.failure.is_none() {self.notice=if self.texture.is_some(){uu_i18n::text("壁纸更新失败，继续使用已有图片")}else{uu_i18n::text("图片暂时无法获取，正在使用内置背景；可在应用设置中刷新")}.into();}
         }
+        let previous=self.download.notice.clone();
+        if self.download.poll(ctx) && (!self.download.notice.is_empty() || self.notice==previous) {self.notice=self.download.notice.clone();}
         if self.worker.is_some()||self.cache_rx.is_some(){ctx.request_repaint_after(Duration::from_millis(100));}
     }
     fn set(&mut self,mut image:wallpapers::Thumbnail,ctx:&egui::Context,cache:bool) {
         if image.url!=self.source{return;}
+        self.original=Some(image.original);
         self.current_encoded=if image.encoded.is_empty(){None}else{Some(Arc::new(std::mem::take(&mut image.encoded)))};
         self.texture_source=image.url.clone();
         self.texture=Some(ctx.load_texture("workspace-background",egui::ColorImage::from_rgba_unmultiplied([image.width as usize,image.height as usize],&image.rgba),egui::TextureOptions::LINEAR));
         // Loading a fallback after a network failure must not erase its reason.
         if cache || self.failure.is_none() {self.notice.clear();}
-        if cache {if let Some(path)=self.cache.clone() {
-            std::thread::spawn(move|| {
-                let result=(||->anyhow::Result<()>{
-                    let rgba=image::RgbaImage::from_raw(image.width,image.height,image.rgba).ok_or_else(||anyhow::anyhow!("invalid background pixels"))?;
-                    let rgb=image::DynamicImage::ImageRgba8(rgba).to_rgb8();let mut bytes=Vec::new();
-                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes,85).encode_image(&rgb)?;
-                    super::settings::save_bytes(&path,&bytes)?;
-                    super::settings::save_bytes(&path.with_extension("source"),image.url.as_bytes())?;Ok(())
-                })();if let Err(e)=result{eprintln!("wallpaper cache: {e}");}
-            });
+        if cache {if let (Some(path),Some(bytes))=(self.cache.clone(),self.current_encoded.clone()) {
+            std::thread::spawn(move|| {if let Err(error)=write_cache(&path,&image.url,&bytes) {eprintln!("wallpaper cache: {error}");}});
         }}
+    }
+    fn displayed(&self)->Option<(Arc<Vec<u8>>,wallpapers::Original)> {
+        if let (Some(bytes),Some(original))=(self.painted_encoded.borrow().clone(),*self.painted_original.borrow()) {return Some((bytes,original));}
+        Some((self.current_encoded.clone()?,self.original?))
+    }
+    pub fn original_size(&self)->Option<(u32,u32)> {if !self.has_wallpaper(){return None;}self.displayed().map(|(_,image)|(image.width,image.height))}
+    pub fn can_download(&self)->bool {self.has_wallpaper()&&!self.download.busy()}
+    pub fn download(&mut self,ctx:&egui::Context) {
+        if let Some((bytes,original))=self.displayed() {self.download.start(bytes,original,ctx);self.notice=self.download.notice.clone();}
     }
     pub fn has_wallpaper(&self)->bool {self.texture.is_some()&&self.current_encoded.is_some()}
     pub fn favorite(&mut self,ctx:&egui::Context) {
@@ -144,7 +172,7 @@ impl Background {
         // Source changes retire cache receivers in sync; set() prevents a late
         // cached image from replacing a successfully downloaded texture.
         self.worker=None;self.received=false;self.failure=None;
-        match wallpapers::Worker::start(vec![wallpapers::Request{device_id:"background".into(),url:self.source.clone()}],ctx.clone()) {
+        match wallpapers::Worker::start_wallpaper(wallpapers::Request{device_id:"background".into(),url:self.source.clone()},ctx.clone()) {
             Ok(worker)=>{self.worker=Some(worker);self.notice=uu_i18n::text("正在更新壁纸…").into();},Err(e)=>self.notice=uu_i18n::format!("壁纸加载失败：{e}")
         }
     }
@@ -174,6 +202,7 @@ impl Background {
         // A network completion can arrive between painting and the title-bar
         // click. Save the bytes of the image used by this paint pass.
         *self.painted_encoded.borrow_mut()=self.current_encoded.clone();
+        *self.painted_original.borrow_mut()=self.original;
         let source=texture.size_vec2();let ratio=(rect.width()/source.x).max(rect.height()/source.y);
         let fraction=rect.size()/(source*ratio);let uv=egui::Rect::from_center_size(egui::pos2(0.5,0.5),fraction);
         painter.image(texture.id(),rect,uv,egui::Color32::WHITE);
@@ -184,6 +213,23 @@ impl Background {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_cache_is_atomic_source_bound_and_legacy_preview_is_not_exported() {
+        let root=std::env::temp_dir().join(format!("eclipse-original-wallpaper-{}",uuid::Uuid::new_v4()));
+        let path=root.join("wallpaper.jpg");let source="https://example.invalid/current";
+        let mut encoded=std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(1280,720,image::Rgb([20,40,80])).write_to(&mut encoded,image::ImageFormat::Png).unwrap();
+        let encoded=encoded.into_inner();
+        write_cache(&path,source,&encoded).unwrap();
+        let (image,fresh)=read_cache(&path,source,4096).unwrap();
+        assert!(fresh);assert_eq!(image.encoded,encoded);assert_eq!(image.original.width,1280);
+        assert!(read_cache(&path,"https://example.invalid/other",4096).is_err());
+        super::super::settings::save_bytes(&path,&encoded).unwrap();
+        super::super::settings::save_bytes(&path.with_extension("source"),source.as_bytes()).unwrap();
+        let (legacy,fresh)=read_cache(&path,source,4096).unwrap();
+        assert!(!fresh);assert!(legacy.encoded.is_empty());assert_eq!(legacy.width,1280);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn favorite_wallpaper_saves_the_painted_bytes_and_local_mode_never_starts_http() {
         let root=std::env::temp_dir().join(format!("eclipse-displayed-favorite-{}",uuid::Uuid::new_v4()));
@@ -206,6 +252,7 @@ mod tests {
         assert_eq!(std::fs::read(root.join(format!("{id}.image"))).unwrap(),bytes);
         let settings=Settings{wallpaper_source:WallpaperSource::Favorites,wallpaper_favorite:Some(id.clone()),wallpaper_api:"http://127.0.0.1:9/must-not-request".into(),..Default::default()};
         background.sync(&settings,&ctx);
+        while background.cache_rx.is_some() {background.poll(&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
         assert!(background.worker.is_none());assert!(background.cache_rx.is_none());
         assert_eq!(background.texture_source,format!("favorite:{id}"));assert!(background.has_wallpaper());
         background.favorite(&ctx);
@@ -227,7 +274,7 @@ mod tests {
         });
         let ctx=egui::Context::default();
         let mut background=Background::new(None);background.source=source.clone();background.enabled=true;background.initialized=true;
-        background.set(wallpapers::Thumbnail{device_id:"background".into(),url:source,width:1,height:1,rgba:vec![10,20,30,255],encoded:vec![]},&ctx,false);
+        background.set(wallpapers::Thumbnail{device_id:"background".into(),url:source,width:1,height:1,rgba:vec![10,20,30,255],encoded:vec![],original:wallpapers::Original{width:1,height:1,format:image::ImageFormat::Png}},&ctx,false);
         let texture=background.texture.as_ref().unwrap().id();
         background.refresh(&ctx);
         let deadline=Instant::now()+Duration::from_secs(5);
@@ -319,13 +366,13 @@ mod tests {
         let pixels=image::RgbImage::from_pixel(64,36,image::Rgb([40,100,180]));
         let mut bytes=Vec::new();image::codecs::jpeg::JpegEncoder::new(&mut bytes).encode_image(&pixels).unwrap();
         let settings=Settings{wallpaper_source:super::super::settings::WallpaperSource::CustomApi,wallpaper_api:"https://wallpaper.example.invalid/image".into(),..Default::default()};
-        super::super::settings::save_bytes(&path,&bytes).unwrap();super::super::settings::save_bytes(&path.with_extension("source"),settings.wallpaper_api.as_bytes()).unwrap();
+        write_cache(&path,&settings.wallpaper_api,&bytes).unwrap();
         let ctx=egui::Context::default();let mut background=Background::new(Some(path));
         let deadline=Instant::now()+Duration::from_secs(3);
         while background.texture.is_none(){background.sync(&settings,&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
         assert!(background.worker.is_none());assert_eq!(background.texture.as_ref().unwrap().size(),[64,36]);
         let settings=Settings{wallpaper_source:super::super::settings::WallpaperSource::CustomApi,wallpaper_api:"https://second.example.invalid/image".into(),..settings};
-        super::super::settings::save_bytes(&background.cache.as_ref().unwrap().with_extension("source"),settings.wallpaper_api.as_bytes()).unwrap();
+        write_cache(background.cache.as_ref().unwrap(),&settings.wallpaper_api,&bytes).unwrap();
         let deadline=Instant::now()+Duration::from_secs(3);
         while background.texture_source!=settings.wallpaper_api {background.sync(&settings,&ctx);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
         assert!(background.worker.is_none());

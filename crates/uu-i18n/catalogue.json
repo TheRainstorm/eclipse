@@ -1,4 +1,9 @@
 {
+  "原图：{} × {} 像素": "Original: {} × {} pixels",
+  "下载壁纸": "Download wallpaper",
+  "请选择壁纸保存位置…": "Choose where to save the wallpaper…",
+  "壁纸保存失败：{error}": "Could not save wallpaper: {error}",
+  "壁纸已保存：{}": "Wallpaper saved: {}",
   "收藏当前壁纸": "Save current wallpaper to favorites",
   "收藏": "Favorites",
   "正在收藏当前壁纸…": "Saving current wallpaper…",

@@ -76,7 +76,7 @@ impl App {
                                 .truncate(),
                         );
                     }
-                    let controls_width = if wallpaper_root { 289.0 } else { 255.0 };
+                    let controls_width = 255.0;
                     let space = (ui.available_width() - controls_width).max(0.0);
                     let (_, drag) =
                         ui.allocate_exact_size(egui::vec2(space, 34.0), Sense::click_and_drag());
@@ -97,13 +97,6 @@ impl App {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                         ui.add_space(4.0);
-                        if wallpaper_root {
-                            ui.add_enabled_ui(self.background.has_wallpaper(), |ui| {
-                                if icon_button_tinted(ui, Icon::Star, uu_i18n::text("收藏当前壁纸"), false, title_color).clicked() {
-                                    self.background.favorite(ctx);
-                                }
-                            });
-                        }
                         if icon_button_tinted(
                             ui,
                             Icon::Settings,

@@ -62,6 +62,7 @@ mod native_host_ui;
 mod native_interfaces;
 mod wallpapers;
 mod wallpaper_favorites;
+mod wallpaper_download;
 mod virtual_display_ui;
 mod virtual_display_presets;
 #[cfg(windows)]

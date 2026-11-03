@@ -10,6 +10,19 @@ use std::{
 };
 
 const MAX_DOWNLOAD: usize = 4 * 1024 * 1024;
+pub(super) const MAX_WALLPAPER_BYTES: usize = 16 * 1024 * 1024;
+#[derive(Clone, Copy)]
+enum Rendition { Preview, Wallpaper(u32), Favorite }
+impl Rendition {
+    fn bytes(self) -> usize { match self { Self::Preview => MAX_DOWNLOAD, _ => MAX_WALLPAPER_BYTES } }
+    fn allocation(self) -> u64 { match self { Self::Preview => MAX_DECODE_ALLOC, _ => 256 * 1024 * 1024 } }
+    fn size(self) -> (u32,u32) { match self { Self::Wallpaper(side) => (side,side), _ => MAX_PREVIEW } }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Original { pub width:u32, pub height:u32, pub format:image::ImageFormat }
+impl Original {
+    pub fn extension(self) -> &'static str { match self.format { image::ImageFormat::Jpeg=>"jpg", image::ImageFormat::Png=>"png", image::ImageFormat::WebP=>"webp", image::ImageFormat::Bmp=>"bmp", image::ImageFormat::Ico=>"ico", _=>"image" } }
+}
 // Random wallpaper APIs also return 5K/8K originals. Bound source decoding
 // separately from the small, fixed-size texture we retain after downsampling.
 const MAX_DECODE_ALLOC: u64 = 96 * 1024 * 1024;
@@ -31,6 +44,7 @@ pub(super) struct Thumbnail {
     pub height: u32,
     pub rgba: Vec<u8>,
     pub encoded: Vec<u8>,
+    pub original: Original,
 }
 
 pub(super) struct Failure {
@@ -48,19 +62,30 @@ pub(super) struct Worker {
 
 impl Worker {
     pub fn start(requests: Vec<Request>, context: eframe::egui::Context) -> anyhow::Result<Self> {
+        Self::start_for(requests, context, Rendition::Preview)
+    }
+    pub fn start_wallpaper(request:Request, context:eframe::egui::Context)->anyhow::Result<Self> {
+        let side=context.input(|i|i.max_texture_side).clamp(1,4096) as u32;
+        Self::start_for(vec![request], context, Rendition::Wallpaper(side))
+    }
+    fn start_for(requests:Vec<Request>, context:eframe::egui::Context, rendition:Rendition)->anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(12))
             .redirect(reqwest::redirect::Policy::limited(3))
             .build()?;
-        Self::with_client(requests, context, client)
+        Self::with_rendition(requests, context, client, rendition)
     }
 
+    #[cfg(test)]
     fn with_client(
         requests: Vec<Request>,
         context: eframe::egui::Context,
         client: reqwest::Client,
     ) -> anyhow::Result<Self> {
+        Self::with_rendition(requests, context, client, Rendition::Preview)
+    }
+    fn with_rendition(requests:Vec<Request>, context:eframe::egui::Context, client:reqwest::Client, rendition:Rendition)->anyhow::Result<Self> {
         let (tx, rx) = tokio::sync::mpsc::channel(2);
         let (cancel, cancelled) = tokio::sync::oneshot::channel();
         let finished = Arc::new(AtomicBool::new(false));
@@ -76,7 +101,7 @@ impl Worker {
                         tokio::select! {
                             biased;
                             _ = cancelled => {},
-                            _ = download_all(requests, client, tx, context.clone()) => {},
+                            _ = download_all(requests, client, tx, context.clone(), rendition) => {},
                         }
                     });
                     // A cancelled image decode may finish on a blocking worker; it
@@ -119,6 +144,7 @@ async fn download_all(
     client: reqwest::Client,
     tx: tokio::sync::mpsc::Sender<Result<Thumbnail, Failure>>,
     context: eframe::egui::Context,
+    rendition:Rendition,
 ) {
     let mut requests = requests.into_iter();
     let mut jobs = tokio::task::JoinSet::new();
@@ -130,7 +156,7 @@ async fn download_all(
             let client = client.clone();
             jobs.spawn(async move {
                 let identity=(request.device_id.clone(),request.url.clone());
-                let result=tokio::time::timeout(DOWNLOAD_DEADLINE,download(client,request)).await
+                let result=tokio::time::timeout(DOWNLOAD_DEADLINE,download_for(client,request,rendition)).await
                     .unwrap_or_else(|_|Err(anyhow::anyhow!("image download exceeded 30 s")));
                 result.map_err(|error|Failure{device_id:identity.0,url:identity.1,error:format!("{error:#}")})
             });
@@ -147,7 +173,9 @@ async fn download_all(
     }
 }
 
-async fn download(client: reqwest::Client, request: Request) -> anyhow::Result<Thumbnail> {
+#[cfg(test)]
+async fn download(client:reqwest::Client,request:Request)->anyhow::Result<Thumbnail> { download_for(client,request,Rendition::Preview).await }
+async fn download_for(client: reqwest::Client, request: Request, rendition:Rendition) -> anyhow::Result<Thumbnail> {
     let url = reqwest::Url::parse(&request.url).context("invalid image URL")?;
     anyhow::ensure!(
         matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
@@ -156,7 +184,7 @@ async fn download(client: reqwest::Client, request: Request) -> anyhow::Result<T
     );
     let mut last_error=None;
     for attempt in 1..=ATTEMPTS {
-        match download_once(&client,&url,Request{device_id:request.device_id.clone(),url:request.url.clone()}).await {
+        match download_once(&client,&url,Request{device_id:request.device_id.clone(),url:request.url.clone()},rendition).await {
             Ok(image)=>return Ok(image),
             Err(error)=> {
                 // Auth/permission errors are actionable, not transient. Random
@@ -173,7 +201,7 @@ async fn download(client: reqwest::Client, request: Request) -> anyhow::Result<T
     Err(last_error.unwrap())
 }
 
-async fn download_once(client:&reqwest::Client,url:&reqwest::Url,request:Request)->anyhow::Result<Thumbnail> {
+async fn download_once(client:&reqwest::Client,url:&reqwest::Url,request:Request,rendition:Rendition)->anyhow::Result<Thumbnail> {
     // Refresh must reach random-image APIs rather than reusing a cached 302.
     // Keep the configured URL unchanged for source ownership and disk caching.
     let mut response=client.get(url.clone())
@@ -183,31 +211,36 @@ async fn download_once(client:&reqwest::Client,url:&reqwest::Url,request:Request
         .send().await.map_err(reqwest::Error::without_url).context("image request failed")?
         .error_for_status().map_err(reqwest::Error::without_url)?;
     if let Some(length)=response.content_length() {
-        anyhow::ensure!(length<=MAX_DOWNLOAD as u64,"image download is {length} bytes; limit is {MAX_DOWNLOAD} bytes");
+        anyhow::ensure!(length<=rendition.bytes() as u64,"image download exceeds byte limit");
     }
     let mut bytes=Vec::new();
     while let Some(chunk)=response.chunk().await.map_err(reqwest::Error::without_url).context("image response interrupted")? {
-        anyhow::ensure!(chunk.len()<=MAX_DOWNLOAD-bytes.len(),"image download exceeds {MAX_DOWNLOAD} bytes");
+        anyhow::ensure!(chunk.len()<=rendition.bytes()-bytes.len(),"image download exceeds byte limit");
         bytes.extend_from_slice(&chunk);
     }
-    tokio::task::spawn_blocking(move||decode(request,bytes)).await.context("image decoder task failed")?
+    tokio::task::spawn_blocking(move||decode_for(request,bytes,rendition)).await.context("image decoder task failed")?
 }
 
-pub(super) fn decode(request: Request, bytes: Vec<u8>) -> anyhow::Result<Thumbnail> {
-    anyhow::ensure!(bytes.len() <= MAX_DOWNLOAD, "preview too large");
+pub(super) fn decode(request: Request, bytes: Vec<u8>) -> anyhow::Result<Thumbnail> { decode_for(request,bytes,Rendition::Preview) }
+pub(super) fn decode_wallpaper(request:Request,bytes:Vec<u8>)->anyhow::Result<Thumbnail> { decode_wallpaper_with_limit(request,bytes,4096) }
+pub(super) fn decode_wallpaper_with_limit(request:Request,bytes:Vec<u8>,side:usize)->anyhow::Result<Thumbnail> { decode_for(request,bytes,Rendition::Wallpaper(side.clamp(1,4096) as u32)) }
+pub(super) fn decode_favorite(request:Request,bytes:Vec<u8>)->anyhow::Result<Thumbnail> { decode_for(request,bytes,Rendition::Favorite) }
+fn decode_for(request:Request,bytes:Vec<u8>,rendition:Rendition)->anyhow::Result<Thumbnail> {
+    anyhow::ensure!(bytes.len() <= rendition.bytes(), "image exceeds byte limit");
     let mut limits=image::Limits::default();
     limits.max_image_width=Some(MAX_SOURCE_DIMENSION);
     limits.max_image_height=Some(MAX_SOURCE_DIMENSION);
-    limits.max_alloc=Some(MAX_DECODE_ALLOC);
+    limits.max_alloc=Some(rendition.allocation());
     let mut reader=image::ImageReader::new(Cursor::new(bytes.as_slice())).with_guessed_format()?;
     reader.limits(limits.clone());
     let format=reader.format();
     let (width,height)=reader.into_dimensions().context("invalid image response or source dimensions exceed 8192 pixels")?;
     let mut reader=image::ImageReader::new(Cursor::new(bytes.as_slice())).with_guessed_format()?;
     reader.limits(limits);
-    let decoded=reader.decode().with_context(||format!("cannot decode {format:?} {width}x{height}, {} bytes (allocation limit {} MiB)",bytes.len(),MAX_DECODE_ALLOC/1024/1024))?;
-    let image = if decoded.width() > MAX_PREVIEW.0 || decoded.height() > MAX_PREVIEW.1 {
-        decoded.thumbnail(MAX_PREVIEW.0, MAX_PREVIEW.1)
+    let decoded=reader.decode().with_context(||format!("cannot decode {format:?} {width}x{height}, {} bytes (allocation limit {} MiB)",bytes.len(),rendition.allocation()/1024/1024))?;
+    let target=rendition.size();
+    let image = if decoded.width() > target.0 || decoded.height() > target.1 {
+        decoded.resize(target.0, target.1, image::imageops::FilterType::Lanczos3)
     } else {
         decoded
     }
@@ -219,6 +252,7 @@ pub(super) fn decode(request: Request, bytes: Vec<u8>) -> anyhow::Result<Thumbna
         height: image.height(),
         rgba: image.into_raw(),
         encoded: bytes,
+        original:Original{width,height,format:format.context("unknown image encoding")?},
     })
 }
 
@@ -387,7 +421,26 @@ mod tests {
         assert_eq!(preview.rgba.len(),960*540*4);
         // Dimensions alone are insufficient: a compact PNG can expand beyond
         // the decode allocation budget while remaining inside the edge limit.
-        assert!(decode(request(String::new()),png(8192,4096)).is_err());
+        let original=png(8192,4096);
+        assert!(decode(request(String::new()),original.clone()).is_err());
+        let wallpaper=decode_wallpaper(request(String::new()),original.clone()).unwrap();
+        assert_eq!((wallpaper.width,wallpaper.height),(4096,2048));
+        assert_eq!((wallpaper.original.width,wallpaper.original.height),(8192,4096));
+        assert_eq!(wallpaper.encoded,original);
+    }
+
+    #[test]
+    fn wallpaper_and_favorite_keep_source_pixels_and_encoding_separate_from_previews() {
+        let bytes=png(2560,1440);
+        let wallpaper=decode_wallpaper(request("https://example.invalid/original".into()),bytes.clone()).unwrap();
+        assert_eq!((wallpaper.width,wallpaper.height),(2560,1440));
+        assert_eq!((wallpaper.original.width,wallpaper.original.height),(2560,1440));
+        assert_eq!(wallpaper.original.extension(),"png");
+        assert_eq!(wallpaper.encoded,bytes);
+        let favorite=decode_favorite(request("favorite:owned".into()),bytes.clone()).unwrap();
+        assert_eq!((favorite.width,favorite.height),MAX_PREVIEW);
+        assert_eq!(favorite.original,wallpaper.original);
+        assert_eq!(favorite.encoded,bytes);
     }
 
     #[test]

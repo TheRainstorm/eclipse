@@ -13,7 +13,7 @@ use std::{
 };
 
 const CAPACITY: usize = 10;
-const MAX_BYTES: usize = 4 * 1024 * 1024;
+const MAX_BYTES: usize = wallpapers::MAX_WALLPAPER_BYTES;
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Manifest {
     version: u32,
@@ -221,7 +221,7 @@ impl Store {
             "favorite image exceeds size limit"
         );
         // Validate before claiming an identity or changing the collection.
-        wallpapers::decode(
+        wallpapers::decode_favorite(
             wallpapers::Request {
                 device_id: "favorite".into(),
                 url: String::new(),
@@ -306,7 +306,7 @@ fn decode_images(
     images
         .into_iter()
         .map(|(id, bytes)| {
-            let image = wallpapers::decode(
+            let image = wallpapers::decode_favorite(
                 wallpapers::Request {
                     device_id: "favorite".into(),
                     url: format!("favorite:{id}"),

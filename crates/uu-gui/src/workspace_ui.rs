@@ -50,6 +50,8 @@ pub(super) struct HomeRoute {
 pub(super) enum Action {
     Open(String),
     RefreshWallpaper,
+    FavoriteWallpaper,
+    DownloadWallpaper,
     SelfStream,
     StartSharing,
     RestartSharing,
@@ -57,6 +59,9 @@ pub(super) enum Action {
 }
 pub(super) struct Info {
     pub wallpaper_enabled:bool,
+    pub wallpaper_ready:bool,
+    pub wallpaper_download_ready:bool,
+    pub wallpaper_size:Option<(u32,u32)>,
     pub nearby:Vec<(String,String)>,
     pub providers:Vec<uu_core::plugins::Descriptor>,
 }
@@ -127,7 +132,7 @@ mod tests {
     #[test]
     fn extension_settings_stay_with_their_provider_between_ip_and_self_hosted_cards() {
         let mut h=Harness::new();h.workspace.route.page=Page::Services;
-        let info=Info{wallpaper_enabled:false,nearby:Vec::new(),providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Generated provider",version:"1"}]};
+        let info=Info{wallpaper_enabled:false,wallpaper_ready:false,wallpaper_download_ready:false,wallpaper_size:None,nearby:Vec::new(),providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Generated provider",version:"1"}]};
         let draw=|ctx:&egui::Context,workspace:&mut Workspace| {
             egui::CentralPanel::default().show(ctx,|ui| {
                 workspace.show_with_connections(ui,&info,&mut |ui,id| {if let Some(id)=id{assert_eq!(id,"example-addon");ui.label("Generated account controls");}else{ui.label("Generated independent protocol");}});
@@ -182,7 +187,7 @@ mod tests {
             self.time += 0.02;
             let mut actions = Vec::new();
             let info = Info {
-                wallpaper_enabled:true,nearby:Vec::new(),providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Example connection",version:"1"}],
+                wallpaper_enabled:true,wallpaper_ready:true,wallpaper_download_ready:true,wallpaper_size:Some((2560,1440)),nearby:Vec::new(),providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Example connection",version:"1"}],
             };
             let output = self.ctx.run(
                 egui::RawInput {
@@ -257,6 +262,22 @@ mod tests {
             h.frame(vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Secondary,pressed,modifiers:Default::default()}]);
         }
         assert!(matches!(&h.click("刷新壁纸")[..],[Action::RefreshWallpaper]));
+    }
+
+    #[test]
+    fn wallpaper_context_menu_exposes_source_pixels_and_separate_favorite_and_download_actions() {
+        for (label, download) in [("收藏当前壁纸",false),("下载壁纸",true)] {
+            let mut h=Harness::new();
+            for _ in 0..3 {h.frame(vec![]);}
+            let point=egui::pos2(900.,850.);
+            for pressed in [true,false] {
+                h.frame(vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Secondary,pressed,modifiers:Default::default()}]);
+            }
+            h.frame(vec![]);
+            assert!(h.texts.iter().any(|(text,_)|text=="原图：2560 × 1440 像素"),"{:?}",h.texts);
+            let actions=h.click(label);
+            assert!(if download {matches!(&actions[..],[Action::DownloadWallpaper])}else{matches!(&actions[..],[Action::FavoriteWallpaper])});
+        }
     }
 
 
@@ -916,6 +937,9 @@ impl Workspace {
         self.feedback.show(ui, super::ui_feedback::Scope::Devices);
         let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
         blank.context_menu(|ui| {
+            if let Some((width,height))=info.wallpaper_size {ui.label(uu_i18n::format!("原图：{} × {} 像素",width,height));ui.separator();}
+            if ui.add_enabled(info.wallpaper_ready,egui::Button::new(uu_i18n::text("收藏当前壁纸"))).clicked(){actions.push(Action::FavoriteWallpaper);ui.close_menu();}
+            if ui.add_enabled(info.wallpaper_download_ready,egui::Button::new(uu_i18n::text("下载壁纸"))).clicked(){actions.push(Action::DownloadWallpaper);ui.close_menu();}
             if ui.add_enabled(info.wallpaper_enabled,egui::Button::new(uu_i18n::text("刷新壁纸"))).clicked(){actions.push(Action::RefreshWallpaper);ui.close_menu();}
             ui.separator();
             if ui.button(uu_i18n::text("本机串流测试")).on_hover_text(uu_i18n::text("只读采集本机画面，通过本机回环完成编解码和显示；无需开启共享服务。")).clicked(){actions.push(Action::SelfStream);ui.close_menu();}
@@ -1951,7 +1975,7 @@ impl super::App {
         self.context.request_repaint();
     }
     pub(super) fn workspace_info(&self)->Info {
-        Info {wallpaper_enabled:self.preferences.wallpaper_enabled,nearby:self.lan.nearby(self.workspace.host.server_id()),providers:uu_core::plugins::registry().descriptors()}
+        Info {wallpaper_enabled:self.preferences.wallpaper_enabled,wallpaper_ready:self.background.has_wallpaper(),wallpaper_download_ready:self.background.can_download(),wallpaper_size:self.background.original_size(),nearby:self.lan.nearby(self.workspace.host.server_id()),providers:uu_core::plugins::registry().descriptors()}
     }
     pub(super) fn workspace_home(&mut self, ctx: &egui::Context) {
         let info = self.workspace_info();
@@ -2003,6 +2027,8 @@ impl super::App {
                     let scope = self.workspace.device_scope();
                     self.workspace.feedback.success(scope, uu_i18n::text("全局默认客户端配置已保存；下次连接生效"));
                 }
+                Action::FavoriteWallpaper => self.background.favorite(ctx),
+                Action::DownloadWallpaper => self.background.download(ctx),
                 Action::RefreshWallpaper => {
                     if self.preferences.wallpaper_enabled {self.background.sync(&self.preferences,ctx);self.background.refresh(ctx);}
                 }

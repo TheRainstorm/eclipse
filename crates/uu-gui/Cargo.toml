@@ -19,6 +19,7 @@ zeroize = {version="1",features=["serde"]}
 sha2.workspace = true
 fs2 = "0.4"
 raw-window-handle = "0.6"
+rfd = { version = "0.15.4", default-features = false, features = ["xdg-portal", "tokio"] }
 winit = {version="0.30.13",default-features=false,features=["x11","wayland"]}
 reqwest.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "ico", "bmp", "webp"] }
