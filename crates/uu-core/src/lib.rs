@@ -114,3 +114,5 @@ pub mod hotkeys;
 
 pub mod plugins;
 pub mod plugin_backend;
+
+pub mod stream_ports;

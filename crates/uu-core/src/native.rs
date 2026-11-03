@@ -20,7 +20,6 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::TcpListener,
     sync::{mpsc, watch},
     time::timeout,
 };
@@ -358,8 +357,11 @@ pub(crate) async fn serve_with_authority(config: HostConfig, mut stop: watch::Re
         "choose a concrete native host interface"
     );
     SharingConfig::from(&config).validate()?;
-    let listener = TcpListener::bind(config.bind)
-        .await
+    let listener = if config.bind.port() == 0 {
+        crate::stream_ports::tcp(config.bind.ip())
+    } else {
+        crate::listen_socket::tcp(config.bind)
+    }
         .context("cannot bind native signaling listener")?;
     let address = listener.local_addr()?;
     let credentials = HostCredentials::new(address, config.invitation_lifetime)?;

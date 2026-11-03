@@ -89,7 +89,7 @@ impl Owner {
                 let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build()?;
                 runtime.block_on(async {
                     let init=async {
-                        let socket=UdpSocket::bind(SocketAddr::new(ip,0)).await?;
+                        let socket=crate::stream_ports::udp(ip)?;
                         #[cfg(windows)]
                         super::native_media::configure_udp_probing(&socket)?;
                         let local=socket.local_addr()?;

@@ -318,7 +318,7 @@ impl NativePeer {
             let (mux,io)=crate::native_io::Owner::start(local_ip,observation.clone()).await?;
             (mux,Some(io),None::<Arc<UdpSocket>>,None)
         } else {
-        let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
+        let socket = crate::stream_ports::udp(local_ip)?;
         #[cfg(all(test,target_os="linux"))]
         { original_socket = Some(socket_lifetime_test::capture(&socket)?); }
         #[cfg(windows)]
@@ -391,6 +391,7 @@ impl NativePeer {
         crate::srtp_policy::configure(&mut settings);
         settings.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
         settings.set_network_types(vec![NetworkType::Udp4, NetworkType::Udp6]);
+        settings.set_udp_network(UDPNetwork::Ephemeral(webrtc::ice::udp_network::EphemeralUDP::new(crate::stream_ports::FIRST, crate::stream_ports::LAST)?));
         let mut peer=Self::build(settings, None, ice.configuration(), stats, sender).await?;
         peer.development_relay=ice.development_relay();
         Ok(peer)
