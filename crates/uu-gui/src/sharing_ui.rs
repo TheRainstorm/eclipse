@@ -41,6 +41,9 @@ pub(super) fn permissions(ui:&mut egui::Ui,value:&mut Permissions)->bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn host_ui() -> HostUi {
+        HostUi::with_startup(|_, _| Ok(None))
+    }
     fn poll_until(host: &mut HostUi, ctx: &egui::Context, condition: impl Fn(&HostUi) -> bool) {
         let start = std::time::Instant::now();
         while !condition(host) {
@@ -59,7 +62,7 @@ mod tests {
         let config=uu_core::Config{data_dir:root.join("data"),state_dir:root.join("state"),signaling_host:"unreachable.example.invalid".into()};
         let trust=TrustStore::open(config.at("device-trust")).unwrap();
         let ctx=egui::Context::default();
-        let mut host=HostUi::default();
+        let mut host=host_ui();
         let mut book=Book::default();book.sharing.ip_enabled=false;
         assert!(host.start(config.clone(),book.clone(),trust.clone(),&ctx).unwrap_err().to_string().contains("至少一个"));
         book.sharing.plugin_services=vec!["example-addon".into()];
@@ -87,9 +90,22 @@ mod tests {
         book.sharing.audio=false;book.sharing.control=false;
         drop((tcp,udp));
         store.sharing(book.sharing.clone()).unwrap();
-        let mut host=HostUi::default();
+        let calls=Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed=calls.clone();
+        let mut host=HostUi::with_startup(move |service,discovery| {
+            let mut calls=observed.lock().unwrap();
+            let _new=std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,service))
+                .expect("startup must finish before the new listener binds");
+            if let Some(&(previous,_))=calls.last() {
+                let _old=std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,previous))
+                    .expect("restart must release the old listener before startup");
+            }
+            calls.push((service,discovery));
+            Ok(None)
+        });
         host.start(config.clone(),book.clone(),trust.clone(),&ctx).unwrap();
         poll_until(&mut host,&ctx,|h|h.statuses().iter().any(|(_,s)|matches!(s,EndpointStatus::Ready)));
+        assert_eq!(*calls.lock().unwrap(),[(book.sharing.service_port,book.sharing.discovery_port)]);
         let old_port=book.sharing.service_port;
         let next=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         book.sharing.service_port=next.local_addr().unwrap().port();
@@ -109,6 +125,7 @@ mod tests {
         drop(next);
         host.restart(config,store.read().unwrap(),trust,&ctx).unwrap();
         poll_until(&mut host,&ctx,|h|!h.stopping()&&h.active_sharing.as_ref().is_some_and(|s|s.audio)&&h.statuses().iter().any(|(_,s)|matches!(s,EndpointStatus::Ready)));
+        assert_eq!(*calls.lock().unwrap(),[(old_port,book.sharing.discovery_port),(book.sharing.service_port,book.sharing.discovery_port)]);
         assert!(!host.changes_pending(&book.sharing));
         let _old=std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,old_port)).unwrap();
         assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,book.sharing.service_port)).is_err());
@@ -133,7 +150,7 @@ mod tests {
         book.sharing.control = false;
         book.sharing.service_port = tcp.local_addr().unwrap().port();
         book.sharing.discovery_port = udp.local_addr().unwrap().port();
-        let mut host = HostUi::default();
+        let mut host = host_ui();
         host.start(config.clone(), book.clone(), trust.clone(), &ctx)
             .unwrap();
         poll_until(&mut host, &ctx, |host| !host.running());
@@ -154,7 +171,7 @@ mod tests {
             book.sharing.service_port
         ))
         .is_err());
-        let mut other = HostUi::default();
+        let mut other = host_ui();
         assert!(other
             .start(config.clone(), book.clone(), trust, &ctx)
             .is_err());
@@ -182,6 +199,47 @@ mod tests {
         let _owner = uu_core::shared_host::HostOwner::claim(&config.at("device-trust")).unwrap();
         drop(_owner);
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn stop_during_startup_never_binds_the_listener() {
+        let root=std::env::temp_dir().join(format!("eclipse-host-startup-stop-{}",uuid::Uuid::new_v4()));
+        let config=uu_core::Config{data_dir:root.join("data"),state_dir:root.join("state"),signaling_host:"unreachable.example.invalid".into()};
+        let trust=TrustStore::open(config.at("device-trust")).unwrap();
+        let tcp=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let udp=std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let mut book=Book::default();
+        book.sharing.service_port=tcp.local_addr().unwrap().port();
+        book.sharing.discovery_port=udp.local_addr().unwrap().port();
+        book.sharing.audio=false;book.sharing.control=false;
+        let service=book.sharing.service_port;
+        drop((tcp,udp));
+        let (entered,waiting)=mpsc::channel();
+        let (release,wait)=mpsc::channel();
+        let wait=std::sync::Mutex::new(wait);
+        let mut host=HostUi::with_startup(move |_,_| {
+            entered.send(()).unwrap();
+            wait.lock().unwrap().recv_timeout(Duration::from_secs(3)).unwrap();
+            Ok(None)
+        });
+        let ctx=egui::Context::default();
+        host.start(config,book,trust,&ctx).unwrap();
+        waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+        host.stop();
+        release.send(()).unwrap();
+        poll_until(&mut host,&ctx,|h|!h.running());
+        assert!(!host.statuses().iter().any(|(_,status)|matches!(status,EndpointStatus::Ready)));
+        let _listener=std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,service)).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+#[derive(Clone)]
+struct Startup(Arc<dyn Fn(u16,u16)->anyhow::Result<Option<String>> + Send + Sync>);
+impl Default for Startup {
+    fn default()->Self {
+        Self(Arc::new(|service,discovery| {
+            #[cfg(windows)] {super::service_ui::prepare_foreground_firewall(service,discovery)}
+            #[cfg(not(windows))] {let _=(service,discovery);Ok(None)}
+        }))
     }
 }
 struct Worker {
@@ -226,6 +284,7 @@ pub(super) struct SessionView {
 
 #[derive(Default)]
 pub(super) struct HostUi {
+    startup: Startup,
     worker: Option<Worker>,
     events: Option<mpsc::Receiver<Event>>,
     requests: Option<async_mpsc::UnboundedReceiver<PairRequest>>,
@@ -244,6 +303,10 @@ pub(super) struct HostUi {
     restart_context:Option<(uu_core::Config,TrustStore)>,
 }
 impl HostUi {
+    #[cfg(test)]
+    fn with_startup(startup:impl Fn(u16,u16)->anyhow::Result<Option<String>> + Send + Sync + 'static)->Self {
+        Self{startup:Startup(Arc::new(startup)),..Self::default()}
+    }
     pub fn running(&self) -> bool {
         self.worker.is_some()
     }
@@ -402,13 +465,11 @@ impl HostUi {
         self.restart_context = Some((config, access.store.clone()));
         let (stop, receiver) = watch::channel(false);
         let context = ctx.clone();
+        let startup=self.startup.clone();
         let task = std::thread::Builder::new().name("eclipse-shared-host".into()).spawn(move || {
             let result = (|| -> anyhow::Result<()> {
                 let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build()?;
-                #[cfg(windows)]
-                let result = runtime.block_on(prepared.runner.run_with_startup(receiver, super::service_ui::prepare_foreground_firewall));
-                #[cfg(not(windows))]
-                let result = runtime.block_on(prepared.runner.run(receiver));
+                let result = runtime.block_on(prepared.runner.run_with_startup(receiver, move |service,discovery|(startup.0)(service,discovery)));
                 runtime.shutdown_timeout(Duration::from_secs(2));
                 result
             })();
