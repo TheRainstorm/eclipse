@@ -1,7 +1,6 @@
-//! Prepare capacity from an already installed, explicitly disabled Mtt adapter.
-//! The driver's monitor count/configuration is not changed: its global reload
-//! commands would rebuild other outputs. Enabled adapters and Zako are never
-//! restarted to manufacture a slot.
+//! Exact Mtt adapter primitives and disabled-adapter recovery. The separate
+//! capacity child owns idle-host count/configuration changes; the legacy
+//! enable-only path below never changes XML, restarts Zako, or adopts a screen.
 
 use super::*;
 use std::{
@@ -12,6 +11,9 @@ use windows_sys::Win32::System::Registry::REG_DWORD;
 
 const SETTLE: Duration = Duration::from_millis(500);
 const STARTUP: Duration = Duration::from_secs(10);
+
+#[path = "capacity_windows.rs"]
+pub(in crate::virtual_display) mod capacity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DisabledState {

@@ -18,6 +18,9 @@ struct Fake {
     claims: Mutex<BTreeSet<TargetKey>>,
     provision_calls: AtomicUsize,
     provisioned: Mutex<Option<Target>>,
+    capacity: Mutex<Option<preparation::Observation>>,
+    capacity_downloads: AtomicUsize,
+    capacity_changes: AtomicUsize,
 }
 
 struct FakeClaim {
@@ -69,6 +72,53 @@ impl Backend for Arc<Fake> {
             driver_present: true,
             targets: self.targets.lock().unwrap().clone(),
         })
+    }
+    fn preparation_observation(&self) -> Result<Option<preparation::Observation>> {
+        let Some(mut observed) = *self.capacity.lock().unwrap() else {
+            return Ok(None);
+        };
+        let targets = self.targets.lock().unwrap();
+        observed.targets = targets.len() as u32;
+        observed.available = targets
+            .iter()
+            .filter(|target| target.available && !target.active)
+            .count() as u32;
+        observed.active_driver_targets =
+            targets.iter().filter(|target| target.active).count() as u32;
+        observed.claimed_targets = self.claims.lock().unwrap().len() as u32;
+        Ok(Some(observed))
+    }
+    fn preparation_authorized(&self) -> bool {
+        self.capacity
+            .lock()
+            .unwrap()
+            .is_some_and(|state| state.authority)
+    }
+    fn download_capacity_driver(&self) -> preparation::Result<Vec<(String, Vec<u8>)>> {
+        self.capacity_downloads.fetch_add(1, Ordering::SeqCst);
+        Ok(Vec::new())
+    }
+    fn prepare_capacity(
+        &self,
+        minimum: u32,
+        package: Option<&[(String, Vec<u8>)]>,
+        check: &(dyn Fn() -> preparation::Result<()> + Sync),
+    ) -> preparation::Result<()> {
+        check()?;
+        self.capacity_changes.fetch_add(1, Ordering::SeqCst);
+        let mut state = self.capacity.lock().unwrap();
+        let state = state.as_mut().unwrap();
+        if !state.driver_present {
+            assert!(package.is_some());
+        }
+        let mut targets = self.targets.lock().unwrap();
+        assert!(targets.iter().all(|target| !target.active));
+        for id in targets.len() as u32 + 1..=minimum {
+            targets.push(capacity_target(id));
+        }
+        state.driver_present = true;
+        state.configured_capacity = Some(minimum);
+        Ok(())
     }
     fn activate(
         &self,
@@ -174,6 +224,9 @@ fn fixture() -> (Arc<Manager>, Arc<Fake>) {
             entries: Mutex::new(BTreeMap::new()),
             sessions: Mutex::new(BTreeMap::new()),
             manual_closing: AtomicBool::new(false),
+            preparation: preparation::Coordinator::default(),
+            preparation_owner: AtomicBool::new(true),
+            hosts: Mutex::default(),
         }),
         fake,
     )
@@ -528,6 +581,9 @@ fn another_manager(backend: &Arc<Fake>) -> Arc<Manager> {
         entries: Mutex::new(BTreeMap::new()),
         sessions: Mutex::new(BTreeMap::new()),
         manual_closing: AtomicBool::new(false),
+        preparation: preparation::Coordinator::default(),
+        preparation_owner: AtomicBool::new(true),
+        hosts: Mutex::default(),
     })
 }
 #[test]
@@ -702,4 +758,182 @@ fn provisioning_that_does_not_publish_inactive_capacity_is_not_retried_or_adopte
     assert_eq!(backend.provision_calls.load(Ordering::SeqCst), 1);
     assert!(backend.activated.lock().unwrap().is_empty());
     assert!(backend.removed.lock().unwrap().is_empty());
+}
+
+fn capacity_target(id: u32) -> Target {
+    Target {
+        key: TargetKey {
+            adapter: (17, 18),
+            target: id,
+            monitor_path: format!("prepared-monitor-{id}"),
+        },
+        name: "prepared virtual screen".into(),
+        source: format!("prepared-source-{id}"),
+        active: false,
+        available: true,
+        actual: None,
+    }
+}
+fn capacity_fixture(count: u32) -> (Arc<Manager>, Arc<Fake>) {
+    let (manager, backend) = fixture();
+    *backend.targets.lock().unwrap() = (1..=count).map(capacity_target).collect();
+    *backend.capacity.lock().unwrap() = Some(preparation::Observation {
+        supported: true,
+        driver_present: count != 0,
+        authority: true,
+        configured_capacity: (count != 0).then_some(count),
+        ..Default::default()
+    });
+    (manager, backend)
+}
+#[test]
+fn common_create_prepares_missing_driver_once_before_allocating_distinct_leases() {
+    let (manager, backend) = capacity_fixture(0);
+    // Inspect alone cannot install or accept preparation intent.
+    assert_eq!(
+        manager.status().unwrap().preparation.unwrap().phase,
+        preparation::Phase::NeedsDriver
+    );
+    assert!(!manager.has_queued_preparation());
+    let a = manager.create(Owner::Manual, Spec::default()).unwrap();
+    let b = manager.create(Owner::Manual, Spec::default()).unwrap();
+    assert_ne!(a.id, b.id);
+    assert_ne!(a.source, b.source);
+    assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 1);
+    assert_eq!(manager.status().unwrap().available_slots, 14);
+    manager.remove(a.id).unwrap();
+    manager.remove(b.id).unwrap();
+}
+#[test]
+fn an_existing_slot_is_usable_during_physical_stream_then_growth_waits_for_idle() {
+    let (manager, backend) = capacity_fixture(1);
+    let gate = Arc::new(crate::shared_host::SessionGate::default());
+    manager.register_host(&gate);
+    let physical = gate.claim("peer").unwrap();
+    physical.progress(crate::native::HostStatus::Streaming {
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        audio: "off".into(),
+        encoder: "fake".into(),
+    });
+    let a = manager.create(Owner::Manual, Spec::default()).unwrap();
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 0);
+    assert!(manager.has_queued_preparation());
+    let error = manager.create(Owner::Manual, Spec::default()).unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Preparation(preparation::Status {
+            phase: preparation::Phase::WaitingForIdle,
+            ..
+        })
+    ));
+    manager.remove(a.id).unwrap();
+    assert_eq!(
+        manager.resume_preparation().unwrap().unwrap().phase,
+        preparation::Phase::WaitingForIdle
+    );
+    drop(physical);
+    assert_eq!(
+        manager.resume_preparation().unwrap().unwrap().phase,
+        preparation::Phase::Ready
+    );
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst), 0);
+    assert_eq!(manager.status().unwrap().available_slots, 16);
+}
+#[test]
+fn initial_preparation_exempts_only_its_own_authenticated_pending_session() {
+    let (manager, backend) = capacity_fixture(0);
+    let gate = Arc::new(crate::shared_host::SessionGate::default());
+    manager.register_host(&gate);
+    let connection = gate.claim("peer").unwrap();
+    connection.progress(crate::native::HostStatus::Preparing);
+    assert!(matches!(
+        manager.create_with_context(Owner::Manual, Spec::default(), Some("other-session")),
+        Err(Error::Preparation(preparation::Status {
+            phase: preparation::Phase::WaitingForIdle,
+            ..
+        }))
+    ));
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 0);
+    let display = manager
+        .create_with_context(Owner::Manual, Spec::default(), Some(connection.id()))
+        .unwrap();
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 1);
+    manager.remove(display.id).unwrap();
+}
+#[test]
+fn sharing_startup_only_queues_existing_driver_and_never_installs_missing_driver() {
+    let (missing, missing_backend) = capacity_fixture(0);
+    missing.queue_installed_preparation().unwrap();
+    assert!(!missing.has_queued_preparation());
+    assert_eq!(missing_backend.capacity_downloads.load(Ordering::SeqCst), 0);
+    let (installed, backend) = capacity_fixture(1);
+    installed.queue_installed_preparation().unwrap();
+    assert!(installed.has_queued_preparation());
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 0);
+    installed.resume_preparation().unwrap();
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 1);
+}
+#[test]
+fn old_virtual_status_without_preparation_remains_readable() {
+    let value = serde_json::json!({"supported":true,"driver_present":true,"available_slots":1,"leased":0,"explanation":"ready","install_url":"https://example.invalid"});
+    let status: Status = serde_json::from_value(value).unwrap();
+    assert!(status.preparation.is_none());
+}
+
+#[test]
+fn consuming_an_existing_other_driver_slot_does_not_queue_an_unneeded_mtt_install() {
+    let (manager, backend) = capacity_fixture(0);
+    backend.targets.lock().unwrap().push(capacity_target(1));
+    let display = manager.create(Owner::Manual, Spec::default()).unwrap();
+    assert!(!manager.has_queued_preparation());
+    assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst), 0);
+    manager.remove(display.id).unwrap();
+}
+
+#[test]
+fn a_foreground_helper_can_reuse_a_slot_but_cannot_reload_an_existing_driver() {
+    let (manager, backend) = capacity_fixture(1);
+    manager.preparation_owner.store(false, Ordering::Release);
+    let display = manager.create(Owner::Manual, Spec::default()).unwrap();
+    assert!(!manager.has_queued_preparation());
+    assert!(matches!(
+        manager.create(Owner::Manual, Spec::default()),
+        Err(Error::Preparation(preparation::Status {
+            phase: preparation::Phase::NeedsElevation,
+            ..
+        }))
+    ));
+    manager.remove(display.id).unwrap();
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        manager.resume_preparation().unwrap().unwrap().phase,
+        preparation::Phase::NeedsElevation
+    );
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn durable_preparation_pending_blocks_create_before_any_recovery_or_slot_reuse() {
+    let (manager, backend) = capacity_fixture(1);
+    backend
+        .capacity
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .recovery_pending = true;
+    assert!(matches!(
+        manager.create(Owner::Manual, Spec::default()),
+        Err(Error::Preparation(preparation::Status {
+            phase: preparation::Phase::RecoveryPending,
+            ..
+        }))
+    ));
+    assert_eq!(backend.recover_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 0);
+    assert!(backend.claims.lock().unwrap().is_empty());
 }

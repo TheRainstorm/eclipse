@@ -64,35 +64,6 @@ fn win_ok(value: i32, operation: &str) -> Result<()> {
     }
 }
 
-pub(super) fn install(directory: &Path) -> Result<()> {
-    crate::service_admin::windows::require_administrator().map_err(|_| {
-        Error::Platform(
-            "explicit administrator elevation is required to install the virtual display driver"
-                .into(),
-        )
-    })?;
-    #[cfg(not(target_arch = "x86_64"))]
-    return Err(Error::Platform(
-        "the pinned signed driver package is for x86_64 Windows".into(),
-    ));
-    #[cfg(target_arch = "x86_64")]
-    {
-        // Copy bytes, not paths, across the elevation boundary. The original
-        // directory may be writable by an unelevated caller; its files are not
-        // referenced by SetupAPI after this bounded digest check.
-        let payload = read_pinned_package(directory)?;
-        super::windows::worker(move || {
-            // PnP and the driver's HKLM config are machine-wide even when
-            // different interactive console sessions have different CCD locks.
-            let _installer = super::windows::MutationLock::acquire_named(
-                "Global\\EclipseVirtualDisplayDriverInstaller",
-                5_000,
-            )?;
-            install_on_desktop(payload)
-        })?
-    }
-}
-
 struct ProtectedDirectory {
     path: PathBuf,
     keep: bool,
@@ -201,7 +172,7 @@ impl Drop for ProtectedDirectory {
     }
 }
 
-fn verify_catalog(directory: &Path) -> Result<()> {
+pub(super) fn verify_catalog(directory: &Path) -> Result<()> {
     let path = path_wide(&directory.join("mttvdd.cat"));
     let mut file: WINTRUST_FILE_INFO = unsafe { zeroed() };
     file.cbStruct = size_of::<WINTRUST_FILE_INFO>() as u32;
@@ -301,6 +272,26 @@ fn no_existing_mtt_node() -> Result<()> {
     ))
 }
 
+fn configuration_absent() -> Result<bool> {
+    let mut bytes = 0;
+    let code = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            wide(CONFIG_KEY).as_ptr(),
+            wide("VDDPATH").as_ptr(),
+            RRF_RT_ANY,
+            null_mut(),
+            null_mut(),
+            &mut bytes,
+        )
+    };
+    match code {
+        ERROR_FILE_NOT_FOUND => Ok(true),
+        0 => Ok(false),
+        code => Err(os_error("read VDDPATH absence", code)),
+    }
+}
+
 struct Configuration {
     key: HKEY,
     value: Vec<u16>,
@@ -359,12 +350,23 @@ impl Configuration {
             )
         };
         if code != 0 {
-            return Err(os_error("RegSetValueExW(MttVDD path)", code));
+            let failure = os_error("RegSetValueExW(MttVDD path)", code);
+            let rollback = config.rollback();
+            config.keep = true;
+            return Err(match rollback {
+                Ok(()) => failure,
+                Err(error) => Error::Platform(format!(
+                    "{failure}; exact VDDPATH recovery pending: {error}"
+                )),
+            });
         }
+        // Capacity owns explicit compensation. Drop during a panic must not
+        // remove a config while its accepted device install may still run.
+        config.keep = true;
         Ok(config)
     }
     fn rollback(&mut self) -> Result<()> {
-        if self.keep || self.value.is_empty() {
+        if self.value.is_empty() {
             return Ok(());
         }
         let mut current = vec![0u16; self.value.len() + 1];
@@ -400,8 +402,10 @@ impl Configuration {
 }
 impl Drop for Configuration {
     fn drop(&mut self) {
-        if let Err(error) = self.rollback() {
-            tracing::warn!(%error, "virtual display configuration rollback remains pending");
+        if !self.keep {
+            if let Err(error) = self.rollback() {
+                tracing::warn!(%error,"virtual display configuration rollback remains pending");
+            }
         }
         unsafe {
             RegCloseKey(self.key);
@@ -474,13 +478,7 @@ impl DeviceNode {
             keep: false,
         })
     }
-    fn register(&mut self) -> Result<()> {
-        no_existing_mtt_node()?;
-        win_ok(
-            unsafe { SetupDiCallClassInstaller(DIF_REGISTERDEVICE, self.devices.0, &self.info) },
-            "DIF_REGISTERDEVICE",
-        )?;
-        self.registered = true;
+    fn refresh_instance(&mut self) -> Result<()> {
         let mut instance = [0u16; 512];
         win_ok(
             unsafe {
@@ -492,16 +490,37 @@ impl DeviceNode {
                     null_mut(),
                 )
             },
-            "SetupDiGetDeviceInstanceIdW(new node)",
+            "read exact new device instance",
         )?;
-        self.instance = String::from_utf16_lossy(
-            &instance[..instance
-                .iter()
-                .position(|v| *v == 0)
-                .unwrap_or(instance.len())],
-        )
-        .to_ascii_lowercase();
+        let length = instance
+            .iter()
+            .position(|v| *v == 0)
+            .ok_or_else(|| Error::Platform("new device instance is not terminated".into()))?;
+        let instance = String::from_utf16(&instance[..length])
+            .map_err(|_| Error::Platform("new device instance is invalid UTF-16".into()))?
+            .to_ascii_lowercase();
+        if instance.is_empty() || (!self.instance.is_empty() && self.instance != instance) {
+            return Err(Error::Platform(
+                "new device instance identity changed".into(),
+            ));
+        }
+        self.instance = instance;
         Ok(())
+    }
+    fn register(&mut self) -> Result<()> {
+        no_existing_mtt_node()?;
+        // Best effort before registration; some SetupAPI providers expose the
+        // generated ID only after creating the devnode. A failed DIF may still
+        // have accepted a registration, so mark submission before invoking it.
+        let _ = self.refresh_instance();
+        self.registered = true;
+        let submitted = win_ok(
+            unsafe { SetupDiCallClassInstaller(DIF_REGISTERDEVICE, self.devices.0, &self.info) },
+            "DIF_REGISTERDEVICE",
+        );
+        let identity = self.refresh_instance();
+        submitted?;
+        identity
     }
     fn bind(&mut self, directory: &Path) -> Result<()> {
         let inf = path_wide(&directory.join("MttVDD.inf"));
@@ -608,7 +627,7 @@ impl DeviceNode {
         Ok(())
     }
     fn rollback(&mut self) -> Result<()> {
-        if self.keep || !self.registered {
+        if !self.registered {
             return Ok(());
         }
         let mut reboot = 0;
@@ -627,29 +646,255 @@ impl DeviceNode {
 }
 impl Drop for DeviceNode {
     fn drop(&mut self) {
-        if let Err(error) = self.rollback() {
-            tracing::warn!(%error, "new virtual display device rollback remains pending");
+        if !self.keep {
+            if let Err(error) = self.rollback() {
+                tracing::warn!(%error,"new virtual display device rollback remains pending");
+            }
         }
     }
 }
 
-fn install_on_desktop(payload: Vec<(String, Vec<u8>)>) -> Result<()> {
-    no_existing_mtt_node()?;
-    let before = super::windows::active_signature()?;
-    let mut directory = ProtectedDirectory::create(&payload)?;
-    verify_catalog(&directory.path)?;
-    let mut configuration = Configuration::create(&directory.path)?;
-    let mut node = DeviceNode::create()?;
+pub(super) struct InstallationFailure {
+    pub error: Error,
+    pub cleanup_verified: bool,
+}
+
+/// Compensate only a node and configuration created by this still-live
+/// transaction. A durable journal alone never grants this capability.
+pub(super) fn rollback_capacity_install(
+    instance: &str,
+    directory: &Path,
+    expected_xml: &[u8],
+    baseline: &super::windows::Fingerprints,
+    checkpoint: &(dyn Fn() -> super::preparation::Result<()> + Sync),
+    claims: &mut BTreeMap<TargetKey, Box<dyn Claim>>,
+) -> Result<()> {
+    checkpoint().map_err(|e| Error::Platform(e.message))?;
+    // Do not remove files an administrator changed after the installation.
+    for expected in &driver_package().files {
+        let bytes = super::windows::provision::capacity::read_configuration(
+            &directory.join(&expected.name),
+        )?;
+        let owned = if expected.name == "vdd_settings.xml" {
+            bytes == expected_xml
+        } else {
+            bytes.len() == expected.bytes && hex::encode(Sha256::digest(&bytes)) == expected.sha256
+        };
+        if !owned {
+            return Err(Error::Platform(
+                "new driver staging files changed; recovery did not overwrite them".into(),
+            ));
+        }
+    }
+    let mut key = null_mut();
+    let code = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            wide(CONFIG_KEY).as_ptr(),
+            0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY,
+            &mut key,
+        )
+    };
+    if code != 0 {
+        return Err(os_error(
+            "open owned new-driver configuration for recovery",
+            code,
+        ));
+    }
+    let mut configuration = Configuration {
+        key,
+        value: path_wide(directory),
+        keep: true,
+    };
+    // Prove the current value before touching the node. rollback() repeats the
+    // exact comparison on the same key before removing only VDDPATH.
+    let mut current = vec![0u16; configuration.value.len() + 1];
+    let mut bytes = (current.len() * 2) as u32;
+    let mut kind = 0;
+    let code = unsafe {
+        RegQueryValueExW(
+            key,
+            wide("VDDPATH").as_ptr(),
+            null_mut(),
+            &mut kind,
+            current.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    current.truncate(bytes as usize / 2);
+    if code != 0 || kind != REG_SZ || current != configuration.value {
+        return Err(Error::Platform(
+            "new-driver configuration ownership changed before recovery".into(),
+        ));
+    }
+    let handle = unsafe { SetupDiGetClassDevsW(&DISPLAY_CLASS, null(), null_mut(), DIGCF_PRESENT) };
+    if handle == INVALID_HANDLE_VALUE as isize {
+        return Err(os_error("open new-driver recovery inventory", unsafe {
+            GetLastError()
+        }));
+    }
+    let devices = DevInfoSet(handle);
+    let mut info: SP_DEVINFO_DATA = unsafe { zeroed() };
+    info.cbSize = size_of::<SP_DEVINFO_DATA>() as u32;
+    win_ok(
+        unsafe {
+            SetupDiOpenDeviceInfoW(devices.0, wide(instance).as_ptr(), null_mut(), 0, &mut info)
+        },
+        "open only the owned new driver instance",
+    )?;
+    let mut node = DeviceNode {
+        devices,
+        info,
+        instance: instance.into(),
+        registered: true,
+        keep: true,
+    };
+    node.refresh_instance()?;
+    let targets = super::windows::targets_for_instance(instance)?;
+    for target in targets {
+        if !claims.contains_key(&target.key) {
+            claims.insert(
+                target.key.clone(),
+                super::ownership_windows::claim(&target.key)?,
+            );
+        }
+    }
+    super::windows::provision::capacity::verify_new_instance(baseline, instance)?;
+    checkpoint().map_err(|e| Error::Platform(e.message))?;
+    node.rollback()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !super::windows::targets_for_instance(instance)?.is_empty() {
+        if Instant::now() >= deadline {
+            return Err(Error::Platform(
+                "new-driver targets remain after exact removal".into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if super::windows::active_signature()? != *baseline {
+        return Err(Error::Platform(
+            "original displays changed during new-driver compensation".into(),
+        ));
+    }
+    configuration.rollback()?;
+    if !configuration_absent()? {
+        return Err(Error::Platform(
+            "new-driver configuration removal is not verified".into(),
+        ));
+    }
+    // Drop removes only the four fixed, byte-verified files, never a recursive
+    // foreign directory tree or unrelated driver-store package.
+    drop(ProtectedDirectory {
+        path: directory.to_path_buf(),
+        keep: false,
+    });
+    Ok(())
+}
+
+pub(super) fn install_capacity_on_desktop(
+    payload: &[(String, Vec<u8>)],
+    minimum: u32,
+    checkpoint: &(dyn Fn() -> super::preparation::Result<()> + Sync),
+    claims: &mut BTreeMap<TargetKey, Box<dyn Claim>>,
+    created: &mut dyn FnMut(&str, &Path) -> Result<()>,
+) -> std::result::Result<(), InstallationFailure> {
+    let preflight = (|| -> Result<_> {
+        // Revalidate memory inputs at the privileged installer boundary.
+        if payload.len() != driver_package().files.len() {
+            return Err(Error::Platform("driver payload file count mismatch".into()));
+        }
+        for expected in &driver_package().files {
+            let matches: Vec<_> = payload
+                .iter()
+                .filter(|(name, _)| name == &expected.name)
+                .collect();
+            if matches.len() != 1
+                || matches[0].1.len() != expected.bytes
+                || hex::encode(Sha256::digest(&matches[0].1)) != expected.sha256
+            {
+                return Err(Error::Platform(
+                    "driver payload differs from the pinned official release".into(),
+                ));
+            }
+        }
+        checkpoint().map_err(|e| Error::Platform(e.message))?;
+        no_existing_mtt_node()?;
+        let before = super::windows::active_signature()?;
+        if before.is_empty() {
+            return Err(Error::LastActiveOutput);
+        }
+        if !configuration_absent()? {
+            return Err(Error::Platform(
+                "an existing Mtt configuration path was found; it was left unchanged".into(),
+            ));
+        }
+        let directory = ProtectedDirectory::create(payload)?;
+        verify_catalog(&directory.path)?;
+        // Verify the untouched signed payload first, then derive only its XML.
+        // XML is runtime user configuration and is not a replacement catalog.
+        let path = directory.path.join("vdd_settings.xml");
+        let original = std::fs::read(&path).map_err(|e| Error::Platform(e.to_string()))?;
+        let change = super::capacity_config::expand(&original, minimum)?;
+        super::windows::provision::capacity::replace_configuration(
+            &path,
+            &change.before,
+            &change.after,
+        )?;
+        // All fallible zero-write setup precedes the first HKLM mutation.
+        let node = DeviceNode::create()?;
+        Ok((before, directory, node))
+    })();
+    let (before, mut directory, mut node) = preflight.map_err(|error| InstallationFailure {
+        error,
+        cleanup_verified: true,
+    })?;
+    let mut configuration = None;
+    // Retain stage on unwinding after a potentially accepted registry/PnP
+    // write. Normal errors explicitly prove rollback below before deleting it.
+    directory.keep = true;
+    node.keep = true;
     let installation = (|| -> Result<()> {
+        checkpoint().map_err(|e| Error::Platform(e.message))?;
+        created("", &directory.path)?;
+        configuration = Some(Configuration::create(&directory.path)?);
         node.register()?;
+        created(&node.instance, &directory.path)?;
+        checkpoint().map_err(|e| Error::Platform(e.message))?;
         node.bind(&directory.path)?;
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + Duration::from_secs(45);
+        let mut last_keys = std::collections::BTreeSet::new();
+        let mut stable_since = Instant::now();
         loop {
+            checkpoint().map_err(|e| Error::Platform(e.message))?;
             let targets = super::windows::targets_for_instance(&node.instance)?;
-            if !targets.is_empty() {
+            for target in &targets {
+                if !claims.contains_key(&target.key) {
+                    claims.insert(
+                        target.key.clone(),
+                        super::ownership_windows::claim(&target.key)?,
+                    );
+                }
+            }
+            super::windows::provision::capacity::verify_new_instance(&before, &node.instance)?;
+            let keys: std::collections::BTreeSet<_> =
+                targets.iter().map(|t| t.key.clone()).collect();
+            if keys != last_keys {
+                last_keys = keys;
+                stable_since = Instant::now();
+            }
+            if targets.len() == minimum as usize
+                && stable_since.elapsed() >= Duration::from_millis(500)
+            {
+                checkpoint().map_err(|e| Error::Platform(e.message))?;
                 // Installation itself proves ownership of this exact new PnP
                 // instance. No pre-existing adapter's screen is adopted.
                 for target in &targets {
+                    checkpoint().map_err(|e| Error::Platform(e.message))?;
+                    super::windows::provision::capacity::verify_new_instance(
+                        &before,
+                        &node.instance,
+                    )?;
                     super::windows::deactivate(&target.key)?;
                 }
                 let after = super::windows::targets_for_instance(&node.instance)?;
@@ -658,7 +903,11 @@ fn install_on_desktop(payload: Vec<(String, Vec<u8>)>) -> Result<()> {
                         "new virtual display remained active during slot preparation".into(),
                     ));
                 }
-                if !after.iter().any(|target| target.available) {
+                if after.len() != minimum as usize
+                    || after
+                        .iter()
+                        .any(|target| !target.available || target.actual.is_some())
+                {
                     return Err(Error::Platform(
                         "new driver has no usable inactive display slot".into(),
                     ));
@@ -670,7 +919,7 @@ fn install_on_desktop(payload: Vec<(String, Vec<u8>)>) -> Result<()> {
             }
             if Instant::now() >= deadline {
                 return Err(Error::Platform(
-                    "new driver target did not appear within 20 seconds".into(),
+                    "new driver targets did not settle within 45 seconds".into(),
                 ));
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -680,29 +929,130 @@ fn install_on_desktop(payload: Vec<(String, Vec<u8>)>) -> Result<()> {
     match installation {
         Ok(()) => {
             node.keep = true;
-            configuration.keep = true;
+            if let Some(config) = configuration.as_mut() {
+                config.keep = true;
+            }
             directory.keep = true;
             Ok(())
         }
         Err(error) => {
+            // Accepted PnP changes are not cancelled by a caller timeout. If a
+            // host became active, retain this exact new node/config and claims.
+            if let Err(admission) = checkpoint() {
+                if !node.registered {
+                    let restored = match configuration.as_mut() {
+                        Some(config) => config.rollback(),
+                        None => configuration_absent().and_then(|absent| {
+                            if absent {
+                                Ok(())
+                            } else {
+                                Err(Error::Platform(
+                                    "configuration creation recovery remains pending".into(),
+                                ))
+                            }
+                        }),
+                    };
+                    if restored.is_ok() && configuration_absent().unwrap_or(false) {
+                        directory.keep = false;
+                        return Err(InstallationFailure {
+                            error,
+                            cleanup_verified: true,
+                        });
+                    }
+                }
+                node.keep = true;
+                if let Some(config) = configuration.as_mut() {
+                    config.keep = true;
+                }
+                directory.keep = true;
+                return Err(InstallationFailure {
+                    error: Error::Platform(format!(
+                        "{error}; idle-host recovery pending: {}",
+                        admission.message
+                    )),
+                    cleanup_verified: false,
+                });
+            }
+            let ownership = (|| -> Result<()> {
+                if node.registered {
+                    node.refresh_instance()?;
+                    created(&node.instance, &directory.path)?;
+                    let targets = super::windows::targets_for_instance(&node.instance)?;
+                    for target in targets {
+                        if !claims.contains_key(&target.key) {
+                            claims.insert(
+                                target.key.clone(),
+                                super::ownership_windows::claim(&target.key)?,
+                            );
+                        }
+                    }
+                    super::windows::provision::capacity::verify_new_instance(
+                        &before,
+                        &node.instance,
+                    )?;
+                }
+                checkpoint().map_err(|e| Error::Platform(e.message))?;
+                Ok(())
+            })();
+            if let Err(recovery) = ownership {
+                return Err(InstallationFailure {
+                    error: Error::Platform(format!(
+                        "{error}; exact new-device ownership recovery pending: {recovery}"
+                    )),
+                    cleanup_verified: false,
+                });
+            }
             if let Err(rollback) = node.rollback() {
                 // Keep the verified config available while Windows still has
                 // our node; never delete its files and pretend cleanup passed.
                 node.keep = true;
-                configuration.keep = true;
+                if let Some(config) = configuration.as_mut() {
+                    config.keep = true;
+                }
                 directory.keep = true;
-                return Err(Error::Platform(format!(
-                    "{error}; rollback remains pending: {rollback}"
-                )));
+                return Err(InstallationFailure {
+                    error: Error::Platform(format!(
+                        "{error}; rollback remains pending: {rollback}"
+                    )),
+                    cleanup_verified: false,
+                });
             }
-            if let Err(rollback) = configuration.rollback() {
-                configuration.keep = true;
-                directory.keep = true;
-                return Err(Error::Platform(format!(
-                    "{error}; configuration rollback remains pending: {rollback}"
-                )));
+            let rollback = match configuration.as_mut() {
+                Some(config) => config.rollback(),
+                None => configuration_absent().and_then(|absent| {
+                    if absent {
+                        Ok(())
+                    } else {
+                        Err(Error::Platform(
+                            "VDDPATH remains after failed configuration creation".into(),
+                        ))
+                    }
+                }),
+            };
+            if let Err(rollback) = rollback {
+                return Err(InstallationFailure {
+                    error: Error::Platform(format!(
+                        "{error}; configuration rollback remains pending: {rollback}"
+                    )),
+                    cleanup_verified: false,
+                });
             }
-            Err(error)
+            let gone = if node.instance.is_empty() {
+                !node.registered
+            } else {
+                super::windows::targets_for_instance(&node.instance)
+                    .is_ok_and(|targets| targets.is_empty())
+            };
+            let verified = gone
+                && super::windows::active_signature().is_ok_and(|after| after == before)
+                && configuration_absent().unwrap_or(false);
+            if verified {
+                directory.keep = false;
+            }
+            Err(InstallationFailure {
+                error,
+                cleanup_verified: verified,
+            })
         }
     }
 }

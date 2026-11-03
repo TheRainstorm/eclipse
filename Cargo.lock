@@ -5433,6 +5433,7 @@ dependencies = [
  "if-addrs",
  "rand 0.8.8",
  "rcgen",
+ "reqwest",
  "ring",
  "rustls",
  "rustls-pki-types",

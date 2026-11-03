@@ -19,6 +19,10 @@ use std::{
 use uuid::Uuid;
 
 #[cfg(any(windows, test))]
+mod capacity_config;
+#[cfg(any(windows, test))]
+mod capacity_policy;
+#[cfg(any(windows, test))]
 mod color_state;
 #[cfg(any(windows, test))]
 mod config_apply;
@@ -26,6 +30,7 @@ mod config_apply;
 mod install_windows;
 #[cfg(windows)]
 mod ownership_windows;
+pub mod preparation;
 #[cfg(any(windows, test))]
 mod provision_policy;
 #[cfg(windows)]
@@ -90,8 +95,31 @@ pub fn install_signed(package_directory: &std::path::Path) -> Result<Status> {
     {
         let manager = Manager::shared();
         {
-            let _ownership = manager.lock()?;
-            install_windows::install(package_directory)?;
+            let ownership = manager.lock()?;
+            if manager
+                .backend
+                .preparation_observation()?
+                .is_some_and(|observed| observed.driver_present)
+            {
+                return Err(Error::Platform("an installed driver pool must be prepared through the running background management service".into()));
+            }
+            manager
+                .fresh_install_admission()
+                .map_err(|failure| Error::Platform(failure.message))?;
+            let package = read_pinned_package(package_directory)?;
+            let provider = CapacityProvider {
+                manager: &manager,
+                leases: ownership.len() as u32,
+                initial: None,
+                package: Some(&package),
+            };
+            let status = manager
+                .preparation
+                .request(&provider, preparation::INITIAL_CAPACITY)
+                .map_err(|failure| Error::Platform(failure.message))?;
+            if status.phase != preparation::Phase::Ready {
+                return Err(Error::Preparation(status));
+            }
         }
         manager.status()
     }
@@ -102,8 +130,9 @@ pub fn install_signed(package_directory: &std::path::Path) -> Result<Status> {
     }
 }
 
-/// Prepare an installed driver explicitly from an elevated source-machine UI.
-/// Background hosts use the same provisioning path automatically on creation.
+/// Explicit management request for an idle driver pool. Reconfiguration belongs
+/// to the protected running host and its session gate; an elevated standalone
+/// frontend cannot infer whether that host has active capture sessions.
 pub fn prepare() -> Result<()> {
     Manager::shared().prepare_driver()
 }
@@ -164,6 +193,8 @@ pub struct Status {
     pub leased: usize,
     pub explanation: String,
     pub install_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation: Option<preparation::Status>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,6 +232,8 @@ pub enum Error {
     DriverMissing,
     #[error("no unused connected virtual display slot is available; existing active displays are never taken over")]
     NoAvailableSlot,
+    #[error("virtual display preparation: {0:?}")]
+    Preparation(preparation::Status),
     #[error("this virtual display is already leased by another host process")]
     Claimed,
     #[error("invalid virtual display size or refresh rate")]
@@ -279,6 +312,14 @@ trait Backend: Send + Sync {
     fn recover(&self) -> Result<()> {
         Ok(())
     }
+    fn recover_capacity(
+        &self,
+        checkpoint: &(dyn Fn() -> preparation::Result<()> + Sync),
+    ) -> preparation::Result<()> {
+        checkpoint()?;
+        self.recover()
+            .map_err(|error| preparation::Failure::unchanged(error.to_string()))
+    }
     fn claim(&self, key: &TargetKey) -> Result<Box<dyn Claim>>;
     fn is_claimed(&self, key: &TargetKey) -> Result<bool>;
     /// Supply an unused target without adopting or reconfiguring existing output.
@@ -287,6 +328,27 @@ trait Backend: Send + Sync {
         Err(Error::NoAvailableSlot)
     }
     fn inventory(&self) -> Result<Inventory>;
+    fn preparation_observation(&self) -> Result<Option<preparation::Observation>> {
+        Ok(None)
+    }
+    fn preparation_authorized(&self) -> bool {
+        false
+    }
+    fn download_capacity_driver(&self) -> preparation::Result<Vec<(String, Vec<u8>)>> {
+        Err(preparation::Failure::unchanged(
+            "driver preparation is unavailable on this platform",
+        ))
+    }
+    fn prepare_capacity(
+        &self,
+        _minimum: u32,
+        _package: Option<&[(String, Vec<u8>)]>,
+        _checkpoint: &(dyn Fn() -> preparation::Result<()> + Sync),
+    ) -> preparation::Result<()> {
+        Err(preparation::Failure::unchanged(
+            "driver capacity preparation is unavailable on this platform",
+        ))
+    }
     fn activate(
         &self,
         key: &TargetKey,
@@ -309,6 +371,9 @@ pub struct Manager {
     entries: Mutex<BTreeMap<LeaseId, Entry>>,
     sessions: Mutex<BTreeMap<Uuid, Weak<AtomicBool>>>,
     manual_closing: AtomicBool,
+    preparation: preparation::Coordinator,
+    preparation_owner: AtomicBool,
+    hosts: Mutex<Vec<Weak<crate::shared_host::SessionGate>>>,
 }
 
 impl Manager {
@@ -325,9 +390,155 @@ impl Manager {
                     entries: Mutex::new(BTreeMap::new()),
                     sessions: Mutex::new(BTreeMap::new()),
                     manual_closing: AtomicBool::new(false),
+                    preparation: preparation::Coordinator::default(),
+                    preparation_owner: AtomicBool::new(false),
+                    hosts: Mutex::default(),
                 })
             })
             .clone()
+    }
+
+    /// Only the protected service-session entry calls this after verifying its
+    /// LocalSystem identity, console session, stop event and installed path.
+    /// A foreground helper must never impersonate a running host's idle state.
+    pub fn enable_service_preparation(&self) -> Result<()> {
+        #[cfg(windows)]
+        {
+            crate::service_admin::windows::require_administrator()
+                .map_err(|_| Error::AdministratorRequired)?;
+            let user = crate::service_admin::windows::process_user(unsafe {
+                windows_sys::Win32::System::Threading::GetCurrentProcess()
+            })
+            .map_err(|e| Error::Platform(e.to_string()))?;
+            if user != "S-1-5-18" {
+                return Err(Error::AdministratorRequired);
+            }
+            self.preparation_owner.store(true, Ordering::Release);
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            Err(Error::Unsupported)
+        }
+    }
+    /// The standalone first-install helper has no running host's activity gate.
+    /// Never infer that another host is idle from this process's empty sessions.
+    fn fresh_install_admission(&self) -> preparation::Result<()> {
+        if self.preparation_owner.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::ERROR_SERVICE_DOES_NOT_EXIST;
+            use windows_sys::Win32::System::Services::SERVICE_STOPPED;
+            match crate::service_admin::windows::status() {
+                Ok(SERVICE_STOPPED)=>Ok(()),
+                Err(error) if error.downcast_ref::<std::io::Error>().and_then(std::io::Error::raw_os_error)==Some(ERROR_SERVICE_DOES_NOT_EXIST as i32)=>Ok(()),
+                Ok(_)=>Err(preparation::Failure::unchanged("the background service is active; prepare virtual displays through its administrator IPC")),
+                Err(error)=>Err(preparation::Failure::unchanged(format!("cannot verify that the background service is stopped: {error:#}"))),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            Err(preparation::Failure::unchanged(
+                "standalone driver installation is only supported on Windows",
+            ))
+        }
+    }
+    pub(crate) fn register_host(&self, gate: &Arc<crate::shared_host::SessionGate>) {
+        if let Ok(mut hosts) = self.hosts.lock() {
+            hosts.retain(|host| host.strong_count() != 0);
+            let gate = Arc::downgrade(gate);
+            if !hosts.iter().any(|host| host.ptr_eq(&gate)) {
+                hosts.push(gate);
+            }
+        }
+    }
+    fn preparation_streams(&self, initial: Option<&str>) -> u32 {
+        self.hosts
+            .lock()
+            .map(|hosts| {
+                hosts
+                    .iter()
+                    .filter_map(Weak::upgrade)
+                    .map(|gate| gate.preparation_activity(initial))
+                    .fold(0u32, u32::saturating_add)
+            })
+            .unwrap_or(u32::MAX)
+    }
+    pub(crate) fn preparation_in_flight(&self) -> bool {
+        self.preparation.in_flight()
+    }
+    pub(crate) fn has_queued_preparation(&self) -> bool {
+        self.preparation.queued()
+    }
+    pub fn preparation_status(&self) -> Result<Option<preparation::Status>> {
+        let entries = self.lock()?;
+        if self.backend.preparation_observation()?.is_none() {
+            return Ok(None);
+        }
+        self.preparation
+            .inspect(&CapacityProvider {
+                manager: self,
+                leases: entries.len() as u32,
+                initial: None,
+                package: None,
+            })
+            .map(Some)
+            .map_err(|failure| Error::Platform(failure.message))
+    }
+    /// Shared-host startup may reserve an already installed driver while idle.
+    /// Missing drivers are installed only by an explicit create/prepare action.
+    pub(crate) fn queue_installed_preparation(&self) -> Result<()> {
+        let _entries = self.lock()?;
+        if let Some(observed) = self.backend.preparation_observation()? {
+            if self.preparation_owner.load(Ordering::Acquire)
+                && observed.driver_present
+                && !observed.recovery_pending
+                && observed.authority
+                && observed.targets < preparation::INITIAL_CAPACITY
+            {
+                self.preparation.queue(preparation::INITIAL_CAPACITY);
+            }
+        }
+        Ok(())
+    }
+    pub fn resume_preparation(&self) -> Result<Option<preparation::Status>> {
+        let entries = self.lock()?;
+        if self.manual_closing.load(Ordering::Acquire) {
+            return Err(Error::HostClosing);
+        }
+        if self.backend.preparation_observation()?.is_none() {
+            return Ok(None);
+        }
+        self.preparation
+            .resume(&CapacityProvider {
+                manager: self,
+                leases: entries.len() as u32,
+                initial: None,
+                package: None,
+            })
+            .map(Some)
+            .map_err(|failure| Error::Platform(failure.message))
+    }
+    pub fn recover_preparation(&self) -> Result<Option<preparation::Status>> {
+        let entries = self.lock()?;
+        if self.backend.preparation_observation()?.is_none() {
+            return Ok(None);
+        }
+        let provider = CapacityProvider {
+            manager: self,
+            leases: entries.len() as u32,
+            initial: None,
+            package: None,
+        };
+        self.preparation
+            .recover(&provider, || {
+                self.backend
+                    .recover_capacity(&|| preparation::Provider::host_idle(&provider))
+            })
+            .map(Some)
+            .map_err(|failure| Error::Platform(failure.message))
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, BTreeMap<LeaseId, Entry>>> {
@@ -340,6 +551,24 @@ impl Manager {
         let _ownership = self.lock()?;
         if self.manual_closing.load(Ordering::Acquire) {
             return Err(Error::HostClosing);
+        }
+        if self.backend.preparation_observation()?.is_some() {
+            let status = self
+                .preparation
+                .request(
+                    &CapacityProvider {
+                        manager: self,
+                        leases: _ownership.len() as u32,
+                        initial: None,
+                        package: None,
+                    },
+                    preparation::INITIAL_CAPACITY,
+                )
+                .map_err(|failure| Error::Platform(failure.message))?;
+            if status.phase == preparation::Phase::Ready {
+                return Ok(());
+            }
+            return Err(Error::Preparation(status));
         }
         self.backend.recover()?;
         let inventory = self.backend.inventory()?;
@@ -367,11 +596,11 @@ impl Manager {
         let explanation = if !inventory.supported {
             "Virtual displays are only supported on Windows."
         } else if !inventory.driver_present {
-            "Install the signed VirtualDrivers driver explicitly as administrator; installation is never automatic."
+            "Creating a virtual display can prepare the pinned signed driver through an authorized management service. A foreground application without that service requires local administrator approval."
         } else if inventory.targets.is_empty() {
-            "A supported driver is installed but has no connected monitor target. Creating a display can prepare a disabled Mtt adapter that has no active output; foreground preparation requires administrator permission."
+            "The driver has no unused connected target. Preparation reserves an inactive pool while the host is idle; existing streams and displays are preserved."
         } else if available_slots == 0 {
-            "No unused connected virtual display slot is available. Creating a display attempts to prepare an unused disabled Mtt adapter. Capacity is limited to the driver's configured targets; active adapters are not reloaded and existing active displays are not taken over."
+            "No unused virtual display slot is available. Additional capacity can be prepared when the host is idle. Active streams are never interrupted to reload a driver, and the initial reservation is not a session limit."
         } else {
             "Unused virtual display slots are available. Removing a lease disconnects only that target from the Windows desktop."
         };
@@ -382,6 +611,20 @@ impl Manager {
             leased: entries.len(),
             explanation: explanation.into(),
             install_url: INSTALL_URL.into(),
+            preparation: if self.backend.preparation_observation()?.is_some() {
+                Some(
+                    self.preparation
+                        .inspect(&CapacityProvider {
+                            manager: self,
+                            leases: entries.len() as u32,
+                            initial: None,
+                            package: None,
+                        })
+                        .map_err(|failure| Error::Platform(failure.message))?,
+                )
+            } else {
+                None
+            },
         })
     }
 
@@ -451,6 +694,14 @@ impl Manager {
     }
 
     pub fn create(&self, owner: Owner, spec: Spec) -> Result<Display> {
+        self.create_with_context(owner, spec, None)
+    }
+    pub fn create_with_context(
+        &self,
+        owner: Owner,
+        spec: Spec,
+        initial_session: Option<&str>,
+    ) -> Result<Display> {
         spec.validate()?;
         let mut entries = self.lock()?;
         if owner == Owner::Manual && self.manual_closing.load(Ordering::Acquire) {
@@ -469,11 +720,63 @@ impl Manager {
                 return Err(Error::SessionClosed);
             }
         }
+        let preparation_before = self.backend.preparation_observation()?;
+        if self.preparation.recovery_pending()
+            || preparation_before.is_some_and(|state| state.recovery_pending)
+        {
+            let status = self
+                .preparation
+                .inspect(&CapacityProvider {
+                    manager: self,
+                    leases: entries.len() as u32,
+                    initial: initial_session,
+                    package: None,
+                })
+                .map_err(|failure| Error::Platform(failure.message))?;
+            return Err(Error::Preparation(status));
+        }
         self.backend.recover()?;
+        let capacity = self.backend.preparation_observation()?;
+        // Reuse an already safe slot immediately, even during another stream.
+        // Pool expansion is an independent idle-only intent, never a condition
+        // for consuming existing capacity.
         let mut selected = self.claim_available(&entries)?;
+        if selected.is_some()
+            && self.preparation_owner.load(Ordering::Acquire)
+            && capacity.is_some_and(|observed| observed.driver_present)
+        {
+            self.preparation.queue(preparation::INITIAL_CAPACITY);
+        }
         if selected.is_none() {
-            self.backend.provision()?;
-            selected = self.claim_available(&entries)?;
+            if let Some(capacity) = capacity {
+                let minimum = if capacity.targets < preparation::INITIAL_CAPACITY {
+                    preparation::INITIAL_CAPACITY
+                } else {
+                    capacity
+                        .targets
+                        .checked_add(preparation::INITIAL_CAPACITY)
+                        .ok_or_else(|| Error::Platform("virtual target capacity overflow".into()))?
+                };
+                let status = self
+                    .preparation
+                    .request(
+                        &CapacityProvider {
+                            manager: self,
+                            leases: entries.len() as u32,
+                            initial: initial_session,
+                            package: None,
+                        },
+                        minimum,
+                    )
+                    .map_err(|failure| Error::Platform(failure.message))?;
+                if status.phase != preparation::Phase::Ready {
+                    return Err(Error::Preparation(status));
+                }
+                selected = self.claim_available(&entries)?;
+            } else {
+                self.backend.provision()?;
+                selected = self.claim_available(&entries)?;
+            }
         }
         let (target, claim) = selected.ok_or(Error::NoAvailableSlot)?;
         let id = LeaseId(Uuid::new_v4());
@@ -676,6 +979,66 @@ impl Manager {
             session_id,
             _closed: closed,
         }
+    }
+}
+
+struct CapacityProvider<'a> {
+    manager: &'a Manager,
+    leases: u32,
+    initial: Option<&'a str>,
+    package: Option<&'a [(String, Vec<u8>)]>,
+}
+impl preparation::Provider for CapacityProvider<'_> {
+    type Package = Vec<(String, Vec<u8>)>;
+    fn observe(&self) -> preparation::Result<preparation::Observation> {
+        let mut state = self
+            .manager
+            .backend
+            .preparation_observation()
+            .map_err(|error| preparation::Failure::unchanged(error.to_string()))?
+            .ok_or_else(|| preparation::Failure::unchanged("driver preparation is unavailable"))?;
+        state.authority &= self.manager.preparation_owner.load(Ordering::Acquire)
+            || (self.package.is_some()
+                && !state.driver_present
+                && self.manager.fresh_install_admission().is_ok());
+        state.claimed_targets = state.claimed_targets.max(self.leases);
+        state.active_streams = state
+            .active_streams
+            .saturating_add(self.manager.preparation_streams(self.initial));
+        Ok(state)
+    }
+    fn download_pinned(&self) -> preparation::Result<Self::Package> {
+        match self.package {
+            Some(package) => Ok(package.to_vec()),
+            None => self.manager.backend.download_capacity_driver(),
+        }
+    }
+    fn host_idle(&self) -> preparation::Result<()> {
+        if self.package.is_some() && !self.manager.preparation_owner.load(Ordering::Acquire) {
+            self.manager.fresh_install_admission()?;
+        }
+        if !(self.manager.preparation_owner.load(Ordering::Acquire) || self.package.is_some())
+            || !self.manager.backend.preparation_authorized()
+            || self.leases != 0
+            || self.manager.preparation_streams(self.initial) != 0
+        {
+            return Err(preparation::Failure {
+                message: "host authorization or stream state changed during driver preparation"
+                    .into(),
+                outcome: preparation::FailureOutcome::AdmissionChanged,
+            });
+        }
+        Ok(())
+    }
+    fn apply(
+        &self,
+        minimum: u32,
+        package: Option<&Self::Package>,
+        checkpoint: &(dyn Fn() -> preparation::Result<()> + Sync),
+    ) -> preparation::Result<()> {
+        self.manager
+            .backend
+            .prepare_capacity(minimum, package.map(Vec::as_slice), checkpoint)
     }
 }
 

@@ -1,5 +1,6 @@
 //! Original Windows CCD/SetupAPI adapter. No Sunshine implementation is copied.
-//! Driver-global commands deliberately have no place in this backend.
+//! Driver pipe commands are never used. Idle capacity preparation owns its
+//! separate signed-package/configuration transaction through SetupAPI.
 
 use super::*;
 use std::{
@@ -32,8 +33,10 @@ use windows_sys::{
 
 #[path = "color_windows.rs"]
 mod color_api;
+#[path = "driver_download_windows.rs"]
+mod driver_download;
 #[path = "provision_windows.rs"]
-mod provision;
+pub(super) mod provision;
 
 pub(super) struct Windows;
 
@@ -126,9 +129,63 @@ pub(super) fn worker<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) 
         .map_err(|_| Error::Platform("virtual display worker panicked".into()))?
 }
 
+// Capacity admission borrows a host activity checkpoint. Join a scoped worker
+// before returning so that the callback cannot outlive its Manager/host gates.
+fn scoped_worker<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T> {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("eclipse-vdd-capacity".into())
+            .spawn_scoped(scope, move || {
+                uu_input::windows_desktop::sync_input_desktop()
+                    .map_err(|e| Error::Platform(e.to_string()))?;
+                let _coordinates = uu_input::windows_desktop::PhysicalCoordinates::enter()
+                    .map_err(|e| Error::Platform(e.to_string()))?;
+                let _serialized = MutationLock::acquire()?;
+                Ok(f())
+            })
+            .map_err(|e| Error::Platform(e.to_string()))?
+            .join()
+            .map_err(|_| Error::Platform("capacity worker panicked".into()))?
+    })
+}
+
 impl Backend for Windows {
     fn recover(&self) -> Result<()> {
-        worker(provision::recover_pending_only)?
+        worker(|| {
+            // Inspect the durable gate after acquiring the shared layout lock;
+            // another process may have submitted preparation while we waited.
+            if provision::capacity::recovery_pending()? {
+                return Err(Error::Platform(
+                    "capacity preparation requires verified idle-host recovery".into(),
+                ));
+            }
+            provision::recover_pending_only()
+        })?
+    }
+    fn preparation_authorized(&self) -> bool {
+        crate::service_admin::windows::require_administrator().is_ok()
+    }
+    fn preparation_observation(&self) -> Result<Option<preparation::Observation>> {
+        worker(provision::capacity::observe)?.map(Some)
+    }
+    fn download_capacity_driver(&self) -> preparation::Result<Vec<(String, Vec<u8>)>> {
+        driver_download::download()
+    }
+    fn prepare_capacity(
+        &self,
+        minimum: u32,
+        package: Option<&[(String, Vec<u8>)]>,
+        checkpoint: &(dyn Fn() -> preparation::Result<()> + Sync),
+    ) -> preparation::Result<()> {
+        scoped_worker(|| provision::capacity::prepare(minimum, package, checkpoint))
+            .map_err(|error| preparation::Failure::unchanged(error.to_string()))?
+    }
+    fn recover_capacity(
+        &self,
+        checkpoint: &(dyn Fn() -> preparation::Result<()> + Sync),
+    ) -> preparation::Result<()> {
+        scoped_worker(|| provision::capacity::recover(checkpoint))
+            .map_err(|error| preparation::Failure::pending(error.to_string()))?
     }
     fn claim(&self, key: &TargetKey) -> Result<Box<dyn Claim>> {
         super::ownership_windows::claim(key)
@@ -352,6 +409,12 @@ fn query(flags: u32) -> Result<Topology> {
         }
         let mut paths = vec![unsafe { zeroed() }; paths_count as usize];
         let mut modes = vec![unsafe { zeroed() }; modes_count as usize];
+        let mut database_topology = 0;
+        let topology_id = if flags == QDC_DATABASE_CURRENT {
+            &mut database_topology as *mut i32
+        } else {
+            null_mut()
+        };
         let code = unsafe {
             QueryDisplayConfig(
                 flags,
@@ -359,7 +422,7 @@ fn query(flags: u32) -> Result<Topology> {
                 paths.as_mut_ptr(),
                 &mut modes_count,
                 modes.as_mut_ptr(),
-                null_mut(),
+                topology_id,
             )
         };
         if code == ERROR_INSUFFICIENT_BUFFER {

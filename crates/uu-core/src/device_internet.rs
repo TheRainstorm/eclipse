@@ -140,7 +140,7 @@ pub(crate) async fn serve_connection_with_permit(
         let lease=match access.claim_authenticated(&mut authorized) {Ok(lease)=>lease,Err(error)=>{bootstrap.reject_media().await;return Err(error);}};
         let cancellation = access.cancellation(&lease, &peer, Some(authorized.permissions), stop);
         sharing.allow_input &= authorized.permissions.control;
-        sharing.session=Some(crate::shared_host::SessionContext{access:Arc::new(access.clone()),peer:peer.clone(),permissions:authorized.permissions});
+        sharing.session=Some(crate::shared_host::SessionContext{access:Arc::new(access.clone()),peer:peer.clone(),permissions:authorized.permissions,session_id:Some(lease.id().to_owned())});
         if let Some(factory) = clipboard {
             sharing.clipboard = Some(factory(&uuid::Uuid::new_v4().to_string())?);
         }

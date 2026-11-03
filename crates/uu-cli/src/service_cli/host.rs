@@ -63,6 +63,9 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
                 .canonicalize()?,
         "后台媒体进程必须从受保护的安装位置启动"
     );
+    // Driver reconfiguration belongs to this protected management host's
+    // session gate. Ordinary UAC helpers may only perform a fresh install.
+    uu_core::virtual_display::Manager::shared().enable_service_preparation()?;
     let config = paths.config();
     config.ensure_dirs().await?;
     let result=async {loop {

@@ -667,7 +667,7 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
         .data_dir
         .join(format!("session-{id}.eclipse-invite.json"));
     let (phase, mut status) = watch::channel(native::HostStatus::Starting);
-    let config = native::HostConfig {encoder_tuning:state.config.encoder_tuning,session:state.access.as_ref().map(|access|crate::shared_host::SessionContext{access:access.clone(),peer:client.clone(),permissions:permission}),video_policy:state.config.video_policy.clone(),codec:state.config.codec,rate_control:state.config.rate_control,
+    let config = native::HostConfig {encoder_tuning:state.config.encoder_tuning,session:state.access.as_ref().map(|access|crate::shared_host::SessionContext{access:access.clone(),peer:client.clone(),permissions:permission,session_id:guard._lease.as_ref().map(|lease|lease.id().to_owned())}),video_policy:state.config.video_policy.clone(),codec:state.config.codec,rate_control:state.config.rate_control,
         bind: SocketAddr::new(local.ip(), 0),
         source: state.config.source.clone(),
         invitation_file: path.clone(),

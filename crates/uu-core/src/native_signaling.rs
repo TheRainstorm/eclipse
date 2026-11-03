@@ -4,6 +4,10 @@ use serde_json::Value;
 use std::net::IpAddr;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+/// Initial virtual creation may download and verify a pinned signed driver.
+/// This is an answer-phase deadline, never a cancellation of a host mutation.
+pub(crate) const VIRTUAL_PREPARATION_WAIT: std::time::Duration =
+    std::time::Duration::from_secs(600);
 pub(crate) const PREPARATION_WAIT: std::time::Duration = std::time::Duration::from_secs(125);
 
 #[async_trait::async_trait]
@@ -15,6 +19,11 @@ pub trait SessionSignaling: Send {
     /// returning its first answer. Other protocol reads keep their own limits.
     async fn receive_answer(&mut self) -> Result<Value> {
         self.receive().await
+    }
+    /// Dedicated first virtual request; default keeps custom signaling
+    /// implementations compatible with their existing answer behavior.
+    async fn receive_virtual_answer(&mut self) -> Result<Value> {
+        self.receive_answer().await
     }
     /// LAN's authenticated TCP address pins its host candidates. Internet
     /// providers use authenticated SDP and allow direct UDP candidates instead.
@@ -42,6 +51,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SessionSignaling for TlsSignaling
     }
     async fn receive_answer(&mut self) -> Result<Value> {
         crate::native::read_message_wait(&mut self.stream, PREPARATION_WAIT).await
+    }
+    async fn receive_virtual_answer(&mut self) -> Result<Value> {
+        crate::native::read_message_wait(&mut self.stream, VIRTUAL_PREPARATION_WAIT).await
     }
     fn lan_peer(&self) -> Option<IpAddr> {
         Some(self.peer)

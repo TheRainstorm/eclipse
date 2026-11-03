@@ -70,6 +70,7 @@ pub fn prepare(
         pairing: Arc::new(PairingControl::new(requests)),
         sessions: Arc::new(SessionGate::default()),
     });
+    crate::virtual_display::Manager::shared().register_host(&access.sessions);
     *access.sessions.administration.lock().unwrap() =
         Some(Arc::new(crate::host_admin::Service::new(
             Store::open(config.at("device-trust"))?,
@@ -166,6 +167,10 @@ impl Runner {
             Err(error)=>emit(Event::Notice(format!("Firewall worker failed: {error}"))),
         }
         if *stop.borrow() {return Ok(());}
+        // Driver setup has its own owner: network-task cancellation must never
+        // abandon an accepted PnP transaction or release its rollback claims.
+        let (preparation_shutdown, preparation_stop)=watch::channel(false);
+        let preparation=tokio::spawn(preparation_worker(stop.clone(),preparation_stop));
         let (stream, _) = watch::channel(HostStatus::Starting);
         let (lan_events, mut receive) = mpsc::unbounded_channel();
         let forward = emit.clone();
@@ -250,6 +255,7 @@ impl Runner {
                 }
             }
         }
+        preparation_shutdown.send_replace(true);
         access.sessions.disconnect();
         if tokio::time::timeout(Duration::from_secs(5), async {
             while tasks.join_next().await.is_some() {}
@@ -262,7 +268,43 @@ impl Runner {
         }
         forwarding.abort();
         let _ = forwarding.await;
+        // No timeout/abort here: an accepted driver change must settle or retain
+        // its journal before the shared-host owner can finish shutting down.
+        if let Err(error)=preparation.await {tracing::warn!(%error,"virtual display preparation worker failed");}
         drop(_owner);
         Ok(())
+    }
+}
+
+/// Poll only a previously accepted intent. Status/peer inspection never creates
+/// one, and a missing driver is not installed merely because sharing started.
+async fn preparation_worker(mut stop:watch::Receiver<bool>, mut shutdown:watch::Receiver<bool>) {
+    let manager=crate::virtual_display::Manager::shared();
+    let setup=manager.clone();
+    match tokio::task::spawn_blocking(move||setup.queue_installed_preparation()).await {
+        Ok(Ok(()))=>{},
+        Ok(Err(error))=>tracing::warn!(%error,"virtual display startup preparation remains incomplete"),
+        Err(error)=>{tracing::warn!(%error,"virtual display startup preparation worker failed");return;},
+    }
+    let mut previous_error=None;
+    loop {
+        if *stop.borrow() || *shutdown.borrow() {break;}
+        if manager.has_queued_preparation() && !manager.preparation_in_flight() {
+            let operation=manager.clone();
+            match tokio::task::spawn_blocking(move||operation.resume_preparation()).await {
+                Ok(Ok(_))=>{previous_error=None;},
+                Ok(Err(error))=>{
+                    let message=error.to_string();
+                    if previous_error.as_ref()!=Some(&message) {tracing::warn!(%error,"virtual display queued preparation remains incomplete");}
+                    previous_error=Some(message);
+                },
+                Err(error)=>{tracing::warn!(%error,"virtual display preparation worker failed");break;},
+            }
+        }
+        tokio::select! {
+            _=stop.changed()=>break,
+            _=shutdown.changed()=>break,
+            _=tokio::time::sleep(Duration::from_millis(500))=>{},
+        }
     }
 }

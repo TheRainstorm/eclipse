@@ -39,6 +39,9 @@ pub enum Request {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LocalRequest {
     Manage { request: Request },
+    /// Host-local administrator IPC only; remote Create has its own ManageServer check.
+    Prepare,
+    Recover,
     PrepareSlot { id: String },
 }
 impl From<Request> for LocalRequest {
@@ -70,6 +73,7 @@ pub fn error_message(error: &anyhow::Error) -> String {
     match error.downcast_ref::<Error>() {
         Some(Error::Unsupported) => uu_i18n::text("虚拟显示器仅支持 Windows").into(),
         Some(Error::DriverMissing) => uu_i18n::text("源机尚未安装支持的签名虚拟显示器驱动").into(),
+        Some(Error::Preparation(status))=>preparation_message(status),
         Some(Error::NoAvailableSlot) => {
             uu_i18n::text("驱动没有可用虚拟屏，请在源机管理窗口准备驱动后重试").into()
         }
@@ -89,12 +93,40 @@ pub fn error_message(error: &anyhow::Error) -> String {
         _ => format!("{error:#}"),
     }
 }
+/// Stable user-facing result for both first-offer and in-session Create.
+/// The status still carries the detailed provider error for the local details UI.
+pub fn preparation_message(status:&crate::virtual_display::preparation::Status)->String {
+    use crate::virtual_display::preparation::Phase;
+    match status.phase {
+        Phase::Unsupported=>uu_i18n::text("此电脑暂不支持虚拟副屏").into(),
+        Phase::NeedsDriver=>uu_i18n::text("首次使用虚拟副屏时，后台可以准备签名驱动。").into(),
+        Phase::NeedsCapacity=>uu_i18n::text("可用虚拟副屏数量不足，可在空闲时准备更多。").into(),
+        Phase::NeedsElevation=>uu_i18n::text("请在源机打开后台准备虚拟副屏；首次安装时按系统提示授权。").into(),
+        Phase::WaitingForIdle if status.queued=>uu_i18n::text("当前有连接或虚拟屏正在使用，准备已排队；空闲后会自动补充虚拟副屏。").into(),
+        Phase::WaitingForIdle=>uu_i18n::text("当前有连接或虚拟屏正在使用，可登记准备并在空闲时补充。").into(),
+        Phase::Preparing=>uu_i18n::text("正在准备虚拟副屏，请等待本次操作完成。").into(),
+        Phase::Ready=>uu_i18n::text("虚拟副屏已就绪，可以创建。").into(),
+        Phase::Failed=>uu_i18n::text("虚拟副屏准备未完成，请查看诊断详情后重试。").into(),
+        Phase::RecoveryPending=>uu_i18n::text("上次准备尚未完成恢复，已停止自动重试；请在源机后台检查并恢复。").into(),
+    }
+}
 /// Local UI operation. An installed service must call this only after its OS
 /// administrator IPC boundary; it is never the remote connection entry point.
 pub fn execute_local_owner(request: LocalRequest) -> Result<Response> {
     let manager = Manager::shared();
     let request = match request {
         LocalRequest::Manage { request } => request,
+        LocalRequest::Prepare => {
+            match crate::virtual_display::prepare() {
+                Ok(()) | Err(crate::virtual_display::Error::Preparation(_))=>{},
+                Err(error)=>return Err(error.into()),
+            }
+            Request::Inspect
+        }
+        LocalRequest::Recover => {
+            manager.recover_preparation()?;
+            Request::Inspect
+        }
         LocalRequest::PrepareSlot { id } => {
             manager.prepare_slot(&id)?;
             Request::Inspect
@@ -280,7 +312,7 @@ impl Host {
         self.authorize()?;
         self.initial.prepare(spec,|| {
             self.authorize()?;
-            let display=self.manager.create(Owner::Session(self.owner),spec)?;
+            let display=self.manager.create_with_context(Owner::Session(self.owner),spec,self.context.session_id.as_deref())?;
             if let Err(error)=self.authorize() {
                 self.manager.remove_session(self.owner,display.id)?;
                 return Err(error);
@@ -326,7 +358,7 @@ impl Host {
                 slots: Vec::new(),
             },
             Request::Create { spec } => {
-                let display = self.manager.create(Owner::Session(self.owner), spec)?;
+                let display = self.manager.create_with_context(Owner::Session(self.owner), spec,self.context.session_id.as_deref())?;
                 // Revocation or cancellation while Windows was applying the
                 // target cannot leave a new display owned by an expired grant.
                 if let Err(error) = self.authorize() {

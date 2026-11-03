@@ -37,6 +37,8 @@ pub struct SessionContext {
     pub access: Arc<Access>,
     pub peer: String,
     pub permissions: Permissions,
+    /// The authenticated session lease, independent of peer/device identity.
+    pub session_id: Option<String>,
 }
 struct Active { peer: String, stop: watch::Sender<bool>, status: crate::native::HostStatus }
 #[derive(Default)]
@@ -46,10 +48,20 @@ pub struct SessionGate {
     pub administration: Mutex<Option<Arc<crate::host_admin::Service>>>,
 }
 impl SessionGate {
+    pub(crate) fn preparation_activity(&self, initial:Option<&str>)->u32 {
+        self.active.lock().map(|sessions|sessions.iter().filter(|(id,active)| {
+            !(Some(id.as_str())==initial && !*active.stop.borrow() && matches!(active.status,crate::native::HostStatus::Starting|crate::native::HostStatus::Preparing))
+        }).count().try_into().unwrap_or(u32::MAX)).unwrap_or(u32::MAX)
+    }
     /// Authenticated sessions have no fixed application count limit. Capture,
     /// encoder and transport admission failures remain local to each session.
     pub fn claim(self: &Arc<Self>, peer: &str) -> Result<SessionLease> {
         let mut active = self.active.lock().unwrap();
+        // This check shares the activity mutex with the preparation checkpoint:
+        // either the new session is observed, or admission waits for the host's
+        // accepted machine-wide setup transaction. Existing streams continue.
+        anyhow::ensure!(!crate::virtual_display::Manager::shared().preparation_in_flight(),
+            "{}",uu_i18n::text("源机正在准备虚拟副屏，请在准备完成后连接。"));
         let session = uuid::Uuid::new_v4().to_string();
         let (stop, receiver) = watch::channel(false);
         active.insert(session.clone(), Active { peer: peer.into(), stop, status: crate::native::HostStatus::Starting });
@@ -76,6 +88,7 @@ impl SessionGate {
 }
 pub struct SessionLease { gate: Arc<SessionGate>, session: String, receiver: watch::Receiver<bool>,temporary:Option<crate::device_auth::TemporaryGrant> }
 impl SessionLease {
+    pub fn id(&self)->&str {&self.session}
     pub fn cancel(&self) { self.gate.disconnect_session(&self.session); }
     pub fn stopped(&self) -> watch::Receiver<bool> { self.receiver.clone() }
     pub fn progress(&self, status: crate::native::HostStatus) {
@@ -208,4 +221,29 @@ mod tests {
         for lease in others.iter().chain([&b,&e]) { assert!(*lease.receiver.borrow()); }
         drop((b,others,e)); assert!(gate.sessions().is_empty());
     }
+    #[test]
+    fn preparation_exempts_only_the_exact_pending_connection_never_streaming_or_other_sessions() {
+        let gate=Arc::new(SessionGate::default());
+        let initial=gate.claim("same-peer").unwrap();
+        assert_eq!(gate.preparation_activity(Some(initial.id())),0);
+        assert_eq!(gate.preparation_activity(None),1);
+        assert_eq!(gate.preparation_activity(Some("unknown")),1);
+        initial.progress(crate::native::HostStatus::Preparing);
+        assert_eq!(gate.preparation_activity(Some(initial.id())),0);
+        let parallel=gate.claim("same-peer").unwrap();
+        assert_eq!(gate.preparation_activity(Some(initial.id())),1);
+        drop(parallel);
+        initial.progress(crate::native::HostStatus::Streaming {width:1920,height:1080,fps:60,audio:"off".into(),encoder:"fake".into()});
+        assert_eq!(gate.preparation_activity(Some(initial.id())),1);
+        drop(initial);assert_eq!(gate.preparation_activity(None),0);
+    }
+
+    #[test]
+    fn a_cancelled_initial_connection_is_not_exempt_from_idle_admission() {
+        let gate=Arc::new(SessionGate::default());let initial=gate.claim("peer").unwrap();
+        assert_eq!(gate.preparation_activity(Some(initial.id())),0);
+        initial.cancel();assert_eq!(gate.preparation_activity(Some(initial.id())),1);
+        drop(initial);assert_eq!(gate.preparation_activity(None),0);
+    }
+
 }

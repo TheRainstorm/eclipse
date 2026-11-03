@@ -172,7 +172,7 @@ mod tests {
         let store=Store::open(root.join("host")).unwrap();
         let (sender,_)=mpsc::unbounded_channel();
         let access=Arc::new(Access {store:trust.clone(),name:"Generated host".into(),pairing:Arc::new(PairingControl::new(sender)),sessions:Arc::new(SessionGate::default())});
-        let context=SessionContext{access,peer:client.id(),permissions:Permissions::VIEW};
+        let context=SessionContext{access,peer:client.id(),permissions:Permissions::VIEW,session_id:None};
         let service=Service::new(store.clone(),Sharing::default(),||Ok(()));
         let Response::Snapshot{snapshot}=service.execute(&context,Request::Inspect).unwrap() else{panic!()};
         assert!(snapshot.server.is_none());

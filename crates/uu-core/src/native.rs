@@ -1097,13 +1097,17 @@ async fn receive_session(
     if let Some(codecs)=stats.native_hdr_codecs.get().filter(|codecs|!codecs.is_empty()) {
         crate::native_color::Request{codecs:codecs.clone()}.add(&mut description)?;
     }
+    let virtual_setup=matches!(crate::native_displays::InitialRequest::read(&description)?,Some(crate::native_displays::InitialRequest::Virtual{..}));
     stream.send(serde_json::to_value(Offer {
         version: 1,
         sdp: description,
     })?).await?;
     let answer_started=Instant::now();
-    let message=timeout(crate::native_signaling::PREPARATION_WAIT,stream.receive_answer()).await
-        .context(uu_i18n::text("等待被控端屏幕共享授权或编码器准备超时"))??;
+    let message=if virtual_setup {
+        timeout(crate::native_signaling::VIRTUAL_PREPARATION_WAIT,stream.receive_virtual_answer()).await
+    } else {
+        timeout(crate::native_signaling::PREPARATION_WAIT,stream.receive_answer()).await
+    }.context(uu_i18n::text("等待被控端屏幕共享授权或编码器准备超时"))??;
     stats.diagnostics.record(serde_json::json!({"event":"native_answer_wait","elapsed_us":elapsed_us(answer_started)}));
     if let Some(reason)=message.get("preparation_error").and_then(|v|v.as_str()) {
         bail!("{}", uu_i18n::format!("被控端准备失败：{}",reason.chars().take(512).collect::<String>()));
@@ -1483,7 +1487,7 @@ mod tests {
         *access.sessions.administration.lock().unwrap()=Some(Arc::new(Service::new(store.clone(),Default::default(),move||{invoked.store(true,Ordering::Release);Ok(())})));
         let _lease=access.claim(&client.id()).unwrap();
         let (mut config,file)=config();
-        config.session=Some(SessionContext{access,peer:client.id(),permissions});
+        config.session=Some(SessionContext{access,peer:client.id(),permissions,session_id:None});
         let (host_stop,rx)=watch::channel(false);let host=tokio::spawn(serve(config,rx));
         let invite=invitation(&file).await;
         let stats=Arc::new(MediaStats::default());let observed=stats.clone();
