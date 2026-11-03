@@ -41,8 +41,8 @@ impl ClientUi {
                         PairingMethod::Code=>{ui.label(uu_i18n::text("主机输入本机显示的八位短码并批准，保存长期授权。"));},
                         PairingMethod::TemporaryCode=>{ui.label(uu_i18n::text("主机确认八位短码后转为本次授权；此前长期授权会撤销，断开后需重新配对。"));},
                         PairingMethod::Password=>{
-                            ui.label(uu_i18n::text("输入主机预先设置的配对密码；验证成功后保存设备授权。"));
-                            ui.add(egui::TextEdit::singleline(&mut *self.password).password(true).char_limit(256).hint_text(uu_i18n::text("主机配对密码")));
+                            ui.label(uu_i18n::text("输入对方电脑预先设置的安全连接密码；验证成功后保存设备授权。"));
+                            ui.add(egui::TextEdit::singleline(&mut *self.password).password(true).char_limit(256).hint_text(uu_i18n::text("安全连接密码")));
                         },
                         PairingMethod::PublicKey=>{ui.label(uu_i18n::text("主机已预先授权本机公钥。核对上方指纹后信任并连接。"));},
                     }
@@ -113,14 +113,14 @@ impl HostUi {
         ui.add_space(12.);
         if self.method==0 {
             ui.strong(uu_i18n::text("密码配对"));
-            ui.label(if self.configured{uu_i18n::text("已设置配对密码")}else{uu_i18n::text("尚未设置配对密码")});
+            ui.label(if self.configured{uu_i18n::text("已设置安全连接密码")}else{uu_i18n::text("尚未设置安全连接密码")});
             ui.weak(uu_i18n::text("设置后，知道密码的新设备可配对并保存授权。更改密码用于后续配对，已有设备授权仍由下方列表管理。"));
-            ui.add(egui::TextEdit::singleline(&mut *self.password).password(true).char_limit(256).hint_text(uu_i18n::text("新配对密码 · 8–256 字节")));
+            ui.add(egui::TextEdit::singleline(&mut *self.password).password(true).char_limit(256).hint_text(uu_i18n::text("新的安全连接密码 · 8–256 字节")));
             ui.horizontal_wrapped(|ui|{super::sharing_ui::permissions(ui,&mut self.password_permissions);});
             let mut change=None;
             ui.horizontal(|ui| {
-                if ui.add_enabled(self.job.is_none()&&(8..=256).contains(&self.password.len()),egui::Button::new(uu_i18n::text("保存配对密码"))).clicked(){change=Some(true);}
-                if ui.add_enabled(self.job.is_none()&&self.configured,egui::Button::new(uu_i18n::text("移除配对密码"))).clicked(){change=Some(false);}
+                if ui.add_enabled(self.job.is_none()&&(8..=256).contains(&self.password.len()),egui::Button::new(uu_i18n::text("保存安全连接密码"))).clicked(){change=Some(true);}
+                if ui.add_enabled(self.job.is_none()&&self.configured,egui::Button::new(uu_i18n::text("移除安全连接密码"))).clicked(){change=Some(false);}
                 if self.job.is_some(){ui.spinner();}
             });
             if let Some(set)=change {

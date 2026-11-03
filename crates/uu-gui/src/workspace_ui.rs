@@ -120,6 +120,7 @@ pub(super) struct Workspace {
     last_read: Instant,
     pub pairing_visible: bool,
     pairing_settings:super::pairing_ui::HostUi,
+    pairing_password_configured: Option<bool>,
     autostart_checked: bool,
     previews:std::collections::HashMap<String,PreviewSlot>,
     preview_jobs:Vec<PreviewJob>,
@@ -253,6 +254,34 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.root);
         }
     }
+    #[test]
+    fn empty_devices_offer_add_and_optional_password_setup_without_starting_sharing() {
+        let mut h = Harness::new();
+        h.frame(vec![]);
+        assert!(h.texts.iter().any(|(s, _)| s == "连接你的第一台电脑"));
+        assert!(h.click("添加第一台电脑").is_empty());
+        assert!(h.workspace.editor.is_some());
+        assert!(!h.workspace.host.running());
+        h.workspace.editor = None;
+        h.click("设置安全连接密码");
+        assert_eq!(h.workspace.route.page, Page::Services);
+        assert_eq!(h.workspace.service_tab, 4);
+        assert!(!h.workspace.host.running());
+    }
+
+    #[test]
+    fn explicit_stream_button_uses_the_saved_device_connection_action() {
+        let mut h = Harness::new();
+        let profile = Profile::new("Generated desktop", Destination::Ip {
+            address: "192.0.2.10:48998".into(), legacy_device: None,
+        });
+        let id = profile.id.clone();
+        h.workspace.book.devices.push(profile);
+        let actions = h.click("开始串流");
+        assert!(matches!(&actions[..], [Action::Open(found)] if found == &id));
+        assert!(!h.workspace.host.running());
+    }
+
     #[test]
     fn device_background_context_menu_requests_wallpaper_refresh() {
         let mut h=Harness::new();
@@ -652,6 +681,9 @@ impl Workspace {
             ),
         };
         let draft = book.sharing.clone();
+        let pairing_password_configured = trust.as_ref()
+            .and_then(|store| store.pairing_password_permissions().ok())
+            .map(|permissions| permissions.is_some());
         let mut feedback = super::ui_feedback::Feedback::default();
         if !notice.is_empty() {
             feedback.error(super::ui_feedback::Scope::Devices, notice);
@@ -687,6 +719,7 @@ impl Workspace {
             last_read: Instant::now(),
             pairing_visible: false,
             pairing_settings:Default::default(),
+            pairing_password_configured,
             autostart_checked: false,
             previews:Default::default(),preview_jobs:Vec::new(),presence:Default::default(),
         }
@@ -749,6 +782,9 @@ impl Workspace {
     }
 
     fn refresh(&mut self) {
+        self.pairing_password_configured = self.trust.as_ref()
+            .and_then(|store| store.pairing_password_permissions().ok())
+            .map(|permissions| permissions.is_some());
         if let Some(store) = &self.store {
             match store.read() {
                 Ok(book) => {
@@ -951,7 +987,6 @@ impl Workspace {
             self.device_details(ui, &id, actions);
             return;
         }
-        self.feedback.show(ui, super::ui_feedback::Scope::Devices);
         let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
         blank.context_menu(|ui| {
             if let Some((width,height))=info.wallpaper_size {ui.label(uu_i18n::format!("原图：{} × {} 像素",width,height));ui.separator();}
@@ -981,12 +1016,76 @@ impl Workspace {
                 });
             }
         });
+        self.feedback.show(ui, super::ui_feedback::Scope::Devices);
+        if self.pairing_password_configured == Some(false) {
+            card(ui, |ui| {
+                ui.strong(uu_i18n::text("让其它电脑安全连接本机"));
+                muted(ui, uu_i18n::text("可以先设置安全连接密码，也可使用配对码或已授权公钥。密码用于防止未授权设备接入。"));
+                if ui.add(theme::secondary_button(uu_i18n::text("设置安全连接密码"))).clicked() {
+                    self.route.page = Page::Services;
+                    self.service_tab = 4;
+                }
+            });
+        }
         let profiles:Vec<_>=self.book.devices.iter().filter(|p|p.redirect.is_none()).cloned().collect();
+        if profiles.is_empty() {
+            card(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    let p = theme::palette(ui.visuals());
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(96., 72.), egui::Sense::hover());
+                    let screen = egui::Rect::from_center_size(rect.center() - egui::vec2(0., 8.), egui::vec2(72., 44.));
+                    ui.painter().rect(screen, 8., p.overlay, egui::Stroke::new(1.5, p.accent));
+                    ui.painter().line_segment([screen.center_bottom(), screen.center_bottom()+egui::vec2(0., 10.)], egui::Stroke::new(2., p.accent));
+                    ui.painter().line_segment([screen.center_bottom()+egui::vec2(-14., 10.), screen.center_bottom()+egui::vec2(14., 10.)], egui::Stroke::new(2., p.accent));
+                    ui.heading(uu_i18n::text("连接你的第一台电脑"));
+                    muted(ui, uu_i18n::text("1. 在对方电脑开启 Eclipse 服务　2. 添加对方 IP 地址"));
+                    muted(ui, uu_i18n::text("3. 首次连接完成设备配对　4. 点击开始串流"));
+                    ui.add_space(8.);
+                    if ui.add(theme::primary_button(uu_i18n::text("添加第一台电脑"))).clicked() {
+                        self.new_device(None, None);
+                    }
+                    if !info.nearby.is_empty() {
+                        ui.menu_button(uu_i18n::text("选择附近电脑"), |ui| {
+                            for (name, address) in &info.nearby {
+                                if ui.button(name).clicked() {
+                                    self.new_device(None, None);
+                                    if let Some(editor) = &mut self.editor {
+                                        editor.name = name.clone();
+                                        editor.address = address.clone();
+                                    }
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+        }
         let columns=((ui.available_width()+22.)/252.).floor().clamp(1.,8.) as usize;
         for row in profiles.chunks(columns) {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x=22.;
-                for profile in row {self.device_tile(ui,profile,actions);}
+                for profile in row {
+                    ui.vertical(|ui| {
+                        ui.set_width(230_f32.min(ui.available_width()));
+                        theme::card(ui.visuals()).show(ui, |ui| {
+                            self.device_tile(ui,profile,actions);
+                            if let Ok(route) = profile.route() {
+                                let address = route.destination.target();
+                                ui.add(egui::Label::new(RichText::new(&address).small().color(theme::palette(ui.visuals()).muted)).truncate()).on_hover_text(address);
+                            }
+                            let (label, tone) = match self.presence.status(&profile.id) {
+                                super::device_presence::Status::Online => (uu_i18n::text("在线"), theme::Tone::Success),
+                                super::device_presence::Status::Offline => (uu_i18n::text("暂时离线"), theme::Tone::Neutral),
+                                super::device_presence::Status::Unknown => (uu_i18n::text("在线状态待检查"), theme::Tone::Neutral),
+                            };
+                            theme::pill(ui, label, tone);
+                            if ui.add_sized([ui.available_width(), 32.], theme::primary_button(uu_i18n::text("开始串流"))).clicked() {
+                                actions.push(Action::Open(profile.id.clone()));
+                            }
+                        });
+                    });
+                }
             });
             ui.add_space(22.);
         }
@@ -1793,7 +1892,10 @@ impl Workspace {
                 });
                 ui.add_space(12.);
                 match editor.kind {
-                    0 => field(ui, uu_i18n::text("目标地址"), &mut editor.address, uu_i18n::text("主机 IP:端口")),
+                    0 => {
+                        field(ui, uu_i18n::text("对方电脑 IP 地址"), &mut editor.address, uu_i18n::text("例如 192.168.1.100"));
+                        muted(ui, uu_i18n::text("同一局域网可在对方的“服务管理”查看地址。使用自定义端口时，在地址后加 :端口。"));
+                    },
                     1 => {field(ui,uu_i18n::text("目标设备编号"),&mut editor.device,uu_i18n::text("由连接插件提供的设备标识"));},
                     _ => {
                         ui.label(uu_i18n::text("连接服务器"));
