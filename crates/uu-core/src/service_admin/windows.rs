@@ -28,6 +28,9 @@ use windows_sys::{
 
 pub const SERVICE_NAME: &str = "EclipseRemoteHost";
 pub const PIPE_NAME: &str = r"\\.\pipe\EclipseRemoteHost.admin.v1";
+#[path="process_query_windows.rs"]
+mod process_query;
+pub use process_query::enable_running_version_query;
 pub fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain(Some(0)).collect()
 }
@@ -440,7 +443,11 @@ pub fn build_status()->Result<BuildStatus> {
             ensure!(!process.0.is_null(),"{}",std::io::Error::last_os_error());
             let mut image=vec![0u16;32768];let mut length=image.len() as u32;
             winok(unsafe{QueryFullProcessImageNameW(process.0,0,image.as_mut_ptr(),&mut length)})?;
-            ensure!(service_process(service.0)?.dwProcessId==state.dwProcessId,"Service restarted during version query");
+            let mut exit_code=0;
+            winok(unsafe{GetExitCodeProcess(process.0,&mut exit_code)})?;
+            let after=service_process(service.0)?;
+            ensure!(after.dwProcessId==state.dwProcessId && after.dwCurrentState==state.dwCurrentState
+                && exit_code==STILL_ACTIVE as u32,"Service changed during version query");
             Ok(image_build(&paths,&PathBuf::from(OsString::from_wide(&image[..length as usize]))))
         })();
         match result {Ok(build)=>build,Err(error)=>{running_error=Some(error.to_string());None}}

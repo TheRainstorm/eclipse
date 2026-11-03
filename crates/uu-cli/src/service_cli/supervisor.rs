@@ -415,6 +415,9 @@ fn run() -> Result<()> {
                 .canonicalize()?,
         "后台服务必须从受保护的安装位置运行"
     );
+    if let Err(error) = enable_running_version_query() {
+        tracing::error!(%error, "background running-version query access unavailable; sharing continues");
+    }
     for name in [
         "SeTcbPrivilege",
         "SeAssignPrimaryTokenPrivilege",
