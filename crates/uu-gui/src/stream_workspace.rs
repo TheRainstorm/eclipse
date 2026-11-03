@@ -112,7 +112,7 @@ impl Group {
     }
     pub(super) fn view_group(&self,screen:i32)->Option<Self> {
         let view=self.views.iter().find(|view|view.screen==screen && view.fixed)?;
-        let mut group=self.clone();group.id=view.session;group.can_detach=view.can_detach;group.can_merge=view.can_merge;group.fixed_view=true;group.views.clear();Some(group)
+        let mut group=self.clone();group.id=view.session;group.can_detach=view.can_detach;group.can_merge=view.can_merge;group.fixed_view=true;group.can_open_displays=false;group.views.clear();Some(group)
     }
     pub(super) fn can_open_display(&self,screen:i32)->bool {
         self.can_open_displays && (self.can_detach || self.selected!=Some(screen))

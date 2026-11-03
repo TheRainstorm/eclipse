@@ -123,6 +123,7 @@ fn aggregated_device_commands_keep_individual_view_ownership() {
     assert!(group.contains(2));assert_eq!(group.command_session(),2);assert_eq!(group.creation_session(),1);
     assert_eq!(group.screen_action(0),Action::Select(1,None));assert_eq!(group.screen_action(16),Action::Select(2,None));
     let virtual_menu=group.view_group(16).unwrap();assert_eq!(virtual_menu.command_session(),2);assert!(virtual_menu.can_merge);
+    assert!(!virtual_menu.can_open_displays,"a fixed view menu must not inherit device-wide source-opening actions");
     let actions=Rc::new(RefCell::new(Vec::new()));
     let tabs=Tabs{presets:Default::default(),groups:vec![group],active:2,actions:actions.clone(),local_ui:Default::default()};
     tabs.navigate(uu_core::hotkeys::Action::PreviousDisplay);
