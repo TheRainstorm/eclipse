@@ -953,6 +953,14 @@ impl App {
 
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        // The App moves with its Session between native containers. Only its
+        // final destruction retires the route shared by asynchronous callbacks.
+        self.context.retire();
+    }
+}
+
 impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.workspace.host.stop();

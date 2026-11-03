@@ -1,6 +1,7 @@
 mod app_icon;
 mod epi_integration;
 mod event_loop_context;
+mod viewport_lifecycle;
 pub mod run;
 
 /// File storage which can be used by native backends.

@@ -2,7 +2,7 @@
 //! Moving a group never recreates its controller, decoder, or media transport.
 use crate::{
     sessions::{ConnectionTarget, DisplayTarget, StreamTarget, VirtualDisplayTarget},
-    window_context, App,
+    App,
 };
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -389,6 +389,7 @@ impl Window {
         let index=self.sessions.iter().position(|session|session.id==id).expect("live session");
         let mut session=self.sessions.remove(index);
         session.app.deactivate_session();
+        session.app.context.suspend();
         if self.active==id {
             if let Some(next)=self.sessions.iter().find(|session|!session.app.exit_requested&&!session.app.disconnecting).map(|session|session.id) {self.select(next);}
         }
@@ -439,7 +440,7 @@ impl Window {
                 let old_viewport=session.app.context.viewport();
                 session.app.shortcuts=self.shortcuts.clone();
                 session.app.platform = self.platform.as_ref().unwrap().clone();
-                session.app.context = window_context::Context::new(ctx);
+                session.app.context.bind(ctx);
                 session.app.clipboard_window.store(
                     session.app.platform.window_id(),
                     std::sync::atomic::Ordering::Release,
@@ -510,7 +511,7 @@ impl Window {
         }
         if let Some(index) = active {
             let app = &mut self.sessions[index].app;
-            app.context = window_context::Context::new(ctx);
+            app.context.bind(ctx);
             if self.vsync_session != Some(self.active) {
                 eframe::request_vsync(ctx, app.preferences.vsync);
                 self.vsync_session = Some(self.active);

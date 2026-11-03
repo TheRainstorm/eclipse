@@ -1392,6 +1392,7 @@ impl GlutinWindowContext {
             },
         ) in viewport_output.clone()
         {
+            if !super::viewport_lifecycle::declared(viewport_id,class) {continue;}
             let ids = ViewportIdPair::from_self_and_parent(viewport_id, parent);
 
             let viewport = initialize_or_update_viewport(
