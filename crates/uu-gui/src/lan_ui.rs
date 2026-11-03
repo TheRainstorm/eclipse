@@ -4,7 +4,7 @@ use super::{
     ui::{self, Icon},
     App,
 };
-use eframe::egui::{self, Color32 as C, RichText};
+use eframe::egui::{self, RichText};
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
@@ -18,8 +18,6 @@ use uu_core::{
     native_discovery as discovery, native_lan as lan,
     native_lan_store::{Device, Devices},
 };
-const BLUE: C = super::theme::ACCENT;
-const MUTED: C = super::theme::MUTED;
 enum Event {
     Scan(u64, Result<Vec<discovery::Device>, String>),
     Code(String),
@@ -515,7 +513,7 @@ impl LanUi {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
-                    .fill(C::from_rgb(245, 248, 252))
+                    .fill(super::theme::palette(&ctx.style().visuals).base)
                     .inner_margin(24.),
             )
             .show(ctx, |ui| {
@@ -523,7 +521,7 @@ impl LanUi {
                     ui.vertical(|ui| {
                         ui.label(RichText::new(uu_i18n::text("局域网设备")).size(25.).strong());
                         ui.label(
-                            RichText::new(uu_i18n::text("Eclipse · 无需账号，直接连接你的设备")).color(MUTED),
+                            RichText::new(uu_i18n::text("Eclipse · 无需账号，直接连接你的设备")).color(super::theme::palette(ui.visuals()).muted),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -541,7 +539,7 @@ impl LanUi {
                 ui.add_space(18.);
                 if !self.notice.is_empty() {
                     egui::Frame::none()
-                        .fill(C::from_rgb(237, 243, 253))
+                        .fill(super::theme::palette(ui.visuals()).info_bg)
                         .rounding(8.)
                         .inner_margin(12.)
                         .show(ui, |ui| {
@@ -561,18 +559,18 @@ impl LanUi {
                         ui.add_space(52.);
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(54., 54.), egui::Sense::hover());
-                        ui::icon(ui.painter(), rect, Icon::Desktop, BLUE);
+                        ui::icon(ui.painter(), rect, Icon::Desktop, super::theme::palette(ui.visuals()).accent);
                         ui.add_space(16.);
                         ui.label(RichText::new(uu_i18n::text("还没有发现设备")).size(19.));
                         ui.add_space(8.);
                         ui.label(
-                            RichText::new(uu_i18n::text("在目标电脑启用共享，或输入 IP 添加设备。")).color(MUTED),
+                            RichText::new(uu_i18n::text("在目标电脑启用共享，或输入 IP 添加设备。")).color(super::theme::palette(ui.visuals()).muted),
                         );
                         ui.add_space(8.);
                         ui.label(
                             RichText::new(uu_i18n::text("原账号设备请切换顶部“兼容设备”，登录状态与设置仍保留。"))
                                 .size(12.)
-                                .color(MUTED),
+                                .color(super::theme::palette(ui.visuals()).muted),
                         );
                         ui.add_space(16.);
                         if ui.button(uu_i18n::text("添加设备")).clicked() {
@@ -586,9 +584,9 @@ impl LanUi {
                     .show(ui, |ui| {
                         for row in &rows {
                             egui::Frame::none()
-                                .fill(C::WHITE)
+                                .fill(super::theme::palette(ui.visuals()).card)
                                 .rounding(10.)
-                                .stroke(egui::Stroke::new(1., C::from_rgb(226, 232, 240)))
+                                .stroke(egui::Stroke::new(1., super::theme::palette(ui.visuals()).border))
                                 .inner_margin(16.)
                                 .show(ui, |ui| {
                                     ui.set_min_width((row_width - 32.).max(0.));
@@ -608,13 +606,13 @@ impl LanUi {
                                                 ui.painter().rect_filled(
                                                     rect,
                                                     9.,
-                                                    C::from_rgb(236, 244, 255),
+                                                    super::theme::palette(ui.visuals()).tint,
                                                 );
                                                 ui::icon(
                                                     ui.painter(),
                                                     rect.shrink(10.),
                                                     Icon::Desktop,
-                                                    BLUE,
+                                                    super::theme::palette(ui.visuals()).accent,
                                                 );
                                                 ui.add_space(10.);
                                                 ui.vertical(|ui| {
@@ -629,16 +627,16 @@ impl LanUi {
                                                     ui.label(
                                                         RichText::new(&row.endpoint)
                                                             .size(12.)
-                                                            .color(MUTED),
+                                                            .color(super::theme::palette(ui.visuals()).muted),
                                                     );
                                                     ui.add(
                                                         egui::Label::new(
                                                             RichText::new(&row.detail)
                                                                 .size(12.)
                                                                 .color(if row.changed {
-                                                                    C::from_rgb(170, 60, 50)
+                                                                    super::theme::palette(ui.visuals()).danger
                                                                 } else {
-                                                                    MUTED
+                                                                    super::theme::palette(ui.visuals()).muted
                                                                 }),
                                                         )
                                                         .truncate(),
@@ -657,10 +655,7 @@ impl LanUi {
                                                     self.client.is_none()
                                                         && self.book.is_some()
                                                         && !row.changed,
-                                                    egui::Button::new(
-                                                        RichText::new(label).color(C::WHITE),
-                                                    )
-                                                    .fill(BLUE)
+                                                    super::theme::primary_button(label)
                                                     .min_size(egui::vec2(90., 32.)),
                                                 )
                                                 .clicked()
@@ -742,14 +737,14 @@ impl LanUi {
                 .show(ctx, |ui| {
                     ui.label(&self.pair_target);
                     if let Some(error) = &self.client_error {
-                        ui.colored_label(C::from_rgb(170,60,50),uu_i18n::text("连接未完成"));
+                        ui.colored_label(super::theme::palette(ui.visuals()).danger,uu_i18n::text("连接未完成"));
                         ui.add(egui::Label::new(error).wrap());
                         ui.add_space(8.);
                         ui.label(uu_i18n::text("请确认目标已启用共享、服务端口正确，并允许防火墙中的 TCP 入站连接。"));
                         ui.weak(uu_i18n::text("跨网段请使用手动地址，广播发现通常不跨路由器。"));
                     } else if let Some(code) = &self.pair_code {
                         ui.add_space(12.);
-                        ui.label(RichText::new(code).size(34.).strong().color(BLUE));
+                        ui.label(RichText::new(code).size(34.).strong().color(super::theme::palette(ui.visuals()).accent));
                         ui.add_space(12.);
                         ui.label(uu_i18n::text("请在目标电脑输入此配对码并允许连接。"));
                         ui.weak(uu_i18n::text("等待主机确认，最长 90 秒；无需在本机再次输入。"));

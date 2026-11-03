@@ -160,7 +160,7 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
         if state.streaming && s.vsync != state.presentation_vsync {
             ui.label(
                     RichText::new(uu_i18n::text("保存后应用新的垂直同步设置"))
-                    .color(theme::ACCENT)
+                    .color(theme::palette(ui.visuals()).accent)
                     .size(12.0),
             );
         }
@@ -409,7 +409,7 @@ pub fn show(
         .exact_height(58.0)
         .frame(
             egui::Frame::none()
-                .fill(theme::SURFACE)
+                .fill(theme::palette(&ctx.style().visuals).card)
                 .inner_margin(egui::Margin::symmetric(16.0, 8.0)),
         )
         .show(ctx, |ui| {
@@ -429,7 +429,7 @@ pub fn show(
                     RichText::new(if state.streaming {uu_i18n::text("串流设置")}else{uu_i18n::text("应用设置")})
                         .size(18.0)
                         .strong()
-                        .color(theme::INK),
+                        .color(theme::palette(ui.visuals()).text),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui::icon_button(ui, Icon::Close, uu_i18n::text("关闭软件")).clicked() {
@@ -453,7 +453,7 @@ pub fn show(
         .exact_height(if compact { 54.0 } else { 66.0 })
         .frame(
             egui::Frame::none()
-                .fill(theme::SURFACE)
+                .fill(theme::palette(&ctx.style().visuals).card)
                 .inner_margin(egui::Margin::symmetric(
                     20.0,
                     if compact { 8.0 } else { 14.0 },
@@ -467,7 +467,7 @@ pub fn show(
                 if state.dirty {
                     ui.label(
                         RichText::new(uu_i18n::text("有未保存的更改"))
-                            .color(theme::MUTED)
+                            .color(theme::palette(ui.visuals()).muted)
                             .size(12.0),
                     );
                 }
@@ -500,14 +500,14 @@ pub fn show(
         egui::SidePanel::left("settings-navigation")
             .exact_width(184.0)
             .resizable(false)
-            .frame(egui::Frame::none().fill(theme::SIDEBAR).inner_margin(14.0))
+            .frame(egui::Frame::none().fill(theme::palette(&ctx.style().visuals).sidebar).inner_margin(14.0))
             .show(ctx, |ui| {
                 ui.add_space(12.0);
                 for (title, items) in [
                     (uu_i18n::text("客户端"), &[Section::Video, Section::Encoding, Section::Audio, Section::Input, Section::Stream][..]),
 
                 ] {
-                    ui.label(RichText::new(title).size(12.0).strong().color(theme::MUTED));
+                    ui.label(RichText::new(title).size(12.0).strong().color(theme::palette(ui.visuals()).muted));
                     ui.add_space(6.0);
                     for &item in items {
                         if ui.add_sized([ui.available_width(), 38.0],
@@ -527,7 +527,7 @@ pub fn show(
             });
     } else if state.streaming {
         egui::TopBottomPanel::top("settings-compact-navigation")
-            .frame(egui::Frame::none().fill(theme::SIDEBAR).inner_margin(12.0))
+            .frame(egui::Frame::none().fill(theme::palette(&ctx.style().visuals).sidebar).inner_margin(12.0))
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for item in [Section::Video,Section::Encoding,Section::Audio,Section::Input,Section::Stream] {
@@ -540,7 +540,7 @@ pub fn show(
     egui::CentralPanel::default()
         .frame(
             egui::Frame::none()
-                .fill(theme::CANVAS)
+                .fill(theme::palette(&ctx.style().visuals).base)
                 .inner_margin(if compact { 12.0 } else { 22.0 }),
         )
         .show(ctx, |ui| {
@@ -553,7 +553,7 @@ pub fn show(
                         RichText::new(section.label())
                             .size(if compact { 20.0 } else { 24.0 })
                             .strong()
-                            .color(theme::INK),
+                            .color(theme::palette(ui.visuals()).text),
                     );
                     if !compact { note(ui, section.description()); }
                     if !matches!(*section,Section::Application|Section::Connections|Section::Server) {
@@ -570,7 +570,7 @@ pub fn show(
                     ui.add_space(if compact { 10.0 } else { 18.0 });
                     if state.storage_error {
                         group(ui, uu_i18n::text("设置文件需要处理"), |ui| {
-                            ui.colored_label(theme::DANGER, state.notice);
+                            ui.colored_label(theme::palette(ui.visuals()).danger, state.notice);
                             note(ui, uu_i18n::text("异常原件会保留。可先备份，再保存当前设置。"));
                             if ui.button(uu_i18n::text("备份异常文件并保存")).clicked() {
                                 actions.apply = true;
@@ -578,7 +578,7 @@ pub fn show(
                             }
                         });
                     } else if !state.notice.is_empty() {
-                        ui.label(RichText::new(state.notice).color(theme::SUCCESS));
+                        ui.label(RichText::new(state.notice).color(theme::palette(ui.visuals()).success));
                         ui.add_space(12.0);
                     }
                     match section {

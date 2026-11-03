@@ -93,12 +93,12 @@ impl Manager {
         Ok(())
     }
     pub fn show_page(&mut self,ui:&mut egui::Ui,id:&str,page:&str)->Vec<Action> {
-        if let Err(error)=self.ensure_page(id){ui.colored_label(super::theme::DANGER,error.to_string());return Vec::new();}
+        if let Err(error)=self.ensure_page(id){ui.colored_label(super::theme::palette(ui.visuals()).danger,error.to_string());return Vec::new();}
         self.pages.get_mut(id).map(|state|state.show(ui,page)).unwrap_or_default()
     }
     pub fn show_navigation(&mut self,ctx:&egui::Context,id:&str,page:&str)->Vec<Action> {
         if let Err(error)=self.ensure_page(id) {
-            egui::CentralPanel::default().show(ctx,|ui|{ui.colored_label(super::theme::DANGER,error.to_string());});return Vec::new();
+            egui::CentralPanel::default().show(ctx,|ui|{ui.colored_label(super::theme::palette(ui.visuals()).danger,error.to_string());});return Vec::new();
         }
         self.pages.get_mut(id).map(|state|state.show_navigation(ctx,page)).unwrap_or_default()
     }
@@ -106,13 +106,13 @@ impl Manager {
         let mut actions=Vec::new();
         ui.label(uu_i18n::text("插件默认关闭，手动启用后提供对应功能。"));
         ui.label(uu_i18n::text("将插件包解压到软件目录，再点击重新扫描。"));
-        if !self.error.is_empty(){ui.colored_label(super::theme::DANGER,&self.error);}
+        if !self.error.is_empty(){ui.colored_label(super::theme::palette(ui.visuals()).danger,&self.error);}
         if !self.notice.is_empty(){ui.label(&self.notice);}
         let Some(runtime)=self.runtime.clone() else{return actions;};
         if ui.button(uu_i18n::text("重新扫描插件")).clicked(){let mut r=runtime.lock().unwrap();r.rescan();r.apply(&self.preferences);}
         let (directory,records,errors)={let r=runtime.lock().unwrap();(r.directory.clone(),r.records.iter().map(|(id,p)|(id.clone(),p.manifest.clone(),p.enabled,p.compatible,p.error.clone())).collect::<Vec<_>>(),r.errors.clone())};
-        ui.label(egui::RichText::new(directory.display().to_string()).small().color(super::theme::MUTED));
-        for error in errors {ui.colored_label(super::theme::DANGER,error);}
+        ui.label(egui::RichText::new(directory.display().to_string()).small().color(super::theme::palette(ui.visuals()).muted));
+        for error in errors {ui.colored_label(super::theme::palette(ui.visuals()).danger,error);}
         if records.is_empty(){ui.add_space(16.);ui.label(uu_i18n::text("尚未安装插件"));}
         for (id,manifest,mut enabled,compatible,error) in records {
             ui.add_space(12.);
@@ -133,8 +133,8 @@ impl Manager {
                         }
                     }
                 });
-                if !compatible {ui.colored_label(super::theme::DANGER,uu_i18n::text("插件与当前程序不匹配，请下载匹配版本。"));}
-                if !error.is_empty(){ui.colored_label(super::theme::DANGER,error);}
+                if !compatible {ui.colored_label(super::theme::palette(ui.visuals()).danger,uu_i18n::text("插件与当前程序不匹配，请下载匹配版本。"));}
+                if !error.is_empty(){ui.colored_label(super::theme::palette(ui.visuals()).danger,error);}
                 if enabled&&self.enabled(&id) {
                     for page in self.pages(Placement::Settings).into_iter().filter_map(|(plugin,page)|(plugin==id).then_some(page)) {
                         ui.separator();for action in self.show_page(ui,&id,&page.id){actions.push((id.clone(),action));}

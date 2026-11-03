@@ -304,8 +304,8 @@ impl App {
             .collapsible(false)
             .frame(
                 egui::Frame::window(&ctx.style())
-                    .fill(egui::Color32::WHITE)
-                    .rounding(10.0)
+                    .fill(super::theme::palette(&ctx.style().visuals).overlay)
+                    .rounding(super::theme::RADIUS)
                     .inner_margin(14.0),
             )
             .resizable(false)
@@ -387,9 +387,9 @@ impl App {
                             !sharing.stopping,
                             egui::Button::new(
                                 egui::RichText::new(uu_i18n::text("停止共享"))
-                                    .color(egui::Color32::from_rgb(175, 65, 60)),
+                                    .color(super::theme::palette(ui.visuals()).danger),
                             )
-                            .fill(egui::Color32::from_rgb(255, 241, 239))
+
                             .min_size(egui::vec2(130.0, 32.0)),
                         )
                         .clicked()
@@ -439,7 +439,7 @@ impl App {
                     });
                     if !host.source_size_supported() {
                         ui.colored_label(
-                            egui::Color32::from_rgb(180, 75, 65),
+                            super::theme::palette(ui.visuals()).danger,
                             uu_i18n::text("当前源尺寸超出所选编码器支持范围，请调整编码方式或选择其它显示器。"),
                         );
                     }
@@ -463,7 +463,7 @@ impl App {
                         ui.add(egui::TextEdit::singleline(&mut host.bind).desired_width(250.0));
                     });
                     ui.weak(uu_i18n::text("跨设备连接时填写本机局域网地址；127.0.0.1 仅限本机。"));
-                    if let Some(error)=&host.address_error {ui.colored_label(egui::Color32::from_rgb(180,75,65),error);}
+                    if let Some(error)=&host.address_error {ui.colored_label(super::theme::palette(ui.visuals()).danger,error);}
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.label(uu_i18n::text("帧率"));
@@ -496,10 +496,7 @@ impl App {
                     if ui
                         .add_enabled(
                             !host.monitors.is_empty() && host.source_size_supported(),
-                            egui::Button::new(
-                                egui::RichText::new(uu_i18n::text("开始共享")).color(egui::Color32::WHITE),
-                            )
-                            .fill(egui::Color32::from_rgb(53, 131, 255))
+                            super::theme::primary_button(uu_i18n::text("开始共享"))
                             .min_size(egui::vec2(130.0, 32.0)),
                         )
                         .clicked()

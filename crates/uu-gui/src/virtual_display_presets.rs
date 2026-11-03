@@ -235,7 +235,7 @@ pub fn editor(ui: &mut egui::Ui, presets: &mut Presets) {
         "规格在创建时交给远端驱动验证；HDR 还需要远端驱动、显示与串流编码支持。",
     ));
     if let Err(error) = presets.validate() {
-        ui.colored_label(super::theme::DANGER, error.to_string());
+        ui.colored_label(super::theme::palette(ui.visuals()).danger, error.to_string());
     }
 }
 

@@ -38,7 +38,7 @@ impl App {
                     .fill(if wallpaper_root {
                         C::TRANSPARENT
                     } else {
-                        super::theme::SURFACE
+                        super::theme::palette(&ctx.style().visuals).card
                     })
                     .inner_margin(egui::Margin::symmetric(16.0, 8.0)),
             )
@@ -54,11 +54,11 @@ impl App {
                     if response.drag_started() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
-                    let title_color = if wallpaper_root { C::WHITE } else { INK };
+                    let title_color = if wallpaper_root { C::WHITE } else { super::theme::palette(ui.visuals()).text };
                     let separator_color = if wallpaper_root {
                         C::from_white_alpha(190)
                     } else {
-                        MUTED
+                        super::theme::palette(ui.visuals()).muted
                     };
                     if ctx.screen_rect().width() >= 520.0 {
                         ui.label(RichText::new(super::brand::NAME).size(18.0).strong().color(title_color));
@@ -102,7 +102,7 @@ impl App {
                             Icon::Settings,
                             uu_i18n::text("应用设置"),
                             page == super::workspace_ui::Page::Settings,
-                            if wallpaper_root { C::WHITE } else { INK },
+                            if wallpaper_root { C::WHITE } else { super::theme::palette(ui.visuals()).text },
                         )
                         .clicked()
                         {
@@ -112,32 +112,20 @@ impl App {
                             let selected=self.workspace.route.page==super::workspace_ui::Page::Plugin&&self.workspace.route.plugin.as_ref()==Some(&(id.clone(),page.id.clone()));
                             if icon_button_selected(ui,page.icon.unwrap_or(Icon::Extension),&page.title,selected).clicked(){self.select_plugin_page(id,page.id);}
                         }
-                        let response = ui.add_sized([30.0, 30.0], egui::Button::new("").frame(false));
                         let selected = page == super::workspace_ui::Page::Services;
-                        if selected || response.hovered() {
-                            ui.painter().rect_filled(
-                                response.rect,
-                                6.0,
-                                C::from_rgb(222, 235, 249),
-                            );
-                        }
                         let color = if failed {
-                            super::theme::DANGER
+                            super::theme::palette(ui.visuals()).danger
                         } else if running {
-                            C::from_rgb(34, 197, 94)
+                            super::theme::palette(ui.visuals()).success
                         } else if wallpaper_root {
                             C::WHITE
                         } else {
-                            MUTED
+                            super::theme::palette(ui.visuals()).muted
                         };
-                        icon(ui.painter(), response.rect, Icon::Globe, color);
-                        response.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
-                                ui.is_enabled(),
-                                uu_i18n::text("服务管理"),
-                            )
-                        });
+                        let response=ui.add_sized([30.0,30.0],egui::Button::new("").frame(false));
+                        ghost_background(ui,&response,selected);
+                        icon(ui.painter(),response.rect,Icon::Globe,color);
+                        response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),uu_i18n::text("服务管理")));
                         if response
                             .on_hover_text(if failed {
                                 uu_i18n::text("服务管理 · 部分入口异常")
@@ -155,7 +143,7 @@ impl App {
                             Icon::Desktop,
                             uu_i18n::text("设备列表"),
                             page == super::workspace_ui::Page::Devices,
-                            if wallpaper_root { C::WHITE } else { INK },
+                            if wallpaper_root { C::WHITE } else { super::theme::palette(ui.visuals()).text },
                         )
                         .clicked()
                         {
@@ -245,7 +233,7 @@ impl App {
                     }
                     if !self.disconnecting && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),egui::Button::new(uu_i18n::text("取消连接"))).clicked(){self.disconnect();}
                 } else {
-                    if ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),egui::Button::new(RichText::new(uu_i18n::text("重新连接")).color(C::WHITE)).fill(BLUE)).clicked(){self.connect();}
+                    if ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),super::theme::primary_button(uu_i18n::text("重新连接"))).clicked(){self.connect();}
                     if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),egui::Button::new(uu_i18n::text("关闭串流窗口"))).clicked(){self.disconnect();}
                 }
             }

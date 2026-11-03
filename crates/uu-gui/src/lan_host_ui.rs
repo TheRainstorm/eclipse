@@ -392,7 +392,7 @@ impl HostUi {
                     egui::ScrollArea::vertical().max_height((ctx.screen_rect().height()-120.0).max(160.0)).show(ui, |ui| {
                     if !self.notice.is_empty() {
                         ui.add(egui::Label::new(egui::RichText::new(&self.notice)
-                            .color(egui::Color32::from_rgb(160,75,35))).wrap());
+                            .color(super::theme::palette(ui.visuals()).warning)).wrap());
                         ui.add_space(10.0);
                     }
                     ui.label(egui::RichText::new(&self.status).strong());
@@ -583,7 +583,7 @@ impl HostUi {
                     let matches = entered == expected;
                     if entered.len() == 8 && !matches {
                         ui.colored_label(
-                            egui::Color32::from_rgb(170, 55, 55),
+                            super::theme::palette(ui.visuals()).danger,
                             uu_i18n::text("号码不匹配，请核对发起连接的设备。"),
                         );
                     }

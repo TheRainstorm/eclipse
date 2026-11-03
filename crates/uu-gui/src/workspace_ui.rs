@@ -1095,14 +1095,14 @@ impl Workspace {
             let width=230_f32.min(ui.available_width());
             let offline=self.presence.status(&profile.id)==super::device_presence::Status::Offline;
             let color=if offline {
-                egui::Color32::from_gray(if self.dark_background {200}else{96})
-            }else if self.dark_background {egui::Color32::WHITE}else{theme::INK};
+                if self.dark_background {egui::Color32::from_gray(200)}else{theme::palette(ui.visuals()).muted}
+            }else if self.dark_background {egui::Color32::WHITE}else{theme::palette(ui.visuals()).text};
             let mut label=egui::text::LayoutJob::simple(profile.name.clone(),egui::FontId::proportional(17.),color,width);
             label.halign=egui::Align::Center;
             let text=ui.painter().layout_job(label);
             let (rect,response)=ui.allocate_exact_size(egui::vec2(width,width*9./16.+20.+text.size().y),egui::Sense::click());
             response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),uu_i18n::format!("连接 {}",profile.name)));
-            if response.hovered()||response.has_focus(){ui.painter().rect_filled(rect.expand(7.),10.,egui::Color32::from_rgba_unmultiplied(80,140,220,55));}
+            if response.hovered()||response.has_focus()||response.is_pointer_button_down_on(){let p=theme::palette(ui.visuals());ui.painter().rect_filled(rect.expand(7.),theme::RADIUS,if response.is_pointer_button_down_on(){p.primary.gamma_multiply(0.35)}else{p.accent.gamma_multiply(0.18)});}
             let picture=egui::Rect::from_min_size(rect.min,egui::vec2(width,width*9./16.));
             let mut painter=ui.painter().clone();
             if offline{ui.painter().rect_filled(picture,8.,egui::Color32::from_gray(50));painter.multiply_opacity(0.35);}
@@ -1169,7 +1169,7 @@ impl Workspace {
         self.paint_device_picture(ui.painter(),rect,profile);
     }
     fn paint_device_picture(&self,painter:&egui::Painter,rect:egui::Rect,profile:&Profile) {
-        painter.rect_filled(rect,8.,theme::SIDEBAR);
+        painter.rect_filled(rect,8.,theme::palette(&painter.ctx().style().visuals).sidebar);
         if let Some(texture)=self.previews.get(&profile.id).and_then(|p|p.texture.as_ref()) {
             let size=texture.size_vec2();let scale=(rect.width()/size.x).min(rect.height()/size.y);
             painter.image(texture.id(),egui::Rect::from_center_size(rect.center(),size*scale),egui::Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.,1.)),egui::Color32::WHITE);
@@ -1263,9 +1263,9 @@ impl Workspace {
                     }).unwrap_or_else(|_| uu_i18n::text("未选择连接方式").into());
                     muted(ui, route);
                     if profile.peer.is_some() {
-                        ui.label(RichText::new(uu_i18n::text("已完成设备配对")).color(theme::SUCCESS));
+                        ui.label(RichText::new(uu_i18n::text("已完成设备配对")).color(theme::palette(ui.visuals()).success));
                     } else {
-                        ui.label(RichText::new(uu_i18n::text("首次连接需要配对")).color(theme::MUTED));
+                        ui.label(RichText::new(uu_i18n::text("首次连接需要配对")).color(theme::palette(ui.visuals()).muted));
                     }
                     ui.add_space(8.0);
                     if primary(ui, uu_i18n::text("连接此设备")).clicked() {
@@ -1278,7 +1278,7 @@ impl Workspace {
                 ui.strong(uu_i18n::text("设备身份"));
                 ui.add_space(8.0);
                 if let Some(peer) = &profile.peer {
-                    ui.label(RichText::new(uu_i18n::text("已完成配对")).color(theme::SUCCESS));
+                    ui.label(RichText::new(uu_i18n::text("已完成配对")).color(theme::palette(ui.visuals()).success));
                     muted(ui,uu_i18n::text("设备公钥指纹"));
                     ui.monospace(peer);
                     if ui.small_button(uu_i18n::text("复制指纹")).clicked() {
@@ -1481,9 +1481,9 @@ impl Workspace {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
                         RichText::new(&self.host.notice).color(if error {
-                            theme::DANGER
+                            theme::palette(ui.visuals()).danger
                         } else {
-                            theme::SUCCESS
+                            theme::palette(ui.visuals()).success
                         }),
                     );
                     if error && ui.small_button(uu_i18n::text("关闭")).clicked() {
@@ -1503,7 +1503,7 @@ impl Workspace {
             if self.host.running() {
                 ui.add_space(12.);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(uu_i18n::text("新设备可直接发起配对")).color(theme::SUCCESS));
+                    ui.label(RichText::new(uu_i18n::text("新设备可直接发起配对")).color(theme::palette(ui.visuals()).success));
                     if self
                         .host
                         .access
@@ -1575,7 +1575,7 @@ impl Workspace {
             let monitors:Vec<_>=self.monitors.iter().map(|m|(m.name.clone(),format!("{} · {}×{}",m.name,m.width,m.height))).collect();
             if self.host_section==0 {super::server_config_ui::capture(ui,&mut self.draft,&monitors,uu_core::native::uses_desktop_portal());}
             else {super::server_config_ui::edit(ui,&mut self.draft,self.host_section,&monitors,uu_core::native::uses_desktop_portal(),true);}
-            if !self.monitor_error.is_empty(){ui.colored_label(theme::DANGER,&self.monitor_error);}
+            if !self.monitor_error.is_empty(){ui.colored_label(theme::palette(ui.visuals()).danger,&self.monitor_error);}
             if running {
                 muted(ui,uu_i18n::text("运行期间可编辑并保存；下次启动生效，或保存后重启服务。重启会断开当前串流。"));
             }
@@ -1588,7 +1588,7 @@ impl Workspace {
             Some(store) => match store.peers() {
                 Ok(peers) => peers,
                 Err(e) => {
-                    ui.colored_label(theme::DANGER, uu_i18n::format!("无法读取授权：{e}"));
+                    ui.colored_label(theme::palette(ui.visuals()).danger, uu_i18n::format!("无法读取授权：{e}"));
                     return;
                 }
             },
@@ -1714,7 +1714,7 @@ impl Workspace {
         ui.horizontal(|ui| {
             ui.label(RichText::new(uu_i18n::text("自建服务器")).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                if ui.add_enabled(!locked,egui::Button::new(RichText::new(uu_i18n::text("＋ 添加服务器")).color(theme::ACCENT))).clicked(){self.edit_service(None);}
+                if ui.add_enabled(!locked,egui::Button::new(RichText::new(uu_i18n::text("＋ 添加服务器")).color(theme::palette(ui.visuals()).accent))).clicked(){self.edit_service(None);}
             });
         });
         ui.add_space(10.);
@@ -1822,7 +1822,7 @@ impl Workspace {
             egui::Window::new(if editor.global {uu_i18n::text("全局默认客户端配置")} else {uu_i18n::text("设备客户端配置")}).id("device-client-editor".into()).open(&mut open)
                 .default_width(720.).default_height(600.).max_height((ctx.screen_rect().height()-70.).max(200.)).max_width((ctx.screen_rect().width()-40.).max(280.))
                 .collapsible(false).show(ctx,|ui| {
-                    if !editor.error.is_empty(){ui.colored_label(theme::DANGER,&editor.error);}
+                    if !editor.error.is_empty(){ui.colored_label(theme::palette(ui.visuals()).danger,&editor.error);}
                     if !editor.global && ui.small_button(uu_i18n::text("编辑全局默认")).clicked() {
                         editor.global = true;
                         editor.device.clear();
@@ -1882,7 +1882,7 @@ impl Workspace {
             .default_pos(ctx.screen_rect().center() - egui::vec2(240., 200.))
             .show(ctx, |ui| {
                 if !editor.error.is_empty() {
-                    ui.colored_label(theme::DANGER, &editor.error);
+                    ui.colored_label(theme::palette(ui.visuals()).danger, &editor.error);
                 }
                 field(ui, uu_i18n::text("设备名称（可选）"), &mut editor.name, uu_i18n::text("例如：工作电脑"));
                 ui.horizontal(|ui| {
@@ -1968,7 +1968,7 @@ impl Workspace {
                 .default_pos(ctx.screen_rect().center() - egui::vec2(250., 210.))
                 .show(ctx, |ui| {
                     if !editor.error.is_empty() {
-                        ui.colored_label(theme::DANGER, &editor.error);
+                        ui.colored_label(theme::palette(ui.visuals()).danger, &editor.error);
                     }
                     field(ui, uu_i18n::text("名称"), &mut editor.value.name, uu_i18n::text("例如：家庭服务器"));
                     field(
@@ -2110,7 +2110,7 @@ impl super::App {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
-                    .fill(if wallpaper_root { egui::Color32::TRANSPARENT } else { theme::CANVAS })
+                    .fill(if wallpaper_root { egui::Color32::TRANSPARENT } else { theme::palette(&ctx.style().visuals).base })
                     .inner_margin(24.),
             )
             .show(ctx, |ui| {

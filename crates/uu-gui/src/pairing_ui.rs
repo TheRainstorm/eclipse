@@ -47,7 +47,7 @@ impl ClientUi {
                         PairingMethod::PublicKey=>{ui.label(uu_i18n::text("主机已预先授权本机公钥。核对上方指纹后信任并连接。"));},
                     }
                     if !prompt.preauthorized {ui.weak(uu_i18n::text("公钥方式需先在主机“配对设置”中添加本机公钥。"));}
-                    if !self.notice.is_empty(){ui.colored_label(super::theme::DANGER,&self.notice);}
+                    if !self.notice.is_empty(){ui.colored_label(super::theme::palette(ui.visuals()).danger,&self.notice);}
                     let valid=self.method!=PairingMethod::Password || (8..=256).contains(&self.password.len());
                     if ui.add_enabled(valid,egui::Button::new(if self.method==PairingMethod::PublicKey{uu_i18n::text("信任并连接")}else{uu_i18n::text("开始配对")})).clicked() {
                         let choice=PairingChoice{method:self.method,password:std::mem::take(&mut self.password)};
@@ -56,7 +56,7 @@ impl ClientUi {
                 }else if let Some(code)=code {
                     ui.label(uu_i18n::text("请在主机输入下面的配对码，并批准本设备："));
                     ui.add_space(14.);
-                    ui.label(egui::RichText::new(format!("{} {}",&code[..4],&code[4..])).size(34.).monospace().color(super::theme::ACCENT));
+                    ui.label(egui::RichText::new(format!("{} {}",&code[..4],&code[4..])).size(34.).monospace().color(super::theme::palette(ui.visuals()).accent));
                     if ui.button(uu_i18n::text("复制配对码")).clicked(){ctx.copy_text(code);}
                     ui.weak(if display.selected_method()==PairingMethod::TemporaryCode {uu_i18n::text("临时授权只用于本次串流，断开后失效。")}else{uu_i18n::text("配对完成后，以后连接无需重复输入。")});
                     ui.spinner();ui.label(uu_i18n::text("等待主机确认…"));

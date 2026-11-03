@@ -75,7 +75,7 @@ mod device_presence;
 #[cfg(test)]
 mod tests {use super::*;
     #[test]
-    fn light_theme_keeps_touch_targets_when_started_from_either_theme() {
+    fn dark_theme_keeps_touch_targets_when_started_from_either_theme() {
         for theme in [eframe::egui::Theme::Dark, eframe::egui::Theme::Light] {
             let context = eframe::egui::Context::default();
             context.set_theme(theme);
@@ -86,7 +86,7 @@ mod tests {use super::*;
                     height = ui.button("Retry").rect.height();
                 });
             });
-            assert_eq!(context.theme(), eframe::egui::Theme::Light);
+            assert_eq!(context.theme(), eframe::egui::Theme::Dark);
             assert!(height >= 30.0, "custom button target was lost after theme selection");
         }
     }
@@ -255,9 +255,9 @@ fn vk_for(key: egui::Key) -> Option<u32> {
 }
 
 fn setup_style(ctx: &egui::Context) {
-    // Styles are stored per theme. Select Light before updating its style;
-    // otherwise a dark-system startup customizes Dark and then discards it.
-    ctx.set_theme(egui::ThemePreference::Light);
+    // The application uses one dark desktop palette. Shared theme setup also
+    // registers Light for embedded consumers and generated compatibility checks.
+    ctx.set_theme(egui::ThemePreference::Dark);
     // Remote Ctrl +/- belongs to the remote app, never to this client's UI zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let mut fonts = egui::FontDefinitions::default();

@@ -124,7 +124,7 @@ impl App {
         let mut share = false;
         egui::Window::new(uu_i18n::text("原生直连"))
             .id("native-connect".into())
-            .frame(egui::Frame::window(&ctx.style()).fill(egui::Color32::WHITE).rounding(10.0).inner_margin(14.0))
+            .frame(egui::Frame::window(&ctx.style()).fill(super::theme::palette(&ctx.style().visuals).overlay).rounding(super::theme::RADIUS).inner_margin(14.0))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -148,14 +148,13 @@ impl App {
                 ui.checkbox(&mut self.native_ui.request_control,uu_i18n::text("请求输入控制（需主机允许）"));
                 ui.weak(uu_i18n::text("未获主机许可时仅观看；画质由主机设置。"));
                 if !self.native_ui.notice.is_empty() {
-                    ui.colored_label(egui::Color32::from_rgb(180, 75, 65), &self.native_ui.notice);
+                    ui.colored_label(super::theme::palette(ui.visuals()).danger, &self.native_ui.notice);
                 }
                 ui.add_space(12.0);
                 if ui
                     .add_enabled(
                         !self.native_ui.path.trim().is_empty(),
-                        egui::Button::new(egui::RichText::new(uu_i18n::text("打开共享画面")).color(egui::Color32::WHITE))
-                            .fill(egui::Color32::from_rgb(53,131,255)).min_size(egui::vec2(140.0, 32.0)),
+                        super::theme::primary_button(uu_i18n::text("打开共享画面")).min_size(egui::vec2(140.0, 32.0)),
                     )
                     .clicked()
                 {

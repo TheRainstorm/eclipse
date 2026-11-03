@@ -91,9 +91,9 @@ impl Feedback {
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new(&message.text).color(match message.kind {
-                    Kind::Info => super::theme::MUTED,
-                    Kind::Success => super::theme::SUCCESS,
-                    Kind::Error => super::theme::DANGER,
+                    Kind::Info => super::theme::palette(ui.visuals()).muted,
+                    Kind::Success => super::theme::palette(ui.visuals()).success,
+                    Kind::Error => super::theme::palette(ui.visuals()).danger,
                 }),
             );
             if message.kind == Kind::Error && ui.small_button(uu_i18n::text("关闭")).clicked() {

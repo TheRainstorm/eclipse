@@ -617,7 +617,7 @@ impl State {
                                 }
                             });
                             if let Some(error) = &display.last_error {
-                                ui.colored_label(crate::theme::DANGER, error);
+                                ui.colored_label(crate::theme::palette(ui.visuals()).danger, error);
                             }
                         }
                     });

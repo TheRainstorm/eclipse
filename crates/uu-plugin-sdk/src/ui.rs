@@ -233,7 +233,8 @@ pub fn icon_button_tinted(
     response.on_hover_text(tip)
 }
 
-fn ghost_background(ui:&egui::Ui,response:&Response,selected:bool) {
+/// Shared interaction surface for custom icon buttons with semantic tint.
+pub fn ghost_background(ui:&egui::Ui,response:&Response,selected:bool) {
     let palette=crate::theme::palette(ui.visuals());
     let fill=if !ui.is_enabled(){C::TRANSPARENT}
         else if response.is_pointer_button_down_on(){palette.pressed}

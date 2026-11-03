@@ -117,13 +117,13 @@ pub(super) fn show(ctx: &egui::Context, open: &mut bool, snapshot: &Snapshot) {
         .collapsible(false).resizable(true).default_width(width.min(780.))
         .max_width(width).max_height((ctx.screen_rect().height()-48.).max(160.))
         .anchor(egui::Align2::CENTER_CENTER,egui::Vec2::ZERO)
-        .frame(egui::Frame::window(&ctx.style()).fill(super::theme::SURFACE).rounding(12.).inner_margin(18.))
+        .frame(egui::Frame::window(&ctx.style()).fill(super::theme::palette(&ctx.style().visuals).overlay).rounding(super::theme::RADIUS).inner_margin(18.))
         .show(ctx,|ui|{
             ui.horizontal_wrapped(|ui|{
                 ui.label(RichText::new(snapshot.service.as_str()).strong());
                 ui.separator();
                 if let Some(path)=&snapshot.selected {
-                    ui.label(RichText::new(if path.relayed(){uu_i18n::text("媒体路径：中继")}else{uu_i18n::text("媒体路径：直连")}).color(super::theme::ACCENT));
+                    ui.label(RichText::new(if path.relayed(){uu_i18n::text("媒体路径：中继")}else{uu_i18n::text("媒体路径：直连")}).color(super::theme::palette(ui.visuals()).accent));
                 }else{ui.label(uu_i18n::text("媒体路径：等待 ICE 选路"));}
                 ui.label(uu_i18n::format!("连接 {} · ICE {}",snapshot.peer_state,snapshot.ice_state));
             });

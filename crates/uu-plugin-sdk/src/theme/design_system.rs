@@ -181,6 +181,7 @@ pub struct Button {
     text: WidgetText,
     kind: ButtonKind,
     small: bool,
+    min_size: egui::Vec2,
 }
 impl Button {
     pub fn new(text: impl Into<WidgetText>, kind: ButtonKind) -> Self {
@@ -188,10 +189,15 @@ impl Button {
             text: text.into(),
             kind,
             small: false,
+            min_size: egui::Vec2::ZERO,
         }
     }
     pub fn small(mut self) -> Self {
         self.small = true;
+        self
+    }
+    pub fn min_size(mut self, size: egui::Vec2) -> Self {
+        self.min_size = size;
         self
     }
 }
@@ -236,7 +242,7 @@ impl Widget for Button {
         let enabled = ui.is_enabled();
         ui.scope(|ui| {
             button_visuals(ui.visuals_mut(), &p, self.kind, enabled);
-            let button = egui::Button::new(self.text);
+            let button = egui::Button::new(self.text).min_size(self.min_size);
             ui.add(if self.small { button.small() } else { button })
         })
         .inner

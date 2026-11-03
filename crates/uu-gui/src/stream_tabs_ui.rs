@@ -56,7 +56,7 @@ macro_rules! record {
 }
 
 fn label(ui: &mut egui::Ui, text: &str, selected: bool, device: bool, width_limit: f32) -> Response {
-    let color = if selected { crate::theme::ACCENT } else if device { crate::theme::INK } else { crate::theme::MUTED };
+    let color = if selected { crate::theme::palette(ui.visuals()).accent } else if device { crate::theme::palette(ui.visuals()).text } else { crate::theme::palette(ui.visuals()).muted };
     let font = egui::FontId::proportional(if device { 12.5 } else { 12. });
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), color);
     let leading = if device { 22. } else { 0. };
@@ -65,8 +65,8 @@ fn label(ui: &mut egui::Ui, text: &str, selected: bool, device: bool, width_limi
     let width = (galley.size().x + leading + 16.).max(if device {70.} else {72.}).min(width_limit);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 24.), Sense::click_and_drag());
     let hovered = response.hovered() || response.is_pointer_button_down_on();
-    let fill = if selected && !device { crate::theme::TINT }
-        else if hovered { crate::theme::CANVAS } else { Color32::TRANSPARENT };
+    let fill = if selected && !device { crate::theme::palette(ui.visuals()).tint }
+        else if hovered { crate::theme::palette(ui.visuals()).base } else { Color32::TRANSPARENT };
     ui.painter().rect_filled(rect, 6., fill);
     if device {
         uu_plugin_sdk::ui::icon(ui.painter(), Rect::from_center_size(egui::pos2(rect.left()+12.,rect.center().y), egui::vec2(18.,18.)), uu_plugin_sdk::ui::Icon::Desktop, color);
@@ -86,14 +86,15 @@ fn label(ui: &mut egui::Ui, text: &str, selected: bool, device: bool, width_limi
 #[derive(Clone, Copy)]
 enum Control { Add, Close }
 fn control(ui: &mut egui::Ui, kind: Control, enabled: bool) -> Response {
+    let enabled=enabled&&ui.is_enabled();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(22.,22.), if enabled { Sense::click() } else { Sense::hover() });
     let hovered = enabled && (response.hovered() || response.is_pointer_button_down_on());
-    let color = if !enabled { crate::theme::MUTED.gamma_multiply(0.45) }
-        else if hovered { match kind { Control::Add => crate::theme::ACCENT, Control::Close => crate::theme::DANGER } }
-        else { crate::theme::MUTED };
-    let fill = if hovered { match kind {
-        Control::Add => crate::theme::TINT,
-        Control::Close => crate::theme::DANGER.gamma_multiply(0.10),
+    let color = if !enabled { crate::theme::palette(ui.visuals()).muted }
+        else if hovered { match kind { Control::Add => crate::theme::palette(ui.visuals()).accent, Control::Close => crate::theme::palette(ui.visuals()).danger } }
+        else { crate::theme::palette(ui.visuals()).muted };
+    let fill = if enabled&&response.is_pointer_button_down_on(){crate::theme::palette(ui.visuals()).pressed}else if hovered { match kind {
+        Control::Add => crate::theme::palette(ui.visuals()).tint,
+        Control::Close => crate::theme::palette(ui.visuals()).danger.gamma_multiply(0.10),
     }} else { Color32::TRANSPARENT };
     ui.painter().rect_filled(rect, 6., fill);
     let center=rect.center();
@@ -133,7 +134,7 @@ fn connection_menu(ui: &mut egui::Ui, group: &Group, actions: &mut Vec<Action>, 
 
 fn insertion(ui: &egui::Ui, rect: Rect, after: bool) {
     let x=if after {rect.right()+1.} else {rect.left()-1.};
-    ui.painter().line_segment([egui::pos2(x,rect.top()+3.),egui::pos2(x,rect.bottom()-3.)],Stroke::new(2.,crate::theme::ACCENT));
+    ui.painter().line_segment([egui::pos2(x,rect.top()+3.),egui::pos2(x,rect.bottom()-3.)],Stroke::new(2.,crate::theme::palette(ui.visuals()).accent));
 }
 
 pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> StripRects {
@@ -157,8 +158,8 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                 for group in &tabs.groups {
                     ui.push_id(group.id,|ui| {
                         let active=group.contains(tabs.active);
-                        let frame=egui::Frame::none().fill(if active {crate::theme::SURFACE} else {crate::theme::SURFACE.gamma_multiply(0.55)})
-                            .rounding(8.).stroke(Stroke::new(0.75,crate::theme::BORDER))
+                        let frame=egui::Frame::none().fill(if active {crate::theme::palette(ui.visuals()).card} else {crate::theme::palette(ui.visuals()).card.gamma_multiply(0.55)})
+                            .rounding(8.).stroke(Stroke::new(0.75,crate::theme::palette(ui.visuals()).border))
                             .inner_margin(egui::Margin::symmetric(4.,2.));
                         let response=frame.show(ui,|ui| {
                             ui.horizontal_centered(|ui| {
@@ -179,7 +180,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                 if active && reveal_active {name.union(close).scroll_to_me(None);}
                                 if !group.screens.is_empty() {
                                     let (divider,_)=ui.allocate_exact_size(egui::vec2(7.,22.),Sense::hover());
-                                    ui.painter().line_segment([divider.center()-egui::vec2(0.,6.),divider.center()+egui::vec2(0.,6.)],Stroke::new(1.,crate::theme::BORDER));
+                                    ui.painter().line_segment([divider.center()-egui::vec2(0.,6.),divider.center()+egui::vec2(0.,6.)],Stroke::new(1.,crate::theme::palette(ui.visuals()).border));
                                 }
                                 for (screen,text) in &group.screens {
                                     let response=label(ui,text,active && group.selected==Some(*screen),false,(width-12.).max(72.));

@@ -71,7 +71,7 @@ pub trait PageState {
     /// application pages. Embedded connection/settings pages use `show`.
     fn show_navigation(&mut self,ctx:&egui::Context,page:&str)->Vec<Action> {
         let mut actions=Vec::new();
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(theme::CANVAS).inner_margin(24.)).show(ctx,|ui| {
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(theme::palette(&ctx.style().visuals).base).inner_margin(24.)).show(ctx,|ui| {
             egui::ScrollArea::vertical().show(ui,|ui|{actions=self.show(ui,page);});
         });actions
     }

@@ -2,7 +2,6 @@
 use super::ui::{icon, icon_button, icon_label_button, Icon};
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke};
 
-const MENU_INK: Color32 = super::theme::INK;
 const MENU_WIDTH: f32 = 264.0;
 
 // A 30-point face has 30.6% less area than the previous 36-point button.
@@ -106,9 +105,11 @@ impl FloatingHandle {
                 let (rect,response)=ui.allocate_exact_size(hit.size(),egui::Sense::click_and_drag());
                 let full=full.translate(rect.min-hit.min);
                 let painter=ui.painter().with_clip_rect(screen);
-                let accent=super::theme::ACCENT;
-                painter.rect(full.shrink(0.75),9.0,Color32::WHITE,
-                    Stroke::new(1.2,if response.hovered() || *open {accent}else{Color32::from_rgb(177,195,218)}));
+                let palette=super::theme::palette(ui.visuals());
+                let accent=palette.accent;
+                let fill=if response.is_pointer_button_down_on(){palette.pressed}else if response.hovered(){palette.hover}else{palette.overlay};
+                painter.rect(full.shrink(0.75),super::theme::RADIUS,fill,
+                    Stroke::new(1.2,if response.hovered() || *open {accent}else{palette.control_border}));
                 if self.docked.is_none() {
                     for y in [-4.0,4.0] {
                         let pill=Rect::from_center_size(full.center()+egui::vec2(0.0,y),egui::vec2(14.0,4.0));
@@ -202,10 +203,11 @@ fn hover_bridge(a: Rect, b: Rect) -> Option<Rect> {
 }
 
 fn popup_frame(ui: &egui::Ui) -> egui::Frame {
+    let palette=super::theme::palette(ui.visuals());
     egui::Frame::popup(ui.style())
-        .fill(Color32::WHITE)
-        .stroke(Stroke::new(1.0, super::theme::BORDER))
-        .rounding(10.0)
+        .fill(palette.overlay)
+        .stroke(Stroke::new(1.0, palette.border))
+        .rounding(super::theme::RADIUS)
         .inner_margin(egui::Margin::same(6.0))
         .shadow(egui::epaint::Shadow {
             offset: egui::vec2(0.0, 3.0),
@@ -231,18 +233,19 @@ fn menu_toggle(ui:&mut egui::Ui,label:&str,enabled:bool,hint:&str)->egui::Respon
     menu_control(ui,label,None,false,false,hint,false,Some(enabled))
 }
 fn menu_control(ui:&mut egui::Ui,label:&str,kind:Option<Icon>,selected:bool,arrow:bool,hint:&str,active:bool,toggle:Option<bool>)->egui::Response {
+    let palette=super::theme::palette(ui.visuals());
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
     let ink = if !ui.is_enabled() {
-        Color32::from_gray(160)
+        palette.muted
     } else if label == uu_i18n::text("退出串流") {
-        Color32::from_rgb(187, 65, 55)
+        palette.danger
     } else {
-        MENU_INK
+        palette.text
     };
-    if ui.is_enabled() && (response.hovered() || active || selected) {
-        ui.painter()
-            .rect_filled(rect.shrink(1.), 7.0, super::theme::TINT);
+    if ui.is_enabled() && (response.hovered() || response.is_pointer_button_down_on() || active || selected) {
+        let fill=if response.is_pointer_button_down_on(){palette.pressed}else if response.hovered(){palette.hover}else{palette.tint};
+        ui.painter().rect_filled(rect.shrink(1.), super::theme::RADIUS, fill);
     }
     if let Some(kind) = kind {
         icon(
@@ -258,18 +261,18 @@ fn menu_control(ui:&mut egui::Ui,label:&str,kind:Option<Icon>,selected:bool,arro
     let label_x=rect.left()+if kind.is_some(){36.}else{13.};
     let end_space=if toggle.is_some(){56.}else if arrow||selected{30.}else{12.};
     let hint_galley=(!hint.is_empty()).then(||{
-        let mut job=egui::text::LayoutJob::simple_singleline(hint.into(),egui::FontId::proportional(12.),super::theme::MUTED);
+        let mut job=egui::text::LayoutJob::simple_singleline(hint.into(),egui::FontId::proportional(12.),super::theme::palette(ui.visuals()).muted);
         job.wrap.max_width=(rect.width()*0.42).max(1.);job.wrap.max_rows=1;
         ui.fonts(|fonts|fonts.layout_job(job))
     });
     let hint_width=hint_galley.as_ref().map_or(0.,|g|g.size().x+18.);
-    let mut job=egui::text::LayoutJob::simple_singleline(label.into(),egui::FontId::proportional(14.),if selected{super::theme::ACCENT}else{ink});
+    let mut job=egui::text::LayoutJob::simple_singleline(label.into(),egui::FontId::proportional(14.),if selected&&ui.is_enabled(){palette.accent}else{ink});
     job.wrap.max_width=(rect.right()-label_x-end_space-hint_width-6.).max(1.);job.wrap.max_rows=1;job.wrap.break_anywhere=true;
     let galley=ui.fonts(|fonts|fonts.layout_job(job));
     ui.painter().galley(egui::pos2(label_x,rect.center().y-galley.size().y/2.),galley,ink);
     if selected && !arrow {
         let c=egui::pos2(rect.right()-14.,rect.center().y);
-        ui.painter().circle_filled(c,7.,super::theme::ACCENT);
+        ui.painter().circle_filled(c,7.,palette.primary);
         ui.painter().line_segment([c+egui::vec2(-3.,0.),c+egui::vec2(-1.,2.)],Stroke::new(1.4,Color32::WHITE));
         ui.painter().line_segment([c+egui::vec2(-1.,2.),c+egui::vec2(3.,-2.)],Stroke::new(1.4,Color32::WHITE));
     }
@@ -277,24 +280,24 @@ fn menu_control(ui:&mut egui::Ui,label:&str,kind:Option<Icon>,selected:bool,arro
         let center = egui::pos2(rect.right() - 13.0, rect.center().y);
         ui.painter().line_segment(
             [center - egui::vec2(2.0, 3.0), center + egui::vec2(1.0, 0.0)],
-            Stroke::new(1.0, Color32::from_gray(125)),
+            Stroke::new(1.0, palette.muted),
         );
         ui.painter().line_segment(
             [
                 center + egui::vec2(1.0, 0.0),
                 center + egui::vec2(-2.0, 3.0),
             ],
-            Stroke::new(1.0, Color32::from_gray(125)),
+            Stroke::new(1.0, palette.muted),
         );
     }
     if let Some(galley)=hint_galley {
         let pos=egui::pos2(rect.right()-end_space-galley.size().x,rect.center().y-galley.size().y/2.);
-        ui.painter().rect_filled(Rect::from_min_size(pos,galley.size()).expand2(egui::vec2(5.,2.)),4.,Color32::from_rgb(238,243,249));
-        ui.painter().galley(pos,galley,super::theme::MUTED);
+        ui.painter().rect_filled(Rect::from_min_size(pos,galley.size()).expand2(egui::vec2(5.,2.)),4.,palette.base);
+        ui.painter().galley(pos,galley,super::theme::palette(ui.visuals()).muted);
     }
     if let Some(enabled)=toggle {
         let track=Rect::from_center_size(egui::pos2(rect.right()-25.,rect.center().y),egui::vec2(32.,18.));
-        ui.painter().rect_filled(track,9.,if !ui.is_enabled(){Color32::from_gray(220)}else if enabled{super::theme::ACCENT}else{Color32::from_rgb(192,204,219)});
+        ui.painter().rect_filled(track,9.,if !ui.is_enabled(){palette.disabled}else if enabled{palette.primary}else{palette.control_border});
         ui.painter().circle_filled(track.center()+egui::vec2(if enabled{7.}else{-7.},0.),6.5,Color32::WHITE);
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -304,7 +307,7 @@ fn separator(ui: &mut egui::Ui) {
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 9.0), egui::Sense::hover());
     ui.painter().line_segment(
         [rect.left_center(), rect.right_center()],
-        Stroke::new(1.0, Color32::from_rgb(235,240,244)),
+        Stroke::new(1.0, super::theme::palette(ui.visuals()).border),
     );
 }
 fn child_position(row: Rect, screen: Rect, width: f32) -> Pos2 {
@@ -362,7 +365,7 @@ fn side_submenu<R>(
     egui::InnerResponse::new(inner, response)
 }
 fn menu_heading(ui:&mut egui::Ui,title:&str,status:&str) {
-    ui.horizontal(|ui|{ui.add_space(7.);ui.label(RichText::new(title).size(11.5).color(super::theme::MUTED).strong());if !status.is_empty(){ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{ui.label(RichText::new(status).size(11.5).color(super::theme::ACCENT));});}});ui.add_space(4.);
+    ui.horizontal(|ui|{ui.add_space(7.);ui.label(RichText::new(title).size(11.5).color(super::theme::palette(ui.visuals()).muted).strong());if !status.is_empty(){ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{ui.label(RichText::new(status).size(11.5).color(super::theme::palette(ui.visuals()).accent));});}});ui.add_space(4.);
 }
 fn nested_submenu<R>(ui:&mut egui::Ui,blocked:&mut Vec<Rect>,label:&str,status:&str,body:impl FnOnce(&mut egui::Ui)->R)->egui::InnerResponse<Option<R>> {
     let key=egui::Id::new((ui.ctx().viewport_id(),"stream-nested-menu"));let id=ui.make_persistent_id(("nested",label));
@@ -435,7 +438,7 @@ impl super::App {
             .exact_height(super::window::CONNECTION_BAR_HEIGHT)
             .frame(
                 egui::Frame::none()
-                    .fill(super::theme::CANVAS)
+                    .fill(super::theme::palette(&ctx.style().visuals).base)
                     .inner_margin(egui::Margin::symmetric(10.0, 2.0)),
             )
             .show(ctx, |ui| {
@@ -469,7 +472,7 @@ impl super::App {
                         let status_width = text_width(text, egui::TextStyle::Body)
                             + if resume {text_width(uu_i18n::text("恢复控制"), egui::TextStyle::Body) + 2.0*ui.spacing().button_padding.x + ui.spacing().item_spacing.x} else {0.0};
                         if ui.available_width() >= controls_width + status_width + 2.0*ui.spacing().item_spacing.x {
-                            ui.label(RichText::new(text).color(Color32::from_rgb(98, 125, 160))).on_hover_text(help);
+                            ui.label(RichText::new(text).color(super::theme::palette(ui.visuals()).muted)).on_hover_text(help);
                             if resume && ui.small_button(uu_i18n::text("恢复控制")).on_hover_text(uu_i18n::text("重新请求此串流的键鼠控制")).clicked() {
                                 self.input_capture.request();
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -481,7 +484,7 @@ impl super::App {
                         ui.label(
                             RichText::new(if self.displays.switching(){uu_i18n::text("正在切换显示器…")}else{uu_i18n::text("输入连接中…")})
                                 .size(12.0)
-                                .color(Color32::from_gray(110)),
+                                .color(super::theme::palette(ui.visuals()).muted),
                         )
                         .on_hover_text(uu_i18n::text("视频和输入分别建立连接，输入就绪后可操作"));
                     }
@@ -497,7 +500,7 @@ impl super::App {
                                     / 1000.0
                             ))
                             .size(11.0)
-                            .color(Color32::from_rgb(51, 159, 126)),
+                            .color(super::theme::palette(ui.visuals()).success),
                         );
                     }
                     let width = (ui.available_width() - controls_width - ui.spacing().item_spacing.x).max(0.0);
@@ -557,17 +560,17 @@ impl super::App {
                             let selected=self.displays.selected==Some(screen.id);
                             let label=self.displays.layout.label(screen);
                             let (rect,response)=ui.allocate_exact_size(egui::vec2(140.0,30.0),egui::Sense::click_and_drag());
-                            if selected || response.hovered() {ui.painter().rect_filled(rect,7.0,if selected{Color32::WHITE}else{Color32::from_rgb(232,235,239)});}
+                            if selected || response.hovered() || response.is_pointer_button_down_on() {let palette=super::theme::palette(ui.visuals());ui.painter().rect_filled(rect,super::theme::RADIUS,if response.is_pointer_button_down_on(){palette.pressed}else if selected{palette.card}else{palette.hover});}
                             response.dnd_set_drag_payload(super::display_layout::DraggedDisplay(screen.id));
                             if response.dragged(){ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);}
                             let after=ui.input(|i|i.pointer.hover_pos().is_some_and(|p|p.x>rect.center().x));
                             if response.dnd_hover_payload::<super::display_layout::DraggedDisplay>().is_some_and(|s|s.0!=screen.id) {
                                 let x=if after{rect.right()}else{rect.left()};
-                                ui.painter().line_segment([egui::pos2(x,rect.top()+3.0),egui::pos2(x,rect.bottom()-3.0)],egui::Stroke::new(2.0,MENU_INK));
+                                ui.painter().line_segment([egui::pos2(x,rect.top()+3.0),egui::pos2(x,rect.bottom()-3.0)],egui::Stroke::new(2.0,super::theme::palette(ui.visuals()).text));
                                 if let Some(dropped)=response.dnd_release_payload::<super::display_layout::DraggedDisplay>() {reorder=Some((dropped.0,screen.id,after));}
                             }
-                            icon(ui.painter(),Rect::from_center_size(rect.left_center()+egui::vec2(16.0,0.0),egui::vec2(15.0,15.0)),Icon::Desktop,MENU_INK);
-                            ui.painter().with_clip_rect(Rect::from_min_max(rect.min+egui::vec2(30.0,0.0),rect.max-egui::vec2(8.0,0.0))).text(rect.left_center()+egui::vec2(30.0,0.0),egui::Align2::LEFT_CENTER,&label,egui::FontId::proportional(12.0),MENU_INK);
+                            icon(ui.painter(),Rect::from_center_size(rect.left_center()+egui::vec2(16.0,0.0),egui::vec2(15.0,15.0)),Icon::Desktop,super::theme::palette(ui.visuals()).text);
+                            ui.painter().with_clip_rect(Rect::from_min_max(rect.min+egui::vec2(30.0,0.0),rect.max-egui::vec2(8.0,0.0))).text(rect.left_center()+egui::vec2(30.0,0.0),egui::Align2::LEFT_CENTER,&label,egui::FontId::proportional(12.0),super::theme::palette(ui.visuals()).text);
                             if response.on_hover_text(uu_i18n::format!("{}{} · {} × {} · {} Hz\n拖动调整标签顺序；编号为本地标记，重连后保留",label,if screen.primary{uu_i18n::text(" · 主屏")}else{""},screen.width,screen.height,screen.refresh_hz)).clicked(){chosen=Some(screen.id);}
                         }
                         if screens.screens.is_empty(){ui.label(uu_i18n::text("等待显示器…"));}
@@ -1102,8 +1105,8 @@ mod tests {
                     image::save_buffer(&self.output,&data,image.size[0] as u32,image.size[1] as u32,image::ColorType::Rgba8).unwrap();
                     self.saved.store(true,Ordering::Release);ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                egui::CentralPanel::default().frame(egui::Frame::none().fill(super::super::theme::CANVAS).inner_margin(24.)).show(ctx,|ui|{
-                    ui.heading("v0.20.1 · 菜单预览");ui.add_space(18.);
+                egui::CentralPanel::default().frame(egui::Frame::none().fill(super::super::theme::palette(&ctx.style().visuals).base).inner_margin(24.)).show(ctx,|ui|{
+                    ui.heading("Eclipse · 生成菜单预览");ui.add_space(18.);
                     ui.columns(3,|columns|{
                         for (index,title) in ["画面","编码","声音"].into_iter().enumerate(){
                             popup_frame(&columns[index]).show(&mut columns[index],|ui|{

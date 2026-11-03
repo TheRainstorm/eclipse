@@ -4,25 +4,29 @@ use std::sync::atomic::Ordering::Relaxed;
 pub(super) fn volume_slider(ui: &mut eframe::egui::Ui, volume: &mut u32) -> bool {
     use eframe::egui;
     let before = *volume;
-    egui::Frame::none().fill(super::theme::CANVAS).rounding(8.).inner_margin(10.).show(ui,|ui|{
+    let palette=*super::theme::palette(ui.visuals());
+    egui::Frame::none().fill(palette.base).rounding(8.).inner_margin(10.).show(ui,|ui|{
         ui.spacing_mut().interact_size.y=22.;
         ui.spacing_mut().slider_rail_height=4.;
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(uu_i18n::text("音量")).size(13.).color(super::theme::MUTED));
+            ui.label(egui::RichText::new(uu_i18n::text("音量")).size(13.).color(palette.muted));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                 ui.add(egui::DragValue::new(volume).range(0..=100).suffix(" %").speed(0.5));
             });
         });
         ui.add_space(4.);
         ui.spacing_mut().slider_width=ui.available_width().max(1.);
-        ui.visuals_mut().selection.bg_fill=super::theme::ACCENT;
-        ui.visuals_mut().widgets.inactive.bg_fill=egui::Color32::WHITE;
-        ui.visuals_mut().widgets.inactive.bg_stroke=egui::Stroke::new(1.5,super::theme::ACCENT);
-        ui.visuals_mut().widgets.inactive.fg_stroke=egui::Stroke::new(1.5,super::theme::ACCENT);
-        ui.visuals_mut().widgets.hovered.bg_fill=egui::Color32::WHITE;
-        ui.visuals_mut().widgets.hovered.bg_stroke=egui::Stroke::new(2.,super::theme::ACCENT);
-        ui.visuals_mut().widgets.hovered.fg_stroke=egui::Stroke::new(2.,super::theme::ACCENT);
-        ui.visuals_mut().widgets.active=ui.visuals().widgets.hovered;
+        ui.visuals_mut().selection.bg_fill=palette.accent;
+        ui.visuals_mut().widgets.inactive.bg_fill=palette.control;
+        ui.visuals_mut().widgets.inactive.bg_stroke=egui::Stroke::new(1.5,palette.accent);
+        ui.visuals_mut().widgets.inactive.fg_stroke=egui::Stroke::new(1.5,palette.accent);
+        ui.visuals_mut().widgets.hovered.bg_fill=palette.control;
+        ui.visuals_mut().widgets.hovered.bg_stroke=egui::Stroke::new(2.,palette.accent);
+        ui.visuals_mut().widgets.hovered.fg_stroke=egui::Stroke::new(2.,palette.accent);
+        ui.visuals_mut().widgets.active.bg_fill=palette.pressed;
+        ui.visuals_mut().widgets.active.weak_bg_fill=palette.pressed;
+        ui.visuals_mut().widgets.active.bg_stroke=egui::Stroke::new(1.5,palette.accent);
+        ui.visuals_mut().widgets.active.fg_stroke=egui::Stroke::new(1.5,palette.accent);
         ui.add(egui::Slider::new(volume,0..=100).show_value(false).trailing_fill(true));
     });
     before != *volume

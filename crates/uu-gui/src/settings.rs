@@ -397,7 +397,7 @@ impl super::App {
             .resizable(false)
             .frame(
                 egui::Frame::none()
-                    .fill(super::theme::SIDEBAR)
+                    .fill(super::theme::palette(&ctx.style().visuals).sidebar)
                     .inner_margin(egui::Margin::symmetric(14.0, 18.0)),
             )
             .show(ctx, |ui| {
@@ -427,7 +427,7 @@ impl super::App {
                 .exact_height(if ctx.screen_rect().height() < 520.0 { 54.0 } else { 66.0 })
                 .frame(
                     egui::Frame::none()
-                        .fill(super::theme::SURFACE)
+                        .fill(super::theme::palette(&ctx.style().visuals).card)
                         .inner_margin(egui::Margin::symmetric(20.0, 12.0)),
                 )
                 .show(ctx, |ui| {
@@ -436,7 +436,7 @@ impl super::App {
                             actions.reset = true;
                         }
                         if dirty {
-                            ui.label(egui::RichText::new(uu_i18n::text("有未保存的更改")).size(12.0).color(super::theme::MUTED));
+                            ui.label(egui::RichText::new(uu_i18n::text("有未保存的更改")).size(12.0).color(super::theme::palette(ui.visuals()).muted));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
@@ -457,7 +457,7 @@ impl super::App {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
-                    .fill(super::theme::CANVAS)
+                    .fill(super::theme::palette(&ctx.style().visuals).base)
                     .inner_margin(if ctx.screen_rect().height() < 520.0 { 14.0 } else { 24.0 }),
             )
             .show(ctx, |ui| {
@@ -477,7 +477,7 @@ impl super::App {
                                 || super::ui_feedback::looks_like_error(&self.settings_notice);
                             ui.label(
                                 egui::RichText::new(&self.settings_notice)
-                                    .color(if error { super::theme::DANGER } else { super::theme::SUCCESS }),
+                                    .color(if error { super::theme::palette(ui.visuals()).danger } else { super::theme::palette(ui.visuals()).success }),
                             );
                             ui.add_space(10.0);
                         }
