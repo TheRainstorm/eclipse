@@ -30,6 +30,9 @@ use windows_sys::{
     },
 };
 
+#[path = "provision_windows.rs"]
+mod provision;
+
 pub(super) struct Windows;
 
 pub(super) struct MutationLock(HANDLE);
@@ -39,7 +42,7 @@ impl MutationLock {
     }
     pub(super) fn acquire_named(name: &str, timeout: u32) -> Result<Self> {
         let name: Vec<_> = name.encode_utf16().chain([0]).collect();
-        let sddl: Vec<_> = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100001;;;IU)"
+        let sddl: Vec<_> = super::ownership_windows::MUTEX_SECURITY
             .encode_utf16()
             .chain([0])
             .collect();
@@ -122,6 +125,18 @@ pub(super) fn worker<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) 
 }
 
 impl Backend for Windows {
+    fn recover(&self) -> Result<()> {
+        worker(provision::recover_pending_only)?
+    }
+    fn claim(&self, key: &TargetKey) -> Result<Box<dyn Claim>> {
+        super::ownership_windows::claim(key)
+    }
+    fn is_claimed(&self, key: &TargetKey) -> Result<bool> {
+        super::ownership_windows::is_claimed(key)
+    }
+    fn provision(&self) -> Result<()> {
+        worker(provision::prepare)?
+    }
     fn inventory(&self) -> Result<Inventory> {
         worker(|| inventory(&scene()?))?
     }

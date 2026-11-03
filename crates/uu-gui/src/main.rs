@@ -990,8 +990,7 @@ impl App {
                     self.launcher_hidden=false;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                    let foreground=self.workspace.host.running()||self.native_host.running()||self.lan.host.running()||self.virtual_display.owns_foreground_displays();
-                    self.virtual_display.open_local(ctx,foreground);
+                    self.virtual_display.open_local_selector();
                 },
                 tray::Action::Exit=>{self.exit_requested=true;self.disconnect();},
             }

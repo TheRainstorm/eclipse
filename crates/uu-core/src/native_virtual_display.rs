@@ -24,6 +24,9 @@ use webrtc::{
 const ATTRIBUTE: &str = "a=x-eclipse-virtual-display:1";
 const LABEL: &str = "eclipse-virtual-display-v1";
 const MAX_JSON: usize = 16 * 1024;
+/// A UI notice deadline, not permission to cancel or repeat a submitted
+/// topology change. Windows class installers cannot be cancelled safely.
+pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -68,8 +71,10 @@ pub fn error_message(error: &anyhow::Error) -> String {
         Some(Error::Unsupported) => uu_i18n::text("虚拟显示器仅支持 Windows").into(),
         Some(Error::DriverMissing) => uu_i18n::text("源机尚未安装支持的签名虚拟显示器驱动").into(),
         Some(Error::NoAvailableSlot) => {
-            uu_i18n::text("没有空闲虚拟屏，请在源机托盘中准备一个虚拟屏槽位").into()
+            uu_i18n::text("驱动没有可用虚拟屏，请在源机管理窗口准备驱动后重试").into()
         }
+        Some(Error::Claimed) => uu_i18n::text("虚拟显示器由其它共享进程使用").into(),
+        Some(Error::AdministratorRequired) => uu_i18n::text("启用虚拟显示器需要管理员权限，请在源机管理窗口准备虚拟显示器").into(),
         Some(Error::InvalidSpec) => uu_i18n::text("虚拟屏分辨率或刷新率无效").into(),
         Some(Error::WrongOwner) => uu_i18n::text("此虚拟屏属于其它连接或由源机手动创建").into(),
         Some(Error::SessionClosed | Error::HostClosing) => {
@@ -81,7 +86,7 @@ pub fn error_message(error: &anyhow::Error) -> String {
         Some(Error::LastActiveOutput) => {
             uu_i18n::text("不能停用最后一个活动显示器，请先保留另一个桌面输出").into()
         }
-        _ => error.to_string(),
+        _ => format!("{error:#}"),
     }
 }
 /// Local UI operation. An installed service must call this only after its OS

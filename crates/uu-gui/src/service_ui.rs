@@ -77,7 +77,7 @@ impl Entry {
             ui.strong(uu_i18n::text("Windows 后台服务 · 锁屏串流"));
             ui.label(match self.status {Some(SERVICE_RUNNING)=>uu_i18n::text("后台服务运行中"),Some(SERVICE_STOPPED)=>uu_i18n::text("后台服务已停止"),Some(_)=>uu_i18n::text("后台服务正在转换状态"),None=>uu_i18n::text("后台服务尚未安装")});
             if let Some(build)=&self.build {version_labels(ui,build);}
-            ui.weak(uu_i18n::text("安装后随 Windows 启动，在已登录的控制台用户中支持锁屏串流。首次安装使用已保存的共享设置、账号和配对授权。"));
+            ui.weak(uu_i18n::text("后台服务随 Windows 启动，支持已登录控制台用户的锁屏串流。首次安装复制共享设置与配对授权；插件及其账号需单独同步。"));
             let busy=self.job.is_some()||self.pending_install;
             if self.status.is_some() {
                 if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("管理后台服务"))).clicked() {
@@ -85,9 +85,13 @@ impl Entry {
                         Ok(exe)=>self.launch(exe,"--open-background-service-manager".into()),Err(error)=>self.notice=error.to_string(),
                     }
                 }
+                ui.weak(uu_i18n::text("打开管理员管理窗口，查看运行版本、设置及虚拟屏；打开或关闭窗口不更新程序，也不重启服务。"));
+                ui.add_space(6.);
                 if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("更新后台程序"))).clicked() {
                     if host.running(){host.stop();}self.pending_install=true;
                 }
+                ui.weak(uu_i18n::text("安装当前完整程序包并启动后台，保留已有设置与配对，不导入插件或账号；会断开后台串流并停止本窗口的前台共享。"));
+                ui.add_space(6.);
                 if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("同步插件并重启后台服务"))).clicked() {
                     let result=(||->anyhow::Result<_>{
                         let config=uu_core::Config::from_env()?;
@@ -96,6 +100,8 @@ impl Entry {
                     })();
                     match result {Ok((exe,args))=>self.launch(exe,args),Err(error)=>self.notice=error.to_string()}
                 }
+                ui.weak(uu_i18n::text("将当前已启用插件及其声明的配置、账号复制到后台，覆盖对应状态；后台原来运行时重启，原来停止时保持停止。"));
+                ui.weak(uu_i18n::text("原生虚拟显示器不依赖插件，无需为管理虚拟屏同步插件。"));
             }else if ui.add_enabled(available&&!busy,egui::Button::new(uu_i18n::text("安装并启动后台服务"))).clicked() {
                 if host.running(){host.stop();}self.pending_install=true;self.notice=uu_i18n::text("正在准备后台服务安装…").into();
             }
@@ -126,6 +132,7 @@ fn version_labels(ui:&mut egui::Ui,build:&BuildStatus) {
     } else if build.process_id!=0 {
         ui.label(uu_i18n::format!("后台运行版本：无法读取 · PID {}",build.process_id))
             .on_hover_text(build.running_error.as_deref().unwrap_or("Unknown service image"));
+        ui.weak(uu_i18n::text("当前权限可能无法读取系统后台进程版本。请打开管理员管理窗口核对；安装版本不能代替运行版本。"));
     }
     if let Some(installed)=&build.installed {
         if build.running.as_ref().is_none_or(|running|running.revision!=installed.revision) {
@@ -424,7 +431,7 @@ impl eframe::App for Manager {
             });
             if let Some(build)=&self.build {version_labels(ui,build);}
             ui.horizontal(|ui| {
-                if ui.add_enabled(self.state==SERVICE_RUNNING,egui::Button::new(uu_i18n::text("虚拟显示器"))).clicked(){self.virtual_display.open_local(ctx,false);}
+                if ui.add_enabled(self.state==SERVICE_RUNNING,egui::Button::new(uu_i18n::text("虚拟显示器"))).clicked(){self.virtual_display.open_local(ctx,super::virtual_display_ui::LocalOwner::Background);}
                 if ui
                     .add_enabled(
                         !self.busy && self.state == SERVICE_STOPPED,
@@ -645,7 +652,7 @@ fn run_manager(virtual_displays:bool)->eframe::Result {
         },
         Box::new(move |cc| {
             super::setup_style(&cc.egui_ctx);
-            if virtual_displays {manager.virtual_display.open_local(&cc.egui_ctx,false);}
+            if virtual_displays {manager.virtual_display.open_local(&cc.egui_ctx,super::virtual_display_ui::LocalOwner::Background);}
             Ok(Box::new(manager))
         }),
     )
@@ -655,6 +662,21 @@ fn run_manager(virtual_displays:bool)->eframe::Result {
 /// depend on an adjacent CLI; install/import still use a verified complete set.
 pub(super) fn dispatch() -> Option<eframe::Result> {
     let args:Vec<_>=std::env::args_os().skip(1).collect();
+    if args==["--prepare-virtual-display-driver"] {
+        let result=(||->anyhow::Result<()> {
+            require_administrator()?;
+            let exe=std::env::current_exe()?;
+            uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("{}",uu_i18n::format!("无法确定安装包目录")))?,env!("UU_BUILD_COMMIT"))?;
+            uu_core::virtual_display::prepare()?;
+            Ok(())
+        })();
+        if let Err(error)=result {
+            let error=format!("{error:#}");
+            show_error(&uu_i18n::format!("准备虚拟显示器失败：{error}"));
+            std::process::exit(1);
+        }
+        return Some(Ok(()));
+    }
     if args.len()==2&&args[0]=="--install-virtual-display-driver" {
         let result=super::virtual_display_install::install_downloaded(std::path::Path::new(&args[1]));
         if let Err(error)=result {show_error(&uu_i18n::format!("安装虚拟显示器驱动失败：{error}"));std::process::exit(1);}

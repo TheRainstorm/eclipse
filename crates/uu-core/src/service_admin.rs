@@ -11,6 +11,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub mod package;
 
 pub const MAX_MESSAGE: usize = 256 * 1024;
+/// The server may have completed a non-idempotent operation before its reply
+/// was lost. Callers must inspect that same owner before offering mutations.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct SubmittedUnknown(pub String);
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {

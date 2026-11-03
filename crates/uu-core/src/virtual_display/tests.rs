@@ -1,17 +1,66 @@
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[derive(Default)]
 struct Fake {
     targets: Mutex<Vec<Target>>,
+    fail_recover: AtomicBool,
+    recover_calls: AtomicUsize,
+    inventory_calls: AtomicUsize,
     fail_remove: AtomicBool,
     fail_after_activate: AtomicBool,
     activated: Mutex<Vec<TargetKey>>,
     removed: Mutex<Vec<TargetKey>>,
+    claims: Mutex<BTreeSet<TargetKey>>,
+    provision_calls: AtomicUsize,
+    provisioned: Mutex<Option<Target>>,
 }
 
+struct FakeClaim {
+    backend: Arc<Fake>,
+    key: TargetKey,
+}
+impl Claim for FakeClaim {}
+impl Drop for FakeClaim {
+    fn drop(&mut self) {
+        assert!(self.backend.claims.lock().unwrap().remove(&self.key));
+    }
+}
 impl Backend for Arc<Fake> {
+    fn recover(&self) -> Result<()> {
+        self.recover_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_recover.load(Ordering::SeqCst) {
+            Err(Error::Platform("adapter rollback remains pending".into()))
+        } else {
+            Ok(())
+        }
+    }
+    fn claim(&self, key: &TargetKey) -> Result<Box<dyn Claim>> {
+        if !self.claims.lock().unwrap().insert(key.clone()) {
+            return Err(Error::Claimed);
+        }
+        Ok(Box::new(FakeClaim {
+            backend: self.clone(),
+            key: key.clone(),
+        }))
+    }
+    fn is_claimed(&self, key: &TargetKey) -> Result<bool> {
+        Ok(self.claims.lock().unwrap().contains(key))
+    }
+    fn provision(&self) -> Result<()> {
+        self.provision_calls.fetch_add(1, Ordering::SeqCst);
+        let target = self
+            .provisioned
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(Error::NoAvailableSlot)?;
+        self.targets.lock().unwrap().push(target);
+        Ok(())
+    }
     fn inventory(&self) -> Result<Inventory> {
+        self.inventory_calls.fetch_add(1, Ordering::SeqCst);
         Ok(Inventory {
             supported: true,
             driver_present: true,
@@ -211,6 +260,33 @@ fn invalid_spec_does_not_enumerate_or_mutate_a_display() {
         Err(Error::InvalidSpec)
     ));
     assert!(backend.activated.lock().unwrap().is_empty());
+    assert_eq!(backend.recover_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn pending_recovery_blocks_every_mutation_before_inventory_or_target_reuse() {
+    let (manager, backend) = fixture();
+    let slot = backend.targets.lock().unwrap()[1].key.slot_id();
+    backend.fail_recover.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        manager.create(Owner::Manual, Spec::default()),
+        Err(Error::Platform(_))
+    ));
+    assert!(matches!(
+        manager.prepare_slot(&slot),
+        Err(Error::Platform(_))
+    ));
+    assert!(matches!(manager.prepare_driver(), Err(Error::Platform(_))));
+    assert_eq!(backend.recover_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(backend.inventory_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.provision_calls.load(Ordering::SeqCst), 0);
+    assert!(backend.activated.lock().unwrap().is_empty());
+    assert!(backend.removed.lock().unwrap().is_empty());
+    // Once exact rollback succeeds, the same admission path can reuse capacity.
+    backend.fail_recover.store(false, Ordering::SeqCst);
+    let display = manager.create(Owner::Manual, Spec::default()).unwrap();
+    assert_eq!(display.source, "\\\\.\\DISPLAY2");
+    manager.remove(display.id).unwrap();
 }
 
 #[test]
@@ -349,4 +425,187 @@ fn explicit_preparation_cannot_blank_the_last_output_or_run_after_shutdown() {
         manager.prepare_slot(&slot.id),
         Err(Error::HostClosing)
     ));
+    assert!(matches!(manager.prepare_driver(), Err(Error::HostClosing)));
+}
+
+fn another_manager(backend: &Arc<Fake>) -> Arc<Manager> {
+    Arc::new(Manager {
+        backend: Box::new(backend.clone()),
+        entries: Mutex::new(BTreeMap::new()),
+        sessions: Mutex::new(BTreeMap::new()),
+        manual_closing: AtomicBool::new(false),
+    })
+}
+#[test]
+fn independent_managers_keep_claims_while_an_owned_output_is_temporarily_inactive() {
+    let (first, backend) = fixture();
+    backend
+        .targets
+        .lock()
+        .unwrap()
+        .retain(|target| target.key.target <= 2);
+    let second = another_manager(&backend);
+    let display = first.create(Owner::Manual, Spec::default()).unwrap();
+    let key = first
+        .lock()
+        .unwrap()
+        .get(&display.id)
+        .unwrap()
+        .target
+        .clone();
+    let slot = key.slot_id();
+    assert!(
+        second
+            .slots()
+            .unwrap()
+            .iter()
+            .find(|value| value.id == slot)
+            .unwrap()
+            .leased
+    );
+    assert!(matches!(second.prepare_slot(&slot), Err(Error::Claimed)));
+    assert!(backend.removed.lock().unwrap().is_empty());
+    // The user can disable an output in Windows without ending its Eclipse
+    // lease. Another process must not adopt that same exact target meanwhile.
+    backend
+        .targets
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|target| target.key == key)
+        .unwrap()
+        .active = false;
+    assert_eq!(second.status().unwrap().available_slots, 0);
+    assert!(matches!(
+        second.create(Owner::Manual, Spec::default()),
+        Err(Error::NoAvailableSlot)
+    ));
+    assert!(matches!(second.prepare_slot(&slot), Err(Error::Claimed)));
+    first.remove(display.id).unwrap();
+    assert!(!backend.is_claimed(&key).unwrap());
+    let replacement = second.create(Owner::Manual, Spec::default()).unwrap();
+    first.remove(display.id).unwrap(); // A stale remove is idempotent, never B's lease.
+    assert!(second.list().unwrap()[0].active);
+    second.remove(replacement.id).unwrap();
+}
+#[test]
+fn failed_rollback_retains_the_cross_process_claim_until_cleanup_really_succeeds() {
+    let (first, backend) = fixture();
+    backend
+        .targets
+        .lock()
+        .unwrap()
+        .retain(|target| target.key.target <= 2);
+    let second = another_manager(&backend);
+    backend.fail_after_activate.store(true, Ordering::SeqCst);
+    backend.fail_remove.store(true, Ordering::SeqCst);
+    let id = match first.create(Owner::Manual, Spec::default()) {
+        Err(Error::CleanupPending { id, .. }) => id,
+        value => panic!("unexpected activation: {value:?}"),
+    };
+    let key = first.lock().unwrap().get(&id).unwrap().target.clone();
+    assert!(backend.is_claimed(&key).unwrap());
+    backend
+        .targets
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|target| target.key == key)
+        .unwrap()
+        .active = false;
+    assert_eq!(second.status().unwrap().available_slots, 0);
+    assert!(matches!(
+        second.prepare_slot(&key.slot_id()),
+        Err(Error::Claimed)
+    ));
+    backend.fail_remove.store(false, Ordering::SeqCst);
+    first.remove(id).unwrap();
+    assert!(!backend.is_claimed(&key).unwrap());
+}
+#[test]
+fn two_managers_racing_for_one_target_cannot_both_activate_it() {
+    let (first, backend) = fixture();
+    backend
+        .targets
+        .lock()
+        .unwrap()
+        .retain(|target| target.key.target <= 2);
+    let second = another_manager(&backend);
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let workers: Vec<_> = [first.clone(), second.clone()]
+        .into_iter()
+        .map(|manager| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                manager.create(Owner::Manual, Spec::default())
+            })
+        })
+        .collect();
+    let results: Vec<_> = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(backend.activated.lock().unwrap().len(), 1);
+    first.release_manual().unwrap();
+    second.release_manual().unwrap();
+    assert!(backend.claims.lock().unwrap().is_empty());
+}
+#[test]
+fn missing_capacity_provisions_once_then_claims_only_a_fresh_inactive_target() {
+    let (manager, backend) = fixture();
+    backend
+        .targets
+        .lock()
+        .unwrap()
+        .retain(|target| target.active);
+    let target = Target {
+        key: TargetKey {
+            adapter: (9, 10),
+            target: 7,
+            monitor_path: "new-owned-instance-monitor".into(),
+        },
+        name: "fresh".into(),
+        source: "generated-fresh-source".into(),
+        active: false,
+        available: true,
+        actual: None,
+    };
+    *backend.provisioned.lock().unwrap() = Some(target.clone());
+    let display = manager.create(Owner::Manual, Spec::default()).unwrap();
+    assert_eq!(display.source, target.source);
+    assert_eq!(backend.provision_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(*backend.activated.lock().unwrap(), vec![target.key]);
+    assert!(backend.targets.lock().unwrap()[0].active);
+    manager.remove(display.id).unwrap();
+}
+#[test]
+fn provisioning_that_does_not_publish_inactive_capacity_is_not_retried_or_adopted() {
+    let (manager, backend) = fixture();
+    backend
+        .targets
+        .lock()
+        .unwrap()
+        .retain(|target| target.active);
+    let target = Target {
+        key: TargetKey {
+            adapter: (9, 10),
+            target: 7,
+            monitor_path: "new-active-target".into(),
+        },
+        name: "external".into(),
+        source: "generated-other-source".into(),
+        active: true,
+        available: true,
+        actual: None,
+    };
+    *backend.provisioned.lock().unwrap() = Some(target);
+    assert!(matches!(
+        manager.create(Owner::Manual, Spec::default()),
+        Err(Error::NoAvailableSlot)
+    ));
+    assert_eq!(backend.provision_calls.load(Ordering::SeqCst), 1);
+    assert!(backend.activated.lock().unwrap().is_empty());
+    assert!(backend.removed.lock().unwrap().is_empty());
 }

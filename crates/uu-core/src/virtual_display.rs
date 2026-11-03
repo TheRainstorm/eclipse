@@ -1,9 +1,10 @@
 //! Ownership of virtual targets activated by this host process.
 //!
 //! These operations block and belong on a worker, not the GUI/event-loop thread.
-//! The Windows backend only uses already provisioned, connected but inactive
-//! MttVDD/Zako targets. It never changes a driver's global count, reloads an
-//! adapter, imports certificates, or claims an already active target.
+//! Activation requires an unclaimed, connected but inactive target. A backend
+//! may provision capacity in its own exact-resource transaction before a fresh
+//! inventory; an existing active output is never adopted. Target claims remain
+//! live across temporary external deactivation and failed cleanup.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -19,6 +20,8 @@ use uuid::Uuid;
 
 #[cfg(windows)]
 mod install_windows;
+#[cfg(windows)]
+mod ownership_windows;
 #[cfg(windows)]
 mod windows;
 
@@ -91,6 +94,12 @@ pub fn install_signed(package_directory: &std::path::Path) -> Result<Status> {
         let _ = package_directory;
         Err(Error::Unsupported)
     }
+}
+
+/// Prepare an installed driver explicitly from an elevated source-machine UI.
+/// Background hosts use the same provisioning path automatically on creation.
+pub fn prepare() -> Result<()> {
+    Manager::shared().prepare_driver()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -186,6 +195,8 @@ pub enum Error {
     DriverMissing,
     #[error("no unused connected virtual display slot is available; existing active displays are never taken over")]
     NoAvailableSlot,
+    #[error("this virtual display is already leased by another host process")]
+    Claimed,
     #[error("invalid virtual display size or refresh rate")]
     InvalidSpec,
     #[error("this virtual display belongs to another session or was created manually")]
@@ -200,6 +211,8 @@ pub enum Error {
     LastActiveOutput,
     #[error("virtual display operation failed: {0}")]
     Platform(String),
+    #[error("administrator permission is required to prepare the virtual display driver")]
+    AdministratorRequired,
     #[error("virtual display {id} still needs cleanup: {message}")]
     CleanupPending { id: LeaseId, message: String },
 }
@@ -249,7 +262,23 @@ struct ActivationFailure {
     activated: bool,
 }
 
+/// Retained through activation, rollback and removal, including inactive periods.
+/// Dropping this guard releases only this process's claim on the exact target.
+trait Claim: Send + Sync {}
+
 trait Backend: Send + Sync {
+    /// Finish this process's earlier partial mutation before admitting another.
+    /// Read-only inventory/status calls do not trigger recovery.
+    fn recover(&self) -> Result<()> {
+        Ok(())
+    }
+    fn claim(&self, key: &TargetKey) -> Result<Box<dyn Claim>>;
+    fn is_claimed(&self, key: &TargetKey) -> Result<bool>;
+    /// Supply an unused target without adopting or reconfiguring existing output.
+    /// Success means it can be freshly enumerated; failures must own their rollback.
+    fn provision(&self) -> Result<()> {
+        Err(Error::NoAvailableSlot)
+    }
     fn inventory(&self) -> Result<Inventory>;
     fn activate(
         &self,
@@ -261,6 +290,7 @@ trait Backend: Send + Sync {
 }
 
 struct Entry {
+    _claim: Box<dyn Claim>,
     target: TargetKey,
     display: Display,
 }
@@ -299,26 +329,42 @@ impl Manager {
             .map_err(|_| Error::Platform("display manager ownership state is poisoned".into()))
     }
 
+    fn prepare_driver(&self) -> Result<()> {
+        let _ownership = self.lock()?;
+        if self.manual_closing.load(Ordering::Acquire) {
+            return Err(Error::HostClosing);
+        }
+        self.backend.recover()?;
+        let inventory = self.backend.inventory()?;
+        for target in inventory.targets {
+            if target.available && !target.active && !self.backend.is_claimed(&target.key)? {
+                return Ok(());
+            }
+        }
+        self.backend.provision()
+    }
+
     pub fn status(&self) -> Result<Status> {
         let entries = self.lock()?;
         let inventory = self.backend.inventory()?;
-        let available_slots = inventory
-            .targets
-            .iter()
-            .filter(|target| {
-                target.available
-                    && !target.active
-                    && !entries.values().any(|entry| entry.target == target.key)
-            })
-            .count();
+        let mut available_slots = 0;
+        for target in &inventory.targets {
+            if target.available
+                && !target.active
+                && !entries.values().any(|entry| entry.target == target.key)
+                && !self.backend.is_claimed(&target.key)?
+            {
+                available_slots += 1;
+            }
+        }
         let explanation = if !inventory.supported {
             "Virtual displays are only supported on Windows."
         } else if !inventory.driver_present {
             "Install the signed VirtualDrivers driver explicitly as administrator; installation is never automatic."
         } else if inventory.targets.is_empty() {
-            "A supported driver is installed but has no connected monitor target. Enable it explicitly in Windows Device Manager or the official driver manager; Eclipse does not reset adapters automatically."
+            "A supported driver is installed but has no connected monitor target. Creating a display can prepare a disabled Mtt adapter that has no active output; foreground preparation requires administrator permission."
         } else if available_slots == 0 {
-            "No unused connected virtual display slot is available. Provision an inactive slot explicitly in the driver settings; active displays are not taken over."
+            "No unused connected virtual display slot is available. Creating a display attempts to prepare an unused disabled Mtt adapter. Capacity is limited to the driver's configured targets; active adapters are not reloaded and existing active displays are not taken over."
         } else {
             "Unused virtual display slots are available. Removing a lease disconnects only that target from the Windows desktop."
         };
@@ -354,20 +400,23 @@ impl Manager {
 
     pub fn slots(&self) -> Result<Vec<Slot>> {
         let entries = self.lock()?;
-        Ok(self
-            .backend
+        self.backend
             .inventory()?
             .targets
             .into_iter()
-            .map(|target| Slot {
-                id: target.key.slot_id(),
-                name: target.name,
-                source: target.source,
-                active: target.active,
-                leased: entries.values().any(|entry| entry.target == target.key),
-                actual: target.actual,
+            .map(|target| {
+                let leased = entries.values().any(|entry| entry.target == target.key)
+                    || self.backend.is_claimed(&target.key)?;
+                Ok(Slot {
+                    id: target.key.slot_id(),
+                    name: target.name,
+                    source: target.source,
+                    active: target.active,
+                    leased,
+                    actual: target.actual,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// Explicit host-local preparation: the user selects this exact existing
@@ -379,6 +428,7 @@ impl Manager {
         if self.manual_closing.load(Ordering::Acquire) {
             return Err(Error::HostClosing);
         }
+        self.backend.recover()?;
         let target = self
             .backend
             .inventory()?
@@ -389,6 +439,7 @@ impl Manager {
                     && !entries.values().any(|entry| entry.target == target.key)
             })
             .ok_or(Error::UnknownSlot)?;
+        let _claim = self.backend.claim(&target.key)?;
         self.backend.prepare(&target.key)
     }
 
@@ -411,22 +462,13 @@ impl Manager {
                 return Err(Error::SessionClosed);
             }
         }
-        let inventory = self.backend.inventory()?;
-        if !inventory.supported {
-            return Err(Error::Unsupported);
+        self.backend.recover()?;
+        let mut selected = self.claim_available(&entries)?;
+        if selected.is_none() {
+            self.backend.provision()?;
+            selected = self.claim_available(&entries)?;
         }
-        if !inventory.driver_present {
-            return Err(Error::DriverMissing);
-        }
-        let target = inventory
-            .targets
-            .into_iter()
-            .find(|target| {
-                target.available
-                    && !target.active
-                    && !entries.values().any(|entry| entry.target == target.key)
-            })
-            .ok_or(Error::NoAvailableSlot)?;
+        let (target, claim) = selected.ok_or(Error::NoAvailableSlot)?;
         let id = LeaseId(Uuid::new_v4());
         let mut display = Display {
             id,
@@ -447,6 +489,7 @@ impl Manager {
                 entries.insert(
                     id,
                     Entry {
+                        _claim: claim,
                         target: target.key,
                         display: display.clone(),
                     },
@@ -467,6 +510,7 @@ impl Manager {
                         entries.insert(
                             id,
                             Entry {
+                                _claim: claim,
                                 target: target.key,
                                 display,
                             },
@@ -476,6 +520,35 @@ impl Manager {
                 }
             }
         }
+    }
+
+    fn claim_available(
+        &self,
+        entries: &BTreeMap<LeaseId, Entry>,
+    ) -> Result<Option<(Target, Box<dyn Claim>)>> {
+        let inventory = self.backend.inventory()?;
+        if !inventory.supported {
+            return Err(Error::Unsupported);
+        }
+        if !inventory.driver_present {
+            return Err(Error::DriverMissing);
+        }
+        for target in inventory.targets {
+            if !target.available
+                || target.active
+                || entries.values().any(|entry| entry.target == target.key)
+            {
+                continue;
+            }
+            match self.backend.claim(&target.key) {
+                Ok(claim) => return Ok(Some((target, claim))),
+                // A different process may claim after our inventory. Try other
+                // targets; errors establishing ownership still fail closed.
+                Err(Error::Claimed) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(None)
     }
 
     pub fn remove(&self, id: LeaseId) -> Result<()> {
@@ -620,6 +693,12 @@ struct Unsupported;
 
 #[cfg(not(windows))]
 impl Backend for Unsupported {
+    fn claim(&self, _: &TargetKey) -> Result<Box<dyn Claim>> {
+        Err(Error::Unsupported)
+    }
+    fn is_claimed(&self, _: &TargetKey) -> Result<bool> {
+        Err(Error::Unsupported)
+    }
     fn inventory(&self) -> Result<Inventory> {
         Ok(Inventory {
             supported: false,

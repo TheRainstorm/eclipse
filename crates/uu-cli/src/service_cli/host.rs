@@ -116,14 +116,15 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
             .unwrap()
             .clone();
         let listener = pipe(true)?;
+        let (stop, receiver) = watch::channel(false);
         let manager = tokio::spawn(serve(
             listener,
             prepared.access.clone(),
             administration,
             prepared.requests,
             prepared.endpoints,
+            receiver.clone(),
         ));
-        let (stop, receiver) = watch::channel(false);
         let running = prepared.runner.run(receiver);
         tokio::pin!(running);
         let mut completed = false;
@@ -138,12 +139,14 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
         }
         stop.send_replace(true);
         if !completed {
-            match tokio::time::timeout(Duration::from_secs(6), &mut running).await {
+            match tokio::time::timeout(uu_core::native_virtual_display::OPERATION_TIMEOUT, &mut running).await {
                 Ok(result) => failure = result.err(),
                 Err(_) => failure = Some(anyhow::anyhow!("后台共享停止超时")),
             }
         }
-        manager.abort();
+        // Stop accepting IPC first; join every accepted display mutation before
+        // releasing the process's manual leases. Aborting an async wrapper does
+        // not stop its blocking Windows worker.
         let _ = manager.await;
         drop(states);
         if let Some(error) = failure {
@@ -168,12 +171,15 @@ async fn serve(
     admin: Arc<host_admin::Service>,
     mut requests: mpsc::UnboundedReceiver<PairRequest>,
     endpoints: Vec<uu_core::host_runtime::Endpoint>,
+    mut stop: watch::Receiver<bool>,
 ) -> Result<()> {
     let pending: Pending = Arc::default();
     let endpoints = Arc::new(endpoints);
     let mut tasks = tokio::task::JoinSet::new();
-    loop {
+    let result = async { loop {
         tokio::select! {
+            biased;
+            _=stop.changed()=>break,
             request=requests.recv()=>if let Some(request)=request {
                 let mut pending=pending.lock().unwrap();pending.retain(|r|matches!(*r.status.borrow(),PairStatus::Waiting|PairStatus::Verifying));pending.push(request);
             }else{break;},
@@ -182,14 +188,15 @@ async fn serve(
                 if tasks.len()>=4 {drop(connected);continue;}
                 let access=access.clone();let admin=admin.clone();let pending=pending.clone();let endpoints=endpoints.clone();
                 tasks.spawn(async move {
-                    let _=tokio::time::timeout(Duration::from_secs(5),connection(connected,access,admin,pending,endpoints)).await;
+                    let _=connection(connected,access,admin,pending,endpoints).await;
                 });
             },
             _=tasks.join_next(),if !tasks.is_empty()=>{},
         }
-    }
-    tasks.abort_all();
-    Ok(())
+    } Ok(()) }.await;
+    drop(listener);
+    while tasks.join_next().await.is_some() {}
+    result
 }
 async fn connection(
     mut stream: NamedPipeServer,
@@ -198,7 +205,7 @@ async fn connection(
     pending: Pending,
     endpoints: Arc<Vec<uu_core::host_runtime::Endpoint>>,
 ) -> Result<()> {
-    let request: Request = service_admin::read(&mut stream).await?;
+    let request: Request = tokio::time::timeout(Duration::from_secs(5), service_admin::read(&mut stream)).await??;
     let reply_admin = admin.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<(Response, bool)> {
         let snapshot = || -> Result<host_admin::Snapshot> {
@@ -291,7 +298,7 @@ async fn connection(
             false,
         ),
     };
-    service_admin::write(&mut stream, &response).await?;
+    tokio::time::timeout(Duration::from_secs(5), service_admin::write(&mut stream, &response)).await??;
     if restart {
         reply_admin.restart_local_administrator()?;
     }

@@ -445,20 +445,14 @@ mod windows {
                 Response::Snapshot{status,displays,slots}=>{ensure!(status.supported&&status.driver_present&&status.available_slots==0,"unexpected driver inventory");ensure!(displays.is_empty()&&slots.is_empty(),"remote inspect exposed unrelated leases or local preparation slots");},
                 other=>return Err(uu_plugin_sdk::anyhow::anyhow!("unexpected Inspect result: {other:?}")),
             }
-            // Both independent inventories must still show no free target. No
-            // active output is ever prepared/deactivated by this probe.
-            ensure!(Manager::shared().status()?.available_slots==0,"inventory changed; refused to send Create");
-            match viewer.request(Request::Create{spec:Spec{width:1280,height:720,refresh_millihz:30_000,hdr:false}}).await? {
-                Response::Error{message}=>ensure!(message==engine::native_virtual_display::error_message(&engine::virtual_display::Error::NoAvailableSlot.into()),"Create failed for a different reason: {message}"),
-                Response::Created{display}=>{
-                    // An external actor may have provisioned a slot after the
-                    // last preflight. Retire only this test's own unexpected lease.
-                    let _=viewer.request(Request::Remove{id:display.id}).await;
-                    return anyhow_failure("an inactive slot appeared during the probe; owned creation rolled back, test did not pass");
-                },
-                other=>return Err(uu_plugin_sdk::anyhow::anyhow!("unexpected Create result: {other:?}")),
+            // InvalidSpec is rejected before driver provisioning. A zero-slot
+            // inventory alone no longer makes Create read-only: it can enable
+            // an eligible disabled adapter in the production backend.
+            match viewer.request(Request::Create{spec:Spec{width:1,height:720,refresh_millihz:30_000,hdr:false}}).await? {
+                Response::Error{message}=>ensure!(message==engine::native_virtual_display::error_message(&engine::virtual_display::Error::InvalidSpec.into()),"invalid Create failed for a different reason: {message}"),
+                other=>return Err(uu_plugin_sdk::anyhow::anyhow!("unexpected invalid Create result: {other:?}")),
             }
-            ensure!(geometry()?==fixture.initial_geometry&&slots()?==fixture.initial_slots,"NoAvailableSlot changed the display layout");
+            ensure!(geometry()?==fixture.initial_geometry&&slots()?==fixture.initial_slots,"invalid Create changed the display layout");
             let epoch=viewer.stats.native_media_epoch.load(Ordering::Acquire);
             let catalog=viewer.stats.remote_screens.lock().unwrap().clone();
             let target=catalog.screens.iter().find(|screen|screen.id!=catalog.current_id&&screen.width as u64*9==screen.height as u64*16)
@@ -480,7 +474,7 @@ mod windows {
             fixture.ended == 2,
             "normal SessionEnded events were not observed for both authenticated sessions"
         );
-        Ok(format!("{{\"ok\":true,\"sdk_id\":\"{}\",\"view_frames\":{view_frames},\"managed_frames\":{managed_frames},\"view_only_capability_absent\":true,\"manage_capability_present\":true,\"no_available_slot_error\":true,\"epoch_before\":{earlier_epoch},\"epoch_after\":{later_epoch},\"same_authenticated_connection\":true,\"created_targets\":0,\"physical_target_removal_exercised\":false,\"input_messages\":0,\"audio_enabled\":false,\"clipboard_enabled\":false,\"layout_unchanged\":true,\"normal_sessions_ended\":2,\"source\":\"real Windows Desktop, software H264, requested 1280x720@30\"}}",uu_plugin_sdk::SDK_ID))
+        Ok(format!("{{\"ok\":true,\"sdk_id\":\"{}\",\"view_frames\":{view_frames},\"managed_frames\":{managed_frames},\"view_only_capability_absent\":true,\"manage_capability_present\":true,\"invalid_spec_error\":true,\"epoch_before\":{earlier_epoch},\"epoch_after\":{later_epoch},\"same_authenticated_connection\":true,\"created_targets\":0,\"physical_target_removal_exercised\":false,\"input_messages\":0,\"audio_enabled\":false,\"clipboard_enabled\":false,\"layout_unchanged\":true,\"normal_sessions_ended\":2,\"source\":\"real Windows Desktop, software H264, requested 1280x720@30\"}}",uu_plugin_sdk::SDK_ID))
     }
     fn quoted(value: &str) -> String {
         let mut text = String::from("\"");

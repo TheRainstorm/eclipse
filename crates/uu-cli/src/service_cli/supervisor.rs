@@ -36,7 +36,7 @@ fn report(state: u32, code: u32) {
         } else {
             0
         },
-        dwWaitHint: 10000,
+        dwWaitHint: if state == SERVICE_STOP_PENDING { 90_000 } else { 10_000 },
     };
     let handle = STATUS.load(Ordering::Acquire) as SERVICE_STATUS_HANDLE;
     if !handle.is_null() {
@@ -157,7 +157,9 @@ impl Drop for Child {
     fn drop(&mut self) {
         unsafe {
             SetEvent(self.stop.0);
-            WaitForSingleObject(self.process.0, 5000);
+            // Allow an accepted SetupAPI transaction and virtual-display
+            // cleanup to finish before closing the kill-on-close job.
+            WaitForSingleObject(self.process.0, 90_000);
         } /* job closes after graceful deadline */
     }
 }

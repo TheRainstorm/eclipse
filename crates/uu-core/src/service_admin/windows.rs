@@ -308,7 +308,8 @@ fn verify_server(handle: HANDLE) -> Result<()> {
     Ok(())
 }
 pub async fn request(request: Request) -> Result<Response> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    let display_operation = matches!(request, Request::VirtualDisplay { .. });
+    let mut pipe = tokio::time::timeout(Duration::from_secs(5), async {
         let mut pipe = loop {
             match ClientOptions::new().open(PIPE_NAME) {
                 Ok(pipe) => break pipe,
@@ -319,11 +320,29 @@ pub async fn request(request: Request) -> Result<Response> {
             }
         };
         verify_server(pipe.as_raw_handle() as _)?;
-        super::write(&mut pipe, &request).await?;
-        super::read(&mut pipe).await
+        Ok::<_, anyhow::Error>(pipe)
     })
     .await
-    .context(uu_i18n::text("后台服务管理请求超时"))?
+    .context(uu_i18n::text("后台服务管理请求超时"))??;
+    let submitted = tokio::time::timeout(Duration::from_secs(5), super::write(&mut pipe, &request))
+        .await.context(uu_i18n::text("后台服务管理请求超时"))
+        .and_then(|result| result);
+    if display_operation {
+        // A cancelled/failed write may already have delivered the complete
+        // frame. Inspect before retrying even if write_all/flush did not return.
+        submitted.map_err(|error| super::SubmittedUnknown(format!("{error:#}")))?;
+    } else {
+        submitted?;
+    }
+    // Once accepted, a display mutation runs to an explicit result. Dropping a
+    // timeout future cannot cancel SetupAPI/spawn_blocking and would allow the
+    // caller to unknowingly repeat a still-running Create operation.
+    if display_operation {
+        super::read(&mut pipe).await.map_err(|error| super::SubmittedUnknown(format!("{error:#}")).into())
+    } else {
+        tokio::time::timeout(Duration::from_secs(5), super::read(&mut pipe))
+            .await.context(uu_i18n::text("后台服务管理请求超时"))?
+    }
 }
 pub struct ServiceHandle(pub SC_HANDLE);
 impl Drop for ServiceHandle {

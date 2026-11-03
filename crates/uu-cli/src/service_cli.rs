@@ -205,7 +205,7 @@ pub fn stop() -> Result<()> {
     wait(SERVICE_STOPPED)
 }
 fn wait(expected: u32) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(25);
+    let deadline = Instant::now() + Duration::from_secs(if expected == SERVICE_STOPPED { 95 } else { 25 });
     loop {
         if status()? == expected {
             return Ok(());
