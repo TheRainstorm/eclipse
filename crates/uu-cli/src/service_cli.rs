@@ -73,7 +73,7 @@ pub fn init_background_logging() -> Result<()> {
         .append(true)
         .open(path).context("打开后台日志文件失败")?;
     tracing_subscriber::fmt()
-        .with_env_filter("error,uu_core=info,uu=info,uu_capture=warn,uu_input=warn,uu_media=warn")
+        .with_env_filter("error,eclipse_cli=info,uu_core=info,uu=info,uu_capture=warn,uu_input=warn,uu_media=warn")
         .with_target(false)
         .with_ansi(false)
         .with_writer(std::sync::Mutex::new(log))
