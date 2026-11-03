@@ -337,6 +337,9 @@ mod tests {
                 Err(e) if e.kind()==std::io::ErrorKind::WouldBlock=>{assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));},
                 Err(e)=>panic!("{e}"),
             }};
+            // Winsock accepts inherit the listener's nonblocking mode. The
+            // request reader needs blocking I/O bounded by SO_RCVTIMEO.
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
             let mut request=[0;4096];stream.read(&mut request).unwrap();
             let pixels=image::RgbImage::from_pixel(64,36,image::Rgb([40,100,180]));
