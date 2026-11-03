@@ -483,7 +483,7 @@ mod tests {
 
 }
 fn muted(ui:&mut egui::Ui,text:impl Into<String>)->egui::Response {
-    ui.label(RichText::new(text).size(12.).color(theme::MUTED))
+    ui.label(RichText::new(text).size(theme::FONT_META).color(theme::palette(ui.visuals()).muted))
 }
 fn device_placeholder_color(id: &str) -> egui::Color32 {
     let palette = [
@@ -526,14 +526,10 @@ fn last_connection(time:Option<u64>)->String {
     uu_i18n::format!("上次连接 · {relative}")
 }
 fn primary(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add(egui::Button::new(RichText::new(text).color(egui::Color32::WHITE)).fill(theme::ACCENT))
+    ui.add(theme::primary_button(text))
 }
 fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::none()
-        .fill(theme::SURFACE)
-        .stroke(egui::Stroke::new(1., theme::BORDER))
-        .rounding(12.)
-        .inner_margin(18.)
+    theme::card(ui.visuals())
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             contents(ui);
@@ -784,8 +780,8 @@ impl Workspace {
     }
     fn endpoint_state(&self, ui: &mut egui::Ui, name: &str) {
         for (endpoint, status) in self.host.statuses().into_iter().filter(|(n,_)| n==name) {
-            let color = match status { EndpointStatus::Ready|EndpointStatus::Streaming=>theme::SUCCESS,EndpointStatus::Error(_)=>theme::DANGER,_=>theme::MUTED };
-            ui.colored_label(color, format!("{endpoint} · {}",status.label()));
+            let tone = match status { EndpointStatus::Ready|EndpointStatus::Streaming=>theme::Tone::Success,EndpointStatus::Error(_)=>theme::Tone::Danger,_=>theme::Tone::Neutral };
+            theme::pill(ui, &format!("{endpoint} · {}",status.label()), tone);
         }
     }
     pub(super) fn discard_server_draft(&mut self){self.draft=self.book.sharing.clone();}
@@ -1315,7 +1311,7 @@ impl Workspace {
         } else {
             ui.horizontal(|ui| {
                 let running=self.host.running();
-                if ui.add_enabled(self.server_dirty(),egui::Button::new(RichText::new(uu_i18n::text("保存设置")).color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked(){self.save_sharing();}
+                if ui.add_enabled(self.server_dirty(),theme::primary_button(uu_i18n::text("保存设置"))).clicked(){self.save_sharing();}
                 if running && ui.add_enabled(!self.host.stopping(),egui::Button::new(uu_i18n::text("保存并重启服务"))).clicked() {
                     if !self.server_dirty() || self.save_sharing() {actions.push(Action::RestartSharing);}
                 }
@@ -1375,7 +1371,7 @@ impl Workspace {
                         if ui.add_enabled(!self.host.stopping(),egui::Button::new(uu_i18n::text("保存并重启服务"))).clicked() {
                             if !self.server_dirty() || self.save_sharing() {actions.push(Action::RestartSharing);}
                         }
-                    } else if ui.add_enabled(self.store.is_some(),egui::Button::new(RichText::new(uu_i18n::text("启动服务")).color(egui::Color32::WHITE)).fill(theme::ACCENT)).clicked() {
+                    } else if ui.add_enabled(self.store.is_some(),theme::primary_button(uu_i18n::text("启动服务"))).clicked() {
                         if !self.server_dirty() || self.save_sharing() { actions.push(Action::StartSharing); }
                     }
                 });

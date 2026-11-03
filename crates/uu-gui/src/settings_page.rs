@@ -83,21 +83,18 @@ pub struct Actions {
 }
 
 fn note(ui: &mut egui::Ui, text: &str) {
-    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(theme::MUTED)).wrap());
+    ui.add(egui::Label::new(RichText::new(text).size(theme::FONT_META).color(theme::palette(ui.visuals()).muted)).wrap());
 }
 fn group(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::none()
-        .fill(theme::SURFACE)
-        .stroke(egui::Stroke::new(1.0, theme::BORDER))
-        .rounding(12.0)
+    theme::card(ui.visuals())
         .inner_margin(if ui.ctx().screen_rect().height() < 520.0 {
             12.0
         } else {
-            18.0
+            theme::SPACE_4
         })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(title).size(16.0).strong().color(theme::INK));
+            ui.label(RichText::new(title).size(theme::FONT_SECTION).strong().color(theme::palette(ui.visuals()).text));
             ui.add_space(8.0);
             body(ui);
         });
@@ -486,16 +483,13 @@ pub fn show(
                     }
                     if ui
                         .add_enabled(hotkeys_valid,
-                            egui::Button::new(
-                                RichText::new(uu_i18n::text("保存并应用")).color(egui::Color32::WHITE),
-                            )
-                            .fill(theme::ACCENT),
+                            theme::primary_button(uu_i18n::text("保存并应用")),
                         )
                         .clicked()
                     {
                         actions.apply = true;
                     }
-                    if ui.button(uu_i18n::text("取消")).clicked() {
+                    if ui.add(theme::ghost_button(uu_i18n::text("取消"))).clicked() {
                         actions.back = true;
                     }
                 });

@@ -644,11 +644,7 @@ impl HostUi {
                             if ui
                                 .add_enabled(
                                     approval.is_ok(),
-                                    egui::Button::new(
-                                        egui::RichText::new(if pending.temporary{uu_i18n::text("允许本次串流")}else{uu_i18n::text("允许并保存设备")})
-                                            .color(egui::Color32::WHITE),
-                                    )
-                                    .fill(super::theme::ACCENT),
+                                    super::theme::primary_button(if pending.temporary{uu_i18n::text("允许本次串流")}else{uu_i18n::text("允许并保存设备")}),
                                 )
                                 .clicked()
                             {

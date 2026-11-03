@@ -13,61 +13,9 @@ pub const CONTROL_BORDER: C = C::from_rgb(129, 147, 171);
 pub const DANGER: C = C::from_rgb(180, 35, 54);
 pub const SUCCESS: C = C::from_rgb(22, 112, 73);
 
-pub fn apply(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::light();
-    visuals.panel_fill = CANVAS;
-    visuals.window_fill = SURFACE;
-    visuals.extreme_bg_color = SURFACE;
-    visuals.faint_bg_color = TINT;
-    visuals.hyperlink_color = ACCENT;
-    visuals.error_fg_color = DANGER;
-    visuals.selection.bg_fill = ACCENT;
-    visuals.selection.stroke = egui::Stroke::new(1.0, C::WHITE);
-    visuals.widgets.noninteractive.fg_stroke.color = INK;
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, BORDER);
-    visuals.widgets.inactive.bg_fill = SURFACE;
-    visuals.widgets.inactive.weak_bg_fill = SURFACE;
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, CONTROL_BORDER);
-    visuals.widgets.inactive.fg_stroke.color = INK;
-    visuals.widgets.hovered.bg_fill = TINT;
-    visuals.widgets.hovered.weak_bg_fill = TINT;
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, ACCENT);
-    visuals.widgets.hovered.fg_stroke.color = INK;
-    visuals.widgets.active.bg_fill = TINT;
-    visuals.widgets.active.weak_bg_fill = TINT;
-    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, ACCENT);
-    // egui also uses active foreground as its default strong text color.
-    visuals.widgets.active.fg_stroke.color = INK;
-    visuals.widgets.open = visuals.widgets.hovered;
-    visuals.window_rounding = egui::Rounding::same(12.0);
-    visuals.window_stroke = egui::Stroke::new(1.0, BORDER);
-    ctx.set_visuals(visuals);
-    ctx.style_mut(|style| {
-        for widget in [
-            &mut style.visuals.widgets.inactive,
-            &mut style.visuals.widgets.hovered,
-            &mut style.visuals.widgets.active,
-            &mut style.visuals.widgets.open,
-        ] {
-            widget.rounding = egui::Rounding::same(7.0);
-        }
-        style
-            .text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::proportional(24.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
-        style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-        style.spacing.button_padding = egui::vec2(12.0, 7.0);
-        style.spacing.interact_size.y = 32.0;
-    });
-}
+#[path = "theme/design_system.rs"]
+mod design_system;
+pub use design_system::*;
 
 #[cfg(test)]
 mod tests {
@@ -90,6 +38,7 @@ mod tests {
     #[test]
     fn text_selection_and_control_boundaries_remain_legible() {
         let ctx = egui::Context::default();
+        ctx.set_theme(egui::Theme::Light);
         apply(&ctx);
         let style = ctx.style();
         let v = &style.visuals;

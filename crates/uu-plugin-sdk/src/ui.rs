@@ -225,28 +225,29 @@ pub fn icon_button_tinted(
     tint: C,
 ) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
-    if response.hovered() || selected {
-        ui.painter().rect_filled(
-            rect,
-            6.0,
-            if selected {
-                C::from_rgb(222, 235, 249)
-            } else {
-                ui.visuals().widgets.hovered.bg_fill
-            },
-        );
-    }
-    icon(ui.painter(), rect, kind, if selected { BLUE } else { tint });
+    ghost_background(ui, &response, selected);
+    let palette=crate::theme::palette(ui.visuals());
+    let color=if !ui.is_enabled(){palette.muted}else if selected{palette.accent}else{tint};
+    icon(ui.painter(), rect, kind, color);
+    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),tip));
     response.on_hover_text(tip)
+}
+
+fn ghost_background(ui:&egui::Ui,response:&Response,selected:bool) {
+    let palette=crate::theme::palette(ui.visuals());
+    let fill=if !ui.is_enabled(){C::TRANSPARENT}
+        else if response.is_pointer_button_down_on(){palette.pressed}
+        else if response.hovered()||response.has_focus(){palette.hover}
+        else if selected{palette.tint}else{C::TRANSPARENT};
+    ui.painter().rect_filled(response.rect,crate::theme::RADIUS,fill);
 }
 
 pub fn icon_label_button(ui: &mut egui::Ui, kind: Icon, label: &str) -> Response {
     let text = ui.painter().layout_no_wrap(label.into(), egui::FontId::proportional(14.0), ui.visuals().text_color());
     let (rect, response) = ui.allocate_exact_size(egui::vec2(40.0 + text.size().x, 30.0), Sense::click());
-    if response.hovered() {
-        ui.painter().rect_filled(rect, 6.0, ui.visuals().widgets.hovered.bg_fill);
-    }
+    ghost_background(ui,&response,false);
     icon(ui.painter(), Rect::from_center_size(rect.left_center() + egui::vec2(14.0, 0.0), Vec2::splat(18.0)), kind, ui.visuals().text_color());
     ui.painter().galley(egui::pos2(rect.left() + 30.0, rect.center().y - text.size().y / 2.0), text, ui.visuals().text_color());
+    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),label));
     response
 }

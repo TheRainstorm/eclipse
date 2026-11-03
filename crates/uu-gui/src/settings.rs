@@ -441,16 +441,13 @@ impl super::App {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(uu_i18n::text("保存并应用")).color(egui::Color32::WHITE),
-                                    )
-                                    .fill(super::theme::ACCENT),
+                                    super::theme::primary_button(uu_i18n::text("保存并应用")),
                                 )
                                 .clicked()
                             {
                                 actions.apply = true;
                             }
-                            if ui.button(uu_i18n::text("取消")).clicked() {
+                            if ui.add(super::theme::ghost_button(uu_i18n::text("取消"))).clicked() {
                                 actions.back = true;
                             }
                         });
