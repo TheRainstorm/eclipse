@@ -836,6 +836,7 @@ async fn send_video(
         controls=crate::native_control::HostControl::with_injector(config.allow_input,capture.desktop_rect(),config.clipboard.clone(),capture.input_injector(),authority)=>controls,
         _=cancelled(&mut stop)=>return Ok(HostReport::default()),
     };
+    controls.follow_desktop_mapping(capture.desktop_mapping());
     controls.set_permissions(permissions);
     controls.clipboard_images(clipboard_images);
     controls.gamepad_types(typed_gamepads);

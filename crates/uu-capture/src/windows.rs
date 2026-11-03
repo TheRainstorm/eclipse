@@ -35,6 +35,19 @@ pub struct Monitor {
     pub height: u32,
     pub primary: bool,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OutputIdentity { adapter:[u32;2], monitor_interface:String }
+fn output_identity(output:&Output)->Result<OutputIdentity,CaptureError> {
+    use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW,EnumDisplayDevicesW};
+    let name:Vec<u16>=output.monitor.name.encode_utf16().chain(Some(0)).collect();
+    let mut monitor=DISPLAY_DEVICEW::default();monitor.cb=std::mem::size_of::<DISPLAY_DEVICEW>() as u32;
+    if !unsafe{EnumDisplayDevicesW(windows::core::PCWSTR(name.as_ptr()),0,&mut monitor,1)}.as_bool(){return Err(backend("cannot resolve the selected monitor interface"));}
+    let end=monitor.DeviceID.iter().position(|c|*c==0).unwrap_or(monitor.DeviceID.len());
+    let interface=String::from_utf16_lossy(&monitor.DeviceID[..end]).to_ascii_lowercase();
+    if interface.is_empty(){return Err(backend("selected monitor interface is unavailable"));}
+    let adapter=unsafe{output.adapter.GetDesc1()}.map_err(backend)?.AdapterLuid;
+    Ok(OutputIdentity{adapter:[adapter.LowPart,adapter.HighPart as u32],monitor_interface:interface})
+}
 struct Output {
     monitor: Monitor,
     adapter: IDXGIAdapter1,
@@ -159,6 +172,8 @@ pub struct DxgiCapture {
     diagnostics: Option<crate::capture_diagnostics::Recorder>,
     cursor:crate::cursor::Stream,
     source: Monitor,
+    identity:OutputIdentity,
+    mapping:crate::DesktopMapping,
     rotation: Rotation,
     last: Option<RawFrame>,
     source_frames: crate::frame_info::SourceFrames,
@@ -201,6 +216,8 @@ impl DxgiCapture {
             }
             _ => return Err(CaptureError::NoBackend),
         };
+        let identity=output_identity(&selected)?;
+        let mapping=crate::DesktopMapping::new(crate::DesktopRect{x:selected.monitor.x,y:selected.monitor.y,width:selected.monitor.width,height:selected.monitor.height});
         let (mut device, mut context) = (None, None);
         unsafe {
             D3D11CreateDevice(
@@ -244,6 +261,8 @@ impl DxgiCapture {
             diagnostics,
             cursor:Default::default(),
             source: selected.monitor,
+            identity,
+            mapping,
             rotation: selected.rotation,
             last: None,
             source_frames: Default::default(),
@@ -292,6 +311,7 @@ impl DxgiCapture {
         self.cursor.update([self.source.width,self.source.height],position,shape);
     }
     fn invalidate(&mut self) {
+        self.mapping.update(None);
         if let Some(observer) = &mut self.diagnostics {
             observer.retired(self.source_frames.snapshot(None), qpc_now(), "desktop_invalidated", self.duplication.is_some());
         }
@@ -307,15 +327,16 @@ impl DxgiCapture {
             return Err(CaptureError::Suspended("等待桌面切换完成".into()));
         }
         self.retry_at = Instant::now() + Duration::from_millis(100);
-        let selected = outputs()
-            .map_err(|e| CaptureError::Suspended(e.to_string()))?
-            .into_iter()
-            .find(|o| o.monitor.name == self.source.name)
-            .ok_or_else(|| CaptureError::Suspended("等待原显示输出恢复".into()))?;
-        // Input coordinates and encoder dimensions are leased to the
-        // selected output. A topology change requires fresh negotiation.
-        if selected.monitor != self.source || selected.rotation != self.rotation {
-            return Err(backend("显示布局已改变，请重新连接"));
+        let mut matches=outputs().map_err(|e|CaptureError::Suspended(e.to_string()))?
+            .into_iter().filter(|output|output_identity(output).is_ok_and(|identity|identity==self.identity));
+        let selected=matches.next().ok_or_else(||CaptureError::Suspended("等待原显示输出身份恢复".into()))?;
+        // DISPLAYn may be renamed or reused while Windows applies topology.
+        // Match the OS interface and adapter across the entire inventory.
+        if matches.next().is_some(){return Err(CaptureError::Suspended("selected monitor identity is ambiguous".into()));}
+        // Position and primary status are desktop metadata, not an encoded
+        // pixel-mode change. Update their physical input mapping after renewal.
+        if selected.monitor.width!=self.source.width || selected.monitor.height!=self.source.height || selected.rotation!=self.rotation {
+            return Err(backend("display pixel mode changed; reconnect to renegotiate capture"));
         }
         self.duplication = Some(unsafe {
             let now_hdr=output_hdr(&selected.output);
@@ -333,6 +354,8 @@ impl DxgiCapture {
                 }
             })?
         });
+        self.source=selected.monitor;
+        self.mapping.update(Some(crate::DesktopRect{x:self.source.x,y:self.source.y,width:self.source.width,height:self.source.height}));
         Ok(())
     }
     fn acquire(&mut self, bounded_wait:Option<Duration>) -> Result<Option<RawFrame>, CaptureError> {
@@ -578,6 +601,7 @@ impl Capture for DxgiCapture {
     fn resolution(&self) -> (u32, u32) {
         (self.source.width, self.source.height)
     }
+    fn desktop_mapping(&self)->Option<crate::DesktopMapping>{Some(self.mapping.clone())}
     fn desktop_rect(&self) -> Option<crate::DesktopRect> {
         Some(crate::DesktopRect {
             x: self.source.x,
@@ -614,6 +638,7 @@ impl Capture for DxgiCapture {
 }
 impl Drop for DxgiCapture {
     fn drop(&mut self) {
+        self.mapping.update(None);
         self.cursor.clear();
         if let Some(observer) = self.diagnostics.take() {
             let _ = observer.write(&mut std::io::stderr().lock(), std::process::id(),

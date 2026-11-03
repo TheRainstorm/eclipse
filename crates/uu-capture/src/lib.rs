@@ -24,7 +24,7 @@ pub mod x11;
 #[cfg(target_os = "linux")]
 pub mod wayland;
 
-pub use backend::{available_backends, Capture, CaptureError, CaptureTarget, DesktopRect};
+pub use backend::{available_backends, Capture, CaptureError, CaptureTarget, DesktopRect, DesktopMapping};
 pub use synthetic::SyntheticCapture;
 
 #[derive(Clone)]

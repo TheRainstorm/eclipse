@@ -78,6 +78,8 @@ async fn send(channel: &RTCDataChannel, packet: Packet) -> Result<()> {
 
 struct WorkerState {
     text_supported: AtomicBool,
+    mapping:Mutex<Option<uu_capture::DesktopMapping>>,
+    mapping_applied_epoch:AtomicU64,
     allowed: std::sync::atomic::AtomicU8,
     gamepads: Mutex<Option<Arc<crate::native_gamepad::Worker>>>,
     gamepad_error: Mutex<Option<String>>,
@@ -95,6 +97,9 @@ struct WorkerState {
     timing:Arc<crate::native_timing::HostTiming>,
 }
 impl WorkerState {
+    fn mapping_ready(&self)->bool {
+        self.mapping.lock().unwrap().as_ref().is_none_or(|mapping|mapping.live_revision()==Some(self.mapping_applied_epoch.load(Ordering::Acquire)))
+    }
     fn release(&self, injector: &mut dyn InputInjector, final_release: bool) -> bool {
         let mut ownership = self.ownership.lock().unwrap();
         let keyboard = injector.release_all();
@@ -121,7 +126,7 @@ impl WorkerState {
     }
 }
 struct InputApplied {queue_us:u32,inject_us:u32,injected:Option<crate::video_e2e::WireClockStamp>}
-struct InputJob {epoch:u64,command:Option<InputCommand>,text:Option<String>,queued:Instant,reply:Option<oneshot::Sender<InputApplied>>}
+struct InputJob {epoch:u64,mapping_epoch:Option<u64>,command:Option<InputCommand>,text:Option<String>,queued:Instant,reply:Option<oneshot::Sender<InputApplied>>}
 struct InputWorker {
     state: Arc<WorkerState>,
     tx: SyncSender<InputJob>,
@@ -144,6 +149,7 @@ impl InputWorker {
     {
         let state = Arc::new(WorkerState {
             text_supported:AtomicBool::new(false),
+            mapping:Mutex::new(None),mapping_applied_epoch:AtomicU64::new(0),
             allowed:std::sync::atomic::AtomicU8::new(7),
             gamepads:Mutex::new(None),gamepad_error:Mutex::new(None),
             authority, ownership: Mutex::new(None),
@@ -177,6 +183,8 @@ impl InputWorker {
                     return;
                 }
                 let mut epoch = 0;
+                let mut mapped_rect=Some(rect);
+                let mut mapped_epoch=None;
                 loop {
                     let received = rx.recv_timeout(Duration::from_millis(50));
                     if actor.stop.load(Ordering::Acquire) {
@@ -210,9 +218,29 @@ impl InputWorker {
                         epoch = current;
                         actor.applied_epoch.store(current,Ordering::Release);
                     }
+                    // Keep the capture mapping lock through injection. A DXGI
+                    // retirement cannot race an event into a stale physical region.
+                    let mapping=actor.mapping.lock().unwrap().clone();
+                    let mapping_guard=mapping.as_ref().map(|mapping|mapping.lock());
+                    let next_rect=match mapping_guard.as_ref() {
+                        Some(bounds)=>bounds.0.as_ref().and_then(|r|DesktopRect::new(r.x,r.y,r.width,r.height).ok()),
+                        None=>Some(rect),
+                    };
+                    let next_mapping_epoch=mapping_guard.as_ref().map(|bounds|bounds.1);
+                    if next_rect!=mapped_rect || next_mapping_epoch!=mapped_epoch {
+                        if !actor.release(&mut *injector,false) {
+                            actor.suspend("input geometry changed before held input could be released".into());
+                            continue;
+                        }
+                        mapped_rect=next_rect;
+                        mapped_epoch=next_mapping_epoch;
+                        actor.mapping_applied_epoch.store(next_mapping_epoch.unwrap_or(0),Ordering::Release);
+                    }
+                    let Some(rect)=mapped_rect else {continue;};
                     match received {
                         Ok(job)
-                            if job.epoch == epoch && actor.enabled.load(Ordering::Acquire) =>
+                            if job.epoch == epoch && actor.enabled.load(Ordering::Acquire)
+                                && job.mapping_epoch==mapping_guard.as_ref().map(|bounds|bounds.1) =>
                         {
                             if job.command.is_none() && job.text.is_none() {continue;}
                             let queue_us=job.queued.elapsed().as_micros().min(u32::MAX as u128) as u32;
@@ -262,10 +290,10 @@ impl InputWorker {
         *self.state.seen.lock().unwrap() = Instant::now();
     }
     fn available(&self) -> bool {
-        self.state.available.load(Ordering::Acquire) && !self.state.stop.load(Ordering::Acquire)
+        self.state.available.load(Ordering::Acquire) && !self.state.stop.load(Ordering::Acquire) && self.state.mapping_ready()
     }
     fn wake(&self) {
-        let _=self.tx.try_send(InputJob{epoch:self.state.epoch.load(Ordering::Acquire),command:None,text:None,queued:Instant::now(),reply:None});
+        let _=self.tx.try_send(InputJob{epoch:self.state.epoch.load(Ordering::Acquire),mapping_epoch:None,command:None,text:None,queued:Instant::now(),reply:None});
     }
     fn request(&self, enabled: bool) {
         self.touch();
@@ -291,7 +319,7 @@ impl InputWorker {
         if pads.is_none() {
             if state.iter().all(Option::is_none){return;}
             let weak=Arc::downgrade(&self.state);
-            match crate::native_gamepad::Worker::start(Arc::new(move||weak.upgrade().map_or((0,false),|s|(s.epoch.load(Ordering::Acquire),s.enabled.load(Ordering::Acquire)&&!s.stop.load(Ordering::Acquire)&&s.applied_epoch.load(Ordering::Acquire)==s.epoch.load(Ordering::Acquire))))) {
+            match crate::native_gamepad::Worker::start(Arc::new(move||weak.upgrade().map_or((0,false),|s|(s.epoch.load(Ordering::Acquire),s.enabled.load(Ordering::Acquire)&&!s.stop.load(Ordering::Acquire)&&s.applied_epoch.load(Ordering::Acquire)==s.epoch.load(Ordering::Acquire)&&s.mapping_ready())))) {
                 Ok(worker)=>*pads=Some(worker),Err(error)=>{*self.state.gamepad_error.lock().unwrap()=Some(error.to_string());return;}
             }
         }
@@ -320,7 +348,11 @@ impl InputWorker {
         self.enqueue(None,Some(text.into()),None)
     }
     fn enqueue(&self,command:Option<InputCommand>,text:Option<String>,reply:Option<oneshot::Sender<InputApplied>>)->bool {
-        match self.tx.try_send(InputJob {epoch:self.state.epoch.load(Ordering::Acquire),command,text,queued:Instant::now(),reply}) {
+        let mapping=self.state.mapping.lock().unwrap().clone();
+        let mapping_epoch=if let Some(mapping)=mapping {
+            let current=mapping.lock();if current.0.is_none(){return false;}Some(current.1)
+        }else{None};
+        match self.tx.try_send(InputJob {epoch:self.state.epoch.load(Ordering::Acquire),mapping_epoch,command,text,queued:Instant::now(),reply}) {
             Ok(())=>true,
             Err(std::sync::mpsc::TrySendError::Full(_))=>{
                 self.state.suspend(uu_i18n::text("输入队列积压，正在释放并恢复").into());
@@ -461,6 +493,9 @@ impl HostControl {
             gamepad_typed: AtomicBool::new(false),
             registered: AtomicBool::new(false),
         })
+    }
+    pub fn follow_desktop_mapping(&self,mapping:Option<uu_capture::DesktopMapping>) {
+        if let Some(worker)=&self.worker {*worker.state.mapping.lock().unwrap()=mapping;}
     }
     pub fn set_displays(&self,displays:Option<Arc<crate::native_displays::Host>>){*self.displays.lock().unwrap()=displays;}
     pub fn timing(&self)->Arc<crate::native_timing::HostTiming>{self.timing.clone()}
@@ -963,6 +998,38 @@ mod tests {
             worker.state.enabled.load(Ordering::Acquire)
         })
         .await;
+    }
+    #[tokio::test]
+    async fn capture_mapping_retirement_releases_held_input_and_resumes_at_new_origin() {
+        let events=Arc::new(Mutex::new(Vec::new()));let releases=Arc::new(AtomicU64::new(0));
+        let recorded=events.clone();let released=releases.clone();
+        let worker=InputWorker::with_factory(DesktopRect::new(0,0,640,480).unwrap(),move||Ok(Box::new(Fixture{events:recorded,releases:released}))).await.unwrap();
+        let mapping=uu_capture::DesktopMapping::new(uu_capture::DesktopRect{x:-200,y:50,width:640,height:480});
+        *worker.state.mapping.lock().unwrap()=Some(mapping.clone());
+        wait_for_grant(&worker).await;
+        assert!(worker.push(InputCommand::Key{usage:4,pressed:true}));
+        assert!(worker.push(InputCommand::Absolute{x:0,y:0}));
+        wait(||worker.state.applied.load(Ordering::Acquire)==2).await;
+        assert!(matches!(events.lock().unwrap()[1],uu_input::InputEvent::MouseMoveAbsolute{x:-200,y:50}));
+        let rapid_before=releases.load(Ordering::Acquire);
+        // Model a complete invalidation/recovery between two input observations:
+        // the rectangle is identical, but all queued/held input belongs to an
+        // earlier capture generation and must still be retired.
+        mapping.update(mapping.get());
+        wait(||releases.load(Ordering::Acquire)>rapid_before).await;
+        let released_before=releases.load(Ordering::Acquire);
+        mapping.update(None);
+        wait(||releases.load(Ordering::Acquire)>released_before).await;
+        assert!(!worker.push(InputCommand::Key{usage:5,pressed:true}));
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        assert_eq!(worker.state.applied.load(Ordering::Acquire),2,"retired mapping accepted an old input job");
+        mapping.update(Some(uu_capture::DesktopRect{x:1280,y:-900,width:640,height:480}));
+        wait_for_grant(&worker).await;
+        assert!(worker.push(InputCommand::Absolute{x:u16::MAX,y:u16::MAX}));
+        wait(||worker.state.applied.load(Ordering::Acquire)==3).await;
+        assert!(matches!(events.lock().unwrap()[2],uu_input::InputEvent::MouseMoveAbsolute{x:1919,y:-421}));
+        assert_eq!(events.lock().unwrap().len(),3,"paused input was replayed after recovery");
+        worker.stop().await;
     }
     #[tokio::test]
     async fn temporary_input_failure_releases_before_regrant_and_drops_old_events() {

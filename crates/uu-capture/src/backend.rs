@@ -66,6 +66,9 @@ pub trait Capture: Send {
     fn desktop_rect(&self) -> Option<DesktopRect> {
         None
     }
+    /// A live physical input region, cleared while the selected desktop image
+    /// is invalid. The input owner must not inject using a retired rectangle.
+    fn desktop_mapping(&self) -> Option<DesktopMapping> { None }
     /// A compositor-authorized injector belonging to this capture session.
     /// Platforms with independent injection leave this empty.
     fn input_injector(&self) -> Option<Box<dyn uu_input::InputInjector>> {
@@ -75,12 +78,44 @@ pub trait Capture: Send {
     fn next_frame(&mut self) -> Result<RawFrame, CaptureError>;
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DesktopRect {
     pub x: i32,
     pub y: i32,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Clone)]
+pub struct DesktopMapping(std::sync::Arc<MappingState>);
+struct MappingState {
+    bounds:std::sync::Mutex<(Option<DesktopRect>,u64)>,
+    live:std::sync::atomic::AtomicBool,
+    revision:std::sync::atomic::AtomicU64,
+}
+impl DesktopMapping {
+    pub fn new(rect:DesktopRect)->Self {Self(std::sync::Arc::new(MappingState {
+        bounds:std::sync::Mutex::new((Some(rect),0)),live:std::sync::atomic::AtomicBool::new(true),revision:std::sync::atomic::AtomicU64::new(0),
+    }))}
+    pub fn get(&self)->Option<DesktopRect> {self.0.bounds.lock().unwrap().0}
+    /// Serialize coordinate injection with retirement.
+    pub fn lock(&self)->std::sync::MutexGuard<'_,(Option<DesktopRect>,u64)> {self.0.bounds.lock().unwrap()}
+    /// Every update represents a new capture binding, even at the same origin.
+    pub fn update(&self,rect:Option<DesktopRect>) {
+        use std::sync::atomic::Ordering;
+        let mut value=self.0.bounds.lock().unwrap();
+        self.0.live.store(false,Ordering::Release);
+        value.0=rect;value.1=value.1.wrapping_add(1);
+        self.0.revision.store(value.1,Ordering::Release);
+        self.0.live.store(rect.is_some(),Ordering::Release);
+    }
+    /// Nonblocking gate for input devices whose release path waits for its own
+    /// worker. Such workers must not take the coordinate lock during reset.
+    pub fn live_revision(&self)->Option<u64> {
+        use std::sync::atomic::Ordering;
+        let revision=self.0.revision.load(Ordering::Acquire);
+        (self.0.live.load(Ordering::Acquire) && self.0.revision.load(Ordering::Acquire)==revision).then_some(revision)
+    }
 }
 
 /// Describe the backends compiled into this binary.
@@ -106,6 +141,17 @@ pub fn available_backends() -> Vec<&'static str> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn desktop_mapping_shares_retirement_and_relocation_without_changing_pixels() {
+        let before=DesktopRect{x:-1920,y:0,width:1920,height:1080};
+        let mapping=DesktopMapping::new(before);let input=mapping.clone();
+        assert_eq!(input.get(),Some(before));assert_eq!(input.live_revision(),Some(0));
+        mapping.update(None);assert_eq!(input.get(),None);assert_eq!(input.live_revision(),None);
+        let after=DesktopRect{x:640,y:-1080,..before};mapping.update(Some(after));
+        assert_eq!(input.get(),Some(after));assert_eq!(input.live_revision(),Some(2));
+        mapping.update(Some(after));assert_eq!(input.live_revision(),Some(3));
+        assert_eq!(after.width,before.width);
+    }
     #[test]
     fn synthetic_backend_is_always_compiled_in() {
         assert!(available_backends().contains(&"synthetic"));

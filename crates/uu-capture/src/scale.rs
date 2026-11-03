@@ -23,6 +23,7 @@ impl Capture for Scaled {
     fn prefer_gpu(&mut self,enabled:bool,vendor:Option<u16>){self.inner.prefer_gpu(enabled,vendor);}
     fn resolution(&self)->(u32,u32){self.output}
     fn desktop_rect(&self)->Option<DesktopRect>{self.inner.desktop_rect()}
+    fn desktop_mapping(&self)->Option<crate::DesktopMapping>{self.inner.desktop_mapping()}
     fn input_injector(&self)->Option<Box<dyn uu_input::InputInjector>>{self.inner.input_injector()}
     fn next_frame(&mut self)->Result<RawFrame,CaptureError> {
         let frame=self.inner.next_frame()?;
