@@ -62,11 +62,44 @@ pub fn label() -> String {
     describe(env!("UU_BUILD_COMMIT"), env!("UU_BUILD_DIRTY"), manifest)
 }
 
+fn tooltip(version: &str, tag: &str, commit: &str, status: &str) -> String {
+    let mut result = format!("{} v{version}", super::brand::NAME);
+    if !tag.is_empty() {
+        result.push_str(&format!("\nTag: {tag}"));
+    }
+    if support::valid_revision(commit) {
+        result.push_str(&format!("\nCommit: {commit}"));
+    }
+    result.push('\n');
+    result.push_str(status);
+    result
+}
+
+/// Show compiled provenance; package metadata only contributes the labelled
+/// cross-check already present in `status`, never the version/tag/commit rows.
+pub fn version_tooltip(status: &str) -> String {
+    tooltip(env!("CARGO_PKG_VERSION"), env!("UU_BUILD_TAG"), env!("UU_BUILD_COMMIT"), status)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn tooltip_reports_binary_identity_and_keeps_manifest_only_as_a_cross_check() {
+        let status = describe(A, "false", Manifest::Revision(B.into()));
+        let value = tooltip("0.21.3", "v0.21.3-dev.1", A, &status);
+        assert!(value.starts_with("Eclipse v0.21.3\nTag: v0.21.3-dev.1\n"));
+        assert!(value.contains(&format!("Commit: {A}")));
+        assert!(!value.contains(B));
+        assert!(value.ends_with("安装清单与程序不一致"));
+        let archive = tooltip("0.21.3", "", "", &describe("", "unknown", Manifest::Revision(B.into())));
+        assert!(!archive.contains("Tag:") && !archive.contains("Commit:"));
+        assert!(archive.contains("包清单"));
+        assert!(tooltip("0.21.3", "v0.21.3", A, &describe(A, "true", Manifest::Absent)).ends_with("本地修改"));
+    }
 
     #[test]
     fn binary_revision_wins_over_stale_manifest() {

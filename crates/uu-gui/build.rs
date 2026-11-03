@@ -30,6 +30,12 @@ fn embed_provenance() {
     } else {
         ""
     };
+    // Only an exact tag describes this binary. A nearest ancestor's release
+    // would mislabel development builds, and an installed manifest can be stale.
+    let tag = git(&["describe", "--tags", "--exact-match", "HEAD"])
+        .map(|tag| tag.trim().to_owned())
+        .filter(|tag| tag.len() <= 256 && !tag.chars().any(char::is_control))
+        .unwrap_or_default();
     let inputs = [
         "crates",
         "vendor",
@@ -43,7 +49,7 @@ fn embed_provenance() {
             println!("cargo:rerun-if-changed={}", root.join(path).display());
         }
     }
-    for name in ["HEAD".to_owned(), "index".to_owned()]
+    for name in ["HEAD".to_owned(), "index".to_owned(), "refs/tags".to_owned(), "packed-refs".to_owned()]
         .into_iter()
         .chain(git(&["symbolic-ref", "-q", "HEAD"]).map(|s| s.trim().to_owned()))
     {
@@ -62,6 +68,7 @@ fn embed_provenance() {
         None => "unknown",
     };
     println!("cargo:rustc-env=UU_BUILD_COMMIT={revision}");
+    println!("cargo:rustc-env=UU_BUILD_TAG={tag}");
     println!("cargo:rustc-env=UU_BUILD_DIRTY={dirty}");
 }
 

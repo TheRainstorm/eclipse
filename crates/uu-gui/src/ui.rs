@@ -47,6 +47,7 @@ impl App {
                     let (rect, response) =
                         ui.allocate_exact_size(egui::vec2(30.0, 34.0), Sense::click_and_drag());
                     logo(ui.painter(), rect);
+                    let response=response.on_hover_text(super::build_info::version_tooltip(&self.build_label));
                     if response.clicked() {
                         self.select_workspace_page(super::workspace_ui::Page::Devices);
                     }

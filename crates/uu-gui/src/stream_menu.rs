@@ -443,6 +443,7 @@ impl super::App {
                 ui.horizontal_centered(|ui| {
                     let (brand,drag)=ui.allocate_exact_size(egui::vec2(22.0,26.0),egui::Sense::drag());
                     super::ui::logo(ui.painter(),brand);
+                    let drag=drag.on_hover_text(super::build_info::version_tooltip(&self.build_label));
                     if drag.drag_started(){ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);}
                     let title = self.stream_target.as_ref()
                         .map(|target|target.alias.as_str())
