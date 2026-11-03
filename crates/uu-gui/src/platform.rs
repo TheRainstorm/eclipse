@@ -61,6 +61,8 @@ pub struct Platform {
     focus_events: std::cell::RefCell<std::collections::VecDeque<serde_json::Value>>,
     #[cfg(windows)]
     bindings:std::cell::RefCell<uu_core::hotkeys::Bindings>,
+    #[cfg(windows)]
+    appearance: std::cell::Cell<Option<crate::window::Appearance>>,
     show_pending: std::cell::Cell<bool>,
 }
 impl Platform {
@@ -88,6 +90,7 @@ impl Platform {
                 route,
                 focus_events: Default::default(),
                 bindings:Default::default(),
+                appearance: Default::default(),
                 show_pending: std::cell::Cell::new(true),
             }
         }
@@ -170,6 +173,24 @@ impl Platform {
         #[cfg(not(windows))] {None}
     }
     pub fn show(&self, ctx: &egui::Context) {
+        #[cfg(windows)]
+        {
+            let appearance = ctx.input(|i| crate::window::Appearance::new(i.viewport().fullscreen.unwrap_or(false), i.viewport().maximized.unwrap_or(false), i.focused));
+            if self.appearance.get() != Some(appearance) {
+                if let Some(window) = eframe::viewport_window(ctx) {
+                    use winit::platform::windows::{Color, CornerPreference, WindowExtWindows};
+                    // Winit preserves the 1px non-client edge required for DWM's
+                    // shadow. Disable it in fullscreen to avoid a 1px video shift.
+                    window.set_undecorated_shadow(appearance.floating);
+                    window.set_corner_preference(if appearance.floating { CornerPreference::Round } else { CornerPreference::DoNotRound });
+                    let color = crate::window::border_color(appearance.focused);
+                    window.set_border_color(Some(Color::from_rgb(color.r(), color.g(), color.b())));
+                    // Windows 10 ignores the Windows 11 corner/color hints; the
+                    // native shadow and the opaque client outline remain usable.
+                    self.appearance.set(Some(appearance));
+                }
+            }
+        }
         if self.show_pending.replace(false) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);

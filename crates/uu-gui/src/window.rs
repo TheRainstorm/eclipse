@@ -1,6 +1,39 @@
 //! Native resize gestures for our undecorated window.
 use eframe::egui::{self, viewport::ResizeDirection as D, CursorIcon as C};
 
+/// Floating windows receive native chrome; fullscreen and maximized windows
+/// must retain their exact rectangular client geometry.
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Appearance {
+    pub floating: bool,
+    pub focused: bool,
+}
+#[cfg(any(windows, test))]
+impl Appearance {
+    pub fn new(fullscreen: bool, maximized: bool, focused: bool) -> Self {
+        Self { floating: !fullscreen && !maximized, focused }
+    }
+}
+
+pub fn border_color(focused: bool) -> egui::Color32 {
+    if focused { egui::Color32::from_rgb(122, 143, 166) }
+    else { egui::Color32::from_rgb(165, 177, 191) }
+}
+
+/// Opaque, one-physical-pixel fallback for compositors without custom-frame
+/// shadows or corner support. It never changes layout or intercepts input.
+pub fn paint_frame(ctx: &egui::Context) {
+    let viewport = ctx.input(|i| i.viewport().clone());
+    if viewport.fullscreen == Some(true) || viewport.maximized == Some(true) {
+        return;
+    }
+    let pixel = 1.0 / ctx.pixels_per_point();
+    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("application-window-border")))
+        .rect_stroke(ctx.screen_rect().shrink(pixel * 0.5), 0.0,
+            egui::Stroke::new(pixel, border_color(ctx.input(|i| i.focused))));
+}
+
 pub fn resize_border(ctx: &egui::Context, fullscreen: bool) -> bool {
     if fullscreen || ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
         return false;
@@ -409,6 +442,31 @@ pub fn native_geometry(_ctx: &egui::Context) -> Option<Geometry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn floating_chrome_is_restored_after_rectangular_modes_without_changing_layout() {
+        let ctx = egui::Context::default();
+        for (fullscreen, maximized, focused) in [
+            (false, false, true), (true, false, true), (false, true, true),
+            (false, false, false), (false, false, true),
+        ] {
+            let appearance = Appearance::new(fullscreen, maximized, focused);
+            let mut input = egui::RawInput::default();
+            input.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 760.0)));
+            let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+            viewport.fullscreen = Some(fullscreen);
+            viewport.maximized = Some(maximized);
+            let output = ctx.run(input, |ctx| {
+                let before = ctx.available_rect();
+                paint_frame(ctx);
+                assert_eq!(ctx.available_rect(), before);
+            });
+            assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.is_empty());
+            assert_eq!(output.shapes.len(), usize::from(appearance.floating));
+            assert_eq!(appearance.focused, focused);
+        }
+        assert_ne!(border_color(true), border_color(false));
+    }
+
     #[test]
     fn settings_use_application_minimum_and_preserve_pending_stream_fit() {
         let ctx=egui::Context::default();

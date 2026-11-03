@@ -192,6 +192,7 @@ impl App {
             super::workspace_ui::Page::Plugin => self.plugin_page_ui(ctx),
             super::workspace_ui::Page::Settings => self.settings_home(ctx),
         }
+        super::window::paint_frame(ctx);
     }
 
     pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
