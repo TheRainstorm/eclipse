@@ -110,6 +110,13 @@ fn combo(ui: &mut egui::Ui, id: &str, selected: &str, body: impl FnOnce(&mut egu
         .show_ui(ui, body);
 }
 fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
+    group(ui, uu_i18n::text("画质偏好"), |ui| {
+        super::quality_preferences::show(ui, &mut s.client, state.max_fps);
+    });
+    egui::CollapsingHeader::new(uu_i18n::text("高级设置"))
+        .id_salt("video-advanced-settings")
+        .default_open(false)
+        .show(ui, |ui| {
     group(ui, uu_i18n::text("画面"), |ui| {
         egui::Grid::new("settings-video-grid")
             .spacing([24.0, 14.0])
@@ -173,8 +180,19 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
         }
         note(ui,uu_i18n::text("下次连接生效。保持现状不切换主屏或关闭显示器；独占虚拟屏会请求关闭其它屏幕，退出时请求恢复。"));
     });
+        });
 }
 fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
+    group(ui, uu_i18n::text("视频兼容性"), |ui| {
+        note(ui, uu_i18n::text("默认自动选择双方支持的视频格式。先在画面页选择画质偏好；需要精确控制带宽或编码时，再展开高级设置。"));
+        if let Some(codec) = state.actual_codec.filter(|c| !c.is_empty()) {
+            ui.label(uu_i18n::format!("当前编码：{}", codec.trim_start_matches("video/")));
+        }
+    });
+    egui::CollapsingHeader::new(uu_i18n::text("高级设置"))
+        .id_salt("encoding-advanced-settings")
+        .default_open(false)
+        .show(ui, |ui| {
     group(ui,uu_i18n::text("编码与码率"),|ui| {
         egui::Grid::new("settings-encoding-grid").spacing([24.0,14.0]).show(ui,|ui| {
                 ui.label(uu_i18n::text("视频编码"));
@@ -240,6 +258,7 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
             note(ui,uu_i18n::text("PyroWave 当前支持 SDR、CBR；60 FPS 下推荐约 1080p 170 Mbps、4K 288 Mbps，帧率翻倍时码率约翻倍。还需预留协议与纠错带宽；主机需允许此编码。"));
         }
     });
+        });
 }
 fn audio(ui: &mut egui::Ui, s: &mut Settings) {
     group(ui, uu_i18n::text("声音播放"), |ui| {

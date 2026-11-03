@@ -20,6 +20,7 @@ mod settings;
 mod app_startup;
 mod tray;
 mod settings_page;
+mod quality_preferences;
 mod plugin_ui;
 mod theme;
 mod sessions;

@@ -1,4 +1,12 @@
 {
+  "极速流畅": "Fast and smooth",
+  "平衡": "Balanced",
+  "极致画质": "Best picture",
+  "画质偏好": "Picture preference",
+  "视频兼容性": "Video compatibility",
+  "流畅优先节省带宽；平衡使用至多 1440p；极致画质保留远端分辨率。均以 60 帧为目标，编码自动协商。": "Smooth prioritizes bandwidth savings; Balanced uses up to 1440p; Best picture keeps the remote resolution. All target 60 fps with automatic codec selection.",
+  "更改后点击保存。分辨率与带宽需求仍受远端和网络条件影响；高级设置可继续微调。": "Save to apply changes. Resolution and bandwidth still depend on the remote PC and network; use Advanced settings to fine-tune them.",
+  "默认自动选择双方支持的视频格式。先在画面页选择画质偏好；需要精确控制带宽或编码时，再展开高级设置。": "A mutually supported video format is selected automatically. Choose a picture preference on the Video page; expand Advanced settings for precise bandwidth or codec controls.",
   "仅在本软件运行时共享；退出软件后停止。": "Shares only while this app is running; exits when the app closes.",
   "公钥配对": "Public key pairing",
   "后台服务已准备就绪": "Background service is ready",
