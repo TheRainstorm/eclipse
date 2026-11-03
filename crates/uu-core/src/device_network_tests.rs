@@ -536,6 +536,12 @@ async fn unified_device_internet_bootstrap_reuses_native_video_audio_after_short
     let root = std::env::temp_dir().join(format!("eclipse-internet-auth-{}", uuid::Uuid::new_v4()));
     let (access, mut requests) = access(&root);
     access.pairing.open();
+    let existing_leases: Vec<_> = (0..6)
+        .map(|_| access.sessions.claim("existing-authenticated-peer").unwrap())
+        .collect();
+    let active_sessions = access.sessions.clone();
+    let pending_authentication = Arc::new(tokio::sync::Semaphore::new(4));
+    let pending_permit = pending_authentication.clone().try_acquire_owned().unwrap();
     let (tx, rx) = mpsc::channel(8);
     let (tx2, rx2) = mpsc::channel(8);
     let viewer = Connection {
@@ -584,7 +590,9 @@ async fn unified_device_internet_bootstrap_reuses_native_video_audio_after_short
             audio: Some(native::AudioSource::Synthetic),
             clipboard: None,
         };
-        crate::device_internet::serve_connection(host, sharing, &access, host_rx, None, None).await
+        crate::device_internet::serve_connection_with_permit(
+            host, sharing, &access, host_rx, None, None, Some(pending_permit),
+        ).await
     });
     let request = tokio::time::timeout(Duration::from_secs(8), requests.recv())
         .await
@@ -611,6 +619,15 @@ async fn unified_device_internet_bootstrap_reuses_native_video_audio_after_short
         }
     })
     .await;
+    assert_eq!(active_sessions.sessions().len(), 7);
+    assert_eq!(pending_authentication.available_permits(), 4,
+        "authenticated streaming cannot retain a provisional authentication permit");
+    let pending: Vec<_> = (0..4)
+        .map(|_| pending_authentication.clone().try_acquire_owned().unwrap())
+        .collect();
+    assert!(pending_authentication.clone().try_acquire_owned().is_err(),
+        "pending device authentication remains bounded while media is active");
+    drop(pending);
     viewer_stop.send_replace(true);
     host_stop.send_replace(true);
     let viewed = viewing.await.unwrap();
@@ -623,5 +640,8 @@ async fn unified_device_internet_bootstrap_reuses_native_video_audio_after_short
     assert!(stats.audio.packets.load(Ordering::Relaxed) > 0);
     assert_eq!(stats.errors.load(Ordering::Relaxed), 0);
     assert!(stats.pairing.code().is_none());
+    assert_eq!(active_sessions.sessions().len(), 6);
+    drop(existing_leases);
+    assert!(active_sessions.sessions().is_empty());
     std::fs::remove_dir_all(root).unwrap();
 }

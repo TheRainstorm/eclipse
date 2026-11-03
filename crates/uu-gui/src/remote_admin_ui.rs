@@ -56,7 +56,7 @@ impl RemoteAdminUi {
         let manage=snapshot.own_permissions.details().manage_server;
         ui.add_space(12.);
         if section==super::settings_page::Section::Connections {
-            ui.label(uu_i18n::format!("已连接 {} / {} 个会话",snapshot.connections.len(),uu_core::shared_host::MAX_SESSIONS));
+            ui.label(uu_i18n::format!("已连接 {} 个会话",snapshot.connections.len()));
             ui.weak(uu_i18n::text("修改授权会断开对应设备的会话并释放输入，重连后使用新权限。"));
             for connection in snapshot.connections {
                 ui.push_id(&connection.id,|ui| {

@@ -285,7 +285,7 @@ async fn stopping_host_cancels_pending_confirmation_promptly() {
 }
 
 #[tokio::test]
-async fn saved_pairing_survives_server_restart_and_sessions_are_bounded() {
+async fn saved_pairing_survives_server_restart_and_more_than_four_sessions() {
     let mut host = Fixture::new().await;
     let id = uuid::Uuid::new_v4().to_string();
     let mut device = host.pair(&id).await;
@@ -295,8 +295,8 @@ async fn saved_pairing_survives_server_restart_and_sessions_are_bounded() {
     device = verify_address(&device, &host.endpoint).await.unwrap();
     assert!(inspect(&device.endpoint).await.unwrap().pairing_open);
     let invitation = connect(&device, &id).await.unwrap();
-    for _ in 1..crate::shared_host::MAX_SESSIONS { connect(&device, &id).await.unwrap(); }
-    assert!(connect(&device, &id).await.is_err(), "capture concurrency must be bounded");
+    for _ in 1..6 { connect(&device, &id).await.unwrap(); }
+    assert_eq!(host.handle.state.active.lock().unwrap().len(), 6);
     host.handle.revoke(&id).unwrap();
     timeout(Duration::from_secs(3), async {
         loop {

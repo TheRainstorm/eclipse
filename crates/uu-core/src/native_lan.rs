@@ -400,6 +400,8 @@ impl Server {
     pub async fn run(mut self) -> Result<()> {
         let mut stop = self.state.stop.clone();
         let mut clients = JoinSet::new();
+        // Broker handshakes end after returning an invitation; the media task
+        // owns a separate session lease and never retains this permit.
         let permits = Arc::new(Semaphore::new(8));
         let discovery = self.discovery.take().map(|socket| {
             tokio::spawn(crate::native_discovery::respond(
@@ -645,7 +647,6 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
     let id = uuid::Uuid::new_v4().to_string();
     {
         let mut active = state.active.lock().unwrap();
-        ensure!(active.len() < crate::shared_host::MAX_SESSIONS, "{}", uu_i18n::format!("主机并发串流已达上限，请先断开一个设备"));
         active.insert(id.clone(), Active { client: client.clone(), stop: stop.clone() });
     }
     let mut guard = SessionGuard { _lease: lease, _cancellation: None, state: state.clone(), id: id.clone(), clipboard: None };

@@ -246,6 +246,8 @@ pub struct Listener {
     incoming: tokio::sync::mpsc::Receiver<Connection>,
     task: tokio::task::JoinHandle<()>,
 }
+// Pending delivery only; authenticated sessions do not retain queue capacity.
+const INCOMING_QUEUE_CAPACITY: usize = 4;
 impl Listener {
     pub async fn online(config: &Config, device: &str) -> Result<Self> {
         // Version 2 opts a host into multiplexing. A v1 host is kept at one
@@ -263,7 +265,7 @@ impl Listener {
             }
         };
         let (outgoing, mut requests) = tokio::sync::mpsc::channel::<Request>(128);
-        let (accepted, incoming) = tokio::sync::mpsc::channel(crate::shared_host::MAX_SESSIONS);
+        let (accepted, incoming) = tokio::sync::mpsc::channel(INCOMING_QUEUE_CAPACITY);
         let task = tokio::spawn(async move {
             let mut sessions = std::collections::HashMap::<String, tokio::sync::mpsc::Sender<Value>>::new();
             loop {
@@ -278,11 +280,15 @@ impl Listener {
                         match event {
                             Ok(Event::Connected{session,stun})=>{
                                 let Ok(ice)=crate::direct_ice::InternetIce::new(stun) else{break;};
-                                if sessions.len()>=crate::shared_host::MAX_SESSIONS || sessions.contains_key(&session) {break;}
+                                if sessions.contains_key(&session) {break;}
                                 let (send,receive)=tokio::sync::mpsc::channel(64);
                                 sessions.insert(session.clone(),send);
-                                let connection=Connection{transport:Box::new(RoutedTransport{outgoing:outgoing.clone(),incoming:receive,session:session.clone(),closed:false}),session,ice};
-                                if accepted.try_send(connection).is_err(){break;}
+                                let connection=Connection{transport:Box::new(RoutedTransport{outgoing:outgoing.clone(),incoming:receive,session:session.clone(),closed:false}),session:session.clone(),ice};
+                                if accepted.try_send(connection).is_err(){
+                                    sessions.remove(&session);
+                                    let request=Request::Leave{session};
+                                    if socket.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.is_err(){break;}
+                                }
                             },
                             Ok(Event::Signal{session,body})=>{
                                 if let Some(target)=sessions.get(&session) {
@@ -337,5 +343,77 @@ impl Transport for RoutedTransport {
 impl Drop for RoutedTransport {
     fn drop(&mut self) {
         if !self.closed { let _=self.outgoing.try_send(Request::Leave{session:self.session.clone()}); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn six_wss_routes_survive_a_full_pending_delivery_queue() {
+        crate::install_crypto_provider();
+        let root=std::env::temp_dir().join(format!("eclipse-wss-routes-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let certificate=rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+        let ca_file=root.join("ca.pem");
+        let token_file=root.join("token");
+        std::fs::write(&ca_file,certificate.cert.pem()).unwrap();
+        std::fs::write(&token_file,"00".repeat(32)).unwrap();
+        let tls=rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(
+            vec![certificate.cert.der().clone()],
+            rustls_pki_types::PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der()).into(),
+        ).unwrap();
+        let acceptor=tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        let tcp=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=tcp.local_addr().unwrap();
+        let (commands,mut events)=tokio::sync::mpsc::channel::<Event>(16);
+        let (observed,mut requests)=tokio::sync::mpsc::channel::<Request>(16);
+        let server=tokio::spawn(async move {
+            let (tcp,_)=tcp.accept().await.unwrap();
+            let mut socket=tokio_tungstenite::accept_async(acceptor.accept(tcp).await.unwrap()).await.unwrap();
+            let registration=socket.next().await.unwrap().unwrap();
+            assert!(matches!(serde_json::from_str::<Request>(registration.to_text().unwrap()).unwrap(),Request::Host{version:2,..}));
+            socket.send(Message::Text(serde_json::to_string(&Event::Ready).unwrap().into())).await.unwrap();
+            loop {tokio::select! {
+                event=events.recv()=>{
+                    let Some(event)=event else{break;};
+                    if socket.send(Message::Text(serde_json::to_string(&event).unwrap().into())).await.is_err(){break;}
+                },
+                message=socket.next()=>match message {
+                    Some(Ok(Message::Text(text)))=>{
+                        if observed.send(serde_json::from_str(&text).unwrap()).await.is_err(){break;}
+                    },
+                    _=>break,
+                },
+            }}
+        });
+        let mut listener=Listener::online(&Config{url:format!("wss://{address}/v1/signal"),token_file,ca_file:Some(ca_file)},"generated-host").await.unwrap();
+        for n in 1..=5 {
+            commands.send(Event::Connected{session:format!("session-{n}"),stun:vec![]}).await.unwrap();
+        }
+        timeout(Duration::from_secs(3),async {
+            loop {if matches!(requests.recv().await,Some(Request::Leave{session}) if session=="session-5"){break;}}
+        }).await.unwrap();
+        let mut connections=Vec::new();
+        for n in 1..=4 {
+            let connection=timeout(Duration::from_secs(3),listener.accept()).await.unwrap().unwrap();
+            assert_eq!(connection.session,format!("session-{n}"));
+            connections.push(connection);
+        }
+        for n in 6..=7 {
+            commands.send(Event::Connected{session:format!("session-{n}"),stun:vec![]}).await.unwrap();
+            connections.push(timeout(Duration::from_secs(3),listener.accept()).await.unwrap().unwrap());
+        }
+        assert_eq!(connections.len(),6);
+        for (n,connection) in connections.iter_mut().enumerate() {
+            commands.send(Event::Signal{session:connection.session.clone(),body:serde_json::json!({"route":n})}).await.unwrap();
+            assert_eq!(timeout(Duration::from_secs(3),connection.transport.receive()).await.unwrap().unwrap()["route"],n);
+            connection.transport.close().await;
+        }
+        listener.close().await;
+        drop(commands);
+        timeout(Duration::from_secs(3),server).await.unwrap().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

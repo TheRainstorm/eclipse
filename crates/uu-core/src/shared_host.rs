@@ -1,4 +1,4 @@
-//! All listeners share one authorization context and bounded concurrent media sessions.
+//! All listeners share authorization, session ownership and revocation.
 use crate::{
     device_auth::PairingControl,
     device_trust::{Permissions, TrustStore},
@@ -32,7 +32,6 @@ impl Drop for HostOwner {
     }
 }
 
-pub const MAX_SESSIONS: usize = 4;
 #[derive(Clone)]
 pub struct SessionContext {
     pub access: Arc<Access>,
@@ -47,9 +46,10 @@ pub struct SessionGate {
     pub administration: Mutex<Option<Arc<crate::host_admin::Service>>>,
 }
 impl SessionGate {
+    /// Authenticated sessions have no fixed application count limit. Capture,
+    /// encoder and transport admission failures remain local to each session.
     pub fn claim(self: &Arc<Self>, peer: &str) -> Result<SessionLease> {
         let mut active = self.active.lock().unwrap();
-        ensure!(active.len() < MAX_SESSIONS, "{}", uu_i18n::format!("主机最多同时接受 {MAX_SESSIONS} 个串流，请先断开一个设备"));
         let session = uuid::Uuid::new_v4().to_string();
         let (stop, receiver) = watch::channel(false);
         active.insert(session.clone(), Active { peer: peer.into(), stop, status: crate::native::HostStatus::Starting });
@@ -190,21 +190,22 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn concurrent_sessions_are_bounded_and_revocation_only_stops_the_selected_peer() {
+    fn sessions_have_no_fixed_count_limit_and_revocation_is_scoped_until_cleanup() {
         let gate = Arc::new(SessionGate::default());
         let a = gate.claim("a").unwrap();
         let b = gate.claim("b").unwrap();
-        let c = gate.claim("c").unwrap();
-        let d = gate.claim("d").unwrap();
-        assert!(gate.claim("e").is_err());
+        let others: Vec<_> = (0..8).map(|_| gate.claim("other").unwrap()).collect();
+        assert_eq!(gate.sessions().len(), 10);
         gate.revoke("a");
         assert!(*a.receiver.borrow()); assert!(!*b.receiver.borrow());
-        assert!(gate.claim("e").is_err(), "cancellation retains the slot until cleanup");
-        drop(a); let e = gate.claim("e").unwrap();
+        assert_eq!(gate.sessions().len(), 10, "cancellation retains ownership until cleanup");
+        let e = gate.claim("e").unwrap();
+        drop(a);
+        assert_eq!(gate.sessions().len(), 10);
         gate.disconnect_session(&b.session);
         assert!(*b.receiver.borrow()); assert!(!*e.receiver.borrow());
         gate.disconnect();
-        for lease in [&b,&c,&d,&e] { assert!(*lease.receiver.borrow()); }
-        drop((b,c,d,e)); assert!(gate.sessions().is_empty());
+        for lease in others.iter().chain([&b,&e]) { assert!(*lease.receiver.borrow()); }
+        drop((b,others,e)); assert!(gate.sessions().is_empty());
     }
 }

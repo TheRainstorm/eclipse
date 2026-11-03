@@ -1380,7 +1380,7 @@ impl Workspace {
         let sessions=self.host.sessions();
         if !sessions.is_empty() {
             card(ui,|ui| {
-                ui.strong(uu_i18n::format!("已连接 {} / {} 个会话",sessions.len(),uu_core::shared_host::MAX_SESSIONS));
+                ui.strong(uu_i18n::format!("已连接 {} 个会话",sessions.len()));
                 muted(ui,uu_i18n::text("多台设备可同时观看；键鼠由当前取得控制权的一台设备操作，释放或离线后交接。"));
                 for session in sessions {
                     ui.horizontal_wrapped(|ui| {

@@ -62,7 +62,7 @@ struct Host {
     id: uuid::Uuid,
     tx: Sender,
     viewers: HashMap<String, Viewer>,
-    max_sessions: usize,
+    multiplexed: bool,
 }
 #[derive(Default)]
 struct Rooms {
@@ -106,7 +106,7 @@ impl State {
                         id,
                         tx,
                         viewers: HashMap::new(),
-                        max_sessions: if version==2{crate::shared_host::MAX_SESSIONS}else{1},
+                        multiplexed: version==2,
                     },
                 );
                 Ok(Membership::Host { device, id })
@@ -114,7 +114,9 @@ impl State {
             Request::Join { version, device } => {
                 validate_identity(version, &device, 1)?;
                 let host = rooms.hosts.get_mut(&device).context("device_offline")?;
-                ensure!(host.viewers.len() < host.max_sessions, "device_busy");
+                // v1 hosts opt into a single route; v2's session IDs allow
+                // independent viewers without a fixed per-host count limit.
+                ensure!(host.multiplexed || host.viewers.is_empty(), "device_busy");
                 let id = uuid::Uuid::new_v4();
                 let session = uuid::Uuid::new_v4().to_string();
                 host.tx.try_send(Event::Connected {
@@ -376,28 +378,29 @@ async fn handle<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 mod tests {
     use super::*;
     #[test]
-    fn legacy_hosts_keep_their_single_session_limit_and_version_two_explicitly_allows_multiple(){
-        for (version,limit) in [(1,1),(2,crate::shared_host::MAX_SESSIONS)] {
+    fn signaling_v1_retains_one_route_and_v2_accepts_more_than_four_viewers(){
+        for (version,count) in [(1,1),(2,6)] {
             let state=State{rooms:Arc::default(),stun:vec![]};let (tx,_host_receive)=mpsc::channel(32);
             state.register(Request::Host{version,device:"generated-compatibility-host".into()},tx).unwrap();
             let mut receive=Vec::new();
-            for _ in 0..limit {let (tx,rx)=mpsc::channel(16);receive.push(rx);state.register(Request::Join{version:1,device:"generated-compatibility-host".into()},tx).unwrap();}
-            let (tx,_)=mpsc::channel(16);assert!(state.register(Request::Join{version:1,device:"generated-compatibility-host".into()},tx).is_err());
-            assert_eq!(state.rooms.lock().unwrap().hosts["generated-compatibility-host"].viewers.len(),limit);
+            for _ in 0..count {let (tx,rx)=mpsc::channel(16);receive.push(rx);state.register(Request::Join{version:1,device:"generated-compatibility-host".into()},tx).unwrap();}
+            let (tx,rx)=mpsc::channel(16);receive.push(rx);
+            let joined=state.register(Request::Join{version:1,device:"generated-compatibility-host".into()},tx);
+            assert_eq!(joined.is_ok(),version==2);
+            assert_eq!(state.rooms.lock().unwrap().hosts["generated-compatibility-host"].viewers.len(),count+usize::from(version==2));
         }
     }
     #[tokio::test]
-    async fn concurrent_routes_are_private_bounded_and_host_leaves_only_one_session() {
+    async fn concurrent_routes_are_private_and_host_leaves_only_one_session() {
         let state=State{rooms:Arc::default(),stun:vec![]};
         let (host_tx,mut host_rx)=mpsc::channel(32);
         let host=state.register(Request::Host{version:2,device:"generated-host".into()},host_tx).unwrap();
         host_rx.recv().await.unwrap();let mut viewers=Vec::new();let mut receive=Vec::new();
-        for _ in 0..crate::shared_host::MAX_SESSIONS {
+        for _ in 0..6 {
             let (tx,mut rx)=mpsc::channel(16);
             viewers.push(state.register(Request::Join{version:1,device:"generated-host".into()},tx).unwrap());
             rx.recv().await.unwrap();host_rx.recv().await.unwrap();receive.push(rx);
         }
-        let (tx,_)=mpsc::channel(1);assert!(state.register(Request::Join{version:1,device:"generated-host".into()},tx).is_err());
         let session=|member:&Membership|match member{Membership::Viewer{session,..}=>session.clone(),_=>unreachable!()};
         state.route(&host,Request::Signal{session:session(&viewers[1]),body:serde_json::json!({"fixture":2})}).unwrap();
         assert!(matches!(receive[1].recv().await.unwrap(),Event::Signal{body,..} if body["fixture"]==2));
@@ -408,7 +411,7 @@ mod tests {
         state.remove(&viewers[0]);
         state.route(&viewers[1],Request::Signal{session:session(&viewers[1]),body:serde_json::json!({"alive":true})}).unwrap();
         assert!(matches!(host_rx.recv().await.unwrap(),Event::Signal{body,..} if body["alive"]==true));
-        assert_eq!(state.rooms.lock().unwrap().hosts["generated-host"].viewers.len(),3);
+        assert_eq!(state.rooms.lock().unwrap().hosts["generated-host"].viewers.len(),5);
         state.remove(&host);
         assert!(matches!(receive[1].recv().await.unwrap(),Event::Ended{..}));
     }

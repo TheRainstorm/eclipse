@@ -11,7 +11,10 @@ use crate::{
 };
 use anyhow::{ensure, Context, Result};
 use std::{sync::Arc, time::Duration};
-use tokio::sync::watch;
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
+
+// Bound provisional peers without counting authenticated media sessions.
+const MAX_PENDING_DEVICE_AUTH: usize = 4;
 
 #[derive(Clone, Debug)]
 pub enum EndpointStatus {
@@ -89,12 +92,24 @@ pub(crate) async fn view(
 }
 
 pub async fn serve_connection(
+    connection: Connection,
+    sharing: SharingConfig,
+    access: &Access,
+    stop: watch::Receiver<bool>,
+    status: Option<watch::Sender<HostStatus>>,
+    clipboard: Option<crate::native_lan::ClipboardFactory>,
+) -> Result<native::HostReport> {
+    serve_connection_with_permit(connection, sharing, access, stop, status, clipboard, None).await
+}
+
+pub(crate) async fn serve_connection_with_permit(
     mut connection: Connection,
     mut sharing: SharingConfig,
     access: &Access,
     mut stop: watch::Receiver<bool>,
     status: Option<watch::Sender<HostStatus>>,
     clipboard: Option<crate::native_lan::ClipboardFactory>,
+    pending_authentication: Option<OwnedSemaphorePermit>,
 ) -> Result<native::HostReport> {
     let first = tokio::select! {
         result=connection.transport.receive()=>result?,
@@ -118,6 +133,9 @@ pub async fn serve_connection(
             None,
         );
         let mut authorized=tokio::select! {result=authentication=>result?,_=cancelled(&mut stop)=>return Ok(native::HostReport::default())};
+        // A successful device proof leaves the bounded provisional population.
+        // The session lease below owns media/revocation through full cleanup.
+        drop(pending_authentication);
         let peer = authorized.device.id();
         let lease=match access.claim_authenticated(&mut authorized) {Ok(lease)=>lease,Err(error)=>{bootstrap.reject_media().await;return Err(error);}};
         let cancellation = access.cancellation(&lease, &peer, Some(authorized.permissions), stop);
@@ -193,6 +211,7 @@ async fn listen_concurrent(settings: Settings, config: Config, sharing: SharingC
         };
         status.send_replace(EndpointStatus::Ready);
         let mut sessions=tokio::task::JoinSet::new();
+        let pending_authentication=Arc::new(Semaphore::new(MAX_PENDING_DEVICE_AUTH));
         loop {
             tokio::select! {
                 _=cancelled(&mut stop)=>break,
@@ -201,10 +220,19 @@ async fn listen_concurrent(settings: Settings, config: Config, sharing: SharingC
                 },
                 connection=listener.accept()=>{
                     let connection=match connection {Ok(connection)=>connection,Err(error)=>{status.send_replace(EndpointStatus::Error(format!("{error:#}")));break;}};
-                    if sessions.len()>=crate::shared_host::MAX_SESSIONS {
-                        if let crate::plugins::Incoming::Native(mut connection)=connection {connection.transport.close().await;}
-                        continue;
-                    }
+                    let pending=if let crate::plugins::Incoming::Native(_)=&connection {
+                        match pending_authentication.clone().try_acquire_owned() {
+                            Ok(permit)=>Some(permit),
+                            Err(_)=>{
+                                if let crate::plugins::Incoming::Native(mut connection)=connection {connection.transport.close().await;}
+                                continue;
+                            },
+                        }
+                    }else{
+                        // An independent protocol provider owns authorization
+                        // before handing its session to the engine.
+                        None
+                    };
                     let access=access.clone();let sharing=sharing.clone();let stop=stop.clone();let clipboard=clipboard.clone();let progress=stream_status.clone();
                     sessions.spawn(async move {
                         let crate::plugins::Incoming::Native(connection)=connection else {
@@ -214,7 +242,7 @@ async fn listen_concurrent(settings: Settings, config: Config, sharing: SharingC
                             unreachable!()
                         };
                         let (phase,mut updates)=watch::channel(HostStatus::Starting);
-                        let serving=serve_connection(connection,sharing,&access,stop,Some(phase),clipboard);
+                        let serving=serve_connection_with_permit(connection,sharing,&access,stop,Some(phase),clipboard,pending);
                         tokio::pin!(serving);
                         let mut observing=true;
                         loop {tokio::select! {
