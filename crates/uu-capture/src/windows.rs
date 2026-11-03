@@ -111,7 +111,7 @@ fn outputs() -> Result<Vec<Output>, CaptureError> {
     }
     if list.is_empty() {
         return Err(backend(
-            "没有有效显示输出；需要已登录的控制台会话和物理或虚拟显示器。锁屏串流请安装 Windows 后台服务",
+            "没有有效显示输出；需要可用的本机控制台显示会话，并启用物理或虚拟显示器。锁屏或登录屏串流需安装并启动 Windows 后台服务",
         ));
     }
     Ok(list)
@@ -206,7 +206,7 @@ impl DxgiCapture {
             CaptureSource::Primary | CaptureSource::Desktop { initial_monitor:None } => outputs()?
                 .into_iter()
                 .find(|o| o.monitor.primary)
-                .ok_or_else(|| backend("当前没有活动的桌面显示输出；请确认被控用户已登录，显示器或虚拟显示输出保持启用。锁屏共享需安装并启动 Windows 后台服务"))?,
+                .ok_or_else(|| backend("当前没有活动的桌面显示输出；请确认本机控制台显示会话可用，且物理或虚拟显示输出保持启用。锁屏或登录屏共享需安装并启动 Windows 后台服务"))?,
             CaptureSource::Monitor(name) | CaptureSource::Desktop {initial_monitor:Some(name)} => outputs()?
                 .into_iter()
                 .find(|o| &o.monitor.name == name)

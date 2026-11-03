@@ -138,7 +138,7 @@ fn sync_desktop(access: u32) -> io::Result<bool> {
 }
 
 pub fn access_error(error: &io::Error) -> String {
-    format!("无法访问当前输入桌面（{error}）；锁屏或 UAC 安全桌面需要安装并启动 Windows 后台服务；后台服务还需要已登录的控制台会话和有效显示输出")
+    format!("无法访问当前输入桌面（{error}）；锁屏、登录屏或 UAC 安全桌面需要安装并启动 Windows 后台服务；还需要可用的本机控制台显示会话和有效显示输出")
 }
 
 #[cfg(test)]
