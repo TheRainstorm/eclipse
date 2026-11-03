@@ -98,6 +98,8 @@ struct Presentation {
     HANDLE frame_ready=nullptr;
     UINT frame_queue_limit=0;
     bool frame_admitted=false;
+    ComPtr<ID3D11Query> busy_batch;
+    bool busy_batch_pending=false;
     ComPtr<IDXGIFactory2> factory;
     ComPtr<IDXGIFactory1> inventory;
     ComPtr<EclipseOutput6> active_output;
@@ -214,8 +216,8 @@ struct Presentation {
         if(!admit_frame(vsync))return false;
         ComPtr<ID3D11Texture2D> backbuffer;check(chain->GetBuffer(0,__uuidof(ID3D11Texture2D),(void**)backbuffer.GetAddressOf()),"get HDR backbuffer");
         context->CopyResource(backbuffer.Get(),shared_texture.Get());
-        const HRESULT result=present_chain(vsync?1:0,(vsync?DXGI_PRESENT_DO_NOT_WAIT:0)|(!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0));
-        if(result==DXGI_ERROR_WAS_STILL_DRAWING){context->Flush();return false;}
+        const HRESULT result=present_chain(vsync?1:0,DXGI_PRESENT_DO_NOT_WAIT|(!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0));
+        if(result==DXGI_ERROR_WAS_STILL_DRAWING)return false;
         check(result,"present scRGB HDR frame");
         attach();return true;
     }
@@ -236,6 +238,19 @@ struct Presentation {
         if(frame_queue_limit!=limit) {
             check(chain->SetMaximumFrameLatency(limit),"set presentation frame queue");
             frame_queue_limit=limit;
+            // A readiness credit belongs to the old queue policy. In
+            // particular, an unsynchronised busy Present cannot create one.
+            frame_admitted=false;
+        }
+        // A failed Present can still have queued Copy/Draw and a consumer
+        // signal. Do not queue another batch behind an unfinished retry,
+        // including when the latest image, cursor or UI has changed.
+        if(busy_batch_pending) {
+            BOOL complete=FALSE;
+            const HRESULT result=context->GetData(busy_batch.Get(),&complete,sizeof(complete),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            check(result,"query deferred presentation GPU completion");
+            if(result!=S_OK||!complete)return false;
+            busy_batch_pending=false;
         }
         // Never wait for a refresh on the window/input thread. Retain a consumed
         // admission if a nonblocking Present has to be retried before succeeding.
@@ -246,8 +261,20 @@ struct Presentation {
         if(ready!=WAIT_OBJECT_0)throw std::runtime_error("query presentation frame readiness");
         frame_admitted=true;return true;
     }
+    void finish_present(HRESULT result) {
+        if(result!=DXGI_ERROR_WAS_STILL_DRAWING){frame_admitted=false;return;}
+        // Busy retains an existing readiness credit but never creates one.
+        // This event only bounds queued GPU work; it is not a display receipt.
+        if(!busy_batch) {
+            D3D11_QUERY_DESC desc{D3D11_QUERY_EVENT,0};
+            check(device->CreateQuery(&desc,&busy_batch),"create deferred presentation GPU query");
+        }
+        context->End(busy_batch.Get());
+        busy_batch_pending=true;
+        context->Flush();
+    }
     HRESULT present_chain(UINT interval,UINT flags,uint64_t source=0,uint64_t ready=0) {
-        if(!observation_enabled){const HRESULT result=chain->Present(interval,flags);frame_admitted=result==DXGI_ERROR_WAS_STILL_DRAWING;return result;}
+        if(!observation_enabled){const HRESULT result=chain->Present(interval,flags);finish_present(result);return result;}
         RawPresentObservation raw{};raw.version=1;raw.struct_size=sizeof(raw);
         raw.serial=++observation_serial;raw.chain_id=chain_id;raw.surface_epoch=surface_epoch;
         raw.chain_address=uint64_t(reinterpret_cast<uintptr_t>(chain.Get()));
@@ -255,8 +282,8 @@ struct Presentation {
         raw.sync_interval=interval;raw.present_flags=flags;
         raw.present_before_qpc=present_qpc();
         const HRESULT result=chain->Present(interval,flags);
-        frame_admitted=result==DXGI_ERROR_WAS_STILL_DRAWING;
         raw.present_after_qpc=present_qpc();raw.present_hresult=int32_t(result);
+        finish_present(result);
         UINT count=0;
         raw.last_count_query_before_qpc=present_qpc();
         raw.last_present_count_hresult=int32_t(chain->GetLastPresentCount(&count));
@@ -411,8 +438,8 @@ float4 ps(float4 pos:SV_Position):SV_Target{
             debug_pixels.resize(size_t(width)*height*4);for(unsigned y=0;y<height;y++)std::memcpy(debug_pixels.data()+size_t(y)*width*4,(const unsigned char*)map.pData+size_t(y)*map.RowPitch,size_t(width)*8);context->Unmap(debug_target.Get(),0);
             debug_width=width;debug_height=height;debug_serial++;
         }
-        last_present_result=present_chain(vsync?1:0,(vsync?DXGI_PRESENT_DO_NOT_WAIT:0)|(!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0),offered?source_id:0,offered?ready_value:0);
-        if(last_present_result==DXGI_ERROR_WAS_STILL_DRAWING){context->Flush();return 2;}
+        last_present_result=present_chain(vsync?1:0,DXGI_PRESENT_DO_NOT_WAIT|(!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0),offered?source_id:0,offered?ready_value:0);
+        if(last_present_result==DXGI_ERROR_WAS_STILL_DRAWING)return 2;
         check(last_present_result,"present native composed video");attach();return 0;
     }
 };
