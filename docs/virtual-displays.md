@@ -33,3 +33,17 @@ Windows 原生共享支持管理虚拟显示器。主程序不默认携带驱动
 模拟所有权、真实 Windows 互斥和只读盘点不等于真实增删或驱动安装验收。使用前仍应在自己的驱动和显示环境验证创建、切屏、断流与退出；当前开发验证的具体范围随交付说明提供。
 
 驱动来源：[VirtualDrivers / Virtual-Display-Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)，MIT 许可；固定包信息见[驱动包清单](../crates/uu-core/src/virtual_display/driver-package.json)。另支持 Zako 的已安装目标，不自动安装其测试证书。CCD 拓扑处理依据 Windows [QueryDisplayConfig](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-querydisplayconfig) 与 [SetDisplayConfig](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setdisplayconfig) API。
+
+## 创建规格
+
+“软件设置 → 虚拟显示器规格”提供 1080p60、1440p60、4K60 初始规格，可编辑名称、分辨率、刷新率（支持小数 Hz）及 HDR，或添加自己的规格并设为默认。左键“+”使用默认规格；右键“+”选择其它规格。窗口与全屏的“设备与屏幕”菜单使用相同设置。
+
+选择规格时将完整参数交给新连接，再由远端驱动验证和创建。编辑、删除或更换默认规格仅影响之后新建的虚拟屏，不改变活动屏幕或其它连接的布局。规格保存在本机应用设置中，在串流窗口之间同步。
+
+## 移动活动屏幕
+
+Windows 应用显示位置或主屏变更时，采集接口可能失效。对于同一输出且像素模式不变的情况，Eclipse 会重建采集并更新物理输入坐标，等待期间不使用旧缓存画面或旧坐标注入，原连接及其临时屏租约继续保留。此行为需要更新实际共享主机，后台共享需更新后台程序。
+
+这与修改创建规格不同。改变活动屏幕的分辨率、旋转或 HDR 会改变采集模式，目前仍需重新协商，不能保证当前串流和临时屏继续保留。若希望使用其它规格，应通过“+”按该规格新建屏幕。
+
+恢复语义参考 Microsoft 的 [AcquireNextFrame](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutputduplication-acquirenextframe) 与 [DuplicateOutput](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutput1-duplicateoutput) 说明。
