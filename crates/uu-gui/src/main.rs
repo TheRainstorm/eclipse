@@ -460,7 +460,12 @@ impl App {
                     apply_settings |= uu_i18n::matches(&s,"已请求目标画质/码率");
                     self.status = s;
                 }
-                ControllerEvent::Error(e) => self.status = uu_i18n::format!("错误: {e}"),
+                ControllerEvent::Error(e) => {
+                    self.status = uu_i18n::format!("错误: {e}");
+                    if self.stream_target.as_ref().is_some_and(|target|target.connection.virtual_display().is_some()) && self.displays.preparing_initial_target() {
+                        self.virtual_display.startup_failed(self.status.clone());
+                    }
+                },
             }
         }
         if native && self.displays.native_frame_epoch!=h.frames.generation(){

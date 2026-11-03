@@ -215,6 +215,15 @@ impl App {
         self.remote_admin_ui=Default::default();
         let stats=self.client_stats("native");
         let requested=!self.view_only && self.displays.ready();
+        let initial=self.stream_target.as_ref().and_then(|target| {
+            target.connection.virtual_display().map(|target|uu_core::native_displays::InitialRequest::Virtual{spec:target.spec})
+                .or_else(||target.connection.display().map(|target|uu_core::native_displays::InitialRequest::Existing{id:target.id,source:target.source.clone()}))
+        });
+        if let Some(initial)=initial {
+            if let Err(error)=stats.native_displays.request_initial(initial) {
+                self.status=error.to_string();self.displays.notice=self.status.clone();return;
+            }
+        }
         let result=if let Some(path)=profile {
             (||->anyhow::Result<_>{
                 let config=self.config.clone().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法读取设备配置目录")))?;

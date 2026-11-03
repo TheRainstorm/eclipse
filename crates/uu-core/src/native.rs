@@ -640,15 +640,11 @@ pub(crate) async fn host_session(
     result
 }
 
-async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling, mut config: SharingConfig,
+async fn serve_peer(peer: &mut NativePeer, signaling: &mut dyn SessionSignaling, config: SharingConfig,
     mut stop: watch::Receiver<bool>, status: Option<watch::Sender<HostStatus>>,displays:Option<Arc<crate::native_displays::Host>>,authority:Arc<crate::input_ownership::Authority>,virtuals:Option<Arc<crate::native_virtual_display::Host>>) -> Result<HostReport> {
     let message = tokio::select! {result=signaling.receive()=>result?,_=cancelled(&mut stop)=>return Ok(HostReport::default())};
     let offer: Offer = serde_json::from_value(message).map_err(|_| anyhow::anyhow!("invalid native offer"))?;
     ensure!(offer.version == 1, "unsupported native protocol version");
-    if let Some(displays)=&displays {
-        let displays=displays.clone();
-        config.source=tokio::task::spawn_blocking(move||displays.prepare()).await??;
-    }
     progress(&status,HostStatus::Preparing);
     let mut answered=false;
     let result=send_video(peer,signaling,config,stop,offer,status,displays,&mut answered,authority,virtuals).await;
@@ -732,6 +728,8 @@ async fn send_video(
     let typed_gamepads=crate::native_gamepad::typed_offered(&offer.sdp);
     let frame_trace=crate::frame_trace::offered(&offer.sdp);
     let video_e2e=crate::video_e2e::offered(&offer.sdp);
+    let initial_request=crate::native_displays::InitialRequest::read(&offer.sdp)?;
+    let initial_supported=displays.is_some() && !uses_desktop_portal();
     let virtuals=virtuals.filter(|_|crate::native_virtual_display::offered(&offer.sdp));
     let cursor_requested=crate::native_cursor::offered(&offer.sdp)?;
     match stream.lan_peer() {
@@ -739,6 +737,36 @@ async fn send_video(
         None => peer.remote_direct(offer.sdp).await?,
     }
     // Authentication and a valid media offer precede capture access.
+    // A new virtual view cannot first duplicate the parent's physical output:
+    // Windows permits one duplication of each output per host process.
+    let initial_reply=if let Some(displays)=&displays {
+        let displays=displays.clone();
+        let virtuals=virtuals.clone();
+        let request=initial_request.filter(|request| initial_supported || matches!(request,crate::native_displays::InitialRequest::Virtual{..}));
+        let (source,reply)=tokio::task::spawn_blocking(move||->Result<_> {
+            let Some(request)=request else{return Ok((displays.prepare()?,None));};
+            ensure!(initial_supported,"initial virtual displays require an enumerable desktop source");
+            let (source,created)=match &request {
+                crate::native_displays::InitialRequest::Existing{..}=>(displays.prepare_initial(&request)?,None),
+                crate::native_displays::InitialRequest::Virtual{spec}=>{
+                    let host=virtuals.context("initial virtual displays require management permission and an updated host")?;
+                    let display=host.prepare_initial(*spec)?;
+                    (displays.prepare_initial_source(&display.source)?,Some(display))
+                },
+            };
+            let catalog=displays.catalog();
+            let reply=crate::native_displays::InitialReply::from_catalog(request,&catalog,created)?;
+            Ok((source,Some(reply)))
+        }).await??;
+        config.source=source;
+        reply
+    } else {
+        ensure!(!matches!(initial_request,Some(crate::native_displays::InitialRequest::Virtual{..})),"initial virtual displays require a desktop host");
+        None
+    };
+    // Accepted display mutations must finish before the outer connection
+    // lifetime cleans up its leases, even if the viewer closes during setup.
+    if *stop.borrow() {return Ok(HostReport::default());}
     let (fps,kbps,preference,rate_control)=(config.fps,config.bitrate_kbps,config.encoder,config.rate_control);
     let bounds=request.as_ref().and_then(|r|r.bounds);
     let automatic=request.as_ref().is_some_and(|r|r.bitrate_kbps.is_none());
@@ -822,6 +850,8 @@ async fn send_video(
     controls.attach(&peer.pc,peer.tasks.clone());
     let ice_started=Instant::now();
     let mut description=peer.description(false).await?;
+    if initial_supported {crate::native_displays::advertise_initial(&mut description)?;}
+    if let Some(reply)=&initial_reply {reply.add(&mut description)?;}
     if cursor_available {crate::native_cursor::advertise(&mut description)?;}
     if frame_trace && controls.timing().trace.enabled() {crate::frame_trace::advertise(&mut description);}
     if video_e2e {crate::video_e2e::advertise(&mut description);}
@@ -1038,6 +1068,7 @@ async fn receive_session(
     let mut controls=crate::native_control::ViewerControl::new(channel.clone(),stats.clone(),input);
     let ice_started=Instant::now();
     let mut description=peer.description(true).await?;
+    stats.native_displays.write_initial_offer(&mut description)?;
     stats.native_frame_trace_supported.store(false,Ordering::Release);
     {let mut trace=stats.native_frame_trace.lock().unwrap();*stats.native_frame_trace_received.lock().unwrap()=None;*trace=None;}
     crate::frame_trace::advertise(&mut description);
@@ -1092,6 +1123,7 @@ async fn receive_session(
         Ok(None)=>{},
     }
     let quality=crate::native_quality::Response::read(&answer.sdp)?;
+    stats.native_displays.read_initial_answer(&answer.sdp)?;
     let rate:Option<crate::native_quality::RateResponse>=crate::native_quality::get(&answer.sdp,crate::native_quality::RATE_ATTRIBUTE)?;
     ensure!(rate.is_none()||stats.native_rate_request.get().is_some(),"{}", uu_i18n::format!("主机返回未请求的码率模式"));
     if let Some(requested)=rate_request.and_then(|r|r.selection) {

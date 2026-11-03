@@ -294,7 +294,7 @@ impl Window {
                     can_detach:live>1&&!s.app.disconnecting,
                     can_open_displays: !preparing_virtual && s.app.stream_target.as_ref().is_some_and(StreamTarget::is_native)
                         && s.app.controller.as_ref().is_some_and(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)),
-                    can_create_display:!preparing_virtual && s.app.controller.as_ref().is_some_and(|h|h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire)),
+                    can_create_display:!preparing_virtual && s.app.controller.as_ref().is_some_and(|h|h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire) && h.stats.native_displays.initial_supported()),
                 }})
                 .collect(),
         }

@@ -254,8 +254,40 @@ pub(crate) struct Host {
     stopped: AtomicBool,
     busy: AtomicBool,
     worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    initial: InitialLease,
+}
+#[derive(Default)]
+struct InitialLease(Mutex<Option<(Spec,std::result::Result<Display,String>)>>);
+impl InitialLease {
+    fn prepare(&self,spec:Spec,create:impl FnOnce()->Result<Display>)->Result<Display> {
+        spec.validate()?;
+        let mut state=self.0.lock().unwrap();
+        if let Some((previous,result))=&*state {
+            ensure!(*previous==spec,"initial virtual display specification cannot change");
+            return result.clone().map_err(anyhow::Error::msg);
+        }
+        // A failed mutation may have a partially applied OS transaction. Cache
+        // its terminal outcome as well, never silently repeat an accepted Create.
+        let result=create().map_err(|error|error_message(&error));
+        *state=Some((spec,result.clone()));
+        result.map_err(anyhow::Error::msg)
+    }
 }
 impl Host {
+    /// Called on a blocking worker after authentication and before capture.
+    /// The outer connection lifetime owns cleanup, including failed startup.
+    pub fn prepare_initial(&self,spec:Spec)->Result<Display> {
+        self.authorize()?;
+        self.initial.prepare(spec,|| {
+            self.authorize()?;
+            let display=self.manager.create(Owner::Session(self.owner),spec)?;
+            if let Err(error)=self.authorize() {
+                self.manager.remove_session(self.owner,display.id)?;
+                return Err(error);
+            }
+            Ok(display)
+        })
+    }
     pub fn permitted(context: &SessionContext) -> bool {
         context
             .access
@@ -358,6 +390,7 @@ impl Lifetime {
                 stopped: AtomicBool::new(false),
                 busy: AtomicBool::new(false),
                 worker: Mutex::new(None),
+                initial: InitialLease::default(),
             })),
             guard: Some(guard),
         }
@@ -558,6 +591,23 @@ impl Drop for Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn initial_lease_is_connection_scoped_idempotent_and_never_repeats_an_accepted_mutation() {
+        use std::sync::atomic::AtomicUsize;
+        let calls=AtomicUsize::new(0);let spec=Spec::default();let owner=uuid::Uuid::new_v4();
+        let display=Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Session(owner),spec,actual:Some(spec),name:"generated".into(),source:"display-b".into(),active:true,cleanup_pending:false,last_error:None};
+        let lease=InitialLease::default();
+        assert_eq!(lease.prepare(spec,||{calls.fetch_add(1,Ordering::SeqCst);Ok(display.clone())}).unwrap(),display);
+        assert_eq!(lease.prepare(spec,||panic!("same connection must reuse its lease")).unwrap(),display);
+        assert!(lease.prepare(Spec{width:1280,..spec},||panic!("different intent must fail before creation")).is_err());
+        assert_eq!(calls.load(Ordering::SeqCst),1);
+        let another=InitialLease::default();
+        another.prepare(spec,||{calls.fetch_add(1,Ordering::SeqCst);Ok(Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Session(uuid::Uuid::new_v4()),..display})}).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst),2);
+        let failed=InitialLease::default();assert!(failed.prepare(spec,||anyhow::bail!("generated partial transaction failure")).is_err());
+        assert!(failed.prepare(spec,||panic!("failed accepted request must not be repeated")).is_err());
+        assert!(failed.prepare(Spec{width:0,..spec},||panic!("invalid spec")).is_err());
+    }
     #[test]
     fn invalid_or_oversized_wire_and_duplicate_capabilities_are_rejected() {
         assert!(parse(

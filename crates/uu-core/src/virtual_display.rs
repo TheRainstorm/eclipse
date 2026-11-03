@@ -139,7 +139,7 @@ impl Default for Spec {
 }
 
 impl Spec {
-    fn validate(self) -> Result<()> {
+    pub(crate) fn validate(self) -> Result<()> {
         if !(320..=16_384).contains(&self.width)
             || !(200..=16_384).contains(&self.height)
             || !(1_000..=1_000_000).contains(&self.refresh_millihz)
