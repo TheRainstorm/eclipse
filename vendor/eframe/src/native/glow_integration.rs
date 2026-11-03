@@ -772,7 +772,7 @@ impl<'app> GlowWinitRunning<'app> {
 
             if let Some(surface)=&custom_surface {
                 crate::vsync::apply(&integration.egui_ctx,viewport_id,false,|enabled|{surface.set_vsync(enabled);Ok(())});
-                if let Err(error)=surface.present(){log::error!("custom Glow presentation failed: {error}");crate::glow_presentation::remove(&integration.egui_ctx,viewport_id);}
+                if let Err(error)=surface.present(&integration.egui_ctx,viewport_id){log::error!("custom Glow presentation failed: {error}");crate::glow_presentation::remove(&integration.egui_ctx,viewport_id);}
             }else{
                 crate::vsync::apply(&integration.egui_ctx, viewport_id, false, |enabled| {
                     gl_surface.set_swap_interval(context, swap_interval(enabled)).map_err(|e| e.to_string())
@@ -1641,7 +1641,7 @@ fn render_immediate_viewport(
         crate::profile_scope!("swap_buffers");
         if let Some(surface)=&custom_surface {
             crate::vsync::apply(egui_ctx,viewport_id,false,|enabled|{surface.set_vsync(enabled);Ok(())});
-            if let Err(error)=surface.present(){log::error!("custom Glow presentation failed: {error}");crate::glow_presentation::remove(egui_ctx,viewport_id);}
+            if let Err(error)=surface.present(egui_ctx,viewport_id){log::error!("custom Glow presentation failed: {error}");crate::glow_presentation::remove(egui_ctx,viewport_id);}
         }else {
             crate::vsync::apply(egui_ctx, viewport_id, false, |enabled| {
                 gl_surface.set_swap_interval(current_gl_context, swap_interval(enabled)).map_err(|e| e.to_string())

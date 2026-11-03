@@ -81,21 +81,16 @@ impl Presentation {
             Err(message(&error))
         }
     }
-    pub fn present(&mut self, vsync: bool) -> Result<(), String> {
+    pub fn present(&mut self, vsync: bool) -> Result<super::PresentOutcome, String> {
         let mut error = [0; 1024];
-        if unsafe {
+        match unsafe {
             eclipse_hdr_present_frame(
                 self.0.as_ptr(),
                 vsync.into(),
                 error.as_mut_ptr(),
                 error.len(),
             )
-        } == 0
-        {
-            Ok(())
-        } else {
-            Err(message(&error))
-        }
+        } { 0 => Ok(super::PresentOutcome::Presented), 2 => Ok(super::PresentOutcome::Deferred), _ => Err(message(&error)) }
     }
 }
 impl Drop for Presentation {
@@ -150,12 +145,13 @@ impl NativePresentation {
         let mut e=[0;1024];if unsafe{eclipse_native_present_cursor(self.0.as_ptr(),size[0],size[1],alpha.as_ptr(),xored.as_ptr(),e.as_mut_ptr(),e.len())}==0{Ok(())}else{Err(message(&e))}
     }
     pub fn cursor_position(&mut self,rect:Option<[f32;4]>){unsafe{eclipse_native_present_cursor_position(self.0.as_ptr(),rect.as_ref().map_or(std::ptr::null(),|r|r.as_ptr()));}}
-    pub fn present(&mut self,index:u32,vsync:bool,submitted:&mut u64)->Result<(),String>{self.present_if_changed(index,vsync,submitted,false).map(|_|())}
-    /// False means the prior successful composition was reused. No GPU read,
-    /// fence signal, Present or statistics query is issued for that redraw.
-    pub fn present_if_changed(&mut self,index:u32,vsync:bool,submitted:&mut u64,unchanged:bool)->Result<bool,String>{
+    pub fn present(&mut self,index:u32,vsync:bool,submitted:&mut u64)->Result<super::PresentOutcome,String>{self.present_if_changed(index,vsync,submitted,false)}
+    /// Unchanged reuses a successful composition without reading/signalling its
+    /// image. Deferred has not presented; `submitted` still returns any GPU read
+    /// already queued before a nonblocking Present reported a busy driver.
+    pub fn present_if_changed(&mut self,index:u32,vsync:bool,submitted:&mut u64,unchanged:bool)->Result<super::PresentOutcome,String>{
         let mut e=[0;1024];
-        match unsafe{eclipse_native_present_frame(self.0.as_ptr(),index,i32::from(vsync),i32::from(unchanged),submitted,e.as_mut_ptr(),e.len())}{0=>Ok(true),1=>Ok(false),_=>Err(message(&e))}
+        match unsafe{eclipse_native_present_frame(self.0.as_ptr(),index,i32::from(vsync),i32::from(unchanged),submitted,e.as_mut_ptr(),e.len())}{0=>Ok(super::PresentOutcome::Presented),1=>Ok(super::PresentOutcome::Unchanged),2=>Ok(super::PresentOutcome::Deferred),_=>Err(message(&e))}
     }
     /// Negotiated E2E receipts or explicit raw profiling. Disabled means no
     /// QPC/statistics query calls; consumers share this single observation.

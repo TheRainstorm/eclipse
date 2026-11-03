@@ -25,6 +25,9 @@ pub trait Presenter: Send {
     fn begin(&mut self, size: [u32; 2]) -> Result<ColorTarget, String>;
     /// Present the complete UI and restore the default framebuffer.
     fn present(&mut self, vsync: bool) -> Result<(), String>;
+    /// The native queue was busy. Return to the input event loop before retrying
+    /// the latest composition; this must never be reported as a target failure.
+    fn present_deferred(&self) -> bool { false }
     /// Unbind the target, including hidden/minimized frames that do not present.
     fn finish(&mut self);
     /// Detach custom window content when returning to normal presentation.
@@ -167,16 +170,75 @@ impl Surface {
     pub fn set_vsync(&self, enabled: bool) {
         self.0.lock().unwrap().vsync = enabled;
     }
-    pub fn present(&self) -> Result<(), String> {
-        let mut state = self.0.lock().unwrap();
-        let vsync = state.vsync;
-        state.presenter.present(vsync)
+    pub fn present(&self, ctx: &Context, viewport: ViewportId) -> Result<(), String> {
+        let deferred = {
+            let mut state = self.0.lock().unwrap();
+            let vsync = state.vsync;
+            state.presenter.present(vsync)?;
+            state.presenter.present_deferred()
+        };
+        if deferred {
+            // egui subtracts predicted_dt from delayed repaint requests. This
+            // call follows Present, so compensate it to leave a real idle gap
+            // for the event pump rather than spinning immediate redraws.
+            let prediction = ctx.input_for(viewport, |input|
+                std::time::Duration::try_from_secs_f32(input.predicted_dt).unwrap_or_default());
+            ctx.request_repaint_after_for(prediction.saturating_add(std::time::Duration::from_millis(2)), viewport);
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn busy_native_queue_yields_and_retries_only_its_own_viewport() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Busy {
+            busy: Arc<AtomicBool>,
+            intervals: Arc<Mutex<Vec<bool>>>,
+        }
+        impl Presenter for Busy {
+            fn begin(&mut self, _: [u32; 2]) -> Result<ColorTarget, String> {
+                Ok(ColorTarget { hdr: false, sdr_white_nits: 80. })
+            }
+            fn present(&mut self, vsync: bool) -> Result<(), String> {
+                self.intervals.lock().unwrap().push(vsync);
+                Ok(())
+            }
+            fn present_deferred(&self) -> bool { self.busy.load(Ordering::Acquire) }
+            fn finish(&mut self) {}
+            fn deactivate(&mut self) -> Result<(), String> { Ok(()) }
+        }
+        let ctx = Context::default();
+        let viewport = ViewportId::ROOT;
+        let busy = Arc::new(AtomicBool::new(true));
+        let intervals = Arc::new(Mutex::new(vec![]));
+        install(&ctx, Box::new(Busy { busy: busy.clone(), intervals: intervals.clone() }), true,
+            ColorTarget { hdr: false, sdr_white_nits: 80. });
+        set_active(&ctx, viewport, true, true);
+        let surface = begin(&ctx, viewport, [640, 480]).unwrap();
+        for _ in 0..3 { let _ = ctx.run(egui::RawInput::default(), |_| {}); }
+        let requests = Arc::new(Mutex::new(vec![]));
+        let captured = requests.clone();
+        ctx.set_request_repaint_callback(move |request| {
+            captured.lock().unwrap().push((request.viewport_id, request.delay));
+        });
+        surface.present(&ctx, viewport).unwrap();
+        assert_eq!(*requests.lock().unwrap(), [(viewport, std::time::Duration::from_millis(2))]);
+        assert!(color_target_for(&ctx, viewport).is_some(), "busy must keep the native target active");
+        // The event loop can run another UI/input pass while the native queue is
+        // still busy, without disabling this viewport's VSync or affecting others.
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::PointerMoved(egui::pos2(42., 17.)));
+        let _ = ctx.run(input, |ctx| assert_eq!(ctx.pointer_latest_pos(), Some(egui::pos2(42., 17.))));
+        busy.store(false, Ordering::Release);
+        requests.lock().unwrap().clear();
+        surface.present(&ctx, viewport).unwrap();
+        assert!(requests.lock().unwrap().is_empty(), "successful presentation must not start a repaint loop");
+        assert_eq!(*intervals.lock().unwrap(), [true, true]);
+    }
     struct CacheProbe {
         enabled: bool,
         keys: Arc<Mutex<Vec<Option<u64>>>>,
@@ -260,7 +322,7 @@ mod tests {
         assert!(calls.lock().unwrap().is_empty());
         set_active(&ctx, viewport, true, true);
         let surface = begin(&ctx, viewport, [640, 480]).unwrap();
-        surface.present().unwrap();
+        surface.present(&ctx, viewport).unwrap();
         surface.finish();
         assert_eq!(
             color_target_for(&ctx, viewport).unwrap().sdr_white_nits,

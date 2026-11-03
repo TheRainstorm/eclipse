@@ -15,7 +15,7 @@ use std::{
         Arc,
     },
 };
-use uu_core::display_frames::hdr::NativePresentation;
+use uu_core::display_frames::hdr::{NativePresentation, PresentOutcome};
 #[derive(Clone)]
 pub struct Inspection {
     pub tag: u64,
@@ -60,6 +60,7 @@ struct NativePresenter {
     next_ui_key: Option<u64>,
     reuse_ui: bool,
     last_native: bool,
+    deferred: bool,
     last_scene: Option<Scene>,
     finish_error: Option<String>,
     overlays: Vec<Overlay>,
@@ -131,6 +132,7 @@ impl NativePresenter {
             next_ui_key: None,
             reuse_ui: false,
             last_native: false,
+            deferred: false,
             last_scene: None,
             finish_error: None,
             overlays: Vec::new(),
@@ -350,6 +352,7 @@ impl Presenter for NativePresenter {
         Ok(true)
     }
     fn present(&mut self, vsync: bool) -> Result<(), String> {
+        self.deferred = false;
         self.finish();
         if let Some(error) = self.finish_error.take() {
             self.receipt.reset();
@@ -386,12 +389,13 @@ impl Presenter for NativePresenter {
         let result = self
             .native
             .present_if_changed(self.index as u32, vsync, &mut submitted, unchanged);
-        if matches!(result, Ok(false)) {
+        if matches!(result, Ok(PresentOutcome::Unchanged)) {
             // No GPU read, consumer-fence signal, Present or statistics query
             // happened. Keep the previous receipt ledger; never synthesize one.
             self.image = None;
             return Ok(());
         }
+        self.deferred = matches!(result, Ok(PresentOutcome::Deferred));
         if self.observing {
             if let Some(raw)=self.native.take_present_observation() {
                 let offered=self.image.as_ref().map(|image|(image.id,image.ready));
@@ -400,13 +404,16 @@ impl Presenter for NativePresenter {
                     trace.record(present_trace::Row::new(raw,offered,frame,self.reuse_ui,self.inspection.is_some()));
                 }
                 self.receipt.record(raw,offered,frame,self.inspection.is_some());
-            }else {
+            }else if !self.deferred {
                 self.receipt.reset();
             }
+            // A busy admission probe issues no Present and therefore leaves the
+            // prior real receipt ledger intact. An attempted busy Present has
+            // a raw failing HRESULT above, which correctly retires that ledger.
         }
         if result.is_err() {self.receipt.reset();}
         self.last_native = self.image.is_some() && result.is_ok();
-        self.last_scene = if self.last_native { scene } else { None };
+        self.last_scene = if matches!(result, Ok(PresentOutcome::Presented)) { scene } else { None };
         self.ui_key = if self.last_native {
             self.next_ui_key
         } else {
@@ -420,7 +427,7 @@ impl Presenter for NativePresenter {
                 image.valid.store(false, Ordering::Release);
             }
         }
-        if result.is_ok() {
+        if matches!(result, Ok(PresentOutcome::Presented)) {
             if let Some(inspection) = &self.inspection {
                 if let Some((size, serial, pixels)) = self.native.inspected_pixels() {
                     let (actual_hdr, _) = self.native.info();
@@ -439,6 +446,7 @@ impl Presenter for NativePresenter {
         }
         result.map(|_| ())
     }
+    fn present_deferred(&self) -> bool { self.deferred }
     fn finish(&mut self) {
         unsafe {
             if self.locked {

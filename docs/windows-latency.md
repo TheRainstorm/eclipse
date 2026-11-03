@@ -45,9 +45,13 @@ H.264 → D3D11 硬解表面租约 → 最新帧邮箱
 
 同适配器原生 GPU 串流可直接把 D3D 视频与缓存的 GL 界面图层合成到 scRGB 交换链。交换链使用专用子窗口，父窗口的 WGL drawable 只负责 GL 渲染及回退，避免同一 HWND 在全屏时同时承担两种呈现后端。视频转换、UI 缓存和每帧合成命令不因该窗口分离增加拷贝或同步等待。
 
-开发候选使用 `CreateSwapChainForHwnd` 和 `FLIP_DISCARD`，替换此前的 DirectComposition 交换链与视觉树绑定。子窗口自身没有 WGL drawable，可独立拥有窗口翻转交换链；驱动支持时，关闭 VSync 的提交继续使用 tearing 标志。FP16 scRGB 和已有 GPU 同步保持；当前开发版使用五个翻转表面，关闭 VSync 时采用设备默认三帧额度，启用时使用单帧额度。它们是驱动与合成器的有界资源，不是应用新增的视频帧队列。该改动允许系统选择不同的呈现模式，实际是否减少显示排队仍须以相同设置下的系统显示事件和交互验收为准，不能由交换链类型直接推定。
+开发候选使用 `CreateSwapChainForHwnd` 和 `FLIP_DISCARD`，替换此前的 DirectComposition 交换链与视觉树绑定。子窗口自身没有 WGL drawable，可独立拥有窗口翻转交换链；驱动支持时，关闭 VSync 的提交继续使用 tearing 标志。FP16 scRGB 和已有 GPU 同步保持；当前开发版使用五个翻转表面，交换链额度在关闭 VSync 时为三帧，启用时为单帧。它们是驱动与合成器的有界资源，不是应用新增的视频帧队列。该改动允许系统选择不同的呈现模式，实际是否减少显示排队仍须以相同设置下的系统显示事件和交互验收为准，不能由交换链类型直接推定。
 
 父窗口继续负责全屏、缩放、焦点及键鼠输入。子窗口与父窗口属于同一 UI 线程，使用 `WS_EX_NOREDIRECTIONBITMAP`，命中测试返回 `HTTRANSPARENT`；它在首帧提交后显示，停用时隐藏，随呈现器销毁。尺寸变化只调整所属子窗口，不修改显示器模式。
+
+原生呈现与输入处理共用 UI 线程，因此开启 VSync 时不能在该线程等待下一次刷新。交换链使用 [DXGI 帧额度事件](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject)，提交前只作零超时探测；繁忙则交回事件循环，约 2ms 后重试该视口的最新内容。`Present` 保留同步间隔 1，并使用 [DO_NOT_WAIT](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-present) 处理探测后的竞态；`WAS_STILL_DRAWING` 表示稍后重试，不切换呈现后端、不发送成功显示回执。已经提交的 GPU 图像读取仍归还消费栅栏，未开始读取则不伪造归还。复用未变化内容时不消耗帧额度事件。
+
+这些调整避免 VSync 提交等待阻塞输入泵，保留原分辨率、码率、颜色与垂直同步。WGL 共享锁、尺寸重建等路径仍可能等待 GPU。状态与生成输入测试不能证明实际鼠标延迟已降至某个帧数；物理跟手程度及驱动行为仍需同设置实机验收。
 
 `Present` 成功和读回非黑像素都不能证明新帧正在屏幕上显示。全屏回归需要覆盖真实串流的进出全屏、最大化、显示器与 DPI 转换，并对照实际显示事件；生成帧缓冲检查仍只验证绘制内容。性能比较应保持相同的垂直同步、画质和计时范围，不能把 Present API 的 CPU 耗时当作显示完成延迟。
 

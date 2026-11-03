@@ -95,8 +95,9 @@ struct Presentation {
     HWND window;
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
-    ComPtr<IDXGIDevice1> frame_queue;
-    UINT frame_queue_limit=3; // DXGI device default.
+    HANDLE frame_ready=nullptr;
+    UINT frame_queue_limit=0;
+    bool frame_admitted=false;
     ComPtr<IDXGIFactory2> factory;
     ComPtr<IDXGIFactory1> inventory;
     ComPtr<EclipseOutput6> active_output;
@@ -126,7 +127,6 @@ struct Presentation {
         if(!selected)throw std::runtime_error("no adapter owns the HDR window's output");
         D3D_FEATURE_LEVEL level=D3D_FEATURE_LEVEL_11_0;
         check(D3D11CreateDevice(selected.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,&level,1,D3D11_SDK_VERSION,&device,nullptr,&context),"create HDR presentation device");
-        check(device.As(&frame_queue),"query presentation frame queue");
         ComPtr<ID3D10Multithread> threading;check(context.As(&threading),"query HDR presentation threading");threading->SetMultithreadProtected(TRUE);
         check(selected->GetParent(__uuidof(IDXGIFactory2),(void**)factory.GetAddressOf()),"get HDR composition factory");
         ComPtr<IDXGIFactory5> modern;
@@ -140,6 +140,7 @@ struct Presentation {
         check(factory->MakeWindowAssociation(content_window.value,DXGI_MWA_NO_WINDOW_CHANGES|DXGI_MWA_NO_ALT_ENTER),"own native window presentation");
         // The child becomes visible only after GL registration and the first frame.
     }
+    ~Presentation(){if(frame_ready)CloseHandle(frame_ready);}
     void refresh(bool force=false) {
         auto now=GetTickCount64();auto active=MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST);
         if(!force&&active==monitor&&now-queried<500)return;
@@ -182,19 +183,21 @@ struct Presentation {
             desc.BufferCount=5;
             desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
             desc.Scaling=DXGI_SCALING_STRETCH;
-            desc.Flags=allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0;
+            desc.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT|(allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0);
             ComPtr<IDXGISwapChain1> initial;
             HRESULT created=factory->CreateSwapChainForHwnd(device.Get(),content_window.value,&desc,nullptr,nullptr,&initial);
             if(allow_tearing&&(created==DXGI_ERROR_INVALID_CALL||created==DXGI_ERROR_UNSUPPORTED)) {
-                allow_tearing=false;desc.Flags=0;
+                allow_tearing=false;desc.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 created=factory->CreateSwapChainForHwnd(device.Get(),content_window.value,&desc,nullptr,nullptr,&initial);
             }
             check(created,"create FP16 HDR swap chain");
             std::fprintf(stderr,"HDR HWND flip-discard allow_tearing=%s buffers=%u\n",allow_tearing?"true":"false",desc.BufferCount);
             check(initial.As(&chain),"query HDR swap chain");
+            frame_ready=chain->GetFrameLatencyWaitableObject();
+            if(!frame_ready)throw std::runtime_error("get presentation frame readiness");
             chain_id=present_identity();
             check(chain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709),"set scRGB HDR color space");
-        }else check(chain->ResizeBuffers(5,w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0),"resize HDR swap chain");
+        }else check(chain->ResizeBuffers(5,w,h,DXGI_FORMAT_R16G16B16A16_FLOAT,DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT|(allow_tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0)),"resize HDR swap chain");
         surface_epoch=present_identity();observation_ready=false;
         D3D11_TEXTURE2D_DESC td{};td.Width=w;td.Height=h;td.MipLevels=1;td.ArraySize=1;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
         td.SampleDesc.Count=1;td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;td.MiscFlags=D3D11_RESOURCE_MISC_SHARED;
@@ -206,12 +209,15 @@ struct Presentation {
         content_window.visible(false);
         content_visible=false;
     }
-    void present(bool vsync) {
+    bool present(bool vsync) {
         if(!chain||!shared_texture)throw std::runtime_error("HDR presentation surface is not ready");
+        if(!admit_frame(vsync))return false;
         ComPtr<ID3D11Texture2D> backbuffer;check(chain->GetBuffer(0,__uuidof(ID3D11Texture2D),(void**)backbuffer.GetAddressOf()),"get HDR backbuffer");
         context->CopyResource(backbuffer.Get(),shared_texture.Get());
-        check(present_chain(vsync?1:0,!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0),"present scRGB HDR frame");
-        attach();
+        const HRESULT result=present_chain(vsync?1:0,(vsync?DXGI_PRESENT_DO_NOT_WAIT:0)|(!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0));
+        if(result==DXGI_ERROR_WAS_STILL_DRAWING){context->Flush();return false;}
+        check(result,"present scRGB HDR frame");
+        attach();return true;
     }
     void attach() {
         if(!content_visible) {
@@ -225,13 +231,23 @@ struct Presentation {
         LARGE_INTEGER frequency{};
         observation_frequency=enabled&&QueryPerformanceFrequency(&frequency)&&frequency.QuadPart>0?uint64_t(frequency.QuadPart):0;
     }
-    HRESULT present_chain(UINT interval,UINT flags,uint64_t source=0,uint64_t ready=0) {
-        const UINT limit=interval?1:3;
+    bool admit_frame(bool vsync) {
+        const UINT limit=vsync?1:3;
         if(frame_queue_limit!=limit) {
-            check(frame_queue->SetMaximumFrameLatency(limit),"set presentation frame queue");
+            check(chain->SetMaximumFrameLatency(limit),"set presentation frame queue");
             frame_queue_limit=limit;
         }
-        if(!observation_enabled)return chain->Present(interval,flags);
+        // Never wait for a refresh on the window/input thread. Retain a consumed
+        // admission if a nonblocking Present has to be retried before succeeding.
+        if(!vsync)return true;
+        if(frame_admitted)return true;
+        const DWORD ready=WaitForSingleObject(frame_ready,0);
+        if(ready==WAIT_TIMEOUT)return false;
+        if(ready!=WAIT_OBJECT_0)throw std::runtime_error("query presentation frame readiness");
+        frame_admitted=true;return true;
+    }
+    HRESULT present_chain(UINT interval,UINT flags,uint64_t source=0,uint64_t ready=0) {
+        if(!observation_enabled){const HRESULT result=chain->Present(interval,flags);frame_admitted=result==DXGI_ERROR_WAS_STILL_DRAWING;return result;}
         RawPresentObservation raw{};raw.version=1;raw.struct_size=sizeof(raw);
         raw.serial=++observation_serial;raw.chain_id=chain_id;raw.surface_epoch=surface_epoch;
         raw.chain_address=uint64_t(reinterpret_cast<uintptr_t>(chain.Get()));
@@ -239,6 +255,7 @@ struct Presentation {
         raw.sync_interval=interval;raw.present_flags=flags;
         raw.present_before_qpc=present_qpc();
         const HRESULT result=chain->Present(interval,flags);
+        frame_admitted=result==DXGI_ERROR_WAS_STILL_DRAWING;
         raw.present_after_qpc=present_qpc();raw.present_hresult=int32_t(result);
         UINT count=0;
         raw.last_count_query_before_qpc=present_qpc();
@@ -366,12 +383,13 @@ float4 ps(float4 pos:SV_Position):SV_Target{
         for(auto& v:cursor_views)v.Reset();for(auto& c:cursors)c.Reset();cursor_width=cursor_height=0;
     }
     void begin(){offered=false;params.flags[3]=0;observation_ready=false;}
-    bool present(unsigned index,bool vsync,bool unchanged){
+    int present(unsigned index,bool vsync,bool unchanged){
         submitted_return=0;
         if(index>=3||!chain)throw std::runtime_error("native presentation ring is not ready");
         // Retry occluded/failed submissions; only S_OK establishes reusable
         // content. No D3D read or consumed-fence signal occurs on this path.
-        if(unchanged&&last_present_result==S_OK&&content_visible)return false;
+        if(unchanged&&last_present_result==S_OK&&content_visible)return 1;
+        if(!admit_frame(vsync))return 2;
         ComPtr<ID3D11Texture2D> backbuffer;check(chain->GetBuffer(0,IID_PPV_ARGS(&backbuffer)),"get native video backbuffer");
         ComPtr<ID3D11RenderTargetView> target;check(device->CreateRenderTargetView(backbuffer.Get(),nullptr,&target),"create native video target");
         if(offered)check(commands->Wait(ready.Get(),ready_value),"GPU wait for converted native video");
@@ -393,8 +411,9 @@ float4 ps(float4 pos:SV_Position):SV_Target{
             debug_pixels.resize(size_t(width)*height*4);for(unsigned y=0;y<height;y++)std::memcpy(debug_pixels.data()+size_t(y)*width*4,(const unsigned char*)map.pData+size_t(y)*map.RowPitch,size_t(width)*8);context->Unmap(debug_target.Get(),0);
             debug_width=width;debug_height=height;debug_serial++;
         }
-        last_present_result=present_chain(vsync?1:0,!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0,offered?source_id:0,offered?ready_value:0);
-        check(last_present_result,"present native composed video");attach();return true;
+        last_present_result=present_chain(vsync?1:0,(vsync?DXGI_PRESENT_DO_NOT_WAIT:0)|(!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0),offered?source_id:0,offered?ready_value:0);
+        if(last_present_result==DXGI_ERROR_WAS_STILL_DRAWING){context->Flush();return 2;}
+        check(last_present_result,"present native composed video");attach();return 0;
     }
 };
 
@@ -411,7 +430,7 @@ extern "C" int eclipse_hdr_present_resize(void* value,unsigned w,unsigned h,char
 }
 extern "C" void eclipse_hdr_present_info(void* value,int* hdr,float* white) {auto p=(Presentation*)value;p->refresh();*hdr=p->hdr?1:0;*white=p->white;}
 extern "C" int eclipse_hdr_present_frame(void* value,int vsync,char* error,size_t capacity) {
-    try{((Presentation*)value)->present(vsync!=0);return 0;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}
+    try{return ((Presentation*)value)->present(vsync!=0)?0:2;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}
 }
 
 extern "C" int eclipse_hdr_present_deactivate(void* value,char* error,size_t capacity) {
@@ -426,7 +445,7 @@ extern "C" void eclipse_native_present_begin(void* value){((NativePresentation*)
 extern "C" int eclipse_native_present_image(void* value,uint64_t id,void* const* handles,uint64_t ready,uint64_t consumed,const float* rect,int hdr,float white,char* error,size_t capacity){try{((NativePresentation*)value)->offer(id,handles,ready,consumed,rect,hdr!=0,white);return 0;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
 extern "C" int eclipse_native_present_cursor(void* value,unsigned w,unsigned h,const unsigned char* alpha,const unsigned char* xored,char* error,size_t capacity){try{((NativePresentation*)value)->cursor_shape(w,h,alpha,xored);return 0;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
 extern "C" void eclipse_native_present_cursor_position(void* value,const float* rect){((NativePresentation*)value)->cursor_position(rect);}
-extern "C" int eclipse_native_present_frame(void* value,unsigned index,int vsync,int unchanged,uint64_t* submitted,char* error,size_t capacity){auto p=(NativePresentation*)value;try{const bool presented=p->present(index,vsync!=0,unchanged!=0);*submitted=p->submitted_return;return presented?0:1;}catch(const std::exception& e){p->last_present_result=E_FAIL;p->context->Flush();*submitted=p->submitted_return;if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
+extern "C" int eclipse_native_present_frame(void* value,unsigned index,int vsync,int unchanged,uint64_t* submitted,char* error,size_t capacity){auto p=(NativePresentation*)value;try{const int result=p->present(index,vsync!=0,unchanged!=0);*submitted=p->submitted_return;return result;}catch(const std::exception& e){p->last_present_result=E_FAIL;p->context->Flush();*submitted=p->submitted_return;if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
 extern "C" void eclipse_native_present_observe(void* value,int enabled){((NativePresentation*)value)->observe(enabled!=0);}
 extern "C" int eclipse_native_present_observation(void* value,RawPresentObservation* observation,size_t size){
     if(!value||!observation||size!=sizeof(RawPresentObservation))return -1;

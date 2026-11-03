@@ -10,7 +10,7 @@ use eframe::{
     glow_presentation::{ColorTarget, Presenter},
 };
 use std::{ptr, sync::Arc};
-use uu_core::display_frames::hdr::Presentation;
+use uu_core::display_frames::hdr::{Presentation, PresentOutcome};
 struct Target {
     texture: glow::Texture,
     framebuffer: glow::Framebuffer,
@@ -29,6 +29,7 @@ struct HdrPresenter {
     white: Option<glow::UniformLocation>,
     color: ColorTarget,
     locked: bool,
+    deferred: bool,
 }
 // eframe's registry is Send; all methods and destruction run on its native GL
 // thread with the owning context current, as required by Presenter.
@@ -109,6 +110,7 @@ impl HdrPresenter {
                 sdr_white_nits: 80.,
             },
             locked: false,
+            deferred: false,
         })
     }
     unsafe fn clear_targets(&mut self) {
@@ -254,6 +256,7 @@ impl Presenter for HdrPresenter {
         Ok(self.color)
     }
     fn present(&mut self, vsync: bool) -> Result<(), String> {
+        self.deferred = false;
         unsafe {
             if (self.api.lock)(self.device, 1, &mut self.object) == 0 {
                 return Err(uu_i18n::text("HDR 呈现纹理锁定失败").into());
@@ -284,8 +287,11 @@ impl Presenter for HdrPresenter {
             }
             self.locked = false;
         }
-        self.native.present(vsync)
+        let outcome = self.native.present(vsync)?;
+        self.deferred = outcome == PresentOutcome::Deferred;
+        Ok(())
     }
+    fn present_deferred(&self) -> bool { self.deferred }
     fn finish(&mut self) {
         unsafe {
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);

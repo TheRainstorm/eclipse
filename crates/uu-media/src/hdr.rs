@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 #[path="present_observation.rs"]
 mod observation;
 pub use observation::RawPresentObservation;
+/// A busy swap chain is retried after returning to the native event loop.
+/// It is neither an unchanged composition nor a successful display receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresentOutcome { Presented, Unchanged, Deferred }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
