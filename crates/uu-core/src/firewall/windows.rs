@@ -126,6 +126,7 @@ fn execute(input: serde_json::Value) -> Result<Reply> {
         b
     });
     child
+        .0
         .stdin
         .take()
         .unwrap()
