@@ -16,6 +16,7 @@ pub(super) struct Cache {
 }
 impl Cache {
     pub(super) fn keyboard_owned(&self)->bool {self.hover.keyboard_owned()}
+    pub(super) fn hide(&mut self) {self.hover.hide();}
     pub(super) fn invalidate(&mut self) {self.key=None;self.updated=None;self.hover=Default::default();}
     fn clear_history(&mut self,now:Instant,generation:[u64;2]) {
         self.history=Default::default();
@@ -108,6 +109,7 @@ impl super::App {
         }
     }
     pub(super) fn paint_hud(&mut self,ui:&egui::Ui,rect:Rect)->bool {
+        if !self.hud {self.hud_cache.hide();return false;}
         if self.controller.is_none(){return false;}
         self.sample_hud();
         let [w,h]=self.hud_cache.metrics.size;

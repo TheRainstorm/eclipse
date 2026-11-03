@@ -213,7 +213,7 @@ impl App {
                 texture.paint(ui,draw);
                 if self.unpresented.remove(&track) { texture.record_new_image();*self.frame_count.entry(track).or_insert(0) += 1; }
                 let pointer=ctx.input(|i|i.pointer.hover_pos());
-                let hud_pointer=self.hud&&self.paint_hud(ui,rect);
+                let hud_pointer=self.paint_hud(ui,rect);
                 let controls_active=controls_active||hud_pointer;
                 if events.iter().any(|ev|matches!(ev,egui::Event::PointerButton {pos,pressed:true,..} if draw.contains(*pos))) && self.active_session && self.input_capture.activate_picture(self.input_conditions(ctx),picture_blocked||hud_pointer) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -259,7 +259,7 @@ impl App {
                 ui.painter().rect_filled(hint,6.0,C::from_black_alpha(170));
                 ui.put(hint,egui::Label::new(RichText::new(uu_i18n::text("点击画面以获取键盘控制")).color(C::WHITE)).wrap());
             }
-            if self.hud && chosen.is_none() { self.paint_hud(ui, rect); }
+            if chosen.is_none() { self.paint_hud(ui, rect); }
 
         });
         for message in messages {

@@ -242,7 +242,7 @@ impl Layout {
             (m.fps_label(),13.,muted),
             (m.network_label(),13.,network),
             (m.stages_label(),13.,process),
-            (format!("E2E · Video {} · Input→Frame {}",m.video_value(),m.input_frame_value()),13.,primary),
+            (format!("E2E · Video {}",m.video_value()),13.,primary),
         ]];
         if m.waiting_for_keyframe {
             rows.push(vec![(
@@ -580,6 +580,7 @@ pub fn details_at_with_state(ui:&egui::Ui,m:&Metrics,view:Rect,anchor:Rect,previ
 #[derive(Default)]
 pub struct HoverCard {
     since: Option<f64>,
+    last_pointer: Option<egui::Pos2>,
     dismiss_at: Option<f64>,
     pub bounds: Option<Rect>,
     selected: bool,
@@ -588,6 +589,12 @@ pub struct HoverCard {
 impl HoverCard {
     pub fn keyboard_owned(&self)->bool {self.selected}
     pub fn take_clear_requested(&mut self)->bool {std::mem::take(&mut self.state.clear_requested)}
+    /// Hiding the HUD cancels transient interaction, while an explicit pin and
+    /// the selected diagnostic window remain user intent for the next showing.
+    pub fn hide(&mut self) {
+        self.since=None;self.last_pointer=None;self.dismiss_at=None;
+        self.bounds=None;self.selected=false;
+    }
 
     /// Hover alone keeps keyboard ownership remote. Clicking this local card
     /// owns text selection/copy until a click outside, Escape or focus loss.
@@ -599,9 +606,26 @@ impl HoverCard {
         view: Rect,
         appearance:HudAppearance,
     ) -> bool {
-        let (now, pointer, focused) = ui
+        let previous=self.last_pointer;
+        let (now, pointer, focused, moved, interacting) = ui
             .ctx()
-            .input(|i| (i.time, i.pointer.hover_pos(), i.focused));
+            .input(|i| {
+                let mut position=previous;
+                let mut moved=false;
+                for event in &i.events {
+                    match event {
+                        egui::Event::PointerMoved(p)=>{moved|=position!=Some(*p);position=Some(*p);}
+                        egui::Event::PointerGone=>{moved|=position.is_some();position=None;}
+                        egui::Event::MouseMoved(delta)=>moved|=*delta!=egui::Vec2::ZERO,
+                        _=>{},
+                    }
+                }
+                let pointer=i.pointer.hover_pos();
+                moved|=position!=pointer;
+                (i.time,pointer,i.focused,moved,
+                    i.pointer.any_down()||i.pointer.any_pressed()||i.pointer.any_released()||i.raw_scroll_delta!=egui::Vec2::ZERO)
+            });
+        self.last_pointer=pointer;
         if !focused {self.selected=false;}
         if (!focused&&!self.state.pinned) || view.width() < 48. || view.height() < 48. {
             self.selected=false;self.since=None;self.bounds=None;self.dismiss_at=None;
@@ -624,6 +648,14 @@ impl HoverCard {
         if over_source || over_card || self.selected || self.state.pinned {
             self.dismiss_at=None;
             self.since.get_or_insert(now);
+            // Opening requires continuous presence AND a still pointer. Actual
+            // movement, including small jitter and relative motion, restarts
+            // the dwell; duplicate same-position events do not. Active button
+            // or wheel input also postpones opening. Once visible, selection,
+            // pinning and the short bridge between HUD and card own its life.
+            if self.bounds.is_none()&&!self.state.pinned&&(moved||interacting) {
+                self.since=Some(now);
+            }
         } else if self.since.is_some() {
             let deadline=*self.dismiss_at.get_or_insert(now+0.18);
             if now>=deadline {
@@ -635,10 +667,10 @@ impl HoverCard {
         let Some(since) = self.since else {
             return false;
         };
-        if !self.state.pinned&&self.bounds.is_none() && now - since < 0.25 {
+        if !self.state.pinned&&self.bounds.is_none() && now - since < 1.5 {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_secs_f64(
-                    (0.25 - (now - since)).max(0.),
+                    (1.5 - (now - since)).max(0.),
                 ));
             return false;
         }
@@ -671,6 +703,94 @@ pub fn decoder_label(backend: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn hover_frame(ctx:&egui::Context,card:&mut HoverCard,now:f64,events:Vec<egui::Event>,focused:bool) {
+        let view=Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
+        let _=ctx.run(egui::RawInput{screen_rect:Some(view),time:Some(now),events,focused,..Default::default()},|ctx|{
+            egui::CentralPanel::default().show(ctx,|ui|{
+                let source=ui.interact(Rect::from_min_size(egui::pos2(12.,12.),egui::vec2(160.,24.)),egui::Id::new("source"),egui::Sense::hover());
+                card.show(ui,&source,&Metrics::default(),view,HudAppearance::default());
+            });
+        });
+    }
+    #[test]
+    fn hover_requires_one_and_a_half_seconds_still_and_duplicate_positions_do_not_reset_it() {
+        let ctx=egui::Context::default();let mut card=HoverCard::default();
+        for time in [0.,0.5,1.,1.49] {
+            hover_frame(&ctx,&mut card,time,vec![egui::Event::PointerMoved(egui::pos2(30.,20.))],true);
+            assert!(card.bounds.is_none());assert!(!card.keyboard_owned());
+        }
+        hover_frame(&ctx,&mut card,1.5,vec![],true);
+        assert!(card.bounds.is_some());assert!(!card.keyboard_owned());
+    }
+    #[test]
+    fn movement_and_subpixel_jitter_keep_the_pending_card_closed() {
+        let ctx=egui::Context::default();let mut card=HoverCard::default();
+        for n in 0..=5 {
+            hover_frame(&ctx,&mut card,n as f64*0.4,vec![egui::Event::PointerMoved(egui::pos2(30.+(n%2) as f32*0.2,20.))],true);
+            assert!(card.bounds.is_none(),"moving inside the HUD must not finish a hover");
+        }
+        hover_frame(&ctx,&mut card,3.49,vec![],true);assert!(card.bounds.is_none());
+        hover_frame(&ctx,&mut card,3.5,vec![],true);assert!(card.bounds.is_some());
+    }
+    #[test]
+    fn relative_motion_wheel_and_held_buttons_postpone_opening() {
+        for event in [
+            egui::Event::MouseMoved(egui::vec2(1.,0.)),
+            egui::Event::MouseWheel{unit:egui::MouseWheelUnit::Point,delta:egui::vec2(0.,1.),modifiers:Default::default()},
+        ] {
+            let ctx=egui::Context::default();let mut card=HoverCard::default();
+            hover_frame(&ctx,&mut card,0.,vec![egui::Event::PointerMoved(egui::pos2(30.,20.))],true);
+            hover_frame(&ctx,&mut card,1.4,vec![event],true);
+            hover_frame(&ctx,&mut card,2.89,vec![],true);assert!(card.bounds.is_none());
+            hover_frame(&ctx,&mut card,3.,vec![],true);assert!(card.bounds.is_some());
+        }
+        let ctx=egui::Context::default();let mut card=HoverCard::default();let point=egui::pos2(30.,20.);
+        hover_frame(&ctx,&mut card,0.,vec![egui::Event::PointerMoved(point)],true);
+        let button=|pressed|egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+        hover_frame(&ctx,&mut card,1.,vec![button(true)],true);
+        hover_frame(&ctx,&mut card,3.,vec![],true);assert!(card.bounds.is_none());
+        hover_frame(&ctx,&mut card,3.1,vec![button(false)],true);
+        hover_frame(&ctx,&mut card,4.59,vec![],true);assert!(card.bounds.is_none());
+        hover_frame(&ctx,&mut card,4.7,vec![],true);assert!(card.bounds.is_some());
+    }
+    #[test]
+    fn leaving_or_losing_focus_cancels_pending_dwell_instead_of_pausing_it() {
+        for focus_loss in [false,true] {
+            let ctx=egui::Context::default();let mut card=HoverCard::default();let point=egui::pos2(30.,20.);
+            hover_frame(&ctx,&mut card,0.,vec![egui::Event::PointerMoved(point)],true);
+            hover_frame(&ctx,&mut card,1.4,if focus_loss{vec![]}else{vec![egui::Event::PointerGone]},!focus_loss);
+            assert!(card.bounds.is_none());
+            hover_frame(&ctx,&mut card,3.,vec![egui::Event::PointerMoved(point)],true);
+            hover_frame(&ctx,&mut card,4.49,vec![],true);assert!(card.bounds.is_none());
+            hover_frame(&ctx,&mut card,4.5,vec![],true);assert!(card.bounds.is_some());
+        }
+    }
+    #[test]
+    fn hiding_the_hud_cancels_dwell_and_selection_but_preserves_an_explicit_pin() {
+        let ctx=egui::Context::default();let mut card=HoverCard::default();let point=egui::pos2(30.,20.);
+        hover_frame(&ctx,&mut card,0.,vec![egui::Event::PointerMoved(point)],true);
+        card.hide();
+        hover_frame(&ctx,&mut card,3.,vec![egui::Event::PointerMoved(point)],true);
+        hover_frame(&ctx,&mut card,4.49,vec![],true);assert!(card.bounds.is_none());
+        hover_frame(&ctx,&mut card,4.5,vec![],true);assert!(card.bounds.is_some());
+        card.selected=true;card.state.pinned=true;card.state.window=2;
+        card.hide();
+        assert!(!card.keyboard_owned());assert!(card.bounds.is_none());assert!(card.state.pinned);assert_eq!(card.state.window,2);
+        hover_frame(&ctx,&mut card,5.,vec![egui::Event::PointerMoved(egui::pos2(1270.,710.))],true);
+        assert!(card.bounds.is_some(),"an explicitly pinned card returns with the HUD");
+        assert!(!card.keyboard_owned(),"restoring a pin does not restore text-selection ownership");
+    }
+    #[test]
+    fn compact_hud_omits_input_frame_while_diagnostics_keep_the_metric() {
+        let ctx=egui::Context::default();let m=Metrics::default();
+        let _=ctx.run(Default::default(),|ctx|{
+            egui::CentralPanel::default().show(ctx,|ui|{
+                let layout=Layout::new(ui,&m,1280.);
+                assert!(layout.placed.iter().all(|p|!p.galley.job.text.contains("Input→Frame")));
+            });
+        });
+        assert!(detail_rows(&m).iter().flat_map(|r|&r.values).any(|v|v.label==uu_i18n::text("后继画面")&&v.value==m.input_frame_value()));
+    }
     #[test]
     fn diagnostic_time_selection_changes_the_chart_window() {
         let ctx=egui::Context::default();let mut state=DetailState::default();let mut time=0.;
@@ -734,7 +854,7 @@ mod tests {
                 now+=1./120.;frame(&mut card,now,egui::pos2(size.x-2.,size.y-2.));
                 assert!(card.bounds.is_none(),"pending hover opened after exit");
             }
-            for _ in 0..12 {now+=0.05;frame(&mut card,now,egui::pos2(30.,20.));}
+            for _ in 0..32 {now+=0.05;frame(&mut card,now,egui::pos2(30.,20.));}
             let bounds=card.bounds.unwrap();
             // Move through the toolbar, chart and scrollable data, then back
             // across the small bridge to the HUD. None of these closes it.
@@ -750,7 +870,7 @@ mod tests {
             }
             assert!(hidden&&visible_frames>0);assert!(card.bounds.is_none());
             now+=0.01;frame(&mut card,now,egui::pos2(30.,20.));assert!(card.bounds.is_none());
-            for _ in 0..8 {now+=0.05;frame(&mut card,now,egui::pos2(30.,20.));}
+            for _ in 0..32 {now+=0.05;frame(&mut card,now,egui::pos2(30.,20.));}
             assert!(card.bounds.is_some());
         }
     }
@@ -833,7 +953,7 @@ mod tests {
             });});
         };
         let move_to=|p|vec![egui::Event::PointerMoved(p)];
-        for _ in 0..6{frame(&mut card,move_to(egui::pos2(30.,20.)),true);}
+        for _ in 0..10{frame(&mut card,move_to(egui::pos2(30.,20.)),true);}
         assert!(card.bounds.is_some());assert!(!card.keyboard_owned(),"hover keeps keyboard remote");
         let point=card.bounds.unwrap().center();
         let press=|p,pressed|vec![egui::Event::PointerMoved(p),egui::Event::PointerButton{pos:p,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}];
@@ -842,7 +962,7 @@ mod tests {
         frame(&mut card,move_to(egui::pos2(1270.,700.)),true);assert!(card.keyboard_owned(),"selection stays available for Ctrl+C after dragging outside");
         frame(&mut card,press(egui::pos2(1270.,700.),true),true);assert!(!card.keyboard_owned());
         frame(&mut card,press(egui::pos2(1270.,700.),false),true);
-        for _ in 0..6{frame(&mut card,move_to(egui::pos2(30.,20.)),true);}
+        for _ in 0..10{frame(&mut card,move_to(egui::pos2(30.,20.)),true);}
         let point=card.bounds.unwrap().center();frame(&mut card,press(point,false),true);frame(&mut card,press(point,true),true);assert!(card.keyboard_owned());
         frame(&mut card,vec![egui::Event::Key{key:egui::Key::Escape,physical_key:None,pressed:true,repeat:false,modifiers:Default::default()}],true);assert!(!card.keyboard_owned());
         frame(&mut card,press(point,false),true);frame(&mut card,press(point,true),true);assert!(card.keyboard_owned());

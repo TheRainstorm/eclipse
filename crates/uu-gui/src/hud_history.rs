@@ -9,6 +9,7 @@ const SERIES_COUNT:usize=9;
 const ESTIMATE_SERIES:usize=7;
 const INPUT_SERIES:usize=8;
 const SERIES_ORDER:[usize;SERIES_COUNT]=[0,INPUT_SERIES,ESTIMATE_SERIES,1,2,3,4,5,6];
+const DEFAULT_SERIES:[bool;SERIES_COUNT]=[true,true,true,true,true,true,true,true,false];
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub struct EstimatedTotal {
     pub mean_ms:f32,
@@ -115,7 +116,7 @@ pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32,window:usize)
     let samples=visible_samples(samples,window_seconds);
     let names=[uu_i18n::text("视频"),uu_i18n::text("采集"),uu_i18n::text("编码"),uu_i18n::text("解码"),uu_i18n::text("渲染"),"RTT/2",uu_i18n::text("排队"),uu_i18n::text("估计"),uu_i18n::text("输入→画面")];
     let colors=[Color32::WHITE,Color32::from_rgb(159,176,255),Color32::from_rgb(255,190,108),Color32::from_rgb(114,215,185),Color32::from_rgb(109,205,255),Color32::from_rgb(202,156,255),Color32::from_rgb(255,145,157),Color32::from_rgb(226,218,119),Color32::from_rgb(255,168,228)];
-    let id=ui.id().with("latency-curve-series");let mut selected=ui.data_mut(|d|d.get_temp::<[bool;SERIES_COUNT]>(id)).unwrap_or([true;SERIES_COUNT]);
+    let id=ui.id().with("latency-curve-series");let mut selected=ui.data_mut(|d|d.get_temp::<[bool;SERIES_COUNT]>(id)).unwrap_or(DEFAULT_SERIES);
     ui.horizontal(|ui|{ui.strong(uu_i18n::format!("最近 {} 分钟",window_seconds as u64/60));ui.label(egui::RichText::new(uu_i18n::text("延迟 · ms")).small().weak());});
     egui::ScrollArea::horizontal().id_salt("latency-curve-legend").auto_shrink([false,true]).show(ui,|ui|{ui.spacing_mut().button_padding=egui::vec2(6.,3.);ui.spacing_mut().interact_size.y=22.;ui.spacing_mut().item_spacing.x=5.;ui.horizontal(|ui|{for i in SERIES_ORDER {
         let text=egui::RichText::new(names[i]).size(11.).color(if selected[i]{colors[i]}else{Color32::from_gray(110)});
@@ -183,7 +184,11 @@ mod tests {
             let mut output=None;
             for frame in 0..5 {
                 output=Some(ctx.run(egui::RawInput{screen_rect:Some(view),time:Some(frame as f64*0.1),events:vec![Event::PointerMoved(egui::pos2(300.,150.))],..Default::default()},|ctx|{
-                    egui::CentralPanel::default().show(ctx,|ui|chart(ui,std::slice::from_ref(&sample),200.,0));
+                    egui::CentralPanel::default().show(ctx,|ui|{
+                        let mut enabled=DEFAULT_SERIES;enabled[INPUT_SERIES]=true;
+                        ui.data_mut(|d|d.insert_temp(ui.id().with("latency-curve-series"),enabled));
+                        chart(ui,std::slice::from_ref(&sample),200.,0);
+                    });
                 }));
             }
             let expected=format!("{}  {} ms",uu_i18n::text("输入→画面"),if input.is_some(){"≈35.000 ±4.000"}else{"—"});
@@ -254,9 +259,10 @@ mod tests {
         assert!(h.samples.back().unwrap().estimated_total.is_none());
     }
     #[test]
-    fn legend_stays_on_one_line_and_estimate_button_toggles_its_curve() {
+    fn legend_stays_on_one_line_and_buttons_toggle_only_their_curve() {
         use eframe::egui::{self,Rect,Event,PointerButton};
         for width in [520.,420.,300.] {
+          for (series,label) in [(ESTIMATE_SERIES,"估计"),(INPUT_SERIES,"输入→画面")] {
             let ctx=egui::Context::default();let view=Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,400.));
             let mut now=1.;let mut chart_id=None;
             let mut frame=|events| {
@@ -270,7 +276,7 @@ mod tests {
             let labels:Vec<_>=output.shapes.iter().filter_map(|s|if let egui::Shape::Text(t)=&s.shape{names.contains(&t.galley.job.text.as_str()).then_some(t)}else{None}).collect();
             if width>=520. {assert_eq!(labels.len(),9);}else{assert!(labels.len()>=5,"narrow legends scroll instead of wrapping");}
             assert!(labels.iter().all(|t|(t.pos.y-labels[0].pos.y).abs()<0.1&&t.galley.rows.len()==1));
-            let estimate=labels.iter().find(|t|t.galley.job.text=="估计").unwrap();let point=estimate.pos+estimate.galley.size()/2.;
+            let button=labels.iter().find(|t|t.galley.job.text==label).unwrap();let point=button.pos+button.galley.size()/2.;
             frame(vec![Event::PointerMoved(point)]);
             // Let egui finish the hover tooltip's invisible sizing pass before clicking.
             for _ in 0..3 {frame(vec![]);}
@@ -278,7 +284,10 @@ mod tests {
             frame(vec![Event::PointerButton{pos:point,button:PointerButton::Primary,pressed:false,modifiers:Default::default()}]);
             drop(frame);
             let selected=ctx.data(|d|d.get_temp::<[bool;SERIES_COUNT]>(chart_id.unwrap())).unwrap();
-            assert!(!selected[ESTIMATE_SERIES],"{width}: estimate click at {point:?} did not toggle: {selected:?}");assert!(selected[0],"toggling estimate must not toggle E2E");
+            for i in 0..SERIES_COUNT {
+                assert_eq!(selected[i],if i==series{!DEFAULT_SERIES[i]}else{DEFAULT_SERIES[i]},"{width}: {label} click at {point:?} changed the wrong curve: {selected:?}");
+            }
+          }
         }
     }
     #[test]
