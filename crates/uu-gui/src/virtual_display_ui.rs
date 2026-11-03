@@ -1415,7 +1415,10 @@ impl crate::App {
         if let Some(tabs) = &self.workspace_tabs {
             tabs.actions
                 .borrow_mut()
-                .push(crate::stream_workspace::Action::CreateDisplay(tabs.active));
+                .push(crate::stream_workspace::Action::CreateDisplayWithSpec {
+                    session: tabs.active,
+                    spec: self.virtual_display.spec(),
+                });
             return;
         }
         // The uncommon standalone entry uses the same launch ownership rule.
