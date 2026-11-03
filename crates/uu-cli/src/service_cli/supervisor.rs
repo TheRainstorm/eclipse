@@ -15,6 +15,7 @@ static STOP: AtomicBool = AtomicBool::new(false);
 static STATUS: AtomicIsize = AtomicIsize::new(0);
 #[cfg(test)]
 pub(super) mod system_probe;
+mod console_policy;
 
 fn report(state: u32, code: u32) {
     let status = SERVICE_STATUS {
@@ -134,18 +135,51 @@ fn media_privileges(token: HANDLE) -> Result<()> {
     enable_token(token, "SeChangeNotifyPrivilege")
 }
 fn owner_session(installed: &Installed) -> Result<u32> {
+    use console_policy::{permitted, Identity};
     let session = unsafe { WTSGetActiveConsoleSessionId() };
     if session == u32::MAX || session == 0 {
         anyhow::bail!("等待活动控制台会话");
     }
     let mut token = ptr::null_mut();
-    winok(unsafe { WTSQueryUserToken(session, &mut token) }).context("查询控制台用户身份失败")?;
-    let token = Handle(token);
+    let identity;
+    let owner;
+    if unsafe { WTSQueryUserToken(session, &mut token) } != 0 {
+        let token = Handle(token);
+        owner = token_user(token.0)?;
+        identity = Identity::User(&owner);
+    } else {
+        let error = unsafe { GetLastError() };
+        // The service already owns a protected LocalSystem launch token. An
+        // absent logged-on user is an eligible sign-in desktop, but permission
+        // errors and partially initialized/user-switching sessions are not.
+        if error != ERROR_NO_TOKEN {
+            return Err(std::io::Error::from_raw_os_error(error as i32))
+                .context("查询控制台用户身份失败");
+        }
+        identity = Identity::NoToken { empty_username: empty_console_username(session)? };
+    }
     ensure!(
-        token_user(token.0)? == installed.owner_sid,
+        permitted(session, &installed.owner_sid, identity),
         "等待服务所有者登录控制台"
     );
+    ensure!(session == unsafe { WTSGetActiveConsoleSessionId() }, "控制台会话已变化");
     Ok(session)
+}
+fn empty_console_username(session: u32) -> Result<bool> {
+    let mut value = ptr::null_mut();
+    let mut bytes = 0;
+    winok(unsafe { WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session,
+        WTSUserName, &mut value, &mut bytes) }).context("读取控制台登录状态失败")?;
+    struct Buffer(*mut u16);
+    impl Drop for Buffer {
+        fn drop(&mut self) { unsafe { WTSFreeMemory(self.0.cast()); } }
+    }
+    let value = Buffer(value);
+    ensure!(!value.0.is_null() && (2..=65536).contains(&bytes) && bytes % 2 == 0,
+        "控制台登录状态无效");
+    let name = unsafe { std::slice::from_raw_parts(value.0, bytes as usize / 2) };
+    ensure!(name.last() == Some(&0), "控制台登录状态缺少结尾");
+    Ok(name.len() == 1)
 }
 struct Child {
     session: u32,
@@ -408,7 +442,7 @@ fn run() -> Result<()> {
             }
         };
         if child.as_ref().is_some_and(|child| {
-            Some(child.session) != session
+            console_policy::must_retire(child.session, session)
                 || unsafe { WaitForSingleObject(child.process.0, 0) } == WAIT_OBJECT_0
         }) {
             if let Some(child) = &child {
