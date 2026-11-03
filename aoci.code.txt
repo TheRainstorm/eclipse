@@ -495,7 +495,7 @@ native-fec.md[SR5T]: F:定义原生XOR视频校验协商、预算、有界缓存
 native-gamepad.md[SH5T]: F:说明四槽原生手柄传感器、焦点控制权与虚拟驱动要求 | R:code:crates/uu-core/src/native_gamepad.rs | A:- | S:250ms陈旧中立；SI传感器单位和两套DS4校准不能混用，未实现震动
 native-input.md[SU6T]: F:说明主机输入许可、HID坐标、Ctrl+Alt客户端命令与租约释放及隔离验证 | R:code:crates/uu-core/src/native_control.rs,code:docs/keyboard-shortcuts.md | A:- | S:按下成功才拥有，复位带外不受满队列影响；Windows DPI上下文保持至SendInput完成；门户拒绝不改其它注入接口
 native-internet.md[SN6S]: F:说明原生公网寻址和公钥授权、自建多路WSS部署、实际媒体路径及显式中继策略 | R:code:crates/uu-core/src/internet.rs,code:crates/uu-core/src/internet/self_hosted.rs,code:docs/plugins.md | A:- | S:信令非媒体中继；v1单路，v2无固定媒体会话上限；四槽仅限制未认证握手；默认禁TURN，插件可显式放UDP；候选存在不证明实际选中路径
-native-lan.md[SN5S]: F:说明LAN配对、多会话、固定十槽串流端口及Windows启动防火墙行为 | R:code:crates/uu-core/src/native_lan.rs,code:crates/uu-core/src/stream_ports.rs,code:crates/uu-core/src/firewall/windows.ps1 | A:- | S:发现不是授权；端口可达不证明媒体成功；十槽耗尽不回退，回环两端各占UDP；旧对端不受新版端口限制
+native-lan.md[SN5S]: F:说明LAN配对、多会话、固定十槽串流端口及Windows启动防火墙行为 | R:code:crates/uu-core/src/native_lan.rs,code:crates/uu-core/src/stream_ports.rs,code:crates/uu-core/src/firewall/windows.ps1 | A:- | S:TCP信令随串流保留至断连；十槽耗尽不回退，回环双方各占UDP；旧对端端口不受约束；发现不授访问，规则或端口成功不等于画面验收
 native-latency.md[SO5T]: F:定义同帧视频区间、跨机校时、实际输入送达及后继源首显时间线 | R:code:crates/uu-core/src/native_timing.rs,code:crates/uu-core/src/frame_trace.rs,code:crates/uu-core/src/video_e2e.rs,code:crates/uu-core/src/video_e2e/input.rs | A:- | S:旧严格信封不改，新计时独立公告；跨机校时只给区间，入队时钟须括定；后继源须晚于注入且有首显，非应用响应
 native-pairing.md[SS5T]: F:说明早期邀请文件TLS固定证书与短期访问凭据的生命周期 | R:code:crates/uu-core/src/native_pairing.rs | A:- | S:邀请等同访问许可且可在期限内复用，不是一次性码；新GUI授权以设备文档为准
 native-public-connectivity.md[SN4S]: F:保留原生公网信令与可替换STUN的前期架构及服务适配比较 | R:code:docs/native-internet.md | A:- | S:其中未实现与取消描述属历史，以文首链接的当前实现说明为准
