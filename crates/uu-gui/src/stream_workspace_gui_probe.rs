@@ -109,7 +109,7 @@ mod native {
             let point = rect.center() * scale;
             let hwnd = platform.window_id();
             let mut owner = 0;
-            let mut client = RECT::default();
+            let mut client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
             unsafe {
                 assert_ne!(GetWindowThreadProcessId(hwnd as _, &mut owner), 0);
                 assert_eq!(
