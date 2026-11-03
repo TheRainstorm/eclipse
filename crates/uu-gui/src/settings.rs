@@ -87,6 +87,7 @@ pub struct Settings {
     pub app_autostart:bool,
     pub close_to_tray:bool,
     pub show_input_status:bool,
+    pub virtual_display_presets: super::virtual_display_presets::Presets,
     pub wallpaper_source: WallpaperSource,
     pub wallpaper_favorite: Option<String>,
     /// Retained while built-in sources are selected, so returning to Custom API
@@ -98,7 +99,7 @@ impl Default for Settings {
         Self { client: ClientSettings::default(), application_hotkeys:None, language:uu_i18n::Language::default(), lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
-            device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,close_to_tray:false,show_input_status:false,
+            device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,close_to_tray:false,show_input_status:false,virtual_display_presets:Default::default(),
             wallpaper_source:WallpaperSource::Photography, wallpaper_favorite:None, wallpaper_api:PHOTOGRAPHY_WALLPAPER.into() }
     }
 }
@@ -130,6 +131,7 @@ impl Settings {
     }
     fn validate(&self)->anyhow::Result<()> {
         self.client.validate()?;
+        self.virtual_display_presets.validate()?;
         anyhow::ensure!(self.application_hotkeys().issues().is_empty(),"{}", uu_i18n::format!("客户端快捷键存在冲突，请在应用设置中修正"));
         anyhow::ensure!(self.lan_service_port>0&&self.lan_discovery_port>0,"{}", uu_i18n::format!("局域网端口必须在 1–65535 之间"));
         if self.wallpaper_enabled && self.wallpaper_source == WallpaperSource::CustomApi {
@@ -328,6 +330,11 @@ impl super::App {
                 self.preferences.hotkeys=keys.clone();self.settings_draft.hotkeys=keys;
             }
             self.preferences.application_hotkeys=value.application_hotkeys;
+            if self.preferences.virtual_display_presets!=value.virtual_display_presets {
+                self.preferences.virtual_display_presets=value.virtual_display_presets.clone();
+                self.settings_draft.virtual_display_presets=value.virtual_display_presets;
+                self.context.request_repaint();
+            }
             if self.preferences.show_input_status!=value.show_input_status {
                 self.preferences.show_input_status=value.show_input_status;
                 self.settings_draft.show_input_status=value.show_input_status;
@@ -720,6 +727,31 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn virtual_creation_presets_migrate_save_and_survive_stale_stream_preferences() {
+        let root=std::env::temp_dir().join(format!("eclipse-display-specs-{}",uuid::Uuid::new_v4()));
+        let path=root.join("gui-settings.json");
+        let legacy=Settings::default();
+        let mut old=serde_json::to_value(&legacy).unwrap();old.as_object_mut().unwrap().remove("virtual_display_presets");
+        std::fs::create_dir(&root).unwrap();let original=serde_json::to_vec(&old).unwrap();std::fs::write(&path,&original).unwrap();
+        let mut stale=Settings::load(&path).unwrap();assert_eq!(stale.virtual_display_presets,Default::default());
+        assert_eq!(std::fs::read(&path).unwrap(),original,"legacy loading must not rewrite preferences");
+        let mut launcher=stale.clone();
+        launcher.virtual_display_presets.items[1].name="Wide HDR".into();
+        launcher.virtual_display_presets.items[1].spec=uu_core::virtual_display::Spec {width:3440,height:1440,refresh_millihz:59_940,hdr:true};
+        launcher.virtual_display_presets.default=launcher.virtual_display_presets.items[1].id;
+        launcher.wallpaper_enabled=false;launcher.save(&path).unwrap();
+        stale.fps=120;stale.save_client(&path).unwrap();
+        let reopened=Settings::load(&path).unwrap();
+        assert_eq!(reopened.virtual_display_presets,launcher.virtual_display_presets);
+        assert!(!reopened.wallpaper_enabled);assert_eq!(reopened.fps,120);
+        let mut bad=serde_json::to_value(&reopened).unwrap();bad["virtual_display_presets"]["items"][0]["spec"]["width"]=0.into();
+        let bytes=serde_json::to_vec(&bad).unwrap();std::fs::write(&path,&bytes).unwrap();
+        assert!(Settings::load(&path).is_err());assert!(reopened.save(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(),bytes,"invalid preset storage must remain recoverable");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn virtual_profile(id:&str)->super::super::sessions::ConnectionTarget {
         use super::super::sessions::{ConnectionTarget,VirtualDisplayTarget};
         ConnectionTarget::NativeVirtual {

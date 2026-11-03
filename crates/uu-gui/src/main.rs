@@ -63,6 +63,7 @@ mod native_interfaces;
 mod wallpapers;
 mod wallpaper_favorites;
 mod virtual_display_ui;
+mod virtual_display_presets;
 #[cfg(windows)]
 mod virtual_display_install;
 mod background;

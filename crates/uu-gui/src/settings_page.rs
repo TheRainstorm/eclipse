@@ -309,11 +309,11 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
     });
 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Hash)]
-pub(super) enum SoftwareSection { #[default] General, Appearance, Shortcuts, Discovery }
+pub(super) enum SoftwareSection { #[default] General, Appearance, Shortcuts, Discovery, VirtualDisplays }
 impl SoftwareSection {
-    pub const ALL:[Self;4]=[Self::General,Self::Appearance,Self::Shortcuts,Self::Discovery];
+    pub const ALL:[Self;5]=[Self::General,Self::Appearance,Self::Shortcuts,Self::Discovery,Self::VirtualDisplays];
     pub fn label(self)->&'static str {uu_i18n::text(match self {
-        Self::General=>"常规",Self::Appearance=>"外观",Self::Shortcuts=>"快捷键",Self::Discovery=>"设备发现",
+        Self::General=>"常规",Self::Appearance=>"外观",Self::Shortcuts=>"快捷键",Self::Discovery=>"设备发现",Self::VirtualDisplays=>"虚拟显示器规格",
     })}
     pub fn reset(self,s:&mut Settings) {
         let defaults=Settings::default();
@@ -322,11 +322,15 @@ impl SoftwareSection {
             Self::Appearance=>{s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
             Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
             Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
+            Self::VirtualDisplays=>s.virtual_display_presets=defaults.virtual_display_presets,
         }
     }
 }
 pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Actions,section:SoftwareSection) {
     match section {
+    SoftwareSection::VirtualDisplays=>group(ui,uu_i18n::text("虚拟显示器规格"),|ui| {
+        super::virtual_display_presets::editor(ui,&mut s.virtual_display_presets);
+    }),
     SoftwareSection::Shortcuts=>group(ui,uu_i18n::text("客户端快捷键"),|ui|{
         let mut bindings=s.application_hotkeys().clone();
         super::shortcuts_ui::editor(ui,&mut bindings);

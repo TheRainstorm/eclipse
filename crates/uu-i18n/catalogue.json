@@ -1722,5 +1722,18 @@
   "已保留地址、网卡、服务或身份限制，请从目标电脑验证连接": "Address, interface, service or identity restrictions were preserved; verify from the remote computer.",
   "网络 {profile} 的策略不允许本地入站规则": "The {profile} network policy prevents local inbound rules.",
   "{scope} 端口规则缺失或受限，已保留现有设置": "{scope} port rules are missing or restricted; existing settings were preserved.",
-  "正在检查防火墙，缺少规则时将请求管理员配置…": "Checking the firewall; administrator setup will be requested if rules are missing…"
+  "正在检查防火墙，缺少规则时将请求管理员配置…": "Checking the firewall; administrator setup will be requested if rules are missing…",
+  "虚拟显示器规格": "Virtual display presets",
+  "虚拟显示器规格需要保留 1–32 项": "Keep between 1 and 32 virtual display presets.",
+  "虚拟显示器规格标识无效或重复": "Virtual display preset IDs are invalid or duplicated.",
+  "虚拟显示器规格名称须为 1–64 个可见字符": "Preset names must contain 1–64 visible characters.",
+  "虚拟显示器规格名称不能重复": "Preset names must be unique.",
+  "虚拟显示器规格的分辨率或刷新率超出支持范围": "The preset resolution or refresh rate is outside the supported range.",
+  "请选择一个有效的默认虚拟显示器规格": "Select a valid default virtual display preset.",
+  "自定义规格": "Custom preset",
+  "按规格新建虚拟显示器": "Create a virtual display from a preset",
+  "左键 + 使用默认规格；右键 + 可选择其它规格。修改规格只影响之后新建的虚拟显示器。": "Left-click + to use the default preset; right-click + to choose another preset. Changes only apply to newly created virtual displays.",
+  "规格名称": "Preset name",
+  "添加规格": "Add preset",
+  "规格在创建时交给远端驱动验证；HDR 还需要远端驱动、显示与串流编码支持。": "Presets are validated by the remote driver when created. HDR also requires support from the remote driver, display, and streaming encoder."
 }
