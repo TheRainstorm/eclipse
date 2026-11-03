@@ -1111,7 +1111,12 @@ impl App {
         {
             let gpu_video=self.textures.get(&self.selected_track).is_some_and(|t|t.native_gpu_source());
             if self.uses_engine_controls()&&gpu_video&&std::env::var("UU_D3D11_NATIVE_VIDEO").as_deref()!=Ok("0") {
-                if let Some(gl)=self.video_gl.clone(){if !eframe::glow_presentation::native_video_available(ctx,ctx.viewport_id()){if let Err(e)=video_hdr::enable_native(ctx,gl,self.preferences.vsync){eprintln!("native video presentation unavailable: {e}");}}}
+                if let Some(gl)=self.video_gl.clone(){if !eframe::glow_presentation::native_video_available(ctx,ctx.viewport_id()){if let Err(e)=video_hdr::enable_native(ctx,gl,self.preferences.vsync){
+                    if let Some(controller)=&self.controller {
+                        video_texture::record_presenter_failure(ctx,&controller.stats,&e);
+                    }
+                    eprintln!("native video presentation unavailable: {e}");
+                }}}
             }
             let hdr=self.uses_engine_controls() && self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_response.lock().unwrap().is_some());
             if hdr && eframe::glow_presentation::available_color_for(ctx,ctx.viewport_id()).is_none() {
