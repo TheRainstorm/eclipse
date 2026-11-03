@@ -24,6 +24,25 @@ pub(super) fn recommended_bitrate(settings:&ClientSettings,actual_size:Option<[u
     Some(uu_core::bitrate::recommended_kbps(width,height,settings.fps,codec))
 }
 
+fn save_profile_client_settings(store:&uu_core::device_book::Store,connection:&super::sessions::ConnectionTarget,settings:ClientSettings)->anyhow::Result<()> {
+    let id=match connection.base() {
+        super::sessions::ConnectionTarget::NativeProfile{id,..}=>id,
+        _=>anyhow::bail!("{}",uu_i18n::format!("当前串流没有可编辑的设备配置")),
+    };
+    let book=store.read()?;
+    let profile=book.device(id)?;
+    // The base profile owns presets even when this view has a temporary
+    // virtual-display intent. Use the preset API: save_device preserves the
+    // stored presets to protect them from stale device-editor snapshots.
+    if let Some(mut config)=profile.selected_client.as_ref()
+        .and_then(|selected|profile.client_configs.iter().find(|config|&config.id==selected)).cloned() {
+        config.settings=settings;
+        store.save_client_config(&profile.id,config)
+    } else {
+        store.save_and_select_client_config(&profile.id,uu_core::client_settings::NamedClientSettings::new(uu_i18n::text("串流设置"),settings))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceView { #[default] Cards, List }
@@ -688,41 +707,78 @@ impl super::App {
     }
 
     fn save_stream_profile_settings(&mut self) -> anyhow::Result<()> {
-        let id = match self.stream_target.as_ref().map(|target|target.connection.base()) {
-            Some(super::sessions::ConnectionTarget::NativeProfile { id, .. }) => id.clone(),
-            _ => anyhow::bail!("{}", uu_i18n::format!("当前串流没有可编辑的设备配置")),
-        };
+        let target=self.stream_target.as_ref().ok_or_else(||anyhow::anyhow!("{}",uu_i18n::format!("当前串流没有可编辑的设备配置")))?;
         let store = self
             .workspace
             .store
             .clone()
             .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用")))?;
-        let mut profile = store.read()?.device(&id)?.clone();
-        let settings = self.preferences.client.clone();
-        if let Some(selected) = profile.selected_client.clone() {
-            if let Some(config) = profile
-                .client_configs
-                .iter_mut()
-                .find(|config| config.id == selected)
-            {
-                config.settings = settings;
-            } else {
-                let config = uu_core::client_settings::NamedClientSettings::new(uu_i18n::text("串流设置"), settings);
-                profile.selected_client = Some(config.id.clone());
-                profile.client_configs.push(config);
-            }
-        } else {
-            let config = uu_core::client_settings::NamedClientSettings::new(uu_i18n::text("串流设置"), settings);
-            profile.selected_client = Some(config.id.clone());
-            profile.client_configs.push(config);
-        }
-        store.save_device(profile)
+        save_profile_client_settings(&store,&target.connection,self.preferences.client.clone())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn virtual_profile(id:&str)->super::super::sessions::ConnectionTarget {
+        use super::super::sessions::{ConnectionTarget,VirtualDisplayTarget};
+        ConnectionTarget::NativeVirtual {
+            connection:Box::new(ConnectionTarget::NativeProfile{id:id.into(),snapshot:"generated-launch.json".into()}),
+            virtual_display:VirtualDisplayTarget{id:uuid::Uuid::new_v4(),spec:Default::default()},
+        }
+    }
+    #[test]
+    fn virtual_view_saves_selected_base_preset_and_preserves_other_device_changes() {
+        use uu_core::{client_settings::NamedClientSettings,device_book::{Destination,Profile,Route,Store}};
+        let root=std::env::temp_dir().join(format!("eclipse-virtual-preset-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        let mut profile=Profile::new("Generated host",Destination::Ip{address:"192.0.2.10:47998".into(),legacy_device:None});
+        let chosen=NamedClientSettings::new("Desktop",ClientSettings::default());
+        let mut other=NamedClientSettings::new("Other preset",ClientSettings::default());other.settings.fps=30;
+        profile.selected_client=Some(chosen.id.clone());profile.client_configs=vec![chosen.clone(),other.clone()];
+        let id=profile.id.clone();store.save_device(profile.clone()).unwrap();
+        let target=virtual_profile(&id);
+        // A launcher can update device fields while the temporary view is open.
+        profile.name="Renamed while streaming".into();
+        let route=Route::new(Destination::Ip{address:"192.0.2.11:47998".into(),legacy_device:None});
+        profile.selected_route=route.id.clone();profile.routes.push(route);
+        store.save_device(profile.clone()).unwrap();store.record_connected(&id,123).unwrap();
+        let mut client=ClientSettings::default();client.fps=165;client.volume=41;
+        let mut expected=serde_json::to_value(store.read().unwrap()).unwrap();
+        expected["devices"][0]["client_configs"][0]["settings"]=serde_json::to_value(&client).unwrap();
+        save_profile_client_settings(&store,&target,client).unwrap();
+        assert_eq!(serde_json::to_value(store.read().unwrap()).unwrap(),expected);
+        let stored=std::fs::read_to_string(root.join("connections.json")).unwrap();
+        assert!(!stored.contains(&target.virtual_display().unwrap().id.to_string()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn virtual_view_creates_one_base_preset_and_rejected_saves_preserve_storage() {
+        use uu_core::device_book::{Destination,Profile,Store};
+        let root=std::env::temp_dir().join(format!("eclipse-virtual-new-preset-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        let profile=Profile::new("Generated host",Destination::Ip{address:"192.0.2.12:47998".into(),legacy_device:None});
+        let id=profile.id.clone();store.save_device(profile).unwrap();
+        let target=virtual_profile(&id);
+        let mut client=ClientSettings::default();client.fps=120;
+        save_profile_client_settings(&store,&target,client.clone()).unwrap();
+        let first=store.read().unwrap();let profile=first.device(&id).unwrap();
+        assert_eq!(profile.client_configs.len(),1);
+        let selected=profile.selected_client.clone().unwrap();
+        assert_eq!(profile.client_configs[0].id,selected);
+        assert_eq!(profile.client_configs[0].settings,client);
+        client.fps=144;save_profile_client_settings(&store,&target,client.clone()).unwrap();
+        let second=store.read().unwrap();let profile=second.device(&id).unwrap();
+        assert_eq!(profile.client_configs.len(),1);
+        assert_eq!(profile.selected_client.as_deref(),Some(selected.as_str()));
+        assert_eq!(profile.client_configs[0].settings,client);
+        let path=root.join("connections.json");let before=std::fs::read(&path).unwrap();
+        client.fps=0;
+        assert!(save_profile_client_settings(&store,&target,client).is_err());
+        assert!(save_profile_client_settings(&store,&super::super::sessions::ConnectionTarget::NativeDevice(uuid::Uuid::new_v4().to_string()),ClientSettings::default()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(),before);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn legacy_wallpaper_urls_migrate_without_rewriting_the_original() {
         let root=std::env::temp_dir().join(format!("eclipse-wallpaper-settings-{}",uuid::Uuid::new_v4()));
