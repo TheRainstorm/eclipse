@@ -86,6 +86,7 @@ pub struct State {
     startup: Option<Startup>,
     initial_timed_out: bool,
     remote_create_supported: bool,
+    fixed_source: Option<String>,
     create_requested: bool,
 }
 impl State {
@@ -125,6 +126,7 @@ impl State {
         self.startup=None;
         self.initial_timed_out=false;
         self.remote_create_supported=false;
+        self.fixed_source=None;
         self.create_requested=false;
     }
     pub fn owns_foreground_displays(&self) -> bool {
@@ -586,6 +588,7 @@ impl State {
                     .show(ui, |ui| {
                         for display in &self.displays {
                             ui.horizontal(|ui| {
+                                let fixed_current=client.is_some() && self.fixed_source.as_ref()==Some(&display.source);
                                 ui.label(format!(
                                     "{} · {}×{} · {:.3} Hz",
                                     display.name,
@@ -600,13 +603,14 @@ impl State {
                                 });
                                 if ui
                                     .add_enabled(
-                                        !busy && !mutations_blocked,
+                                        !busy && !mutations_blocked && !fixed_current,
                                         egui::Button::new(if display.cleanup_pending {
                                             uu_i18n::text("重试移除")
                                         } else {
                                             uu_i18n::text("移除")
                                         }),
                                     )
+                                    .on_disabled_hover_text(uu_i18n::text("关闭此串流标签即可断开并移除它的临时虚拟屏"))
                                     .clicked()
                                 {
                                     command = Some(Request::Remove { id: display.id });
@@ -956,6 +960,9 @@ impl crate::App {
     }
     pub(super) fn poll_virtual_display_state(&mut self) {
         if self.disconnecting || self.exit_requested {return;}
+        self.virtual_display.fixed_source=if self.virtual_display.open && self.is_fixed_display_view() {
+            self.visible_remote_screens().selected().map(|screen|screen.display_name.clone())
+        } else {None};
         let stats = self.controller.as_ref().map(|handle| handle.stats.clone());
         self.virtual_display.remote_create_supported=stats.as_ref().is_some_and(|stats|stats.native_displays.initial_supported());
         if let Some(result)=stats.as_ref().and_then(|stats|stats.native_displays.take_initial_result()) {

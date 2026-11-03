@@ -26,6 +26,8 @@ pub(super) struct StripRects {
     #[cfg(test)]
     pub detach: Vec<(u64, Rect)>,
     #[cfg(test)]
+    pub merge: Vec<(u64, Rect)>,
+    #[cfg(test)]
     pub disconnect: Vec<(u64, Rect)>,
     #[cfg(test)]
     pub open_display: Vec<(u64, i32, Rect)>,
@@ -41,6 +43,7 @@ impl Default for StripRects {
             #[cfg(test)] create: vec![],
             #[cfg(test)] blank: None,
             #[cfg(test)] detach: vec![],
+            #[cfg(test)] merge: vec![],
             #[cfg(test)] disconnect: vec![],
             #[cfg(test)] open_display: vec![],
         }
@@ -57,7 +60,9 @@ fn label(ui: &mut egui::Ui, text: &str, selected: bool, device: bool, width_limi
     let font = egui::FontId::proportional(if device { 12.5 } else { 12. });
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), color);
     let leading = if device { 22. } else { 0. };
-    let width = (galley.size().x + leading + 16.).clamp(if device { 70. } else { 38. }, if device { 158. } else { 126. }).min(width_limit);
+    // Give each title its measured width. The scroll viewport, rather than a
+    // short fixed cap, limits how much of one long label can be shown at once.
+    let width = (galley.size().x + leading + 16.).max(if device {70.} else {72.}).min(width_limit);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 24.), Sense::click_and_drag());
     let hovered = response.hovered() || response.is_pointer_button_down_on();
     let fill = if selected && !device { crate::theme::TINT }
@@ -110,10 +115,16 @@ fn connection_menu(ui: &mut egui::Ui, group: &Group, actions: &mut Vec<Action>, 
     if group.can_open_displays && group.screens.len()>1 && ui.button(uu_i18n::text("所有屏幕独立打开")).clicked() {
         actions.push(Action::OpenAllDisplays(group.id)); ui.close_menu();
     }
-    let detach=ui.add_enabled(group.can_detach,egui::Button::new(uu_i18n::text("移到独立窗口")))
-        .on_disabled_hover_text(uu_i18n::text("已在独立窗口中"));
-    record!(_rects.detach,(group.id,detach.rect));
-    if detach.clicked() { actions.push(Action::Detach(group.id)); ui.close_menu(); }
+    if group.can_merge {
+        let merge=ui.button(uu_i18n::text("合并到原本窗口"));
+        record!(_rects.merge,(group.id,merge.rect));
+        if merge.clicked() {actions.push(Action::Merge(group.id));ui.close_menu();}
+    } else {
+        let detach=ui.add_enabled(group.can_detach,egui::Button::new(uu_i18n::text("移到独立窗口")))
+            .on_disabled_hover_text(uu_i18n::text("已在独立窗口中"));
+        record!(_rects.detach,(group.id,detach.rect));
+        if detach.clicked() { actions.push(Action::Detach(group.id)); ui.close_menu(); }
+    }
     ui.separator();
     let disconnect=ui.button(uu_i18n::text("断开此会话"));
     record!(_rects.disconnect,(group.id,disconnect.rect));
@@ -171,10 +182,12 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                     ui.painter().line_segment([divider.center()-egui::vec2(0.,6.),divider.center()+egui::vec2(0.,6.)],Stroke::new(1.,crate::theme::BORDER));
                                 }
                                 for (screen,text) in &group.screens {
-                                    let response=label(ui,text,active && group.selected==Some(*screen),false,126.);
+                                    let response=label(ui,text,active && group.selected==Some(*screen),false,(width-12.).max(72.));
                                     record!(rects.screens,(group.id,*screen,response.rect));
-                                    if response.clicked() { actions.push(Action::Select(group.id,Some(*screen))); }
-                                    if group.can_open_displays {
+                                    if response.clicked() { actions.push(Action::Select(group.id,if group.fixed_view {None}else{Some(*screen)})); }
+                                    if group.fixed_view {
+                                        response.context_menu(|ui|connection_menu(ui,group,&mut actions,&mut rects));
+                                    } else if group.can_open_displays {
                                         response.context_menu(|ui| {
                                             let open=ui.add_enabled(group.can_open_display(*screen),egui::Button::new(uu_i18n::text("在独立窗口中打开")))
                                                 .on_disabled_hover_text(uu_i18n::text("已在独立窗口中"));
@@ -183,14 +196,17 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                         });
                                     }
                                     if response.context_menu_opened() { tabs.local_ui.set(true); }
-                                    response.dnd_set_drag_payload(DragScreen{session:group.id,screen:*screen});
-                                    if let Some(drag)=response.dnd_hover_payload::<DragScreen>().filter(|drag|drag.session==group.id && drag.screen!=*screen) {
-                                        let after=ui.input(|i|i.pointer.hover_pos().is_some_and(|p|p.x>response.rect.center().x));
-                                        insertion(ui,response.rect,after);
-                                        if response.dnd_release_payload::<DragScreen>().is_some() { actions.push(Action::ReorderScreen{session:group.id,source:drag.screen,target:*screen,after}); }
+                                    if group.fixed_view {response.dnd_set_drag_payload(Drag(group.id));}
+                                    else {
+                                        response.dnd_set_drag_payload(DragScreen{session:group.id,screen:*screen});
+                                        if let Some(drag)=response.dnd_hover_payload::<DragScreen>().filter(|drag|drag.session==group.id && drag.screen!=*screen) {
+                                            let after=ui.input(|i|i.pointer.hover_pos().is_some_and(|p|p.x>response.rect.center().x));
+                                            insertion(ui,response.rect,after);
+                                            if response.dnd_release_payload::<DragScreen>().is_some() { actions.push(Action::ReorderScreen{session:group.id,source:drag.screen,target:*screen,after}); }
+                                        }
                                     }
                                 }
-                                if group.can_open_displays {
+                                if group.can_open_displays || group.can_create_display {
                                     let add=control(ui,Control::Add,group.can_create_display)
                                         .on_hover_text(uu_i18n::text(if group.can_create_display {
                                             "新建临时虚拟显示器，断开此串流后自动移除"
@@ -254,7 +270,7 @@ mod tests {
             groups:(1..=4).map(|id|Group {
                 id,name:format!("Generated computer {id} with a long title"),
                 screens:vec![(1,"Main display".into()),(2,"Temporary virtual display".into())],
-                selected:Some(1),can_open_displays:true,can_create_display:true,can_detach:true,
+                selected:Some(1),can_open_displays:true,can_create_display:true,can_detach:true,fixed_view:false,can_merge:false,
             }).collect(),
             active:1,actions:Default::default(),local_ui:Default::default(),
         };
@@ -284,5 +300,42 @@ mod tests {
         let narrow=frame(&ctx,&tabs,3.6,320.,190.,vec![]);
         assert!(narrow.bounds.contains_rect(header(&narrow,3)));
         assert!(tabs.actions.borrow().is_empty());
+    }
+    #[test]
+    fn readable_fixed_source_activates_its_connection_and_routes_the_real_window_menu() {
+        let ctx=egui::Context::default();
+        let name="Generated workstation with a descriptive name";
+        let source="Display 12 (VDD by MTT DISPLAY16)";
+        let mut tabs=Tabs {
+            groups:vec![Group{id:1,name:name.into(),screens:vec![(12,source.into())],selected:Some(12),
+                can_open_displays:false,can_create_display:true,can_detach:false,fixed_view:true,can_merge:true}],
+            active:1,actions:Default::default(),local_ui:Default::default(),
+        };
+        let rects=frame(&ctx,&tabs,0.,1100.,180.,vec![]);
+        let text_width=|text:&str,size:f32|ctx.fonts(|fonts|fonts.layout_no_wrap(text.into(),egui::FontId::proportional(size),Color32::WHITE).size().x);
+        assert!(rects.devices[0].1.width()+0.1>=text_width(name,12.5)+38.);
+        assert!(rects.screens[0].2.width()+0.1>=text_width(source,12.)+16.);
+        assert_eq!(rects.create.len(),1,"a fixed view retains its independent virtual-display creation entry");
+        let point=rects.screens[0].2.center();
+        let button=|point,button,pressed|vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button,pressed,modifiers:Default::default()}];
+        frame(&ctx,&tabs,0.2,1100.,180.,button(point,egui::PointerButton::Primary,true));
+        frame(&ctx,&tabs,0.4,1100.,180.,button(point,egui::PointerButton::Primary,false));
+        assert!(matches!(&tabs.actions.borrow()[..],[Action::Select(1,None)]),"fixed source must select the connection without requesting a display switch");
+        tabs.actions.borrow_mut().clear();
+        frame(&ctx,&tabs,0.6,1100.,180.,button(point,egui::PointerButton::Secondary,true));
+        frame(&ctx,&tabs,0.8,1100.,180.,button(point,egui::PointerButton::Secondary,false));
+        let popup=frame(&ctx,&tabs,1.,1100.,180.,vec![]);
+        assert_eq!(popup.merge.len(),1);assert!(popup.detach.is_empty());
+        let merge=popup.merge[0].1.center();
+        frame(&ctx,&tabs,1.2,1100.,180.,button(merge,egui::PointerButton::Primary,true));
+        frame(&ctx,&tabs,1.4,1100.,180.,button(merge,egui::PointerButton::Primary,false));
+        assert!(matches!(&tabs.actions.borrow()[..],[Action::Merge(1)]));
+        tabs.actions.borrow_mut().clear();
+        // Returning home changes window ownership, not the fixed source.
+        tabs.groups[0].can_merge=false;tabs.groups[0].can_detach=true;
+        frame(&ctx,&tabs,1.6,1100.,180.,button(point,egui::PointerButton::Secondary,true));
+        frame(&ctx,&tabs,1.8,1100.,180.,button(point,egui::PointerButton::Secondary,false));
+        let home=frame(&ctx,&tabs,2.,1100.,180.,vec![]);
+        assert!(home.merge.is_empty());assert_eq!(home.detach.len(),1);
     }
 }

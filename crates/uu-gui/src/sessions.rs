@@ -81,6 +81,9 @@ impl ConnectionTarget {
     pub fn is_auxiliary_view(&self)->bool {
         matches!(self,Self::NativeDisplay{..}|Self::NativeVirtual{..})
     }
+    /// Explicit views keep one display source for their entire connection.
+    /// A normal connection may also acquire a runtime binding when detached.
+    pub fn is_fixed_display_view(&self)->bool {self.is_auxiliary_view()}
     pub fn validate(&self)->Result<(),String> {
         let connection=match self {
             Self::NativeDisplay{connection,display}=>{display.validate()?;Some(connection)},

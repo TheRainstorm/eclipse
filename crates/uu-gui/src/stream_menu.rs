@@ -537,7 +537,11 @@ impl super::App {
 
     fn display_tabs(&mut self, ui: &mut egui::Ui, controls_width: f32) {
         if let Some(tabs)=&self.workspace_tabs {tabs.show_with_controls(ui,controls_width);return;}
-        let screens=self.remote_screens();
+        let screens=self.visible_remote_screens();
+        if self.is_fixed_display_view() {
+            if let Some(screen)=screens.selected(){ui.label(self.displays.layout.label(screen)).on_hover_text(&screen.display_name);}
+            return;
+        }
         let reserve=if ui.available_width()>660.0{345.0}else{250.0};
         let width=(ui.available_width()-reserve).clamp(75.0,540.0);
         let mut chosen=None;
@@ -594,7 +598,7 @@ impl super::App {
     }
 
     fn display_menu(&mut self, ui: &mut egui::Ui) {
-        let screens=self.remote_screens();
+        let screens=self.visible_remote_screens();
         ui.set_min_width(260.0);
         for screen in &screens.screens {
             let response=menu_row(ui,&self.displays.layout.label(screen),None,

@@ -71,6 +71,7 @@ pub enum Action {
         after: bool,
     },
     Detach(u64),
+    Merge(u64),
     OpenDisplay { session: u64, screen: i32 },
     OpenAllDisplays(u64),
     CreateDisplay(u64),
@@ -86,6 +87,8 @@ pub struct Group {
     pub(super) can_open_displays: bool,
     pub(super) can_create_display:bool,
     pub(super) can_detach:bool,
+    pub(super) fixed_view:bool,
+    pub(super) can_merge:bool,
 }
 impl Group {
     pub(super) fn can_open_display(&self,screen:i32)->bool {
@@ -128,7 +131,7 @@ impl Tabs {
                 for group in &self.groups {
                     if ui.selectable_label(group.id==self.active,&group.name).clicked() {selected=Some(Action::Select(group.id,None));}
                     ui.indent(group.id,|ui| {
-                        if group.can_open_displays && ui.add_enabled(group.can_create_display,egui::Button::new(uu_i18n::text("+ 新建临时虚拟显示器")))
+                        if (group.can_open_displays||group.can_create_display) && ui.add_enabled(group.can_create_display,egui::Button::new(uu_i18n::text("+ 新建临时虚拟显示器")))
                             .on_disabled_hover_text(uu_i18n::text("远端未提供虚拟显示器管理，请更新后台并授予管理服务权限")).clicked() {selected=Some(Action::CreateDisplay(group.id));}
                         if group.can_create_display && ui.small_button(uu_i18n::text("管理虚拟显示器")).clicked() {selected=Some(Action::ManageDisplays(group.id));}
                         for (screen,label) in &group.screens {
@@ -198,6 +201,9 @@ fn adjacent(length:usize,current:Option<usize>,previous:bool)->usize {
 struct Session {
     id: u64,
     app: App,
+    // A presentation destination, never connection or virtual-lease ownership.
+    // Keep the ID after its empty native container retires so Merge can restore it.
+    home_window:Option<u64>,
 }
 fn session_title(app:&App)->String {
     let target=app.stream_target.as_ref().expect("stream session target");
@@ -243,6 +249,9 @@ struct Window {
     position: Option<egui::Pos2>,
     origin: Option<(i32, i32)>,
     local_ui: Rc<Cell<bool>>,
+    // Consumed by the initial explicit-display launch only. Later sessions
+    // created in this window choose this container as home when detached.
+    home_window:Option<u64>,
 }
 impl Window {
     fn new(id: u64, pending: Vec<Launch>, position: Option<egui::Pos2>) -> Self {
@@ -261,13 +270,13 @@ impl Window {
             origin: None,
             local_ui: Default::default(),
             vsync_session: None,
+            home_window:None,
         }
     }
     fn viewport(&self) -> egui::ViewportId {
         egui::ViewportId::from_hash_of(("stream-window", self.id))
     }
     fn tabs(&self, actions: Rc<RefCell<Vec<Action>>>) -> Tabs {
-        let live=self.sessions.iter().filter(|session|!session.app.exit_requested&&!session.app.disconnecting).count();
         Tabs {
             active: self.active,
             actions,
@@ -279,20 +288,24 @@ impl Window {
                 .map(|s| {
                     let preparing_virtual=s.app.stream_target.as_ref().is_some_and(|target|target.connection.virtual_display().is_some())
                         && s.app.displays.preparing_initial_target();
+                    let fixed_view=s.app.is_fixed_display_view();
+                    let can_merge=s.home_window.is_some_and(|home|home!=self.id);
                     Group {
                     id: s.id,
-                    name: session_title(&s.app),
+                    name: s.app.stream_target.as_ref().expect("stream target").alias.clone(),
                     screens: s
                         .app
-                        .remote_screens()
+                        .visible_remote_screens()
                         .screens
                         .iter()
-                        .filter(|_|!preparing_virtual)
+                        .filter(|screen|!preparing_virtual && (!fixed_view || s.app.displays.selected==Some(screen.id)))
                         .map(|screen| (screen.id, s.app.displays.layout.label(screen)))
                         .collect(),
                     selected: s.app.displays.selected.filter(|_|!preparing_virtual),
-                    can_detach:live>1&&!s.app.disconnecting,
-                    can_open_displays: !preparing_virtual && s.app.stream_target.as_ref().is_some_and(StreamTarget::is_native)
+                    can_detach:!can_merge&&!s.app.disconnecting&&(fixed_view||s.app.displays.ready()),
+                    fixed_view,
+                    can_merge:can_merge&&!s.app.disconnecting,
+                    can_open_displays: !fixed_view && !preparing_virtual && s.app.stream_target.as_ref().is_some_and(StreamTarget::is_native)
                         && s.app.controller.as_ref().is_some_and(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)),
                     can_create_display:!preparing_virtual && s.app.controller.as_ref().is_some_and(|h|h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire) && h.stats.native_displays.initial_supported()),
                 }})
@@ -322,6 +335,29 @@ impl Window {
             }
         }
     }
+    fn take_session(&mut self,id:u64)->Session {
+        let index=self.sessions.iter().position(|session|session.id==id).expect("live session");
+        let mut session=self.sessions.remove(index);
+        session.app.deactivate_session();
+        if self.active==id {
+            if let Some(next)=self.sessions.iter().find(|session|!session.app.exit_requested&&!session.app.disconnecting).map(|session|session.id) {self.select(next);}
+        }
+        session
+    }
+    fn adopt_session(&mut self,mut session:Session) {
+        if let Some(active)=self.sessions.iter_mut().find(|s|s.id==self.active) {active.app.deactivate_session();}
+        session.app.window_sizing=self.sizing.clone();
+        session.app.shortcuts=self.shortcuts.clone();
+        session.app.restore_maximized=self.restore_maximized.clone();
+        session.app.active_session=false;
+        let id=session.id;
+        self.sessions.push(session);
+        // Activation belongs to the destination viewport's next pass, after
+        // its platform/context and wakeups have been bound by show().
+        self.active=id;
+        self.sizing.borrow_mut().begin_stream();
+        self.focus=true;
+    }
     fn show(
         &mut self,
         ctx: &egui::Context,
@@ -343,7 +379,14 @@ impl Window {
                 ctx,
                 self.origin,
             )));
-            for session in &mut self.sessions {
+            eframe::request_vsync(ctx, vsync);
+        }
+        // Sessions can join an existing surface as well as a newly created
+        // one. Retarget every moved session before it can receive local input.
+        for session in &mut self.sessions {
+            if !Rc::ptr_eq(&session.app.platform,self.platform.as_ref().unwrap()) || session.app.context.viewport()!=ctx.viewport_id() {
+                #[cfg(test)]
+                let old_viewport=session.app.context.viewport();
                 session.app.shortcuts=self.shortcuts.clone();
                 session.app.platform = self.platform.as_ref().unwrap().clone();
                 session.app.context = window_context::Context::new(ctx);
@@ -355,8 +398,9 @@ impl Window {
                     let context = session.app.context.clone();
                     handle.frames.set_waker(move || context.request_video_frame());
                 }
+                #[cfg(test)]
+                tests::surface_bound(session.id,old_viewport,ctx.viewport_id(),session.app.controller.is_some());
             }
-            eframe::request_vsync(ctx, vsync);
         }
         // Fullscreen belongs to this native window. Parked sessions must read
         // the same state before a late controller attach or a tab switch.
@@ -394,7 +438,8 @@ impl Window {
             app.shortcuts=self.shortcuts.clone();
             app.gamepad = gamepad.clone();
             app.restore_maximized = self.restore_maximized.clone();
-            self.sessions.push(Session { id, app });
+            let home_window=if app.stream_target.as_ref().is_some_and(|target|target.connection.display().is_some()) {self.home_window.take()}else{None};
+            self.sessions.push(Session { id, app,home_window });
             self.select(id);
         }
         let tabs = self.tabs(actions);
@@ -490,6 +535,62 @@ pub struct Workspace {
     owner: uu_core::local_workspace::Owner,
 }
 impl State {
+    fn displaying_session(&self,identity:&ConnectionTarget,display:&DisplayTarget,excluding:Option<u64>)->Option<u64> {
+        self.windows.iter().filter(|w|!w.closing).flat_map(|w|&w.sessions).find(|s| {
+            Some(s.id)!=excluding && !s.app.exit_requested && !s.app.disconnecting && s.app.displays.ready()
+                && s.app.stream_target.as_ref().is_some_and(|t|base_key(t)==*identity)
+                && display.resolve(&s.app.remote_screens().screens).is_ok_and(|id|s.app.displays.selected==Some(id))
+        }).map(|s|s.id)
+    }
+    fn detach(&mut self,id:u64,ctx:&egui::Context) {
+        let Some(index)=self.windows.iter().position(|w|!w.closing&&w.sessions.iter().any(|s|s.id==id&&!s.app.exit_requested&&!s.app.disconnecting)) else{return;};
+        let source=&mut self.windows[index];
+        let session=source.sessions.iter_mut().find(|s|s.id==id).unwrap();
+        if session.home_window.is_some_and(|home|home!=source.id) {
+            source.select(id);source.focus=true;return;
+        }
+        if !session.app.pin_current_display_view() {return;}
+        let source_id=source.id;
+        let position=ctx.input_for(source.viewport(),|input|input.viewport().outer_rect.map(|rect|rect.min+egui::vec2(36.,36.)));
+        let mut session=source.take_session(id);
+        session.home_window.get_or_insert(source_id);
+        ctx.request_repaint_of(source.viewport());
+        if self.input_owner==Some(id) {self.input_owner=None;}
+        let window_id=self.next;self.next+=1;
+        let mut window=Window::new(window_id,Vec::new(),position);
+        window.adopt_session(session);
+        self.windows.push(window);
+    }
+    fn merge(&mut self,id:u64,ctx:&egui::Context) {
+        let Some(source_index)=self.windows.iter().position(|w|!w.closing&&w.sessions.iter().any(|s|s.id==id&&!s.app.exit_requested&&!s.app.disconnecting)) else{return;};
+        let source_id=self.windows[source_index].id;
+        let home=self.windows[source_index].sessions.iter().find(|s|s.id==id).unwrap().home_window;
+        if home==Some(source_id) {self.windows[source_index].select(id);self.windows[source_index].focus=true;return;}
+        let Some(target_id)=self.merge_target(source_id,home) else {
+            self.windows[source_index].select(id);self.windows[source_index].focus=true;return;
+        };
+        let mut session=self.windows[source_index].take_session(id);
+        session.home_window=Some(target_id);
+        ctx.request_repaint_of(self.windows[source_index].viewport());
+        if self.input_owner==Some(id) {self.input_owner=None;}
+        let target=self.windows.iter_mut().find(|window|window.id==target_id).unwrap();
+        target.adopt_session(session);
+        ctx.request_repaint_of(target.viewport());
+    }
+    fn merge_target(&mut self,source_id:u64,home:Option<u64>)->Option<u64> {
+        Some(if let Some(home)=home.filter(|home|!self.windows.iter().any(|w|w.id==*home&&w.closing)) {
+            // An emptied native container may already be retired. Recreate its
+            // logical identity, without recreating the moved media connection.
+            if !self.windows.iter().any(|w|w.id==home) {self.windows.push(Window::new(home,Vec::new(),None));}
+            home
+        } else if let Some(window)=self.windows.iter().find(|w|w.id!=source_id&&!w.closing&&(!w.pending.is_empty()||w.sessions.iter().any(|s|!s.app.exit_requested&&!s.app.disconnecting))) {
+            window.id
+        } else if home.is_some() {
+            let id=self.next;self.next+=1;self.windows.push(Window::new(id,Vec::new(),None));id
+        } else {
+            return None;
+        })
+    }
     fn fork_virtual_display(&mut self,session:u64) {
         let Some(window)=self.windows.iter_mut().find(|window|!window.closing&&window.sessions.iter().any(|source|source.id==session)) else{return;};
         let source=window.sessions.iter_mut().find(|source|source.id==session).unwrap();
@@ -525,11 +626,7 @@ impl State {
         let requested=launch.target.connection.display().expect("display launch");
         // Reuse a live view of this exact source, including an ordinary device
         // tab already displaying it. Pending views deduplicate by stable key.
-        let existing=self.windows.iter().filter(|w|!w.closing).flat_map(|w|&w.sessions).find(|s| {
-            !s.app.exit_requested && !s.app.disconnecting && s.app.displays.ready()
-                && s.app.stream_target.as_ref().is_some_and(|t|base_key(t)==identity)
-                && requested.resolve(&s.app.remote_screens().screens).is_ok_and(|id|s.app.displays.selected==Some(id))
-        }).map(|s|s.id);
+        let existing=self.displaying_session(&identity,requested,None);
         if let Some(existing)=existing {self.apply(Action::Detach(existing),ctx);return;}
         let key=launch.target.key();
         if let Some(window)=self.windows.iter_mut().filter(|w|!w.closing).find(|w|w.pending.iter().any(|l|l.target.key()==key)) {
@@ -537,7 +634,9 @@ impl State {
         }
         let position=self.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==session)).and_then(|w|ctx.input_for(w.viewport(),|i|i.viewport().outer_rect.map(|r|r.min+egui::vec2(36.,36.))));
         let id=self.next;self.next+=1;
-        self.windows.push(Window::new(id,vec![launch],position));
+        let home=self.windows.iter().find(|window|window.sessions.iter().any(|source|source.id==session)).map(|window|window.id);
+        let mut window=Window::new(id,vec![launch],position);window.home_window=home;
+        self.windows.push(window);
     }
     fn attach(&mut self, launch: Launch) -> bool {
         if launch.plugin_payload().is_err() {
@@ -572,7 +671,9 @@ impl State {
         }
         if launch.target.connection.display().is_some() {
             let id=self.next;self.next+=1;
-            self.windows.push(Window::new(id,vec![launch],None));
+            let home=self.windows.iter().find(|window|!window.closing).map(|window|window.id);
+            let mut window=Window::new(id,vec![launch],None);window.home_window=home;
+            self.windows.push(window);
             return true;
         }
         if let Some(window) = self.windows.iter_mut().find(|w| !w.closing) {
@@ -584,6 +685,8 @@ impl State {
         }
     }
     fn apply(&mut self, action: Action, ctx: &egui::Context) {
+        #[cfg(test)]
+        eprintln!("generated workspace action={action:?}");
         match action {
             Action::OpenDisplay{session,screen}=>self.open_display(session,screen,ctx),
             Action::CreateDisplay(id)=>self.fork_virtual_display(id),
@@ -594,9 +697,17 @@ impl State {
                 for screen in screens {self.open_display(session,screen,ctx);}
             },
             Action::Select(id, screen) => {
+                let existing=screen.and_then(|screen|self.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==id).and_then(|source| {
+                    if source.app.is_fixed_display_view() && source.app.displays.selected!=Some(screen) {return None;}
+                    let target=source.app.stream_target.as_ref()?;
+                    let screens=source.app.remote_screens();let screen=screens.screens.iter().find(|s|s.id==screen)?;
+                    self.displaying_session(&base_key(target),&DisplayTarget{id:screen.id,source:screen.display_name.clone()},Some(id))
+                }));
+                let (id,screen)=existing.map_or((id,screen),|existing|(existing,None));
                 for window in &mut self.windows {
                     if window.sessions.iter().any(|s| s.id == id&&!s.app.exit_requested) {
                         window.select(id);
+                        window.focus=true;
                         if let Some(screen) = screen {
                             if let Some(s) = window.sessions.iter_mut().find(|s| s.id == id) {
                                 s.app.select_remote_screen(screen);
@@ -656,46 +767,8 @@ impl State {
                     session.app.reorder_display_tab(source, target, after);
                 }
             }
-            Action::Detach(id) => {
-                let Some(index) = self
-                    .windows
-                    .iter()
-                    .position(|w| !w.closing && w.sessions.iter().any(|s| s.id == id&&!s.app.exit_requested&&!s.app.disconnecting))
-                else {
-                    return;
-                };
-                if self.windows[index].sessions.iter().filter(|session|!session.app.exit_requested&&!session.app.disconnecting).count()<=1 {
-                    self.windows[index].select(id);
-                    self.windows[index].focus=true;
-                    return;
-                }
-                let source = &mut self.windows[index];
-                let at = source.sessions.iter().position(|s| s.id == id).unwrap();
-                let mut session = source.sessions.remove(at);
-                session.app.deactivate_session();
-                if source.active == id {
-                    if let Some(next)=source.sessions.iter().find(|session|!session.app.exit_requested&&!session.app.disconnecting).map(|session|session.id) {
-                        source.select(next);
-                    }
-                }
-                let id = self.next;
-                self.next += 1;
-                let position = ctx.input_for(source.viewport(), |i| {
-                    i.viewport()
-                        .outer_rect
-                        .map(|r| r.min + egui::vec2(36., 36.))
-                });
-                let mut window = Window::new(id, Vec::new(), position);
-                window.active = session.id;
-                session.app.window_sizing = window.sizing.clone();
-                session.app.shortcuts=window.shortcuts.clone();
-                session.app.restore_maximized = window.restore_maximized.clone();
-                // Native handles and wakeups are retargeted when the new native
-                // surface exists, before this session can receive input again.
-                session.app.active_session = false;
-                window.sessions.push(session);
-                self.windows.push(window);
-            }
+            Action::Detach(id)=>self.detach(id,ctx),
+            Action::Merge(id)=>self.merge(id,ctx),
         }
     }
 }

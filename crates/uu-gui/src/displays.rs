@@ -15,6 +15,7 @@ pub(super) struct Displays {
     queued: Option<i32>,
     initial_selection_checked: bool,
     initial_display: Option<super::sessions::DisplayTarget>,
+    fixed_display: Option<super::sessions::DisplayTarget>,
     awaiting_virtual: bool,
     remember_on_confirmation: Option<i32>,
     blocked: bool,
@@ -41,6 +42,24 @@ struct Pending {
     settings_accepted: bool,
 }
 impl Displays {
+    fn for_reconnect(&self)->Self {
+        let mut next=Self::default();
+        if let Some(target)=&self.fixed_display {next.set_initial_display(target.clone());}
+        next
+    }
+    fn reconcile_fixed_source(&mut self,screens:&RemoteScreens) {
+        let Some(target)=self.fixed_display.clone() else{return;};
+        let result=target.resolve(&screens.screens);
+        if result==Ok(screens.current_id){return;}
+        self.blocked=true;
+        self.initial_display=Some(target);
+        self.initial_selection_checked=false;
+        self.selected=result.ok();
+        if result.is_err(){self.notice=uu_i18n::text("固定显示器不可用，正在等待原显示器恢复；也可关闭此标签").into();}
+    }
+    fn permits_source(&self,id:i32,screens:&RemoteScreens)->bool {
+        self.fixed_display.as_ref().is_none_or(|target|target.resolve(&screens.screens)==Ok(id))
+    }
     fn await_virtual(&mut self) {
         self.awaiting_virtual=true;
         self.blocked=true;
@@ -54,6 +73,7 @@ impl Displays {
     }
     pub(super) fn awaiting_virtual(&self)->bool {self.awaiting_virtual}
     fn set_initial_display(&mut self,target:super::sessions::DisplayTarget) {
+        self.fixed_display=Some(target.clone());
         self.initial_display=Some(target);
         self.blocked=true;
         self.notice=uu_i18n::text("正在准备指定显示器…").into();
@@ -68,7 +88,7 @@ impl Displays {
                     self.remember_on_confirmation=Some(id);
                     return (id!=screens.current_id).then_some(id);
                 }
-                Err(notice)=>{self.notice=notice.into();return None;}
+                Err(notice)=>{self.notice=if self.fixed_display.is_some(){uu_i18n::text("固定显示器不可用，正在等待原显示器恢复；也可关闭此标签").into()}else{notice.into()};return None;}
             }
         }
         if screens.screens.is_empty(){return None;}
@@ -268,13 +288,38 @@ impl Displays {
 }
 
 impl super::App {
+    pub(super) fn is_fixed_display_view(&self)->bool {
+        self.displays.fixed_display.is_some() || self.stream_target.as_ref().is_some_and(|target|target.connection.is_fixed_display_view())
+    }
+    pub(super) fn fixed_display_target(&self)->Option<super::sessions::DisplayTarget> {self.displays.fixed_display.clone()}
+    pub(super) fn pin_current_display_view(&mut self)->bool {
+        if self.is_fixed_display_view(){return true;}
+        if !self.stream_target.as_ref().is_some_and(super::sessions::StreamTarget::is_native)
+            || !self.controller.as_ref().is_some_and(|handle|handle.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)) {return true;}
+        if !self.displays.ready() || self.disconnecting || self.exit_requested {return false;}
+        let screens=self.remote_screens();
+        let Some(screen)=screens.selected().filter(|screen|self.displays.selected==Some(screen.id)) else {return false;};
+        self.displays.fixed_display=Some(super::sessions::DisplayTarget{id:screen.id,source:screen.display_name.clone()});
+        self.displays.queued=None;
+        self.displays.menu_open=false;
+        true
+    }
+    pub(super) fn visible_remote_screens(&self)->RemoteScreens {
+        let mut screens=self.remote_screens();
+        if self.is_fixed_display_view() {
+            let selected=self.displays.fixed_display.as_ref().and_then(|target|target.resolve(&screens.screens).ok());
+            screens.screens.retain(|screen|Some(screen.id)==selected);
+        }
+        screens
+    }
     pub(super) fn prepare_displays(&mut self) {
-        self.displays = Displays::default();
+        self.displays = self.displays.for_reconnect();
         if self.stream_target.as_ref().is_some_and(|target|target.connection.virtual_display().is_some()) {
+            self.displays=Displays::default();
             self.displays.await_virtual();
         }
-        if let Some(display)=self.stream_target.as_ref().and_then(|target|target.connection.display()) {
-            self.displays.set_initial_display(display.clone());
+        if let Some(display)=self.stream_target.as_ref().and_then(|target|target.connection.display()).cloned() {
+            if !self.displays.awaiting_virtual {self.displays.set_initial_display(display);}
         }
         self.selected_track = 0;
         let Some(path) = self.config.as_ref().zip(self.stream_target.as_ref())
@@ -310,6 +355,7 @@ impl super::App {
         }
     }
     pub(super) fn reorder_display_tab(&mut self, source: i32, target: i32, after: bool) {
+        if self.is_fixed_display_view(){return;}
         if self.displays.layout.move_tab(source, target, after) {
             self.save_display_layout();
         }
@@ -322,12 +368,12 @@ impl super::App {
             .unwrap_or_else(|| uu_i18n::text("显示器").into())
     }
     pub(super) fn select_remote_screen(&mut self,id:i32){
-        if self.stream_target.as_ref().is_some_and(|target|target.connection.virtual_display().is_some()) && self.displays.preparing_initial_target() {return;}
         self.select_native_display(id);
     }
     fn select_native_display(&mut self,id:i32){
         if self.displays.awaiting_virtual {return;}
         let screens=self.remote_screens();
+        if !self.displays.permits_source(id,&screens){return;}
         if !screens.screens.iter().any(|s|s.id==id){return;}
         if self.displays.defer_selection(id){return;}
         if self.displays.selected==Some(id) && self.displays.ready(){return;}
@@ -353,6 +399,7 @@ impl super::App {
     fn poll_native_displays(&mut self,tracks:&[u32]){
         if self.displays.awaiting_virtual {return;}
         let screens=self.remote_screens();
+        self.displays.reconcile_fixed_source(&screens);
         if self.displays.layout.sync(&screens.screens){self.save_display_layout();}
         let Some(h)=self.controller.as_ref()else{return;};
         let binding=h.stats.display_track_binding.load(std::sync::atomic::Ordering::Acquire);
@@ -423,6 +470,33 @@ mod tests {
         displays
     }
     #[test]
+    fn fixed_view_reconnect_and_foreign_catalog_keep_the_same_source_and_frame_gate() {
+        let mut view=explicit(1,"Source 1");
+        assert_eq!(view.restore_selection(&catalog(1),true,true),None);
+        view.confirm_initial_current(&catalog(1),true,true,true);
+        assert!(view.ready());
+        view.queued=Some(0);
+        let mut restarted=view.for_reconnect();
+        assert!(!restarted.ready() && restarted.queued.is_none());
+        assert_eq!(restarted.restore_selection(&catalog(0),true,true),Some(1));
+        assert!(restarted.permits_source(1,&catalog(0)));
+        assert!(!restarted.permits_source(0,&catalog(0)));
+        restarted.confirm_initial_current(&catalog(1),true,true,false);
+        assert!(!restarted.ready());
+        restarted.confirm_initial_current(&catalog(1),true,true,true);
+        assert!(restarted.ready());
+        restarted.reconcile_fixed_source(&catalog(0));
+        assert!(!restarted.ready() && restarted.selected==Some(1));
+        let mut missing=catalog(0);missing.screens.retain(|screen|screen.id!=1);
+        restarted.reconcile_fixed_source(&missing);
+        assert!(!restarted.ready() && restarted.selected.is_none());
+        assert!(!restarted.permits_source(0,&missing));
+        assert_eq!(restarted.restore_selection(&missing,true,true),None);
+        assert_eq!(restarted.restore_selection(&catalog(1),true,true),None);
+        restarted.confirm_initial_current(&catalog(1),true,true,true);
+        assert!(restarted.ready() && restarted.selected==Some(1));
+    }
+    #[test]
     fn virtual_view_never_adopts_the_initial_physical_source_and_requires_its_created_source() {
         let mut d=Displays::default();
         d.layout.remember_selected(&catalog(0).screens[0]);
@@ -465,12 +539,13 @@ mod tests {
         assert!(d.native_source_frame(&catalog(1),5,true));
         assert!(!d.waiting_binding());
         assert!(!d.preparing_initial_target());
-        // The launch target chooses the first screen, not a permanent pin.
-        let next=d.begin(0,0,Instant::now());
+        // Confirmation retires startup, while the view's source remains fixed.
         assert!(!d.preparing_initial_target());
-        d.native_request_epoch=5;d.response(next,11,0);d.native_frame_epoch=6;
-        assert!(d.native_source_frame(&catalog(0),6,true));
-        assert_eq!(d.selected,Some(0));
+        assert!(d.permits_source(1,&catalog(1)));
+        assert!(!d.permits_source(0,&catalog(1)));
+        let mut missing=catalog(0);missing.screens.retain(|screen|screen.id!=1);
+        assert!(!d.permits_source(0,&missing));
+        assert!(!d.permits_source(1,&missing));
     }
     #[test]
     fn explicit_current_source_unlocks_only_after_current_catalog_control_and_frame() {
@@ -489,12 +564,12 @@ mod tests {
         let mut d=explicit(0,"Missing");
         assert_eq!(d.restore_selection(&catalog(0),true,true),None);
         d.confirm_initial_current(&catalog(0),true,true,true);
-        assert!(!d.ready());assert!(d.waiting_binding());assert!(uu_i18n::matches(&d.notice,"指定显示器不存在，请重新选择显示器"));
+        assert!(!d.ready());assert!(d.waiting_binding());assert!(uu_i18n::matches(&d.notice,"固定显示器不可用，正在等待原显示器恢复；也可关闭此标签"));
         assert_eq!(d.selected,None);
         let mut ambiguous=catalog(0);ambiguous.screens[1].display_name="Source 0".into();
         let mut d=explicit(0,"Source 0");
         assert_eq!(d.restore_selection(&ambiguous,true,true),None);
-        assert!(!d.ready());assert!(d.waiting_binding());assert!(uu_i18n::matches(&d.notice,"指定显示器名称不唯一，请重新选择显示器"));
+        assert!(!d.ready());assert!(d.waiting_binding());assert!(uu_i18n::matches(&d.notice,"固定显示器不可用，正在等待原显示器恢复；也可关闭此标签"));
         let mut id_only=explicit(1,"");
         assert_eq!(id_only.restore_selection(&catalog(0),true,true),Some(1));
     }

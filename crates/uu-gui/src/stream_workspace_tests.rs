@@ -132,6 +132,25 @@ fn independent_display_ipc_creates_separate_pending_windows_and_reuses_a_stable_
     assert_eq!(state.windows[1].pending.len(),1);assert_eq!(state.windows[1].pending[0].target.key(),first_key);
 }
 
+#[test]
+fn merge_recreates_a_retired_home_and_avoids_a_closing_container() {
+    let mut state=State{input_owner:None,gamepad:Default::default(),windows:vec![Window::new(2,Vec::new(),None)],gl:None,vsync:false,next:3,actions:Default::default()};
+    assert_eq!(state.merge_target(2,Some(1)),Some(1));
+    assert_eq!(state.windows.iter().map(|window|window.id).collect::<Vec<_>>(),[2,1]);
+    assert_eq!(state.next,3,"restoring an old identity does not allocate or reuse another ID");
+    state.windows.iter_mut().find(|window|window.id==1).unwrap().closing=true;
+    let third=state.next;state.next+=1;
+    state.windows.push(Window::new(third,vec![launch("generated-only.json".into(),"Pending")],None));
+    assert_eq!(state.merge_target(2,Some(1)),Some(third));
+    state.windows.iter_mut().find(|window|window.id==third).unwrap().closing=true;
+    let fallback=state.next;
+    assert_eq!(state.merge_target(2,Some(1)),Some(fallback));
+    assert_ne!(fallback,1,"a closing surface retains its identity until cleanup completes");
+    assert!(state.windows.iter().find(|window|window.id==fallback).is_some_and(|window|!window.closing));
+    let mut alone=State{input_owner:None,gamepad:Default::default(),windows:vec![Window::new(1,Vec::new(),None)],gl:None,vsync:false,next:2,actions:Default::default()};
+    assert_eq!(alone.merge_target(1,None),None);
+}
+
 fn check_display_window_routing(state:&mut State,session:u64,ctx:&egui::Context) {
     // Synthetic capture has no monitor catalog. This temporary inventory tests
     // workspace routing only; pending display launches are removed before any
@@ -187,6 +206,13 @@ fn check_display_window_routing(state:&mut State,session:u64,ctx:&egui::Context)
     assert!(state.attach(display_launch(source_target.as_ref().unwrap(),&generated_screen(2)).unwrap()));
     assert_eq!(state.windows.len(),original_windows+2);
     assert!(state.windows[0].focus,"an already confirmed source B is reused regardless of its original launch key");
+    let epoch=stats.native_media_epoch.load(Ordering::Acquire);
+    state.apply(Action::Select(session,Some(2)),ctx);
+    assert_eq!(state.windows[0].active,sibling_id,"selecting an already viewed source focuses its existing connection");
+    let source=state.windows[0].sessions.iter().find(|s|s.id==session).unwrap();
+    assert_eq!(source.app.displays.selected,Some(0),"the originating connection must retain its physical source");
+    assert_eq!(stats.native_media_epoch.load(Ordering::Acquire),epoch);
+    state.windows[0].select(active_before);
     state.windows.retain(|window|window.id!=first&&window.id!=second);
     assert_eq!(state.windows.len(),original_windows);
     *stats.remote_screens.lock().unwrap()=original_catalog;
@@ -268,7 +294,7 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
         settings:tokio::sync::mpsc::unbounded_channel().0,close,stats:Arc::new(Default::default()),
     });
     let id=state.next;state.next+=1;
-    window.sessions.push(Session{id,app:closing});
+    window.sessions.push(Session{id,app:closing,home_window:None});
     window.select(id);
     let previous_owner=state.input_owner.replace(id);
     state.apply(Action::Close(id),ctx);
@@ -314,8 +340,8 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
 fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() {
     use uu_core::hotkeys::Action as Command;
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let mut tabs=Tabs{groups:vec![Group{id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false,can_detach:true},
-        Group{id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let mut tabs=Tabs{groups:vec![Group{id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},
+        Group{id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     for command in [Command::NextDisplay,Command::PreviousDisplay,Command::NextComputer,Command::PreviousComputer] {tabs.navigate(command);}
     assert_eq!(*actions.borrow(),[Action::Select(22,Some(2)),Action::Select(22,Some(9)),Action::Select(11,None),Action::Select(11,None)]);
     actions.borrow_mut().clear();tabs.active=11;
@@ -328,7 +354,7 @@ fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() 
 #[test]
 fn device_selector_requires_an_explicit_open_and_keeps_the_video_area() {
     let ctx=egui::Context::default();crate::setup_style(&ctx);
-    let mut tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true},Group{id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true}],active:1,actions:Default::default(),local_ui:Default::default()};
+    let mut tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},Group{id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:1,actions:Default::default(),local_ui:Default::default()};
     let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
     let draw=|tabs:&Tabs,pointer| {
         let mut visible=false;
@@ -363,6 +389,7 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
                 can_open_displays: true,
                 can_create_display: false,
                 can_detach: true,
+                fixed_view:false,can_merge:false,
             },
             Group {
                 id: 22,
@@ -372,6 +399,7 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
                 can_open_displays: true,
                 can_create_display: false,
                 can_detach: true,
+                fixed_view:false,can_merge:false,
             },
         ],
         active: 11,
@@ -456,7 +484,7 @@ fn device_context_menu_routes_detach_and_disconnect_from_a_child_viewport() {
     let context=egui::Context::default();
     crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{groups:vec![Group{id:22,name:"Generated B".into(),screens:vec![(2,"Monitor B".into())],selected:Some(2),can_open_displays:true,can_create_display:false,can_detach:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{groups:vec![Group{id:22,name:"Generated B".into(),screens:vec![(2,"Monitor B".into())],selected:Some(2),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let viewport=egui::ViewportId::from_hash_of("generated-child");
     let render=|events|context.run(egui::RawInput{viewport_id:viewport,viewports:[(viewport,egui::ViewportInfo::default())].into_iter().collect(),events,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),focused:true,..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     fn text(shape:&egui::epaint::Shape,label:&str)->Option<egui::Pos2>{match shape{egui::epaint::Shape::Text(text) if text.galley.job.text==label=>Some(text.pos+text.galley.rect.center().to_vec2()),egui::epaint::Shape::Vec(shapes)=>shapes.iter().find_map(|shape|text(shape,label)),_=>None}}
@@ -477,10 +505,34 @@ fn device_context_menu_routes_detach_and_disconnect_from_a_child_viewport() {
 }
 
 #[test]
+fn fixed_source_context_menu_returns_to_home_and_source_click_only_selects_its_session() {
+    let context=egui::Context::default();crate::setup_style(&context);
+    let actions=Rc::new(RefCell::new(Vec::new()));
+    let tabs=Tabs{groups:vec![Group{id:22,name:"Generated fixed view".into(),screens:vec![(2,"Bound monitor".into())],selected:Some(2),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let viewport=egui::ViewportId::from_hash_of("fixed-generated-child");
+    let render=|events|context.run(egui::RawInput{viewport_id:viewport,viewports:[(viewport,egui::ViewportInfo::default())].into_iter().collect(),events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
+    let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|rects|find(rects.borrow().get(&viewport).unwrap()).center());
+    let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};
+    render(Vec::new());let source=region(|rects|rects.screens[0].2);
+    render(vec![egui::Event::PointerMoved(source),button(source,egui::PointerButton::Primary,true)]);
+    render(vec![button(source,egui::PointerButton::Primary,false)]);
+    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::Select(22,None)]);
+    for source_menu in [false,true] {
+        render(Vec::new());let anchor=if source_menu {region(|rects|rects.screens[0].2)}else{region(|rects|rects.devices[0].1)};
+        render(vec![egui::Event::PointerMoved(anchor),button(anchor,egui::PointerButton::Secondary,true)]);
+        render(vec![button(anchor,egui::PointerButton::Secondary,false)]);render(Vec::new());
+        assert!(tabs.owns_input(&context));let merge=region(|rects|rects.merge[0].1);
+        render(vec![egui::Event::PointerMoved(merge),button(merge,egui::PointerButton::Primary,true)]);
+        render(vec![button(merge,egui::PointerButton::Primary,false)]);
+        assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::Merge(22)]);
+    }
+}
+
+#[test]
 fn display_pills_open_their_own_source_and_keep_connection_ownership() {
     let context=egui::Context::default();crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{groups:vec![Group{id:22,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{groups:vec![Group{id:22,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:false,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let render=|events|context.run(egui::RawInput{events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|rects|find(rects.borrow().get(&egui::ViewportId::ROOT).unwrap()).center());
     let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};
@@ -528,12 +580,17 @@ std::thread_local! {
     static HUD_COMMANDS:std::cell::RefCell<std::collections::HashSet<egui::ViewportId>>=std::cell::RefCell::new(std::collections::HashSet::new());
     static TAB_RECTS:RefCell<std::collections::HashMap<egui::ViewportId,crate::stream_tabs_ui::StripRects>>=RefCell::new(Default::default());
     static POINTER_SCRIPT:RefCell<Option<PointerScript>>=const {RefCell::new(None)};
+    static SURFACE_BINDINGS:RefCell<Vec<(u64,egui::ViewportId,egui::ViewportId)>>=const {RefCell::new(Vec::new())};
+}
+pub(super) fn surface_bound(session:u64,old:egui::ViewportId,new:egui::ViewportId,waker:bool) {
+    eprintln!("generated surface binding session={session} old={old:?} new={new:?} frame_waker={waker}");
+    if waker {SURFACE_BINDINGS.with(|bindings|bindings.borrow_mut().push((session,old,new)));}
 }
 pub(super) fn observe_tab_rects(ctx:&egui::Context,rects:crate::stream_tabs_ui::StripRects) {
     TAB_RECTS.with(|slots|slots.borrow_mut().insert(ctx.viewport_id(),rects));
 }
-#[derive(Clone,Copy)]
-enum PointerAction { Detach, Disconnect, CloseButton }
+#[derive(Clone,Copy,Debug)]
+enum PointerAction { Detach, Merge, Disconnect, CloseButton }
 struct PointerScript {
     viewport:egui::ViewportId,
     session:u64,
@@ -552,9 +609,10 @@ fn inject_pointer_script(input:&mut egui::RawInput) {
         let finished=TAB_RECTS.with(|rects| {
             let rects=rects.borrow();let Some(rects)=rects.get(&script.viewport) else{return false;};
             let direct=matches!(script.action,PointerAction::CloseButton);
-            let buttons=if direct {&rects.close} else if script.step<3 {&rects.devices} else {match script.action {PointerAction::Detach=>&rects.detach,PointerAction::Disconnect=>&rects.disconnect,PointerAction::CloseButton=>unreachable!()}};
+            let buttons=if direct {&rects.close} else if script.step<3 {&rects.devices} else {match script.action {PointerAction::Detach=>&rects.detach,PointerAction::Merge=>&rects.merge,PointerAction::Disconnect=>&rects.disconnect,PointerAction::CloseButton=>unreachable!()}};
             let Some((_,rect))=buttons.iter().find(|(id,_)|*id==script.session) else{return false;};
             let position=rect.center();
+            eprintln!("generated pointer action={:?} session={} viewport={:?} step={} rect={rect:?}",script.action,script.session,script.viewport,script.step);
             input.focused=true;
             input.events.push(egui::Event::PointerMoved(position));
             let button=if !direct && script.step<3 {egui::PointerButton::Secondary} else {egui::PointerButton::Primary};
@@ -598,6 +656,8 @@ struct Probe {
     hud_before: Option<[bool;2]>,
     passed: Arc<Mutex<bool>>,
     ui_started:Option<Instant>,
+    roundtrip_done:bool,
+    tail_state:Option<String>,
 }
 impl eframe::App for Probe {
     fn raw_input_hook(&mut self,_ctx:&egui::Context,input:&mut egui::RawInput) {
@@ -624,6 +684,12 @@ impl eframe::App for Probe {
                     .map_or(0, |h| h.stats.decoded_total.load(Ordering::Acquire))
             };
             match self.phase {
+                5 => {
+                    let tail=format!("script_done={} pending_actions={} windows={:?}",pointer_script_done(),state.actions.borrow().len(),
+                        state.windows.iter().map(|window|(window.id,window.active,window.sessions.iter().map(|session|(session.id,session.app.exit_requested,session.app.disconnecting,
+                            session.app.controller.as_ref().map(|handle|handle.stopped.load(Ordering::Acquire)),session.app.context.viewport())).collect::<Vec<_>>())).collect::<Vec<_>>());
+                    if self.tail_state.as_ref()!=Some(&tail) {eprintln!("generated close tail {tail}");self.tail_state=Some(tail);}
+                }
                 0 if state.windows[0]
                     .sessions
                     .first()
@@ -719,7 +785,8 @@ impl eframe::App for Probe {
                     FULLSCREEN_COMMANDS.with(|commands|commands.borrow_mut().insert(state.windows[0].viewport()));
                     self.phase = 7;
                 }
-                7 if ctx.input_for(state.windows[0].viewport(),|i|i.viewport().fullscreen)==Some(true) => {
+                7 if ctx.input_for(state.windows[0].viewport(),|i|i.viewport().fullscreen)==Some(true)
+                    && eframe::viewport_window_for(ctx,state.windows[0].viewport()).is_some_and(|window|window.current_monitor().is_some_and(|monitor|window.inner_size()==monitor.size())) => {
                     let window=eframe::viewport_window_for(ctx,state.windows[0].viewport()).unwrap();
                     let monitor=window.current_monitor().unwrap();
                     assert_eq!(window.inner_size(),monitor.size(),"fullscreen must cover the complete monitor");
@@ -764,6 +831,12 @@ impl eframe::App for Probe {
                         .zip(&self.counts)
                         .all(|(s, old)| s.decoded_total.load(Ordering::Acquire) > old + 8) =>
                 {
+                    if !self.roundtrip_done {
+                        let window=state.windows.iter().find(|window|window.sessions.iter().any(|session|session.id==self.first)).unwrap();
+                        assert!(window.tabs(Default::default()).groups.iter().find(|group|group.id==self.first).unwrap().can_merge);
+                        click_session(window.viewport(),self.first,PointerAction::Merge,ctx);
+                        self.phase=30;return;
+                    }
                     check_close_returns_to_live_stream_before_cleanup(state,self.first,ctx);
                     for (index, id) in [self.first, self.second_id].into_iter().enumerate() {
                         let (window, session) = state
@@ -791,6 +864,26 @@ impl eframe::App for Probe {
                     HUD_COMMANDS.with(|commands|commands.borrow_mut().insert(first.viewport()));
                     self.phase=10;
                 }
+                30 if pointer_script_done() && state.windows.len()==1 && state.windows[0].sessions.len()==2 => {
+                    assert_eq!(state.windows[0].id,1,"Merge returns to the original logical container");
+                    if state.windows[0].sessions.iter().any(|session|session.app.context.viewport()!=state.windows[0].viewport()) {
+                        assert!(!state.windows[0].sessions.iter().find(|session|session.id==self.first).unwrap().app.active_session,
+                            "a moved session cannot become active before its destination surface pass");
+                        ctx.request_repaint_of(state.windows[0].viewport());return;
+                    }
+                    for (index,id) in [self.first,self.second_id].into_iter().enumerate() {
+                        let session=state.windows[0].sessions.iter().find(|session|session.id==id).unwrap();
+                        assert!(Arc::ptr_eq(&session.app.controller.as_ref().unwrap().stats,&self.stats[index]));
+                        assert_eq!(self.stats[index].native_media_epoch.load(Ordering::Acquire),self.epochs[index]);
+                        assert_eq!(session.app.context.viewport(),state.windows[0].viewport(),"merging onto an existing surface must rebind commands and wakeups");
+                        assert!(Rc::ptr_eq(&session.app.platform,state.windows[0].platform.as_ref().unwrap()));
+                    }
+                    assert!(SURFACE_BINDINGS.with(|bindings|bindings.borrow().iter().any(|(session,old,new)|*session==self.first&&old!=new&&*new==state.windows[0].viewport())),
+                        "Merge must retarget the real frame publisher wakeup to the existing destination viewport");
+                    click_session(state.windows[0].viewport(),self.first,PointerAction::Detach,ctx);
+                    self.phase=31;
+                }
+                31 if pointer_script_done() && state.windows.len()==2 => {self.roundtrip_done=true;self.phase=3;}
                 10 if state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==self.first))
                     .is_some_and(|w|ctx.input_for(w.viewport(),|i|i.viewport().fullscreen)==Some(true)) => {
                     let first=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==self.first)).unwrap();
@@ -947,6 +1040,8 @@ fn native_windows_attach_reorder_and_detach_two_live_generated_sessions() {
                 hud_before: None,
                 passed: result,
                 ui_started:None,
+                roundtrip_done:false,
+                tail_state:None,
             }))
         }),
     )

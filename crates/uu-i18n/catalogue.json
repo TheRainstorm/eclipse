@@ -301,6 +301,7 @@
   "重新读取主机信息": "Read host information again",
   "主机未提供连接管理，请更新两端并重新连接。": "Host does not provide connection management. Update both ends and reconnect.",
   "已连接 {} / {} 个会话": "{} / {} sessions connected",
+  "已连接 {} 个会话": "{} sessions connected",
   "修改授权会断开对应设备的会话并释放输入，重连后使用新权限。": "Changing authorization disconnects affected sessions and releases input. New permissions apply on reconnect.",
   "断开此会话": "Disconnect this session",
   "本机没有主机管理授权；房主可在服务管理的设备授权中授予。": "This device lacks host administration permission. The owner can grant it under authorized devices in service management.",
@@ -1114,6 +1115,9 @@
   "设备名称过长": "Device name is too long",
   "连接方式与凭据不匹配": "Connection method does not match credentials",
   "移到独立窗口": "Move to separate window",
+  "合并到原本窗口": "Merge into original window",
+  "固定显示器不可用，正在等待原显示器恢复；也可关闭此标签": "The fixed display is unavailable. Waiting for it to return; you can also close this tab",
+  "关闭此串流标签即可断开并移除它的临时虚拟屏": "Close this stream tab to disconnect and remove its temporary virtual display",
   "已在独立窗口中": "Already in a separate window",
   "断开此设备": "Disconnect this device",
   "串流 · {}": "Stream · {}",
@@ -1705,6 +1709,5 @@
   "当前权限可能无法读取系统后台进程版本。请打开管理员管理窗口核对；安装版本不能代替运行版本。": "Current permissions may prevent reading the system background process version. Check it in the administrator manager; the installed version cannot stand in for the running version.",
   "驱动没有可用虚拟屏，请在源机管理窗口准备驱动后重试": "No virtual display is available from the driver. Prepare the driver in the host’s management window and try again.",
   "虚拟显示器操作尚未确认，正在等待回执；确认前不能再次操作，断开连接仍会清理临时屏": "The virtual display operation is unconfirmed and awaiting its response. Further operations stay blocked until confirmation; disconnecting still cleans up temporary displays.",
-  "上一次操作结果未知，请刷新当前管理对象的列表后再操作。": "The previous operation’s result is unknown. Refresh the selected host’s list before making further changes.",
-  "已连接 {} 个会话": "{} sessions connected"
+  "上一次操作结果未知，请刷新当前管理对象的列表后再操作。": "The previous operation’s result is unknown. Refresh the selected host’s list before making further changes."
 }
