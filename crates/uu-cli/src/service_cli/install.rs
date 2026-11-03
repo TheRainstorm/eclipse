@@ -392,7 +392,12 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
     }
     let mut created = false;
     let mut switched = false;
+    let mut firewall_changes=None;
     let result = (|| -> Result<()> {
+        let sharing=uu_core::device_book::Store::open(config.at("device-trust"))?.read()?.sharing;
+        let old_program=previous.as_ref().map(|old|paths.binary_directory(old).join(old.cli_name()));
+        let (report,changes)=uu_core::firewall::migrate(old_program.as_deref(),&destination.join(installed.cli_name()),sharing.service_port,sharing.discovery_port)?;
+        eprintln!("{}",report.message());firewall_changes=Some(changes);
         let (service, new) = registration(&paths, &installed)?;
         created = new;
         switched = true;
@@ -428,8 +433,9 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
                 let service = open_service(DELETE)?;
                 winok(unsafe { DeleteService(service.0) })?;
             }
+            if let Some(changes)=&firewall_changes {changes.rollback()?;}
             if before == Some(SERVICE_RUNNING) {
-                super::start()?;
+                super::start_registered()?;
             }
             Ok(())
         })();

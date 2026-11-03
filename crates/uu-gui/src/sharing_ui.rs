@@ -367,6 +367,7 @@ impl HostUi {
         ctx: &egui::Context,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!self.running(), "{}", uu_i18n::format!("共享已经开启"));
+        #[cfg(windows)] {self.notice=uu_i18n::text("正在检查防火墙，缺少规则时将请求管理员配置…").into();}
         let (send, events) = mpsc::channel();
         let factory = book.sharing.clipboard.then(|| {
             let send = send.clone();
@@ -404,6 +405,9 @@ impl HostUi {
         let task = std::thread::Builder::new().name("eclipse-shared-host".into()).spawn(move || {
             let result = (|| -> anyhow::Result<()> {
                 let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build()?;
+                #[cfg(windows)]
+                let result = runtime.block_on(prepared.runner.run_with_startup(receiver, super::service_ui::prepare_foreground_firewall));
+                #[cfg(not(windows))]
                 let result = runtime.block_on(prepared.runner.run(receiver));
                 runtime.shutdown_timeout(Duration::from_secs(2));
                 result

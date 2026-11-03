@@ -447,6 +447,23 @@ pub fn build_status()->Result<BuildStatus> {
     }else{None};
     Ok(BuildStatus{state:state.dwCurrentState,process_id:state.dwProcessId,installed,running,running_error})
 }
+/// Firewall repair must bind the exact protected executable, including build
+/// directory and legacy filename, rather than comparing the revision label.
+pub fn firewall_program(paths:&Paths,installed:&Installed)->Result<PathBuf> {
+    let expected=paths.binary_directory(installed).join(installed.cli_name());
+    let service=open_service(SERVICE_QUERY_STATUS)?;
+    let state=service_process(service.0)?;
+    if state.dwProcessId==0 || state.dwCurrentState==SERVICE_STOPPED {return Ok(expected);}
+    let process=Handle(unsafe{OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,0,state.dwProcessId)});
+    ensure!(!process.0.is_null(),"cannot verify running service image: {}",std::io::Error::last_os_error());
+    let mut image=vec![0u16;32768];let mut length=image.len() as u32;
+    winok(unsafe{QueryFullProcessImageNameW(process.0,0,image.as_mut_ptr(),&mut length)})?;
+    let actual=PathBuf::from(OsString::from_wide(&image[..length as usize]));
+    ensure!(service_process(service.0)?.dwProcessId==state.dwProcessId,"service restarted during firewall inspection");
+    ensure!(actual.canonicalize()?==expected.canonicalize()?,"running service image differs from the protected installation; firewall was not modified");
+    Ok(actual)
+}
+
 #[cfg(test)]
 mod build_version_tests {
     use super::*;

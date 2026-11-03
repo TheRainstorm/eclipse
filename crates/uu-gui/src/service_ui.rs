@@ -144,6 +144,7 @@ fn version_labels(ui:&mut egui::Ui,build:&BuildStatus) {
 
 enum Job {
     Refresh,
+    Firewall(bool),
     Rpc(Request),
     Control(&'static str),
     SaveStopped {
@@ -153,10 +154,12 @@ enum Job {
     },
 }
 enum Event {
+    Firewall(Result<String,String>),
     State(u32, Result<Response, String>),
     Done(bool, Result<(), String>),
 }
 struct Manager {
+    firewall: String,
     virtual_display:super::virtual_display_ui::State,
     build:Option<BuildStatus>,
     trust: TrustStore,
@@ -238,6 +241,16 @@ impl Manager {
                         let result = (|| -> anyhow::Result<()> {
                             match job {
                                 Job::Refresh => {}
+                                Job::Firewall(repair) => {
+                                    let result=(||->anyhow::Result<String>{
+                                        let paths=Paths::discover()?;let installed=paths.manifest()?;
+                                        let exe=firewall_program(&paths,&installed)?;
+                                        let sharing=Store::open(worker_config.at("device-trust"))?.read()?.sharing;
+                                        let report=if repair {uu_core::firewall::ensure(&exe,sharing.service_port,sharing.discovery_port)?} else {uu_core::firewall::inspect(&exe,sharing.service_port,sharing.discovery_port)?};
+                                        Ok(report.message())
+                                    })().map_err(|e|format!("{e:#}"));
+                                    let _=send.send(Event::Firewall(result));
+                                }
                                 Job::Rpc(request) => {
                                     match runtime.block_on(request_remote(request))? {
                                         Response::Error { message } => anyhow::bail!(message),
@@ -318,7 +331,9 @@ impl Manager {
                 }
             }
         });
+        let _=sender.send(Job::Firewall(false));
         Ok(Self {
+            firewall:String::new(),
             virtual_display:Default::default(),
             build:build_status().ok(),
             trust,
@@ -363,6 +378,7 @@ impl Manager {
                         Err(error) => self.notice = error,
                     }
                 }
+                Event::Firewall(result)=> {self.firewall=match result {Ok(message)=>message,Err(error)=>error};}
                 Event::State(state, result) => {
                     self.build=build_status().ok();
                     self.state = state;
@@ -430,6 +446,11 @@ impl eframe::App for Manager {
                 _ => uu_i18n::text("正在读取服务状态…"),
             });
             if let Some(build)=&self.build {version_labels(ui,build);}
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!self.busy,egui::Button::new(uu_i18n::text("检查防火墙"))).clicked(){self.submit(Job::Firewall(false));}
+                if ui.add_enabled(!self.busy,egui::Button::new(uu_i18n::text("修复防火墙"))).clicked(){self.submit(Job::Firewall(true));}
+            });
+            if !self.firewall.is_empty(){ui.label(&self.firewall);}
             ui.horizontal(|ui| {
                 if ui.add_enabled(self.state==SERVICE_RUNNING,egui::Button::new(uu_i18n::text("虚拟显示器"))).clicked(){self.virtual_display.open_local(ctx,super::virtual_display_ui::LocalOwner::Background);}
                 if ui
@@ -658,10 +679,34 @@ fn run_manager(virtual_displays:bool)->eframe::Result {
     )
 }
 
+/// Called on the sharing startup worker, never on the rendering thread.
+pub(super) fn prepare_foreground_firewall(service:u16,discovery:u16)->anyhow::Result<Option<String>> {
+    let exe=std::env::current_exe()?;
+    let before=uu_core::firewall::inspect(&exe,service,discovery)?;
+    if before.rules.as_array().is_some_and(|r|!r.is_empty()) {return Ok(Some(before.message()));}
+    if require_administrator().is_ok() {return Ok(Some(uu_core::firewall::ensure(&exe,service,discovery)?.message()));}
+    elevated(&exe,&format!("--configure-streaming-firewall {service} {discovery}"))?;
+    let after=uu_core::firewall::inspect(&exe,service,discovery)?;
+    anyhow::ensure!(after.rules.as_array().is_some_and(|r|!r.is_empty()),"Firewall configuration was not visible after administrator repair");
+    Ok(Some(format!("{}\n{}",uu_i18n::text("已由管理员配置防火墙"),after.message())))
+}
+
 /// Each UAC action is launched through this GUI version. Management does not
 /// depend on an adjacent CLI; install/import still use a verified complete set.
 pub(super) fn dispatch() -> Option<eframe::Result> {
     let args:Vec<_>=std::env::args_os().skip(1).collect();
+    if args.len()==3 && args[0]=="--configure-streaming-firewall" {
+        let result=(||->anyhow::Result<()> {
+            require_administrator()?;
+            let exe=std::env::current_exe()?;
+            uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("cannot determine package directory"))?,env!("UU_BUILD_COMMIT"))?;
+            let service=args[1].to_str().ok_or_else(||anyhow::anyhow!("invalid service port"))?.parse::<u16>()?;
+            let discovery=args[2].to_str().ok_or_else(||anyhow::anyhow!("invalid discovery port"))?.parse::<u16>()?;
+            uu_core::firewall::ensure(&exe,service,discovery)?;Ok(())
+        })();
+        if let Err(error)=result {show_error(&format!("Firewall: {error:#}"));std::process::exit(1);}
+        return Some(Ok(()));
+    }
     if args==["--prepare-virtual-display-driver"] {
         let result=(||->anyhow::Result<()> {
             require_administrator()?;
@@ -732,6 +777,7 @@ mod tests {
         let mut saved = Sharing::default();
         saved.name = "Generated service".into();
         let mut manager = Manager {
+            firewall:String::new(),
             virtual_display:Default::default(),
             build:None,
             trust,

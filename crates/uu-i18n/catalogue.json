@@ -1709,5 +1709,18 @@
   "当前权限可能无法读取系统后台进程版本。请打开管理员管理窗口核对；安装版本不能代替运行版本。": "Current permissions may prevent reading the system background process version. Check it in the administrator manager; the installed version cannot stand in for the running version.",
   "驱动没有可用虚拟屏，请在源机管理窗口准备驱动后重试": "No virtual display is available from the driver. Prepare the driver in the host’s management window and try again.",
   "虚拟显示器操作尚未确认，正在等待回执；确认前不能再次操作，断开连接仍会清理临时屏": "The virtual display operation is unconfirmed and awaiting its response. Further operations stay blocked until confirmation; disconnecting still cleans up temporary displays.",
-  "上一次操作结果未知，请刷新当前管理对象的列表后再操作。": "The previous operation’s result is unknown. Refresh the selected host’s list before making further changes."
+  "上一次操作结果未知，请刷新当前管理对象的列表后再操作。": "The previous operation’s result is unknown. Refresh the selected host’s list before making further changes.",
+  "防火墙配置未完成：{error:#}。共享仍会启动，请检查网络权限。": "Firewall setup was not completed: {error:#}. Sharing will still start; check network permissions.",
+  "{status}：TCP/UDP 49000–49009 用于串流；保留已有网络范围，未自动开放公用网络。仍需从另一台电脑验证连接。": "{status}: TCP/UDP 49000–49009 for streaming. Existing network scope is preserved; Public networks were not automatically opened. Verify the connection from another computer.",
+  "检查防火墙": "Check firewall",
+  "修复防火墙": "Repair firewall",
+  "已配置防火墙": "Firewall configured",
+  "已检查防火墙": "Firewall checked",
+  "已由管理员配置防火墙": "Firewall configured by an administrator",
+  "未检测到活动网络，远端可达性未知": "No active network was detected; remote reachability is unknown.",
+  "存在可能适用的入站阻止规则，已保留；请检查系统或组织策略": "Potential inbound Block rules were preserved; check system or organization policy.",
+  "已保留地址、网卡、服务或身份限制，请从目标电脑验证连接": "Address, interface, service or identity restrictions were preserved; verify from the remote computer.",
+  "网络 {profile} 的策略不允许本地入站规则": "The {profile} network policy prevents local inbound rules.",
+  "{scope} 端口规则缺失或受限，已保留现有设置": "{scope} port rules are missing or restricted; existing settings were preserved.",
+  "正在检查防火墙，缺少规则时将请求管理员配置…": "Checking the firewall; administrator setup will be requested if rules are missing…"
 }

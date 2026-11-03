@@ -116,3 +116,4 @@ pub mod plugins;
 pub mod plugin_backend;
 
 pub mod stream_ports;
+pub mod firewall;

@@ -96,6 +96,8 @@ pub enum Command {
         #[arg(long)]
         source_data: Option<PathBuf>,
     },
+    /// Inspect or repair rules for the actual protected service executable.
+    Firewall { #[arg(long)] repair:bool },
     Start,
     Stop,
     Restart,
@@ -128,6 +130,13 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
                 manage()?;
             }
             Ok(())
+        }
+        Command::Firewall {repair} => {
+            let paths=Paths::discover()?; let installed=paths.manifest()?;
+            let sharing=uu_core::device_book::Store::open(paths.config().at("device-trust"))?.read()?.sharing;
+            let exe=firewall_program(&paths,&installed)?;
+            let report=if repair {uu_core::firewall::ensure(&exe,sharing.service_port,sharing.discovery_port)?} else {uu_core::firewall::inspect(&exe,sharing.service_port,sharing.discovery_port)?};
+            println!("{}",serde_json::to_string_pretty(&report)?);Ok(())
         }
         Command::Start => start(),
         Command::ImportPlugins { source_data } => {
@@ -177,6 +186,14 @@ pub async fn run(command: Command, config: Config) -> Result<()> {
     }
 }
 pub fn start() -> Result<()> {
+    require_administrator()?;
+    let paths=Paths::discover()?; let installed=paths.manifest()?;
+    let sharing=uu_core::device_book::Store::open(paths.config().at("device-trust"))?.read()?.sharing;
+    let report=uu_core::firewall::ensure(&firewall_program(&paths,&installed)?,sharing.service_port,sharing.discovery_port)?;
+    eprintln!("{}",report.message());
+    start_registered()
+}
+pub(super) fn start_registered() -> Result<()> {
     require_administrator()?;
     let service = open_service(SERVICE_START | SERVICE_QUERY_STATUS)?;
     let result = unsafe { StartServiceW(service.0, 0, ptr::null()) };

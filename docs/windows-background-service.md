@@ -39,12 +39,19 @@
 
 服务名为 `EclipseRemoteHost`。程序安装在 Windows Program Files 的同名目录，配置和服务日志保存在 ProgramData 的同名目录；实际位置通过 Windows Known Folder API 获取。日志位于服务配置的 `state/uu-remote/log/service.log`，达到约 4 MiB 后在新进程启动时轮换。移除服务注册会保留受保护配置，便于重新安装；彻底移除时，在服务停止后由管理员删除对应目录。
 
-排查连接时，应检查正在运行的后台 `eclipse-cli.exe` 的防火墙规则。默认 TCP 48998 用于设备检查和授权，每次串流还会使用动态 TCP 端口完成 TLS 会话握手，以及动态 UDP 媒体端口。仅允许 TCP 48998 可能导致设备检查成功后出现 `native pairing timed out`。可按实际后台程序路径允许所需网络配置文件中的 TCP/UDP 入站；更新后台版本后也要核对规则是否仍匹配当前路径，应用不会自动修改防火墙。
+排查连接时，应检查正在运行的后台 `eclipse-cli.exe` 的防火墙规则。默认 TCP 48998 用于设备检查和授权，串流 TCP TLS 握手和 UDP 媒体都限定在 `49000–49009` 端口池。仅允许 TCP 48998 可能导致设备检查成功后出现 `native pairing timed out`。后台安装、启动及共享入口启动时会检查当前受保护程序的规则，完全缺失时自动创建仅 Domain、Private 的本程序入站规则，并通过日志及管理页面提示。管理窗口提供“检查防火墙”和“修复防火墙”；不必停止正在运行的串流。已有规则不自动扩大范围或启用，组织策略与 Block 不会被覆盖。
 
-服务日志记录会话等待的地址、设备连接失败原因，以及媒体会话结束时的会话编号、阶段和错误链。若记录停留在 `native host waiting for an invited controller`，随后出现 `native invitation expired before a controller paired`，应检查该行动态 TCP 端口是否可达。这些日志不记录邀请 token、配对码或剪贴板正文。
+服务日志记录会话等待的地址、设备连接失败原因，以及媒体会话结束时的会话编号、阶段和错误链。若记录停留在 `native host waiting for an invited controller`，随后出现 `native invitation expired before a controller paired`，应检查该行 TCP 握手端口是否可达。这些日志不记录邀请 token、配对码或剪贴板正文。
 
 安装器验证包内程序哈希，拒绝重解析点及普通用户可修改的服务目录。媒体进程由服务私有 Job 对象管理，停止时先请求正常退出，超过期限仅终止该服务拥有的进程。管理通道仅向本地管理员与 System 开放，拒绝远程命名管道连接；客户端还会核验服务器的 System 身份及受保护程序位置。新设备仍需完成配对，后台服务不自动批准请求。
 
 SCM 在服务异常退出后自动重启，连续失败时等待时间依次为 1、5、15 秒；正常停止服务不会触发这项恢复。媒体子进程由服务单独监督，退出后重新等待所属控制台会话并启动。
 
 实现参考了 Sunshine 的服务与桌面生命周期设计，代码独立实现。Windows 平台约束见 [DuplicateOutput](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutput1-duplicateoutput)、[OpenInputDesktop](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-openinputdesktop) 和 [SetThreadDesktop](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setthreaddesktop)。
+
+
+更新后台时只迁移本机 PersistentStore 中精确绑定旧安装记录程序路径的规则，仅更改 Program。旧、新程序名均按各自安装记录确定；启用状态、Allow/Block、Profile、地址、端口、接口、服务和身份条件保留。组织下发规则不会复制成本地授权。旧、新路径都已有本地规则时报告冲突，不猜测合并。
+
+普通安装失败会按本次变更的完整规则/过滤器 postimage 精确补偿；管理员并发修改的规则保留并报错。不导入全局防火墙快照，不回写账号或配对快照。此补偿不保证断电原子性；进程在变更期间中断后须检查实际规则和服务状态。
+
+管理员 CLI 可用 `eclipse-cli service firewall` 查看规则及网络状态，或 `eclipse-cli service firewall --repair` 修复缺失规则。规则检查不能证明实际监听、端口可达或媒体出画面；运行程序身份无法核实时会明确报错。

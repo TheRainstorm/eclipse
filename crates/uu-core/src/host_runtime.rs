@@ -134,7 +134,19 @@ pub fn prepare(
 }
 
 impl Runner {
-    pub async fn run(self, mut stop: watch::Receiver<bool>) -> Result<()> {
+    pub async fn run(self, stop: watch::Receiver<bool>) -> Result<()> {
+        self.run_with_startup(stop, |service,discovery| {
+            #[cfg(windows)] {
+                let exe=std::env::current_exe()?;
+                let report=if crate::service_admin::windows::require_administrator().is_ok() {
+                    crate::firewall::ensure(&exe,service,discovery)?
+                } else {crate::firewall::inspect(&exe,service,discovery)?};
+                return Ok(Some(report.message()));
+            }
+            #[cfg(not(windows))] {let _=(service,discovery);Ok(None)}
+        }).await
+    }
+    pub async fn run_with_startup(self, mut stop: watch::Receiver<bool>, startup:impl FnOnce(u16,u16)->Result<Option<String>> + Send + 'static) -> Result<()> {
         let Self {
             config,
             book,
@@ -146,6 +158,14 @@ impl Runner {
             _owner,
         } = self;
         let sharing = book.sharing;
+        let service=sharing.service_port; let discovery=sharing.discovery_port;
+        match tokio::task::spawn_blocking(move||startup(service,discovery)).await {
+            Ok(Ok(Some(message)))=>emit(Event::Notice(message)),
+            Ok(Ok(None))=>{},
+            Ok(Err(error))=>emit(Event::Notice(uu_i18n::format!("防火墙配置未完成：{error:#}。共享仍会启动，请检查网络权限。"))),
+            Err(error)=>emit(Event::Notice(format!("Firewall worker failed: {error}"))),
+        }
+        if *stop.borrow() {return Ok(());}
         let (stream, _) = watch::channel(HostStatus::Starting);
         let (lan_events, mut receive) = mpsc::unbounded_channel();
         let forward = emit.clone();
