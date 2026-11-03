@@ -74,6 +74,29 @@ fn display_launch_preserves_base_identity_source_alias_and_read_only_mode() {
     assert!(display_launch(&loopback,&generated_screen(0)).unwrap().target.view_only);
 }
 #[test]
+fn temporary_display_launch_is_a_distinct_connection_with_an_unwrapped_origin() {
+    let base=ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into());
+    let target=StreamTarget{connection:base.clone(),alias:"Generated computer".into(),view_only:true};
+    let spec=uu_core::virtual_display::Spec{width:3840,height:2160,refresh_millihz:60_000,hdr:true};
+    let first=virtual_launch(&target,spec).unwrap();
+    let second=virtual_launch(&first.target,spec).unwrap();
+    assert_eq!(first.target.connection.base(),&base);
+    assert_eq!(second.target.connection.base(),&base);
+    assert_eq!(first.target.alias,target.alias);
+    assert!(first.target.view_only&&second.target.view_only);
+    assert_eq!(first.target.connection.virtual_display().unwrap().spec,spec);
+    assert_ne!(first.target.key(),second.target.key());
+    assert_ne!(first.target.key(),target.key());
+    let explicit=display_launch(&first.target,&generated_screen(1)).unwrap();
+    assert_eq!(explicit.target.connection.base(),&base,"viewing an owned source must not copy its creation intent");
+    assert!(explicit.target.connection.virtual_display().is_none());
+    for launch in [first,second] {
+        let decoded:Launch=serde_json::from_slice(&serde_json::to_vec(&launch).unwrap()).unwrap();
+        assert_eq!(decoded.target.key(),launch.target.key());
+        assert!(decoded.plugin_payload().unwrap().is_none());
+    }
+}
+#[test]
 fn independent_display_launch_and_ipc_reject_plugins_invalid_sources_and_nested_wrappers() {
     let plugin=StreamTarget{connection:ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"generated".into()},alias:"Generated".into(),view_only:true};
     assert!(display_launch(&plugin,&generated_screen(0)).is_err());
@@ -173,6 +196,118 @@ fn check_display_window_routing(state:&mut State,session:u64,ctx:&egui::Context)
     sibling.app.stream_target=sibling_target;sibling.app.displays.selected=sibling_selected;
     *sibling_stats.remote_screens.lock().unwrap()=sibling_catalog;
     *sibling_stats.desktop_capture_source.lock().unwrap()=sibling_capture;
+}
+
+fn check_temporary_display_fork(state:&mut State,session:u64,ctx:&egui::Context) {
+    // The hosts below provide only generated video, without virtual hardware.
+    // Exercise launch ownership here and discard pending intents before they
+    // can establish a new connection or submit a display creation request.
+    let origin=state.windows.iter().position(|w|w.sessions.iter().any(|s|s.id==session)).unwrap();
+    let origin_id=state.windows[origin].id;
+    let source=state.windows[origin].sessions.iter().find(|s|s.id==session).unwrap();
+    let selected=source.app.displays.selected;
+    let key=source.app.stream_target.as_ref().unwrap().key();
+    let stats=source.app.controller.as_ref().unwrap().stats.clone();
+    let available=stats.virtual_displays.available.swap(true,Ordering::AcqRel);
+    let other=state.next;state.next+=1;
+    state.windows.insert(0,Window::new(other,vec![],None));
+    state.apply(Action::CreateDisplay(session),ctx);
+    state.apply(Action::CreateDisplay(session),ctx);
+    let origin=state.windows.iter_mut().find(|w|w.id==origin_id).unwrap();
+    assert_eq!(origin.pending.len(),2,"new temporary streams must join the clicked connection's window");
+    assert_ne!(origin.pending[0].target.key(),origin.pending[1].target.key());
+    for launch in &origin.pending {
+        assert!(launch.target.connection.virtual_display().is_some());
+        assert_eq!(base_key(&launch.target),base_key(origin.sessions.iter().find(|s|s.id==session).unwrap().app.stream_target.as_ref().unwrap()));
+    }
+    let source=origin.sessions.iter().find(|s|s.id==session).unwrap();
+    assert_eq!(source.app.displays.selected,selected);
+    assert_eq!(source.app.stream_target.as_ref().unwrap().key(),key);
+    assert!(Arc::ptr_eq(&source.app.controller.as_ref().unwrap().stats,&stats));
+    let launch=origin.pending[0].target.clone();
+    let source=origin.sessions.iter_mut().find(|s|s.id==session).unwrap();
+    let saved_displays=std::mem::take(&mut source.app.displays);
+    let saved_target=source.app.stream_target.replace(launch);
+    let saved_track=source.app.selected_track;
+    source.app.prepare_displays();
+    let tabs=origin.tabs(Default::default());
+    let preparing=tabs.groups.iter().find(|group|group.id==session).unwrap();
+    assert!(preparing.screens.is_empty()&&preparing.selected.is_none());
+    assert!(!preparing.can_open_displays&&!preparing.can_create_display);
+    assert!(preparing.can_detach,"a connecting virtual stream can still be moved without reopening it");
+    let source=origin.sessions.iter_mut().find(|s|s.id==session).unwrap();
+    let preparing_title=session_title(&source.app);
+    assert!(preparing_title.ends_with(uu_i18n::text("临时虚拟屏")));
+    source.app.displays.layout.sync(&[generated_screen(1)]);
+    source.app.displays.selected=Some(1);
+    assert_eq!(session_title(&source.app),preparing_title,"first source binding must not grow the header or displace its close control");
+    source.app.stream_target=saved_target;source.app.displays=saved_displays;source.app.selected_track=saved_track;
+    origin.pending.clear();
+    assert!(state.windows.iter().find(|w|w.id==other).unwrap().pending.is_empty());
+    state.windows.retain(|w|w.id!=other);
+    stats.virtual_displays.available.store(available,Ordering::Release);
+}
+
+fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u64,ctx:&egui::Context) {
+    let window=state.windows.iter_mut().find(|window|window.sessions.iter().any(|source|source.id==session)).unwrap();
+    assert_eq!(window.sessions.len(),1,"exercise one surviving stream plus a closing tab");
+    let origin=&window.sessions[0].app;
+    let target=origin.stream_target.clone();
+    let stats=origin.controller.as_ref().unwrap().stats.clone();
+    let epoch=stats.native_media_epoch.load(Ordering::Acquire);
+    let selected=origin.displays.selected;
+    let mut closing=App::new_session(ctx,None,window.platform.as_ref().unwrap().clone(),None,false,None);
+    closing.stream_target=target;
+    closing.shortcuts=window.shortcuts.clone();
+    closing.window_sizing=window.sizing.clone();
+    let stopped=Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (close,mut close_requests)=tokio::sync::mpsc::unbounded_channel();
+    closing.controller=Some(uu_core::controller::ControllerHandle {
+        stopped:stopped.clone(),events:std::sync::mpsc::channel().1,
+        frames:uu_core::media::frame_channel().1,input:tokio::sync::mpsc::unbounded_channel().0,native_input:None,
+        settings:tokio::sync::mpsc::unbounded_channel().0,close,stats:Arc::new(Default::default()),
+    });
+    let id=state.next;state.next+=1;
+    window.sessions.push(Session{id,app:closing});
+    window.select(id);
+    let previous_owner=state.input_owner.replace(id);
+    state.apply(Action::Close(id),ctx);
+    let window=state.windows.iter_mut().find(|window|window.sessions.iter().any(|source|source.id==session)).unwrap();
+    let closing=window.sessions.iter().find(|source|source.id==id).unwrap();
+    assert!(closing.app.exit_requested&&closing.app.disconnecting);
+    assert!(!closing.app.active_session);
+    assert!(!stopped.load(Ordering::Acquire),"the controller's cleanup has deliberately not finished");
+    assert!(closing.app.controller.is_some(),"retain the cleanup owner while hiding its tab");
+    assert!(close_requests.try_recv().is_ok());
+    assert_eq!(window.active,session,"closing an active tab returns to its sibling immediately");
+    let survivor=&window.sessions.iter().find(|source|source.id==session).unwrap().app;
+    assert!(survivor.active_session);
+    assert!(Arc::ptr_eq(&survivor.controller.as_ref().unwrap().stats,&stats));
+    assert_eq!(stats.native_media_epoch.load(Ordering::Acquire),epoch);
+    assert_eq!(survivor.displays.selected,selected);
+    let tabs=window.tabs(Default::default());
+    assert_eq!(tabs.groups.iter().map(|group|group.id).collect::<Vec<_>>(),[session]);
+    assert!(!tabs.groups[0].can_detach,"a retiring tab cannot make the survivor appear merged");
+    window.select(id);
+    assert_eq!(window.active,session,"a stale selection cannot reactivate the closing tab");
+    // A local command belongs to the native window, including its key-up.
+    // Finishing the old controller must not clear the survivor's shared keys.
+    window.shortcuts.borrow_mut().configure(&Default::default(),egui::Modifiers::NONE);
+    let modifiers=egui::Modifiers{ctrl:true,alt:true,..egui::Modifiers::NONE};
+    assert_eq!(window.shortcuts.borrow_mut().key(egui::Key::S,true,false,modifiers,true,false),
+        crate::shortcuts::KeyAction::Trigger(uu_core::hotkeys::Action::Stats));
+    stopped.store(true,Ordering::Release);
+    let retiring=window.sessions.iter_mut().find(|source|source.id==id).unwrap();
+    retiring.app.poll_controller(ctx);
+    assert!(retiring.app.controller.is_none());
+    assert_eq!(window.shortcuts.borrow_mut().key(egui::Key::S,false,false,egui::Modifiers::NONE,true,false),
+        crate::shortcuts::KeyAction::Consumed,"a late controller stop cannot forward the local command's physical key-up");
+    let survivor=window.sessions.iter().find(|source|source.id==session).unwrap();
+    assert!(Arc::ptr_eq(&survivor.app.controller.as_ref().unwrap().stats,&stats));
+    assert_eq!(stats.native_media_epoch.load(Ordering::Acquire),epoch);
+    // This deterministic cleanup handle never owned a worker or a display.
+    window.sessions.retain(|source|source.id!=id);
+    state.input_owner=previous_owner;
 }
 
 #[test]
@@ -529,6 +664,7 @@ impl eframe::App for Probe {
                         .map(|s| s.native_media_epoch.load(Ordering::Acquire))
                         .collect();
                     check_display_window_routing(state,self.first,ctx);
+                    check_temporary_display_fork(state,self.first,ctx);
                     // Switch away without another UI pass: inactive sessions
                     // must pause observation immediately, including parked tabs.
                     state.apply(Action::Select(self.first,None),ctx);
@@ -628,6 +764,7 @@ impl eframe::App for Probe {
                         .zip(&self.counts)
                         .all(|(s, old)| s.decoded_total.load(Ordering::Acquire) > old + 8) =>
                 {
+                    check_close_returns_to_live_stream_before_cleanup(state,self.first,ctx);
                     for (index, id) in [self.first, self.second_id].into_iter().enumerate() {
                         let (window, session) = state
                             .windows

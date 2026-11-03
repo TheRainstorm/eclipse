@@ -17,6 +17,9 @@ pub(super) struct DraggedDisplay(pub i32);
 
 impl DisplayLayout {
     pub fn path(config: &uu_core::Config, target: &super::sessions::StreamTarget) -> Option<PathBuf> {
+        // A virtual view is a one-connection creation intent, not a saved
+        // display choice. Keep its order and selection only in this view.
+        if target.connection.virtual_display().is_some() {return None;}
         // Use the same connection identity as workspace reuse. A profile's
         // immutable launch file and alias may change on every connection.
         let identity = serde_json::to_vec(&target.key()).ok()?;
@@ -211,5 +214,21 @@ mod tests {
         assert_eq!(default_layout.last_selected(),Some(7));
         assert_eq!(explicit_layout.last_selected(),Some(9));
         assert_eq!(original,DisplayLayout::path(&config,&target(base)).unwrap());
+    }
+    #[test]
+    fn virtual_views_keep_layout_in_memory_without_changing_saved_device_choices() {
+        use super::super::sessions::{ConnectionTarget,StreamTarget,VirtualDisplayTarget};
+        let config=uu_core::Config{data_dir:"generated-data".into(),state_dir:"generated-state".into(),signaling_host:String::new()};
+        let base=ConnectionTarget::NativeProfile{id:"profile-one".into(),snapshot:"launch.json".into()};
+        let target=|connection|StreamTarget{connection,alias:"Generated".into(),view_only:false};
+        let original=DisplayLayout::path(&config,&target(base.clone())).unwrap();
+        for _ in 0..2 {
+            let virtual_view=target(ConnectionTarget::NativeVirtual {
+                connection:Box::new(base.clone()),
+                virtual_display:VirtualDisplayTarget{id:uuid::Uuid::new_v4(),spec:Default::default()},
+            });
+            assert!(DisplayLayout::path(&config,&virtual_view).is_none());
+        }
+        assert_eq!(DisplayLayout::path(&config,&target(base)).unwrap(),original);
     }
 }

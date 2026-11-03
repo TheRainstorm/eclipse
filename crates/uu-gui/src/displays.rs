@@ -15,6 +15,7 @@ pub(super) struct Displays {
     queued: Option<i32>,
     initial_selection_checked: bool,
     initial_display: Option<super::sessions::DisplayTarget>,
+    awaiting_virtual: bool,
     remember_on_confirmation: Option<i32>,
     blocked: bool,
     unbound: bool,
@@ -40,13 +41,25 @@ struct Pending {
     settings_accepted: bool,
 }
 impl Displays {
+    fn await_virtual(&mut self) {
+        self.awaiting_virtual=true;
+        self.blocked=true;
+        self.notice=uu_i18n::text("正在创建临时虚拟显示器…").into();
+    }
+    pub(super) fn bind_created_virtual(&mut self,target:super::sessions::DisplayTarget) {
+        self.awaiting_virtual=false;
+        self.initial_selection_checked=false;
+        self.selected=None;
+        self.set_initial_display(target);
+    }
+    pub(super) fn awaiting_virtual(&self)->bool {self.awaiting_virtual}
     fn set_initial_display(&mut self,target:super::sessions::DisplayTarget) {
         self.initial_display=Some(target);
         self.blocked=true;
         self.notice=uu_i18n::text("正在准备指定显示器…").into();
     }
     fn restore_selection(&mut self, screens: &RemoteScreens, catalog_current: bool, control_ready: bool) -> Option<i32> {
-        if self.initial_selection_checked || self.pending.is_some() || !catalog_current || !control_ready {return None;}
+        if self.awaiting_virtual || self.initial_selection_checked || self.pending.is_some() || !catalog_current || !control_ready {return None;}
         if let Some(target)=&self.initial_display {
             match target.resolve(&screens.screens) {
                 Ok(id)=>{
@@ -81,13 +94,13 @@ impl Displays {
         screens.selected().is_some_and(|screen| self.layout.remember_selected(screen))
     }
     pub fn ready(&self) -> bool {
-        !self.blocked && self.pending.is_none()
+        !self.awaiting_virtual && !self.blocked && self.pending.is_none()
     }
     pub fn switching(&self) -> bool {
         self.pending.is_some()
     }
     pub(super) fn preparing_initial_target(&self)->bool {
-        self.initial_display.is_some()
+        self.awaiting_virtual || self.initial_display.is_some()
     }
     // A source change is not cancellable on the host. Keep only the newest
     // selection until the in-flight source, settings and frame are confirmed.
@@ -131,7 +144,7 @@ impl Displays {
     pub fn waiting_binding(&self) -> bool {
         // The initial host frame can belong to another monitor. Keep it hidden
         // until this window's explicit first selection has been confirmed.
-        self.unbound || self.initial_display.is_some()
+        self.awaiting_virtual || self.unbound || self.initial_display.is_some()
     }
     fn bind_track(&mut self, track: u32) {
         if let Some(p) = self
@@ -257,6 +270,9 @@ impl Displays {
 impl super::App {
     pub(super) fn prepare_displays(&mut self) {
         self.displays = Displays::default();
+        if self.stream_target.as_ref().is_some_and(|target|target.connection.virtual_display().is_some()) {
+            self.displays.await_virtual();
+        }
         if let Some(display)=self.stream_target.as_ref().and_then(|target|target.connection.display()) {
             self.displays.set_initial_display(display.clone());
         }
@@ -305,8 +321,12 @@ impl super::App {
             .map(|number| uu_i18n::format!("显示屏 {number}"))
             .unwrap_or_else(|| uu_i18n::text("显示器").into())
     }
-    pub(super) fn select_remote_screen(&mut self,id:i32){self.select_native_display(id);}
+    pub(super) fn select_remote_screen(&mut self,id:i32){
+        if self.stream_target.as_ref().is_some_and(|target|target.connection.virtual_display().is_some()) && self.displays.preparing_initial_target() {return;}
+        self.select_native_display(id);
+    }
     fn select_native_display(&mut self,id:i32){
+        if self.displays.awaiting_virtual {return;}
         let screens=self.remote_screens();
         if !screens.screens.iter().any(|s|s.id==id){return;}
         if self.displays.defer_selection(id){return;}
@@ -331,6 +351,7 @@ impl super::App {
         self.context.memory_mut(|m|m.close_popup());
     }
     fn poll_native_displays(&mut self,tracks:&[u32]){
+        if self.displays.awaiting_virtual {return;}
         let screens=self.remote_screens();
         if self.displays.layout.sync(&screens.screens){self.save_display_layout();}
         let Some(h)=self.controller.as_ref()else{return;};
@@ -400,6 +421,29 @@ mod tests {
         let mut displays=Displays::default();
         displays.set_initial_display(super::super::sessions::DisplayTarget{id,source:source.into()});
         displays
+    }
+    #[test]
+    fn virtual_view_never_adopts_the_initial_physical_source_and_requires_its_created_source() {
+        let mut d=Displays::default();
+        d.layout.remember_selected(&catalog(0).screens[0]);
+        d.await_virtual();
+        assert!(!d.ready() && d.waiting_binding());
+        assert_eq!(d.restore_selection(&catalog(0),true,true),None);
+        d.confirm_initial_current(&catalog(0),true,true,true);
+        assert!(!d.ready());
+        assert!(!d.remember_display(&catalog(0),true,true));
+        d.bind_created_virtual(super::super::sessions::DisplayTarget{id:1,source:"Source 1".into()});
+        assert!(!d.awaiting_virtual() && !d.ready() && d.waiting_binding());
+        assert_eq!(d.restore_selection(&catalog(0),true,true),Some(1));
+        d.native_frame_epoch=1;d.native_request_epoch=1;
+        let request=d.begin(1,0,Instant::now());
+        d.response(request,11,0);
+        assert!(!d.native_source_frame(&catalog(1),1,true));
+        d.native_frame_epoch=2;
+        assert!(!d.native_source_frame(&catalog(0),2,true));
+        assert!(!d.native_source_frame(&catalog(1),2,false));
+        assert!(d.native_source_frame(&catalog(1),2,true));
+        assert!(d.ready() && !d.waiting_binding());
     }
     #[test]
     fn explicit_source_wins_over_saved_selection_and_waits_for_the_target_epoch() {

@@ -333,7 +333,7 @@ impl App {
         }
         // Extra views of one host start silent so simultaneous display windows
         // do not play duplicated system audio. Their own sound menu can unmute.
-        if stream_target.as_ref().is_some_and(|t|t.connection.display().is_some()) {preferences.muted=true;}
+        if stream_target.as_ref().is_some_and(|t|t.connection.is_auxiliary_view()) {preferences.muted=true;}
         let mut client_support=uu_plugin_sdk::ClientSupport::default();
         let mut plugin_client_error=None;
         if let Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::Plugin{plugin,..},..})=&stream_target {
@@ -512,7 +512,9 @@ impl App {
         }
         if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
             if let Some(h)=&self.controller {h.stats.audio.stop();h.stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);}
-            self.release_all_keys();self.release_pointer_capture(ctx);self.shortcuts.borrow_mut().clear();
+            // The native window owns client-command key-ups; a retiring
+            // connection must not clear the surviving tab's held commands.
+            self.release_all_keys();self.release_pointer_capture(ctx);
             self.save_last_remote_frame();
             self.controller = None;
             self.disconnecting = false;
@@ -937,7 +939,7 @@ impl App {
                     Ok(handle)=>self.attach_controller(handle),Err(error)=>self.status=error.to_string(),
                 }
             }
-            sessions::ConnectionTarget::NativeDisplay{..}=>unreachable!("validated base connection"),
+            sessions::ConnectionTarget::NativeDisplay{..}|sessions::ConnectionTarget::NativeVirtual{..}=>unreachable!("validated base connection"),
         }
     }
 

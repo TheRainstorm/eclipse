@@ -52,12 +52,12 @@ macro_rules! record {
     };
 }
 
-fn label(ui: &mut egui::Ui, text: &str, selected: bool, device: bool) -> Response {
+fn label(ui: &mut egui::Ui, text: &str, selected: bool, device: bool, width_limit: f32) -> Response {
     let color = if selected { crate::theme::ACCENT } else if device { crate::theme::INK } else { crate::theme::MUTED };
     let font = egui::FontId::proportional(if device { 12.5 } else { 12. });
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), color);
     let leading = if device { 22. } else { 0. };
-    let width = (galley.size().x + leading + 16.).clamp(if device { 70. } else { 38. }, if device { 158. } else { 126. });
+    let width = (galley.size().x + leading + 16.).clamp(if device { 70. } else { 38. }, if device { 158. } else { 126. }).min(width_limit);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 24.), Sense::click_and_drag());
     let hovered = response.hovered() || response.is_pointer_button_down_on();
     let fill = if selected && !device { crate::theme::TINT }
@@ -130,6 +130,11 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
     let width=(ui.available_width()-controls_width-ui.spacing().item_spacing.x).max(0.);
     // Keep the device name and its close control visible together.
     if width<104. {return StripRects::default();}
+    let active_id=ui.make_persistent_id(("workspace-visible-device",ui.ctx().viewport_id()));
+    let reveal_active=tabs.groups.iter().any(|group|group.id==tabs.active) && ui.ctx().data_mut(|data| {
+        if data.get_temp::<u64>(active_id)==Some(tabs.active) {false}
+        else {data.insert_temp(active_id,tabs.active);true}
+    });
     let mut rects=StripRects::default();
     let mut actions=vec![];
     let _area=egui::ScrollArea::horizontal().id_salt("workspace-device-groups")
@@ -147,7 +152,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                         let response=frame.show(ui,|ui| {
                             ui.horizontal_centered(|ui| {
                                 ui.spacing_mut().item_spacing=egui::vec2(2.,0.);
-                                let name=label(ui,&group.name,active,true);
+                                let name=label(ui,&group.name,active,true,(width-34.).max(70.));
                                 record!(rects.devices,(group.id,name.rect));
                                 name.dnd_set_drag_payload(Drag(group.id));
                                 if name.clicked() { actions.push(Action::Select(group.id,None)); }
@@ -157,12 +162,16 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                 let close=control(ui,Control::Close,true).on_hover_text(uu_i18n::text("断开此会话"));
                                 record!(rects.close,(group.id,close.rect));
                                 if close.clicked() {actions.push(Action::Close(group.id));}
+                                // Reveal the connection header once per activation. Its
+                                // sources can be wider than the viewport; keep the close
+                                // control reachable without overriding manual scrolling.
+                                if active && reveal_active {name.union(close).scroll_to_me(None);}
                                 if !group.screens.is_empty() {
                                     let (divider,_)=ui.allocate_exact_size(egui::vec2(7.,22.),Sense::hover());
                                     ui.painter().line_segment([divider.center()-egui::vec2(0.,6.),divider.center()+egui::vec2(0.,6.)],Stroke::new(1.,crate::theme::BORDER));
                                 }
                                 for (screen,text) in &group.screens {
-                                    let response=label(ui,text,active && group.selected==Some(*screen),false);
+                                    let response=label(ui,text,active && group.selected==Some(*screen),false,126.);
                                     record!(rects.screens,(group.id,*screen,response.rect));
                                     if response.clicked() { actions.push(Action::Select(group.id,Some(*screen))); }
                                     if group.can_open_displays {
@@ -216,4 +225,64 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
         }
     }
     rects
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn frame(ctx:&egui::Context,tabs:&Tabs,time:f64,width:f32,controls:f32,events:Vec<egui::Event>)->StripRects {
+        let mut rects=StripRects::default();
+        let _=ctx.run(egui::RawInput {
+            screen_rect:Some(Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,80.))),
+            time:Some(time),events,..Default::default()
+        },|ctx| {
+            egui::CentralPanel::default().show(ctx,|ui| {
+                ui.horizontal_centered(|ui| {rects=show(tabs,ui,controls);});
+            });
+        });
+        rects
+    }
+    fn header(rects:&StripRects,id:u64)->Rect {
+        rects.devices.iter().find(|item|item.0==id).unwrap().1
+            .union(rects.close.iter().find(|item|item.0==id).unwrap().1)
+    }
+    #[test]
+    fn active_connection_reveals_its_header_once_and_preserves_manual_scroll() {
+        let ctx=egui::Context::default();
+        ctx.style_mut(|style|style.scroll_animation=egui::style::ScrollAnimation::none());
+        let mut tabs=Tabs {
+            groups:(1..=4).map(|id|Group {
+                id,name:format!("Generated computer {id} with a long title"),
+                screens:vec![(1,"Main display".into()),(2,"Temporary virtual display".into())],
+                selected:Some(1),can_open_displays:true,can_create_display:true,can_detach:true,
+            }).collect(),
+            active:1,actions:Default::default(),local_ui:Default::default(),
+        };
+        frame(&ctx,&tabs,0.,440.,140.,vec![]);
+        let before=frame(&ctx,&tabs,0.2,440.,140.,vec![]);
+        assert!(header(&before,4).left()>before.bounds.right());
+        tabs.active=4;
+        frame(&ctx,&tabs,0.4,440.,140.,vec![]);
+        frame(&ctx,&tabs,0.6,440.,140.,vec![]);
+        let revealed=frame(&ctx,&tabs,0.8,440.,140.,vec![]);
+        assert!(revealed.bounds.contains_rect(header(&revealed,4)),"active name and close must both be visible: {:?}",header(&revealed,4));
+        let events=vec![egui::Event::PointerMoved(revealed.bounds.center()),egui::Event::MouseWheel {
+            unit:egui::MouseWheelUnit::Point,delta:egui::vec2(10000.,0.),modifiers:Default::default(),
+        }];
+        frame(&ctx,&tabs,1.,440.,140.,events);
+        let mut manual=frame(&ctx,&tabs,1.2,440.,140.,vec![]);
+        for index in 0..8 {manual=frame(&ctx,&tabs,1.4+index as f64*0.2,440.,140.,vec![]);}
+        assert!(header(&manual,4).left()>manual.bounds.right(),"the active tab must not pull manual scrolling back");
+        tabs.groups[3].selected=Some(2);
+        let source_changed=frame(&ctx,&tabs,3.,440.,140.,vec![]);
+        assert_eq!(header(&source_changed,4),header(&manual,4));
+        // Even a viewport just above the strip threshold keeps name + close
+        // together; the title is elided before the close control is clipped.
+        tabs.active=3;
+        frame(&ctx,&tabs,3.2,320.,190.,vec![]);
+        frame(&ctx,&tabs,3.4,320.,190.,vec![]);
+        let narrow=frame(&ctx,&tabs,3.6,320.,190.,vec![]);
+        assert!(narrow.bounds.contains_rect(header(&narrow,3)));
+        assert!(tabs.actions.borrow().is_empty());
+    }
 }

@@ -1,7 +1,7 @@
 //! Live sessions belong to a workspace; native windows only present a group.
 //! Moving a group never recreates its controller, decoder, or media transport.
 use crate::{
-    sessions::{ConnectionTarget, DisplayTarget, StreamTarget},
+    sessions::{ConnectionTarget, DisplayTarget, StreamTarget, VirtualDisplayTarget},
     window_context, App,
 };
 use eframe::egui;
@@ -25,7 +25,7 @@ impl Launch {
     ) -> anyhow::Result<Self> {
         target.connection.validate().map_err(anyhow::Error::msg)?;
         let connection = match &mut target.connection {
-            ConnectionTarget::NativeDisplay {connection,..}=>connection.as_mut(),
+            ConnectionTarget::NativeDisplay {connection,..}|ConnectionTarget::NativeVirtual {connection,..}=>connection.as_mut(),
             connection=>connection,
         };
         match connection {
@@ -201,7 +201,8 @@ struct Session {
 }
 fn session_title(app:&App)->String {
     let target=app.stream_target.as_ref().expect("stream session target");
-    if target.connection.display().is_some() {format!("{} · {}",target.alias,app.display_label())}
+    if target.connection.virtual_display().is_some() {format!("{} · {}",target.alias,uu_i18n::text("临时虚拟屏"))}
+    else if target.connection.display().is_some() {format!("{} · {}",target.alias,app.display_label())}
     else {target.alias.clone()}
 }
 fn base_key(target:&StreamTarget)->ConnectionTarget {
@@ -213,6 +214,16 @@ fn display_launch(target:&StreamTarget,screen:&uu_core::screen_control::RemoteSc
         connection:ConnectionTarget::NativeDisplay {
             connection:Box::new(target.connection.base().clone()),
             display:DisplayTarget{id:screen.id,source:screen.display_name.clone()},
+        },
+        alias:target.alias.clone(),view_only:target.view_only,
+    },None)
+}
+fn virtual_launch(target:&StreamTarget,spec:uu_core::virtual_display::Spec)->anyhow::Result<Launch> {
+    anyhow::ensure!(target.is_native(),"temporary displays require a native connection");
+    Launch::new(StreamTarget {
+        connection:ConnectionTarget::NativeVirtual {
+            connection:Box::new(target.connection.base().clone()),
+            virtual_display:VirtualDisplayTarget::new(spec),
         },
         alias:target.alias.clone(),view_only:target.view_only,
     },None)
@@ -256,6 +267,7 @@ impl Window {
         egui::ViewportId::from_hash_of(("stream-window", self.id))
     }
     fn tabs(&self, actions: Rc<RefCell<Vec<Action>>>) -> Tabs {
+        let live=self.sessions.iter().filter(|session|!session.app.exit_requested&&!session.app.disconnecting).count();
         Tabs {
             active: self.active,
             actions,
@@ -263,7 +275,11 @@ impl Window {
             groups: self
                 .sessions
                 .iter()
-                .map(|s| Group {
+                .filter(|session|!session.app.exit_requested)
+                .map(|s| {
+                    let preparing_virtual=s.app.stream_target.as_ref().is_some_and(|target|target.connection.virtual_display().is_some())
+                        && s.app.displays.preparing_initial_target();
+                    Group {
                     id: s.id,
                     name: session_title(&s.app),
                     screens: s
@@ -271,18 +287,20 @@ impl Window {
                         .remote_screens()
                         .screens
                         .iter()
+                        .filter(|_|!preparing_virtual)
                         .map(|screen| (screen.id, s.app.displays.layout.label(screen)))
                         .collect(),
-                    selected: s.app.displays.selected,
-                    can_detach:self.sessions.len()>1,
-                    can_open_displays: s.app.stream_target.as_ref().is_some_and(StreamTarget::is_native)
+                    selected: s.app.displays.selected.filter(|_|!preparing_virtual),
+                    can_detach:live>1&&!s.app.disconnecting,
+                    can_open_displays: !preparing_virtual && s.app.stream_target.as_ref().is_some_and(StreamTarget::is_native)
                         && s.app.controller.as_ref().is_some_and(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)),
-                    can_create_display:s.app.controller.as_ref().is_some_and(|h|h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire)),
-                })
+                    can_create_display:!preparing_virtual && s.app.controller.as_ref().is_some_and(|h|h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire)),
+                }})
                 .collect(),
         }
     }
     fn select(&mut self, id: u64) {
+        if !self.sessions.iter().any(|session|session.id==id&&!session.app.exit_requested) {return;}
         if self.active == id {
             return;
         }
@@ -383,12 +401,13 @@ impl Window {
         let mut active = None;
         for (index, session) in self.sessions.iter_mut().enumerate() {
             session.app.workspace_tabs = Some(tabs.clone());
-            session.app.active_session = session.id == self.active && !self.closing;
+            session.app.active_session = session.id == self.active && !self.closing && !session.app.exit_requested;
             if session.app.active_session {
                 active = Some(index);
             } else {
                 session.app.workspace_poll(ctx);
                 session.app.poll_controller(ctx);
+                session.app.poll_virtual_display_state();
                 if session.app.exit_requested && session.app.audio_save_after.take().is_some() {
                     session.app.persist_preferences();
                 }
@@ -412,8 +431,8 @@ impl Window {
         }
         self.sessions
             .retain(|s| !s.app.exit_requested || s.app.controller.is_some());
-        if !self.sessions.iter().any(|s| s.id == self.active) {
-            if let Some(first) = self.sessions.first() {
+        if !self.sessions.iter().any(|s| s.id == self.active&&!s.app.exit_requested) {
+            if let Some(first) = self.sessions.iter().find(|session|!session.app.exit_requested&&!session.app.disconnecting) {
                 self.select(first.id);
             }
         }
@@ -471,6 +490,25 @@ pub struct Workspace {
     owner: uu_core::local_workspace::Owner,
 }
 impl State {
+    fn fork_virtual_display(&mut self,session:u64) {
+        let Some(window)=self.windows.iter_mut().find(|window|!window.closing&&window.sessions.iter().any(|source|source.id==session)) else{return;};
+        let source=window.sessions.iter_mut().find(|source|source.id==session).unwrap();
+        if source.app.exit_requested || source.app.disconnecting {return;}
+        if !source.app.controller.as_ref().is_some_and(|handle|handle.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire)) {
+            source.app.displays.notice=uu_i18n::text("远端未提供虚拟显示器管理，请更新后台并授予管理服务权限").into();
+            return;
+        }
+        let Some(target)=source.app.stream_target.as_ref() else{return;};
+        match virtual_launch(target,source.app.virtual_display.spec()) {
+            Ok(launch)=>{
+                // The new connection creates and owns its own temporary screen.
+                // Keep the origin's selected source, controller and leases intact.
+                window.pending.push(launch);
+                window.focus=true;
+            },
+            Err(error)=>source.app.displays.notice=error.to_string(),
+        }
+    }
     fn open_display(&mut self,session:u64,screen:i32,ctx:&egui::Context) {
         let Some(source)=self.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==session) else{return;};
         let screens=source.app.remote_screens();
@@ -548,7 +586,7 @@ impl State {
     fn apply(&mut self, action: Action, ctx: &egui::Context) {
         match action {
             Action::OpenDisplay{session,screen}=>self.open_display(session,screen,ctx),
-            Action::CreateDisplay(id)=>{if let Some(session)=self.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==id){session.app.create_remote_virtual_display();}},
+            Action::CreateDisplay(id)=>self.fork_virtual_display(id),
             Action::ManageDisplays(id)=>{if let Some(session)=self.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==id){session.app.manage_remote_virtual_displays();}},
             Action::OpenAllDisplays(session)=>{
                 let screens=self.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==session)
@@ -557,7 +595,7 @@ impl State {
             },
             Action::Select(id, screen) => {
                 for window in &mut self.windows {
-                    if window.sessions.iter().any(|s| s.id == id) {
+                    if window.sessions.iter().any(|s| s.id == id&&!s.app.exit_requested) {
                         window.select(id);
                         if let Some(screen) = screen {
                             if let Some(s) = window.sessions.iter_mut().find(|s| s.id == id) {
@@ -571,8 +609,17 @@ impl State {
             }
             Action::Close(id) => {
                 for window in &mut self.windows {
-                    if let Some(session) = window.sessions.iter_mut().find(|s| s.id == id) {
+                    if let Some(session) = window.sessions.iter_mut().find(|s| s.id == id&&!s.app.exit_requested) {
+                        session.app.deactivate_session();
                         session.app.disconnect();
+                        if self.input_owner==Some(id) {self.input_owner=None;}
+                        if !window.sessions.iter().any(|session|session.id==window.active&&!session.app.exit_requested) {
+                            if let Some(next)=window.sessions.iter().find(|session|!session.app.exit_requested&&!session.app.disconnecting).map(|session|session.id) {
+                                window.select(next);
+                            }
+                        }
+                        ctx.request_repaint_of(window.viewport());
+                        break;
                     }
                 }
             }
@@ -613,11 +660,11 @@ impl State {
                 let Some(index) = self
                     .windows
                     .iter()
-                    .position(|w| !w.closing && w.sessions.iter().any(|s| s.id == id))
+                    .position(|w| !w.closing && w.sessions.iter().any(|s| s.id == id&&!s.app.exit_requested&&!s.app.disconnecting))
                 else {
                     return;
                 };
-                if self.windows[index].sessions.len()==1 {
+                if self.windows[index].sessions.iter().filter(|session|!session.app.exit_requested&&!session.app.disconnecting).count()<=1 {
                     self.windows[index].select(id);
                     self.windows[index].focus=true;
                     return;
@@ -627,8 +674,9 @@ impl State {
                 let mut session = source.sessions.remove(at);
                 session.app.deactivate_session();
                 if source.active == id {
-                    let next = source.sessions[0].id;
-                    source.select(next);
+                    if let Some(next)=source.sessions.iter().find(|session|!session.app.exit_requested&&!session.app.disconnecting).map(|session|session.id) {
+                        source.select(next);
+                    }
                 }
                 let id = self.next;
                 self.next += 1;

@@ -2,6 +2,7 @@
 //! retains its own input state and controller inside that process.
 use std::{
     collections::HashMap,
+    hash::Hash,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
 };
@@ -22,6 +23,30 @@ pub enum ConnectionTarget {
     NativeInternet(PathBuf),
     NativeProfile {id:String,snapshot:PathBuf},
     NativeDisplay {connection:Box<ConnectionTarget>,display:DisplayTarget},
+    NativeVirtual {connection:Box<ConnectionTarget>,virtual_display:VirtualDisplayTarget},
+}
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VirtualDisplayTarget {
+    pub id:uuid::Uuid,
+    pub spec:uu_core::virtual_display::Spec,
+}
+impl VirtualDisplayTarget {
+    pub fn new(spec:uu_core::virtual_display::Spec)->Self {
+        Self{id:uuid::Uuid::new_v4(),spec}
+    }
+    fn validate(&self)->Result<(),String> {
+        if self.id.is_nil() {return Err("temporary display launch identity is empty".into());}
+        // The host owns the canonical Spec validation and creation rules.
+        Ok(())
+    }
+}
+impl Hash for VirtualDisplayTarget {
+    fn hash<H:std::hash::Hasher>(&self,state:&mut H) {
+        self.id.hash(state);
+        self.spec.width.hash(state);self.spec.height.hash(state);
+        self.spec.refresh_millihz.hash(state);self.spec.hdr.hash(state);
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash,serde::Serialize,serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,15 +70,29 @@ impl DisplayTarget {
 }
 impl ConnectionTarget {
     pub fn base(&self)->&Self {
-        match self {Self::NativeDisplay{connection,..}=>connection.base(),other=>other}
+        match self {Self::NativeDisplay{connection,..}|Self::NativeVirtual{connection,..}=>connection.base(),other=>other}
     }
     pub fn display(&self)->Option<&DisplayTarget> {
         match self {Self::NativeDisplay{display,..}=>Some(display),_=>None}
     }
+    pub fn virtual_display(&self)->Option<&VirtualDisplayTarget> {
+        match self {Self::NativeVirtual{virtual_display,..}=>Some(virtual_display),_=>None}
+    }
+    pub fn is_auxiliary_view(&self)->bool {
+        matches!(self,Self::NativeDisplay{..}|Self::NativeVirtual{..})
+    }
     pub fn validate(&self)->Result<(),String> {
-        if let Self::NativeDisplay{connection,display}=self {
-            display.validate()?;
-            if matches!(connection.as_ref(),Self::Plugin{..}|Self::NativeDisplay{..}) {
+        let connection=match self {
+            Self::NativeDisplay{connection,display}=>{display.validate()?;Some(connection)},
+            Self::NativeVirtual{connection,virtual_display}=>{
+                virtual_display.validate()?;
+                if matches!(connection.as_ref(),Self::NativeLoopback) {return Err("temporary displays require an authenticated remote connection".into());}
+                Some(connection)
+            },
+            _=>None,
+        };
+        if let Some(connection)=connection {
+            if matches!(connection.as_ref(),Self::Plugin{..}|Self::NativeDisplay{..}|Self::NativeVirtual{..}) {
                 return Err("native display target requires an unwrapped native connection".into());
             }
         }
@@ -68,6 +107,9 @@ impl ConnectionTarget {
                 // Host IDs may change after reconnect; a unique source name
                 // identifies the explicit window independently of that ID.
                 display:DisplayTarget{id:if display.source.is_empty(){display.id}else{0},source:display.source.clone()},
+            },
+            Self::NativeVirtual{connection,virtual_display}=>Self::NativeVirtual {
+                connection:Box::new(connection.key()),virtual_display:virtual_display.clone(),
             },
             other=>other.clone(),
         }
@@ -90,6 +132,7 @@ impl StreamTarget {
         let mut args = args.into_iter();
         let (mut connection, mut alias, mut view_only) = (None, None, false);
         let (mut display_id,mut display_source)=(None,None);
+        let mut virtual_display=None;
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--self-stream" => {
@@ -131,13 +174,21 @@ impl StreamTarget {
                     if display_source.is_some(){return Err("duplicate native display source".into());}
                     display_source=Some(args.next().ok_or("missing native display source")?);
                 }
+                "--virtual-display" => {
+                    if virtual_display.is_some(){return Err("duplicate temporary display launch".into());}
+                    let value=args.next().ok_or("missing temporary display launch")?;
+                    virtual_display=Some(serde_json::from_str::<VirtualDisplayTarget>(&value).map_err(|_|"invalid temporary display launch")?);
+                }
                 "--view-only" => view_only = true,
                 _ => return Err(uu_i18n::format!("未知参数：{arg}")),
             }
         }
         match connection {
             Some(connection) => {
-                let connection=if let Some(id)=display_id {
+                let connection=if let Some(virtual_display)=virtual_display {
+                    if display_id.is_some()||display_source.is_some(){return Err("temporary and existing display targets are mutually exclusive".into());}
+                    ConnectionTarget::NativeVirtual{connection:Box::new(connection),virtual_display}
+                }else if let Some(id)=display_id {
                     ConnectionTarget::NativeDisplay{connection:Box::new(connection),display:DisplayTarget{id,source:display_source.unwrap_or_default()}}
                 }else{
                     if display_source.is_some(){return Err("native display source requires a display id".into());}
@@ -149,7 +200,7 @@ impl StreamTarget {
                     ConnectionTarget::Plugin {identity,..} => identity.clone(),
                     ConnectionTarget::NativeLoopback => uu_i18n::text("本机串流测试").into(),
                     ConnectionTarget::NativeInvitation(_) | ConnectionTarget::NativeDevice(_) | ConnectionTarget::NativeInternet(_) | ConnectionTarget::NativeProfile{..} => uu_i18n::text("原生设备").into(),
-                    ConnectionTarget::NativeDisplay{..}=>unreachable!("base connection is unwrapped"),
+                    ConnectionTarget::NativeDisplay{..}|ConnectionTarget::NativeVirtual{..}=>unreachable!("base connection is unwrapped"),
                 };
                 Ok(Some(Self {
                     connection,
@@ -157,7 +208,7 @@ impl StreamTarget {
                     view_only,
                 }))
             }
-            None if alias.is_some() || view_only || display_id.is_some() || display_source.is_some() => Err(uu_i18n::text("串流参数需要设备或原生邀请").into()),
+            None if alias.is_some() || view_only || display_id.is_some() || display_source.is_some() || virtual_display.is_some() => Err(uu_i18n::text("串流参数需要设备或原生邀请").into()),
             None => Ok(None),
         }
     }
@@ -172,9 +223,10 @@ impl StreamTarget {
             ConnectionTarget::NativeDevice(id) => {command.arg("--native-device").arg(id);}
             ConnectionTarget::NativeInternet(path) => {command.arg("--native-internet").arg(path);}
             ConnectionTarget::NativeProfile{snapshot,..}=>{command.arg("--device-profile").arg(snapshot);}
-            ConnectionTarget::NativeDisplay{..}=>unreachable!("base connection is unwrapped"),
+            ConnectionTarget::NativeDisplay{..}|ConnectionTarget::NativeVirtual{..}=>unreachable!("base connection is unwrapped"),
         }
         if let Some(display)=self.connection.display(){command.arg("--display-id").arg(display.id.to_string()).arg("--display-source").arg(&display.source);}
+        if let Some(virtual_display)=self.connection.virtual_display(){command.arg("--virtual-display").arg(serde_json::to_string(virtual_display).expect("temporary display launch serializes"));}
         command
             .arg("--stream-alias")
             .arg(&self.alias)
@@ -250,6 +302,54 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn temporary_display_identity_and_arguments_preserve_launch_intent() {
+        let virtual_display=VirtualDisplayTarget::new(uu_core::virtual_display::Spec{width:2560,height:1440,refresh_millihz:120_000,hdr:false});
+        let wrap=|snapshot:&str,virtual_display:VirtualDisplayTarget|StreamTarget {
+            connection:ConnectionTarget::NativeVirtual {
+                connection:Box::new(ConnectionTarget::NativeProfile{id:"generated-profile".into(),snapshot:snapshot.into()}),virtual_display,
+            },alias:"Generated computer".into(),view_only:true,
+        };
+        let first=wrap("first.json",virtual_display.clone());
+        assert!(first.connection.is_auxiliary_view());
+        assert!(first.connection.display().is_none());
+        assert_eq!(first.connection.virtual_display(),Some(&virtual_display));
+        assert_eq!(first.key(),wrap("second.json",virtual_display.clone()).key());
+        assert_ne!(first.key(),wrap("first.json",VirtualDisplayTarget::new(virtual_display.spec)).key());
+        assert_ne!(first.key(),first.connection.base().key());
+        assert_eq!(serde_json::from_slice::<StreamTarget>(&serde_json::to_vec(&first).unwrap()).unwrap(),first);
+        // Normal process handoff must not turn a temporary view into an ordinary
+        // device connection by dropping its UUID or requested display spec.
+        let device=StreamTarget{connection:ConnectionTarget::NativeVirtual {
+            connection:Box::new(ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into())),virtual_display,
+        },..first};
+        let args=device.command(Path::new("generated-gui"),None).get_args().map(|arg|arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        assert_eq!(StreamTarget::parse(args).unwrap(),Some(device));
+    }
+    #[test]
+    fn temporary_display_targets_reject_nested_wrappers_plugins_and_loopback() {
+        let wrap=|connection|ConnectionTarget::NativeVirtual {
+            connection:Box::new(connection),virtual_display:VirtualDisplayTarget::new(Default::default()),
+        };
+        let base=ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into());
+        for invalid in [
+            wrap(ConnectionTarget::NativeLoopback),
+            wrap(ConnectionTarget::Plugin{plugin:"example-addon".into(),identity:"generated".into()}),
+            wrap(wrap(base.clone())),
+            wrap(display(base.clone(),1,"Generated source")),
+            display(wrap(base.clone()),1,"Generated source"),
+            ConnectionTarget::NativeVirtual{connection:Box::new(base),virtual_display:VirtualDisplayTarget{id:uuid::Uuid::nil(),spec:Default::default()}},
+        ] {
+            let decoded:ConnectionTarget=serde_json::from_slice(&serde_json::to_vec(&invalid).unwrap()).unwrap();
+            assert!(decoded.validate().is_err());
+        }
+        let virtual_display=serde_json::to_string(&VirtualDisplayTarget::new(Default::default())).unwrap();
+        for args in [
+            vec!["--virtual-display".into(),virtual_display.clone()],
+            vec!["--self-stream".into(),"--virtual-display".into(),virtual_display.clone()],
+            vec!["--native-device".into(),"01234567-89ab-4cde-8fab-0123456789ab".into(),"--virtual-display".into(),virtual_display,"--display-id".into(),"1".into()],
+        ] {assert!(StreamTarget::parse(args).is_err());}
+    }
     fn display(connection:ConnectionTarget,id:i32,source:&str)->ConnectionTarget {
         ConnectionTarget::NativeDisplay{connection:Box::new(connection),display:DisplayTarget{id,source:source.into()}}
     }

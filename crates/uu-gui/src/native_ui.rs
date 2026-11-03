@@ -57,6 +57,9 @@ impl App {
     }
     pub(super) fn attach_controller(&mut self,handle:uu_core::controller::ControllerHandle) {
         self.virtual_display.reset_remote();
+        if let Some(target)=self.stream_target.as_ref().and_then(|target|target.connection.virtual_display()) {
+            self.virtual_display.prepare_startup(target.spec);
+        }
         let context=self.context.clone();handle.frames.enable_planar();handle.frames.set_waker(move||context.request_video_frame());
         if let Err(error)=super::clipboard::start_following(handle.stats.clipboard.clone(),self.clipboard_window.clone()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(error.to_string());}
         self.controller=Some(handle);self.window_sizing.borrow_mut().begin_stream();self.input_capture.request();
@@ -211,21 +214,22 @@ impl App {
     fn connect_native_source(&mut self,path:Option<PathBuf>,device:Option<String>,internet:Option<PathBuf>,profile:Option<PathBuf>){
         self.remote_admin_ui=Default::default();
         let stats=self.client_stats("native");
+        let requested=!self.view_only && self.displays.ready();
         let result=if let Some(path)=profile {
             (||->anyhow::Result<_>{
                 let config=self.config.clone().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法读取设备配置目录")))?;
                 let launch=uu_core::device_book::Launch::read(&path)?;
-                uu_core::native_controller::spawn_profile(launch,config,stats,!self.view_only)
+                uu_core::native_controller::spawn_profile(launch,config,stats,requested)
             })()
         }else if let Some(profile)=internet {
             (|| -> anyhow::Result<_> {
                 let config=self.config.clone().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法读取连接配置目录")))?;
                 let settings=super::internet_ui::read_profile(&profile)?;
-                uu_core::native_controller::spawn_internet(settings,config,stats,!self.view_only)
+                uu_core::native_controller::spawn_internet(settings,config,stats,requested)
             })()
         }else if let Some(id)=device {
-            self.config.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定原生设备配置目录"))).and_then(|config|uu_core::native_controller::spawn_device(config.at("native-lan/paired-devices.json"),id,stats,!self.view_only))
-        }else{uu_core::native_controller::spawn_with_input(path.unwrap(),stats,!self.view_only)};
+            self.config.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定原生设备配置目录"))).and_then(|config|uu_core::native_controller::spawn_device(config.at("native-lan/paired-devices.json"),id,stats,requested))
+        }else{uu_core::native_controller::spawn_with_input(path.unwrap(),stats,requested)};
         match result {
             Ok(handle)=>self.attach_controller(handle),
             Err(error) => self.status = uu_i18n::format!("原生连接失败：{error}"),

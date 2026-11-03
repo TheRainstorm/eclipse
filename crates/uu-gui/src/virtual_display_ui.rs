@@ -57,6 +57,13 @@ use uu_core::{
     virtual_display::{Display, Owner, Slot, Spec, Status},
 };
 
+#[derive(Clone,Copy)]
+enum Startup {
+    Waiting(Instant),
+    Submitted,
+    Finished,
+}
+
 #[derive(Default)]
 pub struct State {
     pub open: bool,
@@ -74,10 +81,33 @@ pub struct State {
     pending: Option<(u64, Instant)>,
     pending_timed_out: bool,
     pub source: Option<(String, Instant)>,
+    source_timed_out: bool,
     notice: String,
     notice_changed: bool,
+    startup: Option<Startup>,
+    create_requested: bool,
 }
 impl State {
+    pub(super) fn spec(&self)->Spec {self.spec}
+    pub(super) fn prepare_startup(&mut self,spec:Spec) {
+        self.spec=spec;
+        self.startup=Some(Startup::Waiting(Instant::now()));
+        self.message(uu_i18n::text("正在创建临时虚拟显示器…").into());
+    }
+    fn poll_startup(&mut self,client:Option<&Client>) {
+        let Some(Startup::Waiting(started))=self.startup else {return;};
+        if self.busy() {return;}
+        if let Some(client)=client.filter(|client|client.available.load(std::sync::atomic::Ordering::Acquire)) {
+            // A media epoch change must never replay a connection's Create.
+            self.startup=Some(Startup::Submitted);
+            self.remote(client,Request::Create{spec:self.spec});
+            if self.pending.is_none() {self.startup=Some(Startup::Finished);}
+        } else if started.elapsed()>uu_core::native_virtual_display::OPERATION_TIMEOUT {
+            self.startup=Some(Startup::Finished);
+            self.message(uu_i18n::text("远端未提供虚拟显示器管理，请更新后台并授予管理服务权限").into());
+        }
+    }
+    fn take_create_request(&mut self)->bool {std::mem::take(&mut self.create_requested)}
     pub fn reset_remote(&mut self) {
         self.open = false;
         self.local_owner = None;
@@ -85,12 +115,15 @@ impl State {
         self.pending = None;
         self.pending_timed_out = false;
         self.source = None;
+        self.source_timed_out=false;
         self.status = None;
         self.displays.clear();
         self.slots.clear();
         self.preparing_slot = None;
         self.notice.clear();
         self.notice_changed = false;
+        self.startup=None;
+        self.create_requested=false;
     }
     pub fn owns_foreground_displays(&self) -> bool {
         !self.foreground_displays.is_empty()
@@ -251,9 +284,6 @@ impl State {
             Err(error) => self.message(error.to_string()),
         }
     }
-    pub fn create_remote(&mut self, client: &Client) {
-        self.remote(client, Request::Create { spec: self.spec });
-    }
     pub fn open_remote(&mut self, client: &Client) {
         self.open = true;
         self.remote(client, Request::Inspect);
@@ -287,8 +317,10 @@ impl State {
                 self.message(String::new());
             }
             Response::Created { display } => {
+                if matches!(self.startup,Some(Startup::Submitted)) {self.startup=Some(Startup::Finished);}
                 if matches!(display.owner, Owner::Session(_)) {
                     self.source = Some((display.source.clone(), Instant::now()));
+                    self.source_timed_out=false;
                 }
                 self.displays.retain(|d| d.id != display.id);
                 self.displays.push(display);
@@ -301,10 +333,14 @@ impl State {
                 self.status = None;
                 self.message(uu_i18n::text("虚拟显示器已移除").into());
             }
-            Response::Error { message } => self.message(message),
+            Response::Error { message } => {
+                if matches!(self.startup,Some(Startup::Submitted)) {self.startup=Some(Startup::Finished);}
+                self.message(message)
+            },
         }
     }
     pub fn poll(&mut self, client: Option<&Client>) {
+        self.poll_startup(client);
         if let Some(receiver) = &self.worker {
             match receiver.try_recv() {
                 Ok(result) => {
@@ -355,15 +391,19 @@ impl State {
                 );
             }
         }
-        if self
+        if !self.source_timed_out && self
             .source
             .as_ref()
             .is_some_and(|(_, started)| started.elapsed() > Duration::from_secs(12))
         {
-            self.source = None;
-            self.message(
-                uu_i18n::text("虚拟屏已创建，但显示目录尚未更新，请重新选择显示器").into(),
-            );
+            self.source_timed_out=true;
+            if self.startup.is_some() {
+                // A late catalog may still confirm this exact created target.
+                self.message(uu_i18n::text("仍在等待临时虚拟屏进入显示目录，可关闭此标签取消").into());
+            } else {
+                self.source = None;
+                self.message(uu_i18n::text("虚拟屏已创建，但显示目录尚未更新，请重新选择显示器").into());
+            }
         }
     }
     pub fn show(&mut self, ctx: &egui::Context, client: Option<&Client>) {
@@ -586,7 +626,11 @@ impl State {
         }
         if let Some(command) = command {
             if let Some(client) = client {
-                self.remote(client, command);
+                if matches!(command,Request::Create{..}) {
+                    self.create_requested=true;
+                } else {
+                    self.remote(client, command);
+                }
             } else {
                 self.local(ctx, command.into());
             }
@@ -612,6 +656,37 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn virtual_view_startup_waits_for_management_and_never_replays_submitted_creation() {
+        let mut state=State::default();
+        let spec=Spec{width:2560,..Default::default()};
+        state.prepare_startup(spec);
+        state.take_notice();
+        state.poll(None);
+        assert!(matches!(state.startup,Some(Startup::Waiting(_))));
+        assert!(state.pending.is_none());
+        // An accepted request keeps its identity across late replies and media
+        // restarts. A UI timeout is not permission to create another display.
+        state.startup=Some(Startup::Submitted);
+        state.pending=Some((7,Instant::now()-uu_core::native_virtual_display::OPERATION_TIMEOUT-Duration::from_secs(1)));
+        state.poll(None);state.poll(None);
+        assert_eq!(state.pending.map(|pending|pending.0),Some(7));
+        assert!(matches!(state.startup,Some(Startup::Submitted)));
+        state.pending=None;
+        let mut created=display();created.owner=Owner::Session(uuid::Uuid::new_v4());
+        state.receive(Response::Created{display:created},None);
+        assert!(matches!(state.startup,Some(Startup::Finished)));
+        state.source.as_mut().unwrap().1=Instant::now()-Duration::from_secs(13);
+        state.poll(None);
+        assert!(state.source.is_some(),"late exact catalogs can still bind this owned source");
+        state.take_notice();
+        state.poll(None);
+        assert!(state.take_notice().is_none());
+        state.reset_remote();
+        assert!(state.startup.is_none() && state.source.is_none());
+        state.prepare_startup(spec);
+        assert!(matches!(state.startup,Some(Startup::Waiting(_))),"only a new controller admits a new startup");
+    }
     #[test]
     fn unconfirmed_remote_work_blocks_retries_until_reset_and_new_connections_drop_old_selection() {
         let mut state = State::default();
@@ -856,12 +931,26 @@ impl crate::App {
     pub(super) fn create_remote_virtual_display(&mut self) {
         self.release_all_keys();
         self.stream_menu.open = false;
-        if let Some(handle) = &self.controller {
-            self.virtual_display
-                .create_remote(&handle.stats.virtual_displays);
+        self.virtual_display.open=false;
+        if let Some(tabs)=&self.workspace_tabs {
+            tabs.actions.borrow_mut().push(crate::stream_workspace::Action::CreateDisplay(tabs.active));
+            return;
+        }
+        // The uncommon standalone entry uses the same launch ownership rule.
+        if let Some(origin)=self.stream_target.as_ref() {
+            let target=crate::sessions::StreamTarget {
+                connection:crate::sessions::ConnectionTarget::NativeVirtual {
+                    connection:Box::new(origin.connection.base().clone()),
+                    virtual_display:crate::sessions::VirtualDisplayTarget::new(self.virtual_display.spec()),
+                },
+                alias:origin.alias.clone(),view_only:origin.view_only,
+            };
+            let result=std::env::current_exe().map_err(anyhow::Error::from).and_then(|exe|self.sessions.open(&exe,&target,self.platform.origin()).map_err(anyhow::Error::from));
+            if let Err(error)=result {self.displays.notice=error.to_string();}
         }
     }
-    pub(super) fn poll_virtual_displays(&mut self, ctx: &egui::Context) {
+    pub(super) fn poll_virtual_display_state(&mut self) {
+        if self.disconnecting || self.exit_requested {return;}
         let stats = self.controller.as_ref().map(|handle| handle.stats.clone());
         self.virtual_display
             .poll(stats.as_ref().map(|stats| &stats.virtual_displays));
@@ -873,8 +962,13 @@ impl crate::App {
                 .filter(|screen| &screen.display_name == source);
             if let Some(screen) = matching.next().filter(|_| matching.next().is_none()) {
                 let id = screen.id;
+                let source=source.clone();
                 self.virtual_display.source = None;
-                self.select_remote_screen(id);
+                if self.displays.awaiting_virtual() {
+                    self.displays.bind_created_virtual(crate::sessions::DisplayTarget{id,source});
+                } else {
+                    self.select_remote_screen(id);
+                }
             }
         }
         if self.stream_target.is_some() {
@@ -882,7 +976,12 @@ impl crate::App {
                 self.displays.notice = notice;
             }
         }
+    }
+    pub(super) fn poll_virtual_displays(&mut self, ctx: &egui::Context) {
+        self.poll_virtual_display_state();
+        let stats = self.controller.as_ref().map(|handle| handle.stats.clone());
         self.virtual_display
             .show(ctx, stats.as_ref().map(|stats| &stats.virtual_displays));
+        if self.virtual_display.take_create_request() {self.create_remote_virtual_display();}
     }
 }
