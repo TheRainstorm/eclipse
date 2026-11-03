@@ -24,6 +24,8 @@ mod install_windows;
 mod ownership_windows;
 #[cfg(windows)]
 mod windows;
+#[cfg(any(windows, test))]
+mod provision_policy;
 
 pub const INSTALL_URL: &str = "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases";
 

@@ -455,7 +455,10 @@ fn scene() -> Result<Scene> {
     let active = query(QDC_ONLY_ACTIVE_PATHS)?;
     let mut supported_adapters = BTreeMap::new();
     let mut seen = BTreeSet::new();
-    for path in &all.paths {
+    // An adapter can finish publishing between the two CCD queries. Resolve
+    // exact PnP ownership for the freshest active set too; absence from the
+    // earlier all-path sample must not turn our own adapter into a foreign one.
+    for path in all.paths.iter().chain(active.paths.iter()) {
         let id = adapter(path.targetInfo.adapterId);
         if !seen.insert(id) {
             continue;

@@ -37,6 +37,7 @@ struct Candidate {
 struct PendingRollback {
     instance: String,
     original: DisabledState,
+    baseline: Fingerprints,
     claims: BTreeMap<TargetKey, Box<dyn Claim>>,
     failure: String,
 }
@@ -261,15 +262,60 @@ fn claim_targets(
     Ok(())
 }
 
+fn verify_enable_effects(baseline: &Fingerprints, fresh: &Scene, instance: &str) -> Result<()> {
+    use super::super::provision_policy::{check_enabled, Violation};
+    let current = fingerprints(&fresh.active, None)?;
+    let candidate = current
+        .keys()
+        .filter(|key| {
+            fresh
+                .supported_adapters
+                .get(&key.adapter)
+                .is_some_and(|owner| owner == instance)
+        })
+        .cloned()
+        .collect();
+    let Err(violation) = check_enabled(baseline, &current, &candidate) else {
+        return Ok(());
+    };
+    let key = match &violation {
+        Violation::ExistingChanged(key) | Violation::ForeignActivated(key) => key,
+    };
+    let name = fresh
+        .active
+        .paths
+        .iter()
+        .find_map(|path| {
+            target_key(path)
+                .ok()
+                .filter(|(found, _)| found == key)
+                .map(|(_, name)| name)
+        })
+        .filter(|name| !name.is_empty());
+    let output = name.map_or_else(
+        || key.monitor_path.clone(),
+        |name| format!("{name} ({})", key.monitor_path),
+    );
+    let reason = match violation {
+        Violation::ExistingChanged(_) => "an existing display changed during virtual adapter preparation",
+        Violation::ForeignActivated(_) => "a display outside the prepared adapter became active during virtual adapter preparation",
+    };
+    Err(Error::Platform(format!("{reason}: {output}; automatic preparation stopped before taking over that display or replaying its layout")))
+}
+
 fn rollback(
     devices: &DeviceSet,
     candidate: &Candidate,
+    baseline: &Fingerprints,
     claims: &mut BTreeMap<TargetKey, Box<dyn Claim>>,
 ) -> Result<()> {
     let targets = targets_for_instance(&candidate.instance)?;
     // A previous cooperating owner can still hold the identity of a newly
     // published target. Never disable its adapter until every target is owned.
     claim_targets(&targets, claims)?;
+    // Preserve fresh external state, never replay a cached global topology.
+    // Disabling our adapter can also naturally undo its extra output effects;
+    // exact equality with the original baseline proves that recovery too.
     let mut preserved = active_signature()?;
     for target in &targets {
         preserved.remove(&target.key);
@@ -291,7 +337,11 @@ fn rollback(
         if disabled_state(devices, &candidate.device)? == candidate.original
             && problem(&candidate.device)? == CM_PROB_DISABLED
             && !targets.iter().any(|target| target.active)
-            && active_signature()? == preserved
+            && super::super::provision_policy::rollback_matches(
+                baseline,
+                &preserved,
+                &active_signature()?,
+            )
         {
             return Ok(());
         }
@@ -346,8 +396,14 @@ pub(super) fn recover_pending_only() -> Result<()> {
         .map_err(|_| Error::Platform("virtual adapter rollback state is poisoned".into()))?;
     let devices = DeviceSet::displays()?;
     recover_pending(&mut pending, |previous| {
-        reopen(&devices, previous)
-            .and_then(|candidate| rollback(&devices, &candidate, &mut previous.claims))
+        reopen(&devices, previous).and_then(|candidate| {
+            rollback(
+                &devices,
+                &candidate,
+                &previous.baseline,
+                &mut previous.claims,
+            )
+        })
     })
 }
 
@@ -362,8 +418,14 @@ pub(super) fn prepare() -> Result<()> {
         .map_err(|_| Error::Platform("virtual adapter rollback state is poisoned".into()))?;
     let devices = DeviceSet::displays()?;
     recover_pending(&mut pending, |previous| {
-        reopen(&devices, previous)
-            .and_then(|candidate| rollback(&devices, &candidate, &mut previous.claims))
+        reopen(&devices, previous).and_then(|candidate| {
+            rollback(
+                &devices,
+                &candidate,
+                &previous.baseline,
+                &mut previous.claims,
+            )
+        })
     })?;
     for candidate in candidates(&devices)? {
         let existing = targets_for_instance(&candidate.instance)?;
@@ -391,6 +453,7 @@ pub(super) fn prepare() -> Result<()> {
         *pending = Some(PendingRollback {
             instance: candidate.instance.clone(),
             original: candidate.original,
+            baseline: before.clone(),
             claims,
             failure: "virtual adapter preparation was interrupted".into(),
         });
@@ -408,8 +471,17 @@ pub(super) fn prepare() -> Result<()> {
             let mut last_keys = BTreeSet::new();
             let mut stable_since = Instant::now();
             loop {
-                let targets = targets_for_instance(&candidate.instance)?;
+                let fresh = scene()?;
+                let targets: Vec<_> = inventory(&fresh)?
+                    .targets
+                    .into_iter()
+                    .filter(|target| {
+                        fresh.supported_adapters.get(&target.key.adapter)
+                            == Some(&candidate.instance)
+                    })
+                    .collect();
                 claim_targets(&targets, &mut operation.claims)?;
+                verify_enable_effects(&before, &fresh, &candidate.instance)?;
                 let keys: BTreeSet<_> = targets.iter().map(|target| target.key.clone()).collect();
                 if keys != last_keys {
                     last_keys = keys;
@@ -453,7 +525,12 @@ pub(super) fn prepare() -> Result<()> {
         if let Err(failure) = result {
             operation.failure = failure.to_string();
             recover_pending(&mut pending, |previous| {
-                rollback(&devices, &candidate, &mut previous.claims)
+                rollback(
+                    &devices,
+                    &candidate,
+                    &previous.baseline,
+                    &mut previous.claims,
+                )
             })?;
             return Err(failure);
         }
@@ -499,6 +576,7 @@ mod tests {
         let mut pending = Some(PendingRollback {
             instance: "generated-exact-mtt-instance".into(),
             original,
+            baseline: BTreeMap::new(),
             claims,
             failure: "generated activation failure".into(),
         });
