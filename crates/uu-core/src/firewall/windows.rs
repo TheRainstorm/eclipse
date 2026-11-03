@@ -63,6 +63,13 @@ impl Changes {
         Ok(())
     }
 }
+struct ChildProcess(std::process::Child);
+impl Drop for ChildProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 fn execute(input: serde_json::Value) -> Result<Reply> {
     use std::os::windows::{ffi::OsStringExt, process::CommandExt};
     // Resolve the OS binary independently of PATH and caller-controlled environment.
@@ -86,24 +93,26 @@ fn execute(input: serde_json::Value) -> Result<Reply> {
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>(),
     );
-    let mut child = Command::new(executable)
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            &encoded,
-        ])
-        .creation_flags(0x08000000)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let mut child = ChildProcess(
+        Command::new(executable)
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                &encoded,
+            ])
+            .creation_flags(0x08000000)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?,
+    );
     // A dedicated reader drains both pipes while we enforce a bounded child lifetime.
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let stdout = child.0.stdout.take().unwrap();
+    let stderr = child.0.stderr.take().unwrap();
     let output = std::thread::spawn(move || {
         use std::io::Read;
         let mut b = Vec::new();
@@ -123,12 +132,12 @@ fn execute(input: serde_json::Value) -> Result<Reply> {
         .write_all(&serde_json::to_vec(&input)?)?;
     let deadline = Instant::now() + Duration::from_secs(90);
     let status = loop {
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = child.0.try_wait()? {
             break status;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.0.kill();
+            let _ = child.0.wait();
             let _ = output.join();
             let _ = errors.join();
             anyhow::bail!("firewall operation timed out; its result is unknown, inspect rules before retrying");

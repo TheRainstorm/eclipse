@@ -433,11 +433,14 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
                 let service = open_service(DELETE)?;
                 winok(unsafe { DeleteService(service.0) })?;
             }
-            if let Some(changes)=&firewall_changes {changes.rollback()?;}
-            if before == Some(SERVICE_RUNNING) {
-                super::start_registered()?;
+            let firewall_restore=firewall_changes.as_ref().map(|changes|changes.rollback()).transpose();
+            let service_restore=if before==Some(SERVICE_RUNNING) {super::start_registered()} else {Ok(())};
+            match (firewall_restore,service_restore) {
+                (Ok(_),Ok(()))=>Ok(()),
+                (Err(firewall),Ok(()))=>Err(firewall.context("原服务已恢复，防火墙精确补偿未完成")),
+                (Ok(_),Err(service))=>Err(service),
+                (Err(firewall),Err(service))=>Err(anyhow::anyhow!("防火墙补偿失败：{firewall:#}；原服务启动也失败：{service:#}")),
             }
-            Ok(())
         })();
         return match restored {
             Ok(()) => Err(error.context("后台安装更新失败，已恢复原服务状态")),

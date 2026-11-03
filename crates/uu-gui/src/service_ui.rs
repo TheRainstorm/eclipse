@@ -682,8 +682,11 @@ fn run_manager(virtual_displays:bool)->eframe::Result {
 /// Called on the sharing startup worker, never on the rendering thread.
 pub(super) fn prepare_foreground_firewall(service:u16,discovery:u16)->anyhow::Result<Option<String>> {
     let exe=std::env::current_exe()?;
-    let before=uu_core::firewall::inspect(&exe,service,discovery)?;
-    if before.rules.as_array().is_some_and(|r|!r.is_empty()) {return Ok(Some(before.message()));}
+    if let Ok(before)=uu_core::firewall::inspect(&exe,service,discovery) {
+        if before.rules.as_array().is_some_and(|r|!r.is_empty()) {return Ok(Some(before.message()));}
+    }
+    // Some organization policies also restrict ordinary-user inspection. The
+    // elevated helper rechecks before deciding whether any rule may be created.
     if require_administrator().is_ok() {return Ok(Some(uu_core::firewall::ensure(&exe,service,discovery)?.message()));}
     elevated(&exe,&format!("--configure-streaming-firewall {service} {discovery}"))?;
     let after=uu_core::firewall::inspect(&exe,service,discovery)?;
