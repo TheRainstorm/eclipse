@@ -113,22 +113,22 @@ fn control(ui: &mut egui::Ui, kind: Control, enabled: bool) -> Response {
 
 fn connection_menu(ui: &mut egui::Ui, group: &Group, actions: &mut Vec<Action>, _rects: &mut StripRects) {
     if group.can_open_displays && group.screens.len()>1 && ui.button(uu_i18n::text("所有屏幕独立打开")).clicked() {
-        actions.push(Action::OpenAllDisplays(group.id)); ui.close_menu();
+        actions.push(Action::OpenAllDisplays(group.command_session())); ui.close_menu();
     }
     if group.can_merge {
         let merge=ui.button(uu_i18n::text("合并到原本窗口"));
-        record!(_rects.merge,(group.id,merge.rect));
-        if merge.clicked() {actions.push(Action::Merge(group.id));ui.close_menu();}
+        record!(_rects.merge,(group.command_session(),merge.rect));
+        if merge.clicked() {actions.push(Action::Merge(group.command_session()));ui.close_menu();}
     } else {
         let detach=ui.add_enabled(group.can_detach,egui::Button::new(uu_i18n::text("移到独立窗口")))
             .on_disabled_hover_text(uu_i18n::text("已在独立窗口中"));
-        record!(_rects.detach,(group.id,detach.rect));
-        if detach.clicked() { actions.push(Action::Detach(group.id)); ui.close_menu(); }
+        record!(_rects.detach,(group.command_session(),detach.rect));
+        if detach.clicked() { actions.push(Action::Detach(group.command_session())); ui.close_menu(); }
     }
     ui.separator();
     let disconnect=ui.button(uu_i18n::text("断开此会话"));
-    record!(_rects.disconnect,(group.id,disconnect.rect));
-    if disconnect.clicked() { actions.push(Action::Close(group.id)); ui.close_menu(); }
+    record!(_rects.disconnect,(group.command_session(),disconnect.rect));
+    if disconnect.clicked() { actions.push(Action::Close(group.command_session())); ui.close_menu(); }
 }
 
 fn insertion(ui: &egui::Ui, rect: Rect, after: bool) {
@@ -142,7 +142,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
     // Keep the device name and its close control visible together.
     if width<104. {return StripRects::default();}
     let active_id=ui.make_persistent_id(("workspace-visible-device",ui.ctx().viewport_id()));
-    let reveal_active=tabs.groups.iter().any(|group|group.id==tabs.active) && ui.ctx().data_mut(|data| {
+    let reveal_active=tabs.groups.iter().any(|group|group.contains(tabs.active)) && ui.ctx().data_mut(|data| {
         if data.get_temp::<u64>(active_id)==Some(tabs.active) {false}
         else {data.insert_temp(active_id,tabs.active);true}
     });
@@ -156,7 +156,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                 ui.spacing_mut().item_spacing=egui::vec2(6.,0.);
                 for group in &tabs.groups {
                     ui.push_id(group.id,|ui| {
-                        let active=group.id==tabs.active;
+                        let active=group.contains(tabs.active);
                         let frame=egui::Frame::none().fill(if active {crate::theme::SURFACE} else {crate::theme::SURFACE.gamma_multiply(0.55)})
                             .rounding(8.).stroke(Stroke::new(0.75,crate::theme::BORDER))
                             .inner_margin(egui::Margin::symmetric(4.,2.));
@@ -165,14 +165,14 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                 ui.spacing_mut().item_spacing=egui::vec2(2.,0.);
                                 let name=label(ui,&group.name,active,true,(width-34.).max(70.));
                                 record!(rects.devices,(group.id,name.rect));
-                                name.dnd_set_drag_payload(Drag(group.id));
-                                if name.clicked() { actions.push(Action::Select(group.id,None)); }
+                                name.dnd_set_drag_payload(Drag(group.command_session()));
+                                if name.clicked() { actions.push(Action::Select(group.command_session(),None)); }
                                 if name.dragged() { ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing); }
                                 name.context_menu(|ui|connection_menu(ui,group,&mut actions,&mut rects));
                                 if name.context_menu_opened() { tabs.local_ui.set(true); }
                                 let close=control(ui,Control::Close,true).on_hover_text(uu_i18n::text("断开此会话"));
                                 record!(rects.close,(group.id,close.rect));
-                                if close.clicked() {actions.push(Action::Close(group.id));}
+                                if close.clicked() {actions.push(Action::Close(group.command_session()));}
                                 // Reveal the connection header once per activation. Its
                                 // sources can be wider than the viewport; keep the close
                                 // control reachable without overriding manual scrolling.
@@ -184,9 +184,9 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                 for (screen,text) in &group.screens {
                                     let response=label(ui,text,active && group.selected==Some(*screen),false,(width-12.).max(72.));
                                     record!(rects.screens,(group.id,*screen,response.rect));
-                                    if response.clicked() { actions.push(Action::Select(group.id,if group.fixed_view {None}else{Some(*screen)})); }
-                                    if group.fixed_view {
-                                        response.context_menu(|ui|connection_menu(ui,group,&mut actions,&mut rects));
+                                    if response.clicked() { actions.push(group.screen_action(*screen)); }
+                                    if let Some(view)=group.view_group(*screen).or_else(||group.fixed_view.then(||group.clone())) {
+                                        response.context_menu(|ui|connection_menu(ui,&view,&mut actions,&mut rects));
                                     } else if group.can_open_displays {
                                         response.context_menu(|ui| {
                                             let open=ui.add_enabled(group.can_open_display(*screen),egui::Button::new(uu_i18n::text("在独立窗口中打开")))
@@ -196,7 +196,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                         });
                                     }
                                     if response.context_menu_opened() { tabs.local_ui.set(true); }
-                                    if group.fixed_view {response.dnd_set_drag_payload(Drag(group.id));}
+                                    if let Some(view)=group.view_group(*screen).or_else(||group.fixed_view.then(||group.clone())) {response.dnd_set_drag_payload(Drag(view.id));}
                                     else {
                                         response.dnd_set_drag_payload(DragScreen{session:group.id,screen:*screen});
                                         if let Some(drag)=response.dnd_hover_payload::<DragScreen>().filter(|drag|drag.session==group.id && drag.screen!=*screen) {
@@ -212,10 +212,12 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                             "新建临时虚拟显示器，断开此串流后自动移除"
                                         } else { "远端未提供虚拟显示器管理，请更新后台并授予管理服务权限" }));
                                     record!(rects.create,(group.id,add.rect));
-                                    if add.clicked() { actions.push(Action::CreateDisplay(group.id)); }
+                                    if add.clicked() { actions.push(Action::CreateDisplayWithSpec{session:group.creation_session(),spec:tabs.presets.default_spec()}); }
                                     if group.can_create_display {
                                         add.context_menu(|ui| {
-                                            if ui.button(uu_i18n::text("管理虚拟显示器")).clicked() {actions.push(Action::ManageDisplays(group.id));ui.close_menu();}
+                                            if let Some(spec)=crate::virtual_display_presets::create_menu(ui,&tabs.presets) {actions.push(Action::CreateDisplayWithSpec{session:group.creation_session(),spec});}
+                                            ui.separator();
+                                            if ui.button(uu_i18n::text("管理虚拟显示器")).clicked() {actions.push(Action::ManageDisplays(group.creation_session()));ui.close_menu();}
                                         });
                                     }
                                     if add.context_menu_opened() {tabs.local_ui.set(true);}
@@ -236,7 +238,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
     tabs.actions.borrow_mut().extend(actions);
     if let Some(drag)=egui::DragAndDrop::payload::<Drag>(ui.ctx()) {
         let outside=ui.input(|i|i.pointer.any_released() && i.pointer.latest_pos().is_none_or(|p|!i.screen_rect().contains(p)));
-        if outside && tabs.groups.iter().any(|group|group.id==drag.0 && group.can_detach) {
+        if outside && tabs.groups.iter().any(|group|group.contains(drag.0) && group.can_detach) {
             tabs.actions.borrow_mut().push(Action::Detach(drag.0));egui::DragAndDrop::clear_payload(ui.ctx());
         }
     }
@@ -266,8 +268,8 @@ mod tests {
     fn active_connection_reveals_its_header_once_and_preserves_manual_scroll() {
         let ctx=egui::Context::default();
         ctx.style_mut(|style|style.scroll_animation=egui::style::ScrollAnimation::none());
-        let mut tabs=Tabs {
-            groups:(1..=4).map(|id|Group {
+        let mut tabs=Tabs {presets:Default::default(),
+            groups:(1..=4).map(|id|Group {members:vec![],views:vec![],
                 id,name:format!("Generated computer {id} with a long title"),
                 screens:vec![(1,"Main display".into()),(2,"Temporary virtual display".into())],
                 selected:Some(1),can_open_displays:true,can_create_display:true,can_detach:true,fixed_view:false,can_merge:false,
@@ -306,8 +308,8 @@ mod tests {
         let ctx=egui::Context::default();
         let name="Generated workstation with a descriptive name";
         let source="Display 12 (VDD by MTT DISPLAY16)";
-        let mut tabs=Tabs {
-            groups:vec![Group{id:1,name:name.into(),screens:vec![(12,source.into())],selected:Some(12),
+        let mut tabs=Tabs {presets:Default::default(),
+            groups:vec![Group{members:vec![],views:vec![],id:1,name:name.into(),screens:vec![(12,source.into())],selected:Some(12),
                 can_open_displays:false,can_create_display:true,can_detach:false,fixed_view:true,can_merge:true}],
             active:1,actions:Default::default(),local_ui:Default::default(),
         };

@@ -116,6 +116,32 @@ fn independent_display_launch_and_ipc_reject_plugins_invalid_sources_and_nested_
     }
 }
 #[test]
+fn aggregated_device_commands_keep_individual_view_ownership() {
+    let group=Group{id:1,name:"Generated device".into(),screens:vec![(0,"Physical".into()),(16,"Virtual".into())],selected:Some(16),
+        members:vec![1,2],views:vec![View{screen:0,session:1,fixed:false,active:false,can_create:true,can_detach:true,can_merge:false},View{screen:16,session:2,fixed:true,active:true,can_create:false,can_detach:false,can_merge:true}],
+        can_open_displays:true,can_create_display:true,can_detach:false,fixed_view:false,can_merge:true};
+    assert!(group.contains(2));assert_eq!(group.command_session(),2);assert_eq!(group.creation_session(),1);
+    assert_eq!(group.screen_action(0),Action::Select(1,None));assert_eq!(group.screen_action(16),Action::Select(2,None));
+    let virtual_menu=group.view_group(16).unwrap();assert_eq!(virtual_menu.command_session(),2);assert!(virtual_menu.can_merge);
+    let actions=Rc::new(RefCell::new(Vec::new()));
+    let tabs=Tabs{presets:Default::default(),groups:vec![group],active:2,actions:actions.clone(),local_ui:Default::default()};
+    tabs.navigate(uu_core::hotkeys::Action::PreviousDisplay);
+    assert_eq!(&actions.borrow()[..],&[Action::Select(1,None)]);
+    actions.borrow_mut().clear();
+    let context=egui::Context::default();
+    let render=|events| {
+        let mut close=None;
+        let _=context.run(egui::RawInput{events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1100.,200.))),..Default::default()},|ctx| {
+            egui::CentralPanel::default().show(ctx,|ui|{let rects=crate::stream_tabs_ui::show(&tabs,ui,160.);close=Some(rects.close[0].1.center());});
+        });close.unwrap()
+    };
+    let close=render(vec![]);
+    let button=|pressed|egui::Event::PointerButton{pos:close,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+    render(vec![egui::Event::PointerMoved(close),button(true)]);render(vec![button(false)]);
+    assert_eq!(&actions.borrow()[..],&[Action::Close(2)],"the aggregate device header closes only its active virtual view");
+}
+
+#[test]
 fn independent_display_ipc_creates_separate_pending_windows_and_reuses_a_stable_source() {
     let mut state=State{input_owner:None,gamepad:Default::default(),windows:vec![Window::new(1,Vec::new(),None)],gl:None,vsync:false,next:2,actions:Default::default()};
     let target=StreamTarget{connection:ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into()),alias:"Generated computer".into(),view_only:true};
@@ -224,6 +250,84 @@ fn check_display_window_routing(state:&mut State,session:u64,ctx:&egui::Context)
     *sibling_stats.desktop_capture_source.lock().unwrap()=sibling_capture;
 }
 
+fn check_same_device_views_keep_home_and_route_each_connection(state:&mut State,first:u64,second:u64,ctx:&egui::Context) {
+    let original_windows=state.windows.len();let home=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==first)).unwrap().id;
+    let original_active=state.windows.iter().find(|w|w.id==home).unwrap().active;
+    let source=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==first).unwrap();
+    let first_target=source.app.stream_target.clone();
+    let first_displays=std::mem::take(&mut source.app.displays);
+    source.app.displays.selected=Some(0);
+    let first_stats=source.app.controller.as_ref().unwrap().stats.clone();
+    let first_catalog=std::mem::replace(&mut *first_stats.remote_screens.lock().unwrap(),uu_core::screen_control::RemoteScreens{current_id:0,screens:(0..2).map(generated_screen).collect()});
+    let first_capture=first_stats.desktop_capture_source.lock().unwrap().take();
+    let old_control=first_stats.control_open.swap(1,Ordering::AcqRel);
+    let old_binding=first_stats.display_track_binding.swap(false,Ordering::AcqRel);
+    let old_capability=first_stats.capabilities.allows(uu_core::capabilities::Capability::Displays);
+    first_stats.capabilities.enable(uu_core::capabilities::Capability::Displays,true);
+    // Owned queue observes routing without asking the generated host to switch
+    // to fixture-only monitor names or changing a real display topology.
+    let (input,_requests)=uu_core::native_input::channel(false);
+    let original_input=source.app.controller.as_mut().unwrap().native_input.replace(input);
+    state.open_display(first,0,ctx);
+    assert_eq!(state.windows.iter().find(|w|w.id==home).unwrap().sessions.len(),2,"opening the selected monitor cannot move its ordinary source session out of home");
+    let original=state.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==first).unwrap();
+    assert_eq!(original.app.displays.selected,Some(1),"the original window keeps the other physical monitor");
+    assert!(Arc::ptr_eq(&original.app.controller.as_ref().unwrap().stats,&first_stats));
+    assert_eq!(state.windows.last().unwrap().pending[0].target.connection.display().unwrap().id,0);
+    state.windows.truncate(original_windows);
+    let source=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==first).unwrap();
+    source.app.displays=Default::default();source.app.displays.selected=Some(0);
+    state.apply(Action::OpenAllDisplays(first),ctx);
+    assert!(state.windows.iter().find(|w|w.id==home).unwrap().sessions.iter().any(|s|s.id==first));
+    assert_eq!(state.windows.len(),original_windows+1,"open-all leaves one monitor in home and forks only the other");
+    assert_eq!(state.windows.last().unwrap().pending[0].target.connection.display().unwrap().id,1);
+    let original=state.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==first).unwrap();
+    assert_eq!(original.app.fixed_display_target().unwrap().id,0);
+    state.windows.truncate(original_windows);
+    let source=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==first).unwrap();
+    source.app.displays=Default::default();source.app.displays.selected=Some(0);
+    first_stats.remote_screens.lock().unwrap().screens.push(generated_screen(16));
+    let virtual_target=virtual_launch(first_target.as_ref().unwrap(),Default::default()).unwrap().target;
+    let virtual_id=virtual_target.connection.virtual_display().unwrap().id;
+    let sibling=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==second).unwrap();
+    let second_target=sibling.app.stream_target.replace(virtual_target);
+    let second_displays=std::mem::take(&mut sibling.app.displays);let second_home=sibling.home_window;
+    sibling.app.displays.bind_created_virtual(DisplayTarget{id:16,source:generated_screen(16).display_name});sibling.app.displays.selected=Some(16);
+    let second_stats=sibling.app.controller.as_ref().unwrap().stats.clone();
+    let second_catalog=std::mem::replace(&mut *second_stats.remote_screens.lock().unwrap(),uu_core::screen_control::RemoteScreens{current_id:16,screens:[0,1,16].into_iter().map(generated_screen).collect()});
+    let second_capture=second_stats.desktop_capture_source.lock().unwrap().take();
+    state.windows.iter_mut().find(|w|w.id==home).unwrap().select(second);
+    let tabs=state.windows.iter().find(|w|w.id==home).unwrap().tabs(Default::default());
+    assert_eq!(tabs.groups.len(),1,"a virtual connection is a view of the same device, not another device group");
+    let group=&tabs.groups[0];assert!(group.contains(first)&&group.contains(second));
+    assert_eq!(group.command_session(),second,"device controls apply only to the active view");
+    let virtual_key=group.views.iter().find(|view|view.session==second).unwrap().screen;
+    assert!(virtual_key<0,"per-connection view identity must not collide with remote catalog IDs");
+    assert_eq!(group.screen_action(virtual_key),Action::Select(second,None));
+    assert_eq!(group.screen_action(0),Action::Select(first,None));
+    assert_eq!(group.view_group(virtual_key).unwrap().command_session(),second);
+    assert_eq!(group.screens.len(),3,"the shared catalog's virtual source must not add a second pill");
+    state.detach(second,ctx);
+    assert!(state.windows.iter().find(|w|w.id==home).unwrap().sessions.iter().any(|s|s.id==first));
+    let moved=state.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==second).unwrap();
+    assert_eq!(moved.app.stream_target.as_ref().unwrap().connection.virtual_display().unwrap().id,virtual_id);
+    assert!(Arc::ptr_eq(&moved.app.controller.as_ref().unwrap().stats,&second_stats));
+    state.merge(second,ctx);
+    let window=state.windows.iter().find(|w|w.id==home).unwrap();
+    assert_eq!(window.sessions.len(),2);assert_eq!(window.tabs(Default::default()).groups.len(),1);
+    let original=window.sessions.iter().find(|s|s.id==first).unwrap();assert!(Arc::ptr_eq(&original.app.controller.as_ref().unwrap().stats,&first_stats));
+    state.windows.retain(|w|!w.sessions.is_empty()||!w.pending.is_empty());
+    let source=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==first).unwrap();
+    source.app.displays=first_displays;source.app.stream_target=first_target;
+    source.app.controller.as_mut().unwrap().native_input=original_input;
+    *first_stats.remote_screens.lock().unwrap()=first_catalog;*first_stats.desktop_capture_source.lock().unwrap()=first_capture;
+    first_stats.control_open.store(old_control,Ordering::Release);first_stats.display_track_binding.store(old_binding,Ordering::Release);first_stats.capabilities.enable(uu_core::capabilities::Capability::Displays,old_capability);
+    let sibling=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==second).unwrap();
+    sibling.app.displays=second_displays;sibling.app.stream_target=second_target;sibling.home_window=second_home;
+    *second_stats.remote_screens.lock().unwrap()=second_catalog;*second_stats.desktop_capture_source.lock().unwrap()=second_capture;
+    state.windows.iter_mut().find(|w|w.id==home).unwrap().select(original_active);
+}
+
 fn check_temporary_display_fork(state:&mut State,session:u64,ctx:&egui::Context) {
     // The hosts below provide only generated video, without virtual hardware.
     // Exercise launch ownership here and discard pending intents before they
@@ -258,7 +362,8 @@ fn check_temporary_display_fork(state:&mut State,session:u64,ctx:&egui::Context)
     source.app.prepare_displays();
     let tabs=origin.tabs(Default::default());
     let preparing=tabs.groups.iter().find(|group|group.id==session).unwrap();
-    assert!(preparing.screens.is_empty()&&preparing.selected.is_none());
+    assert_eq!(preparing.screens.len(),1,"a pending virtual view is visible inside its device group");
+    assert_eq!(preparing.screen_action(preparing.screens[0].0),Action::Select(session,None));
     assert!(!preparing.can_open_displays&&!preparing.can_create_display);
     assert!(preparing.can_detach,"a connecting virtual stream can still be moved without reopening it");
     let source=origin.sessions.iter_mut().find(|s|s.id==session).unwrap();
@@ -340,8 +445,8 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
 fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() {
     use uu_core::hotkeys::Action as Command;
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let mut tabs=Tabs{groups:vec![Group{id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},
-        Group{id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let mut tabs=Tabs{presets:Default::default(),groups:vec![Group{members:vec![],views:vec![],id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},
+        Group{members:vec![],views:vec![],id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     for command in [Command::NextDisplay,Command::PreviousDisplay,Command::NextComputer,Command::PreviousComputer] {tabs.navigate(command);}
     assert_eq!(*actions.borrow(),[Action::Select(22,Some(2)),Action::Select(22,Some(9)),Action::Select(11,None),Action::Select(11,None)]);
     actions.borrow_mut().clear();tabs.active=11;
@@ -354,7 +459,7 @@ fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() 
 #[test]
 fn device_selector_requires_an_explicit_open_and_keeps_the_video_area() {
     let ctx=egui::Context::default();crate::setup_style(&ctx);
-    let mut tabs=Tabs{groups:vec![Group{id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},Group{id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:1,actions:Default::default(),local_ui:Default::default()};
+    let mut tabs=Tabs{presets:Default::default(),groups:vec![Group{members:vec![],views:vec![],id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},Group{members:vec![],views:vec![],id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:1,actions:Default::default(),local_ui:Default::default()};
     let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
     let draw=|tabs:&Tabs,pointer| {
         let mut visible=false;
@@ -379,9 +484,9 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
     let context = egui::Context::default();
     crate::setup_style(&context);
     let actions = Rc::new(RefCell::new(Vec::new()));
-    let tabs = Tabs {
+    let tabs = Tabs {presets:Default::default(),
         groups: vec![
-            Group {
+            Group {members:vec![],views:vec![],
                 id: 11,
                 name: "Generated A".into(),
                 screens: vec![(1, "Monitor A".into())],
@@ -391,7 +496,7 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
                 can_detach: true,
                 fixed_view:false,can_merge:false,
             },
-            Group {
+            Group {members:vec![],views:vec![],
                 id: 22,
                 name: "Generated B".into(),
                 screens: vec![(2, "Monitor B".into())],
@@ -484,7 +589,7 @@ fn device_context_menu_routes_detach_and_disconnect_from_a_child_viewport() {
     let context=egui::Context::default();
     crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{groups:vec![Group{id:22,name:"Generated B".into(),screens:vec![(2,"Monitor B".into())],selected:Some(2),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{presets:Default::default(),groups:vec![Group{members:vec![],views:vec![],id:22,name:"Generated B".into(),screens:vec![(2,"Monitor B".into())],selected:Some(2),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let viewport=egui::ViewportId::from_hash_of("generated-child");
     let render=|events|context.run(egui::RawInput{viewport_id:viewport,viewports:[(viewport,egui::ViewportInfo::default())].into_iter().collect(),events,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),focused:true,..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     fn text(shape:&egui::epaint::Shape,label:&str)->Option<egui::Pos2>{match shape{egui::epaint::Shape::Text(text) if text.galley.job.text==label=>Some(text.pos+text.galley.rect.center().to_vec2()),egui::epaint::Shape::Vec(shapes)=>shapes.iter().find_map(|shape|text(shape,label)),_=>None}}
@@ -508,7 +613,7 @@ fn device_context_menu_routes_detach_and_disconnect_from_a_child_viewport() {
 fn fixed_source_context_menu_returns_to_home_and_source_click_only_selects_its_session() {
     let context=egui::Context::default();crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{groups:vec![Group{id:22,name:"Generated fixed view".into(),screens:vec![(2,"Bound monitor".into())],selected:Some(2),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{presets:Default::default(),groups:vec![Group{members:vec![],views:vec![],id:22,name:"Generated fixed view".into(),screens:vec![(2,"Bound monitor".into())],selected:Some(2),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let viewport=egui::ViewportId::from_hash_of("fixed-generated-child");
     let render=|events|context.run(egui::RawInput{viewport_id:viewport,viewports:[(viewport,egui::ViewportInfo::default())].into_iter().collect(),events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|rects|find(rects.borrow().get(&viewport).unwrap()).center());
@@ -532,7 +637,7 @@ fn fixed_source_context_menu_returns_to_home_and_source_click_only_selects_its_s
 fn display_pills_open_their_own_source_and_keep_connection_ownership() {
     let context=egui::Context::default();crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{groups:vec![Group{id:22,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:false,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{presets:Default::default(),groups:vec![Group{members:vec![],views:vec![],id:22,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:false,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let render=|events|context.run(egui::RawInput{events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|rects|find(rects.borrow().get(&egui::ViewportId::ROOT).unwrap()).center());
     let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};
@@ -567,7 +672,7 @@ fn display_pills_open_their_own_source_and_keep_connection_ownership() {
     let create=region(|r|r.create[0].1);
     render(vec![egui::Event::PointerMoved(create),button(create,egui::PointerButton::Primary,true)]);
     render(vec![button(create,egui::PointerButton::Primary,false)]);
-    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::CreateDisplay(22)],"temporary screens stay owned by the existing authenticated connection");
+    assert!(matches!(&std::mem::take(&mut *actions.borrow_mut())[..],[Action::CreateDisplayWithSpec{session:22,..}]),"creation stays under the clicked device and carries the visible preset");
     render(Vec::new());let close=region(|r|r.close[0].1);
     render(vec![egui::Event::PointerMoved(close),button(close,egui::PointerButton::Primary,true)]);
     render(vec![button(close,egui::PointerButton::Primary,false)]);
@@ -731,6 +836,7 @@ impl eframe::App for Probe {
                         .collect();
                     check_display_window_routing(state,self.first,ctx);
                     check_temporary_display_fork(state,self.first,ctx);
+                    check_same_device_views_keep_home_and_route_each_connection(state,self.first,self.second_id,ctx);
                     // Switch away without another UI pass: inactive sessions
                     // must pause observation immediately, including parked tabs.
                     state.apply(Action::Select(self.first,None),ctx);
