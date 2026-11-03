@@ -831,9 +831,9 @@ mod tests {
         // creators; every successful connection must already be closed when the
         // creators and close have joined, including callers retaining a handle.
         for _ in 0..32 {
-            let socket=UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let socket=Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
             let address=socket.local_addr().unwrap();
-            let (mux,worker)=UDPMuxDefault::new_with_worker(UDPMuxParams::new(socket));
+            let (mux,worker)=UDPMuxDefault::new_with_worker(UDPMuxParams::new(crate::native_qos::SharedSocket(socket.clone())));
             let weak=Arc::downgrade(&mux);
             let ready=Arc::new(tokio::sync::Barrier::new(5));
             let mut creators=Vec::new();
@@ -862,6 +862,13 @@ mod tests {
             timeout(Duration::from_secs(2),async {
                 while weak.strong_count()!=0 {tokio::task::yield_now().await;}
             }).await.expect("closed connection observer retained the mux");
+            // Arc publishes strong=0 before running the value's destructor.
+            // Observe this actual socket's final external owner retiring, then
+            // close our last owner on this thread before testing its OS port.
+            timeout(Duration::from_secs(2),async {
+                while Arc::strong_count(&socket)!=1 {tokio::task::yield_now().await;}
+            }).await.expect("closed mux retained the original socket");
+            drop(socket);
             let rebound=UdpSocket::bind(address).await.expect("closed mux retained the OS socket");
             drop(rebound);drop(retained);
         }
