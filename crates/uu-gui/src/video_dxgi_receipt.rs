@@ -424,6 +424,50 @@ mod tests {
         }
     }
     #[test]
+    fn nonblocking_busy_present_is_not_a_receipt_and_a_new_image_recovers() {
+        let mut ledger = Ledger::default();
+        ledger.observe(raw(1, 1), image(10));
+
+        // Present was attempted, but DXGI did not accept another flip. Its
+        // counters can still describe the previous successfully queued image.
+        let mut busy = raw(2, 1);
+        busy.present_flags = 0x8; // DXGI_PRESENT_DO_NOT_WAIT
+        busy.present_hresult = 0x887a000au32 as i32; // WAS_STILL_DRAWING
+        busy.last_present_count = 1;
+        assert!(matches!(ledger.observe(busy, image(20)), Update::Invalid));
+        assert!(ledger.pending.is_empty() && ledger.first.is_empty());
+
+        // A later S_OK for the cached image cannot invent a first-display
+        // interval across that failed submission's observation gap.
+        let mut retry = raw(3, 2);
+        retry.present_flags = 0x8;
+        retry.last_present_count = 2;
+        assert!(matches!(ledger.observe(retry, image(20)), Update::Invalid));
+
+        // A new source token starts a fresh ledger. Present serials include
+        // the failed attempt, whereas the accepted-present count does not.
+        let mut next = raw(4, 2);
+        next.present_flags = 0x8;
+        next.last_present_count = 3;
+        assert!(receipt(ledger.observe(next, image(30))).is_none());
+        let mut observed = raw(5, 3);
+        observed.present_flags = 0x8;
+        observed.last_present_count = 4;
+        let r = receipt(ledger.observe(observed, image(40))).unwrap();
+        assert_eq!(r.image, image(30));
+        assert_eq!((r.count, r.earliest, r.latest), (3, 4000, 5012));
+    }
+    #[test]
+    fn successful_nonblocking_present_flags_preserve_receipts() {
+        for (interval, flags) in [(1, 0x8), (0, 0x208)] {
+            let mut r = raw(1, 1);
+            r.sync_interval = interval;
+            r.present_flags = flags;
+            let receipt = receipt(Ledger::default().observe(r, image(1))).unwrap();
+            assert_eq!((receipt.image, receipt.count), (image(1), 1));
+        }
+    }
+    #[test]
     fn surface_or_frequency_change_cannot_reassign_cached_image_first_submission() {
         for mutate in [0, 1, 2] {
             let mut l = Ledger::default();
