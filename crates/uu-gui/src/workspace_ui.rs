@@ -270,14 +270,14 @@ mod tests {
     }
 
     #[test]
-    fn explicit_stream_button_uses_the_saved_device_connection_action() {
+    fn device_name_uses_the_saved_device_connection_action() {
         let mut h = Harness::new();
         let profile = Profile::new("Generated desktop", Destination::Ip {
             address: "192.0.2.10:48998".into(), legacy_device: None,
         });
         let id = profile.id.clone();
         h.workspace.book.devices.push(profile);
-        let actions = h.click("开始串流");
+        let actions = h.click("Generated desktop");
         assert!(matches!(&actions[..], [Action::Open(found)] if found == &id));
         assert!(!h.workspace.host.running());
     }
@@ -1065,27 +1065,7 @@ impl Workspace {
         for row in profiles.chunks(columns) {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x=22.;
-                for profile in row {
-                    ui.vertical(|ui| {
-                        ui.set_width(230_f32.min(ui.available_width()));
-                        theme::card(ui.visuals()).show(ui, |ui| {
-                            self.device_tile(ui,profile,actions);
-                            if let Ok(route) = profile.route() {
-                                let address = route.destination.target();
-                                ui.add(egui::Label::new(RichText::new(&address).small().color(theme::palette(ui.visuals()).muted)).truncate()).on_hover_text(address);
-                            }
-                            let (label, tone) = match self.presence.status(&profile.id) {
-                                super::device_presence::Status::Online => (uu_i18n::text("在线"), theme::Tone::Success),
-                                super::device_presence::Status::Offline => (uu_i18n::text("暂时离线"), theme::Tone::Neutral),
-                                super::device_presence::Status::Unknown => (uu_i18n::text("在线状态待检查"), theme::Tone::Neutral),
-                            };
-                            theme::pill(ui, label, tone);
-                            if ui.add_sized([ui.available_width(), 32.], theme::primary_button(uu_i18n::text("开始串流"))).clicked() {
-                                actions.push(Action::Open(profile.id.clone()));
-                            }
-                        });
-                    });
-                }
+                for profile in row {self.device_tile(ui,profile,actions);}
             });
             ui.add_space(22.);
         }
@@ -1105,7 +1085,7 @@ impl Workspace {
             if response.hovered()||response.has_focus()||response.is_pointer_button_down_on(){let p=theme::palette(ui.visuals());ui.painter().rect_filled(rect.expand(7.),theme::RADIUS,if response.is_pointer_button_down_on(){p.primary.gamma_multiply(0.35)}else{p.accent.gamma_multiply(0.18)});}
             let picture=egui::Rect::from_min_size(rect.min,egui::vec2(width,width*9./16.));
             let mut painter=ui.painter().clone();
-            if offline{ui.painter().rect_filled(picture,8.,egui::Color32::from_gray(50));painter.multiply_opacity(0.35);}
+            if offline{ui.painter().rect_filled(picture,6.,egui::Color32::from_gray(50));painter.multiply_opacity(0.35);}
             self.paint_device_picture(&painter,picture,profile);
             let pos=egui::pos2(rect.center().x,picture.bottom()+12.);
             if self.dark_background {
@@ -1169,12 +1149,15 @@ impl Workspace {
         self.paint_device_picture(ui.painter(),rect,profile);
     }
     fn paint_device_picture(&self,painter:&egui::Painter,rect:egui::Rect,profile:&Profile) {
-        painter.rect_filled(rect,8.,theme::palette(&painter.ctx().style().visuals).sidebar);
+        painter.rect_filled(rect,6.,theme::palette(&painter.ctx().style().visuals).sidebar);
         if let Some(texture)=self.previews.get(&profile.id).and_then(|p|p.texture.as_ref()) {
             let size=texture.size_vec2();let scale=(rect.width()/size.x).min(rect.height()/size.y);
-            painter.image(texture.id(),egui::Rect::from_center_size(rect.center(),size*scale),egui::Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.,1.)),egui::Color32::WHITE);
+            let mut picture=egui::epaint::RectShape::filled(egui::Rect::from_center_size(rect.center(),size*scale),6.,egui::Color32::WHITE);
+            picture.fill_texture_id=texture.id();
+            picture.uv=egui::Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.,1.));
+            painter.add(picture);
         }else{
-            painter.rect_filled(rect, 8.0, device_placeholder_color(&profile.id));
+            painter.rect_filled(rect, 6.0, device_placeholder_color(&profile.id));
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
