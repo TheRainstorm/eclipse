@@ -1,5 +1,6 @@
 //! Shared colors and control states for the desktop application.
 use eframe::egui::{self, Color32 as C};
+pub use crate::island;
 
 pub const ACCENT: C = C::from_rgb(37, 99, 235);
 pub const INK: C = C::from_rgb(23, 37, 61);

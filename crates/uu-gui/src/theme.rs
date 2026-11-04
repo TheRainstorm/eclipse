@@ -32,6 +32,7 @@ pub fn color_theme_label(color: ColorTheme) -> &'static str {
     uu_i18n::text(match color {
         ColorTheme::Blue => "默认蓝",
         ColorTheme::Cyan => "青蓝",
+        ColorTheme::Animal => "动森",
     })
 }
 

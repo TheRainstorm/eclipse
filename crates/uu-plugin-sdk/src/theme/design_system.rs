@@ -1,5 +1,6 @@
 //! Theme-aware tokens and controls. Compatibility constants live in the parent.
 use eframe::egui::{self, Color32 as C, Response, RichText, Stroke, Widget, WidgetText};
+use super::island;
 
 pub const SPACE_1: f32 = 4.0;
 pub const SPACE_2: f32 = 8.0;
@@ -101,8 +102,9 @@ pub enum ColorTheme {
     #[default]
     Blue,
     Cyan,
+    Animal,
 }
-pub const COLOR_THEMES: [ColorTheme; 2] = [ColorTheme::Blue, ColorTheme::Cyan];
+pub const COLOR_THEMES: [ColorTheme; 3] = [ColorTheme::Blue, ColorTheme::Cyan, ColorTheme::Animal];
 pub const CYAN_LIGHT: Palette = Palette {
     base: C::from_rgb(242, 251, 252),
     overlay: C::from_rgb(248, 253, 254),
@@ -143,27 +145,48 @@ pub const CYAN_DARK: Palette = Palette {
     info_bg: C::from_rgb(13, 62, 75),
     ..DARK
 };
+const fn island_palette(p: island::Tokens) -> Palette {
+    Palette {
+        base:p.base, card:p.card, overlay:p.overlay, sidebar:p.sidebar,
+        text:p.text, muted:p.muted, border:p.border, control_border:p.control_border,
+        control:p.control, hover:p.hover, pressed:p.pressed, tint:p.tint,
+        accent:p.accent, primary:p.primary, primary_hover:p.primary_hover,
+        primary_pressed:p.primary_pressed, disabled:p.disabled,
+        success:p.success, warning:p.warning, danger:p.danger,
+        success_bg:p.success_bg, warning_bg:p.warning_bg, danger_bg:p.danger_bg,
+        info_bg:p.info_bg,
+    }
+}
+pub const ANIMAL_LIGHT: Palette = island_palette(island::LIGHT);
+pub const ANIMAL_DARK: Palette = island_palette(island::DARK);
 fn colors(theme: egui::Theme, color: ColorTheme) -> &'static Palette {
     match (theme, color) {
         (egui::Theme::Light, ColorTheme::Blue) => &LIGHT,
         (egui::Theme::Dark, ColorTheme::Blue) => &DARK,
         (egui::Theme::Light, ColorTheme::Cyan) => &CYAN_LIGHT,
         (egui::Theme::Dark, ColorTheme::Cyan) => &CYAN_DARK,
+        (egui::Theme::Light, ColorTheme::Animal) => &ANIMAL_LIGHT,
+        (egui::Theme::Dark, ColorTheme::Animal) => &ANIMAL_DARK,
     }
 }
-pub fn palette(visuals: &egui::Visuals) -> &'static Palette {
+fn visual_family(visuals: &egui::Visuals) -> ColorTheme {
     // The host-generated hyperlink accent is a semantic color-family token.
     // Visuals clones and widget-local state changes keep it, so existing host
     // and extension callers resolve their own context's palette without TLS or
     // process-global state. Local controls must not repurpose this global token.
-    let color = if visuals.hyperlink_color == CYAN_LIGHT.accent
-        || visuals.hyperlink_color == CYAN_DARK.accent {
+    if visuals.hyperlink_color == ANIMAL_LIGHT.accent || visuals.hyperlink_color == ANIMAL_DARK.accent {
+        ColorTheme::Animal
+    } else if visuals.hyperlink_color == CYAN_LIGHT.accent || visuals.hyperlink_color == CYAN_DARK.accent {
         ColorTheme::Cyan
     } else {
         ColorTheme::Blue
-    };
-    colors(if visuals.dark_mode { egui::Theme::Dark } else { egui::Theme::Light }, color)
+    }
 }
+pub fn is_animal(visuals: &egui::Visuals) -> bool { visual_family(visuals) == ColorTheme::Animal }
+pub fn palette(visuals: &egui::Visuals) -> &'static Palette {
+    colors(if visuals.dark_mode { egui::Theme::Dark } else { egui::Theme::Light }, visual_family(visuals))
+}
+
 fn color_theme_id() -> egui::Id { egui::Id::new("eclipse.color-theme.v1") }
 pub fn current_color_theme(ctx: &egui::Context) -> ColorTheme {
     ctx.data(|data| data.get_temp(color_theme_id()).unwrap_or_default())
@@ -194,6 +217,7 @@ pub fn visuals(theme: egui::Theme) -> egui::Visuals {
     visuals_with_color(theme, ColorTheme::Blue)
 }
 pub fn visuals_with_color(theme: egui::Theme, color: ColorTheme) -> egui::Visuals {
+    if color == ColorTheme::Animal { return island::tokens::style(theme).visuals; }
     let mut v = match theme {
         egui::Theme::Dark => egui::Visuals::dark(),
         egui::Theme::Light => egui::Visuals::light(),
@@ -224,7 +248,14 @@ pub fn visuals_with_color(theme: egui::Theme, color: ColorTheme) -> egui::Visual
 pub fn apply(ctx: &egui::Context) {
     let color = current_color_theme(ctx);
     ctx.data_mut(|data| data.insert_temp(color_theme_id(), color));
+    if color == ColorTheme::Animal { island::fonts::ensure(ctx); }
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        if color == ColorTheme::Animal {
+            // Keep the library's geometry, named font, native selection and
+            // control styles together; host compatibility tokens stay 8/32.
+            ctx.set_style_of(theme, island::tokens::style(theme));
+            continue;
+        }
         let mut style = egui::Style {
             visuals: visuals_with_color(theme, color),
             ..Default::default()
@@ -246,6 +277,7 @@ pub fn apply(ctx: &egui::Context) {
     }
 }
 pub fn card(visuals: &egui::Visuals) -> egui::Frame {
+    if is_animal(visuals) { return island::Card::frame(visuals); }
     let p = palette(visuals);
     egui::Frame::none()
         .fill(p.card)
@@ -258,6 +290,7 @@ pub enum ButtonKind {
     Primary,
     Secondary,
     Ghost,
+    Danger,
 }
 /// Native egui button interaction with shared state colors. `Button::fill`
 /// would override hovered/pressed fills, so appearance is applied via Visuals.
@@ -287,10 +320,10 @@ impl Button {
     }
 }
 fn button_visuals(v: &mut egui::Visuals, p: &Palette, kind: ButtonKind, enabled: bool) {
-    let text = if kind == ButtonKind::Primary {
-        C::WHITE
-    } else {
-        p.text
+    let text = match kind {
+        ButtonKind::Primary => C::WHITE,
+        ButtonKind::Danger => p.danger,
+        _ => p.text,
     };
     v.override_text_color = Some(if enabled { text } else { p.muted });
     if !enabled {
@@ -318,11 +351,25 @@ fn button_visuals(v: &mut egui::Visuals, p: &Palette, kind: ButtonKind, enabled:
             v.widgets.hovered = widget(p.hover, p.border, text);
             v.widgets.active = widget(p.pressed, p.accent, text);
         }
+        ButtonKind::Danger => {
+            v.widgets.inactive = widget(p.control, p.danger, text);
+            v.widgets.hovered = widget(p.danger_bg, p.danger, text);
+            v.widgets.active = widget(p.pressed, p.danger, text);
+        }
     }
     v.widgets.active.bg_stroke.width = 1.5;
 }
 impl Widget for Button {
     fn ui(self, ui: &mut egui::Ui) -> Response {
+        if is_animal(ui.visuals()) {
+            let kind = match self.kind {
+                ButtonKind::Primary => island::ButtonKind::Primary,
+                ButtonKind::Secondary => island::ButtonKind::Secondary,
+                ButtonKind::Ghost => island::ButtonKind::Ghost,
+                ButtonKind::Danger => island::ButtonKind::Danger,
+            };
+            return ui.add(island::Button::new(self.text, kind).compact(self.small).min_size(self.min_size));
+        }
         let p = *palette(ui.visuals());
         let enabled = ui.is_enabled();
         ui.scope(|ui| {
@@ -341,6 +388,19 @@ pub fn secondary_button(text: impl Into<WidgetText>) -> Button {
 }
 pub fn ghost_button(text: impl Into<WidgetText>) -> Button {
     Button::new(text, ButtonKind::Ghost)
+}
+pub fn danger_button(text: impl Into<WidgetText>) -> Button {
+    Button::new(text, ButtonKind::Danger)
+}
+/// Use the shared switch only for Animal; legacy themes keep native behavior.
+pub fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: impl Into<WidgetText>) -> Response {
+    if is_animal(ui.visuals()) { ui.add(island::Switch::new(value, label)) }
+    else { ui.checkbox(value, label) }
+}
+/// Keep native text/IME ownership while selecting the library's Animal styling.
+pub fn text_input(ui: &mut egui::Ui, value: &mut String, hint: &str, width: f32) -> Response {
+    if is_animal(ui.visuals()) { ui.add(island::Input::new(value).hint_text(hint).desired_width(width)) }
+    else { ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(width)) }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
@@ -363,6 +423,16 @@ impl Palette {
 }
 /// Read-only status. Meaning stays in the label rather than color alone.
 pub fn pill(ui: &mut egui::Ui, text: &str, tone: Tone) -> Response {
+    if is_animal(ui.visuals()) {
+        let tone = match tone {
+            Tone::Neutral => island::containers::Tone::Neutral,
+            Tone::Info => island::containers::Tone::Info,
+            Tone::Success => island::containers::Tone::Success,
+            Tone::Warning => island::containers::Tone::Warning,
+            Tone::Danger => island::containers::Tone::Danger,
+        };
+        return ui.add(island::Tag::new(text, tone));
+    }
     let (foreground, background) = palette(ui.visuals()).status(tone);
     egui::Frame::none()
         .fill(background)
@@ -414,8 +484,16 @@ mod tests {
                 let (fg, bg) = p.status(tone);
                 assert!(contrast(fg, bg) >= 4.5, "{theme:?} {tone:?}");
             }
-            for fill in [p.primary, p.primary_hover, p.primary_pressed] {
-                assert!(contrast(C::WHITE, fill) >= 4.5);
+            if color != ColorTheme::Animal {
+                for fill in [p.primary, p.primary_hover, p.primary_pressed] {
+                    assert!(contrast(C::WHITE, fill) >= 4.5);
+                }
+            } else {
+                // Animal's real primary is warm ink on cream, not white on
+                // the mint semantic accent. Its native selection comes from
+                // the library style and is checked above using actual colors.
+                let tokens = if theme == egui::Theme::Dark { island::DARK } else { island::LIGHT };
+                assert!(contrast(tokens.text, tokens.base) >= 4.5);
             }
         }
     }
@@ -446,6 +524,31 @@ mod tests {
         assert!(apply_color_theme(&cyan, ColorTheme::Blue));
         assert_eq!(current_color_theme(&blue), ColorTheme::Blue);
         assert_eq!(palette(&cyan.style().visuals).primary, LIGHT.primary);
+    }
+    #[test]
+    fn animal_uses_the_library_style_and_preserves_legacy_theme_geometry() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        for mode in [egui::Theme::Light, egui::Theme::Dark] {
+            ctx.set_theme(mode);
+            apply_color_theme(&ctx, ColorTheme::Animal);
+            apply(&ctx);
+            let actual = ctx.style();
+            let expected = island::tokens::style(mode);
+            assert!(is_animal(&actual.visuals));
+            assert_eq!(actual.visuals, expected.visuals);
+            assert_eq!(actual.spacing.interact_size.y, island::tokens::CONTROL_HEIGHT);
+            assert_eq!(actual.visuals.window_rounding, egui::Rounding::same(island::tokens::CARD_RADIUS));
+            assert_eq!(actual.text_styles[&egui::TextStyle::Body].family, island::fonts::family());
+            assert_eq!(card(&actual.visuals).rounding, island::Card::frame(&actual.visuals).rounding);
+            assert!(contrast(actual.visuals.selection.stroke.color, actual.visuals.selection.bg_fill) >= 4.5);
+        }
+        for color in [ColorTheme::Blue, ColorTheme::Cyan] {
+            apply_color_theme(&ctx, color);
+            assert_eq!(ctx.style().spacing.interact_size.y, CONTROL_HEIGHT);
+            assert_eq!(ctx.style().visuals.window_rounding, egui::Rounding::same(RADIUS));
+            assert!(!is_animal(&ctx.style().visuals));
+        }
     }
     #[test]
     fn theme_switch_keeps_geometry_and_preference() {

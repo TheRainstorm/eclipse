@@ -5,6 +5,7 @@
 //! Installed SDK sources, compiler, target and features must match. Libraries
 //! remain loaded for the process lifetime, including after disabling a plugin.
 pub use eframe::egui;
+pub use animal_island_ui as island;
 pub use tokio;
 pub use uu_core as engine;
 pub use uu_i18n as i18n;
