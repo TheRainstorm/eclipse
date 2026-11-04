@@ -10,6 +10,7 @@ build = "build.rs"
 crate-type = ["dylib"]
 
 [dependencies]
+animal-island-ui = { path = "../animal-island-ui" }
 uu-core = {path="../uu-core"}
 uu-i18n = {path="../uu-i18n"}
 eframe = {version="0.29",default-features=false,features=["glow","default_fonts","x11","wayland"]}

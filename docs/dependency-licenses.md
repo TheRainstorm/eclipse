@@ -60,6 +60,7 @@
 | [block-buffer](https://github.com/RustCrypto/utils) | 0.10.4 | `MIT OR Apache-2.0` |
 | [block-padding](https://github.com/RustCrypto/utils) | 0.3.3 | `MIT OR Apache-2.0` |
 | [block2](https://github.com/madsmtm/objc2) | 0.5.1 | `MIT` |
+| [block2](https://github.com/madsmtm/objc2) | 0.6.2 | `MIT` |
 | [bumpalo](https://github.com/fitzgen/bumpalo) | 3.20.3 | `MIT OR Apache-2.0` |
 | [bytemuck](https://github.com/Lokathor/bytemuck) | 1.25.2 | `Zlib OR Apache-2.0 OR MIT` |
 | [bytemuck_derive](https://github.com/Lokathor/bytemuck) | 1.12.1 | `Zlib OR Apache-2.0 OR MIT` |
@@ -356,6 +357,7 @@
 | [plain](https://github.com/randomites/plain) | 0.2.3 | `MIT/Apache-2.0` |
 | [png](https://github.com/image-rs/image-png) | 0.18.1 | `MIT OR Apache-2.0` |
 | [polling](https://github.com/smol-rs/polling) | 3.11.0 | `Apache-2.0 OR MIT` |
+| [pollster](https://github.com/zesterer/pollster) | 0.4.0 | `Apache-2.0/MIT` |
 | [polyval](https://github.com/RustCrypto/universal-hashes) | 0.6.2 | `Apache-2.0 OR MIT` |
 | [portable-atomic](https://github.com/taiki-e/portable-atomic) | 1.15.0 | `Apache-2.0 OR MIT` |
 | [potential_utf](https://github.com/unicode-org/icu4x) | 0.1.6 | `Unicode-3.0` |
@@ -395,6 +397,7 @@
 | [renderdoc-sys](https://github.com/ebkalderon/renderdoc-rs) | 1.1.0 | `MIT OR Apache-2.0` |
 | [reqwest](https://github.com/seanmonstar/reqwest) | 0.12.28 | `MIT OR Apache-2.0` |
 | [rfc6979](https://github.com/RustCrypto/signatures/tree/master/rfc6979) | 0.4.0 | `Apache-2.0 OR MIT` |
+| [rfd](https://github.com/PolyMeilex/rfd) | 0.15.4 | `MIT` |
 | [ring](https://github.com/briansmith/ring) | 0.17.14 | `Apache-2.0 AND ISC` |
 | [rtcp](https://github.com/webrtc-rs/rtcp) | 0.11.0 | `MIT OR Apache-2.0` |
 | [rtp](https://github.com/webrtc-rs/rtp) | 0.11.0 | `MIT OR Apache-2.0` |
@@ -511,6 +514,7 @@
 | [universal-hash](https://github.com/RustCrypto/traits) | 0.5.1 | `MIT OR Apache-2.0` |
 | [untrusted](https://github.com/briansmith/untrusted) | 0.9.0 | `ISC` |
 | [url](https://github.com/servo/rust-url) | 2.5.8 | `MIT OR Apache-2.0` |
+| [urlencoding](https://github.com/kornelski/rust_urlencoding) | 2.1.3 | `MIT` |
 | [utf-8](https://github.com/SimonSapin/rust-utf8) | 0.7.6 | `MIT OR Apache-2.0` |
 | [utf8_iter](https://github.com/hsivonen/utf8_iter) | 1.0.4 | `Apache-2.0 OR MIT` |
 | [utf8parse](https://github.com/alacritty/vte) | 0.2.2 | `Apache-2.0 OR MIT` |

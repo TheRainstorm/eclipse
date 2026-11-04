@@ -4,17 +4,18 @@ use std::{path::{Path,PathBuf},process::Command};
 fn sources(directory:&Path,files:&mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(directory).expect("SDK source directory") {
         let path=entry.expect("SDK source entry").path();
-        if path.is_dir(){sources(&path,files);}else if matches!(path.extension().and_then(|s|s.to_str()),Some("rs"|"toml"|"c"|"cpp"|"h"|"json")){files.push(path);}
+        if path.is_dir(){sources(&path,files);}else if matches!(path.extension().and_then(|s|s.to_str()),Some("rs"|"toml"|"c"|"cpp"|"h"|"json"|"ttf"|"otf")){files.push(path);}
     }
 }
 fn main() {
     println!("cargo:rerun-if-env-changed=ECLIPSE_PLUGIN_ENGINE_SOURCE");
     let root=std::env::var_os("ECLIPSE_PLUGIN_ENGINE_SOURCE").map(PathBuf::from).unwrap_or_else(||PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../..")).canonicalize().unwrap();
     let mut files=Vec::new();
-    for name in ["uu-plugin-sdk","uu-core","uu-media","uu-capture","uu-input","uu-clipboard","uu-proto","uu-i18n","uu-i18n-macros"] {
+    for name in ["animal-island-ui","uu-plugin-sdk","uu-core","uu-media","uu-capture","uu-input","uu-clipboard","uu-proto","uu-i18n","uu-i18n-macros"] {
         println!("cargo:rerun-if-changed={}",root.join("crates").join(name).display());
         let directory=root.join("crates").join(name);
         sources(&directory.join("src"),&mut files);
+        if directory.join("assets").is_dir(){sources(&directory.join("assets"),&mut files);}
         for filename in ["Cargo.toml","build.rs"] {let file=directory.join(filename);if file.is_file(){files.push(file);}}
     }
     files.sort();

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/animal-island-ui",
     "crates/uu-proto",
     "crates/uu-i18n",
     "crates/uu-i18n-macros",
@@ -27,7 +28,7 @@ webrtc-dtls = { path = "vendor/webrtc-dtls" }
 winit = { path = "vendor/winit" }
 
 [workspace.package]
-version = "0.23.3-dev.20261104"
+version = "0.23.4-dev.20261104"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/TheRainstorm/eclipse"
