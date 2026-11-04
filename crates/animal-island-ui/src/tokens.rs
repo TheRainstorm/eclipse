@@ -38,6 +38,7 @@ pub struct Tokens {
     pub shadow: C,
     pub focus: C,
     pub switch_on: C,
+    pub switch_on_border: C,
     pub switch_off: C,
 }
 // Core light colors follow the reference's cream, warm brown and mint tokens.
@@ -70,6 +71,7 @@ pub const LIGHT: Tokens = Tokens {
     shadow: C::from_rgb(189, 174, 160),
     focus: C::from_rgb(255, 204, 0),
     switch_on: C::from_rgb(134, 214, 122),
+    switch_on_border: C::from_rgb(111, 186, 44),
     switch_off: C::from_rgb(212, 201, 180),
 };
 // A warm night interpretation; the reference itself specifies a light theme.
@@ -101,6 +103,7 @@ pub const DARK: Tokens = Tokens {
     shadow: C::from_rgb(25, 23, 19),
     focus: C::from_rgb(255, 211, 74),
     switch_on: C::from_rgb(113, 178, 96),
+    switch_on_border: C::from_rgb(82, 132, 69),
     switch_off: C::from_rgb(104, 91, 70),
 };
 pub fn palette(visuals: &egui::Visuals) -> &'static Tokens {

@@ -5,7 +5,12 @@ pub(super) fn volume_slider(ui: &mut eframe::egui::Ui, volume: &mut u32) -> bool
     use eframe::egui;
     let before = *volume;
     let palette=*super::theme::palette(ui.visuals());
+    let width=ui.available_width();
     egui::Frame::none().fill(palette.base).rounding(8.).inner_margin(10.).show(ui,|ui|{
+        // Frame margins are outside the child UI's minimum width. Bound the
+        // content explicitly before either the header or rail can expand it.
+        let content_width=(width-20.).max(1.);
+        ui.set_width(content_width);
         ui.spacing_mut().interact_size.y=22.;
         ui.spacing_mut().slider_rail_height=4.;
         ui.horizontal(|ui| {
@@ -15,7 +20,7 @@ pub(super) fn volume_slider(ui: &mut eframe::egui::Ui, volume: &mut u32) -> bool
             });
         });
         ui.add_space(4.);
-        ui.spacing_mut().slider_width=ui.available_width().max(1.);
+        ui.spacing_mut().slider_width=content_width;
         ui.visuals_mut().selection.bg_fill=palette.accent;
         ui.visuals_mut().widgets.inactive.bg_fill=palette.control;
         ui.visuals_mut().widgets.inactive.bg_stroke=egui::Stroke::new(1.5,palette.accent);

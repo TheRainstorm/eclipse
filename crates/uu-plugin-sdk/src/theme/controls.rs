@@ -450,15 +450,6 @@ pub fn paint_tab(
                 p.disabled
             },
         );
-        if selected {
-            ui.painter().line_segment(
-                [
-                    face.left_bottom() + egui::vec2(8., -1.),
-                    face.right_bottom() + egui::vec2(-8., -1.),
-                ],
-                Stroke::new(2., p.accent),
-            );
-        }
         if enabled && response.has_focus() {
             ui.painter()
                 .rect_stroke(face.shrink(1.), 6., Stroke::new(1.5, p.accent));
@@ -528,8 +519,9 @@ pub fn menu_control(
         let p = *palette(ui.visuals());
         let animal = is_animal(ui.visuals());
         let enabled = ui.is_enabled();
-        let h: f32 = if animal { 40. } else { 32. };
-        let inset = if animal { 12. } else { 8. };
+        // Popup density is independent of the larger controls on settings pages.
+        let h: f32 = 30.;
+        let inset = 8.;
         let gutter = 24.;
         let hint = WidgetText::from(hint).into_galley(
             ui,

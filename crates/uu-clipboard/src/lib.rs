@@ -256,10 +256,7 @@ fn run_system(control: Arc<Clipboard>, mut system: impl SystemClipboard, publish
                             match system.write(token, &value, &content) {
                                 Ok(()) => {
                                     tracker.observe_fingerprint(Some(fingerprint), false);
-                                    control.status(match value {
-                                        Value::Text(_) => "文本剪贴板已同步",
-                                        Value::Image(_) => "图片剪贴板已同步",
-                                    });
+                                    control.status("");
                                 }
                                 Err(message) => {
                                     let mut pending = control.remote.lock().unwrap();

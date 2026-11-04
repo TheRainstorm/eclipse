@@ -305,13 +305,8 @@ impl Widget for Switch<'_> {
             } else {
                 p.disabled
             };
-            let green = if ui.visuals().dark_mode {
-                p.accent
-            } else {
-                egui::Color32::from_rgb(111, 186, 44)
-            };
             let border = if enabled {
-                p.control_border.lerp_to_gamma(green, position)
+                p.control_border.lerp_to_gamma(p.switch_on_border, position)
             } else {
                 p.border
             };

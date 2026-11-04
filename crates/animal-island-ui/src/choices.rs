@@ -352,18 +352,6 @@ pub fn paint_tab(
             ui.painter()
                 .rect_stroke(face.expand(2.), 20., Stroke::new(2., p.focus));
         }
-        if selected && enabled {
-            ui.painter().line_segment(
-                [
-                    pos2(face.left() + 12., face.bottom() - 5.),
-                    pos2(
-                        face.left() + 12. + (face.width() - 24.) * motion,
-                        face.bottom() - 5.,
-                    ),
-                ],
-                Stroke::new(2., p.primary),
-            );
-        }
         ui.painter().galley_with_override_text_color(
             face.center() - galley.size() * 0.5,
             galley,

@@ -202,7 +202,16 @@ fn hover_bridge(a: Rect, b: Rect) -> Option<Rect> {
     }
 }
 
-fn popup_frame(ui: &egui::Ui) -> egui::Frame {
+fn popup_frame(ui: &mut egui::Ui) -> egui::Frame {
+    // Root, children and detail panels use the same density in every theme.
+    // Page controls retain their larger touch targets.
+    let style=ui.style_mut();
+    style.spacing.interact_size.y=24.;
+    style.spacing.button_padding=egui::vec2(7.,3.);
+    style.spacing.item_spacing=egui::Vec2::ZERO;
+    for (kind,size) in [(egui::TextStyle::Heading,14.),(egui::TextStyle::Body,13.),(egui::TextStyle::Button,13.),(egui::TextStyle::Small,11.)] {
+        if let Some(font)=style.text_styles.get_mut(&kind){font.size=size;}
+    }
     // The shared theme owns opacity, corners and shadow for every popup.
     egui::Frame::popup(ui.style()).fill(super::theme::palette(ui.visuals()).overlay)
 }
@@ -286,7 +295,7 @@ fn side_submenu<R>(
     egui::InnerResponse::new(inner, response)
 }
 fn menu_heading(ui:&mut egui::Ui,title:&str,status:&str) {
-    ui.horizontal(|ui|{ui.add_space(7.);ui.label(RichText::new(title).strong());if !status.is_empty(){ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{ui.label(RichText::new(status).color(super::theme::palette(ui.visuals()).accent));});}});ui.add_space(4.);
+    ui.horizontal(|ui|{ui.add_space(7.);ui.label(RichText::new(title).size(12.).strong());if !status.is_empty(){ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{ui.label(RichText::new(status).size(12.).color(super::theme::palette(ui.visuals()).accent));});}});
 }
 fn nested_submenu<R>(ui:&mut egui::Ui,blocked:&mut Vec<Rect>,label:&str,status:&str,body:impl FnOnce(&mut egui::Ui)->R)->egui::InnerResponse<Option<R>> {
     let key=egui::Id::new((ui.ctx().viewport_id(),"stream-nested-menu"));let id=ui.make_persistent_id(("nested",label));
@@ -526,6 +535,13 @@ impl super::App {
     fn display_menu(&mut self, ui: &mut egui::Ui) {
         let screens=self.visible_remote_screens();
         ui.set_min_width(260.0);
+        if let Some(tabs)=&self.workspace_tabs {
+            if menu_row(ui,uu_i18n::text("设备与屏幕"),Some(Icon::Grid),false,false,"",false).clicked() {
+                tabs.open_selector(ui.ctx());self.displays.menu_open=false;self.stream_menu.open=false;
+                ui.memory_mut(|memory|memory.close_popup());
+            }
+            separator(ui);
+        }
         for screen in &screens.screens {
             let response=menu_row(ui,&self.displays.layout.label(screen),None,
                 self.displays.selected==Some(screen.id),false,if screen.primary {uu_i18n::text("主屏")}else{""},false)
@@ -640,9 +656,8 @@ impl super::App {
         ui.add_space(6.);
         changed|=super::audio_controls::volume_slider(ui,&mut volume);
         if let Some(audio)=&audio {
-            ui.add_space(6.);
             let status=audio.status.lock().unwrap().clone();
-            menu_heading(ui,uu_i18n::text("声音"),&status);
+            if !status.is_empty(){ui.add_space(4.);ui.add(egui::Label::new(RichText::new(status).small()).wrap());}
             ui.response().on_hover_text(uu_i18n::format!("播放排队 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
         }
         if changed {
@@ -918,12 +933,6 @@ impl super::App {
                                         uu_i18n::text("文件、终端和端口映射尚未接入"),
                                     );
                                     }
-                                    if let Some(tabs)=&self.workspace_tabs {
-                                        if menu_row(ui,uu_i18n::text("设备与屏幕"),Some(Icon::Grid),false,false,"",false).clicked() {
-                                            tabs.open_selector(ctx);self.stream_menu.open=false;
-                                            ctx.memory_mut(|memory|memory.close_popup());
-                                        }
-                                    }
                                     if menu_row(ui,uu_i18n::text("连接详情"),Some(Icon::Link),false,false,"",false).clicked(){self.open_connection_details();}
                                     if menu_row(ui,uu_i18n::text("串流设置"),Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
                                     side_submenu(ui, &mut blocked, Icon::Grid, uu_i18n::text("更多"), |ui| {
@@ -1047,7 +1056,7 @@ mod tests {
                         ui.heading("Eclipse · 生成业务菜单预览");ui.add_space(18.);
                         ui.columns(3,|columns|{
                             for (index,title) in ["画面","编码","声音"].into_iter().enumerate(){
-                                popup_frame(&columns[index]).show(&mut columns[index],|ui|{
+                                popup_frame(&mut columns[index]).show(&mut columns[index],|ui|{
                                     ui.set_width(MENU_WIDTH);ui.spacing_mut().item_spacing=egui::Vec2::ZERO;
                                     menu_heading(ui,title,"");separator(ui);
                                     match index {0=>self.app.picture_menu(ui),1=>self.app.encoding_menu(ui),_=>self.app.audio_menu(ui)}
