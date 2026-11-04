@@ -216,7 +216,7 @@ struct Presentation {
         if(!admit_frame(vsync))return false;
         ComPtr<ID3D11Texture2D> backbuffer;check(chain->GetBuffer(0,__uuidof(ID3D11Texture2D),(void**)backbuffer.GetAddressOf()),"get HDR backbuffer");
         context->CopyResource(backbuffer.Get(),shared_texture.Get());
-        const HRESULT result=present_chain(vsync?1:0,DXGI_PRESENT_DO_NOT_WAIT|(!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0));
+        const HRESULT result=present_chain(0,present_flags(vsync));
         if(result==DXGI_ERROR_WAS_STILL_DRAWING)return false;
         check(result,"present scRGB HDR frame");
         attach();return true;
@@ -233,8 +233,19 @@ struct Presentation {
         LARGE_INTEGER frequency{};
         observation_frequency=enabled&&QueryPerformanceFrequency(&frequency)&&frequency.QuadPart>0?uint64_t(frequency.QuadPart):0;
     }
-    bool admit_frame(bool vsync) {
-        const UINT limit=vsync?1:3;
+    UINT present_flags(bool vsync) const {
+        // These are windowed flip chains, including borderless fullscreen.
+        // Interval 0 lets DXGI replace stale queued images at the next refresh;
+        // without ALLOW_TEARING the output remains tear-free. Interval 1 plus
+        // a one-frame cap can stall inside Present even after ready is signaled
+        // and with DO_NOT_WAIT, delaying the shared window/input thread.
+        return DXGI_PRESENT_DO_NOT_WAIT|(!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0);
+    }
+    bool admit_frame(bool /*vsync*/) {
+        // Leave room for DWM and the driver in the existing five-buffer chain.
+        // Interval 0 replaces pending flips instead of displaying a FIFO of
+        // old frames. Readiness and busy-batch gates still bound submissions.
+        const UINT limit=3;
         if(frame_queue_limit!=limit) {
             check(chain->SetMaximumFrameLatency(limit),"set presentation frame queue");
             frame_queue_limit=limit;
@@ -254,7 +265,6 @@ struct Presentation {
         }
         // Never wait for a refresh on the window/input thread. Retain a consumed
         // admission if a nonblocking Present has to be retried before succeeding.
-        if(!vsync)return true;
         if(frame_admitted)return true;
         const DWORD ready=WaitForSingleObject(frame_ready,0);
         if(ready==WAIT_TIMEOUT)return false;
@@ -438,7 +448,7 @@ float4 ps(float4 pos:SV_Position):SV_Target{
             debug_pixels.resize(size_t(width)*height*4);for(unsigned y=0;y<height;y++)std::memcpy(debug_pixels.data()+size_t(y)*width*4,(const unsigned char*)map.pData+size_t(y)*map.RowPitch,size_t(width)*8);context->Unmap(debug_target.Get(),0);
             debug_width=width;debug_height=height;debug_serial++;
         }
-        last_present_result=present_chain(vsync?1:0,DXGI_PRESENT_DO_NOT_WAIT|(!vsync&&allow_tearing?DXGI_PRESENT_ALLOW_TEARING:0),offered?source_id:0,offered?ready_value:0);
+        last_present_result=present_chain(0,present_flags(vsync),offered?source_id:0,offered?ready_value:0);
         if(last_present_result==DXGI_ERROR_WAS_STILL_DRAWING)return 2;
         check(last_present_result,"present native composed video");attach();return 0;
     }

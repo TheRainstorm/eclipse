@@ -85,16 +85,17 @@ struct PresentTiming {
     max: [f64; 4],
     raw_samples: u64,
     raw_sum: [f64; 2],
+    raw_policy: Option<[u32; 2]>,
     admission: [u64; 2],
 }
 impl Default for PresentTiming {
-    fn default()->Self { Self { started:std::time::Instant::now(),counts:[0;4],sum:[0.;4],max:[0.;4],raw_samples:0,raw_sum:[0.;2],admission:[0;2] } }
+    fn default()->Self { Self { started:std::time::Instant::now(),counts:[0;4],sum:[0.;4],max:[0.;4],raw_samples:0,raw_sum:[0.;2],raw_policy:None,admission:[0;2] } }
 }
 impl PresentTiming {
-    fn record(&mut self, stats:Option<&uu_core::media::MediaStats>,vsync:bool,outcome:usize,phases:[f64;4],raw:Option<[f64;2]>) {
+    fn record(&mut self, stats:Option<&uu_core::media::MediaStats>,vsync:bool,outcome:usize,phases:[f64;4],raw:Option<([f64;2],[u32;2])>) {
         self.counts[outcome]+=1;
         for i in 0..4 {self.sum[i]+=phases[i];self.max[i]=self.max[i].max(phases[i]);}
-        if let Some(raw)=raw {self.raw_samples+=1;for i in 0..2 {self.raw_sum[i]+=raw[i];}}
+        if let Some((times,policy))=raw {self.raw_samples+=1;self.raw_policy=Some(policy);for i in 0..2 {self.raw_sum[i]+=times[i];}}
         if self.started.elapsed()<std::time::Duration::from_secs(2){return;}
         if let Some(stats)=stats {
             let count=self.counts.iter().sum::<u64>() as f64;
@@ -103,6 +104,7 @@ impl PresentTiming {
                 "admitted_deferred":self.admission,
                 "mean_finish_prepare_submit_receipt_ms":self.sum.map(|x|x/count),"max_finish_prepare_submit_receipt_ms":self.max,
                 "raw_samples":self.raw_samples,"mean_dxgi_present_queries_ms":(self.raw_samples>0).then(||self.raw_sum.map(|x|x/self.raw_samples as f64)),
+                "dxgi_sync_interval_flags_at_end":self.raw_policy,
                 "scope":"native presenter CPU wall time; DXGI is a subset of submit; not GPU execution or physical latency"}));
         }
         *self=Self::default();
@@ -448,7 +450,7 @@ impl Presenter for NativePresenter {
             if let Some(raw)=self.native.take_present_observation() {
                 if raw.qpc_frequency>0 && raw.present_after_qpc>=raw.present_before_qpc && raw.stats_query_after_qpc>=raw.last_count_query_before_qpc {
                     let ms=1000./raw.qpc_frequency as f64;
-                    raw_times=Some([(raw.present_after_qpc-raw.present_before_qpc) as f64*ms,(raw.stats_query_after_qpc-raw.last_count_query_before_qpc) as f64*ms]);
+                    raw_times=Some(([(raw.present_after_qpc-raw.present_before_qpc) as f64*ms,(raw.stats_query_after_qpc-raw.last_count_query_before_qpc) as f64*ms],[raw.sync_interval,raw.present_flags]));
                 }
                 let offered=self.image.as_ref().map(|image|(image.id,image.ready));
                 let frame=self.image.as_ref().and_then(|image|image.observation.as_ref());

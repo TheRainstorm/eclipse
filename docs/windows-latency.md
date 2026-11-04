@@ -45,13 +45,15 @@ H.264 → D3D11 硬解表面租约 → 最新帧邮箱
 
 同适配器原生 GPU 串流可直接把 D3D 视频与缓存的 GL 界面图层合成到 scRGB 交换链。交换链使用专用子窗口，父窗口的 WGL drawable 只负责 GL 渲染及回退，避免同一 HWND 在全屏时同时承担两种呈现后端。视频转换、UI 缓存和每帧合成命令不因该窗口分离增加拷贝或同步等待。
 
-开发候选使用 `CreateSwapChainForHwnd` 和 `FLIP_DISCARD`，替换此前的 DirectComposition 交换链与视觉树绑定。子窗口自身没有 WGL drawable，可独立拥有窗口翻转交换链；驱动支持时，关闭 VSync 的提交继续使用 tearing 标志。FP16 scRGB 和已有 GPU 同步保持；当前开发版使用五个翻转表面，交换链额度在关闭 VSync 时为三帧，启用时为单帧。它们是驱动与合成器的有界资源，不是应用新增的视频帧队列。该改动允许系统选择不同的呈现模式，实际是否减少显示排队仍须以相同设置下的系统显示事件和交互验收为准，不能由交换链类型直接推定。
+开发候选使用 `CreateSwapChainForHwnd` 和 `FLIP_DISCARD`，替换此前的 DirectComposition 交换链与视觉树绑定。子窗口自身没有 WGL drawable，可独立拥有窗口翻转交换链；驱动支持时，关闭 VSync 的提交继续使用 tearing 标志。FP16 scRGB 和已有 GPU 同步保持；当前开发版使用五个翻转表面和三帧交换链额度。它们是驱动与合成器的有界资源，不是应用新增的视频帧队列。该改动允许系统选择不同的呈现模式，实际是否减少显示排队仍须以相同设置下的系统显示事件和交互验收为准，不能由交换链类型直接推定。
 
 父窗口继续负责全屏、缩放、焦点及键鼠输入。子窗口与父窗口属于同一 UI 线程，使用 `WS_EX_NOREDIRECTIONBITMAP`，命中测试返回 `HTTRANSPARENT`；它在首帧提交后显示，停用时隐藏，随呈现器销毁。尺寸变化只调整所属子窗口，不修改显示器模式。
 
-原生呈现与输入处理共用 UI 线程，两种 VSync 模式的 `Present` 都使用 [DO_NOT_WAIT](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-present)，避免队列繁忙时在该调用中等待。开启 VSync 时保持同步间隔 1，通过 [DXGI 帧额度事件](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject) 作零超时准入。准入在处理本轮界面输入后、锁定共享 UI 纹理和执行视频绘制回调前完成；繁忙时保留当前呈现目标，只同步必要的 egui 纹理增删，跳过本轮绘制与提交，随后处理输入并重试最新画面，不退回普通 GL 交换缓冲。关闭时保持同步间隔 0、原有队列容量及受支持的撕裂标志。`WAS_STILL_DRAWING` 表示交回事件循环，约 2ms 后重试该视口的最新内容，不切换呈现后端、不发送成功显示回执。重试前用事件查询非阻塞地确认上批 GPU 工作完成，避免持续繁忙时反复排入图像、光标或 UI 合成；它不表示该图像已经显示。繁忙只能保留已取得的额度，切换队列策略时清除旧额度。已经提交的 GPU 图像读取仍归还消费栅栏，未开始读取则不伪造归还。复用未变化内容不提交新的 `Present`，已经获得但尚未提交的额度保留给下一次真实提交；忙态本身不使静态 UI 缓存失效。这些规则限制繁忙时的共享目标锁定、绘制和 `Present` 等待；尺寸重建、必要纹理上传等其它 GPU 调用和完整输入到显示延迟仍须分别测量。
+原生呈现与输入处理共用 UI 线程。两种 VSync 模式均使用同步间隔 0 和 [DO_NOT_WAIT](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-present)，并通过 [DXGI 帧额度事件](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject) 作零超时准入。这些始终为窗口化交换链，包括无边框全屏；开启 VSync 时禁止 `ALLOW_TEARING`，由系统在刷新时选择最新完成帧，关闭时才允许受支持的撕裂提交。零间隔允许淘汰过时的待呈现帧，语义见 [DXGI Present](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present) 和 [窗口化交换链调度](https://developer.nvidia.com/blog/advanced-api-performance-swap-chains/)。该策略参考 [Moonlight D3D11 呈现](https://github.com/moonlight-stream/moonlight-qt/blob/master/app/streaming/video/ffmpeg-renderers/d3d11va.cpp)，独立实现，未复制其代码。此前使用同步间隔 1 和单帧额度时，实流曾在就绪检查成功且带 `DO_NOT_WAIT` 的情况下，仍在 `Present` 内等待约 10–11ms；不能把该标志当成所有驱动调用均不阻塞的保证。
 
-这些调整避免 VSync 提交等待阻塞输入泵，保留原分辨率、码率、颜色与垂直同步。WGL 共享锁、尺寸重建等路径仍可能等待 GPU。状态与生成输入测试不能证明实际鼠标延迟已降至某个帧数；物理跟手程度及驱动行为仍需同设置实机验收。
+准入在处理本轮界面输入后、锁定共享 UI 纹理和执行视频绘制回调前完成；繁忙时保留当前呈现目标，只同步必要的 egui 纹理增删，跳过本轮绘制与提交，随后处理输入并重试最新画面，不退回普通 GL 交换缓冲。`WAS_STILL_DRAWING` 表示交回事件循环，约 2ms 后重试该视口的最新内容，不发送成功显示回执。重试前用事件查询非阻塞地确认上批 GPU 工作完成，避免持续繁忙时反复排入合成任务；它不表示图像已经显示。繁忙只能保留已取得的额度。已排入的 GPU 图像读取仍归还消费栅栏，未开始读取则不伪造归还。未变化内容不提交新的 `Present`，已经获得但尚未提交的额度保留给下一次真实提交；忙态本身不使静态 UI 缓存失效。
+
+这些调整针对 VSync 提交阻塞输入泵，保留原分辨率、码率、颜色与无撕裂输出。WGL 共享锁、尺寸重建等路径仍可能等待 GPU。状态与生成输入测试不能证明实际鼠标延迟已降至某个帧数；物理跟手程度及驱动行为仍需同设置实机验收。
 
 `Present` 成功和读回非黑像素都不能证明新帧正在屏幕上显示。全屏回归需要覆盖真实串流的进出全屏、最大化、显示器与 DPI 转换，并对照实际显示事件；生成帧缓冲检查仍只验证绘制内容。性能比较应保持相同的垂直同步、画质和计时范围，不能把 Present API 的 CPU 耗时当作显示完成延迟。
 
