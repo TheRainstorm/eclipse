@@ -143,9 +143,9 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
 
     });
     group(ui, uu_i18n::text("呈现与解码"), |ui| {
-        ui.add_enabled_ui(cfg!(windows),|ui|{ui.checkbox(&mut s.hdr,uu_i18n::text("原生串流：优先 HDR"));});
+        ui.add_enabled_ui(cfg!(windows),|ui|{theme::checkbox(ui,&mut s.hdr,uu_i18n::text("原生串流：优先 HDR"));});
         note(ui,uu_i18n::text("双方显示器均启用 HDR 且支持 10 位 HEVC / AV1 时自动协商。HDR 和编码切换需要重新连接；其它情况使用 SDR。当前 Linux 客户端以 SDR 呈现。"));
-        ui.checkbox(&mut s.vsync, uu_i18n::text("垂直同步"));
+        theme::checkbox(ui,&mut s.vsync, uu_i18n::text("垂直同步"));
         note(
             ui,
             uu_i18n::text("保存后立即应用到当前窗口。关闭可减少呈现等待，也可能出现撕裂。"),
@@ -158,7 +158,7 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
             );
         }
         ui.add_space(8.0);
-        ui.checkbox(&mut s.software_decoder, uu_i18n::text("使用软件解码"));
+        theme::checkbox(ui,&mut s.software_decoder, uu_i18n::text("使用软件解码"));
         note(ui, uu_i18n::text("默认优先使用硬件解码。更改后重新连接此设备生效。"));
     });
     group(ui, uu_i18n::text("远端显示器布局"), |ui| {
@@ -240,7 +240,7 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
 }
 fn audio(ui: &mut egui::Ui, s: &mut Settings) {
     group(ui, uu_i18n::text("声音播放"), |ui| {
-        ui.checkbox(&mut s.muted, uu_i18n::text("静音"));
+        theme::checkbox(ui,&mut s.muted, uu_i18n::text("静音"));
         ui.add_space(8.0);
         super::audio_controls::volume_slider(ui, &mut s.volume);
         note(ui, uu_i18n::text("当前串流和全局默认分别保存；设备配置可覆盖默认值。"));
@@ -263,21 +263,21 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
         note(ui,&uu_i18n::format!("{} 切换移动方式。游戏模式单击画面捕获鼠标，{} 释放或重新捕获；菜单和失焦时自动释放。",s.hotkeys.label(uu_core::hotkeys::Action::MouseMode),s.hotkeys.label(uu_core::hotkeys::Action::Capture)));
     });
     group(ui, uu_i18n::text("手柄与运动传感器"), |ui| {
-        ui.checkbox(&mut s.gamepad, uu_i18n::text("转发本地手柄和陀螺仪"));
+        theme::checkbox(ui,&mut s.gamepad, uu_i18n::text("转发本地手柄和陀螺仪"));
         if let Some(status)=state.gamepad_status{ui.label(status);}
         note(ui, uu_i18n::text("原生串流支持最多 4 个手柄，仅在画面获得输入焦点和控制权时转发；失焦或断线后释放。Xbox 模拟为 Xbox，NS/PS 模拟为 DS4 并保留实体支持的运动传感器。Windows 被控端需要 ViGEmBus；Linux 的 Xbox 需要 uinput、DS4 需要 UHID 访问权限。"));
     });
     group(ui, uu_i18n::text("键盘与协作"), |ui| {
-        ui.checkbox(&mut s.capture_keyboard, uu_i18n::text("全屏时将系统快捷键交给远端"));
-        ui.checkbox(&mut s.nested_shortcuts, uu_i18n::text("将客户端快捷键交给远端（嵌套串流）"));
+        theme::checkbox(ui,&mut s.capture_keyboard, uu_i18n::text("全屏时将系统快捷键交给远端"));
+        theme::checkbox(ui,&mut s.nested_shortcuts, uu_i18n::text("将客户端快捷键交给远端（嵌套串流）"));
         note(ui,&uu_i18n::format!("{} 随时切换嵌套透传；其它客户端命令发送到远端。",s.hotkeys.label(uu_core::hotkeys::Action::ToggleNested)));
         note(ui,uu_i18n::text("系统键跟随全屏画面的输入焦点。客户端命令可在下方设置；Ctrl+Alt+Del 由 Windows 保留。"));
         ui.add_space(8.0);
         if state.native {
-            ui.checkbox(&mut s.native_clipboard, uu_i18n::text("同步剪贴板（文本和图片）"));
+            theme::checkbox(ui,&mut s.native_clipboard, uu_i18n::text("同步剪贴板（文本和图片）"));
         } else {
-            ui.checkbox(&mut s.native_clipboard, uu_i18n::text("原生连接：同步文本和图片剪贴板"));
-            ui.checkbox(&mut s.clipboard, uu_i18n::text("兼容连接：同步文本剪贴板"));
+            theme::checkbox(ui,&mut s.native_clipboard, uu_i18n::text("原生连接：同步文本和图片剪贴板"));
+            theme::checkbox(ui,&mut s.clipboard, uu_i18n::text("兼容连接：同步文本剪贴板"));
         }
         note(
             ui,
@@ -293,7 +293,7 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
             &uu_i18n::format!("默认位于右边缘、距顶部 15%。悬停展开、离开收起，{} 隐藏或显示。",s.hotkeys.label(uu_core::hotkeys::Action::Menu)),
         );
         ui.add_space(8.0);
-        ui.checkbox(&mut s.hud, uu_i18n::text("启用 HUD"));
+        theme::checkbox(ui,&mut s.hud, uu_i18n::text("启用 HUD"));
         ui.add(egui::Slider::new(&mut s.hud_appearance.vertical_position,0.0..=1.0).step_by(0.001).text(uu_i18n::text("HUD垂直位置")));
         note(ui,uu_i18n::text("0为画面顶部，1为底部；默认在1080高度下距顶部约36点，HUD始终保持在画面内。"));
         ui.add(egui::Slider::new(&mut s.hud_appearance.opacity,0.0..=1.0).step_by(0.01).text(uu_i18n::text("HUD背景不透明度")));
@@ -640,33 +640,36 @@ mod parameter_tests {
             ..Default::default()
         };
         let before = settings.clone();
-        for (mut section, labels) in [
-            (Section::Video, vec!["目标帧率", "输出分辨率", "垂直同步", "使用软件解码"]),
-            (Section::Encoding, vec!["视频编码", "原生码率模式", "自定义码率"]),
-        ] {
-            let ctx = egui::Context::default();
-            let output = ctx.run(egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 1800.))),
-                ..Default::default()
-            }, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| client_editor(ui, &mut settings, &mut section));
-            });
-            fn collect(shape: &egui::Shape, text: &mut Vec<String>) {
-                match shape {
-                    egui::Shape::Text(value) => text.push(value.galley.job.text.clone()),
-                    egui::Shape::Vec(shapes) => for shape in shapes { collect(shape, text); },
-                    _ => {},
+        for color in theme::COLOR_THEMES {
+            for (mut section, labels) in [
+                (Section::Video, vec!["目标帧率", "输出分辨率", "垂直同步", "使用软件解码"]),
+                (Section::Encoding, vec!["视频编码", "原生码率模式", "自定义码率"]),
+            ] {
+                let ctx = egui::Context::default();
+                theme::apply_color_theme(&ctx,color);
+                let output = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 1800.))),
+                    ..Default::default()
+                }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| client_editor(ui, &mut settings, &mut section));
+                });
+                fn collect(shape: &egui::Shape, text: &mut Vec<String>) {
+                    match shape {
+                        egui::Shape::Text(value) => text.push(value.galley.job.text.clone()),
+                        egui::Shape::Vec(shapes) => for shape in shapes { collect(shape, text); },
+                        _ => {},
+                    }
                 }
+                let mut text = Vec::new();
+                for shape in output.shapes { collect(&shape.shape, &mut text); }
+                for label in labels {
+                    assert!(text.iter().any(|text| text == uu_i18n::text(label)), "parameter {label} must be visible on first paint");
+                }
+                for label in ["极速流畅", "平衡", "极致画质", "画质偏好", "视频兼容性", "高级设置"] {
+                    assert!(!text.iter().any(|text| text == uu_i18n::text(label)), "removed shortcut {label} must not hide actual parameters");
+                }
+                assert_eq!(settings, before, "opening the editor must preserve all saved client values");
             }
-            let mut text = Vec::new();
-            for shape in output.shapes { collect(&shape.shape, &mut text); }
-            for label in labels {
-                assert!(text.iter().any(|text| text == uu_i18n::text(label)), "parameter {label} must be visible on first paint");
-            }
-            for label in ["极速流畅", "平衡", "极致画质", "画质偏好", "视频兼容性", "高级设置"] {
-                assert!(!text.iter().any(|text| text == uu_i18n::text(label)), "removed shortcut {label} must not hide actual parameters");
-            }
-            assert_eq!(settings, before, "opening the editor must preserve all saved client values");
         }
     }
 }
