@@ -172,6 +172,7 @@ enum Event {
     Done(bool, Result<(), String>),
 }
 struct Manager {
+    appearance:super::theme::PreferenceWatch,
     firewall: String,
     virtual_display:super::virtual_display_ui::State,
     build:Option<BuildStatus>,
@@ -346,6 +347,7 @@ impl Manager {
         });
         let _=sender.send(Job::Firewall(false));
         Ok(Self {
+            appearance:Default::default(),
             firewall:String::new(),
             virtual_display:Default::default(),
             build:build_status().ok(),
@@ -447,6 +449,7 @@ async fn request_remote(request: Request) -> anyhow::Result<Response> {
 
 impl eframe::App for Manager {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.appearance.poll(ctx);
         self.poll();
         self.virtual_display.poll(None);
         self.virtual_display.show(ctx,None);
@@ -686,6 +689,7 @@ fn run_manager(virtual_displays:bool)->eframe::Result {
         },
         Box::new(move |cc| {
             super::setup_style(&cc.egui_ctx);
+            manager.appearance=super::theme::PreferenceWatch::load_current(&cc.egui_ctx);
             if virtual_displays {manager.virtual_display.open_local(&cc.egui_ctx,super::virtual_display_ui::LocalOwner::Background);}
             Ok(Box::new(manager))
         }),
@@ -793,6 +797,7 @@ mod tests {
         let mut saved = Sharing::default();
         saved.name = "Generated service".into();
         let mut manager = Manager {
+            appearance:Default::default(),
             firewall:String::new(),
             virtual_display:Default::default(),
             build:None,

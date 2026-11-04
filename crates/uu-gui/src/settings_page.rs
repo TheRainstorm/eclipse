@@ -335,7 +335,7 @@ impl SoftwareSection {
         let defaults=Settings::default();
         match self {
             Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;s.close_to_tray=defaults.close_to_tray;}
-            Self::Appearance=>{s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
+            Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
             Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
             Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
             Self::VirtualDisplays=>s.virtual_display_presets=defaults.virtual_display_presets,
@@ -366,7 +366,16 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
             note(ui,uu_i18n::text("共享服务继续运行；从托盘菜单重新打开或退出 Eclipse。"));
         }
     }),
-    SoftwareSection::Appearance=>{group(ui,uu_i18n::text("设备页外观"),|ui| {
+    SoftwareSection::Appearance=>{
+        group(ui,uu_i18n::text("界面主题"),|ui| {
+            combo(ui,"application-theme",theme::preference_label(s.theme_preference),|ui| {
+                for preference in theme::PREFERENCES {
+                    ui.selectable_value(&mut s.theme_preference,preference,theme::preference_label(preference));
+                }
+            });
+            note(ui,uu_i18n::text("保存后应用到主窗口和串流窗口。"));
+        });
+        group(ui,uu_i18n::text("设备页外观"),|ui| {
         ui.checkbox(&mut s.wallpaper_enabled,uu_i18n::text("显示背景壁纸"));
         ui.horizontal(|ui| {
             ui.label(uu_i18n::text("壁纸图片来源"));

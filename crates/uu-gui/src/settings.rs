@@ -77,6 +77,9 @@ pub struct Settings {
     /// Global application bindings. Legacy files migrate from the global client
     /// defaults; per-device/profile bindings no longer override application keys.
     pub application_hotkeys: Option<uu_core::hotkeys::Bindings>,
+    /// Software appearance is global, never part of a device's client profile.
+    #[serde(with = "super::theme::PreferenceStorage")]
+    pub theme_preference: egui::ThemePreference,
     pub language: uu_i18n::Language,
     pub lan_discovery: bool,
     // Retained only to migrate older configurations into connection services.
@@ -96,7 +99,7 @@ pub struct Settings {
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { client: ClientSettings::default(), application_hotkeys:None, language:uu_i18n::Language::default(), lan_discovery:true,
+        Self { client: ClientSettings::default(), application_hotkeys:None, theme_preference:super::theme::DEFAULT_PREFERENCE, language:uu_i18n::Language::default(), lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
             device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,close_to_tray:false,show_input_status:false,virtual_display_presets:Default::default(),
@@ -294,7 +297,7 @@ impl Drop for ApplicationWorker {
     }
 }
 impl ApplicationWatch {
-    fn changed(&mut self,path:&Path)->Option<Settings> {
+    pub(super) fn changed(&mut self,path:&Path)->Option<Settings> {
         if self.worker.is_none() {
             let path=path.to_owned();let stopped=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));let stop=stopped.clone();
             let (tx,values)=std::sync::mpsc::sync_channel(1);
@@ -321,9 +324,22 @@ impl ApplicationWatch {
 
 impl super::App {
     pub(super) fn poll_application_settings(&mut self) {
-        if self.stream_target.is_none(){return;}
         let Some(path)=Settings::path() else{return;};
         if let Some(value)=self.application_settings_watch.changed(&path) {
+            if self.preferences.theme_preference != value.theme_preference {
+                // Keep an appearance draft the user is editing locally. A
+                // client/profile save still preserves the latest global choice.
+                if self.settings_draft.theme_preference == self.preferences.theme_preference {
+                    self.settings_draft.theme_preference = value.theme_preference;
+                }
+                self.preferences.theme_preference = value.theme_preference;
+                super::theme::apply_preference(&self.context, value.theme_preference);
+                self.hud_cache.invalidate();
+                self.context.request_repaint();
+            }
+            // Main and management contexts follow the same global appearance;
+            // the remaining compatibility/client fields keep their stream scope.
+            if self.stream_target.is_none(){return;}
             let keys=value.application_hotkeys().clone();
             if self.preferences.hotkeys!=keys {
                 self.recover_input("application_hotkeys_changed");
@@ -541,7 +557,7 @@ impl super::App {
             self.preferences = self.settings_draft.clone();
             self.preferences.use_application_hotkeys();
             self.persist_preferences();
-            if !self.settings_storage_error {uu_i18n::set_language(self.preferences.language);self.hud_cache.invalidate();self.set_settings_notice(uu_i18n::text("已保存应用设置"));ctx.request_repaint();}
+            if !self.settings_storage_error {super::theme::apply_preference(ctx,self.preferences.theme_preference);uu_i18n::set_language(self.preferences.language);self.hud_cache.invalidate();self.set_settings_notice(uu_i18n::text("已保存应用设置"));ctx.request_repaint();}
             if wallpaper_changed {
                 self.background.sync(&self.preferences, ctx);
             }
@@ -648,6 +664,7 @@ impl super::App {
                 self.settings_draft.app_autostart=defaults.app_autostart;
                 self.settings_draft.close_to_tray=defaults.close_to_tray;
                 self.settings_draft.show_input_status=defaults.show_input_status;
+                self.settings_draft.theme_preference=defaults.theme_preference;
                 self.settings_draft.application_hotkeys=Some(Default::default());
             }
             if self.workspace.host.running() {
@@ -698,6 +715,7 @@ impl super::App {
                 };
                 self.set_settings_notice(notice);
             } else { self.persist_preferences(); }
+            if !self.settings_storage_error {super::theme::apply_preference(ctx,self.preferences.theme_preference);self.hud_cache.invalidate();}
             if capture_changed {self.send_capture_settings();}
             if save_profile {
                 if let Err(error) = self.save_stream_profile_settings() {
@@ -724,6 +742,44 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn application_theme_defaults_light_and_preserves_explicit_saved_choices() {
+        let root=std::env::temp_dir().join(format!("eclipse-application-theme-{}",uuid::Uuid::new_v4()));
+        let path=root.join("gui-settings.json");
+        std::fs::create_dir(&root).unwrap();
+        let mut legacy=serde_json::to_value(Settings::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("theme_preference");
+        legacy["wallpaper_enabled"]=false.into();
+        let original=serde_json::to_vec(&legacy).unwrap();std::fs::write(&path,&original).unwrap();
+        let mut settings=Settings::load(&path).unwrap();
+        assert_eq!(settings.theme_preference,egui::ThemePreference::Light);
+        assert!(!settings.wallpaper_enabled);
+        assert_eq!(std::fs::read(&path).unwrap(),original,"loading a legacy configuration must not rewrite it");
+        for preference in super::super::theme::PREFERENCES {
+            settings.theme_preference=preference;settings.save(&path).unwrap();
+            let reopened=Settings::load(&path).unwrap();
+            assert_eq!(reopened.theme_preference,preference);
+            assert!(!reopened.wallpaper_enabled);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_client_save_cannot_replace_global_theme_with_its_snapshot() {
+        let root=std::env::temp_dir().join(format!("eclipse-theme-profile-{}",uuid::Uuid::new_v4()));
+        let path=root.join("gui-settings.json");
+        let mut global=Settings::default();global.theme_preference=egui::ThemePreference::Dark;
+        global.save(&path).unwrap();
+        let mut stream=Settings::load(&path).unwrap();
+        global.theme_preference=egui::ThemePreference::System;global.save(&path).unwrap();
+        stream.fps=120;stream.save_client(&path).unwrap();
+        let reopened=Settings::load(&path).unwrap();
+        assert_eq!(reopened.theme_preference,egui::ThemePreference::System);
+        assert_eq!(reopened.fps,120);
+        assert_eq!(stream.theme_preference,egui::ThemePreference::Dark,"the fixture must actually contain a stale explicit choice");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn virtual_creation_presets_migrate_save_and_survive_stale_stream_preferences() {
         let root=std::env::temp_dir().join(format!("eclipse-display-specs-{}",uuid::Uuid::new_v4()));

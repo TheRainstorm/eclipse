@@ -1,4 +1,9 @@
 {
+  "界面主题": "Interface theme",
+  "浅色": "Light",
+  "深色": "Dark",
+  "跟随系统": "Follow system",
+  "保存后应用到主窗口和串流窗口。": "Applies to the main and streaming windows after saving.",
   "让其它电脑安全连接本机": "Let other computers connect securely",
   "可以先设置安全连接密码，也可使用配对码或已授权公钥。密码用于防止未授权设备接入。": "Set a secure connection password, or use a pairing code or an authorized public key. A password helps prevent unauthorized access.",
   "设置安全连接密码": "Set connection password",

@@ -75,7 +75,7 @@ mod device_presence;
 #[cfg(test)]
 mod tests {use super::*;
     #[test]
-    fn dark_theme_keeps_touch_targets_when_started_from_either_theme() {
+    fn light_startup_keeps_touch_targets_and_saved_preference_can_override_it() {
         for theme in [eframe::egui::Theme::Dark, eframe::egui::Theme::Light] {
             let context = eframe::egui::Context::default();
             context.set_theme(theme);
@@ -86,8 +86,10 @@ mod tests {use super::*;
                     height = ui.button("Retry").rect.height();
                 });
             });
-            assert_eq!(context.theme(), eframe::egui::Theme::Dark);
+            assert_eq!(context.theme(), eframe::egui::Theme::Light);
             assert!(height >= 30.0, "custom button target was lost after theme selection");
+            theme::apply_preference(&context,eframe::egui::ThemePreference::Dark);
+            assert_eq!(context.theme(),eframe::egui::Theme::Dark,"a saved explicit choice overrides the startup default");
         }
     }
 }
@@ -255,9 +257,9 @@ fn vk_for(key: egui::Key) -> Option<u32> {
 }
 
 fn setup_style(ctx: &egui::Context) {
-    // The application uses one dark desktop palette. Shared theme setup also
-    // registers Light for embedded consumers and generated compatibility checks.
-    ctx.set_theme(egui::ThemePreference::Dark);
+    // Register both shared palettes; loaded application preferences replace the
+    // light startup default before the first visible application frame.
+    theme::apply_preference(ctx, theme::DEFAULT_PREFERENCE);
     // Remote Ctrl +/- belongs to the remote app, never to this client's UI zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let mut fonts = egui::FontDefinitions::default();
@@ -347,6 +349,7 @@ impl App {
             }
         }
         preferences.hotkeys=application_hotkeys;
+        theme::apply_preference(ctx, preferences.theme_preference);
         if stream_target.is_some() {
             if let Ok(value)=std::env::var("UU_VSYNC"){preferences.vsync=value!="0";}
         }
