@@ -277,9 +277,25 @@ mod tests {
         });
         let id = profile.id.clone();
         h.workspace.book.devices.push(profile);
+        h.workspace.pairing_password_configured = Some(false);
         let actions = h.click("Generated desktop");
         assert!(matches!(&actions[..], [Action::Open(found)] if found == &id));
         assert!(!h.workspace.host.running());
+        for hidden in ["让其它电脑安全连接本机", "设置安全连接密码", "192.0.2.10:48998", "在线", "暂时离线", "在线状态待检查", "开始串流"] {
+            assert!(!h.texts.iter().any(|(text, _)| text == hidden), "extra device-list content: {hidden}");
+        }
+        let point = h.texts.iter().find(|(text, _)| text == "Generated desktop").unwrap().1;
+        for pressed in [true, false] {
+            h.frame(vec![egui::Event::PointerMoved(point), egui::Event::PointerButton {
+                pos: point, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default(),
+            }]);
+        }
+        h.frame(vec![]);
+        h.click("详情");
+        h.frame(vec![]);
+        assert_eq!(h.workspace.route.device, DeviceView::Details(id));
+        assert!(h.texts.iter().any(|(text, _)| text == "编辑"));
+        assert!(h.texts.iter().any(|(text, _)| text == "移除本地设备记录"));
     }
 
     #[test]
@@ -1017,7 +1033,8 @@ impl Workspace {
             }
         });
         self.feedback.show(ui, super::ui_feedback::Scope::Devices);
-        if self.pairing_password_configured == Some(false) {
+        let profiles:Vec<_>=self.book.devices.iter().filter(|p|p.redirect.is_none()).cloned().collect();
+        if profiles.is_empty() && self.pairing_password_configured == Some(false) {
             card(ui, |ui| {
                 ui.strong(uu_i18n::text("让其它电脑安全连接本机"));
                 muted(ui, uu_i18n::text("可以先设置安全连接密码，也可使用配对码或已授权公钥。密码用于防止未授权设备接入。"));
@@ -1027,7 +1044,6 @@ impl Workspace {
                 }
             });
         }
-        let profiles:Vec<_>=self.book.devices.iter().filter(|p|p.redirect.is_none()).cloned().collect();
         if profiles.is_empty() {
             card(ui, |ui| {
                 ui.vertical_centered(|ui| {
