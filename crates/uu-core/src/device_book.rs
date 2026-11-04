@@ -643,6 +643,34 @@ impl Store {
     pub fn save_and_select_client_config(&self,device:&str,config:crate::client_settings::NamedClientSettings)->Result<()> {
         self.save_config(device,config,true)
     }
+    /// The editor explicitly selects an existing ID, or creates a new name.
+    /// Resolve that intent under the store lock so a stale editor cannot
+    /// overwrite a same-named preset or resurrect a deleted one.
+    pub fn save_named_client_config(&self,device:&str,editing:Option<&str>,name:&str,settings:crate::client_settings::ClientSettings)->Result<String> {
+        let mut value=crate::client_settings::NamedClientSettings::new(name.trim(),settings);
+        if let Some(id)=editing {value.id=id.into();}
+        value.validate()?;
+        let saved_id=value.id.clone();
+        self.edit(|book| {
+            let canonical=book.device(device)?.id.clone();
+            let profile=book.devices.iter_mut().find(|p|p.id==canonical).unwrap();
+            if let Some(id)=editing {
+                let existing=profile.client_configs.iter_mut().find(|c|c.id==id)
+                    .context(uu_i18n::text("配置已更改或删除，请重新选择后编辑。"))?;
+                ensure!(existing.name.trim()==value.name,"{}",uu_i18n::text("配置已更改或删除，请重新选择后编辑。"));
+                // Preserve legacy spelling/whitespace and duplicate names;
+                // only the explicitly selected stable ID is updated.
+                value.name=existing.name.clone();
+                *existing=value;
+            } else {
+                ensure!(!profile.client_configs.iter().any(|c|c.name.trim()==value.name),"{}",uu_i18n::text("已存在同名配置，请从列表选择后编辑。"));
+                profile.client_configs.push(value);
+            }
+            profile.selected_client=Some(saved_id.clone());
+            Ok(())
+        })?;
+        Ok(saved_id)
+    }
     fn save_config(&self,device:&str,config:crate::client_settings::NamedClientSettings,select:bool)->Result<()> {
         config.validate()?;
         self.edit(|book| {
@@ -890,6 +918,62 @@ mod tests {
         store.remove_client_config(&profile.id,&named.id).unwrap();
         assert!(store.read().unwrap().device(&profile.id).unwrap().selected_client.is_none());
         assert_eq!(Launch::read(&store.publish_launch_with_defaults(&profile.id,&defaults).unwrap()).unwrap().client.unwrap().fps,90);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn named_editor_intents_keep_ids_fresh_records_and_active_launches_isolated() {
+        let root=std::env::temp_dir().join(format!("eclipse-named-editor-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        let other_process=Store::open(&root).unwrap();
+        let host=Profile::new("Host",Destination::Plugin{plugin:"fixture".into(),device:"host".into()});
+        let other=Profile::new("Other",Destination::Plugin{plugin:"fixture".into(),device:"other".into()});
+        store.save_device(host.clone()).unwrap();store.save_device(other.clone()).unwrap();
+        let other_preset=NamedClientSettings::new("Office",ClientSettings{fps:90,..Default::default()});
+        store.save_and_select_client_config(&other.id,other_preset).unwrap();
+        let original=serde_json::to_value(store.read().unwrap()).unwrap();
+        let first=store.save_named_client_config(&host.id,None," Office ",ClientSettings{fps:120,..Default::default()}).unwrap();
+        let frozen=store.publish_launch_with_defaults(&host.id,&ClientSettings::default()).unwrap();
+        let second=other_process.save_named_client_config(&host.id,None,"Travel",ClientSettings{fps:30,..Default::default()}).unwrap();
+        let unchanged=std::fs::read(root.join("connections.json")).unwrap();
+        assert!(store.save_named_client_config(&host.id,None," Travel ",ClientSettings::default()).is_err(),"a stale name list must not overwrite another process's preset");
+        assert_eq!(std::fs::read(root.join("connections.json")).unwrap(),unchanged);
+        assert_eq!(store.save_named_client_config(&host.id,Some(&first),"Office",ClientSettings{fps:60,..Default::default()}).unwrap(),first);
+        let book=store.read().unwrap();let profile=book.device(&host.id).unwrap();
+        assert_eq!(profile.client_configs.len(),2);
+        assert_eq!(profile.client_configs.iter().find(|c|c.id==first).unwrap().name,"Office");
+        assert_eq!(profile.client_configs.iter().find(|c|c.id==second).unwrap().settings.fps,30);
+        assert_eq!(serde_json::to_value(&profile.routes).unwrap(),serde_json::to_value(&host.routes).unwrap());
+        assert_eq!(serde_json::to_value(book.device(&other.id).unwrap()).unwrap(),original["devices"][1]);
+        assert_eq!(serde_json::to_value(&book.sharing).unwrap(),original["sharing"]);
+        assert_eq!(Launch::read(&frozen).unwrap().client.unwrap().fps,120);
+        other_process.remove_client_config(&host.id,&first).unwrap();
+        assert!(store.read().unwrap().device(&host.id).unwrap().selected_client.is_none());
+        let unchanged=std::fs::read(root.join("connections.json")).unwrap();
+        assert!(store.save_named_client_config(&host.id,Some(&first),"Office",ClientSettings::default()).is_err(),"saving a removed selected ID must not resurrect it");
+        assert_eq!(std::fs::read(root.join("connections.json")).unwrap(),unchanged);
+        assert_eq!(Launch::read(&frozen).unwrap().client.unwrap().fps,120);
+        assert_eq!(Launch::read(&store.publish_launch_with_defaults(&host.id,&ClientSettings{fps:75,..Default::default()}).unwrap()).unwrap().client.unwrap().fps,75);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn named_editor_preserves_legacy_duplicate_names_and_rejects_stale_renames() {
+        let root=std::env::temp_dir().join(format!("eclipse-named-duplicates-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        let host=Profile::new("Host",Destination::Plugin{plugin:"fixture".into(),device:"host".into()});
+        store.save_device(host.clone()).unwrap();
+        let first=NamedClientSettings::new(" Same ",ClientSettings{fps:90,..Default::default()});
+        let mut second=NamedClientSettings::new("Same",ClientSettings{fps:120,..Default::default()});
+        store.save_client_config(&host.id,first.clone()).unwrap();store.save_client_config(&host.id,second.clone()).unwrap();
+        store.save_named_client_config(&host.id,Some(&second.id)," Same ",ClientSettings{fps:30,..Default::default()}).unwrap();
+        let book=store.read().unwrap();let profile=book.device(&host.id).unwrap();
+        assert_eq!(profile.client_configs.len(),2);
+        assert_eq!(serde_json::to_value(profile.client_configs.iter().find(|v|v.id==first.id).unwrap()).unwrap(),serde_json::to_value(&first).unwrap());
+        assert_eq!(profile.client_configs.iter().find(|v|v.id==second.id).unwrap().settings.fps,30);
+        assert!(store.save_named_client_config(&host.id,None,"Same",ClientSettings::default()).is_err());
+        second.name="Renamed elsewhere".into();store.save_client_config(&host.id,second.clone()).unwrap();
+        let unchanged=std::fs::read(root.join("connections.json")).unwrap();
+        assert!(store.save_named_client_config(&host.id,Some(&second.id),"Same",ClientSettings::default()).is_err());
+        assert_eq!(std::fs::read(root.join("connections.json")).unwrap(),unchanged);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

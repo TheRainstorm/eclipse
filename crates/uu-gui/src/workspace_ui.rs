@@ -81,9 +81,20 @@ struct DeviceEditor {
 struct ClientEditor {
     device:String,
     value:uu_core::client_settings::NamedClientSettings,
+    loaded:Option<(String,String)>,
     section:super::settings_page::Section,
     global:bool,
     error:String,
+}
+impl ClientEditor {
+    fn editing_id(&self)->Option<&str> {
+        self.loaded.as_ref().filter(|(_,name)|name.trim()==self.value.name.trim()).map(|(id,_)|id.as_str())
+    }
+    fn load(&mut self,value:uu_core::client_settings::NamedClientSettings) {
+        self.loaded=Some((value.id.clone(),value.name.clone()));
+        self.value=value;
+        self.error.clear();
+    }
 }
 #[derive(Clone)]
 struct ServiceEditor {
@@ -238,6 +249,9 @@ mod tests {
                 .find(|(text, _)| text == label)
                 .unwrap_or_else(|| panic!("missing button {label}: {:?}", self.texts))
                 .1;
+            self.click_at(position)
+        }
+        fn click_at(&mut self,position:egui::Pos2)->Vec<Action> {
             let event = |pressed| egui::Event::PointerButton {
                 pos: position,
                 button: egui::PointerButton::Primary,
@@ -246,6 +260,11 @@ mod tests {
             };
             self.frame(vec![egui::Event::PointerMoved(position), event(true)]);
             self.frame(vec![event(false)])
+        }
+        fn choose_preset(&mut self,label:&str) {
+            for _ in 0..3 {self.frame(Vec::new());}
+            let rect=self.ctx.data(|d|d.get_temp::<egui::Rect>(egui::Id::new("test-client-config-name-arrow"))).expect("name dropdown response");
+            self.click_at(rect.center());self.click(label);
         }
     }
     impl Drop for Harness {
@@ -481,6 +500,65 @@ mod tests {
         h.workspace.route.device = DeviceView::Details(id);
         h.click("复制");
         assert!(h.workspace.client_editor.as_ref().unwrap().value.name.contains("副本"));
+    }
+    #[test]
+    fn preset_name_dropdown_loads_the_chosen_id_and_new_names_create_copies() {
+        let mut h=Harness::new();
+        let host=Profile::new("Desk",Destination::Ip{address:"127.0.0.1:47998".into(),legacy_device:None});
+        let store=h.workspace.store.clone().unwrap();store.save_device(host.clone()).unwrap();
+        let first=uu_core::client_settings::NamedClientSettings::new("桌面",uu_core::client_settings::ClientSettings{fps:120,..Default::default()});
+        let second=uu_core::client_settings::NamedClientSettings::new("办公",uu_core::client_settings::ClientSettings{fps:30,..Default::default()});
+        store.save_client_config(&host.id,first.clone()).unwrap();store.save_client_config(&host.id,second.clone()).unwrap();
+        h.workspace.refresh();h.workspace.client_defaults.fps=75;
+        let profile=h.workspace.book.device(&host.id).unwrap().clone();
+        h.workspace.edit_client_config(&profile,Some(first.clone()),false);
+        h.workspace.client_editor.as_mut().unwrap().value.settings.fps=90;
+        h.choose_preset("办公");
+        let editor=h.workspace.client_editor.as_mut().unwrap();
+        assert_eq!(editor.editing_id(),Some(second.id.as_str()));assert_eq!(editor.value.settings.fps,30);
+        editor.value.settings.fps=45;h.click("保存配置");
+        assert!(h.workspace.client_editor.is_none());
+        let profile=store.read().unwrap().device(&host.id).unwrap().clone();
+        let loaded=profile.client_configs.iter().find(|c|c.id==second.id).unwrap().clone();
+        assert_eq!(loaded.settings.fps,45);
+        h.workspace.edit_client_config(&profile,Some(loaded),false);
+        let editor=h.workspace.client_editor.as_mut().unwrap();editor.value.name="旅行".into();editor.value.settings.fps=60;
+        assert!(editor.editing_id().is_none());h.click("保存配置");
+        let profile=store.read().unwrap().device(&host.id).unwrap().clone();
+        assert_eq!(profile.client_configs.len(),3);
+        let copy=profile.client_configs.iter().find(|c|c.name=="旅行").unwrap();
+        assert_ne!(copy.id,second.id);assert_eq!(copy.settings.fps,60);
+        assert_eq!(profile.client_configs.iter().find(|c|c.id==second.id).unwrap().settings.fps,45);
+        assert_eq!(serde_json::to_value(profile.client_configs.iter().find(|c|c.id==first.id).unwrap()).unwrap(),serde_json::to_value(&first).unwrap());
+        assert_eq!(profile.selected_client.as_deref(),Some(copy.id.as_str()));
+        assert_eq!(h.workspace.client_defaults.fps,75);
+        h.workspace.edit_client_config(&profile,Some(copy.clone()),false);
+        h.workspace.client_editor.as_mut().unwrap().value.name="未保存".into();
+        h.click("删除");assert!(h.workspace.client_editor.is_some());
+        assert_eq!(store.read().unwrap().device(&host.id).unwrap().client_configs.len(),3);
+        h.workspace.client_editor.as_mut().unwrap().value.name="旅行".into();h.click("删除");
+        assert!(h.workspace.client_editor.is_none());
+        let profile=store.read().unwrap().device(&host.id).unwrap().clone();
+        assert_eq!(profile.client_configs.len(),2);assert!(profile.selected_client.is_none());
+    }
+    #[test]
+    fn preset_editor_requires_explicit_selection_for_a_conflicting_or_legacy_duplicate_name() {
+        let mut h=Harness::new();
+        let host=Profile::new("Desk",Destination::Ip{address:"127.0.0.1:47998".into(),legacy_device:None});
+        let store=h.workspace.store.clone().unwrap();store.save_device(host.clone()).unwrap();
+        let mut a=uu_core::client_settings::NamedClientSettings::new("同名",uu_core::client_settings::ClientSettings{fps:120,..Default::default()});
+        let mut b=uu_core::client_settings::NamedClientSettings::new("同名",uu_core::client_settings::ClientSettings{fps:30,..Default::default()});
+        a.id="aaaaaaaa-0000-4000-8000-000000000001".into();b.id="aaaaaaaa-0000-4000-8000-000000000002".into();
+        store.save_client_config(&host.id,a.clone()).unwrap();store.save_client_config(&host.id,b.clone()).unwrap();h.workspace.refresh();
+        let profile=h.workspace.book.device(&host.id).unwrap().clone();h.workspace.edit_client_config(&profile,None,false);
+        h.workspace.client_editor.as_mut().unwrap().value.name="同名".into();
+        let path=h.root.join("data/device-trust/connections.json");
+        let unchanged=std::fs::read(&path).unwrap();
+        h.click("保存配置");assert!(!h.workspace.client_editor.as_ref().unwrap().error.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(),unchanged);
+        h.choose_preset(&format!("同名 · {}",b.id));
+        let editor=h.workspace.client_editor.as_ref().unwrap();
+        assert!(editor.error.is_empty());assert_eq!(editor.editing_id(),Some(b.id.as_str()));assert_eq!(editor.value.settings.fps,30);
     }
     #[test]
     fn media_draft_does_not_restore_old_connection_ports_or_enable_flags() {
@@ -1184,14 +1262,16 @@ impl Workspace {
         }
     }
     fn edit_client_config(&mut self,profile:&Profile, value:Option<uu_core::client_settings::NamedClientSettings>, duplicate:bool) {
+        let loaded=value.as_ref().filter(|_|!duplicate).map(|v|(v.id.clone(),v.name.clone()));
         let mut value=value.unwrap_or_else(||uu_core::client_settings::NamedClientSettings::new(uu_i18n::text("新配置"),self.client_defaults.clone()));
         if duplicate { value.id=uuid::Uuid::new_v4().to_string(); value.name=uu_i18n::format!("{} 副本",value.name); }
-        self.client_editor=Some(ClientEditor {device:profile.id.clone(),value,section:super::settings_page::Section::Video,global:false,error:String::new()});
+        self.client_editor=Some(ClientEditor {device:profile.id.clone(),value,loaded,section:super::settings_page::Section::Video,global:false,error:String::new()});
     }
     fn edit_global_client_config(&mut self) {
         self.client_editor=Some(ClientEditor {
             device:String::new(),
             value:uu_core::client_settings::NamedClientSettings::new(uu_i18n::text("全局默认"),self.client_defaults.clone()),
+            loaded:None,
             section:super::settings_page::Section::Video,
             global:true,
             error:String::new(),
@@ -1817,7 +1897,7 @@ impl Workspace {
         let mut actions = Vec::new();
         self.host.dialogs(ctx);
         if let Some(mut editor)=self.client_editor.take() {
-            let mut open=true; let mut save=false; let mut cancel=false;
+            let mut open=true; let mut save=false; let mut cancel=false; let mut remove=false;
             egui::Window::new(if editor.global {uu_i18n::text("全局默认客户端配置")} else {uu_i18n::text("设备客户端配置")}).id("device-client-editor".into()).open(&mut open)
                 .default_width(720.).default_height(600.).max_height((ctx.screen_rect().height()-70.).max(200.)).max_width((ctx.screen_rect().width()-40.).max(280.))
                 .collapsible(false).show(ctx,|ui| {
@@ -1825,6 +1905,7 @@ impl Workspace {
                     if !editor.global && ui.small_button(uu_i18n::text("编辑全局默认")).clicked() {
                         editor.global = true;
                         editor.device.clear();
+                        editor.loaded=None;
                         editor.value = uu_core::client_settings::NamedClientSettings::new(
                             uu_i18n::text("全局默认"),
                             self.client_defaults.clone(),
@@ -1833,7 +1914,27 @@ impl Workspace {
                     if editor.global {
                         muted(ui,uu_i18n::text("全局默认会用于未指定独立配置的设备；修改只影响下一次连接。"));
                     } else {
-                        field(ui,uu_i18n::text("配置名称"),&mut editor.value.name,uu_i18n::text("例如：桌面 4K / 游戏 120 FPS"));
+                        ui.label(uu_i18n::text("配置名称"));
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut editor.value.name).hint_text(uu_i18n::text("例如：桌面 4K / 游戏 120 FPS")).desired_width(300.));
+                            let configs=self.book.device(&editor.device).map(|p|p.client_configs.clone()).unwrap_or_default();
+                            ui.add_enabled_ui(!configs.is_empty(),|ui| {
+                                let response=egui::ComboBox::from_id_salt(("client-config-name",&editor.device)).selected_text("").width(28.).show_ui(ui,|ui| {
+                                    for value in &configs {
+                                        let duplicate=configs.iter().any(|c|c.id!=value.id&&c.name.trim()==value.name.trim());
+                                        let short=value.id.get(..8).unwrap_or(&value.id);
+                                        let suffix=if configs.iter().any(|c|c.id!=value.id&&c.id.starts_with(short)){value.id.as_str()}else{short};
+                                        let label=if duplicate {format!("{} · {}",value.name,suffix)}else{value.name.clone()};
+                                        if ui.selectable_label(editor.editing_id()==Some(value.id.as_str()),label).clicked(){editor.load(value.clone());ui.close_menu();}
+                                    }
+                                }).response.on_hover_text(uu_i18n::text("配置选择"));
+                                #[cfg(test)]
+                                ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("test-client-config-name-arrow"),response.rect));
+                                #[cfg(not(test))]
+                                let _=response;
+                            });
+                        });
+                        muted(ui,uu_i18n::text("选择已有配置会加载其参数；输入新名称会用当前参数另存配置。"));
                         muted(ui,uu_i18n::text("仅用于这台设备，不改变本机共享设置和其它设备。"));
                     }
                     ui.separator();
@@ -1841,14 +1942,18 @@ impl Workspace {
                         super::settings_page::client_editor(ui,&mut editor.value.settings,&mut editor.section);
                     });
                     ui.separator();
-                    ui.horizontal(|ui| {save=primary(ui,uu_i18n::text("保存配置")).clicked();cancel=ui.button(uu_i18n::text("取消")).clicked();});
+                    ui.horizontal(|ui| {
+                        save=primary(ui,uu_i18n::text("保存配置")).clicked();
+                        if !editor.global {remove=ui.add_enabled(editor.editing_id().is_some(),egui::Button::new(uu_i18n::text("删除"))).clicked();}
+                        cancel=ui.button(uu_i18n::text("取消")).clicked();
+                    });
                 });
             if save {
                 if editor.global {
                     actions.push(Action::SaveClientDefaults(editor.value.settings.clone()));
                 } else {
                     let result=self.store.as_ref().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("设备配置不可用"))).and_then(|store| {
-                        store.save_and_select_client_config(&editor.device,editor.value.clone())
+                        store.save_named_client_config(&editor.device,editor.editing_id(),&editor.value.name,editor.value.settings.clone()).map(|_|())
                     });
                     match result {
                         Ok(())=>{
@@ -1858,6 +1963,14 @@ impl Workspace {
                         }
                         Err(e)=>{editor.error=uu_i18n::format!("无法保存：{e:#}");self.client_editor=Some(editor);}
                     }
+                }
+            }else if remove {
+                let result=self.store.as_ref().ok_or_else(||anyhow::anyhow!("{}",uu_i18n::text("设备配置不可用"))).and_then(|store| {
+                    store.remove_client_config(&editor.device,editor.editing_id().expect("delete requires a selected preset"))
+                });
+                match result {
+                    Ok(())=>{self.feedback.success(self.device_scope(),uu_i18n::text("配置已删除；当前连接不受影响。"));self.refresh();}
+                    Err(e)=>{editor.error=uu_i18n::format!("无法删除配置：{e:#}");self.client_editor=Some(editor);}
                 }
             }else if open && !cancel {self.client_editor=Some(editor);}
         }
