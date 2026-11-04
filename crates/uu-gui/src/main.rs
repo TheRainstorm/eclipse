@@ -348,7 +348,7 @@ impl App {
             }
         }
         preferences.hotkeys=application_hotkeys;
-        theme::apply_preference(ctx, preferences.theme_preference);
+        theme::apply_appearance(ctx, preferences.theme_preference, preferences.color_theme);
         if stream_target.is_some() {
             if let Ok(value)=std::env::var("UU_VSYNC"){preferences.vsync=value!="0";}
         }

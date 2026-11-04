@@ -93,13 +93,93 @@ pub const LIGHT: Palette = Palette {
     danger_bg: C::from_rgb(255, 235, 238),
     info_bg: C::from_rgb(234, 242, 255),
 };
-pub fn palette(visuals: &egui::Visuals) -> &'static Palette {
-    if visuals.dark_mode {
-        &DARK
-    } else {
-        &LIGHT
+/// Application color family, independent of Light/Dark/System appearance.
+/// Keep this value in each host Context, never in process-global mutable state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorTheme {
+    #[default]
+    Blue,
+    Cyan,
+}
+pub const COLOR_THEMES: [ColorTheme; 2] = [ColorTheme::Blue, ColorTheme::Cyan];
+pub const CYAN_LIGHT: Palette = Palette {
+    base: C::from_rgb(242, 251, 252),
+    overlay: C::from_rgb(248, 253, 254),
+    sidebar: C::from_rgb(233, 247, 249),
+    text: C::from_rgb(22, 47, 58),
+    muted: C::from_rgb(75, 104, 116),
+    border: C::from_rgb(203, 221, 226),
+    control_border: C::from_rgb(117, 142, 152),
+    hover: C::from_rgb(221, 243, 247),
+    pressed: C::from_rgb(192, 232, 239),
+    tint: C::from_rgb(221, 243, 247),
+    accent: C::from_rgb(14, 116, 144),
+    primary: C::from_rgb(14, 116, 144),
+    primary_hover: C::from_rgb(12, 122, 142),
+    primary_pressed: C::from_rgb(21, 94, 117),
+    disabled: C::from_rgb(230, 241, 244),
+    info_bg: C::from_rgb(221, 243, 247),
+    ..LIGHT
+};
+pub const CYAN_DARK: Palette = Palette {
+    base: C::from_rgb(11, 31, 37),
+    card: C::from_rgb(17, 43, 52),
+    overlay: C::from_rgb(23, 56, 66),
+    sidebar: C::from_rgb(12, 36, 43),
+    text: C::from_rgb(230, 247, 250),
+    muted: C::from_rgb(166, 196, 205),
+    border: C::from_rgb(44, 86, 96),
+    control_border: C::from_rgb(114, 151, 162),
+    control: C::from_rgb(23, 56, 66),
+    hover: C::from_rgb(33, 73, 85),
+    pressed: C::from_rgb(14, 42, 51),
+    tint: C::from_rgb(13, 62, 75),
+    accent: C::from_rgb(103, 232, 249),
+    primary: C::from_rgb(14, 116, 144),
+    primary_hover: C::from_rgb(12, 122, 142),
+    primary_pressed: C::from_rgb(21, 94, 117),
+    disabled: C::from_rgb(23, 49, 58),
+    info_bg: C::from_rgb(13, 62, 75),
+    ..DARK
+};
+fn colors(theme: egui::Theme, color: ColorTheme) -> &'static Palette {
+    match (theme, color) {
+        (egui::Theme::Light, ColorTheme::Blue) => &LIGHT,
+        (egui::Theme::Dark, ColorTheme::Blue) => &DARK,
+        (egui::Theme::Light, ColorTheme::Cyan) => &CYAN_LIGHT,
+        (egui::Theme::Dark, ColorTheme::Cyan) => &CYAN_DARK,
     }
 }
+pub fn palette(visuals: &egui::Visuals) -> &'static Palette {
+    // The host-generated hyperlink accent is a semantic color-family token.
+    // Visuals clones and widget-local state changes keep it, so existing host
+    // and extension callers resolve their own context's palette without TLS or
+    // process-global state. Local controls must not repurpose this global token.
+    let color = if visuals.hyperlink_color == CYAN_LIGHT.accent
+        || visuals.hyperlink_color == CYAN_DARK.accent {
+        ColorTheme::Cyan
+    } else {
+        ColorTheme::Blue
+    };
+    colors(if visuals.dark_mode { egui::Theme::Dark } else { egui::Theme::Light }, color)
+}
+fn color_theme_id() -> egui::Id { egui::Id::new("eclipse.color-theme.v1") }
+pub fn current_color_theme(ctx: &egui::Context) -> ColorTheme {
+    ctx.data(|data| data.get_temp(color_theme_id()).unwrap_or_default())
+}
+/// Apply a color family to both mode styles. Returns whether it changed.
+/// Calling `apply` again from an extension preserves this context-owned choice.
+pub fn apply_color_theme(ctx: &egui::Context, color: ColorTheme) -> bool {
+    let changed = ctx.data_mut(|data| {
+        let previous = data.get_temp::<ColorTheme>(color_theme_id());
+        data.insert_temp(color_theme_id(), color);
+        previous != Some(color)
+    });
+    if changed { apply(ctx); }
+    changed
+}
+
 fn widget(fill: C, border: C, text: C) -> egui::style::WidgetVisuals {
     egui::style::WidgetVisuals {
         bg_fill: fill,
@@ -111,11 +191,14 @@ fn widget(fill: C, border: C, text: C) -> egui::style::WidgetVisuals {
     }
 }
 pub fn visuals(theme: egui::Theme) -> egui::Visuals {
+    visuals_with_color(theme, ColorTheme::Blue)
+}
+pub fn visuals_with_color(theme: egui::Theme, color: ColorTheme) -> egui::Visuals {
     let mut v = match theme {
         egui::Theme::Dark => egui::Visuals::dark(),
         egui::Theme::Light => egui::Visuals::light(),
     };
-    let p = palette(&v);
+    let p = colors(theme, color);
     v.panel_fill = p.base;
     v.window_fill = p.overlay;
     v.extreme_bg_color = p.base;
@@ -139,9 +222,11 @@ pub fn visuals(theme: egui::Theme) -> egui::Visuals {
 }
 /// Configure both theme styles without changing the host's theme preference.
 pub fn apply(ctx: &egui::Context) {
+    let color = current_color_theme(ctx);
+    ctx.data_mut(|data| data.insert_temp(color_theme_id(), color));
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
         let mut style = egui::Style {
-            visuals: visuals(theme),
+            visuals: visuals_with_color(theme, color),
             ..Default::default()
         };
         for (kind, size) in [
@@ -309,8 +394,9 @@ mod tests {
     }
     #[test]
     fn both_themes_keep_text_controls_and_status_legible() {
-        for theme in [egui::Theme::Dark, egui::Theme::Light] {
-            let v = visuals(theme);
+        for (theme, color) in [egui::Theme::Dark, egui::Theme::Light].into_iter()
+            .flat_map(|theme| COLOR_THEMES.map(|color| (theme, color))) {
+            let v = visuals_with_color(theme, color);
             let p = palette(&v);
             for surface in [p.base, p.card, p.overlay] {
                 assert!(contrast(p.text, surface) >= 4.5);
@@ -332,6 +418,34 @@ mod tests {
                 assert!(contrast(C::WHITE, fill) >= 4.5);
             }
         }
+    }
+    #[test]
+    fn context_color_choices_survive_extensions_modes_and_visuals_clones() {
+        let blue = egui::Context::default();
+        let cyan = egui::Context::default();
+        apply(&blue);
+        apply_color_theme(&cyan, ColorTheme::Cyan);
+        for mode in [egui::Theme::Light, egui::Theme::Dark, egui::Theme::Light] {
+            blue.set_theme(mode); cyan.set_theme(mode);
+            // Extensions can register the shared controls at any time.
+            apply(&cyan); apply(&blue);
+            assert_eq!(palette(&blue.style().visuals).primary, colors(mode, ColorTheme::Blue).primary);
+            assert_eq!(palette(&cyan.style().visuals).base, colors(mode, ColorTheme::Cyan).base);
+            assert_eq!(current_color_theme(&blue), ColorTheme::Blue);
+            assert_eq!(current_color_theme(&cyan), ColorTheme::Cyan);
+            for kind in [ButtonKind::Primary, ButtonKind::Secondary, ButtonKind::Ghost] {
+                let mut local = cyan.style().visuals.clone();
+                let p = *palette(&local);
+                button_visuals(&mut local, &p, kind, true);
+                assert_eq!(palette(&local).accent, p.accent, "local widget states preserve the family token");
+                button_visuals(&mut local, &p, kind, false);
+                assert_eq!(palette(&local).accent, p.accent);
+            }
+        }
+        assert!(!apply_color_theme(&cyan, ColorTheme::Cyan));
+        assert!(apply_color_theme(&cyan, ColorTheme::Blue));
+        assert_eq!(current_color_theme(&blue), ColorTheme::Blue);
+        assert_eq!(palette(&cyan.style().visuals).primary, LIGHT.primary);
     }
     #[test]
     fn theme_switch_keeps_geometry_and_preference() {
