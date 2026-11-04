@@ -3,7 +3,7 @@
 use crate::stream_workspace::{Action, Drag, DragScreen, Group, Tabs};
 use eframe::egui::{self, Color32, Rect, Response, Sense, Stroke};
 
-const HEIGHT: f32 = 28.;
+const HEIGHT: f32 = crate::theme::TOOLBAR_HEIGHT + 4.;
 
 /// Hit regions belong to the frame in which they were painted. Native-window
 /// tests use the same controls as people, including the actual popup buttons.
@@ -56,29 +56,27 @@ macro_rules! record {
 }
 
 fn label(ui: &mut egui::Ui, text: &str, selected: bool, device: bool, width_limit: f32) -> Response {
-    let color = if selected { crate::theme::palette(ui.visuals()).accent } else if device { crate::theme::palette(ui.visuals()).text } else { crate::theme::palette(ui.visuals()).muted };
-    let font = egui::FontId::proportional(if device { 12.5 } else { 12. });
+    let color = crate::theme::tab_text_color(ui.visuals(),selected);
+    let mut font = egui::TextStyle::Button.resolve(ui.style());font.size=if device {12.5}else{12.};
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), color);
     let leading = if device { 22. } else { 0. };
     // Give each title its measured width. The scroll viewport, rather than a
     // short fixed cap, limits how much of one long label can be shown at once.
     let width = (galley.size().x + leading + 16.).max(if device {70.} else {72.}).min(width_limit);
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 24.), Sense::click_and_drag());
-    let hovered = response.hovered() || response.is_pointer_button_down_on();
-    let fill = if selected && !device { crate::theme::palette(ui.visuals()).tint }
-        else if hovered { crate::theme::palette(ui.visuals()).base } else { Color32::TRANSPARENT };
-    ui.painter().rect_filled(rect, 6., fill);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, crate::theme::TOOLBAR_HEIGHT), Sense::click_and_drag());
+    let face=crate::theme::paint_tab(ui,&response,selected,"");
+    // Drag/hit ownership remains the stable slot; glyphs follow its painted face.
     if device {
-        uu_plugin_sdk::ui::icon(ui.painter(), Rect::from_center_size(egui::pos2(rect.left()+12.,rect.center().y), egui::vec2(18.,18.)), uu_plugin_sdk::ui::Icon::Desktop, color);
+        uu_plugin_sdk::ui::icon(ui.painter(), Rect::from_center_size(egui::pos2(face.left()+12.,face.center().y), egui::vec2(18.,18.)), uu_plugin_sdk::ui::Icon::Desktop, color);
     }
-    let text_rect = Rect::from_min_max(egui::pos2(rect.left()+8.+leading,rect.top()),egui::pos2(rect.right()-6.,rect.bottom()));
+    let text_rect = Rect::from_min_max(egui::pos2(face.left()+8.+leading,face.top()),egui::pos2(face.right()-6.,face.bottom()));
     let galley = if galley.size().x>text_rect.width() {
         let mut job=egui::text::LayoutJob::simple_singleline(text.to_owned(),font,color);
         job.wrap.max_width=text_rect.width();
         job.wrap.max_rows=1;
         ui.painter().layout_job(job)
     } else { galley };
-    let position = egui::pos2(text_rect.left(), rect.center().y - galley.size().y/2.);
+    let position = egui::pos2(text_rect.left(), face.center().y - galley.size().y/2.);
     ui.painter().with_clip_rect(text_rect.intersect(ui.clip_rect())).galley(position, galley, color);
     response.on_hover_text(text)
 }
@@ -87,7 +85,8 @@ fn label(ui: &mut egui::Ui, text: &str, selected: bool, device: bool, width_limi
 enum Control { Add, Close }
 fn control(ui: &mut egui::Ui, kind: Control, enabled: bool) -> Response {
     let enabled=enabled&&ui.is_enabled();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(22.,22.), if enabled { Sense::click() } else { Sense::hover() });
+    let response=ui.add_enabled(enabled,crate::theme::toolbar_button("",crate::theme::ButtonKind::Ghost).min_size(egui::vec2(crate::theme::TOOLBAR_FACE,crate::theme::TOOLBAR_FACE)));
+    let rect=crate::theme::toolbar_face_rect(ui,&response);
     let hovered = enabled && (response.hovered() || response.is_pointer_button_down_on());
     let color = if !enabled { crate::theme::palette(ui.visuals()).muted }
         else if hovered { match kind { Control::Add => crate::theme::palette(ui.visuals()).accent, Control::Close => crate::theme::palette(ui.visuals()).danger } }
@@ -96,7 +95,7 @@ fn control(ui: &mut egui::Ui, kind: Control, enabled: bool) -> Response {
         Control::Add => crate::theme::palette(ui.visuals()).tint,
         Control::Close => crate::theme::palette(ui.visuals()).danger.gamma_multiply(0.10),
     }} else { Color32::TRANSPARENT };
-    ui.painter().rect_filled(rect, 6., fill);
+    if hovered {ui.painter().rect_filled(rect,12.,fill);}
     let center=rect.center();
     let stroke=Stroke::new(1.5,color);
     match kind {
@@ -113,21 +112,21 @@ fn control(ui: &mut egui::Ui, kind: Control, enabled: bool) -> Response {
 }
 
 fn connection_menu(ui: &mut egui::Ui, group: &Group, actions: &mut Vec<Action>, _rects: &mut StripRects) {
-    if group.can_open_displays && group.screens.len()>1 && ui.button(uu_i18n::text("所有屏幕独立打开")).clicked() {
+    if group.can_open_displays && group.screens.len()>1 && ui.add(crate::theme::ghost_button(uu_i18n::text("所有屏幕独立打开"))).clicked() {
         actions.push(Action::OpenAllDisplays(group.command_session())); ui.close_menu();
     }
     if group.can_merge {
-        let merge=ui.button(uu_i18n::text("合并到原本窗口"));
+        let merge=ui.add(crate::theme::ghost_button(uu_i18n::text("合并到原本窗口")));
         record!(_rects.merge,(group.command_session(),merge.rect));
         if merge.clicked() {actions.push(Action::Merge(group.command_session()));ui.close_menu();}
     } else {
-        let detach=ui.add_enabled(group.can_detach,egui::Button::new(uu_i18n::text("移到独立窗口")))
+        let detach=ui.add_enabled(group.can_detach,crate::theme::ghost_button(uu_i18n::text("移到独立窗口")))
             .on_disabled_hover_text(uu_i18n::text("已在独立窗口中"));
         record!(_rects.detach,(group.command_session(),detach.rect));
         if detach.clicked() { actions.push(Action::Detach(group.command_session())); ui.close_menu(); }
     }
     ui.separator();
-    let disconnect=ui.button(uu_i18n::text("断开此会话"));
+    let disconnect=ui.add(crate::theme::ghost_button(uu_i18n::text("断开此会话")));
     record!(_rects.disconnect,(group.command_session(),disconnect.rect));
     if disconnect.clicked() { actions.push(Action::Close(group.command_session())); ui.close_menu(); }
 }
@@ -141,7 +140,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
     tabs.local_ui.set(false);
     let width=(ui.available_width()-controls_width-ui.spacing().item_spacing.x).max(0.);
     // Keep the device name and its close control visible together.
-    if width<104. {return StripRects::default();}
+    if width<124. {return StripRects::default();}
     let active_id=ui.make_persistent_id(("workspace-visible-device",ui.ctx().viewport_id()));
     let reveal_active=tabs.groups.iter().any(|group|group.contains(tabs.active)) && ui.ctx().data_mut(|data| {
         if data.get_temp::<u64>(active_id)==Some(tabs.active) {false}
@@ -164,7 +163,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                         let response=frame.show(ui,|ui| {
                             ui.horizontal_centered(|ui| {
                                 ui.spacing_mut().item_spacing=egui::vec2(2.,0.);
-                                let name=label(ui,&group.name,active,true,(width-34.).max(70.));
+                                let name=label(ui,&group.name,active,true,(width-crate::theme::TOOLBAR_HEIGHT-14.).max(70.));
                                 record!(rects.devices,(group.id,name.rect));
                                 name.dnd_set_drag_payload(Drag(group.command_session()));
                                 if name.clicked() { actions.push(Action::Select(group.command_session(),None)); }
@@ -190,7 +189,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                         response.context_menu(|ui|connection_menu(ui,&view,&mut actions,&mut rects));
                                     } else if group.can_open_displays {
                                         response.context_menu(|ui| {
-                                            let open=ui.add_enabled(group.can_open_display(*screen),egui::Button::new(uu_i18n::text("在独立窗口中打开")))
+                                            let open=ui.add_enabled(group.can_open_display(*screen),crate::theme::ghost_button(uu_i18n::text("在独立窗口中打开")))
                                                 .on_disabled_hover_text(uu_i18n::text("已在独立窗口中"));
                                             record!(rects.open_display,(group.id,*screen,open.rect));
                                             if open.clicked() { actions.push(Action::OpenDisplay{session:group.id,screen:*screen}); ui.close_menu(); }
@@ -218,7 +217,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                         add.context_menu(|ui| {
                                             if let Some(spec)=crate::virtual_display_presets::create_menu(ui,&tabs.presets) {actions.push(Action::CreateDisplayWithSpec{session:group.creation_session(),spec});}
                                             ui.separator();
-                                            if ui.button(uu_i18n::text("管理虚拟显示器")).clicked() {actions.push(Action::ManageDisplays(group.creation_session()));ui.close_menu();}
+                                            if ui.add(crate::theme::ghost_button(uu_i18n::text("管理虚拟显示器"))).clicked() {actions.push(Action::ManageDisplays(group.creation_session()));ui.close_menu();}
                                         });
                                     }
                                     if add.context_menu_opened() {tabs.local_ui.set(true);}
@@ -298,9 +297,11 @@ mod tests {
         // Even a viewport just above the strip threshold keeps name + close
         // together; the title is elided before the close control is clipped.
         tabs.active=3;
-        frame(&ctx,&tabs,3.2,320.,190.,vec![]);
-        frame(&ctx,&tabs,3.4,320.,190.,vec![]);
-        let narrow=frame(&ctx,&tabs,3.6,320.,190.,vec![]);
+        // Forty-point close controls raise the minimum header width.
+        // Keep this case just above that threshold, not below the strip guard.
+        frame(&ctx,&tabs,3.2,320.,170.,vec![]);
+        frame(&ctx,&tabs,3.4,320.,170.,vec![]);
+        let narrow=frame(&ctx,&tabs,3.6,320.,170.,vec![]);
         assert!(narrow.bounds.contains_rect(header(&narrow,3)));
         assert!(tabs.actions.borrow().is_empty());
     }
