@@ -500,13 +500,16 @@ fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32,state:&m
     *ui.visuals_mut()=crate::theme::visuals_with_color(egui::Theme::Dark,crate::theme::current_color_theme(ui.ctx()));ui.visuals_mut().panel_fill=Color32::TRANSPARENT;
     ui.spacing_mut().item_spacing=egui::vec2(7.,4.);
     let now=ui.input(|i|i.time);let top=ui.cursor().top();
-    ui.horizontal_wrapped(|ui|{
+    // A wrapped toolbar can consume the whole card in a short viewport. Keep
+    // its common-sized controls on one horizontally scrollable row so the
+    // measurements always retain their own vertical scrolling area.
+    egui::ScrollArea::horizontal().id_salt("hud-detail-actions").auto_shrink([false,true]).show(ui,|ui|ui.horizontal(|ui|{
         ui.label(RichText::new(uu_i18n::text("串流诊断")).size(13.).strong().color(Color32::WHITE));
         for (i,name) in ["3 min","10 min","60 min"].iter().enumerate(){crate::theme::tab_value(ui,&mut state.window,i,*name);}
         crate::theme::compact_switch(ui,&mut state.pinned,uu_i18n::text("固定"));
         if ui.add(crate::theme::secondary_button(uu_i18n::text(if now<state.copied_until{"已复制"}else{"复制诊断"}))).clicked(){ui.ctx().copy_text(m.diagnostic_text(state.window));state.copied_until=now+1.5;}
         if ui.add(crate::theme::secondary_button(uu_i18n::text("清除"))).on_hover_text(uu_i18n::text("清除图表和诊断统计历史，从当前计数重新记录；保留连接和实时测量。")).clicked(){state.clear_requested=true;state.copied_until=0.;}
-    });
+    }));
     ui.separator();
     let remaining=(max_height-(ui.cursor().top()-top)-2.).max(1.);
     if width<820. {
@@ -1003,12 +1006,11 @@ mod tests {
     }
     #[test]
     fn actual_detail_card_fits_windowed_viewports_and_has_scrollable_content() {
-        for size in [
-            egui::vec2(1280., 720.),
-            egui::vec2(640., 360.),
-            egui::vec2(320., 180.),
-        ] {
+        for (color,size) in crate::theme::COLOR_THEMES.into_iter().flat_map(|color|[
+            egui::vec2(1280.,720.),egui::vec2(640.,360.),egui::vec2(320.,180.)
+        ].map(|size|(color,size))) {
             let ctx = egui::Context::default();
+            crate::theme::apply_appearance(&ctx,egui::ThemePreference::Dark,color);
             let view = Rect::from_min_size(egui::pos2(0., 0.), size);
             let m = Metrics {
                 size: [3840, 2160],

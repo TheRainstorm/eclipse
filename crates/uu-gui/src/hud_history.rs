@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn legend_stays_on_one_line_and_buttons_toggle_only_their_curve() {
         use eframe::egui::{self,Rect,Event,PointerButton};
-        for width in [520.,420.,300.] {
+        for width in [1000.,520.,420.,300.] {
           for (series,label) in [(ESTIMATE_SERIES,"估计"),(INPUT_SERIES,"输入→画面")] {
             let ctx=egui::Context::default();let view=Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,400.));
             let mut now=1.;let mut chart_id=None;
@@ -273,10 +273,31 @@ mod tests {
             };
             let mut output=frame(vec![]);for _ in 0..3{output=frame(vec![]);}
             let names=["视频","输入→画面","估计","采集","编码","解码","渲染","RTT/2","排队"];
-            let labels:Vec<_>=output.shapes.iter().filter_map(|s|if let egui::Shape::Text(t)=&s.shape{names.contains(&t.galley.job.text.as_str()).then_some(t)}else{None}).collect();
-            if width>=520. {assert_eq!(labels.len(),9);}else{assert!(labels.len()>=5,"narrow legends scroll instead of wrapping");}
-            assert!(labels.iter().all(|t|(t.pos.y-labels[0].pos.y).abs()<0.1&&t.galley.rows.len()==1));
-            let button=labels.iter().find(|t|t.galley.job.text==label).unwrap();let point=button.pos+button.galley.size()/2.;
+            let visible_labels=|output:&egui::FullOutput|->Vec<(String,Rect)> {
+                output.shapes.iter().filter_map(|shape|if let egui::Shape::Text(t)=&shape.shape {
+                    let rect=Rect::from_min_size(t.pos,t.galley.size());
+                    (names.contains(&t.galley.job.text.as_str())&&shape.clip_rect.contains_rect(rect))
+                        .then(||(t.galley.job.text.clone(),rect))
+                }else{None}).collect()
+            };
+            let labels=visible_labels(&output);
+            if width>=1000. {assert_eq!(labels.len(),9);}
+            assert!(!labels.is_empty());
+            let legend_y=labels[0].1.center().y;
+            let mut seen=std::collections::HashSet::new();
+            for _ in 0..20 {
+                let labels=visible_labels(&output);
+                assert!(labels.iter().all(|(_,r)|(r.center().y-legend_y).abs()<0.1),"legend wrapped at {width}");
+                seen.extend(labels.into_iter().map(|(name,_)|name));
+                output=frame(vec![Event::PointerMoved(egui::pos2(width/2.,legend_y)),Event::MouseWheel {
+                    unit:egui::MouseWheelUnit::Point,delta:egui::vec2(-80.,0.),modifiers:Default::default()
+                }]);
+            }
+            assert_eq!(seen.len(),names.len(),"all nine switches must be reachable by horizontal scrolling at {width}: {seen:?}");
+            frame(vec![Event::MouseWheel{unit:egui::MouseWheelUnit::Point,delta:egui::vec2(10000.,0.),modifiers:Default::default()}]);
+            for _ in 0..20 {output=frame(vec![]);}
+            let labels=visible_labels(&output);
+            let button=labels.iter().find(|(text,_)|text==label).unwrap();let point=button.1.center();
             frame(vec![Event::PointerMoved(point)]);
             // Let egui finish the hover tooltip's invisible sizing pass before clicking.
             for _ in 0..3 {frame(vec![]);}
