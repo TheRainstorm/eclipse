@@ -30,8 +30,9 @@ pub fn preference_label(preference: ThemePreference) -> &'static str {
 
 pub fn color_theme_label(color: ColorTheme) -> &'static str {
     uu_i18n::text(match color {
-        ColorTheme::Blue => "默认蓝",
-        ColorTheme::LightBlue => "浅蓝色",
+        ColorTheme::Blue => "天蓝色",
+        ColorTheme::LightBlue => "蓝",
+        ColorTheme::SkyBlue => "天蓝色",
         ColorTheme::Animal => "动森",
     })
 }
@@ -40,14 +41,17 @@ pub fn color_theme_label(color: ColorTheme) -> &'static str {
 /// egui resolves System from each platform ThemeChanged event; unsupported
 /// platforms use the same light fallback as a fresh application configuration.
 pub fn apply_preference(ctx: &egui::Context, preference: ThemePreference) {
-    if update_preference(ctx, preference) { repaint_known_windows(ctx); }
+    if update_preference(ctx, effective_preference(preference, current_color_theme(ctx))) { repaint_known_windows(ctx); }
 }
 /// Mode and color family are independent global application preferences.
 /// Apply both before waking shared streaming/management viewports once.
 pub fn apply_appearance(ctx: &egui::Context, preference: ThemePreference, color: ColorTheme) {
     let color_changed = apply_color_theme(ctx, color);
-    let mode_changed = update_preference(ctx, preference);
+    let mode_changed = update_preference(ctx, effective_preference(preference, color));
     if color_changed || mode_changed { repaint_known_windows(ctx); }
+}
+fn effective_preference(preference: ThemePreference, color: ColorTheme) -> ThemePreference {
+    if color.light_only() { ThemePreference::Light } else { preference }
 }
 fn update_preference(ctx: &egui::Context, preference: ThemePreference) -> bool {
     ctx.options_mut(|options| {
@@ -104,9 +108,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sky_is_light_and_restores_the_saved_mode_when_changing_family() {
+        let legacy:ColorTheme=serde_json::from_str("\"blue\"").unwrap();
+        assert_eq!(legacy,ColorTheme::SkyBlue);
+        assert!(!COLOR_THEMES.contains(&ColorTheme::Blue));
+        let ctx=egui::Context::default();
+        apply_appearance(&ctx,ThemePreference::Dark,legacy);
+        assert_eq!(ctx.theme(),egui::Theme::Light);
+        apply_appearance(&ctx,ThemePreference::Dark,ColorTheme::Animal);
+        assert_eq!(ctx.theme(),egui::Theme::Dark);
+        apply_appearance(&ctx,ThemePreference::System,ColorTheme::SkyBlue);
+        let _=ctx.run(egui::RawInput{system_theme:Some(egui::Theme::Dark),..Default::default()},|ctx| {
+            assert_eq!(ctx.theme(),egui::Theme::Light);
+            assert_eq!(palette(&ctx.style().visuals).base,SKY_BLUE_LIGHT.base);
+        });
+    }
+
+    #[test]
     fn system_follows_platform_events_and_explicit_choices_remain_fixed() {
         let ctx = egui::Context::default();
-        apply(&ctx);
+        apply_color_theme(&ctx, ColorTheme::Blue);
         apply_preference(&ctx, ThemePreference::System);
         for system in [egui::Theme::Dark, egui::Theme::Light, egui::Theme::Dark] {
             let _ = ctx.run(
@@ -179,7 +200,7 @@ mod tests {
     #[test]
     fn light_default_and_unknown_system_share_the_light_palette() {
         let ctx = egui::Context::default();
-        apply(&ctx);
+        apply_color_theme(&ctx, ColorTheme::Blue);
         apply_preference(&ctx, DEFAULT_PREFERENCE);
         assert_eq!(ctx.theme(), egui::Theme::Light);
         apply_preference(&ctx, ThemePreference::System);

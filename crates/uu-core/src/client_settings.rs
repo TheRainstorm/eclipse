@@ -62,6 +62,9 @@ impl HudAppearance {
 #[serde(default)]
 pub struct ClientSettings {
     pub fps: u32,
+    // Legacy profile field: do not carry an obsolete exclusive-layout request
+    // into a new connection after the control has been retired.
+    #[serde(skip_serializing, deserialize_with="preserve_display_layout")]
     pub display_mode: crate::screen_control::DisplayMode,
     pub bitrate: usize,
     pub custom_mbps: u32,
@@ -89,6 +92,10 @@ pub struct ClientSettings {
     pub gamepad: bool,
     /// Forward client commands except the configured nested-mode toggle.
     pub nested_shortcuts: bool,
+}
+fn preserve_display_layout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<crate::screen_control::DisplayMode,D::Error> {
+    let _ = crate::screen_control::DisplayMode::deserialize(d)?;
+    Ok(crate::screen_control::DisplayMode::Preserve)
 }
 impl Default for ClientSettings {
     fn default() -> Self {
@@ -183,6 +190,12 @@ mod clipboard_tests {
 #[cfg(test)]
 mod bitrate_tests {
     use super::*;
+    #[test]
+    fn retired_exclusive_layout_is_migrated_without_reissuing_it() {
+        let settings:ClientSettings=serde_json::from_str(r#"{"display_mode":"exclusive_virtual"}"#).unwrap();
+        assert_eq!(settings.display_mode,crate::screen_control::DisplayMode::Preserve);
+        assert!(serde_json::to_value(settings).unwrap().get("display_mode").is_none());
+    }
     #[test]
     fn recommended_bitrate_is_default_and_fixed_presets_keep_their_values() {
         let mut s=ClientSettings::default();

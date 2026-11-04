@@ -24,7 +24,7 @@ pub(super) struct Entry {
     next: Option<Instant>,
     pending_install: bool,
     install_started: bool,
-    job: Option<mpsc::Receiver<Result<(), String>>>,
+    job: Option<mpsc::Receiver<Result<bool, String>>>,
     notice: String,
     completed: String,
 }
@@ -35,7 +35,8 @@ impl Entry {
             if let Ok(result)=job.try_recv() {
                 self.job=None;self.next=None;
                 match result {
-                    Ok(())=>{self.notice=self.completed.clone();installed=self.install_started;},
+                    Ok(true)=>{self.notice=self.completed.clone();installed=self.install_started;},
+                    Ok(false)=>self.notice.clear(),
                     Err(error)=>self.notice=error,
                 }
                 self.install_started=false;
@@ -62,18 +63,36 @@ impl Entry {
             self.status=self.build.as_ref().map(|build|build.state).or_else(||status().ok());
             self.next=Some(Instant::now()+Duration::from_secs(1));
         }
-        egui::Frame::group(ui.style()).show(ui,|ui| {
-            ui.strong(uu_i18n::text("Windows 后台服务 · 锁屏串流"));
-            ui.label(match self.status {
-                Some(SERVICE_RUNNING)=>uu_i18n::text("后台服务运行中"),
-                Some(SERVICE_STOPPED)=>uu_i18n::text("后台服务已停止"),
-                Some(_)=>uu_i18n::text("后台服务正在转换状态"),
-                None=>uu_i18n::text("后台服务尚未安装"),
+        let busy=self.job.is_some()||self.pending_install;
+        let outdated=self.build.as_ref().and_then(|build|build.installed.as_ref())
+            .is_some_and(|version|version.revision!=env!("UU_BUILD_COMMIT"));
+        let width=ui.available_width();
+        let frame=crate::theme::card(ui.visuals());
+        let inner=(width-frame.inner_margin.sum().x-frame.outer_margin.sum().x-2.*frame.stroke.width).max(1.);
+        frame.show(ui,|ui| {
+            ui.set_width(inner);
+            ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(uu_i18n::text("Windows 后台服务"));
+                let (label,color)=match self.status {
+                    Some(SERVICE_RUNNING)=>(uu_i18n::text("运行中"),crate::theme::palette(ui.visuals()).success),
+                    Some(SERVICE_STOPPED)=>(uu_i18n::text("已停止"),crate::theme::palette(ui.visuals()).muted),
+                    Some(_)=>(uu_i18n::text("正在转换状态"),crate::theme::palette(ui.visuals()).warning),
+                    None=>(uu_i18n::text("未安装"),crate::theme::palette(ui.visuals()).muted),
+                };
+                ui.colored_label(color,label);
+                if busy {ui.spinner();}
             });
-            ui.weak(uu_i18n::text("开机后共享此电脑，退出软件后仍可连接。"));
-            let busy=self.job.is_some()||self.pending_install;
-            let outdated=self.build.as_ref().and_then(|build|build.installed.as_ref())
-                .is_some_and(|version|version.revision!=env!("UU_BUILD_COMMIT"));
+            ui.weak(uu_i18n::text("开机后共享此电脑，支持锁屏连接。"));
+            if let Some(build)=&self.build {
+                let version=build.running.as_ref().or(build.installed.as_ref()).map(|v|v.label());
+                if let Some(version)=version {
+                    ui.small(version).on_hover_ui(|ui|version_labels(ui,build));
+                } else if build.process_id!=0 {
+                    ui.small(uu_i18n::text("运行版本暂不可读")).on_hover_ui(|ui|version_labels(ui,build));
+                }
+            }
+            ui.add_space(6.);
             ui.horizontal_wrapped(|ui| {
                 if self.status.is_some() {
                     if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("管理后台服务")))
@@ -83,24 +102,12 @@ impl Entry {
                             Err(error)=>self.notice=error.to_string(),
                         }
                     }
-                    if outdated && ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("更新后台程序")))
+                    if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("更新后台程序")))
                         .on_hover_text(uu_i18n::text("保留后台设置和配对；更新会断开串流。")).clicked() {
                         self.prepare_install(host);
                     }
-                }else if ui.add_enabled(available&&!busy,crate::theme::secondary_button(uu_i18n::text("安装并启动后台服务"))).clicked() {
-                    self.prepare_install(host);
-                }
-                if busy {ui.spinner();}
-            });
-            ui.add_space(6.);
-            ui.collapsing(uu_i18n::text("详情"),|ui| {
-                if let Some(build)=&self.build {version_labels(ui,build);}
-                if self.status.is_some() {
-                    if !outdated && ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("更新后台程序"))).clicked() {self.prepare_install(host);}
-                    ui.weak(uu_i18n::text("安装当前完整程序包并启动后台，保留已有设置与配对，不导入插件或账号；会断开后台串流并停止本窗口的前台共享。"));
-                    ui.add_space(8.);
-                    ui.strong(uu_i18n::text("插件与账号"));
-                    if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("同步插件并重启后台服务"))).clicked() {
+                    if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("同步插件与账号")))
+                        .on_hover_text(uu_i18n::text("将当前已启用插件及其声明的配置、账号复制到后台，覆盖对应状态；后台原来运行时重启，原来停止时保持停止。")).clicked() {
                         let result=(||->anyhow::Result<_>{
                             let config=uu_core::Config::from_env()?;
                             Ok((std::env::current_exe()?,format!("--background-service-action import-plugins --source-data \"{}\"",config.data_dir.display())))
@@ -110,11 +117,20 @@ impl Entry {
                             Err(error)=>self.notice=error.to_string(),
                         }
                     }
-                    ui.weak(uu_i18n::text("将当前已启用插件及其声明的配置、账号复制到后台，覆盖对应状态；后台原来运行时重启，原来停止时保持停止。"));
-                    ui.weak(uu_i18n::text("原生虚拟显示器不依赖插件，无需为管理虚拟屏同步插件。"));
+                }else if ui.add_enabled(available&&!busy,crate::theme::primary_button(uu_i18n::text("安装并启动后台服务")))
+                    .on_hover_text(uu_i18n::text("安装当前完整程序包并启动后台，保留已有设置与配对，不导入插件或账号；会断开后台串流并停止本窗口的前台共享。")).clicked() {
+                    self.prepare_install(host);
                 }
             });
-            if !self.notice.is_empty(){ui.label(&self.notice);}
+            if outdated {ui.small(uu_i18n::text("后台有可用更新"));}
+            if !self.notice.is_empty() {
+                ui.add_space(4.);
+                ui.horizontal_wrapped(|ui| {
+                    let dismiss=ui.add(crate::theme::ghost_button("×").small()).clicked();
+                    ui.add(egui::Label::new(&self.notice).wrap());
+                    if dismiss {self.notice.clear();}
+                });
+            }
         });
         ui.add_space(10.);
         installed
@@ -127,11 +143,15 @@ impl Entry {
         self.completed=completed.to_owned();self.notice.clear();
         let (send,receive)=mpsc::channel();self.job=Some(receive);let ctx=ctx.clone();
         std::thread::spawn(move|| {
-            let result=(||->anyhow::Result<()> {
+            let result=(||->anyhow::Result<bool> {
                 if args.starts_with("--background-service-action ") {
                     uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("{}",uu_i18n::format!("无法确定安装包目录")))?,env!("UU_BUILD_COMMIT"))?;
                 }
-                elevated(&exe,&args)
+                match elevated(&exe,&args) {
+                    Ok(())=>Ok(true),
+                    Err(error) if error.downcast_ref::<std::io::Error>().is_some_and(|e|e.raw_os_error()==Some(1223))=>Ok(false),
+                    Err(error)=>Err(error),
+                }
             })();
             let _=send.send(result.map_err(|e|format!("{e:#}")));ctx.request_repaint();
         });
@@ -802,6 +822,32 @@ fn show_error(message:&str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn service_card_keeps_long_notices_inside_and_actions_visible() {
+        for color in crate::theme::COLOR_THEMES {
+            for width in [340.,560.] {
+                let ctx=egui::Context::default();
+                crate::theme::apply_appearance(&ctx,egui::ThemePreference::Light,color);
+                let mut entry=Entry {status:Some(SERVICE_RUNNING),next:Some(Instant::now()+Duration::from_secs(60)),
+                    notice:"Generated long failure description ".repeat(16),..Default::default()};
+                let mut host=super::super::sharing_ui::HostUi::default();
+                let output=ctx.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,900.))),..Default::default()},|ctx| {
+                    egui::CentralPanel::default().show(ctx,|ui| {
+                        let right=ui.max_rect().right();
+                        entry.show(ui,&mut host,true);
+                        assert!(ui.min_rect().right()<=right+1.,"service card grew outside its column: {color:?} {width}");
+                    });
+                });
+                let mut texts=String::new();
+                for shape in output.shapes {
+                    if let egui::Shape::Text(t)=shape.shape {texts.push_str(t.galley.text());}
+                }
+                for label in ["管理后台服务","更新后台程序","同步插件与账号"] {
+                    assert!(texts.contains(uu_i18n::text(label)),"action hidden: {label}");
+                }
+            }
+        }
+    }
     #[test]
     fn pairing_and_status_updates_preserve_unsaved_settings_and_manager_close_keeps_service_independent(
     ) {

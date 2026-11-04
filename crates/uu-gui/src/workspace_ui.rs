@@ -1079,17 +1079,19 @@ impl Workspace {
         }
         let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
         blank.context_menu(|ui| {
+            theme::compact_menu_style(ui);
+            ui.set_min_width(180.);
             if let Some((width,height))=info.wallpaper_size {ui.label(uu_i18n::format!("原图：{} × {} 像素",width,height));ui.separator();}
-            if ui.add_enabled(info.wallpaper_ready,crate::theme::secondary_button(uu_i18n::text("收藏当前壁纸"))).clicked(){actions.push(Action::FavoriteWallpaper);ui.close_menu();}
-            if ui.add_enabled(info.wallpaper_download_ready,crate::theme::secondary_button(uu_i18n::text("下载壁纸"))).clicked(){actions.push(Action::DownloadWallpaper);ui.close_menu();}
-            if ui.add_enabled(info.wallpaper_enabled,crate::theme::secondary_button(uu_i18n::text("刷新壁纸"))).clicked(){actions.push(Action::RefreshWallpaper);ui.close_menu();}
+            if theme::menu_action(ui,info.wallpaper_ready,uu_i18n::text("收藏当前壁纸")).clicked(){actions.push(Action::FavoriteWallpaper);ui.close_menu();}
+            if theme::menu_action(ui,info.wallpaper_download_ready,uu_i18n::text("下载壁纸")).clicked(){actions.push(Action::DownloadWallpaper);ui.close_menu();}
+            if theme::menu_action(ui,info.wallpaper_enabled,uu_i18n::text("刷新壁纸")).clicked(){actions.push(Action::RefreshWallpaper);ui.close_menu();}
             ui.separator();
-            if ui.add(crate::theme::secondary_button(uu_i18n::text("本机串流测试"))).on_hover_text(uu_i18n::text("只读采集本机画面，通过本机回环完成编解码和显示；无需开启共享服务。")).clicked(){actions.push(Action::SelfStream);ui.close_menu();}
-            if ui.add(crate::theme::secondary_button(uu_i18n::text("添加设备"))).clicked(){self.new_device(None,None);ui.close_menu();}
+            if theme::menu_action(ui,true,uu_i18n::text("本机串流测试")).on_hover_text(uu_i18n::text("只读采集本机画面，通过本机回环完成编解码和显示；无需开启共享服务。")).clicked(){actions.push(Action::SelfStream);ui.close_menu();}
+            if theme::menu_action(ui,true,uu_i18n::text("添加设备")).clicked(){self.new_device(None,None);ui.close_menu();}
             if !info.nearby.is_empty() {
                 ui.menu_button(uu_i18n::text("添加附近设备"),|ui| {
                     for (name,address) in &info.nearby {
-                        if ui.add(crate::theme::secondary_button(name)).on_hover_text(address).clicked() {
+                        if theme::menu_action(ui,true,name).on_hover_text(address).clicked() {
                             if let Some(store)=&self.store {
                                 let result=store.save_device(Profile::new(name,Destination::Ip {address:address.clone(),legacy_device:None}));
                                 if let Err(error)=result {
@@ -1184,9 +1186,10 @@ impl Workspace {
             ui.painter().galley(pos,text,color);
             if response.clicked(){actions.push(Action::Open(profile.id.clone()));}
             response.context_menu(|ui| {
+                theme::compact_menu_style(ui);
                 ui.set_min_width(170.);
-                if ui.add(crate::theme::secondary_button(uu_i18n::text("刷新在线状态"))).clicked(){self.presence.refresh();ui.close_menu();}
-                if ui.add(crate::theme::secondary_button(uu_i18n::text("详情"))).clicked(){self.route.device=DeviceView::Details(profile.id.clone());ui.close_menu();}
+                if theme::menu_action(ui,true,uu_i18n::text("刷新在线状态")).clicked(){self.presence.refresh();ui.close_menu();}
+                if theme::menu_action(ui,true,uu_i18n::text("详情")).clicked(){self.route.device=DeviceView::Details(profile.id.clone());ui.close_menu();}
                 ui.menu_button(uu_i18n::text("连接方式"),|ui| {
                     for route in &profile.routes {
                         if crate::theme::selectable_label(ui,profile.selected_route==route.id,format!("{} · {}",route.destination.label(),route.destination.target())).clicked() {
@@ -1210,7 +1213,7 @@ impl Workspace {
                         }
                     }
                 });
-                if ui.add(crate::theme::secondary_button(uu_i18n::text("配置编辑"))).clicked(){
+                if theme::menu_action(ui,true,uu_i18n::text("配置编辑")).clicked(){
                     let selected=profile.client_configs.iter().find(|v|Some(&v.id)==profile.selected_client.as_ref()).cloned();
                     self.edit_client_config(profile,selected,false);ui.close_menu();
                 }

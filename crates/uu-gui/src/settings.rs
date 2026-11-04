@@ -770,7 +770,7 @@ mod tests {
         let original=serde_json::to_vec(&legacy).unwrap();std::fs::write(&path,&original).unwrap();
         let mut settings=Settings::load(&path).unwrap();
         assert_eq!(settings.theme_preference,egui::ThemePreference::Light);
-        assert_eq!(settings.color_theme,super::super::theme::ColorTheme::Blue);
+        assert_eq!(settings.color_theme,super::super::theme::ColorTheme::SkyBlue);
         assert!(!settings.wallpaper_enabled);
         assert_eq!(std::fs::read(&path).unwrap(),original,"loading a legacy configuration must not rewrite it");
         for preference in super::super::theme::PREFERENCES {
@@ -797,7 +797,7 @@ mod tests {
         let reopened=Settings::load(&path).unwrap();
         assert_eq!(reopened.theme_preference,egui::ThemePreference::System);
         assert_eq!(reopened.color_theme,super::super::theme::ColorTheme::LightBlue);
-        assert_eq!(stream.color_theme,super::super::theme::ColorTheme::Blue);
+        assert_eq!(stream.color_theme,super::super::theme::ColorTheme::SkyBlue);
         assert_eq!(reopened.fps,120);
         assert_eq!(stream.theme_preference,egui::ThemePreference::Dark,"the fixture must actually contain a stale explicit choice");
         std::fs::remove_dir_all(root).unwrap();

@@ -89,7 +89,7 @@ mod tests {use super::*;
             });
             assert_eq!(context.theme(), eframe::egui::Theme::Light);
             assert!(height >= 30.0, "custom button target was lost after theme selection");
-            theme::apply_preference(&context,eframe::egui::ThemePreference::Dark);
+            theme::apply_appearance(&context,eframe::egui::ThemePreference::Dark,theme::ColorTheme::LightBlue);
             assert_eq!(context.theme(),eframe::egui::Theme::Dark,"a saved explicit choice overrides the startup default");
         }
     }

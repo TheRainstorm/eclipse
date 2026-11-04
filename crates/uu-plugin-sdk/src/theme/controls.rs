@@ -516,6 +516,22 @@ pub fn tab_value<T: PartialEq>(
 
 /// Full-width option row: optional vector icon, stable gutters, visible hint,
 /// native click/focus and submenu arrow all share one response.
+pub fn compact_menu_style(ui: &mut Ui) {
+    let style = ui.style_mut();
+    style.spacing.interact_size.y = 24.;
+    style.spacing.button_padding = egui::vec2(7., 3.);
+    style.spacing.item_spacing = egui::Vec2::ZERO;
+    for (kind, size) in [(TextStyle::Heading, 14.), (TextStyle::Body, 13.),
+        (TextStyle::Button, 13.), (TextStyle::Small, 11.)] {
+        if let Some(font) = style.text_styles.get_mut(&kind) { font.size = size; }
+    }
+}
+
+/// Compact action with the same density and focus behavior as option rows.
+pub fn menu_action(ui: &mut Ui, enabled: bool, label: impl Into<WidgetText>) -> Response {
+    ui.add_enabled_ui(enabled, |ui| menu_row(ui, false, label)).inner
+}
+
 pub fn menu_control(
     ui: &mut Ui,
     label: impl Into<WidgetText>,

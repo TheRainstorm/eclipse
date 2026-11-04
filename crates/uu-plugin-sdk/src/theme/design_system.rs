@@ -30,6 +30,7 @@ pub struct Palette {
     pub tint: C,
     pub accent: C,
     pub primary: C,
+    pub primary_text: C,
     pub primary_hover: C,
     pub primary_pressed: C,
     pub disabled: C,
@@ -57,6 +58,7 @@ pub const DARK: Palette = Palette {
     tint: C::from_rgb(29, 48, 76),
     accent: C::from_rgb(141, 183, 255),
     primary: C::from_rgb(37, 99, 235),
+    primary_text: C::WHITE,
     primary_hover: C::from_rgb(42, 107, 238),
     primary_pressed: C::from_rgb(29, 78, 216),
     disabled: C::from_rgb(32, 40, 52),
@@ -83,6 +85,7 @@ pub const LIGHT: Palette = Palette {
     tint: C::from_rgb(234, 242, 255),
     accent: C::from_rgb(37, 99, 235),
     primary: C::from_rgb(37, 99, 235),
+    primary_text: C::WHITE,
     primary_hover: C::from_rgb(42, 107, 238),
     primary_pressed: C::from_rgb(29, 78, 216),
     disabled: C::from_rgb(234, 239, 246),
@@ -99,14 +102,44 @@ pub const LIGHT: Palette = Palette {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ColorTheme {
-    #[default]
+    // Retained for source compatibility with extensions; no longer offered.
+    #[serde(rename = "legacy_blue")]
     Blue,
     #[serde(alias = "cyan")]
     LightBlue,
+    #[default]
+    #[serde(alias = "blue")]
+    SkyBlue,
     Animal,
 }
 pub const COLOR_THEMES: [ColorTheme; 3] =
-    [ColorTheme::Blue, ColorTheme::LightBlue, ColorTheme::Animal];
+    [ColorTheme::SkyBlue, ColorTheme::LightBlue, ColorTheme::Animal];
+impl ColorTheme {
+    pub fn light_only(self) -> bool { self == Self::SkyBlue }
+}
+/// Airy blue surfaces and cloud-white cards, with ink on pale blue actions.
+pub const SKY_BLUE_LIGHT: Palette = Palette {
+    base: C::from_rgb(244, 250, 255),
+    card: C::WHITE,
+    overlay: C::from_rgb(252, 254, 255),
+    sidebar: C::from_rgb(235, 247, 255),
+    text: C::from_rgb(36, 69, 92),
+    muted: C::from_rgb(78, 105, 125),
+    border: C::from_rgb(214, 232, 244),
+    control_border: C::from_rgb(119, 146, 164),
+    control: C::WHITE,
+    hover: C::from_rgb(233, 247, 255),
+    pressed: C::from_rgb(211, 236, 251),
+    tint: C::from_rgb(228, 245, 255),
+    accent: C::from_rgb(66, 107, 137),
+    primary: C::from_rgb(201, 232, 250),
+    primary_text: C::from_rgb(36, 69, 92),
+    primary_hover: C::from_rgb(184, 225, 248),
+    primary_pressed: C::from_rgb(168, 213, 241),
+    disabled: C::from_rgb(235, 243, 248),
+    info_bg: C::from_rgb(228, 245, 255),
+    ..LIGHT
+};
 pub const LIGHT_BLUE_LIGHT: Palette = Palette {
     base: C::from_rgb(245, 250, 255),
     overlay: C::from_rgb(251, 253, 255),
@@ -163,6 +196,7 @@ const fn island_palette(p: island::Tokens) -> Palette {
         tint: p.tint,
         accent: p.accent,
         primary: p.primary,
+        primary_text: p.text,
         primary_hover: p.primary_hover,
         primary_pressed: p.primary_pressed,
         disabled: p.disabled,
@@ -183,6 +217,7 @@ fn colors(theme: egui::Theme, color: ColorTheme) -> &'static Palette {
         (egui::Theme::Dark, ColorTheme::Blue) => &DARK,
         (egui::Theme::Light, ColorTheme::LightBlue) => &LIGHT_BLUE_LIGHT,
         (egui::Theme::Dark, ColorTheme::LightBlue) => &LIGHT_BLUE_DARK,
+        (_, ColorTheme::SkyBlue) => &SKY_BLUE_LIGHT,
         (egui::Theme::Light, ColorTheme::Animal) => &ANIMAL_LIGHT,
         (egui::Theme::Dark, ColorTheme::Animal) => &ANIMAL_DARK,
     }
@@ -200,6 +235,8 @@ fn visual_family(visuals: &egui::Visuals) -> ColorTheme {
         || visuals.hyperlink_color == LIGHT_BLUE_DARK.accent
     {
         ColorTheme::LightBlue
+    } else if visuals.hyperlink_color == SKY_BLUE_LIGHT.accent {
+        ColorTheme::SkyBlue
     } else {
         ColorTheme::Blue
     }
@@ -255,6 +292,7 @@ pub fn visuals_with_color(theme: egui::Theme, color: ColorTheme) -> egui::Visual
     if color == ColorTheme::Animal {
         return island::tokens::style(theme).visuals;
     }
+    let theme = if color.light_only() { egui::Theme::Light } else { theme };
     let mut v = match theme {
         egui::Theme::Dark => egui::Visuals::dark(),
         egui::Theme::Light => egui::Visuals::light(),
@@ -268,7 +306,7 @@ pub fn visuals_with_color(theme: egui::Theme, color: ColorTheme) -> egui::Visual
     v.error_fg_color = p.danger;
     v.warn_fg_color = p.warning;
     v.selection.bg_fill = p.primary;
-    v.selection.stroke = Stroke::new(1.0, C::WHITE);
+    v.selection.stroke = Stroke::new(1.0, p.primary_text);
     v.widgets.noninteractive = widget(p.card, p.border, p.text);
     v.widgets.noninteractive.weak_bg_fill = island::tokens::readable_fade_target(p.text, p.muted);
     v.widgets.inactive = widget(p.control, p.control_border, p.text);
@@ -381,7 +419,7 @@ impl Button {
 }
 fn button_visuals(v: &mut egui::Visuals, p: &Palette, kind: ButtonKind, enabled: bool) {
     let text = match kind {
-        ButtonKind::Primary => C::WHITE,
+        ButtonKind::Primary => p.primary_text,
         ButtonKind::Danger => p.danger,
         _ => p.text,
     };
@@ -636,7 +674,7 @@ mod tests {
             }
             if color != ColorTheme::Animal {
                 for fill in [p.primary, p.primary_hover, p.primary_pressed] {
-                    assert!(contrast(C::WHITE, fill) >= 4.5);
+                    assert!(contrast(p.primary_text, fill) >= 4.5);
                 }
             } else {
                 // Animal's real primary is warm ink on cream, not white on
@@ -655,6 +693,7 @@ mod tests {
     fn context_color_choices_survive_extensions_modes_and_visuals_clones() {
         let blue = egui::Context::default();
         let cyan = egui::Context::default();
+        apply_color_theme(&blue, ColorTheme::Blue);
         apply(&blue);
         apply_color_theme(&cyan, ColorTheme::LightBlue);
         for mode in [egui::Theme::Light, egui::Theme::Dark, egui::Theme::Light] {
@@ -744,7 +783,7 @@ mod tests {
     fn theme_switch_keeps_geometry_and_preference() {
         let ctx = egui::Context::default();
         ctx.set_theme(egui::Theme::Dark);
-        apply(&ctx);
+        apply_color_theme(&ctx, ColorTheme::LightBlue);
         assert_eq!(ctx.theme(), egui::Theme::Dark);
         for theme in [egui::Theme::Light, egui::Theme::Dark] {
             ctx.set_theme(theme);

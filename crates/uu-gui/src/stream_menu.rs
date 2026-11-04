@@ -205,13 +205,7 @@ fn hover_bridge(a: Rect, b: Rect) -> Option<Rect> {
 fn popup_frame(ui: &mut egui::Ui) -> egui::Frame {
     // Root, children and detail panels use the same density in every theme.
     // Page controls retain their larger touch targets.
-    let style=ui.style_mut();
-    style.spacing.interact_size.y=24.;
-    style.spacing.button_padding=egui::vec2(7.,3.);
-    style.spacing.item_spacing=egui::Vec2::ZERO;
-    for (kind,size) in [(egui::TextStyle::Heading,14.),(egui::TextStyle::Body,13.),(egui::TextStyle::Button,13.),(egui::TextStyle::Small,11.)] {
-        if let Some(font)=style.text_styles.get_mut(&kind){font.size=size;}
-    }
+    super::theme::compact_menu_style(ui);
     // The shared theme owns opacity, corners and shadow for every popup.
     egui::Frame::popup(ui.style()).fill(super::theme::palette(ui.visuals()).overlay)
 }
@@ -551,7 +545,6 @@ impl super::App {
         if screens.screens.is_empty(){ui.add_enabled(false,egui::Label::new(uu_i18n::text("等待远端显示器列表…")));}
         if !self.displays.notice.is_empty(){separator(ui);ui.label(&self.displays.notice);}
         separator(ui);
-        if menu_row(ui,uu_i18n::text("显示器模式设置…"),None,false,false,"",false).on_hover_text(uu_i18n::text("设置远端物理或虚拟显示器的使用方式。")).clicked(){self.displays.menu_open=false;self.open_stream_settings();}
     }
 
     fn confirm_quality(&mut self, ui: &mut egui::Ui) {
@@ -1036,6 +1029,7 @@ mod tests {
             "blue"=>super::super::theme::ColorTheme::Blue,
             "light_blue"=>super::super::theme::ColorTheme::LightBlue,
             "animal"=>super::super::theme::ColorTheme::Animal,
+            "sky_blue"=>super::super::theme::ColorTheme::SkyBlue,
             _=>panic!("explicit supported preview theme required"),
         };
         assert!(matches!(surface.as_str(),"menus"|"device-config"));

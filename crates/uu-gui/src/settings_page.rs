@@ -161,15 +161,6 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
         theme::switch(ui,&mut s.software_decoder, uu_i18n::text("使用软件解码"));
         note(ui, uu_i18n::text("默认优先使用硬件解码。更改后重新连接此设备生效。"));
     });
-    group(ui, uu_i18n::text("远端显示器布局"), |ui| {
-        for mode in [
-            uu_core::screen_control::DisplayMode::Preserve,
-            uu_core::screen_control::DisplayMode::ExclusiveVirtual,
-        ] {
-            crate::theme::radio_value(ui,&mut s.display_mode, mode, mode.label());
-        }
-        note(ui,uu_i18n::text("下次连接生效。保持现状不切换主屏或关闭显示器；独占虚拟屏会请求关闭其它屏幕，退出时请求恢复。"));
-    });
 }
 fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
     group(ui,uu_i18n::text("编码与码率"),|ui| {
@@ -200,8 +191,8 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                     "settings-bitrate",
                     if state.streaming {super::settings::bitrate_label(s.bitrate,!state.host_managed_bitrate)}else{uu_i18n::text(super::BITRATE_PRESETS[s.bitrate])},
                     |ui| {
-                        for (i, label) in super::BITRATE_PRESETS.iter().enumerate() {
-                            let label=uu_i18n::text(label);
+                        for i in [5,0,1,2,3,4] {
+                            let label=uu_i18n::text(super::BITRATE_PRESETS[i]);
                             if (!state.host_managed_bitrate&&i==0)||(state.host_managed_bitrate&&state.streaming&&i==5){continue;}
                             if !state.host_managed_bitrate&&i==5 {
                                 if crate::theme::selectable_label(ui,matches!(s.bitrate,0|5),label).clicked(){s.bitrate=5;}
@@ -349,10 +340,12 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
     }),
     SoftwareSection::Appearance=>{
         group(ui,uu_i18n::text("界面主题"),|ui| {
-            combo(ui,"application-theme",theme::preference_label(s.theme_preference),|ui| {
-                for preference in theme::PREFERENCES {
-                    crate::theme::selectable_value(ui,&mut s.theme_preference,preference,theme::preference_label(preference));
-                }
+            ui.add_enabled_ui(!s.color_theme.light_only(),|ui| {
+                combo(ui,"application-theme",theme::preference_label(if s.color_theme.light_only(){egui::ThemePreference::Light}else{s.theme_preference}),|ui| {
+                    for preference in theme::PREFERENCES {
+                        crate::theme::selectable_value(ui,&mut s.theme_preference,preference,theme::preference_label(preference));
+                    }
+                });
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -363,6 +356,7 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
                     }
                 });
             });
+            if s.color_theme.light_only() { note(ui,uu_i18n::text("天蓝色使用浅色外观。")); }
             note(ui,uu_i18n::text("保存后应用到主窗口和串流窗口。"));
         });
         group(ui,uu_i18n::text("设备页外观"),|ui| {
