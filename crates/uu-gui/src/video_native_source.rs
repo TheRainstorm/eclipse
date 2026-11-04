@@ -79,8 +79,29 @@ impl Source {
         self.leases.reserve(frame.clone());
         self.converter.convert(&frame, color).map_err(|e|self.failure("convert_submit","backend_error",e))?;
         let ready = self.sync.ready().map_err(|e|self.failure("producer_signal","backend_error",e))?;
-        self.leases.produced(ready,observation);
+        self.leases.produced(ready,observation,Instant::now());
         Ok(Update::Updated{transition})
+    }
+    /// Owner-thread housekeeping is independent of incoming frames and paints.
+    /// Only producer completion releases decoder samples; ready/observation,
+    /// the converted texture and the consumer timeline remain unchanged.
+    pub fn poll_completion(&mut self)->Result<Option<std::time::Duration>,Failure> {
+        if !self.valid.load(Ordering::Acquire){return Ok(None);}
+        let now=Instant::now();
+        let Some(retry)=self.leases.completion_retry(now) else{return Ok(None);};
+        if !retry.is_zero(){return Ok(Some(retry));}
+        let complete=self.sync.completed();
+        if complete==u64::MAX {
+            // Never interpret device loss as completion or keep polling it.
+            // Retirement retains the existing synchronization/Drop contract.
+            self.valid.store(false,Ordering::Release);
+            return Err(self.failure("producer_completion","device_lost","native source GPU removed".into()));
+        }
+        self.leases.observe(complete,now);
+        Ok(self.leases.completion_retry(now))
+    }
+    pub fn completion_retry(&self)->Option<std::time::Duration> {
+        self.valid.load(Ordering::Acquire).then(||self.leases.completion_retry(Instant::now())).flatten()
     }
     fn failure(&self,phase:&'static str,kind:&'static str,reason:String)->Failure {
         Failure{phase,kind,reason,leases:Some(self.leases.snapshot())}

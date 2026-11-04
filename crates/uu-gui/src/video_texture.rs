@@ -109,6 +109,20 @@ impl VideoTexture {
     pub fn set(&mut self, ctx: &egui::Context, image: DisplayImage) {
         self.set_with_observation(ctx,image,None)
     }
+    /// Call on the owner UI thread even for hidden views or stalled decoders.
+    /// This queries a fence only; it does not require a current GL context.
+    #[cfg(windows)]
+    pub fn poll_decoder_leases(&self,ctx:&egui::Context,viewport:egui::ViewportId) {
+        let Some(gpu)=&self.gpu else{return;};
+        let mut state=gpu.lock().unwrap();
+        let Some(source)=state.native.as_mut() else{return;};
+        match source.poll_completion() {
+            Ok(Some(retry))=>native_capacity::request_retry(ctx,viewport,retry),
+            Ok(None)=>{},
+            Err(error)=>Planes::record_native(state.native_last.as_ref().and_then(|frame|frame.2.as_ref()),serde_json::json!({
+                "event":"native_video_completion_failed","phase":error.phase,"kind":error.kind,"leases":error.leases})),
+        }
+    }
     pub fn set_observed(&mut self,ctx:&egui::Context,image:DisplayImage,stats:&Arc<uu_core::media::MediaStats>,frozen:Option<uu_core::display_frames::DecodedObservation>) {
         let observation=FrameObservation::new(stats,&image,frozen);
         self.set_with_observation(ctx,image,observation)
@@ -252,6 +266,8 @@ impl VideoTexture {
         Ok(output)
     }
     pub fn paint(&self, ui: &egui::Ui, rect: egui::Rect) {
+        #[cfg(windows)]
+        self.poll_decoder_leases(ui.ctx(),ui.ctx().viewport_id());
         if let Some(gpu) = &self.gpu {
             // A legacy RGBA frame can occur before the receiver opts in.
             let ready = {
@@ -657,6 +673,9 @@ impl Planes {
             }
             let frame=self.pending.take().unwrap();self.size=[frame.0.width,frame.0.height];self.layout=Some(frame.0.format);self.color=frame.1;
             self.native_last=Some(frame);self.native_active=true;self.d3d_active=false;
+            if let Some(retry)=self.native.as_ref().and_then(|source|source.completion_retry()) {
+                native_capacity::request_retry(ctx,viewport,retry);
+            }
         }
         self.native_active.then(||self.native.as_ref().unwrap().image(rect,self.color.hdr(),source_white,self.cursor.state.clone()))
     }

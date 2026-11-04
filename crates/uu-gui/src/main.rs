@@ -458,6 +458,8 @@ impl App {
 
 
     fn poll_controller(&mut self, ctx: &egui::Context) {
+        #[cfg(windows)]
+        for texture in self.textures.values(){texture.poll_decoder_leases(ctx,self.context.viewport());}
         let native=self.uses_engine_controls();
         let Some(h) = &mut self.controller else {
             return;
