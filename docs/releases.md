@@ -1,6 +1,6 @@
 # 构建与版本发布
 
-当前开发版：[0.23.4-dev.20261104](releases/v0.23.4-dev.20261104.md)。前一阶段：[0.23.3-dev.20261104](releases/v0.23.3-dev.20261104.md)。上一开发版：[0.23.2-dev.20261104](releases/v0.23.2-dev.20261104.md)。已固定源码里程碑：[Eclipse v0.23.1](releases/v0.23.1.md)，标签保留本地。此前源码版本：[v0.21.2](releases/v0.21.2.md)；下载以 GitHub Releases 实际发布为准。历史开发版：[0.21.3-dev.20261103](releases/v0.21.3-dev.20261103.md)。
+当前开发版：[0.23.5-dev.20261104](releases/v0.23.5-dev.20261104.md)。上一开发版：[0.23.4-dev.20261104](releases/v0.23.4-dev.20261104.md)。前一阶段：[0.23.3-dev.20261104](releases/v0.23.3-dev.20261104.md)。上一开发版：[0.23.2-dev.20261104](releases/v0.23.2-dev.20261104.md)。已固定源码里程碑：[Eclipse v0.23.1](releases/v0.23.1.md)，标签保留本地。此前源码版本：[v0.21.2](releases/v0.21.2.md)；下载以 GitHub Releases 实际发布为准。历史开发版：[0.21.3-dev.20261103](releases/v0.21.3-dev.20261103.md)。
 
 功能里程碑以及每组可交付的小功能或修复使用 `v主版本.次版本.修订号` 标签；小组更新递增修订号，标签版本必须与根目录 `Cargo.toml` 的 workspace 版本一致。正式安装包在 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 提供。
 

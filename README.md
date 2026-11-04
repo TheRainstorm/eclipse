@@ -47,7 +47,7 @@ Eclipse 将设备管理、画面共享、声音和输入控制放在同一个应
 
 ## 开始使用
 
-当前开发版 **0.23.4-dev.20261104** 增加设备多配置管理、青蓝与动森主题，画面和编码页直接展示实际参数；核心界面组件作为独立 Rust/egui crate 提供。默认仍为浅色。详见 [0.23.4 开发说明](docs/releases/v0.23.4-dev.20261104.md)。此前源码里程碑 [v0.23.1](docs/releases/v0.23.1.md) 已固定为本地标签。下载以 GitHub Releases 实际发布为准。旧配置继续使用；Windows 后台服务需在服务管理中单独更新。
+当前开发版 **0.23.5-dev.20261104** 统一设备配置、设置页和悬浮菜单控件，补齐动森交互样式，青蓝调整为浅蓝；原生显示器按需保留连接以加快再次切换，并增加垂直同步快捷键。默认仍为浅色。详见 [0.23.5 开发说明](docs/releases/v0.23.5-dev.20261104.md)。此前源码里程碑 [v0.23.1](docs/releases/v0.23.1.md) 已固定为本地标签。下载以 GitHub Releases 实际发布为准。旧配置继续使用；Windows 后台服务需在服务管理中单独更新。
 
 从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包，保留包内全部运行库与清单。
 
@@ -89,7 +89,7 @@ python3 tools/release/download.py
 
 ## 快捷键与统计
 
-默认客户端快捷键均以 **Ctrl+Alt** 开头：`F / X` 全屏或窗口、`S` 启用 HUD、`Q` 退出当前串流、`M` 静音、`H` 悬浮入口、`Z` 释放或捕获输入。可在应用设置中自定义，菜单按实际绑定显示。[完整快捷键](docs/keyboard-shortcuts.md) · [键盘捕获规则](docs/keyboard-capture.md)
+默认客户端快捷键均以 **Ctrl+Alt** 开头：`F / X` 全屏或窗口、`S` 启用 HUD、`Q` 退出当前串流、`M` 静音、`V` 垂直同步、`H` 悬浮入口、`Z` 释放或捕获输入。可在应用设置中自定义，菜单按实际绑定显示。[完整快捷键](docs/keyboard-shortcuts.md) · [键盘捕获规则](docs/keyboard-capture.md)
 
 视频端到端统计从源画面到客户端显示回执区间，不包含此前的输入上行和远端应用响应。`Est.Total` 是已知阶段的独立窗口估计；帧周期是节拍参考，不会额外加入视频 E2E。两者都不能用来直接判断完整鼠标跟随延迟。[延迟口径](docs/native-latency.md) · [HUD](docs/hud.md)
 
