@@ -74,6 +74,39 @@ struct NativePresenter {
     trace:Option<present_trace::Producer>,
     observing:bool,
     receipt:dxgi_receipt::Bridge,
+    timing: PresentTiming,
+}
+// Keep API wall time separate from display receipts. Only aggregate metadata
+// enters the existing bounded diagnostic sink, never frame or input contents.
+struct PresentTiming {
+    started: std::time::Instant,
+    counts: [u64; 4],
+    sum: [f64; 4],
+    max: [f64; 4],
+    raw_samples: u64,
+    raw_sum: [f64; 2],
+    admission: [u64; 2],
+}
+impl Default for PresentTiming {
+    fn default()->Self { Self { started:std::time::Instant::now(),counts:[0;4],sum:[0.;4],max:[0.;4],raw_samples:0,raw_sum:[0.;2],admission:[0;2] } }
+}
+impl PresentTiming {
+    fn record(&mut self, stats:Option<&uu_core::media::MediaStats>,vsync:bool,outcome:usize,phases:[f64;4],raw:Option<[f64;2]>) {
+        self.counts[outcome]+=1;
+        for i in 0..4 {self.sum[i]+=phases[i];self.max[i]=self.max[i].max(phases[i]);}
+        if let Some(raw)=raw {self.raw_samples+=1;for i in 0..2 {self.raw_sum[i]+=raw[i];}}
+        if self.started.elapsed()<std::time::Duration::from_secs(2){return;}
+        if let Some(stats)=stats {
+            let count=self.counts.iter().sum::<u64>() as f64;
+            stats.diagnostics.record(serde_json::json!({"event":"native_present_timing","vsync_at_end":vsync,
+                "window_ms":self.started.elapsed().as_secs_f64()*1000.,"presented_reused_deferred_failed":self.counts,
+                "admitted_deferred":self.admission,
+                "mean_finish_prepare_submit_receipt_ms":self.sum.map(|x|x/count),"max_finish_prepare_submit_receipt_ms":self.max,
+                "raw_samples":self.raw_samples,"mean_dxgi_present_queries_ms":(self.raw_samples>0).then(||self.raw_sum.map(|x|x/self.raw_samples as f64)),
+                "scope":"native presenter CPU wall time; DXGI is a subset of submit; not GPU execution or physical latency"}));
+        }
+        *self=Self::default();
+    }
 }
 unsafe impl Send for NativePresenter {}
 pub fn enable(ctx: &egui::Context, gl: Arc<glow::Context>, vsync: bool) -> Result<bool, String> {
@@ -146,6 +179,7 @@ impl NativePresenter {
             image: None,
             trace,observing,
             receipt:dxgi_receipt::Bridge::default(),
+            timing:PresentTiming::default(),
             inspection: None,
             shape: None,
         })
@@ -260,7 +294,9 @@ impl Presenter for NativePresenter {
 
     fn prepare_frame(&mut self,size:[u32;2],vsync:bool)->Result<bool,String>{
         unsafe {self.resize(size.map(|v|v.max(1)))?;}
-        self.native.prepare_frame(vsync)
+        let ready=self.native.prepare_frame(vsync)?;
+        self.timing.admission[usize::from(!ready)]+=1;
+        Ok(ready)
     }
     fn begin(&mut self, size: [u32; 2]) -> Result<ColorTarget, String> {
         unsafe {
@@ -356,9 +392,13 @@ impl Presenter for NativePresenter {
         Ok(true)
     }
     fn present(&mut self, vsync: bool) -> Result<(), String> {
+        let started=std::time::Instant::now();
+        let stats=self.image.as_ref().and_then(|image|image.observation.as_ref()).and_then(|o|o.current_stats());
         self.deferred = false;
         self.finish();
+        let finished=started.elapsed().as_secs_f64()*1000.;
         if let Some(error) = self.finish_error.take() {
+            self.timing.record(stats.as_deref(),vsync,3,[finished,0.,0.,0.],None);
             self.receipt.reset();
             self.last_scene = None;
             if let Some(image) = self.image.take() {
@@ -390,18 +430,26 @@ impl Presenter for NativePresenter {
         });
         let unchanged = self.reuse_ui && self.inspection.is_none()
             && scene.is_some() && scene == self.last_scene;
+        let prepared=started.elapsed().as_secs_f64()*1000.;
         let result = self
             .native
             .present_if_changed(self.index as u32, vsync, &mut submitted, unchanged);
+        let submitted_at=started.elapsed().as_secs_f64()*1000.;
         if matches!(result, Ok(PresentOutcome::Unchanged)) {
             // No GPU read, consumer-fence signal, Present or statistics query
             // happened. Keep the previous receipt ledger; never synthesize one.
             self.image = None;
+            self.timing.record(stats.as_deref(),vsync,1,[finished,prepared-finished,submitted_at-prepared,0.],None);
             return Ok(());
         }
         self.deferred = matches!(result, Ok(PresentOutcome::Deferred));
+        let mut raw_times=None;
         if self.observing {
             if let Some(raw)=self.native.take_present_observation() {
+                if raw.qpc_frequency>0 && raw.present_after_qpc>=raw.present_before_qpc && raw.stats_query_after_qpc>=raw.last_count_query_before_qpc {
+                    let ms=1000./raw.qpc_frequency as f64;
+                    raw_times=Some([(raw.present_after_qpc-raw.present_before_qpc) as f64*ms,(raw.stats_query_after_qpc-raw.last_count_query_before_qpc) as f64*ms]);
+                }
                 let offered=self.image.as_ref().map(|image|(image.id,image.ready));
                 let frame=self.image.as_ref().and_then(|image|image.observation.as_ref());
                 if let Some(trace)=&self.trace {
@@ -448,6 +496,7 @@ impl Presenter for NativePresenter {
                 }
             }
         }
+        self.timing.record(stats.as_deref(),vsync,if result.is_err(){3}else if self.deferred{2}else{0},[finished,prepared-finished,submitted_at-prepared,started.elapsed().as_secs_f64()*1000.-submitted_at],raw_times);
         result.map(|_| ())
     }
     fn present_deferred(&self) -> bool { self.deferred }
