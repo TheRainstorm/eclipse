@@ -153,7 +153,12 @@ impl Select {
         ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = if self.compact { 24. } else { CONTROL_HEIGHT };
             let p = *palette(ui.visuals());
-            let result = self.combo.show_ui(ui, contents);
+            let result = self.combo.show_ui(ui, |ui| {
+                // Trigger width may intentionally be arrow-only. Popup items
+                // retain native intrinsic sizing independently of that width.
+                ui.set_min_width(ui.spacing().combo_width);
+                contents(ui)
+            });
             let response = &result.response;
             let open = egui::ComboBox::is_open(ui.ctx(), response.id);
             let ring = ui.ctx().animate_bool_with_time(
@@ -532,9 +537,16 @@ pub fn menu_control(
             ui.available_width() * 0.4,
             TextStyle::Small,
         );
+        // Native ComboBox deliberately uses Extend so an arrow-only trigger
+        // can grow its popup to its items. Fixed menus still truncate normally.
+        let extend = ui.wrap_mode() == egui::TextWrapMode::Extend;
         let text = label.into().into_galley(
             ui,
-            Some(egui::TextWrapMode::Truncate),
+            Some(if extend {
+                egui::TextWrapMode::Extend
+            } else {
+                egui::TextWrapMode::Truncate
+            }),
             (ui.available_width()
                 - inset * 2.
                 - gutter
@@ -543,10 +555,15 @@ pub fn menu_control(
             .max(1.),
             TextStyle::Button,
         );
-        let (rect, response) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), h.max(text.size().y + 8.)),
-            Sense::click(),
-        );
+        let intrinsic =
+            text.size().x + hint.size().x + inset * 2. + gutter + if arrow { 20. } else { 0. };
+        let width = if extend {
+            ui.available_width().max(intrinsic)
+        } else {
+            ui.available_width()
+        };
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(width, h.max(text.size().y + 8.)), Sense::click());
         response.widget_info(|| {
             WidgetInfo::selected(WidgetType::SelectableLabel, enabled, selected, text.text())
         });
@@ -854,5 +871,78 @@ mod tests {
         let value = serde_json::to_value(config).unwrap();
         assert_eq!(value["color_theme"], "light_blue");
         assert_eq!(value["fps"], 165);
+    }
+    #[test]
+    fn arrow_only_select_expands_items_and_clicks_the_visible_text() {
+        for color in COLOR_THEMES {
+            let ctx = egui::Context::default();
+            theme::apply_color_theme(&ctx, color);
+            let label = "Existing profile with its complete descriptive name";
+            let mut selected = 0u8;
+            let mut arrow = egui::Rect::NOTHING;
+            let mut row = egui::Rect::NOTHING;
+            let mut draw = |time, events| {
+                frame(&ctx, time, events, |ui| {
+                    arrow = Select::from_id_salt("arrow-only-select")
+                        .selected_text("")
+                        .width(28.)
+                        .show_ui(ui, |ui| {
+                            let response = selectable_value(ui, &mut selected, 1, label);
+                            row = response.rect;
+                        })
+                        .response
+                        .rect;
+                })
+            };
+            let _ = draw(0., vec![]);
+            drop(draw);
+            let at = arrow.center();
+            for (time, down) in [(0.1, true), (0.2, false)] {
+                let _ = frame(&ctx, time, pointer(at, down), |ui| {
+                    Select::from_id_salt("arrow-only-select")
+                        .selected_text("")
+                        .width(28.)
+                        .show_ui(ui, |ui| {
+                            row = selectable_value(ui, &mut selected, 1, label).rect;
+                        });
+                });
+            }
+            let output = frame(&ctx, 0.25, vec![], |ui| {
+                Select::from_id_salt("arrow-only-select")
+                    .selected_text("")
+                    .width(28.)
+                    .show_ui(ui, |ui| {
+                        row = selectable_value(ui, &mut selected, 1, label).rect;
+                    });
+            });
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == label => Some(t),
+                    _ => None,
+                })
+                .expect("visible popup item text");
+            let center = text.pos + text.galley.size() * 0.5;
+            assert!(
+                row.contains(center),
+                "{color:?} text outside item hit rectangle"
+            );
+            assert!(
+                row.width() > arrow.width() + 80.,
+                "popup must be independent of 28-point trigger"
+            );
+            for (time, down) in [(0.3, true), (0.4, false)] {
+                let _ = frame(&ctx, time, pointer(center, down), |ui| {
+                    Select::from_id_salt("arrow-only-select")
+                        .selected_text("")
+                        .width(28.)
+                        .show_ui(ui, |ui| {
+                            selectable_value(ui, &mut selected, 1, label);
+                        });
+                });
+            }
+            assert_eq!(selected, 1, "visible item click {color:?}");
+        }
     }
 }

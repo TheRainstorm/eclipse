@@ -421,7 +421,12 @@ impl Select {
     ) -> InnerResponse<Option<R>> {
         ui.scope(|ui| {
             form_style(ui, self.compact);
-            let result = self.combo.show_ui(ui, contents);
+            let result = self.combo.show_ui(ui, |ui| {
+                // A narrow arrow trigger is not the width of its menu. Keep
+                // native Extend sizing and a usable minimum for shared rows.
+                ui.set_min_width(ui.spacing().combo_width);
+                contents(ui)
+            });
             let response = &result.response;
             let p = *tokens::tokens(ui);
             let open = egui::ComboBox::is_open(ui.ctx(), response.id);
