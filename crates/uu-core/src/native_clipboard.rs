@@ -198,6 +198,7 @@ pub(crate) fn suspend(control: &Clipboard) {
     control.active.store(false, Ordering::Release);
     control.supported.store(false, Ordering::Release);
     control.images_supported.store(false, Ordering::Release);
+    control.clear_capability_status();
     clear_pending(control);
 }
 pub(crate) fn stop(control: &Clipboard) {
@@ -205,6 +206,7 @@ pub(crate) fn stop(control: &Clipboard) {
     control.active.store(false, Ordering::Release);
     control.supported.store(false, Ordering::Release);
     control.images_supported.store(false, Ordering::Release);
+    control.clear_capability_status();
     clear_pending(control);
 }
 struct Shared {
@@ -619,14 +621,14 @@ pub(crate) fn viewer(
                                 || previous_supported != enabled
                                 || empty_status)
                         {
-                            state.clipboard.status(if enabled {
+                            state.clipboard.capability_status(if enabled {
                                 if wire_version == 2 {
-                                    uu_i18n::text("文本和图片剪贴板已开启")
+                                    ""
                                 } else {
                                     uu_i18n::text("文本剪贴板已开启；对端版本暂不支持图片")
                                 }
                             } else if available {
-                                uu_i18n::text("同步已关闭，可在菜单或输入设置中开启")
+                                ""
                             } else {
                                 uu_i18n::text("主机未允许剪贴板同步")
                             });
@@ -750,6 +752,40 @@ pub(crate) fn viewer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capability_notices_retire_without_hiding_operation_errors() {
+        let control = Clipboard::default();
+        control.capability_status("text-only peer");
+        suspend(&control);
+        assert!(control.status.lock().unwrap().is_empty());
+        control.capability_status("peer denied");
+        control.capability_status("");
+        assert!(control.status.lock().unwrap().is_empty());
+        control.status("image copy failed");
+        control.capability_status("peer denied");
+        stop(&control);
+        assert_eq!(control.status.lock().unwrap().as_str(), "image copy failed");
+        control.status("image sent");
+        suspend(&control);
+        assert_eq!(control.status.lock().unwrap().as_str(), "image sent");
+    }
+
+    #[test]
+    fn racing_notice_retirement_never_clears_a_new_error() {
+        for _ in 0..24 {
+            let control = Arc::new(Clipboard::default());
+            control.capability_status("previous transport notice");
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            let writer = {let control=control.clone();let barrier=barrier.clone();std::thread::spawn(move || {barrier.wait();control.status("backend error");})};
+            let retiring = {let control=control.clone();let barrier=barrier.clone();std::thread::spawn(move || {barrier.wait();suspend(&control);})};
+            barrier.wait();writer.join().unwrap();retiring.join().unwrap();
+            assert_eq!(control.status.lock().unwrap().as_str(), "backend error");
+            // A late close from the retired transport also preserves the error.
+            stop(&control);
+            assert_eq!(control.status.lock().unwrap().as_str(), "backend error");
+        }
+    }
 
     async fn local_close_retires_owned_channel(host_closes: bool, have_backend: bool) {
         use crate::native_media::NativePeer;

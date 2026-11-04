@@ -26,13 +26,31 @@ pub struct Clipboard {
     pub last_sent: AtomicU64,
     pub sent: AtomicU64,
     pub received: AtomicU64,
+    /// Current user notice. Writers use `status` or `capability_status` so a
+    /// retiring capability notice cannot clear a newer operation/error.
     pub status: Mutex<String>,
+    status_availability: AtomicBool,
     /// Invalidates pending transport assemblies after local content/focus changes.
     pub reset_generation: AtomicU64,
 }
 impl Clipboard {
     pub fn status(&self, text: impl Into<String>) {
-        *self.status.lock().unwrap() = text.into();
+        let mut current = self.status.lock().unwrap();
+        *current = text.into();
+        self.status_availability.store(false, Ordering::Relaxed);
+    }
+    pub(crate) fn capability_status(&self, text: impl Into<String>) {
+        let mut current = self.status.lock().unwrap();
+        if current.is_empty() || self.status_availability.load(Ordering::Relaxed) {
+            *current = text.into();
+            self.status_availability.store(true, Ordering::Relaxed);
+        }
+    }
+    pub(crate) fn clear_capability_status(&self) {
+        let mut current = self.status.lock().unwrap();
+        if self.status_availability.swap(false, Ordering::Relaxed) {
+            current.clear();
+        }
     }
     pub fn ready(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
