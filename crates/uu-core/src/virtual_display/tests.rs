@@ -34,6 +34,12 @@ impl Drop for FakeClaim {
     }
 }
 impl Backend for Arc<Fake> {
+    fn recover_capacity(&self,checkpoint:&(dyn Fn()->preparation::Result<()>+Sync))->preparation::Result<()> {
+        checkpoint()?;
+        self.recover().map_err(|e|preparation::Failure::pending(e.to_string()))?;
+        if let Some(state)=self.capacity.lock().unwrap().as_mut(){state.recovery_pending=false;}
+        Ok(())
+    }
     fn recover(&self) -> Result<()> {
         self.recover_calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_recover.load(Ordering::SeqCst) {
@@ -67,10 +73,11 @@ impl Backend for Arc<Fake> {
     }
     fn inventory(&self) -> Result<Inventory> {
         self.inventory_calls.fetch_add(1, Ordering::SeqCst);
+        let targets=self.targets.lock().unwrap().clone();
         Ok(Inventory {
             supported: true,
-            driver_present: true,
-            targets: self.targets.lock().unwrap().clone(),
+            driver_present: !targets.is_empty() || self.capacity.lock().unwrap().as_ref().is_none_or(|state|state.driver_present),
+            targets,
         })
     }
     fn preparation_observation(&self) -> Result<Option<preparation::Observation>> {
@@ -935,5 +942,29 @@ fn durable_preparation_pending_blocks_create_before_any_recovery_or_slot_reuse()
     ));
     assert_eq!(backend.recover_calls.load(Ordering::SeqCst), 0);
     assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 0);
+    assert!(backend.claims.lock().unwrap().is_empty());
+}
+
+#[test]
+fn explicit_create_recovers_removed_driver_before_downloading_a_fresh_pool() {
+    let (manager,backend)=capacity_fixture(0);
+    {let mut capacity=backend.capacity.lock().unwrap();let state=capacity.as_mut().unwrap();state.driver_present=false;state.recovery_pending=true;}
+    assert_eq!(manager.preparation_status().unwrap().unwrap().phase,preparation::Phase::RecoveryPending);
+    assert_eq!(backend.recover_calls.load(Ordering::SeqCst),0,"status must not recover");
+    let display=manager.create(Owner::Manual,Spec::default()).unwrap();
+    assert!(display.active);
+    assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst),1);
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),1);
+    assert!(!backend.capacity.lock().unwrap().unwrap().recovery_pending);
+}
+
+#[test]
+fn removed_driver_recovery_failure_never_downloads_or_creates_a_replacement() {
+    let (manager,backend)=capacity_fixture(0);
+    {let mut capacity=backend.capacity.lock().unwrap();let state=capacity.as_mut().unwrap();state.driver_present=false;state.recovery_pending=true;}
+    backend.fail_recover.store(true,Ordering::SeqCst);
+    assert!(matches!(manager.create(Owner::Manual,Spec::default()),Err(Error::Preparation(_))));
+    assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst),0);
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),0);
     assert!(backend.claims.lock().unwrap().is_empty());
 }

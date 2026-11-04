@@ -23,6 +23,8 @@ mod capacity_config;
 #[cfg(any(windows, test))]
 mod capacity_policy;
 #[cfg(any(windows, test))]
+mod capacity_recovery;
+#[cfg(any(windows, test))]
 mod color_state;
 #[cfg(any(windows, test))]
 mod config_apply;
@@ -724,6 +726,15 @@ impl Manager {
         if self.preparation.recovery_pending()
             || preparation_before.is_some_and(|state| state.recovery_pending)
         {
+            // Create is an explicit host mutation. A removed driver may retire
+            // a bound interrupted first install before fresh preparation;
+            // inventory/status remain read-only and cannot reopen admission.
+            if preparation_before.is_some_and(|state|!state.driver_present)
+                && self.preparation_owner.load(Ordering::Acquire) && entries.is_empty() {
+                let provider=CapacityProvider{manager:self,leases:0,initial:initial_session,package:None};
+                self.preparation.recover(&provider,||self.backend.recover_capacity(&||preparation::Provider::host_idle(&provider)))
+                    .map_err(|failure|Error::Platform(failure.message))?;
+            }
             let status = self
                 .preparation
                 .inspect(&CapacityProvider {
@@ -733,14 +744,17 @@ impl Manager {
                     package: None,
                 })
                 .map_err(|failure| Error::Platform(failure.message))?;
-            return Err(Error::Preparation(status));
+            if status.phase==preparation::Phase::RecoveryPending {return Err(Error::Preparation(status));}
         }
         self.backend.recover()?;
         let capacity = self.backend.preparation_observation()?;
         // Reuse an already safe slot immediately, even during another stream.
         // Pool expansion is an independent idle-only intent, never a condition
         // for consuming existing capacity.
-        let mut selected = self.claim_available(&entries)?;
+        let mut selected = match self.claim_available(&entries) {
+            Err(Error::DriverMissing) if capacity.is_some()=>None,
+            result=>result?,
+        };
         if selected.is_some()
             && self.preparation_owner.load(Ordering::Acquire)
             && capacity.is_some_and(|observed| observed.driver_present)

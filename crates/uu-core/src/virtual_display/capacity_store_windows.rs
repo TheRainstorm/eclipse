@@ -289,6 +289,23 @@ pub(super) struct Journal {
     token: String,
 }
 impl Journal {
+    /// Reopen evidence only. The caller must prove the old device is gone and
+    /// bind every remaining resource before retiring this startup gate.
+    pub(super) fn reopen() -> Result<(Self, serde_json::Value, Vec<u8>)> {
+        let root=root_path()?;
+        private_root(&root)?;
+        let path=root.join("pending.json");
+        let last=read(&path)?;
+        let value:serde_json::Value=serde_json::from_slice(&last).map_err(|e|fail(e.to_string()))?;
+        let token=value["owner_token"].as_str().ok_or_else(||fail("capacity journal token missing"))?.to_owned();
+        if Uuid::parse_str(&token).map(|id|id.to_string()).ok().as_deref()!=Some(token.as_str()) {
+            return Err(fail("capacity journal token is not canonical"));
+        }
+        let backup=root.join(format!("{token}.original.xml"));
+        if value["backup"].as_str()!=backup.to_str(){return Err(fail("capacity backup binding changed"));}
+        let original=read(&backup)?;
+        Ok((Self{path,last,token},value,original))
+    }
     pub(super) fn create(original: &[u8], value: serde_json::Value) -> Result<Self> {
         let root = root()?;
         let token = Uuid::new_v4().to_string();

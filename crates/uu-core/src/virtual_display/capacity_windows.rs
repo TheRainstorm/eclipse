@@ -2,7 +2,7 @@
 //! changes require an adapter restart; they are never performed for a live
 //! lease, through the driver's pipe, or by making one Root device per stream.
 use super::*;
-use crate::virtual_display::{capacity_config, capacity_policy, preparation};
+use crate::virtual_display::{capacity_config, capacity_policy, capacity_recovery, preparation};
 use std::{
     os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
@@ -704,14 +704,66 @@ pub(in crate::virtual_display) fn recover(checkpoint: Checkpoint<'_>) -> prepara
         .lock()
         .map_err(|_| preparation::Failure::pending("capacity recovery state is poisoned"))?;
     if let Some(transaction) = state.as_mut() {
-        compensate(transaction, checkpoint)
+        let externally_removed=transaction.existing.is_none() && transaction.installed.is_some()
+            && crate::virtual_display::install_windows::no_existing_mtt_node().is_ok();
+        (if externally_removed {recover_uninstalled_first_install(checkpoint)} else {compensate(transaction, checkpoint)})
             .map_err(|e| preparation::Failure::pending(format!("{}; {e}", transaction.failure)))?;
         state.take();
     } else if store::pending_exists().map_err(unchanged)? {
-        return Err(preparation::Failure::pending("an interrupted capacity transaction has a durable journal; ownership was not inherited after process restart, so verified local recovery is required"));
+        recover_uninstalled_first_install(checkpoint).map_err(|e|preparation::Failure::pending(e.to_string()))?;
     }
     drop(state);
     recover_pending_only().map_err(unchanged)
+}
+
+fn recover_uninstalled_first_install(checkpoint:Checkpoint<'_>)->Result<()> {
+    let (mut journal,record,original)=store::Journal::reopen()?;
+    let binding=capacity_recovery::InterruptedInstall::from_record(&record)?;
+    let expected=crate::virtual_display::driver_package().files.iter().find(|f|f.name=="vdd_settings.xml")
+        .ok_or_else(||fail("pinned configuration missing"))?;
+    let original_sha=hex::encode(Sha256::digest(&original));
+    if original_sha!=binding.backup_sha256 || original_sha!=expected.sha256 {
+        return Err(fail("interrupted installation backup does not match its pinned evidence"));
+    }
+    let directory=PathBuf::from(&binding.directory);
+    let program_data=crate::service_admin::windows::Paths::discover().map_err(|e|fail(e.to_string()))?.root
+        .parent().ok_or_else(||fail("protected installation parent missing"))?.to_path_buf();
+    if directory.parent()!=Some(program_data.as_path()) || directory.file_name().and_then(|n|n.to_str())
+        .and_then(|name|name.strip_prefix("Eclipse-VirtualDisplay-")).and_then(|id|Uuid::parse_str(id).ok()).is_none() {
+        return Err(fail("interrupted installation directory is not a bound protected stage"));
+    }
+    let xml=capacity_config::expand(&original,binding.minimum)?.after;
+    match std::fs::symlink_metadata(&directory) {
+        Ok(_) => {
+            for file in &crate::virtual_display::driver_package().files {
+                let bytes=store::read(&directory.join(&file.name))?;
+                let exact=if file.name=="vdd_settings.xml"{bytes==xml}else{
+                    bytes.len()==file.bytes && hex::encode(Sha256::digest(&bytes))==file.sha256
+                };
+                if !exact {return Err(fail("old installation files changed; recovery retained its evidence"));}
+            }
+        }
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+        Err(error)=>return Err(fail(format!("cannot inspect old installation directory: {error}"))),
+    }
+    // External uninstall ends our device ownership. Prove fresh absence,
+    // including phantom nodes, without reconstructing or replaying old layouts.
+    let before=active_signature()?;
+    let saved=database()?;
+    if before.is_empty(){return Err(fail("recovery requires an active original display"));}
+    let started=Instant::now();
+    let mut stable=capacity_policy::StableReadback::default();
+    loop {
+        idle(checkpoint)?;
+        crate::virtual_display::install_windows::no_existing_mtt_node()?;
+        let exact=active_signature()?==before && database()?==saved;
+        if stable.observe(started.elapsed(),exact).map_err(|_|fail("display state changed during uninstall recovery"))? {break;}
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    crate::virtual_display::install_windows::retire_uninstalled_configuration(&directory)?;
+    idle(checkpoint)?;
+    if active_signature()?!=before || database()?!=saved {return Err(fail("display state changed while retiring uninstalled configuration"));}
+    journal.complete("external_uninstall_verified")
 }
 
 pub(in crate::virtual_display) fn prepare(

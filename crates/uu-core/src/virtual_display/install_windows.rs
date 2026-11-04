@@ -222,7 +222,7 @@ impl Drop for DevInfoSet {
         }
     }
 }
-fn no_existing_mtt_node() -> Result<()> {
+pub(super) fn no_existing_mtt_node() -> Result<()> {
     // Include phantom nodes: installation is not an implicit repair/upgrade of
     // a previous installation, even if its monitor is currently disconnected.
     let handle = unsafe { SetupDiGetClassDevsW(&DISPLAY_CLASS, null(), null_mut(), 0) };
@@ -296,6 +296,21 @@ struct Configuration {
     key: HKEY,
     value: Vec<u16>,
     keep: bool,
+}
+/// An explicit recovery after uninstall may retire only the exact old registry
+/// value. No device is removed and the old installation files remain evidence.
+pub(super) fn retire_uninstalled_configuration(directory:&Path) -> Result<()> {
+    no_existing_mtt_node()?; // includes phantom devices; absence is not disabled
+    if configuration_absent()? {return Ok(());}
+    let mut key=null_mut();
+    let code=unsafe{RegOpenKeyExW(HKEY_LOCAL_MACHINE,wide(CONFIG_KEY).as_ptr(),0,
+        KEY_QUERY_VALUE|KEY_SET_VALUE|KEY_WOW64_64KEY,&mut key)};
+    if code!=0{return Err(os_error("open uninstalled driver configuration",code));}
+    let mut configuration=Configuration{key,value:path_wide(directory),keep:true};
+    // rollback compares the complete current REG_SZ on this same handle.
+    configuration.rollback()?;
+    if !configuration_absent()? {return Err(Error::Platform("uninstalled driver configuration remains".into()));}
+    no_existing_mtt_node()
 }
 impl Configuration {
     fn create(directory: &Path) -> Result<Self> {
