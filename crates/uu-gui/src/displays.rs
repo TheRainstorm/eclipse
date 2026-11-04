@@ -116,6 +116,9 @@ impl Displays {
     pub fn ready(&self) -> bool {
         !self.awaiting_virtual && !self.blocked && self.pending.is_none()
     }
+    fn confirmed_refresh(&self, screens:&RemoteScreens)->Option<u32> {
+        self.ready().then(||self.selected.and_then(|id|screens.screens.iter().find(|s|s.id==id)).map(|s|s.refresh_hz)).flatten()
+    }
     pub fn switching(&self) -> bool {
         self.pending.is_some()
     }
@@ -459,6 +462,18 @@ impl super::App {
     }
     pub(super) fn poll_displays(&mut self, tracks: &[u32]) {
         self.poll_native_displays(tracks);
+        if self.resolve_remote_frame_rate() {self.send_capture_settings();}
+    }
+    /// Resolve only the confirmed source. A pending switch must not change the
+    /// old capture's quality using metadata for a different monitor.
+    pub(super) fn resolve_remote_frame_rate(&mut self)->bool {
+        if !self.preferences.follow_remote_fps || !self.displays.ready() {return false;}
+        let screens=self.remote_screens();
+        let refresh=self.displays.confirmed_refresh(&screens);
+        let fps=self.preferences.resolved_fps(refresh,self.client_support.max_fps);
+        let changed=self.target_fps!=fps;
+        self.target_fps=fps;self.fps_draft=fps;self.preferences.fps=fps;
+        changed
     }
 }
 
@@ -476,6 +491,24 @@ mod tests {
         let mut displays=Displays::default();
         displays.set_initial_display(super::super::sessions::DisplayTarget{id,source:source.into()});
         displays
+    }
+    #[test]
+    fn remote_frame_rate_follows_only_the_confirmed_display() {
+        let mut screens=catalog(0);
+        screens.screens[0].refresh_hz=144;screens.screens[1].refresh_hz=240;
+        let mut displays=explicit(0,"Source 0");
+        assert_eq!(displays.restore_selection(&screens,true,true),None);
+        displays.confirm_initial_current(&screens,true,true,true);
+        assert_eq!(displays.confirmed_refresh(&screens),Some(144));
+        let request=displays.begin(1,0,Instant::now());
+        assert_eq!(displays.confirmed_refresh(&screens),None);
+        displays.response(request,11,0);
+        assert_eq!(displays.confirmed_refresh(&screens),None);
+        displays.frame(0);
+        assert_eq!(displays.confirmed_refresh(&screens),Some(240));
+        screens.screens.retain(|s|s.id==0);
+        displays.reconcile_fixed_source(&screens);
+        assert_eq!(displays.confirmed_refresh(&screens),None);
     }
     #[test]
     fn fixed_view_reconnect_and_foreign_catalog_keep_the_same_source_and_frame_gate() {

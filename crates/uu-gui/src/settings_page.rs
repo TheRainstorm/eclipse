@@ -112,11 +112,17 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
             .spacing([24.0, 14.0])
             .show(ui, |ui| {
                 ui.label(uu_i18n::text("目标帧率"));
-                crate::theme::Select::from_id_salt("settings-frame-rate").selected_text(format!("{} FPS",s.fps)).show_ui(ui,|ui| {
-                    for fps in [30,60,120,165].into_iter().filter(|fps|*fps<=state.max_fps) {crate::theme::selectable_value(ui,&mut s.fps,fps,format!("{fps} FPS"));}
+                crate::theme::Select::from_id_salt("settings-frame-rate").selected_text(if s.follow_remote_fps {uu_i18n::text("保持远端帧率").to_owned()}else{format!("{} FPS",s.fps)}).show_ui(ui,|ui| {
+                    if crate::theme::selectable_label(ui,s.follow_remote_fps,uu_i18n::text("保持远端帧率")).clicked(){s.follow_remote_fps=true;}
+                    for fps in [30,60,120,165].into_iter().filter(|fps|*fps<=state.max_fps) {
+                        if crate::theme::selectable_label(ui,!s.follow_remote_fps&&s.fps==fps,format!("{fps} FPS")).clicked(){s.fps=fps;s.follow_remote_fps=false;}
+                    }
                     ui.menu_button(uu_i18n::text("其它帧数"),|ui| {
-                        for fps in [24,90,120,144].into_iter().filter(|fps|*fps<=state.max_fps) {crate::theme::selectable_value(ui,&mut s.fps,fps,format!("{fps} FPS"));}
-                        ui.separator();ui.label(uu_i18n::text("自定义帧数"));crate::theme::number_input(ui,egui::DragValue::new(&mut s.fps).range(5..=state.max_fps.clamp(5,240)).suffix(" FPS"));
+                        for fps in [24,90,120,144].into_iter().filter(|fps|*fps<=state.max_fps) {
+                            if crate::theme::selectable_label(ui,!s.follow_remote_fps&&s.fps==fps,format!("{fps} FPS")).clicked(){s.fps=fps;s.follow_remote_fps=false;}
+                        }
+                        ui.separator();ui.label(uu_i18n::text("自定义帧数"));
+                        if crate::theme::number_input(ui,egui::DragValue::new(&mut s.fps).range(5..=state.max_fps.clamp(5,240)).suffix(" FPS")).changed(){s.follow_remote_fps=false;}
                     });
                 });
                 ui.end_row();

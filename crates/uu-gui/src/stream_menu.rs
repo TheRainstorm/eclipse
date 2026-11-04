@@ -567,13 +567,16 @@ impl super::App {
         let response=menu_row(ui,uu_i18n::text("分辨率"),None,false,true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::Resolution,response.rect));}
         separator(ui);
+        let response=menu_row(ui,uu_i18n::text("保持远端帧率"),None,self.preferences.follow_remote_fps,false,"",false);
+        if response.hovered(){self.stream_menu.quality_detail=None;}
+        if response.clicked(){self.preferences.follow_remote_fps=true;self.confirm_quality(ui);}
         let max_fps=self.client_support.max_fps;
         for fps in [30,60,120,165].into_iter().filter(move|fps|*fps<=max_fps) {
-            let response=menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,self.target_fps==fps,false,"",false);
+            let response=menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,!self.preferences.follow_remote_fps&&self.target_fps==fps,false,"",false);
             if response.hovered(){self.stream_menu.quality_detail=None;}
-            if response.clicked(){self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);}
+            if response.clicked(){self.preferences.follow_remote_fps=false;self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);}
         }
-        let response=menu_row(ui,uu_i18n::text("其它帧数"),None,![30,60,120,165].contains(&self.target_fps),true,"",false);
+        let response=menu_row(ui,uu_i18n::text("其它帧数"),None,!self.preferences.follow_remote_fps&&![30,60,120,165].contains(&self.target_fps),true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::FrameRate,response.rect));}
         separator(ui);
         let response=menu_toggle(ui,uu_i18n::text("垂直同步"),self.preferences.vsync,&self.preferences.hotkeys.label(super::shortcuts::Action::Vsync));
@@ -713,8 +716,8 @@ impl super::App {
                             QualityDetail::FrameRate => {
                                 let max_fps=self.client_support.max_fps;
                                 for fps in [24,90,120,144].into_iter().filter(move|fps|*fps<=max_fps) {
-                                    if menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,self.target_fps==fps,false,"",false).clicked() {
-                                        self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);
+                                    if menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,!self.preferences.follow_remote_fps&&self.target_fps==fps,false,"",false).clicked() {
+                                        self.preferences.follow_remote_fps=false;self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);
                                     }
                                 }
                                 separator(ui);
@@ -731,6 +734,7 @@ impl super::App {
                                 ui.add_space(5.0);
                                 separator(ui);
                                 if menu_row(ui, uu_i18n::text("确认"), None, false, false, "", false).clicked() {
+                                    self.preferences.follow_remote_fps=false;
                                     self.target_fps = self.fps_draft.clamp(5,self.client_support.max_fps.clamp(5,240));
                                     self.confirm_quality(ui);
                                 }

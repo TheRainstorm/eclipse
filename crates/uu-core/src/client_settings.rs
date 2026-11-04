@@ -62,6 +62,9 @@ impl HudAppearance {
 #[serde(default)]
 pub struct ClientSettings {
     pub fps: u32,
+    /// Follow the confirmed remote monitor's refresh rate. `fps` remains the
+    /// last valid rate until a catalog arrives; zero is never a wire sentinel.
+    pub follow_remote_fps: bool,
     // Legacy profile field: do not carry an obsolete exclusive-layout request
     // into a new connection after the control has been retired.
     #[serde(skip_serializing, deserialize_with="preserve_display_layout")]
@@ -99,7 +102,7 @@ fn preserve_display_layout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<cra
 }
 impl Default for ClientSettings {
     fn default() -> Self {
-        Self { fps:60, display_mode:crate::screen_control::DisplayMode::Preserve,
+        Self { fps:60, follow_remote_fps:false, display_mode:crate::screen_control::DisplayMode::Preserve,
             bitrate:5,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,rate_control:None,
             volume:100,muted:false,hud:false,hud_appearance:HudAppearance::default(),hotkeys:crate::hotkeys::Bindings::default(),capture_keyboard:true,
             vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
@@ -107,6 +110,10 @@ impl Default for ClientSettings {
     }
 }
 impl ClientSettings {
+    pub fn resolved_fps(&self, remote_refresh:Option<u32>, max_fps:u32)->u32 {
+        let fps=if self.follow_remote_fps {remote_refresh.filter(|fps|*fps>=5).unwrap_or(self.fps)}else{self.fps};
+        fps.clamp(5,max_fps.clamp(5,240))
+    }
     pub fn validate(&self) -> Result<()> {
         self.hotkeys.validate()?;
         self.hud_appearance.validate()?;
@@ -190,6 +197,19 @@ mod clipboard_tests {
 #[cfg(test)]
 mod bitrate_tests {
     use super::*;
+    #[test]
+    fn remote_frame_rate_keeps_valid_fallback_and_obeys_protocol_limits() {
+        let mut settings=ClientSettings::default();
+        settings.fps=120;
+        assert_eq!(settings.resolved_fps(Some(165),240),120);
+        settings.follow_remote_fps=true;
+        for (refresh,max,expected) in [(Some(165),240,165),(Some(240),144,144),(Some(1),240,120),(Some(0),240,120),(None,240,120),(Some(360),240,240)] {
+            assert_eq!(settings.resolved_fps(refresh,max),expected);
+        }
+        let restored:ClientSettings=serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert!(restored.follow_remote_fps);
+        restored.native_request().validate().unwrap();
+    }
     #[test]
     fn retired_exclusive_layout_is_migrated_without_reissuing_it() {
         let settings:ClientSettings=serde_json::from_str(r#"{"display_mode":"exclusive_virtual"}"#).unwrap();

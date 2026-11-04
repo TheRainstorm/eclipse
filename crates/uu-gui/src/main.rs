@@ -587,6 +587,7 @@ impl App {
         }
     }
     fn send_capture_settings_through(&mut self,immediate:bool) {
+        self.resolve_remote_frame_rate();
         if self.stream_target.is_some() {
             if self.disconnecting {return;}
             let request=self.preferences.native_request();

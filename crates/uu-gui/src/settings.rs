@@ -148,8 +148,8 @@ impl Settings {
         }
         Ok(())
     }
-    fn capture_values(&self)->(u32,usize,u32,usize,bool,CodecPreference,bool,bool) {
-        (self.fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.cursor_mode.remote(),self.codec,self.hevc_preferred(),self.hdr)
+    fn capture_values(&self)->(u32,bool,usize,u32,usize,bool,CodecPreference,bool,bool) {
+        (self.fps,self.follow_remote_fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.cursor_mode.remote(),self.codec,self.hevc_preferred(),self.hdr)
     }
     pub fn path() -> Option<PathBuf> {
         uu_core::Config::from_env()
