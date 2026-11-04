@@ -294,10 +294,10 @@ fn stream(ui:&mut egui::Ui,s:&mut Settings) {
         );
         ui.add_space(8.0);
         theme::switch(ui,&mut s.hud, uu_i18n::text("启用 HUD"));
-        ui.add(egui::Slider::new(&mut s.hud_appearance.vertical_position,0.0..=1.0).step_by(0.001).text(uu_i18n::text("HUD垂直位置")));
+        crate::theme::slider(ui,egui::Slider::new(&mut s.hud_appearance.vertical_position,0.0..=1.0).step_by(0.001).text(uu_i18n::text("HUD垂直位置")));
         note(ui,uu_i18n::text("0为画面顶部，1为底部；默认在1080高度下距顶部约36点，HUD始终保持在画面内。"));
-        ui.add(egui::Slider::new(&mut s.hud_appearance.opacity,0.0..=1.0).step_by(0.01).text(uu_i18n::text("HUD背景不透明度")));
-        ui.add(egui::Slider::new(&mut s.hud_appearance.diagnostic_opacity,0.0..=1.0).step_by(0.01).text(uu_i18n::text("诊断背景不透明度")));
+        crate::theme::slider(ui,egui::Slider::new(&mut s.hud_appearance.opacity,0.0..=1.0).step_by(0.01).text(uu_i18n::text("HUD背景不透明度")));
+        crate::theme::slider(ui,egui::Slider::new(&mut s.hud_appearance.diagnostic_opacity,0.0..=1.0).step_by(0.01).text(uu_i18n::text("诊断背景不透明度")));
         if ui.add(crate::theme::secondary_button(uu_i18n::text("恢复HUD外观默认值")).small()).clicked(){s.hud_appearance=Default::default();}
         note(
             ui,

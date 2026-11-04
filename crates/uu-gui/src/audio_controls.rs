@@ -32,7 +32,7 @@ pub(super) fn volume_slider(ui: &mut eframe::egui::Ui, volume: &mut u32) -> bool
         ui.visuals_mut().widgets.active.weak_bg_fill=palette.pressed;
         ui.visuals_mut().widgets.active.bg_stroke=egui::Stroke::new(1.5,palette.accent);
         ui.visuals_mut().widgets.active.fg_stroke=egui::Stroke::new(1.5,palette.accent);
-        ui.add(egui::Slider::new(volume,0..=100).show_value(false).trailing_fill(true));
+        crate::theme::slider(ui,egui::Slider::new(volume,0..=100).show_value(false).trailing_fill(true));
     });
     before != *volume
 }

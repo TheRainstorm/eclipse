@@ -52,7 +52,7 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
         if matches!(s.encoding,Encoding::Auto|Encoding::Hardware|Encoding::Intel) {
             egui::CollapsingHeader::new("Intel QSV").id_salt("intel-tuning").show(ui,|ui| {
                 use uu_core::device_book::LowPower;
-                ui.add(egui::Slider::new(&mut tuning.intel_target_usage,1..=7).text(uu_i18n::text("Target Usage · 1 画质 / 7 速度")));
+                crate::theme::slider(ui,egui::Slider::new(&mut tuning.intel_target_usage,1..=7).text(uu_i18n::text("Target Usage · 1 画质 / 7 速度")));
                 ui.horizontal(|ui| {
                     ui.label(uu_i18n::text("低功耗引擎"));
                     for (value,label) in [(LowPower::Auto,uu_i18n::text("自动")),(LowPower::On,uu_i18n::text("启用")),(LowPower::Off,uu_i18n::text("停用"))] {
@@ -69,7 +69,7 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
                     tuning.nvidia_quality_vs_speed=custom.then_some(0);
                 }
                 if let Some(value)=&mut tuning.nvidia_quality_vs_speed {
-                    ui.add(egui::Slider::new(value,0..=100).text(uu_i18n::text("0 速度 / 100 画质")));
+                    crate::theme::slider(ui,egui::Slider::new(value,0..=100).text(uu_i18n::text("0 速度 / 100 画质")));
                 }
                 ui.weak(uu_i18n::text("通过显卡驱动的 Media Foundation 接口设置；驱动须支持并回报该值。"));
             });

@@ -200,6 +200,16 @@ pub fn number_input(ui: &mut Ui, value: egui::DragValue<'_>) -> Response {
     .inner
 }
 
+/// egui uses inactive widget rounding to extend the trailing rail fill. A
+/// page's pill radius must never extend that fill beyond the slider handle.
+pub fn slider(ui:&mut Ui,value:egui::Slider<'_>)->Response {
+    ui.scope(|ui|{
+        let radius=(ui.spacing().slider_rail_height*0.5).max(0.);
+        ui.visuals_mut().widgets.inactive.rounding=egui::Rounding::same(radius);
+        ui.add(value)
+    }).inner
+}
+
 fn simple_switch(
     ui: &mut Ui,
     value: &mut bool,
@@ -672,6 +682,32 @@ pub fn selectable_value<T: PartialEq>(
 mod tests {
     use super::*;
     use crate::theme::{self, ButtonKind, ColorTheme, COLOR_THEMES};
+    #[test]
+    fn trailing_slider_fill_stays_inside_the_widget_for_every_theme_and_endpoint() {
+        for color in COLOR_THEMES {
+            for mode in [egui::ThemePreference::Light,egui::ThemePreference::Dark] {
+                for mut value in [0.,72.,100.] {
+                    let ctx=egui::Context::default();ctx.set_theme(mode);theme::apply_color_theme(&ctx,color);
+                    let mut bounds=None;
+                    let output=ctx.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(300.,100.))),..Default::default()},|ctx|{
+                        egui::CentralPanel::default().show(ctx,|ui|{
+                            ui.spacing_mut().slider_width=140.;ui.spacing_mut().slider_rail_height=4.;
+                            bounds=Some(slider(ui,egui::Slider::new(&mut value,0.0..=100.0).show_value(false).trailing_fill(true)).rect);
+                        });
+                    });
+                    let bounds=bounds.unwrap();let mut rails=0;
+                    for shape in &output.shapes {
+                        if let egui::Shape::Rect(rect)=&shape.shape {
+                            if rect.rect.height()<=4.01&&rect.rect.width()>4. {
+                                rails+=1;assert!(bounds.expand(0.1).contains_rect(rect.rect),"{color:?} {mode:?} at {value}: {:?} outside {bounds:?}",rect.rect);
+                            }
+                        }
+                    }
+                    assert!(rails>0);
+                }
+            }
+        }
+    }
     fn frame(
         ctx: &egui::Context,
         time: f64,
