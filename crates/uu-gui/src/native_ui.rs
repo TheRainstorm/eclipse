@@ -131,21 +131,21 @@ impl App {
             .default_width(440.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                if ui.button(uu_i18n::text("共享此设备 →")).clicked(){ share = true; }
+                if ui.add(crate::theme::secondary_button(uu_i18n::text("共享此设备 →"))).clicked(){ share = true; }
                 ui.add_space(8.0);
                 ui.label(uu_i18n::text("使用主机生成的邀请，不需要登录账号。"));
                 ui.add_space(10.0);
                 ui.label(uu_i18n::text("将邀请文件拖入窗口，或填写文件路径："));
                 let edited = ui.add_sized(
                     [420.0, 30.0],
-                    egui::TextEdit::singleline(&mut self.native_ui.path)
+                    crate::theme::Input::new(&mut self.native_ui.path)
                         .hint_text("session.eclipse-invite.json"),
                 );
                 if edited.changed() {
                     self.native_ui.notice.clear();
                 }
                 ui.add_space(8.0);
-                ui.checkbox(&mut self.native_ui.request_control,uu_i18n::text("请求输入控制（需主机允许）"));
+                crate::theme::switch(ui,&mut self.native_ui.request_control,uu_i18n::text("请求输入控制（需主机允许）"));
                 ui.weak(uu_i18n::text("未获主机许可时仅观看；画质由主机设置。"));
                 if !self.native_ui.notice.is_empty() {
                     ui.colored_label(super::theme::palette(ui.visuals()).danger, &self.native_ui.notice);

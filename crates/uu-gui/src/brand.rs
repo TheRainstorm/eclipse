@@ -91,7 +91,7 @@ impl super::App {
         ui.collapsing(uu_i18n::text("诊断信息"), |ui| {
             ui.label(uu_i18n::text("程序路径"));
             ui.add(egui::Label::new(&self.executable_path).wrap());
-            if ui.button(uu_i18n::text("复制版本与诊断信息")).clicked() {
+            if ui.add(crate::theme::secondary_button(uu_i18n::text("复制版本与诊断信息"))).clicked() {
                 ui.output_mut(|output| output.copied_text = uu_i18n::format!(
                     "{NAME} {}\n构建：{}\n平台：{} / {}\n{REPOSITORY}",
                     env!("CARGO_PKG_VERSION"), self.build_label,

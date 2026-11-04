@@ -1080,16 +1080,16 @@ impl Workspace {
         let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
         blank.context_menu(|ui| {
             if let Some((width,height))=info.wallpaper_size {ui.label(uu_i18n::format!("原图：{} × {} 像素",width,height));ui.separator();}
-            if ui.add_enabled(info.wallpaper_ready,egui::Button::new(uu_i18n::text("收藏当前壁纸"))).clicked(){actions.push(Action::FavoriteWallpaper);ui.close_menu();}
-            if ui.add_enabled(info.wallpaper_download_ready,egui::Button::new(uu_i18n::text("下载壁纸"))).clicked(){actions.push(Action::DownloadWallpaper);ui.close_menu();}
-            if ui.add_enabled(info.wallpaper_enabled,egui::Button::new(uu_i18n::text("刷新壁纸"))).clicked(){actions.push(Action::RefreshWallpaper);ui.close_menu();}
+            if ui.add_enabled(info.wallpaper_ready,crate::theme::secondary_button(uu_i18n::text("收藏当前壁纸"))).clicked(){actions.push(Action::FavoriteWallpaper);ui.close_menu();}
+            if ui.add_enabled(info.wallpaper_download_ready,crate::theme::secondary_button(uu_i18n::text("下载壁纸"))).clicked(){actions.push(Action::DownloadWallpaper);ui.close_menu();}
+            if ui.add_enabled(info.wallpaper_enabled,crate::theme::secondary_button(uu_i18n::text("刷新壁纸"))).clicked(){actions.push(Action::RefreshWallpaper);ui.close_menu();}
             ui.separator();
-            if ui.button(uu_i18n::text("本机串流测试")).on_hover_text(uu_i18n::text("只读采集本机画面，通过本机回环完成编解码和显示；无需开启共享服务。")).clicked(){actions.push(Action::SelfStream);ui.close_menu();}
-            if ui.button(uu_i18n::text("添加设备")).clicked(){self.new_device(None,None);ui.close_menu();}
+            if ui.add(crate::theme::secondary_button(uu_i18n::text("本机串流测试"))).on_hover_text(uu_i18n::text("只读采集本机画面，通过本机回环完成编解码和显示；无需开启共享服务。")).clicked(){actions.push(Action::SelfStream);ui.close_menu();}
+            if ui.add(crate::theme::secondary_button(uu_i18n::text("添加设备"))).clicked(){self.new_device(None,None);ui.close_menu();}
             if !info.nearby.is_empty() {
                 ui.menu_button(uu_i18n::text("添加附近设备"),|ui| {
                     for (name,address) in &info.nearby {
-                        if ui.button(name).on_hover_text(address).clicked() {
+                        if ui.add(crate::theme::secondary_button(name)).on_hover_text(address).clicked() {
                             if let Some(store)=&self.store {
                                 let result=store.save_device(Profile::new(name,Destination::Ip {address:address.clone(),legacy_device:None}));
                                 if let Err(error)=result {
@@ -1137,7 +1137,7 @@ impl Workspace {
                     if !info.nearby.is_empty() {
                         ui.menu_button(uu_i18n::text("选择附近电脑"), |ui| {
                             for (name, address) in &info.nearby {
-                                if ui.button(name).clicked() {
+                                if ui.add(crate::theme::secondary_button(name)).clicked() {
                                     self.new_device(None, None);
                                     if let Some(editor) = &mut self.editor {
                                         editor.name = name.clone();
@@ -1185,11 +1185,11 @@ impl Workspace {
             if response.clicked(){actions.push(Action::Open(profile.id.clone()));}
             response.context_menu(|ui| {
                 ui.set_min_width(170.);
-                if ui.button(uu_i18n::text("刷新在线状态")).clicked(){self.presence.refresh();ui.close_menu();}
-                if ui.button(uu_i18n::text("详情")).clicked(){self.route.device=DeviceView::Details(profile.id.clone());ui.close_menu();}
+                if ui.add(crate::theme::secondary_button(uu_i18n::text("刷新在线状态"))).clicked(){self.presence.refresh();ui.close_menu();}
+                if ui.add(crate::theme::secondary_button(uu_i18n::text("详情"))).clicked(){self.route.device=DeviceView::Details(profile.id.clone());ui.close_menu();}
                 ui.menu_button(uu_i18n::text("连接方式"),|ui| {
                     for route in &profile.routes {
-                        if ui.selectable_label(profile.selected_route==route.id,format!("{} · {}",route.destination.label(),route.destination.target())).clicked() {
+                        if crate::theme::selectable_label(ui,profile.selected_route==route.id,format!("{} · {}",route.destination.label(),route.destination.target())).clicked() {
                             let mut updated=profile.clone();updated.selected_route=route.id.clone();
                             if let Some(store)=&self.store {if let Err(e)=store.save_device(updated){
                                 let scope=self.device_scope();
@@ -1201,7 +1201,7 @@ impl Workspace {
                 });
                 ui.menu_button(uu_i18n::text("配置选择"),|ui| {
                     for (id,name) in std::iter::once((None,uu_i18n::text("默认配置"))).chain(profile.client_configs.iter().map(|v|(Some(v.id.clone()),v.name.as_str()))) {
-                        if ui.selectable_label(profile.selected_client==id,name).clicked() {
+                        if crate::theme::selectable_label(ui,profile.selected_client==id,name).clicked() {
                             if let Some(store)=&self.store {if let Err(e)=store.select_client_config(&profile.id,id){
                                 let scope=self.device_scope();
                                 self.feedback.error(scope,uu_i18n::format!("无法选择配置：{e:#}"));
@@ -1210,7 +1210,7 @@ impl Workspace {
                         }
                     }
                 });
-                if ui.button(uu_i18n::text("配置编辑")).clicked(){
+                if ui.add(crate::theme::secondary_button(uu_i18n::text("配置编辑"))).clicked(){
                     let selected=profile.client_configs.iter().find(|v|Some(&v.id)==profile.selected_client.as_ref()).cloned();
                     self.edit_client_config(profile,selected,false);ui.close_menu();
                 }
@@ -1221,8 +1221,8 @@ impl Workspace {
                 let mut selected=profile.selected_route.clone();
                 ui.horizontal(|ui| {
                     ui.label(uu_i18n::text("连接方式"));
-                    egui::ComboBox::from_id_salt("device-route").selected_text(profile.route().map(|r|r.destination.label()).unwrap_or(uu_i18n::text("请选择"))).width(150.).show_ui(ui,|ui| {
-                        for route in &profile.routes {ui.selectable_value(&mut selected,route.id.clone(),format!("{} · {}",route.destination.label(),route.destination.target()));}
+                    crate::theme::Select::from_id_salt("device-route").selected_text(profile.route().map(|r|r.destination.label()).unwrap_or(uu_i18n::text("请选择"))).width(150.).show_ui(ui,|ui| {
+                        for route in &profile.routes {crate::theme::selectable_value(ui,&mut selected,route.id.clone(),format!("{} · {}",route.destination.label(),route.destination.target()));}
                     });
                 });
                 if selected!=profile.selected_route {
@@ -1257,6 +1257,10 @@ impl Workspace {
             );
         }
     }
+    #[cfg(test)]
+    pub(super) fn open_generated_preview_editor(&mut self,profile:&Profile) {
+        self.edit_client_config(profile,profile.client_configs.first().cloned(),false);
+    }
     fn edit_client_config(&mut self,profile:&Profile, value:Option<uu_core::client_settings::NamedClientSettings>, duplicate:bool) {
         let loaded=value.as_ref().filter(|_|!duplicate).map(|v|(v.id.clone(),v.name.clone()));
         let mut value=value.unwrap_or_else(||uu_core::client_settings::NamedClientSettings::new(uu_i18n::text("新配置"),self.client_defaults.clone()));
@@ -1278,9 +1282,9 @@ impl Workspace {
             ui.label(uu_i18n::text("客户端配置"));
             let mut selected=profile.selected_client.clone();
             let title=profile.client_configs.iter().find(|v|Some(&v.id)==selected.as_ref()).map(|v|v.name.as_str()).unwrap_or(uu_i18n::text("默认配置"));
-            egui::ComboBox::from_id_salt(("client-config",&profile.id)).selected_text(title).width(160.).show_ui(ui,|ui| {
-                ui.selectable_value(&mut selected,None,uu_i18n::text("默认配置"));
-                for value in &profile.client_configs {ui.selectable_value(&mut selected,Some(value.id.clone()),&value.name);}
+            crate::theme::Select::from_id_salt(("client-config",&profile.id)).selected_text(title).width(160.).show_ui(ui,|ui| {
+                crate::theme::selectable_value(ui,&mut selected,None,uu_i18n::text("默认配置"));
+                for value in &profile.client_configs {crate::theme::selectable_value(ui,&mut selected,Some(value.id.clone()),&value.name);}
             });
             if selected!=profile.selected_client {
                 if let Some(store)=&self.store {
@@ -1293,12 +1297,12 @@ impl Workspace {
                     }
                 }
             }
-            if ui.small_button(uu_i18n::text("配置…")).clicked() {
+            if ui.add(crate::theme::secondary_button(uu_i18n::text("配置…")).small()).clicked() {
                 let value=profile.client_configs.iter().find(|v|Some(&v.id)==profile.selected_client.as_ref()).cloned();
                 self.edit_client_config(profile,value,false);
             }
-            if matches!(self.route.device, DeviceView::Details(_)) && ui.small_button(uu_i18n::text("新建")).clicked(){self.edit_client_config(profile,None,false);}
-            if ui.small_button(uu_i18n::text("编辑全局默认")).clicked(){self.edit_global_client_config();}
+            if matches!(self.route.device, DeviceView::Details(_)) && ui.add(crate::theme::secondary_button(uu_i18n::text("新建")).small()).clicked(){self.edit_client_config(profile,None,false);}
+            if ui.add(crate::theme::secondary_button(uu_i18n::text("编辑全局默认")).small()).clicked(){self.edit_global_client_config();}
         });
     }
     fn device_details(&mut self, ui: &mut egui::Ui, id: &str, actions: &mut Vec<Action>) {
@@ -1325,7 +1329,7 @@ impl Workspace {
                     ui.add_space(4.0);
                     muted(ui, last_connection(profile.last_connected));
                     let mut pinned=profile.preview.as_ref().is_some_and(|p|p.pinned);
-                    if ui.add_enabled(profile.preview.is_some(),egui::Checkbox::new(&mut pinned,uu_i18n::text("固定当前截图"))).on_hover_text(uu_i18n::text("固定后保留这张截图；取消固定后，下次串流结束时自动更新")).changed() {
+                    if ui.add_enabled_ui(profile.preview.is_some(),|ui|crate::theme::switch(ui,&mut pinned,uu_i18n::text("固定当前截图"))).inner.on_hover_text(uu_i18n::text("固定后保留这张截图；取消固定后，下次串流结束时自动更新")).changed() {
                         if let (Some(store),Some(preview))=(&self.store,&profile.preview) {
                             if let Err(error)=store.pin_preview(&profile.id,&preview.id,pinned) {
                                 self.feedback.error(super::ui_feedback::Scope::DeviceDetails(id.to_owned()),uu_i18n::format!("无法保存截图设置：{error:#}"));
@@ -1356,7 +1360,7 @@ impl Workspace {
                     ui.label(RichText::new(uu_i18n::text("已完成配对")).color(theme::palette(ui.visuals()).success));
                     muted(ui,uu_i18n::text("设备公钥指纹"));
                     ui.monospace(peer);
-                    if ui.small_button(uu_i18n::text("复制指纹")).clicked() {
+                    if ui.add(crate::theme::secondary_button(uu_i18n::text("复制指纹")).small()).clicked() {
                         ui.ctx().copy_text(peer.clone());
                     }
                 } else {
@@ -1366,7 +1370,7 @@ impl Workspace {
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.strong(uu_i18n::text("连接地址"));
-                if ui.button(uu_i18n::text("添加地址")).clicked() {
+                if ui.add(crate::theme::secondary_button(uu_i18n::text("添加地址"))).clicked() {
                     self.new_device(Some(profile.id.clone()), None);
                 }
             });
@@ -1380,13 +1384,13 @@ impl Workspace {
                             route.destination.label(),
                             route.destination.target()
                         ));
-                        if ui.small_button(uu_i18n::text("编辑")).clicked() {
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("编辑")).small()).clicked() {
                             self.new_device(Some(profile.id.clone()), Some(route.id.clone()));
                         }
                         if ui
                             .add_enabled(
                                 profile.routes.len() > 1,
-                                egui::Button::new(uu_i18n::text("移除")).small(),
+                                crate::theme::secondary_button(uu_i18n::text("移除")).small(),
                             )
                             .clicked()
                         {
@@ -1418,9 +1422,9 @@ impl Workspace {
                     ui.horizontal_wrapped(|ui| {
                         ui.strong(&value.name);
                         muted(ui,format!("{} FPS · {}",value.settings.fps,value.settings.codec.label()));
-                        if ui.small_button(uu_i18n::text("编辑")).clicked(){self.edit_client_config(&profile,Some(value.clone()),false);}
-                        if ui.small_button(uu_i18n::text("复制")).clicked(){self.edit_client_config(&profile,Some(value.clone()),true);}
-                        if ui.small_button(uu_i18n::text("删除")).clicked(){
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("编辑")).small()).clicked(){self.edit_client_config(&profile,Some(value.clone()),false);}
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("复制")).small()).clicked(){self.edit_client_config(&profile,Some(value.clone()),true);}
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("删除")).small()).clicked(){
                             if let Some(store)=&self.store {
                                 match store.remove_client_config(&profile.id,&value.id){
                                     Ok(())=>self.refresh(),
@@ -1436,7 +1440,7 @@ impl Workspace {
             }
         });
         ui.add_space(12.);
-        if ui.button(uu_i18n::text("移除本地设备记录")).clicked() {
+        if ui.add(crate::theme::secondary_button(uu_i18n::text("移除本地设备记录"))).clicked() {
             if let Some(store) = &self.store {
                 match store.forget(&profile.id) {
                     Ok(()) => {
@@ -1472,7 +1476,7 @@ impl Workspace {
     fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) {
         ui.horizontal_wrapped(|ui| {
             for (tab,label) in [(5,uu_i18n::text("服务管理")),(0,uu_i18n::text("连接服务")),(1,uu_i18n::text("输入")),(2,uu_i18n::text("音频 / 视频")),(3,uu_i18n::text("编码器")),(4,uu_i18n::text("配对设置"))] {
-                ui.selectable_value(&mut self.service_tab,tab,label);
+                crate::theme::tab_value(ui,&mut self.service_tab,tab,label);
             }
         });
         ui.add_space(14.);
@@ -1486,10 +1490,10 @@ impl Workspace {
             ui.horizontal(|ui| {
                 let running=self.host.running();
                 if ui.add_enabled(self.server_dirty(),theme::primary_button(uu_i18n::text("保存设置"))).clicked(){self.save_sharing();}
-                if running && ui.add_enabled(!self.host.stopping(),egui::Button::new(uu_i18n::text("保存并重启服务"))).clicked() {
+                if running && ui.add_enabled(!self.host.stopping(),crate::theme::secondary_button(uu_i18n::text("保存并重启服务"))).clicked() {
                     if !self.server_dirty() || self.save_sharing() {actions.push(Action::RestartSharing);}
                 }
-                if ui.add_enabled(self.server_dirty(),egui::Button::new(uu_i18n::text("还原修改"))).clicked(){self.discard_server_draft();}
+                if ui.add_enabled(self.server_dirty(),crate::theme::secondary_button(uu_i18n::text("还原修改"))).clicked(){self.discard_server_draft();}
                 muted(ui,if self.server_dirty(){uu_i18n::text("有未保存的修改")}else if self.host.changes_pending(&self.book.sharing){uu_i18n::text("已保存，下次启动生效")}else{uu_i18n::text("已保存")});
             });
             ui.add_space(12.);
@@ -1497,7 +1501,7 @@ impl Workspace {
             if self.service_tab==3 {
                 ui.horizontal_wrapped(|ui| {
                     for (vendor,label) in [(0,uu_i18n::text("自动")),(1,"NVIDIA"),(2,"Intel"),(3,"AMD")] {
-                        ui.selectable_value(&mut self.encoder_vendor_tab,vendor,label);
+                        crate::theme::tab_value(ui,&mut self.encoder_vendor_tab,vendor,label);
                     }
                 });
                 muted(ui,match self.encoder_vendor_tab {
@@ -1509,7 +1513,7 @@ impl Workspace {
                 let choice=match self.encoder_vendor_tab {1=>Some(Encoding::Nvidia),2=>Some(Encoding::Intel),3=>Some(Encoding::Amd),_=>None};
                 if let Some(choice)=choice {
                     let mut selected=self.draft.encoding==choice;
-                    if ui.checkbox(&mut selected,uu_i18n::text("使用此厂商硬件编码")).changed() {
+                    if crate::theme::switch(ui,&mut selected,uu_i18n::text("使用此厂商硬件编码")).changed() {
                         self.draft.encoding=if selected {choice}else{Encoding::Auto};
                     }
                 }
@@ -1541,8 +1545,8 @@ impl Workspace {
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.host.running() {
-                        if ui.add_enabled(!self.host.stopping(),egui::Button::new(uu_i18n::text("停止服务"))).clicked(){self.host.stop();}
-                        if ui.add_enabled(!self.host.stopping(),egui::Button::new(uu_i18n::text("保存并重启服务"))).clicked() {
+                        if ui.add_enabled(!self.host.stopping(),crate::theme::secondary_button(uu_i18n::text("停止服务"))).clicked(){self.host.stop();}
+                        if ui.add_enabled(!self.host.stopping(),crate::theme::secondary_button(uu_i18n::text("保存并重启服务"))).clicked() {
                             if !self.server_dirty() || self.save_sharing() {actions.push(Action::RestartSharing);}
                         }
                     } else if ui.add_enabled(self.store.is_some(),theme::primary_button(uu_i18n::text("启动服务"))).clicked() {
@@ -1561,7 +1565,7 @@ impl Workspace {
                             theme::palette(ui.visuals()).success
                         }),
                     );
-                    if error && ui.small_button(uu_i18n::text("关闭")).clicked() {
+                    if error && ui.add(crate::theme::secondary_button(uu_i18n::text("关闭")).small()).clicked() {
                         dismiss = true;
                     }
                 });
@@ -1571,7 +1575,7 @@ impl Workspace {
             }
             muted(ui,uu_i18n::text("仅在本软件运行时共享；退出软件后停止。"));
             let mut auto = self.book.sharing.auto_start;
-            if ui.checkbox(&mut auto, uu_i18n::text("打开软件时自动启动服务")).changed() {
+            if crate::theme::switch(ui,&mut auto, uu_i18n::text("打开软件时自动启动服务")).changed() {
                 self.update_connections(|s| s.auto_start = auto);
                 self.draft.auto_start = auto;
             }
@@ -1584,7 +1588,7 @@ impl Workspace {
                         .access
                         .as_ref()
                         .is_some_and(|a| a.sessions.active_peer().is_some())
-                        && ui.button(uu_i18n::text("断开全部串流")).clicked()
+                        && ui.add(crate::theme::secondary_button(uu_i18n::text("断开全部串流"))).clicked()
                     {
                         self.host.disconnect();
                     }
@@ -1615,7 +1619,7 @@ impl Workspace {
                                 ),
                             }
                         }
-                        if ui.small_button(uu_i18n::text("断开此会话")).clicked(){self.host.disconnect_session(&session.id);}
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("断开此会话")).small()).clicked(){self.host.disconnect_session(&session.id);}
                     });
                     muted(ui,match session.status {
                         HostStatus::Starting|HostStatus::Preparing=>uu_i18n::text("正在准备串流…").into(),
@@ -1704,7 +1708,7 @@ impl Workspace {
                                 ),
                             }
                         }
-                        if ui.small_button(uu_i18n::text("撤销授权")).clicked() {
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("撤销授权")).small()).clicked() {
                             let result = if let Some(access) = &self.host.access {
                                 access.revoke(&peer.device.id())
                             } else {
@@ -1733,7 +1737,7 @@ impl Workspace {
                 ui.horizontal(|ui| {
                     ui.label(&legacy.name);
                     muted(ui,uu_i18n::text("旧版 IP 配对"));
-                    if ui.small_button(uu_i18n::text("撤销授权")).clicked() {
+                    if ui.add(crate::theme::secondary_button(uu_i18n::text("撤销授权")).small()).clicked() {
                         self.host.revoke_legacy(&legacy.id);
                     }
                 });
@@ -1747,7 +1751,7 @@ impl Workspace {
             ui.horizontal(|ui| {
                 ui.strong(uu_i18n::text("IP 直连"));
                 let mut enabled = self.book.sharing.ip_enabled;
-                if ui.add_enabled(!locked, egui::Checkbox::new(&mut enabled,uu_i18n::text("启用"))).changed() {
+                if ui.add_enabled_ui(!locked,|ui|crate::theme::switch(ui,&mut enabled,uu_i18n::text("启用"))).inner.changed() {
                     self.update_connections(|s| s.ip_enabled=enabled);
                 }
             });
@@ -1756,8 +1760,8 @@ impl Workspace {
             let mut udp=self.book.sharing.discovery_port;
             ui.add_enabled_ui(!locked, |ui| {
                 egui::Grid::new("connection-ip-ports").spacing([20.,10.]).show(ui,|ui| {
-                    ui.label(uu_i18n::text("服务端口 · TCP")); ui.add(egui::DragValue::new(&mut tcp).range(1..=65535)); ui.end_row();
-                    ui.label(uu_i18n::text("发现端口 · UDP")); ui.add(egui::DragValue::new(&mut udp).range(1..=65535)); ui.end_row();
+                    ui.label(uu_i18n::text("服务端口 · TCP")); crate::theme::number_input(ui,egui::DragValue::new(&mut tcp).range(1..=65535)); ui.end_row();
+                    ui.label(uu_i18n::text("发现端口 · UDP")); crate::theme::number_input(ui,egui::DragValue::new(&mut udp).range(1..=65535)); ui.end_row();
                 });
             });
             if tcp!=self.book.sharing.service_port || udp!=self.book.sharing.discovery_port {
@@ -1768,7 +1772,7 @@ impl Workspace {
                 if let Ok(addresses)=super::native_interfaces::enumerate() {
                     for address in addresses.into_iter().filter(|a| a.ip.is_ipv4()) {
                         let endpoint=format!("{}:{}",address.ip,self.book.sharing.service_port);
-                        ui.horizontal(|ui| {ui.monospace(&endpoint); if ui.small_button(uu_i18n::text("复制")).clicked(){ui.ctx().copy_text(endpoint);}});
+                        ui.horizontal(|ui| {ui.monospace(&endpoint); if ui.add(crate::theme::secondary_button(uu_i18n::text("复制")).small()).clicked(){ui.ctx().copy_text(endpoint);}});
                     }
                 }
                 muted(ui,uu_i18n::text("手动输入可达地址支持跨网段；自动发现通常不跨路由。"));
@@ -1779,7 +1783,7 @@ impl Workspace {
                 ui.horizontal(|ui| {
                     ui.strong(provider.name);
                     let mut enabled=self.book.sharing.plugin_services.iter().any(|id|id==provider.id);
-                    if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,uu_i18n::text("启用"))).changed(){self.update_connections(|sharing|{sharing.plugin_services.retain(|id|id!=provider.id);if enabled{sharing.plugin_services.push(provider.id.into());}});}
+                    if ui.add_enabled_ui(!locked,|ui|crate::theme::switch(ui,&mut enabled,uu_i18n::text("启用"))).inner.changed(){self.update_connections(|sharing|{sharing.plugin_services.retain(|id|id!=provider.id);if enabled{sharing.plugin_services.push(provider.id.into());}});}
                 });
                 self.endpoint_state(ui,provider.name);
                 connection(ui,Some(provider.id));
@@ -1789,7 +1793,7 @@ impl Workspace {
         ui.horizontal(|ui| {
             ui.label(RichText::new(uu_i18n::text("自建服务器")).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                if ui.add_enabled(!locked,egui::Button::new(RichText::new(uu_i18n::text("＋ 添加服务器")).color(theme::palette(ui.visuals()).accent))).clicked(){self.edit_service(None);}
+                if ui.add_enabled(!locked,crate::theme::secondary_button(RichText::new(uu_i18n::text("＋ 添加服务器")).color(theme::palette(ui.visuals()).accent))).clicked(){self.edit_service(None);}
             });
         });
         ui.add_space(10.);
@@ -1808,13 +1812,13 @@ impl Workspace {
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
-                                .add_enabled(!locked, egui::Button::new(uu_i18n::text("编辑")))
+                                .add_enabled(!locked, crate::theme::secondary_button(uu_i18n::text("编辑")))
                                 .clicked()
                             {
                                 self.edit_service(Some(service.clone()));
                             }
                             if ui
-                                .add_enabled(!locked, egui::Button::new(uu_i18n::text("移除")))
+                                .add_enabled(!locked, crate::theme::secondary_button(uu_i18n::text("移除")))
                                 .clicked()
                             {
                                 if let Some(store) = &self.store {
@@ -1829,12 +1833,12 @@ impl Workspace {
                     ui.horizontal(|ui| {
                         ui.label(uu_i18n::text("本机在此服务的设备名称"));
                         ui.monospace(&service.published_name);
-                        if ui.small_button(uu_i18n::text("复制")).clicked() {
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("复制")).small()).clicked() {
                             ui.ctx().copy_text(service.published_name.clone());
                         }
                     });
                     let mut enabled=service.host_enabled;
-                    if ui.add_enabled(!locked,egui::Checkbox::new(&mut enabled,uu_i18n::text("启用此连接服务"))).changed() {
+                    if ui.add_enabled_ui(!locked,|ui|crate::theme::switch(ui,&mut enabled,uu_i18n::text("启用此连接服务"))).inner.changed() {
                         if let Some(store)=&self.store {
                             let result=store.edit(|book| {
                                 let item=book.services.iter_mut().find(|s|s.id==service.id).ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("服务器已移除")))?;
@@ -1898,7 +1902,7 @@ impl Workspace {
                 .default_width(720.).default_height(600.).max_height((ctx.screen_rect().height()-70.).max(200.)).max_width((ctx.screen_rect().width()-40.).max(280.))
                 .collapsible(false).show(ctx,|ui| {
                     if !editor.error.is_empty(){ui.colored_label(theme::palette(ui.visuals()).danger,&editor.error);}
-                    if !editor.global && ui.small_button(uu_i18n::text("编辑全局默认")).clicked() {
+                    if !editor.global && ui.add(crate::theme::secondary_button(uu_i18n::text("编辑全局默认")).small()).clicked() {
                         editor.global = true;
                         editor.device.clear();
                         editor.loaded=None;
@@ -1915,13 +1919,13 @@ impl Workspace {
                             theme::text_input(ui,&mut editor.value.name,uu_i18n::text("例如：桌面 4K / 游戏 120 FPS"),300.);
                             let configs=self.book.device(&editor.device).map(|p|p.client_configs.clone()).unwrap_or_default();
                             ui.add_enabled_ui(!configs.is_empty(),|ui| {
-                                let response=egui::ComboBox::from_id_salt(("client-config-name",&editor.device)).selected_text("").width(28.).show_ui(ui,|ui| {
+                                let response=crate::theme::Select::from_id_salt(("client-config-name",&editor.device)).selected_text("").width(28.).show_ui(ui,|ui| {
                                     for value in &configs {
                                         let duplicate=configs.iter().any(|c|c.id!=value.id&&c.name.trim()==value.name.trim());
                                         let short=value.id.get(..8).unwrap_or(&value.id);
                                         let suffix=if configs.iter().any(|c|c.id!=value.id&&c.id.starts_with(short)){value.id.as_str()}else{short};
                                         let label=if duplicate {format!("{} · {}",value.name,suffix)}else{value.name.clone()};
-                                        if ui.selectable_label(editor.editing_id()==Some(value.id.as_str()),label).clicked(){editor.load(value.clone());ui.close_menu();}
+                                        if crate::theme::selectable_label(ui,editor.editing_id()==Some(value.id.as_str()),label).clicked(){editor.load(value.clone());ui.close_menu();}
                                     }
                                 }).response.on_hover_text(uu_i18n::text("配置选择"));
                                 #[cfg(test)]
@@ -1940,8 +1944,8 @@ impl Workspace {
                     ui.separator();
                     ui.horizontal(|ui| {
                         save=primary(ui,uu_i18n::text("保存配置")).clicked();
-                        if !editor.global {remove=ui.add_enabled(editor.editing_id().is_some(),egui::Button::new(uu_i18n::text("删除"))).clicked();}
-                        cancel=ui.button(uu_i18n::text("取消")).clicked();
+                        if !editor.global {remove=ui.add_enabled(editor.editing_id().is_some(),crate::theme::secondary_button(uu_i18n::text("删除"))).clicked();}
+                        cancel=ui.add(crate::theme::secondary_button(uu_i18n::text("取消"))).clicked();
                     });
                 });
             if save {
@@ -1994,9 +1998,9 @@ impl Workspace {
                 }
                 field(ui, uu_i18n::text("设备名称（可选）"), &mut editor.name, uu_i18n::text("例如：工作电脑"));
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut editor.kind, 0, uu_i18n::text("IP 直连"));
-                    for provider in &info.providers {if ui.selectable_label(editor.kind==1&&editor.provider==provider.id,provider.name).clicked(){editor.kind=1;editor.provider=provider.id.into();}}
-                    ui.selectable_value(&mut editor.kind, 2, uu_i18n::text("自建服务器"));
+                    crate::theme::tab_value(ui,&mut editor.kind, 0, uu_i18n::text("IP 直连"));
+                    for provider in &info.providers {if crate::theme::selectable_tab(ui,editor.kind==1&&editor.provider==provider.id,provider.name).clicked(){editor.kind=1;editor.provider=provider.id.into();}}
+                    crate::theme::tab_value(ui,&mut editor.kind, 2, uu_i18n::text("自建服务器"));
                 });
                 ui.add_space(12.);
                 match editor.kind {
@@ -2007,7 +2011,7 @@ impl Workspace {
                     1 => {field(ui,uu_i18n::text("目标设备编号"),&mut editor.device,uu_i18n::text("由连接插件提供的设备标识"));},
                     _ => {
                         ui.label(uu_i18n::text("连接服务器"));
-                        egui::ComboBox::from_id_salt("route-service")
+                        crate::theme::Select::from_id_salt("route-service")
                             .selected_text(
                                 self.book
                                     .services
@@ -2018,7 +2022,7 @@ impl Workspace {
                             )
                             .show_ui(ui, |ui| {
                                 for service in &self.book.services {
-                                    ui.selectable_value(
+                                    crate::theme::selectable_value(ui,
                                         &mut editor.service,
                                         service.id.clone(),
                                         &service.name,
@@ -2040,10 +2044,10 @@ impl Workspace {
                         save = true;
                         connect = true;
                     }
-                    if ui.button(uu_i18n::text("仅保存")).clicked() {
+                    if ui.add(crate::theme::secondary_button(uu_i18n::text("仅保存"))).clicked() {
                         save = true;
                     }
-                    if ui.button(uu_i18n::text("取消")).clicked() {
+                    if ui.add(crate::theme::secondary_button(uu_i18n::text("取消"))).clicked() {
                         cancel = true;
                     }
                 });
@@ -2087,7 +2091,7 @@ impl Workspace {
                     );
                     ui.label(uu_i18n::text("访问令牌"));
                     ui.add(
-                        egui::TextEdit::singleline(&mut editor.credential)
+                        crate::theme::Input::new(&mut editor.credential)
                             .password(true)
                             .desired_width(f32::INFINITY)
                             .hint_text(if editor.token.is_empty() {
@@ -2111,7 +2115,7 @@ impl Workspace {
                             uu_i18n::text("公开可信证书可留空"),
                         );
                     });
-                    ui.checkbox(&mut editor.value.host_enabled, uu_i18n::text("共享本机时使用此服务器"));
+                    crate::theme::switch(ui,&mut editor.value.host_enabled, uu_i18n::text("共享本机时使用此服务器"));
                     if editor.value.host_enabled {
                         field(
                             ui,

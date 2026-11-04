@@ -2,7 +2,7 @@
 use super::ui::{icon, icon_button, icon_label_button, Icon};
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke};
 
-const MENU_WIDTH: f32 = 264.0;
+const MENU_WIDTH: f32 = 320.0;
 
 // A 30-point face has 30.6% less area than the previous 36-point button.
 const HANDLE_SIZE: f32 = 30.0;
@@ -203,21 +203,10 @@ fn hover_bridge(a: Rect, b: Rect) -> Option<Rect> {
 }
 
 fn popup_frame(ui: &egui::Ui) -> egui::Frame {
-    let palette=super::theme::palette(ui.visuals());
-    egui::Frame::popup(ui.style())
-        .fill(palette.overlay)
-        .stroke(Stroke::new(1.0, palette.border))
-        .rounding(super::theme::RADIUS)
-        .inner_margin(egui::Margin::same(6.0))
-        .shadow(egui::epaint::Shadow {
-            offset: egui::vec2(0.0, 3.0),
-            blur: 10.0,
-            spread: 0.0,
-            color: Color32::from_black_alpha(22),
-        })
+    // The shared theme owns opacity, corners and shadow for every popup.
+    egui::Frame::popup(ui.style()).fill(super::theme::palette(ui.visuals()).overlay)
 }
 
-/// Fixed gutters keep icons, selection dots, labels and arrows aligned.
 fn menu_row(
     ui: &mut egui::Ui,
     label: &str,
@@ -227,80 +216,12 @@ fn menu_row(
     hint: &str,
     active: bool,
 ) -> egui::Response {
-    menu_control(ui,label,kind,selected,arrow,hint,active,None)
+    super::theme::menu_control(ui,label,kind,selected,arrow,hint,active)
 }
 fn menu_toggle(ui:&mut egui::Ui,label:&str,enabled:bool,hint:&str)->egui::Response {
-    menu_control(ui,label,None,false,false,hint,false,Some(enabled))
-}
-fn menu_control(ui:&mut egui::Ui,label:&str,kind:Option<Icon>,selected:bool,arrow:bool,hint:&str,active:bool,toggle:Option<bool>)->egui::Response {
-    let palette=super::theme::palette(ui.visuals());
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
-    let ink = if !ui.is_enabled() {
-        palette.muted
-    } else if label == uu_i18n::text("退出串流") {
-        palette.danger
-    } else {
-        palette.text
-    };
-    if ui.is_enabled() && (response.hovered() || response.is_pointer_button_down_on() || active || selected) {
-        let fill=if response.is_pointer_button_down_on(){palette.pressed}else if response.hovered(){palette.hover}else{palette.tint};
-        ui.painter().rect_filled(rect.shrink(1.), super::theme::RADIUS, fill);
-    }
-    if let Some(kind) = kind {
-        icon(
-            ui.painter(),
-            Rect::from_center_size(
-                egui::pos2(rect.left() + 16.0, rect.center().y),
-                egui::vec2(16.0, 16.0),
-            ),
-            kind,
-            ink,
-        );
-    }
-    let label_x=rect.left()+if kind.is_some(){36.}else{13.};
-    let end_space=if toggle.is_some(){56.}else if arrow||selected{30.}else{12.};
-    let hint_galley=(!hint.is_empty()).then(||{
-        let mut job=egui::text::LayoutJob::simple_singleline(hint.into(),egui::FontId::proportional(12.),super::theme::palette(ui.visuals()).muted);
-        job.wrap.max_width=(rect.width()*0.42).max(1.);job.wrap.max_rows=1;
-        ui.fonts(|fonts|fonts.layout_job(job))
-    });
-    let hint_width=hint_galley.as_ref().map_or(0.,|g|g.size().x+18.);
-    let mut job=egui::text::LayoutJob::simple_singleline(label.into(),egui::FontId::proportional(14.),if selected&&ui.is_enabled(){palette.accent}else{ink});
-    job.wrap.max_width=(rect.right()-label_x-end_space-hint_width-6.).max(1.);job.wrap.max_rows=1;job.wrap.break_anywhere=true;
-    let galley=ui.fonts(|fonts|fonts.layout_job(job));
-    ui.painter().galley(egui::pos2(label_x,rect.center().y-galley.size().y/2.),galley,ink);
-    if selected && !arrow {
-        let c=egui::pos2(rect.right()-14.,rect.center().y);
-        ui.painter().circle_filled(c,7.,palette.primary);
-        ui.painter().line_segment([c+egui::vec2(-3.,0.),c+egui::vec2(-1.,2.)],Stroke::new(1.4,Color32::WHITE));
-        ui.painter().line_segment([c+egui::vec2(-1.,2.),c+egui::vec2(3.,-2.)],Stroke::new(1.4,Color32::WHITE));
-    }
-    if arrow {
-        let center = egui::pos2(rect.right() - 13.0, rect.center().y);
-        ui.painter().line_segment(
-            [center - egui::vec2(2.0, 3.0), center + egui::vec2(1.0, 0.0)],
-            Stroke::new(1.0, palette.muted),
-        );
-        ui.painter().line_segment(
-            [
-                center + egui::vec2(1.0, 0.0),
-                center + egui::vec2(-2.0, 3.0),
-            ],
-            Stroke::new(1.0, palette.muted),
-        );
-    }
-    if let Some(galley)=hint_galley {
-        let pos=egui::pos2(rect.right()-end_space-galley.size().x,rect.center().y-galley.size().y/2.);
-        ui.painter().rect_filled(Rect::from_min_size(pos,galley.size()).expand2(egui::vec2(5.,2.)),4.,palette.base);
-        ui.painter().galley(pos,galley,super::theme::palette(ui.visuals()).muted);
-    }
-    if let Some(enabled)=toggle {
-        let track=Rect::from_center_size(egui::pos2(rect.right()-25.,rect.center().y),egui::vec2(32.,18.));
-        ui.painter().rect_filled(track,9.,if !ui.is_enabled(){palette.disabled}else if enabled{palette.primary}else{palette.control_border});
-        ui.painter().circle_filled(track.center()+egui::vec2(if enabled{7.}else{-7.},0.),6.5,Color32::WHITE);
-    }
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    // Business actions keep their original ownership of the saved preference.
+    let mut value=enabled;
+    super::theme::menu_toggle_with_hint(ui,&mut value,label,hint)
 }
 fn separator(ui: &mut egui::Ui) {
     let (rect, _) =
@@ -365,7 +286,7 @@ fn side_submenu<R>(
     egui::InnerResponse::new(inner, response)
 }
 fn menu_heading(ui:&mut egui::Ui,title:&str,status:&str) {
-    ui.horizontal(|ui|{ui.add_space(7.);ui.label(RichText::new(title).size(11.5).color(super::theme::palette(ui.visuals()).muted).strong());if !status.is_empty(){ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{ui.label(RichText::new(status).size(11.5).color(super::theme::palette(ui.visuals()).accent));});}});ui.add_space(4.);
+    ui.horizontal(|ui|{ui.add_space(7.);ui.label(RichText::new(title).strong());if !status.is_empty(){ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{ui.label(RichText::new(status).color(super::theme::palette(ui.visuals()).accent));});}});ui.add_space(4.);
 }
 fn nested_submenu<R>(ui:&mut egui::Ui,blocked:&mut Vec<Rect>,label:&str,status:&str,body:impl FnOnce(&mut egui::Ui)->R)->egui::InnerResponse<Option<R>> {
     let key=egui::Id::new((ui.ctx().viewport_id(),"stream-nested-menu"));let id=ui.make_persistent_id(("nested",label));
@@ -473,7 +394,7 @@ impl super::App {
                             + if resume {text_width(uu_i18n::text("恢复控制"), egui::TextStyle::Body) + 2.0*ui.spacing().button_padding.x + ui.spacing().item_spacing.x} else {0.0};
                         if ui.available_width() >= controls_width + status_width + 2.0*ui.spacing().item_spacing.x {
                             ui.label(RichText::new(text).color(super::theme::palette(ui.visuals()).muted)).on_hover_text(help);
-                            if resume && ui.small_button(uu_i18n::text("恢复控制")).on_hover_text(uu_i18n::text("重新请求此串流的键鼠控制")).clicked() {
+                            if resume && ui.add(crate::theme::secondary_button(uu_i18n::text("恢复控制")).small()).on_hover_text(uu_i18n::text("重新请求此串流的键鼠控制")).clicked() {
                                 self.input_capture.request();
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                                 self.platform.focus_window();
@@ -550,17 +471,17 @@ impl super::App {
         let width=(ui.available_width()-reserve).clamp(75.0,540.0);
         let mut chosen=None;
         let mut reorder=None;
-        ui.allocate_ui_with_layout(egui::vec2(width,30.0),egui::Layout::left_to_right(egui::Align::Center),|ui| {
+        ui.allocate_ui_with_layout(egui::vec2(width,super::theme::TOOLBAR_HEIGHT),egui::Layout::left_to_right(egui::Align::Center),|ui| {
             egui::ScrollArea::horizontal().id_salt("remote-display-tabs")
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .max_width((width-30.0).max(60.0)).auto_shrink([true,true]).show(ui,|ui| {
+                .max_width((width-super::theme::TOOLBAR_HEIGHT).max(60.0)).auto_shrink([true,true]).show(ui,|ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x=2.0;
                         for screen in &screens.screens {
                             let selected=self.displays.selected==Some(screen.id);
                             let label=self.displays.layout.label(screen);
-                            let (rect,response)=ui.allocate_exact_size(egui::vec2(140.0,30.0),egui::Sense::click_and_drag());
-                            if selected || response.hovered() || response.is_pointer_button_down_on() {let palette=super::theme::palette(ui.visuals());ui.painter().rect_filled(rect,super::theme::RADIUS,if response.is_pointer_button_down_on(){palette.pressed}else if selected{palette.card}else{palette.hover});}
+                            let (rect,response)=ui.allocate_exact_size(egui::vec2(140.0,super::theme::TOOLBAR_HEIGHT),egui::Sense::click_and_drag());
+                            let face=super::theme::paint_tab(ui,&response,selected,"");
                             response.dnd_set_drag_payload(super::display_layout::DraggedDisplay(screen.id));
                             if response.dragged(){ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);}
                             let after=ui.input(|i|i.pointer.hover_pos().is_some_and(|p|p.x>rect.center().x));
@@ -569,14 +490,15 @@ impl super::App {
                                 ui.painter().line_segment([egui::pos2(x,rect.top()+3.0),egui::pos2(x,rect.bottom()-3.0)],egui::Stroke::new(2.0,super::theme::palette(ui.visuals()).text));
                                 if let Some(dropped)=response.dnd_release_payload::<super::display_layout::DraggedDisplay>() {reorder=Some((dropped.0,screen.id,after));}
                             }
-                            icon(ui.painter(),Rect::from_center_size(rect.left_center()+egui::vec2(16.0,0.0),egui::vec2(15.0,15.0)),Icon::Desktop,super::theme::palette(ui.visuals()).text);
-                            ui.painter().with_clip_rect(Rect::from_min_max(rect.min+egui::vec2(30.0,0.0),rect.max-egui::vec2(8.0,0.0))).text(rect.left_center()+egui::vec2(30.0,0.0),egui::Align2::LEFT_CENTER,&label,egui::FontId::proportional(12.0),super::theme::palette(ui.visuals()).text);
+                            let ink=super::theme::tab_text_color(ui.visuals(),selected);
+                            icon(ui.painter(),Rect::from_center_size(face.left_center()+egui::vec2(16.0,0.0),egui::vec2(15.0,15.0)),Icon::Desktop,ink);
+                            ui.painter().with_clip_rect(Rect::from_min_max(face.min+egui::vec2(30.0,0.0),face.max-egui::vec2(8.0,0.0))).text(face.left_center()+egui::vec2(30.0,0.0),egui::Align2::LEFT_CENTER,&label,egui::TextStyle::Button.resolve(ui.style()),ink);
                             if response.on_hover_text(uu_i18n::format!("{}{} · {} × {} · {} Hz\n拖动调整标签顺序；编号为本地标记，重连后保留",label,if screen.primary{uu_i18n::text(" · 主屏")}else{""},screen.width,screen.height,screen.refresh_hz)).clicked(){chosen=Some(screen.id);}
                         }
                         if screens.screens.is_empty(){ui.label(uu_i18n::text("等待显示器…"));}
                     });
                 });
-            let response=ui.add_sized([26.0,28.0],egui::Button::new(RichText::new("+").size(20.0)).frame(false)).on_hover_text(uu_i18n::text("选择远端显示器"));
+            let response=ui.add(super::theme::toolbar_button("+",super::theme::ButtonKind::Ghost)).on_hover_text(uu_i18n::text("选择远端显示器"));
             if response.clicked(){self.displays.menu_open=!self.displays.menu_open;self.stream_menu.open=false;self.context.memory_mut(|m|m.close_popup());self.displays.anchor=response.rect.left_bottom();self.release_all_keys();}
         });
         if let Some((source,target,after))=reorder{self.reorder_display_tab(source,target,after);}
@@ -767,7 +689,7 @@ impl super::App {
                                 ui.add_space(5.0);
                                 ui.horizontal(|ui| {
                                     ui.label(uu_i18n::text("码率"));
-                                    ui.add(
+                                    crate::theme::number_input(ui,
                                         egui::DragValue::new(&mut self.custom_mbps)
                                             .range(1..=1000)
                                             .suffix(" Mbps"),
@@ -792,7 +714,7 @@ impl super::App {
                                 ui.add_space(5.0);
                                 ui.horizontal(|ui| {
                                     ui.label(uu_i18n::text("帧率"));
-                                    ui.add(
+                                    crate::theme::number_input(ui,
                                         egui::DragValue::new(&mut self.fps_draft)
                                             .range(5..=self.client_support.max_fps.clamp(5,240))
                                             .suffix(" FPS"),
@@ -981,7 +903,10 @@ impl super::App {
                                         else if menu_toggle(ui,uu_i18n::text("同步文本剪贴板"),self.preferences.clipboard,"").on_hover_text(uu_i18n::text("兼容连接仅支持最多30KiB文本；双方均需允许。")).clicked(){self.preferences.clipboard=!self.preferences.clipboard;self.persist_preferences();}
                                         if self.uses_engine_controls(){ui.response().on_hover_text(uu_i18n::text("仅同步当前前台串流；文本最多30KiB，图片最多8MiB PNG，双方均需允许，不传输文件。"));}
                                         else{ui.response().on_hover_text(uu_i18n::text("兼容连接仅支持最多30KiB的文本同步。"));}
-                                        if let Some(h)=&self.controller {ui.label(h.stats.clipboard.status.lock().unwrap().as_str());}
+                                        if let Some(h)=&self.controller {
+                                            let notice=h.stats.clipboard.status.lock().unwrap().clone();
+                                            if !notice.is_empty(){ui.add(egui::Label::new(notice).wrap());}
+                                        }
                                     });
                                     }
                                     if !self.uses_engine_controls() {
@@ -1021,6 +946,7 @@ impl super::App {
                                     });
                                     separator(ui);
                                     ui.scope(|ui| {
+                                        ui.visuals_mut().override_text_color=Some(super::theme::palette(ui.visuals()).danger);
                                         if menu_row(
                                             ui,
                                             uu_i18n::text("退出串流"),
@@ -1096,7 +1022,15 @@ mod tests {
         super::owned_display::check(&std::env::var("DISPLAY").unwrap()).unwrap();
         let output=PathBuf::from(std::env::var_os("ECLIPSE_MENU_PREVIEW").expect("explicit screenshot destination"));
         assert!(!output.exists());
-        struct Preview {app:super::super::App,output:PathBuf,frames:u32,saved:Arc<AtomicBool>}
+        let surface=std::env::var("ECLIPSE_UI_PREVIEW_SURFACE").unwrap_or_else(|_|"menus".into());
+        let color=match std::env::var("ECLIPSE_UI_PREVIEW_THEME").as_deref().unwrap_or("blue") {
+            "blue"=>super::super::theme::ColorTheme::Blue,
+            "light_blue"=>super::super::theme::ColorTheme::LightBlue,
+            "animal"=>super::super::theme::ColorTheme::Animal,
+            _=>panic!("explicit supported preview theme required"),
+        };
+        assert!(matches!(surface.as_str(),"menus"|"device-config"));
+        struct Preview {app:super::super::App,output:PathBuf,surface:String,frames:u32,saved:Arc<AtomicBool>}
         impl eframe::App for Preview {
             fn update(&mut self,ctx:&egui::Context,_:&mut eframe::Frame){
                 if let Some(image)=ctx.input(|i|i.events.iter().find_map(|e|if let egui::Event::Screenshot{image,..}=e{Some(image.clone())}else{None})) {
@@ -1104,35 +1038,52 @@ mod tests {
                     image::save_buffer(&self.output,&data,image.size[0] as u32,image.size[1] as u32,image::ColorType::Rgba8).unwrap();
                     self.saved.store(true,Ordering::Release);ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                egui::CentralPanel::default().frame(egui::Frame::none().fill(super::super::theme::palette(&ctx.style().visuals).base).inner_margin(24.)).show(ctx,|ui|{
-                    ui.heading("Eclipse · 生成菜单预览");ui.add_space(18.);
-                    ui.columns(3,|columns|{
-                        for (index,title) in ["画面","编码","声音"].into_iter().enumerate(){
-                            popup_frame(&columns[index]).show(&mut columns[index],|ui|{
-                                ui.set_width(MENU_WIDTH);ui.spacing_mut().item_spacing=egui::Vec2::ZERO;
-                                menu_heading(ui,title,"");separator(ui);
-                                match index {0=>self.app.picture_menu(ui),1=>self.app.encoding_menu(ui),_=>self.app.audio_menu(ui)}
-                            });
-                        }
+                self.app.preview_title_bar(ctx);
+                if self.surface=="device-config" {
+                    self.app.workspace_home(ctx);
+                    self.app.workspace_dialogs(ctx);
+                } else {
+                    egui::CentralPanel::default().frame(egui::Frame::none().fill(super::super::theme::palette(&ctx.style().visuals).base).inner_margin(24.)).show(ctx,|ui|{
+                        ui.heading("Eclipse · 生成业务菜单预览");ui.add_space(18.);
+                        ui.columns(3,|columns|{
+                            for (index,title) in ["画面","编码","声音"].into_iter().enumerate(){
+                                popup_frame(&columns[index]).show(&mut columns[index],|ui|{
+                                    ui.set_width(MENU_WIDTH);ui.spacing_mut().item_spacing=egui::Vec2::ZERO;
+                                    menu_heading(ui,title,"");separator(ui);
+                                    match index {0=>self.app.picture_menu(ui),1=>self.app.encoding_menu(ui),_=>self.app.audio_menu(ui)}
+                                });
+                            }
+                        });
                     });
-                });
-                self.frames+=1;if self.frames==4{ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);}
+                }
+                self.frames+=1;if self.frames==6{ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);}
                 ctx.request_repaint();
             }
         }
         let saved=Arc::new(AtomicBool::new(false));let check=saved.clone();
-        let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([940.,580.]),vsync:false,
+        let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([1100.,800.]),vsync:false,
             event_loop_builder:Some(Box::new(|builder|{use winit::platform::x11::EventLoopBuilderExtX11;builder.with_any_thread(true);})),..Default::default()};
-        eframe::run_native("Generated stream menus",options,Box::new(move|cc|{
+        eframe::run_native("Generated application UI",options,Box::new(move|cc|{
             let mut app=super::super::App::new(cc,None,None,false,None);
-            app.stream_target=Some(super::super::sessions::StreamTarget{connection:super::super::sessions::ConnectionTarget::NativeInvitation("generated-unused-invitation".into()),alias:"Generated preview".into(),view_only:true});
-            app.preferences.codec=super::super::settings::CodecPreference::Auto;app.preferences.hdr=true;app.target_fps=165;
-            let stats=Arc::new(uu_core::media::MediaStats::default());*stats.codec.lock().unwrap()="video/AV1".into();
-            stats.audio.volume.store(72,Ordering::Relaxed);*stats.audio.status.lock().unwrap()="Opus".into();
-            app.controller=Some(uu_core::controller::ControllerHandle {stopped:Arc::new(AtomicBool::new(true)),events:std::sync::mpsc::channel().1,
-                frames:uu_core::media::frame_channel().1,input:tokio::sync::mpsc::unbounded_channel().0,native_input:None,
-                settings:tokio::sync::mpsc::unbounded_channel().0,close:tokio::sync::mpsc::unbounded_channel().0,stats});
-            Ok(Box::new(Preview{app,output,frames:0,saved}))
+            app.preferences.wallpaper_enabled=false;
+            app.preferences.lan_discovery=false;
+            app.preferences.color_theme=color;
+            super::super::theme::apply_appearance(&cc.egui_ctx,egui::ThemePreference::Light,color);
+            let mut profile=uu_core::device_book::Profile::new("生成工作站",uu_core::device_book::Destination::Ip{address:"preview.example.invalid:48998".into(),legacy_device:None});
+            let config=uu_core::client_settings::NamedClientSettings::new("桌面 4K",uu_core::client_settings::ClientSettings{fps:120,resolution:3,bitrate:4,custom_mbps:79,..Default::default()});
+            profile.selected_client=Some(config.id.clone());profile.client_configs.push(config);
+            app.workspace.book.devices=vec![profile.clone()];
+            if surface=="device-config" {app.workspace.open_generated_preview_editor(&profile);}
+            else {
+                app.stream_target=Some(super::super::sessions::StreamTarget{connection:super::super::sessions::ConnectionTarget::NativeInvitation("generated-unused-invitation".into()),alias:"Generated preview".into(),view_only:true});
+                app.preferences.codec=super::super::settings::CodecPreference::Auto;app.preferences.hdr=true;app.target_fps=165;
+                let stats=Arc::new(uu_core::media::MediaStats::default());*stats.codec.lock().unwrap()="video/AV1".into();
+                stats.audio.volume.store(72,Ordering::Relaxed);*stats.audio.status.lock().unwrap()="Opus".into();
+                app.controller=Some(uu_core::controller::ControllerHandle {stopped:Arc::new(AtomicBool::new(true)),events:std::sync::mpsc::channel().1,
+                    frames:uu_core::media::frame_channel().1,input:tokio::sync::mpsc::unbounded_channel().0,native_input:None,
+                    settings:tokio::sync::mpsc::unbounded_channel().0,close:tokio::sync::mpsc::unbounded_channel().0,stats});
+            }
+            Ok(Box::new(Preview{app,output,surface,frames:0,saved}))
         })).unwrap();
         assert!(check.load(Ordering::Acquire));
     }

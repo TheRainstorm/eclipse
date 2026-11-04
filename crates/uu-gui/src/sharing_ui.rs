@@ -29,11 +29,11 @@ enum Event {
 pub(super) fn permissions(ui:&mut egui::Ui,value:&mut Permissions)->bool {
     let mut details=value.details();
     let mut changed=false;
-    changed|=ui.checkbox(&mut details.keyboard,uu_i18n::text("键盘")).changed();
-    changed|=ui.checkbox(&mut details.mouse,uu_i18n::text("鼠标")).changed();
-    changed|=ui.checkbox(&mut details.gamepad,uu_i18n::text("手柄")).changed();
-    changed|=ui.checkbox(&mut details.clipboard,uu_i18n::text("剪贴板")).changed();
-    changed|=ui.checkbox(&mut details.manage_server,uu_i18n::text("管理服务和连接权限")).changed();
+    changed|=crate::theme::switch(ui,&mut details.keyboard,uu_i18n::text("键盘")).changed();
+    changed|=crate::theme::switch(ui,&mut details.mouse,uu_i18n::text("鼠标")).changed();
+    changed|=crate::theme::switch(ui,&mut details.gamepad,uu_i18n::text("手柄")).changed();
+    changed|=crate::theme::switch(ui,&mut details.clipboard,uu_i18n::text("剪贴板")).changed();
+    changed|=crate::theme::switch(ui,&mut details.manage_server,uu_i18n::text("管理服务和连接权限")).changed();
     if changed {*value=value.with_details(details);}
     changed
 }
@@ -623,12 +623,12 @@ impl HostUi {
                     if waiting {
                         ui.label(uu_i18n::text("输入控制端显示的 8 位配对码："));
                         ui.add(
-                            egui::TextEdit::singleline(&mut pending.code)
+                            crate::theme::Input::new(&mut pending.code)
                                 .hint_text(uu_i18n::text("例如 4827 1936"))
                                 .char_limit(12),
                         );
                         ui.add_enabled_ui(self.allow_control, |ui| {
-                            ui.checkbox(&mut pending.control, uu_i18n::text("允许键盘、鼠标和手柄控制"));
+                            crate::theme::switch(ui,&mut pending.control, uu_i18n::text("允许键盘、鼠标和手柄控制"));
                         });
                         ui.weak(if pending.temporary{uu_i18n::text("本次为临时配对。批准后撤销此前长期授权，仅允许这次串流，断开后必须重新配对。")}else{uu_i18n::text("批准后记住这台设备，以后连接不再输入配对码。")});
                         let permission = if pending.control {
@@ -636,7 +636,7 @@ impl HostUi {
                         } else {
                             Permissions::VIEW
                         };
-                        ui.checkbox(&mut pending.manage,uu_i18n::text("允许管理服务配置和连接权限"));
+                        crate::theme::switch(ui,&mut pending.manage,uu_i18n::text("允许管理服务配置和连接权限"));
                         let mut details=permission.details();details.manage_server=pending.manage;
                         let permission=if pending.manage {permission.with_details(details)}else{permission};
                         let approval = PairApproval::new(&pending.code, permission);
@@ -652,7 +652,7 @@ impl HostUi {
                                     let _ = respond.send(approval.ok());
                                 }
                             }
-                            if ui.button(uu_i18n::text("拒绝")).clicked() {
+                            if ui.add(crate::theme::secondary_button(uu_i18n::text("拒绝"))).clicked() {
                                 remove = Some(index);
                             }
                         });
@@ -694,12 +694,12 @@ impl HostUi {
                         .collect();
                     ui.horizontal(|ui| {
                         if ui
-                            .add_enabled(entered == expected, egui::Button::new(uu_i18n::text("允许配对")))
+                            .add_enabled(entered == expected, crate::theme::secondary_button(uu_i18n::text("允许配对")))
                             .clicked()
                         {
                             decision = Some(true);
                         }
-                        if ui.button(uu_i18n::text("拒绝")).clicked() {
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("拒绝"))).clicked() {
                             decision = Some(false);
                         }
                     });

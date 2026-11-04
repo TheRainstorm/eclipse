@@ -403,24 +403,24 @@ impl HostUi {
                         for address in &self.addresses {
                             ui.horizontal(|ui| {
                                 ui.label(address);
-                                if ui.small_button(uu_i18n::text("复制地址")).clicked() {
+                                if ui.add(crate::theme::secondary_button(uu_i18n::text("复制地址")).small()).clicked() {
                                     ctx.copy_text(address.clone());
                                 }
                             });
                         }
                         if let Some(handle) = &self.handle {
-                            if self.active_session.is_some() && ui.button(uu_i18n::text("断开当前串流")).clicked()
+                            if self.active_session.is_some() && ui.add(crate::theme::secondary_button(uu_i18n::text("断开当前串流"))).clicked()
                             {
                                 handle.stop_session();
                                 self.status = uu_i18n::text("正在断开串流…").into();
                             }
                             ui.horizontal(|ui| {
-                                if ui.button(uu_i18n::text("允许新设备配对（2 分钟）")).clicked() {
+                                if ui.add(crate::theme::secondary_button(uu_i18n::text("允许新设备配对（2 分钟）"))).clicked() {
                                     handle.allow_pairing();
                                     self.notice =
                                         uu_i18n::text("请在另一台设备发起配对，并核对客户端显示的配对码。").into();
                                 }
-                                if ui.small_button(uu_i18n::text("停止接收配对")).clicked() {
+                                if ui.add(crate::theme::secondary_button(uu_i18n::text("停止接收配对")).small()).clicked() {
                                     handle.close_pairing();
                                 }
                             });
@@ -433,7 +433,7 @@ impl HostUi {
                             for peer in peers {
                                 ui.horizontal(|ui| {
                                     ui.label(&peer.name);
-                                    if ui.small_button(uu_i18n::text("撤销授权")).clicked() {
+                                    if ui.add(crate::theme::secondary_button(uu_i18n::text("撤销授权")).small()).clicked() {
                                         if let Err(error) = handle.revoke(&peer.id) {
                                             self.notice = error.to_string();
                                         }
@@ -455,7 +455,7 @@ impl HostUi {
                         }
                         ui.add_space(10.);
                         if ui
-                            .add_enabled(!self.stopping, egui::Button::new(uu_i18n::text("停止共享")))
+                            .add_enabled(!self.stopping, crate::theme::secondary_button(uu_i18n::text("停止共享")))
                             .clicked()
                         {
                             stop = true;
@@ -469,7 +469,7 @@ impl HostUi {
                                 ui.text_edit_singleline(&mut self.name);
                                 ui.end_row();
                                 ui.label(uu_i18n::text("共享屏幕"));
-                                egui::ComboBox::from_id_salt("lan-monitor")
+                                crate::theme::Select::from_id_salt("lan-monitor")
                                     .selected_text(
                                         self.monitors
                                             .get(self.monitor)
@@ -480,7 +480,7 @@ impl HostUi {
                                     )
                                     .show_ui(ui, |ui| {
                                         for (i, m) in self.monitors.iter().enumerate() {
-                                            ui.selectable_value(
+                                            crate::theme::selectable_value(ui,
                                                 &mut self.monitor,
                                                 i,
                                                 format!("{} · {}×{}", m.name, m.width, m.height),
@@ -489,52 +489,52 @@ impl HostUi {
                                     });
                                 ui.end_row();
                                 ui.label(uu_i18n::text("编码加速"));
-                                egui::ComboBox::from_id_salt("lan-host-encoder")
+                                crate::theme::Select::from_id_salt("lan-host-encoder")
                                     .selected_text(super::native_host_ui::preference_label(self.encoder))
                                     .show_ui(ui,|ui| {
                                         for preference in [native::EncoderPreference::Auto,native::EncoderPreference::Hardware,native::EncoderPreference::Software] {
-                                            ui.selectable_value(&mut self.encoder,preference,super::native_host_ui::preference_label(preference));
+                                            crate::theme::selectable_value(ui,&mut self.encoder,preference,super::native_host_ui::preference_label(preference));
                                         }
                                     });
                                 ui.end_row();
                                 ui.label(uu_i18n::text("帧率"));
                                 ui.horizontal(|ui| {
-                                    ui.selectable_value(&mut self.fps, 30, "30 FPS");
-                                    ui.selectable_value(&mut self.fps, 60, "60 FPS");
+                                    crate::theme::selectable_value(ui,&mut self.fps, 30, "30 FPS");
+                                    crate::theme::selectable_value(ui,&mut self.fps, 60, "60 FPS");
                                 });
                                 ui.end_row();
                                 ui.label(uu_i18n::text("码率"));
-                                ui.add(
+                                crate::theme::number_input(ui,
                                     egui::DragValue::new(&mut self.mbps)
                                         .range(1..=100)
                                         .suffix(" Mbps"),
                                 );
                                 ui.end_row();
                                 ui.label(uu_i18n::text("服务端口"));
-                                ui.add(egui::DragValue::new(&mut self.port).range(1..=65535));
+                                crate::theme::number_input(ui,egui::DragValue::new(&mut self.port).range(1..=65535));
                                 ui.end_row();
                                 ui.label(uu_i18n::text("发现端口"));
-                                ui.add(egui::DragValue::new(&mut self.discovery_port).range(1..=65535));
+                                crate::theme::number_input(ui,egui::DragValue::new(&mut self.discovery_port).range(1..=65535));
                                 ui.end_row();
                             });
                         ui.add_space(10.);
                         ui.weak(uu_i18n::text("服务端口使用 TCP，发现端口使用 UDP；端口自动保存。更改发现端口时，请将控制端设为相同端口，也可用 IP:服务端口 手动连接。"));
-                        ui.checkbox(&mut self.input, uu_i18n::text("允许已配对设备控制键盘、鼠标和手柄"));
-                        ui.checkbox(&mut self.audio, uu_i18n::text("共享系统声音"));
-                        ui.checkbox(&mut self.clipboard, uu_i18n::text("允许双方启用文本和图片剪贴板"));
+                        crate::theme::switch(ui,&mut self.input, uu_i18n::text("允许已配对设备控制键盘、鼠标和手柄"));
+                        crate::theme::switch(ui,&mut self.audio, uu_i18n::text("共享系统声音"));
+                        crate::theme::switch(ui,&mut self.clipboard, uu_i18n::text("允许双方启用文本和图片剪贴板"));
                         ui.weak(uu_i18n::text("只有在你确认配对后，设备才能访问本机。关闭软件会停止共享。"));
                         ui.add_space(10.);
                         ui.horizontal(|ui| {
                             if ui
                                 .add_enabled(
                                     data_dir.is_some() && !self.monitors.is_empty(),
-                                    egui::Button::new(uu_i18n::text("启用共享")),
+                                    crate::theme::secondary_button(uu_i18n::text("启用共享")),
                                 )
                                 .clicked()
                             {
                                 start = true;
                             }
-                            if ui.button(uu_i18n::text("刷新屏幕")).clicked() {
+                            if ui.add(crate::theme::secondary_button(uu_i18n::text("刷新屏幕"))).clicked() {
                                 self.refresh_monitors();
                             }
                         });
@@ -565,7 +565,7 @@ impl HostUi {
                     ui.add_space(8.);
                     ui.label(uu_i18n::text("请在发起连接的设备查看配对码，并在这里输入："));
                     ui.add(
-                        egui::TextEdit::singleline(&mut pending.entered)
+                        crate::theme::Input::new(&mut pending.entered)
                             .hint_text(uu_i18n::text("8 位配对码"))
                             .char_limit(12),
                     );
@@ -589,12 +589,12 @@ impl HostUi {
                     }
                     ui.horizontal(|ui| {
                         if ui
-                            .add_enabled(matches, egui::Button::new(uu_i18n::text("允许配对")))
+                            .add_enabled(matches, crate::theme::secondary_button(uu_i18n::text("允许配对")))
                             .clicked()
                         {
                             decision = Some(true);
                         }
-                        if ui.button(uu_i18n::text("拒绝")).clicked() {
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("拒绝"))).clicked() {
                             decision = Some(false);
                         }
                     });

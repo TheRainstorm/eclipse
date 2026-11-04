@@ -47,7 +47,7 @@ impl RemoteAdminUi {
         let snapshot=client.snapshot.lock().unwrap().clone();
         if available&&snapshot.is_none()&&self.pending.is_none() {self.send(client,Request::Inspect);}
         ui.horizontal(|ui| {
-            if ui.add_enabled(available&&self.pending.is_none(),egui::Button::new(uu_i18n::text("重新读取主机信息"))).clicked(){self.send(client,Request::Inspect);}
+            if ui.add_enabled(available&&self.pending.is_none(),crate::theme::secondary_button(uu_i18n::text("重新读取主机信息"))).clicked(){self.send(client,Request::Inspect);}
             if self.pending.is_some(){ui.spinner();}
         });
         if !self.notice.is_empty(){ui.label(&self.notice);}
@@ -66,7 +66,7 @@ impl RemoteAdminUi {
                         ui.add_enabled_ui(manage&&self.pending.is_none(),|ui| {
                             ui.horizontal_wrapped(|ui| {
                                 if super::sharing_ui::permissions(ui,&mut permissions){self.send(client,Request::Permissions{peer:connection.peer.clone(),permissions});}
-                                if ui.button(uu_i18n::text("断开此会话")).clicked(){self.send(client,Request::Disconnect{session:connection.id.clone()});}
+                                if ui.add(crate::theme::secondary_button(uu_i18n::text("断开此会话"))).clicked(){self.send(client,Request::Disconnect{session:connection.id.clone()});}
                             });
                         });
                     });
@@ -77,7 +77,7 @@ impl RemoteAdminUi {
             if !manage {ui.label(uu_i18n::text("房主尚未授予管理服务配置的权限。"));return;}
             if self.base.is_none()&&self.pending.is_none(){self.send(client,Request::Inspect);}
             let (Some(base),Some(draft))=(&self.base,&mut self.draft) else{return;};
-            ui.horizontal_wrapped(|ui|{for (tab,label) in [(0,uu_i18n::text("采集与声音")),(1,uu_i18n::text("编码")),(2,uu_i18n::text("访问权限"))] {ui.selectable_value(&mut self.tab,tab,label);}});
+            ui.horizontal_wrapped(|ui|{for (tab,label) in [(0,uu_i18n::text("采集与声音")),(1,uu_i18n::text("编码")),(2,uu_i18n::text("访问权限"))] {crate::theme::tab_value(ui,&mut self.tab,tab,label);}});
             ui.add_space(10.);
             super::server_config_ui::edit(ui,draft,self.tab,&base.monitors,base.portal,true);
             ui.add_space(12.);
@@ -85,8 +85,8 @@ impl RemoteAdminUi {
             ui.weak(uu_i18n::text("保存供下次启动使用；保存并重启会断开主机上的全部串流。修改连接端口后，请同步更新设备地址。"));
             let mut save=None;
             ui.horizontal(|ui| {
-                if ui.add_enabled(self.pending.is_none()&&draft!=&base.saved,egui::Button::new(uu_i18n::text("保存，下次启动生效"))).clicked(){save=Some(false);}
-                if ui.add_enabled(self.pending.is_none(),egui::Button::new(uu_i18n::text("保存并重启服务"))).clicked(){save=Some(true);}
+                if ui.add_enabled(self.pending.is_none()&&draft!=&base.saved,crate::theme::secondary_button(uu_i18n::text("保存，下次启动生效"))).clicked(){save=Some(false);}
+                if ui.add_enabled(self.pending.is_none(),crate::theme::secondary_button(uu_i18n::text("保存并重启服务"))).clicked(){save=Some(true);}
             });
             if let Some(restart)=save {let request=Request::Save{revision:base.revision.clone(),settings:draft.clone(),restart};self.send(client,request);}
         }

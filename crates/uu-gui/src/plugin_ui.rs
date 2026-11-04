@@ -109,7 +109,7 @@ impl Manager {
         if !self.error.is_empty(){ui.colored_label(super::theme::palette(ui.visuals()).danger,&self.error);}
         if !self.notice.is_empty(){ui.label(&self.notice);}
         let Some(runtime)=self.runtime.clone() else{return actions;};
-        if ui.button(uu_i18n::text("重新扫描插件")).clicked(){let mut r=runtime.lock().unwrap();r.rescan();r.apply(&self.preferences);}
+        if ui.add(crate::theme::secondary_button(uu_i18n::text("重新扫描插件"))).clicked(){let mut r=runtime.lock().unwrap();r.rescan();r.apply(&self.preferences);}
         let (directory,records,errors)={let r=runtime.lock().unwrap();(r.directory.clone(),r.records.iter().map(|(id,p)|(id.clone(),p.manifest.clone(),p.enabled,p.compatible,p.error.clone())).collect::<Vec<_>>(),r.errors.clone())};
         ui.label(egui::RichText::new(directory.display().to_string()).small().color(super::theme::palette(ui.visuals()).muted));
         for error in errors {ui.colored_label(super::theme::palette(ui.visuals()).danger,error);}
@@ -119,7 +119,7 @@ impl Manager {
             egui::Frame::group(ui.style()).inner_margin(16.).show(ui,|ui| {
                 ui.horizontal(|ui| {
                     ui.strong(&manifest.name);ui.label(format!("v{}",manifest.version));
-                    if ui.add_enabled(compatible&&self.error.is_empty(),egui::Checkbox::new(&mut enabled,uu_i18n::text("启用"))).changed() {
+                    if ui.add_enabled_ui(compatible&&self.error.is_empty(),|ui|crate::theme::switch(ui,&mut enabled,uu_i18n::text("启用"))).inner.changed() {
                         let expected=self.preferences.get(&id);let value=PluginPreferences{enabled,..expected.clone()};
                         let result=self.config.as_ref().ok_or_else(||anyhow::anyhow!("configuration directory unavailable"))
                             .and_then(|config|runtime.lock().unwrap().save(config,&id,&expected,value));

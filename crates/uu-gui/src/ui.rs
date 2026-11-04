@@ -7,6 +7,8 @@ pub(super) fn logo(p: &egui::Painter, rect: Rect) {
 }
 
 impl App {
+    #[cfg(test)]
+    pub(super) fn preview_title_bar(&mut self,ctx:&egui::Context) { self.title_bar(ctx); }
     fn title_bar(&mut self, ctx: &egui::Context) {
         let page = self.workspace.route.page;
         let wallpaper_root = page == super::workspace_ui::Page::Devices
@@ -31,6 +33,7 @@ impl App {
             .statuses()
             .iter()
             .any(|(_, status)| matches!(status, uu_core::device_internet::EndpointStatus::Error(_)));
+        let navigation_pages=self.plugins.pages(uu_plugin_sdk::Placement::Navigation);
         egui::TopBottomPanel::top("home-title")
             .exact_height(58.0)
             .frame(
@@ -44,48 +47,54 @@ impl App {
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(30.0, 34.0), Sense::click_and_drag());
-                    logo(ui.painter(), rect);
-                    let response=response.on_hover_text(super::build_info::version_tooltip(&self.build_label));
-                    if response.clicked() {
-                        self.select_workspace_page(super::workspace_ui::Page::Devices);
-                    }
-                    if response.drag_started() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                    }
                     let title_color = if wallpaper_root { C::WHITE } else { super::theme::palette(ui.visuals()).text };
-                    let separator_color = if wallpaper_root {
-                        C::from_white_alpha(190)
-                    } else {
-                        super::theme::palette(ui.visuals()).muted
-                    };
-                    if ctx.screen_rect().width() >= 520.0 {
-                        ui.label(RichText::new(super::brand::NAME).size(18.0).strong().color(title_color));
-                        ui.label(RichText::new("/").size(17.0).color(separator_color));
-                    }
-                    if let Some(name) = detail_name {
-                        if ui.link(RichText::new(uu_i18n::text("设备列表")).size(17.0)).clicked() {
-                            self.workspace.route.device = super::workspace_ui::DeviceView::List;
+                    let count=6+navigation_pages.len();
+                    let controls_width=count as f32*super::theme::TOOLBAR_HEIGHT
+                        +count.saturating_sub(1) as f32*ui.spacing().item_spacing.x+4.0;
+                    let title_width=(ui.available_width()-controls_width-ui.spacing().item_spacing.x).max(0.0);
+                    ui.allocate_ui_with_layout(egui::vec2(title_width,super::theme::TOOLBAR_HEIGHT),egui::Layout::left_to_right(egui::Align::Center),|ui| {
+                        let (slot, response) = ui.allocate_exact_size(
+                            egui::Vec2::splat(super::theme::TOOLBAR_HEIGHT), Sense::click_and_drag());
+                        let rect=Rect::from_center_size(slot.center(),egui::Vec2::splat(super::theme::TOOLBAR_FACE));
+                        logo(ui.painter(), rect);
+                        let response=response.on_hover_text(super::build_info::version_tooltip(&self.build_label));
+                        if response.clicked() {
+                            self.select_workspace_page(super::workspace_ui::Page::Devices);
                         }
-                        ui.label(RichText::new("/").size(17.0).color(separator_color));
-                        ui.add(egui::Label::new(RichText::new(name).size(17.0).color(title_color)).truncate());
-                    } else {
-                        ui.add(
-                            egui::Label::new(RichText::new(current).size(17.0).color(title_color))
-                                .truncate(),
-                        );
-                    }
-                    let controls_width = 255.0;
-                    let space = (ui.available_width() - controls_width).max(0.0);
-                    let (_, drag) =
-                        ui.allocate_exact_size(egui::vec2(space, 34.0), Sense::click_and_drag());
-                    if drag.drag_started() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                    }
-                    if drag.double_clicked() {
-                        self.toggle_maximized(ctx);
-                    }
+                        if response.drag_started() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        }
+                        let separator_color = if wallpaper_root {
+                            C::from_white_alpha(190)
+                        } else {
+                            super::theme::palette(ui.visuals()).muted
+                        };
+                        if ctx.screen_rect().width() >= 520.0 {
+                            ui.label(RichText::new(super::brand::NAME).size(18.0).strong().color(title_color));
+                            ui.label(RichText::new("/").size(17.0).color(separator_color));
+                        }
+                        if let Some(name) = detail_name {
+                            if ui.link(RichText::new(uu_i18n::text("设备列表")).size(17.0)).clicked() {
+                                self.workspace.route.device = super::workspace_ui::DeviceView::List;
+                            }
+                            ui.label(RichText::new("/").size(17.0).color(separator_color));
+                            ui.add(egui::Label::new(RichText::new(name).size(17.0).color(title_color)).truncate());
+                        } else {
+                            ui.add(
+                                egui::Label::new(RichText::new(current).size(17.0).color(title_color))
+                                    .truncate(),
+                            );
+                        }
+                        let space=ui.available_width().max(0.0);
+                        let (_, drag) =
+                            ui.allocate_exact_size(egui::vec2(space, super::theme::TOOLBAR_HEIGHT), Sense::click_and_drag());
+                        if drag.drag_started() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        }
+                        if drag.double_clicked() {
+                            self.toggle_maximized(ctx);
+                        }
+                    });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if icon_button_tinted(ui, Icon::Close, uu_i18n::text("关闭"), false, title_color).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -108,9 +117,9 @@ impl App {
                         {
                             self.select_workspace_page(super::workspace_ui::Page::Settings);
                         }
-                        for (id,page) in self.plugins.pages(uu_plugin_sdk::Placement::Navigation) {
+                        for (id,page) in navigation_pages {
                             let selected=self.workspace.route.page==super::workspace_ui::Page::Plugin&&self.workspace.route.plugin.as_ref()==Some(&(id.clone(),page.id.clone()));
-                            if icon_button_selected(ui,page.icon.unwrap_or(Icon::Extension),&page.title,selected).clicked(){self.select_plugin_page(id,page.id);}
+                            if icon_button_tinted(ui,page.icon.unwrap_or(Icon::Extension),&page.title,selected,title_color).clicked(){self.select_plugin_page(id,page.id);}
                         }
                         let selected = page == super::workspace_ui::Page::Services;
                         let color = if failed {
@@ -122,10 +131,7 @@ impl App {
                         } else {
                             super::theme::palette(ui.visuals()).muted
                         };
-                        let response=ui.add_sized([30.0,30.0],egui::Button::new("").frame(false));
-                        ghost_background(ui,&response,selected);
-                        icon(ui.painter(),response.rect,Icon::Globe,color);
-                        response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),uu_i18n::text("服务管理")));
+                        let response=icon_button_tinted(ui,Icon::Globe,uu_i18n::text("服务管理"),selected,color);
                         if response
                             .on_hover_text(if failed {
                                 uu_i18n::text("服务管理 · 部分入口异常")
@@ -229,12 +235,12 @@ impl App {
                     if self.displays.ready() || self.displays.switching() {
                         ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(24.0,24.0)),egui::Spinner::new());
                     } else if let Some(id)=self.displays.selected {
-                        if ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(156.0,34.0)),egui::Button::new(uu_i18n::text("重试当前显示器"))).clicked(){self.select_remote_screen(id);}
+                        if ui.put(Rect::from_center_size(center+egui::vec2(0.0,44.0),egui::vec2(156.0,34.0)),super::theme::secondary_button(uu_i18n::text("重试当前显示器"))).clicked(){self.select_remote_screen(id);}
                     }
-                    if !self.disconnecting && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),egui::Button::new(uu_i18n::text("取消连接"))).clicked(){self.disconnect();}
+                    if !self.disconnecting && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),super::theme::secondary_button(uu_i18n::text("取消连接"))).clicked(){self.disconnect();}
                 } else {
                     if ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),super::theme::primary_button(uu_i18n::text("重新连接"))).clicked(){self.connect();}
-                    if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),egui::Button::new(uu_i18n::text("关闭串流窗口"))).clicked(){self.disconnect();}
+                    if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),super::theme::secondary_button(uu_i18n::text("关闭串流窗口"))).clicked(){self.disconnect();}
                 }
             }
             if chosen.is_some() && !self.displays.notice.is_empty() {

@@ -96,7 +96,7 @@ impl Feedback {
                     Kind::Error => super::theme::palette(ui.visuals()).danger,
                 }),
             );
-            if message.kind == Kind::Error && ui.small_button(uu_i18n::text("关闭")).clicked() {
+            if message.kind == Kind::Error && ui.add(crate::theme::secondary_button(uu_i18n::text("关闭")).small()).clicked() {
                 dismiss = true;
             }
         });

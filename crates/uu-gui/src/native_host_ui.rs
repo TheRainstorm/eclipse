@@ -374,18 +374,18 @@ impl App {
                     }
                     ui.label(uu_i18n::text("将邀请文件私下发给要连接的设备："));
                     ui.add(
-                        egui::TextEdit::singleline(&mut host.invitation)
+                        crate::theme::Input::new(&mut host.invitation)
                             .desired_width(460.0)
                             .interactive(false),
                     );
-                    if ui.button(uu_i18n::text("复制邀请路径")).clicked() {
+                    if ui.add(crate::theme::secondary_button(uu_i18n::text("复制邀请路径"))).clicked() {
                         ui.output_mut(|o| o.copied_text = host.invitation.clone());
                     }
                     ui.add_space(12.0);
                     if ui
                         .add_enabled(
                             !sharing.stopping,
-                            egui::Button::new(
+                            crate::theme::secondary_button(
                                 egui::RichText::new(uu_i18n::text("停止共享"))
                                     .color(super::theme::palette(ui.visuals()).danger),
                             )
@@ -400,12 +400,12 @@ impl App {
                 } else {
                     ui.horizontal(|ui| {
                         ui.label(uu_i18n::text("编码"));
-                        egui::ComboBox::from_id_salt("native-host-encoder").selected_text(preference_label(host.encoder))
+                        crate::theme::Select::from_id_salt("native-host-encoder").selected_text(preference_label(host.encoder))
                             .show_ui(ui,|ui| {
-                                ui.selectable_value(&mut host.encoder,EncoderPreference::Software,preference_label(EncoderPreference::Software));
+                                crate::theme::selectable_value(ui,&mut host.encoder,EncoderPreference::Software,preference_label(EncoderPreference::Software));
                                 if uu_core::native::hardware_encoding_compiled() {
                                     for preference in [EncoderPreference::Auto,EncoderPreference::Hardware] {
-                                        ui.selectable_value(&mut host.encoder,preference,preference_label(preference));
+                                        crate::theme::selectable_value(ui,&mut host.encoder,preference,preference_label(preference));
                                     }
                                 }
                             });
@@ -414,13 +414,13 @@ impl App {
                     else if matches!(host.encoder,EncoderPreference::Hardware|EncoderPreference::Vaapi) {ui.weak(uu_i18n::text("驱动不支持时停止并显示原因。当前仍有CPU颜色转换和上传。"));}
                     ui.horizontal(|ui| {
                         ui.label(uu_i18n::text("显示器"));
-                        egui::ComboBox::from_id_salt("native-host-monitor")
+                        crate::theme::Select::from_id_salt("native-host-monitor")
                             .selected_text(host.monitor.as_deref().unwrap_or(uu_i18n::text("主显示器")))
                             .width(300.0)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut host.monitor, None, uu_i18n::text("主显示器"));
+                                crate::theme::selectable_value(ui,&mut host.monitor, None, uu_i18n::text("主显示器"));
                                 for m in &host.monitors {
-                                    ui.selectable_value(
+                                    crate::theme::selectable_value(ui,
                                         &mut host.monitor,
                                         Some(m.name.clone()),
                                         format!(
@@ -433,7 +433,7 @@ impl App {
                                     );
                                 }
                             });
-                        if ui.button(uu_i18n::text("刷新")).clicked() {
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("刷新"))).clicked() {
                             host.refresh();
                         }
                     });
@@ -449,32 +449,32 @@ impl App {
                         let selected=host.addresses.iter().find(|address|address.ip.to_string()==host.bind.trim())
                             .map(|address|format!("{} · {}",address.name,address.ip))
                             .unwrap_or_else(||if host.bind.trim()=="127.0.0.1" {uu_i18n::text("仅本机（默认）").into()}else{uu_i18n::text("手动地址").into()});
-                        egui::ComboBox::from_id_salt("native-host-address").selected_text(selected.as_str()).width(250.0).truncate()
+                        crate::theme::Select::from_id_salt("native-host-address").selected_text(selected.as_str()).width(250.0).truncate()
                             .show_ui(ui,|ui| {
-                                ui.selectable_value(&mut host.bind,"127.0.0.1".into(),uu_i18n::text("仅本机（默认）"));
+                                crate::theme::selectable_value(ui,&mut host.bind,"127.0.0.1".into(),uu_i18n::text("仅本机（默认）"));
                                 for address in &host.addresses {
-                                    ui.selectable_value(&mut host.bind,address.ip.to_string(),format!("{} · {}",address.name,address.ip));
+                                    crate::theme::selectable_value(ui,&mut host.bind,address.ip.to_string(),format!("{} · {}",address.name,address.ip));
                                 }
                             }).response.on_hover_text(selected);
-                        if ui.button(uu_i18n::text("刷新地址")).clicked() {host.refresh_addresses();}
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("刷新地址"))).clicked() {host.refresh_addresses();}
                     });
                     ui.horizontal(|ui| {
                         ui.label(uu_i18n::text("本机网卡 IP"));
-                        ui.add(egui::TextEdit::singleline(&mut host.bind).desired_width(250.0));
+                        ui.add(crate::theme::Input::new(&mut host.bind).desired_width(250.0));
                     });
                     ui.weak(uu_i18n::text("跨设备连接时填写本机局域网地址；127.0.0.1 仅限本机。"));
                     if let Some(error)=&host.address_error {ui.colored_label(super::theme::palette(ui.visuals()).danger,error);}
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.label(uu_i18n::text("帧率"));
-                        ui.add(
+                        crate::theme::number_input(ui,
                             egui::DragValue::new(&mut host.fps)
                                 .range(1..=60)
                                 .suffix(" FPS"),
                         );
                         ui.add_space(16.0);
                         ui.label(uu_i18n::text("码率"));
-                        ui.add(
+                        crate::theme::number_input(ui,
                             egui::DragValue::new(&mut host.bitrate_kbps)
                                 .range(64..=100_000)
                                 .speed(500)
@@ -482,15 +482,15 @@ impl App {
                         );
                     });
                     ui.add_space(8.0);
-                    ui.checkbox(&mut host.allow_input, uu_i18n::text("允许受邀端请求键盘、鼠标和手柄控制"));
-                    ui.checkbox(&mut host.share_audio, uu_i18n::text("共享系统声音（输出设备）"));
-                    ui.checkbox(
+                    crate::theme::switch(ui,&mut host.allow_input, uu_i18n::text("允许受邀端请求键盘、鼠标和手柄控制"));
+                    crate::theme::switch(ui,&mut host.share_audio, uu_i18n::text("共享系统声音（输出设备）"));
+                    crate::theme::switch(ui,
                         &mut host.share_clipboard,
                         uu_i18n::text("允许文本和图片剪贴板同步（控制端需主动开启）"),
                     );
                     ui.add_space(8.0);
                     ui.label(uu_i18n::text("新邀请文件（10 分钟内可连接）"));
-                    ui.add(egui::TextEdit::singleline(&mut host.invitation).desired_width(460.0));
+                    ui.add(crate::theme::Input::new(&mut host.invitation).desired_width(460.0));
                     ui.weak(uu_i18n::text("停止或关闭共享后邀请失效。每次只接受一个连接。"));
                     ui.add_space(12.0);
                     if ui

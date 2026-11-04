@@ -82,7 +82,7 @@ mod tests {use super::*;
             let mut height = 0.0;
             let _ = context.run(Default::default(), |context| {
                 eframe::egui::CentralPanel::default().show(context, |ui| {
-                    height = ui.button("Retry").rect.height();
+                    height = ui.add(super::theme::secondary_button("Retry")).rect.height();
                 });
             });
             assert_eq!(context.theme(), eframe::egui::Theme::Light);

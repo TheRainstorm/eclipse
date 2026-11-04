@@ -462,7 +462,7 @@ impl super::App {
                 )
                 .show(ctx, |ui| {
                     ui.horizontal_centered(|ui| {
-                        if ui.button(uu_i18n::text("恢复默认")).clicked() {
+                        if ui.add(super::theme::secondary_button(uu_i18n::text("恢复默认"))).clicked() {
                             actions.reset = true;
                         }
                         if dirty {

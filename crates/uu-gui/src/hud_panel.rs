@@ -497,15 +497,15 @@ fn data_rows(ui:&mut egui::Ui,m:&Metrics,window:usize,width:f32) {
 }
 fn detail_contents(ui:&mut egui::Ui,m:&Metrics,width:f32,max_height:f32,state:&mut DetailState) {
     ui.set_width(width.max(1.));ui.set_max_height(max_height.max(1.));
-    *ui.visuals_mut()=egui::Visuals::dark();ui.visuals_mut().panel_fill=Color32::TRANSPARENT;
+    *ui.visuals_mut()=crate::theme::visuals_with_color(egui::Theme::Dark,crate::theme::current_color_theme(ui.ctx()));ui.visuals_mut().panel_fill=Color32::TRANSPARENT;
     ui.spacing_mut().item_spacing=egui::vec2(7.,4.);
     let now=ui.input(|i|i.time);let top=ui.cursor().top();
     ui.horizontal_wrapped(|ui|{
         ui.label(RichText::new(uu_i18n::text("串流诊断")).size(13.).strong().color(Color32::WHITE));
-        for (i,name) in ["3 min","10 min","60 min"].iter().enumerate(){ui.selectable_value(&mut state.window,i,*name);}
-        if ui.selectable_label(state.pinned,uu_i18n::text(if state.pinned{"已固定"}else{"固定"})).clicked(){state.pinned=!state.pinned;}
-        if ui.button(uu_i18n::text(if now<state.copied_until{"已复制"}else{"复制诊断"})).clicked(){ui.ctx().copy_text(m.diagnostic_text(state.window));state.copied_until=now+1.5;}
-        if ui.button(uu_i18n::text("清除")).on_hover_text(uu_i18n::text("清除图表和诊断统计历史，从当前计数重新记录；保留连接和实时测量。")).clicked(){state.clear_requested=true;state.copied_until=0.;}
+        for (i,name) in ["3 min","10 min","60 min"].iter().enumerate(){crate::theme::tab_value(ui,&mut state.window,i,*name);}
+        crate::theme::compact_switch(ui,&mut state.pinned,uu_i18n::text("固定"));
+        if ui.add(crate::theme::secondary_button(uu_i18n::text(if now<state.copied_until{"已复制"}else{"复制诊断"}))).clicked(){ui.ctx().copy_text(m.diagnostic_text(state.window));state.copied_until=now+1.5;}
+        if ui.add(crate::theme::secondary_button(uu_i18n::text("清除"))).on_hover_text(uu_i18n::text("清除图表和诊断统计历史，从当前计数重新记录；保留连接和实时测量。")).clicked(){state.clear_requested=true;state.copied_until=0.;}
     });
     ui.separator();
     let remaining=(max_height-(ui.cursor().top()-top)-2.).max(1.);

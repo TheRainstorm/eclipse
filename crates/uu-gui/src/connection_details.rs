@@ -132,7 +132,7 @@ pub(super) fn show(ctx: &egui::Context, open: &mut bool, snapshot: &Snapshot) {
             ui.add_space(12.);ui.separator();
             ui.weak(uu_i18n::text("候选地址用于尝试连接；顶部实际端点才是当前媒体使用的路径。映射地址可能仍属于上级内网，未发现映射不表示连接失败。"));
             ui.weak(uu_i18n::text("网卡候选也可能含公网 IPv6；中继端点属于 TURN 服务器。这里显示的是媒体端点，不是信令服务器地址。"));
-            if ui.button(uu_i18n::text("复制连接信息")).clicked(){ui.output_mut(|o|o.copied_text=snapshot.copy_text());}
+            if ui.add(crate::theme::secondary_button(uu_i18n::text("复制连接信息"))).clicked(){ui.output_mut(|o|o.copied_text=snapshot.copy_text());}
         });
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         *open = false;

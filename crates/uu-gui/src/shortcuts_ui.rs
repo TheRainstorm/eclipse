@@ -69,7 +69,7 @@ pub fn editor(ui: &mut egui::Ui, bindings: &mut Bindings) {
         active.seen = pass;
         ctx.data_mut(|d| d.insert_temp(record_id, active));
         ui.label(uu_i18n::format!("为“{}”按下快捷键；Esc 取消", active.action.label()));
-        if ui.small_button(uu_i18n::text("取消录入")).clicked() {
+        if ui.add(crate::theme::secondary_button(uu_i18n::text("取消录入")).small()).clicked() {
             clear(&ctx);
         }
         let event = ctx.input(|i| {
@@ -160,8 +160,7 @@ pub fn editor(ui: &mut egui::Ui, bindings: &mut Bindings) {
                     let mut changed = false;
                     let mut remove = None;
                     for (index, chord) in chords.iter().enumerate() {
-                        if ui
-                            .button(chord.label())
+                        if ui.add(crate::theme::secondary_button(chord.label()))
                             .on_hover_text(uu_i18n::text("点击重新录入"))
                             .clicked()
                         {
@@ -176,7 +175,7 @@ pub fn editor(ui: &mut egui::Ui, bindings: &mut Bindings) {
                                 )
                             });
                         }
-                        if ui.small_button("×").on_hover_text(uu_i18n::text("移除此绑定")).clicked() {
+                        if ui.add(crate::theme::secondary_button("×").small()).on_hover_text(uu_i18n::text("移除此绑定")).clicked() {
                             remove = Some(index);
                         }
                         if let Some(warning) = chord.warning() {
@@ -190,7 +189,7 @@ pub fn editor(ui: &mut egui::Ui, bindings: &mut Bindings) {
                     if chords.is_empty() {
                         ui.weak(uu_i18n::text("已禁用"));
                     }
-                    if chords.len() < 3 && ui.small_button("＋").on_hover_text(uu_i18n::text("增加绑定")).clicked()
+                    if chords.len() < 3 && ui.add(crate::theme::secondary_button("＋").small()).on_hover_text(uu_i18n::text("增加绑定")).clicked()
                     {
                         ctx.data_mut(|d| {
                             d.insert_temp(
@@ -210,7 +209,7 @@ pub fn editor(ui: &mut egui::Ui, bindings: &mut Bindings) {
                     if changed {
                         bindings.set(action, chords);
                     }
-                    if ui.small_button(uu_i18n::text("默认")).clicked() {
+                    if ui.add(crate::theme::secondary_button(uu_i18n::text("默认")).small()).clicked() {
                         bindings.reset(action);
                     }
                 });

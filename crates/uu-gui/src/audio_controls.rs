@@ -11,7 +11,7 @@ pub(super) fn volume_slider(ui: &mut eframe::egui::Ui, volume: &mut u32) -> bool
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(uu_i18n::text("音量")).size(13.).color(palette.muted));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-                ui.add(egui::DragValue::new(volume).range(0..=100).suffix(" %").speed(0.5));
+                super::theme::number_input(ui,egui::DragValue::new(volume).range(0..=100).suffix(" %").speed(0.5));
             });
         });
         ui.add_space(4.);

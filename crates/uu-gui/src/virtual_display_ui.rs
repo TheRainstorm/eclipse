@@ -604,7 +604,7 @@ impl State {
                     ui.weak(owner.lifetime());
                     if administrator_required(owner) {
                         ui.label(uu_i18n::text("请在服务管理中准备后台，再创建虚拟副屏；已有副屏不会因打开设置而断开。"));
-                        if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("打开后台准备"))).clicked(){preparation_action=Some(preparation_ui::Action::BackgroundSetup);}
+                        if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("打开后台准备"))).clicked(){preparation_action=Some(preparation_ui::Action::BackgroundSetup);}
                         if !self.notice.is_empty() { ui.label(&self.notice); }
                         return;
                     }
@@ -618,25 +618,24 @@ impl State {
                 }
                 ui.horizontal(|ui| {
                     ui.label(uu_i18n::text("分辨率"));
-                    ui.add(egui::DragValue::new(&mut self.spec.width).range(320..=16384));
+                    crate::theme::number_input(ui,egui::DragValue::new(&mut self.spec.width).range(320..=16384));
                     ui.label("×");
-                    ui.add(egui::DragValue::new(&mut self.spec.height).range(200..=16384));
+                    crate::theme::number_input(ui,egui::DragValue::new(&mut self.spec.height).range(200..=16384));
                     let mut fps = self.spec.refresh_millihz / 1000;
-                    if ui
-                        .add(egui::DragValue::new(&mut fps).range(1..=1000).suffix(" Hz"))
+                    if crate::theme::number_input(ui,egui::DragValue::new(&mut fps).range(1..=1000).suffix(" Hz"))
                         .changed()
                     {
                         self.spec.refresh_millihz = fps * 1000;
                     }
                 });
-                ui.checkbox(&mut self.spec.hdr, "HDR");
+                crate::theme::switch(ui,&mut self.spec.hdr, "HDR");
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
                             !busy && !mutations_blocked && !background_unavailable && (client.is_none() || self.remote_create_supported)
                                 && self.status.as_ref().is_none_or(|s|s.supported)
                                 && preparation_ui::can_create(self.preparation.as_ref(),self.preparation.as_ref().map_or_else(||self.status.as_ref().map_or(0,|s|s.available_slots),|s|s.available as usize),self.local_owner==Some(LocalOwner::Foreground)&&client.is_none()),
-                            egui::Button::new(uu_i18n::text("新建虚拟副屏")),
+                            crate::theme::secondary_button(uu_i18n::text("新建虚拟副屏")),
                         )
                         .on_disabled_hover_text(uu_i18n::text("远端未提供虚拟副屏管理，请更新后台并授予管理服务权限"))
                         .clicked()
@@ -644,7 +643,7 @@ impl State {
                         command = Some(Request::Create { spec: self.spec });
                     }
                     if ui
-                        .add_enabled(!self.busy(), egui::Button::new(uu_i18n::text("刷新")))
+                        .add_enabled(!self.busy(), crate::theme::secondary_button(uu_i18n::text("刷新")))
                         .clicked()
                     {
                         command = Some(Request::Inspect);
@@ -670,7 +669,7 @@ impl State {
                                 preparation_ui::Action::Recover=>uu_i18n::text("检查并恢复准备"),
                                 preparation_ui::Action::BackgroundSetup=>uu_i18n::text("打开后台准备"),
                             };
-                            if ui.add_enabled(!busy&&!mutations_blocked,egui::Button::new(label)).clicked(){preparation_action=Some(action);}
+                            if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(label)).clicked(){preparation_action=Some(action);}
                         }
                     }
                 } else if let Some(status) = &self.status {
@@ -698,18 +697,18 @@ impl State {
                     }
                     #[cfg(windows)]
                     if client.is_none() && status.driver_present && status.available_slots == 0 {
-                        if ui.add_enabled(!busy && !mutations_blocked, egui::Button::new(uu_i18n::text("打开后台准备")))
+                        if ui.add_enabled(!busy && !mutations_blocked, crate::theme::secondary_button(uu_i18n::text("打开后台准备")))
                             .on_hover_text(uu_i18n::text("准备已安装的虚拟显示设备，完成后刷新当前管理对象的列表。"))
                             .clicked() {preparation_action=Some(preparation_ui::Action::BackgroundSetup);}
                     }
                     if client.is_none()&&!status.driver_present {
                         ui.weak(uu_i18n::text("更新或启用源机后台后，可自动准备虚拟副屏。"));
-                        if ui.add_enabled(!busy&&!mutations_blocked,egui::Button::new(uu_i18n::text("打开后台准备"))).clicked(){preparation_action=Some(preparation_ui::Action::BackgroundSetup);}
+                        if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(uu_i18n::text("打开后台准备"))).clicked(){preparation_action=Some(preparation_ui::Action::BackgroundSetup);}
                     }
                 }
                 if background_unavailable {
                     ui.weak(uu_i18n::text("请在服务管理中准备后台，再创建虚拟副屏；已有副屏不会因打开设置而断开。"));
-                    if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("打开后台准备"))).clicked(){preparation_action=Some(preparation_ui::Action::BackgroundSetup);}
+                    if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("打开后台准备"))).clicked(){preparation_action=Some(preparation_ui::Action::BackgroundSetup);}
                 }
                 ui.separator();
                 if client.is_none() {
@@ -723,7 +722,7 @@ impl State {
                                 if ui
                                     .add_enabled(
                                         !busy && !mutations_blocked,
-                                        egui::Button::new(uu_i18n::text("停用现有虚拟屏…")),
+                                        crate::theme::secondary_button(uu_i18n::text("停用现有虚拟屏…")),
                                     )
                                     .clicked()
                                 {
@@ -740,11 +739,11 @@ impl State {
                             slot.source
                         ));
                         ui.horizontal(|ui| {
-                            if ui.add_enabled(!busy && !mutations_blocked,egui::Button::new(uu_i18n::text("确认停用"))).clicked() {
+                            if ui.add_enabled(!busy && !mutations_blocked,crate::theme::secondary_button(uu_i18n::text("确认停用"))).clicked() {
                                 prepare = Some(slot.id);
                                 self.preparing_slot = None;
                             }
-                            if ui.button(uu_i18n::text("取消")).clicked() {
+                            if ui.add(crate::theme::secondary_button(uu_i18n::text("取消"))).clicked() {
                                 self.preparing_slot = None;
                             }
                         });
@@ -771,7 +770,7 @@ impl State {
                                 if ui
                                     .add_enabled(
                                         !busy && !mutations_blocked && !fixed_current,
-                                        egui::Button::new(if display.cleanup_pending {
+                                        crate::theme::secondary_button(if display.cleanup_pending {
                                             uu_i18n::text("重试移除")
                                         } else {
                                             uu_i18n::text("移除")

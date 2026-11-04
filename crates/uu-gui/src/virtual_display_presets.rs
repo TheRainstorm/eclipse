@@ -161,7 +161,7 @@ pub fn create_menu(ui: &mut egui::Ui, presets: &Presets) -> Option<Spec> {
             specification(preset.spec)
         );
         if ui
-            .add_enabled(valid_spec(preset.spec), egui::Button::new(label))
+            .add_enabled(valid_spec(preset.spec), crate::theme::secondary_button(label))
             .clicked()
         {
             selected = Some(preset.spec);
@@ -181,15 +181,15 @@ pub fn editor(ui: &mut egui::Ui, presets: &mut Presets) {
         ui.push_id(preset.id, |ui| {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut presets.default, preset.id, uu_i18n::text("默认"));
+                    crate::theme::radio_value(ui,&mut presets.default, preset.id, uu_i18n::text("默认"));
                     ui.label(uu_i18n::text("规格名称"));
                     ui.add(
-                        egui::TextEdit::singleline(&mut preset.name)
+                        crate::theme::Input::new(&mut preset.name)
                             .desired_width(160.)
                             .char_limit(NAME_LIMIT),
                     );
                     if ui
-                        .add_enabled(removable, egui::Button::new(uu_i18n::text("删除")))
+                        .add_enabled(removable, crate::theme::secondary_button(uu_i18n::text("删除")))
                         .clicked()
                     {
                         remove = Some(preset.id);
@@ -197,13 +197,12 @@ pub fn editor(ui: &mut egui::Ui, presets: &mut Presets) {
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label(uu_i18n::text("分辨率"));
-                    ui.add(egui::DragValue::new(&mut preset.spec.width).range(320..=16_384));
+                    crate::theme::number_input(ui,egui::DragValue::new(&mut preset.spec.width).range(320..=16_384));
                     ui.label("×");
-                    ui.add(egui::DragValue::new(&mut preset.spec.height).range(200..=16_384));
+                    crate::theme::number_input(ui,egui::DragValue::new(&mut preset.spec.height).range(200..=16_384));
                     ui.label(uu_i18n::text("刷新率"));
                     let mut hz = preset.spec.refresh_millihz as f64 / 1000.;
-                    if ui
-                        .add(
+                    if crate::theme::number_input(ui,
                             egui::DragValue::new(&mut hz)
                                 .range(1.0..=1000.0)
                                 .speed(0.1)
@@ -214,7 +213,7 @@ pub fn editor(ui: &mut egui::Ui, presets: &mut Presets) {
                     {
                         preset.spec.refresh_millihz = (hz * 1000.).round() as u32;
                     }
-                    ui.checkbox(&mut preset.spec.hdr, "HDR");
+                    crate::theme::switch(ui,&mut preset.spec.hdr, "HDR");
                 });
             });
         });
@@ -225,7 +224,7 @@ pub fn editor(ui: &mut egui::Ui, presets: &mut Presets) {
     if ui
         .add_enabled(
             presets.items.len() < MAX_PRESETS,
-            egui::Button::new(uu_i18n::text("添加规格")),
+            crate::theme::secondary_button(uu_i18n::text("添加规格")),
         )
         .clicked()
     {

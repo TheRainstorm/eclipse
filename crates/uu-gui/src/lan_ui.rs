@@ -573,7 +573,7 @@ impl LanUi {
                                 .color(super::theme::palette(ui.visuals()).muted),
                         );
                         ui.add_space(16.);
-                        if ui.button(uu_i18n::text("添加设备")).clicked() {
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text("添加设备"))).clicked() {
                             self.add_open = true;
                         }
                     });
@@ -663,14 +663,13 @@ impl LanUi {
                                                 connect = Some(row.clone());
                                             }
                                             ui.menu_button(uu_i18n::text("更多"), |ui| {
-                                                if ui
-                                                    .button(
+                                                if ui.add(crate::theme::secondary_button(
                                                         if matches!(row.kind, RowKind::Paired(_)) {
                                                             uu_i18n::text("忘记配对")
                                                         } else {
                                                             uu_i18n::text("移除设备")
                                                         },
-                                                    )
+                                                    ))
                                                     .clicked()
                                                 {
                                                     forget = Some(row.clone());
@@ -707,7 +706,7 @@ impl LanUi {
                     ui.weak(uu_i18n::text("未填写端口时使用 TCP 48998；其它端口请填写 IP:端口。"));
                     ui.weak(uu_i18n::text("不同网段可手动连接，需路由及防火墙允许互通。"));
                     let edit = ui.add(
-                        egui::TextEdit::singleline(&mut self.address)
+                        crate::theme::Input::new(&mut self.address)
                             .hint_text(uu_i18n::text("IP 或 主机名[:端口]"))
                             .desired_width(350.),
                     );
@@ -716,7 +715,7 @@ impl LanUi {
                     }
                     ui.add_space(10.);
                     if ui
-                        .add_enabled(self.book.is_some(), egui::Button::new(uu_i18n::text("添加设备")))
+                        .add_enabled(self.book.is_some(), crate::theme::secondary_button(uu_i18n::text("添加设备")))
                         .clicked()
                     {
                         add = true;
@@ -756,7 +755,7 @@ impl LanUi {
                         });
                     }
                     ui.add_space(12.);
-                    if ui.button(if self.client_error.is_some() {uu_i18n::text("关闭")} else {uu_i18n::text("取消")}).clicked() {
+                    if ui.add(crate::theme::secondary_button(if self.client_error.is_some() {uu_i18n::text("关闭")} else {uu_i18n::text("取消")})).clicked() {
                         cancel = true;
                     }
                 });

@@ -32,9 +32,9 @@ impl ClientUi {
                     ui.add_space(10.);
                     ui.horizontal_wrapped(|ui| {
                         for (method,label) in [(PairingMethod::Code,uu_i18n::text("配对码")),(PairingMethod::Password,uu_i18n::text("密码")),(PairingMethod::TemporaryCode,uu_i18n::text("临时配对码"))] {
-                            ui.selectable_value(&mut self.method,method,label);
+                            crate::theme::tab_value(ui,&mut self.method,method,label);
                         }
-                        ui.add_enabled_ui(prompt.preauthorized,|ui| {ui.selectable_value(&mut self.method,PairingMethod::PublicKey,uu_i18n::text("已授权公钥"));});
+                        ui.add_enabled_ui(prompt.preauthorized,|ui| {crate::theme::tab_value(ui,&mut self.method,PairingMethod::PublicKey,uu_i18n::text("已授权公钥"));});
                     });
                     ui.add_space(8.);
                     match self.method {
@@ -42,14 +42,14 @@ impl ClientUi {
                         PairingMethod::TemporaryCode=>{ui.label(uu_i18n::text("主机确认八位短码后转为本次授权；此前长期授权会撤销，断开后需重新配对。"));},
                         PairingMethod::Password=>{
                             ui.label(uu_i18n::text("输入对方电脑预先设置的安全连接密码；验证成功后保存设备授权。"));
-                            ui.add(egui::TextEdit::singleline(&mut *self.password).password(true).char_limit(256).hint_text(uu_i18n::text("安全连接密码")));
+                            ui.add(crate::theme::Input::new(&mut *self.password).password(true).char_limit(256).hint_text(uu_i18n::text("安全连接密码")));
                         },
                         PairingMethod::PublicKey=>{ui.label(uu_i18n::text("主机已预先授权本机公钥。核对上方指纹后信任并连接。"));},
                     }
                     if !prompt.preauthorized {ui.weak(uu_i18n::text("公钥方式需先在主机“配对设置”中添加本机公钥。"));}
                     if !self.notice.is_empty(){ui.colored_label(super::theme::palette(ui.visuals()).danger,&self.notice);}
                     let valid=self.method!=PairingMethod::Password || (8..=256).contains(&self.password.len());
-                    if ui.add_enabled(valid,egui::Button::new(if self.method==PairingMethod::PublicKey{uu_i18n::text("信任并连接")}else{uu_i18n::text("开始配对")})).clicked() {
+                    if ui.add_enabled(valid,crate::theme::secondary_button(if self.method==PairingMethod::PublicKey{uu_i18n::text("信任并连接")}else{uu_i18n::text("开始配对")})).clicked() {
                         let choice=PairingChoice{method:self.method,password:std::mem::take(&mut self.password)};
                         if let Err(error)=display.choose(choice){self.notice=error.to_string();}
                     }
@@ -57,7 +57,7 @@ impl ClientUi {
                     ui.label(uu_i18n::text("请在主机输入下面的配对码，并批准本设备："));
                     ui.add_space(14.);
                     ui.label(egui::RichText::new(format!("{} {}",&code[..4],&code[4..])).size(34.).monospace().color(super::theme::palette(ui.visuals()).accent));
-                    if ui.button(uu_i18n::text("复制配对码")).clicked(){ctx.copy_text(code);}
+                    if ui.add(crate::theme::secondary_button(uu_i18n::text("复制配对码"))).clicked(){ctx.copy_text(code);}
                     ui.weak(if display.selected_method()==PairingMethod::TemporaryCode {uu_i18n::text("临时授权只用于本次串流，断开后失效。")}else{uu_i18n::text("配对完成后，以后连接无需重复输入。")});
                     ui.spinner();ui.label(uu_i18n::text("等待主机确认…"));
                 }
@@ -107,20 +107,20 @@ impl HostUi {
             }
         }
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut self.method,0,uu_i18n::text("密码配对"));
-            ui.selectable_value(&mut self.method,1,uu_i18n::text("公钥配对"));
+            crate::theme::tab_value(ui,&mut self.method,0,uu_i18n::text("密码配对"));
+            crate::theme::tab_value(ui,&mut self.method,1,uu_i18n::text("公钥配对"));
         });
         ui.add_space(12.);
         if self.method==0 {
             ui.strong(uu_i18n::text("密码配对"));
             ui.label(if self.configured{uu_i18n::text("已设置安全连接密码")}else{uu_i18n::text("尚未设置安全连接密码")});
             ui.weak(uu_i18n::text("设置后，知道密码的新设备可配对并保存授权。更改密码用于后续配对，已有设备授权仍由下方列表管理。"));
-            ui.add(egui::TextEdit::singleline(&mut *self.password).password(true).char_limit(256).hint_text(uu_i18n::text("新的安全连接密码 · 8–256 字节")));
+            ui.add(crate::theme::Input::new(&mut *self.password).password(true).char_limit(256).hint_text(uu_i18n::text("新的安全连接密码 · 8–256 字节")));
             ui.horizontal_wrapped(|ui|{super::sharing_ui::permissions(ui,&mut self.password_permissions);});
             let mut change=None;
             ui.horizontal(|ui| {
-                if ui.add_enabled(self.job.is_none()&&(8..=256).contains(&self.password.len()),egui::Button::new(uu_i18n::text("保存安全连接密码"))).clicked(){change=Some(true);}
-                if ui.add_enabled(self.job.is_none()&&self.configured,egui::Button::new(uu_i18n::text("移除安全连接密码"))).clicked(){change=Some(false);}
+                if ui.add_enabled(self.job.is_none()&&(8..=256).contains(&self.password.len()),crate::theme::secondary_button(uu_i18n::text("保存安全连接密码"))).clicked(){change=Some(true);}
+                if ui.add_enabled(self.job.is_none()&&self.configured,crate::theme::secondary_button(uu_i18n::text("移除安全连接密码"))).clicked(){change=Some(false);}
                 if self.job.is_some(){ui.spinner();}
             });
             if let Some(set)=change {
@@ -134,10 +134,10 @@ impl HostUi {
             }
         } else {
             ui.strong(uu_i18n::text("预先授权控制端公钥"));
-            ui.add(egui::TextEdit::singleline(&mut self.name).char_limit(64).hint_text(uu_i18n::text("控制端名称")));
-            if ui.add(egui::TextEdit::multiline(&mut self.public_key).char_limit(8192).desired_rows(2).hint_text(uu_i18n::text("粘贴 Eclipse 或 SSH Ed25519 公钥"))).changed(){self.update_key_name();}
+            ui.add(crate::theme::Input::new(&mut self.name).char_limit(64).hint_text(uu_i18n::text("控制端名称")));
+            if ui.add(crate::theme::Input::multiline(&mut self.public_key).char_limit(8192).desired_rows(2).hint_text(uu_i18n::text("粘贴 Eclipse 或 SSH Ed25519 公钥"))).changed(){self.update_key_name();}
             ui.horizontal_wrapped(|ui|{super::sharing_ui::permissions(ui,&mut self.key_permissions);});
-            if ui.button(uu_i18n::text("添加授权公钥")).clicked() {
+            if ui.add(crate::theme::secondary_button(uu_i18n::text("添加授权公钥"))).clicked() {
                 let result=PublicDevice::from_public_key(&self.public_key,&self.name).and_then(|device| {
                     store.authorize(device.clone(),self.key_permissions,None)?;
                     if let Some(access)=access{access.sessions.revoke(&device.id());}
@@ -151,8 +151,8 @@ impl HostUi {
                 ui.weak(uu_i18n::text("作为控制端时，复制此公钥到主机的授权公钥列表。"));
                 let card=store.card(name);
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button(uu_i18n::text("复制本机公钥")).clicked(){ui.ctx().copy_text(card.export_public_key());}
-                    if ui.button(uu_i18n::text("复制公钥指纹")).clicked(){ui.ctx().copy_text(card.id());}
+                    if ui.add(crate::theme::secondary_button(uu_i18n::text("复制本机公钥"))).clicked(){ui.ctx().copy_text(card.export_public_key());}
+                    if ui.add(crate::theme::secondary_button(uu_i18n::text("复制公钥指纹"))).clicked(){ui.ctx().copy_text(card.id());}
                 });
             });
         }

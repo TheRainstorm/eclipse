@@ -119,12 +119,12 @@ pub fn chart(ui:&mut eframe::egui::Ui,samples:&[Sample],height:f32,window:usize)
     let id=ui.id().with("latency-curve-series");let mut selected=ui.data_mut(|d|d.get_temp::<[bool;SERIES_COUNT]>(id)).unwrap_or(DEFAULT_SERIES);
     ui.horizontal(|ui|{ui.strong(uu_i18n::format!("最近 {} 分钟",window_seconds as u64/60));ui.label(egui::RichText::new(uu_i18n::text("延迟 · ms")).small().weak());});
     egui::ScrollArea::horizontal().id_salt("latency-curve-legend").auto_shrink([false,true]).show(ui,|ui|{ui.spacing_mut().button_padding=egui::vec2(6.,3.);ui.spacing_mut().interact_size.y=22.;ui.spacing_mut().item_spacing.x=5.;ui.horizontal(|ui|{for i in SERIES_ORDER {
-        let text=egui::RichText::new(names[i]).size(11.).color(if selected[i]{colors[i]}else{Color32::from_gray(110)});
         let help=if i==ESTIMATE_SERIES {uu_i18n::text("估计曲线为Est.Total：最近3秒完整分量和采样的均值，±为这些估计值的标准差，不是同帧端到端或测量误差界。缺项留空，样本不足两次时波动未知。点击切换曲线。")}
             else if i==INPUT_SERIES {uu_i18n::text("输入→画面为同一次输入至注入后已观测源图像的首显回执估测，竖线保留显示误差；不证明游戏响应。无输入或证据缺失断线，点击切换曲线。")}
             else{uu_i18n::text("端到端曲线为同帧测量的估计均值，竖线为误差范围；其它曲线是独立阶段窗口均值。未知不补零，测量代次改变后重新记录。点击切换曲线。")};
-        let response=ui.add(egui::Button::new(text).selected(selected[i]).frame(true).stroke(Stroke::NONE).rounding(3.).wrap_mode(egui::TextWrapMode::Extend)).on_hover_text(help);
-        if response.clicked(){selected[i]=!selected[i];}
+        let (dot,_)=ui.allocate_exact_size(egui::vec2(7.,24.),egui::Sense::hover());
+        ui.painter().circle_filled(dot.center(),3.,colors[i]);
+        crate::theme::compact_switch(ui,&mut selected[i],names[i]).on_hover_text(help);
     } });});ui.data_mut(|d|d.insert_temp(id,selected));
     let (bounds,response)=ui.allocate_exact_size(egui::vec2(ui.available_width().max(1.),height.max(80.)),egui::Sense::hover());
     let plot=egui::Rect::from_min_max(bounds.min+egui::vec2(32.,8.),bounds.max-egui::vec2(8.,22.));

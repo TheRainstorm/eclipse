@@ -76,18 +76,18 @@ impl Entry {
                 .is_some_and(|version|version.revision!=env!("UU_BUILD_COMMIT"));
             ui.horizontal_wrapped(|ui| {
                 if self.status.is_some() {
-                    if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("管理后台服务")))
+                    if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("管理后台服务")))
                         .on_hover_text(uu_i18n::text("查看后台设置、设备授权和虚拟显示器；不会重启服务。")).clicked() {
                         match std::env::current_exe() {
                             Ok(exe)=>self.launch(exe,"--open-background-service-manager".into(),"",ui.ctx()),
                             Err(error)=>self.notice=error.to_string(),
                         }
                     }
-                    if outdated && ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("更新后台程序")))
+                    if outdated && ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("更新后台程序")))
                         .on_hover_text(uu_i18n::text("保留后台设置和配对；更新会断开串流。")).clicked() {
                         self.prepare_install(host);
                     }
-                }else if ui.add_enabled(available&&!busy,egui::Button::new(uu_i18n::text("安装并启动后台服务"))).clicked() {
+                }else if ui.add_enabled(available&&!busy,crate::theme::secondary_button(uu_i18n::text("安装并启动后台服务"))).clicked() {
                     self.prepare_install(host);
                 }
                 if busy {ui.spinner();}
@@ -96,11 +96,11 @@ impl Entry {
             ui.collapsing(uu_i18n::text("详情"),|ui| {
                 if let Some(build)=&self.build {version_labels(ui,build);}
                 if self.status.is_some() {
-                    if !outdated && ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("更新后台程序"))).clicked() {self.prepare_install(host);}
+                    if !outdated && ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("更新后台程序"))).clicked() {self.prepare_install(host);}
                     ui.weak(uu_i18n::text("安装当前完整程序包并启动后台，保留已有设置与配对，不导入插件或账号；会断开后台串流并停止本窗口的前台共享。"));
                     ui.add_space(8.);
                     ui.strong(uu_i18n::text("插件与账号"));
-                    if ui.add_enabled(!busy,egui::Button::new(uu_i18n::text("同步插件并重启后台服务"))).clicked() {
+                    if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("同步插件并重启后台服务"))).clicked() {
                         let result=(||->anyhow::Result<_>{
                             let config=uu_core::Config::from_env()?;
                             Ok((std::env::current_exe()?,format!("--background-service-action import-plugins --source-data \"{}\"",config.data_dir.display())))
@@ -463,16 +463,16 @@ impl eframe::App for Manager {
             });
             if let Some(build)=&self.build {version_labels(ui,build);}
             ui.horizontal(|ui| {
-                if ui.add_enabled(!self.busy,egui::Button::new(uu_i18n::text("检查防火墙"))).clicked(){self.submit(Job::Firewall(false));}
-                if ui.add_enabled(!self.busy,egui::Button::new(uu_i18n::text("修复防火墙"))).clicked(){self.submit(Job::Firewall(true));}
+                if ui.add_enabled(!self.busy,crate::theme::secondary_button(uu_i18n::text("检查防火墙"))).clicked(){self.submit(Job::Firewall(false));}
+                if ui.add_enabled(!self.busy,crate::theme::secondary_button(uu_i18n::text("修复防火墙"))).clicked(){self.submit(Job::Firewall(true));}
             });
             if !self.firewall.is_empty(){ui.label(&self.firewall);}
             ui.horizontal(|ui| {
-                if ui.add_enabled(self.state==SERVICE_RUNNING,egui::Button::new(uu_i18n::text("虚拟显示器"))).clicked(){self.virtual_display.open_local(ctx,super::virtual_display_ui::LocalOwner::Background);}
+                if ui.add_enabled(self.state==SERVICE_RUNNING,crate::theme::secondary_button(uu_i18n::text("虚拟显示器"))).clicked(){self.virtual_display.open_local(ctx,super::virtual_display_ui::LocalOwner::Background);}
                 if ui
                     .add_enabled(
                         !self.busy && self.state == SERVICE_STOPPED,
-                        egui::Button::new(uu_i18n::text("启动服务")),
+                        crate::theme::secondary_button(uu_i18n::text("启动服务")),
                     )
                     .clicked()
                 {
@@ -481,13 +481,13 @@ impl eframe::App for Manager {
                 if ui
                     .add_enabled(
                         !self.busy && self.state == SERVICE_RUNNING,
-                        egui::Button::new(uu_i18n::text("停止服务")),
+                        crate::theme::secondary_button(uu_i18n::text("停止服务")),
                     )
                     .clicked()
                 {
                     self.submit(Job::Control("stop"));
                 }
-                if ui.button(uu_i18n::text("重新读取配置")).clicked() {
+                if ui.add(crate::theme::secondary_button(uu_i18n::text("重新读取配置"))).clicked() {
                     self.dirty = false;
                     self.submit(Job::Refresh);
                 }
@@ -508,7 +508,7 @@ impl eframe::App for Manager {
                     ui.monospace(request.device.id());
                     let code = self.codes.entry(request.id.clone()).or_default();
                     ui.add(
-                        egui::TextEdit::singleline(&mut **code)
+                        crate::theme::Input::new(&mut **code)
                             .hint_text(uu_i18n::text("控制端显示的 8 位配对码"))
                             .char_limit(8),
                     );
@@ -523,7 +523,7 @@ impl eframe::App for Manager {
                         if ui
                             .add_enabled(
                                 !self.busy && request.waiting && code.len() == 8,
-                                egui::Button::new(uu_i18n::text("批准配对")),
+                                crate::theme::secondary_button(uu_i18n::text("批准配对")),
                             )
                             .clicked()
                         {
@@ -534,7 +534,7 @@ impl eframe::App for Manager {
                             }));
                         }
                         if ui
-                            .add_enabled(!self.busy, egui::Button::new(uu_i18n::text("拒绝")))
+                            .add_enabled(!self.busy, crate::theme::secondary_button(uu_i18n::text("拒绝")))
                             .clicked()
                         {
                             self.submit(Job::Rpc(Request::Reject {
@@ -552,7 +552,7 @@ impl eframe::App for Manager {
                     (3, uu_i18n::text("配对设置")),
                     (4, uu_i18n::text("连接")),
                 ] {
-                    ui.selectable_value(&mut self.section, section, name);
+                    crate::theme::tab_value(ui,&mut self.section, section, name);
                 }
             });
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -601,7 +601,7 @@ impl eframe::App for Manager {
                                                     Err(error) => error.to_string(),
                                                 };
                                             }
-                                            if ui.small_button(uu_i18n::text("撤销授权")).clicked() {
+                                            if ui.add(crate::theme::secondary_button(uu_i18n::text("撤销授权")).small()).clicked() {
                                                 self.notice =
                                                     match self.trust.revoke(&peer.device.id()) {
                                                         Ok(()) => uu_i18n::text("设备授权已撤销").into(),
@@ -617,19 +617,19 @@ impl eframe::App for Manager {
                             }
                         }
                         _ => {
-                            ui.checkbox(&mut self.draft.ip_enabled, uu_i18n::text("IP 直连"));
+                            crate::theme::switch(ui,&mut self.draft.ip_enabled, uu_i18n::text("IP 直连"));
                             for provider in uu_core::plugins::registry().descriptors() {
                                 let mut enabled=self.draft.plugin_services.iter().any(|id|id==provider.id);
-                                if ui.checkbox(&mut enabled,provider.name).changed(){self.draft.plugin_services.retain(|id|id!=provider.id);if enabled {self.draft.plugin_services.push(provider.id.into());}}
+                                if crate::theme::switch(ui,&mut enabled,provider.name).changed(){self.draft.plugin_services.retain(|id|id!=provider.id);if enabled {self.draft.plugin_services.push(provider.id.into());}}
                             }
                             ui.horizontal(|ui| {
                                 ui.label(uu_i18n::text("服务端口"));
-                                ui.add(
+                                crate::theme::number_input(ui,
                                     egui::DragValue::new(&mut self.draft.service_port)
                                         .range(1..=65535),
                                 );
                                 ui.label(uu_i18n::text("发现端口"));
-                                ui.add(
+                                crate::theme::number_input(ui,
                                     egui::DragValue::new(&mut self.draft.discovery_port)
                                         .range(1..=65535),
                                 );
@@ -640,13 +640,13 @@ impl eframe::App for Manager {
                     ui.add_space(14.);
                     ui.horizontal(|ui| {
                         if ui
-                            .add_enabled(!self.busy, egui::Button::new(uu_i18n::text("保存，下次启动生效")))
+                            .add_enabled(!self.busy, crate::theme::secondary_button(uu_i18n::text("保存，下次启动生效")))
                             .clicked()
                         {
                             self.save(false);
                         }
                         if ui
-                            .add_enabled(!self.busy, egui::Button::new(uu_i18n::text("保存并重启服务")))
+                            .add_enabled(!self.busy, crate::theme::secondary_button(uu_i18n::text("保存并重启服务")))
                             .clicked()
                         {
                             self.save(true);
@@ -658,7 +658,7 @@ impl eframe::App for Manager {
                         for connection in snapshot.connections.clone() {
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(format!("{} · {}", connection.name, connection.status));
-                                if ui.small_button(uu_i18n::text("断开")).clicked() {
+                                if ui.add(crate::theme::secondary_button(uu_i18n::text("断开")).small()).clicked() {
                                     self.submit(Job::Rpc(Request::Admin {
                                         request: host_admin::Request::Disconnect {
                                             session: connection.id,
