@@ -1,4 +1,4 @@
-//! An hour of bounded observations. Missing values and generations never join.
+//! An hour of session observations. Replaced measurement owners leave a gap.
 use std::{collections::VecDeque, sync::Arc, time::Instant};
 
 const RETENTION_SECONDS:f64=super::WINDOWS[2] as f64;
@@ -57,11 +57,20 @@ impl History {
     }
     pub(crate) fn record_input_at(&mut self, now:f64, generation:[u64;3], values:[Option<f32>;7], video_uncertainty_ms:Option<f32>,input_frame:Option<[f32;2]>) {
         if !now.is_finite() { return; }
-        if self.generation!=Some(generation) {self.samples.clear();self.generation=Some(generation);}
-        if self.samples.back().is_some_and(|s| now < s.seconds) { self.samples.clear(); }
-        if self.samples.back().is_some_and(|s| now - s.seconds < STEP_SECONDS - 0.001) { return; }
+        let same_stream=self.generation.is_some_and(|previous|previous[..2]==generation[..2]);
+        let new_measurement=self.generation!=Some(generation);
+        if !same_stream || self.samples.back().is_some_and(|s|now<s.seconds) {self.samples.clear();}
+        self.generation=Some(generation);
+        if !new_measurement && self.samples.back().is_some_and(|s| now - s.seconds < STEP_SECONDS - 0.001) { return; }
         while self.samples.front().is_some_and(|s| now - s.seconds > RETENTION_SECONDS) { self.samples.pop_front(); }
-        while self.samples.len() >= MAX_SAMPLES { self.samples.pop_front(); }
+        let gap=new_measurement&&!self.samples.is_empty();
+        while self.samples.len() >= MAX_SAMPLES-usize::from(gap) { self.samples.pop_front(); }
+        if gap {
+            // Fullscreen/DPI/surface replacement retires display receipts, not
+            // the stream's past observations. Break curves and the rolling
+            // estimate rather than erasing the hour or joining namespaces.
+            self.samples.push_back(Sample{seconds:now,values:[None;7],video_uncertainty_ms:None,estimated_total:None,input_frame:None});
+        }
         let values=values.map(|v|v.filter(|v|v.is_finite() && *v>=0.));
         let estimated_total=full_total(&values).map(|total|{
             let mut count=1usize;let mut mean=f64::from(total);let mut m2=0.;let mut previous=now;
@@ -325,9 +334,9 @@ mod tests {
         h.record_at(0.,[1,0,1],[Some(3.);7],None);assert_eq!(h.samples.len(),1);assert_eq!(h.samples[0].values,[Some(3.);7]);
     }
     #[test]
-    fn source_track_and_measurement_generations_reset_history_without_throttling() {
+    fn media_and_track_changes_reset_history_without_throttling() {
         let mut h=History::default();
-        for (n,generation) in [[1,0,1],[2,0,1],[2,1,1],[2,1,2]].into_iter().enumerate() {
+        for (n,generation) in [[1,0,1],[2,0,1],[2,1,1]].into_iter().enumerate() {
             h.record_at(n as f64*0.1,generation,[Some(n as f32);7],Some(0.2));
             assert_eq!(h.samples.len(),1);
             assert_eq!(h.samples[0].values,[Some(n as f32);7]);
@@ -335,5 +344,25 @@ mod tests {
         h.record_at(1.,[2,1,2],[None;7],Some(0.2));
         assert_eq!(h.samples.back().unwrap().values,[None;7]);
         assert_eq!(h.samples.back().unwrap().video_uncertainty_ms,None);
+    }
+    #[test]
+    fn replacing_the_display_observer_preserves_history_but_never_joins_measurements() {
+        let mut h=History::default();
+        h.record_input_at(0.,[1,0,1],[Some(1.);7],Some(0.2),Some([10.,1.]));
+        h.record_input_at(0.5,[1,0,1],[Some(2.);7],Some(0.3),Some([20.,2.]));
+        h.record_input_at(0.6,[1,0,2],[Some(3.);7],Some(0.4),Some([30.,3.]));
+        let samples=h.snapshot();
+        assert_eq!(samples.len(),4);
+        assert_eq!(samples[0].values,[Some(1.);7]);
+        assert_eq!(samples[1].input_frame,Some([20.,2.]));
+        assert_eq!(samples[2].values,[None;7]);
+        assert_eq!(samples[3].estimated_total.unwrap().samples,1);
+        assert_eq!(samples[3].estimated_total.unwrap().mean_ms,18.);
+        for series in 0..SERIES_COUNT {
+            let runs=curve_runs(&samples,series,60.,600);
+            assert_eq!(runs.len(),2,"series {series} must break at the retired observer");
+            assert_eq!(runs[0],vec![0,1]);
+            assert_eq!(runs[1],vec![3]);
+        }
     }
 }
