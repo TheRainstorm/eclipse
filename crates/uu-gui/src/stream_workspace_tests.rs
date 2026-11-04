@@ -131,15 +131,20 @@ fn aggregated_device_commands_keep_individual_view_ownership() {
     actions.borrow_mut().clear();
     let context=egui::Context::default();
     let render=|events| {
-        let mut close=None;
+        let mut regions=None;
         let _=context.run(egui::RawInput{events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1100.,200.))),..Default::default()},|ctx| {
-            egui::CentralPanel::default().show(ctx,|ui|{let rects=crate::stream_tabs_ui::show(&tabs,ui,160.);close=Some(rects.close[0].1.center());});
-        });close.unwrap()
+            egui::CentralPanel::default().show(ctx,|ui|{let rects=crate::stream_tabs_ui::show(&tabs,ui,160.);regions=Some(rects);});
+        });regions.unwrap()
     };
-    let close=render(vec![]);
-    let button=|pressed|egui::Event::PointerButton{pos:close,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
-    render(vec![egui::Event::PointerMoved(close),button(true)]);render(vec![button(false)]);
-    assert_eq!(&actions.borrow()[..],&[Action::Close(2)],"the aggregate device header closes only its active virtual view");
+    let regions=render(vec![]);assert!(regions.close.is_empty());
+    let device=regions.devices[0].1.center();
+    let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};
+    render(vec![egui::Event::PointerMoved(device),button(device,egui::PointerButton::Secondary,true)]);
+    render(vec![button(device,egui::PointerButton::Secondary,false)]);
+    let close=render(vec![]).disconnect[0].1.center();
+    render(vec![egui::Event::PointerMoved(close),button(close,egui::PointerButton::Primary,true)]);
+    render(vec![button(close,egui::PointerButton::Primary,false)]);
+    assert_eq!(&actions.borrow()[..],&[Action::Close(2)],"the aggregate device menu closes only its active virtual view");
 }
 
 #[test]
@@ -784,7 +789,10 @@ fn display_pills_open_their_own_source_and_keep_connection_ownership() {
     render(vec![egui::Event::PointerMoved(create),button(create,egui::PointerButton::Primary,true)]);
     render(vec![button(create,egui::PointerButton::Primary,false)]);
     assert!(matches!(&std::mem::take(&mut *actions.borrow_mut())[..],[Action::CreateDisplayWithSpec{session:22,..}]),"creation stays under the clicked device and carries the visible preset");
-    render(Vec::new());let close=region(|r|r.close[0].1);
+    render(Vec::new());let device=region(|r|r.devices[0].1);
+    render(vec![egui::Event::PointerMoved(device),button(device,egui::PointerButton::Secondary,true)]);
+    render(vec![button(device,egui::PointerButton::Secondary,false)]);render(Vec::new());
+    let close=region(|r|r.disconnect[0].1);
     render(vec![egui::Event::PointerMoved(close),button(close,egui::PointerButton::Primary,true)]);
     render(vec![button(close,egui::PointerButton::Primary,false)]);
     assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::Close(22)],"close ends this connection, not one source or another window");
@@ -806,7 +814,7 @@ pub(super) fn observe_tab_rects(ctx:&egui::Context,rects:crate::stream_tabs_ui::
     TAB_RECTS.with(|slots|slots.borrow_mut().insert(ctx.viewport_id(),rects));
 }
 #[derive(Clone,Copy,Debug)]
-enum PointerAction { Detach, Merge, Disconnect, CloseButton }
+enum PointerAction { Detach, Merge, Disconnect }
 struct PointerScript {
     viewport:egui::ViewportId,
     session:u64,
@@ -824,18 +832,17 @@ fn inject_pointer_script(input:&mut egui::RawInput) {
         let Some(script)=slot.as_mut().filter(|script|script.viewport==input.viewport_id) else{return;};
         let finished=TAB_RECTS.with(|rects| {
             let rects=rects.borrow();let Some(rects)=rects.get(&script.viewport) else{return false;};
-            let direct=matches!(script.action,PointerAction::CloseButton);
-            let buttons=if direct {&rects.close} else if script.step<3 {&rects.devices} else {match script.action {PointerAction::Detach=>&rects.detach,PointerAction::Merge=>&rects.merge,PointerAction::Disconnect=>&rects.disconnect,PointerAction::CloseButton=>unreachable!()}};
+            let buttons=if script.step<3 {&rects.devices} else {match script.action {PointerAction::Detach=>&rects.detach,PointerAction::Merge=>&rects.merge,PointerAction::Disconnect=>&rects.disconnect}};
             let Some((_,rect))=buttons.iter().find(|(id,_)|*id==script.session) else{return false;};
             let position=rect.center();
             eprintln!("generated pointer action={:?} session={} viewport={:?} step={} rect={rect:?}",script.action,script.session,script.viewport,script.step);
             input.focused=true;
             input.events.push(egui::Event::PointerMoved(position));
-            let button=if !direct && script.step<3 {egui::PointerButton::Secondary} else {egui::PointerButton::Primary};
-            let stage=if direct {script.step} else if script.step<3 {script.step} else {script.step-3};
+            let button=if script.step<3 {egui::PointerButton::Secondary} else {egui::PointerButton::Primary};
+            let stage=if script.step<3 {script.step} else {script.step-3};
             if stage<2 {input.events.push(egui::Event::PointerButton{pos:position,button,pressed:stage==0,modifiers:Default::default()});}
             script.step+=1;
-            direct && script.step==2 || !direct && script.step==5
+            script.step==5
         });
         if finished {*slot=None;}
     });
@@ -1131,10 +1138,10 @@ impl eframe::App for Probe {
                         self.stats[1].native_media_epoch.load(Ordering::Acquire),
                         self.epochs[1]
                     );
-                    click_session(state.windows[0].viewport(),self.second_id,PointerAction::CloseButton,ctx);
+                    click_session(state.windows[0].viewport(),self.second_id,PointerAction::Disconnect,ctx);
                     self.phase = 5;
                     *self.passed.lock().unwrap() = true;
-                    println!("two distinct generated sources: attach, tab selection, independent quality, group reorder, context-menu detach and disconnect, close button, independent fullscreen/HUD; display-window launch routing checked with catalog fixtures, epochs unchanged, decode errors=0");
+                    println!("two distinct generated sources: attach, tab selection, independent quality, group reorder, context-menu detach and disconnect, independent fullscreen/HUD; display-window launch routing checked with catalog fixtures, epochs unchanged, decode errors=0");
                 }
                 _ => {}
             }

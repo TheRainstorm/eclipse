@@ -47,6 +47,8 @@ pub fn uses_desktop_portal() -> bool { uu_capture::uses_desktop_portal() }
 #[derive(Clone, Debug)]
 pub struct CaptureMonitor {
     pub name: String,
+    pub friendly_name:Option<String>,
+    pub hdr_enabled:Option<bool>,
     pub x: i32,
     pub y: i32,
     pub width: u32,
@@ -74,14 +76,14 @@ pub fn monitors() -> Result<Vec<CaptureMonitor>> {
     #[cfg(windows)]
     return Ok(uu_capture::windows::diagnostic_monitors()?.into_iter().map(|m|CaptureMonitor {
         name:m.name,x:m.physical_bounds[0],y:m.physical_bounds[1],width:m.physical_bounds[2] as u32,height:m.physical_bounds[3] as u32,
-        primary:m.primary,refresh_hz:m.refresh_hz,
+        primary:m.primary,refresh_hz:m.refresh_hz,friendly_name:m.friendly_name,hdr_enabled:m.hdr_enabled,
     }).collect());
     #[cfg(target_os = "linux")]
     let sources = if uu_capture::uses_wayland() {uu_capture::wayland::monitors()?}
         else {uu_capture::x11::monitors(None)?};
     #[cfg(target_os = "linux")]
     return Ok(sources.into_iter().map(|m| CaptureMonitor {
-        name: m.name, x: m.x, y: m.y, width: m.width, height: m.height, primary: m.primary,refresh_hz:None,
+        name: m.name, x: m.x, y: m.y, width: m.width, height: m.height, primary: m.primary,refresh_hz:None,friendly_name:None,hdr_enabled:None,
     }).collect());
     #[cfg(not(any(windows, target_os = "linux")))]
     bail!("native desktop capture is unavailable on this platform")
@@ -853,6 +855,7 @@ async fn send_video(
     controls.attach(&peer.pc,peer.tasks.clone());
     let ice_started=Instant::now();
     let mut description=peer.description(false).await?;
+    if let Some(displays)=&displays {displays.add_names(&mut description)?;}
     if initial_supported {crate::native_displays::advertise_initial(&mut description)?;}
     if let Some(reply)=&initial_reply {reply.add(&mut description)?;}
     if cursor_available {crate::native_cursor::advertise(&mut description)?;}
@@ -1131,6 +1134,9 @@ async fn receive_session(
     }
     let quality=crate::native_quality::Response::read(&answer.sdp)?;
     stats.native_displays.read_initial_answer(&answer.sdp)?;
+    if stats.native_displays.read_names(&answer.sdp).is_err() {
+        stats.diagnostics.record(serde_json::json!({"event":"native_display_names_invalid"}));
+    }
     let rate:Option<crate::native_quality::RateResponse>=crate::native_quality::get(&answer.sdp,crate::native_quality::RATE_ATTRIBUTE)?;
     ensure!(rate.is_none()||stats.native_rate_request.get().is_some(),"{}", uu_i18n::format!("主机返回未请求的码率模式"));
     if let Some(requested)=rate_request.and_then(|r|r.selection) {

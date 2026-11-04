@@ -77,15 +77,13 @@ impl DisplayLayout {
         self.numbers.iter().position(|v| *v == id).map(|i| i + 1)
     }
     pub fn label(&self, screen: &RemoteScreen) -> String {
-        let number = self
-            .number(screen.id)
-            .map(|n| format!(" {n}"))
-            .unwrap_or_default();
-        if screen.display_name.is_empty() {
-            uu_i18n::format!("显示屏{number}")
-        } else {
-            uu_i18n::format!("显示屏{number}（{}）", screen.display_name)
-        }
+        self.label_named(screen,&screen.display_name)
+    }
+    pub fn label_named(&self,screen:&RemoteScreen,name:&str)->String {
+        let number=self.number(screen.id).unwrap_or_else(||screen.id.max(0) as usize+1);
+        let name=name.strip_prefix(r"\\.\").unwrap_or(name).trim();
+        let name=if name.is_empty(){uu_i18n::text("显示器")}else{name};
+        format!("{number}:{name}")
     }
     pub fn sort(&self, screens: &mut [RemoteScreen]) {
         screens.sort_by_key(|s| {
@@ -147,6 +145,15 @@ mod tests {
         layout.sync(&[screen(42), screen(11), screen(7), screen(99)]);
         assert_eq!(layout.number(42), Some(2));
         assert_eq!(layout.number(99), Some(4));
+    }
+    #[test]
+    fn compact_caption_uses_a_friendly_name_without_changing_stable_identity() {
+        let mut layout=DisplayLayout::default();let mut monitor=screen(42);
+        monitor.display_name=r"\\.\DISPLAY4".into();
+        layout.sync(&[monitor.clone()]);
+        assert_eq!(layout.label_named(&monitor,"Zako HDR"),"1:Zako HDR");
+        assert_eq!(layout.label(&monitor),"1:DISPLAY4");
+        assert_eq!(monitor.display_name,r"\\.\DISPLAY4");
     }
     #[test]
     fn saved_layout_restores_order_independently_of_global_preferences() {

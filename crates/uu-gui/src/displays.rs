@@ -370,6 +370,10 @@ impl super::App {
             .map(|number| uu_i18n::format!("显示屏 {number}"))
             .unwrap_or_else(|| uu_i18n::text("显示器").into())
     }
+    pub(super) fn screen_label(&self,screen:&uu_core::screen_control::RemoteScreen)->String {
+        let friendly=self.controller.as_ref().and_then(|h|h.stats.native_displays.display_label(&screen.display_name));
+        friendly.map_or_else(||self.displays.layout.label(screen),|name|self.displays.layout.label_named(screen,&name))
+    }
     pub(super) fn select_remote_screen(&mut self,id:i32){
         if self.active_session {
             if let Some(tabs)=&self.workspace_tabs {

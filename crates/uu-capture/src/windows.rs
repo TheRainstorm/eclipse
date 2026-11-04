@@ -135,6 +135,7 @@ pub fn monitors() -> Result<Vec<Monitor>, CaptureError> {
 #[derive(serde::Serialize)]
 pub struct MonitorDiagnostic {
     pub name: String,
+    pub friendly_name: Option<String>,
     /// X, Y, width, height in physical desktop pixels.
     pub physical_bounds: [i32;4],
     pub primary: bool,
@@ -150,6 +151,7 @@ pub fn diagnostic_monitors() -> Result<Vec<MonitorDiagnostic>,CaptureError> {
         use windows::Win32::Graphics::Gdi::{EnumDisplaySettingsW,DEVMODEW,ENUM_CURRENT_SETTINGS};
         uu_input::windows_desktop::sync_input_desktop().map_err(backend)?;
         let _coordinates=uu_input::windows_desktop::PhysicalCoordinates::enter().map_err(backend)?;
+        let names=monitor_friendly_names();
         outputs()?.into_iter().map(|output| {
             let adapter=unsafe{output.adapter.GetDesc1()}.map_err(backend)?;
             let advanced=output.output.cast::<IDXGIOutput6>().ok().and_then(|o|unsafe{o.GetDesc1().ok()});
@@ -158,6 +160,7 @@ pub fn diagnostic_monitors() -> Result<Vec<MonitorDiagnostic>,CaptureError> {
             let current=unsafe{EnumDisplaySettingsW(windows::core::PCWSTR(name.as_ptr()),ENUM_CURRENT_SETTINGS,&mut mode)}.as_bool();
             let end=adapter.Description.iter().position(|v|*v==0).unwrap_or(adapter.Description.len());
             Ok(MonitorDiagnostic {
+                friendly_name:names.get(&output.monitor.name).cloned(),
                 name:output.monitor.name,physical_bounds:[output.monitor.x,output.monitor.y,output.monitor.width as i32,output.monitor.height as i32],
                 primary:output.monitor.primary,adapter:String::from_utf16_lossy(&adapter.Description[..end]),adapter_vendor:adapter.VendorId,
                 refresh_hz:current.then_some(mode.dmDisplayFrequency).filter(|hz|*hz>1),
@@ -166,6 +169,35 @@ pub fn diagnostic_monitors() -> Result<Vec<MonitorDiagnostic>,CaptureError> {
             })
         }).collect()
     }).join().map_err(|_|backend("显示诊断工作线程异常"))?
+}
+
+/// CCD supplies the monitor's EDID/driver label; the DXGI/GDI name remains the
+/// capture identity. Missing or cloned/ambiguous labels fall back at the UI.
+fn monitor_friendly_names()->std::collections::HashMap<String,String> {
+    use windows::Win32::Devices::Display::*;
+    let text=|v:&[u16]|String::from_utf16_lossy(&v[..v.iter().position(|c|*c==0).unwrap_or(v.len())]);
+    for _ in 0..3 {
+        let (mut np,mut nm)=(0,0);
+        if unsafe{GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS,&mut np,&mut nm)}.0!=0 || np>256 || nm>1024 {break;}
+        let mut paths=vec![DISPLAYCONFIG_PATH_INFO::default();np as usize];
+        let mut modes=vec![DISPLAYCONFIG_MODE_INFO::default();nm as usize];
+        let result=unsafe{QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS,&mut np,paths.as_mut_ptr(),&mut nm,modes.as_mut_ptr(),None)};
+        if result.0==122 {continue;}
+        if result.0!=0 {break;}
+        let mut found=std::collections::HashMap::<String,Option<String>>::new();
+        for path in paths.iter().take(np as usize) {
+            let mut source=DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+            source.header=DISPLAYCONFIG_DEVICE_INFO_HEADER{r#type:DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,size:std::mem::size_of_val(&source) as u32,adapterId:path.sourceInfo.adapterId,id:path.sourceInfo.id};
+            let mut target=DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
+            target.header=DISPLAYCONFIG_DEVICE_INFO_HEADER{r#type:DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,size:std::mem::size_of_val(&target) as u32,adapterId:path.targetInfo.adapterId,id:path.targetInfo.id};
+            if unsafe{DisplayConfigGetDeviceInfo(&mut source.header)}!=0 || unsafe{DisplayConfigGetDeviceInfo(&mut target.header)}!=0 {continue;}
+            let (source,name)=(text(&source.viewGdiDeviceName),text(&target.monitorFriendlyDeviceName));
+            if source.is_empty() || name.trim().is_empty() {continue;}
+            found.entry(source).and_modify(|previous|{if previous.as_ref()!=Some(&name){*previous=None;}}).or_insert(Some(name));
+        }
+        return found.into_iter().filter_map(|(source,name)|name.map(|name|(source,name))).collect();
+    }
+    Default::default()
 }
 
 pub struct DxgiCapture {

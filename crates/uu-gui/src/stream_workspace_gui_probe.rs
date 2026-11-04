@@ -78,6 +78,10 @@ mod native {
                 })).collect::<Vec<_>>()
             }));
         }
+        fn disconnect(&mut self,state:&State,session:u64)->bool {
+            if self.click(state,session,"close",false) {true}
+            else {self.click(state,session,"device",true);false}
+        }
         fn click(&mut self, state: &State, session: u64, kind: &str, right: bool) -> bool {
             if self.held.is_some() {
                 return false;
@@ -100,7 +104,7 @@ mod native {
             let collection = match kind {
                 "device" => &rects.devices,
                 "detach" => &rects.detach,
-                "close" => &rects.close,
+                "close" => &rects.disconnect,
                 _ => panic!("unknown control"),
             };
             let Some((_, rect)) = collection.iter().find(|(id, _)| *id == session) else {
@@ -271,7 +275,7 @@ mod native {
                         }
                         self.record("native_detach_both_video_continued");
                         self.counts[1] = self.stats[1].decoded_total.load(Ordering::Acquire);
-                        if self.click(state, self.ids[0], "close", false) {
+                        if self.disconnect(state, self.ids[0]) {
                             self.phase = 4;
                         }
                     }
@@ -287,7 +291,7 @@ mod native {
                             self.epochs[1]
                         );
                         self.record("native_connection_close_survivor_continued");
-                        if self.click(state, self.ids[1], "close", false) {
+                        if self.disconnect(state, self.ids[1]) {
                             self.phase = 5;
                         }
                     }

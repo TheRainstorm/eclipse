@@ -4,6 +4,12 @@ pub use uu_plugin_sdk::theme::*;
 use eframe::egui::{self, ThemePreference};
 
 pub const DEFAULT_PREFERENCE: ThemePreference = ThemePreference::Light;
+pub(super) const BOLD_FONT_FAMILY:&str="eclipse.bold";
+pub(super) fn device_title_font(ui:&egui::Ui)->egui::FontId {
+    let family=egui::FontFamily::Name(BOLD_FONT_FAMILY.into());
+    let family=if ui.fonts(|fonts|fonts.families().contains(&family)){family}else{egui::TextStyle::Button.resolve(ui.style()).family};
+    egui::FontId::new(12.5,family)
+}
 pub const PREFERENCES: [ThemePreference; 3] = [
     ThemePreference::Light,
     ThemePreference::Dark,

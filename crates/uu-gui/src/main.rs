@@ -312,6 +312,19 @@ fn setup_style(ctx: &egui::Context) {
             break;
         }
     }
+    let mut bold=fonts.families[&egui::FontFamily::Proportional].clone();
+    let candidates=if cfg!(windows) {
+        vec![r"C:\Windows\Fonts\msyhbd.ttc",r"C:\Windows\Fonts\seguisb.ttf"]
+    }else{
+        vec!["/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc","/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc"]
+    };
+    for path in candidates {
+        if let Ok(data)=std::fs::read(path) {
+            fonts.font_data.insert("cjk-bold".into(),egui::FontData::from_owned(data));
+            bold.insert(0,"cjk-bold".into());break;
+        }
+    }
+    fonts.families.insert(egui::FontFamily::Name(theme::BOLD_FONT_FAMILY.into()),bold);
     theme::island::fonts::install(ctx, fonts);
 
     theme::apply(ctx);

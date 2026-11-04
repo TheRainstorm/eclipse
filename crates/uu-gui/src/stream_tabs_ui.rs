@@ -57,12 +57,14 @@ macro_rules! record {
 
 fn label(ui: &mut egui::Ui, text: &str, selected: bool, device: bool, width_limit: f32) -> Response {
     let color = crate::theme::tab_text_color(ui.visuals(),selected);
-    let mut font = egui::TextStyle::Button.resolve(ui.style());font.size=if device {12.5}else{12.};
+    let mut font=if device {crate::theme::device_title_font(ui)}else{egui::TextStyle::Button.resolve(ui.style())};
+    if !device {font.size=12.;}
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), color);
     let leading = if device { 22. } else { 0. };
     // Give each title its measured width. The scroll viewport, rather than a
     // short fixed cap, limits how much of one long label can be shown at once.
-    let width = (galley.size().x + leading + 16.).max(if device {70.} else {72.}).min(width_limit);
+    let width=if device {(galley.size().x+leading+16.).max(70.)}
+        else {((galley.size().x+16.).max(72.)*0.6).clamp(72.,144.)}.min(width_limit);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, crate::theme::TOOLBAR_HEIGHT), Sense::click_and_drag());
     let face=crate::theme::paint_tab(ui,&response,selected,"");
     // Drag/hit ownership remains the stable slot; glyphs follow its painted face.
@@ -82,18 +84,17 @@ fn label(ui: &mut egui::Ui, text: &str, selected: bool, device: bool, width_limi
 }
 
 #[derive(Clone, Copy)]
-enum Control { Add, Close }
+enum Control { Add }
 fn control(ui: &mut egui::Ui, kind: Control, enabled: bool) -> Response {
     let enabled=enabled&&ui.is_enabled();
     let response=ui.add_enabled(enabled,crate::theme::toolbar_button("",crate::theme::ButtonKind::Ghost).min_size(egui::vec2(crate::theme::TOOLBAR_FACE,crate::theme::TOOLBAR_FACE)));
     let rect=crate::theme::toolbar_face_rect(ui,&response);
     let hovered = enabled && (response.hovered() || response.is_pointer_button_down_on());
     let color = if !enabled { crate::theme::palette(ui.visuals()).muted }
-        else if hovered { match kind { Control::Add => crate::theme::palette(ui.visuals()).accent, Control::Close => crate::theme::palette(ui.visuals()).danger } }
+        else if hovered { match kind { Control::Add => crate::theme::palette(ui.visuals()).accent } }
         else { crate::theme::palette(ui.visuals()).muted };
     let fill = if enabled&&response.is_pointer_button_down_on(){crate::theme::palette(ui.visuals()).pressed}else if hovered { match kind {
         Control::Add => crate::theme::palette(ui.visuals()).tint,
-        Control::Close => crate::theme::palette(ui.visuals()).danger.gamma_multiply(0.10),
     }} else { Color32::TRANSPARENT };
     if hovered {ui.painter().rect_filled(rect,12.,fill);}
     let center=rect.center();
@@ -103,30 +104,29 @@ fn control(ui: &mut egui::Ui, kind: Control, enabled: bool) -> Response {
             ui.painter().line_segment([center-egui::vec2(4.5,0.),center+egui::vec2(4.5,0.)],stroke);
             ui.painter().line_segment([center-egui::vec2(0.,4.5),center+egui::vec2(0.,4.5)],stroke);
         },
-        Control::Close => {
-            ui.painter().line_segment([center-egui::vec2(3.5,3.5),center+egui::vec2(3.5,3.5)],stroke);
-            ui.painter().line_segment([center-egui::vec2(3.5,-3.5),center+egui::vec2(3.5,-3.5)],stroke);
-        },
+
     }
     response
 }
 
 fn connection_menu(ui: &mut egui::Ui, group: &Group, actions: &mut Vec<Action>, _rects: &mut StripRects) {
-    if group.can_open_displays && group.screens.len()>1 && ui.add(crate::theme::ghost_button(uu_i18n::text("所有屏幕独立打开"))).clicked() {
+    crate::theme::compact_menu_style(ui);
+    ui.set_min_width(180.);
+    if group.can_open_displays && group.screens.len()>1 && crate::theme::menu_action(ui,true,uu_i18n::text("所有屏幕独立打开")).clicked() {
         actions.push(Action::OpenAllDisplays(group.command_session())); ui.close_menu();
     }
     if group.can_merge {
-        let merge=ui.add(crate::theme::ghost_button(uu_i18n::text("合并到原本窗口")));
+        let merge=crate::theme::menu_action(ui,true,uu_i18n::text("合并到原本窗口"));
         record!(_rects.merge,(group.command_session(),merge.rect));
         if merge.clicked() {actions.push(Action::Merge(group.command_session()));ui.close_menu();}
     } else {
-        let detach=ui.add_enabled(group.can_detach,crate::theme::ghost_button(uu_i18n::text("移到独立窗口")))
+        let detach=crate::theme::menu_action(ui,group.can_detach,uu_i18n::text("移到独立窗口"))
             .on_disabled_hover_text(uu_i18n::text("已在独立窗口中"));
         record!(_rects.detach,(group.command_session(),detach.rect));
         if detach.clicked() { actions.push(Action::Detach(group.command_session())); ui.close_menu(); }
     }
     ui.separator();
-    let disconnect=ui.add(crate::theme::ghost_button(uu_i18n::text("断开此会话")));
+    let disconnect=crate::theme::menu_action(ui,true,uu_i18n::text("断开此会话"));
     record!(_rects.disconnect,(group.command_session(),disconnect.rect));
     if disconnect.clicked() { actions.push(Action::Close(group.command_session())); ui.close_menu(); }
 }
@@ -170,13 +170,10 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                 if name.dragged() { ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing); }
                                 name.context_menu(|ui|connection_menu(ui,group,&mut actions,&mut rects));
                                 if name.context_menu_opened() { tabs.local_ui.set(true); }
-                                let close=control(ui,Control::Close,true).on_hover_text(uu_i18n::text("断开此会话"));
-                                record!(rects.close,(group.id,close.rect));
-                                if close.clicked() {actions.push(Action::Close(group.command_session()));}
                                 // Reveal the connection header once per activation. Its
-                                // sources can be wider than the viewport; keep the close
-                                // control reachable without overriding manual scrolling.
-                                if active && reveal_active {name.union(close).scroll_to_me(None);}
+                                // sources can be wider than the viewport; preserve
+                                // manual scrolling after revealing the name once.
+                                if active && reveal_active {name.scroll_to_me(None);}
                                 if !group.screens.is_empty() {
                                     let (divider,_)=ui.allocate_exact_size(egui::vec2(7.,22.),Sense::hover());
                                     ui.painter().line_segment([divider.center()-egui::vec2(0.,6.),divider.center()+egui::vec2(0.,6.)],Stroke::new(1.,crate::theme::palette(ui.visuals()).border));
@@ -262,7 +259,6 @@ mod tests {
     }
     fn header(rects:&StripRects,id:u64)->Rect {
         rects.devices.iter().find(|item|item.0==id).unwrap().1
-            .union(rects.close.iter().find(|item|item.0==id).unwrap().1)
     }
     #[test]
     fn active_connection_reveals_its_header_once_and_preserves_manual_scroll() {
@@ -318,7 +314,8 @@ mod tests {
         let rects=frame(&ctx,&tabs,0.,1100.,180.,vec![]);
         let text_width=|text:&str,size:f32|ctx.fonts(|fonts|fonts.layout_no_wrap(text.into(),egui::FontId::proportional(size),Color32::WHITE).size().x);
         assert!(rects.devices[0].1.width()+0.1>=text_width(name,12.5)+38.);
-        assert!(rects.screens[0].2.width()+0.1>=text_width(source,12.)+16.);
+        assert!(rects.screens[0].2.width()<=144.1,"long source captions must remain compact");
+        assert!(rects.close.is_empty(),"the hostname has no inline disconnect action");
         assert_eq!(rects.create.len(),1,"a fixed view retains its independent virtual-display creation entry");
         let point=rects.screens[0].2.center();
         let button=|point,button,pressed|vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button,pressed,modifiers:Default::default()}];

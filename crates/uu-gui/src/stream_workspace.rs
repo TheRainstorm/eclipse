@@ -356,13 +356,13 @@ impl Window {
                 let key=if bound {-(i32::try_from(session.id).unwrap_or(i32::MAX))} else {screen.id};
                 let key=if let Some((_,existing))=sources.iter_mut().find(|(name,_)|name==&screen.display_name) {
                     if bound {
-                        if let Some((old,label))=group.screens.iter_mut().find(|(old,_)|*old==*existing) {*old=key;*label=session.app.displays.layout.label(screen);}
+                        if let Some((old,label))=group.screens.iter_mut().find(|(old,_)|*old==*existing) {*old=key;*label=session.app.screen_label(screen);}
                         if group.selected==Some(*existing) {group.selected=Some(key);}
                         for view in &mut group.views {if view.screen==*existing {view.screen=key;}}
                         *existing=key;
                     }
                     *existing
-                } else {sources.push((screen.display_name.clone(),key));group.screens.push((key,session.app.displays.layout.label(screen)));key};
+                } else {sources.push((screen.display_name.clone(),key));group.screens.push((key,session.app.screen_label(screen)));key};
                 if session.app.displays.selected==Some(screen.id) {selected=Some(key);}
             }
             if preparing {

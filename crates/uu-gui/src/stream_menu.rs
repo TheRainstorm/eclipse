@@ -467,7 +467,7 @@ impl super::App {
         if let Some(tabs)=&self.workspace_tabs {tabs.show_with_controls(ui,controls_width);return;}
         let screens=self.visible_remote_screens();
         if self.is_fixed_display_view() {
-            if let Some(screen)=screens.selected(){ui.label(self.displays.layout.label(screen)).on_hover_text(&screen.display_name);}
+            if let Some(screen)=screens.selected(){ui.label(self.screen_label(screen)).on_hover_text(&screen.display_name);}
             return;
         }
         let reserve=if ui.available_width()>660.0{345.0}else{250.0};
@@ -482,7 +482,7 @@ impl super::App {
                         ui.spacing_mut().item_spacing.x=2.0;
                         for screen in &screens.screens {
                             let selected=self.displays.selected==Some(screen.id);
-                            let label=self.displays.layout.label(screen);
+                            let label=self.screen_label(screen);
                             let (rect,response)=ui.allocate_exact_size(egui::vec2(140.0,super::theme::TOOLBAR_HEIGHT),egui::Sense::click_and_drag());
                             let face=super::theme::paint_tab(ui,&response,selected,"");
                             response.dnd_set_drag_payload(super::display_layout::DraggedDisplay(screen.id));
@@ -537,7 +537,7 @@ impl super::App {
             separator(ui);
         }
         for screen in &screens.screens {
-            let response=menu_row(ui,&self.displays.layout.label(screen),None,
+            let response=menu_row(ui,&self.screen_label(screen),None,
                 self.displays.selected==Some(screen.id),false,if screen.primary {uu_i18n::text("主屏")}else{""},false)
                 .on_hover_text(format!("{} · {} × {} · {} Hz · {}",screen.display_name,screen.width,screen.height,screen.refresh_hz,screen.kind_label()));
             if response.clicked(){self.select_remote_screen(screen.id);ui.close_menu();}

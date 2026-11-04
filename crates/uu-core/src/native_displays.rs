@@ -19,6 +19,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 pub const ALL_MONITORS: &str = "*";
 const MAX_DISPLAYS: usize = 16;
+mod names;
 const INITIAL_REQUEST:&str="x-eclipse-initial-display-client";
 const INITIAL_REPLY:&str="x-eclipse-initial-display-host";
 const INITIAL_SUPPORTED:&str="x-eclipse-initial-display-supported";
@@ -138,6 +139,7 @@ pub fn initial_offered(sdp:&RTCSessionDescription)->Result<bool> {
 
 #[derive(Default)]
 struct Selection {
+    names_metadata:names::Names,
     names: Vec<String>,
     selected: Option<String>,
     catalog: RemoteScreens,
@@ -149,6 +151,7 @@ pub(crate) struct Host {
     switching: AtomicBool,
 }
 impl Host {
+    pub fn add_names(&self,sdp:&mut RTCSessionDescription)->Result<()> {self.state.lock().unwrap().names_metadata.add(sdp)}
     pub fn for_source(source: &CaptureSource) -> Option<std::sync::Arc<Self>> {
         let CaptureSource::Desktop { initial_monitor } = source else { return None; };
         let host=Self::default();
@@ -226,6 +229,7 @@ impl Host {
             .or_else(|| monitors.iter().find(|m| m.primary))
             .unwrap_or(&monitors[0]);
         let selected_name = selected.name.clone();
+        state.names_metadata=names::Names::from_monitors(&monitors);
         // Stable IDs for outputs which disappear and return during this session.
         for monitor in &monitors {
             if !state.names.contains(&monitor.name) {
@@ -296,6 +300,7 @@ impl Host {
         let active=monitors.iter().position(|monitor|monitor.name==name).ok_or_else(||anyhow::anyhow!("current capture source disappeared; reconnect before changing virtual displays"))?;
         if active>=MAX_DISPLAYS {monitors.swap(active,MAX_DISPLAYS-1);}
         monitors.truncate(MAX_DISPLAYS);
+        state.names_metadata=names::Names::from_monitors(&monitors);
         for monitor in &monitors {if !state.names.contains(&monitor.name){state.names.push(monitor.name.clone());}}
         let screens=monitors.iter().map(|monitor| {
             let id=state.names.iter().position(|name|name==&monitor.name).unwrap() as i32;
@@ -381,6 +386,7 @@ pub struct Response {
 }
 #[derive(Default)]
 struct Pending {
+    names_metadata:names::Names,
     request: Option<u64>,
     responses: VecDeque<Response>,
     switch: Option<u64>,
@@ -402,6 +408,13 @@ pub struct Client {
     pub(crate) changed: Notify,
 }
 impl Client {
+    pub(crate) fn read_names(&self,sdp:&RTCSessionDescription)->Result<()> {
+        let mut state=self.state.lock().unwrap();
+        state.names_metadata=names::Names::default();
+        state.names_metadata=names::Names::read(sdp)?;
+        Ok(())
+    }
+    pub fn display_label(&self,source:&str)->Option<String> {self.state.lock().unwrap().names_metadata.label(source)}
     pub fn request_initial(&self, request:InitialRequest)->Result<()> {
         request.validate()?;
         let mut state=self.state.lock().unwrap();
@@ -609,6 +622,7 @@ mod tests {
     }
     fn monitor(name: &str, primary: bool) -> CaptureMonitor {
         CaptureMonitor {
+            friendly_name:None,hdr_enabled:None,
             name: name.into(),
             primary,
             x: 0,
