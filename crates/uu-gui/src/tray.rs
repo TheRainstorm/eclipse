@@ -6,7 +6,14 @@ use eframe::egui;
 pub enum Action {
     Open,
     VirtualDisplays,
+    Display(DisplayAction),
     Exit,
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum DisplayAction {Create,Close,ToggleKeep,Reset}
+impl DisplayAction {
+    pub fn verb(self)->&'static str{match self{Self::Create=>"create",Self::Close=>"close",Self::ToggleKeep=>"keep",Self::Reset=>"reset"}}
+    pub fn parse(value:&str)->Option<Self>{Some(match value{"create"=>Self::Create,"close"=>Self::Close,"keep"=>Self::ToggleKeep,"reset"=>Self::Reset,_=>return None})}
 }
 
 pub const fn supported() -> bool {
@@ -31,6 +38,7 @@ impl Tray {
     pub fn take_action(&self) -> Option<Action> {
         None
     }
+    pub fn set_display_options(&self,_:bool,_:bool){}
 }
 
 #[cfg(windows)]
@@ -46,6 +54,10 @@ mod windows {
     const OPEN: usize = 1;
     const EXIT: usize = 2;
     const VIRTUAL_DISPLAYS:usize=3;
+    const CREATE_DISPLAY:usize=4;
+    const CLOSE_DISPLAYS:usize=5;
+    const KEEP_DISPLAYS:usize=6;
+    const RESET_DISPLAYS:usize=7;
     // winuser.h's keyboard activation notification (not exposed by windows-sys).
     const KEY_SELECT: u32 = NIN_SELECT | 1;
     fn wide(s: &str) -> Vec<u16> {
@@ -57,6 +69,8 @@ mod windows {
         icon: HICON,
         context: egui::Context,
         action: Cell<Option<Action>>,
+        keep_displays:Cell<bool>,
+        display_busy:Cell<bool>,
         taskbar_created: u32,
     }
     impl State {
@@ -122,7 +136,18 @@ mod windows {
                 wide(uu_i18n::text("打开 Eclipse")).as_ptr(),
             );
             AppendMenuW(menu,MF_SEPARATOR,0,ptr::null());
-            AppendMenuW(menu,MF_STRING,VIRTUAL_DISPLAYS,wide(uu_i18n::text("管理虚拟显示器")).as_ptr());
+            let displays=CreatePopupMenu();
+            if !displays.is_null() {
+                AppendMenuW(displays,MF_STRING,VIRTUAL_DISPLAYS,wide(uu_i18n::text("管理虚拟显示器")).as_ptr());
+                let flags=MF_STRING|if self.display_busy.get(){MF_GRAYED}else{0};
+                AppendMenuW(displays,flags,CREATE_DISPLAY,wide(uu_i18n::text("创建虚拟显示器")).as_ptr());
+                AppendMenuW(displays,flags,CLOSE_DISPLAYS,wide(uu_i18n::text("关闭虚拟显示器")).as_ptr());
+                AppendMenuW(displays,flags|if self.keep_displays.get(){MF_CHECKED}else{0},KEEP_DISPLAYS,wide(uu_i18n::text("串流结束后保留")).as_ptr());
+                AppendMenuW(displays,MF_SEPARATOR,0,ptr::null());
+                AppendMenuW(displays,flags,RESET_DISPLAYS,wide(uu_i18n::text("重置显示")).as_ptr());
+                if AppendMenuW(menu,MF_POPUP,displays as usize,wide(uu_i18n::text("显示")).as_ptr())==0 {DestroyMenu(displays);}
+            }
+            AppendMenuW(menu,MF_SEPARATOR,0,ptr::null());
             AppendMenuW(
                 menu,
                 MF_STRING,
@@ -183,6 +208,10 @@ mod windows {
                     match wparam & 0xffff {
                         OPEN => state.publish(Action::Open),
                         VIRTUAL_DISPLAYS=>state.publish(Action::VirtualDisplays),
+                        CREATE_DISPLAY=>state.publish(Action::Display(DisplayAction::Create)),
+                        CLOSE_DISPLAYS=>state.publish(Action::Display(DisplayAction::Close)),
+                        KEEP_DISPLAYS=>state.publish(Action::Display(DisplayAction::ToggleKeep)),
+                        RESET_DISPLAYS=>state.publish(Action::Display(DisplayAction::Reset)),
                         EXIT => state.publish(Action::Exit),
                         _ => {}
                     }
@@ -241,6 +270,8 @@ mod windows {
                     icon,
                     context: context.clone(),
                     action: Cell::new(None),
+                    keep_displays:Cell::new(false),
+                    display_busy:Cell::new(false),
                     taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
                 });
                 if state.taskbar_created == 0 {
@@ -293,6 +324,7 @@ mod windows {
         pub fn take_action(&self) -> Option<Action> {
             self.state.action.take()
         }
+        pub fn set_display_options(&self,keep:bool,busy:bool){self.state.keep_displays.set(keep);self.state.display_busy.set(busy);}
     }
     impl Drop for Tray {
         fn drop(&mut self) {

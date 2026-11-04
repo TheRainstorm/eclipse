@@ -209,7 +209,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                 if group.can_open_displays || group.can_create_display {
                                     let add=control(ui,Control::Add,group.can_create_display)
                                         .on_hover_text(uu_i18n::text(if group.can_create_display {
-                                            "新建临时虚拟显示器，断开此串流后自动移除"
+                                            "新建虚拟显示器；默认断开后移除，源机可以保留"
                                         } else { "远端未提供虚拟显示器管理，请更新后台并授予管理服务权限" }));
                                     record!(rects.create,(group.id,add.rect));
                                     if add.clicked() { actions.push(Action::CreateDisplayWithSpec{session:group.creation_session(),spec:tabs.presets.default_spec()}); }

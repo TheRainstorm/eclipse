@@ -70,6 +70,9 @@ pub fn prepare(
         pairing: Arc::new(PairingControl::new(requests)),
         sessions: Arc::new(SessionGate::default()),
     });
+    if let Err(error)=crate::virtual_display::Manager::shared().configure_saved_displays(config.at("device-trust")) {
+        tracing::warn!(%error,"saved virtual display settings could not be loaded; sharing continues");
+    }
     crate::virtual_display::Manager::shared().register_host(&access.sessions);
     *access.sessions.administration.lock().unwrap() =
         Some(Arc::new(crate::host_admin::Service::new(
@@ -287,6 +290,7 @@ async fn preparation_worker(mut stop:watch::Receiver<bool>, mut shutdown:watch::
         Err(error)=>{tracing::warn!(%error,"virtual display startup preparation worker failed");return;},
     }
     let mut previous_error=None;
+    let mut previous_restore_error=None;
     loop {
         if *stop.borrow() || *shutdown.borrow() {break;}
         if manager.has_queued_preparation() && !manager.preparation_in_flight() {
@@ -299,6 +303,14 @@ async fn preparation_worker(mut stop:watch::Receiver<bool>, mut shutdown:watch::
                     previous_error=Some(message);
                 },
                 Err(error)=>{tracing::warn!(%error,"virtual display preparation worker failed");break;},
+            }
+        }
+        if manager.saved_restore_pending() && !manager.preparation_in_flight() {
+            let operation=manager.clone();
+            match tokio::task::spawn_blocking(move||operation.restore_saved_displays()).await {
+                Ok(Ok(()))=>{previous_restore_error=None;},
+                Ok(Err(error))=>{let message=error.to_string();if previous_restore_error.as_ref()!=Some(&message){tracing::warn!(%error,"saved virtual display restoration remains incomplete");previous_restore_error=Some(message);}},
+                Err(error)=>tracing::warn!(%error,"saved virtual display restoration worker failed"),
             }
         }
         tokio::select! {

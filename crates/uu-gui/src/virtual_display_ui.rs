@@ -23,10 +23,10 @@ impl LocalOwner {
     fn lifetime(self) -> &'static str {
         match self {
             Self::Foreground => uu_i18n::text(
-                "手动屏由当前 Eclipse 进程持有；停止前台共享或关闭此弹窗不移除，退出 Eclipse 时清理。",
+                "临时屏随当前进程退出清理；持续保存的屏幕会保留，并在下次启动时恢复。",
             ),
             Self::Background => uu_i18n::text(
-                "手动屏由后台共享进程持有；关闭管理窗口不影响，后台进程正常退出时清理。",
+                "由后台服务管理；持续保存的屏幕会保留，并在后台开机启动时恢复。",
             ),
         }
     }
@@ -101,6 +101,7 @@ pub struct State {
     local_selector: bool,
     foreground_displays: BTreeSet<uu_core::virtual_display::LeaseId>,
     spec: Spec,
+    persistent_new:Option<bool>,
     status: Option<Status>,
     displays: Vec<Display>,
     slots: Vec<Slot>,
@@ -572,6 +573,7 @@ impl State {
             && !self.details.is_empty();
         let mut open = self.open;
         let mut command = None;
+        let mut local_command = None;
         let mut prepare = None;
         let mut selected_owner = None;
         let mut preparation_action = None;
@@ -598,7 +600,7 @@ impl State {
                 }
                 if client.is_some() {
                     ui.strong(uu_i18n::text("管理对象：本串流连接"));
-                    ui.weak(uu_i18n::text("这里创建的临时屏在本串流连接断开后自动移除。"));
+                    ui.weak(uu_i18n::text("默认在串流连接断开时移除；源机可以选择持续保存。"));
                 } else if let Some(owner) = self.local_owner {
                     ui.strong(uu_i18n::format!("管理对象：{}", owner.label()));
                     ui.weak(owner.lifetime());
@@ -629,6 +631,13 @@ impl State {
                     }
                 });
                 crate::theme::switch(ui,&mut self.spec.hdr, "HDR");
+                if client.is_none() {
+                    crate::theme::switch(ui,self.persistent_new.get_or_insert(true),uu_i18n::text("持续保存并在开机恢复"));
+                    if let Some(status)=&self.status {
+                        let mut keep=status.keep_after_stream;
+                        if crate::theme::switch(ui,&mut keep,uu_i18n::text("串流结束后保留")).changed(){local_command=Some(LocalRequest::KeepAfterStream{keep});}
+                    }
+                }
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
@@ -753,6 +762,12 @@ impl State {
                     .max_height(300.)
                     .show(ui, |ui| {
                         for display in &self.displays {
+                            if client.is_none() {
+                                let mut persistent=display.persistent;
+                                if ui.add_enabled_ui(!busy&&!mutations_blocked,|ui|crate::theme::compact_switch(ui,&mut persistent,uu_i18n::text("持续保存并在开机恢复"))).inner.changed() {
+                                    local_command=Some(LocalRequest::SetPersistent{id:display.id,persistent});
+                                }
+                            }
                             ui.horizontal(|ui| {
                                 let fixed_current=client.is_some() && self.fixed_source.as_ref()==Some(&display.source);
                                 ui.label(format!(
@@ -814,9 +829,11 @@ impl State {
                     self.remote(client, command);
                 }
             } else {
-                self.local(ctx, command.into());
+                let command=match command {Request::Create{spec}=>LocalRequest::CreateManual{spec,persistent:self.persistent_new.unwrap_or(true)},other=>other.into()};
+                self.local(ctx, command);
             }
         }
+        if let Some(command)=local_command{self.local(ctx,command);}
         if let Some(id) = prepare {
             self.local(ctx, LocalRequest::PrepareSlot { id });
         }
@@ -1120,6 +1137,7 @@ mod tests {
             name: "Generated virtual display".into(),
             source: "generated-source".into(),
             active: true,
+            persistent:false,
             cleanup_pending: false,
             last_error: None,
         }
@@ -1131,6 +1149,7 @@ mod tests {
                 driver_present: true,
                 available_slots: 1,
                 leased: displays.len(),
+                keep_after_stream:false,
                 explanation: String::new(),
                 install_url: String::new(),
                 preparation: None,
@@ -1355,7 +1374,7 @@ impl BackgroundHost {
     }
 }
 
-fn local_request(request: LocalRequest, owner: LocalOwner) -> anyhow::Result<Response> {
+pub(super) fn local_request(request: LocalRequest, owner: LocalOwner) -> anyhow::Result<Response> {
     if owner == LocalOwner::Foreground {
         return uu_core::native_virtual_display::execute_local_owner(request);
     }

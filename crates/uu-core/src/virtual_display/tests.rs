@@ -234,6 +234,7 @@ fn fixture() -> (Arc<Manager>, Arc<Fake>) {
             preparation: preparation::Coordinator::default(),
             preparation_owner: AtomicBool::new(true),
             hosts: Mutex::default(),
+            policy:Mutex::default(),
         }),
         fake,
     )
@@ -591,6 +592,7 @@ fn another_manager(backend: &Arc<Fake>) -> Arc<Manager> {
         preparation: preparation::Coordinator::default(),
         preparation_owner: AtomicBool::new(true),
         hosts: Mutex::default(),
+        policy:Mutex::default(),
     })
 }
 #[test]
@@ -967,4 +969,79 @@ fn removed_driver_recovery_failure_never_downloads_or_creates_a_replacement() {
     assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst),0);
     assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),0);
     assert!(backend.claims.lock().unwrap().is_empty());
+}
+
+fn saved_policy(manager:&Manager)->std::path::PathBuf {
+    let path=std::env::temp_dir().join(format!("eclipse-saved-displays-{}",Uuid::new_v4()));
+    std::fs::create_dir_all(&path).unwrap();
+    manager.configure_saved_displays(&path).unwrap();path
+}
+
+#[test]
+fn retained_session_becomes_durable_manual_ownership_and_restarts_without_duplicate_activation() {
+    let (first,backend)=fixture();let path=saved_policy(&first);
+    first.set_keep_after_stream(true).unwrap();
+    let session=Uuid::new_v4();let guard=first.session_guard(session);
+    let created=first.create(Owner::Session(session),Spec::default()).unwrap();
+    first.release_session(session).unwrap();drop(guard);
+    let retained=first.list().unwrap();assert_eq!(retained.len(),1);
+    assert_eq!(retained[0].owner,Owner::Manual);assert!(retained[0].persistent&&retained[0].active);
+    assert_eq!(backend.activated.lock().unwrap().len(),1);
+    first.shutdown_manual().unwrap();assert!(first.list().unwrap().is_empty());
+    assert!(backend.removed.lock().unwrap().is_empty(),"saved output outlives process ownership");
+    let second=another_manager(&backend);second.configure_saved_displays(&path).unwrap();
+    assert!(second.keep_after_stream().unwrap());second.restore_saved_displays().unwrap();
+    assert_eq!(second.list().unwrap()[0].id,created.id);
+    assert_eq!(backend.activated.lock().unwrap().len(),1,"restoring a live recorded output is not another activation");
+    let third=another_manager(&backend);third.configure_saved_displays(&path).unwrap();
+    assert!(matches!(third.restore_saved_displays(),Err(Error::Claimed)));
+    assert!(third.list().unwrap().is_empty());
+    assert!(third.saved_restore_pending(),"known claim contention preserves the startup intent");
+    second.shutdown_manual().unwrap();third.restore_saved_displays().unwrap();
+    assert_eq!(third.list().unwrap()[0].id,created.id);
+    third.remove(created.id).unwrap();
+    let fourth=another_manager(&backend);fourth.configure_saved_displays(&path).unwrap();fourth.restore_saved_displays().unwrap();
+    assert!(fourth.list().unwrap().is_empty(),"explicit removal also removes boot intent");
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn saved_manual_display_recovers_after_boot_luid_change_and_can_be_made_temporary() {
+    let (first,backend)=fixture();let path=saved_policy(&first);
+    let display=first.create_manual(Spec::default(),true).unwrap();
+    let key=first.lock().unwrap()[&display.id].target.clone();
+    first.shutdown_manual().unwrap();
+    {let mut targets=backend.targets.lock().unwrap();let target=targets.iter_mut().find(|t|t.key==key).unwrap();target.active=false;target.actual=None;target.key.adapter.0+=100;}
+    let second=another_manager(&backend);second.configure_saved_displays(&path).unwrap();
+    second.restore_saved_displays().unwrap();assert_eq!(second.list().unwrap().len(),1);
+    assert!(second.list().unwrap()[0].persistent);
+    assert_eq!(backend.activated.lock().unwrap().len(),2);
+    second.set_persistent(display.id,false).unwrap();
+    second.shutdown_manual().unwrap();assert_eq!(backend.removed.lock().unwrap().len(),1);
+    let third=another_manager(&backend);third.configure_saved_displays(&path).unwrap();third.restore_saved_displays().unwrap();
+    assert!(third.list().unwrap().is_empty());std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn close_and_reset_touch_only_owned_outputs_and_remove_saved_creation_intent() {
+    let (manager,backend)=fixture();let path=saved_policy(&manager);
+    manager.create_manual(Spec::default(),true).unwrap();
+    manager.create_manual(Spec::default(),false).unwrap();
+    manager.set_keep_after_stream(true).unwrap();
+    manager.reset_displays().unwrap();
+    assert!(!manager.keep_after_stream().unwrap());
+    assert!(manager.list().unwrap().is_empty());
+    assert!(backend.targets.lock().unwrap()[0].active,"foreign original display is preserved");
+    let next=another_manager(&backend);next.configure_saved_displays(&path).unwrap();next.restore_saved_displays().unwrap();
+    assert!(next.list().unwrap().is_empty());std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn damaged_saved_configuration_never_changes_targets_or_overwrites_evidence() {
+    let (manager,backend)=fixture();let path=saved_policy(&manager);
+    let file=path.join("virtual-displays.json");let damaged=b"{not a saved policy}";
+    std::fs::write(&file,damaged).unwrap();
+    assert!(manager.configure_saved_displays(&path).is_err());
+    assert_eq!(std::fs::read(file).unwrap(),damaged);
+    assert!(backend.activated.lock().unwrap().is_empty());std::fs::remove_dir_all(path).unwrap();
 }

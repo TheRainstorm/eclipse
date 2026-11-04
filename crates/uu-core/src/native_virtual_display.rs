@@ -43,6 +43,12 @@ pub enum LocalRequest {
     Prepare,
     Recover,
     PrepareSlot { id: String },
+    CreateManual { spec:Spec, persistent:bool },
+    KeepAfterStream { keep:bool },
+    ToggleKeepAfterStream,
+    SetPersistent { id:LeaseId, persistent:bool },
+    CloseAll,
+    ResetDisplays,
 }
 impl From<Request> for LocalRequest {
     fn from(request: Request) -> Self {
@@ -131,6 +137,12 @@ pub fn execute_local_owner(request: LocalRequest) -> Result<Response> {
             manager.prepare_slot(&id)?;
             Request::Inspect
         }
+        LocalRequest::CreateManual{spec,persistent}=>return Ok(Response::Created{display:manager.create_manual(spec,persistent)?}),
+        LocalRequest::KeepAfterStream{keep}=>{manager.set_keep_after_stream(keep)?;Request::Inspect},
+        LocalRequest::ToggleKeepAfterStream=>{manager.toggle_keep_after_stream()?;Request::Inspect},
+        LocalRequest::SetPersistent{id,persistent}=>{manager.set_persistent(id,persistent)?;Request::Inspect},
+        LocalRequest::CloseAll=>{manager.close_all()?;Request::Inspect},
+        LocalRequest::ResetDisplays=>{manager.reset_displays()?;Request::Inspect},
     };
     Ok(match request {
         Request::Inspect => Response::Snapshot {
@@ -627,7 +639,7 @@ mod tests {
     fn initial_lease_is_connection_scoped_idempotent_and_never_repeats_an_accepted_mutation() {
         use std::sync::atomic::AtomicUsize;
         let calls=AtomicUsize::new(0);let spec=Spec::default();let owner=uuid::Uuid::new_v4();
-        let display=Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Session(owner),spec,actual:Some(spec),name:"generated".into(),source:"display-b".into(),active:true,cleanup_pending:false,last_error:None};
+        let display=Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Session(owner),spec,actual:Some(spec),name:"generated".into(),source:"display-b".into(),active:true,persistent:false,cleanup_pending:false,last_error:None};
         let lease=InitialLease::default();
         assert_eq!(lease.prepare(spec,||{calls.fetch_add(1,Ordering::SeqCst);Ok(display.clone())}).unwrap(),display);
         assert_eq!(lease.prepare(spec,||panic!("same connection must reuse its lease")).unwrap(),display);

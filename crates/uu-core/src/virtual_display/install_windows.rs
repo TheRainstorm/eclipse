@@ -241,7 +241,7 @@ pub(super) fn no_existing_mtt_node() -> Result<()> {
             return Err(os_error("SetupDiEnumDeviceInfo", code));
         }
         let mut data = [0u16; 2048];
-        if unsafe {
+        let read = unsafe {
             SetupDiGetDeviceRegistryPropertyW(
                 devices.0,
                 &info,
@@ -251,7 +251,8 @@ pub(super) fn no_existing_mtt_node() -> Result<()> {
                 std::mem::size_of_val(&data) as u32,
                 null_mut(),
             )
-        } != 0
+        };
+        if read == 0 {return Err(os_error("verify installed display hardware identity",unsafe{GetLastError()}));}
         {
             if data
                 .split(|value| *value == 0)

@@ -92,12 +92,14 @@ mod initial_display {
         spec:crate::virtual_display::Spec,
         actual:Option<StrictSpec>,
         name:String,source:String,active:bool,cleanup_pending:bool,last_error:Option<String>,
+        #[serde(default)]
+        persistent:bool,
     }
     #[derive(Deserialize)]
     struct StrictSpec(#[serde(with="initial_spec")] crate::virtual_display::Spec);
     pub fn serialize<S:serde::Serializer>(value:&Option<crate::virtual_display::Display>,serializer:S)->std::result::Result<S::Ok,S::Error> {value.serialize(serializer)}
     pub fn deserialize<'de,D:serde::Deserializer<'de>>(deserializer:D)->std::result::Result<Option<crate::virtual_display::Display>,D::Error> {
-        Ok(Option::<Strict>::deserialize(deserializer)?.map(|v|crate::virtual_display::Display{id:v.id,owner:v.owner,spec:v.spec,actual:v.actual.map(|s|s.0),name:v.name,source:v.source,active:v.active,cleanup_pending:v.cleanup_pending,last_error:v.last_error}))
+        Ok(Option::<Strict>::deserialize(deserializer)?.map(|v|crate::virtual_display::Display{id:v.id,owner:v.owner,spec:v.spec,actual:v.actual.map(|s|s.0),name:v.name,source:v.source,active:v.active,persistent:v.persistent,cleanup_pending:v.cleanup_pending,last_error:v.last_error}))
     }
 }
 impl InitialReply {
@@ -492,7 +494,7 @@ mod tests {
     fn virtual_reply()->InitialReply {
         use crate::virtual_display::*;
         let request=InitialRequest::Virtual{spec:Spec::default()};
-        InitialReply{request,id:1,source:"display-b".into(),virtual_display:Some(Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Session(uuid::Uuid::new_v4()),spec:Spec::default(),actual:Some(Spec::default()),name:"test virtual".into(),source:"display-b".into(),active:true,cleanup_pending:false,last_error:None})}
+        InitialReply{request,id:1,source:"display-b".into(),virtual_display:Some(Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Session(uuid::Uuid::new_v4()),spec:Spec::default(),actual:Some(Spec::default()),name:"test virtual".into(),source:"display-b".into(),active:true,persistent:false,cleanup_pending:false,last_error:None})}
     }
     #[test]
     fn initial_wire_is_independent_strict_versioned_and_round_trips_through_sdp() {

@@ -19,6 +19,7 @@ mod input_capture;
 mod settings;
 mod app_startup;
 mod tray;
+mod tray_displays;
 mod settings_page;
 mod plugin_ui;
 mod theme;
@@ -181,6 +182,7 @@ struct App {
     virtual_display:virtual_display_ui::State,
     tray_retry:Option<std::time::Instant>,
     tray_background:virtual_display_ui::BackgroundHost,
+    tray_displays:tray_displays::State,
     launcher_hidden: bool,
     disconnecting: bool,
     output_reconnect_pending: bool,
@@ -438,6 +440,7 @@ impl App {
             virtual_display:Default::default(),
             tray_retry:None,
             tray_background:Default::default(),
+            tray_displays:Default::default(),
             launcher_hidden: false,
             disconnecting: false,
             output_reconnect_pending: false,
@@ -1022,12 +1025,25 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     self.virtual_display.open_local_selector();
                 },
+                tray::Action::Display(action)=>{
+                    let background=self.tray_background.poll(ctx);
+                    self.tray_displays.start(ctx,action,self.preferences.virtual_display_presets.default_spec(),background);
+                },
                 tray::Action::Exit=>{self.exit_requested=true;self.disconnect();},
             }
         }
         let foreground_host=self.workspace.host.running()||self.native_host.running()||self.lan.host.running();
         let background_host=self.tray_background.poll(ctx);
-        let tray_needed=self.preferences.close_to_tray||foreground_host||background_host||self.virtual_display.owns_foreground_displays();
+        self.tray_displays.restore_on_start(ctx);
+        if let Some(result)=self.tray_displays.poll() {
+            match result {
+                Ok(Some(keep))=>{self.preferences.keep_virtual_displays_after_stream=keep;self.settings_draft.keep_virtual_displays_after_stream=keep;self.persist_preferences();},
+                Ok(None)=>{},
+                Err(error)=>{self.status=uu_i18n::format!("虚拟显示器操作失败：{error}");self.virtual_display.open_local_selector();},
+            }
+        }
+        if let Some(tray)=&self.tray{tray.set_display_options(self.preferences.keep_virtual_displays_after_stream,self.tray_displays.busy());}
+        let tray_needed=tray::supported()||foreground_host||background_host||self.virtual_display.owns_foreground_displays();
         if !tray_needed || self.exit_requested {
             if self.launcher_hidden && !self.exit_requested {
                 self.launcher_hidden=false;

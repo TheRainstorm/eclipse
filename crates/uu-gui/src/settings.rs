@@ -91,6 +91,8 @@ pub struct Settings {
     pub wallpaper_enabled: bool,
     pub app_autostart:bool,
     pub close_to_tray:bool,
+    /// Last acknowledged host value for the tray; the host owns the policy.
+    pub keep_virtual_displays_after_stream:bool,
     pub show_input_status:bool,
     pub virtual_display_presets: super::virtual_display_presets::Presets,
     pub wallpaper_source: WallpaperSource,
@@ -104,7 +106,7 @@ impl Default for Settings {
         Self { client: ClientSettings::default(), application_hotkeys:None, theme_preference:super::theme::DEFAULT_PREFERENCE, color_theme:Default::default(), language:uu_i18n::Language::default(), lan_discovery:true,
             lan_service_port:uu_core::native_discovery::SERVICE_PORT,
             lan_discovery_port:uu_core::native_discovery::DISCOVERY_PORT,
-            device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,close_to_tray:false,show_input_status:false,virtual_display_presets:Default::default(),
+            device_view:DeviceView::Cards, wallpaper_enabled:true, app_autostart:false,close_to_tray:false,keep_virtual_displays_after_stream:false,show_input_status:false,virtual_display_presets:Default::default(),
             wallpaper_source:WallpaperSource::Photography, wallpaper_favorite:None, wallpaper_api:PHOTOGRAPHY_WALLPAPER.into() }
     }
 }

@@ -356,6 +356,7 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
             "device-trust/identity.pk8",
             "device-trust/peers.json",
             "device-trust/pairing-password.json",
+            "device-trust/virtual-displays.json",
             "native-lan/server-identity.json",
             "native-lan/authorized-clients.json",
         ] {

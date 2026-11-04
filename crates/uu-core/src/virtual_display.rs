@@ -33,6 +33,7 @@ mod install_windows;
 #[cfg(windows)]
 mod ownership_windows;
 pub mod preparation;
+mod policy;
 #[cfg(any(windows, test))]
 mod provision_policy;
 #[cfg(windows)]
@@ -176,7 +177,7 @@ impl Default for Spec {
 }
 
 impl Spec {
-    pub(crate) fn validate(self) -> Result<()> {
+    pub fn validate(self) -> Result<()> {
         if !(320..=16_384).contains(&self.width)
             || !(200..=16_384).contains(&self.height)
             || !(1_000..=1_000_000).contains(&self.refresh_millihz)
@@ -193,6 +194,8 @@ pub struct Status {
     pub driver_present: bool,
     pub available_slots: usize,
     pub leased: usize,
+    #[serde(default)]
+    pub keep_after_stream: bool,
     pub explanation: String,
     pub install_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -209,6 +212,8 @@ pub struct Display {
     /// The actual GDI source name, matching `native::monitors().name`.
     pub source: String,
     pub active: bool,
+    #[serde(default,skip_serializing_if="is_false")]
+    pub persistent: bool,
     /// A failed removal retains ownership; callers can retry the same ID.
     pub cleanup_pending: bool,
     pub last_error: Option<String>,
@@ -259,10 +264,11 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+fn is_false(value:&bool)->bool{!*value}
 
 // Full target identity remains host-private. In particular, a remote caller
 // cannot turn an arbitrary adapter/target number into a cleanup capability.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct TargetKey {
     adapter: (u32, i32),
     target: u32,
@@ -376,6 +382,7 @@ pub struct Manager {
     preparation: preparation::Coordinator,
     preparation_owner: AtomicBool,
     hosts: Mutex<Vec<Weak<crate::shared_host::SessionGate>>>,
+    policy: Mutex<policy::State>,
 }
 
 impl Manager {
@@ -395,6 +402,7 @@ impl Manager {
                     preparation: preparation::Coordinator::default(),
                     preparation_owner: AtomicBool::new(false),
                     hosts: Mutex::default(),
+                    policy: Mutex::default(),
                 })
             })
             .clone()
@@ -611,6 +619,7 @@ impl Manager {
             driver_present: inventory.driver_present,
             available_slots,
             leased: entries.len(),
+            keep_after_stream:self.keep_after_stream()?,
             explanation: explanation.into(),
             install_url: INSTALL_URL.into(),
             preparation: if self.backend.preparation_observation()?.is_some() {
@@ -704,6 +713,12 @@ impl Manager {
         spec: Spec,
         initial_session: Option<&str>,
     ) -> Result<Display> {
+        self.create_target(owner,spec,initial_session,None)
+    }
+    fn create_restored(&self,saved:&policy::SavedDisplay)->Result<Display> {
+        self.create_target(Owner::Manual,saved.spec,None,Some(saved))
+    }
+    fn create_target(&self,owner:Owner,spec:Spec,initial_session:Option<&str>,saved:Option<&policy::SavedDisplay>)->Result<Display> {
         spec.validate()?;
         let mut entries = self.lock()?;
         if owner == Owner::Manual && self.manual_closing.load(Ordering::Acquire) {
@@ -730,7 +745,7 @@ impl Manager {
             // a bound interrupted first install before fresh preparation;
             // inventory/status remain read-only and cannot reopen admission.
             if preparation_before.is_some_and(|state|!state.driver_present)
-                && self.preparation_owner.load(Ordering::Acquire) && entries.is_empty() {
+                && saved.is_none() && self.preparation_owner.load(Ordering::Acquire) && entries.is_empty() {
                 let provider=CapacityProvider{manager:self,leases:0,initial:initial_session,package:None};
                 self.preparation.recover(&provider,||self.backend.recover_capacity(&||preparation::Provider::host_idle(&provider)))
                     .map_err(|failure|Error::Platform(failure.message))?;
@@ -751,10 +766,22 @@ impl Manager {
         // Reuse an already safe slot immediately, even during another stream.
         // Pool expansion is an independent idle-only intent, never a condition
         // for consuming existing capacity.
-        let mut selected = match self.claim_available(&entries) {
+        let restored=if let Some(saved)=saved {
+            let targets=self.backend.inventory()?.targets;
+            let matching:Vec<_>=targets.into_iter().filter(|t|t.key.monitor_path==saved.target.monitor_path&&t.key.target==saved.target.target).collect();
+            if matching.len()>1{return Err(Error::Platform("saved virtual target is ambiguous".into()));}
+            if let Some(target)=matching.into_iter().next() {
+                if !target.available || entries.values().any(|e|e.target==target.key){return Err(Error::Claimed);}
+                let claim=self.backend.claim(&target.key)?;
+                let target=self.backend.inventory()?.targets.into_iter().find(|t|t.key==target.key).ok_or(Error::UnknownSlot)?;
+                Some((target,claim))
+            }else{None}
+        }else{None};
+        let mut selected = if restored.is_some(){restored}else{match self.claim_available(&entries) {
+            Err(Error::DriverMissing) if saved.is_some()=>return Err(Error::DriverMissing),
             Err(Error::DriverMissing) if capacity.is_some()=>None,
             result=>result?,
-        };
+        }};
         if selected.is_some()
             && self.preparation_owner.load(Ordering::Acquire)
             && capacity.is_some_and(|observed| observed.driver_present)
@@ -763,6 +790,7 @@ impl Manager {
         }
         if selected.is_none() {
             if let Some(capacity) = capacity {
+                if saved.is_some()&&!capacity.driver_present{return Err(Error::DriverMissing);}
                 let minimum = if capacity.targets < preparation::INITIAL_CAPACITY {
                     preparation::INITIAL_CAPACITY
                 } else {
@@ -793,19 +821,21 @@ impl Manager {
             }
         }
         let (target, claim) = selected.ok_or(Error::NoAvailableSlot)?;
-        let id = LeaseId(Uuid::new_v4());
+        let id = LeaseId(saved.map_or_else(Uuid::new_v4,|s|s.id));
         let mut display = Display {
             id,
             owner,
             spec,
             actual: target.actual,
-            name: target.name,
-            source: target.source,
+            name: target.name.clone(),
+            source: target.source.clone(),
             active: false,
+            persistent:saved.is_some(),
             cleanup_pending: false,
             last_error: None,
         };
-        match self.backend.activate(&target.key, spec) {
+        let activation=if saved.is_some()&&target.active {Ok(target.clone())}else{self.backend.activate(&target.key,spec)};
+        match activation {
             Ok(observed) => {
                 display.active = observed.active;
                 display.actual = observed.actual;
@@ -892,6 +922,7 @@ impl Manager {
         if owner.is_some_and(|owner| owner != entry.display.owner) {
             return Err(Error::WrongOwner);
         }
+        if entry.display.persistent {self.forget_saved(id)?;entry.display.persistent=false;}
         match self.backend.deactivate(&entry.target) {
             Ok(()) => {
                 entries.remove(&id);
@@ -907,8 +938,9 @@ impl Manager {
     }
 
     pub fn release_session(&self, session_id: Uuid) -> Result<()> {
+        let mut persistence_error=None;
         let ids: Vec<_> = {
-            let entries = self.lock()?;
+            let mut entries = self.lock()?;
             // Closing and activation share the ownership lock. An in-flight
             // create either completes before this snapshot or sees closed;
             // it cannot publish a new lease after disconnect cleanup.
@@ -921,6 +953,13 @@ impl Manager {
             {
                 closed.store(true, Ordering::Release);
             }
+            let keep=self.keep_after_stream()?&&!self.manual_closing.load(Ordering::Acquire);
+            let saved=if keep&&entries.values().any(|entry|entry.display.owner==Owner::Session(session_id)&&!entry.display.cleanup_pending) {match self.save_disconnected(&entries,session_id){Ok(())=>true,Err(error)=>{persistence_error=Some(error);false}}}else{false};
+            for entry in entries.values_mut().filter(|e|e.display.owner==Owner::Session(session_id)) {
+                if (entry.display.persistent||saved)&&!entry.display.cleanup_pending {
+                    entry.display.owner=Owner::Manual;entry.display.persistent=true;
+                }
+            }
             entries
                 .iter()
                 .filter_map(|(id, entry)| {
@@ -928,7 +967,7 @@ impl Manager {
                 })
                 .collect()
         };
-        let mut first_error = None;
+        let mut first_error = persistence_error;
         for id in ids {
             if let Err(error) = self.remove_session(session_id, id) {
                 if first_error.is_none() {
@@ -968,8 +1007,11 @@ impl Manager {
     /// This is intentionally permanent for this Manager, unlike release_manual.
     pub fn shutdown_manual(&self) -> Result<()> {
         {
-            let _ownership = self.lock()?;
+            let mut _ownership = self.lock()?;
             self.manual_closing.store(true, Ordering::Release);
+            // Persisted targets intentionally outlive this process. A later
+            // host must reacquire the recorded target under a fresh claim.
+            _ownership.retain(|_,entry|entry.display.owner!=Owner::Manual||!entry.display.persistent);
         }
         self.release_manual()
     }

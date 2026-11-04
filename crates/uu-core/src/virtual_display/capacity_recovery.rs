@@ -13,7 +13,7 @@ impl InterruptedInstall {
     pub fn from_record(record: &Value) -> Result<Self> {
         let fail=||Error::Platform("interrupted transaction is not a bound first installation; local recovery evidence is still required".into());
         if record["schema"]!="eclipse-capacity-transaction/v1"
-            || record["phase"]!="installation_submitted"
+            || !matches!(record["phase"].as_str(),Some("installation_submitted"|"external_uninstall_verified"))
             || !record["config"].is_null() || !record["inf"].is_null()
             || !record["count_before"].is_null()
         {return Err(fail());}

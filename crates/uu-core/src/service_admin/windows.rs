@@ -492,6 +492,13 @@ mod build_version_tests {
 }
 /// Run from a GUI worker, never the render thread. No shell is involved.
 pub fn elevated(exe: &Path, arguments: &str) -> Result<()> {
+    let code=elevated_exit_code(exe,arguments)?;
+    ensure!(code == 0, "{}", uu_i18n::format!("后台服务管理未成功（退出码 {code}）"));
+    Ok(())
+}
+/// Some fixed local helpers return a small status in their exit code. They
+/// still use the same UAC/process-handle boundary, never a writable result path.
+pub fn elevated_exit_code(exe:&Path,arguments:&str)->Result<u32> {
     let verb = wide("runas");
     let file = wide(exe.as_os_str());
     let arguments = wide(arguments);
@@ -505,11 +512,10 @@ pub fn elevated(exe: &Path, arguments: &str) -> Result<()> {
     winok(unsafe { ShellExecuteExW(&mut info) })?;
     let process = Handle(info.hProcess);
     ensure!(!process.0.is_null(), "{}", uu_i18n::format!("后台服务管理程序未启动"));
-    ensure!(
-        unsafe { WaitForSingleObject(process.0, 180_000) } == WAIT_OBJECT_0,
-        "{}", uu_i18n::format!("后台服务管理程序仍在执行"));
+    if unsafe { WaitForSingleObject(process.0, 180_000) } != WAIT_OBJECT_0 {
+        return Err(super::SubmittedUnknown(uu_i18n::text("后台服务管理程序仍在执行").into()).into());
+    }
     let mut code = 0;
     winok(unsafe { GetExitCodeProcess(process.0, &mut code) })?;
-    ensure!(code == 0, "{}", uu_i18n::format!("后台服务管理未成功（退出码 {code}）"));
-    Ok(())
+    Ok(code)
 }

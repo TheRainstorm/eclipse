@@ -714,6 +714,23 @@ pub(super) fn prepare_foreground_firewall(service:u16,discovery:u16)->anyhow::Re
 /// Each UAC action is launched through this GUI version. Management does not
 /// depend on an adjacent CLI; install/import still use a verified complete set.
 pub(super) fn dispatch() -> Option<eframe::Result> {
+    let tray_args:Vec<_>=std::env::args_os().skip(1).collect();
+    if tray_args.len()==6&&tray_args[0]=="--tray-display-action" {
+        let result=(||->anyhow::Result<bool>{
+            require_administrator()?;
+            let exe=std::env::current_exe()?;
+            uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("application directory unavailable"))?,env!("UU_BUILD_COMMIT"))?;
+            let action=tray_args[1].to_str().and_then(crate::tray::DisplayAction::parse).ok_or_else(||anyhow::anyhow!("unknown tray display action"))?;
+            let number=|i:usize|->anyhow::Result<u32>{Ok(tray_args[i].to_str().ok_or_else(||anyhow::anyhow!("invalid display number"))?.parse()?)};
+            let hdr=number(5)?;anyhow::ensure!(hdr<=1,"invalid HDR flag");
+            let spec=uu_core::virtual_display::Spec{width:number(2)?,height:number(3)?,refresh_millihz:number(4)?,hdr:hdr==1};spec.validate()?;
+            crate::tray_displays::execute(action,spec,crate::virtual_display_ui::LocalOwner::Background)
+        })();
+        match result {Ok(keep)=>std::process::exit(10+u32::from(keep) as i32),Err(error)=>{
+            let unknown=error.downcast_ref::<uu_core::service_admin::SubmittedUnknown>().is_some();
+            show_error(&format!("{error:#}"));std::process::exit(if unknown{12}else{1});
+        }}
+    }
     let args:Vec<_>=std::env::args_os().skip(1).collect();
     if args.len()==3 && args[0]=="--configure-streaming-firewall" {
         let result=(||->anyhow::Result<()> {
