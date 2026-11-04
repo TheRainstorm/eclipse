@@ -107,13 +107,6 @@ fn combo(ui: &mut egui::Ui, id: &str, selected: &str, body: impl FnOnce(&mut egu
         .show_ui(ui, body);
 }
 fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
-    group(ui, uu_i18n::text("画质偏好"), |ui| {
-        super::quality_preferences::show(ui, &mut s.client, state.max_fps);
-    });
-    egui::CollapsingHeader::new(uu_i18n::text("高级设置"))
-        .id_salt("video-advanced-settings")
-        .default_open(false)
-        .show(ui, |ui| {
     group(ui, uu_i18n::text("画面"), |ui| {
         egui::Grid::new("settings-video-grid")
             .spacing([24.0, 14.0])
@@ -177,19 +170,8 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
         }
         note(ui,uu_i18n::text("下次连接生效。保持现状不切换主屏或关闭显示器；独占虚拟屏会请求关闭其它屏幕，退出时请求恢复。"));
     });
-        });
 }
 fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
-    group(ui, uu_i18n::text("视频兼容性"), |ui| {
-        note(ui, uu_i18n::text("默认自动选择双方支持的视频格式。先在画面页选择画质偏好；需要精确控制带宽或编码时，再展开高级设置。"));
-        if let Some(codec) = state.actual_codec.filter(|c| !c.is_empty()) {
-            ui.label(uu_i18n::format!("当前编码：{}", codec.trim_start_matches("video/")));
-        }
-    });
-    egui::CollapsingHeader::new(uu_i18n::text("高级设置"))
-        .id_salt("encoding-advanced-settings")
-        .default_open(false)
-        .show(ui, |ui| {
     group(ui,uu_i18n::text("编码与码率"),|ui| {
         egui::Grid::new("settings-encoding-grid").spacing([24.0,14.0]).show(ui,|ui| {
                 ui.label(uu_i18n::text("视频编码"));
@@ -232,7 +214,7 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                 ui.end_row();
                 if s.bitrate == 4 {
                     ui.label(uu_i18n::text("自定义码率"));
-                    ui.add(egui::Slider::new(&mut s.custom_mbps, 1..=1000).suffix(" Mbps"));
+                    ui.add(egui::DragValue::new(&mut s.custom_mbps).range(1..=1000).suffix(" Mbps"));
                     ui.end_row();
                 }
         });
@@ -255,7 +237,6 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
             note(ui,uu_i18n::text("PyroWave 当前支持 SDR、CBR；60 FPS 下推荐约 1080p 170 Mbps、4K 288 Mbps，帧率翻倍时码率约翻倍。还需预留协议与纠错带宽；主机需允许此编码。"));
         }
     });
-        });
 }
 fn audio(ui: &mut egui::Ui, s: &mut Settings) {
     group(ui, uu_i18n::text("声音播放"), |ui| {
@@ -335,7 +316,7 @@ impl SoftwareSection {
         let defaults=Settings::default();
         match self {
             Self::General=>{s.language=defaults.language;s.app_autostart=defaults.app_autostart;s.close_to_tray=defaults.close_to_tray;}
-            Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
+            Self::Appearance=>{s.theme_preference=defaults.theme_preference;s.color_theme=defaults.color_theme;s.wallpaper_enabled=defaults.wallpaper_enabled;s.wallpaper_source=defaults.wallpaper_source;s.wallpaper_favorite=defaults.wallpaper_favorite;s.wallpaper_api=defaults.wallpaper_api;s.show_input_status=defaults.show_input_status;}
             Self::Shortcuts=>s.application_hotkeys=Some(Default::default()),
             Self::Discovery=>s.lan_discovery=defaults.lan_discovery,
             Self::VirtualDisplays=>s.virtual_display_presets=defaults.virtual_display_presets,
@@ -372,6 +353,15 @@ pub(super) fn software(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Action
                 for preference in theme::PREFERENCES {
                     ui.selectable_value(&mut s.theme_preference,preference,theme::preference_label(preference));
                 }
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(uu_i18n::text("主题配色"));
+                combo(ui,"application-color-theme",theme::color_theme_label(s.color_theme),|ui| {
+                    for color in theme::COLOR_THEMES {
+                        ui.selectable_value(&mut s.color_theme,color,theme::color_theme_label(color));
+                    }
+                });
             });
             note(ui,uu_i18n::text("保存后应用到主窗口和串流窗口。"));
         });
@@ -629,5 +619,54 @@ mod language_tests {
             });
         }
         assert_eq!(settings,before);
+    }
+}
+
+#[cfg(test)]
+mod parameter_tests {
+    use super::*;
+
+    #[test]
+    fn device_parameters_are_visible_without_expanding_and_preserve_saved_values() {
+        let mut settings = super::super::settings::ClientSettings {
+            fps: 177,
+            resolution: 3,
+            bitrate: 4,
+            custom_mbps: 79,
+            codec: super::super::settings::CodecPreference::Av1,
+            prefer_hevc: true,
+            hdr: false,
+            vsync: false,
+            ..Default::default()
+        };
+        let before = settings.clone();
+        for (mut section, labels) in [
+            (Section::Video, vec!["目标帧率", "输出分辨率", "垂直同步", "使用软件解码"]),
+            (Section::Encoding, vec!["视频编码", "原生码率模式", "自定义码率"]),
+        ] {
+            let ctx = egui::Context::default();
+            let output = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 1800.))),
+                ..Default::default()
+            }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| client_editor(ui, &mut settings, &mut section));
+            });
+            fn collect(shape: &egui::Shape, text: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(value) => text.push(value.galley.job.text.clone()),
+                    egui::Shape::Vec(shapes) => for shape in shapes { collect(shape, text); },
+                    _ => {},
+                }
+            }
+            let mut text = Vec::new();
+            for shape in output.shapes { collect(&shape.shape, &mut text); }
+            for label in labels {
+                assert!(text.iter().any(|text| text == uu_i18n::text(label)), "parameter {label} must be visible on first paint");
+            }
+            for label in ["极速流畅", "平衡", "极致画质", "画质偏好", "视频兼容性", "高级设置"] {
+                assert!(!text.iter().any(|text| text == uu_i18n::text(label)), "removed shortcut {label} must not hide actual parameters");
+            }
+            assert_eq!(settings, before, "opening the editor must preserve all saved client values");
+        }
     }
 }
