@@ -80,7 +80,7 @@ pub fn resize_border(ctx: &egui::Context, fullscreen: bool) -> bool {
     false
 }
 
-pub const CONNECTION_BAR_HEIGHT: f32 = 36.0;
+pub const CONNECTION_BAR_HEIGHT: f32 = crate::theme::TOOLBAR_HEIGHT + 8.0;
 
 // Native size requests can update the API's cached size before the compositor
 // applies them. Keep ownership through a short stable observation interval,
@@ -135,6 +135,10 @@ impl WindowSizing {
     }
     pub fn begin_stream(&mut self) {
         self.stream_pending = true;
+    }
+    /// A tab uses its container's existing canvas; only its first view sizes it.
+    pub fn begin_view(&mut self) {
+        if self.canvas_px.is_none() {self.begin_stream();}
     }
 
     pub fn update(
@@ -505,6 +509,27 @@ mod tests {
         assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::InnerSize(size) if size.x > 1200.0 && size.x < 1280.0 && size.y < 800.0)));
     }
 
+    #[test]
+    fn cached_views_preserve_the_canvas_after_user_resize() {
+        let ctx=egui::Context::default();let mut sizing=WindowSizing::default();
+        let now=std::time::Instant::now();
+        let run=|sizing:&mut WindowSizing,size,video,manual,time| {
+            let inner=egui::Rect::from_min_size(egui::pos2(40.0,40.0),size);
+            let geometry=Geometry{inner,outer:inner,ppp:1.0,work:egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1920.0,1080.0))};
+            ctx.run(Default::default(),|ctx|sizing.update_at(ctx,true,Some(video),manual,Some(geometry),time))
+                .viewport_output[&egui::ViewportId::ROOT].commands.clone()
+        };
+        sizing.begin_view();
+        let first=run(&mut sizing,egui::vec2(750.0,450.0),egui::vec2(1920.0,1080.0),false,now);
+        assert!(first.iter().any(|c|matches!(c,egui::ViewportCommand::InnerSize(_))));
+        let manual=egui::vec2(900.0,600.0);
+        run(&mut sizing,manual,egui::vec2(1920.0,1080.0),true,now);
+        for (step,video) in [egui::vec2(3840.0,2160.0),egui::vec2(1280.0,1024.0),egui::vec2(1920.0,1080.0)].into_iter().enumerate() {
+            sizing.begin_view();
+            let commands=run(&mut sizing,manual,video,false,now+std::time::Duration::from_millis(50*(step as u64+1)));
+            assert!(!commands.iter().any(|c|matches!(c,egui::ViewportCommand::InnerSize(_)|egui::ViewportCommand::OuterPosition(_))),"a warm view cannot resize or move its container: {commands:?}");
+        }
+    }
     #[test]
     fn stream_fills_eighty_percent_with_aspect_ratio_at_every_dpi() {
         for ppp in [1.0, 1.25, 1.5, 2.0, 2.5] {

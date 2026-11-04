@@ -251,6 +251,102 @@ fn check_display_window_routing(state:&mut State,session:u64,ctx:&egui::Context)
     *sibling_stats.desktop_capture_source.lock().unwrap()=sibling_capture;
 }
 
+// The encrypted synthetic hosts remain live; only their monitor catalogs are
+// generated here, and every cold launch intent is removed before an IO pass.
+fn check_cached_display_switches(state:&mut State,first:u64,ctx:&egui::Context) {
+    let home=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==first)).unwrap().id;
+    let window=state.windows.iter_mut().find(|w|w.id==home).unwrap();
+    let active=window.active;let count=window.sessions.len();
+    let source=window.sessions.iter_mut().find(|s|s.id==first).unwrap();
+    let target=source.app.stream_target.clone().unwrap();
+    let first_displays=std::mem::take(&mut source.app.displays);source.app.displays.selected=Some(0);
+    let a=source.app.controller.as_ref().unwrap().stats.clone();
+    let cap=a.capabilities.allows(uu_core::capabilities::Capability::Displays);
+    a.capabilities.enable(uu_core::capabilities::Capability::Displays,true);
+    let a_catalog=std::mem::replace(&mut *a.remote_screens.lock().unwrap(),uu_core::screen_control::RemoteScreens{current_id:0,screens:(0..2).map(generated_screen).collect()});
+    let a_capture=a.desktop_capture_source.lock().unwrap().take();
+    let a_parked=a.audio.parked.load(Ordering::Acquire);let a_desired=source.app.audio_parked;
+    let epoch=a.native_media_epoch.load(Ordering::Acquire);
+    let windows=state.windows.len();
+    for _ in 0..12 {state.apply(Action::Select(first,Some(1)),ctx);}
+    assert_eq!(state.windows.len(),windows,"ordinary switching must not create a native window");
+    let window=state.windows.iter_mut().find(|w|w.id==home).unwrap();
+    assert_eq!(window.sessions.len(),count);assert_eq!(window.pending.len(),1,"one cold source has one pending connection");
+    assert_eq!(window.pending[0].target.connection.display().unwrap().source,generated_screen(1).display_name);
+    assert_eq!(window.cached_launches.len(),1);
+    assert_eq!(window.sessions.iter().find(|s|s.id==first).unwrap().app.displays.selected,Some(0),"cold launch must retain the current source and frame");
+    window.pending.clear();window.cached_launches.clear();
+    let sibling=window.sessions.iter_mut().find(|s|s.id!=first).unwrap();let second=sibling.id;
+    let second_target=sibling.app.stream_target.replace(target.clone());
+    let second_displays=std::mem::take(&mut sibling.app.displays);sibling.app.displays.selected=Some(1);
+    let second_home=sibling.home_window;let second_browser=sibling.browsable;sibling.browsable=true;sibling.home_window=None;
+    let b=sibling.app.controller.as_ref().unwrap().stats.clone();
+    let b_catalog=std::mem::replace(&mut *b.remote_screens.lock().unwrap(),uu_core::screen_control::RemoteScreens{current_id:1,screens:(0..2).map(generated_screen).collect()});
+    let b_capture=b.desktop_capture_source.lock().unwrap().take();let b_parked=b.audio.parked.load(Ordering::Acquire);let b_desired=sibling.app.audio_parked;
+    let b_cap=b.capabilities.allows(uu_core::capabilities::Capability::Displays);
+    b.capabilities.enable(uu_core::capabilities::Capability::Displays,true);
+    assert!(sibling.app.pin_current_display_view());
+    sibling.app.stream_target=Some(display_launch(&target,&generated_screen(1)).unwrap().target);
+    let second_epoch=b.native_media_epoch.load(Ordering::Acquire);
+    // The fixture just changed these two formerly unrelated device identities.
+    // Activate through the production transition before checking shared audio.
+    window.select(first);
+    for _ in 0..24 {
+        state.apply(Action::Select(first,Some(1)),ctx);
+        let window=state.windows.iter().find(|w|w.id==home).unwrap();assert_eq!(window.active,second);
+        assert!(a.audio.parked.load(Ordering::Acquire));assert!(!b.audio.parked.load(Ordering::Acquire));
+        state.apply(Action::Select(first,Some(0)),ctx);
+        assert_eq!(state.windows.iter().find(|w|w.id==home).unwrap().active,first);
+        assert!(!a.audio.parked.load(Ordering::Acquire));assert!(b.audio.parked.load(Ordering::Acquire));
+    }
+    assert_eq!(a.native_media_epoch.load(Ordering::Acquire),epoch);
+    assert_eq!(b.native_media_epoch.load(Ordering::Acquire),second_epoch);
+    state.detach(second,ctx);
+    let independent=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==second)).unwrap();
+    assert_ne!(independent.id,home);assert_eq!(independent.tabs(Default::default()).groups[0].screens.len(),1);
+    assert!(Arc::ptr_eq(&independent.sessions[0].app.controller.as_ref().unwrap().stats,&b));
+    state.merge(second,ctx);
+    let window=state.windows.iter_mut().find(|w|w.id==home).unwrap();
+    assert_eq!(window.sessions.len(),count);assert_eq!(window.tabs(Default::default()).groups.len(),1);
+    assert_eq!(window.tabs(Default::default()).groups[0].screens.len(),2,"merging must retain the device browser");
+    assert!(window.pending.is_empty());assert!(window.cached_launches.is_empty());
+    assert!(a.audio.parked.load(Ordering::Acquire),"merge must park the previous same-device audio owner");
+    assert!(!b.audio.parked.load(Ordering::Acquire));
+    // A failed cached view with no catalog must keep ownership of Close and
+    // reconnect commands rather than borrowing the healthy catalog owner.
+    let failed=window.sessions.iter_mut().find(|s|s.id==second).unwrap();
+    failed.app.displays.selected=None;
+    *b.remote_screens.lock().unwrap()=Default::default();
+    let tabs=window.tabs(Default::default());
+    assert_eq!(tabs.groups.len(),1);
+    assert_eq!(tabs.groups[0].command_session(),second);
+    assert!(window.sessions.iter().find(|s|s.id==first).unwrap().app.controller.is_some());
+    // The catalog is device-wide: a failed first connection cannot hide an
+    // unvisited third screen supplied by a healthy sibling.
+    window.sessions.iter_mut().find(|s|s.id==first).unwrap().app.disconnecting=true;
+    window.sessions.iter_mut().find(|s|s.id==second).unwrap().app.displays.selected=Some(1);
+    *b.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:1,screens:(0..3).map(generated_screen).collect()};
+    let tabs=window.tabs(Default::default());assert_eq!(tabs.groups[0].id,second);
+    assert_eq!(tabs.groups[0].screens.len(),3);
+    window.sessions.iter_mut().find(|s|s.id==first).unwrap().app.disconnecting=false;
+    // Explicit views share the same audio ownership rule after merging.
+    window.sessions.iter_mut().find(|s|s.id==second).unwrap().browsable=false;
+    window.select(first);assert!(!a.audio.parked.load(Ordering::Acquire));assert!(b.audio.parked.load(Ordering::Acquire));
+    window.select(second);assert!(a.audio.parked.load(Ordering::Acquire));assert!(!b.audio.parked.load(Ordering::Acquire));
+    let source=window.sessions.iter_mut().find(|s|s.id==first).unwrap();source.app.displays=first_displays;
+    let sibling=window.sessions.iter_mut().find(|s|s.id==second).unwrap();sibling.app.displays=second_displays;sibling.app.stream_target=second_target;sibling.home_window=second_home;sibling.browsable=second_browser;
+    *a.remote_screens.lock().unwrap()=a_catalog;*a.desktop_capture_source.lock().unwrap()=a_capture;
+    *b.remote_screens.lock().unwrap()=b_catalog;*b.desktop_capture_source.lock().unwrap()=b_capture;
+    a.capabilities.enable(uu_core::capabilities::Capability::Displays,cap);
+    b.capabilities.enable(uu_core::capabilities::Capability::Displays,b_cap);
+    window.select(active);
+    window.sessions.iter_mut().find(|s|s.id==first).unwrap().app.audio_parked=a_desired;
+    window.sessions.iter_mut().find(|s|s.id==second).unwrap().app.audio_parked=b_desired;
+    a.audio.parked.store(a_parked,Ordering::Release);b.audio.parked.store(b_parked,Ordering::Release);
+    state.windows.retain(|w|!w.sessions.is_empty()||!w.pending.is_empty());
+    assert_eq!(state.windows.len(),windows);
+}
+
 fn check_same_device_views_keep_home_and_route_each_connection(state:&mut State,first:u64,second:u64,ctx:&egui::Context) {
     let original_windows=state.windows.len();let home=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==first)).unwrap().id;
     let original_active=state.windows.iter().find(|w|w.id==home).unwrap().active;
@@ -400,7 +496,7 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
         settings:tokio::sync::mpsc::unbounded_channel().0,close,stats:Arc::new(Default::default()),
     });
     let id=state.next;state.next+=1;
-    window.sessions.push(Session{id,app:closing,home_window:None});
+    window.sessions.push(Session{id,app:closing,home_window:None,browsable:false});
     window.select(id);
     let previous_owner=state.input_owner.replace(id);
     state.apply(Action::Close(id),ctx);
@@ -836,6 +932,7 @@ impl eframe::App for Probe {
                         .map(|s| s.native_media_epoch.load(Ordering::Acquire))
                         .collect();
                     check_display_window_routing(state,self.first,ctx);
+                    check_cached_display_switches(state,self.first,ctx);
                     check_temporary_display_fork(state,self.first,ctx);
                     check_same_device_views_keep_home_and_route_each_connection(state,self.first,self.second_id,ctx);
                     // Switch away without another UI pass: inactive sessions

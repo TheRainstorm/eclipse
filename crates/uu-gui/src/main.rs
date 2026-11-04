@@ -102,6 +102,8 @@ struct App {
     stream_target: Option<sessions::StreamTarget>,
     workspace_tabs:Option<stream_workspace::Tabs>,
     active_session:bool,
+    // Container ownership is separate from the user mute preference.
+    audio_parked:bool,
     plugin_payload:Option<zeroize::Zeroizing<String>>,
     native_ui: native_ui::NativeUi,
     gamepad: std::rc::Rc<std::cell::RefCell<gamepad::Reader>>,
@@ -359,6 +361,7 @@ impl App {
             stream_target,
             workspace_tabs:None,
             active_session:true,
+            audio_parked:false,
             plugin_payload,
             native_ui: native_ui::NativeUi::default(),
             gamepad:Default::default(),
@@ -530,15 +533,17 @@ impl App {
             self.controller = None;
             self.disconnecting = false;
             self.input_capture.release();
+            // Only the selected session owns this viewport's presenter.
+            // A parked connection may retire while its sibling is drawing.
             #[cfg(windows)]
-        eframe::glow_presentation::remove(&self.context,self.context.viewport());
-        self.textures.clear();
+            if self.active_session {eframe::glow_presentation::remove(&self.context,self.context.viewport());}
+            self.textures.clear();
             self.hud_cache=Default::default();
             self.frame_count.clear();
             self.fps.clear();
             self.settings_feedback.clear();
             self.cursor=cursor::Cursor::default();self.remote_cursor_active=false;
-            self.displays=displays::Displays::default();
+            self.displays=if self.exit_requested {displays::Displays::default()} else {self.displays.for_reconnect()};
             if std::mem::take(&mut self.output_reconnect_pending) && !self.exit_requested {
                 self.connect();
             }

@@ -42,7 +42,7 @@ struct Pending {
     settings_accepted: bool,
 }
 impl Displays {
-    fn for_reconnect(&self)->Self {
+    pub(super) fn for_reconnect(&self)->Self {
         let mut next=Self::default();
         if let Some(target)=&self.fixed_display {next.set_initial_display(target.clone());}
         next
@@ -368,9 +368,17 @@ impl super::App {
             .unwrap_or_else(|| uu_i18n::text("显示器").into())
     }
     pub(super) fn select_remote_screen(&mut self,id:i32){
+        if self.active_session {
+            if let Some(tabs)=&self.workspace_tabs {
+                tabs.actions.borrow_mut().push(super::stream_workspace::Action::Select(tabs.active,Some(id)));
+                self.release_all_keys();self.release_pointer_capture(&self.context.clone());
+                self.displays.menu_open=false;self.stream_menu.open=false;
+                self.context.memory_mut(|memory|memory.close_popup());return;
+            }
+        }
         self.select_native_display(id);
     }
-    fn select_native_display(&mut self,id:i32){
+    pub(super) fn select_native_display(&mut self,id:i32){
         if self.displays.awaiting_virtual {return;}
         let screens=self.remote_screens();
         if !self.displays.permits_source(id,&screens){return;}

@@ -234,6 +234,8 @@ struct Session {
     // A presentation destination, never connection or virtual-lease ownership.
     // Keep the ID after its empty native container retires so Merge can restore it.
     home_window:Option<u64>,
+    // Normal device browsing keeps visited sources alive in this container.
+    browsable:bool,
 }
 fn session_title(app:&App)->String {
     let target=app.stream_target.as_ref().expect("stream session target");
@@ -270,6 +272,7 @@ struct Window {
     id: u64,
     sessions: Vec<Session>,
     pending: Vec<Launch>,
+    cached_launches:std::collections::HashMap<ConnectionTarget,(bool,u32)>,
     active: u64,
     closing: bool,
     platform: Option<Rc<crate::platform::Platform>>,
@@ -290,6 +293,7 @@ impl Window {
             id,
             sessions: Vec::new(),
             pending,
+            cached_launches:Default::default(),
             active: 0,
             closing: false,
             platform: None,
@@ -308,29 +312,39 @@ impl Window {
     }
     fn tabs(&self, actions: Rc<RefCell<Vec<Action>>>) -> Tabs {
         let mut groups:Vec<(ConnectionTarget,Group,Vec<(String,i32)>)>=Vec::new();
+        let mut browsers=std::collections::HashMap::new();
+        for source in self.sessions.iter().filter(|s|s.browsable && !s.app.exit_requested && s.home_window.is_none_or(|home|home==self.id)) {
+            if let Some(target)=&source.app.stream_target {
+                let healthy=!source.app.disconnecting && source.app.controller.as_ref().is_some_and(|h|!h.stopped.load(std::sync::atomic::Ordering::Acquire)) && !source.app.remote_screens().screens.is_empty();
+                let entry=browsers.entry(base_key(target)).or_insert((source.id,healthy));
+                if healthy && !entry.1 {*entry=(source.id,true);}
+            }
+        }
         for session in self.sessions.iter().filter(|session|!session.app.exit_requested) {
             let target=session.app.stream_target.as_ref().expect("stream target");
             let identity=base_key(target);
-            let preparing=target.connection.virtual_display().is_some() && session.app.displays.preparing_initial_target();
+            let preparing=target.connection.is_fixed_display_view() && session.app.displays.preparing_initial_target();
             let fixed=session.app.is_fixed_display_view();
+            let browser=browsers.get(&identity).is_some_and(|(id,_)|*id==session.id);
             let can_merge=session.home_window.is_some_and(|home|home!=self.id)&&!session.app.disconnecting;
             let live=self.sessions.iter().filter(|s|!s.app.exit_requested&&!s.app.disconnecting).count();
-            let can_detach=!can_merge&&!session.app.disconnecting&&(!fixed||live>1)&&(fixed||session.app.displays.ready());
-            let can_open=!fixed && !preparing && target.is_native() && session.app.controller.as_ref().is_some_and(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Displays));
+            let can_detach=!can_merge&&!session.app.disconnecting&&(!fixed||live>1||(browser&&session.app.remote_screens().screens.len()>1))&&(fixed||session.app.displays.ready());
+            let can_open=browser && !preparing && target.is_native() && session.app.controller.as_ref().is_some_and(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Displays));
             let can_create=!preparing && session.app.controller.as_ref().is_some_and(|h|h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire)&&h.stats.native_displays.initial_supported());
             let at=groups.iter().position(|(key,_,_)|*key==identity).unwrap_or_else(|| {
                 groups.push((identity,Group{id:session.id,name:target.alias.clone(),screens:Vec::new(),selected:None,members:Vec::new(),views:Vec::new(),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:false},Vec::new()));groups.len()-1
             });
             let (_,group,sources)=&mut groups[at];
             group.members.push(session.id);group.can_create_display|=can_create;
-            if !fixed {group.id=session.id;group.fixed_view=false;group.can_open_displays|=can_open;}
+            if browser {group.id=session.id;group.fixed_view=false;group.can_open_displays|=can_open;}
             if session.id==self.active || group.members.len()==1 {group.can_detach=can_detach;group.can_merge=can_merge;}
-            let catalog=session.app.visible_remote_screens();
+            let catalog=if browser {session.app.remote_screens()}else{session.app.visible_remote_screens()};
             let mut selected=None;
-            for screen in catalog.screens.iter().filter(|screen|!preparing&&(!fixed||session.app.displays.selected==Some(screen.id))) {
-                let key=if fixed {-(i32::try_from(session.id).unwrap_or(i32::MAX))} else {screen.id};
+            for screen in catalog.screens.iter().filter(|screen|!preparing&&(browser||!fixed||session.app.displays.selected==Some(screen.id))) {
+                let bound=fixed && session.app.displays.selected==Some(screen.id);
+                let key=if bound {-(i32::try_from(session.id).unwrap_or(i32::MAX))} else {screen.id};
                 let key=if let Some((_,existing))=sources.iter_mut().find(|(name,_)|name==&screen.display_name) {
-                    if fixed {
+                    if bound {
                         if let Some((old,label))=group.screens.iter_mut().find(|(old,_)|*old==*existing) {*old=key;*label=session.app.displays.layout.label(screen);}
                         if group.selected==Some(*existing) {group.selected=Some(key);}
                         for view in &mut group.views {if view.screen==*existing {view.screen=key;}}
@@ -350,11 +364,15 @@ impl Window {
                         *existing=placeholder;
                     }
                 }
-                group.screens.push((placeholder,uu_i18n::text("正在创建临时虚拟显示器…").into()));selected=Some(placeholder);
+                group.screens.push((placeholder,uu_i18n::text(if target.connection.virtual_display().is_some(){"正在创建临时虚拟显示器…"}else{"正在准备指定显示器…"}).into()));selected=Some(placeholder);
             }
             if let Some(screen)=selected {
                 group.views.push(View{screen,session:session.id,fixed,active:session.id==self.active,can_create,can_detach,can_merge});
                 if session.id==self.active {group.selected=Some(screen);}
+            } else if session.id==self.active {
+                // A failed/preparing view still owns its commands. Its absent
+                // catalog must never route Close to a healthy sibling.
+                group.views.push(View{screen:-(i32::try_from(session.id).unwrap_or(i32::MAX)),session:session.id,fixed,active:true,can_create,can_detach,can_merge});
             }
         }
         Tabs {
@@ -371,10 +389,11 @@ impl Window {
             old.app.deactivate_session();
         }
         self.active = id;
+        self.route_cached_audio(id);
         if let Some(platform) = &self.platform {
             platform.select_session(id);
         }
-        self.sizing.borrow_mut().begin_stream();
+        self.sizing.borrow_mut().begin_view();
         for session in &mut self.sessions {
             session.app.active_session = session.id == id;
             if session.app.active_session {
@@ -385,9 +404,20 @@ impl Window {
             }
         }
     }
+    fn route_cached_audio(&mut self,id:u64) {
+        let owner=self.sessions.iter().find(|s|s.id==id).and_then(|s|s.app.stream_target.as_ref()).map(base_key);
+        if let Some(owner)=owner {
+            for view in self.sessions.iter_mut().filter(|s|s.app.stream_target.as_ref().is_some_and(|t|base_key(t)==owner)) {
+                view.app.audio_parked=view.id!=id;
+                if let Some(handle)=&view.app.controller {handle.stats.audio.parked.store(view.app.audio_parked,std::sync::atomic::Ordering::Release);}
+            }
+        }
+    }
     fn take_session(&mut self,id:u64)->Session {
         let index=self.sessions.iter().position(|session|session.id==id).expect("live session");
         let mut session=self.sessions.remove(index);
+        session.app.audio_parked=false;
+        if let Some(handle)=&session.app.controller {handle.stats.audio.parked.store(false,std::sync::atomic::Ordering::Release);}
         session.app.deactivate_session();
         session.app.context.suspend();
         if self.active==id {
@@ -406,7 +436,8 @@ impl Window {
         // Activation belongs to the destination viewport's next pass, after
         // its platform/context and wakeups have been bound by show().
         self.active=id;
-        self.sizing.borrow_mut().begin_stream();
+        self.route_cached_audio(id);
+        self.sizing.borrow_mut().begin_view();
         self.focus=true;
     }
     fn show(
@@ -465,9 +496,11 @@ impl Window {
                 session.app.deactivate_session();
                 session.app.disconnect();
             }
-            self.pending.clear();
+            self.pending.clear();self.cached_launches.clear();
         }
         for launch in std::mem::take(&mut self.pending) {
+            let cached=self.cached_launches.remove(&launch.target.key());
+            let browsable=cached.is_some() || !launch.target.connection.is_fixed_display_view();
             let plugin_payload = match launch.plugin_payload() {
                 Ok(value) => value,
                 Err(_) => continue,
@@ -485,12 +518,18 @@ impl Window {
                 vsync,
                 plugin_payload,
             );
+            app.fullscreen=ctx.input(|input|input.viewport().fullscreen.unwrap_or(false));
+            if let Some((muted,volume))=cached {
+                app.preferences.muted=muted;app.settings_draft.muted=muted;
+                app.preferences.volume=volume;app.settings_draft.volume=volume;
+                if let Some(handle)=&app.controller {handle.stats.audio.muted.store(muted,std::sync::atomic::Ordering::Release);handle.stats.audio.volume.store(volume,std::sync::atomic::Ordering::Release);}
+            }
             app.window_sizing = self.sizing.clone();
             app.shortcuts=self.shortcuts.clone();
             app.gamepad = gamepad.clone();
             app.restore_maximized = self.restore_maximized.clone();
             let home_window=if app.stream_target.as_ref().is_some_and(|target|target.connection.display().is_some()) {self.home_window.take()}else{None};
-            self.sessions.push(Session { id, app,home_window });
+            self.sessions.push(Session { id, app,home_window,browsable });
             self.select(id);
         }
         let tabs = self.tabs(actions);
@@ -597,10 +636,16 @@ impl State {
         let Some(index)=self.windows.iter().position(|w|!w.closing&&w.sessions.iter().any(|s|s.id==id&&!s.app.exit_requested&&!s.app.disconnecting)) else{return;};
         let source=&self.windows[index];
         let session=source.sessions.iter().find(|s|s.id==id).unwrap();
-        if !session.app.is_fixed_display_view() && session.app.remote_screens().screens.len()>1 {
+        let browsing=session.browsable&&session.home_window.is_none_or(|home|home==source.id);
+        let only=source.sessions.iter().filter(|s|!s.app.exit_requested&&!s.app.disconnecting).count()==1;
+        let other=(browsing&&only).then(||session.app.remote_screens().screens.into_iter().find(|screen|Some(screen.id)!=session.app.displays.selected)).flatten().map(|screen|screen.id);
+        if let Some(other)=other {
+            // Keep another source in the original container. The selected
+            // controller itself moves; neither connection needs renegotiation.
+            if !self.cache_display(id,other,ctx) {return;}
+        } else if !session.app.is_fixed_display_view() && session.app.remote_screens().screens.len()>1 {
             if let Some(screen)=session.app.displays.selected {self.open_display(id,screen,ctx);return;}
-        }
-        if session.app.is_fixed_display_view() && source.sessions.iter().filter(|s|!s.app.exit_requested&&!s.app.disconnecting).count()==1 {
+        } else if session.app.is_fixed_display_view() && only {
             self.windows[index].select(id);self.windows[index].focus=true;return;
         }
         let source=&mut self.windows[index];
@@ -754,6 +799,32 @@ impl State {
             false
         }
     }
+    fn cache_display(&mut self,session:u64,screen:i32,ctx:&egui::Context)->bool {
+        let Some(index)=self.windows.iter().position(|w|!w.closing&&w.sessions.iter().any(|s|s.id==session&&!s.app.exit_requested&&!s.app.disconnecting)) else{return false;};
+        let source=self.windows[index].sessions.iter().find(|s|s.id==session).unwrap();
+        if !source.browsable || source.home_window.is_some_and(|home|home!=self.windows[index].id) || !source.app.displays.ready() {return false;}
+        let Some(target)=source.app.stream_target.as_ref().filter(|t|t.is_native()) else{return false;};
+        if !source.app.controller.as_ref().is_some_and(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)) {return false;}
+        let catalog=source.app.remote_screens();
+        let Some(display)=catalog.screens.iter().find(|s|s.id==screen) else{return true;};
+        if source.app.displays.selected==Some(screen) {self.windows[index].select(session);return true;}
+        let launch=match display_launch(target,display) {Ok(launch)=>launch,Err(_)=>return false};
+        let audio=(source.app.preferences.muted,source.app.preferences.volume);
+        let key=launch.target.key();
+        if let Some((window,id))=self.windows.iter().filter(|w|!w.closing).find_map(|w|w.sessions.iter().find(|s|!s.app.exit_requested&&!s.app.disconnecting&&s.app.stream_target.as_ref().is_some_and(|t|t.key()==key)).map(|s|(w.id,s.id))) {
+            let window=self.windows.iter_mut().find(|w|w.id==window).unwrap();window.select(id);window.focus=true;
+            ctx.request_repaint_of(window.viewport());return true;
+        }
+        if let Some(window)=self.windows.iter_mut().find(|w|!w.closing&&w.pending.iter().any(|l|l.target.key()==key)) {
+            window.focus=true;ctx.request_repaint_of(window.viewport());return true;
+        }
+        let window=&mut self.windows[index];
+        let source=window.sessions.iter_mut().find(|s|s.id==session).unwrap();
+        if !source.app.pin_current_display_view() {return false;}
+        if let Some(handle)=&source.app.controller {handle.stats.diagnostics.record(serde_json::json!({"event":"display_view_open","screen":screen,"reuse_transport":false}));}
+        window.cached_launches.insert(key,audio);window.pending.push(launch);window.focus=true;
+        ctx.request_repaint_of(window.viewport());true
+    }
     fn apply(&mut self, action: Action, ctx: &egui::Context) {
         #[cfg(test)]
         eprintln!("generated workspace action={action:?}");
@@ -773,6 +844,7 @@ impl State {
                     let screens=source.app.remote_screens();let screen=screens.screens.iter().find(|s|s.id==screen)?;
                     self.displaying_session(&base_key(target),&DisplayTarget{id:screen.id,source:screen.display_name.clone()},Some(id))
                 }));
+                if existing.is_none() && screen.is_some_and(|screen|self.cache_display(id,screen,ctx)) {return;}
                 let (id,screen)=existing.map_or((id,screen),|existing|(existing,None));
                 for window in &mut self.windows {
                     if window.sessions.iter().any(|s| s.id == id&&!s.app.exit_requested) {
@@ -780,7 +852,7 @@ impl State {
                         window.focus=true;
                         if let Some(screen) = screen {
                             if let Some(s) = window.sessions.iter_mut().find(|s| s.id == id) {
-                                s.app.select_remote_screen(screen);
+                                s.app.select_native_display(screen);
                             }
                         }
                         ctx.request_repaint_of(window.viewport());

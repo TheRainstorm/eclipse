@@ -1490,7 +1490,7 @@ impl crate::App {
                     self.displays
                         .bind_created_virtual(crate::sessions::DisplayTarget { id, source });
                 } else {
-                    self.select_remote_screen(id);
+                    self.select_native_display(id);
                 }
             }
         }

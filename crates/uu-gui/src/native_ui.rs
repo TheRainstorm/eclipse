@@ -39,6 +39,7 @@ impl App {
         if kind==uu_core::media::DecoderKind::Software {let _=stats.native_codec_capabilities.set(vec![uu_core::native::VideoCodec::H264]);}
         stats.audio.volume.store(self.preferences.volume,std::sync::atomic::Ordering::Release);
         stats.audio.muted.store(self.preferences.muted,std::sync::atomic::Ordering::Release);
+        stats.audio.parked.store(self.audio_parked,std::sync::atomic::Ordering::Release);
         if let Some(config) = &self.config {
             stats.diagnostics.start([config.state_dir.join("diagnostics")]);
         }
@@ -62,8 +63,12 @@ impl App {
         }
         let context=self.context.clone();handle.frames.enable_planar();handle.frames.set_waker(move||context.request_video_frame());
         if let Err(error)=super::clipboard::start_following(handle.stats.clipboard.clone(),self.clipboard_window.clone()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(error.to_string());}
-        self.controller=Some(handle);self.window_sizing.borrow_mut().begin_stream();self.input_capture.request();
-        if self.active_session&&!self.fullscreen {self.context.send_viewport_cmd(egui::ViewportCommand::Maximized(false));}
+        handle.stats.audio.parked.store(self.audio_parked,std::sync::atomic::Ordering::Release);
+        self.controller=Some(handle);
+        if self.workspace_tabs.is_some() {self.window_sizing.borrow_mut().begin_view();}
+        else {self.window_sizing.borrow_mut().begin_stream();}
+        self.input_capture.request();
+        if self.active_session&&!self.fullscreen&&!self.context.input(|input|input.viewport().maximized==Some(true)||input.viewport().fullscreen==Some(true)) {self.context.send_viewport_cmd(egui::ViewportCommand::Maximized(false));}
         self.status=uu_i18n::text("连接中…").into();
     }
 

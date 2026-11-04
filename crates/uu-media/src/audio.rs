@@ -19,6 +19,8 @@ pub struct AudioControl {
     pub injected_loss: AtomicU64,
     pub volume: AtomicU32,
     pub muted: AtomicBool,
+    /// A cached, inactive source keeps receiving without duplicating playback.
+    pub parked: AtomicBool,
     pub packets: AtomicU64,
     pub concealed: AtomicU64,
     pub dropped: AtomicU64,
@@ -41,6 +43,7 @@ impl Default for AudioControl {
             injected_loss: AtomicU64::new(0),
             volume: AtomicU32::new(100),
             muted: AtomicBool::new(false),
+            parked: AtomicBool::new(false),
             packets: AtomicU64::new(0),
             concealed: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
@@ -55,6 +58,10 @@ impl Default for AudioControl {
     }
 }
 impl AudioControl {
+    pub fn gain(&self)->f32 {
+        if self.muted.load(Ordering::Relaxed) || self.parked.load(Ordering::Acquire) {0.0}
+        else {self.volume.load(Ordering::Relaxed).min(100) as f32 / 100.0}
+    }
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
     }
@@ -534,11 +541,7 @@ mod device {
                     (data.len() * 1_000_000 / (rate as usize * channels)) as u32,
                     Ordering::Relaxed,
                 );
-                let gain = if control.muted.load(Ordering::Relaxed) {
-                    0.0
-                } else {
-                    control.volume.load(Ordering::Relaxed).min(100) as f32 / 100.0
-                };
+                let gain = control.gain();
                 // Never wait for decode on the realtime device callback.
                 if let Ok(mut q) = queue.try_lock() {
                     transition.begin(false);
@@ -572,6 +575,16 @@ mod device {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parked_view_silences_output_without_changing_user_mute_or_volume() {
+        let control=AudioControl::default();control.volume.store(37,Ordering::Relaxed);
+        assert!((control.gain()-0.37).abs()<0.001);
+        control.parked.store(true,Ordering::Release);assert_eq!(control.gain(),0.0);
+        assert!(!control.muted.load(Ordering::Relaxed));assert_eq!(control.volume.load(Ordering::Relaxed),37);
+        control.muted.store(true,Ordering::Relaxed);control.parked.store(false,Ordering::Release);
+        assert_eq!(control.gain(),0.0,"returning to a view must not unmute the user's muted audio");
+        control.muted.store(false,Ordering::Relaxed);assert!((control.gain()-0.37).abs()<0.001);
+    }
     #[test]
     fn opus_roundtrip_and_single_packet_concealment() {
         let mut encoder =
