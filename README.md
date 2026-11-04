@@ -47,7 +47,7 @@ Eclipse 将设备管理、画面共享、声音和输入控制放在同一个应
 
 ## 开始使用
 
-当前源码版本 **v0.21.2** 增加 Windows 共享启动时的防火墙检查和缺失规则配置，并在后台升级时保留原规则范围迁移程序路径；原生串流使用十槽固定端口。详见 [0.21.2 版本说明](docs/releases/v0.21.2.md)。下载以 GitHub Releases 实际发布为准。旧配置继续使用；Windows 后台服务需在服务管理中单独更新。
+当前源码里程碑 **v0.23.1** 固定暗色界面、虚拟副屏管理和串流队列改进，标签保留本地；已通过检查与尚未完成的实机验收见 [0.23.1 版本说明](docs/releases/v0.23.1.md)。下载以 GitHub Releases 实际发布为准。旧配置继续使用；Windows 后台服务需在服务管理中单独更新。
 
 从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包，保留包内全部运行库与清单。
 
