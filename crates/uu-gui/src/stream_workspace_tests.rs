@@ -117,7 +117,7 @@ fn independent_display_launch_and_ipc_reject_plugins_invalid_sources_and_nested_
 }
 #[test]
 fn aggregated_device_commands_keep_individual_view_ownership() {
-    let group=Group{id:1,name:"Generated device".into(),screens:vec![(0,"Physical".into()),(16,"Virtual".into())],selected:Some(16),
+    let group=Group{last_session:1,id:1,name:"Generated device".into(),screens:vec![(0,"Physical".into()),(16,"Virtual".into())],selected:Some(16),
         members:vec![1,2],views:vec![View{screen:0,session:1,fixed:false,active:false,can_create:true,can_detach:true,can_merge:false},View{screen:16,session:2,fixed:true,active:true,can_create:false,can_detach:false,can_merge:true}],
         can_open_displays:true,can_create_display:true,can_detach:false,fixed_view:false,can_merge:true};
     assert!(group.contains(2));assert_eq!(group.command_session(),2);assert_eq!(group.creation_session(),1);
@@ -140,6 +140,20 @@ fn aggregated_device_commands_keep_individual_view_ownership() {
     let button=|pressed|egui::Event::PointerButton{pos:close,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
     render(vec![egui::Event::PointerMoved(close),button(true)]);render(vec![button(false)]);
     assert_eq!(&actions.borrow()[..],&[Action::Close(2)],"the aggregate device header closes only its active virtual view");
+}
+
+#[test]
+fn computer_navigation_uses_its_last_view_and_falls_back_when_it_was_closed() {
+    let group=Group{last_session:12,id:11,name:"Remembered computer".into(),screens:vec![],selected:None,
+        members:vec![11,12],views:vec![],can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false};
+    let mut other=group.clone();other.id=22;other.last_session=22;other.members=vec![22];
+    let mut tabs=Tabs{presets:Default::default(),groups:vec![group,other],active:22,actions:Default::default(),local_ui:Default::default()};
+    assert_eq!(tabs.groups[0].activate(),Action::Select(12,None),"hostname selection shares the same rule");
+    for command in [uu_core::hotkeys::Action::NextComputer,uu_core::hotkeys::Action::PreviousComputer] {tabs.navigate(command);}
+    assert_eq!(std::mem::take(&mut *tabs.actions.borrow_mut()),[Action::Select(12,None),Action::Select(12,None)]);
+    tabs.groups[0].members.retain(|id|*id!=12);
+    tabs.navigate(uu_core::hotkeys::Action::NextComputer);
+    assert_eq!(std::mem::take(&mut *tabs.actions.borrow_mut()),[Action::Select(11,None)]);
 }
 
 #[test]
@@ -496,7 +510,7 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
         settings:tokio::sync::mpsc::unbounded_channel().0,close,stats:Arc::new(Default::default()),
     });
     let id=state.next;state.next+=1;
-    window.sessions.push(Session{id,app:closing,home_window:None,browsable:false});
+    window.sessions.push(Session{id,activated:None,app:closing,home_window:None,browsable:false});
     window.select(id);
     let previous_owner=state.input_owner.replace(id);
     state.apply(Action::Close(id),ctx);
@@ -542,8 +556,8 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
 fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() {
     use uu_core::hotkeys::Action as Command;
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let mut tabs=Tabs{presets:Default::default(),groups:vec![Group{members:vec![],views:vec![],id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},
-        Group{members:vec![],views:vec![],id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let mut tabs=Tabs{presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},
+        Group{last_session:11,members:vec![],views:vec![],id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     for command in [Command::NextDisplay,Command::PreviousDisplay,Command::NextComputer,Command::PreviousComputer] {tabs.navigate(command);}
     assert_eq!(*actions.borrow(),[Action::Select(22,Some(2)),Action::Select(22,Some(9)),Action::Select(11,None),Action::Select(11,None)]);
     actions.borrow_mut().clear();tabs.active=11;
@@ -556,7 +570,7 @@ fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() 
 #[test]
 fn device_selector_requires_an_explicit_open_and_keeps_the_video_area() {
     let ctx=egui::Context::default();crate::setup_style(&ctx);
-    let mut tabs=Tabs{presets:Default::default(),groups:vec![Group{members:vec![],views:vec![],id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},Group{members:vec![],views:vec![],id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:1,actions:Default::default(),local_ui:Default::default()};
+    let mut tabs=Tabs{presets:Default::default(),groups:vec![Group{last_session:1,members:vec![],views:vec![],id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},Group{last_session:2,members:vec![],views:vec![],id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:1,actions:Default::default(),local_ui:Default::default()};
     let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
     let draw=|tabs:&Tabs,pointer| {
         let mut visible=false;
@@ -583,7 +597,7 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
     let actions = Rc::new(RefCell::new(Vec::new()));
     let tabs = Tabs {presets:Default::default(),
         groups: vec![
-            Group {members:vec![],views:vec![],
+            Group {last_session:11,members:vec![],views:vec![],
                 id: 11,
                 name: "Generated A".into(),
                 screens: vec![(1, "Monitor A".into())],
@@ -593,7 +607,7 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
                 can_detach: true,
                 fixed_view:false,can_merge:false,
             },
-            Group {members:vec![],views:vec![],
+            Group {last_session:22,members:vec![],views:vec![],
                 id: 22,
                 name: "Generated B".into(),
                 screens: vec![(2, "Monitor B".into())],
@@ -686,7 +700,7 @@ fn device_context_menu_routes_detach_and_disconnect_from_a_child_viewport() {
     let context=egui::Context::default();
     crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{presets:Default::default(),groups:vec![Group{members:vec![],views:vec![],id:22,name:"Generated B".into(),screens:vec![(2,"Monitor B".into())],selected:Some(2),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated B".into(),screens:vec![(2,"Monitor B".into())],selected:Some(2),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let viewport=egui::ViewportId::from_hash_of("generated-child");
     let render=|events|context.run(egui::RawInput{viewport_id:viewport,viewports:[(viewport,egui::ViewportInfo::default())].into_iter().collect(),events,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),focused:true,..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     fn text(shape:&egui::epaint::Shape,label:&str)->Option<egui::Pos2>{match shape{egui::epaint::Shape::Text(text) if text.galley.job.text==label=>Some(text.pos+text.galley.rect.center().to_vec2()),egui::epaint::Shape::Vec(shapes)=>shapes.iter().find_map(|shape|text(shape,label)),_=>None}}
@@ -710,7 +724,7 @@ fn device_context_menu_routes_detach_and_disconnect_from_a_child_viewport() {
 fn fixed_source_context_menu_returns_to_home_and_source_click_only_selects_its_session() {
     let context=egui::Context::default();crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{presets:Default::default(),groups:vec![Group{members:vec![],views:vec![],id:22,name:"Generated fixed view".into(),screens:vec![(2,"Bound monitor".into())],selected:Some(2),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated fixed view".into(),screens:vec![(2,"Bound monitor".into())],selected:Some(2),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let viewport=egui::ViewportId::from_hash_of("fixed-generated-child");
     let render=|events|context.run(egui::RawInput{viewport_id:viewport,viewports:[(viewport,egui::ViewportInfo::default())].into_iter().collect(),events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|rects|find(rects.borrow().get(&viewport).unwrap()).center());
@@ -734,7 +748,7 @@ fn fixed_source_context_menu_returns_to_home_and_source_click_only_selects_its_s
 fn display_pills_open_their_own_source_and_keep_connection_ownership() {
     let context=egui::Context::default();crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{presets:Default::default(),groups:vec![Group{members:vec![],views:vec![],id:22,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:false,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:false,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let render=|events|context.run(egui::RawInput{events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|rects|find(rects.borrow().get(&egui::ViewportId::ROOT).unwrap()).center());
     let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};

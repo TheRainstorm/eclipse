@@ -166,7 +166,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                 let name=label(ui,&group.name,active,true,(width-crate::theme::TOOLBAR_HEIGHT-14.).max(70.));
                                 record!(rects.devices,(group.id,name.rect));
                                 name.dnd_set_drag_payload(Drag(group.command_session()));
-                                if name.clicked() { actions.push(Action::Select(group.command_session(),None)); }
+                                if name.clicked() { actions.push(group.activate()); }
                                 if name.dragged() { ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing); }
                                 name.context_menu(|ui|connection_menu(ui,group,&mut actions,&mut rects));
                                 if name.context_menu_opened() { tabs.local_ui.set(true); }
@@ -269,7 +269,7 @@ mod tests {
         let ctx=egui::Context::default();
         ctx.style_mut(|style|style.scroll_animation=egui::style::ScrollAnimation::none());
         let mut tabs=Tabs {presets:Default::default(),
-            groups:(1..=4).map(|id|Group {members:vec![],views:vec![],
+            groups:(1..=4).map(|id|Group {last_session:id,members:vec![],views:vec![],
                 id,name:format!("Generated computer {id} with a long title"),
                 screens:vec![(1,"Main display".into()),(2,"Temporary virtual display".into())],
                 selected:Some(1),can_open_displays:true,can_create_display:true,can_detach:true,fixed_view:false,can_merge:false,
@@ -311,7 +311,7 @@ mod tests {
         let name="Generated workstation with a descriptive name";
         let source="Display 12 (VDD by MTT DISPLAY16)";
         let mut tabs=Tabs {presets:Default::default(),
-            groups:vec![Group{members:vec![],views:vec![],id:1,name:name.into(),screens:vec![(12,source.into())],selected:Some(12),
+            groups:vec![Group{last_session:1,members:vec![],views:vec![],id:1,name:name.into(),screens:vec![(12,source.into())],selected:Some(12),
                 can_open_displays:false,can_create_display:true,can_detach:false,fixed_view:true,can_merge:true}],
             active:1,actions:Default::default(),local_ui:Default::default(),
         };

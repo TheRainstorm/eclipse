@@ -91,6 +91,7 @@ pub(super) struct View {
 }
 #[derive(Clone)]
 pub struct Group {
+    pub(super) last_session: u64,
     pub(super) members:Vec<u64>,
     pub(super) views:Vec<View>,
     pub(super) id: u64,
@@ -105,14 +106,15 @@ pub struct Group {
 }
 impl Group {
     pub(super) fn creation_session(&self)->u64 {self.views.iter().find(|view|view.can_create).map_or(self.id,|view|view.session)}
-    pub(super) fn command_session(&self)->u64 {self.views.iter().find(|view|view.active).map_or(self.id,|view|view.session)}
+    pub(super) fn command_session(&self)->u64 {self.views.iter().find(|view|view.active).map_or_else(||if self.contains(self.last_session){self.last_session}else{self.id},|view|view.session)}
+    pub(super) fn activate(&self)->Action {Action::Select(self.command_session(),None)}
     pub(super) fn contains(&self,id:u64)->bool {self.id==id || self.members.contains(&id)}
     pub(super) fn screen_action(&self,screen:i32)->Action {
         self.views.iter().find(|view|view.screen==screen&&view.fixed).or_else(||self.views.iter().find(|view|view.screen==screen)).map_or(Action::Select(self.id,if self.fixed_view {None}else{Some(screen)}),|view|Action::Select(view.session,None))
     }
     pub(super) fn view_group(&self,screen:i32)->Option<Self> {
         let view=self.views.iter().find(|view|view.screen==screen && view.fixed)?;
-        let mut group=self.clone();group.id=view.session;group.can_detach=view.can_detach;group.can_merge=view.can_merge;group.fixed_view=true;group.can_open_displays=false;group.views.clear();Some(group)
+        let mut group=self.clone();group.id=view.session;group.last_session=view.session;group.can_detach=view.can_detach;group.can_merge=view.can_merge;group.fixed_view=true;group.can_open_displays=false;group.views.clear();Some(group)
     }
     pub(super) fn can_open_display(&self,screen:i32)->bool {
         self.can_open_displays && (self.can_detach || self.selected!=Some(screen))
@@ -153,7 +155,7 @@ impl Tabs {
             .id(id).open(&mut open).collapsible(false).resizable(false).default_width(360.)
             .show(ctx,|ui|egui::ScrollArea::vertical().max_height(440.).show(ui,|ui| {
                 for group in &self.groups {
-                    if ui.selectable_label(group.contains(self.active),&group.name).clicked() {selected=Some(Action::Select(group.id,None));}
+                    if ui.selectable_label(group.contains(self.active),&group.name).clicked() {selected=Some(group.activate());}
                     ui.indent(group.id,|ui| {
                         if group.can_open_displays||group.can_create_display {
                             let add=ui.add_enabled(group.can_create_display,egui::Button::new(uu_i18n::text("+ 新建临时虚拟显示器")))
@@ -186,7 +188,7 @@ impl Tabs {
         let previous=matches!(action,Command::PreviousDisplay|Command::PreviousComputer);
         let selection=match action {
             Command::PreviousComputer|Command::NextComputer if self.groups.len()>1 => {
-                Some(Action::Select(self.groups[adjacent(self.groups.len(),Some(current),previous)].id,None))
+                Some(self.groups[adjacent(self.groups.len(),Some(current),previous)].activate())
             },
             Command::PreviousDisplay|Command::NextDisplay => {
                 let group=&self.groups[current];
@@ -230,6 +232,7 @@ fn adjacent(length:usize,current:Option<usize>,previous:bool)->usize {
 }
 struct Session {
     id: u64,
+    activated:Option<std::time::Instant>,
     app: App,
     // A presentation destination, never connection or virtual-lease ownership.
     // Keep the ID after its empty native container retires so Merge can restore it.
@@ -313,6 +316,13 @@ impl Window {
     fn tabs(&self, actions: Rc<RefCell<Vec<Action>>>) -> Tabs {
         let mut groups:Vec<(ConnectionTarget,Group,Vec<(String,i32)>)>=Vec::new();
         let mut browsers=std::collections::HashMap::new();
+        let mut recent=std::collections::HashMap::new();
+        for session in self.sessions.iter().filter(|s|!s.app.exit_requested) {
+            if let Some(target)=&session.app.stream_target {
+                let value=recent.entry(base_key(target)).or_insert((session.id,session.activated));
+                if session.activated>value.1 {*value=(session.id,session.activated);}
+            }
+        }
         for source in self.sessions.iter().filter(|s|s.browsable && !s.app.exit_requested && s.home_window.is_none_or(|home|home==self.id)) {
             if let Some(target)=&source.app.stream_target {
                 let healthy=!source.app.disconnecting && source.app.controller.as_ref().is_some_and(|h|!h.stopped.load(std::sync::atomic::Ordering::Acquire)) && !source.app.remote_screens().screens.is_empty();
@@ -332,12 +342,13 @@ impl Window {
             let can_open=browser && !preparing && target.is_native() && session.app.controller.as_ref().is_some_and(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Displays));
             let can_create=!preparing && session.app.controller.as_ref().is_some_and(|h|h.stats.virtual_displays.available.load(std::sync::atomic::Ordering::Acquire)&&h.stats.native_displays.initial_supported());
             let at=groups.iter().position(|(key,_,_)|*key==identity).unwrap_or_else(|| {
-                groups.push((identity,Group{id:session.id,name:target.alias.clone(),screens:Vec::new(),selected:None,members:Vec::new(),views:Vec::new(),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:false},Vec::new()));groups.len()-1
+                let last_session=recent.get(&identity).map_or(session.id,|v|v.0);
+                groups.push((identity,Group{last_session,id:session.id,name:target.alias.clone(),screens:Vec::new(),selected:None,members:Vec::new(),views:Vec::new(),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:false},Vec::new()));groups.len()-1
             });
             let (_,group,sources)=&mut groups[at];
             group.members.push(session.id);group.can_create_display|=can_create;
             if browser {group.id=session.id;group.fixed_view=false;group.can_open_displays|=can_open;}
-            if session.id==self.active || group.members.len()==1 {group.can_detach=can_detach;group.can_merge=can_merge;}
+            if session.id==self.active || session.id==group.last_session || group.members.len()==1 {group.can_detach=can_detach;group.can_merge=can_merge;}
             let catalog=if browser {session.app.remote_screens()}else{session.app.visible_remote_screens()};
             let mut selected=None;
             for screen in catalog.screens.iter().filter(|screen|!preparing&&(browser||!fixed||session.app.displays.selected==Some(screen.id))) {
@@ -382,6 +393,7 @@ impl Window {
     }
     fn select(&mut self, id: u64) {
         if !self.sessions.iter().any(|session|session.id==id&&!session.app.exit_requested) {return;}
+        self.sessions.iter_mut().find(|session|session.id==id).unwrap().activated=Some(std::time::Instant::now());
         if self.active == id {
             return;
         }
@@ -432,6 +444,7 @@ impl Window {
         session.app.restore_maximized=self.restore_maximized.clone();
         session.app.active_session=false;
         let id=session.id;
+        session.activated=Some(std::time::Instant::now());
         self.sessions.push(session);
         // Activation belongs to the destination viewport's next pass, after
         // its platform/context and wakeups have been bound by show().
@@ -529,7 +542,7 @@ impl Window {
             app.gamepad = gamepad.clone();
             app.restore_maximized = self.restore_maximized.clone();
             let home_window=if app.stream_target.as_ref().is_some_and(|target|target.connection.display().is_some()) {self.home_window.take()}else{None};
-            self.sessions.push(Session { id, app,home_window,browsable });
+            self.sessions.push(Session { id, activated:None, app,home_window,browsable });
             self.select(id);
         }
         let tabs = self.tabs(actions);
