@@ -239,6 +239,10 @@ impl HdrPresenter {
     }
 }
 impl Presenter for HdrPresenter {
+    fn prepare_frame(&mut self,size:[u32;2],vsync:bool)->Result<bool,String>{
+        unsafe {self.resize(size.map(|v|v.max(1)))?;}
+        self.native.prepare_frame(vsync)
+    }
     fn begin(&mut self, size: [u32; 2]) -> Result<ColorTarget, String> {
         let size = size.map(|v| v.max(1));
         unsafe {

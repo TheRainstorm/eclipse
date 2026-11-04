@@ -456,6 +456,9 @@ extern "C" int eclipse_hdr_present_resize(void* value,unsigned w,unsigned h,char
     try{((Presentation*)value)->resize(w,h);return 0;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}
 }
 extern "C" void eclipse_hdr_present_info(void* value,int* hdr,float* white) {auto p=(Presentation*)value;p->refresh();*hdr=p->hdr?1:0;*white=p->white;}
+extern "C" int eclipse_hdr_present_admit(void* value,int vsync,char* error,size_t capacity) {
+    try{return ((Presentation*)value)->admit_frame(vsync!=0)?0:2;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}
+}
 extern "C" int eclipse_hdr_present_frame(void* value,int vsync,char* error,size_t capacity) {
     try{return ((Presentation*)value)->present(vsync!=0)?0:2;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}
 }
@@ -468,6 +471,9 @@ extern "C" void* eclipse_native_present_open(void* hwnd,char* error,size_t capac
 extern "C" void eclipse_native_present_close(void* value){delete (NativePresentation*)value;}
 extern "C" void* eclipse_native_present_texture(void* value,unsigned index){return index<3?((NativePresentation*)value)->overlays[index].Get():nullptr;}
 extern "C" int eclipse_native_present_resize(void* value,unsigned w,unsigned h,char* error,size_t capacity){try{((NativePresentation*)value)->resize(w,h);return 0;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
+extern "C" int eclipse_native_present_admit(void* value,int vsync,char* error,size_t capacity) {
+    try{return ((NativePresentation*)value)->admit_frame(vsync!=0)?0:2;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}
+}
 extern "C" void eclipse_native_present_begin(void* value){((NativePresentation*)value)->begin();}
 extern "C" int eclipse_native_present_image(void* value,uint64_t id,void* const* handles,uint64_t ready,uint64_t consumed,const float* rect,int hdr,float white,char* error,size_t capacity){try{((NativePresentation*)value)->offer(id,handles,ready,consumed,rect,hdr!=0,white);return 0;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}
 extern "C" int eclipse_native_present_cursor(void* value,unsigned w,unsigned h,const unsigned char* alpha,const unsigned char* xored,char* error,size_t capacity){try{((NativePresentation*)value)->cursor_shape(w,h,alpha,xored);return 0;}catch(const std::exception& e){if(capacity)std::snprintf(error,capacity,"%s",e.what());return -1;}}

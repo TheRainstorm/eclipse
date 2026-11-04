@@ -17,6 +17,7 @@ unsafe extern "C" {
     ) -> i32;
     fn eclipse_hdr_present_info(value: *mut c_void, hdr: *mut i32, white: *mut f32);
     fn eclipse_hdr_present_deactivate(value: *mut c_void, error: *mut c_char, len: usize) -> i32;
+    fn eclipse_hdr_present_admit(value: *mut c_void, vsync: i32, error: *mut c_char, len: usize) -> i32;
     fn eclipse_hdr_present_frame(
         value: *mut c_void,
         vsync: i32,
@@ -81,6 +82,14 @@ impl Presentation {
             Err(message(&error))
         }
     }
+    /// Zero-wait admission before any GL/WGL frame work. A credit is retained
+    /// for the existing Present call; this never submits or acknowledges video.
+    pub fn prepare_frame(&mut self, vsync: bool) -> Result<bool, String> {
+        let mut error = [0; 1024];
+        match unsafe { eclipse_hdr_present_admit(self.0.as_ptr(), vsync.into(), error.as_mut_ptr(), error.len()) } {
+            0 => Ok(true), 2 => Ok(false), _ => Err(message(&error)),
+        }
+    }
     pub fn present(&mut self, vsync: bool) -> Result<super::PresentOutcome, String> {
         let mut error = [0; 1024];
         match unsafe {
@@ -116,6 +125,7 @@ unsafe extern "C" {
     fn eclipse_native_present_device(value:*mut c_void)->*mut c_void;
     fn eclipse_native_present_texture(value:*mut c_void,index:u32)->*mut c_void;
     fn eclipse_native_present_resize(value:*mut c_void,w:u32,h:u32,error:*mut c_char,len:usize)->i32;
+    fn eclipse_native_present_admit(value:*mut c_void,vsync:i32,error:*mut c_char,len:usize)->i32;
     fn eclipse_native_present_begin(value:*mut c_void);
     fn eclipse_native_present_debug(value:*mut c_void,enabled:i32,hdr:i32,white:f32);
     fn eclipse_native_present_debug_pixels(value:*mut c_void,data:*mut u16,capacity:usize,w:*mut u32,h:*mut u32,serial:*mut u64)->usize;
@@ -134,6 +144,10 @@ impl NativePresentation {
     pub fn device_ptr(&self)->*mut c_void{unsafe{eclipse_native_present_device(self.0.as_ptr())}}
     pub fn texture_ptr(&self,index:u32)->*mut c_void{unsafe{eclipse_native_present_texture(self.0.as_ptr(),index)}}
     pub fn resize(&mut self,size:[u32;2])->Result<(),String>{let mut e=[0;1024];if unsafe{eclipse_native_present_resize(self.0.as_ptr(),size[0],size[1],e.as_mut_ptr(),e.len())}==0{Ok(())}else{Err(message(&e))}}
+    pub fn prepare_frame(&mut self,vsync:bool)->Result<bool,String>{
+        let mut error=[0;1024];
+        match unsafe{eclipse_native_present_admit(self.0.as_ptr(),vsync.into(),error.as_mut_ptr(),error.len())}{0=>Ok(true),2=>Ok(false),_=>Err(message(&error))}
+    }
     pub fn begin(&mut self){unsafe{eclipse_native_present_begin(self.0.as_ptr());}}
     pub fn info(&self)->(bool,f32){let mut hdr=0;let mut white=80.;unsafe{eclipse_native_present_info(self.0.as_ptr(),&mut hdr,&mut white);} (hdr!=0,white)}
     pub fn image(&mut self,id:u64,handles:[usize;3],ready:u64,consumed:u64,rect:[f32;4],hdr:bool,white:f32)->Result<(),String>{

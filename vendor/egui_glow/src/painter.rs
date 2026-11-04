@@ -403,8 +403,22 @@ impl Painter {
         crate::profile_function!();
 
         self.cpu_timings_ms = [0.; 9];
-        let textures_started = web_time::Instant::now();
+        self.upload_texture_delta(pixels_per_point, textures_delta);
+        self.paint_primitives_inner(screen_size_px, pixels_per_point, clipped_primitives);
+        self.free_texture_delta(textures_delta);
+    }
 
+    /// Keep egui's texture ownership current while a native queue defers a
+    /// paint. No mesh draw or video callback is executed, and no deferred
+    /// texture queue grows while the GPU presentation target remains busy.
+    pub fn update_textures_only(&mut self, pixels_per_point: f32, delta: &egui::TexturesDelta) {
+        self.cpu_timings_ms = [0.; 9];
+        self.upload_texture_delta(pixels_per_point, delta);
+        self.free_texture_delta(delta);
+    }
+
+    fn upload_texture_delta(&mut self, pixels_per_point: f32, textures_delta: &egui::TexturesDelta) {
+        let textures_started = web_time::Instant::now();
         self.font_atlases.select(pixels_per_point);
 
         for (id, image_delta) in &textures_delta.set {
@@ -415,9 +429,9 @@ impl Painter {
             }
         }
         self.record_cpu(0, textures_started);
+    }
 
-        self.paint_primitives_inner(screen_size_px, pixels_per_point, clipped_primitives);
-
+    fn free_texture_delta(&mut self, textures_delta: &egui::TexturesDelta) {
         let textures_started = web_time::Instant::now();
         for &id in &textures_delta.free {
             self.free_texture(id);

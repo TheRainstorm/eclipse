@@ -258,6 +258,10 @@ impl Presenter for NativePresenter {
         self.last_scene = None;
     }
 
+    fn prepare_frame(&mut self,size:[u32;2],vsync:bool)->Result<bool,String>{
+        unsafe {self.resize(size.map(|v|v.max(1)))?;}
+        self.native.prepare_frame(vsync)
+    }
     fn begin(&mut self, size: [u32; 2]) -> Result<ColorTarget, String> {
         unsafe {
             self.resize(size.map(|v| v.max(1)))?;

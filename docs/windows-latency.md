@@ -49,7 +49,7 @@ H.264 → D3D11 硬解表面租约 → 最新帧邮箱
 
 父窗口继续负责全屏、缩放、焦点及键鼠输入。子窗口与父窗口属于同一 UI 线程，使用 `WS_EX_NOREDIRECTIONBITMAP`，命中测试返回 `HTTRANSPARENT`；它在首帧提交后显示，停用时隐藏，随呈现器销毁。尺寸变化只调整所属子窗口，不修改显示器模式。
 
-原生呈现与输入处理共用 UI 线程，两种 VSync 模式的 `Present` 都使用 [DO_NOT_WAIT](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-present)，避免队列繁忙时在该调用中等待。开启 VSync 时保持同步间隔 1，通过 [DXGI 帧额度事件](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject) 作零超时准入；关闭时保持同步间隔 0、原有队列容量及受支持的撕裂标志。`WAS_STILL_DRAWING` 表示交回事件循环，约 2ms 后重试该视口的最新内容，不切换呈现后端、不发送成功显示回执。重试前用事件查询非阻塞地确认上批 GPU 工作完成，避免持续繁忙时反复排入图像、光标或 UI 合成；它不表示该图像已经显示。繁忙只能保留已取得的额度，切换队列策略时清除旧额度。已经提交的 GPU 图像读取仍归还消费栅栏，未开始读取则不伪造归还。复用未变化内容时不消耗帧额度事件。这个规则约束 `Present` 的等待；其它 GPU 调用和完整输入到显示延迟仍须分别测量。
+原生呈现与输入处理共用 UI 线程，两种 VSync 模式的 `Present` 都使用 [DO_NOT_WAIT](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-present)，避免队列繁忙时在该调用中等待。开启 VSync 时保持同步间隔 1，通过 [DXGI 帧额度事件](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject) 作零超时准入。准入在处理本轮界面输入后、锁定共享 UI 纹理和执行视频绘制回调前完成；繁忙时保留当前呈现目标，只同步必要的 egui 纹理增删，跳过本轮绘制与提交，随后处理输入并重试最新画面，不退回普通 GL 交换缓冲。关闭时保持同步间隔 0、原有队列容量及受支持的撕裂标志。`WAS_STILL_DRAWING` 表示交回事件循环，约 2ms 后重试该视口的最新内容，不切换呈现后端、不发送成功显示回执。重试前用事件查询非阻塞地确认上批 GPU 工作完成，避免持续繁忙时反复排入图像、光标或 UI 合成；它不表示该图像已经显示。繁忙只能保留已取得的额度，切换队列策略时清除旧额度。已经提交的 GPU 图像读取仍归还消费栅栏，未开始读取则不伪造归还。复用未变化内容不提交新的 `Present`，已经获得但尚未提交的额度保留给下一次真实提交；忙态本身不使静态 UI 缓存失效。这些规则限制繁忙时的共享目标锁定、绘制和 `Present` 等待；尺寸重建、必要纹理上传等其它 GPU 调用和完整输入到显示延迟仍须分别测量。
 
 这些调整避免 VSync 提交等待阻塞输入泵，保留原分辨率、码率、颜色与垂直同步。WGL 共享锁、尺寸重建等路径仍可能等待 GPU。状态与生成输入测试不能证明实际鼠标延迟已降至某个帧数；物理跟手程度及驱动行为仍需同设置实机验收。
 

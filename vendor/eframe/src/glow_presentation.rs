@@ -20,6 +20,11 @@ pub trait Presenter: Send {
     fn ui_reused(&self)->bool{false}
     fn invalidate_ui(&mut self){}
 
+    /// Probe queue readiness before locking a shared render target or running
+    /// paint callbacks. False defers this paint while UI/input keep progressing.
+    /// Implementations must not wait for the GPU or consume a decoded frame.
+    fn prepare_frame(&mut self, _size: [u32; 2], _vsync: bool) -> Result<bool, String> { Ok(true) }
+
     /// Bind the render target before clear/egui painting. Called on the owning
     /// native GL thread with its context current. No UI lock is held.
     fn begin(&mut self, size: [u32; 2]) -> Result<ColorTarget, String>;
@@ -38,6 +43,7 @@ struct State {
     vsync: bool,
     color: ColorTarget,
     active: bool,
+    paint_ready: bool,
 }
 #[derive(Clone)]
 pub(crate) struct Surface(Arc<Mutex<State>>);
@@ -56,6 +62,7 @@ pub fn install(ctx: &Context, presenter: Box<dyn Presenter>, vsync: bool, color:
                 vsync,
                 color,
                 active: false,
+                paint_ready: false,
             }))),
         )
     });
@@ -112,6 +119,10 @@ pub(crate) fn prepare_ui(ctx:&Context,viewport:ViewportId,size:[u32;2],ppp:f32,p
         }
     }
     let signature=textures_unchanged().then(||hash.finish());
+    // Deltas may be uploaded even when admission defers the overlay paint.
+    // Changed texture contents must invalidate the previously painted layer.
+    // Admission alone must keep it reusable for static scenes.
+    if signature.is_none() {state.presenter.invalidate_ui();}
     state.presenter.prepare_ui(signature);
 }
 pub fn ui_reused(ctx:&Context,viewport:ViewportId)->bool{
@@ -147,12 +158,20 @@ pub fn set_active(ctx: &Context, viewport: ViewportId, active: bool, vsync: bool
 }
 pub(crate) fn begin(ctx: &Context, viewport: ViewportId, size: [u32; 2]) -> Option<Surface> {
     let surface = ctx.data(|data| data.get_temp::<Surface>(key(viewport)))?;
+    // An inactive native surface must leave pending swap control for the
+    // ordinary drawable; acknowledging it here would never set WGL's interval.
+    if !surface.0.lock().unwrap().active {return None;}
+    crate::vsync::apply(ctx, viewport, false, |enabled| {surface.set_vsync(enabled); Ok(())});
     let result = {
         let mut state = surface.0.lock().unwrap();
-        if !state.active {
-            return None;
-        }
-        state.presenter.begin(size).map(|color| state.color = color)
+        if !state.active { return None; }
+        let vsync = state.vsync;
+        state.paint_ready = false;
+        state.presenter.prepare_frame(size, vsync).and_then(|ready| {
+            if ready {
+                state.presenter.begin(size).map(|color| {state.color = color; state.paint_ready = true;})
+            } else {Ok(())}
+        })
     };
     match result {
         Ok(()) => Some(surface),
@@ -164,8 +183,10 @@ pub(crate) fn begin(ctx: &Context, viewport: ViewportId, size: [u32; 2]) -> Opti
     }
 }
 impl Surface {
+    pub fn paint_ready(&self) -> bool {self.0.lock().unwrap().paint_ready}
     pub fn finish(&self) {
-        self.0.lock().unwrap().presenter.finish();
+        let mut state=self.0.lock().unwrap();
+        if state.paint_ready {state.presenter.finish();}
     }
     pub fn set_vsync(&self, enabled: bool) {
         self.0.lock().unwrap().vsync = enabled;
@@ -174,8 +195,10 @@ impl Surface {
         let deferred = {
             let mut state = self.0.lock().unwrap();
             let vsync = state.vsync;
-            state.presenter.present(vsync)?;
-            state.presenter.present_deferred()
+            if state.paint_ready {
+                state.presenter.present(vsync)?;
+                state.presenter.present_deferred()
+            } else {true}
         };
         if deferred {
             // egui subtracts predicted_dt from delayed repaint requests. This
@@ -192,6 +215,56 @@ impl Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn admission_precedes_render_target_and_busy_never_becomes_gl_fallback() {
+        use std::sync::atomic::{AtomicBool,Ordering};
+        struct Gate {
+            ready:Arc<AtomicBool>,
+            calls:Arc<Mutex<Vec<&'static str>>>,
+            intervals:Arc<Mutex<Vec<bool>>>,
+        }
+        impl Presenter for Gate {
+            fn cache_ui(&self)->bool {true}
+            fn prepare_frame(&mut self,_:[u32;2],vsync:bool)->Result<bool,String>{
+                self.intervals.lock().unwrap().push(vsync);
+                Ok(self.ready.load(Ordering::Acquire))
+            }
+            fn invalidate_ui(&mut self){self.calls.lock().unwrap().push("invalidate");}
+            fn begin(&mut self,_:[u32;2])->Result<ColorTarget,String>{
+                self.calls.lock().unwrap().push("lock-target");
+                Ok(ColorTarget{hdr:false,sdr_white_nits:80.})
+            }
+            fn present(&mut self,_:bool)->Result<(),String>{self.calls.lock().unwrap().push("present");Ok(())}
+            fn finish(&mut self){self.calls.lock().unwrap().push("unlock-target");}
+            fn deactivate(&mut self)->Result<(),String>{Ok(())}
+        }
+        let ctx=Context::default();let viewport=ViewportId::ROOT;
+        let ready=Arc::new(AtomicBool::new(false));
+        let calls=Arc::new(Mutex::new(vec![]));let intervals=Arc::new(Mutex::new(vec![]));
+        install(&ctx,Box::new(Gate{ready:ready.clone(),calls:calls.clone(),intervals:intervals.clone()}),true,
+            ColorTarget{hdr:false,sdr_white_nits:80.});
+        set_active(&ctx,viewport,true,true);
+        for _ in 0..3 {let _=ctx.run(egui::RawInput::default(),|_|{});}
+        prepare_ui(&ctx,viewport,[640,480],1.,&[],||true,[0.;4]);
+        let deferred=begin(&ctx,viewport,[640,480]).expect("busy keeps custom surface; no SwapBuffers fallback");
+        assert!(!deferred.paint_ready());
+        deferred.present(&ctx,viewport).unwrap();deferred.finish();
+        assert!(calls.lock().unwrap().is_empty(),"no target lock/unlock, Present or cache churn during admission deferral");
+        prepare_ui(&ctx,viewport,[640,480],1.,&[],||false,[0.;4]);
+        assert_eq!(*calls.lock().unwrap(),["invalidate"],"a texture delta invalidates cached overlay even while drawing is deferred");
+        assert!(color_target_for(&ctx,viewport).is_some());
+        let mut input=egui::RawInput::default();input.events.push(egui::Event::PointerMoved(egui::pos2(19.,27.)));
+        let _=ctx.run(input,|ctx|assert_eq!(ctx.pointer_latest_pos(),Some(egui::pos2(19.,27.))));
+        // A policy change is applied before the next admission, rather than
+        // leaving it until Present after target locking and video conversion.
+        crate::vsync::request_for(&ctx,viewport,false);
+        ready.store(true,Ordering::Release);
+        let admitted=begin(&ctx,viewport,[640,480]).unwrap();assert!(admitted.paint_ready());
+        admitted.present(&ctx,viewport).unwrap();admitted.finish();
+        assert_eq!(*intervals.lock().unwrap(),[true,false]);
+        assert_eq!(*calls.lock().unwrap(),["invalidate","lock-target","present","unlock-target"]);
+    }
+
     #[test]
     fn busy_native_queue_yields_and_retries_only_its_own_viewport() {
         use std::sync::atomic::{AtomicBool, Ordering};

@@ -701,13 +701,15 @@ impl<'app> GlowWinitRunning<'app> {
 
         crate::glow_presentation::prepare_ui(&integration.egui_ctx,viewport_id,screen_size_in_pixels,pixels_per_point,&clipped_primitives,||painter.textures_delta_is_unchanged(pixels_per_point,&textures_delta),clear_color);
         let custom_surface=crate::glow_presentation::begin(&integration.egui_ctx,viewport_id,screen_size_in_pixels);
-        let reuse_ui=custom_surface.is_some()&&crate::glow_presentation::ui_reused(&integration.egui_ctx,viewport_id);
-        if !reuse_ui && (custom_surface.is_some() || !cleared_before_update) {
+        let paint_ready=custom_surface.as_ref().is_none_or(|surface|surface.paint_ready());
+        let reuse_ui=paint_ready&&custom_surface.is_some()&&crate::glow_presentation::ui_reused(&integration.egui_ctx,viewport_id);
+        if paint_ready && !reuse_ui && (custom_surface.is_some() || !cleared_before_update) {
             painter.clear(screen_size_in_pixels, clear_color);
         }
         let paint_cleared_seconds = frame_timer.total_time_sec();
 
-        if reuse_ui {painter.paint_callbacks_only(screen_size_in_pixels,pixels_per_point,&clipped_primitives);} else {
+        if !paint_ready {painter.update_textures_only(pixels_per_point,&textures_delta);}
+        else if reuse_ui {painter.paint_callbacks_only(screen_size_in_pixels,pixels_per_point,&clipped_primitives);} else {
         painter.paint_and_update_textures(
             screen_size_in_pixels,
             pixels_per_point,
@@ -1624,14 +1626,16 @@ fn render_immediate_viewport(
 
     crate::glow_presentation::prepare_ui(egui_ctx,viewport_id,screen_size_in_pixels,pixels_per_point,&clipped_primitives,||painter.borrow().textures_delta_is_unchanged(pixels_per_point,&textures_delta),[0.;4]);
     let custom_surface=crate::glow_presentation::begin(egui_ctx,viewport_id,screen_size_in_pixels);
-    let reuse_ui=custom_surface.is_some()&&crate::glow_presentation::ui_reused(egui_ctx,viewport_id);
-    if !reuse_ui {egui_glow::painter::clear(
+    let paint_ready=custom_surface.as_ref().is_none_or(|surface|surface.paint_ready());
+    let reuse_ui=paint_ready&&custom_surface.is_some()&&crate::glow_presentation::ui_reused(egui_ctx,viewport_id);
+    if paint_ready && !reuse_ui {egui_glow::painter::clear(
         painter.borrow().gl(),
         screen_size_in_pixels,
         [0.0, 0.0, 0.0, 0.0],
     );}
 
-    if reuse_ui {painter.borrow_mut().paint_callbacks_only(screen_size_in_pixels,pixels_per_point,&clipped_primitives);} else {painter.borrow_mut().paint_and_update_textures(
+    if !paint_ready {painter.borrow_mut().update_textures_only(pixels_per_point,&textures_delta);}
+    else if reuse_ui {painter.borrow_mut().paint_callbacks_only(screen_size_in_pixels,pixels_per_point,&clipped_primitives);} else {painter.borrow_mut().paint_and_update_textures(
         screen_size_in_pixels,
         pixels_per_point,
         &clipped_primitives,
