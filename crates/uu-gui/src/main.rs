@@ -37,6 +37,7 @@ mod video_hdr;
 mod window;
 mod window_context;
 mod stream_workspace;
+mod workspace_generation;
 mod stream_tabs_ui;
 mod stream_menu;
 mod ui;
@@ -1388,7 +1389,7 @@ fn main() -> eframe::Result {
             let launch=stream_workspace::Launch::new(target,plugin_payload.as_ref().map(|s|s.as_str()))?;
             let config=uu_core::Config::from_env()?;
             let bytes=zeroize::Zeroizing::new(serde_json::to_vec(&launch)?);
-            Ok((launch,uu_core::local_workspace::join(&config.at("stream-workspace-v2"),&bytes)?))
+            Ok((launch,uu_core::local_workspace::join(&workspace_generation::directory(&config),&bytes)?))
         })();
         match result {
             Ok((_,uu_core::local_workspace::Join::Attached))=>return Ok(()),
