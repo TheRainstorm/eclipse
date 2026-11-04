@@ -1,6 +1,6 @@
 //! Shared colors and control states for the desktop application.
-use eframe::egui::{self, Color32 as C};
 pub use crate::island;
+use eframe::egui::{self, Color32 as C};
 
 pub const ACCENT: C = C::from_rgb(37, 99, 235);
 pub const INK: C = C::from_rgb(23, 37, 61);
@@ -17,6 +17,9 @@ pub const SUCCESS: C = C::from_rgb(22, 112, 73);
 #[path = "theme/design_system.rs"]
 mod design_system;
 pub use design_system::*;
+#[path = "theme/controls.rs"]
+mod controls;
+pub use controls::*;
 
 #[cfg(test)]
 mod tests {

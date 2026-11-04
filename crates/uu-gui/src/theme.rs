@@ -31,7 +31,7 @@ pub fn preference_label(preference: ThemePreference) -> &'static str {
 pub fn color_theme_label(color: ColorTheme) -> &'static str {
     uu_i18n::text(match color {
         ColorTheme::Blue => "默认蓝",
-        ColorTheme::Cyan => "青蓝",
+        ColorTheme::LightBlue => "浅蓝色",
         ColorTheme::Animal => "动森",
     })
 }
@@ -157,20 +157,20 @@ mod tests {
         let cyan = egui::Context::default();
         let blue = egui::Context::default();
         apply(&cyan); apply(&blue);
-        apply_appearance(&cyan, ThemePreference::System, ColorTheme::Cyan);
+        apply_appearance(&cyan, ThemePreference::System, ColorTheme::LightBlue);
         apply_appearance(&blue, ThemePreference::System, ColorTheme::Blue);
         for mode in [egui::Theme::Dark, egui::Theme::Light, egui::Theme::Dark] {
             let _ = cyan.run(egui::RawInput { system_theme:Some(mode), ..Default::default() }, |ctx| {
                 assert_eq!(ctx.theme(), mode);
-                assert_eq!(current_color_theme(ctx), ColorTheme::Cyan);
-                assert_eq!(palette(&ctx.style().visuals).accent, if mode==egui::Theme::Dark { CYAN_DARK.accent } else { CYAN_LIGHT.accent });
+                assert_eq!(current_color_theme(ctx), ColorTheme::LightBlue);
+                assert_eq!(palette(&ctx.style().visuals).accent, if mode==egui::Theme::Dark { LIGHT_BLUE_DARK.accent } else { LIGHT_BLUE_LIGHT.accent });
             });
             let _ = blue.run(egui::RawInput { system_theme:Some(mode), ..Default::default() }, |ctx| {
                 assert_eq!(current_color_theme(ctx), ColorTheme::Blue);
                 assert_eq!(palette(&ctx.style().visuals).accent, if mode==egui::Theme::Dark { DARK.accent } else { LIGHT.accent });
             });
         }
-        apply_appearance(&cyan, ThemePreference::Light, ColorTheme::Cyan);
+        apply_appearance(&cyan, ThemePreference::Light, ColorTheme::LightBlue);
         assert_eq!(cyan.theme(), egui::Theme::Light);
         assert_eq!(blue.options(|o| o.theme_preference), ThemePreference::System);
         assert_eq!(current_color_theme(&blue), ColorTheme::Blue);
@@ -241,7 +241,7 @@ mod tests {
         let path = root.join("gui-settings.json");
         let mut settings = super::super::settings::Settings::default();
         settings.theme_preference = ThemePreference::Dark;
-        settings.color_theme = ColorTheme::Cyan;
+        settings.color_theme = ColorTheme::LightBlue;
         settings.save(&path).unwrap();
         let ctx = egui::Context::default();
         apply(&ctx);
@@ -251,7 +251,7 @@ mod tests {
             egui::Theme::Dark,
             "management windows load the saved choice before their first frame"
         );
-        assert_eq!(current_color_theme(&ctx), ColorTheme::Cyan);
+        assert_eq!(current_color_theme(&ctx), ColorTheme::LightBlue);
         settings.theme_preference = ThemePreference::System;
         settings.color_theme = ColorTheme::Blue;
         settings.save(&path).unwrap();

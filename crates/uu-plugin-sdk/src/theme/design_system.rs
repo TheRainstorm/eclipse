@@ -1,6 +1,6 @@
 //! Theme-aware tokens and controls. Compatibility constants live in the parent.
-use eframe::egui::{self, Color32 as C, Response, RichText, Stroke, Widget, WidgetText};
 use super::island;
+use eframe::egui::{self, Color32 as C, Response, RichText, Stroke, Widget, WidgetText};
 
 pub const SPACE_1: f32 = 4.0;
 pub const SPACE_2: f32 = 8.0;
@@ -101,60 +101,78 @@ pub const LIGHT: Palette = Palette {
 pub enum ColorTheme {
     #[default]
     Blue,
-    Cyan,
+    #[serde(alias = "cyan")]
+    LightBlue,
     Animal,
 }
-pub const COLOR_THEMES: [ColorTheme; 3] = [ColorTheme::Blue, ColorTheme::Cyan, ColorTheme::Animal];
-pub const CYAN_LIGHT: Palette = Palette {
-    base: C::from_rgb(242, 251, 252),
-    overlay: C::from_rgb(248, 253, 254),
-    sidebar: C::from_rgb(233, 247, 249),
-    text: C::from_rgb(22, 47, 58),
-    muted: C::from_rgb(75, 104, 116),
-    border: C::from_rgb(203, 221, 226),
-    control_border: C::from_rgb(117, 142, 152),
-    hover: C::from_rgb(221, 243, 247),
-    pressed: C::from_rgb(192, 232, 239),
-    tint: C::from_rgb(221, 243, 247),
-    accent: C::from_rgb(14, 116, 144),
-    primary: C::from_rgb(14, 116, 144),
-    primary_hover: C::from_rgb(12, 122, 142),
-    primary_pressed: C::from_rgb(21, 94, 117),
-    disabled: C::from_rgb(230, 241, 244),
-    info_bg: C::from_rgb(221, 243, 247),
+pub const COLOR_THEMES: [ColorTheme; 3] =
+    [ColorTheme::Blue, ColorTheme::LightBlue, ColorTheme::Animal];
+pub const LIGHT_BLUE_LIGHT: Palette = Palette {
+    base: C::from_rgb(245, 250, 255),
+    overlay: C::from_rgb(251, 253, 255),
+    sidebar: C::from_rgb(233, 244, 255),
+    text: C::from_rgb(25, 50, 79),
+    muted: C::from_rgb(68, 96, 127),
+    border: C::from_rgb(207, 224, 242),
+    control_border: C::from_rgb(129, 151, 177),
+    hover: C::from_rgb(228, 241, 255),
+    pressed: C::from_rgb(206, 226, 247),
+    tint: C::from_rgb(228, 241, 255),
+    accent: C::from_rgb(49, 108, 159),
+    primary: C::from_rgb(49, 108, 159),
+    primary_hover: C::from_rgb(43, 116, 172),
+    primary_pressed: C::from_rgb(38, 86, 130),
+    disabled: C::from_rgb(232, 240, 249),
+    info_bg: C::from_rgb(228, 241, 255),
     ..LIGHT
 };
-pub const CYAN_DARK: Palette = Palette {
-    base: C::from_rgb(11, 31, 37),
-    card: C::from_rgb(17, 43, 52),
-    overlay: C::from_rgb(23, 56, 66),
-    sidebar: C::from_rgb(12, 36, 43),
-    text: C::from_rgb(230, 247, 250),
-    muted: C::from_rgb(166, 196, 205),
-    border: C::from_rgb(44, 86, 96),
-    control_border: C::from_rgb(114, 151, 162),
-    control: C::from_rgb(23, 56, 66),
-    hover: C::from_rgb(33, 73, 85),
-    pressed: C::from_rgb(14, 42, 51),
-    tint: C::from_rgb(13, 62, 75),
-    accent: C::from_rgb(103, 232, 249),
-    primary: C::from_rgb(14, 116, 144),
-    primary_hover: C::from_rgb(12, 122, 142),
-    primary_pressed: C::from_rgb(21, 94, 117),
-    disabled: C::from_rgb(23, 49, 58),
-    info_bg: C::from_rgb(13, 62, 75),
+pub const LIGHT_BLUE_DARK: Palette = Palette {
+    base: C::from_rgb(19, 28, 42),
+    card: C::from_rgb(27, 40, 59),
+    overlay: C::from_rgb(35, 50, 72),
+    sidebar: C::from_rgb(21, 33, 50),
+    text: C::from_rgb(230, 241, 255),
+    muted: C::from_rgb(165, 188, 215),
+    border: C::from_rgb(54, 77, 106),
+    control_border: C::from_rgb(127, 151, 181),
+    control: C::from_rgb(35, 50, 72),
+    hover: C::from_rgb(46, 67, 95),
+    pressed: C::from_rgb(24, 38, 58),
+    tint: C::from_rgb(33, 59, 91),
+    accent: C::from_rgb(155, 204, 255),
+    primary: C::from_rgb(49, 108, 159),
+    primary_hover: C::from_rgb(43, 116, 172),
+    primary_pressed: C::from_rgb(38, 86, 130),
+    disabled: C::from_rgb(31, 44, 63),
+    info_bg: C::from_rgb(33, 59, 91),
     ..DARK
 };
 const fn island_palette(p: island::Tokens) -> Palette {
     Palette {
-        base:p.base, card:p.card, overlay:p.overlay, sidebar:p.sidebar,
-        text:p.text, muted:p.muted, border:p.border, control_border:p.control_border,
-        control:p.control, hover:p.hover, pressed:p.pressed, tint:p.tint,
-        accent:p.accent, primary:p.primary, primary_hover:p.primary_hover,
-        primary_pressed:p.primary_pressed, disabled:p.disabled,
-        success:p.success, warning:p.warning, danger:p.danger,
-        success_bg:p.success_bg, warning_bg:p.warning_bg, danger_bg:p.danger_bg,
-        info_bg:p.info_bg,
+        base: p.base,
+        card: p.card,
+        overlay: p.overlay,
+        sidebar: p.sidebar,
+        text: p.text,
+        muted: p.muted,
+        border: p.border,
+        control_border: p.control_border,
+        control: p.control,
+        hover: p.hover,
+        pressed: p.pressed,
+        tint: p.tint,
+        accent: p.accent,
+        primary: p.primary,
+        primary_hover: p.primary_hover,
+        primary_pressed: p.primary_pressed,
+        disabled: p.disabled,
+        success: p.success,
+        warning: p.warning,
+        danger: p.danger,
+        success_bg: p.success_bg,
+        warning_bg: p.warning_bg,
+        danger_bg: p.danger_bg,
+        info_bg: p.info_bg,
     }
 }
 pub const ANIMAL_LIGHT: Palette = island_palette(island::LIGHT);
@@ -163,8 +181,8 @@ fn colors(theme: egui::Theme, color: ColorTheme) -> &'static Palette {
     match (theme, color) {
         (egui::Theme::Light, ColorTheme::Blue) => &LIGHT,
         (egui::Theme::Dark, ColorTheme::Blue) => &DARK,
-        (egui::Theme::Light, ColorTheme::Cyan) => &CYAN_LIGHT,
-        (egui::Theme::Dark, ColorTheme::Cyan) => &CYAN_DARK,
+        (egui::Theme::Light, ColorTheme::LightBlue) => &LIGHT_BLUE_LIGHT,
+        (egui::Theme::Dark, ColorTheme::LightBlue) => &LIGHT_BLUE_DARK,
         (egui::Theme::Light, ColorTheme::Animal) => &ANIMAL_LIGHT,
         (egui::Theme::Dark, ColorTheme::Animal) => &ANIMAL_DARK,
     }
@@ -174,20 +192,35 @@ fn visual_family(visuals: &egui::Visuals) -> ColorTheme {
     // Visuals clones and widget-local state changes keep it, so existing host
     // and extension callers resolve their own context's palette without TLS or
     // process-global state. Local controls must not repurpose this global token.
-    if visuals.hyperlink_color == ANIMAL_LIGHT.accent || visuals.hyperlink_color == ANIMAL_DARK.accent {
+    if visuals.hyperlink_color == ANIMAL_LIGHT.accent
+        || visuals.hyperlink_color == ANIMAL_DARK.accent
+    {
         ColorTheme::Animal
-    } else if visuals.hyperlink_color == CYAN_LIGHT.accent || visuals.hyperlink_color == CYAN_DARK.accent {
-        ColorTheme::Cyan
+    } else if visuals.hyperlink_color == LIGHT_BLUE_LIGHT.accent
+        || visuals.hyperlink_color == LIGHT_BLUE_DARK.accent
+    {
+        ColorTheme::LightBlue
     } else {
         ColorTheme::Blue
     }
 }
-pub fn is_animal(visuals: &egui::Visuals) -> bool { visual_family(visuals) == ColorTheme::Animal }
+pub fn is_animal(visuals: &egui::Visuals) -> bool {
+    visual_family(visuals) == ColorTheme::Animal
+}
 pub fn palette(visuals: &egui::Visuals) -> &'static Palette {
-    colors(if visuals.dark_mode { egui::Theme::Dark } else { egui::Theme::Light }, visual_family(visuals))
+    colors(
+        if visuals.dark_mode {
+            egui::Theme::Dark
+        } else {
+            egui::Theme::Light
+        },
+        visual_family(visuals),
+    )
 }
 
-fn color_theme_id() -> egui::Id { egui::Id::new("eclipse.color-theme.v1") }
+fn color_theme_id() -> egui::Id {
+    egui::Id::new("eclipse.color-theme.v1")
+}
 pub fn current_color_theme(ctx: &egui::Context) -> ColorTheme {
     ctx.data(|data| data.get_temp(color_theme_id()).unwrap_or_default())
 }
@@ -199,7 +232,9 @@ pub fn apply_color_theme(ctx: &egui::Context, color: ColorTheme) -> bool {
         data.insert_temp(color_theme_id(), color);
         previous != Some(color)
     });
-    if changed { apply(ctx); }
+    if changed {
+        apply(ctx);
+    }
     changed
 }
 
@@ -217,7 +252,9 @@ pub fn visuals(theme: egui::Theme) -> egui::Visuals {
     visuals_with_color(theme, ColorTheme::Blue)
 }
 pub fn visuals_with_color(theme: egui::Theme, color: ColorTheme) -> egui::Visuals {
-    if color == ColorTheme::Animal { return island::tokens::style(theme).visuals; }
+    if color == ColorTheme::Animal {
+        return island::tokens::style(theme).visuals;
+    }
     let mut v = match theme {
         egui::Theme::Dark => egui::Visuals::dark(),
         egui::Theme::Light => egui::Visuals::light(),
@@ -233,6 +270,7 @@ pub fn visuals_with_color(theme: egui::Theme, color: ColorTheme) -> egui::Visual
     v.selection.bg_fill = p.primary;
     v.selection.stroke = Stroke::new(1.0, C::WHITE);
     v.widgets.noninteractive = widget(p.card, p.border, p.text);
+    v.widgets.noninteractive.weak_bg_fill = island::tokens::readable_fade_target(p.text, p.muted);
     v.widgets.inactive = widget(p.control, p.control_border, p.text);
     v.widgets.hovered = widget(p.hover, p.accent, p.text);
     v.widgets.active = widget(p.pressed, p.accent, p.text);
@@ -248,7 +286,9 @@ pub fn visuals_with_color(theme: egui::Theme, color: ColorTheme) -> egui::Visual
 pub fn apply(ctx: &egui::Context) {
     let color = current_color_theme(ctx);
     ctx.data_mut(|data| data.insert_temp(color_theme_id(), color));
-    if color == ColorTheme::Animal { island::fonts::ensure(ctx); }
+    if color == ColorTheme::Animal {
+        island::fonts::ensure(ctx);
+    }
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
         if color == ColorTheme::Animal {
             // Keep the library's geometry, named font, native selection and
@@ -277,7 +317,9 @@ pub fn apply(ctx: &egui::Context) {
     }
 }
 pub fn card(visuals: &egui::Visuals) -> egui::Frame {
-    if is_animal(visuals) { return island::Card::frame(visuals); }
+    if is_animal(visuals) {
+        return island::Card::frame(visuals);
+    }
     let p = palette(visuals);
     egui::Frame::none()
         .fill(p.card)
@@ -292,13 +334,16 @@ pub enum ButtonKind {
     Ghost,
     Danger,
 }
-/// Native egui button interaction with shared state colors. `Button::fill`
-/// would override hovered/pressed fills, so appearance is applied via Visuals.
+/// Native egui click/focus semantics with finite shared state transitions.
+/// Every appearance comes from the selected theme; rich text cannot override
+/// the semantic foreground of a primary, danger or disabled button.
 #[must_use = "add this widget with ui.add or ui.add_enabled"]
 pub struct Button {
     text: WidgetText,
     kind: ButtonKind,
     small: bool,
+    toolbar: bool,
+    selected: bool,
     min_size: egui::Vec2,
 }
 impl Button {
@@ -307,11 +352,26 @@ impl Button {
             text: text.into(),
             kind,
             small: false,
+            toolbar: false,
+            selected: false,
             min_size: egui::Vec2::ZERO,
         }
     }
     pub fn small(mut self) -> Self {
         self.small = true;
+        self
+    }
+    pub fn toolbar(mut self) -> Self {
+        self.toolbar = true;
+        self.small = true;
+        self
+    }
+    pub fn selected(mut self, on: bool) -> Self {
+        self.selected = on;
+        self
+    }
+    pub fn compact(mut self, on: bool) -> Self {
+        self.small = on;
         self
     }
     pub fn min_size(mut self, size: egui::Vec2) -> Self {
@@ -368,18 +428,115 @@ impl Widget for Button {
                 ButtonKind::Ghost => island::ButtonKind::Ghost,
                 ButtonKind::Danger => island::ButtonKind::Danger,
             };
-            return ui.add(island::Button::new(self.text, kind).compact(self.small).min_size(self.min_size));
+            let mut button = island::Button::new(self.text, kind)
+                .compact(self.small)
+                .min_size(self.min_size)
+                .selected(self.selected);
+            if self.toolbar {
+                button = button.toolbar();
+            }
+            return ui.add(button);
         }
         let p = *palette(ui.visuals());
         let enabled = ui.is_enabled();
-        ui.scope(|ui| {
-            button_visuals(ui.visuals_mut(), &p, self.kind, enabled);
-            let button = egui::Button::new(self.text).min_size(self.min_size);
-            ui.add(if self.small { button.small() } else { button })
-        })
-        .inner
+        let label = self.text.text().to_owned();
+        let galley = self.text.into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            (ui.available_width() - 24.).max(1.),
+            egui::TextStyle::Button,
+        );
+        let h = if self.toolbar {
+            TOOLBAR_FACE
+        } else if self.small {
+            24.
+        } else {
+            CONTROL_HEIGHT
+        };
+        let face_size =
+            egui::vec2(galley.size().x + 24., h.max(galley.size().y + 8.)).max(self.min_size);
+        let envelope = if self.toolbar {
+            egui::Vec2::splat(10.)
+        } else {
+            egui::Vec2::ZERO
+        };
+        let (rect, response) = ui.allocate_at_least(face_size + envelope, egui::Sense::click());
+        if !label.is_empty() {
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &label)
+            });
+        }
+        let face = if self.toolbar { rect.shrink(5.) } else { rect };
+        if self.toolbar {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(response.id.with("toolbar-face"), face));
+        }
+        let hover = ui.ctx().animate_bool_with_time(
+            response.id.with("button-hover"),
+            enabled && response.hovered(),
+            0.15,
+        );
+        let down = response.is_pointer_button_down_on()
+            || (response.has_focus()
+                && ui.input(|i| i.key_down(egui::Key::Space) || i.key_down(egui::Key::Enter)));
+        let press = ui.ctx().animate_bool_with_time(
+            response.id.with("button-press"),
+            enabled && down,
+            0.12,
+        );
+        let mut states = ui.visuals().clone();
+        button_visuals(&mut states, &p, self.kind, enabled);
+        let base = if self.kind == ButtonKind::Ghost && self.selected {
+            p.tint
+        } else {
+            states.widgets.inactive.weak_bg_fill
+        };
+        let hover_fill = states.widgets.hovered.weak_bg_fill;
+        let press_fill = states.widgets.active.weak_bg_fill;
+        let fg = states.widgets.inactive.fg_stroke.color;
+        let border = states.widgets.inactive.bg_stroke.color;
+        let fill = if enabled {
+            base.lerp_to_gamma(hover_fill, hover)
+                .lerp_to_gamma(press_fill, press)
+        } else {
+            p.disabled
+        };
+        if ui.is_rect_visible(rect) {
+            ui.painter().rect(
+                face,
+                RADIUS,
+                fill,
+                Stroke::new(1., if enabled { border } else { p.border }),
+            );
+            if response.has_focus() && enabled {
+                ui.painter()
+                    .rect_stroke(face.expand(2.), RADIUS + 2., Stroke::new(1.5, p.accent));
+            }
+            ui.painter().galley_with_override_text_color(
+                face.center() - galley.size() * 0.5,
+                galley,
+                if enabled { fg } else { p.muted },
+            );
+        }
+        if enabled {
+            response.on_hover_cursor(egui::CursorIcon::PointingHand)
+        } else {
+            response
+        }
     }
 }
+pub const TOOLBAR_HEIGHT: f32 = island::tokens::TOOLBAR_HEIGHT;
+pub const TOOLBAR_FACE: f32 = island::tokens::TOOLBAR_FACE;
+pub fn toolbar_button(text: impl Into<WidgetText>, kind: ButtonKind) -> Button {
+    Button::new(text, kind).toolbar()
+}
+/// Actual animated face, shared by vector icons and text-only toolbar controls.
+pub fn toolbar_face_rect(ui: &egui::Ui, response: &Response) -> egui::Rect {
+    ui.ctx()
+        .data(|d| d.get_temp(response.id.with("toolbar-face")))
+        .unwrap_or(response.rect.shrink(5.))
+}
+
 pub fn primary_button(text: impl Into<WidgetText>) -> Button {
     Button::new(text, ButtonKind::Primary)
 }
@@ -391,16 +548,6 @@ pub fn ghost_button(text: impl Into<WidgetText>) -> Button {
 }
 pub fn danger_button(text: impl Into<WidgetText>) -> Button {
     Button::new(text, ButtonKind::Danger)
-}
-/// Use the shared switch only for Animal; legacy themes keep native behavior.
-pub fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: impl Into<WidgetText>) -> Response {
-    if is_animal(ui.visuals()) { ui.add(island::Switch::new(value, label)) }
-    else { ui.checkbox(value, label) }
-}
-/// Keep native text/IME ownership while selecting the library's Animal styling.
-pub fn text_input(ui: &mut egui::Ui, value: &mut String, hint: &str, width: f32) -> Response {
-    if is_animal(ui.visuals()) { ui.add(island::Input::new(value).hint_text(hint).desired_width(width)) }
-    else { ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(width)) }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
@@ -464,13 +611,16 @@ mod tests {
     }
     #[test]
     fn both_themes_keep_text_controls_and_status_legible() {
-        for (theme, color) in [egui::Theme::Dark, egui::Theme::Light].into_iter()
-            .flat_map(|theme| COLOR_THEMES.map(|color| (theme, color))) {
+        for (theme, color) in [egui::Theme::Dark, egui::Theme::Light]
+            .into_iter()
+            .flat_map(|theme| COLOR_THEMES.map(|color| (theme, color)))
+        {
             let v = visuals_with_color(theme, color);
             let p = palette(&v);
             for surface in [p.base, p.card, p.overlay] {
                 assert!(contrast(p.text, surface) >= 4.5);
                 assert!(contrast(p.muted, surface) >= 4.5);
+                assert!(contrast(v.weak_text_color(),surface)>=4.5,"actual weak {theme:?} {color:?}");
             }
             assert!(contrast(v.selection.stroke.color, v.selection.bg_fill) >= 4.5);
             assert!(contrast(p.control_border, p.control) >= 3.0);
@@ -492,7 +642,11 @@ mod tests {
                 // Animal's real primary is warm ink on cream, not white on
                 // the mint semantic accent. Its native selection comes from
                 // the library style and is checked above using actual colors.
-                let tokens = if theme == egui::Theme::Dark { island::DARK } else { island::LIGHT };
+                let tokens = if theme == egui::Theme::Dark {
+                    island::DARK
+                } else {
+                    island::LIGHT
+                };
                 assert!(contrast(tokens.text, tokens.base) >= 4.5);
             }
         }
@@ -502,25 +656,41 @@ mod tests {
         let blue = egui::Context::default();
         let cyan = egui::Context::default();
         apply(&blue);
-        apply_color_theme(&cyan, ColorTheme::Cyan);
+        apply_color_theme(&cyan, ColorTheme::LightBlue);
         for mode in [egui::Theme::Light, egui::Theme::Dark, egui::Theme::Light] {
-            blue.set_theme(mode); cyan.set_theme(mode);
+            blue.set_theme(mode);
+            cyan.set_theme(mode);
             // Extensions can register the shared controls at any time.
-            apply(&cyan); apply(&blue);
-            assert_eq!(palette(&blue.style().visuals).primary, colors(mode, ColorTheme::Blue).primary);
-            assert_eq!(palette(&cyan.style().visuals).base, colors(mode, ColorTheme::Cyan).base);
+            apply(&cyan);
+            apply(&blue);
+            assert_eq!(
+                palette(&blue.style().visuals).primary,
+                colors(mode, ColorTheme::Blue).primary
+            );
+            assert_eq!(
+                palette(&cyan.style().visuals).base,
+                colors(mode, ColorTheme::LightBlue).base
+            );
             assert_eq!(current_color_theme(&blue), ColorTheme::Blue);
-            assert_eq!(current_color_theme(&cyan), ColorTheme::Cyan);
-            for kind in [ButtonKind::Primary, ButtonKind::Secondary, ButtonKind::Ghost] {
+            assert_eq!(current_color_theme(&cyan), ColorTheme::LightBlue);
+            for kind in [
+                ButtonKind::Primary,
+                ButtonKind::Secondary,
+                ButtonKind::Ghost,
+            ] {
                 let mut local = cyan.style().visuals.clone();
                 let p = *palette(&local);
                 button_visuals(&mut local, &p, kind, true);
-                assert_eq!(palette(&local).accent, p.accent, "local widget states preserve the family token");
+                assert_eq!(
+                    palette(&local).accent,
+                    p.accent,
+                    "local widget states preserve the family token"
+                );
                 button_visuals(&mut local, &p, kind, false);
                 assert_eq!(palette(&local).accent, p.accent);
             }
         }
-        assert!(!apply_color_theme(&cyan, ColorTheme::Cyan));
+        assert!(!apply_color_theme(&cyan, ColorTheme::LightBlue));
         assert!(apply_color_theme(&cyan, ColorTheme::Blue));
         assert_eq!(current_color_theme(&blue), ColorTheme::Blue);
         assert_eq!(palette(&cyan.style().visuals).primary, LIGHT.primary);
@@ -537,16 +707,36 @@ mod tests {
             let expected = island::tokens::style(mode);
             assert!(is_animal(&actual.visuals));
             assert_eq!(actual.visuals, expected.visuals);
-            assert_eq!(actual.spacing.interact_size.y, island::tokens::CONTROL_HEIGHT);
-            assert_eq!(actual.visuals.window_rounding, egui::Rounding::same(island::tokens::CARD_RADIUS));
-            assert_eq!(actual.text_styles[&egui::TextStyle::Body].family, island::fonts::family());
-            assert_eq!(card(&actual.visuals).rounding, island::Card::frame(&actual.visuals).rounding);
-            assert!(contrast(actual.visuals.selection.stroke.color, actual.visuals.selection.bg_fill) >= 4.5);
+            assert_eq!(
+                actual.spacing.interact_size.y,
+                island::tokens::CONTROL_HEIGHT
+            );
+            assert_eq!(
+                actual.visuals.window_rounding,
+                egui::Rounding::same(island::tokens::CARD_RADIUS)
+            );
+            assert_eq!(
+                actual.text_styles[&egui::TextStyle::Body].family,
+                island::fonts::family()
+            );
+            assert_eq!(
+                card(&actual.visuals).rounding,
+                island::Card::frame(&actual.visuals).rounding
+            );
+            assert!(
+                contrast(
+                    actual.visuals.selection.stroke.color,
+                    actual.visuals.selection.bg_fill
+                ) >= 4.5
+            );
         }
-        for color in [ColorTheme::Blue, ColorTheme::Cyan] {
+        for color in [ColorTheme::Blue, ColorTheme::LightBlue] {
             apply_color_theme(&ctx, color);
             assert_eq!(ctx.style().spacing.interact_size.y, CONTROL_HEIGHT);
-            assert_eq!(ctx.style().visuals.window_rounding, egui::Rounding::same(RADIUS));
+            assert_eq!(
+                ctx.style().visuals.window_rounding,
+                egui::Rounding::same(RADIUS)
+            );
             assert!(!is_animal(&ctx.style().visuals));
         }
     }

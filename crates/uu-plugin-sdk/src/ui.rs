@@ -1,5 +1,5 @@
 //! Shared application colors and UI controls for independent extensions.
-use eframe::egui::{self,Color32 as C,Pos2,Rect,Response,RichText,Sense,Stroke,Vec2};
+use eframe::egui::{self, Color32 as C, Pos2, Rect, Response, Stroke, Vec2};
 pub const BLUE: C = crate::theme::ACCENT;
 pub const INK: C = crate::theme::INK;
 pub const MUTED: C = crate::theme::MUTED;
@@ -7,7 +7,10 @@ pub const SIDEBAR: C = crate::theme::SIDEBAR;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Icon {
-    Image { id: &'static str, bytes: &'static [u8] },
+    Image {
+        id: &'static str,
+        bytes: &'static [u8],
+    },
     Desktop,
     Globe,
     Extension,
@@ -40,37 +43,81 @@ pub fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
         p.line_segment([pt(a.0, a.1), pt(b.0, b.1)], stroke);
     };
     match kind {
-        Icon::Image{id,bytes} => {
-            let key=egui::Id::new(("extension-icon",id));
-            let ctx=p.ctx();
-            let cached=ctx.data_mut(|data|data.get_temp::<egui::TextureHandle>(key));
-            let texture=cached.or_else(|| {
-                let image=image::load_from_memory(bytes).ok()?.into_rgba8();
-                let texture=ctx.load_texture(id,egui::ColorImage::from_rgba_unmultiplied([image.width() as usize,image.height() as usize],image.as_raw()),egui::TextureOptions::LINEAR);
-                ctx.data_mut(|data|data.insert_temp(key,texture.clone()));Some(texture)
+        Icon::Image { id, bytes } => {
+            let key = egui::Id::new(("extension-icon", id));
+            let ctx = p.ctx();
+            let cached = ctx.data_mut(|data| data.get_temp::<egui::TextureHandle>(key));
+            let texture = cached.or_else(|| {
+                let image = image::load_from_memory(bytes).ok()?.into_rgba8();
+                let texture = ctx.load_texture(
+                    id,
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [image.width() as usize, image.height() as usize],
+                        image.as_raw(),
+                    ),
+                    egui::TextureOptions::LINEAR,
+                );
+                ctx.data_mut(|data| data.insert_temp(key, texture.clone()));
+                Some(texture)
             });
-            if let Some(texture)=texture {p.image(texture.id(),rect.shrink(5.),Rect::from_min_max(Pos2::ZERO,egui::pos2(1.,1.)),C::WHITE);}
+            if let Some(texture) = texture {
+                p.image(
+                    texture.id(),
+                    rect.shrink(5.),
+                    Rect::from_min_max(Pos2::ZERO, egui::pos2(1., 1.)),
+                    C::WHITE,
+                );
+            }
         }
         Icon::Keyboard => {
-            p.rect_stroke(Rect::from_min_max(pt(1.0,4.0),pt(17.0,14.0)),2.0,stroke);
-            for y in [7.0,10.0] {for x in [4.0,7.0,10.0,13.0] {p.circle_filled(pt(x,y),0.7,color);}}
-            line((6.0,12.0),(12.0,12.0));
+            p.rect_stroke(
+                Rect::from_min_max(pt(1.0, 4.0), pt(17.0, 14.0)),
+                2.0,
+                stroke,
+            );
+            for y in [7.0, 10.0] {
+                for x in [4.0, 7.0, 10.0, 13.0] {
+                    p.circle_filled(pt(x, y), 0.7, color);
+                }
+            }
+            line((6.0, 12.0), (12.0, 12.0));
         }
         Icon::Encoding => {
-            p.rect_stroke(Rect::from_min_max(pt(4.0,4.0),pt(14.0,14.0)),2.0,stroke);
-            for v in [6.0,9.0,12.0] {line((v,1.0),(v,4.0));line((v,14.0),(v,17.0));line((1.0,v),(4.0,v));line((14.0,v),(17.0,v));}
+            p.rect_stroke(
+                Rect::from_min_max(pt(4.0, 4.0), pt(14.0, 14.0)),
+                2.0,
+                stroke,
+            );
+            for v in [6.0, 9.0, 12.0] {
+                line((v, 1.0), (v, 4.0));
+                line((v, 14.0), (v, 17.0));
+                line((1.0, v), (4.0, v));
+                line((14.0, v), (17.0, v));
+            }
         }
         Icon::Volume | Icon::Muted => {
-            p.add(egui::Shape::closed_line(vec![pt(2.0, 7.0), pt(5.0, 7.0), pt(9.0, 3.0), pt(9.0, 15.0), pt(5.0, 11.0), pt(2.0, 11.0)], stroke));
+            p.add(egui::Shape::closed_line(
+                vec![
+                    pt(2.0, 7.0),
+                    pt(5.0, 7.0),
+                    pt(9.0, 3.0),
+                    pt(9.0, 15.0),
+                    pt(5.0, 11.0),
+                    pt(2.0, 11.0),
+                ],
+                stroke,
+            ));
             if matches!(kind, Icon::Muted) {
                 line((12.0, 6.0), (17.0, 12.0));
                 line((12.0, 12.0), (17.0, 6.0));
             } else {
                 for radius in [4.0, 7.0] {
-                    let points = (0..=8).map(|step| {
-                        let angle = -0.8 + step as f32 * 0.2;
-                        pt(9.0, 9.0) + egui::vec2(angle.cos(), angle.sin()) * radius
-                    }).collect();
+                    let points = (0..=8)
+                        .map(|step| {
+                            let angle = -0.8 + step as f32 * 0.2;
+                            pt(9.0, 9.0) + egui::vec2(angle.cos(), angle.sin()) * radius
+                        })
+                        .collect();
                     p.add(egui::Shape::line(points, stroke));
                 }
             }
@@ -79,15 +126,24 @@ pub fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
             p.circle_stroke(r.center(), 8.0, stroke);
             line((1.0, 9.0), (17.0, 9.0));
             for axis in [false, true] {
-                let points = (0..=32).map(|i| {
-                    let angle = i as f32 * std::f32::consts::TAU / 32.0;
-                    if axis { pt(9.0 + 7.5 * angle.cos(), 9.0 + 3.4 * angle.sin()) }
-                    else { pt(9.0 + 3.4 * angle.cos(), 9.0 + 7.5 * angle.sin()) }
-                }).collect();
+                let points = (0..=32)
+                    .map(|i| {
+                        let angle = i as f32 * std::f32::consts::TAU / 32.0;
+                        if axis {
+                            pt(9.0 + 7.5 * angle.cos(), 9.0 + 3.4 * angle.sin())
+                        } else {
+                            pt(9.0 + 3.4 * angle.cos(), 9.0 + 7.5 * angle.sin())
+                        }
+                    })
+                    .collect();
                 p.add(egui::Shape::closed_line(points, stroke));
             }
         }
-        Icon::Extension => {p.rect_stroke(r.shrink(2.),3.,stroke);line((5.,9.),(13.,9.));line((9.,5.),(9.,13.));},
+        Icon::Extension => {
+            p.rect_stroke(r.shrink(2.), 3., stroke);
+            line((5., 9.), (13., 9.));
+            line((9., 5.), (9., 13.));
+        }
         Icon::Info => {
             p.circle_stroke(r.center(), 7.0, stroke);
             p.circle_filled(pt(9.0, 5.0), 0.9, color);
@@ -102,7 +158,11 @@ pub fn icon(p: &egui::Painter, rect: Rect, kind: Icon, color: C) {
             line((17.0, 9.0), (13.0, 13.0));
         }
         Icon::Picture => {
-            p.rect_stroke(Rect::from_min_max(pt(1.0, 2.0), pt(17.0, 16.0)), 2.0, stroke);
+            p.rect_stroke(
+                Rect::from_min_max(pt(1.0, 2.0), pt(17.0, 16.0)),
+                2.0,
+                stroke,
+            );
             p.circle_stroke(pt(6.0, 6.0), 1.5, stroke);
             line((2.0, 14.0), (8.0, 9.0));
             line((8.0, 9.0), (11.0, 12.0));
@@ -224,31 +284,75 @@ pub fn icon_button_tinted(
     selected: bool,
     tint: C,
 ) -> Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
-    ghost_background(ui, &response, selected);
-    let palette=crate::theme::palette(ui.visuals());
-    let color=if !ui.is_enabled(){palette.muted}else if selected{palette.accent}else{tint};
+    let response = ui.add(
+        crate::theme::toolbar_button("", crate::theme::ButtonKind::Ghost)
+            .selected(selected)
+            .min_size(Vec2::splat(crate::theme::TOOLBAR_FACE)),
+    );
+    let rect = crate::theme::toolbar_face_rect(ui, &response);
+    let palette = crate::theme::palette(ui.visuals());
+    let color = if !ui.is_enabled() {
+        palette.muted
+    } else if selected {
+        palette.accent
+    } else {
+        tint
+    };
     icon(ui.painter(), rect, kind, color);
-    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),tip));
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tip));
     response.on_hover_text(tip)
 }
 
 /// Shared interaction surface for custom icon buttons with semantic tint.
-pub fn ghost_background(ui:&egui::Ui,response:&Response,selected:bool) {
-    let palette=crate::theme::palette(ui.visuals());
-    let fill=if !ui.is_enabled(){C::TRANSPARENT}
-        else if response.is_pointer_button_down_on(){palette.pressed}
-        else if response.hovered()||response.has_focus(){palette.hover}
-        else if selected{palette.tint}else{C::TRANSPARENT};
-    ui.painter().rect_filled(response.rect,crate::theme::RADIUS,fill);
+pub fn ghost_background(ui: &egui::Ui, response: &Response, selected: bool) {
+    let palette = crate::theme::palette(ui.visuals());
+    let fill = if !ui.is_enabled() {
+        C::TRANSPARENT
+    } else if response.is_pointer_button_down_on() {
+        palette.pressed
+    } else if response.hovered() || response.has_focus() {
+        palette.hover
+    } else if selected {
+        palette.tint
+    } else {
+        C::TRANSPARENT
+    };
+    ui.painter()
+        .rect_filled(response.rect, crate::theme::RADIUS, fill);
 }
 
 pub fn icon_label_button(ui: &mut egui::Ui, kind: Icon, label: &str) -> Response {
-    let text = ui.painter().layout_no_wrap(label.into(), egui::FontId::proportional(14.0), ui.visuals().text_color());
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(40.0 + text.size().x, 30.0), Sense::click());
-    ghost_background(ui,&response,false);
-    icon(ui.painter(), Rect::from_center_size(rect.left_center() + egui::vec2(14.0, 0.0), Vec2::splat(18.0)), kind, ui.visuals().text_color());
-    ui.painter().galley(egui::pos2(rect.left() + 30.0, rect.center().y - text.size().y / 2.0), text, ui.visuals().text_color());
-    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),label));
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let text = ui
+        .painter()
+        .layout_no_wrap(label.into(), font, ui.visuals().text_color());
+    let response = ui.add(
+        crate::theme::toolbar_button("", crate::theme::ButtonKind::Ghost)
+            .min_size(egui::vec2(30. + text.size().x, crate::theme::TOOLBAR_FACE)),
+    );
+    let face = crate::theme::toolbar_face_rect(ui, &response);
+    let color = if ui.is_enabled() {
+        ui.visuals().text_color()
+    } else {
+        crate::theme::palette(ui.visuals()).muted
+    };
+    icon(
+        ui.painter(),
+        Rect::from_center_size(
+            egui::pos2(face.left() + 12., face.center().y),
+            Vec2::splat(18.),
+        ),
+        kind,
+        color,
+    );
+    ui.painter().galley_with_override_text_color(
+        egui::pos2(face.left() + 26., face.center().y - text.size().y * 0.5),
+        text,
+        color,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
     response
 }
