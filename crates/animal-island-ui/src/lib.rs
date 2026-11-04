@@ -4,11 +4,13 @@
 //! See README.md for the supported component scope and upstream provenance.
 pub use egui;
 pub mod button;
+pub mod choices;
 pub mod containers;
 pub mod fonts;
 pub mod forms;
 pub mod tokens;
 pub use button::{Button, ButtonKind};
+pub use choices::{Radio, Tab};
 pub use containers::{Card, Ribbon, Tag};
 pub use forms::{Input, Select, Switch};
 pub use tokens::{Tokens, DARK, LIGHT};

@@ -2,6 +2,8 @@
 use egui::{Color32 as C, Ui};
 
 pub const CONTROL_HEIGHT: f32 = 40.0;
+pub const TOOLBAR_HEIGHT: f32 = 40.0;
+pub const TOOLBAR_FACE: f32 = 30.0;
 pub const COMPACT_HEIGHT: f32 = 32.0;
 pub const CARD_RADIUS: f32 = 20.0;
 pub const PILL_RADIUS: f32 = 50.0;
@@ -41,12 +43,12 @@ pub struct Tokens {
 // Core light colors follow the reference's cream, warm brown and mint tokens.
 // Muted text/status accents are deepened where needed for readable small text.
 pub const LIGHT: Tokens = Tokens {
-    base: C::from_rgb(248, 248, 240),
-    card: C::from_rgb(247, 243, 223),
-    overlay: C::from_rgb(255, 253, 247),
-    sidebar: C::from_rgb(240, 232, 216),
-    text: C::from_rgb(114, 93, 66),
-    muted: C::from_rgb(120, 105, 84),
+    base: C::from_rgb(250, 250, 247),
+    card: C::from_rgb(244, 245, 238),
+    overlay: C::from_rgb(253, 253, 250),
+    sidebar: C::from_rgb(238, 241, 233),
+    text: C::from_rgb(72, 63, 53),
+    muted: C::from_rgb(99, 94, 84),
     border: C::from_rgb(212, 201, 180),
     control_border: C::from_rgb(158, 145, 124),
     control: C::from_rgb(255, 253, 247),
@@ -112,6 +114,18 @@ pub fn tokens(ui: &Ui) -> &'static Tokens {
     palette(ui.visuals())
 }
 
+/// egui 0.29 averages text with this target for `ui.weak` and disabled UIs.
+/// Keep that actual derived weak text readable, rather than fading it to paper.
+/// Surface fills use `base`/`card`/`overlay`, never this fade target.
+pub fn readable_fade_target(text: C, muted: C) -> C {
+    let channel = |t: u8, m: u8| (2 * i16::from(m) - i16::from(t)).clamp(0, 255) as u8;
+    C::from_rgb(
+        channel(text.r(), muted.r()),
+        channel(text.g(), muted.g()),
+        channel(text.b(), muted.b()),
+    )
+}
+
 /// Standalone native style; applications can reuse this without any widgets.
 pub fn style(theme: egui::Theme) -> egui::Style {
     let mut style = egui::Style::default();
@@ -139,6 +153,7 @@ pub fn style(theme: egui::Theme) -> egui::Style {
     v.selection.bg_fill = p.focus;
     v.selection.stroke = egui::Stroke::new(1.0, C::from_rgb(43, 38, 32));
     v.widgets.noninteractive = widget(p.card, p.border, p.text);
+    v.widgets.noninteractive.weak_bg_fill = readable_fade_target(p.text, p.muted);
     v.widgets.inactive = widget(p.control, p.control_border, p.text);
     v.widgets.hovered = widget(p.hover, p.accent, p.text);
     v.widgets.active = widget(p.pressed, p.focus, p.text);
@@ -192,6 +207,17 @@ mod tests {
                 assert!(contrast(p.text, surface) >= 4.5, "{theme:?} body");
                 assert!(contrast(p.muted, surface) >= 4.5, "{theme:?} secondary");
             }
+            assert!(
+                contrast(
+                    if theme == egui::Theme::Dark {
+                        p.base
+                    } else {
+                        C::WHITE
+                    },
+                    p.accent
+                ) >= 4.5,
+                "tab/check foreground"
+            );
             for (fg, bg) in [
                 (p.success, p.success_bg),
                 (p.warning, p.warning_bg),
@@ -206,6 +232,40 @@ mod tests {
                     style.visuals.selection.bg_fill
                 ) >= 4.5
             );
+        }
+    }
+    #[test]
+    fn actual_weak_label_mesh_matches_readable_secondary_ink() {
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let ctx = egui::Context::default();
+            crate::apply(&ctx);
+            ctx.set_theme(theme);
+            let v = ctx.style().visuals.clone();
+            let p = palette(&v);
+            for surface in [p.base, p.card, p.overlay] {
+                assert!(
+                    contrast(v.weak_text_color(), surface) >= 4.5,
+                    "{theme:?} actual weak"
+                );
+            }
+            let output = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.weak("Secondary text");
+                });
+            });
+            let shapes=output.shapes.into_iter().filter(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="Secondary text")).collect();
+            let colors: Vec<_> = ctx
+                .tessellate(shapes, output.pixels_per_point)
+                .into_iter()
+                .flat_map(|s| match s.primitive {
+                    egui::epaint::Primitive::Mesh(m) => {
+                        m.vertices.into_iter().map(|v| v.color).collect()
+                    }
+                    _ => Vec::new(),
+                })
+                .collect();
+            assert!(!colors.is_empty());
+            assert!(colors.iter().all(|color| *color == v.weak_text_color()));
         }
     }
 }

@@ -1,12 +1,14 @@
 //! Interactive native gallery. Optional --screenshot PATH captures this window.
 use animal_island_ui::{
-    self as island, egui, Button, ButtonKind, Card, Input, Ribbon, Select, Switch, Tag,
+    self as island, egui, Button, ButtonKind, Card, Input, Radio, Ribbon, Select, Switch, Tab, Tag,
 };
 use island::containers::Tone;
 struct Gallery {
     name: String,
     enabled: bool,
     quality: String,
+    mode: usize,
+    tab: usize,
     night: bool,
     saved: bool,
     output: Option<std::path::PathBuf>,
@@ -41,6 +43,14 @@ impl eframe::App for Gallery {
                 });
             });
             ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                for (i,label) in ["Overview","Devices","Preferences"].into_iter().enumerate() {
+                    let response=ui.add(Tab::new(self.tab==i,label));
+                    let by_key=island::choices::selection_by_key(ui,&response,"gallery-tabs");
+                    if response.clicked()||by_key {self.tab=i;}
+                }
+            });
+            ui.add_space(10.0);
             ui.label("Reusable Rust / egui components");
             ui.colored_label(island::tokens::tokens(ui).muted,"Hover, press, type, select or navigate with Tab. The application owns the data.");
             ui.add_space(20.0);
@@ -66,7 +76,12 @@ impl eframe::App for Gallery {
                     Select::from_id_salt("gallery-codec").selected_text(&self.quality).width(220.0).show_ui(ui,|ui| {
                         for label in ["Automatic","AV1","HEVC","H.264"] {ui.selectable_value(&mut self.quality,label.to_owned(),label);}
                     });
-                    ui.add_space(12.0);ui.add(Switch::new(&mut self.enabled,"Streaming enabled"));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {for (i,label) in ["Windowed","Fullscreen"].into_iter().enumerate(){
+                        let r=ui.add(Radio::new(self.mode==i,label));
+                        let key=island::choices::selection_by_key(ui,&r,"gallery-radio");if r.clicked()||key{self.mode=i;}
+                    }});
+                    ui.add_space(8.0);ui.add(Switch::new(&mut self.enabled,"Streaming enabled"));
                     let mut fixed=true;ui.add_enabled(false,Switch::new(&mut fixed,"Managed setting"));
                 });
                 Card::frame(columns[1].visuals()).show(&mut columns[1],|ui| {
@@ -104,7 +119,7 @@ fn main() -> eframe::Result<()> {
     }
     let night = args.iter().any(|arg| arg == "--night");
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 860.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 940.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -121,6 +136,8 @@ fn main() -> eframe::Result<()> {
                 name: "Desktop 4K".into(),
                 enabled: true,
                 quality: "Automatic".into(),
+                mode: 0,
+                tab: 0,
                 night,
                 saved: false,
                 output,

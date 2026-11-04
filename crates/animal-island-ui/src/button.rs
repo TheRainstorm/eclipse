@@ -18,6 +18,8 @@ pub struct Button {
     text: WidgetText,
     kind: ButtonKind,
     small: bool,
+    toolbar: bool,
+    selected: bool,
     min_size: Vec2,
 }
 impl Button {
@@ -26,6 +28,8 @@ impl Button {
             text: text.into(),
             kind,
             small: false,
+            toolbar: false,
+            selected: false,
             min_size: Vec2::ZERO,
         }
     }
@@ -34,6 +38,16 @@ impl Button {
     }
     pub fn compact(mut self, compact: bool) -> Self {
         self.small = compact;
+        self
+    }
+    /// Shared 40-point toolbar slot, 30-point face centered in both axes.
+    pub fn toolbar(mut self) -> Self {
+        self.toolbar = true;
+        self.small = true;
+        self
+    }
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
         self
     }
     /// Minimum face dimensions; the layout also reserves room for its shadow.
@@ -129,7 +143,13 @@ fn appearance(
 impl Widget for Button {
     fn ui(self, ui: &mut egui::Ui) -> Response {
         let label = self.text.text().to_owned();
-        let horizontal = if self.small { 16. } else { 20. };
+        let horizontal = if self.toolbar {
+            8.
+        } else if self.small {
+            16.
+        } else {
+            20.
+        };
         let text = if self.small {
             self.text.small()
         } else {
@@ -146,15 +166,27 @@ impl Widget for Button {
         } else {
             CONTROL_HEIGHT
         };
-        let face_size = vec2(
+        let mut face_size = vec2(
             galley.size().x + 2. * horizontal,
             height.max(galley.size().y + 12.),
         )
         .max(self.min_size);
         // Reserve the same envelope for every kind so rows align and a thick
         // shadow cannot paint into the next control's hit target.
-        let (rect, response) = ui.allocate_at_least(face_size + vec2(0., 6.), Sense::click());
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), &label));
+        if self.toolbar {
+            face_size = face_size.max(Vec2::splat(crate::tokens::TOOLBAR_FACE));
+            face_size.y = crate::tokens::TOOLBAR_FACE.max(self.min_size.y);
+        }
+        let envelope = if self.toolbar {
+            vec2(10., 10.)
+        } else {
+            vec2(0., 6.)
+        };
+        let (rect, response) = ui.allocate_at_least(face_size + envelope, Sense::click());
+        if !label.is_empty() {
+            response
+                .widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), &label));
+        }
         let enabled = ui.is_enabled();
         let hover = ui.ctx().animate_bool_with_time_and_easing(
             response.id.with("island-hover"),
@@ -173,9 +205,23 @@ impl Widget for Button {
         );
         if ui.is_rect_visible(rect) {
             let p = tokens::tokens(ui);
-            let a = appearance(p, ui.visuals().dark_mode, self.kind, enabled, hover, press);
-            let face = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - 6.))
-                .translate(vec2(0., a.offset));
+            let mut a = appearance(p, ui.visuals().dark_mode, self.kind, enabled, hover, press);
+            if self.selected && self.kind == ButtonKind::Ghost && enabled {
+                a.fill = p
+                    .tint
+                    .lerp_to_gamma(p.hover, hover)
+                    .lerp_to_gamma(p.pressed, press);
+            }
+            let face = if self.toolbar {
+                rect.shrink2(vec2(5., 5.))
+            } else {
+                Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - 6.))
+            };
+            let face = face.translate(vec2(0., a.offset));
+            if self.toolbar {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(response.id.with("toolbar-face"), face));
+            }
             let radius = if self.small {
                 12.
             } else {
@@ -344,7 +390,8 @@ mod tests {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         ui.visuals_mut().override_text_color = Some(Color32::from_rgb(255, 0, 255));
                         ui.add(Button::new(
-                            egui::RichText::new("State-owned button").color(Color32::from_rgb(255, 0, 255)),
+                            egui::RichText::new("State-owned button")
+                                .color(Color32::from_rgb(255, 0, 255)),
                             kind,
                         ));
                     });

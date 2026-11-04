@@ -7,9 +7,11 @@ The visual language follows [guokaigdg/animal-island-ui](https://github.com/guok
 ## Included
 
 - `Button`: primary, secondary, ghost and danger, compact sizing, hover/press feedback and disabled state.
-- `Input`: native text editing, selection, clipboard, password and IME support, with island focus styling.
+- `Input`: native text editing, selection, clipboard, password, character limits, multiline, read-only and IME support, with island focus styling. Width includes the pill inset; inputs have no shadow unless explicitly enabled.
 - `Select`: native egui dropdown interaction and popup ownership.
-- `Switch`: animated on/off control, keyboard activation and disabled semantics.
+- `Switch`: animated on/off control, keyboard activation and disabled semantics; whole-row menu mode keeps its visible shortcut hint.
+- `Radio`: round checked face with finite splash motion; `Tab`: selected pill and finite elevation. `choices::selection_by_key` supplies arrow/Home/End navigation for immediate choice groups.
+- `choices::paint_tab`: face-only styling for existing draggable/closable responses, without allocating a second interaction ID.
 - `Card`, `Tag`, `Ribbon`: containers, status labels and decorative section headings.
 - `tokens`: semantic light/night colors, geometry and standalone `Style` generation.
 - `fonts`: optional bundled rounded Latin font with host CJK fallbacks preserved.
@@ -29,7 +31,7 @@ Call `animal_island_ui::apply(ctx)` before rendering a standalone application. I
 
 Run `cargo run -p animal-island-ui --example gallery` for an interactive component gallery. Controls use egui's native interaction and focus model; visual animation requests frames only while changing. Business actions and data remain outside this crate.
 
-The upstream design specifies a light theme. The warm night palette is an extension for native desktop use. Muted text and small status colors are deepened for readability. Windows, scrolling, accessibility and IME follow egui rather than browser behavior; charts, complex modals, uploads, decorative scenes and the complete React library are outside this port's scope.
+The upstream design specifies a light theme. The warm night palette is an extension for native desktop use. Muted text and small status colors are deepened for readability. Native weak labels use the same readable secondary ink; selection/check foregrounds adapt to the night palette. Toolbar controls reserve a common 40-point slot with a centered 30-point face, including elevation space. Windows, scrolling, accessibility and IME follow egui rather than browser behavior; charts, complex modals, uploads, decorative scenes and the complete React library are outside this port's scope.
 
 ## License and provenance
 

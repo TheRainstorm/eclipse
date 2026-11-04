@@ -46,36 +46,65 @@ fn form_style(ui: &mut Ui, compact: bool) {
 /// Single-line native TextEdit: cursor, selection, IME and clipboard stay in egui.
 #[must_use = "add this widget with ui.add or ui.add_enabled"]
 pub struct Input<'a> {
-    value: &'a mut String,
-    hint: WidgetText,
+    edit: egui::TextEdit<'a>,
     width: Option<f32>,
-    password: bool,
     compact: bool,
+    shadow: bool,
 }
 impl<'a> Input<'a> {
     pub fn new(value: &'a mut String) -> Self {
+        Self::from_text_edit(egui::TextEdit::singleline(value))
+    }
+    pub fn multiline(value: &'a mut String) -> Self {
+        Self::from_text_edit(egui::TextEdit::multiline(value))
+    }
+    pub fn from_text_edit(edit: egui::TextEdit<'a>) -> Self {
         Self {
-            value,
-            hint: WidgetText::default(),
+            edit,
             width: None,
-            password: false,
             compact: false,
+            shadow: false,
         }
     }
     pub fn hint_text(mut self, hint: impl Into<WidgetText>) -> Self {
-        self.hint = hint.into();
+        self.edit = self.edit.hint_text(hint);
         self
     }
+    /// Desired outside width, including the pill's horizontal inset.
     pub fn desired_width(mut self, width: f32) -> Self {
         self.width = Some(width);
         self
     }
-    pub fn password(mut self, password: bool) -> Self {
-        self.password = password;
+    pub fn password(mut self, on: bool) -> Self {
+        self.edit = self.edit.password(on);
         self
     }
-    pub fn compact(mut self, compact: bool) -> Self {
-        self.compact = compact;
+    pub fn compact(mut self, on: bool) -> Self {
+        self.compact = on;
+        self
+    }
+    pub fn shadow(mut self, on: bool) -> Self {
+        self.shadow = on;
+        self
+    }
+    pub fn char_limit(mut self, limit: usize) -> Self {
+        self.edit = self.edit.char_limit(limit);
+        self
+    }
+    pub fn interactive(mut self, on: bool) -> Self {
+        self.edit = self.edit.interactive(on);
+        self
+    }
+    pub fn font(mut self, font: impl Into<egui::FontSelection>) -> Self {
+        self.edit = self.edit.font(font);
+        self
+    }
+    pub fn id(mut self, id: egui::Id) -> Self {
+        self.edit = self.edit.id(id);
+        self
+    }
+    pub fn desired_rows(mut self, rows: usize) -> Self {
+        self.edit = self.edit.desired_rows(rows);
         self
     }
 }
@@ -83,41 +112,63 @@ impl Widget for Input<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         ui.scope(|ui| {
             form_style(ui, self.compact);
-            // Inputs have no resting border or drop shadow; a small warm
-            // underside appears only on hover, behind the native field.
-            ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
-            ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
-            let shadow = ui.painter().add(egui::Shape::Noop);
-            let mut input = egui::TextEdit::singleline(self.value)
-                .hint_text(self.hint)
-                .password(self.password)
-                .margin(egui::Margin::symmetric(16.0, 0.0))
+            let p = *tokens::tokens(ui);
+            let background = ui.painter().add(egui::Shape::Noop);
+            let inset = egui::vec2(18., 8.);
+            let mut edit = self
+                .edit
+                .frame(false)
+                .margin(egui::Margin::symmetric(inset.x, inset.y))
                 .vertical_align(egui::Align::Center)
-                .min_size(egui::vec2(0.0, height(self.compact)));
+                .min_size(egui::vec2(0., height(self.compact) - inset.y * 2.));
             if let Some(width) = self.width {
-                input = input.desired_width(width);
+                edit = edit.desired_width((width.min(ui.available_width()) - inset.x * 2.).max(1.));
             }
-            let response = ui.add(input);
-            let outer = response.rect.expand2(egui::vec2(16.0, 0.0));
-            if response.hovered() && !response.has_focus() && ui.is_enabled() {
-                ui.painter().set(
-                    shadow,
-                    egui::epaint::RectShape::filled(
-                        outer.translate(egui::vec2(0.0, 2.0)),
-                        PILL_RADIUS,
-                        tokens::tokens(ui).shadow,
-                    ),
+            let mut response = ui.add(edit);
+            // TextEdit owns selection/IME and reports its text rectangle. Its
+            // reserved margin forms the pill, not an extra external allocation.
+            let outer = response.rect.expand2(inset);
+            response.rect = outer;
+            let hover = ui.ctx().animate_bool_with_time(
+                response.id.with("input-hover"),
+                response.hovered() && ui.is_enabled(),
+                MOTION_SECONDS,
+            );
+            let focus = ui.ctx().animate_bool_with_time(
+                response.id.with("input-focus"),
+                response.has_focus() && ui.is_enabled(),
+                MOTION_SECONDS,
+            );
+            let enabled = ui.is_enabled();
+            let fill = if enabled {
+                p.control.lerp_to_gamma(p.hover, hover * 0.35)
+            } else {
+                p.disabled
+            };
+            let mut shapes = Vec::new();
+            // Upstream defaults shadow=false; explicitly requested elevation
+            // remains finite and never changes text layout or hit geometry.
+            if self.shadow && enabled {
+                shapes.push(
+                    egui::epaint::Shadow {
+                        offset: egui::vec2(0., 2. + hover),
+                        blur: 4. + hover * 4.,
+                        spread: 0.,
+                        color: p.shadow.gamma_multiply(0.2),
+                    }
+                    .as_shape(outer, PILL_RADIUS)
+                    .into(),
                 );
             }
-            if response.has_focus() && ui.is_enabled() {
-                // Keep native selection colors intact: TextEdit uses the same
-                // selection stroke for its built-in focus frame.
-                ui.painter().rect_stroke(
-                    outer,
+            shapes.push(egui::Shape::rect_filled(outer, PILL_RADIUS, fill));
+            if focus > 0. {
+                shapes.push(egui::Shape::rect_stroke(
+                    outer.expand(2.),
                     PILL_RADIUS,
-                    Stroke::new(2.0, tokens::tokens(ui).focus),
-                );
+                    Stroke::new(2., p.focus.gamma_multiply(focus)),
+                ));
             }
+            ui.painter().set(background, egui::Shape::Vec(shapes));
             response
         })
         .inner
@@ -131,6 +182,9 @@ pub struct Switch<'a> {
     value: &'a mut bool,
     label: WidgetText,
     compact: bool,
+    hint: WidgetText,
+    full_width: bool,
+    trailing: bool,
 }
 impl<'a> Switch<'a> {
     pub fn new(value: &'a mut bool, label: impl Into<WidgetText>) -> Self {
@@ -138,130 +192,194 @@ impl<'a> Switch<'a> {
             value,
             label: label.into(),
             compact: false,
+            hint: WidgetText::default(),
+            full_width: false,
+            trailing: false,
         }
     }
-    pub fn compact(mut self, compact: bool) -> Self {
-        self.compact = compact;
+    pub fn compact(mut self, on: bool) -> Self {
+        self.compact = on;
+        self
+    }
+    pub fn hint_text(mut self, hint: impl Into<WidgetText>) -> Self {
+        self.hint = hint.into();
+        self
+    }
+    pub fn full_width(mut self, on: bool) -> Self {
+        self.full_width = on;
+        self
+    }
+    pub fn trailing(mut self, on: bool) -> Self {
+        self.trailing = on;
         self
     }
 }
 impl Widget for Switch<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let p = *tokens::tokens(ui);
-        let track_size = if self.compact {
-            egui::vec2(44.0, 24.0)
+        let enabled = ui.is_enabled();
+        let gap = 10.;
+        let size = if self.compact {
+            egui::vec2(38., 20.)
         } else {
-            egui::vec2(52.0, 28.0)
+            egui::vec2(52., 28.)
         };
-        let gap = ui.spacing().icon_spacing;
-        let label = if self.label.is_empty() {
-            None
-        } else {
-            Some(self.label.into_galley(
-                ui,
-                None,
-                (ui.available_width() - track_size.x - gap).max(0.0),
-                TextStyle::Button,
-            ))
-        };
-        let label_size = label
-            .as_ref()
-            .map_or(egui::Vec2::ZERO, |label| label.size());
-        let width = track_size.x
-            + if label.is_some() {
-                gap + label_size.x
+        let hint = self.hint.into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            ui.available_width() * 0.4,
+            TextStyle::Small,
+        );
+        let label = self.label.into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            (ui.available_width() - size.x - hint.size().x - 3. * gap).max(1.),
+            TextStyle::Button,
+        );
+        let natural = size.x
+            + if label.is_empty() {
+                0.
             } else {
-                0.0
+                gap + label.size().x
+            }
+            + if hint.is_empty() {
+                0.
+            } else {
+                gap + hint.size().x
             };
+        let width = if self.full_width {
+            ui.available_width()
+        } else {
+            natural
+        };
         let (rect, mut response) = ui.allocate_exact_size(
-            egui::vec2(width, height(self.compact).max(label_size.y)),
+            egui::vec2(width, height(self.compact).max(label.size().y)),
             Sense::click(),
         );
-        if ui.is_enabled() && response.clicked() {
+        if enabled && response.clicked() {
             *self.value = !*self.value;
             response.mark_changed();
         }
         response.widget_info(|| {
-            WidgetInfo::selected(
-                WidgetType::Checkbox,
-                ui.is_enabled(),
-                *self.value,
-                label.as_ref().map_or("", |label| label.text()),
-            )
+            WidgetInfo::selected(WidgetType::Checkbox, enabled, *self.value, label.text())
         });
-        // egui requests repaints only while this 200 ms transition is active.
         let position = ui.ctx().animate_bool_with_time(
             response.id.with("island-switch"),
             *self.value,
             MOTION_SECONDS,
         );
+        let hover = ui.ctx().animate_bool_with_time(
+            response.id.with("switch-hover"),
+            enabled && response.hovered(),
+            MOTION_SECONDS,
+        );
+        let press = ui.ctx().animate_bool_with_time(
+            response.id.with("switch-press"),
+            enabled && response.is_pointer_button_down_on(),
+            0.12,
+        );
         if ui.is_rect_visible(rect) {
+            if self.full_width {
+                ui.painter().rect_filled(
+                    rect,
+                    12.,
+                    egui::Color32::TRANSPARENT.lerp_to_gamma(p.tint, hover),
+                );
+            }
             let track = egui::Rect::from_center_size(
-                egui::pos2(rect.left() + track_size.x * 0.5, rect.center().y),
-                track_size,
+                egui::pos2(
+                    if self.trailing {
+                        rect.right() - size.x * 0.5 - 8.
+                    } else {
+                        rect.left() + size.x * 0.5
+                    },
+                    rect.center().y,
+                ),
+                size,
             );
-            let enabled = ui.is_enabled();
-            let fill = if !enabled {
+            let on = p
+                .switch_on
+                .lerp_to_gamma(p.switch_on.gamma_multiply(0.94), hover.max(press));
+            let fill = if enabled {
+                p.switch_off.lerp_to_gamma(on, position)
+            } else {
                 p.disabled
-            } else {
-                egui::Color32::from(egui::lerp(
-                    egui::Rgba::from(p.switch_off)..=egui::Rgba::from(p.switch_on),
-                    position,
-                ))
             };
-            let border = if response.has_focus() && enabled {
-                Stroke::new(2.5, p.focus)
-            } else if response.hovered() && enabled {
-                Stroke::new(2.5, p.accent)
+            let green = if ui.visuals().dark_mode {
+                p.accent
             } else {
-                Stroke::new(2.5, p.control_border)
+                egui::Color32::from_rgb(111, 186, 44)
             };
-            ui.painter().rect(track, PILL_RADIUS, fill, border);
+            let border = if enabled {
+                p.control_border.lerp_to_gamma(green, position)
+            } else {
+                p.border
+            };
+            ui.painter()
+                .rect(track, PILL_RADIUS, fill, Stroke::new(2.5, border));
+            // The CSS reference uses an inset upper shadow, never elevation.
             if enabled {
                 let inset = track.shrink(2.5);
-                let r = inset.height() * 0.5;
-                let mut upper = Vec::with_capacity(18);
-                for step in 0..=8 {
-                    let angle =
-                        std::f32::consts::PI + step as f32 * std::f32::consts::FRAC_PI_2 / 8.0;
-                    upper.push(egui::pos2(
-                        inset.left() + r + r * angle.cos(),
-                        inset.center().y + r * angle.sin(),
-                    ));
-                }
-                for step in 0..=8 {
-                    let angle = -std::f32::consts::FRAC_PI_2
-                        + step as f32 * std::f32::consts::FRAC_PI_2 / 8.0;
-                    upper.push(egui::pos2(
-                        inset.right() - r + r * angle.cos(),
-                        inset.center().y + r * angle.sin(),
-                    ));
-                }
-                ui.painter().with_clip_rect(inset).add(egui::Shape::line(
-                    upper,
-                    Stroke::new(2.0, p.shadow.gamma_multiply(0.45)),
-                ));
+                let top = egui::Rect::from_min_size(
+                    inset.min,
+                    egui::vec2(inset.width(), inset.height() * 0.46),
+                );
+                ui.painter().with_clip_rect(top).rect_stroke(
+                    inset.translate(egui::vec2(0., 1.5)),
+                    PILL_RADIUS,
+                    Stroke::new(2., p.shadow.gamma_multiply(0.28)),
+                );
             }
-            let radius = track.height() * 0.5 - 3.0;
-            let x = egui::lerp(
-                (track.left() + radius + 3.0)..=(track.right() - radius - 3.0),
-                position,
+            let radius = if self.compact { 7. } else { 10.5 };
+            let center = egui::pos2(
+                egui::lerp(
+                    (track.left() + radius + 3.5)..=(track.right() - radius - 3.5),
+                    position,
+                ),
+                track.center().y,
             );
-            ui.painter().circle(
-                egui::pos2(x, track.center().y),
-                radius,
+            let handle = egui::Rect::from_center_size(
+                center,
+                egui::vec2(2. * radius + press * 2., 2. * radius),
+            );
+            ui.painter().rect(
+                handle,
+                PILL_RADIUS,
                 if enabled { p.control } else { p.border },
-                Stroke::new(2.5, p.control_border),
+                Stroke::new(2.5, border),
             );
-            if let Some(label) = label {
-                ui.painter().galley(
-                    egui::pos2(track.right() + gap, rect.center().y - label.size().y * 0.5),
-                    label,
-                    if enabled { p.text } else { p.muted },
+            if response.has_focus() && enabled {
+                ui.painter()
+                    .rect_stroke(track.expand(3.), PILL_RADIUS, Stroke::new(2., p.focus));
+            }
+            let text_x = if self.trailing {
+                rect.left() + 8.
+            } else {
+                track.right() + gap
+            };
+            ui.painter().galley_with_override_text_color(
+                egui::pos2(text_x, rect.center().y - label.size().y * 0.5),
+                label,
+                if enabled { p.text } else { p.muted },
+            );
+            if !hint.is_empty() {
+                let right = if self.trailing {
+                    track.left() - gap
+                } else {
+                    rect.right() - 8.
+                };
+                ui.painter().galley_with_override_text_color(
+                    egui::pos2(right - hint.size().x, rect.center().y - hint.size().y * 0.5),
+                    hint,
+                    p.muted,
                 );
             }
         }
-        response
+        if enabled {
+            response.on_hover_cursor(egui::CursorIcon::PointingHand)
+        } else {
+            response
+        }
     }
 }
 
@@ -275,6 +393,12 @@ impl Select {
     pub fn from_id_salt(id: impl std::hash::Hash) -> Self {
         Self {
             combo: egui::ComboBox::from_id_salt(id),
+            compact: false,
+        }
+    }
+    pub fn from_combo(combo: egui::ComboBox) -> Self {
+        Self {
+            combo,
             compact: false,
         }
     }
@@ -297,7 +421,23 @@ impl Select {
     ) -> InnerResponse<Option<R>> {
         ui.scope(|ui| {
             form_style(ui, self.compact);
-            self.combo.show_ui(ui, contents)
+            let result = self.combo.show_ui(ui, contents);
+            let response = &result.response;
+            let p = *tokens::tokens(ui);
+            let open = egui::ComboBox::is_open(ui.ctx(), response.id);
+            let ring = ui.ctx().animate_bool_with_time(
+                response.id.with("select-ring"),
+                ui.is_enabled() && (response.hovered() || response.has_focus() || open),
+                MOTION_SECONDS,
+            );
+            if ring > 0. {
+                ui.painter().rect_stroke(
+                    response.rect.expand(2.),
+                    PILL_RADIUS,
+                    Stroke::new(2., p.focus.gamma_multiply(ring)),
+                );
+            }
+            result
         })
         .inner
     }
@@ -472,5 +612,25 @@ mod tests {
             settled.viewport_output[&egui::ViewportId::ROOT].repaint_delay
                 > std::time::Duration::from_secs(1)
         );
+    }
+    #[test]
+    fn input_outer_width_char_limit_and_read_only_are_native() {
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        let mut id = egui::Id::NULL;
+        let _ = frame(&ctx, 0., vec![], |ui| {
+            let r = ui.add(Input::new(&mut text).desired_width(240.).char_limit(3));
+            assert!((r.rect.width() - 240.).abs() < 0.01);
+            id = r.id;
+        });
+        ctx.memory_mut(|m| m.request_focus(id));
+        let _ = frame(&ctx, 0.1, vec![egui::Event::Paste("abcdef".into())], |ui| {
+            ui.add(Input::new(&mut text).desired_width(240.).char_limit(3));
+        });
+        assert_eq!(text, "abc");
+        let _ = frame(&ctx, 0.2, vec![egui::Event::Paste("x".into())], |ui| {
+            ui.add(Input::new(&mut text).interactive(false));
+        });
+        assert_eq!(text, "abc");
     }
 }
