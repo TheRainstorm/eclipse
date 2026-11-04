@@ -307,7 +307,7 @@ fn setup_style(ctx: &egui::Context) {
             break;
         }
     }
-    ctx.set_fonts(fonts);
+    theme::island::fonts::install(ctx, fonts);
 
     theme::apply(ctx);
 }

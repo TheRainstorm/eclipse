@@ -661,11 +661,7 @@ fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
 }
 fn field(ui: &mut egui::Ui, label: &str, text: &mut String, hint: &str) {
     ui.label(label);
-    ui.add(
-        egui::TextEdit::singleline(text)
-            .desired_width(f32::INFINITY)
-            .hint_text(hint),
-    );
+    theme::text_input(ui, text, hint, f32::INFINITY);
     ui.add_space(6.);
 }
 impl Workspace {
@@ -1916,7 +1912,7 @@ impl Workspace {
                     } else {
                         ui.label(uu_i18n::text("配置名称"));
                         ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut editor.value.name).hint_text(uu_i18n::text("例如：桌面 4K / 游戏 120 FPS")).desired_width(300.));
+                            theme::text_input(ui,&mut editor.value.name,uu_i18n::text("例如：桌面 4K / 游戏 120 FPS"),300.);
                             let configs=self.book.device(&editor.device).map(|p|p.client_configs.clone()).unwrap_or_default();
                             ui.add_enabled_ui(!configs.is_empty(),|ui| {
                                 let response=egui::ComboBox::from_id_salt(("client-config-name",&editor.device)).selected_text("").width(28.).show_ui(ui,|ui| {

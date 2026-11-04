@@ -2,9 +2,7 @@
 #[cfg(target_os = "linux")]
 #[path = "../../../tools/native/owned_display.rs"]
 mod owned_display;
-#[allow(dead_code)]
-#[path = "../../uu-plugin-sdk/src/theme.rs"]
-mod theme;
+use uu_plugin_sdk::theme;
 use eframe::egui;
 
 struct Preview {
