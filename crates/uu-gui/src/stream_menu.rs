@@ -1077,7 +1077,8 @@ mod tests {
             app.preferences.wallpaper_enabled=false;
             app.preferences.lan_discovery=false;
             app.preferences.color_theme=color;
-            super::super::theme::apply_appearance(&cc.egui_ctx,egui::ThemePreference::Light,color);
+            let mode=if std::env::var("ECLIPSE_UI_PREVIEW_DARK").as_deref()==Ok("1"){egui::ThemePreference::Dark}else{egui::ThemePreference::Light};
+            super::super::theme::apply_appearance(&cc.egui_ctx,mode,color);
             let mut profile=uu_core::device_book::Profile::new("生成工作站",uu_core::device_book::Destination::Ip{address:"preview.example.invalid:48998".into(),legacy_device:None});
             let config=uu_core::client_settings::NamedClientSettings::new("桌面 4K",uu_core::client_settings::ClientSettings{fps:120,resolution:3,bitrate:4,custom_mbps:79,..Default::default()});
             profile.selected_client=Some(config.id.clone());profile.client_configs.push(config);
