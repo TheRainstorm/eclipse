@@ -42,7 +42,7 @@ impl eframe::App for Gallery {
             });
             ui.add_space(10.0);
             ui.label("Reusable Rust / egui components");
-            ui.weak("Hover, press, type, select or navigate with Tab. The application owns the data.");
+            ui.colored_label(island::tokens::tokens(ui).muted,"Hover, press, type, select or navigate with Tab. The application owns the data.");
             ui.add_space(20.0);
             Card::frame(ui.visuals()).show(ui,|ui| {
                 ui.set_width(ui.available_width());
@@ -55,7 +55,7 @@ impl eframe::App for Gallery {
                     ui.add_enabled(false,Button::new("Unavailable",ButtonKind::Primary));
                 });
                 ui.add_space(10.0);
-                ui.weak(if self.saved {"Saved locally in this demo."}else{"Primary buttons have tactile depth. Secondary actions stay light."});
+                ui.colored_label(island::tokens::tokens(ui).muted,if self.saved {"Saved locally in this demo."}else{"Primary buttons have tactile depth. Secondary actions stay light."});
             });
             ui.add_space(20.0);
             ui.columns(2,|columns| {
@@ -76,15 +76,15 @@ impl eframe::App for Gallery {
                     for (label,tone) in [("Connected",Tone::Success),("Low bandwidth",Tone::Warning),("Disconnected",Tone::Danger),("AV1 / 60 FPS",Tone::Info)] {
                         ui.add(Tag::new(label,tone));ui.add_space(4.0);
                     }
-                    ui.weak("Status is always expressed in words as well as color.");
+                    ui.colored_label(island::tokens::tokens(ui).muted,"Status is always expressed in words as well as color.");
                 });
             });
-            ui.add_space(18.0);ui.weak("Native widget gallery with generated data. No remote session or performance measurement.");
+            ui.add_space(18.0);ui.colored_label(island::tokens::tokens(ui).muted,"Native widget gallery with generated data. No remote session or performance measurement.");
         });
         self.frames += 1;
         if self.output.is_some() {
             if self.frames == 5 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
             }
             if self.started.elapsed() > std::time::Duration::from_secs(12) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -104,7 +104,7 @@ fn main() -> eframe::Result<()> {
     }
     let night = args.iter().any(|arg| arg == "--night");
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 760.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 860.0]),
         ..Default::default()
     };
     eframe::run_native(
