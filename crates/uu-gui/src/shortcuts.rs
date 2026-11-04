@@ -37,6 +37,21 @@ impl Shortcuts {
 mod tests {
     use super::*;
     #[test]
+    fn vsync_toggle_owns_repeat_and_release_across_capture_and_nested_changes() {
+        let mut keys=Shortcuts::default();
+        assert_eq!(keys.key(Key::V,true,false,CHORD,true,false),KeyAction::Trigger(Action::Vsync));
+        assert_eq!(keys.key(Key::V,true,true,Modifiers::NONE,false,true),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::V,false,false,Modifiers::NONE,false,true),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::V,true,false,CHORD,true,true),KeyAction::Forward);
+        assert_eq!(keys.key(Key::V,false,false,CHORD,true,false),KeyAction::Forward);
+        assert_eq!(keys.key(Key::V,true,false,Modifiers::NONE,true,false),KeyAction::Forward);
+        assert_eq!(keys.key(Key::V,true,true,CHORD,true,false),KeyAction::Forward);
+        assert_eq!(keys.key(Key::V,false,false,CHORD,true,false),KeyAction::Forward);
+        assert_eq!(keys.key(Key::V,true,false,CHORD,true,false),KeyAction::Trigger(Action::Vsync));
+        keys.clear();
+        assert_eq!(keys.key(Key::V,true,false,CHORD,true,false),KeyAction::Trigger(Action::Vsync));
+    }
+    #[test]
     fn fullscreen_navigation_owns_repeat_and_release_after_leaving_fullscreen() {
         let modifiers=Modifiers{ctrl:true,alt:true,..Modifiers::NONE};
         let mut keys=Shortcuts::default();

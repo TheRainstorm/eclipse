@@ -645,11 +645,10 @@ impl super::App {
         let response=menu_row(ui,uu_i18n::text("其它帧数"),None,![30,60,120,165].contains(&self.target_fps),true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::FrameRate,response.rect));}
         separator(ui);
-        let response=menu_toggle(ui,uu_i18n::text("垂直同步"),self.preferences.vsync,"");
+        let response=menu_toggle(ui,uu_i18n::text("垂直同步"),self.preferences.vsync,&self.preferences.hotkeys.label(super::shortcuts::Action::Vsync));
         if response.hovered(){self.stream_menu.quality_detail=None;}
         if response.clicked(){
-            self.preferences.vsync=!self.preferences.vsync;
-            eframe::request_vsync(ui.ctx(),self.preferences.vsync);
+            self.set_presentation_vsync(ui.ctx(),!self.preferences.vsync);
             self.persist_preferences();ui.close_menu();
         }
     }

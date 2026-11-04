@@ -609,6 +609,7 @@ impl App {
         match action {
             shortcuts::Action::Stats=>{self.hud=!self.hud;self.persist_preferences();},
             shortcuts::Action::Menu=>{self.release_pointer_capture(ctx);self.stream_menu.visible=!self.stream_menu.visible;self.stream_menu.open=false;ctx.memory_mut(|m|m.close_popup());self.persist_preferences();},
+            shortcuts::Action::Vsync=>{self.set_presentation_vsync(ctx,!self.preferences.vsync);self.persist_preferences();},
             shortcuts::Action::Mute=>{if self.supports_remote(uu_core::capabilities::Capability::Audio){self.toggle_audio_mute();}},
             shortcuts::Action::Fullscreen=>self.toggle_fullscreen(ctx),
             action @ (shortcuts::Action::PreviousDisplay | shortcuts::Action::NextDisplay

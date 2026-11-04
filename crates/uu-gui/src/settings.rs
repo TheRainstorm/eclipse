@@ -325,6 +325,14 @@ impl ApplicationWatch {
 }
 
 impl super::App {
+    /// Menus, hotkeys and Save/Apply share the same viewport request and draft.
+    /// Persistence remains owned by the caller's existing settings transaction.
+    pub(super) fn set_presentation_vsync(&mut self,ctx:&egui::Context,enabled:bool) {
+        self.preferences.vsync=enabled;
+        self.settings_draft.vsync=enabled;
+        eframe::request_vsync(ctx,enabled);
+    }
+
     pub(super) fn poll_application_settings(&mut self) {
         let Some(path)=Settings::path() else{return;};
         if let Some(value)=self.application_settings_watch.changed(&path) {
@@ -692,10 +700,9 @@ impl super::App {
             }
             let capture_changed=self.preferences.capture_values()!=self.settings_draft.capture_values();
             if self.preferences.hotkeys!=self.settings_draft.hotkeys {self.recover_input("hotkeys_changed");}
-            if self.preferences.vsync!=self.settings_draft.vsync {
-                eframe::request_vsync(ctx,self.settings_draft.vsync);
-            }
+            let vsync_changed=self.preferences.vsync!=self.settings_draft.vsync;
             self.preferences=self.settings_draft.clone();
+            if vsync_changed {self.set_presentation_vsync(ctx,self.preferences.vsync);}
             self.preferences.use_application_hotkeys();
             self.release_pointer_capture(ctx);
             self.target_fps = self.preferences.fps;
@@ -783,11 +790,11 @@ mod tests {
         let mut global=Settings::default();global.theme_preference=egui::ThemePreference::Dark;
         global.save(&path).unwrap();
         let mut stream=Settings::load(&path).unwrap();
-        global.theme_preference=egui::ThemePreference::System;global.color_theme=super::super::theme::ColorTheme::Cyan;global.save(&path).unwrap();
+        global.theme_preference=egui::ThemePreference::System;global.color_theme=super::super::theme::ColorTheme::LightBlue;global.save(&path).unwrap();
         stream.fps=120;stream.save_client(&path).unwrap();
         let reopened=Settings::load(&path).unwrap();
         assert_eq!(reopened.theme_preference,egui::ThemePreference::System);
-        assert_eq!(reopened.color_theme,super::super::theme::ColorTheme::Cyan);
+        assert_eq!(reopened.color_theme,super::super::theme::ColorTheme::LightBlue);
         assert_eq!(stream.color_theme,super::super::theme::ColorTheme::Blue);
         assert_eq!(reopened.fps,120);
         assert_eq!(stream.theme_preference,egui::ThemePreference::Dark,"the fixture must actually contain a stale explicit choice");
@@ -935,6 +942,24 @@ mod tests {
         assert_eq!(settings.wallpaper_url(),PHOTOGRAPHY_WALLPAPER);
     }
 
+    #[test]
+    fn legacy_vsync_chord_owner_keeps_the_whole_settings_file_loadable() {
+        use uu_core::hotkeys::{Action,Chord};
+        let root=std::env::temp_dir().join(format!("eclipse-legacy-vsync-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();let path=root.join("gui-settings.json");
+        let mut legacy=Settings::default();legacy.fps=144;legacy.vsync=false;
+        legacy.client.hotkeys.set(Action::Stats,vec![Chord::ctrl_alt(0x56)]);
+        // Reproduce a valid pre-VSync-action file without validating it against
+        // the new command before the reader has had a chance to migrate it.
+        let original=serde_json::to_vec(&legacy).unwrap();std::fs::write(&path,&original).unwrap();
+        let restored=Settings::load(&path).unwrap();
+        assert_eq!(restored.fps,144);assert!(!restored.vsync);
+        assert_eq!(restored.application_hotkeys().chords(Action::Stats),&[Chord::ctrl_alt(0x56)]);
+        assert!(restored.application_hotkeys().chords(Action::Vsync).is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(),original,"loading needs no backup/rewrite/recovery");
+        restored.save(&path).unwrap();assert_eq!(Settings::load(&path).unwrap().application_hotkeys(),restored.application_hotkeys());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn application_bindings_migrate_and_survive_stream_saves() {
         use uu_core::hotkeys::{Action,Chord};

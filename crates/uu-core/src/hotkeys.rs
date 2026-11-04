@@ -18,9 +18,10 @@ pub enum Action {
     NextDisplay,
     PreviousComputer,
     NextComputer,
+    Vsync,
 }
 impl Action {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Stats,
         Self::Menu,
         Self::Mute,
@@ -34,10 +35,12 @@ impl Action {
         Self::NextDisplay,
         Self::PreviousComputer,
         Self::NextComputer,
+        Self::Vsync,
     ];
     pub fn label(self) -> &'static str {
         match self {
             Self::Stats => "HUD",
+            Self::Vsync => uu_i18n::text("垂直同步"),
             Self::Menu => uu_i18n::text("悬浮菜单"),
             Self::Mute => uu_i18n::text("静音"),
             Self::Fullscreen => uu_i18n::text("全屏"),
@@ -53,7 +56,7 @@ impl Action {
         }
     }
     fn defaults(self) -> &'static [Chord] {
-        const DEFAULTS: [&[Chord]; 13] = [
+        const DEFAULTS: [&[Chord]; 14] = [
             &[Chord::ctrl_alt(0x53)],
             &[Chord::ctrl_alt(0x48)],
             &[Chord::ctrl_alt(0x4d)],
@@ -67,6 +70,7 @@ impl Action {
             &[Chord::ctrl_alt(0x28)],
             &[Chord::ctrl_alt(0x25)],
             &[Chord::ctrl_alt(0x27)],
+            &[Chord::ctrl_alt(0x56)],
         ];
         DEFAULTS[self as usize]
     }
@@ -167,9 +171,22 @@ impl Chord {
     }
 }
 /// Missing actions inherit defaults; an explicit empty list disables an action.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct Bindings(BTreeMap<Action, Vec<Chord>>);
+impl<'de> Deserialize<'de> for Bindings {
+    fn deserialize<D:serde::Deserializer<'de>>(deserializer:D)->Result<Self,D::Error> {
+        let mut bindings=BTreeMap::<Action,Vec<Chord>>::deserialize(deserializer)?;
+        // VSync is new to this schema. Keep a previously valid explicit owner
+        // of its new default rather than making the whole saved settings file
+        // invalid on upgrade. Explicit VSync choices still validate normally.
+        if !bindings.contains_key(&Action::Vsync)
+            && bindings.values().flatten().any(|chord|Action::Vsync.defaults().contains(chord)) {
+            bindings.insert(Action::Vsync,Vec::new());
+        }
+        Ok(Self(bindings))
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Issue {
     pub actions: Vec<Action>,
@@ -279,6 +296,37 @@ impl Bindings {
 mod tests {
     use super::*;
     #[test]
+    fn adding_vsync_does_not_invalidate_an_existing_custom_binding() {
+        let mut old=Bindings::default();old.set(Action::Stats,vec![Chord::ctrl_alt(0x56)]);
+        let loaded:Bindings=serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
+        loaded.validate().unwrap();
+        assert_eq!(loaded.chords(Action::Stats),&[Chord::ctrl_alt(0x56)]);
+        assert!(loaded.chords(Action::Vsync).is_empty());
+        assert_eq!(loaded.find(0x56,Chord::ctrl_alt(0).modifiers,false,true,false),Some(Action::Stats));
+        let reopened:Bindings=serde_json::from_slice(&serde_json::to_vec(&loaded).unwrap()).unwrap();
+        assert_eq!(loaded,reopened);
+        old.set(Action::Vsync,vec![Chord::ctrl_alt(0x56)]);
+        let explicit:Bindings=serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(explicit.validate().is_err(),"explicit conflicts must not silently lose either binding");
+    }
+    #[test]
+    fn vsync_inherits_default_and_can_be_rebound_disabled_or_passed_through() {
+        let mut bindings:Bindings=serde_json::from_str(r#"{"stats":[]}"#).unwrap();
+        assert_eq!(bindings.label(Action::Vsync),"Ctrl+Alt+V");
+        let modifiers=Chord::ctrl_alt(0).modifiers;
+        assert_eq!(bindings.find(0x56,modifiers,false,true,false),Some(Action::Vsync));
+        for (nested,streaming,altgr) in [(true,true,false),(false,false,false),(false,true,true)] {
+            assert_eq!(bindings.find(0x56,modifiers,nested,streaming,altgr),None);
+        }
+        bindings.set(Action::Vsync,vec![Chord::ctrl_alt(0x42)]);
+        let mut restored:Bindings=serde_json::from_slice(&serde_json::to_vec(&bindings).unwrap()).unwrap();
+        assert_eq!(restored.find(0x56,modifiers,false,true,false),None);
+        assert_eq!(restored.find(0x42,modifiers,false,true,false),Some(Action::Vsync));
+        restored.set(Action::Vsync,vec![]);restored.validate().unwrap();
+        assert_eq!(restored.find(0x42,modifiers,false,true,false),None);
+        restored.reset(Action::Vsync);assert_eq!(restored.label(Action::Vsync),"Ctrl+Alt+V");
+    }
+    #[test]
     fn navigation_is_configurable_and_only_claimed_in_fullscreen() {
         let mut bindings:Bindings=serde_json::from_str("{}").unwrap();
         for (key,action) in [(0x26,Action::PreviousDisplay),(0x28,Action::NextDisplay),
@@ -302,7 +350,7 @@ mod tests {
     #[test]
     fn all_defaults_use_ctrl_alt_and_saved_overrides_remain_exact() {
         let b:Bindings=serde_json::from_str("{}").unwrap();
-        for (action,keys) in Action::ALL.into_iter().zip([&[0x53][..],&[0x48],&[0x4d],&[0x46,0x58],&[0x51],&[0x5a],&[0x50],&[0x43],&[0x7b],&[0x26],&[0x28],&[0x25],&[0x27]]) {
+        for (action,keys) in Action::ALL.into_iter().zip([&[0x53][..],&[0x48],&[0x4d],&[0x46,0x58],&[0x51],&[0x5a],&[0x50],&[0x43],&[0x7b],&[0x26],&[0x28],&[0x25],&[0x27],&[0x56]]) {
             assert_eq!(b.chords(action),keys.iter().map(|key|Chord::ctrl_alt(*key)).collect::<Vec<_>>());
             for key in keys {
                 assert_eq!(b.find_in_view(*key,Chord::ctrl_alt(0).modifiers,false,true,true,false),Some(action));

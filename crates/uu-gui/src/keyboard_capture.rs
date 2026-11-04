@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn client_commands_are_local_without_remote_control_or_system_capture() {
         for (vk,action) in [(0x46,Action::Fullscreen),(0x58,Action::Fullscreen),(0x51,Action::Exit),
-            (0x53,Action::Stats),(0x4d,Action::Mute),(0x48,Action::Menu),(0x5a,Action::Capture),(0x50,Action::MouseMode),(0x43,Action::CursorMode)] {
+            (0x53,Action::Stats),(0x4d,Action::Mute),(0x48,Action::Menu),(0x5a,Action::Capture),(0x50,Action::MouseMode),(0x43,Action::CursorMode),(0x56,Action::Vsync)] {
             let mut keys=Keys::new();
             assert_eq!(keys.event_with_shortcuts(vk,true,false,true,false,true,false),Decision::Shortcut(action));
             assert_eq!(keys.event_with_shortcuts(vk,true,false,false,false,false,false),Decision::Consume);
