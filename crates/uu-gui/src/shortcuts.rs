@@ -60,7 +60,7 @@ mod tests {
         // A remotely held arrow remains remote when fullscreen begins.
         assert_eq!(keys.key(Key::ArrowRight,true,true,modifiers,true,false),KeyAction::Forward);
         assert_eq!(keys.key(Key::ArrowRight,false,false,modifiers,true,false),KeyAction::Forward);
-        assert_eq!(keys.key(Key::ArrowRight,true,false,modifiers,true,false),KeyAction::Trigger(Action::NextComputer));
+        assert_eq!(keys.key(Key::ArrowRight,true,false,modifiers,true,false),KeyAction::Trigger(Action::NextDisplay));
         keys.fullscreen=false;
         assert_eq!(keys.key(Key::ArrowRight,true,true,Modifiers::NONE,true,false),KeyAction::Consumed);
         assert_eq!(keys.key(Key::ArrowRight,false,false,Modifiers::NONE,true,false),KeyAction::Consumed);

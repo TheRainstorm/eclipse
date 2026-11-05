@@ -230,7 +230,7 @@ mod tests {
         assert_eq!(keys.window_event(0x27,true,windowed,&modifiers,false),Decision::Remote{vk:0x27,pressed:true});
         assert_eq!(keys.window_event(0x27,true,fullscreen,&modifiers,true),Decision::Remote{vk:0x27,pressed:true});
         assert_eq!(keys.window_event(0x27,false,fullscreen,&modifiers,false),Decision::Remote{vk:0x27,pressed:false});
-        assert_eq!(keys.window_event(0x27,true,fullscreen,&modifiers,false),Decision::Shortcut(Action::NextComputer));
+        assert_eq!(keys.window_event(0x27,true,fullscreen,&modifiers,false),Decision::Shortcut(Action::NextDisplay));
         assert_eq!(keys.window_event(0x27,true,windowed,&modifiers,true),Decision::Consume);
         assert_eq!(keys.window_event(0x27,false,WindowRoute{foreground:false,..windowed},&Modifiers::new(),false),Decision::Consume);
         assert_eq!(keys.window_event(0x27,true,WindowRoute{nested_passthrough:true,..fullscreen},&modifiers,false),Decision::Remote{vk:0x27,pressed:true});
@@ -310,7 +310,7 @@ mod tests {
             modifiers.observe(modifier,true);
             assert_eq!(keys.event(modifier,true,route,&modifiers,false),Decision::Remote{vk:modifier,pressed:true});
         }
-        for (session,key,action) in [(2,0x27,Action::NextComputer),(1,0x25,Action::PreviousComputer),(2,0x27,Action::NextComputer)] {
+        for (session,key,action) in [(2,0x27,Action::NextDisplay),(1,0x25,Action::PreviousDisplay),(2,0x27,Action::NextDisplay)] {
             assert_eq!(keys.event(key,true,route,&modifiers,false),Decision::Shortcut(action));
             keys.select((10,session),&modifiers);
             assert_eq!(keys.event(key,true,route,&modifiers,true),Decision::Consume);
@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(keys.event(0x25,true,WindowRoute{nested_passthrough:true,..route},&modifiers,false),Decision::Consume);
         assert_eq!(keys.event(0x25,false,route,&modifiers,false),Decision::Consume);
         let mut bindings=uu_core::hotkeys::Bindings::default();
-        bindings.set(Action::NextComputer,vec![uu_core::hotkeys::Chord::ctrl_alt(0x70)]);
+        bindings.set(Action::NextDisplay,vec![uu_core::hotkeys::Chord::ctrl_alt(0x70)]);
         keys.configure(&bindings,&modifiers);
         assert_eq!(keys.event(0x70,true,route,&modifiers,false),Decision::Consume,"binding changes still wait for modifier release");
         assert_eq!(keys.event(0x70,false,route,&modifiers,false),Decision::Consume);

@@ -66,10 +66,10 @@ impl Action {
             &[Chord::ctrl_alt(0x50)],
             &[Chord::ctrl_alt(0x43)],
             &[Chord::ctrl_alt(0x7b)],
-            &[Chord::ctrl_alt(0x26)],
-            &[Chord::ctrl_alt(0x28)],
             &[Chord::ctrl_alt(0x25)],
             &[Chord::ctrl_alt(0x27)],
+            &[Chord::ctrl_alt(0x26)],
+            &[Chord::ctrl_alt(0x28)],
             &[Chord::ctrl_alt(0x56)],
         ];
         DEFAULTS[self as usize]
@@ -177,12 +177,14 @@ pub struct Bindings(BTreeMap<Action, Vec<Chord>>);
 impl<'de> Deserialize<'de> for Bindings {
     fn deserialize<D:serde::Deserializer<'de>>(deserializer:D)->Result<Self,D::Error> {
         let mut bindings=BTreeMap::<Action,Vec<Chord>>::deserialize(deserializer)?;
-        // VSync is new to this schema. Keep a previously valid explicit owner
-        // of its new default rather than making the whole saved settings file
-        // invalid on upgrade. Explicit VSync choices still validate normally.
-        if !bindings.contains_key(&Action::Vsync)
-            && bindings.values().flatten().any(|chord|Action::Vsync.defaults().contains(chord)) {
-            bindings.insert(Action::Vsync,Vec::new());
+        // Defaults may evolve. Explicit choices keep ownership of their keys;
+        // inherit only the still-free defaults, preserving explicit conflicts
+        // for the normal validation UI instead of discarding user settings.
+        let explicit:std::collections::BTreeSet<_>=bindings.values().flatten().copied().collect();
+        for action in Action::ALL {
+            if !bindings.contains_key(&action) && action.defaults().iter().any(|chord|explicit.contains(chord)) {
+                bindings.insert(action,action.defaults().iter().filter(|chord|!explicit.contains(chord)).copied().collect());
+            }
         }
         Ok(Self(bindings))
     }
@@ -296,6 +298,20 @@ impl Bindings {
 mod tests {
     use super::*;
     #[test]
+    fn evolving_navigation_defaults_keep_explicit_ownership_and_free_alternatives() {
+        let loaded:Bindings=serde_json::from_str(r#"{"next_display":[{"key":40,"modifiers":{"ctrl":true,"alt":true}}],"previous_display":[]}"#).unwrap();
+        loaded.validate().unwrap();
+        assert_eq!(loaded.chords(Action::NextDisplay), &[Chord::ctrl_alt(0x28)]);
+        assert!(loaded.chords(Action::NextComputer).is_empty());
+        assert!(loaded.chords(Action::PreviousDisplay).is_empty());
+        assert_eq!(loaded.chords(Action::PreviousComputer), &[Chord::ctrl_alt(0x26)]);
+        let restored:Bindings=serde_json::from_slice(&serde_json::to_vec(&loaded).unwrap()).unwrap();
+        assert_eq!(loaded,restored);
+        let partial:Bindings=serde_json::from_str(r#"{"stats":[{"key":70,"modifiers":{"ctrl":true,"alt":true}}]}"#).unwrap();
+        partial.validate().unwrap();
+        assert_eq!(partial.chords(Action::Fullscreen), &[Chord::ctrl_alt(0x58)]);
+    }
+    #[test]
     fn adding_vsync_does_not_invalidate_an_existing_custom_binding() {
         let mut old=Bindings::default();old.set(Action::Stats,vec![Chord::ctrl_alt(0x56)]);
         let loaded:Bindings=serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
@@ -329,8 +345,8 @@ mod tests {
     #[test]
     fn navigation_is_configurable_and_only_claimed_in_fullscreen() {
         let mut bindings:Bindings=serde_json::from_str("{}").unwrap();
-        for (key,action) in [(0x26,Action::PreviousDisplay),(0x28,Action::NextDisplay),
-            (0x25,Action::PreviousComputer),(0x27,Action::NextComputer)] {
+        for (key,action) in [(0x25,Action::PreviousDisplay),(0x27,Action::NextDisplay),
+            (0x26,Action::PreviousComputer),(0x28,Action::NextComputer)] {
             let modifiers=Chord::ctrl_alt(key).modifiers;
             assert_eq!(bindings.find_in_view(key,modifiers,false,true,true,false),Some(action));
             assert_eq!(bindings.find_in_view(key,modifiers,false,true,false,false),None);
@@ -341,7 +357,7 @@ mod tests {
         }
         bindings.set(Action::NextComputer,vec![Chord::ctrl_alt_shift(0x70)]);
         assert_eq!(bindings.label(Action::NextComputer),"Ctrl+Alt+Shift+F1");
-        assert_eq!(bindings.find_in_view(0x27,Chord::ctrl_alt(0).modifiers,false,true,true,false),None);
+        assert_eq!(bindings.find_in_view(0x28,Chord::ctrl_alt(0).modifiers,false,true,true,false),None);
         bindings.set(Action::PreviousDisplay,vec![]);
         let restored:Bindings=serde_json::from_slice(&serde_json::to_vec(&bindings).unwrap()).unwrap();
         assert!(restored.chords(Action::PreviousDisplay).is_empty());
@@ -350,7 +366,7 @@ mod tests {
     #[test]
     fn all_defaults_use_ctrl_alt_and_saved_overrides_remain_exact() {
         let b:Bindings=serde_json::from_str("{}").unwrap();
-        for (action,keys) in Action::ALL.into_iter().zip([&[0x53][..],&[0x48],&[0x4d],&[0x46,0x58],&[0x51],&[0x5a],&[0x50],&[0x43],&[0x7b],&[0x26],&[0x28],&[0x25],&[0x27],&[0x56]]) {
+        for (action,keys) in Action::ALL.into_iter().zip([&[0x53][..],&[0x48],&[0x4d],&[0x46,0x58],&[0x51],&[0x5a],&[0x50],&[0x43],&[0x7b],&[0x25],&[0x27],&[0x26],&[0x28],&[0x56]]) {
             assert_eq!(b.chords(action),keys.iter().map(|key|Chord::ctrl_alt(*key)).collect::<Vec<_>>());
             for key in keys {
                 assert_eq!(b.find_in_view(*key,Chord::ctrl_alt(0).modifiers,false,true,true,false),Some(action));
