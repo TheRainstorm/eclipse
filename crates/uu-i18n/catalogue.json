@@ -1,4 +1,12 @@
 {
+  "服务器配置已被其他窗口修改，请刷新后重试": "Server settings changed in another window. Refresh and try again.",
+  "请填写服务器访问令牌": "Enter the server access token.",
+  "服务器证书大小无效": "Invalid server certificate size.",
+  "服务器配置已保存；重启服务后使用新入口。": "Server settings saved. Restart the service to use the updated entrance.",
+  "保留证书": "Keep certificate",
+  "公共可信证书": "Publicly trusted certificate",
+  "设置私有 CA": "Set private CA",
+  "粘贴 PEM 格式的 CA 证书内容": "Paste the CA certificate in PEM format",
   "保持远端帧率": "Match remote refresh rate",
   "蓝": "Blue",
   "天蓝色": "Sky blue",

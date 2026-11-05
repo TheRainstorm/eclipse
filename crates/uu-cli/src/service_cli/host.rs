@@ -74,6 +74,7 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
         }
         let store = uu_core::device_book::Store::open(config.at("device-trust"))?;
         let book = store.read()?;
+        let active_services = Arc::new(book.services.clone());
         let trust = TrustStore::open(config.at("device-trust"))?;
         let states = Clipboards(Arc::new(Mutex::new(Vec::new())));
         let factory = Some({
@@ -126,6 +127,7 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
             administration,
             prepared.requests,
             prepared.endpoints,
+            active_services,
             receiver.clone(),
         ));
         let running = prepared.runner.run(receiver);
@@ -174,6 +176,7 @@ async fn serve(
     admin: Arc<host_admin::Service>,
     mut requests: mpsc::UnboundedReceiver<PairRequest>,
     endpoints: Vec<uu_core::host_runtime::Endpoint>,
+    active_services: Arc<Vec<uu_core::device_book::Service>>,
     mut stop: watch::Receiver<bool>,
 ) -> Result<()> {
     let pending: Pending = Arc::default();
@@ -189,9 +192,9 @@ async fn serve(
             connected=listener.connect()=>{
                 connected?;let next=pipe(false)?;let connected=std::mem::replace(&mut listener,next);
                 if tasks.len()>=4 {drop(connected);continue;}
-                let access=access.clone();let admin=admin.clone();let pending=pending.clone();let endpoints=endpoints.clone();
+                let access=access.clone();let admin=admin.clone();let pending=pending.clone();let endpoints=endpoints.clone();let active_services=active_services.clone();
                 tasks.spawn(async move {
-                    let _=connection(connected,access,admin,pending,endpoints).await;
+                    let _=connection(connected,access,admin,pending,endpoints,active_services).await;
                 });
             },
             _=tasks.join_next(),if !tasks.is_empty()=>{},
@@ -207,6 +210,7 @@ async fn connection(
     admin: Arc<host_admin::Service>,
     pending: Pending,
     endpoints: Arc<Vec<uu_core::host_runtime::Endpoint>>,
+    active_services: Arc<Vec<uu_core::device_book::Service>>,
 ) -> Result<()> {
     let request: Request = tokio::time::timeout(Duration::from_secs(5), service_admin::read(&mut stream)).await??;
     let reply_admin = admin.clone();
@@ -318,6 +322,11 @@ async fn connection(
                 let report = if repair { uu_core::firewall::ensure(&executable, sharing.service_port, sharing.discovery_port)? }
                     else { uu_core::firewall::inspect(&executable, sharing.service_port, sharing.discovery_port)? };
                 Ok((Response::Firewall { message: report.message() }, false))
+            },
+            Request::Connections { request } => {
+                let directory = Paths::discover()?.config().at("device-trust");
+                let snapshot = service_admin::connections::execute(&directory, &active_services, request)?;
+                Ok((Response::Connections { snapshot }, false))
             },
             Request::Restart => Ok((Response::Applied, true)),
         }

@@ -16,6 +16,7 @@ use uu_core::{
     service_admin::{windows::*, Request, Response, TrustRequest, TrustSnapshot},
 };
 use windows_sys::Win32::System::Services::{SERVICE_RUNNING, SERVICE_STOPPED};
+mod connections;
 
 #[derive(Default)]
 pub(super) struct Entry {
@@ -337,6 +338,10 @@ enum Event {
         completed: bool,
         result: Result<Response, String>,
     },
+    Connections {
+        completed: bool,
+        result: Result<Response, String>,
+    },
 }
 struct Manager {
     virtual_display: super::virtual_display_ui::State,
@@ -351,6 +356,7 @@ struct Manager {
     keep_displays: Option<bool>,
     snapshot: Option<host_admin::Snapshot>,
     trust: Option<TrustSnapshot>,
+    service_connections: connections::State,
     endpoints: Vec<(String, String)>,
     pending: Vec<uu_core::service_admin::Pairing>,
     draft: Sharing,
@@ -398,11 +404,17 @@ impl Manager {
                     }
                     Ok(Job::Rpc(request)) => {
                         let trust = matches!(request, Request::Trust { .. });
+                        let connections = matches!(request, Request::Connections { .. });
                         let result = runtime
                             .block_on(request_remote(request))
                             .map_err(|e| format!("{e:#}"));
                         let _ = send.send(if trust {
                             Event::Trust {
+                                completed: true,
+                                result,
+                            }
+                        } else if connections {
+                            Event::Connections {
                                 completed: true,
                                 result,
                             }
@@ -465,6 +477,20 @@ impl Manager {
                         break;
                     }
                     trust_at = Instant::now() + Duration::from_secs(5);
+                    let result = runtime
+                        .block_on(request_remote(Request::Connections {
+                            request: uu_core::service_admin::connections::Request::Inspect,
+                        }))
+                        .map_err(|e| format!("{e:#}"));
+                    if send
+                        .send(Event::Connections {
+                            completed: false,
+                            result,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
         });
@@ -488,6 +514,7 @@ impl Manager {
             keep_displays: None,
             snapshot: None,
             trust: None,
+            service_connections: Default::default(),
             endpoints: vec![],
             pending: vec![],
             draft: Sharing::default(),
@@ -563,6 +590,7 @@ impl Manager {
                             self.ready = false;
                             self.keep_displays = None;
                             self.snapshot = None;
+                            self.service_connections.snapshot = None;
                             self.pending.clear();
                             self.endpoints.clear();
                             self.connection_error = message;
@@ -571,6 +599,14 @@ impl Manager {
                             self.ready = false;
                             self.snapshot = None;
                         }
+                    }
+                }
+                Event::Connections { completed, result } => {
+                    if completed {
+                        self.busy = false;
+                    }
+                    if let Some(notice) = self.service_connections.apply(completed, result) {
+                        self.notice = notice;
                     }
                 }
                 Event::Done(result) => {
@@ -601,11 +637,16 @@ impl Manager {
                         Ok(Response::Trust { snapshot }) => {
                             self.trust = Some(snapshot);
                             if completed {
+                                if self.pairing.password_submitted {
+                                    self.pairing.password.clear();
+                                }
+                                self.pairing.password_submitted = false;
                                 self.notice = uu_i18n::text("操作已完成").into();
                             }
                         }
                         Ok(Response::Error { message }) | Err(message) => {
                             if completed {
+                                self.pairing.password_submitted = false;
                                 self.notice = message;
                             }
                         }
@@ -831,6 +872,11 @@ impl Manager {
                 }
             });
         }
+        if self.section == 5 {
+            if let Some(request) = self.service_connections.show(ui, enabled) {
+                self.submit(Job::Rpc(Request::Connections { request }));
+            }
+        }
         for pending in self.pending.clone() {
             crate::theme::card(ui.visuals()).show(ui, |ui| {
                 ui.strong(uu_i18n::format!("配对请求 · {}", pending.device.name));
@@ -933,6 +979,8 @@ impl eframe::App for Standalone {
 }
 struct ServicePairing {
     loaded: bool,
+    method: u8,
+    password_submitted: bool,
     password: zeroize::Zeroizing<String>,
     permissions: Permissions,
     key: String,
@@ -943,6 +991,8 @@ impl Default for ServicePairing {
     fn default() -> Self {
         Self {
             loaded: false,
+            method: 0,
+            password_submitted: false,
             password: Default::default(),
             permissions: Permissions::CONTROL,
             key: String::new(),
@@ -965,88 +1015,95 @@ impl ServicePairing {
             self.loaded = true;
         }
         ui.add_space(8.);
-        ui.strong(uu_i18n::text("密码配对"));
-        ui.label(if snapshot.password_permissions.is_some() {
-            uu_i18n::text("已设置安全连接密码")
+        ui.horizontal_wrapped(|ui| {
+            crate::theme::tab_value(ui, &mut self.method, 0, uu_i18n::text("密码配对"));
+            crate::theme::tab_value(ui, &mut self.method, 1, uu_i18n::text("公钥配对"));
+        });
+        if self.method == 0 {
+            ui.label(if snapshot.password_permissions.is_some() {
+                uu_i18n::text("已设置安全连接密码")
+            } else {
+                uu_i18n::text("尚未设置安全连接密码")
+            });
+            ui.add(
+                crate::theme::Input::new(&mut *self.password)
+                    .password(true)
+                    .char_limit(256)
+                    .hint_text(uu_i18n::text("新的安全连接密码 · 8–256 字节")),
+            );
+            ui.horizontal_wrapped(|ui| {
+                super::sharing_ui::permissions(ui, &mut self.permissions);
+            });
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(
+                        (8..=256).contains(&self.password.len()),
+                        crate::theme::secondary_button(uu_i18n::text("保存安全连接密码")),
+                    )
+                    .clicked()
+                {
+                    commands.push(TrustRequest::Password {
+                        password: Some(self.password.clone()),
+                        permissions: self.permissions,
+                    });
+                    self.password_submitted = true;
+                }
+                if ui
+                    .add_enabled(
+                        snapshot.password_permissions.is_some(),
+                        crate::theme::secondary_button(uu_i18n::text("移除安全连接密码")),
+                    )
+                    .clicked()
+                {
+                    commands.push(TrustRequest::Password {
+                        password: None,
+                        permissions: self.permissions,
+                    });
+                }
+            });
         } else {
-            uu_i18n::text("尚未设置安全连接密码")
-        });
-        ui.add(
-            crate::theme::Input::new(&mut *self.password)
-                .password(true)
-                .char_limit(256)
-                .hint_text(uu_i18n::text("新的安全连接密码 · 8–256 字节")),
-        );
-        ui.horizontal_wrapped(|ui| {
-            super::sharing_ui::permissions(ui, &mut self.permissions);
-        });
-        ui.horizontal_wrapped(|ui| {
+            ui.add_space(10.);
+            ui.strong(uu_i18n::text("预先授权控制端公钥"));
+            ui.add(
+                crate::theme::Input::new(&mut self.name)
+                    .char_limit(64)
+                    .hint_text(uu_i18n::text("控制端名称")),
+            );
+            ui.add(
+                crate::theme::Input::multiline(&mut self.key)
+                    .char_limit(8192)
+                    .desired_rows(2)
+                    .hint_text(uu_i18n::text("粘贴 Eclipse 或 SSH Ed25519 公钥")),
+            );
+            ui.horizontal_wrapped(|ui| {
+                super::sharing_ui::permissions(ui, &mut self.key_permissions);
+            });
             if ui
                 .add_enabled(
-                    (8..=256).contains(&self.password.len()),
-                    crate::theme::secondary_button(uu_i18n::text("保存安全连接密码")),
+                    PublicDevice::from_public_key(&self.key, &self.name).is_ok(),
+                    crate::theme::secondary_button(uu_i18n::text("添加授权公钥")),
                 )
                 .clicked()
             {
-                commands.push(TrustRequest::Password {
-                    password: Some(std::mem::take(&mut self.password)),
-                    permissions: self.permissions,
-                });
+                if let Ok(device) = PublicDevice::from_public_key(&self.key, &self.name) {
+                    commands.push(TrustRequest::Authorize {
+                        device,
+                        permissions: self.key_permissions,
+                    });
+                }
             }
-            if ui
-                .add_enabled(
-                    snapshot.password_permissions.is_some(),
-                    crate::theme::secondary_button(uu_i18n::text("移除安全连接密码")),
-                )
-                .clicked()
-            {
-                commands.push(TrustRequest::Password {
-                    password: None,
-                    permissions: self.permissions,
-                });
-            }
-        });
-        ui.add_space(10.);
-        ui.strong(uu_i18n::text("预先授权控制端公钥"));
-        ui.add(
-            crate::theme::Input::new(&mut self.name)
-                .char_limit(64)
-                .hint_text(uu_i18n::text("控制端名称")),
-        );
-        ui.add(
-            crate::theme::Input::multiline(&mut self.key)
-                .char_limit(8192)
-                .desired_rows(2)
-                .hint_text(uu_i18n::text("粘贴 Eclipse 或 SSH Ed25519 公钥")),
-        );
-        ui.horizontal_wrapped(|ui| {
-            super::sharing_ui::permissions(ui, &mut self.key_permissions);
-        });
-        if ui
-            .add_enabled(
-                PublicDevice::from_public_key(&self.key, &self.name).is_ok(),
-                crate::theme::secondary_button(uu_i18n::text("添加授权公钥")),
-            )
-            .clicked()
-        {
-            if let Ok(device) = PublicDevice::from_public_key(&self.key, &self.name) {
-                commands.push(TrustRequest::Authorize {
-                    device,
-                    permissions: self.key_permissions,
-                });
-            }
+            ui.collapsing(uu_i18n::text("本机公钥"), |ui| {
+                ui.monospace(snapshot.device.id());
+                if ui
+                    .add(crate::theme::secondary_button(uu_i18n::text(
+                        "复制本机公钥",
+                    )))
+                    .clicked()
+                {
+                    ui.ctx().copy_text(snapshot.device.export_public_key());
+                }
+            });
         }
-        ui.collapsing(uu_i18n::text("本机公钥"), |ui| {
-            ui.monospace(snapshot.device.id());
-            if ui
-                .add(crate::theme::secondary_button(uu_i18n::text(
-                    "复制本机公钥",
-                )))
-                .clicked()
-            {
-                ui.ctx().copy_text(snapshot.device.export_public_key());
-            }
-        });
         ui.add_space(10.);
         ui.strong(uu_i18n::text("已授权设备"));
         for peer in snapshot
@@ -1501,5 +1558,152 @@ mod tests {
                 );
             }
         }
+    }
+
+    struct Harness {
+        manager: Manager,
+        send: mpsc::SyncSender<Event>,
+        jobs: mpsc::Receiver<Job>,
+        ctx: egui::Context,
+        labels: Vec<(String, egui::Pos2)>,
+    }
+    impl Harness {
+        fn new() -> Self {
+            let (mut manager, send, jobs, _) = fixture();
+            send.send(state(true, Sharing::default())).unwrap();
+            send.send(Event::Trust {
+                completed: false,
+                result: Ok(Response::Trust {
+                    snapshot: TrustSnapshot {
+                        device: PublicDevice {
+                            name: "Generated service".into(),
+                            public_key: "ab".repeat(32),
+                        },
+                        peers: vec![],
+                        password_permissions: None,
+                    },
+                }),
+            })
+            .unwrap();
+            send.send(Event::Connections {
+                completed: false,
+                result: Ok(Response::Connections {
+                    snapshot: uu_core::service_admin::connections::Snapshot {
+                        revision: "service-revision".into(),
+                        entries: vec![],
+                        restart_required: false,
+                    },
+                }),
+            })
+            .unwrap();
+            manager.poll();
+            let ctx = egui::Context::default();
+            crate::theme::apply(&ctx);
+            Self {
+                manager,
+                send,
+                jobs,
+                ctx,
+                labels: vec![],
+            }
+        }
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            self.manager.poll();
+            let output = self.ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000., 1400.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| self.manager.show(ui));
+                },
+            );
+            fn visit(shape: &egui::Shape, labels: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Text(t) => labels.push((
+                        t.galley.text().into(),
+                        t.pos + t.galley.rect.center().to_vec2(),
+                    )),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            visit(shape, labels);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.labels.clear();
+            for shape in output.shapes {
+                visit(&shape.shape, &mut self.labels);
+            }
+        }
+        fn has(&self, label: &str) -> bool {
+            self.labels.iter().any(|(text, _)| text == label)
+        }
+        fn click(&mut self, label: &str) {
+            self.frame(vec![]);
+            self.frame(vec![]);
+            let pos = self
+                .labels
+                .iter()
+                .find(|(text, _)| text == label)
+                .unwrap_or_else(|| panic!("missing service control: {label}"))
+                .1;
+            let event = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            self.frame(vec![egui::Event::PointerMoved(pos), event(true)]);
+            self.frame(vec![event(false)]);
+            self.frame(vec![]);
+        }
+    }
+    #[test]
+    fn service_tabs_keep_authority_and_pairing_forms_in_their_own_sections() {
+        let mut h = Harness::new();
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert!(!h.has("IP 直连"));
+        h.click("连接服务");
+        assert!(h.has("IP 直连"));
+        assert!(h.has("＋ 添加服务器"));
+        h.click("配对设置");
+        assert!(h.has("设备名称"));
+        assert!(h.has("密码配对"));
+        assert!(!h.has("添加授权公钥"));
+        h.manager.pairing.password = zeroize::Zeroizing::new("generated-password".into());
+        h.click("公钥配对");
+        assert!(h.has("添加授权公钥"));
+        assert!(!h.has("保存安全连接密码"));
+        assert_eq!(&*h.manager.pairing.password, "generated-password");
+        h.click("输入");
+        assert!(!h.has("密码配对"));
+        assert!(!h.has("＋ 添加服务器"));
+    }
+    #[test]
+    fn service_connection_form_queues_only_owner_rpc_and_keeps_failed_fields() {
+        let mut h = Harness::new();
+        h.click("连接服务");
+        h.click("＋ 添加服务器");
+        h.click("保存服务器");
+        assert!(h.has("请填写服务器访问令牌"));
+        assert!(matches!(h.jobs.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        h.send
+            .send(Event::Connections {
+                completed: true,
+                result: Err("generated backend error".into()),
+            })
+            .unwrap();
+        h.frame(vec![]);
+        assert!(h.has("保存服务器"));
+        assert!(h.has("generated backend error"));
+        h.click("取消");
+        assert!(!h.has("保存服务器"));
     }
 }

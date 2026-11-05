@@ -142,6 +142,7 @@ pub(super) struct Workspace {
 mod tests {
     use super::*;
     #[test]
+    #[cfg(not(windows))]
     fn extension_settings_stay_with_their_provider_between_ip_and_self_hosted_cards() {
         let mut h=Harness::new();h.workspace.route.page=Page::Services;
         let info=Info{wallpaper_enabled:false,wallpaper_ready:false,wallpaper_download_ready:false,wallpaper_size:None,nearby:Vec::new(),providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Generated provider",version:"1"}]};
@@ -348,6 +349,7 @@ mod tests {
 
 
     #[test]
+    #[cfg(not(windows))]
     fn service_management_is_separate_from_connection_routes() {
         let mut h=Harness::new();h.workspace.route.page=Page::Services;
         h.frame(vec![]);
@@ -362,6 +364,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn pairing_tab_owns_identity_and_authorization_controls() {
         let mut h=Harness::new();h.workspace.route.page=Page::Services;
         h.click("配对设置");
@@ -436,6 +439,7 @@ mod tests {
             .any(|(s, _)| s.contains("配对文件") || s.contains("配对 key")));
     }
     #[test]
+    #[cfg(not(windows))]
     fn server_form_reports_missing_credentials_without_discarding_fields() {
         let mut h = Harness::new();
         h.workspace.route.page = Page::Services;

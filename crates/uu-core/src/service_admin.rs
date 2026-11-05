@@ -8,6 +8,7 @@ use crate::{
 use anyhow::{ensure, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+pub mod connections;
 pub mod package;
 
 pub const MAX_MESSAGE: usize = 256 * 1024;
@@ -31,28 +32,57 @@ pub enum Request {
     Admin {
         request: host_admin::Request,
     },
-    VirtualDisplay {request:crate::native_virtual_display::LocalRequest},
-    Trust { request: TrustRequest },
-    Firewall { repair: bool },
+    VirtualDisplay {
+        request: crate::native_virtual_display::LocalRequest,
+    },
+    Trust {
+        request: TrustRequest,
+    },
+    Firewall {
+        repair: bool,
+    },
+    Connections {
+        request: connections::Request,
+    },
     Restart,
 }
 impl Request {
     /// Queries may time out safely. An accepted mutation must settle or report
     /// an unknown result; disconnecting its frontend never cancels the work.
-    pub fn is_mutation(&self)->bool {
-        !matches!(self,Self::Status|Self::Trust{request:TrustRequest::Inspect}
-            |Self::Firewall{repair:false}
-            |Self::VirtualDisplay{request:crate::native_virtual_display::LocalRequest::Manage{
-                request:crate::native_virtual_display::Request::Inspect}})
+    pub fn is_mutation(&self) -> bool {
+        !matches!(
+            self,
+            Self::Status
+                | Self::Trust {
+                    request: TrustRequest::Inspect
+                }
+                | Self::Firewall { repair: false }
+                | Self::Connections {
+                    request: connections::Request::Inspect
+                }
+                | Self::VirtualDisplay {
+                    request: crate::native_virtual_display::LocalRequest::Manage {
+                        request: crate::native_virtual_display::Request::Inspect
+                    }
+                }
+        )
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(tag="action", rename_all="snake_case", deny_unknown_fields)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TrustRequest {
     Inspect,
-    Password { password: Option<zeroize::Zeroizing<String>>, permissions: Permissions },
-    Authorize { device: PublicDevice, permissions: Permissions },
-    Revoke { peer: String },
+    Password {
+        password: Option<zeroize::Zeroizing<String>>,
+        permissions: Permissions,
+    },
+    Authorize {
+        device: PublicDevice,
+        permissions: Permissions,
+    },
+    Revoke {
+        peer: String,
+    },
 }
 /// Public host identity and permissions only; no private key or password record.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,10 +115,21 @@ pub enum Response {
     Admin {
         response: host_admin::Response,
     },
-    VirtualDisplay {response:crate::native_virtual_display::Response},
-    Trust { snapshot: TrustSnapshot },
-    Firewall { message: String },
-    SubmittedUnknown { message: String },
+    VirtualDisplay {
+        response: crate::native_virtual_display::Response,
+    },
+    Trust {
+        snapshot: TrustSnapshot,
+    },
+    Firewall {
+        message: String,
+    },
+    Connections {
+        snapshot: connections::Snapshot,
+    },
+    SubmittedUnknown {
+        message: String,
+    },
     Applied,
     Error {
         message: String,
@@ -96,7 +137,11 @@ pub enum Response {
 }
 pub async fn read<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin)) -> Result<T> {
     let length = stream.read_u32().await? as usize;
-    ensure!(length > 0 && length <= MAX_MESSAGE, "{}", uu_i18n::format!("后台服务消息长度无效"));
+    ensure!(
+        length > 0 && length <= MAX_MESSAGE,
+        "{}",
+        uu_i18n::format!("后台服务消息长度无效")
+    );
     let mut bytes = zeroize::Zeroizing::new(vec![0u8; length]);
     stream.read_exact(&mut bytes).await?;
     Ok(serde_json::from_slice(&bytes)?)
@@ -105,7 +150,9 @@ pub async fn write<T: Serialize>(stream: &mut (impl AsyncWrite + Unpin), value: 
     let bytes = zeroize::Zeroizing::new(serde_json::to_vec(value)?);
     ensure!(
         !bytes.is_empty() && bytes.len() <= MAX_MESSAGE,
-        "{}", uu_i18n::format!("后台服务消息过大"));
+        "{}",
+        uu_i18n::format!("后台服务消息过大")
+    );
     stream.write_u32(bytes.len() as u32).await?;
     stream.write_all(&bytes).await?;
     stream.flush().await?;
