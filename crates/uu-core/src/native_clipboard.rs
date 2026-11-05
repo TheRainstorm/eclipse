@@ -387,7 +387,6 @@ async fn transmit(
         if sending.offset == sending.image.png.len() {
             *pending = None;
             control.sent.fetch_add(1, Ordering::Relaxed);
-            control.status(uu_i18n::text("图片已发送"));
             break;
         }
     }
