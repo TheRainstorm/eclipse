@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-05T14:17:15Z",
+  "updated_at": "2026-11-05T14:39:15Z",
   "files": {
     ".cargo/config.toml": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "019fc56ff34d9faaf76f5a8106bc0374c228338ed666b80265489f695ed1d0bf",
-      "size": 205560,
-      "normalized_sha256": "019fc56ff34d9faaf76f5a8106bc0374c228338ed666b80265489f695ed1d0bf"
+      "sha256": "6393d84dd5a996dd4b2e99fcf4619dd05a03c5896ba71d85721591305bd77468",
+      "size": 205628,
+      "normalized_sha256": "6393d84dd5a996dd4b2e99fcf4619dd05a03c5896ba71d85721591305bd77468"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1643,9 +1643,9 @@
     },
     "crates/uu-gui/src/service_ui.rs": {
       "role": "index",
-      "sha256": "c99e6689e750eb69c4d4d68c5ca1b18690e4b79163f1e04a1bbbc57bef786bdc",
-      "size": 74693,
-      "normalized_sha256": "c99e6689e750eb69c4d4d68c5ca1b18690e4b79163f1e04a1bbbc57bef786bdc"
+      "sha256": "823d5cdf184d7fc318abfb823f9262dad506bde6557898798722923d1b357955",
+      "size": 77955,
+      "normalized_sha256": "823d5cdf184d7fc318abfb823f9262dad506bde6557898798722923d1b357955"
     },
     "crates/uu-gui/src/service_ui/connections.rs": {
       "role": "index",
