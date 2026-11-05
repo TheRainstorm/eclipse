@@ -94,7 +94,9 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
             }) as uu_core::native_lan::ClipboardFactory
         });
         let (restart, mut restarts) = mpsc::channel(1);
-        let _extensions=uu_plugin_sdk::runtime::shared(&config);
+        let extensions=uu_plugin_sdk::runtime::shared(&config);
+        if let Ok(preferences)=uu_core::plugins::Preferences::load(&config){extensions.lock().unwrap().apply(&preferences);}
+        let _extensions=extensions;
         let prepared = uu_core::host_runtime::prepare_service(
             config.clone(),
             book,
@@ -328,6 +330,21 @@ async fn connection(
                 let snapshot = service_admin::connections::execute(&directory, &active_services, request)?;
                 Ok((Response::Connections { snapshot }, false))
             },
+            Request::Plugins{request}=>{
+                use service_admin::PluginRequest;
+                let config=Paths::discover()?.config();
+                let runtime=uu_plugin_sdk::runtime::shared(&config);
+                let restart=matches!(&request,PluginRequest::Save{..});
+                match request {
+                    PluginRequest::Inspect=>{},
+                    PluginRequest::Rescan=>{
+                        let preferences=uu_core::plugins::Preferences::load(&config)?;
+                        let mut runtime=runtime.lock().unwrap();runtime.rescan();runtime.apply(&preferences);
+                    },
+                    PluginRequest::Save{id,expected,value}=>{runtime.lock().unwrap().save(&config,&id,&expected,value)?;},
+                }
+                Ok((Response::Plugins{snapshot:plugin_snapshot(&config)?},restart))
+            },
             Request::Restart => Ok((Response::Applied, true)),
         }
     })
@@ -346,4 +363,16 @@ async fn connection(
         reply_admin.restart_local_manager()?;
     }
     Ok(())
+}
+
+fn plugin_snapshot(config:&uu_core::Config)->Result<service_admin::PluginSnapshot>{
+    let preferences=uu_core::plugins::Preferences::load(config)?;
+    let runtime=uu_plugin_sdk::runtime::shared(config);
+    let runtime=runtime.lock().unwrap();
+    let plugins=runtime.records.iter().map(|(id,record)|service_admin::PluginInfo{
+        id:id.clone(),name:record.manifest.name.clone(),version:record.manifest.version.clone(),
+        enabled:record.enabled,compatible:record.compatible,error:record.error.clone(),
+        preferences:preferences.get(id),
+    }).collect();
+    Ok(service_admin::PluginSnapshot{directory:runtime.directory.display().to_string(),plugins})
 }

@@ -44,6 +44,9 @@ pub enum Request {
     Connections {
         request: connections::Request,
     },
+    Plugins {
+        request: PluginRequest,
+    },
     Restart,
 }
 impl Request {
@@ -60,6 +63,7 @@ impl Request {
                 | Self::Connections {
                     request: connections::Request::Inspect
                 }
+                | Self::Plugins { request: PluginRequest::Inspect }
                 | Self::VirtualDisplay {
                     request: crate::native_virtual_display::LocalRequest::Manage {
                         request: crate::native_virtual_display::Request::Inspect
@@ -91,6 +95,34 @@ pub struct TrustSnapshot {
     pub device: PublicDevice,
     pub peers: Vec<crate::device_trust::Peer>,
     pub password_permissions: Option<Permissions>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag="action",rename_all="snake_case",deny_unknown_fields)]
+pub enum PluginRequest {
+    Inspect,
+    Rescan,
+    Save {
+        id:String,
+        expected:crate::plugins::PluginPreferences,
+        value:crate::plugins::PluginPreferences,
+    },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginInfo {
+    pub id:String,
+    pub name:String,
+    pub version:String,
+    pub enabled:bool,
+    pub compatible:bool,
+    pub error:String,
+    pub preferences:crate::plugins::PluginPreferences,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginSnapshot {
+    pub directory:String,
+    pub plugins:Vec<PluginInfo>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,6 +158,9 @@ pub enum Response {
     },
     Connections {
         snapshot: connections::Snapshot,
+    },
+    Plugins {
+        snapshot: PluginSnapshot,
     },
     SubmittedUnknown {
         message: String,
@@ -181,5 +216,10 @@ mod tests {
             read::<Request>(&mut output.as_slice()).await.unwrap(),
             Request::Status
         ));
+        let inspect=Request::Plugins{request:PluginRequest::Inspect};
+        assert!(!inspect.is_mutation());
+        let save=Request::Plugins{request:PluginRequest::Save{id:"fixture".into(),expected:Default::default(),value:Default::default()}};
+        assert!(save.is_mutation());
+        let wire=serde_json::to_vec(&save).unwrap();assert!(serde_json::from_slice::<Request>(&wire).is_ok());
     }
 }

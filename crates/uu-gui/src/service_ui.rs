@@ -13,7 +13,7 @@ use uu_core::{
     device_book::Sharing,
     device_trust::{Permissions, PublicDevice},
     host_admin,
-    service_admin::{windows::*, Request, Response, TrustRequest, TrustSnapshot},
+    service_admin::{windows::*, PluginRequest, PluginSnapshot, PluginInfo, Request, Response, TrustRequest, TrustSnapshot},
 };
 use windows_sys::Win32::System::Services::{SERVICE_RUNNING, SERVICE_STOPPED};
 mod connections;
@@ -342,6 +342,22 @@ enum Event {
         completed: bool,
         result: Result<Response, String>,
     },
+    Plugins {
+        completed: bool,
+        result: Result<Response, String>,
+    },
+}
+struct PluginDraft {
+    expected:uu_core::plugins::PluginPreferences,
+    value:uu_core::plugins::PluginPreferences,
+    options:String,
+    dirty:bool,
+}
+impl PluginDraft {
+    fn new(value:uu_core::plugins::PluginPreferences)->Self {
+        let options=serde_json::to_string_pretty(&value.options).unwrap_or_else(|_| "{}".into());
+        Self{expected:value.clone(),value,options,dirty:false}
+    }
 }
 struct Manager {
     virtual_display: super::virtual_display_ui::State,
@@ -356,6 +372,8 @@ struct Manager {
     keep_displays: Option<bool>,
     snapshot: Option<host_admin::Snapshot>,
     trust: Option<TrustSnapshot>,
+    plugins:Option<PluginSnapshot>,
+    plugin_drafts:HashMap<String,PluginDraft>,
     service_connections: connections::State,
     endpoints: Vec<(String, String)>,
     pending: Vec<uu_core::service_admin::Pairing>,
@@ -393,6 +411,7 @@ impl Manager {
                 }
             };
             let mut trust_at = Instant::now();
+            let mut plugins_at = Instant::now();
             while !stopped.load(Ordering::Acquire) {
                 match jobs.recv_timeout(Duration::from_millis(750)) {
                     Ok(Job::Refresh) => {}
@@ -405,6 +424,7 @@ impl Manager {
                     Ok(Job::Rpc(request)) => {
                         let trust = matches!(request, Request::Trust { .. });
                         let connections = matches!(request, Request::Connections { .. });
+                        let plugins = matches!(request, Request::Plugins { .. });
                         let result = runtime
                             .block_on(request_remote(request))
                             .map_err(|e| format!("{e:#}"));
@@ -415,6 +435,11 @@ impl Manager {
                             }
                         } else if connections {
                             Event::Connections {
+                                completed: true,
+                                result,
+                            }
+                        } else if plugins {
+                            Event::Plugins {
                                 completed: true,
                                 result,
                             }
@@ -492,6 +517,13 @@ impl Manager {
                         break;
                     }
                 }
+                if state == SERVICE_RUNNING && Instant::now() >= plugins_at {
+                    let result = runtime
+                        .block_on(request_remote(Request::Plugins{request:PluginRequest::Inspect}))
+                        .map_err(|e| format!("{e:#}"));
+                    if send.send(Event::Plugins{completed:false,result}).is_err(){break;}
+                    plugins_at=Instant::now()+Duration::from_secs(5);
+                }
             }
         });
         Ok(Self::empty(sender, events, stop))
@@ -514,6 +546,8 @@ impl Manager {
             keep_displays: None,
             snapshot: None,
             trust: None,
+            plugins:None,
+            plugin_drafts:HashMap::new(),
             service_connections: Default::default(),
             endpoints: vec![],
             pending: vec![],
@@ -609,6 +643,17 @@ impl Manager {
                         self.notice = notice;
                     }
                 }
+                Event::Plugins { completed, result } => {
+                    if completed {self.busy=false;}
+                    match result {
+                        Ok(Response::Plugins{snapshot})=>{
+                            self.apply_plugin_snapshot(snapshot);
+                            if completed {self.notice=uu_i18n::text("后台插件设置已保存，服务已重启").into();}
+                        }
+                        Ok(Response::Error{message})|Err(message)=>if completed{self.notice=message;},
+                        _=>{},
+                    }
+                }
                 Event::Done(result) => {
                     self.busy = false;
                     match result {
@@ -668,6 +713,70 @@ impl Manager {
                 restart,
             },
         }));
+    }
+    fn apply_plugin_snapshot(&mut self,snapshot:PluginSnapshot) {
+        let ids=snapshot.plugins.iter().map(|plugin|plugin.id.clone()).collect::<std::collections::HashSet<_>>();
+        for plugin in &snapshot.plugins {
+            match self.plugin_drafts.get_mut(&plugin.id) {
+                Some(draft) if draft.dirty=>{},
+                Some(draft)=>{
+                    if draft.expected!=plugin.preferences {*draft=PluginDraft::new(plugin.preferences.clone());}
+                }
+                None=>{self.plugin_drafts.insert(plugin.id.clone(),PluginDraft::new(plugin.preferences.clone()));}
+            }
+        }
+        self.plugin_drafts.retain(|id,_|ids.contains(id));
+        self.plugins=Some(snapshot);
+    }
+    fn plugins_ui(&mut self,ui:&mut egui::Ui,enabled:bool) {
+        ui.add_space(12.);
+        crate::theme::card(ui.visuals()).show(ui,|ui|{
+            ui.horizontal_wrapped(|ui|{
+                ui.strong(uu_i18n::text("后台插件"));
+                if ui.add_enabled(enabled,crate::theme::secondary_button(uu_i18n::text("重新扫描后台插件"))).clicked(){
+                    self.submit(Job::Rpc(Request::Plugins{request:PluginRequest::Rescan}));
+                }
+            });
+            ui.weak(uu_i18n::text("这里读写 Windows 后台服务自己的插件开关和选项；不会读取或覆盖当前用户的前台插件配置。保存后共享服务会重启。"));
+            let Some(snapshot)=self.plugins.clone() else{ui.weak(uu_i18n::text("正在读取后台插件…"));return;};
+            ui.small(snapshot.directory);
+            if snapshot.plugins.is_empty(){ui.label(uu_i18n::text("后台尚未安装插件。可先导入服务插件，再重新扫描。"));}
+            let mut save=None;
+            for plugin in snapshot.plugins {
+                ui.push_id(("service-plugin",&plugin.id),|ui|{
+                    egui::Frame::group(ui.style()).inner_margin(12.).show(ui,|ui|{
+                        ui.horizontal_wrapped(|ui|{
+                            ui.strong(&plugin.name);ui.label(format!("v{}",plugin.version));
+                            if !plugin.compatible{ui.colored_label(crate::theme::palette(ui.visuals()).danger,uu_i18n::text("与当前后台 SDK 不匹配"));}
+                        });
+                        if !plugin.error.is_empty(){ui.colored_label(crate::theme::palette(ui.visuals()).danger,&plugin.error);}
+                        let draft=self.plugin_drafts.entry(plugin.id.clone()).or_insert_with(||PluginDraft::new(plugin.preferences.clone()));
+                        let mut changed=false;
+                        changed|=ui.add_enabled_ui(enabled&&plugin.compatible,|ui|crate::theme::switch(ui,&mut draft.value.enabled,uu_i18n::text("在后台启用"))).inner.changed();
+                        ui.collapsing(uu_i18n::text("高级选项（JSON）"),|ui|{
+                            changed|=ui.add(egui::TextEdit::multiline(&mut draft.options).desired_rows(3).code_editor()).changed();
+                        });
+                        if changed{draft.dirty=true;}
+                        if draft.dirty {
+                            ui.horizontal_wrapped(|ui|{
+                                if ui.add_enabled(enabled&&plugin.compatible,crate::theme::primary_button(uu_i18n::text("保存并重启服务"))).clicked(){
+                                    match serde_json::from_str::<serde_json::Map<String,serde_json::Value>>(&draft.options) {
+                                        Ok(options)=>{draft.value.options=options;save=Some((plugin.id.clone(),draft.expected.clone(),draft.value.clone()));},
+                                        Err(error)=>self.notice=uu_i18n::format!("插件选项不是有效 JSON：{error}"),
+                                    }
+                                }
+                                if ui.add(crate::theme::secondary_button(uu_i18n::text("还原"))).clicked(){*draft=PluginDraft::new(draft.expected.clone());}
+                            });
+                            ui.weak(uu_i18n::text("保存会按后台插件自己的校验规则应用选项，并重启共享服务以更新主机入口。"));
+                        }
+                    });
+                });
+            }
+            if let Some((id,expected,value))=save {
+                self.plugin_drafts.get_mut(&id).map(|draft|draft.dirty=false);
+                self.submit(Job::Rpc(Request::Plugins{request:PluginRequest::Save{id,expected,value}}));
+            }
+        });
     }
     fn show(&mut self, ui: &mut egui::Ui) {
         self.virtual_display.poll(None);
@@ -876,6 +985,7 @@ impl Manager {
             if let Some(request) = self.service_connections.show(ui, enabled) {
                 self.submit(Job::Rpc(Request::Connections { request }));
             }
+            self.plugins_ui(ui,enabled);
         }
         for pending in self.pending.clone() {
             crate::theme::card(ui.visuals()).show(ui, |ui| {
@@ -1705,5 +1815,18 @@ mod tests {
         assert!(h.has("generated backend error"));
         h.click("取消");
         assert!(!h.has("保存服务器"));
+    }
+    #[test]
+    fn periodic_plugin_snapshots_do_not_overwrite_an_unsaved_service_draft() {
+        let (mut manager,_,_,_)=fixture();
+        let initial=uu_core::plugins::PluginPreferences{enabled:false,options:Default::default()};
+        manager.apply_plugin_snapshot(PluginSnapshot{directory:"generated".into(),plugins:vec![PluginInfo{id:"fixture".into(),name:"Fixture".into(),version:"1".into(),enabled:false,compatible:true,error:String::new(),preferences:initial.clone()}]});
+        let draft=manager.plugin_drafts.get_mut("fixture").unwrap();draft.value.enabled=true;draft.dirty=true;
+        let remote=uu_core::plugins::PluginPreferences{enabled:false,options:serde_json::from_str(r#"{"remote":true}"#).unwrap()};
+        manager.apply_plugin_snapshot(PluginSnapshot{directory:"generated".into(),plugins:vec![PluginInfo{id:"fixture".into(),name:"Fixture".into(),version:"1".into(),enabled:false,compatible:true,error:String::new(),preferences:remote.clone()}]});
+        let draft=manager.plugin_drafts.get("fixture").unwrap();assert!(draft.dirty&&draft.value.enabled);assert_eq!(draft.expected,initial);
+        manager.plugin_drafts.get_mut("fixture").unwrap().dirty=false;
+        manager.apply_plugin_snapshot(PluginSnapshot{directory:"generated".into(),plugins:vec![PluginInfo{id:"fixture".into(),name:"Fixture".into(),version:"1".into(),enabled:false,compatible:true,error:String::new(),preferences:remote.clone()}]});
+        assert_eq!(manager.plugin_drafts.get("fixture").unwrap().expected,remote);
     }
 }
