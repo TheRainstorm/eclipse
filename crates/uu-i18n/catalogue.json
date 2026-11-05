@@ -1920,6 +1920,7 @@
   "按总预算自动分配": "Allocate from total budget",
   "按当前所有活动屏幕的分辨率和帧率比例分配配置中的预期总带宽；手动码率先扣除。": "Share the configured expected total bandwidth across active screens by resolution and frame rate; manual bitrates are reserved first.",
   "已保存到此显示器的客户端配置；下次连接继续使用": "Saved settings for this display; they will be used on the next connection.",
+  "正在分配串流带宽…": "Allocating stream bandwidth…",
   "后台插件": "Background plugins",
   "重新扫描后台插件": "Rescan background plugins",
   "这里读写 Windows 后台服务自己的插件开关和选项；不会读取或覆盖当前用户的前台插件配置。保存后共享服务会重启。": "These controls read and write the Windows background service's own plugin switches and options. They do not read or overwrite the current user's foreground plugin settings. Saving restarts the sharing service.",

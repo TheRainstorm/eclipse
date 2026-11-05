@@ -210,10 +210,10 @@ impl Default for BudgetState {
     fn default()->Self {Self{factor:1.,last_eval:None,last_decrease:None,last_increase:None}}
 }
 impl BudgetState {
-    fn observe(&mut self,loss_ppm:u32,rtt_ms:Option<u32>,now:std::time::Instant) {
+    fn observe(&mut self,loss_ppm:Option<u32>,rtt_ms:Option<u32>,now:std::time::Instant) {
         if self.last_eval.is_some_and(|last|now.duration_since(last)<std::time::Duration::from_secs(1)){return;}
-        let severe=loss_ppm>=20_000||rtt_ms.is_some_and(|rtt|rtt>=250);
-        let good=loss_ppm<=5_000&&rtt_ms.is_none_or(|rtt|rtt<=150);
+        let severe=loss_ppm.is_some_and(|loss|loss>=20_000)||rtt_ms.is_some_and(|rtt|rtt>=250);
+        let good=loss_ppm.is_some_and(|loss|loss<=5_000)&&rtt_ms.is_none_or(|rtt|rtt<=150);
         if severe {self.factor=(self.factor*0.8).max(0.15);self.last_decrease=Some(now);}
         else if good&&self.last_decrease.is_none_or(|last|now.duration_since(last)>=std::time::Duration::from_secs(5))&&self.last_increase.is_none_or(|last|now.duration_since(last)>=std::time::Duration::from_secs(2)) {
             self.factor=(self.factor+0.05).min(1.);self.last_increase=Some(now);
@@ -221,6 +221,72 @@ impl BudgetState {
         self.last_eval=Some(now);
     }
 }
+#[derive(Clone)]
+struct BudgetCandidate {
+    session:u64,
+    weight:u64,
+    fixed:Option<u32>,
+    budget_kbps:u32,
+    loss_ppm:Option<u32>,
+    rtt_ms:Option<u32>,
+    deferred:bool,
+}
+fn active_budget_candidate(session:&Session)->Option<BudgetCandidate> {
+    let app=&session.app;
+    if app.exit_requested||app.disconnecting {return None;}
+    let target=app.stream_target.as_ref()?;
+    if !target.is_native(){return None;}
+    let handle=app.controller.as_ref()?;
+    let (mut width,mut height)=handle.stats.res();
+    let screens=app.remote_screens();
+    if width==0||height==0 {
+        if let Some(screen)=app.displays.selected.and_then(|id|screens.screens.iter().find(|screen|screen.id==id)).or_else(||screens.screens.iter().find(|screen|screen.id==screens.current_id)) {
+            width=screen.width;height=screen.height;
+        }
+    }
+    let width=width.max(320);let height=height.max(200);let fps=app.target_fps.clamp(5,240) as u64;
+    let codec=handle.stats.codec.lock().map(|codec|codec.to_ascii_lowercase()).unwrap_or_default();
+    let codec=if codec.contains("av1"){uu_core::native::VideoCodec::Av1}else if codec.contains("265")||codec.contains("hevc"){uu_core::native::VideoCodec::Hevc}else if codec.contains("pyrowave"){uu_core::native::VideoCodec::Pyrowave}else{uu_core::native::VideoCodec::H264};
+    let auto=app.preferences.bitrate==6;
+    let fixed=if auto {None} else {app.native_quality_request().bitrate_kbps.or_else(||Some(uu_core::bitrate::recommended_kbps(width,height,fps as u32,codec)))};
+    let loss=handle.stats.network_loss.lock().ok().and_then(|loss|loss.as_ref().filter(|loss|loss.fresh()).and_then(|loss|loss.loss_ppm));
+    let rtt=handle.stats.rtt_updated_ms.load(std::sync::atomic::Ordering::Relaxed);
+    let rtt_ms=(rtt>0&&uu_core::time::now_ms().saturating_sub(rtt)<5_000).then(||handle.stats.rtt_ms.load(std::sync::atomic::Ordering::Relaxed));
+    Some(BudgetCandidate{session:session.id,weight:u64::from(width)*u64::from(height)*fps,fixed,budget_kbps:app.preferences.network_budget_mbps.saturating_mul(1000),loss_ppm:loss,rtt_ms,deferred:false})
+}
+fn deferred_budget_candidate(session:&Session,sources:&[SourceRecord])->Option<BudgetCandidate> {
+    let app=&session.app;
+    if app.exit_requested||app.disconnecting||app.controller.is_some()||!app.connect_deferred {return None;}
+    let target=app.stream_target.as_ref()?;
+    if !target.is_native(){return None;}
+    let device=base_key(target);
+    let source=target.connection.display().and_then(|display|sources.iter().find(|source|source.device==device&&source.active&&if display.source.is_empty(){source.screen.id==display.id}else{source.screen.display_name==display.source}).map(|source|&source.screen));
+    deferred_budget_plan(session.id,&app.preferences.client,target,source)
+}
+fn deferred_budget_plan(session:u64,settings:&super::settings::ClientSettings,target:&StreamTarget,source:Option<&uu_core::screen_control::RemoteScreen>)->Option<BudgetCandidate> {
+    if !target.is_native(){return None;}
+    let mut width=1920u32;let mut height=1080u32;let mut refresh=None;
+    if let Some(virtual_display)=target.connection.virtual_display() {
+        width=virtual_display.spec.width;height=virtual_display.spec.height;
+        refresh=Some(virtual_display.spec.refresh_millihz/1000).filter(|hz|*hz>1);
+    } else if let Some(source)=source {
+        width=source.width;height=source.height;refresh=Some(source.refresh_hz).filter(|hz|*hz>1);
+    }
+    let request=settings.native_request();
+    if let Some([bounded_width,bounded_height])=request.bounds {width=bounded_width;height=bounded_height;}
+    let width=width.max(320);let height=height.max(200);let fps=settings.resolved_fps(refresh,240) as u64;
+    let codec=match settings.codec {
+        super::settings::CodecPreference::H264=>uu_core::native::VideoCodec::H264,
+        super::settings::CodecPreference::Hevc=>uu_core::native::VideoCodec::Hevc,
+        super::settings::CodecPreference::Av1=>uu_core::native::VideoCodec::Av1,
+        super::settings::CodecPreference::Pyrowave=>uu_core::native::VideoCodec::Pyrowave,
+        super::settings::CodecPreference::Auto=>uu_core::native::VideoCodec::H264,
+    };
+    let auto=settings.bitrate==6;
+    let fixed=if auto {None} else {request.bitrate_kbps.or_else(||Some(uu_core::bitrate::recommended_kbps(width,height,fps as u32,codec)))};
+    Some(BudgetCandidate{session,weight:u64::from(width)*u64::from(height)*fps,fixed,budget_kbps:settings.network_budget_mbps.saturating_mul(1000),loss_ppm:None,rtt_ms:None,deferred:true})
+}
+
 /// A window owns its explicit views, including views that have never connected.
 /// A media Session can outlive a removed view only while its cleanup settles.
 #[derive(Clone)]
@@ -532,6 +598,7 @@ impl Window {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.request_close();
         }
+        let had_pending=!self.pending.is_empty();
         for launch in std::mem::take(&mut self.pending) {
             let plugin_payload = match launch.plugin_payload() {
                 Ok(value) => value,
@@ -539,6 +606,7 @@ impl Window {
             };
             let id = self.record_launch(&launch,next);
             let selected=self.active==0||self.active==id;
+            let deferred=launch.target.is_native();
             let mut app = App::new_session(
                 ctx,
                 gl.clone(),
@@ -546,6 +614,7 @@ impl Window {
                 Some(launch.target),
                 vsync,
                 plugin_payload,
+                deferred,
             );
             app.fullscreen=ctx.input(|input|input.viewport().fullscreen.unwrap_or(false));
             app.window_sizing = self.sizing.clone();
@@ -556,6 +625,7 @@ impl Window {
             self.sessions.push(Session { id, activated:None, app });
             if selected {self.select(id);}
         }
+        if had_pending {ctx.request_repaint_of(egui::ViewportId::ROOT);}
         let tabs = self.tabs(actions);
         let mut active = None;
         for (index, session) in self.sessions.iter_mut().enumerate() {
@@ -673,59 +743,55 @@ pub struct Workspace {
     owner: uu_core::local_workspace::Owner,
 }
 impl State {
-    fn rebalance_budgets(&mut self) {
+    fn has_deferred_connect(&self)->bool {
+        self.windows.iter().flat_map(|window|&window.sessions).any(|session|session.app.connect_deferred&&session.app.controller.is_none()&&!session.app.exit_requested)
+    }
+    fn rebalance_budgets(&mut self,force:bool) {
         let now=std::time::Instant::now();
-        if self.budget_refresh.is_some_and(|last|now.duration_since(last)<std::time::Duration::from_secs(1)){return;}
+        if !force&&self.budget_refresh.is_some_and(|last|now.duration_since(last)<std::time::Duration::from_secs(1)){return;}
         self.budget_refresh=Some(now);
-        struct Candidate {session:u64, weight:u64, fixed:Option<u32>, budget_kbps:u32, loss_ppm:u32, rtt_ms:Option<u32>}
-        let mut groups:std::collections::HashMap<ConnectionTarget,Vec<Candidate>>=Default::default();
+        let mut groups:std::collections::HashMap<ConnectionTarget,Vec<BudgetCandidate>>=Default::default();
         let mut active=std::collections::HashSet::new();
         for window in &self.windows {
             for session in &window.sessions {
-                if session.app.exit_requested||session.app.disconnecting{continue;}
                 let Some(target)=session.app.stream_target.as_ref() else{continue;};
-                if !target.is_native(){continue;}
-                let Some(handle)=session.app.controller.as_ref() else{continue;};
-                active.insert(session.id);
-                let auto=session.app.preferences.bitrate==6;
-                let (mut width,mut height)=handle.stats.res();
-                let screens=session.app.remote_screens();
-                if width==0||height==0 {
-                    if let Some(screen)=session.app.displays.selected.and_then(|id|screens.screens.iter().find(|screen|screen.id==id)).or_else(||screens.screens.iter().find(|screen|screen.id==screens.current_id)) {
-                        width=screen.width;height=screen.height;
-                    }
+                let candidate=active_budget_candidate(session).or_else(||deferred_budget_candidate(session,&self.sources));
+                if let Some(candidate)=candidate {
+                    active.insert(session.id);
+                    groups.entry(base_key(target)).or_default().push(candidate);
                 }
-                let width=width.max(320);let height=height.max(200);let fps=session.app.target_fps.clamp(5,240) as u64;
-                let codec=handle.stats.codec.lock().map(|codec|codec.to_ascii_lowercase()).unwrap_or_default();
-                let codec=if codec.contains("av1"){uu_core::native::VideoCodec::Av1}else if codec.contains("265")||codec.contains("hevc"){uu_core::native::VideoCodec::Hevc}else if codec.contains("pyrowave"){uu_core::native::VideoCodec::Pyrowave}else{uu_core::native::VideoCodec::H264};
-                let fixed=if auto {None} else {session.app.native_quality_request().bitrate_kbps.or_else(||Some(uu_core::bitrate::recommended_kbps(width,height,fps as u32,codec)))};
-                let loss=handle.stats.loss_ppm.load(std::sync::atomic::Ordering::Relaxed).max(handle.stats.network_loss.lock().ok().and_then(|loss|loss.as_ref().filter(|loss|loss.fresh()).and_then(|loss|loss.loss_ppm)).unwrap_or(0));
-                let rtt=handle.stats.rtt_updated_ms.load(std::sync::atomic::Ordering::Relaxed);
-                let rtt_ms=(rtt>0&&uu_core::time::now_ms().saturating_sub(rtt)<5_000).then(||handle.stats.rtt_ms.load(std::sync::atomic::Ordering::Relaxed));
-                groups.entry(base_key(target)).or_default().push(Candidate{session:session.id,weight:u64::from(width)*u64::from(height)*fps,fixed,budget_kbps:session.app.preferences.network_budget_mbps.saturating_mul(1000),loss_ppm:loss,rtt_ms});
             }
         }
         let mut updates=Vec::new();
-        for (_,candidates) in groups {
+        for (device,candidates) in groups {
             let total=candidates.iter().map(|candidate|candidate.budget_kbps).min().unwrap_or(0);
             let items=candidates.iter().map(|candidate|(candidate.weight,candidate.fixed)).collect::<Vec<_>>();
             let allocations=uu_core::client_settings::allocate_bitrate_budget(total,&items);
             for (candidate,allocation) in candidates.into_iter().zip(allocations) {
                 let state=self.budget.entry(candidate.session).or_default();
                 state.observe(candidate.loss_ppm,candidate.rtt_ms,now);
-                if candidate.fixed.is_some(){updates.push((candidate.session,None));}
-                else {updates.push((candidate.session,Some((allocation as f32*state.factor).round() as u32)));}
+                let target=if candidate.fixed.is_some(){None}else{Some((allocation as f32*state.factor).round() as u32)};
+                let deferred=if candidate.deferred{Some(device.clone())}else{None};
+                updates.push((candidate.session,target,deferred));
             }
         }
-        for (id,target) in updates {
+        let mut deferred=Vec::new();
+        for (id,target,device) in updates {
             for window in &mut self.windows {
                 if let Some(session)=window.sessions.iter_mut().find(|session|session.id==id) {
                     if session.app.budget_alloc_kbps!=target {
                         session.app.budget_alloc_kbps=target;
-                        if target.is_some(){session.app.send_capture_settings();}
+                        if target.is_some()&&session.app.controller.is_some(){session.app.send_capture_settings();}
                     }
+                    if let Some(device)=device {deferred.push((id,device));}
                     break;
                 }
+            }
+        }
+        for (id,device) in deferred {
+            if self.windows.iter().any(|window|window.pending.iter().any(|launch|base_key(&launch.target)==device)){continue;}
+            if let Some(session)=self.windows.iter_mut().flat_map(|window|&mut window.sessions).find(|session|session.id==id) {
+                if session.app.connect_deferred {session.app.connect();}
             }
         }
         self.budget.retain(|id,_|active.contains(id));
@@ -973,7 +1039,8 @@ impl eframe::App for Workspace {
             let state = state.as_mut().expect("workspace UI thread");
             if crate::platform::take_global_toggle(){state.toggle_local_desktop(ctx);}
             state.sync_owned_views();
-            state.rebalance_budgets();
+            let force_budget=state.has_deferred_connect();
+            state.rebalance_budgets(force_budget);
             while let Some(request) = self.owner.try_recv() {
                 let accepted = serde_json::from_slice::<Launch>(&request.bytes)
                     .ok()

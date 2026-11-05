@@ -90,7 +90,7 @@ mod tests {use super::*;
         }
         let ctx=egui::Context::default();
         let platform=std::rc::Rc::new(platform::Platform::for_window(&NoWindow,&ctx,None));
-        let mut app=App::new_session(&ctx,None,platform,None,false,None);
+        let mut app=App::new_session(&ctx,None,platform,None,false,None,false);
         // The controller is only a typed in-memory queue: no socket, desktop,
         // hook, clipboard, audio output or platform injection is opened.
         let stats=Arc::new(uu_core::media::MediaStats::default());
@@ -222,6 +222,7 @@ struct App {
     target_fps: u32,
     fps_draft: u32,
     budget_alloc_kbps: Option<u32>,
+    connect_deferred: bool,
     settings_seq: u64,
     settings_feedback: String,
     pointer: input::RemotePointer,
@@ -389,9 +390,9 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>, stream_target: Option<sessions::StreamTarget>, origin: Option<(i32, i32)>, presentation_vsync: bool, plugin_payload:Option<zeroize::Zeroizing<String>>) -> Self {
         setup_style(&cc.egui_ctx);
         if let Some(gl)=&cc.gl {video_texture::enable_gpu_video(gl);}
-        Self::new_session(&cc.egui_ctx,cc.gl.clone(),std::rc::Rc::new(platform::Platform::new(cc,origin)),stream_target,presentation_vsync,plugin_payload)
+        Self::new_session(&cc.egui_ctx,cc.gl.clone(),std::rc::Rc::new(platform::Platform::new(cc,origin)),stream_target,presentation_vsync,plugin_payload,false)
     }
-    fn new_session(ctx:&egui::Context,gl:Option<std::sync::Arc<eframe::glow::Context>>,platform:std::rc::Rc<platform::Platform>,stream_target:Option<sessions::StreamTarget>,presentation_vsync:bool,plugin_payload:Option<zeroize::Zeroizing<String>>)->Self {
+    fn new_session(ctx:&egui::Context,gl:Option<std::sync::Arc<eframe::glow::Context>>,platform:std::rc::Rc<platform::Platform>,stream_target:Option<sessions::StreamTarget>,presentation_vsync:bool,plugin_payload:Option<zeroize::Zeroizing<String>>,defer_connect:bool)->Self {
         static NEXT_INSTANCE:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
         let (config, config_error) = match uu_core::Config::from_env() {
             Ok(config) => (Some(config), None),
@@ -502,6 +503,7 @@ impl App {
             target_fps:preferences.fps,
             fps_draft: preferences.fps,
             budget_alloc_kbps:None,
+            connect_deferred:false,
             settings_seq: 0,
             settings_feedback: String::new(),
             pointer: input::RemotePointer::default(),
@@ -524,7 +526,13 @@ impl App {
             window_edge_active: false,
         };
         if let Some(target)=&app.stream_target {
-            app.view_only=target.view_only || matches!(target.connection.base(),sessions::ConnectionTarget::NativeLoopback);app.connect();
+            app.view_only=target.view_only || matches!(target.connection.base(),sessions::ConnectionTarget::NativeLoopback);
+            if defer_connect {
+                app.connect_deferred=true;
+                app.status=uu_i18n::text("正在分配串流带宽…").into();
+            } else {
+                app.connect();
+            }
         }else{app.status=uu_i18n::text("选择连接方式").into();}
 
         app
@@ -1058,6 +1066,7 @@ impl App {
         }
     }
     fn disconnect(&mut self) {
+        self.connect_deferred = false;
         self.output_reconnect_pending = false;
         if self.stream_target.is_some() { self.exit_requested = true; }
         self.stop_connection();
@@ -1089,6 +1098,7 @@ impl App {
 
 
     fn connect(&mut self) {
+        self.connect_deferred=false;
         self.recorded_connection=false;
         if self.controller.is_some(){return;}
         let Some(connection)=self.stream_target.as_ref().map(|t|&t.connection) else{return;};

@@ -90,13 +90,36 @@ fn local_desktop_toggle_preserves_window_and_view_identity_for_restore() {
     assert!(!state.local_desktop);assert!(state.restore_window.is_none());assert_eq!(state.windows[0].views[0].id,a);assert_eq!(state.windows[0].active,a);
 }
 #[test]
+fn deferred_initial_budget_uses_source_geometry_and_reserves_manual_targets() {
+    let base=ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into());
+    let target=|id,source:&str|StreamTarget{connection:ConnectionTarget::NativeDisplay{connection:Box::new(base.clone()),display:DisplayTarget{id,source:source.into()}},alias:"Generated computer".into(),view_only:true};
+    let mut settings=uu_core::client_settings::ClientSettings::default();
+    assert_eq!(settings.bitrate,6);
+    let mut large_screen=generated_screen(1);large_screen.width=3840;large_screen.height=2160;large_screen.refresh_hz=120;large_screen.display_name="Large".into();
+    let mut small_screen=generated_screen(2);small_screen.width=1920;small_screen.height=1080;small_screen.refresh_hz=60;small_screen.display_name="Small".into();
+    let large=deferred_budget_plan(1,&settings,&target(1,"Large"),Some(&large_screen)).unwrap();
+    let small=deferred_budget_plan(2,&settings,&target(2,"Small"),Some(&small_screen)).unwrap();
+    assert!(large.deferred&&small.deferred);
+    assert!(large.fixed.is_none()&&small.fixed.is_none());
+    assert!(large.weight>small.weight);
+    let allocations=uu_core::client_settings::allocate_bitrate_budget(100_000,&[(large.weight,large.fixed),(small.weight,small.fixed)]);
+    assert!(allocations.iter().sum::<u32>()<=100_000);
+    assert!(allocations[0]>allocations[1]);
+    settings.bitrate=4;settings.custom_mbps=20;
+    let manual=deferred_budget_plan(3,&settings,&target(2,"Small"),Some(&small_screen)).unwrap();
+    assert_eq!(manual.fixed,Some(20_000));
+    let allocations=uu_core::client_settings::allocate_bitrate_budget(100_000,&[(large.weight,large.fixed),(manual.weight,manual.fixed)]);
+    assert_eq!(allocations[1],20_000);assert!(allocations[0]+allocations[1]<=100_000);
+}
+#[test]
 fn budget_congestion_controller_uses_loss_and_rtt_with_hysteresis() {
     let start=Instant::now();let mut state=BudgetState::default();
-    state.observe(25_000,None,start);assert!(state.factor<1.);
+    state.observe(Some(25_000),None,start);assert!(state.factor<1.);
     let reduced=state.factor;
-    state.observe(0,Some(20),start+Duration::from_secs(1));assert_eq!(state.factor,reduced,"a healthy sample cannot immediately undo backoff");
-    state.observe(0,Some(20),start+Duration::from_secs(6));assert!(state.factor>reduced);
-    state.observe(0,Some(300),start+Duration::from_secs(7));assert!(state.factor<reduced+0.05);
+    state.observe(Some(0),Some(20),start+Duration::from_secs(1));assert_eq!(state.factor,reduced,"a healthy sample cannot immediately undo backoff");
+    state.observe(None,None,start+Duration::from_secs(6));assert_eq!(state.factor,reduced,"missing loss evidence cannot increase the factor");
+    state.observe(Some(0),Some(20),start+Duration::from_secs(7));assert!(state.factor>reduced);
+    state.observe(Some(0),Some(300),start+Duration::from_secs(8));assert!(state.factor<reduced+0.05);
 }
 #[test]
 fn owned_views_merge_into_oldest_other_live_window_and_never_restore_retired_homes() {
@@ -367,7 +390,7 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
     let stats=origin.controller.as_ref().unwrap().stats.clone();
     let epoch=stats.native_media_epoch.load(Ordering::Acquire);
     let selected=origin.displays.selected;
-    let mut closing=App::new_session(ctx,None,window.platform.as_ref().unwrap().clone(),None,false,None);
+    let mut closing=App::new_session(ctx,None,window.platform.as_ref().unwrap().clone(),None,false,None,false);
     closing.stream_target=target;
     closing.shortcuts=window.shortcuts.clone();
     closing.window_sizing=window.sizing.clone();
