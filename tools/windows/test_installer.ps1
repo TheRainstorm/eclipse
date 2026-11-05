@@ -51,27 +51,27 @@ try {
     $archive = Join-Path $root 'archive'
     $old = New-TestPackage 'old'
     $new = New-TestPackage 'new'
-    & $Installer -SourceDir $old -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null
+    & $Installer -SourceDir $old -InstallDir $target -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null
     [IO.File]::WriteAllText((Join-Path $target 'user-config.json'), 'preserved user settings', $utf8)
     $before = Get-TestHashes
     # Denying delete on the last DLL forces a failure after earlier EXE/DLL replacements.
     $locked = [IO.File]::Open((Join-Path $target 'libpyrowave-shared-1.dll'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
         $failed = $false
-        try { & $Installer -SourceDir $new -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null }
+        try { & $Installer -SourceDir $new -InstallDir $target -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null }
         catch { $failed = $true; Assert-Test ($_.Exception.Message -like '*package files were restored*') 'Installer did not report rollback' }
         Assert-Test $failed 'A sharing violation should fail installation'
         Assert-TestHashes $before
     } finally { $locked.Dispose() }
-    & $Installer -SourceDir $new -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null
+    & $Installer -SourceDir $new -InstallDir $target -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null
     foreach ($file in @('eclipse.exe','eclipse-cli.exe') + @($baseFiles[2..($baseFiles.Count-1)]) + @('libvpl.dll','libpyrowave-shared-1.dll', 'version.json')) {
         Assert-Test ((Get-FileHash -LiteralPath (Join-Path $target $file)).Hash -eq (Get-FileHash -LiteralPath (Join-Path $new $file)).Hash) "New payload mismatch: $file"
     }
     Assert-Test ([IO.File]::ReadAllText((Join-Path $target 'user-config.json')) -eq 'preserved user settings') 'User settings changed'
     # Exercise a legal non-canonical input; the installer returns full paths.
     $defaultTarget = Join-Path $root 'installed/../default-archive-installed'
-    & $Installer -SourceDir $old -InstallDir $defaultTarget -NoShortcut | Out-Null
-    $installed = (& $Installer -SourceDir $new -InstallDir $defaultTarget -NoShortcut) | ConvertFrom-Json
+    & $Installer -SourceDir $old -InstallDir $defaultTarget -NoShortcut -SkipServiceUpdate | Out-Null
+    $installed = (& $Installer -SourceDir $new -InstallDir $defaultTarget -NoShortcut -SkipServiceUpdate) | ConvertFrom-Json
     $expectedArchiveRoot = [IO.Path]::GetFullPath((Join-Path $defaultTarget '.upgrade-archive'))
     $actualArchiveRoot = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($installed.Archive))
     Assert-Test ([string]::Equals($actualArchiveRoot, $expectedArchiveRoot, [StringComparison]::OrdinalIgnoreCase)) `
@@ -88,7 +88,7 @@ try {
         # Set-Location may expand an NTFS short name such as a temporary profile.
         $shellDirectory = (Get-Location).ProviderPath
         [Environment]::CurrentDirectory = $otherWorkingDirectory
-        $relative = (& $Installer -SourceDir 'old' -InstallDir 'relative-installed' -ArchiveRoot 'relative-archive' -NoShortcut) | ConvertFrom-Json
+        $relative = (& $Installer -SourceDir 'old' -InstallDir 'relative-installed' -ArchiveRoot 'relative-archive' -NoShortcut -SkipServiceUpdate) | ConvertFrom-Json
         Assert-Test ([string]::Equals($relative.InstallDir, (Join-Path $shellDirectory 'relative-installed'), [StringComparison]::OrdinalIgnoreCase)) "Relative installation mismatch: expected '$(Join-Path $shellDirectory 'relative-installed')', got '$($relative.InstallDir)', shell '$((Get-Location).Path)', process '$([Environment]::CurrentDirectory)'"
         Assert-Test (Test-Path -LiteralPath (Join-Path $root 'relative-installed/eclipse.exe')) 'Relative payload was not installed in the shell location'
         Assert-Test ([string]::Equals([IO.Path]::GetDirectoryName($relative.Archive), (Join-Path $shellDirectory 'relative-archive'), [StringComparison]::OrdinalIgnoreCase)) "Relative archive mismatch: expected '$(Join-Path $shellDirectory 'relative-archive')', got '$([IO.Path]::GetDirectoryName($relative.Archive))'"
@@ -98,26 +98,26 @@ try {
         [Environment]::CurrentDirectory = $savedProcessDirectory
     }
     $failed = $false
-    try { & $Installer -SourceDir $old -InstallDir ([IO.Path]::GetPathRoot($root)) -NoShortcut | Out-Null }
+    try { & $Installer -SourceDir $old -InstallDir ([IO.Path]::GetPathRoot($root)) -NoShortcut -SkipServiceUpdate | Out-Null }
     catch { $failed = $true; Assert-Test ($_.Exception.Message -like '*drive root*') 'Drive root rejection was not explicit' }
     Assert-Test $failed 'Drive root installation should be rejected before mutation'
     # Validation failures must occur before touching any installed payload.
     $before = Get-TestHashes
     [IO.File]::WriteAllText((Join-Path $old 'eclipse-cli.exe'), 'corrupt payload', $utf8)
     $failed = $false
-    try { & $Installer -SourceDir $old -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null }
+    try { & $Installer -SourceDir $old -InstallDir $target -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null }
     catch { $failed = $true }
     Assert-Test $failed 'Corrupt payload was accepted'
     Assert-TestHashes $before
     $legacy = New-TestPackage 'legacy' 1
-    & $Installer -SourceDir $legacy -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null
+    & $Installer -SourceDir $legacy -InstallDir $target -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null
     Assert-Test ((Get-FileHash -LiteralPath (Join-Path $target 'uu.exe')).Hash -eq (Get-FileHash -LiteralPath (Join-Path $legacy 'uu.exe')).Hash) 'Legacy bundle did not install'
     # Renaming the product archives old binaries and preserves user files.
     $previousSdk = New-TestPackage 'previous-sdk' 4
     $renamedTarget = Join-Path $root 'renamed-installed'
-    & $Installer -SourceDir $previousSdk -InstallDir $renamedTarget -NoShortcut | Out-Null
+    & $Installer -SourceDir $previousSdk -InstallDir $renamedTarget -NoShortcut -SkipServiceUpdate | Out-Null
     [IO.File]::WriteAllText((Join-Path $renamedTarget 'user-config.json'), 'keep configuration', $utf8)
-    $renamed = (& $Installer -SourceDir $new -InstallDir $renamedTarget -NoShortcut) | ConvertFrom-Json
+    $renamed = (& $Installer -SourceDir $new -InstallDir $renamedTarget -NoShortcut -SkipServiceUpdate) | ConvertFrom-Json
     Assert-Test (Test-Path -LiteralPath (Join-Path $renamedTarget 'eclipse.exe')) 'Renamed GUI missing'
     Assert-Test (!(Test-Path -LiteralPath (Join-Path $renamedTarget 'uu-gui.exe'))) 'Legacy GUI left in active installation'
     Assert-Test (!(Test-Path -LiteralPath (Join-Path $renamedTarget 'uu.exe'))) 'Legacy CLI left in active installation'
@@ -126,7 +126,7 @@ try {
     $before = Get-TestHashes
     $unknown = New-TestPackage 'unsupported' 6
     $failed = $false
-    try { & $Installer -SourceDir $unknown -InstallDir $target -ArchiveRoot $archive -NoShortcut | Out-Null }
+    try { & $Installer -SourceDir $unknown -InstallDir $target -ArchiveRoot $archive -NoShortcut -SkipServiceUpdate | Out-Null }
     catch { $failed = $true }
     Assert-Test $failed 'Unknown package format was accepted'
     Assert-TestHashes $before

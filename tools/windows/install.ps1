@@ -3,7 +3,8 @@ param(
     [string]$SourceDir = $PSScriptRoot,
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\Eclipse'),
     [string]$ArchiveRoot = '',
-    [switch]$NoShortcut
+    [switch]$NoShortcut,
+    [switch]$SkipServiceUpdate
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -189,7 +190,25 @@ foreach ($name in $required) {
         throw "Installed hash mismatch: $name"
     }
 }
+$serviceUpdate = 'not-installed'
+if (!$SkipServiceUpdate -and (Test-Path -LiteralPath (Join-Path $env:ProgramData 'EclipseRemoteHost\service.json') -PathType Leaf)) {
+    $dataHome = if ([string]::IsNullOrWhiteSpace($env:XDG_DATA_HOME)) { Join-Path $env:USERPROFILE '.local\share' } else { $env:XDG_DATA_HOME }
+    $sourceData = Join-Path $dataHome 'uu-remote'
+    try {
+        $arguments = '--background-service-action install --source-data "' + $sourceData.Replace('"','""') + '"'
+        $update = Start-Process -FilePath (Join-Path $InstallDir $guiName) -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+        if ($update.ExitCode -eq 0) { $serviceUpdate = 'updated' }
+        elseif ($update.ExitCode -eq 1223) { $serviceUpdate = 'cancelled' }
+        else { $serviceUpdate = 'failed:' + $update.ExitCode }
+    } catch {
+        # App installation already succeeded. Keep it usable; the service page
+        # can retry an explicit verified update. Never hide the divergence.
+        if ($_.Exception.Message -match 'canceled|cancelled|1223') { $serviceUpdate = 'cancelled' }
+        else { $serviceUpdate = 'failed:' + $_.Exception.Message }
+        Write-Warning "Eclipse application installed, but the existing background service was not updated: $($_.Exception.Message)"
+    }
+}
 [pscustomobject]@{
     InstallDir=$InstallDir; Executable=(Join-Path $InstallDir $guiName)
-    SourceCommit=$manifest.source_commit; Shortcut=$shortcut; Archive=$archive
+    SourceCommit=$manifest.source_commit; Shortcut=$shortcut; Archive=$archive; ServiceUpdate=$serviceUpdate
 } | ConvertTo-Json -Compress
