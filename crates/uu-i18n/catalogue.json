@@ -1884,6 +1884,7 @@
   "连接插件 {} 不可用；请导入匹配插件或启用其它连接入口。": "Connection plugin {} is unavailable; import a compatible plugin or enable another connection entrance.",
   "已取消系统授权，服务尚未更新": "System authorization was cancelled; the service has not been updated.",
   "Eclipse 服务": "Eclipse service",
+  "后台服务管理未就绪": "Background service management is not ready",
   "后台服务未启动或尚未就绪": "The background service is stopped or not ready",
   "启用服务": "Enable service",
   "应用程序更新": "Apply application update",
