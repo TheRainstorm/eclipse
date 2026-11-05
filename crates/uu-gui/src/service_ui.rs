@@ -164,7 +164,7 @@ impl Entry {
     }
 
     fn show_status_card(&mut self, ui: &mut egui::Ui, available: bool) {
-        let busy = self.job.is_some();
+        let busy = self.job.is_some() || self.manager.as_ref().is_some_and(|manager| manager.busy);
         let frame = crate::theme::card(ui.visuals());
         let width = (ui.available_width()
             - frame.inner_margin.sum().x
@@ -357,6 +357,13 @@ enum Job {
     Refresh,
     Control(bool),
     Rpc(Request),
+}
+impl Job {
+    /// Background refresh has no completion event; locking the whole service
+    /// form for it leaves stale busy state after a successful deployment.
+    fn foreground(&self) -> bool {
+        !matches!(self, Self::Refresh)
+    }
 }
 enum Event {
     State {
@@ -595,11 +602,12 @@ impl Manager {
         }
     }
     fn submit(&mut self, job: Job) {
-        if self.busy {
+        let foreground = job.foreground();
+        if foreground && self.busy {
             return;
         }
         match self.sender.try_send(job) {
-            Ok(()) => self.busy = true,
+            Ok(()) => self.busy |= foreground,
             Err(error) => self.notice = error.to_string(),
         }
     }
@@ -829,9 +837,6 @@ impl Manager {
         ui.add_space(10.);
     }
     fn show_body(&mut self, ui: &mut egui::Ui) {
-        if self.busy {
-            ui.spinner();
-        }
         if !self.notice.is_empty() {
             ui.label(&self.notice);
         }
@@ -1649,6 +1654,18 @@ mod tests {
             matches!(jobs.try_recv(), Err(mpsc::TryRecvError::Disconnected)),
             "closing a GUI must not enqueue stop or restart"
         );
+    }
+    #[test]
+    fn background_refresh_never_locks_service_controls() {
+        let (mut manager, _send, jobs, _stop) = fixture();
+        manager.submit(Job::Refresh);
+        assert!(!manager.busy, "refresh has no completion event and must stay background");
+        assert!(matches!(jobs.try_recv(), Ok(Job::Refresh)));
+
+        manager.busy = true;
+        manager.submit(Job::Refresh);
+        assert!(manager.busy, "a background refresh must not clear a real foreground operation");
+        assert!(matches!(jobs.try_recv(), Ok(Job::Refresh)));
     }
     #[test]
     fn unified_service_controls_and_long_notices_fit_narrow_columns() {
