@@ -195,6 +195,7 @@ impl State {
         self.open = false;
         self.local_owner = None;
         self.local_selector = false;
+        self.local_initial_refresh = false;
         self.pending = None;
         self.pending_timed_out = false;
         self.source = None;
@@ -1129,9 +1130,16 @@ mod tests {
     }
 
     #[test]
-    fn tray_selector_requires_an_explicit_owner_before_querying_a_process() {
+    fn tray_entry_uses_the_service_on_windows_and_defers_io_until_rendering() {
         let mut state = State::default();
         state.open_local_selector();
+        #[cfg(windows)] {
+            assert!(state.open && !state.local_selector);
+            assert_eq!(state.local_owner,Some(LocalOwner::Background));
+            assert!(state.local_initial_refresh);
+            assert!(state.worker.is_none(),"the callback selects the one service without doing IPC on the UI callback");
+        }
+        #[cfg(not(windows))] {
         assert!(state.open && state.local_selector);
         assert_eq!(state.local_owner, None);
         assert!(!state.busy());
@@ -1140,6 +1148,7 @@ mod tests {
             state.worker.is_none(),
             "opening the tray selector cannot silently query the foreground host"
         );
+        }
     }
 
     fn display() -> Display {
