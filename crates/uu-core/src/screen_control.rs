@@ -1,5 +1,7 @@
 //! Provider-neutral remote displays and presentation preferences.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+/// A desktop-portal choice is an authorization action, not another monitor.
+pub const PORTAL_CHOICE_KIND:u32=4;
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteScreens {
     pub screens: Vec<RemoteScreen>,
@@ -24,7 +26,7 @@ impl RemoteScreens {
             .or_else(|| self.screens.iter().find(|s| s.assigned_track() == Some(track)))
     }
 }
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteScreen {
     pub id: i32,
@@ -47,6 +49,7 @@ impl RemoteScreen {
             0 => uu_i18n::text("物理屏"),
             1 => uu_i18n::text("虚拟屏"),
             2 => uu_i18n::text("超级屏"),
+            PORTAL_CHOICE_KIND => uu_i18n::text("共享屏幕选择"),
             _ => uu_i18n::text("未知屏幕"),
         }
     }

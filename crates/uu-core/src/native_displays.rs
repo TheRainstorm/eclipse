@@ -156,6 +156,8 @@ pub(crate) struct Host {
     state: Mutex<Selection>,
     pub changed: Notify,
     switching: AtomicBool,
+    refreshing: AtomicBool,
+    refresh_after: Mutex<Option<std::time::Instant>>,
 }
 impl Host {
     pub fn add_names(&self,sdp:&mut RTCSessionDescription)->Result<()> {self.state.lock().unwrap().names_metadata.add(sdp)}
@@ -176,6 +178,7 @@ impl Host {
                     screen(1, uu_i18n::text("重新选择共享屏幕…").into(), 2, 2, false, false,None),
                 ],
             };
+            for screen in &mut state.catalog.screens {screen.kind=crate::screen_control::PORTAL_CHOICE_KIND;}
             return Ok(CaptureSource::Primary);
         }
         self.prepare_monitors(crate::native::monitors()?)
@@ -274,6 +277,29 @@ impl Host {
     }
     pub fn catalog(&self) -> RemoteScreens {
         self.state.lock().unwrap().catalog.clone()
+    }
+    /// Inventory refresh never blocks control packets or the capture thread.
+    /// Concurrent sessions share one short-lived OS enumeration result.
+    pub(crate) fn poll_catalog(self:&std::sync::Arc<Self>) {
+        if crate::native::uses_desktop_portal() {return;}
+        let now=std::time::Instant::now();
+        let mut after=self.refresh_after.lock().unwrap();
+        if after.is_some_and(|at|now<at) || self.refreshing.swap(true,Ordering::AcqRel) {return;}
+        *after=Some(now+std::time::Duration::from_secs(2));
+        let host=self.clone();
+        tokio::task::spawn_blocking(move|| {
+            struct Done(std::sync::Arc<Host>);
+            impl Drop for Done {fn drop(&mut self){self.0.refreshing.store(false,Ordering::Release);}}
+            let _done=Done(host.clone());
+            type Cached=Option<(std::time::Instant,Vec<CaptureMonitor>)>;
+            static CACHE:std::sync::OnceLock<Mutex<Cached>>=std::sync::OnceLock::new();
+            let mut cache=CACHE.get_or_init(Default::default).lock().unwrap();
+            if cache.as_ref().is_none_or(|(at,_)|at.elapsed()>=std::time::Duration::from_secs(2)) {
+                match crate::native::monitors() {Ok(monitors)=>*cache=Some((std::time::Instant::now(),monitors)),Err(_)=>return,}
+            }
+            let monitors=cache.as_ref().unwrap().1.clone();drop(cache);
+            let _=host.refresh_monitors(monitors);
+        });
     }
     /// Refresh source IDs after a leased target appears. This does not request
     /// a media restart or change the current capture source.
@@ -398,6 +424,7 @@ struct Pending {
     responses: VecDeque<Response>,
     switch: Option<u64>,
     catalog_epoch: u64,
+    catalog_updated: Option<std::time::Instant>,
     initial: InitialState,
 }
 #[derive(Default)]
@@ -496,11 +523,14 @@ impl Client {
         std::mem::take(&mut self.state.lock().unwrap().switch)
     }
     pub(crate) fn catalog(&self, epoch: u64) {
-        self.state.lock().unwrap().catalog_epoch = epoch;
+        let mut state=self.state.lock().unwrap();
+        state.catalog_epoch = epoch;
+        state.catalog_updated=Some(std::time::Instant::now());
     }
     pub fn catalog_epoch(&self) -> u64 {
         self.state.lock().unwrap().catalog_epoch
     }
+    pub fn catalog_updated(&self)->Option<std::time::Instant> {self.state.lock().unwrap().catalog_updated}
     pub fn responses(&self) -> Vec<Response> {
         self.state.lock().unwrap().responses.drain(..).collect()
     }

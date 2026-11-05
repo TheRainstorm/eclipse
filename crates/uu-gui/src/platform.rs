@@ -66,6 +66,25 @@ pub struct Platform {
     show_pending: std::cell::Cell<bool>,
 }
 impl Platform {
+    /// Explicit drag/drop coordinates, in the same physical space as HWNDs.
+    /// Wayland intentionally has no process-global pointer-position fallback.
+    pub fn pointer_screen_position()->Option<(i32,i32)> {
+        #[cfg(windows)] {
+            let _dpi=uu_input::windows_desktop::PhysicalCoordinates::enter().ok()?;
+            let mut point=windows_sys::Win32::Foundation::POINT{x:0,y:0};
+            if unsafe{windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut point)}!=0 {return Some((point.x,point.y));}
+        }
+        None
+    }
+    pub fn contains_screen_point(&self,point:(i32,i32))->bool {
+        #[cfg(windows)] {
+            let Ok(_dpi)=uu_input::windows_desktop::PhysicalCoordinates::enter() else{return false;};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{WindowFromPoint,GetAncestor,GA_ROOT};
+            let hit=unsafe{WindowFromPoint(windows_sys::Win32::Foundation::POINT{x:point.0,y:point.1})};
+            return !hit.is_null()&&unsafe{GetAncestor(hit,GA_ROOT)}==self.window;
+        }
+        #[cfg(not(windows))] {let _=point;false}
+    }
     pub fn new(_cc: &eframe::CreationContext<'_>, _origin: Option<(i32, i32)>) -> Self {
         Self::for_window(_cc,&_cc.egui_ctx,_origin)
     }

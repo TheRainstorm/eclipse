@@ -53,6 +53,74 @@ fn connection_identity_groups_profiles_independently_of_the_launch_snapshot() {
 fn generated_screen(id:i32)->uu_core::screen_control::RemoteScreen {
     uu_core::screen_control::RemoteScreen{id,display_name:format!("Generated source {id}"),refresh_hz:60,kind:0,width:320,height:192,dpi_scale:None,primary:id==0,video_track_index:if id==0{0}else{-1}}
 }
+fn owned_state()->State {
+    State {sources:vec![],inquiries:Default::default(),input_owner:None,gamepad:Default::default(),windows:vec![Window::new(1,vec![],None)],gl:None,vsync:false,next:2,actions:Default::default()}
+}
+fn owned_target(name:&str)->StreamTarget {
+    StreamTarget {connection:ConnectionTarget::NativeDevice(format!("generated-{name}")),alias:name.into(),view_only:true}
+}
+fn own_generated(state:&mut State,window:usize,device:&StreamTarget,screen:i32)->u64 {
+    let launch=display_launch(device,&generated_screen(screen)).unwrap();
+    state.windows[window].record_launch(&launch,&mut state.next)
+}
+#[test]
+fn owned_lazy_views_detach_leave_navigation_and_close_only_their_window_group() {
+    let mut state=owned_state();let device=owned_target("A");
+    let a=own_generated(&mut state,0,&device,0);let b=own_generated(&mut state,0,&device,1);let c=own_generated(&mut state,0,&device,2);
+    assert!(state.windows[0].sessions.is_empty());assert!(state.windows[0].pending.is_empty());
+    state.windows[0].select(a);assert_eq!(state.windows[0].pending.len(),1);
+    let ctx=egui::Context::default();state.detach(c,&ctx);
+    assert_eq!(state.windows[0].views.iter().map(|v|v.id).collect::<Vec<_>>(),[a,b]);
+    assert_eq!(state.windows[1].views.iter().map(|v|v.id).collect::<Vec<_>>(),[c]);
+    let actions=Rc::new(RefCell::new(Vec::new()));let tabs=state.windows[0].tabs(actions.clone());
+    tabs.navigate(uu_core::hotkeys::Action::NextDisplay);
+    assert_eq!(&*actions.borrow(),&[Action::Select(b,None)]);
+    state.apply(Action::CloseGroup(a),&ctx);
+    assert!(state.windows[0].views.is_empty());assert!(state.windows[0].pending.is_empty());
+    assert_eq!(state.windows[1].views[0].id,c);
+    state.apply(Action::Close(c),&ctx);assert!(state.windows.iter().all(|w|w.views.is_empty()&&w.pending.is_empty()));
+}
+#[test]
+fn owned_views_merge_into_oldest_other_live_window_and_never_restore_retired_homes() {
+    let mut state=owned_state();let device=owned_target("A");let ctx=egui::Context::default();
+    let a=own_generated(&mut state,0,&device,0);let b=own_generated(&mut state,0,&device,1);let c=own_generated(&mut state,0,&device,2);
+    state.detach(c,&ctx);let original=state.windows[0].id;let detached=state.windows[1].id;
+    assert_eq!(state.oldest_other_window(detached),Some(original));
+    state.merge(c,&ctx);assert_eq!(state.windows[0].views.iter().map(|v|v.id).collect::<Vec<_>>(),[a,b,c]);
+    assert!(state.windows[1].views.is_empty());
+    state.windows.retain(|w|!w.views.is_empty());
+    let before=state.next;assert_eq!(state.oldest_other_window(original),None);
+    assert_eq!(state.next,before);assert_eq!(state.windows.len(),1);
+    state.windows[0].request_close();assert!(state.windows[0].closing);assert!(state.windows[0].views.is_empty());
+}
+#[test]
+fn add_display_reserves_unopened_views_and_prioritizes_active_physical_sources() {
+    let mut state=owned_state();let device=owned_target("A");let ctx=egui::Context::default();
+    let a=own_generated(&mut state,0,&device,0);
+    for (id,screen,kind,active) in [(100,1,SourceKind::Persistent,true),(101,2,SourceKind::Physical,true),(102,3,SourceKind::Physical,false)] {
+        state.sources.push(SourceRecord{id,device:base_key(&device),screen:generated_screen(screen),label:format!("Source {screen}"),kind,active});
+    }
+    state.add_display(a,&ctx);
+    assert_eq!(state.windows[0].views.len(),2);assert_eq!(state.windows[0].views[1].source.as_ref().unwrap().source,"Generated source 2");
+    assert!(state.source_owned(&state.sources[1]));
+    let windows=state.windows.len();state.open_source(a,101,true,&ctx);
+    assert_eq!(state.windows.len(),windows,"unopened or pending views already own their source");
+    state.add_display(a,&ctx);assert_eq!(state.windows[0].views.last().unwrap().source.as_ref().unwrap().source,"Generated source 1");
+    let id=state.windows[0].views[1].id;state.close(&[id],&ctx);
+    state.open_source(a,101,false,&ctx);
+    assert_ne!(state.windows[0].views.last().unwrap().id,id,"a retired view identity cannot be reused by an old cleanup");
+}
+#[test]
+fn multicomputer_close_is_confirmed_and_ui_screen_keys_never_truncate_view_ids() {
+    let mut state=owned_state();state.next=i32::MAX as u64+100;
+    let a=own_generated(&mut state,0,&owned_target("A"),0);let b=own_generated(&mut state,0,&owned_target("B"),1);
+    state.windows[0].select(a);let tabs=state.windows[0].tabs(Default::default());
+    assert_eq!(tabs.groups[0].screens[0].0,0);assert_eq!(tabs.groups[1].screens[0].0,0);
+    assert_eq!(tabs.groups[1].screen_action(0),Action::Select(b,None));
+    state.windows[0].request_close();assert!(state.windows[0].close_confirmation);assert!(state.windows[0].modal.get());
+    assert!(!state.windows[0].closing);assert_eq!(state.windows[0].views.len(),2);
+    state.windows[0].close_all();assert!(state.windows[0].views.is_empty());assert!(state.windows[0].pending.is_empty());
+}
 #[test]
 fn display_launch_preserves_base_identity_source_alias_and_read_only_mode() {
     let base=ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into());
@@ -125,7 +193,7 @@ fn aggregated_device_commands_keep_individual_view_ownership() {
     let virtual_menu=group.view_group(16).unwrap();assert_eq!(virtual_menu.command_session(),2);assert!(virtual_menu.can_merge);
     assert!(!virtual_menu.can_open_displays,"a fixed view menu must not inherit device-wide source-opening actions");
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{presets:Default::default(),groups:vec![group],active:2,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![group],active:2,actions:actions.clone(),local_ui:Default::default()};
     tabs.navigate(uu_core::hotkeys::Action::PreviousDisplay);
     assert_eq!(&actions.borrow()[..],&[Action::Select(1,None)]);
     actions.borrow_mut().clear();
@@ -144,7 +212,7 @@ fn aggregated_device_commands_keep_individual_view_ownership() {
     let close=render(vec![]).disconnect[0].1.center();
     render(vec![egui::Event::PointerMoved(close),button(close,egui::PointerButton::Primary,true)]);
     render(vec![button(close,egui::PointerButton::Primary,false)]);
-    assert_eq!(&actions.borrow()[..],&[Action::Close(2)],"the aggregate device menu closes only its active virtual view");
+    assert_eq!(&actions.borrow()[..],&[Action::CloseGroup(2)],"the hostname closes all views of this device in this window");
 }
 
 #[test]
@@ -152,7 +220,7 @@ fn computer_navigation_uses_its_last_view_and_falls_back_when_it_was_closed() {
     let group=Group{last_session:12,id:11,name:"Remembered computer".into(),screens:vec![],selected:None,
         members:vec![11,12],views:vec![],can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false};
     let mut other=group.clone();other.id=22;other.last_session=22;other.members=vec![22];
-    let mut tabs=Tabs{presets:Default::default(),groups:vec![group,other],active:22,actions:Default::default(),local_ui:Default::default()};
+    let mut tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![group,other],active:22,actions:Default::default(),local_ui:Default::default()};
     assert_eq!(tabs.groups[0].activate(),Action::Select(12,None),"hostname selection shares the same rule");
     for command in [uu_core::hotkeys::Action::NextComputer,uu_core::hotkeys::Action::PreviousComputer] {tabs.navigate(command);}
     assert_eq!(std::mem::take(&mut *tabs.actions.borrow_mut()),[Action::Select(12,None),Action::Select(12,None)]);
@@ -163,7 +231,7 @@ fn computer_navigation_uses_its_last_view_and_falls_back_when_it_was_closed() {
 
 #[test]
 fn independent_display_ipc_creates_separate_pending_windows_and_reuses_a_stable_source() {
-    let mut state=State{input_owner:None,gamepad:Default::default(),windows:vec![Window::new(1,Vec::new(),None)],gl:None,vsync:false,next:2,actions:Default::default()};
+    let mut state=State{sources:vec![],inquiries:Default::default(),input_owner:None,gamepad:Default::default(),windows:vec![Window::new(1,Vec::new(),None)],gl:None,vsync:false,next:2,actions:Default::default()};
     let target=StreamTarget{connection:ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into()),alias:"Generated computer".into(),view_only:true};
     assert!(state.attach(display_launch(&target,&generated_screen(1)).unwrap()));
     assert!(state.attach(display_launch(&target,&generated_screen(2)).unwrap()));
@@ -179,320 +247,98 @@ fn independent_display_ipc_creates_separate_pending_windows_and_reuses_a_stable_
 }
 
 #[test]
-fn merge_recreates_a_retired_home_and_avoids_a_closing_container() {
-    let mut state=State{input_owner:None,gamepad:Default::default(),windows:vec![Window::new(2,Vec::new(),None)],gl:None,vsync:false,next:3,actions:Default::default()};
-    assert_eq!(state.merge_target(2,Some(1)),Some(1));
-    assert_eq!(state.windows.iter().map(|window|window.id).collect::<Vec<_>>(),[2,1]);
-    assert_eq!(state.next,3,"restoring an old identity does not allocate or reuse another ID");
-    state.windows.iter_mut().find(|window|window.id==1).unwrap().closing=true;
+fn merge_uses_live_pending_windows_and_ignores_retired_or_closing_containers() {
+    let mut state=State{sources:vec![],inquiries:Default::default(),input_owner:None,gamepad:Default::default(),windows:vec![Window::new(2,Vec::new(),None)],gl:None,vsync:false,next:3,actions:Default::default()};
+    assert_eq!(state.oldest_other_window(2),None);assert_eq!(state.windows.len(),1);assert_eq!(state.next,3);
     let third=state.next;state.next+=1;
     state.windows.push(Window::new(third,vec![launch("generated-only.json".into(),"Pending")],None));
-    assert_eq!(state.merge_target(2,Some(1)),Some(third));
-    state.windows.iter_mut().find(|window|window.id==third).unwrap().closing=true;
-    let fallback=state.next;
-    assert_eq!(state.merge_target(2,Some(1)),Some(fallback));
-    assert_ne!(fallback,1,"a closing surface retains its identity until cleanup completes");
-    assert!(state.windows.iter().find(|window|window.id==fallback).is_some_and(|window|!window.closing));
-    let mut alone=State{input_owner:None,gamepad:Default::default(),windows:vec![Window::new(1,Vec::new(),None)],gl:None,vsync:false,next:2,actions:Default::default()};
-    assert_eq!(alone.merge_target(1,None),None);
+    assert_eq!(state.oldest_other_window(2),Some(third));
+    state.windows.iter_mut().find(|w|w.id==third).unwrap().closing=true;
+    assert_eq!(state.oldest_other_window(2),None);assert_eq!(state.next,4);
 }
 
-fn check_display_window_routing(state:&mut State,session:u64,ctx:&egui::Context) {
-    // Synthetic capture has no monitor catalog. This temporary inventory tests
-    // workspace routing only; pending display launches are removed before any
-    // UI pass can start them. Actual media below remains two generated hosts.
-    let source=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==session).unwrap();
-    let original_selected=source.app.displays.selected;
-    source.app.displays.selected=Some(0);
-    let source_target=source.app.stream_target.clone();
-    let stats=source.app.controller.as_ref().unwrap().stats.clone();
-    let original_catalog=std::mem::replace(&mut *stats.remote_screens.lock().unwrap(),uu_core::screen_control::RemoteScreens{current_id:0,screens:(0..3).map(generated_screen).collect()});
-    let original_capture=stats.desktop_capture_source.lock().unwrap().take();
-    // A same-device tab whose catalog is not ready must not match a missing
-    // resolution and selected=None as if it already displayed this source.
-    let sibling=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id!=session).unwrap();
-    let sibling_id=sibling.id;
-    let sibling_target=std::mem::replace(&mut sibling.app.stream_target,source_target.clone());
-    let sibling_selected=sibling.app.displays.selected.take();
-    let sibling_stats=sibling.app.controller.as_ref().unwrap().stats.clone();
-    let sibling_catalog=std::mem::take(&mut *sibling_stats.remote_screens.lock().unwrap());
-    let sibling_capture=sibling_stats.desktop_capture_source.lock().unwrap().take();
-    let original_windows=state.windows.len();
-    state.open_display(session,1,ctx);
-    state.open_display(session,2,ctx);
-    assert_eq!(state.windows.len(),original_windows+2);
-    let first=state.windows[original_windows].id;
-    let second=state.windows[original_windows+1].id;
-    for (index,id) in [(original_windows,1),(original_windows+1,2)] {
-        let window=&state.windows[index];
-        assert!(window.sessions.is_empty());assert_eq!(window.pending.len(),1);
-        assert_eq!(window.pending[0].target.connection.display().unwrap().id,id);
-    }
-    state.windows[original_windows].focus=false;
-    state.windows[original_windows+1].focus=false;
-    state.open_display(session,1,ctx);
-    assert_eq!(state.windows.len(),original_windows+2);
-    assert!(state.windows[original_windows].focus);
-    assert!(!state.windows[original_windows+1].focus);
-    // A completed window can change from its original source A to B. Its old
-    // launch key must not steal a subsequent request for source A.
-    let sibling=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==sibling_id).unwrap();
-    sibling.app.stream_target=Some(display_launch(source_target.as_ref().unwrap(),&generated_screen(1)).unwrap().target);
-    sibling.app.displays.selected=Some(2);
-    *sibling_stats.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:2,screens:(0..3).map(|id| {
-        let mut screen=generated_screen(id);screen.video_track_index=if id==2{0}else{-1};screen
-    }).collect()};
-    state.windows[original_windows].focus=false;
-    let active_before=state.windows[0].active;
-    assert!(state.attach(display_launch(source_target.as_ref().unwrap(),&generated_screen(1)).unwrap()));
-    assert_eq!(state.windows.len(),original_windows+2);
-    assert_eq!(state.windows[0].active,active_before);
-    assert!(state.windows[original_windows].focus,"request A must focus pending A, not the live launch-A window displaying B");
-    state.windows[0].focus=false;
-    assert!(state.attach(display_launch(source_target.as_ref().unwrap(),&generated_screen(2)).unwrap()));
-    assert_eq!(state.windows.len(),original_windows+2);
-    assert!(state.windows[0].focus,"an already confirmed source B is reused regardless of its original launch key");
-    let epoch=stats.native_media_epoch.load(Ordering::Acquire);
-    state.apply(Action::Select(session,Some(2)),ctx);
-    assert_eq!(state.windows[0].active,sibling_id,"selecting an already viewed source focuses its existing connection");
-    let source=state.windows[0].sessions.iter().find(|s|s.id==session).unwrap();
-    assert_eq!(source.app.displays.selected,Some(0),"the originating connection must retain its physical source");
-    assert_eq!(stats.native_media_epoch.load(Ordering::Acquire),epoch);
-    state.windows[0].select(active_before);
-    state.windows.retain(|window|window.id!=first&&window.id!=second);
-    assert_eq!(state.windows.len(),original_windows);
-    *stats.remote_screens.lock().unwrap()=original_catalog;
-    *stats.desktop_capture_source.lock().unwrap()=original_capture;
-    state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==session).unwrap().app.displays.selected=original_selected;
-    let sibling=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==sibling_id).unwrap();
-    sibling.app.stream_target=sibling_target;sibling.app.displays.selected=sibling_selected;
-    *sibling_stats.remote_screens.lock().unwrap()=sibling_catalog;
-    *sibling_stats.desktop_capture_source.lock().unwrap()=sibling_capture;
-}
-
-// The encrypted synthetic hosts remain live; only their monitor catalogs are
-// generated here, and every cold launch intent is removed before an IO pass.
-fn check_cached_display_switches(state:&mut State,first:u64,ctx:&egui::Context) {
-    let home=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==first)).unwrap().id;
-    let window=state.windows.iter_mut().find(|w|w.id==home).unwrap();
-    let active=window.active;let count=window.sessions.len();
-    let source=window.sessions.iter_mut().find(|s|s.id==first).unwrap();
-    let target=source.app.stream_target.clone().unwrap();
-    let first_displays=std::mem::take(&mut source.app.displays);source.app.displays.selected=Some(0);
-    let a=source.app.controller.as_ref().unwrap().stats.clone();
-    let cap=a.capabilities.allows(uu_core::capabilities::Capability::Displays);
-    a.capabilities.enable(uu_core::capabilities::Capability::Displays,true);
-    let a_catalog=std::mem::replace(&mut *a.remote_screens.lock().unwrap(),uu_core::screen_control::RemoteScreens{current_id:0,screens:(0..2).map(generated_screen).collect()});
-    let a_capture=a.desktop_capture_source.lock().unwrap().take();
-    let a_parked=a.audio.parked.load(Ordering::Acquire);let a_desired=source.app.audio_parked;
-    let epoch=a.native_media_epoch.load(Ordering::Acquire);
-    let windows=state.windows.len();
-    for _ in 0..12 {state.apply(Action::Select(first,Some(1)),ctx);}
-    assert_eq!(state.windows.len(),windows,"ordinary switching must not create a native window");
-    let window=state.windows.iter_mut().find(|w|w.id==home).unwrap();
-    assert_eq!(window.sessions.len(),count);assert_eq!(window.pending.len(),1,"one cold source has one pending connection");
-    assert_eq!(window.pending[0].target.connection.display().unwrap().source,generated_screen(1).display_name);
-    assert_eq!(window.cached_launches.len(),1);
-    assert_eq!(window.sessions.iter().find(|s|s.id==first).unwrap().app.displays.selected,Some(0),"cold launch must retain the current source and frame");
-    window.pending.clear();window.cached_launches.clear();
-    let sibling=window.sessions.iter_mut().find(|s|s.id!=first).unwrap();let second=sibling.id;
-    let second_target=sibling.app.stream_target.replace(target.clone());
-    let second_displays=std::mem::take(&mut sibling.app.displays);sibling.app.displays.selected=Some(1);
-    let second_home=sibling.home_window;let second_browser=sibling.browsable;sibling.browsable=true;sibling.home_window=None;
-    let b=sibling.app.controller.as_ref().unwrap().stats.clone();
-    let b_catalog=std::mem::replace(&mut *b.remote_screens.lock().unwrap(),uu_core::screen_control::RemoteScreens{current_id:1,screens:(0..2).map(generated_screen).collect()});
-    let b_capture=b.desktop_capture_source.lock().unwrap().take();let b_parked=b.audio.parked.load(Ordering::Acquire);let b_desired=sibling.app.audio_parked;
-    let b_cap=b.capabilities.allows(uu_core::capabilities::Capability::Displays);
-    b.capabilities.enable(uu_core::capabilities::Capability::Displays,true);
-    assert!(sibling.app.pin_current_display_view());
-    sibling.app.stream_target=Some(display_launch(&target,&generated_screen(1)).unwrap().target);
-    let second_epoch=b.native_media_epoch.load(Ordering::Acquire);
-    // The fixture just changed these two formerly unrelated device identities.
-    // Activate through the production transition before checking shared audio.
-    window.select(first);
-    for _ in 0..24 {
-        state.apply(Action::Select(first,Some(1)),ctx);
-        let window=state.windows.iter().find(|w|w.id==home).unwrap();assert_eq!(window.active,second);
-        assert!(a.audio.parked.load(Ordering::Acquire));assert!(!b.audio.parked.load(Ordering::Acquire));
-        state.apply(Action::Select(first,Some(0)),ctx);
-        assert_eq!(state.windows.iter().find(|w|w.id==home).unwrap().active,first);
-        assert!(!a.audio.parked.load(Ordering::Acquire));assert!(b.audio.parked.load(Ordering::Acquire));
-    }
-    assert_eq!(a.native_media_epoch.load(Ordering::Acquire),epoch);
-    assert_eq!(b.native_media_epoch.load(Ordering::Acquire),second_epoch);
-    state.detach(second,ctx);
-    let independent=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==second)).unwrap();
-    assert_ne!(independent.id,home);assert_eq!(independent.tabs(Default::default()).groups[0].screens.len(),1);
-    assert!(Arc::ptr_eq(&independent.sessions[0].app.controller.as_ref().unwrap().stats,&b));
-    state.merge(second,ctx);
-    let window=state.windows.iter_mut().find(|w|w.id==home).unwrap();
-    assert_eq!(window.sessions.len(),count);assert_eq!(window.tabs(Default::default()).groups.len(),1);
-    assert_eq!(window.tabs(Default::default()).groups[0].screens.len(),2,"merging must retain the device browser");
-    assert!(window.pending.is_empty());assert!(window.cached_launches.is_empty());
-    assert!(a.audio.parked.load(Ordering::Acquire),"merge must park the previous same-device audio owner");
-    assert!(!b.audio.parked.load(Ordering::Acquire));
-    // A failed cached view with no catalog must keep ownership of Close and
-    // reconnect commands rather than borrowing the healthy catalog owner.
-    let failed=window.sessions.iter_mut().find(|s|s.id==second).unwrap();
-    failed.app.displays.selected=None;
-    *b.remote_screens.lock().unwrap()=Default::default();
-    let tabs=window.tabs(Default::default());
-    assert_eq!(tabs.groups.len(),1);
-    assert_eq!(tabs.groups[0].command_session(),second);
-    assert!(window.sessions.iter().find(|s|s.id==first).unwrap().app.controller.is_some());
-    // The catalog is device-wide: a failed first connection cannot hide an
-    // unvisited third screen supplied by a healthy sibling.
-    window.sessions.iter_mut().find(|s|s.id==first).unwrap().app.disconnecting=true;
-    window.sessions.iter_mut().find(|s|s.id==second).unwrap().app.displays.selected=Some(1);
-    *b.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:1,screens:(0..3).map(generated_screen).collect()};
-    let tabs=window.tabs(Default::default());assert_eq!(tabs.groups[0].id,second);
-    assert_eq!(tabs.groups[0].screens.len(),3);
-    window.sessions.iter_mut().find(|s|s.id==first).unwrap().app.disconnecting=false;
-    // Explicit views share the same audio ownership rule after merging.
-    window.sessions.iter_mut().find(|s|s.id==second).unwrap().browsable=false;
-    window.select(first);assert!(!a.audio.parked.load(Ordering::Acquire));assert!(b.audio.parked.load(Ordering::Acquire));
-    window.select(second);assert!(a.audio.parked.load(Ordering::Acquire));assert!(!b.audio.parked.load(Ordering::Acquire));
-    let source=window.sessions.iter_mut().find(|s|s.id==first).unwrap();source.app.displays=first_displays;
-    let sibling=window.sessions.iter_mut().find(|s|s.id==second).unwrap();sibling.app.displays=second_displays;sibling.app.stream_target=second_target;sibling.home_window=second_home;sibling.browsable=second_browser;
-    *a.remote_screens.lock().unwrap()=a_catalog;*a.desktop_capture_source.lock().unwrap()=a_capture;
-    *b.remote_screens.lock().unwrap()=b_catalog;*b.desktop_capture_source.lock().unwrap()=b_capture;
-    a.capabilities.enable(uu_core::capabilities::Capability::Displays,cap);
-    b.capabilities.enable(uu_core::capabilities::Capability::Displays,b_cap);
-    window.select(active);
-    window.sessions.iter_mut().find(|s|s.id==first).unwrap().app.audio_parked=a_desired;
-    window.sessions.iter_mut().find(|s|s.id==second).unwrap().app.audio_parked=b_desired;
-    a.audio.parked.store(a_parked,Ordering::Release);b.audio.parked.store(b_parked,Ordering::Release);
-    state.windows.retain(|w|!w.sessions.is_empty()||!w.pending.is_empty());
-    assert_eq!(state.windows.len(),windows);
-}
-
-fn check_same_device_views_keep_home_and_route_each_connection(state:&mut State,first:u64,second:u64,ctx:&egui::Context) {
-    let original_windows=state.windows.len();let home=state.windows.iter().find(|w|w.sessions.iter().any(|s|s.id==first)).unwrap().id;
-    let original_active=state.windows.iter().find(|w|w.id==home).unwrap().active;
-    let source=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==first).unwrap();
-    let first_target=source.app.stream_target.clone();
-    let first_displays=std::mem::take(&mut source.app.displays);
-    source.app.displays.selected=Some(0);
-    let first_stats=source.app.controller.as_ref().unwrap().stats.clone();
-    let first_catalog=std::mem::replace(&mut *first_stats.remote_screens.lock().unwrap(),uu_core::screen_control::RemoteScreens{current_id:0,screens:(0..2).map(generated_screen).collect()});
-    let first_capture=first_stats.desktop_capture_source.lock().unwrap().take();
-    let old_control=first_stats.control_open.swap(1,Ordering::AcqRel);
-    let old_binding=first_stats.display_track_binding.swap(false,Ordering::AcqRel);
-    let old_capability=first_stats.capabilities.allows(uu_core::capabilities::Capability::Displays);
-    first_stats.capabilities.enable(uu_core::capabilities::Capability::Displays,true);
-    // Owned queue observes routing without asking the generated host to switch
-    // to fixture-only monitor names or changing a real display topology.
-    let (input,_requests)=uu_core::native_input::channel(false);
-    let original_input=source.app.controller.as_mut().unwrap().native_input.replace(input);
-    state.open_display(first,0,ctx);
-    assert_eq!(state.windows.iter().find(|w|w.id==home).unwrap().sessions.len(),2,"opening the selected monitor cannot move its ordinary source session out of home");
-    let original=state.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==first).unwrap();
-    assert_eq!(original.app.displays.selected,Some(1),"the original window keeps the other physical monitor");
-    assert!(Arc::ptr_eq(&original.app.controller.as_ref().unwrap().stats,&first_stats));
-    assert_eq!(state.windows.last().unwrap().pending[0].target.connection.display().unwrap().id,0);
-    state.windows.truncate(original_windows);
-    let source=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==first).unwrap();
-    source.app.displays=Default::default();source.app.displays.selected=Some(0);
-    state.apply(Action::OpenAllDisplays(first),ctx);
-    assert!(state.windows.iter().find(|w|w.id==home).unwrap().sessions.iter().any(|s|s.id==first));
-    assert_eq!(state.windows.len(),original_windows+1,"open-all leaves one monitor in home and forks only the other");
-    assert_eq!(state.windows.last().unwrap().pending[0].target.connection.display().unwrap().id,1);
-    let original=state.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==first).unwrap();
-    assert_eq!(original.app.fixed_display_target().unwrap().id,0);
-    state.windows.truncate(original_windows);
-    let source=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==first).unwrap();
-    source.app.displays=Default::default();source.app.displays.selected=Some(0);
-    first_stats.remote_screens.lock().unwrap().screens.push(generated_screen(16));
-    let virtual_target=virtual_launch(first_target.as_ref().unwrap(),Default::default()).unwrap().target;
-    let virtual_id=virtual_target.connection.virtual_display().unwrap().id;
-    let sibling=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==second).unwrap();
-    let second_target=sibling.app.stream_target.replace(virtual_target);
-    let second_displays=std::mem::take(&mut sibling.app.displays);let second_home=sibling.home_window;
-    sibling.app.displays.bind_created_virtual(DisplayTarget{id:16,source:generated_screen(16).display_name});sibling.app.displays.selected=Some(16);
-    let second_stats=sibling.app.controller.as_ref().unwrap().stats.clone();
-    let second_catalog=std::mem::replace(&mut *second_stats.remote_screens.lock().unwrap(),uu_core::screen_control::RemoteScreens{current_id:16,screens:[0,1,16].into_iter().map(generated_screen).collect()});
-    let second_capture=second_stats.desktop_capture_source.lock().unwrap().take();
-    state.windows.iter_mut().find(|w|w.id==home).unwrap().select(second);
-    let tabs=state.windows.iter().find(|w|w.id==home).unwrap().tabs(Default::default());
-    assert_eq!(tabs.groups.len(),1,"a virtual connection is a view of the same device, not another device group");
-    let group=&tabs.groups[0];assert!(group.contains(first)&&group.contains(second));
-    assert_eq!(group.command_session(),second,"device controls apply only to the active view");
-    let virtual_key=group.views.iter().find(|view|view.session==second).unwrap().screen;
-    assert!(virtual_key<0,"per-connection view identity must not collide with remote catalog IDs");
-    assert_eq!(group.screen_action(virtual_key),Action::Select(second,None));
-    assert_eq!(group.screen_action(0),Action::Select(first,None));
-    assert_eq!(group.view_group(virtual_key).unwrap().command_session(),second);
-    assert_eq!(group.screens.len(),3,"the shared catalog's virtual source must not add a second pill");
-    state.detach(second,ctx);
-    assert!(state.windows.iter().find(|w|w.id==home).unwrap().sessions.iter().any(|s|s.id==first));
-    let moved=state.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==second).unwrap();
-    assert_eq!(moved.app.stream_target.as_ref().unwrap().connection.virtual_display().unwrap().id,virtual_id);
-    assert!(Arc::ptr_eq(&moved.app.controller.as_ref().unwrap().stats,&second_stats));
-    state.merge(second,ctx);
+// Real encrypted generated streams keep their controllers; only the source
+// inventory and view binding are temporary fixtures. Cold intents are removed
+// before the next viewport pass, so this never creates desktop resources.
+fn check_owned_live_transitions(state:&mut State,first:u64,second:u64,ctx:&egui::Context) {
+    let home=state.windows.iter().find(|w|w.views.iter().any(|v|v.id==first)).unwrap().id;
     let window=state.windows.iter().find(|w|w.id==home).unwrap();
-    assert_eq!(window.sessions.len(),2);assert_eq!(window.tabs(Default::default()).groups.len(),1);
-    let original=window.sessions.iter().find(|s|s.id==first).unwrap();assert!(Arc::ptr_eq(&original.app.controller.as_ref().unwrap().stats,&first_stats));
-    state.windows.retain(|w|!w.sessions.is_empty()||!w.pending.is_empty());
-    let source=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==first).unwrap();
-    source.app.displays=first_displays;source.app.stream_target=first_target;
-    source.app.controller.as_mut().unwrap().native_input=original_input;
-    *first_stats.remote_screens.lock().unwrap()=first_catalog;*first_stats.desktop_capture_source.lock().unwrap()=first_capture;
-    first_stats.control_open.store(old_control,Ordering::Release);first_stats.display_track_binding.store(old_binding,Ordering::Release);first_stats.capabilities.enable(uu_core::capabilities::Capability::Displays,old_capability);
-    let sibling=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==second).unwrap();
-    sibling.app.displays=second_displays;sibling.app.stream_target=second_target;sibling.home_window=second_home;
-    *second_stats.remote_screens.lock().unwrap()=second_catalog;*second_stats.desktop_capture_source.lock().unwrap()=second_capture;
-    state.windows.iter_mut().find(|w|w.id==home).unwrap().select(original_active);
-}
-
-fn check_temporary_display_fork(state:&mut State,session:u64,ctx:&egui::Context) {
-    // The hosts below provide only generated video, without virtual hardware.
-    // Exercise launch ownership here and discard pending intents before they
-    // can establish a new connection or submit a display creation request.
-    let origin=state.windows.iter().position(|w|w.sessions.iter().any(|s|s.id==session)).unwrap();
-    let origin_id=state.windows[origin].id;
-    let source=state.windows[origin].sessions.iter().find(|s|s.id==session).unwrap();
-    let selected=source.app.displays.selected;
-    let key=source.app.stream_target.as_ref().unwrap().key();
-    let stats=source.app.controller.as_ref().unwrap().stats.clone();
-    let available=stats.virtual_displays.available.swap(true,Ordering::AcqRel);
-    let other=state.next;state.next+=1;
-    state.windows.insert(0,Window::new(other,vec![],None));
-    state.apply(Action::CreateDisplay(session),ctx);
-    state.apply(Action::CreateDisplay(session),ctx);
-    let origin=state.windows.iter_mut().find(|w|w.id==origin_id).unwrap();
-    assert_eq!(origin.pending.len(),2,"new temporary streams must join the clicked connection's window");
-    assert_ne!(origin.pending[0].target.key(),origin.pending[1].target.key());
-    for launch in &origin.pending {
-        assert!(launch.target.connection.virtual_display().is_some());
-        assert_eq!(base_key(&launch.target),base_key(origin.sessions.iter().find(|s|s.id==session).unwrap().app.stream_target.as_ref().unwrap()));
+    let saved_views=window.views.clone();let saved_active=window.active;
+    let saved_sources=state.sources.clone();
+    let target=window.sessions.iter().find(|s|s.id==first).unwrap().app.stream_target.clone().unwrap();
+    let virtual_target=virtual_launch(&target,Default::default()).unwrap().target;
+    let creation=virtual_target.connection.virtual_display().unwrap().id;
+    let mut saved=Vec::new();
+    for (id,current) in [(first,0),(second,16)] {
+        let source=state.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==id).unwrap();
+        let stats=source.app.controller.as_ref().unwrap().stats.clone();
+        let displays=std::mem::take(&mut source.app.displays);
+        let old_target=source.app.stream_target.replace(target.clone());
+        let old_catalog=std::mem::replace(&mut *stats.remote_screens.lock().unwrap(),uu_core::screen_control::RemoteScreens {
+            current_id:current,screens:[0,1,16].into_iter().map(|id|{let mut s=generated_screen(id);s.video_track_index=if id==current{0}else{-1};s}).collect()
+        });
+        let capture=stats.desktop_capture_source.lock().unwrap().take();
+        let capability=stats.capabilities.allows(uu_core::capabilities::Capability::Displays);
+        stats.capabilities.enable(uu_core::capabilities::Capability::Displays,true);
+        source.app.displays.selected=Some(current);assert!(source.app.pin_current_display_view());
+        if id==second {source.app.stream_target=Some(virtual_target.clone());}
+        saved.push((id,displays,old_target,stats,old_catalog,capture,capability));
     }
-    let source=origin.sessions.iter().find(|s|s.id==session).unwrap();
-    assert_eq!(source.app.displays.selected,selected);
-    assert_eq!(source.app.stream_target.as_ref().unwrap().key(),key);
-    assert!(Arc::ptr_eq(&source.app.controller.as_ref().unwrap().stats,&stats));
-    let launch=origin.pending[0].target.clone();
-    let source=origin.sessions.iter_mut().find(|s|s.id==session).unwrap();
-    let saved_displays=std::mem::take(&mut source.app.displays);
-    let saved_target=source.app.stream_target.replace(launch);
-    let saved_track=source.app.selected_track;
-    source.app.prepare_displays();
-    let tabs=origin.tabs(Default::default());
-    let preparing=tabs.groups.iter().find(|group|group.id==session).unwrap();
-    assert_eq!(preparing.screens.len(),1,"a pending virtual view is visible inside its device group");
-    assert_eq!(preparing.screen_action(preparing.screens[0].0),Action::Select(session,None));
-    assert!(!preparing.can_open_displays&&!preparing.can_create_display);
-    assert!(preparing.can_detach,"a connecting virtual stream can still be moved without reopening it");
-    let source=origin.sessions.iter_mut().find(|s|s.id==session).unwrap();
-    let preparing_title=session_title(&source.app);
-    assert!(preparing_title.ends_with(uu_i18n::text("临时虚拟屏")));
-    source.app.displays.layout.sync(&[generated_screen(1)]);
-    source.app.displays.selected=Some(1);
-    assert_eq!(session_title(&source.app),preparing_title,"first source binding must not grow the header or displace its close control");
-    source.app.stream_target=saved_target;source.app.displays=saved_displays;source.app.selected_track=saved_track;
-    origin.pending.clear();
-    assert!(state.windows.iter().find(|w|w.id==other).unwrap().pending.is_empty());
-    state.windows.retain(|w|w.id!=other);
-    stats.virtual_displays.available.store(available,Ordering::Release);
+    {
+        let window=state.windows.iter_mut().find(|w|w.id==home).unwrap();
+        let view=window.views.iter_mut().find(|v|v.id==second).unwrap();
+        view.launch.target=virtual_target;view.source=Some(DisplayTarget{id:16,source:generated_screen(16).display_name});
+        view.discover_initial=false;
+        window.views.iter_mut().find(|v|v.id==first).unwrap().discover_initial=true;
+    }
+    state.sync_owned_views();
+    let window=state.windows.iter().find(|w|w.id==home).unwrap();
+    assert_eq!(window.views.len(),3);assert_eq!(window.sessions.len(),2);assert!(window.pending.is_empty());
+    let lazy=window.views.iter().find(|v|v.id!=first&&v.id!=second).unwrap().id;
+    let epochs:Vec<_>=saved.iter().map(|s|s.3.native_media_epoch.load(Ordering::Acquire)).collect();
+    for _ in 0..12 {
+        state.apply(Action::Select(first,Some(16)),ctx);
+        let window=state.windows.iter().find(|w|w.id==home).unwrap();assert_eq!(window.active,second);assert!(window.pending.is_empty());
+        assert!(saved[0].3.audio.parked.load(Ordering::Acquire));assert!(!saved[1].3.audio.parked.load(Ordering::Acquire));
+        state.apply(Action::Select(first,Some(0)),ctx);assert_eq!(state.windows.iter().find(|w|w.id==home).unwrap().active,first);
+    }
+    state.detach(second,ctx);
+    let moved=state.windows.iter().flat_map(|w|&w.sessions).find(|s|s.id==second).unwrap();
+    assert!(Arc::ptr_eq(&moved.app.controller.as_ref().unwrap().stats,&saved[1].3));
+    assert_eq!(moved.app.stream_target.as_ref().unwrap().connection.virtual_display().unwrap().id,creation);
+    let original=state.windows.iter().find(|w|w.id==home).unwrap();
+    assert_eq!(original.views.iter().map(|v|v.id).collect::<Vec<_>>(),[first,lazy]);
+    let queued=Rc::new(RefCell::new(Vec::new()));original.tabs(queued.clone()).navigate(uu_core::hotkeys::Action::PreviousDisplay);
+    assert_eq!(&*queued.borrow(),&[Action::Select(lazy,None)]);
+    state.merge(second,ctx);
+    state.detach(lazy,ctx);
+    let unopened=state.windows.iter().find(|w|w.views.iter().any(|v|v.id==lazy)).unwrap();
+    assert!(unopened.sessions.is_empty());assert_eq!(unopened.pending.len(),1);
+    state.apply(Action::Close(lazy),ctx);
+    state.windows.retain(|w|!w.views.is_empty()||!w.sessions.is_empty()||!w.pending.is_empty());
+    assert_eq!(state.windows.len(),1);
+    for (index,record) in saved.iter().enumerate() {
+        let runtime=state.windows[0].sessions.iter().find(|s|s.id==record.0).unwrap();
+        assert!(Arc::ptr_eq(&runtime.app.controller.as_ref().unwrap().stats,&record.3));
+        assert_eq!(record.3.native_media_epoch.load(Ordering::Acquire),epochs[index]);
+    }
+    let available=saved[0].3.virtual_displays.available.swap(true,Ordering::AcqRel);
+    state.fork_virtual_display(first,None,false);state.fork_virtual_display(first,None,true);
+    let virtual_views:Vec<_>=state.windows[0].views.iter().filter(|v|v.id!=first&&v.id!=second).collect();
+    assert_eq!(virtual_views.len(),2);
+    assert_ne!(virtual_views[0].launch.target.key(),virtual_views[1].launch.target.key());
+    assert!(!virtual_views[0].launch.target.connection.virtual_display().unwrap().persistent);
+    assert!(virtual_views[1].launch.target.connection.virtual_display().unwrap().persistent);
+    let cold:Vec<_>=virtual_views.iter().map(|v|v.id).collect();state.close(&cold,ctx);
+    saved[0].3.virtual_displays.available.store(available,Ordering::Release);
+    for (id,displays,target,stats,catalog,capture,capability) in saved {
+        let source=state.windows[0].sessions.iter_mut().find(|s|s.id==id).unwrap();
+        source.app.displays=displays;source.app.stream_target=target;
+        *stats.remote_screens.lock().unwrap()=catalog;*stats.desktop_capture_source.lock().unwrap()=capture;
+        stats.capabilities.enable(uu_core::capabilities::Capability::Displays,capability);
+    }
+    state.windows[0].views=saved_views;state.windows[0].pending.clear();state.sources=saved_sources;
+    state.windows[0].select(saved_active);
 }
 
 fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u64,ctx:&egui::Context) {
@@ -514,8 +360,9 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
         frames:uu_core::media::frame_channel().1,input:tokio::sync::mpsc::unbounded_channel().0,native_input:None,
         settings:tokio::sync::mpsc::unbounded_channel().0,close,stats:Arc::new(Default::default()),
     });
-    let id=state.next;state.next+=1;
-    window.sessions.push(Session{id,activated:None,app:closing,home_window:None,browsable:false});
+    let launch=virtual_launch(closing.stream_target.as_ref().unwrap(),Default::default()).unwrap();
+    let id=window.record_launch(&launch,&mut state.next);
+    window.sessions.push(Session{id,activated:None,app:closing});
     window.select(id);
     let previous_owner=state.input_owner.replace(id);
     state.apply(Action::Close(id),ctx);
@@ -561,7 +408,7 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
 fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() {
     use uu_core::hotkeys::Action as Command;
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let mut tabs=Tabs{presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},
+    let mut tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},
         Group{last_session:11,members:vec![],views:vec![],id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     for command in [Command::NextDisplay,Command::PreviousDisplay,Command::NextComputer,Command::PreviousComputer] {tabs.navigate(command);}
     assert_eq!(*actions.borrow(),[Action::Select(22,Some(2)),Action::Select(22,Some(9)),Action::Select(11,None),Action::Select(11,None)]);
@@ -575,7 +422,7 @@ fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() 
 #[test]
 fn device_selector_requires_an_explicit_open_and_keeps_the_video_area() {
     let ctx=egui::Context::default();crate::setup_style(&ctx);
-    let mut tabs=Tabs{presets:Default::default(),groups:vec![Group{last_session:1,members:vec![],views:vec![],id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},Group{last_session:2,members:vec![],views:vec![],id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:1,actions:Default::default(),local_ui:Default::default()};
+    let mut tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:1,members:vec![],views:vec![],id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},Group{last_session:2,members:vec![],views:vec![],id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:1,actions:Default::default(),local_ui:Default::default()};
     let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
     let draw=|tabs:&Tabs,pointer| {
         let mut visible=false;
@@ -600,7 +447,7 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
     let context = egui::Context::default();
     crate::setup_style(&context);
     let actions = Rc::new(RefCell::new(Vec::new()));
-    let tabs = Tabs {presets:Default::default(),
+    let tabs = Tabs {sources:vec![],modal:Default::default(),presets:Default::default(),
         groups: vec![
             Group {last_session:11,members:vec![],views:vec![],
                 id: 11,
@@ -697,25 +544,26 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
     let outside = egui::pos2(-25., 80.);
     render(vec![egui::Event::PointerMoved(outside)]);
     render(vec![button(outside, false)]);
-    assert_eq!(*actions.borrow(), vec![Action::Detach(22)]);
+    assert!(matches!(&actions.borrow()[..],[Action::Drop{source:22,group:true,..}]));
 }
 
 #[test]
-fn device_context_menu_routes_detach_and_disconnect_from_a_child_viewport() {
+fn device_context_menu_merges_or_closes_the_group_without_detach_commands() {
     let context=egui::Context::default();
     crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated B".into(),screens:vec![(2,"Monitor B".into())],selected:Some(2),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated B".into(),screens:vec![(2,"Monitor B".into())],selected:Some(2),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let viewport=egui::ViewportId::from_hash_of("generated-child");
     let render=|events|context.run(egui::RawInput{viewport_id:viewport,viewports:[(viewport,egui::ViewportInfo::default())].into_iter().collect(),events,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),focused:true,..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     fn text(shape:&egui::epaint::Shape,label:&str)->Option<egui::Pos2>{match shape{egui::epaint::Shape::Text(text) if text.galley.job.text==label=>Some(text.pos+text.galley.rect.center().to_vec2()),egui::epaint::Shape::Vec(shapes)=>shapes.iter().find_map(|shape|text(shape,label)),_=>None}}
     let locate=|output:&egui::FullOutput,label:&str|output.shapes.iter().find_map(|shape|text(&shape.shape,label)).unwrap_or_else(||panic!("missing {label}"));
     let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};
-    for (label,expected) in [("移到独立窗口",Action::Detach(22)),("断开此会话",Action::Close(22))] {
+    for (label,expected) in [("合并所有显示器到原窗口",Action::MergeGroup(22)),("断开此会话",Action::CloseGroup(22))] {
         let output=render(Vec::new());let device=locate(&output,"Generated B");
         render(vec![egui::Event::PointerMoved(device),button(device,egui::PointerButton::Secondary,true)]);
         render(vec![button(device,egui::PointerButton::Secondary,false)]);
         let output=render(Vec::new());
+        assert!(!output.shapes.iter().any(|s|text(&s.shape,"移到独立窗口").is_some()));
         assert!(tabs.owns_input(&context),"open context menu owns local input");
         let action=locate(&output,uu_i18n::text(label));
         render(vec![egui::Event::PointerMoved(action),button(action,egui::PointerButton::Primary,true)]);
@@ -729,7 +577,7 @@ fn device_context_menu_routes_detach_and_disconnect_from_a_child_viewport() {
 fn fixed_source_context_menu_returns_to_home_and_source_click_only_selects_its_session() {
     let context=egui::Context::default();crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated fixed view".into(),screens:vec![(2,"Bound monitor".into())],selected:Some(2),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated fixed view".into(),screens:vec![(2,"Bound monitor".into())],selected:Some(2),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let viewport=egui::ViewportId::from_hash_of("fixed-generated-child");
     let render=|events|context.run(egui::RawInput{viewport_id:viewport,viewports:[(viewport,egui::ViewportInfo::default())].into_iter().collect(),events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|rects|find(rects.borrow().get(&viewport).unwrap()).center());
@@ -745,7 +593,7 @@ fn fixed_source_context_menu_returns_to_home_and_source_click_only_selects_its_s
         assert!(tabs.owns_input(&context));let merge=region(|rects|rects.merge[0].1);
         render(vec![egui::Event::PointerMoved(merge),button(merge,egui::PointerButton::Primary,true)]);
         render(vec![button(merge,egui::PointerButton::Primary,false)]);
-        assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::Merge(22)]);
+        assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[if source_menu{Action::Merge(22)}else{Action::MergeGroup(22)}]);
     }
 }
 
@@ -753,49 +601,33 @@ fn fixed_source_context_menu_returns_to_home_and_source_click_only_selects_its_s
 fn display_pills_open_their_own_source_and_keep_connection_ownership() {
     let context=egui::Context::default();crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:false,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
-    let render=|events|context.run(egui::RawInput{events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
-    let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|rects|find(rects.borrow().get(&egui::ViewportId::ROOT).unwrap()).center());
+    let views=vec![View{screen:7,session:31,fixed:true,active:false,can_create:false,can_detach:true,can_merge:false},View{screen:16,session:22,fixed:true,active:true,can_create:true,can_detach:true,can_merge:false}];
+    let tabs=Tabs{sources:vec![(31,vec![SourceChoice{id:100,label:"Spare physical".into(),kind:SourceKind::Physical,active:true,owned:false},SourceChoice{id:101,label:"Owned unopened".into(),kind:SourceKind::Physical,active:true,owned:true}])],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![31,22],views,id:31,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:true,fixed_view:true,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let render=|events|context.run(egui::RawInput{events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,700.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
+    let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|r|find(r.borrow().get(&egui::ViewportId::ROOT).unwrap()).center());
     let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};
-    render(Vec::new());
-    let screen=region(|r|r.screens.iter().find(|(_,id,_)|*id==7).unwrap().2);
-    render(vec![egui::Event::PointerMoved(screen),button(screen,egui::PointerButton::Secondary,true)]);
-    render(vec![button(screen,egui::PointerButton::Secondary,false)]);render(Vec::new());
-    let independent=region(|r|r.open_display[0].2);
-    render(vec![egui::Event::PointerMoved(independent),button(independent,egui::PointerButton::Primary,true)]);
-    render(vec![button(independent,egui::PointerButton::Primary,false)]);
-    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::OpenDisplay{session:22,screen:7}]);
-    render(Vec::new());let current=region(|r|r.screens.iter().find(|(_,id,_)|*id==16).unwrap().2);
-    render(vec![egui::Event::PointerMoved(current),button(current,egui::PointerButton::Secondary,true)]);
-    render(vec![button(current,egui::PointerButton::Secondary,false)]);render(Vec::new());
-    let independent=region(|r|r.open_display[0].2);
-    render(vec![egui::Event::PointerMoved(independent),button(independent,egui::PointerButton::Primary,true)]);
-    render(vec![button(independent,egui::PointerButton::Primary,false)]);
-    assert!(actions.borrow().is_empty(),"the current source of an independent window must not offer another silent focus action");
-    let outside=egui::pos2(1200.,200.);
-    render(vec![egui::Event::PointerMoved(outside),button(outside,egui::PointerButton::Primary,true)]);
-    render(vec![button(outside,egui::PointerButton::Primary,false)]);
-    render(Vec::new());let device=region(|r|r.devices[0].1);
-    render(vec![egui::Event::PointerMoved(device),button(device,egui::PointerButton::Secondary,true)]);
-    render(vec![button(device,egui::PointerButton::Secondary,false)]);render(Vec::new());
-    let detach=region(|r|r.detach[0].1);
-    render(vec![egui::Event::PointerMoved(detach),button(detach,egui::PointerButton::Primary,true)]);
-    render(vec![button(detach,egui::PointerButton::Primary,false)]);
-    assert!(actions.borrow().is_empty(),"an already independent connection must not queue a silent detach");
-    let outside=egui::pos2(1200.,200.);
-    render(vec![egui::Event::PointerMoved(outside),button(outside,egui::PointerButton::Primary,true)]);
-    render(vec![button(outside,egui::PointerButton::Primary,false)]);render(Vec::new());
-    let create=region(|r|r.create[0].1);
-    render(vec![egui::Event::PointerMoved(create),button(create,egui::PointerButton::Primary,true)]);
-    render(vec![button(create,egui::PointerButton::Primary,false)]);
-    assert!(matches!(&std::mem::take(&mut *actions.borrow_mut())[..],[Action::CreateDisplayWithSpec{session:22,..}]),"creation stays under the clicked device and carries the visible preset");
-    render(Vec::new());let device=region(|r|r.devices[0].1);
-    render(vec![egui::Event::PointerMoved(device),button(device,egui::PointerButton::Secondary,true)]);
-    render(vec![button(device,egui::PointerButton::Secondary,false)]);render(Vec::new());
-    let close=region(|r|r.disconnect[0].1);
-    render(vec![egui::Event::PointerMoved(close),button(close,egui::PointerButton::Primary,true)]);
-    render(vec![button(close,egui::PointerButton::Primary,false)]);
-    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::Close(22)],"close ends this connection, not one source or another window");
+    let click=|pos,kind|{render(vec![egui::Event::PointerMoved(pos),button(pos,kind,true)]);render(vec![button(pos,kind,false)]);};
+    render(vec![]);let screen=region(|r|r.screens.iter().find(|(_,id,_)|*id==7).unwrap().2);
+    click(screen,egui::PointerButton::Secondary);render(vec![]);
+    click(region(|r|r.detach[0].1),egui::PointerButton::Primary);
+    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::Detach(31)]);
+    render(vec![]);click(region(|r|r.create[0].1),egui::PointerButton::Primary);
+    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::AddDisplay(22)]);
+    render(vec![]);click(region(|r|r.create[0].1),egui::PointerButton::Secondary);render(vec![]);
+    fn text(shape:&egui::Shape,label:&str)->Option<egui::Pos2> {match shape {
+        egui::Shape::Text(t) if t.galley.text()==label=>Some(t.pos+t.galley.rect.center().to_vec2()),
+        egui::Shape::Vec(s)=>s.iter().find_map(|s|text(s,label)),_=>None,
+    }}
+    let locate=|label|render(vec![]).shapes.iter().find_map(|s|text(&s.shape,label)).unwrap_or_else(||panic!("missing {label}"));
+    click(locate("Owned unopened"),egui::PointerButton::Primary);assert!(actions.borrow().is_empty());
+    click(locate("Spare physical"),egui::PointerButton::Primary);
+    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::OpenSource{session:22,source:100,new_window:false}]);
+    render(vec![]);click(region(|r|r.screens.iter().find(|(_,id,_)|*id==16).unwrap().2),egui::PointerButton::Secondary);render(vec![]);
+    click(region(|r|r.disconnect[0].1),egui::PointerButton::Primary);
+    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::Close(22)]);
+    render(vec![]);click(region(|r|r.devices[0].1),egui::PointerButton::Secondary);render(vec![]);
+    click(region(|r|r.disconnect[0].1),egui::PointerButton::Primary);
+    assert_eq!(std::mem::take(&mut *actions.borrow_mut()),[Action::CloseGroup(22)]);
 }
 
 std::thread_local! {
@@ -832,7 +664,7 @@ fn inject_pointer_script(input:&mut egui::RawInput) {
         let Some(script)=slot.as_mut().filter(|script|script.viewport==input.viewport_id) else{return;};
         let finished=TAB_RECTS.with(|rects| {
             let rects=rects.borrow();let Some(rects)=rects.get(&script.viewport) else{return false;};
-            let buttons=if script.step<3 {&rects.devices} else {match script.action {PointerAction::Detach=>&rects.detach,PointerAction::Merge=>&rects.merge,PointerAction::Disconnect=>&rects.disconnect}};
+            let buttons=if script.step<3 {if matches!(script.action,PointerAction::Disconnect) {&rects.devices}else{&rects.view_screens}} else {match script.action {PointerAction::Detach=>&rects.detach,PointerAction::Merge=>&rects.merge,PointerAction::Disconnect=>&rects.disconnect}};
             let Some((_,rect))=buttons.iter().find(|(id,_)|*id==script.session) else{return false;};
             let position=rect.center();
             eprintln!("generated pointer action={:?} session={} viewport={:?} step={} rect={rect:?}",script.action,script.session,script.viewport,script.step);
@@ -952,10 +784,7 @@ impl eframe::App for Probe {
                         .iter()
                         .map(|s| s.native_media_epoch.load(Ordering::Acquire))
                         .collect();
-                    check_display_window_routing(state,self.first,ctx);
-                    check_cached_display_switches(state,self.first,ctx);
-                    check_temporary_display_fork(state,self.first,ctx);
-                    check_same_device_views_keep_home_and_route_each_connection(state,self.first,self.second_id,ctx);
+                    check_owned_live_transitions(state,self.first,self.second_id,ctx);
                     // Switch away without another UI pass: inactive sessions
                     // must pause observation immediately, including parked tabs.
                     state.apply(Action::Select(self.first,None),ctx);
@@ -973,7 +802,7 @@ impl eframe::App for Probe {
                         },
                         ctx,
                     );
-                    assert_eq!(state.windows[0].sessions[0].id, self.second_id);
+                    assert_eq!(state.windows[0].views[0].id, self.second_id);
                     state.apply(Action::Select(self.first, None), ctx);
                     let first = state.windows[0]
                         .sessions

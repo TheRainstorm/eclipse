@@ -435,7 +435,7 @@ impl super::App {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if icon_button(ui, Icon::Close, uu_i18n::text("退出串流")).clicked() {
-                            self.disconnect();
+                            if self.workspace_tabs.is_some() {ctx.send_viewport_cmd(egui::ViewportCommand::Close);}else{self.disconnect();}
                         }
                         if icon_button(ui, Icon::Max, uu_i18n::text("最大化 / 还原窗口")).clicked() {
                             self.toggle_maximized(ctx);
@@ -965,7 +965,8 @@ impl super::App {
                                         .clicked()
                                         {
                                             self.stream_menu.open = false;
-                                            self.disconnect();
+                                            if let Some(tabs)=&self.workspace_tabs {tabs.actions.borrow_mut().push(super::stream_workspace::Action::CloseGroup(tabs.active));}
+                                            else{self.disconnect();}
                                         }
                                     });
                                 },

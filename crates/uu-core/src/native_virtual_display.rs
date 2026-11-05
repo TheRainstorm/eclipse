@@ -237,10 +237,12 @@ struct ClientState {
     sender: Option<mpsc::Sender<Command>>,
     responses: std::collections::VecDeque<(u64, Response)>,
     catalog: Option<(Status,Vec<Display>)>,
+    catalog_updated:Option<std::time::Instant>,
     slots:Vec<Slot>,
 }
 impl Client {
     pub fn snapshot(&self)->Option<(Status,Vec<Display>)> {self.state.lock().unwrap().catalog.clone()}
+    pub fn catalog_updated(&self)->Option<std::time::Instant> {self.state.lock().unwrap().catalog_updated}
     pub fn slots(&self)->Vec<Slot> {self.state.lock().unwrap().slots.clone()}
     pub fn request(&self, request: Request) -> Result<u64> {
         let state = self.state.lock().unwrap();
@@ -273,6 +275,7 @@ impl Client {
         self.available.store(false, Ordering::Release);
         state.responses.clear();
         state.catalog=None;
+        state.catalog_updated=None;
         state.slots.clear();
         state.epoch += 1;
         let (sender, receiver) = mpsc::channel(4);
@@ -293,6 +296,7 @@ impl Client {
             self.available.store(false, Ordering::Release);
             state.sender.take();
             state.catalog=None;
+            state.catalog_updated=None;
             state.slots.clear();
         }
     }
@@ -302,7 +306,7 @@ impl Client {
             return;
         }
         match &response {
-            Response::Snapshot{status,displays,slots}=>{state.catalog=Some((status.clone(),displays.clone()));state.slots=slots.clone();},
+            Response::Snapshot{status,displays,slots}=>{state.catalog=Some((status.clone(),displays.clone()));state.slots=slots.clone();state.catalog_updated=Some(std::time::Instant::now());},
             Response::Created{display}=>if let Some((_,displays))=&mut state.catalog {displays.retain(|d|d.id!=display.id);displays.push(display.clone());},
             Response::Removed{id}=>if let Some((_,displays))=&mut state.catalog {displays.retain(|d|d.id!=*id);},
             _=>{},

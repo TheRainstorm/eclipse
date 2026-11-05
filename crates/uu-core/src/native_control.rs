@@ -612,7 +612,7 @@ impl HostControl {
                                 let _ = send(&channel,Packet::Telemetry{version:1,stages:host.timing.snapshot()}).await;
                                 if host.timing.video_e2e.enabled() {let _=send(&channel,Packet::InputTimingSupport{version:1}).await;}
                                 let displays=host.displays.lock().unwrap().clone();
-                                if let Some(displays)=displays {let _=send(&channel,Packet::Displays{catalog:displays.catalog()}).await;}
+                                if let Some(displays)=displays {displays.poll_catalog();let _=send(&channel,Packet::Displays{catalog:displays.catalog()}).await;}
 
                             }
                             Some(Packet::SelectDisplay{request,id})=>{
@@ -797,9 +797,12 @@ impl ViewerControl {
                     }
                 },
                 Some(Packet::Displays{catalog}) if crate::native_displays::valid(&catalog)=>{
-                    *incoming.remote_screens.lock().unwrap()=catalog;
-                    incoming.native_displays.catalog(media_epoch);
-                    incoming.remote_screens_revision.fetch_add(1,Ordering::Release);
+                    let changed={let mut previous=incoming.remote_screens.lock().unwrap();
+                        if *previous==catalog {false}else{*previous=catalog;true}};
+                    if changed || incoming.native_displays.catalog_epoch()!=media_epoch {
+                        incoming.native_displays.catalog(media_epoch);
+                        incoming.remote_screens_revision.fetch_add(1,Ordering::Release);
+                    }
                     incoming.capabilities.enable(Capability::Displays,true);
                 },
                 Some(Packet::DisplaySelected{request,accepted,restart})=>incoming.native_displays.response(crate::native_displays::Response{request,accepted,restart}),

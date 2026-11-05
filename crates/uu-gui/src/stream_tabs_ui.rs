@@ -18,6 +18,8 @@ pub(super) struct StripRects {
     #[cfg(test)]
     pub screens: Vec<(u64, i32, Rect)>,
     #[cfg(test)]
+    pub view_screens:Vec<(u64,Rect)>,
+    #[cfg(test)]
     pub close: Vec<(u64, Rect)>,
     #[cfg(test)]
     pub create: Vec<(u64, Rect)>,
@@ -39,6 +41,7 @@ impl Default for StripRects {
             #[cfg(test)] devices: vec![],
             #[cfg(test)] groups: vec![],
             #[cfg(test)] screens: vec![],
+            #[cfg(test)] view_screens:vec![],
             #[cfg(test)] close: vec![],
             #[cfg(test)] create: vec![],
             #[cfg(test)] blank: None,
@@ -64,7 +67,7 @@ fn label(ui: &mut egui::Ui, text: &str, selected: bool, device: bool, width_limi
     // Give each title its measured width. The scroll viewport, rather than a
     // short fixed cap, limits how much of one long label can be shown at once.
     let width=if device {(galley.size().x+leading+16.).max(70.)}
-        else {((galley.size().x+16.).max(72.)*0.6).clamp(72.,144.)}.min(width_limit);
+        else {(galley.size().x+20.).clamp(110.,300.)}.min(width_limit);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, crate::theme::TOOLBAR_HEIGHT), Sense::click_and_drag());
     let face=crate::theme::paint_tab(ui,&response,selected,"");
     // Drag/hit ownership remains the stable slot; glyphs follow its painted face.
@@ -109,26 +112,63 @@ fn control(ui: &mut egui::Ui, kind: Control, enabled: bool) -> Response {
     response
 }
 
-fn connection_menu(ui: &mut egui::Ui, group: &Group, actions: &mut Vec<Action>, _rects: &mut StripRects) {
+fn connection_menu(ui: &mut egui::Ui, group: &Group, screen:bool, actions: &mut Vec<Action>, _rects: &mut StripRects) {
     crate::theme::compact_menu_style(ui);
     ui.set_min_width(180.);
-    if group.can_open_displays && group.screens.len()>1 && crate::theme::menu_action(ui,true,uu_i18n::text("所有屏幕独立打开")).clicked() {
-        actions.push(Action::OpenAllDisplays(group.command_session())); ui.close_menu();
-    }
-    if group.can_merge {
-        let merge=crate::theme::menu_action(ui,true,uu_i18n::text("合并到原本窗口"));
+    if screen {
+        let detach=crate::theme::menu_action(ui,group.can_detach,uu_i18n::text("移到独立窗口"));
+        record!(_rects.detach,(group.command_session(),detach.rect));
+        if detach.clicked() {actions.push(Action::Detach(group.command_session()));ui.close_menu();}
+        let merge=crate::theme::menu_action(ui,group.can_merge,uu_i18n::text("合并到原本窗口"));
         record!(_rects.merge,(group.command_session(),merge.rect));
         if merge.clicked() {actions.push(Action::Merge(group.command_session()));ui.close_menu();}
     } else {
-        let detach=crate::theme::menu_action(ui,group.can_detach,uu_i18n::text("移到独立窗口"))
-            .on_disabled_hover_text(uu_i18n::text("已在独立窗口中"));
-        record!(_rects.detach,(group.command_session(),detach.rect));
-        if detach.clicked() { actions.push(Action::Detach(group.command_session())); ui.close_menu(); }
+        let merge=crate::theme::menu_action(ui,group.can_merge,uu_i18n::text("合并所有显示器到原窗口"));
+        record!(_rects.merge,(group.command_session(),merge.rect));
+        if merge.clicked() {actions.push(Action::MergeGroup(group.command_session()));ui.close_menu();}
     }
     ui.separator();
     let disconnect=crate::theme::menu_action(ui,true,uu_i18n::text("断开此会话"));
     record!(_rects.disconnect,(group.command_session(),disconnect.rect));
-    if disconnect.clicked() { actions.push(Action::Close(group.command_session())); ui.close_menu(); }
+    if disconnect.clicked() { actions.push(if screen{Action::Close(group.command_session())}else{Action::CloseGroup(group.command_session())}); ui.close_menu(); }
+}
+
+pub(super) fn source_menu(tabs:&Tabs,group:&Group,ui:&mut egui::Ui,actions:&mut Vec<Action>) {
+    use crate::stream_workspace::SourceKind;
+    crate::theme::compact_menu_style(ui);
+    ui.set_min_width((ui.ctx().screen_rect().width()-32.).clamp(220.,440.));
+    let sources=tabs.sources.iter().find(|(id,_)|*id==group.id).map(|(_,s)|s.as_slice()).unwrap_or_default();
+    for (kind,label) in [(SourceKind::Physical,"物理显示器"),(SourceKind::Persistent,"持久虚拟显示器"),(SourceKind::Temporary,"临时虚拟显示器"),(SourceKind::Virtual,"虚拟显示器")] {
+        let rows:Vec<_>=sources.iter().filter(|s|s.kind==kind).collect();
+        if rows.is_empty(){continue;}
+        ui.strong(uu_i18n::text(label));
+        for source in rows {
+            ui.add_enabled_ui(source.active&&!source.owned,|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let title=ui.add_sized([180.,24.],egui::Button::new(&source.label).frame(false));
+                    if title.clicked() {actions.push(Action::OpenSource{session:group.command_session(),source:source.id,new_window:false});ui.close_menu();}
+                    for (label,new_window) in [("当前窗口",false),("独立窗口",true)] {
+                        if ui.add(crate::theme::secondary_button(uu_i18n::text(label)).small()).clicked() {
+                            actions.push(Action::OpenSource{session:group.command_session(),source:source.id,new_window});ui.close_menu();
+                        }
+                    }
+                });
+            }).response.on_hover_text(if source.owned {uu_i18n::text("已由串流窗口拥有此显示器")}else if !source.active {uu_i18n::text("显示器当前未激活")}else{&source.label});
+        }
+    }
+    ui.separator();
+    for (label,persistent) in [("新建临时虚拟显示器",false),("新建持久虚拟显示器",true)] {
+        if crate::theme::menu_action(ui,group.can_create_display,uu_i18n::text(label)).clicked() {
+            let session=group.creation_session();let spec=tabs.presets.default_spec();
+            actions.push(if persistent {Action::CreatePersistentDisplayWithSpec{session,spec}}else{Action::CreateDisplayWithSpec{session,spec}});ui.close_menu();
+        }
+    }
+    if group.can_create_display {
+        ui.menu_button(uu_i18n::text("按规格新建临时显示器"),|ui| {
+            if let Some(spec)=crate::virtual_display_presets::create_menu(ui,&tabs.presets) {actions.push(Action::CreateDisplayWithSpec{session:group.creation_session(),spec});}
+        });
+        if crate::theme::menu_action(ui,true,uu_i18n::text("管理虚拟显示器")).clicked() {actions.push(Action::ManageDisplays(group.creation_session()));ui.close_menu();}
+    }
 }
 
 fn insertion(ui: &egui::Ui, rect: Rect, after: bool) {
@@ -168,7 +208,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                 name.dnd_set_drag_payload(Drag(group.command_session()));
                                 if name.clicked() { actions.push(group.activate()); }
                                 if name.dragged() { ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing); }
-                                name.context_menu(|ui|connection_menu(ui,group,&mut actions,&mut rects));
+                                name.context_menu(|ui|connection_menu(ui,group,false,&mut actions,&mut rects));
                                 if name.context_menu_opened() { tabs.local_ui.set(true); }
                                 // Reveal the connection header once per activation. Its
                                 // sources can be wider than the viewport; preserve
@@ -183,7 +223,7 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                     record!(rects.screens,(group.id,*screen,response.rect));
                                     if response.clicked() { actions.push(group.screen_action(*screen)); }
                                     if let Some(view)=group.view_group(*screen).or_else(||group.fixed_view.then(||group.clone())) {
-                                        response.context_menu(|ui|connection_menu(ui,&view,&mut actions,&mut rects));
+                                        response.context_menu(|ui|connection_menu(ui,&view,true,&mut actions,&mut rects));
                                     } else if group.can_open_displays {
                                         response.context_menu(|ui| {
                                             let open=ui.add_enabled(group.can_open_display(*screen),crate::theme::ghost_button(uu_i18n::text("在独立窗口中打开")))
@@ -193,30 +233,22 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                                         });
                                     }
                                     if response.context_menu_opened() { tabs.local_ui.set(true); }
-                                    if let Some(view)=group.view_group(*screen).or_else(||group.fixed_view.then(||group.clone())) {response.dnd_set_drag_payload(Drag(view.id));}
-                                    else {
-                                        response.dnd_set_drag_payload(DragScreen{session:group.id,screen:*screen});
-                                        if let Some(drag)=response.dnd_hover_payload::<DragScreen>().filter(|drag|drag.session==group.id && drag.screen!=*screen) {
-                                            let after=ui.input(|i|i.pointer.hover_pos().is_some_and(|p|p.x>response.rect.center().x));
-                                            insertion(ui,response.rect,after);
-                                            if response.dnd_release_payload::<DragScreen>().is_some() { actions.push(Action::ReorderScreen{session:group.id,source:drag.screen,target:*screen,after}); }
-                                        }
+                                    let view_id=group.view_session(*screen).unwrap_or(group.id);
+                                    record!(rects.view_screens,(view_id,response.rect));
+                                    response.dnd_set_drag_payload(DragScreen{session:view_id,screen:*screen});
+                                    if let Some(drag)=response.dnd_hover_payload::<DragScreen>().filter(|d|d.session!=view_id) {
+                                        let after=ui.input(|i|i.pointer.hover_pos().is_some_and(|p|p.x>response.rect.center().x));
+                                        insertion(ui,response.rect,after);
+                                        if response.dnd_release_payload::<DragScreen>().is_some() {actions.push(Action::MoveView{source:drag.session,target:view_id,after});}
                                     }
+
                                 }
                                 if group.can_open_displays || group.can_create_display {
-                                    let add=control(ui,Control::Add,group.can_create_display)
-                                        .on_hover_text(uu_i18n::text(if group.can_create_display {
-                                            "新建虚拟显示器；默认断开后移除，源机可以保留"
-                                        } else { "远端未提供虚拟显示器管理，请更新后台并授予管理服务权限" }));
+                                    let add=control(ui,Control::Add,group.can_open_displays||group.can_create_display)
+                                        .on_hover_text(uu_i18n::text("打开空闲显示器；右键选择显示器或新建虚拟显示器"));
                                     record!(rects.create,(group.id,add.rect));
-                                    if add.clicked() { actions.push(Action::CreateDisplayWithSpec{session:group.creation_session(),spec:tabs.presets.default_spec()}); }
-                                    if group.can_create_display {
-                                        add.context_menu(|ui| {
-                                            if let Some(spec)=crate::virtual_display_presets::create_menu(ui,&tabs.presets) {actions.push(Action::CreateDisplayWithSpec{session:group.creation_session(),spec});}
-                                            ui.separator();
-                                            if ui.add(crate::theme::ghost_button(uu_i18n::text("管理虚拟显示器"))).clicked() {actions.push(Action::ManageDisplays(group.creation_session()));ui.close_menu();}
-                                        });
-                                    }
+                                    if add.clicked() {actions.push(Action::AddDisplay(group.command_session()));}
+                                    add.context_menu(|ui|source_menu(tabs,group,ui,&mut actions));
                                     if add.context_menu_opened() {tabs.local_ui.set(true);}
                                 }
                             });
@@ -227,16 +259,22 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
                             insertion(ui,response.rect,after);
                             if response.dnd_release_payload::<Drag>().is_some() {actions.push(Action::Reorder{source:drag.0,target:group.id,after});}
                         }
+                        if let Some(drag)=response.dnd_hover_payload::<DragScreen>() {
+                            if response.dnd_release_payload::<DragScreen>().is_some() {actions.push(Action::MoveView{source:drag.session,target:group.command_session(),after:true});}
+                        }
                     });
                 }
             });
         });
     #[cfg(test)] {rects.bounds=_area.inner_rect;}
     tabs.actions.borrow_mut().extend(actions);
-    if let Some(drag)=egui::DragAndDrop::payload::<Drag>(ui.ctx()) {
-        let outside=ui.input(|i|i.pointer.any_released() && i.pointer.latest_pos().is_none_or(|p|!i.screen_rect().contains(p)));
-        if outside && tabs.groups.iter().any(|group|group.contains(drag.0) && group.can_detach) {
-            tabs.actions.borrow_mut().push(Action::Detach(drag.0));egui::DragAndDrop::clear_payload(ui.ctx());
+    let outside=ui.input(|i|i.pointer.any_released()&&i.pointer.hover_pos().is_none_or(|p|!i.screen_rect().contains(p)));
+    if outside {
+        let payload=egui::DragAndDrop::payload::<Drag>(ui.ctx()).map(|d|(d.0,true))
+            .or_else(||egui::DragAndDrop::payload::<DragScreen>(ui.ctx()).map(|d|(d.session,false)));
+        if let Some((source,group))=payload {
+            tabs.actions.borrow_mut().push(Action::Drop{source,group,point:crate::platform::Platform::pointer_screen_position()});
+            egui::DragAndDrop::clear_payload(ui.ctx());
         }
     }
     rects
@@ -264,7 +302,7 @@ mod tests {
     fn active_connection_reveals_its_header_once_and_preserves_manual_scroll() {
         let ctx=egui::Context::default();
         ctx.style_mut(|style|style.scroll_animation=egui::style::ScrollAnimation::none());
-        let mut tabs=Tabs {presets:Default::default(),
+        let mut tabs=Tabs {sources:vec![],modal:Default::default(),presets:Default::default(),
             groups:(1..=4).map(|id|Group {last_session:id,members:vec![],views:vec![],
                 id,name:format!("Generated computer {id} with a long title"),
                 screens:vec![(1,"Main display".into()),(2,"Temporary virtual display".into())],
@@ -306,7 +344,7 @@ mod tests {
         let ctx=egui::Context::default();
         let name="Generated workstation with a descriptive name";
         let source="Display 12 (VDD by MTT DISPLAY16)";
-        let mut tabs=Tabs {presets:Default::default(),
+        let mut tabs=Tabs {sources:vec![],modal:Default::default(),presets:Default::default(),
             groups:vec![Group{last_session:1,members:vec![],views:vec![],id:1,name:name.into(),screens:vec![(12,source.into())],selected:Some(12),
                 can_open_displays:false,can_create_display:true,can_detach:false,fixed_view:true,can_merge:true}],
             active:1,actions:Default::default(),local_ui:Default::default(),
@@ -314,7 +352,7 @@ mod tests {
         let rects=frame(&ctx,&tabs,0.,1100.,180.,vec![]);
         let text_width=|text:&str,size:f32|ctx.fonts(|fonts|fonts.layout_no_wrap(text.into(),egui::FontId::proportional(size),Color32::WHITE).size().x);
         assert!(rects.devices[0].1.width()+0.1>=text_width(name,12.5)+38.);
-        assert!(rects.screens[0].2.width()<=144.1,"long source captions must remain compact");
+        assert!(rects.screens[0].2.width()>=text_width(source,12.)+16. && rects.screens[0].2.width()<=300.1,"source captions get their measured width up to a readable cap");
         assert!(rects.close.is_empty(),"the hostname has no inline disconnect action");
         assert_eq!(rects.create.len(),1,"a fixed view retains its independent virtual-display creation entry");
         let point=rects.screens[0].2.center();
@@ -326,17 +364,21 @@ mod tests {
         frame(&ctx,&tabs,0.6,1100.,180.,button(point,egui::PointerButton::Secondary,true));
         frame(&ctx,&tabs,0.8,1100.,180.,button(point,egui::PointerButton::Secondary,false));
         let popup=frame(&ctx,&tabs,1.,1100.,180.,vec![]);
-        assert_eq!(popup.merge.len(),1);assert!(popup.detach.is_empty());
+        assert_eq!(popup.merge.len(),1);assert_eq!(popup.detach.len(),1);
+        let disabled=popup.detach[0].1.center();
+        frame(&ctx,&tabs,1.05,1100.,180.,button(disabled,egui::PointerButton::Primary,true));
+        frame(&ctx,&tabs,1.1,1100.,180.,button(disabled,egui::PointerButton::Primary,false));
+        assert!(tabs.actions.borrow().is_empty(),"a lone view cannot detach into an empty replacement window");
         let merge=popup.merge[0].1.center();
         frame(&ctx,&tabs,1.2,1100.,180.,button(merge,egui::PointerButton::Primary,true));
         frame(&ctx,&tabs,1.4,1100.,180.,button(merge,egui::PointerButton::Primary,false));
         assert!(matches!(&tabs.actions.borrow()[..],[Action::Merge(1)]));
         tabs.actions.borrow_mut().clear();
-        // Returning home changes window ownership, not the fixed source.
+        // Moving into the surviving window changes ownership, not the source.
         tabs.groups[0].can_merge=false;tabs.groups[0].can_detach=true;
         frame(&ctx,&tabs,1.6,1100.,180.,button(point,egui::PointerButton::Secondary,true));
         frame(&ctx,&tabs,1.8,1100.,180.,button(point,egui::PointerButton::Secondary,false));
         let home=frame(&ctx,&tabs,2.,1100.,180.,vec![]);
-        assert!(home.merge.is_empty());assert_eq!(home.detach.len(),1);
+        assert_eq!(home.merge.len(),1);assert_eq!(home.detach.len(),1);
     }
 }

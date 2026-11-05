@@ -683,6 +683,7 @@ impl App {
     }
 
     fn local_shortcut(&mut self, action: shortcuts::Action, ctx: &egui::Context) {
+        if self.workspace_tabs.as_ref().is_some_and(|tabs|tabs.modal.get()) {return;}
         self.release_all_keys();
         match action {
             shortcuts::Action::Stats=>{self.hud=!self.hud;self.persist_preferences();},
@@ -696,7 +697,10 @@ impl App {
                     if let Some(tabs)=&self.workspace_tabs {tabs.navigate(action);}
                 }
             },
-            shortcuts::Action::Exit=>self.disconnect(),
+            shortcuts::Action::Exit=>{
+                if let Some(tabs)=&self.workspace_tabs {tabs.actions.borrow_mut().push(stream_workspace::Action::CloseGroup(tabs.active));}
+                else {self.disconnect();}
+            },
             shortcuts::Action::MouseMode=>{
                 self.release_pointer_capture(ctx);
                 self.preferences.relative_mouse=!self.preferences.relative_mouse;
