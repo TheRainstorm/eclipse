@@ -1,4 +1,10 @@
 {
+  "先关闭拥有此屏幕的串流；其他连接的临时屏由其所有者回收": "Close the owning stream first. Other connections reclaim their own temporary displays.",
+  "物理显示器": "Physical displays",
+  "当前窗口": "Current window",
+  "新建持久虚拟显示器": "Create a persistent virtual display",
+  "持久虚拟显示器": "Persistent virtual displays",
+  "临时虚拟显示器": "Temporary virtual displays",
   "已由串流窗口拥有此显示器": "This display already belongs to a streaming window.",
   "显示器当前未激活": "This display is currently inactive.",
   "打开空闲显示器；右键选择显示器或新建虚拟显示器": "Open an unused display; right-click to choose a display or create a virtual display.",

@@ -98,7 +98,7 @@ fn add_display_reserves_unopened_views_and_prioritizes_active_physical_sources()
     let mut state=owned_state();let device=owned_target("A");let ctx=egui::Context::default();
     let a=own_generated(&mut state,0,&device,0);
     for (id,screen,kind,active) in [(100,1,SourceKind::Persistent,true),(101,2,SourceKind::Physical,true),(102,3,SourceKind::Physical,false)] {
-        state.sources.push(SourceRecord{id,device:base_key(&device),screen:generated_screen(screen),label:format!("Source {screen}"),kind,active});
+        state.sources.push(SourceRecord{id,device:base_key(&device),screen:generated_screen(screen),label:format!("Source {screen}"),kind,active,managed:None,removable:false});
     }
     state.add_display(a,&ctx);
     assert_eq!(state.windows[0].views.len(),2);assert_eq!(state.windows[0].views[1].source.as_ref().unwrap().source,"Generated source 2");
@@ -420,29 +420,6 @@ fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() 
 }
 
 #[test]
-fn device_selector_requires_an_explicit_open_and_keeps_the_video_area() {
-    let ctx=egui::Context::default();crate::setup_style(&ctx);
-    let mut tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:1,members:vec![],views:vec![],id:1,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},Group{last_session:2,members:vec![],views:vec![],id:2,name:"B".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:1,actions:Default::default(),local_ui:Default::default()};
-    let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
-    let draw=|tabs:&Tabs,pointer| {
-        let mut visible=false;
-        let _=ctx.run(egui::RawInput{screen_rect:Some(screen),focused:true,
-            events:vec![egui::Event::PointerMoved(pointer)],..Default::default()},|ctx| {
-                visible=tabs.show_selector(ctx).is_some();
-                assert_eq!(ctx.available_rect(),screen,"selector must not reserve a top panel");
-            });
-        visible
-    };
-    for _ in 0..3 {assert!(!draw(&tabs,egui::pos2(600.,3.)));}
-    tabs.open_selector(&ctx);
-    assert!(draw(&tabs,egui::pos2(600.,360.)));
-    assert!(tabs.owns_input(&ctx));
-    tabs.active=2;
-    assert!(!draw(&tabs,egui::pos2(600.,3.)),"switching computers closes the previous selector");
-    assert!(!tabs.owns_input(&ctx));
-}
-
-#[test]
 fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
     let context = egui::Context::default();
     crate::setup_style(&context);
@@ -602,7 +579,7 @@ fn display_pills_open_their_own_source_and_keep_connection_ownership() {
     let context=egui::Context::default();crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
     let views=vec![View{screen:7,session:31,fixed:true,active:false,can_create:false,can_detach:true,can_merge:false},View{screen:16,session:22,fixed:true,active:true,can_create:true,can_detach:true,can_merge:false}];
-    let tabs=Tabs{sources:vec![(31,vec![SourceChoice{id:100,label:"Spare physical".into(),kind:SourceKind::Physical,active:true,owned:false},SourceChoice{id:101,label:"Owned unopened".into(),kind:SourceKind::Physical,active:true,owned:true}])],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![31,22],views,id:31,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:true,fixed_view:true,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{sources:vec![(31,vec![SourceChoice{id:100,label:"Spare physical".into(),kind:SourceKind::Physical,active:true,owned:false,current_view:None,managed:None,removable:false},SourceChoice{id:101,label:"Owned unopened".into(),kind:SourceKind::Physical,active:true,owned:true,current_view:None,managed:None,removable:false}])],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![31,22],views,id:31,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:true,fixed_view:true,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let render=|events|context.run(egui::RawInput{events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,700.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|r|find(r.borrow().get(&egui::ViewportId::ROOT).unwrap()).center());
     let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};

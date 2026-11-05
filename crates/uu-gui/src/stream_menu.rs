@@ -312,13 +312,6 @@ fn hud_toggle(ui:&mut egui::Ui,enabled:&mut bool,bindings:&uu_core::hotkeys::Bin
     let hint=bindings.label(uu_core::hotkeys::Action::Stats);
     if menu_toggle(ui,uu_i18n::text("启用 HUD"),*enabled,&hint).on_hover_text(uu_i18n::text("开关精简HUD；悬停查看诊断和历史曲线。")).clicked(){*enabled=!*enabled;true}else{false}
 }
-fn unavailable(ui: &mut egui::Ui, kind: Icon, label: &str, hint: &str) {
-    ui.add_enabled_ui(false, |ui| {
-        menu_row(ui, label, Some(kind), false, true, "", false)
-    })
-    .inner
-    .on_disabled_hover_text(hint);
-}
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum QualityDetail {
     Bitrate,
@@ -529,12 +522,18 @@ impl super::App {
     fn display_menu(&mut self, ui: &mut egui::Ui) {
         let screens=self.visible_remote_screens();
         ui.set_min_width(260.0);
-        if let Some(tabs)=&self.workspace_tabs {
-            if menu_row(ui,uu_i18n::text("设备与屏幕"),Some(Icon::Grid),false,false,"",false).clicked() {
-                tabs.open_selector(ui.ctx());self.displays.menu_open=false;self.stream_menu.open=false;
-                ui.memory_mut(|memory|memory.close_popup());
+        if !screens.screens.iter().any(|s|s.kind==uu_core::screen_control::PORTAL_CHOICE_KIND) {
+            if let Some(tabs)=self.workspace_tabs.clone() {
+                if let Some(group)=tabs.groups.iter().find(|g|g.contains(tabs.active)) {
+                    let mut actions=vec![];
+                    crate::stream_tabs_ui::display_sources(&tabs,group,ui,&mut actions,false);
+                    if !actions.is_empty() {
+                        tabs.actions.borrow_mut().extend(actions);
+                        self.displays.menu_open=false;self.stream_menu.open=false;ui.close_menu();
+                    }
+                    return;
+                }
             }
-            separator(ui);
         }
         for screen in &screens.screens {
             let response=menu_row(ui,&self.screen_label(screen),None,
@@ -855,7 +854,7 @@ impl super::App {
                                         ui,
                                         &mut blocked,
                                         Icon::Desktop,
-                                        self.display_label(),
+                                        uu_i18n::text("显示器"),
                                         |ui| self.display_menu(ui),
                                     );
                                     }
@@ -889,12 +888,6 @@ impl super::App {
                                     }
                                     {
                                     side_submenu(ui, &mut blocked, Icon::Person, uu_i18n::text("安全"), |ui| {
-                                        if self.native_input_available()&&!self.supports_remote(uu_core::capabilities::Capability::Input)
-                                            &&menu_row(ui,uu_i18n::text("请求输入控制"),None,false,false,"",false).on_hover_text(uu_i18n::text("向允许输入的主机请求控制权。")).clicked() {
-                                            self.view_only=false;
-                                            self.input_capture.request();
-                                            ui.close_menu();
-                                        }
                                         if menu_toggle(ui,uu_i18n::text("仅观看，禁止远程输入"),self.view_only,"").on_hover_text(uu_i18n::text("启用时释放全部远端键鼠与手柄；关闭后按主机授权恢复控制。")).clicked()
                                         {
                                             self.view_only=!self.view_only;
@@ -921,31 +914,14 @@ impl super::App {
                                         }
                                     });
                                     }
-                                    if !self.uses_engine_controls() {
-                                    unavailable(ui, Icon::Link, uu_i18n::text("外设"), uu_i18n::text("外设透传尚未接入"));
-                                    unavailable(
-                                        ui,
-                                        Icon::Folder,
-                                        uu_i18n::text("工具"),
-                                        uu_i18n::text("文件、终端和端口映射尚未接入"),
-                                    );
-                                    }
                                     if menu_row(ui,uu_i18n::text("连接详情"),Some(Icon::Link),false,false,"",false).clicked(){self.open_connection_details();}
                                     if menu_row(ui,uu_i18n::text("串流设置"),Some(Icon::Settings),false,false,"",false).clicked(){self.open_stream_settings();}
                                     side_submenu(ui, &mut blocked, Icon::Grid, uu_i18n::text("更多"), |ui| {
                                         if hud_toggle(ui,&mut self.hud,&self.preferences.hotkeys) {self.persist_preferences();}
-                                        if menu_row(
-                                            ui,
-                                            uu_i18n::text("隐藏悬浮入口"),
-                                            None,
-                                            false,
-                                            false,
-                                            &self.preferences.hotkeys.label(uu_core::hotkeys::Action::Menu),
-                                            false,
-                                        )
-                                        .clicked()
+                                        if menu_toggle(ui,uu_i18n::text("隐藏悬浮入口"),!self.stream_menu.visible,
+                                            &self.preferences.hotkeys.label(uu_core::hotkeys::Action::Menu)).clicked()
                                         {
-                                            self.stream_menu.visible = false;
+                                            self.stream_menu.visible = !self.stream_menu.visible;
                                             self.stream_menu.open = false;
                                             ctx.memory_mut(|m| m.close_popup());
                                         }

@@ -423,7 +423,7 @@ pub fn paint_tab(
 ) -> egui::Rect {
     let label = label.into();
     if is_animal(ui.visuals()) {
-        return island::choices::paint_tab(ui, response, selected, label);
+        return island::choices::paint_flat_tab(ui, response, selected, label);
     }
     let p = *palette(ui.visuals());
     let enabled = ui.is_enabled();

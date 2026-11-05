@@ -185,10 +185,8 @@ impl App {
 
     pub(super) fn stream_ui(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
         if !self.fullscreen { self.connection_bar(ctx); }
-        let device_selector=self.workspace_tabs.as_ref().and_then(|tabs|tabs.show_selector(ctx));
         let was_open = self.stream_menu.owns_input(self.fullscreen) || self.displays.menu_open;
         let mut controls = self.stream_controls(ctx);
-        controls.extend(device_selector);
         let control_pointer = !self.mouse_captured && ctx.input(|i|i.pointer.hover_pos().is_some_and(|p|controls.iter().any(|r|r.contains(p))));
         let picture_blocked = self.displays.menu_open || self.local_dialog_open() || self.window_edge_active || was_open || self.stream_menu.owns_input(self.fullscreen) || control_pointer
             || self.workspace_tabs.as_ref().is_some_and(|tabs|tabs.owns_input(ctx));
@@ -241,7 +239,9 @@ impl App {
                     if !self.disconnecting && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),super::theme::secondary_button(uu_i18n::text("取消连接"))).clicked(){self.disconnect();}
                 } else {
                     if ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),super::theme::primary_button(uu_i18n::text("重新连接"))).clicked(){self.connect();}
-                    if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),super::theme::secondary_button(uu_i18n::text("关闭串流窗口"))).clicked(){self.disconnect();}
+                    if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),super::theme::secondary_button(uu_i18n::text("关闭串流窗口"))).clicked(){
+                        if self.workspace_tabs.is_some(){ctx.send_viewport_cmd(egui::ViewportCommand::Close);}else{self.disconnect();}
+                    }
                 }
             }
             if chosen.is_some() && !self.displays.notice.is_empty() {

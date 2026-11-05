@@ -305,6 +305,13 @@ pub fn paint_tab(
     selected: bool,
     text: impl Into<WidgetText>,
 ) -> egui::Rect {
+    paint_tab_style(ui,response,selected,text,true)
+}
+/// Flat presentation for tabs embedded in a native window's toolbar.
+pub fn paint_flat_tab(ui:&mut Ui,response:&Response,selected:bool,text:impl Into<WidgetText>)->egui::Rect {
+    paint_tab_style(ui,response,selected,text,false)
+}
+fn paint_tab_style(ui:&mut Ui,response:&Response,selected:bool,text:impl Into<WidgetText>,raised:bool)->egui::Rect {
     let p = *tokens::tokens(ui);
     let enabled = ui.is_enabled();
     let rect = response.rect;
@@ -333,7 +340,7 @@ pub fn paint_tab(
     let face = egui::Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - 4.))
         .translate(vec2(0., down));
     if ui.is_rect_visible(rect) {
-        if selected && enabled {
+        if raised && selected && enabled {
             ui.painter().rect_filled(
                 face.translate(vec2(0., 3. * motion)),
                 18.,

@@ -86,6 +86,7 @@ pub enum Action {
     OpenSource { session:u64, source:u64, new_window:bool },
     MoveView { source:u64, target:u64, after:bool },
     Drop { source:u64, group:bool, point:Option<(i32,i32)> },
+    RemoveDisplay { session:u64, display:uu_core::virtual_display::LeaseId },
 }
 #[derive(Clone)]
 pub(super) struct View {
@@ -147,52 +148,6 @@ pub(super) struct DragScreen {
     pub(super) screen: i32,
 }
 impl Tabs {
-    fn selector_id(ctx:&egui::Context)->egui::Id {
-        egui::Id::new(("workspace-device-selector",ctx.viewport_id()))
-    }
-    pub fn open_selector(&self,ctx:&egui::Context) {
-        let id=Self::selector_id(ctx);
-        ctx.data_mut(|data|data.insert_temp(id,self.active));
-    }
-    pub fn show_selector(&self,ctx:&egui::Context)->Option<egui::Rect> {
-        let id=Self::selector_id(ctx);
-        let owner=ctx.data(|data|data.get_temp::<u64>(id));
-        if owner!=Some(self.active) {
-            if owner.is_some(){ctx.data_mut(|data|data.remove::<u64>(id));}
-            return None;
-        }
-        let mut open=true;let mut selected=None;
-        let window=egui::Window::new(uu_i18n::text("设备与屏幕"))
-            .id(id).open(&mut open).collapsible(false).resizable(false).default_width(360.)
-            .show(ctx,|ui|egui::ScrollArea::vertical().max_height(440.).show(ui,|ui| {
-                for group in &self.groups {
-                    if ui.selectable_label(group.contains(self.active),&group.name).clicked() {selected=Some(group.activate());}
-                    ui.indent(group.id,|ui| {
-                        if group.can_open_displays||group.can_create_display {
-                            let add=ui.add_enabled(group.can_create_display,egui::Button::new(uu_i18n::text("+ 新建临时虚拟显示器")))
-                                .on_disabled_hover_text(uu_i18n::text("远端未提供虚拟显示器管理，请更新后台并授予管理服务权限"));
-                            if add.clicked() {selected=Some(Action::CreateDisplayWithSpec{session:group.creation_session(),spec:self.presets.default_spec()});}
-                            if group.can_create_display {add.context_menu(|ui| {if let Some(spec)=crate::virtual_display_presets::create_menu(ui,&self.presets) {selected=Some(Action::CreateDisplayWithSpec{session:group.creation_session(),spec});}});}
-                        }
-                        if group.can_create_display && ui.small_button(uu_i18n::text("管理虚拟显示器")).clicked() {selected=Some(Action::ManageDisplays(group.creation_session()));}
-                        for (screen,label) in &group.screens {
-                            ui.horizontal(|ui| {
-                                if ui.selectable_label(group.contains(self.active) && group.selected==Some(*screen),label).clicked() {selected=Some(group.screen_action(*screen));}
-                                if let Some(view)=group.view_group(*screen) {
-                                    if ui.add_enabled(view.can_detach,egui::Button::new(uu_i18n::text("独立窗口")).small()).on_disabled_hover_text(uu_i18n::text("已在独立窗口中")).clicked() {selected=Some(Action::Detach(view.id));}
-                                } else if group.can_open_displays && ui.add_enabled(group.can_open_display(*screen),egui::Button::new(uu_i18n::text("独立窗口")).small())
-                                    .on_disabled_hover_text(uu_i18n::text("已在独立窗口中")).clicked() {selected=Some(Action::OpenDisplay{session:group.id,screen:*screen});}
-                            });
-                        }
-                        if group.can_open_displays && group.screens.len()>1 && ui.button(uu_i18n::text("所有屏幕独立打开")).clicked() {selected=Some(Action::OpenAllDisplays(group.id));}
-                    });
-                    ui.separator();
-                }
-            }));
-        if let Some(selection)=selected {self.actions.borrow_mut().push(selection);open=false;}
-        if !open {ctx.data_mut(|data|data.remove::<u64>(id));}
-        window.map(|window|window.response.rect)
-    }
     pub fn navigate(&self, action: uu_core::hotkeys::Action) {
         use uu_core::hotkeys::Action as Command;
         let Some(current)=self.groups.iter().position(|group|group.contains(self.active)) else {return;};
@@ -212,9 +167,7 @@ impl Tabs {
         if let Some(selection)=selection {self.actions.borrow_mut().push(selection);}
     }
     pub fn owns_input(&self, ctx: &egui::Context) -> bool {
-        let selector_id=Self::selector_id(ctx);
         self.modal.get() || self.local_ui.get()
-            || ctx.data(|data|data.get_temp::<u64>(selector_id))==Some(self.active)
             || egui::DragAndDrop::has_payload_of_type::<Drag>(ctx)
             || egui::DragAndDrop::has_payload_of_type::<DragScreen>(ctx)
     }
@@ -266,6 +219,8 @@ struct SourceRecord {
     label:String,
     kind:SourceKind,
     active:bool,
+    managed:Option<uu_core::virtual_display::LeaseId>,
+    removable:bool,
 }
 #[derive(Clone)]
 pub(super) struct SourceChoice {
@@ -274,6 +229,9 @@ pub(super) struct SourceChoice {
     pub kind:SourceKind,
     pub active:bool,
     pub owned:bool,
+    pub current_view:Option<u64>,
+    pub managed:Option<uu_core::virtual_display::LeaseId>,
+    pub removable:bool,
 }
 fn session_title(app:&App)->String {
     let target=app.stream_target.as_ref().expect("stream session target");
@@ -826,6 +784,12 @@ impl State {
             Action::CreateDisplayWithSpec{session,spec}=>self.fork_virtual_display(session,Some(spec),false),
             Action::CreatePersistentDisplayWithSpec{session,spec}=>self.fork_virtual_display(session,Some(spec),true),
             Action::ManageDisplays(id)=>if let Some(s)=self.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==id) {s.app.manage_remote_virtual_displays();},
+            Action::RemoveDisplay{session,display}=>{
+                let allowed=self.sources.iter().find(|s|s.managed==Some(display))
+                    .is_some_and(|source|source.removable&&!self.source_owned(source)&&self.windows.iter().flat_map(|w|&w.views)
+                        .any(|view|view.id==session&&base_key(&view.launch.target)==source.device));
+                if allowed {if let Some(s)=self.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==session) {s.app.remove_remote_virtual_display(display);}}
+            },
             Action::OpenAllDisplays(id)=>{for view in self.group_ids(id) {self.detach(view,ctx);}},
             Action::MoveView{source,target,after}=>{
                 let Some(index)=self.windows.iter().position(|w|!w.closing&&w.views.iter().any(|v|v.id==target)) else{return;};

@@ -134,28 +134,47 @@ fn connection_menu(ui: &mut egui::Ui, group: &Group, screen:bool, actions: &mut 
 }
 
 pub(super) fn source_menu(tabs:&Tabs,group:&Group,ui:&mut egui::Ui,actions:&mut Vec<Action>) {
+    display_sources(tabs,group,ui,actions,true);
+}
+pub(super) fn display_sources(tabs:&Tabs,group:&Group,ui:&mut egui::Ui,actions:&mut Vec<Action>,open_modes:bool) {
     use crate::stream_workspace::SourceKind;
     crate::theme::compact_menu_style(ui);
-    ui.set_min_width((ui.ctx().screen_rect().width()-32.).clamp(220.,440.));
+    if open_modes {ui.set_min_width((ui.ctx().screen_rect().width()-32.).clamp(220.,440.));}
     let sources=tabs.sources.iter().find(|(id,_)|*id==group.id).map(|(_,s)|s.as_slice()).unwrap_or_default();
     for (kind,label) in [(SourceKind::Physical,"物理显示器"),(SourceKind::Persistent,"持久虚拟显示器"),(SourceKind::Temporary,"临时虚拟显示器"),(SourceKind::Virtual,"虚拟显示器")] {
         let rows:Vec<_>=sources.iter().filter(|s|s.kind==kind).collect();
         if rows.is_empty(){continue;}
-        ui.strong(uu_i18n::text(label));
+        ui.label(egui::RichText::new(uu_i18n::text(label)).small().weak());
         for source in rows {
-            ui.add_enabled_ui(source.active&&!source.owned,|ui| {
-                ui.horizontal_wrapped(|ui| {
-                    let title=ui.add_sized([180.,24.],egui::Button::new(&source.label).frame(false));
-                    if title.clicked() {actions.push(Action::OpenSource{session:group.command_session(),source:source.id,new_window:false});ui.close_menu();}
-                    for (label,new_window) in [("当前窗口",false),("独立窗口",true)] {
+            ui.horizontal_wrapped(|ui| {
+                let enabled=source.active&&(!source.owned||(!open_modes&&source.current_view.is_some()));
+                ui.add_enabled_ui(enabled,|ui| {
+                    let width=if open_modes{180.}else{(ui.available_width()-if source.managed.is_some(){52.}else{0.}).max(90.)};
+                    let title=ui.add_sized([width,24.],egui::Button::new(&source.label).frame(false)
+                        .selected(!open_modes&&source.current_view==Some(tabs.active)));
+                    if title.clicked() {
+                        actions.push(if !open_modes&&source.current_view.is_some(){Action::Select(source.current_view.unwrap(),None)}
+                            else{Action::OpenSource{session:group.command_session(),source:source.id,new_window:false}});
+                        ui.close_menu();
+                    }
+                    if open_modes {for (label,new_window) in [("当前窗口",false),("独立窗口",true)] {
                         if ui.add(crate::theme::secondary_button(uu_i18n::text(label)).small()).clicked() {
                             actions.push(Action::OpenSource{session:group.command_session(),source:source.id,new_window});ui.close_menu();
                         }
+                    }}
+                }).response.on_hover_text(if source.owned {uu_i18n::text("已由串流窗口拥有此显示器")}else if !source.active {uu_i18n::text("显示器当前未激活")}else{&source.label});
+                if let Some(display)=source.managed {
+                    if ui.add_enabled(source.removable&&!source.owned&&group.can_create_display,
+                        crate::theme::secondary_button(uu_i18n::text("删除")).small())
+                        .on_disabled_hover_text(uu_i18n::text("先关闭拥有此屏幕的串流；其他连接的临时屏由其所有者回收"))
+                        .clicked() {
+                        actions.push(Action::RemoveDisplay{session:group.creation_session(),display});ui.close_menu();
                     }
-                });
-            }).response.on_hover_text(if source.owned {uu_i18n::text("已由串流窗口拥有此显示器")}else if !source.active {uu_i18n::text("显示器当前未激活")}else{&source.label});
+                }
+            });
         }
     }
+
     ui.separator();
     for (label,persistent) in [("新建临时虚拟显示器",false),("新建持久虚拟显示器",true)] {
         if crate::theme::menu_action(ui,group.can_create_display,uu_i18n::text(label)).clicked() {
@@ -283,6 +302,36 @@ pub(super) fn show(tabs: &Tabs, ui: &mut egui::Ui, controls_width: f32) -> Strip
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn display_menu_uses_current_device_views_and_queues_manual_display_removal() {
+        use crate::stream_workspace::{SourceChoice,SourceKind};
+        let ctx=egui::Context::default();crate::setup_style(&ctx);
+        let lease=uu_core::virtual_display::LeaseId(uuid::Uuid::new_v4());
+        let group=Group{last_session:1,members:vec![1],views:vec![],id:1,name:"Current device".into(),screens:vec![],selected:None,
+            can_open_displays:true,can_create_display:true,can_detach:false,fixed_view:true,can_merge:false};
+        let tabs=Tabs{sources:vec![(1,vec![
+            SourceChoice{id:10,label:"Current owned display".into(),kind:SourceKind::Physical,active:true,owned:true,current_view:Some(1),managed:None,removable:false},
+            SourceChoice{id:11,label:"Unused manual display".into(),kind:SourceKind::Persistent,active:true,owned:false,current_view:None,managed:Some(lease),removable:true},
+        ]),(2,vec![SourceChoice{id:20,label:"Another device display".into(),kind:SourceKind::Physical,active:true,owned:false,current_view:None,managed:None,removable:false}])],
+            modal:Default::default(),presets:Default::default(),groups:vec![group.clone()],active:1,actions:Default::default(),local_ui:Default::default()};
+        let actions=std::cell::RefCell::new(Vec::new());
+        let render=|events|ctx.run(egui::RawInput{events,screen_rect:Some(Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(560.,700.))),..Default::default()},|ctx| {
+            egui::CentralPanel::default().show(ctx,|ui|display_sources(&tabs,&group,ui,&mut actions.borrow_mut(),false));
+        });
+        fn position(shape:&egui::Shape,label:&str)->Option<egui::Pos2>{match shape {
+            egui::Shape::Text(t) if t.galley.text()==label=>Some(t.pos+t.galley.rect.center().to_vec2()),
+            egui::Shape::Vec(shapes)=>shapes.iter().find_map(|s|position(s,label)),_=>None,
+        }}
+        let locate=|label|render(vec![]).shapes.iter().find_map(|s|position(&s.shape,label));
+        assert!(locate("Another device display").is_none());
+        let click=|pos| {
+            let event=|pressed|egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+            render(vec![egui::Event::PointerMoved(pos),event(true)]);render(vec![event(false)]);
+        };
+        click(locate("Current owned display").unwrap());assert_eq!(&*actions.borrow(),&[Action::Select(1,None)]);
+        actions.borrow_mut().clear();click(locate(uu_i18n::text("删除")).unwrap());
+        assert_eq!(&*actions.borrow(),&[Action::RemoveDisplay{session:1,display:lease}]);
+    }
     fn frame(ctx:&egui::Context,tabs:&Tabs,time:f64,width:f32,controls:f32,events:Vec<egui::Event>)->StripRects {
         let mut rects=StripRects::default();
         let _=ctx.run(egui::RawInput {

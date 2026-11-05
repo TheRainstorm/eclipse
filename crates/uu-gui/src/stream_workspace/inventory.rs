@@ -56,14 +56,17 @@ impl State {
             for source in self.sources.iter_mut().filter(|s|s.device==device) {source.active=false;}
             let managed=virtual_catalogs.iter().rev().find(|(key,_,_,_)|*key==device);
             for (screen,label) in screens {
-                let kind=managed.and_then(|(_,_,displays,_)|displays.iter().find(|d|d.source==screen.display_name))
+                let display=managed.and_then(|(_,_,displays,_)|displays.iter().find(|d|d.source==screen.display_name));
+                let managed_id=display.map(|d|d.id);
+                let removable=display.is_some_and(|d|matches!(d.owner,uu_core::virtual_display::Owner::Manual));
+                let kind=display
                     .map(|d|if d.persistent {SourceKind::Persistent}else{SourceKind::Temporary})
                     .unwrap_or_else(||if managed.is_some_and(|(_,_,_,slots)|slots.iter().any(|s|s.source==screen.display_name)) || screen.kind!=0 {SourceKind::Virtual}else{SourceKind::Physical});
                 if let Some(source)=self.sources.iter_mut().find(|s|s.device==device&&s.screen.display_name==screen.display_name) {
-                    source.screen=screen;source.label=label;source.active=true;source.kind=kind;
+                    source.screen=screen;source.label=label;source.active=true;source.kind=kind;source.managed=managed_id;source.removable=removable;
                 } else {
                     let id=self.next;self.next+=1;
-                    self.sources.push(SourceRecord{id,device:device.clone(),screen,label,kind,active:true});
+                    self.sources.push(SourceRecord{id,device:device.clone(),screen,label,kind,active:true,managed:managed_id,removable});
                 }
             }
         }
@@ -91,6 +94,7 @@ impl State {
         }
         let choices:Vec<_>=self.sources.iter().map(|s|(s.device.clone(),SourceChoice {
             id:s.id,label:s.label.clone(),kind:s.kind,active:s.active,owned:self.source_owned(s),
+            current_view:None,managed:s.managed,removable:s.removable,
         })).collect();
         let live_windows=self.windows.iter().filter(|w|!w.closing&&!w.views.is_empty()).count();
         for window in &mut self.windows {
@@ -100,7 +104,11 @@ impl State {
                 let at=window.sources.iter().position(|(key,_)|key==device).unwrap_or_else(|| {
                     window.sources.push((device.clone(),Vec::new()));window.sources.len()-1
                 });
-                window.sources[at].1.push(choice.clone());
+                let mut choice=choice.clone();
+                if let Some(source)=self.sources.iter().find(|s|s.id==choice.id) {
+                    choice.current_view=window.views.iter().find(|v|base_key(&v.launch.target)==*device&&v.source.as_ref().is_some_and(|d|d.source==source.screen.display_name)).map(|v|v.id);
+                }
+                window.sources[at].1.push(choice);
             }
         }
     }
