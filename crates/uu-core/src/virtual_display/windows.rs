@@ -216,6 +216,10 @@ impl Backend for Windows {
         let key = key.clone();
         worker(move || deactivate(&key))?
     }
+    fn reconfigure(&self,key:&TargetKey,spec:Spec)->std::result::Result<Target,ActivationFailure> {
+        let key=key.clone();
+        worker(move||configure_mode(&key,spec,true)).unwrap_or_else(|error|Err(ActivationFailure{message:error.to_string(),activated:false}))
+    }
     fn prepare(&self, key: &TargetKey) -> Result<()> {
         let key = key.clone();
         worker(move || deactivate_checked(&key, true))?
@@ -675,6 +679,9 @@ fn apply(topology: &Topology, apply_submitted: &mut bool) -> Result<()> {
 }
 
 fn activate(key: &TargetKey, spec: Spec) -> std::result::Result<Target, ActivationFailure> {
+    configure_mode(key,spec,false)
+}
+fn configure_mode(key: &TargetKey, spec: Spec, existing:bool) -> std::result::Result<Target, ActivationFailure> {
     let mut apply_submitted = false;
     let result = (|| -> Result<Target> {
         let mut before = scene()?;
@@ -682,11 +689,29 @@ fn activate(key: &TargetKey, spec: Spec) -> std::result::Result<Target, Activati
         if !targets
             .targets
             .iter()
-            .any(|target| &target.key == key && target.available && !target.active)
+            .any(|target| &target.key == key && if existing {target.active}else{target.available && !target.active})
         {
             return Err(Error::NoAvailableSlot);
         }
-        let preserved = fingerprints(&before.active, None)?;
+        let preserved = fingerprints(&before.active, if existing {Some(key)}else{None})?;
+        if existing {
+            let index=super::config_apply::exact_index(before.active.paths.iter().map(|path|target_key(path).map(|(key,_)|key)),key)?.ok_or(Error::UnknownSlot)?;
+            let path=before.active.paths[index];
+            // A cloned source cannot be edited without changing another output.
+            if before.active.paths.iter().enumerate().any(|(other,p)|other!=index && p.sourceInfo.id==path.sourceInfo.id && adapter(p.sourceInfo.adapterId)==adapter(path.sourceInfo.adapterId)) {
+                return Err(Error::Platform("detach the cloned virtual output before changing its mode".into()));
+            }
+            let source_index=unsafe{path.sourceInfo.Anonymous.modeInfoIdx} as usize;
+            let mode=before.active.modes.get_mut(source_index).ok_or(Error::UnknownSlot)?;
+            if mode.infoType!=DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE || mode.id!=path.sourceInfo.id || adapter(mode.adapterId)!=adapter(path.sourceInfo.adapterId) {return Err(Error::UnknownSlot);}
+            let mut source=unsafe{mode.Anonymous.sourceMode};
+            source.width=spec.width;source.height=spec.height;
+            mode.Anonymous.sourceMode=source;
+            let path=&mut before.active.paths[index];
+            path.targetInfo.Anonymous.modeInfoIdx=DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            path.targetInfo.refreshRate=DISPLAYCONFIG_RATIONAL{Numerator:spec.refresh_millihz,Denominator:1000};
+            path.targetInfo.scanLineOrdering=DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+        }else{
         let used: BTreeSet<_> = before
             .active
             .paths
@@ -733,6 +758,7 @@ fn activate(key: &TargetKey, spec: Spec) -> std::result::Result<Target, Activati
         path.flags = DISPLAYCONFIG_PATH_ACTIVE;
         before.active.modes.push(source);
         before.active.paths.push(path);
+        }
         // Do not use SDC_ALLOW_CHANGES: it could silently change another screen
         // to make an unsupported mode work. Unsupported requests fail instead.
         apply(&before.active, &mut apply_submitted)?;

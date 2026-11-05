@@ -171,6 +171,44 @@ pub fn create_menu(ui: &mut egui::Ui, presets: &Presets) -> Option<Spec> {
     selected
 }
 
+/// One editor for creation presets and existing host-owned displays. Common
+/// modes are conveniences; arbitrary valid modes and fractional Hz survive.
+pub(super) fn spec_editor(ui:&mut egui::Ui,spec:&mut Spec) {
+    let sizes=[[1280,720],[1920,1080],[1920,1200],[2560,1440],[2560,1600],[3440,1440],[3840,2160],[1080,1920],[1440,2560]];
+    let rates=[30_000,50_000,59_940,60_000,75_000,90_000,100_000,119_880,120_000,144_000,165_000,180_000,240_000,360_000,480_000];
+    let size_id=ui.make_persistent_id("virtual-size-custom");
+    let rate_id=ui.make_persistent_id("virtual-rate-custom");
+    let mut size_custom=ui.ctx().data(|d|d.get_temp::<bool>(size_id)).unwrap_or(false)||!sizes.contains(&[spec.width,spec.height]);
+    let mut rate_custom=ui.ctx().data(|d|d.get_temp::<bool>(rate_id)).unwrap_or(false)||!rates.contains(&spec.refresh_millihz);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(uu_i18n::text("分辨率"));
+        crate::theme::Select::from_id_salt("virtual-size").selected_text(format!("{} × {}",spec.width,spec.height)).show_ui(ui,|ui| {
+            for [width,height] in sizes {
+                if crate::theme::selectable_tab(ui,!size_custom&&spec.width==width&&spec.height==height,format!("{width} × {height}")).clicked(){spec.width=width;spec.height=height;size_custom=false;}
+            }
+            if crate::theme::selectable_tab(ui,size_custom,uu_i18n::text("自定义")).clicked(){size_custom=true;}
+        });
+        if size_custom {
+            crate::theme::number_input(ui,egui::DragValue::new(&mut spec.width).range(320..=16_384));ui.label("×");
+            crate::theme::number_input(ui,egui::DragValue::new(&mut spec.height).range(200..=16_384));
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label(uu_i18n::text("刷新率"));
+        crate::theme::Select::from_id_salt("virtual-rate").selected_text(format!("{} Hz",spec.refresh_millihz as f64/1000.)).show_ui(ui,|ui| {
+            for rate in rates {
+                if crate::theme::selectable_tab(ui,!rate_custom&&spec.refresh_millihz==rate,format!("{} Hz",rate as f64/1000.)).clicked(){spec.refresh_millihz=rate;rate_custom=false;}
+            }
+            if crate::theme::selectable_tab(ui,rate_custom,uu_i18n::text("自定义")).clicked(){rate_custom=true;}
+        });
+        if rate_custom {
+            let mut hz=spec.refresh_millihz as f64/1000.;
+            if crate::theme::number_input(ui,egui::DragValue::new(&mut hz).range(1.0..=1000.0).speed(0.1).max_decimals(3).suffix(" Hz")).changed(){spec.refresh_millihz=(hz*1000.).round() as u32;}
+        }
+        crate::theme::compact_switch(ui,&mut spec.hdr,"HDR");
+    });
+    ui.ctx().data_mut(|d|{d.insert_temp(size_id,size_custom);d.insert_temp(rate_id,rate_custom);});
+}
 pub fn editor(ui: &mut egui::Ui, presets: &mut Presets) {
     ui.label(uu_i18n::text(
         "左键 + 使用默认规格；右键 + 可选择其它规格。修改规格只影响之后新建的虚拟显示器。",
@@ -195,26 +233,7 @@ pub fn editor(ui: &mut egui::Ui, presets: &mut Presets) {
                         remove = Some(preset.id);
                     }
                 });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(uu_i18n::text("分辨率"));
-                    crate::theme::number_input(ui,egui::DragValue::new(&mut preset.spec.width).range(320..=16_384));
-                    ui.label("×");
-                    crate::theme::number_input(ui,egui::DragValue::new(&mut preset.spec.height).range(200..=16_384));
-                    ui.label(uu_i18n::text("刷新率"));
-                    let mut hz = preset.spec.refresh_millihz as f64 / 1000.;
-                    if crate::theme::number_input(ui,
-                            egui::DragValue::new(&mut hz)
-                                .range(1.0..=1000.0)
-                                .speed(0.1)
-                                .max_decimals(3)
-                                .suffix(" Hz"),
-                        )
-                        .changed()
-                    {
-                        preset.spec.refresh_millihz = (hz * 1000.).round() as u32;
-                    }
-                    crate::theme::switch(ui,&mut preset.spec.hdr, "HDR");
-                });
+                spec_editor(ui,&mut preset.spec);
             });
         });
     }

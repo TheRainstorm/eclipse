@@ -386,7 +386,8 @@ impl super::App {
             .unwrap_or_else(|| uu_i18n::text("显示器").into())
     }
     pub(super) fn screen_label(&self,screen:&uu_core::screen_control::RemoteScreen)->String {
-        let friendly=self.controller.as_ref().and_then(|h|h.stats.native_displays.display_label(&screen.display_name));
+        let friendly=self.controller.as_ref().and_then(|h|h.stats.virtual_displays.snapshot().and_then(|(_,displays)|displays.into_iter().find(|display|display.source==screen.display_name)).map(|display|display.name)
+            .or_else(||h.stats.native_displays.display_label(&screen.display_name)));
         friendly.map_or_else(||self.displays.layout.label(screen),|name|self.displays.layout.label_named(screen,&name))
     }
     pub(super) fn select_remote_screen(&mut self,id:i32){

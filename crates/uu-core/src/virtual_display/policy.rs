@@ -3,12 +3,19 @@
 use super::*;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SavedDisplay {
     pub id: Uuid,
     pub spec: Spec,
     pub target: TargetKey,
+    #[serde(default,skip_serializing_if="String::is_empty")]
+    pub name: String,
+}
+impl SavedDisplay {
+    pub(super) fn disconnected(&self)->Display {
+        Display{id:LeaseId(self.id),owner:Owner::Manual,spec:self.spec,actual:None,name:if self.name.is_empty(){uu_i18n::text("持久虚拟显示器").into()}else{self.name.clone()},source:String::new(),active:false,persistent:true,cleanup_pending:false,last_error:Some(uu_i18n::text("等待已保存的虚拟显示器恢复；请检查驱动及可用槽位").into())}
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -31,10 +38,14 @@ impl Settings {
         if self.version != 1 {
             return Err(Error::Platform("unsupported saved display policy".into()));
         }
+        if self.displays.len()>usize::from(MAX_DISPLAY_LIMIT) {
+            return Err(Error::Platform("saved display policy exceeds the native display catalog budget".into()));
+        }
         let mut ids = std::collections::BTreeSet::new();
         let mut targets = std::collections::BTreeSet::new();
         for display in &self.displays {
             display.spec.validate()?;
+            validate_name(&display.name)?;
             if !ids.insert(display.id)
                 || !targets.insert((&display.target.monitor_path, display.target.target))
                 || display.target.monitor_path.is_empty()
@@ -48,6 +59,10 @@ impl Settings {
         }
         Ok(())
     }
+}
+fn validate_name(name:&str)->Result<()> {
+    if name.chars().count()>64 || name.chars().any(char::is_control) {return Err(platform(uu_i18n::text("虚拟显示器名称最多64字且不能包含控制字符")));}
+    Ok(())
 }
 #[derive(Clone)]
 pub(super) struct File {
@@ -92,6 +107,13 @@ pub(super) struct State {
 }
 
 impl Manager {
+    pub(super) fn saved_records(&self)->Result<Vec<SavedDisplay>> {
+        let file=self.policy.lock().map_err(|_|platform("saved display policy is poisoned"))?.file.clone();
+        file.map(|file|file.read().map(|policy|policy.displays)).unwrap_or_else(||Ok(Vec::new()))
+    }
+    pub(super) fn allocated_count(&self,entries:&BTreeMap<LeaseId,Entry>)->Result<usize> {
+        Ok(entries.len()+self.saved_records()?.iter().filter(|saved|!entries.contains_key(&LeaseId(saved.id))).count())
+    }
     pub fn configure_saved_displays(&self, directory: impl AsRef<Path>) -> Result<()> {
         let entries = self.lock()?;
         let file = File {
@@ -178,11 +200,15 @@ impl Manager {
     }
     pub fn set_persistent(&self, id: LeaseId, persistent: bool) -> Result<()> {
         let mut entries = self.lock()?;
-        let entry = entries.get_mut(&id).ok_or(Error::UnknownSlot)?;
+        let Some(entry)=entries.get_mut(&id) else {
+            if !persistent && self.saved_records()?.iter().any(|s|s.id==id.0) {return self.forget_saved(id);}
+            return Err(Error::UnknownSlot);
+        };
         let saved = SavedDisplay {
             id: id.0,
             spec: entry.display.spec,
             target: entry.target.clone(),
+            name: entry.display.name.clone(),
         };
         self.saved_file()?.edit(|policy| {
             policy.displays.retain(|d| d.id != id.0);
@@ -194,6 +220,72 @@ impl Manager {
         entry.display.persistent = persistent;
         entry.explicit_temporary = !persistent;
         Ok(())
+    }
+    /// Names are metadata. Mode changes require an idle host because changing
+    /// source geometry retires DXGI capture; session admission observes the
+    /// editing flag before the activity snapshot, closing the check/apply race.
+    pub fn configure_display(&self,id:LeaseId,name:String,spec:Spec)->Result<Display> {
+        spec.validate()?;
+        let name=name.trim().to_owned();validate_name(&name)?;
+        let mut entries=self.lock()?;
+        if self.manual_closing.load(Ordering::Acquire) {return Err(Error::HostClosing);}
+        let Some(entry)=entries.get_mut(&id) else {
+            let mut saved=self.saved_records()?.into_iter().find(|s|s.id==id.0).ok_or(Error::UnknownSlot)?;
+            saved.name=name;saved.spec=spec;
+            self.saved_file()?.save(saved.clone())?;
+            self.policy.lock().map_err(|_|platform("saved display policy is poisoned"))?.restore_pending=true;
+            return Ok(saved.disconnected());
+        };
+        if entry.display.cleanup_pending {return Err(Error::CleanupPending{id,message:entry.display.last_error.clone().unwrap_or_default()});}
+        let previous=entry.display.clone();
+        let current=self.backend.inventory()?.targets.into_iter().find(|target|target.key==entry.target).ok_or(Error::UnknownSlot)?;
+        let mode_changed=previous.spec!=spec || current.actual.is_some_and(|actual|actual!=spec);
+        let _edit=if mode_changed {
+            if self.editing_mode.swap(true,Ordering::AcqRel) {return Err(platform("another virtual display edit is running"));}
+            struct Edit<'a>(&'a AtomicBool);
+            impl Drop for Edit<'_> {fn drop(&mut self){self.0.store(false,Ordering::Release);}}
+            let guard=Edit(&self.editing_mode);
+            if self.preparation_streams(None)!=0 {return Err(platform(uu_i18n::text("修改虚拟显示器规格前，请先结束此主机上的串流")));}
+            Some(guard)
+        }else{None};
+        let observed=if mode_changed {
+            let old=current.actual.ok_or_else(||platform("virtual display has no confirmed current mode"))?;
+            match self.backend.reconfigure(&entry.target,spec) {
+                Ok(target)=>Some(target),
+                Err(failure)=>{
+                    let mut message=failure.message;
+                    if failure.activated {
+                        if let Err(rollback)=self.backend.reconfigure(&entry.target,old) {message.push_str(&format!("; rollback: {}",rollback.message));}
+                    }
+                    entry.display.last_error=Some(message.clone());
+                    return Err(platform(message));
+                }
+            }
+        }else{None};
+        let next_name=if name.is_empty(){current.name}else{name};
+        if previous.persistent {
+            let record=SavedDisplay{id:id.0,spec,target:entry.target.clone(),name:next_name.clone()};
+            let file=self.saved_file()?;
+            if let Err(error)=file.save(record.clone()) {
+                // Atomic replacement may have completed before an IO error.
+                // Confirm the exact record before rolling hardware back.
+                if !file.read().is_ok_and(|p|p.displays.iter().any(|d|d==&record)) {
+                    let mut message=error.to_string();
+                    if mode_changed {
+                        if let Err(rollback)=self.backend.reconfigure(&entry.target,current.actual.unwrap()) {message.push_str(&format!("; rollback: {}",rollback.message));}
+                    }
+                    entry.display.last_error=Some(message.clone());
+                    return Err(platform(message));
+                }
+            }
+        }
+        entry.display.name=next_name;
+        entry.display.spec=spec;
+        entry.display.last_error=None;
+        if let Some(target)=observed {
+            entry.display.actual=target.actual;entry.display.active=target.active;entry.display.source=target.source;
+        }
+        Ok(entry.display.clone())
     }
     pub fn create_manual(&self, spec: Spec, persistent: bool) -> Result<Display> {
         let mut display = self.create(Owner::Manual, spec)?;
@@ -226,6 +318,7 @@ impl Manager {
                     id: id.0,
                     spec: entry.display.spec,
                     target: entry.target.clone(),
+                    name: entry.display.name.clone(),
                 });
             }
             Ok(())
@@ -263,6 +356,9 @@ impl Manager {
                     return Err(error);
                 }
             };
+            if display.actual!=Some(saved.spec) {
+                self.configure_display(display.id,display.name.clone(),saved.spec)?;
+            }
             let target = self
                 .lock()?
                 .get(&display.id)
@@ -282,7 +378,8 @@ impl Manager {
         Ok(())
     }
     pub fn close_all(&self) -> Result<()> {
-        let ids: Vec<_> = self.lock()?.keys().copied().collect();
+        let mut ids:std::collections::BTreeSet<_>=self.lock()?.keys().copied().collect();
+        ids.extend(self.saved_records()?.into_iter().map(|saved|LeaseId(saved.id)));
         let mut first = None;
         for id in ids {
             if let Err(error) = self.remove(id) {

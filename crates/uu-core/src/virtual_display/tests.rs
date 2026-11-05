@@ -13,7 +13,10 @@ struct Fake {
     fail_validate: AtomicBool,
     fail_apply: AtomicBool,
     write_before_apply_error: AtomicBool,
+    fail_reconfigure_once: AtomicBool,
+    write_before_reconfigure_error: AtomicBool,
     activated: Mutex<Vec<TargetKey>>,
+    reconfigured: Mutex<Vec<(TargetKey,Spec)>>,
     removed: Mutex<Vec<TargetKey>>,
     claims: Mutex<BTreeSet<TargetKey>>,
     provision_calls: AtomicUsize,
@@ -178,6 +181,26 @@ impl Backend for Arc<Fake> {
         }
         Ok(target.clone())
     }
+    fn reconfigure(&self,key:&TargetKey,spec:Spec)->std::result::Result<Target,ActivationFailure> {
+        let mut targets=self.targets.lock().unwrap();
+        let Some(target)=targets.iter_mut().find(|target|&target.key==key&&target.active) else {
+            return Err(ActivationFailure{message:"target is not active".into(),activated:false});
+        };
+        let mut apply_submitted=false;
+        let result=config_apply::run(&mut apply_submitted,|phase|{
+            match phase {
+                config_apply::Phase::Validate=>if self.fail_validate.load(Ordering::Relaxed){return Err("validation rejected");},
+                config_apply::Phase::Apply=>{
+                    let fail=self.fail_reconfigure_once.swap(false,Ordering::Relaxed);
+                    if !fail||self.write_before_reconfigure_error.load(Ordering::Relaxed){target.actual=Some(spec);self.reconfigured.lock().unwrap().push((key.clone(),spec));}
+                    if fail{return Err("driver error after reconfigure APPLY submission");}
+                }
+            }
+            Ok(())
+        });
+        if let Err(message)=result{return Err(ActivationFailure{message:message.into(),activated:apply_submitted});}
+        Ok(target.clone())
+    }
     fn deactivate(&self, key: &TargetKey) -> Result<()> {
         if self.fail_remove.load(Ordering::Relaxed) {
             return Err(Error::Platform("busy".into()));
@@ -233,6 +256,7 @@ fn fixture() -> (Arc<Manager>, Arc<Fake>) {
             manual_closing: AtomicBool::new(false),
             preparation: preparation::Coordinator::default(),
             preparation_owner: AtomicBool::new(true),
+            editing_mode: AtomicBool::new(false),
             hosts: Mutex::default(),
             policy:Mutex::default(),
             limit:std::sync::atomic::AtomicU16::new(DEFAULT_DISPLAY_LIMIT),
@@ -594,6 +618,7 @@ fn another_manager(backend: &Arc<Fake>) -> Arc<Manager> {
         manual_closing: AtomicBool::new(false),
         preparation: preparation::Coordinator::default(),
         preparation_owner: AtomicBool::new(true),
+            editing_mode: AtomicBool::new(false),
         hosts: Mutex::default(),
         policy:Mutex::default(),
             limit:std::sync::atomic::AtomicU16::new(DEFAULT_DISPLAY_LIMIT),
@@ -991,7 +1016,8 @@ fn retained_session_becomes_durable_manual_ownership_and_restarts_without_duplic
     let retained=first.list().unwrap();assert_eq!(retained.len(),1);
     assert_eq!(retained[0].owner,Owner::Manual);assert!(retained[0].persistent&&retained[0].active);
     assert_eq!(backend.activated.lock().unwrap().len(),1);
-    first.shutdown_manual().unwrap();assert!(first.list().unwrap().is_empty());
+    first.shutdown_manual().unwrap();
+    let after=first.list().unwrap();assert_eq!(after.len(),1);assert_eq!(after[0].id,created.id);assert!(!after[0].active&&after[0].persistent);
     assert!(backend.removed.lock().unwrap().is_empty(),"saved output outlives process ownership");
     let second=another_manager(&backend);second.configure_saved_displays(&path).unwrap();
     assert!(second.keep_after_stream().unwrap());second.restore_saved_displays().unwrap();
@@ -999,7 +1025,7 @@ fn retained_session_becomes_durable_manual_ownership_and_restarts_without_duplic
     assert_eq!(backend.activated.lock().unwrap().len(),1,"restoring a live recorded output is not another activation");
     let third=another_manager(&backend);third.configure_saved_displays(&path).unwrap();
     assert!(matches!(third.restore_saved_displays(),Err(Error::Claimed)));
-    assert!(third.list().unwrap().is_empty());
+    let pending=third.list().unwrap();assert_eq!(pending.len(),1);assert_eq!(pending[0].id,created.id);assert!(!pending[0].active);
     assert!(third.saved_restore_pending(),"known claim contention preserves the startup intent");
     second.shutdown_manual().unwrap();third.restore_saved_displays().unwrap();
     assert_eq!(third.list().unwrap()[0].id,created.id);
@@ -1094,9 +1120,111 @@ fn failed_persistent_record_rolls_back_creation_and_preserves_corrupt_policy() {
     let file=path.join("virtual-displays.json");std::fs::write(&file,b"{broken policy}").unwrap();
     let owner=Uuid::new_v4();let _guard=manager.session_guard(owner);
     assert!(manager.create_for_session(owner,Spec::default(),true,None).is_err());
-    assert!(manager.list().unwrap().is_empty());
-    assert_eq!(backend.removed.lock().unwrap().len(),1);
+    assert!(manager.list().is_err());
+    assert_eq!(backend.removed.lock().unwrap().len(),0,"invalid durable policy is rejected before target activation");
+    assert!(backend.activated.lock().unwrap().is_empty());
     assert!(backend.claims.lock().unwrap().is_empty());
     assert_eq!(std::fs::read(file).unwrap(),b"{broken policy}");
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn display_rename_is_metadata_only_and_does_not_require_an_idle_host() {
+    let (manager,backend)=fixture();let path=saved_policy(&manager);
+    let display=manager.create_manual(Spec::default(),true).unwrap();
+    let gate=Arc::new(crate::shared_host::SessionGate::default());manager.register_host(&gate);
+    let _active=gate.claim("streaming-peer").unwrap();
+    let edited=manager.configure_display(display.id,"Desk".into(),display.spec).unwrap();
+    assert_eq!(edited.name,"Desk");assert!(edited.actual.is_some());
+    assert!(backend.reconfigured.lock().unwrap().is_empty());
+    assert_eq!(manager.saved_records().unwrap()[0].name,"Desk");
+    manager.remove(display.id).unwrap();std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn display_mode_edit_requires_idle_host_then_reconfigures_and_updates_durable_intent() {
+    let (manager,backend)=fixture();let path=saved_policy(&manager);
+    let display=manager.create_manual(Spec::default(),true).unwrap();
+    let target=manager.lock().unwrap()[&display.id].target.clone();
+    let gate=Arc::new(crate::shared_host::SessionGate::default());manager.register_host(&gate);
+    let active=gate.claim("streaming-peer").unwrap();
+    let next=Spec{width:2560,height:1440,refresh_millihz:120_000,hdr:true};
+    assert!(matches!(manager.configure_display(display.id,"Desk".into(),next),Err(Error::Platform(message)) if message.contains("结束")));
+    assert!(backend.reconfigured.lock().unwrap().is_empty());
+    drop(active);
+    let edited=manager.configure_display(display.id,"Desk".into(),next).unwrap();
+    assert_eq!(edited.spec,next);assert_eq!(edited.actual,Some(next));
+    assert_eq!(*backend.reconfigured.lock().unwrap(),vec![(target,next)]);
+    let saved=manager.saved_records().unwrap();assert_eq!(saved.len(),1);assert_eq!(saved[0].name,"Desk");assert_eq!(saved[0].spec,next);
+    manager.remove(display.id).unwrap();std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn failed_mode_apply_rolls_back_to_the_exact_previous_mode() {
+    let (manager,backend)=fixture();let path=saved_policy(&manager);
+    let display=manager.create_manual(Spec::default(),true).unwrap();
+    let target=manager.lock().unwrap()[&display.id].target.clone();
+    let next=Spec{width:3840,height:2160,refresh_millihz:60_000,hdr:false};
+    backend.fail_reconfigure_once.store(true,Ordering::SeqCst);
+    backend.write_before_reconfigure_error.store(true,Ordering::SeqCst);
+    assert!(manager.configure_display(display.id,"Desk".into(),next).is_err());
+    assert_eq!(*backend.reconfigured.lock().unwrap(),vec![(target.clone(),next),(target.clone(),Spec::default())]);
+    let listed=manager.list().unwrap();assert_eq!(listed[0].spec,Spec::default());assert_eq!(listed[0].actual,Some(Spec::default()));assert!(listed[0].last_error.is_some());
+    assert_eq!(manager.saved_records().unwrap()[0].spec,Spec::default());
+    assert!(backend.is_claimed(&target).unwrap());
+    manager.remove(display.id).unwrap();std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn durable_write_failure_rolls_back_a_submitted_mode_change_without_overwriting_corruption() {
+    let (manager,backend)=fixture();let path=saved_policy(&manager);
+    let display=manager.create_manual(Spec::default(),true).unwrap();
+    let policy=path.join("virtual-displays.json");let valid=std::fs::read(&policy).unwrap();
+    std::fs::write(&policy,b"{broken policy}").unwrap();
+    let next=Spec{width:2560,height:1600,refresh_millihz:75_000,hdr:false};
+    assert!(manager.configure_display(display.id,"Desk".into(),next).is_err());
+    assert_eq!(backend.reconfigured.lock().unwrap().len(),2);
+    assert_eq!(backend.targets.lock().unwrap()[1].actual,Some(Spec::default()));
+    assert!(manager.list().is_err(),"the corrupted durable record must not be silently hidden");
+    assert_eq!(std::fs::read(&policy).unwrap(),b"{broken policy}");
+    std::fs::write(&policy,valid).unwrap();
+    let listed=manager.list().unwrap();assert_eq!(listed[0].spec,Spec::default());assert_eq!(listed[0].actual,Some(Spec::default()));assert!(listed[0].last_error.is_some());
+    manager.remove(display.id).unwrap();std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn disconnected_saved_display_can_be_edited_without_hardware_then_restored_with_new_mode() {
+    let (first,backend)=fixture();let path=saved_policy(&first);
+    let display=first.create_manual(Spec::default(),true).unwrap();
+    first.shutdown_manual().unwrap();
+    let second=another_manager(&backend);second.configure_saved_displays(&path).unwrap();
+    let saved=second.list().unwrap().into_iter().find(|d|d.id==display.id).unwrap();
+    assert!(!saved.active&&saved.persistent&&saved.actual.is_none());
+    let next=Spec{width:1920,height:1200,refresh_millihz:59_940,hdr:false};
+    let edited=second.configure_display(display.id,"Office".into(),next).unwrap();
+    assert_eq!(edited.name,"Office");assert_eq!(edited.spec,next);assert!(!edited.active);
+    assert!(backend.reconfigured.lock().unwrap().is_empty());
+    second.restore_saved_displays().unwrap();
+    let restored=second.list().unwrap().into_iter().find(|d|d.id==display.id).unwrap();
+    assert!(restored.active);assert_eq!(restored.name,"Office");assert_eq!(restored.spec,next);assert_eq!(restored.actual,Some(next));
+    assert_eq!(backend.reconfigured.lock().unwrap().len(),1);
+    second.shutdown_manual().unwrap();std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn saved_records_count_toward_limit_and_close_all_retires_them() {
+    let (first,backend)=fixture();let path=saved_policy(&first);
+    let saved_id=first.create_manual(Spec::default(),true).unwrap().id;
+    first.shutdown_manual().unwrap();
+    let second=another_manager(&backend);second.configure_saved_displays(&path).unwrap();
+    let status=second.status().unwrap();assert_eq!(status.leased,0);assert_eq!(status.allocated,1);assert_eq!(status.allocation_count(),1);
+    second.create_manual(Spec::default(),false).unwrap();
+    assert!(matches!(second.create(Owner::Manual,Spec::default()),Err(Error::LimitReached{limit:2})));
+    second.close_all().unwrap();
+    assert!(second.list().unwrap().is_empty());
+    assert!(!second.saved_records().unwrap().iter().any(|saved|saved.id==saved_id.0));
+    assert!(backend.claims.lock().unwrap().is_empty());
+    let third=another_manager(&backend);third.configure_saved_displays(&path).unwrap();third.restore_saved_displays().unwrap();
+    assert!(third.list().unwrap().is_empty());
     std::fs::remove_dir_all(path).unwrap();
 }

@@ -193,17 +193,28 @@ pub struct Status {
     pub supported: bool,
     pub driver_present: bool,
     pub available_slots: usize,
+    /// Live resources currently held by this manager.
     pub leased: usize,
+    /// Durable allocations, including persisted displays waiting for recovery.
+    #[serde(default)]
+    pub allocated: usize,
     #[serde(default)]
     pub keep_after_stream: bool,
     #[serde(default="default_display_limit")]
     pub limit: u16,
     #[serde(default)]
     pub supports_lifetimes: bool,
+    #[serde(default)]
+    pub supports_configuration: bool,
     pub explanation: String,
     pub install_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation: Option<preparation::Status>,
+}
+
+impl Status {
+    /// Older peers do not know the durable allocation counter.
+    pub fn allocation_count(&self)->usize {self.allocated.max(self.leased)}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -372,6 +383,10 @@ trait Backend: Send + Sync {
         key: &TargetKey,
         spec: Spec,
     ) -> std::result::Result<Target, ActivationFailure>;
+    /// Changes only an already claimed target, retaining its desktop position.
+    fn reconfigure(&self, _key:&TargetKey, _spec:Spec)->std::result::Result<Target,ActivationFailure> {
+        Err(ActivationFailure{message:"display mode editing is unavailable".into(),activated:false})
+    }
     fn deactivate(&self, key: &TargetKey) -> Result<()>;
     fn prepare(&self, key: &TargetKey) -> Result<()>;
 }
@@ -392,6 +407,7 @@ pub struct Manager {
     manual_closing: AtomicBool,
     preparation: preparation::Coordinator,
     preparation_owner: AtomicBool,
+    editing_mode: AtomicBool,
     hosts: Mutex<Vec<Weak<crate::shared_host::SessionGate>>>,
     policy: Mutex<policy::State>,
     limit: std::sync::atomic::AtomicU16,
@@ -413,6 +429,7 @@ impl Manager {
                     manual_closing: AtomicBool::new(false),
                     preparation: preparation::Coordinator::default(),
                     preparation_owner: AtomicBool::new(false),
+                    editing_mode: AtomicBool::new(false),
                     hosts: Mutex::default(),
                     policy: Mutex::default(),
                     limit: std::sync::atomic::AtomicU16::new(DEFAULT_DISPLAY_LIMIT),
@@ -490,7 +507,7 @@ impl Manager {
             .unwrap_or(u32::MAX)
     }
     pub(crate) fn preparation_in_flight(&self) -> bool {
-        self.preparation.in_flight()
+        self.preparation.in_flight() || self.editing_mode.load(Ordering::Acquire)
     }
     pub(crate) fn has_queued_preparation(&self) -> bool {
         self.preparation.queued()
@@ -632,9 +649,11 @@ impl Manager {
             driver_present: inventory.driver_present,
             available_slots,
             leased: entries.len(),
+            allocated:self.allocated_count(&entries)?,
             keep_after_stream:self.keep_after_stream()?,
             limit:self.limit.load(Ordering::Acquire),
             supports_lifetimes:true,
+            supports_configuration:true,
             explanation: explanation.into(),
             install_url: INSTALL_URL.into(),
             preparation: if self.backend.preparation_observation()?.is_some() {
@@ -668,10 +687,18 @@ impl Manager {
                 entry.display.source.clone_from(&target.source);
             }
         }
-        Ok(entries
+        let mut result:Vec<_>=entries
             .values()
             .map(|entry| entry.display.clone())
-            .collect())
+            .collect();
+        // A removed driver must not hide durable intent. These records can be
+        // renamed, edited or deleted without recreating a driver unattended.
+        for saved in self.saved_records()? {
+            if !entries.contains_key(&LeaseId(saved.id)) {
+                result.push(saved.disconnected());
+            }
+        }
+        Ok(result)
     }
 
     pub fn slots(&self) -> Result<Vec<Slot>> {
@@ -763,7 +790,7 @@ impl Manager {
             }
         }
         let limit=self.limit.load(Ordering::Acquire);
-        if saved.is_none() && entries.len()>=usize::from(limit) {return Err(Error::LimitReached{limit});}
+        if saved.is_none() && self.allocated_count(&entries)? >=usize::from(limit) {return Err(Error::LimitReached{limit});}
         let preparation_before = self.backend.preparation_observation()?;
         if self.preparation.recovery_pending()
             || preparation_before.is_some_and(|state| state.recovery_pending)
@@ -854,7 +881,7 @@ impl Manager {
             owner,
             spec,
             actual: target.actual,
-            name: target.name.clone(),
+            name: saved.filter(|s|!s.name.is_empty()).map_or_else(||target.name.clone(),|s|s.name.clone()),
             source: target.source.clone(),
             active: false,
             persistent:saved.is_some(),
@@ -868,7 +895,7 @@ impl Manager {
                 display.actual = observed.actual;
                 display.source = observed.source;
                 if retention==Some(true) {
-                    let record=policy::SavedDisplay{id:id.0,spec,target:target.key.clone()};
+                    let record=policy::SavedDisplay{id:id.0,spec,target:target.key.clone(),name:display.name.clone()};
                     let saved=self.saved_file().and_then(|file|file.save(record));
                     if let Err(error)=saved {
                         if let Err(cleanup)=self.backend.deactivate(&target.key) {
@@ -961,6 +988,7 @@ impl Manager {
     fn remove_owned(&self, id: LeaseId, owner: Option<Owner>) -> Result<()> {
         let mut entries = self.lock()?;
         let Some(entry) = entries.get_mut(&id) else {
+            if owner.is_none() && self.saved_records()?.iter().any(|saved|saved.id==id.0) {self.forget_saved(id)?;}
             return Ok(());
         };
         if owner.is_some_and(|owner| owner != entry.display.owner) {

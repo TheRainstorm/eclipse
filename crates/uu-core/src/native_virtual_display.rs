@@ -35,6 +35,7 @@ pub enum Request {
     Create { spec: Spec },
     CreatePersistent { spec: Spec },
     SetPersistent { id:LeaseId, persistent:bool },
+    Configure { id:LeaseId, name:String, spec:Spec },
     Remove { id: LeaseId },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -159,6 +160,10 @@ pub fn execute_local_owner(request: LocalRequest) -> Result<Response> {
         Request::CreatePersistent { spec }=>Response::Created{display:manager.create_manual(spec,true)?},
         Request::SetPersistent{id,persistent}=>{
             manager.set_persistent(id,persistent)?;
+            Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}
+        },
+        Request::Configure{id,name,spec}=>{
+            manager.configure_display(id,name,spec)?;
             Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}
         },
         Request::Remove { id } => {
@@ -421,6 +426,13 @@ impl Host {
                 let owned=self.manager.list()?.into_iter().any(|d|d.id==id&&(d.owner==Owner::Session(self.owner)||d.owner==Owner::Manual));
                 ensure!(owned,"{}",uu_i18n::text("此虚拟屏属于其它连接或由源机手动创建"));
                 self.manager.set_persistent(id,persistent)?;
+                Response::Snapshot{status:self.manager.status()?,displays:self.manager.list()?,slots:self.manager.slots()?.into_iter().filter(|s|s.active).collect()}
+            },
+            Request::Configure{id,name,spec}=>{
+                let owned=self.manager.list()?.into_iter().any(|d|d.id==id&&(d.owner==Owner::Session(self.owner)||d.owner==Owner::Manual));
+                ensure!(owned,"{}",uu_i18n::text("此虚拟屏属于其它连接或由源机手动创建"));
+                self.manager.configure_display(id,name,spec)?;
+                displays.refresh()?;
                 Response::Snapshot{status:self.manager.status()?,displays:self.manager.list()?,slots:self.manager.slots()?.into_iter().filter(|s|s.active).collect()}
             },
             Request::Remove { id } => {

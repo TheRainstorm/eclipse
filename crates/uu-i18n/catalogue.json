@@ -1901,5 +1901,11 @@
   "导入服务插件": "Import service plugins",
   "将当前已启用插件及其声明的配置、账号复制到服务；导入代码需要系统授权。": "Copy enabled plugins and their declared settings and accounts to the service. Importing code requires system authorization.",
   "添加连接服务器": "Add connection server",
-  "编辑连接服务器": "Edit connection server"
+  "编辑连接服务器": "Edit connection server",
+  "等待已保存的虚拟显示器恢复；请检查驱动及可用槽位": "Waiting to restore the saved virtual display. Check the driver and available slots.",
+  "虚拟显示器名称最多64字且不能包含控制字符": "Virtual display names may contain at most 64 characters and no control characters.",
+  "修改虚拟显示器规格前，请先结束此主机上的串流": "End streams on this host before changing a virtual display mode.",
+  "已分配：{}，活动占用：{}": "Allocated: {}; active: {}",
+  "名称立即生效；修改规格前请结束此主机上的串流。未恢复的持久屏在恢复时采用新规格。": "The name applies immediately. End streams on this host before changing the mode. An unrestored persistent display uses the new mode when recovered.",
+  "保存显示器设置": "Save display settings"
 }
