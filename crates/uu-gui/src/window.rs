@@ -88,13 +88,14 @@ pub const CONNECTION_BAR_HEIGHT: f32 = crate::theme::TOOLBAR_HEIGHT + 8.0;
 // or keep fighting an uncooperative window manager indefinitely.
 struct SizeTransition {
     target: egui::Vec2,
+    position:Option<egui::Pos2>,
     started: std::time::Instant,
     stable_since: Option<std::time::Instant>,
 }
 #[derive(Debug,PartialEq,Eq)]
 enum SizeProgress { Retry, Waiting, Complete }
 impl SizeTransition {
-    fn new(target:egui::Vec2,now:std::time::Instant)->Self {Self{target,started:now,stable_since:None}}
+    fn new(target:egui::Vec2,now:std::time::Instant)->Self {Self{target,position:None,started:now,stable_since:None}}
     fn observe(&mut self,actual:egui::Vec2,now:std::time::Instant)->SizeProgress {
         if now.duration_since(self.started)>=std::time::Duration::from_secs(2) {return SizeProgress::Complete;}
         let delta=(actual-self.target).abs();
@@ -122,15 +123,19 @@ pub struct WindowSizing {
     stream_pending: bool,
     was_streaming: bool,
     settings_page: bool,
+    settings_resize_pending:bool,
     canvas_px: Option<egui::Vec2>,
     home_points: Option<egui::Vec2>,
     resizing: bool,
     previous: Option<(f32, egui::Vec2, egui::Rect)>,
     transition: Option<SizeTransition>,
+    geometry:Option<Geometry>,
 }
 
 impl WindowSizing {
     pub fn set_settings_page(&mut self, open: bool) {
+        if open&&!self.settings_page {self.settings_resize_pending=true;}
+        if !open {self.settings_resize_pending=false;}
         self.settings_page = open;
     }
     pub fn begin_stream(&mut self) {
@@ -182,6 +187,19 @@ impl WindowSizing {
             work,
             ppp,
         } = geometry;
+        let previous_geometry=self.geometry.replace(geometry);
+        let native_transfer=self.initialized&&previous_geometry.is_some_and(|old| {
+            let monitor=(old.ppp-ppp).abs()>0.01||old.work!=work;
+            let moved=(old.outer.min*old.ppp-outer.min*ppp).length()>1.;
+            let acknowledged=self.transition.as_ref().and_then(|t|t.position)
+                .is_some_and(|expected|(expected-outer.min*ppp).length()<=1.);
+            monitor || (moved&&!acknowledged)
+        });
+        if native_transfer {
+            self.transition=None;self.stream_pending=false;self.settings_resize_pending=false;
+            self.resizing=false;self.home_points=Some(inner.size());
+            if streaming {self.canvas_px=Some((inner.size()-egui::vec2(0.,CONNECTION_BAR_HEIGHT)).max(egui::Vec2::splat(1.))*ppp);}
+        }
         // egui-winit converts viewport commands with the current frame's PPP.
         // Never send native geometry measured with the next monitor's DPI
         // through a frame still using the previous scale factor.
@@ -189,12 +207,6 @@ impl WindowSizing {
             self.transition=None;
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
             return;
-        }
-        let monitor_changed=self.previous.is_some_and(|(old_ppp,_,old_work)|(old_ppp-ppp).abs()>0.01 || old_work!=work);
-        if monitor_changed {
-            // Native monitor transfers retire the old sizing transaction. The
-            // window manager owns the destination position and a fitting size.
-            self.transition=None;
         }
         let chrome = (outer.size() - inner.size()).max(egui::Vec2::ZERO);
         let available = work.shrink(8.0);
@@ -213,12 +225,20 @@ impl WindowSizing {
             };
             ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(minimum.min(capacity)));
         }
+        if native_transfer {
+            self.previous=Some((ppp,inner.size(),work));
+            self.initialized=true;return;
+        }
+        if resize_started {
+            self.transition=None;self.stream_pending=false;
+            self.resizing=true;
+        }
         if self.settings_page {
             self.transition=None;
             // A settings page uses the application minimum, even in a live
             // stream process. Keep pending video sizing until the user returns.
             let size=inner.size().max(egui::vec2(560.0,360.0).min(capacity)).min(capacity);
-            if size!=inner.size() {
+            if std::mem::take(&mut self.settings_resize_pending)&&size!=inner.size() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
                 let position=egui::pos2(
                     outer.left().clamp(available.left(),(available.right()-size.x-chrome.x).max(available.left())),
@@ -228,10 +248,6 @@ impl WindowSizing {
             self.previous=Some((ppp,size,work));
             self.initialized=true;
             return;
-        }
-        if resize_started {
-            self.transition=None;
-            self.resizing = true;
         }
         if self.resizing {
             if streaming {
@@ -252,23 +268,6 @@ impl WindowSizing {
         } else if !self.initialized {
             self.home_points = Some(egui::vec2(1100.0, 760.0));
             Some(self.home_points.unwrap().min(capacity))
-        } else if let Some((old_ppp, _, old_work)) = self.previous {
-            if (old_ppp - ppp).abs() > 0.01 || old_work != work
-                || (!self.resizing && self.transition.is_none() && (inner.width() > capacity.x + 1.0 || inner.height() > capacity.y + 1.0)) {
-                if streaming {
-                    Some(stream_size(video_px.or(self.canvas_px).unwrap_or(inner.size()*ppp),ppp,capacity))
-                } else if inner.width()>capacity.x+1. || inner.height()>capacity.y+1. {
-                    Some(self.home_points.unwrap_or(inner.size()).min(capacity))
-                } else {
-                    // A fitting launcher belongs to the OS/user, including
-                    // partial off-screen placement. Do not pull it to a corner
-                    // or recreate its former size during a native move.
-                    self.home_points=Some(inner.size());
-                    None
-                }
-            } else {
-                None
-            }
         } else {
             None
         };
@@ -300,6 +299,7 @@ impl WindowSizing {
             };
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(position));
+            if let Some(transition)=&mut self.transition {transition.position=Some(position*ppp);}
             self.previous = Some((ppp, size, work));
         } else {
             self.previous = Some((ppp, inner.size(), work));
@@ -587,7 +587,7 @@ mod tests {
         }
     }
     #[test]
-    fn stream_recenters_on_new_monitor_but_preserves_manual_size_on_same_monitor() {
+    fn stream_keeps_native_placement_on_new_monitor_and_manual_size_on_same_monitor() {
         let ctx = egui::Context::default();
         let mut sizing = WindowSizing::default();
         sizing.begin_stream();
@@ -605,46 +605,46 @@ mod tests {
         assert!(!run(work,1.0,true).iter().any(|c|matches!(c,egui::ViewportCommand::InnerSize(_))));
         let work = egui::Rect::from_min_size(egui::pos2(0.0,-1080.0),egui::vec2(1280.0,720.0));
         let commands = run(work,1.5,false);
-        let size = stream_size(egui::vec2(1920.0,1080.0),1.5,work.shrink(8.0).size());
-        assert!(commands.contains(&egui::ViewportCommand::InnerSize(size)));
-        assert!(commands.contains(&egui::ViewportCommand::OuterPosition(work.center()-size/2.0)));
+        assert!(!commands.iter().any(|c|matches!(c,egui::ViewportCommand::InnerSize(_)|egui::ViewportCommand::OuterPosition(_))),"native monitor transfer must own its destination geometry: {commands:?}");
     }
     #[test]
-    fn late_large_and_small_configures_converge_before_releasing_size_ownership() {
+    fn late_configures_retry_only_while_the_original_sizing_intent_is_owned() {
         use std::time::{Duration,Instant};
-        let streaming=true;
-        let ctx=egui::Context::default();let mut sizing=WindowSizing::default();
-        if streaming {sizing.begin_stream();}
+        let ctx=egui::Context::default();let mut sizing=WindowSizing::default();sizing.begin_stream();
         let started=Instant::now();
-        let mut run=|work:egui::Rect,ppp:f32,size:egui::Vec2,ms:u64,manual:bool| {
-            let inner=egui::Rect::from_min_size(work.min,size);
-            ctx.run(dpi_input(ppp),|ctx|sizing.update_at(ctx,streaming,
-                streaming.then_some(egui::vec2(1280.,720.)),manual,Some(Geometry{inner,outer:inner,work,ppp}),started+Duration::from_millis(ms)))
+        let mut run=|size:egui::Vec2,ms:u64| {
+            let inner=egui::Rect::from_min_size(egui::Pos2::ZERO,size);
+            ctx.run(dpi_input(1.),|ctx|sizing.update_at(ctx,true,Some(egui::vec2(1280.,720.)),false,
+                Some(Geometry{inner,outer:inner,work:egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1600.,1000.)),ppp:1.}),started+Duration::from_millis(ms)))
                 .viewport_output[&egui::ViewportId::ROOT].commands.clone()
         };
         let requested=|commands:Vec<egui::ViewportCommand>|commands.into_iter().find_map(|c|if let egui::ViewportCommand::InnerSize(s)=c{Some(s)}else{None});
-        let low=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1600.,1000.));
-        let large=requested(run(low,1.,egui::vec2(1100.,760.),0,false)).unwrap();
-        assert!(requested(run(low,1.,large,100,false)).is_none());
-        assert!(requested(run(low,1.,large,700,false)).is_none());
-        let high=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(853.,533.));
-        let small=requested(run(high,1.5,large,1000,false)).unwrap();
-        assert!(requested(run(high,1.5,small,1100,false)).is_none());
-        assert_eq!(requested(run(high,1.5,large,1200,false)),Some(small));
-        assert!(requested(run(high,1.5,small,1300,false)).is_none());
-        assert!(requested(run(high,1.5,small,1900,false)).is_none());
-        let restored=requested(run(low,1.,small,2000,false)).unwrap();
-        assert_eq!(restored,large);
-        assert!(requested(run(low,1.,large,2100,false)).is_none());
-        // A smaller stale size fits the new monitor but still belongs to
-        // the previous configure; accepting it would cancel enlargement.
-        assert_eq!(requested(run(low,1.,small,2200,false)),Some(large));
-        assert!(requested(run(low,1.,large,2300,false)).is_none());
-        assert!(requested(run(low,1.,large,2900,false)).is_none());
-        let manual=low.shrink(8.).size()*0.95;
-        assert!(requested(run(low,1.,manual,3000,false)).is_none());
-        run(high,1.5,large,3100,false);
-        assert!(requested(run(high,1.5,high.shrink(8.).size()*0.95,3200,true)).is_none(),"explicit resizing takes ownership immediately");
+        let previous=egui::vec2(1100.,760.);let intended=requested(run(previous,0)).unwrap();
+        assert!(requested(run(intended,100)).is_none());
+        assert_eq!(requested(run(previous,200)),Some(intended));
+        assert!(requested(run(intended,300)).is_none());assert!(requested(run(intended,850)).is_none());
+        assert!(requested(run(previous,900)).is_none(),"a completed intent cannot reclaim a later native resize");
+    }
+    #[test]
+    fn native_movement_retires_pending_fit_before_video_and_during_dpi_changes() {
+        use std::time::{Duration,Instant};
+        for streaming in [false,true] {
+            let ctx=egui::Context::default();let mut sizing=WindowSizing::default();if streaming{sizing.begin_stream();}
+            let started=Instant::now();
+            let geometry=|ppp:f32,position:egui::Pos2,work:egui::Rect| {let inner=egui::Rect::from_min_size(position,egui::vec2(1000.,700.));Geometry{inner,outer:inner,ppp,work}};
+            let work=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1920.,1080.));
+            let mut run=|frame_ppp:f32,g:Geometry,video,ms:u64|ctx.run(dpi_input(frame_ppp),|ctx|sizing.update_at(ctx,streaming,video,false,Some(g),started+Duration::from_millis(ms)))
+                .viewport_output[&egui::ViewportId::ROOT].commands.clone();
+            run(1.,geometry(1.,egui::pos2(60.,50.),work),None,0);
+            let assert_native=|commands:Vec<egui::ViewportCommand>|assert!(!commands.iter().any(|c|matches!(c,egui::ViewportCommand::InnerSize(_)|egui::ViewportCommand::OuterPosition(_))),"OS move was overwritten: {commands:?}");
+            // Moving inside the same monitor must also retire an initial retry.
+            assert_native(run(1.,geometry(1.,egui::pos2(90.,70.),work),Some(egui::vec2(3840.,2160.)),50));
+            let next=geometry(1.5,egui::pos2(-1200.,-50.),egui::Rect::from_min_size(egui::pos2(-1280.,-100.),egui::vec2(1280.,800.)));
+            assert_native(run(1.,next,Some(egui::vec2(3840.,2160.)),100));
+            assert_native(run(1.5,next,Some(egui::vec2(3840.,2160.)),150));
+            assert_native(run(1.5,next,Some(egui::vec2(3840.,2160.)),300));
+            assert!(sizing.transition.is_none());assert!(!sizing.stream_pending);
+        }
     }
     #[test]
     fn an_uncooperative_compositor_cannot_hold_size_ownership_forever() {
@@ -654,7 +654,7 @@ mod tests {
         assert_eq!(state.observe(egui::vec2(1267.,749.),now+Duration::from_secs(2)),SizeProgress::Complete);
     }
     #[test]
-    fn launcher_uses_native_dpi_and_fits_position_on_negative_origin_monitor() {
+    fn launcher_keeps_native_dpi_and_position_on_negative_origin_monitor() {
         let ctx = egui::Context::default();
         let mut sizing = WindowSizing::default();
         let mut run = |geometry: Geometry| {
@@ -682,17 +682,13 @@ mod tests {
             ppp: 1.0,
             work: egui::Rect::from_min_size(egui::pos2(580.0, -1080.0), egui::vec2(1920.0, 1032.0)),
         });
-        assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(1100.0, 760.0))));
+        assert!(!commands.iter().any(|c|matches!(c,egui::ViewportCommand::InnerSize(_)|egui::ViewportCommand::OuterPosition(_))));
         assert!(
             commands.contains(&egui::ViewportCommand::MinInnerSize(egui::vec2(
                 560.0, 360.0
             )))
         );
-        assert!(
-            commands.contains(&egui::ViewportCommand::OuterPosition(egui::pos2(
-                1392.0, -1060.0
-            )))
-        );
+
         let small =
             egui::Rect::from_min_size(egui::pos2(-300.0, -200.0), egui::vec2(1100.0, 760.0));
         let commands = run(Geometry {
