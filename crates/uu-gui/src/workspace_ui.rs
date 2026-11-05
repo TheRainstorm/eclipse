@@ -290,6 +290,35 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
+    fn empty_devices_onboarding_stays_stable_while_password_state_is_unknown() {
+        let mut h = Harness::new();
+        let mut heading_y = None;
+        let mut add_y = None;
+        for state in [None, Some(false), Some(true), None, Some(false)] {
+            h.workspace.pairing_password_configured = state;
+            h.frame(vec![]);
+            h.frame(vec![]);
+            let y = |label: &str| {
+                h.texts
+                    .iter()
+                    .find(|(text, _)| text == label)
+                    .unwrap_or_else(|| panic!("missing onboarding action: {label}"))
+                    .1
+                    .y
+            };
+            let next_heading = y("连接你的第一台电脑");
+            let next_add = y("添加第一台电脑");
+            assert_eq!(*heading_y.get_or_insert(next_heading), next_heading);
+            assert_eq!(*add_y.get_or_insert(next_add), next_add);
+            assert!(
+                !h.texts.iter().any(|(text, _)| text == "让其它电脑安全连接本机"),
+                "the async password probe must not insert a second onboarding card"
+            );
+        }
+    }
+
+    #[test]
     fn device_name_uses_the_saved_device_connection_action() {
         let mut h = Harness::new();
         let profile = Profile::new("Generated desktop", Destination::Ip {
@@ -1146,17 +1175,6 @@ impl Workspace {
         });
         self.feedback.show(ui, super::ui_feedback::Scope::Devices);
         let profiles:Vec<_>=self.book.devices.iter().filter(|p|p.redirect.is_none()).cloned().collect();
-        if profiles.is_empty() && self.pairing_password_configured == Some(false) {
-            card(ui, |ui| {
-                ui.strong(uu_i18n::text("让其它电脑安全连接本机"));
-                muted(ui, uu_i18n::text("可以先设置安全连接密码，也可使用配对码或已授权公钥。密码用于防止未授权设备接入。"));
-                if ui.add(theme::secondary_button(uu_i18n::text("设置安全连接密码"))).clicked() {
-                    self.route.page = Page::Services;
-                    self.service_tab = 4;
-                    #[cfg(windows)] self.background_service.open_pairing();
-                }
-            });
-        }
         if profiles.is_empty() {
             card(ui, |ui| {
                 ui.vertical_centered(|ui| {
@@ -1186,6 +1204,18 @@ impl Workspace {
                                 }
                             }
                         });
+                    }
+                    ui.add_space(6.);
+                    muted(ui, uu_i18n::text("安全连接密码为可选设置；也可以使用配对码或已授权公钥。"));
+                    let password_label = if self.pairing_password_configured == Some(true) {
+                        uu_i18n::text("修改安全连接密码")
+                    } else {
+                        uu_i18n::text("设置安全连接密码")
+                    };
+                    if ui.add(theme::secondary_button(password_label)).clicked() {
+                        self.route.page = Page::Services;
+                        self.service_tab = 4;
+                        #[cfg(windows)] self.background_service.open_pairing();
                     }
                 });
             });

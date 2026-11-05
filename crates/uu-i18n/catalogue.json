@@ -54,6 +54,8 @@
   "让其它电脑安全连接本机": "Let other computers connect securely",
   "可以先设置安全连接密码，也可使用配对码或已授权公钥。密码用于防止未授权设备接入。": "Set a secure connection password, or use a pairing code or an authorized public key. A password helps prevent unauthorized access.",
   "设置安全连接密码": "Set connection password",
+  "修改安全连接密码": "Change connection password",
+  "安全连接密码为可选设置；也可以使用配对码或已授权公钥。": "A connection password is optional; a pairing code or authorized public key can also be used.",
   "连接你的第一台电脑": "Connect your first computer",
   "1. 在对方电脑开启 Eclipse 服务　2. 添加对方 IP 地址": "1. Start the Eclipse service on the other PC   2. Add its IP address",
   "3. 首次连接完成设备配对　4. 点击开始串流": "3. Pair the devices on first connection   4. Start streaming",
