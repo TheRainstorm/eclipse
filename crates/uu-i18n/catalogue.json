@@ -1908,4 +1908,7 @@
   "已分配：{}，活动占用：{}": "Allocated: {}; active: {}",
   "名称立即生效；修改规格前请结束此主机上的串流。未恢复的持久屏在恢复时采用新规格。": "The name applies immediately. End streams on this host before changing the mode. An unrestored persistent display uses the new mode when recovered.",
   "保存显示器设置": "Save display settings"
+  ,"返回本机 / 恢复串流": "Return to local desktop / restore stream",
+  "无法注册全局返回本机快捷键；请检查按键是否被其它程序占用": "Cannot register the global return-to-local shortcut. Check whether another program owns the key."
+  ,"{} 隐藏所有串流窗口并返回本机，再按一次恢复；此全局命令在嵌套模式下仍由本机处理。": "{} hides all stream windows and returns to the local desktop. Press it again to restore them. This global command remains local in nested mode."
 }

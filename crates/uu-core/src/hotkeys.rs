@@ -14,6 +14,7 @@ pub enum Action {
     MouseMode,
     CursorMode,
     ToggleNested,
+    ToggleLocal,
     PreviousDisplay,
     NextDisplay,
     PreviousComputer,
@@ -21,7 +22,7 @@ pub enum Action {
     Vsync,
 }
 impl Action {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Stats,
         Self::Menu,
         Self::Mute,
@@ -31,6 +32,7 @@ impl Action {
         Self::MouseMode,
         Self::CursorMode,
         Self::ToggleNested,
+        Self::ToggleLocal,
         Self::PreviousDisplay,
         Self::NextDisplay,
         Self::PreviousComputer,
@@ -49,6 +51,7 @@ impl Action {
             Self::MouseMode => uu_i18n::text("桌面 / 游戏鼠标"),
             Self::CursorMode => uu_i18n::text("光标显示"),
             Self::ToggleNested => uu_i18n::text("嵌套快捷键透传"),
+            Self::ToggleLocal => uu_i18n::text("返回本机 / 恢复串流"),
             Self::PreviousDisplay => uu_i18n::text("上一个远端屏幕（全屏）"),
             Self::NextDisplay => uu_i18n::text("下一个远端屏幕（全屏）"),
             Self::PreviousComputer => uu_i18n::text("上一台串流电脑（全屏）"),
@@ -56,7 +59,7 @@ impl Action {
         }
     }
     fn defaults(self) -> &'static [Chord] {
-        const DEFAULTS: [&[Chord]; 14] = [
+        const DEFAULTS: [&[Chord]; 15] = [
             &[Chord::ctrl_alt(0x53)],
             &[Chord::ctrl_alt(0x48)],
             &[Chord::ctrl_alt(0x4d)],
@@ -66,6 +69,7 @@ impl Action {
             &[Chord::ctrl_alt(0x50)],
             &[Chord::ctrl_alt(0x43)],
             &[Chord::ctrl_alt(0x7b)],
+            &[Chord::ctrl_alt(0x44)],
             &[Chord::ctrl_alt(0x25)],
             &[Chord::ctrl_alt(0x27)],
             &[Chord::ctrl_alt(0x26)],
@@ -237,7 +241,9 @@ impl Bindings {
         }
         let chord = Chord { key, modifiers };
         Action::ALL.into_iter().find(|a| {
-            (!nested || *a == Action::ToggleNested)
+            // Returning to the local desktop is an escape command and remains
+            // local even while an explicit nested-passthrough mode is active.
+            (!nested || matches!(*a, Action::ToggleNested | Action::ToggleLocal))
                 && (streaming || *a == Action::Fullscreen)
                 && (fullscreen || !a.fullscreen_only())
                 && self.chords(*a).contains(&chord)
@@ -343,6 +349,17 @@ mod tests {
         restored.reset(Action::Vsync);assert_eq!(restored.label(Action::Vsync),"Ctrl+Alt+V");
     }
     #[test]
+    fn local_desktop_toggle_is_global_escape_and_can_be_customized() {
+        let mut bindings:Bindings=serde_json::from_str("{}").unwrap();
+        let modifiers=Chord::ctrl_alt(0).modifiers;
+        assert_eq!(bindings.find(0x44,modifiers,false,true,false),Some(Action::ToggleLocal));
+        assert_eq!(bindings.find(0x44,modifiers,true,true,false),Some(Action::ToggleLocal));
+        assert_eq!(bindings.find(0x44,modifiers,false,false,false),None);
+        bindings.set(Action::ToggleLocal,vec![Chord::ctrl_alt_shift(0x70)]);
+        assert_eq!(bindings.find(0x44,modifiers,false,true,false),None);
+        assert_eq!(bindings.find(0x70,Chord::ctrl_alt_shift(0).modifiers,true,true,false),Some(Action::ToggleLocal));
+    }
+    #[test]
     fn navigation_is_configurable_and_only_claimed_in_fullscreen() {
         let mut bindings:Bindings=serde_json::from_str("{}").unwrap();
         for (key,action) in [(0x25,Action::PreviousDisplay),(0x27,Action::NextDisplay),
@@ -366,7 +383,7 @@ mod tests {
     #[test]
     fn all_defaults_use_ctrl_alt_and_saved_overrides_remain_exact() {
         let b:Bindings=serde_json::from_str("{}").unwrap();
-        for (action,keys) in Action::ALL.into_iter().zip([&[0x53][..],&[0x48],&[0x4d],&[0x46,0x58],&[0x51],&[0x5a],&[0x50],&[0x43],&[0x7b],&[0x25],&[0x27],&[0x26],&[0x28],&[0x56]]) {
+        for (action,keys) in Action::ALL.into_iter().zip([&[0x53][..],&[0x48],&[0x4d],&[0x46,0x58],&[0x51],&[0x5a],&[0x50],&[0x43],&[0x7b],&[0x44],&[0x25],&[0x27],&[0x26],&[0x28],&[0x56]]) {
             assert_eq!(b.chords(action),keys.iter().map(|key|Chord::ctrl_alt(*key)).collect::<Vec<_>>());
             for key in keys {
                 assert_eq!(b.find_in_view(*key,Chord::ctrl_alt(0).modifiers,false,true,true,false),Some(action));

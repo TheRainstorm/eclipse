@@ -113,6 +113,14 @@ mod tests {
         }
     }
     #[test]
+    fn local_desktop_escape_remains_local_in_nested_mode_and_owns_its_release() {
+        let mut keys=Shortcuts::default();
+        assert_eq!(keys.key(Key::D,true,false,CHORD,true,true),KeyAction::Trigger(Action::ToggleLocal));
+        assert_eq!(keys.key(Key::D,true,true,CHORD,true,true),KeyAction::Consumed);
+        assert_eq!(keys.key(Key::D,false,false,Modifiers::NONE,true,true),KeyAction::Consumed);
+        assert_eq!(Shortcuts::default().key(Key::D,true,false,Modifiers::NONE,true,false),KeyAction::Forward);
+    }
+    #[test]
     fn ordinary_remote_keys_and_f1_are_preserved() {
         let mut keys = Shortcuts::default();
         assert_eq!(keys.key(Key::S, true, false, Modifiers::CTRL, true, false), KeyAction::Forward);

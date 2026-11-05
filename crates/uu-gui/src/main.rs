@@ -721,6 +721,11 @@ impl App {
                 };
                 self.persist_preferences();
             },
+            shortcuts::Action::ToggleLocal=>{
+                if !crate::platform::global_toggle_registered() {
+                    self.status=uu_i18n::text("无法注册全局返回本机快捷键；请检查按键是否被其它程序占用").into();
+                } else if let Some(tabs)=&self.workspace_tabs {tabs.actions.borrow_mut().push(stream_workspace::Action::ToggleLocal);}
+            },
             shortcuts::Action::Capture=>{
                 self.input_capture.toggle();
                 if let Some(h)=&self.controller { h.stats.diagnostics.record(serde_json::json!({"event":"input_focus","active":self.input_capture.requested()})); }

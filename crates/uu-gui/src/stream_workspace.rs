@@ -80,6 +80,7 @@ pub enum Action {
     CreatePersistentDisplayWithSpec { session:u64, spec:uu_core::virtual_display::Spec },
     ManageDisplays(u64),
     Close(u64),
+    ToggleLocal,
     CloseGroup(u64),
     MergeGroup(u64),
     AddDisplay(u64),
@@ -417,6 +418,20 @@ impl Window {
             }
         }
     }
+    fn resume_local_desktop(&mut self) {
+        if self.active==0 {self.active=self.views.first().map_or(0,|view|view.id);}
+        for session in &mut self.sessions {
+            session.app.active_session=session.id==self.active&&!session.app.exit_requested;
+            if session.app.active_session {
+                if let Some(handle)=&session.app.controller {
+                    let context=session.app.context.clone();
+                    handle.frames.set_waker(move||context.request_video_frame());
+                }
+            }
+        }
+        self.route_cached_audio(self.active);
+        self.sizing.borrow_mut().begin_view();
+    }
     fn take_session(&mut self,id:u64)->Session {
         let index=self.sessions.iter().position(|session|session.id==id).expect("live session");
         let mut session=self.sessions.remove(index);
@@ -589,6 +604,8 @@ struct State {
     vsync: bool,
     next: u64,
     actions: Rc<RefCell<Vec<Action>>>,
+    local_desktop: bool,
+    restore_window: Option<u64>,
 }
 impl Workspace {
     pub fn new(
@@ -617,6 +634,8 @@ impl Workspace {
                 actions: Default::default(),
                 gamepad: Default::default(),
                 input_owner: None,
+                local_desktop: false,
+                restore_window: None,
             })
         });
         Self { owner }
@@ -629,6 +648,35 @@ pub struct Workspace {
     owner: uu_core::local_workspace::Owner,
 }
 impl State {
+    fn toggle_local_desktop(&mut self,ctx:&egui::Context) {
+        if self.windows.is_empty() {return;}
+        if self.local_desktop {
+            for window in &self.windows {
+                ctx.send_viewport_cmd_to(window.viewport(),egui::ViewportCommand::Visible(true));
+            }
+            self.local_desktop=false;
+            let selected=self.restore_window.and_then(|id|self.windows.iter().position(|window|window.id==id))
+                .or_else(||self.windows.iter().position(|window|!window.views.is_empty()))
+                .or_else(||(!self.windows.is_empty()).then_some(0));
+            if let Some(index)=selected {
+                let window=&mut self.windows[index];
+                window.resume_local_desktop();window.focus=true;
+                ctx.send_viewport_cmd_to(window.viewport(),egui::ViewportCommand::Focus);
+            }
+            self.restore_window=None;
+        } else {
+            self.restore_window=self.input_owner.and_then(|id|self.windows.iter().find(|window|window.views.iter().any(|view|view.id==id)).map(|window|window.id))
+                .or_else(||self.windows.iter().find(|window|window.sessions.iter().any(|session|session.id==window.active&&!session.app.exit_requested)).map(|window|window.id))
+                .or_else(||self.windows.first().map(|window|window.id));
+            for window in &mut self.windows {
+                for session in &mut window.sessions {session.app.deactivate_session();}
+                ctx.send_viewport_cmd_to(window.viewport(),egui::ViewportCommand::Visible(false));
+            }
+            self.input_owner=None;
+            self.local_desktop=true;
+        }
+        ctx.request_repaint();
+    }
     fn displaying_session(&self,identity:&ConnectionTarget,display:&DisplayTarget,excluding:Option<u64>)->Option<u64> {
         self.windows.iter().filter(|w|!w.closing).flat_map(|w|&w.views).find(|v|
             Some(v.id)!=excluding&&base_key(&v.launch.target)==*identity&&v.source.as_ref().is_some_and(|s|
@@ -773,6 +821,7 @@ impl State {
                 }
             },
             Action::Close(id)=>self.close(&[id],ctx),
+            Action::ToggleLocal=>self.toggle_local_desktop(ctx),
             Action::CloseGroup(id)=>{let ids=self.group_ids(id);self.close(&ids,ctx);},
             Action::Detach(id)=>self.detach(id,ctx),
             Action::Merge(id)=>self.merge(id,ctx),
@@ -840,6 +889,7 @@ impl eframe::App for Workspace {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             let state = state.as_mut().expect("workspace UI thread");
+            if crate::platform::take_global_toggle(){state.toggle_local_desktop(ctx);}
             state.sync_owned_views();
             while let Some(request) = self.owner.try_recv() {
                 let accepted = serde_json::from_slice::<Launch>(&request.bytes)
@@ -852,10 +902,23 @@ impl eframe::App for Workspace {
                 state.apply(action, ctx);
             }
             state.sync_owned_views();
+            if state.local_desktop {
+                for window in &mut state.windows {
+                    let tabs=window.tabs(Default::default());
+                    for session in &mut window.sessions {
+                        session.app.workspace_tabs=Some(tabs.clone());
+                        session.app.workspace_poll(ctx);
+                        session.app.poll_controller(ctx);
+                        session.app.poll_virtual_display_state();
+                        if session.app.exit_requested && session.app.audio_save_after.take().is_some() {session.app.persist_preferences();}
+                    }
+                }
+            }
             state
                 .windows
                 .retain(|w| !w.views.is_empty() || !w.sessions.is_empty() || !w.pending.is_empty());
             for window in &mut state.windows {
+                if state.local_desktop {continue;}
                 let id = window.id;
                 let viewport = window.viewport();
                 let title=window.sessions.iter().find(|s|s.id==window.active).map(|s|format!("{} · {}",session_title(&s.app),crate::brand::NAME))

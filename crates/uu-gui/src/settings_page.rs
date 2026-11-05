@@ -268,6 +268,7 @@ fn input(ui: &mut egui::Ui, s: &mut Settings, state:&State<'_>) {
         theme::switch(ui,&mut s.capture_keyboard, uu_i18n::text("全屏时将系统快捷键交给远端"));
         theme::switch(ui,&mut s.nested_shortcuts, uu_i18n::text("将客户端快捷键交给远端（嵌套串流）"));
         note(ui,&uu_i18n::format!("{} 随时切换嵌套透传；其它客户端命令发送到远端。",s.hotkeys.label(uu_core::hotkeys::Action::ToggleNested)));
+        note(ui,&uu_i18n::format!("{} 隐藏所有串流窗口并返回本机，再按一次恢复；此全局命令在嵌套模式下仍由本机处理。",s.hotkeys.label(uu_core::hotkeys::Action::ToggleLocal)));
         note(ui,uu_i18n::text("系统键跟随全屏画面的输入焦点。客户端命令可在下方设置；Ctrl+Alt+Del 由 Windows 保留。"));
         ui.add_space(8.0);
         if state.native {

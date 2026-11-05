@@ -155,6 +155,7 @@ impl Platform {
             let active=active&&self.route.old_proc!=0;
             if *self.bindings.borrow()!=*bindings {
                 self.route.configure_bindings(bindings);
+                if let Some(hook)=&self.hook {hook.configure_global_hotkeys(bindings);}
                 *self.bindings.borrow_mut()=bindings.clone();
             }
             self.route.set_policy(active,shortcuts,nested_passthrough,fullscreen);
@@ -229,6 +230,24 @@ impl Platform {
             events.push_back(event);
         }
     }
+}
+
+/// One process-wide local-desktop escape command. The low-level keyboard hook
+/// registers the configured chords with Windows so they still work after every
+/// stream viewport is hidden. No key content or unrelated state is retained.
+pub fn take_global_toggle()->bool {
+    #[cfg(windows)]
+    {windows::GLOBAL_TOGGLE.swap(false,std::sync::atomic::Ordering::AcqRel)}
+    #[cfg(not(windows))]
+    {false}
+}
+/// Hiding every stream window is safe only when the process owns a global
+/// escape registration that can restore them afterwards.
+pub fn global_toggle_registered()->bool {
+    #[cfg(windows)]
+    {windows::GLOBAL_TOGGLE_REGISTERED.load(std::sync::atomic::Ordering::Acquire)}
+    #[cfg(not(windows))]
+    {false}
 }
 
 #[cfg(windows)]
@@ -324,7 +343,7 @@ mod windows {
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
-    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::sync::atomic::{AtomicBool,AtomicI32,AtomicU64, Ordering::Relaxed};
     use windows_sys::Win32::{
         System::LibraryLoader::GetModuleHandleW, UI::Input::KeyboardAndMouse::*,
     };
@@ -395,6 +414,38 @@ mod windows {
     static HOOK_PUMP_ACK: AtomicU64=AtomicU64::new(0);
     static HOOK_PUMP_LATENCY: AtomicU64=AtomicU64::new(0);
     const PUMP_PROBE:u32=WM_APP+0x71;
+    const PUMP_HOTKEY_REFRESH:u32=WM_APP+0x72;
+    const HOTKEY_BASE:i32=0xE100;
+    pub(super) static GLOBAL_TOGGLE:AtomicBool=AtomicBool::new(false);
+    pub(super) static GLOBAL_TOGGLE_REGISTERED:AtomicBool=AtomicBool::new(false);
+    static HOTKEY_COUNT:AtomicI32=AtomicI32::new(0);
+    fn global_hotkeys()->&'static std::sync::Mutex<Vec<uu_core::hotkeys::Chord>> {
+        static KEYS:std::sync::OnceLock<std::sync::Mutex<Vec<uu_core::hotkeys::Chord>>>=std::sync::OnceLock::new();
+        KEYS.get_or_init(||std::sync::Mutex::new(uu_core::hotkeys::Bindings::default().chords(uu_core::hotkeys::Action::ToggleLocal).to_vec()))
+    }
+    fn set_global_hotkeys(bindings:&uu_core::hotkeys::Bindings) {
+        if let Ok(mut keys)=global_hotkeys().lock() {*keys=bindings.chords(uu_core::hotkeys::Action::ToggleLocal).to_vec();}
+    }
+    unsafe fn unregister_global_hotkeys() {
+        let count=HOTKEY_COUNT.swap(0,Relaxed);
+        GLOBAL_TOGGLE_REGISTERED.store(false,std::sync::atomic::Ordering::Release);
+        for index in 0..count {UnregisterHotKey(std::ptr::null_mut(),HOTKEY_BASE+index);}
+    }
+    unsafe fn refresh_global_hotkeys() {
+        unregister_global_hotkeys();
+        let keys=global_hotkeys().lock().map(|keys|keys.clone()).unwrap_or_default();
+        let mut count=0i32;
+        for chord in keys.into_iter().filter(|chord|chord.modifiers.ctrl||chord.modifiers.alt||chord.modifiers.shift||chord.modifiers.meta).take(3) {
+            let mut modifiers=0x4000u32; // MOD_NOREPEAT
+            if chord.modifiers.alt{modifiers|=0x0001;}
+            if chord.modifiers.ctrl{modifiers|=0x0002;}
+            if chord.modifiers.shift{modifiers|=0x0004;}
+            if chord.modifiers.meta{modifiers|=0x0008;}
+            if RegisterHotKey(std::ptr::null_mut(),HOTKEY_BASE+count,modifiers,chord.key)!=0 {count+=1;}
+        }
+        HOTKEY_COUNT.store(count,Relaxed);
+        GLOBAL_TOGGLE_REGISTERED.store(count>0,std::sync::atomic::Ordering::Release);
+    }
     fn clock_ms()->u64 {
         static START:std::sync::OnceLock<std::time::Instant>=std::sync::OnceLock::new();
         START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64+1
@@ -521,6 +572,10 @@ mod windows {
             let ok=unsafe{PostThreadMessageW(self.id,PUMP_PROBE,now as usize,0)};
             self.probe_error.set(if ok==0 {std::io::Error::last_os_error().raw_os_error()}else{None});
         }
+        pub fn configure_global_hotkeys(&self,bindings:&uu_core::hotkeys::Bindings) {
+            set_global_hotkeys(bindings);
+            unsafe{PostThreadMessageW(self.id,PUMP_HOTKEY_REFRESH,0,0);}
+        }
     }
     unsafe fn desktop_name(thread:u32)->Option<Vec<u16>> {
         use windows_sys::Win32::System::StationsAndDesktops::*;
@@ -628,6 +683,7 @@ mod windows {
                 let _=ready_tx.send(None);return;
             }
             let installed_ms=clock_ms();
+            refresh_global_hotkeys();
             if ready_tx.send(Some((windows_sys::Win32::System::Threading::GetCurrentThreadId(),installed_ms))).is_ok(){
                 while GetMessageW(&mut message,std::ptr::null_mut(),0,0)>0 {
                     if message.message==PUMP_PROBE {
@@ -635,9 +691,15 @@ mod windows {
                         HOOK_PUMP_ACK.store(message.wParam as u64,std::sync::atomic::Ordering::Release);
                         continue;
                     }
+                    if message.message==PUMP_HOTKEY_REFRESH {refresh_global_hotkeys();continue;}
+                    if message.message==WM_HOTKEY {
+                        if (HOTKEY_BASE..HOTKEY_BASE+3).contains(&(message.wParam as i32)) {GLOBAL_TOGGLE.store(true,std::sync::atomic::Ordering::Release);}
+                        continue;
+                    }
                     TranslateMessage(&message);DispatchMessageW(&message);
                 }
             }
+            unregister_global_hotkeys();
             UnhookWindowsHookEx(hook);
         }).ok()?;
         match ready_rx.recv().ok().flatten() {
