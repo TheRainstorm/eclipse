@@ -314,7 +314,24 @@ impl Entry {
                 ui.label(&self.notice);
             }
         });
+        ui.add_space(12.);
     }
+}
+fn section_card(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
+    let frame = crate::theme::card(ui.visuals());
+    let width = (ui.available_width()
+        - frame.inner_margin.sum().x
+        - frame.outer_margin.sum().x
+        - 2. * frame.stroke.width)
+        .max(1.);
+    frame.show(ui, |ui| {
+        ui.set_width(width);
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+        ui.strong(title);
+        ui.add_space(8.);
+        contents(ui);
+    });
+    ui.add_space(12.);
 }
 fn version_labels(ui: &mut egui::Ui, build: &BuildStatus) {
     if let Some(running) = &build.running {
@@ -844,101 +861,123 @@ impl Manager {
             ui.label(&self.connection_error);
         }
         let enabled = self.snapshot.is_some() && !self.busy;
-        if self.section == 0 {
-            for (name, state) in &self.endpoints {
-                ui.label(format!("{name} · {state}"));
-            }
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(
-                        enabled,
-                        crate::theme::secondary_button(uu_i18n::text("检查防火墙")),
-                    )
-                    .clicked()
-                {
-                    self.submit(Job::Rpc(Request::Firewall { repair: false }));
-                }
-                if ui
-                    .add_enabled(
-                        enabled,
-                        crate::theme::secondary_button(uu_i18n::text("修复防火墙")),
-                    )
-                    .clicked()
-                {
-                    self.submit(Job::Rpc(Request::Firewall { repair: true }));
-                }
-            });
-            self.connections(ui);
-        } else if self.section == 6 {
-            ui.add_enabled_ui(enabled, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(uu_i18n::text("最多创建虚拟显示器"));
-                    let before = self.draft.virtual_display_limit;
-                    crate::theme::number_input(
-                        ui,
-                        egui::DragValue::new(&mut self.draft.virtual_display_limit)
-                            .range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT),
-                    );
-                    self.dirty |= self.draft.virtual_display_limit != before;
-                    if ui
-                        .add_enabled(
-                            self.dirty,
-                            crate::theme::primary_button(uu_i18n::text("保存设置")),
-                        )
-                        .clicked()
-                    {
-                        self.save(false);
+        match self.section {
+            0 => {
+                section_card(ui, uu_i18n::text("连接入口"), |ui| {
+                    for (name, state) in &self.endpoints {
+                        ui.label(format!("{name} · {state}"));
                     }
-                });
-            });
-            ui.label(uu_i18n::text(
-                "临时屏随所属串流断开回收；持久屏保留并在开机恢复。",
-            ));
-            if ui
-                .add_enabled(
-                    enabled,
-                    crate::theme::primary_button(uu_i18n::text("管理虚拟显示器")),
-                )
-                .clicked()
-            {
-                self.virtual_display
-                    .open_local(ui.ctx(), super::virtual_display_ui::LocalOwner::Background);
-            }
-        } else {
-            ui.add_enabled_ui(enabled, |ui| {
-                let before = self.draft.clone();
-                match self.section {
-                    1..=3 => {
-                        let monitors = self
-                            .snapshot
-                            .as_ref()
-                            .and_then(|s| s.server.as_ref())
-                            .map(|s| s.monitors.clone())
-                            .unwrap_or_default();
-                        super::server_config_ui::edit(
-                            ui,
-                            &mut self.draft,
-                            match self.section {
-                                1 => 2,
-                                2 => 0,
-                                _ => 1,
-                            },
-                            &monitors,
-                            false,
-                            true,
-                        );
+                    if self.endpoints.is_empty() {
+                        ui.weak(uu_i18n::text("当前没有可用的连接入口。"));
                     }
-                    4 => {
-                        super::server_config_ui::device_name(ui, &mut self.draft, true);
-                        if let Some(snapshot) = &self.trust {
-                            let mut commands = vec![];
-                            self.pairing.show(ui, snapshot, &mut commands);
-                            if let Some(request) = commands.pop() {
-                                self.submit(Job::Rpc(Request::Trust { request }));
-                            }
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(
+                                enabled,
+                                crate::theme::secondary_button(uu_i18n::text("检查防火墙")),
+                            )
+                            .clicked()
+                        {
+                            self.submit(Job::Rpc(Request::Firewall { repair: false }));
                         }
-                    }
-                    _ => {
+                        if ui
+                            .add_enabled(
+                                enabled,
+                                crate::theme::secondary_button(uu_i18n::text("修复防火墙")),
+                            )
+                            .clicked()
+                        {
+                            self.submit(Job::Rpc(Request::Firewall { repair: true }));
+                        }
+                    });
+                });
+                section_card(ui, uu_i18n::text("会话"), |ui| self.connections(ui));
+            }
+            1..=4 => {
+                let title = match self.section {
+                    1 => uu_i18n::text("输入"),
+                    2 => uu_i18n::text("音频 / 视频"),
+                    3 => uu_i18n::text("编码器"),
+                    _ => uu_i18n::text("配对设置"),
+                };
+                section_card(ui, title, |ui| {
+                    ui.add_enabled_ui(enabled, |ui| {
+                        let before = self.draft.clone();
+                        match self.section {
+                            1..=3 => {
+                                let monitors = self
+                                    .snapshot
+                                    .as_ref()
+                                    .and_then(|s| s.server.as_ref())
+                                    .map(|s| s.monitors.clone())
+                                    .unwrap_or_default();
+                                super::server_config_ui::edit(
+                                    ui,
+                                    &mut self.draft,
+                                    match self.section {
+                                        1 => 2,
+                                        2 => 0,
+                                        _ => 1,
+                                    },
+                                    &monitors,
+                                    false,
+                                    true,
+                                );
+                            }
+                            4 => {
+                                super::server_config_ui::device_name(ui, &mut self.draft, true);
+                                if let Some(snapshot) = &self.trust {
+                                    let mut commands = vec![];
+                                    self.pairing.show(ui, snapshot, &mut commands);
+                                    if let Some(request) = commands.pop() {
+                                        self.submit(Job::Rpc(Request::Trust { request }));
+                                    }
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                        self.dirty |= self.draft != before;
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .add_enabled(
+                                    self.dirty,
+                                    crate::theme::primary_button(uu_i18n::text("保存设置")),
+                                )
+                                .clicked()
+                            {
+                                self.save(false);
+                            }
+                            if ui
+                                .add_enabled(
+                                    self.dirty,
+                                    crate::theme::secondary_button(uu_i18n::text("还原修改")),
+                                )
+                                .clicked()
+                            {
+                                self.dirty = false;
+                                if let Some(server) =
+                                    self.snapshot.as_ref().and_then(|s| s.server.as_ref())
+                                {
+                                    self.draft = server.saved.clone();
+                                    self.revision = server.revision.clone();
+                                }
+                            }
+                            if ui
+                                .add(crate::theme::secondary_button(uu_i18n::text(
+                                    "保存并重启服务",
+                                )))
+                                .clicked()
+                            {
+                                self.confirm = Some(Confirmation::Restart);
+                            }
+                        });
+                    });
+                });
+            }
+            5 => {
+                section_card(ui, uu_i18n::text("连接服务"), |ui| {
+                    ui.add_enabled_ui(enabled, |ui| {
+                        let before = self.draft.clone();
                         crate::theme::switch(
                             ui,
                             &mut self.draft.ip_enabled,
@@ -970,61 +1009,102 @@ impl Manager {
                                 }
                             }
                         }
-                    }
-                }
-                self.dirty |= self.draft != before;
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .add_enabled(
-                            self.dirty,
-                            crate::theme::primary_button(uu_i18n::text("保存设置")),
-                        )
-                        .clicked()
-                    {
-                        self.save(false);
-                    }
-                    if ui
-                        .add_enabled(
-                            self.dirty,
-                            crate::theme::secondary_button(uu_i18n::text("还原修改")),
-                        )
-                        .clicked()
-                    {
-                        self.dirty = false;
-                        if let Some(server) = self.snapshot.as_ref().and_then(|s| s.server.as_ref())
+                        self.dirty |= self.draft != before;
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .add_enabled(
+                                    self.dirty,
+                                    crate::theme::primary_button(uu_i18n::text("保存设置")),
+                                )
+                                .clicked()
+                            {
+                                self.save(false);
+                            }
+                            if ui
+                                .add_enabled(
+                                    self.dirty,
+                                    crate::theme::secondary_button(uu_i18n::text("还原修改")),
+                                )
+                                .clicked()
+                            {
+                                self.dirty = false;
+                                if let Some(server) =
+                                    self.snapshot.as_ref().and_then(|s| s.server.as_ref())
+                                {
+                                    self.draft = server.saved.clone();
+                                    self.revision = server.revision.clone();
+                                }
+                            }
+                            if ui
+                                .add(crate::theme::secondary_button(uu_i18n::text(
+                                    "保存并重启服务",
+                                )))
+                                .clicked()
+                            {
+                                self.confirm = Some(Confirmation::Restart);
+                            }
+                        });
+                        if self.dirty
+                            || self.draft
+                                != self
+                                    .snapshot
+                                    .as_ref()
+                                    .and_then(|s| s.server.as_ref())
+                                    .map(|s| s.active.clone())
+                                    .unwrap_or_default()
                         {
-                            self.draft = server.saved.clone();
-                            self.revision = server.revision.clone();
+                            ui.weak(uu_i18n::text(
+                                "名称、端口和连接入口变更需要重启服务；重启会断开当前串流。",
+                            ));
                         }
-                    }
-                    if ui
-                        .add(crate::theme::secondary_button(uu_i18n::text(
-                            "保存并重启服务",
-                        )))
-                        .clicked()
-                    {
-                        self.confirm = Some(Confirmation::Restart);
-                    }
+                    });
                 });
-                if self.draft
-                    != self
-                        .snapshot
-                        .as_ref()
-                        .and_then(|s| s.server.as_ref())
-                        .map(|s| s.active.clone())
-                        .unwrap_or_default()
-                {
-                    ui.weak(uu_i18n::text(
-                        "名称、端口和连接入口变更需要重启服务；重启会断开当前串流。",
-                    ));
+                if let Some(request) = self.service_connections.show(ui, enabled) {
+                    self.submit(Job::Rpc(Request::Connections { request }));
                 }
-            });
-        }
-        if self.section == 5 {
-            if let Some(request) = self.service_connections.show(ui, enabled) {
-                self.submit(Job::Rpc(Request::Connections { request }));
+                self.plugins_ui(ui, enabled);
             }
-            self.plugins_ui(ui,enabled);
+            6 => {
+                section_card(ui, uu_i18n::text("虚拟显示器"), |ui| {
+                    ui.add_enabled_ui(enabled, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(uu_i18n::text("最多创建虚拟显示器"));
+                            let before = self.draft.virtual_display_limit;
+                            crate::theme::number_input(
+                                ui,
+                                egui::DragValue::new(&mut self.draft.virtual_display_limit)
+                                    .range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT),
+                            );
+                            self.dirty |= self.draft.virtual_display_limit != before;
+                            if ui
+                                .add_enabled(
+                                    self.dirty,
+                                    crate::theme::primary_button(uu_i18n::text("保存设置")),
+                                )
+                                .clicked()
+                            {
+                                self.save(false);
+                            }
+                        });
+                        ui.weak(uu_i18n::text(
+                            "临时屏随所属串流断开回收；持久屏保留并在开机恢复。",
+                        ));
+                        if ui
+                            .add_enabled(
+                                enabled,
+                                crate::theme::primary_button(uu_i18n::text("管理虚拟显示器")),
+                            )
+                            .clicked()
+                        {
+                            self.virtual_display.open_local(
+                                ui.ctx(),
+                                super::virtual_display_ui::LocalOwner::Background,
+                            );
+                        }
+                    });
+                });
+            }
+            _ => {}
         }
         for pending in self.pending.clone() {
             crate::theme::card(ui.visuals()).show(ui, |ui| {
