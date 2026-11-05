@@ -142,6 +142,28 @@ impl Entry {
         available: bool,
     ) -> bool {
         let installed = self.poll(ui.ctx(), host);
+        if self.manager.is_none() {
+            ui.weak(if self.notice.is_empty() {
+                uu_i18n::text("后台服务管理未就绪")
+            } else {
+                &self.notice
+            });
+            return installed;
+        }
+        if let Some(manager) = &mut self.manager {
+            manager.show_tabs(ui);
+        }
+        let section = self.manager.as_ref().map_or(0, |manager| manager.section);
+        if section == 0 {
+            self.show_status_card(ui, available);
+        }
+        if let Some(manager) = &mut self.manager {
+            manager.show_body(ui);
+        }
+        installed
+    }
+
+    fn show_status_card(&mut self, ui: &mut egui::Ui, available: bool) {
         let busy = self.job.is_some();
         let frame = crate::theme::card(ui.visuals());
         let width = (ui.available_width()
@@ -193,7 +215,7 @@ impl Entry {
                             )
                             .clicked()
                         {
-                            self.deployment=Some(Deployment::Install);
+                            self.deployment = Some(Deployment::Install);
                         }
                     } else {
                         if ui
@@ -232,10 +254,19 @@ impl Entry {
                         }
                     }
                 });
-                if manager.section==5 && manager.state!=0 {
-                    if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("导入服务插件")))
-                        .on_hover_text(uu_i18n::text("将当前已启用插件及其声明的配置、账号复制到服务；导入代码需要系统授权。"))
-                        .clicked(){manager.confirm=Some(Confirmation::ImportPlugins);}
+                if manager.section == 5 && manager.state != 0 {
+                    if ui
+                        .add_enabled(
+                            !busy,
+                            crate::theme::secondary_button(uu_i18n::text("导入服务插件")),
+                        )
+                        .on_hover_text(uu_i18n::text(
+                            "将当前已启用插件及其声明的配置、账号复制到服务；导入代码需要系统授权。",
+                        ))
+                        .clicked()
+                    {
+                        manager.confirm = Some(Confirmation::ImportPlugins);
+                    }
                 }
                 if outdated {
                     ui.colored_label(
@@ -262,8 +293,10 @@ impl Entry {
                         {
                             manager.confirm = None;
                             match confirm {
-                                Confirmation::Update => self.deployment=Some(Deployment::Install),
-                                Confirmation::ImportPlugins => self.deployment=Some(Deployment::ImportPlugins),
+                                Confirmation::Update => self.deployment = Some(Deployment::Install),
+                                Confirmation::ImportPlugins => {
+                                    self.deployment = Some(Deployment::ImportPlugins)
+                                }
                                 Confirmation::Stop => manager.submit(Job::Control(false)),
                                 Confirmation::Restart => manager.save(true),
                             }
@@ -276,13 +309,11 @@ impl Entry {
                         }
                     });
                 }
-                ui.add_enabled_ui(!busy, |ui| manager.show(ui));
             }
             if !self.notice.is_empty() {
                 ui.label(&self.notice);
             }
         });
-        installed
     }
 }
 fn version_labels(ui: &mut egui::Ui, build: &BuildStatus) {
@@ -778,7 +809,7 @@ impl Manager {
             }
         });
     }
-    fn show(&mut self, ui: &mut egui::Ui) {
+    fn show_tabs(&mut self, ui: &mut egui::Ui) {
         self.virtual_display.poll(None);
         self.virtual_display.show(ui.ctx(), None);
         ui.add_space(10.);
@@ -795,6 +826,9 @@ impl Manager {
                 crate::theme::tab_value(ui, &mut self.section, tab, uu_i18n::text(label));
             }
         });
+        ui.add_space(10.);
+    }
+    fn show_body(&mut self, ui: &mut egui::Ui) {
         if self.busy {
             ui.spinner();
         }
@@ -1670,6 +1704,58 @@ mod tests {
         }
     }
 
+    fn drawn_text(output: &egui::FullOutput) -> String {
+        fn visit(shape: &egui::Shape, output: &mut String) {
+            match shape {
+                egui::Shape::Text(text) => output.push_str(text.galley.text()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        visit(shape, output);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        for shape in &output.shapes {
+            visit(&shape.shape, &mut text);
+        }
+        text
+    }
+    fn draw_service(entry: &mut Entry, host: &mut super::super::sharing_ui::HostUi, ctx: &egui::Context) -> String {
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 1400.))),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    entry.show(ui, host, true);
+                });
+            },
+        );
+        drawn_text(&output)
+    }
+    #[test]
+    fn service_status_card_is_only_rendered_in_the_service_management_tab() {
+        let (mut manager, send, _jobs, _stop) = fixture();
+        send.send(state(false, Sharing::default())).unwrap();
+        manager.poll();
+        manager.section = 0;
+        let mut entry = Entry { manager: Some(manager), ..Default::default() };
+        let mut host = super::super::sharing_ui::HostUi::default();
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let service = draw_service(&mut entry, &mut host, &ctx);
+        assert!(service.contains(uu_i18n::text("Eclipse 服务")));
+        assert!(service.contains(uu_i18n::text("后台服务未启动或尚未就绪")));
+        entry.manager.as_mut().unwrap().section = 1;
+        let input = draw_service(&mut entry, &mut host, &ctx);
+        assert!(input.contains(uu_i18n::text("服务管理")));
+        assert!(!input.contains(uu_i18n::text("Eclipse 服务")));
+        assert!(!input.contains(uu_i18n::text("后台服务未启动或尚未就绪")));
+    }
+
     struct Harness {
         manager: Manager,
         send: mpsc::SyncSender<Event>,
@@ -1729,7 +1815,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| self.manager.show(ui));
+                    egui::CentralPanel::default().show(ctx, |ui| { self.manager.show_tabs(ui); self.manager.show_body(ui); });
                 },
             );
             fn visit(shape: &egui::Shape, labels: &mut Vec<(String, egui::Pos2)>) {
