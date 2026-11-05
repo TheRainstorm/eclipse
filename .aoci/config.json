@@ -129,6 +129,39 @@
         "created_by": "aoci-init",
         "order": 106,
         "enabled": true
+      },
+      {
+        "rule_id": "local-handoff-exclude",
+        "action": "exclude",
+        "pattern": "handoff",
+        "pattern_kind": "directory",
+        "reason": "handoff 是仅供本地开发与 agent 续接的资料，不进入 Eclipse 项目正式认知索引",
+        "source": "user",
+        "created_by": "user",
+        "order": 900,
+        "enabled": true
+      },
+      {
+        "rule_id": "local-notes-exclude",
+        "action": "exclude",
+        "pattern": "notes",
+        "pattern_kind": "directory",
+        "reason": "notes 是仅供本地开发与 agent 续接的资料，不进入 Eclipse 项目正式认知索引",
+        "source": "user",
+        "created_by": "user",
+        "order": 901,
+        "enabled": true
+      },
+      {
+        "rule_id": "local-todo-exclude",
+        "action": "exclude",
+        "pattern": "todo.md",
+        "pattern_kind": "file",
+        "reason": "todo.md 是本地开发清单，不进入 Eclipse 项目正式认知索引",
+        "source": "user",
+        "created_by": "user",
+        "order": 902,
+        "enabled": true
       }
     ]
   },
