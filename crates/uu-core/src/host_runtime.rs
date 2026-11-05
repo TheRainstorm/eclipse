@@ -116,10 +116,6 @@ fn prepare_inner(
             state,
         });
     }
-    for id in book.sharing.plugin_services.iter().filter(|id|!providers.iter().any(|(available,_)|available==*id)) {
-        let (_status,state)=watch::channel(EndpointStatus::Error(uu_i18n::format!("连接插件 {} 不可用；请导入匹配插件或启用其它连接入口。",id)));
-        endpoints.push(Endpoint{name:id.clone(),provider:Some(id.clone()),state});
-    }
     let mut services = Vec::new();
     let mut add = |name: String, settings: Settings| {
         let (status, state) = watch::channel(EndpointStatus::Starting);
@@ -382,7 +378,11 @@ mod tests {
                 }
             }).await.unwrap();
             assert!(!running.is_finished(),"an unavailable listener must not destroy service management");
-            assert!(endpoints.iter().all(|e|matches!(*e.state.borrow(),EndpointStatus::Error(_))));
+            if conflict {
+                assert!(endpoints.iter().all(|e|matches!(*e.state.borrow(),EndpointStatus::Error(_))));
+            } else {
+                assert!(endpoints.is_empty(),"an unavailable configured plugin must not synthesize an endpoint");
+            }
             let crate::host_admin::Response::Snapshot{snapshot}=admin.execute_local_manager(&access,crate::host_admin::Request::Inspect).unwrap() else {panic!()};
             let mut settings=book.sharing.clone();settings.ip_enabled=true;
             let revision=snapshot.server.unwrap().revision;
@@ -395,5 +395,19 @@ mod tests {
             drop(occupied);drop(admin);drop(access);drop(trust);
             std::fs::remove_dir_all(root).unwrap();
         }
+    }
+    #[test]
+    fn unavailable_configured_plugin_does_not_hide_or_shadow_ip_entrance() {
+        let root=std::env::temp_dir().join(format!("eclipse-phantom-plugin-{}",uuid::Uuid::new_v4()));
+        let config=Config{data_dir:root.join("data"),state_dir:root.join("state"),signaling_host:String::new()};
+        let mut book=Book::default();book.sharing.audio=false;book.sharing.control=false;
+        book.sharing.ip_enabled=true;book.sharing.plugin_services=vec!["missing-generated-addon".into()];
+        let trust=TrustStore::open(config.at("device-trust")).unwrap();
+        let prepared=prepare_service(config.clone(),book,trust,None,||Ok(()),|_|{}).unwrap();
+        assert_eq!(prepared.endpoints.len(),1,"missing plugins must not publish phantom entrances");
+        assert_eq!(prepared.endpoints[0].name,uu_i18n::text("IP 直连"));
+        assert!(prepared.endpoints[0].provider.is_none());
+        drop(prepared);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

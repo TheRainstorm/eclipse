@@ -1881,7 +1881,6 @@
   "浅蓝色": "Light blue",
   "已达到源机设置的虚拟显示器上限（{limit} 个）": "The host virtual display limit ({limit}) has been reached",
   "此操作会断开当前 {} 个串流会话。": "This operation will disconnect {} active streaming sessions.",
-  "连接插件 {} 不可用；请导入匹配插件或启用其它连接入口。": "Connection plugin {} is unavailable; import a compatible plugin or enable another connection entrance.",
   "已取消系统授权，服务尚未更新": "System authorization was cancelled; the service has not been updated.",
   "Eclipse 服务": "Eclipse service",
   "后台服务管理未就绪": "Background service management is not ready",
