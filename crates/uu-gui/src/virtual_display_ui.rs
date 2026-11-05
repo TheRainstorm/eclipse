@@ -1519,6 +1519,13 @@ impl crate::App {
         }
         self.virtual_display
             .poll(stats.as_ref().map(|stats| &stats.virtual_displays));
+        if let Some((_,displays))=stats.as_ref().and_then(|stats|stats.virtual_displays.snapshot()) {
+            if let Some(source)=self.fixed_display_target() {
+                if let Some(display)=displays.iter().find(|display|display.source==source.source) {
+                    self.displays.persistent_virtual=display.persistent;
+                }
+            }
+        }
         if let Some((source, _)) = &self.virtual_display.source {
             let catalog = self.remote_screens();
             let mut matching = catalog
@@ -1530,6 +1537,7 @@ impl crate::App {
                 let source = source.clone();
                 self.virtual_display.source = None;
                 if self.displays.awaiting_virtual() {
+                    self.displays.persistent_virtual=self.virtual_display.displays.iter().find(|display|display.source==source).is_some_and(|display|display.persistent);
                     self.displays
                         .bind_created_virtual(crate::sessions::DisplayTarget { id, source });
                 } else {

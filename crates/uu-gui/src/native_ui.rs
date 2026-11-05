@@ -58,7 +58,7 @@ impl App {
     }
     pub(super) fn attach_controller(&mut self,handle:uu_core::controller::ControllerHandle) {
         self.virtual_display.reset_remote();
-        if let Some(target)=self.stream_target.as_ref().and_then(|target|target.connection.virtual_display()) {
+        if let Some(target)=self.stream_target.as_ref().and_then(|target|target.connection.virtual_display()).filter(|_|self.displays.awaiting_virtual()) {
             self.virtual_display.prepare_startup_with_lifetime(target.spec,target.persistent);
         }
         let context=self.context.clone();handle.frames.enable_planar();handle.frames.set_waker(move||context.request_video_frame());
@@ -219,10 +219,7 @@ impl App {
         self.remote_admin_ui=Default::default();
         let stats=self.client_stats("native");
         let requested=!self.view_only && self.displays.ready();
-        let initial=self.stream_target.as_ref().and_then(|target| {
-            target.connection.virtual_display().map(|target|uu_core::native_displays::InitialRequest::virtual_display(target.spec,target.persistent))
-                .or_else(||self.fixed_display_target().map(|target|uu_core::native_displays::InitialRequest::Existing{id:target.id,source:target.source}))
-        });
+        let initial=self.stream_target.as_ref().and_then(|target|self.displays.initial_request(&target.connection));
         if let Some(initial)=initial {
             if let Err(error)=stats.native_displays.request_initial(initial) {
                 self.status=error.to_string();self.displays.notice=self.status.clone();return;

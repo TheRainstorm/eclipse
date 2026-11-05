@@ -16,6 +16,7 @@ pub(super) struct Displays {
     initial_selection_checked: bool,
     initial_display: Option<super::sessions::DisplayTarget>,
     fixed_display: Option<super::sessions::DisplayTarget>,
+    pub(super) persistent_virtual: bool,
     awaiting_virtual: bool,
     remember_on_confirmation: Option<i32>,
     blocked: bool,
@@ -45,7 +46,28 @@ impl Displays {
     pub(super) fn for_reconnect(&self)->Self {
         let mut next=Self::default();
         if let Some(target)=&self.fixed_display {next.set_initial_display(target.clone());}
+        next.persistent_virtual=self.persistent_virtual;
         next
+    }
+    fn for_connection(&self,connection:&super::sessions::ConnectionTarget)->Self {
+        let mut next=self.for_reconnect();
+        if connection.virtual_display().is_some() && !(next.persistent_virtual && next.fixed_display.is_some()) {
+            next=Self::default();
+            next.await_virtual();
+        }
+        if let Some(display)=connection.display().cloned() {
+            if !next.awaiting_virtual {next.set_initial_display(display);}
+        }
+        next
+    }
+    pub(super) fn initial_request(&self,connection:&super::sessions::ConnectionTarget)->Option<uu_core::native_displays::InitialRequest> {
+        use uu_core::native_displays::InitialRequest;
+        if let Some(target)=connection.virtual_display() {
+            if !self.persistent_virtual || self.fixed_display.is_none() {
+                return Some(InitialRequest::virtual_display(target.spec,target.persistent));
+            }
+        }
+        self.fixed_display.clone().map(|target|InitialRequest::Existing{id:target.id,source:target.source})
     }
     fn reconcile_fixed_source(&mut self,screens:&RemoteScreens) {
         let Some(target)=self.fixed_display.clone() else{return;};
@@ -316,14 +338,7 @@ impl super::App {
         screens
     }
     pub(super) fn prepare_displays(&mut self) {
-        self.displays = self.displays.for_reconnect();
-        if self.stream_target.as_ref().is_some_and(|target|target.connection.virtual_display().is_some()) {
-            self.displays=Displays::default();
-            self.displays.await_virtual();
-        }
-        if let Some(display)=self.stream_target.as_ref().and_then(|target|target.connection.display()).cloned() {
-            if !self.displays.awaiting_virtual {self.displays.set_initial_display(display);}
-        }
+        self.displays = self.stream_target.as_ref().map(|target|self.displays.for_connection(&target.connection)).unwrap_or_default();
         self.selected_track = 0;
         let Some(path) = self.config.as_ref().zip(self.stream_target.as_ref())
             .and_then(|(config, target)| super::display_layout::DisplayLayout::path(config, target)) else {return;};
@@ -513,6 +528,32 @@ mod tests {
         screens.screens.retain(|s|s.id==0);
         displays.reconcile_fixed_source(&screens);
         assert_eq!(displays.confirmed_refresh(&screens),None);
+    }
+    #[test]
+    fn persistent_virtual_reconnect_reuses_the_confirmed_source_and_temporary_recreates() {
+        use super::super::sessions::{ConnectionTarget,VirtualDisplayTarget};
+        use uu_core::native_displays::InitialRequest;
+        let mut intent=VirtualDisplayTarget::new(Default::default());intent.persistent=true;
+        let connection=ConnectionTarget::NativeVirtual{connection:Box::new(ConnectionTarget::NativeDevice("generated".into())),virtual_display:intent.clone()};
+        let first=Displays::default().for_connection(&connection);
+        assert!(first.awaiting_virtual());
+        assert!(matches!(first.initial_request(&connection),Some(InitialRequest::VirtualPersistent{..})));
+        let mut created=first;
+        created.bind_created_virtual(super::super::sessions::DisplayTarget{id:1,source:"Source 1".into()});
+        created.persistent_virtual=true;
+        let mut next=created.for_connection(&connection);
+        assert!(!next.awaiting_virtual() && !next.ready());
+        assert_eq!(next.initial_request(&connection),Some(InitialRequest::Existing{id:1,source:"Source 1".into()}));
+        assert_eq!(next.restore_selection(&catalog(0),true,true),Some(1));
+        let mut missing=catalog(0);missing.screens.retain(|screen|screen.id!=1);
+        next.reconcile_fixed_source(&missing);
+        assert!(!next.ready());
+        assert!(matches!(next.initial_request(&connection),Some(InitialRequest::Existing{..})),"a missing persistent source must never silently create another screen");
+        // A successful lifetime change overrides the original creation intent.
+        created.persistent_virtual=false;
+        let temporary=created.for_connection(&connection);
+        assert!(temporary.awaiting_virtual() && temporary.fixed_display.is_none());
+        assert_eq!(connection.virtual_display().unwrap().id,intent.id);
     }
     #[test]
     fn fixed_view_reconnect_and_foreign_catalog_keep_the_same_source_and_frame_gate() {
