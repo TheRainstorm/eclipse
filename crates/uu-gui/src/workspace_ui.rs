@@ -690,6 +690,11 @@ fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
         });
     ui.add_space(12.);
 }
+const COMPACT_CONTEXT_MENU_WIDTH: f32 = 190.;
+fn compact_context_menu(ui: &mut egui::Ui) {
+    theme::compact_menu_style(ui);
+    ui.set_width(COMPACT_CONTEXT_MENU_WIDTH);
+}
 fn field(ui: &mut egui::Ui, label: &str, text: &mut String, hint: &str) {
     ui.label(label);
     theme::text_input(ui, text, hint, f32::INFINITY);
@@ -1111,8 +1116,7 @@ impl Workspace {
         }
         let blank=ui.interact(ui.max_rect().intersect(ui.clip_rect()),ui.id().with("device-wallpaper"),egui::Sense::click());
         blank.context_menu(|ui| {
-            theme::compact_menu_style(ui);
-            ui.set_min_width(180.);
+            compact_context_menu(ui);
             if let Some((width,height))=info.wallpaper_size {ui.label(uu_i18n::format!("原图：{} × {} 像素",width,height));ui.separator();}
             if theme::menu_action(ui,info.wallpaper_ready,uu_i18n::text("收藏当前壁纸")).clicked(){actions.push(Action::FavoriteWallpaper);ui.close_menu();}
             if theme::menu_action(ui,info.wallpaper_download_ready,uu_i18n::text("下载壁纸")).clicked(){actions.push(Action::DownloadWallpaper);ui.close_menu();}
@@ -1219,8 +1223,7 @@ impl Workspace {
             ui.painter().galley(pos,text,color);
             if response.clicked(){actions.push(Action::Open(profile.id.clone()));}
             response.context_menu(|ui| {
-                theme::compact_menu_style(ui);
-                ui.set_min_width(170.);
+                compact_context_menu(ui);
                 if theme::menu_action(ui,true,uu_i18n::text("刷新在线状态")).clicked(){self.presence.refresh();ui.close_menu();}
                 if theme::menu_action(ui,true,uu_i18n::text("详情")).clicked(){self.route.device=DeviceView::Details(profile.id.clone());ui.close_menu();}
                 ui.menu_button(uu_i18n::text("连接方式"),|ui| {
