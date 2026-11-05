@@ -33,6 +33,8 @@ pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 pub enum Request {
     Inspect,
     Create { spec: Spec },
+    CreatePersistent { spec: Spec },
+    SetPersistent { id:LeaseId, persistent:bool },
     Remove { id: LeaseId },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -96,6 +98,7 @@ pub fn error_message(error: &anyhow::Error) -> String {
         Some(Error::LastActiveOutput) => {
             uu_i18n::text("不能停用最后一个活动显示器，请先保留另一个桌面输出").into()
         }
+        Some(Error::LimitReached{limit})=>uu_i18n::format!("已达到源机设置的虚拟显示器上限（{limit} 个）"),
         _ => format!("{error:#}"),
     }
 }
@@ -152,6 +155,11 @@ pub fn execute_local_owner(request: LocalRequest) -> Result<Response> {
         },
         Request::Create { spec } => Response::Created {
             display: manager.create(Owner::Manual, spec)?,
+        },
+        Request::CreatePersistent { spec }=>Response::Created{display:manager.create_manual(spec,true)?},
+        Request::SetPersistent{id,persistent}=>{
+            manager.set_persistent(id,persistent)?;
+            Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}
         },
         Request::Remove { id } => {
             manager.remove(id)?;
@@ -228,8 +236,12 @@ struct ClientState {
     epoch: u64,
     sender: Option<mpsc::Sender<Command>>,
     responses: std::collections::VecDeque<(u64, Response)>,
+    catalog: Option<(Status,Vec<Display>)>,
+    slots:Vec<Slot>,
 }
 impl Client {
+    pub fn snapshot(&self)->Option<(Status,Vec<Display>)> {self.state.lock().unwrap().catalog.clone()}
+    pub fn slots(&self)->Vec<Slot> {self.state.lock().unwrap().slots.clone()}
     pub fn request(&self, request: Request) -> Result<u64> {
         let state = self.state.lock().unwrap();
         ensure!(
@@ -260,6 +272,8 @@ impl Client {
         let mut state = self.state.lock().unwrap();
         self.available.store(false, Ordering::Release);
         state.responses.clear();
+        state.catalog=None;
+        state.slots.clear();
         state.epoch += 1;
         let (sender, receiver) = mpsc::channel(4);
         state.sender = Some(sender);
@@ -269,6 +283,8 @@ impl Client {
         let state = self.state.lock().unwrap();
         if state.epoch == epoch {
             self.available.store(true, Ordering::Release);
+            let id=self.next.fetch_add(1,Ordering::Relaxed)+1;
+            if let Some(sender)=&state.sender {let _=sender.try_send(Command{id,request:Request::Inspect});}
         }
     }
     fn disconnect(&self, epoch: u64) {
@@ -276,12 +292,20 @@ impl Client {
         if state.epoch == epoch {
             self.available.store(false, Ordering::Release);
             state.sender.take();
+            state.catalog=None;
+            state.slots.clear();
         }
     }
     fn receive(&self, epoch: u64, id: u64, response: Response) {
         let mut state = self.state.lock().unwrap();
         if state.epoch != epoch {
             return;
+        }
+        match &response {
+            Response::Snapshot{status,displays,slots}=>{state.catalog=Some((status.clone(),displays.clone()));state.slots=slots.clone();},
+            Response::Created{display}=>if let Some((_,displays))=&mut state.catalog {displays.retain(|d|d.id!=display.id);displays.push(display.clone());},
+            Response::Removed{id}=>if let Some((_,displays))=&mut state.catalog {displays.retain(|d|d.id!=*id);},
+            _=>{},
         }
         let responses = &mut state.responses;
         if responses.len() == 16 {
@@ -301,19 +325,22 @@ pub(crate) struct Host {
     initial: InitialLease,
 }
 #[derive(Default)]
-struct InitialLease(Mutex<Option<(Spec,std::result::Result<Display,String>)>>);
+struct InitialLease(Mutex<Option<(Spec,bool,std::result::Result<Display,String>)>>);
 impl InitialLease {
     fn prepare(&self,spec:Spec,create:impl FnOnce()->Result<Display>)->Result<Display> {
+        self.prepare_with_lifetime(spec,false,create)
+    }
+    fn prepare_with_lifetime(&self,spec:Spec,persistent:bool,create:impl FnOnce()->Result<Display>)->Result<Display> {
         spec.validate()?;
         let mut state=self.0.lock().unwrap();
-        if let Some((previous,result))=&*state {
-            ensure!(*previous==spec,"initial virtual display specification cannot change");
+        if let Some((previous,lifetime,result))=&*state {
+            ensure!(*previous==spec && *lifetime==persistent,"initial virtual display specification cannot change");
             return result.clone().map_err(anyhow::Error::msg);
         }
         // A failed mutation may have a partially applied OS transaction. Cache
         // its terminal outcome as well, never silently repeat an accepted Create.
         let result=create().map_err(|error|error_message(&error));
-        *state=Some((spec,result.clone()));
+        *state=Some((spec,persistent,result.clone()));
         result.map_err(anyhow::Error::msg)
     }
 }
@@ -321,10 +348,13 @@ impl Host {
     /// Called on a blocking worker after authentication and before capture.
     /// The outer connection lifetime owns cleanup, including failed startup.
     pub fn prepare_initial(&self,spec:Spec)->Result<Display> {
+        self.prepare_initial_with_lifetime(spec,false)
+    }
+    pub fn prepare_initial_with_lifetime(&self,spec:Spec,persistent:bool)->Result<Display> {
         self.authorize()?;
-        self.initial.prepare(spec,|| {
+        self.initial.prepare_with_lifetime(spec,persistent,|| {
             self.authorize()?;
-            let display=self.manager.create_with_context(Owner::Session(self.owner),spec,self.context.session_id.as_deref())?;
+            let display=self.manager.create_for_session(self.owner,spec,persistent,self.context.session_id.as_deref())?;
             if let Err(error)=self.authorize() {
                 self.manager.remove_session(self.owner,display.id)?;
                 return Err(error);
@@ -365,12 +395,12 @@ impl Host {
                     .manager
                     .list()?
                     .into_iter()
-                    .filter(|d| d.owner == Owner::Session(self.owner))
                     .collect(),
-                slots: Vec::new(),
+                slots: self.manager.slots()?.into_iter().filter(|s|s.active).collect(),
             },
-            Request::Create { spec } => {
-                let display = self.manager.create_with_context(Owner::Session(self.owner), spec,self.context.session_id.as_deref())?;
+            Request::Create { spec } | Request::CreatePersistent { spec } => {
+                let persistent=matches!(request,Request::CreatePersistent{..});
+                let display = self.manager.create_for_session(self.owner,spec,persistent,self.context.session_id.as_deref())?;
                 // Revocation or cancellation while Windows was applying the
                 // target cannot leave a new display owned by an expired grant.
                 if let Err(error) = self.authorize() {
@@ -383,9 +413,15 @@ impl Host {
                 }
                 Response::Created { display }
             }
+            Request::SetPersistent{id,persistent}=>{
+                let owned=self.manager.list()?.into_iter().any(|d|d.id==id&&(d.owner==Owner::Session(self.owner)||d.owner==Owner::Manual));
+                ensure!(owned,"{}",uu_i18n::text("此虚拟屏属于其它连接或由源机手动创建"));
+                self.manager.set_persistent(id,persistent)?;
+                Response::Snapshot{status:self.manager.status()?,displays:self.manager.list()?,slots:self.manager.slots()?.into_iter().filter(|s|s.active).collect()}
+            },
             Request::Remove { id } => {
                 let owned = self.manager.list()?.into_iter().find(|display| {
-                    display.id == id && display.owner == Owner::Session(self.owner)
+                    display.id == id && (display.owner == Owner::Session(self.owner)||display.owner==Owner::Manual)
                 });
                 ensure!(
                     !owned
@@ -394,7 +430,8 @@ impl Host {
                     "{}",
                     uu_i18n::text("请先切换到另一显示器，再移除当前或正在切换的虚拟屏")
                 );
-                self.manager.remove_session(self.owner, id)?;
+                ensure!(owned.is_some(),"{}",uu_i18n::text("此虚拟屏属于其它连接或由源机手动创建"));
+                self.manager.remove(id)?;
                 displays.refresh()?;
                 Response::Removed { id }
             }
@@ -674,6 +711,7 @@ mod tests {
         assert!(client.request(Request::Inspect).is_err());
         let (epoch, mut requests) = client.attach();
         client.opened(epoch);
+        assert!(matches!(requests.try_recv().unwrap().request,Request::Inspect),"opening reads the host catalog once");
         let id = client.request(Request::Inspect).unwrap();
         assert_eq!(requests.try_recv().unwrap().id, id);
         client.receive(

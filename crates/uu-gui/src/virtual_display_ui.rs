@@ -132,14 +132,18 @@ pub struct State {
     create_requested: bool,
 }
 impl State {
+    pub(super) fn new_is_persistent(&self)->bool {self.persistent_new.unwrap_or(false)}
     pub(super) fn spec(&self) -> Spec {
         self.spec
     }
     pub(super) fn prepare_startup(&mut self, spec: Spec) {
+        self.prepare_startup_with_lifetime(spec,false);
+    }
+    pub(super) fn prepare_startup_with_lifetime(&mut self, spec: Spec, persistent:bool) {
         self.spec = spec;
         self.startup = Some(Startup::Waiting(Instant::now()));
         self.initial_timed_out = false;
-        self.message(uu_i18n::text("正在创建临时虚拟副屏…").into());
+        self.message(uu_i18n::text(if persistent {"正在创建持久虚拟显示器…"}else{"正在创建临时虚拟副屏…"}).into());
     }
     fn poll_startup(&mut self) {
         let Some(Startup::Waiting(started)) = self.startup else {
@@ -599,8 +603,8 @@ impl State {
                     ui.separator();
                 }
                 if client.is_some() {
-                    ui.strong(uu_i18n::text("管理对象：本串流连接"));
-                    ui.weak(uu_i18n::text("默认在串流连接断开时移除；源机可以选择持续保存。"));
+                    ui.strong(uu_i18n::text("虚拟显示器"));
+                    ui.weak(uu_i18n::text("临时屏在所属串流断开时回收；持久屏保留并在开机恢复。"));
                 } else if let Some(owner) = self.local_owner {
                     ui.strong(uu_i18n::format!("管理对象：{}", owner.label()));
                     ui.weak(owner.lifetime());
@@ -638,11 +642,15 @@ impl State {
                         if crate::theme::switch(ui,&mut keep,uu_i18n::text("串流结束后保留")).changed(){local_command=Some(LocalRequest::KeepAfterStream{keep});}
                     }
                 }
+                if client.is_some() && self.status.as_ref().is_some_and(|s|s.supports_lifetimes) {
+                    crate::theme::switch(ui,self.persistent_new.get_or_insert(false),uu_i18n::text("持续保存并在开机恢复"));
+                }
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
                             !busy && !mutations_blocked && !background_unavailable && (client.is_none() || self.remote_create_supported)
                                 && self.status.as_ref().is_none_or(|s|s.supported)
+                                && self.status.as_ref().is_none_or(|s|!s.supports_lifetimes||s.leased<usize::from(s.limit))
                                 && preparation_ui::can_create(self.preparation.as_ref(),self.preparation.as_ref().map_or_else(||self.status.as_ref().map_or(0,|s|s.available_slots),|s|s.available as usize),self.local_owner==Some(LocalOwner::Foreground)&&client.is_none()),
                             crate::theme::secondary_button(uu_i18n::text("新建虚拟副屏")),
                         )
@@ -762,10 +770,11 @@ impl State {
                     .max_height(300.)
                     .show(ui, |ui| {
                         for display in &self.displays {
-                            if client.is_none() {
+                            if client.is_none() || self.status.as_ref().is_some_and(|s|s.supports_lifetimes) {
                                 let mut persistent=display.persistent;
                                 if ui.add_enabled_ui(!busy&&!mutations_blocked,|ui|crate::theme::compact_switch(ui,&mut persistent,uu_i18n::text("持续保存并在开机恢复"))).inner.changed() {
-                                    local_command=Some(LocalRequest::SetPersistent{id:display.id,persistent});
+                                    if client.is_some(){command=Some(Request::SetPersistent{id:display.id,persistent});}
+                                    else {local_command=Some(LocalRequest::SetPersistent{id:display.id,persistent});}
                                 }
                             }
                             ui.horizontal(|ui| {
@@ -777,7 +786,7 @@ impl State {
                                     display.spec.height,
                                     display.spec.refresh_millihz as f32 / 1000.
                                 ));
-                                ui.weak(if matches!(display.owner, Owner::Manual) {
+                                ui.weak(if display.persistent {uu_i18n::text("持久虚拟显示器")}else if matches!(display.owner, Owner::Manual) {
                                     uu_i18n::text("手动创建")
                                 } else {
                                     uu_i18n::text("连接临时屏")
@@ -1149,7 +1158,7 @@ mod tests {
                 driver_present: true,
                 available_slots: 1,
                 leased: displays.len(),
-                keep_after_stream:false,
+                keep_after_stream:false,limit:uu_core::virtual_display::DEFAULT_DISPLAY_LIMIT,supports_lifetimes:true,
                 explanation: String::new(),
                 install_url: String::new(),
                 preparation: None,
@@ -1433,10 +1442,8 @@ impl crate::App {
         if let Some(tabs) = &self.workspace_tabs {
             tabs.actions
                 .borrow_mut()
-                .push(crate::stream_workspace::Action::CreateDisplayWithSpec {
-                    session: tabs.active,
-                    spec: self.virtual_display.spec(),
-                });
+                .push(if self.virtual_display.new_is_persistent(){crate::stream_workspace::Action::CreatePersistentDisplayWithSpec {session:tabs.active,spec:self.virtual_display.spec()}}
+                    else{crate::stream_workspace::Action::CreateDisplayWithSpec {session:tabs.active,spec:self.virtual_display.spec()}});
             return;
         }
         // The uncommon standalone entry uses the same launch ownership rule.
@@ -1444,9 +1451,7 @@ impl crate::App {
             let target = crate::sessions::StreamTarget {
                 connection: crate::sessions::ConnectionTarget::NativeVirtual {
                     connection: Box::new(origin.connection.base().clone()),
-                    virtual_display: crate::sessions::VirtualDisplayTarget::new(
-                        self.virtual_display.spec(),
-                    ),
+                    virtual_display: crate::sessions::VirtualDisplayTarget{persistent:self.virtual_display.new_is_persistent(),..crate::sessions::VirtualDisplayTarget::new(self.virtual_display.spec())},
                 },
                 alias: origin.alias.clone(),
                 view_only: origin.view_only,

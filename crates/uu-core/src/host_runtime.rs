@@ -74,6 +74,7 @@ pub fn prepare(
         tracing::warn!(%error,"saved virtual display settings could not be loaded; sharing continues");
     }
     crate::virtual_display::Manager::shared().register_host(&access.sessions);
+    crate::virtual_display::Manager::shared().set_limit(book.sharing.virtual_display_limit)?;
     *access.sessions.administration.lock().unwrap() =
         Some(Arc::new(crate::host_admin::Service::new(
             Store::open(config.at("device-trust"))?,

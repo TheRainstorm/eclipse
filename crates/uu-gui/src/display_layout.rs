@@ -232,7 +232,7 @@ mod tests {
         for _ in 0..2 {
             let virtual_view=target(ConnectionTarget::NativeVirtual {
                 connection:Box::new(base.clone()),
-                virtual_display:VirtualDisplayTarget{id:uuid::Uuid::new_v4(),spec:Default::default()},
+                virtual_display:VirtualDisplayTarget{id:uuid::Uuid::new_v4(),spec:Default::default(),persistent:false},
             });
             assert!(DisplayLayout::path(&config,&virtual_view).is_none());
         }

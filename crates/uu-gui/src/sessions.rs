@@ -30,10 +30,12 @@ pub enum ConnectionTarget {
 pub struct VirtualDisplayTarget {
     pub id:uuid::Uuid,
     pub spec:uu_core::virtual_display::Spec,
+    #[serde(default,skip_serializing_if="std::ops::Not::not")]
+    pub persistent:bool,
 }
 impl VirtualDisplayTarget {
     pub fn new(spec:uu_core::virtual_display::Spec)->Self {
-        Self{id:uuid::Uuid::new_v4(),spec}
+        Self{id:uuid::Uuid::new_v4(),spec,persistent:false}
     }
     fn validate(&self)->Result<(),String> {
         if self.id.is_nil() {return Err("temporary display launch identity is empty".into());}
@@ -46,6 +48,7 @@ impl Hash for VirtualDisplayTarget {
         self.id.hash(state);
         self.spec.width.hash(state);self.spec.height.hash(state);
         self.spec.refresh_millihz.hash(state);self.spec.hdr.hash(state);
+        self.persistent.hash(state);
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash,serde::Serialize,serde::Deserialize)]
@@ -341,7 +344,7 @@ mod tests {
             wrap(wrap(base.clone())),
             wrap(display(base.clone(),1,"Generated source")),
             display(wrap(base.clone()),1,"Generated source"),
-            ConnectionTarget::NativeVirtual{connection:Box::new(base),virtual_display:VirtualDisplayTarget{id:uuid::Uuid::nil(),spec:Default::default()}},
+            ConnectionTarget::NativeVirtual{connection:Box::new(base),virtual_display:VirtualDisplayTarget{id:uuid::Uuid::nil(),spec:Default::default(),persistent:false}},
         ] {
             let decoded:ConnectionTarget=serde_json::from_slice(&serde_json::to_vec(&invalid).unwrap()).unwrap();
             assert!(decoded.validate().is_err());

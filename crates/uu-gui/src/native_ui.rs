@@ -59,7 +59,7 @@ impl App {
     pub(super) fn attach_controller(&mut self,handle:uu_core::controller::ControllerHandle) {
         self.virtual_display.reset_remote();
         if let Some(target)=self.stream_target.as_ref().and_then(|target|target.connection.virtual_display()) {
-            self.virtual_display.prepare_startup(target.spec);
+            self.virtual_display.prepare_startup_with_lifetime(target.spec,target.persistent);
         }
         let context=self.context.clone();handle.frames.enable_planar();handle.frames.set_waker(move||context.request_video_frame());
         if let Err(error)=super::clipboard::start_following(handle.stats.clipboard.clone(),self.clipboard_window.clone()){handle.stats.clipboard.available.store(false,std::sync::atomic::Ordering::Release);handle.stats.clipboard.status(error.to_string());}
@@ -220,7 +220,7 @@ impl App {
         let stats=self.client_stats("native");
         let requested=!self.view_only && self.displays.ready();
         let initial=self.stream_target.as_ref().and_then(|target| {
-            target.connection.virtual_display().map(|target|uu_core::native_displays::InitialRequest::Virtual{spec:target.spec})
+            target.connection.virtual_display().map(|target|uu_core::native_displays::InitialRequest::virtual_display(target.spec,target.persistent))
                 .or_else(||self.fixed_display_target().map(|target|uu_core::native_displays::InitialRequest::Existing{id:target.id,source:target.source}))
         });
         if let Some(initial)=initial {

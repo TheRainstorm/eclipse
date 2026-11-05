@@ -746,15 +746,15 @@ async fn send_video(
     let initial_reply=if let Some(displays)=&displays {
         let displays=displays.clone();
         let virtuals=virtuals.clone();
-        let request=initial_request.filter(|request| initial_supported || matches!(request,crate::native_displays::InitialRequest::Virtual{..}));
+        let request=initial_request.filter(|request| initial_supported || request.virtual_spec().is_some());
         let (source,reply)=tokio::task::spawn_blocking(move||->Result<_> {
             let Some(request)=request else{return Ok((displays.prepare()?,None));};
             ensure!(initial_supported,"initial virtual displays require an enumerable desktop source");
             let (source,created)=match &request {
                 crate::native_displays::InitialRequest::Existing{..}=>(displays.prepare_initial(&request)?,None),
-                crate::native_displays::InitialRequest::Virtual{spec}=>{
+                crate::native_displays::InitialRequest::Virtual{spec}|crate::native_displays::InitialRequest::VirtualPersistent{spec}=>{
                     let host=virtuals.context("initial virtual displays require management permission and an updated host")?;
-                    let display=host.prepare_initial(*spec)?;
+                    let display=host.prepare_initial_with_lifetime(*spec,request.virtual_spec().unwrap().1)?;
                     (displays.prepare_initial_source(&display.source)?,Some(display))
                 },
             };
@@ -765,7 +765,7 @@ async fn send_video(
         config.source=source;
         reply
     } else {
-        ensure!(!matches!(initial_request,Some(crate::native_displays::InitialRequest::Virtual{..})),"initial virtual displays require a desktop host");
+        ensure!(!initial_request.as_ref().is_some_and(|r|r.virtual_spec().is_some()),"initial virtual displays require a desktop host");
         None
     };
     // Accepted display mutations must finish before the outer connection
@@ -1100,7 +1100,7 @@ async fn receive_session(
     if let Some(codecs)=stats.native_hdr_codecs.get().filter(|codecs|!codecs.is_empty()) {
         crate::native_color::Request{codecs:codecs.clone()}.add(&mut description)?;
     }
-    let virtual_setup=matches!(crate::native_displays::InitialRequest::read(&description)?,Some(crate::native_displays::InitialRequest::Virtual{..}));
+    let virtual_setup=crate::native_displays::InitialRequest::read(&description)?.is_some_and(|r|r.virtual_spec().is_some());
     stream.send(serde_json::to_value(Offer {
         version: 1,
         sdp: description,

@@ -63,6 +63,7 @@ pub struct Sharing {
     pub extensions: std::collections::BTreeMap<String,serde_json::Value>,
     pub ip_enabled: bool,
     pub auto_start: bool,
+    pub virtual_display_limit: u16,
 }
 impl Default for Sharing {
     fn default() -> Self {
@@ -84,6 +85,7 @@ impl Default for Sharing {
             extensions: Default::default(),
             ip_enabled: true,
             auto_start: false,
+            virtual_display_limit: crate::virtual_display::DEFAULT_DISPLAY_LIMIT,
         }
     }
 }
@@ -103,6 +105,7 @@ impl Sharing {
         }
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!(self.virtual_display_limit<=crate::virtual_display::MAX_DISPLAY_LIMIT,"virtual display limit exceeds the native catalog budget");
         ensure!(self.plugin_services.len()<=64&&self.extensions.len()<=64,"too many extension settings");
         let mut unique=std::collections::BTreeSet::new();
         for id in &self.plugin_services {

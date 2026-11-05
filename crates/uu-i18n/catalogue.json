@@ -1853,5 +1853,6 @@
   "默认蓝": "Default blue",
   "青蓝": "Cyan",
   "动森": "Island",
-  "浅蓝色": "Light blue"
+  "浅蓝色": "Light blue",
+  "已达到源机设置的虚拟显示器上限（{limit} 个）": "The host virtual display limit ({limit}) has been reached"
 }

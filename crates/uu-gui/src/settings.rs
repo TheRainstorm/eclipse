@@ -832,7 +832,7 @@ mod tests {
         use super::super::sessions::{ConnectionTarget,VirtualDisplayTarget};
         ConnectionTarget::NativeVirtual {
             connection:Box::new(ConnectionTarget::NativeProfile{id:id.into(),snapshot:"generated-launch.json".into()}),
-            virtual_display:VirtualDisplayTarget{id:uuid::Uuid::new_v4(),spec:Default::default()},
+            virtual_display:VirtualDisplayTarget{id:uuid::Uuid::new_v4(),spec:Default::default(),persistent:false},
         }
     }
     #[test]

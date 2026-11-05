@@ -235,6 +235,7 @@ fn fixture() -> (Arc<Manager>, Arc<Fake>) {
             preparation_owner: AtomicBool::new(true),
             hosts: Mutex::default(),
             policy:Mutex::default(),
+            limit:std::sync::atomic::AtomicU16::new(DEFAULT_DISPLAY_LIMIT),
         }),
         fake,
     )
@@ -243,6 +244,8 @@ fn fixture() -> (Arc<Manager>, Arc<Fake>) {
 #[test]
 fn manual_and_two_sessions_never_take_active_targets_or_each_others_leases() {
     let (manager, backend) = fixture();
+    // This test exercises driver exhaustion and ownership independently of policy.
+    manager.set_limit(3).unwrap();
     let a = Uuid::new_v4();
     let b = Uuid::new_v4();
     let _a = manager.session_guard(a);
@@ -593,6 +596,7 @@ fn another_manager(backend: &Arc<Fake>) -> Arc<Manager> {
         preparation_owner: AtomicBool::new(true),
         hosts: Mutex::default(),
         policy:Mutex::default(),
+            limit:std::sync::atomic::AtomicU16::new(DEFAULT_DISPLAY_LIMIT),
     })
 }
 #[test]
@@ -1044,4 +1048,55 @@ fn damaged_saved_configuration_never_changes_targets_or_overwrites_evidence() {
     assert!(manager.configure_saved_displays(&path).is_err());
     assert_eq!(std::fs::read(file).unwrap(),damaged);
     assert!(backend.activated.lock().unwrap().is_empty());std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn host_limit_counts_manual_and_session_allocations_without_changing_existing_targets() {
+    let (manager,backend)=fixture();
+    let owner=Uuid::new_v4();let _guard=manager.session_guard(owner);
+    assert_eq!(manager.status().unwrap().limit,2);
+    let manual=manager.create(Owner::Manual,Spec::default()).unwrap();
+    let session=manager.create_for_session(owner,Spec::default(),false,None).unwrap();
+    let before=backend.inventory_calls.load(Ordering::SeqCst);
+    assert!(matches!(manager.create(Owner::Manual,Spec::default()),Err(Error::LimitReached{limit:2})));
+    assert_eq!(before,backend.inventory_calls.load(Ordering::SeqCst),"quota rejection precedes driver work");
+    manager.set_limit(0).unwrap();
+    assert_eq!(manager.list().unwrap().len(),2,"reducing the limit preserves existing outputs");
+    assert!(matches!(manager.create(Owner::Manual,Spec::default()),Err(Error::LimitReached{limit:0})));
+    manager.remove(manual.id).unwrap();manager.set_limit(2).unwrap();
+    manager.create(Owner::Manual,Spec::default()).unwrap();
+    manager.remove_session(owner,session.id).unwrap();
+    manager.close_all().unwrap();
+}
+
+#[test]
+fn explicit_temporary_and_persistent_creation_have_distinct_disconnect_lifetimes() {
+    let (manager,backend)=fixture();let path=saved_policy(&manager);
+    manager.set_keep_after_stream(true).unwrap();
+    let owner=Uuid::new_v4();let _guard=manager.session_guard(owner);
+    let temporary=manager.create_for_session(owner,Spec::default(),false,None).unwrap();
+    manager.release_session(owner).unwrap();
+    assert!(!manager.list().unwrap().iter().any(|d|d.id==temporary.id),"explicit temporary bypasses the legacy keep policy");
+    let owner=Uuid::new_v4();let _guard=manager.session_guard(owner);
+    let durable=manager.create_for_session(owner,Spec::default(),true,None).unwrap();
+    assert!(durable.persistent);
+    manager.release_session(owner).unwrap();
+    let displays=manager.list().unwrap();assert_eq!(displays.len(),1);
+    assert_eq!(displays[0].owner,Owner::Manual);assert_eq!(displays[0].id,durable.id);
+    assert_eq!(backend.removed.lock().unwrap().len(),1);
+    manager.set_persistent(durable.id,false).unwrap();manager.close_all().unwrap();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn failed_persistent_record_rolls_back_creation_and_preserves_corrupt_policy() {
+    let (manager,backend)=fixture();let path=saved_policy(&manager);
+    let file=path.join("virtual-displays.json");std::fs::write(&file,b"{broken policy}").unwrap();
+    let owner=Uuid::new_v4();let _guard=manager.session_guard(owner);
+    assert!(manager.create_for_session(owner,Spec::default(),true,None).is_err());
+    assert!(manager.list().unwrap().is_empty());
+    assert_eq!(backend.removed.lock().unwrap().len(),1);
+    assert!(backend.claims.lock().unwrap().is_empty());
+    assert_eq!(std::fs::read(file).unwrap(),b"{broken policy}");
+    std::fs::remove_dir_all(path).unwrap();
 }

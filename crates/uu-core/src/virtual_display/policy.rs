@@ -50,10 +50,13 @@ impl Settings {
     }
 }
 #[derive(Clone)]
-struct File {
+pub(super) struct File {
     directory: PathBuf,
 }
 impl File {
+    pub(super) fn save(&self,display:SavedDisplay)->Result<()> {
+        self.edit(|policy|{policy.displays.retain(|d|d.id!=display.id);policy.displays.push(display);Ok(())})
+    }
     fn read(&self) -> Result<Settings> {
         let path = self.directory.join("virtual-displays.json");
         if !path.try_exists().map_err(platform)? {
@@ -95,6 +98,7 @@ impl Manager {
             directory: directory.as_ref().to_owned(),
         };
         let saved = file.read()?;
+        let limit=crate::device_book::Store::open(&file.directory).and_then(|store|store.read()).map_err(platform)?.sharing.virtual_display_limit;
         let mut state = self
             .policy
             .lock()
@@ -113,9 +117,10 @@ impl Manager {
         state.keep_after_stream = saved.keep_after_stream;
         state.restore_pending = !saved.displays.is_empty();
         state.waiting_for_capacity = false;
+        self.limit.store(limit,Ordering::Release);
         Ok(())
     }
-    fn saved_file(&self) -> Result<File> {
+    pub(super) fn saved_file(&self) -> Result<File> {
         let mut state = self
             .policy
             .lock()
@@ -187,6 +192,7 @@ impl Manager {
             Ok(())
         })?;
         entry.display.persistent = persistent;
+        entry.explicit_temporary = !persistent;
         Ok(())
     }
     pub fn create_manual(&self, spec: Spec, persistent: bool) -> Result<Display> {
@@ -213,7 +219,7 @@ impl Manager {
     ) -> Result<()> {
         self.saved_file()?.edit(|policy| {
             for (id, entry) in entries.iter().filter(|(_, e)| {
-                e.display.owner == Owner::Session(session) && !e.display.cleanup_pending
+                e.display.owner == Owner::Session(session) && !e.display.cleanup_pending && !e.explicit_temporary
             }) {
                 policy.displays.retain(|d| d.id != id.0);
                 policy.displays.push(SavedDisplay {

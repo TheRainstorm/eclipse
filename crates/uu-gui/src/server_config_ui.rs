@@ -7,6 +7,11 @@ pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String
     if section==0 {
         device_name(ui,s,naming);
         capture(ui,s,monitors,portal);
+        ui.horizontal(|ui| {
+            ui.label(uu_i18n::text("虚拟显示器上限"));
+            ui.add(egui::DragValue::new(&mut s.virtual_display_limit).range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT));
+        });
+        ui.weak(uu_i18n::text("默认 2 个；临时和持久虚拟屏共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。"));
     } else if section==1 {
         ui.horizontal_wrapped(|ui| {
             ui.label(uu_i18n::text("允许的编码"));

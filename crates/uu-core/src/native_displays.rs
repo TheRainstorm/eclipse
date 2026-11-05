@@ -29,6 +29,7 @@ const INITIAL_SUPPORTED:&str="x-eclipse-initial-display-supported";
 pub enum InitialRequest {
     Existing{id:i32,source:String},
     Virtual{#[serde(with="initial_spec")] spec:crate::virtual_display::Spec},
+    VirtualPersistent{#[serde(with="initial_spec")] spec:crate::virtual_display::Spec},
 }
 // Keep the extension strict without changing the existing Spec wire format.
 mod initial_spec {
@@ -59,10 +60,16 @@ fn add_initial<T:Serialize>(sdp:&mut RTCSessionDescription,key:&str,value:&T)->R
 }
 fn valid_source(source:&str,empty:bool)->bool {(empty||!source.is_empty())&&source.len()<=384&&!source.chars().any(char::is_control)}
 impl InitialRequest {
+    pub fn virtual_display(spec:crate::virtual_display::Spec,persistent:bool)->Self {
+        if persistent {Self::VirtualPersistent{spec}}else{Self::Virtual{spec}}
+    }
+    pub fn virtual_spec(&self)->Option<(crate::virtual_display::Spec,bool)> {
+        match self {Self::Virtual{spec}=>Some((*spec,false)),Self::VirtualPersistent{spec}=>Some((*spec,true)),_=>None}
+    }
     fn validate(&self)->Result<()> {
         match self {
             Self::Existing{id,source}=>ensure!(*id>=0&&valid_source(source,true),"invalid initial display target"),
-            Self::Virtual{spec}=>spec.validate()?,
+            Self::Virtual{spec}|Self::VirtualPersistent{spec}=>spec.validate()?,
         }
         Ok(())
     }
@@ -116,7 +123,7 @@ impl InitialReply {
         ensure!(self.id>=0&&valid_source(&self.source,false),"invalid initial display reply source");
         match (&self.request,&self.virtual_display) {
             (InitialRequest::Existing{id,source},None)=>ensure!(if source.is_empty(){self.id==*id}else{self.source==*source},"initial display reply target mismatch"),
-            (InitialRequest::Virtual{spec},Some(display))=>ensure!(display.spec==*spec&&display.source==self.source&&display.active
+            (request,Some(display)) if request.virtual_spec().is_some()=>ensure!(Some((display.spec,display.persistent))==request.virtual_spec()&&display.source==self.source&&display.active
                 &&matches!(display.owner,crate::virtual_display::Owner::Session(owner) if !owner.is_nil())&&!display.id.0.is_nil()
                 &&!display.cleanup_pending&&display.actual.is_none_or(|actual|actual.validate().is_ok()),"initial virtual display reply mismatch"),
             _=>anyhow::bail!("initial display reply kind mismatch"),
@@ -450,7 +457,7 @@ impl Client {
             ensure!(supported,"initial display reply without capability");
             ensure!(&reply.request==request,"initial display reply does not match request");
             Some(Ok(reply))
-        } else if matches!(request,InitialRequest::Virtual{..}) {
+        } else if request.virtual_spec().is_some() {
             Some(Err("remote host does not support initial virtual displays; update its background service".into()))
         } else {
             // Old hosts still use the GUI's original exact-source selection
@@ -508,6 +515,17 @@ mod tests {
         use crate::virtual_display::*;
         let request=InitialRequest::Virtual{spec:Spec::default()};
         InitialReply{request,id:1,source:"display-b".into(),virtual_display:Some(Display{id:LeaseId(uuid::Uuid::new_v4()),owner:Owner::Session(uuid::Uuid::new_v4()),spec:Spec::default(),actual:Some(Spec::default()),name:"test virtual".into(),source:"display-b".into(),active:true,persistent:false,cleanup_pending:false,last_error:None})}
+    }
+    #[test]
+    fn persistent_initial_intent_roundtrips_and_rejects_a_temporary_reply() {
+        let mut reply=virtual_reply();
+        reply.request=InitialRequest::virtual_display(crate::virtual_display::Spec::default(),true);
+        let mut offer=description();reply.request.add(&mut offer).unwrap();
+        assert_eq!(InitialRequest::read(&offer).unwrap(),Some(reply.request.clone()));
+        assert!(reply.validate().is_err(),"a host cannot silently turn a persistent request into temporary");
+        reply.virtual_display.as_mut().unwrap().persistent=true;
+        let mut answer=description();reply.add(&mut answer).unwrap();
+        assert_eq!(InitialReply::read(&answer).unwrap(),Some(reply));
     }
     #[test]
     fn initial_wire_is_independent_strict_versioned_and_round_trips_through_sdp() {

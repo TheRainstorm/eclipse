@@ -76,6 +76,7 @@ pub enum Action {
     OpenAllDisplays(u64),
     CreateDisplay(u64),
     CreateDisplayWithSpec { session:u64, spec:uu_core::virtual_display::Spec },
+    CreatePersistentDisplayWithSpec { session:u64, spec:uu_core::virtual_display::Spec },
     ManageDisplays(u64),
     Close(u64),
 }
@@ -242,7 +243,7 @@ struct Session {
 }
 fn session_title(app:&App)->String {
     let target=app.stream_target.as_ref().expect("stream session target");
-    if target.connection.virtual_display().is_some() {format!("{} · {}",target.alias,uu_i18n::text("临时虚拟屏"))}
+    if let Some(display)=target.connection.virtual_display() {format!("{} · {}",target.alias,uu_i18n::text(if display.persistent {"持久虚拟屏"}else{"临时虚拟屏"}))}
     else if target.connection.display().is_some() {format!("{} · {}",target.alias,app.display_label())}
     else {target.alias.clone()}
 }
@@ -708,7 +709,7 @@ impl State {
             return None;
         })
     }
-    fn fork_virtual_display(&mut self,session:u64,spec:Option<uu_core::virtual_display::Spec>) {
+    fn fork_virtual_display(&mut self,session:u64,spec:Option<uu_core::virtual_display::Spec>,persistent:bool) {
         let Some(window)=self.windows.iter_mut().find(|window|!window.closing&&window.sessions.iter().any(|source|source.id==session)) else{return;};
         let source=window.sessions.iter_mut().find(|source|source.id==session).unwrap();
         if source.app.exit_requested || source.app.disconnecting {return;}
@@ -718,9 +719,10 @@ impl State {
         }
         let Some(target)=source.app.stream_target.as_ref() else{return;};
         match virtual_launch(target,spec.unwrap_or_else(||source.app.preferences.virtual_display_presets.default_spec())) {
-            Ok(launch)=>{
+            Ok(mut launch)=>{
                 // The new connection creates and owns its own temporary screen.
                 // Keep the origin's selected source, controller and leases intact.
+                if let ConnectionTarget::NativeVirtual{virtual_display,..}=&mut launch.target.connection {virtual_display.persistent=persistent;}
                 window.pending.push(launch);
                 window.focus=true;
             },
@@ -843,8 +845,9 @@ impl State {
         eprintln!("generated workspace action={action:?}");
         match action {
             Action::OpenDisplay{session,screen}=>self.open_display(session,screen,ctx),
-            Action::CreateDisplay(id)=>self.fork_virtual_display(id,None),
-            Action::CreateDisplayWithSpec{session,spec}=>self.fork_virtual_display(session,Some(spec)),
+            Action::CreateDisplay(id)=>self.fork_virtual_display(id,None,false),
+            Action::CreateDisplayWithSpec{session,spec}=>self.fork_virtual_display(session,Some(spec),false),
+            Action::CreatePersistentDisplayWithSpec{session,spec}=>self.fork_virtual_display(session,Some(spec),true),
             Action::ManageDisplays(id)=>{if let Some(session)=self.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==id){session.app.manage_remote_virtual_displays();}},
             Action::OpenAllDisplays(session)=>{
                 let screens=self.windows.iter_mut().flat_map(|w|&mut w.sessions).find(|s|s.id==session)

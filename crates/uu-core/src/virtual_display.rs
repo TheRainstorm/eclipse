@@ -196,6 +196,10 @@ pub struct Status {
     pub leased: usize,
     #[serde(default)]
     pub keep_after_stream: bool,
+    #[serde(default="default_display_limit")]
+    pub limit: u16,
+    #[serde(default)]
+    pub supports_lifetimes: bool,
     pub explanation: String,
     pub install_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -255,6 +259,8 @@ pub enum Error {
     UnknownSlot,
     #[error("the last active desktop display cannot be prepared as a virtual display slot")]
     LastActiveOutput,
+    #[error("the host virtual display limit ({limit}) has been reached")]
+    LimitReached { limit:u16 },
     #[error("virtual display operation failed: {0}")]
     Platform(String),
     #[error("administrator permission is required to prepare the virtual display driver")]
@@ -264,6 +270,10 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+pub const DEFAULT_DISPLAY_LIMIT:u16=2;
+/// Current native display catalog and management envelopes contain at most 16 outputs.
+pub const MAX_DISPLAY_LIMIT:u16=16;
+pub fn default_display_limit()->u16 {DEFAULT_DISPLAY_LIMIT}
 fn is_false(value:&bool)->bool{!*value}
 
 // Full target identity remains host-private. In particular, a remote caller
@@ -370,6 +380,7 @@ struct Entry {
     _claim: Box<dyn Claim>,
     target: TargetKey,
     display: Display,
+    explicit_temporary: bool,
 }
 
 /// One process-wide owner for manual and authenticated-session display leases.
@@ -383,6 +394,7 @@ pub struct Manager {
     preparation_owner: AtomicBool,
     hosts: Mutex<Vec<Weak<crate::shared_host::SessionGate>>>,
     policy: Mutex<policy::State>,
+    limit: std::sync::atomic::AtomicU16,
 }
 
 impl Manager {
@@ -403,6 +415,7 @@ impl Manager {
                     preparation_owner: AtomicBool::new(false),
                     hosts: Mutex::default(),
                     policy: Mutex::default(),
+                    limit: std::sync::atomic::AtomicU16::new(DEFAULT_DISPLAY_LIMIT),
                 })
             })
             .clone()
@@ -620,6 +633,8 @@ impl Manager {
             available_slots,
             leased: entries.len(),
             keep_after_stream:self.keep_after_stream()?,
+            limit:self.limit.load(Ordering::Acquire),
+            supports_lifetimes:true,
             explanation: explanation.into(),
             install_url: INSTALL_URL.into(),
             preparation: if self.backend.preparation_observation()?.is_some() {
@@ -707,18 +722,28 @@ impl Manager {
     pub fn create(&self, owner: Owner, spec: Spec) -> Result<Display> {
         self.create_with_context(owner, spec, None)
     }
+    /// Policy limits new allocations, never removes existing or saved targets.
+    pub fn set_limit(&self,limit:u16)->Result<()> {
+        if limit>MAX_DISPLAY_LIMIT {return Err(Error::Platform("virtual display limit exceeds the native catalog budget".into()));}
+        let _entries=self.lock()?;
+        self.limit.store(limit,Ordering::Release);
+        Ok(())
+    }
+    pub fn create_for_session(&self,owner:Uuid,spec:Spec,persistent:bool,context:Option<&str>)->Result<Display> {
+        self.create_target(Owner::Session(owner),spec,context,None,Some(persistent))
+    }
     pub fn create_with_context(
         &self,
         owner: Owner,
         spec: Spec,
         initial_session: Option<&str>,
     ) -> Result<Display> {
-        self.create_target(owner,spec,initial_session,None)
+        self.create_target(owner,spec,initial_session,None,None)
     }
     fn create_restored(&self,saved:&policy::SavedDisplay)->Result<Display> {
-        self.create_target(Owner::Manual,saved.spec,None,Some(saved))
+        self.create_target(Owner::Manual,saved.spec,None,Some(saved),None)
     }
-    fn create_target(&self,owner:Owner,spec:Spec,initial_session:Option<&str>,saved:Option<&policy::SavedDisplay>)->Result<Display> {
+    fn create_target(&self,owner:Owner,spec:Spec,initial_session:Option<&str>,saved:Option<&policy::SavedDisplay>,retention:Option<bool>)->Result<Display> {
         spec.validate()?;
         let mut entries = self.lock()?;
         if owner == Owner::Manual && self.manual_closing.load(Ordering::Acquire) {
@@ -737,6 +762,8 @@ impl Manager {
                 return Err(Error::SessionClosed);
             }
         }
+        let limit=self.limit.load(Ordering::Acquire);
+        if saved.is_none() && entries.len()>=usize::from(limit) {return Err(Error::LimitReached{limit});}
         let preparation_before = self.backend.preparation_observation()?;
         if self.preparation.recovery_pending()
             || preparation_before.is_some_and(|state| state.recovery_pending)
@@ -840,12 +867,28 @@ impl Manager {
                 display.active = observed.active;
                 display.actual = observed.actual;
                 display.source = observed.source;
+                if retention==Some(true) {
+                    let record=policy::SavedDisplay{id:id.0,spec,target:target.key.clone()};
+                    let saved=self.saved_file().and_then(|file|file.save(record));
+                    if let Err(error)=saved {
+                        if let Err(cleanup)=self.backend.deactivate(&target.key) {
+                            display.cleanup_pending=true;
+                            let message=format!("{error}; rollback: {cleanup}");
+                            display.last_error=Some(message.clone());
+                            entries.insert(id,Entry{_claim:claim,target:target.key,display,explicit_temporary:false});
+                            return Err(Error::CleanupPending{id,message});
+                        }
+                        return Err(error);
+                    }
+                    display.persistent=true;
+                }
                 entries.insert(
                     id,
                     Entry {
                         _claim: claim,
                         target: target.key,
                         display: display.clone(),
+                        explicit_temporary:retention==Some(false),
                     },
                 );
                 Ok(display)
@@ -867,6 +910,7 @@ impl Manager {
                                 _claim: claim,
                                 target: target.key,
                                 display,
+                                explicit_temporary:false,
                             },
                         );
                         Err(Error::CleanupPending { id, message })
@@ -956,7 +1000,7 @@ impl Manager {
             let keep=self.keep_after_stream()?&&!self.manual_closing.load(Ordering::Acquire);
             let saved=if keep&&entries.values().any(|entry|entry.display.owner==Owner::Session(session_id)&&!entry.display.cleanup_pending) {match self.save_disconnected(&entries,session_id){Ok(())=>true,Err(error)=>{persistence_error=Some(error);false}}}else{false};
             for entry in entries.values_mut().filter(|e|e.display.owner==Owner::Session(session_id)) {
-                if (entry.display.persistent||saved)&&!entry.display.cleanup_pending {
+                if (entry.display.persistent||(saved&&!entry.explicit_temporary))&&!entry.display.cleanup_pending {
                     entry.display.owner=Owner::Manual;entry.display.persistent=true;
                 }
             }
