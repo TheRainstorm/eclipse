@@ -1,6 +1,6 @@
-//! Windows OS boundary for service management. Only elevated local
-//! administrators and System can access the pipe. Clients verify System and
-//! the protected installed executable before sending any pairing code.
+//! Windows management boundaries: an owner data pipe in the SCM process and
+//! an internal administrator/System pipe in the protected console media child.
+//! Both clients verify their OS peer before sending pairing credentials.
 use super::{Request, Response};
 use anyhow::{ensure, Context, Result};
 use std::{
@@ -28,9 +28,13 @@ use windows_sys::{
 
 pub const SERVICE_NAME: &str = "EclipseRemoteHost";
 pub const PIPE_NAME: &str = r"\\.\pipe\EclipseRemoteHost.admin.v1";
+/// The SCM process, rather than the console media child, owns this endpoint.
+pub const OWNER_PIPE_NAME: &str = r"\\.\pipe\EclipseRemoteHost.owner.v1";
+const OWNER_PIPE_CLIENT_ACCESS:u32=0x0012019b;
 #[path="process_query_windows.rs"]
 mod process_query;
 pub use process_query::enable_running_version_query;
+pub fn configure_owner_control(service:&ServiceHandle,installed:&Installed)->Result<()> {process_query::configure_owner_control(service,installed)}
 pub fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain(Some(0)).collect()
 }
@@ -52,10 +56,13 @@ impl Drop for Handle {
 pub struct Descriptor(pub PSECURITY_DESCRIPTOR);
 impl Descriptor {
     pub fn administrators() -> Result<Self> {
+        Self::from_sddl("O:BAG:BAD:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)")
+    }
+    fn from_sddl(sddl: &str) -> Result<Self> {
         let mut descriptor = ptr::null_mut();
         winok(unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                wide("O:BAG:BAD:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)").as_ptr(),
+                wide(sddl).as_ptr(),
                 SDDL_REVISION_1,
                 &mut descriptor,
                 ptr::null_mut(),
@@ -283,6 +290,75 @@ pub fn pipe(first: bool) -> Result<NamedPipeServer> {
             )
     }?)
 }
+pub fn owner_pipe(first: bool, installed: &Installed) -> Result<NamedPipeServer> {
+    installed.validate()?;
+    // Individual client rights deliberately exclude FILE_CREATE_PIPE_INSTANCE.
+    // GENERIC_WRITE would also grant that server right on a named pipe.
+    let descriptor = owner_pipe_descriptor(&installed.owner_sid)?;
+    let attributes = descriptor.attributes();
+    Ok(unsafe { ServerOptions::new().first_pipe_instance(first)
+        .reject_remote_clients(true).max_instances(8)
+        .create_with_security_attributes_raw(OWNER_PIPE_NAME,
+            (&attributes as *const SECURITY_ATTRIBUTES).cast_mut().cast()) }?)
+}
+fn owner_pipe_descriptor(owner:&str)->Result<Descriptor> {
+    Descriptor::from_sddl(&format!(
+        "O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;{OWNER_PIPE_CLIENT_ACCESS:#x};;;{owner})S:(ML;;NW;;;ME)"
+    ))
+}
+
+fn verify_owner_server(handle: HANDLE) -> Result<()> {
+    let mut pid = 0;
+    winok(unsafe { GetNamedPipeServerProcessId(handle, &mut pid) })?;
+    let service = open_service(SERVICE_QUERY_STATUS)?;
+    let state = service_process(service.0)?;
+    ensure!(pid != 0 && state.dwProcessId == pid && state.dwCurrentState == SERVICE_RUNNING,
+        "后台管理通路不是已安装的 Windows 服务");
+    Ok(())
+}
+
+/// Ordinary GUI clients never open the protected configuration or a System token.
+/// SCM binds the pipe peer to the actual service process before sending secrets.
+pub async fn request_owner(request: Request) -> Result<Response> {
+    use windows_sys::Win32::Storage::FileSystem::*;
+    let mut stream = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let handle = unsafe { CreateFileW(wide(OWNER_PIPE_NAME).as_ptr(), OWNER_PIPE_CLIENT_ACCESS, 0,
+                ptr::null(), OPEN_EXISTING, FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                ptr::null_mut()) };
+            if handle != INVALID_HANDLE_VALUE {
+                let handle = Handle(handle);
+                verify_owner_server(handle.0)?;
+                // from_raw_handle takes ownership, including registration failure.
+                let raw = handle.0;
+                std::mem::forget(handle);
+                return unsafe { tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(raw) }
+                    .map_err(anyhow::Error::from);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_PIPE_BUSY as i32) {
+                return Err(error).context("后台服务未启动或尚未更新，请在服务管理中启动或更新");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await.context("后台服务连接超时")??;
+    let mutation = request.is_mutation();
+    let result = async {
+        super::write(&mut stream, &request).await?;
+        let response:Response=if mutation {
+            super::read(&mut stream).await?
+        } else {
+            tokio::time::timeout(Duration::from_secs(100),super::read(&mut stream)).await
+                .context("后台服务响应超时，请刷新确认结果")??
+        };
+        match response {
+            Response::SubmittedUnknown{message}=>Err(super::SubmittedUnknown(message).into()),
+            response=>Ok(response),
+        }
+    }.await;
+    if mutation { result.map_err(|error| super::SubmittedUnknown(format!("{error:#}")).into()) }
+    else { result }
+}
 fn verify_server(handle: HANDLE) -> Result<()> {
     let mut pid = 0;
     winok(unsafe { GetNamedPipeServerProcessId(handle, &mut pid) })?;
@@ -311,7 +387,7 @@ fn verify_server(handle: HANDLE) -> Result<()> {
     Ok(())
 }
 pub async fn request(request: Request) -> Result<Response> {
-    let display_operation = matches!(request, Request::VirtualDisplay { .. });
+    let mutation = request.is_mutation();
     let mut pipe = tokio::time::timeout(Duration::from_secs(5), async {
         let mut pipe = loop {
             match ClientOptions::new().open(PIPE_NAME) {
@@ -330,17 +406,17 @@ pub async fn request(request: Request) -> Result<Response> {
     let submitted = tokio::time::timeout(Duration::from_secs(5), super::write(&mut pipe, &request))
         .await.context(uu_i18n::text("后台服务管理请求超时"))
         .and_then(|result| result);
-    if display_operation {
+    if mutation {
         // A cancelled/failed write may already have delivered the complete
         // frame. Inspect before retrying even if write_all/flush did not return.
         submitted.map_err(|error| super::SubmittedUnknown(format!("{error:#}")))?;
     } else {
         submitted?;
     }
-    // Once accepted, a display mutation runs to an explicit result. Dropping a
-    // timeout future cannot cancel SetupAPI/spawn_blocking and would allow the
-    // caller to unknowingly repeat a still-running Create operation.
-    if display_operation {
+    // Once accepted, mutations run to an explicit result. Dropping a timeout
+    // cannot cancel blocking OS work or a durable configuration write, and
+    // must not encourage the frontend to replay a still-running operation.
+    if mutation {
         super::read(&mut pipe).await.map_err(|error| super::SubmittedUnknown(format!("{error:#}")).into())
     } else {
         tokio::time::timeout(Duration::from_secs(5), super::read(&mut pipe))
@@ -374,6 +450,24 @@ pub fn status() -> Result<u32> {
     let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
     winok(unsafe { QueryServiceStatus(service.0, &mut status) })?;
     Ok(status.dwCurrentState)
+}
+/// The installer grants only start/stop/query rights to the configured owner.
+/// Starting here does not read host data; the System service prepares itself.
+pub fn control_owner(start: bool) -> Result<()> {
+    let service = open_service(SERVICE_QUERY_STATUS | if start { SERVICE_START } else { SERVICE_STOP })?;
+    let target=if start {SERVICE_RUNNING}else{SERVICE_STOPPED};
+    if status()?==target {return Ok(());}
+    if start {winok(unsafe{StartServiceW(service.0,0,ptr::null())})?;}
+    else {
+        let mut state: SERVICE_STATUS=unsafe{std::mem::zeroed()};
+        winok(unsafe{ControlService(service.0,SERVICE_CONTROL_STOP,&mut state)})?;
+    }
+    let deadline=std::time::Instant::now()+Duration::from_secs(95);
+    while status()?!=target {
+        ensure!(std::time::Instant::now()<deadline,"后台服务仍在切换状态，请刷新确认");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
 }
 /// Read-only display metadata from SCM and the running supervisor image. This
 /// is not an authorization check and never relaxes the protected file ACLs.
@@ -474,6 +568,42 @@ pub fn firewall_program(paths:&Paths,installed:&Installed)->Result<PathBuf> {
 #[cfg(test)]
 mod build_version_tests {
     use super::*;
+    #[tokio::test]
+    async fn management_rejects_a_pipe_owned_by_a_process_other_than_the_scm_service() {
+        let name=format!(r"\\.\pipe\eclipse-owned-peer-test-{}",uuid::Uuid::new_v4());
+        let server=ServerOptions::new().first_pipe_instance(true).reject_remote_clients(true).create(&name).unwrap();
+        let client=ClientOptions::new().open(&name).unwrap();
+        assert!(verify_owner_server(client.as_raw_handle() as _).is_err());
+        drop(client);drop(server);
+    }
+    #[test]
+    fn owner_pipe_grants_data_access_without_instance_creation_or_acl_control() {
+        use windows_sys::Win32::Storage::FileSystem::*;
+        let own=process_user(unsafe{GetCurrentProcess()}).unwrap();
+        let owner=if own=="S-1-5-18"{"S-1-0-0"}else{&own};
+        let descriptor=owner_pipe_descriptor(owner).unwrap();
+        let mut sid=ptr::null_mut();
+        winok(unsafe{ConvertStringSidToSidW(wide(owner).as_ptr(),&mut sid)}).unwrap();
+        let _sid=Descriptor(sid);
+        let mut original=ptr::null_mut();
+        winok(unsafe{OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY|TOKEN_DUPLICATE,&mut original)}).unwrap();
+        let original=Handle(original);
+        let restriction=SID_AND_ATTRIBUTES{Sid:sid,Attributes:0};
+        let mut restricted=ptr::null_mut();
+        winok(unsafe{CreateRestrictedToken(original.0,DISABLE_MAX_PRIVILEGE,0,ptr::null(),0,ptr::null(),1,&restriction,&mut restricted)}).unwrap();
+        let restricted=Handle(restricted);
+        let mut token=ptr::null_mut();
+        winok(unsafe{DuplicateTokenEx(restricted.0,TOKEN_QUERY,ptr::null(),SecurityImpersonation,TokenImpersonation,&mut token)}).unwrap();
+        let token=Handle(token);
+        let mapping=GENERIC_MAPPING{GenericRead:FILE_GENERIC_READ,GenericWrite:FILE_GENERIC_WRITE,GenericExecute:FILE_GENERIC_EXECUTE,GenericAll:FILE_ALL_ACCESS};
+        for (rights,expected) in [(OWNER_PIPE_CLIENT_ACCESS,true),(0x4,false),(WRITE_DAC,false),(WRITE_OWNER,false)] {
+            let mut mapping=mapping;
+            let mut privileges=[0usize;64];let mut length=std::mem::size_of_val(&privileges) as u32;
+            let mut granted=0;let mut allowed=0;
+            winok(unsafe{AccessCheck(descriptor.0,token.0,rights,&mut mapping,privileges.as_mut_ptr().cast(),&mut length,&mut granted,&mut allowed)}).unwrap();
+            assert_eq!(allowed!=0,expected,"unexpected owner pipe access {rights:#x}");
+        }
+    }
     #[test]
     fn service_build_metadata_requires_a_complete_version_directory_and_known_image() {
         let paths=Paths{root:std::env::temp_dir().join("generated-service-data"),programs:std::env::temp_dir().join("generated-service-programs")};

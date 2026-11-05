@@ -76,7 +76,7 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
         let book = store.read()?;
         let trust = TrustStore::open(config.at("device-trust"))?;
         let states = Clipboards(Arc::new(Mutex::new(Vec::new())));
-        let factory = book.sharing.clipboard.then(|| {
+        let factory = Some({
             let states = states.0.clone();
             Arc::new(move |_id: &str| {
                 let state = Arc::new(uu_core::clipboard::Clipboard::default());
@@ -94,7 +94,7 @@ pub async fn run(expected_session: u32, event: &str) -> Result<()> {
         });
         let (restart, mut restarts) = mpsc::channel(1);
         let _extensions=uu_plugin_sdk::runtime::shared(&config);
-        let prepared = uu_core::host_runtime::prepare(
+        let prepared = uu_core::host_runtime::prepare_service(
             config.clone(),
             book,
             trust,
@@ -212,7 +212,7 @@ async fn connection(
     let reply_admin = admin.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<(Response, bool)> {
         let snapshot = || -> Result<host_admin::Snapshot> {
-            match admin.execute_local_administrator(&access, host_admin::Request::Inspect)? {
+            match admin.execute_local_manager(&access, host_admin::Request::Inspect)? {
                 host_admin::Response::Snapshot { snapshot } => Ok(snapshot),
                 _ => anyhow::bail!("后台状态读取失败"),
             }
@@ -237,6 +237,8 @@ async fn connection(
                     .collect();
                 Ok((
                     Response::Status {
+                        ready: endpoints.iter().any(|e| matches!(*e.state.borrow(), uu_core::device_internet::EndpointStatus::Ready)),
+                        keep_virtual_displays: uu_core::virtual_display::Manager::shared().keep_after_stream().ok(),
                         endpoints: endpoints
                             .iter()
                             .map(|e| (e.name.clone(), e.state.borrow().label()))
@@ -280,13 +282,42 @@ async fn connection(
                 Ok((Response::Applied, false))
             }
             Request::Admin { request } => {
-                let response = admin.execute_local_administrator(&access, request)?;
+                let response = admin.execute_local_manager(&access, request)?;
                 let restart = matches!(response, host_admin::Response::Saved { restart: true });
                 Ok((Response::Admin { response }, restart))
             }
             Request::VirtualDisplay{request}=>{
                 let response=uu_core::native_virtual_display::execute_local_owner(request).unwrap_or_else(|error|uu_core::native_virtual_display::Response::Error{message:uu_core::native_virtual_display::error_message(&error)});
                 Ok((Response::VirtualDisplay{response},false))
+            },
+            Request::Trust { request } => {
+                use service_admin::TrustRequest;
+                match request {
+                    TrustRequest::Inspect => {},
+                    TrustRequest::Password { password, permissions } => {
+                        if let Some(password) = password {
+                            access.store.set_pairing_password(&password, permissions)?;
+                        } else { access.store.clear_pairing_password()?; }
+                    },
+                    TrustRequest::Authorize { device, permissions } => {
+                        access.store.authorize(device.clone(), permissions, None)?;
+                        access.sessions.revoke(&device.id());
+                    },
+                    TrustRequest::Revoke { peer } => { access.revoke(&peer)?; },
+                }
+                Ok((Response::Trust { snapshot: service_admin::TrustSnapshot {
+                    device: access.store.card(&access.name), peers: access.store.peers()?,
+                    password_permissions: access.store.pairing_password_permissions()?,
+                } }, false))
+            },
+            Request::Firewall { repair } => {
+                let paths = Paths::discover()?;
+                let installed = paths.manifest()?;
+                let executable = firewall_program(&paths, &installed)?;
+                let sharing = uu_core::device_book::Store::open(paths.config().at("device-trust"))?.read()?.sharing;
+                let report = if repair { uu_core::firewall::ensure(&executable, sharing.service_port, sharing.discovery_port)? }
+                    else { uu_core::firewall::inspect(&executable, sharing.service_port, sharing.discovery_port)? };
+                Ok((Response::Firewall { message: report.message() }, false))
             },
             Request::Restart => Ok((Response::Applied, true)),
         }
@@ -303,7 +334,7 @@ async fn connection(
     };
     tokio::time::timeout(Duration::from_secs(5), service_admin::write(&mut stream, &response)).await??;
     if restart {
-        reply_admin.restart_local_administrator()?;
+        reply_admin.restart_local_manager()?;
     }
     Ok(())
 }

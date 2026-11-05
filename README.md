@@ -47,7 +47,7 @@ Eclipse 将设备管理、画面共享、声音和输入控制放在同一个应
 
 ## 开始使用
 
-当前开发版 **0.23.5-dev.20261104** 统一设备配置、设置页和悬浮菜单控件，补齐动森交互样式，青蓝调整为浅蓝；原生显示器按需保留连接以加快再次切换，并增加垂直同步快捷键。默认仍为浅色。详见 [0.23.5 开发说明](docs/releases/v0.23.5-dev.20261104.md)。此前源码里程碑 [v0.23.1](docs/releases/v0.23.1.md) 已固定为本地标签。下载以 GitHub Releases 实际发布为准。旧配置继续使用；Windows 后台服务需在服务管理中单独更新。
+当前开发版 **0.23.5-dev.20261104** 统一设备配置、设置页和悬浮菜单控件，补齐动森交互样式，青蓝调整为浅蓝；原生显示器按需保留连接以加快再次切换，并增加垂直同步快捷键。默认仍为浅色。详见 [0.23.5 开发说明](docs/releases/v0.23.5-dev.20261104.md)。此前源码里程碑 [v0.23.1](docs/releases/v0.23.1.md) 已固定为本地标签。下载以 GitHub Releases 实际发布为准。旧配置继续使用；Windows 主机统一由后台服务运行，在“服务管理”应用当前程序包更新并保留配置和配对。
 
 从 [GitHub Releases](https://github.com/TheRainstorm/eclipse/releases) 下载对应平台的完整包，保留包内全部运行库与清单。
 
@@ -57,7 +57,7 @@ Eclipse 将设备管理、画面共享、声音和输入控制放在同一个应
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-默认安装到 `%LOCALAPPDATA%\Programs\Eclipse`，桌面入口为 **Eclipse**；`-InstallDir` 可指定位置。升级已有安装时，请指定原安装目录以更新原程序。安装保留用户配置与现有进程，完成后退出旧主页、串流窗口再重新打开。后台共享服务需在服务管理中单独更新并重启。[安装与运行库说明](docs/windows-build.md) · [后台服务](docs/windows-background-service.md)
+默认安装到 `%LOCALAPPDATA%\Programs\Eclipse`，桌面入口为 **Eclipse**；`-InstallDir` 可指定位置。升级已有安装时，请指定原安装目录以更新原程序。安装保留用户配置与现有进程，完成后退出旧主页、串流窗口再重新打开。Windows 主机配置统一由后台服务持有；在“服务管理”应用当前程序包更新，确认后切换服务。[安装与运行库说明](docs/windows-build.md) · [后台服务](docs/windows-background-service.md)
 
 **Linux**：解压 `eclipse-linux-x86_64-<提交号>.tar.gz`，在包目录执行：
 

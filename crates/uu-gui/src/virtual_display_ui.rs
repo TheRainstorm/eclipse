@@ -75,8 +75,7 @@ fn local_error(error: &anyhow::Error) -> LocalFailure {
 
 fn administrator_required(owner: LocalOwner) -> bool {
     #[cfg(windows)]
-    return owner == LocalOwner::Background
-        && uu_core::service_admin::windows::require_administrator().is_err();
+    {let _=owner;return false;}
     #[cfg(not(windows))]
     {
         let _ = owner;
@@ -98,6 +97,7 @@ enum Startup {
 pub struct State {
     pub open: bool,
     local_owner: Option<LocalOwner>,
+    local_initial_refresh: bool,
     local_selector: bool,
     foreground_displays: BTreeSet<uu_core::virtual_display::LeaseId>,
     spec: Spec,
@@ -239,7 +239,8 @@ impl State {
     pub fn open_local_selector(&mut self) {
         self.open = true;
         if !self.busy() {
-            self.local_selector = true;
+            #[cfg(windows)] {self.local_selector=false;self.select_local_owner(LocalOwner::Background);self.local_initial_refresh=true;}
+            #[cfg(not(windows))] {self.local_selector = true;}
         }
     }
     fn select_local_owner(&mut self, owner: LocalOwner) -> bool {
@@ -550,6 +551,10 @@ impl State {
     pub fn show(&mut self, ctx: &egui::Context, client: Option<&Client>) {
         if !self.open {
             return;
+        }
+        if client.is_none() && self.local_initial_refresh && !self.busy() {
+            self.local_initial_refresh=false;
+            self.local(ctx,Request::Inspect.into());
         }
         if let Some(client) = client {
             if self.take_remote_refresh_request() {
@@ -1384,18 +1389,17 @@ impl BackgroundHost {
 }
 
 pub(super) fn local_request(request: LocalRequest, owner: LocalOwner) -> anyhow::Result<Response> {
-    if owner == LocalOwner::Foreground {
+    if owner == LocalOwner::Foreground && !cfg!(windows) {
         return uu_core::native_virtual_display::execute_local_owner(request);
     }
     #[cfg(windows)]
     {
-        uu_core::service_admin::windows::require_administrator()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         use anyhow::Context as _;
         match runtime
-            .block_on(uu_core::service_admin::windows::request(
+            .block_on(uu_core::service_admin::windows::request_owner(
                 uu_core::service_admin::Request::VirtualDisplay { request },
             ))
             .context(uu_i18n::text("无法读取后台虚拟副屏管理响应"))?

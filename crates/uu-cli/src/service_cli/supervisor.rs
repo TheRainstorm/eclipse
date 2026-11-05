@@ -16,6 +16,7 @@ static STATUS: AtomicIsize = AtomicIsize::new(0);
 #[cfg(test)]
 pub(super) mod system_probe;
 mod console_policy;
+mod management;
 
 fn report(state: u32, code: u32) {
     let status = SERVICE_STATUS {
@@ -425,11 +426,13 @@ fn run() -> Result<()> {
     ] {
         enable(name)?;
     }
+    let _management = management::Management::start(installed.clone())?;
     report(SERVICE_RUNNING, 0);
     let mut child: Option<Child> = None;
     let mut retry_at = Instant::now();
     let mut waiting = None;
     while !STOP.load(Ordering::Acquire) {
+        ensure!(!_management.is_finished(), "本机服务管理通道已退出");
         let session = match owner_session(&installed) {
             Ok(session) => {
                 waiting = None;

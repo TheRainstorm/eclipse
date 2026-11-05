@@ -1105,6 +1105,7 @@ impl eframe::App for App {
         self.workspace.host.stop();
         self.lan.host.stop();
         self.native_host.stop();
+        #[cfg(not(windows))]
         if self.stream_target.is_none()&&self.workspace_tabs.is_none() {
             if let Err(error)=uu_core::virtual_display::Manager::shared().shutdown_manual(){eprintln!("virtual display cleanup remains pending: {error}");}
         }
@@ -1148,7 +1149,11 @@ impl App {
                     self.launcher_hidden=false;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                    self.virtual_display.open_local_selector();
+                    #[cfg(windows)] {
+                        self.select_workspace_page(workspace_ui::Page::Services);
+                        self.workspace.background_service.open_virtual_displays(ctx);
+                    }
+                    #[cfg(not(windows))] self.virtual_display.open_local_selector();
                 },
                 tray::Action::Display(action)=>{
                     let background=self.tray_background.poll(ctx);
@@ -1162,12 +1167,13 @@ impl App {
         self.tray_displays.restore_on_start(ctx);
         if let Some(result)=self.tray_displays.poll() {
             match result {
-                Ok(Some(keep))=>{self.preferences.keep_virtual_displays_after_stream=keep;self.settings_draft.keep_virtual_displays_after_stream=keep;self.persist_preferences();},
+                Ok(Some(_))=>{},
                 Ok(None)=>{},
                 Err(error)=>{self.status=uu_i18n::format!("虚拟显示器操作失败：{error}");self.virtual_display.open_local_selector();},
             }
         }
-        if let Some(tray)=&self.tray{tray.set_display_options(self.preferences.keep_virtual_displays_after_stream,self.tray_displays.busy());}
+        #[cfg(windows)]
+        if let Some(tray)=&self.tray{let keep=self.workspace.background_service.keep_displays();tray.set_display_options(keep.unwrap_or(false),self.tray_displays.busy()||keep.is_none());}
         let tray_needed=tray::supported()||foreground_host||background_host||self.virtual_display.owns_foreground_displays();
         if !tray_needed || self.exit_requested {
             if self.launcher_hidden && !self.exit_requested {

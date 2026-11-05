@@ -1,5 +1,5 @@
-//! Dedicated local administrator manager. Its lifetime is independent of the
-//! installed service, and its editors share the normal host validation rules.
+//! Windows GUI manages the one installed host. All host configuration and trust
+//! mutations are service RPCs; dropping this frontend never stops the service.
 use eframe::egui;
 use std::{
     collections::HashMap,
@@ -10,202 +10,350 @@ use std::{
     time::{Duration, Instant},
 };
 use uu_core::{
-    device_book::{Sharing, Store},
-    device_trust::{Permissions, TrustStore},
+    device_book::Sharing,
+    device_trust::{Permissions, PublicDevice},
     host_admin,
-    service_admin::{windows::*, Request, Response},
+    service_admin::{windows::*, Request, Response, TrustRequest, TrustSnapshot},
 };
 use windows_sys::Win32::System::Services::{SERVICE_RUNNING, SERVICE_STOPPED};
 
 #[derive(Default)]
 pub(super) struct Entry {
-    status: Option<u32>,
-    build:Option<BuildStatus>,
-    next: Option<Instant>,
-    pending_install: bool,
-    install_started: bool,
+    manager: Option<Manager>,
+    deployment: Option<Deployment>,
     job: Option<mpsc::Receiver<Result<bool, String>>>,
     notice: String,
-    completed: String,
 }
 impl Entry {
-    pub fn poll(&mut self, ctx:&egui::Context, host:&mut super::sharing_ui::HostUi) -> bool {
-        let mut installed=false;
-        if let Some(job)=&self.job {
-            if let Ok(result)=job.try_recv() {
-                self.job=None;self.next=None;
+    pub fn poll(&mut self, ctx: &egui::Context, _host: &mut super::sharing_ui::HostUi) -> bool {
+        if self.manager.is_none() {
+            match Manager::new() {
+                Ok(manager) => self.manager = Some(manager),
+                Err(error) => self.notice = error.to_string(),
+            }
+        }
+        if let Some(manager) = &mut self.manager {
+            manager.poll();
+        }
+        let mut installed = false;
+        if let Some(job) = &self.job {
+            if let Ok(result) = job.try_recv() {
+                self.job = None;
                 match result {
-                    Ok(true)=>{self.notice=self.completed.clone();installed=self.install_started;},
-                    Ok(false)=>self.notice.clear(),
-                    Err(error)=>self.notice=error,
+                    Ok(true) => {
+                        installed = true;
+                        self.notice = uu_i18n::text("服务程序操作已完成").into();
+                        if let Some(manager) = &mut self.manager {
+                            manager.submit(Job::Refresh);
+                        }
+                    }
+                    Ok(false) => self.notice = uu_i18n::text("已取消系统授权，服务尚未更新").into(),
+                    Err(error) => self.notice = error,
                 }
-                self.install_started=false;
             }
         }
-        if self.pending_install && !host.running() {
-            self.pending_install=false;self.install_started=true;
-            let result=(||->anyhow::Result<_>{
-                let config=uu_core::Config::from_env()?;
-                Ok((std::env::current_exe()?,format!("--background-service-action install --source-data \"{}\"",config.data_dir.display())))
-            })();
-            match result {
-                Ok((exe,args))=>self.launch(exe,args,uu_i18n::text("后台服务已准备就绪"),ctx),
-                Err(error)=>{self.install_started=false;self.notice=error.to_string();},
-            }
+        if let Some(deployment) = self.deployment.take() {
+            let (send, receive) = mpsc::channel();
+            self.job = Some(receive);
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let result = (|| -> anyhow::Result<bool> {
+                    let exe = std::env::current_exe()?;
+                    uu_core::service_admin::package::verify(
+                        exe.parent()
+                            .ok_or_else(|| anyhow::anyhow!("application directory unavailable"))?,
+                        env!("UU_BUILD_COMMIT"),
+                    )?;
+                    let config = uu_core::Config::from_env()?;
+                    match elevated(
+                        &exe,
+                        &format!(
+                            "--background-service-action {} --source-data \"{}\"",
+                            deployment.action(),
+                            config.data_dir.display()
+                        ),
+                    ) {
+                        Ok(()) => Ok(true),
+                        Err(error)
+                            if error
+                                .downcast_ref::<std::io::Error>()
+                                .is_some_and(|e| e.raw_os_error() == Some(1223)) =>
+                        {
+                            Ok(false)
+                        }
+                        Err(error) => Err(error),
+                    }
+                })()
+                .map_err(|e| format!("{e:#}"));
+                let _ = send.send(result);
+                ctx.request_repaint();
+            });
         }
-        if self.job.is_some()||self.pending_install {ctx.request_repaint_after(Duration::from_millis(100));}
+        ctx.request_repaint_after(Duration::from_millis(500));
         installed
     }
-    pub fn show(&mut self,ui:&mut egui::Ui,host:&mut super::sharing_ui::HostUi,available:bool)->bool {
-        let installed=self.poll(ui.ctx(),host);
-        if self.next.is_none_or(|next|Instant::now()>=next) {
-            self.build=build_status().ok();
-            self.status=self.build.as_ref().map(|build|build.state).or_else(||status().ok());
-            self.next=Some(Instant::now()+Duration::from_secs(1));
+    pub fn keep_displays(&self) -> Option<bool> {
+        self.manager.as_ref().and_then(|m| m.keep_displays)
+    }
+    pub fn password_configured(&self) -> Option<bool> {
+        self.manager
+            .as_ref()
+            .filter(|m| m.snapshot.is_some())
+            .and_then(|m| m.trust.as_ref())
+            .map(|t| t.password_permissions.is_some())
+    }
+    pub fn open_pairing(&mut self) {
+        if let Some(manager) = &mut self.manager {
+            manager.section = 4;
         }
-        let busy=self.job.is_some()||self.pending_install;
-        let outdated=self.build.as_ref().and_then(|build|build.installed.as_ref())
-            .is_some_and(|version|version.revision!=env!("UU_BUILD_COMMIT"));
-        let width=ui.available_width();
-        let frame=crate::theme::card(ui.visuals());
-        let inner=(width-frame.inner_margin.sum().x-frame.outer_margin.sum().x-2.*frame.stroke.width).max(1.);
-        frame.show(ui,|ui| {
-            ui.set_width(inner);
-            ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(uu_i18n::text("Windows 后台服务"));
-                let (label,color)=match self.status {
-                    Some(SERVICE_RUNNING)=>(uu_i18n::text("运行中"),crate::theme::palette(ui.visuals()).success),
-                    Some(SERVICE_STOPPED)=>(uu_i18n::text("已停止"),crate::theme::palette(ui.visuals()).muted),
-                    Some(_)=>(uu_i18n::text("正在转换状态"),crate::theme::palette(ui.visuals()).warning),
-                    None=>(uu_i18n::text("未安装"),crate::theme::palette(ui.visuals()).muted),
-                };
-                ui.colored_label(color,label);
-                if busy {ui.spinner();}
-            });
-            ui.weak(uu_i18n::text("开机后共享此电脑，支持锁屏连接。"));
-            if let Some(build)=&self.build {
-                let version=build.running.as_ref().or(build.installed.as_ref()).map(|v|v.label());
-                if let Some(version)=version {
-                    ui.small(version).on_hover_ui(|ui|version_labels(ui,build));
-                } else if build.process_id!=0 {
-                    ui.small(uu_i18n::text("运行版本暂不可读")).on_hover_ui(|ui|version_labels(ui,build));
-                }
+    }
+    pub fn open_virtual_displays(&mut self, ctx: &egui::Context) {
+        if let Some(manager) = &mut self.manager {
+            manager.section = 6;
+            if manager.snapshot.is_some() {
+                manager
+                    .virtual_display
+                    .open_local(ctx, super::virtual_display_ui::LocalOwner::Background);
             }
-            ui.add_space(6.);
+        }
+    }
+    pub fn online(&self) -> bool {
+        self.manager.as_ref().is_some_and(|m| m.ready)
+    }
+    pub fn toggle(&mut self) {
+        if let Some(manager) = &mut self.manager {
+            if !manager.checked {
+                return;
+            }
+            if manager.state == 0 {
+                self.deployment = Some(Deployment::Install);
+            } else if manager.state == SERVICE_RUNNING {
+                manager.confirm = Some(Confirmation::Stop);
+            } else if manager.state == SERVICE_STOPPED {
+                manager.submit(Job::Control(true));
+            }
+        }
+    }
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        host: &mut super::sharing_ui::HostUi,
+        available: bool,
+    ) -> bool {
+        let installed = self.poll(ui.ctx(), host);
+        let busy = self.job.is_some();
+        let frame = crate::theme::card(ui.visuals());
+        let width = (ui.available_width()
+            - frame.inner_margin.sum().x
+            - frame.outer_margin.sum().x
+            - 2. * frame.stroke.width)
+            .max(1.);
+        frame.show(ui, |ui| {
+            ui.set_width(width);
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
             ui.horizontal_wrapped(|ui| {
-                if self.status.is_some() {
-                    if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("管理后台服务")))
-                        .on_hover_text(uu_i18n::text("查看后台设置、设备授权和虚拟显示器；不会重启服务。")).clicked() {
-                        match std::env::current_exe() {
-                            Ok(exe)=>self.launch(exe,"--open-background-service-manager".into(),"",ui.ctx()),
-                            Err(error)=>self.notice=error.to_string(),
-                        }
-                    }
-                    if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("更新后台程序")))
-                        .on_hover_text(uu_i18n::text("保留后台设置和配对；更新会断开串流。")).clicked() {
-                        self.prepare_install(host);
-                    }
-                    if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("同步插件与账号")))
-                        .on_hover_text(uu_i18n::text("将当前已启用插件及其声明的配置、账号复制到后台，覆盖对应状态；后台原来运行时重启，原来停止时保持停止。")).clicked() {
-                        let result=(||->anyhow::Result<_>{
-                            let config=uu_core::Config::from_env()?;
-                            Ok((std::env::current_exe()?,format!("--background-service-action import-plugins --source-data \"{}\"",config.data_dir.display())))
-                        })();
-                        match result {
-                            Ok((exe,args))=>self.launch(exe,args,uu_i18n::text("后台插件已同步"),ui.ctx()),
-                            Err(error)=>self.notice=error.to_string(),
-                        }
-                    }
-                }else if ui.add_enabled(available&&!busy,crate::theme::primary_button(uu_i18n::text("安装并启动后台服务")))
-                    .on_hover_text(uu_i18n::text("安装当前完整程序包并启动后台，保留已有设置与配对，不导入插件或账号；会断开后台串流并停止本窗口的前台共享。")).clicked() {
-                    self.prepare_install(host);
+                ui.strong(uu_i18n::text("Eclipse 服务"));
+                let online = self.online();
+                ui.colored_label(
+                    if online {
+                        crate::theme::palette(ui.visuals()).success
+                    } else {
+                        crate::theme::palette(ui.visuals()).warning
+                    },
+                    if online {
+                        uu_i18n::text("在线")
+                    } else {
+                        uu_i18n::text("后台服务未启动或尚未就绪")
+                    },
+                );
+                if busy {
+                    ui.spinner();
                 }
             });
-            if outdated {ui.small(uu_i18n::text("后台有可用更新"));}
-            if !self.notice.is_empty() {
-                ui.add_space(4.);
+            ui.weak(uu_i18n::text(
+                "开机自动运行；关闭此窗口后继续提供串流。配置和配对统一保存在服务中。",
+            ));
+            if let Some(manager) = &mut self.manager {
+                let outdated = manager
+                    .build
+                    .as_ref()
+                    .and_then(|b| b.installed.as_ref())
+                    .is_some_and(|v| v.revision != env!("UU_BUILD_COMMIT"));
+                if let Some(build) = &manager.build {
+                    ui.small(crate::build_info::label())
+                        .on_hover_ui(|ui| version_labels(ui, build));
+                }
                 ui.horizontal_wrapped(|ui| {
-                    let dismiss=ui.add(crate::theme::ghost_button("×").small()).clicked();
-                    ui.add(egui::Label::new(&self.notice).wrap());
-                    if dismiss {self.notice.clear();}
+                    if manager.state == 0 {
+                        if ui
+                            .add_enabled(
+                                available && !busy && manager.checked,
+                                crate::theme::primary_button(uu_i18n::text("启用服务")),
+                            )
+                            .clicked()
+                        {
+                            self.deployment=Some(Deployment::Install);
+                        }
+                    } else {
+                        if ui
+                            .add_enabled(
+                                !busy,
+                                crate::theme::secondary_button(if outdated {
+                                    uu_i18n::text("应用程序更新")
+                                } else {
+                                    uu_i18n::text("重新部署服务")
+                                }),
+                            )
+                            .clicked()
+                        {
+                            manager.confirm = Some(Confirmation::Update);
+                        }
+                        if ui
+                            .add_enabled(
+                                !busy
+                                    && !manager.busy
+                                    && matches!(manager.state, SERVICE_RUNNING | SERVICE_STOPPED),
+                                crate::theme::secondary_button(
+                                    if manager.state == SERVICE_STOPPED {
+                                        uu_i18n::text("启动服务")
+                                    } else {
+                                        uu_i18n::text("停止服务")
+                                    },
+                                ),
+                            )
+                            .clicked()
+                        {
+                            if manager.state == SERVICE_STOPPED {
+                                manager.submit(Job::Control(true));
+                            } else {
+                                manager.confirm = Some(Confirmation::Stop);
+                            }
+                        }
+                    }
                 });
+                if manager.section==5 && manager.state!=0 {
+                    if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("导入服务插件")))
+                        .on_hover_text(uu_i18n::text("将当前已启用插件及其声明的配置、账号复制到服务；导入代码需要系统授权。"))
+                        .clicked(){manager.confirm=Some(Confirmation::ImportPlugins);}
+                }
+                if outdated {
+                    ui.colored_label(
+                        crate::theme::palette(ui.visuals()).warning,
+                        uu_i18n::text("新程序包尚未应用到服务。更新会保留同一份配置与配对。"),
+                    );
+                }
+                if let Some(confirm) = manager.confirm {
+                    ui.separator();
+                    if let Some(snapshot) = &manager.snapshot {
+                        ui.label(uu_i18n::format!(
+                            "此操作会断开当前 {} 个串流会话。",
+                            snapshot.connections.len()
+                        ));
+                    } else {
+                        ui.label(uu_i18n::text(
+                            "无法确认当前连接数；此操作可能会断开正在进行的串流。",
+                        ));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(crate::theme::primary_button(uu_i18n::text("确认继续")))
+                            .clicked()
+                        {
+                            manager.confirm = None;
+                            match confirm {
+                                Confirmation::Update => self.deployment=Some(Deployment::Install),
+                                Confirmation::ImportPlugins => self.deployment=Some(Deployment::ImportPlugins),
+                                Confirmation::Stop => manager.submit(Job::Control(false)),
+                                Confirmation::Restart => manager.save(true),
+                            }
+                        }
+                        if ui
+                            .add(crate::theme::secondary_button(uu_i18n::text("取消")))
+                            .clicked()
+                        {
+                            manager.confirm = None;
+                        }
+                    });
+                }
+                ui.add_enabled_ui(!busy, |ui| manager.show(ui));
+            }
+            if !self.notice.is_empty() {
+                ui.label(&self.notice);
             }
         });
-        ui.add_space(10.);
         installed
     }
-    fn prepare_install(&mut self,host:&mut super::sharing_ui::HostUi) {
-        if host.running(){host.stop();}
-        self.pending_install=true;self.notice=uu_i18n::text("正在准备后台服务安装…").into();
-    }
-    fn launch(&mut self,exe:std::path::PathBuf,args:String,completed:&str,ctx:&egui::Context) {
-        self.completed=completed.to_owned();self.notice.clear();
-        let (send,receive)=mpsc::channel();self.job=Some(receive);let ctx=ctx.clone();
-        std::thread::spawn(move|| {
-            let result=(||->anyhow::Result<bool> {
-                if args.starts_with("--background-service-action ") {
-                    uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("{}",uu_i18n::format!("无法确定安装包目录")))?,env!("UU_BUILD_COMMIT"))?;
-                }
-                match elevated(&exe,&args) {
-                    Ok(())=>Ok(true),
-                    Err(error) if error.downcast_ref::<std::io::Error>().is_some_and(|e|e.raw_os_error()==Some(1223))=>Ok(false),
-                    Err(error)=>Err(error),
-                }
-            })();
-            let _=send.send(result.map_err(|e|format!("{e:#}")));ctx.request_repaint();
-        });
-    }
 }
-
-fn version_labels(ui:&mut egui::Ui,build:&BuildStatus) {
-    if let Some(running)=&build.running {
-        ui.label(uu_i18n::format!("后台运行版本：{} · PID {}",running.label(),build.process_id))
-            .on_hover_text(&running.revision);
-    } else if build.process_id!=0 {
-        ui.label(uu_i18n::format!("后台运行版本：无法读取 · PID {}",build.process_id))
-            .on_hover_text(build.running_error.as_deref().unwrap_or("Unknown service image"));
-        ui.weak(uu_i18n::text("运行版本暂不可读。可打开管理窗口核对，或更新旧后台后重试。"));
+fn version_labels(ui: &mut egui::Ui, build: &BuildStatus) {
+    if let Some(running) = &build.running {
+        ui.label(uu_i18n::format!(
+            "后台运行版本：{} · PID {}",
+            running.label(),
+            build.process_id
+        ))
+        .on_hover_text(&running.revision);
+    } else if build.process_id != 0 {
+        ui.label(uu_i18n::text("运行版本暂不可读"));
     }
-    if let Some(installed)=&build.installed {
-        if build.running.as_ref().is_none_or(|running|running.revision!=installed.revision) {
-            ui.label(uu_i18n::format!("后台安装版本：{}",installed.label())).on_hover_text(&installed.revision);
+    if let Some(installed) = &build.installed {
+        ui.label(uu_i18n::format!("后台安装版本：{}", installed.label()))
+            .on_hover_text(&installed.revision);
+    }
+    ui.weak(crate::build_info::label());
+}
+#[derive(Clone, Copy)]
+enum Deployment {
+    Install,
+    ImportPlugins,
+}
+impl Deployment {
+    fn action(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::ImportPlugins => "import-plugins",
         }
     }
-    ui.weak(uu_i18n::format!("当前程序版本：{} · {}",env!("CARGO_PKG_VERSION"),crate::build_info::label()));
 }
-
+#[derive(Clone, Copy)]
+enum Confirmation {
+    Update,
+    ImportPlugins,
+    Stop,
+    Restart,
+}
 enum Job {
     Refresh,
-    Firewall(bool),
+    Control(bool),
     Rpc(Request),
-    Control(&'static str),
-    SaveStopped {
-        expected: Sharing,
-        value: Sharing,
-        start: bool,
-    },
 }
 enum Event {
-    Firewall(Result<String,String>),
-    State(u32, Result<Response, String>),
-    Done(bool, Result<(), String>),
+    State {
+        state: u32,
+        build: Option<BuildStatus>,
+        response: Result<Response, String>,
+    },
+    Done(Result<Response, String>),
+    Trust {
+        completed: bool,
+        result: Result<Response, String>,
+    },
 }
 struct Manager {
-    appearance:super::theme::PreferenceWatch,
-    firewall: String,
-    virtual_display:super::virtual_display_ui::State,
-    build:Option<BuildStatus>,
-    trust: TrustStore,
-    sender: mpsc::Sender<Job>,
+    virtual_display: super::virtual_display_ui::State,
+    sender: mpsc::SyncSender<Job>,
     events: mpsc::Receiver<Event>,
     stop: Arc<AtomicBool>,
     state: u32,
+    build: Option<BuildStatus>,
+    ready: bool,
+    checked: bool,
+    connection_error: String,
+    keep_displays: Option<bool>,
     snapshot: Option<host_admin::Snapshot>,
+    trust: Option<TrustSnapshot>,
     endpoints: Vec<(String, String)>,
     pending: Vec<uu_core::service_admin::Pairing>,
     draft: Sharing,
-    baseline: Sharing,
     revision: String,
     dirty: bool,
     busy: bool,
@@ -213,174 +361,136 @@ struct Manager {
     notice: String,
     codes: HashMap<String, zeroize::Zeroizing<String>>,
     permissions: HashMap<String, Permissions>,
-    pairing: super::pairing_ui::HostUi,
+    pairing: ServicePairing,
+    confirm: Option<Confirmation>,
 }
 impl Drop for Manager {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
     }
 }
-fn control(exe: &std::path::Path, command: &str) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    let output = std::process::Command::new(exe)
-        .args(["service", command])
-        .creation_flags(0x08000000)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(uu_i18n::format!(
-            "后台服务操作失败：{}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
-    }
-}
 impl Manager {
     fn new() -> anyhow::Result<Self> {
-        administrator_file_owner()?;
-        let paths = Paths::discover()?;
-        let installed = paths.manifest()?;
-        let executable = paths.binary_directory(&installed).join(installed.cli_name());
-        let config = paths.config();
-        let store = Store::open(config.at("device-trust"))?;
-        let draft = store.read()?.sharing;
-        let trust = TrustStore::open(config.at("device-trust"))?;
-        let (sender, jobs) = mpsc::channel();
-        let (send, events) = mpsc::channel();
+        let (sender, jobs) = mpsc::sync_channel(8);
+        let (send, events) = mpsc::sync_channel(16);
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
-        let worker_config = config.clone();
         std::thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
             {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    let _ = send.send(Event::Done(false, Err(error.to_string())));
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = send.send(Event::Done(Err(e.to_string())));
                     return;
                 }
             };
+            let mut trust_at = Instant::now();
             while !stopped.load(Ordering::Acquire) {
-                match jobs.recv_timeout(Duration::from_millis(650)) {
-                    Ok(job) => {
-                        let saved = matches!(
-                            &job,
-                            Job::SaveStopped { .. }
-                                | Job::Rpc(Request::Admin {
-                                    request: host_admin::Request::Save { .. }
-                                })
-                        );
-                        let result = (|| -> anyhow::Result<()> {
-                            match job {
-                                Job::Refresh => {}
-                                Job::Firewall(repair) => {
-                                    let result=(||->anyhow::Result<String>{
-                                        let paths=Paths::discover()?;let installed=paths.manifest()?;
-                                        let exe=firewall_program(&paths,&installed)?;
-                                        let sharing=Store::open(worker_config.at("device-trust"))?.read()?.sharing;
-                                        let report=if repair {uu_core::firewall::ensure(&exe,sharing.service_port,sharing.discovery_port)?} else {uu_core::firewall::inspect(&exe,sharing.service_port,sharing.discovery_port)?};
-                                        Ok(report.message())
-                                    })().map_err(|e|format!("{e:#}"));
-                                    let _=send.send(Event::Firewall(result));
-                                }
-                                Job::Rpc(request) => {
-                                    match runtime.block_on(request_remote(request))? {
-                                        Response::Error { message } => anyhow::bail!(message),
-                                        _ => {}
-                                    }
-                                }
-                                Job::Control(command) => {
-                                    control(&executable, command).map_err(anyhow::Error::msg)?
-                                }
-                                Job::SaveStopped {
-                                    expected,
-                                    value,
-                                    start,
-                                } => {
-                                    anyhow::ensure!(
-                                        status()? == SERVICE_STOPPED,
-                                        "{}", uu_i18n::format!("后台服务已启动，请重新读取后保存"));
-                                    value.validate()?;
-                                    let store = Store::open(worker_config.at("device-trust"))?;
-                                    store.edit(|book| {
-                                        anyhow::ensure!(
-                                            book.sharing == expected,
-                                            "{}", uu_i18n::format!("配置已在其它窗口修改，请重新读取"));
-                                        anyhow::ensure!(
-                                            value.ip_enabled
-                                                || !value.plugin_services.is_empty()
-                                                || book.services.iter().any(|s| s.host_enabled),
-                                            "{}", uu_i18n::format!("至少保留一个连接入口"));
-                                        book.sharing = value;
-                                        Ok(())
-                                    })?;
-                                    if start {
-                                        control(&executable, "start")
-                                            .map_err(anyhow::Error::msg)?;
-                                    }
-                                }
+                match jobs.recv_timeout(Duration::from_millis(750)) {
+                    Ok(Job::Refresh) => {}
+                    Ok(Job::Control(start)) => {
+                        let result = control_owner(start)
+                            .map(|_| Response::Applied)
+                            .map_err(|e| format!("{e:#}"));
+                        let _ = send.send(Event::Done(result));
+                    }
+                    Ok(Job::Rpc(request)) => {
+                        let trust = matches!(request, Request::Trust { .. });
+                        let result = runtime
+                            .block_on(request_remote(request))
+                            .map_err(|e| format!("{e:#}"));
+                        let _ = send.send(if trust {
+                            Event::Trust {
+                                completed: true,
+                                result,
                             }
-                            Ok(())
-                        })()
-                        .map_err(|e| e.to_string());
-                        let _ = send.send(Event::Done(saved, result));
+                        } else {
+                            Event::Done(result)
+                        });
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
-                let state = status().unwrap_or(0);
+                let build = build_status().ok();
+                let state = build
+                    .as_ref()
+                    .map(|b| b.state)
+                    .unwrap_or_else(|| match status() {
+                        Ok(state) => state,
+                        Err(error)
+                            if error.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                                e.raw_os_error()
+                                    == Some(
+                                        windows_sys::Win32::Foundation::ERROR_SERVICE_DOES_NOT_EXIST
+                                            as i32,
+                                    )
+                            }) =>
+                        {
+                            0
+                        }
+                        Err(_) => u32::MAX,
+                    });
                 let response = if state == SERVICE_RUNNING {
                     runtime
                         .block_on(request_remote(Request::Status))
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| format!("{e:#}"))
                 } else {
-                    (|| -> anyhow::Result<Response> {
-                        let saved = Store::open(worker_config.at("device-trust"))?
-                            .read()?
-                            .sharing;
-                        let mut details = Permissions::CONTROL.details();
-                        details.manage_server = true;
-                        Ok(Response::Status {
-                            endpoints: vec![],
-                            pending: vec![],
-                            snapshot: host_admin::Snapshot {
-                                own_permissions: Permissions::CONTROL.with_details(details),
-                                connections: vec![],
-                                server: Some(host_admin::ServerSettings {
-                                    active: saved.clone(),
-                                    saved,
-                                    revision: String::new(),
-                                    monitors: vec![],
-                                    portal: false,
-                                }),
-                            },
-                        })
-                    })()
-                    .map_err(|e| e.to_string())
+                    Err(uu_i18n::text("后台服务未启动；启动服务后读取和修改同一份配置。").into())
                 };
-                if send.send(Event::State(state, response)).is_err() {
+                if send
+                    .send(Event::State {
+                        state,
+                        build,
+                        response,
+                    })
+                    .is_err()
+                {
                     break;
+                }
+                if state == SERVICE_RUNNING && Instant::now() >= trust_at {
+                    let result = runtime
+                        .block_on(request_remote(Request::Trust {
+                            request: TrustRequest::Inspect,
+                        }))
+                        .map_err(|e| format!("{e:#}"));
+                    if send
+                        .send(Event::Trust {
+                            completed: false,
+                            result,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    trust_at = Instant::now() + Duration::from_secs(5);
                 }
             }
         });
-        let _=sender.send(Job::Firewall(false));
-        Ok(Self {
-            appearance:Default::default(),
-            firewall:String::new(),
-            virtual_display:Default::default(),
-            build:build_status().ok(),
-            trust,
+        Ok(Self::empty(sender, events, stop))
+    }
+    fn empty(
+        sender: mpsc::SyncSender<Job>,
+        events: mpsc::Receiver<Event>,
+        stop: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            virtual_display: Default::default(),
             sender,
             events,
             stop,
             state: 0,
+            build: None,
+            ready: false,
+            checked: false,
+            connection_error: String::new(),
+            keep_displays: None,
             snapshot: None,
+            trust: None,
             endpoints: vec![],
             pending: vec![],
-            baseline: draft.clone(),
-            draft,
+            draft: Sharing::default(),
             revision: String::new(),
             dirty: false,
             busy: false,
@@ -389,315 +499,586 @@ impl Manager {
             codes: HashMap::new(),
             permissions: HashMap::new(),
             pairing: Default::default(),
-        })
+            confirm: None,
+        }
     }
     fn submit(&mut self, job: Job) {
-        self.busy = true;
-        if self.sender.send(job).is_err() {
-            self.busy = false;
-            self.notice = uu_i18n::text("后台管理工作线程已结束").into();
+        if self.busy {
+            return;
+        }
+        match self.sender.try_send(job) {
+            Ok(()) => self.busy = true,
+            Err(error) => self.notice = error.to_string(),
         }
     }
     fn poll(&mut self) {
-        while let Ok(event) = self.events.try_recv() {
-            match event {
-                Event::Done(saved, result) => {
+        loop {
+            let event = match self.events.try_recv() {
+                Ok(event) => event,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.ready = false;
+                    self.keep_displays = None;
+                    self.snapshot = None;
                     self.busy = false;
-                    match result {
-                        Ok(()) => {
-                            if saved {
-                                self.dirty = false;
-                            }
-                            self.notice = uu_i18n::text("操作已完成").into();
-                        }
-                        Err(error) => self.notice = error,
-                    }
+                    self.connection_error = uu_i18n::text("后台管理工作线程已结束").into();
+                    break;
                 }
-                Event::Firewall(result)=> {self.firewall=match result {Ok(message)=>message,Err(error)=>error};}
-                Event::State(state, result) => {
-                    self.build=build_status().ok();
+            };
+            match event {
+                Event::State {
+                    state,
+                    build,
+                    response,
+                } => {
                     self.state = state;
-                    match result {
+                    self.build = build;
+                    self.checked = true;
+                    match response {
                         Ok(Response::Status {
+                            ready,
+                            keep_virtual_displays,
                             endpoints,
                             pending,
                             snapshot,
                         }) => {
-                            self.codes
-                                .retain(|id, _| pending.iter().any(|p| p.id == *id));
-                            self.permissions
-                                .retain(|id, _| pending.iter().any(|p| p.id == *id));
+                            self.connection_error.clear();
+                            self.keep_displays = keep_virtual_displays;
+                            self.ready = ready;
                             self.endpoints = endpoints;
                             self.pending = pending;
+                            self.codes
+                                .retain(|id, _| self.pending.iter().any(|p| p.id == *id));
+                            self.permissions
+                                .retain(|id, _| self.pending.iter().any(|p| p.id == *id));
                             if !self.dirty {
                                 if let Some(server) = &snapshot.server {
                                     self.draft = server.saved.clone();
-                                    self.baseline = server.saved.clone();
                                     self.revision = server.revision.clone();
                                 }
                             }
                             self.snapshot = Some(snapshot);
                         }
+                        Ok(Response::Error { message }) | Err(message) => {
+                            self.ready = false;
+                            self.keep_displays = None;
+                            self.snapshot = None;
+                            self.pending.clear();
+                            self.endpoints.clear();
+                            self.connection_error = message;
+                        }
+                        _ => {
+                            self.ready = false;
+                            self.snapshot = None;
+                        }
+                    }
+                }
+                Event::Done(result) => {
+                    self.busy = false;
+                    match result {
                         Ok(Response::Error { message }) | Err(message) => self.notice = message,
+                        Ok(Response::Admin {
+                            response: host_admin::Response::Error { message },
+                        }) => self.notice = message,
+                        Ok(Response::Admin {
+                            response: host_admin::Response::Saved { .. },
+                        }) => {
+                            self.dirty = false;
+                            self.notice = uu_i18n::text(
+                                "已保存到服务。媒体默认值用于新连接；显示器上限立即生效。",
+                            )
+                            .into();
+                        }
+                        Ok(Response::Firewall { message }) => self.notice = message,
+                        _ => self.notice = uu_i18n::text("操作已完成").into(),
+                    }
+                }
+                Event::Trust { completed, result } => {
+                    if completed {
+                        self.busy = false;
+                    }
+                    match result {
+                        Ok(Response::Trust { snapshot }) => {
+                            self.trust = Some(snapshot);
+                            if completed {
+                                self.notice = uu_i18n::text("操作已完成").into();
+                            }
+                        }
+                        Ok(Response::Error { message }) | Err(message) => {
+                            if completed {
+                                self.notice = message;
+                            }
+                        }
                         _ => {}
                     }
+                    // Periodic trust inspection is not a completion for another job.
                 }
             }
         }
     }
     fn save(&mut self, restart: bool) {
-        if self.state == SERVICE_STOPPED {
-            self.submit(Job::SaveStopped {
-                expected: self.baseline.clone(),
-                value: self.draft.clone(),
-                start: restart,
+        if self.snapshot.is_none() || self.busy {
+            return;
+        }
+        self.submit(Job::Rpc(Request::Admin {
+            request: host_admin::Request::Save {
+                revision: self.revision.clone(),
+                settings: self.draft.clone(),
+                restart,
+            },
+        }));
+    }
+    fn show(&mut self, ui: &mut egui::Ui) {
+        self.virtual_display.poll(None);
+        self.virtual_display.show(ui.ctx(), None);
+        ui.add_space(10.);
+        ui.horizontal_wrapped(|ui| {
+            for (tab, label) in [
+                (0, "服务管理"),
+                (1, "输入"),
+                (2, "音频 / 视频"),
+                (3, "编码器"),
+                (4, "配对设置"),
+                (5, "连接服务"),
+                (6, "虚拟显示器"),
+            ] {
+                crate::theme::tab_value(ui, &mut self.section, tab, uu_i18n::text(label));
+            }
+        });
+        if self.busy {
+            ui.spinner();
+        }
+        if !self.notice.is_empty() {
+            ui.label(&self.notice);
+        }
+        if !self.connection_error.is_empty() {
+            ui.label(&self.connection_error);
+        }
+        let enabled = self.snapshot.is_some() && !self.busy;
+        if self.section == 0 {
+            for (name, state) in &self.endpoints {
+                ui.label(format!("{name} · {state}"));
+            }
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(
+                        enabled,
+                        crate::theme::secondary_button(uu_i18n::text("检查防火墙")),
+                    )
+                    .clicked()
+                {
+                    self.submit(Job::Rpc(Request::Firewall { repair: false }));
+                }
+                if ui
+                    .add_enabled(
+                        enabled,
+                        crate::theme::secondary_button(uu_i18n::text("修复防火墙")),
+                    )
+                    .clicked()
+                {
+                    self.submit(Job::Rpc(Request::Firewall { repair: true }));
+                }
             });
+            self.connections(ui);
+        } else if self.section == 6 {
+            ui.add_enabled_ui(enabled, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(uu_i18n::text("最多创建虚拟显示器"));
+                    let before = self.draft.virtual_display_limit;
+                    crate::theme::number_input(
+                        ui,
+                        egui::DragValue::new(&mut self.draft.virtual_display_limit)
+                            .range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT),
+                    );
+                    self.dirty |= self.draft.virtual_display_limit != before;
+                    if ui
+                        .add_enabled(
+                            self.dirty,
+                            crate::theme::primary_button(uu_i18n::text("保存设置")),
+                        )
+                        .clicked()
+                    {
+                        self.save(false);
+                    }
+                });
+            });
+            ui.label(uu_i18n::text(
+                "临时屏随所属串流断开回收；持久屏保留并在开机恢复。",
+            ));
+            if ui
+                .add_enabled(
+                    enabled,
+                    crate::theme::primary_button(uu_i18n::text("管理虚拟显示器")),
+                )
+                .clicked()
+            {
+                self.virtual_display
+                    .open_local(ui.ctx(), super::virtual_display_ui::LocalOwner::Background);
+            }
         } else {
-            self.submit(Job::Rpc(Request::Admin {
-                request: host_admin::Request::Save {
-                    revision: self.revision.clone(),
-                    settings: self.draft.clone(),
-                    restart,
-                },
-            }));
+            ui.add_enabled_ui(enabled, |ui| {
+                let before = self.draft.clone();
+                match self.section {
+                    1..=3 => {
+                        let monitors = self
+                            .snapshot
+                            .as_ref()
+                            .and_then(|s| s.server.as_ref())
+                            .map(|s| s.monitors.clone())
+                            .unwrap_or_default();
+                        super::server_config_ui::edit(
+                            ui,
+                            &mut self.draft,
+                            match self.section {
+                                1 => 2,
+                                2 => 0,
+                                _ => 1,
+                            },
+                            &monitors,
+                            false,
+                            true,
+                        );
+                    }
+                    4 => {
+                        super::server_config_ui::device_name(ui, &mut self.draft, true);
+                        if let Some(snapshot) = &self.trust {
+                            let mut commands = vec![];
+                            self.pairing.show(ui, snapshot, &mut commands);
+                            if let Some(request) = commands.pop() {
+                                self.submit(Job::Rpc(Request::Trust { request }));
+                            }
+                        }
+                    }
+                    _ => {
+                        crate::theme::switch(
+                            ui,
+                            &mut self.draft.ip_enabled,
+                            uu_i18n::text("IP 直连"),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(uu_i18n::text("服务端口"));
+                            crate::theme::number_input(
+                                ui,
+                                egui::DragValue::new(&mut self.draft.service_port).range(1..=65535),
+                            );
+                            ui.label(uu_i18n::text("发现端口"));
+                            crate::theme::number_input(
+                                ui,
+                                egui::DragValue::new(&mut self.draft.discovery_port)
+                                    .range(1..=65535),
+                            );
+                        });
+                        for provider in uu_core::plugins::registry().descriptors() {
+                            let mut selected = self
+                                .draft
+                                .plugin_services
+                                .iter()
+                                .any(|id| id == provider.id);
+                            if crate::theme::switch(ui, &mut selected, provider.name).changed() {
+                                self.draft.plugin_services.retain(|id| id != provider.id);
+                                if selected {
+                                    self.draft.plugin_services.push(provider.id.into());
+                                }
+                            }
+                        }
+                    }
+                }
+                self.dirty |= self.draft != before;
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .add_enabled(
+                            self.dirty,
+                            crate::theme::primary_button(uu_i18n::text("保存设置")),
+                        )
+                        .clicked()
+                    {
+                        self.save(false);
+                    }
+                    if ui
+                        .add_enabled(
+                            self.dirty,
+                            crate::theme::secondary_button(uu_i18n::text("还原修改")),
+                        )
+                        .clicked()
+                    {
+                        self.dirty = false;
+                        if let Some(server) = self.snapshot.as_ref().and_then(|s| s.server.as_ref())
+                        {
+                            self.draft = server.saved.clone();
+                            self.revision = server.revision.clone();
+                        }
+                    }
+                    if ui
+                        .add(crate::theme::secondary_button(uu_i18n::text(
+                            "保存并重启服务",
+                        )))
+                        .clicked()
+                    {
+                        self.confirm = Some(Confirmation::Restart);
+                    }
+                });
+                if self.draft
+                    != self
+                        .snapshot
+                        .as_ref()
+                        .and_then(|s| s.server.as_ref())
+                        .map(|s| s.active.clone())
+                        .unwrap_or_default()
+                {
+                    ui.weak(uu_i18n::text(
+                        "名称、端口和连接入口变更需要重启服务；重启会断开当前串流。",
+                    ));
+                }
+            });
+        }
+        for pending in self.pending.clone() {
+            crate::theme::card(ui.visuals()).show(ui, |ui| {
+                ui.strong(uu_i18n::format!("配对请求 · {}", pending.device.name));
+                ui.monospace(pending.device.id());
+                let code = self.codes.entry(pending.id.clone()).or_default();
+                ui.add(
+                    crate::theme::Input::new(&mut **code)
+                        .char_limit(8)
+                        .hint_text(uu_i18n::text("控制端显示的 8 位配对码")),
+                );
+                let permission = self
+                    .permissions
+                    .entry(pending.id.clone())
+                    .or_insert(Permissions::CONTROL);
+                ui.horizontal_wrapped(|ui| {
+                    super::sharing_ui::permissions(ui, permission);
+                });
+                let permission = *permission;
+                let code = code.to_string();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !self.busy && pending.waiting && code.len() == 8,
+                            crate::theme::primary_button(uu_i18n::text("批准配对")),
+                        )
+                        .clicked()
+                    {
+                        self.submit(Job::Rpc(Request::Approve {
+                            id: pending.id.clone(),
+                            code,
+                            permissions: permission,
+                        }));
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.busy,
+                            crate::theme::secondary_button(uu_i18n::text("拒绝")),
+                        )
+                        .clicked()
+                    {
+                        self.submit(Job::Rpc(Request::Reject {
+                            id: pending.id.clone(),
+                        }));
+                    }
+                });
+            });
+        }
+    }
+    fn connections(&mut self, ui: &mut egui::Ui) {
+        if let Some(snapshot) = self.snapshot.clone() {
+            ui.strong(uu_i18n::format!(
+                "已连接 {} 个会话",
+                snapshot.connections.len()
+            ));
+            for connection in snapshot.connections {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("{} · {}", connection.name, connection.status));
+                    let mut permission = connection.permissions;
+                    if super::sharing_ui::permissions(ui, &mut permission) {
+                        self.submit(Job::Rpc(Request::Admin {
+                            request: host_admin::Request::Permissions {
+                                peer: connection.peer,
+                                permissions: permission,
+                            },
+                        }));
+                    }
+                    if ui
+                        .add(crate::theme::secondary_button(uu_i18n::text("断开此会话")))
+                        .clicked()
+                    {
+                        self.submit(Job::Rpc(Request::Admin {
+                            request: host_admin::Request::Disconnect {
+                                session: connection.id,
+                            },
+                        }));
+                    }
+                });
+            }
         }
     }
 }
 async fn request_remote(request: Request) -> anyhow::Result<Response> {
-    uu_core::service_admin::windows::request(request).await
+    uu_core::service_admin::windows::request_owner(request).await
 }
-
-impl eframe::App for Manager {
+struct Standalone {
+    entry: Entry,
+    host: super::sharing_ui::HostUi,
+    appearance: super::theme::PreferenceWatch,
+}
+impl eframe::App for Standalone {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.appearance.poll(ctx);
-        self.poll();
-        self.virtual_display.poll(None);
-        self.virtual_display.show(ctx,None);
-        ctx.request_repaint_after(Duration::from_millis(200));
+        ctx.request_repaint_after(Duration::from_millis(500));
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading(uu_i18n::text("Windows 后台服务"));
-            ui.label(match self.state {
-                SERVICE_RUNNING => uu_i18n::text("运行中 · 后台服务独立运行"),
-                SERVICE_STOPPED => uu_i18n::text("已停止"),
-                _ => uu_i18n::text("正在读取服务状态…"),
-            });
-            if let Some(build)=&self.build {version_labels(ui,build);}
-            ui.horizontal(|ui| {
-                if ui.add_enabled(!self.busy,crate::theme::secondary_button(uu_i18n::text("检查防火墙"))).clicked(){self.submit(Job::Firewall(false));}
-                if ui.add_enabled(!self.busy,crate::theme::secondary_button(uu_i18n::text("修复防火墙"))).clicked(){self.submit(Job::Firewall(true));}
-            });
-            if !self.firewall.is_empty(){ui.label(&self.firewall);}
-            ui.horizontal(|ui| {
-                if ui.add_enabled(self.state==SERVICE_RUNNING,crate::theme::secondary_button(uu_i18n::text("虚拟显示器"))).clicked(){self.virtual_display.open_local(ctx,super::virtual_display_ui::LocalOwner::Background);}
-                if ui
-                    .add_enabled(
-                        !self.busy && self.state == SERVICE_STOPPED,
-                        crate::theme::secondary_button(uu_i18n::text("启动服务")),
-                    )
-                    .clicked()
-                {
-                    self.submit(Job::Control("start"));
-                }
-                if ui
-                    .add_enabled(
-                        !self.busy && self.state == SERVICE_RUNNING,
-                        crate::theme::secondary_button(uu_i18n::text("停止服务")),
-                    )
-                    .clicked()
-                {
-                    self.submit(Job::Control("stop"));
-                }
-                if ui.add(crate::theme::secondary_button(uu_i18n::text("重新读取配置"))).clicked() {
-                    self.dirty = false;
-                    self.submit(Job::Refresh);
-                }
-                if self.busy {
-                    ui.spinner();
-                }
-            });
-            for (name, state) in &self.endpoints {
-                ui.label(format!("{name} · {state}"));
-            }
-            if !self.notice.is_empty() {
-                ui.label(&self.notice);
-            }
-            ui.separator();
-            for request in self.pending.clone() {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.strong(uu_i18n::format!("配对请求 · {}", request.device.name));
-                    ui.monospace(request.device.id());
-                    let code = self.codes.entry(request.id.clone()).or_default();
-                    ui.add(
-                        crate::theme::Input::new(&mut **code)
-                            .hint_text(uu_i18n::text("控制端显示的 8 位配对码"))
-                            .char_limit(8),
-                    );
-                    let permissions = self
-                        .permissions
-                        .entry(request.id.clone())
-                        .or_insert(Permissions::CONTROL);
-                    super::sharing_ui::permissions(ui, permissions);
-                    let permissions = *permissions;
-                    let code = code.to_string();
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(
-                                !self.busy && request.waiting && code.len() == 8,
-                                crate::theme::secondary_button(uu_i18n::text("批准配对")),
-                            )
-                            .clicked()
-                        {
-                            self.submit(Job::Rpc(Request::Approve {
-                                id: request.id.clone(),
-                                code,
-                                permissions,
-                            }));
-                        }
-                        if ui
-                            .add_enabled(!self.busy, crate::theme::secondary_button(uu_i18n::text("拒绝")))
-                            .clicked()
-                        {
-                            self.submit(Job::Rpc(Request::Reject {
-                                id: request.id.clone(),
-                            }));
-                        }
-                    });
-                });
-            }
-            ui.horizontal_wrapped(|ui| {
-                for (section, name) in [
-                    (0, uu_i18n::text("画面")),
-                    (1, uu_i18n::text("编码")),
-                    (2, uu_i18n::text("权限")),
-                    (3, uu_i18n::text("配对设置")),
-                    (4, uu_i18n::text("连接")),
-                ] {
-                    crate::theme::tab_value(ui,&mut self.section, section, name);
-                }
-            });
             egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.add_enabled_ui(!self.busy, |ui| {
-                    let before = self.draft.clone();
-                    match self.section {
-                        0..=2 => {
-                            let monitors = self
-                                .snapshot
-                                .as_ref()
-                                .and_then(|s| s.server.as_ref())
-                                .map(|s| s.monitors.clone())
-                                .unwrap_or_default();
-                            super::server_config_ui::edit(
-                                ui,
-                                &mut self.draft,
-                                self.section,
-                                &monitors,
-                                false,
-                                false,
-                            );
-                        }
-                        3 => {
-                            super::server_config_ui::device_name(ui, &mut self.draft, true);
-                            self.pairing.show(ui, &self.trust, &self.draft.name, None);
-                            ui.separator();
-                            ui.strong(uu_i18n::text("已授权设备"));
-                            match self.trust.peers() {
-                                Ok(peers) => {
-                                    for peer in peers
-                                        .into_iter()
-                                        .filter(|p| p.inbound.is_some() && !p.revoked)
-                                    {
-                                        egui::Frame::group(ui.style()).show(ui, |ui| {
-                                            ui.label(&peer.device.name);
-                                            ui.monospace(peer.device.id());
-                                            let mut permissions = peer.inbound.unwrap();
-                                            if super::sharing_ui::permissions(ui, &mut permissions)
-                                            {
-                                                self.notice = match self.trust.authorize(
-                                                    peer.device.clone(),
-                                                    permissions,
-                                                    None,
-                                                ) {
-                                                    Ok(()) => uu_i18n::text("设备授权已更新").into(),
-                                                    Err(error) => error.to_string(),
-                                                };
-                                            }
-                                            if ui.add(crate::theme::secondary_button(uu_i18n::text("撤销授权")).small()).clicked() {
-                                                self.notice =
-                                                    match self.trust.revoke(&peer.device.id()) {
-                                                        Ok(()) => uu_i18n::text("设备授权已撤销").into(),
-                                                        Err(error) => error.to_string(),
-                                                    };
-                                            }
-                                        });
-                                    }
-                                }
-                                Err(error) => {
-                                    ui.label(error.to_string());
-                                }
-                            }
-                        }
-                        _ => {
-                            crate::theme::switch(ui,&mut self.draft.ip_enabled, uu_i18n::text("IP 直连"));
-                            for provider in uu_core::plugins::registry().descriptors() {
-                                let mut enabled=self.draft.plugin_services.iter().any(|id|id==provider.id);
-                                if crate::theme::switch(ui,&mut enabled,provider.name).changed(){self.draft.plugin_services.retain(|id|id!=provider.id);if enabled {self.draft.plugin_services.push(provider.id.into());}}
-                            }
-                            ui.horizontal(|ui| {
-                                ui.label(uu_i18n::text("服务端口"));
-                                crate::theme::number_input(ui,
-                                    egui::DragValue::new(&mut self.draft.service_port)
-                                        .range(1..=65535),
-                                );
-                                ui.label(uu_i18n::text("发现端口"));
-                                crate::theme::number_input(ui,
-                                    egui::DragValue::new(&mut self.draft.discovery_port)
-                                        .range(1..=65535),
-                                );
-                            });
-                        }
-                    }
-                    self.dirty |= self.draft != before;
-                    ui.add_space(14.);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(!self.busy, crate::theme::secondary_button(uu_i18n::text("保存，下次启动生效")))
-                            .clicked()
-                        {
-                            self.save(false);
-                        }
-                        if ui
-                            .add_enabled(!self.busy, crate::theme::secondary_button(uu_i18n::text("保存并重启服务")))
-                            .clicked()
-                        {
-                            self.save(true);
-                        }
-                    });
-                    if let Some(snapshot) = self.snapshot.clone() {
-                        ui.separator();
-                        ui.strong(uu_i18n::text("当前连接"));
-                        for connection in snapshot.connections.clone() {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(format!("{} · {}", connection.name, connection.status));
-                                if ui.add(crate::theme::secondary_button(uu_i18n::text("断开")).small()).clicked() {
-                                    self.submit(Job::Rpc(Request::Admin {
-                                        request: host_admin::Request::Disconnect {
-                                            session: connection.id,
-                                        },
-                                    }));
-                                }
-                            });
-                        }
-                    }
-                    ui.weak(uu_i18n::text("服务运行时接受新设备配对；已有授权、密码和公钥规则继续生效。"));
-                });
+                self.entry.show(ui, &mut self.host, true);
             });
         });
+    }
+}
+struct ServicePairing {
+    loaded: bool,
+    password: zeroize::Zeroizing<String>,
+    permissions: Permissions,
+    key: String,
+    name: String,
+    key_permissions: Permissions,
+}
+impl Default for ServicePairing {
+    fn default() -> Self {
+        Self {
+            loaded: false,
+            password: Default::default(),
+            permissions: Permissions::CONTROL,
+            key: String::new(),
+            name: String::new(),
+            key_permissions: Permissions::CONTROL,
+        }
+    }
+}
+impl ServicePairing {
+    fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &TrustSnapshot,
+        commands: &mut Vec<TrustRequest>,
+    ) {
+        if !self.loaded {
+            self.permissions = snapshot
+                .password_permissions
+                .unwrap_or(Permissions::CONTROL);
+            self.loaded = true;
+        }
+        ui.add_space(8.);
+        ui.strong(uu_i18n::text("密码配对"));
+        ui.label(if snapshot.password_permissions.is_some() {
+            uu_i18n::text("已设置安全连接密码")
+        } else {
+            uu_i18n::text("尚未设置安全连接密码")
+        });
+        ui.add(
+            crate::theme::Input::new(&mut *self.password)
+                .password(true)
+                .char_limit(256)
+                .hint_text(uu_i18n::text("新的安全连接密码 · 8–256 字节")),
+        );
+        ui.horizontal_wrapped(|ui| {
+            super::sharing_ui::permissions(ui, &mut self.permissions);
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(
+                    (8..=256).contains(&self.password.len()),
+                    crate::theme::secondary_button(uu_i18n::text("保存安全连接密码")),
+                )
+                .clicked()
+            {
+                commands.push(TrustRequest::Password {
+                    password: Some(std::mem::take(&mut self.password)),
+                    permissions: self.permissions,
+                });
+            }
+            if ui
+                .add_enabled(
+                    snapshot.password_permissions.is_some(),
+                    crate::theme::secondary_button(uu_i18n::text("移除安全连接密码")),
+                )
+                .clicked()
+            {
+                commands.push(TrustRequest::Password {
+                    password: None,
+                    permissions: self.permissions,
+                });
+            }
+        });
+        ui.add_space(10.);
+        ui.strong(uu_i18n::text("预先授权控制端公钥"));
+        ui.add(
+            crate::theme::Input::new(&mut self.name)
+                .char_limit(64)
+                .hint_text(uu_i18n::text("控制端名称")),
+        );
+        ui.add(
+            crate::theme::Input::multiline(&mut self.key)
+                .char_limit(8192)
+                .desired_rows(2)
+                .hint_text(uu_i18n::text("粘贴 Eclipse 或 SSH Ed25519 公钥")),
+        );
+        ui.horizontal_wrapped(|ui| {
+            super::sharing_ui::permissions(ui, &mut self.key_permissions);
+        });
+        if ui
+            .add_enabled(
+                PublicDevice::from_public_key(&self.key, &self.name).is_ok(),
+                crate::theme::secondary_button(uu_i18n::text("添加授权公钥")),
+            )
+            .clicked()
+        {
+            if let Ok(device) = PublicDevice::from_public_key(&self.key, &self.name) {
+                commands.push(TrustRequest::Authorize {
+                    device,
+                    permissions: self.key_permissions,
+                });
+            }
+        }
+        ui.collapsing(uu_i18n::text("本机公钥"), |ui| {
+            ui.monospace(snapshot.device.id());
+            if ui
+                .add(crate::theme::secondary_button(uu_i18n::text(
+                    "复制本机公钥",
+                )))
+                .clicked()
+            {
+                ui.ctx().copy_text(snapshot.device.export_public_key());
+            }
+        });
+        ui.add_space(10.);
+        ui.strong(uu_i18n::text("已授权设备"));
+        for peer in snapshot
+            .peers
+            .iter()
+            .filter(|p| !p.revoked && p.inbound.is_some())
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(&peer.device.name);
+                let mut permission = peer.inbound.unwrap();
+                if super::sharing_ui::permissions(ui, &mut permission) {
+                    commands.push(TrustRequest::Authorize {
+                        device: peer.device.clone(),
+                        permissions: permission,
+                    });
+                }
+                if ui
+                    .add(crate::theme::secondary_button(uu_i18n::text("撤销授权")))
+                    .clicked()
+                {
+                    commands.push(TrustRequest::Revoke {
+                        peer: peer.device.id(),
+                    });
+                }
+            });
+        }
     }
 }
 pub(super) fn run() -> eframe::Result {
     run_manager(false)
 }
-fn run_manager(virtual_displays:bool)->eframe::Result {
+fn run_manager(virtual_displays: bool) -> eframe::Result {
     let mut manager = Manager::new().map_err(|error| eframe::Error::AppCreation(error.into()))?;
     eframe::run_native(
         uu_i18n::text("Eclipse · 后台服务管理"),
@@ -709,220 +1090,416 @@ fn run_manager(virtual_displays:bool)->eframe::Result {
         },
         Box::new(move |cc| {
             super::setup_style(&cc.egui_ctx);
-            manager.appearance=super::theme::PreferenceWatch::load_current(&cc.egui_ctx);
-            if virtual_displays {manager.virtual_display.open_local(&cc.egui_ctx,super::virtual_display_ui::LocalOwner::Background);}
-            Ok(Box::new(manager))
+            let appearance = super::theme::PreferenceWatch::load_current(&cc.egui_ctx);
+            if virtual_displays {
+                manager.virtual_display.open_local(
+                    &cc.egui_ctx,
+                    super::virtual_display_ui::LocalOwner::Background,
+                );
+            }
+            Ok(Box::new(Standalone {
+                entry: Entry {
+                    manager: Some(manager),
+                    ..Default::default()
+                },
+                host: Default::default(),
+                appearance,
+            }))
         }),
     )
 }
 
 /// Called on the sharing startup worker, never on the rendering thread.
-pub(super) fn prepare_foreground_firewall(service:u16,discovery:u16)->anyhow::Result<Option<String>> {
-    let exe=std::env::current_exe()?;
-    if let Ok(before)=uu_core::firewall::inspect(&exe,service,discovery) {
-        if before.rules.as_array().is_some_and(|r|!r.is_empty()) {return Ok(Some(before.message()));}
+pub(super) fn prepare_foreground_firewall(
+    service: u16,
+    discovery: u16,
+) -> anyhow::Result<Option<String>> {
+    let exe = std::env::current_exe()?;
+    if let Ok(before) = uu_core::firewall::inspect(&exe, service, discovery) {
+        if before.rules.as_array().is_some_and(|r| !r.is_empty()) {
+            return Ok(Some(before.message()));
+        }
     }
     // Some organization policies also restrict ordinary-user inspection. The
     // elevated helper rechecks before deciding whether any rule may be created.
-    if require_administrator().is_ok() {return Ok(Some(uu_core::firewall::ensure(&exe,service,discovery)?.message()));}
-    elevated(&exe,&format!("--configure-streaming-firewall {service} {discovery}"))?;
-    let after=uu_core::firewall::inspect(&exe,service,discovery)?;
-    anyhow::ensure!(after.rules.as_array().is_some_and(|r|!r.is_empty()),"Firewall configuration was not visible after administrator repair");
-    Ok(Some(format!("{}\n{}",uu_i18n::text("已由管理员配置防火墙"),after.message())))
+    if require_administrator().is_ok() {
+        return Ok(Some(
+            uu_core::firewall::ensure(&exe, service, discovery)?.message(),
+        ));
+    }
+    elevated(
+        &exe,
+        &format!("--configure-streaming-firewall {service} {discovery}"),
+    )?;
+    let after = uu_core::firewall::inspect(&exe, service, discovery)?;
+    anyhow::ensure!(
+        after.rules.as_array().is_some_and(|r| !r.is_empty()),
+        "Firewall configuration was not visible after administrator repair"
+    );
+    Ok(Some(format!(
+        "{}\n{}",
+        uu_i18n::text("已由管理员配置防火墙"),
+        after.message()
+    )))
 }
 
 /// Each UAC action is launched through this GUI version. Management does not
 /// depend on an adjacent CLI; install/import still use a verified complete set.
 pub(super) fn dispatch() -> Option<eframe::Result> {
-    let tray_args:Vec<_>=std::env::args_os().skip(1).collect();
-    if tray_args.len()==6&&tray_args[0]=="--tray-display-action" {
-        let result=(||->anyhow::Result<bool>{
+    let tray_args: Vec<_> = std::env::args_os().skip(1).collect();
+    if tray_args.len() == 6 && tray_args[0] == "--tray-display-action" {
+        let result = (|| -> anyhow::Result<bool> {
             require_administrator()?;
-            let exe=std::env::current_exe()?;
-            uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("application directory unavailable"))?,env!("UU_BUILD_COMMIT"))?;
-            let action=tray_args[1].to_str().and_then(crate::tray::DisplayAction::parse).ok_or_else(||anyhow::anyhow!("unknown tray display action"))?;
-            let number=|i:usize|->anyhow::Result<u32>{Ok(tray_args[i].to_str().ok_or_else(||anyhow::anyhow!("invalid display number"))?.parse()?)};
-            let hdr=number(5)?;anyhow::ensure!(hdr<=1,"invalid HDR flag");
-            let spec=uu_core::virtual_display::Spec{width:number(2)?,height:number(3)?,refresh_millihz:number(4)?,hdr:hdr==1};spec.validate()?;
-            crate::tray_displays::execute(action,spec,crate::virtual_display_ui::LocalOwner::Background)
+            let exe = std::env::current_exe()?;
+            uu_core::service_admin::package::verify(
+                exe.parent()
+                    .ok_or_else(|| anyhow::anyhow!("application directory unavailable"))?,
+                env!("UU_BUILD_COMMIT"),
+            )?;
+            let action = tray_args[1]
+                .to_str()
+                .and_then(crate::tray::DisplayAction::parse)
+                .ok_or_else(|| anyhow::anyhow!("unknown tray display action"))?;
+            let number = |i: usize| -> anyhow::Result<u32> {
+                Ok(tray_args[i]
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("invalid display number"))?
+                    .parse()?)
+            };
+            let hdr = number(5)?;
+            anyhow::ensure!(hdr <= 1, "invalid HDR flag");
+            let spec = uu_core::virtual_display::Spec {
+                width: number(2)?,
+                height: number(3)?,
+                refresh_millihz: number(4)?,
+                hdr: hdr == 1,
+            };
+            spec.validate()?;
+            crate::tray_displays::execute(
+                action,
+                spec,
+                crate::virtual_display_ui::LocalOwner::Background,
+            )
         })();
-        match result {Ok(keep)=>std::process::exit(10+u32::from(keep) as i32),Err(error)=>{
-            let unknown=error.downcast_ref::<uu_core::service_admin::SubmittedUnknown>().is_some();
-            show_error(&format!("{error:#}"));std::process::exit(if unknown{12}else{1});
-        }}
+        match result {
+            Ok(keep) => std::process::exit(10 + u32::from(keep) as i32),
+            Err(error) => {
+                let unknown = error
+                    .downcast_ref::<uu_core::service_admin::SubmittedUnknown>()
+                    .is_some();
+                show_error(&format!("{error:#}"));
+                std::process::exit(if unknown { 12 } else { 1 });
+            }
+        }
     }
-    let args:Vec<_>=std::env::args_os().skip(1).collect();
-    if args.len()==3 && args[0]=="--configure-streaming-firewall" {
-        let result=(||->anyhow::Result<()> {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.len() == 3 && args[0] == "--configure-streaming-firewall" {
+        let result = (|| -> anyhow::Result<()> {
             require_administrator()?;
-            let exe=std::env::current_exe()?;
-            uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("cannot determine package directory"))?,env!("UU_BUILD_COMMIT"))?;
-            let service=args[1].to_str().ok_or_else(||anyhow::anyhow!("invalid service port"))?.parse::<u16>()?;
-            let discovery=args[2].to_str().ok_or_else(||anyhow::anyhow!("invalid discovery port"))?.parse::<u16>()?;
-            uu_core::firewall::ensure(&exe,service,discovery)?;Ok(())
+            let exe = std::env::current_exe()?;
+            uu_core::service_admin::package::verify(
+                exe.parent()
+                    .ok_or_else(|| anyhow::anyhow!("cannot determine package directory"))?,
+                env!("UU_BUILD_COMMIT"),
+            )?;
+            let service = args[1]
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("invalid service port"))?
+                .parse::<u16>()?;
+            let discovery = args[2]
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("invalid discovery port"))?
+                .parse::<u16>()?;
+            uu_core::firewall::ensure(&exe, service, discovery)?;
+            Ok(())
         })();
-        if let Err(error)=result {show_error(&format!("Firewall: {error:#}"));std::process::exit(1);}
+        if let Err(error) = result {
+            show_error(&format!("Firewall: {error:#}"));
+            std::process::exit(1);
+        }
         return Some(Ok(()));
     }
-    if args==["--prepare-virtual-display-driver"] {
-        let result=(||->anyhow::Result<()> {
+    if args == ["--prepare-virtual-display-driver"] {
+        let result = (|| -> anyhow::Result<()> {
             require_administrator()?;
-            let exe=std::env::current_exe()?;
-            uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("{}",uu_i18n::format!("无法确定安装包目录")))?,env!("UU_BUILD_COMMIT"))?;
+            let exe = std::env::current_exe()?;
+            uu_core::service_admin::package::verify(
+                exe.parent()
+                    .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定安装包目录")))?,
+                env!("UU_BUILD_COMMIT"),
+            )?;
             uu_core::virtual_display::prepare()?;
             Ok(())
         })();
-        if let Err(error)=result {
-            let error=format!("{error:#}");
+        if let Err(error) = result {
+            let error = format!("{error:#}");
             show_error(&uu_i18n::format!("准备虚拟显示器失败：{error}"));
             std::process::exit(1);
         }
         return Some(Ok(()));
     }
-    if args.len()==2&&args[0]=="--install-virtual-display-driver" {
-        let result=super::virtual_display_install::install_downloaded(std::path::Path::new(&args[1]));
-        if let Err(error)=result {show_error(&uu_i18n::format!("安装虚拟显示器驱动失败：{error}"));std::process::exit(1);}
+    if args.len() == 2 && args[0] == "--install-virtual-display-driver" {
+        let result =
+            super::virtual_display_install::install_downloaded(std::path::Path::new(&args[1]));
+        if let Err(error) = result {
+            show_error(&uu_i18n::format!("安装虚拟显示器驱动失败：{error}"));
+            std::process::exit(1);
+        }
         return Some(Ok(()));
     }
-    if args==["--manage-background-service"] || args==["--manage-virtual-displays"] {
-        let result=run_manager(args==["--manage-virtual-displays"]);
-        if let Err(error)=&result {show_error(&uu_i18n::format!("无法打开后台服务管理：{error}"));}
+    if args == ["--manage-background-service"] || args == ["--manage-virtual-displays"] {
+        let result = run_manager(args == ["--manage-virtual-displays"]);
+        if let Err(error) = &result {
+            show_error(&uu_i18n::format!("无法打开后台服务管理：{error}"));
+        }
         return Some(result);
     }
-    let virtual_displays=args==["--open-virtual-display-manager"];
-    let opening=args==["--open-background-service-manager"]||virtual_displays;
-    let action=if args.len()==4 && args[0]=="--background-service-action" && args[2]=="--source-data" {
-        args[1].to_str().filter(|s|matches!(*s,"install"|"import-plugins"))
-    }else{None};
-    if !opening && action.is_none(){return None;}
-    let result=(||->anyhow::Result<()> {
-        require_administrator()?;
-        let exe=std::env::current_exe()?;
+    let virtual_displays = args == ["--open-virtual-display-manager"];
+    let opening = args == ["--open-background-service-manager"] || virtual_displays;
+    let action = if args.len() == 4
+        && args[0] == "--background-service-action"
+        && args[2] == "--source-data"
+    {
+        args[1]
+            .to_str()
+            .filter(|s| matches!(*s, "install" | "import-plugins"))
+    } else {
+        None
+    };
+    if !opening && action.is_none() {
+        return None;
+    }
+    let result = (|| -> anyhow::Result<()> {
+        let exe = std::env::current_exe()?;
         if opening {
-            std::process::Command::new(exe).arg(if virtual_displays{"--manage-virtual-displays"}else{"--manage-background-service"}).spawn()?;
-        }else if let Some(action)=action {
+            std::process::Command::new(exe)
+                .arg(if virtual_displays {
+                    "--manage-virtual-displays"
+                } else {
+                    "--manage-background-service"
+                })
+                .spawn()?;
+        } else if let Some(action) = action {
+            require_administrator()?;
             use std::os::windows::process::CommandExt;
-            uu_core::service_admin::package::verify(exe.parent().ok_or_else(||anyhow::anyhow!("{}", uu_i18n::format!("无法确定安装包目录")))?,env!("UU_BUILD_COMMIT"))?;
-            let mut command=std::process::Command::new(exe.with_file_name("eclipse-cli.exe"));
-            command.args(["service",action,"--source-data"]).arg(&args[3]);
-            if action=="install"{command.arg("--open-manager");}
-            let output=command.creation_flags(0x08000000).output()?;
-            anyhow::ensure!(output.status.success(),"{}", uu_i18n::format!("后台服务操作失败（{}）：\n{}",output.status,String::from_utf8_lossy(&output.stderr).trim()));
+            uu_core::service_admin::package::verify(
+                exe.parent()
+                    .ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定安装包目录")))?,
+                env!("UU_BUILD_COMMIT"),
+            )?;
+            let mut command = std::process::Command::new(exe.with_file_name("eclipse-cli.exe"));
+            command
+                .args(["service", action, "--source-data"])
+                .arg(&args[3]);
+            let output = command.creation_flags(0x08000000).output()?;
+            anyhow::ensure!(
+                output.status.success(),
+                "{}",
+                uu_i18n::format!(
+                    "后台服务操作失败（{}）：\n{}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )
+            );
         }
         Ok(())
     })();
-    if let Err(error)=result {show_error(&format!("{error:#}"));std::process::exit(1);}
+    if let Err(error) = result {
+        show_error(&format!("{error:#}"));
+        std::process::exit(1);
+    }
     Some(Ok(()))
 }
-fn show_error(message:&str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW,MB_ICONERROR,MB_OK};
-    unsafe{MessageBoxW(std::ptr::null_mut(),wide(message).as_ptr(),wide(uu_i18n::text("Eclipse · 后台服务")).as_ptr(),MB_OK|MB_ICONERROR);}
+fn show_error(message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            wide(message).as_ptr(),
+            wide(uu_i18n::text("Eclipse · 后台服务")).as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn service_card_keeps_long_notices_inside_and_actions_visible() {
-        for color in crate::theme::COLOR_THEMES {
-            for width in [340.,560.] {
-                let ctx=egui::Context::default();
-                crate::theme::apply_appearance(&ctx,egui::ThemePreference::Light,color);
-                let mut entry=Entry {status:Some(SERVICE_RUNNING),next:Some(Instant::now()+Duration::from_secs(60)),
-                    notice:"Generated long failure description ".repeat(16),..Default::default()};
-                let mut host=super::super::sharing_ui::HostUi::default();
-                let output=ctx.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,900.))),..Default::default()},|ctx| {
-                    egui::CentralPanel::default().show(ctx,|ui| {
-                        let right=ui.max_rect().right();
-                        entry.show(ui,&mut host,true);
-                        assert!(ui.min_rect().right()<=right+1.,"service card grew outside its column: {color:?} {width}");
-                    });
-                });
-                let mut texts=String::new();
-                for shape in output.shapes {
-                    if let egui::Shape::Text(t)=shape.shape {texts.push_str(t.galley.text());}
-                }
-                for label in ["管理后台服务","更新后台程序","同步插件与账号"] {
-                    assert!(texts.contains(uu_i18n::text(label)),"action hidden: {label}");
-                }
-            }
+    fn fixture() -> (
+        Manager,
+        mpsc::SyncSender<Event>,
+        mpsc::Receiver<Job>,
+        Arc<AtomicBool>,
+    ) {
+        let (sender, jobs) = mpsc::sync_channel(8);
+        let (send, events) = mpsc::sync_channel(16);
+        let stop = Arc::new(AtomicBool::new(false));
+        (
+            Manager::empty(sender, events, stop.clone()),
+            send,
+            jobs,
+            stop,
+        )
+    }
+    fn state(ready: bool, settings: Sharing) -> Event {
+        Event::State {
+            state: SERVICE_RUNNING,
+            build: None,
+            response: Ok(Response::Status {
+                ready,
+                keep_virtual_displays: Some(true),
+                endpoints: vec![],
+                pending: vec![],
+                snapshot: host_admin::Snapshot {
+                    own_permissions: Permissions::CONTROL,
+                    connections: vec![],
+                    server: Some(host_admin::ServerSettings {
+                        active: settings.clone(),
+                        saved: settings,
+                        revision: "a".repeat(64),
+                        monitors: vec![],
+                        portal: false,
+                    }),
+                },
+            }),
         }
     }
     #[test]
-    fn pairing_and_status_updates_preserve_unsaved_settings_and_manager_close_keeps_service_independent(
-    ) {
-        let root =
-            std::env::temp_dir().join(format!("eclipse-service-manager-{}", uuid::Uuid::new_v4()));
-        let trust = TrustStore::open(root.join("trust")).unwrap();
-        let (sender, jobs) = mpsc::channel();
-        let (send, events) = mpsc::channel();
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut saved = Sharing::default();
-        saved.name = "Generated service".into();
-        let mut manager = Manager {
-            appearance:Default::default(),
-            firewall:String::new(),
-            virtual_display:Default::default(),
-            build:None,
-            trust,
-            sender,
-            events,
-            stop: stop.clone(),
-            state: SERVICE_RUNNING,
-            snapshot: None,
-            endpoints: vec![],
-            pending: vec![],
-            draft: saved.clone(),
-            baseline: saved.clone(),
-            revision: "0".repeat(64),
-            dirty: false,
-            busy: true,
-            section: 0,
-            notice: String::new(),
-            codes: HashMap::new(),
-            permissions: HashMap::new(),
-            pairing: Default::default(),
+    fn service_readiness_and_lost_connection_control_the_online_state() {
+        let (manager, send, _jobs, _stop) = fixture();
+        let mut entry = Entry {
+            manager: Some(manager),
+            ..Default::default()
         };
+        send.send(state(false, Sharing::default())).unwrap();
+        entry.manager.as_mut().unwrap().poll();
+        assert!(
+            !entry.online(),
+            "SCM running alone is not a ready streaming service"
+        );
+        send.send(state(true, Sharing::default())).unwrap();
+        entry.manager.as_mut().unwrap().poll();
+        assert!(entry.online());
+        assert_eq!(entry.keep_displays(), Some(true));
+        send.send(Event::State {
+            state: SERVICE_STOPPED,
+            build: None,
+            response: Err("generated stopped service".into()),
+        })
+        .unwrap();
+        entry.manager.as_mut().unwrap().poll();
+        assert!(!entry.online());
+        assert_eq!(entry.keep_displays(), None);
+        assert!(
+            entry.manager.as_ref().unwrap().snapshot.is_none(),
+            "offline configuration must never be replaced with a local user's host configuration"
+        );
+    }
+    #[test]
+    fn service_refresh_preserves_drafts_and_conflicts_while_closing_only_retires_the_gui_worker() {
+        let (mut manager, send, jobs, stop) = fixture();
+        send.send(state(true, Sharing::default())).unwrap();
+        manager.poll();
         manager.draft.audio = false;
         manager.dirty = true;
-        send.send(Event::Done(false, Ok(()))).unwrap();
-        let status = |saved: Sharing| Response::Status {
-            endpoints: vec![],
-            pending: vec![],
-            snapshot: host_admin::Snapshot {
-                own_permissions: Permissions::VIEW,
-                connections: vec![],
-                server: Some(host_admin::ServerSettings {
-                    active: saved.clone(),
-                    saved,
-                    revision: "1".repeat(64),
-                    monitors: vec![],
-                    portal: false,
-                }),
-            },
+        let mut elsewhere = Sharing::default();
+        elsewhere.name = "Another manager".into();
+        send.send(state(true, elsewhere)).unwrap();
+        manager.poll();
+        assert!(!manager.draft.audio);
+        assert_ne!(manager.draft.name, "Another manager");
+        manager.save(false);
+        let Job::Rpc(Request::Admin {
+            request:
+                host_admin::Request::Save {
+                    revision,
+                    settings,
+                    restart,
+                },
+        }) = jobs.try_recv().unwrap()
+        else {
+            panic!("save must go to the service")
         };
-        send.send(Event::State(SERVICE_RUNNING, Ok(status(saved.clone()))))
+        assert_eq!(revision, "a".repeat(64));
+        assert!(!settings.audio);
+        assert!(!restart);
+        assert!(manager.busy);
+        send.send(Event::Trust {
+            completed: false,
+            result: Err("generated periodic inspection".into()),
+        })
+        .unwrap();
+        manager.poll();
+        assert!(
+            manager.busy,
+            "a periodic inspection is not a save completion"
+        );
+        send.send(Event::Done(Err("generated revision conflict".into())))
             .unwrap();
         manager.poll();
         assert!(manager.dirty);
-        assert!(
-            !manager.draft.audio,
-            "approving a pair must not discard the settings draft"
-        );
-        saved.audio = false;
-        send.send(Event::Done(true, Ok(()))).unwrap();
-        send.send(Event::State(SERVICE_RUNNING, Ok(status(saved))))
-            .unwrap();
+        assert!(!manager.busy);
+        send.send(state(true, Sharing::default())).unwrap();
         manager.poll();
-        assert!(!manager.dirty);
-        assert!(!manager.draft.audio);
-        assert_eq!(manager.revision, "1".repeat(64));
+        assert_eq!(manager.notice, "generated revision conflict");
         drop(manager);
         assert!(stop.load(Ordering::Acquire));
         assert!(
-            jobs.try_recv().is_err(),
-            "closing the manager queues no service stop command"
+            matches!(jobs.try_recv(), Err(mpsc::TryRecvError::Disconnected)),
+            "closing a GUI must not enqueue stop or restart"
         );
-        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn unified_service_controls_and_long_notices_fit_narrow_columns() {
+        for width in [340., 560.] {
+            let (mut manager, send, _jobs, _stop) = fixture();
+            send.send(state(true, Sharing::default())).unwrap();
+            manager.poll();
+            manager.notice = "Generated long service detail ".repeat(16);
+            let mut entry = Entry {
+                manager: Some(manager),
+                ..Default::default()
+            };
+            let mut host = super::super::sharing_ui::HostUi::default();
+            let ctx = egui::Context::default();
+            crate::theme::apply_appearance(
+                &ctx,
+                egui::ThemePreference::Dark,
+                crate::theme::COLOR_THEMES[0],
+            );
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 1000.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let right = ui.max_rect().right();
+                        entry.show(ui, &mut host, true);
+                        assert!(ui.min_rect().right() <= right + 1.);
+                    });
+                },
+            );
+            let text = output
+                .shapes
+                .iter()
+                .filter_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        Some(text.galley.text())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<String>();
+            for action in ["重新部署服务", "停止服务", "虚拟显示器"] {
+                assert!(
+                    text.contains(uu_i18n::text(action)),
+                    "missing service control: {action}"
+                );
+            }
+        }
     }
 }

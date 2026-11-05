@@ -110,7 +110,7 @@ struct PreviewJob {device:String,revision:String,rx:std::sync::mpsc::Receiver<Re
 pub(super) struct Workspace {
     providers:Vec<uu_core::plugins::Descriptor>,
     #[cfg(windows)]
-    background_service:super::service_ui::Entry,
+    pub(super) background_service:super::service_ui::Entry,
     pub route: HomeRoute,
     pub book: Book,
     pub host: super::sharing_ui::HostUi,
@@ -818,8 +818,9 @@ impl Workspace {
         self.feedback.tick(ctx);
         self.host.poll(ctx, window);
         #[cfg(windows)]
-        if self.background_service.poll(ctx,&mut self.host) {
-            self.book.sharing.auto_start=false;self.draft.auto_start=false;
+        {
+            self.background_service.poll(ctx,&mut self.host);
+            self.pairing_password_configured=self.background_service.password_configured();
         }
         self.poll_previews(ctx);
         if self.last_read.elapsed() >= Duration::from_millis(500) {
@@ -1117,6 +1118,7 @@ impl Workspace {
                 if ui.add(theme::secondary_button(uu_i18n::text("设置安全连接密码"))).clicked() {
                     self.route.page = Page::Services;
                     self.service_tab = 4;
+                    #[cfg(windows)] self.background_service.open_pairing();
                 }
             });
         }
@@ -1476,6 +1478,11 @@ impl Workspace {
             Err(e) => self.monitor_error = uu_i18n::format!("无法读取屏幕：{e}"),
         }
     }
+    #[cfg(windows)]
+    fn service_workspace(&mut self, ui:&mut egui::Ui, _info:&Info, _actions:&mut Vec<Action>, _connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) {
+        self.background_service.show(ui,&mut self.host,self.store.is_some());
+    }
+    #[cfg(not(windows))]
     fn service_workspace(&mut self, ui:&mut egui::Ui, info:&Info, actions:&mut Vec<Action>, connection:&mut dyn FnMut(&mut egui::Ui,Option<&str>)) {
         ui.horizontal_wrapped(|ui| {
             for (tab,label) in [(5,uu_i18n::text("服务管理")),(0,uu_i18n::text("连接服务")),(1,uu_i18n::text("输入")),(2,uu_i18n::text("音频 / 视频")),(3,uu_i18n::text("编码器")),(4,uu_i18n::text("配对设置"))] {
@@ -2177,10 +2184,16 @@ impl Workspace {
 }
 
 impl super::App {
+    #[cfg(windows)]
+    pub(super) fn toggle_shared_host(&mut self, _ctx:&egui::Context) {self.workspace.background_service.toggle();}
+    #[cfg(not(windows))]
     pub(super) fn toggle_shared_host(&mut self, ctx:&egui::Context) {
         if self.workspace.host.running() { self.workspace.host.stop(); }
         else { self.workspace_actions(vec![Action::StartSharing],ctx); }
     }
+    #[cfg(windows)]
+    pub(super) fn autostart_shared_host(&mut self, _ctx:&egui::Context) {}
+    #[cfg(not(windows))]
     pub(super) fn autostart_shared_host(&mut self, ctx:&egui::Context) {
         if self.workspace.autostart_checked {return;}
         self.workspace.autostart_checked=true;
@@ -2271,6 +2284,8 @@ impl super::App {
                 // The start button is dispatched after rendering to keep one
                 // owner of the runtime and immutable sharing configuration.
                 Action::StartSharing | Action::RestartSharing => {
+                    #[cfg(windows)] {self.workspace.background_service.toggle();}
+                    #[cfg(not(windows))] {
                     let restart=matches!(action,Action::RestartSharing);
                     let result = (|| -> anyhow::Result<()> {
                         let config = self
@@ -2296,6 +2311,7 @@ impl super::App {
                             super::ui_feedback::Scope::Services(0),
                             uu_i18n::format!("无法开始共享：{e:#}"),
                         );
+                    }
                     }
                 }
             }

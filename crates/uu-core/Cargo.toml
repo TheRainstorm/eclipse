@@ -21,7 +21,7 @@ hmac.workspace = true
 sha2.workspace = true
 hex.workspace = true
 uuid = { workspace = true, features = ["serde"] }
-zeroize = "1"
+zeroize = {version="1",features=["serde"]}
 rand = "0.8"
 ring = "0.17"
 spake2 = "0.4"

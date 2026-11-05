@@ -655,10 +655,12 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
         guard._cancellation = Some(access.cancellation(lease, &client, record.map(|(_,p)|p), rx.clone()));
     }
     let serving_stop = guard._cancellation.as_ref().map(|c|c.receiver.clone()).unwrap_or(rx);
+    let defaults=state.access.as_ref().and_then(|a|a.sessions.administration.lock().unwrap().as_ref().map(|admin|admin.defaults()));
     let clipboard = state
         .config
         .clipboard
         .as_ref()
+        .filter(|_|defaults.as_ref().is_none_or(|s|s.clipboard))
         .map(|factory| factory(&id))
         .transpose()?;
     guard.clipboard = clipboard.clone();
@@ -680,6 +682,20 @@ async fn start_authorized_session(state:Arc<State>,client:String,local:SocketAdd
         audio: state.config.audio,
         clipboard,
     };
+    let mut config=config;
+    if let Some(defaults)=defaults {
+        let latest=defaults.native();
+        config.encoder_tuning=latest.encoder_tuning;
+        config.video_policy=latest.video_policy;
+        config.codec=latest.codec;
+        config.rate_control=latest.rate_control;
+        config.source=latest.source;
+        config.fps=latest.fps;
+        config.bitrate_kbps=latest.bitrate_kbps;
+        config.encoder=latest.encoder;
+        config.allow_input=latest.allow_input && permission.control;
+        config.audio=latest.audio;
+    }
     let task_state = state.clone();
     let task_id = id.clone();
     let (done, mut failure) = oneshot::channel();

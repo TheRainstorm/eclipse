@@ -40,6 +40,7 @@ pub struct Runner {
     services: Vec<(Settings, watch::Sender<EndpointStatus>)>,
     emit: Arc<dyn Fn(Event) + Send + Sync>,
     _owner: HostOwner,
+    persistent: bool,
 }
 
 pub fn prepare(
@@ -50,6 +51,31 @@ pub fn prepare(
     restart: impl Fn() -> Result<()> + Send + Sync + 'static,
     emit: impl Fn(Event) + Send + Sync + 'static,
 ) -> Result<Prepared> {
+    prepare_inner(config,book,trust,factory,restart,emit,false)
+}
+
+/// Installed hosts retain their identity and management plane even when no
+/// entrance can listen. A local administrator can repair configuration in place.
+pub fn prepare_service(
+    config: Config,
+    book: Book,
+    trust: TrustStore,
+    factory: Option<lan::ClipboardFactory>,
+    restart: impl Fn() -> Result<()> + Send + Sync + 'static,
+    emit: impl Fn(Event) + Send + Sync + 'static,
+) -> Result<Prepared> {
+    prepare_inner(config,book,trust,factory,restart,emit,true)
+}
+
+fn prepare_inner(
+    config: Config,
+    book: Book,
+    trust: TrustStore,
+    factory: Option<lan::ClipboardFactory>,
+    restart: impl Fn() -> Result<()> + Send + Sync + 'static,
+    emit: impl Fn(Event) + Send + Sync + 'static,
+    persistent: bool,
+) -> Result<Prepared> {
     book.sharing.validate()?;
     // A missing, damaged or unavailable optional extension must not prevent an
     // otherwise configured native IP/self-hosted entrance from starting.
@@ -58,7 +84,7 @@ pub fn prepare(
         .map(|service|(service.id.to_owned(),service.name.to_owned()))
         .collect();
     ensure!(
-        book.sharing.ip_enabled
+        persistent || book.sharing.ip_enabled
             || !providers.is_empty()
             || book.services.iter().any(|s| s.host_enabled),
         "{}", uu_i18n::format!("请先在连接服务中启用至少一个入口"));
@@ -89,6 +115,10 @@ pub fn prepare(
             provider:None,
             state,
         });
+    }
+    for id in book.sharing.plugin_services.iter().filter(|id|!providers.iter().any(|(available,_)|available==*id)) {
+        let (_status,state)=watch::channel(EndpointStatus::Error(uu_i18n::format!("连接插件 {} 不可用；请导入匹配插件或启用其它连接入口。",id)));
+        endpoints.push(Endpoint{name:id.clone(),provider:Some(id.clone()),state});
     }
     let mut services = Vec::new();
     let mut add = |name: String, settings: Settings| {
@@ -134,6 +164,7 @@ pub fn prepare(
             services,
             emit: Arc::new(emit),
             _owner: owner,
+            persistent,
         },
     })
 }
@@ -161,6 +192,7 @@ impl Runner {
             services,
             emit,
             _owner,
+            persistent,
         } = self;
         let sharing = book.sharing;
         let service=sharing.service_port; let discovery=sharing.discovery_port;
@@ -249,10 +281,10 @@ impl Runner {
                 Ok(())
             });
         }
-        while !*stop.borrow() && !tasks.is_empty() {
+        while !*stop.borrow() && (persistent || !tasks.is_empty()) {
             tokio::select! {
                 _=stop.changed()=>break,
-                result=tasks.join_next()=>match result {
+                result=tasks.join_next(),if !tasks.is_empty()=>match result {
                     Some(Err(error))=>emit(Event::Notice(format!("共享线程异常：{error}"))),
                     Some(Ok(Err(error)))=>emit(Event::Notice(format!("共享服务异常：{error:#}"))),
                     _=>{},
@@ -318,6 +350,50 @@ async fn preparation_worker(mut stop:watch::Receiver<bool>, mut shutdown:watch::
             _=stop.changed()=>break,
             _=shutdown.changed()=>break,
             _=tokio::time::sleep(Duration::from_millis(500))=>{},
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn installed_host_keeps_management_and_identity_when_entrances_are_unavailable() {
+        for conflict in [false,true] {
+            let root=std::env::temp_dir().join(format!("eclipse-persistent-host-{}",uuid::Uuid::new_v4()));
+            let config=Config{data_dir:root.join("data"),state_dir:root.join("state"),signaling_host:String::new()};
+            let mut book=Book::default();book.sharing.audio=false;book.sharing.control=false;
+            let occupied=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            book.sharing.service_port=occupied.local_addr().unwrap().port();
+            book.sharing.ip_enabled=conflict;
+            if !conflict {book.sharing.plugin_services=vec!["missing-generated-addon".into()];}
+            let store=Store::open(config.at("device-trust")).unwrap();store.sharing(book.sharing.clone()).unwrap();
+            let trust=TrustStore::open(config.at("device-trust")).unwrap();
+            let identity=trust.card("Generated host").id();
+            let prepared=prepare_service(config.clone(),book.clone(),trust.clone(),None,||Ok(()),|_|{}).unwrap();
+            let access=prepared.access.clone();
+            let endpoints=prepared.endpoints;
+            let admin=access.sessions.administration.lock().unwrap().as_ref().unwrap().clone();
+            let (stop,receive)=watch::channel(false);
+            let running=tokio::spawn(prepared.runner.run_with_startup(receive,|_,_|Ok(None)));
+            tokio::time::timeout(Duration::from_secs(3),async {
+                while endpoints.iter().any(|e|matches!(*e.state.borrow(),EndpointStatus::Starting)) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }).await.unwrap();
+            assert!(!running.is_finished(),"an unavailable listener must not destroy service management");
+            assert!(endpoints.iter().all(|e|matches!(*e.state.borrow(),EndpointStatus::Error(_))));
+            let crate::host_admin::Response::Snapshot{snapshot}=admin.execute_local_manager(&access,crate::host_admin::Request::Inspect).unwrap() else {panic!()};
+            let mut settings=book.sharing.clone();settings.ip_enabled=true;
+            let revision=snapshot.server.unwrap().revision;
+            admin.execute_local_manager(&access,crate::host_admin::Request::Save{revision,settings,restart:false}).unwrap();
+            assert!(store.read().unwrap().sharing.ip_enabled);
+            assert_eq!(trust.card("Generated host").id(),identity);
+            assert!(HostOwner::claim(&config.at("device-trust")).is_err(),"the service remains the one host owner during recovery");
+            stop.send_replace(true);tokio::time::timeout(Duration::from_secs(5),running).await.unwrap().unwrap().unwrap();
+            drop(HostOwner::claim(&config.at("device-trust")).unwrap());
+            drop(occupied);drop(admin);drop(access);drop(trust);
+            std::fs::remove_dir_all(root).unwrap();
         }
     }
 }

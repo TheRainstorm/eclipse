@@ -86,14 +86,16 @@ impl Client {
 
 pub struct Service {
     store:Store,
-    active:Sharing,
+    active:Mutex<Sharing>,
     restart:Arc<dyn Fn()->Result<()>+Send+Sync>,
 }
 fn revision(settings:&Sharing)->Result<String> {Ok(hex::encode(Sha256::digest(serde_json::to_vec(settings)?)))}
 impl Service {
     pub fn new(store:Store,active:Sharing,restart:impl Fn()->Result<()>+Send+Sync+'static)->Self {
-        Self {store,active,restart:Arc::new(restart)}
+        Self {store,active:Mutex::new(active),restart:Arc::new(restart)}
     }
+    /// Snapshot at admission; existing media retains its previous settings.
+    pub(crate) fn defaults(&self)->Sharing {self.active.lock().unwrap().clone()}
     fn grant(context:&SessionContext)->Result<Permissions> {
         Ok(context.access.peer_permissions(&context.peer)?.context(uu_i18n::text("设备授权已撤销"))?.1)
     }
@@ -101,13 +103,13 @@ impl Service {
         let grant=Self::grant(context)?;
         self.execute_granted(&context.access, grant, request)
     }
-    /// Only call after the local OS administrator boundary has been checked.
+    /// Only call after the local OS service-management authority has been checked.
     /// Network requests must use execute() and their current device grant.
-    pub fn execute_local_administrator(&self, access:&crate::shared_host::Access, request:Request)->Result<Response> {
+    pub fn execute_local_manager(&self, access:&crate::shared_host::Access, request:Request)->Result<Response> {
         let mut details=Permissions::CONTROL.details(); details.manage_server=true;
         self.execute_granted(access,Permissions::CONTROL.with_details(details),request)
     }
-    pub fn restart_local_administrator(&self)->Result<()> {(self.restart)()}
+    pub fn restart_local_manager(&self)->Result<()> {(self.restart)()}
     fn execute_granted(&self,access:&crate::shared_host::Access,grant:Permissions,request:Request)->Result<Response> {
         grant.validate()?;
         if !matches!(request,Request::Inspect) {ensure!(grant.details().manage_server,"{}", uu_i18n::format!("本机未授予管理服务和连接权限"));}
@@ -126,19 +128,30 @@ impl Service {
                 let server=if grant.details().manage_server {
                     let saved=self.store.read()?.sharing;
                     let monitors=crate::native::monitors().unwrap_or_default().into_iter().map(|m|(m.name.clone(),format!("{} · {}×{}",m.name,m.width,m.height))).collect();
-                    Some(ServerSettings{active:self.active.clone(),revision:revision(&saved)?,saved,monitors,portal:crate::native::uses_desktop_portal()})
+                    Some(ServerSettings{active:self.defaults(),revision:revision(&saved)?,saved,monitors,portal:crate::native::uses_desktop_portal()})
                 }else{None};
                 Ok(Response::Snapshot{snapshot:Snapshot{own_permissions:grant,connections,server}})
             },
             Request::Save{revision:expected,settings,restart}=>{
                 settings.validate()?;
+                let mut active=self.active.lock().unwrap();
                 ensure!(expected.len()==64,"{}", uu_i18n::format!("服务配置版本无效，请重新读取"));
                 self.store.edit(|book| {
                     ensure!(revision(&book.sharing)?==expected,"{}", uu_i18n::format!("服务配置已被其它窗口修改，请重新读取后保存"));
                     ensure!(settings.ip_enabled||!settings.plugin_services.is_empty()||book.services.iter().any(|s|s.host_enabled),"{}", uu_i18n::format!("至少保留一个连接入口"));
-                    book.sharing=settings;
+                    book.sharing=settings.clone();
                     Ok(())
                 })?;
+                // Listener identity and ports await explicit restart. Media
+                // defaults apply to new connections without ending live media.
+                let mut next=settings;
+                next.name=active.name.clone();
+                next.ip_enabled=active.ip_enabled;
+                next.service_port=active.service_port;
+                next.discovery_port=active.discovery_port;
+                next.plugin_services=active.plugin_services.clone();
+                crate::virtual_display::Manager::shared().set_limit(next.virtual_display_limit)?;
+                *active=next;
                 Ok(Response::Saved{restart})
             },
             Request::Permissions{peer,permissions}=>{
@@ -183,8 +196,16 @@ mod tests {
         let Response::Snapshot{snapshot}=service.execute(&context,Request::Inspect).unwrap() else{panic!()};
         let server=snapshot.server.unwrap();
         let mut changed=server.saved;changed.audio=false;
+        changed.virtual_display_limit=1;
+        changed.service_port=changed.service_port.saturating_sub(1);
+        let initial=service.defaults();
         assert!(matches!(service.execute(&context,Request::Save{revision:server.revision.clone(),settings:changed.clone(),restart:false}).unwrap(),Response::Saved{restart:false}));
         assert!(!store.read().unwrap().sharing.audio);
+        let live=service.defaults();
+        assert!(!live.audio,"new media admissions must use the saved default without restarting the host");
+        assert_eq!(live.virtual_display_limit,1);
+        assert_eq!(live.service_port,initial.service_port,"a saved port must not claim the listener has moved");
+        assert!(initial.audio,"already admitted media retains its immutable settings");
         assert!(service.execute(&context,Request::Save{revision:server.revision,settings:Sharing::default(),restart:false}).unwrap_err().to_string().contains("其它窗口"));
         trust.revoke(&client.id()).unwrap();
         assert!(service.execute(&context,Request::Inspect).is_err());

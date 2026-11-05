@@ -403,6 +403,7 @@ fn install_from(source: PathBuf, package: PathBuf, enforce_console: bool) -> Res
         created = new;
         switched = true;
         configure_recovery(&service)?;
+        configure_owner_control(&service, &installed)?;
         paths.save_manifest(&installed)?;
         protect(&paths.root.join("service.json"))?;
         super::start()?;
@@ -482,7 +483,7 @@ fn registration(paths: &Paths, installed: &Installed) -> Result<(ServiceHandle, 
         OpenServiceW(
             manager.0,
             name.as_ptr(),
-            SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS,
+            SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS | READ_CONTROL | WRITE_DAC,
         )
     };
     if service.is_null() {
@@ -495,7 +496,7 @@ fn registration(paths: &Paths, installed: &Installed) -> Result<(ServiceHandle, 
                 manager.0,
                 name.as_ptr(),
                 wide("Eclipse Remote Host").as_ptr(),
-                SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS,
+                SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS | READ_CONTROL | WRITE_DAC,
                 SERVICE_WIN32_OWN_PROCESS,
                 SERVICE_AUTO_START,
                 SERVICE_ERROR_NORMAL,

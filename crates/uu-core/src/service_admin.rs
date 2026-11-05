@@ -32,7 +32,35 @@ pub enum Request {
         request: host_admin::Request,
     },
     VirtualDisplay {request:crate::native_virtual_display::LocalRequest},
+    Trust { request: TrustRequest },
+    Firewall { repair: bool },
     Restart,
+}
+impl Request {
+    /// Queries may time out safely. An accepted mutation must settle or report
+    /// an unknown result; disconnecting its frontend never cancels the work.
+    pub fn is_mutation(&self)->bool {
+        !matches!(self,Self::Status|Self::Trust{request:TrustRequest::Inspect}
+            |Self::Firewall{repair:false}
+            |Self::VirtualDisplay{request:crate::native_virtual_display::LocalRequest::Manage{
+                request:crate::native_virtual_display::Request::Inspect}})
+    }
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag="action", rename_all="snake_case", deny_unknown_fields)]
+pub enum TrustRequest {
+    Inspect,
+    Password { password: Option<zeroize::Zeroizing<String>>, permissions: Permissions },
+    Authorize { device: PublicDevice, permissions: Permissions },
+    Revoke { peer: String },
+}
+/// Public host identity and permissions only; no private key or password record.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustSnapshot {
+    pub device: PublicDevice,
+    pub peers: Vec<crate::device_trust::Peer>,
+    pub password_permissions: Option<Permissions>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,6 +74,10 @@ pub struct Pairing {
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Response {
     Status {
+        #[serde(default)]
+        ready: bool,
+        #[serde(default)]
+        keep_virtual_displays: Option<bool>,
         endpoints: Vec<(String, String)>,
         pending: Vec<Pairing>,
         snapshot: host_admin::Snapshot,
@@ -54,6 +86,9 @@ pub enum Response {
         response: host_admin::Response,
     },
     VirtualDisplay {response:crate::native_virtual_display::Response},
+    Trust { snapshot: TrustSnapshot },
+    Firewall { message: String },
+    SubmittedUnknown { message: String },
     Applied,
     Error {
         message: String,

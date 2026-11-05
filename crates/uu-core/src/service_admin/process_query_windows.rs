@@ -17,15 +17,14 @@ fn authenticated_users() -> Result<[usize; 16]> {
     winok(unsafe { CreateWellKnownSid(WinAuthenticatedUserSid, ptr::null_mut(), sid.as_mut_ptr().cast(), &mut length) })?;
     Ok(sid)
 }
-fn grant_limited_query(process: HANDLE) -> Result<()> {
+fn append_allow(process: HANDLE, kind: SE_OBJECT_TYPE, rights: u32, sid: PSID) -> Result<()> {
     let mut descriptor = ptr::null_mut();
     let mut existing = ptr::null_mut();
-    check(unsafe { GetSecurityInfo(process, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+    check(unsafe { GetSecurityInfo(process, kind, DACL_SECURITY_INFORMATION,
         ptr::null_mut(), ptr::null_mut(), &mut existing, ptr::null_mut(), &mut descriptor) })?;
     let _descriptor = Local(descriptor);
     ensure!(!existing.is_null(), "Cannot merge a missing process DACL");
     ensure!(unsafe { IsValidAcl(existing) } != 0, "Invalid process DACL");
-    let mut sid = authenticated_users()?;
     let mut info: ACL_SIZE_INFORMATION = unsafe { std::mem::zeroed() };
     winok(unsafe { GetAclInformation(existing, (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
         std::mem::size_of_val(&info) as u32, AclSizeInformation) })?;
@@ -35,10 +34,17 @@ fn grant_limited_query(process: HANDLE) -> Result<()> {
         winok(unsafe { GetAce(existing, index, &mut entry) })?;
         let header = unsafe { &*entry.cast::<ACE_HEADER>() };
         ensure!(usize::from(header.AceSize) >= std::mem::size_of::<ACE_HEADER>(), "Invalid process ACE");
+        if header.AceType==windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE as u8
+            && usize::from(header.AceSize)>=std::mem::size_of::<ACCESS_ALLOWED_ACE>() {
+            let allowed=unsafe{&*entry.cast::<ACCESS_ALLOWED_ACE>()};
+            if allowed.Mask & rights == rights && unsafe{EqualSid(ptr::addr_of!(allowed.SidStart).cast_mut().cast(),sid)}!=0 {
+                return Ok(());
+            }
+        }
         entries.push((entry, u32::from(header.AceSize)));
     }
     let size = info.AclBytesInUse as usize + std::mem::size_of::<ACCESS_ALLOWED_ACE>()
-        - std::mem::size_of::<u32>() + unsafe { GetLengthSid(sid.as_mut_ptr().cast()) } as usize;
+        - std::mem::size_of::<u32>() + unsafe { GetLengthSid(sid) } as usize;
     ensure!(size <= u16::MAX as usize, "Process DACL is too large");
     let mut storage = vec![0usize; size.div_ceil(std::mem::size_of::<usize>())];
     let merged = storage.as_mut_ptr().cast::<ACL>();
@@ -51,9 +57,22 @@ fn grant_limited_query(process: HANDLE) -> Result<()> {
         winok(unsafe { AddAce(merged, ACL_REVISION_DS, u32::MAX, entry, bytes) })?;
     }
     winok(unsafe { AddAccessAllowedAceEx(merged, ACL_REVISION_DS, 0,
-        PROCESS_QUERY_LIMITED_INFORMATION, sid.as_mut_ptr().cast()) })?;
-    check(unsafe { SetSecurityInfo(process, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+        rights, sid) })?;
+    check(unsafe { SetSecurityInfo(process, kind, DACL_SECURITY_INFORMATION,
         ptr::null_mut(), ptr::null_mut(), merged, ptr::null_mut()) })
+}
+
+fn grant_limited_query(process: HANDLE) -> Result<()> {
+    let mut sid=authenticated_users()?;
+    append_allow(process,SE_KERNEL_OBJECT,PROCESS_QUERY_LIMITED_INFORMATION,sid.as_mut_ptr().cast())
+}
+pub(super) fn configure_owner_control(service: &ServiceHandle, installed: &Installed)->Result<()> {
+    installed.validate()?;
+    let mut sid=ptr::null_mut();
+    winok(unsafe{ConvertStringSidToSidW(wide(&installed.owner_sid).as_ptr(),&mut sid)})?;
+    let _sid=Local(sid);
+    append_allow(service.0 as _,SE_SERVICE,
+        SERVICE_QUERY_CONFIG|SERVICE_QUERY_STATUS|SERVICE_START|SERVICE_STOP|SERVICE_INTERROGATE,sid)
 }
 
 /// Called by the SCM supervisor on itself, never on another process or its

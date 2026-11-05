@@ -139,8 +139,11 @@ pub(crate) async fn serve_connection_with_permit(
         let peer = authorized.device.id();
         let lease=match access.claim_authenticated(&mut authorized) {Ok(lease)=>lease,Err(error)=>{bootstrap.reject_media().await;return Err(error);}};
         let cancellation = access.cancellation(&lease, &peer, Some(authorized.permissions), stop);
+        let defaults=access.sessions.administration.lock().unwrap().as_ref().map(|admin|admin.defaults());
+        if let Some(defaults)=&defaults {sharing=defaults.native();}
         sharing.allow_input &= authorized.permissions.control;
         sharing.session=Some(crate::shared_host::SessionContext{access:Arc::new(access.clone()),peer:peer.clone(),permissions:authorized.permissions,session_id:Some(lease.id().to_owned())});
+        let clipboard=if defaults.as_ref().is_none_or(|settings|settings.clipboard) {clipboard}else{None};
         if let Some(factory) = clipboard {
             sharing.clipboard = Some(factory(&uuid::Uuid::new_v4().to_string())?);
         }
@@ -233,10 +236,14 @@ async fn listen_concurrent(settings: Settings, config: Config, sharing: SharingC
                         // before handing its session to the engine.
                         None
                     };
-                    let access=access.clone();let sharing=sharing.clone();let stop=stop.clone();let clipboard=clipboard.clone();let progress=stream_status.clone();
+                    let access=access.clone();
+                    let defaults=access.sessions.administration.lock().unwrap().as_ref().map(|admin|admin.defaults());
+                    let sharing=defaults.as_ref().map_or_else(||sharing.clone(),|s|s.native());
+                    let stop=stop.clone();let clipboard=clipboard.clone();let progress=stream_status.clone();
                     sessions.spawn(async move {
                         let crate::plugins::Incoming::Native(connection)=connection else {
                             if let crate::plugins::Incoming::Protocol(session)=connection {
+                                let clipboard=if defaults.as_ref().is_none_or(|s|s.clipboard){clipboard}else{None};
                                 return session.serve(crate::plugins::HostContext {sharing,sessions:access.sessions.clone(),stop,progress,clipboard}).await;
                             }
                             unreachable!()

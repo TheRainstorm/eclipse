@@ -26,6 +26,9 @@ impl App {
             super::workspace_ui::Page::Plugin => self.workspace.route.plugin.as_ref().and_then(|(id,page)|self.plugins.pages(uu_plugin_sdk::Placement::Navigation).into_iter().find(|(p,x)|p==id&&&x.id==page).map(|(_,p)|p.title)).unwrap_or_else(||uu_i18n::text("插件").into()),
             super::workspace_ui::Page::Settings => uu_i18n::text("应用设置").into(),
         };
+        #[cfg(windows)]
+        let running = self.workspace.background_service.online();
+        #[cfg(not(windows))]
         let running = self.workspace.host.running();
         let failed = self
             .workspace
@@ -126,10 +129,8 @@ impl App {
                             super::theme::palette(ui.visuals()).danger
                         } else if running {
                             super::theme::palette(ui.visuals()).success
-                        } else if wallpaper_root {
-                            C::WHITE
                         } else {
-                            super::theme::palette(ui.visuals()).muted
+                            super::theme::palette(ui.visuals()).warning
                         };
                         let response=icon_button_tinted(ui,Icon::Globe,uu_i18n::text("服务管理"),selected,color);
                         if response
