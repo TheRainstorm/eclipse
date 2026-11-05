@@ -12,6 +12,8 @@ Windows 初始化时移除 winit 默认注册的键盘 Raw Input，键盘统一�
 
 低级钩子在独立线程安装并运行消息循环，保存物理修饰键及按键所有权。它只做有限队列写入和异步窗口通知；不执行渲染、网络发送或等待 GUI 锁。渲染线程收到通知后请求重绘、排出输入队列。来自外层远程桌面或辅助工具的 injected 按键也按同样规则处理，不整体过滤。
 
+输入是否交给远端由当前会话的焦点、授权和本地界面占用统一决定。原生路由已经消费的消息不会再生成 UI 按键事件；实际到达 UI 的按键继续走同一发送边界，不能因为帧开始时记录了“原生捕获已开启”就丢弃。这样普通键的备用路径在捕获方式变化时仍可工作。诊断另记录窗口路由是否仍安装及键盘焦点是否匹配，线程存活与捕获有效性分别核对。
+
 ## 参考实现
 
 - [Moonlight 输入管理](https://github.com/moonlight-stream/moonlight-qt/blob/master/app/streaming/input/input.cpp)：`updateKeyboardGrabState()` 根据捕获模式、输入捕获与全屏状态调用 SDL 键盘 grab；`isSystemKeyCaptureActive()` 还要求输入焦点。本项目参考状态管理方式，未复制其 GPL 实现。

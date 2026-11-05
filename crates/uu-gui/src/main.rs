@@ -76,6 +76,59 @@ mod device_presence;
 #[cfg(test)]
 mod tests {use super::*;
     #[test]
+    #[ignore = "run alone with a new, private XDG_DATA_HOME"]
+    fn delivered_ui_keys_survive_native_capture_and_keep_focus_ownership() {
+        use std::sync::{Arc,atomic::Ordering::Relaxed};
+        use raw_window_handle::{HandleError,WindowHandle,DisplayHandle,HasWindowHandle,HasDisplayHandle};
+        struct NoWindow;
+        impl HasWindowHandle for NoWindow {fn window_handle(&self)->Result<WindowHandle<'_>,HandleError>{Err(HandleError::Unavailable)}}
+        impl HasDisplayHandle for NoWindow {fn display_handle(&self)->Result<DisplayHandle<'_>,HandleError>{Err(HandleError::Unavailable)}}
+        let directory=std::path::PathBuf::from(std::env::var_os("ECLIPSE_KEYBOARD_TEST_ROOT").expect("owned configuration required"));
+        assert!(directory.is_absolute()&&directory.join("owner.token").is_file());
+        for key in ["XDG_DATA_HOME","XDG_STATE_HOME","XDG_CONFIG_HOME","XDG_CACHE_HOME"] {
+            assert!(std::path::PathBuf::from(std::env::var_os(key).unwrap()).starts_with(&directory));
+        }
+        let ctx=egui::Context::default();
+        let platform=std::rc::Rc::new(platform::Platform::for_window(&NoWindow,&ctx,None));
+        let mut app=App::new_session(&ctx,None,platform,None,false,None);
+        // The controller is only a typed in-memory queue: no socket, desktop,
+        // hook, clipboard, audio output or platform injection is opened.
+        let stats=Arc::new(uu_core::media::MediaStats::default());
+        stats.capabilities.enable(uu_core::capabilities::Capability::Input,true);
+        stats.control_open.store(1,Relaxed);
+        let (input,mut receiver)=uu_core::native_input::channel(true);
+        let (_,events)=std::sync::mpsc::channel();
+        let (_,frames)=uu_core::display_frames::channel();
+        let (raw,_)=tokio::sync::mpsc::unbounded_channel();
+        let (close,_)=tokio::sync::mpsc::unbounded_channel();
+        app.controller=Some(ControllerHandle{stopped:Arc::new(false.into()),events,frames,input:raw.clone(),native_input:Some(input),settings:raw,close,stats});
+        app.stream_target=Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::NativeDevice("generated-keyboard".into()),alias:"Generated".into(),view_only:false});
+        app.input_capture.request();
+        let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let key=|pressed,repeat|egui::Event::Key{key:egui::Key::A,physical_key:Some(egui::Key::A),pressed,repeat,modifiers:Default::default()};
+        let batch=vec![key(true,false),key(true,true),key(false,false)];
+        for capture in [false,true] {
+            app.native_window_keyboard=capture;app.native_keyboard_capture=capture;
+            let _=ctx.run(egui::RawInput{focused:true,..Default::default()},|ctx|app.forward_keyboard_events(ctx,&batch));
+            for pressed in [true,true,false] {
+                let next=runtime.block_on(async {loop {
+                    match tokio::time::timeout(std::time::Duration::from_millis(100),receiver.next_protocol()).await.unwrap().unwrap() {
+                        uu_core::native_input::ProtocolCommand::Input(value)=>break value,
+                        _=>{},
+                    }
+                }});
+                assert_eq!(next,uu_core::native_input::InputCommand::Key{usage:4,pressed});
+            }
+        }
+        for (focused,view_only,local_ui) in [(false,false,false),(true,true,false),(true,false,true)] {
+            app.view_only=view_only;app.displays.menu_open=local_ui;
+            let _=ctx.run(egui::RawInput{focused,..Default::default()},|ctx|app.forward_keyboard_events(ctx,&batch));
+            assert!(runtime.block_on(async {tokio::time::timeout(std::time::Duration::from_millis(10),receiver.next_protocol()).await}).is_err());
+        }
+        // Avoid any attempt to disconnect a real controller on teardown.
+        app.controller=None;app.stream_target=None;
+    }
+    #[test]
     fn light_startup_keeps_touch_targets_and_saved_preference_can_override_it() {
         for theme in [eframe::egui::Theme::Dark, eframe::egui::Theme::Light] {
             let context = eframe::egui::Context::default();
@@ -715,6 +768,64 @@ impl App {
         self.native_keyboard_capture=active;self.native_window_keyboard=window;
     }
 
+    /// Native routes consume their messages before egui. Events that reach
+    /// this fallback still belong to the active session, regardless of which
+    /// capture method was configured when the frame began.
+    fn forward_keyboard_events(&mut self,ctx:&egui::Context,events:&[egui::Event]) {
+        for event in self.platform.captured_keys() {
+            match event {
+                keyboard_capture::Decision::Remote{vk,pressed}=> {
+                    if !pressed || self.remote_input_active(ctx) {self.send_key(vk,pressed);}
+                },
+                keyboard_capture::Decision::Shortcut(action)=>self.local_shortcut(action,ctx),
+                _=>{},
+            }
+        }
+        self.send_modifier_repeats();
+        for event in events {
+            if let egui::Event::Key {
+                key,
+                pressed,
+                modifiers,
+                repeat,
+                physical_key,
+                ..
+            } = event
+            {
+                if std::env::var_os("UU_UI_DEBUG").is_some() && matches!(key, egui::Key::S | egui::Key::M | egui::Key::F) {
+                    eprintln!("ui shortcut {key:?} pressed={pressed} repeat={repeat} ctrl={} alt={}", modifiers.ctrl, modifiers.alt);
+                }
+                if shortcuts_ui::consume_key(ctx,*key,*pressed) {continue;}
+                if self.stream_target.is_none() || shortcuts_ui::recording(ctx) { continue; }
+                let shortcut=self.shortcuts.borrow_mut().key(*key, *pressed, *repeat, *modifiers, true, self.nested_passthrough);
+                match shortcut {
+                    shortcuts::KeyAction::Consumed => continue,
+                    shortcuts::KeyAction::Trigger(action) => {
+                        self.local_shortcut(action,ctx);
+                        continue;
+                    }
+                    shortcuts::KeyAction::Forward => {}
+                }
+                // A swallowed native key never generates this window event.
+                // Any key that reaches egui still needs forwarding, including
+                // keys from another input source or a hook that timed out.
+                if self.remote_input_active(ctx) {
+                    self.sync_modifiers(*modifiers);
+                    if self.uses_engine_controls() {
+                        if let Some(usage)=native_keys::hid_for_egui(physical_key.unwrap_or(*key)){
+                            self.send_native(uu_core::native_input::InputCommand::Key{usage,pressed:*pressed});
+                        }
+                    } else if let Some(vk) = vk_for(physical_key.unwrap_or(*key)) {
+                        self.send_key(vk, *pressed);
+                    }
+                }
+            }
+        }
+        if !self.native_keyboard_capture && !self.native_window_keyboard && self.remote_input_active(ctx) {
+            self.sync_modifiers(ctx.input(|i| i.modifiers));
+        }
+    }
+
     fn release_pointer_capture(&mut self,ctx:&egui::Context) {
         for message in self.pointer.release_all(self.input_screen(self.selected_track)){self.send_input(message,15);}
         if self.mouse_captured {
@@ -1209,58 +1320,7 @@ impl App {
             self.recover_input("keyboard_queue_overflow");
             self.update_keyboard_capture(ctx);
         }
-        for event in self.platform.captured_keys() {
-            match event {
-                keyboard_capture::Decision::Remote{vk,pressed}=> {
-                    if !pressed || ((self.native_keyboard_capture||self.native_window_keyboard) && self.input_ready()) {self.send_key(vk,pressed);}
-                },
-                keyboard_capture::Decision::Shortcut(action)=>self.local_shortcut(action,ctx),
-                _=>{},
-            }
-        }
-        self.send_modifier_repeats();
-        for event in &events {
-            if let egui::Event::Key {
-                key,
-                pressed,
-                modifiers,
-                repeat,
-                physical_key,
-                ..
-            } = event
-            {
-                if std::env::var_os("UU_UI_DEBUG").is_some() && matches!(key, egui::Key::S | egui::Key::M | egui::Key::F) {
-                    eprintln!("ui shortcut {key:?} pressed={pressed} repeat={repeat} ctrl={} alt={}", modifiers.ctrl, modifiers.alt);
-                }
-                if shortcuts_ui::consume_key(ctx,*key,*pressed) {continue;}
-                if self.stream_target.is_none() || shortcuts_ui::recording(ctx) { continue; }
-                let shortcut=self.shortcuts.borrow_mut().key(*key, *pressed, *repeat, *modifiers, true, self.nested_passthrough);
-                match shortcut {
-                    shortcuts::KeyAction::Consumed => continue,
-                    shortcuts::KeyAction::Trigger(action) => {
-                        self.local_shortcut(action,ctx);
-                        continue;
-                    }
-                    shortcuts::KeyAction::Forward => {}
-                }
-                // A swallowed native key never generates this window event.
-                // Any key that reaches egui still needs forwarding, including
-                // keys from another input source or a hook that timed out.
-                if !self.native_window_keyboard && self.remote_input_active(ctx) {
-                    self.sync_modifiers(*modifiers);
-                    if self.uses_engine_controls() {
-                        if let Some(usage)=native_keys::hid_for_egui(physical_key.unwrap_or(*key)){
-                            self.send_native(uu_core::native_input::InputCommand::Key{usage,pressed:*pressed});
-                        }
-                    } else if let Some(vk) = vk_for(physical_key.unwrap_or(*key)) {
-                        self.send_key(vk, *pressed);
-                    }
-                }
-            }
-        }
-        if !self.native_keyboard_capture && !self.native_window_keyboard && self.remote_input_active(ctx) {
-            self.sync_modifiers(ctx.input(|i| i.modifiers));
-        }
+        self.forward_keyboard_events(ctx,&events);
         let elapsed = self.last_fps.elapsed().as_secs_f32();
         if elapsed >= 0.5 {
             for fps in self.fps.values_mut() { *fps = 0.0; }

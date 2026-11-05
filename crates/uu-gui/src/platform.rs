@@ -536,6 +536,9 @@ mod windows {
         });
         serde_json::json!({
             "window_valid":IsWindow(window)!=0,
+            "window_route_installed":route(window).is_some_and(|r|r.old_proc!=0)
+                && GetWindowLongPtrW(window,GWLP_WNDPROC)==window_keyboard as *const () as isize,
+            "keyboard_focus_matches":GetFocus()==window,
             "foreground_matches":!window.is_null()&&GetForegroundWindow()==window,
             "foreground":foreground_snapshot(),
             "hook_thread_alive":hook.is_some_and(KeyboardHook::alive),
