@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-05T14:39:15Z",
+  "updated_at": "2026-11-05T14:46:45Z",
   "files": {
     ".cargo/config.toml": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "6393d84dd5a996dd4b2e99fcf4619dd05a03c5896ba71d85721591305bd77468",
-      "size": 205628,
-      "normalized_sha256": "6393d84dd5a996dd4b2e99fcf4619dd05a03c5896ba71d85721591305bd77468"
+      "sha256": "b3dfeed5fc2f01d76f06ab8b2e86510d5f4bf5826c72f24d59e276d70665fb8e",
+      "size": 205728,
+      "normalized_sha256": "b3dfeed5fc2f01d76f06ab8b2e86510d5f4bf5826c72f24d59e276d70665fb8e"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1949,9 +1949,9 @@
     },
     "crates/uu-i18n/catalogue.json": {
       "role": "index",
-      "sha256": "71a1d6a8613517574142fbe4945c1e5f6e8200561cc451c83f4e52772eba24db",
-      "size": 188878,
-      "normalized_sha256": "71a1d6a8613517574142fbe4945c1e5f6e8200561cc451c83f4e52772eba24db"
+      "sha256": "c7254615eeaf78bb6b412ad4e1fb8e9c2d0c53652f98cb386d10b5802455ca8c",
+      "size": 188957,
+      "normalized_sha256": "c7254615eeaf78bb6b412ad4e1fb8e9c2d0c53652f98cb386d10b5802455ca8c"
     },
     "crates/uu-i18n/src/catalogue.rs": {
       "role": "index",

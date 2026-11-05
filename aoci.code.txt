@@ -339,7 +339,7 @@ lib.rs[LL6T]: F:合并主目录与消费crate自有目录，展开双语格式�
 ===/home/yfy/Repo/uu_remote/crates/uu-i18n/===
 Cargo.toml[FL4T]: F:声明应用语言库、双语宏和构建时目录依赖 | R:code:crates/uu-i18n/src/lib.rs | A:- | S:-
 build.rs[OL5T]: F:把翻译JSON生成到OUT_DIR的静态匹配函数 | R:code:crates/uu-i18n/catalogue.json,code:crates/uu-i18n/src/catalogue.rs | A:main | S:目录变化触发重建，生成物不写回源码目录
-catalogue.json[FL6L]: F:维护主程序诊断、设备授权、显示视图、每屏带宽、返回本机、后台插件及服务管理英文模板 | R:code:crates/uu-i18n/build.rs,code:crates/uu-i18n-macros/src/lib.rs | A:- | S:插件词汇归插件；占位符匹配原文，用户远端内容不译；后继帧非游戏响应；旧模板保留不证明当前行为
+catalogue.json[FL6L]: F:维护主程序诊断、设备授权、显示视图、每屏带宽、返回本机、后台插件、服务管理及标签状态英文模板 | R:code:crates/uu-i18n/build.rs,code:crates/uu-i18n-macros/src/lib.rs | A:- | S:插件词汇归插件；占位符匹配原文，用户远端内容不译；运行期text缺失英文会回退原文，新增用户可见文案须同步模板；后继帧非游戏响应；旧模板保留不证明当前行为
 
 ===/home/yfy/Repo/uu_remote/crates/uu-i18n/src/===
 catalogue.rs[LL4T]: F:把构建生成的静态英文查询函数引入语言库 | R:code:crates/uu-i18n/build.rs | A:- | S:-
