@@ -197,8 +197,9 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                     "settings-bitrate",
                     if state.streaming {super::settings::bitrate_label(s.bitrate,!state.host_managed_bitrate)}else{uu_i18n::text(super::BITRATE_PRESETS[s.bitrate])},
                     |ui| {
-                        for i in [5,0,1,2,3,4] {
+                        for i in [6,5,0,1,2,3,4] {
                             let label=uu_i18n::text(super::BITRATE_PRESETS[i]);
+                            if i==6&&!state.native {continue;}
                             if (!state.host_managed_bitrate&&i==0)||(state.host_managed_bitrate&&state.streaming&&i==5){continue;}
                             if !state.host_managed_bitrate&&i==5 {
                                 if crate::theme::selectable_label(ui,matches!(s.bitrate,0|5),label).clicked(){s.bitrate=5;}
@@ -214,6 +215,11 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                     crate::theme::number_input(ui,egui::DragValue::new(&mut s.custom_mbps).range(1..=1000).suffix(" Mbps"));
                     ui.end_row();
                 }
+                if s.bitrate==6 {
+                    ui.label(uu_i18n::text("预期总带宽"));
+                    crate::theme::number_input(ui,egui::DragValue::new(&mut s.network_budget_mbps).range(1..=1000).suffix(" Mbps"));
+                    ui.end_row();
+                }
         });
         if state.native||!state.streaming {
             match super::settings::recommended_bitrate(&s.client,state.actual_size,state.actual_codec) {
@@ -224,6 +230,9 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                 note(ui,uu_i18n::text("推荐值已达到当前 1000 Mbps 上限；此组合需要降低分辨率或 FPS，或自行调整画质目标。"));
             }
             note(ui,uu_i18n::text("推荐档随分辨率、FPS 和编码更新；以良好画质为目标，复杂场景可手动提高。不是网络测速或所有画面的最低码率保证。UU 兼容模式的自动档由官方主机决定。"));
+        }
+        if s.bitrate==6 {
+            note(ui,uu_i18n::text("活动屏幕按实际分辨率和帧率比例分配这段视频预算。手动码率先从总预算扣除；懒连接或已断开窗口不占预算。"));
         }
         if let Some(codec)=state.actual_codec.filter(|c|!c.is_empty()){ui.label(uu_i18n::format!("当前编码：{}",codec.trim_start_matches("video/")));}
         note(
@@ -603,7 +612,7 @@ pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::Cli
     });
     ui.add_space(12.);
     let mut wrapper=Settings {client:settings.clone(),..Default::default()};
-    let state=State { native:false,host_managed_bitrate:false,max_fps:240,codecs:None,rate_control_available:true,native_cursor:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None,actual_codec:None,actual_size:None };
+    let state=State { native:true,host_managed_bitrate:false,max_fps:240,codecs:None,rate_control_available:true,native_cursor:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None,actual_codec:None,actual_size:None };
     match section {Section::Encoding=>encoding(ui,&mut wrapper,&state),Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
     *settings=wrapper.client;
 }

@@ -621,11 +621,11 @@ impl super::App {
         let actual=self.controller.as_ref().map(|h|{let(w,h)=h.stats.res();[w,h]});
         let codec=self.controller.as_ref().map(|h|h.stats.codec.lock().unwrap().clone());
         let recommended=super::settings::recommended_bitrate(&self.preferences,actual,codec.as_deref());
-        let order=if native{[5,1,2,3,4]}else{[0,1,2,3,4]};
-        for index in order {
+        let order:&[usize]=if native{&[6,5,1,2,3,4]}else{&[0,1,2,3,4]};
+        for &index in order {
             let label=super::BITRATE_PRESETS[index];
             let label=uu_i18n::text(label);
-            let title=if index==5{uu_i18n::text("推荐码率")}else if index==0{uu_i18n::text("原画 · 服务端策略")}else{label};
+            let title=if index==6{uu_i18n::text("按总预算自动分配")}else if index==5{uu_i18n::text("推荐码率")}else if index==0{uu_i18n::text("原画 · 服务端策略")}else{label};
             let hint=if index==5 {recommended.map_or_else(||uu_i18n::text("自动计算").into(),|kbps|format!("{:.1} Mbps",kbps as f64/1000.))}else if index==4{format!("{} Mbps",self.custom_mbps)}else{String::new()};
             let custom=index==4;
             let response=menu_row(ui,title,None,self.bitrate_idx==index||(native&&index==5&&self.bitrate_idx==0)||(!native&&index==0&&self.bitrate_idx==5),custom,&hint,false);
@@ -633,6 +633,7 @@ impl super::App {
             else if response.hovered(){self.stream_menu.quality_detail=None;}
             if !custom&&response.clicked(){self.bitrate_idx=index;self.confirm_quality(ui);}
             response.on_hover_text(match index {
+                6=>uu_i18n::text("按当前所有活动屏幕的分辨率和帧率比例分配配置中的预期总带宽；手动码率先扣除。"),
                 5=>uu_i18n::text("按当前实际分辨率、帧率和编码计算LAN Quality推荐值，随参数改变。PyroWave需要较高带宽。"),
                 0=>uu_i18n::text("跟随主机的画质策略；具体码率由主机决定。可选择推荐码率或自定义目标。"),
                 4=>uu_i18n::text("输入自己的目标码率，单位Mbps。设置保存在当前串流偏好中。"),

@@ -81,6 +81,16 @@ impl ConnectionTarget {
     pub fn virtual_display(&self)->Option<&VirtualDisplayTarget> {
         match self {Self::NativeVirtual{virtual_display,..}=>Some(virtual_display),_=>None}
     }
+    /// Durable key for per-display client settings. Physical views use the
+    /// stable source name; explicit virtual views use their launch UUID.
+    pub fn display_client_key(&self)->Option<String> {
+        match self {
+            Self::NativeDisplay{display,..} if !display.source.is_empty()=>Some(format!("display:{}",display.source)),
+            Self::NativeDisplay{display,..}=>Some(format!("display-id:{}",display.id)),
+            Self::NativeVirtual{virtual_display,..}=>Some(format!("virtual:{}",virtual_display.id)),
+            _=>None,
+        }
+    }
     pub fn is_auxiliary_view(&self)->bool {
         matches!(self,Self::NativeDisplay{..}|Self::NativeVirtual{..})
     }
@@ -376,6 +386,16 @@ mod tests {
         }
         let target=StreamTarget{connection:display(ConnectionTarget::NativeLoopback,0,""),alias:"Generated".into(),view_only:false};
         assert!(target.command(Path::new("generated-gui"),None).get_args().any(|arg|arg=="--view-only"));
+    }
+    #[test]
+    fn per_display_settings_keys_follow_stable_display_identity_not_transient_ids() {
+        let base=ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into());
+        let a=display(base.clone(),1,"Stable source");
+        let b=display(base.clone(),9,"Stable source");
+        assert_eq!(a.display_client_key(),b.display_client_key());
+        assert_eq!(display(base.clone(),7,"").display_client_key().as_deref(),Some("display-id:7"));
+        let virtual_display=VirtualDisplayTarget::new(Default::default());
+        assert_eq!(ConnectionTarget::NativeVirtual{connection:Box::new(base),virtual_display:virtual_display.clone()}.display_client_key(),Some(format!("virtual:{}",virtual_display.id)));
     }
     #[test]
     fn display_arguments_and_workspace_targets_reject_invalid_or_nested_selection() {

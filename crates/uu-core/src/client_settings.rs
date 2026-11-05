@@ -71,6 +71,9 @@ pub struct ClientSettings {
     pub display_mode: crate::screen_control::DisplayMode,
     pub bitrate: usize,
     pub custom_mbps: u32,
+    /// Expected total video budget shared by active displays of one device.
+    #[serde(default="default_network_budget")]
+    pub network_budget_mbps:u32,
     pub resolution: usize,
     pub codec: CodecPreference,
     /// None follows the host default; explicit modes affect only this session.
@@ -100,10 +103,11 @@ fn preserve_display_layout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<cra
     let _ = crate::screen_control::DisplayMode::deserialize(d)?;
     Ok(crate::screen_control::DisplayMode::Preserve)
 }
+fn default_network_budget()->u32 {100}
 impl Default for ClientSettings {
     fn default() -> Self {
-        Self { fps:60, follow_remote_fps:false, display_mode:crate::screen_control::DisplayMode::Preserve,
-            bitrate:5,custom_mbps:55,resolution:0,codec:CodecPreference::Auto,rate_control:None,
+        Self { fps:60, follow_remote_fps:true, display_mode:crate::screen_control::DisplayMode::Preserve,
+            bitrate:6,custom_mbps:55,network_budget_mbps:default_network_budget(),resolution:0,codec:CodecPreference::Auto,rate_control:None,
             volume:100,muted:false,hud:false,hud_appearance:HudAppearance::default(),hotkeys:crate::hotkeys::Bindings::default(),capture_keyboard:true,
             vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
             cursor_mode:CursorMode::Remote,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
@@ -117,8 +121,8 @@ impl ClientSettings {
     pub fn validate(&self) -> Result<()> {
         self.hotkeys.validate()?;
         self.hud_appearance.validate()?;
-        ensure!((5..=240).contains(&self.fps) && self.bitrate<=5
-            && (1..=1000).contains(&self.custom_mbps) && self.resolution<=3 && self.volume<=100,
+        ensure!((5..=240).contains(&self.fps) && self.bitrate<=6
+            && (1..=1000).contains(&self.custom_mbps) && (1..=1000).contains(&self.network_budget_mbps) && self.resolution<=3 && self.volume<=100,
             "{}", uu_i18n::format!("客户端分辨率、帧率、码率或音量无效"));
         ensure!(!self.software_decoder || !matches!(self.codec,CodecPreference::Hevc|CodecPreference::Av1|CodecPreference::Pyrowave),
             "{}", uu_i18n::format!("HEVC / AV1 / PyroWave 需要可用的 GPU 解码；请选择自动或 H.264"));
@@ -135,6 +139,32 @@ impl ClientSettings {
     pub fn hevc_preferred(&self) -> bool {
         !self.software_decoder && (self.codec == CodecPreference::Hevc || (self.codec == CodecPreference::Auto && self.prefer_hevc))
     }
+    pub fn with_budget_kbps(&self,kbps:Option<u32>)->crate::native_quality::Request {
+        let mut request=self.native_request();
+        if self.bitrate==6 {request.bitrate_kbps=kbps.map(|kbps|kbps.clamp(64,crate::native_quality::MAX_BITRATE_KBPS));}
+        request
+    }
+}
+
+/// Allocate a device-wide video budget across active displays.
+/// Each item is `(weight, fixed_kbps)`. Fixed targets are reserved first;
+/// remaining capacity is divided by weight with a small floor per auto view.
+pub fn allocate_bitrate_budget(total_kbps:u32,items:&[(u64,Option<u32>)])->Vec<u32> {
+    let max=crate::native_quality::MAX_BITRATE_KBPS;
+    let fixed:u64=items.iter().filter_map(|(_,fixed)|*fixed).map(|kbps|u64::from(kbps.clamp(64,max))).sum();
+    let remaining=u64::from(total_kbps).saturating_sub(fixed);
+    let auto:Vec<_>=items.iter().enumerate().filter(|(_,(_,fixed))|fixed.is_none()).map(|(index,(weight,_))|(index,*weight)).collect();
+    let mut result=items.iter().map(|(_,fixed)|fixed.map_or(0,|kbps|kbps.clamp(64,max))).collect::<Vec<_>>();
+    if auto.is_empty(){return result;}
+    let count=auto.len() as u64;
+    let floor=(remaining/count).min(64);
+    let distributable=remaining.saturating_sub(floor*count);
+    let weight_total:u64=auto.iter().map(|(_,weight)|*weight).sum();
+    for (index,weight) in auto {
+        let share=floor+if weight_total==0{distributable/count}else{distributable.saturating_mul(weight)/weight_total};
+        result[index]=u32::try_from(share).unwrap_or(max).clamp(1,max);
+    }
+    result
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -143,6 +173,29 @@ pub struct NamedClientSettings {
     pub id: String,
     pub name: String,
     pub settings: ClientSettings,
+}
+
+/// Settings owned by one stable display target within a device profile.
+/// `target` is `display:<source>` for physical views or `virtual:<uuid>` for
+/// an explicit virtual-display view, never a transient host track number.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplayClientSettings {
+    pub target: String,
+    pub settings: ClientSettings,
+}
+
+impl DisplayClientSettings {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.target.is_empty()
+                && self.target.len() <= 320
+                && !self.target.chars().any(char::is_control),
+            "{}",
+            uu_i18n::format!("显示器客户端配置标识无效")
+        );
+        self.settings.validate()
+    }
 }
 impl NamedClientSettings {
     pub fn new(name: impl Into<String>, settings: ClientSettings) -> Self {
@@ -200,6 +253,8 @@ mod bitrate_tests {
     #[test]
     fn remote_frame_rate_keeps_valid_fallback_and_obeys_protocol_limits() {
         let mut settings=ClientSettings::default();
+        assert!(settings.follow_remote_fps,"new profiles follow the confirmed remote refresh by default");
+        settings.follow_remote_fps=false;
         settings.fps=120;
         assert_eq!(settings.resolved_fps(Some(165),240),120);
         settings.follow_remote_fps=true;
@@ -219,7 +274,9 @@ mod bitrate_tests {
     #[test]
     fn recommended_bitrate_is_default_and_fixed_presets_keep_their_values() {
         let mut s=ClientSettings::default();
-        assert_eq!(s.bitrate,5);assert!(s.native_request().bitrate_kbps.is_none());
+        assert_eq!(s.bitrate,6);assert_eq!(s.network_budget_mbps,100);assert!(s.native_request().bitrate_kbps.is_none());
+        assert_eq!(s.with_budget_kbps(Some(12_345)).bitrate_kbps,Some(12_345));
+        assert_eq!(s.with_budget_kbps(None).bitrate_kbps,None);
         for (index,kbps) in [(1,30_000),(2,14_000),(3,8_000),(4,55_000)] {
             s.bitrate=index;assert_eq!(s.native_request().bitrate_kbps,Some(kbps));
         }
@@ -228,5 +285,17 @@ mod bitrate_tests {
         let selected:ClientSettings=serde_json::from_str(r#"{"bitrate":5,"codec":"pyrowave"}"#).unwrap();
         selected.validate().unwrap();
         assert_eq!(serde_json::from_slice::<ClientSettings>(&serde_json::to_vec(&selected).unwrap()).unwrap(),selected);
+        let missing:ClientSettings=serde_json::from_str(r#"{"fps":60}"#).unwrap();
+        assert_eq!(missing.network_budget_mbps,100);
+        let mut invalid=ClientSettings::default();invalid.network_budget_mbps=0;assert!(invalid.validate().is_err());
+    }
+    #[test]
+    fn device_budget_reserves_manual_targets_and_allocates_remaining_by_display_weight() {
+        let all=allocate_bitrate_budget(100_000,&[(1,None),(2,None)]);
+        assert_eq!(all.len(),2);assert!(all[0]<all[1]);assert!(all.iter().sum::<u32>()<=100_000);
+        let mixed=allocate_bitrate_budget(100_000,&[(100,Some(30_000)),(100,None),(200,None)]);
+        assert_eq!(mixed[0],30_000);assert!(mixed[1]+mixed[2]<=70_000);assert!(mixed[1]<mixed[2]);
+        let disabled=allocate_bitrate_budget(8_000,&[(1,None),(1,None),(1,None)]);
+        assert!(disabled.iter().all(|kbps|*kbps>=1));assert!(disabled.iter().sum::<u32>()<=8_000);
     }
 }

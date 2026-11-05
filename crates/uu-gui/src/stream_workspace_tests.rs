@@ -54,7 +54,7 @@ fn generated_screen(id:i32)->uu_core::screen_control::RemoteScreen {
     uu_core::screen_control::RemoteScreen{id,display_name:format!("Generated source {id}"),refresh_hz:60,kind:0,width:320,height:192,dpi_scale:None,primary:id==0,video_track_index:if id==0{0}else{-1}}
 }
 fn owned_state()->State {
-    State {sources:vec![],inquiries:Default::default(),input_owner:None,gamepad:Default::default(),windows:vec![Window::new(1,vec![],None)],gl:None,vsync:false,next:2,actions:Default::default(),local_desktop:false,restore_window:None}
+    State {sources:vec![],inquiries:Default::default(),input_owner:None,gamepad:Default::default(),windows:vec![Window::new(1,vec![],None)],gl:None,vsync:false,next:2,actions:Default::default(),local_desktop:false,restore_window:None,budget:Default::default(),budget_refresh:None}
 }
 fn owned_target(name:&str)->StreamTarget {
     StreamTarget {connection:ConnectionTarget::NativeDevice(format!("generated-{name}")),alias:name.into(),view_only:true}
@@ -88,6 +88,15 @@ fn local_desktop_toggle_preserves_window_and_view_identity_for_restore() {
     assert!(state.local_desktop);assert_eq!(state.restore_window,Some(1));assert_eq!(state.windows[0].views[0].id,a);assert_eq!(state.windows[0].active,a);
     state.toggle_local_desktop(&ctx);
     assert!(!state.local_desktop);assert!(state.restore_window.is_none());assert_eq!(state.windows[0].views[0].id,a);assert_eq!(state.windows[0].active,a);
+}
+#[test]
+fn budget_congestion_controller_uses_loss_and_rtt_with_hysteresis() {
+    let start=Instant::now();let mut state=BudgetState::default();
+    state.observe(25_000,None,start);assert!(state.factor<1.);
+    let reduced=state.factor;
+    state.observe(0,Some(20),start+Duration::from_secs(1));assert_eq!(state.factor,reduced,"a healthy sample cannot immediately undo backoff");
+    state.observe(0,Some(20),start+Duration::from_secs(6));assert!(state.factor>reduced);
+    state.observe(0,Some(300),start+Duration::from_secs(7));assert!(state.factor<reduced+0.05);
 }
 #[test]
 fn owned_views_merge_into_oldest_other_live_window_and_never_restore_retired_homes() {
@@ -240,7 +249,7 @@ fn computer_navigation_uses_its_last_view_and_falls_back_when_it_was_closed() {
 
 #[test]
 fn independent_display_ipc_creates_separate_pending_windows_and_reuses_a_stable_source() {
-    let mut state=State{sources:vec![],inquiries:Default::default(),input_owner:None,gamepad:Default::default(),windows:vec![Window::new(1,Vec::new(),None)],gl:None,vsync:false,next:2,actions:Default::default(),local_desktop:false,restore_window:None};
+    let mut state=State{sources:vec![],inquiries:Default::default(),input_owner:None,gamepad:Default::default(),windows:vec![Window::new(1,Vec::new(),None)],gl:None,vsync:false,next:2,actions:Default::default(),local_desktop:false,restore_window:None,budget:Default::default(),budget_refresh:None};
     let target=StreamTarget{connection:ConnectionTarget::NativeDevice("01234567-89ab-4cde-8fab-0123456789ab".into()),alias:"Generated computer".into(),view_only:true};
     assert!(state.attach(display_launch(&target,&generated_screen(1)).unwrap()));
     assert!(state.attach(display_launch(&target,&generated_screen(2)).unwrap()));
@@ -257,7 +266,7 @@ fn independent_display_ipc_creates_separate_pending_windows_and_reuses_a_stable_
 
 #[test]
 fn merge_uses_live_pending_windows_and_ignores_retired_or_closing_containers() {
-    let mut state=State{sources:vec![],inquiries:Default::default(),input_owner:None,gamepad:Default::default(),windows:vec![Window::new(2,Vec::new(),None)],gl:None,vsync:false,next:3,actions:Default::default(),local_desktop:false,restore_window:None};
+    let mut state=State{sources:vec![],inquiries:Default::default(),input_owner:None,gamepad:Default::default(),windows:vec![Window::new(2,Vec::new(),None)],gl:None,vsync:false,next:3,actions:Default::default(),local_desktop:false,restore_window:None,budget:Default::default(),budget_refresh:None};
     assert_eq!(state.oldest_other_window(2),None);assert_eq!(state.windows.len(),1);assert_eq!(state.next,3);
     let third=state.next;state.next+=1;
     state.windows.push(Window::new(third,vec![launch("generated-only.json".into(),"Pending")],None));

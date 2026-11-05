@@ -24,7 +24,7 @@ impl App {
         stats.pairing.enable_choices();
         let kind=self.decoder_kind();
         let _=stats.decoder_preference.set(kind);
-        let _=stats.native_quality_request.set(self.preferences.native_request());
+        let _=stats.native_quality_request.set(self.native_quality_request());
         let _=stats.native_rate_request.set(uu_core::native_quality::RateRequest{selection:self.preferences.rate_control});
         let _=stats.native_hdr_requested.set(self.preferences.hdr);
         #[cfg(windows)]

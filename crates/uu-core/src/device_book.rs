@@ -243,6 +243,8 @@ pub struct Profile {
     #[serde(default)]
     pub selected_client: Option<String>,
     #[serde(default)]
+    pub display_clients: Vec<crate::client_settings::DisplayClientSettings>,
+    #[serde(default)]
     pub last_connected:Option<u64>,
     #[serde(default)]
     pub preview:Option<Preview>,
@@ -257,7 +259,7 @@ impl Profile {
             name: name.into(),
             peer: None,
             selected_route: route.id.clone(),
-            client_configs:Vec::new(),selected_client:None,last_connected:None,preview:None,
+            client_configs:Vec::new(),selected_client:None,display_clients:Vec::new(),last_connected:None,preview:None,
             routes: vec![route],
             redirect: None,
         }
@@ -360,6 +362,9 @@ impl Book {
             let mut config_ids=std::collections::HashSet::new();
             for config in &profile.client_configs {config.validate()?;ensure!(config_ids.insert(&config.id),"{}", uu_i18n::format!("客户端配置标识重复"));}
             ensure!(profile.selected_client.as_ref().is_none_or(|id|config_ids.contains(id)),"{}", uu_i18n::format!("请选择有效的客户端配置"));
+            ensure!(profile.display_clients.len()<=64,"{}",uu_i18n::format!("每台设备最多保存64个显示器客户端配置"));
+            let mut display_targets=std::collections::HashSet::new();
+            for config in &profile.display_clients {config.validate()?;ensure!(display_targets.insert(&config.target),"{}",uu_i18n::format!("显示器客户端配置标识重复"));}
             ensure!(ids.insert(&profile.id), "{}", uu_i18n::format!("设备配置标识重复"));
             ensure!(
                 profile
@@ -431,7 +436,7 @@ impl Launch {
             peer: self.expected_peer.clone(),
             routes: vec![self.route.clone()],
             selected_route: self.route.id.clone(),
-            client_configs:Vec::new(),selected_client:None,last_connected:None,preview:None,
+            client_configs:Vec::new(),selected_client:None,display_clients:Vec::new(),last_connected:None,preview:None,
             redirect: None,
         };
         let book = Book {
@@ -590,6 +595,7 @@ impl Store {
                 let mut profile=profile;
                 profile.client_configs=v.client_configs.clone();
                 profile.selected_client=v.selected_client.clone();
+                profile.display_clients=v.display_clients.clone();
                 profile.last_connected=v.last_connected;profile.preview=v.preview.clone();
                 *v = profile;
             } else {
@@ -645,6 +651,22 @@ impl Store {
     }
     pub fn save_and_select_client_config(&self,device:&str,config:crate::client_settings::NamedClientSettings)->Result<()> {
         self.save_config(device,config,true)
+    }
+    pub fn display_client_settings(&self,device:&str,target:&str)->Result<Option<crate::client_settings::ClientSettings>> {
+        let book=self.read()?;
+        let profile=book.device(device)?;
+        Ok(profile.display_clients.iter().find(|config|config.target==target).map(|config|config.settings.clone()))
+    }
+    pub fn save_display_client_settings(&self,device:&str,target:&str,settings:crate::client_settings::ClientSettings)->Result<()> {
+        let value=crate::client_settings::DisplayClientSettings{target:target.into(),settings};
+        value.validate()?;
+        self.edit(|book| {
+            let id=book.device(device)?.id.clone();
+            let profile=book.devices.iter_mut().find(|p|p.id==id).unwrap();
+            if let Some(existing)=profile.display_clients.iter_mut().find(|config|config.target==value.target) {*existing=value;}
+            else {profile.display_clients.push(value);}
+            Ok(())
+        })
     }
     /// The editor explicitly selects an existing ID, or creates a new name.
     /// Resolve that intent under the store lock so a stale editor cannot
@@ -721,6 +743,8 @@ impl Store {
                 let selection=b.devices[current].selected_client.take();
                 for config in configs {if !b.devices[other].client_configs.iter().any(|c|c.id==config.id) {b.devices[other].client_configs.push(config);}}
                 if b.devices[other].selected_client.is_none() {b.devices[other].selected_client=selection;}
+                let display_configs=std::mem::take(&mut b.devices[current].display_clients);
+                for config in display_configs {if !b.devices[other].display_clients.iter().any(|c|c.target==config.target) {b.devices[other].display_clients.push(config);}}
                 let routes = std::mem::take(&mut b.devices[current].routes);
                 for route in routes {
                     if !b.devices[other]
@@ -1093,6 +1117,25 @@ mod tests {
             store.save_device(a).is_err(),
             "stale UI must not erase a freshly verified peer identity"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn per_display_client_settings_roundtrip_without_overwriting_selected_profile() {
+        let root=std::env::temp_dir().join(format!("eclipse-display-settings-{}",uuid::Uuid::new_v4()));
+        let store=Store::open(&root).unwrap();
+        let profile=Profile::new("Generated",Destination::Plugin{plugin:"fixture".into(),device:"generated".into()});
+        store.save_device(profile.clone()).unwrap();
+        let selected=NamedClientSettings::new("Selected",ClientSettings::default());
+        store.save_and_select_client_config(&profile.id,selected.clone()).unwrap();
+        let display=ClientSettings{fps:165,follow_remote_fps:true,bitrate:4,custom_mbps:42,..Default::default()};
+        store.save_display_client_settings(&profile.id,"display:Generated source",display.clone()).unwrap();
+        assert_eq!(store.display_client_settings(&profile.id,"display:Generated source").unwrap(),Some(display.clone()));
+        let saved=store.read().unwrap().device(&profile.id).unwrap().clone();
+        assert_eq!(saved.selected_client.as_deref(),Some(selected.id.as_str()));
+        assert_eq!(saved.client_configs[0].settings,selected.settings);
+        let mut stale=saved.clone();stale.display_clients.clear();
+        store.save_device(stale).unwrap();
+        assert_eq!(store.display_client_settings(&profile.id,"display:Generated source").unwrap(),Some(display));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

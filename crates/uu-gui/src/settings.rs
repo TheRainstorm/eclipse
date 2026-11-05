@@ -31,6 +31,9 @@ fn save_profile_client_settings(store:&uu_core::device_book::Store,connection:&s
     };
     let book=store.read()?;
     let profile=book.device(id)?;
+    if let Some(target)=connection.display_client_key() {
+        return store.save_display_client_settings(&profile.id,&target,settings);
+    }
     // The base profile owns presets even when this view has a temporary
     // virtual-display intent. Use the preset API: save_device preserves the
     // stored presets to protect them from stale device-editor snapshots.
@@ -147,8 +150,8 @@ impl Settings {
         }
         Ok(())
     }
-    fn capture_values(&self)->(u32,bool,usize,u32,usize,bool,CodecPreference,bool,bool) {
-        (self.fps,self.follow_remote_fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.cursor_mode.remote(),self.codec,self.hevc_preferred(),self.hdr)
+    fn capture_values(&self)->(u32,bool,usize,u32,usize,bool,CodecPreference,bool,bool,u32) {
+        (self.fps,self.follow_remote_fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.cursor_mode.remote(),self.codec,self.hevc_preferred(),self.hdr,self.network_budget_mbps)
     }
     pub fn path() -> Option<PathBuf> {
         uu_core::Config::from_env()
@@ -175,7 +178,7 @@ impl Settings {
         if s.lan_service_port==47998 { s.lan_service_port=uu_core::native_discovery::SERVICE_PORT; }
         if s.lan_discovery_port==47999 { s.lan_discovery_port=uu_core::native_discovery::DISCOVERY_PORT; }
         s.fps = s.fps.clamp(5, 240);
-        s.bitrate = s.bitrate.min(5);
+        s.bitrate = s.bitrate.min(6);
         s.custom_mbps = s.custom_mbps.clamp(1, 1000);
         s.resolution = s.resolution.min(3);
         s.volume = s.volume.min(100);
@@ -737,7 +740,11 @@ impl super::App {
                     self.settings_storage_error = true;
                     self.set_settings_notice(uu_i18n::format!("无法保存到设备配置：{error:#}"));
                 } else {
-                    self.set_settings_notice(uu_i18n::text("已保存到设备配置；下次连接继续使用"));
+                    self.set_settings_notice(uu_i18n::text(if self.stream_target.as_ref().and_then(|target|target.connection.display_client_key()).is_some() {
+                        "已保存到此显示器的客户端配置；下次连接继续使用"
+                    } else {
+                        "已保存到设备配置；下次连接继续使用"
+                    }));
                 }
             }
         }
@@ -835,7 +842,7 @@ mod tests {
         }
     }
     #[test]
-    fn virtual_view_saves_selected_base_preset_and_preserves_other_device_changes() {
+    fn virtual_view_saves_only_its_display_settings_and_preserves_base_presets() {
         use uu_core::{client_settings::NamedClientSettings,device_book::{Destination,Profile,Route,Store}};
         let root=std::env::temp_dir().join(format!("eclipse-virtual-preset-{}",uuid::Uuid::new_v4()));
         let store=Store::open(&root).unwrap();
@@ -852,15 +859,15 @@ mod tests {
         store.save_device(profile.clone()).unwrap();store.record_connected(&id,123).unwrap();
         let mut client=ClientSettings::default();client.fps=165;client.volume=41;
         let mut expected=serde_json::to_value(store.read().unwrap()).unwrap();
-        expected["devices"][0]["client_configs"][0]["settings"]=serde_json::to_value(&client).unwrap();
+        expected["devices"][0]["display_clients"]=serde_json::json!([{"target":target.display_client_key().unwrap(),"settings":client}]);
         save_profile_client_settings(&store,&target,client).unwrap();
         assert_eq!(serde_json::to_value(store.read().unwrap()).unwrap(),expected);
         let stored=std::fs::read_to_string(root.join("connections.json")).unwrap();
-        assert!(!stored.contains(&target.virtual_display().unwrap().id.to_string()));
+        assert!(stored.contains(&format!("virtual:{}",target.virtual_display().unwrap().id)));
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn virtual_view_creates_one_base_preset_and_rejected_saves_preserve_storage() {
+    fn virtual_view_creates_one_display_profile_and_rejected_saves_preserve_storage() {
         use uu_core::device_book::{Destination,Profile,Store};
         let root=std::env::temp_dir().join(format!("eclipse-virtual-new-preset-{}",uuid::Uuid::new_v4()));
         let store=Store::open(&root).unwrap();
@@ -870,15 +877,14 @@ mod tests {
         let mut client=ClientSettings::default();client.fps=120;
         save_profile_client_settings(&store,&target,client.clone()).unwrap();
         let first=store.read().unwrap();let profile=first.device(&id).unwrap();
-        assert_eq!(profile.client_configs.len(),1);
-        let selected=profile.selected_client.clone().unwrap();
-        assert_eq!(profile.client_configs[0].id,selected);
-        assert_eq!(profile.client_configs[0].settings,client);
+        assert!(profile.client_configs.is_empty());assert!(profile.selected_client.is_none());
+        assert_eq!(profile.display_clients.len(),1);
+        assert_eq!(profile.display_clients[0].target,target.display_client_key().unwrap());
+        assert_eq!(profile.display_clients[0].settings,client);
         client.fps=144;save_profile_client_settings(&store,&target,client.clone()).unwrap();
         let second=store.read().unwrap();let profile=second.device(&id).unwrap();
-        assert_eq!(profile.client_configs.len(),1);
-        assert_eq!(profile.selected_client.as_deref(),Some(selected.as_str()));
-        assert_eq!(profile.client_configs[0].settings,client);
+        assert!(profile.client_configs.is_empty());assert_eq!(profile.display_clients.len(),1);
+        assert_eq!(profile.display_clients[0].settings,client);
         let path=root.join("connections.json");let before=std::fs::read(&path).unwrap();
         client.fps=0;
         assert!(save_profile_client_settings(&store,&target,client).is_err());
@@ -973,7 +979,7 @@ mod tests {
         assert_eq!(stream.application_hotkeys().chords(Action::Stats),&[Chord::ctrl_alt(0x54)]);
         let mut launcher=stream.clone();
         let mut global=launcher.application_hotkeys().clone();
-        global.set(Action::Stats,vec![Chord::ctrl_alt(0x44)]);
+        global.set(Action::Stats,vec![Chord::ctrl_alt(0x4a)]);
         launcher.application_hotkeys=Some(global.clone());launcher.save(&path).unwrap();
         stream.client.hotkeys=Default::default();stream.fps=165;
         stream.save_client(&path).unwrap();
@@ -1149,7 +1155,7 @@ mod tests {
         assert_eq!(s.volume, 100);
         assert!(s.capture_keyboard);
         assert_eq!(s.display_mode,uu_core::screen_control::DisplayMode::Preserve);
-        assert_eq!(s.bitrate, 5);
+        assert_eq!(s.bitrate, 6);
         s.save(&p).unwrap();
         s.fps = 90;
         s.save(&p).unwrap();

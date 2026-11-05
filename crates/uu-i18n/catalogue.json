@@ -1907,8 +1907,17 @@
   "修改虚拟显示器规格前，请先结束此主机上的串流": "End streams on this host before changing a virtual display mode.",
   "已分配：{}，活动占用：{}": "Allocated: {}; active: {}",
   "名称立即生效；修改规格前请结束此主机上的串流。未恢复的持久屏在恢复时采用新规格。": "The name applies immediately. End streams on this host before changing the mode. An unrestored persistent display uses the new mode when recovered.",
-  "保存显示器设置": "Save display settings"
-  ,"返回本机 / 恢复串流": "Return to local desktop / restore stream",
-  "无法注册全局返回本机快捷键；请检查按键是否被其它程序占用": "Cannot register the global return-to-local shortcut. Check whether another program owns the key."
-  ,"{} 隐藏所有串流窗口并返回本机，再按一次恢复；此全局命令在嵌套模式下仍由本机处理。": "{} hides all stream windows and returns to the local desktop. Press it again to restore them. This global command remains local in nested mode."
+  "保存显示器设置": "Save display settings",
+  "返回本机 / 恢复串流": "Return to local desktop / restore stream",
+  "无法注册全局返回本机快捷键；请检查按键是否被其它程序占用": "Cannot register the global return-to-local shortcut. Check whether another program owns the key.",
+  "{} 隐藏所有串流窗口并返回本机，再按一次恢复；此全局命令在嵌套模式下仍由本机处理。": "{} hides all stream windows and returns to the local desktop. Press it again to restore them. This global command remains local in nested mode.",
+  "每台设备最多保存64个显示器客户端配置": "Each device can store at most 64 per-display client profiles.",
+  "显示器客户端配置标识重复": "Duplicate per-display client profile identity.",
+  "显示器客户端配置标识无效": "Invalid per-display client profile identity.",
+  "按预期总带宽自动分配": "Allocate from the expected total bandwidth",
+  "预期总带宽": "Expected total bandwidth",
+  "活动屏幕按实际分辨率和帧率比例分配这段视频预算。手动码率先从总预算扣除；懒连接或已断开窗口不占预算。": "Active screens share this video budget in proportion to actual resolution and frame rate. Manual bitrates are reserved first; lazy or disconnected windows do not consume the budget.",
+  "按总预算自动分配": "Allocate from total budget",
+  "按当前所有活动屏幕的分辨率和帧率比例分配配置中的预期总带宽；手动码率先扣除。": "Share the configured expected total bandwidth across active screens by resolution and frame rate; manual bitrates are reserved first.",
+  "已保存到此显示器的客户端配置；下次连接继续使用": "Saved settings for this display; they will be used on the next connection."
 }

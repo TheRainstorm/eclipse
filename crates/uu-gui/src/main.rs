@@ -221,6 +221,7 @@ struct App {
     custom_mbps: u32,
     target_fps: u32,
     fps_draft: u32,
+    budget_alloc_kbps: Option<u32>,
     settings_seq: u64,
     settings_feedback: String,
     pointer: input::RemotePointer,
@@ -252,6 +253,7 @@ const BITRATE_PRESETS: &[&str] = &[
     "高清 8M",
     "自定义",
     "推荐码率（LAN Quality）",
+    "按预期总带宽自动分配",
 ];
 
 fn vk_for(key: egui::Key) -> Option<u32> {
@@ -406,6 +408,13 @@ impl App {
                 if let Some(client) = launch.client { preferences.client = client; }
             }
         }
+        if let (Some(target),Some(config))=(stream_target.as_ref(),config.as_ref()) {
+            if let (sessions::ConnectionTarget::NativeProfile{id,..},Some(display))=(target.connection.base(),target.connection.display_client_key()) {
+                if let Ok(store)=uu_core::device_book::Store::open(config.at("device-trust")) {
+                    if let Ok(Some(client))=store.display_client_settings(id,&display) {preferences.client=client;}
+                }
+            }
+        }
         // Extra views of one host start silent so simultaneous display windows
         // do not play duplicated system audio. Their own sound menu can unmute.
         if stream_target.as_ref().is_some_and(|t|t.connection.is_auxiliary_view()) {preferences.muted=true;}
@@ -492,6 +501,7 @@ impl App {
             custom_mbps: preferences.custom_mbps,
             target_fps:preferences.fps,
             fps_draft: preferences.fps,
+            budget_alloc_kbps:None,
             settings_seq: 0,
             settings_feedback: String::new(),
             pointer: input::RemotePointer::default(),
@@ -652,11 +662,15 @@ impl App {
             _=>uu_core::video_options::CaptureResolution::Unchanged,
         }
     }
+    fn native_quality_request(&self)->uu_core::native_quality::Request {
+        let fallback=self.preferences.network_budget_mbps.saturating_mul(1000);
+        self.preferences.with_budget_kbps(self.budget_alloc_kbps.or_else(||(self.preferences.bitrate==6).then_some(fallback)))
+    }
     fn send_capture_settings_through(&mut self,immediate:bool) {
         self.resolve_remote_frame_rate();
         if self.stream_target.is_some() {
             if self.disconnecting {return;}
-            let request=self.preferences.native_request();
+            let request=self.native_quality_request();
             let dynamic=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_response.lock().unwrap().as_ref().is_some_and(|r|r.dynamic));
             let reconnect=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_request.get().is_some_and(|old|if dynamic {old.bounds!=request.bounds||old.codec!=request.codec}else{old!=&request}));
             let reconnect=reconnect || self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_requested.get().is_some_and(|old|*old!=self.preferences.hdr));

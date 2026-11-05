@@ -200,6 +200,27 @@ struct Session {
     activated:Option<std::time::Instant>,
     app: App,
 }
+struct BudgetState {
+    factor:f32,
+    last_eval:Option<std::time::Instant>,
+    last_decrease:Option<std::time::Instant>,
+    last_increase:Option<std::time::Instant>,
+}
+impl Default for BudgetState {
+    fn default()->Self {Self{factor:1.,last_eval:None,last_decrease:None,last_increase:None}}
+}
+impl BudgetState {
+    fn observe(&mut self,loss_ppm:u32,rtt_ms:Option<u32>,now:std::time::Instant) {
+        if self.last_eval.is_some_and(|last|now.duration_since(last)<std::time::Duration::from_secs(1)){return;}
+        let severe=loss_ppm>=20_000||rtt_ms.is_some_and(|rtt|rtt>=250);
+        let good=loss_ppm<=5_000&&rtt_ms.is_none_or(|rtt|rtt<=150);
+        if severe {self.factor=(self.factor*0.8).max(0.15);self.last_decrease=Some(now);}
+        else if good&&self.last_decrease.is_none_or(|last|now.duration_since(last)>=std::time::Duration::from_secs(5))&&self.last_increase.is_none_or(|last|now.duration_since(last)>=std::time::Duration::from_secs(2)) {
+            self.factor=(self.factor+0.05).min(1.);self.last_increase=Some(now);
+        }
+        self.last_eval=Some(now);
+    }
+}
 /// A window owns its explicit views, including views that have never connected.
 /// A media Session can outlive a removed view only while its cleanup settles.
 #[derive(Clone)]
@@ -606,6 +627,8 @@ struct State {
     actions: Rc<RefCell<Vec<Action>>>,
     local_desktop: bool,
     restore_window: Option<u64>,
+    budget:std::collections::HashMap<u64,BudgetState>,
+    budget_refresh:Option<std::time::Instant>,
 }
 impl Workspace {
     pub fn new(
@@ -636,6 +659,8 @@ impl Workspace {
                 input_owner: None,
                 local_desktop: false,
                 restore_window: None,
+                budget:Default::default(),
+                budget_refresh:None,
             })
         });
         Self { owner }
@@ -648,6 +673,63 @@ pub struct Workspace {
     owner: uu_core::local_workspace::Owner,
 }
 impl State {
+    fn rebalance_budgets(&mut self) {
+        let now=std::time::Instant::now();
+        if self.budget_refresh.is_some_and(|last|now.duration_since(last)<std::time::Duration::from_secs(1)){return;}
+        self.budget_refresh=Some(now);
+        struct Candidate {session:u64, weight:u64, fixed:Option<u32>, budget_kbps:u32, loss_ppm:u32, rtt_ms:Option<u32>}
+        let mut groups:std::collections::HashMap<ConnectionTarget,Vec<Candidate>>=Default::default();
+        let mut active=std::collections::HashSet::new();
+        for window in &self.windows {
+            for session in &window.sessions {
+                if session.app.exit_requested||session.app.disconnecting{continue;}
+                let Some(target)=session.app.stream_target.as_ref() else{continue;};
+                if !target.is_native(){continue;}
+                let Some(handle)=session.app.controller.as_ref() else{continue;};
+                active.insert(session.id);
+                let auto=session.app.preferences.bitrate==6;
+                let (mut width,mut height)=handle.stats.res();
+                let screens=session.app.remote_screens();
+                if width==0||height==0 {
+                    if let Some(screen)=session.app.displays.selected.and_then(|id|screens.screens.iter().find(|screen|screen.id==id)).or_else(||screens.screens.iter().find(|screen|screen.id==screens.current_id)) {
+                        width=screen.width;height=screen.height;
+                    }
+                }
+                let width=width.max(320);let height=height.max(200);let fps=session.app.target_fps.clamp(5,240) as u64;
+                let codec=handle.stats.codec.lock().map(|codec|codec.to_ascii_lowercase()).unwrap_or_default();
+                let codec=if codec.contains("av1"){uu_core::native::VideoCodec::Av1}else if codec.contains("265")||codec.contains("hevc"){uu_core::native::VideoCodec::Hevc}else if codec.contains("pyrowave"){uu_core::native::VideoCodec::Pyrowave}else{uu_core::native::VideoCodec::H264};
+                let fixed=if auto {None} else {session.app.native_quality_request().bitrate_kbps.or_else(||Some(uu_core::bitrate::recommended_kbps(width,height,fps as u32,codec)))};
+                let loss=handle.stats.loss_ppm.load(std::sync::atomic::Ordering::Relaxed).max(handle.stats.network_loss.lock().ok().and_then(|loss|loss.as_ref().filter(|loss|loss.fresh()).and_then(|loss|loss.loss_ppm)).unwrap_or(0));
+                let rtt=handle.stats.rtt_updated_ms.load(std::sync::atomic::Ordering::Relaxed);
+                let rtt_ms=(rtt>0&&uu_core::time::now_ms().saturating_sub(rtt)<5_000).then(||handle.stats.rtt_ms.load(std::sync::atomic::Ordering::Relaxed));
+                groups.entry(base_key(target)).or_default().push(Candidate{session:session.id,weight:u64::from(width)*u64::from(height)*fps,fixed,budget_kbps:session.app.preferences.network_budget_mbps.saturating_mul(1000),loss_ppm:loss,rtt_ms});
+            }
+        }
+        let mut updates=Vec::new();
+        for (_,candidates) in groups {
+            let total=candidates.iter().map(|candidate|candidate.budget_kbps).min().unwrap_or(0);
+            let items=candidates.iter().map(|candidate|(candidate.weight,candidate.fixed)).collect::<Vec<_>>();
+            let allocations=uu_core::client_settings::allocate_bitrate_budget(total,&items);
+            for (candidate,allocation) in candidates.into_iter().zip(allocations) {
+                let state=self.budget.entry(candidate.session).or_default();
+                state.observe(candidate.loss_ppm,candidate.rtt_ms,now);
+                if candidate.fixed.is_some(){updates.push((candidate.session,None));}
+                else {updates.push((candidate.session,Some((allocation as f32*state.factor).round() as u32)));}
+            }
+        }
+        for (id,target) in updates {
+            for window in &mut self.windows {
+                if let Some(session)=window.sessions.iter_mut().find(|session|session.id==id) {
+                    if session.app.budget_alloc_kbps!=target {
+                        session.app.budget_alloc_kbps=target;
+                        if target.is_some(){session.app.send_capture_settings();}
+                    }
+                    break;
+                }
+            }
+        }
+        self.budget.retain(|id,_|active.contains(id));
+    }
     fn toggle_local_desktop(&mut self,ctx:&egui::Context) {
         if self.windows.is_empty() {return;}
         if self.local_desktop {
@@ -891,6 +973,7 @@ impl eframe::App for Workspace {
             let state = state.as_mut().expect("workspace UI thread");
             if crate::platform::take_global_toggle(){state.toggle_local_desktop(ctx);}
             state.sync_owned_views();
+            state.rebalance_budgets();
             while let Some(request) = self.owner.try_recv() {
                 let accepted = serde_json::from_slice::<Launch>(&request.bytes)
                     .ok()
