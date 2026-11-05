@@ -1899,5 +1899,7 @@
   "名称、端口和连接入口变更需要重启服务；重启会断开当前串流。": "Name, port, and connection entrance changes require a service restart, which disconnects current streams.",
   "服务程序操作已完成": "The service operation is complete.",
   "导入服务插件": "Import service plugins",
-  "将当前已启用插件及其声明的配置、账号复制到服务；导入代码需要系统授权。": "Copy enabled plugins and their declared settings and accounts to the service. Importing code requires system authorization."
+  "将当前已启用插件及其声明的配置、账号复制到服务；导入代码需要系统授权。": "Copy enabled plugins and their declared settings and accounts to the service. Importing code requires system authorization.",
+  "添加连接服务器": "Add connection server",
+  "编辑连接服务器": "Edit connection server"
 }

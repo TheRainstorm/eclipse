@@ -136,7 +136,13 @@ impl Manager {
                 if !compatible {ui.colored_label(super::theme::palette(ui.visuals()).danger,uu_i18n::text("插件与当前程序不匹配，请下载匹配版本。"));}
                 if !error.is_empty(){ui.colored_label(super::theme::palette(ui.visuals()).danger,error);}
                 if enabled&&self.enabled(&id) {
-                    for page in self.pages(Placement::Settings).into_iter().filter_map(|(plugin,page)|(plugin==id).then_some(page)) {
+                    let pages=self.pages(Placement::Settings);
+                    // Windows host pages belong to the service. Connection
+                    // accounts still run as this controlling user and must
+                    // remain reachable without installing a local host.
+                    let accounts=if cfg!(windows){self.pages(Placement::Connections)}else{Vec::new()};
+                    for page in pages.into_iter().chain(accounts).filter_map(|(plugin,page)|(plugin==id).then_some(page)) {
+                        if page.placement==Placement::Connections {ui.strong(&page.title);}
                         ui.separator();for action in self.show_page(ui,&id,&page.id){actions.push((id.clone(),action));}
                     }
                 }

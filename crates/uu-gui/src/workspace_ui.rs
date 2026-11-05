@@ -439,6 +439,33 @@ mod tests {
             .any(|(s, _)| s.contains("配对文件") || s.contains("配对 key")));
     }
     #[test]
+    fn fresh_controller_can_configure_a_server_from_the_device_route_without_a_host() {
+        let mut h=Harness::new();
+        let sharing=h.workspace.book.sharing.clone();
+        h.workspace.new_device(None,None);
+        h.workspace.editor.as_mut().unwrap().kind=2;
+        h.click("添加连接服务器");
+        let editor=h.workspace.service_editor.as_mut().unwrap();
+        editor.value.name="Controller route".into();
+        editor.value.address="signal.example.invalid:8443".into();
+        h.click("保存服务器");
+        assert!(h.workspace.service_editor.as_ref().is_some_and(|e|!e.error.is_empty()));
+        h.workspace.service_editor.as_mut().unwrap().credential="ab".repeat(32);
+        h.click("保存服务器");
+        assert!(h.workspace.service_editor.is_none());
+        let selected=h.workspace.book.services[0].clone();
+        assert!(!selected.host_enabled);
+        assert_eq!(h.workspace.editor.as_ref().unwrap().service,selected.id);
+        assert_eq!(h.workspace.book.sharing,sharing);
+        assert!(!h.workspace.host.running());
+        let editor=h.workspace.editor.as_mut().unwrap();
+        editor.device="remote-desktop".into();
+        let actions=h.click("保存并连接");
+        assert!(matches!(&actions[..],[Action::Open(_)]));
+        let profile=&h.workspace.book.devices[0];
+        assert!(matches!(&profile.routes[0].destination,Destination::Vps{service,device} if service==&selected.id&&device=="remote-desktop"));
+    }
+    #[test]
     #[cfg(not(windows))]
     fn server_form_reports_missing_credentials_without_discarding_fields() {
         let mut h = Harness::new();
@@ -2043,6 +2070,15 @@ impl Workspace {
                                     );
                                 }
                             });
+                        ui.horizontal(|ui| {
+                            if ui.add(crate::theme::secondary_button(uu_i18n::text("添加连接服务器"))).clicked() {
+                                self.edit_service(None);
+                            }
+                            let selected=self.book.services.iter().find(|s|s.id==editor.service).cloned();
+                            if ui.add_enabled(selected.is_some(),crate::theme::secondary_button(uu_i18n::text("编辑连接服务器"))).clicked() {
+                                self.edit_service(selected);
+                            }
+                        });
                         field(
                             ui,
                             uu_i18n::text("目标设备名称"),
@@ -2129,8 +2165,9 @@ impl Workspace {
                             uu_i18n::text("公开可信证书可留空"),
                         );
                     });
+                    #[cfg(not(windows))]
                     crate::theme::switch(ui,&mut editor.value.host_enabled, uu_i18n::text("共享本机时使用此服务器"));
-                    if editor.value.host_enabled {
+                    if !cfg!(windows) && editor.value.host_enabled {
                         field(
                             ui,
                             uu_i18n::text("本机在服务器的设备名称"),
@@ -2168,6 +2205,9 @@ impl Workspace {
                 })();
                 match result {
                     Ok(()) => {
+                        if let Some(device)=&mut self.editor {
+                            if device.kind==2 {device.service=editor.value.id.clone();}
+                        }
                         self.feedback.success(
                             super::ui_feedback::Scope::Services(0),
                             uu_i18n::text("服务器配置已保存"),
