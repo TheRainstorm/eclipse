@@ -106,6 +106,9 @@ pub(super) struct State {
     waiting_for_capacity: bool,
 }
 
+impl State {
+    pub(super) fn directory(&self)->Option<PathBuf> {self.file.as_ref().map(|file|file.directory.clone())}
+}
 impl Manager {
     pub(super) fn saved_records(&self)->Result<Vec<SavedDisplay>> {
         let file=self.policy.lock().map_err(|_|platform("saved display policy is poisoned"))?.file.clone();

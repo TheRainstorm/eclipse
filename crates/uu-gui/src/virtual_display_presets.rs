@@ -171,6 +171,44 @@ pub fn create_menu(ui: &mut egui::Ui, presets: &Presets) -> Option<Spec> {
     selected
 }
 
+/// Compact live-display row. Existing uncommon modes remain visible, while
+/// the common choices stay one click away without manual number entry.
+pub(super) fn display_spec_row(ui:&mut egui::Ui,spec:&mut Spec)->bool {
+    let sizes=[[1280,720],[1920,1080],[1920,1200],[2560,1440],[2560,1600],[3440,1440],[3840,2160],[1080,1920],[1440,2560]];
+    let rates=[30_000,50_000,59_940,60_000,75_000,90_000,100_000,119_880,120_000,144_000,165_000,180_000,240_000,360_000,480_000];
+    let mut changed=false;
+    ui.horizontal_wrapped(|ui|{
+        ui.label(uu_i18n::text("分辨率"));
+        crate::theme::Select::from_id_salt("virtual-live-size")
+            .selected_text(format!("{} × {}",spec.width,spec.height))
+            .show_ui(ui,|ui|{
+                if !sizes.contains(&[spec.width,spec.height]) {
+                    let _=crate::theme::selectable_tab(ui,true,format!("{} × {}",spec.width,spec.height));
+                }
+                for [width,height] in sizes {
+                    if crate::theme::selectable_tab(ui,spec.width==width&&spec.height==height,format!("{width} × {height}")).clicked() {
+                        spec.width=width;spec.height=height;changed=true;
+                    }
+                }
+            });
+        ui.label(uu_i18n::text("刷新率"));
+        crate::theme::Select::from_id_salt("virtual-live-rate")
+            .selected_text(format!("{} Hz",spec.refresh_millihz as f64/1000.))
+            .show_ui(ui,|ui|{
+                if !rates.contains(&spec.refresh_millihz) {
+                    let _=crate::theme::selectable_tab(ui,true,format!("{} Hz",spec.refresh_millihz as f64/1000.));
+                }
+                for rate in rates {
+                    if crate::theme::selectable_tab(ui,spec.refresh_millihz==rate,format!("{} Hz",rate as f64/1000.)).clicked() {
+                        spec.refresh_millihz=rate;changed=true;
+                    }
+                }
+            });
+        if crate::theme::compact_switch(ui,&mut spec.hdr,"HDR").changed(){changed=true;}
+    });
+    changed
+}
+
 /// One editor for creation presets and existing host-owned displays. Common
 /// modes are conveniences; arbitrary valid modes and fractional Hz survive.
 pub(super) fn spec_editor(ui:&mut egui::Ui,spec:&mut Spec) {

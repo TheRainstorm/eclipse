@@ -34,6 +34,7 @@ pub enum Request {
     Inspect,
     Create { spec: Spec },
     CreatePersistent { spec: Spec },
+    SetLimit { limit:u16 },
     SetPersistent { id:LeaseId, persistent:bool },
     Configure { id:LeaseId, name:String, spec:Spec },
     Remove { id: LeaseId },
@@ -47,6 +48,7 @@ pub enum LocalRequest {
     Recover,
     PrepareSlot { id: String },
     CreateManual { spec:Spec, persistent:bool },
+    SetLimit { limit:u16 },
     KeepAfterStream { keep:bool },
     ToggleKeepAfterStream,
     SetPersistent { id:LeaseId, persistent:bool },
@@ -142,6 +144,7 @@ pub fn execute_local_owner(request: LocalRequest) -> Result<Response> {
             Request::Inspect
         }
         LocalRequest::CreateManual{spec,persistent}=>return Ok(Response::Created{display:manager.create_manual(spec,persistent)?}),
+        LocalRequest::SetLimit{limit}=>{manager.set_limit_persisted(limit)?;Request::Inspect},
         LocalRequest::KeepAfterStream{keep}=>{manager.set_keep_after_stream(keep)?;Request::Inspect},
         LocalRequest::ToggleKeepAfterStream=>{manager.toggle_keep_after_stream()?;Request::Inspect},
         LocalRequest::SetPersistent{id,persistent}=>{manager.set_persistent(id,persistent)?;Request::Inspect},
@@ -158,6 +161,10 @@ pub fn execute_local_owner(request: LocalRequest) -> Result<Response> {
             display: manager.create(Owner::Manual, spec)?,
         },
         Request::CreatePersistent { spec }=>Response::Created{display:manager.create_manual(spec,true)?},
+        Request::SetLimit{limit}=>{
+            manager.set_limit_persisted(limit)?;
+            Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}
+        },
         Request::SetPersistent{id,persistent}=>{
             manager.set_persistent(id,persistent)?;
             Response::Snapshot{status:manager.status()?,displays:manager.list()?,slots:manager.slots()?}
@@ -407,6 +414,10 @@ impl Host {
                     .collect(),
                 slots: self.manager.slots()?.into_iter().filter(|s|s.active).collect(),
             },
+            Request::SetLimit{limit}=>{
+                self.manager.set_limit_persisted(limit)?;
+                Response::Snapshot{status:self.manager.status()?,displays:self.manager.list()?,slots:self.manager.slots()?.into_iter().filter(|s|s.active).collect()}
+            }
             Request::Create { spec } | Request::CreatePersistent { spec } => {
                 let persistent=matches!(request,Request::CreatePersistent{..});
                 let display = self.manager.create_for_session(self.owner,spec,persistent,self.context.session_id.as_deref())?;

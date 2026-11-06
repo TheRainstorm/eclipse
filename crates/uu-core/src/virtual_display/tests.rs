@@ -1096,6 +1096,19 @@ fn host_limit_counts_manual_and_session_allocations_without_changing_existing_ta
 }
 
 #[test]
+fn remote_limit_change_persists_through_the_service_book() {
+    let (manager,_backend)=fixture();
+    let path=saved_policy(&manager);
+    manager.set_limit_persisted(4).unwrap();
+    let book=crate::device_book::Store::open(&path).unwrap().read().unwrap();
+    assert_eq!(book.sharing.virtual_display_limit,4);
+    let (next,_backend)=fixture();
+    next.configure_saved_displays(&path).unwrap();
+    assert_eq!(next.status().unwrap().limit,4);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn explicit_temporary_and_persistent_creation_have_distinct_disconnect_lifetimes() {
     let (manager,backend)=fixture();let path=saved_policy(&manager);
     manager.set_keep_after_stream(true).unwrap();

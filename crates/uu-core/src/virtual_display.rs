@@ -756,6 +756,19 @@ impl Manager {
         self.limit.store(limit,Ordering::Release);
         Ok(())
     }
+    /// Remote management changes the same canonical service setting used by
+    /// the host settings page, rather than an in-memory value that disappears
+    /// when the background service restarts.
+    pub fn set_limit_persisted(&self,limit:u16)->Result<()> {
+        let directory=self.policy.lock().map_err(|_| Error::Platform("saved display policy is poisoned".into()))?.directory();
+        if let Some(directory)=directory {
+            crate::device_book::Store::open(directory).and_then(|store|store.edit(|book|{
+                book.sharing.virtual_display_limit=limit;
+                Ok(())
+            })).map_err(|error|Error::Platform(error.to_string()))?;
+        }
+        self.set_limit(limit)
+    }
     pub fn create_for_session(&self,owner:Uuid,spec:Spec,persistent:bool,context:Option<&str>)->Result<Display> {
         self.create_target(Owner::Session(owner),spec,context,None,Some(persistent))
     }
