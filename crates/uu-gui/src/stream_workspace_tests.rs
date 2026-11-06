@@ -181,14 +181,14 @@ fn group_shortcut_menu_and_window_close_hide_before_cleanup_and_reject_late_fram
         let output=ctx.run(Default::default(),|ctx| {
             state.windows[0].poll_closing(ctx);
             let window=&mut state.windows[0];
-            window.show(ctx,&None,false,&mut state.next,state.actions.clone(),&state.gamepad);
+            window.show(ctx,&None,false,false,&mut state.next,state.actions.clone(),&state.gamepad);
         });
         assert!(output.viewport_output.values().any(|out|out.commands.iter().any(|cmd|matches!(cmd,egui::ViewportCommand::Visible(false)))));
         assert!(state.windows[0].sessions.iter().all(|s|s.app.controller.is_some()&&s.app.textures.is_empty()),
             "{entry}: retain the cleanup owners without uploading late frames");
         for stopped in stops {stopped.store(true,Ordering::Release);}
-        ctx.run(Default::default(),|ctx| {
-            state.windows[0].show(ctx,&None,false,&mut state.next,state.actions.clone(),&state.gamepad);
+        let _=ctx.run(Default::default(),|ctx| {
+            state.windows[0].show(ctx,&None,false,false,&mut state.next,state.actions.clone(),&state.gamepad);
         });
         assert!(state.windows[0].sessions.is_empty(),"{entry}: release after the real completion signal");
     }
@@ -859,6 +859,8 @@ struct Probe {
     ui_started:Option<Instant>,
     roundtrip_done:bool,
     tail_state:Option<String>,
+    hidden_window:Option<winit::window::WindowId>,
+    hidden_since:Option<Instant>,
 }
 impl eframe::App for Probe {
     fn raw_input_hook(&mut self,_ctx:&egui::Context,input:&mut egui::RawInput) {
@@ -982,8 +984,28 @@ impl eframe::App for Probe {
                         .iter()
                         .map(|s| s.decoded_total.load(Ordering::Acquire))
                         .collect();
+                    self.hidden_window=Some(eframe::viewport_window_for(ctx,state.windows[0].viewport()).unwrap().id());
+                    self.hidden_since=Some(Instant::now());
+                    state.toggle_local_desktop(ctx);
+                    self.phase=40;
+                }
+                40=>{
+                    let window=eframe::viewport_window_for(ctx,state.windows[0].viewport()).expect("returning to local must keep the native window declared");
+                    assert_eq!(Some(window.id()),self.hidden_window,"hiding must not replace the native window");
+                    if self.hidden_since.unwrap().elapsed()>=Duration::from_millis(300) {
+                        assert_eq!(window.is_visible(),Some(false));
+                        assert!(state.windows[0].sessions.iter().all(|s|!s.app.active_session));
+                        state.toggle_local_desktop(ctx);self.phase=41;
+                    }
+                }
+                41 if eframe::viewport_window_for(ctx,state.windows[0].viewport()).is_some_and(|window|window.is_visible()==Some(true))=>{
+                    assert_eq!(Some(eframe::viewport_window_for(ctx,state.windows[0].viewport()).unwrap().id()),self.hidden_window,"restoring must reuse the same native window");
+                    for (index,session) in state.windows[0].sessions.iter().enumerate() {
+                        assert!(Arc::ptr_eq(&session.app.controller.as_ref().unwrap().stats,&self.stats[index]));
+                        assert_eq!(self.stats[index].native_media_epoch.load(Ordering::Acquire),self.epochs[index]);
+                    }
                     FULLSCREEN_COMMANDS.with(|commands|commands.borrow_mut().insert(state.windows[0].viewport()));
-                    self.phase = 7;
+                    self.phase=7;
                 }
                 7 if ctx.input_for(state.windows[0].viewport(),|i|i.viewport().fullscreen)==Some(true)
                     && eframe::viewport_window_for(ctx,state.windows[0].viewport()).is_some_and(|window|window.current_monitor().is_some_and(|monitor|window.inner_size()==monitor.size())) => {
@@ -1242,6 +1264,8 @@ fn native_windows_attach_reorder_and_detach_two_live_generated_sessions() {
                 ui_started:None,
                 roundtrip_done:false,
                 tail_state:None,
+                hidden_window:None,
+                hidden_since:None,
             }))
         }),
     )

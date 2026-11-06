@@ -575,6 +575,7 @@ impl Window {
         ctx: &egui::Context,
         gl: &Option<Arc<eframe::glow::Context>>,
         vsync: bool,
+        local_desktop: bool,
         next: &mut u64,
         actions: Rc<RefCell<Vec<Action>>>,
         gamepad: &Rc<RefCell<crate::gamepad::Reader>>,
@@ -591,6 +592,18 @@ impl Window {
                 self.sessions.retain(|s|s.app.controller.is_some());
             }
             ctx.request_repaint_of(egui::ViewportId::ROOT);
+            return;
+        }
+        if local_desktop {
+            let tabs=self.tabs(actions);
+            for session in &mut self.sessions {
+                session.app.workspace_tabs=Some(tabs.clone());
+                session.app.active_session=false;
+                session.app.workspace_poll(ctx);
+                session.app.poll_controller(ctx);
+                session.app.poll_virtual_display_state();
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
             return;
         }
         if self.platform.is_none() {
@@ -839,15 +852,15 @@ impl State {
         self.budget.retain(|id,_|active.contains(id));
     }
     fn toggle_local_desktop(&mut self,ctx:&egui::Context) {
-        if self.windows.is_empty() {return;}
+        if self.windows.iter().all(|window|window.closing) {return;}
         if self.local_desktop {
-            for window in &self.windows {
+            for window in self.windows.iter().filter(|window|!window.closing) {
                 ctx.send_viewport_cmd_to(window.viewport(),egui::ViewportCommand::Visible(true));
             }
             self.local_desktop=false;
             let selected=self.restore_window.and_then(|id|self.windows.iter().position(|window|window.id==id))
                 .or_else(||self.windows.iter().position(|window|!window.views.is_empty()))
-                .or_else(||(!self.windows.is_empty()).then_some(0));
+                .or_else(||self.windows.iter().position(|window|!window.closing));
             if let Some(index)=selected {
                 let window=&mut self.windows[index];
                 window.resume_local_desktop();window.focus=true;
@@ -1095,23 +1108,10 @@ impl eframe::App for Workspace {
             }
             state.sync_owned_views();
             for window in &mut state.windows {window.poll_closing(ctx);}
-            if state.local_desktop {
-                for window in state.windows.iter_mut().filter(|w|!w.closing) {
-                    let tabs=window.tabs(Default::default());
-                    for session in &mut window.sessions {
-                        session.app.workspace_tabs=Some(tabs.clone());
-                        session.app.workspace_poll(ctx);
-                        session.app.poll_controller(ctx);
-                        session.app.poll_virtual_display_state();
-                        if session.app.exit_requested && session.app.audio_save_after.take().is_some() {session.app.persist_preferences();}
-                    }
-                }
-            }
             state
                 .windows
                 .retain(|w| !w.views.is_empty() || !w.sessions.is_empty() || !w.pending.is_empty());
             for window in &mut state.windows {
-                if state.local_desktop && !window.closing {continue;}
                 let id = window.id;
                 let viewport = window.viewport();
                 let title=window.sessions.iter().find(|s|s.id==window.active).map(|s|format!("{} · {}",session_title(&s.app),crate::brand::NAME))
@@ -1120,7 +1120,7 @@ impl eframe::App for Workspace {
                     .with_title(title)
                     .with_inner_size([1100., 760.])
                     .with_min_inner_size([320., 200.])
-                    .with_visible(!window.closing)
+                    .with_visible(!window.closing&&!state.local_desktop)
                     .with_decorations(false)
                     .with_icon(crate::brand::window_icon());
                 if let Some(position) = window.position.take() {
@@ -1130,7 +1130,7 @@ impl eframe::App for Workspace {
                     STATE.with(|state| {
                         let mut state = state.borrow_mut();
                         let state = state.as_mut().expect("workspace UI thread");
-                        let focused = ctx.input(|i| i.focused);
+                        let focused = !state.local_desktop&&ctx.input(|i| i.focused);
                         let current = state.windows.iter().find(|w| w.id == id).and_then(|w|(w.active!=0).then_some(w.active));
                         let old_here = state.windows.iter().find(|w| w.id == id).is_some_and(|w| {
                             w.sessions.iter().any(|s| Some(s.id) == state.input_owner)
@@ -1154,10 +1154,11 @@ impl eframe::App for Workspace {
                             actions,
                             gamepad,
                             input_owner,
+                            local_desktop,
                             ..
                         } = state;
                         if let Some(window) = windows.iter_mut().find(|w| w.id == id) {
-                            window.show(ctx, gl, *vsync, next, actions.clone(), gamepad);
+                            window.show(ctx, gl, *vsync, *local_desktop, next, actions.clone(), gamepad);
                             if focused {
                                 *input_owner = (window.active!=0).then_some(window.active);
                             }
