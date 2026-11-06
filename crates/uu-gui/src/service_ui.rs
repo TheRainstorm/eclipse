@@ -23,14 +23,14 @@ pub(super) struct Entry {
     manager: Option<Manager>,
     deployment: Option<Deployment>,
     job: Option<mpsc::Receiver<Result<bool, String>>>,
-    notice: String,
+    feedback: super::ui_feedback::Feedback,
 }
 impl Entry {
     pub fn poll(&mut self, ctx: &egui::Context, _host: &mut super::sharing_ui::HostUi) -> bool {
         if self.manager.is_none() {
             match Manager::new() {
                 Ok(manager) => self.manager = Some(manager),
-                Err(error) => self.notice = error.to_string(),
+                Err(error) => self.feedback.error(super::ui_feedback::Scope::Services(0), error.to_string()),
             }
         }
         if let Some(manager) = &mut self.manager {
@@ -43,13 +43,23 @@ impl Entry {
                 match result {
                     Ok(true) => {
                         installed = true;
-                        self.notice = uu_i18n::text("服务程序操作已完成").into();
+                        self.feedback.success(
+                            super::ui_feedback::Scope::Services(0),
+                            uu_i18n::text("服务程序操作已完成"),
+                        );
                         if let Some(manager) = &mut self.manager {
                             manager.submit(Job::Refresh);
                         }
                     }
-                    Ok(false) => self.notice = uu_i18n::text("已取消系统授权，服务尚未更新").into(),
-                    Err(error) => self.notice = error,
+                    Ok(false) => self.feedback.report(
+                        super::ui_feedback::Scope::Services(0),
+                        super::ui_feedback::Kind::Info,
+                        uu_i18n::text("已取消系统授权，服务尚未更新"),
+                    ),
+                    Err(error) => self.feedback.error(
+                        super::ui_feedback::Scope::Services(0),
+                        error,
+                    ),
                 }
             }
         }
@@ -90,6 +100,7 @@ impl Entry {
                 ctx.request_repaint();
             });
         }
+        self.feedback.tick(ctx);
         ctx.request_repaint_after(Duration::from_millis(500));
         installed
     }
@@ -143,11 +154,9 @@ impl Entry {
     ) -> bool {
         let installed = self.poll(ui.ctx(), host);
         if self.manager.is_none() {
-            ui.weak(if self.notice.is_empty() {
-                uu_i18n::text("后台服务管理未就绪")
-            } else {
-                &self.notice
-            });
+            ui.weak(uu_i18n::text("后台服务管理未就绪"));
+            self.feedback
+                .show(ui, super::ui_feedback::Scope::Services(0));
             return installed;
         }
         if let Some(manager) = &mut self.manager {
@@ -310,8 +319,15 @@ impl Entry {
                     });
                 }
             }
-            if !self.notice.is_empty() {
-                ui.label(&self.notice);
+            self.feedback
+                .show(ui, super::ui_feedback::Scope::Services(0));
+            if let Some(manager) = &self.manager {
+                if !manager.connection_error.is_empty() {
+                    ui.colored_label(
+                        crate::theme::palette(ui.visuals()).danger,
+                        &manager.connection_error,
+                    );
+                }
             }
         });
         ui.add_space(12.);
@@ -437,7 +453,8 @@ struct Manager {
     dirty: bool,
     busy: bool,
     section: u8,
-    notice: String,
+    feedback: super::ui_feedback::Feedback,
+    job_section: Option<u8>,
     codes: HashMap<String, zeroize::Zeroizing<String>>,
     permissions: HashMap<String, Permissions>,
     pairing: ServicePairing,
@@ -611,7 +628,8 @@ impl Manager {
             dirty: false,
             busy: false,
             section: 0,
-            notice: String::new(),
+            feedback: Default::default(),
+            job_section: None,
             codes: HashMap::new(),
             permissions: HashMap::new(),
             pairing: Default::default(),
@@ -624,9 +642,35 @@ impl Manager {
             return;
         }
         match self.sender.try_send(job) {
-            Ok(()) => self.busy |= foreground,
-            Err(error) => self.notice = error.to_string(),
+            Ok(()) => {
+                if foreground {
+                    self.busy = true;
+                    self.job_section = Some(self.section);
+                }
+            }
+            Err(error) => self.feedback.error(
+                super::ui_feedback::Scope::Services(self.section),
+                error.to_string(),
+            ),
         }
+    }
+    fn completion_scope(&mut self) -> super::ui_feedback::Scope {
+        super::ui_feedback::Scope::Services(self.job_section.take().unwrap_or(self.section))
+    }
+    fn report_completion(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        let kind = if super::ui_feedback::looks_like_error(&text) {
+            super::ui_feedback::Kind::Error
+        } else {
+            super::ui_feedback::Kind::Success
+        };
+        let scope = self.completion_scope();
+        self.feedback.report(scope, kind, text);
+    }
+    fn report_info(&mut self, text: impl Into<String>) {
+        let scope = self.completion_scope();
+        self.feedback
+            .report(scope, super::ui_feedback::Kind::Info, text);
     }
     fn poll(&mut self) {
         loop {
@@ -696,7 +740,9 @@ impl Manager {
                         self.busy = false;
                     }
                     if let Some(notice) = self.service_connections.apply(completed, result) {
-                        self.notice = notice;
+                        if completed {
+                            self.report_completion(notice);
+                        }
                     }
                 }
                 Event::Plugins { completed, result } => {
@@ -704,30 +750,29 @@ impl Manager {
                     match result {
                         Ok(Response::Plugins{snapshot})=>{
                             self.apply_plugin_snapshot(snapshot);
-                            if completed {self.notice=uu_i18n::text("后台插件设置已保存，服务已重启").into();}
+                            if completed {self.report_completion(uu_i18n::text("后台插件设置已保存，服务已重启"));}
                         }
-                        Ok(Response::Error{message})|Err(message)=>if completed{self.notice=message;},
+                        Ok(Response::Error{message})|Err(message)=>if completed{self.report_completion(message);},
                         _=>{},
                     }
                 }
                 Event::Done(result) => {
                     self.busy = false;
                     match result {
-                        Ok(Response::Error { message }) | Err(message) => self.notice = message,
+                        Ok(Response::Error { message }) | Err(message) => self.report_completion(message),
                         Ok(Response::Admin {
                             response: host_admin::Response::Error { message },
-                        }) => self.notice = message,
+                        }) => self.report_completion(message),
                         Ok(Response::Admin {
                             response: host_admin::Response::Saved { .. },
                         }) => {
                             self.dirty = false;
-                            self.notice = uu_i18n::text(
+                            self.report_completion(uu_i18n::text(
                                 "已保存到服务。媒体默认值用于新连接；显示器上限立即生效。",
-                            )
-                            .into();
+                            ));
                         }
-                        Ok(Response::Firewall { message }) => self.notice = message,
-                        _ => self.notice = uu_i18n::text("操作已完成").into(),
+                        Ok(Response::Firewall { message }) => self.report_info(message),
+                        _ => self.report_completion(uu_i18n::text("操作已完成")),
                     }
                 }
                 Event::Trust { completed, result } => {
@@ -742,13 +787,13 @@ impl Manager {
                                     self.pairing.password.clear();
                                 }
                                 self.pairing.password_submitted = false;
-                                self.notice = uu_i18n::text("操作已完成").into();
+                                self.report_completion(uu_i18n::text("操作已完成"));
                             }
                         }
                         Ok(Response::Error { message }) | Err(message) => {
                             if completed {
                                 self.pairing.password_submitted = false;
-                                self.notice = message;
+                                self.report_completion(message);
                             }
                         }
                         _ => {}
@@ -818,7 +863,10 @@ impl Manager {
                                 if ui.add_enabled(enabled&&plugin.compatible,crate::theme::primary_button(uu_i18n::text("保存并重启服务"))).clicked(){
                                     match serde_json::from_str::<serde_json::Map<String,serde_json::Value>>(&draft.options) {
                                         Ok(options)=>{draft.value.options=options;save=Some((plugin.id.clone(),draft.expected.clone(),draft.value.clone()));},
-                                        Err(error)=>self.notice=uu_i18n::format!("插件选项不是有效 JSON：{error}"),
+                                        Err(error)=>self.feedback.error(
+                                            super::ui_feedback::Scope::Services(5),
+                                            uu_i18n::format!("插件选项不是有效 JSON：{error}"),
+                                        ),
                                     }
                                 }
                                 if ui.add(crate::theme::secondary_button(uu_i18n::text("还原"))).clicked(){*draft=PluginDraft::new(draft.expected.clone());}
@@ -854,12 +902,9 @@ impl Manager {
         ui.add_space(10.);
     }
     fn show_body(&mut self, ui: &mut egui::Ui) {
-        if !self.notice.is_empty() {
-            ui.label(&self.notice);
-        }
-        if !self.connection_error.is_empty() {
-            ui.label(&self.connection_error);
-        }
+        self.feedback.tick(ui.ctx());
+        self.feedback
+            .show(ui, super::ui_feedback::Scope::Services(self.section));
         let enabled = self.snapshot.is_some() && !self.busy;
         match self.section {
             0 => {
@@ -891,7 +936,13 @@ impl Manager {
                         }
                     });
                 });
-                section_card(ui, uu_i18n::text("会话"), |ui| self.connections(ui));
+                if self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| !snapshot.connections.is_empty())
+                {
+                    section_card(ui, uu_i18n::text("会话"), |ui| self.connections(ui));
+                }
             }
             1..=4 => {
                 let title = match self.section {
@@ -1727,7 +1778,12 @@ mod tests {
         assert!(!manager.busy);
         send.send(state(true, Sharing::default())).unwrap();
         manager.poll();
-        assert_eq!(manager.notice, "generated revision conflict");
+        let message = manager
+            .feedback
+            .current(&crate::ui_feedback::Scope::Services(0))
+            .expect("completion message");
+        assert_eq!(message.text, "generated revision conflict");
+        assert_eq!(message.kind, crate::ui_feedback::Kind::Error);
         drop(manager);
         assert!(stop.load(Ordering::Acquire));
         assert!(
@@ -1748,12 +1804,40 @@ mod tests {
         assert!(matches!(jobs.try_recv(), Ok(Job::Refresh)));
     }
     #[test]
+    fn firewall_result_stays_on_its_own_tab_and_is_informational() {
+        let (mut manager, send, jobs, _stop) = fixture();
+        manager.section = 0;
+        manager.submit(Job::Rpc(Request::Firewall { repair: false }));
+        assert!(matches!(jobs.try_recv(), Ok(Job::Rpc(Request::Firewall { repair: false }))));
+        manager.section = 5;
+        send.send(Event::Done(Ok(Response::Firewall {
+            message: "已检查防火墙：Generated result".into(),
+        })))
+        .unwrap();
+        manager.poll();
+        let message = manager
+            .feedback
+            .current(&crate::ui_feedback::Scope::Services(0))
+            .expect("firewall result belongs to the service-management tab");
+        assert_eq!(message.kind, crate::ui_feedback::Kind::Info);
+        assert!(
+            manager
+                .feedback
+                .current(&crate::ui_feedback::Scope::Services(5))
+                .is_none(),
+            "a firewall result must not appear above another service tab"
+        );
+    }
+    #[test]
     fn unified_service_controls_and_long_notices_fit_narrow_columns() {
         for width in [340., 560.] {
             let (mut manager, send, _jobs, _stop) = fixture();
             send.send(state(true, Sharing::default())).unwrap();
             manager.poll();
-            manager.notice = "Generated long service detail ".repeat(16);
+            manager.feedback.error(
+                crate::ui_feedback::Scope::Services(0),
+                "Generated long service detail ".repeat(16),
+            );
             let mut entry = Entry {
                 manager: Some(manager),
                 ..Default::default()
