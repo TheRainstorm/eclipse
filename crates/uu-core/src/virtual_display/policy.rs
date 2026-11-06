@@ -228,6 +228,9 @@ impl Manager {
     /// source geometry retires DXGI capture; session admission observes the
     /// editing flag before the activity snapshot, closing the check/apply race.
     pub fn configure_display(&self,id:LeaseId,name:String,spec:Spec)->Result<Display> {
+        self.configure_display_inner(id,name,spec,false)
+    }
+    fn configure_display_inner(&self,id:LeaseId,name:String,spec:Spec,restore_mode:bool)->Result<Display> {
         spec.validate()?;
         let name=name.trim().to_owned();validate_name(&name)?;
         let mut entries=self.lock()?;
@@ -242,7 +245,10 @@ impl Manager {
         if entry.display.cleanup_pending {return Err(Error::CleanupPending{id,message:entry.display.last_error.clone().unwrap_or_default()});}
         let previous=entry.display.clone();
         let current=self.backend.inventory()?.targets.into_iter().find(|target|target.key==entry.target).ok_or(Error::UnknownSlot)?;
-        let mode_changed=previous.spec!=spec || current.actual.is_some_and(|actual|actual!=spec);
+        // Actual HDR/mode may differ because of OS policy or an external mode
+        // change. A name-only save must not turn that observation into a new
+        // topology request, especially while this host is streaming.
+        let mode_changed=previous.spec!=spec || (restore_mode&&current.actual!=Some(spec));
         let _edit=if mode_changed {
             if self.editing_mode.swap(true,Ordering::AcqRel) {return Err(platform("another virtual display edit is running"));}
             struct Edit<'a>(&'a AtomicBool);
@@ -287,6 +293,8 @@ impl Manager {
         entry.display.last_error=None;
         if let Some(target)=observed {
             entry.display.actual=target.actual;entry.display.active=target.active;entry.display.source=target.source;
+        } else {
+            entry.display.actual=current.actual;entry.display.active=current.active;entry.display.source=current.source;
         }
         Ok(entry.display.clone())
     }
@@ -360,7 +368,9 @@ impl Manager {
                 }
             };
             if display.actual!=Some(saved.spec) {
-                self.configure_display(display.id,display.name.clone(),saved.spec)?;
+                // Startup explicitly reconciles the exact saved target's mode;
+                // ordinary metadata edits never imply that recovery action.
+                self.configure_display_inner(display.id,display.name.clone(),saved.spec,true)?;
             }
             let target = self
                 .lock()?

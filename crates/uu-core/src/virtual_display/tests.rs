@@ -1144,11 +1144,14 @@ fn failed_persistent_record_rolls_back_creation_and_preserves_corrupt_policy() {
 #[test]
 fn display_rename_is_metadata_only_and_does_not_require_an_idle_host() {
     let (manager,backend)=fixture();let path=saved_policy(&manager);
-    let display=manager.create_manual(Spec::default(),true).unwrap();
+    let display=manager.create_manual(Spec{hdr:true,..Spec::default()},true).unwrap();
+    let target=manager.lock().unwrap()[&display.id].target.clone();
+    let observed=Spec{hdr:false,..display.spec};
+    backend.targets.lock().unwrap().iter_mut().find(|t|t.key==target).unwrap().actual=Some(observed);
     let gate=Arc::new(crate::shared_host::SessionGate::default());manager.register_host(&gate);
     let _active=gate.claim("streaming-peer").unwrap();
     let edited=manager.configure_display(display.id,"Desk".into(),display.spec).unwrap();
-    assert_eq!(edited.name,"Desk");assert!(edited.actual.is_some());
+    assert_eq!(edited.name,"Desk");assert_eq!(edited.actual,Some(observed));assert_eq!(edited.spec,display.spec);
     assert!(backend.reconfigured.lock().unwrap().is_empty());
     assert_eq!(manager.saved_records().unwrap()[0].name,"Desk");
     manager.remove(display.id).unwrap();std::fs::remove_dir_all(path).unwrap();
