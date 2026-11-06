@@ -148,6 +148,14 @@ impl Coordinator {
     pub(super) fn recovery_queued(&self) -> bool {
         self.recovery_requested.load(Ordering::Acquire)
     }
+    pub(super) fn limit_changed(&self,limit:u32) {
+        // Manager serializes this with the worker. A queued intent follows the
+        // current user limit; lowering it must not publish its older batch.
+        if self.queued.load(Ordering::Acquire)&&!self.in_flight() {
+            self.requested.store(limit,Ordering::Release);
+            if limit==0 {self.queued.store(false,Ordering::Release);}
+        }
+    }
     pub fn recovery_pending(&self) -> bool {
         self.blocked.load(Ordering::Acquire)
     }
@@ -288,8 +296,7 @@ impl Coordinator {
         if self.blocked.load(Ordering::Acquire) {
             return self.inspect(provider);
         }
-        self.requested
-            .fetch_max(minimum, Ordering::AcqRel);
+        self.requested.store(minimum,Ordering::Release);
         self.queued.store(true, Ordering::Release);
         if let Ok(mut state) = self.state.lock() {
             state.failure = None;
@@ -574,10 +581,8 @@ mod tests {
         let coordinator = Coordinator::default();
         let fake = Fake::missing();
         assert_eq!(coordinator.request(&fake, 32).unwrap().targets, 32);
-        assert_eq!(
-            coordinator.request(&fake, 16).unwrap().requested_capacity,
-            32
-        );
+        assert_eq!(coordinator.request(&fake,16).unwrap().requested_capacity,16);
+        assert_eq!(coordinator.inspect(&fake).unwrap().targets,32,"a smaller new intent does not shrink an existing pool");
         assert_eq!(fake.changes.load(Ordering::SeqCst), 1);
     }
     #[test]

@@ -904,6 +904,22 @@ fn initial_preparation_exempts_only_its_own_authenticated_pending_session() {
     manager.remove(display.id).unwrap();
 }
 #[test]
+fn lowering_the_limit_retargets_or_cancels_a_waiting_preparation_without_installing_an_old_batch() {
+    for limit in [0,1] {
+        let (manager,backend)=capacity_fixture(0);
+        let gate=Arc::new(crate::shared_host::SessionGate::default());manager.register_host(&gate);
+        let stream=gate.claim("generated-physical-stream").unwrap();
+        manager.set_limit(16).unwrap();
+        assert!(matches!(manager.create(Owner::Manual,Spec::default()),Err(Error::Preparation(_))));
+        assert!(manager.has_queued_preparation());
+        manager.set_limit(limit).unwrap();drop(stream);
+        manager.resume_preparation().unwrap();
+        assert_eq!(backend.targets.lock().unwrap().len(),usize::from(limit));
+        assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),usize::from(limit));
+        assert!(!manager.has_queued_preparation());
+    }
+}
+#[test]
 fn status_and_unrequested_worker_ticks_never_install_or_expand_a_driver() {
     for count in [0,1,2,16] {
         let (manager,backend)=capacity_fixture(count);

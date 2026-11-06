@@ -773,7 +773,7 @@ impl State {
                     };
                     if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(label)).clicked(){preparation_action=Some(action);}
                     if action==preparation_ui::Action::Recover {
-                        ui.weak(uu_i18n::text("核对上次操作日志、驱动及配置，仅撤销本次未完成的变更；驱动已卸载时核验后封存旧记录。不会重装驱动、新建屏幕或恢复历史桌面布局。"));
+                        ui.weak(uu_i18n::text("核对上次日志、驱动、配置及显示状态，确认操作已完成或撤销本次未完成变更；驱动已卸载时核验后封存旧记录。不会重装驱动、新建屏幕或恢复历史桌面布局。"));
                     } else if action==preparation_ui::Action::Prepare {
                         ui.weak(uu_i18n::text("准备驱动容量以当前创建上限为准；新建一次只激活一块屏幕。首次安装会短暂枚举驱动目标。"));
                     }

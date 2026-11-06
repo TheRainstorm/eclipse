@@ -1973,12 +1973,12 @@
   "未完成的驱动操作尚未修复；请查看诊断详情，处理原因后再点击修复。": "The unfinished driver operation has not been repaired. Review the diagnostic details, address the cause, and request repair again.",
   "上次驱动安装或容量调整未完成，已暂停新建；请修复未完成的驱动操作。": "The previous driver installation or capacity change is unfinished. New displays are blocked until you repair the unfinished driver operation.",
   "修复未完成的驱动操作": "Repair unfinished driver operation",
-  "核对上次操作日志、驱动及配置，仅撤销本次未完成的变更；驱动已卸载时核验后封存旧记录。不会重装驱动、新建屏幕或恢复历史桌面布局。": "Checks the previous operation journal, driver, and configuration and rolls back only its unfinished changes. If the driver was uninstalled, verifies its removal and archives the old record. Does not reinstall, create displays, or restore a historical desktop layout.",
   "准备驱动容量以当前创建上限为准；新建一次只激活一块屏幕。首次安装会短暂枚举驱动目标。": "Driver capacity follows the configured display limit. Each Create activates one display. Initial installation briefly enumerates driver targets.",
   "保持本地帧率": "Keep local frame rate",
   "保持本地分辨率": "Keep local resolution",
   "自定义分辨率": "Custom resolution",
   "串流帧率不超过本地显示器帧率": "Limit stream frame rate to the local display refresh rate",
   "本地指串流窗口所在的显示器，移动窗口后按所在屏幕更新。启用上限保留所选帧率，关闭后恢复；刷新率按整数帧率向下取整。": "Local means the display containing this stream window and follows it when moved. The limit preserves your selected frame rate and restores it when disabled. Refresh rates are rounded down to whole frames per second.",
-  "自定义分辨率的宽高须为 2–8192 之间的偶数": "Custom resolution dimensions must be even numbers between 2 and 8192"
+  "自定义分辨率的宽高须为 2–8192 之间的偶数": "Custom resolution dimensions must be even numbers between 2 and 8192",
+  "核对上次日志、驱动、配置及显示状态，确认操作已完成或撤销本次未完成变更；驱动已卸载时核验后封存旧记录。不会重装驱动、新建屏幕或恢复历史桌面布局。": "Checks the previous journal, driver, configuration and display state to confirm completion or roll back the unfinished changes. If the driver was uninstalled, verifies its removal and archives the old record. Does not reinstall, create displays, or restore a historical desktop layout."
 }

@@ -740,6 +740,7 @@ impl Manager {
         if limit>MAX_DISPLAY_LIMIT {return Err(Error::Platform("virtual display limit exceeds the native catalog budget".into()));}
         let _entries=self.lock()?;
         self.limit.store(limit,Ordering::Release);
+        self.preparation.limit_changed(u32::from(limit));
         Ok(())
     }
     /// Remote management changes the same canonical service setting used by
