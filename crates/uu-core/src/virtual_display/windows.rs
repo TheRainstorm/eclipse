@@ -879,32 +879,48 @@ pub(super) fn deactivate(key: &TargetKey) -> Result<()> {
     deactivate_checked(key, false)
 }
 fn deactivate_checked(key: &TargetKey, require_other_active: bool) -> Result<()> {
+    deactivate_keys(&BTreeSet::from([key.clone()]), require_other_active)
+}
+
+/// Pool setup owns every target in this batch, including its inactive siblings.
+/// Submit one topology without the entire batch, so no temporary sibling layout
+/// can be normalized by Windows between individual removals.
+pub(super) fn deactivate_claimed(
+    targets: &[Target],
+    claims: &BTreeMap<TargetKey, Box<dyn Claim>>,
+) -> Result<()> {
+    let keys:BTreeSet<_>=targets.iter().map(|target|target.key.clone()).collect();
+    if keys.iter().any(|key|!claims.contains_key(key)) {return Err(Error::Claimed);}
+    deactivate_keys(&keys, true)
+}
+
+fn deactivate_keys(keys: &BTreeSet<TargetKey>, require_other_active: bool) -> Result<()> {
     let mut before = scene()?;
     // A numeric ID can be recycled after a driver restart. Never fall back from
     // the full monitor path to a number, a name, or a different driver instance.
-    let index = super::config_apply::exact_index(
+    let retained = super::config_apply::retained_indices(
         before
             .active
             .paths
             .iter()
             .map(|path| target_key(path).map(|(candidate, _)| candidate)),
-        key,
+        keys,
     )?;
-    let Some(index) = index else {
+    if retained.len() == before.active.paths.len() {
         return Ok(());
-    };
-    if require_other_active && before.active.paths.len() <= 1 {
+    }
+    if require_other_active && retained.is_empty() {
         return Err(Error::LastActiveOutput);
     }
-    let preserved = fingerprints(&before.active, Some(key))?;
-    before.active.paths.remove(index);
+    let preserved = super::capacity_policy::foreign(&fingerprints(&before.active, None)?, keys);
+    before.active.paths = retained.iter().map(|index|before.active.paths[*index]).collect();
     let mut apply_submitted = false;
     apply(&before.active, &mut apply_submitted)?;
     let mut readback = || {
         let after = query(QDC_ONLY_ACTIVE_PATHS)?;
         // Reading every identity is required to prove absence. A retiring
         // monitor with no interface yet must wait, never masquerade as removed.
-        if super::config_apply::exact_index(after.paths.iter().map(|path| target_key(path).map(|(candidate,_)|candidate)), key)?.is_some() {
+        if super::config_apply::retained_indices(after.paths.iter().map(|path| target_key(path).map(|(candidate,_)|candidate)), keys)?.len() != after.paths.len() {
             return Err(Error::Platform("virtual target remained active after removal".into()));
         }
         let observed=fingerprints(&after, None)?;
@@ -924,6 +940,18 @@ fn deactivate_checked(key: &TargetKey, require_other_active: bool) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_pool_batch_requires_every_exact_claim_before_querying_or_mutating_the_desktop() {
+        struct TestClaim;
+        impl Claim for TestClaim {}
+        let targets:Vec<_>=(0..2).map(|id|Target {
+            key:TargetKey{adapter:(0,0),target:id,monitor_path:format!("generated-unpublished-pool-{}",Uuid::new_v4())},
+            name:String::new(),source:String::new(),active:true,available:false,actual:Some(Spec::default()),
+        }).collect();
+        let mut claims:BTreeMap<TargetKey,Box<dyn Claim>>=BTreeMap::new();
+        claims.insert(targets[0].key.clone(),Box::new(TestClaim));
+        assert!(matches!(deactivate_claimed(&targets,&claims),Err(Error::Claimed)));
+    }
     #[test]
     fn named_owner_mutex_serializes_another_process_without_display_changes() {
         let name = format!("Local\\EclipseVirtualDisplayTest-{}", Uuid::new_v4());

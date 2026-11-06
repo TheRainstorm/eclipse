@@ -470,12 +470,10 @@ pub(super) fn prepare() -> Result<()> {
             }
             let targets = capacity::ready_instance(&before, &candidate.instance, None, STARTUP,
                 &|| Ok(()), &mut operation.claims)?;
-            for target in &targets {
-                settled_readback(Duration::from_secs(5), &|| Ok(()), || {
-                    verify_enable_effects(&before, &scene()?, &candidate.instance)
-                })?;
-                deactivate(&target.key)?;
-            }
+            settled_readback(Duration::from_secs(5), &|| Ok(()), || {
+                verify_enable_effects(&before, &scene()?, &candidate.instance)
+            })?;
+            deactivate_claimed(&targets, &operation.claims)?;
             settled_readback(Duration::from_secs(5), &|| Ok(()), || {
                 let after = targets_for_instance(&candidate.instance)?;
                 if after.iter().map(|t| &t.key).collect::<BTreeSet<_>>() != targets.iter().map(|t| &t.key).collect::<BTreeSet<_>>()

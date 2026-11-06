@@ -889,14 +889,12 @@ pub(super) fn install_capacity_on_desktop(
         let targets = super::windows::provision::capacity::ready_instance(
             &before, &node.instance, Some(minimum as usize), Duration::from_secs(45), checkpoint, claims,
         )?;
-        for target in &targets {
-            stage = "prepare inactive target";
-            super::windows::settled_readback(Duration::from_secs(5), checkpoint, || {
-                super::windows::provision::capacity::verify_new_instance(&before, &node.instance)
-            })?;
-            checkpoint().map_err(|e| Error::Platform(e.message))?;
-            super::windows::deactivate(&target.key)?;
-        }
+        stage = "prepare inactive pool";
+        super::windows::settled_readback(Duration::from_secs(5), checkpoint, || {
+            super::windows::provision::capacity::verify_new_instance(&before, &node.instance)
+        })?;
+        checkpoint().map_err(|e| Error::Platform(e.message))?;
+        super::windows::deactivate_claimed(&targets, claims)?;
         stage = "verify inactive pool";
         super::windows::settled_readback(Duration::from_secs(10), checkpoint, || {
             let after = super::windows::targets_for_instance(&node.instance)?;

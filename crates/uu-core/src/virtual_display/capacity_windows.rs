@@ -447,13 +447,9 @@ fn inactive(
 ) -> Result<()> {
     let targets = ready_instance(&pending.baseline, &candidate.instance, Some(count),
         Duration::from_secs(45), checkpoint, &mut pending.claims)?;
-    for target in &targets {
-        // The previous removal can briefly retire a CCD interface. Observe a
-        // complete original set again before submitting this next exact write.
-        settled_readback(Duration::from_secs(5), checkpoint, || verify_new_instance(&pending.baseline, &candidate.instance))?;
-        idle(checkpoint)?;
-        deactivate(&target.key)?;
-    }
+    settled_readback(Duration::from_secs(5), checkpoint, || verify_new_instance(&pending.baseline, &candidate.instance))?;
+    idle(checkpoint)?;
+    deactivate_claimed(&targets, &pending.claims)?;
     settled_readback(Duration::from_secs(10), checkpoint, || {
         let after = targets_for_instance(&candidate.instance)?;
         if after.iter().map(|t| &t.key).collect::<BTreeSet<_>>() != targets.iter().map(|t| &t.key).collect::<BTreeSet<_>>()
