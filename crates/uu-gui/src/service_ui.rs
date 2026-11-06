@@ -119,14 +119,9 @@ impl Entry {
             manager.section = 4;
         }
     }
-    pub fn open_virtual_displays(&mut self, ctx: &egui::Context) {
+    pub fn open_virtual_displays(&mut self, _ctx: &egui::Context) {
         if let Some(manager) = &mut self.manager {
             manager.section = 6;
-            if manager.snapshot.is_some() {
-                manager
-                    .virtual_display
-                    .open_local(ctx, super::virtual_display_ui::LocalOwner::Background);
-            }
         }
     }
     pub fn online(&self) -> bool {
@@ -884,7 +879,6 @@ impl Manager {
     }
     fn show_tabs(&mut self, ui: &mut egui::Ui) {
         self.virtual_display.poll(None);
-        self.virtual_display.show(ui.ctx(), None);
         ui.add_space(10.);
         ui.horizontal_wrapped(|ui| {
             for (tab, label) in [
@@ -973,6 +967,7 @@ impl Manager {
                                     &monitors,
                                     false,
                                     true,
+                                    false,
                                 );
                             }
                             4 => {
@@ -1116,7 +1111,7 @@ impl Manager {
                 self.plugins_ui(ui, enabled);
             }
             6 => {
-                section_card(ui, uu_i18n::text("虚拟显示器"), |ui| {
+                section_card(ui, uu_i18n::text("虚拟显示器上限"), |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(uu_i18n::text("最多创建虚拟显示器"));
@@ -1138,21 +1133,19 @@ impl Manager {
                             }
                         });
                         ui.weak(uu_i18n::text(
-                            "临时屏随所属串流断开回收；持久屏保留并在开机恢复。",
+                            "默认 2 个；临时和持久虚拟显示器共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。",
                         ));
-                        if ui
-                            .add_enabled(
-                                enabled,
-                                crate::theme::primary_button(uu_i18n::text("管理虚拟显示器")),
-                            )
-                            .clicked()
-                        {
-                            self.virtual_display.open_local(
-                                ui.ctx(),
-                                super::virtual_display_ui::LocalOwner::Background,
-                            );
-                        }
                     });
+                });
+                section_card(ui, uu_i18n::text("虚拟显示器"), |ui| {
+                    if self.snapshot.is_some() {
+                        let service_busy = self.busy;
+                        ui.add_enabled_ui(!service_busy, |ui| {
+                            self.virtual_display.show_background_inline(ui);
+                        });
+                    } else {
+                        ui.weak(uu_i18n::text("启动服务后可在这里管理虚拟显示器。"));
+                    }
                 });
             }
             _ => {}
@@ -1429,10 +1422,7 @@ fn run_manager(virtual_displays: bool) -> eframe::Result {
             super::setup_style(&cc.egui_ctx);
             let appearance = super::theme::PreferenceWatch::load_current(&cc.egui_ctx);
             if virtual_displays {
-                manager.virtual_display.open_local(
-                    &cc.egui_ctx,
-                    super::virtual_display_ui::LocalOwner::Background,
-                );
+                manager.section = 6;
             }
             Ok(Box::new(Standalone {
                 entry: Entry {
@@ -2062,6 +2052,18 @@ mod tests {
         h.click("输入");
         assert!(!h.has("密码配对"));
         assert!(!h.has("＋ 添加服务器"));
+        h.click("虚拟显示器");
+        assert!(h.has("虚拟显示器上限"));
+        assert!(h.has("新建虚拟显示器"));
+        assert!(!h.has("管理虚拟显示器"));
+        assert!(!h.has("管理对象"));
+    }
+    #[test]
+    fn empty_session_list_does_not_render_an_empty_section_card() {
+        let mut h = Harness::new();
+        h.frame(vec![]);
+        assert!(!h.has("会话"));
+        assert!(!h.has("已连接 0 个会话"));
     }
     #[test]
     fn service_connection_form_queues_only_owner_rpc_and_keeps_failed_fields() {

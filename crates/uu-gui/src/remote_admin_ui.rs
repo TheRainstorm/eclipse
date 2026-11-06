@@ -79,7 +79,7 @@ impl RemoteAdminUi {
             let (Some(base),Some(draft))=(&self.base,&mut self.draft) else{return;};
             ui.horizontal_wrapped(|ui|{for (tab,label) in [(0,uu_i18n::text("采集与声音")),(1,uu_i18n::text("编码")),(2,uu_i18n::text("访问权限"))] {crate::theme::tab_value(ui,&mut self.tab,tab,label);}});
             ui.add_space(10.);
-            super::server_config_ui::edit(ui,draft,self.tab,&base.monitors,base.portal,true);
+            super::server_config_ui::edit(ui,draft,self.tab,&base.monitors,base.portal,true,true);
             ui.add_space(12.);
             if base.active!=base.saved {ui.weak(uu_i18n::text("已保存配置与当前运行配置不同，下次启动生效。"));}
             ui.weak(uu_i18n::text("保存供下次启动使用；保存并重启会断开主机上的全部串流。修改连接端口后，请同步更新设备地址。"));

@@ -1727,7 +1727,7 @@ impl Workspace {
             ui.add_space(10.);
             let monitors:Vec<_>=self.monitors.iter().map(|m|(m.name.clone(),format!("{} · {}×{}",m.name,m.width,m.height))).collect();
             if self.host_section==0 {super::server_config_ui::capture(ui,&mut self.draft,&monitors,uu_core::native::uses_desktop_portal());}
-            else {super::server_config_ui::edit(ui,&mut self.draft,self.host_section,&monitors,uu_core::native::uses_desktop_portal(),true);}
+            else {super::server_config_ui::edit(ui,&mut self.draft,self.host_section,&monitors,uu_core::native::uses_desktop_portal(),true,true);}
             if !self.monitor_error.is_empty(){ui.colored_label(theme::palette(ui.visuals()).danger,&self.monitor_error);}
             if running {
                 muted(ui,uu_i18n::text("运行期间可编辑并保存；下次启动生效，或保存后重启服务。重启会断开当前串流。"));

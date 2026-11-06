@@ -3,15 +3,17 @@ use eframe::egui;
 use uu_core::device_book::{Encoding,RateMode,Sharing};
 use uu_core::native::VideoCodec;
 
-pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String)],portal:bool,naming:bool) {
+pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String)],portal:bool,naming:bool,virtual_limit:bool) {
     if section==0 {
         device_name(ui,s,naming);
         capture(ui,s,monitors,portal);
-        ui.horizontal(|ui| {
-            ui.label(uu_i18n::text("虚拟显示器上限"));
-            ui.add(egui::DragValue::new(&mut s.virtual_display_limit).range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT));
-        });
-        ui.weak(uu_i18n::text("默认 2 个；临时和持久虚拟屏共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。"));
+        if virtual_limit {
+            ui.horizontal(|ui| {
+                ui.label(uu_i18n::text("虚拟显示器上限"));
+                ui.add(egui::DragValue::new(&mut s.virtual_display_limit).range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT));
+            });
+            ui.weak(uu_i18n::text("默认 2 个；临时和持久虚拟屏共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。"));
+        }
     } else if section==1 {
         ui.horizontal_wrapped(|ui| {
             ui.label(uu_i18n::text("允许的编码"));
@@ -102,4 +104,50 @@ pub fn capture(ui:&mut egui::Ui,s:&mut Sharing,monitors:&[(String,String)],porta
         ui.add_space(10.);crate::theme::switch(ui,&mut s.audio,uu_i18n::text("传输系统声音"));
         ui.weak(uu_i18n::text("帧率、输出尺寸和码率由各客户端调整。"));
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(virtual_limit: bool) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let mut sharing = Sharing::default();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900., 900.),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    edit(ui, &mut sharing, 0, &[], false, true, virtual_limit);
+                });
+            },
+        );
+        fn collect(shape: &egui::Shape, texts: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => texts.push(text.galley.text().into()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, texts);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for shape in output.shapes {
+            collect(&shape.shape, &mut texts);
+        }
+        texts
+    }
+
+    #[test]
+    fn audio_video_can_hide_the_virtual_display_limit_owned_by_its_own_tab() {
+        assert!(!texts(false).iter().any(|text| text == "虚拟显示器上限"));
+        assert!(texts(true).iter().any(|text| text == "虚拟显示器上限"));
+    }
 }
