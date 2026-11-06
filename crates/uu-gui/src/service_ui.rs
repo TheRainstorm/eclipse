@@ -930,13 +930,7 @@ impl Manager {
                         }
                     });
                 });
-                if self
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|snapshot| !snapshot.connections.is_empty())
-                {
-                    section_card(ui, uu_i18n::text("会话"), |ui| self.connections(ui));
-                }
+                section_card(ui, uu_i18n::text("会话"), |ui| self.connections(ui));
             }
             1..=4 => {
                 let title = match self.section {
@@ -1200,6 +1194,10 @@ impl Manager {
     }
     fn connections(&mut self, ui: &mut egui::Ui) {
         if let Some(snapshot) = self.snapshot.clone() {
+            if snapshot.connections.is_empty() {
+                ui.weak(uu_i18n::text("当前没有连接的会话。设备连接后，可在这里查看和管理会话。"));
+                return;
+            }
             ui.strong(uu_i18n::format!(
                 "已连接 {} 个会话",
                 snapshot.connections.len()
@@ -1228,6 +1226,8 @@ impl Manager {
                     }
                 });
             }
+        } else {
+            ui.weak(uu_i18n::text("连接服务后显示当前会话。"));
         }
     }
 }
@@ -2059,10 +2059,11 @@ mod tests {
         assert!(!h.has("管理对象"));
     }
     #[test]
-    fn empty_session_list_does_not_render_an_empty_section_card() {
+    fn empty_session_list_keeps_the_section_and_explains_the_empty_state() {
         let mut h = Harness::new();
         h.frame(vec![]);
-        assert!(!h.has("会话"));
+        assert!(h.has("会话"));
+        assert!(h.has("当前没有连接的会话。设备连接后，可在这里查看和管理会话。"));
         assert!(!h.has("已连接 0 个会话"));
     }
     #[test]

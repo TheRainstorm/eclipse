@@ -1,4 +1,6 @@
 {
+  "当前没有连接的会话。设备连接后，可在这里查看和管理会话。": "No sessions are connected. Connected devices will appear here for session management.",
+  "连接服务后显示当前会话。": "Current sessions will appear after connecting to the service.",
   "先关闭拥有此屏幕的串流；其他连接的临时屏由其所有者回收": "Close the owning stream first. Other connections reclaim their own temporary displays.",
   "物理显示器": "Physical displays",
   "当前窗口": "Current window",
