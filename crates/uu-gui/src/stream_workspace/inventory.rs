@@ -96,8 +96,16 @@ impl State {
                 if self.source_owned(&source) {continue;}
                 if let Ok(launch)=display_launch(&target,&source.screen) {
                     let id=self.windows[index].record_launch(&launch,&mut self.next);
-                    let view=self.windows[index].views.iter_mut().find(|v|v.id==id).unwrap();
+                    let views=&mut self.windows[index].views;
+                    let at=views.iter().position(|v|v.id==id).unwrap();
+                    let mut view=views.remove(at);
                     view.label=source.label; // Stay unopened until selected.
+                    // Restoring a selection must not promote it ahead of the
+                    // host's earlier displays. Insert only the newly discovered
+                    // view; later refreshes leave user drag order untouched.
+                    let at=views.iter().position(|v|base_key(&v.launch.target)==device
+                        && v.source.as_ref().is_some_and(|s|s.id>source.screen.id)).unwrap_or(views.len());
+                    views.insert(at,view);
                 }
             }
         }

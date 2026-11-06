@@ -92,10 +92,8 @@ fn closing_the_last_view_marks_the_window_for_immediate_release() {
     assert!(window.pending.is_empty());
     assert!(window.closing);
 }
-#[test]
-fn later_catalog_sources_are_added_once_and_do_not_reappear_after_close() {
+fn catalog_state(screens:Vec<uu_core::screen_control::RemoteScreen>,current:i32)->(State,Arc<uu_core::media::MediaStats>,egui::Context,u64) {
     use raw_window_handle::{DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle};
-    use std::sync::atomic::Ordering;
     struct NoWindow;
     impl HasWindowHandle for NoWindow {
         fn window_handle(&self)->Result<WindowHandle<'_>,HandleError>{Err(HandleError::Unavailable)}
@@ -109,20 +107,39 @@ fn later_catalog_sources_are_added_once_and_do_not_reappear_after_close() {
     let mut app=App::new_session(&ctx,None,platform.clone(),Some(target.clone()),false,None,false);
     let stats=Arc::new(uu_core::media::MediaStats::default());
     stats.capabilities.enable(uu_core::capabilities::Capability::Displays,true);
-    *stats.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:0,screens:vec![generated_screen(0)]};
+    *stats.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:current,screens};
     let (input,_)=uu_core::native_input::channel(false);
     let (_,events)=std::sync::mpsc::channel();
     let frames=uu_core::media::frame_channel().1;
     let (raw,_)=tokio::sync::mpsc::unbounded_channel();
     let (close,_)=tokio::sync::mpsc::unbounded_channel();
     app.controller=Some(uu_core::controller::ControllerHandle{stopped:Arc::new(false.into()),events,frames,input:raw.clone(),native_input:Some(input),settings:raw,close,stats:stats.clone()});
-    app.displays.selected=Some(0);
+    app.displays.selected=Some(current);
     let launch=Launch::new(target,None).unwrap();
     let mut state=owned_state();
     let id=state.windows[0].record_launch(&launch,&mut state.next);
     state.windows[0].sessions.push(Session{id,activated:None,app});
     state.windows[0].active=id;
     state.windows[0].platform=Some(platform);
+    (state,stats,ctx,id)
+}
+#[test]
+fn remembered_second_display_keeps_host_order_and_only_connects_the_selection() {
+    let (mut state,stats,_,selected)=catalog_state(vec![generated_screen(0),generated_screen(1)],1);
+    state.sync_owned_views();
+    let window=&state.windows[0];
+    assert_eq!(window.views.iter().map(|v|v.source.as_ref().unwrap().id).collect::<Vec<_>>(),[0,1]);
+    assert_eq!(window.active,selected);
+    assert_eq!(window.sessions.iter().map(|s|s.id).collect::<Vec<_>>(),[selected]);
+    assert!(window.pending.is_empty(),"discovering the earlier display must not connect it");
+    state.windows[0].views.reverse(); // A deliberate user reorder survives refresh.
+    state.sync_owned_views();
+    assert_eq!(state.windows[0].views.iter().map(|v|v.source.as_ref().unwrap().id).collect::<Vec<_>>(),[1,0]);
+    assert_eq!(stats.native_media_epoch.load(Ordering::Acquire),0);
+}
+#[test]
+fn later_catalog_sources_are_added_once_and_do_not_reappear_after_close() {
+    let (mut state,stats,ctx,id)=catalog_state(vec![generated_screen(0)],0);
     state.sync_owned_views();
     assert_eq!(state.windows[0].views.len(),1,"the first catalog has one source");
 
