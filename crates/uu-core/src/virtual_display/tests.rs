@@ -825,6 +825,14 @@ fn capacity_fixture(count: u32) -> (Arc<Manager>, Arc<Fake>) {
     (manager, backend)
 }
 #[test]
+fn passive_catalog_reads_skip_an_owned_display_mutation_without_observing_its_pool() {
+    let (manager,_)=capacity_fixture(0);
+    let guard=manager.lock().unwrap();
+    assert!(manager.try_read_display_configuration(||panic!("an intermediate pool must not be enumerated")).is_none());
+    drop(guard);
+    assert_eq!(manager.try_read_display_configuration(||3),Some(3));
+}
+#[test]
 fn common_create_prepares_missing_driver_once_before_allocating_distinct_leases() {
     let (manager, backend) = capacity_fixture(0);
     // Inspect alone cannot install or accept preparation intent.

@@ -509,6 +509,13 @@ impl Manager {
     pub(crate) fn preparation_in_flight(&self) -> bool {
         self.preparation.in_flight() || self.editing_mode.load(Ordering::Acquire)
     }
+    /// Passive catalogs keep their last committed snapshot during display
+    /// changes. Hold the same ownership lock through observation/publication;
+    /// the callback must not reenter this manager.
+    pub(crate) fn try_read_display_configuration<T>(&self, read: impl FnOnce() -> T) -> Option<T> {
+        let _ownership = self.entries.try_lock().ok()?;
+        Some(read())
+    }
     pub(crate) fn has_queued_preparation(&self) -> bool {
         self.preparation.queued()
     }

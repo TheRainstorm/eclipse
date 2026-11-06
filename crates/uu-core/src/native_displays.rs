@@ -291,14 +291,19 @@ impl Host {
             struct Done(std::sync::Arc<Host>);
             impl Drop for Done {fn drop(&mut self){self.0.refreshing.store(false,Ordering::Release);}}
             let _done=Done(host.clone());
-            type Cached=Option<(std::time::Instant,Vec<CaptureMonitor>)>;
-            static CACHE:std::sync::OnceLock<Mutex<Cached>>=std::sync::OnceLock::new();
-            let mut cache=CACHE.get_or_init(Default::default).lock().unwrap();
-            if cache.as_ref().is_none_or(|(at,_)|at.elapsed()>=std::time::Duration::from_secs(2)) {
-                match crate::native::monitors() {Ok(monitors)=>*cache=Some((std::time::Instant::now(),monitors)),Err(_)=>return,}
-            }
-            let monitors=cache.as_ref().unwrap().1.clone();drop(cache);
-            let _=host.refresh_monitors(monitors);
+            // Driver setup briefly activates its whole reserved pool. None of
+            // those intermediate outputs belong in other sessions' catalogs.
+            // Cache only observations made under the manager's mutation lock.
+            let _=crate::virtual_display::Manager::shared().try_read_display_configuration(|| {
+                type Cached=Option<(std::time::Instant,Vec<CaptureMonitor>)>;
+                static CACHE:std::sync::OnceLock<Mutex<Cached>>=std::sync::OnceLock::new();
+                let mut cache=CACHE.get_or_init(Default::default).lock().unwrap();
+                if cache.as_ref().is_none_or(|(at,_)|at.elapsed()>=std::time::Duration::from_secs(2)) {
+                    match crate::native::monitors() {Ok(monitors)=>*cache=Some((std::time::Instant::now(),monitors)),Err(_)=>return,}
+                }
+                let monitors=cache.as_ref().unwrap().1.clone();drop(cache);
+                let _=host.refresh_monitors(monitors);
+            });
         });
     }
     /// Refresh source IDs after a leased target appears. This does not request
