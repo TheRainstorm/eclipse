@@ -272,7 +272,7 @@ pub enum Error {
     LastActiveOutput,
     #[error("the host virtual display limit ({limit}) has been reached")]
     LimitReached { limit:u16 },
-    #[error("virtual display operation failed: {0}")]
+    #[error("{0}")]
     Platform(String),
     #[error("administrator permission is required to prepare the virtual display driver")]
     AdministratorRequired,
@@ -307,7 +307,7 @@ impl TargetKey {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Target {
     key: TargetKey,
     name: String,

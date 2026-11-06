@@ -13,7 +13,7 @@ use std::{
     },
     path::{Path, PathBuf},
     ptr::{null, null_mut},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use windows_sys::{
     core::GUID,
@@ -682,8 +682,10 @@ pub(super) fn rollback_capacity_install(
     directory: &Path,
     expected_xml: &[u8],
     baseline: &super::windows::Fingerprints,
+    saved_baseline: &super::windows::Fingerprints,
     checkpoint: &(dyn Fn() -> super::preparation::Result<()> + Sync),
     claims: &mut BTreeMap<TargetKey, Box<dyn Claim>>,
+    phase: &mut dyn FnMut(&str) -> Result<()>,
 ) -> Result<()> {
     checkpoint().map_err(|e| Error::Platform(e.message))?;
     // Do not remove files an administrator changed after the installation.
@@ -767,39 +769,26 @@ pub(super) fn rollback_capacity_install(
         keep: true,
     };
     node.refresh_instance()?;
-    let targets = super::windows::targets_for_instance(instance)?;
-    let owned: std::collections::BTreeSet<_> = targets.iter().map(|target|target.key.clone()).collect();
-    for target in targets {
-        if !claims.contains_key(&target.key) {
-            claims.insert(
-                target.key.clone(),
-                super::ownership_windows::claim(&target.key)?,
-            );
-        }
-    }
     // Installation failure may itself have moved another output. Cleanup still
     // owns this exact new node, never that other output. Preserve its fresh
     // state instead of requiring/replaying the old global layout to remove us.
-    let preserved=super::capacity_policy::foreign(&super::windows::active_signature()?,&owned);
-    if preserved.is_empty() {return Err(Error::LastActiveOutput);}
-    let saved=super::windows::provision::capacity::database()?;
+    let (preserved, saved) = super::windows::settled_readback(Duration::from_secs(10), checkpoint, || {
+        super::windows::provision::capacity::installation_external_state(instance, claims)
+    })?;
     checkpoint().map_err(|e| Error::Platform(e.message))?;
+    phase("installation_remove_submitted")?;
     node.rollback()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !super::windows::targets_for_instance(instance)?.is_empty() {
-        if Instant::now() >= deadline {
-            return Err(Error::Platform(
-                "new-driver targets remain after exact removal".into(),
-            ));
+    phase("installation_removed")?;
+    super::windows::settled_readback(Duration::from_secs(10), checkpoint, || {
+        no_existing_mtt_node()?;
+        let active = super::windows::active_signature()?;
+        let database = super::windows::provision::capacity::database()?;
+        if !super::provision_policy::rollback_matches(baseline, &preserved, &active)
+            || !super::provision_policy::rollback_matches(saved_baseline, &saved, &database) {
+            return Err(Error::Platform("original displays have not settled after new-driver removal; no saved layout was replayed".into()));
         }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    if !super::provision_policy::rollback_matches(baseline,&preserved,&super::windows::active_signature()?)
-        || !super::capacity_policy::unchanged_foreign(&saved,&super::windows::provision::capacity::database()?,&owned) {
-        return Err(Error::Platform(
-            "original displays changed during new-driver compensation".into(),
-        ));
-    }
+        Ok((active, database))
+    })?;
     configuration.rollback()?;
     if !configuration_absent()? {
         return Err(Error::Platform(
@@ -818,9 +807,11 @@ pub(super) fn rollback_capacity_install(
 pub(super) fn install_capacity_on_desktop(
     payload: &[(String, Vec<u8>)],
     minimum: u32,
+    original_active: &super::windows::Fingerprints,
+    original_saved: &super::windows::Fingerprints,
     checkpoint: &(dyn Fn() -> super::preparation::Result<()> + Sync),
     claims: &mut BTreeMap<TargetKey, Box<dyn Claim>>,
-    created: &mut dyn FnMut(&str, &Path) -> Result<()>,
+    created: &mut dyn FnMut(&str, &str, &Path) -> Result<()>,
 ) -> std::result::Result<(), InstallationFailure> {
     let preflight = (|| -> Result<_> {
         // Revalidate memory inputs at the privileged installer boundary.
@@ -843,7 +834,14 @@ pub(super) fn install_capacity_on_desktop(
         }
         checkpoint().map_err(|e| Error::Platform(e.message))?;
         no_existing_mtt_node()?;
-        let before = super::windows::active_signature()?;
+        let (before, saved) = super::windows::settled_readback(Duration::from_secs(10), checkpoint, || {
+            let active = super::windows::active_signature()?;
+            let saved = super::windows::provision::capacity::database()?;
+            if &active != original_active || &saved != original_saved {
+                return Err(Error::Platform("original displays changed before driver installation; no node was installed".into()));
+            }
+            Ok((active, saved))
+        })?;
         if before.is_empty() {
             return Err(Error::LastActiveOutput);
         }
@@ -866,9 +864,9 @@ pub(super) fn install_capacity_on_desktop(
         )?;
         // All fallible zero-write setup precedes the first HKLM mutation.
         let node = DeviceNode::create()?;
-        Ok((before, directory, node))
+        Ok((before, saved, directory, node))
     })();
-    let (before, mut directory, mut node) = preflight.map_err(|error| InstallationFailure {
+    let (before, saved, mut directory, mut node) = preflight.map_err(|error| InstallationFailure {
         error,
         cleanup_verified: true,
     })?;
@@ -879,74 +877,31 @@ pub(super) fn install_capacity_on_desktop(
     node.keep = true;
     let installation = (|| -> Result<()> {
         checkpoint().map_err(|e| Error::Platform(e.message))?;
-        created("", &directory.path)?;
+        created("installation_submitted", "", &directory.path)?;
         configuration = Some(Configuration::create(&directory.path)?);
         node.register()?;
-        created(&node.instance, &directory.path)?;
+        created("installation_submitted", &node.instance, &directory.path)?;
         checkpoint().map_err(|e| Error::Platform(e.message))?;
         node.bind(&directory.path)?;
-        let deadline = Instant::now() + Duration::from_secs(45);
-        let mut last_keys = std::collections::BTreeSet::new();
-        let mut stable_since = Instant::now();
-        loop {
+        let targets = super::windows::provision::capacity::ready_instance(
+            &before, &node.instance, Some(minimum as usize), Duration::from_secs(45), checkpoint, claims,
+        )?;
+        for target in &targets {
+            super::windows::settled_readback(Duration::from_secs(5), checkpoint, || {
+                super::windows::provision::capacity::verify_new_instance(&before, &node.instance)
+            })?;
             checkpoint().map_err(|e| Error::Platform(e.message))?;
-            let targets = super::windows::targets_for_instance(&node.instance)?;
-            for target in &targets {
-                if !claims.contains_key(&target.key) {
-                    claims.insert(
-                        target.key.clone(),
-                        super::ownership_windows::claim(&target.key)?,
-                    );
-                }
-            }
-            super::windows::provision::capacity::verify_new_instance(&before, &node.instance)?;
-            let keys: std::collections::BTreeSet<_> =
-                targets.iter().map(|t| t.key.clone()).collect();
-            if keys != last_keys {
-                last_keys = keys;
-                stable_since = Instant::now();
-            }
-            if targets.len() == minimum as usize
-                && stable_since.elapsed() >= Duration::from_millis(500)
-            {
-                checkpoint().map_err(|e| Error::Platform(e.message))?;
-                // Installation itself proves ownership of this exact new PnP
-                // instance. No pre-existing adapter's screen is adopted.
-                for target in &targets {
-                    checkpoint().map_err(|e| Error::Platform(e.message))?;
-                    super::windows::provision::capacity::verify_new_instance(
-                        &before,
-                        &node.instance,
-                    )?;
-                    super::windows::deactivate(&target.key)?;
-                }
-                let after = super::windows::targets_for_instance(&node.instance)?;
-                if after.iter().any(|target| target.active) {
-                    return Err(Error::Platform(
-                        "new virtual display remained active during slot preparation".into(),
-                    ));
-                }
-                if after.len() != minimum as usize
-                    || after
-                        .iter()
-                        .any(|target| !target.available || target.actual.is_some())
-                {
-                    return Err(Error::Platform(
-                        "new driver has no usable inactive display slot".into(),
-                    ));
-                }
-                if super::windows::active_signature()? != before {
-                    return Err(Error::Platform("another display changed during driver installation; old global layout was not replayed".into()));
-                }
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err(Error::Platform(
-                    "new driver targets did not settle within 45 seconds".into(),
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(100));
+            super::windows::deactivate(&target.key)?;
         }
+        super::windows::settled_readback(Duration::from_secs(10), checkpoint, || {
+            let after = super::windows::targets_for_instance(&node.instance)?;
+            if after.iter().map(|t| &t.key).collect::<std::collections::BTreeSet<_>>() != targets.iter().map(|t| &t.key).collect::<std::collections::BTreeSet<_>>()
+                || after.iter().any(|target| target.active || !target.available || target.actual.is_some())
+                || super::windows::active_signature()? != before {
+                return Err(Error::Platform("new driver inactive slots or original outputs have not settled".into()));
+            }
+            Ok(after)
+        })?;
         Ok(())
     })();
     match installation {
@@ -1001,7 +956,8 @@ pub(super) fn install_capacity_on_desktop(
                     &payload.iter().find(|(name,_)|name=="vdd_settings.xml").expect("verified XML payload").1,
                     minimum,
                 ).expect("verified capacity configuration").after;
-                let rollback=rollback_capacity_install(&node.instance,&directory.path,&xml,&before,checkpoint,claims);
+                let rollback=rollback_capacity_install(&node.instance,&directory.path,&xml,&before,&saved,checkpoint,claims,
+                    &mut |phase| created(phase, &node.instance, &directory.path));
                 return Err(InstallationFailure {
                     cleanup_verified:rollback.is_ok(),
                     error:match rollback {Ok(())=>error,Err(recovery)=>Error::Platform(format!("{error}; exact new-device cleanup remains pending: {recovery}"))},
@@ -1010,7 +966,7 @@ pub(super) fn install_capacity_on_desktop(
             let ownership = (|| -> Result<()> {
                 if node.registered {
                     node.refresh_instance()?;
-                    created(&node.instance, &directory.path)?;
+                    created("installation_submitted", &node.instance, &directory.path)?;
                     let targets = super::windows::targets_for_instance(&node.instance)?;
                     for target in targets {
                         if !claims.contains_key(&target.key) {

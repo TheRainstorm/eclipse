@@ -9,7 +9,6 @@ use std::{
 };
 use windows_sys::Win32::System::Registry::REG_DWORD;
 
-const SETTLE: Duration = Duration::from_millis(500);
 const STARTUP: Duration = Duration::from_secs(10);
 
 #[path = "capacity_windows.rs"]
@@ -299,8 +298,8 @@ fn verify_enable_effects(baseline: &Fingerprints, fresh: &Scene, instance: &str)
         |name| format!("{name} ({})", key.monitor_path),
     );
     let reason = match violation {
-        Violation::ExistingChanged(_) => "an existing display changed during virtual adapter preparation",
-        Violation::ForeignActivated(_) => "a display outside the prepared adapter became active during virtual adapter preparation",
+        Violation::ExistingChanged(ref key) => format!("an existing display changed during virtual adapter preparation ({})", fingerprint_change(baseline, &current, key)),
+        Violation::ForeignActivated(_) => "a display outside the prepared adapter became active during virtual adapter preparation".into(),
     };
     Err(Error::Platform(format!("{reason}: {output}; automatic preparation stopped before taking over that display or replaying its layout")))
 }
@@ -469,60 +468,31 @@ pub(super) fn prepare() -> Result<()> {
                     "Windows requires a restart to enable the virtual adapter".into(),
                 ));
             }
-            let deadline = Instant::now() + STARTUP;
-            let mut last_keys = BTreeSet::new();
-            let mut stable_since = Instant::now();
-            loop {
-                let fresh = scene()?;
-                let targets: Vec<_> = inventory(&fresh)?
-                    .targets
-                    .into_iter()
-                    .filter(|target| {
-                        fresh.supported_adapters.get(&target.key.adapter)
-                            == Some(&candidate.instance)
-                    })
-                    .collect();
-                claim_targets(&targets, &mut operation.claims)?;
-                verify_enable_effects(&before, &fresh, &candidate.instance)?;
-                let keys: BTreeSet<_> = targets.iter().map(|target| target.key.clone()).collect();
-                if keys != last_keys {
-                    last_keys = keys;
-                    stable_since = Instant::now();
-                }
-                if !targets.is_empty() && stable_since.elapsed() >= SETTLE {
-                    for target in &targets {
-                        deactivate(&target.key)?;
-                    }
-                    let after = targets_for_instance(&candidate.instance)?;
-                    let after_keys: BTreeSet<_> =
-                        after.iter().map(|target| target.key.clone()).collect();
-                    if after_keys == last_keys
-                        && !after.iter().any(|target| target.active)
-                        && after.iter().any(|target| target.available)
-                    {
-                        let enabled = DisabledState {
-                            global_flags: candidate.original.global_flags & !CONFIGFLAG_DISABLED,
-                            profile: candidate.original.profile,
-                        };
-                        if disabled_state(&devices, &candidate.device)? != enabled
-                            || problem(&candidate.device)? != 0
-                        {
-                            return Err(Error::Platform(
-                                "virtual adapter did not enter the requested enabled state".into(),
-                            ));
-                        }
-                        if active_signature()? != before {
-                            return Err(Error::Platform("another display changed while enabling the virtual adapter; its layout was not replayed".into()));
-                        }
-                        return Ok(());
-                    }
-                    stable_since = Instant::now();
-                }
-                if Instant::now() >= deadline {
-                    return Err(Error::Platform("the enabled virtual adapter did not provide a stable inactive display within 10 seconds".into()));
-                }
-                std::thread::sleep(Duration::from_millis(100));
+            let targets = capacity::ready_instance(&before, &candidate.instance, None, STARTUP,
+                &|| Ok(()), &mut operation.claims)?;
+            for target in &targets {
+                settled_readback(Duration::from_secs(5), &|| Ok(()), || {
+                    verify_enable_effects(&before, &scene()?, &candidate.instance)
+                })?;
+                deactivate(&target.key)?;
             }
+            settled_readback(Duration::from_secs(5), &|| Ok(()), || {
+                let after = targets_for_instance(&candidate.instance)?;
+                if after.iter().map(|t| &t.key).collect::<BTreeSet<_>>() != targets.iter().map(|t| &t.key).collect::<BTreeSet<_>>()
+                    || after.iter().any(|t| t.active) || !after.iter().any(|t| t.available)
+                    || active_signature()? != before {
+                    return Err(Error::Platform("virtual adapter or preserved original outputs have not settled".into()));
+                }
+                let enabled = DisabledState {
+                    global_flags: candidate.original.global_flags & !CONFIGFLAG_DISABLED,
+                    profile: candidate.original.profile,
+                };
+                if disabled_state(&devices, &candidate.device)? != enabled || problem(&candidate.device)? != 0 {
+                    return Err(Error::Platform("virtual adapter did not enter the requested enabled state".into()));
+                }
+                Ok(after)
+            })?;
+            Ok(())
         })();
         if let Err(failure) = result {
             operation.failure = failure.to_string();

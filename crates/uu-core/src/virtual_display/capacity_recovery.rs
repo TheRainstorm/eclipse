@@ -13,7 +13,7 @@ impl InterruptedInstall {
     pub fn from_record(record: &Value) -> Result<Self> {
         let fail=||Error::Platform("interrupted transaction is not a bound first installation; local recovery evidence is still required".into());
         if record["schema"]!="eclipse-capacity-transaction/v1"
-            || !matches!(record["phase"].as_str(),Some("installation_submitted"|"external_uninstall_verified"))
+            || !matches!(record["phase"].as_str(),Some("installation_submitted"|"installation_remove_submitted"|"installation_removed"|"external_uninstall_verified"))
             || !record["config"].is_null() || !record["inf"].is_null()
             || !record["count_before"].is_null()
         {return Err(fail());}
@@ -51,6 +51,15 @@ mod tests {
             ("config_before_sha256",Value::from("unbound")),("driver_version",Value::from("unknown"))] {
             let mut changed=record();changed[key]=value;
             assert!(InterruptedInstall::from_record(&changed).is_err(),"{key}");
+        }
+    }
+    #[test]
+    fn removal_submission_and_completed_node_removal_keep_the_original_evidence_binding() {
+        for phase in ["installation_remove_submitted", "installation_removed"] {
+            let mut bound = record(); bound["phase"] = phase.into();
+            assert!(InterruptedInstall::from_record(&bound).is_ok());
+            bound["config_before_sha256"] = Value::Null;
+            assert!(InterruptedInstall::from_record(&bound).is_err());
         }
     }
 }

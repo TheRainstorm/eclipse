@@ -2,6 +2,32 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+/// PnP/CCD publishes in stages. Before the next mutation, require consecutive
+/// complete, identical observations. An unreadable sample resets the window;
+/// it is never interpreted as an absent monitor or a new preservation baseline.
+pub(super) struct Settling<T> {
+    last: Option<T>,
+    since: Duration,
+    samples: u32,
+}
+impl<T> Default for Settling<T> {
+    fn default() -> Self {
+        Self { last: None, since: Duration::ZERO, samples: 0 }
+    }
+}
+impl<T: Clone + Eq> Settling<T> {
+    pub fn observe(&mut self, now: Duration, value: Option<&T>) -> bool {
+        if value.is_none() || self.last.as_ref() != value {
+            self.last = value.cloned();
+            self.since = now;
+            self.samples = 0;
+        }
+        if value.is_none() { return false; }
+        self.samples += 1;
+        now.saturating_sub(self.since) >= Duration::from_millis(500) && self.samples >= 6
+    }
+}
+
 #[derive(Default)]
 pub(super) struct StableReadback {
     samples: u32,
@@ -93,6 +119,47 @@ pub(super) fn preserve_saved_scaling(saved: &[i64], current: &[i64]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_waits_for_complete_identity_and_consecutive_original_state() {
+        let original = BTreeMap::from([("original", vec![3072, 1920, 0, 0])]);
+        let mut settling = Settling::default();
+        // Incomplete identity and a transient original mode are read-only
+        // waiting states. Neither grants permission to remove another output.
+        assert!(!settling.observe(Duration::ZERO, None));
+        assert!(!settling.observe(Duration::from_millis(100), Some(&original)));
+        assert!(!settling.observe(Duration::from_millis(400), None));
+        for step in 0..6 {
+            assert_eq!(settling.observe(Duration::from_millis(500 + step * 100), Some(&original)), step == 5);
+        }
+    }
+    #[test]
+    fn target_replacement_restarts_the_readiness_window() {
+        let mut settling = Settling::default();
+        for step in 0..5 {
+            assert!(!settling.observe(Duration::from_millis(step * 100), Some(&"first")));
+        }
+        assert!(!settling.observe(Duration::from_millis(500), Some(&"replacement")));
+        for step in 1..6 {
+            assert_eq!(settling.observe(Duration::from_millis(500 + step * 100), Some(&"replacement")), step == 5);
+        }
+    }
+    #[test]
+    fn stable_foreign_drift_never_becomes_an_accepted_original_state() {
+        let original = BTreeMap::from([("original", vec![1920, 1080, 0, 0])]);
+        let changed = BTreeMap::from([("original", vec![1920, 1080, 100, 0])]);
+        let owned = BTreeSet::from(["owned"]);
+        let mut settling = Settling::default();
+        for step in 0..20 {
+            let value = super::super::provision_policy::check_enabled(&original, &changed, &owned)
+                .ok().map(|()| &changed);
+            assert!(!settling.observe(Duration::from_millis(step * 100), value));
+        }
+        for step in 0..6 {
+            let value = super::super::provision_policy::check_enabled(&original, &original, &owned)
+                .ok().map(|()| &original);
+            assert_eq!(settling.observe(Duration::from_millis(2000 + step * 100), value), step == 5);
+        }
+    }
     #[test]
     fn failure_before_first_submission_does_not_restart_a_driver() {
         assert_eq!(

@@ -604,6 +604,49 @@ fn inventory(scene: &Scene) -> Result<Inventory> {
 // or driver status flags. A fresh OS layout is never replaced with an old global
 // snapshot during cleanup: only our exact target is removed from the fresh set.
 pub(super) type Fingerprints = BTreeMap<TargetKey, Vec<i64>>;
+
+fn fingerprint_change(before: &Fingerprints, after: &Fingerprints, key: &TargetKey) -> String {
+    let Some(current) = after.get(key) else {
+        return "original full monitor identity is temporarily unavailable or has been replaced".into();
+    };
+    let Some(previous) = before.get(key) else { return "output was absent before preparation".into(); };
+    let fields = ["width", "height", "pixel format", "x", "y", "source ID", "rotation", "scaling",
+        "refresh numerator", "refresh denominator", "HDR active", "color API", "color flags",
+        "active color mode", "color encoding", "bits per channel"];
+    fields.iter().zip(previous.iter().zip(current)).filter_map(|(name, (old, new))| {
+        (old != new).then(|| format!("{name}: {old} -> {new}"))
+    }).collect::<Vec<_>>().join(", ")
+}
+
+// QueryDisplayConfig and monitor interfaces are asynchronous during PnP. Wait
+// only by reading; writes remain outside this helper and still use fresh exact
+// identity and unchanged-original checks at their submission boundary.
+pub(super) fn settled_readback<T: Clone + Eq>(
+    timeout: Duration,
+    checkpoint: &(dyn Fn() -> super::preparation::Result<()> + Sync),
+    mut read: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    let start = std::time::Instant::now();
+    let mut settling = super::capacity_policy::Settling::default();
+    loop {
+        checkpoint().map_err(|e| Error::Platform(e.message))?;
+        let last = match read() {
+            Ok(value) => {
+                if settling.observe(start.elapsed(), Some(&value)) { return Ok(value); }
+                "complete display observations are still changing".to_owned()
+            }
+            Err(error) => {
+                settling.observe(start.elapsed(), None);
+                error.to_string()
+            }
+        };
+        if start.elapsed() >= timeout {
+            return Err(Error::Platform(format!("display state did not settle within {} seconds: {last}", timeout.as_secs())));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 pub(super) fn active_signature() -> Result<Fingerprints> {
     fingerprints(&query(QDC_ONLY_ACTIVE_PATHS)?, None)
 }
@@ -857,21 +900,20 @@ fn deactivate_checked(key: &TargetKey, require_other_active: bool) -> Result<()>
     before.active.paths.remove(index);
     let mut apply_submitted = false;
     apply(&before.active, &mut apply_submitted)?;
-    let after = scene()?;
-    if after
-        .active
-        .paths
-        .iter()
-        .any(|path| target_key(path).is_ok_and(|(candidate, _)| &candidate == key))
-    {
-        return Err(Error::Platform(
-            "virtual target remained active after removal".into(),
-        ));
-    }
-    if fingerprints(&after.active, None)? != preserved {
-        return Err(Error::Platform(
-            "another display changed during removal; original layout was not replayed".into(),
-        ));
+    let mut readback = || {
+        let after = query(QDC_ONLY_ACTIVE_PATHS)?;
+        // Reading every identity is required to prove absence. A retiring
+        // monitor with no interface yet must wait, never masquerade as removed.
+        if super::config_apply::exact_index(after.paths.iter().map(|path| target_key(path).map(|(candidate,_)|candidate)), key)?.is_some() {
+            return Err(Error::Platform("virtual target remained active after removal".into()));
+        }
+        if fingerprints(&after, None)? != preserved {
+            return Err(Error::Platform("another display changed during removal; original layout was not replayed".into()));
+        }
+        Ok(())
+    };
+    if readback().is_err() {
+        settled_readback(Duration::from_secs(5), &|| Ok(()), &mut readback)?;
     }
     Ok(())
 }

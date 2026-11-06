@@ -70,6 +70,57 @@ pub(in crate::virtual_display) fn verify_new_instance(
     verify_enable_effects(baseline, &scene()?, instance)
 }
 
+pub(in crate::virtual_display) fn ready_instance(
+    baseline: &Fingerprints,
+    instance: &str,
+    count: Option<usize>,
+    timeout: Duration,
+    checkpoint: Checkpoint<'_>,
+    claims: &mut BTreeMap<TargetKey, Box<dyn Claim>>,
+) -> Result<Vec<Target>> {
+    settled_readback(timeout, checkpoint, || {
+        let fresh = scene()?;
+        let targets: Vec<_> = inventory(&fresh)?.targets.into_iter().filter(|target| {
+            fresh.supported_adapters.get(&target.key.adapter).is_some_and(|owner| owner == instance)
+        }).collect();
+        claim_targets(&targets, claims)?;
+        verify_enable_effects(baseline, &fresh, instance)?;
+        if targets.is_empty() || count.is_some_and(|count| targets.len() != count) {
+            return Err(fail("the owned adapter has not published every requested monitor identity"));
+        }
+        Ok(targets)
+    })
+}
+
+/// A still-live first-install transaction owns the PnP node even while its
+/// monitor interfaces are being published/retired. Exclude only adapters whose
+/// SetupAPI instance resolves to that exact node; unknown original identities
+/// remain errors. This does not manufacture a monitor identity or adopt a slot.
+pub(in crate::virtual_display) fn installation_external_state(
+    instance: &str,
+    claims: &mut BTreeMap<TargetKey, Box<dyn Claim>>,
+) -> Result<(Fingerprints, Fingerprints)> {
+    let fresh = scene()?;
+    let owned: BTreeSet<_> = fresh.supported_adapters.iter()
+        .filter(|(_, owner)| owner.as_str() == instance).map(|(id, _)| *id).collect();
+    for path in fresh.all.paths.iter().chain(&fresh.active.paths) {
+        if owned.contains(&adapter(path.targetInfo.adapterId)) {
+            if let Ok((key, _)) = target_key(path) {
+                if !claims.contains_key(&key) {
+                    claims.insert(key.clone(), crate::virtual_display::ownership_windows::claim(&key)?);
+                }
+            }
+        }
+    }
+    let mut active = fresh.active;
+    active.paths.retain(|p| !owned.contains(&adapter(p.targetInfo.adapterId)));
+    let mut saved = query(QDC_DATABASE_CURRENT)?;
+    saved.paths.retain(|p| !owned.contains(&adapter(p.targetInfo.adapterId)));
+    let active = fingerprints(&active, None)?;
+    if active.is_empty() { return Err(Error::LastActiveOutput); }
+    Ok((active, modes(&saved)?))
+}
+
 fn string_value(key: &str, name: &str) -> Result<String> {
     let key: Vec<_> = key.encode_utf16().chain([0]).collect();
     let name: Vec<_> = name.encode_utf16().chain([0]).collect();
@@ -392,49 +443,26 @@ fn inactive(
     count: usize,
     checkpoint: Checkpoint<'_>,
 ) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(45);
-    let mut keys = BTreeSet::new();
-    let mut since = Instant::now();
-    loop {
+    let targets = ready_instance(&pending.baseline, &candidate.instance, Some(count),
+        Duration::from_secs(45), checkpoint, &mut pending.claims)?;
+    for target in &targets {
+        // The previous removal can briefly retire a CCD interface. Observe a
+        // complete original set again before submitting this next exact write.
+        settled_readback(Duration::from_secs(5), checkpoint, || verify_new_instance(&pending.baseline, &candidate.instance))?;
         idle(checkpoint)?;
-        let fresh = scene()?;
-        let targets = targets_for_instance(&candidate.instance)?;
-        claim_targets(&targets, &mut pending.claims)?;
-        verify_enable_effects(&pending.baseline, &fresh, &candidate.instance)?;
-        let next: BTreeSet<_> = targets.iter().map(|t| t.key.clone()).collect();
-        if next != keys {
-            keys = next;
-            since = Instant::now();
-        }
-        if targets.len() == count && since.elapsed() >= SETTLE {
-            for target in &targets {
-                idle(checkpoint)?;
-                verify_new_instance(&pending.baseline, &candidate.instance)?;
-                // Temporary exact-target removal; pool persistence is a
-                // separate, final fresh SAVE after all targets are inactive.
-                deactivate(&target.key)?;
-            }
-            let after = targets_for_instance(&candidate.instance)?;
-            if after.iter().map(|t| t.key.clone()).collect::<BTreeSet<_>>() == keys
-                && after
-                    .iter()
-                    .all(|t| !t.active && t.actual.is_none() && t.available)
-            {
-                healthy(devices, candidate, true)?;
-                if active_signature()? != pending.baseline {
-                    return Err(fail("an original output changed during capacity preparation; its layout was not replayed"));
-                }
-                return Ok(());
-            }
-            since = Instant::now();
-        }
-        if Instant::now() >= deadline {
-            return Err(fail(
-                "requested Mtt capacity did not settle into wholly inactive targets",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(100));
+        deactivate(&target.key)?;
     }
+    settled_readback(Duration::from_secs(10), checkpoint, || {
+        let after = targets_for_instance(&candidate.instance)?;
+        if after.iter().map(|t| &t.key).collect::<BTreeSet<_>>() != targets.iter().map(|t| &t.key).collect::<BTreeSet<_>>()
+            || after.iter().any(|t| t.active || t.actual.is_some() || !t.available)
+            || active_signature()? != pending.baseline {
+            return Err(fail("requested capacity or original outputs have not settled after exact target removal"));
+        }
+        healthy(devices, candidate, true)?;
+        Ok(after)
+    })?;
+    Ok(())
 }
 fn save_pool(pending: &mut Pending, instance: &str, checkpoint: Checkpoint<'_>) -> Result<()> {
     idle(checkpoint)?;
@@ -630,6 +658,12 @@ fn compensate(pending: &mut Pending, checkpoint: Checkpoint<'_>) -> Result<()> {
         return verify_saved_completion(pending, checkpoint);
     }
     if pending.existing.is_none() {
+        // The previous remover may have succeeded before its CCD readback
+        // failed. Continue absence/configuration verification, not another
+        // attempt to reopen a device that no longer exists.
+        if crate::virtual_display::install_windows::no_existing_mtt_node().is_ok() {
+            return recover_uninstalled_first_install(checkpoint);
+        }
         let (instance,directory)=pending.installed.as_ref().ok_or_else(||fail("first-install identity remains unknown; no partial device was adopted automatically"))?.clone();
         let devices = DeviceSet::displays()?;
         let candidate = mtt(&devices)?
@@ -647,8 +681,10 @@ fn compensate(pending: &mut Pending, checkpoint: Checkpoint<'_>) -> Result<()> {
             &directory,
             &pending.install_xml,
             &pending.baseline,
+            &pending.database,
             checkpoint,
             &mut pending.claims,
+            &mut |phase| pending.journal.phase(phase),
         )?;
         // The owned-node remover verifies fresh external state, independently
         // of the original install preflight. A changed original display blocks
@@ -746,8 +782,10 @@ fn recover_uninstalled_first_install(checkpoint:Checkpoint<'_>)->Result<()> {
     }
     // External uninstall ends our device ownership. Prove fresh absence,
     // including phantom nodes, without reconstructing or replaying old layouts.
-    let before=active_signature()?;
-    let saved=database()?;
+    let (before, saved) = settled_readback(Duration::from_secs(10), checkpoint, || {
+        crate::virtual_display::install_windows::no_existing_mtt_node()?;
+        Ok((active_signature()?, database()?))
+    })?;
     if before.is_empty(){return Err(fail("recovery requires an active original display"));}
     let started=Instant::now();
     let mut stable=capacity_policy::StableReadback::default();
@@ -794,11 +832,12 @@ pub(in crate::virtual_display) fn prepare(
     if candidates.len() > 1 {
         return Err(preparation::Failure::unchanged("multiple Mtt adapters share global configuration; automatic capacity changes were refused"));
     }
-    let baseline = active_signature().map_err(unchanged)?;
+    let (baseline, saved) = settled_readback(Duration::from_secs(10), checkpoint, || {
+        Ok((active_signature()?, database()?))
+    }).map_err(unchanged)?;
     if baseline.is_empty() {
         return Err(preparation::Failure::unchanged("preserving at least one active original display is required to prepare an inactive pool"));
     }
-    let saved = database().map_err(unchanged)?;
     let minimum = minimum.max(1);
     let existing = if let Some(candidate) = candidates.pop() {
         let targets = targets_for_instance(&candidate.instance).map_err(unchanged)?;
@@ -890,8 +929,8 @@ pub(in crate::virtual_display) fn prepare(
             transaction.journal.phase("installation_submitted")?;
             transaction.progress=capacity_policy::Progress::AdapterSubmitted;
             let installed = crate::virtual_display::install_windows::install_capacity_on_desktop(
-                package, minimum, checkpoint, &mut transaction.claims,
-                &mut |instance, directory| {
+                package, minimum, &transaction.baseline, &transaction.database, checkpoint, &mut transaction.claims,
+                &mut |phase, instance, directory| {
                     if !instance.is_empty() {
                         transaction.installed = Some((instance.into(), directory.into()));
                     }
@@ -899,6 +938,7 @@ pub(in crate::virtual_display) fn prepare(
                     if !instance.is_empty() {
                         transaction.journal.record("instance", instance.into())?;
                     }
+                    transaction.journal.phase(phase)?;
                     Ok(())
                 },
             );
