@@ -563,6 +563,13 @@ impl App {
     fn poll_controller(&mut self, ctx: &egui::Context) {
         #[cfg(windows)]
         for texture in self.textures.values(){texture.poll_decoder_leases(ctx,self.context.viewport());}
+        if self.disconnecting || self.exit_requested {
+            // A close request is terminal for this view. Late catalogs, frames
+            // and progress must never re-enter display selection while its
+            // transport is releasing resources.
+            self.retire_stopped_controller(ctx);
+            return;
+        }
         let native=self.uses_engine_controls();
         let Some(h) = &mut self.controller else {
             return;
@@ -629,6 +636,9 @@ impl App {
         if apply_settings {
             self.send_capture_settings();
         }
+        self.retire_stopped_controller(ctx);
+    }
+    fn retire_stopped_controller(&mut self,ctx:&egui::Context) {
         if self.controller.as_ref().is_some_and(|h| h.stopped.load(std::sync::atomic::Ordering::Acquire)) {
             if let Some(h)=&self.controller {h.stats.audio.stop();h.stats.clipboard.stopped.store(true,std::sync::atomic::Ordering::Release);}
             // The native window owns client-command key-ups; a retiring
@@ -1115,8 +1125,11 @@ impl App {
             let _ = h.close.send(());
             self.disconnecting = true;
         }
-        self.textures.clear();
-            self.hud_cache=Default::default();
+        // Closing views stop presenting immediately, but retain GPU leases
+        // until retirement. Dropping each display here serializes driver
+        // teardown before the event loop can hide a fully closed window.
+        if !self.exit_requested {self.textures.clear();}
+        self.hud_cache=Default::default();
         self.frame_count.clear();
         self.fps.clear();
         self.status = if self.disconnecting { uu_i18n::text("正在释放连接…") } else { uu_i18n::text("已断开") }.into();

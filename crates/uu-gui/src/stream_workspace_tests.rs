@@ -138,6 +138,62 @@ fn remembered_second_display_keeps_host_order_and_only_connects_the_selection() 
     assert_eq!(stats.native_media_epoch.load(Ordering::Acquire),0);
 }
 #[test]
+fn group_shortcut_menu_and_window_close_hide_before_cleanup_and_reject_late_frames() {
+    for entry in ["shortcut","device-menu","window"] {
+        let (mut state,_,ctx,first)=catalog_state(vec![generated_screen(0),generated_screen(1)],0);
+        state.sync_owned_views();
+        let second=state.windows[0].views.iter().find(|v|v.id!=first).unwrap().id;
+        let platform=state.windows[0].platform.as_ref().unwrap().clone();
+        let target=state.windows[0].views.iter().find(|v|v.id==second).unwrap().launch.target.clone();
+        let app=App::new_session(&ctx,None,platform,Some(target),false,None,true);
+        state.windows[0].sessions.push(Session{id:second,activated:None,app});
+        let mut stops=Vec::new();
+        let mut closes=Vec::new();
+        let mut frames=Vec::new();
+        for session in &mut state.windows[0].sessions {
+            let (tx,rx)=uu_core::media::frame_channel();
+            let stopped=Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (close,receive)=tokio::sync::mpsc::unbounded_channel();
+            let (raw,_)=tokio::sync::mpsc::unbounded_channel();
+            session.app.controller=Some(uu_core::controller::ControllerHandle {
+                stopped:stopped.clone(),events:std::sync::mpsc::channel().1,frames:rx,
+                input:raw.clone(),native_input:None,settings:raw,close,stats:Arc::new(Default::default()),
+            });
+            stops.push(stopped);closes.push(receive);frames.push(tx);
+        }
+        state.windows[0].select(second);
+        let tabs=state.windows[0].tabs(state.actions.clone());
+        state.windows[0].sessions[1].app.workspace_tabs=Some(tabs);
+        match entry {
+            "shortcut"=>{
+                state.windows[0].sessions[1].app.local_shortcut(crate::shortcuts::Action::Exit,&ctx);
+                let actions=std::mem::take(&mut *state.actions.borrow_mut());
+                for action in actions {state.apply(action,&ctx);}
+            },
+            "device-menu"=>state.apply(Action::CloseGroup(second),&ctx),
+            _=>state.windows[0].request_close(),
+        }
+        assert!(state.windows[0].closing,"{entry}");
+        assert!(state.windows[0].views.is_empty()&&state.windows[0].pending.is_empty());
+        assert_eq!(state.windows[0].active,0);
+        assert!(closes.iter_mut().all(|rx|rx.try_recv().is_ok()));
+        for tx in &frames {tx.send((0,2,2,vec![255;16])).unwrap();}
+        let output=ctx.run(Default::default(),|ctx| {
+            state.windows[0].poll_closing(ctx);
+            let window=&mut state.windows[0];
+            window.show(ctx,&None,false,&mut state.next,state.actions.clone(),&state.gamepad);
+        });
+        assert!(output.viewport_output.values().any(|out|out.commands.iter().any(|cmd|matches!(cmd,egui::ViewportCommand::Visible(false)))));
+        assert!(state.windows[0].sessions.iter().all(|s|s.app.controller.is_some()&&s.app.textures.is_empty()),
+            "{entry}: retain the cleanup owners without uploading late frames");
+        for stopped in stops {stopped.store(true,Ordering::Release);}
+        ctx.run(Default::default(),|ctx| {
+            state.windows[0].show(ctx,&None,false,&mut state.next,state.actions.clone(),&state.gamepad);
+        });
+        assert!(state.windows[0].sessions.is_empty(),"{entry}: release after the real completion signal");
+    }
+}
+#[test]
 fn later_catalog_sources_are_added_once_and_do_not_reappear_after_close() {
     let (mut state,stats,ctx,id)=catalog_state(vec![generated_screen(0)],0);
     state.sync_owned_views();
