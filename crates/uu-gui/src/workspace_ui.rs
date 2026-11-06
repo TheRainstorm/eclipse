@@ -170,6 +170,7 @@ mod tests {
         root: PathBuf,
         time: f64,
         texts: Vec<(String, egui::Pos2)>,
+        text_lefts: Vec<(String, f32)>,
 
 
     }
@@ -192,7 +193,7 @@ mod tests {
                 root,
                 time: 0.,
                 texts: Vec::new(),
-
+                text_lefts: Vec::new(),
 
             }
         }
@@ -200,7 +201,7 @@ mod tests {
             self.time += 0.02;
             let mut actions = Vec::new();
             let info = Info {
-                wallpaper_enabled:true,wallpaper_ready:true,wallpaper_download_ready:true,wallpaper_size:Some((2560,1440)),nearby:Vec::new(),providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Example connection",version:"1"}],
+                wallpaper_enabled:true,wallpaper_ready:true,wallpaper_download_ready:true,wallpaper_size:Some((2560,1440)),nearby:vec![("Generated nearby".into(),"192.0.2.20:48998".into())],providers:vec![uu_core::plugins::Descriptor{id:"example-addon",name:"Example connection",version:"1"}],
             };
             let output = self.ctx.run(
                 egui::RawInput {
@@ -220,23 +221,25 @@ mod tests {
                     actions.extend(self.workspace.dialogs(ctx, &info));
                 },
             );
-            fn collect(shape: &egui::Shape, texts: &mut Vec<(String, egui::Pos2)>) {
+            fn collect(shape: &egui::Shape, texts: &mut Vec<(String, egui::Pos2)>, lefts: &mut Vec<(String,f32)>) {
                 match shape {
-                    egui::Shape::Text(text) => texts.push((
-                        text.galley.text().to_owned(),
-                        text.pos + text.galley.size() * 0.5,
-                    )),
+                    egui::Shape::Text(text) => {
+                        let text_value=text.galley.text().to_owned();
+                        texts.push((text_value.clone(),text.pos + text.galley.size() * 0.5));
+                        lefts.push((text_value,text.pos.x));
+                    }
                     egui::Shape::Vec(shapes) => {
                         for s in shapes {
-                            collect(s, texts);
+                            collect(s, texts, lefts);
                         }
                     }
                     _ => {}
                 }
             }
             self.texts.clear();
+            self.text_lefts.clear();
             for shape in output.shapes {
-                collect(&shape.shape, &mut self.texts);
+                collect(&shape.shape, &mut self.texts, &mut self.text_lefts);
             }
             actions
         }
@@ -359,6 +362,22 @@ mod tests {
     }
 
     #[test]
+    fn context_menu_actions_and_submenu_entry_share_the_same_text_origin() {
+        let mut h=Harness::new();
+        for _ in 0..3 {h.frame(vec![]);}
+        let point=egui::pos2(900.,850.);
+        for pressed in [true,false] {
+            h.frame(vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Secondary,pressed,modifiers:Default::default()}]);
+        }
+        h.frame(vec![]);
+        let x=|label:&str|h.text_lefts.iter().find(|(text,_)|text==label).unwrap_or_else(||panic!("missing {label}: {:?}",h.texts)).1;
+        let expected=x("收藏当前壁纸");
+        for label in ["下载壁纸","刷新壁纸","本机串流测试","添加设备","添加附近设备"] {
+            assert!((x(label)-expected).abs()<2.,"{label} at {} is not aligned with {expected}: {:?}",x(label),h.text_lefts);
+        }
+    }
+
+    #[test]
     fn wallpaper_context_menu_exposes_source_pixels_and_separate_favorite_and_download_actions() {
         for (label, download) in [("收藏当前壁纸",false),("下载壁纸",true)] {
             let mut h=Harness::new();
@@ -390,6 +409,17 @@ mod tests {
         h.click("连接服务");
         assert!(!h.texts.iter().any(|(s,_)|s=="本机服务已停止"));
         assert!(h.texts.iter().any(|(s,_)|s=="＋ 添加服务器"));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn empty_connection_sessions_keep_the_section_and_show_an_empty_state() {
+        let mut h=Harness::new();h.workspace.route.page=Page::Services;
+        h.click("服务管理");
+        h.frame(vec![]);
+        assert!(h.texts.iter().any(|(s,_)|s=="会话"),"{:?}",h.texts);
+        assert!(h.texts.iter().any(|(s,_)|s=="会话为空"),"{:?}",h.texts);
+        assert!(!h.texts.iter().any(|(s,_)|s.starts_with("已连接 ")));
     }
 
     #[test]
@@ -1673,11 +1703,15 @@ impl Workspace {
             self.refresh_monitors();
         }
         let sessions=self.host.sessions();
-        if !sessions.is_empty() {
-            card(ui,|ui| {
-                ui.strong(uu_i18n::format!("已连接 {} 个会话",sessions.len()));
-                muted(ui,uu_i18n::text("多台设备可同时观看；键鼠由当前取得控制权的一台设备操作，释放或离线后交接。"));
-                for session in sessions {
+        card(ui,|ui| {
+            ui.strong(uu_i18n::text("会话"));
+            if sessions.is_empty() {
+                muted(ui,uu_i18n::text("会话为空"));
+                return;
+            }
+            ui.label(uu_i18n::format!("已连接 {} 个会话",sessions.len()));
+            muted(ui,uu_i18n::text("多台设备可同时观看；键鼠由当前取得控制权的一台设备操作，释放或离线后交接。"));
+            for session in sessions {
                     ui.horizontal_wrapped(|ui| {
                         ui.strong(&session.name);
                         let mut permissions=session.permissions;
@@ -1700,9 +1734,8 @@ impl Workspace {
                         HostStatus::Waiting{..}=>uu_i18n::text("等待控制端建立媒体连接…").into(),
                         HostStatus::Streaming{width,height,fps,encoder,audio}=>format!("{width}×{height} · {fps} FPS · {encoder} · {audio}"),
                     });
-                }
-            });
-        }
+            }
+        });
     }
     pub(super) fn server_settings(&mut self, ui: &mut egui::Ui, info: &Info, _actions: &mut Vec<Action>) {
         if self.service_tab==4 {

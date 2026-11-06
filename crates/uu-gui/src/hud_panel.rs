@@ -205,7 +205,10 @@ impl Metrics {
             |v| format!("{} ± {} ms", number(Some(v[0])), number(Some(v[1]))),
         );
         let loss = valid(self.loss).map_or_else(|| "—".into(), |v| format!("{v:.2}%"));
-        format!("BW {} Mbps · RTT {rtt} · Loss {loss}",number(self.throughput()))
+        // Compact HUD fields must not recenter when a link crosses 9.9 → 10.0.
+        // Four fixed glyph cells keep common LAN throughput values stable.
+        let bandwidth=valid(self.throughput()).map_or_else(||"----".into(),|v|format!("{v:>4.1}"));
+        format!("BW {bandwidth} Mbps · RTT {rtt} · Loss {loss}")
     }
     fn stages_label(&self) -> String {
         let total=self.estimated_value();
@@ -883,7 +886,12 @@ mod tests {
         assert_eq!(m.network_label(),"BW 12.4 Mbps · RTT 1.5 ± 0.32 ms · Loss 0.00%");
         assert!(m.stages_label().ends_with("Est. ≈4.75 ±— ms"));
         m.queues[2]=None;assert!(m.stages_label().ends_with("Est. —"));
-        m.link.as_mut().unwrap().tx_mbps=None;assert!(m.network_label().starts_with("BW — Mbps"));
+        m.link.as_mut().unwrap().tx_mbps=None;assert!(m.network_label().starts_with("BW ---- Mbps"));
+        m.link=Some(uu_core::link_metrics::Snapshot{rx_mbps:Some(8.2),tx_mbps:Some(0.),ping_ms:None});
+        let one_digit=m.network_label();
+        m.link=Some(uu_core::link_metrics::Snapshot{rx_mbps:Some(12.4),tx_mbps:Some(0.),ping_ms:None});
+        let two_digit=m.network_label();
+        assert_eq!(one_digit.find(" Mbps"),two_digit.find(" Mbps"),"bandwidth field must keep a fixed character width");
         let rows=detail_rows(&m);
         assert_eq!(rows.iter().take(6).map(|r|r.label).collect::<Vec<_>>(),["画面","帧率","编解码","网络","延迟","端到端"]);
         let latency=&rows[4].values;assert_eq!(latency.iter().filter(|v|v.line==1).count(),5);

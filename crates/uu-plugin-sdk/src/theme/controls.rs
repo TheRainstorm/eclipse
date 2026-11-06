@@ -529,7 +529,7 @@ pub fn compact_menu_style(ui: &mut Ui) {
 
 /// Compact action with the same density and focus behavior as option rows.
 pub fn menu_action(ui: &mut Ui, enabled: bool, label: impl Into<WidgetText>) -> Response {
-    ui.add_enabled_ui(enabled, |ui| menu_row(ui, false, label)).inner
+    ui.add_enabled_ui(enabled, |ui| menu_row_with_gutter(ui, None, false, false, label, false, "", false)).inner
 }
 
 pub fn menu_control(
@@ -541,6 +541,19 @@ pub fn menu_control(
     hint: &str,
     active: bool,
 ) -> Response {
+    menu_row_with_gutter(ui, icon, selected, true, label, arrow, hint, active)
+}
+
+fn menu_row_with_gutter(
+    ui: &mut Ui,
+    icon: Option<crate::ui::Icon>,
+    selected: bool,
+    reserve_icon_gutter: bool,
+    label: impl Into<WidgetText>,
+    arrow: bool,
+    hint: &str,
+    active: bool,
+) -> Response {
     ui.scope(|ui| {
         let p = *palette(ui.visuals());
         let animal = is_animal(ui.visuals());
@@ -548,7 +561,7 @@ pub fn menu_control(
         // Popup density is independent of the larger controls on settings pages.
         let h: f32 = 30.;
         let inset = 8.;
-        let gutter = 24.;
+        let gutter = if reserve_icon_gutter {24.} else {0.};
         let hint = WidgetText::from(hint).into_galley(
             ui,
             Some(egui::TextWrapMode::Truncate),
