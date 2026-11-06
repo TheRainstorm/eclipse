@@ -64,6 +64,30 @@ fn own_generated(state:&mut State,window:usize,device:&StreamTarget,screen:i32)-
     state.windows[window].record_launch(&launch,&mut state.next)
 }
 #[test]
+fn disconnect_returns_to_the_most_recent_surviving_view_without_reordering_tabs() {
+    let mut state=owned_state();let device=owned_target("A");
+    let a=own_generated(&mut state,0,&device,0);let b=own_generated(&mut state,0,&device,1);let c=own_generated(&mut state,0,&device,2);
+    let window=&mut state.windows[0];
+    for id in [a,c,b,c] {window.select(id);}
+    window.close_views(&[c]);assert_eq!(window.active,b);
+    assert_eq!(window.views.iter().map(|view|view.id).collect::<Vec<_>>(),[a,b]);
+    window.close_views(&[a]);assert_eq!(window.active,b,"closing a background view must keep the current one");
+    window.close_views(&[b]);assert_eq!(window.active,0);assert!(window.visited.is_empty());
+}
+#[test]
+fn moving_an_active_view_returns_to_the_previous_view_in_each_window() {
+    let mut state=owned_state();let device=owned_target("A");
+    let a=own_generated(&mut state,0,&device,0);let b=own_generated(&mut state,0,&device,1);let c=own_generated(&mut state,0,&device,2);
+    let other=state.next;state.next+=1;state.windows.push(Window::new(other,vec![],None));
+    let d=own_generated(&mut state,1,&device,3);
+    for id in [a,b,c] {state.windows[0].select(id);}
+    state.windows[1].select(d);
+    state.move_view(c,other,&egui::Context::default());
+    assert_eq!(state.windows[0].active,b);assert_eq!(state.windows[1].active,c);
+    state.windows[1].close_views(&[c]);assert_eq!(state.windows[1].active,d);
+    state.windows[0].close_views(&[b]);assert_eq!(state.windows[0].active,a);
+}
+#[test]
 fn owned_lazy_views_detach_leave_navigation_and_close_only_their_window_group() {
     let mut state=owned_state();let device=owned_target("A");
     let a=own_generated(&mut state,0,&device,0);let b=own_generated(&mut state,0,&device,1);let c=own_generated(&mut state,0,&device,2);

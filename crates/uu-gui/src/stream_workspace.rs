@@ -365,6 +365,7 @@ struct Window {
     sessions: Vec<Session>,
     pending: Vec<Launch>,
     active: u64,
+    visited: Vec<u64>,
     closing: bool,
     close_hidden: bool,
     platform: Option<Rc<crate::platform::Platform>>,
@@ -395,7 +396,7 @@ impl Window {
             session.app.deactivate_session();
             if bulk {session.app.disconnect_without_preview();}else{session.app.disconnect();}
         }
-        if !self.views.iter().any(|v|v.id==self.active) {if let Some(next)=self.views.first().map(|v|v.id) {self.select(next);}else{self.active=0;}}
+        self.select_remaining();
         if self.views.is_empty() {
             self.closing=true;
             self.close_confirmation=false;
@@ -436,6 +437,7 @@ impl Window {
             sessions: Vec::new(),
             pending,
             active: 0,
+            visited: Vec::new(),
             closing: false,
             close_hidden: false,
             platform: None,
@@ -493,7 +495,19 @@ impl Window {
             groups:groups.into_iter().map(|(_,group)|group).collect(),
         }
     }
+    fn remember_visit(&mut self,id:u64) {
+        self.visited.retain(|previous|*previous!=id);
+        self.visited.push(id);
+    }
+    fn select_remaining(&mut self) {
+        self.visited.retain(|id|self.views.iter().any(|view|view.id==*id));
+        if self.views.iter().any(|view|view.id==self.active) {return;}
+        if let Some(id)=self.visited.last().copied().or_else(||self.views.first().map(|view|view.id)) {self.select(id);}
+        else {self.active=0;}
+    }
     fn select(&mut self, id: u64) {
+        if !self.views.iter().any(|view|view.id==id) {return;}
+        self.remember_visit(id);
         if let Some(view)=self.views.iter_mut().find(|view|view.id==id) {view.discovered=false;}
         let Some(view)=self.views.iter().find(|v|v.id==id) else{return;};
         if let Some(session)=self.sessions.iter_mut().find(|s|s.id==id&&!s.app.exit_requested) {
@@ -534,7 +548,7 @@ impl Window {
         }
     }
     fn resume_local_desktop(&mut self) {
-        if self.active==0 {self.active=self.views.first().map_or(0,|view|view.id);}
+        self.select_remaining();
         for session in &mut self.sessions {
             session.app.active_session=session.id==self.active&&!session.app.exit_requested;
             if session.app.active_session {
@@ -554,7 +568,7 @@ impl Window {
         if let Some(handle)=&session.app.controller {handle.stats.audio.parked.store(false,std::sync::atomic::Ordering::Release);}
         session.app.deactivate_session();
         session.app.context.suspend();
-        if self.active==id {if let Some(next)=self.views.iter().find(|v|v.id!=id).map(|v|v.id) {self.select(next);}}
+        self.select_remaining();
         session
     }
     fn adopt_session(&mut self,mut session:Session) {
@@ -569,6 +583,7 @@ impl Window {
         // Activation belongs to the destination viewport's next pass, after
         // its platform/context and wakeups have been bound by show().
         self.active=id;
+        self.remember_visit(id);
         self.route_cached_audio(id);
         self.sizing.borrow_mut().begin_view();
         self.focus=true;
@@ -719,9 +734,7 @@ impl Window {
         let closed:Vec<_>=self.sessions.iter().filter(|s|s.app.exit_requested).map(|s|s.id).collect();
         self.views.retain(|v|!closed.contains(&v.id));
         self.sessions.retain(|s| !s.app.exit_requested || s.app.controller.is_some());
-        if !self.views.iter().any(|v|v.id==self.active) {
-            if let Some(first)=self.views.first().map(|v|v.id) {self.select(first);}
-        }
+        self.select_remaining();
         if self.close_confirmation {
             if ctx.input(|i|i.key_pressed(egui::Key::Escape)) {self.close_confirmation=false;self.modal.set(false);}
         }
@@ -897,7 +910,7 @@ impl State {
         let view=source.views.remove(at);
         source.pending.retain(|l|l.target.key()!=view.launch.target.key());
         let session=source.sessions.iter().any(|s|s.id==id).then(||source.take_session(id));
-        if source.active==id {source.active=0;if let Some(next)=source.views.first().map(|v|v.id){source.select(next);}}
+        source.select_remaining();
         ctx.request_repaint_of(source.viewport());
         if self.input_owner==Some(id) {self.input_owner=None;}
         let target=self.windows.iter_mut().find(|w|w.id==target_id).unwrap();
