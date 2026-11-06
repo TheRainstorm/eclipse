@@ -21,6 +21,7 @@ mod connections;
 #[derive(Default)]
 pub(super) struct Entry {
     manager: Option<Manager>,
+    requested_section: Option<u8>,
     deployment: Option<Deployment>,
     job: Option<mpsc::Receiver<Result<bool, String>>>,
     feedback: super::ui_feedback::Feedback,
@@ -34,6 +35,7 @@ impl Entry {
             }
         }
         if let Some(manager) = &mut self.manager {
+            if let Some(section)=self.requested_section.take() {manager.section=section;}
             manager.poll();
         }
         let mut installed = false;
@@ -115,14 +117,17 @@ impl Entry {
             .map(|t| t.password_permissions.is_some())
     }
     pub fn open_pairing(&mut self) {
+        self.select_section(4);
+    }
+    fn select_section(&mut self,section:u8) {
+        self.requested_section=Some(section);
         if let Some(manager) = &mut self.manager {
-            manager.section = 4;
+            manager.section = section;
+            self.requested_section=None;
         }
     }
     pub fn open_virtual_displays(&mut self, _ctx: &egui::Context) {
-        if let Some(manager) = &mut self.manager {
-            manager.section = 6;
-        }
+        self.select_section(6);
     }
     pub fn online(&self) -> bool {
         self.manager.as_ref().is_some_and(|m| m.ready)
@@ -1664,6 +1669,19 @@ mod tests {
                 },
             }),
         }
+    }
+    #[test]
+    fn tray_management_selection_survives_service_manager_initialization() {
+        let ctx=egui::Context::default();let mut entry=Entry::default();
+        entry.open_virtual_displays(&ctx);
+        assert_eq!(entry.requested_section,Some(6));
+        let (manager,_send,_jobs,_stop)=fixture();
+        entry.manager=Some(manager);
+        entry.poll(&ctx,&mut Default::default());
+        assert_eq!(entry.manager.as_ref().unwrap().section,6);
+        assert!(entry.requested_section.is_none());
+        entry.open_pairing();
+        assert_eq!(entry.manager.as_ref().unwrap().section,4);
     }
     #[test]
     fn service_readiness_and_lost_connection_control_the_online_state() {
