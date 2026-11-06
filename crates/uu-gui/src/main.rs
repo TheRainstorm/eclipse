@@ -683,7 +683,7 @@ impl App {
             let reconnect=self.controller.as_ref().is_some_and(|h|h.stats.native_quality_request.get().is_some_and(|old|if dynamic {old.bounds!=request.bounds||old.codec!=request.codec}else{old!=&request}));
             let reconnect=reconnect || self.controller.as_ref().is_some_and(|h|h.stats.native_hdr_requested.get().is_some_and(|old|*old!=self.preferences.hdr));
             if reconnect {
-                self.output_reconnect_pending=true;self.stop_connection();self.status=uu_i18n::text("正在应用原生串流画质…").into();
+                self.output_reconnect_pending=true;self.stop_connection(false);self.status=uu_i18n::text("正在应用原生串流画质…").into();
             }else if dynamic {
                 if let Some(h)=&self.controller {
                     let rate=*h.stats.native_rate_response.lock().unwrap();
@@ -1066,16 +1066,22 @@ impl App {
         }
     }
     fn disconnect(&mut self) {
+        self.disconnect_with_preview(true);
+    }
+    fn disconnect_without_preview(&mut self) {
+        self.disconnect_with_preview(false);
+    }
+    fn disconnect_with_preview(&mut self, save_preview: bool) {
         self.connect_deferred = false;
         self.output_reconnect_pending = false;
         if self.stream_target.is_some() { self.exit_requested = true; }
-        self.stop_connection();
+        self.stop_connection(save_preview);
     }
 
-    fn stop_connection(&mut self) {
+    fn stop_connection(&mut self, save_preview: bool) {
         if self.disconnecting { return; }
         self.virtual_display.reset_remote();
-        self.save_last_remote_frame();
+        if save_preview { self.save_last_remote_frame(); }
         self.release_pointer_capture(&self.context.clone());
         self.stream_menu.open = false;
         self.displays.menu_open=false;

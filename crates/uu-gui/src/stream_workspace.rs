@@ -384,10 +384,19 @@ impl Window {
     }
     fn close_views(&mut self, ids:&[u64]) {
         let keys:Vec<_>=self.views.iter().filter(|v|ids.contains(&v.id)).map(|v|v.launch.target.key()).collect();
+        let bulk=ids.len()>1;
         self.views.retain(|v|!ids.contains(&v.id));
         self.pending.retain(|l|!keys.contains(&l.target.key()));
-        for session in self.sessions.iter_mut().filter(|s|ids.contains(&s.id)) {session.app.deactivate_session();session.app.disconnect();}
+        for session in self.sessions.iter_mut().filter(|s|ids.contains(&s.id)) {
+            session.app.deactivate_session();
+            if bulk {session.app.disconnect_without_preview();}else{session.app.disconnect();}
+        }
         if !self.views.iter().any(|v|v.id==self.active) {if let Some(next)=self.views.first().map(|v|v.id) {self.select(next);}else{self.active=0;}}
+        if self.views.is_empty() {
+            self.closing=true;
+            self.close_confirmation=false;
+            self.modal.set(false);
+        }
     }
     fn close_all(&mut self) {
         self.closing=true;self.close_confirmation=false;self.modal.set(false);

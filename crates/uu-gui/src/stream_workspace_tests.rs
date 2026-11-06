@@ -81,6 +81,18 @@ fn owned_lazy_views_detach_leave_navigation_and_close_only_their_window_group() 
     state.apply(Action::Close(c),&ctx);assert!(state.windows.iter().all(|w|w.views.is_empty()&&w.pending.is_empty()));
 }
 #[test]
+fn closing_the_last_view_marks_the_window_for_immediate_release() {
+    let mut state=owned_state();
+    let device=owned_target("A");
+    let view=own_generated(&mut state,0,&device,0);
+    let ctx=egui::Context::default();
+    state.apply(Action::CloseGroup(view),&ctx);
+    let window=&state.windows[0];
+    assert!(window.views.is_empty());
+    assert!(window.pending.is_empty());
+    assert!(window.closing);
+}
+#[test]
 fn local_desktop_toggle_preserves_window_and_view_identity_for_restore() {
     let mut state=owned_state();let device=owned_target("A");let ctx=egui::Context::default();
     let a=own_generated(&mut state,0,&device,0);state.windows[0].select(a);
