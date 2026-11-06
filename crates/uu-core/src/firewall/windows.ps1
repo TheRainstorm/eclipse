@@ -73,7 +73,10 @@ function Report($program) {
         }
     }
     # Explicit Block wins over Allow. Report potential overlaps without changing it.
-    $blocks = @(Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Action Block -Enabled True | Where-Object { "$($_.Direction)" -eq 'Inbound' -and "$($_.Enabled)" -eq 'True' -and "$($_.Action)" -eq 'Block' } | Where-Object {
+    # Some NetSecurity providers fail the whole CIM query when server-side
+    # Action/Enabled filters have no matching rows. Enumerate first and filter
+    # locally so an empty block-rule set is a valid report, not an update error.
+    $blocks = @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { "$($_.Direction)" -eq 'Inbound' -and "$($_.Enabled)" -eq 'True' -and "$($_.Action)" -eq 'Block' } | Where-Object {
         $app = $_ | Get-NetFirewallApplicationFilter
         $app.Program -eq 'Any' -or [string]::Equals($app.Program,$program,[StringComparison]::OrdinalIgnoreCase)
     })
