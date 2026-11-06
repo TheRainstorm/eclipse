@@ -3,7 +3,7 @@
 mod preparation_ui;
 use eframe::egui;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap,BTreeSet},
     sync::mpsc,
     time::{Duration, Instant},
 };
@@ -92,8 +92,11 @@ enum Startup {
     Waiting(Instant),
     Finished,
 }
-#[derive(Clone)]
+#[derive(Clone,PartialEq,Eq)]
 struct DisplayEditor { id:uu_core::virtual_display::LeaseId, name:String, spec:Spec }
+impl From<&Display> for DisplayEditor {
+    fn from(display:&Display)->Self {Self{id:display.id,name:display.name.clone(),spec:display.spec}}
+}
 
 #[derive(Default)]
 pub struct State {
@@ -106,8 +109,10 @@ pub struct State {
     persistent_new:Option<bool>,
     status: Option<Status>,
     displays: Vec<Display>,
-    editing: Option<DisplayEditor>,
-    editing_submitted: bool,
+    editors: BTreeMap<uu_core::virtual_display::LeaseId,DisplayEditor>,
+    submitted_editor: Option<uu_core::virtual_display::LeaseId>,
+    limit_draft: Option<u16>,
+    next_inventory_check: Option<Instant>,
     slots: Vec<Slot>,
     preparing_slot: Option<Slot>,
     worker: Option<mpsc::Receiver<Result<Response, LocalFailure>>>,
@@ -115,6 +120,7 @@ pub struct State {
     worker_started: Option<Instant>,
     worker_timed_out: bool,
     worker_preparation: bool,
+    inspect_inflight: bool,
     uncertain_owners: BTreeSet<LocalOwner>,
     pending: Option<(u64, Instant)>,
     pending_timed_out: bool,
@@ -136,6 +142,25 @@ pub struct State {
     create_requested: bool,
 }
 impl State {
+    #[cfg(test)]
+    pub(super) fn generated_preview()->Self {
+        let displays=[("办公副屏",true,Spec::default()),("游戏副屏",false,Spec{width:2560,height:1440,refresh_millihz:120_000,hdr:true})]
+            .into_iter().enumerate().map(|(index,(name,persistent,spec))|Display {
+                id:uu_core::virtual_display::LeaseId(uuid::Uuid::from_u128(index as u128+1)),owner:Owner::Manual,
+                spec,actual:Some(spec),name:name.into(),source:format!("generated-source-{index}"),active:true,persistent,cleanup_pending:false,last_error:None,
+            }).collect();
+        let mut state=Self{local_owner:Some(LocalOwner::Background),..Default::default()};
+        state.receive(Response::Snapshot {
+            status:Status{supported:true,driver_present:true,available_slots:14,leased:2,allocated:2,keep_after_stream:false,limit:2,supports_lifetimes:true,supports_configuration:true,explanation:String::new(),install_url:String::new(),preparation:None},
+            displays,slots:Vec::new(),
+        },Some(LocalOwner::Background));
+        state
+    }
+    #[cfg(test)]
+    pub(super) fn show_generated_preview(&mut self,ui:&mut egui::Ui) {
+        // The isolated visual probe never polls or calls a real service.
+        self.contents(ui,&ui.ctx().clone(),None,true);
+    }
     pub(super) fn new_is_persistent(&self)->bool {self.persistent_new.unwrap_or(false)}
     pub(super) fn spec(&self) -> Spec {
         self.spec
@@ -206,7 +231,7 @@ impl State {
         self.source_timed_out = false;
         self.status = None;
         self.displays.clear();
-        self.editing=None;self.editing_submitted=false;
+        self.editors.clear();self.submitted_editor=None;self.limit_draft=None;self.next_inventory_check=None;
         self.slots.clear();
         self.preparing_slot = None;
         self.preparation = None;
@@ -256,7 +281,7 @@ impl State {
         if self.local_owner != Some(owner) {
             self.status = None;
             self.displays.clear();
-            self.editing=None;self.editing_submitted=false;
+            self.editors.clear();self.submitted_editor=None;self.limit_draft=None;self.next_inventory_check=None;
             self.slots.clear();
             self.preparing_slot = None;
             self.notice.clear();
@@ -300,6 +325,7 @@ impl State {
             return;
         }
         let preparing = matches!(&request, LocalRequest::Prepare | LocalRequest::Recover);
+        self.inspect_inflight=matches!(&request,LocalRequest::Manage{request:Request::Inspect});
         self.message(
             if preparing {
                 uu_i18n::text("正在准备虚拟副屏，请等待本次操作完成。")
@@ -342,6 +368,7 @@ impl State {
         match client.request(request) {
             Ok(id) => {
                 self.pending = Some((id, Instant::now()));
+                self.inspect_inflight=inspect;
                 self.pending_timed_out = false;
                 if !inspect {
                     self.remote_refresh_attempted = false;
@@ -402,15 +429,17 @@ impl State {
                     .as_ref()
                     .filter(|s| s.queued && preparation_ui::active(s))
                     .map(|_| Instant::now() + Duration::from_secs(1));
+                if self.limit_draft==Some(status.limit) {self.limit_draft=None;}
                 self.status = Some(status);
-                if self.editing_submitted {
-                    if self.editing.as_ref().is_some_and(|draft|displays.iter().any(|display|display.id==draft.id && display.spec==draft.spec && (draft.name.trim().is_empty() || display.name==draft.name.trim()))) {
-                        self.editing=None;
+                if let Some(id)=self.submitted_editor.take() {
+                    if self.editors.get(&id).is_some_and(|draft|displays.iter().any(|display|display.id==draft.id && display.spec==draft.spec && (draft.name.trim().is_empty() || display.name==draft.name.trim()))) {
+                        self.editors.remove(&id);
                     }
-                    self.editing_submitted=false;
                 }
+                self.editors.retain(|id,_|displays.iter().any(|display|display.id==*id));
                 self.displays = displays;
                 self.slots = slots;
+                self.next_inventory_check=Some(Instant::now()+Duration::from_secs(2));
                 self.message(String::new());
                 self.details.clear();
             }
@@ -430,17 +459,20 @@ impl State {
                 self.preparation = None;
                 self.next_preparation_check = None;
                 self.details.clear();
+                self.next_inventory_check=Some(Instant::now());
             }
             Response::Removed { id } => {
                 self.displays.retain(|d| d.id != id);
+                self.editors.remove(&id);
                 self.status = None;
                 self.preparation = None;
                 self.next_preparation_check = None;
                 self.details.clear();
                 self.message(uu_i18n::text("虚拟副屏已移除").into());
+                self.next_inventory_check=Some(Instant::now());
             }
             Response::Error { message } => {
-                self.editing_submitted=false;
+                self.submitted_editor=None;
                 if self.startup.is_some() {
                     self.startup = Some(Startup::Finished);
                 }
@@ -462,6 +494,7 @@ impl State {
             match receiver.try_recv() {
                 Ok(result) => {
                     self.worker = None;
+                    self.inspect_inflight=false;
                     self.worker_started = None;
                     self.worker_timed_out = false;
                     self.worker_preparation = false;
@@ -494,6 +527,7 @@ impl State {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.worker = None;
+                    self.inspect_inflight=false;
                     self.worker_started = None;
                     self.worker_timed_out = false;
                     self.worker_preparation = false;
@@ -526,6 +560,7 @@ impl State {
         if let Some((id, started)) = self.pending {
             if let Some(response) = client.and_then(|client| client.take_response(id)) {
                 self.pending = None;
+                self.inspect_inflight=false;
                 self.pending_timed_out = false;
                 self.receive(response, None);
             } else if started.elapsed() > uu_core::native_virtual_display::OPERATION_TIMEOUT
@@ -567,6 +602,12 @@ impl State {
             self.local_initial_refresh=false;
             self.local(ctx,Request::Inspect.into());
         }
+        if !self.busy() && self.next_inventory_check.is_some_and(|at|Instant::now()>=at) {
+            self.next_inventory_check=None;
+            if let Some(client)=client {self.remote(client,Request::Inspect);}
+            else {self.local(ctx,Request::Inspect.into());}
+        }
+        if let Some(at)=self.next_inventory_check {ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));}
         if let Some(client) = client {
             if self.take_remote_refresh_request() {
                 self.remote(client, Request::Inspect);
@@ -615,6 +656,7 @@ impl State {
         embedded: bool,
     ) {
         let busy = self.busy();
+        let can_edit=!busy||self.inspect_inflight;
         let mutations_blocked = if client.is_some() {
             self.remote_inventory_uncertain
         } else {
@@ -647,7 +689,7 @@ impl State {
             ui.weak(uu_i18n::text("临时屏在所属串流断开时回收；持久屏保留并在开机恢复。"));
         } else if let Some(owner) = self.local_owner {
             if embedded {
-                ui.weak(uu_i18n::text("临时屏随所属串流断开时回收；持久屏保留并在开机恢复。"));
+                ui.weak(uu_i18n::text("临时屏随所属串流或服务退出回收；持久屏保留并在开机恢复。"));
             } else {
                 ui.strong(uu_i18n::format!("管理对象：{}", owner.label()));
                 ui.weak(owner.lifetime());
@@ -666,69 +708,54 @@ impl State {
         if mutations_blocked {
             ui.weak(uu_i18n::text("上一次操作结果未知，请刷新当前管理对象的列表后再操作。"));
         }
-        crate::virtual_display_presets::spec_editor(ui,&mut self.spec);
-        if client.is_none() {
-            crate::theme::switch(ui,self.persistent_new.get_or_insert(true),uu_i18n::text("持续保存并在开机恢复"));
-            if !embedded {
-                if let Some(status)=&self.status {
-                    let mut keep=status.keep_after_stream;
-                    if crate::theme::switch(ui,&mut keep,uu_i18n::text("串流结束后保留")).changed(){local_command=Some(LocalRequest::KeepAfterStream{keep});}
-                }
-            }
-        }
-        if client.is_some() && self.status.as_ref().is_some_and(|s|s.supports_lifetimes) {
-            crate::theme::switch(ui,self.persistent_new.get_or_insert(false),uu_i18n::text("持续保存并在开机恢复"));
-        }
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    !busy && !mutations_blocked && !background_unavailable && (client.is_none() || self.remote_create_supported)
-                        && self.status.as_ref().is_none_or(|s|s.supported)
-                        && self.status.as_ref().is_none_or(|s|!s.supports_lifetimes||s.allocation_count()<usize::from(s.limit))
-                        && preparation_ui::can_create(self.preparation.as_ref(),self.preparation.as_ref().map_or_else(||self.status.as_ref().map_or(0,|s|s.available_slots),|s|s.available as usize),self.local_owner==Some(LocalOwner::Foreground)&&client.is_none()),
-                    crate::theme::secondary_button(uu_i18n::text("新建虚拟显示器")),
-                )
-                .on_disabled_hover_text(if embedded {
-                    uu_i18n::text("当前服务未提供虚拟显示器管理，请更新服务并授予管理权限")
-                } else {
-                    uu_i18n::text("远端未提供虚拟副屏管理，请更新后台并授予管理服务权限")
-                })
-                .clicked()
-            {
-                command = Some(Request::Create { spec: self.spec });
-            }
-            if ui
-                .add_enabled(!self.busy(), crate::theme::secondary_button(uu_i18n::text("刷新")))
-                .clicked()
-            {
-                command = Some(Request::Inspect);
-            }
-            if self.busy() {
-                ui.spinner();
-                if self.worker_preparation {ui.weak(uu_i18n::text("正在准备虚拟副屏，请等待本次操作完成。"));}
-                ctx.request_repaint_after(Duration::from_millis(100));
-            }
-        });
         if let Some(status)=&self.status {
-            ui.add_space(6.);
             ui.horizontal_wrapped(|ui|{
                 ui.label(uu_i18n::text("虚拟显示器上限"));
-                let mut limit=status.limit;
-                if crate::theme::number_input(ui,egui::DragValue::new(&mut limit).range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT)).changed() && limit!=status.limit {
-                    command=Some(Request::SetLimit{limit});
-                }
+                let mut limit=self.limit_draft.unwrap_or(status.limit);
+                ui.add_enabled_ui(can_edit,|ui| {
+                    if crate::theme::number_input(ui,egui::DragValue::new(&mut limit).range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT)).changed() {
+                        self.limit_draft=(limit!=status.limit).then_some(limit);
+                    }
+                    if ui.add_enabled(self.limit_draft.is_some()&&!busy&&!mutations_blocked,crate::theme::primary_button(uu_i18n::text("保存上限"))).clicked() {
+                        command=Some(Request::SetLimit{limit});
+                    }
+                });
                 ui.weak(uu_i18n::format!("/ {} 个",uu_core::virtual_display::MAX_DISPLAY_LIMIT));
             });
-            let existing=self.slots.iter().filter(|slot|slot.active).count();
+            ui.weak(uu_i18n::text("默认 2 个；临时和持久虚拟显示器共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。"));
+            let persistent=self.displays.iter().filter(|display|display.persistent).count();
+            let temporary=self.displays.len()-persistent;
             let available=self.preparation.as_ref().map_or(status.available_slots,|preparation|preparation.available as usize);
+            let allocated=status.allocation_count();let limit=status.limit;
+            let remaining=available.min(usize::from(limit).saturating_sub(allocated));
             ui.horizontal_wrapped(|ui|{
-                ui.weak(uu_i18n::format!("已分配：{}",status.allocation_count()));
-                ui.weak(uu_i18n::format!("活动占用：{}",status.leased));
-                ui.weak(uu_i18n::format!("可创建槽位：{available}"));
-                ui.weak(uu_i18n::format!("现有虚拟屏：{existing}"));
+                ui.weak(uu_i18n::format!("已创建：{allocated} / {limit}"));
+                ui.weak(uu_i18n::format!("持久：{persistent} · 临时：{temporary}"));
+                ui.weak(uu_i18n::format!("可新建：{remaining}"));
             });
-            ui.weak(uu_i18n::text("已分配包含持久和临时虚拟屏；活动占用是当前串流持有的虚拟屏；可创建槽位是驱动中尚未占用的空闲目标。"));
+        } else {
+            ui.horizontal(|ui| {ui.label(uu_i18n::text("虚拟显示器上限"));ui.weak("—");});
         }
+        ui.add_space(8.);
+        egui::CollapsingHeader::new(uu_i18n::text("创建设置")).id_salt("virtual-display-create").default_open(self.displays.is_empty()).show(ui,|ui| {
+            ui.add_enabled_ui(can_edit,|ui| {
+                crate::virtual_display_presets::spec_editor(ui,&mut self.spec);
+                if client.is_none() || self.status.as_ref().is_some_and(|s|s.supports_lifetimes) {
+                    crate::theme::switch(ui,self.persistent_new.get_or_insert(client.is_none()),uu_i18n::text("持久保存，开机恢复"));
+                }
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
+            let can_create=!busy && !mutations_blocked && !background_unavailable && (client.is_none() || self.remote_create_supported)
+                && self.status.as_ref().is_some_and(|s|s.supported && (!s.supports_lifetimes||s.allocation_count()<usize::from(s.limit)))
+                && preparation_ui::can_create(self.preparation.as_ref(),self.preparation.as_ref().map_or_else(||self.status.as_ref().map_or(0,|s|s.available_slots),|s|s.available as usize),self.local_owner==Some(LocalOwner::Foreground)&&client.is_none());
+            if ui.add_enabled(can_create,crate::theme::primary_button(uu_i18n::text("新建虚拟显示器"))).clicked() {
+                command=Some(Request::Create{spec:self.spec});
+            }
+            ui.weak(uu_i18n::text(if self.persistent_new.unwrap_or(client.is_none()) {"持久虚拟显示器"}else{"临时虚拟显示器"}));
+            if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("刷新"))).clicked() {command=Some(Request::Inspect);}
+            if busy {ui.spinner();ctx.request_repaint_after(Duration::from_millis(100));}
+        });
         if let Some(preparation)=&self.preparation {
             ui.weak(uu_core::native_virtual_display::preparation_message(preparation));
             if preparation_ui::active(preparation) {
@@ -746,14 +773,12 @@ impl State {
                 }
             }
         } else if let Some(status) = &self.status {
-            ui.label(uu_i18n::format!(
-                "可用虚拟屏槽位：{}",
-                status.available_slots
-            ));
             ui.weak(if !status.supported {
                 uu_i18n::text("虚拟副屏仅支持 Windows")
             } else if !status.driver_present {
                 uu_i18n::text("源机尚未安装支持的签名虚拟副屏驱动")
+            } else if status.supports_lifetimes&&status.allocation_count()>=usize::from(status.limit) {
+                uu_i18n::text("已达到创建上限；提高上限或删除已有显示器后可继续创建。")
             } else if status.available_slots == 0 {
                 uu_i18n::text("驱动没有可用虚拟屏，请在源机管理窗口准备驱动后重试")
             } else {
@@ -807,48 +832,12 @@ impl State {
             if ui.add_enabled(!busy,crate::theme::secondary_button(label)).clicked(){preparation_action=Some(if embedded {preparation_ui::Action::Prepare} else {preparation_ui::Action::BackgroundSetup});}
         }
         ui.separator();
-        if client.is_none() {
-            for slot in &self.slots {
-                if slot.leased {
-                    continue;
-                }
-                ui.horizontal(|ui| {
-                    ui.label(format!("{} · {}", slot.name, slot.source));
-                    if slot.active {
-                        if ui
-                            .add_enabled(
-                                !busy && !mutations_blocked,
-                                crate::theme::secondary_button(uu_i18n::text("停用现有虚拟屏…")),
-                            )
-                            .clicked()
-                        {
-                            self.preparing_slot = Some(slot.clone());
-                        }
-                    } else {
-                        ui.weak(uu_i18n::text("空闲虚拟屏"));
-                    }
-                });
-            }
-            if let Some(slot) = self.preparing_slot.clone() {
-                ui.label(uu_i18n::format!(
-                    "将断开 {} 的桌面输出，供 Eclipse 临时创建使用。其它显示器保持不变。",
-                    slot.source
-                ));
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(!busy && !mutations_blocked,crate::theme::secondary_button(uu_i18n::text("确认停用"))).clicked() {
-                        prepare = Some(slot.id);
-                        self.preparing_slot = None;
-                    }
-                    if ui.add(crate::theme::secondary_button(uu_i18n::text("取消"))).clicked() {
-                        self.preparing_slot = None;
-                    }
-                });
-            }
+        ui.strong(uu_i18n::text("已创建的显示器"));
+        if self.displays.is_empty() {
+            ui.weak(uu_i18n::text("还没有由 Eclipse 创建的虚拟显示器。可以在上方创建持久或临时显示器。"));
         }
         let displays=self.displays.clone();
-        let mut next_editing=self.editing.clone();
         let mut save_edit=None;
-        let mut cancel_edit=false;
         let mut list = egui::ScrollArea::vertical();
         if !embedded {
             list = list.max_height(300.);
@@ -859,57 +848,87 @@ impl State {
         list.show(ui, |ui| {
             for display in &displays {
                 let fixed_current=client.is_some() && self.fixed_source.as_ref()==Some(&display.source);
+                let original=DisplayEditor::from(display);
+                let mut draft=self.editors.get(&display.id).cloned().unwrap_or_else(||original.clone());
+                let mut cancel=false;
                 ui.push_id(display.id.0,|ui|{
                     egui::Frame::group(ui.style()).show(ui,|ui|{
-                        if let Some(draft)=next_editing.as_mut().filter(|draft|draft.id==display.id) {
-                            ui.horizontal_wrapped(|ui|{
+                        ui.set_min_width(ui.available_width());
+                        ui.add_enabled_ui(can_edit&&supports_configuration,|ui| {
+                            let wide=ui.available_width()>=760.;
+                            let name=|ui:&mut egui::Ui,draft:&mut DisplayEditor| {
                                 ui.label(uu_i18n::text("名称"));
-                                ui.add(crate::theme::Input::new(&mut draft.name).desired_width(150.).char_limit(64));
-                                crate::virtual_display_presets::display_spec_row(ui,&mut draft.spec);
+                                ui.add(crate::theme::Input::new(&mut draft.name).desired_width(180.).char_limit(64));
+                            };
+                            ui.horizontal_wrapped(|ui| {
+                                name(ui,&mut draft);
+                                if wide {crate::virtual_display_presets::display_spec_row(ui,&mut draft.spec);}
+                                ui.weak(if display.active {uu_i18n::text("已启用")}else{uu_i18n::text("等待恢复")});
                             });
-                            ui.horizontal(|ui|{
-                                if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::primary_button(uu_i18n::text("保存显示器设置"))).clicked(){
-                                    save_edit=Some(draft.clone());
-                                }
-                                if ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("取消"))).clicked(){cancel_edit=true;}
-                                ui.weak(uu_i18n::text("名称可立即修改；规格变更需先结束此主机的串流。"));
-                            });
-                        } else {
-                            ui.horizontal_wrapped(|ui|{
-                                ui.strong(&display.name);
-                                ui.label(format!("{} × {} · {} Hz",display.spec.width,display.spec.height,display.spec.refresh_millihz as f64/1000.));
-                                if display.spec.hdr {ui.label("HDR");}
-                                ui.weak(if display.persistent {uu_i18n::text("持久虚拟显示器")}else{uu_i18n::text("临时虚拟显示器")});
-                                if client_is_none || supports_lifetimes {
-                                    let mut persistent=display.persistent;
-                                    if ui.add_enabled_ui(!busy&&!mutations_blocked,|ui|crate::theme::compact_switch(ui,&mut persistent,uu_i18n::text("持久"))).inner.changed() {
-                                        if client.is_some(){command=Some(Request::SetPersistent{id:display.id,persistent});}
-                                        else {local_command=Some(LocalRequest::SetPersistent{id:display.id,persistent});}
-                                    }
-                                }
-                                if supports_configuration && ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(uu_i18n::text("编辑"))).clicked() {
-                                    next_editing=Some(DisplayEditor{id:display.id,name:display.name.clone(),spec:display.spec});
-                                }
-                                if ui.add_enabled(!busy&&!mutations_blocked&&!fixed_current,crate::theme::secondary_button(if display.cleanup_pending {uu_i18n::text("重试移除")}else{uu_i18n::text("移除")}))
-                                    .on_disabled_hover_text(uu_i18n::text("关闭此串流标签即可断开并移除它的临时虚拟屏"))
-                                    .clicked()
-                                {
-                                    command=Some(Request::Remove{id:display.id});
-                                }
-                            });
+                            if !wide {crate::virtual_display_presets::display_spec_row(ui,&mut draft.spec);}
+                        });
+                        let dirty=draft!=original;
+                        ui.horizontal_wrapped(|ui| {
+                            let mut persistent=display.persistent;
+                            if ui.add_enabled_ui(!busy&&!mutations_blocked&&(client_is_none||supports_lifetimes),|ui|crate::theme::compact_switch(ui,&mut persistent,uu_i18n::text("持久"))).inner.changed() {
+                                if client.is_some(){command=Some(Request::SetPersistent{id:display.id,persistent});}
+                                else {local_command=Some(LocalRequest::SetPersistent{id:display.id,persistent});}
+                            }
+                            ui.weak(uu_i18n::text(if display.persistent {"持久虚拟显示器"}else{"临时虚拟显示器"}));
+                            if ui.add_enabled(dirty&&supports_configuration&&!busy&&!mutations_blocked,crate::theme::primary_button(uu_i18n::text("保存显示器设置"))).clicked() {
+                                save_edit=Some(draft.clone());
+                            }
+                            if dirty && ui.add_enabled(!busy,crate::theme::secondary_button(uu_i18n::text("还原修改"))).clicked() {cancel=true;}
+                            if ui.add_enabled(!busy&&!mutations_blocked&&!fixed_current,crate::theme::secondary_button(if display.cleanup_pending {uu_i18n::text("重试移除")}else{uu_i18n::text("删除显示器")}))
+                                .on_disabled_hover_text(uu_i18n::text("关闭此串流标签即可断开并移除它的临时虚拟屏")).clicked() {
+                                command=Some(Request::Remove{id:display.id});
+                            }
+                        });
+                        if let Some(actual)=display.actual {
+                            if actual!=display.spec {
+                                ui.weak(uu_i18n::format!("实际模式：{} × {} · {} Hz · {}",actual.width,actual.height,actual.refresh_millihz as f64/1000.,if actual.hdr {"HDR"}else{"SDR"}));
+                            }
+                        }
+                        if !supports_configuration {
+                            ui.weak(uu_i18n::text("当前后台尚不支持属性编辑，请更新并重启后台服务。"));
+                        } else if dirty {
+                            ui.weak(uu_i18n::text("名称可立即修改；规格变更需先结束此主机的串流。"));
                         }
                         if let Some(error)=&display.last_error {
                             ui.collapsing(uu_i18n::text("诊断详情"),|ui|{ui.monospace(error);});
                         }
                     });
                 });
+                if cancel||draft==original {self.editors.remove(&display.id);}
+                else {self.editors.insert(display.id,draft);}
             }
         });
-        if cancel_edit {next_editing=None;}
-        self.editing=next_editing;
         if let Some(draft)=save_edit {
+            self.submitted_editor=Some(draft.id);
             command=Some(Request::Configure{id:draft.id,name:draft.name,spec:draft.spec});
-            self.editing_submitted=true;
+        }
+        let external:Vec<_>=self.slots.iter().filter(|slot|slot.active && !self.displays.iter().any(|display|display.source==slot.source)).cloned().collect();
+        if !external.is_empty() {
+            ui.add_space(8.);ui.strong(uu_i18n::text("系统现有的虚拟显示器"));
+            ui.weak(uu_i18n::text("这些显示器不是由当前服务创建，不计入创建上限。"));
+            for slot in external {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(&slot.name);
+                    if let Some(actual)=slot.actual {ui.label(format!("{} × {} · {} Hz{}",actual.width,actual.height,actual.refresh_millihz as f64/1000.,if actual.hdr {" · HDR"}else{""}));}
+                    if client_is_none && ui.add_enabled(!busy&&!mutations_blocked&&!slot.leased,crate::theme::secondary_button(uu_i18n::text("停用现有虚拟屏…"))).clicked() {
+                        self.preparing_slot=Some(slot);
+                    }
+                });
+            }
+        }
+        if let Some(slot)=self.preparing_slot.clone() {
+            ui.label(uu_i18n::format!("将断开 {} 的桌面输出，供 Eclipse 临时创建使用。其它显示器保持不变。",slot.source));
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(uu_i18n::text("确认停用"))).clicked() {
+                    prepare=Some(slot.id);self.preparing_slot=None;
+                }
+                if ui.add(crate::theme::secondary_button(uu_i18n::text("取消"))).clicked() {self.preparing_slot=None;}
+            });
         }
         if !self.notice.is_empty() {
             ui.label(&self.notice);
@@ -1321,10 +1340,71 @@ mod tests {
         }
         assert!(texts.iter().any(|text| text == "新建虚拟显示器"));
         assert!(texts.iter().any(|text| text == "虚拟显示器上限"));
-        assert!(texts.iter().any(|text| text == "已分配：1"));
+        assert!(texts.iter().any(|text| text == "已创建：1 / 2"));
         assert!(texts.iter().any(|text| text.contains("Generated desk")));
         assert!(!texts.iter().any(|text| text == "选择管理对象"));
         assert!(!texts.iter().any(|text| text.starts_with("管理对象：")));
+    }
+    #[test]
+    fn inventory_refresh_preserves_each_display_draft_and_confirms_only_the_saved_one() {
+        let first=display();let second=display();
+        let mut state=State{local_owner:Some(LocalOwner::Background),..Default::default()};
+        state.receive(snapshot(vec![first.clone(),second.clone()]),Some(LocalOwner::Background));
+        for (item,name) in [(&first,"First edit"),(&second,"Second edit")] {
+            state.editors.insert(item.id,DisplayEditor{name:name.into(),..DisplayEditor::from(item)});
+        }
+        state.limit_draft=Some(5);
+        state.receive(snapshot(vec![first.clone(),second.clone()]),Some(LocalOwner::Background));
+        assert_eq!(state.editors.len(),2);
+        assert_eq!(state.limit_draft,Some(5));
+        let mut applied=first.clone();applied.name="First edit".into();
+        state.submitted_editor=Some(first.id);
+        state.receive(snapshot(vec![applied,second.clone()]),Some(LocalOwner::Background));
+        assert!(!state.editors.contains_key(&first.id));
+        assert_eq!(state.editors[&second.id].name,"Second edit");
+        let created=display();
+        state.receive(Response::Created{display:created.clone()},Some(LocalOwner::Background));
+        assert!(state.next_inventory_check.is_some_and(|at|at<=Instant::now()),"creation schedules a read-only inventory refresh");
+        state.receive(Response::Removed{id:second.id},Some(LocalOwner::Background));
+        assert!(!state.editors.contains_key(&second.id));
+        assert!(state.next_inventory_check.is_some_and(|at|at<=Instant::now()),"deletion updates capacity automatically");
+    }
+    fn inventory_frame(state:&mut State,ctx:&egui::Context,events:Vec<egui::Event>,width:f32)->Vec<(String,egui::Rect)> {
+        let output=ctx.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,1200.))),events,..Default::default()},|ctx| {
+            egui::CentralPanel::default().show(ctx,|ui|state.show_background_inline(ui));
+        });
+        fn collect(shape:&egui::Shape,texts:&mut Vec<(String,egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(text)=>texts.push((text.galley.text().into(),text.galley.rect.translate(text.pos.to_vec2()))),
+                egui::Shape::Vec(shapes)=>for shape in shapes {collect(shape,texts);},
+                _=>{},
+            }
+        }
+        let mut texts=Vec::new();for shape in output.shapes {collect(&shape.shape,&mut texts);}texts
+    }
+    #[test]
+    fn display_properties_are_visible_and_remain_editable_during_read_only_refresh() {
+        for width in [360.,900.] {
+            let first=display();let mut second=display();second.name="Second generated screen".into();second.persistent=true;
+            let mut state=State{local_owner:Some(LocalOwner::Background),..Default::default()};
+            state.receive(snapshot(vec![first.clone(),second]),Some(LocalOwner::Background));
+            // Keep a synthetic Inspect in flight. UI edits must still work;
+            // no test action may reach the real local management service.
+            let (_send,receive)=mpsc::channel();state.worker=Some(receive);state.inspect_inflight=true;
+            let ctx=egui::Context::default();
+            let texts=inventory_frame(&mut state,&ctx,vec![],width);
+            for label in ["名称","分辨率","刷新率","HDR","持久","保存显示器设置","删除显示器"] {
+                assert_eq!(texts.iter().filter(|(text,_)|text==label).count(),2,"{label} at {width}: {texts:?}");
+            }
+            assert_eq!(texts.iter().filter(|(text,_)|text=="虚拟显示器上限").count(),1);
+            assert!(!texts.iter().any(|(text,_)|text=="编辑"));
+            let point=texts.iter().find(|(text,_)|text==&first.name).unwrap().1.center();
+            let button=|pressed|egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed,modifiers:egui::Modifiers::NONE};
+            inventory_frame(&mut state,&ctx,vec![egui::Event::PointerMoved(point),button(true)],width);
+            inventory_frame(&mut state,&ctx,vec![button(false)],width);
+            inventory_frame(&mut state,&ctx,vec![egui::Event::Key{key:egui::Key::A,physical_key:Some(egui::Key::A),pressed:true,repeat:false,modifiers:egui::Modifiers{ctrl:true,command:true,..Default::default()}},egui::Event::Text("Edited during refresh".into())],width);
+            assert_eq!(state.editors[&first.id].name,"Edited during refresh");
+        }
     }
     #[test]
     fn changing_management_owner_clears_visible_inventory_but_preserves_foreground_ownership() {
@@ -1362,17 +1442,17 @@ mod tests {
     fn display_editor_is_owner_scoped_and_keeps_failed_drafts() {
         let generated=display();
         let draft=DisplayEditor{id:generated.id,name:"Generated desk".into(),spec:generated.spec};
-        let mut state=State{local_owner:Some(LocalOwner::Foreground),editing:Some(draft),editing_submitted:true,..Default::default()};
+        let mut state=State{local_owner:Some(LocalOwner::Foreground),editors:BTreeMap::from([(generated.id,draft)]),submitted_editor:Some(generated.id),..Default::default()};
         assert!(state.select_local_owner(LocalOwner::Background));
-        assert!(state.editing.is_none()&&!state.editing_submitted,"switching management ownership discards a stale draft");
+        assert!(state.editors.is_empty()&&state.submitted_editor.is_none(),"switching management ownership discards a stale draft");
         state.local_owner=Some(LocalOwner::Foreground);
-        state.editing=Some(DisplayEditor{id:generated.id,name:"Generated desk".into(),spec:generated.spec});state.editing_submitted=true;
+        state.editors.insert(generated.id,DisplayEditor{id:generated.id,name:"Generated desk".into(),spec:generated.spec});state.submitted_editor=Some(generated.id);
         state.receive(Response::Error{message:"generated failure".into()},Some(LocalOwner::Foreground));
-        assert!(state.editing.is_some()&&!state.editing_submitted,"a failed save keeps the draft for correction");
+        assert!(state.editors.contains_key(&generated.id)&&state.submitted_editor.is_none(),"a failed save keeps the draft for correction");
         let mut edited=generated.clone();edited.name="Generated desk".into();
-        state.editing_submitted=true;
+        state.submitted_editor=Some(generated.id);
         state.receive(snapshot(vec![edited]),Some(LocalOwner::Foreground));
-        assert!(state.editing.is_none(),"a matching authoritative snapshot closes the saved editor");
+        assert!(state.editors.is_empty(),"a matching authoritative snapshot acknowledges the saved editor");
     }
     #[test]
     fn closed_local_window_finishes_its_operation_and_controller_reset_keeps_only_lease_bookkeeping(

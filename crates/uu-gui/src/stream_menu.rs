@@ -1014,8 +1014,8 @@ mod tests {
             "sky_blue"=>super::super::theme::ColorTheme::SkyBlue,
             _=>panic!("explicit supported preview theme required"),
         };
-        assert!(matches!(surface.as_str(),"menus"|"device-config"));
-        struct Preview {app:super::super::App,output:PathBuf,surface:String,frames:u32,saved:Arc<AtomicBool>}
+        assert!(matches!(surface.as_str(),"menus"|"device-config"|"virtual-displays"));
+        struct Preview {app:super::super::App,virtual_displays:crate::virtual_display_ui::State,output:PathBuf,surface:String,frames:u32,saved:Arc<AtomicBool>}
         impl eframe::App for Preview {
             fn update(&mut self,ctx:&egui::Context,_:&mut eframe::Frame){
                 if let Some(image)=ctx.input(|i|i.events.iter().find_map(|e|if let egui::Event::Screenshot{image,..}=e{Some(image.clone())}else{None})) {
@@ -1027,6 +1027,11 @@ mod tests {
                 if self.surface=="device-config" {
                     self.app.workspace_home(ctx);
                     self.app.workspace_dialogs(ctx);
+                } else if self.surface=="virtual-displays" {
+                    egui::CentralPanel::default().frame(egui::Frame::none().fill(super::super::theme::palette(&ctx.style().visuals).base).inner_margin(24.)).show(ctx,|ui| {
+                        ui.heading("虚拟显示器 · 生成数据预览");ui.add_space(12.);
+                        self.virtual_displays.show_generated_preview(ui);
+                    });
                 } else {
                     egui::CentralPanel::default().frame(egui::Frame::none().fill(super::super::theme::palette(&ctx.style().visuals).base).inner_margin(24.)).show(ctx,|ui|{
                         ui.heading("Eclipse · 生成业务菜单预览");ui.add_space(18.);
@@ -1069,7 +1074,7 @@ mod tests {
                     frames:uu_core::media::frame_channel().1,input:tokio::sync::mpsc::unbounded_channel().0,native_input:None,
                     settings:tokio::sync::mpsc::unbounded_channel().0,close:tokio::sync::mpsc::unbounded_channel().0,stats});
             }
-            Ok(Box::new(Preview{app,output,surface,frames:0,saved}))
+            Ok(Box::new(Preview{app,virtual_displays:crate::virtual_display_ui::State::generated_preview(),output,surface,frames:0,saved}))
         })).unwrap();
         assert!(check.load(Ordering::Acquire));
     }

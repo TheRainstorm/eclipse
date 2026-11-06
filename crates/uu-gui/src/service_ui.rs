@@ -1105,32 +1105,6 @@ impl Manager {
                 self.plugins_ui(ui, enabled);
             }
             6 => {
-                section_card(ui, uu_i18n::text("虚拟显示器上限"), |ui| {
-                    ui.add_enabled_ui(enabled, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(uu_i18n::text("最多创建虚拟显示器"));
-                            let before = self.draft.virtual_display_limit;
-                            crate::theme::number_input(
-                                ui,
-                                egui::DragValue::new(&mut self.draft.virtual_display_limit)
-                                    .range(0..=uu_core::virtual_display::MAX_DISPLAY_LIMIT),
-                            );
-                            self.dirty |= self.draft.virtual_display_limit != before;
-                            if ui
-                                .add_enabled(
-                                    self.dirty,
-                                    crate::theme::primary_button(uu_i18n::text("保存设置")),
-                                )
-                                .clicked()
-                            {
-                                self.save(false);
-                            }
-                        });
-                        ui.weak(uu_i18n::text(
-                            "默认 2 个；临时和持久虚拟显示器共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。",
-                        ));
-                    });
-                });
                 section_card(ui, uu_i18n::text("虚拟显示器"), |ui| {
                     if self.snapshot.is_some() {
                         let service_busy = self.busy;
