@@ -26,6 +26,14 @@ impl DisplayLayout {
         let key = format!("{:x}", Sha256::digest(identity));
         Some(config.at(format!("display-tabs/{key}.json")))
     }
+    /// Selection belongs to the device, while tab order may be scoped to an
+    /// explicit display window. Resolve the device-level layout without
+    /// changing the identity of that window.
+    pub fn device_path(config: &uu_core::Config, target: &super::sessions::StreamTarget) -> Option<PathBuf> {
+        if target.connection.virtual_display().is_some() {return None;}
+        let connection=target.connection.base().clone();
+        Self::path(config, &super::sessions::StreamTarget {connection,alias:String::new(),view_only:target.view_only})
+    }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let data = match std::fs::read(path) {
             Ok(data) => data,
@@ -211,9 +219,13 @@ mod tests {
         let target=|connection|StreamTarget{connection,alias:"Generated".into(),view_only:false};
         let display=|id,source:&str|ConnectionTarget::NativeDisplay{connection:Box::new(base.clone()),display:DisplayTarget{id,source:source.into()}};
         let original=DisplayLayout::path(&config,&target(base.clone())).unwrap();
-        let left=DisplayLayout::path(&config,&target(display(7,"Source A"))).unwrap();
-        let right=DisplayLayout::path(&config,&target(display(9,"Source B"))).unwrap();
+        let left_target=target(display(7,"Source A"));
+        let right_target=target(display(9,"Source B"));
+        let left=DisplayLayout::path(&config,&left_target).unwrap();
+        let right=DisplayLayout::path(&config,&right_target).unwrap();
         assert_ne!(left,original);assert_ne!(right,original);assert_ne!(left,right);
+        assert_eq!(DisplayLayout::device_path(&config,&left_target),Some(original.clone()));
+        assert_eq!(DisplayLayout::device_path(&config,&right_target),Some(original.clone()));
         assert_eq!(left,DisplayLayout::path(&config,&target(display(42,"Source A"))).unwrap());
         assert_ne!(DisplayLayout::path(&config,&target(display(7,""))),DisplayLayout::path(&config,&target(display(9,""))));
         let mut default_layout=DisplayLayout::default();default_layout.remember_selected(&screen(7));

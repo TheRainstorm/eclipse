@@ -26,6 +26,10 @@ pub(super) struct Displays {
     pub anchor: egui::Pos2,
     pub layout: super::display_layout::DisplayLayout,
     pub layout_path: Option<std::path::PathBuf>,
+    // A selected source is device-wide even when its tab order belongs to an
+    // explicit display window. Keep the device layout cached for that case.
+    device_layout: super::display_layout::DisplayLayout,
+    device_layout_path: Option<std::path::PathBuf>,
     next_request: u64,
     profiles: HashMap<i32, (u32, CaptureProfile)>,
     settings_sent: Option<(u64, i32, u32, CaptureProfile)>,
@@ -360,6 +364,17 @@ impl super::App {
             // the first catalog arrives with an otherwise empty layout.
             Err(error) => self.set_settings_notice(uu_i18n::format!("显示器排序读取失败：{error}")),
         }
+        let device_path=self.config.as_ref().zip(self.stream_target.as_ref())
+            .and_then(|(config, target)| super::display_layout::DisplayLayout::device_path(config, target));
+        if let Some(device_path)=device_path.filter(|path|self.displays.layout_path.as_ref()!=Some(path)) {
+            match super::display_layout::DisplayLayout::load(&device_path) {
+                Ok(layout) => {
+                    self.displays.device_layout=layout;
+                    self.displays.device_layout_path=Some(device_path);
+                }
+                Err(error) => self.set_settings_notice(uu_i18n::format!("显示器排序读取失败：{error}")),
+            }
+        }
     }
     pub(super) fn remote_screens(&self) -> RemoteScreens {
         let mut screens = self
@@ -382,6 +397,14 @@ impl super::App {
             if let Err(error) = self.displays.layout.save(path) {
                 self.set_settings_notice(uu_i18n::format!("显示器排序保存失败：{error}"));
             }
+        }
+    }
+    fn remember_device_display(&mut self,screens:&RemoteScreens) {
+        let Some(path)=self.displays.device_layout_path.clone() else{return;};
+        let Some(screen)=screens.selected() else{return;};
+        if !self.displays.device_layout.remember_selected(screen) {return;}
+        if let Err(error)=self.displays.device_layout.save(&path) {
+            self.set_settings_notice(uu_i18n::format!("显示器排序保存失败：{error}"));
         }
     }
     pub(super) fn reorder_display_tab(&mut self, source: i32, target: i32, after: bool) {
@@ -486,11 +509,18 @@ impl super::App {
         let has_frame=tracks.contains(&self.selected_track)||self.textures.contains_key(&self.selected_track);
         self.displays.confirm_initial_current(&screens,catalog_current,control_ready,has_frame);
         let remembered=self.displays.remember_display(&screens,catalog_current,has_frame);
+        let confirmed_device_display=self.displays.ready() && catalog_current && has_frame && self.displays.selected==Some(screens.current_id);
         if remembered {h.stats.diagnostics.record(serde_json::json!({"event":"display_selection_confirmed","screen":screens.current_id}));}
         if let Some(id)=restore {h.stats.diagnostics.record(serde_json::json!({"event":"display_selection_restore","screen":id}));}
         if remembered {self.save_display_layout();}
         if let Some(id)=restore {self.select_native_display(id);}
         if let Some(id)=self.displays.queued_selection(){self.select_native_display(id);}
+        if confirmed_device_display {
+            // An explicit display tab has its own tab-order file, but the next
+            // device connection still needs to reopen the last source the user
+            // actually streamed. Persist that selection in the device layout.
+            self.remember_device_display(&screens);
+        }
     }
     pub(super) fn poll_displays(&mut self, tracks: &[u32]) {
         self.poll_native_displays(tracks);

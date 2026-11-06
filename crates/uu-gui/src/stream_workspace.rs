@@ -1150,9 +1150,17 @@ impl eframe::App for Workspace {
                         session.app.disconnect();
                     }
                 }
+                // One shared grace period for all displays. Sequential six-second
+                // waits made closing two streams take twice as long.
+                let deadline=std::time::Instant::now()+std::time::Duration::from_secs(6);
+                while std::time::Instant::now()<deadline && state.windows.iter().flat_map(|w|&w.sessions).any(|s|
+                    s.app.controller.as_ref().is_some_and(|h|!h.stopped.load(std::sync::atomic::Ordering::Acquire)))
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
                 for window in &mut state.windows {
                     for session in &mut window.sessions {
-                        eframe::App::on_exit(&mut session.app, gl);
+                        session.app.finish_exit(gl,false);
                     }
                 }
             }

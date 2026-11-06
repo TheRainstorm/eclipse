@@ -76,6 +76,22 @@ mod device_presence;
 #[cfg(test)]
 mod tests {use super::*;
     #[test]
+    fn explicit_close_never_requests_a_second_preview_capture() {
+        use raw_window_handle::{DisplayHandle,HandleError,HasDisplayHandle,HasWindowHandle,WindowHandle};
+        struct NoWindow;
+        impl HasWindowHandle for NoWindow {fn window_handle(&self)->Result<WindowHandle<'_>,HandleError>{Err(HandleError::Unavailable)}}
+        impl HasDisplayHandle for NoWindow {fn display_handle(&self)->Result<DisplayHandle<'_>,HandleError>{Err(HandleError::Unavailable)}}
+        let ctx=egui::Context::default();
+        let platform=std::rc::Rc::new(platform::Platform::for_window(&NoWindow,&ctx,None));
+        let mut app=App::new_session(&ctx,None,platform,None,false,None,false);
+        app.stream_target=Some(sessions::StreamTarget{connection:sessions::ConnectionTarget::NativeDevice("generated-close".into()),alias:"Generated".into(),view_only:false});
+        app.exit_requested=false;
+        assert!(app.should_capture_preview_on_stop());
+        app.disconnect_without_preview();
+        assert!(app.exit_requested&&!app.should_capture_preview_on_stop());
+        app.stream_target=None;
+    }
+    #[test]
     #[ignore = "run alone with a new, private XDG_DATA_HOME"]
     fn delivered_ui_keys_survive_native_capture_and_keep_focus_ownership() {
         use std::sync::{Arc,atomic::Ordering::Relaxed};
@@ -618,7 +634,10 @@ impl App {
             // The native window owns client-command key-ups; a retiring
             // connection must not clear the surviving tab's held commands.
             self.release_all_keys();self.release_pointer_capture(ctx);
-            self.save_last_remote_frame();
+            // Explicit close already took its preview decision before sending
+            // the stop request. Capturing another GPU frame here serializes
+            // every closing display on the UI thread and makes bulk close hang.
+            if self.should_capture_preview_on_stop() {self.save_last_remote_frame();}
             self.controller = None;
             self.disconnecting = false;
             self.input_capture.release();
@@ -1071,6 +1090,7 @@ impl App {
     fn disconnect_without_preview(&mut self) {
         self.disconnect_with_preview(false);
     }
+    fn should_capture_preview_on_stop(&self)->bool {!self.exit_requested}
     fn disconnect_with_preview(&mut self, save_preview: bool) {
         self.connect_deferred = false;
         self.output_reconnect_pending = false;
@@ -1139,8 +1159,10 @@ impl Drop for App {
     }
 }
 
-impl eframe::App for App {
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+impl App {
+    /// Shared workspace exit already gives every controller one common grace
+    /// period. Do not wait another six seconds per stream after that.
+    fn finish_exit(&mut self, _gl: Option<&eframe::glow::Context>, wait_for_controller: bool) {
         self.workspace.host.stop();
         self.lan.host.stop();
         self.native_host.stop();
@@ -1150,18 +1172,26 @@ impl eframe::App for App {
         }
         // Delete custom GL textures while eframe still owns a current context.
         self.textures.clear();
-            self.hud_cache=Default::default();
+        self.hud_cache=Default::default();
         // Also cover backend shutdown paths that do not deliver CloseRequested.
         if self.audio_save_after.take().is_some(){self.persist_preferences();}
         self.disconnect();
-        if let Some(h) = &self.controller {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
-            while !h.stopped.load(std::sync::atomic::Ordering::Acquire)
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(std::time::Duration::from_millis(20));
+        if wait_for_controller {
+            if let Some(h) = &self.controller {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+                while !h.stopped.load(std::sync::atomic::Ordering::Acquire)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
             }
         }
+    }
+}
+
+impl eframe::App for App {
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        self.finish_exit(gl,true);
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
