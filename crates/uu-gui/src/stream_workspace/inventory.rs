@@ -41,11 +41,9 @@ impl State {
                 }
                 catalogs.push((base_key(&view.launch.target),handle.stats.native_displays.catalog_updated(),
                     screens.screens.iter().map(|screen|(screen.clone(),session.app.screen_label(screen))).collect::<Vec<_>>()));
-                if session.app.displays.ready() {
-                    if let Some(screen)=screens.screens.iter().find(|s|session.app.displays.selected==Some(s.id)) {
-                        view.source=Some(DisplayTarget{id:screen.id,source:screen.display_name.clone()});
-                        view.label=session.app.screen_label(screen);
-                    }
+                if let Some(screen)=screens.screens.iter().find(|s|session.app.displays.selected==Some(s.id)) {
+                    view.source=Some(DisplayTarget{id:screen.id,source:screen.display_name.clone()});
+                    view.label=session.app.screen_label(screen);
                 }
             }
         }

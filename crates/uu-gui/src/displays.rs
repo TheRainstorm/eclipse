@@ -138,6 +138,11 @@ impl Displays {
     pub fn ready(&self) -> bool {
         !self.awaiting_virtual && !self.blocked && self.pending.is_none()
     }
+    pub(super) fn selected_target(&self, screens: &RemoteScreens) -> Option<super::sessions::DisplayTarget> {
+        let id = self.selected?;
+        let screen = screens.screens.iter().find(|screen| screen.id == id)?;
+        Some(super::sessions::DisplayTarget { id, source: screen.display_name.clone() })
+    }
     fn confirmed_refresh(&self, screens:&RemoteScreens)->Option<u32> {
         self.ready().then(||self.selected.and_then(|id|screens.screens.iter().find(|s|s.id==id)).map(|s|s.refresh_hz)).flatten()
     }
@@ -321,10 +326,10 @@ impl super::App {
         if self.is_fixed_display_view(){return true;}
         if !self.stream_target.as_ref().is_some_and(super::sessions::StreamTarget::is_native)
             || !self.controller.as_ref().is_some_and(|handle|handle.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)) {return true;}
-        if !self.displays.ready() || self.disconnecting || self.exit_requested {return false;}
+        if self.disconnecting || self.exit_requested {return false;}
         let screens=self.remote_screens();
-        let Some(screen)=screens.selected().filter(|screen|self.displays.selected==Some(screen.id)) else {return false;};
-        self.displays.fixed_display=Some(super::sessions::DisplayTarget{id:screen.id,source:screen.display_name.clone()});
+        let Some(target)=self.displays.selected_target(&screens) else {return false;};
+        self.displays.fixed_display=Some(target);
         self.displays.queued=None;
         self.displays.menu_open=false;
         true
@@ -529,6 +534,16 @@ mod tests {
         screens.screens.retain(|s|s.id==0);
         displays.reconcile_fixed_source(&screens);
         assert_eq!(displays.confirmed_refresh(&screens),None);
+    }
+    #[test]
+    fn selected_target_can_be_pinned_before_the_first_frame_gate_opens() {
+        let mut displays = Displays::default();
+        displays.selected = Some(1);
+        displays.blocked = true;
+        assert!(!displays.ready());
+        let target = displays.selected_target(&catalog(1)).unwrap();
+        assert_eq!(target.id, 1);
+        assert_eq!(target.source, "Source 1");
     }
     #[test]
     fn persistent_virtual_reconnect_reuses_the_confirmed_source_and_temporary_recreates() {
