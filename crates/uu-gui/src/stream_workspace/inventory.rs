@@ -24,7 +24,7 @@ impl State {
                         inquiry.0=Instant::now()+Duration::from_secs(5);
                     }
                     if let Some((_,displays))=handle.stats.virtual_displays.snapshot() {
-                        virtual_catalogs.push((base_key(&view.launch.target),handle.stats.virtual_displays.catalog_updated(),displays,handle.stats.virtual_displays.slots()));
+                        virtual_catalogs.push((base_key(&view.launch.target),handle.stats.virtual_displays.catalog_updated(),displays));
                     }
                 }
                 if !view.launch.target.is_native() || !handle.stats.capabilities.allows(uu_core::capabilities::Capability::Displays) {
@@ -49,17 +49,17 @@ impl State {
         }
         self.inquiries.retain(|id,_|self.windows.iter().any(|w|w.views.iter().any(|v|v.id==*id)));
         catalogs.sort_by_key(|(_,at,_)|*at);
-        virtual_catalogs.sort_by_key(|(_,at,_,_)|*at);
+        virtual_catalogs.sort_by_key(|(_,at,_)|*at);
         for (device,_,screens) in catalogs {
             for source in self.sources.iter_mut().filter(|s|s.device==device) {source.active=false;}
-            let managed=virtual_catalogs.iter().rev().find(|(key,_,_,_)|*key==device);
+            let managed=virtual_catalogs.iter().rev().find(|(key,_,_)|*key==device);
             for (screen,label) in screens {
-                let display=managed.and_then(|(_,_,displays,_)|displays.iter().find(|d|d.source==screen.display_name));
+                let display=managed.and_then(|(_,_,displays)|displays.iter().find(|d|d.source==screen.display_name));
                 let managed_id=display.map(|d|d.id);
                 let removable=display.is_some_and(|d|matches!(d.owner,uu_core::virtual_display::Owner::Manual));
                 let kind=display
                     .map(|d|if d.persistent {SourceKind::Persistent}else{SourceKind::Temporary})
-                    .unwrap_or_else(||if managed.is_some_and(|(_,_,_,slots)|slots.iter().any(|s|s.source==screen.display_name)) || screen.kind!=0 {SourceKind::Virtual}else{SourceKind::Physical});
+                    .unwrap_or(SourceKind::Existing);
                 if let Some(source)=self.sources.iter_mut().find(|s|s.device==device&&s.screen.display_name==screen.display_name) {
                     source.screen=screen;source.label=label;source.active=true;source.kind=kind;source.managed=managed_id;source.removable=removable;
                 } else {

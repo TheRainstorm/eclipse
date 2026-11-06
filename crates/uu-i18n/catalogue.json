@@ -20,6 +20,7 @@
   "连接服务后显示当前会话。": "Current sessions will appear after connecting to the service.",
   "先关闭拥有此屏幕的串流；其他连接的临时屏由其所有者回收": "Close the owning stream first. Other connections reclaim their own temporary displays.",
   "物理显示器": "Physical displays",
+  "已有显示器": "Existing displays",
   "当前窗口": "Current window",
   "新建持久虚拟显示器": "Create a persistent virtual display",
   "持久虚拟显示器": "Persistent virtual displays",

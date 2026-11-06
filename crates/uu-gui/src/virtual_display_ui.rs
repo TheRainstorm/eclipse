@@ -114,7 +114,6 @@ pub struct State {
     limit_draft: Option<u16>,
     next_inventory_check: Option<Instant>,
     slots: Vec<Slot>,
-    preparing_slot: Option<Slot>,
     worker: Option<mpsc::Receiver<Result<Response, LocalFailure>>>,
     worker_owner: Option<LocalOwner>,
     worker_started: Option<Instant>,
@@ -236,7 +235,6 @@ impl State {
         self.displays.clear();
         self.editors.clear();self.submitted_editor=None;self.limit_draft=None;self.next_inventory_check=None;
         self.slots.clear();
-        self.preparing_slot = None;
         self.preparation = None;
         self.details.clear();
         self.background_setup_requested = false;
@@ -287,7 +285,6 @@ impl State {
             self.displays.clear();
             self.editors.clear();self.submitted_editor=None;self.limit_draft=None;self.next_inventory_check=None;
             self.slots.clear();
-            self.preparing_slot = None;
             self.notice.clear();
             self.details.clear();
             self.preparation = None;
@@ -699,7 +696,6 @@ impl State {
             && !self.details.is_empty();
         let mut command = None;
         let mut local_command = None;
-        let mut prepare = None;
         let mut selected_owner = None;
         let mut preparation_action = None;
         if client.is_none() && self.local_selector && !embedded {
@@ -940,29 +936,6 @@ impl State {
             self.submitted_editor=Some(draft.id);
             command=Some(Request::Configure{id:draft.id,name:draft.name,spec:draft.spec});
         }
-        let external:Vec<_>=self.slots.iter().filter(|slot|slot.active && !self.displays.iter().any(|display|display.source==slot.source)).cloned().collect();
-        if !external.is_empty() {
-            ui.add_space(8.);ui.strong(uu_i18n::text("系统现有的虚拟显示器"));
-            ui.weak(uu_i18n::text("这些显示器不是由当前服务创建，不计入创建上限。"));
-            for slot in external {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(&slot.name);
-                    if let Some(actual)=slot.actual {ui.label(format!("{} × {} · {} Hz{}",actual.width,actual.height,actual.refresh_millihz as f64/1000.,if actual.hdr {" · HDR"}else{""}));}
-                    if client_is_none && ui.add_enabled(!busy&&!mutations_blocked&&!slot.leased,crate::theme::secondary_button(uu_i18n::text("停用现有虚拟屏…"))).clicked() {
-                        self.preparing_slot=Some(slot);
-                    }
-                });
-            }
-        }
-        if let Some(slot)=self.preparing_slot.clone() {
-            ui.label(uu_i18n::format!("将断开 {} 的桌面输出，供 Eclipse 临时创建使用。其它显示器保持不变。",slot.source));
-            ui.horizontal(|ui| {
-                if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(uu_i18n::text("确认停用"))).clicked() {
-                    prepare=Some(slot.id);self.preparing_slot=None;
-                }
-                if ui.add(crate::theme::secondary_button(uu_i18n::text("取消"))).clicked() {self.preparing_slot=None;}
-            });
-        }
         if !self.notice.is_empty() {
             ui.label(&self.notice);
         }
@@ -1009,9 +982,6 @@ impl State {
             }
         }
         if let Some(command)=local_command{self.local(ctx,command);}
-        if let Some(id) = prepare {
-            self.local(ctx, LocalRequest::PrepareSlot { id });
-        }
         if let Some(action) = preparation_action {
             match action {
                 preparation_ui::Action::Prepare => self.local(ctx, LocalRequest::Prepare),
@@ -1434,6 +1404,15 @@ mod tests {
             }
         }
         let mut texts=Vec::new();for shape in output.shapes {collect(&shape.shape,&mut texts);}(texts,output.platform_output.copied_text)
+    }
+    #[test]
+    fn manager_only_lists_owned_displays_even_when_external_virtual_outputs_exist() {
+        let mut state=State::generated_preview();
+        state.slots.push(Slot{id:"external-fixture".into(),name:"External fixture display".into(),source:"external-source".into(),active:true,leased:false,actual:Some(Spec::default())});
+        let ctx=egui::Context::default();
+        let texts=inventory_frame(&mut state,&ctx,vec![],1280.);
+        assert!(!texts.iter().any(|(text,_)|text=="External fixture display"||text==uu_i18n::text("系统现有的虚拟显示器")||text==uu_i18n::text("停用现有虚拟屏…")));
+        assert_eq!(state.displays.len(),2);
     }
     #[test]
     fn copy_details_contains_the_retained_error_after_refresh() {

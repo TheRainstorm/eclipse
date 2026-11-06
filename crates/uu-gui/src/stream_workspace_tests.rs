@@ -88,6 +88,13 @@ fn moving_an_active_view_returns_to_the_previous_view_in_each_window() {
     state.windows[0].close_views(&[b]);assert_eq!(state.windows[0].active,a);
 }
 #[test]
+fn an_unmanaged_virtual_output_is_an_existing_display() {
+    let mut external=generated_screen(1);external.kind=1;
+    let (mut state,_,_,_)=catalog_state(vec![generated_screen(0),external],0);
+    state.sync_owned_views();
+    assert!(state.sources.iter().all(|source|source.kind==SourceKind::Existing&&source.managed.is_none()));
+}
+#[test]
 fn owned_lazy_views_detach_leave_navigation_and_close_only_their_window_group() {
     let mut state=owned_state();let device=owned_target("A");
     let a=own_generated(&mut state,0,&device,0);let b=own_generated(&mut state,0,&device,1);let c=own_generated(&mut state,0,&device,2);
@@ -397,7 +404,7 @@ fn owned_views_merge_into_oldest_other_live_window_and_never_restore_retired_hom
 fn add_display_reserves_unopened_views_and_prioritizes_active_physical_sources() {
     let mut state=owned_state();let device=owned_target("A");let ctx=egui::Context::default();
     let a=own_generated(&mut state,0,&device,0);
-    for (id,screen,kind,active) in [(100,1,SourceKind::Persistent,true),(101,2,SourceKind::Physical,true),(102,3,SourceKind::Physical,false)] {
+    for (id,screen,kind,active) in [(100,1,SourceKind::Persistent,true),(101,2,SourceKind::Existing,true),(102,3,SourceKind::Existing,false)] {
         state.sources.push(SourceRecord{id,device:base_key(&device),screen:generated_screen(screen),label:format!("Source {screen}"),kind,active,managed:None,removable:false});
     }
     state.add_display(a,&ctx);
@@ -879,7 +886,7 @@ fn display_pills_open_their_own_source_and_keep_connection_ownership() {
     let context=egui::Context::default();crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
     let views=vec![View{screen:7,session:31,fixed:true,active:false,can_create:false,can_detach:true,can_merge:false},View{screen:16,session:22,fixed:true,active:true,can_create:true,can_detach:true,can_merge:false}];
-    let tabs=Tabs{sources:vec![(31,vec![SourceChoice{id:100,label:"Spare physical".into(),kind:SourceKind::Physical,active:true,owned:false,current_view:None,managed:None,removable:false},SourceChoice{id:101,label:"Owned unopened".into(),kind:SourceKind::Physical,active:true,owned:true,current_view:None,managed:None,removable:false}])],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![31,22],views,id:31,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:true,fixed_view:true,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{sources:vec![(31,vec![SourceChoice{id:100,label:"Spare physical".into(),kind:SourceKind::Existing,active:true,owned:false,current_view:None,managed:None,removable:false},SourceChoice{id:101,label:"Owned unopened".into(),kind:SourceKind::Existing,active:true,owned:true,current_view:None,managed:None,removable:false}])],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![31,22],views,id:31,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:true,fixed_view:true,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let render=|events|context.run(egui::RawInput{events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,700.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|r|find(r.borrow().get(&egui::ViewportId::ROOT).unwrap()).center());
     let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};

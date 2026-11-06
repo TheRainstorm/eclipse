@@ -300,7 +300,7 @@ struct OwnedView {
     discovered:bool,
 }
 #[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
-pub(super) enum SourceKind { Physical, Persistent, Temporary, Virtual }
+pub(super) enum SourceKind { Existing, Persistent, Temporary }
 #[derive(Clone)]
 struct SourceRecord {
     id:u64,
