@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-06T08:41:46Z",
+  "updated_at": "2026-11-06T09:08:01Z",
   "files": {
     ".cargo/config.toml": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "eaff9ce6dc9fa40ea0a09456de10e8550574fbbae09fa7cd8db6f7243ebb59df",
-      "size": 205812,
-      "normalized_sha256": "eaff9ce6dc9fa40ea0a09456de10e8550574fbbae09fa7cd8db6f7243ebb59df"
+      "sha256": "3f85c07f83c9347ba93c19a82edc3cf0f3f353ea739ca57379d2905309cb17f2",
+      "size": 205980,
+      "normalized_sha256": "3f85c07f83c9347ba93c19a82edc3cf0f3f353ea739ca57379d2905309cb17f2"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1229,9 +1229,9 @@
     },
     "crates/uu-core/src/virtual_display/capacity_windows.rs": {
       "role": "index",
-      "sha256": "909a1949c2f533a817961b8a14872f307f7956929689887427a0f0e5f269b73c",
-      "size": 45560,
-      "normalized_sha256": "909a1949c2f533a817961b8a14872f307f7956929689887427a0f0e5f269b73c"
+      "sha256": "46cf8c7d60cde38791d9e44edbc1c4f9e6d4615de6cd7985fa38b9896c942b5e",
+      "size": 45377,
+      "normalized_sha256": "46cf8c7d60cde38791d9e44edbc1c4f9e6d4615de6cd7985fa38b9896c942b5e"
     },
     "crates/uu-core/src/virtual_display/color_state.rs": {
       "role": "index",
@@ -1247,9 +1247,9 @@
     },
     "crates/uu-core/src/virtual_display/config_apply.rs": {
       "role": "index",
-      "sha256": "588e4aa0cc281f11c5b4bcb101dca6765a30789596f4b8fa9219cb8b0fd8f392",
-      "size": 3615,
-      "normalized_sha256": "588e4aa0cc281f11c5b4bcb101dca6765a30789596f4b8fa9219cb8b0fd8f392"
+      "sha256": "59ded7755b4304ea709b3c3355b6c2f148133bfe9311f2d2410a16accf39df7c",
+      "size": 6429,
+      "normalized_sha256": "59ded7755b4304ea709b3c3355b6c2f148133bfe9311f2d2410a16accf39df7c"
     },
     "crates/uu-core/src/virtual_display/driver-package.json": {
       "role": "index",
@@ -1265,9 +1265,9 @@
     },
     "crates/uu-core/src/virtual_display/install_windows.rs": {
       "role": "index",
-      "sha256": "9271f7abc6ed328d5f7b5b740af499f929e447ff49c653ade5cc9578350e0f41",
-      "size": 40646,
-      "normalized_sha256": "9271f7abc6ed328d5f7b5b740af499f929e447ff49c653ade5cc9578350e0f41"
+      "sha256": "b961af24eff4e9a8ea3eaf7ffd239bcd1b8eab739ceed51e2ce0175234b45248",
+      "size": 40590,
+      "normalized_sha256": "b961af24eff4e9a8ea3eaf7ffd239bcd1b8eab739ceed51e2ce0175234b45248"
     },
     "crates/uu-core/src/virtual_display/ownership_windows.rs": {
       "role": "index",
@@ -1295,9 +1295,9 @@
     },
     "crates/uu-core/src/virtual_display/provision_windows.rs": {
       "role": "index",
-      "sha256": "ec7720d839cd2857a1b9bdb64568d48533153a952737ccf489bbd3b170b1930d",
-      "size": 21013,
-      "normalized_sha256": "ec7720d839cd2857a1b9bdb64568d48533153a952737ccf489bbd3b170b1930d"
+      "sha256": "9c53ca57c5fd83d77a57842a13250e18ab550f9304ca3c95b63bbdfe4b0cf3f6",
+      "size": 20970,
+      "normalized_sha256": "9c53ca57c5fd83d77a57842a13250e18ab550f9304ca3c95b63bbdfe4b0cf3f6"
     },
     "crates/uu-core/src/virtual_display/tests.rs": {
       "role": "index",
@@ -1307,9 +1307,9 @@
     },
     "crates/uu-core/src/virtual_display/windows.rs": {
       "role": "index",
-      "sha256": "72499a85188a0369b0eedb55dc45f4148b4fbd3b2890c03b5888815184c2004e",
-      "size": 37703,
-      "normalized_sha256": "72499a85188a0369b0eedb55dc45f4148b4fbd3b2890c03b5888815184c2004e"
+      "sha256": "40bd080238c7be72372a75a9a51031fd2b975b9f820c093c5b6649d92fb47515",
+      "size": 39254,
+      "normalized_sha256": "40bd080238c7be72372a75a9a51031fd2b975b9f820c093c5b6649d92fb47515"
     },
     "crates/uu-core/src/wlan_streaming.rs": {
       "role": "index",
@@ -3352,9 +3352,9 @@
     },
     "docs/virtual-displays.md": {
       "role": "index",
-      "sha256": "3760c81738f09161034fcf068ec2eb75408951d0d4787fd355bc19d18f40ab96",
-      "size": 14191,
-      "normalized_sha256": "3760c81738f09161034fcf068ec2eb75408951d0d4787fd355bc19d18f40ab96"
+      "sha256": "ada89de8b9820c6fb8bf42214eb8054100dae7391c2696d76e539dab313c03fc",
+      "size": 14323,
+      "normalized_sha256": "ada89de8b9820c6fb8bf42214eb8054100dae7391c2696d76e539dab313c03fc"
     },
     "docs/vision.md": {
       "role": "index",
