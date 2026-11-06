@@ -121,6 +121,7 @@ pub struct State {
     worker_timed_out: bool,
     worker_preparation: bool,
     inspect_inflight: bool,
+    deferred_request: Option<LocalRequest>,
     uncertain_owners: BTreeSet<LocalOwner>,
     pending: Option<(u64, Instant)>,
     pending_timed_out: bool,
@@ -128,6 +129,7 @@ pub struct State {
     source_timed_out: bool,
     notice: String,
     notice_changed: bool,
+    details_open_requested: bool,
     details: String,
     preparation: Option<uu_core::virtual_display::preparation::Status>,
     background_setup_requested: bool,
@@ -226,6 +228,7 @@ impl State {
         self.local_selector = false;
         self.local_initial_refresh = false;
         self.pending = None;
+        self.deferred_request = None;
         self.pending_timed_out = false;
         self.source = None;
         self.source_timed_out = false;
@@ -279,6 +282,7 @@ impl State {
             return false;
         }
         if self.local_owner != Some(owner) {
+            self.deferred_request = None;
             self.status = None;
             self.displays.clear();
             self.editors.clear();self.submitted_editor=None;self.limit_draft=None;self.next_inventory_check=None;
@@ -302,6 +306,9 @@ impl State {
     }
     fn local(&mut self, ctx: &egui::Context, request: LocalRequest) {
         if self.busy() {
+            if self.inspect_inflight && !matches!(&request, LocalRequest::Manage { request: Request::Inspect }) {
+                self.deferred_request.get_or_insert(request);
+            }
             return;
         }
         let Some(owner) = self.local_owner else {
@@ -326,14 +333,16 @@ impl State {
         }
         let preparing = matches!(&request, LocalRequest::Prepare | LocalRequest::Recover);
         self.inspect_inflight=matches!(&request,LocalRequest::Manage{request:Request::Inspect});
-        self.message(
-            if preparing {
-                uu_i18n::text("正在准备虚拟副屏，请等待本次操作完成。")
-            } else {
-                uu_i18n::text("正在读取或更新虚拟副屏状态…")
-            }
-            .into(),
-        );
+        if !self.inspect_inflight {
+            self.details.clear();
+            self.message(
+                if preparing {
+                    uu_i18n::text("正在准备虚拟副屏，请等待本次操作完成。")
+                } else {
+                    uu_i18n::text("正在读取或更新虚拟副屏状态…")
+                }.into(),
+            );
+        }
         self.start_worker(ctx, owner, preparing, move || local_request(request, owner));
     }
     fn start_worker(
@@ -360,6 +369,10 @@ impl State {
         });
     }
     fn remote(&mut self, client: &Client, request: Request) {
+        if self.busy() && self.inspect_inflight && !matches!(&request, Request::Inspect) {
+            self.deferred_request.get_or_insert(request.into());
+            return;
+        }
         if self.busy() || (self.remote_inventory_uncertain && !matches!(&request, Request::Inspect))
         {
             return;
@@ -372,8 +385,9 @@ impl State {
                 self.pending_timed_out = false;
                 if !inspect {
                     self.remote_refresh_attempted = false;
+                    self.details.clear();
+                    self.message(uu_i18n::text("正在管理虚拟副屏…").into());
                 }
-                self.message(uu_i18n::text("正在管理虚拟副屏…").into());
             }
             Err(error) => self.message(error.to_string()),
         }
@@ -424,6 +438,9 @@ impl State {
                     self.remote_refresh_attempted = false;
                 }
                 self.preparation = status.preparation.clone();
+                if self.preparation.as_ref().is_some_and(|s| s.error.is_some()) && !self.inspect_inflight {
+                    self.details_open_requested = true;
+                }
                 self.next_preparation_check = self
                     .preparation
                     .as_ref()
@@ -431,17 +448,21 @@ impl State {
                     .map(|_| Instant::now() + Duration::from_secs(1));
                 if self.limit_draft==Some(status.limit) {self.limit_draft=None;}
                 self.status = Some(status);
-                if let Some(id)=self.submitted_editor.take() {
-                    if self.editors.get(&id).is_some_and(|draft|displays.iter().any(|display|display.id==draft.id && display.spec==draft.spec && (draft.name.trim().is_empty() || display.name==draft.name.trim()))) {
-                        self.editors.remove(&id);
+                if !self.inspect_inflight {
+                    if let Some(id)=self.submitted_editor.take() {
+                        if self.editors.get(&id).is_some_and(|draft|displays.iter().any(|display|display.id==draft.id && display.spec==draft.spec && (draft.name.trim().is_empty() || display.name==draft.name.trim()))) {
+                            self.editors.remove(&id);
+                        }
                     }
                 }
                 self.editors.retain(|id,_|displays.iter().any(|display|display.id==*id));
                 self.displays = displays;
                 self.slots = slots;
                 self.next_inventory_check=Some(Instant::now()+Duration::from_secs(2));
-                self.message(String::new());
-                self.details.clear();
+                if !self.inspect_inflight {
+                    self.message(String::new());
+                    self.details.clear();
+                }
             }
             Response::Created { display } => {
                 if self.startup.is_some() {
@@ -484,6 +505,7 @@ impl State {
                     self.remote_refresh_requested = !self.remote_refresh_attempted;
                 }
                 self.details = message;
+                self.details_open_requested = true;
                 self.message(uu_i18n::text("虚拟副屏操作未完成，请刷新确认当前状态。").into());
             }
         }
@@ -494,7 +516,6 @@ impl State {
             match receiver.try_recv() {
                 Ok(result) => {
                     self.worker = None;
-                    self.inspect_inflight=false;
                     self.worker_started = None;
                     self.worker_timed_out = false;
                     self.worker_preparation = false;
@@ -514,6 +535,7 @@ impl State {
                             }
                             if owner == self.local_owner {
                                 self.details = error.details;
+                                self.details_open_requested = true;
                                 if let Some(preparation) = error.preparation {
                                     self.next_preparation_check = (preparation.queued
                                         && preparation_ui::active(&preparation))
@@ -524,6 +546,7 @@ impl State {
                             }
                         }
                     }
+                    self.inspect_inflight=false;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.worker = None;
@@ -560,9 +583,9 @@ impl State {
         if let Some((id, started)) = self.pending {
             if let Some(response) = client.and_then(|client| client.take_response(id)) {
                 self.pending = None;
-                self.inspect_inflight=false;
                 self.pending_timed_out = false;
                 self.receive(response, None);
+                self.inspect_inflight=false;
             } else if started.elapsed() > uu_core::native_virtual_display::OPERATION_TIMEOUT
                 && !self.pending_timed_out
             {
@@ -598,6 +621,13 @@ impl State {
         }
     }
     fn prepare_interaction(&mut self, ctx: &egui::Context, client: Option<&Client>) {
+        if !self.busy() {
+            if let Some(request) = self.deferred_request.take() {
+                if let Some(client) = client {
+                    if let LocalRequest::Manage { request } = request { self.remote(client, request); }
+                } else { self.local(ctx, request); }
+            }
+        }
         if client.is_none() && self.local_initial_refresh && !self.busy() {
             self.local_initial_refresh=false;
             self.local(ctx,Request::Inspect.into());
@@ -655,8 +685,8 @@ impl State {
         client: Option<&Client>,
         embedded: bool,
     ) {
-        let busy = self.busy();
-        let can_edit=!busy||self.inspect_inflight;
+        let busy = (self.busy() && !self.inspect_inflight) || self.deferred_request.is_some();
+        let can_edit=!busy;
         let mutations_blocked = if client.is_some() {
             self.remote_inventory_uncertain
         } else {
@@ -725,7 +755,7 @@ impl State {
             ui.weak(uu_i18n::text("默认 2 个；临时和持久虚拟显示器共同计数，0 表示禁止新建。降低上限不会关闭已有显示器。"));
             let persistent=self.displays.iter().filter(|display|display.persistent).count();
             let temporary=self.displays.len()-persistent;
-            let available=self.preparation.as_ref().map_or(status.available_slots,|preparation|preparation.available as usize);
+            let available=status.available_slots;
             let allocated=status.allocation_count();let limit=status.limit;
             let remaining=available.min(usize::from(limit).saturating_sub(allocated));
             ui.horizontal_wrapped(|ui|{
@@ -750,7 +780,7 @@ impl State {
         ui.horizontal_wrapped(|ui| {
             let can_create=!busy && !mutations_blocked && !background_unavailable && (client.is_none() || self.remote_create_supported)
                 && self.status.as_ref().is_some_and(|s|s.supported && (!s.supports_lifetimes||s.allocation_count()<usize::from(s.limit)))
-                && preparation_ui::can_create(self.preparation.as_ref(),self.preparation.as_ref().map_or_else(||self.status.as_ref().map_or(0,|s|s.available_slots),|s|s.available as usize),self.local_owner==Some(LocalOwner::Foreground)&&client.is_none());
+                && preparation_ui::can_create(self.preparation.as_ref(),self.status.as_ref().map_or(0,|s|s.available_slots),self.local_owner==Some(LocalOwner::Foreground)&&client.is_none());
             if ui.add_enabled(can_create,crate::theme::primary_button(uu_i18n::text("新建虚拟显示器"))).clicked() {
                 command=Some(Request::Create{spec:self.spec});
             }
@@ -759,7 +789,10 @@ impl State {
             if busy {ui.spinner();ctx.request_repaint_after(Duration::from_millis(100));}
         });
         if let Some(preparation)=&self.preparation {
-            ui.weak(uu_core::native_virtual_display::preparation_message(preparation));
+            if self.status.as_ref().is_some_and(|s|s.available_slots>0)
+                && preparation_ui::can_create(Some(preparation),1,false)
+            {ui.weak(uu_i18n::text("已准备好空闲虚拟屏，可以创建；移除仅断开所属目标的桌面输出。"));}
+            else {ui.weak(uu_core::native_virtual_display::preparation_message(preparation));}
             if preparation_ui::active(preparation) {
                 ui.weak(uu_i18n::text("已登记的准备会在空闲时继续；无需重复点击，也不会中断正在使用的副屏。"));
                 if let Some(at)=self.next_preparation_check {ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));}
@@ -934,11 +967,21 @@ impl State {
             ui.label(&self.notice);
         }
         let provider_error=self.preparation.as_ref().and_then(|s|s.error.as_deref());
-        let explanation=self.status.as_ref().map(|s|s.explanation.as_str()).filter(|s|!s.is_empty());
+        // Typed preparation states already have localized explanations above.
+        // The generic legacy text may describe a different installed driver.
+        let explanation=self.status.as_ref().filter(|s|s.preparation.is_none()).map(|s|s.explanation.as_str()).filter(|s|!s.is_empty());
         if !self.details.is_empty()||provider_error.is_some()||explanation.is_some(){
             egui::CollapsingHeader::new(uu_i18n::text("诊断详情"))
-                .id_salt(("virtual-display-details",provider_error,&self.details))
+                .id_salt("virtual-display-details")
+                .open(std::mem::take(&mut self.details_open_requested).then_some(true))
                 .default_open(provider_error.is_some()||!self.details.is_empty()).show(ui,|ui|{
+                if ui.add(crate::theme::secondary_button(uu_i18n::text("复制详情"))).clicked() {
+                    let mut lines=vec![self.notice.as_str(),self.details.as_str()];
+                    if let Some(error)=provider_error {if error!=self.details {lines.push(error);}}
+                    if let Some(explanation)=explanation {lines.push(explanation);}
+                    let report=lines.into_iter().filter(|line|!line.is_empty()).collect::<Vec<_>>().join("\n\n");
+                    ui.output_mut(|output|output.copied_text=report);
+                }
                 if !self.details.is_empty(){ui.monospace(&self.details);}
                 if let Some(error)=provider_error{if error!=self.details{ui.monospace(error);}}
                 if let Some(explanation)=explanation{ui.monospace(explanation);}
@@ -1374,6 +1417,9 @@ mod tests {
         assert!(state.next_inventory_check.is_some_and(|at|at<=Instant::now()),"deletion updates capacity automatically");
     }
     fn inventory_frame(state:&mut State,ctx:&egui::Context,events:Vec<egui::Event>,width:f32)->Vec<(String,egui::Rect)> {
+        inventory_frame_output(state,ctx,events,width).0
+    }
+    fn inventory_frame_output(state:&mut State,ctx:&egui::Context,events:Vec<egui::Event>,width:f32)->(Vec<(String,egui::Rect)>,String) {
         let output=ctx.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,1200.))),events,..Default::default()},|ctx| {
             egui::CentralPanel::default().show(ctx,|ui| {
                 let right=ui.max_rect().right();state.show_background_inline(ui);
@@ -1387,7 +1433,49 @@ mod tests {
                 _=>{},
             }
         }
-        let mut texts=Vec::new();for shape in output.shapes {collect(&shape.shape,&mut texts);}texts
+        let mut texts=Vec::new();for shape in output.shapes {collect(&shape.shape,&mut texts);}(texts,output.platform_output.copied_text)
+    }
+    #[test]
+    fn copy_details_contains_the_retained_error_after_refresh() {
+        let mut state=State{open:true,local_owner:Some(LocalOwner::Background),details:"Generated precise driver failure".into(),..Default::default()};
+        let ctx=egui::Context::default();
+        let texts=inventory_frame(&mut state,&ctx,vec![],1280.);
+        let point=texts.iter().find(|(text,_)|text=="复制详情").unwrap().1.center();
+        let button=|pressed|egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed,modifiers:egui::Modifiers::NONE};
+        inventory_frame(&mut state,&ctx,vec![egui::Event::PointerMoved(point),button(true)],1280.);
+        let (_,copied)=inventory_frame_output(&mut state,&ctx,vec![button(false)],1280.);
+        assert_eq!(copied,"Generated precise driver failure");
+    }
+    #[test]
+    fn inventory_refresh_keeps_operation_errors_and_page_geometry() {
+        let mut state=State{open:true,local_owner:Some(LocalOwner::Background),..Default::default()};
+        state.receive(snapshot(vec![display()]),Some(LocalOwner::Background));
+        state.message("Generated operation failed".into());
+        state.details="Generated exact driver failure".into();
+        let ctx=egui::Context::default();
+        let before=inventory_frame(&mut state,&ctx,vec![],1280.);
+        let (send,receive)=mpsc::channel();
+        state.worker=Some(receive);state.worker_owner=Some(LocalOwner::Background);state.inspect_inflight=true;
+        let during=inventory_frame(&mut state,&ctx,vec![],1280.);
+        send.send(Ok(snapshot(vec![display()]))).unwrap();
+        state.poll(None);
+        let after=inventory_frame(&mut state,&ctx,vec![],1280.);
+        assert_eq!(state.notice,"Generated operation failed");
+        assert_eq!(state.details,"Generated exact driver failure");
+        for label in ["Generated operation failed","新建虚拟显示器","诊断详情"] {
+            let rect=|texts:&Vec<(String,egui::Rect)>|texts.iter().find(|(s,_)|s==label).unwrap().1;
+            assert_eq!(rect(&before),rect(&during),"refresh changed {label}");
+            assert_eq!(rect(&before),rect(&after),"readback changed {label}");
+        }
+    }
+    #[test]
+    fn explicit_action_waits_for_inventory_read_without_losing_the_request() {
+        let mut state=State{local_owner:Some(LocalOwner::Background),..Default::default()};
+        let (_send,receive)=mpsc::channel();state.worker=Some(receive);state.inspect_inflight=true;
+        state.local(&egui::Context::default(),Request::Create{spec:Spec::default()}.into());
+        assert!(matches!(state.deferred_request,Some(LocalRequest::Manage{request:Request::Create{..}})));
+        state.reset_remote();
+        assert!(state.deferred_request.is_none(),"an action cannot follow a reset to another owner");
     }
     #[test]
     fn display_properties_are_visible_and_remain_editable_during_read_only_refresh() {
