@@ -1111,6 +1111,7 @@ impl preparation::Provider for CapacityProvider<'_> {
             || (self.package.is_some()
                 && !state.driver_present
                 && self.manager.fresh_install_admission().is_ok());
+        state.live_install &= self.manager.preparation_owner.load(Ordering::Acquire);
         state.claimed_targets = state.claimed_targets.max(self.leases);
         state.active_streams = state
             .active_streams
@@ -1136,6 +1137,17 @@ impl preparation::Provider for CapacityProvider<'_> {
                 message: "host authorization or stream state changed during driver preparation"
                     .into(),
                 outcome: preparation::FailureOutcome::AdmissionChanged,
+            });
+        }
+        Ok(())
+    }
+    fn first_install_checkpoint(&self) -> preparation::Result<()> {
+        if !self.manager.preparation_owner.load(Ordering::Acquire)
+            || !self.manager.backend.preparation_authorized() || self.leases != 0
+        {
+            return Err(preparation::Failure {
+                message:"first-install ownership or authorization changed".into(),
+                outcome:preparation::FailureOutcome::AdmissionChanged,
             });
         }
         Ok(())

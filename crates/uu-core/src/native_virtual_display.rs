@@ -84,7 +84,10 @@ pub fn error_message(error: &anyhow::Error) -> String {
     match error.downcast_ref::<Error>() {
         Some(Error::Unsupported) => uu_i18n::text("虚拟显示器仅支持 Windows").into(),
         Some(Error::DriverMissing) => uu_i18n::text("源机尚未安装支持的签名虚拟显示器驱动").into(),
-        Some(Error::Preparation(status))=>preparation_message(status),
+        Some(Error::Preparation(status))=>{
+            let message=preparation_message(status);
+            match &status.error {Some(details)=>format!("{message}\n{details}"),None=>message}
+        },
         Some(Error::NoAvailableSlot) => {
             uu_i18n::text("驱动没有可用虚拟屏，请在源机管理窗口准备驱动后重试").into()
         }
@@ -105,13 +108,13 @@ pub fn error_message(error: &anyhow::Error) -> String {
         _ => format!("{error:#}"),
     }
 }
-/// Stable user-facing result for both first-offer and in-session Create.
-/// The status still carries the detailed provider error for the local details UI.
+/// Localized state summary. Operation failures additionally retain their
+/// provider error in `error_message`, including failed first-offer creation.
 pub fn preparation_message(status:&crate::virtual_display::preparation::Status)->String {
     use crate::virtual_display::preparation::Phase;
     match status.phase {
         Phase::Unsupported=>uu_i18n::text("此电脑暂不支持虚拟副屏").into(),
-        Phase::NeedsDriver=>uu_i18n::text("首次使用虚拟副屏时，后台可以准备签名驱动。").into(),
+        Phase::NeedsDriver=>uu_i18n::text("尚未安装创建所需的签名驱动；新建时由后台自动安装。").into(),
         Phase::NeedsCapacity=>uu_i18n::text("可用虚拟副屏数量不足，可在空闲时准备更多。").into(),
         Phase::NeedsElevation=>uu_i18n::text("请在源机打开后台准备虚拟副屏；首次安装时按系统提示授权。").into(),
         Phase::WaitingForIdle if status.queued=>uu_i18n::text("当前有连接或虚拟屏正在使用，准备已排队；空闲后会自动补充虚拟副屏。").into(),
@@ -700,6 +703,17 @@ impl Drop for Viewer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_initial_creation_retains_the_provider_reason_for_the_controller() {
+        let status=crate::virtual_display::preparation::Status {
+            phase:crate::virtual_display::preparation::Phase::Failed,
+            configured_capacity:None,targets:0,available:0,requested_capacity:2,queued:false,
+            error:Some("generated exact Windows readback failure".into()),
+        };
+        let message=super::error_message(&crate::virtual_display::Error::Preparation(status.clone()).into());
+        assert!(message.starts_with(&super::preparation_message(&status)));
+        assert!(message.contains("generated exact Windows readback failure"));
+    }
     use super::*;
     #[test]
     fn initial_lease_is_connection_scoped_idempotent_and_never_repeats_an_accepted_mutation() {

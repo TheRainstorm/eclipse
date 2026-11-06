@@ -845,6 +845,30 @@ fn common_create_prepares_missing_driver_once_before_allocating_distinct_leases(
     manager.remove(b.id).unwrap();
 }
 #[test]
+fn plus_can_install_a_missing_driver_and_lease_a_screen_while_another_session_streams() {
+    let (manager,backend)=capacity_fixture(0);
+    backend.capacity.lock().unwrap().as_mut().unwrap().live_install=true;
+    let gate=Arc::new(crate::shared_host::SessionGate::default());manager.register_host(&gate);
+    let physical=gate.claim("generated-physical").unwrap();
+    physical.progress(crate::native::HostStatus::Streaming{width:1920,height:1080,fps:60,audio:"off".into(),encoder:"fake".into()});
+    let pending=gate.claim("generated-virtual-tab").unwrap();pending.progress(crate::native::HostStatus::Preparing);
+    let owner=Uuid::new_v4();
+    let guard=manager.session_guard(owner);
+    let created=manager.create_with_context(Owner::Session(owner),Spec::default(),Some(pending.id())).unwrap();
+    assert!(created.active);
+    assert_eq!(gate.sessions().len(),2);
+    assert!(!*physical.stopped().borrow());
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),1);
+    assert_eq!(backend.targets.lock().unwrap().len(),2);
+    // The second slot is consumed without reinstalling or ending either stream.
+    let second=manager.create(Owner::Manual,Spec::default()).unwrap();
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),1);
+    drop(guard);
+    assert!(manager.list().unwrap().iter().any(|d|d.id==second.id && d.active));
+    assert!(!*physical.stopped().borrow());
+    manager.remove(second.id).unwrap();
+}
+#[test]
 fn existing_slot_reuse_does_not_expand_until_a_second_create_requests_capacity() {
     let (manager, backend) = capacity_fixture(1);
     let gate = Arc::new(crate::shared_host::SessionGate::default());

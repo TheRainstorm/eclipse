@@ -1,6 +1,7 @@
-//! Idle-host capacity preparation for the pinned Mtt driver. Global XML count
-//! changes require an adapter restart; they are never performed for a live
-//! lease, through the driver's pipe, or by making one Root device per stream.
+//! Capacity preparation for the pinned Mtt driver. First installation owns a
+//! new independent adapter and can preserve live streams. Global XML count
+//! changes to an existing adapter require idle; no active adapter is reloaded
+//! through the driver's pipe and no Root device is made per stream.
 use super::*;
 use crate::virtual_display::{capacity_config, capacity_policy, capacity_recovery, preparation};
 use std::{
@@ -299,6 +300,7 @@ pub(in crate::virtual_display) fn observe() -> Result<preparation::Observation> 
         active_driver_targets: 0,
         claimed_targets: 0,
         active_streams: 0,
+        live_install: true,
         authority: crate::service_admin::windows::require_administrator().is_ok(),
         recovery_pending: recovery_pending()?,
     };
@@ -988,6 +990,7 @@ pub(in crate::virtual_display) fn prepare(
         }
         Err(error) => {
             transaction.failure = error.to_string();
+            tracing::warn!(%error,minimum,progress=?transaction.progress,"virtual display capacity preparation failed");
             if transaction.progress == capacity_policy::Progress::Unchanged {
                 transaction
                     .journal

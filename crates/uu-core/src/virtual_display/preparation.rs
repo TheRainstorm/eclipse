@@ -32,6 +32,9 @@ pub struct Observation {
     pub active_driver_targets: u32,
     pub claimed_targets: u32,
     pub active_streams: u32,
+    /// The provider can install a new independent adapter while preserving
+    /// existing outputs. This never permits restarting an installed adapter.
+    pub live_install: bool,
     /// An elevated local administrator or the installed management service.
     pub authority: bool,
     pub recovery_pending: bool,
@@ -42,7 +45,8 @@ impl Observation {
         self.supported && self.driver_present && self.targets >= requested
     }
     fn busy(self) -> bool {
-        self.active_streams != 0 || self.active_driver_targets != 0 || self.claimed_targets != 0
+        self.active_driver_targets != 0 || self.claimed_targets != 0
+            || (self.active_streams != 0 && (self.driver_present || !self.live_install))
     }
 }
 
@@ -108,6 +112,9 @@ pub trait Provider: Sync {
         }
         Ok(())
     }
+    /// Rechecked after the installer owns its exact new node. Its own newly
+    /// published targets must not be mistaken for an existing driver reload.
+    fn first_install_checkpoint(&self) -> Result<()> { self.host_idle() }
     fn apply(
         &self,
         requested_capacity: u32,
@@ -352,7 +359,11 @@ impl Coordinator {
             // before the provider takes its exact machine-wide mutation locks.
             checkpoint()?;
             if !provider.observe()?.ready(requested) {
-                provider.apply(requested, package.as_ref(), &|| provider.host_idle())?;
+                provider.apply(requested, package.as_ref(), &|| {
+                    if !before.driver_present && before.live_install {
+                        provider.first_install_checkpoint()
+                    } else { provider.host_idle() }
+                })?;
             }
             let after = provider.observe()?;
             if !after.ready(requested) || after.recovery_pending {
@@ -457,6 +468,40 @@ mod tests {
             observed.targets = requested;
             observed.available = requested;
             Ok(())
+        }
+        fn first_install_checkpoint(&self) -> Result<()> {
+            let state=self.observe()?;
+            if state.authority && state.live_install && state.active_driver_targets==0 && state.claimed_targets==0 {Ok(())}
+            else {Err(Failure::admission_changed())}
+        }
+    }
+    #[test]
+    fn first_install_preserves_live_streams_and_later_reload_still_waits_for_idle() {
+        let coordinator=Coordinator::default();let fake=Fake::missing();
+        {
+            let mut state=fake.observed.lock().unwrap();state.active_streams=1;state.live_install=true;
+        }
+        let status=coordinator.request(&fake,2).unwrap();
+        assert_eq!(status.phase,Phase::Ready);
+        assert_eq!(fake.observed.lock().unwrap().active_streams,1);
+        assert_eq!(fake.downloads.load(Ordering::SeqCst),1);
+        assert_eq!(fake.changes.load(Ordering::SeqCst),1);
+        let status=coordinator.request(&fake,3).unwrap();
+        assert_eq!(status.phase,Phase::WaitingForIdle);
+        assert!(status.queued);
+        assert_eq!(fake.changes.load(Ordering::SeqCst),1,"an installed pool is never reloaded through first-install admission");
+    }
+    #[test]
+    fn live_install_capability_does_not_override_claims_targets_or_authority() {
+        for field in 0..3 {
+            let coordinator=Coordinator::default();let fake=Fake::missing();
+            {
+                let mut state=fake.observed.lock().unwrap();state.live_install=true;state.active_streams=1;
+                match field {0=>state.claimed_targets=1,1=>state.active_driver_targets=1,_=>state.authority=false}
+            }
+            let status=coordinator.request(&fake,2).unwrap();
+            assert_eq!(status.phase,if field==2 {Phase::NeedsElevation}else{Phase::WaitingForIdle});
+            assert_eq!(fake.changes.load(Ordering::SeqCst),0);
         }
     }
     #[test]

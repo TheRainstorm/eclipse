@@ -907,8 +907,11 @@ fn deactivate_checked(key: &TargetKey, require_other_active: bool) -> Result<()>
         if super::config_apply::exact_index(after.paths.iter().map(|path| target_key(path).map(|(candidate,_)|candidate)), key)?.is_some() {
             return Err(Error::Platform("virtual target remained active after removal".into()));
         }
-        if fingerprints(&after, None)? != preserved {
-            return Err(Error::Platform("another display changed during removal; original layout was not replayed".into()));
+        let observed=fingerprints(&after, None)?;
+        if observed != preserved {
+            let changes=preserved.keys().filter(|key|observed.get(*key)!=preserved.get(*key))
+                .map(|key|format!("{}: {}",key.monitor_path,fingerprint_change(&preserved,&observed,key))).collect::<Vec<_>>().join("; ");
+            return Err(Error::Platform(format!("another display changed during removal; original layout was not replayed: {changes}")));
         }
         Ok(())
     };

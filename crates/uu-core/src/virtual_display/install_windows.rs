@@ -875,6 +875,7 @@ pub(super) fn install_capacity_on_desktop(
     // write. Normal errors explicitly prove rollback below before deleting it.
     directory.keep = true;
     node.keep = true;
+    let mut stage = "register new adapter";
     let installation = (|| -> Result<()> {
         checkpoint().map_err(|e| Error::Platform(e.message))?;
         created("installation_submitted", "", &directory.path)?;
@@ -882,17 +883,21 @@ pub(super) fn install_capacity_on_desktop(
         node.register()?;
         created("installation_submitted", &node.instance, &directory.path)?;
         checkpoint().map_err(|e| Error::Platform(e.message))?;
+        stage = "bind pinned driver";
         node.bind(&directory.path)?;
+        stage = "wait for complete monitor identities";
         let targets = super::windows::provision::capacity::ready_instance(
             &before, &node.instance, Some(minimum as usize), Duration::from_secs(45), checkpoint, claims,
         )?;
         for target in &targets {
+            stage = "prepare inactive target";
             super::windows::settled_readback(Duration::from_secs(5), checkpoint, || {
                 super::windows::provision::capacity::verify_new_instance(&before, &node.instance)
             })?;
             checkpoint().map_err(|e| Error::Platform(e.message))?;
             super::windows::deactivate(&target.key)?;
         }
+        stage = "verify inactive pool";
         super::windows::settled_readback(Duration::from_secs(10), checkpoint, || {
             let after = super::windows::targets_for_instance(&node.instance)?;
             if after.iter().map(|t| &t.key).collect::<std::collections::BTreeSet<_>>() != targets.iter().map(|t| &t.key).collect::<std::collections::BTreeSet<_>>()
@@ -914,8 +919,9 @@ pub(super) fn install_capacity_on_desktop(
             Ok(())
         }
         Err(error) => {
+            tracing::warn!(%stage,instance=%node.instance,%error,"virtual display first installation failed before cleanup");
             // Accepted PnP changes are not cancelled by a caller timeout. If a
-            // host became active, retain this exact new node/config and claims.
+            // authorization changed, retain this exact new node/config and claims.
             if let Err(admission) = checkpoint() {
                 if !node.registered {
                     let restored = match configuration.as_mut() {

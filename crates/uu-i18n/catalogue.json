@@ -1866,7 +1866,7 @@
   "添加规格": "Add preset",
   "规格在创建时交给远端驱动验证；HDR 还需要远端驱动、显示与串流编码支持。": "Presets are validated by the remote driver when created. HDR also requires support from the remote driver, display, and streaming encoder.",
   "此电脑暂不支持虚拟副屏": "This computer does not support virtual displays.",
-  "首次使用虚拟副屏时，后台可以准备签名驱动。": "The background service can prepare a signed driver when you first use a virtual display.",
+  "尚未安装创建所需的签名驱动；新建时由后台自动安装。": "The signed driver required to create displays is missing. The background service installs it when you create a display.",
   "可用虚拟副屏数量不足，可在空闲时准备更多。": "More virtual displays can be prepared when the host is idle.",
   "请在源机打开后台准备虚拟副屏；首次安装时按系统提示授权。": "Open the background service on the host to prepare virtual displays. Approve the system prompt on first installation.",
   "当前有连接或虚拟屏正在使用，准备已排队；空闲后会自动补充虚拟副屏。": "A connection or virtual display is in use. Preparation is queued and will add capacity when the host is idle.",
