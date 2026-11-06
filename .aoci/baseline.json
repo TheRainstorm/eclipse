@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-06T02:28:46Z",
+  "updated_at": "2026-11-06T03:07:07Z",
   "files": {
     ".cargo/config.toml": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "6430d6da813945a07992701c96361972b80689ed7e98e32d91de08fc3344dd92",
-      "size": 207184,
-      "normalized_sha256": "6430d6da813945a07992701c96361972b80689ed7e98e32d91de08fc3344dd92"
+      "sha256": "1786a0c4add3226be53ba2c5b2292e771e8ba0cc18e649b1bfcf4117b1d8f5c6",
+      "size": 207607,
+      "normalized_sha256": "1786a0c4add3226be53ba2c5b2292e771e8ba0cc18e649b1bfcf4117b1d8f5c6"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1505,9 +1505,9 @@
     },
     "crates/uu-gui/src/displays.rs": {
       "role": "index",
-      "sha256": "35c6836ab101881199ad806f2a707461f24278cfa992c77201115db126691cf3",
-      "size": 44668,
-      "normalized_sha256": "35c6836ab101881199ad806f2a707461f24278cfa992c77201115db126691cf3"
+      "sha256": "07c1bc192cdc6bf7a712209842f1212d0bf205e2fe9a9818d22c4f045faf8f9a",
+      "size": 45176,
+      "normalized_sha256": "07c1bc192cdc6bf7a712209842f1212d0bf205e2fe9a9818d22c4f045faf8f9a"
     },
     "crates/uu-gui/src/gamepad.rs": {
       "role": "index",
@@ -1709,15 +1709,15 @@
     },
     "crates/uu-gui/src/stream_workspace.rs": {
       "role": "index",
-      "sha256": "1c3c6073b28b0ac845789407adfa16dd10450b7c3d7074bb6a1734c6b975d089",
-      "size": 62410,
-      "normalized_sha256": "1c3c6073b28b0ac845789407adfa16dd10450b7c3d7074bb6a1734c6b975d089"
+      "sha256": "8d76fed4c77e4b8b51b153ce680f44be510c8e7a43541ab19002ee5ee5579d3c",
+      "size": 62526,
+      "normalized_sha256": "8d76fed4c77e4b8b51b153ce680f44be510c8e7a43541ab19002ee5ee5579d3c"
     },
     "crates/uu-gui/src/stream_workspace/inventory.rs": {
       "role": "index",
-      "sha256": "15974edee73b8762be6de467c697450257b8a04d927c6b1c2325d827aa88dde6",
-      "size": 7969,
-      "normalized_sha256": "15974edee73b8762be6de467c697450257b8a04d927c6b1c2325d827aa88dde6"
+      "sha256": "d333e999e2f2d3dd7adb5d20c19167c645b5b666fcd490c1591ce16f04abc334",
+      "size": 8735,
+      "normalized_sha256": "d333e999e2f2d3dd7adb5d20c19167c645b5b666fcd490c1591ce16f04abc334"
     },
     "crates/uu-gui/src/stream_workspace_gui_probe.rs": {
       "role": "index",
@@ -1727,9 +1727,9 @@
     },
     "crates/uu-gui/src/stream_workspace_tests.rs": {
       "role": "index",
-      "sha256": "3686f6d5bbabc55a046dcd21e1cc5d4e969dd91c60e827faf95b89e91fb67cbf",
-      "size": 72013,
-      "normalized_sha256": "3686f6d5bbabc55a046dcd21e1cc5d4e969dd91c60e827faf95b89e91fb67cbf"
+      "sha256": "10efea40272085ed200b8029bae550aad32b4bf217edcbce1e98b9b71a3df6d6",
+      "size": 74571,
+      "normalized_sha256": "10efea40272085ed200b8029bae550aad32b4bf217edcbce1e98b9b71a3df6d6"
     },
     "crates/uu-gui/src/theme.rs": {
       "role": "index",
