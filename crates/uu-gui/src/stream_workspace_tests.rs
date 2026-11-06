@@ -138,6 +138,41 @@ fn remembered_second_display_keeps_host_order_and_only_connects_the_selection() 
     assert_eq!(stats.native_media_epoch.load(Ordering::Acquire),0);
 }
 #[test]
+fn failed_virtual_tab_disconnect_button_preserves_the_other_stream_and_window() {
+    let (mut state,stats,ctx,live)=catalog_state(vec![generated_screen(0)],0);
+    let target=state.windows[0].sessions[0].app.stream_target.as_ref().unwrap().clone();
+    let launch=virtual_launch(&target,uu_core::virtual_display::Spec::default()).unwrap();
+    let failed=state.windows[0].record_launch(&launch,&mut state.next);
+    let platform=state.windows[0].platform.as_ref().unwrap().clone();
+    let mut app=App::new_session(&ctx,None,platform,Some(launch.target),false,None,false);
+    app.status="generated virtual display preparation failure".into();
+    app.connect_deferred=false;
+    state.windows[0].sessions.push(Session{id:failed,activated:None,app});
+    state.windows[0].active=failed;
+    let tabs=state.windows[0].tabs(state.actions.clone());
+    state.windows[0].sessions[1].app.workspace_tabs=Some(tabs);
+    let view=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.,720.));
+    let mut render=|events|ctx.run(egui::RawInput{screen_rect:Some(view),events,..Default::default()},|ctx|{
+        state.windows[0].sessions[1].app.stream_ui(ctx,&[]);
+    });
+    let mut output=render(vec![]);
+    for _ in 0..2 {output=render(vec![]);}
+    let point=output.shapes.iter().find_map(|shape|if let egui::Shape::Text(text)=&shape.shape {
+        (text.galley.job.text==uu_i18n::text("断开此会话")).then_some(text.pos+text.galley.size()/2.)
+    } else {None}).expect("failed tab disconnect button");
+    render(vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}]);
+    let output=render(vec![egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}]);
+    assert!(output.viewport_output.values().all(|viewport|!viewport.commands.iter().any(|command|matches!(command,egui::ViewportCommand::Close))),"tab action must never close the native window");
+    let actions=state.actions.take();
+    assert_eq!(actions,[Action::Close(failed)]);
+    for action in actions {state.apply(action,&ctx);}
+    assert_eq!(state.windows[0].views.iter().map(|view|view.id).collect::<Vec<_>>(),[live]);
+    assert!(!state.windows[0].closing);
+    let live_session=state.windows[0].sessions.iter().find(|session|session.id==live).unwrap();
+    assert!(!live_session.app.exit_requested && !live_session.app.disconnecting);
+    assert!(Arc::ptr_eq(&stats,&live_session.app.controller.as_ref().unwrap().stats));
+}
+#[test]
 fn group_shortcut_menu_and_window_close_hide_before_cleanup_and_reject_late_frames() {
     for entry in ["shortcut","device-menu","window"] {
         let (mut state,_,ctx,first)=catalog_state(vec![generated_screen(0),generated_screen(1)],0);

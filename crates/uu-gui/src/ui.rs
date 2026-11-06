@@ -239,8 +239,8 @@ impl App {
                     if !self.disconnecting && ui.put(Rect::from_center_size(center+egui::vec2(0.0,94.0),egui::vec2(116.0,34.0)),super::theme::secondary_button(uu_i18n::text("取消连接"))).clicked(){self.disconnect();}
                 } else {
                     if ui.put(Rect::from_center_size(center+egui::vec2(-70.0,54.0),egui::vec2(124.0,36.0)),super::theme::primary_button(uu_i18n::text("重新连接"))).clicked(){self.connect();}
-                    if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),super::theme::secondary_button(uu_i18n::text("关闭串流窗口"))).clicked(){
-                        if self.workspace_tabs.is_some(){ctx.send_viewport_cmd(egui::ViewportCommand::Close);}else{self.disconnect();}
+                    if ui.put(Rect::from_center_size(center+egui::vec2(70.0,54.0),egui::vec2(124.0,36.0)),super::theme::secondary_button(uu_i18n::text("断开此会话"))).clicked(){
+                        if let Some(tabs)=&self.workspace_tabs {tabs.actions.borrow_mut().push(super::stream_workspace::Action::Close(tabs.active));}else{self.disconnect();}
                     }
                 }
             }
