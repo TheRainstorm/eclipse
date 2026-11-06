@@ -93,6 +93,49 @@ fn closing_the_last_view_marks_the_window_for_immediate_release() {
     assert!(window.closing);
 }
 #[test]
+fn later_catalog_sources_are_added_once_and_do_not_reappear_after_close() {
+    use raw_window_handle::{DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle};
+    use std::sync::atomic::Ordering;
+    struct NoWindow;
+    impl HasWindowHandle for NoWindow {
+        fn window_handle(&self)->Result<WindowHandle<'_>,HandleError>{Err(HandleError::Unavailable)}
+    }
+    impl HasDisplayHandle for NoWindow {
+        fn display_handle(&self)->Result<DisplayHandle<'_>,HandleError>{Err(HandleError::Unavailable)}
+    }
+    let ctx=egui::Context::default();
+    let platform=Rc::new(crate::platform::Platform::for_window(&NoWindow,&ctx,None));
+    let target=owned_target("A");
+    let mut app=App::new_session(&ctx,None,platform.clone(),Some(target.clone()),false,None,false);
+    let stats=Arc::new(uu_core::media::MediaStats::default());
+    stats.capabilities.enable(uu_core::capabilities::Capability::Displays,true);
+    *stats.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:0,screens:vec![generated_screen(0)]};
+    let (input,_)=uu_core::native_input::channel(false);
+    let (_,events)=std::sync::mpsc::channel();
+    let frames=uu_core::media::frame_channel().1;
+    let (raw,_)=tokio::sync::mpsc::unbounded_channel();
+    let (close,_)=tokio::sync::mpsc::unbounded_channel();
+    app.controller=Some(uu_core::controller::ControllerHandle{stopped:Arc::new(false.into()),events,frames,input:raw.clone(),native_input:Some(input),settings:raw,close,stats:stats.clone()});
+    app.displays.selected=Some(0);
+    let launch=Launch::new(target,None).unwrap();
+    let mut state=owned_state();
+    let id=state.windows[0].record_launch(&launch,&mut state.next);
+    state.windows[0].sessions.push(Session{id,activated:None,app});
+    state.windows[0].active=id;
+    state.windows[0].platform=Some(platform);
+    state.sync_owned_views();
+    assert_eq!(state.windows[0].views.len(),1,"the first catalog has one source");
+
+    *stats.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:0,screens:vec![generated_screen(0),generated_screen(1)]};
+    state.sync_owned_views();
+    assert_eq!(state.windows[0].views.len(),2,"a later catalog adds the new source once");
+    let added=state.windows[0].views.iter().find(|view|view.id!=id).unwrap().id;
+    state.close(&[added],&ctx);
+    state.sync_owned_views();
+    assert_eq!(state.windows[0].views.len(),1,"a source closed by the user stays closed");
+    assert_eq!(stats.native_media_epoch.load(Ordering::Acquire),0);
+}
+#[test]
 fn local_desktop_toggle_preserves_window_and_view_identity_for_restore() {
     let mut state=owned_state();let device=owned_target("A");let ctx=egui::Context::default();
     let a=own_generated(&mut state,0,&device,0);state.windows[0].select(a);

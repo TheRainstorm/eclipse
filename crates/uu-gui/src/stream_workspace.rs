@@ -353,6 +353,7 @@ fn virtual_launch(target:&StreamTarget,spec:uu_core::virtual_display::Spec)->any
 struct Window {
     views:Vec<OwnedView>,
     sources:Vec<(ConnectionTarget,Vec<SourceChoice>)>,
+    discovered_sources:std::collections::HashSet<(ConnectionTarget,String)>,
     merge_available:bool,
     close_confirmation:bool,
     modal:Rc<Cell<bool>>,
@@ -412,7 +413,7 @@ impl Window {
     }
     fn new(id: u64, pending: Vec<Launch>, position: Option<egui::Pos2>) -> Self {
         Self {
-            views:Vec::new(), sources:Vec::new(), merge_available:false,
+            views:Vec::new(), sources:Vec::new(), discovered_sources:Default::default(), merge_available:false,
             close_confirmation:false,modal:Default::default(),
             shortcuts:Default::default(),
             id,

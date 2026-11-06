@@ -329,6 +329,13 @@ impl super::App {
         if self.disconnecting || self.exit_requested {return false;}
         let screens=self.remote_screens();
         let Some(target)=self.displays.selected_target(&screens) else {return false;};
+        self.pin_display_view(target)
+    }
+    pub(super) fn pin_display_view(&mut self,target:super::sessions::DisplayTarget)->bool {
+        if self.is_fixed_display_view(){return true;}
+        if !self.stream_target.as_ref().is_some_and(super::sessions::StreamTarget::is_native)
+            || !self.controller.as_ref().is_some_and(|handle|handle.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)) {return true;}
+        if self.disconnecting || self.exit_requested {return false;}
         self.displays.fixed_display=Some(target);
         self.displays.queued=None;
         self.displays.menu_open=false;

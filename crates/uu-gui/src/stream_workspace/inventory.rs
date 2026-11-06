@@ -68,20 +68,31 @@ impl State {
                 }
             }
         }
-        // A normal initial connection owns all initial sources as lazy views.
-        // Discovery runs once, after the remembered source has been confirmed.
-        let discover:Vec<_>=self.windows.iter().flat_map(|w|w.views.iter().filter(|v|v.discover_initial&&v.source.is_some()).map(move|v|(w.id,v.id))).collect();
-        for (window_id,id) in discover {
+        // A normal connection owns every source it has ever discovered as a
+        // lazy view. A host may publish its catalog in more than one packet;
+        // keep adding newly visible sources, but remember names so closing a
+        // tab does not make it reappear on the next refresh.
+        let anchors:Vec<_>=self.windows.iter().flat_map(|window|window.sessions.iter().filter_map(|session|{
+            let target=session.app.stream_target.clone()?;
+            let handle=session.app.controller.as_ref()?;
+            if session.app.exit_requested||session.app.disconnecting||!target.is_native()||target.connection.is_auxiliary_view()
+                ||!handle.stats.capabilities.allows(uu_core::capabilities::Capability::Displays)
+                ||session.app.remote_screens().screens.is_empty() {return None;}
+            Some((window.id,session.id,target))
+        })).collect();
+        for (window_id,session_id,target) in anchors {
             let Some(index)=self.windows.iter().position(|w|w.id==window_id) else{continue;};
-            let target=self.windows[index].views.iter().find(|v|v.id==id).unwrap().launch.target.clone();
+            let Some(source)=self.windows[index].views.iter().find(|v|v.id==session_id).and_then(|v|v.source.clone()) else{continue;};
+            let Some(session)=self.windows[index].sessions.iter_mut().find(|s|s.id==session_id) else{continue;};
+            let pinned=session.app.pin_display_view(source.clone())||session.app.pin_current_display_view();
+            if !pinned {continue;}
             let device=base_key(&target);
-            if self.windows.iter().flat_map(|w|&w.views).any(|v|base_key(&v.launch.target)==device&&v.launch.target.connection.virtual_display().is_some()&&v.source.is_none()) {continue;}
-            if let Some(session)=self.windows[index].sessions.iter_mut().find(|s|s.id==id) {
-                if !session.app.pin_current_display_view() {continue;}
-            }
-            self.windows[index].views.iter_mut().find(|v|v.id==id).unwrap().discover_initial=false;
+            if let Some(view)=self.windows[index].views.iter_mut().find(|v|v.id==session_id) {view.discover_initial=false;}
             let choices:Vec<_>=self.sources.iter().filter(|s|s.device==device&&s.active).cloned().collect();
             for source in choices {
+                let key=(device.clone(),source.screen.display_name.clone());
+                if self.windows[index].discovered_sources.contains(&key) {continue;}
+                self.windows[index].discovered_sources.insert(key);
                 if self.source_owned(&source) {continue;}
                 if let Ok(launch)=display_launch(&target,&source.screen) {
                     let id=self.windows[index].record_launch(&launch,&mut self.next);
