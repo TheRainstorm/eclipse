@@ -241,16 +241,15 @@ impl Layout {
             format!("{}x{}@{}", m.size[0], m.size[1], m.target_fps)
         };
         let mut rows=vec![vec![
-            (format!("{resolution} {codec}"),"3840x2160@240 PyroWave",13.,primary),
-            (m.fps_label(),"FPS · Rcv/Dec/Rnd 1000.0/1000.0/1000.0",13.,muted),
-            (m.network_label(),"BW 9999 Mbps · RTT 999.9 ± 99.9 ms · Loss 100.00%",13.,network),
-            (m.stages_label(),"Latency · Cap+Enc/Dec+Rnd 999.9/999.9 ms · Est. ≈999.99 ±99.99 ms",13.,process),
-            (format!("E2E · Video {}",m.video_value()),"E2E · Video ≈999.99 ±99.99 ms",13.,primary),
+            (format!("{resolution} {codec}"),13.,primary),
+            (m.fps_label(),13.,muted),
+            (m.network_label(),13.,network),
+            (m.stages_label(),13.,process),
+            (format!("E2E · Video {}",m.video_value()),13.,primary),
         ]];
         if m.waiting_for_keyframe {
             rows.push(vec![(
                 "Recovering reference frame…".into(),
-                "Recovering reference frame…",
                 12.5,
                 Color32::from_rgb(255, 195, 108),
             )]);
@@ -267,31 +266,26 @@ impl Layout {
                 y += row_h + 6.;
                 row_h = 0.;
             }
-            for (text, reference, size, color) in row {
-                // Reserve geometry independently of current sample validity.
-                // Equal-width numeric glyphs also prevent each field moving
-                // when values cross digit boundaries or become unknown.
-                let cell=ui.fonts(|f|f.layout(reference.into(),FontId::monospace(size),color,width));
-                let cell_width=cell.size().x;
+            for (text, size, color) in row {
                 let mut job =
-                    egui::text::LayoutJob::simple(text, FontId::monospace(size), color, cell_width);
+                    egui::text::LayoutJob::simple(text, FontId::proportional(size), color, width);
                 job.wrap.break_anywhere = false;
                 let galley = ui.fonts(|f| f.layout_job(job));
                 let gap = if x > 0. { 16. } else { 0. };
-                if x > 0. && x + gap + cell_width > width {
+                if x > 0. && x + gap + galley.size().x > width {
                     x = 0.;
                     y += row_h + 5.;
                     row_h = 0.;
                 } else {
                     x += gap;
                 }
-                row_h = row_h.max(galley.size().y.max(cell.size().y));
-                max_x = max_x.max(x + cell_width);
+                row_h = row_h.max(galley.size().y);
+                max_x = max_x.max(x + galley.size().x);
                 placed.push(Placed {
                     offset: egui::vec2(x, y),
                     galley: galley.clone(),
                 });
-                x += cell_width;
+                x += galley.size().x;
             }
         }
         Self {
@@ -899,27 +893,6 @@ mod tests {
         let rows=detail_rows(&m);
         assert_eq!(rows.iter().take(6).map(|r|r.label).collect::<Vec<_>>(),["画面","帧率","编解码","网络","延迟","端到端"]);
         let latency=&rows[4].values;assert_eq!(latency.iter().filter(|v|v.line==1).count(),5);
-    }
-    #[test]
-    fn compact_hud_geometry_survives_missing_estimate_and_video_samples() {
-        use uu_core::video_e2e::{DisplayMethod,Measurement};
-        let known=Metrics {
-            process:[Some(1.2);4],queues:[Some(0.1);3],rtt:Some([2.1,0.2]),
-            fps:[Some(60.);3],loss:Some(0.),size:[1920,1080],target_fps:60,codec:"AV1".into(),
-            video_e2e:Some(e2e_snapshot(Some(Measurement {samples:24,mean_us:21_163,p50_us:20_000,p95_us:26_000,uncertainty_us:999,max_sample_uncertainty_us:1500,method:DisplayMethod::PlatformDisplayed}),None)),
-            ..Default::default()
-        };
-        let mut missing=known.clone();missing.process[0]=None;missing.video_e2e=None;
-        let ctx=egui::Context::default();
-        let _=ctx.run(Default::default(),|ctx| {
-            egui::CentralPanel::default().show(ctx,|ui| {
-                for width in [240.,640.,1280.,1920.] {
-                    let a=Layout::new(ui,&known,width);let b=Layout::new(ui,&missing,width);
-                    assert_eq!(a.size,b.size,"HUD bounds at {width}");
-                    assert_eq!(a.placed.iter().map(|p|p.offset).collect::<Vec<_>>(),b.placed.iter().map(|p|p.offset).collect::<Vec<_>>(),"field positions at {width}");
-                }
-            });
-        });
     }
     #[test]
     fn diagnostic_card_is_centered_on_the_video_independently_of_hud_width() {
