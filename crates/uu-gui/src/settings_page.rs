@@ -68,6 +68,8 @@ pub struct State<'a> {
     pub gamepad_status: Option<&'a str>,
     pub actual_codec: Option<&'a str>,
     pub actual_size: Option<[u32;2]>,
+    pub local_display:uu_core::client_settings::LocalDisplay,
+    pub remote_refresh:Option<u32>,
 }
 #[derive(Default)]
 pub struct Actions {
@@ -112,17 +114,18 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
             .spacing([24.0, 14.0])
             .show(ui, |ui| {
                 ui.label(uu_i18n::text("目标帧率"));
-                crate::theme::Select::from_id_salt("settings-frame-rate").selected_text(if s.follow_remote_fps {uu_i18n::text("保持远端帧率").to_owned()}else{format!("{} FPS",s.fps)}).show_ui(ui,|ui| {
-                    if crate::theme::selectable_label(ui,s.follow_remote_fps,uu_i18n::text("保持远端帧率")).clicked(){s.follow_remote_fps=true;}
-                    for fps in [30,60,120,165].into_iter().filter(|fps|*fps<=state.max_fps) {
-                        if crate::theme::selectable_label(ui,!s.follow_remote_fps&&s.fps==fps,format!("{fps} FPS")).clicked(){s.fps=fps;s.follow_remote_fps=false;}
+                crate::theme::Select::from_id_salt("settings-frame-rate").selected_text(if s.follow_local_fps {uu_i18n::text("保持本地帧率").to_owned()}else if s.follow_remote_fps {uu_i18n::text("保持远端帧率").to_owned()}else{format!("{} FPS",s.fps)}).show_ui(ui,|ui| {
+                    if crate::theme::selectable_label(ui,s.follow_remote_fps&&!s.follow_local_fps,uu_i18n::text("保持远端帧率")).clicked(){s.follow_remote_fps=true;s.follow_local_fps=false;}
+                    if crate::theme::selectable_label(ui,s.follow_local_fps,uu_i18n::text("保持本地帧率")).clicked(){s.follow_remote_fps=false;s.follow_local_fps=true;}
+                    for fps in uu_core::client_settings::COMMON_FRAME_RATES.into_iter().filter(|fps|*fps<=state.max_fps) {
+                        if crate::theme::selectable_label(ui,!s.follow_remote_fps&&!s.follow_local_fps&&s.fps==fps,format!("{fps} FPS")).clicked(){s.fps=fps;s.follow_remote_fps=false;s.follow_local_fps=false;}
                     }
                     ui.menu_button(uu_i18n::text("其它帧数"),|ui| {
-                        for fps in [24,90,120,144].into_iter().filter(|fps|*fps<=state.max_fps) {
-                            if crate::theme::selectable_label(ui,!s.follow_remote_fps&&s.fps==fps,format!("{fps} FPS")).clicked(){s.fps=fps;s.follow_remote_fps=false;}
+                        for fps in uu_core::client_settings::OTHER_FRAME_RATES.into_iter().filter(|fps|*fps<=state.max_fps) {
+                            if crate::theme::selectable_label(ui,!s.follow_remote_fps&&!s.follow_local_fps&&s.fps==fps,format!("{fps} FPS")).clicked(){s.fps=fps;s.follow_remote_fps=false;s.follow_local_fps=false;}
                         }
                         ui.separator();ui.label(uu_i18n::text("自定义帧数"));
-                        if crate::theme::number_input(ui,egui::DragValue::new(&mut s.fps).range(5..=state.max_fps.clamp(5,240)).suffix(" FPS")).changed(){s.follow_remote_fps=false;}
+                        if crate::theme::number_input(ui,egui::DragValue::new(&mut s.fps).range(5..=state.max_fps.clamp(5,240)).suffix(" FPS")).changed(){s.follow_remote_fps=false;s.follow_local_fps=false;}
                     });
                 });
                 ui.end_row();
@@ -132,16 +135,29 @@ fn video(ui: &mut egui::Ui, s: &mut Settings, state: &State<'_>) {
                     "1920 × 1080",
                     "2560 × 1440",
                     "3840 × 2160",
+                    uu_i18n::text("保持本地分辨率"),
+                    uu_i18n::text("自定义分辨率"),
                 ];
                 combo(ui, "settings-resolution", labels[s.resolution], |ui| {
-                    for (i, label) in labels.iter().enumerate() {
-                        crate::theme::selectable_value(ui,&mut s.resolution, i, *label);
+                    for i in [0,4,1,2,3,5] {
+                        crate::theme::selectable_value(ui,&mut s.resolution, i, labels[i]);
                     }
                 });
                 ui.end_row();
+                if s.resolution==uu_core::client_settings::CUSTOM_RESOLUTION {
+                    ui.label(uu_i18n::text("自定义分辨率"));
+                    ui.horizontal(|ui| {
+                        crate::theme::number_input(ui,egui::DragValue::new(&mut s.custom_resolution[0]).range(2..=8192).speed(2.).max_decimals(0));
+                        ui.label("×");
+                        crate::theme::number_input(ui,egui::DragValue::new(&mut s.custom_resolution[1]).range(2..=8192).speed(2.).max_decimals(0));
+                    });
+                    ui.end_row();
+                }
 
             });
         ui.add_space(8.0);
+        theme::switch(ui,&mut s.limit_fps_to_local,uu_i18n::text("串流帧率不超过本地显示器帧率"));
+        note(ui,uu_i18n::text("本地指串流窗口所在的显示器，移动窗口后按所在屏幕更新。启用上限保留所选帧率，关闭后恢复；刷新率按整数帧率向下取整。"));
         note(
             ui,
             uu_i18n::text("输出分辨率只调整串流编码尺寸，不修改远端桌面。实际帧率取决于被控端、屏幕和网络。"),
@@ -222,11 +238,15 @@ fn encoding(ui:&mut egui::Ui,s:&mut Settings,state:&State<'_>) {
                 }
         });
         if state.native||!state.streaming {
-            match super::settings::recommended_bitrate(&s.client,state.actual_size,state.actual_codec) {
+            let mut effective=s.client.clone();
+            effective.fps=s.resolved_fps_for_display(state.remote_refresh,state.local_display,state.max_fps);
+            let size=state.actual_size.or_else(||s.resolved_bounds(state.local_display));
+            let recommended=super::settings::recommended_bitrate(&effective,size,state.actual_codec);
+            match recommended {
                 Some(kbps)=>{ui.label(uu_i18n::format!("LAN Quality 推荐约 {:.1} Mbps",kbps as f64/1000.));},
                 None=>{ui.label(uu_i18n::text("推荐码率将在连接后按实际分辨率、帧率和协商编码计算。"));},
             }
-            if super::settings::recommended_bitrate(&s.client,state.actual_size,state.actual_codec)==Some(uu_core::native_quality::MAX_BITRATE_KBPS) {
+            if recommended==Some(uu_core::native_quality::MAX_BITRATE_KBPS) {
                 note(ui,uu_i18n::text("推荐值已达到当前 1000 Mbps 上限；此组合需要降低分辨率或 FPS，或自行调整画质目标。"));
             }
             note(ui,uu_i18n::text("推荐档随分辨率、FPS 和编码更新；以良好画质为目标，复杂场景可手动提高。不是网络测速或所有画面的最低码率保证。UU 兼容模式的自动档由官方主机决定。"));
@@ -612,7 +632,7 @@ pub(super) fn client_editor(ui:&mut egui::Ui, settings:&mut super::settings::Cli
     });
     ui.add_space(12.);
     let mut wrapper=Settings {client:settings.clone(),..Default::default()};
-    let state=State { native:true,host_managed_bitrate:false,max_fps:240,codecs:None,rate_control_available:true,native_cursor:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None,actual_codec:None,actual_size:None };
+    let state=State { native:true,host_managed_bitrate:false,max_fps:240,codecs:None,rate_control_available:true,native_cursor:false,streaming:false,can_save_profile:false,dirty:false,storage_error:false,notice:"",presentation_vsync:settings.vsync,gamepad_status:None,actual_codec:None,actual_size:None,local_display:Default::default(),remote_refresh:None };
     match section {Section::Encoding=>encoding(ui,&mut wrapper,&state),Section::Audio=>audio(ui,&mut wrapper),Section::Input=>input(ui,&mut wrapper,&state),Section::Stream=>stream(ui,&mut wrapper),_=>video(ui,&mut wrapper,&state)}
     *settings=wrapper.client;
 }
@@ -651,7 +671,7 @@ mod parameter_tests {
         let before = settings.clone();
         for color in theme::COLOR_THEMES {
             for (mut section, labels) in [
-                (Section::Video, vec!["目标帧率", "输出分辨率", "垂直同步", "使用软件解码"]),
+                (Section::Video, vec!["目标帧率", "输出分辨率", "串流帧率不超过本地显示器帧率", "垂直同步", "使用软件解码"]),
                 (Section::Encoding, vec!["视频编码", "原生码率模式", "自定义码率"]),
             ] {
                 let ctx = egui::Context::default();

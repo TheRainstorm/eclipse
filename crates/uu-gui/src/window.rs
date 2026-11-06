@@ -1,6 +1,15 @@
 //! Native resize gestures for our undecorated window.
 use eframe::egui::{self, viewport::ResizeDirection as D, CursorIcon as C};
 
+pub fn local_display(ctx:&egui::Context,viewport:egui::ViewportId)->uu_core::client_settings::LocalDisplay {
+    #[cfg(test)]
+    if let Some(display)=ctx.data(|data|data.get_temp::<uu_core::client_settings::LocalDisplay>(egui::Id::new(("test-local-display",viewport)))) {return display;}
+    eframe::viewport_window_for(ctx,viewport).and_then(|window|window.current_monitor()).map(|monitor| {
+        let size=monitor.size();
+        uu_core::client_settings::LocalDisplay {size:Some([size.width,size.height]),refresh_millihz:monitor.refresh_rate_millihertz()}
+    }).unwrap_or_default()
+}
+
 /// Floating windows receive native chrome; fullscreen and maximized windows
 /// must retain their exact rectangular client geometry.
 #[cfg(any(windows, test))]

@@ -326,6 +326,7 @@ pub(super) struct StreamMenu {
     pub anchor: Pos2,
     pub(super) trigger_rect: Option<Rect>,
     pub(super) quality_detail: Option<(QualityDetail, Rect)>,
+    custom_resolution_draft:Option<[u32;2]>,
     pub(super) floating: FloatingHandle,
 }
 impl Default for StreamMenu {
@@ -336,6 +337,7 @@ impl Default for StreamMenu {
             anchor: Pos2::ZERO,
             trigger_rect: None,
             quality_detail: None,
+            custom_resolution_draft:None,
             floating: FloatingHandle::default(),
         }
     }
@@ -566,16 +568,20 @@ impl super::App {
         let response=menu_row(ui,uu_i18n::text("分辨率"),None,false,true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::Resolution,response.rect));}
         separator(ui);
-        let response=menu_row(ui,uu_i18n::text("保持远端帧率"),None,self.preferences.follow_remote_fps,false,"",false);
+        let response=menu_row(ui,uu_i18n::text("保持远端帧率"),None,self.preferences.follow_remote_fps&&!self.preferences.follow_local_fps,false,"",false);
         if response.hovered(){self.stream_menu.quality_detail=None;}
-        if response.clicked(){self.preferences.follow_remote_fps=true;self.confirm_quality(ui);}
+        if response.clicked(){self.preferences.follow_remote_fps=true;self.preferences.follow_local_fps=false;self.confirm_quality(ui);}
+        let response=menu_row(ui,uu_i18n::text("保持本地帧率"),None,self.preferences.follow_local_fps,false,"",false);
+        if response.hovered(){self.stream_menu.quality_detail=None;}
+        if response.clicked(){self.preferences.follow_remote_fps=false;self.preferences.follow_local_fps=true;self.confirm_quality(ui);}
         let max_fps=self.client_support.max_fps;
-        for fps in [30,60,120,165].into_iter().filter(move|fps|*fps<=max_fps) {
-            let response=menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,!self.preferences.follow_remote_fps&&self.target_fps==fps,false,"",false);
+        let manual=!self.preferences.follow_remote_fps&&!self.preferences.follow_local_fps;
+        for fps in uu_core::client_settings::COMMON_FRAME_RATES.into_iter().filter(move|fps|*fps<=max_fps) {
+            let response=menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,manual&&self.preferences.fps==fps,false,"",false);
             if response.hovered(){self.stream_menu.quality_detail=None;}
-            if response.clicked(){self.preferences.follow_remote_fps=false;self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);}
+            if response.clicked(){self.select_frame_rate(fps);self.confirm_quality(ui);}
         }
-        let response=menu_row(ui,uu_i18n::text("其它帧数"),None,!self.preferences.follow_remote_fps&&![30,60,120,165].contains(&self.target_fps),true,"",false);
+        let response=menu_row(ui,uu_i18n::text("其它帧数"),None,manual&&!uu_core::client_settings::COMMON_FRAME_RATES.contains(&self.preferences.fps),true,"",false);
         if response.hovered()||response.clicked(){self.stream_menu.quality_detail=Some((QualityDetail::FrameRate,response.rect));}
         separator(ui);
         let response=menu_toggle(ui,uu_i18n::text("垂直同步"),self.preferences.vsync,&self.preferences.hotkeys.label(super::shortcuts::Action::Vsync));
@@ -620,7 +626,8 @@ impl super::App {
         let native=!self.client_support.host_managed_bitrate;
         let actual=self.controller.as_ref().map(|h|{let(w,h)=h.stats.res();[w,h]});
         let codec=self.controller.as_ref().map(|h|h.stats.codec.lock().unwrap().clone());
-        let recommended=super::settings::recommended_bitrate(&self.preferences,actual,codec.as_deref());
+        let mut effective=self.preferences.client.clone();effective.fps=self.native_quality_request().fps;
+        let recommended=super::settings::recommended_bitrate(&effective,actual.or_else(||self.preferences.resolved_bounds(self.local_display())),codec.as_deref());
         let order:&[usize]=if native{&[6,5,1,2,3,4]}else{&[0,1,2,3,4]};
         for &index in order {
             let label=super::BITRATE_PRESETS[index];
@@ -715,9 +722,9 @@ impl super::App {
                             }
                             QualityDetail::FrameRate => {
                                 let max_fps=self.client_support.max_fps;
-                                for fps in [24,90,120,144].into_iter().filter(move|fps|*fps<=max_fps) {
-                                    if menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,!self.preferences.follow_remote_fps&&self.target_fps==fps,false,"",false).clicked() {
-                                        self.preferences.follow_remote_fps=false;self.target_fps=fps;self.fps_draft=fps;self.confirm_quality(ui);
+                                for fps in uu_core::client_settings::OTHER_FRAME_RATES.into_iter().filter(move|fps|*fps<=max_fps) {
+                                    if menu_row(ui,&uu_i18n::format!("{fps} 帧"),None,!self.preferences.follow_remote_fps&&!self.preferences.follow_local_fps&&self.preferences.fps==fps,false,"",false).clicked() {
+                                        self.select_frame_rate(fps);self.confirm_quality(ui);
                                     }
                                 }
                                 separator(ui);
@@ -734,20 +741,18 @@ impl super::App {
                                 ui.add_space(5.0);
                                 separator(ui);
                                 if menu_row(ui, uu_i18n::text("确认"), None, false, false, "", false).clicked() {
-                                    self.preferences.follow_remote_fps=false;
-                                    self.target_fps = self.fps_draft.clamp(5,self.client_support.max_fps.clamp(5,240));
+                                    self.select_frame_rate(self.fps_draft);
                                     self.confirm_quality(ui);
                                 }
                             }
                             QualityDetail::Resolution => {
                                 for (index, label) in [
-                                    uu_i18n::text("保持远端桌面分辨率"),
-                                    uu_i18n::text("输出 1920 × 1080"),
-                                    uu_i18n::text("输出 2560 × 1440"),
-                                    uu_i18n::text("输出 3840 × 2160"),
+                                    (0,uu_i18n::text("保持远端桌面分辨率")),
+                                    (uu_core::client_settings::LOCAL_RESOLUTION,uu_i18n::text("保持本地分辨率")),
+                                    (1,uu_i18n::text("输出 1920 × 1080")),
+                                    (2,uu_i18n::text("输出 2560 × 1440")),
+                                    (3,uu_i18n::text("输出 3840 × 2160")),
                                 ]
-                                .iter()
-                                .enumerate()
                                 {
                                     if menu_row(
                                         ui,
@@ -761,8 +766,27 @@ impl super::App {
                                     .clicked()
                                     {
                                         self.resolution_idx = index;
+                                        self.stream_menu.custom_resolution_draft=None;
                                         self.confirm_quality(ui);
                                     }
+                                }
+                                let custom=uu_core::client_settings::CUSTOM_RESOLUTION;
+                                if menu_row(ui,uu_i18n::text("自定义分辨率"),None,self.resolution_idx==custom,false,"",false).clicked() {
+                                    self.stream_menu.custom_resolution_draft=Some(self.preferences.custom_resolution);
+                                }
+                                if self.resolution_idx==custom||self.stream_menu.custom_resolution_draft.is_some() {
+                                    let draft=self.stream_menu.custom_resolution_draft.get_or_insert(self.preferences.custom_resolution);
+                                    ui.horizontal(|ui| {
+                                        crate::theme::number_input(ui,egui::DragValue::new(&mut draft[0]).range(2..=8192).speed(2.).max_decimals(0));
+                                        ui.label("×");
+                                        crate::theme::number_input(ui,egui::DragValue::new(&mut draft[1]).range(2..=8192).speed(2.).max_decimals(0));
+                                    });
+                                    let valid=draft.iter().all(|n|(2..=8192).contains(n)&&n%2==0);
+                                    if ui.add_enabled_ui(valid,|ui|menu_row(ui,uu_i18n::text("确认"),None,false,false,"",false)).inner.clicked() {
+                                        self.preferences.custom_resolution=*self.stream_menu.custom_resolution_draft.as_ref().unwrap();
+                                        self.resolution_idx=custom;self.confirm_quality(ui);
+                                    }
+                                    if !valid {ui.weak(uu_i18n::text("自定义分辨率的宽高须为 2–8192 之间的偶数"));}
                                 }
                                 separator(ui);
                                 ui.response().on_hover_text(uu_i18n::text("输出尺寸保持宽高比；更改会重新准备媒体，不改变远端桌面显示模式。"));
@@ -774,6 +798,12 @@ impl super::App {
             });
         if let Some(bridge)=hover_bridge(row,response.response.rect) {blocked.push(bridge);}
         blocked.push(response.response.rect);
+    }
+
+    fn select_frame_rate(&mut self,fps:u32) {
+        let fps=fps.clamp(5,self.client_support.max_fps.clamp(5,240));
+        self.preferences.follow_remote_fps=false;self.preferences.follow_local_fps=false;
+        self.preferences.fps=fps;self.target_fps=fps;self.fps_draft=fps;
     }
 
     /// Draw first so the stream can exclude every control rectangle from input.
@@ -1136,6 +1166,70 @@ mod tests {
     }
     fn button(pos:Pos2,pressed:bool)->egui::Event {
         egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}
+    }
+    fn quality_app(ctx:&egui::Context)->crate::App {
+        use raw_window_handle::{DisplayHandle,HandleError,HasDisplayHandle,HasWindowHandle,WindowHandle};
+        struct NoWindow;
+        impl HasWindowHandle for NoWindow {fn window_handle(&self)->Result<WindowHandle<'_>,HandleError>{Err(HandleError::Unavailable)}}
+        impl HasDisplayHandle for NoWindow {fn display_handle(&self)->Result<DisplayHandle<'_>,HandleError>{Err(HandleError::Unavailable)}}
+        let platform=std::rc::Rc::new(crate::platform::Platform::for_window(&NoWindow,ctx,None));
+        let target=crate::sessions::StreamTarget{connection:crate::sessions::ConnectionTarget::NativeDevice("generated-quality-menu".into()),alias:"Generated".into(),view_only:true};
+        let mut app=crate::App::new_session(ctx,None,platform,Some(target),false,None,true);
+        app.preferences.client=Default::default();app.target_fps=60;app.resolution_idx=0;
+        ctx.data_mut(|data|data.insert_temp(egui::Id::new(("test-local-display",app.context.viewport())),uu_core::client_settings::LocalDisplay{size:Some([2560,1440]),refresh_millihz:Some(60_000)}));
+        app
+    }
+    fn quality_frame(app:&mut crate::App,ctx:&egui::Context,kind:Option<QualityDetail>,events:Vec<egui::Event>)->std::collections::HashMap<String,Rect> {
+        if let Some(kind)=kind {app.stream_menu.quality_detail=Some((kind,Rect::from_min_size(egui::pos2(20.,20.),egui::vec2(100.,30.))));}
+        let output=ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(1280.,900.))),events,focused:true,..Default::default()},|ctx| {
+            if kind.is_some(){app.quality_detail(ctx,&mut vec![]);}else{
+                egui::CentralPanel::default().show(ctx,|ui| {ui.set_width(MENU_WIDTH);app.picture_menu(ui);});
+            }
+        });
+        fn collect(shape:&egui::Shape,values:&mut std::collections::HashMap<String,Rect>) {
+            match shape {
+                egui::Shape::Text(text)=>{values.insert(text.galley.job.text.clone(),Rect::from_min_size(text.pos,text.galley.size()));},
+                egui::Shape::Vec(shapes)=>for shape in shapes {collect(shape,values)},_=>{},
+            }
+        }
+        let mut values=Default::default();for shape in output.shapes {collect(&shape.shape,&mut values);}values
+    }
+    fn quality_click(app:&mut crate::App,ctx:&egui::Context,kind:Option<QualityDetail>,label:&str) {
+        quality_frame(app,ctx,kind,vec![]);
+        let values=quality_frame(app,ctx,kind,vec![]);let point=values[label].center();
+        quality_frame(app,ctx,kind,vec![egui::Event::PointerMoved(point),button(point,true)]);
+        quality_frame(app,ctx,kind,vec![egui::Event::PointerMoved(point),button(point,false)]);
+    }
+    #[test]
+    fn picture_menu_keeps_common_rates_compact_and_local_mode_preserves_manual_capped_selection() {
+        let ctx=egui::Context::default();let mut app=quality_app(&ctx);
+        let labels=quality_frame(&mut app,&ctx,None,vec![]);
+        for fps in [30,60,120] {assert!(labels.contains_key(&uu_i18n::format!("{fps} 帧")));}
+        for fps in [24,90,144,165] {assert!(!labels.contains_key(&uu_i18n::format!("{fps} 帧")));}
+        quality_click(&mut app,&ctx,None,uu_i18n::text("保持本地帧率"));
+        assert!(app.preferences.follow_local_fps&&!app.preferences.follow_remote_fps);assert_eq!(app.native_quality_request().fps,60);
+        app.preferences.limit_fps_to_local=true;
+        let fps=120;quality_click(&mut app,&ctx,None,&uu_i18n::format!("{fps} 帧"));
+        assert!(!app.preferences.follow_local_fps&&!app.preferences.follow_remote_fps);
+        assert_eq!(app.preferences.fps,120);assert_eq!(app.target_fps,60);
+        quality_frame(&mut app,&ctx,Some(QualityDetail::FrameRate),vec![]);
+        let labels=quality_frame(&mut app,&ctx,Some(QualityDetail::FrameRate),vec![]);
+        for fps in [24,90,144,165] {assert!(labels.contains_key(&uu_i18n::format!("{fps} 帧")));}
+        let fps=120;assert!(!labels.contains_key(&uu_i18n::format!("{fps} 帧")));
+    }
+    #[test]
+    fn resolution_menu_applies_local_size_and_waits_for_valid_custom_confirmation() {
+        let ctx=egui::Context::default();let mut app=quality_app(&ctx);
+        quality_click(&mut app,&ctx,Some(QualityDetail::Resolution),uu_i18n::text("保持本地分辨率"));
+        assert_eq!(app.native_quality_request().bounds,Some([2560,1440]));
+        quality_click(&mut app,&ctx,Some(QualityDetail::Resolution),uu_i18n::text("自定义分辨率"));
+        app.stream_menu.custom_resolution_draft=Some([3441,1440]);
+        quality_click(&mut app,&ctx,Some(QualityDetail::Resolution),uu_i18n::text("确认"));
+        assert_eq!(app.native_quality_request().bounds,Some([2560,1440]));
+        app.stream_menu.custom_resolution_draft=Some([3440,1440]);
+        quality_click(&mut app,&ctx,Some(QualityDetail::Resolution),uu_i18n::text("确认"));
+        assert_eq!(app.preferences.resolution,uu_core::client_settings::CUSTOM_RESOLUTION);
+        assert_eq!(app.native_quality_request().bounds,Some([3440,1440]));
     }
     #[test]
     fn floating_handle_starts_right_at_fifteen_percent_and_hover_opens_without_click() {

@@ -632,7 +632,7 @@ impl App {
                 } else { uu_i18n::text("远端拒绝了画质设置，请重新选择").into() };
             }
         }
-        if self.supports_remote(uu_core::capabilities::Capability::Displays) {self.poll_displays(&arrived);}
+        self.poll_displays(&arrived);
         if apply_settings {
             self.send_capture_settings();
         }
@@ -689,22 +689,24 @@ impl App {
     /// Apply frame rate, quality and resolution together so another setting never resets FPS.
     fn send_capture_settings(&mut self) {self.send_capture_settings_through(false);}
     fn capture_profile(&self) -> displays::CaptureProfile {
-        (self.target_fps, self.bitrate_idx, if self.bitrate_idx == 4 {self.custom_mbps} else {0}, self.resolution_idx, self.preferences.cursor_mode.remote())
+        (self.target_fps, self.bitrate_idx, if self.bitrate_idx == 4 {self.custom_mbps} else {0}, self.preferences.resolved_bounds(self.local_display()), self.preferences.cursor_mode.remote())
     }
     fn capture_resolution(&self) -> uu_core::video_options::CaptureResolution {
-        match self.resolution_idx {
-            1=>uu_core::video_options::CaptureResolution::Exact(1920,1080),
-            2=>uu_core::video_options::CaptureResolution::Exact(2560,1440),
-            3=>uu_core::video_options::CaptureResolution::Exact(3840,2160),
-            _=>uu_core::video_options::CaptureResolution::Unchanged,
-        }
+        self.preferences.resolved_bounds(self.local_display()).map_or(uu_core::video_options::CaptureResolution::Unchanged,|[w,h]|uu_core::video_options::CaptureResolution::Exact(w,h))
+    }
+    fn local_display(&self)->uu_core::client_settings::LocalDisplay {
+        window::local_display(&self.context,self.context.viewport())
+    }
+    fn confirmed_remote_refresh(&self)->Option<u32> {
+        self.displays.ready().then(||self.displays.confirmed_refresh(&self.remote_screens())).flatten()
     }
     fn native_quality_request(&self)->uu_core::native_quality::Request {
         let fallback=self.preferences.network_budget_mbps.saturating_mul(1000);
-        self.preferences.with_budget_kbps(self.budget_alloc_kbps.or_else(||(self.preferences.bitrate==6).then_some(fallback)))
+        self.preferences.resolved_request(self.confirmed_remote_refresh(),self.local_display(),self.client_support.max_fps,
+            self.budget_alloc_kbps.or_else(||(self.preferences.bitrate==6).then_some(fallback)))
     }
     fn send_capture_settings_through(&mut self,immediate:bool) {
-        self.resolve_remote_frame_rate();
+        self.resolve_frame_rate();
         if self.stream_target.is_some() {
             if self.disconnecting {return;}
             let request=self.native_quality_request();

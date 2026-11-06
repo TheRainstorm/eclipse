@@ -150,8 +150,10 @@ impl Settings {
         }
         Ok(())
     }
-    fn capture_values(&self)->(u32,bool,usize,u32,usize,bool,CodecPreference,bool,bool,u32) {
-        (self.fps,self.follow_remote_fps,self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.cursor_mode.remote(),self.codec,self.hevc_preferred(),self.hdr,self.network_budget_mbps)
+    fn capture_values(&self)->((u32,bool,bool,bool),(usize,u32,usize,[u32;2]),bool,CodecPreference,bool,bool,u32) {
+        ((self.fps,self.follow_remote_fps,self.follow_local_fps,self.limit_fps_to_local),
+            (self.bitrate,if self.bitrate==4{self.custom_mbps}else{0},self.resolution,self.custom_resolution),
+            self.cursor_mode.remote(),self.codec,self.hevc_preferred(),self.hdr,self.network_budget_mbps)
     }
     pub fn path() -> Option<PathBuf> {
         uu_core::Config::from_env()
@@ -604,7 +606,6 @@ impl super::App {
         }
     }
     fn snapshot_preferences(&mut self) {
-        self.preferences.fps = self.target_fps;
         self.preferences.bitrate = self.bitrate_idx;
         self.preferences.custom_mbps = self.custom_mbps;
         self.preferences.resolution = self.resolution_idx;
@@ -650,7 +651,8 @@ impl super::App {
         let native=self.uses_engine_controls();
         let stats=self.controller.as_ref().map(|h|h.stats.clone());
         let actual_codec=stats.as_ref().map(|s|s.codec.lock().unwrap().clone());
-        let actual_size=stats.as_ref().filter(|s|s.native_quality_request.get().is_some_and(|r|r.bounds==self.settings_draft.native_request().bounds))
+        let local_display=self.local_display();let remote_refresh=self.confirmed_remote_refresh();
+        let actual_size=stats.as_ref().filter(|s|s.native_quality_request.get().is_some_and(|r|r.bounds==self.settings_draft.resolved_bounds(local_display)))
             .map(|s|{let(w,h)=s.res();[w,h]});
         let remote=&mut self.remote_admin_ui;
         let actions=super::settings_page::show(ctx,&mut self.settings_draft,&mut self.settings_section,
@@ -667,6 +669,7 @@ impl super::App {
                 gamepad_status:gamepad_status.as_deref(),
                 actual_codec:actual_codec.as_deref(),
                 actual_size,
+                local_display,remote_refresh,
             },|ui,section|remote.show(ui,section,stats.as_deref()));
         if actions.back {self.workspace.discard_server_draft();self.stream_settings_open=false;ctx.request_repaint();}
         if actions.maximize {self.toggle_maximized(ctx);}

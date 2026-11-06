@@ -3,6 +3,24 @@
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
+pub const LOCAL_RESOLUTION:usize=4;
+pub const CUSTOM_RESOLUTION:usize=5;
+pub const COMMON_FRAME_RATES:[u32;3]=[30,60,120];
+pub const OTHER_FRAME_RATES:[u32;4]=[24,90,144,165];
+
+/// Observed viewer monitor, in physical pixels and millihertz. Missing values
+/// stay unknown; neither DPI scaling nor a window's client size is a mode.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct LocalDisplay {
+    pub size:Option<[u32;2]>,
+    pub refresh_millihz:Option<u32>,
+}
+impl LocalDisplay {
+    pub fn fps(self)->Option<u32> {
+        self.refresh_millihz.map(|hz|hz/1000).filter(|fps|*fps>=5)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CursorMode {
@@ -65,6 +83,9 @@ pub struct ClientSettings {
     /// Follow the confirmed remote monitor's refresh rate. `fps` remains the
     /// last valid rate until a catalog arrives; zero is never a wire sentinel.
     pub follow_remote_fps: bool,
+    /// Local mode takes precedence over the legacy remote-mode flag.
+    pub follow_local_fps:bool,
+    pub limit_fps_to_local:bool,
     // Legacy profile field: do not carry an obsolete exclusive-layout request
     // into a new connection after the control has been retired.
     #[serde(skip_serializing, deserialize_with="preserve_display_layout")]
@@ -75,6 +96,7 @@ pub struct ClientSettings {
     #[serde(default="default_network_budget")]
     pub network_budget_mbps:u32,
     pub resolution: usize,
+    pub custom_resolution:[u32;2],
     pub codec: CodecPreference,
     /// None follows the host default; explicit modes affect only this session.
     pub rate_control: Option<crate::native_quality::RateMode>,
@@ -106,8 +128,8 @@ fn preserve_display_layout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<cra
 fn default_network_budget()->u32 {100}
 impl Default for ClientSettings {
     fn default() -> Self {
-        Self { fps:60, follow_remote_fps:true, display_mode:crate::screen_control::DisplayMode::Preserve,
-            bitrate:6,custom_mbps:55,network_budget_mbps:default_network_budget(),resolution:0,codec:CodecPreference::Auto,rate_control:None,
+        Self { fps:60, follow_remote_fps:true,follow_local_fps:false,limit_fps_to_local:false, display_mode:crate::screen_control::DisplayMode::Preserve,
+            bitrate:6,custom_mbps:55,network_budget_mbps:default_network_budget(),resolution:0,custom_resolution:[1920,1080],codec:CodecPreference::Auto,rate_control:None,
             volume:100,muted:false,hud:false,hud_appearance:HudAppearance::default(),hotkeys:crate::hotkeys::Bindings::default(),capture_keyboard:true,
             vsync:true,hdr:true,software_decoder:false,prefer_hevc:false,relative_mouse:false,
             cursor_mode:CursorMode::Remote,clipboard:true,native_clipboard:false,gamepad:true,nested_shortcuts:false }
@@ -115,15 +137,34 @@ impl Default for ClientSettings {
 }
 impl ClientSettings {
     pub fn resolved_fps(&self, remote_refresh:Option<u32>, max_fps:u32)->u32 {
-        let fps=if self.follow_remote_fps {remote_refresh.filter(|fps|*fps>=5).unwrap_or(self.fps)}else{self.fps};
+        self.resolved_fps_for_display(remote_refresh,LocalDisplay::default(),max_fps)
+    }
+    pub fn resolved_fps_for_display(&self,remote_refresh:Option<u32>,local:LocalDisplay,max_fps:u32)->u32 {
+        let observed=if self.follow_local_fps {local.fps()} else if self.follow_remote_fps {remote_refresh.filter(|fps|*fps>=5)} else {None};
+        let fps=observed.unwrap_or(self.fps);
+        let fps=if self.limit_fps_to_local {local.fps().map_or(fps,|limit|fps.min(limit))}else{fps};
         fps.clamp(5,max_fps.clamp(5,240))
+    }
+    pub fn resolved_bounds(&self,local:LocalDisplay)->Option<[u32;2]> {
+        match self.resolution {
+            1=>Some([1920,1080]),2=>Some([2560,1440]),3=>Some([3840,2160]),
+            LOCAL_RESOLUTION=>local.size.filter(|size|size.iter().all(|n|*n>=2)).map(|size|size.map(|n|n.min(8192)/2*2)),
+            CUSTOM_RESOLUTION=>Some(self.custom_resolution),_=>None,
+        }
+    }
+    pub fn resolved_request(&self,remote_refresh:Option<u32>,local:LocalDisplay,max_fps:u32,budget_kbps:Option<u32>)->crate::native_quality::Request {
+        let mut request=self.with_budget_kbps(budget_kbps);
+        request.fps=self.resolved_fps_for_display(remote_refresh,local,max_fps);
+        request.bounds=self.resolved_bounds(local);
+        request
     }
     pub fn validate(&self) -> Result<()> {
         self.hotkeys.validate()?;
         self.hud_appearance.validate()?;
         ensure!((5..=240).contains(&self.fps) && self.bitrate<=6
-            && (1..=1000).contains(&self.custom_mbps) && (1..=1000).contains(&self.network_budget_mbps) && self.resolution<=3 && self.volume<=100,
+            && (1..=1000).contains(&self.custom_mbps) && (1..=1000).contains(&self.network_budget_mbps) && self.resolution<=CUSTOM_RESOLUTION && self.volume<=100,
             "{}", uu_i18n::format!("客户端分辨率、帧率、码率或音量无效"));
+        ensure!(self.custom_resolution.iter().all(|n|(2..=8192).contains(n)&&n%2==0),"{}",uu_i18n::format!("自定义分辨率的宽高须为 2–8192 之间的偶数"));
         ensure!(!self.software_decoder || !matches!(self.codec,CodecPreference::Hevc|CodecPreference::Av1|CodecPreference::Pyrowave),
             "{}", uu_i18n::format!("HEVC / AV1 / PyroWave 需要可用的 GPU 解码；请选择自动或 H.264"));
         ensure!(self.codec!=CodecPreference::Pyrowave || self.rate_control!=Some(crate::native_quality::RateMode::Vbr),"{}", uu_i18n::format!("PyroWave 当前只支持 CBR 帧预算，请选择 CBR"));
@@ -132,7 +173,7 @@ impl ClientSettings {
     pub fn native_request(&self)->crate::native_quality::Request {
         use uu_proto::media::VideoCodec;
         crate::native_quality::Request { fps:self.fps,
-            bounds:match self.resolution {1=>Some([1920,1080]),2=>Some([2560,1440]),3=>Some([3840,2160]),_=>None},
+            bounds:self.resolved_bounds(LocalDisplay::default()),
             bitrate_kbps:match self.bitrate {1=>Some(30_000),2=>Some(14_000),3=>Some(8_000),4=>Some(self.custom_mbps*1000),_=>None},
             codec:match self.codec {CodecPreference::Auto=>None,CodecPreference::H264=>Some(VideoCodec::H264),CodecPreference::Hevc=>Some(VideoCodec::Hevc),CodecPreference::Av1=>Some(VideoCodec::Av1),CodecPreference::Pyrowave=>Some(VideoCodec::Pyrowave)} }
     }
@@ -250,6 +291,42 @@ mod clipboard_tests {
 #[cfg(test)]
 mod bitrate_tests {
     use super::*;
+    #[test]
+    fn local_monitor_modes_and_caps_preserve_manual_intent_and_handle_unknown_or_fractional_refresh() {
+        let mut settings:ClientSettings=serde_json::from_str(r#"{"fps":165,"follow_remote_fps":false}"#).unwrap();
+        assert!(!settings.follow_local_fps&&!settings.limit_fps_to_local);
+        let monitor=|hz|LocalDisplay{size:Some([2560,1440]),refresh_millihz:Some(hz)};
+        settings.limit_fps_to_local=true;
+        assert_eq!(settings.resolved_fps_for_display(Some(240),monitor(60_000),240),60);
+        assert_eq!(settings.fps,165);
+        assert_eq!(settings.resolved_fps_for_display(None,monitor(144_000),240),144);
+        assert_eq!(settings.resolved_fps_for_display(None,monitor(59_940),240),59);
+        assert_eq!(settings.resolved_fps_for_display(None,LocalDisplay::default(),240),165);
+        settings.limit_fps_to_local=false;
+        assert_eq!(settings.resolved_fps_for_display(None,monitor(60_000),240),165);
+        settings.follow_local_fps=true;
+        assert_eq!(settings.resolved_fps_for_display(Some(240),monitor(120_000),240),120);
+        assert_eq!(settings.resolved_fps_for_display(Some(240),LocalDisplay::default(),240),165);
+        settings.follow_local_fps=false;settings.follow_remote_fps=true;settings.limit_fps_to_local=true;
+        assert_eq!(settings.resolved_fps_for_display(Some(240),monitor(144_000),120),120);
+        let restored:ClientSettings=serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert_eq!(restored,settings);
+    }
+    #[test]
+    fn local_and_custom_resolution_resolve_to_valid_wire_bounds_without_changing_source_modes() {
+        let mut settings=ClientSettings{resolution:LOCAL_RESOLUTION,follow_local_fps:true,..Default::default()};
+        let local=LocalDisplay{size:Some([3072,1920]),refresh_millihz:Some(120_000)};
+        let request=settings.resolved_request(Some(240),local,240,Some(20_000));
+        assert_eq!(request.bounds,Some([3072,1920]));assert_eq!(request.fps,120);assert_eq!(request.bitrate_kbps,Some(20_000));request.validate().unwrap();
+        assert!(settings.resolved_request(None,LocalDisplay::default(),240,None).bounds.is_none());
+        let odd=LocalDisplay{size:Some([8193,1439]),..local};
+        assert_eq!(settings.resolved_bounds(odd),Some([8192,1438]));
+        settings.resolution=CUSTOM_RESOLUTION;settings.custom_resolution=[3440,1440];
+        settings.validate().unwrap();assert_eq!(settings.resolved_bounds(local),Some([3440,1440]));
+        let restored:ClientSettings=serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert_eq!(restored,settings);
+        for size in [[0,1080],[1921,1080],[8194,2160],[1920,3]] {settings.custom_resolution=size;assert!(settings.validate().is_err());}
+    }
     #[test]
     fn remote_frame_rate_keeps_valid_fallback_and_obeys_protocol_limits() {
         let mut settings=ClientSettings::default();

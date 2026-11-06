@@ -260,8 +260,8 @@ fn deferred_initial_budget_uses_source_geometry_and_reserves_manual_targets() {
     assert_eq!(settings.bitrate,6);
     let mut large_screen=generated_screen(1);large_screen.width=3840;large_screen.height=2160;large_screen.refresh_hz=120;large_screen.display_name="Large".into();
     let mut small_screen=generated_screen(2);small_screen.width=1920;small_screen.height=1080;small_screen.refresh_hz=60;small_screen.display_name="Small".into();
-    let large=deferred_budget_plan(1,&settings,&target(1,"Large"),Some(&large_screen)).unwrap();
-    let small=deferred_budget_plan(2,&settings,&target(2,"Small"),Some(&small_screen)).unwrap();
+    let large=deferred_budget_plan(1,&settings,&target(1,"Large"),Some(&large_screen),Default::default()).unwrap();
+    let small=deferred_budget_plan(2,&settings,&target(2,"Small"),Some(&small_screen),Default::default()).unwrap();
     assert!(large.deferred&&small.deferred);
     assert!(large.fixed.is_none()&&small.fixed.is_none());
     assert!(large.weight>small.weight);
@@ -269,10 +269,37 @@ fn deferred_initial_budget_uses_source_geometry_and_reserves_manual_targets() {
     assert!(allocations.iter().sum::<u32>()<=100_000);
     assert!(allocations[0]>allocations[1]);
     settings.bitrate=4;settings.custom_mbps=20;
-    let manual=deferred_budget_plan(3,&settings,&target(2,"Small"),Some(&small_screen)).unwrap();
+    let manual=deferred_budget_plan(3,&settings,&target(2,"Small"),Some(&small_screen),Default::default()).unwrap();
     assert_eq!(manual.fixed,Some(20_000));
     let allocations=uu_core::client_settings::allocate_bitrate_budget(100_000,&[(large.weight,large.fixed),(manual.weight,manual.fixed)]);
     assert_eq!(allocations[1],20_000);assert!(allocations[0]+allocations[1]<=100_000);
+    settings.resolution=uu_core::client_settings::LOCAL_RESOLUTION;settings.follow_remote_fps=false;
+    settings.fps=165;settings.limit_fps_to_local=true;
+    let local=uu_core::client_settings::LocalDisplay{size:Some([3072,1920]),refresh_millihz:Some(60_000)};
+    let plan=deferred_budget_plan(4,&settings,&target(1,"Large"),Some(&large_screen),local).unwrap();
+    assert_eq!(plan.weight,3072*1920*60,"initial budget must use the same local bounds and cap as the media offer");
+}
+#[test]
+fn initial_quality_and_runtime_monitor_changes_keep_the_requested_rate_when_capped() {
+    let (mut state,_,ctx,_)=catalog_state(vec![generated_screen(0)],0);
+    let app=&mut state.windows[0].sessions[0].app;
+    app.preferences.client=uu_core::client_settings::ClientSettings {
+        fps:165,follow_remote_fps:false,limit_fps_to_local:true,resolution:uu_core::client_settings::LOCAL_RESOLUTION,..Default::default()
+    };
+    app.target_fps=165;app.resolution_idx=app.preferences.resolution;
+    let key=egui::Id::new(("test-local-display",app.context.viewport()));
+    let set=|size,refresh|ctx.data_mut(|data|data.insert_temp(key,uu_core::client_settings::LocalDisplay{size:Some(size),refresh_millihz:Some(refresh)}));
+    set([3072,1920],60_000);
+    let first=app.client_stats("generated-initial-quality");
+    let request=first.native_quality_request.get().unwrap();
+    assert_eq!(request.fps,60);assert_eq!(request.bounds,Some([3072,1920]));assert_eq!(app.target_fps,60);
+    app.persist_preferences();assert_eq!(app.preferences.fps,165,"saving another setting must preserve the uncapped selection");
+    set([2560,1440],144_000);
+    assert!(app.resolve_frame_rate());assert_eq!(app.target_fps,144);
+    assert_eq!(app.native_quality_request().bounds,Some([2560,1440]));
+    app.preferences.limit_fps_to_local=false;app.resolve_frame_rate();assert_eq!(app.target_fps,165);
+    app.preferences.follow_local_fps=true;app.resolve_frame_rate();assert_eq!(app.target_fps,144);
+    app.controller=None;
 }
 #[test]
 fn budget_congestion_controller_uses_loss_and_rtt_with_hysteresis() {

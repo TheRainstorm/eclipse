@@ -261,9 +261,9 @@ fn deferred_budget_candidate(session:&Session,sources:&[SourceRecord])->Option<B
     if !target.is_native(){return None;}
     let device=base_key(target);
     let source=target.connection.display().and_then(|display|sources.iter().find(|source|source.device==device&&source.active&&if display.source.is_empty(){source.screen.id==display.id}else{source.screen.display_name==display.source}).map(|source|&source.screen));
-    deferred_budget_plan(session.id,&app.preferences.client,target,source)
+    deferred_budget_plan(session.id,&app.preferences.client,target,source,app.local_display())
 }
-fn deferred_budget_plan(session:u64,settings:&super::settings::ClientSettings,target:&StreamTarget,source:Option<&uu_core::screen_control::RemoteScreen>)->Option<BudgetCandidate> {
+fn deferred_budget_plan(session:u64,settings:&super::settings::ClientSettings,target:&StreamTarget,source:Option<&uu_core::screen_control::RemoteScreen>,local:uu_core::client_settings::LocalDisplay)->Option<BudgetCandidate> {
     if !target.is_native(){return None;}
     let mut width=1920u32;let mut height=1080u32;let mut refresh=None;
     if let Some(virtual_display)=target.connection.virtual_display() {
@@ -272,9 +272,9 @@ fn deferred_budget_plan(session:u64,settings:&super::settings::ClientSettings,ta
     } else if let Some(source)=source {
         width=source.width;height=source.height;refresh=Some(source.refresh_hz).filter(|hz|*hz>1);
     }
-    let request=settings.native_request();
+    let request=settings.resolved_request(refresh,local,240,None);
     if let Some([bounded_width,bounded_height])=request.bounds {width=bounded_width;height=bounded_height;}
-    let width=width.max(320);let height=height.max(200);let fps=settings.resolved_fps(refresh,240) as u64;
+    let width=width.max(320);let height=height.max(200);let fps=u64::from(request.fps);
     let codec=match settings.codec {
         super::settings::CodecPreference::H264=>uu_core::native::VideoCodec::H264,
         super::settings::CodecPreference::Hevc=>uu_core::native::VideoCodec::Hevc,

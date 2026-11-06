@@ -18,6 +18,7 @@ impl Default for NativeUi {
 }
 impl App {
     pub(super) fn client_stats(&mut self,transport:&str)->Arc<uu_core::media::MediaStats> {
+        self.resolve_frame_rate();
         let stats = Arc::new(uu_core::media::MediaStats::default());
         let cursor_context=self.context.clone();
         stats.native_cursor.set_waker(move||cursor_context.request_repaint());

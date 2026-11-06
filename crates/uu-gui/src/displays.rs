@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use uu_core::screen_control::RemoteScreens;
 
-pub(super) type CaptureProfile = (u32, usize, u32, usize, bool);
+pub(super) type CaptureProfile = (u32, usize, u32, Option<[u32;2]>, bool);
 
 #[derive(Default)]
 pub(super) struct Displays {
@@ -147,7 +147,7 @@ impl Displays {
         let screen = screens.screens.iter().find(|screen| screen.id == id)?;
         Some(super::sessions::DisplayTarget { id, source: screen.display_name.clone() })
     }
-    fn confirmed_refresh(&self, screens:&RemoteScreens)->Option<u32> {
+    pub(super) fn confirmed_refresh(&self, screens:&RemoteScreens)->Option<u32> {
         self.ready().then(||self.selected.and_then(|id|screens.screens.iter().find(|s|s.id==id)).map(|s|s.refresh_hz)).flatten()
     }
     pub fn switching(&self) -> bool {
@@ -523,18 +523,24 @@ impl super::App {
         }
     }
     pub(super) fn poll_displays(&mut self, tracks: &[u32]) {
-        self.poll_native_displays(tracks);
-        if self.resolve_remote_frame_rate() {self.send_capture_settings();}
+        if self.supports_remote(uu_core::capabilities::Capability::Displays) {self.poll_native_displays(tracks);}
+        let fps_changed=self.resolve_frame_rate();
+        let local_size_changed=self.preferences.resolution==uu_core::client_settings::LOCAL_RESOLUTION
+            && self.controller.as_ref().is_some_and(|h|h.stats.native_quality_request.get().is_some_and(|old|old.bounds!=self.native_quality_request().bounds));
+        if fps_changed||local_size_changed {self.send_capture_settings();}
     }
     /// Resolve only the confirmed source. A pending switch must not change the
     /// old capture's quality using metadata for a different monitor.
-    pub(super) fn resolve_remote_frame_rate(&mut self)->bool {
-        if !self.preferences.follow_remote_fps || !self.displays.ready() {return false;}
-        let screens=self.remote_screens();
-        let refresh=self.displays.confirmed_refresh(&screens);
-        let fps=self.preferences.resolved_fps(refresh,self.client_support.max_fps);
+    pub(super) fn resolve_frame_rate(&mut self)->bool {
+        let refresh=self.confirmed_remote_refresh();
+        let fps=self.preferences.resolved_fps_for_display(refresh,self.local_display(),self.client_support.max_fps);
         let changed=self.target_fps!=fps;
-        self.target_fps=fps;self.fps_draft=fps;self.preferences.fps=fps;
+        self.target_fps=fps;
+        if changed&&(self.preferences.follow_remote_fps||self.preferences.follow_local_fps) {self.fps_draft=fps;}
+        // Persist the uncapped source rate, never the effective local limit.
+        if self.preferences.follow_remote_fps&&!self.preferences.follow_local_fps {
+            if let Some(refresh)=refresh.filter(|fps|*fps>=5) {self.preferences.fps=refresh.clamp(5,self.client_support.max_fps.clamp(5,240));}
+        }
         changed
     }
 }
@@ -914,7 +920,7 @@ mod tests {
     #[test]
     fn cached_profile_requires_matching_ack_and_source_binding() {
         let mut d = Displays::default();
-        let profile = (60, 0, 0, 0, false);
+        let profile = (60, 0, 0, None, false);
         d.bindings.insert(2, 42);
         d.settings_sent(2001, 42, 2, profile);
         d.capture_response(2000, true);
@@ -922,7 +928,7 @@ mod tests {
         d.capture_response(2001, true);
         assert!(d.settings_match(42, 2, profile));
         assert!(!d.settings_match(42, 0, profile));
-        assert!(!d.settings_match(42, 2, (120, 0, 0, 0, false)));
+        assert!(!d.settings_match(42, 2, (120, 0, 0, None, false)));
         let id = d.begin(42, 2, Instant::now());
         d.frame(2);
         d.response(id, 11, 0);
