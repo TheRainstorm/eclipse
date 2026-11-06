@@ -119,7 +119,9 @@ pub fn preparation_message(status:&crate::virtual_display::preparation::Status)-
         Phase::Preparing=>uu_i18n::text("正在准备虚拟副屏，请等待本次操作完成。").into(),
         Phase::Ready=>uu_i18n::text("虚拟副屏已就绪，可以创建。").into(),
         Phase::Failed=>uu_i18n::text("虚拟副屏准备未完成，请查看诊断详情后重试。").into(),
-        Phase::RecoveryPending=>uu_i18n::text("上次准备尚未完成恢复，已停止自动重试；请在源机后台检查并恢复。").into(),
+        Phase::RecoveryPending if status.queued=>uu_i18n::text("恢复检查已登记；请结束此主机的所有串流，空闲后后台会检查一次，不会重复安装驱动。").into(),
+        Phase::RecoveryPending if status.error.is_some()=>uu_i18n::text("恢复检查未完成；请查看诊断详情，处理后再检查。").into(),
+        Phase::RecoveryPending=>uu_i18n::text("上次准备尚未完成恢复；请点击“检查并恢复准备”。有串流时会等待空闲，再检查一次。").into(),
     }
 }
 /// Local UI operation. An installed service must call this only after its OS

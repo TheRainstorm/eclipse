@@ -10,7 +10,7 @@ pub(super) enum Action {
 
 pub(super) fn action(status: &Status, foreground: bool) -> Option<Action> {
     if matches!(status.phase, Phase::Unsupported | Phase::Preparing)
-        || (status.phase == Phase::WaitingForIdle && status.queued)
+        || (matches!(status.phase,Phase::WaitingForIdle|Phase::RecoveryPending) && status.queued)
     {
         return None;
     }
@@ -46,7 +46,7 @@ pub(super) fn can_create(status: Option<&Status>, available: usize, foreground: 
         && !(status.phase == Phase::WaitingForIdle && status.queued)
 }
 pub(super) fn active(status: &Status) -> bool {
-    status.phase == Phase::Preparing || (status.phase == Phase::WaitingForIdle && status.queued)
+    status.phase == Phase::Preparing || (matches!(status.phase,Phase::WaitingForIdle|Phase::RecoveryPending) && status.queued)
 }
 
 #[cfg(test)]
@@ -98,7 +98,7 @@ mod tests {
     }
     #[test]
     fn queued_work_cannot_repeat_or_be_mistaken_for_a_recovery_request() {
-        for phase in [Phase::WaitingForIdle, Phase::Preparing] {
+        for phase in [Phase::WaitingForIdle, Phase::Preparing,Phase::RecoveryPending] {
             let mut state = status(phase);
             state.queued = true;
             assert!(active(&state));

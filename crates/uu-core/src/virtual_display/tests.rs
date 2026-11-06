@@ -977,6 +977,32 @@ fn durable_preparation_pending_blocks_create_before_any_recovery_or_slot_reuse()
 }
 
 #[test]
+fn explicit_recovery_waits_for_streams_then_checks_once_without_reinstalling() {
+    for fail in [false,true] {
+        let (manager,backend)=capacity_fixture(0);
+        backend.capacity.lock().unwrap().as_mut().unwrap().recovery_pending=true;
+        backend.fail_recover.store(fail,Ordering::SeqCst);
+        let gate=Arc::new(crate::shared_host::SessionGate::default());manager.register_host(&gate);
+        let active=gate.claim("generated-streaming-peer").unwrap();
+        let queued=manager.recover_preparation().unwrap().unwrap();
+        assert_eq!(queued.phase,preparation::Phase::RecoveryPending);
+        assert!(queued.queued && manager.has_queued_preparation());
+        assert!(manager.preparation_status().unwrap().unwrap().queued);
+        manager.resume_preparation().unwrap();
+        assert_eq!(backend.recover_calls.load(Ordering::SeqCst),0,"streaming must never be interrupted for recovery");
+        drop(active);
+        let finished=manager.resume_preparation().unwrap().unwrap();
+        assert_eq!(finished.phase,if fail {preparation::Phase::RecoveryPending}else{preparation::Phase::NeedsDriver});
+        assert_eq!(finished.error.is_some(),fail);
+        assert!(!finished.queued && !manager.has_queued_preparation());
+        manager.resume_preparation().unwrap();
+        assert_eq!(backend.recover_calls.load(Ordering::SeqCst),1,"a failed recovery needs a new explicit intent");
+        assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst),0);
+        assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),0,"recovery never repeats driver installation");
+    }
+}
+
+#[test]
 fn explicit_create_recovers_removed_driver_before_downloading_a_fresh_pool() {
     let (manager,backend)=capacity_fixture(0);
     {let mut capacity=backend.capacity.lock().unwrap();let state=capacity.as_mut().unwrap();state.driver_present=false;state.recovery_pending=true;}

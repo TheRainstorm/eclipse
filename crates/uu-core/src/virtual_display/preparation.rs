@@ -130,6 +130,7 @@ struct State {
 pub struct Coordinator {
     requested: AtomicU32,
     queued: AtomicBool,
+    recovery_requested: AtomicBool,
     running: AtomicBool,
     blocked: AtomicBool,
     state: Mutex<State>,
@@ -140,9 +141,15 @@ impl Coordinator {
         self.running.load(Ordering::Acquire)
     }
     pub fn queued(&self) -> bool {
-        self.queued.load(Ordering::Acquire)
+        self.recovery_queued() || (self.queued.load(Ordering::Acquire)
             && !self.blocked.load(Ordering::Acquire)
-            && self.failure().is_none()
+            && self.failure().is_none())
+    }
+    pub(super) fn queue_recovery(&self) {
+        self.recovery_requested.store(true, Ordering::Release);
+    }
+    pub(super) fn recovery_queued(&self) -> bool {
+        self.recovery_requested.load(Ordering::Acquire)
     }
     pub fn recovery_pending(&self) -> bool {
         self.blocked.load(Ordering::Acquire)
@@ -150,6 +157,7 @@ impl Coordinator {
     pub(super) fn recovered(&self) {
         self.blocked.store(false, Ordering::Release);
         self.queued.store(false, Ordering::Release);
+        self.recovery_requested.store(false, Ordering::Release);
         if let Ok(mut state) = self.state.lock() {
             state.failure = None;
         }
@@ -191,7 +199,8 @@ impl Coordinator {
             targets: observed.targets,
             available: observed.available,
             requested_capacity: requested,
-            queued: self.queued.load(Ordering::Acquire)
+            queued: (self.recovery_queued() && phase == Phase::RecoveryPending)
+                || (self.queued.load(Ordering::Acquire)
                 && matches!(
                     phase,
                     Phase::NeedsDriver
@@ -199,7 +208,7 @@ impl Coordinator {
                         | Phase::NeedsElevation
                         | Phase::WaitingForIdle
                         | Phase::Preparing
-                ),
+                )),
             error: failure.map(|f| f.message),
         }
     }
@@ -222,7 +231,16 @@ impl Coordinator {
             finished: false,
         };
         let result = (|| {
-            provider.host_idle()?;
+            if let Err(failure) = provider.host_idle() {
+                if failure.outcome != FailureOutcome::AdmissionChanged {
+                    self.recovery_requested.store(false, Ordering::Release);
+                }
+                return Err(failure);
+            }
+            // One explicit recovery intent can wait for host admission. Once
+            // accepted by the provider it is consumed even if recovery fails;
+            // background polling cannot replay an uncertain operation.
+            self.recovery_requested.store(false, Ordering::Release);
             operation()?;
             if provider.observe()?.recovery_pending {
                 return Err(Failure::pending(

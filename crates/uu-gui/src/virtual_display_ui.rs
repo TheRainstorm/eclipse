@@ -936,7 +936,9 @@ impl State {
         let provider_error=self.preparation.as_ref().and_then(|s|s.error.as_deref());
         let explanation=self.status.as_ref().map(|s|s.explanation.as_str()).filter(|s|!s.is_empty());
         if !self.details.is_empty()||provider_error.is_some()||explanation.is_some(){
-            ui.collapsing(uu_i18n::text("诊断详情"),|ui|{
+            egui::CollapsingHeader::new(uu_i18n::text("诊断详情"))
+                .id_salt(("virtual-display-details",provider_error,&self.details))
+                .default_open(provider_error.is_some()||!self.details.is_empty()).show(ui,|ui|{
                 if !self.details.is_empty(){ui.monospace(&self.details);}
                 if let Some(error)=provider_error{if error!=self.details{ui.monospace(error);}}
                 if let Some(explanation)=explanation{ui.monospace(explanation);}
@@ -1037,6 +1039,8 @@ mod tests {
         assert!(!state.preparation_refresh_due(Instant::now()));
         state.open = true;
         state.preparation.as_mut().unwrap().phase = Phase::RecoveryPending;
+        assert!(state.preparation_refresh_due(Instant::now()),"an explicitly queued recovery only polls status");
+        state.preparation.as_mut().unwrap().queued=false;
         assert!(
             !state.preparation_refresh_due(Instant::now()),
             "recovery is explicit, never a polling side effect"

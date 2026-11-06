@@ -551,18 +551,19 @@ impl Manager {
         if self.backend.preparation_observation()?.is_none() {
             return Ok(None);
         }
-        self.preparation
-            .resume(&CapacityProvider {
-                manager: self,
-                leases: entries.len() as u32,
-                initial: None,
-                package: None,
-            })
+        let provider=CapacityProvider {
+            manager:self,leases:entries.len() as u32,initial:None,package:None,
+        };
+        let result=if self.preparation.recovery_queued() {
+            self.preparation.recover(&provider,||self.backend.recover_capacity(&||preparation::Provider::host_idle(&provider)))
+        } else {self.preparation.resume(&provider)};
+        result
             .map(Some)
             .map_err(|failure| Error::Platform(failure.message))
     }
     pub fn recover_preparation(&self) -> Result<Option<preparation::Status>> {
         let entries = self.lock()?;
+        if self.manual_closing.load(Ordering::Acquire) {return Err(Error::HostClosing);}
         if self.backend.preparation_observation()?.is_none() {
             return Ok(None);
         }
@@ -572,6 +573,7 @@ impl Manager {
             initial: None,
             package: None,
         };
+        self.preparation.queue_recovery();
         self.preparation
             .recover(&provider, || {
                 self.backend
