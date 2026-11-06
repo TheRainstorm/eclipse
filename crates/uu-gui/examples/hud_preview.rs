@@ -6,6 +6,7 @@ mod hud_panel;
 #[path = "../../../tools/native/owned_display.rs"]
 mod owned_display;
 use eframe::egui;
+mod theme {pub use uu_plugin_sdk::theme::*;}
 struct Preview {
     output: std::path::PathBuf,
     frames: usize,
