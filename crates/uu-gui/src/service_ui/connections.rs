@@ -46,13 +46,13 @@ impl Editor {
     }
 }
 impl State {
-    pub fn apply(&mut self, completed: bool, result: Result<Response, String>) -> Option<String> {
+    pub fn apply(&mut self, completed: bool, result: Result<Response, String>) -> Option<Result<String, String>> {
         match result {
             Ok(Response::Connections { snapshot }) => {
                 self.snapshot = Some(snapshot);
                 if completed {
                     self.editor = None;
-                    Some(uu_i18n::text("服务器配置已保存；重启服务后使用新入口。").into())
+                    Some(Ok(uu_i18n::text("服务器配置已保存；重启服务后使用新入口。").into()))
                 } else {
                     None
                 }
@@ -61,7 +61,7 @@ impl State {
                 if let Some(editor) = &mut self.editor {
                     editor.error = message.clone();
                 }
-                Some(message)
+                Some(Err(message))
             }
             _ => None,
         }

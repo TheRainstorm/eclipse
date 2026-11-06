@@ -657,15 +657,12 @@ impl Manager {
     fn completion_scope(&mut self) -> super::ui_feedback::Scope {
         super::ui_feedback::Scope::Services(self.job_section.take().unwrap_or(self.section))
     }
-    fn report_completion(&mut self, text: impl Into<String>) {
-        let text = text.into();
-        let kind = if super::ui_feedback::looks_like_error(&text) {
-            super::ui_feedback::Kind::Error
-        } else {
-            super::ui_feedback::Kind::Success
-        };
+    fn report_completion(&mut self, result: Result<String, String>) {
         let scope = self.completion_scope();
-        self.feedback.report(scope, kind, text);
+        match result {
+            Ok(text) => self.feedback.success(scope, text),
+            Err(text) => self.feedback.error(scope, text),
+        }
     }
     fn report_info(&mut self, text: impl Into<String>) {
         let scope = self.completion_scope();
@@ -750,29 +747,29 @@ impl Manager {
                     match result {
                         Ok(Response::Plugins{snapshot})=>{
                             self.apply_plugin_snapshot(snapshot);
-                            if completed {self.report_completion(uu_i18n::text("后台插件设置已保存，服务已重启"));}
+                            if completed {self.report_completion(Ok(uu_i18n::text("后台插件设置已保存，服务已重启").into()));}
                         }
-                        Ok(Response::Error{message})|Err(message)=>if completed{self.report_completion(message);},
+                        Ok(Response::Error{message})|Err(message)=>if completed{self.report_completion(Err(message));},
                         _=>{},
                     }
                 }
                 Event::Done(result) => {
                     self.busy = false;
                     match result {
-                        Ok(Response::Error { message }) | Err(message) => self.report_completion(message),
+                        Ok(Response::Error { message }) | Err(message) => self.report_completion(Err(message)),
                         Ok(Response::Admin {
                             response: host_admin::Response::Error { message },
-                        }) => self.report_completion(message),
+                        }) => self.report_completion(Err(message)),
                         Ok(Response::Admin {
                             response: host_admin::Response::Saved { .. },
                         }) => {
                             self.dirty = false;
-                            self.report_completion(uu_i18n::text(
+                            self.report_completion(Ok(uu_i18n::text(
                                 "已保存到服务。媒体默认值用于新连接；显示器上限立即生效。",
-                            ));
+                            ).into()));
                         }
                         Ok(Response::Firewall { message }) => self.report_info(message),
-                        _ => self.report_completion(uu_i18n::text("操作已完成")),
+                        _ => self.report_completion(Ok(uu_i18n::text("操作已完成").into())),
                     }
                 }
                 Event::Trust { completed, result } => {
@@ -787,13 +784,13 @@ impl Manager {
                                     self.pairing.password.clear();
                                 }
                                 self.pairing.password_submitted = false;
-                                self.report_completion(uu_i18n::text("操作已完成"));
+                                self.report_completion(Ok(uu_i18n::text("操作已完成").into()));
                             }
                         }
                         Ok(Response::Error { message }) | Err(message) => {
                             if completed {
                                 self.pairing.password_submitted = false;
-                                self.report_completion(message);
+                                self.report_completion(Err(message));
                             }
                         }
                         _ => {}
@@ -1772,6 +1769,38 @@ mod tests {
             matches!(jobs.try_recv(), Err(mpsc::TryRecvError::Disconnected)),
             "closing a GUI must not enqueue stop or restart"
         );
+    }
+    #[test]
+    fn service_failures_keep_their_type_and_original_tab_without_matching_message_words() {
+        let message = "generated revision conflict".to_owned();
+        let events = [
+            Event::Done(Err(message.clone())),
+            Event::Done(Ok(Response::Error { message: message.clone() })),
+            Event::Done(Ok(Response::Admin {
+                response: host_admin::Response::Error { message: message.clone() },
+            })),
+            Event::Plugins { completed: true, result: Err(message.clone()) },
+            Event::Plugins { completed: true, result: Ok(Response::Error { message: message.clone() }) },
+            Event::Trust { completed: true, result: Err(message.clone()) },
+            Event::Trust { completed: true, result: Ok(Response::Error { message: message.clone() }) },
+            Event::Connections { completed: true, result: Err(message.clone()) },
+            Event::Connections { completed: true, result: Ok(Response::Error { message: message.clone() }) },
+        ];
+        for event in events {
+            let (mut manager, send, _jobs, _stop) = fixture();
+            manager.busy = true;
+            manager.dirty = true;
+            manager.job_section = Some(2);
+            manager.section = 6;
+            send.send(event).unwrap();
+            manager.poll();
+            assert!(!manager.busy);
+            assert!(manager.dirty);
+            let notice = manager.feedback.current(&crate::ui_feedback::Scope::Services(2)).unwrap();
+            assert_eq!(notice.text, message);
+            assert_eq!(notice.kind, crate::ui_feedback::Kind::Error);
+            assert!(manager.feedback.current(&crate::ui_feedback::Scope::Services(6)).is_none());
+        }
     }
     #[test]
     fn background_refresh_never_locks_service_controls() {
