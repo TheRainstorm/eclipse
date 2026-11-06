@@ -244,6 +244,51 @@ fn later_catalog_sources_are_added_once_and_do_not_reappear_after_close() {
     assert_eq!(stats.native_media_epoch.load(Ordering::Acquire),0);
 }
 #[test]
+fn committed_virtual_view_replaces_discovered_duplicate_and_retires_unused_pool_tabs() {
+    let (mut state,stats,_,base)=catalog_state((0..4).map(generated_screen).collect(),0);
+    state.sync_owned_views();
+    let target=state.windows[0].sessions[0].app.stream_target.as_ref().unwrap().clone();
+    let launch=virtual_launch(&target,uu_core::virtual_display::Spec::default()).unwrap();
+    let requested=state.windows[0].record_launch(&launch,&mut state.next);
+    state.windows[0].views.iter_mut().find(|view|view.id==requested).unwrap().source=Some(DisplayTarget{id:2,source:generated_screen(2).display_name});
+    assert_eq!(state.windows[0].views.len(),5,"the reported intermediate state has a duplicate and an unused target");
+    *stats.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:0,screens:(0..3).map(generated_screen).collect()};
+    state.sync_owned_views();
+    assert_eq!(state.windows[0].views.len(),3);
+    assert_eq!(state.windows[0].views.iter().filter(|view|view.source.as_ref().is_some_and(|source|source.id==2)).count(),1);
+    assert!(state.windows[0].views.iter().any(|view|view.id==requested&&view.launch.target.connection.virtual_display().is_some()));
+    assert_eq!(state.windows[0].sessions.iter().map(|session|session.id).collect::<Vec<_>>(),[base]);
+    assert!(state.windows[0].pending.is_empty());
+    state.sync_owned_views();assert_eq!(state.windows[0].views.len(),3,"polling must not resurrect retired pool tabs");
+}
+#[test]
+fn pending_virtual_launch_reserves_discovery_until_its_exact_source_is_bound() {
+    let (mut state,stats,_,_)=catalog_state((0..2).map(generated_screen).collect(),0);
+    state.sync_owned_views();
+    let target=state.windows[0].sessions[0].app.stream_target.as_ref().unwrap().clone();
+    let launch=virtual_launch(&target,uu_core::virtual_display::Spec::default()).unwrap();
+    let requested=state.windows[0].record_launch(&launch,&mut state.next);
+    state.windows[0].pending.push(launch);
+    *stats.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:0,screens:(0..4).map(generated_screen).collect()};
+    state.sync_owned_views();assert_eq!(state.windows[0].views.len(),3);
+    assert!(state.windows[0].views.iter().all(|view|view.source.as_ref().is_none_or(|source|source.id<2)));
+    state.windows[0].pending.clear();
+    state.windows[0].views.iter_mut().find(|view|view.id==requested).unwrap().source=Some(DisplayTarget{id:2,source:generated_screen(2).display_name});
+    *stats.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:0,screens:(0..3).map(generated_screen).collect()};
+    state.sync_owned_views();assert_eq!(state.windows[0].views.len(),3);
+    assert_eq!(state.windows[0].views.iter().filter(|view|view.source.as_ref().is_some_and(|source|source.id==2)).count(),1);
+}
+#[test]
+fn a_user_opened_display_keeps_its_tab_when_the_source_goes_offline() {
+    let (mut state,stats,_,base)=catalog_state((0..2).map(generated_screen).collect(),0);
+    state.sync_owned_views();
+    let requested=state.windows[0].views.iter().find(|view|view.id!=base).unwrap().id;
+    state.windows[0].select(requested);state.windows[0].pending.clear();state.windows[0].select(base);
+    *stats.remote_screens.lock().unwrap()=uu_core::screen_control::RemoteScreens{current_id:0,screens:vec![generated_screen(0)]};
+    state.sync_owned_views();
+    assert!(state.windows[0].views.iter().any(|view|view.id==requested&&!view.discovered));
+}
+#[test]
 fn local_desktop_toggle_preserves_window_and_view_identity_for_restore() {
     let mut state=owned_state();let device=owned_target("A");let ctx=egui::Context::default();
     let a=own_generated(&mut state,0,&device,0);state.windows[0].select(a);

@@ -296,6 +296,8 @@ struct OwnedView {
     source:Option<DisplayTarget>,
     label:String,
     discover_initial:bool,
+    // Unopened automatic suggestions may retire; requested views own their tab.
+    discovered:bool,
 }
 #[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) enum SourceKind { Physical, Persistent, Temporary, Virtual }
@@ -380,7 +382,7 @@ impl Window {
         let source=launch.target.connection.display().cloned();
         let label=source.as_ref().map(|s|s.source.clone()).filter(|s|!s.is_empty()).unwrap_or_else(||
             uu_i18n::text(if launch.target.connection.virtual_display().is_some(){"正在创建虚拟显示器…"}else{"正在连接显示器…"}).into());
-        self.views.push(OwnedView { id,launch:launch.clone(),source,label,
+        self.views.push(OwnedView { id,launch:launch.clone(),source,label,discovered:false,
             discover_initial:launch.target.is_native()&&!launch.target.connection.is_fixed_display_view() });
         id
     }
@@ -492,6 +494,7 @@ impl Window {
         }
     }
     fn select(&mut self, id: u64) {
+        if let Some(view)=self.views.iter_mut().find(|view|view.id==id) {view.discovered=false;}
         let Some(view)=self.views.iter().find(|v|v.id==id) else{return;};
         if let Some(session)=self.sessions.iter_mut().find(|s|s.id==id&&!s.app.exit_requested) {
             session.activated=Some(std::time::Instant::now());

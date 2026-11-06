@@ -142,7 +142,7 @@ pub(super) fn display_sources(tabs:&Tabs,group:&Group,ui:&mut egui::Ui,actions:&
     if open_modes {ui.set_min_width((ui.ctx().screen_rect().width()-32.).clamp(220.,440.));}
     let sources=tabs.sources.iter().find(|(id,_)|*id==group.id).map(|(_,s)|s.as_slice()).unwrap_or_default();
     for (kind,label) in [(SourceKind::Physical,"物理显示器"),(SourceKind::Persistent,"持久虚拟显示器"),(SourceKind::Temporary,"临时虚拟显示器"),(SourceKind::Virtual,"虚拟显示器")] {
-        let rows:Vec<_>=sources.iter().filter(|s|s.kind==kind).collect();
+        let rows:Vec<_>=sources.iter().filter(|s|s.active&&s.kind==kind).collect();
         if rows.is_empty(){continue;}
         ui.label(egui::RichText::new(uu_i18n::text(label)).small().weak());
         for source in rows {
@@ -312,6 +312,7 @@ mod tests {
         let tabs=Tabs{sources:vec![(1,vec![
             SourceChoice{id:10,label:"Current owned display".into(),kind:SourceKind::Physical,active:true,owned:true,current_view:Some(1),managed:None,removable:false},
             SourceChoice{id:11,label:"Unused manual display".into(),kind:SourceKind::Persistent,active:true,owned:false,current_view:None,managed:Some(lease),removable:true},
+            SourceChoice{id:12,label:"Retired pool target".into(),kind:SourceKind::Physical,active:false,owned:false,current_view:None,managed:None,removable:false},
         ]),(2,vec![SourceChoice{id:20,label:"Another device display".into(),kind:SourceKind::Physical,active:true,owned:false,current_view:None,managed:None,removable:false}])],
             modal:Default::default(),presets:Default::default(),groups:vec![group.clone()],active:1,actions:Default::default(),local_ui:Default::default()};
         let actions=std::cell::RefCell::new(Vec::new());
@@ -324,6 +325,7 @@ mod tests {
         }}
         let locate=|label|render(vec![]).shapes.iter().find_map(|s|position(&s.shape,label));
         assert!(locate("Another device display").is_none());
+        assert!(locate("Retired pool target").is_none(),"inactive setup outputs are not menu choices");
         let click=|pos| {
             let event=|pressed|egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
             render(vec![egui::Event::PointerMoved(pos),event(true)]);render(vec![event(false)]);

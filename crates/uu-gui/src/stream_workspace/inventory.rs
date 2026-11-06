@@ -68,6 +68,17 @@ impl State {
                 }
             }
         }
+        self.reconcile_discovered_views();
+        // An explicit virtual launch owns its eventual source before SDP tells
+        // us its name. Wait for that binding instead of adding a competing lazy
+        // view as soon as the original connection sees the new desktop output.
+        let creating:std::collections::HashSet<_>=self.windows.iter().flat_map(|window| {
+            window.views.iter().filter(|view|view.source.is_none()&&view.launch.target.connection.virtual_display().is_some()
+                && (window.pending.iter().any(|launch|launch.target.key()==view.launch.target.key())
+                    ||window.sessions.iter().any(|session|session.id==view.id&&!session.app.exit_requested&&!session.app.disconnecting
+                        &&(session.app.connect_deferred||session.app.controller.as_ref().is_some_and(|handle|!handle.stopped.load(Ordering::Acquire))))))
+                .map(|view|base_key(&view.launch.target))
+        }).collect();
         // A normal connection owns every source it has ever discovered as a
         // lazy view. A host may publish its catalog in more than one packet;
         // keep adding newly visible sources, but remember names so closing a
@@ -81,6 +92,7 @@ impl State {
             Some((window.id,session.id,target))
         })).collect();
         for (window_id,session_id,target) in anchors {
+            if creating.contains(&base_key(&target)) {continue;}
             let Some(index)=self.windows.iter().position(|w|w.id==window_id) else{continue;};
             let Some(source)=self.windows[index].views.iter().find(|v|v.id==session_id).and_then(|v|v.source.clone()) else{continue;};
             let Some(session)=self.windows[index].sessions.iter_mut().find(|s|s.id==session_id) else{continue;};
@@ -100,6 +112,7 @@ impl State {
                     let at=views.iter().position(|v|v.id==id).unwrap();
                     let mut view=views.remove(at);
                     view.label=source.label; // Stay unopened until selected.
+                    view.discovered=true;
                     // Restoring a selection must not promote it ahead of the
                     // host's earlier displays. Insert only the newly discovered
                     // view; later refreshes leave user drag order untouched.
@@ -127,6 +140,26 @@ impl State {
                 }
                 window.sources[at].1.push(choice);
             }
+        }
+    }
+    fn reconcile_discovered_views(&mut self) {
+        let requested:std::collections::HashSet<_>=self.windows.iter().flat_map(|window|window.views.iter()
+            .filter(|view|!view.discovered).filter_map(|view|view.source.as_ref().map(|source|(base_key(&view.launch.target),source.source.clone())))).collect();
+        for window in &mut self.windows {
+            let mut retired=Vec::new();
+            window.views.retain_mut(|view| {
+                let Some(target)=&view.source else{return true;};
+                let key=(base_key(&view.launch.target),target.source.clone());
+                let source=self.sources.iter().find(|source|source.device==key.0&&source.screen.display_name==key.1);
+                let idle=view.id!=window.active&&!window.sessions.iter().any(|session|session.id==view.id)
+                    &&!window.pending.iter().any(|launch|launch.target.key()==view.launch.target.key());
+                if view.discovered&&idle&&(source.is_some_and(|source|!source.active)||requested.contains(&key)) {
+                    retired.push(key);return false;
+                }
+                if let Some(source)=source.filter(|source|source.active) {view.label.clone_from(&source.label);}
+                true
+            });
+            for key in retired {window.discovered_sources.remove(&key);}
         }
     }
     pub(super) fn source_owned(&self,source:&SourceRecord)->bool {
