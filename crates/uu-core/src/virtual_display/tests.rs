@@ -833,6 +833,20 @@ fn passive_catalog_reads_skip_an_owned_display_mutation_without_observing_its_po
     assert_eq!(manager.try_read_display_configuration(||3),Some(3));
 }
 #[test]
+fn new_display_names_cover_both_lifetimes_and_reserve_disconnected_saved_names() {
+    let (manager,backend)=capacity_fixture(4);let path=saved_policy(&manager);manager.set_limit(4).unwrap();
+    let saved=policy::SavedDisplay{id:Uuid::new_v4(),spec:Spec::default(),target:backend.targets.lock().unwrap()[3].key.clone(),name:"APOLLO".into()};
+    manager.saved_file().unwrap().save(saved.clone()).unwrap();
+    let persistent=manager.create_manual(Spec::default(),true).unwrap();
+    let temporary=manager.create_manual(Spec::default(),false).unwrap();
+    assert_eq!(persistent.name,"Athena");assert_eq!(temporary.name,"Artemis");
+    assert_eq!(manager.saved_records().unwrap().iter().find(|record|record.id==persistent.id.0).unwrap().name,"Athena");
+    let restored=manager.create_restored(&saved).unwrap();assert_eq!(restored.name,"APOLLO","restoration keeps the saved name");
+    assert_eq!(backend.targets.lock().unwrap()[3].name,"prepared virtual screen","friendly names must not change driver identity");
+    for display in [persistent,temporary,restored] {manager.remove(display.id).unwrap();}
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
 fn common_create_prepares_missing_driver_once_before_allocating_distinct_leases() {
     let (manager, backend) = capacity_fixture(0);
     // Inspect alone cannot install or accept preparation intent.

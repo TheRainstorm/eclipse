@@ -516,6 +516,22 @@ impl Manager {
         let _ownership = self.entries.try_lock().ok()?;
         Some(read())
     }
+    fn next_display_name(&self,entries:&BTreeMap<LeaseId,Entry>)->Result<String> {
+        const NAMES:[&str;16]=["Athena","Apollo","Artemis","Zeus","Hera","Poseidon","Demeter","Ares",
+            "Hermes","Hephaestus","Hestia","Dionysus","Persephone","Hades","Helios","Selene"];
+        let saved=self.saved_records()?;
+        let used:std::collections::BTreeSet<_>=entries.values().map(|entry|entry.display.name.to_lowercase())
+            .chain(saved.iter().map(|display|display.name.to_lowercase())).collect();
+        // Saved-but-disconnected displays reserve their names too. Keep this
+        // host-owned metadata separate from the driver's capture identity.
+        for suffix in 1..=used.len()+1 {
+            for name in NAMES {
+                let candidate=if suffix==1 {name.to_owned()}else{format!("{name} {suffix}")};
+                if !used.contains(&candidate.to_lowercase()) {return Ok(candidate);}
+            }
+        }
+        unreachable!("more candidates than reserved names")
+    }
     pub(crate) fn has_queued_preparation(&self) -> bool {
         self.preparation.queued()
     }
@@ -870,7 +886,7 @@ impl Manager {
             owner,
             spec,
             actual: target.actual,
-            name: saved.filter(|s|!s.name.is_empty()).map_or_else(||target.name.clone(),|s|s.name.clone()),
+            name: match saved.filter(|s|!s.name.is_empty()) {Some(saved)=>saved.name.clone(),None=>self.next_display_name(&entries)?},
             source: target.source.clone(),
             active: false,
             persistent:saved.is_some(),
