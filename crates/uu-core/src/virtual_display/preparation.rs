@@ -7,9 +7,6 @@ use std::sync::{
     Mutex,
 };
 
-/// Initial reservation size, not a limit on sessions or later pool expansion.
-pub const INITIAL_CAPACITY: u32 = 16;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -172,7 +169,7 @@ impl Coordinator {
         self.state.lock().ok().and_then(|s| s.failure.clone())
     }
     fn status_for(&self, observed: Observation) -> Status {
-        let requested = self.requested.load(Ordering::Acquire).max(INITIAL_CAPACITY);
+        let requested = self.requested.load(Ordering::Acquire).max(1);
         let failure = self.failure();
         let phase = if self.blocked.load(Ordering::Acquire) || observed.recovery_pending {
             Phase::RecoveryPending
@@ -279,7 +276,7 @@ impl Coordinator {
             return;
         }
         self.requested
-            .fetch_max(minimum.max(INITIAL_CAPACITY), Ordering::AcqRel);
+            .fetch_max(minimum.max(1), Ordering::AcqRel);
         self.queued.store(true, Ordering::Release);
     }
     pub fn request<P: Provider>(&self, provider: &P, minimum: u32) -> Result<Status> {
@@ -292,7 +289,7 @@ impl Coordinator {
             return self.inspect(provider);
         }
         self.requested
-            .fetch_max(minimum.max(INITIAL_CAPACITY), Ordering::AcqRel);
+            .fetch_max(minimum, Ordering::AcqRel);
         self.queued.store(true, Ordering::Release);
         if let Ok(mut state) = self.state.lock() {
             state.failure = None;

@@ -108,4 +108,15 @@ mod tests {
             assert!(!rollback_matches(&baseline, &preserved, &after));
         }
     }
+    #[test]
+    fn original_output_change_blocks_installation_but_can_be_preserved_during_owned_cleanup() {
+        let original=map(&[("zako",&[1920,1080,0,0])]);
+        let fresh=map(&[("zako",&[1920,1080,0,-1080]),("our-new-target",&[1920,1080,0,0])]);
+        let owned=["our-new-target".to_owned()].into_iter().collect();
+        assert!(matches!(check_enabled(&original,&fresh,&owned),Err(Violation::ExistingChanged(_))));
+        let preserved=super::super::capacity_policy::foreign(&fresh,&owned);
+        assert!(rollback_matches(&original,&preserved,&preserved));
+        assert!(!rollback_matches(&original,&preserved,&fresh),"an owned output left active is not completed cleanup");
+        assert!(!rollback_matches(&original,&preserved,&map(&[])),"cleanup cannot remove the last original output");
+    }
 }

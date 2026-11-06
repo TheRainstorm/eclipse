@@ -1874,9 +1874,6 @@
   "正在准备虚拟副屏，请等待本次操作完成。": "Preparing virtual displays. Wait for the current operation to finish.",
   "虚拟副屏已就绪，可以创建。": "Virtual displays are ready to create.",
   "虚拟副屏准备未完成，请查看诊断详情后重试。": "Virtual display preparation did not complete. Check the diagnostic details before trying again.",
-  "恢复检查已登记；请结束此主机的所有串流，空闲后后台会检查一次，不会重复安装驱动。": "Recovery is queued. End all streams from this host; the background service will check once when idle without repeating driver installation.",
-  "恢复检查未完成；请查看诊断详情，处理后再检查。": "Recovery did not complete. Review the diagnostic details, resolve the issue, then check again.",
-  "上次准备尚未完成恢复；请点击“检查并恢复准备”。有串流时会等待空闲，再检查一次。": "The previous preparation needs recovery. Click Check and recover preparation; if streaming, it will wait until idle and check once.",
   "源机正在准备虚拟副屏，请在准备完成后连接。": "The host is preparing virtual displays. Connect after preparation finishes.",
   "正在创建临时虚拟副屏…": "Creating a temporary virtual display…",
   "虚拟副屏操作尚未确认，正在等待回执；确认前不能再次操作，断开连接仍会清理临时屏": "The virtual display operation is unconfirmed and awaiting its response. Further operations stay blocked until confirmation; disconnecting still cleans up temporary displays.",
@@ -1902,7 +1899,6 @@
   "已占用：{}": "In use: {}",
   "已登记的准备会在空闲时继续；无需重复点击，也不会中断正在使用的副屏。": "Queued preparation continues when the host is idle. No need to click again; displays in use stay connected.",
   "准备虚拟副屏": "Prepare virtual displays",
-  "检查并恢复准备": "Check and recover preparation",
   "诊断详情": "Diagnostic details",
   "虚拟副屏操作未完成，请刷新确认当前状态。": "The virtual display operation did not complete. Refresh to confirm its current state.",
   "更新或启用源机后台后，可自动准备虚拟副屏。": "Update or enable the host background service to prepare virtual displays automatically.",
@@ -1970,8 +1966,13 @@
   "与当前后台 SDK 不匹配": "Incompatible with the current background SDK",
   "在后台启用": "Enable in background",
   "高级选项（JSON）": "Advanced options (JSON)",
-  "保存并重启服务": "Save and restart service",
   "插件选项不是有效 JSON：{error}": "Plugin options are not valid JSON: {error}",
   "保存会按后台插件自己的校验规则应用选项，并重启共享服务以更新主机入口。": "Saving applies the options through the plugin's own validation and restarts the sharing service so host entries update.",
-  "后台插件设置已保存，服务已重启": "Background plugin settings saved; the service was restarted"
+  "后台插件设置已保存，服务已重启": "Background plugin settings saved; the service was restarted",
+  "驱动修复已登记；请结束此主机的所有串流，空闲后处理一次未完成操作，不会重新安装驱动或新建屏幕。": "Driver repair is queued. End all streams on this host to process the unfinished operation once. It will not reinstall the driver or create displays.",
+  "未完成的驱动操作尚未修复；请查看诊断详情，处理原因后再点击修复。": "The unfinished driver operation has not been repaired. Review the diagnostic details, address the cause, and request repair again.",
+  "上次驱动安装或容量调整未完成，已暂停新建；请修复未完成的驱动操作。": "The previous driver installation or capacity change is unfinished. New displays are blocked until you repair the unfinished driver operation.",
+  "修复未完成的驱动操作": "Repair unfinished driver operation",
+  "核对上次操作日志、驱动及配置，仅撤销本次未完成的变更；驱动已卸载时核验后封存旧记录。不会重装驱动、新建屏幕或恢复历史桌面布局。": "Checks the previous operation journal, driver, and configuration and rolls back only its unfinished changes. If the driver was uninstalled, verifies its removal and archives the old record. Does not reinstall, create displays, or restore a historical desktop layout.",
+  "准备驱动容量以当前创建上限为准；新建一次只激活一块屏幕。首次安装会短暂枚举驱动目标。": "Driver capacity follows the configured display limit. Each Create activates one display. Initial installation briefly enumerates driver targets."
 }

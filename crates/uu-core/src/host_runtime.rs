@@ -312,12 +312,6 @@ impl Runner {
 /// one, and a missing driver is not installed merely because sharing started.
 async fn preparation_worker(mut stop:watch::Receiver<bool>, mut shutdown:watch::Receiver<bool>) {
     let manager=crate::virtual_display::Manager::shared();
-    let setup=manager.clone();
-    match tokio::task::spawn_blocking(move||setup.queue_installed_preparation()).await {
-        Ok(Ok(()))=>{},
-        Ok(Err(error))=>tracing::warn!(%error,"virtual display startup preparation remains incomplete"),
-        Err(error)=>{tracing::warn!(%error,"virtual display startup preparation worker failed");return;},
-    }
     let mut previous_error=None;
     let mut previous_restore_error=None;
     loop {

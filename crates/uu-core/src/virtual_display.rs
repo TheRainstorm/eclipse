@@ -118,7 +118,7 @@ pub fn install_signed(package_directory: &std::path::Path) -> Result<Status> {
             };
             let status = manager
                 .preparation
-                .request(&provider, preparation::INITIAL_CAPACITY)
+                .request(&provider, u32::from(manager.limit.load(Ordering::Acquire)).max(1))
                 .map_err(|failure| Error::Platform(failure.message))?;
             if status.phase != preparation::Phase::Ready {
                 return Err(Error::Preparation(status));
@@ -527,22 +527,6 @@ impl Manager {
             .map(Some)
             .map_err(|failure| Error::Platform(failure.message))
     }
-    /// Shared-host startup may reserve an already installed driver while idle.
-    /// Missing drivers are installed only by an explicit create/prepare action.
-    pub(crate) fn queue_installed_preparation(&self) -> Result<()> {
-        let _entries = self.lock()?;
-        if let Some(observed) = self.backend.preparation_observation()? {
-            if self.preparation_owner.load(Ordering::Acquire)
-                && observed.driver_present
-                && !observed.recovery_pending
-                && observed.authority
-                && observed.targets < preparation::INITIAL_CAPACITY
-            {
-                self.preparation.queue(preparation::INITIAL_CAPACITY);
-            }
-        }
-        Ok(())
-    }
     pub fn resume_preparation(&self) -> Result<Option<preparation::Status>> {
         let entries = self.lock()?;
         if self.manual_closing.load(Ordering::Acquire) {
@@ -604,7 +588,7 @@ impl Manager {
                         initial: None,
                         package: None,
                     },
-                    preparation::INITIAL_CAPACITY,
+                    u32::from(self.limit.load(Ordering::Acquire)).max(1),
                 )
                 .map_err(|failure| Error::Platform(failure.message))?;
             if status.phase == preparation::Phase::Ready {
@@ -810,15 +794,8 @@ impl Manager {
         if self.preparation.recovery_pending()
             || preparation_before.is_some_and(|state| state.recovery_pending)
         {
-            // Create is an explicit host mutation. A removed driver may retire
-            // a bound interrupted first install before fresh preparation;
-            // inventory/status remain read-only and cannot reopen admission.
-            if preparation_before.is_some_and(|state|!state.driver_present)
-                && saved.is_none() && self.preparation_owner.load(Ordering::Acquire) && entries.is_empty() {
-                let provider=CapacityProvider{manager:self,leases:0,initial:initial_session,package:None};
-                self.preparation.recover(&provider,||self.backend.recover_capacity(&||preparation::Provider::host_idle(&provider)))
-                    .map_err(|failure|Error::Platform(failure.message))?;
-            }
+            // Recovery is a separate explicit action. Create must not retire an
+            // interrupted installation and silently start another one.
             let status = self
                 .preparation
                 .inspect(&CapacityProvider {
@@ -851,23 +828,12 @@ impl Manager {
             Err(Error::DriverMissing) if capacity.is_some()=>None,
             result=>result?,
         }};
-        if selected.is_some()
-            && self.preparation_owner.load(Ordering::Acquire)
-            && capacity.is_some_and(|observed| observed.driver_present)
-        {
-            self.preparation.queue(preparation::INITIAL_CAPACITY);
-        }
         if selected.is_none() {
             if let Some(capacity) = capacity {
                 if saved.is_some()&&!capacity.driver_present{return Err(Error::DriverMissing);}
-                let minimum = if capacity.targets < preparation::INITIAL_CAPACITY {
-                    preparation::INITIAL_CAPACITY
-                } else {
-                    capacity
-                        .targets
-                        .checked_add(preparation::INITIAL_CAPACITY)
-                        .ok_or_else(|| Error::Platform("virtual target capacity overflow".into()))?
-                };
+                // Reserve only the configured creation limit. Existing pools
+                // are reused without growth; capacity is never a hidden batch.
+                let minimum = u32::from(limit).max(1);
                 let status = self
                     .preparation
                     .request(

@@ -768,10 +768,15 @@ impl State {
                 if let Some(action)=preparation_ui::action(preparation,self.local_owner==Some(LocalOwner::Foreground)) {
                     let label=match action {
                         preparation_ui::Action::Prepare=>if embedded {uu_i18n::text("准备虚拟显示器")}else{uu_i18n::text("准备虚拟副屏")},
-                        preparation_ui::Action::Recover=>uu_i18n::text("检查并恢复准备"),
+                        preparation_ui::Action::Recover=>uu_i18n::text("修复未完成的驱动操作"),
                         preparation_ui::Action::BackgroundSetup=>if embedded {uu_i18n::text("准备虚拟显示器")}else{uu_i18n::text("打开后台准备")},
                     };
                     if ui.add_enabled(!busy&&!mutations_blocked,crate::theme::secondary_button(label)).clicked(){preparation_action=Some(action);}
+                    if action==preparation_ui::Action::Recover {
+                        ui.weak(uu_i18n::text("核对上次操作日志、驱动及配置，仅撤销本次未完成的变更；驱动已卸载时核验后封存旧记录。不会重装驱动、新建屏幕或恢复历史桌面布局。"));
+                    } else if action==preparation_ui::Action::Prepare {
+                        ui.weak(uu_i18n::text("准备驱动容量以当前创建上限为准；新建一次只激活一块屏幕。首次安装会短暂枚举驱动目标。"));
+                    }
                 }
             }
         } else if let Some(status) = &self.status {

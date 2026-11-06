@@ -768,6 +768,7 @@ pub(super) fn rollback_capacity_install(
     };
     node.refresh_instance()?;
     let targets = super::windows::targets_for_instance(instance)?;
+    let owned: std::collections::BTreeSet<_> = targets.iter().map(|target|target.key.clone()).collect();
     for target in targets {
         if !claims.contains_key(&target.key) {
             claims.insert(
@@ -776,7 +777,12 @@ pub(super) fn rollback_capacity_install(
             );
         }
     }
-    super::windows::provision::capacity::verify_new_instance(baseline, instance)?;
+    // Installation failure may itself have moved another output. Cleanup still
+    // owns this exact new node, never that other output. Preserve its fresh
+    // state instead of requiring/replaying the old global layout to remove us.
+    let preserved=super::capacity_policy::foreign(&super::windows::active_signature()?,&owned);
+    if preserved.is_empty() {return Err(Error::LastActiveOutput);}
+    let saved=super::windows::provision::capacity::database()?;
     checkpoint().map_err(|e| Error::Platform(e.message))?;
     node.rollback()?;
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -788,7 +794,8 @@ pub(super) fn rollback_capacity_install(
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    if super::windows::active_signature()? != *baseline {
+    if !super::provision_policy::rollback_matches(baseline,&preserved,&super::windows::active_signature()?)
+        || !super::capacity_policy::unchanged_foreign(&saved,&super::windows::provision::capacity::database()?,&owned) {
         return Err(Error::Platform(
             "original displays changed during new-driver compensation".into(),
         ));
@@ -987,6 +994,17 @@ pub(super) fn install_capacity_on_desktop(
                         admission.message
                     )),
                     cleanup_verified: false,
+                });
+            }
+            if node.registered {
+                let xml=super::capacity_config::expand(
+                    &payload.iter().find(|(name,_)|name=="vdd_settings.xml").expect("verified XML payload").1,
+                    minimum,
+                ).expect("verified capacity configuration").after;
+                let rollback=rollback_capacity_install(&node.instance,&directory.path,&xml,&before,checkpoint,claims);
+                return Err(InstallationFailure {
+                    cleanup_verified:rollback.is_ok(),
+                    error:match rollback {Ok(())=>error,Err(recovery)=>Error::Platform(format!("{error}; exact new-device cleanup remains pending: {recovery}"))},
                 });
             }
             let ownership = (|| -> Result<()> {

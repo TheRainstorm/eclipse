@@ -336,7 +336,7 @@ fn modes(topology: &Topology) -> Result<Fingerprints> {
     }
     Ok(result)
 }
-fn database() -> Result<Fingerprints> {
+pub(in crate::virtual_display) fn database() -> Result<Fingerprints> {
     modes(&query(QDC_DATABASE_CURRENT)?)
 }
 fn owned_keys(pending: &Pending) -> BTreeSet<TargetKey> {
@@ -639,8 +639,8 @@ fn compensate(pending: &mut Pending, checkpoint: Checkpoint<'_>) -> Result<()> {
                 fail("owned first-install instance is unavailable for exact recovery")
             })?;
         verify_driver(&devices, &candidate, None)?;
-        if configuration()? != directory.join("vdd_settings.xml") || !database_preserved(pending)? {
-            return Err(fail("new installation configuration or saved foreign outputs changed before compensation"));
+        if configuration()? != directory.join("vdd_settings.xml") {
+            return Err(fail("new installation configuration changed before compensation"));
         }
         crate::virtual_display::install_windows::rollback_capacity_install(
             &instance,
@@ -650,11 +650,9 @@ fn compensate(pending: &mut Pending, checkpoint: Checkpoint<'_>) -> Result<()> {
             checkpoint,
             &mut pending.claims,
         )?;
-        if !database_preserved(pending)? {
-            return Err(fail(
-                "saved non-owned topology changed during first-install compensation",
-            ));
-        }
+        // The owned-node remover verifies fresh external state, independently
+        // of the original install preflight. A changed original display blocks
+        // installation, but does not grant it ownership of our failed node.
         return pending.journal.complete("installation_rolled_back");
     }
     let existing = pending.existing.as_ref().unwrap();
@@ -801,7 +799,7 @@ pub(in crate::virtual_display) fn prepare(
         return Err(preparation::Failure::unchanged("preserving at least one active original display is required to prepare an inactive pool"));
     }
     let saved = database().map_err(unchanged)?;
-    let minimum = minimum.max(preparation::INITIAL_CAPACITY);
+    let minimum = minimum.max(1);
     let existing = if let Some(candidate) = candidates.pop() {
         let targets = targets_for_instance(&candidate.instance).map_err(unchanged)?;
         if targets.iter().any(|t| t.active || t.actual.is_some()) {
@@ -906,7 +904,6 @@ pub(in crate::virtual_display) fn prepare(
             );
             if let Err(failure)=installed {
                 if failure.cleanup_verified {
-                    if active_signature()?!=transaction.baseline||!database_preserved(transaction)? {return Err(fail(format!("{}; first-install active/saved configuration compensation is not proven",failure.error)));}
                     transaction.journal.complete("installation_rolled_back")?;
                     return Err(failure.error);
                 }

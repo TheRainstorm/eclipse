@@ -839,12 +839,13 @@ fn common_create_prepares_missing_driver_once_before_allocating_distinct_leases(
     assert_ne!(a.source, b.source);
     assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst), 1);
     assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 1);
-    assert_eq!(manager.status().unwrap().available_slots, 14);
+    assert_eq!(manager.status().unwrap().available_slots, 0);
+    assert_eq!(backend.targets.lock().unwrap().len(), 2, "default limit prepares two targets, never a hidden batch of sixteen");
     manager.remove(a.id).unwrap();
     manager.remove(b.id).unwrap();
 }
 #[test]
-fn an_existing_slot_is_usable_during_physical_stream_then_growth_waits_for_idle() {
+fn existing_slot_reuse_does_not_expand_until_a_second_create_requests_capacity() {
     let (manager, backend) = capacity_fixture(1);
     let gate = Arc::new(crate::shared_host::SessionGate::default());
     manager.register_host(&gate);
@@ -858,7 +859,7 @@ fn an_existing_slot_is_usable_during_physical_stream_then_growth_waits_for_idle(
     });
     let a = manager.create(Owner::Manual, Spec::default()).unwrap();
     assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 0);
-    assert!(manager.has_queued_preparation());
+    assert!(!manager.has_queued_preparation());
     let error = manager.create(Owner::Manual, Spec::default()).unwrap_err();
     assert!(matches!(
         error,
@@ -879,7 +880,7 @@ fn an_existing_slot_is_usable_during_physical_stream_then_growth_waits_for_idle(
     );
     assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 1);
     assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst), 0);
-    assert_eq!(manager.status().unwrap().available_slots, 16);
+    assert_eq!(manager.status().unwrap().available_slots, 2);
 }
 #[test]
 fn initial_preparation_exempts_only_its_own_authenticated_pending_session() {
@@ -903,17 +904,16 @@ fn initial_preparation_exempts_only_its_own_authenticated_pending_session() {
     manager.remove(display.id).unwrap();
 }
 #[test]
-fn sharing_startup_only_queues_existing_driver_and_never_installs_missing_driver() {
-    let (missing, missing_backend) = capacity_fixture(0);
-    missing.queue_installed_preparation().unwrap();
-    assert!(!missing.has_queued_preparation());
-    assert_eq!(missing_backend.capacity_downloads.load(Ordering::SeqCst), 0);
-    let (installed, backend) = capacity_fixture(1);
-    installed.queue_installed_preparation().unwrap();
-    assert!(installed.has_queued_preparation());
-    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 0);
-    installed.resume_preparation().unwrap();
-    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst), 1);
+fn status_and_unrequested_worker_ticks_never_install_or_expand_a_driver() {
+    for count in [0,1,2,16] {
+        let (manager,backend)=capacity_fixture(count);
+        manager.status().unwrap();manager.preparation_status().unwrap();
+        manager.resume_preparation().unwrap();
+        assert!(!manager.has_queued_preparation());
+        assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst),0);
+        assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),0);
+        assert_eq!(backend.targets.lock().unwrap().len(),count as usize);
+    }
 }
 #[test]
 fn old_virtual_status_without_preparation_remains_readable() {
@@ -1003,15 +1003,22 @@ fn explicit_recovery_waits_for_streams_then_checks_once_without_reinstalling() {
 }
 
 #[test]
-fn explicit_create_recovers_removed_driver_before_downloading_a_fresh_pool() {
+fn create_requires_separate_explicit_repair_before_installing_after_external_uninstall() {
     let (manager,backend)=capacity_fixture(0);
     {let mut capacity=backend.capacity.lock().unwrap();let state=capacity.as_mut().unwrap();state.driver_present=false;state.recovery_pending=true;}
     assert_eq!(manager.preparation_status().unwrap().unwrap().phase,preparation::Phase::RecoveryPending);
     assert_eq!(backend.recover_calls.load(Ordering::SeqCst),0,"status must not recover");
+    assert!(matches!(manager.create(Owner::Manual,Spec::default()),Err(Error::Preparation(_))));
+    assert_eq!(backend.recover_calls.load(Ordering::SeqCst),0,"create must not silently repair");
+    assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst),0);
+    let repaired=manager.recover_preparation().unwrap().unwrap();
+    assert_eq!(repaired.phase,preparation::Phase::NeedsDriver);
+    assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),0,"repair must not install");
     let display=manager.create(Owner::Manual,Spec::default()).unwrap();
     assert!(display.active);
     assert_eq!(backend.capacity_downloads.load(Ordering::SeqCst),1);
     assert_eq!(backend.capacity_changes.load(Ordering::SeqCst),1);
+    assert_eq!(backend.targets.lock().unwrap().len(),2);
     assert!(!backend.capacity.lock().unwrap().unwrap().recovery_pending);
 }
 
