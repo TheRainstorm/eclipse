@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-27T21:14:34Z",
-  "updated_at": "2026-11-06T10:38:21Z",
+  "updated_at": "2026-11-07T16:36:04Z",
   "files": {
     ".cargo/config.toml": {
       "role": "index",
@@ -83,9 +83,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "747ced60f021c84e774fd5872b2ed8eeb2611142725e5fd16689d0c83cb3bbe9",
-      "size": 205888,
-      "normalized_sha256": "747ced60f021c84e774fd5872b2ed8eeb2611142725e5fd16689d0c83cb3bbe9"
+      "sha256": "b27cd28d8c56f7a58739904a3d17367c8cabc4436fa7a01bf0be3f9f22b3a37b",
+      "size": 206305,
+      "normalized_sha256": "b27cd28d8c56f7a58739904a3d17367c8cabc4436fa7a01bf0be3f9f22b3a37b"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1388,6 +1388,12 @@
       "sha256": "0e325a359ec72df7ce218f328eae35e3f621408a17398f286ca4ee66806f2258",
       "size": 1660,
       "normalized_sha256": "0e325a359ec72df7ce218f328eae35e3f621408a17398f286ca4ee66806f2258"
+    },
+    "crates/uu-gui/examples/repaint_probe.rs": {
+      "role": "index",
+      "sha256": "956f23cce8b18958f04bbf34290a6cfd67ddd32ddad95ad5c6e2a2d604f56771",
+      "size": 10296,
+      "normalized_sha256": "956f23cce8b18958f04bbf34290a6cfd67ddd32ddad95ad5c6e2a2d604f56771"
     },
     "crates/uu-gui/examples/support/hdr_offscreen_target.rs": {
       "role": "index",
@@ -2788,9 +2794,9 @@
     },
     "docs/multiple-displays.md": {
       "role": "index",
-      "sha256": "befa968de950c60fa28afb4560f929d960926a6623999d124c232e07eb9d3e4b",
-      "size": 5212,
-      "normalized_sha256": "befa968de950c60fa28afb4560f929d960926a6623999d124c232e07eb9d3e4b"
+      "sha256": "5b730fe09a1f6009780dad16e1eac9b55674e0f082acfe72096adbd64837f803",
+      "size": 5506,
+      "normalized_sha256": "5b730fe09a1f6009780dad16e1eac9b55674e0f082acfe72096adbd64837f803"
     },
     "docs/native-audio.md": {
       "role": "index",
