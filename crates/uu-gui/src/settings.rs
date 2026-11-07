@@ -611,11 +611,8 @@ impl super::App {
         self.preferences.resolution = self.resolution_idx;
         self.preferences.hud = self.hud;
         self.preferences.nested_shortcuts = self.nested_passthrough;
-        if let Some(h) = self.controller.as_ref().filter(|h|h.stats.capabilities.allows(uu_core::capabilities::Capability::Audio)) {
-            use std::sync::atomic::Ordering::Relaxed;
-            self.preferences.volume = h.stats.audio.volume.load(Relaxed);
-            self.preferences.muted = h.stats.audio.muted.load(Relaxed);
-        }
+        let playback=self.audio_playback();
+        self.preferences.volume=playback.volume;self.preferences.muted=playback.muted;
     }
     pub(super) fn persist_preferences(&mut self) {
         self.snapshot_preferences();
@@ -719,11 +716,7 @@ impl super::App {
             self.resolution_idx = self.preferences.resolution;
             self.hud = self.preferences.hud;
             self.nested_passthrough = self.preferences.nested_shortcuts;
-            if let Some(h) = &self.controller {
-                use std::sync::atomic::Ordering::Relaxed;
-                h.stats.audio.volume.store(self.preferences.volume, Relaxed);
-                h.stats.audio.muted.store(self.preferences.muted, Relaxed);
-            }
+            self.set_audio_playback(self.preferences.muted,self.preferences.volume);
             if recover && self.stream_target.is_none() {
                 self.snapshot_preferences();
                 let result = Settings::path().ok_or_else(|| anyhow::anyhow!("{}", uu_i18n::format!("无法确定设置目录")))

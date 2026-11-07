@@ -1,5 +1,17 @@
 //! All mute controls share the current stream's state without changing volume.
 use std::sync::atomic::Ordering::Relaxed;
+use std::{cell::{Cell,RefCell},sync::{Arc,Weak}};
+
+#[derive(Clone,Copy)]
+pub(super) struct Playback {pub muted:bool,pub volume:u32}
+pub(super) struct Group {
+    pub playback:Cell<Playback>,
+    pub owner:Cell<Option<u64>>,
+    pub stats:RefCell<Weak<uu_core::media::MediaStats>>,
+}
+impl Group {
+    pub fn new(playback:Playback)->Self {Self{playback:Cell::new(playback),owner:Cell::new(None),stats:RefCell::new(Weak::new())}}
+}
 
 pub(super) fn volume_slider(ui: &mut eframe::egui::Ui, volume: &mut u32) -> bool {
     use eframe::egui;
@@ -38,27 +50,37 @@ pub(super) fn volume_slider(ui: &mut eframe::egui::Ui, volume: &mut u32) -> bool
 }
 
 impl super::App {
+    fn audio_group(&self)->Option<std::rc::Rc<Group>> {
+        self.workspace_tabs.as_ref()?.audio_group(self.stream_target.as_ref()?)
+    }
+    pub(super) fn audio_stats(&self)->Option<Arc<uu_core::media::MediaStats>> {
+        self.audio_group().and_then(|group|group.stats.borrow().upgrade())
+            .or_else(||self.controller.as_ref().map(|h|h.stats.clone()))
+    }
+    pub(super) fn audio_playback(&self)->Playback {
+        if let Some(group)=self.audio_group() {return group.playback.get();}
+        self.audio_stats().map(|stats|Playback {muted:stats.audio.muted.load(Relaxed),volume:stats.audio.volume.load(Relaxed)})
+            .unwrap_or(Playback{muted:self.preferences.muted,volume:self.preferences.volume})
+    }
+    pub(super) fn set_audio_playback(&mut self,muted:bool,volume:u32) {
+        if let Some(group)=self.audio_group() {group.playback.set(Playback{muted,volume});}
+        if let Some(stats)=self.audio_stats() {stats.audio.muted.store(muted,Relaxed);stats.audio.volume.store(volume,Relaxed);}
+        self.preferences.muted=muted;self.preferences.volume=volume;
+        self.settings_draft.muted=muted;self.settings_draft.volume=volume;
+        self.audio_save_after=Some(std::time::Instant::now()+std::time::Duration::from_millis(250));
+    }
     fn audio_muted(&self) -> bool {
-        self.controller
-            .as_ref()
-            .map(|controller| controller.stats.audio.muted.load(Relaxed))
-            .unwrap_or(self.preferences.muted)
+        self.audio_playback().muted
     }
 
     pub(super) fn toggle_audio_mute(&mut self) {
-        if !self.supports_remote(uu_core::capabilities::Capability::Audio){return;}
+        if !self.audio_stats().is_some_and(|stats|stats.capabilities.allows(uu_core::capabilities::Capability::Audio)){return;}
         let muted = !self.audio_muted();
-        self.preferences.muted = muted;
-        self.settings_draft.muted = muted;
-        if let Some(controller) = &self.controller {
-            controller.stats.audio.muted.store(muted, Relaxed);
-        }
-        self.audio_save_after =
-            Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
+        self.set_audio_playback(muted,self.audio_playback().volume);
     }
 
     pub(super) fn audio_button(&mut self, ui: &mut eframe::egui::Ui) {
-        if !self.supports_remote(uu_core::capabilities::Capability::Audio){return;}
+        if !self.audio_stats().is_some_and(|stats|stats.capabilities.allows(uu_core::capabilities::Capability::Audio)){return;}
         let muted = self.audio_muted();
         let icon = if muted {
             super::ui::Icon::Muted

@@ -168,6 +168,60 @@ fn remembered_second_display_keeps_host_order_and_only_connects_the_selection() 
     assert_eq!(state.windows[0].views.iter().map(|v|v.source.as_ref().unwrap().id).collect::<Vec<_>>(),[1,0]);
     assert_eq!(stats.native_media_epoch.load(Ordering::Acquire),0);
 }
+fn audio_window()->(State,egui::Context,u64,u64,Arc<uu_core::media::MediaStats>,Arc<uu_core::media::MediaStats>) {
+    let (mut state,first_stats,ctx,first)=catalog_state(vec![generated_screen(0)],0);
+    let target=state.windows[0].sessions[0].app.stream_target.as_ref().unwrap().clone();
+    let launch=display_launch(&target,&generated_screen(1)).unwrap();
+    let second=state.windows[0].record_launch(&launch,&mut state.next);
+    let (mut extra,second_stats,_,_)=catalog_state(vec![generated_screen(1)],1);
+    let mut session=extra.windows[0].sessions.remove(0);session.id=second;session.app.stream_target=Some(launch.target);
+    session.app.preferences.muted=true;session.app.preferences.volume=10;
+    state.windows[0].sessions[0].app.preferences.muted=false;
+    state.windows[0].sessions[0].app.preferences.volume=73;
+    for stats in [&first_stats,&second_stats] {stats.capabilities.enable(uu_core::capabilities::Capability::Audio,true);}
+    state.windows[0].sessions.push(session);
+    state.windows[0].route_cached_audio(first);
+    let tabs=state.windows[0].tabs(state.actions.clone());
+    for session in &mut state.windows[0].sessions {session.app.workspace_tabs=Some(tabs.clone());}
+    (state,ctx,first,second,first_stats,second_stats)
+}
+#[test]
+fn switching_video_tabs_keeps_one_audio_source_and_shared_controls_until_owner_closes() {
+    let (mut state,ctx,first,second,a,b)=audio_window();
+    for _ in 0..4 {
+        state.windows[0].select(second);
+        assert!(!a.audio.parked.load(Ordering::Acquire));
+        assert!(b.audio.parked.load(Ordering::Acquire));
+        assert_eq!(state.windows[0].sessions[1].app.audio_playback().volume,73);
+        assert!(!state.windows[0].sessions[1].app.audio_playback().muted);
+        state.windows[0].select(first);
+    }
+    state.windows[0].sessions[1].app.set_audio_playback(true,25);
+    assert!(a.audio.muted.load(Ordering::Acquire));
+    assert_eq!(a.audio.volume.load(Ordering::Acquire),25);
+    state.windows[0].sessions[0].app.set_audio_playback(false,25);
+    state.apply(Action::Close(first),&ctx);
+    state.windows[0].route_cached_audio(second);
+    assert!(!b.audio.parked.load(Ordering::Acquire));
+    assert!(!b.audio.muted.load(Ordering::Acquire));
+    assert_eq!(b.audio.volume.load(Ordering::Acquire),25);
+}
+#[test]
+fn independent_window_starts_silent_and_merging_uses_the_destination_audio_state() {
+    let (mut state,ctx,_,second,a,b)=audio_window();
+    state.apply(Action::Detach(second),&ctx);
+    assert_eq!(state.windows.len(),2);
+    assert!(!a.audio.muted.load(Ordering::Acquire));
+    assert!(b.audio.muted.load(Ordering::Acquire));
+    state.windows[1].sessions[0].app.workspace_tabs=Some(state.windows[1].tabs(state.actions.clone()));
+    state.windows[1].sessions[0].app.set_audio_playback(false,36);
+    assert!(!b.audio.muted.load(Ordering::Acquire));
+    assert_eq!(a.audio.volume.load(Ordering::Acquire),73);
+    state.apply(Action::Merge(second),&ctx);
+    assert!(!a.audio.parked.load(Ordering::Acquire));
+    assert!(b.audio.parked.load(Ordering::Acquire));
+    assert_eq!(b.audio.volume.load(Ordering::Acquire),73);
+}
 #[test]
 fn failed_virtual_tab_disconnect_button_preserves_the_other_stream_and_window() {
     let (mut state,stats,ctx,live)=catalog_state(vec![generated_screen(0)],0);
@@ -520,7 +574,7 @@ fn aggregated_device_commands_keep_individual_view_ownership() {
     let virtual_menu=group.view_group(16).unwrap();assert_eq!(virtual_menu.command_session(),2);assert!(virtual_menu.can_merge);
     assert!(!virtual_menu.can_open_displays,"a fixed view menu must not inherit device-wide source-opening actions");
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![group],active:2,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{audio_groups:Default::default(),sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![group],active:2,actions:actions.clone(),local_ui:Default::default()};
     tabs.navigate(uu_core::hotkeys::Action::PreviousDisplay);
     assert_eq!(&actions.borrow()[..],&[Action::Select(1,None)]);
     actions.borrow_mut().clear();
@@ -547,7 +601,7 @@ fn computer_navigation_uses_its_last_view_and_falls_back_when_it_was_closed() {
     let group=Group{last_session:12,id:11,name:"Remembered computer".into(),screens:vec![],selected:None,
         members:vec![11,12],views:vec![],can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false};
     let mut other=group.clone();other.id=22;other.last_session=22;other.members=vec![22];
-    let mut tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![group,other],active:22,actions:Default::default(),local_ui:Default::default()};
+    let mut tabs=Tabs{audio_groups:Default::default(),sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![group,other],active:22,actions:Default::default(),local_ui:Default::default()};
     assert_eq!(tabs.groups[0].activate(),Action::Select(12,None),"hostname selection shares the same rule");
     for command in [uu_core::hotkeys::Action::NextComputer,uu_core::hotkeys::Action::PreviousComputer] {tabs.navigate(command);}
     assert_eq!(std::mem::take(&mut *tabs.actions.borrow_mut()),[Action::Select(12,None),Action::Select(12,None)]);
@@ -626,7 +680,7 @@ fn check_owned_live_transitions(state:&mut State,first:u64,second:u64,ctx:&egui:
     for _ in 0..12 {
         state.apply(Action::Select(first,Some(16)),ctx);
         let window=state.windows.iter().find(|w|w.id==home).unwrap();assert_eq!(window.active,second);assert!(window.pending.is_empty());
-        assert!(saved[0].3.audio.parked.load(Ordering::Acquire));assert!(!saved[1].3.audio.parked.load(Ordering::Acquire));
+        assert!(saved[0].3.audio.parked.load(Ordering::Acquire));assert!(saved[1].3.audio.parked.load(Ordering::Acquire)); // This fixture has no Audio capability.
         state.apply(Action::Select(first,Some(0)),ctx);assert_eq!(state.windows.iter().find(|w|w.id==home).unwrap().active,first);
     }
     state.detach(second,ctx);
@@ -735,7 +789,7 @@ fn check_close_returns_to_live_stream_before_cleanup(state:&mut State,session:u6
 fn fullscreen_navigation_follows_tab_order_and_wraps_without_crossing_windows() {
     use uu_core::hotkeys::Action as Command;
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let mut tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},
+    let mut tabs=Tabs{audio_groups:Default::default(),sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"B".into(),screens:vec![(7,"Second".into()),(2,"First".into()),(9,"Third".into())],selected:Some(7),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false},
         Group{last_session:11,members:vec![],views:vec![],id:11,name:"A".into(),screens:vec![],selected:None,can_open_displays:false,can_create_display:false,can_detach:true,fixed_view:false,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     for command in [Command::NextDisplay,Command::PreviousDisplay,Command::NextComputer,Command::PreviousComputer] {tabs.navigate(command);}
     assert_eq!(*actions.borrow(),[Action::Select(22,Some(2)),Action::Select(22,Some(9)),Action::Select(11,None),Action::Select(11,None)]);
@@ -751,7 +805,7 @@ fn device_and_monitor_widgets_route_clicks_and_drags_to_their_session() {
     let context = egui::Context::default();
     crate::setup_style(&context);
     let actions = Rc::new(RefCell::new(Vec::new()));
-    let tabs = Tabs {sources:vec![],modal:Default::default(),presets:Default::default(),
+    let tabs = Tabs {audio_groups:Default::default(),sources:vec![],modal:Default::default(),presets:Default::default(),
         groups: vec![
             Group {last_session:11,members:vec![],views:vec![],
                 id: 11,
@@ -856,7 +910,7 @@ fn device_context_menu_merges_or_closes_the_group_without_detach_commands() {
     let context=egui::Context::default();
     crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated B".into(),screens:vec![(2,"Monitor B".into())],selected:Some(2),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{audio_groups:Default::default(),sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated B".into(),screens:vec![(2,"Monitor B".into())],selected:Some(2),can_open_displays:true,can_create_display:false,can_detach:true,fixed_view:false,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let viewport=egui::ViewportId::from_hash_of("generated-child");
     let render=|events|context.run(egui::RawInput{viewport_id:viewport,viewports:[(viewport,egui::ViewportInfo::default())].into_iter().collect(),events,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),focused:true,..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     fn text(shape:&egui::epaint::Shape,label:&str)->Option<egui::Pos2>{match shape{egui::epaint::Shape::Text(text) if text.galley.job.text==label=>Some(text.pos+text.galley.rect.center().to_vec2()),egui::epaint::Shape::Vec(shapes)=>shapes.iter().find_map(|shape|text(shape,label)),_=>None}}
@@ -881,7 +935,7 @@ fn device_context_menu_merges_or_closes_the_group_without_detach_commands() {
 fn fixed_source_context_menu_returns_to_home_and_source_click_only_selects_its_session() {
     let context=egui::Context::default();crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
-    let tabs=Tabs{sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated fixed view".into(),screens:vec![(2,"Bound monitor".into())],selected:Some(2),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{audio_groups:Default::default(),sources:vec![],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![],views:vec![],id:22,name:"Generated fixed view".into(),screens:vec![(2,"Bound monitor".into())],selected:Some(2),can_open_displays:false,can_create_display:false,can_detach:false,fixed_view:true,can_merge:true}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let viewport=egui::ViewportId::from_hash_of("fixed-generated-child");
     let render=|events|context.run(egui::RawInput{viewport_id:viewport,viewports:[(viewport,egui::ViewportInfo::default())].into_iter().collect(),events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,300.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|rects|find(rects.borrow().get(&viewport).unwrap()).center());
@@ -906,7 +960,7 @@ fn display_pills_open_their_own_source_and_keep_connection_ownership() {
     let context=egui::Context::default();crate::setup_style(&context);
     let actions=Rc::new(RefCell::new(Vec::new()));
     let views=vec![View{screen:7,session:31,fixed:true,active:false,can_create:false,can_detach:true,can_merge:false},View{screen:16,session:22,fixed:true,active:true,can_create:true,can_detach:true,can_merge:false}];
-    let tabs=Tabs{sources:vec![(31,vec![SourceChoice{id:100,label:"Spare physical".into(),kind:SourceKind::Existing,active:true,owned:false,current_view:None,managed:None,removable:false},SourceChoice{id:101,label:"Owned unopened".into(),kind:SourceKind::Existing,active:true,owned:true,current_view:None,managed:None,removable:false}])],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![31,22],views,id:31,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:true,fixed_view:true,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
+    let tabs=Tabs{audio_groups:Default::default(),sources:vec![(31,vec![SourceChoice{id:100,label:"Spare physical".into(),kind:SourceKind::Existing,active:true,owned:false,current_view:None,managed:None,removable:false},SourceChoice{id:101,label:"Owned unopened".into(),kind:SourceKind::Existing,active:true,owned:true,current_view:None,managed:None,removable:false}])],modal:Default::default(),presets:Default::default(),groups:vec![Group{last_session:22,members:vec![31,22],views,id:31,name:"Generated computer".into(),screens:vec![(7,"Physical".into()),(16,"Temporary".into())],selected:Some(16),can_open_displays:true,can_create_display:true,can_detach:true,fixed_view:true,can_merge:false}],active:22,actions:actions.clone(),local_ui:Default::default()};
     let render=|events|context.run(egui::RawInput{events,focused:true,screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1300.,700.))),..Default::default()},|ctx|{egui::TopBottomPanel::top("groups").show(ctx,|ui|tabs.show(ui));});
     let region=|find:fn(&crate::stream_tabs_ui::StripRects)->egui::Rect|TAB_RECTS.with(|r|find(r.borrow().get(&egui::ViewportId::ROOT).unwrap()).center());
     let button=|pos,button,pressed|egui::Event::PointerButton{pos,button,pressed,modifiers:Default::default()};

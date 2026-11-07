@@ -309,7 +309,7 @@ mod tests {
         let lease=uu_core::virtual_display::LeaseId(uuid::Uuid::new_v4());
         let group=Group{last_session:1,members:vec![1],views:vec![],id:1,name:"Current device".into(),screens:vec![],selected:None,
             can_open_displays:true,can_create_display:true,can_detach:false,fixed_view:true,can_merge:false};
-        let tabs=Tabs{sources:vec![(1,vec![
+        let tabs=Tabs{audio_groups:Default::default(),sources:vec![(1,vec![
             SourceChoice{id:10,label:"Current owned display".into(),kind:SourceKind::Existing,active:true,owned:true,current_view:Some(1),managed:None,removable:false},
             SourceChoice{id:11,label:"Unused manual display".into(),kind:SourceKind::Persistent,active:true,owned:false,current_view:None,managed:Some(lease),removable:true},
             SourceChoice{id:12,label:"Retired pool target".into(),kind:SourceKind::Existing,active:false,owned:false,current_view:None,managed:None,removable:false},
@@ -355,7 +355,7 @@ mod tests {
     fn active_connection_reveals_its_header_once_and_preserves_manual_scroll() {
         let ctx=egui::Context::default();
         ctx.style_mut(|style|style.scroll_animation=egui::style::ScrollAnimation::none());
-        let mut tabs=Tabs {sources:vec![],modal:Default::default(),presets:Default::default(),
+        let mut tabs=Tabs {audio_groups:Default::default(),sources:vec![],modal:Default::default(),presets:Default::default(),
             groups:(1..=4).map(|id|Group {last_session:id,members:vec![],views:vec![],
                 id,name:format!("Generated computer {id} with a long title"),
                 screens:vec![(1,"Main display".into()),(2,"Temporary virtual display".into())],
@@ -397,7 +397,7 @@ mod tests {
         let ctx=egui::Context::default();
         let name="Generated workstation with a descriptive name";
         let source="Display 12 (VDD by MTT DISPLAY16)";
-        let mut tabs=Tabs {sources:vec![],modal:Default::default(),presets:Default::default(),
+        let mut tabs=Tabs {audio_groups:Default::default(),sources:vec![],modal:Default::default(),presets:Default::default(),
             groups:vec![Group{last_session:1,members:vec![],views:vec![],id:1,name:name.into(),screens:vec![(12,source.into())],selected:Some(12),
                 can_open_displays:false,can_create_display:true,can_detach:false,fixed_view:true,can_merge:true}],
             active:1,actions:Default::default(),local_ui:Default::default(),

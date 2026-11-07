@@ -133,6 +133,7 @@ impl Group {
 }
 #[derive(Clone)]
 pub struct Tabs {
+    pub(super) audio_groups:Rc<RefCell<std::collections::HashMap<ConnectionTarget,Rc<crate::audio_controls::Group>>>>,
     pub(super) sources: Vec<(u64,Vec<SourceChoice>)>,
     pub(super) modal: Rc<Cell<bool>>,
     pub(super) presets:crate::virtual_display_presets::Presets,
@@ -149,6 +150,9 @@ pub(super) struct DragScreen {
     pub(super) screen: i32,
 }
 impl Tabs {
+    pub(super) fn audio_group(&self,target:&StreamTarget)->Option<Rc<crate::audio_controls::Group>> {
+        self.audio_groups.borrow().get(&base_key(target)).cloned()
+    }
     pub fn navigate(&self, action: uu_core::hotkeys::Action) {
         use uu_core::hotkeys::Action as Command;
         let Some(current)=self.groups.iter().position(|group|group.contains(self.active)) else {return;};
@@ -353,6 +357,7 @@ fn virtual_launch(target:&StreamTarget,spec:uu_core::virtual_display::Spec)->any
     },None)
 }
 struct Window {
+    audio_groups:Rc<RefCell<std::collections::HashMap<ConnectionTarget,Rc<crate::audio_controls::Group>>>>,
     views:Vec<OwnedView>,
     sources:Vec<(ConnectionTarget,Vec<SourceChoice>)>,
     discovered_sources:std::collections::HashSet<(ConnectionTarget,String)>,
@@ -430,6 +435,7 @@ impl Window {
     }
     fn new(id: u64, pending: Vec<Launch>, position: Option<egui::Pos2>) -> Self {
         Self {
+            audio_groups:Default::default(),
             views:Vec::new(), sources:Vec::new(), discovered_sources:Default::default(), merge_available:false,
             close_confirmation:false,modal:Default::default(),
             shortcuts:Default::default(),
@@ -490,6 +496,7 @@ impl Window {
         }
         let sources=groups.iter().map(|(key,group)| (group.id,self.sources.iter().find(|(device,_)|device==key).map(|(_,values)|values.clone()).unwrap_or_default())).collect();
         Tabs {
+            audio_groups:self.audio_groups.clone(),
             presets:self.sessions.iter().find(|s|s.id==self.active).map(|s|s.app.preferences.virtual_display_presets.clone()).unwrap_or_default(),
             sources,modal:self.modal.clone(),active:self.active,actions,local_ui:self.local_ui.clone(),
             groups:groups.into_iter().map(|(_,group)|group).collect(),
@@ -538,12 +545,39 @@ impl Window {
             }
         }
     }
-    fn route_cached_audio(&mut self,id:u64) {
-        let owner=self.sessions.iter().find(|s|s.id==id).and_then(|s|s.app.stream_target.as_ref()).map(base_key);
-        if let Some(owner)=owner {
-            for view in self.sessions.iter_mut().filter(|s|s.app.stream_target.as_ref().is_some_and(|t|base_key(t)==owner)) {
-                view.app.audio_parked=view.id!=id;
-                if let Some(handle)=&view.app.controller {handle.stats.audio.parked.store(view.app.audio_parked,std::sync::atomic::Ordering::Release);}
+    fn route_cached_audio(&mut self,_id:u64) {
+        use std::sync::atomic::Ordering::{Acquire,Release,Relaxed};
+        let mut groups=self.audio_groups.borrow_mut();
+        groups.retain(|key,_|self.views.iter().any(|v|base_key(&v.launch.target)==*key));
+        for view in &self.sessions {
+            if let Some(target)=&view.app.stream_target {
+                groups.entry(base_key(target)).or_insert_with(||Rc::new(crate::audio_controls::Group::new(crate::audio_controls::Playback{muted:view.app.preferences.muted,volume:view.app.preferences.volume})));
+            }
+        }
+        for (key,group) in groups.iter() {
+            let eligible=|s:&&Session|s.app.stream_target.as_ref().is_some_and(|t|base_key(t)==*key)
+                && !s.app.exit_requested && !s.app.disconnecting
+                && s.app.controller.as_ref().is_some_and(|h|!h.stopped.load(Acquire)&&h.stats.capabilities.allows(uu_core::capabilities::Capability::Audio));
+            // Keep a working audio source when switching video tabs. Only
+            // replace it after disconnect, failure or a permission change.
+            let owner=self.sessions.iter().filter(eligible).find(|s|Some(s.id)==group.owner.get())
+                .or_else(||self.sessions.iter().filter(eligible).find(|s|s.id==self.active))
+                .or_else(||self.sessions.iter().find(eligible));
+            group.owner.set(owner.map(|s|s.id));
+            *group.stats.borrow_mut()=owner.and_then(|s|s.app.controller.as_ref()).map(|h|Arc::downgrade(&h.stats)).unwrap_or_default();
+            let playback=group.playback.get();
+            // Stop the previous source before enabling its replacement, even
+            // when the replacement appears earlier in the tab order.
+            for view in self.sessions.iter().filter(|s|Some(s.id)!=group.owner.get()&&s.app.stream_target.as_ref().is_some_and(|t|base_key(t)==*key)) {
+                if let Some(handle)=&view.app.controller {handle.stats.audio.parked.store(true,Release);}
+            }
+            for view in self.sessions.iter_mut().filter(|s|s.app.stream_target.as_ref().is_some_and(|t|base_key(t)==*key)) {
+                view.app.audio_parked=Some(view.id)!=group.owner.get();
+                if let Some(handle)=&view.app.controller {
+                    handle.stats.audio.parked.store(view.app.audio_parked,Release);
+                    handle.stats.audio.muted.store(playback.muted,Relaxed);
+                    handle.stats.audio.volume.store(playback.volume,Relaxed);
+                }
             }
         }
     }
@@ -564,8 +598,8 @@ impl Window {
     fn take_session(&mut self,id:u64)->Session {
         let index=self.sessions.iter().position(|session|session.id==id).expect("live session");
         let mut session=self.sessions.remove(index);
-        session.app.audio_parked=false;
-        if let Some(handle)=&session.app.controller {handle.stats.audio.parked.store(false,std::sync::atomic::Ordering::Release);}
+        session.app.audio_parked=true;
+        if let Some(handle)=&session.app.controller {handle.stats.audio.parked.store(true,std::sync::atomic::Ordering::Release);}
         session.app.deactivate_session();
         session.app.context.suspend();
         self.select_remaining();
@@ -621,6 +655,7 @@ impl Window {
                 session.app.poll_controller(ctx);
                 session.app.poll_virtual_display_state();
             }
+            self.route_cached_audio(self.active);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             return;
         }
@@ -694,11 +729,13 @@ impl Window {
             app.shortcuts=self.shortcuts.clone();
             app.gamepad = gamepad.clone();
             app.restore_maximized = self.restore_maximized.clone();
+            app.audio_parked=true;
             if !selected {app.deactivate_session();}
             self.sessions.push(Session { id, activated:None, app });
             if selected {self.select(id);}
         }
         if had_pending {ctx.request_repaint_of(egui::ViewportId::ROOT);}
+        self.route_cached_audio(self.active);
         let tabs = self.tabs(actions);
         let mut active = None;
         for (index, session) in self.sessions.iter_mut().enumerate() {
@@ -735,6 +772,7 @@ impl Window {
         self.views.retain(|v|!closed.contains(&v.id));
         self.sessions.retain(|s| !s.app.exit_requested || s.app.controller.is_some());
         self.select_remaining();
+        self.route_cached_audio(self.active);
         if self.close_confirmation {
             if ctx.input(|i|i.key_pressed(egui::Key::Escape)) {self.close_confirmation=false;self.modal.set(false);}
         }
@@ -908,12 +946,23 @@ impl State {
         let source=&mut self.windows[source_index];
         let at=source.views.iter().position(|v|v.id==id).unwrap();
         let view=source.views.remove(at);
+        let audio_key=base_key(&view.launch.target);
+        let audio=source.audio_groups.borrow().get(&audio_key).map(|group| {
+            let mut playback=group.playback.get();
+            // A second independent window starts silent. A whole-device
+            // merge installs its shared state before moving individual tabs.
+            playback.muted|=source.views.iter().any(|v|base_key(&v.launch.target)==audio_key);
+            playback
+        });
         source.pending.retain(|l|l.target.key()!=view.launch.target.key());
         let session=source.sessions.iter().any(|s|s.id==id).then(||source.take_session(id));
         source.select_remaining();
         ctx.request_repaint_of(source.viewport());
         if self.input_owner==Some(id) {self.input_owner=None;}
         let target=self.windows.iter_mut().find(|w|w.id==target_id).unwrap();
+        if let Some(playback)=audio {
+            target.audio_groups.borrow_mut().entry(audio_key).or_insert_with(||Rc::new(crate::audio_controls::Group::new(playback)));
+        }
         target.views.push(view);
         if let Some(session)=session {target.adopt_session(session);}else{target.select(id);}
         target.focus=true;ctx.request_repaint_of(target.viewport());
@@ -942,7 +991,18 @@ impl State {
     fn merge_group(&mut self,id:u64,ctx:&egui::Context) {
         let ids=self.group_ids(id);
         let Some(source)=self.windows.iter().find(|w|w.views.iter().any(|v|v.id==id)).map(|w|w.id) else{return;};
-        if let Some(target)=self.oldest_other_window(source) {for view in ids {self.move_view(view,target,ctx);}}
+        if let Some(target)=self.oldest_other_window(source) {
+            let window=self.windows.iter().find(|w|w.id==source).unwrap();
+            if let Some(view)=window.views.iter().find(|v|v.id==id) {
+                let key=base_key(&view.launch.target);
+                let playback=window.audio_groups.borrow().get(&key).map(|g|g.playback.get());
+                if let Some(playback)=playback {
+                    self.windows.iter().find(|w|w.id==target).unwrap().audio_groups.borrow_mut()
+                        .entry(key).or_insert_with(||Rc::new(crate::audio_controls::Group::new(playback)));
+                }
+            }
+            for view in ids {self.move_view(view,target,ctx);}
+        }
     }
     fn fork_virtual_display(&mut self,session:u64,spec:Option<uu_core::virtual_display::Spec>,persistent:bool) {
         let Some(index)=self.windows.iter().position(|w|!w.closing&&w.views.iter().any(|v|v.id==session)) else{return;};

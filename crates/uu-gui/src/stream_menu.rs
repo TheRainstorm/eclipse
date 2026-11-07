@@ -651,9 +651,9 @@ impl super::App {
 
     fn audio_menu(&mut self,ui:&mut egui::Ui){
         use std::sync::atomic::Ordering::Relaxed;
-        let audio=self.controller.as_ref().map(|h|h.stats.audio.clone());
-        let mut muted=audio.as_ref().map_or(self.preferences.muted,|a|a.muted.load(Relaxed));
-        let mut volume=audio.as_ref().map_or(self.preferences.volume,|a|a.volume.load(Relaxed));
+        let audio=self.audio_stats().map(|stats|stats.audio.clone());
+        let playback=self.audio_playback();
+        let (mut muted,mut volume)=(playback.muted,playback.volume);
         let mut changed=false;
         if menu_toggle(ui,uu_i18n::text("启用声音"),!muted,"").on_hover_text(uu_i18n::text("仅控制本串流窗口的声音播放。")).clicked(){muted=!muted;changed=true;}
         ui.add_space(6.);
@@ -664,10 +664,7 @@ impl super::App {
             ui.response().on_hover_text(uu_i18n::format!("播放排队 {} ms · 接收 {} 包",audio.queue_ms.load(Relaxed),audio.packets.load(Relaxed)));
         }
         if changed {
-            if let Some(audio)=audio {audio.muted.store(muted,Relaxed);audio.volume.store(volume,Relaxed);}
-            self.preferences.muted=muted;self.preferences.volume=volume;
-            self.settings_draft.muted=muted;self.settings_draft.volume=volume;
-            self.audio_save_after=Some(std::time::Instant::now()+std::time::Duration::from_millis(250));
+            self.set_audio_playback(muted,volume);
         }
     }
     fn rate_mode_choices(&mut self,ui:&mut egui::Ui) {
