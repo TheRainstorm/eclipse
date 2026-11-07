@@ -5,7 +5,7 @@ use uu_core::native::VideoCodec;
 
 pub fn edit(ui:&mut egui::Ui,s:&mut Sharing,section:u8,monitors:&[(String,String)],portal:bool,naming:bool,virtual_limit:bool) {
     if section==0 {
-        device_name(ui,s,naming);
+        if naming {device_name(ui,s,true);}
         capture(ui,s,monitors,portal);
         if virtual_limit {
             ui.horizontal(|ui| {

@@ -1016,7 +1016,7 @@ impl Manager {
                                     },
                                     &monitors,
                                     false,
-                                    true,
+                                    false,
                                     false,
                                 );
                             }
@@ -1310,11 +1310,9 @@ impl ServicePairing {
             self.loaded = true;
         }
         ui.add_space(8.);
-        ui.horizontal_wrapped(|ui| {
-            crate::theme::tab_value(ui, &mut self.method, 0, uu_i18n::text("密码配对"));
-            crate::theme::tab_value(ui, &mut self.method, 1, uu_i18n::text("公钥配对"));
-        });
-        if self.method == 0 {
+        super::pairing_ui::host_methods(ui,&mut self.method);
+        if super::pairing_ui::host_code_settings(ui,self.method) {
+        } else if self.method == 0 {
             ui.label(if snapshot.password_permissions.is_some() {
                 uu_i18n::text("已设置安全连接密码")
             } else {
@@ -2119,6 +2117,14 @@ mod tests {
         assert!(h.has("添加授权公钥"));
         assert!(!h.has("保存安全连接密码"));
         assert_eq!(&*h.manager.pairing.password, "generated-password");
+        h.click("PIN 码配对");
+        assert!(h.has("PIN 由控制端在连接时生成，无需在这里预先设置。请保持服务运行，收到的配对请求会显示在本页。"));
+        assert!(!h.has("保存安全连接密码"));
+        h.click("临时 PIN 码");
+        assert!(h.has("选择临时配对会撤销该控制端此前的长期授权。"));
+        assert_eq!(&*h.manager.pairing.password, "generated-password");
+        h.click("音频 / 视频");
+        assert!(!h.has("设备名称"));
         h.click("输入");
         assert!(!h.has("密码配对"));
         assert!(!h.has("＋ 添加服务器"));

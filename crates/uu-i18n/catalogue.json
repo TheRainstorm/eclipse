@@ -1,4 +1,10 @@
 {
+  "PIN 码配对": "Pair with PIN",
+  "临时 PIN 码": "Temporary PIN",
+  "控制端首次连接时选择“配对码”，会显示 8 位 PIN。请在本机收到的配对请求中输入该 PIN，选择权限并批准；以后连接无需再次输入。": "On the connecting device, choose Pairing code to display an 8-digit PIN. Enter it in the pairing request on this host, choose permissions and approve. Future connections will use the saved authorization.",
+  "控制端连接时选择“临时配对码”，会显示 8 位 PIN。请在本机收到的配对请求中输入该 PIN 并批准；授权仅本次有效，断开后需要重新配对。": "On the connecting device, choose Temporary pairing code to display an 8-digit PIN. Enter it in the pairing request on this host and approve. Authorization lasts for this connection only; pairing is required again after disconnecting.",
+  "PIN 由控制端在连接时生成，无需在这里预先设置。请保持服务运行，收到的配对请求会显示在本页。": "The connecting device generates the PIN during pairing. No PIN needs to be configured here. Keep the service running; incoming pairing requests appear on this page.",
+  "选择临时配对会撤销该控制端此前的长期授权。": "Temporary pairing revokes any previous persistent authorization for this connecting device.",
   "插件设置已保存；现有串流继续，服务将在空闲时自动应用。": "Plugin settings saved. Existing streams continue; the service will apply them when idle.",
   "更新正在等待串流结束或临时显示器关闭；未完成的显示器操作也需要先处理。": "The update is waiting for streams to end, temporary displays to close, and pending display operations to finish.",
   "正在完成更新…": "Completing update…",
