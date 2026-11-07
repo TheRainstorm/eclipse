@@ -344,6 +344,26 @@ async fn cancelled(stop: &mut watch::Receiver<bool>) {
     }
 }
 
+/// A blocking platform preparation cannot be aborted by dropping its handle.
+/// Keep it inside the connection's lifetime until it releases capture/device
+/// resources, including when the viewer disconnects during encoder startup.
+async fn owned_preparation<T: Send + 'static>(
+    mut task: tokio::task::JoinHandle<Result<T>>,
+    cancelled: Arc<AtomicBool>,
+    interrupted: impl std::future::Future<Output = ()>,
+) -> Result<Option<T>> {
+    tokio::select! {
+        result=&mut task => Ok(Some(result??)),
+        _=interrupted => {
+            cancelled.store(true, Ordering::Release);
+            // Do not release the host lease while an accepted open still owns
+            // a DXGI output. Its result is discarded only after real cleanup.
+            drop(task.await);
+            Ok(None)
+        }
+    }
+}
+
 /// Serve one invited controller, then close. A fresh invocation makes a fresh invitation.
 pub async fn serve(config: HostConfig, stop: watch::Receiver<bool>) -> Result<HostReport> {
     serve_with_status(config, stop, None).await
@@ -776,10 +796,11 @@ async fn send_video(
     impl Drop for CancelCaptureOpen { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
     let capture_cancel = CancelCaptureOpen(Arc::new(AtomicBool::new(false)));
     let capture_options = uu_capture::OpenOptions { hdr:!hdr_codecs.is_empty(),allow_input: config.allow_input, fps, cancelled:capture_cancel.0.clone() };
-    let (capture,encoder,codec,available,encoder_settings,mut startup) = tokio::select! {
-        result=tokio::task::spawn_blocking(move || -> Result<_> {
+    let cancel_open = capture_cancel.0.clone();
+    let preparation=tokio::task::spawn_blocking(move || -> Result<_> {
             let started=Instant::now();
             let mut capture=uu_capture::open_with_options(&config.source,capture_options)?;
+            ensure!(!cancel_open.load(Ordering::Acquire),"capture preparation cancelled");
             capture.set_frame_rate(fps)?;
             let mut capture=uu_capture::scale::bounded(capture,bounds);
             let separate=crate::capture_overlap::separate_from_env()?;
@@ -799,7 +820,10 @@ async fn send_video(
             let attempts=choices.iter().copied().filter(|c|source_hdr&&hdr_codecs.contains(c)).map(|c|(c,true))
                 .chain(choices.iter().copied().map(|c|(c,false))).collect::<Vec<_>>();
             for (codec,hdr) in attempts {
-                match uu_media::encoder::create_with_device(settings(codec,hdr),capture.encoder_input_device()) {
+                ensure!(!cancel_open.load(Ordering::Acquire),"capture preparation cancelled");
+                let encoder=uu_media::encoder::create_with_device(settings(codec,hdr),capture.encoder_input_device());
+                ensure!(!cancel_open.load(Ordering::Acquire),"capture preparation cancelled");
+                match encoder {
                     Ok(encoder) if !hdr || encoder.gpu_input()=>{selected=Some((codec,encoder,hdr));break;},
                     Ok(_)=>last_error=Some(anyhow::anyhow!("{codec:?}: HDR source requires same-device GPU color conversion")),
                     Err(error)=>{tracing::warn!(?codec,?preference,hdr,%error,"native codec initialization failed");last_error=Some(anyhow::anyhow!("{codec:?}: {error}"));},
@@ -818,10 +842,11 @@ async fn send_video(
             let available=vec![codec];
             let startup=crate::native_quality::Startup{capture_us,encoder_us,other_encoders_us:0,..Default::default()};
             Ok((capture,encoder,codec,available,settings(codec,hdr),startup))
-        })=>result??,
-        _=cancelled(&mut stop)=>return Ok(HostReport::default()),
-        _=stream.disconnected()=>return Ok(HostReport::default()),
-    };
+        });
+    let interrupted=async {tokio::select!{_=cancelled(&mut stop)=>{},_=stream.disconnected()=>{}}};
+    let Some((capture,encoder,codec,available,encoder_settings,mut startup))=
+        owned_preparation(preparation,capture_cancel.0.clone(),interrupted).await?
+        else{return Ok(HostReport::default());};
     config.codec=codec;
     config.bitrate_kbps=encoder_settings.bitrate_kbps;
     let permissions=config.session.as_ref().map_or(crate::device_trust::Permissions::CONTROL,|s|s.permissions);
@@ -1402,6 +1427,35 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn cancelled_preparation_is_joined_before_its_resources_are_released() {
+        struct Resource(Arc<AtomicBool>);
+        impl Drop for Resource {fn drop(&mut self){self.0.store(true,Ordering::Release);}}
+        let cancelled=Arc::new(AtomicBool::new(false));
+        let released=Arc::new(AtomicBool::new(false));
+        let (started,started_rx)=tokio::sync::oneshot::channel();
+        let (finish,finish_rx)=std::sync::mpsc::channel();
+        let resource=Resource(released.clone());
+        let task=tokio::task::spawn_blocking(move||{
+            started.send(()).unwrap();
+            finish_rx.recv().unwrap();
+            Ok(resource)
+        });
+        started_rx.await.unwrap();
+        let mut pending=Box::pin(owned_preparation(task,cancelled.clone(),std::future::ready(())));
+        tokio::select! {
+            biased;
+            _=&mut pending=>panic!("cancellation cannot detach an accepted platform open"),
+            _=tokio::task::yield_now()=>{},
+        }
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(!released.load(Ordering::Acquire));
+        finish.send(()).unwrap();
+        assert!(pending.await.unwrap().is_none());
+        assert!(released.load(Ordering::Acquire));
+        let ready=tokio::task::spawn_blocking(||Ok(42));
+        assert_eq!(owned_preparation(ready,Default::default(),std::future::pending()).await.unwrap(),Some(42));
+    }
     #[tokio::test]
     async fn first_frame_deadline_uses_new_frames_and_can_be_cancelled() {
         let stats=MediaStats::default();
