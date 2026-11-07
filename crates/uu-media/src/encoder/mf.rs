@@ -517,6 +517,7 @@ impl Driver {
             // GPU conversion and CPU upload have a defined signal. Keep the
             // emitted AV1 description consistent before caching recovery headers.
             if codec==VideoCodec::Av1 {data=crate::av1::declare_encoder_color(&data,self.settings.hdr)?;}
+            if codec==VideoCodec::Hevc {data=crate::hevc::declare_encoder_color(&data,self.settings.hdr)?;}
             let mut encoded=EncodedFrame{data:data.into(),pts:frame.pts,is_keyframe:idr};
             self.headers.prepare(codec,&mut encoded)?;
             if idr {

@@ -2,6 +2,11 @@
 //! Parsing stays independent of the platform decoder and its GPU backend.
 use crate::color::YuvColor;
 use cros_codecs::codec::h265::parser::{Nalu, NaluType, Parser};
+#[cfg(any(windows,test))]
+#[path="hevc_encoder_color.rs"]
+mod encoder_color;
+#[cfg(any(windows,test))]
+pub(crate) use encoder_color::declare_encoder_color;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sequence {

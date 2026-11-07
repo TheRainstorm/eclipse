@@ -12,6 +12,8 @@ Windows 默认构建包含 `mf-encode`，按 H.264 / HEVC / AV1 子类型枚举�
 
 COM、Media Foundation、编码器和缓冲均在专用线程创建、使用和释放，与 Linux 共用有界请求队列和超时处理。NV12 直接写入每帧独立的 MF 输入缓冲，省去临时 NV12 向量到输入 sample 的整帧复制；异步编码器持有 sample 时，其缓冲保持独立，不根据输入额度提前复用。恢复关键帧携带实际编码器生成的参数集，核验尺寸、颜色和当前帧时间戳。支持显式请求关键帧与动态码率调整。支持 D3D11 输入的编码器直接接收 GPU NV12 sample，CPU 输入保留逐帧独立缓冲。
 
+MF 输出的 HEVC SPS 和 AV1 序列头会明确声明本程序实际送入的颜色信号：SDR 为有限范围 BT.601，HDR10 为有限范围 BT.2020 / PQ。驱动忽略媒体类型中的颜色属性时，只修正本机编码器的序列描述，保留编码图像、参考关系和其它参数；接收端码流不做这种改写。输出仍须通过尺寸、位深和颜色校验。
+
 驱动内部等待在 Windows 默认计时精度下可能多消耗一个刷新量级。编码器活动期间持有配对的 1 ms 计时请求，退出时释放；不会修改系统设置或目标帧率。对支持的驱动申请桌面远程场景和速度优先配置。开发诊断可显式设置 `UU_ENCODE_PROFILE=1`，退出时输出转换、输入提交、驱动完成的聚合耗时；默认关闭，不记录画面。
 
 实现依据微软的 [硬件 MFT](https://learn.microsoft.com/en-us/windows/win32/medfound/hardware-mfts)、[异步 MFT](https://learn.microsoft.com/en-us/windows/win32/medfound/asynchronous-mfts) 和 [H.264 编码器](https://learn.microsoft.com/en-us/windows/win32/medfound/h-264-video-encoder) API。Sunshine 与 uu-remote-linux 提供了硬件选择、低延迟参数和恢复行为的参考；本后端未复制其 GPL 代码。
